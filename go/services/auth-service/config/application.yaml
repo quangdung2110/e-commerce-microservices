@@ -1,0 +1,105 @@
+# Auth Service Configuration
+
+server:
+  port: 8081
+  host: 0.0.0.0
+  mode: development # development, production
+
+database:
+  host: localhost
+  port: 5432
+  name: auth_db
+  user: postgres
+  password: postgres
+  ssl_mode: disable
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+kafka:
+  brokers:
+    - localhost:9092
+  group_id: auth-service-group
+  topics:
+    - auth-events
+    - user-events
+  dead_letter_topic: auth-events-dlt
+
+# JWT Configuration
+jwt:
+  access_token_secret: "your-access-token-secret-key-change-in-production"
+  refresh_token_secret: "your-refresh-token-secret-key-change-in-production"
+  access_token_ttl_minutes: 15
+  refresh_token_ttl_days: 90
+  issuer: "auth-service"
+  token_rotation_window_minutes: 5
+
+# Security Configuration
+security:
+  bcrypt_cost: 12
+  max_login_attempts_per_ip: 10
+  login_attempt_window_minutes: 15
+  ip_block_duration_hours: 1
+  max_active_sessions_per_user: 5
+
+# OTP Configuration
+otp:
+  email:
+    length: 6
+    ttl_minutes: 15
+    max_attempts: 3
+    max_daily_requests: 5
+  sms:
+    length: 6
+    ttl_minutes: 5
+    max_attempts: 3
+    max_daily_requests: 3
+
+# Password Reset Configuration
+password_reset:
+  token_length: 32
+  ttl_hours: 1
+  max_daily_requests: 3
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  burst: 10
+
+# CORS Configuration
+cors:
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+  allowed_methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allowed_headers:
+    - "Content-Type"
+    - "Authorization"
+    - "X-Request-ID"
+  expose_headers:
+    - "X-Request-ID"
+  allow_credentials: true
+  max_age_seconds: 3600
+
+# External Services
+external_services:
+  user_service:
+    url: "http://localhost:8082"
+    timeout_seconds: 5
+  notification_service:
+    url: "http://localhost:8083"
+    timeout_seconds: 10
+
+# Logging
+logging:
+  level: info # debug, info, warn, error
+  format: json # json, console

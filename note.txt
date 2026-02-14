@@ -1,0 +1,202 @@
+1. Annotation implementation example
+
+@Data: contains @Getter, @Setter, @ToString, @EqualsAndHashCode and @RequiredArgsConstructor
+
+@EqualsAndHashCode: generates equals() and hashCode() methods
+    @EqualsAndHashCode(onlyExplicitlyIncluded = true): only includes fields annotated with @EqualsAndHashCode.Include in equals() and hashCode() methods
+    @EqualsAndHashCode(callSuper = true): includes fields from superclass in equals() and hashCode() methods
+
+@NoArgsConstructor: generates a no-argument constructor
+
+@AllArgsConstructor: generates a constructor with 1 parameter for each field in the class
+
+@RequiredArgsConstructor: generates a constructor for final fields and fields annotated with @NonNull
+    Instead of @Autowired on each field, you can use @RequiredArgsConstructor on the class level to generate a constructor with required arguments (final fields and fields annotated with @NonNull). Spring will use this constructor for dependency injection.
+
+@Builder: implements the builder pattern for object creation
+    Ex: MyClass obj = MyClass.builder().field1(value1).field2(value2).build();
+    Put @Builder.Default on fields to set default values when using the builder.
+
+@SuperBuilder: similar to @Builder but supports inheritance hierarchies
+    Put @SuperBuilder on both the parent and child classes to enable builder pattern for subclasses.
+
+@Slf4j: generates a logger field (private static final Logger log = LoggerFactory.getLogger(YourClass.class);)
+    Use log.info("message") to log messages.
+
+
+@Target: specifies where the annotation can be applied (e.g., TYPE, METHOD, FIELD)
+    Ex: TYPE: can be applied to classes, interfaces, enums
+        FIELD: can be applied to fields in a class
+        METHOD: can be applied to methods
+        PARAMETER: can be applied to method parameters
+        CONSTRUCTOR: can be applied to constructors
+@Retention: specifies how long the annotation is retained (e.g., SOURCE, CLASS, RUNTIME)
+Way to create a new annotation:
+
+    1. Define the annotation interface
+    @Target(ElementType.TYPE) // can be applied to classes, interfaces, enums
+    @Retention(RetentionPolicy.RUNTIME) // available at runtime
+    public @interface TrackExecutionTime {
+        String message() default "Execution time";
+    }
+
+    2. Implement the annotation logic (e.g., using AOP aka Aspect-Oriented Programming)
+    @Aspect
+    @Component
+    @Slf4j
+    public class ExecutionTimeAspect {
+
+        @Around("@annotation(trackTime)") // Tìm các method có gắn @TrackExecutionTime
+        public Object logExecutionTime(ProceedingJoinPoint joinPoint, TrackExecutionTime trackTime) throws Throwable {
+            long start = System.currentTimeMillis();
+
+            // Cho phép method thực tế chạy
+            Object proceed = joinPoint.proceed();
+
+            long executionTime = System.currentTimeMillis() - start;
+
+            log.info("{} của method [{}] là: {} ms", 
+                    trackTime.message(), 
+                    joinPoint.getSignature().getName(), 
+                    executionTime);
+            
+            return proceed;
+        }
+    }
+
+@ConfigurationProperties: binds external configuration (e.g., from application.yml) to a Java class
+    Ex:
+    @Configuration
+    @ConfigurationProperties(prefix = "kafka.topics")
+    public class KafkaTopicProperties {
+        private List<TopicConfig> topics;
+        // getters and setters
+    }
+    Note: Remember to add @EnableConfigurationProperties(KafkaTopicProperties.class) in a @Configuration class to enable binding.
+          Always provide getters and setters for the fields to allow Spring to set the values.
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+|    Note: If in file .properties using spring.kafka.*, that means using Spring Boot's built-in KafkaConfiguration class (contains default KafkaProducerFactory, KafkaTemplate, etc.)
+|      If you want more customized configuration, create your own KafkaConfig class and define your own ProducerFactory and KafkaTemplate beans.
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+2. Publisher design 
+
+┌──────────────────────────────────────────────────────────────────┐
+|2.1 Implement interface EventPublisher 
+|    public interface EventPublisher<T extends BaseEvent> {
+|        void publish(T event);
+|        void publish(T event, String routingKey);
+|    }
+└──────────────────────────────────────────────────────────────────┘
+Why interface?
+- Enforce all publishers to implement the publish methods
+- Allow multiple implementations (e.g., KafkaEventPublisher, RabbitMQEventPublisher)
+┌──────────────────────────────────────────────────────────────────┐
+|2.2 Create abstract class KafkaEventPublisher implements EventPublisher
+|    public abstract class KafkaEventPublisher<T extends BaseEvent> implements EventPublisher<T> {
+|        private final KafkaTemplate<String, T> kafkaTemplate;
+|        private final String defaultTopic;
+|        public KafkaEventPublisher(KafkaTemplate<String, T> template, String topic) {
+|            this.kafkaTemplate = template;
+|            this.defaultTopic = topic;
+|        }
+|        @Override 
+|        public void publish(T event) {
+|            // common logic for publishing event
+|        }
+|        @Override
+|        public void publish(T event, String routingKey) {
+|            // common logic for publishing event with routing key
+|        }
+|    }
+└──────────────────────────────────────────────────────────────────┘
+Why abstract class?
+- Provide common implementation for publish methods
+- Prevent direct instantiation of KafkaEventPublisher
+- Enforce subclasses to provide specific configurations (e.g., topic name)
+- Each services have its own publisher by extending KafkaEventPublisher
+    public class OrderEventPublisher extends KafkaEventPublisher<OrderEvent> {
+        public OrderEventPublisher(KafkaTemplate<String, OrderEvent> template, String topic) {
+            super(template, topic);
+        }
+    }
+
+
+
+3. Event Repository design
+
+┌───────────────────────────────────────────────────────────────────┐                                         
+| 3.1 Implement interface EventStore
+|    public interface EventStore<T extends BaseEvent> {
+|        void saveEvent(T event);
+|        List<T> getEventsByAggregateId(String aggregateId);
+|    }
+└───────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+|3.2 Create class JpaEventStore implements EventStore
+|    @Component
+|    public class JpaEventStore<T extends BaseEvent> implements EventStore<T> {
+|        private final EventStoreRepository repository;
+|        private final ObjectMapper objectMapper;
+|        @Override
+|        public void saveEvent(T event) {
+|            // logic to save event using JPA
+|        }
+|        @Override
+|        public List<T> getEventsByAggregateId(String aggregateId) {
+|            // logic to retrieve events by aggregate ID using JPA
+|        }
+|    }
+|
+└───────────────────────────────────────────────────────────────────┘    
+┌─────────────────────────────────────────────────────────────────────────┐
+| The reason we have 2 repository in here cause in here we apply CQRS pattern:
+|  - EventStoreRepository: for storing and retrieving events (write model)
+|  - OrderRepository: for querying order data (read model)
+└─────────────────────────────────────────────────────────────────────────┘
+WRITE MODEL (Command Side)          READ MODEL (Query Side)
+─────────────────────────           ─────────────────────
+EventStoreRepository                 OrderRepo
+│                                    │
+├─ Mục đích: Lưu EVENTS             ├─ Mục đích: Query nhanh
+├─ Bảng: event_store                ├─ Bảng: order_event
+├─ Cấu trúc: Event sourcing         ├─ Cấu trúc: Traditional
+├─ Immutable (không sửa)            ├─ Mutable (có thể update)
+├─ Audit trail đầy đủ               ├─ Current state only
+└─ Rebuild được state               └─ Denormalized, optimized
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Event Sourcing Pattern                                                  │
+│ Đặc điểm:                                                               │
+│ ✓ Append-only: Chỉ INSERT, không UPDATE/DELETE                          │
+│ ✓ Lưu TẤT CẢ events theo thứ tự thời gian                               │
+│ ✓ Mỗi event là immutable (không thay đổi)                              │
+│ ✓ eventData chứa TOÀN BỘ thông tin của event dạng JSON                │
+│ ✓ Có version để track                                                  │
+│ ✓ Là source of truth - nguồn sự thật duy nhất                         │
+│                                                                         │
+│ Use case:                                                               │
+│ → Audit trail: Biết được order đã thay đổi như thế nào                │
+│ → Rebuild state: Có thể tái tạo lại state ở bất kỳ thời điểm nào     │
+│ → Event replay: Replay lại events để debug                            │
+│ → Time travel: Xem state của order ở quá khứ                          │
+│ → Analytics: Phân tích hành vi user                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Read Model / Query Side Pattern                                        │
+│ Đặc điểm:                                                               │
+│ ✓ Mutable: Có thể UPDATE                                               │
+│ ✓ Lưu CURRENT STATE only (trạng thái hiện tại)                        │
+│ ✓ Denormalized: Tất cả data cần thiết trong 1 bảng                    │
+│ ✓ Optimized cho query: Có index, dễ search                            │
+│ ✓ Không có version tracking                                            │
+│ ✓ Là projection từ events                                              │
+│                                                                         │
+│ Use case:                                                               │
+│ → Query nhanh: SELECT * FROM order_event WHERE userId = ?              │
+│ → List orders: Hiển thị danh sách orders                              │
+│ → Search: Tìm kiếm orders theo criteria                               │
+│ → Report: Báo cáo tổng hợp                                            │
+│ → API response: Trả về current state cho client                       │
+└─────────────────────────────────────────────────────────────────────────┘
