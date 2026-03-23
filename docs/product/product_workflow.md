@@ -18,7 +18,7 @@ Khác với Cart (Redis-First), Product Service mang tư tưởng **PostgreSQL-F
 > - [Thẩm định Dữ liệu (Validation Cache)](product_caching_schema.md) — Cache-Aside, Caffeine + Redis, Idempotency bằng SETNX.
 > - [Nguồn Sự Thật (PostgreSQL)](product_db_design.md) — Lưu trữ gốc cho Command Write Model.
 > - [Biến Trạng thái (State Machine)](product_state_machine.md) — Cấu hình FSM thay đổi trạng thái sản phẩm.
-> - [Luồng Đồng Bộ Ngầm (Background Workers)](product_workers.md) — Outbox Polling Worker bắn Kafka.
+> - [Luồng Đồng Bộ Ngầm (Background Workers)](product_workers.md) — Debezium Outbox + các worker đồng bộ nghiệp vụ.
 > - [Cấu trúc Event Chi tiết (Events)](product_events.md) — Payload schema cho tất cả messages.
 
 ## 1. Gợi ý cấu trúc Base API Path
@@ -71,7 +71,14 @@ Sửa tên, giá tiền, hình ảnh, cập nhật tồn kho tĩnh, hoặc sửa
    - `INSERT` event [`ProductUpdatedEvent`](product_events.md#32-product_updated) vào Outbox.
    - *Lưu ý Markdown (Khuyến mãi):* Ngay sau khi lưu thành công sản phẩm hoặc SKU mới, Promotion Service sẽ consume event tạo mới để cấp lại event áp dụng Markdown cho SKU mới sinh ra (nếu category đang trong thời gian sale), gỡ bỏ lỗ hổng Missed Markdown.
    - Nếu giá thay đổi, `INSERT` thêm event [`ProductPriceUpdatedEvent`](product_events.md#34-product_price_updated) vào Outbox.
-- Tiến trình Invalidate Cache (Soft Invalidation - Chống Thundering Herd):
+- **Tiến trình Invalidate Cache (Soft Invalidation - Chống Thundering Herd Strict):**
+  - ⚠️ **NEVER use Hard DELETE (`DEL product:sku:{id}`)** - nó gây Cache Stampede khi hàng nghìn request đổ vào cùng lúc. 
+  - **Thay thế bằng SET (Overwrite):** `SET product:sku:{sku_id} {fresh_json_value}` để đảm bảo luôn có dữ liệu, ngay cả khi Elasticsearch tạm sập.
+  - **Fallback Safety:** Nếu Redis GET return null (cache bị evict), Application BUỘC phải:  
+    1. Gọi DB SELECT (không được gọi ES vì có thể stale)
+    2. Transform dữ liệu ở RAM
+    3. SET lại Redis ngay lập tức với TTL 5 phút
+  - **Không được phép Fallback → ES** vì dữ liệu đó lệch (Event có thể delay vài giây). Chỉ fallback → PostgreSQL (Source of Truth).
    - Thay vì gọi API xóa (`DEL`), [Backend] sẽ gửi tin nhắn đến **Invalidation Worker** để làm mới cache ngầm (Out-of-band).
    - [Trường hợp In-band] Tuyệt đối không dùng `DEL`. Worker/API sẽ chủ động trích xuất kết quả sau cập nhật, nén Snappy/Zstd và **ghi đè (`SET` / Overwrite)** lại khoá Redis bằng dữ liệu mới. Điều này duy trì trạng thái "Always-Warm" (Luôn Nóng) cho Cache, chặn nguy cơ Cache Stampede.
 
@@ -90,6 +97,11 @@ Sửa tên, giá tiền, hình ảnh, cập nhật tồn kho tĩnh, hoặc sửa
    - Nếu thỏa mãn, chuyển sang State mới.
 3. **[Database Giao Dịch Đồng Thời] - Lưu Trữ Tình Trạng:**
    - `@Transactional`: `UPDATE products SET status = newStatus, version = version + 1`.
+   - Nếu command là `RE_ACTIVATE`, xử lý bằng 1 nhánh atomic:
+     - `UPDATE products SET seller_intention_hidden = false WHERE id = :id`.
+     - `SELECT COALESCE(SUM(display_quantity), 0) FROM product_skus WHERE product_id = :id FOR UPDATE`.
+     - Chỉ đổi `status = ACTIVE` khi tổng tồn > 0. Nếu tổng tồn = 0 thì giữ nguyên `status = HIDDEN` nhưng vẫn lưu `seller_intention_hidden = false` để chờ inventory event hoặc worker reevaluate.
+     - Đồng thời phát event nội bộ `PRODUCT_VISIBILITY_REEVALUATE_REQUESTED` để worker đánh thức lại Product nếu dữ liệu tồn kho đã có sẵn nhưng chưa có event mới.
    - Lệnh lưu log kiểm toán vào `product_status_history`.
    - Phát sinh Outbox Event: [`ProductStateChangedEvent`](product_events.md#33-product_state_changed).
 4. **[Khoá] - Giải phóng Lock:**
@@ -143,7 +155,7 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng).
    - Áp dụng `max_discount_amount` nếu có.
 4. **[PostgreSQL] - Ghi dữ liệu & Tránh Deadlock Liên Bảng (Concurrency Guard):**
    - **Cảnh báo Race Condition:** Tuyệt đối không tung một lệnh `UPDATE product_skus` khổng lồ theo diện rộng (Category). Nếu đụng độ với luồng Seller Update API (Lock `products` -> `product_skus`), sẽ lập tức gây Deadlock chéo.
-   - Worker BẮT BUỘC phải chia theo nhóm `product_id`. Với mỗi khối `product_id`, mở `@Transactional` độc lập:
+   - Worker BẮT BUỘC phải chia theo nhóm `product_id` và ORDER BY `product_id` ASC. Với mỗi khối `product_id`, mở `@Transactional` độc lập:
      - Khóa cha: `SELECT 1 FROM products WHERE id = :product_id FOR NO KEY UPDATE`.
      - **UPDATE PRODUCTS**: `UPDATE products SET version = version + 1 WHERE id = :product_id`. Cập nhật `version` của Aggregation Root trước để trigger event bắt chính xác.
      - Cập nhật con: `UPDATE product_skus SET promotional_price = :calc, updated_at = NOW() WHERE product_id = :product_id AND sku_id IN (...)`.
@@ -168,20 +180,27 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng).
    - Parse payload: `sku_id`, `available_quantity`.
 2. **[PostgreSQL] - Cập nhật Display Quantity:**
    - `@Transactional`:
-     - Cập nhật cha: `UPDATE products SET version = version + 1 WHERE id = :product_id`.
-     - `UPDATE product_skus SET display_quantity = :available_quantity WHERE sku_id = :sku_id`.
-     - Nếu phát sinh thay đổi tới trạng thái hệ thống, cập nhật version của products.
+       - Bước 1: `SELECT 1 FROM products WHERE id = :product_id FOR NO KEY UPDATE`.
+       - Bước 2: `SELECT sku_id, status, display_quantity FROM product_skus WHERE product_id = :product_id FOR UPDATE`.
+       - Bước 3: `UPDATE product_skus SET display_quantity = :available_quantity WHERE sku_id = :sku_id`.
+       - Bước 4: Chỉ tăng `products.version` khi có thay đổi trạng thái SKU hoặc trạng thái Product (tránh bơm version rác).
 3. **[Logic] - Kiểm tra Auto-Hide / Auto-Reactivate chống Race Condition:**
-   - **BẮT BUỘC sử dụng Row-Level Lock** kiểu Pessimistic (`SELECT 1 FROM products WHERE id = :product_id FOR NO KEY UPDATE`) ở cấp cơ sở dữ liệu TRƯỚC KHI tiến hành tổng hợp số lượng. Điều này đảm bảo tính nhất quán tuyệt đối (Strict Consistency) khi nhiều Worker cùng xử lý nhiều SKU về 0 cùng lúc, ngăn chặn cấp triệt để hiện tượng Stale Read mà không tốn chi phí và rủi ro rớt mạng/Clock-Drift như Redis Redlock.
+    - **BẮT BUỘC sử dụng Row-Level Lock** kiểu Pessimistic (`FOR NO KEY UPDATE` + `FOR UPDATE`) và giữ lock xuyên suốt toàn bộ chuỗi Đọc SKU -> Tính toán -> Update, tuyệt đối không tách thành nhiều transaction con.
    - Nếu `available_quantity = 0` và SKU đang `ACTIVE`:
-     - Chuyển `product_skus.status = 'OUT_OF_STOCK'`.
+     - Chuyển `product_skus.status = 'OUT_OF_STOCK'`. Đồng thời BẮT BUỘC phải thực thi lệnh `UPDATE products SET version = version + 1 WHERE id = :product_id` để tăng version của bảng cha, nếu không Search Service sẽ từ chối Event này do phiên bản cũ.
      - Phát [`ProductSkuStatusChangedEvent`](product_events.md#35-product_sku_status_changed) vào Outbox.
      - Sau khi lưu trạng thái SKU vào DB, kiểm tra lại tổng: **Tất cả** SKU của Product này đều đã mang `status = OUT_OF_STOCK`? → Nếu đúng, Trigger [AUTO_HIDE_OUT_OF_STOCK](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger) trên Product cha.
    - Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK`:
-     - Chuyển `product_skus.status = 'ACTIVE'`.
+     - Chuyển `product_skus.status = 'ACTIVE'`. Đồng thời BẮT BUỘC phải thực thi lệnh `UPDATE products SET version = version + 1 WHERE id = :product_id` để tăng version của bảng cha.
      - Phát `ProductSkuStatusChangedEvent` vào Outbox.
-       - **Cảnh báo Lỗ hổng TOCTOU & Override Ý định Seller:** Parent Product đang `HIDDEN`? Tuyệt đối KHÔNG tự động bật lại bằng mắt mù. Phải xác minh MỆNH ĐỀ KÉP: `status = 'HIDDEN' AND seller_intention_hidden = false`. Chỉ khi hệ thống tự tắt (không phải do mưu đồ của Seller) thì mới cho phép Trigger [AUTO_REACTIVATE_IN_STOCK](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger).
+       - **PHÒNG CHỐNG Lỗ hổng TOCTOU (Time-of-Check to Time-of-Use) & Override Ý định Seller (ATOMIC):** Khi SKU chuyển từ `OUT_OF_STOCK` → `ACTIVE`, cần kiểm tra kết hợp `status = 'HIDDEN' AND seller_intention_hidden = false` (MỆNH ĐỀ KÉP). **Cơ chế Thực thi (Atomicity Guarantee):** Phải sử dụng SQL Query đơn nguyên: `SELECT 1 FROM products WHERE id = :product_id AND status = 'HIDDEN' AND seller_intention_hidden = false FOR NO KEY UPDATE;` TRƯỚC trigger AUTO_REACTIVATE_IN_STOCK. Query check này BẮT BUỘC:
+  - Đặt SAU Row-Level Lock đã acquire ở Bước 1 (cùng Transaction)
+  - Chạy NGAY TRONG Transaction để lock toàn bộ read + write của cả hai cột
+  - Nếu query không return row, hủy trigger (Seller ý định ẩn)
+  - Nếu return row, trigger AUTO_REACTIVATE_IN_STOCK kèm tăng `version`
+  - Điều này triệt tiêu Race Condition nơi Seller đổi `seller_intention_hidden` giữa thời điểm check và update.
    - **Đồng bộ hóa phiên bản:** Giữ cho State luôn nhất quán. Giải phóng Pessimistic Lock tự động khi hoàn tất DB Transaction (Commit).
+   - **Chống Hố Đen sau khi Seller mở cờ thủ công:** Khi có event nội bộ `PRODUCT_VISIBILITY_REEVALUATE_REQUESTED`, worker bắt buộc chạy lại guard `status = HIDDEN AND seller_intention_hidden = false AND EXISTS(sku in_stock)` trong 1 transaction. Nếu đúng thì trigger `AUTO_REACTIVATE_IN_STOCK` dù không có inventory event mới.
 4. **[Redis] - Update Cache (Chống Read-After-Write Inconsistency):**
    - Không được dùng một lệnh cắm `SELECT` rời rạc khác sau khi Commit vì sẽ làm tăng kết nối và sinh rủi ro đọc nhầm State do Replicate-lag (nếu trúng Read-Replica). Worker nên tự tổng hợp hoặc dùng `RETURNING` để có kết quả vừa Commit.
    - Bắn message thay đổi bằng lệnh Partial Update (VD: `JSON.SET product:sku:{sku_id} .display_quantity 40` hoặc `HSET`) sang Redis.

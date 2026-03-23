@@ -36,7 +36,7 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 *   **`REJECT`**: Từ chối với lý do đính kèm. (`PENDING_REVIEW` → `REJECTED`).
 *   **`REQUEST_REVISION`**: Chỉnh sửa (Làm lại form). (`REJECTED` / `HIDDEN` → `DRAFT`).
 *   **`HIDE_PRODUCT`**: Chủ động tạm dừng kinh doanh. Khi Seller thao tác trigger này, hệ thống sẽ gán/cập nhật thêm cờ `seller_intention_hidden = true`. (`ACTIVE` → `HIDDEN`).
-*   **`RE_ACTIVATE`**: Bán lại. Lệnh này sẽ mở cờ `seller_intention_hidden = false`. (`HIDDEN` → `ACTIVE`).
+*   **`RE_ACTIVATE`**: Bán lại. Lệnh này sẽ mở cờ `seller_intention_hidden = false`. **Sửa lỗi Hố Đen:** Khi chạy lệnh này, BẮT BUỘC hệ thống API phải đếm tổng Tồn Kho của tất cả SKU (`SUM(display_quantity)`). Bấm "Bán lại" chỉ được phép chuyển state sang `ACTIVE` NẾU VÀ CHỈ NẾU tổng tồn kho > 0. Nếu tổng tồn kho = 0 nhưng Seller vẫn cố chỉnh cờ `seller_intention_hidden = false`, bản ghi Database chỉ lưu lại ý định (cập nhật cờ = false) nhưng **GIỮ NGUYÊN PRODUCT Ở TRẠNG THÁI `HIDDEN`** do kẹt điều kiện tồn kho. Sau khi ý định được cập nhật lại, bất kỳ event nhập kho nào đến sau cũng sẽ thành công đưa hàng lên web qua luồng `AUTO_REACTIVATE_IN_STOCK`.
 *   **`BAN_PRODUCT`**: Hành động tối cao của Admin. Bất kể là `PENDING_REVIEW` hay `ACTIVE` đều bị ép sang `BANNED`.
 
 ### 2.2 Transitions do System/Worker Tự Động Trigger
@@ -45,6 +45,7 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 
 *   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0`. (`ACTIVE` → `HIDDEN`).
 *   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động bật lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn điều kiện `seller_intention_hidden = false`. Trước đây việc dựa vào `product_status_history.changed_by = 'SYSTEM'` là sai lầm vì ngăn chặn khả năng Seller được chủ động ẩn hàng vĩnh viễn lúc nó đang tạm hết.
+*   **`VISIBILITY_REEVALUATE` (Internal Trigger)**: Trigger nội bộ được phát khi Seller đổi cờ `seller_intention_hidden: true -> false` trong lúc Product vẫn `HIDDEN`. Worker phải chạy lại guard tồn kho (ít nhất 1 SKU khả dụng) trong cùng transaction; nếu đạt điều kiện thì hợp thức chuyển `HIDDEN` → `ACTIVE` bằng `AUTO_REACTIVATE_IN_STOCK` mà không cần chờ inventory event mới.
 
 > **Lưu ý:** Hai transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` hoạt động ở mức Product (cấp cha), không phải SKU (cấp con). Logic tổng hợp: nếu **ít nhất 1 SKU** khả dụng → Product vẫn ACTIVE. Chỉ khi **100% SKU** hết hàng → auto-hide. Trạng thái riêng lẻ của từng SKU (`ACTIVE`/`OUT_OF_STOCK`/`INACTIVE`) được quản lý trực tiếp trên field `product_skus.status` — xem [DB Design](product_db_design.md#12-nhóm-sản-phẩm--biến-thể-product--sku).
 
@@ -82,4 +83,5 @@ stateDiagram-v2
     *   `APPROVE` không thể trigger nếu sản phẩm chưa có đủ Category Attributes Required (sẽ báo cản trong Code).
     *   `SUBMIT_FOR_REVIEW` yêu cầu sản phẩm phải có ít nhất 1 SKU với `original_price > 0`.
     *   `AUTO_REACTIVATE_IN_STOCK` chỉ áp dụng khi lý do ẩn trước đó là `OUT_OF_STOCK` (check `product_status_history`).
+    *   `VISIBILITY_REEVALUATE` không được phép bypass `seller_intention_hidden`; chỉ chạy khi cờ hiện tại đã là `false` và ít nhất 1 SKU còn hàng.
     *   Hàng đã `BANNED` sẽ không bao giờ có thể quay lui lại được trạng thái nào khác. Nếu Seller muốn khiếu nại, họ phải tạo SP khác, hoặc Admin phải tác động cứng dưới DB (Data Patching).

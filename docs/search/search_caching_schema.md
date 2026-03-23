@@ -54,7 +54,8 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
     *   **TTL**: 60 giây (Logical Expiration Pattern). Giá trị cache được lưu 60s, nhưng thuộc tính `valid_until` (thời điểm trễ 30s) quyết định độ 'tươi' của data.
     *   **Invalidation**: Nếu Query API bốc ra object JSON và phát hiện `now() > valid_until`, Application vẫn trả về JSON stale này cho người dùng, nhưng đồng thời bắn ngầm một Async Job xuống Elasticsearch tính toán kết quả mới.
     *   **Sửa Lỗi Thundering Herd (Logical Expiration Flaw):** Lỗi nguyên thuỷ là khi nhiều Request cùng đọc trúng `now() > valid_until` thì N Goroutine sẽ cùng bay xuống Elasticsearch. Để chống Stampede triệt để, tiến trình Async Job phải chiếm được Distributed Lock `SETNX search:lock:refresh:{query_hash} 1 EX 10` (Hợp hợp Singleflight cho các tiến trình trên chung Pod). Chỉ tiến trình nào nắm được lock mới query xuống ES, các tiến trình trượt lock sẽ Return Stale Data ngay lập tức mà không làm gì thêm.
-    *   **Khi nào cache**: Chỉ cache nếu query là "hot" (đếm tần suất query, chỉ cache khi `query_count > threshold` trong sliding window). Tránh cache pollution cho long-tail queries.
+    *   **Fallback Circuit Breaker (Xử lý khi Elasticsearch sập liên tục):** Khi Goroutine trúng lock nhưng gọi xuống Elasticsearch thất bại (Timeout/Error liên tiếp 3 lần), hệ thống KHÔNG ĐƯỢC gia hạn refresh mù quáng. Cần bắn Log Alert Critical (Grafana/Datadog) và lập tức Fallback gia hạn thêm trường `valid_until` của document trong Redis lên 60 giây tiếp theo để tránh Request kế tiếp lại đập vào DB hỏng, câu giờ chờ ES phục hồi.
+    *   **Khi nào cache:** Chỉ cache nếu query là "hot". Sử dụng Redis Sliding Window Rate Limiter đếm tần suất. Ngưỡng quy định (Threshold): `query_count > 50 requests / 1 phút`. Tránh cache pollution cho long-tail queries, tiết kiệm Memory. Mọi query dưới 50 RPS sẽ đánh trực tiếp Elasticsearch.
 
 > **Query Normalization:** Trước khi hash, query phải được chuẩn hoá: lowercase, trim, sort filter params alphabetically. VD: `keyword=iphone&category=smartphone&sort=price_asc` → cùng hash bất kể thứ tự params.
 
@@ -64,8 +65,8 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
     *   **Mô tả**: Toàn bộ cây danh mục với `category_id`, `name`, `slug`, `parent_id`, `level`, `product_count` (số sản phẩm ACTIVE). Phục vụ hiển thị sidebar/breadcrumb navigation.
     *   **Loại Dữ Liệu**: `String (JSON)`.
     *   **TTL**: 1 giờ. Cây danh mục hiếm khi thay đổi.
-    *   **Invalidation**: Khi Search Service nhận được sản phẩm mới/xoá → product_count thay đổi → rebuild cache. Hoặc subscribe kênh `channel:product:cache:evict` từ [Product Service Pub/Sub](../product/product_caching_schema.md#2-chiến-lược-đồng-bộ-l1--l2-cache-cache-invalidation).
-    *   **L1 Local Cache**: Nếu Search Service dùng JVM (Spring Boot), nên nhét thêm Caffeine L1 (TTL 5 phút) trước Redis để giảm round-trip.
+    *   **Invalidation**: Khi Search Service nhận được sản phẩm mới/xoá -> product_count thay đổi -> rebuild cache. Hoặc subscribe kênh `channel:product:cache:evict` từ [Product Service Pub/Sub](../product/product_caching_schema.md#2-chiến-lược-đồng-bộ-l1--l2-cache-cache-invalidation).
+    *   **L1/L2 Miss Fallback (Chống Stampede Toàn Cụm):** Cả L1 (Caffeine) và L2 (Redis) bị miss thì chỉ 1 Pod được phép gọi Product Service bằng lock phân tán `SETNX search:lock:category-tree-refresh 1 EX 10`; các Pod còn lại phải dùng stale data gần nhất hoặc chờ kết quả refresh broadcast qua Pub/Sub.
 
 ### 1.3 Autocomplete / Suggestions Cache
 

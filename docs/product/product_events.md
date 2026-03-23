@@ -40,7 +40,7 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
-Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEvents](https://cloudevents.io/) và được [Outbox Polling Worker](product_workers.md#1-outbox-polling-worker-producer) bổ sung header khi forward từ bảng `product_outbox_events`:
+Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEvents](https://cloudevents.io/) và được pipeline Debezium Outbox bổ sung header khi forward từ bảng `product_outbox_events`:
 
 *   `event_id`: UUID của sự kiện (lấy từ `product_outbox_events.event_id`).
 *   `event_type`: Loại sự kiện (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`...).
@@ -307,16 +307,79 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "aggregate_id": "cat_001",
   "aggregate_type": "Category",
   "event_type": "CATEGORY_UPDATED",
-  "version": 4,
+  "category_version": 4,
   "timestamp": "2026-03-20T10:00:00Z",
   "payload": {
     "category_id": "cat_001",
     "old_name": "Điện thoại",
     "new_name": "Điện thoại thông minh",
-    "new_path": "dien-tu/dien-thoai-thong-minh"
+    "new_path": "dien-tu/dien-thoai-thong-minh",
+    "category_version": 4
   }
 }
 ```
+
+### 3.8. PRODUCT_SKU_DELETED
+**Ngữ cảnh phát sinh:** Một SKU cụ thể bị Soft Delete khỏi Sản phẩm bởi Seller (các SKU khác trong sản phẩm vẫn tồn tại).
+**Consumers chính:** Search Service (nhận Event để xóa hoặc đánh dấu DELETED cho SKU Document, tránh việc User search ra kết quả lỗi). Cart Service (xoá SKU này khỏi giỏ hàng).
+**Cấu trúc Payload (JSON):**
+```json
+{
+  "event_id": "evt_skudel_xxx",
+  "aggregate_id": "prod-uuid-001",
+  "aggregate_type": "Product",
+  "event_type": "PRODUCT_SKU_DELETED",
+  "version": 6,
+  "timestamp": "2026-03-24T10:00:00Z",
+  "payload": {
+    "product_id": "prod-uuid-001",
+    "sku_id": "sku-uuid-002",
+    "deleted_at": "2026-03-24T10:00:00Z"
+  }
+}
+```
+
+### 3.9. CATEGORY_DELETED
+**Ngữ cảnh phát sinh:** Danh mục bị Xóa Cứng hoặc Xóa Mềm bởi Admin (System Constraint: thông thường Admin chỉ được xoá khi danh mục không còn Product nào, nhưng đề phòng trường hợp Force Delete).
+**Consumers chính:** Search Service (cập nhật trạng thái HIDDEN cho các Product mồ côi nếu có và xoá Cache).
+**Cấu trúc Payload (JSON):**
+```json
+{
+  "event_id": "evt_catdel_xxx",
+  "aggregate_id": "cat_001",
+  "aggregate_type": "Category",
+  "event_type": "CATEGORY_DELETED",
+  "category_version": 5,
+  "timestamp": "2026-03-24T10:00:00Z",
+  "payload": {
+    "category_id": "cat_001",
+    "deleted_at": "2026-03-24T10:00:00Z",
+    "category_version": 5
+  }
+}
+```
+
+### 3.10. PRODUCT_VISIBILITY_REEVALUATE_REQUESTED (Internal)
+**Ngữ cảnh phát sinh:** Seller đổi ý mở lại cờ `seller_intention_hidden = false` trong khi Product vẫn `HIDDEN` và chưa có inventory event mới.
+**Consumers chính:** Chỉ Product Service internal worker (không public cho service khác).
+
+**Cấu trúc Payload (JSON):**
+```json
+{
+  "event_id": "evt_visibility_recheck_xxx",
+  "event_type": "PRODUCT_VISIBILITY_REEVALUATE_REQUESTED",
+  "aggregate_type": "Product",
+  "product_id": "prod-uuid-001",
+  "timestamp": "2026-03-24T10:10:00Z",
+  "source": "product-service",
+  "payload": {
+    "product_id": "prod-uuid-001",
+    "trigger": "SELLER_UNHIDE_INTENTION_CHANGED",
+    "version": 7
+  }
+}
+```
+**Logic xử lý:** Worker chạy guard trong 1 transaction: `status = HIDDEN` + `seller_intention_hidden = false` + `EXISTS sku còn hàng` -> nếu đạt điều kiện thì trigger `AUTO_REACTIVATE_IN_STOCK`.
 
 ## 4. Chi Tiết Các Loại Event Tiêu Thụ (Consumed Events)
 

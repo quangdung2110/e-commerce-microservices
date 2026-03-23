@@ -77,9 +77,10 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
               { "term": { "product_status": "ACTIVE" } },
               { "term": { "sku_status": "ACTIVE" } },
               { "term": { "is_in_stock": true } },
-              { "prefix": { "category_path": "dien-tu/dien-thoai/smartphone" } },
+              { "term": { "category_id": "cat-smartphone" } },
               { "range": { "best_price": { "gte": 20000000, "lte": 40000000 } } },
-              { "term": { "searchable_attributes.keyword": "Thương hiệu:Apple" } }
+              { "term": { "searchable_attributes": "thuonghieu:apple" } },
+              { "term": { "variant_attributes": "mausac:titan-tu-nhien" } }
             ]
           }
         },
@@ -88,12 +89,12 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
         },
         "sort": [
           { "_score": "desc" },
-          { "sold_count": "desc" }
+          { "product_sold_count": "desc" }
         ],
         "from": 0,
         "size": 20,
         "aggs": {
-          "categories": { "terms": { "field": "category.id", "size": 20 } },
+          "categories": { "terms": { "field": "category_id", "size": 20 } },
           "price_ranges": {
             "range": {
               "field": "best_price",
@@ -118,29 +119,26 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 4. **[Response Transformation] - Chuẩn hoá kết quả:**
    - Map Elasticsearch hits → API response format. Kết quả trả về đã là SKU (First-class document).
    - `best_price` và `has_promotion` đã được tính sẵn, không cần loop ở App Level nữa.
-       - **Response JSON:**\n       ```json\n       {\n         "total": 1250,\n         "page": 1,\n         "size": 20,\n         "items": [\n           {\n             "product_id": "prod-123",\n             "sku_id": "sku-abc",\n             "name": "iPhone 15 Pro Max 256GB",\n             "original_price": 31900000,\n             "best_price": 29500000,\n             "discount_percentage": 7,\n             "sold_count": 1500,\n             "is_in_stock": true\n           }\n         ],\n         "facets": {
-         "total": 1250,
-         "page": 1,
-         "size": 20,
-         "items": [
-           {
-             "product_id": "prod-123",
-             "sku_id": "sku-abc",
-             "name": "iPhone 15 Pro Max 256GB - Titan Tự nhiên",
-             "thumbnail_url": "https://img.cdn/iphone15.jpg",
-             "original_price": 31900000,
-             "best_price": 29500000,
-             "discount_percentage": 7,
-             "sold_count": 1500,
-             "rating": 4.9,
-             "is_in_stock": true,
-             "attributes": [
-               { "name": "Màu sắc", "value": "Titan Tự nhiên" },
-               { "name": "Dung lượng", "value": "256GB" }
-             ]
-           }
-         ],
-         "facets": {
+   - **Response JSON:**
+     ```json
+     {
+       "total": 1250,
+       "page": 1,
+       "size": 20,
+       "items": [
+         {
+           "product_id": "prod-123",
+           "sku_id": "sku-abc",
+           "name": "iPhone 15 Pro Max 256GB - Titan Tự nhiên",
+           "thumbnail_url": "https://img.cdn/iphone15.jpg",
+           "original_price": 31900000,
+           "best_price": 29500000,
+           "discount_percentage": 7,
+           "sold_count": 1500,
+           "rating": 4.9,
+           "is_in_stock": true
+         }
+       ],
        "facets": {
          "categories": [{ "value": "Smartphone", "count": 800 }],
          "price_ranges": [{ "label": "15 - 30 triệu", "count": 350 }],

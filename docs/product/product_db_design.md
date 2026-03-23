@@ -26,6 +26,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `slug`: VARCHAR(255) UNIQUE (Dùng cho SEO URL).
     *   `level`: INT (Cấp độ phân nhánh, vd: Thư mục gốc = 1).
     *   `is_leaf`: BOOLEAN (Đánh dấu có phải danh mục lá không, sản phẩm chỉ được gán vào danh mục lá).
+    *   `category_version`: BIGINT DEFAULT 1 (Quản lý phiên bản thay đổi tên/cấu trúc của danh mục, phục vụ làm cờ Guard OCC chặn rủi ro Race Condition đè dữ liệu cũ ở Search Service).
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
@@ -59,7 +60,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `status`: VARCHAR(50) DEFAULT 'DRAFT'. Quản lý bởi [State Machine](product_state_machine.md). (Các trạng thái: DRAFT, PENDING_REVIEW, ACTIVE, HIDDEN, REJECTED, BANNED. Tuyệt đối KHÔNG có trạng thái DELETED).
     *   `seller_intention_hidden`: BOOLEAN DEFAULT FALSE (Cờ độc lập ghi nhận ý muốn chủ quan của Seller là ẩn sản phẩm. Dùng để vượt mặt State Machine tự động bật hàng khi Inventory > 0).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete, dùng chung với Annotation `@SQLRestriction("is_deleted = false")` ở tầng Entity để tách biệt vòng đời dữ liệu khỏi vòng đời nghiệp vụ. Trạng thái cũ được bảo lưu giúp Restore dễ dàng).
-    *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ).
+    *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ). **Đây là dữ liệu thô (raw key-value), không phải token search.** Việc transform sang token `k:v` cho Elasticsearch thuộc trách nhiệm Search Worker.
     *   `version`: BIGINT DEFAULT 0 (Dùng cho Optimistic Locking, tăng tự động khi update).
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
@@ -72,8 +73,8 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Seller đặt).
     *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#6-workflow-xử-lý-markdown-event-từ-promotion-service)).
     *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán).
-    *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ từ [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#5-inventory-sync-worker)).
-    *   `variant_attributes_json`: JSONB (Cấu hình riêng của SKU này, vd: `{"color": "Xanh", "size": "M"}`).
+    *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ từ [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)).
+    *   `variant_attributes_json`: JSONB (Cấu hình riêng của SKU này, vd: `{"color": "Xanh", "size": "M"}`). **Giữ nguyên dạng object tại Write Model; Search Worker sẽ chuyển đổi sang `variant_attributes` token array khi index.**
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
@@ -157,7 +158,7 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
     *   **Lock-Free với Khoá lạc quan (Optimistic Locking):** Bảng `products` sử dụng field `version` để bảo vệ **tính toàn vẹn (Row-level integrity)** cho Aggregate Root. Bất kể thay đổi ở `products` hay `product_skus`, `version` của bảng cha `products` đều phải được tăng lên. Khác với Distributed Lock chậm chạp, Optimistic Lock nhẹ và tăng throughput. Mọi luồng API sẽ tự check `version` và Reject Transaction bẩn. Tránh việc sử dụng 2 chuỗi version độc lập gây xung đột ở Search Service.
     *   **Khoá bi quan (Pessimistic Locking) cho Strict Consistency:** Riêng đối với thao tác có tính ganh đua cao và yêu cầu nhất quán lượng tồn kho tuyệt đối (Workflow xử lý `INVENTORY_QUANTITY_CHANGED`), hệ thống áp dụng `FOR NO KEY UPDATE`. Điều này chặn triệt để hiện tượng Stale Read tại DB thay vì sử dụng Redis Redlock ở App.
 3.  **Outbox Phát Sự Kiện:**
-    *   Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events` với status `PENDING`. Job định kỳ sẽ kéo dữ liệu chuyển lên Kafka. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
+    *   Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events`. Debezium CDC sẽ đọc WAL và đẩy record sang Kafka. Không dùng polling job dựa trên cột trạng thái `PENDING`. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
 4.  **Markdown Price Integrity:**
     *   `promotional_price` trên `product_skus` chỉ được cập nhật bởi [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker), KHÔNG phải bởi API trực tiếp từ Seller. Seller chỉ có quyền sửa `original_price`.
     *   Khi `original_price` thay đổi (Seller sửa giá), nếu SKU đang có `product_markdown_applied` active → cần re-calculate `promotional_price` tương ứng.

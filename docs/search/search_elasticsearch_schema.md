@@ -17,7 +17,7 @@
 
 Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Mọi dữ liệu được đồng bộ bất đồng bộ (Async) từ [Product Service](../product/product_db_design.md) thông qua Kafka events.
 
-> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có logic ghi phức tạp, không có Transaction, không có Optimistic Locking. Tất cả dữ liệu được "nhồi sẵn" (denormalized / pre-computed) để trả về trong < 10ms.
+> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng guard `version`/`category_version` để chống out-of-order.
 
 ## 1. Danh Sách Elasticsearch Indices
 
@@ -100,6 +100,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       
       "seller_id":           { "type": "keyword" },
       "category_id":         { "type": "keyword" },
+      "category_version":    { "type": "long" },
       
       "name": {
         "type": "text",
@@ -140,10 +141,11 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 |---|---|---|
 | `sku_id` | keyword | Là `_id` thực sự của document này. |
 | `product_id` | keyword | Đóng vai trò làm Routing Key và là Pivot Key cho tính năng **Field Collapsing** (Gom cụm các sku lại thành 1 Product ở API Response). |
-| `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Tốc độ quét cực nhanh mà không bị lỗi chéo râu ông nọ cắm cằm bà kia của Flatten Object bình thường. |
-| `variant_attributes` | keyword array | Mảng mô tả đặc tính SKU (VD: `["mau:đen", "dungluong:256GB"]`). Phù hợp để người dùng tick chọn chính xác màu sắc. |
+| `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens) cho các thuộc tính dùng chung của toàn bộ Sản phẩm (Product-level attributes). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Dùng để hỗ trợ Filtering chung hoặc Full-text search mở rộng. **Search Worker chịu trách nhiệm transform từ `attributes_json` (raw JSON) thành token array khi consume event.** |
+| `variant_attributes` | keyword array | Mảng mô tả đặc tính riêng của từng SKU (SKU-level attributes). Ví dụ: `["mau:đen", "dungluong:256GB"]`. Dùng để hỗ trợ Facet Filtering chính xác cho người dùng. **Search Worker transform từ `variant_attributes_json` sang token array.** |
 | `is_in_stock` | boolean | Thay thế hoàn toàn cho `display_quantity` và `total_quantity`. Cờ boolean giảm 99.9% lưu lượng update rác vô tri vào Cluster. Chỉ update ES khi Event báo Tồn Kho rớt về 0 hoặc có hàng lại từ 0. Tồn kho thực trích xuất từ Checkout/Cart. |
-| `version` | long | **Critical**: Giữ nguyên cơ chế Optimistic Concurrency, chặn event lộn xộn. |
+| `version` | long | **Critical**: Giữ nguyên cơ chế Optimistic Concurrency cho Product Update. |
+| `category_version` | long | **Lifecycle và Init:** (1) Khởi tạo bằng `categories.category_version` tại thời điểm index lần đầu (không hard-code 0). (2) Chỉ cập nhật khi nhận `CATEGORY_UPDATED`/`CATEGORY_DELETED`. (3) Track độc lập với `version` của Product document để làm OCC Guard cho update-by-query theo category. |
 
 ### 2.4. Mẫu Document Hoàn Chỉnh
 
@@ -153,6 +155,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
   "product_id": "prod-uuid-001",
   "seller_id": "seller-uuid-001",
   "category_id": "cat-smartphone",
+  "category_version": 12,
   "name": "iPhone 15 Pro Max 256GB Chính Hãng",
   "product_status": "ACTIVE",
   "sku_status": "ACTIVE",

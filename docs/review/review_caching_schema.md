@@ -28,7 +28,7 @@ Khi người dùng mở trang sản phẩm, phần tử Header hiển thị ngay
   }
   ```
 - **TTL (Thời gian tồn tại):** 24 giờ.
-- **Cơ chế Update / Invalidate:** Cache-Aside. Khi có Event làm thay đổi các bảng điểm của `product_rating_aggregates` hoặc `sku_rating_aggregates` (Các Event `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_REJECTED_FROM_APPROVED`), hệ thống sẽ gọi lệnh xóa 2 Cache Key gồm khóa `DEL review:prod:agg:{product_id}` và khóa `review:sku:agg:{product_id}:{sku_id}` trên Redis. Lúc đó ở Request kế tiếp gọi vào sản phẩm, hệ thống bị Cache Miss và sẽ tự query vào DB lấy lệnh count kết quả mới, nạp lại vào Redis.
+- **Cơ chế Update / Invalidate:** Proactive Push (Write-Through). Nhằm chống lại hiện tượng Cache Stampede (Bão truy vấn đồng loạt đâm vào DB nếu bị Cache Miss), hệ thống sẽ không sử dụng lệnh `DEL` để hard invalidate cache. Thay vào đó, khi có Event làm thay đổi các bảng điểm của `product_rating_aggregates` hoặc `sku_rating_aggregates` (`REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_REJECTED_FROM_APPROVED`), **Background Worker xử lý Event sẽ tự đâm truy vấn vào DB để tính lại điểm, sau đó chủ động nạp JSON mới vào Redis** thông qua lệnh `SET`. Request từ hệ thống Load Web luôn Hit Cache 100%.
 
 ## 2. Cụm Cache 2: Trang Đánh Giá Đầu Tiên (First-Page Pagination Cache)
 Theo số liệu hành vi, hơn 90% người dùng chỉ lướt xem danh sách nhận xét ở "Trang 1" để đưa ra quyết định mua hàng. Việc liên tục đập query lấy danh sách 10 mẫu đâm thẳng vào DB là tối kị. Để cho phép linh động xóa bộ lọc hay xếp trang, thiết kế sử dụng **Pattern Cache Versioning**.
@@ -71,12 +71,13 @@ Lưu ý: Giải pháp này yêu cầu `user_id` phải là số nguyên dương 
   - **Mô tả:** Chỉ lưu trữ lượng tăng/giảm (Delta) của Like từ thời điểm Worker gom số lần trước. Số Like thật được duy trì an toàn và cập nhật dần ở Database.
 
 
-### Tiến trình Đồng bộ `helpful_count` xuống Database (Chống Race Condition)
-1.  **Background Cron Job** kích hoạt định kỳ (Ví dụ cứ mỗi 1 giờ/lần).
-2.  Lấy danh sách `review_id` từ `review:dirty_delta_keys` bằng lệnh `SPOP` khối lượng an toàn (Option B Tracking).
-3.  Với mỗi `review_id`, Worker chạy một **Lua Script Atomic** để lấy độ lệch (`GET review:{review_id}:delta`) VÀ xóa key (`DEL`) ngay đi lập tức trong cùng 1 chu kỳ tích tắc. Việc này **chặn đứng Race Condition**, khiến lượt Like mới sinh ra khi worker đang chạy sẽ không bị xóa đè gây mất dữ liệu.
-4.  Lấy con số delta, gọi lệnh Batch Update đè cộng dồn vào cột `helpful_count` của bảng `reviews` ở Database (`UPDATE reviews SET helpful_count = GREATEST(helpful_count + $delta, 0)`).
-5.  Hoàn tất tiến trình. DB không phải lưu trữ các bảng `review_likes` nối quan hệ tốn dung lượng nữa.
+### Tiến trình Đồng bộ `helpful_count` xuống Database (Bảo đảm Crash Recovery & Chống Race Condition)
+Tiến trình phải sử dụng vùng đệm (Processing Hash) để tránh Data Loss nếu Worker bị Crash giữa chừng (khi lấy đứt delta ra khỏi Redis mà chưa kịp lưu vào PostgreSQL):
+1.  **Crash Recovery Check**: Đầu mỗi chu kỳ, Worker luôn kiểm tra Hash `review:processing_deltas` trước. Nếu có dữ liệu (HGETALL trả về keys), chứng tỏ ca làm việc trước bị crash hoặc chưa commit xong DB. Worker sẽ lấy lượng delta tồn đọng này để đi cập nhập DB ngay (Đi thẳng sang bước 3). Nếu không có, đi sang bước 2.
+2.  **Đẩy vào Processing Hash (Atomic)**: Worker chạy một **Lua Script** để quét lấy list `review_id` từ Set `review:dirty_delta_keys`. Với mỗi ID, lấy giá trị delta (`GET`), đưa vào một Hash tạm thao tác (`HSET review:processing_deltas {id} {delta}`), sau đó xóa key delta cũ (`DEL`) và xóa ID khỏi Set dirty (`SREM`).
+3.  **Cập nhật Database**: Đọc toàn bộ danh sách ID và số delta định biên từ vùng đệm (`HGETALL review:processing_deltas`), chạy lệnh Batch Update cộng dồn đè vào cột `helpful_count` của bảng `reviews` ở PostgreSQL (`UPDATE reviews SET helpful_count = GREATEST(helpful_count + $delta, 0)`).
+4.  **Dọn dẹp**: **Chỉ khi và sau khi** câu lệnh SQL trả về thông báo thành công (Commit Transaction), Worker mới chạy Pipeline gọi lệnh `HDEL review:processing_deltas {id1} {id2}...` để dọn dẹp các delta đã xử lý an toàn.
+5.  Hoàn tất tiến trình. DB không phải lưu trữ các bảng `review_likes` nối quan hệ tốn dung lượng nữa, và hệ thống miễn nhiễm với Worker Crash.
 
 ## Tóm Lược 
 

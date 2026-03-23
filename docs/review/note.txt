@@ -1,2 +1,19 @@
 1. Mỗi service chịu trách nhiệm xử lý dữ liệu của riêng mình, không được quá phụ thuộc vào các service khác.
 
+2. Sử dụng Cache Versioning để đảm bảo dữ liệu được cập nhật đúng cách và tránh việc sử dụng dữ liệu cũ (đây là một cách tiếp cận tốt để thực hiện cache invalidation).
+
+3. Loại bỏ trực tiếp bảng review_likes vì không thật sự cần thiết và làm tốn tài nguyên của hệ thống. Thay vào đó, chúng ta sử dụng Redis Bitmaps để lưu trữ thông tin về việc người dùng
+đã thích một bài đánh giá nào đó hay chưa. Điều này giúp giảm tải cho cơ sở dữ liệu và tăng hiệu suất truy vấn. Tuy nhiên trade-off là key này sẽ có TTL là 6 tháng, có nghĩa là người
+dùng có thể like lại một bài đánh giá sau 6 tháng kể từ lần like trước đó. Đây là một giải pháp hợp lý để cân bằng giữa hiệu suất và tính năng của hệ thống.
+
+4. Sử dụng Redis Lua Script để thực hiện các thao tác atom khi khách hàng spam like/unlike liên tục trong một khoảng thời gian ngắn, giúp tránh tình trạng race condition và đảm bảo tính nhất
+quán của dữ liệu. Tạo thêm Redis key để lưu trữ thông tin về số lượng thay đổi like/unlike trong một khoảng thời gian nhất định và key để có thể lưu trữ thông tin những review nào đã được 
+chiều chỉnh đó, sau đó sử dụng một Worker chạy định kỳ để có thể đồng bộ dữ liệu xuống Database.
+
+5. Vì việc đồng bộ dữ liệu từ Redis xuống Database là từ 2 hệ thống khác nhau, chúng ta tạo thêm một key phụ để lưu trữ thêm thông tin về những review nào đã được chỉnh sửa (được like hoặc
+unlike) và chúng chỉ bị xóa sau khi đã đồng bộ thành công xuống Database
+
+6. Lưu ý khi sử dụng một key phụ trên, chúng ta phải ngay lập tức xóa các key chính (Counter và key chính khi lưu trữ thông tin về review đã like / unlike) để tránh việc bị race condition
+xảy ra khi worker này đang chạy và có một khách hàng khác thực hiện like/unlike cùng một bài đánh giá đó, điều này có thể dẫn đến việc mất dữ liệu hoặc dữ liệu không nhất quán. Việc xóa key chính
+ngay lập tức sẽ giúp đảm bảo rằng nếu có một khách hàng khác thực hiện like/unlike cùng một bài đánh giá đó, hệ thống sẽ không tìm thấy key chính và sẽ không thực hiện được thao tác đó, từ đó giúp 
+việc thực hiện like / unlike đó sẽ được thực hiện ở chu kỳ tiếp theo của Worker.

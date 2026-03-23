@@ -120,30 +120,18 @@ Với đặc thù hệ thống đọc nhiều, nhưng ghi/tính toán số liệ
 
 ## 5. Helpful Votes Sync Worker (Cron Job dồn Like)
 **Loại hình:** Lịch biểu chạy `1 giờ / Lần`.
-**Sứ mệnh:** Đồng bộ lượt Hữu Ích (Helpful/Like) thông qua bộ đếm Delta từ Redis vào Database Persistent. Xử lý triệt để bài toán Race Condition khi người dùng Like trùng vào khoảng khắc Worker quét thay đổi.
+**Sứ mệnh:** Đồng bộ lượt Hữu Ích (Helpful/Like) thông qua bộ đếm Delta từ Redis vào Database Persistent. Xử lý triệt để bài toán Crash Recovery và Race Condition.
 
-**Luồng hoạt động Batch Update (Sử dụng luồng Delta Tracking):**
-1. Lấy danh sách ID của các đối tượng review vừa có thay đổi Like trong 1 giờ qua từ một Redis SET lưu trữ: `SPOP review:dirty_delta_keys {batch_size}` (Option B - Rút trọn gói không cần SCAN toàn DB).
-2. Với mỗi `review_id` lấy được, thực hiện gọi một Lua Script nguyên tử (Atomic) rút số Delta ra một khóa tậm thời, CHỐNG MẤT DỮ LIỆU KHI CRASH:
-     ```lua
-     local target_key = KEYS[1]
-     local processing_key = KEYS[2]
-     local val = redis.call('GET', target_key)
-     if val and tonumber(val) ~= 0 then
-         -- Rút delta qua biến tạm chờ DB xử lý (Tránh lỗi Crash làm bốc hơi lượt Like)
-         redis.call('SET', processing_key, val)
-         redis.call('DEL', target_key)
-         return tonumber(val)
-     else
-         return 0
-     end
-     -- KEYS[1] là "review:{review_id}:delta", KEYS[2] là "review:{review_id}:delta:processing:{worker_id}"
-     ```
-3. Nhận về Output (`$delta` - Ví dụ: `+5`, hoặc `-2`). Nếu `$delta == 0`, bỏ qua.
-4. Mở Transaction. Phóng câu lệnh Bulk Update SQL vào PostgreSQL Database với lệnh cộng dồn an toàn:
-   - `UPDATE reviews SET helpful_count = GREATEST(helpful_count + $delta, 0) WHERE id = 'uuid-review'`.
-   - Commit DB.
-5. Sau khi Update DB thành công 100%, Worker mới quay lại Redis ném lệnh `DEL review:{review_id}:delta:processing:{worker_id}`. Nếu Worker bị sập ngang (chưa kịp đưa xuống DB), một tiến trình Sweeper định kỳ ngầm sẽ kiểm tra các key khóa `processing` trôi nổi để khôi phục.
+**Luồng hoạt động Batch Update (Sử dụng luồng Processing Hash):**
+1. **Kiểm tra Crash Recovery:** Khởi đầu chu kỳ, Worker lập tức ưu tiên gọi `HGETALL review:processing_deltas` để lấy toàn bộ dữ liệu đang mắc kẹt chưa kịp đồng bộ (Nếu ca làm việc trước bị Crash). Nếu có dữ liệu, nhảy thẳng sang bước 4 để cứu hộ. Nếu không có đâm sang bước 2.
+2. **Kéo dữ liệu Delta (Atomic Lua Script):** Nếu không có rác, Worker quét danh sách ID các review vừa có thay đổi Like trong 1 giờ qua vào khu vực đang xử lý: 
+   - Quét từ `SMEMBERS review:dirty_delta_keys`.
+   - Với mỗi mục, lấy `GET review:{review_id}:delta` và chuyển vào `HSET review:processing_deltas {id} {delta}`, sau đó gọi `DEL` trên key delta cũ và `SREM` khỏi dirty. Hoạt động này được gói bằng LUA Script để đảm bảo Atomic trong Redis.
+3. Nếu danh sách thu về trống rỗng, kết thúc Job.
+4. Mở Transaction. Phóng câu lệnh Batch Update SQL vào PostgreSQL Database với lệnh cộng dồn an toàn từ toàn bộ Hash `processing_deltas`:
+   - `UPDATE reviews SET helpful_count = GREATEST(helpful_count + $delta, 0) WHERE id IN (...)`
+   - Commit Transaction DB.
+5. Sau khi Update DB thành công 100%, Worker mới gọi Pipeline `HDEL review:processing_deltas {id1} {id2}...` để dọn dẹp các ID đã đồng bộ xong.
 6. Đảm nhiệm Update Caching L1/L2 Paging nếu danh sách thuộc Trang 1.
 
 ## 6. L1 Cache Invalidator Consumer (Tránh Hiển Thị Sai Trang Đánh Giá)

@@ -35,11 +35,11 @@ Search Service là **Read Model** thuần túy, không có luồng ghi phức t�
 1. **Consumer Poll:** Worker gọi `poll(100ms)` lắng nghe events.
 2. **Batch Processing:** Gom nhóm events theo `product_id` để tối ưu. Nếu nhận 50 events cho 20 products, chỉ cần 20 Elasticsearch operations (lấy event cuối cùng / mới nhất cho mỗi product).
 3. **Phân loại Event & Xử lý:**
-     - `PRODUCT_CREATED` / `PRODUCT_UPDATED` / `PRODUCT_SKU_ADDED`: Create/Update sử dụng Document SKU độc lập (doc_as_upsert). Xem [Search Events 2.1, 2.2](search_events.md#2-chi-tiết-xử-lý-từng-event-type).
+  - `PRODUCT_CREATED` / `PRODUCT_UPDATED`: Create/Update sử dụng Document SKU độc lập. `PRODUCT_CREATED` dùng `index/upsert` đầy đủ document; `PRODUCT_UPDATED` dùng script update có guard version. Xem [Search Events 2.1, 2.2](search_events.md#2-chi-tiết-xử-lý-từng-event-type).
      - `PRODUCT_STATE_CHANGED`: Partial update trạng thái theo tất cả các SKU.
-     - `PRODUCT_PRICE_UPDATED`: Update giá và các trường tính toán từ App/Worker thay vì Painless Script.
-     - `PRODUCT_SKU_STATUS_CHANGED`: Cập nhật cờ `is_in_stock` (cấm hoàn toàn Painless script và gỡ bỏ `total_quantity`).
-     - `PRODUCT_DELETED`: Đánh dấu Xóa (Tombstone - doc_as_upsert) thay vì hard delete để tránh lỗi lệch thứ tự event.
+  - `PRODUCT_PRICE_UPDATED`: Partial update giá, **cấm `doc_as_upsert`** để tránh tạo document cụt khi out-of-order.
+  - `PRODUCT_SKU_STATUS_CHANGED`: Cập nhật `sku_status` + `is_in_stock`, **cấm `doc_as_upsert`**.
+  - `PRODUCT_DELETED`: Đánh dấu Xóa (Tombstone qua scripted upsert) thay vì hard delete để tránh lỗi lệch thứ tự event.
 4. **Bulk API:** Sử dụng Elasticsearch [Bulk API](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html) để gộp nhiều operations vào 1 request HTTP, giảm round-trip overhead:
    ```
    POST _bulk
@@ -93,11 +93,13 @@ POST products_write/_update_by_query
 **Sứ mệnh:** Đồng bộ cây danh mục (category tree) từ Product Service vào bộ nhớ local của Search Service. Dữ liệu này được Worker #1 dùng để enrichment (`category_path`, `category_name`) khi index sản phẩm.
 
 **Chi tiết luồng hoạt động:**
-1. **Khi Service khởi động:** Gọi Product Service API `GET /api/v1/products/categories/tree` (internal API) → lưu vào RAM (HashMap) + Redis (`search:categories:tree`).
-2. **Lắng nghe Pub/Sub:** Subscribe kênh `channel:product:cache:evict` từ [Product Service](../product/product_caching_schema.md#2-chiến-lược-đồng-bộ-l1--l2-cache-cache-invalidation).
-3. Khi nhận message invalidate → re-fetch cây danh mục mới → update RAM + Redis.
+1. **Khi Service khởi động:** Lập tức gọi Product Service API `GET /api/v1/products/categories/tree` (internal API). Lưu vào RAM (HashMap) + Redis (`search:categories:tree`).
+2. **Sửa lỗi Race Condition (Cold Start Circular Dependency):** Rất dễ xảy ra lỗi nếu `Product Indexing Worker` bắt đầu poll Event Kafka TRƯỚC KHI cây danh mục này được tải xong. Cần quy định **Ordered Startup** trong Application Lifecycle: Worker số `3` này PHẢI hoàn tất lượt Warm-up Cache Đầu tiên thành công thì mới phát cờ `Readiness` nội bộ cho Worker số `1` bắt đầu start Kafka Consumer. Nếu tải cây danh mục thất bại, Search Service không được phép Khởi động.
+3. **Lắng nghe Pub/Sub:** Subscribe kênh `channel:product:cache:evict` từ Product Service.
+4. Khi nhận message invalidate → re-fetch cây danh mục mới → update RAM + Redis. Nếu cache bị Miss (chưa update), Worker số 1 BẮT BUỘC dùng cơ chế Singleflight (chỉ 1 Worker gọi API Product, sau đó broadcast RAM) để Fallback; nếu không sẽ dính Thundering Herd gây DDoS Product Service chết ngay lập tức.
+5. **Cross-Pod Singleflight:** Singleflight trong RAM chỉ chặn trên từng Pod. Để chặn stampede toàn cụm, fallback category tree phải kèm lock phân tán Redis `SETNX search:lock:category-tree-refresh 1 EX 10`. Pod trượt lock dùng stale cache hoặc chờ Pub/Sub refresh.
 
-## 3. Full Reindex Job (Zero-Downtime)
+## 4. Full Reindex Job (Zero-Downtime)
 **Loại hình:** Manual trigger hoặc Scheduled Job (VD: chạy hàng tháng hoặc khi đổi mapping).
 
 **Sứ mệnh:** Rebuild toàn bộ Elasticsearch index từ đầu, **không gây gián đoạn** traffic đang phục vụ.
@@ -108,8 +110,8 @@ POST products_write/_update_by_query
 3. **Scan & Index (Đổ Data quá khứ):** 
    - Gọi Product Service internal API `GET /api/v1/products/export?page={n}&size=500` (paginated).
    - Flag payload Reindex bằng tham số `_source._is_reindex_job = true`.
-   - Mở Cờ Dual-Write trên Redis (`SET search:feature:dual_write_target products_v{N+1}`).
-   - **Sửa lỗi Race Condition (Missing Synchronization):** KHÔNG ĐƯỢC chạy bước Scan & Index ngay lập tức. Cần delay 5-10 giây để đảm bảo mọi Pods của Product Indexing Worker đều đã load được cấu hình Dual-Write và mọi Event tồn đọng trong Topic cũ trước khoảnh khắc bật cờ đã xử lý xong.
+   - Mở Cờ Dual-Write trên Redis (`SET search:feature:dual_write_target products_v{N+1}`). Đồng thời hệ thống quản lý Reindex phải publish lệnh `Pub/Sub channel:search:config:reload` tới tất cả các Pods.
+   - **Sửa lỗi Race Condition (Pod Sync Confirmation):** BỎ NGAY tư duy dùng "sleep 5-10 giây" mù quáng để chờ Pod cập nhật. Hệ thống phải thực hiện **Health-check đồng bộ**: Yêu cầu tất cả các Pods đẩy tín hiệu ACK trạng thái cập nhật cờ Dual-Write vào Redis Hash `search:config:dual_write_acks`. Master Job sẽ liên tục loop kiểm tra `HLEN search:config:dual_write_acks == Tổng_số_Pods_đang_hoạt_động` rồi mới được kích hoạt bước Scan & Index. Nếu sau 30 giây không thể sync đủ Pod, Job sẽ báo lỗi vòng lặp và Abort quá trình Reindex để ngăn chặn vĩnh viễn sai lệch dữ liệu. Mọi Event lỗi ghi tại đây (nếu Cluster v2 đang quá tải) không được phép bỏ qua, nều write failed ở một trong 2 Index thì event đó sẽ bị đẩy vào DLQ để nhân viên can thiệp hoặc Retry. Cập nhật này sẽ ngăn chặn các pod cũ ghi lệch vào v1.
 3. **Scan & Index (Đổ Data quá khứ):** 
    - Gọi Product Service internal API `GET /api/v1/products/export?page={n}&size=500` (paginated). Lấy về `product_id` kèm theo `updated_at_us` (Microseconds).
    - **Sửa lỗi Race Condition Ghi Đè Bản Cũ (Missing Version Check):** Bắt buộc sử dụng Upsert Script với logic Versioning (với `version` bằng `updated_at_us`). Nếu Script không có version check, dữ liệu tĩnh từ Job Scan (bản siêu cũ) sẽ chèn lên dữ liệu Real-time (vừa được Dual-Write ghi thành công bên trên).
@@ -159,7 +161,7 @@ POST products_write/_update_by_query
 7. **Warm Redis Cache:** Pre-populate `search:suggest:{prefix}` cho top 100 common prefixes.
 
 ## 5. Facet Pre-warmer (Cronjob)
-**Loại hình:** Cronjob chạy mỗi 5 phút.
+**Loại hình:** Cronjob chạy mỗi 5 phút (Normal) / Realtime tính toán (Flash Sale).
 
 **Sứ mệnh:** Pre-compute facets (bộ lọc sidebar) cho các Category page truy cập cao nhất. Tránh Elasticsearch phải chạy aggregation query mỗi lần user vào trang danh mục.
 
@@ -185,6 +187,7 @@ POST products_write/_update_by_query
    }
    ```
 3. Đẩy kết quả vào Redis: `SET search:facets:{category_id} json EX 300`.
+4. **Sửa lỗi Stale Facets (Giải pháp cho Flash Sale):** Cronjob 5 phút là quá chậm trong các kỳ Mega Sale khi Inventory rớt theo giây. Do đó, hệ thống trang bị cơ chế **Phân tầng Facet (Layered Faceting):** Application API sẽ đọc cờ `is_flash_sale_active` trên Redis. Nếu cờ này TRUE, nó sẽ Bypass (bỏ qua) Facet Cache và yêu cầu Elasticsearch chạy realtime Aggregation trên tập data hiện tại (chỉ apply cho category nào đang chạy flash sale), đánh đổi một chút CPU lấy tính chính xác tuyệt đối của bộ đếm (ngăn chặn tình hiển thị sai số liệu lượng hàng trong Filter Sidebar).
 
 ## 6. Elasticsearch Maintenance Jobs
 
