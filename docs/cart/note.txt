@@ -1,0 +1,41 @@
+1. Redis không hỗ trợ Rollback trong Lua Script, do đó mọi thao tác thay đổi dữ liệu đều phải được thực hiện một cách cẩn thận để tránh việc dữ liệu bị sai lệch khi có lỗi xảy ra giữa chừng. 
+Tuy nhiên, việc sử dụng Redis Stream làm Outbox giúp đảm bảo rằng mọi event liên quan đến thay đổi dữ liệu đều được ghi lại một cách đồng bộ với lệnh thay đổi dữ liệu trên Redis, 
+điều này làm cho event Outbox sinh ra đồng thời với lệnh thay đổi dữ liệu nơi lưu trữ gốc.
+
+
+
+2. Không nên chuyển hướng xử lý object ở trong Lua Script sang Backend để tránh việc mất tính Atomicity, 
+đồng thời cũng làm giảm hiệu năng do phải thực hiện nhiều lần round-trip giữa Redis và Backend. 
+Thay vào đó, nên giữ mọi logic liên quan đến việc thay đổi dữ liệu và sinh event trong cùng một Lua Script để đảm bảo tính nhất quán và hiệu quả.
+
+
+
+3. Khi nhận được sự kiện từ Product Service về việc cập nhật lại các thông tin sản phẩm, 
+chúng ta cần một cơ chế để biết được những giỏ hàng nào đang chứa sản phẩm đó để cập nhật lại thông tin.
+Ở đây chúng ta có 2 phương án:
+- Phương án 1: Lưu trữ thông tin về các giỏ hàng đang chứa sản phẩm đó trong một cấu trúc dữ liệu riêng trên Redis được gọi là Reverse Index (VD: Set, Sorted Set),
+khi có sự kiện cập nhật sản phẩm, chúng ta sẽ truy vấn cấu trúc dữ liệu này để lấy danh sách các giỏ hàng mà có chứa sản phẩm đó và cập nhật lại thông tin.
+Ưu điểm: 
++ Đọc cực nhanh: Cart Service chỉ cần lấy dữ liệu từ Redis mà không cần phải truy vấn đến Backend để lấy thông tin về các giỏ hàng chứa sản phẩm đó.
++ Đảm bảo tính nhất quán: Khi có sự kiện cập nhật sản phẩm, chúng ta sẽ ngay lập tức cập nhật lại thông tin trong cấu trúc dữ liệu trên Redis, đảm bảo rằng thông tin về các giỏ hàng luôn được cập nhật kịp thời.
+Nhược điểm:
++ Tốn thêm bộ nhớ: Việc lưu trữ thông tin về các giỏ hàng chứa sản phẩm đó sẽ tốn thêm bộ nhớ trên Redis, đặc biệt nếu số lượng sản phẩm và giỏ hàng lớn.
++ Write Amplification: Mỗi khi có sự kiện cập nhật sản phẩm, chúng ta sẽ phải thực hiện nhiều lần ghi vào Redis để cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó, điều này có thể
+gây ra hiện tượng write amplification, làm giảm hiệu năng của hệ thống.
+- Phương án 2: Bỏ Reserve Index, đồng bộ dữ liệu qua gRPC khi truy cập 
+(nghĩa là mỗi khi khách hàng truy cập vào giỏ hàng aka Cart Service hoặc thực hiện Đặt hàng aka Checkout Service, 
+chúng ta sẽ thực hiện một lần gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về sản phẩm đó).
+Ưu điểm:
++ Tránh được Write Amplification: không có một Worker nào sẽ thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm, 
+do đó tránh được hiện tượng write amplification.
++ Tiết kiệm tài nguyên: chỉ khi nào khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng thì chúng ta mới thực hiện việc đồng bộ dữ liệu, 
+điều này giúp tiết kiệm tài nguyên hơn so với việc phải cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm.
++ Tinh gọn hơn: không cần phải duy trì một cấu trúc dữ liệu riêng trên Redis để lưu trữ thông tin về các giỏ hàng chứa sản phẩm đó, thêm vào đó tránh được Race Condition
+khi có nhiều Worker cùng thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm trong khi đó thì khách hàng lại đang truy cập vào giỏ hàng đó.
+Nhược điểm:
++ Tăng độ trễ: mỗi khi khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng, chúng ta sẽ phải thực hiện một lần gọi gRPC đến Product Service 
+để lấy thông tin cập nhật mới nhất về sản phẩm đó
++ Tăng tải cho Product Service: nếu có nhiều khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng cùng một lúc, 
+điều này có thể được cải thiện bằng cách sử dụng một cơ chế caching tạm thời trên Product Service và trên Cart Service 
++ Tăng rủi ro phụ thuộc: việc đồng bộ dữ liệu qua gRPC sẽ làm tăng sự phụ thuộc giữa Cart Service và Product Service, nếu Product Service gặp sự cố hoặc có độ trễ cao thì sẽ ảnh hưởng đến trải nghiệm của
+khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (có thể được cải thiện bằng Circuit Breaker pattern)

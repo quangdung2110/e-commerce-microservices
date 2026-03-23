@@ -1,0 +1,103 @@
+version: "3.9"
+
+services:
+  shipping-postgres:
+    image: postgres:16
+    container_name: shipping-postgres
+    environment:
+      POSTGRES_DB: shipping_db
+      POSTGRES_USER: shipping
+      POSTGRES_PASSWORD: shipping
+    ports:
+      - "5436:5432"
+    volumes:
+      - shipping-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipping -d shipping_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  shipping-redis:
+    image: redis:7
+    container_name: shipping-redis
+    ports:
+      - "6383:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  shipping-zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: shipping-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2185
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2185:2181"
+
+  shipping-kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: shipping-kafka
+    depends_on:
+      - shipping-zookeeper
+    ports:
+      - "9096:9092"
+      - "29096:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: shipping-zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://shipping-kafka:29092,PLAINTEXT_HOST://localhost:9096
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  shipping-scylla:
+    image: scylladb/scylla:6.0
+    container_name: shipping-scylla
+    command: --smp 1 --memory 1G --overprovisioned 1 --api-address 0.0.0.0
+    ports:
+      - "9042:9042"
+      - "9160:9160"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  shipping-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shipping-service
+    depends_on:
+      shipping-postgres:
+        condition: service_healthy
+      shipping-redis:
+        condition: service_healthy
+      shipping-kafka:
+        condition: service_started
+      shipping-scylla:
+        condition: service_healthy
+    ports:
+      - "8090:8090"
+    environment:
+      # Theo thiết kế docs/shipping/shipping_db_design.md + shipping_workers.md
+      SERVER_PORT: 8090
+      SPRING_DATASOURCE_URL: jdbc:postgresql://shipping-postgres:5432/shipping_db
+      SPRING_DATASOURCE_USERNAME: shipping
+      SPRING_DATASOURCE_PASSWORD: shipping
+      SPRING_DATA_REDIS_HOST: shipping-redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: shipping-kafka:29092
+      SPRING_DATA_CASSANDRA_CONTACT_POINTS: shipping-scylla
+      SPRING_DATA_CASSANDRA_PORT: 9042
+      SPRING_DATA_CASSANDRA_KEYSPACE_NAME: shipping_keyspace
+      SPRING_DATA_CASSANDRA_LOCAL_DATACENTER: datacenter1
+      SPRING_PROFILES_ACTIVE: dev
+
+volumes:
+  shipping-postgres-data:

@@ -1,0 +1,55 @@
+# Theo thiết kế shipping_workflow.md mục 6.2: provider-specific connection pool và timeout.
+shipping:
+  providers:
+    ghn:
+      circuit-breaker-name: ghn
+      pool:
+        max-connections-per-host: 50
+        max-idle-connections: 10
+        idle-timeout-seconds: 90
+        connect-timeout-seconds: 3
+        read-timeout-seconds: 10
+        write-timeout-seconds: 5
+    ninjavan:
+      circuit-breaker-name: ninjavan
+      pool:
+        max-connections-per-host: 50
+        max-idle-connections: 10
+        idle-timeout-seconds: 90
+        connect-timeout-seconds: 3
+        read-timeout-seconds: 10
+        write-timeout-seconds: 5
+    jt:
+      circuit-breaker-name: jt
+      pool:
+        max-connections-per-host: 50
+        max-idle-connections: 10
+        idle-timeout-seconds: 90
+        connect-timeout-seconds: 3
+        read-timeout-seconds: 10
+        write-timeout-seconds: 5
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      ghn:
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+        permittedNumberOfCallsInHalfOpenState: 1
+      ninjavan:
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+        permittedNumberOfCallsInHalfOpenState: 1
+      jt:
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+        permittedNumberOfCallsInHalfOpenState: 1

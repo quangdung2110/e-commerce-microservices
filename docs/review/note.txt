@@ -1,0 +1,2 @@
+1. Mỗi service chịu trách nhiệm xử lý dữ liệu của riêng mình, không được quá phụ thuộc vào các service khác.
+

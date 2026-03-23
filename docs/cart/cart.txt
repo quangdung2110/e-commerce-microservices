@@ -1,0 +1,111 @@
+Cart Service 
+
+1. Redis làm Source of Truth (nghĩa là Redis sẽ giữ bản ghi mới nhất, cách thao tác CRUD được thực hiện trực tiếp trên Redis, sau đó sẽ được đồng
+bộ xuống PostgreSQL (Cold Data Storage)
+
++ Dữ liệu được lưu trữ dưới dạng Redis Hash (mỗi key đại diện cho một giỏ hàng, Field sẽ đại diện cho một SKU "sản phẩm biến thể của Product", 
+Value là chuỗi Json chứa toàn bộ dữ liệu (denormalization để khi render hiển thị thì không cần join database)
++ Đặc biệt các API get để lấy giỏ hàng sẽ không tăng TTL, việc gia hạn TTL chỉ được thực hiện ở các API Write (Add / Update)
++ Thêm vào đó, vì đây là Service sử dụng Redis là Source of Truth, khác với các Service sử dụng Relational Database và Outbox Table để tránh
+Dual-Write, ở Service này sẽ sử dụng Redis Stream để làm điều đó. Nghĩa là mỗi thao tác thực hiện trên Redis (CRUD), sẽ tạo một Outbox Table tương ứng
+trên Redis, điều này làm cho event Outbox sinh ra đồng thời với lệnh thay đổi dữ liệu nơi lưu trữ gốc
+
+Hỗ trợ người dùng đã đăng nhập
+Key Pattern:
++ cart:user:{user_id}
+
+Hash Field:
++ {sku_id}
+Hash Value:
+{
+	"product_id"
+	"seller_id"
+	"seller_name"         (để gom nhóm các sản phẩm chung một shop thành một cụm, nếu shop đổi tên, tên cũ vẫn được hiển thị ở giỏ vì TTL của giỏ chỉ có 7 ngày))
+	"quantity"
+	"unit_price_at_add"
+	"product_name"
+	"variant_info"
+	"image_url"
+	"added_at"
+	"updated_at"	    (quan trọng để thực hiện Idempotency cho Consumer khi đồng bộ dữ liệu xuống PostgreSQL)
+}
+
+Lưu ý: để ngăn chặn việc Race Condition khi các Request đến song song, các lệnh được gộp thành Lua Script để đảm bảo tính Atomicity
+
+1.1 Luồng thêm sản phẩm mới / cập nhật số lượng sản phẩm
+
++ Chặn chỉ cho phép tối đa 120 sku_id trong một giỏ hàng
++ Mỗi sku_id chỉ được có số lượng tối đa 100
++ Gia hạn giỏ hàng này sống thêm 7 ngày
++ Đẩy event xuống Outbox "CART_ITEM_ADDED" hoặc "CART_ITEM_UPDATED" (Redis Stream) với payload tương tự như Hash Value
+
+1.2 Luồng đọc giỏ hàng
++ Đơn giản chỉ cần gọi HGETALL cart:user:{user_id} là được
++ Nếu kết quả rỗng hoặc Cache Miss, sẽ thực hiện fallback lấy dữ liệu từ PostgreSQL để build lại vào Redis Hash
+
+1.3 Luồng xóa item (sku_id) sau khi Checkout hoặc chọn xóa một vài sản phẩm khỏi cửa hàng
++ Duyệt qua từng sku_id để thực hiện lệnh xóa và đẩy event xuống Outbox "CART_ITEM_DELETED", payload là {cart_id, sku_id, deleted_at}
++ Nếu số lượng sku_id của giỏ hàng sau khi xóa = 0, thực hiện lệnh xóa giỏ hàng, đẩy event "CART_CLEANED" hoặc "CART_CHECKED_OUT", payload là {cart_id, cleared_at}
+
+
+2. PostgreSQL được xem là Backup Store
+Mọi thao tác CRUD trực tiếp trên Redis sẽ được đẩy PostgreSQL bất đồng bộ thông qua 
++ Lưu script (XADD) -> Redis Stream Outbox -> Kafka -> Postgres Sync Worker (Consumer) -> Ghi xuống database
+
+Lưu ý:
++ Khi thực hiện bất kỳ thao tác nào trên cart_items đều phải cập nhật là status và updated_at để phản ánh đúng thời điểm tương tác cuối cùng của người dùng
+
+3. Một số worker & cronjob chạy trong service
+3.1  Outbox Relay (Producer Worker)
+Mục đích: chuyển các event từ Redis Stream lên Kafka Cluster
++ Thêm một số trường để đúng với định dạng Kafka Message đã được định nghĩa chung
++ Ném vào Topic: "t.cart.events" và partition là cart_id
+Lưu ý: chỉ sau khi Kafka "ACK" xác nhận đã ghi, worker mới được gọi lệnh "XACK" để đánh dấu message trong Redis Stream đã được xử lý xong
+Xử lý Pending Message: khi Relay Worker bị crash giữa chừng (đã đọc nhưng chưa "XACK"), Redis Stream tự động giữ Message ở trạng thái Pending,
+một Goroutine phụ chạy để nhặt lại các Message Pending này, nếu một message bị retry quá 5 lần, chuyển vào Dead Letter Stream (giống Dead Letter Queue của Kafka)
+
+3.2 Postgre Sync (Consumer Worker, phục vụ nội bộ Service này)
+Mục đích: đồng bộ dữ liệu từ Redis xuống PostgreSQL
++ Consumer lắng nghe từ Kafka topic "t.cart.events"
++ Áp dụng nghiêm ngặt chiến lược Idempotency để không bị sai lệch dữ liệu khi ghi xuống
++ Xử lý chia rẽ dựa trên Event Type
+++ CART_ITEM_ADDED / CART_ITEM_UPDATE: xử lý thêm sản phẩm vào giỏ và tăng số lượng SKU, ghi dữ liệu xuống cart_items (lưu ý đồng thời đồng bộ sang trường updated_at của bảng carts).
+Chỉ xử lý nếu "updated_at" của sự kiện > "updated_at" trong database để tránh out-of-order
+++ CART_ITEM_DELETED: xóa các SKU trong giỏ hàng (tự tay xóa hoặc đã thanh toán cho các món hàng này, chỉ xóa nếu "deleted_at" của sự kiện > "update_at" trong database để chặn lỗi "out_of_order"
+++ CART_CLEARED: được kích hoạt khi tự tay xóa hết các sản phẩm trong giỏ (status = "DELETED, updated_at = now())
+++ CART_CHECKED_OUT: được kích hoạt khi lắng nghe từ Order Event Consumer Worker để xử lý sự kiện "ORDER_PAID" (status = "CHECKED_OUT, updated_at = now())
+
+3.3 Abandoned Cart Marker
+Mục đích: đánh dấu các giỏ hàng hoang, để phục vụ gửi thông báo về cho khách hàng
++ Truy vấn các giỏ hàng không tương tác quá 30 ngày (updated_at < '30days' và status = "ACTIVE") rồi cập nhật status = "ABANDONED"
++ Puslish một sự kiện CART_ABANDONED, Notification Service lắng nghe và gửi thông báo về cho khách hàng
+
+3.4 Data Archival Cleaner
+Mục đích: dọn dữ liệu rách ra khỏi Postgre
+3.4.1 Giỏ DELETED / CHECKED_OUT quá 3 tháng
+3.4.2 Giỏ ABANDONED quá 6 tháng
+
+3.5 Stream Trimmer
+Mục đích: giải phóng RAM Redis bằng cách cắt bớt các message đã được XACK khỏi Outbox Stream
+
+3.6 Order Event Consumer Worker
+Mục đích: lắng nghe event từ Order Service để xóa các SKU đã thanh toán khỏi giỏ hàng của User
++ Lắng nghe "ORDER_PAID" từ "t.order.events
++ Lấy user_id, order_id, sku_ids từ payload
++ Xử lý Idempotency để tránh nhận được sự kiện nhiều lần (SETNX cart:idemp:order_paid:{order_id})
++ Gọi Lua Script Batch Delete và truyền tham số 'clear_event_type = "CART_CHECKED_OUT"
++ Mỗi SKU bị xóa, Lua Script tự động emit "CART_ITEM_DELETED" event vao Redis Stream Outbox để Postgres Sync Worker có thể đồng bộ, khi giỏ
+hàng rỗng hoàn toàn, emit thêm "CART_CHECKED_OUT" để có thể cập nhật carts.status = "CHECKED_OUT"
+
+3.7 Product Event Consumer Worker
+Mục đích: lắng nghe event từ Product Service để thay đổi / cập nhật trạng thái / dữ liệu của sản phẩm
++ Lắng nghe các event từ "t.product.events"
++ Phân loại các event
+++ PRODUCT_PRICE_UPDATED
+++ PRODUCT_UPDATED
+++ PRODUCT_DELETED
+++ PRODUCT_STATE_CHANGED (BANNED / HIDDEN)
+++ PRODUCT_SKY_STATUS_CHANGED (OUT_OF_STOCK, INACTIVE)
+
+3.8 DLQ Monitor
+Mục đích: giám sát Dead Letter Stream của Redis, phát cảnh báo

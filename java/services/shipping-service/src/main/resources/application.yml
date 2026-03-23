@@ -1,0 +1,51 @@
+# Theo thiết kế technology_choice.md mục 4: stack Spring Boot + PostgreSQL + ScyllaDB + Kafka + Redis.
+server:
+  port: 8090
+
+spring:
+  application:
+    name: shipping-service
+  profiles:
+    active: dev
+  datasource:
+    url: jdbc:postgresql://localhost:5432/shipping_db
+    username: shipping
+    password: shipping
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    cassandra:
+      keyspace-name: shipping_keyspace
+      contact-points: localhost
+      port: 9042
+      local-datacenter: datacenter1
+  kafka:
+    bootstrap-servers: localhost:9092
+  cache:
+    type: caffeine
+  threads:
+    virtual:
+      enabled: true
+
+shipping:
+  topics:
+    events: t.shipping.events
+    webhooks-raw: t.shipping.webhooks.raw
+  workers:
+    outbox:
+      fixed-delay-ms: 3000
+    rate-card-sync:
+      cron: "0 0 2 * * *"
+    stale-detector:
+      cron: "0 0 */2 * * *"
+    outbox-trimmer:
+      cron: "0 15 3 * * *"
+    dead-letter:
+      cron: "0 */5 * * * *"
