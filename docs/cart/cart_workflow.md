@@ -31,7 +31,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:** 
    - Backend nhận `sku_id`, `quantity` từ Body và `user_id` từ Header `X-User-Id` (được Inject bởi API Gateway).
-   - Gọi API nội bộ sang *Product Service*: `GET /api/v1/products/skus/{sku_id}`.
+   - Gọi gRPC nội bộ sang *Product Service*: `GetProductSku(sku_id)`.
    - **Xử lý và Mapping dữ liệu:**
       - `unit_price_at_add`: Lấy `promotional_price` nếu có, ngược lại lấy `original_price`.
       - `image_url`: Map từ trường `main_image_url` của SKU.
@@ -56,102 +56,119 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 ## 3. API: Lấy thông tin Giỏ hàng (Đọc)
 **Endpoint:** `GET /api/v1/carts/mine`
 
+**Định nghĩa dữ liệu bắt buộc trước khi triển khai:**
+- `unit_price_at_add`: Giá snapshot lúc user thêm vào giỏ. Đây là dữ liệu lịch sử, **immutable**.
+- `current_price`: Giá hiện tại tại thời điểm đọc (lấy từ Product Service theo Pull Model), **chỉ là field response runtime**, không phải field lưu bền trong Redis Hash Value.
+- `is_available`: Cờ khả dụng để hiển thị/validate checkout. Trường này có thể được làm mới trong luồng cache-miss rehydrate, nhưng không phát sinh event outbox.
+
 **Quy trình chuẩn kiện (Workflow):**
-1. **[Redis] - Fetch Data:**
-   - Gọi `HGETALL $cart_key`.
-   - App Server nhận về dict flat (key = `sku_id`, value = JSON string).
+1. **[Request Gate] - Anti-Stampede và Negative Cache check:**
+    - Kiểm tra key `cart:user:{id}:notfound` trước khi đọc DB fallback.
+    - Nếu key tồn tại thì trả giỏ rỗng ngay (TTL 60 giây) để chặn quét DB lặp.
+2. **[Redis] - Fetch Data:**
+    - Gọi `HGETALL $cart_key`.
+    - Nếu có dữ liệu, đi theo nhánh **Cache Hit**.
+    - Nếu không có dữ liệu, đi theo nhánh **Cache Miss Rehydrate**.
+
+### 3.1. Nhánh Cache Hit
+1. **[App Server] - Decode và gom SKU:**
+    - Decode dict trả về từ Redis (key = `sku_id`, value = JSON string).
+    - Thu thập tập `sku_ids`.
 2. **[App Server] - Pull Model (Multi-Get qua gRPC với Circuit Breaker):**
-   - Tập hợp tất cả `sku_id` có trong kết quả Redis.
-   - Kiểm tra **Local Cache** (ví dụ sơ bộ có TTL cực ngắn 1-2 phút tùy bộ nhớ process) cho các SKU này. Các SKU chưa có trong Local Cache sẽ được gom thành 1 mảng để gọi gRPC.
-   - Bắn 1 request gRPC duy nhất: `GetProductSnapshots(mảng_sku_ids)` sang Product Service.
-   - **Lưu ý an toàn:** Request gRPC **phải được bọc bởi Circuit Breaker** (như Resilience4j) với mức *Timeout cứng (VD: 200ms)*. 
-   - **Fallback Logic:** Nếu gRPC gọi lỗi hoặc quá Timeout, lập tức bypass và bỏ qua bước cập nhật giá mới (tiếp tục dùng nguyên Snapshot JSON cũ sinh ra lúc add vào giỏ), nhưng chèn kèm một flag/thông điệp lỗi mềm để cảnh báo ở màn hình: *"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"*. Điều này đảm bảo Cart Service không bao giờ sập dây chuyền nếu Product Service sụp trặc.
-   - **Merge Dữ Liệu:** Đối với những SKU gọi gRPC thành công, cập nhật đè thông tin hiển thị (VD: `current_price`, flag đứt hàng `is_available` mới nhất) vào JSON Object tương ứng. Tuyệt đối: **KHÔNG ghi đè trường `unit_price_at_add`**.
-3. **[App Server] - Group By Shop (In-Memory):**
-   - Decode tất cả JSON values.
-   - Group items theo `seller_id`.
-   - Với mỗi nhóm shop, tính `latest_item_at = max(added_at)` của các items trong nhóm.
-   - Sắp xếp các nhóm theo `latest_item_at DESC` (shop có sản phẩm được thêm gần nhất hiển thị trên cùng).
-   - Trong mỗi nhóm, sắp xếp items theo `added_at DESC`.
-   - > **Hiệu năng:** Grouping và sorting thực hiện hoàn toàn in-memory trên App Server sau 1 lần `HGETALL` duy nhất — không tốn thêm Network I/O, không thay đổi Redis structure.
-4. **Response Structure:**
-   ```json
-   {
-     "shop_groups": [
-       {
-         "seller_id": "seller-002",
-         "seller_name": "Fashion Store",
-         "latest_item_at": 1708616400456,
-         "items": [
-           {
-             "sku_id": "sku-2001",
-             "product_name": "Váy Hoa",
-             "variant_info": "Màu Hồng, Size M",
-             "image_url": "https://cdn.domain.com/vay.jpg",
-             "quantity": 1,
-             "unit_price_at_add": 250000,
-             "added_at": 1708616400456
-           }
-         ]
-       },
-       {
-         "seller_id": "seller-001",
-         "seller_name": "Shop Tech Việt",
-         "latest_item_at": 1708530000123,
-         "items": [
-           {
-             "sku_id": "sku-1001",
-             "product_name": "Áo Thun Nam",
-             "variant_info": "Màu Đen, Size L",
-             "image_url": "https://cdn.domain.com/ao.jpg",
-             "quantity": 2,
-             "unit_price_at_add": 150000,
-             "added_at": 1708530000123
-           }
-         ]
-       }
-     ],
-     "total_items": 2,
-     "total_unique_skus": 2
-   }
-   ```
-4. **[Fallback] - Xử lý Cache Miss (Re-validate & Re-hydrate):**
-   Xảy ra khi Redis Key đã hết hạn (TTL 7 ngày) nhưng User quay lại tương tác. Dữ liệu dưới Database lúc này là dữ liệu "Lạnh" (Cold Data), có thể chứa giá hoặc nội dung sản phẩm đã cũ.
-   - **B1: Kiểm tra tình trạng giỏ hàng:** Query bảng `carts` lấy `status`. Nếu status là `DELETED` hoặc `CHECKED_OUT` → Trả về giỏ hàng trống ngay lập tức.
-   - **B2: Truy xuất danh sách từ Database:** 
-     ```sql
-     SELECT sku_id, quantity, product_snapshot 
-     FROM cart_items 
-     WHERE cart_id = $1 AND is_deleted = false;
-     ```
-   - **B3: Negative Caching:** Nếu DB không trả về dữ liệu, ghi một key tạm `cart:user:{id}:notfound` với TTL 60 giây để chặn request spam quét rỗng xuống Database liên tục, sau đó return giỏ hàng rỗng.
-   - **B4: Gọi Batch API sang Product Service (Sửa lỗi Cache Stampede/Thundering Herd):**
-     **Cảnh báo Race Condition:** Trước khi thực hiện Query từ B2 và gọi B4, hệ thống phải thực hiện Distributed Lock thông qua lệnh Redis `SETNX cart:lock:rebuild:{id} 1 EX 10`. 
-     - **Thread nắm Lock (Leader):** Sẽ tiến hành bốc mảng `sku_id` từ B2 và gọi API `GET /api/v1/products/batch?skus=sku1,sku2...` để kéo giá, tình trạng từ Product Service. Sau khi gọi thành công, xóa Lock `DEL cart:lock:rebuild:{id}`.
-     - **Các Thread trượt Lock (Followers):** Tự động Sleep 50ms và Retry chạy lại từ Bước B1 lên Redis đọc. Không để cả trăm request cùng chọc xuống PostgreSQL và ngập lụt Call nội bộ sang Product Service gây sập chuyền.
-   - **B5: Xử lý Mix Data (Re-hydrate) & Re-populate Redis:**
-     - Vòng lặp map dữ liệu từ Product Service đè lên `product_snapshot` lấy từ DB, đặc biệt cập nhật lại thông tin mới nhất.
-     - Nếu Product API trả về status không phải `ACTIVE`, đánh dấu cờ `is_available = false`.
-     - Bắt buộc sử dụng **Silent Rehydrate Lua Script** kèm logic Timestamp Guard để đẩy lại lên Redis: Lệnh Lua nạp từng Field, chỉ `HSET` lại Item mới nếu Field đó hoàn toàn chưa có tại Redis, hoặc nếu có rồi thì Timestamp `updated_at` của Redis phải bé hơn bản mới. Tuyệt đối KHÔNG gọi `XADD` phát sinh Event trong Lua script này để tránh lỗi **TTL replay idempotency**.
-   - **B6: Kích hoạt TTL:** Gọi `EXPIRE $cart_id 604800` (7 ngày) để kích hoạt lại vòng đời trên Cache với giá trị đã Re-validate. Tính toán trước `subtotal` bằng cách nhân số lượng với giá mới nhất và trả về kèm theo response mảng JSON cho Frontend (khắc phục issue subtotal uncalculated).
+    - Kiểm tra **L1 local cache** (TTL 15-30 giây, LRU).
+    - Các SKU chưa có ở L1 được gom và gọi 1 request gRPC `GetBatchProductSkus`.
+    - Timeout cứng: 200ms. Bắt buộc bọc Circuit Breaker.
+3. **Merge Runtime Overlay (viết lại `is_available` vào Redis khi BANNED):**
+    - Nếu gRPC thành công: map dữ liệu Product vào response runtime:
+       - `current_price = promotional_price ?? original_price`
+       - `is_available` runtime theo trạng thái mới nhất từ Product
+    - **Đặc biệt:** Nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field được mườf thóc với is_available=false, không đụng vào TTL hay các field khác.
+    - Nếu gRPC lỗi/timeout: dùng snapshot cũ trong Redis và trả cờ `is_price_degraded = true` để UI cảnh báo mềm.
+    - **Nguyên tắc bắt buộc:** Ngoại trừ việc ghi lại `is_available = false` khi Product BANNED, Cache-hit read **không được HMSET/EXPIRE** vào `cart:user:{id}`.
+
+> **Lý do kiến trúc:** Redis vẫn là Source of Truth của trạng thái cart (SKU, quantity, timeline). Product Service vẫn là Source of Truth của dữ liệu catalog thời gian thực. Overlay lúc đọc không làm mất vai trò Source of Truth của Redis.
+
+### 3.2. Nhánh Cache Miss Rehydrate (chi tiết)
+Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn dữ liệu.
+
+1. **B1 - Cart state gate (DB):**
+    - Query bảng `carts` lấy `status`.
+    - Nếu `DELETED` hoặc `CHECKED_OUT` -> trả giỏ rỗng.
+2. **B2 - Load cold items (DB):**
+    ```sql
+    SELECT sku_id, quantity, product_snapshot
+    FROM cart_items
+    WHERE cart_id = $1 AND is_deleted = false;
+    ```
+3. **B3 - Negative Caching:**
+    - Nếu DB không có row, set `cart:user:{id}:notfound` TTL 60 giây rồi trả rỗng.
+4. **B4 - Singleflight + Pull Product:**
+    - Dùng In-Memory Singleflight trên từng Pod để dồn các request miss trùng `cart_id`.
+    - Chỉ request tiên phong thực hiện B2 + gRPC `GetBatchProductSkus`.
+5. **B5 - Merge policy trước khi nạp lại Redis:**
+    - Bảo toàn các field lịch sử: `unit_price_at_add`, `added_at`.
+    - Làm mới các field hiển thị có thể thay đổi: `is_available`, `product_updated_at`, `updated_at`.
+    - Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.
+6. **B6 - Silent Rehydrate Lua Script (timestamp guard):**
+    - Script nhận danh sách item đã merge.
+    - Với mỗi `sku_id`:
+       - Nếu chưa có field trên Redis -> `HSET`.
+       - Nếu đã có -> chỉ `HSET` khi `incoming.updated_at > redis.updated_at`.
+    - **Tuyệt đối không `XADD` outbox** trong script rehydrate.
+7. **B7 - TTL policy:**
+    - Rehydrate là một thao tác phục hồi dữ liệu (write-recovery), được phép `EXPIRE $cart_key 604800` đúng 1 lần sau khi rehydrate thành công.
+    - Quy tắc Read-Only TTL chỉ áp dụng cho read hit thông thường.
+
+### 3.3. Grouping và Response
+1. Group item theo `seller_id`.
+2. Sắp xếp group theo `latest_item_at DESC` và item theo `added_at DESC`.
+3. Trả response gồm cả giá lịch sử và giá runtime mới nhất:
+    ```json
+    {
+       "shop_groups": [
+          {
+             "seller_id": "seller-001",
+             "seller_name": "Shop Tech Việt",
+             "latest_item_at": 1708530000123,
+             "items": [
+                {
+                   "sku_id": "sku-1001",
+                   "product_name": "Áo Thun Nam",
+                   "variant_info": "Màu Đen, Size L",
+                   "image_url": "https://cdn.domain.com/ao.jpg",
+                   "quantity": 2,
+                   "unit_price_at_add": 150000,
+                   "current_price": 165000,
+                   "is_available": true,
+                   "added_at": 1708530000123,
+                   "updated_at": 1708616400456
+                }
+             ]
+          }
+       ],
+       "is_price_degraded": false,
+       "total_items": 2,
+       "total_unique_skus": 2
+    }
+    ```
 
 ## 4. API: Batch Delete (Xóa lô sản phẩm sau Checkout tĩnh)
 **Endpoint:** `DELETE /api/v1/carts/items` (Body: `cart_id` + mảng `sku_ids`)
 
-> **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` tách riêng để tránh parse chuỗi ghép có dấu `:`. Trường `cart_item_ids` chỉ duy trì backward compatibility tạm thời.
+> **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` tách riêng để tránh parse chuỗi ghép có dấu `:`.
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:** 
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.
-   - Với payload cũ chỉ có `cart_item_ids`, parse an toàn từ phải sang trái để tách `sku_id`.
+   - Convert `payload.paid_at` (ISO-8601 UTC) sang `checkout_timestamp_ms` (**Epoch Milliseconds**) bằng `time.Parse(time.RFC3339, paidAt).UTC().UnixMilli()` trước khi truyền vào Lua.
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)):**
-   - Truyền Timestamp của đơn Checkout (`checkout_timestamp_us`), Idempotency Key, và danh sách `sku_id` vào Redis.
-   - Redis thực hiện chốt Idempotency chặn lệnh ngay ở dòng đầu trong mặt khối Script (Fix 4).
-   - Redis thực hiện so sánh check mốc thời gian (Fix 3), bỏ qua những món bị user cố tình thêm mới sau checkout, sau đó thực thi `HDEL` theo field key của giỏ hàng (đang dùng `sku_id`).
+   - Truyền Timestamp của đơn Checkout (`checkout_timestamp_ms` — **Epoch Milliseconds** convert từ `payload.paid_at` ISO-8601 UTC bằng `time.Parse(time.RFC3339).UTC().UnixMilli()`), Idempotency Key, và danh sách `sku_id` vào Redis.
+   - Redis thực hiện chốt Idempotency ở đầu script bằng key trạng thái `PROCESSING` (NX + TTL ngắn), sau khi hoàn tất không có runtime error đổi sang `DONE` TTL 24h.
+   - Redis thực hiện so sánh check mốc thời gian, bỏ qua những món được user thêm mới sau checkout (`item.added_at >= checkout_timestamp_ms`), sau đó thực thi `HDEL` theo field key của giỏ hàng (đang dùng `sku_id`).
    - Tương ứng với mỗi nhát `HDEL`, 1 Event [`CART_ITEM_DELETED`](cart_events.md#23-cart_item_deleted) được ném vào stream `XADD` (sử dụng `cjson.encode` cho JSON an toàn).
    - Check chốt hạ nếu giỏ hàng rỗng `HLEN == 0` → Xóa nguyên Key bằng `DEL`.
    - Nếu luồng do user xóa thủ công: phát [`CART_CLEARED`](cart_events.md#24-cart_cleared).
-   - Nếu luồng do checkout (`ORDER_PAID`): phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out).
+   - Nếu luồng do checkout (`ORDER_PAID`) và giỏ rỗng hoàn toàn: phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out). Nếu giỏ vẫn còn SKU khác (partial checkout), không phát event này và giỏ tiếp tục trạng thái `ACTIVE`.
 3. **[Background] - Bất đồng bộ Database:**
    - Tương tự chiều Update, [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) gắp Event Delete đi xử lý, gỡ dòng trong bảng Cold Store (`cart_items`). Áp dụng [Out-of-order validation cho DELETE](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event).
    - Nếu nhận event `CART_CLEARED`, Update bảng `carts` chuyển `status` sang `DELETED`.
@@ -163,7 +180,9 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 ### 4. Cơ chế Circuit Breaker & Fallback (Pull Model)
 Để phòng ngừa lỗi Cascading Failure (sập dây chuyền nếu Product Service sụp trặc), các truy vấn lấy giá mới nhất sẽ được cấu hình quy tắc sau:
 - **Thời gian chờ (Timeout):** Request gRPC sang Product Service bị giới hạn cứng thời gian thực thi (ví dụ tối đa 200ms).
-- **Fallback Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn. 
+- **L1 Local Cache Fallback:** Trong ngưỡng Circuit Breaker Half-Open (khi Product Service đang rolling restart), hệ thống ưu tiên trả dữ liệu từ **L1 local cache** (Caffeine, TTL 15-30 giây) nếu còn hạn. Chỉ flag `is_price_degraded = true` khi L1 cache cũng miss. Điều này tránh việc user liên tục thấy cảnh báo giá trong suốt thời gian deploy.
+- **Fallback Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn.
+- **Half-Open Recovery:** Sau một khoảng `wait_duration_in_open_state`, Circuit Breaker phải vào trạng thái Half-Open và cho phép một số request thăm dò có giới hạn. Nếu thăm dò thành công thì đóng mạch (Closed); nếu tiếp tục lỗi thì quay lại Open.
 - **Cảnh báo UI:** Phản hồi Fallback đọc `product_snapshot` hiện đang lưu sẵn trong Redis/PostgreSQL ra hiện tạm để user vẫn lướt được giỏ hàng. Kèm theo đó là thông báo hiển thị nhẹ trên UI: _"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"_.
 - **Lợi ích kiến trúc:** Đảm bảo SLA cho màn hình xem giỏ hàng luôn nằm trong ngưỡng an toàn tuyệt đối. Cart Service không bao giờ sập kéo theo Product Service.
 

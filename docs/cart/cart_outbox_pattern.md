@@ -36,16 +36,21 @@ Vì Cart Service lấy Redis làm Primary Store, ta không thể dùng thư vi�
 
 Thay vì dùng Transaction `MULTI/EXEC` dễ gây tranh chấp và không thực hiện được các logic kiểm tra đọc-sửa-ghi phức tạp, cấu trúc Outbox của Cart Service đẩy thẳng lệnh tạo Message vào trong lòng **Lua Script**. Bất kể thao tác Thêm (`CART_ITEM_ADDED`), Sửa (`CART_ITEM_UPDATED`) hay Xóa (`CART_ITEM_DELETED` / `CART_CLEARED`), Event Outbox đều được sinh ra đồng thời với lệnh thay đổi Store gốc. Xem danh sách đầy đủ Event tại [Events Structure](cart_events.md).
 
+> **Boundary quan trọng:** Nhánh cache-miss rehydrate là luồng phục hồi dữ liệu từ Cold Store, không phải business write. Vì vậy script rehydrate phải **silent** (không `XADD`), tránh tạo event replay rác và phá idempotency downstream.
+
 Ví dụ mô phỏng bên trong Script cấu trúc Lua (xem code đầy đủ tại [Caching Schema](cart_caching_schema.md#31-thêm-add--cập-nhật-update-item-ngăn-chặn-race-condition)):
 ```lua
 -- ... logic tính toán new_qty ...
+-- KEYS[1]: cart_key dùng Hash Tag (VD: {cart:user:12345})
+-- KEYS[2]: outbox stream cùng Hash Tag (VD: {cart:user:12345}:outbox)
 redis.call('HSET', KEYS[1], ARGV[1], encoded_json)
 redis.call('EXPIRE', KEYS[1], 604800)
 
--- Build event payload bổ sung cart_id + sku_id cho downstream consumer
+-- Build event payload bổ sung cart_id + sku_id + user_id cho downstream consumer
 local event_obj = cjson.decode(encoded_json)
 event_obj.cart_id = KEYS[1]
 event_obj.sku_id = ARGV[1]
+event_obj.user_id = ARGV[7]  -- ARGV[7]: user_id truyền từ Backend
 local event_payload = cjson.encode(event_obj)
 
 -- Điểm mấu chốt: Nhét trực tiếp XADD vào cuối khối lệnh
@@ -53,9 +58,9 @@ redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_UPDATED', 'payload', e
 ```
 *Vì chạy chung một Script, Redis khóa Single-thread đánh sập toàn khối nếu rớt giữa chừng. Data trên Redis either CÓ CẢ HAI hoặc KHÔNG CÓ GÌ. Tính Atomicity được bảo toàn tuyệt đối.*
 
-> **Lưu ý kiến trúc:** Event payload đẩy vào Stream **bắt buộc phải chứa `cart_id` và `sku_id`** (bổ sung bằng `cjson.encode` trong Lua), dù Hash Value không lưu các field này (vì đã implicit trong Key/Field). Consumer Worker cần chúng để biết ghi vào bảng DB nào. Xem cấu trúc payload chi tiết tại [Events Structure](cart_events.md#2-chi-tiết-các-loại-event).
+> **Lưu ý kiến trúc:** Event payload đẩy vào Stream **bắt buộc phải chứa `cart_id`, `sku_id` và `user_id`** (bổ sung bằng `cjson.encode` trong Lua), dù Hash Value không lưu các field này (vì đã implicit trong Key/Field). Consumer Worker cần chúng để biết ghi vào bảng DB nào và upsert bảng `carts` mà không parse chuỗi `cart_id`. Xem cấu trúc payload chi tiết tại [Events Structure](cart_events.md#2-chi-tiết-các-loại-event).
 
-> **Định danh Deterministic (Fix 2):** Cấu trúc Outbox phụ thuộc vào Relay Worker. Khi đọc Stream message (VD: ID `170853000-0`), Worker tuyệt đối KHÔNG được sinh ngẫu nhiên UUID làm event_id cho Kafka. Nó BẮT BUỘC phải dùng thuật toán băm SHA-256 tạo ra UUIDv5 (sử dụng Hash của `Stream_ID` + `cart_id`) để đảm bảo không collision và có thể Idempotent ngược lại đúng event của Kafka. từ `Stream ID -> Kafka event_id`. Tính chất Monotonic của Stream ID sẽ giúp các event bị Forward Retry hàng chục lần vẫn ánh xạ ra đúng 1 ID duy nhất nhằm bảo vệ tính Idempotency.
+> **Định danh Deterministic (Fix 2):** Cấu trúc Outbox phụ thuộc vào Relay Worker. Khi đọc Stream message (VD: ID `170853000-0`), Worker tuyệt đối KHÔNG được sinh ngẫu nhiên UUID làm `event_id` cho Kafka. Worker bắt buộc sinh `event_id` theo cách deterministic từ `Stream ID + cart_id` (ví dụ UUIDv5 hoặc băm ổn định tương đương) để mọi lần retry vẫn ánh xạ về cùng một ID.
 
 ### 2.2. Stream Memory Management (Kiểm soát bộ nhớ Stream)
 
@@ -63,14 +68,36 @@ Redis Streams **không tự xóa message** sau khi Consumer đọc xong. Cần k
 
 1.  **Tuyệt đối không dùng `MAXLEN` rủi ro trên `XADD`:** Lệnh `XADD` bỏ `MAXLEN` để chống hiện tượng mất event chưa ACK khi hệ thống kẹt.
 2.  **`XACK` chỉ đánh dấu đã xử lý**, KHÔNG xóa message khỏi Stream. Sau khi [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) forward event sang Kafka thành công, gọi `XACK` để đánh dấu message đã được consume trong Consumer Group (tránh re-delivery cho cùng group).
-3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background chạy mỗi 5 phút gọi `XTRIM cart_outbox_stream_{shard_id}
-   - **Sharding Algorithm:** Sử dụng Hash nhất quán (Consistent Hashing) thuật toán `CRC32(cart_id) % N` (với N là số lượng stream) để quyết định phân luồng. Đảm bảo mọi event của cùng 1 User Cart luôn chui vào đúng 1 Stream, giữ vững thứ tự (Strict Ordering).
-   - **Sharding Algorithm:** Sử dụng Hash nhất quán (Consistent Hashing) thuật toán `CRC32(cart_id) % N` (với N là số lượng stream) để quyết định phân luồng. Đảm bảo mọi event của cùng 1 User Cart luôn chui vào đúng 1 Stream, giữ vững thứ tự (Strict Ordering). MINID ~ <id>` (với `<id>` là message ID an toàn nhỏ nhất đã được all groups consume) để dọn sạch stream an toàn. Xem [Stream Trimmer](cart_workers.md#5-stream-trimmer-background-goroutine).
+3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background chạy mỗi 5 phút và gọi:
+   `XTRIM cart_outbox_stream_{shard_id} MINID ~ <id>`
+   Trong đó `<id>` là message ID an toàn nhỏ nhất đã được all groups consume.
+4.  **Sharding Algorithm:** Sử dụng thuật toán nhất quán `CRC32(cart_id) % N` (với N là số lượng stream) để quyết định phân luồng. Đảm bảo mọi event của cùng 1 cart luôn vào đúng 1 stream, giữ vững thứ tự (Strict Ordering).
+
+Xem [Stream Trimmer](cart_workers.md#5-stream-trimmer-background-goroutine).
 
 > **Phân biệt quan trọng:**
 > - `XACK`: Đánh dấu message đã xử lý trong Consumer Group → tránh re-delivery.
 > - `XDEL` / `XTRIM`: Thực sự xóa message khỏi Stream → giải phóng RAM.
 > - Thiếu `XTRIM` sẽ gây **memory leak dần dần** dù đã `XACK` hết.
+
+### 2.3. Redis Cluster Hash Tag (Constraint bắt buộc)
+
+Lua Script đưa ra yêu cầu **tất cả KEYS nằm trên cùng một Redis node**. Trong Redis Cluster, nếu `KEYS[1]` (cart hash) và `KEYS[2]` (outbox stream) nằm khác slot, Redis sẽ trả lỗi `CROSSSLOT Keys in request don't hash to the same slot` và <b>Lua Script sẽ thất bại hoàn toàn</b>.
+
+**Giải pháp bắt buộc — Redis Hash Tag:**
+
+| Key | Format | Ví dụ |
+|:---|:---|:---|
+| Cart Hash (KEYS[1]) | `{cart:user:{user_id}}` | `{cart:user:12345}` |
+| Outbox Stream (KEYS[2]) | `{cart:user:{user_id}}:outbox` | `{cart:user:12345}:outbox` |
+
+Phần `{...}` trong tên key là Hash Tag — Redis Cluster chỉ hash phần nằm trong `{}` để quyết định slot. Vì cả hai key cùng chứa `{cart:user:12345}`, Redis đảm bảo chúng vào cùng một slot → Lua Script vẫn atomic.
+
+**Sharding cho Outbox Stream:**
+
+Mỗi cart có outbox stream riêng (`{cart:user:{user_id}}:outbox`) thay vì stream chia sẻ (`cart_outbox_stream_{shard_id}`). Điều này đảm bảo ordering per-cart tự nhiên mà không cần sharding index riêng. Stream Trimmer dùng `SCAN` với pattern `*:outbox` để tìm tất cả stream cần trim.
+
+> **Quan trọng:** Tất cả code Lua trong các file thiết kế phải sử dụng format key với Hash Tag. Backend khi xây dựng `KEYS[]` để gọi Lua cũng phải đảm bảo truyền key đã có Hash Tag.
 
 ## 3. Lợi ích Đạt Được
 

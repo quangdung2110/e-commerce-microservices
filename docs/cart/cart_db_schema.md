@@ -32,17 +32,17 @@ Mô hình thiết kế phi chuẩn một phần để tối ưu hóa việc khô
 ### 2.1. Bảng `carts`
 Lưu trữ định danh chung của một giỏ hàng, phục vụ cho việc tracking vòng đời trạng thái.
 
-*   `cart_id`: VARCHAR(255) PRIMARY KEY (Lưu Key gốc của Redis, VD: `cart:user:12345`).
-*   `user_id`: VARCHAR(255) INDEX (Tách chuỗi từ `cart_id` để filter theo User nhanh hơn nếu cần thiết).
+*   `cart_id`: VARCHAR(255) PRIMARY KEY. Lưu Key gốc của Redis (VD: `{cart:user:12345}`). **Quy ước cứng:** `cart_id = Redis Key` là convention bất biến trong toàn hệ thống (DB, Events, Kafka payload). Nếu format key Redis thay đổi, cần migration đồng bộ.
+*   `user_id`: VARCHAR(255) INDEX. Lưu trực tiếp `user_id` từ event payload. **Tuyệt đối KHÔNG tách chuỗi từ `cart_id`** vì anti-pattern và dễ sai nếu format key thay đổi. `user_id` phải có trong mọi event payload (thêm vào Lua Script ARGV[7]).
 *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Cập nhật qua các State). Xem [Events Structure](cart_events.md) để biết event nào kích hoạt chuyển đổi trạng thái.
     *   `ACTIVE`: Đang được sử dụng tương tác.
     *   `ABANDONED`: Khách để quá 30 ngày không checkout — được đánh dấu bởi [Abandoned Cart Marker CronJob](cart_workers.md#3-abandoned-cart-marker-batch-cronjob).
     *   `DELETED`: Giỏ hàng đã bị xóa sạch (toàn bộ items bị remove dẫn đến `HLEN == 0`). Kích hoạt bởi event [`CART_CLEARED`](cart_events.md#24-cart_cleared). Đây là **soft delete** (không hard-delete ngay). Sẽ bị hard-delete sau 3 tháng bởi [Data Archival CronJob](cart_workers.md#4-data-archival-cleaner-batch-cronjob).
-    *   `CHECKED_OUT`: Giỏ hàng đã hoàn tất checkout. Được cập nhật khi nhận event `CART_CHECKED_OUT` (phát sau `ORDER_PAID`) qua Kafka.
-*   `subtotal`: DECIMAL(15,2) DEFAULT 0 (Tổng tiền của giỏ, tính theo dạng Dữ liệu phân tích chậm (Analytical Data), cập nhật bất đồng bộ qua luồng Worker Outbox, tiện phục vụ Data Marketing Team).
-*   `last_event_time_ms`: BIGINT DEFAULT 0 (**Trường Quan Trọng**: Lưu Logical Event Time từ ứng dụng/Kafka. Dùng để so sánh chặn Out-of-order event cho trạng thái giỏ hàng thay vì dùng `updated_at`).
+    *   `CHECKED_OUT`: Giỏ hàng đã hoàn tất checkout **và rỗng hoàn toàn**. Được cập nhật khi nhận event `CART_CHECKED_OUT` (phát sau `ORDER_PAID` khi `HLEN == 0`) qua Kafka. Partial checkout (chỉ xóa một số SKU nhưng còn SKU khác) giữ trạng thái `ACTIVE`.
+*   `subtotal`: DECIMAL(15,2) DEFAULT 0. Tổng tiền phân tích chậm (Analytical Data), cập nhật bất đồng bộ qua Worker theo `unit_price_at_add`. **Không dùng làm giá realtime** thay thế cho `current_price` ở API đọc giỏ. Có thể tạm thời inaccurate khi nhiều events chạy song song — eventual consistency là chấp nhận được cho analytics.
+*   `last_event_time_ms`: BIGINT DEFAULT 0. (**Trường Quan Trọng**) Lưu Logical Event Time từ ứng dụng/Kafka theo **Milliseconds Epoch**. Dùng để so sánh chặn Out-of-order event cho trạng thái giỏ hàng.
 *   `created_at`: TIMESTAMPTZ
-*   `updated_at`: TIMESTAMPTZ (Dùng để xác định 'Abandoned' data hoặc dọn dẹp hệ thống. Cập nhật bởi DB/Worker khi ghi dòng dữ liệu).
+*   `updated_at`: TIMESTAMPTZ (Dùng để xác định 'Abandoned' data hoặc dọn dẹp hệ thống. Cập nhật bởi DB/Worker khi ghi dòng dữ liệu)
 
 ### 2.2. Bảng `cart_items`
 Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ phức tạp của Json Value trên Redis.
@@ -53,14 +53,16 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
 *   `sku_id`: VARCHAR(255) INDEX.
 *   `seller_id`: VARCHAR(255).
 *   `seller_name`: VARCHAR(255).    
-*   `quantity`: INT.
-*   `unit_price_at_add`: DECIMAL(15,2) (Lưu số tiền lúc khách vừa bắt đầu click "Thêm vào giỏ", dùng hiển thị chênh lệch giá do Promotion hay do thời gian).
+*   `quantity`: INT NOT NULL DEFAULT 0.
+*   `unit_price_at_add`: DECIMAL(15,2) NOT NULL DEFAULT 0.00 (Lưu số tiền lúc khách vừa bắt đầu click "Thêm vào giỏ", dùng hiển thị chênh lệch giá do Promotion hay do thời gian. Lưu ở **cột riêng** vì cần query analytics và idempotency, KHÔNG đưa vào `product_snapshot`).
 *   `product_snapshot`: JSONB (***Trường Quan Trọng***)
-    *   Lý do: PostgreSQL không cần biết chi tiết sản phẩm. Hệ thống nhét toàn bộ các thuộc tính như `{"product_name": "Áo Bò", "image_url": "link", "variant_info": "Xanh lơ", "added_at": 1708530000123000, "updated_at": 1708616400456000, "is_available": true}` vào JSONB.
-    *   Mục đích 1: Tái cấu trúc lại object Struct **y hệt** Redis Value và nhét lên lại Caching. LƯU Ý: Flag `is_available` buộc phải nằm trong JSONB này để đánh dấu item còn hàng hay không.
-    *   Mục đích 2: Dùng trường `updated_at` (Microseconds Epoch) bên trong JSON này làm Idempotency Key để chống Out-of-order event.
+    *   Lý do: PostgreSQL không cần biết chi tiết sản phẩm. Hệ thống nhét toàn bộ các thuộc tính như `{"product_name": "Áo Bò", "image_url": "link", "variant_info": "Xanh lơ", "added_at": "1708530000123", "updated_at": "1708616400456", "is_available": true}` vào JSONB.
+    *   Mục đích 1: Tái cấu trúc lại object Struct để nhét lên lại Redis. **LƯU Ý:** Khi rehydrate từ DB lên Redis, Worker phải inject thêm `unit_price_at_add` từ cột riêng vào JSON trước khi ghi. Flag `is_available` buộc phải nằm trong JSONB này.
+    *   Mục đích 2: Dùng trường `updated_at` (Milliseconds Epoch) bên trong JSON này làm Idempotency Key để chống Out-of-order event.
+    *   Ràng buộc: `current_price` không lưu trong `product_snapshot`; đây là field runtime của API đọc giỏ.
+    *   Timestamps (`added_at`, `updated_at`, `product_updated_at`) lưu dạng **chuỗi số nguyên Milliseconds Epoch** để nhất quán với Redis Hash Value và tránh precision loss qua JSON.
 *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete / Tombstone để xử lý lỗi Ghost Item khi Event Delete đến trước Event Add).
-*   `tombstone_at`: BIGINT (Ghi lại thời điểm Event Delete được phát từ Redis để Consumer bắt Event Add/Update cũ hơn có thể loại bỏ).
+*   `tombstone_at`: BIGINT DEFAULT 0 (Lưu **Milliseconds Epoch** của thời điểm Event Delete được phát từ Redis, dùng để Consumer bắt Event Add/Update cũ hơn có thể loại bỏ an toàn).
 *   `created_at`: TIMESTAMPTZ
 *   `updated_at`: TIMESTAMPTZ
 
@@ -71,7 +73,7 @@ Vì dữ liệu chính chạy trên nền Redis, dữ liệu đẩy xuống Post
 1.  **Dumb Store**: PostgreSQL trong Service này sẽ bị "Ngu hóa" (Chỉ nhận lệnh Upsert (Create or Update) chứ không bắt ràng buộc Unique rườm rà cản trở Business logic chính trên tầng Cache).
 2.  **Concurrency / Lock**: Khi chạy Upsert từ Worker lên Table `cart_items`, sử dụng tính năng `ON CONFLICT` của Postgres Database. Xem chi tiết cú pháp tại [Idempotency Pattern](cart_idempotency.md#23-xử-lý-sai-thứ-tự-out-of-order).
 3.  **Đồng bộ bảng Master `carts`**: Trong cùng Transaction DB của Worker khi xử lý Upsert `cart_items` hoặc status event, Worker phải cập nhật bảng `carts` theo nguyên tắc:
-    - Event `CART_ITEM_ADDED` / `CART_ITEM_UPDATED`: luôn set `status = 'ACTIVE'` (re-activate), cập nhật `updated_at` theo event time mới nhất.
+    - Event `CART_ITEM_ADDED` / `CART_ITEM_UPDATED`: luôn set `status = 'ACTIVE'` (re-activate), cập nhật `updated_at` theo event time mới nhất. `user_id` lấy trực tiếp từ event payload (không parse `cart_id`).
     - Event `CART_CLEARED` / `CART_CHECKED_OUT`: chỉ đổi trạng thái khi event time mới hơn hoặc bằng mốc hiện tại của cart.
     - Không update mù trạng thái chỉ theo `cart_id`; luôn có điều kiện thời gian/version để chặn out-of-order.
 
@@ -88,8 +90,8 @@ Quy định thời gian sống (TTL của RDBMS Database) theo trạng thái:
 
 | Trạng thái | Điều kiện | Hành động | CronJob / Event |
 |---|---|---|---|
-| `ACTIVE` | `updated_at` quá 30 ngày không tương tác | Chuyển `status` → `ABANDONED` và publish event `CART_ABANDONED` | [Abandoned Cart Marker](cart_workers.md#3-abandoned-cart-marker-batch-cronjob) |
-| `ABANDONED` | Ngay khi mark thành `ABANDONED` | Lắng nghe event `CART_ABANDONED` xử lý nghiệp vụ Promotion | Kafka `t.cart.abandoned` |
+| `ACTIVE` | `updated_at` quá 30 ngày không tương tác | Chuyển `status` → `ABANDONED` và publish event `CART_ABANDONED` qua Outbox | [Abandoned Cart Marker](cart_workers.md#3-abandoned-cart-marker-batch-cronjob) |
+| `ABANDONED` | Ngay khi mark thành `ABANDONED` | Lắng nghe event `CART_ABANDONED` xử lý nghiệp vụ Promotion | Kafka `t.cart.events` |
 | `DELETED` | `updated_at` quá 3 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |
 | `CHECKED_OUT` | `updated_at` quá 3 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |
 | `ABANDONED` | `updated_at` quá 6 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |

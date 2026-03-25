@@ -12,7 +12,7 @@
 | **Mô hình I/O** | Write-heavy nhưng rải rác, Read cực nhẹ (HGETALL), yêu cầu latency < 10ms |
 | **Concurrency** | Lua Scripts trên Redis đảm bảo atomicity; không có OOP pattern phức tạp |
 | **Background Workers** | Goroutines chạy Outbox Relay, Stream Trimmer, DLQ Monitor |
-| **Kafka** | Producer (Outbox Relay) + Consumer (Order Event, Product Snapshot Sync) |
+| **Kafka** | Producer (Outbox Relay) + Consumer (Order Event) |
 | **Database** | PostgreSQL chỉ làm Cold Store — logic ghi đơn giản (Upsert/Delete) |
 | **Logic nghiệp vụ** | Đơn giản — CRUD giỏ hàng, batch delete |
 

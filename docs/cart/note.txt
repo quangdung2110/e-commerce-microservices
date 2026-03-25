@@ -39,3 +39,6 @@ Nhược điểm:
 điều này có thể được cải thiện bằng cách sử dụng một cơ chế caching tạm thời trên Product Service và trên Cart Service 
 + Tăng rủi ro phụ thuộc: việc đồng bộ dữ liệu qua gRPC sẽ làm tăng sự phụ thuộc giữa Cart Service và Product Service, nếu Product Service gặp sự cố hoặc có độ trễ cao thì sẽ ảnh hưởng đến trải nghiệm của
 khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (có thể được cải thiện bằng Circuit Breaker pattern)
+
+4. Chính vì ta sử dụng theo cách gọi gRPC sang Product Service để lấy thông tin mới nhất của các sản phẩm trong giỏ hàng,
+Tuy nhiên vì ở Cart Service này, chúng ta lại sử dụng Redis first (Redis là Source of Truth), do đó khi gọi qua Product Service sẽ có 2 trường hợp xảy ra:
