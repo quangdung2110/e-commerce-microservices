@@ -68,7 +68,7 @@ Redis Streams **không tự xóa message** sau khi Consumer đọc xong. Cần k
 
 1.  **Tuyệt đối không dùng `MAXLEN` rủi ro trên `XADD`:** Lệnh `XADD` bỏ `MAXLEN` để chống hiện tượng mất event chưa ACK khi hệ thống kẹt.
 2.  **`XACK` chỉ đánh dấu đã xử lý**, KHÔNG xóa message khỏi Stream. Sau khi [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) forward event sang Kafka thành công, gọi `XACK` để đánh dấu message đã được consume trong Consumer Group (tránh re-delivery cho cùng group).
-3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background (Stream Trimmer) chạy mỗi 5 phút quét các stream và gọi `XTRIM {cart_key}:outbox MINID ~ <lowest_delivered_id>`. Nếu stream rỗng và không còn message pending, gọi `DEL` xóa hẳn stream và xóa khỏi ZSET `active_outbox_streams`.
+3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background (Stream Trimmer) chạy mỗi 5 phút quét các stream và gọi `XTRIM {cart_key}:outbox MINID ~ <lowest_safe_id>`. Nếu stream rỗng và không còn message pending, gọi `DEL` xóa hẳn stream và xóa khỏi ZSET `active_outbox_streams`.
 4.  **Luồng Đọc Hybrid (Pub/Sub + ZSET Fallback) qua Application-Level Dual-Write:** 
     - Lệnh Lua tạo event chỉ ghi vào Hash và Stream của chính user đó (cùng Hash Tag).
     - Ngay sau khi Lua script thành công, ứng dụng (Go) chạy một background goroutine gọi `ZADD active_outbox_streams` và lệnh `PUBLISH outbox_notifications` độc lập. Điều này giúp né lỗi `CROSSSLOT` trên Redis Cluster do `active_outbox_streams` là global key.

@@ -163,12 +163,16 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 
 **Sứ mệnh:** Giải phóng RAM Redis bằng cách cắt bớt (Trim) các message đã được `XACK` khỏi Outbox Stream. Xem [Outbox Pattern — Stream Memory Management](cart_outbox_pattern.md#22-stream-memory-management).
 
-**Stream Memory Management:**
-1. Mỗi 5 phút, duyệt qua các stream nằm trong danh sách đang hoạt động bằng lệnh `ZSCAN active_outbox_streams 0 COUNT 100` (paginated đến hết ZSET thay vì dùng `ZRANGE 0 -1` dễ gây tắc nghẽn bộ nhớ mạng và nghẽn tiến trình Redis).
-2. Gọi `XINFO GROUPS {stream_key}` để lấy `last-delivered-id` trong tất cả Consumer Groups.
-3. **Kiểm tra Consumer Group Health:** Nếu một Consumer Group có `last-delivered-id` không thay đổi sau 30 phút (group "chết" do incident), **không trim** và phát alert Prometheus `cart_outbox_dlq_stale_group`. Ops cần xem xét xóa group đó hoặc restart consumer trước khi trim.
-4. Gọi `XTRIM {stream_key} MINID ~ <lowest_delivered_id_across_active_groups>` để dọn các message đã được mọi active group tiêu thụ an toàn.
-5. Nếu stream trống rỗng sau khi trim, cần xóa nó để giải phóng RAM. **Lưu ý Asynchronous:** Không dùng các lệnh check `XLEN` rồi tự gọi lệnh `DEL` vì có thể gây mất event nếu trong khe hở đó Lua script Add/Update vừa bắn event mới vào. Phải dùng Lua Script để dọn dẹp nguyên tử:
+**Stream Memory Management (Theo mô hình Redis Pipeline tối ưu):**
+1. Mỗi 5 phút, duyệt qua các stream nằm trong danh sách đang hoạt động bằng lệnh `ZSCAN active_outbox_streams 0 COUNT 100` (paginated đến hết ZSET thay vì dùng `ZRANGE 0 -1` dễ gây tắc nghẽn bộ nhớ mạng và nghẽn tiến trình Redis). Với mỗi batch 100 streams lấy được, tiến hành giải quyết qua **3 Pipeline** để tối ưu RTT (Round-Trip Time):
+2. **Pipeline 1 (Quét Health & Pending Count):** Gom 100 lệnh `XINFO GROUPS {stream_key}` cho batch đang xét và gửi đi 1 lần. Quét các group trả về:
+   - *Kiểm tra Consumer Group Health:* Nếu một Consumer Group có `last-delivered-id` không thay đổi sau 30 phút (group "chết" do incident), **không trim** toàn bộ stream đó và phát alert Prometheus `cart_outbox_dlq_stale_group`.
+   - Nếu `pending == 0`: Tin nhắn cuối cùng worker xử lý đã xong, chọn `last-delivered-id` làm ranh giới an toàn (`safe_id`).
+   - Nếu `pending > 0`: Có tin nhắn bị treo làm sai lệch `last-delivered-id`. Phải đưa group này vào Pipeline 2 để đào sâu.
+3. **Pipeline 2 (Đào sâu tin nhắn Pending - Tùy chọn):** Dùng lệnh `XPENDING {stream_key} {group_name}` gửi một loạt cho tất cả các nhóm có `pending > 0`. Lệnh này lật "sổ nợ" và chỉ đích danh ID của tin nhắn cũ nhất chưa ACK. Lấy id này làm `safe_id`. So sánh chéo `safe_id` qua từng group trong 1 stream để chốt được `<lowest_safe_id_across_groups>`.
+4. **Pipeline 3 (Thực thi Trim & Xóa nguyên tử):** Gửi đồng loạt batch lệnh dọn dẹp:
+   - Gọi `XTRIM {stream_key} MINID ~ <lowest_safe_id_across_groups>` cho tất cả stream để dọn rác bộ nhớ bằng số ranh giới an toàn.
+5. Xóa stream trống rỗng sau khi trim ngay tại Pipeline 3. **Lưu ý Asynchronous:** Không dùng các lệnh check `XLEN` rồi tự gọi lệnh `DEL` vì có thể gây mất event nếu trong khe hở đó Lua script Add/Update vừa bắn event mới vào. Phải dùng đoạn Lua Script dưới đây để dọn dẹp nguyên tử:
    ```lua
    -- KEYS[1] = {stream_key}, KEYS[2] = active_outbox_streams
    if redis.call('XLEN', KEYS[1]) == 0 then
@@ -181,6 +185,7 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
    return 0
    ```
    Nếu Lua trả về `1`, Worker sẽ gọi `ZREM active_outbox_streams {stream_key}`.
+   *(Trường hợp Worker die ngay trước khi gọi `ZREM`, tên stream lưu rác lại trong danh sách `active` nhưng key stream bên ngoài đã bị xóa. Lần quét Trimmer hoặc Fallback tiếp theo, khi gọi `XINFO`/`XREADGROUP` lên stream này sẽ nhận lỗi `ERR no such key`. Worker chỉ cần bắt lỗi này, ngầm hiểu là stream rỗng/bị xóa rồi tự động gọi `ZREM active_outbox_streams {stream_key}` để dọn rác danh sách Tracking)*.
 6. Log metric số message và số stream đã dọn dẹp để monitor.
 
 ---
