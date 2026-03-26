@@ -56,7 +56,7 @@ local event_payload = cjson.encode(event_obj)
 -- Điểm mấu chốt: Nhét trực tiếp XADD vào cuối khối lệnh
 redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_UPDATED', 'payload', event_payload)
 ```
-*Vì chạy chung một Script, Redis khóa Single-thread đánh sập toàn khối nếu rớt giữa chừng. Data trên Redis either CÓ CẢ HAI hoặc KHÔNG CÓ GÌ. Tính Atomicity được bảo toàn tuyệt đối.*
+*Vì chạy chung một Script, Redis khóa Single-thread đánh sập toàn khối nếu rớt giữa chừng. Data trên Redis either CÓ CẢ HAI hoặc KHÔNG CÓ GÌ. Tính Atomicity được bảo toàn tuyệt đối mà không vi phạm chuẩn Hash Tag của Redis Cluster.*
 
 > **Lưu ý kiến trúc:** Event payload đẩy vào Stream **bắt buộc phải chứa `cart_id`, `sku_id` và `user_id`** (bổ sung bằng `cjson.encode` trong Lua), dù Hash Value không lưu các field này (vì đã implicit trong Key/Field). Consumer Worker cần chúng để biết ghi vào bảng DB nào và upsert bảng `carts` mà không parse chuỗi `cart_id`. Xem cấu trúc payload chi tiết tại [Events Structure](cart_events.md#2-chi-tiết-các-loại-event).
 
@@ -68,21 +68,22 @@ Redis Streams **không tự xóa message** sau khi Consumer đọc xong. Cần k
 
 1.  **Tuyệt đối không dùng `MAXLEN` rủi ro trên `XADD`:** Lệnh `XADD` bỏ `MAXLEN` để chống hiện tượng mất event chưa ACK khi hệ thống kẹt.
 2.  **`XACK` chỉ đánh dấu đã xử lý**, KHÔNG xóa message khỏi Stream. Sau khi [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) forward event sang Kafka thành công, gọi `XACK` để đánh dấu message đã được consume trong Consumer Group (tránh re-delivery cho cùng group).
-3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background chạy mỗi 5 phút và gọi:
-   `XTRIM cart_outbox_stream_{shard_id} MINID ~ <id>`
-   Trong đó `<id>` là message ID an toàn nhỏ nhất đã được all groups consume.
-4.  **Sharding Algorithm:** Sử dụng thuật toán nhất quán `CRC32(cart_id) % N` (với N là số lượng stream) để quyết định phân luồng. Đảm bảo mọi event của cùng 1 cart luôn vào đúng 1 stream, giữ vững thứ tự (Strict Ordering).
+3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background (Stream Trimmer) chạy mỗi 5 phút quét các stream và gọi `XTRIM {cart_key}:outbox MINID ~ <lowest_delivered_id>`. Nếu stream rỗng và không còn message pending, gọi `DEL` xóa hẳn stream và xóa khỏi ZSET `active_outbox_streams`.
+4.  **Luồng Đọc Hybrid (Pub/Sub + ZSET Fallback) qua Application-Level Dual-Write:** 
+    - Lệnh Lua tạo event chỉ ghi vào Hash và Stream của chính user đó (cùng Hash Tag).
+    - Ngay sau khi Lua script thành công, ứng dụng (Go) chạy một background goroutine gọi `ZADD active_outbox_streams` và lệnh `PUBLISH outbox_notifications` độc lập. Điều này giúp né lỗi `CROSSSLOT` trên Redis Cluster do `active_outbox_streams` là global key.
+    - Worker nhận real-time qua Pub/Sub, hoặc qua luồng Fallback định kỳ scan ZSET để chống rớt event. Để chống mọi lỗi do sập node Go ngay đúng lúc kẹp giữa đoạn chạy Lua và gọi ZADD, hệ thống có thêm một **Keyspace Reaper** quét toàn bộ stream định kỳ.
 
-Xem [Stream Trimmer](cart_workers.md#5-stream-trimmer-background-goroutine).
+Xem chi tiết trong [Các Background Workers](cart_workers.md).
 
 > **Phân biệt quan trọng:**
 > - `XACK`: Đánh dấu message đã xử lý trong Consumer Group → tránh re-delivery.
-> - `XDEL` / `XTRIM`: Thực sự xóa message khỏi Stream → giải phóng RAM.
-> - Thiếu `XTRIM` sẽ gây **memory leak dần dần** dù đã `XACK` hết.
+> - `XDEL` / `XTRIM` / `DEL`: Thực sự xóa/cắt message khỏi Stream, phá nát stream metadata khi trống rỗng → giải phóng RAM.
+> - Thiếu `XTRIM` và dọn nhóm rỗng sẽ gây **memory leak dần dần** dù đã `XACK` hết.
 
 ### 2.3. Redis Cluster Hash Tag (Constraint bắt buộc)
 
-Lua Script đưa ra yêu cầu **tất cả KEYS nằm trên cùng một Redis node**. Trong Redis Cluster, nếu `KEYS[1]` (cart hash) và `KEYS[2]` (outbox stream) nằm khác slot, Redis sẽ trả lỗi `CROSSSLOT Keys in request don't hash to the same slot` và <b>Lua Script sẽ thất bại hoàn toàn</b>.
+Lua Script đưa ra yêu cầu **tất cả KEYS nằm trên cùng một Redis node**. Trong Redis Cluster, nếu `KEYS[1]` (cart hash) và `KEYS[2]` (outbox stream) nằm khác slot, Redis sẽ trả lỗi `CROSSSLOT Keys in request don't hash to the same slot` và **Lua Script sẽ thất bại hoàn toàn**.
 
 **Giải pháp bắt buộc — Redis Hash Tag:**
 
@@ -95,7 +96,7 @@ Phần `{...}` trong tên key là Hash Tag — Redis Cluster chỉ hash phần n
 
 **Sharding cho Outbox Stream:**
 
-Mỗi cart có outbox stream riêng (`{cart:user:{user_id}}:outbox`) thay vì stream chia sẻ (`cart_outbox_stream_{shard_id}`). Điều này đảm bảo ordering per-cart tự nhiên mà không cần sharding index riêng. Stream Trimmer dùng `SCAN` với pattern `*:outbox` để tìm tất cả stream cần trim.
+Mỗi cart có outbox stream riêng (`{cart:user:{user_id}}:outbox`) thay vì stream chia sẻ (`cart_outbox_stream_{shard_id}`). Điều này đảm bảo ordering per-cart tự nhiên mà không cần sharding index riêng. Stream Trimmer có thể duyệt qua ZSET `active_outbox_streams` (hoặc dùng `SCAN` dự phòng) để lấy danh sách toàn bộ các stream cần dọn dẹp dung lượng.
 
 > **Quan trọng:** Tất cả code Lua trong các file thiết kế phải sử dụng format key với Hash Tag. Backend khi xây dựng `KEYS[]` để gọi Lua cũng phải đảm bảo truyền key đã có Hash Tag.
 

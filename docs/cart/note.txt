@@ -40,5 +40,19 @@ Nhược điểm:
 + Tăng rủi ro phụ thuộc: việc đồng bộ dữ liệu qua gRPC sẽ làm tăng sự phụ thuộc giữa Cart Service và Product Service, nếu Product Service gặp sự cố hoặc có độ trễ cao thì sẽ ảnh hưởng đến trải nghiệm của
 khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (có thể được cải thiện bằng Circuit Breaker pattern)
 
-4. Chính vì ta sử dụng theo cách gọi gRPC sang Product Service để lấy thông tin mới nhất của các sản phẩm trong giỏ hàng,
-Tuy nhiên vì ở Cart Service này, chúng ta lại sử dụng Redis first (Redis là Source of Truth), do đó khi gọi qua Product Service sẽ có 2 trường hợp xảy ra:
+
+
+4. Chính vì ta sử dụng theo cách gọi gRPC sang Product Service để lấy thông tin mới nhất của các sản phẩm trong giỏ hàng, chính vì thế vai trò của Redis Hash được ta sử dụng để lưu trữ thông tin về
+các sản phẩm trong giỏ hàng cũng được thay đổi, cụ thể là:
++ Write Path: Atomic CRUD với Lua Script. Khi user nhấn '+1' vào sản phẩm A trong giỏ hàng, Cart Service sẽ thực hiện một đoạn Lua Script để thực hiện điều này, không cần DB, không cần đợi. Nếu bỏ 
+Redis, những thao tác concurrency như này phải được bọc trong transaction làm tăng latency đáng kể.
++ Read Path: HGETALL trong 1 round-trip, không cần JOIN trên database. Nếu bỏ Redis, khi thực hiện merge dữ liệu được lấy từ Product Service và DB sẽ tốn nhiều tài nguyên hơn.
+
+Từ những điều trên, ta có thể kết luận được việc sử dụng Redis Hash ở đây chủ yếu là vì Write Path:
+Write (Add/Update/Delete item):
+  Redis Hash → Lua (atomic, < 1ms) → Outbox Stream → Kafka → PostgreSQL (async)
+Read (View cart):
+  Redis Hash (HGETALL) → merge với gRPC Product data → Response
+
+Nếu bỏ Redis Hash, Write Path phải đổi thành:
+Write: HTTP → PostgreSQL (transaction, 5-30ms) → phát Kafka

@@ -23,12 +23,18 @@ Dưới đây là sơ đồ liệt kê các Worker và Script cronjob tự độ
 
 **Sứ mệnh:** Chuyển phát nhanh (Forwarding) Event từ Redis đệm lên Kafka Cluster. Xem kiến trúc Outbox tại [Redis Streams Outbox Pattern](cart_outbox_pattern.md).
 
-**Chi tiết luồng hoạt động:**
-1. Khởi chạy các luồng Goroutine liên tục (`XREADGROUP GROUP relay_group consumer_1 BLOCK 5000 COUNT 50 STREAMS {cart:user:{id}}:outbox >`) để kéo dữ liệu mới từ Stream.
-2. Với mỗi block Event nhặt được (Ví dụ: `CART_ITEM_ADDED`, `CART_ITEM_DELETED`, `CART_CLEARED`).
-3. Bổ sung các trường Header cho Kafka message ([xem Events Header](cart_events.md#1-cấu-trúc-message-header-chung)): `event_id` (**Bắt buộc** sinh deterministic từ `Redis Stream ID + cart_id` như UUIDv5/băm ổn định tương đương; tuyệt đối KHÔNG tự sinh UUID random), `timestamp` (ISO 8601 UTC), `source = "cart-service"`.
-4. Thực hiện `Kafka.Produce` ném vào Topic chung `t.cart.events` (Key phân vùng = `cart_id` để đảm bảo event cùng giỏ đi tuần tự qua cùng partition).
-5. Điểm trọng yếu: Chỉ sau khi Kafka `ACK` xác nhận đã ghi (cấu hình `acks=all`), Worker gọi lệnh `XACK` để đánh dấu message đã xử lý trong Consumer Group.
+**Chi tiết luồng hoạt động (Hybrid Read + Application Dual-Write):**
+1. **Phát hiện dữ liệu (Discovery):** Do mỗi giỏ có 1 Stream riêng, tiến trình Go sau khi gọi *Lua Script* thành công sẽ chạy Goroutine ghi log `ZADD active_outbox_streams` và bắn `PUBLISH outbox_notifications` lên Redis. Worker phát hiện Stream cần xử lý qua 3 lớp phòng phủ:
+   - **Đường Nhanh (Pub/Sub):** Subscribe kênh `outbox_notifications`. Hễ có message, lập tức đẩy tên này vào Go Channel buffer.
+   - **Đường Trì Hoãn (Delay ZSET Worker):** Một Goroutine phụ chạy mỗi 30 giây dùng lệnh `ZRANGE active_outbox_streams -inf <nows_ms - 30000> BYSCORE LIMIT 0 1000` (paginated theo block 1000) để hốt những stream có event chực chờ (do rớt mạng hoặc crash làm miss Pub/Sub), đẩy chúng vào cùng Go Channel trên. Khi đẩy xong, Worker **bắt buộc phải update lại thời gian** bằng `ZADD active_outbox_streams <nows_ms> <tên_stream>` để không bị process lặp lại ở chu kỳ 30s sau. (Tuyệt đối KHÔNG `ZREM` khỏi ZSET vì Stream Trimmer cần danh sách này để quản lý RAM).
+   - **Đường Chống Lỗi Tuyệt Đối (Keyspace Reaper):** Nếu Application Worker (Go) chết ngay *sau* luồng Lua nhưng *trước* khi ghi `ZADD`/`PUBLISH`, stream đó sẽ kẹt vĩnh viễn trên Redis. Một worker **Keyspace Reaper** đặc biệt sẽ chạy **mỗi 1 tiếng**, sử dụng lệnh `SCAN 0 MATCH {cart:user:*}:outbox COUNT 500`. Những stream nào có dữ liệu mà thiếu trong `active_outbox_streams` sẽ được Worker này `ZADD` trở lại, đảm bảo Eventual Consistency tuyệt đối cho Outbox Pattern.
+2. Khởi chạy các luồng Goroutine liên tục móc tên Stream từ Go Channel trên và thực hiện đọc bằng lệnh:
+   `XREADGROUP GROUP relay_group consumer_1 COUNT 50 STREAMS <các_stream_nhặt_được> >` 
+   *(Nếu trả mã lỗi `NOGROUP`, Worker tự động gọi `XGROUP CREATE {cart_key}:outbox relay_group 0 MKSTREAM` rồi vòng lại đọc).*
+3. Với mỗi block Event nhặt được (Ví dụ: `CART_ITEM_ADDED`, `CART_ITEM_DELETED`, `CART_CLEARED`).
+4. Bổ sung các trường Header cho Kafka message ([xem Events Header](cart_events.md#1-cấu-trúc-message-header-chung)): `event_id` (**Bắt buộc** sinh deterministic từ `Redis Stream ID + cart_id` như UUIDv5/băm ổn định tương đương; tuyệt đối KHÔNG tự sinh UUID random), `timestamp` (ISO 8601 UTC), `source = "cart-service"`.
+5. Thực hiện `Kafka.Produce` ném vào Topic chung `t.cart.events` (Key phân vùng = `cart_id` để đảm bảo event cùng giỏ đi tuần tự qua cùng partition).
+6. Điểm trọng yếu: Chỉ sau khi Kafka `ACK` xác nhận đã ghi (cấu hình `acks=all`), Worker gọi lệnh `XACK` để đánh dấu message đã xử lý trong Consumer Group.
 
 > **Chú ý:** `XACK` **chỉ đánh dấu message đã xử lý** trong Consumer Group, **KHÔNG** xóa message khỏi Stream Memory. Việc giải phóng RAM thực sự do [Stream Trimmer](#5-stream-trimmer-background-goroutine) đảm nhận bằng cách xóa theo ID. Xem [Outbox Pattern - Stream Memory Management](cart_outbox_pattern.md#22-stream-memory-management).
 
@@ -36,7 +42,7 @@ Dưới đây là sơ đồ liệt kê các Worker và Script cronjob tự độ
 
 **Xử lý Pending Messages (Crash Recovery):**
 Khi Worker crash sau khi `XREADGROUP` nhưng trước khi `XACK`, message ở trạng thái **Pending** (bị giữ vĩnh viễn).
-- Mỗi 30 giây, một Goroutine phụ chạy `XAUTOCLAIM {cart:user:{id}}:outbox relay_group consumer_1 60000 0-0 COUNT 100` để nhặt lại message Pending quá 60s.
+- Nhờ quá trình dò quét `ZSET active_outbox_streams` mỗi 30 giây ở luồng Fallback, với mỗi stream phát hiện được, Worker chạy thêm `XAUTOCLAIM {stream_key} relay_group consumer_1 60000 0-0 COUNT 100` để nhặt lại message Pending quá 60s.
 - Nếu một message bị retry quá 5 lần (kiểm tra qua `XPENDING` delivery count), chuyển vào Dead Letter Stream `cart_outbox_dlq` và ghi log cảnh báo. Xem [Worker #8 DLQ Handler](#8-dlq-handler-goroutine).
 
 ---
@@ -158,11 +164,24 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 **Sứ mệnh:** Giải phóng RAM Redis bằng cách cắt bớt (Trim) các message đã được `XACK` khỏi Outbox Stream. Xem [Outbox Pattern — Stream Memory Management](cart_outbox_pattern.md#22-stream-memory-management).
 
 **Stream Memory Management:**
-1. Mỗi 5 phút, duyệt qua tất cả stream shards (`SCAN` pattern `*:outbox`).
+1. Mỗi 5 phút, duyệt qua các stream nằm trong danh sách đang hoạt động bằng lệnh `ZSCAN active_outbox_streams 0 COUNT 100` (paginated đến hết ZSET thay vì dùng `ZRANGE 0 -1` dễ gây tắc nghẽn bộ nhớ mạng và nghẽn tiến trình Redis).
 2. Gọi `XINFO GROUPS {stream_key}` để lấy `last-delivered-id` trong tất cả Consumer Groups.
 3. **Kiểm tra Consumer Group Health:** Nếu một Consumer Group có `last-delivered-id` không thay đổi sau 30 phút (group "chết" do incident), **không trim** và phát alert Prometheus `cart_outbox_dlq_stale_group`. Ops cần xem xét xóa group đó hoặc restart consumer trước khi trim.
 4. Gọi `XTRIM {stream_key} MINID ~ <lowest_delivered_id_across_active_groups>` để dọn các message đã được mọi active group tiêu thụ an toàn.
-5. Log metric số message đã trim để monitor.
+5. Nếu stream trống rỗng sau khi trim, cần xóa nó để giải phóng RAM. **Lưu ý Asynchronous:** Không dùng các lệnh check `XLEN` rồi tự gọi lệnh `DEL` vì có thể gây mất event nếu trong khe hở đó Lua script Add/Update vừa bắn event mới vào. Phải dùng Lua Script để dọn dẹp nguyên tử:
+   ```lua
+   -- KEYS[1] = {stream_key}, KEYS[2] = active_outbox_streams
+   if redis.call('XLEN', KEYS[1]) == 0 then
+       redis.call('DEL', KEYS[1])
+       -- Mặc dù không cùng Hash Tag, việc ZREM chỉ chạy khi dọn dẹp định kỳ
+       -- thay vì chạy ở luồng ghi chính, nên ta kéo lệnh ZREM ra Go Backend 
+       -- (Worker nhận kết quả 1 từ Lua rồi gọi vòng ngoài lệnh ZREM)
+       return 1
+   end
+   return 0
+   ```
+   Nếu Lua trả về `1`, Worker sẽ gọi `ZREM active_outbox_streams {stream_key}`.
+6. Log metric số message và số stream đã dọn dẹp để monitor.
 
 ---
 
@@ -205,7 +224,7 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 1. `cart_read_cache_hit_ratio` theo cửa sổ 5 phút.
 2. `cart_read_cache_miss_ratio` theo cửa sổ 5 phút.
 3. `cart_product_grpc_timeout_rate` và `cart_product_grpc_latency_ms` (p95, p99).
-4. `cart_outbox_pending_count` theo từng shard stream.
+4. `cart_outbox_pending_count` tổng hợp từ các active_outbox_streams.
 5. `kafka_consumer_group_lag{group="cart-db-sync"}`.
 6. `cart_rehydrate_conflict_skip_count` (số item bị bỏ qua do timestamp guard).
 7. `cart_lua_error_count{script="add_update|batch_delete|rehydrate"}`.
