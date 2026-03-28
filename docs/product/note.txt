@@ -21,10 +21,23 @@ Trong trường hợp này, chúng ta có thể sắp xếp các Product ID theo
 5. Ở phần xử lý Markdown Event đến từ Promotion Service, chúng ta phải query ra những product SKU có trạng thái active thỏa mãn với điều kiện khuyến mãi đang áp dụng. Sau đó gom nhóm lại theo
 product_id rồi tính toán tiền giảm giá trên RAM của tầng application (không query DB) của từng SKU trong nhóm đó. Chúng ta cũng sẽ không mở transaction cho toàn bộ nhóm, mà mỗi nhóm product_id, 
 ta mở transaction riêng lẽ, thực hiện batch processing bao gồm việc: cập nhật giá tiền, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi, sau đó mới commit transaction nhả cho product_id
-tiếp theo. Tuy nhiên, khi chúng ta thiết kế như vậy, cũng phải lưu ý một trường hợp như sau:
+tiếp theo. Sau mỗi commit cho một product_id, chúng ta sử dụng Redis Pipeline để invalidate cache, tất nhiên cũng phải xử lý batching ở đây. Tuy nhiên, khi chúng ta thiết kế như vậy, 
+cũng phải lưu ý một trường hợp như sau:
 - Worker nhận được event xử lý giảm giá cho 1000 product. Nó đã xử lý xong 300 product đầu tiên thì server bị treo.
 Bởi vì chúng ta chỉ mở transaction riêng lẻ product_id, nên 300 product đã được cập nhật giá mới, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi rồi.
 Vấn đề thực sự là khi server bị treo như vậy, Kafka xem Event đó như là chưa được xử lý, nó sẽ tự động reprocess lại từ đầu, dẫn đến việc 300 product có thể sinh ra thêm record trong bảng truy vết 
 cũng như outbox event. Tuy nhiên, việc này cũng không bị ảnh hưởng quá nhiều trong thiết kế hiện tại. Nếu muốn tối ưu hơn, chúng ta có thể thêm bảng đánh dấu (Job Checkpoint):
 - Product Service tạo một bảng markdown_job_tracking. Chạy xong product_id nào, cập nhật vào bảng đó: last_processed_product_id = 300. Khi Worker sập và nhận lại Event, 
 nó query bảng này: "À, lần trước anh em làm đến số 300 rồi, tao sẽ làm tiếp từ 301"
+
+6. Ở phàn xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Serrvice, chúng ta cũng thực hiện việc lock theo thứ tự tương tự như trên để tránh deadlock (product -> sku). Cơ chế mà chúng ta quan
+tâm nhất ở đây chính là invalidate cache sao cho tối ưu nhất có thể. Ở đây, sau khi commit database thành công, thông tin cập nhật này sẽ được bắn vào trong một Queue In-memory trên RAM của 
+tầng Application, sau đó chúng ta sẽ có một background worker chuyên đọc Queue này để thực hiện việc invalidate cache. Tuy nhiên khi sử dụng Queue In-memory, chúng ta sẽ phải đối mặt với một số
+vấn đề như sau:
+1. Nếu có quá nhiều cập nhật về sản phẩm đến cùng một lúc, Queue có thể bị tràn, dẫn đến việc mất dữ liệu cập nhật và cache không được invalidate đúng cách.
+2. Nếu server bị treo hoặc khởi động lại, tất cả dữ liệu trong Queue sẽ bị mất, dẫn đến việc cache không được invalidate và người dùng có thể nhìn thấy dữ liệu cũ.
+Để giải quyết vấn đề 1, ta có thể giới hạn kích thước của Queue và sử dụng cơ chế backpressure để điều chỉnh tốc độ cập nhật sản phẩm. Khi Queue đạt đến giới hạn, 
+chúng ta có thể tạm thời ngừng nhận các cập nhật mới cho đến khi có đủ dung lượng trong Queue để xử lý chúng.
+Để giải quyết vấn đề 2, chúng ta có thể cân nhắc việc sử dụng một hệ thống lưu trữ bền vững hơn cho Queue, chẳng hạn như Redis Stream hoặc Kafka, để đảm bảo rằng dữ liệu cập nhật không bị mất khi server bị treo hoặc khởi động lại. 
+Tuy nhiên, việc này cũng sẽ làm tăng độ phức tạp của hệ thống và có thể ảnh hưởng đến hiệu suất, vì vậy chúng ta cần cân nhắc kỹ lưỡng trước khi quyết định sử dụng giải pháp này. Nếu vẫn muốn sử dụng
+Queue In-memory, chúng ta sẽ ngừng nhận các event mới trên worker khi server bị treo, nhưng phải đảm bảo các thread đã đẩy toàn bộ các task còn tồn đọng trong Queue vào Redis bằng Pipeline trước khi server hoàn toàn sập. 

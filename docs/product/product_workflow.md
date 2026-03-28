@@ -187,16 +187,17 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Kafka Consumer] - Nhận Event:**
    - Worker (`groupId: product-inventory-sync-group`) nhận `INVENTORY_QUANTITY_CHANGED`.
-   - Parse payload: `sku_id`, `available_quantity`, `event_timestamp`.
+   - Parse payload bắt buộc: `product_id`, `sku_id`, `available_quantity`, `event_timestamp`.
 2. **[PostgreSQL] - Cập nhật Display Quantity:**
    - `@Transactional`:
-       - Bước 1: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id FOR UPDATE` để resolve `product_id` từ SKU.
-       - Bước 2: `SELECT product_id, status, seller_intention_hidden FROM products WHERE product_id = :product_id FOR NO KEY UPDATE`.
+       - Bước 1: `SELECT product_id, status, seller_intention_hidden FROM products WHERE product_id = :product_id FOR NO KEY UPDATE`.
+       - Bước 2: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id AND product_id = :product_id FOR UPDATE`.
+       - Bước 2.1: Nếu không có row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> dừng apply, đưa message vào DLQ/parking-lot để điều tra producer contract.
        - Bước 3: **Out-of-order guard:** chỉ apply nếu `event_timestamp > last_inventory_sync_at`.
        - Bước 4: `UPDATE product_skus SET display_quantity = :available_quantity, last_inventory_sync_at = :event_timestamp WHERE sku_id = :sku_id`.
        - Bước 5: Cập nhật `products.version = version + 1` khi có thay đổi cần phản ánh xuống các read models.
 3. **[Logic] - Kiểm tra Auto-Hide / Auto-Reactivate chống Race Condition:**
-    - **BẮT BUỘC sử dụng Row-Level Lock** kiểu Pessimistic (`FOR NO KEY UPDATE` + `FOR UPDATE`) và giữ lock xuyên suốt toàn bộ chuỗi Đọc SKU -> Tính toán -> Update, tuyệt đối không tách thành nhiều transaction con.
+   - **BẮT BUỘC sử dụng Row-Level Lock** kiểu Pessimistic (`FOR NO KEY UPDATE` + `FOR UPDATE`) và giữ lock xuyên suốt toàn bộ chuỗi Đọc Product -> Đọc SKU -> Tính toán -> Update, tuyệt đối không tách thành nhiều transaction con.
    - Nếu `available_quantity = 0` và SKU đang `ACTIVE`:
    - Chuyển `product_skus.status = 'OUT_OF_STOCK'`. Đồng thời BẮT BUỘC phải thực thi lệnh `UPDATE products SET version = version + 1 WHERE product_id = :product_id` để tăng version của bảng cha, nếu không Search Service sẽ từ chối Event này do phiên bản cũ.
      - Phát [`ProductSkuStatusChangedEvent`](product_events.md#35-product_sku_status_changed) vào Outbox.
@@ -214,12 +215,20 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
 
 4. **[Redis] - Update Cache (Chống Read-After-Write Inconsistency):**
    - Không được dùng một lệnh cắm `SELECT` rời rạc khác sau khi Commit vì sẽ làm tăng kết nối và sinh rủi ro đọc nhầm State do Replicate-lag (nếu trúng Read-Replica). Worker nên tự tổng hợp hoặc dùng `RETURNING` để có kết quả vừa Commit.
-   - Sau commit, đẩy cache-update task vào queue in-memory và để threadpool xử lý Redis pipeline bất đồng bộ.
-   - **Giải thích ngắn:** queue in-memory là hàng đợi RAM nội bộ process; threadpool là tập worker threads cố định đọc task từ queue để gửi batch lệnh Redis.
-   - Rủi ro out-of-order cho cùng SKU có thể xảy ra nếu nhiều task/retry/pod cùng ghi key. Cách chặn tối ưu:
-     - tuyến task theo striped lane `hash(sku_id)` để cùng SKU xử lý tuần tự,
-     - coalescing latest-only theo `event_timestamp` trong queue,
-     - Lua CAS tại Redis chỉ cho phép update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`.
+   - Sau commit, đẩy cache-update task vào **bounded queue in-memory** và để threadpool xử lý Redis pipeline bất đồng bộ.
+   - **Giải thích ngắn:** bounded queue là hàng đợi RAM có giới hạn cứng để chống OOM; threadpool là tập worker threads cố định đọc task từ queue để gửi batch lệnh Redis.
+   - **Queue full policy (Backpressure cứng):** khi queue đầy, worker phải block enqueue hoặc pause Kafka partitions; tuyệt đối không drop task cache update.
+   - **Scale-down safety:** khi SIGTERM, worker dừng nhận message mới và drain queue trong thời gian grace; nếu timeout mà còn backlog thì phát metric/alert bắt buộc.
+    - Rủi ro out-of-order cho cùng SKU có thể xảy ra nếu nhiều task/retry/pod cùng ghi key. Cách chặn tối ưu:
+       - tuyến task theo striped lane `hash(sku_id)` để cùng SKU xử lý tuần tự,
+       - coalescing latest-only theo `event_timestamp` trong queue,
+       - Lua CAS tại Redis chỉ cho phép update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`.
+    - **Lua CAS tại Redis (chi tiết):**
+       - `KEYS[1] = product:sku:{sku_id}`
+       - `ARGV[1] = incoming_event_timestamp`, `ARGV[2] = new_display_quantity`, `ARGV[3] = new_sku_status` (optional)
+       - Đọc `cached_ts = $.last_inventory_sync_at` (mặc định `0` nếu key chưa có field).
+       - Nếu `incoming_event_timestamp < cached_ts` -> return stale, bỏ qua write.
+       - Nếu hợp lệ -> cập nhật `display_quantity`, `sku_status` (nếu có), và bắt buộc set `last_inventory_sync_at = incoming_event_timestamp`.
    - Tuyệt đối TRÁNH mô hình Read-Modify-Write nguyên thủy trên Redis Client (`GET json -> sửa ram -> SETXX json`) vì nếu 2 worker chạy đè lên nhau sẽ sinh ra "Stale Cache" (Tồn kho Redis khác Tồn kho DB).
 
 ## 8. API: Xóa Mềm Sản Phẩm (Soft Delete)

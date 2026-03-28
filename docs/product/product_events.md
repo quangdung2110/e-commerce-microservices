@@ -460,6 +460,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "timestamp": "2026-02-28T08:00:00Z",
   "source": "inventory-service",
   "payload": {
+    "product_id": "prod-uuid-001",
     "sku_id": "sku-uuid-001",
     "available_quantity": 0,
     "previous_available_quantity": 15,
@@ -469,7 +470,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   }
 }
 ```
-**Logic xử lý:** Update `product_skus.display_quantity = available_quantity`. Product Service phải resolve `product_id` từ `sku_id` trước khi lock bảng cha. **Rào cản Out-Of-Order (X6 Fix):** Chỉ thực hiện apply update nếu `event_timestamp > product_skus.last_inventory_sync_at`. Nếu `available_quantity = 0` và SKU đang `ACTIVE` → chuyển SKU status sang `OUT_OF_STOCK` → phát `PRODUCT_SKU_STATUS_CHANGED`. Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK` → chuyển về `ACTIVE`. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
+**Logic xử lý:** Update `product_skus.display_quantity = available_quantity`. Product Service lock theo thứ tự **Product -> SKU** và validate cặp `product_id/sku_id` ngay trong transaction trước khi apply update. **Rào cản Out-Of-Order (X6 Fix):** Chỉ thực hiện apply update nếu `event_timestamp > product_skus.last_inventory_sync_at`. Nếu `available_quantity = 0` và SKU đang `ACTIVE` → chuyển SKU status sang `OUT_OF_STOCK` → phát `PRODUCT_SKU_STATUS_CHANGED`. Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK` → chuyển về `ACTIVE`. Cache `product:sku:{sku_id}` bắt buộc lưu `last_inventory_sync_at` để Lua CAS fence chống stale write. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
 
 ## 5. Schema Versioning & Backward Compatibility
 

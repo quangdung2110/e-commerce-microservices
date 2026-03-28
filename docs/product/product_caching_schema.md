@@ -65,6 +65,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "is_deleted": false,
           "variant_attributes": {"color": "Đen", "storage": "256GB"},
           "display_quantity": 150,
+                    "last_inventory_sync_at": 1709420000000,
           "seller_id": "seller-uuid-001",
           "product_updated_at": "2026-02-28T06:00:00Z"
         }

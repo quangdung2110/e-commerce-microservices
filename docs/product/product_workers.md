@@ -103,32 +103,43 @@ Product Service là Command. Search Service là Query. Search Service sở hữu
 
 **Sứ mệnh:** Đồng bộ dữ liệu tồn kho từ Inventory Service về Product Service. Cập nhật `display_quantity` trên `product_skus` và trigger tự động ẩn/hiện sản phẩm khi hết hàng/có hàng trở lại. Xem chi tiết tại [Workflow Inventory Sync](product_workflow.md#7-workflow-xử-lý-inventory-sync-event).
 
+> **Chuẩn Lock Hierarchy bắt buộc:** Với mọi transaction cùng chạm `products` và `product_skus`, Inventory Sync Worker phải lock theo thứ tự **Product -> SKU** để tránh vòng deadlock AB-BA với Markdown Worker và API Update Product.
+
 **Chi tiết luồng hoạt động:**
 1. Worker (`groupId="product-inventory-sync-group"`) nhận [`INVENTORY_QUANTITY_CHANGED`](product_events.md#44-inventory_quantity_changed-từ-inventory-service) event.
 2. `@Transactional`:
-   - Bước 1: Resolve + khóa SKU đích: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id FOR UPDATE;`
-   - Bước 2: Khóa Product cha: `SELECT product_id, status, seller_intention_hidden FROM products WHERE product_id = :product_id FOR NO KEY UPDATE;`
+   - Bước 1: Lock Product cha từ payload event: `SELECT product_id, status, seller_intention_hidden FROM products WHERE product_id = :product_id FOR NO KEY UPDATE;`
+   - Bước 2: Lock SKU con và validate cặp khóa: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id AND product_id = :product_id FOR UPDATE;`
+   - Bước 2.1: Nếu không tìm thấy row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> không update DB, đẩy DLQ/parking-lot để điều tra producer contract.
    - Bước 3: So sánh thứ tự sự kiện. Nếu `event_timestamp <= last_inventory_sync_at` thì bỏ qua message (stale).
    - Bước 4: Dùng lệnh `UPDATE product_skus SET display_quantity = :available_quantity, last_inventory_sync_at = :event_timestamp WHERE sku_id = :sku_id`.
    - Bước 5: Dùng lệnh `UPDATE products SET version = version + 1 WHERE product_id = :product_id` khi có thay đổi trạng thái/khả dụng cần phản ánh ra downstream.
 3. Logic auto-hide/reactivate (Dựa trên dữ liệu đã lock ở Bước 1 + Bước 2, chặn đứng TOCTOU):
    - **[X6 Rào Cản Out-Of-Order]**: Trước tiên, Worker phải so sánh `event_timestamp` từ Event với trường `last_inventory_sync_at` của SKU trên database (vừa lock ở bước 2). Nếu `event_timestamp <= last_inventory_sync_at`, vứt Message và return bỏ qua để triệt tiêu lỗi Kafka Lag cập nhật tồn kho lạc hậu. Nếu hợp lệ, gán `last_inventory_sync_at = event_timestamp`.
-   - Tuyệt đối không được thực hiện thêm một vòng `SELECT` mới bên ngoài Transaction để kiểm tra lại trạng thái SKU. Toàn bộ chuỗi **Đọc SKU -> Tính toán auto-hide/reactivate -> Update Product/SKU** phải nằm trong cùng Transaction đang giữ lock.
+   - Tuyệt đối không được thực hiện thêm một vòng `SELECT` mới bên ngoài Transaction để kiểm tra lại trạng thái SKU. Toàn bộ chuỗi **Đọc Product -> Đọc SKU -> Tính toán auto-hide/reactivate -> Update Product/SKU** phải nằm trong cùng Transaction đang giữ lock.
    - `available_quantity = 0` + SKU `ACTIVE` -> chuyển SKU sang `OUT_OF_STOCK`. Cập nhật ngay snapshot SKUs trong memory của Transaction; nếu 100% SKU đều hết hàng thì trigger [`AUTO_HIDE_OUT_OF_STOCK`](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger) trên FSM. BẮT BUỘC KHÔNG CHẠM vào `seller_intention_hidden`. Việc FSM Trigger sẽ tự động chèn thêm `ProductStateChangedEvent` vào Outbox để báo hiệu cho hệ thống ngoài (Worker không cần tự gọi bắn tay cấp độ Product đâu).
    - `available_quantity > 0` + SKU `OUT_OF_STOCK` -> chuyển SKU về `ACTIVE`. Cập nhật snapshot, kiểm tra Product đang `HIDDEN` do thiếu hàng và `seller_intention_hidden = false` thì trigger [`AUTO_REACTIVATE_IN_STOCK`](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger) (kèm tăng version). **ĐIỀU KIỆN RÀNG BUỘC CỨNG:** Worker trước khi hồi sinh Product về ACTIVE bắt buộc phải check SQL `status = 'HIDDEN' AND seller_intention_hidden = FALSE` trong cùng transaction.
 4. Phát [`ProductSkuStatusChangedEvent`](product_events.md#35-product_sku_status_changed) nếu SKU status thay đổi.
 5. **[P2 Tối Ưu] Invalidate/Update Redis cache (Async Write-Behind Pipeline):**
-   - Sau khi Commit Database thành công, Worker ném tín hiệu cache-update vào **Queue in-memory**.
-   - **Queue in-memory**: hàng đợi nằm trong RAM của process hiện tại, chỉ dùng để tách luồng DB commit và luồng cache write (không phải hàng đợi bền vững).
-   - **ThreadPool**: tập các worker threads cố định (ví dụ 2-4 threads) tiêu thụ queue và gửi lệnh Redis theo batch/pipeline.
-   - Các worker dùng **Redis Pipelining** để gửi nhiều lệnh partial update `JSON.SET product:sku:{sku_id} .display_quantity 40` trong một round-trip, tránh block transaction path.
+    - Sau khi Commit Database thành công, Worker ném tín hiệu cache-update vào **Bounded Queue in-memory** (capacity cấu hình, ví dụ 5,000 tasks).
+    - **Bounded Queue in-memory**: hàng đợi RAM có giới hạn cứng để chặn phình bộ nhớ và OOM. Không dùng unbounded queue.
+    - **Queue full policy (Backpressure cứng - bắt buộc):** khi queue đầy, worker phải block enqueue hoặc `pause()` Kafka consumer partition tương ứng đến khi queue có chỗ; tuyệt đối không drop task âm thầm.
+    - **ThreadPool**: tập worker threads cố định (ví dụ 2-4 threads) tiêu thụ queue và gửi lệnh Redis theo batch/pipeline.
+    - **Graceful shutdown drain:** khi Pod nhận SIGTERM/scale-down, dừng nhận message mới và drain queue trong `terminationGracePeriodSeconds`; nếu hết timeout mà còn backlog thì log + metric + alert bắt buộc.
+    - Các worker dùng **Redis Pipelining** để gửi partial update theo batch, tối thiểu gồm: `display_quantity`, `sku_status` (nếu đổi), và `last_inventory_sync_at` trên key `product:sku:{sku_id}`.
 6. **Chặn Out-of-Order khi update cache cùng SKU (BẮT BUỘC):**
    - Rủi ro out-of-order có thể xảy ra khi cùng SKU có nhiều tín hiệu cập nhật đi qua queue/threadpool (đặc biệt khi retry, khi nhiều thread xử lý song song, hoặc nhiều pod ghi cùng key Redis).
    - Giải pháp tối ưu cần kết hợp 3 lớp:
      1. **Striped lanes theo `hash(sku_id)`**: mọi task cùng SKU đi vào cùng lane và được xử lý tuần tự.
      2. **Coalescing latest-only trong queue**: nếu queue đã có task cho SKU đó, chỉ giữ bản mới nhất theo `event_timestamp`, loại bỏ bản cũ chưa xử lý.
-     3. **Redis Lua CAS guard theo timestamp**: chỉ apply cache update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`; nếu cũ hơn thì bỏ qua, chặn stale write kể cả multi-thread/multi-pod.
-   - Khuyến nghị lưu `last_inventory_sync_at` trong payload cache của `product:sku:{sku_id}` để Lua script có dữ liệu fence.
+       3. **Redis Lua CAS guard theo timestamp**: chỉ apply cache update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`; nếu cũ hơn thì bỏ qua, chặn stale write kể cả multi-thread/multi-pod.
+    - **Lua CAS tại Redis (rõ ràng):**
+       - `KEYS[1] = product:sku:{sku_id}`
+       - `ARGV[1] = incoming_event_timestamp`, `ARGV[2] = new_display_quantity`, `ARGV[3] = new_sku_status` (optional)
+       - Script đọc `cached_ts = JSON.GET KEYS[1] $.last_inventory_sync_at` (mặc định `0` nếu thiếu).
+       - Nếu `ARGV[1] < cached_ts` -> `return 0` (stale, bỏ qua write).
+       - Nếu hợp lệ -> `JSON.SET` các field cần cập nhật, bắt buộc set `$.last_inventory_sync_at = ARGV[1]` -> `return 1`.
+    - BẮT BUỘC lưu `last_inventory_sync_at` trong payload cache của `product:sku:{sku_id}` để Lua script có dữ liệu fence.
 7. *Lưu ý quan trọng:* Nếu Trigger `AUTO_HIDE_OUT_OF_STOCK` diễn ra, luồng cache async cũng phải cập nhật thêm `product:master:{product_id}` về `status="HIDDEN"` trong cùng batch pipeline để tránh lệch trạng thái giữa SKU và Product master.
 
 ## 7. Markdown Expiry Cronjob (Self-Healing)
