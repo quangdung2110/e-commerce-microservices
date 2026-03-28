@@ -341,5 +341,5 @@ Nhờ thiết kế này, worker an toàn trước cả **Tin nhắn trùng** l�
 
 ### 4. Chuẩn hóa Timezone
 - **UTC Milliseconds:** Tất cả timestamp sinh ra từ API Gateway, Cart Service hay Product Service đều NGUYÊN TẮC sử dụng chuẩn UTC để tính epoch milliseconds, tránh hoàn toàn sai lệch logic khi chạy hệ thống phân tán ở các node khác nhau.
-- **Bắt buộc khi parse ISO-8601:** Khi convert từ chuỗi ISO-8601 (như `paid_at` trong `ORDER_PAID`) sang epoch ms, Worker **phải** dùng `time.Parse(time.RFC3339, str)` rồi `.UTC().UnixMilli()`. Tuyệt đối không dùng `time.Local()`.
+- **Bắt buộc khi parse ISO-8601:** Khi convert từ chuỗi ISO-8601 sang epoch ms trong các luồng cần timestamp guard, Worker **phải** dùng `time.Parse(time.RFC3339, str)` rồi `.UTC().UnixMilli()`. Tuyệt đối không dùng `time.Local()`.
 - **Deterministic Event Header:** `event_id` ở Kafka header được Relay Worker sinh theo cách deterministic từ `Redis Stream ID + cart_id` để phục vụ trace/dedup downstream, nhưng không dùng làm khóa so sánh trong `product_snapshot` của `cart_items`.

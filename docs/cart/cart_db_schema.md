@@ -41,6 +41,7 @@ Lưu trữ định danh chung của một giỏ hàng, phục vụ cho việc tr
     *   `CHECKED_OUT`: Giỏ hàng đã hoàn tất checkout **và rỗng hoàn toàn**. Được cập nhật khi nhận event `CART_CHECKED_OUT` (phát sau `ORDER_PAID` khi `HLEN == 0`) qua Kafka. Partial checkout (chỉ xóa một số SKU nhưng còn SKU khác) giữ trạng thái `ACTIVE`.
 *   `subtotal`: DECIMAL(15,2) DEFAULT 0. Tổng tiền phân tích chậm (Analytical Data), cập nhật bất đồng bộ qua Worker theo `unit_price_at_add`. **Không dùng làm giá realtime** thay thế cho `current_price` ở API đọc giỏ. Có thể tạm thời inaccurate khi nhiều events chạy song song — eventual consistency là chấp nhận được cho analytics.
 *   `last_event_time_ms`: BIGINT DEFAULT 0. (**Trường Quan Trọng**) Lưu Logical Event Time từ ứng dụng/Kafka theo **Milliseconds Epoch**. Dùng để so sánh chặn Out-of-order event cho trạng thái giỏ hàng.
+*   `abandoned_event_published_at`: TIMESTAMPTZ NULL. Dùng cho Cronjob ABANDONED để đánh dấu đã publish `CART_ABANDONED` thành công lên Redis Stream/Kafka. Nếu NULL, job reconcile sẽ publish bù.
 *   `created_at`: TIMESTAMPTZ
 *   `updated_at`: TIMESTAMPTZ (Dùng để xác định 'Abandoned' data hoặc dọn dẹp hệ thống. Cập nhật bởi DB/Worker khi ghi dòng dữ liệu)
 
@@ -91,7 +92,7 @@ Quy định thời gian sống (TTL của RDBMS Database) theo trạng thái:
 | Trạng thái | Điều kiện | Hành động | CronJob / Event |
 |---|---|---|---|
 | `ACTIVE` | `updated_at` quá 30 ngày không tương tác | Chuyển `status` → `ABANDONED` và publish event `CART_ABANDONED` qua Outbox | [Abandoned Cart Marker](cart_workers.md#3-abandoned-cart-marker-batch-cronjob) |
-| `ABANDONED` | Ngay khi mark thành `ABANDONED` | Lắng nghe event `CART_ABANDONED` xử lý nghiệp vụ Promotion | Kafka `t.cart.events` |
+| `ABANDONED` | Ngay khi mark thành `ABANDONED` | Lắng nghe event `CART_ABANDONED` xử lý nghiệp vụ Notification re-engagement | Kafka `t.cart.events` |
 | `DELETED` | `updated_at` quá 3 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |
 | `CHECKED_OUT` | `updated_at` quá 3 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |
 | `ABANDONED` | `updated_at` quá 6 tháng | Hard Delete | [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) |

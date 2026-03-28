@@ -201,6 +201,8 @@ Vì Redis thực thi Lua Script ở dạng đơn luồng (Single-threaded), kị
 
 > **Lưu ý CROSSSLOT:** Các thao tác `ZADD active_outbox_streams` và `PUBLISH outbox_notifications` **bắt buộc** phải được thực hiện ở tầng Application (Go) sau khi Lua Script chạy thành công. Không mang các lệnh này vào Lua vì `active_outbox_streams` không có cùng Hash Tag với stream `{cart:user:{user_id}}:outbox`, nếu để trong Lua sẽ bắn ra lỗi CROSSSLOT trên Redis Cluster.
 
+> **Lưu ý Negative Cache Invalidation:** Sau mỗi lần Write thành công (Add/Update/Delete), Backend phải gọi `DEL cart:user:{user_id}:notfound` để xóa cache âm 60 giây, tránh tình trạng vừa thêm hàng nhưng API đọc tiếp theo vẫn trả giỏ rỗng giả.
+
 
 ### 3.2. Đọc (Get) Giỏ hàng
 Luồng đọc gọi cực nhiều nhưng tốn rất ít I/O.
@@ -210,9 +212,11 @@ HGETALL {cart:user:12345}
 *(Nếu kết quả trả về rỗng, Service sẽ qua bước Cache-Miss Fallback để lấy từ Cold Store PostgreSQL lên và gọi Silent Rehydrate Lua Script (không `XADD`) để nạp lại dữ liệu vào Redis. Mục tiêu là phục hồi cache an toàn mà không sinh event rác.)*
 
 ### 3.3. Xóa Item (Batch Delete) sau Checkout hoặc Remove
-Một giỏ hàng có thể có nhiều SKU. Khi người dùng bấm xóa nhiều món hàng cùng lúc, hoặc Checkout xong một cơ số mặt hàng, hệ thống đưa toàn bộ danh sách `sku_ids` vào một lần chạy Lua duy nhất để tối ưu Network I/O và đảm bảo Atomicity:
+Một giỏ hàng có thể có nhiều SKU. Khi người dùng bấm xóa nhiều món hàng cùng lúc, hoặc Checkout xong, hệ thống đưa toàn bộ danh sách `sku_ids` vào một lần chạy Lua duy nhất để tối ưu Network I/O và đảm bảo Atomicity.
 
-**Code Lua Script tham khảo (Xóa Batch Items):**
+> **Contract ORDER_PAID (chốt mới):** Dùng `sku_ids` và **xóa thẳng dòng SKU khỏi giỏ**. Không xử lý trừ quantity ở bước cleanup sau thanh toán.
+
+**Code Lua Script tham khảo (Batch Delete / Full-SKU Delete):**
 ```lua
 -- Tham số truyền vào
 -- KEYS[1]: cart_key (VD: {cart:user:12345})
@@ -221,69 +225,49 @@ Một giỏ hàng có thể có nhiều SKU. Khi người dùng bấm xóa nhi�
 -- ARGV[2]: clear_event_type — Loại event phát khi giỏ hàng bị rỗng hoàn toàn
 --          "CART_CLEARED"     : User chủ động xóa hết sản phẩm (default)
 --          "CART_CHECKED_OUT" : Gọi từ Order Event Consumer Worker (#6) sau khi ORDER_PAID
--- ARGV[3]: checkout_timestamp_ms (Truyền 0 nếu là User tự xóa. Truyền timestamp đơn hàng để chống Ghost Delete)
--- ARGV[4]: idempotency_key (VD: 'cart:idemp:order_paid:123'. Truyền rỗng '' nếu là user tự xoá)
--- ARGV[5]: user_id (Dùng để build event payload cho Worker)
--- Từ ARGV[6] trở đi: Danh sách vô hạn các sku_id cần xóa (VD: sku-1001, sku-1002...)
+-- ARGV[3]: idempotency_key (VD: 'cart:idemp:order_paid:123'. Truyền rỗng '' nếu là user tự xoá)
+-- ARGV[4]: user_id (Dùng để build event payload cho Worker)
+-- ARGV[5]: sku_ids_json
+--          - Với checkout: ["sku-1001","sku-1002",...]
+--          - Với user manual delete: ["sku-1001","sku-1002",...]
 
 -- Xử lý Idempotency
-if ARGV[4] ~= '' then
-    local idemp_ok = redis.call('SET', ARGV[4], 'PROCESSING', 'NX', 'EX', 300)
+if ARGV[3] ~= '' then
+    local idemp_ok = redis.call('SET', ARGV[3], 'PROCESSING', 'NX', 'EX', 300)
     if not idemp_ok then return 0 end
 end
 
-local checkout_time_ms = tonumber(ARGV[3]) or 0
 local current_time_str = tostring(ARGV[1])
-local user_id = ARGV[5]
+local user_id = ARGV[4]
+local sku_ids = cjson.decode(ARGV[5])
 
 local deleted_count = 0
-local skus_to_delete = {} -- Mảng chứa các SKU cần xóa để gom nhóm HDEL
+local skus_to_delete = {} -- Mảng chứa các SKU cần xóa vật lý để gom nhóm HDEL
 
 -- Tái sử dụng object để tối ưu bộ nhớ trong vòng lặp
-local event_obj = {
+local deleted_event_obj = {
     sku_id = "",
     cart_id = KEYS[1],
     user_id = user_id,
     deleted_at = current_time_str
 }
 
--- 1. Quét qua mảng sku_ids để kiểm tra điều kiện và đẩy Event (XADD)
-for i = 6, #ARGV do
-    local sku_id = ARGV[i]
+-- 1. Quét qua mảng sku_ids và gom các SKU tồn tại để xóa batch
+for i = 1, #sku_ids do
+    local sku_id = sku_ids[i]
     local current_item = redis.call('HGET', KEYS[1], sku_id)
     
     if current_item then
-        local should_delete = true
-        
-        -- Chống Ghost Delete
-        if checkout_time_ms > 0 then
-            -- Bọc pcall ở cjson.decode đề phòng dữ liệu rác gây crash script
-            local status, item_obj = pcall(cjson.decode, current_item)
-            if status and item_obj then
-                local item_added_at = tonumber(item_obj.added_at) or 0
-                if item_added_at >= checkout_time_ms then
-                    should_delete = false
-                end
-            else
-                -- Nếu parse JSON lỗi, có thể quyết định xóa luôn hoặc bỏ qua (ở đây chọn xóa)
-                should_delete = true 
-            end
-        end
+        table.insert(skus_to_delete, sku_id)
+        deleted_count = deleted_count + 1
 
-        if should_delete then
-            -- Thêm vào mảng chờ xóa
-            table.insert(skus_to_delete, sku_id)
-            deleted_count = deleted_count + 1
-            
-            -- Push event
-            event_obj.sku_id = sku_id
-            local event_payload = cjson.encode(event_obj)
-            redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_DELETED', 'payload', event_payload)
-        end
+        deleted_event_obj.sku_id = sku_id
+        local deleted_payload = cjson.encode(deleted_event_obj)
+        redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_DELETED', 'payload', deleted_payload)
     end
 end
 
--- 2. Xóa hàng loạt (Batch HDEL) chỉ với 1 lệnh Redis
+-- 2. Xóa hàng loạt (Batch HDEL) cho các dòng cần remove hoàn toàn
 if deleted_count > 0 then
     -- Sử dụng unpack để truyền mảng thành các tham số rời rạc cho HDEL
     redis.call('HDEL', KEYS[1], unpack(skus_to_delete))
@@ -303,14 +287,16 @@ if deleted_count > 0 then
 end
 
 -- 3. Ký giấy hoàn tất
-if ARGV[4] ~= '' then
-    redis.call('SETEX', ARGV[4], 86400, 'DONE')
+if ARGV[3] ~= '' then
+    -- Nếu Redis lỗi ở bước này, script fail và caller phải retry toàn bộ request.
+    -- Key PROCESSING (TTL 300s) giúp chặn re-entry trong thời gian ngắn.
+    redis.call('SETEX', ARGV[3], 86400, 'DONE')
 end
 
 return deleted_count
 ```
 
-> **Lưu ý về partial checkout:** Nếu user chỉ checkout một phần giỏ (không hết SKU), `remaining_items > 0` sau khi xóa → không phát `CART_CHECKED_OUT` → giỏ hàng tiếp tục ở trạng thái `ACTIVE`. Đây là hành vi đúng về nghiệp vụ. `CART_CHECKED_OUT` chỉ phát khi **toàn bộ** giỏ rỗng sau khi checkout.
+> **Lưu ý về partial checkout:** Nếu user chỉ checkout một phần giỏ, script chỉ xóa các `sku_id` có trong snapshot checkout. Các SKU không nằm trong danh sách vẫn giữ nguyên. Nếu `remaining_items > 0` sau xử lý, không phát `CART_CHECKED_OUT` và giỏ tiếp tục trạng thái `ACTIVE`. `CART_CHECKED_OUT` chỉ phát khi **toàn bộ** giỏ rỗng sau checkout.
 > 
 > **Lưu ý CROSSSLOT:** Giống như script Add/Update, thao tác `ZADD` và `PUBLISH` phải được gọi ở tầng Application (Go) ngay sau khi Lua script chạy xong chứ không nhúng trực tiếp vào đây.
 
@@ -390,4 +376,4 @@ return 1
 
 > **Tham khảo:** Chi tiết trình tự API khi hụt cache tại [Cart Workflow - API Đọc Giỏ](cart_workflow.md#3-api-lấy-thông-tin-giỏ-hàng-đọc).
 
-> **Lưu ý ORDER_PAID:** Contract chuẩn của luồng checkout là `cart_id` + `sku_ids` (tách riêng field).
+> **Lưu ý ORDER_PAID:** Contract chuẩn của luồng checkout cho Cart cleanup là `cart_id` + `sku_ids` (xóa thẳng SKU line khỏi giỏ).

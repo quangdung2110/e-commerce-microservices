@@ -13,7 +13,7 @@
 
 Tài liệu này định nghĩa cấu trúc tiêu chuẩn của tất cả các luồng sự kiện (Events) được phát đi (Emitted) từ Cart Service thông qua Redis Streams Outbox và Kafka.
 
-Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ bất đồng bộ từ [Primary Store (Redis)](cart_caching_schema.md) xuống [Cold Store (Postgres)](cart_db_schema.md) để tránh thất thoát dữ liệu, cũng như phục vụ các hệ thống downstream (Promotion, Analytics, Notification...) subscribe event để phản ứng theo logic riêng.
+Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ bất đồng bộ từ [Primary Store (Redis)](cart_caching_schema.md) xuống [Cold Store (Postgres)](cart_db_schema.md) để tránh thất thoát dữ liệu, cũng như phục vụ các hệ thống downstream (Analytics, Notification...) subscribe event để phản ứng theo logic riêng.
 
 ### Bản Đồ Kafka Topics
 
@@ -32,9 +32,9 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ bất đ�
 ---
 
 ## 1. Cấu trúc Message Header chung (Kafka/Outbox Wrapper)
-Tất cả các tin nhắn đẩy vào Redis Stream (`XADD`) và khi Forward tới Kafka đều mang theo cấu trúc dạng Map (Key-Value) để dễ bề điều hướng:
+Message Kafka do Relay Worker phát đi sẽ mang theo đầy đủ header chuẩn để dễ điều hướng:
 
-*   `event_id`: Định danh sự kiện sinh ở tầng [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) theo cơ chế deterministic từ `Redis Stream ID + cart_id`, dùng để Trace log và dedup ở downstream.
+*   `event_id`: Định danh sự kiện sinh ở tầng [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) theo cơ chế deterministic từ `Redis Stream ID + cart_id`, dùng để trace log và dedup ở downstream.
 *   `event_type`: Loại sự kiện (Ví dụ: `CART_ITEM_ADDED`, `CART_CLEARED`...).
 *   `aggregate_type`: Loại Aggregate Root (VD: `Cart`).
 *   `aggregate_id`: ID của entity chủ thể (Cart ID).
@@ -61,7 +61,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174000",
   "event_type": "CART_ITEM_ADDED",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "req-123",
   "timestamp": "2026-02-28T10:00:00Z",
   "source": "cart-service",
@@ -97,7 +97,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174001",
   "event_type": "CART_ITEM_UPDATED",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
@@ -122,7 +122,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 ```
 
 ### 2.3. CART_ITEM_DELETED
-**Ngữ cảnh phát sinh:** Khách hàng chủ động nhấn nút Xóa rác (`HDEL`), hoặc tích chọn vài món đem đi Checkout dẫn đến giỏ hàng bị trừ đi các SKU này. Phục vụ cho tính năng [Batch Delete trong Caching Schema](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove).
+**Ngữ cảnh phát sinh:** Khách hàng chủ động nhấn nút Xóa rác (`HDEL`), hoặc tích chọn vài món đem đi Checkout dẫn đến giỏ hàng xóa thẳng các SKU này. Phục vụ cho tính năng [Batch Delete trong Caching Schema](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove).
 **Mục đích DB Consumer:** Đánh dấu xóa logic (Soft Delete/Tombstone) cho dòng sản phẩm `item_id = cart_id + sku_id` trong bảng `cart_items`. Áp dụng [Out-of-order validation](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event) để đảm bảo không xóa nhầm item vừa được re-add.
 
 > **Quy ước nghiệp vụ:** `CART_ITEM_DELETED` luôn biểu diễn thao tác xóa **toàn bộ dòng item theo `sku_id`** khỏi giỏ; không phải giảm từng đơn vị `quantity`.
@@ -133,7 +133,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174002",
   "event_type": "CART_ITEM_DELETED",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "req-125",
   "timestamp": "2026-02-28T10:10:00Z",
   "source": "cart-service",
@@ -159,7 +159,7 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "event_id": "123e4567-e89b-12d3-a456-426614174003",
   "event_type": "CART_CLEARED",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "req-126",
   "timestamp": "2026-02-28T10:15:00Z",
   "source": "cart-service",
@@ -185,7 +185,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "CART_CHECKED_OUT",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:25:00Z",
   "source": "cart-service",
@@ -207,7 +207,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
 
 ### 2.6. CART_ABANDONED
 **Ngữ cảnh phát sinh:** [Abandoned Cart Marker CronJob](cart_workers.md#3-abandoned-cart-marker-batch-cronjob) quét bảng `carts` và chuyển các giỏ `ACTIVE` không tương tác trong 30 ngày sang `ABANDONED`.
-**Mục đích downstream:** Promotion/Notification/Analytics dùng để kích hoạt flow chăm sóc lại người dùng.
+**Mục đích downstream (phase hiện tại):** Notification Service dùng để kích hoạt flow chăm sóc lại người dùng.
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -215,7 +215,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174006",
   "event_type": "CART_ABANDONED",
   "aggregate_type": "Cart",
-  "aggregate_id": "cart:user:12345",
+  "aggregate_id": "{cart:user:12345}",
   "correlation_id": "cron-20260315-020000",
   "timestamp": "2026-03-15T02:00:00Z",
   "source": "cart-service",
@@ -227,6 +227,11 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   }
 }
 ```
+
+**Consumer Contract (Phase hiện tại):**
+- Notification Service dùng các field: `user_id`, `cart_id`, `abandoned_at`, `subtotal`.
+- `abandoned_at` bắt buộc là **milliseconds epoch UTC** (chuỗi 13 chữ số), không phải ISO-8601.
+- Consumer group đề xuất: `notification-cart-consumer`.
 
 ---
 
@@ -244,8 +249,7 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
 
 **Hành động của Cart Service:**
 1. Extract `user_id`, `cart_id` và danh sách `sku_ids` từ payload.
-2. Convert `payload.paid_at` (ISO-8601 UTC) sang `checkout_timestamp_ms` bằng `time.Parse(time.RFC3339, paidAt).UTC().UnixMilli()` trước khi gọi Lua Batch Delete.
-3. Gọi Lua Batch Delete với `clear_event_type = "CART_CHECKED_OUT"` để xóa các SKU đã mua khỏi Redis Hash.
+2. Gọi Lua Batch Delete với `clear_event_type = "CART_CHECKED_OUT"` để xóa thẳng các SKU đã mua khỏi Redis Hash.
 4. Nếu giỏ rỗng hoàn toàn: phát `CART_CHECKED_OUT` → Postgres Sync cập nhật `status = 'CHECKED_OUT'`.
 
 **Cấu trúc Payload kỳ vọng (chỉ các trường Cart Service dùng):**
@@ -261,17 +265,22 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
   "payload": {
     "order_id": 10001,
     "user_id": 999,
-    "cart_id": "cart:user:999",
+    "cart_id": "{cart:user:999}",
     "status": "PAID",
     "sku_ids": ["sku-001", "sku-002"],
+    "checkout_submitted_at": "2026-02-28T10:00:00Z",
     "paid_at": "2026-02-28T10:05:00Z"
-    // paid_at là ISO-8601 UTC — Worker phải convert sang epoch milliseconds (UTC)
-    // Dùng: time.Parse(time.RFC3339, paidAt) rồi .UTC().UnixMilli()
+    // checkout_submitted_at / paid_at có thể được giữ cho mục đích timeline
+    // Cart cleanup không phụ thuộc timestamp, chỉ dựa vào sku_ids snapshot
   }
 }
 ```
 
-> **Contract ổn định:** Cart dùng duy nhất `cart_id` + `sku_ids` để xóa item, không parse chuỗi ghép có dấu `:` nhằm tránh sai lệch định danh.
+> **Lưu ý scope mẫu payload:** Đây là subset field mà Cart Service tiêu thụ. Payload đầy đủ của ORDER_PAID (bao gồm `items[]`, `parcels[]`) xem tại [Order Events](../order/order_events.md#32-order_paid).
+
+> **Contract ổn định:** Cart dùng `cart_id` + `sku_ids` để cleanup, không parse chuỗi ghép có dấu `:` nhằm tránh sai lệch định danh.
+
+> **Type normalization:** Upstream `ORDER_PAID.payload.user_id` có thể là số (`number`). Cart Worker phải normalize về chuỗi trước khi gọi Lua (`user_id = strconv.FormatInt(...)`) để nhất quán với key format Redis.
 
 > **Idempotency:** Worker truyền `cart:idemp:order_paid:{order_id}` vào Lua Batch Delete. Lua sẽ tự set key trạng thái `PROCESSING` bằng `SET ... NX EX 300` ngay đầu script. Nếu đã có key thì skip an toàn. Khi script hoàn tất, key được đổi sang `DONE` với TTL 24h để chặn redelivery.
 

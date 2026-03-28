@@ -27,7 +27,7 @@ Dưới đây là sơ đồ liệt kê các Worker và Script cronjob tự độ
 1. **Phát hiện dữ liệu (Discovery):** Do mỗi giỏ có 1 Stream riêng, tiến trình Go sau khi gọi *Lua Script* thành công sẽ chạy Goroutine ghi log `ZADD active_outbox_streams` và bắn `PUBLISH outbox_notifications` lên Redis. Worker phát hiện Stream cần xử lý qua 3 lớp phòng phủ:
    - **Đường Nhanh (Pub/Sub):** Subscribe kênh `outbox_notifications`. Hễ có message, lập tức đẩy tên này vào Go Channel buffer.
    - **Đường Trì Hoãn (Delay ZSET Worker):** Một Goroutine phụ chạy mỗi 30 giây dùng lệnh `ZRANGE active_outbox_streams -inf <nows_ms - 30000> BYSCORE LIMIT 0 1000` (paginated theo block 1000) để hốt những stream có event chực chờ (do rớt mạng hoặc crash làm miss Pub/Sub), đẩy chúng vào cùng Go Channel trên. Khi đẩy xong, Worker **bắt buộc phải update lại thời gian** bằng `ZADD active_outbox_streams <nows_ms> <tên_stream>` để không bị process lặp lại ở chu kỳ 30s sau. (Tuyệt đối KHÔNG `ZREM` khỏi ZSET vì Stream Trimmer cần danh sách này để quản lý RAM).
-   - **Đường Chống Lỗi Tuyệt Đối (Keyspace Reaper):** Nếu Application Worker (Go) chết ngay *sau* luồng Lua nhưng *trước* khi ghi `ZADD`/`PUBLISH`, stream đó sẽ kẹt vĩnh viễn trên Redis. Một worker **Keyspace Reaper** đặc biệt sẽ chạy **mỗi 1 tiếng**, sử dụng lệnh `SCAN 0 MATCH {cart:user:*}:outbox COUNT 500`. Những stream nào có dữ liệu mà thiếu trong `active_outbox_streams` sẽ được Worker này `ZADD` trở lại, đảm bảo Eventual Consistency tuyệt đối cho Outbox Pattern.
+   - **Đường Chống Lỗi Tuyệt Đối (Keyspace Reaper):** Nếu Application Worker (Go) chết ngay *sau* luồng Lua nhưng *trước* khi ghi `ZADD`/`PUBLISH`, stream đó sẽ kẹt vĩnh viễn trên Redis. Một worker **Keyspace Reaper** đặc biệt sẽ chạy **mỗi 1 tiếng** và **bắt buộc quét SCAN theo vòng lặp cursor đến khi cursor = 0** (không được chạy 1 lần `SCAN 0` rồi dừng). Pseudocode chuẩn: `cursor = 0 -> SCAN cursor MATCH {cart:user:*}:outbox COUNT 500 -> xử lý batch -> cursor = next_cursor -> lặp`. Những stream nào có dữ liệu mà thiếu trong `active_outbox_streams` sẽ được Worker này `ZADD` trở lại, đảm bảo Eventual Consistency tuyệt đối cho Outbox Pattern.
 2. Khởi chạy các luồng Goroutine liên tục móc tên Stream từ Go Channel trên và thực hiện đọc bằng lệnh:
    `XREADGROUP GROUP relay_group consumer_1 COUNT 50 STREAMS <các_stream_nhặt_được> >` 
    *(Nếu trả mã lỗi `NOGROUP`, Worker tự động gọi `XGROUP CREATE {cart_key}:outbox relay_group 0 MKSTREAM` rồi vòng lại đọc).*
@@ -96,30 +96,32 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 **Sứ mệnh:** Đánh dấu các giỏ hàng bỏ hoang (không tương tác quá 30 ngày) để phục vụ Marketing re-engagement và phân loại dữ liệu. Cập nhật cột `status` trên bảng `carts` từ `ACTIVE` → `ABANDONED`. Xem [Database Schema - Trạng thái](cart_db_schema.md#21-bảng-carts).
 
 **Chi tiết luồng hoạt động:**
-1. Truy vấn các giỏ hàng không tương tác quá 30 ngày và INSERT Outbox Event trong cùng 1 transaction:
-   ```sql
-   BEGIN;
-   -- Bước 1: Cập nhật trạng thái
-   UPDATE carts 
-   SET status = 'ABANDONED', updated_at = NOW()
-   WHERE updated_at < NOW() - INTERVAL '30 days' 
-     AND status = 'ACTIVE'
-   RETURNING cart_id, user_id, subtotal;
-   
-   -- Bước 2: Insert vào Outbox table cho từng cart vừa được mark (duyệt qua RETURNING result)
-   INSERT INTO cart_outbox_events (cart_id, event_type, payload, created_at)
-   SELECT cart_id,
-          'CART_ABANDONED',
-          json_build_object('cart_id', cart_id, 'user_id', user_id,
-                            'abandoned_at', EXTRACT(EPOCH FROM NOW())::bigint * 1000,
-                            'subtotal', subtotal),
-          NOW()
-   FROM (kết quả RETURNING ở trên);
-   COMMIT;
-   ```
-2. Outbox Relay Worker (hoặc Debezium CDC) đọc `cart_outbox_events` và publish `CART_ABANDONED` lên Kafka topic `t.cart.events`. Promotion/Notification Service subscribe event này để xử lý nghị vụ khuyến mãi re-engagement.
+1. Chạy theo block nhỏ để tránh lock lớn (khuyến nghị 500-2000 carts/batch):
+    ```sql
+    -- Bước 1: Quét 1 batch carts đủ điều kiện
+    SELECT cart_id, user_id, subtotal
+    FROM carts
+    WHERE status = 'ACTIVE'
+       AND updated_at < NOW() - INTERVAL '30 days'
+    ORDER BY updated_at ASC
+    LIMIT 1000;
+    ```
+2. Với mỗi cart trong batch, thực hiện theo thứ tự an toàn:
+    - Cập nhật DB: `UPDATE carts SET status = 'ABANDONED', updated_at = NOW(), abandoned_event_published_at = NULL WHERE cart_id = ? AND status = 'ACTIVE'`.
+    - Nếu `RowsAffected = 1`, publish event vào **Redis Stream Outbox per-cart** (không dùng bảng SQL outbox):
+       - Stream key: `{cart:user:{user_id}}:outbox`
+       - `XADD {cart:user:{user_id}}:outbox * event_type CART_ABANDONED payload <json>`
+       - Payload tối thiểu: `cart_id`, `user_id`, `abandoned_at` (ms epoch UTC), `subtotal`.
+    - Sau khi `XADD` thành công, cập nhật marker DB: `UPDATE carts SET abandoned_event_published_at = NOW() WHERE cart_id = ?`.
+    - Sau `XADD` thành công, gọi ở tầng Go:
+       - `ZADD active_outbox_streams <now_ms> {cart:user:{user_id}}:outbox`
+       - `PUBLISH outbox_notifications {cart:user:{user_id}}:outbox`
+3. Outbox Relay Worker đọc stream như các event Cart khác và publish lên Kafka `t.cart.events`.
+4. Downstream phase hiện tại: **Notification Service consume `CART_ABANDONED`** để chạy flow re-engagement.
 
-> **Lý do dùng Outbox Pattern:** CronJob publish Kafka trực tiếp (không qua Outbox) là at-most-once delivery — nếu CronJob crash sau UPDATE nhưng trước publish, event bị mất vĩnh viễn và Marketing không nhận được thông tin Abandoned Cart. Outbox Pattern đảm bảo at-least-once delivery bất kể crash xảy ra lúc nào.
+> **Lý do kiến trúc:** Cart Service đã chọn Redis Streams làm Outbox chuẩn. Cronjob ABANDONED phải đi cùng đường `XADD -> Relay -> Kafka` để giữ một mô hình duy nhất, tránh lệch thiết kế giữa write API và write cronjob.
+
+> **At-least-once & Recovery:** Nếu crash xảy ra sau `UPDATE carts` nhưng trước `XADD`, lần chạy cron kế tiếp phải có bước reconcile quét `status = 'ABANDONED' AND abandoned_event_published_at IS NULL AND updated_at >= NOW() - INTERVAL '24 hours'` rồi publish bù. Cho phép duplicate event, downstream xử lý bằng idempotency.
 
 ---
 
@@ -199,23 +201,19 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 
 **Chi tiết luồng hoạt động:**
 1. **Consume** event `ORDER_PAID` từ `t.order.events` (filter `event_type = 'ORDER_PAID'`).
-2. **Extract & Validate:** Lấy `user_id`, `cart_id` và mảng `sku_ids` từ payload.
-   - **Bắt buộc validate `cart_id` không null/rỗng.** Nếu `cart_id` null nhưng `user_id` có, thử tái tạo `cart_id = "{cart:user:{user_id}}"`. Nếu cả hai đều thiếu → push message sang DLQ với alert severity HIGH để ops xử lý thủ công.
-   - Không cần cắt chuỗi phức tạp nhờ Contract `sku_ids` tách rời mới nhất. Mọi thao tác sử dụng chuẩn xác ID do Order cung cấp để đồng bộ.
-3. **Convert Timestamp (UTC bắt buộc):** Convert `payload.paid_at` (ISO-8601 UTC string) sang epoch **milliseconds**:
-   ```go
-   // Bắt buộc dùng time.RFC3339 + .UTC() để tránh sai lệch timezone
-   t, err := time.Parse(time.RFC3339, payload.PaidAt)
-   if err != nil { /* xử lý lỗi */ }
-   checkoutTimestampMs := t.UTC().UnixMilli()
-   // Tuyệt đối KHÔNG dùng time.Local() hoặc time.Now()
-   ```
-4. **Idempotency Check:** Gọi Lua Script Batch Delete (xem [Batch Delete](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)).
-   - ARGV[3] (`checkout_timestamp_ms`): `checkoutTimestampMs` đã convert ở bước trên.
-   - ARGV[4]: Idempotency Key `cart:idemp:order_paid:{order_id}`.
-   - ARGV[5]: `user_id` (để build event payload).
+2. **Extract & Validate:** Lấy `user_id`, `cart_id` và danh sách `sku_ids` từ payload.
+   - **Bắt buộc validate `cart_id` không null/rỗng và đúng format Redis key:** `^\{cart:user:[^{}]+\}$`.
+   - Nếu `cart_id` null nhưng `user_id` có, thử tái tạo `cart_id = "{cart:user:{user_id}}"`. Nếu cả hai đều thiếu → push message sang DLQ với alert severity HIGH để ops xử lý thủ công.
+   - `sku_ids` phải không rỗng. Event thiếu `sku_ids` hoặc chứa SKU không hợp lệ phải vào DLQ.
+   - **Bắt buộc bỏ qua** các field `items[]`, `parcels[]` và `quantity` trong payload ORDER_PAID khi chạy cart cleanup.
+3. **Idempotency Check:** Gọi Lua Script Batch Delete (xem [Batch Delete](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)).
+   - ARGV[3]: Idempotency Key `cart:idemp:order_paid:{order_id}`.
+   - ARGV[4]: `user_id` (để build event payload).
+   - ARGV[5]: `sku_ids_json` chứa danh sách `["sku-001","sku-002",...]` cần xóa khỏi giỏ.
+   - **Lưu ý tránh nhầm:** ARGV của script Batch Delete **khác** ARGV của script Add/Update; không được tái sử dụng map vị trí tham số giữa 2 script.
    - Lua script đặt key trạng thái `PROCESSING` bằng `SET NX EX 300` ngay đầu luồng. Nếu key đã tồn tại thì skip.
-   - Sau khi xóa thành công và phát event cần thiết, Lua đổi key sang `DONE` với TTL 24h (chỉ khi không có runtime error).
+   - Script xóa thẳng các `sku_id` tồn tại trong giỏ bằng `HDEL` và emit `CART_ITEM_DELETED` tương ứng.
+   - Sau khi xử lý thành công và phát event cần thiết, Lua đổi key sang `DONE` với TTL 24h (chỉ khi không có runtime error).
    - Cách này chặn redelivery và tránh chạy lặp trên cùng `order_id`.
 
 > **Lưu ý:** Nếu user đã xóa sản phẩm khỏi giỏ trước khi thanh toán (edge case), Lua Script sẽ bỏ qua các SKU không tồn tại — không gây lỗi.

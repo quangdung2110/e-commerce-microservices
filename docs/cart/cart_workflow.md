@@ -47,7 +47,8 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
    - Ghi/Cập nhật dữ liệu vào `HSET`.
    - Sinh Event `CART_ITEM_ADDED` hoặc `CART_ITEM_UPDATED` thông qua `XADD` xuống Outbox Stream trên cùng Lua context đó.
    - Gia hạn vòng đời giỏ hàng 7 ngày.
-3. **[Backend] - Trả HTTP 200 OK:**
+3. **[Backend] - Hậu xử lý Write & Trả HTTP 200 OK:**
+   - Xóa negative cache: `DEL cart:user:{id}:notfound` để tránh trả giỏ rỗng giả ở request đọc kế tiếp.
    - Ngay sau khi Lua Script chạy xong nháy mắt (1-3ms), API trả về Success tức thì cho User mà không cần quan tâm DB đã lưu chưa.
 4. **[Background] - Bất đồng bộ xuống DB:**
    - [Outbox Relay Worker](cart_workers.md) gắp Event từ Redis Stream bắn sang Kafka.
@@ -155,17 +156,15 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 ## 4. API: Batch Delete (Xóa lô sản phẩm sau Checkout tĩnh)
 **Endpoint:** `DELETE /api/v1/carts/items` (Body: `cart_id` + mảng `sku_ids`)
 
-> **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` tách riêng để tránh parse chuỗi ghép có dấu `:`.
+> **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` để xóa thẳng các SKU đã mua khỏi giỏ, tránh parse chuỗi ghép có dấu `:`.
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:** 
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.
-   - Convert `payload.paid_at` (ISO-8601 UTC) sang `checkout_timestamp_ms` (**Epoch Milliseconds**) bằng `time.Parse(time.RFC3339, paidAt).UTC().UnixMilli()` trước khi truyền vào Lua.
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)):**
-   - Truyền Timestamp của đơn Checkout (`checkout_timestamp_ms` — **Epoch Milliseconds** convert từ `payload.paid_at` ISO-8601 UTC bằng `time.Parse(time.RFC3339).UTC().UnixMilli()`), Idempotency Key, và danh sách `sku_id` vào Redis.
+   - Truyền Idempotency Key và danh sách `sku_ids` vào Redis.
    - Redis thực hiện chốt Idempotency ở đầu script bằng key trạng thái `PROCESSING` (NX + TTL ngắn), sau khi hoàn tất không có runtime error đổi sang `DONE` TTL 24h.
-   - Redis thực hiện so sánh check mốc thời gian, bỏ qua những món được user thêm mới sau checkout (`item.added_at >= checkout_timestamp_ms`), sau đó thực thi `HDEL` theo field key của giỏ hàng (đang dùng `sku_id`).
-   - Tương ứng với mỗi nhát `HDEL`, 1 Event [`CART_ITEM_DELETED`](cart_events.md#23-cart_item_deleted) được ném vào stream `XADD` (sử dụng `cjson.encode` cho JSON an toàn).
+   - Redis xóa thẳng từng field SKU (`HDEL`) có trong danh sách nếu SKU đó tồn tại và phát [`CART_ITEM_DELETED`](cart_events.md#23-cart_item_deleted).
    - Check chốt hạ nếu giỏ hàng rỗng `HLEN == 0` → Xóa nguyên Key bằng `DEL`.
    - Nếu luồng do user xóa thủ công: phát [`CART_CLEARED`](cart_events.md#24-cart_cleared).
    - Nếu luồng do checkout (`ORDER_PAID`) và giỏ rỗng hoàn toàn: phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out). Nếu giỏ vẫn còn SKU khác (partial checkout), không phát event này và giỏ tiếp tục trạng thái `ACTIVE`.
