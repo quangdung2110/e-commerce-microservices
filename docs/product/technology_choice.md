@@ -13,7 +13,7 @@
 | **Concurrency** | Optimistic Locking (`version`) cho State Transitions, Pessimistic Locking (`FOR NO KEY UPDATE`) cho Inventory Sync, Cache Stampede Protection (ReentrantLock) |
 | **Caching** | 2-Tier: Caffeine L1 (Category Tree) + Redis L2 (Point-Read, Idempotency) |
 | **Outbox Pattern** | Debezium (Change Data Capture) — Real-time event streaming |
-| **Cross-Service** | Consumer: Promotion Markdown Events, Inventory Events. Producer: Product Events cho Search/Cart |
+| **Cross-Service** | Consumer: Promotion Markdown Events, Inventory Events. Producer: Product Events cho Search/Order/Notification |
 | **Logic nghiệp vụ** | Category validation, SKU management, Markdown price calculation, Auto-hide/reactivate |
 
 ---

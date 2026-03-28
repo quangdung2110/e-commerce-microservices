@@ -11,3 +11,20 @@ Nếu luồng In-band bị lỗi (ví dụ do rớt mạng), luồng Out-of-band
 - Hard Invalidation (Dùng lệnh DEL của Redis): Khi có thay đổi, bạn xóa thẳng key đó trong Redis. Nhược điểm chí mạng là rủi ro Thundering Herd (Hiệu ứng bầy đàn)
 - Soft Invalidation (Dùng lệnh SET đè dữ liệu mới): Worker không xóa key cũ. Nó chủ động query DB lấy dữ liệu mới nhất, sau đó dùng lệnh SET để ghi đè lên giá trị cũ trong Redis
 Tuy nhiên có một điều cần lưu ý khi dùng Soft Invalidation là phải tránh được Race Condition
+
+4. Trong thiết kế của CronJob cho việc quét các sản phẩm hết hạn khuyến mãi ở bảng product_markdown_applied, khi lock nhiều row trong bảng products, thứ tự các ID được truyển vào
+IN (A, B, C...) thường là ngẫu nhiên (không theo thứ tự của bảng products). Nếu trong lúc Cronjob đang khóa các Product ID theo mảng (A, B, C...), mà đồng thời có API Sửa Tồn Kho / Sửa Sản Phẩm 
+của Seller chạm đúng vào các Product ID đó theo thứ tự ngược lại (C, B, A...), Deadlock sẽ lập tức bùng nổ khiến hệ thống DB treo transaction hàng loạt.
+Để giải quyết vấn đề này, chúng ta cần đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự. 
+Trong trường hợp này, chúng ta có thể sắp xếp các Product ID theo thứ tự tăng dần trước khi khóa, để đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự.
+
+5. Ở phần xử lý Markdown Event đến từ Promotion Service, chúng ta phải query ra những product SKU có trạng thái active thỏa mãn với điều kiện khuyến mãi đang áp dụng. Sau đó gom nhóm lại theo
+product_id rồi tính toán tiền giảm giá trên RAM của tầng application (không query DB) của từng SKU trong nhóm đó. Chúng ta cũng sẽ không mở transaction cho toàn bộ nhóm, mà mỗi nhóm product_id, 
+ta mở transaction riêng lẽ, thực hiện batch processing bao gồm việc: cập nhật giá tiền, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi, sau đó mới commit transaction nhả cho product_id
+tiếp theo. Tuy nhiên, khi chúng ta thiết kế như vậy, cũng phải lưu ý một trường hợp như sau:
+- Worker nhận được event xử lý giảm giá cho 1000 product. Nó đã xử lý xong 300 product đầu tiên thì server bị treo.
+Bởi vì chúng ta chỉ mở transaction riêng lẻ product_id, nên 300 product đã được cập nhật giá mới, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi rồi.
+Vấn đề thực sự là khi server bị treo như vậy, Kafka xem Event đó như là chưa được xử lý, nó sẽ tự động reprocess lại từ đầu, dẫn đến việc 300 product có thể sinh ra thêm record trong bảng truy vết 
+cũng như outbox event. Tuy nhiên, việc này cũng không bị ảnh hưởng quá nhiều trong thiết kế hiện tại. Nếu muốn tối ưu hơn, chúng ta có thể thêm bảng đánh dấu (Job Checkpoint):
+- Product Service tạo một bảng markdown_job_tracking. Chạy xong product_id nào, cập nhật vào bảng đó: last_processed_product_id = 300. Khi Worker sập và nhận lại Event, 
+nó query bảng này: "À, lần trước anh em làm đến số 300 rồi, tao sẽ làm tiếp từ 301"

@@ -60,11 +60,12 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `status`: VARCHAR(50) DEFAULT 'DRAFT'. Quản lý bởi [State Machine](product_state_machine.md). (Các trạng thái: DRAFT, PENDING_REVIEW, ACTIVE, HIDDEN, REJECTED, BANNED. Tuyệt đối KHÔNG có trạng thái DELETED).
     *   `seller_intention_hidden`: BOOLEAN DEFAULT FALSE (Cờ độc lập ghi nhận ý muốn chủ quan của Seller là ẩn sản phẩm. Dùng để vượt mặt State Machine tự động bật hàng khi Inventory > 0).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete, dùng chung với Annotation `@SQLRestriction("is_deleted = false")` ở tầng Entity để tách biệt vòng đời dữ liệu khỏi vòng đời nghiệp vụ. Trạng thái cũ được bảo lưu giúp Restore dễ dàng).
+    *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm bị xóa mềm).
     *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ). **Đây là dữ liệu thô (raw key-value), không phải token search.** Việc transform sang token `k:v` cho Elasticsearch thuộc trách nhiệm Search Worker.
     *   `version`: BIGINT DEFAULT 0 (Dùng cho Optimistic Locking, tăng tự động khi update).
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
-    *   **Partitioning**: Yêu cầu **Hash Partitioning** theo `product_id` phân thành 32/64 bảng vật lý để chia nhỏ tải Write IOPS khổng lồ, ngăn chặn Row Lock toàn cục.
+    *   **Partitioning**: Yêu cầu **Hash Partitioning** theo `product_id` với **64 partitions** cố định để chia nhỏ tải Write IOPS khổng lồ, ngăn chặn Row Lock toàn cục.
 
 *   `product_skus` (Bảng Biến thể vật lý - Stock Keeping Unit)
     *   `sku_id`: VARCHAR(255) PRIMARY KEY.
@@ -73,14 +74,17 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Seller đặt).
     *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#6-workflow-xử-lý-markdown-event-từ-promotion-service)).
     *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán).
+    *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ xoá mềm riêng biệt cấp độ SKU).
+    *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm SKU bị xóa mềm).
     *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ từ [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)).
+    *   `last_inventory_sync_at`: BIGINT DEFAULT 0 (Lưu lại `event_timestamp` từ Kafka Event cuối cùng của Inventory Service để chặn lùi version do lỗi Out-of-order Kafka message).
     *   `variant_attributes_json`: JSONB (Cấu hình riêng của SKU này, vd: `{"color": "Xanh", "size": "M"}`). **Giữ nguyên dạng object tại Write Model; Search Worker sẽ chuyển đổi sang `variant_attributes` token array khi index.**
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
 > **Lưu ý quan trọng về Versioning (Optimistic Locking & Search Event Sourcing):**
 > Bảng `product_skus` KHÔNG ĐƯỢC PHÉP có cột `version` riêng. Theo thiết kế Aggregate Root, mọi thao tác tạo, sửa, xóa bất kỳ SKU nào cũng BẮT BUỘC phải làm tăng cột `version` của bảng cha `products`. Chuỗi `version` đồng bộ duy nhất này sẽ được dùng làm căn cứ thứ tự tuần tự (Optimistic Concurrency Control) cho Search Service, nhằm triệt tiêu hoàn toàn sự cố lỗi từ chối Event (Out-of-Order Event Reject) do Elasticsearch version clash.
-    *   **Partitioning / Data Routing**: Mặc dù đồng bộ **Hash Partitioning** theo khóa `product_id` (để tối ưu hóa query JOIN), nhưng Endpoint gRPC Point-Read cực kì nhạy cảm về độ trễ lại truy vấn thuần túy theo `sku_id`. Để giải quyết triệt để lỗi Scatter-Gather (Full Partition Scan), **bắt buộc phải nhúng mã định tuyến `product_id` vào trong chuỗi sinh `sku_id`**. Ví dụ format: `SKU_{product_id}_{random_hash}`. Nhờ vậy, ngay tại tầng Repository, Application có thể bóc tách tiền tố chuỗi `sku_id` để biết đích xác Record này nằm ở Partition nào và chỉ định tuyến `SELECT` thẳng vào Partition đó thay vì mở bung tất cả các Partition.
+    *   **Partitioning / Data Routing**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
 
 *   `product_status_history` (Bảng Ghi nhận Lịch sử Đổi trạng thái)
     *   `history_id`: VARCHAR(255) PRIMARY KEY.
@@ -105,24 +109,24 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 
 ### 1.3. Nhóm Tích Hợp Giá Khuyến Mãi (Markdown Integration)
 
-Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_EXPIRED`, Product Service cần biết chính xác rule nào đang tác động lên SKU nào để:
+Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product Service cần biết chính xác rule nào đang tác động lên SKU nào để:
 - **Tính toán** `promotional_price` khi rule mới được tạo.
 - **Reset** `promotional_price` về NULL khi rule hết hạn hoặc bị huỷ.
 
-> **Tại sao cần bảng này?** Nếu chỉ lưu `promotional_price` trên `product_skus` mà không tracking rule_id, khi một rule hết hạn (event `MARKDOWN_EXPIRED`), Product Service sẽ không biết cần reset SKU nào. Bảng này chính là "sổ ghi nợ" cho Markdown lifecycle. Xem chi tiết luồng tại [Promotion DB Design - Markdown](../promotion/promotion_db_design.md#2-thiết-kế-giảm-giá-trực-tiếp-markdowns--price-slashes).
+> **Tại sao cần bảng này?** Nếu chỉ lưu `promotional_price` trên `product_skus` mà không tracking rule_id, khi một rule kết thúc (event `MARKDOWN_ENDED`), Product Service sẽ không biết cần reset SKU nào. Bảng này chính là "sổ ghi nợ" cho Markdown lifecycle. Xem chi tiết luồng tại [Promotion DB Design - Markdown](../promotion/promotion_db_design.md#2-thiết-kế-giảm-giá-trực-tiếp-markdowns--price-slashes).
 
 *   `product_markdown_applied` (Bảng theo dõi Markdown Rule đang Active trên SKU)
     *   `id`: VARCHAR(255) PRIMARY KEY.
     *   `product_id`: VARCHAR(255) INDEX (FK ảo tới `products`).
-    *   `rule_id`: BIGINT INDEX (ID của `markdown_rules` từ Promotion Service).
+    *   `rule_id`: VARCHAR(255) INDEX NOT NULL (ID markdown rule từ Promotion Service; lưu dạng string để đồng nhất payload event liên service).
     *   `sku_id`: VARCHAR(255) INDEX (FK ảo tới `product_skus`).
-    *   `original_price_snapshot`: DECIMAL(15,2) (Giá gốc tại thời điểm áp dụng rule — dùng để audit & rollback).
+    *   `original_price_snapshot`: DECIMAL(15,2) NOT NULL (Giá gốc tại lúc áp dụng rule. **Bắt buộc** phải được cập nhật lại nếu Seller thao tác thay đổi `original_price` lúc Rule đang chạy để tránh lỗi Data Drift khi Audit).
     *   `discount_type`: VARCHAR(50) (Loại giảm giá: PERCENTAGE, FIXED_AMOUNT).
     *   `discount_value`: DECIMAL(15,2) (Giá trị cấu hình giảm).
     *   `max_discount_amount`: DECIMAL(15,2) NULL (Giới hạn mức giảm tối đa trên mỗi sản phẩm - chỉ dùng khi PERCENTAGE).
-    *   `calculated_price`: DECIMAL(15,2) (Giá sau khi tính toán = `original_price * (1 - discount_percentage)` hoặc `original_price - fixed_amount`).
+    *   `calculated_price`: DECIMAL(15,2) NOT NULL (Giá đã giảm lưu nháp để check sai số nếu đổi công thức).
     *   `applied_at`: TIMESTAMPTZ.
-    *   `expires_at`: TIMESTAMPTZ (Copy từ `end_time` của rule, dùng để tracking và hiển thị Countdown Timer trên UI, không dùng để quét dọn vì Event Expiry do Promotion Service đẩy sang).
+    *   `expires_at`: TIMESTAMPTZ INDEX NOT NULL (Thời điểm hết hạn. **[M2 Lưu ý]** Index này KHÔNG PHỤC VỤ Flow mua hàng chính, nó DÀNH RIÊNG cho [Markdown Expiry Cronjob(Self-Healing)](product_workers.md#7-markdown-expiry-cronjob-self-healing), hỗ trợ quét dọn dữ liệu hết hạn cực nhẹ.).
     *   **Unique Index (`rule_id`, `sku_id`)**: Đảm bảo một rule chỉ áp dụng 1 lần trên 1 SKU.
 
 ### 1.4. Nhóm Hạ tầng Cốt lõi (Infrastructure)
@@ -132,7 +136,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_EXPIRED`, Produ
     *   `event_type`: VARCHAR(100) (VD: ProductCreatedEvent, ProductStateChangedEvent, ProductPriceUpdatedEvent). Xem danh sách đầy đủ tại [Product Events](product_events.md).
     *   `aggregate_type`: VARCHAR(50) (VD: Product, ProductSku).
     *   `aggregate_id`: VARCHAR(255).
-    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id`. Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect). Ràng buộc `NOT NULL` là lá chắn sống còn bảo vệ CQRS: Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
+    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect). Ràng buộc `NOT NULL` là lá chắn sống còn bảo vệ CQRS: Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
     *   `payload`: JSONB.
     *   `created_at`: TIMESTAMPTZ.
 

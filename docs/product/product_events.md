@@ -18,7 +18,7 @@
 
 Tài liệu này định nghĩa cấu trúc tiêu chuẩn của tất cả các luồng sự kiện (Events) được **phát đi (Produce)** từ Product Service thông qua Transactional Outbox Pattern, cũng như các sự kiện mà Product Service **tiêu thụ (Consume)** từ các service khác.
 
-Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ [Write Store (PostgreSQL)](product_db_design.md) sang Elasticsearch (Search Service) và Redis Cache, đồng thời phục vụ các hệ thống downstream (Cart, Order, Inventory, Promotion...) subscribe để phản ứng theo logic riêng.
+Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ [Write Store (PostgreSQL)](product_db_design.md) sang Elasticsearch (Search Service) và Redis Cache, đồng thời phục vụ các hệ thống downstream (Order, Inventory, Promotion...) subscribe để phản ứng theo logic riêng.
 
 ## 1. Bản Đồ Kafka Topics
 
@@ -26,9 +26,10 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 
 | Topic Name | Partition Key | Consumers | Mô tả |
 |---|---|---|---|
-| `t.product.events` | `product_id` | Search Service, Cart Service, Order Service, Notification Service, Product Service (self-consume invalidation) | Topic chính chứa mọi sự kiện thay đổi dữ liệu sản phẩm |
+| `t.product.events` | `product_id` | Search Service, Order Service, Notification Service, Product Service (self-consume invalidation) | Topic chính chứa mọi sự kiện thay đổi dữ liệu sản phẩm |
+| `t.category.events` | `category_id` | Search Service, Product Service | Topic phát sự kiện thay đổi cấu trúc danh mục, tách biệt hoàn toàn để tránh xung đột partition key |
 
-> **Ghi chú Partition Key:** Sử dụng `product_id` làm key đảm bảo tất cả events của cùng 1 sản phẩm luôn vào đúng 1 Partition → **Strict Ordering** cho từng sản phẩm. Điều này cực kỳ quan trọng để Search Service index đúng thứ tự (không bao giờ index trạng thái cũ đè lên trạng thái mới).
+> **Ghi chú Partition Key:** Sử dụng `product_id` làm key cho `t.product.events` đảm bảo tất cả events của cùng 1 sản phẩm luôn vào đúng 1 Partition → **Strict Ordering** cho từng sản phẩm. Tương tự, dùng `category_id` cho `t.category.events`.
 
 ### 1.2 Topics mà Product Service **Consume** (Lắng nghe)
 
@@ -36,7 +37,7 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 |---|---|---|---|
 | `t.promotion.markdown.events` | `product-markdown-group` | Promotion Service | Lắng nghe `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED` để tính [promotional_price](product_db_design.md#13-nhóm-tích-hợp-giá-khuyến-mãi-markdown-integration) |
 | `t.inventory.events` | `product-inventory-sync-group` | Inventory Service | Lắng nghe `INVENTORY_QUANTITY_CHANGED` để cập nhật `display_quantity` và auto-hide sản phẩm hết hàng |
-| `t.product.events` | `product-invalidation-group` | Product Service (chính nó) | Self-consume để xoá Cache Redis. Xem [Invalidation Consumer Worker](product_workers.md#2-invalidation-consumer-worker-xoá-cache-ngầm---optional) |
+| `t.product.events` | `product-invalidation-group` | Product Service (chính nó) | Self-consume để cập nhật lại Cache Redis theo cơ chế soft invalidation fallback. Xem [Invalidation Consumer Worker](product_workers.md) |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
@@ -44,8 +45,8 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 *   `event_id`: UUID của sự kiện (lấy từ `product_outbox_events.event_id`).
 *   `event_type`: Loại sự kiện (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`...).
-*   `aggregate_type`: Loại Aggregate Root (VD: `Product`, `ProductSku`).
-*   `product_id`: ID của entity chủ thể (Thay thế cho aggregate_id để luôn dùng chung partition key).
+*   `aggregate_type`: Loại Aggregate Root (VD: `Product`, `ProductSku`, `Category`).
+*   `aggregate_id`: ID của entity chủ thể (Thay thế cho `product_id`/`category_id` để luôn dùng chung partition key cho Kafka Generic Header).
 *   `correlation_id`: ID để truy vết chuỗi Saga xuyên suốt nhiều service (thường lấy từ upstream hoặc log tracing).
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: Định danh service gốc phát event (Cố định: `product-service`).
@@ -63,7 +64,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174000",
   "event_type": "PRODUCT_CREATED",
   "aggregate_type": "Product",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123456",
   "timestamp": "2026-02-28T03:51:00Z",
   "source": "product-service",
@@ -128,7 +129,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.2. PRODUCT_UPDATED
 **Ngữ cảnh phát sinh:** Seller cập nhật thông tin sản phẩm (tên, mô tả, attributes, giá SKU, thêm/xoá SKU). Xem [Workflow Sửa Sản Phẩm](product_workflow.md#3-api-sửa-đổi-thông-tin-sản-phẩm).
-**Consumers chính:** [Search Service](../search/search_events.md#22-product_updated) (re-index), Cart Service (invalidate product snapshot trong giỏ), Product Service (self-invalidate cache).
+**Consumers chính:** [Search Service](../search/search_events.md#22-product_updated) (re-index), Product Service (self-invalidate cache).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -136,7 +137,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174001",
   "event_type": "PRODUCT_UPDATED",
   "aggregate_type": "Product",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123457",
   "timestamp": "2026-02-28T04:15:00Z",
   "source": "product-service",
@@ -195,13 +196,15 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174002",
   "event_type": "PRODUCT_STATE_CHANGED",
   "aggregate_type": "Product",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123458",
   "timestamp": "2026-02-28T05:00:00Z",
   "source": "product-service",
   "payload": {
     "product_id": "prod-uuid-001",
+    "product_name": "iPhone 15 Pro Max 256GB",
     "seller_id": "seller-uuid-001",
+    "sku_ids": ["sku-uuid-001", "sku-uuid-002"],
     "old_status": "PENDING_REVIEW",
     "new_status": "ACTIVE",
     "changed_by": "admin-uuid-007",
@@ -212,11 +215,11 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   }
 }
 ```
-*(Ghi chú: Khi `new_status = BANNED`, field `reason` là bắt buộc có giá trị. Notification Service sẽ dùng field này để gửi mail giải thích cho Seller.)*
+*(Ghi chú: Sự kiện này bắt buộc phải nạp thêm mảng `sku_ids` vào payload để **Worker Invalidation Cache** không bị mù, nó có thể xoá Cache cho các SKU đó ngay lập tức mà không phải tốn thêm Query xuống DB mò mẫm.)*
 
 ### 3.4. PRODUCT_PRICE_UPDATED
 **Ngữ cảnh phát sinh:** Giá sản phẩm thay đổi — bao gồm cả khi Seller sửa `original_price` LẪN khi [Markdown Worker](product_workers.md#5-markdown-price-calculator-worker) tính lại `promotional_price`. Xem [Promotion DB Design - Cơ chế Zero-Latency](../promotion/promotion_db_design.md#22-xử-lý-zero-latency-tính-toán-best-deal-mà-không-cần-discount_items-mapping).
-**Consumers chính:** [Search Service](../search/search_events.md#24-product_price_updated) (cập nhật giá hiển thị trên Elasticsearch), Cart Service (cảnh báo giá đã đổi cho user).
+**Consumers chính:** [Search Service](../search/search_events.md#24-product_price_updated) (cập nhật giá hiển thị trên Elasticsearch).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -224,7 +227,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174003",
   "event_type": "PRODUCT_PRICE_UPDATED",
   "aggregate_type": "ProductSku",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123459",
   "timestamp": "2026-02-28T06:00:00Z",
   "source": "product-service",
@@ -234,20 +237,27 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "sku_code": "IP15PM-256-BLK",
     "original_price": 33990000.00,
     "promotional_price": 28891500.00,
+    "best_price": 28891500.00,
+    "has_promotion": true,
     "previous_original_price": 34990000.00,
     "previous_promotional_price": null,
     "change_source": "MARKDOWN_APPLIED",
     "rule_id": 42,
     "version": 4,
+    "event_sequence_id": 1709420001,
     "updated_at": "2026-02-28T06:00:00Z"
   }
 }
 ```
-> **Field `change_source`:** Giúp downstream phân biệt nguồn thay đổi giá: `SELLER_UPDATE` (Seller tự sửa giá gốc), `MARKDOWN_APPLIED` (Promotion rule mới áp dụng), `MARKDOWN_EXPIRED` (Promotion rule hết hạn, `promotional_price` reset về null).
+> **Field `change_source`:** Giúp downstream phân biệt nguồn thay đổi giá: `SELLER_UPDATE` (Seller tự sửa giá gốc), `MARKDOWN_APPLIED` (Promotion rule mới áp dụng), `MARKDOWN_EXPIRED_FALLBACK` (Promotion rule hết hạn trôi tuột và tự dọn dẹp bởi Cronjob, reset price về null).
+>
+> Với event `MARKDOWN_ENDED` xử lý theo luồng chuẩn, `change_source` phải dùng `MARKDOWN_ENDED`.
+>
+> 🔴 **Cảnh báo Concurrency & C5 Fix (`event_sequence_id`):** Khi bảng `product_skus` bị update hàng loạt bởi Promotion Worker, `products.version` của bảng cha chỉ tăng 1 lần duy nhất cho toàn bộ batch SKU. Do đó tất cả các event `PRODUCT_PRICE_UPDATED` cho N SKUs này đều mang cùng một số `version` (Ví dụ = 4). Search Service nếu dùng `version` này để làm Guard Check cho từng SKU Document sẽ rơi vào lỗi: Event đầu lấy version = 4, Event thứ hai lấy version = 4 -> bị Drop (Discarded). Do vậy, Event cho SKU bắt buộc phải mang theo `event_sequence_id` (VD bằng Epoch Timestamp lúc DB update) để Search Downstream Guard check đúng cấp SKU (xem Thống nhất C5 Audit Report).
 
 ### 3.5. PRODUCT_SKU_STATUS_CHANGED
 **Ngữ cảnh phát sinh:** Trạng thái của một SKU cụ thể thay đổi (VD: `ACTIVE` → `OUT_OF_STOCK` do Inventory sync, hoặc `ACTIVE` → `INACTIVE` do Seller tạm ngưng).
-**Consumers chính:** Cart Service (cảnh báo user SKU không còn khả dụng), Search Service (cập nhật availability).
+**Consumers chính:** Search Service (cập nhật availability).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -255,7 +265,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174004",
   "event_type": "PRODUCT_SKU_STATUS_CHANGED",
   "aggregate_type": "ProductSku",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123460",
   "timestamp": "2026-02-28T07:00:00Z",
   "source": "product-service",
@@ -274,7 +284,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.6. PRODUCT_DELETED
 **Ngữ cảnh phát sinh:** Sản phẩm bị Soft Delete (cập nhật cờ `is_deleted = true`, trạng thái nghiệp vụ cũ được giữ nguyên).
-**Consumers chính:** [Search Service](../search/search_events.md#26-product_deleted) (xoá khỏi Elasticsearch index), Cart Service (xoá sản phẩm khỏi giỏ hàng active).
+**Consumers chính:** [Search Service](../search/search_events.md#26-product_deleted) (xoá khỏi Elasticsearch index).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -282,7 +292,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "PRODUCT_DELETED",
   "aggregate_type": "Product",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "prod-uuid-001",
   "correlation_id": "req-123461",
   "timestamp": "2026-02-28T08:00:00Z",
   "source": "product-service",
@@ -290,6 +300,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "product_id": "prod-uuid-001",
     "seller_id": "seller-uuid-001",
     "sku_ids": ["sku-uuid-001", "sku-uuid-002"],
+    "active_markdown_rule_ids": [42],
     "version": 5,
     "deleted_at": "2026-02-28T08:00:00Z"
   }
@@ -303,11 +314,12 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 **Cấu trúc Payload (JSON):**
 ```json
 {
-  "event_id": "evt_abc124...",
-  "aggregate_id": "cat_001",
-  "aggregate_type": "Category",
+  "event_id": "123e4567-e89b-12d3-a456-426614174008",
   "event_type": "CATEGORY_UPDATED",
-  "category_version": 4,
+  "aggregate_type": "Category",
+  "aggregate_id": "cat_001",
+  "correlation_id": "req-123490",
+  "source": "product-service",
   "timestamp": "2026-03-20T10:00:00Z",
   "payload": {
     "category_id": "cat_001",
@@ -321,7 +333,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.8. PRODUCT_SKU_DELETED
 **Ngữ cảnh phát sinh:** Một SKU cụ thể bị Soft Delete khỏi Sản phẩm bởi Seller (các SKU khác trong sản phẩm vẫn tồn tại).
-**Consumers chính:** Search Service (nhận Event để xóa hoặc đánh dấu DELETED cho SKU Document, tránh việc User search ra kết quả lỗi). Cart Service (xoá SKU này khỏi giỏ hàng).
+**Consumers chính:** Search Service (nhận Event để xóa hoặc đánh dấu DELETED cho SKU Document, tránh việc User search ra kết quả lỗi).
 **Cấu trúc Payload (JSON):**
 ```json
 {
@@ -341,15 +353,16 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.9. CATEGORY_DELETED
 **Ngữ cảnh phát sinh:** Danh mục bị Xóa Cứng hoặc Xóa Mềm bởi Admin (System Constraint: thông thường Admin chỉ được xoá khi danh mục không còn Product nào, nhưng đề phòng trường hợp Force Delete).
-**Consumers chính:** Search Service (cập nhật trạng thái HIDDEN cho các Product mồ côi nếu có và xoá Cache).
+**Consumers chính:** Product Service (Worker nội bộ hứng event và tự động đổi `status` thành `HIDDEN` cho toàn bộ sản phẩm thuộc danh mục bị xoá. Việc này BẮT BUỘC phải thực hiện ngay tại PostgreSQL (Nguồn Sự Thật) và sinh tiếp Event `PRODUCT_STATE_CHANGED` cho từng sản phẩm). Search Service chỉ đơn thuần xoá Cache Category Tree và cập nhật version danh mục đính kèm Product, tuyệt đối KHÔNG TỰ Ý ẨN HÀNG nếu không nhận được `PRODUCT_STATE_CHANGED` từ Product.
 **Cấu trúc Payload (JSON):**
 ```json
 {
-  "event_id": "evt_catdel_xxx",
-  "aggregate_id": "cat_001",
-  "aggregate_type": "Category",
+  "event_id": "123e4567-e89b-12d3-a456-426614174009",
   "event_type": "CATEGORY_DELETED",
-  "category_version": 5,
+  "aggregate_type": "Category",
+  "aggregate_id": "cat_001",
+  "correlation_id": "req-123491",
+  "source": "product-service",
   "timestamp": "2026-03-24T10:00:00Z",
   "payload": {
     "category_id": "cat_001",
@@ -359,27 +372,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 }
 ```
 
-### 3.10. PRODUCT_VISIBILITY_REEVALUATE_REQUESTED (Internal)
-**Ngữ cảnh phát sinh:** Seller đổi ý mở lại cờ `seller_intention_hidden = false` trong khi Product vẫn `HIDDEN` và chưa có inventory event mới.
-**Consumers chính:** Chỉ Product Service internal worker (không public cho service khác).
 
-**Cấu trúc Payload (JSON):**
-```json
-{
-  "event_id": "evt_visibility_recheck_xxx",
-  "event_type": "PRODUCT_VISIBILITY_REEVALUATE_REQUESTED",
-  "aggregate_type": "Product",
-  "product_id": "prod-uuid-001",
-  "timestamp": "2026-03-24T10:10:00Z",
-  "source": "product-service",
-  "payload": {
-    "product_id": "prod-uuid-001",
-    "trigger": "SELLER_UNHIDE_INTENTION_CHANGED",
-    "version": 7
-  }
-}
-```
-**Logic xử lý:** Worker chạy guard trong 1 transaction: `status = HIDDEN` + `seller_intention_hidden = false` + `EXISTS sku còn hàng` -> nếu đạt điều kiện thì trigger `AUTO_REACTIVATE_IN_STOCK`.
 
 ## 4. Chi Tiết Các Loại Event Tiêu Thụ (Consumed Events)
 
@@ -424,7 +417,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   }
 }
 ```
-**Logic xử lý:** Product Service query `product_markdown_applied WHERE rule_id = 42` → lấy danh sách `sku_id` bị ảnh hưởng → tính lại `promotional_price` với các thông số thay đổi được áp dụng → batch update `product_skus` và `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events cho từng SKU bị ảnh hưởng.
+**Logic xử lý (Kèm Sửa Lỗi C2):** Product Service query `product_markdown_applied WHERE rule_id = 42` → lấy danh sách `sku_id` bị ảnh hưởng → tính lại `promotional_price` với các thông số thay đổi. **Lưu ý tối cao:** `original_price` dùng để tính toán BẮT BUỘC phải được query trực tiếp từ field tĩnh `product_skus.original_price` tính tại thời điểm Worker đang xử lý, TUYỆT ĐỐI KHÔNG dùng lại `original_price_snapshot` của lịch sử; đồng thời worker cập nhật lại `original_price_snapshot` = `original_price` tại thời điểm đó → batch update `product_skus` và `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events cho từng SKU bị ảnh hưởng.
 
 ### 4.3. MARKDOWN_ENDED (Từ Promotion Service)
 **Topic:** `t.promotion.markdown.events`
@@ -449,7 +442,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 >
 > Xem định nghĩa event gốc tại [Promotion Events - MARKDOWN_ENDED](../promotion/promotion_events.md#23-markdown_ended).
 
-**Logic xử lý:** Query `product_markdown_applied WHERE rule_id = 42` → lấy danh sách `sku_id` bị ảnh hưởng → reset `product_skus.promotional_price = NULL` → delete records từ `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events (với `change_source = MARKDOWN_EXPIRED`).
+**Logic xử lý:** Query `product_markdown_applied WHERE rule_id = 42` → lấy danh sách `sku_id` bị ảnh hưởng → reset `product_skus.promotional_price = NULL` → delete records từ `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events (với `change_source = MARKDOWN_ENDED` hoặc `MARKDOWN_EXPIRED_FALLBACK` nếu đến từ job self-healing).
 
 ### 4.4. INVENTORY_QUANTITY_CHANGED (Từ Inventory Service)
 **Topic:** `t.inventory.events`
@@ -462,7 +455,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_id": "123e4567-e89b-12d3-a456-426614174006",
   "event_type": "INVENTORY_QUANTITY_CHANGED",
   "aggregate_type": "Inventory",
-  "product_id": "prod-uuid-001",
+  "aggregate_id": "sku-uuid-001",
   "correlation_id": "sys-abc",
   "timestamp": "2026-02-28T08:00:00Z",
   "source": "inventory-service",
@@ -470,11 +463,13 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "sku_id": "sku-uuid-001",
     "available_quantity": 0,
     "previous_available_quantity": 15,
-    "change_type": "ORDER_DEDUCTED"
+    "change_type": "ORDER_DEDUCTED",
+    "event_timestamp": 1709420000000,
+    "timestamp_iso": "2026-02-28T08:00:00Z"
   }
 }
 ```
-**Logic xử lý:** Update `product_skus.display_quantity = available_quantity`. Nếu `available_quantity = 0` và SKU đang `ACTIVE` → chuyển SKU status sang `OUT_OF_STOCK` → phát `PRODUCT_SKU_STATUS_CHANGED`. Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK` → chuyển về `ACTIVE`. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
+**Logic xử lý:** Update `product_skus.display_quantity = available_quantity`. Product Service phải resolve `product_id` từ `sku_id` trước khi lock bảng cha. **Rào cản Out-Of-Order (X6 Fix):** Chỉ thực hiện apply update nếu `event_timestamp > product_skus.last_inventory_sync_at`. Nếu `available_quantity = 0` và SKU đang `ACTIVE` → chuyển SKU status sang `OUT_OF_STOCK` → phát `PRODUCT_SKU_STATUS_CHANGED`. Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK` → chuyển về `ACTIVE`. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
 
 ## 5. Schema Versioning & Backward Compatibility
 

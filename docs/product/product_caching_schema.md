@@ -28,10 +28,10 @@ Tất cả các Redis Key của Product Service bắt đầu bằng prefix: `pro
 Đây là dữ liệu ít thay đổi nhất hệ thống, dùng để chặn các request tạo/sửa sản phẩm sai cấu hình danh mục.
 Áp dụng chiến lược **2-Tier Caching (L1: Caffeine Local + L2: Redis)**. Dù áp dụng đẩy xoá cache Pub/Sub, Caffeine L1 bắt buộc phải có `expireAfterWrite = 1 phút` làm Fallback. Mức 1 phút này là đủ an toàn để cân bằng giữa hiệu năng phân tán và rủi ro lệch đồng bộ Validation Rule nếu Pod vô tình bị miss một bản tin Pub/Sub, thay vì giữ luật sai quá lâu.
 
-*   `product:categories:tree`
+*   **Key Pattern**: `product:categories:tree`
     *   **Mô tả**: Toàn bộ cây danh mục của hệ thống dưới dạng JSON (dùng để check `category_id` truyền lên nằm ở lá mạng nào).
-    *   **Loại Dữ Liệu**: `String (JSON)` trên Redis, Map memory trên Caffeine.
-    *   **TTL**: Redis TTL có thể vô hạn, nhưng L1 Caffeine TTL là 1 phút.
+    *   **Loại Data**: `String (JSON Array Lồng)` trên Redis, Map memory trên Caffeine.
+    *   **TTL**: **[H6 Fix]** 24 giờ. TTL đóng vai trò là safety net chống lại chiến lược Eviction LRU ngầm làm thủng RAM của cluster. Fast-Path invalidation vẫn dựa vào Pub/Sub.
     *   **Cách thức**: RAM của App chọc tới L1 (0.1ms). Nếu L1 rỗng, gọi L2 Redis (1ms). Nếu L2 rỗng, Fetch Database -> Lưu L2 -> Lưu L1.
 
 *   `product:category:{category_id}:attributes`
@@ -40,11 +40,13 @@ Tất cả các Redis Key của Product Service bắt đầu bằng prefix: `pro
     *   **TTL**: 24 giờ. Cập nhật Cache-Aside.
 
 ### 1.2 Nhóm Khóa Point-Read Nội Bộ (Fast Access)
-Order, Cart, Inventory Service không có quyền Query DB trực tiếp của Product. Họ gọi qua API `/api/v1/products/skus/{id}`.
+Order, Cart, Inventory Service không có quyền Query DB trực tiếp của Product. Họ gọi qua gRPC `GetProductSku`.
+
+> **Boundary bắt buộc:** Các service khác không đọc Redis của Product trực tiếp; chỉ truy cập qua gRPC (`GetProductSku`, `GetBatchProductSkus`) để bảo toàn hợp đồng và versioning.
 
 *   `product:sku:{sku_id}`
     *   **Mô tả**: Chứa thông tin denormalized quan trọng nhất của một biến thể chuẩn bị vào giỏ. (Ví dụ: Định danh, Status, Giá Niêm Yết `original_price`, Giá Khuyến Mãi `promotional_price`, Product Name, Image).
-    *   **Loại Dữ Liệu**: `RedisJSON` (hoặc `Hash`).
+    *   **Loại Dữ Liệu**: `RedisJSON` (Ưu tiên tuyệt đối RedisJSON vì `variant_attributes` lưu dưới dạng Nested JSON, giúp Cart có thể thực hiện `JSON.MGET` thay cho lệnh HGET parse tay đắt đỏ).
     *   **Khuôn mẫu JSON**:
         ```json
         {
@@ -52,20 +54,25 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "product_id": "prod-uuid-001",
           "sku_code": "IP15PM-256-BLK",
           "product_name": "iPhone 15 Pro Max",
+          "seller_name": "Apple Flagship Store",
           "main_image_url": "https://cdn.example.com/ip15-black.jpg",
           "original_price": 34990000.00,
           "promotional_price": 28891500.00,
+          "best_price": 28891500.00,
           "sku_status": "ACTIVE",
           "product_status": "ACTIVE",
+          "is_available": true,
+          "is_deleted": false,
           "variant_attributes": {"color": "Đen", "storage": "256GB"},
           "display_quantity": 150,
-          "seller_id": "seller-uuid-001"
+          "seller_id": "seller-uuid-001",
+          "product_updated_at": "2026-02-28T06:00:00Z"
         }
         ```
     *   **TTL**: 1 tiếng (3600s).
-    *   **Invalidation**: Nếu Seller Update tên, giá, đổi trạng thái, hoặc ảnh qua API `PUT/PATCH` của Product Service -> Xóa ngay Key này qua Cache-Evict (In-band) hoặc Worker nghe Kafka xoá (Out-of-band). Xem [Invalidation Consumer Worker](product_workers.md#2-invalidation-consumer-worker-xoá-cache-ngầm---optional).
+    *   **Xử lý Invalidation**: **[M1 Fix Nhất Quán Thuật Ngữ]** Khi có cập nhật bảng cha hoặc SKU từ DB, hệ thống (API hoặc Async Pipeline Worker) CẮM CHỐT sử dụng cơ chế OVERWRITE (Partial SET/Soft Invalidation). Thay vì báo hiệu Delete (DEL) phũ phàng gây họa Cache Stampede dồn dập vào PostgreSQL, mọi thay đổi DB đều dội ngược mảng JSON Partial Update chèn đè lên lại Cache ở Redis. Xem [Invalidation Consumer Worker](product_workers.md).
 
-> **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nên hỗ trợ endpoint batch `POST /api/v1/products/skus/batch` nhận danh sách `sku_ids`. Backend sử dụng Redis `MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
+> **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
 *   `product:master:{product_id}`
     *   **Mô tả**: Thông tin chung của sản phẩm gốc phục vụ việc hiển thị giỏ hàng mượt mà (tên, category, seller, status).
@@ -77,7 +84,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 *   `product:idempotency:{idempotency_key}`
     *   **Mô tả**: Ngăn chặn tình trạng tạo 2 Product cùng lúc do lỗi UI Double-Click hoặc Retries từ Client.
     *   **Loại Dữ Liệu**: `String (JSON Response)`.
-    *   **TTL**: 24 Giờ.
+    *   **TTL**: **[H1 Fix Phân Trị 2 Pha]** Pha 1 khi bắt Request POST/PUT: `SETNX` cấp phát vòng đời duy nhất 5 phút (Lease time) để hạn chế giam cầm token nếu Container crash. Pha 2 khi Transaction DB Commits: `SET XX` kéo dài TTL lên 24 giờ vĩnh viễn (Finalize).
     *   **Cơ chế**: Dùng `SETNX`. Request đầu tiên set biến thành công -> Vào DB. Request hai set xịt -> Bị dội ngược 409 Conflict hoặc lấy Response từ payload Cache. (Thư viện: Redisson/Spring Data Redis). Xem chi tiết luồng tại [Product Workflow](product_workflow.md). Tính Luỹ đẳng của Product sẽ được giữ tại Memory thay vì chọc Update ở PostgreSQL.
 
 *   `product:rate_limit:seller:{seller_id}`
@@ -105,16 +112,11 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 
 ---
 
-## 2. Chiến Lược Đồng Bộ L1 / L2 Cache (Cache Invalidation)
-
-Vì `category_attributes` hoặc `categories_tree` được nhét vào L1 (Bộ nhớ trong của JVM) để tăng max Speed, phát sinh rủi ro Caching Cũ (Stale Data) giữa vô số Instance (Máy chủ số 1 đã biết cây danh mục đổi, nhưng máy chủ 2 vẫn chứa cây cũ trong RAM).
-
-**Giải pháp Invalidation (L1 Pub-Sub):**
-1. Admin Sửa cấu hình Danh Mục trên bảng `categories`.
-2. Hệ thống gọi lệnh `DEL product:categories:tree` (Xoá L2 ở vùng chung Redis).
-3. Hệ thống Product Service (Instance chịu trách nhiệm đổi Database) sẽ gửi một Broadcast Message lên Redis Pub/Sub channel (VD: `channel:product:cache:evict`).
-4. **TẤT CẢ** các Product Service Instances còn lại đang subscribe channel này lắng nghe. Lấy lệnh -> Bắn lệnh `CaffeineCacheManager.clear("categoryTree")`.
-5. Đợt Request sau tới từ bất kỳ Máy nào, Local L1 rỗng, Redis L2 Rỗng -> Chọc DB nạp lại mới cả 2 Tier.
+### 2. Chiến lược Đồng bộ L1 & L2 Cache (Cache Invalidation)
+Khi Admin cập nhật Cây Danh Mục (Category Tree) hoặc Thuộc Tính bắt buộc, hệ thống **Product Service (Master)** phải phát tin nhắn broadcast qua Redis Pub/Sub:
+- **Pub/Sub Channel**: **[X3 Fix]** Tách thành kênh định danh rạch ròi: `channel:product:l1-evict` (Kênh chuyên dùng cho nội bộ hạm đội Pod Product vứt Caffeine L1). Channel mở rộng `channel:search:category-refresh` dành riêng cho hệ Search Service.
+- **Message Format JSON**: Bắt buộc schema Payload rõ ràng `{"type": "CATEGORY_TREE", "data_id": "cat-uuid..."}` thay vì bắn tín hiệu rỗng sinh Exception Parsing.
+- **Hành động (After-Commit Hook)**: CỰC KỲ QUAN TRỌNG: Lệnh đẩy Pub/Sub **BẮT BUỘC** phải được thực thi tại phase `After-Transaction-Commit`. Nếu đẩy trong In-Transaction, Kafka/L1 sẽ bị xóa, và Request ngay lúc đó lấy data từ DB sẽ bị rơi vào khoảng Dirty Read (lấy phải dữ liệu lúc chưa commit hoàn toàn). Các Pod nhận tín hiệu -> decode Type -> gọi `categoryLocalCache.invalidateAll()`. Khóa Redis `product:categories:tree` sẽ bị xóa cục bộ, Request API kế tiếp sẽ mồi lại Cache.
 
 ---
 
@@ -131,7 +133,7 @@ Product Service chứa hàng chục triệu mã SKU. Việc "đập" tất cả 
 
 | Key Pattern | Loại | TTL | Invalidation | Mục đích |
 |---|---|---|---|---|
-| `product:categories:tree` | String (JSON) | Vĩnh viễn | Pub/Sub L1 | Cây danh mục validate |
+| `product:categories:tree` | String (JSON) | 24h | Pub/Sub L1 + TTL fallback | Cây danh mục validate |
 | `product:category:{id}:attributes` | Hash/Set | 24h | Cache-Aside | Thuộc tính theo Category |
 | `product:sku:{sku_id}` | RedisJSON/Hash | 1h | Partial Update (Worker) | Point-Read cho Cart/Order (Sử dụng Partial Update hoặc Hash để tránh Data Drift, CẤM gán full snapshot string) |
 | `product:master:{product_id}` | RedisJSON/Hash | 1h | Partial Update | Info sản phẩm gốc |
