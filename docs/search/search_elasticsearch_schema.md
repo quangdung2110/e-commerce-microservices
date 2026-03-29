@@ -26,7 +26,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 | `products_v1` | `products` (read alias), `products_write` (write alias) | Sản phẩm denormalized phẳng | Hàng triệu |
 | `search_suggestions_v1` | `search_suggestions` | Autocomplete / Gợi ý tìm kiếm | Hàng trăm ngàn |
 
-> **Index Alias Strategy:** Sử dụng Alias để cho phép [Zero-Downtime Reindex](search_workers.md#3-full-reindex-job-zero-downtime). Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`. Không gián đoạn traffic.
+> **Index Alias Strategy:** Sử dụng Alias để cho phép [Zero-Downtime Reindex](search_workers.md#7-full-reindex-job-zero-downtime). Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`. Không gián đoạn traffic.
 
 ## 2. Products Index — Mapping & Document Structure
 
@@ -84,7 +84,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 - **`icu_folding`**: Chuẩn hóa Unicode — "phở" matches "pho", "điện thoại" matches "dien thoai".
 - **`edge_ngram`**: Sinh ra prefix tokens cho autocomplete. VD: "iPhone" → ["ip", "iph", "ipho", "iphon", "iphone"]. Cho phép user gõ "iph" đã thấy gợi ý.
 - **`vi_stop`**: Loại bỏ stop words tiếng Việt khỏi full-text search để tăng precision.
-- **`refresh_interval: 1s`**: Document mới xuất hiện trong kết quả search sau tối đa 1 giây. Acceptable trade-off giữa indexing throughput và near-real-time search.
+- **`refresh_interval: 1s` (mặc định)**: Document mới xuất hiện trong kết quả search sau tối đa 1 giây. Khi ingest spike lớn, có thể tăng tạm `3s-5s` để tăng throughput indexing, rồi trả về `1s` sau khi ổn định.
 
 ### 2.2. Field Mapping (Document Schema: Denormalized SKU)
 
@@ -100,6 +100,8 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       
       "seller_id":           { "type": "keyword" },
       "category_id":         { "type": "keyword" },
+      "category_name":       { "type": "keyword" },
+      "category_path":       { "type": "keyword" },
       "category_version":    { "type": "long" },
       
       "name": {
@@ -119,15 +121,32 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "searchable_attributes": { "type": "keyword" }, 
       "variant_attributes":    { "type": "keyword" },
 
-      "original_price":      { "type": "long" },
-      "promotional_price":    { "type": "long" },
-      "best_price":          { "type": "long" },
+      "original_price":      { "type": "scaled_float", "scaling_factor": 100 },
+      "promotional_price":   { "type": "scaled_float", "scaling_factor": 100 },
+      "best_price":          { "type": "scaled_float", "scaling_factor": 100 },
 
       "is_in_stock":         { "type": "boolean" },
       "has_promotion":       { "type": "boolean" },
+      "is_deleted":          { "type": "boolean" },
+      "deleted_at":          { "type": "date" },
 
       "product_rating_avg":  { "type": "half_float" },
+      "product_rating_count": { "type": "integer" },
+      "review_metrics_updated_at": { "type": "date" },
+      "review_metrics_event_sequence_id": { "type": "long" },
       "product_sold_count":  { "type": "integer" },
+      "sales_metrics_event_sequence_id": { "type": "long" },
+      "seller_name":         { "type": "keyword" },
+      "seller_status":       { "type": "keyword" },
+      "seller_profile_version": { "type": "long" },
+      "seller_status_version": { "type": "long" },
+
+      "price_event_sequence_id": { "type": "long" },
+      "created_at":          { "type": "date" },
+      "updated_at":          { "type": "date" },
+      "indexed_at":          { "type": "date" },
+      "last_event_id":       { "type": "keyword" },
+      "last_event_timestamp": { "type": "date" },
 
       "version":             { "type": "long" }
     }
@@ -144,8 +163,15 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 | `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens) cho các thuộc tính dùng chung của toàn bộ Sản phẩm (Product-level attributes). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Dùng để hỗ trợ Filtering chung hoặc Full-text search mở rộng. **Search Worker chịu trách nhiệm transform từ `attributes_json` (raw JSON) thành token array khi consume event.** |
 | `variant_attributes` | keyword array | Mảng mô tả đặc tính riêng của từng SKU (SKU-level attributes). Ví dụ: `["mau:đen", "dungluong:256GB"]`. Dùng để hỗ trợ Facet Filtering chính xác cho người dùng. **Search Worker transform từ `variant_attributes_json` sang token array.** |
 | `is_in_stock` | boolean | Thay thế hoàn toàn cho `display_quantity` và `total_quantity`. Cờ boolean giảm 99.9% lưu lượng update rác vô tri vào Cluster. Chỉ update ES khi Event báo Tồn Kho rớt về 0 hoặc có hàng lại từ 0. Tồn kho thực trích xuất từ Checkout/Cart. |
+| `is_deleted`, `deleted_at` | boolean/date | Cờ Tombstone để chặn zombie update khi event đến trễ sau delete. |
 | `version` | long | **Critical**: Giữ nguyên cơ chế Optimistic Concurrency cho Product Update. |
-| `category_version` | long | **Lifecycle và Init:** (1) Khởi tạo bằng `categories.category_version` tại thời điểm index lần đầu (không hard-code 0). (2) Chỉ cập nhật khi nhận `CATEGORY_UPDATED`/`CATEGORY_DELETED`. (3) Track độc lập với `version` của Product document để làm OCC Guard cho update-by-query theo category. |
+| `price_event_sequence_id` | long | Guard thứ tự riêng cho `PRODUCT_PRICE_UPDATED` ở cấp SKU. |
+| `review_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `REVIEW_METRICS_UPDATED`, ưu tiên hơn timestamp. |
+| `sales_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `ORDER_PRODUCT_METRICS_UPDATED` theo `product_id`. |
+| `seller_status` | keyword | Đồng bộ trạng thái seller (`VERIFIED`, `SUSPENDED`, `BANNED`) khi cần filter/ẩn listing theo policy nguồn. |
+| `seller_profile_version`, `seller_status_version` | long/long | Guard out-of-order riêng cho các sự kiện seller profile/status. |
+| `category_version` | long | **Lifecycle và Init:** (1) Khởi tạo từ payload Product event nếu có; nếu không có thì lookup qua snapshot API `GET /api/v1/internal/products/categories/tree` trước khi index (không hard-code 0). (2) Chỉ cập nhật khi nhận `CATEGORY_UPDATED`/`CATEGORY_DELETED`. (3) Track độc lập với `version` của Product document để làm OCC Guard cho update-by-query theo category. |
+| `last_event_id`, `last_event_timestamp`, `indexed_at` | keyword/date/date | Phục vụ audit, replay DLQ, và điều tra drift dữ liệu. |
 
 ### 2.4. Mẫu Document Hoàn Chỉnh
 
@@ -175,9 +201,24 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
   
   "is_in_stock": true,
   "has_promotion": true,
+  "is_deleted": false,
   
   "product_rating_avg": 4.9,
+  "product_rating_count": 1200,
   "product_sold_count": 15200,
+  "sales_metrics_event_sequence_id": 1709420011,
+  "seller_name": "Apple Flagship Store",
+  "seller_status": "VERIFIED",
+  "seller_profile_version": 12,
+  "seller_status_version": 7,
+
+  "price_event_sequence_id": 1709420001,
+  "review_metrics_event_sequence_id": 1709420009,
+  "created_at": "2026-02-28T03:51:00Z",
+  "updated_at": "2026-03-28T10:05:00Z",
+  "indexed_at": "2026-03-28T10:05:01Z",
+  "last_event_id": "123e4567-e89b-12d3-a456-426614174003",
+  "last_event_timestamp": "2026-03-28T10:05:00Z",
   
   "version": 1709420000000
 }

@@ -10,7 +10,7 @@
 
 **Cross-Service References:**
 *   [Product Service - Architecture Recommendations](../product/product_architecture_recommendations.md)
-*   [Order Service - CQRS Elasticsearch Design](../order/cqrs_elasticsearch_design.md)
+*   [Order Service - Workflows](../order/order_workflow.md)
 
 ---
 
@@ -70,14 +70,14 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng và
       "functions": [
         {
           "field_value_factor": {
-            "field": "sold_count",
+            "field": "product_sold_count",
             "modifier": "log1p",
             "factor": 0.5
           }
         },
         {
           "field_value_factor": {
-            "field": "rating_avg",
+            "field": "product_rating_avg",
             "modifier": "sqrt",
             "factor": 2
           }
@@ -131,21 +131,38 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng và
 - **Shard sizing:** Mỗi shard nên chứa 10-50GB data. Quá nhỏ (< 1GB) tạo overhead, quá lớn (> 50GB) chậm recovery.
 - **Dedicated Master Nodes:** 3 master-eligible nodes riêng, không chạy data, tránh split-brain.
 - **JVM Heap:** Cấp 50% RAM cho JVM heap (tối đa 31GB để tận dụng Compressed Oops). 50% còn lại cho filesystem cache.
-- **Index per version:** Pattern `products_v1`, `products_v2` + alias swap cho zero-downtime schema changes. Xem [Full Reindex Job](search_workers.md#3-full-reindex-job-zero-downtime).
+- **Index per version:** Pattern `products_v1`, `products_v2` + alias swap cho zero-downtime schema changes. Xem [Full Reindex Job](search_workers.md#7-full-reindex-job-zero-downtime).
 
-## 8. Multi-Source Data Integration (Lộ Trình Tương Lai)
+## 8. Multi-Source Data Integration
 
-**Vấn đề hiện tại:** Search Service chỉ consume product events. Tuy nhiên, document chứa `rating_avg`, `sold_count`, `seller_name` — dữ liệu thuộc sở hữu của các service khác.
+**Vấn đề hiện tại:** Search document chứa `product_rating_*`, `product_sold_count`, `seller_name` — dữ liệu thuộc sở hữu của các service khác, nên cần contract consume riêng cho từng nguồn.
 
-**Đề xuất tích hợp tương lai:**
+**Trạng thái tích hợp:**
 
 | Data Field | Source Service | Topic | Ghi chú |
 |---|---|---|---|
-| `rating_avg`, `rating_count` | Review Service | `t.review.events` | Update khi có review mới |
-| `sold_count` | Order Service | `t.order.events` | Update khi đơn hàng COMPLETED |
-| `seller_name` | Seller Service | `t.seller.events` | Update khi Seller đổi tên gian hàng |
+| `product_rating_avg`, `product_rating_count` | Review Service | `t.review.events` | Realtime qua `REVIEW_METRICS_UPDATED` |
+| `product_sold_count` | Order Metrics Projector | `t.search.metrics.events` | Realtime aggregate theo `product_id` |
+| `seller_name` | Seller Service | `t.seller.events` | Realtime qua `SELLER_PROFILE_UPDATED` |
 
-**Tạm thời:** Các field này được set giá trị mặc định (rating=0, sold_count=0) và cập nhật bằng periodic batch job cho đến khi luồng real-time event được thiết kế đầy đủ.
+**Fallback vận hành:** Nếu một trong các consumer realtime bị disable, cho phép batch sync tạm thời, nhưng phải công bố SLO freshness rõ ràng (ví dụ <= 15 phút) để tránh hiểu nhầm dữ liệu realtime.
+
+## 9. Tối Ưu Hiệu Năng Vận Hành (Khuyến nghị triển khai)
+
+1. **Adaptive Refresh Interval:**
+  - Tải thấp: `refresh_interval=1s`.
+  - Tải cao/đợt import lớn: tăng tạm lên `3s-5s` để tăng throughput indexing.
+2. **Bounded Async Refresh Queue cho hot-query cache:**
+  - Không spawn goroutine vô hạn khi stale-hit đồng loạt.
+  - Dùng queue hữu hạn + distributed lock để giữ ES ổn định ở p99.
+3. **Cache Admission theo tần suất thực:**
+  - Chỉ cache query vượt ngưỡng hot (`> 50 req/phút`).
+  - Tránh cache pollution cho long-tail queries.
+4. **ILM + Rollover thay vì force-merge định kỳ trên index nóng:**
+  - Giảm IO spike, giảm ảnh hưởng latency query trong giờ cao điểm.
+5. **Projection observability chuẩn:**
+  - Theo dõi `consumer lag`, `projection freshness`, `DLQ volume`, `refresh queue depth`.
+  - Tạo alert theo SLO để phát hiện drift sớm.
 
 ---
 

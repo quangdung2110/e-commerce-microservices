@@ -33,7 +33,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 |---|---|---|---|
 | `q` | string | Không | Từ khóa tìm kiếm (VD: "iphone 15 pro max") |
 | `category` | string | Không | Category ID hoặc slug để lọc theo danh mục |
-| `filters` | object/string | Không | Bộ lọc động: `filters[brand]=Apple&filters[ram]=8GB` |
+| `filters` | query-string map | Không | Bộ lọc động: `filters[brand]=Apple&filters[ram]=8GB` |
 | `price_min` | number | Không | Giá tối thiểu |
 | `price_max` | number | Không | Giá tối đa |
 | `in_stock` | boolean | Không | Chỉ hiện sản phẩm còn hàng (default: true) |
@@ -47,16 +47,41 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 1. **[Input Validation & Normalization]:**
    - Validate input parameters (page > 0, size <= 100, etc.).
    - Normalize query `q`: lowercase, trim, remove extra whitespace.
+   - Chuẩn hóa và sort toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`).
    - Hash normalized query + all params → `query_hash` cho cache lookup.
-2. **[Redis] - Check Hot Query Cache (Kèm Logical Expiration & Distributed Lock):**
+2. **[Redis] - Check Hot Query Cache (Kèm SWR + 2 tầng chống stampede):**
    - Lệnh đọc: `GET search:query:{query_hash}`.
-   - Nếu Data rỗng (Cache Miss thực sự) → Chuyển sang Bước 3, nhưng phải có lệnh đếm Sliding Window `INCR` trước, nếu truy vấn đủ độ Hot thì khi Elasticsearch lấy được data mới ghi `SET` vào Cache (Bảo vệ Ram khởi rác Long-tail Query).
+  - Nếu Data rỗng (Cache Miss thực sự) → Chuyển sang Bước 3, nhưng phải có lệnh đếm Sliding Window `INCR` trước. Chỉ cache khi truy vấn đủ độ hot (`> 50 requests/phút`) để tránh cache pollution từ long-tail query.
    - Nếu Cache Hit: Bóc tách trường `valid_until` bên trong JSON.
+     - **Early Refresh (tuỳ chọn):** Cho phép kích hoạt refresh sớm theo xác suất để giảm burst, nhưng refresh vẫn phải đi qua lock phân tán như quy tắc chống herd.
      - Nếu `now() <= valid_until`: Trả về kết quả cho User ngay lập tức (< 1ms). **Kết thúc.**
      - Nếu `now() > valid_until` (Dữ liệu đã cũ cần lấy mới ngầm): 
        - Trả về kết quả Cũ (Stale Data) cho User ngay lập tức để giữ API Latency < 1ms.
-       - Gửi ngầm một tín hiệu Async (Goroutine) để lấy Data mới từ Elasticsearch. 
-       - **[Chống Thundering Herd]:** Thread Async này TRƯỚC KHI Query Elasticsearch BẮT BUỘC phải lấy Lock: `SETNX search:lock:refresh:{query_hash} 1 EX 10`. Chỉ Thread nào lấy Lock thành công mới được nhảy đến Bước 3 để Query ElasticSearch và nạp đè `SET` lại Cache. Các Thread thất bại Lock bị hủy ngay tắp lự.
+       - Gửi ngầm một tín hiệu Async vào bounded refresh queue để lấy Data mới từ Elasticsearch.
+       - **Tầng 1 (Pod-local):** Singleflight gom request trùng theo `query_hash` trong cùng Pod.
+       - **Tầng 2 (Multi-pod):** Worker chỉ được query Elasticsearch khi lấy được lock `SETNX search:lock:refresh:{query_hash} 1 EX 10`.
+       - Nếu lock thất bại, worker thoát ngay, không query ES.
+
+### 2.1. Chi tiết Refresh Scheduler (Bắt buộc cho tính đúng đắn)
+
+Để tránh enqueue trùng cùng một `query_hash` trong cùng Pod, scheduler phải có **Refresh Registry** (in-memory map + CAS) với trạng thái:
+
+`IDLE -> ENQUEUED -> RUNNING -> IDLE`
+
+**Quy tắc:**
+1. Chỉ enqueue khi CAS `IDLE -> ENQUEUED` thành công.
+2. Nếu trạng thái đã là `ENQUEUED` hoặc `RUNNING`, bỏ enqueue mới.
+3. Nếu queue full khi `offer`, rollback `ENQUEUED -> IDLE`, tăng metric drop và kết thúc.
+4. Worker sau khi lấy task phải CAS `ENQUEUED -> RUNNING`.
+5. Kết thúc task (thành công/lỗi) luôn phải `RUNNING -> IDLE` trong `finally`.
+
+### 2.2. Semantics của Bounded Queue và Worker
+
+1. Queue là thread-safe, thao tác lấy task là destructive (`take/pop`).
+2. Một queue-node chỉ có một worker lấy; worker khác không thể lấy cùng queue-node đó.
+3. Trùng lặp chỉ có thể đến từ enqueue nhiều node khác nhau cho cùng `query_hash`; phần này đã được chặn bằng Refresh Registry + coalescing.
+4. Queue full policy: không block request path, vẫn trả stale data, chỉ bỏ refresh task có kiểm soát và ghi metric/alert.
+5. Queue nằm trên RAM Pod; nếu Pod down thì task có thể mất. Với SWR đây là chấp nhận được, vì request kế tiếp sẽ trigger refresh lại.
 3. **[Elasticsearch] - Build & Execute Query:**
     - Xây dựng Elasticsearch query DSL:
       ```json
@@ -67,7 +92,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
               {
                 "multi_match": {
                   "query": "iphone 15 pro max",
-                  "fields": ["name^3", "name.raw^2", "searchable_attributes"],
+                  "fields": ["name^3", "name.keyword^2", "searchable_attributes"],
                   "type": "best_fields",
                   "fuzziness": "AUTO"
                 }
@@ -113,6 +138,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
       - `multi_match` với `fuzziness: AUTO`: cho phép typo (VD: "iphnoe" vẫn match "iPhone").
       - `name^3`: Boost trọng số tên sản phẩm so với attributes.
       - `filter` context: Các điều kiện lọc cứng, được ES cache bitset tự động.
+      - `in_stock`: khi tham số `in_stock=false` thì bỏ `term is_in_stock=true` khỏi filter.
       - `searchable_attributes`: Thay thế hoàn toàn cho kiểu `nested`, search/filter trực tiếp trên Composite Array.
       - `collapse`: Gom nhóm các SKU (Document) thuộc cùng 1 sản phẩm (`product_id`), chỉ trả về SKU best match cho UI.
 
@@ -134,8 +160,8 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
            "original_price": 31900000,
            "best_price": 29500000,
            "discount_percentage": 7,
-           "sold_count": 1500,
-           "rating": 4.9,
+           "product_sold_count": 1500,
+           "product_rating_avg": 4.9,
            "is_in_stock": true
          }
        ],
@@ -147,7 +173,8 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
      }
      ```
 5. **[Redis] - Cache kết quả (nếu hot query):**
-   - Nếu query đủ "hot" → `SET search:query:{hash} json EX 30`.
+  - Nếu query đủ "hot" → `SET search:query:{query_hash} json EX 86400`.
+  - JSON phải chứa `valid_until = now + 30s` để điều khiển logical expiration.
 6. **[Backend] - Trả HTTP 200:**
    - Trả JSON response cho Frontend.
 
@@ -243,4 +270,10 @@ Trả về danh sách bộ lọc (filters) khả dụng cho một danh mục c�
 | **Tính nhất quán** | Eventual (delay 1-3s) | Strong (realtime) |
 | **Use case** | Full-text search, faceted filter, autocomplete | Point-Read giá chính xác, tạo/sửa sản phẩm |
 | **API prefix** | `/api/v1/search/...` | `/api/v1/products/...` |
-| **Caching** | Redis (hot queries, 30s TTL) | Redis + Caffeine (validation, 1h TTL) |
+| **Caching** | Redis (hot queries: logical 30s, physical 24h) | Redis + Caffeine (validation, 1h TTL) |
+
+## 7. Custom Routing Cho Truy Vấn Seller (Dashboard)
+**[P4 Tối Ưu Routing]**: Đối với các truy vấn List từ Seller Dashboard (Danh sách tất cả sản phẩm của Shop đang đăng nhập), Application KHÔNG ĐƯỢC để Elasticsearch scatter-gather 3 shard lãng phí băng thông rẽ nhánh.
+- Ngay từ khi Worker Indexing đẩy document: `PUT products/_doc/{sku_id}?routing={seller_id}`.
+- Khi Application gọi Query cho Seller: Bổ sung Param `GET products/_search?routing={seller_id}`.
+- Giúp giảm 60-70% query latency cho Seller Dashboard bằng cách chỉ đánh vào đúng 1 Shard đích nơi hàng của Seller đó tọa lạc.
