@@ -1,18 +1,33 @@
-# Seller Service Design Document
+# Seller Service - Design Index
 
-## 1. Overview
-The Seller Service manages vendor onboarding, store profiles, seller verification status, commission rates, and payouts info.
+Tài liệu tổng hợp cho Seller Service đã được tách thành các module chi tiết, với cấp độ mô tả tương đương Product Service.
 
-## 2. Technology Choice
-- **Database**: PostgreSQL (Store metadata, legal info, tier settings).
-- **Blob Storage**: AWS S3 / MinIO (For KYC documents, store logos).
-- **Cache**: Redis (Store details queried mostly at checkout and product view).
+## 1. Mục tiêu thiết kế
 
-## 3. Key Entities
-- `sellers`: `id(PK)`, `user_id`, `company_name`, `tax_id`, `status(PENDING,VERIFIED,SUSPENDED)`
-- `store_profiles`: `store_id(PK)`, `seller_id(FK)`, `name`, `description`, `logo_url`, `theme`
-- `seller_configs`: `seller_id(PK)`, `return_policy`, `shipping_tiers`
+1. Thiết kế contract-first cho seller lifecycle và các luồng tài chính.
+2. Mô tả đầy đủ workflow onboarding, verification, status, commission, và payout.
+3. Chuẩn hóa thiết kế DB, cache L1/L2, Kafka events, workers, và state machine.
 
-## 4. Background Workers
-- **KYC Verification Worker**: Processes uploaded docs asynchronously, calls 3rd-party APIs for verifications.
-- **Status Sync**: Informs Product service and Search service via Kafka to deactivate listings when a seller is banned.
+## 2. Danh sách tài liệu chi tiết
+
+1. [Architecture Recommendations](seller_architecture_recommendations.md)
+2. [Database Schema (Write Store)](seller_db_design.md)
+3. [Caching Schema (Redis + L1)](seller_caching_schema.md)
+4. [Events Structure and Kafka Topics](seller_events.md)
+5. [State Machine and Lifecycle](seller_state_machine.md)
+6. [Background Workers and Jobs](seller_workers.md)
+7. [Workflows (API and Data Flow)](seller_workflow.md)
+
+## 3. Runtime và hướng triển khai
+
+1. Runtime đề xuất: Java/Spring Boot.
+2. Cơ sở dữ liệu: PostgreSQL với ledger và payout tables.
+3. Cache: Caffeine L1 kết hợp Redis L2.
+4. Event bus: Kafka với transactional outbox relay/CDC.
+
+## 4. Phụ thuộc liên service
+
+1. Upstream consume: Order, Review, Payment, Inventory events.
+2. Downstream produce: Product, Search, Order, Payment, Analytics consume `t.seller.events`.
+3. Luồng visibility listing phụ thuộc chặt chẽ vào contract `SELLER_STATUS_CHANGED`.
+
