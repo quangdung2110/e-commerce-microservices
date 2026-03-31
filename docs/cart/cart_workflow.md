@@ -41,6 +41,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
       - Kiểm tra tồn kho `display_quantity` (Snapshot) có đủ cho `quantity` yêu cầu không.
    - Build chuỗi JSON Payload hoàn chỉnh đại diện cho SKU đó.
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#31-thêm-add--cập-nhật-update-item-ngăn-chặn-race-condition)):**
+   - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
    - App Server truyền params ngầm vào Lua Script.
    - Redis kiểm tra ngưỡng cấu hình tối đa số lượng SKUs trong giỏ (`HLEN`). 
    - Redis cộng dồn Quantity nếu đã tồn tại, chặn trần max quantity per item.
@@ -49,10 +50,14 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
    - Gia hạn vòng đời giỏ hàng 7 ngày.
 3. **[Backend] - Hậu xử lý Write & Trả HTTP 200 OK:**
    - Xóa negative cache: `DEL cart:user:{id}:notfound` để tránh trả giỏ rỗng giả ở request đọc kế tiếp.
-   - Ngay sau khi Lua Script chạy xong nháy mắt (1-3ms), API trả về Success tức thì cho User mà không cần quan tâm DB đã lưu chưa.
+   - Hoàn tất publish path: `ZADD active_outbox_streams <now_ms> <stream_key>` + `PUBLISH outbox_notifications <stream_key>`.
+   - Dọn intent sau publish thành công: `ZREM outbox_publish_intents <stream_key>`.
+   - Nếu Pod chết giữa Lua thành công và publish path, [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) sẽ tự recovery từ `outbox_publish_intents` thay vì quét SCAN toàn keyspace.
+   - Relay Worker sẽ lấy `stream_id` trực tiếp từ Redis message ID (`msg.ID`) để bổ sung vào Kafka header; Postgres Sync dùng `stream_id` làm khóa ordering/idempotency chính.
+   - Sau khi hoàn tất publish path nhẹ (thường chỉ vài ms), API trả về Success cho User mà không cần chờ DB đã lưu xong.
 4. **[Background] - Bất đồng bộ xuống DB:**
    - [Outbox Relay Worker](cart_workers.md) gắp Event từ Redis Stream bắn sang Kafka.
-   - [Postgres Sync Worker](cart_workers.md) gắp Kafka Event Upsert xuống Table `cart_items` và cập nhật cột `updated_at` của bảng master `carts`. Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
+   - [Postgres Sync Worker](cart_workers.md) gắp Kafka Event Upsert xuống Table `cart_items` và cập nhật bảng master `carts` theo guard `stream_id` (primary) + `updated_at` (fallback). Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
 
 ## 3. API: Lấy thông tin Giỏ hàng (Đọc)
 **Endpoint:** `GET /api/v1/carts/mine`
@@ -162,12 +167,14 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 1. **[Backend] - Chuẩn bị Payload:** 
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)):**
-   - Truyền Idempotency Key và danh sách `sku_ids` vào Redis.
-   - Redis thực hiện chốt Idempotency ở đầu script bằng key trạng thái `PROCESSING` (NX + TTL ngắn), sau khi hoàn tất không có runtime error đổi sang `DONE` TTL 24h.
+   - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
+   - App Server chốt idempotency ở Go layer bằng key `cart:idemp:order_paid:{order_id}`: `SET NX EX 300` trước Lua, `SETEX DONE 24h` sau publish path thành công.
+   - Truyền danh sách `sku_ids` vào Redis (không truyền idempotency key vào Lua).
    - Redis xóa thẳng từng field SKU (`HDEL`) có trong danh sách nếu SKU đó tồn tại và phát [`CART_ITEM_DELETED`](cart_events.md#23-cart_item_deleted).
    - Check chốt hạ nếu giỏ hàng rỗng `HLEN == 0` → Xóa nguyên Key bằng `DEL`.
    - Nếu luồng do user xóa thủ công: phát [`CART_CLEARED`](cart_events.md#24-cart_cleared).
    - Nếu luồng do checkout (`ORDER_PAID`) và giỏ rỗng hoàn toàn: phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out). Nếu giỏ vẫn còn SKU khác (partial checkout), không phát event này và giỏ tiếp tục trạng thái `ACTIVE`.
+   - Sau khi Lua thành công, Go phải chạy `ZADD active_outbox_streams` + `PUBLISH outbox_notifications`, rồi `ZREM outbox_publish_intents`.
 3. **[Background] - Bất đồng bộ Database:**
    - Tương tự chiều Update, [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) gắp Event Delete đi xử lý, gỡ dòng trong bảng Cold Store (`cart_items`). Áp dụng [Out-of-order validation cho DELETE](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event).
    - Nếu nhận event `CART_CLEARED`, Update bảng `carts` chuyển `status` sang `DELETED`.

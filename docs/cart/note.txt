@@ -56,3 +56,21 @@ Read (View cart):
 
 Nếu bỏ Redis Hash, Write Path phải đổi thành:
 Write: HTTP → PostgreSQL (transaction, 5-30ms) → phát Kafka
+
+
+5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL:
+
+5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, chúng ta phải kiểm tra ở DB xem trường is_deleted của item đó, nếu is_deleted = true thì chúng ta phải kiểm tra thêm thời điểm của sự kiện này
+so sánh với trường tombstone_at của item đó. Nếu sự kiện này cũ hơn tombstone_at thì có nghĩa là item này đã bị xóa sau khi sự kiện này được sinh ra (do sự kiện này bị out-of-order), 
+do đó chúng ta sẽ bỏ qua sự kiện này và không thực hiện việc thêm item vào giỏ hàng trong DB. Cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng,
+tất nhiên chúng ta chỉ được cập nhật khi *primary*: event.stream_id >= carts.last_event_stream_id và *fallback*: event.updated_at >= carts.last_event_time_ms
+
+5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, chúng ta chia thành 2 trường hợp:
+- Trường hợp 1: nếu item đó chưa tồn tại trong DB, có nghĩa là sự kiện này bị out-of-order và đã bị bỏ qua khi xử lý sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED trước đó, do đó chúng ta sẽ tạo một
+record sản phẩm mới với trường is_deleted = true và tombstone_at = thời điểm hiện tại để đánh dấu rằng item này đã bị xóa, khi sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED sau này được sinh ra với cùng item_id nhưng có thời điểm cập nhật cũ hơn tombstone_at thì chúng ta sẽ bỏ qua sự kiện đó. 
+như trên đã đề cập ở phần 5.1
+- Trường hợp 2: nếu item đó đã tồn tại trong DB, chúng ta chỉ sẽ cập nhật khi *primary*: event.stream_id >= cart_items.redis_stream_id và *fallback*: event.deleted_at >= cart_items.product_snapshot.updated_at
+
+5.3 CART_CHECKED_OUT / CART_DELETED: khi nhận được sự kiện này, chúng ta chỉ sẽ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id >= carts.last_event_stream_id và *fallback*: event.checked_out_at >= carts.last_event_time_ms
+Một điều lưu ý quan trọng ở sự kiện này là chúng ta sẽ không xóa các record trong bảng cart_items, nó sẽ được xóa mềm khi duyệt qua các sự kiện CART_ITEM_DELETED với trường hợp 1 như đã đề cập ở phần 5.2, điều này giúp chúng ta tránh được việc phải xử lý các trường hợp out-of-order khi có nhiều sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED được sinh ra sau khi có sự kiện CART_CHECKED_OUT / CART_DELETED nhưng có thời điểm cập nhật cũ hơn sự kiện đó.
+

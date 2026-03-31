@@ -41,9 +41,12 @@ Message Kafka do Relay Worker phát đi sẽ mang theo đầy đủ header chu�
 *   `correlation_id`: ID để truy vết (thường lấy từ upstream hoặc user_id/session_id).
 *   `timestamp`: Thời điểm sinh ra event (ISO 8601 UTC).
 *   `source`: Định danh service gốc phát event (Cố định: `cart-service`).
+*   `stream_id`: Redis Stream Entry ID (VD: `1708616400456-0`) — khóa ordering/idempotency chính downstream.
+*   `stream_timestamp_ms`: Thành phần timestamp (ms) của `stream_id`.
+*   `event_sequence`: Thành phần sequence của `stream_id`.
 *   `payload`: Nội dung chi tiết biến động dữ liệu (ở Redis Stream là chuỗi JSON; sau Relay sang Kafka là object JSON đã parse).
 
-> **Lưu ý quan trọng:** Ở tầng Redis Stream (Outbox), message chỉ chứa `event_type` và `payload`. Các field `event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source` được **Relay Worker bổ sung** khi forward sang Kafka. Xem chi tiết tại [Outbox Pattern](cart_outbox_pattern.md#21-kiến-trúc-luồng-mới).
+> **Lưu ý quan trọng:** Ở tầng Redis Stream (Outbox), message chỉ chứa `event_type` và `payload`. Các field `event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence` được **Relay Worker bổ sung** khi forward sang Kafka. Xem chi tiết tại [Outbox Pattern](cart_outbox_pattern.md#21-kiến-trúc-luồng-mới).
 
 ## 2. Chi tiết các loại Event (Event Types) & Phân tích Payload
 
@@ -53,7 +56,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 
 ### 2.1. CART_ITEM_ADDED
 **Ngữ cảnh phát sinh:** Khách hàng thêm mới một mã sản phẩm (SKU) chưa từng tồn tại trong giỏ hàng hiện tại.
-**Mục đích DB Consumer:** Tạo mới dòng bản ghi (Insert) vào bảng `cart_items`. Đồng thời **re-activate** bảng `carts` (`status = 'ACTIVE'`) và cập nhật `updated_at` theo event time mới nhất.
+**Mục đích DB Consumer:** Tạo mới dòng bản ghi (Insert) vào bảng `cart_items`. Đồng thời **re-activate** bảng `carts` (`status = 'ACTIVE'`) với guard **`stream_id` (primary)**, fallback `updated_at` cho dữ liệu legacy chưa có stream-id.
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -65,6 +68,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "correlation_id": "req-123",
   "timestamp": "2026-02-28T10:00:00Z",
   "source": "cart-service",
+  "stream_id": "1708530000123-0",
+  "stream_timestamp_ms": "1708530000123",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "sku_id": "sku-1001",
@@ -89,7 +95,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 ### 2.2. CART_ITEM_UPDATED
 **Ngữ cảnh phát sinh:** 
 1. Khách hàng thay đổi số lượng sản phẩm (bấm tăng/giảm).
-**Mục đích DB Consumer:** Cập nhật lại số lượng và/hoặc nội dung snapshot sản phẩm vào bảng `cart_items`. Đồng thời **re-activate** `carts` (`status = 'ACTIVE'`) nếu trước đó đang `DELETED`/`CHECKED_OUT`/`ABANDONED`. Cấu trúc JSON Payload *giống hệt* `CART_ITEM_ADDED`, nhưng `quantity`, nội dung snapshot và `updated_at` đã được làm mới. Đảm bảo Luỹ đẳng (`updated_at` event phải lớn hơn `updated_at` trong DB).
+**Mục đích DB Consumer:** Cập nhật lại số lượng và/hoặc nội dung snapshot sản phẩm vào bảng `cart_items`. Đồng thời **re-activate** `carts` (`status = 'ACTIVE'`) nếu trước đó đang `DELETED`/`CHECKED_OUT`/`ABANDONED`. Cấu trúc JSON Payload *giống hệt* `CART_ITEM_ADDED`, nhưng `quantity`, nội dung snapshot và `updated_at` đã được làm mới. Đảm bảo luỹ đẳng theo **`stream_id` (primary)**; `updated_at` chỉ là fallback cho bản ghi legacy.
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -101,6 +107,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
+  "stream_id": "1708616400456-0",
+  "stream_timestamp_ms": "1708616400456",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "sku_id": "sku-1001",
@@ -137,6 +146,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "correlation_id": "req-125",
   "timestamp": "2026-02-28T10:10:00Z",
   "source": "cart-service",
+  "stream_id": "1708616400899-0",
+  "stream_timestamp_ms": "1708616400899",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "sku_id": "sku-1001",
@@ -146,12 +158,12 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 }
 ```
 
-> **Quan trọng:** `deleted_at` (Tính bằng **Milliseconds Epoch**; với Rate Limit 100 req/s/user, collision trong 1ms là bất khả thi) phải được so sánh với `updated_at` trong `product_snapshot` (JSONB) trên PostgreSQL. Chỉ xóa nếu `deleted_at > (product_snapshot->>'updated_at')::bigint` để tránh xóa nhầm item vừa được thêm lại sau khi event DELETE bị trễ (Out-of-order).
+> **Quan trọng:** Guard chính cho out-of-order là `stream_id` trong Kafka header. `deleted_at` vẫn được so sánh với `updated_at` trong `product_snapshot` làm fallback cho dữ liệu legacy chưa có `redis_stream_id`.
 
 ### 2.4. CART_CLEARED
 **Ngữ cảnh phát sinh:** 
 Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đến giỏ hàng không còn món đồ nào (`HLEN == 0`), Key Redis của giỏ sẽ tự động bị tiêu hủy (lệnh `DEL`).
-**Mục đích DB Consumer:** Chuyển đổi trạng thái `status` của master table `carts` từ `ACTIVE` sang `DELETED` theo cơ chế **guard event-time**. Chỉ cập nhật nếu `cleared_at` mới hơn hoặc bằng mốc hiện tại của cart; event cũ hơn phải bỏ qua để tránh out-of-order. Giúp cho CronJob dọn rác phân biệt được trạng thái để [xóa rác lạnh 3 tháng thay vì 6 tháng](cart_db_schema.md#4-quản-lý-không-gian-archival--cold-data-policy).
+**Mục đích DB Consumer:** Chuyển đổi trạng thái `status` của master table `carts` từ `ACTIVE` sang `DELETED` theo cơ chế **guard stream-version**. Chỉ cập nhật nếu `stream_id` mới hơn (primary), fallback `cleared_at` cho bản ghi legacy; event cũ hơn phải bỏ qua để tránh out-of-order. Giúp cho CronJob dọn rác phân biệt được trạng thái để [xóa rác lạnh 3 tháng thay vì 6 tháng](cart_db_schema.md#4-quản-lý-không-gian-archival--cold-data-policy).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -163,6 +175,9 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "correlation_id": "req-126",
   "timestamp": "2026-02-28T10:15:00Z",
   "source": "cart-service",
+  "stream_id": "1708616500000-0",
+  "stream_timestamp_ms": "1708616500000",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "user_id": "12345",
@@ -177,7 +192,7 @@ Khi [Order Event Consumer Worker (#6)](cart_workers.md#6-order-event-consumer-wo
 
 Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản phẩm → trạng thái `DELETED`), event này phản ánh ngữ nghĩa "đã thanh toán thành công".
 
-**Mục đích DB Consumer:** Chuyển đổi trạng thái `status` của master table `carts` từ `ACTIVE` sang `CHECKED_OUT` theo cơ chế **guard event-time**. Chỉ cập nhật nếu `checked_out_at` mới hơn hoặc bằng mốc hiện tại của cart; event cũ hơn phải bỏ qua. Giúp CronJob [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) phân loại đúng vòng đời (hard-delete sau 3 tháng thay vì 6 tháng).
+**Mục đích DB Consumer:** Chuyển đổi trạng thái `status` của master table `carts` từ `ACTIVE` sang `CHECKED_OUT` theo cơ chế **guard stream-version**. Chỉ cập nhật nếu `stream_id` mới hơn (primary), fallback `checked_out_at` cho bản ghi legacy; event cũ hơn phải bỏ qua. Giúp CronJob [Data Archival Cleaner](cart_workers.md#4-data-archival-cleaner-batch-cronjob) phân loại đúng vòng đời (hard-delete sau 3 tháng thay vì 6 tháng).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -189,6 +204,9 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:25:00Z",
   "source": "cart-service",
+  "stream_id": "1708616700000-0",
+  "stream_timestamp_ms": "1708616700000",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "user_id": "12345",
@@ -219,6 +237,9 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "correlation_id": "cron-20260315-020000",
   "timestamp": "2026-03-15T02:00:00Z",
   "source": "cart-service",
+  "stream_id": "1773530400000-0",
+  "stream_timestamp_ms": "1773530400000",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "user_id": "12345",
@@ -282,6 +303,6 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
 
 > **Type normalization:** Upstream `ORDER_PAID.payload.user_id` có thể là số (`number`). Cart Worker phải normalize về chuỗi trước khi gọi Lua (`user_id = strconv.FormatInt(...)`) để nhất quán với key format Redis.
 
-> **Idempotency:** Worker truyền `cart:idemp:order_paid:{order_id}` vào Lua Batch Delete. Lua sẽ tự set key trạng thái `PROCESSING` bằng `SET ... NX EX 300` ngay đầu script. Nếu đã có key thì skip an toàn. Khi script hoàn tất, key được đổi sang `DONE` với TTL 24h để chặn redelivery.
+> **Idempotency:** Worker xử lý `cart:idemp:order_paid:{order_id}` ở Go layer (không truyền vào Lua): `SET ... NX EX 300` trước khi gọi Lua Batch Delete và `SETEX ... DONE` sau khi publish path thành công.
 
 ---

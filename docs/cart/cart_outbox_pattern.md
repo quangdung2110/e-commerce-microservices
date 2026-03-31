@@ -61,6 +61,8 @@ redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_UPDATED', 'payload', e
 > **Lưu ý kiến trúc:** Event payload đẩy vào Stream **bắt buộc phải chứa `cart_id`, `sku_id` và `user_id`** (bổ sung bằng `cjson.encode` trong Lua), dù Hash Value không lưu các field này (vì đã implicit trong Key/Field). Consumer Worker cần chúng để biết ghi vào bảng DB nào và upsert bảng `carts` mà không parse chuỗi `cart_id`. Xem cấu trúc payload chi tiết tại [Events Structure](cart_events.md#2-chi-tiết-các-loại-event).
 
 > **Định danh Deterministic (Fix 2):** Cấu trúc Outbox phụ thuộc vào Relay Worker. Khi đọc Stream message (VD: ID `170853000-0`), Worker tuyệt đối KHÔNG được sinh ngẫu nhiên UUID làm `event_id` cho Kafka. Worker bắt buộc sinh `event_id` theo cách deterministic từ `Stream ID + cart_id` (ví dụ UUIDv5 hoặc băm ổn định tương đương) để mọi lần retry vẫn ánh xạ về cùng một ID.
+>
+> **Contract ordering mới:** Relay Worker bắt buộc propagate `stream_id`, `stream_timestamp_ms`, `event_sequence` vào Kafka message. Downstream idempotency/out-of-order guard dùng `stream_id` làm khóa chính; `updated_at` chỉ giữ vai trò fallback cho dữ liệu legacy chưa có `stream_id`.
 
 ### 2.2. Stream Memory Management (Kiểm soát bộ nhớ Stream)
 
@@ -69,10 +71,15 @@ Redis Streams **không tự xóa message** sau khi Consumer đọc xong. Cần k
 1.  **Tuyệt đối không dùng `MAXLEN` rủi ro trên `XADD`:** Lệnh `XADD` bỏ `MAXLEN` để chống hiện tượng mất event chưa ACK khi hệ thống kẹt.
 2.  **`XACK` chỉ đánh dấu đã xử lý**, KHÔNG xóa message khỏi Stream. Sau khi [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) forward event sang Kafka thành công, gọi `XACK` để đánh dấu message đã được consume trong Consumer Group (tránh re-delivery cho cùng group).
 3.  **`XTRIM MINID` định kỳ (CronJob bổ sung):** Một Goroutine background (Stream Trimmer) chạy mỗi 5 phút quét các stream và gọi `XTRIM {cart_key}:outbox MINID ~ <lowest_safe_id>`. Nếu stream rỗng và không còn message pending, gọi `DEL` xóa hẳn stream và xóa khỏi ZSET `active_outbox_streams`.
-4.  **Luồng Đọc Hybrid (Pub/Sub + ZSET Fallback) qua Application-Level Dual-Write:** 
+    - **Guard bắt buộc chống race:** Nếu `XLEN > 0` nhưng `XINFO GROUPS` trả về rỗng (chưa có Consumer Group), Trimmer phải **bỏ qua (skip)** stream ở chu kỳ hiện tại, tuyệt đối không trim/delete.
+4.  **Luồng Đọc Hybrid (Pub/Sub + ZSET Fallback + Intent Index) qua Application-Level Dual-Write:** 
+    - Trước khi gọi Lua script có `XADD`, ứng dụng (Go) gọi `ZADD outbox_publish_intents <now_ms> <stream_key>` để tạo intent.
     - Lệnh Lua tạo event chỉ ghi vào Hash và Stream của chính user đó (cùng Hash Tag).
     - Ngay sau khi Lua script thành công, ứng dụng (Go) chạy một background goroutine gọi `ZADD active_outbox_streams` và lệnh `PUBLISH outbox_notifications` độc lập. Điều này giúp né lỗi `CROSSSLOT` trên Redis Cluster do `active_outbox_streams` là global key.
-    - Worker nhận real-time qua Pub/Sub, hoặc qua luồng Fallback định kỳ scan ZSET để chống rớt event. Để chống mọi lỗi do sập node Go ngay đúng lúc kẹp giữa đoạn chạy Lua và gọi ZADD, hệ thống có thêm một **Keyspace Reaper** quét toàn bộ stream định kỳ.
+    - Sau khi publish path thành công, Go gọi `ZREM outbox_publish_intents <stream_key>` để clear intent.
+    - Worker nhận real-time qua Pub/Sub, hoặc qua luồng Fallback định kỳ scan ZSET để chống rớt event.
+    - Để chống crash đúng cửa sổ Lua thành công nhưng Go chết trước khi `ZADD`/`PUBLISH`, hệ thống dùng **Intent Recovery Worker** đọc `outbox_publish_intents` theo score và replay publish path. Cơ chế này thay thế SCAN toàn keyspace trong steady-state.
+    - Với luồng `ORDER_PAID`, idempotency key `cart:idemp:order_paid:{order_id}` phải xử lý ở Go layer (single-key GET/SET), không đưa vào Lua để tránh rủi ro `CROSSSLOT`.
 
 Xem chi tiết trong [Các Background Workers](cart_workers.md).
 
@@ -96,13 +103,14 @@ Phần `{...}` trong tên key là Hash Tag — Redis Cluster chỉ hash phần n
 
 **Sharding cho Outbox Stream:**
 
-Mỗi cart có outbox stream riêng (`{cart:user:{user_id}}:outbox`) thay vì stream chia sẻ (`cart_outbox_stream_{shard_id}`). Điều này đảm bảo ordering per-cart tự nhiên mà không cần sharding index riêng. Stream Trimmer có thể duyệt qua ZSET `active_outbox_streams` (hoặc dùng `SCAN` dự phòng) để lấy danh sách toàn bộ các stream cần dọn dẹp dung lượng.
+Mỗi cart có outbox stream riêng (`{cart:user:{user_id}}:outbox`) thay vì stream chia sẻ (`cart_outbox_stream_{shard_id}`). Điều này đảm bảo ordering per-cart tự nhiên mà không cần sharding index riêng. Stream Trimmer duyệt qua ZSET `active_outbox_streams`, còn recovery path duyệt qua ZSET `outbox_publish_intents`; steady-state không dùng SCAN full keyspace Redis.
 
 > **Quan trọng:** Tất cả code Lua trong các file thiết kế phải sử dụng format key với Hash Tag. Backend khi xây dựng `KEYS[]` để gọi Lua cũng phải đảm bảo truyền key đã có Hash Tag.
 
 ## 3. Lợi ích Đạt Được
 
 1.  **Đảm bảo At-least-once Delivery:** Dù Service Crash hay Kafka chết mạng, Event không bao giờ bị mất đi, chúng nằm an toàn dưới dạng Stream lưu trên Redis đợi ngày mạng lên lại sẽ tự chạy. Stream được bảo vệ dung lượng qua cơ chế Trim MINID an toàn nhưng đủ buffer cho hàng giờ downtime.
-2.  **Độ trễ thấp hoàn hảo:** Khách hàng bấm "Thêm giỏ hàng", lệnh lưu vào Redis siêu gọn (Dưới 5ms), user nhận HTTP 200 OK ngay lập tức. Việc Kafka bị chậm hay lỗi hoàn toàn bị cô lập khỏi Main Thread của HTTP API.
-3.  **Hưởng lợi từ Redis Persistence:** Vì Redis hỗ trợ AOF (Append Only File) persistence, khả năng mất dữ liệu trong Redis Stream cũng được giảm tối thiểu nếu Server Reboot.
-4.  **Pending Message Recovery:** Khi Relay Worker crash giữa chừng (đã đọc nhưng chưa `XACK`), Redis Streams tự động giữ message ở trạng thái Pending. Worker sau khi restart sẽ chạy `XAUTOCLAIM` / `XPENDING` để nhặt lại các message bị mắc kẹt. Xem chi tiết tại [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker).
+2.  **Ordering mạnh hơn cho downstream:** `stream_id` (Redis message ID) là ordering token tự nhiên, không phụ thuộc clock của Pod ứng dụng.
+3.  **Độ trễ thấp hoàn hảo:** Khách hàng bấm "Thêm giỏ hàng", lệnh lưu vào Redis siêu gọn (Dưới 5ms), user nhận HTTP 200 OK ngay lập tức. Việc Kafka bị chậm hay lỗi hoàn toàn bị cô lập khỏi Main Thread của HTTP API.
+4.  **Hưởng lợi từ Redis Persistence:** Vì Redis hỗ trợ AOF (Append Only File) persistence, khả năng mất dữ liệu trong Redis Stream cũng được giảm tối thiểu nếu Server Reboot.
+5.  **Pending Message Recovery:** Khi Relay Worker crash giữa chừng (đã đọc nhưng chưa `XACK`), Redis Streams tự động giữ message ở trạng thái Pending. Worker sau khi restart sẽ chạy `XAUTOCLAIM` / `XPENDING` để nhặt lại các message bị mắc kẹt. Xem chi tiết tại [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker).

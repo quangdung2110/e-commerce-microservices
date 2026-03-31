@@ -63,6 +63,8 @@ Mỗi Field/Value trong Hash map với một món hàng.
 
 *Lưu ý: `updated_at` và `product_updated_at` (Epoch timestamp tính bằng **Milliseconds**) được lưu dưới dạng **chuỗi (String)** để tránh lỗi mất độ chính xác (Precision Loss) từ định dạng khoa học của thư viện `cjson` trên Redis. Field `product_updated_at` chuyên dùng để chống Timeline Collision cho luồng Pull gRPC ngẫu nhiên (On-demand).*
 
+*Lưu ý quan trọng về thứ tự sự kiện:* `updated_at` trong payload chỉ là business timestamp để hiển thị/timeline mềm. Khóa ordering/idempotency chính cho downstream là **Redis Stream Entry ID** (VD: `1708616400456-0`) do `XADD` sinh ra và Relay Worker đọc từ `msg.ID`.
+
 > **Lý do dùng Milliseconds:** Epoch millisecond năm 2026 ≈ 13 chữ số, nằm trong ngưỡng safe integer của JavaScript (2^53). Epoch microsecond ≈ 16 chữ số vượt ngưỡng này, gây mất precision khi truyền qua JSON tới client JS. Với Rate Limit 100 req/s/user, collision trong 1ms là bất khả thi.
 
 *Lưu ý về `is_available`: Nếu gRPC Pull Model trả về `is_available = false` (product BANNED/deleted/out-of-stock) trong luồng Cache Hit, **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` để bảo vệ các request đọc tiếp theo và luồng Checkout. Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ ghi 1 field, không EXPIRE.*
@@ -85,7 +87,7 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 *   **ARGV[3]:** `$max_qty` — Giới hạn tối đa số lượng mỗi SKU (Default: 100)
 *   **ARGV[4]:** `$max_skus` — Giới hạn tối đa số loại SKU trong giỏ (Default: 50)
 *   **ARGV[5]:** `$step` — Số lượng cộng thêm (VD: 1 hoặc -1)
-*   **ARGV[6]:** `$current_timestamp_ms` — Epoch **milliseconds** hiện tại
+*   **ARGV[6]:** `$event_time_ms` — Epoch **milliseconds** từ Backend (business timestamp; không phải ordering arbiter)
 
 **Luồng xử lý:**
 0. Validate input bắt buộc: `step` phải là số nguyên khác 0, `payload_json` phải là JSON hợp lệ và giới hạn kích thước ở tầng Backend (khuyến nghị <= 8KB/item).
@@ -95,7 +97,7 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 4. Nếu đã tồn tại → Parse JSON hiện tại và JSON mới. Cộng dồn: `new_qty = current_qty + step`. Cập nhật `updated_at` bằng chuỗi (String), bảo toàn `added_at`, và chỉ cập nhật `is_available`/`product_updated_at` nếu bản từ request có phiên bản mới hơn.
 5. Validate chặn trần giới hạn mua của từng Item: `if new_qty > tonumber(ARGV[3]) then new_qty = tonumber(ARGV[3]) end`.
 6. Stringify lại JSON và ghi đè (`redis.call('HSET', KEYS[1], ARGV[1], encoded_json)`).
-7. **Build event payload** bổ sung `cart_id`, `sku_id` và `user_id` vào JSON rồi đẩy vào Outbox Stream: `redis.call('XADD', KEYS[2], '*', 'event_type', event_name, 'payload', event_payload)`. Cắt bỏ MAXLEN để tránh mất event chưa ACK, delegate việc dọn dẹp bộ nhớ cho Stream Trimmer (sử dụng XTRIM MINID).
+7. **Build event payload** bổ sung `cart_id`, `sku_id` và `user_id` vào JSON rồi đẩy vào Outbox Stream bằng `XADD`. ID do `XADD` trả về (Stream Entry ID) là ordering token chính cho downstream. Cắt bỏ MAXLEN để tránh mất event chưa ACK, delegate việc dọn dẹp bộ nhớ cho Stream Trimmer (sử dụng XTRIM MINID).
 8. Gia hạn vòng đời (EXPIRE 7 days).
 
 **Code Lua Script tham khảo:**
@@ -108,7 +110,7 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 -- ARGV[3]: max_qty (Giới hạn của từng món)
 -- ARGV[4]: max_skus (Giới hạn tổng số món trong giỏ, khuyến nghị 50)
 -- ARGV[5]: step (Số lượng cộng thêm, VD: 1 hoặc -1)
--- ARGV[6]: current_timestamp_ms (Milliseconds epoch tính tại Backend Server)
+-- ARGV[6]: event_time_ms (Milliseconds epoch từ Backend; dùng cho business timestamp)
 -- ARGV[7]: user_id (Cần bổ sung vào event payload để Worker upsert bảng carts)
 
 -- 1. Chặn Hack/Bot làm phình to Hash Key (Giới hạn số SKUs)
@@ -192,14 +194,22 @@ if is_new == 0 then
 end
 
 -- 7. Atomicity: Đẩy Event xuống Outbox Stream (bỏ MAXLEN để tránh mất event khi relay bị chậm)
-redis.call('XADD', KEYS[2], '*', 'event_type', event_name, 'payload', event_payload)
+--    stream_id được Relay Worker đọc từ Redis message ID (msg.ID) để làm ordering/idempotency key.
+local stream_id = redis.call('XADD', KEYS[2], '*', 'event_type', event_name, 'payload', event_payload)
 
 return encoded_json
 ```
 
 Vì Redis thực thi Lua Script ở dạng đơn luồng (Single-threaded), kịch bản này triệt tiêu hoàn toàn Race Condition giữa các HTTP Requests và quá trình tạo Event Outbox mà không cần phân mảnh bước gọi.
 
-> **Lưu ý CROSSSLOT:** Các thao tác `ZADD active_outbox_streams` và `PUBLISH outbox_notifications` **bắt buộc** phải được thực hiện ở tầng Application (Go) sau khi Lua Script chạy thành công. Không mang các lệnh này vào Lua vì `active_outbox_streams` không có cùng Hash Tag với stream `{cart:user:{user_id}}:outbox`, nếu để trong Lua sẽ bắn ra lỗi CROSSSLOT trên Redis Cluster.
+> **Giao thức Intent Index bắt buộc (Fix bỏ SCAN toàn keyspace):** Với mọi luồng có `XADD`, tầng Go phải chạy trình tự sau:
+> 1) Trước khi gọi Lua: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
+> 2) Gọi Lua script (Hash + `XADD` atomic).
+> 3) Nếu Lua thành công: gọi `ZADD active_outbox_streams <now_ms> <stream_key>` + `PUBLISH outbox_notifications <stream_key>`.
+> 4) Sau bước 3 thành công: `ZREM outbox_publish_intents <stream_key>`.
+> 5) Nếu Lua fail: vẫn phải `ZREM outbox_publish_intents <stream_key>` để dọn intent rác.
+
+> **Lưu ý CROSSSLOT:** Các thao tác `ZADD active_outbox_streams`, `PUBLISH outbox_notifications`, `ZADD/ZREM outbox_publish_intents` **bắt buộc** thực hiện ở tầng Application (Go). Không mang các lệnh global key vào Lua vì sẽ phát sinh lỗi CROSSSLOT trên Redis Cluster.
 
 > **Lưu ý Negative Cache Invalidation:** Sau mỗi lần Write thành công (Add/Update/Delete), Backend phải gọi `DEL cart:user:{user_id}:notfound` để xóa cache âm 60 giây, tránh tình trạng vừa thêm hàng nhưng API đọc tiếp theo vẫn trả giỏ rỗng giả.
 
@@ -225,21 +235,14 @@ Một giỏ hàng có thể có nhiều SKU. Khi người dùng bấm xóa nhi�
 -- ARGV[2]: clear_event_type — Loại event phát khi giỏ hàng bị rỗng hoàn toàn
 --          "CART_CLEARED"     : User chủ động xóa hết sản phẩm (default)
 --          "CART_CHECKED_OUT" : Gọi từ Order Event Consumer Worker (#6) sau khi ORDER_PAID
--- ARGV[3]: idempotency_key (VD: 'cart:idemp:order_paid:123'. Truyền rỗng '' nếu là user tự xoá)
--- ARGV[4]: user_id (Dùng để build event payload cho Worker)
--- ARGV[5]: sku_ids_json
+-- ARGV[3]: user_id (Dùng để build event payload cho Worker)
+-- ARGV[4]: sku_ids_json
 --          - Với checkout: ["sku-1001","sku-1002",...]
 --          - Với user manual delete: ["sku-1001","sku-1002",...]
 
--- Xử lý Idempotency
-if ARGV[3] ~= '' then
-    local idemp_ok = redis.call('SET', ARGV[3], 'PROCESSING', 'NX', 'EX', 300)
-    if not idemp_ok then return 0 end
-end
-
 local current_time_str = tostring(ARGV[1])
-local user_id = ARGV[4]
-local sku_ids = cjson.decode(ARGV[5])
+local user_id = ARGV[3]
+local sku_ids = cjson.decode(ARGV[4])
 
 local deleted_count = 0
 local skus_to_delete = {} -- Mảng chứa các SKU cần xóa vật lý để gom nhóm HDEL
@@ -286,19 +289,19 @@ if deleted_count > 0 then
     end
 end
 
--- 3. Ký giấy hoàn tất
-if ARGV[3] ~= '' then
-    -- Nếu Redis lỗi ở bước này, script fail và caller phải retry toàn bộ request.
-    -- Key PROCESSING (TTL 300s) giúp chặn re-entry trong thời gian ngắn.
-    redis.call('SETEX', ARGV[3], 86400, 'DONE')
-end
-
 return deleted_count
 ```
 
 > **Lưu ý về partial checkout:** Nếu user chỉ checkout một phần giỏ, script chỉ xóa các `sku_id` có trong snapshot checkout. Các SKU không nằm trong danh sách vẫn giữ nguyên. Nếu `remaining_items > 0` sau xử lý, không phát `CART_CHECKED_OUT` và giỏ tiếp tục trạng thái `ACTIVE`. `CART_CHECKED_OUT` chỉ phát khi **toàn bộ** giỏ rỗng sau checkout.
 > 
-> **Lưu ý CROSSSLOT:** Giống như script Add/Update, thao tác `ZADD` và `PUBLISH` phải được gọi ở tầng Application (Go) ngay sau khi Lua script chạy xong chứ không nhúng trực tiếp vào đây.
+> **Idempotency cho ORDER_PAID bắt buộc xử lý ở Go layer (không nằm trong Lua):**
+> 1) Trước Lua: `GET cart:idemp:order_paid:{order_id}`.
+> 2) Nếu chưa có: `SET cart:idemp:order_paid:{order_id} PROCESSING NX EX 300`.
+> 3) Gọi Lua Batch Delete (không truyền idempotency key vào ARGV).
+> 4) Sau publish path thành công: `SETEX cart:idemp:order_paid:{order_id} 86400 DONE`.
+> 5) Nếu lỗi: để TTL PROCESSING tự hết hạn hoặc ghi trạng thái lỗi ngắn hạn theo policy retry.
+>
+> **Lưu ý CROSSSLOT + Intent Index:** Giống script Add/Update, thao tác `ZADD active_outbox_streams`, `PUBLISH outbox_notifications` và `ZADD/ZREM outbox_publish_intents` phải chạy ở tầng Application (Go). Batch Delete cũng bắt buộc pre-register intent trước khi gọi Lua và clear intent sau khi publish path thành công.
 
 
 ### 3.5. Chiến lược Re-populate Cache (từ Cold Store)
