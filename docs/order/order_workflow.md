@@ -84,13 +84,14 @@ Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Se
    ```sql
    SELECT status, version FROM orders WHERE id = :orderId FOR UPDATE;
    ```
-   - Guard: `status` phải là `PENDING_PAYMENT` (Buyer cancel) hoặc `PROCESSING` (Admin force cancel).
+   - Buyer cancel: `status` phải là `PENDING_PAYMENT`.
+   - Admin force cancel: `status` phải là `PENDING_PAYMENT`, `PAID` hoặc `PROCESSING`.
    - Nếu không hợp lệ → `409 Conflict`.
 4. **[Temporal]** Signal Temporal Workflow: `workflowStub.signal("CancelOrder", reason)`.
 5. **[Temporal Compensation Stack]** Tự động chạy:
-   - `RollbackInventoryActivity` → Nhả reserved stock.
-   - `RollbackPromotionActivity` → Hoàn voucher budget.
    - `CancelPaymentActivity` → Hủy pending payment (nếu có).
+   - `RollbackPromotionActivity` → Hoàn voucher budget.
+   - `RollbackInventoryActivity` → Nhả reserved stock.
 6. **[FSM + PostgreSQL]** Update: `status = 'CANCELLED'`, `version = version + 1`. Insert `order_status_history`.
 7. **[Outbox]** Insert `outbox_events` với `ORDER_CANCELLED`.
 8. **[Response]** `200 OK`.
@@ -117,12 +118,12 @@ sequenceDiagram
 
     rect rgb(200, 230, 200)
     Note over TW: Pre-Payment Saga
-    TW->>IV: ReserveInventoryActivity
-    IV-->>TW: Reserved OK
-    TW->>PM: ReservePromotionActivity
-    PM-->>TW: Budget Reserved OK
     TW->>OS: CreateOrderActivity (DB INSERT)
     OS-->>TW: Order Created (ID=10001)
+   TW->>IV: ReserveInventoryActivity
+   IV-->>TW: Reserved OK
+   TW->>PM: ReservePromotionActivity
+   PM-->>TW: Budget Reserved OK
     TW->>PY: InitiatePaymentActivity
     PY-->>TW: payment_url + txn_id
     end
@@ -137,8 +138,8 @@ sequenceDiagram
     Note over TW: Post-Payment Saga
     TW->>IV: DeductInventoryActivity
     TW->>PM: ConfirmPromotionActivity
-    TW->>SH: CreateShippingLabelsActivity
     TW->>OS: UpdateOrderStatusActivity → PROCESSING
+   TW->>SH: CreateShippingLabelsActivity
     end
 ```
 
@@ -147,37 +148,56 @@ sequenceDiagram
 **4.1. Nhận Request từ Checkout:**
 1. **[Backend]** Validate `checkout_token` từ Redis: kiểm tra chưa dùng, chưa hết TTL, anti-tamper.
 2. **[Backend]** Mark `checkout_token` as USED (SETNX chống đúp submit).
-3. **[Temporal]** Start `OrderCheckoutWorkflow` với WorkflowID = `order-checkout-{order_id}`.
+3. **[Temporal]** Start `OrderCheckoutWorkflow` với WorkflowID = `order-checkout-{checkout_token}`.
+   - `order_id` được sinh ngay ở bước `CreateOrderActivity` đầu tiên (4.2 step 1), trước mọi bước reserve liên service.
+   - Payment/Shipping workers signal workflow qua lookup `checkout_token` theo `order_id` trong DB.
 
 **4.2. Pre-Payment Saga (Temporal Orchestrate):**
 
 | Bước | Activity | Service | Thành công | Compensation (Rollback) |
 |:--|:---|:---|:---|:---|
-| 1 | `ReserveInventoryActivity` | Inventory | Redis Lua Reserve → Kafka Event | `RollbackInventoryActivity` (Release) |
-| 2 | `ReservePromotionActivity` | Promotion | Redis Lua Lock budget (Lua Script 2) → Kafka Event | `RollbackPromotionActivity` (Release Budget) |
-| 3 | `CreateOrderActivity` | Order (self) | INSERT `orders`, `order_parcels`, `order_items`, `order_promotions` | *(Không cần — chỉ mark CANCELLED)* |
+| 1 | `CreateOrderActivity` | Order (self) | INSERT `orders`, `order_parcels`, `order_items`, `order_promotions` với trạng thái `PENDING_PAYMENT` | `CancelOrderActivity` (mark `CANCELLED`, reason=`PRE_PAYMENT_SAGA_FAILED`) |
+| 2 | `ReserveInventoryActivity` | Inventory | Redis Lua Reserve → Kafka Event | `RollbackInventoryActivity` (Release) |
+| 3 | `ReservePromotionActivity` | Promotion | Redis Lua Batch Reserve all-or-nothing (Lua Script 2B) | `RollbackPromotionActivity` (Release Budget) |
 | 4 | `InitiatePaymentActivity` | Payment | Tạo `payment_transaction`, trả `payment_url` | `CancelPaymentActivity` |
+
+> **Compensation registration order (Pre-Payment):** `CancelOrder` → `RollbackInventory` → `RollbackPromotion` → `CancelPayment`.
+> Khi rollback, Temporal chạy theo LIFO: `CancelPayment` → `RollbackPromotion` → `RollbackInventory` → `CancelOrder`.
 
 > [!NOTE]
 > **Tại sao Promotion `/reserve` nằm trong Saga chứ không khóa ở Checkout Preview?** Khóa tại Preview tạo lỗ hổng lạm dụng nghiêm trọng: kẻ xấu có thể dùng bot mở hàng loạt checkout session, áp voucher Flash Sale và bỏ trống, làm cạn kiệt budget mà không phát sinh đơn hàng thực sự. `ReservePromotionActivity` chạy ngay tại đây — sau khi user đã commit Submit và `order_id` đã tồn tại — đảm bảo mỗi lần lock budget đều gắn với một giao dịch thực sự. Xem [Promotion Workflow Section 4](../promotion/promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow).
 
+> [!IMPORTANT]
+> Nếu `ReservePromotionActivity` fail (ví dụ `BUDGET_EXHAUSTED` ở một mã trong batch), Order phải propagate lỗi có cấu trúc (`failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`) về Checkout. Không collapse thành lỗi hạ tầng 500. Order **không** tự tính lại discount; Checkout mới là nơi gọi lại Promotion evaluate để dựng `dropped_promotions[]`, trả `409 PROMOTION_RECALCULATION_NEEDED`, rồi dẫn user đi lại Preview với token mới.
+
 **4.3. Chờ Payment Signal:**
 - Temporal Workflow enters `await()` state — chờ Signal từ [Payment Status Consumer](order_workers.md#3-payment-status-consumer).
-- **Timeout Timer:** 15 phút. Nếu hết → Compensation Stack (Release Inventory + Release Promotion Budget + Cancel Payment).
+- **Timeout Timer:** 15 phút. Nếu hết → Compensation Stack theo LIFO (`CancelPayment` -> `RollbackPromotion` -> `RollbackInventory` -> `CancelOrder`).
 - **Payment Success Signal:** Resume workflow → Post-Payment Saga.
+- **Signal acceptance window:** Chỉ nhận Payment signal khi workflow còn ở trạng thái `WAITING_PAYMENT`. Signal đến sau khi timeout/complete sẽ bị reject bởi idempotency guard + workflow-state guard.
 
 **4.4. Post-Payment Saga (Sau khi nhận Payment Success):**
 
 | Bước | Activity | Service | Mô tả | Compensation |
 |:--|:---|:---|:---|:---|
-| 1 | `DeductInventoryActivity` | Inventory | Chuyển Reserved → Deducted (không quay lại available) | *(Đã deduct — cần Refund flow riêng)* |
-| 2 | `ConfirmPromotionActivity` | Promotion | Chuyển `coupon_usages.status` RESERVED → REDEEMED | `RollbackPromotionActivity` |
-| 3 | `CreateShippingLabelsActivity` | Shipping | Tạo vận đơn cho từng parcel. Nhận `tracking_number` | `CancelShippingActivity` |
-| 4 | `UpdateOrderStatusActivity` | Order (self) | FSM `PAID` → `PROCESSING` + Produce `ORDER_PAID` | — |
+| 1 | `DeductInventoryActivity` | Inventory | Chuyển Reserved → Deducted (commit stock movement) | `RollbackDeductedInventoryActivity` |
+| 2 | `ConfirmPromotionActivity` | Promotion | Commit reservation trong Redis + ghi ledger `coupon_usages.status = REDEEMED` (bắt buộc truyền `idempotency_key` theo từng `promotion_id`) | `RollbackPromotionActivity` |
+| 3 | `UpdateOrderStatusActivity` | Order (self) | FSM `PAID` → `PROCESSING` | `RevertOrderStatusToPaidActivity` |
+| 4 | `CreateShippingLabelsActivity` | Shipping | Tạo vận đơn cho từng parcel. Nhận `tracking_number` | `CancelShippingActivity` |
+
+> **Compensation registration order (Post-Payment):** `RollbackDeductedInventory` → `RollbackPromotion` → `RevertOrderStatusToPaid` → `CancelShipping`.
+> Khi rollback, Temporal chạy LIFO: `CancelShipping` → `RevertOrderStatusToPaid` → `RollbackPromotion` → `RollbackDeductedInventory`.
+
+> [!IMPORTANT]
+> **Contract Idempotency-Key khi gọi Promotion (sync path):**
+> 1. `ConfirmPromotionActivity` phải truyền `idempotency_key` theo từng `promotion_id` (không dùng 1 key chung cho nhiều promotion).
+> 2. `RollbackPromotionActivity` phải truyền `idempotency_key` theo từng `promotion_id`.
+> 3. Nếu bật nhánh sync `/refund` trong Refund workflow, cũng phải truyền `idempotency_key` theo từng `promotion_id`.
+> 4. Các key này do Order sinh và giữ ổn định xuyên retry; Promotion dùng trực tiếp làm `promotion_event_idempotency.event_id`.
 
 **4.5. Produce Events sau Saga:**
-- `ORDER_CREATED` (sau bước 4.2 step 3 — sau khi `CreateOrderActivity` insert thành công `orders`, `order_parcels`, `order_items`, `order_promotions`)
-- `ORDER_PAID` (sau bước 4.4 step 4 — **Event thông báo trạng thái đã thanh toán:** trigger Cart delete, Notification, CQRS/Analytics. Các bước Promotion confirm và Inventory deduct đã được xử lý đồng bộ ở bước 4.4)
+- `ORDER_CREATED` (sau bước 4.2 step 1 — sau khi `CreateOrderActivity` insert thành công `orders`, `order_parcels`, `order_items`, `order_promotions`)
+- `ORDER_PAID` (sau bước 4.4 step 4 thành công — **Event thông báo trạng thái đã thanh toán và sẵn sàng fulfillment:** trigger Cart delete, Notification, CQRS/Analytics. Các bước Promotion confirm và Inventory deduct đã được xử lý đồng bộ ở bước 4.4)
 
 ---
 
@@ -186,14 +206,17 @@ sequenceDiagram
 **Ngữ cảnh:** Kafka Consumer nhận `PAYMENT_SUCCESS` / `PAYMENT_FAILED` từ Payment Service.
 
 1. **[Kafka Consumer]** Nhận event từ `t.payment.events`. Xem [Payment Status Consumer](order_workers.md#3-payment-status-consumer).
-2. **[Idempotency Check]** Redis `SETNX payment:signal:{order_id}:{event_type}` TTL 24h.
-3. **[Temporal Signal]** `workflowClient.newSignalStub("order-checkout-{order_id}").paymentResult(signalPayload)`.
+2. **[Idempotency Check]** Redis `SETNX payment:signal:{order_id}:{payment_transaction_id}:{event_type}` TTL 30 phút.
+3. **[Temporal Signal]** Lookup `checkout_token` theo `order_id` trong DB rồi signal `workflowClient.newSignalStub("order-checkout-{checkout_token}").paymentResult(signalPayload)`.
 4. **[Temporal Workflow Resume]:**
    - SUCCESS → Chạy Post-Payment Saga (Bước 4.4 ở trên).
    - FAILED/EXPIRED → Chạy Compensation Stack → `ORDER_CANCELLED`.
+   - REFUND_SUCCESS → FSM `RETURN_REQUESTED` → `REFUNDED` + produce `ORDER_REFUNDED`.
+   - REFUND_FAILED → giữ `RETURN_REQUESTED`, update `payment_status = REFUND_FAILED`, produce `ORDER_REFUND_FAILED`.
+   - REFUND_REVERSED (provider optional) → giữ `RETURN_REQUESTED`, update `payment_status = REFUND_REVERSED`, produce `ORDER_REFUND_FAILED` với reason `REFUND_REVERSED_BY_PROVIDER`.
 
 > [!WARNING]
-> **Race Condition:** Payment Signal có thể đến **cùng lúc** với Temporal Timer timeout 15 phút. Temporal Framework giải quyết bằng: chỉ 1 signal/timer thắng race. Nếu Timer fire trước → Signal bị ignore (workflow đã complete). Nếu Signal đến trước → Timer bị cancel.
+**Race Condition:** Payment Signal có thể đến **cùng lúc** với Temporal Timer timeout 15 phút. Temporal Framework giải quyết bằng cơ chế quyết định đơn: chỉ 1 nhánh (signal hoặc timer) được commit vào workflow history. Nếu Timer fire trước → workflow đóng nhánh timeout và signal đến sau bị reject. Nếu Signal đến trước → Timer bị cancel.
 
 > **Race Mitigation Contract:** Trước khi commit khuyến mãi, `ConfirmPromotionActivity` phải gia hạn reservation key thêm 60 giây grace-window rồi mới xác nhận `REDEEMED`. Mục tiêu là tránh va chạm biên giữa Payment success, Timer timeout, và Promotion sweep.
 
@@ -203,12 +226,13 @@ sequenceDiagram
 
 **Ngữ cảnh:** Shipping Service webhook → Shipping Service → Kafka → Order Service consumer.
 
-1. **[Kafka Consumer]** Nhận `SHIPMENT_STATUS_UPDATED` từ `t.shipping.events`. Xem [Shipping Status Consumer](order_workers.md#4-shipping-status-consumer).
+1. **[Kafka Consumer]** Nhận `SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`, `SHIPMENT_DELAYED` từ `t.shipping.events`. Xem [Shipping Status Consumer](order_workers.md#4-shipping-status-consumer).
 2. **[Mapping]** Áp dụng [Status Mapping Table](order_state_machine.md#23-mapping-với-shipping-service-standardized_status).
 3. **[FSM Validation]** Kiểm tra transition hợp lệ theo [Parcel FSM](order_state_machine.md#22-bảng-chi-tiết-transitions).
 4. **[PostgreSQL]** Update `order_parcels.status` + increment `version`.
-5. **[Auto-Complete Check]** Nếu tất cả parcels `DELIVERED` → Master Order FSM `PROCESSING` → `COMPLETED`.
+5. **[Auto-Complete Check]** Nếu tất cả parcels `DELIVERED` ổn định trong cửa sổ coalescing 5 giây → Master Order FSM `PROCESSING` → `COMPLETED`.
 6. **[Outbox]** Produce `PARCEL_STATUS_CHANGED` và/hoặc `ORDER_COMPLETED`.
+7. **[Delayed Escalation]** Với `SHIPMENT_DELAYED` level cao, cập nhật metadata SLA và produce `ORDER_STATUS_CHANGED` reason `SHIPMENT_DELAYED_ESCALATED` để CQRS/Ops theo dõi.
 
 ---
 
@@ -219,8 +243,9 @@ sequenceDiagram
 1. **[Temporal Timer]** `workflow.newTimer(Duration.ofMinutes(15))` chạy song song với `await(paymentSignal)`.
 2. **[Timer Fires]** Temporal trigger Compensation Stack theo thứ tự LIFO:
    - `CancelPaymentActivity` → Hủy pending payment.
+   - `RollbackPromotionActivity` → Nhả reservation budget của voucher (gọi sync sang Promotion với `idempotency_key` theo từng `promotion_id`).
    - `RollbackInventoryActivity` → Nhả reserved stock.
-   - `RollbackPromotionActivity` → Nhả reservation budget của voucher.
+   - `CancelOrderActivity` → Đánh dấu đơn `CANCELLED` với reason `PAYMENT_TIMEOUT`.
 3. **[FSM]** Update `orders.status = 'CANCELLED'`, `reason = 'PAYMENT_TIMEOUT'`.
 4. **[Outbox]** Produce `ORDER_CANCELLED`.
 
@@ -237,17 +262,23 @@ sequenceDiagram
 2. **[Backend / Temporal]** Start Refund Temporal Workflow (hoặc xử lý inline):
    - Tính `refund_amount` dựa trên returned parcels.
    - Gọi Payment Service: `POST /v1/payments/{txn_id}/refund`.
+   - Nếu bật nhánh sync sang Promotion (`/refund`) trước khi phát event, bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
 
 3. **[Chờ Payment Refund]** Payment Service xử lý refund với 3PL → produce `REFUND_SUCCESS`.
 
 4. **[Order Consumer nhận `REFUND_SUCCESS`]:**
    - Update `orders.payment_status = 'REFUNDED'`.
    - FSM `RETURN_REQUESTED` → `REFUNDED`.
-   - Produce `ORDER_REFUNDED`.
+   - Produce `ORDER_REFUNDED` bắt buộc kèm `refund_transaction_id` và `promotion_refund_allocations[]` (deterministic refund contract cho Promotion).
 
-5. **[Downstream consume `ORDER_REFUNDED`]:**
+5. **[Order Consumer nhận `REFUND_FAILED` hoặc `REFUND_REVERSED`]:**
+   - Update `orders.payment_status = 'REFUND_FAILED'` hoặc `REFUND_REVERSED`.
+   - Giữ FSM ở `RETURN_REQUESTED`.
+   - Produce `ORDER_REFUND_FAILED` (critical lane) để Notification/Ops escalation.
+
+6. **[Downstream consume `ORDER_REFUNDED`]:**
    - **Promotion:** [Hoàn budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
-   - **Inventory:** Release deducted stock (nếu hàng trả về kho).
+   - **Inventory:** Không restock trực tiếp từ `ORDER_REFUNDED`. Restock vật lý được kích hoạt bởi `SHIPMENT_RETURNED` từ Shipping sau khi hàng về kho.
 
 ---
 

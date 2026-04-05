@@ -27,7 +27,7 @@ Lưu trữ thông tin tổng quát của giao dịch để khách hàng thanh to
 *   `total_discount`: DECIMAL (Tổng giảm giá từ Promotion)
 *   `final_amount`: DECIMAL (Tổng tiền khách phải trả)
 *   `payment_method`: VARCHAR(50) (VNPAY, MOMO, ZALOPAY) — **denormalized for read-model/UI only**
-*   `payment_status`: VARCHAR(50) (PENDING, PAID, FAILED, REFUNDING, REFUNDED, REFUND_FAILED) — **denormalized for read-model/UI only**
+*   `payment_status`: VARCHAR(50) (PENDING, PAID, FAILED, REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED) — **denormalized for read-model/UI only**
 *   `status`: VARCHAR(50) (CREATED, PENDING_PAYMENT, PAID, PROCESSING, COMPLETED, CANCELLED, RETURN_REQUESTED, REFUNDED)
 *   `version`: BIGINT DEFAULT 1 (Optimistic Locking cho FSM)
 *   `created_at`, `updated_at`: TIMESTAMPTZ
@@ -56,8 +56,8 @@ Mỗi Order có thể tách thành 1 hoặc nhiều Parcel dựa trên Tọa đ�
 Lưu snapshot tĩnh của thông tin sản phẩm tại thời điểm mua, không phụ thuộc vào Product Service trong tương lai. Map với từng Parcel cụ thể.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `parcel_id`: BIGINT (Foreign Key -> `order_parcels.id`)
-*   `sku_id`: BIGINT
-*   `product_id`: BIGINT
+*   `sku_id`: VARCHAR(255)
+*   `product_id`: VARCHAR(255)
 *   `quantity`: INT
 *   `unit_price`: DECIMAL (Đơn giá lúc mua)
 *   `snapshot_name`: VARCHAR(255) (Tên sản phẩm lúc mua)
