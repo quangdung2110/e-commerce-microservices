@@ -5,6 +5,7 @@
 *   [State Machine](payment_state_machine.md)
 *   [Background Workers & Jobs](payment_workers.md)
 *   [Events Structure & Kafka Topics](payment_events.md)
+*   [Refund Boundary Decision (ADR)](refund_boundary_decision.md)
 
 **Cross-Service References:**
 *   [Order Workflow](../order/order_workflow.md) — Order gọi Initiate Payment
@@ -177,6 +178,34 @@ sequenceDiagram
    - VNPay: `POST /refund` endpoint.
    - MoMo: `POST /v2/gateway/api/refund`.
 5. **[Async]** Hầu hết cổng xử lý refund **async** (3-7 ngày). [Refund Status Poller](payment_workers.md#5-refund-status-poller-cronjob) sẽ theo dõi và emit `REFUND_SUCCESS`/`REFUND_FAILED`.
+
+### 4.1. Chuẩn hóa Refund Lifecycle (theo thực tiễn quốc tế)
+
+Để nhất quán với Stripe/Adyen/PayPal/Square/Amazon Pay, workflow Refund cần tuân thủ:
+
+1.  **Accepted != Final:** Response `PROCESSING` chỉ là xác nhận đã nhận lệnh refund, không phải hoàn tiền thành công.
+2.  **Asynchronous Finalization:** Kết quả cuối cùng phải đến từ webhook hoặc poller/reconcile fallback.
+3.  **Duplicate-safe:** Webhook duplicate/retry/out-of-order không được làm đổi trạng thái sai.
+4.  **Failure-after-accept:** Hệ thống phải chấp nhận case refund thất bại sau khi đã vào `PROCESSING`.
+5.  **Provider variance:** Một số provider có thể trả trạng thái đảo chiều (`reversed`) sau `success`; mapping này phải được hỗ trợ ở tầng adapter.
+
+### 4.2. API Contract bổ sung khuyến nghị
+
+Ngoài endpoint khởi tạo refund, nên chuẩn hóa thêm endpoint đọc trạng thái refund độc lập:
+
+*   `GET /v1/refunds/{refundTransactionId}`
+
+Mục tiêu:
+
+*   Tách đọc Refund khỏi read model Payment Transaction.
+*   Chuẩn bị seam để tách `Refund Service` ở Phase 2 mà không đổi contract phía Order/CSKH.
+*   Hỗ trợ query timeline khi reconciliation phát hiện chênh lệch.
+
+### 4.3. Trigger chuyển sang Refund Service riêng
+
+Workflow hiện tại giữ Refund trong Payment Service (Phase 1).
+
+Chỉ cân nhắc tách service khi đạt ngưỡng trong ADR: [Refund Boundary Decision](refund_boundary_decision.md).
 
 ---
 

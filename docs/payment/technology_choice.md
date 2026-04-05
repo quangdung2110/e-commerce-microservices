@@ -78,3 +78,32 @@ Daily CronJob đối soát cần:
 | **HTTP Client** | Spring WebClient / OkHttp (gọi 3PL payment APIs) |
 | **Scheduling** | Spring `@Scheduled` (Reconciliation, Expiration Scanner, Refund Poller) |
 | **Build** | Maven + JDK 21 |
+
+---
+
+## 5. Quyết Định Boundary: Refund trong Payment hay tách Service?
+
+### Quyết định hiện tại
+
+Giữ Refund trong Payment Service (modular boundary), **chưa tách thành microservice độc lập**.
+
+### Lý do
+
+1. Refund ratio hiện thấp, chưa đạt ngưỡng cần scale độc lập.
+2. Chưa có workflow dispute/approval nhiều cấp buộc phải tách domain vận hành.
+3. Tránh overhead phân tán sớm: lock coordination, idempotency chéo service, reconciliation chéo service.
+
+### Chuẩn tham chiếu quốc tế
+
+Các hệ thống lớn (Stripe, Adyen, PayPal, Square, Amazon Pay) đều tuân thủ:
+
+*   Refund lifecycle bất đồng bộ.
+*   Idempotency bắt buộc.
+*   Webhook retry/duplicate/out-of-order là bình thường.
+*   Reconciliation là lớp bắt buộc.
+
+Thiết kế hiện tại của Payment Service bám sát các nguyên tắc trên.
+
+### Tài liệu chuẩn hóa quyết định
+
+Xem chi tiết tại: [Refund Boundary Decision (ADR)](refund_boundary_decision.md)

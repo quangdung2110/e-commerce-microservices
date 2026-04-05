@@ -5,9 +5,10 @@
 *   [State Machine](payment_state_machine.md)
 *   [Workflows (API & Data Flow)](payment_workflow.md)
 *   [Background Workers & Jobs](payment_workers.md)
+*   [Refund Boundary Decision (ADR)](refund_boundary_decision.md)
 
 **Cross-Service References:**
-*   [Order Events (Consumer chính)](../order/order_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_SUCCESS`
+*   [Order Events (Consumer chính)](../order/order_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
 *   [Order Temporal Saga](../order/temporal_saga_design.md) — Payment Signal flow
 
 ---
@@ -47,6 +48,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: Định danh service gốc phát event (Cố định: `payment-service`).
 *   `payload`: JSON Object chứa nội dung chi tiết.
+
+> **Routing contract cho Order consumer:** Dù `aggregate_id` của Payment events là transaction-level (`payment_transaction_id` hoặc `refund_transaction_id`), Order Service route workflow theo `payload.order_id`.
 
 ---
 
@@ -211,6 +214,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 }
 ```
 
+> **Correlation note:** `aggregate_id` ở đây là `refund_transaction_id`; để tìm đúng order workflow/downstream order aggregate, consumer phải dùng `payload.order_id`.
+
 ### 3.7. REFUND_FAILED
 
 **Ngữ cảnh:** Cổng thanh toán từ chối hoàn tiền. Refund FSM: `PROCESSING` → `FAILED`.
@@ -235,6 +240,36 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   }
 }
 ```
+
+### 3.8. REFUND_REVERSED (Optional, Provider-dependent)
+
+**Ngữ cảnh:** Một số cổng có thể đảo chiều trạng thái refund sau khi trước đó đã thông báo success/processing (ví dụ account đích không còn hợp lệ, scheme trả tiền ngược về merchant account).
+
+**Consumer:** Order Service (trigger manual-review flow + `ORDER_REFUND_FAILED` escalation), SysAdmin Dashboard, Accounting/Reconciliation.
+
+```json
+{
+  "event_id": "123e4567-e89b-12d3-a456-426614174008",
+  "event_type": "REFUND_REVERSED",
+  "aggregate_type": "Payment",
+  "aggregate_id": "RFD-DEF456",
+  "correlation_id": "wf-10001",
+  "timestamp": "2026-03-06T08:00:00Z",
+  "source": "payment-service",
+  "payload": {
+    "refund_transaction_id": "RFD-DEF456",
+    "payment_transaction_id": "TXN-ABC123",
+    "order_id": 10001,
+    "provider_refund_id": "VNP-RFD-001",
+    "reason_code": "REFUND_REVERSED_BY_PROVIDER",
+    "reason_message": "Destination account invalid or rejected by scheme",
+    "reversed_at": "2026-03-06T08:00:00Z"
+  }
+}
+```
+
+> [!NOTE]
+> Event này là optional theo provider capability. Nếu provider không hỗ trợ reversal callback, trạng thái tương tự sẽ được phát hiện qua Reconciliation job.
 
 ---
 
@@ -273,3 +308,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 *   Chỉ thêm fields mới, không xóa/rename fields hiện có.
 *   Consumers phải ignore unknown fields.
 *   `event_id` unique — downstream dùng để idempotency check.
+
+---
+
+## 6. Reliability Rules cho Refund Events
+
+Các quy tắc sau là bắt buộc để giữ tính đúng đắn tài chính:
+
+1.  **Ordering nội bộ:** Producer luôn partition theo `order_id` để giữ strict ordering trong cùng order.
+2.  **Webhook reality:** Dữ liệu upstream từ cổng có thể out-of-order; worker phải so sánh trạng thái hiện tại + transition hợp lệ trước khi update.
+3.  **Idempotency consumer:** Consumer dùng `event_id` và/hoặc `provider_refund_id + event_type` để dedup.
+4.  **At-least-once compatible:** Mọi consumer phải an toàn khi nhận lặp lại cùng một event.
+5.  **Terminal state governance:** `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` đều là terminal signals cần được audit vào `payment_status_history`.

@@ -5,6 +5,7 @@
 *   [Workflows (API & Data Flow)](payment_workflow.md)
 *   [Background Workers & Jobs](payment_workers.md)
 *   [Events Structure & Kafka Topics](payment_events.md)
+*   [Refund Boundary Decision (ADR)](refund_boundary_decision.md)
 
 ---
 
@@ -22,7 +23,7 @@ Lưu trữ thông tin chi tiết mỗi lần người dùng cố gắng thanh to
 *   `user_id`: `BIGINT` (Dùng để filter, sharding sau này).
 *   `amount`: `DECIMAL` (Số tiền thực tế phải thanh toán).
 *   `currency`: `VARCHAR(10)` (VD: `VND`, `USD`).
-*   `provider`: `VARCHAR(50)` (VD: `VNPAY`, `MOMO`, `STRIPE`, `ZALOPAY`, `COD`).
+*   `provider`: `VARCHAR(50)` (VD: `VNPAY`, `MOMO`, `STRIPE`, `ZALOPAY`).
 *   `provider_transaction_id`: `VARCHAR(100)` (Mã giao dịch sinh ra từ phía đối tác để tiện đối soát/Reconciliation).
 *   `status`: `VARCHAR(50)` (`PENDING`, `SUCCESS`, `FAILED`, `CANCELED`, `REFUNDING`, `REFUNDED`).
 *   `version`: `BIGINT` DEFAULT 1 (Optimistic Locking cho FSM, chống race-condition từ webhook).
@@ -38,7 +39,7 @@ Hoàn tiền (Refund) là một quy trình tách biệt, có thể hoàn toàn p
 *   `refund_amount`: `DECIMAL`
 *   `reason`: `VARCHAR(255)` (Lý do hoàn: User Cancel, Out of Stock, Return, v.v.)
 *   `provider_refund_id`: `VARCHAR(100)` (Mã đối soát hoàn tiền từ đối tác).
-*   `status`: `VARCHAR(50)` (`PENDING`, `SUCCESS`, `FAILED`).
+*   `status`: `VARCHAR(50)` (`PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`).
 *   `created_at`, `updated_at`: `TIMESTAMPTZ`
 
 ### 1.3. `webhook_logs` (Nhật ký Callbacks/Webhooks)
@@ -102,6 +103,51 @@ Khi hệ thống chạm ngưỡng Scale, mảng CSKH và Kế toán cần một 
 *   **Kích hoạt:** `Order Service` phát kiện hàng bị trả về (Return) -> Bắn Kafka Event `OrderReturned`.
 *   **Quy trình Xét duyệt (Workflow):** `Refund Service` bắt Event, tự động sinh ra một `RefundRequest (Status = PENDING_APPROVAL)`. Dashboard nội bộ cho phép Nhân viên Kho vào xác nhận "Hàng không hỏng hóc", Kế toán duyệt lệnh.
 *   **Thực thi:** `Refund Service` mới gọi gRPC (hoặc Call API) sang `Payment Service` với thông điệp: *"Tiền này an toàn, hãy thực thi lệnh Refund với Bank/VNPAY đi"*.
+
+### 2.1. Quyết định kiến trúc hiện tại (03/2026)
+
+Theo dữ liệu vận hành hiện tại:
+
+*   Tỷ lệ refund thấp (`< 2%` trên tổng giao dịch thanh toán).
+*   Chưa có nhu cầu workflow duyệt refund nhiều cấp (Kho/CSKH/Kế toán/Compliance).
+*   Chưa tách ownership team Refund khỏi team Payment.
+
+=> **Quyết định hiện tại: giữ Refund trong Payment Service theo mô hình Modular Boundary (Phase 1).**
+
+Lý do: Tách Refund Service quá sớm sẽ tăng overhead hệ phân tán (distributed lock, idempotency chéo service, reconciliation chéo service, contract drift), trong khi chưa tạo ra lợi ích vận hành tương xứng.
+
+### 2.2. Thực tiễn tham chiếu từ hệ thống lớn
+
+Tham chiếu từ Stripe, Adyen, PayPal, Square, Amazon Pay cho thấy các điểm chung sau:
+
+1.  Refund luôn là **asynchronous lifecycle** (không coi API response ban đầu là kết quả cuối cùng).
+2.  Luôn cần **idempotency key** cho API refund để chống duplicate request.
+3.  **Webhook không đảm bảo thứ tự tuyệt đối** và có thể retry/duplicate; hệ thống phải tự dedup.
+4.  Có thể phát sinh trạng thái **failed/reversed sau khi đã accepted/processing**.
+5.  Luôn có lớp **reconciliation** để sửa lệch giữa DB nội bộ và PSP.
+
+Thiết kế hiện tại của Payment Service đã bám sát các nguyên tắc này: Outbox, Idempotency, Webhook Signature Verification, Retry, Cronjob Sync.
+
+### 2.3. Trigger tách sang Refund Service (Phase 2)
+
+Chỉ chuyển sang Phase 2 khi đạt ít nhất 1 trong các điều kiện chính dưới đây trong 2 chu kỳ liên tiếp:
+
+| Trigger | Ngưỡng gợi ý | Ý nghĩa |
+|:---|:---|:---|
+| Refund volume tăng cao | `refund_ratio > 5%` | Khối lượng nghiệp vụ refund đủ lớn để tách scale độc lập |
+| Workflow phức tạp | `manual/dispute refund > 1%` và cần multi-step approval | Cần domain riêng cho dispute, chargeback, duyệt nhiều cấp |
+| Tách ownership | Team Refund vận hành độc lập team Payment | Cần ranh giới deploy/incident/SLA rõ ràng |
+| Áp lực vận hành | Backlog refund xử lý thủ công tăng theo xu hướng | Cần service riêng để giảm MTTR và tách runbook |
+
+### 2.4. Bất biến kiến trúc cần giữ khi tách service
+
+Khi bóc tách `src/refund/` thành Refund Service, các bất biến sau **không được thay đổi**:
+
+1.  **Ordering key:** Event Refund vẫn partition theo `order_id`.
+2.  **Idempotency:** Giữ dedup ở cả API layer và consumer layer.
+3.  **Security:** Webhook signature verification bắt buộc trước mọi state transition.
+4.  **Outbox contract:** Event chỉ được phát sau DB commit thành công.
+5.  **Reconciliation:** Vẫn phải có job đối soát độc lập với provider.
 
 ---
 ## 3. Các kỹ thuật chuyên sâu (Advanced Techniques)
