@@ -1,72 +1,75 @@
 # Inventory Service - Định Nghĩa Các Sự Kiện & Kafka Topics
 
 **Liên kết nhanh (Related Documents):**
-*   [Database & Cache Schema](inventory_db_design.md)
-*   [Redis Caching & Lua Scripts](inventory_redis_design.md)
-*   [Hybrid Routing Strategy](hybrid_routing_strategy.md)
-*   [Smart Routing Engine](smart_routing_engine.md)
-*   [Workflows (API & Data Flow)](inventory_workflow.md)
-*   [Background Workers & Jobs](inventory_workers.md)
+* [Database & Cache Schema](inventory_db_design.md)
+* [Redis Caching & Lua Scripts](inventory_redis_design.md)
+* [Hybrid Routing Strategy](hybrid_routing_strategy.md)
+* [Smart Routing Engine](smart_routing_engine.md)
+* [Workflows (API & Data Flow)](inventory_workflow.md)
+* [Background Workers & Jobs](inventory_workers.md)
 
 **Cross-Service References:**
-*   [Product Events - Consumed](../product/product_events.md#43-inventory_quantity_changed) — Product consume `INVENTORY_QUANTITY_CHANGED`
-*   [Order Workflow](../order/order_workflow.md) — Order Temporal Activities gọi Reserve/Deduct/Release
+* [Product Events - Consumed](../product/product_events.md#44-inventory_quantity_changed) — Product consume `INVENTORY_QUANTITY_CHANGED`
+* [Shipping Events](../shipping/shipping_events.md#34-shipment_returned) — Inventory consume `SHIPMENT_RETURNED`
 
 ---
 
-Inventory Service produce các events liên quan đến biến động tồn kho.
+Inventory Service produce các events liên quan đến biến động tồn kho và consume event trả hàng từ Shipping.
 
-**Cơ chế Produce theo loại Event:**
+## 1. Cơ chế Produce theo loại Event
 
 | Event | Produce Method | Lý do |
 |:---|:---|:---|
-| `INVENTORY_RESERVED` | **Direct Produce** (sau Redis Lua Script) | Data change atomic trong Redis, không cần DB transaction |
-| `INVENTORY_DEDUCTED` | **Direct Produce** (sau Redis Lua Script) | Tương tự RESERVED |
-| `INVENTORY_RELEASED` | **Direct Produce** (sau Redis Lua Script) | Tương tự RESERVED |
-| `INVENTORY_QUANTITY_CHANGED` | **Outbox Pattern** (PostgreSQL) | Cần đảm bảo consistency với Ledger write (DB transaction) |
-| `INVENTORY_OUT_OF_STOCK` | **Direct Produce** (sau Redis check) | Lightweight event, không cần DB transaction |
+| `INVENTORY_RESERVED` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
+| `INVENTORY_DEDUCTED` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
+| `INVENTORY_RELEASED` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
+| `INVENTORY_QUANTITY_CHANGED` | **PostgreSQL Outbox Pattern** | Đồng bộ chặt với Ledger write trong DB transaction |
 
-> **Direct Produce:** Service gọi `Kafka.Produce` ngay sau khi Redis Lua Script trả success. Nếu Kafka fail → retry với backoff. Idempotency đảm bảo bởi `SETNX` trên Redis (xem [inventory_redis_design.md](inventory_redis_design.md)).
->
-> **Outbox Pattern:** Event ghi vào bảng `outbox_events` cùng Transaction PostgreSQL với Ledger write. Outbox Polling Worker forward lên Kafka. Đảm bảo consistency giữa DB state và event — nếu transaction fail, event cũng không được publish.
+> **Quy tắc chống duplicate:** Lua script trả mã `2` khi idempotent hit. Backend và Relay Worker không được phát thêm event mới cho idempotent hit.
 
 ---
 
-## 1. Bản Đồ Kafka Topics
+## 2. Bản Đồ Kafka Topics
+
+### 2.1 Topics Produce
 
 | Topic Name | Partition Key | Consumers | Mô tả |
 |:---|:---|:---|:---|
-| `t.inventory.events` | `sku_id` | Product Service, Analytics, Search Service (indirect) | Biến động tồn kho |
+| `t.inventory.commands` | `sku_id` | Inventory Ledger Worker (internal), Analytics | Mutation events nội bộ từ đường nóng reserve/deduct/release |
+| `t.inventory.events` | `sku_id` | Product Service, Analytics | Public inventory projection events (`INVENTORY_QUANTITY_CHANGED`) |
 
-## 1.1. Topics Consume
+### 2.2 Topics Consume
 
 | Topic Name | Partition Key | Producer | Event Types | Mô tả |
 |:---|:---|:---|:---|:---|
 | `t.shipping.events` | `order_id` | Shipping Service | `SHIPMENT_RETURNED` | Nhập trả kho khi kiện hàng hoàn về warehouse |
 
-> **Partition Key = `sku_id`:** Đảm bảo ordering cho cùng 1 SKU → Product Service update đúng thứ tự.
-
-## 1.1 Cấu Trúc Message Header Chung (CloudEvents Wrapper)
-
-Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
-
-*   `event_id`: UUID của sự kiện.
-*   `event_type`: Loại sự kiện (VD: `INVENTORY_RESERVED`, `INVENTORY_QUANTITY_CHANGED`).
-*   `aggregate_type`: Loại Aggregate Root (Cố định: `Inventory`).
-*   `aggregate_id`: ID của entity chủ thể (Cố định: `sku_id`).
-*   `correlation_id`: Temporal Workflow ID hoặc upstream request ID.
-*   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
-*   `source`: Định danh service gốc phát event (Cố định: `inventory-service`).
-*   `payload`: JSON Object chứa nội dung chi tiết của biến động dữ liệu.
+> Partition key `sku_id` đảm bảo ordering cho cùng SKU ở downstream consumer.
 
 ---
 
-## 2. Events Phát Đi (Produced Events)
+## 3. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
-### 2.1. INVENTORY_RESERVED
+Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 
-**Ngữ cảnh:** Temporal Activity `ReserveInventoryActivity` thành công → Redis Lua Script Reserve trả `1` → Backend produce event.
-**Consumer:** Internal Ledger Worker (ghi `inventory_ledger`), Analytics.
+* `event_id`: UUID của sự kiện.
+* `event_type`: Loại sự kiện.
+* `aggregate_type`: Cố định `Inventory`.
+* `aggregate_id`: Cố định `sku_id`.
+* `correlation_id`: Temporal Workflow ID hoặc upstream request ID.
+* `timestamp`: ISO 8601 UTC.
+* `source`: Cố định `inventory-service`.
+* `schema_version`: Phiên bản schema payload (khuyến nghị, hiện tại `1`).
+* `payload`: JSON Object chi tiết.
+
+---
+
+## 4. Events Phát Đi (Produced Events)
+
+### 4.1. INVENTORY_RESERVED
+
+**Ngữ cảnh:** `ReserveInventoryActivity` thành công và Lua script trả `1`.
+**Consumer:** Internal Ledger Worker, Analytics.
 
 ```json
 {
@@ -77,23 +80,26 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
     "sku_id": "sku-001",
+    "product_id": "prod-uuid-001",
     "order_id": 10001,
-    "parcel_id": 2001,
-    "warehouse_id": null,
+    "parcel_id": null,
+    "warehouse_id": 5,
     "quantity": 2,
     "routing_tier": "FAST_LANE",
+    "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
+    "route_version": 3,
     "available_after": 798,
     "reserved_at": "2026-02-28T10:05:00Z"
   }
 }
 ```
-> `routing_tier`: `FAST_LANE` (Hot SKU, logical inventory, `warehouse_id = null`) hoặc `SMART_ROUTE` (normal, physical warehouse, `warehouse_id != null`). Xem [Hybrid Routing](hybrid_routing_strategy.md).
 
-### 2.2. INVENTORY_DEDUCTED
+### 4.2. INVENTORY_DEDUCTED
 
-**Ngữ cảnh:** Temporal Activity `DeductInventoryActivity` sau Payment Success → Redis Lua Script Deduct → Trừ vĩnh viễn khỏi reserved.
+**Ngữ cảnh:** `DeductInventoryActivity` thành công và Lua script trả `1`.
 **Consumer:** Internal Ledger Worker.
 
 ```json
@@ -105,8 +111,10 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:06:00Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
     "sku_id": "sku-001",
+    "product_id": "prod-uuid-001",
     "order_id": 10001,
     "warehouse_id": 5,
     "quantity": 2,
@@ -115,9 +123,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 }
 ```
 
-### 2.3. INVENTORY_RELEASED
+### 4.3. INVENTORY_RELEASED
 
-**Ngữ cảnh:** Order cancelled/timeout → Temporal Compensation `RollbackInventoryActivity` → Redis Lua Script Release → Nhả reserved về available.
+**Ngữ cảnh:** `RollbackInventoryActivity` hoặc Reservation Expiry Scanner.
 **Consumer:** Internal Ledger Worker.
 
 ```json
@@ -129,8 +137,10 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:20:00Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
     "sku_id": "sku-001",
+    "product_id": "prod-uuid-001",
     "order_id": 10001,
     "warehouse_id": 5,
     "quantity": 2,
@@ -139,12 +149,13 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   }
 }
 ```
-> `reason`: `ORDER_CANCELLED`, `PAYMENT_TIMEOUT`, `ORDER_REFUNDED`.
 
-### 2.4. INVENTORY_QUANTITY_CHANGED
+`reason` hợp lệ: `ORDER_CANCELLED`, `PAYMENT_TIMEOUT`, `RESERVATION_EXPIRED`.
 
-**Ngữ cảnh:** Sau khi Ledger Worker ghi `inventory_ledger` + update `logical_inventory` → Produce event cho Product Service cập nhật `display_quantity` và `is_in_stock`.
-**Consumer chính:** **Product Service** — [Inventory Sync Worker](../product/product_workers.md#5-inventory-sync-worker) update `display_quantity`.
+### 4.4. INVENTORY_QUANTITY_CHANGED
+
+**Ngữ cảnh:** Sau khi Ledger Worker ghi `inventory_ledger` + update inventory tables -> insert `outbox_events` -> Outbox Worker publish Kafka.
+**Consumer chính:** Product Service.
 
 ```json
 {
@@ -155,53 +166,70 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "sys-abc",
   "timestamp": "2026-02-28T10:05:01Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
+    "product_id": "prod-uuid-001",
     "sku_id": "sku-001",
     "available_quantity": 798,
     "previous_available_quantity": 800,
     "change_type": "ORDER_RESERVED",
-    "timestamp": "2026-02-28T10:05:01Z"
+    "event_timestamp": 1709114701000,
+    "timestamp_iso": "2026-02-28T10:05:01Z"
   }
 }
 ```
-> **Field `change_type`:** `ORDER_RESERVED`, `ORDER_DEDUCTED`, `ORDER_CANCELLED`, `VENDOR_RESTOCK`, `ORDER_RETURNED_RESTOCK`, `ADMIN_ADJUSTMENT`.
 
-### 2.5. INVENTORY_OUT_OF_STOCK
+`change_type` hợp lệ: `ORDER_RESERVED`, `ORDER_DEDUCTED`, `ORDER_CANCELLED`, `VENDOR_RESTOCK`, `ORDER_RETURNED_RESTOCK`, `ADMIN_ADJUSTMENT`, `RESERVATION_EXPIRED`.
 
-**Ngữ cảnh:** `available_quantity` = 0 cho 1 SKU. Circuit Breaker trigger.
-**Consumer:** Product Service (mark `is_in_stock = false`), Frontend (disable nút Mua).
+**Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
+
+---
+
+## 5. Events Tiêu Thụ (Consumed Events)
+
+Inventory Service không consume event ngoài cho luồng Reserve/Deduct/Release (gọi qua API trực tiếp từ Order Temporal Activities).
+
+Inventory consume thêm event logistics:
+
+### 5.1. SHIPMENT_RETURNED
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174004",
-  "event_type": "INVENTORY_OUT_OF_STOCK",
-  "aggregate_type": "Inventory",
-  "aggregate_id": "sku-001",
-  "correlation_id": "sys-xyz",
-  "timestamp": "2026-02-28T12:00:00Z",
-  "source": "inventory-service",
+  "event_type": "SHIPMENT_RETURNED",
   "payload": {
-    "sku_id": "sku-001",
-    "out_of_stock_at": "2026-02-28T12:00:00Z"
+    "shipment_id": 3001,
+    "order_id": 10001,
+    "parcel_id": 2001,
+    "returned_to_warehouse_id": 5,
+    "return_reason": "CUSTOMER_RETURN",
+    "items": [
+      {
+        "sku_id": "sku-001",
+        "product_id": "prod-uuid-001",
+        "quantity": 2
+      }
+    ],
+    "returned_at": "2026-03-04T10:00:00Z"
   }
 }
 ```
 
+`shipment_id` và `items[]` là bắt buộc để idempotency + restock chính xác.
+
+### 5.2. Internal command events
+
+Inventory Ledger Worker consume từ `t.inventory.commands` và chỉ xử lý:
+
+* `INVENTORY_RESERVED`
+* `INVENTORY_DEDUCTED`
+* `INVENTORY_RELEASED`
+
+Ledger Worker không xử lý `INVENTORY_QUANTITY_CHANGED`.
+
 ---
 
-## 3. Events Tiêu Thụ (Consumed Events)
+## 6. Schema Versioning
 
-Inventory Service **không consume Kafka events từ bên ngoài cho luồng Reserve/Deduct/Release**. Các thao tác này được gọi qua **gRPC/REST API trực tiếp** từ Order Service (Temporal Activities).
-
-Ngoài 3 luồng trên, Inventory có consume event ngoài cho bài toán nhập trả kho:
-- Consume `SHIPMENT_RETURNED` từ `t.shipping.events` để restock khi kiện hàng trả về warehouse.
-
-Inventory cũng consume event nội bộ qua Kafka cho **Ledger Worker** (ghi sổ cái).
-
----
-
-## 4. Schema Versioning
-
-*   Backward compatible: chỉ thêm fields mới.
-*   `event_id` unique cho idempotency.
-*   Product Service dùng `change_type` + `sku_id` để discriminate logic xử lý.
+1. Backward compatible: chỉ thêm fields mới.
+2. `event_id` unique cho idempotency.
+3. Không đổi nghĩa field hiện có nếu chưa có migration plan.
