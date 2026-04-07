@@ -81,3 +81,24 @@ Ràng buộc:
 - Chỉ khi update thành công (affected rows = 1) mới được phát `ORDER_COMPLETED`.
 - Không chuyển `COMPLETED` nếu còn parcel chưa kết thúc.
 - Coalescing window 5 giây để tránh rung trạng thái khi webhook shipping đến sát nhau.
+
+## 32. Mapping FSM sang CQRS Read Model
+
+Để đồng bộ với [CQRS & Elasticsearch](cqrs_elasticsearch_design.md), projector phải map trạng thái như sau:
+
+| Nguồn FSM | Field trong `orders_read` | Field trong `order_search_lines` |
+|---|---|---|
+| `orders.status` | `order_status` | `order_status` |
+| `orders.payment_status` | `payment_status` | `payment_status` |
+| Tập trạng thái từ `order_parcels.status` | `parcel_statuses` (keyword array) | `parcel_status` (theo từng line gắn `parcel_id`) |
+
+Guard keys áp dụng khi projection:
+
+| Stream ownership | Guard key | Mục đích |
+|---|---|---|
+| Order lifecycle | `order_version` | Chặn update cũ ghi đè trạng thái mới |
+| Parcel/shipping | `parcel_version`, `shipment_event_sequence_id` | Chặn out-of-order ở cấp parcel |
+| Payment | `payment_event_sequence_id` | Tách ownership khỏi order lifecycle |
+| Refund | `refund_event_sequence_id` | Tránh stale refund update |
+
+> Khi có xung đột giữa timestamp và sequence/version, projector luôn ưu tiên sequence/version để quyết định mới-cũ.

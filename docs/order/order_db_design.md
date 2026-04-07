@@ -92,7 +92,7 @@ Lưu dấu vết các voucher/deal đã dùng cho đơn hàng này để đối 
 
 Order Service là Orchestrator, kết nối với Payment, Inventory, và Promotion. Để đảm bảo tính nhất quán cuối (Eventual Consistency) và hỗ trợ giao dịch phân tán (Saga), bên cạnh Temporal Workflow, chúng ta cần các bảng phục vụ Event-Driven Architecture nội bộ.
 
-### 2.1. `outbox_events` (Transactional Outbox)
+### 3.1. `outbox_events` (Transactional Outbox)
 Đảm bảo Event được gửi đi một cách tin cậy sau khi CSDL thay đổi (At-least-once delivery). Schema đồng bộ chuẩn với [Payment](../payment/payment_db_design.md), [Shipping](../shipping/shipping_db_design.md), và [Promotion](../promotion/promotion_db_design.md) outbox.
 *   `id`: UUID PRIMARY KEY
 *   `aggregate_type`: VARCHAR(100) (VD: "Order", "OrderParcel")
@@ -115,7 +115,7 @@ CREATE INDEX idx_outbox_pending ON outbox_events (status, next_retry_at)
 
 > **Tại sao cần 5 fields bổ sung?** [Outbox Polling Worker](order_workers.md#1-outbox-polling-worker-producer) tham chiếu `status = 'PENDING'`, `PUBLISHED`, `FAILED`, `DEAD` và `retry_count < max_retries` trong SQL query. Thiếu các fields này, Worker không thể retry khi Kafka fail → events mất vĩnh viễn.
 
-### 2.2. `idempotency_keys` (Chống lặp Request)
+### 3.2. `idempotency_keys` (Chống lặp Request)
 Chặn các lượt submit trung lặp (VD: user ấn thanh toán 2 lần do lag, hoặc webhook payment gửi lại nhiều lần).
 *   `key`: VARCHAR(255) PRIMARY KEY (Có thể là Checkout-Token hoặc Kafka Message ID)
 *   `action`: VARCHAR(100) (VD: "CREATE_ORDER", "PAYMENT_WEBHOOK")
@@ -124,7 +124,7 @@ Chặn các lượt submit trung lặp (VD: user ấn thanh toán 2 lần do lag
 *   `locked_at`: TIMESTAMPTZ
 *   `expires_at`: TIMESTAMPTZ
 
-### 2.3. `order_status_history` (Audit Trail FSM)
+### 3.3. `order_status_history` (Audit Trail FSM)
 Ghi log mọi transition trạng thái của Master Order và Parcel để phục vụ điều tra sự cố, compliance và đối soát.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `order_id`: BIGINT (Index)
@@ -137,13 +137,54 @@ Ghi log mọi transition trạng thái của Master Order và Parcel để phụ
 *   `metadata`: JSONB NULL (provider response, signal payload, extra context)
 *   `created_at`: TIMESTAMPTZ
 
+### 3.4. `cqrs_projection_checkpoints` (Projection Lag & Replay Offset)
+Lưu offset/checkpoint theo từng projector lane để giám sát lag, phục vụ replay có kiểm soát và tránh reconsume mù.
+
+*   `projector_name`: VARCHAR(100) PRIMARY KEY (VD: `order-cqrs-summary-projector`, `order-cqrs-line-projector`, `order-cqrs-retry-replayer`)
+*   `topic_name`: VARCHAR(120) NOT NULL
+*   `partition_id`: INT NOT NULL
+*   `last_committed_offset`: BIGINT NOT NULL
+*   `last_processed_event_id`: UUID NULL
+*   `last_processed_at`: TIMESTAMPTZ NOT NULL
+*   `updated_at`: TIMESTAMPTZ NOT NULL
+
+### 3.5. `cqrs_reindex_runs` (Zero-downtime Reindex Control Plane)
+Theo dõi lifecycle các lần reindex `orders_read_vN` và `order_search_lines_vN` để rollback an toàn.
+
+*   `id`: UUID PRIMARY KEY
+*   `run_name`: VARCHAR(120) NOT NULL
+*   `source_index_version`: VARCHAR(30) NOT NULL
+*   `target_index_version`: VARCHAR(30) NOT NULL
+*   `phase`: VARCHAR(30) NOT NULL (`INIT`, `BACKFILL`, `CATCHUP`, `VALIDATE`, `CUTOVER`, `ROLLED_BACK`, `DONE`, `FAILED`)
+*   `watermark_topic`: VARCHAR(120) NOT NULL DEFAULT 't.order.events'
+*   `watermark_partition_offsets`: JSONB NOT NULL
+*   `validation_summary`: JSONB NULL
+*   `started_at`: TIMESTAMPTZ NOT NULL
+*   `finished_at`: TIMESTAMPTZ NULL
+*   `created_by`: VARCHAR(120) NOT NULL
+
+**Indexes đề xuất:**
+```sql
+CREATE INDEX idx_cqrs_projection_checkpoints_updated_at
+    ON cqrs_projection_checkpoints (updated_at DESC);
+
+CREATE INDEX idx_cqrs_reindex_runs_phase_started
+    ON cqrs_reindex_runs (phase, started_at DESC);
+```
+
 ---
 ## 4. Kiến trúc Mở rộng (Scalability & Performance)
 
 Để đảm bảo hệ thống Order Service có thể xử lý lượng tải khổng lồ (Read-Heavy) và lưu trữ lâu dài mà không suy giảm hiệu năng RDBMS, hai kỹ thuật chuyên sâu được áp dụng:
 
 ### 4.1. Tìm kiếm và Lọc với CQRS & Elasticsearch
-Mọi API phục vụ việc tìm kiếm văn bản (Full-text) hoặc lọc đa chiều (Multiple filters) không được thi hành trên PostgreSQL. Dữ liệu Đơn hàng được "Phi chuẩn hóa" thành Document phẳng và đồng bộ liên tục sang Elasticsearch.
+Mọi API phục vụ việc tìm kiếm văn bản (Full-text) hoặc lọc đa chiều (Multiple filters) không được thi hành trên PostgreSQL. Dữ liệu đơn hàng được phi chuẩn hóa và đồng bộ liên tục sang Elasticsearch theo kiến trúc **hybrid 2-index**:
+
+*   `orders_read_vN`: 1 document/order, tối ưu cho lọc chính xác và phân trang ổn định.
+*   `order_search_lines_vN`: 1 document/item (gắn `parcel_id`), tối ưu cho text search theo tên sản phẩm, tracking number, store name.
+
+Chiến lược query: filter-first trên `orders_read`; text query chạy trên `order_search_lines` rồi hydrate summary từ `orders_read`.
+
 📖 *Chi tiết kiến trúc:* Xem file `docs/order/cqrs_elasticsearch_design.md`
 
 ### 4.2. Lưu trữ Dữ liệu Lạnh (Cold Data Archiving)

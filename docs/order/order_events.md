@@ -30,6 +30,8 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 |---|---|---|---|
 | `t.order.events` | `order_id` | Promotion, Inventory, Cart, CQRS Projection Worker (internal), Notification, Analytics, Review | Topic chính chứa mọi thay đổi trạng thái đơn hàng |
 | `t.search.metrics.events` | `product_id` | Search Service | Topic metrics chuyên dụng cho projection realtime theo product, được phát bởi internal Order Metrics Projector thuộc Order Service |
+| `t.order.cqrs.retry` | `order_id` | Internal `order-cqrs-retry-replayer` | Parking lot cho CQRS projector để replay/self-heal sau backoff |
+| `t.order.cqrs.dlq` | `order_id` | Ops / Internal triage tools | Dead-letter cho CQRS projector khi lỗi permanent/contract violation |
 
 > **Ghi chú Partition Key:** Sử dụng `order_id` đảm bảo tất cả events của cùng 1 đơn hàng luôn vào đúng 1 Partition → **Strict Ordering** cho từng đơn. Promotion/Inventory cần ordering chính xác để không bị Redeem trước Cancel.
 
@@ -39,6 +41,7 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 |---|---|---|---|---|
 | `t.payment.events` | `order-payment-consumer` | Payment Service | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` | Nhận kết quả thanh toán / hoàn tiền |
 | `t.shipping.events` | `order-shipping-consumer` | Shipping Service | `SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`, `SHIPMENT_DELAYED` | Nhận cập nhật trạng thái vận chuyển |
+| `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Order Service (internal projector) | Envelope chứa original event + retry metadata | Replay sự kiện CQRS sau backoff/self-heal |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
@@ -53,6 +56,19 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 *   `correlation_id`: Temporal Workflow ID (để trace xuyên suốt Saga).
 *   `business_id`: `order_id` dùng cho nghiệp vụ đối soát.
 *   `payload`: JSON Object chi tiết theo từng `event_type`.
+
+### 2.1. CQRS Ordering Contract (bắt buộc cho projection)
+
+Để CQRS projector chống out-of-order an toàn, các produced events phải mang guard keys theo stream ownership.
+
+| Event nhóm | Guard key bắt buộc | Ownership |
+|---|---|---|
+| `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_COMPLETED` | `order_version` | Order lifecycle stream |
+| `PARCEL_STATUS_CHANGED` | `parcel_version`, `shipment_event_sequence_id` | Parcel/shipping stream theo `parcel_id` |
+| `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `refund_event_sequence_id` | Refund stream |
+| Payment-derived updates | `payment_event_sequence_id` | Payment stream |
+
+> Guard keys này phục vụ CQRS projection và replay logic. Không suy luận thứ tự event bằng UUID `event_id` theo từ điển.
 
 ## 3. Chi Tiết Các Loại Event Phát Đi (Produced Events)
 
@@ -74,6 +90,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_id": 10001,
     "user_id": 999,
     "status": "PENDING_PAYMENT",
+    "order_version": 1,
+    "payment_event_sequence_id": 0,
+    "refund_event_sequence_id": 0,
     "payment_method": "VNPAY",
     "total_amount": 1000000,
     "total_shipping_fee": 45000,
@@ -148,6 +167,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_id": 10001,
     "user_id": 999,
     "status": "PAID",
+    "order_version": 3,
+    "payment_event_sequence_id": 20260228100500,
     "payment_method": "VNPAY",
     "payment_transaction_id": "TXN-ABC123",
     "cart_id": "{cart:user:999}",
@@ -215,6 +236,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_id": 10001,
     "user_id": 999,
     "status": "CANCELLED",
+    "order_version": 4,
     "previous_status": "PENDING_PAYMENT",
     "reason": "PAYMENT_TIMEOUT",
     "promotions_applied": [
@@ -253,6 +275,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "user_id": 999,
     "old_status": "PAID",
     "new_status": "PROCESSING",
+    "order_version": 5,
     "changed_by": "system",
     "changed_by_type": "TEMPORAL",
     "reason": "POST_PAYMENT_SAGA_COMPLETE",
@@ -280,6 +303,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "parcel_id": 2001,
     "old_status": "HANDED_OVER",
     "new_status": "IN_TRANSIT",
+    "parcel_version": 5,
+    "shipment_event_sequence_id": 20260228140000,
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
     "estimated_delivery_date": "2026-03-02",
@@ -288,7 +313,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 }
 ```
 
-> **Ordering contract cho consumers:** Topic vẫn partition theo `order_id` để giữ lifecycle theo đơn, nhưng consumer phải dedup theo cặp `parcel_id + changed_at` để không ghi đè trạng thái parcel cũ khi webhook đến lệch nhịp.
+> **Ordering contract cho consumers:** Topic vẫn partition theo `order_id` để giữ lifecycle theo đơn, nhưng CQRS/Notification consumers phải guard theo `parcel_id + parcel_version` và ưu tiên `shipment_event_sequence_id` hơn timestamp để chống out-of-order.
 
 ### 3.6. ORDER_REFUNDED
 
@@ -310,6 +335,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_id": 10001,
     "user_id": 999,
     "status": "REFUNDED",
+    "order_version": 11,
+    "refund_event_sequence_id": 20260305100000,
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
     "refund_amount": 995000,
@@ -367,6 +394,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_id": 10001,
     "user_id": 999,
     "status": "COMPLETED",
+    "order_version": 9,
     "final_amount": 995000,
     "parcels_count": 2,
     "items": [
@@ -434,6 +462,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "user_id": 999,
     "status": "RETURN_REQUESTED",
     "payment_status": "REFUND_FAILED",
+    "order_version": 10,
+    "refund_event_sequence_id": 20260305101000,
     "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "reason": "REFUND_WINDOW_EXPIRED",
@@ -465,6 +495,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "payment_event_sequence_id": 20260228100500,
     "amount": 995000,
     "provider": "VNPAY",
     "provider_transaction_id": "VNP-XYZ789",
@@ -475,6 +506,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 **Logic xử lý:** Worker nhận event → Signal Temporal Workflow (bằng `WorkflowStub.signal("PaymentResult", SUCCESS)`) → Temporal resume → FSM `PENDING_PAYMENT` → `PAID` → Produce `ORDER_PAID`.
 
 > **Routing rule bắt buộc:** Với toàn bộ payment consumed events, Order lookup workflow theo `payload.order_id` (không route theo `aggregate_id` vì aggregate của Payment là transaction-level).
+
+> **Ordering contract payment stream:** `payment_event_sequence_id`/`refund_event_sequence_id` phải đơn điệu theo từng `order_id` để Order/CQRS xử lý an toàn khi nhận event đồng thời hoặc replay.
 
 ### 4.2. PAYMENT_FAILED (Từ Payment Service)
 
@@ -493,6 +526,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "payment_event_sequence_id": 20260228100600,
     "error_code": "INSUFFICIENT_BALANCE",
     "error_message": "Số dư không đủ",
     "failed_at": "2026-02-28T10:06:00Z"
@@ -518,6 +552,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "payment_event_sequence_id": 20260228101500,
     "expired_at": "2026-02-28T10:15:00Z"
   }
 }
@@ -542,6 +577,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "order_id": 10001,
+    "refund_event_sequence_id": 20260305100000,
     "refund_amount": 995000,
     "refunded_at": "2026-03-05T10:00:00Z"
   }
@@ -567,6 +603,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "order_id": 10001,
+    "refund_event_sequence_id": 20260305101000,
     "error_code": "REFUND_WINDOW_EXPIRED",
     "error_message": "Cổng thanh toán từ chối hoàn",
     "failed_at": "2026-03-05T10:10:00Z"
@@ -593,6 +630,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "refund_event_sequence_id": 20260306080000,
     "reason_code": "REFUND_REVERSED_BY_PROVIDER",
     "reason_message": "Destination account invalid",
     "reversed_at": "2026-03-06T08:00:00Z"
@@ -620,6 +658,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_id": 3001,
     "parcel_id": 2001,
     "order_id": 10001,
+    "shipment_event_sequence_id": 20260302160000,
     "old_status": "IN_TRANSIT",
     "new_status": "DELIVERED",
     "tracking_number": "GHN12345",
@@ -629,6 +668,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 }
 ```
 **Logic xử lý:** Worker nhận event → Update `order_parcels.status` theo [mapping table](order_state_machine.md#23-mapping-với-shipping-service-standardized_status) → Produce `PARCEL_STATUS_CHANGED` → Kiểm tra [Auto-Complete](order_state_machine.md#31-auto-complete-logic-processing--completed).
+
+> **Ordering contract shipping stream:** `shipment_event_sequence_id` phải tăng dần theo `parcel_id`; khi sequence mới hơn mâu thuẫn với timestamp cũ hơn thì vẫn ưu tiên sequence.
 
 ### 4.8. SHIPMENT_DELIVERED (Từ Shipping Service)
 
@@ -648,6 +689,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_id": 3001,
     "parcel_id": 2001,
     "order_id": 10001,
+    "shipment_event_sequence_id": 20260302160000,
     "tracking_number": "GHN12345",
     "delivered_at": "2026-03-02T16:00:00Z"
   }
@@ -673,6 +715,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_id": 3001,
     "parcel_id": 2001,
     "order_id": 10001,
+    "shipment_event_sequence_id": 20260304100000,
     "tracking_number": "GHN12345",
     "return_reason": "DELIVERY_FAILED_3_TIMES",
     "returned_at": "2026-03-04T10:00:00Z"
@@ -699,6 +742,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_id": 3001,
     "parcel_id": 2001,
     "order_id": 10001,
+    "shipment_event_sequence_id": 20260303160000,
     "tracking_number": "GHN12345",
     "hours_since_update": 56,
     "escalation_level": 1,

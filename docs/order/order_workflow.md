@@ -48,27 +48,59 @@ Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Se
 
 **Ngữ cảnh:** Buyer xem danh sách đơn hàng (history), Seller xem đơn hàng cần xử lý, Admin Dashboard.
 
-1. **[API Gateway]** Xác thực JWT.
-2. **[Backend → Elasticsearch]** Redirect sang CQRS Read Model. Query ES:
-   ```json
-   {
-     "query": {
-       "bool": {
-         "must": [
-           {"term": {"buyer_id": 999}},
-           {"term": {"status": "PROCESSING"}}
-         ],
-         "filter": [
-           {"range": {"created_at": {"gte": "2026-02-01"}}}
-         ]
-       }
-     },
-     "sort": [{"created_at": "desc"}],
-     "from": 0, "size": 20
-   }
-   ```
-3. **[Elasticsearch]** Trả về Top-N results (denormalized documents).
-4. **[Response]** Paginated list với `total_count`, `items[]`, `next_cursor`.
+1. **[API Gateway]** Xác thực JWT và dựng `visibility_scope`:
+    - Buyer -> filter theo `buyer_id`.
+    - Seller -> filter theo `seller_id`/`seller_ids`.
+    - Admin -> full scope theo tenant.
+2. **[Backend]** Chuẩn hóa query params thành 2 query classes (xem [CQRS Design](cqrs_elasticsearch_design.md#1-mục-tiêu-nghiệp-vụ-và-query-classes)).
+
+### 2.1. Query Class A - Lọc đa chiều chính xác
+
+3. **[Backend -> Elasticsearch `orders_read`]** Nếu request không có text query (`q` rỗng), gọi thẳng index order-level:
+    ```json
+    {
+       "query": {
+          "bool": {
+             "filter": [
+                {"term": {"buyer_id": "999"}},
+                {"terms": {"order_status": ["PAID", "PROCESSING"]}},
+                {"terms": {"payment_status": ["PAID"]}},
+                {"range": {"created_at": {"gte": "2026-02-01T00:00:00Z", "lt": "2026-03-01T00:00:00Z"}}},
+                {"range": {"final_amount": {"gte": 100000, "lte": 3000000}}}
+             ]
+          }
+       },
+       "sort": [
+          {"created_at": "desc"},
+          {"order_id": "desc"}
+       ],
+       "size": 20,
+       "search_after": ["2026-02-28T10:00:00Z", "10001"]
+    }
+    ```
+4. **[Elasticsearch]** Trả `hits.total` chính là tổng đơn.
+5. **[Response]** Trả `total_orders`, `items[]`, `next_cursor`.
+
+### 2.2. Query Class B - Text search + Filter
+
+6. **[Backend -> Elasticsearch `order_search_lines`]** Nếu có `q`, chạy chiến lược exact-first:
+    - Ưu tiên exact/prefix cho `tracking_number_normalized`, `store_name_normalized`.
+    - Match/match_phrase cho `snapshot_product_name`.
+    - Kết hợp toàn bộ filter của Query Class A trong `filter` context.
+
+7. **[Elasticsearch]** Query line-level có `collapse` theo `order_id`:
+    - `hits.total`: tổng line match.
+    - `aggs.total_orders` (cardinality): tổng đơn match.
+    - `inner_hits.matched_lines`: line match + highlight.
+
+8. **[Backend -> Elasticsearch `orders_read`]** Hydrate order summary theo danh sách `order_id` vừa match.
+9. **[Response]** Trả:
+    - `total_orders`
+    - `matched_lines_count`
+    - `items[]` (order summary + highlights + `match_reason`)
+    - `next_cursor`
+
+10. **[Fallback]** Nếu exact-first hit thấp hơn ngưỡng cấu hình, backend tự chạy thêm fuzzy query (`multi_match`) rồi merge kết quả theo score/rule.
 
 > **Tại sao Elasticsearch?** Xem [CQRS Design](cqrs_elasticsearch_design.md). PostgreSQL JOIN 4 bảng với LIMIT/OFFSET trên triệu rows sẽ cực kỳ chậm.
 

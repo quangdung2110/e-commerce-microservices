@@ -19,8 +19,11 @@ Order Service chạy song song 2 hệ thống nền: **Temporal Workers** (đi�
 |---|---|---|---|
 | **Produce** | `t.order.events` | — | Topic chính chứa mọi event phát đi |
 | **Produce** | `t.search.metrics.events` | — | Topic metrics theo `product_id` cho Search projection |
+| **Produce** | `t.order.cqrs.retry` | — | Retry lane cho CQRS projector khi self-heal/replay |
+| **Produce** | `t.order.cqrs.dlq` | — | Dead-letter lane cho CQRS projector (contract/permanent errors) |
 | **Consume** | `t.payment.events` | `order-payment-consumer` | Nhận kết quả thanh toán |
 | **Consume** | `t.shipping.events` | `order-shipping-consumer` | Nhận cập nhật vận chuyển |
+| **Consume** | `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Replay sự kiện CQRS sau backoff |
 
 Xem payload chi tiết tại [Order Events](order_events.md).
 
@@ -48,23 +51,58 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 
 ---
 
-## 2. CQRS Projection Worker (Kafka Consumer)
+## 2. CQRS Projection Workers (Kafka Consumers)
 **Loại hình:** Kafka Consumer chạy liên tục.
-**Consumer Group:** `order-cqrs-projection`
 
-**Sứ mệnh:** Phi chuẩn hóa dữ liệu Order thành Document JSON → Upsert vào Elasticsearch. Phục vụ tìm kiếm/lọc đa chiều cho Buyer và Seller. Xem [CQRS Design](cqrs_elasticsearch_design.md).
+**Consumer groups chính:**
+- `order-cqrs-summary-projector`: ghi `orders_write` (1 document/order).
+- `order-cqrs-line-projector`: ghi `order_search_lines_write` (1 document/item).
+- `order-cqrs-retry-replayer`: consume `t.order.cqrs.retry` và replay theo backoff.
 
-**Chi tiết luồng hoạt động:**
-1. Consume topic `t.order.events`.
-2. Phân loại event:
-   - `ORDER_CREATED`: Tạo document mới trong ES — denormalize toàn bộ (buyer info, items, parcels, financials).
-   - `ORDER_PAID` / `ORDER_CANCELLED` / `ORDER_STATUS_CHANGED`: Partial update `status` field trong ES document.
-   - `PARCEL_STATUS_CHANGED`: Script update parcel status trong nested array.
-   - `ORDER_COMPLETED` / `ORDER_REFUNDED`: Update status + financial fields.
-3. **Batch Processing:** Gom events theo `order_id` — chỉ xử lý event cuối cùng cho mỗi order (dedup).
-4. Bulk API: `POST _bulk` cho Elasticsearch.
+**Sứ mệnh:** Đồng bộ read-model Elasticsearch theo kiến trúc hybrid 2-index để phục vụ đồng thời:
+1. Lọc đa chiều chính xác theo buyer/seller/status/time.
+2. Text search theo tên sản phẩm, tracking number, store name.
 
-**Idempotency:** Sử dụng `event_id` check — nếu ES document đã có `last_event_id >= current_event_id`, skip.
+Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch_design.md).
+
+### 2.1. Luồng xử lý chuẩn
+
+1. Consume từ `t.order.events`.
+2. Parse và phân lane theo event type:
+   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, parcel summary).
+   - Lane `order_search_lines`: cập nhật line-level text documents cho product/tracking/store search.
+3. Áp guard theo stream ownership:
+   - `order_version` cho order lifecycle events.
+   - `parcel_version` + `shipment_event_sequence_id` cho shipping/parcel events.
+   - `payment_event_sequence_id` hoặc `refund_event_sequence_id` cho payment/refund updates.
+4. Bulk write:
+   - `POST orders_write/_bulk`
+   - `POST order_search_lines_write/_bulk`
+5. Cập nhật metadata (`last_event_id`, `last_event_timestamp`, `indexed_at`, `projection_version`).
+
+### 2.2. Idempotency và out-of-order
+
+- Idempotency không dựa trên so sánh thứ tự UUID `event_id` theo từ điển.
+- Quy tắc skip event cũ: chỉ skip khi guard key của stream đó không tăng (`incoming <= current`).
+- Event thiếu guard key bắt buộc bị xem là contract violation và chuyển DLQ.
+
+### 2.3. Retry, self-heal và DLQ
+
+1. Lỗi ES transient (`429`, timeout, network reset): inline retry tối đa 3 lần.
+2. Không tìm thấy document hoặc thiếu data để apply event incrementally:
+   - Park vào `t.order.cqrs.retry`.
+   - Retry replayer thực hiện snapshot rebuild theo `order_id` rồi replay event.
+3. Lỗi schema/permanent hoặc vượt retry budget:
+   - Chuyển `t.order.cqrs.dlq`.
+   - Gắn reason code để Ops triage.
+
+### 2.4. Commit semantics
+
+Offset chỉ được commit khi:
+- bulk apply thành công, hoặc
+- event đã park thành công vào retry/DLQ.
+
+Nếu cả apply lẫn park đều fail, không commit offset để tránh mất event.
 
 ---
 
