@@ -36,6 +36,14 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 - Projection freshness mục tiêu: `p95 <= 5s`, `p99 <= 15s`.
 - Dữ liệu có thể lệch tạm thời (eventual consistency), nhưng phải hội tụ bằng retry/replay/self-heal.
 
+### 1.3. Product contract kiểu Shopee cho My Purchases
+
+- Đơn vị hiển thị ở list luôn là **order-level card** (1 card/1 order), kể cả khi đơn có nhiều parcel và nhiều item.
+- Buyer tabs được chuẩn hóa thành 6 nhóm cố định: `TO_PAY`, `TO_SHIP`, `TO_RECEIVE`, `COMPLETED`, `CANCELLED`, `RETURN_REFUND`.
+- Mặc định query buyer history là cửa sổ thời gian `90 ngày` gần nhất nếu client không truyền `from/to`.
+- `q` hoạt động theo semantics **ANY field**: chỉ cần khớp một trong ba trường `snapshot_product_name`, `tracking_number`, `store_name`.
+- Kết quả text search luôn collapse theo `order_id`, sau đó hydrate summary từ `orders_read` để đảm bảo response vẫn là order-level card.
+
 ---
 
 ## 2. Nguồn dữ liệu và Kiến trúc Projection
@@ -163,12 +171,16 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 			"order_status": { "type": "keyword" },
 			"payment_status": { "type": "keyword" },
 			"parcel_statuses": { "type": "keyword" },
+			"buyer_tab": { "type": "keyword" },
+			"ui_primary_status": { "type": "keyword" },
+			"ui_status_rank": { "type": "byte" },
 
 			"created_at": { "type": "date" },
 			"paid_at": { "type": "date" },
 			"completed_at": { "type": "date" },
 			"cancelled_at": { "type": "date" },
 			"refunded_at": { "type": "date" },
+			"last_tracking_updated_at": { "type": "date" },
 
 			"total_amount": { "type": "scaled_float", "scaling_factor": 100 },
 			"total_shipping_fee": { "type": "scaled_float", "scaling_factor": 100 },
@@ -177,6 +189,15 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 
 			"parcel_count": { "type": "short" },
 			"item_count": { "type": "integer" },
+			"remaining_item_count": { "type": "integer" },
+			"has_multi_parcel": { "type": "boolean" },
+
+			"primary_item_name": { "type": "keyword" },
+			"primary_item_image_url": { "type": "keyword", "index": false },
+			"primary_store_name": { "type": "keyword" },
+			"primary_store_name_normalized": { "type": "keyword", "normalizer": "folding_lc" },
+			"primary_tracking_number": { "type": "keyword" },
+			"primary_tracking_number_normalized": { "type": "keyword", "normalizer": "folding_lc" },
 
 			"store_names": { "type": "keyword" },
 			"store_names_normalized": { "type": "keyword", "normalizer": "folding_lc" },
@@ -217,14 +238,26 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"order_status": "PROCESSING",
 	"payment_status": "PAID",
 	"parcel_statuses": ["IN_TRANSIT", "PREPARING"],
+	"buyer_tab": "TO_RECEIVE",
+	"ui_primary_status": "IN_TRANSIT",
+	"ui_status_rank": 30,
 	"created_at": "2026-02-28T10:00:00Z",
 	"paid_at": "2026-02-28T10:05:00Z",
+	"last_tracking_updated_at": "2026-03-01T10:00:00Z",
 	"final_amount": 995000,
 	"total_amount": 1000000,
 	"total_shipping_fee": 45000,
 	"total_discount": 50000,
 	"parcel_count": 2,
 	"item_count": 3,
+	"remaining_item_count": 2,
+	"has_multi_parcel": true,
+	"primary_item_name": "Ao thun nam cotton premium",
+	"primary_item_image_url": "https://cdn.domain.com/order/10001/item-001.jpg",
+	"primary_store_name": "Apple Flagship Store",
+	"primary_store_name_normalized": "apple flagship store",
+	"primary_tracking_number": "GHN12345",
+	"primary_tracking_number_normalized": "ghn12345",
 	"store_names": ["Apple Flagship Store", "Seller B"],
 	"store_names_normalized": ["apple flagship store", "seller b"],
 	"tracking_numbers": ["GHN12345"],
@@ -263,6 +296,8 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 			"order_status": { "type": "keyword" },
 			"payment_status": { "type": "keyword" },
 			"parcel_status": { "type": "keyword" },
+			"buyer_tab": { "type": "keyword" },
+			"ui_status_rank": { "type": "byte" },
 
 			"snapshot_product_name": {
 				"type": "text",
@@ -321,6 +356,8 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"order_status": "PROCESSING",
 	"payment_status": "PAID",
 	"parcel_status": "IN_TRANSIT",
+	"buyer_tab": "TO_RECEIVE",
+	"ui_status_rank": 30,
 	"snapshot_product_name": "Ao thun nam cotton premium",
 	"snapshot_product_name_normalized": "ao thun nam cotton premium",
 	"store_name": "Apple Flagship Store",
@@ -359,9 +396,10 @@ GET orders_read/_search
 		"bool": {
 			"filter": [
 				{ "term": { "buyer_id": "999" } },
+				{ "term": { "buyer_tab": "TO_RECEIVE" } },
 				{ "terms": { "order_status": ["PAID", "PROCESSING", "COMPLETED"] } },
 				{ "terms": { "payment_status": ["PAID"] } },
-				{ "range": { "created_at": { "gte": "2026-02-01T00:00:00Z", "lt": "2026-03-01T00:00:00Z" } } },
+				{ "range": { "created_at": { "gte": "now-90d/d", "lte": "now" } } },
 				{ "range": { "final_amount": { "gte": 100000, "lte": 3000000 } } }
 			]
 		}
@@ -377,6 +415,8 @@ GET orders_read/_search
 
 **Lưu ý:** Bắt buộc dùng `search_after` ở traffic lớn; tránh `from/size` sâu gây chi phí cao.
 
+**Contract mặc định:** Nếu buyer query không truyền `from/to`, backend tự áp `created_at in [now-90d, now]` để giữ latency ổn định.
+
 ### 6.2. Query Class B - Text search (exact-first)
 
 ### Bước 1: Tìm trên `order_search_lines` + collapse theo `order_id`
@@ -388,7 +428,8 @@ GET order_search_lines/_search
 		"bool": {
 			"filter": [
 				{ "term": { "buyer_id": "999" } },
-				{ "range": { "created_at": { "gte": "2026-02-01T00:00:00Z" } } }
+				{ "term": { "buyer_tab": "TO_RECEIVE" } },
+				{ "range": { "created_at": { "gte": "now-90d/d", "lte": "now" } } }
 			],
 			"should": [
 				{ "term": { "tracking_number_normalized": { "value": "ghn12345", "boost": 12 } } },
@@ -427,7 +468,9 @@ GET order_search_lines/_search
 	},
 	"sort": [
 		{ "_score": "desc" },
+		{ "ui_status_rank": "asc" },
 		{ "created_at": "desc" },
+		{ "order_id": "desc" },
 		{ "line_doc_id": "asc" }
 	],
 	"size": 20
@@ -442,7 +485,8 @@ GET order_search_lines/_search
 	"query": {
 		"bool": {
 			"filter": [
-				{ "term": { "buyer_id": "999" } }
+				{ "term": { "buyer_id": "999" } },
+				{ "range": { "created_at": { "gte": "now-90d/d", "lte": "now" } } }
 			],
 			"must": [
 				{
@@ -471,8 +515,29 @@ Khi text search:
 3. Trả response gồm:
 	 - `total_orders`
 	 - `matched_lines_count`
-	 - `items[]` (order summary + highlights + match_reason)
+	 - `items[]` (order-level card summary + highlights + match_reason)
 	 - `next_cursor`
+
+### 6.4. Card semantics cho đơn nhiều parcel/nhiều item
+
+- `items[]` luôn trả theo `order_id` (không trả theo line).
+- Card hiển thị item đại diện dùng `primary_item_name` + `primary_item_image_url`.
+- Nếu `item_count > 1`, UI hiển thị thêm `remaining_item_count` (ví dụ: `+2 sản phẩm`).
+- `primary_tracking_number` chỉ là mã tracking đại diện; chi tiết toàn bộ tracking vẫn đọc từ API order detail.
+- `match_reason` trả các giá trị chuẩn: `TRACKING_EXACT`, `TRACKING_PREFIX`, `STORE_EXACT`, `STORE_PREFIX`, `PRODUCT_PHRASE`, `PRODUCT_PREFIX`, `FUZZY_FALLBACK`.
+
+### 6.5. Bảng thứ tự tab buyer (để derive `buyer_tab`)
+
+| Ưu tiên | Điều kiện | buyer_tab |
+|---|---|---|
+| 1 | `order_status = PENDING_PAYMENT` | `TO_PAY` |
+| 2 | `order_status in (PAID, PROCESSING)` và chưa có parcel ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_SHIP` |
+| 3 | `order_status in (PAID, PROCESSING)` và có ít nhất 1 parcel ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_RECEIVE` |
+| 4 | `order_status = COMPLETED` và không nằm return/refund flow | `COMPLETED` |
+| 5 | `order_status = CANCELLED` | `CANCELLED` |
+| 6 | `order_status in (RETURN_REQUESTED, REFUNDED)` hoặc `payment_status in (REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED)` | `RETURN_REFUND` |
+
+Nếu một đơn đồng thời thỏa nhiều điều kiện, projector chọn tab theo thứ tự ưu tiên ở trên.
 
 ---
 
@@ -596,6 +661,7 @@ Alerts bắt buộc:
 
 1. Event contract có đủ guard fields theo [Order Events](order_events.md).
 2. Workers cập nhật đồng thời cả `orders_read` và `order_search_lines` theo cùng một event.
-3. API workflow áp dụng đúng 2 query classes và response contract.
+3. API workflow áp dụng đúng 2 query classes, default 90 ngày và semantics `q` theo ANY field.
 4. Reindex runbook đã được dry-run thành công ở staging.
 5. Privacy audit xác nhận không có PII nhạy cảm trong index.
+6. Tab mapping buyer (`TO_PAY`...`RETURN_REFUND`) khớp 100% với [Order FSM](order_state_machine.md).

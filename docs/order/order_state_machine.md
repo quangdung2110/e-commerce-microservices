@@ -41,11 +41,13 @@ Các trạng thái chính của parcel:
 | T1 | `CREATED` | `PENDING_PAYMENT` | `CREATE_ORDER_ACTIVITY_COMMITTED` |
 | T2 | `PENDING_PAYMENT` | `PAID` | `PAYMENT_SUCCESS` |
 | T3 | `PENDING_PAYMENT` | `CANCELLED` | `PAYMENT_TIMEOUT` |
+| T3.1 | `CANCELLED` | `PAID` | `PAYMENT_SUCCESS_LATE_RECOVERY` (chỉ khi `cancel_reason = PAYMENT_TIMEOUT`) |
 | T4 | `PENDING_PAYMENT` | `CANCELLED` | `USER_CANCEL` |
-| T7 | `PAID` | `CANCELLED` | `ADMIN_FORCE_CANCEL` |
+| T4.1 | `PENDING_PAYMENT` | `CANCELLED` | `ADMIN_FORCE_CANCEL` |
+| T7 | `PAID` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_REQUESTED` |
 | T8 | `PAID` | `PROCESSING` | `POST_PAYMENT_SAGA_COMPLETED` |
 | T8.1 | `PROCESSING` | `PAID` | `POST_PAYMENT_COMPENSATION_ROLLBACK` |
-| T8.2 | `PROCESSING` | `CANCELLED` | `ADMIN_FORCE_CANCEL` |
+| T8.2 | `PROCESSING` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_REQUESTED` |
 | T8.3 | `PROCESSING` | `COMPLETED` | `AUTO_COMPLETE_ALL_PARCELS_DELIVERED` |
 | P1 | `PREPARING` | `PACKAGED` | `WAREHOUSE_PACKED` |
 | P2 | `PACKAGED` | `HANDED_OVER` | `COURIER_PICKED_UP` |
@@ -55,8 +57,36 @@ Các trạng thái chính của parcel:
 | P6 | `DELIVERY_FAILED` | `IN_TRANSIT` | `SHIPMENT_STATUS_UPDATED(RETRY_IN_TRANSIT)` |
 | P7 | `DELIVERY_FAILED` | `RETURNED` | `SHIPMENT_RETURNED` |
 | P8 | `DELIVERED` | `RETURNED` | `SHIPMENT_RETURNED` |
-| T9 | `COMPLETED` | `RETURN_REQUESTED` | `RETURN_API_ACCEPTED` hoặc `SHIPMENT_RETURNED` |
+| T9 | `COMPLETED` | `RETURN_REQUESTED` | `RETURN_API_ACCEPTED` (pass customer one-shot guard) hoặc `SHIPMENT_RETURNED_FIRST_TRIGGER` |
+| T9.1 | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `SHIPMENT_RETURNED_APPEND` (chỉ append return context, không mở refund transaction mới) |
 | T10 | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` |
+| T10.1 | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_FAILED` hoặc `REFUND_REVERSED` (giữ FSM, cập nhật `payment_status`) |
+
+> [!IMPORTANT]
+> **Ownership transition cho mốc thanh toán/vận hành:**
+> - T2 (`PENDING_PAYMENT` -> `PAID`) được commit trong Temporal workflow branch `PAYMENT_SUCCESS`.
+> - Kafka `order-payment-consumer` chỉ làm nhiệm vụ signal workflow, không ghi trực tiếp `orders.status` cho T2.
+> - T3.1 (`CANCELLED` -> `PAID`) chỉ được commit bởi late-payment recovery lane khi có bằng chứng payment success đến muộn sau timeout.
+> - T8 (`PAID` -> `PROCESSING`) được commit bởi `UpdateOrderStatusActivity` trong post-payment saga và phát `ORDER_STATUS_CHANGED`.
+> - T8.3 (`PROCESSING` -> `COMPLETED`) phát canonical event `ORDER_COMPLETED`.
+> - Admin force action với đơn đã thu tiền (`PAID`/`PROCESSING`) phải đi lane refund (`RETURN_REQUESTED`), không đi lane cancel pre-payment.
+> - Trigger `RETURN_API_ACCEPTED` chỉ hợp lệ khi Buyer API chưa dùng one-shot guard của order; guard này không áp cho trigger vận hành (`SHIPMENT_RETURNED`, `ADMIN_FORCE_REFUND_REQUESTED`).
+> - Theo policy B, mỗi order chỉ có một refund transaction do Order khởi tạo; event `SHIPMENT_RETURNED` phát sinh thêm chỉ được append context (T9.1).
+
+## 22.1 Guard cho Buyer API One-shot
+
+Ràng buộc one-shot chỉ áp cho nguồn trigger từ Buyer API (`POST /v1/orders/{orderId}/return`):
+
+| Nguồn trigger | Có áp one-shot guard | Hành vi khi đã dùng guard |
+|---|---|---|
+| `RETURN_API_ACCEPTED` | Có | Từ chối request mới với `REFUND_CUSTOMER_REQUEST_ALREADY_USED` |
+| `SHIPMENT_RETURNED` (event đầu) | Không | Được phép mở lane refund theo policy vận hành |
+| `SHIPMENT_RETURNED` (event tiếp theo) | Không | Không mở workflow mới; chỉ append return context vào case hiện hữu |
+| `ADMIN_FORCE_REFUND_REQUESTED` | Không | Vẫn cho phép vào lane refund theo quyền admin |
+
+Nếu request Buyer đầu tiên là `PARTIAL`, mọi request Buyer tiếp theo cho cùng order đều bị từ chối và chuyển manual lane (`REFUND_PARTIAL_FOLLOWUP_MANUAL_REQUIRED`).
+
+> **Refund invariant:** `sum(refund_transaction)` do Order khởi tạo cho mỗi `order_id` tối đa một lần; không phát sinh refund transaction thứ hai từ shipping follow-up events.
 
 ## 23. Mapping với Shipping Service (standardized_status)
 
@@ -66,6 +96,21 @@ Các trạng thái chính của parcel:
 | `SHIPMENT_DELIVERED` | `DELIVERED` |
 | `SHIPMENT_RETURNED` | `RETURNED` |
 | `SHIPMENT_DELAYED` | Không đổi parcel status, chỉ cập nhật metadata SLA/escalation |
+
+## 24. Buyer Tab Precedence (Shopee-style)
+
+Để tránh 1 order xuất hiện đồng thời ở nhiều tab, projector phải derive duy nhất `buyer_tab` theo thứ tự ưu tiên sau:
+
+| Ưu tiên | Điều kiện | buyer_tab |
+|---|---|---|
+| 1 | `orders.status = PENDING_PAYMENT` | `TO_PAY` |
+| 2 | `orders.status in (PAID, PROCESSING)` và **chưa có** parcel ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_SHIP` |
+| 3 | `orders.status in (PAID, PROCESSING)` và **có ít nhất 1** parcel ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_RECEIVE` |
+| 4 | `orders.status = COMPLETED` và không ở return/refund flow | `COMPLETED` |
+| 5 | `orders.status = CANCELLED` | `CANCELLED` |
+| 6 | `orders.status in (RETURN_REQUESTED, REFUNDED)` hoặc `orders.payment_status in (REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED)` | `RETURN_REFUND` |
+
+Nếu có nhiều điều kiện cùng đúng, luôn chọn tab có ưu tiên cao hơn trong bảng.
 
 ## 31. Auto-Complete Logic: PROCESSING -> COMPLETED
 
@@ -91,6 +136,8 @@ Ràng buộc:
 | `orders.status` | `order_status` | `order_status` |
 | `orders.payment_status` | `payment_status` | `payment_status` |
 | Tập trạng thái từ `order_parcels.status` | `parcel_statuses` (keyword array) | `parcel_status` (theo từng line gắn `parcel_id`) |
+| Kết quả bảng precedence mục 24 | `buyer_tab` | `buyer_tab` |
+| Trạng thái ưu tiên hiển thị card | `ui_primary_status`, `ui_status_rank` | `ui_status_rank` |
 
 Guard keys áp dụng khi projection:
 

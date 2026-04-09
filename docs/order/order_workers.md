@@ -11,7 +11,7 @@
 
 ---
 
-Order Service chạy song song 2 hệ thống nền: **Temporal Workers** (điều phối Saga) và **Kafka Workers** (event-driven sync). Ngoài ra có các CronJob dọn dẹp và archive dữ liệu.
+Order Service chạy song song 3 lớp nền: **Temporal Workers** (điều phối Saga), **Kafka Workers** (event-driven sync), và **CDC Connector Runtime** (publish outbox theo WAL). Ngoài ra có các CronJob dọn dẹp và archive dữ liệu.
 
 ## Tổng Hợp Kafka Topics
 
@@ -19,8 +19,10 @@ Order Service chạy song song 2 hệ thống nền: **Temporal Workers** (đi�
 |---|---|---|---|
 | **Produce** | `t.order.events` | — | Topic chính chứa mọi event phát đi |
 | **Produce** | `t.search.metrics.events` | — | Topic metrics theo `product_id` cho Search projection |
+| **Produce** | `t.order.archive.retry` | — | Topic replay cho archive batch lỗi (payload chỉ chứa `archive_batch_id`) |
 | **Produce** | `t.order.cqrs.retry` | — | Retry lane cho CQRS projector khi self-heal/replay |
 | **Produce** | `t.order.cqrs.dlq` | — | Dead-letter lane cho CQRS projector (contract/permanent errors) |
+| **Consume** | `t.order.archive.retry` | `order-archive-replay-consumer` | Consumer chạy lại archive batch theo `archive_batch_id` |
 | **Consume** | `t.payment.events` | `order-payment-consumer` | Nhận kết quả thanh toán |
 | **Consume** | `t.shipping.events` | `order-shipping-consumer` | Nhận cập nhật vận chuyển |
 | **Consume** | `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Replay sự kiện CQRS sau backoff |
@@ -29,25 +31,22 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 
 ---
 
-## 1. Outbox Polling Worker (Producer)
-**Loại hình:** Background Thread chạy định kỳ (mỗi 3 giây).
+## 1. Outbox CDC Pipeline (Producer Path)
+**Loại hình:** CDC Connector (Debezium/Kafka Connect), không polling SQL trong application.
 
-**Sứ mệnh:** Chuyển Event từ bảng `outbox_events` sang Kafka Topic `t.order.events`. Cơ chế tương tự hướng CDC/Outbox chuẩn ở [Product Workers](../product/product_workers.md).
+**Sứ mệnh:** Đẩy event từ bảng `outbox_events` append-only ra Kafka một cách tin cậy theo WAL CDC.
 
 **Chi tiết luồng hoạt động:**
-1. Quét theo lô:
-   ```sql
-   SELECT * FROM outbox_events 
-   WHERE (status = 'PENDING') 
-      OR (status = 'FAILED' AND retry_count < max_retries AND next_retry_at <= NOW()) 
-   ORDER BY created_at ASC LIMIT 100 
-   FOR UPDATE SKIP LOCKED;
-   ```
-2. Forward lên Kafka: Key = `aggregate_id` (order_id). Bổ sung CloudEvents headers.
-3. Sau khi Kafka ACK: `UPDATE outbox_events SET status = 'PUBLISHED'`.
-4. Xử lý lỗi: `status = 'FAILED'`, `retry_count + 1`, Exponential Backoff. Quá `max_retries` → `DEAD`.
+1. Trong cùng DB transaction nghiệp vụ, application insert 1 record vào `outbox_events` (kèm `partition_key`, `event_type`, `aggregate_type`, `aggregate_id`, `payload`).
+2. Debezium đọc WAL thay đổi mới của `outbox_events`.
+3. Outbox Event Router publish sang topic đích:
+   - `aggregate_type IN ('Order', 'OrderParcel')` -> `t.order.events`
+   - `aggregate_type = 'ProductSalesMetrics'` -> `t.search.metrics.events`
+   - `aggregate_type = 'ArchiveBatch'` -> `t.order.archive.retry`
+4. Partition key lấy trực tiếp từ cột `partition_key` để giữ ordering theo stream ownership.
+5. Retry, DLQ, backoff vận hành tại Kafka Connect runtime, không dùng cột `status/retry_count` trong DB.
 
-> **Multi-instance safe:** `FOR UPDATE SKIP LOCKED` cho phép chạy nhiều instance song song mà không duplicate.
+> **Invariant:** `partition_key` bắt buộc `NOT NULL`; thiếu key sẽ phá ordering của CQRS/consumer downstream.
 
 ---
 
@@ -62,6 +61,7 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 **Sứ mệnh:** Đồng bộ read-model Elasticsearch theo kiến trúc hybrid 2-index để phục vụ đồng thời:
 1. Lọc đa chiều chính xác theo buyer/seller/status/time.
 2. Text search theo tên sản phẩm, tracking number, store name.
+3. Trả về order-level card nhất quán với buyer tabs kiểu Shopee.
 
 Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch_design.md).
 
@@ -69,8 +69,8 @@ Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch
 
 1. Consume từ `t.order.events`.
 2. Parse và phân lane theo event type:
-   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, parcel summary).
-   - Lane `order_search_lines`: cập nhật line-level text documents cho product/tracking/store search.
+   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, parcel summary, buyer_tab, card fields).
+   - Lane `order_search_lines`: cập nhật line-level text documents cho product/tracking/store search, đồng bộ `buyer_tab` và `ui_status_rank` để sort ổn định.
 3. Áp guard theo stream ownership:
    - `order_version` cho order lifecycle events.
    - `parcel_version` + `shipment_event_sequence_id` cho shipping/parcel events.
@@ -80,13 +80,24 @@ Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch
    - `POST order_search_lines_write/_bulk`
 5. Cập nhật metadata (`last_event_id`, `last_event_timestamp`, `indexed_at`, `projection_version`).
 
-### 2.2. Idempotency và out-of-order
+### 2.2. Projection fields bắt buộc cho buyer list/search
+
+- Summary projector phải derive `buyer_tab` theo precedence trong [Order FSM](order_state_machine.md#24-buyer-tab-precedence-shopee-style).
+- Summary projector phải duy trì đầy đủ card fields trong `orders_read`:
+   - `ui_primary_status`, `ui_status_rank`
+   - `primary_item_name`, `primary_item_image_url`, `remaining_item_count`
+   - `primary_store_name`, `primary_tracking_number`
+   - `parcel_count`, `item_count`, `has_multi_parcel`
+- Line projector phải đồng bộ `buyer_tab` và `ui_status_rank` để query class B có thể filter/sort đồng nhất với query class A.
+- Nếu thiếu dữ liệu để dựng card fields (ví dụ event incremental không đủ), event phải park vào `t.order.cqrs.retry` để snapshot rebuild, không được ghi document nửa vời.
+
+### 2.3. Idempotency và out-of-order
 
 - Idempotency không dựa trên so sánh thứ tự UUID `event_id` theo từ điển.
 - Quy tắc skip event cũ: chỉ skip khi guard key của stream đó không tăng (`incoming <= current`).
 - Event thiếu guard key bắt buộc bị xem là contract violation và chuyển DLQ.
 
-### 2.3. Retry, self-heal và DLQ
+### 2.4. Retry, self-heal và DLQ
 
 1. Lỗi ES transient (`429`, timeout, network reset): inline retry tối đa 3 lần.
 2. Không tìm thấy document hoặc thiếu data để apply event incrementally:
@@ -96,7 +107,7 @@ Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch
    - Chuyển `t.order.cqrs.dlq`.
    - Gắn reason code để Ops triage.
 
-### 2.4. Commit semantics
+### 2.5. Commit semantics
 
 Offset chỉ được commit khi:
 - bulk apply thành công, hoặc
@@ -106,7 +117,7 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 
 ---
 
-## 2.1. Order Metrics Projector (Kafka Consumer + Producer)
+## 3. Order Metrics Projector (Kafka Consumer + Producer)
 **Loại hình:** Kafka Consumer chạy liên tục, đồng thời produce metrics event.
 **Consumer Group:** `order-metrics-projector`
 
@@ -119,53 +130,47 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    - Upsert bảng aggregate nội bộ `order_product_metrics`.
    - Tăng `event_sequence_id` đơn điệu theo từng `product_id`.
    - Insert outbox event `ORDER_PRODUCT_METRICS_UPDATED` cho từng `product_id` bị ảnh hưởng.
-4. Outbox relay publish sang `t.search.metrics.events` với partition key `product_id`.
+4. CDC connector publish sang `t.search.metrics.events` với partition key `product_id`.
 
 **Idempotency & Ordering:**
 - Dedup theo `event_id` của `ORDER_COMPLETED`.
 - Event metrics bắt buộc mang `event_sequence_id` đơn điệu theo `product_id`.
-- Nếu xử lý lỗi tạm thời, retry trước khi publish; quá ngưỡng chuyển `DEAD` để tránh phát metrics lùi.
+- Nếu xử lý lỗi tạm thời, retry tại consumer trước khi ghi DB/outbox; nếu connector lỗi, xử lý qua Kafka Connect DLQ và replay pipeline.
 
 ---
 
-## 3. Payment Status Consumer (Kafka Consumer)
+## 4. Payment Status Consumer (Kafka Consumer)
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `order-payment-consumer`
 
-**Sứ mệnh:** Nhận kết quả thanh toán / hoàn tiền từ Payment Service → Signal Temporal Workflow để resume.
+**Sứ mệnh:** Nhận kết quả thanh toán / hoàn tiền từ Payment Service → signal Temporal workflows để resume, đồng thời kích hoạt recovery lane khi payment success đến muộn sau timeout.
 
 **Chi tiết luồng hoạt động:**
 1. Consume topic `t.payment.events`.
 2. Phân loại event:
-   - **`PAYMENT_SUCCESS`:** 
-       - Lookup `checkout_token` theo `order_id`, sau đó tìm Temporal Workflow (WorkflowID = `order-checkout-{checkout_token}`).
-     - `workflowStub.signal("PaymentResult", PaymentSignal.SUCCESS, txn_details)`.
-     - Temporal resume → Post-Payment Saga bắt đầu.
-   - **`PAYMENT_FAILED` / `PAYMENT_EXPIRED`:**
-     - Signal Temporal: `PaymentSignal.FAILED`.
-     - Temporal resume → Cancel Order → Compensation Stack.
-   - **`REFUND_SUCCESS`:**
-     - Update `orders.payment_status = 'REFUNDED'`.
-     - Trigger FSM: `RETURN_REQUESTED` → `REFUNDED` (nếu đang ở trạng thái phù hợp).
-     - Produce `ORDER_REFUNDED` event.
-    - **`REFUND_FAILED`:**
-       - Update `orders.payment_status = 'REFUND_FAILED'`.
-       - Giữ Order ở `RETURN_REQUESTED` và gắn `refund_error_code`, `refund_error_message` để tránh đóng đơn sai trạng thái.
-       - Produce `ORDER_REFUND_FAILED` event cho Notification/Ops.
-       - Retry policy: exponential backoff + dead-letter escalation sau ngưỡng retry.
-   - **`REFUND_REVERSED` (provider-dependent):**
-      - Update `orders.payment_status = 'REFUND_REVERSED'`.
-      - Giữ Order ở `RETURN_REQUESTED` để chờ xử lý thủ công hoặc retry nghiệp vụ.
-      - Produce `ORDER_REFUND_FAILED` với reason `REFUND_REVERSED_BY_PROVIDER` cho Notification/Ops.
+    - **`PAYMENT_SUCCESS`:**
+       1. Lookup `checkout_token` theo `order_id`, sau đó tìm Temporal Workflow (WorkflowID = `order-checkout-{checkout_token}`).
+       2. Nếu checkout workflow đang active, signal checkout workflow: `workflowStub.signal("PaymentResult", PaymentSignal.SUCCESS, txn_details)`.
+       3. Nếu checkout workflow đã close do timeout và order đang `CANCELLED(PAYMENT_TIMEOUT)`, start `OrderLatePaymentRecoveryWorkflow` theo `order_id`.
+       4. Worker **không** update trực tiếp `orders.status` và **không** insert `ORDER_PAID`; checkout/recovery workflow mới là owner của commit mốc tài chính.
+    - **`PAYMENT_FAILED` / `PAYMENT_EXPIRED`:**
+       1. Signal checkout workflow: `PaymentSignal.FAILED`.
+       2. Checkout workflow tự chạy compensation pre-payment và chỉ commit `CANCELLED` + outbox `ORDER_CANCELLED` sau khi compensation hoàn tất.
+    - **`REFUND_SUCCESS` / `REFUND_FAILED` / `REFUND_REVERSED`:**
+       1. Lookup refund workflow theo `order_id` (WorkflowID = `order-refund-{order_id}`).
+       2. Signal `RefundResult` tương ứng cho `OrderRefundWorkflow`.
+       3. Worker **không** update trực tiếp `orders.status/payment_status`; refund workflow là owner duy nhất của commit FSM/outbox trong lane refund.
+       4. Worker **không** được reset `order_customer_return_guard`; policy one-shot của Buyer API vẫn giữ nguyên ngay cả khi refund fail/reversed.
 
 **Idempotency:**
 - Fast-path: Redis `SETNX payment:signal:{order_id}:{payment_transaction_id}:{event_type}` TTL 30 phút.
-- Durable guard: ghi/check bảng `idempotency_keys` cùng key để chống lặp sau restart.
+- Durable guard: ghi/check bảng `order_event_idempotency` với `action_type` theo loại payment/refund để chống lặp sau restart.
+- Khi gặp cùng `event_id` nhưng khác `payload_hash`, phải đưa vào contract-violation lane (không skip mù).
 - Nếu đã xử lý → skip, tránh signal Temporal nhiều lần.
 
 ---
 
-## 4. Shipping Status Consumer (Kafka Consumer)
+## 5. Shipping Status Consumer (Kafka Consumer)
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `order-shipping-consumer`
 
@@ -200,18 +205,21 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    WHERE id = :order_id AND status = 'PROCESSING';
    ```
    Chỉ khi số bản ghi update = 1 mới produce `ORDER_COMPLETED`.
-5. **Partial Return Check:** Nếu parcel chuyển sang `RETURNED` sau `DELIVERED`:
-   - Master Order FSM `COMPLETED` → `RETURN_REQUESTED`.
-   - Trigger Refund luồng: gọi Payment refund API hoặc start Refund Temporal Workflow.
+5. **Return Trigger Check (policy B):** Nếu parcel chuyển sang `RETURNED` sau `DELIVERED`:
+   - Trigger Refund luồng: chỉ `SHIPMENT_RETURNED` **event đầu tiên** được quyền start `OrderRefundWorkflow` (`trigger_source = SHIPMENT_RETURNED`).
+   - Trigger này là lane vận hành hệ thống, không bị ràng buộc bởi one-shot guard của Buyer API.
+   - Nếu order đã có refund workflow active: worker signal append-returned-parcel vào workflow hiện tại (không start workflow mới).
+   - Nếu order đã có `refund_transaction_id` terminal: worker không mở refund transaction thứ hai; ghi history + chuyển manual adjustment lane.
+   - `OrderRefundWorkflow` là nơi commit transition master `COMPLETED` -> `RETURN_REQUESTED`.
 6. **Delayed Escalation:** Nếu event `SHIPMENT_DELAYED` có `escalation_level >= 2`:
    - Insert `order_status_history` với reason `SHIPMENT_DELAYED_ESCALATED`.
    - Produce `ORDER_STATUS_CHANGED` (metadata-only) cho CQRS/Ops dashboard.
 
-**Idempotency:** Key = `shipping:{shipment_id}:{new_status}:{occurred_at}`.
+**Idempotency:** Key = `shipping:{shipment_id}:{new_status}:{occurred_at}`; durable guard ghi vào `order_event_idempotency` với `action_scope_key = {shipment_id}:{shipment_event_sequence_id}`.
 
 ---
 
-## 5. Temporal Worker (Workflow & Activity Registration)
+## 6. Temporal Worker (Workflow & Activity Registration)
 **Loại hình:** Long-running process đăng ký với Temporal Server.
 
 **Sứ mệnh:** Chạy `OrderCheckoutWorkflow` và các Activities liên quan. Xem [Temporal Saga Design](temporal_saga_design.md).
@@ -219,6 +227,8 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 **Chi tiết:**
 1. **Workflow Registration:**
    - `OrderCheckoutWorkflow` — Orchestrator chính cho Pre-Payment và Post-Payment Saga.
+   - `OrderRefundWorkflow` — Orchestrator cho lane hoàn tiền (`return` + `admin force refund`).
+   - `OrderLatePaymentRecoveryWorkflow` — Orchestrator cho lane khôi phục đơn khi payment success đến muộn sau timeout.
 2. **Activity Registration:**
    - `CreateOrderActivity` — INSERT Master Order + Parcels + Items vào DB.
    - `ReserveInventoryActivity` — gRPC/API sang Inventory `/reserve`.
@@ -229,6 +239,9 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    - `ConfirmPromotionActivity` — gRPC/API sang Promotion `/confirm` (sau Payment), bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
    - `CreateShippingLabelsActivity` — gRPC/API sang Shipping `/create-shipment` cho từng parcel.
    - `UpdateOrderStatusActivity` — FSM update an toàn với Optimistic Locking.
+   - `LockRefundScopeActivity` — chốt snapshot parcels returned để tính refund một lần cho mỗi order.
+   - `AppendReturnedParcelActivity` — append shipping return follow-up vào refund case đang active.
+   - `RecoverPaidOrderFromTimeoutActivity` — khôi phục order lane khi checkout timeout nhưng payment success đến muộn.
 3. **Compensation Activities:**
    - `RollbackPromotionActivity` — Hoàn voucher, bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
    - `RollbackInventoryActivity` — Giải phóng reserved stock.
@@ -238,57 +251,95 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    - `RevertOrderStatusToPaidActivity` — Trả status `PROCESSING` về `PAID` khi rollback post-payment.
    - `CancelShippingActivity` — Hủy vận đơn đã tạo.
 4. **Cấu hình:**
-   - Task Queue: `order-checkout-queue`
-   - WorkflowID: `order-checkout-{checkout_token}` (đảm bảo 1 checkout submit chỉ có 1 workflow active)
-   - Activity Timeout: StartToClose = 30 giây, RetryPolicy = 3 lần
-   - Workflow Timeout: 30 phút (bao gồm payment window 15 phút + retry/rollback buffer)
+    - Task Queues: `order-checkout-queue`, `order-refund-queue`, `order-late-payment-recovery-queue`
+    - WorkflowID:
+       - `order-checkout-{checkout_token}` (đảm bảo 1 checkout submit chỉ có 1 workflow active)
+       - `order-refund-{order_id}` (đảm bảo 1 lane refund active theo order)
+       - `order-late-payment-recovery-{order_id}` (đảm bảo 1 lane recovery active theo order)
+    - Activity Timeout: StartToClose = 30 giây, RetryPolicy = 3 lần
+    - Workflow Timeout: 30 phút (bao gồm payment window 15 phút + retry/rollback buffer)
 
 ---
 
-## 6. Cold Data Archiver (Batch CronJob)
+## 7. Cold Data Archiver (Batch CronJob)
 **Loại hình:** Lịch biểu chạy hàng tuần (VD: Chủ Nhật 3:00 AM).
 
 **Sứ mệnh:** Di dời đơn hàng cũ sang Cold Storage. Xem [Cold Data Archiving Design](cold_data_archiving_design.md).
 
 **Chi tiết luồng hoạt động:**
-1. Quét đơn hàng đủ điều kiện:
+1. Khởi tạo `archive_batch_id` và insert control record vào `archive_batches` (`status = RUNNING`, `attempt_count + 1`).
+2. Quét đơn hàng đủ điều kiện:
    ```sql
    SELECT id FROM orders 
-   WHERE status IN ('COMPLETED', 'CANCELLED') 
+   WHERE status IN ('COMPLETED', 'CANCELLED', 'REFUNDED') 
      AND updated_at < NOW() - INTERVAL '6 months' 
-   LIMIT 1000;
+   LIMIT 10000;
    ```
-2. Denormalize → JSON/Parquet → Upload S3.
-3. Verify S3 integrity → Hard Delete từ PostgreSQL (CASCADE `order_parcels`, `order_items`, `order_promotions`).
+3. Insert membership vào `archive_batch_items` cho toàn bộ `order_id` đã chọn.
+4. Denormalize -> JSON/Parquet -> Upload S3.
+5. Verify S3 integrity, sau đó upsert `archived_orders_lookup` (`order_id`, `archive_batch_id`, `s3_file_key`, `order_created_at`, `archived_at`).
+6. Hard Delete từ PostgreSQL (CASCADE `order_parcels`, `order_items`, `order_promotions`) chỉ sau khi lookup đã ghi thành công.
+7. Cập nhật `archive_batch_items.archive_status` theo từng order và chốt `archive_batches.status = COMPLETED`.
+8. Nếu fail ở bất kỳ stage nào (`SNAPSHOT`, `UPLOAD`, `VERIFY`, `DELETE`):
+   - Cập nhật `archive_batches.status = FAILED`, `failure_stage`, `failure_reason`.
+   - Insert outbox event `ORDER_ARCHIVE_BATCH_FAILED` (`aggregate_type = ArchiveBatch`, `partition_key = archive_batch_id`) để CDC publish lên `t.order.archive.retry`.
 
 ---
 
-## 7. Old Outbox Trimmer (Batch CronJob)
-**Loại hình:** Job dọn dẹp chạy hàng ngày (VD: 4:00 AM).
+## 8. Archive Replay Consumer (Kafka Consumer)
+**Loại hình:** Kafka Consumer chạy liên tục.
+**Consumer Group:** `order-archive-replay-consumer`
+
+**Sứ mệnh:** Lắng nghe `ORDER_ARCHIVE_BATCH_FAILED` từ `t.order.archive.retry`, sau đó replay lô lỗi theo `archive_batch_id`.
+
+**Chi tiết luồng hoạt động:**
+1. Consume event chứa: `archive_batch_id`, `attempt`, `failure_stage`, `failed_at`.
+2. Idempotency guard:
+   - Fast path: Redis `SETNX archive:replay:{archive_batch_id}:{attempt}`.
+   - Durable path: `order_event_idempotency` với `action_type = ARCHIVE_BATCH_REPLAY`, `action_scope_key = {archive_batch_id}:{attempt}`.
+3. Load `archive_batches` + danh sách `order_id` từ `archive_batch_items`.
+4. Chỉ replay các item `archive_status IN ('PENDING', 'FAILED')`.
+5. Re-run theo stage thất bại:
+   - `SNAPSHOT`/`UPLOAD`/`VERIFY`: re-upload + verify rồi mới cho phép delete.
+   - `DELETE`: chỉ chạy delete cho orders đã có `archived_orders_lookup` + checksum hợp lệ.
+6. Khi thành công, update `archive_batches.status = COMPLETED`; nếu vẫn fail:
+   - Tăng `attempt_count`, cập nhật `archive_batches.status = FAILED` + `failure_stage` mới.
+   - Insert outbox event `ORDER_ARCHIVE_BATCH_FAILED` mới (`aggregate_type = ArchiveBatch`, `partition_key = archive_batch_id`) để CDC publish lại retry event theo backoff policy.
+
+---
+
+## 9. Outbox Data Retention Trimmer (Batch CronJob)
+**Loại hình:** Job hàng ngày (VD: 4:00 AM).
 
 ```sql
-DELETE FROM outbox_events 
-WHERE status = 'PUBLISHED' AND created_at < NOW() - INTERVAL '15 days';
+DELETE FROM outbox_events
+WHERE created_at < NOW() - INTERVAL '15 days';
 ```
 
-Không xóa `DEAD` events — giữ lại cho SysAdmin Dashboard.
+> Chỉ chạy khi CDC connector lag trong ngưỡng an toàn (watermark đã vượt xa dữ liệu sắp xóa).
 
 ---
 
-## 8. Dead Letter Handler (Alerting CronJob)
+## 10. CDC DLQ & Connector Health Monitor (Alerting CronJob)
 **Loại hình:** Cron Job mỗi 5 phút.
 
 **Chi tiết:**
-1. Quét `outbox_events WHERE status = 'DEAD'`.
-2. Ghi metric `order_outbox_dead_events_total` → Prometheus.
-3. Alert Slack/PagerDuty nếu `dead_count > 0`.
-4. SysAdmin Dashboard cho phép manual retry: `UPDATE outbox_events SET status = 'PENDING', retry_count = 0 WHERE event_id = :id`.
+1. Kiểm tra trạng thái Debezium/Kafka Connect connector của outbox.
+2. Theo dõi DLQ topics của CDC pipeline (ví dụ: `t.order.outbox.cdc.dlq`).
+3. Ghi metrics:
+   - `order_outbox_cdc_connector_down_total`
+   - `order_outbox_cdc_dlq_events_total`
+4. Alert Slack/PagerDuty nếu connector `FAILED` hoặc DLQ tăng vượt ngưỡng.
 
 ---
 
-## 9. Idempotency Key Cleanup (Batch CronJob)
+## 11. Idempotency Cleanup (Batch CronJob)
 **Loại hình:** Job hàng ngày (VD: 5:00 AM).
 
 ```sql
-DELETE FROM idempotency_keys WHERE expires_at < NOW();
+DELETE FROM order_request_idempotency
+WHERE expires_at < NOW();
+
+DELETE FROM order_event_idempotency
+WHERE processed_at < NOW() - INTERVAL '45 days';
 ```

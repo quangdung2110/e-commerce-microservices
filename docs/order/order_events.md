@@ -20,7 +20,7 @@
 
 Tài liệu này định nghĩa cấu trúc tiêu chuẩn của tất cả các luồng sự kiện **phát đi (Produce)** từ Order Service và **tiêu thụ (Consume)** từ các service khác.
 
-Order Service là **Orchestrator trung tâm** — nó produce nhiều event nhất và consume từ nhiều nguồn nhất trong hệ thống. Tất cả events đi qua [Outbox Pattern](order_db_design.md) để đảm bảo At-Least-Once Delivery.
+Order Service là **Orchestrator trung tâm** — nó produce nhiều event nhất và consume từ nhiều nguồn nhất trong hệ thống. Tất cả produced events đi qua [Outbox Pattern](order_db_design.md) dạng append-only và được publish bằng CDC pipeline để đảm bảo At-Least-Once Delivery.
 
 ## 1. Bản Đồ Kafka Topics
 
@@ -30,10 +30,14 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 |---|---|---|---|
 | `t.order.events` | `order_id` | Promotion, Inventory, Cart, CQRS Projection Worker (internal), Notification, Analytics, Review | Topic chính chứa mọi thay đổi trạng thái đơn hàng |
 | `t.search.metrics.events` | `product_id` | Search Service | Topic metrics chuyên dụng cho projection realtime theo product, được phát bởi internal Order Metrics Projector thuộc Order Service |
+| `t.order.archive.retry` | `archive_batch_id` | Internal `order-archive-replay-consumer` | Retry topic cho archive batch lỗi; event chỉ mang metadata batch |
 | `t.order.cqrs.retry` | `order_id` | Internal `order-cqrs-retry-replayer` | Parking lot cho CQRS projector để replay/self-heal sau backoff |
 | `t.order.cqrs.dlq` | `order_id` | Ops / Internal triage tools | Dead-letter cho CQRS projector khi lỗi permanent/contract violation |
 
-> **Ghi chú Partition Key:** Sử dụng `order_id` đảm bảo tất cả events của cùng 1 đơn hàng luôn vào đúng 1 Partition → **Strict Ordering** cho từng đơn. Promotion/Inventory cần ordering chính xác để không bị Redeem trước Cancel.
+> **Ghi chú Partition Key:**
+> - `t.order.events` dùng `order_id` để giữ strict ordering theo từng đơn.
+> - `t.search.metrics.events` dùng `product_id` để giữ ordering của sold metrics.
+> - `t.order.archive.retry` dùng `archive_batch_id` để giữ ordering replay theo batch.
 
 ### 1.2 Topics mà Order Service **Consume** (Lắng nghe)
 
@@ -41,15 +45,16 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 |---|---|---|---|---|
 | `t.payment.events` | `order-payment-consumer` | Payment Service | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` | Nhận kết quả thanh toán / hoàn tiền |
 | `t.shipping.events` | `order-shipping-consumer` | Shipping Service | `SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`, `SHIPMENT_DELAYED` | Nhận cập nhật trạng thái vận chuyển |
+| `t.order.archive.retry` | `order-archive-replay-consumer` | Order Service (internal) | `ORDER_ARCHIVE_BATCH_FAILED` | Trigger replay cho archive batch thất bại |
 | `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Order Service (internal projector) | Envelope chứa original event + retry metadata | Replay sự kiện CQRS sau backoff/self-heal |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
-Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và được [Outbox Polling Worker](order_workers.md#1-outbox-polling-worker) bổ sung:
+Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và được [Outbox CDC Pipeline](order_workers.md#1-outbox-cdc-pipeline-producer-path) publish:
 
-*   `event_id`: UUID của sự kiện (từ `outbox_events.id`).
+*   `event_id`: UUID của sự kiện (từ `outbox_events.event_id`).
 *   `event_type`: Loại sự kiện (VD: `ORDER_CREATED`, `ORDER_PAID`).
-*   `aggregate_type`: Với **produced events** của Order: `Order`, `OrderParcel`, hoặc `ProductSalesMetrics`. Với **consumed events**, giữ nguyên giá trị từ producer gốc (ví dụ `Payment`).
+*   `aggregate_type`: Với **produced events** của Order: `Order`, `OrderParcel`, `ProductSalesMetrics`, hoặc `ArchiveBatch`. Với **consumed events**, giữ nguyên giá trị từ producer gốc (ví dụ `Payment`).
 *   `aggregate_id`: ID theo `aggregate_type` (ví dụ `order_id`, `parcel_id`, `payment_transaction_id`, `refund_transaction_id`, `product_id`).
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: `order-service`.
@@ -69,6 +74,19 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 | Payment-derived updates | `payment_event_sequence_id` | Payment stream |
 
 > Guard keys này phục vụ CQRS projection và replay logic. Không suy luận thứ tự event bằng UUID `event_id` theo từ điển.
+
+### 2.2. Search projection contract (order-level card)
+
+Để dựng được list/search kiểu Shopee (1 card/1 order), downstream projector cần các trường tối thiểu sau:
+
+| Event | Trường bắt buộc cho CQRS |
+|---|---|
+| `ORDER_CREATED` | `parcels[].seller_id`, `parcels[].store_name_snapshot`, `parcels[].items[].snapshot_name`, `parcels[].items[].snapshot_image_url` |
+| `ORDER_STATUS_CHANGED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_COMPLETED` | `order_version`, `status/new_status`, `changed_at/paid_at/completed_at/cancelled_at` |
+| `PARCEL_STATUS_CHANGED` | `parcel_id`, `new_status`, `tracking_number`, `parcel_version`, `shipment_event_sequence_id`, `changed_at` |
+| `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `refund_event_sequence_id`, `payment_status`, `status` |
+
+`buyer_tab`, `ui_primary_status`, `ui_status_rank` được derive trong projector theo [Order FSM](order_state_machine.md#24-buyer-tab-precedence-shopee-style), không hard-code ở producer.
 
 ## 3. Chi Tiết Các Loại Event Phát Đi (Produced Events)
 
@@ -108,6 +126,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "parcels": [
       {
         "parcel_id": 2001,
+        "seller_id": 501,
+        "store_name_snapshot": "Apple Flagship Store",
         "warehouse_id": 5,
         "shipping_fee": 25000,
         "courier_code": "GHN",
@@ -126,6 +146,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
       },
       {
         "parcel_id": 2002,
+        "seller_id": 502,
+        "store_name_snapshot": "Seller B",
         "warehouse_id": 8,
         "shipping_fee": 20000,
         "courier_code": "NINJAVAN",
@@ -169,6 +191,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "status": "PAID",
     "order_version": 3,
     "payment_event_sequence_id": 20260228100500,
+    "payment_recovery": false,
     "payment_method": "VNPAY",
     "payment_transaction_id": "TXN-ABC123",
     "cart_id": "{cart:user:999}",
@@ -190,6 +213,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "parcels": [
       {
         "parcel_id": 2001,
+        "seller_id": 501,
+        "store_name_snapshot": "Apple Flagship Store",
         "warehouse_id": 5,
         "items": [
           {"sku_id": "sku-001", "quantity": 2}
@@ -211,17 +236,21 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 > **Field Subset cho Cart Consumer:** Cart Service chỉ dùng `cart_id` + `sku_ids`. Các field `items[]`, `parcels[]` và `quantity` phục vụ consumer khác (inventory/analytics/notification), **không** tham gia logic cart cleanup.
 
 > [!IMPORTANT]
-> `ORDER_PAID` là event thông báo trạng thái sau khi Post-Payment Saga đã hoàn tất. Các thao tác giao dịch lõi như `DeductInventoryActivity` và `ConfirmPromotionActivity` được thực thi đồng bộ trước khi event này được phát ra.
+> `ORDER_PAID` là event mốc tài chính: được phát ngay khi workflow branch `PAYMENT_SUCCESS` commit thành công transition FSM `PENDING_PAYMENT` -> `PAID`.
+> Các thao tác hậu thanh toán thuộc mốc vận hành (`DeductInventoryActivity`, `ConfirmPromotionActivity`, `CreateShippingLabelsActivity`) được theo dõi bằng `ORDER_STATUS_CHANGED` khi transition `PAID` -> `PROCESSING` hoàn tất.
+>
+> Trong lane khôi phục payment muộn, `ORDER_PAID` có thể được phát với `payment_recovery = true` sau khi order từng bị `ORDER_CANCELLED` vì `PAYMENT_TIMEOUT`.
 
 ### 3.3. ORDER_CANCELLED
 
-**Ngữ cảnh:** Timeout 15 phút / User cancel / Admin force cancel. FSM → `CANCELLED`. Xem [State Machine T3/T4/T7](order_state_machine.md#22-bảng-chi-tiết-transitions).
+**Ngữ cảnh:** Lane cancel pre-payment (`status = PENDING_PAYMENT`): timeout 15 phút / user cancel / admin cancel / payment failed. FSM -> `CANCELLED`. Xem [State Machine T3/T4/T4.1](order_state_machine.md#22-bảng-chi-tiết-transitions).
 **Consumers chính:**
-- **Payment Service:** Trigger Auto-Refund nếu đã thanh toán (T7 case).
+- **Payment Service:** Reconciliation/cancel pending payment transaction (nếu còn mở).
 - **CQRS/Notification/Analytics:** Đồng bộ trạng thái hiển thị và thông báo.
 
 > [!NOTE]
 > Với timeout/user-cancel trong checkout saga, rollback Promotion/Inventory được thực thi đồng bộ qua Temporal Compensation Activities trước khi `ORDER_CANCELLED` được phát ra.
+> Riêng `reason = PAYMENT_TIMEOUT` là trạng thái có thể được bù bằng lane khôi phục nếu Payment Service xác nhận thu tiền thành công đến muộn.
 
 ```json
 {
@@ -258,7 +287,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 ### 3.4. ORDER_STATUS_CHANGED
 
-**Ngữ cảnh:** Mọi transition FSM của Master Order (trừ CREATED, PAID, CANCELLED đã có event riêng). VD: `PAID` → `PROCESSING`, `PROCESSING` → `COMPLETED`.
+**Ngữ cảnh:** Mọi transition FSM của Master Order (trừ CREATED, PAID, CANCELLED, COMPLETED đã có event riêng). VD: `PAID` -> `PROCESSING`, `PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`, `CANCELLED` -> `PAID` (late-payment recovery).
 **Consumers chính:** CQRS Projection Worker, Notification Service.
 
 ```json
@@ -273,16 +302,25 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "payload": {
     "order_id": 10001,
     "user_id": 999,
+    "buyer_tab": "TO_SHIP",
     "old_status": "PAID",
     "new_status": "PROCESSING",
     "order_version": 5,
     "changed_by": "system",
     "changed_by_type": "TEMPORAL",
     "reason": "POST_PAYMENT_SAGA_COMPLETE",
+    "refund_trigger_source": null,
+    "customer_return_request_id": null,
+    "customer_return_guard_applied": false,
+    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
     "changed_at": "2026-02-28T10:05:30Z"
   }
 }
 ```
+
+> **Reason contract mở rộng:** ngoài `POST_PAYMENT_SAGA_COMPLETE`, event này còn dùng cho lane refund/recovery với các reason như `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`, `SHIPMENT_RETURNED`, `LATE_PAYMENT_RECOVERED`, `RETURN_AFTER_REFUND_MANUAL_REVIEW`.
+>
+> **Refund metadata contract (additive-only):** Khi `new_status = RETURN_REQUESTED`, producer nên phát thêm `refund_trigger_source` (`API_RETURN`/`SHIPMENT_RETURNED`/`ADMIN_FORCE_REFUND_REQUESTED`) và các field policy one-shot để downstream phân tích hành vi trigger.
 
 ### 3.5. PARCEL_STATUS_CHANGED
 
@@ -307,6 +345,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_event_sequence_id": 20260228140000,
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
+    "standardized_status": "IN_TRANSIT",
     "estimated_delivery_date": "2026-03-02",
     "changed_at": "2026-02-28T14:00:00Z"
   }
@@ -317,7 +356,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 ### 3.6. ORDER_REFUNDED
 
-**Ngữ cảnh:** Đơn hàng đã giao thành công nhưng khách đổi trả hàng. FSM `RETURN_REQUESTED` → `REFUNDED`. Xem [State Machine T9](order_state_machine.md#22-bảng-chi-tiết-transitions).
+**Ngữ cảnh:** Lane refund hoàn tất thành công (return sau giao hàng hoặc admin force refund). FSM `RETURN_REQUESTED` -> `REFUNDED`. Xem [State Machine](order_state_machine.md#22-bảng-chi-tiết-transitions).
 **Consumers chính:**
 - **Promotion Service:** Trigger [Refund Budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
 - **Inventory Service:** Không restock trực tiếp từ event này; Inventory restock vật lý theo `SHIPMENT_RETURNED` khi hàng về kho.
@@ -338,7 +377,14 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "order_version": 11,
     "refund_event_sequence_id": 20260305100000,
     "refund_transaction_id": "RFD-DEF456",
+    "single_refund_transaction": true,
+    "refund_trigger_source": "API_RETURN",
+    "customer_return_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
+    "customer_return_guard_applied": true,
+    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
     "refund_type": "FULL",
+    "refund_scope_locked_at": "2026-03-05T09:59:40Z",
+    "returned_parcel_ids": [2001],
     "refund_amount": 995000,
     "promotions_applied": [
       {"promotion_id": 100, "discount_amount": 50000, "platform_funding": 20000, "seller_funding": 30000}
@@ -375,6 +421,10 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 > **Contract bắt buộc cho idempotency liên service:** `refund_transaction_id` phải luôn có trong payload để downstream dedup đúng một giao dịch hoàn tiền.
 >
 > **Contract deterministic cho Promotion:** Với `refund_type = PARTIAL`, Order phải phát `promotion_refund_allocations[]` để chỉ rõ số tiền hoàn theo từng promotion. Promotion **không** tự suy luận từ tỷ lệ item khi thiếu allocation.
+>
+> **One-shot scope:** Chính sách one-shot chỉ áp khi `refund_trigger_source = API_RETURN`. Trigger từ shipping/admin có thể không dùng guard này (`customer_return_guard_applied = false`).
+>
+> **Policy B invariant:** Mỗi `order_id` chỉ có một `refund_transaction_id` do Order khởi tạo. `SHIPMENT_RETURNED` follow-up sau khi đã có refund transaction không tạo giao dịch refund thứ hai.
 
 ### 3.7. ORDER_COMPLETED
 
@@ -424,7 +474,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174006",
+  "event_id": "123e4567-e89b-12d3-a456-426614174016",
   "event_type": "ORDER_PRODUCT_METRICS_UPDATED",
   "aggregate_type": "ProductSalesMetrics",
   "aggregate_id": "prod-001",
@@ -445,7 +495,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 ### 3.9. ORDER_REFUND_FAILED
 
-**Ngữ cảnh:** Payment trả `REFUND_FAILED` hoặc `REFUND_REVERSED`. Order giữ FSM ở `RETURN_REQUESTED` và phát event escalation để Notification/Ops xử lý.
+**Ngữ cảnh:** Payment trả `REFUND_FAILED` hoặc `REFUND_REVERSED` trong lane refund (bao gồm return flow và admin force refund). Order giữ FSM ở `RETURN_REQUESTED` và phát event escalation để Notification/Ops xử lý.
 **Consumers chính:** Notification Service (critical lane), Ops Dashboard.
 
 ```json
@@ -466,12 +516,47 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "refund_event_sequence_id": 20260305101000,
     "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
+    "refund_trigger_source": "API_RETURN",
+    "customer_return_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
+    "customer_return_guard_applied": true,
+    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
     "reason": "REFUND_WINDOW_EXPIRED",
     "error_message": "Cong thanh toan tu choi hoan",
     "failed_at": "2026-03-05T10:10:00Z"
   }
 }
 ```
+
+> Khi event là `ORDER_REFUND_FAILED` từ lane `API_RETURN`, policy one-shot vẫn giữ nguyên; Buyer API không được mở lại quyền submit mới cho cùng order.
+
+### 3.10. ORDER_ARCHIVE_BATCH_FAILED
+
+**Ngữ cảnh:** Cold Data Archiver thất bại ở một stage của batch archive và cần trigger replay.
+**Topic:** `t.order.archive.retry`
+**Consumers chính:** Internal `order-archive-replay-consumer`.
+
+```json
+{
+  "event_id": "123e4567-e89b-12d3-a456-426614174015",
+  "event_type": "ORDER_ARCHIVE_BATCH_FAILED",
+  "aggregate_type": "ArchiveBatch",
+  "aggregate_id": "ARCHIVE-20260331-030000",
+  "correlation_id": "archive-20260331-030000-attempt-1",
+  "timestamp": "2026-03-31T03:02:10Z",
+  "source": "order-service",
+  "payload": {
+    "archive_batch_id": "ARCHIVE-20260331-030000",
+    "attempt": 1,
+    "failure_stage": "VERIFY",
+    "failed_order_count": 37,
+    "error_code": "S3_CHECKSUM_MISMATCH",
+    "error_message": "Checksum verification failed after upload",
+    "failed_at": "2026-03-31T03:02:10Z"
+  }
+}
+```
+
+> **Design rule:** Event chỉ mang metadata batch (`archive_batch_id`, `attempt`, `failure_stage`), không nhét danh sách `order_id`; replay consumer sẽ đọc membership từ `archive_batch_items`.
 
 ---
 
@@ -481,7 +566,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
-**Xử lý bởi:** [Payment Status Consumer Worker](order_workers.md#3-payment-status-consumer)
+**Xử lý bởi:** [Payment Status Consumer Worker](order_workers.md#4-payment-status-consumer-kafka-consumer)
 
 ```json
 {
@@ -503,9 +588,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Worker nhận event → Signal Temporal Workflow (bằng `WorkflowStub.signal("PaymentResult", SUCCESS)`) → Temporal resume → FSM `PENDING_PAYMENT` → `PAID` → Produce `ORDER_PAID`.
+**Logic xử lý:** Worker nhận event → Signal Temporal Workflow (bằng `WorkflowStub.signal("PaymentResult", SUCCESS)`) → Temporal resume → commit FSM `PENDING_PAYMENT` -> `PAID` + produce `ORDER_PAID` (mốc tài chính) → chạy Post-Payment Saga → `UpdateOrderStatusActivity` chuyển `PAID` -> `PROCESSING` và produce `ORDER_STATUS_CHANGED` (mốc vận hành).
 
-> **Routing rule bắt buộc:** Với toàn bộ payment consumed events, Order lookup workflow theo `payload.order_id` (không route theo `aggregate_id` vì aggregate của Payment là transaction-level).
+Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_TIMEOUT)`, worker phải start `OrderLatePaymentRecoveryWorkflow` thay vì drop signal thành stale.
+
+> **Routing rule bắt buộc:**
+> - `PAYMENT_SUCCESS|PAYMENT_FAILED|PAYMENT_EXPIRED`: lookup `checkout_token` theo `payload.order_id` rồi signal `order-checkout-{checkout_token}`.
+> - Nếu `PAYMENT_SUCCESS` không signal được do checkout workflow đã close timeout, route sang `order-late-payment-recovery-{order_id}`.
+> - `REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED`: signal trực tiếp `order-refund-{order_id}` theo `payload.order_id`.
+> - Không route theo `aggregate_id` vì aggregate của Payment là transaction-level.
 
 > **Ordering contract payment stream:** `payment_event_sequence_id`/`refund_event_sequence_id` phải đơn điệu theo từng `order_id` để Order/CQRS xử lý an toàn khi nhận event đồng thời hoặc replay.
 
@@ -533,7 +624,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Signal Temporal → FSM `PENDING_PAYMENT` → `CANCELLED` (lý do: `PAYMENT_FAILED`) → Produce `ORDER_CANCELLED` → Trigger compensation stack (Release Inventory + Cancel Promotion).
+**Logic xử lý:** Worker signal checkout workflow (`PaymentResult.FAILED`) -> Temporal chạy compensation stack pre-payment (`CancelPayment` -> `RollbackPromotion` -> `RollbackInventory` -> `CancelOrder`) -> sau khi compensation hoàn tất mới commit FSM `PENDING_PAYMENT` -> `CANCELLED` và produce `ORDER_CANCELLED`.
 
 ### 4.3. PAYMENT_EXPIRED (Từ Payment Service)
 
@@ -583,7 +674,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Worker nhận event → Update `orders.payment_status = 'REFUNDED'` → FSM `RETURN_REQUESTED` → `REFUNDED` → Produce `ORDER_REFUNDED` (bắt buộc kèm `refund_transaction_id` + `promotion_refund_allocations[]`) → Promotion hoàn budget. Inventory restock đi theo luồng `SHIPMENT_RETURNED` từ Shipping.
+**Logic xử lý:** Worker route theo `order_id` và signal `OrderRefundWorkflow` (`RefundResult.SUCCESS`) -> refund workflow commit `orders.payment_status = 'REFUNDED'`, FSM `RETURN_REQUESTED` -> `REFUNDED`, rồi produce `ORDER_REFUNDED` (bắt buộc kèm `refund_transaction_id` + `promotion_refund_allocations[]`). Inventory restock đi theo luồng `SHIPMENT_RETURNED` từ Shipping. Worker không reset one-shot guard của Buyer API.
 
 ### 4.5. REFUND_FAILED (Từ Payment Service)
 
@@ -610,7 +701,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Worker cập nhật `orders.payment_status = 'REFUND_FAILED'`, giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` cho Notification/Ops, áp retry policy hoặc escalation.
+**Logic xử lý:** Worker signal `OrderRefundWorkflow` (`RefundResult.FAILED`) -> refund workflow commit `orders.payment_status = 'REFUND_FAILED'`, giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` cho Notification/Ops và escalation lane. Nếu trigger ban đầu là `API_RETURN`, policy one-shot vẫn giữ nguyên.
 
 ### 4.6. REFUND_REVERSED (Từ Payment Service - Optional)
 
@@ -637,20 +728,20 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Worker cập nhật `orders.payment_status = 'REFUND_REVERSED'`, giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` với reason escalation cho Notification/Ops.
+**Logic xử lý:** Worker signal `OrderRefundWorkflow` (`RefundResult.REVERSED`) -> refund workflow commit `orders.payment_status = 'REFUND_REVERSED'`, giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` với reason escalation cho Notification/Ops.
 
 ### 4.7. SHIPMENT_STATUS_UPDATED (Từ Shipping Service)
 
 **Topic:** `t.shipping.events`
 **Consumer Group:** `order-shipping-consumer`
-**Xử lý bởi:** [Shipping Status Consumer Worker](order_workers.md#4-shipping-status-consumer)
+**Xử lý bởi:** [Shipping Status Consumer Worker](order_workers.md#5-shipping-status-consumer-kafka-consumer)
 
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174011",
   "event_type": "SHIPMENT_STATUS_UPDATED",
-  "aggregate_type": "OrderParcel",
-  "aggregate_id": "2001",
+  "aggregate_type": "Shipment",
+  "aggregate_id": "3001",
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-02T16:00:00Z",
   "source": "shipping-service",
@@ -661,6 +752,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
     "shipment_event_sequence_id": 20260302160000,
     "old_status": "IN_TRANSIT",
     "new_status": "DELIVERED",
+    "standardized_status": "DELIVERED",
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
     "occurred_at": "2026-03-02T16:00:00Z"
@@ -722,7 +814,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
-**Logic xử lý:** Worker map parcel sang `RETURNED`, nếu order đã `COMPLETED` thì chuyển master sang `RETURN_REQUESTED` và kích hoạt refund flow.
+**Logic xử lý:** Worker map parcel sang `RETURNED`; nếu order đủ điều kiện mở refund case thì `SHIPMENT_RETURNED` đầu tiên kích hoạt `OrderRefundWorkflow` với `trigger_source = SHIPMENT_RETURNED`.
+
+`SHIPMENT_RETURNED` đến sau khi refund workflow đã active chỉ được append vào return context của case hiện tại (không start workflow mới). Nếu order đã có `refund_transaction_id` terminal thì chuyển manual adjustment lane, không mở giao dịch refund thứ hai.
 
 ### 4.10. SHIPMENT_DELAYED (Từ Shipping Service)
 
@@ -752,10 +846,35 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 ```
 **Logic xử lý:** Worker không đổi parcel terminal status, chỉ ghi metadata SLA; nếu `escalation_level >= 2` thì phát `ORDER_STATUS_CHANGED` reason `SHIPMENT_DELAYED_ESCALATED` cho CQRS/Ops.
 
+### 4.11. ORDER_ARCHIVE_BATCH_FAILED (Internal Retry Trigger)
+
+**Topic:** `t.order.archive.retry`
+**Consumer Group:** `order-archive-replay-consumer`
+
+```json
+{
+  "event_id": "123e4567-e89b-12d3-a456-426614174015",
+  "event_type": "ORDER_ARCHIVE_BATCH_FAILED",
+  "aggregate_type": "ArchiveBatch",
+  "aggregate_id": "ARCHIVE-20260331-030000",
+  "timestamp": "2026-03-31T03:02:10Z",
+  "source": "order-service",
+  "payload": {
+    "archive_batch_id": "ARCHIVE-20260331-030000",
+    "attempt": 1,
+    "failure_stage": "VERIFY",
+    "failed_order_count": 37,
+    "error_code": "S3_CHECKSUM_MISMATCH"
+  }
+}
+```
+
+**Logic xử lý:** Replay consumer đọc membership từ `archive_batch_items` theo `archive_batch_id`, không lấy danh sách `order_id` trực tiếp từ event payload. Nếu replay vẫn fail, consumer ghi một record outbox `ORDER_ARCHIVE_BATCH_FAILED` mới để CDC publish lại theo backoff.
+
 ---
 
 ## 5. Schema Versioning & Backward Compatibility
 
 *   **Backward Compatibility Rule:** Chỉ được phép **thêm field mới**. Không được xóa hoặc đổi tên field hiện có.
 *   **Consumer Resilience:** Tất cả consumers PHẢI ignore unknown fields.
-*   **Idempotency:** Mỗi event mang `event_id` (UUID) unique. Downstream consumers sử dụng bảng `idempotency_keys` hoặc `SETNX` Redis để chống xử lý trùng.
+*   **Idempotency:** Mỗi event mang `event_id` unique. Downstream consumers dùng `SETNX` (fast-path) + bảng `order_event_idempotency` (durable guard) để chống xử lý trùng.
