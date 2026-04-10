@@ -85,8 +85,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
     "image_url": "https://cdn.example.com/item-image.jpg",
     "is_available": true,
     "added_at": "1708530000123",
-    "updated_at": "1708530000123",
-    "product_updated_at": "1708530000123"
+    "updated_at": "1708530000123"
   }
 }
 ```
@@ -124,8 +123,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
     "image_url": "https://cdn.domain.com/abc.jpg",
     "is_available": true,
     "added_at": "1708530000123",
-    "updated_at": "1708616400456",
-    "product_updated_at": "1708616400456"
+    "updated_at": "1708616400456"
   }
 }
 ```

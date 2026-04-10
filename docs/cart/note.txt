@@ -3,11 +3,8 @@ Tuy nhiên, việc sử dụng Redis Stream làm Outbox giúp đảm bảo rằn
 điều này làm cho event Outbox sinh ra đồng thời với lệnh thay đổi dữ liệu nơi lưu trữ gốc.
 
 
-
-2. Không nên chuyển hướng xử lý object ở trong Lua Script sang Backend để tránh việc mất tính Atomicity, 
-đồng thời cũng làm giảm hiệu năng do phải thực hiện nhiều lần round-trip giữa Redis và Backend. 
+2. Không nên chuyển hướng xử lý object ở trong Lua Script sang Backend để tránh việc mất tính Atomicity, đồng thời cũng làm giảm hiệu năng do phải thực hiện nhiều lần round-trip giữa Redis và Backend. 
 Thay vào đó, nên giữ mọi logic liên quan đến việc thay đổi dữ liệu và sinh event trong cùng một Lua Script để đảm bảo tính nhất quán và hiệu quả.
-
 
 
 3. Khi nhận được sự kiện từ Product Service về việc cập nhật lại các thông tin sản phẩm, 
@@ -28,15 +25,14 @@ chúng ta sẽ thực hiện một lần gọi gRPC đến Product Service để
 Ưu điểm:
 + Tránh được Write Amplification: không có một Worker nào sẽ thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm, 
 do đó tránh được hiện tượng write amplification.
-+ Tiết kiệm tài nguyên: chỉ khi nào khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng thì chúng ta mới thực hiện việc đồng bộ dữ liệu, 
-điều này giúp tiết kiệm tài nguyên hơn so với việc phải cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm.
++ Tiết kiệm tài nguyên: chỉ khi nào khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng thì chúng ta mới thực hiện việc đồng bộ dữ liệu, điều này giúp tiết kiệm tài nguyên hơn so với việc phải cập nhật 
+lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm.
 + Tinh gọn hơn: không cần phải duy trì một cấu trúc dữ liệu riêng trên Redis để lưu trữ thông tin về các giỏ hàng chứa sản phẩm đó, thêm vào đó tránh được Race Condition
 khi có nhiều Worker cùng thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm trong khi đó thì khách hàng lại đang truy cập vào giỏ hàng đó.
 Nhược điểm:
-+ Tăng độ trễ: mỗi khi khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng, chúng ta sẽ phải thực hiện một lần gọi gRPC đến Product Service 
-để lấy thông tin cập nhật mới nhất về sản phẩm đó
-+ Tăng tải cho Product Service: nếu có nhiều khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng cùng một lúc, 
-điều này có thể được cải thiện bằng cách sử dụng một cơ chế caching tạm thời trên Product Service và trên Cart Service 
++ Tăng độ trễ: mỗi khi khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng, chúng ta sẽ phải thực hiện một lần gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về sản phẩm đó
++ Tăng tải cho Product Service: nếu có nhiều khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng cùng một lúc, điều này có thể được cải thiện bằng cách sử dụng một cơ chế caching tạm thời trên 
+Product Service và trên Cart Service 
 + Tăng rủi ro phụ thuộc: việc đồng bộ dữ liệu qua gRPC sẽ làm tăng sự phụ thuộc giữa Cart Service và Product Service, nếu Product Service gặp sự cố hoặc có độ trễ cao thì sẽ ảnh hưởng đến trải nghiệm của
 khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (có thể được cải thiện bằng Circuit Breaker pattern)
 
@@ -58,7 +54,28 @@ Nếu bỏ Redis Hash, Write Path phải đổi thành:
 Write: HTTP → PostgreSQL (transaction, 5-30ms) → phát Kafka
 
 
-5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL:
+4.1 Chi tiết luồng hoạt động khi đọc giỏ hàng
+Cart Service chỉ lưu trữ thông tin người dùng muốn mua gì (Source of Truth), còn về giá cả và trạng thái phải được kéo về từ Product Service ngay tại thời điểm đọc. Nó không có nhiệm vụ nhớ giá cả thị trường.
+Việc ráp giá mới nhất vào ngay giây phút khách mở app (Runtime) đảm bảo khách luôn thấy giá đúng nhất mà không làm rác hệ thống lưu trữ
+Gọi HGETALL để chia làm 2 nhánh:
+  Nhánh cache hit: nếu HGETALL trả về dữ liệu
+    Hệ thống lấy ra các sku_id và gọi 1 lần gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
+    Bảo vệ bằng Circuit Breaker: nếu gRPC call thất bại, hệ thống sẽ trả về dữ liệu cũ trong Redis, đồng thời bật cờ để báo cho FE biết rằng 'Hệ thống đang quá tải, giá có thể chưa được cập nhật'
+    Ở đây ta sử dụng cơ chế Runtime Overlay: dữ liệu được lấy từ Product Service (bao gồm giá hiện tại, còn hàng hay không hay các thông tin khác) chủ yếu sẽ được merge vào response để trả về cho khách hàng, còn dữ liệu trong Redis Hash sẽ 
+    được bảo toàn
+    Ngoại lệ duy nhất là nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field với is_available=false, không đụng vào TTL hay các field khác.
+
+  Nhánh Cache Miss Rehydrate: nếu HGETALL trả về rỗng, có nghĩa là Redis đã bị xóa sạch (do hết TTL hoặc bị lỗi)
+    Hệ thống sẽ phải truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
+    Dựa vào những cart_item lấy được từ DB trên, tiếp tục gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
+    Merge dữ liệu từ DB và Product Service, sau đó trả về cho khách hàng đồng thời nạp lại Redis để những lần truy cập tiếp theo sẽ có cache hit
+      Giữ nguyên từ DB: quantity, added_at, unit_price_at_add
+      Cập nhật từ Product Service: product_name, image_url, variant_info, is_available
+      Tạo mới: updated_at (thời điểm tái tạo cache)
+    Khi nạp lại Redis, chúng ta sẽ bảo toàn các field lịch sử như `unit_price_at_add`, `added_at`, đồng thời làm mới các field hiển thị có thể thay đổi như `is_available`, `updated_at`
+
+
+5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL: Postgres Sync (Consumer Worker)
 
 5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, chúng ta phải kiểm tra ở DB xem trường is_deleted của item đó, nếu is_deleted = true thì chúng ta phải kiểm tra thêm thời điểm của sự kiện này
 so sánh với trường tombstone_at của item đó. Nếu sự kiện này cũ hơn tombstone_at thì có nghĩa là item này đã bị xóa sau khi sự kiện này được sinh ra (do sự kiện này bị out-of-order), 
@@ -73,4 +90,62 @@ như trên đã đề cập ở phần 5.1
 
 5.3 CART_CHECKED_OUT / CART_DELETED: khi nhận được sự kiện này, chúng ta chỉ sẽ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id >= carts.last_event_stream_id và *fallback*: event.checked_out_at >= carts.last_event_time_ms
 Một điều lưu ý quan trọng ở sự kiện này là chúng ta sẽ không xóa các record trong bảng cart_items, nó sẽ được xóa mềm khi duyệt qua các sự kiện CART_ITEM_DELETED với trường hợp 1 như đã đề cập ở phần 5.2, điều này giúp chúng ta tránh được việc phải xử lý các trường hợp out-of-order khi có nhiều sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED được sinh ra sau khi có sự kiện CART_CHECKED_OUT / CART_DELETED nhưng có thời điểm cập nhật cũ hơn sự kiện đó.
+
+
+6. Thiết kế chi tiết về luồng hoạt động của Relay Worker
+6.1 Relay Worker không dùng SCAN để quét toàn bộ dữ liệu trong Redis vì có thể sẽ gây quá tải cho CPU. Thay vào đó, nó sẽ sử dụng cơ chế 3 lớp để phát hiện Stream nào đang có tin nhắn mới
+  Đường Pub / Sub: Worker sẽ subscribe vào kênh `outbox_notifications`, sau khi Lua Script thực hiện xong sẽ publish một messsage (tên Stream) lên kênh này. Worker này ngay lập tức nhận được tên Stream này và đưa vào Go Channel Buffer
+  Đường trì hoãn (ZSET Worker): để tránh trường hợp lỡ mất message trên Pub/Sub, chúng ta sẽ có một ZSET để lưu trữ tên các Stream đã được publish lên kênh `outbox_notifications` với timestamp hiện tại, một tiến trình phụ chạy mỗi 30 giây sẽ quét ZSET này để lấy ra những Stream nào đã được publish nhưng chưa được Worker chính xử lý (dựa vào timestamp), 
+  sau đó đưa vào Go Channel Buffer. Lưu ý, bắt buộc phải cập nhật timestamp trong ZSET này để tránh lặp ở những chu kỳ sau. Ở đây tuyệt đối không được xóa tên Stream này trong ZSET bởi vì Stream Trimmer sẽ dựa vào ZSET này để biết được Stream nào đã được xử lý xong và có thể dọn dẹp RAM
+  Đường chống lỗi tuyệt đối: nếu vì một lý do nào đó Pod bị sập ngay sau khi Lua Script thành công nhưng lại chưa kịp kích hoạt Pub / Sub. Ở đây, hệ thống sẽ đăng ký trước một ý định vào `outbox_publish_intent` trước khi gọi Lua Script và chỉ xóa ý định này sau khi Lua Script lẫn Pub/Sub thành công, một tiến trình phụ sẽ quét
+  mỗi 30 giây để lấy ra những ý định quá hạn, sau đó kiểm tra còn bất kỳ tin nhắn nào trong Stream tương ứng với ý định này hay không, nếu có thì kích hoạt Pub/Sub thủ công và dọn dẹp intent này
+
+6.2 Tiêu thụ dữ liệu
+  Các Goroutine liên tục lắng nghe trên Go Channel Buffer, khi có tên Stream mới được đưa vào, chúng sẽ chạy lệnh XREADGROUP để lấy ra các event mới từ Stream đó. Nếu Redis báo lỗi NOGROUP, Worker sẽ tự động khởi tạo nhóm bằng lệnh XGROUP CREATE rồi vòng lại đọc tiếp
+  Tin nhắn trong Redis Stream chỉ có event_type và payload, Relay Worker sẽ chịu trách nhiệm bổ sung các Header bắt buộc cho Kafka
+
+6.3 Đẩy lên Kafka và chốt 
+  Worker đẩy các event đã được bổ sung Header vào Topic Kafka `t.cart.events` vói cart_id làm partition key để đảm bảo các sự kiện trong một giỏ hàng luôn được xử lý theo thứ tự
+  Chỉ khi nào Kafka xác nhận đã nhận được message, Worker mới gọi lệnh XACK để xác nhận đã xử lý xong các event này trên Redis Stream
+  Lưu ý là lệnh XACK sẽ không xóa message trên Redis Stream, nó chỉ đánh dấu là đã được xử lý. Việc dọn dẹp RAM thực sự sẽ do một tiến trình khác là Stream Trimmer đảm nhận để tránh rò rỉ bộ nhớ
+
+6.4 Cơ chế phục hồi lỗi
+  Nếu Relay Worker bị sập (crash) ngay sau khi đọc XREADGROUP nhưng chưa kịp gọi XACK, tin nhắn đó sẽ bị treo ở trạng thái Pending
+  Thông qua quá trình quét active_outbox_streams mỗi 30 giây, Worker sẽ dùng lệnh XAUTOCLAIM để gom lại các tin nhắn Pending quá 60 giây và xử lý lại
+  Nếu việc đẩy lên Kafka thất bại liên tục và một tin nhắn bị retry quá 5 lần, Worker sẽ gắp nó bỏ vào luồng cách ly cart_outbox_dlq và phát cảnh báo để đội vận hành vào xử lý thủ công
+
+Lưu ý: 
+  Điểm yếu chí mạng của thiết kế trên là Go Channel sẽ mất dữ liệu khi Pod Crash, tuy nhiên dữ liệu của chúng ta vẫn được đảm bảo an toàn trong Redis Stream, do đó khi Pod khởi động lại, hệ thống có "Đường Trì Hoãn (Delay ZSET Worker)" quét định kỳ `active_outbox_streams` mỗi 30 giây để nhặt lại những Stream có event chực chờ, 
+  ngoài ra còn có "Đường Chống Lỗi Tuyệt Đối (Intent Recovery Worker)" quét outbox_publish_intents để đề phòng trường hợp sập cả trước khi kịp đẩy tín hiệu Pub/Sub
+  Thêm một điểm yếu đó là có khả năng một Stream bị đẩy vào Go Channel nhiều lần (do Pub/Sub, Delay ZSET Worker), tuy nhiên điều này không quá quan trọng, bởi đây là ví dụ:
+    Lần đọc thứ 1: Goroutine số 1 nhặt được tín hiệu Stream A đầu tiên. Nó chạy ra Redis, gọi lệnh XREADGROUP. Nó lấy được các event mới, đẩy thành công lên Kafka và gọi XACK để xác nhận
+    Lần đọc thứ 2 (Tín hiệu trùng): Goroutine số 2 nhặt được tín hiệu Stream A thứ hai. Nó cũng chạy Redis gọi XREADGROUP. Tuy nhiên, vì Goroutine số 1 đã đọc hết các tin nhắn chờ xử lý rồi, Redis sẽ chỉ trả về một tập RỖNG. Goroutine số 2 thấy không có việc gì làm nên sẽ kết thúc chu trình một cách êm đẹp mà không gây ra bất kỳ lỗi nhân đôi dữ liệu nào
+
+
+7. Thiết kế chi tiết về luồng hoạt động của Stream Trimmer
+Lệnh XACK của Relay Worker chi đánh dấu là đã xử lý xong các event trên Redis Stream, tuy nhiên nó không xóa chúng đi, do đó chúng ta cần Worker này để quét và dọn dẹp những event đã được xử lý xong để tránh rò rỉ bộ nhớ
+Worker này sẽ quét qua `active_outbox_streams` để lấy các batch Stream, sau đó sử dụng Redis Pipeline để tối ưu RTT:
+  Pipeline 1: Chạy lệnh XLEN và XINFO GROUPS để chia Stream này thành 3 case
+    Case A: Nếu XLEN = 0, có nghĩa là không còn event nào trong Stream này, Worker sẽ gọi lệnh DEL để xóa hẳn Stream này đi
+    Case B: Nếu XLEN > 0 và có GROUP, có tin nhắn và có Consumer Group đang theo dõi. Đây là đối tượng chính để cắt tỉa
+    Case C: Nếu XLEN > 0 nhưng không có GROUP, bắt buộc phải skip Stream này, vì đây trạng thái khi API vừa gọi lệnh Lua Script với XADD xong nhưng Relay Worker chưa kịp tạo GROUP để theo dõi. Nếu Trimmer cắt Stream lúc này, dữ liệu sẽ bốc hơi trước khi Relay Worker kịp đọc
+  Pipeline 2 & 3: Đối với các Stream thuộc Case B, hệ thống cần tìm ra ID của tin nhắn để làm mốc cắt bỏ. Nguyên tắc là: Chỉ được xóa những tin nhắn mà TẤT CẢ các Consumer Group đã xử lý xong (Đã ACK)\
+    Dò tìm tin nhắn Pending (XPENDING): Nếu Group đang có tin nhắn bị treo (Pending > 0), hệ thống phải quét sâu hơn để tìm ra ID của tin nhắn cũ nhất chưa được ACK (lowest_safe_id_across_groups). Mốc ID này chính là lằn ranh giới: mọi thứ cũ hơn nó đều đã an toàn để xóa
+  Pipeline 4: Sau khi đã có ID mốc, hệ thống sẽ gọi lệnh XTRIM với tham số MAXLEN để cắt tỉa các tin nhắn cũ hơn ID mốc này, qua đó giải phóng bộ nhớ
+  Pipeline 5: nếu sau khi cắt tía, Stream này đã trống (XLEN = 0), Worker sẽ gọi lệnh DEL để xóa hẳn Stream này đi, đồng thời xóa luôn tên Stream này khỏi ZSET `active_outbox_streams` để tránh việc quét lại những Stream đã được dọn dẹp sạch sẽ
+    Tuy nhiên, việc xóa nguyên Key này tiềm ẩn rủi ro cực lớn: Nếu Backend kiểm tra thấy Stream rỗng, chuẩn bị gọi lệnh DEL xóa nó đi, nhưng ngay tại tích tắc đó có một User bấm "Thêm vào giỏ" và ghi một tin nhắn mới vào. Lệnh DEL đến sau sẽ xóa luôn cả tin nhắn mới tinh này.
+    Do đó, thiết kế bắt buộc phải dùng Lua Script cho bước này
+
+
+
+8. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
+- Đánh dấu nháp ở DB: đổi status thành ABANDONED nhưng cố tình set abandoned_event_published_at = NULL để đánh dấu đây là một bản ghi nháp chưa hoàn chỉnh
+- Đăng ký ý định (Pre-register Intent): Giống như cách API hoạt động, nó ghi danh vào outbox_publish_intents trên Redis trước khi làm việc thực sự
+- Bắn Event vào Redis (XADD): Đẩy sự kiện CART_ABANDONED vào Redis Stream của riêng giỏ hàng đó
+- Xóa nợ ở DB: Nếu bắn Redis thành công, nó quay lại Postgres cập nhật abandoned_event_published_at = NOW(). (Tờ giấy nợ đã được thanh toán)
+- Kích hoạt luồng chảy (Publish path): Đẩy thông báo Pub/Sub và xóa Intent rác trên Redis để luồng Outbox Relay Worker tới gắp đi
+- Cơ chế phục hồi lỗi: Nếu Worker bị sập sau khi ghi DB nhưng trước khi bắn Redis, lúc này, ở Postgres, giỏ hàng đã mang trạng thái ABANDONED nhưng tờ giấy nợ abandoned_event_published_at vẫn mang giá trị NULL
+    Ở lần chạy Cronjob tiếp theo (vào ngày mai, hoặc giờ tiếp theo), hệ thống sẽ có một bước quét lại (Reconcile)
+    Nó tìm tất cả các dòng có status = 'ABANDONED' VÀ abandoned_event_published_at IS NULL
+    Sau đó, nó thực hiện bắn lại (Publish bù) Event lên Redis
 

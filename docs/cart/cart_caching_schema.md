@@ -52,8 +52,7 @@ Mỗi Field/Value trong Hash map với một món hàng.
   "image_url": "https://cdn.domain.com/abc.jpg",
   "is_available": true,
   "added_at": "1708530000123",
-  "updated_at": "1708616400456",
-  "product_updated_at": "1708530000123"
+  "updated_at": "1708616400456"
 }
 ```
 
@@ -61,7 +60,7 @@ Mỗi Field/Value trong Hash map với một món hàng.
 
 *Lưu ý: `seller_name` được **denormalize (snapshot) tại thời điểm Add** — lấy từ response gRPC `GetProductSku` của Product Service (trường `seller_name`). Giá trị này phục vụ hiển thị tên nhóm shop mà không cần join thêm reference. Nếu shop đổi tên sau khi item đã được thêm, tên cũ vẫn hiển thị trên giỏ — điều này chấp nhận được vì giỏ hàng là ephemeral (vòng đời 7 ngày).*
 
-*Lưu ý: `updated_at` và `product_updated_at` (Epoch timestamp tính bằng **Milliseconds**) được lưu dưới dạng **chuỗi (String)** để tránh lỗi mất độ chính xác (Precision Loss) từ định dạng khoa học của thư viện `cjson` trên Redis. Field `product_updated_at` chuyên dùng để chống Timeline Collision cho luồng Pull gRPC ngẫu nhiên (On-demand).*
+*Lưu ý: `updated_at` (Epoch timestamp tính bằng **Milliseconds**) được lưu dưới dạng **chuỗi (String)** để tránh lỗi mất độ chính xác (Precision Loss) từ định dạng khoa học của thư viện `cjson` trên Redis.*
 
 *Lưu ý quan trọng về thứ tự sự kiện:* `updated_at` trong payload chỉ là business timestamp để hiển thị/timeline mềm. Khóa ordering/idempotency chính cho downstream là **Redis Stream Entry ID** (VD: `1708616400456-0`) do `XADD` sinh ra và Relay Worker đọc từ `msg.ID`.
 
@@ -94,7 +93,7 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 1. Kiểm tra giới hạn số loại mặt hàng (SKU) tối đa trong giỏ: `if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) and redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then return {err="Cart Full"} end` (Chặn tấn công phình to Hash Key gây nghẽn Redis).
 2. Đọc Hash Value của `$sku_id` trong `$cart_key` (`redis.call('HGET', KEYS[1], ARGV[1])`).
 3. Nếu chưa tồn tại → Validate `step > 0` (không cho phép giảm số lượng item chưa tồn tại). Sử dụng trực tiếp `$payload_json` (ARGV[2]) mà Backend đã build sẵn với `quantity = step` và `added_at` = `updated_at` = `$current_timestamp_ms`.
-4. Nếu đã tồn tại → Parse JSON hiện tại và JSON mới. Cộng dồn: `new_qty = current_qty + step`. Cập nhật `updated_at` bằng chuỗi (String), bảo toàn `added_at`, và chỉ cập nhật `is_available`/`product_updated_at` nếu bản từ request có phiên bản mới hơn.
+4. Nếu đã tồn tại → Parse JSON hiện tại và JSON mới. Cộng dồn: `new_qty = current_qty + step`. Cập nhật `updated_at` bằng chuỗi (String), bảo toàn `added_at`, đồng thời áp dụng snapshot mới nhất cho các field hiển thị như `is_available`.
 5. Validate chặn trần giới hạn mua của từng Item: `if new_qty > tonumber(ARGV[3]) then new_qty = tonumber(ARGV[3]) end`.
 6. Stringify lại JSON và ghi đè (`redis.call('HSET', KEYS[1], ARGV[1], encoded_json)`).
 7. **Build event payload** bổ sung `cart_id`, `sku_id` và `user_id` vào JSON rồi đẩy vào Outbox Stream bằng `XADD`. ID do `XADD` trả về (Stream Entry ID) là ordering token chính cho downstream. Cắt bỏ MAXLEN để tránh mất event chưa ACK, delegate việc dọn dẹp bộ nhớ cho Stream Trimmer (sử dụng XTRIM MINID).
@@ -155,16 +154,6 @@ if current_item then
     new_item_obj.updated_at = tostring(ARGV[6])
     new_item_obj.added_at = tostring(old_item_obj.added_at) -- giữ lại timestamp Add ban đầu
     
-    -- Chỉ cập nhật metadata Product nếu request mang version mới hơn
-    local old_product_updated = tonumber(old_item_obj.product_updated_at) or 0
-    local new_product_updated = tonumber(new_item_obj.product_updated_at) or 0
-    if new_product_updated < old_product_updated then
-        new_item_obj.is_available = old_item_obj.is_available
-        new_item_obj.product_updated_at = tostring(old_item_obj.product_updated_at)
-    else
-        new_item_obj.product_updated_at = tostring(new_product_updated)
-    end
-
     encoded_json = cjson.encode(new_item_obj)
 else
     -- Item mới: step phải dương (không cho giảm item chưa tồn tại)

@@ -62,7 +62,7 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
     *   Mục đích 1: Tái cấu trúc lại object Struct để nhét lên lại Redis. **LƯU Ý:** Khi rehydrate từ DB lên Redis, Worker phải inject thêm `unit_price_at_add` từ cột riêng vào JSON trước khi ghi. Flag `is_available` buộc phải nằm trong JSONB này.
     *   Mục đích 2: Lưu `updated_at` (Milliseconds Epoch) để làm **fallback guard** cho out-of-order khi bản ghi legacy chưa có `redis_stream_id`.
     *   Ràng buộc: `current_price` không lưu trong `product_snapshot`; đây là field runtime của API đọc giỏ.
-    *   Timestamps (`added_at`, `updated_at`, `product_updated_at`) lưu dạng **chuỗi số nguyên Milliseconds Epoch** để nhất quán với Redis Hash Value và tránh precision loss qua JSON.
+    *   Timestamps (`added_at`, `updated_at`) lưu dạng **chuỗi số nguyên Milliseconds Epoch** để nhất quán với Redis Hash Value và tránh precision loss qua JSON.
 *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete / Tombstone để xử lý lỗi Ghost Item khi Event Delete đến trước Event Add).
 *   `tombstone_at`: BIGINT DEFAULT 0 (Lưu **Milliseconds Epoch** của thời điểm Event Delete được phát từ Redis, dùng để Consumer bắt Event Add/Update cũ hơn có thể loại bỏ an toàn).
 *   `redis_stream_id`: VARCHAR(64) NULL. Lưu Redis Stream ID mới nhất đã áp dụng cho item; là khóa idempotency/out-of-order chính khi Upsert.

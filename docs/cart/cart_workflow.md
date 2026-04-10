@@ -28,6 +28,8 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 
 Được gọi khi người dùng bấm "Thêm vào giỏ hàng" hoặc thay đổi số lượng (+/-) ở giao diện.
 
+> **Boundary với Checkout Service:** Đây là API duy nhất cho nghiệp vụ mutate `quantity`. Checkout Preview không cho phép tăng/giảm số lượng trực tiếp.
+
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:** 
    - Backend nhận `sku_id`, `quantity` từ Body và `user_id` từ Header `X-User-Id` (được Inject bởi API Gateway).
@@ -81,14 +83,13 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
     - Decode dict trả về từ Redis (key = `sku_id`, value = JSON string).
     - Thu thập tập `sku_ids`.
 2. **[App Server] - Pull Model (Multi-Get qua gRPC với Circuit Breaker):**
-    - Kiểm tra **L1 local cache** (TTL 15-30 giây, LRU).
-    - Các SKU chưa có ở L1 được gom và gọi 1 request gRPC `GetBatchProductSkus`.
+    - Lấy các SKU được gom ở trên và gọi 1 request gRPC `GetBatchProductSkus`.
     - Timeout cứng: 200ms. Bắt buộc bọc Circuit Breaker.
 3. **Merge Runtime Overlay (viết lại `is_available` vào Redis khi BANNED):**
     - Nếu gRPC thành công: map dữ liệu Product vào response runtime:
        - `current_price = promotional_price ?? original_price`
        - `is_available` runtime theo trạng thái mới nhất từ Product
-    - **Đặc biệt:** Nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field được mườf thóc với is_available=false, không đụng vào TTL hay các field khác.
+    - **Đặc biệt:** Nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field với is_available=false, không đụng vào TTL hay các field khác.
     - Nếu gRPC lỗi/timeout: dùng snapshot cũ trong Redis và trả cờ `is_price_degraded = true` để UI cảnh báo mềm.
     - **Nguyên tắc bắt buộc:** Ngoại trừ việc ghi lại `is_available = false` khi Product BANNED, Cache-hit read **không được HMSET/EXPIRE** vào `cart:user:{id}`.
 
@@ -113,7 +114,7 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     - Chỉ request tiên phong thực hiện B2 + gRPC `GetBatchProductSkus`.
 5. **B5 - Merge policy trước khi nạp lại Redis:**
     - Bảo toàn các field lịch sử: `unit_price_at_add`, `added_at`.
-    - Làm mới các field hiển thị có thể thay đổi: `is_available`, `product_updated_at`, `updated_at`.
+   - Làm mới các field hiển thị có thể thay đổi: `is_available`, `updated_at`.
     - Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.
 6. **B6 - Silent Rehydrate Lua Script (timestamp guard):**
     - Script nhận danh sách item đã merge.
@@ -158,6 +159,8 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     }
     ```
 
+> `shop_groups.items[].quantity` trong response Cart là nguồn chuẩn để Checkout Preview consume. Frontend không được gửi quantity override ở API Checkout.
+
 ## 4. API: Batch Delete (Xóa lô sản phẩm sau Checkout tĩnh)
 **Endpoint:** `DELETE /api/v1/carts/items` (Body: `cart_id` + mảng `sku_ids`)
 
@@ -186,7 +189,6 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 ### 4. Cơ chế Circuit Breaker & Fallback (Pull Model)
 Để phòng ngừa lỗi Cascading Failure (sập dây chuyền nếu Product Service sụp trặc), các truy vấn lấy giá mới nhất sẽ được cấu hình quy tắc sau:
 - **Thời gian chờ (Timeout):** Request gRPC sang Product Service bị giới hạn cứng thời gian thực thi (ví dụ tối đa 200ms).
-- **L1 Local Cache Fallback:** Trong ngưỡng Circuit Breaker Half-Open (khi Product Service đang rolling restart), hệ thống ưu tiên trả dữ liệu từ **L1 local cache** (Caffeine, TTL 15-30 giây) nếu còn hạn. Chỉ flag `is_price_degraded = true` khi L1 cache cũng miss. Điều này tránh việc user liên tục thấy cảnh báo giá trong suốt thời gian deploy.
 - **Fallback Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn.
 - **Half-Open Recovery:** Sau một khoảng `wait_duration_in_open_state`, Circuit Breaker phải vào trạng thái Half-Open và cho phép một số request thăm dò có giới hạn. Nếu thăm dò thành công thì đóng mạch (Closed); nếu tiếp tục lỗi thì quay lại Open.
 - **Cảnh báo UI:** Phản hồi Fallback đọc `product_snapshot` hiện đang lưu sẵn trong Redis/PostgreSQL ra hiện tạm để user vẫn lướt được giỏ hàng. Kèm theo đó là thông báo hiển thị nhẹ trên UI: _"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"_.

@@ -39,7 +39,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
 ```json
 {
   "event_type": "CART_ITEM_UPDATED",
-  "payload": "{\"cart_id\":\"{cart:user:12345}\",\"sku_id\":\"sku-1001\",\"user_id\":\"12345\",\"product_id\":\"prod-uuid\",\"seller_id\":\"seller-uuid\",\"seller_name\":\"Shop Tech Việt\",\"quantity\":3,\"unit_price_at_add\":150000.00,\"product_name\":\"Áo Thun Nam\",\"variant_info\":\"Màu Đen, Size L\",\"image_url\":\"https://cdn.domain.com/abc.jpg\",\"is_available\":true,\"added_at\":\"1708530000123\",\"updated_at\":\"1708616400456\",\"product_updated_at\":\"1708616400456\"}"
+    "payload": "{\"cart_id\":\"{cart:user:12345}\",\"sku_id\":\"sku-1001\",\"user_id\":\"12345\",\"product_id\":\"prod-uuid\",\"seller_id\":\"seller-uuid\",\"seller_name\":\"Shop Tech Việt\",\"quantity\":3,\"unit_price_at_add\":150000.00,\"product_name\":\"Áo Thun Nam\",\"variant_info\":\"Màu Đen, Size L\",\"image_url\":\"https://cdn.domain.com/abc.jpg\",\"is_available\":true,\"added_at\":\"1708530000123\",\"updated_at\":\"1708616400456\"}"
 }
 ```
 
@@ -70,8 +70,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
     "image_url": "https://cdn.domain.com/abc.jpg",
     "is_available": true,
     "added_at": "1708530000123",
-    "updated_at": "1708616400456",
-    "product_updated_at": "1708616400456"
+    "updated_at": "1708616400456"
   }
 }
 ```
@@ -101,7 +100,6 @@ productSnapshot := map[string]interface{}{
     "is_available":       payload.IsAvailable,
     "added_at":           payload.AddedAt,      // chuỗi epoch ms
     "updated_at":         payload.UpdatedAt,    // chuỗi epoch ms — fallback guard cho dữ liệu legacy
-    "product_updated_at": payload.ProductUpdatedAt,
 }
 productSnapshotJSON, _ := json.Marshal(productSnapshot)
 // LƯU Ý: unit_price_at_add KHÔNG đưa vào product_snapshot — lưu ở cột riêng cart_items.unit_price_at_add
@@ -128,8 +126,7 @@ VALUES (
     '{"product_name":"Áo Thun Nam","variant_info":"Màu Đen, Size L",
       "image_url":"https://cdn.domain.com/abc.jpg",
       "is_available":true,
-      "added_at":"1708530000123","updated_at":"1708530000123",
-      "product_updated_at":"1708530000123"}',  -- product_snapshot
+            "added_at":"1708530000123","updated_at":"1708530000123"}',  -- product_snapshot
     '1708530000123-0',             -- redis_stream_id từ Kafka header
     NOW(),                         -- created_at
     NOW()                          -- updated_at (row-level, cho CronJob ABANDONED check)
