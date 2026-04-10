@@ -5,43 +5,80 @@
 *   [Workflows (API)](auth_workflow.md)
 
 ---
-Tài liệu này mô tả các tiến trình chạy ngầm (Background Tasks/CronJobs) bên trong Auth Service nhằm dọn dẹp dữ liệu rác, xử lý bất đồng bộ, và phân tích rủi ro mà không làm ảnh hưởng tới độ trễ (Latency) của Login/Register API.
+Các worker dưới đây đảm bảo Auth Service vận hành ổn định khi tải cao, không chặn luồng API chính, và giữ nhất quán security state.
 
-## 1. Relational Outbox Worker (Producer)
-**Mục đích**: Hiện thực Transactional Outbox Pattern kết hợp với bảng trung gian `outbox_events` (hoặc Caching Outbox) để đảm bảo 100% tính nhất quán.
+## 1. Outbox Relay Worker
+**Mục đích**: phát event từ `auth_outbox_events` ra Kafka theo Transactional Outbox Pattern.
 
-*   **Trigger**: Chạy liên tục dưới dạng Background Thread (Debezium Change Data Capture / Async Polling theo mili-giây).
+*   **Trigger**: chạy liên tục (poll 200-500ms).
 *   **Workflow**:
-    1.  Ứng dụng Insert Database vào bảng `auth_identities` đồng thời Insert vào `outbox_events` trong cùng một DB Transaction khi "Đăng ký thành công".
-    2.  Worker quét các hàng trong `outbox_events` có `status = PENDING`.
-    3.  Đẩy Payload lên **Kafka** (topic: `t.auth.events`).
-    4.  Nhận ACK (Thành công) từ Kafka Brokers -> Cập nhật `outbox_events.status = PUBLISHED` (Hoặc xoá luôn row).
+    1.  Đọc batch row `status=PENDING`.
+    2.  Publish lên `t.auth.events`.
+    3.  ACK thành công -> `status=PUBLISHED`, set `published_at`.
+    4.  Lỗi -> tăng `retry_count`, set `next_retry_at` theo exponential backoff.
+    5.  Quá `max_retries` -> chuyển `status=FAILED` và đưa vào DLQ.
 
-## 2. Expired Token Cleanup (CronJob)
-**Mục đích**: Bảng `auth_refresh_tokens` trên PostgreSQL sẽ phình to rất nhanh với mỗi lần User đăng nhập/đăng xuất/hết hạn. Gây lãng phí ổ đĩa cứng.
+## 2. Expired Refresh Token Cleanup
+**Mục đích**: dọn token hết hạn lâu ngày để giảm phình bảng.
 
-*   **Lịch chạy (Schedule)**: 02:00 AM hằng ngày (Off-peak hour).
+*   **Schedule**: 02:00 AM hằng ngày.
 *   **Logic**:
-    1.  Tìm tất cả các `auth_refresh_tokens` có trường `expires_at` đã quá hạn `> 30 ngày`.
-    2.  Xóa bằng lệnh: `DELETE FROM auth_refresh_tokens WHERE expires_at < NOW() - INTERVAL '30 DAYS'`.
-    3.  (Lưu ý không xoá Token vừa mới hết hạn hôm qua, giữ bù khoảng thời gian ngắn để query phân tích log nếu cần thiết).
+    1.  Xóa token có `expires_at < NOW() - INTERVAL '30 days'`.
+    2.  Chỉ xóa token đã revoke hoặc hết hạn cứng.
+    3.  Ghi audit job summary (rows deleted, duration).
 
-## 3. Inactive Session Archiver (CronJob)
-**Mục đích**: Tự động "Kick" (Đăng xuất) các phiên làm việc (Thiết bị) đã bị bỏ xó quá lâu giúp an toàn bảo mật.
+## 3. Password Reset Session Cleanup
+**Mục đích**: dọn reset session hết hạn và token one-time đã dùng.
 
-*   **Lịch chạy (Schedule)**: Mỗi 12 giờ một lần.
+*   **Schedule**: mỗi 15 phút.
 *   **Logic**:
-    1.  Tìm kiếm trong `auth_device_sessions` những phiên `is_active = TRUE` nhưng `last_active_at` đã trôi qua hơn 90 ngày (hoặc tuỳ policy cấu hình).
-    2.  Cập nhật trạng thái phiên: `UPDATE auth_device_sessions SET is_active = FALSE WHERE ...`.
-    3.  Chuyển Refresh Token đính kèm thành `is_revoked = TRUE`.
+    1.  `UPDATE auth_password_reset_sessions SET state='EXPIRED'` với session quá hạn.
+    2.  Xóa dữ liệu reset session đã `COMPLETED` quá 30 ngày.
+    3.  Emit metric số lượng session expired/completed.
 
-## 4. Async Risk & Geo-Analyzer Worker
-**Mục đích**: Phân tích rủi ro đăng nhập dị thường (Suspicious Login) trên Background thay vì chặn luồng chính lúc Login.
+## 4. Inactive Session Archiver
+**Mục đích**: đóng phiên bị bỏ lâu, giảm rủi ro account takeover.
 
-*   **Trigger**: Lắng nghe Message đẩy qua Channel/Go Routine hoặc MQ ảo nội bộ khi API Login được gọi.
-*   **Logic (Impossible Travel Analysis)**:
-    1.  Nhận sự kiện chứa `(user_id, IP_hiện_tại, Tọa_độ_mới, Thời_gian_hiện_tại)`.
-    2.  Truy vấn phiên gần nhất trong Redis/DB `(IP_cũ, Tọa_độ_cũ, Thời_gian_cũ)`.
-    3.  Nếu IP_cũ là Việt Nam, IP_mới là Mỹ. Mà hiệu số Thời\_gian\_hiện\_tại trừ Thời\_gian\_cũ chỉ là < 5 giờ. => Kết luận "Vô lý về mặt địa lý" (Impossible Travel).
-    4.  Bắn Kafka Event: `SUSPICIOUS_LOGIN_DETECTED`. (Để hệ thống tự động khóa Account hoặc Gửi Email xác minh cảnh báo khách hàng).
-    5.  Thành phần này có thể gọi IP to Geolocation API ở Caching hoặc Local db (GeoLite2).
+*   **Schedule**: mỗi 12 giờ.
+*   **Logic**:
+    1.  Tìm `auth_device_sessions.is_active=true` và `last_active_at` quá 90 ngày.
+    2.  Mark inactive + revoke refresh token liên quan.
+    3.  Ghi `revoked_reason='INACTIVE_TIMEOUT'`.
+
+## 5. Async Risk & Geo Analyzer Worker
+**Mục đích**: chấm điểm rủi ro đăng nhập (không block API login đồng bộ).
+
+*   **Trigger**: nhận message từ login flow (`OTP_LOGIN_VERIFIED`).
+*   **Logic**:
+    1.  So sánh IP/location hiện tại với phiên gần nhất.
+    2.  Tính risk score (impossible travel, new device, ASN bất thường).
+    3.  Nếu score cao -> emit `SUSPICIOUS_LOGIN_DETECTED`.
+    4.  Nếu score rất cao -> đánh dấu account cần step-up verification ở lần đăng nhập sau.
+
+## 6. Refresh Replay Escalation Worker
+**Mục đích**: lớp dự phòng (safety-net) để bảo đảm replay grace period vẫn được escalated đúng khi API xử lý tức thời gặp race condition hoặc multi-node refresh.
+
+*   **Schedule**: mỗi 1 phút.
+*   **Logic**:
+    1.  Quét token có `grace_expires_at IS NOT NULL`.
+    2.  Nếu phát hiện trạng thái bất thường (`replay_incident_count > 1`) hoặc replay xuất hiện sau `grace_expires_at` mà chưa bị xử lý ở API:
+        * revoke toàn bộ refresh token active của user,
+        * đóng toàn bộ device sessions,
+        * bump `session_version`,
+        * emit `GLOBAL_LOGOUT_TRIGGERED` (reason=`REFRESH_REPLAY`).
+    3.  Dọn grace state đã xử lý để tránh escalation lặp.
+
+## 7. Audit Event Archiver
+**Mục đích**: giữ bảng `auth_audit_events` gọn và vẫn đáp ứng compliance.
+
+*   **Schedule**: mỗi ngày 03:00 AM.
+*   **Logic**:
+    1.  Archive bản ghi quá 2 năm sang object storage/SIEM.
+    2.  Xóa dữ liệu đã archive thành công.
+    3.  Gửi báo cáo archive vào monitoring.
+
+## 8. Vận hành và cảnh báo
+1.  Cảnh báo nếu Outbox `FAILED` tăng đột biến.
+2.  Cảnh báo nếu `GLOBAL_LOGOUT_TRIGGERED` vượt ngưỡng bình thường.
+3.  Cảnh báo nếu reset session `LOCKED` tăng mạnh (dấu hiệu tấn công).
+4.  Cảnh báo nếu cleanup job chạy lỗi 3 lần liên tiếp.

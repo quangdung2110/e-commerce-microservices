@@ -5,57 +5,121 @@
 *   [Workflows (API)](auth_workflow.md)
 
 ---
-Auth Service sử dụng Redis cho 3 mục đích cốt lõi: **Rate Limiting (Chống Brute-force/Spam)**, **Lưu trữ OTP/Trạng thái tạm thời**, và **Quản lý Session Blacklist/Whitelist (JWT)**. Tốc độ xác thực ảnh hưởng đến mọi Service khác nên việc tra cứu trên Redis là tối quan trọng ở Auth Service.
+Redis trong Auth Service dùng cho 4 nhóm chính: rate limit, OTP/TOTP state, token/session revocation, và replay grace tracking.
 
-## 1. Cơ Chế Rate Limiting (Bảo vệ hệ thống)
-Ngăn chặn Brute-force dò mật khẩu và tấn công Exhaustion (làm cạn kiệt tài khoản trả phí SMS/Email). Các thao tác đếm dùng `INCR` và `EXPIRE` hoặc thuật toán Fixed Window/Sliding Window.
+## 1. Quy tắc chung
+1.  Tất cả OTP/TOTP secret lưu dưới dạng hash, không lưu plaintext.
+2.  Key chứa identity phải dùng `identity_value_normalized`.
+3.  Tất cả counters phải có TTL rõ ràng để tránh tăng vô hạn.
+4.  Dùng atomic script/Lua cho thao tác check-and-increment quan trọng.
 
-### 1.1 Tính năng OTP Request (Spam SMS/Email)
-*   **Key**: `auth:rl:otp:req:{action}:{identity_value}` (Ví dụ: `auth:rl:otp:req:register:0981234567`)
-*   **Giá trị**: Counter (Số nguyên đếm số lần gọi OTP).
-*   **TTL**: 1 Tuần (Tùy chính sách chặn rác, có thể là 24h).
-*   **Logic**: Chứa các rule (Max 3 lần / 15 phút, Max 5 lần / ngày). Vượt ngưỡng sẽ Return HTTP 429 Too Many Requests.
+## 2. Rate Limiting
 
-### 1.2 Giới hạn Đăng nhập sai (Brute-Force Account)
-*   **Key**: `auth:rl:login:acc:{identity_value}`
-*   **Giá trị**: Biến đếm số lần sai mật khẩu liên tiếp.
-*   **TTL**: 30 phút.
-*   **Logic**: Tăng lên 1 mỗi khi sai mật khẩu. Khi sai quá 5 lần, thiết lập một key khóa tạm thời `auth:lockout:{identity_value}` với TTL 1 giờ. Trong thời gian Lockout, bất kể gửi pass đúng hay sai cũng văng 429/403. Nếu đăng nhập đúng, xóa Key `auth:rl:login:acc:*`.
+### 2.1 OTP Request Rate Limit
+*   **Key**: `auth:rl:otp:req:{action}:{identity_normalized}:{window}`
+*   **Action**: `register`, `login`, `reset`
+*   **Rule**:
+    *   3 lần / 15 phút / identity
+    *   5 lần / ngày / identity
+*   **Response khi vượt ngưỡng**: HTTP 429
 
-### 1.3 Giới hạn Đăng nhập IP (Brute-Force / Credential Stuffing)
-*   **Key**: `auth:rl:login:ip:{client_ip}`
-*   **Giá trị**: Số lượt đăng nhập (bất kể tài khoản nào).
-*   **TTL**: 1 Giờ.
-*   **Logic**: Chống việc một IP Botnet chạy credential stuffing bằng hàng chục ngàn tài khoản bị rò rỉ trên mạng. (Max 30 requests/hour/IP trên endpoint Login).
+### 2.2 Login Request theo IP
+*   **Key**: `auth:rl:login:ip:{client_ip}:{window}`
+*   **Rule**: 30 lần/giờ/IP cho endpoint request OTP login.
 
-## 2. Dữ liệu Tạm thời (Ephemeral Data)
+### 2.3 OTP Verify Attempts
+*   **Key**: `auth:rl:otp:verify:{action}:{identity_normalized}`
+*   **Rule**: tối đa 5 lần sai/10 phút.
+*   **Vượt ngưỡng**: set `auth:lockout:identity:{identity_normalized}` TTL 30 phút.
 
-### 2.1 OTP Cache (Lưu mã xác nhận)
-*   **Key**: `auth:otp:{action}:{identity_value}` 
-    *   `action` bao gồm: `REGISTER`, `RESET_PASSWORD`, `CHANGE_MFA`.
-*   **Giá trị**: Mã OTP 6 chữ số (Khuyến nghị **Hash bằng SHA256** trước khi lưu vào Redis để đề phòng DB Dump do Server Admin).
-*   **TTL**: 5 Phút (Thời hạn hiệu lực mã OTP).
+### 2.4 Forgot Password Request Limits
+*   **Key**: `auth:rl:reset:req:{identity_normalized}:{window}`
+*   **Rule**:
+    *   3 lần/giờ/identity
+    *   10 lần/ngày/identity
 
-### 2.2 Device Tracking Cache
-*   **Key**: `auth:devices:{user_id}`
-*   **Cấu trúc**: Redis Set chứa các `device_id` đã xác thực gần đây.
-*   **TTL**: 24 giờ.
-*   **Mục đích**: Tăng tốc độ xác nhận "Thiết bị lạ" (Suspicious Login) thay vì query CSDL PostgreSQL.
+### 2.5 TOTP Verify Limits (Reset Flow)
+*   **Key**: `auth:rl:reset:totp:{reset_session_id}`
+*   **Rule**: tối đa 10 lần sai/15 phút.
+*   **Vượt ngưỡng**: set state reset session sang `LOCKED`.
 
-## 3. JWT & Token Management
+## 3. OTP/TOTP và Session tạm thời
 
-Auth Service cấp phát Access Token dạng JWT (Stateless). Tuy nhiên, để có khả năng **Thu hồi quyền bắt buộc (Immediate Revocation)** (Khi có báo cáo hack, user nhấn Đăng xuất, hoặc Admin Ban account), ta cần kết hợp Redis.
+### 3.1 OTP Register/Login/Reset
+*   **Key**: `auth:otp:{action}:{identity_normalized}`
+*   **Action**: `register`, `login`, `reset`
+*   **Value**:
+    ```json
+    {
+      "otp_hash": "sha256...",
+      "attempts": 0,
+      "max_attempts": 5,
+      "session_id": "uuid",
+      "created_at": 1710000000
+    }
+    ```
+*   **TTL**: 5 phút.
 
-### 3.1 Token Blacklist (Denylist Pattern)
-API Gateway trước khi tin tưởng Access Token sẽ cầm ID của Token (`jti`) xuống hỏi Auth/Redis.
+### 3.2 Login OTP Session Binding
+*   **Key**: `auth:otp:login:session:{otp_login_session_id}`
+*   **Value**: `{user_id, identity_normalized, device_fingerprint_hash}`
+*   **TTL**: 5 phút.
+
+### 3.3 Reset MFA Challenge
+*   **Key**: `auth:mfa:challenge:{reset_session_id}`
+*   **Value**: `{challenge_token_hash, user_id, attempts}`
+*   **TTL**: 5 phút.
+
+### 3.4 Single-use Reset Token (gửi qua email link)
+*   **Key**: `auth:reset:link:{reset_session_id}`
+*   **Value**: `{token_hash, used=false}`
+*   **TTL**: 10 phút.
+
+## 4. Token & Session Revocation
+
+### 4.1 Access Token Blacklist
 *   **Key**: `auth:blacklist:{jti}`
-*   **Giá trị**: `1` (Hoặc timestamp khoá).
-*   **TTL**: Bằng đúng **thời gian sống còn lại (Remaining Time-to-live)** của Access Token bị thu hồi.
-*   **Logic**: Khi Logout, lấy `exp` (Expiration) của Token trừ đi thời gian hiện tại ra TTL của Redis Key. Gateway thấy `jti` nằm trong Blacklist -> Từ chối yêu cầu (401 Unauthorized).
+*   **Value**: `1`
+*   **TTL**: thời gian sống còn lại của access token.
 
-### 3.2 User Token Family/Whitelist (Tùy chọn cho High-Security)
-Thay vì Blacklist, hệ thống có thể lưu một version khóa để invalid toàn bộ token.
+### 4.2 Session Version
 *   **Key**: `auth:session_version:{user_id}`
-*   **Giá trị**: `v1`, `v2`, `v3`... (Một UUID hoặc Integer).
-*   **TTL**: Không thời hạn (cho đến khi user chưa đổi).
-*   **Logic**: Khi User đổi mật khẩu, tăng `session_version` này lên. Trong payload của JWT Access Token phát hành có chứa trường `session_version`. Nếu Token version nhỏ hơn Redis Version -> Bị loại bỏ. (Kiểu này cho phép Kick-out All Devices ngay lập tức chỉ với 1 thao tác ghi).
+*   **Value**: integer tăng dần (`1`, `2`, `3`...)
+*   **TTL**: không hết hạn.
+
+## 5. Refresh Replay Grace Period (3 phút)
+
+### 5.1 Grace State Key
+*   **Key**: `auth:refresh:grace:{user_id}:{old_refresh_token_id}`
+*   **Value**:
+    ```json
+    {
+      "grace_expires_at": 1710000000,
+      "grace_replay_used": false,
+      "replay_incident_count": 1,
+      "first_seen_ip": "1.2.3.4",
+      "first_seen_device_id": "device-123"
+    }
+    ```
+*   **TTL**: 3 phút.
+
+### 5.2 Quy tắc xử lý
+1.  Lần replay đầu tiên của previous token trong 3 phút: cho phép và set `grace_replay_used=true`.
+2.  Mỗi replay phải tăng `replay_incident_count` ở cả Redis và DB.
+3.  Replay tiếp theo trong cùng key hoặc replay sau khi key hết hạn: kích hoạt global logout.
+4.  Khi Redis key hết hạn, API fallback sang DB (`grace_expires_at`, `grace_replay_used`, `replay_incident_count`) để tránh bypass.
+5.  Khi global logout: xóa toàn bộ key grace liên quan user để tránh state bẩn.
+
+## 6. Device Risk Cache
+*   **Key**: `auth:devices:{user_id}`
+*   **Type**: Set (danh sách device_id đã tin cậy gần đây)
+*   **TTL**: 24 giờ
+*   **Mục tiêu**: tăng tốc risk check, không thay thế dữ liệu chuẩn trong DB.
+
+## 7. Metrics khuyến nghị
+*   `auth_otp_request_total{action}`
+*   `auth_otp_verify_failed_total{action}`
+*   `auth_reset_totp_failed_total`
+*   `auth_refresh_grace_used_total`
+*   `auth_global_logout_triggered_total{reason}`
+*   `auth_rate_limit_block_total{key_type}`
