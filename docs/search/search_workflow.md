@@ -47,20 +47,22 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 1. **[Input Validation & Normalization]:**
    - Validate input parameters (page > 0, size <= 100, etc.).
    - Normalize query `q`: lowercase, trim, remove extra whitespace.
-   - Chuẩn hóa và sort toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`).
+  - Chuẩn hóa canonical toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`) theo quy tắc tại [Caching Schema](search_caching_schema.md#11-nhóm-search-results-cache-hot-query-cache).
    - Hash normalized query + all params → `query_hash` cho cache lookup.
 2. **[Redis] - Check Hot Query Cache (Kèm SWR + 2 tầng chống stampede):**
    - Lệnh đọc: `GET search:query:{query_hash}`.
-  - Nếu Data rỗng (Cache Miss thực sự) → Chuyển sang Bước 3, nhưng phải có lệnh đếm Sliding Window `INCR` trước. Chỉ cache khi truy vấn đủ độ hot (`> 50 requests/phút`) để tránh cache pollution từ long-tail query.
+  - Mỗi request phải cập nhật bộ đếm hot-query cluster-wide: `ZADD` + `ZREMRANGEBYSCORE(now-60s)` + `PEXPIRE 120s` cho `search:qcount:{query_hash}`.
+  - Nếu Data rỗng (Cache Miss thực sự) → Chuyển sang Bước 3. Chỉ cache khi truy vấn đủ độ hot (`> 50 requests/phút`) để tránh cache pollution từ long-tail query.
    - Nếu Cache Hit: Bóc tách trường `valid_until` bên trong JSON.
-     - **Early Refresh (tuỳ chọn):** Cho phép kích hoạt refresh sớm theo xác suất để giảm burst, nhưng refresh vẫn phải đi qua lock phân tán như quy tắc chống herd.
+    - **Early Refresh (bắt buộc):** Khi còn <= 5 giây tới `valid_until`, kích hoạt refresh sớm với xác suất 20% để dàn tải burst.
      - Nếu `now() <= valid_until`: Trả về kết quả cho User ngay lập tức (< 1ms). **Kết thúc.**
      - Nếu `now() > valid_until` (Dữ liệu đã cũ cần lấy mới ngầm): 
        - Trả về kết quả Cũ (Stale Data) cho User ngay lập tức để giữ API Latency < 1ms.
        - Gửi ngầm một tín hiệu Async vào bounded refresh queue để lấy Data mới từ Elasticsearch.
        - **Tầng 1 (Pod-local):** Singleflight gom request trùng theo `query_hash` trong cùng Pod.
-       - **Tầng 2 (Multi-pod):** Worker chỉ được query Elasticsearch khi lấy được lock `SETNX search:lock:refresh:{query_hash} 1 EX 10`.
+     - **Tầng 2 (Multi-pod):** Worker chỉ được query Elasticsearch khi lấy được lock `SETNX search:lock:refresh:{query_hash} {owner_token} EX {lock_ttl_seconds}` (TTL động theo p99 ES refresh).
        - Nếu lock thất bại, worker thoát ngay, không query ES.
+     - Nếu `now() > stale_max_until` thì không trả stale quá hạn; request path phải fallback query ES trực tiếp (timeout ngắn).
 
 ### 2.1. Chi tiết Refresh Scheduler (Bắt buộc cho tính đúng đắn)
 
@@ -71,9 +73,12 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 **Quy tắc:**
 1. Chỉ enqueue khi CAS `IDLE -> ENQUEUED` thành công.
 2. Nếu trạng thái đã là `ENQUEUED` hoặc `RUNNING`, bỏ enqueue mới.
-3. Nếu queue full khi `offer`, rollback `ENQUEUED -> IDLE`, tăng metric drop và kết thúc.
-4. Worker sau khi lấy task phải CAS `ENQUEUED -> RUNNING`.
-5. Kết thúc task (thành công/lỗi) luôn phải `RUNNING -> IDLE` trong `finally`.
+3. Sau CAS local, bắt buộc CAS Redis `search:refresh:enqueue:{query_hash}` với `EX {enqueue_ttl_seconds}` để chống enqueue trùng đa pod (`enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`).
+4. `search:refresh:enqueue:{query_hash}` chỉ dùng cho dedupe ở pha scheduler; không thay vai trò lock execution.
+5. Nếu queue full khi `offer`, rollback `ENQUEUED -> IDLE`, xoá CAS Redis key, tăng metric drop và kết thúc.
+6. Worker sau khi lấy task phải CAS `ENQUEUED -> RUNNING`.
+7. Kết thúc task (thành công/lỗi) luôn phải `RUNNING -> IDLE` và xoá CAS Redis key trong `finally`.
+8. Lock execution `search:lock:refresh:{query_hash}` chỉ release bằng compare-delete theo `owner_token` hoặc để TTL tự hết hạn.
 
 ### 2.2. Semantics của Bounded Queue và Worker
 
@@ -81,7 +86,10 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 2. Một queue-node chỉ có một worker lấy; worker khác không thể lấy cùng queue-node đó.
 3. Trùng lặp chỉ có thể đến từ enqueue nhiều node khác nhau cho cùng `query_hash`; phần này đã được chặn bằng Refresh Registry + coalescing.
 4. Queue full policy: không block request path, vẫn trả stale data, chỉ bỏ refresh task có kiểm soát và ghi metric/alert.
-5. Queue nằm trên RAM Pod; nếu Pod down thì task có thể mất. Với SWR đây là chấp nhận được, vì request kế tiếp sẽ trigger refresh lại.
+5. Không được phục vụ stale nếu đã vượt `stale_max_until`; phải chuyển sang query ES trực tiếp với timeout.
+6. Queue nằm trên RAM Pod; nếu Pod down thì task có thể mất. Với SWR đây là chấp nhận được, vì request kế tiếp sẽ trigger refresh lại.
+
+**Tiếp tục luồng chính API search:**
 3. **[Elasticsearch] - Build & Execute Query:**
     - Xây dựng Elasticsearch query DSL:
       ```json
@@ -99,6 +107,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
               }
             ],
             "filter": [
+              { "term": { "is_deleted": false } },
               { "term": { "product_status": "ACTIVE" } },
               { "term": { "sku_status": "ACTIVE" } },
               { "term": { "is_in_stock": true } },
@@ -110,7 +119,14 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
           }
         },
         "collapse": {
-          "field": "product_id"
+          "field": "product_id",
+          "inner_hits": {
+            "name": "matching_skus",
+            "size": 3,
+            "sort": [
+              { "best_price": "asc" }
+            ]
+          }
         },
         "sort": [
           { "_score": "desc" },
@@ -119,7 +135,17 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
         "from": 0,
         "size": 20,
         "aggs": {
-          "categories": { "terms": { "field": "category_id", "size": 20 } },
+          "categories": {
+            "terms": { "field": "category_id", "size": 20 },
+            "aggs": {
+              "product_count": {
+                "cardinality": {
+                  "field": "product_id",
+                  "precision_threshold": 40000
+                }
+              }
+            }
+          },
           "price_ranges": {
             "range": {
               "field": "best_price",
@@ -129,6 +155,14 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
                 { "key": "15 - 30 triệu", "from": 15000000, "to": 30000000 },
                 { "key": "Trên 30 triệu", "from": 30000000 }
               ]
+            },
+            "aggs": {
+              "product_count": {
+                "cardinality": {
+                  "field": "product_id",
+                  "precision_threshold": 40000
+                }
+              }
             }
           }
         }
@@ -139,8 +173,18 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
       - `name^3`: Boost trọng số tên sản phẩm so với attributes.
       - `filter` context: Các điều kiện lọc cứng, được ES cache bitset tự động.
       - `in_stock`: khi tham số `in_stock=false` thì bỏ `term is_in_stock=true` khỏi filter.
+      - `is_in_stock` ở Search là cờ khả dụng bán hàng theo Product status stream, không thay cho kiểm tra tồn kho cứng ở checkout.
       - `searchable_attributes`: Thay thế hoàn toàn cho kiểu `nested`, search/filter trực tiếp trên Composite Array.
       - `collapse`: Gom nhóm các SKU (Document) thuộc cùng 1 sản phẩm (`product_id`), chỉ trả về SKU best match cho UI.
+      - Các count hiển thị cho facets/category phải map từ aggregation `product_count` (DISTINCT `product_id`), không dùng trực tiếp doc_count theo SKU.
+
+    - **Sort mapping bắt buộc:**
+      - `relevance` -> `_score desc, product_sold_count desc`
+      - `price_asc` -> `best_price asc, _score desc`
+      - `price_desc` -> `best_price desc, _score desc`
+      - `newest` -> `updated_at desc, _score desc`
+      - `best_selling` -> `product_sold_count desc, _score desc`
+      - `rating` -> `product_rating_avg desc, product_rating_count desc`
 
 4. **[Response Transformation] - Chuẩn hoá kết quả:**
    - Map Elasticsearch hits → API response format. Kết quả trả về đã là SKU (First-class document).
@@ -148,7 +192,9 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
    - **Response JSON:**
      ```json
      {
-       "total": 1250,
+       "total": 1100,
+       "total_skus": 1250,
+       "total_products": 1100,
        "page": 1,
        "size": 20,
        "items": [
@@ -166,15 +212,17 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
          }
        ],
        "facets": {
+         "count_semantics": "DISTINCT_PRODUCT",
          "categories": [{ "value": "Smartphone", "count": 800 }],
          "price_ranges": [{ "label": "15 - 30 triệu", "count": 350 }],
          "brands": [{ "value": "Apple", "count": 200 }]
-       }
+       },
+       "pagination_note": "size là số product groups sau collapse; mỗi item có thể kèm nhiều SKU trong inner_hits"
      }
      ```
 5. **[Redis] - Cache kết quả (nếu hot query):**
   - Nếu query đủ "hot" → `SET search:query:{query_hash} json EX 86400`.
-  - JSON phải chứa `valid_until = now + 30s` để điều khiển logical expiration.
+  - JSON phải chứa `valid_until = now + 30s` và `stale_max_until = valid_until + 240s` để điều khiển stale cap.
 6. **[Backend] - Trả HTTP 200:**
    - Trả JSON response cho Frontend.
 
@@ -201,15 +249,26 @@ User đang gõ trên thanh tìm kiếm → hiện dropdown gợi ý real-time.
      "query": {
        "bool": {
          "must": [
-           { "match": { "text": { "query": "iph", "analyzer": "standard" } } }
+           {
+             "match": {
+               "text": {
+                 "query": "iph"
+               }
+             }
+           }
          ]
        }
      },
-     "sort": [{ "weight": "desc" }],
+     "sort": [
+       { "weight": "desc" },
+       { "query_count_7d": "desc" },
+       { "text.keyword": "asc" }
+     ],
      "size": 8,
      "_source": ["text", "type", "weight"]
    }
    ```
+   - Query dựa trên mapping của index `search_suggestions` (đã pre-compute ranking), không truy vấn trực tiếp từ `products` trong request path.
 4. **[Redis] - Cache kết quả:**
    - `SET search:suggest:{prefix} json EX 600` (10 phút).
 5. **[Backend] - Trả HTTP 200:**
@@ -228,6 +287,7 @@ User đang gõ trên thanh tìm kiếm → hiện dropdown gợi ý real-time.
 **Endpoint:** `GET /api/v1/search/categories`
 
 Trả về cây danh mục với số lượng sản phẩm ACTIVE cho navigation sidebar.
+Số đếm phải bám theo cùng bộ lọc hiển thị mặc định của API search list (không deleted, product active, sku active, in_stock=true) để tránh lệch UX.
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Redis] - Check Category Cache:**
@@ -237,15 +297,32 @@ Trả về cây danh mục với số lượng sản phẩm ACTIVE cho navigatio
    ```json
    {
      "size": 0,
-     "query": { "term": { "product_status": "ACTIVE" } },
+     "query": {
+       "bool": {
+         "filter": [
+           { "term": { "is_deleted": false } },
+           { "term": { "product_status": "ACTIVE" } },
+           { "term": { "sku_status": "ACTIVE" } },
+           { "term": { "is_in_stock": true } }
+         ]
+       }
+     },
      "aggs": {
        "categories": {
-         "terms": { "field": "category_id", "size": 500 }
+          "terms": { "field": "category_id", "size": 500 },
+          "aggs": {
+            "product_count": {
+              "cardinality": {
+                "field": "product_id",
+                "precision_threshold": 40000
+              }
+            }
+          }
        }
      }
    }
    ```
-3. **[Enrichment]:** Map `category_id` → thông tin đầy đủ (name, slug, parent_id, level) từ Category metadata.
+3. **[Enrichment]:** Map `category_id` → thông tin đầy đủ (name, slug, parent_id, level) từ Category metadata; `product_count` lấy từ `categories.*.product_count`.
 4. **[Redis] - Cache:** `SET search:categories:tree json EX 3600`.
 5. **[Backend] - Trả HTTP 200.**
 
@@ -256,7 +333,7 @@ Trả về danh sách bộ lọc (filters) khả dụng cho một danh mục c�
 
 **Quy trình:**
 1. **[Redis]:** `GET search:facets:{category_id}`. Hit → trả về.
-2. **[Elasticsearch]:** Chạy aggregation trên sản phẩm thuộc category (brands, price ranges, dynamic attributes).
+2. **[Elasticsearch]:** Chạy aggregation trên sản phẩm thuộc category (brands, price ranges, dynamic attributes) với count semantics DISTINCT `product_id`.
 3. **[Redis]:** `SET search:facets:{category_id} json EX 300`.
 4. **[Backend]:** Trả HTTP 200. Xem [Khuôn mẫu JSON](search_caching_schema.md#14-facet-cache-aggregation-precomputed).
 

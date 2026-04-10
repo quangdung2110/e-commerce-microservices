@@ -30,6 +30,7 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
         ```json
         {
           "valid_until": 1710500000,
+          "stale_max_until": 1710500240,
           "total_hits": 1250,
           "products": [
             {
@@ -54,37 +55,60 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
     *   **TTL chuẩn hóa (duy nhất):**
       *   `valid_until` (logical TTL): 30 giây. Hết hạn logic thì được trả stale + refresh ngầm.
       *   Redis EX (physical TTL): 24 giờ (`EX 86400`). Mục tiêu là giữ stale data để tránh hard miss hàng loạt khi ES lỗi ngắn hạn.
+      *   `stale_max_until` (stale hard-cap): tối đa `valid_until + 240s`. Quá mốc này không được tiếp tục phục vụ stale.
     *   **SWR Invalidation (đúng nghĩa Stale-While-Revalidate):** Nếu `now() > valid_until`, API trả stale data ngay và chỉ trigger refresh bất đồng bộ, không block request path.
     *   **Chống Stampede (2 tầng bắt buộc):**
       *   Tầng 1 (Pod-local): Singleflight theo `query_hash` để gom request giống nhau trong cùng Pod.
-      *   Tầng 2 (Multi-pod): Distributed lock toàn cụm `SETNX search:lock:refresh:{query_hash} 1 EX 10`.
+      *   Tầng 2 (Multi-pod): Distributed lock toàn cụm `SETNX search:lock:refresh:{query_hash} {owner_token} EX {lock_ttl_seconds}` với `lock_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`.
       Chỉ tác vụ giữ lock mới query xuống ES; tác vụ trượt lock trả stale ngay.
     *   **Refresh Registry (Pod-local, chống enqueue trùng):**
       *   Registry in-memory theo `query_hash` với state machine: `IDLE -> ENQUEUED -> RUNNING -> IDLE`.
       *   Chỉ được enqueue khi CAS `IDLE -> ENQUEUED` thành công.
       *   Nếu state đang `ENQUEUED` hoặc `RUNNING`, request mới không enqueue thêm.
+    *   **Enqueue Dedupe (Multi-pod, bắt buộc):**
+      *   Trước khi enqueue local queue, phải CAS qua Redis key `search:refresh:enqueue:{query_hash}` bằng `SETNX ... EX {enqueue_ttl_seconds}`.
+      *   `enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)` để dedupe key không hết hạn sớm hơn lock khi cụm Elasticsearch chậm.
+      *   Chỉ pod thắng CAS mới được enqueue task; pod còn lại dừng tại chỗ.
+      *   Worker hoàn tất task phải xoá key enqueue (hoặc chờ EX timeout nếu pod crash).
+    *   **Phân biệt 2 key chống stampede (bắt buộc):**
+      *   `search:refresh:enqueue:{query_hash}`: chặn enqueue trùng ở pha scheduler.
+      *   `search:lock:refresh:{query_hash}`: chặn execution trùng ở pha query ES.
+      *   Đây là hai lớp bảo vệ khác nhau theo thời điểm; không thay thế cho nhau.
     *   **Bounded Refresh Queue (In-memory):**
       *   Queue giới hạn cứng (ví dụ 2,000 tasks/pod), chỉ nhận task refresh hot-query.
-      *   Enqueue dùng `offer` non-blocking; nếu queue full thì bỏ refresh task có kiểm soát (không block request), vẫn trả stale data.
+      *   Enqueue dùng `offer` non-blocking; nếu queue full thì bỏ refresh task có kiểm soát (không block request).
+      *   Nếu queue full nhưng `now() > stale_max_until`, request path phải fallback query ES trực tiếp (timeout ngắn) thay vì trả stale quá hạn.
       *   Queue full phải ghi metric `search_refresh_queue_dropped_total` + alert theo ngưỡng.
       *   Task trong queue nằm trên RAM Pod; khi Pod down, task có thể mất và được chấp nhận theo triết lý SWR.
     *   **Queue-worker semantics (bắt buộc):**
       *   Một queue-node chỉ được một worker lấy (destructive pop từ queue thread-safe).
       *   Nhiều worker không lấy cùng một queue-node.
       *   Rủi ro trùng logic chỉ đến từ enqueue trùng `query_hash`, đã được chặn bằng Refresh Registry + coalescing latest-only.
-    *   **Fallback Circuit Breaker:** Nếu refresh thất bại liên tiếp 3 lần trong cửa sổ 30 giây, ghi alert và gia hạn `valid_until` thêm 60 giây để giảm áp lực lên ES đang lỗi.
-    *   **Khi nào cache:** Chỉ cache query hot, ngưỡng chuẩn là `query_count > 50 requests / phút` (không dùng đơn vị RPS ở tài liệu này để tránh mâu thuẫn).
+    *   **Fallback Circuit Breaker:** Nếu refresh thất bại liên tiếp 3 lần trong cửa sổ 30 giây, ghi alert và gia hạn `valid_until` thêm 60 giây nhưng không vượt `stale_max_until`.
+    *   **Khi nào cache:** Chỉ cache query hot, ngưỡng chuẩn là `query_count > 50 requests / phút`.
+    *   **Thuật toán đếm hot query (bắt buộc, cluster-wide):**
+      *   Key: `search:qcount:{query_hash}` (ZSET).
+      *   Mỗi request: `ZADD key now_ms request_id`, rồi `ZREMRANGEBYSCORE key -inf now_ms-60000`, cuối cùng `PEXPIRE key 120000` để tự dọn key cold.
+      *   Đếm: `ZCARD key` sau khi trim.
+      *   Hot nếu count > 50 trong cửa sổ 60 giây trượt.
 
-  > **Query Normalization:** Trước khi hash, query phải được chuẩn hoá: lowercase, trim, sort filter params alphabetically. Bắt buộc bao gồm toàn bộ tham số có thể đổi kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`). Ví dụ: `q=iphone&category=smartphone&sort=price_asc&page=1&size=20`.
+  > **Query Normalization (canonical, bắt buộc):**
+  > 1. Chuẩn hóa chuỗi: lowercase + trim + collapse whitespace cho `q`.
+  > 2. Chuẩn hóa kiểu dữ liệu: boolean -> `true/false`, số -> string không locale.
+  > 3. Với `filters` map: sort theo key tăng dần; nếu value là mảng thì sort value tăng dần.
+  > 4. Loại bỏ field null/rỗng khỏi payload hash.
+  > 5. Serialize JSON với sorted keys cho tập tham số: `q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`.
+  > 6. Băm SHA-256 ra `query_hash`.
 
 ### 1.2 Category Tree Cache
 
 *   `search:categories:tree`
-    *   **Mô tả**: Toàn bộ cây danh mục với `category_id`, `name`, `slug`, `parent_id`, `level`, `product_count` (số sản phẩm ACTIVE). Phục vụ hiển thị sidebar/breadcrumb navigation.
+  *   **Mô tả**: Toàn bộ cây danh mục với `category_id`, `name`, `slug`, `parent_id`, `level`, `product_count` (số product groups DISTINCT theo `product_id` sau bộ lọc hiển thị mặc định: `is_deleted=false`, `product_status=ACTIVE`, `sku_status=ACTIVE`, `is_in_stock=true`). Phục vụ hiển thị sidebar/breadcrumb navigation.
     *   **Loại Dữ Liệu**: `String (JSON)`.
     *   **TTL**: 1 giờ. Cây danh mục hiếm khi thay đổi.
-    *   **Invalidation**: Trigger khi nhận các thay đổi làm biến động tập ACTIVE (`PRODUCT_CREATED`, `PRODUCT_DELETED`, `PRODUCT_STATE_CHANGED`) hoặc khi Product Service phát `channel:search:category-refresh`.
-    *   **L1/L2 Miss Fallback (Chống Stampede Toàn Cụm):** Cả L1 (Caffeine) và L2 (Redis) bị miss thì chỉ 1 Pod được phép gọi Product Service bằng lock phân tán `SETNX search:lock:category-tree-refresh 1 EX 10`; các Pod còn lại phải dùng stale data gần nhất hoặc chờ kết quả refresh broadcast qua Pub/Sub.
+    *   **Invalidation**: Trigger khi có biến động tập ACTIVE hoặc phân bổ category (`PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`, `PRODUCT_UPDATED` đổi footprint theo cặp old/new fields, `CATEGORY_UPDATED`, `CATEGORY_DELETED`) hoặc tín hiệu pub/sub đồng bộ category (`channel:search:category-refresh`). Với payload legacy thiếu old/new fields, `PRODUCT_UPDATED` dùng conservative invalidation.
+    *   **Compatibility mode:** Trong giai đoạn chuyển tiếp, listener có thể chấp nhận thêm `channel:product:l1-evict` để tránh miss invalidation liên service.
+    *   **L1/L2 Miss Fallback (Chống Stampede Toàn Cụm):** Cả L1 (Caffeine) và L2 (Redis) bị miss thì chỉ 1 Pod được phép gọi Product Service bằng lock phân tán `SETNX search:lock:category-tree-refresh 1 EX 30`; các Pod còn lại phải dùng stale data gần nhất hoặc chờ kết quả refresh broadcast qua Pub/Sub.
 
 ### 1.3 Autocomplete / Suggestions Cache
 
@@ -112,6 +136,7 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
         ```json
         {
           "category_id": "cat-smartphone",
+          "count_semantics": "DISTINCT_PRODUCT",
           "filters": [
             {
               "name": "Thương hiệu",
@@ -135,6 +160,7 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
         }
         ```
     *   **TTL**: 5 phút.
+    *   **Count semantics (bắt buộc):** mọi `count` trong facets phải đếm DISTINCT `product_id` để đồng nhất với danh sách sau `collapse`.
     *   **Population**: Chạy aggregation query trên Elasticsearch khi cache miss, hoặc pre-warm bởi [Facet Pre-warmer](search_workers.md#9-facet-pre-warmer).
 
 ---
@@ -145,7 +171,7 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
 |---|---|---|
 | Product event (bất kỳ loại) | `search:query:*` | **Không chủ động invalidate** — TTL hoặc Logical Expiration tự xử lý |
 | Background Worker | `search:facets:{category_id}` | Worker tự động nạp đè định kỳ 5 phút. KHÔNG xóa ngang (event-driven) để tránh thảm họa Database sập vì Cache Miss khi giá đổi liên tục. |
-| Product created/deleted | `search:categories:tree` | Delete → re-build khi request tiếp theo |
+| Biến động category footprint (`PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`, `PRODUCT_UPDATED` đổi footprint theo old/new fields; payload legacy thì invalidate bảo toàn, `CATEGORY_UPDATED`, `CATEGORY_DELETED`, hoặc tín hiệu `channel:search:category-refresh`) | `search:categories:tree` | Delete/refresh có kiểm soát -> re-build ở request kế tiếp hoặc bởi worker warmup |
 | Hàng ngày (Cron) | `search:suggest:*` | Rebuild toàn bộ từ analytics |
 
 > **Philosophy:** Search cache thiên về **TTL-based expiration** hoặc Logical Expiration hơn là event-driven invalidation. Lý do: với hàng triệu sản phẩm thay đổi liên tục, việc chủ động invalidate từng query hash là bất khả thi và không cần thiết, user chấp nhận trễ 30s. Tương tự với Facet Cache, chấp nhận sidebar filter trễ 5 phút để bảo vệ Elastic Cluster.
@@ -159,21 +185,26 @@ Hot query sử dụng stale-while-revalidate, vì vậy stampede có thể xảy
 ### 3.1 Pipeline chuẩn (Request path)
 1. Request đọc `search:query:{query_hash}`.
 2. Nếu fresh (`now <= valid_until`) thì trả ngay.
-3. Nếu stale (`now > valid_until`) thì trả stale ngay và gọi `scheduleRefresh(query_hash)`.
+3. Nếu stale (`valid_until < now <= stale_max_until`) thì trả stale ngay và gọi `scheduleRefresh(query_hash)`.
+4. Nếu `now > stale_max_until` thì bypass stale, query ES trực tiếp với timeout ngắn và ghi đè cache mới.
 
 ### 3.2 `scheduleRefresh(query_hash)` (Pod-local)
 1. Đi qua Singleflight để gom request giống nhau trong Pod.
 2. Trong callback Singleflight, thử CAS registry `IDLE -> ENQUEUED`.
 3. Nếu CAS fail (đang `ENQUEUED/RUNNING`) thì dừng, không enqueue thêm.
-4. Nếu CAS success, `offer` task vào bounded queue.
-5. Nếu queue full, rollback state `ENQUEUED -> IDLE`, tăng metric drop, giữ stale path.
+4. Nếu CAS local success, thử CAS Redis `SETNX search:refresh:enqueue:{query_hash} 1 EX {enqueue_ttl_seconds}` với `enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`.
+5. Nếu CAS Redis fail thì rollback local state về `IDLE` và dừng (đã có pod khác enqueue).
+6. Nếu CAS Redis success, `offer` task vào bounded queue.
+7. Nếu queue full, rollback local state `ENQUEUED -> IDLE`, xoá key enqueue Redis, tăng metric drop.
 
 ### 3.3 Worker loop (Async refresh)
 1. Worker `take()` task, CAS `ENQUEUED -> RUNNING`.
-2. Thử lấy distributed lock `search:lock:refresh:{query_hash}`.
+2. Thử lấy distributed lock `search:lock:refresh:{query_hash}` bằng `owner_token`.
 3. Nếu lock fail: set state về `IDLE`, kết thúc task.
 4. Nếu lock success: query ES, cập nhật Redis `search:query:{query_hash}` với `valid_until` mới.
 5. Dù thành công hay thất bại, luôn `RUNNING -> IDLE` trong `finally` để tránh kẹt state.
+6. Trong `finally`, luôn xoá key `search:refresh:enqueue:{query_hash}` để mở đường enqueue kế tiếp.
+7. Lock key chỉ được release bằng compare-delete theo `owner_token` hoặc hết hạn TTL, không xoá lock mù.
 
 ### 3.4 Pod crash / restart
 1. Task đang nằm trong queue RAM có thể mất khi Pod down.
@@ -186,7 +217,10 @@ Hot query sử dụng stale-while-revalidate, vì vậy stampede có thể xảy
 
 | Key Pattern | Loại | TTL | Mục đích |
 |---|---|---|---|
-| `search:query:{query_hash}` | String (JSON) | Physical: 24h, Logical: 30s (`valid_until`) | Hot search results |
+| `search:query:{query_hash}` | String (JSON) | Physical: 24h, Logical: 30s (`valid_until`) + stale hard-cap 240s (`stale_max_until`) | Hot search results |
+| `search:qcount:{query_hash}` | ZSET | cửa sổ trượt 60s + `PEXPIRE 120s` | Đếm tần suất query theo cluster để xét hot-cache và tự dọn key cold |
+| `search:refresh:enqueue:{query_hash}` | String | `enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)` | CAS đa pod chống enqueue trùng |
+| `search:lock:refresh:{query_hash}` | String | `lock_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)` | Distributed lock đa pod cho execution refresh |
 | `search:categories:tree` | String (JSON) | 1h | Category navigation |
 | `search:suggest:{prefix}` | String (JSON Array) | 10m | Autocomplete gợi ý |
 | `search:facets:{category_id}` | String (JSON) | 5m | Pre-computed filters |
