@@ -50,8 +50,8 @@ Tài liệu này mô tả lifecycle trạng thái của Seller Service, bao gồ
 2. Ghi outbox event tương ứng.
 3. Overwrite cache status/profile.
 4. Trigger side effects downstream:
-   - Product hide/show listings.
-   - Search cập nhật searchable flags.
+    - Product Service quyết định hide/show listings ở write-model và phát `PRODUCT_STATE_CHANGED` cho downstream.
+    - Search chỉ đồng bộ metadata seller (`seller_name`, `seller_status`), không tự đổi `product_status` từ Seller events.
 
 ## 5. UML state diagram
 

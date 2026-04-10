@@ -149,7 +149,7 @@ sequenceDiagram
 4. Insert outbox `SELLER_STATUS_CHANGED`.
 5. Commit.
 6. Soft refresh cache status/profile.
-7. Downstream xử lý visibility qua Kafka.
+7. Downstream xử lý visibility qua Kafka: Product quyết định hide/show listing trong write-model và phát `PRODUCT_STATE_CHANGED`; Search chỉ sync metadata seller.
 
 ## 6. Workflow quan trọng: Commission calculation (async)
 

@@ -13,6 +13,8 @@
 
 Tài liệu này chuẩn hoá contract sự kiện của Seller Service cho toàn bộ downstream critical services.
 
+> **Identity contract (bắt buộc):** `seller_id` là định danh do Seller domain sở hữu và được downstream xử lý như opaque string. Các service không được tự convert format `seller_id`.
+
 ## 1. Bản đồ Kafka topics
 
 ## 1.1 Topics Seller Service produce
@@ -80,6 +82,7 @@ Tài liệu này chuẩn hoá contract sự kiện của Seller Service cho toà
 |---|---|---|
 | `seller_id` | Có | Seller bị cập nhật profile. |
 | `store_name` | Có | Tên shop mới. |
+| `seller_name` | Không | Alias tương thích ngược cho downstream cũ; nếu có thì phải cùng giá trị với `store_name`. |
 | `logo_url` | Không | Logo mới. |
 | `country_code` | Không | Mã quốc gia hoạt động. |
 | `city_code` | Không | Mã khu vực hoạt động. |
@@ -98,6 +101,7 @@ Tài liệu này chuẩn hoá contract sự kiện của Seller Service cho toà
   "payload": {
     "seller_id": "s-9001",
     "store_name": "Apple Flagship Store",
+    "seller_name": "Apple Flagship Store",
     "logo_url": "https://cdn.example.com/s9001-logo.png",
     "country_code": "VN",
     "city_code": "HCM",
@@ -211,7 +215,9 @@ Tài liệu này chuẩn hoá contract sự kiện của Seller Service cho toà
 2. `ORDER_COMPLETED`: cập nhật performance fulfillment metrics.
 3. `ORDER_CANCELLED`/`ORDER_REFUNDED`: điều chỉnh ledger và payout reserve.
 4. `PAYOUT_SUCCESS`/`PAYOUT_FAILED`: cập nhật trạng thái payout.
-5. Review metrics events: cập nhật rating và response-related scores.
+5. Review events từ `t.review.events`:
+  - `REVIEW_APPROVED`, `REVIEW_HIDDEN`: cập nhật rating inputs theo `seller_id`, `rating`, `product_id`.
+  - `SELLER_REPLY_CREATED`: cập nhật response-related score theo `seller_id`.
 
 ## 5. Quy tắc ordering, idempotency, retry
 

@@ -17,7 +17,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cho Seller Servi
 
 1. Seller Service sở hữu seller lifecycle: onboarding, verification, profile, config, commission, payout.
 2. User Service sở hữu account profile/KYC cấp user; Seller chỉ consume kết quả cần thiết.
-3. Product và Search consume seller profile/status để quyết định visibility/discoverability.
+3. Product consume seller profile/status để quyết định visibility listing ở write-model; Search consume cùng luồng để đồng bộ discoverability metadata (`seller_name`, `seller_status`) và không tự đổi `product_status`.
 4. Payment Service sở hữu payment execution; Seller Service sở hữu payout business state.
 
 ## 2. Eventing và Ordering

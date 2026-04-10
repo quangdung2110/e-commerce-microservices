@@ -29,5 +29,5 @@ Tài liệu tổng hợp cho Seller Service đã được tách thành các modu
 
 1. Upstream consume: Order, Review, Payment, Inventory events.
 2. Downstream produce: Product, Search, Order, Payment, Analytics consume `t.seller.events`.
-3. Luồng visibility listing phụ thuộc chặt chẽ vào contract `SELLER_STATUS_CHANGED`.
+3. Luồng visibility listing đi qua Product write-model: Product consume `SELLER_STATUS_CHANGED` để quyết định trạng thái listing và phát `PRODUCT_STATE_CHANGED`; Search chỉ phản chiếu metadata seller.
 
