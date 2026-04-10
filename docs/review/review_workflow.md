@@ -24,53 +24,84 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Workflow chuẩn:**
 1. **Validate request:** `user_id`, `order_id`, `product_id`, `sku_id`, `rating`, nội dung/media theo policy.
-2. **Lock quyền review (DB atomic):** chạy câu `UPDATE ... WHERE status IN ('PENDING','REJECTED_RETRY_PENDING') AND attempt_count < 2 RETURNING attempt_count` trên `review_eligibilities`.
-3. **Nếu lock thất bại:** trả lỗi nghiệp vụ (đã review hoặc quá số lần thử).
-4. **Trong cùng transaction:**
+2. **Normalize identity:** chuẩn hóa `user_id` về canonical format `u-<digits>`.
+3. **Lock quyền review (DB atomic):** chạy `UPDATE ... WHERE status IN ('PENDING','REJECTED_RETRY_PENDING') AND attempt_count < 2 AND expires_at > NOW() RETURNING ...` trên `review_eligibilities`.
+4. **Nếu lock thất bại:**
+   - `expires_at <= NOW()` -> trả `410 GONE`.
+   - vượt số lần thử hoặc đã review -> trả `409 CONFLICT`.
+5. **Resolve seller_id:**
+   - ưu tiên lấy từ `review_eligibilities.seller_id`.
+   - nếu null (legacy), gọi Product snapshot nội bộ để lấy seller_id rồi backfill eligibility.
+6. **Trong cùng transaction:**
    - Insert `reviews` với `status='PENDING_MODERATION'`.
    - Insert `review_media` nếu có.
    - Insert outbox `REVIEW_CREATED` (kèm envelope fields version/sequence).
-5. Commit transaction.
-6. Increment cache version `review:prod_ver:{product_id}` để invalidation page 1.
-7. Trả HTTP 201.
-8. Debezium CDC publish event `REVIEW_CREATED` lên `t.review.events`.
+7. Commit transaction.
+8. Trả HTTP 201.
+9. Debezium CDC publish event `REVIEW_CREATED` lên `t.review.events`.
 
-## 3. API: Sửa Review (Trước Khi Duyệt)
+**Lưu ý nhất quán:** Không invalidate cache page public ở bước tạo mới vì review còn `PENDING_MODERATION`, chưa tham gia danh sách hiển thị công khai.
+
+## 3. API: Sửa Review (Trước Khi Duyệt Hoặc Theo Retry Policy)
 
 **Endpoint:** `PATCH /api/v1/reviews/{review_id}`
 
-**Rule:** Chỉ cho sửa khi review chưa duyệt (`PENDING_MODERATION`) hoặc theo policy cho phép resubmit sau reject.
+**Rule state:**
+1. Cho phép sửa khi `reviews.status='PENDING_MODERATION'`.
+2. Cho phép sửa để resubmit khi `reviews.status='REJECTED'` và eligibility tương ứng đang `REJECTED_RETRY_PENDING`.
+3. Không cho sửa khi `APPROVED` hoặc `HIDDEN_BY_REPORT`.
 
 **Workflow chuẩn:**
-1. Validate ownership theo `user_id`.
-2. `SELECT ... FOR UPDATE` review cần sửa.
-3. Kiểm tra state cho phép chỉnh sửa.
-4. Update `content/media`, tăng `state_version`.
-5. Insert outbox event phù hợp (nếu policy cần phát event update).
-6. Commit và refresh cache version theo `product_id`.
+1. Validate ownership theo `user_id` canonical.
+2. `SELECT review + eligibility ... FOR UPDATE`.
+3. Kiểm tra state theo rule ở trên.
+4. Update `content/media`.
+5. Reset moderation sub-states:
+   - `text_moderation_status='PENDING'`
+   - `media_moderation_status='PENDING'`
+   - giữ nguyên `attempt_count` (không tăng ở PATCH)
+6. Set `reviews.status='PENDING_MODERATION'` nếu trước đó là `REJECTED`.
+7. Insert outbox `REVIEW_UPDATED`.
+8. Commit.
+
+**Lưu ý:** Không invalidate cache page public vì review chưa/không ở trạng thái hiển thị ngay sau PATCH.
 
 ## 4. API: Like/Unlike Review
 
 **Endpoint:** `POST /api/v1/reviews/{review_id}/helpful`
 
+**Guard bắt buộc trước khi mutate:**
+1. Review phải ở trạng thái `APPROVED`.
+2. Chặn Like/Unlike khi `NOW() - review.created_at > 6 tháng`.
+
 **Workflow chuẩn:**
 1. API gọi Lua script atomically:
    - Like: `SETBIT=1` nếu trước đó là 0 thì `INCR review:{review_id}:delta` + `SADD review:dirty_delta_keys`.
    - Unlike: `SETBIT=0` nếu trước đó là 1 thì `DECR delta` + `SADD dirty`.
-2. API trả kết quả ngay (không block DB write).
+2. API trả kết quả ngay (không block DB write), gồm:
+   - `helpful_count_realtime` (DB + delta hiện tại)
+   - `helpful_count_persisted` (giá trị DB đã commit gần nhất)
 3. Scheduled worker mỗi 30s sync delta xuống DB và cập nhật cache.
 
 ## 5. API: Report Review
 
 **Endpoint:** `POST /api/v1/reviews/{review_id}/reports`
 
+**Policy report chuẩn hóa:**
+1. `auto_hide_threshold = 5` unique reporters.
+2. `critical_reason_threshold = 3` unique reporters cho nhóm lý do `ILLEGAL_CONTENT`, `DOXXING`, `HATE_SPEECH`.
+3. Chỉ phát `REVIEW_HIDDEN` khi có transition thật từ trạng thái hiện tại sang `HIDDEN_BY_REPORT`.
+4. Các ngưỡng lấy từ config runtime của Review Service; giá trị trên là default fallback khi config store lỗi.
+
 **Workflow chuẩn:**
-1. Validate reporter role (`USER` hoặc `SELLER`).
-2. Insert `review_reports` với unique constraints chống report trùng.
-3. Tăng `reviews.report_count` trong transaction.
-4. Nếu vượt ngưỡng policy, đổi `reviews.status='HIDDEN_BY_REPORT'`.
-5. Insert outbox `REVIEW_HIDDEN` khi state thực sự đổi.
-6. Commit và trigger aggregate recalculation qua event pipeline.
+1. Validate reporter role (`USER` hoặc `SELLER`) và quyền nghiệp vụ.
+2. Trong **một transaction duy nhất**:
+   - Insert `review_reports` (unique index chống duplicate).
+   - Tăng `reviews.report_count`.
+   - Tính unique reporters + policy threshold.
+   - Nếu đạt ngưỡng policy và review đang `APPROVED`, đổi `reviews.status='HIDDEN_BY_REPORT'`.
+   - Nếu có transition status, insert outbox `REVIEW_HIDDEN`.
+3. Commit và trigger aggregate recalculation qua event pipeline.
 
 ## 6. API: Seller Reply
 
@@ -78,11 +109,13 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Workflow chuẩn:**
 1. Validate seller ownership của product.
-2. Upsert `review_seller_replies` (1 review chỉ 1 reply active).
-3. Update `reviews.is_seller_replied=true`.
-4. Insert outbox `SELLER_REPLY_CREATED`.
-5. Commit.
-6. `INCR review:prod_ver:{product_id}` để refresh page cache hiển thị reply.
+2. `SELECT review ... FOR UPDATE`, chỉ cho reply khi `reviews.status='APPROVED'`.
+3. Upsert `review_seller_replies` (1 review chỉ 1 reply active) với optimistic guard theo `seller_id`.
+4. Update `reviews.is_seller_replied=true`.
+5. Nếu là insert mới -> insert outbox `SELLER_REPLY_CREATED` (bắt buộc có `content`).
+6. Nếu là update reply đã tồn tại -> không phát event notify mới để tránh spam; chỉ invalidate cache.
+7. Commit.
+8. `INCR review:prod_ver:{product_id}` để refresh page cache hiển thị reply.
 
 ## 7. API Đọc: Aggregate và Danh Sách Review
 
@@ -92,8 +125,8 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Workflow:**
 1. Read `review:prod:agg:{product_id}` từ Redis.
-2. Cache miss -> query `product_rating_aggregates`, rồi SET cache với TTL + jitter.
-3. Nếu DB quá tải, có thể trả stale cache tối đa 30s (stale-while-revalidate).
+2. Cache miss -> query `product_rating_aggregates`, rồi SET cache với TTL + deterministic jitter.
+3. Nếu DB quá tải, bật stale-while-revalidate tối đa 30s.
 
 ### 7.2. List Reviews
 
@@ -113,9 +146,10 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Trình tự:**
 1. Consumer validate event.
-2. Insert eligibility từng item với `ON CONFLICT DO NOTHING`.
-3. Commit rồi ACK.
-4. User có thể submit review cho item hợp lệ trong cửa sổ `expires_at`.
+2. Normalize `user_id`.
+3. Upsert eligibility từng item.
+4. Nếu `expires_at <= NOW()` tại lúc xử lý, set `EXPIRED` ngay để tránh eligibility rác.
+5. Commit rồi ACK.
 
 ## 9. Event Workflow: AI Moderation -> State Transition
 
@@ -126,10 +160,15 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 **Trình tự:**
 1. Idempotency guard theo `event_id`.
 2. Lock review row.
-3. Apply transition `PENDING_MODERATION -> APPROVED/REJECTED`.
-4. Insert outbox `REVIEW_APPROVED` hoặc `REVIEW_REJECTED`.
-5. Debezium publish event.
-6. Aggregator worker cập nhật metrics và phát `REVIEW_METRICS_UPDATED`.
+3. Guard out-of-order theo `moderation_sequence_id` trên từng stream TEXT/MEDIA.
+4. Cập nhật sub-state moderation (`SAFE`/`UNSAFE`).
+5. Finalize:
+   - Nếu có `UNSAFE` ở bất kỳ stream -> `REJECTED`.
+   - Nếu cả hai stream đều `SAFE` -> `APPROVED`.
+   - Nếu chưa đủ điều kiện finalize -> giữ `PENDING_MODERATION`.
+6. Khi finalize mới insert outbox `REVIEW_APPROVED` hoặc `REVIEW_REJECTED`.
+7. Debezium publish event.
+8. Aggregator worker cập nhật metrics và phát `REVIEW_METRICS_UPDATED`.
 
 ## 10. Event Workflow: REVIEW_METRICS_UPDATED -> Search/Notification
 
@@ -137,8 +176,14 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Trình tự liên service:**
 1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document SKU theo `product_id`.
-2. Guard theo `event_sequence_id` (ưu tiên), fallback `updated_at` chỉ để tương thích ngược.
-3. Notification service có thể consume các event review lifecycle (`REVIEW_APPROVED`, `REVIEW_REJECTED`, `SELLER_REPLY_CREATED`) để gửi thông báo.
+2. Guard **duy nhất** theo `event_sequence_id`.
+3. Nếu thiếu `event_sequence_id`, phải chuyển DLQ (không fallback timestamp).
+4. Notification service consume các event review lifecycle:
+   - `REVIEW_CREATED`
+   - `REVIEW_APPROVED`
+   - `REVIEW_REJECTED`
+   - `REVIEW_HIDDEN`
+   - `SELLER_REPLY_CREATED`
 
 ## 11. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
 
@@ -147,10 +192,11 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 **Xử lý:** [Privacy Anonymization Consumer](review_workers.md#8-privacy-anonymization-consumer)
 
 **Trình tự:**
-1. Consumer nhận `user_id`, `deleted_at`.
-2. Update `reviews.user_name='Người dùng đã ẩn danh'`, `is_author_anonymized=true`, `anonymized_at`.
-3. Invalidate cache page theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
-4. Broadcast L1 invalidation.
+1. Consumer nhận `user_id`, `deleted_at`, `retention_window_expires_at`, `state_version`.
+2. Normalize `user_id`.
+3. Update `reviews.user_name='Người dùng đã ẩn danh'`, `is_author_anonymized=true`, `anonymized_at`.
+4. Invalidate cache page theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
+5. Broadcast L1 invalidation.
 
 ## 12. Ma Trận Nhất Quán (Consistency Matrix)
 
@@ -166,6 +212,7 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 1. **Duplicate event:** idempotency table chặn xử lý lặp.
 2. **Out-of-order event:** guard bằng `event_sequence_id`/`state_version` trước khi apply.
-3. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
-4. **Crash giữa chừng helpful sync:** phục hồi từ `review:processing_deltas`.
-5. **Poison message:** đẩy DLQ sau ngưỡng retry, không block toàn bộ partition.
+3. **Missing required sequencing field:** chuyển `t.review.dlq`, không xử lý mù.
+4. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
+5. **Crash giữa chừng helpful sync:** phục hồi từ `review:processing_deltas`.
+6. **Poison message:** đẩy DLQ sau ngưỡng retry, không block toàn bộ partition.
