@@ -65,7 +65,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `version`: BIGINT DEFAULT 0 (Dùng cho Optimistic Locking, tăng tự động khi update).
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
-    *   **Partitioning**: Yêu cầu **Hash Partitioning** theo `product_id` với **64 partitions** cố định để chia nhỏ tải Write IOPS khổng lồ, ngăn chặn Row Lock toàn cục.
+    *   **Nguyên tắc đơn giản hóa schema**: Giai đoạn hiện tại giữ `products` là bảng chuẩn (không partition) để giảm độ phức tạp vận hành, migration key/index và rủi ro lệch ràng buộc. Chỉ mở rộng bằng index + retention khi có số liệu tải thực tế chứng minh cần thiết.
 
 *   `product_skus` (Bảng Biến thể vật lý - Stock Keeping Unit)
     *   `sku_id`: VARCHAR(255) PRIMARY KEY.
@@ -84,7 +84,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 
 > **Lưu ý quan trọng về Versioning (Optimistic Locking & Search Event Sourcing):**
 > Bảng `product_skus` KHÔNG ĐƯỢC PHÉP có cột `version` riêng. Theo thiết kế Aggregate Root, mọi thao tác tạo, sửa, xóa bất kỳ SKU nào cũng BẮT BUỘC phải làm tăng cột `version` của bảng cha `products`. Chuỗi `version` đồng bộ duy nhất này sẽ được dùng làm căn cứ thứ tự tuần tự (Optimistic Concurrency Control) cho Search Service, nhằm triệt tiêu hoàn toàn sự cố lỗi từ chối Event (Out-of-Order Event Reject) do Elasticsearch version clash.
-    *   **Partitioning / Data Routing**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
+    *   **Quy tắc định danh SKU**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
 
 *   `product_status_history` (Bảng Ghi nhận Lịch sử Đổi trạng thái)
     *   `history_id`: VARCHAR(255) PRIMARY KEY.
@@ -133,11 +133,11 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
 
 *   `product_outbox_events` (Bảng Ghi nhận Event Phát đi cho Outbox Pattern kết hợp Debezium)
     *   `event_id`: UUID PRIMARY KEY.
-    *   `event_type`: VARCHAR(100) (VD: ProductCreatedEvent, ProductStateChangedEvent, ProductPriceUpdatedEvent). Xem danh sách đầy đủ tại [Product Events](product_events.md).
+    *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_PRICE_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
     *   `aggregate_type`: VARCHAR(50) (VD: Product, ProductSku).
-    *   `aggregate_id`: VARCHAR(255).
-    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect). Ràng buộc `NOT NULL` là lá chắn sống còn bảo vệ CQRS: Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
-    *   `payload`: JSONB.
+    *   `aggregate_id`: VARCHAR(255) (Bắt buộc theo `aggregate_type`: Product -> `product_id`, ProductSku -> `sku_id`, Category -> `category_id`).
+    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect. Ràng buộc `NOT NULL` là lá chắn sống còn bảo vệ CQRS: Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
+    *   `payload`: JSONB (Payload bắt buộc kèm `schema_version` ở top-level message envelope).
     *   `created_at`: TIMESTAMPTZ.
 
 ## 2. Chiến Lược Đánh Index (Indexing Strategy)
@@ -160,9 +160,11 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
     *   Dữ liệu ghi vào bảng `products` (kể cả thuộc tính động) phải được validate chống chéo với nhóm cấu hình (`categories`, `category_attributes`). Tham khảo [Workflow Ghi](product_workflow.md) để biết cơ chế ứng dụng Redis Cache cho khâu kiểm tra này.
 2.  **Cơ chế Khoá (Locking Strategy):** 
     *   **Lock-Free với Khoá lạc quan (Optimistic Locking):** Bảng `products` sử dụng field `version` để bảo vệ **tính toàn vẹn (Row-level integrity)** cho Aggregate Root. Bất kể thay đổi ở `products` hay `product_skus`, `version` của bảng cha `products` đều phải được tăng lên. Khác với Distributed Lock chậm chạp, Optimistic Lock nhẹ và tăng throughput. Mọi luồng API sẽ tự check `version` và Reject Transaction bẩn. Tránh việc sử dụng 2 chuỗi version độc lập gây xung đột ở Search Service.
+    *   **Quy tắc chống xung đột ORM/SQL:** Trong một transaction chỉ dùng một cơ chế tăng version. Nếu transaction đi qua FSM/JPA (`@Version`) thì không được chạy native `UPDATE ... version = version + 1`. Nếu transaction thuần SQL batch, không gọi FSM/JPA, thì tăng version bằng native SQL đúng 1 lần.
     *   **Khoá bi quan (Pessimistic Locking) cho Strict Consistency:** Riêng đối với thao tác có tính ganh đua cao và yêu cầu nhất quán lượng tồn kho tuyệt đối (Workflow xử lý `INVENTORY_QUANTITY_CHANGED`), hệ thống áp dụng lock theo thứ tự chuẩn **Product -> SKU** (`products FOR NO KEY UPDATE` trước, `product_skus FOR UPDATE` sau). Điều này chặn vòng deadlock AB-BA và triệt tiêu Stale Read tại DB thay vì dùng Redis Redlock ở App.
 3.  **Outbox Phát Sự Kiện:**
     *   Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events`. Debezium CDC sẽ đọc WAL và đẩy record sang Kafka. Không dùng polling job dựa trên cột trạng thái `PENDING`. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
 4.  **Markdown Price Integrity:**
-    *   `promotional_price` trên `product_skus` chỉ được cập nhật bởi [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker), KHÔNG phải bởi API trực tiếp từ Seller. Seller chỉ có quyền sửa `original_price`.
-    *   Khi `original_price` thay đổi (Seller sửa giá), nếu SKU đang có `product_markdown_applied` active → cần re-calculate `promotional_price` tương ứng.
+    *   Seller chỉ có quyền sửa `original_price`; API Seller không được tự ý set giá markdown thủ công.
+    *   `promotional_price` được cập nhật bởi Pricing Domain Module của Product Service, có thể chạy từ hai đường hợp lệ: (1) Markdown Worker async, (2) nhánh đồng bộ trong API update khi Seller đổi `original_price` và SKU đang có markdown active.
+    *   Khi `original_price` thay đổi (Seller sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction và cập nhật lại `original_price_snapshot` để chống drift.

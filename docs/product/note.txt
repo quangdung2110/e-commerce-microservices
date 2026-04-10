@@ -18,26 +18,64 @@ của Seller chạm đúng vào các Product ID đó theo thứ tự ngược l�
 Để giải quyết vấn đề này, chúng ta cần đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự. 
 Trong trường hợp này, chúng ta có thể sắp xếp các Product ID theo thứ tự tăng dần trước khi khóa, để đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự.
 
-5. Ở phần xử lý Markdown Event đến từ Promotion Service, chúng ta phải query ra những product SKU có trạng thái active thỏa mãn với điều kiện khuyến mãi đang áp dụng. Sau đó gom nhóm lại theo
-product_id rồi tính toán tiền giảm giá trên RAM của tầng application (không query DB) của từng SKU trong nhóm đó. Chúng ta cũng sẽ không mở transaction cho toàn bộ nhóm, mà mỗi nhóm product_id, 
-ta mở transaction riêng lẽ, thực hiện batch processing bao gồm việc: cập nhật giá tiền, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi, sau đó mới commit transaction nhả cho product_id
-tiếp theo. Sau mỗi commit cho một product_id, chúng ta sử dụng Redis Pipeline để invalidate cache, tất nhiên cũng phải xử lý batching ở đây. Tuy nhiên, khi chúng ta thiết kế như vậy, 
-cũng phải lưu ý một trường hợp như sau:
-- Worker nhận được event xử lý giảm giá cho 1000 product. Nó đã xử lý xong 300 product đầu tiên thì server bị treo.
-Bởi vì chúng ta chỉ mở transaction riêng lẻ product_id, nên 300 product đã được cập nhật giá mới, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi rồi.
-Vấn đề thực sự là khi server bị treo như vậy, Kafka xem Event đó như là chưa được xử lý, nó sẽ tự động reprocess lại từ đầu, dẫn đến việc 300 product có thể sinh ra thêm record trong bảng truy vết 
-cũng như outbox event. Tuy nhiên, việc này cũng không bị ảnh hưởng quá nhiều trong thiết kế hiện tại. Nếu muốn tối ưu hơn, chúng ta có thể thêm bảng đánh dấu (Job Checkpoint):
-- Product Service tạo một bảng markdown_job_tracking. Chạy xong product_id nào, cập nhật vào bảng đó: last_processed_product_id = 300. Khi Worker sập và nhận lại Event, 
-nó query bảng này: "À, lần trước anh em làm đến số 300 rồi, tao sẽ làm tiếp từ 301"
+5. Thiết kế xử lý Markdown Event đến từ Promotion Service (Slow Sync):
+- Query ra những product SKU có trạng thái active thỏa mãn với điều kiện khuyến mãi đang áp dụng theo từng type (CATEGORY và PRODUCT)
+- Sau đó gom nhóm lại theo product_id rồi tính toán tiền giảm giá trên RAM của tầng application (không query DB) của từng SKU trong nhóm đó. 
+- Chúng ta cũng sẽ không mở transaction cho toàn bộ nhóm, mà mỗi nhóm product_id, ta mở transaction riêng lẽ, thực hiện batch processing bao gồm việc: cập nhật giá tiền, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi,
+sau đó mới commit transaction nhả cho product_id tiếp theo. 
+- Sau mỗi commit cho một product_id, chúng ta sử dụng Redis Pipeline để invalidate cache, tất nhiên cũng phải xử lý batching ở đây. Tuy nhiên, khi chúng ta thiết kế như vậy, cũng phải lưu ý một trường hợp như sau:
+    Worker nhận được event xử lý giảm giá cho 1000 product. Nó đã xử lý xong 300 product đầu tiên thì server bị treo.
+    Bởi vì chúng ta chỉ mở transaction riêng lẻ product_id, nên 300 product đã được cập nhật giá mới, ghi outbox event, ghi bảng truy vết áp mã khuyến mãi rồi.
+    Vấn đề thực sự là khi server bị treo như vậy, Kafka xem Event đó như là chưa được xử lý, nó sẽ tự động reprocess lại từ đầu, dẫn đến việc 300 product có thể sinh ra thêm record trong bảng truy vết 
+    cũng như outbox event. Tuy nhiên, việc này cũng không bị ảnh hưởng quá nhiều trong thiết kế hiện tại. Nếu muốn tối ưu hơn, chúng ta có thể thêm bảng đánh dấu (Job Checkpoint):
+        Product Service tạo một bảng markdown_job_tracking. Chạy xong product_id nào, cập nhật vào bảng đó: last_processed_product_id = 300. Khi Worker sập và nhận lại Event, 
+        nó query bảng này: "À, lần trước anh em làm đến số 300 rồi, tao sẽ làm tiếp từ 301"
 
-6. Ở phàn xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Serrvice, chúng ta cũng thực hiện việc lock theo thứ tự tương tự như trên để tránh deadlock (product -> sku). Cơ chế mà chúng ta quan
-tâm nhất ở đây chính là invalidate cache sao cho tối ưu nhất có thể. Ở đây, sau khi commit database thành công, thông tin cập nhật này sẽ được bắn vào trong một Queue In-memory trên RAM của 
-tầng Application, sau đó chúng ta sẽ có một background worker chuyên đọc Queue này để thực hiện việc invalidate cache. Tuy nhiên khi sử dụng Queue In-memory, chúng ta sẽ phải đối mặt với một số
-vấn đề như sau:
+6. Thiết kế xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Service (Fast Sync):
+- Ở từng transaction, thực hiện lock theo thứ tự product_id (FOR KEY NO UPDATE) rồi tới sku_id (FOR UPDATE) để tránh deadlock với các transaction khác
+-  Sau khi commit database thành công, thông tin cập nhật này sẽ được bắn vào trong một Queue In-memory trên RAM của tầng Application, sau đó chúng ta sẽ có một background worker chuyên đọc Queue này để thực hiện việc invalidate cache. 
+- Tuy nhiên khi sử dụng Queue In-memory, chúng ta sẽ phải đối mặt với một số vấn đề như sau:
 1. Nếu có quá nhiều cập nhật về sản phẩm đến cùng một lúc, Queue có thể bị tràn, dẫn đến việc mất dữ liệu cập nhật và cache không được invalidate đúng cách.
 2. Nếu server bị treo hoặc khởi động lại, tất cả dữ liệu trong Queue sẽ bị mất, dẫn đến việc cache không được invalidate và người dùng có thể nhìn thấy dữ liệu cũ.
-Để giải quyết vấn đề 1, ta có thể giới hạn kích thước của Queue và sử dụng cơ chế backpressure để điều chỉnh tốc độ cập nhật sản phẩm. Khi Queue đạt đến giới hạn, 
+- Để giải quyết vấn đề 1, ta có thể giới hạn kích thước của Queue và sử dụng cơ chế backpressure để điều chỉnh tốc độ cập nhật sản phẩm. Khi Queue đạt đến giới hạn, 
 chúng ta có thể tạm thời ngừng nhận các cập nhật mới cho đến khi có đủ dung lượng trong Queue để xử lý chúng.
-Để giải quyết vấn đề 2, chúng ta có thể cân nhắc việc sử dụng một hệ thống lưu trữ bền vững hơn cho Queue, chẳng hạn như Redis Stream hoặc Kafka, để đảm bảo rằng dữ liệu cập nhật không bị mất khi server bị treo hoặc khởi động lại. 
+- Để giải quyết vấn đề 2, chúng ta có thể cân nhắc việc sử dụng một hệ thống lưu trữ bền vững hơn cho Queue, chẳng hạn như Redis Stream hoặc Kafka, để đảm bảo rằng dữ liệu cập nhật không bị mất khi server bị treo hoặc khởi động lại. 
 Tuy nhiên, việc này cũng sẽ làm tăng độ phức tạp của hệ thống và có thể ảnh hưởng đến hiệu suất, vì vậy chúng ta cần cân nhắc kỹ lưỡng trước khi quyết định sử dụng giải pháp này. Nếu vẫn muốn sử dụng
 Queue In-memory, chúng ta sẽ ngừng nhận các event mới trên worker khi server bị treo, nhưng phải đảm bảo các thread đã đẩy toàn bộ các task còn tồn đọng trong Queue vào Redis bằng Pipeline trước khi server hoàn toàn sập. 
+
+7. Quyết định chốt sau khi review tài liệu Product Service:
+- Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` và `product:master:{product_id}` được làm mới qua Invalidation Consumer khi self-consume `PRODUCT_PRICE_UPDATED`.
+- Markdown Worker chỉ còn quản lý key phụ `product:markdown:active:{sku_id}` (SET/DEL) để phản ánh trạng thái rule markdown.
+- Bổ sung bắt buộc `PRODUCT_SKU_STATUS_CHANGED` vào danh sách subscribe của `product-invalidation-group` để self-healing cache khi Inventory Worker crash trước khi flush xong queue in-memory.
+- Để giảm write amplification, Invalidation Consumer phải dedupe theo `product_id` trong từng poll-batch, chỉ refresh `product:master:{product_id}` một lần; có thể debounce ngắn 50-100ms cho các batch liền kề.
+- Trước khi overwrite `product:master:{product_id}`, bắt buộc so sánh guard `(version, updated_at)` giữa event và cache; event bằng/cũ hơn phải skip để chặn stale/equal write.
+
+8. Thiết kế tối ưu cho luồng read 1 SKU thông qua gRPC:
+- Tầng 1: Probabilistic Early Expiration để tránh Cache Stampede
+    - Ngoài việc đọc dữ liệu từ Redis, chúng ta sẽ thêm một bước kiểm tra xác suất để quyết định request này có nên invalidate cache này hay không
+    - Nếu trúng xác suất, request này sẽ làm 2 việc song song:
+        1. Trả về dữ liệu cũ cho người dùng (nếu có) để đảm bảo độ trễ thấp
+        2. Âm thầm gửi một luồng ngầm để query thẳng vào DB để lấy dữ liệu mới nhật, sau đó cập nhật lại cache
+    Điều này giúp cache luôn được làm mới một cách tự nhiên mà không cần phải chờ đến khi cache hết hạn, đồng thời tránh được tình trạng Cache Stampede khi có quá nhiều request cùng đến một lúc
+Tuy nhiên cũng cần lưu ý rằng có khả năng xảy ra trường hợp có nhiều request cùng trúng xác suất và đồng loạt query thẳng vào DB, tuy nhiên xác suất này là rất thấp và chúng ta có thể điều chỉnh nó sao cho phù hợp với lưu lượng truy cập của hệ thống
+Ví dụ: nếu 10000 request đến trong một khoảng thời gian ngắn và xác xuất trúng là rất nhỏ thì chỉ có một vài request trúng và query thẳng vào DB
+Để hệ thống đạt độ hoàn hảo, chúng ta cũng có thể tận dụng luôn cơ chế In-process SingleFlight bọc quanh luồng chạy ngầm đó để đảm bảo rằng nếu có nhiều request cùng trúng xác xuất, chỉ có một request được phép query thẳng vào DB
+
+- Tầng 2: Fallback và Cross-Pod SingleFlight
+    - PER rất tốt, nhưng vô tác dụng nếu cache ban đầu bị rỗng. 
+    - Nếu sử dụng SingleFlight ở cấp độ In-process, hệ thống có nhiều pod sẽ không tận dụng được lợi ích này
+    - Giải pháp là sử dụng Redis làm Distributed Lock để chỉ có 1 pod tranh được khóa để query DB và cập nhật cache, các pod còn lại biết điều đó và tự giác ngủ (sleep khoảng 50ms) và retry lại sau
+
+Điều phải lưu ý ở thiết kế trên:
+- Tầng 1 chỉ chạm đến khi Redis có key - cache hit, tầng 2 chỉ có thể chạm được khi Redis không có key
+
+
+9. Thiết kế tối ưu cho luồng read batch SKU thông qua gRPC:
+- Để giải quyết bài toán N+1 query, luồng Batch sẽ gom tất cả lại
+    - Khi đọc: dùng lệnh MGET để lấy nhiều SKU một lúc
+    - Khi ghi: dùng Redis Pipeline để nhồi tất cả lệnh JSON.SET vào một lần duy nhất
+- Đây là điểm khác biệt so với luồng read 1 SKU
+    - Với luồng 1 SKU, chúng ta sử dụng khóa phân tán để gom nhiều request trên các pod lại thành 1
+    - Với luồng Batch SKU, chúng ta không thể sử dụng như vậy vì mỗi giỏ hàng sẽ có một tập SKU khác nhau, nếu sử dụng SingleFlight ở đây, chúng ta sẽ khó có thể tìm thấy nhiều request giống nhau để gom lại 
+    - Thay vào đó, chúng ta sẽ xé nhỏ các mảng SKU đó ra và sử dụng In-process SingleFlight chọc Database riêng lẽ cho từng SKU bị miss
+    - Hệ thống sẽ chỉ gọi DB 1 lần cho mỗi SKU bị miss, sau đó chia sẻ kết quả đó cho tất cả các request khác cũng bị miss SKU đó trong cùng một khoảng thời gian ngắn (ví dụ 50ms) để tránh việc nhiều request cùng query thẳng vào DB cho cùng một SKU bị miss

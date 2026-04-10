@@ -32,11 +32,13 @@ Khác với Cart (Redis-First), Product Service mang tư tưởng **PostgreSQL-F
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Redis] - Idempotency Check (Chống chập):**
    - API lấy `Idempotency-Key` từ Header.
+    - Tính thêm `request_hash` từ payload chuẩn hoá (canonical JSON) và lưu kèm trong token idempotency.
    - Thử `SETNX product:idempotency:{key}` với TTL ngắn (VD: 5 phút thay vì 24h để tránh kẹt khóa khi OOM/Crash).
    - Nếu tồn tại (Duplicate):
+       - Nếu `request_hash` của request mới khác `request_hash` đã lưu trong token -> trả `409 Conflict` (không cho tái dùng key cho payload khác).
      - Kiểm tra xem Payload Response đã được lưu kèm hay chưa (trường hợp App Crash sau bước DB Commit nhưng trước khi SET XX response).
      - Nếu đã có response -> Trả về lập tức (`200 OK` hoặc theo cached status).
-     - **[Xử lý Data Race]:** Nếu key có giá trị `processing` (Transaction thứ nhất chưa flush xong DB), luồng thứ 2 **TUYỆT ĐỐI CẤM** lao xuống PostgreSQL để đọc bảng `products` bằng cột `idempotency_key`, vì ở Isolation Level là Read-Committed, query DB sẽ nhận được bảng RỖNG và lập tức sinh ra Miss/409 Conflict. Giải pháp chuẩn xác là luồng thứ hai phải BẮT BUỘC thực hiện thủ thuật `Thread.sleep(150ms)` và vào lại vòng lặp `GET Redis`. Vòng lặp Retry này kéo dài tối đa 500ms trước khi timeout, đủ để Transaction 1 kết thúc và Flush dữ liệu an toàn.
+       - **[Xử lý Data Race]:** Nếu key có giá trị `processing` (Transaction thứ nhất chưa flush xong DB), luồng thứ 2 **TUYỆT ĐỐI CẤM** lao xuống PostgreSQL để đọc bảng `products` bằng cột `idempotency_key`, vì ở Isolation Level là Read-Committed, query DB sẽ nhận được bảng RỖNG và lập tức sinh ra Miss/409 Conflict. Luồng thứ hai phải poll lại Redis theo backoff có jitter (ví dụ 50ms -> 100ms -> 150ms, jitter +-20ms), timeout tổng tối đa 1 giây.
    - **Lưu ý vòng đời (Sửa lỗi Race Condition Kinh Điển):** KHÔNG ĐƯỢC đặt tác vụ giải phóng (`DEL`) trong khối `finally { }` vì lỗi mạng sẽ lập tức xóa token, để cho request rác đi tiếp vào tạo Record trùng lặp.
    - 🔴 **CẢNH BÁO QUAN TRỌNG:** Trong khối `catch { }`, TUYỆT ĐỐI KHÔNG `DEL` khóa Idempotency một cách mù quáng (ví dụ khi gọi HTTP timeout nhưng DB đã commit). Việc giải phóng token chỉ được phép xảy ra trước vòng `BEGIN` của Database hoặc khi DB đã Rollback dứt điểm. Nếu không, seller Retry sẽ sinh ra 2 sản phẩm giống hệt nhau.
    - Khi thành công, sử dụng lệnh thay thế (`SET XX`) để cập nhật HTTP 201 Response vào token (bao gồm cả `product_id`) và kéo dài TTL lên 24h. TTL 5 phút ban đầu là chốt chặn tự hủy (Lease Time) nếu Pod bị Crash vật lý.
@@ -48,7 +50,7 @@ Khác với Cart (Redis-First), Product Service mang tư tưởng **PostgreSQL-F
    - Mở Giao Dịch (`@Transactional`).
    - `INSERT INTO products` (Trạng thái: DRAFT, lưu kèm mã `idempotency_key` từ Header request).
    - `INSERT INTO product_skus` (Thêm các SKU con, `status` = ACTIVE).
-   - `INSERT INTO product_outbox_events` (Sự kiện: [`ProductCreatedEvent`](product_events.md#31-product_created)). **[Sửa Đổi Kiến Trúc CQRS]:** Tuyệt đối KHÔNG ĐƯỢC để Promotion Service consume sự kiện `ProductCreatedEvent` này. Sản phẩm vừa tạo ở trạng thái DRAFT hoàn toàn chưa được xuất hiện hệ thống, việc gài đè luật Markdown lúc này là phi lý. Chờ khi sản phẩm lật sang trạng thái `ACTIVE` qua sự kiện FSM, hệ thống mới bắt đầu kết dính giá trị Markdown.
+   - `INSERT INTO product_outbox_events` (Sự kiện: [`PRODUCT_CREATED`](product_events.md#31-product_created)). **[Sửa Đổi Kiến Trúc CQRS]:** Tuyệt đối KHÔNG ĐƯỢC để Promotion Service consume sự kiện `PRODUCT_CREATED` này. Sản phẩm vừa tạo ở trạng thái DRAFT hoàn toàn chưa được xuất hiện hệ thống, việc gài đè luật Markdown lúc này là phi lý. Chờ khi sản phẩm lật sang trạng thái `ACTIVE` qua sự kiện FSM, hệ thống mới bắt đầu kết dính giá trị Markdown.
    - Đóng Giao Dịch (Commit).
 4. **[Redis] - Lưu lại Cache cho API khác / Idempotency:**
    - Cập nhật Payload trả về vào key `product:idempotency:{key}`.
@@ -65,21 +67,23 @@ Sửa tên, giá tiền, hình ảnh, cập nhật tồn kho tĩnh, hoặc sửa
 
 **Điểm khác biệt:**
 - Tiến trình trong Transaction:
-   - `UPDATE products SET version = version + 1...` (Sử dụng Optimistic Locking, nếu `version` không khớp do Race Condition, throw Exception và huỷ giao dịch).
-   - Tiến hành Upsert/Delete vào bảng `product_skus` (không có cột version độc lập). **[M6 Bổ sung]**: Nếu thao tác là Xóa/Delete 1 SKU khỏi Product chứa nhiều SKUs khác, BẮT BUỘC Update cờ `is_deleted = true`, cập nhật `deleted_at`, và `INSERT` thêm event [`ProductSkuDeletedEvent`](product_events.md#38-product_sku_deleted) vào Outbox trong cùng transaction.
-   - Nếu Seller sửa `original_price`, **bắt buộc phải thực hiện truy vấn đồng bộ** (Synchronous Trigger) để đánh giá bảng `product_markdown_applied` trong cùng 1 Transaction. KÈM THEO: Bắt buộc lock theo đúng thứ tự chống Deadlock: Gọi `SELECT 1 FROM products WHERE product_id = ? FOR NO KEY UPDATE`, sau đó mới gọi `SELECT original_price FROM product_skus WHERE sku_id = ? FOR UPDATE` (Pessimistic Locking). Nếu SKU đang có rule giảm giá active, hệ thống tự động tính toán lại `promotional_price`. KÈM ĐÓ: BẮT BUỘC phải ra lệnh `UPDATE product_markdown_applied SET original_price_snapshot = :new_original_price` để chống Data Drift (trôi dữ liệu giá giữa lịch sử Audit Markdown và bảng thực tế).
-   - `INSERT` event [`ProductUpdatedEvent`](product_events.md#32-product_updated) vào Outbox.
-   - Nếu giá thay đổi, `INSERT` thêm event [`ProductPriceUpdatedEvent`](product_events.md#34-product_price_updated) vào Outbox.
+    - Cập nhật Product bằng Optimistic Locking ở Aggregate Root. Quy tắc bắt buộc: trong một transaction chỉ dùng **một** cơ chế tăng `products.version`.
+    - Nếu transaction đi qua FSM/JPA entity save -> để `@Version` tự tăng, không native increment.
+    - Nếu transaction thuần SQL batch, không gọi FSM/JPA -> cho phép `UPDATE products SET version = version + 1` đúng 1 lần.
+   - Tiến hành Upsert/Delete vào bảng `product_skus` (không có cột version độc lập). **[M6 Bổ sung]**: Nếu thao tác là Xóa/Delete 1 SKU khỏi Product chứa nhiều SKUs khác, BẮT BUỘC Update cờ `is_deleted = true`, cập nhật `deleted_at`, và `INSERT` thêm event [`PRODUCT_SKU_DELETED`](product_events.md#38-product_sku_deleted) vào Outbox trong cùng transaction. **[Bổ sung Zero-SKU]**: Ngay sau đó, BẮT BUỘC query kiểm tra số lượng SKU còn lại: `SELECT COUNT(*) FROM product_skus WHERE product_id = :id AND is_deleted = false AND status = 'ACTIVE'`. Nếu bằng 0 và Sản phẩm đang `ACTIVE`, BẮT BUỘC gọi FSM kích hoạt chuyển sang `AUTO_HIDE_OUT_OF_STOCK` để tàng hình sản phẩm khỏi hiển thị.
+    - Nếu Seller sửa `original_price`, luồng API vẫn xử lý đồng bộ trong cùng transaction thông qua Pricing Domain Module dùng chung với Markdown Worker: lock theo thứ tự `products -> product_skus`, cập nhật `original_price`, cập nhật `product_markdown_applied.original_price_snapshot`, và nếu SKU đang có markdown active thì recompute `promotional_price` ngay để tránh drift.
+   - `INSERT` event [`PRODUCT_UPDATED`](product_events.md#32-product_updated) vào Outbox.
+   - Nếu giá thay đổi, `INSERT` thêm event [`PRODUCT_PRICE_UPDATED`](product_events.md#34-product_price_updated) vào Outbox với `change_source = SELLER_UPDATE` và **bắt buộc có** `event_sequence_id` (sequence đơn điệu cấp SKU).
 - **Tiến trình Invalidate Cache (Soft Invalidation - Chống Thundering Herd Strict):**
   - ⚠️ **NEVER use Hard DELETE (`DEL product:sku:{id}`)** - nó gây Cache Stampede khi hàng nghìn request đổ vào cùng lúc. 
-  - **Thay thế bằng SET (Overwrite):** `SET product:sku:{sku_id} {fresh_json_value}` để đảm bảo luôn có dữ liệu, ngay cả khi Elasticsearch tạm sập.
+   - **Thay thế bằng Overwrite có guard:** `JSON.SET product:sku:{sku_id} ...` để đảm bảo luôn có dữ liệu point-read.
   - **Fallback Safety:** Nếu Redis GET return null (cache bị evict), Application BUỘC phải:  
     1. Gọi DB SELECT (không được gọi ES vì có thể stale)
     2. Transform dữ liệu ở RAM
-    3. SET lại Redis ngay lập tức với TTL 5 phút
+      3. `JSON.SET` lại Redis ngay lập tức với TTL 1 tiếng
   - **Không được phép Fallback → ES** vì dữ liệu đó lệch (Event có thể delay vài giây). Chỉ fallback → PostgreSQL (Source of Truth).
    - Thay vì gọi API xóa (`DEL`), [Backend] sẽ gửi tin nhắn đến **Invalidation Worker** để làm mới cache ngầm (Out-of-band).
-   - [Trường hợp In-band] Tuyệt đối không dùng `DEL`. Worker/API sẽ chủ động trích xuất kết quả sau cập nhật, nén Snappy/Zstd và **ghi đè (`SET` / Overwrite)** lại khoá Redis bằng dữ liệu mới. Điều này duy trì trạng thái "Always-Warm" (Luôn Nóng) cho Cache, chặn nguy cơ Cache Stampede.
+    - [Trường hợp In-band] Tuyệt đối không dùng `DEL`. Worker/API sẽ chủ động trích xuất kết quả sau cập nhật và **ghi đè (`JSON.SET` / Overwrite)** lại khoá Redis bằng dữ liệu mới. Điều này duy trì trạng thái "Always-Warm" (Luôn Nóng) cho Cache, chặn nguy cơ Cache Stampede.
 
 ## 4. API: Chuyển Trạng Thái Sản Phẩm (Gửi Duyệt / Duyệt / Khoá Bài)
 **Endpoint:** `PATCH /api/v1/products/{id}/status` hoặc `POST /api/v1/products/{id}/events`
@@ -87,26 +91,26 @@ Sửa tên, giá tiền, hình ảnh, cập nhật tồn kho tĩnh, hoặc sửa
 Được gọi bởi Seller (DRAFT -> PENDING_REVIEW) hoặc Admin/System (PENDING_REVIEW -> ACTIVE). Áp dụng Spring State Machine.
 
 **Quy trình chuẩn kiện (Workflow):**
-1. **[Khoá Song Song Lock-Free] - LUA Scripting:**
-   - Thay vì dùng Distributed Lock Redisson chiếm băng thông mạng, chuyển đổi logic kiểm tra Guard (VD: check trạng thái hiện tại phải là DRAFT) và cập nhật qua **LUA Script trên Redis**, hoặc phó thác hoàn toàn cho **Optimistic Locking cấp Database** `UPDATE products SET status = :new_status WHERE product_id = :product_id AND version = :v`. Không cần dùng khóa mềm Redisson dễ deadlock.
+1. **[Khoá Song Song] - Database Row Lock (Đường chính thức):**
+   - Đường chính thức là lock cấp Database theo lock order chuẩn hóa. Yêu cầu BẮT BUỘC: Dòng code đầu tiên nhất trong Transaction của Controller/FSM phải là: `SELECT 1 FROM products WHERE product_id = :product_id FOR NO KEY UPDATE` để lấy cọc ở bảng Cha. Cấm tuyệt đối đụng vào bảng `product_skus` trước khi Lock Cha (Chống Deadlock AB-BA với Inventory Worker).
 2. **[Database & FSM] - Kích hoạt Logic Lõi:**
    - Lấy Record `products` từ Postgres (Theo ID).
    - Truyền Command vào State Machine (`productStateMachine.sendEvent(command, product)`).
    - FSM kiểm tra điều kiện rẽ nhánh (Guard Conditions) (VD: nếu `command=APPROVE` thì state hiện tại bắt buộc phải là `PENDING_REVIEW`). Xem [State Machine Docs](product_state_machine.md).
    - Nếu thỏa mãn, chuyển sang State mới.
 3. **[Database Giao Dịch Đồng Thời] - Lưu Trữ Tình Trạng:**
-   - `@Transactional`: `UPDATE products SET status = newStatus, version = version + 1`.
-   - Nếu command là `RE_ACTIVATE`, xử lý bằng 1 nhánh atomic:
-       - `UPDATE products SET seller_intention_hidden = false WHERE product_id = :product_id`.
-       - `SELECT COALESCE(SUM(display_quantity), 0) FROM product_skus WHERE product_id = :product_id FOR UPDATE`.
+   - `@Transactional`: Thông qua JpaRepository (Entity `.save()`), Hibernate tự động lưu trạng thái mới và tự động tăng `version` dựa trên `@Version`. TUYỆT ĐỐI KHÔNG sử dụng Native SQL `UPDATE products SET version = version + 1` xen kẽ trong luồng FSM để tránh lỗi `OptimisticLockException`.
+   - Nếu command là `RE_ACTIVATE`, xử lý bằng 1 nhánh atomic (Sau khi đã Lock Cha ở Bước 1):
+         - `UPDATE products SET seller_intention_hidden = false WHERE product_id = :product_id AND is_deleted = false`.
+       - Đếm tồn kho bằng hàm: `SELECT COALESCE(SUM(display_quantity), 0) FROM product_skus WHERE product_id = :product_id`.
      - Chỉ đổi `status = ACTIVE` khi tổng tồn > 0. Nếu tổng tồn = 0 thì giữ nguyên `status = HIDDEN` nhưng vẫn lưu `seller_intention_hidden = false` để chờ inventory event hoặc worker re-evaluate.
      - Việc đánh thức trạng thái Product (`ACTIVE` hay `HIDDEN`) đã được quyết định ngay lập tức trong Transaction này dựa trên kết quả của hàm `SUM(display_quantity)`, triệt tiêu hoàn toàn nhu cầu sử dụng Worker bất đồng bộ chạy lại logic này.
    - Lệnh lưu log kiểm toán vào `product_status_history`.
-   - Phát sinh Outbox Event: [`ProductStateChangedEvent`](product_events.md#33-product_state_changed).
+   - Phát sinh Outbox Event: [`PRODUCT_STATE_CHANGED`](product_events.md#33-product_state_changed). Cực kỳ lưu ý: Nếu Product chuyển từ `DRAFT` sang `ACTIVE`, Promotion Service có trách nhiệm lắng nghe event này để chèn thêm Rule Giảm Giá còn hiệu lực (nếu có).
 4. **[Khoá] - Giải phóng Lock:**
-   - (Bỏ qua nếu đã dùng Lua Script hoặc Optimistic Locking).
+   - Lock row được giải phóng tự động khi transaction kết thúc (COMMIT/ROLLBACK).
 5. **[Background] - CQRS & Cảnh Báo:**
-   - Search Service nhận `ProductStateChangedEvent` -> Ẩn sp khỏi Elasticsearch nếu `status` -> `BANNED`.
+   - Search Service nhận `PRODUCT_STATE_CHANGED` -> cập nhật `product_status` projection tương ứng trên Elasticsearch.
    - Notification Service gửi Mail cho Seller.
    - **Tường minh Cache Invalidation:** Khi bản tin outbox `PRODUCT_STATE_CHANGED` kích hoạt, Kafka in-house Invalidation Worker CHẮC CHẮN phải thực thi lệnh Override ghi đè trạng thái `status` trên Redis Cache cho Thẻ Phụ (`product:sku:{sku_id}`) và Thẻ Chính (`product:master:{product_id}`). Việc này được thực thi mượt mà vì mảng truyền đi `sku_ids` ĐÃ MẶC ĐỊNH tích hợp trong event, không tốn chút Select nào tại DB. Dễ dàng ngăn chặn hành vi mua hàng ở Cart ngay tắp lự.
 
@@ -121,17 +125,17 @@ Dành riêng cho Mạng Lưới Nội Bộ nội vùng (Cart Service, Order Serv
 - `original_price`, `promotional_price`, `best_price`
 - `sku_status`, `product_status`, `is_available`
 - `display_quantity`, `variant_attributes`
-- `main_image_url`, `product_updated_at`
+- `main_image_url`
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Redis] - Fetch Data (Primary Read):**
-   - Gọi `GET product:sku:{id}` (Dữ liệu đã được nén Snappy/Zstd).
+   - Gọi `JSON.GET product:sku:{id}`.
    - Áp dụng **Probabilistic Early Expiration (PER)**: Thuật toán xổ số ngẫu nhiên. Nếu TTL còn < 5%, 1 HTTP Request hên xui duy nhất sẽ tự nguyện ở lại background tải dữ liệu mới từ Database và ghi đè khoá, giúp refresh Cache êm ái mà không đợi nó quá hạn. Trả về kết quả cho Client ngay.
 2. **[Fallback] - Xử lý Cache Miss & Singleflight (Request Coalescing):**
-   - Nếu `GET` trả null (Hoặc Server mới boot):
-   - **[P1/H3 Tối Ưu: Cross-Pod Singleflight]**: Việc chỉ dùng In-process Singleflight (Guava/singleflight) là chưa đủ để chống bão ở cấp Cluster (20 Pods vẫn sinh ra 20 DB hits). Để khắc phục triệt để, Request tiên phong của Pod phải thử chiếm khóa phân tán `SETNX product:lock:fetch:{id} 1 EX 2`. 
-   - Nếu TRÚNG LOCK: Pod được phép query DB Postgres bảng `product_skus` JOIN `products`, sau đó nạp ngược `SET product:sku:{id} compressed_payload EX 3600` đồ sộ lên Redis, rồi giải phóng lock.
-   - Nếu TRƯỢT LOCK: Pod Sleep tĩnh 50ms rồi quay lại vòng lặp `GET product:sku:{id}` (vì Pod trúng lock đã query thực tế và nạp cache xong). Cơ chế này giúp triệt tiêu 95% DB Load dư thừa.
+   - Nếu `JSON.GET` trả null (Hoặc Server mới boot):
+   - **[P1/H3 Tối Ưu: Cross-Pod Singleflight]**: Việc chỉ dùng In-process Singleflight là chưa đủ để chống bão ở cấp Cluster (20 Pods vẫn sinh ra 20 DB hits). Cơ chế chuẩn là cross-pod distributed lock bằng `SETNX product:lock:fetch:{id} 1 EX 2`.
+   - Nếu TRÚNG LOCK: Pod được phép query DB Postgres bảng `product_skus` JOIN `products`, sau đó nạp ngược `JSON.SET product:sku:{id}` với TTL 3600s, rồi giải phóng lock.
+   - Nếu TRƯỢT LOCK: Pod Sleep 50ms (kèm jitter nhỏ) rồi quay lại vòng lặp `JSON.GET product:sku:{id}` (vì Pod trúng lock đã query thực tế và nạp cache xong). Có thể kết hợp In-process Singleflight để giảm thêm contention trong nội bộ từng pod.
 
 **Endpoint Batch:** `gRPC GetBatchProductSkus`
 
@@ -139,7 +143,7 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
 
 **Quy trình:**
 1. Nhận danh sách `sku_ids` từ Protobuf Request.
-2. Lên Redis gọi `JSON.MGET product:sku:{id1} product:sku:{id2} ... .` — lấy tất cả trong 1 round-trip. Khử nén đồng loạt.
+2. Lên Redis gọi `JSON.MGET product:sku:{id1} product:sku:{id2} ... .` — lấy tất cả trong 1 round-trip.
 3. Chạy Singleflight: **[Sửa Lỗi Batch Singleflight Mù]**: Lệnh chạy Singleflight TUYỆT ĐỐI KHÔNG gói gọn toàn chuỗi batch truyền vào. Nó phải đi vào cấu trúc FOR LOOP xé mảng ra và gọi In-Process Singleflight chọc Database **riêng rẽ cho TỪNG cái `sku_id` bị miss**. Nhờ đó tận dụng tối đa 99% hit rate cục bộ giữa các Pods trên Cluster.
 4. **[P5 Tối Ưu]** Nạp ngược cache bằng Soft Invalidation: Bắt buộc sử dụng kỹ thuật **Redis Pipelining** để gom tất cả các lệnh `JSON.SET product:sku:{id}` (cho 8-10 SKUs vừa miss) vào 1 mạng round-trip duy nhất, giảm triệt để N lần network I/O latency.
 5. Serialize Protobuf và rẩy về cho Cart Service.
@@ -155,28 +159,35 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
    - Worker (`groupId: product-markdown-group`) nhận sự kiện Cập Nhật.
    - Parse payload phù hợp cho `MARKDOWN_CREATED`, `MARKDOWN_UPDATED` hoặc `MARKDOWN_ENDED`.
 2. **[PostgreSQL] - Trích xuất SKU bị ảnh hưởng:**
-   - Nếu `scope_type = CATEGORY`: `SELECT sku_id, original_price FROM product_skus ps JOIN products p ON ps.product_id = p.product_id WHERE p.category_id = :ref_id AND p.status = 'ACTIVE' AND ps.status = 'ACTIVE'`.
-   - Nếu `scope_type = PRODUCT`: Query theo `product_id = ref_id`.
+   - Nếu `scope_type = CATEGORY`: `SELECT ps.sku_id, ps.product_id FROM product_skus ps JOIN products p ON ps.product_id = p.product_id WHERE p.category_id = :ref_id AND p.status = 'ACTIVE' AND ps.status = 'ACTIVE'`.
+   - Nếu `scope_type = PRODUCT`: Query theo `product_id = ref_id` để lấy tập `sku_id` cần xử lý.
+   - Bước này chỉ để xác định phạm vi bị ảnh hưởng. Giá `original_price` dùng cho phép tính markdown phải lấy lại từ các row SKU đã lock trong transaction per-product ở bước 4.
 3. **[RAM] - Tính toán Batch giá khuyến mãi:**
-   - Dữ liệu query ở bước 2 là danh sách phẳng có thể lẫn SKU của nhiều Product, vì vậy Worker phải group theo `product_id` ở RAM (HashMap hoặc iterator grouping).
+   - Dữ liệu query ở bước 2 là danh sách phẳng có thể lẫn SKU của nhiều Product, vì vậy Worker phải group theo `product_id` ở RAM (map hoặc iterator grouping).
    - Với tập lớn, ưu tiên streaming/chunk theo `ORDER BY product_id ASC, sku_id ASC` để không phình bộ nhớ.
-   - Với mỗi SKU: `promotional_price = original_price * (1 - percentage / 100)` hoặc `original_price - fixed_amount`.
+   - Với mỗi SKU: `promotional_price = original_price * (1 - percentage / 100)` hoặc `original_price - fixed_amount` (giá `original_price` lấy từ tập row đã lock ở bước 4, không dùng snapshot stale).
    - Áp dụng `max_discount_amount` nếu có.
 4. **[PostgreSQL] - Ghi dữ liệu & Tránh Deadlock Liên Bảng (Concurrency Guard):**
    - **Cảnh báo Race Condition:** Tuyệt đối không tung một lệnh `UPDATE product_skus` khổng lồ theo diện rộng (Category). Nếu đụng độ với luồng Seller Update API (Lock `products` -> `product_skus`), sẽ lập tức gây Deadlock chéo.
    - Worker BẮT BUỘC phải chia theo nhóm `product_id` và ORDER BY `product_id` ASC. Với mỗi khối `product_id`, mở `@Transactional` độc lập:
+   - **Chống va chạm đa instance worker:** ngay đầu transaction lock Product cha bằng `FOR NO KEY UPDATE` với `lock_timeout` ngắn. Nếu timeout thì `nack/requeue` theo retry policy, không được skip im lặng.
        - Khóa cha: `SELECT 1 FROM products WHERE product_id = :product_id FOR NO KEY UPDATE`.
-          - **UPDATE PRODUCTS**: `UPDATE products SET version = version + 1 WHERE product_id = :product_id`. Cập nhật `version` của Aggregation Root trước để trigger event bắt chính xác.
-       - Cập nhật con: batch `UPDATE product_skus SET promotional_price = :calc, updated_at = NOW() WHERE product_id = :product_id AND sku_id IN (...)`.
+       - Khóa con + lấy giá live: `SELECT sku_id, original_price FROM product_skus WHERE sku_id IN (...) AND product_id = :product_id FOR UPDATE`.
+       - Tính giá theo tập row đã lock, sau đó batch `UPDATE product_skus SET promotional_price = :calc, updated_at = NOW() WHERE product_id = :product_id AND sku_id IN (...)`.
        - Tracking: batch upsert `product_markdown_applied` (tracking rule → SKU mapping).
-       - Outbox: batch insert `product_outbox_events` cho các SKU bị ảnh hưởng, chứa [`ProductPriceUpdatedEvent`](product_events.md#34-product_price_updated) với `change_source = MARKDOWN_APPLIED`.
+      - **UPDATE PRODUCTS**: `UPDATE products SET version = version + 1 WHERE product_id = :product_id` đúng 1 lần cho mỗi transaction `product_id`.
+      - Outbox: batch insert `product_outbox_events` cho các SKU bị ảnh hưởng, chứa [`PRODUCT_PRICE_UPDATED`](product_events.md#34-product_price_updated) với `change_source = MARKDOWN_APPLIED`; payload phải dùng `version` sau increment và có `event_sequence_id` để guard ở cấp SKU-event.
      - COMMIT Transaction để nhả cọc cho Product kế tiếp. Mất thêm milisecond vòng lặp nhưng an toàn hệ thống tuyệt đối 100%.
-5. **[Worker] - Invalidate Cache (Soft Invalidation):**
-    - Sau mỗi lần commit của từng Product, Worker thực hiện cache update theo batch bằng Redis pipeline thay vì gửi lệnh lẻ.
-    - Thông qua Outbox Event, Worker chủ động OVERWRITE (ghi đè mềm) `SET/JSON.SET product:sku:{id}` và `SET product:markdown:active:{sku_id}` với TTL theo thời gian còn lại của rule.
-    - Với `MARKDOWN_ENDED` do tắt thủ công, đưa các lệnh `DEL product:markdown:active:{sku_id}` vào cùng pipeline batch để đồng bộ tức thời.
+5. **[Worker] - Invalidate Cache (Soft Invalidation - Ownership tách bạch):**
+   - Sau mỗi lần commit của từng Product, Markdown Worker chỉ quản lý key phụ markdown theo batch Redis pipeline.
+   - Markdown Worker **không** ghi đè trực tiếp `product:sku:{id}` hoặc `product:master:{product_id}` để tránh double-write với luồng Kafka invalidation.
+   - Invalidation Consumer (`product-invalidation-group`) sẽ self-consume `PRODUCT_PRICE_UPDATED` từ outbox để refresh `product:sku:{id}` và `product:master:{product_id}` theo một đường ghi bất đồng bộ duy nhất.
+   - Để tránh write amplification, Invalidation Consumer phải dedupe theo `product_id` trong từng poll-batch và chỉ refresh `product:master:{product_id}` 1 lần cho mỗi product.
+   - Có thể bật micro-debounce 50-100ms giữa các poll-batch liền kề theo `product_id` để gộp thêm các lần refresh `product:master`.
+   - Trước khi overwrite `product:master:{product_id}`, áp dụng stale guard theo cặp `version/updated_at`: chỉ ghi khi event mới hơn cache hiện tại; event bằng/cũ hơn phải bỏ qua.
+   - Với `MARKDOWN_ENDED` do tắt thủ công, đưa các lệnh `DEL product:markdown:active:{sku_id}` vào cùng pipeline batch để đồng bộ tức thời.
 6. **[Background] - Phát Event CQRS:**
-   - Debezium CDC Connector forward `ProductPriceUpdatedEvent` từ outbox sang Kafka → Search Service cập nhật giá hiển thị trên Elasticsearch.
+   - Debezium CDC Connector forward `PRODUCT_PRICE_UPDATED` từ outbox sang Kafka → Search Service cập nhật giá hiển thị trên Elasticsearch.
 
 > **Lưu ý khi `MARKDOWN_UPDATED` / `MARKDOWN_ENDED`:** Luồng tương tự áp dụng cho việc lấy danh sách SKU từ bảng `product_markdown_applied`. Đặc thù với UPDATE, Worker BẮT BUỘC query lại `original_price` live từ bảng `product_skus`, KHÔNG DÙNG snapshot rác cũ; tiếp theo tính toán sửa lại DB rồi tung outbox bình thường. Reset Null Price nếu là event ENDED.
 
@@ -190,27 +201,28 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
    - Parse payload bắt buộc: `product_id`, `sku_id`, `available_quantity`, `event_timestamp`.
 2. **[PostgreSQL] - Cập nhật Display Quantity:**
    - `@Transactional`:
-       - Bước 1: `SELECT product_id, status, seller_intention_hidden FROM products WHERE product_id = :product_id FOR NO KEY UPDATE`.
+       - Bước 1: `SELECT product_id, status, seller_intention_hidden, is_deleted FROM products WHERE product_id = :product_id FOR NO KEY UPDATE`.
        - Bước 2: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id AND product_id = :product_id FOR UPDATE`.
-       - Bước 2.1: Nếu không có row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> dừng apply, đưa message vào DLQ/parking-lot để điều tra producer contract.
+         - Bước 2.1: Nếu không có row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> dừng apply, đưa message vào DLQ/parking-lot để điều tra producer contract.
        - Bước 3: **Out-of-order guard:** chỉ apply nếu `event_timestamp > last_inventory_sync_at`.
        - Bước 4: `UPDATE product_skus SET display_quantity = :available_quantity, last_inventory_sync_at = :event_timestamp WHERE sku_id = :sku_id`.
-       - Bước 5: Cập nhật `products.version = version + 1` khi có thay đổi cần phản ánh xuống các read models.
+   - Bước 5: Quy tắc versioning nhất quán: nếu transaction chỉ dùng SQL (không qua FSM/JPA) thì tăng `products.version` đúng 1 lần; nếu transaction gọi FSM/JPA thì để `@Version` tự tăng và không native increment.
 3. **[Logic] - Kiểm tra Auto-Hide / Auto-Reactivate chống Race Condition:**
    - **BẮT BUỘC sử dụng Row-Level Lock** kiểu Pessimistic (`FOR NO KEY UPDATE` + `FOR UPDATE`) và giữ lock xuyên suốt toàn bộ chuỗi Đọc Product -> Đọc SKU -> Tính toán -> Update, tuyệt đối không tách thành nhiều transaction con.
    - Nếu `available_quantity = 0` và SKU đang `ACTIVE`:
-   - Chuyển `product_skus.status = 'OUT_OF_STOCK'`. Đồng thời BẮT BUỘC phải thực thi lệnh `UPDATE products SET version = version + 1 WHERE product_id = :product_id` để tăng version của bảng cha, nếu không Search Service sẽ từ chối Event này do phiên bản cũ.
-     - Phát [`ProductSkuStatusChangedEvent`](product_events.md#35-product_sku_status_changed) vào Outbox.
-     - Sau khi lưu trạng thái SKU vào DB, kiểm tra lại tổng: **Tất cả** SKU của Product này đều đã mang `status = OUT_OF_STOCK`? → Nếu đúng, Trigger [AUTO_HIDE_OUT_OF_STOCK](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger) trên Product cha.
+   - Chuyển `product_skus.status = 'OUT_OF_STOCK'`. Nếu nhánh này không trigger FSM Product-level thì tăng `products.version` bằng native SQL đúng 1 lần để phản ánh thay đổi SKU-status; nếu có trigger FSM Product-level thì bỏ native increment và để `@Version` tự tăng.
+   - Phát [`PRODUCT_SKU_STATUS_CHANGED`](product_events.md#35-product_sku_status_changed) vào Outbox.
+   - Sau khi lưu trạng thái SKU vào DB, kiểm tra lại tổng: **Tất cả** SKU của Product này đều đã mang `status = OUT_OF_STOCK` và `is_deleted = false`? → Nếu đúng, Trigger [AUTO_HIDE_OUT_OF_STOCK](product_state_machine.md#22-transitions-do-systemworker-tự-động-trigger) trên Product cha.
+   - **Quy tắc versioning chống double-increment:** Nếu nhánh này chỉ đổi trạng thái SKU (không trigger FSM Product-level), được phép tăng `products.version` bằng native SQL đúng 1 lần. Nếu có trigger FSM Product-level (`AUTO_HIDE_OUT_OF_STOCK`), để `@Version` của FSM/JPA tự tăng và bỏ native increment.
    - Nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK`:
-   - Chuyển `product_skus.status = 'ACTIVE'`. Đồng thời BẮT BUỘC phải thực thi lệnh `UPDATE products SET version = version + 1 WHERE product_id = :product_id` để tăng version của bảng cha.
-     - Phát `ProductSkuStatusChangedEvent` vào Outbox.
-      - **PHÒNG CHỐNG Lỗ hổng TOCTOU (Time-of-Check to Time-of-Use) & Override Ý định Seller (ATOMIC):** Khi SKU chuyển từ `OUT_OF_STOCK` → `ACTIVE`, cần kiểm tra kết hợp `status = 'HIDDEN' AND seller_intention_hidden = false` (MỆNH ĐỀ KÉP). **Cơ chế Thực thi (Atomicity Guarantee):** Phải sử dụng SQL Query đơn nguyên: `SELECT 1 FROM products WHERE product_id = :product_id AND status = 'HIDDEN' AND seller_intention_hidden = false FOR NO KEY UPDATE;` TRƯỚC trigger AUTO_REACTIVATE_IN_STOCK. Query check này BẮT BUỘC:
-  - Đặt SAU Row-Level Lock đã acquire ở Bước 1 (cùng Transaction)
-  - Chạy NGAY TRONG Transaction để lock toàn bộ read + write của cả hai cột
-  - Nếu query không return row, hủy trigger (Seller ý định ẩn)
-  - Nếu return row, trigger AUTO_REACTIVATE_IN_STOCK kèm tăng `version`
-  - Điều này triệt tiêu Race Condition nơi Seller đổi `seller_intention_hidden` giữa thời điểm check và update.
+   - Chuyển `product_skus.status = 'ACTIVE'`. Nếu nhánh này không trigger FSM Product-level thì tăng `products.version` bằng native SQL đúng 1 lần; nếu có trigger FSM Product-level (`AUTO_REACTIVATE_IN_STOCK`) thì để `@Version` tự tăng.
+   - Phát `PRODUCT_SKU_STATUS_CHANGED` vào Outbox.
+         - **PHÒNG CHỐNG Lỗ hổng TOCTOU (Time-of-Check to Time-of-Use) & Override Ý định Seller (ATOMIC):** Khi SKU chuyển từ `OUT_OF_STOCK` → `ACTIVE`, cần kiểm tra kết hợp `status = 'HIDDEN' AND seller_intention_hidden = false AND is_deleted = false` (MỆNH ĐỀ KÉP + soft-delete guard).
+         - **Chuẩn thực thi nhất quán:** Không được mở transaction mới hoặc chạy query kiểm tra bên ngoài transaction. Có hai cách tương đương và đều hợp lệ nếu chạy trong cùng transaction đang giữ lock:
+            - Cách A: dùng trực tiếp row `products` đã lock từ Bước 1 để evaluate predicate trước khi trigger `AUTO_REACTIVATE_IN_STOCK`.
+            - Cách B: chạy query guard tường minh `SELECT 1 FROM products WHERE product_id = :product_id AND status = 'HIDDEN' AND seller_intention_hidden = false AND is_deleted = false FOR NO KEY UPDATE;` ngay trước trigger.
+         - Nếu predicate không thỏa thì hủy trigger (tôn trọng ý định ẩn của Seller). Nếu thỏa thì trigger `AUTO_REACTIVATE_IN_STOCK`.
+         - Mục tiêu là giữ check + transition ở cùng transaction đang giữ lock để triệt tiêu Race Condition khi cờ `seller_intention_hidden` thay đổi giữa lúc check và lúc update.
    - **Đồng bộ hóa phiên bản:** Giữ cho State luôn nhất quán. Giải phóng Pessimistic Lock tự động khi hoàn tất DB Transaction (Commit).
 
 4. **[Redis] - Update Cache (Chống Read-After-Write Inconsistency):**
@@ -219,10 +231,12 @@ Dành cho Cart Service cần lấy N SKU cùng lúc (hiển thị giỏ hàng). 
    - **Giải thích ngắn:** bounded queue là hàng đợi RAM có giới hạn cứng để chống OOM; threadpool là tập worker threads cố định đọc task từ queue để gửi batch lệnh Redis.
    - **Queue full policy (Backpressure cứng):** khi queue đầy, worker phải block enqueue hoặc pause Kafka partitions; tuyệt đối không drop task cache update.
    - **Scale-down safety:** khi SIGTERM, worker dừng nhận message mới và drain queue trong thời gian grace; nếu timeout mà còn backlog thì phát metric/alert bắt buộc.
+   - **Self-healing fallback bắt buộc:** nếu Pod crash sau DB commit trước khi queue flush xong, `PRODUCT_SKU_STATUS_CHANGED` đã ghi outbox phải được `product-invalidation-group` tiêu thụ để refresh lại `product:sku:{sku_id}` và `product:master:{product_id}`.
+   - Luồng fallback ở trên vẫn phải tuân thủ dedupe theo `product_id` + stale guard `version/updated_at` khi refresh `product:master:{product_id}` để tránh ghi đè lùi khi event bị tách batch.
     - Rủi ro out-of-order cho cùng SKU có thể xảy ra nếu nhiều task/retry/pod cùng ghi key. Cách chặn tối ưu:
-       - tuyến task theo striped lane `hash(sku_id)` để cùng SKU xử lý tuần tự,
-       - coalescing latest-only theo `event_timestamp` trong queue,
-       - Lua CAS tại Redis chỉ cho phép update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`.
+         - coalescing latest-only theo `event_timestamp` trong queue,
+         - giới hạn song song ghi cache ở mức thấp (threadpool nhỏ + retry có jitter),
+         - Lua CAS tại Redis chỉ cho phép update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`.
     - **Lua CAS tại Redis (chi tiết):**
        - `KEYS[1] = product:sku:{sku_id}`
        - `ARGV[1] = incoming_event_timestamp`, `ARGV[2] = new_display_quantity`, `ARGV[3] = new_sku_status` (optional)
@@ -244,11 +258,12 @@ Chỉ cho phép xoá sản phẩm ở trạng thái `DRAFT`, `HIDDEN`, hoặc `R
     - `@Transactional`:
        - Cập nhật cờ khóa mềm: `UPDATE products SET is_deleted = true, version = version + 1 WHERE product_id = :product_id AND version = :current_version`. (Lưu ý, thư viện FSM không có trạng thái `DELETED`, chỉ lưu cờ `is_deleted` để giữ nguyên trạng thái cũ (ví dụ đang HIDDEN mà bị xóa), dễ phục vụ luồng Restore sau này).
      - Nếu số dòng update = 0, ném `StaleObjectStateException` để Controller retry.
-   - **Dọn dẹp Orphan Data**: `DELETE FROM product_markdown_applied WHERE product_id = :product_id` để cắt đứt mọi khuyến mãi đang dính vào sản phẩm này, tránh rác dữ liệu tính toán.
-     - `INSERT INTO product_outbox_events` ([`ProductDeletedEvent`](product_events.md#36-product_deleted)) để trigger quá trình async cleanup.
+   - **Dọn dẹp Orphan Data**: `DELETE FROM product_markdown_applied WHERE product_id = :product_id` để cắt đứt mọi khuyến mãi đang dính vào sản phẩm này, tránh rác dữ liệu tính toán. ĐỒNG THỜI, BẮT BUỘC phải update `promotional_price = NULL` cho tất cả bản ghi thuộc bảng `product_skus` của Sản phẩm này, để chống lỗi mồ côi dữ liệu khuyến mãi nếu Sản phẩm được Restore sau này.
+   - `INSERT INTO product_outbox_events` ([`PRODUCT_DELETED`](product_events.md#36-product_deleted)) để trigger quá trình async cleanup.
 3. **[Worker] - Soft Invalidate Cache:**
-   - Thông qua In-house worker, bắt giữ DB event và bắn ngầm lệnh `SET product:sku:{sku_id}` cập nhật đè trạng thái `is_deleted = true` cho tất cả SKU thuộc Product để duy trì triết lý Always-Warm. Không được dùng `DEL` sinh bão truy vấn DB.
-   - Thao tác Overwrite tương tự cho `SET product:master:{product_id}`.
+   - Thông qua In-house worker, bắt giữ DB event và bắn ngầm lệnh `JSON.SET product:sku:{sku_id}` cập nhật đè trạng thái `is_deleted = true` cho tất cả SKU thuộc Product để duy trì triết lý Always-Warm. Không được dùng `DEL` sinh bão truy vấn DB.
+   - Thao tác Overwrite tương tự cho `JSON.SET product:master:{product_id}`.
+   - Mọi worker async (Inventory/Markdown/Invalidation/FSM hook) bắt buộc kiểm tra `is_deleted = false` trước khi trigger bất kỳ transition tự động nào để tránh hồi sinh bản ghi đã soft-delete.
 4. **[Background] - CQRS Cleanup:**
    - Search Service nhận event → xoá Product khỏi Elasticsearch index.
    - (Cart Service không còn nhận event từ Product Service do thiết kế đã chuyển sang Pull Model Point-Read theo thời gian thực).
@@ -264,7 +279,59 @@ Cho phép Administrator xây dựng hệ thống cây nhị phân (Level, Leaf).
    - Mở Transaction -> Ghi Bảng `categories` -> tăng version bảng -> Insert Outbox Events (Bao gồm `CATEGORY_UPDATED`, `CATEGORY_DELETED`).
    - Đóng Giao Dịch.
 2. **[Redis] - Kích hoạt Invalidate Caffeine L1 (After-Commit Hook) BẮT BUỘC:** 
-   - Sau khi giao diện đã commit sạch sẽ ở PostgreSQL, API thực thi Bắn tín hiệu làm rỗng L1: Chạy `Redis.Publish("channel:product:l1-evict", "{...}")` để đẩy mệnh lệnh đến toàn cụm Product Pods trút bỏ hoàn toàn Cached Category Tree. Request API tức thì phía sau sẽ lao xuống DB tải lại nhánh cây mới nhất nạp lên RAM.
+   - Sau khi giao diện đã commit sạch sẽ ở PostgreSQL, API phát 2 tín hiệu:
+     - `Redis.Publish("channel:product:l1-evict", "{...}")` cho cụm Product Pods.
+     - `Redis.Publish("channel:search:category-refresh", "{...}")` cho Search category-tree refresh.
+   - Mục tiêu: tránh drift cache liên service khi category đổi.
 3. **[Background CQRS] - Nhuộm dữ liệu Search Service:**
    - Search Worker bắt thông điệp Update hoặc Cờ Deleted.
-   - Thay vì lắt nhắt bắt DB Product tính ra Cây Search. ElasticSearch của Service Tìm kiếm sẽ dùng tập lệnh **Update By Query** nội tại ES để chạy ngầm và đổi toàn bộ Name Category cũ kỹ trên chục triệu sản phẩm. Khủng bố tốc độ không gây hại Product Database. NẾU `CATEGORY_DELETED` văng ra, Product Service phải xử lý ở Write Model bằng worker chuyên trách, đổi trạng thái các sản phẩm liên đới rồi phát `PRODUCT_STATE_CHANGED`; Search chỉ phản chiếu theo event này.
+   - Thay vì lắt nhắt bắt DB Product tính ra Cây Search. ElasticSearch của Service Tìm kiếm sẽ dùng tập lệnh **Update By Query** nội tại ES để chạy ngầm và đổi toàn bộ Name Category cũ kỹ trên chục triệu sản phẩm. Khủng bố tốc độ không gây hại Product Database. NẾU `CATEGORY_DELETED` văng ra, Product Service phải xử lý ở Write Model bằng worker chuyên trách, đổi trạng thái các sản phẩm liên đới sang `REJECTED` (Lý do: Category bị xoá bỏ). Tuyệt đối không đẩy vào `HIDDEN` vì Inventory Sync sẽ tự động hồi sinh cương thi sản phẩm lên `ACTIVE` khi có Tồn kho nhảy về. Sau đó mới phát `PRODUCT_STATE_CHANGED`; Search chỉ phản chiếu theo event này.
+
+## 10. Internal APIs cho Search Service
+
+Các API dưới đây chỉ dành cho nội bộ hệ thống, dùng cho Search bootstrap/reindex và không public cho client bên ngoài.
+
+### 10.1 API: Category Tree Snapshot
+**Endpoint:** `GET /api/v1/internal/products/categories/tree`
+
+**Mục đích:** Search Category Tree Sync Worker warm cache khi startup và self-heal định kỳ.
+
+**Response tối thiểu:**
+- `category_id`, `name`, `slug`, `parent_id`, `level`, `path`, `category_version`
+
+**Ràng buộc:**
+- API phải trả snapshot nhất quán tại thời điểm đọc.
+- Dùng cho read-only projection, không kích hoạt logic nghiệp vụ ghi.
+
+### 10.2 API: Product Export for Reindex
+**Endpoint:** `GET /api/v1/internal/products/export?page={n}&size={m}`
+
+**Mục đích:** Search Full Reindex Job quét dữ liệu theo trang.
+
+**Response tối thiểu mỗi record:**
+- `product_id`, `seller_id`, `category_id`, `category_version`, `name`, `description`, `status`
+- danh sách `skus[]` (bao gồm `sku_id`, `sku_code`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `sku_status`, `variant_attributes_json`)
+- `attributes_json`, `version`, `created_at`, `updated_at`
+
+**Tương thích ngược cho trường trạng thái SKU:**
+- Nếu producer nội bộ cũ vẫn trả `status` trong `skus[]`, Search worker phải map alias `status -> sku_status` trước khi index.
+
+**Ràng buộc:**
+- Sort ổn định (`product_id ASC`, `sku_id ASC`) để replay an toàn.
+- Hỗ trợ watermark/updated_since cho phase catch-up reindex.
+- Read-only, không mutate Source of Truth.
+
+### 10.3 API: Product Snapshot by ID (Self-heal cho Retry)
+**Endpoint:** `GET /api/v1/internal/products/{product_id}/snapshot`
+
+**Mục đích:** Search Retry Replayer dựng lại đầy đủ document khi gặp `document_missing_exception` cho event partial update (`PRODUCT_PRICE_UPDATED`, `PRODUCT_SKU_STATUS_CHANGED`, ...).
+
+**Response tối thiểu:**
+- `product_id`, `seller_id`, `category_id`, `category_version`, `name`, `description`, `status`, `version`, `updated_at`
+- `skus[]`: `sku_id`, `sku_code`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `sku_status`, `variant_attributes_json`, `updated_at`
+- `attributes_json`
+
+**Ràng buộc:**
+- Trả về snapshot nhất quán tại thời điểm đọc.
+- Read-only, không phát side-effect nghiệp vụ.
+- Tương thích ngược: chấp nhận `skus[].status` như alias của `skus[].sku_status` khi parse request/response nội bộ.
