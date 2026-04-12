@@ -18,33 +18,73 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 | Topic | Consumer Group | Cờ (Role) | Mô tả |
 |---|---|---|---|
 | `t.order.events` | `promo-order-consumer` | Consumer | Hứng sự kiện Order (`ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_REFUNDED`) để đối soát và xử lý fallback. |
+| `t.product.events` | `promo-product-state-consumer` | Consumer | Hứng `PRODUCT_STATE_CHANGED` để apply markdown cho sản phẩm vừa chuyển `ACTIVE`. |
+| `t.auth.events` | `promo-auth-consumer` | Consumer (optional) | Hứng `USER_REGISTERED` cho use-case welcome voucher/new-user campaigns. |
 | `t.promotion.markdown.events`, `t.promotion.coupon.events`, `t.promotion.budget.events` | - | Producer | Phát các sự kiện do Promotion Service tạo ra (Markdown, Coupon, Budget). |
 
 ---
 
 ## 1. Trụ cột Message & Event (Kafka)
 
-### 1.1. Outbox Relay Worker (Producer)
-**Loại hình:** Polling Worker chạy liên tục.
+### 1.1. Outbox CDC Connector (Producer)
+**Loại hình:** Kafka Connect Source Connector (Debezium CDC).
 
-**Sứ mệnh:** Đảm bảo mọi sự kiện sinh ra trong Promotion Service (như tạo Rule cấu hình Giảm giá gạch chéo, user claim mã thành công) đều được đưa lên Kafka một cách an toàn (At-Least-Once Delivery).
-*   **Chi tiết thiết kế:** Xem tại [Outbox Pattern](promotion_outbox_pattern.md#4-outbox-relay-worker-chi-tiết).
-*   **Hoạt động:** Quét bảng `promotion_outbox` mỗi 500ms, lấy các record `PENDING` hoặc `FAILED` (đến hạn retry), map `event_type` sang đúng topic đích (`t.promotion.markdown.events` / `t.promotion.coupon.events` / `t.promotion.budget.events`) rồi `producer.send(...)`. Xử lý cập nhật DB và Exponential Backoff nếu Kafka lỗi.
+**Sứ mệnh:** Đảm bảo mọi sự kiện **đi qua bảng `promotion_outbox`** (markdown/coupon ledger/budget events) được đưa lên Kafka một cách an toàn (At-Least-Once Delivery) mà không cần polling trạng thái trong DB.
+*   **Chi tiết thiết kế:** Xem tại [Outbox Pattern](promotion_outbox_pattern.md#4-outbox-cdc-connector-chi-tiết).
+*   **Hoạt động:** Debezium đọc WAL PostgreSQL, lọc `INSERT` từ `promotion_outbox`, map `event_type` sang topic đích (`t.promotion.markdown.events` / `t.promotion.coupon.events` / `t.promotion.budget.events`) và dùng `partition_key` làm Kafka message key.
+*   **Retry/DLQ:** Quản trị tại Kafka Connect runtime (task retry, DLQ topic, connector lag alert), không ghi trạng thái retry vào bảng outbox.
+
+> [!NOTE]
+> Sự kiện claim Flash Sale (`COUPON_CLAIMED`) là luồng direct-produce sau Lua Script, không bắt buộc qua outbox DB.
 
 ### 1.2. Order Events Consumer (Consumer)
 **Loại hình:** Kafka Consumer (Long-running).
 **Consumer Group:** `promo-order-consumer`
 
 **Sứ mệnh:** Lắng nghe chu trình sống của Đơn hàng từ bảng Sổ cái phân tán (Order Service) để thực thi trừ / hoàn ngân sách cho Khuyến mãi.
-*   **Chi tiết luồng xử lý:** Xem tại [Promotion Workflows - Mục 5](promotion_workflow.md#5-luồng-đồng-bộ-sau-thanh-toán-kafka-consumers).
+*   **Chi tiết luồng xử lý:** Xem tại [Promotion Workflows - Luồng Thanh toán](promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow) và [Refund Flow](promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
 *   **Hoạt động:**
     1. Hứng `ORDER_PAID`: Đối soát/reconciliation và fallback recovery khi cần.
     2. Hứng `ORDER_CANCELLED`: Đối soát trạng thái, xử lý fallback khi synchronous rollback bị gián đoạn.
     3. Hứng `ORDER_REFUNDED` (Trả hàng hoàn tiền): Đối soát và kích hoạt fallback hoàn ngân sách khi cần.
-*   **Lưu ý kiến trúc:** Đường xử lý chính cho Confirm/Rollback trong checkout là gọi đồng bộ qua Temporal Activities (`ConfirmPromotionActivity`, `RollbackPromotionActivity`). Kafka consumer này đóng vai trò safety-net.
-*   **Bảo vệ Idempotency:** Worker tích hợp Redis Lock (`SETNX`) kết hợp DB Constraint (`promotion_event_idempotency`) để chặn duplicate messages từ Kafka (đảm bảo xử lý Exactly-Once).
+    4. Với event làm đổi trạng thái ví (`SAVED/USED/EXPIRED`) theo từng `user_id`, thực hiện invalidate user-scoped cache: `DEL wallet:{user_id}:active_vouchers`.
+*   **Lưu ý kiến trúc:** Đường xử lý chính cho Confirm/Rollback trong checkout là gọi đồng bộ qua Temporal Activities (`ConfirmPromotionActivity`, `RollbackPromotionActivity`) với `idempotency_key` theo từng `promotion_id`. Kafka consumer này đóng vai trò safety-net.
+*   **Bảo vệ Idempotency:** Worker tích hợp Redis Lock (`SETNX`) kết hợp DB Constraint (`promotion_event_idempotency`) để chặn duplicate messages từ Kafka (đảm bảo hiệu ứng xử lý tương đương exactly-once ở tầng nghiệp vụ).
+*   **Contract bắt buộc:**
+    1. Luồng sync (`/confirm`, `/cancel`, `/refund`) dùng đúng `idempotency_key/request_id` từ Order để ghi `promotion_event_idempotency.event_id`.
+    2. Luồng async Kafka dùng đúng `event_id` envelope làm `promotion_event_idempotency.event_id`.
+    3. Promotion không tự sinh `event_id` cho các nhánh này.
+*   **Fallback gating bắt buộc:**
+    1. Nếu idempotency record đã tồn tại (`FINAL` hoặc `refund_transaction_id`) thì event được xử lý dạng audit-only, không mutate Redis/DB.
+    2. Chỉ chạy fallback mutation khi xác định synchronous activity chưa hoàn tất hiệu ứng.
+    3. Event có payload hash lệch với bản ghi hiện tại phải vào parking-lot + alert, không tự động ghi đè.
 
-### 1.3. Flash Sale Claim Async Worker (Consumer / Internal Queue)
+> [!NOTE]
+> Với đơn có nhiều promotion, nhánh Confirm/Cancel/Refund phải gọi script theo từng `promotion_id` bằng Redis Pipelining (1 round-trip), dùng lock key cấp voucher `promo:lock:{action}:{promotion_id}:{order_id}` để tránh tự chặn nhau trong cùng một đơn.
+
+### 1.3. Auth Events Consumer (Optional)
+**Loại hình:** Kafka Consumer (Long-running).
+**Consumer Group:** `promo-auth-consumer`
+
+**Sứ mệnh:** Xử lý `USER_REGISTERED` để cấp welcome voucher/new-user wallet record theo feature-flag campaign.
+*   **Hoạt động:**
+    1. Hứng `USER_REGISTERED` từ `t.auth.events`.
+    2. Map envelope theo compatibility adapter (`data -> payload`, `timestamp_ms -> registered_at`) nếu producer dùng format Auth native.
+    3. Kiểm tra campaign active và rule chống cấp trùng.
+    4. Upsert `user_coupon_wallets` theo `(user_id, promotion_id)` để đảm bảo idempotent, đồng thời gán `saved_at = acquired_at` và `expired_at = acquired_at + INTERVAL '30 days'`.
+
+### 1.4. Product State Consumer
+**Loại hình:** Kafka Consumer (Long-running).
+**Consumer Group:** `promo-product-state-consumer`
+
+**Sứ mệnh:** Lắng nghe `PRODUCT_STATE_CHANGED` từ Product Service để xử lý kịch bản sản phẩm chuyển từ trạng thái chưa hiển thị sang `ACTIVE` trong khi markdown rule vẫn còn hiệu lực.
+*   **Hoạt động:**
+    1. Hứng `PRODUCT_STATE_CHANGED` từ `t.product.events`.
+    2. Nếu `new_status = ACTIVE`, re-evaluate markdown rules đang `ACTIVE` theo scope (PRODUCT/CATEGORY) cho `product_id` vừa kích hoạt.
+    3. Phát lại luồng `MARKDOWN_CREATED`/`MARKDOWN_UPDATED` tương ứng khi cần để Product Service apply giá markdown cho SKU mới lên sàn.
+    4. Bảo vệ idempotency theo `event_id` + `product_id` để tránh apply lặp khi replay.
+
+### 1.5. Flash Sale Claim Async Worker (Consumer / Internal Queue)
 **Loại hình:** Kafka Consumer (High-throughput) / Internal Queue Worker.
 **Consumer Group:** `promo-claim-consumer`
 
@@ -52,8 +92,10 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 *   **Chi tiết luồng xử lý:** Xem tại [Thuật toán Giật Mã Flash Sale O(1)](redis_caching_design.md#script-1-thuật-toán-giật-mã-flash-sale-o1-spop-claiming).
 *   **Hoạt động:**
     1. Lắng nghe event `COUPON_CLAIMED` (hoặc thông điệp `CLAIM`) đẩy từ Topic `t.promotion.coupon.events` (hoặc internal queue). Event này do API Backend bắn ra ngay sau khi chạy Lua Script SPOP trên Redis thành công.
-    2. Thực thi Database Transaction: Cập nhật `UPDATE coupon_claims SET owner_id = :user_id, status = 'CLAIMED', claimed_at = NOW() WHERE id = :claim_id;` và insert mã vào `user_coupon_wallets`.
-    3. Dọn dẹp tàn dư: Gọi lên Redis `HDEL promo:{promotion_id}:pending_claims :claim_id` để xác nhận Event đã được ghi đĩa an toàn, tránh bị Sweeper Job (Mục 2.2) quét trúng.
+    2. Áp dụng idempotency 2 lớp cho claim stream: dedup theo `event_id` (delivery) và dedup nghiệp vụ theo `claim_id` (thực thể vé claim bất biến).
+    3. Thực thi Database Transaction: Cập nhật `UPDATE coupon_claims SET owner_id = :user_id, status = 'CLAIMED', claimed_at = NOW() WHERE id = :claim_id AND status = 'AVAILABLE' AND owner_id IS NULL;` và insert/upsert mã vào `user_coupon_wallets` theo khóa duy nhất `(user_id, promotion_id)` với policy `saved_at = acquired_at`, `expired_at = acquired_at + INTERVAL '30 days'`.
+    4. Invalidate ví user sau khi ghi DB thành công: `DEL wallet:{user_id}:active_vouchers` để tray phản ánh mã vừa claim.
+    5. Dọn dẹp tàn dư: Gọi lên Redis `HDEL promo:{promotion_id}:pending_claims:data :claim_id` + `ZREM promo:{promotion_id}:pending_claims:index :claim_id` để xác nhận Event đã được ghi đĩa an toàn, tránh bị Sweeper Job (Mục 2.2) quét trúng.
 
 ---
 
@@ -69,21 +111,51 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 *   **Chi tiết:** Xem [Rule & Metadata Cache (L1 / L2)](redis_caching_design.md#21-rule--metadata-cache-l1--l2).
 
 ### 2.2. Flash Sale Pending Claims Sweeper
-**Loại hình:** Cronjob quét mỗi 1 phút / 5 phút.
+**Loại hình:** Cronjob micro-batch quét mỗi 1 phút (batch rescue near-real-time).
 
-**Sứ mệnh:** Dọn dẹp các phiếu phát hành Voucher (Hàng đợi Flash Sale SPOP) đang treo ghim do user claim được vé ảo từ Redis Cache nhưng crash / không thèm gọi API lấy vé thực, dẫn tới mất slot.
+**Sứ mệnh:** Cứu hộ hàng đợi Flash Sale SPOP. Tránh việc user claim được vé ảo từ Redis Cache nhưng crash ở Backend trước khi Event gắn với Kafka, dẫn tới mất vé của hệ thống và gây ức chế cho User (đã nhận response OK nhưng ví trống trơn).
 *   **Hoạt động:**
-    *   Sử dụng Redis `ZSET pending_claims:{promo_id}`.
-    *   Job quét các claim có `timestamp < NOW() - 5 phút`. Lấy list vé kẹt đó đẩy trả lại vào `AVAILABLE_POOL` (Set) cho lượt tranh giành mới.
-*   **Chi tiết:** Xem thuật toán SPOP [Tranh mã Flash Sale](redis_caching_design.md#script-5-tranh-mã-flash-sale-anti-deadlock-spop).
+*   Sử dụng cặp key Redis:
+    *   `ZSET promo:{promotion_id}:pending_claims:index` (score = timestamp)
+    *   `HASH promo:{promotion_id}:pending_claims:data` (value chứa payload claim)
+*   Job quét theo lô (ví dụ `LIMIT 1000`) các claim có `score < NOW() - 5 phút` từ ZSET index, đọc payload tương ứng trong Hash data và **push (publish) lại `COUPON_CLAIMED` lên Kafka**.
+*   Khi republish bắt buộc giữ `claim_id` bất biến (`business_id = claim_id`, `payload.claim_id = claim_id`), tạo `event_id` mới cho lần phát lại, và gắn `payload.production_source = SWEEPER_RESCUE`.
+*   Consumer downstream phải dedup hai tầng: `event_id` (delivery-level) + `claim_id` (business-level).
+*   **Chi tiết:** Xem thuật toán SPOP [Tranh mã Flash Sale](redis_caching_design.md#script-1-thuật-toán-giật-mã-flash-sale-o1-spop-claiming).
 
-### 2.3. Cart Usage Reservation Evictor
-**Loại hình:** Cronjob dọn dẹp hoặc dùng Redis Key Expiration (TTL).
+### 2.3. Reservation TTL Sweep
+**Loại hình:** Cronjob micro-batch quét định kỳ (mỗi 1 phút).
 
 **Sứ mệnh:** Khi user đang ở Checkout, mã giảm giá bị khoá tạm (Reserve) vào Redis. Nếu họ treo không bấm thanh toán, slot này bị giam. Cần nhả lại ngân sách sau 15 phút.
 *   **Hoạt động:**
-    *   Mỗi mã giữ một Redis Hash `promo:{promotion_id}:reservation:{order_id}` có TTL 15 phút.
-    *   Khi hết hạn, Redis bắn Key Space Notification hoặc Worker định kỳ đối chiếu bảng `coupon_usages` (status = `RESERVED` > 15m) để Rollback: +1 Quantity, +Budget cho Campaign.
+    *   Mỗi reservation ghi song song 2 cấu trúc: key TTL `promo:{promotion_id}:reservation:{order_id}` và index `ZSET promo:reservation:index` (member=`{promotion_id}:{order_id}`, score=`expire_at_epoch_ms`).
+    *   Job quét `ZRANGEBYSCORE promo:reservation:index -inf now_ms LIMIT 0 1000` để lấy reservation quá hạn.
+    *   Trước khi rollback, bắt buộc check DB idempotency `REDEEM_COUPON + action_scope_key='FINAL'`; nếu đã redeem thì chỉ `ZREM` index member (no-op an toàn).
+    *   Nếu chưa redeem và reservation key đã mất (TTL hết hoặc luồng khác đã dọn), gọi Script 4 để nhận mã trả về chuẩn; nếu mã `RESERVATION_MISSING_PAYLOAD` thì chỉ `ZREM` index member + enqueue reconciliation repair task (không coi là release đầy đủ).
+    *   Nếu chưa redeem và reservation key còn tồn tại, gọi Lua Script 4 để release `reserved_qty/reserved_amount`; Script 4 tự dọn `DEL reservation_key + ZREM index` theo nguyên tắc idempotent.
+    *   Sau nhánh release thực tế, ghi `promotion_event_idempotency(event_id='SWEEP-CANCEL:{promotion_id}:{order_id}:FINAL', action_type='CANCEL_COUPON', action_scope_key='FINAL')` theo chiến lược conflict-safe (`ON CONFLICT DO NOTHING`).
+    *   Luồng Confirm/Rollback/Sweep không khóa nhau toàn cục; tính đúng đắn được bảo vệ bằng idempotency DB và thao tác Redis idempotent.
+
+### 2.4. Wallet Expiry Sweep & Cache Invalidation
+**Loại hình:** Cronjob micro-batch định kỳ (khuyến nghị mỗi 30-60 giây).
+
+**Sứ mệnh:** Đồng bộ trạng thái ví theo thời gian hết hạn (`expired_at`) và đảm bảo trigger `Mã hết hạn -> DEL wallet cache` có execution path rõ ràng.
+Theo policy hiện tại, `expired_at` được gán ngay lúc acquire/save bằng `saved_at + 30 ngày`.
+*   **Hoạt động:**
+    1. Quét theo lô các dòng ví quá hạn:
+       ```sql
+       SELECT id, user_id
+       FROM user_coupon_wallets
+       WHERE status = 'SAVED' AND expired_at IS NOT NULL AND expired_at <= NOW()
+       ORDER BY id
+       LIMIT 2000
+       FOR UPDATE SKIP LOCKED;
+       ```
+    2. Update trạng thái: `SAVED -> EXPIRED` trong cùng transaction.
+    3. Thu thập tập `user_id` bị ảnh hưởng và `DEL wallet:{user_id}:active_vouchers` theo batch/pipeline.
+    4. Ghi metric `wallet_expire_sweep_rows`, `wallet_expire_sweep_users`, `wallet_expire_sweep_lag_seconds` để theo dõi độ trễ.
+*   **Idempotency:** Quét lặp là an toàn vì chỉ update các dòng đang `status='SAVED'`.
+*   **Ràng buộc Option A:** Job này chỉ invalidate theo user bị ảnh hưởng; không fanout invalidate toàn cục theo `promotion_id` khi có `BUDGET_EXHAUSTED`.
 
 ---
 
@@ -92,10 +164,10 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 ### 3.1. Coupon Claims Cleanup Job
 **Loại hình:** Cronjob chạy ban đêm (VD: 3:00 AM).
 
-**Sứ mệnh:** Xóa mềm/cứng các record "Tranh mã ảo" ở bảng `coupon_claims` hoặc đẩy vào kho lạnh, tránh làm phình DB sau các đợt Siêu Sale.
+**Sứ mệnh:** Hard delete các record "Tranh mã ảo" ở bảng `coupon_claims` đã quá retention, tránh làm phình DB sau các đợt Siêu Sale.
 *   **Hoạt động:**
     *   Áp dụng Domain-Driven Sweeping: Chỉ xóa những record thuộc về campaign đã kết thúc (Ended) + Hết hiệu lực quá 30 ngày.
-    *   Không chạy lưu trữ dài hạn (Cold Storage) để tiết kiệm chi phí do đây chỉ là vé tranh lượt.
+    *   Không chạy lưu trữ dài hạn (Cold Storage) do đây chỉ là vé tranh lượt.
 *   **Chi tiết:** Xem [Coupon Claims Deletion Strategy](coupon_claims_deletion_strategy.md).
 
 ### 3.2. Idempotency Key Cleanup
@@ -103,43 +175,79 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 
 **Sứ mệnh:** Dọn rác bảng Log giao dịch chống lặp (Idempotency).
 *   **Hoạt động:**
-    *   Câu lệnh SQL dọn sạch `promotion_event_idempotency` đối với các event đã processed quá 14 ngày (cover thời gian trả hàng).
-    *   `DELETE FROM promotion_event_idempotency WHERE processed_at < NOW() - INTERVAL '14 days';`
+    *   Retention tối thiểu phải >= `refund_window + 15 ngày` (khuyến nghị 45 ngày) để tránh mở lại cửa duplicate khi replay trễ.
+    *   Ví dụ chuẩn vận hành: `DELETE FROM promotion_event_idempotency WHERE processed_at < NOW() - INTERVAL '45 days';`
 
 ### 3.3. Outbox Garbage Collection
 **Loại hình:** Cronjob chạy hàng ngày.
 
 **Sứ mệnh:** Dọn rác bảng Outbox.
 *   **Hoạt động:**
-    *   Xóa các sự kiện đã bắn thành công (`PUBLISHED`) hoặc thất bại vĩnh viễn (`DEAD`) dồn ứ trên 7 ngày để giải phóng không gian ổ cứng cho PostgreSQL Outbox:
-    *   `DELETE FROM promotion_outbox WHERE status IN ('PUBLISHED', 'DEAD') AND created_at < NOW() - INTERVAL '7 days';`
+*   Xóa record quá hạn theo `created_at`, nhưng phải chặn bằng mốc an toàn của connector để không xóa sớm event chưa được ship:
+*   `DELETE FROM promotion_outbox WHERE created_at < NOW() - INTERVAL '7 days' AND created_at < :connector_safe_watermark;`
     *   *(Đã bao gồm trong thiết kế [Outbox Pattern](promotion_outbox_pattern.md#44-dọn-rác-outbox-garbage-collection)).*
 
-### 3.4. Markdown Expiry Scanner (CronJob)
-**Loại hình:** CronJob chạy mỗi 1 phút.
+### 3.4. Markdown Expiry Scheduler (Redis ZSET va Cron Fallback)
+**Loại hình:** Redis-driven scheduler loop (near-real-time 250ms-1s) + CronJob fallback self-healing (10-30 giây).
 
-**Sứ mệnh:** Quét các `markdown_rules` đã hết hạn → phát event [`MARKDOWN_ENDED`](promotion_events.md#23-markdown_ended) (reason: `EXPIRED`) để Product Service reset giá `promotional_price`. Đây là trigger duy nhất cho event `MARKDOWN_ENDED` khi rule hết hạn — Product Service **KHÔNG** tự quét markdown expiry.
+**Sứ mệnh:** Kết thúc `markdown_rules` đúng mốc `end_time` gần chuẩn giây để phát event [`MARKDOWN_ENDED`](promotion_events.md#23-markdown_ended) (reason: `EXPIRED`). Cron fallback chỉ đóng vai trò cứu hộ khi miss index hoặc scheduler loop gián đoạn.
+
+**Cấu trúc Redis bắt buộc:**
+*   `ZSET promo:markdown:expiry:index` (score = `end_time_epoch_ms`, member = `rule_id`).
+*   `STRING promo:markdown:expiry:lock:{rule_id}` (khóa `SETNX` TTL ngắn chống xử lý trùng giữa nhiều instance).
 
 **Chi tiết luồng hoạt động:**
-1. **Quét DB:**
-   ```sql
-   SELECT id, campaign_id, scope_type, ref_id
-   FROM markdown_rules
-   WHERE status = 'ACTIVE' AND end_time <= NOW()
-   LIMIT 100 FOR UPDATE SKIP LOCKED;
-   ```
-2. **Với mỗi rule tìm được** (trong cùng 1 PostgreSQL transaction):
-   - `UPDATE markdown_rules SET status = 'ENDED' WHERE id = :rule_id`
-   - `INSERT INTO promotion_outbox (event_type, payload) VALUES ('MARKDOWN_ENDED', '{"rule_id": :rule_id, "scope_type": :scope_type, "ref_id": :ref_id, "reason": "EXPIRED"}')`
-3. **[Outbox Relay Worker](promotion_outbox_pattern.md)** forward event lên Kafka `t.promotion.markdown.events`.
-4. **Product Service [Worker #5](../product/product_workers.md#5-markdown-price-calculator-worker)** nhận `MARKDOWN_ENDED` → reset `promotional_price = NULL` cho SKUs liên quan.
+1. **Write-path đồng bộ lịch:** Mỗi khi rule `ACTIVE` được tạo/cập nhật `end_time`, service upsert `ZADD promo:markdown:expiry:index <end_time_epoch_ms> <rule_id>`. Nếu rule chuyển `INACTIVE/ENDED`, phải `ZREM` khỏi index.
+2. **Scheduler loop (đường chính):** Worker chạy chu kỳ ngắn, quét `ZRANGEBYSCORE promo:markdown:expiry:index -inf now_ms LIMIT 0 200`.
+3. **Claim + guard:** Với từng `rule_id` quá hạn, acquire lock `SETNX promo:markdown:expiry:lock:{rule_id}`. Nếu lock fail thì skip vòng hiện tại.
+4. **DB transaction (source-of-truth):**
+    - `UPDATE markdown_rules SET status = 'ENDED' WHERE id = :rule_id AND status = 'ACTIVE' AND end_time <= NOW()`
+    - Nếu `row_count = 1`, insert outbox: `INSERT INTO promotion_outbox (... event_type='MARKDOWN_ENDED', payload.reason='EXPIRED' ...)` trong cùng transaction.
+5. **Post-commit cleanup:** Commit thành công mới `ZREM promo:markdown:expiry:index :rule_id`.
+6. **Crash-window an toàn:** Nếu crash sau commit trước `ZREM`, lần xử lý sau trở thành no-op nhờ DB guard `status='ACTIVE' AND end_time<=NOW()`, rồi tự dọn index.
+7. **Cron fallback self-healing:** Job định kỳ 10-30 giây quét DB để vá miss schedule/index drift:
+    ```sql
+    SELECT id, campaign_id, scope_type, ref_id
+    FROM markdown_rules
+    WHERE status = 'ACTIVE' AND end_time <= NOW()
+    LIMIT 200 FOR UPDATE SKIP LOCKED;
+    ```
+    Sau đó chạy cùng transaction ở bước 4.
+8. **Startup rebuild index:** Khi service khởi động hoặc sau Redis failover, bootstrap lại `promo:markdown:expiry:index` từ tập rule `ACTIVE` có `end_time > NOW()`.
 
-*   **Idempotency:** Status check `WHERE status = 'ACTIVE'` đảm bảo rule chỉ được xử lý 1 lần. `FOR UPDATE SKIP LOCKED` cho phép multi-instance chạy song song an toàn.
+*   **Idempotency & đa instance:** Khóa Redis chỉ chống đua ngắn hạn. Tính đúng đắn cuối cùng do DB guard + transaction outbox quyết định; `row_count = 0` luôn là no-op hợp lệ.
 
-### 3.5. Dead Letter Handler
+### 3.5. CDC Dead Letter Monitor
 **Loại hình:** CronJob mỗi 5 phút.
 
 **Sứ mệnh:** Theo dõi tình trạng sức khoẻ của hệ thống Event-driven.
 *   **Hoạt động:**
-    *   Quét bảng `promotion_outbox` lấy ra các event có `status = 'DEAD'` (vượt quá `max_retries` publish thất bại).
-    *   Bắn cảnh báo tới SysAdmin qua Slack/PagerDuty để xử lý bằng tay (như reset lại status thành PENDING để thử lại).
+    *   Quét DLQ topic của Kafka Connect (ví dụ `t.promotion.outbox.dlq`) và trạng thái connector task (`FAILED/UNASSIGNED`), đồng thời theo dõi connector lag.
+*   Bắn cảnh báo tới SysAdmin qua Slack/PagerDuty; xử lý bằng cách replay message từ DLQ hoặc restart task connector theo runbook.
+*   Không dùng `status = 'DEAD'` trong bảng outbox vì retry/DLQ ownership đã chuyển sang Kafka Connect.
+
+### 3.6. Redis-DB Budget Reconciliation Job
+**Loại hình:** CronJob micro-batch mỗi 15 phút (kèm full-scan off-peak hằng ngày).
+
+**Sứ mệnh:** Phát hiện và sửa drift giữa Redis counters (`used/reserved`) và trạng thái nghiệp vụ bền vững sau các tình huống crash window (Redis script thành công nhưng DB commit lỗi, replay trễ, hoặc timeout giữa các bước Saga).
+
+**Nguồn chuẩn (Source of Truth) bắt buộc - DB-first:**
+
+| Counter | Nguồn chuẩn | Vai trò |
+|---|---|---|
+| `total_qty`, `total_amount` | `promotion_budgets` (PostgreSQL) | Cấu hình ngân sách bền vững |
+| `used_qty`, `used_amount` | `coupon_usages` (PostgreSQL ledger) + gate `promotion_event_idempotency` | Sổ cái quyết định trạng thái đã dùng |
+| `reserved_qty`, `reserved_amount` | Reservation còn hiệu lực trong Redis index/payload, đã lọc qua idempotency `REDEEM_COUPON FINAL` | Trạng thái tạm thời runtime (không lưu trong DB ledger) |
+
+*   **Hoạt động:**
+    1. Chọn tập `promotion_id` cần đối soát từ cửa sổ biến động gần đây (idempotency/outbox) và bổ sung full-scan định kỳ để bắt drift âm thầm.
+    2. Dựng `expected snapshot`:
+        * `expected_total_*` từ `promotion_budgets`.
+        * `expected_used_*` từ `coupon_usages` (đã trừ phần refund lũy kế) có đối chiếu idempotency.
+        * `expected_reserved_*` từ `promo:reservation:index` + reservation payload còn tồn tại; bỏ qua reservation đã có bản ghi `REDEEM_COUPON FINAL`.
+    3. Đọc `actual snapshot` từ Redis `promo:{id}:budget` và tính drift theo từng chiều (`used_qty`, `used_amount`, `reserved_qty`, `reserved_amount`).
+    4. Nếu drift vượt ngưỡng, acquire lock `promo:budget:reconcile:lock:{promotion_id}`. Nếu lock contention thì skip vòng hiện tại, retry ở vòng kế tiếp.
+    5. Sau khi lock thành công, re-read Redis snapshot để loại bỏ stale read; chỉ repair nếu drift vẫn còn.
+    6. Apply repair script đưa Redis counters về `expected snapshot` với guard bất biến (`>= 0`, không vượt `total_*`).
+    7. Ghi audit đầy đủ (`before/after`, `run_id`, nguyên nhân), emit metrics `promotion_budget_drift_count`, `promotion_budget_repair_count`, `promotion_budget_repair_failed_count`, và alert khi drift lặp lại trên cùng `promotion_id`.
+    8. Tuyệt đối không ghi ngược PostgreSQL từ số liệu Redis trong worker này. Hướng đối soát duy nhất là **DB -> Redis**.

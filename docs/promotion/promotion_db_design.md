@@ -48,17 +48,30 @@ Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `
     > ADD CONSTRAINT chk_seller_no_freeship
     >   CHECK (owner_type != 'SELLER' OR discount_type != 'FREE_SHIPPING');
     > ```
+    > 3. **Migration Rollout bắt buộc (Production):**
+    > ```sql
+    > -- Pre-check dữ liệu vi phạm trước khi ADD CONSTRAINT
+    > SELECT id, owner_type, owner_id, discount_type, code
+    > FROM promotions
+    > WHERE owner_type = 'SELLER' AND discount_type = 'FREE_SHIPPING';
+    > ```
+    > Nếu query trên có dữ liệu, phải cleanup/backfill trước rồi mới apply constraint để tránh migration fail.
 *   **Mapping sang Mô hình Shopee:**
     *   **Shop Voucher**: `owner_type = SELLER` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
     *   **Shopee Voucher**: `owner_type = PLATFORM` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
     *   **Mã Freeship**: `discount_type = FREE_SHIPPING` (Sàn).
 *   `discount_value`: DECIMAL(10,2) (Giá trị giảm, vd: 10%, hoặc 50000đ)
 *   `max_discount_amount`: DECIMAL(10,2) (Giảm tối đa bao nhiêu, áp dụng cho loại PERCENTAGE)
-*   `min_purchase_amount`: DECIMAL(10,2) (Điều kiện giá trị đơn hàng tối thiểu để được áp dụng mã. Đưa ra ngoài JSONB để truy vấn nhanh trên giao diện "Gợi ý mã khuyến mãi". **Lưu ý:** Cần đảm bảo validator API đồng bộ ràng buộc này với `conditions_rule` để tránh "Split source of truth").
+*   `min_purchase_amount`: DECIMAL(10,2) (Điều kiện giá trị đơn hàng tối thiểu để được áp dụng mã. Đưa ra ngoài JSONB để truy vấn nhanh trên giao diện "Gợi ý mã khuyến mãi").
+  > [!IMPORTANT]
+  > **Quy tắc Source of Truth bắt buộc:** API chỉ nhận 1 giá trị `min_purchase_amount` chuẩn hoá. Backend sẽ tự động đồng bộ xuống cả cột riêng và node tương ứng trong `conditions_rule`.
+  >
+  > Không chấp nhận payload gửi 2 giá trị mâu thuẫn. Nếu phát hiện mismatch giữa cột và JSON rule ở luồng update/migration, request phải bị reject để tránh drift logic giữa Preview và Submit.
 *   `conditions_rule`: **JSONB** (Cây Abstract Syntax Tree chứa điều kiện áp dụng - Phân tích chi tiết tại [Rule Engine Design](rule_engine_design.md)).
 *   `priority`: INT (Độ ưu tiên giải quyết xung đột mã, số cao áp dụng trước).
-*   `is_exclusive`: BOOLEAN (Nếu `true`, mã này không được dùng chung với mã nào khác trong giỏ hàng).
 *   `start_time`, `end_time`: TIMESTAMPTZ
+  *   **Claim Window (thời gian tranh/lưu mã):** Dùng để quyết định còn được claim/save mã mới hay không.
+  *   **Không phải Use Window:** Voucher đã sở hữu trong ví không hết hạn theo cặp này; hạn dùng khi redeem lấy từ `user_coupon_wallets.expired_at`.
 *   `status`: VARCHAR(50) (ACTIVE, INACTIVE)
 
 ### 1.3. `promotion_budgets` (Ngân sách & Tồn kho)
@@ -68,6 +81,9 @@ Tách bảng ngân sách ra khỏi bảng `promotions` để tránh Row Lock Con
 *   `used_quantity`: INT (Số lượt đã được REDEEMED / Áp dụng thành công)
 *   `total_budget`: DECIMAL(15,2) (Tổng ngân sách tiền tệ. VD: Cho phép giảm tối đa 500 triệu)
 *   `used_budget`: DECIMAL(15,2) (Số tiền đã xài)
+*   **Naming Mapping bắt buộc:** Redis dùng cặp tên `total_amount / used_amount / reserved_amount`; PostgreSQL dùng `total_budget / used_budget`. Mapping này là 1-1 theo nghiệp vụ tiền tệ, không được trộn lẫn khi implement (`amount` ở Redis tương đương `budget` ở DB).
+*   **Source-of-Truth cho Reconciliation:** `promotion_budgets` giữ cấu hình tổng (`total_*`) và aggregate bền vững (`used_*`) để truy vấn nhanh; `reserved_*` không tồn tại trong DB này mà chỉ nằm ở Redis reservation runtime.
+*   **Nguyên tắc chiều đồng bộ bắt buộc:** Khi chạy Redis-DB reconciliation, chỉ được sửa Redis theo hướng DB-first (`PostgreSQL -> Redis`), không ghi ngược `promotion_budgets` từ counters Redis.
 *   **Chống Race Condition:** Nhờ có tầng Redis Cache kết hợp Lua Script làm "Bảo vệ cửa" (Gatekeeper) tuyệt đối cho cả Số lượng và Tiền tệ (Budget), ở tầng CSDL ta không cần các câu lệnh locking phức tạp hay `@Version` nữa. Khi Worker lấy event thanh toán thành công từ Kafka, nó chỉ cần chạy câu lệnh đơn giản: `UPDATE promotion_budgets SET used_quantity = used_quantity + 1, used_budget = used_budget + :discountAmount WHERE promotion_id = :id;`
 
 ### 1.4. `coupon_claims` (Lịch sử Tranh mã - Đổi tên từ `unique_coupons`)
@@ -76,23 +92,41 @@ Theo cách phân loại mới, mã `LIMITED_FLASH` là mã chung nhưng số lư
 *   `promotion_id`: BIGINT (Foreign Key -> `promotions.id`)
 *   `owner_id`: BIGINT (Mặc định `NULL`, Điền `user_id` khi có người giành được)
 *   `status`: VARCHAR(50) (AVAILABLE, CLAIMED)
+*   `claimed_at`: TIMESTAMPTZ NULL (Ghi mốc claim thành công, phục vụ audit và sweep đối soát)
+*   **State Invariant bắt buộc:**
+    * `status = 'AVAILABLE'` -> `owner_id IS NULL` và `claimed_at IS NULL`
+    * `status = 'CLAIMED'` -> `owner_id IS NOT NULL` và `claimed_at IS NOT NULL`
+    * Gợi ý DB CHECK:
+    ```sql
+    ALTER TABLE coupon_claims
+    ADD CONSTRAINT chk_coupon_claims_state_owner
+    CHECK (
+      (status = 'AVAILABLE' AND owner_id IS NULL AND claimed_at IS NULL)
+      OR
+      (status = 'CLAIMED' AND owner_id IS NOT NULL AND claimed_at IS NOT NULL)
+    );
+    ```
+*   **Lưu ý nhất quán trạng thái:** `PENDING_CLAIM` chỉ tồn tại ở Redis (`pending_claims:data/index`) để chống crash window, KHÔNG phải trạng thái DB của `coupon_claims`.
 *   **Partial Unique Index (`promotion_id`, `owner_id`)**: Do ban đầu 1.000 dòng insert vào có `owner_id` là NULL, ta không thể dùng (promotion_id, owner_id) làm Primary Key. Thay vào đó, ta sử dụng: `CREATE UNIQUE INDEX foo ON coupon_claims(promotion_id, owner_id) WHERE owner_id IS NOT NULL;`. Cách này đảm bảo tuyệt đối ở tầng DB rằng mỗi user chỉ được quyền claim 1 suất.
 *   **Chiến lược Update (Lịch sử: `SELECT FOR UPDATE SKIP LOCKED`):** 
     * *Thiết kế cũ:* Thuật toán cấp mã siêu hạng: `WITH cte AS (SELECT id FROM coupon_claims WHERE promotion_id = :promo_id AND status = 'AVAILABLE' LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE coupon_claims SET owner_id = :user_id, status = 'CLAIMED' FROM cte WHERE coupon_claims.id = cte.id;`
-    * *Thiết kế Hiện tại (Đã tối ưu):* Tuy nhiên, do hiện tại ở tầng Cache Redis chúng ta đã áp dụng hàng đợi nguyên tử **SPOP Claiming** để bốc `claim_id` trực tiếp từ RAM, nên cơ chế tranh giành race-condition đã được chặn đứng hoàn toàn ở ngoài cửa. Worker backend nhận được `claim_id` duy nhất từ Redis chỉ việc chạy câu lệnh update vô hại: `UPDATE coupon_claims SET owner_id = :user_id, status = 'CLAIMED' WHERE id = :claim_id`. Không cần dùng tới khoá `SKIP LOCKED` ở tầng DB nữa, nhưng đây vẫn là một giải pháp dự phòng CSDL tuyệt vời nếu sau này tắt Redis.
+    * *Thiết kế Hiện tại (Đã tối ưu):* Tuy nhiên, do hiện tại ở tầng Cache Redis chúng ta đã áp dụng hàng đợi nguyên tử **SPOP Claiming** để bốc `claim_id` trực tiếp từ RAM, nên cơ chế tranh giành race-condition đã được chặn đứng hoàn toàn ở ngoài cửa. Worker backend nhận được `claim_id` duy nhất từ Redis chỉ việc chạy câu lệnh update có guard: `UPDATE coupon_claims SET owner_id = :user_id, status = 'CLAIMED', claimed_at = NOW() WHERE id = :claim_id AND status = 'AVAILABLE' AND owner_id IS NULL`. Không cần dùng tới khoá `SKIP LOCKED` ở tầng DB nữa, nhưng đây vẫn là một giải pháp dự phòng CSDL tuyệt vời nếu sau này tắt Redis.
 *   **Chiến lược vòng đời dữ liệu:** Bảng này áp dụng [Hard Deletion theo Domain-Driven Sweeping](coupon_claims_deletion_strategy.md) thay vì Cold Data Archiving.
     
 
 ### 1.5. `user_coupon_wallets` (Ví Voucher của User)
-Bảng này quản lý trạng thái của duy nhất 1 suất Khuyến mãi mà User đang sở hữu (Bao gồm cả loại được tặng `UNLIMITED`, hoặc loại đã tranh được ở `LIMITED_FLASH`). Do đã chốt thiết kế "1 người chỉ được 1 mã ở 1 thời điểm", bảng này quay lại dạng State-Tracking đơn giản.
+Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promotion_id)`. Một user có thể sở hữu nhiều voucher đồng thời (mô hình slot theo shop + platform + freeship), nhưng mỗi promotion chỉ có tối đa 1 dòng trạng thái cho user đó.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `user_id`: BIGINT (Index)
 *   `promotion_id`: BIGINT (Foreign Key -> `promotions.id`)
 *   `status`: VARCHAR(50) (SAVED, USED, EXPIRED)
-*   `saved_at`: TIMESTAMPTZ
+*   `saved_at`: TIMESTAMPTZ (Mốc user sở hữu mã; đóng vai trò `acquired_at` theo policy hiện tại)
 *   `used_at`: TIMESTAMPTZ (Cập nhật sau khi thanh toán thành công)
-*   `expired_at`: TIMESTAMPTZ
-*   **Unique Constraint (`user_id`, `promotion_id`)**: Đảm bảo dữ liệu trong ví luôn duy nhất. Chỉ có duy nhất 1 dòng trạng thái cho khách hàng. Mở ví ra query nhẹ, lấy thẳng status.
+*   `expired_at`: TIMESTAMPTZ (Hạn dùng theo ví; mặc định gán `saved_at + INTERVAL '30 days'` tại thời điểm acquire/save)
+*   **Tách bạch 2 cửa sổ thời gian (bắt buộc):**
+  *   Claim window lấy từ `promotions.start_time/end_time`.
+  *   Use window lấy từ `user_coupon_wallets.expired_at`.
+*   **Unique Constraint (`user_id`, `promotion_id`)**: Đảm bảo dữ liệu trong ví luôn duy nhất theo từng promotion. Không áp dụng quy tắc "toàn ví chỉ 1 mã".
 *   **Composite Index (`user_id`, `status`)**: Tối ưu truy vấn "Xem danh sách mã SAVED đang khả dụng trong ví của user" — API `GET /wallet?status=SAVED` sẽ chạy Index Scan chính xác thay vì quét toàn bộ ví.
 
 ### 1.6. `coupon_usages` (Sổ cái Phân tán - Ledger & Audit Trail)
@@ -104,55 +138,79 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   `discount_amount`: DECIMAL(10,2) (Số tiền thực tế đã giảm)
 *   **`platform_funding`**: DECIMAL(10,2) (Số tiền Sàn chịu. VD: Mã giảm 50k, sàn chịu 20k)
 *   **`seller_funding`**: DECIMAL(10,2) (Số tiền Shop chịu. VD: Mã giảm 50k, shop chịu 30k)
-*   `status`: VARCHAR(50) (RESERVED, REDEEMED, CANCELLED, REFUNDED)
-    * `RESERVED`: Checkout đang giữ chỗ ngân sách, chưa thanh toán.
+*   `status`: VARCHAR(50) (REDEEMED, PARTIALLY_REFUNDED, REFUNDED)
     * `REDEEMED`: Đơn hàng thanh toán thành công, ngân sách đã xác nhận trừ.
-    * `CANCELLED`: Đơn hàng bị hủy trước khi thanh toán hoặc TTL Reservation 15 phút hết hạn — nhả ngân sách về Available.
-    * `REFUNDED`: Đơn hàng đã giao thành công nhưng sau đó khách **đổi trả hàng hoàn tiền** — hoàn ngược ngân sách đã Redeemed.
-*   `reserved_at`: TIMESTAMPTZ (Lúc user sang trang Thanh toán)
+    * `PARTIALLY_REFUNDED`: Đơn đã có hoàn tiền một phần, vẫn còn phần voucher đã sử dụng.
+    * `REFUNDED`: Đơn hàng đã giao thành công nhưng sau đó khách **đổi trả hàng hoàn tiền toàn phần** — hoàn ngược toàn bộ ngân sách đã Redeemed.
+    * (Lưu ý: Không lưu trạng thái `RESERVED` hay `CANCELLED` ở bảng này vì hành động giữ chỗ (Reserve/Cancel) chỉ thao tác thuần túy trên Redis để tối ưu tốc độ, không ghi DB ledger.)
+*   `reserved_at`: TIMESTAMPTZ (Timestamp tham chiếu lấy từ reservation Redis tại thời điểm commit REDEEMED; có thể NULL nếu không truy hồi được)
 *   `redeemed_at`: TIMESTAMPTZ (Lúc nhận event Order Success)
-*   `cancelled_at`: TIMESTAMPTZ (Lúc nhận event Order Cancelled hoặc TTL Reservation hết hạn)
 *   `refunded_at`: TIMESTAMPTZ (Lúc nhận event Order Refunded — sau delivery)
-*   **Unique Constraint (`order_id`, `promotion_id`):** Đảm bảo không áp dụng trùng 1 mã cho 1 đơn. (Tuy nhiên, chưa hoàn toàn thay thế được `promotion_event_idempotency` trong các trường hợp Refund lỗi mạng - xem phân tích bên dưới).
+*   `refunded_amount`: DECIMAL(10,2) DEFAULT 0 (Tổng số tiền voucher đã hoàn lũy kế)
+*   `refund_count`: INT DEFAULT 0 (Số lần refund đã áp dụng cho bản ghi)
+*   **Funding Invariant bắt buộc:** `platform_funding >= 0`, `seller_funding >= 0`, và `platform_funding + seller_funding = discount_amount`.
+*   **Refund Invariant bắt buộc:** `0 <= refunded_amount <= discount_amount`, `refund_count >= 0`, và `status` phải khớp trạng thái hoàn (`REDEEMED` khi `refunded_amount = 0`; `PARTIALLY_REFUNDED` khi `0 < refunded_amount < discount_amount`; `REFUNDED` khi `refunded_amount = discount_amount`).
+*   **DB CHECK gợi ý (khuyến nghị triển khai):**
+  ```sql
+  ALTER TABLE coupon_usages
+  ADD CONSTRAINT chk_coupon_refund_bounds
+  CHECK (refunded_amount >= 0 AND refunded_amount <= discount_amount AND refund_count >= 0);
+  ```
+*   **Unique Constraint (`order_id`, `promotion_id`):** Đảm bảo không áp dụng trùng 1 mã cho 1 đơn trong ledger chính. Refund flow sẽ UPDATE bản ghi hiện có, không INSERT thêm bản ghi mới cho cùng cặp này.
+*   **Vai trò Source-of-Truth bắt buộc:** Với worker reconciliation, `coupon_usages` (kèm gate idempotency) là nguồn chuẩn để rebuild `used_qty/used_amount`; không lấy Redis `used_*` làm chuẩn để ghi ngược DB.
 
 ### 1.7. `promotion_event_idempotency` (Chống lặp Message Kafka)
 Đảm bảo khi Order Service gửi Event hoàn mã, nếu Kafka delivery 2 lần, ta không bị cộng dồn ngân sách 2 lần. Bảng này hoạt động như chốt chặn cuối cùng bảo vệ DB, kết hợp cùng lệnh `SETNX` của Redis ở vòng ngoài.
-*   `event_id`: VARCHAR(255) PRIMARY KEY (Kafka Message ID hoặc Correlation ID)
+*   `event_id`: VARCHAR(255) PRIMARY KEY
+  * **Contract nguồn dữ liệu bắt buộc:** Promotion Service **không tự sinh** `event_id`.
+  * Luồng sync qua Temporal (`/confirm`, `/cancel`, `/refund`): nhận `idempotency_key/request_id` từ Order và ghi thẳng vào `event_id`.
+  * Luồng async qua Kafka (`ORDER_PAID/CANCELLED/REFUNDED`): lấy đúng `event_id` từ Kafka envelope và ghi thẳng vào `event_id`.
 *   `order_id`: BIGINT **(Index)** — Hỗ trợ truy vấn đối soát "Tìm tất cả action đã xử lý cho đơn hàng X".
+*   `promotion_id`: BIGINT **(Index)** — Bắt buộc để phân biệt 1 đơn áp nhiều voucher (shop/platform/freeship).
 *   `action_type`: VARCHAR(50) 
     *   `REDEEM_COUPON`: Đánh dấu đơn hàng thành công, trừ lượng Budget đã Reservation.
     *   `CANCEL_COUPON`: Đơn hàng bị huỷ, nhả lại Budget đã khóa về Available.
     *   `REFUND_COUPON`: Trả hàng hoàn tiền, hoàn lại số lượng mã/ngân sách.
+*   `action_scope_key`: VARCHAR(100) (Khóa phạm vi idempotent theo action; ví dụ `FINAL`, `refund_txn_id`, hoặc `refund_batch_id`).
+*   `payload_hash`: VARCHAR(128) NULL (Checksum payload để điều tra replay sai nội dung)
 *   `processed_at`: TIMESTAMPTZ
-*   **Unique Constraint (`order_id`, `action_type`)**: Đảm bảo tuyệt đối không xử lý lặp lại cùng một thao tác (ví dụ 2 lần REDEEM) cho cùng một đơn hàng, bất chấp mọi lỗi hệ thống phân tán hay replay attack.
+*   **Unique Constraint (`order_id`, `promotion_id`, `action_type`, `action_scope_key`)**: Đảm bảo không xử lý lặp lại cùng một thao tác trong cùng phạm vi nghiệp vụ.
+  * REDEEM/CANCEL dùng `action_scope_key = 'FINAL'`.
+  * REFUND partial dùng `action_scope_key = refund_transaction_id` (hoặc `refund_batch_id`) để vừa chống duplicate, vừa cho phép nhiều lần refund hợp lệ.
+*   **Vai trò trong Reconciliation:** `REDEEM_COUPON + action_scope_key='FINAL'` là gate bắt buộc để loại reservation đã chốt khỏi tập `reserved_*` runtime khi đối soát Redis.
+*   **Retention bắt buộc:** Thời gian giữ dữ liệu idempotency phải >= `refund_window + 15 ngày` (khuyến nghị 45 ngày) để không mở lại cửa duplicate khi replay trễ.
 
 ### 1.8. `promotion_outbox` (Outbox Pattern — Reliable Event Publishing)
 Đảm bảo mọi sự kiện Kafka được phát đi đáng tin cậy sau khi ghi DB thành công, tránh mất Event khi Worker crash giữa chừng. Chi tiết thiết kế xem tại [Outbox Pattern](promotion_outbox_pattern.md).
 *   `event_id`: UUID PRIMARY KEY
-*   `aggregate_type`: VARCHAR(50) (VD: `PROMOTION`, `MARKDOWN_RULE`, `COUPON_USAGE`)
-*   `aggregate_id`: VARCHAR(255) (ID của entity liên quan)
 *   `event_type`: VARCHAR(100) (VD: `MARKDOWN_CREATED`, `COUPON_REDEEMED` — xem [Events Schema](promotion_events.md))
+*   `schema_version`: INT DEFAULT 1 (đồng bộ với envelope top-level trong [promotion_events.md](promotion_events.md))
+*   `aggregate_type`: VARCHAR(50) (VD: `Promotion`, `MarkdownRule`, `CouponUsage`)
+*   `aggregate_id`: VARCHAR(255) (ID của entity liên quan)
+*   `partition_key`: VARCHAR(255) (Khóa partition được chốt ngay lúc ghi outbox, không suy luận lại từ payload ở CDC Connector)
 *   `payload`: JSONB (Nội dung Event)
-*   `status`: VARCHAR(20) DEFAULT 'PENDING' (Trạng thái phát sự kiện: PENDING, PUBLISHED, FAILED, DEAD)
-*   `retry_count`: INT DEFAULT 0
-*   `max_retries`: INT DEFAULT 5 (Ngưỡng retry tối đa. Khi `retry_count >= max_retries`, Worker chuyển status sang `DEAD`)
-*   `next_retry_at`: TIMESTAMPTZ NULL (Thời điểm retry tiếp theo, cho phép triển khai Exponential Backoff. VD: lần 1 = +5s, lần 2 = +15s, lần 3 = +60s. Worker chỉ gắp event có `next_retry_at <= NOW()`)
-*   `published_at`: TIMESTAMPTZ NULL (Thời điểm event được publish thành công lên Kafka)
-*   `error_message`: TEXT NULL (Ghi lại lỗi cuối cùng khi publish thất bại. VD: "Kafka broker unreachable". Phục vụ debug)
 *   `created_at`: TIMESTAMPTZ
+*   **Nguyên tắc CDC:** Bảng outbox giữ dạng append-only, không chứa các cột polling-specific như `status/retry_count/max_retries/next_retry_at/published_at/error_message`. Retry/DLQ được quản trị tại Kafka Connect.
 
 ---
 ## 2. Quy tắc Áp dụng Voucher (Stacking & Sequencing)
 Mô hình voucher theo chuẩn Shopee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
 
-### 2.1. Giới hạn Voucher (Max 03 Vouchers)
-Một đơn hàng (có thể gồm nhiều shop) áp dụng tối đa **03 loại Voucher** riêng biệt, chia rõ thành 03 slot:
+### 2.1. Giới hạn Voucher theo Slot (Per-Shop + Platform + Freeship)
+Một đơn hàng (có thể gồm nhiều shop) áp dụng theo slot:
+* mỗi **shop** tối đa 1 `SHOP_VOUCHER`
+* toàn đơn tối đa 1 `PLATFORM_VOUCHER`
+* toàn đơn tối đa 1 `FREESHIP_VOUCHER`
+
+Tổng số voucher có thể áp dụng là biến thiên theo số shop trong đơn: `N_shop_vouchers + [0|1 platform] + [0|1 freeship]`.
+
+Sơ đồ slot:
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  SLOT 1: SHOP_VOUCHER    (≤ 1 mã / shop — theo từng Sub-Cart)   │
-│  SLOT 2: PLATFORM_VOUCHER  (1 mã duy nhất — giảm tổng tiền hàng)  │
-│  SLOT 3: FREESHIP_VOUCHER  (1 mã duy nhất — chỉ Platform)        │
+│  SLOT SHOP_VOUCHER     (≤ 1 mã / shop — lặp theo từng Sub-Cart)  │
+│  SLOT PLATFORM_VOUCHER (≤ 1 mã toàn đơn)                         │
+│  SLOT FREESHIP_VOUCHER (≤ 1 mã toàn đơn, chỉ Platform)           │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -167,7 +225,19 @@ Một đơn hàng (có thể gồm nhiều shop) áp dụng tối đa **03 loạ
 > [!IMPORTANT]
 > **Shop không được tạo Freeship Voucher.** Slot 3 chỉ dành riêng cho Platform. Sàn đã có cơ chế mạnh để hỗ trợ phí ship cho khách, Shop không cần và không nên sành vào slot này.
 
-### 2.2. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
+### 2.2. Mapping với Order Service (`order_promotions.promotion_type`)
+`promotions.type` và `order_promotions.promotion_type` là hai chiều phân loại khác nhau, không được dùng thay thế cho nhau.
+
+| Trường | Ý nghĩa |
+|:---|:---|
+| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, `SELLER_LIMITED`) |
+| `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`, `SHIPPING_DISCOUNT`) |
+
+Quy tắc map bắt buộc:
+* `discount_type = FREE_SHIPPING` -> `order_promotions.promotion_type = SHIPPING_DISCOUNT`
+* `discount_type IN (PERCENTAGE, FIXED_AMOUNT)` -> `order_promotions.promotion_type = CART_DISCOUNT`
+
+### 2.3. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
 Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall):
 1.  **Giá gốc (Original Price):** Giá hiển thị trên trang sản phẩm (đã bao gồm Markdowns/Price Slashes nếu có).
 2.  **Bước 1: Áp Shop Voucher (per shop):** Giảm trực tiếp trên giá gốc của từng sub-cart.
@@ -180,6 +250,12 @@ Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall)
 5.  **Tổng cộng:**
     *   `final_amount = final_product_price + final_shipping_fee`
 
+> [!IMPORTANT]
+> **Phụ thuộc slot trong Checkout Preview:**
+> - Thay đổi Shop Voucher có thể thay đổi điều kiện áp dụng của Platform/Freeship.
+> - Thay đổi Platform/Freeship không làm thay đổi điều kiện áp dụng của Shop Voucher.
+> - Checkout luôn gọi Promotion evaluate lại khi đổi mã để đảm bảo waterfall nhất quán.
+
 
 ---
 ## 3. Thiết kế Giảm giá Trực tiếp (Markdowns / Price Slashes)
@@ -189,16 +265,23 @@ Khác với `promotions` (Mã Voucher áp dụng ở Giỏ hàng), **Giảm giá
 
 **Giải pháp Kiến trúc:** Tách bảng Định nghĩa Luật (Rules) và Bảng Mappings riêng. Dùng Engine Tính toán Động.
 
-### 2.1. `markdown_rules` (Luật Giảm giá Gạch chéo)
+### 3.1. `markdown_rules` (Luật Giảm giá Gạch chéo)
 Định nghĩa luật giảm cơ bản. Không map trực tiếp vào sản phẩm ở DB Quan hệ (PostgreSQL).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Cho phép gom Markdown rules vào cùng chiến dịch với Vouchers. VD: "Mega Sale 11/11" bao gồm cả mã giảm giá lẫn gạch giá trực tiếp).
 *   `owner_id`: BIGINT NULL (Sàn hoặc Shop tạo)
 *   `owner_type`: VARCHAR(50) (PLATFORM, SELLER)
 *   `name`: VARCHAR(255) (VD: "Điện thoại Apple giảm 10%")
-*   `scope_type`: VARCHAR(50) (PRODUCT, CATEGORY, ALL) 
-    *(Lưu ý: `ALL` chỉ áp dụng khi `owner_type = SELLER`, nghĩa là "Toàn bộ gian hàng của Shop này". Sàn không được phép dùng `ALL` vì số lượng sản phẩm toàn sàn khổng lồ sẽ gây tê liệt CSDL khi tính toán ngầm).*
-*   `ref_id`: BIGINT NULL (Chứa ID của Product/Category tương ứng với scope)
+*   `scope_type`: VARCHAR(50) (PRODUCT, CATEGORY)
+*   `ref_id`: VARCHAR(255) NULL (Chứa ID của Product/Category tương ứng với scope, đồng nhất định dạng ID string liên service)
+
+> [!IMPORTANT]
+> **Validation Matrix bắt buộc:**
+> * `scope_type IN (PRODUCT, CATEGORY)` -> `ref_id IS NOT NULL`
+> * Không mở rộng thêm scope enum khi chưa cập nhật đầy đủ contract ở `promotion_events.md` và Product consumer.
+
+> [!NOTE]
+> Không có FK trực tiếp giữa `promotions` và `markdown_rules`. Hai thực thể độc lập, có thể cùng tham chiếu `campaign_id` để gom chiến dịch nhưng không ràng buộc 1-1.
 
 > [!NOTE]
 > **Design Decision (Polymorphic Association):** Cột `ref_id` là một **Polymorphic Foreign Key** — ý nghĩa của nó phụ thuộc vào giá trị `scope_type`. Khi `scope_type = PRODUCT` thì `ref_id` trỏ tới `products.id`, khi `scope_type = CATEGORY` thì trỏ tới `categories.id`. Đây là trade-off có chủ đích: ta hy sinh referential integrity ở tầng DB để đổi lấy sự đơn giản về schema (tránh tạo bảng mapping riêng cho từng scope). Tính toàn vẹn được bảo vệ ở **tầng Application Logic** (Validate `ref_id` tồn tại bằng API call tới Product Service trước khi lưu).
@@ -220,7 +303,7 @@ Trang Danh sách (Search/Filter) không thể vừa query Data, vừa gọi Prom
     * **Tại sao không ném thẳng qua Search Service?** Bởi vì Promotion Service chỉ biết "luật giảm 15%", nó hoàn toàn không biết Category 10 gồm những sản phẩm nào, và quan trọng nhất là không nắm giữ `original_price` (Giá gốc). **Product Service mới là Nguồn Chân Lý (Source of Truth)** về Sản phẩm và Giá. Nếu giao việc tính toán này cho Search Service (Read Model), ElasticSearch sẽ phải gánh vác các logic nhân chia cộng trừ giá tùy chỉnh, làm mất đi đặc tính "Chỉ Đọc" siêu tốc của nó.
     * Bằng một Batch Job Update, Product Service ngầm nhồi công thức tính toán ra giá chéo (ví dụ: `promotional_price = original_price * 0.85`).
     * Sau đó cập nhật hàng loạt trường `promotional_price` này thẳng vào Database của Product Service.
-4. **[Product Service -> Kafka]** Khi giá sản phẩm thay đổi, Product Service ném Event: `PRODUCT_PRICE_UPDATED { product_id: ..., new_promotional_price: ... }` (Luồng CDC - Change Data Capture).
+4. **[Product Service -> Kafka]** Khi giá sản phẩm thay đổi, Product Service ném Event: `PRODUCT_PRICE_UPDATED { product_id, sku_id, original_price, promotional_price, best_price, has_promotion, version, event_sequence_id, change_source }` (Luồng CDC - Change Data Capture).
 5. **[Search Service - Read Model]** Hứng luồng thay đổi giá này, và **Update trực tiếp vào Elasticsearch (hoặc Typesense/Meilisearch)**.
 
 **Kết quả tuyệt đối:** Khi người dùng vào Giao diện (App/Web), họ gọi request tìm kiếm. **Search Service** chỉ đơn thuần móc từ Elasticsearch ra một danh sách sản phẩm gồm `[Tên SP, Hình ảnh, Giá gốc (original_price), Giá đã giảm (promotional_price)]`. 

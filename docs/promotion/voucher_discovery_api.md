@@ -18,22 +18,39 @@ Tài liệu này thiết kế API `GET /v1/promotions/voucher-suggestions` — A
 
 ### 1.1. Nguồn mã giảm giá tại Checkout
 
-Khách hàng có thể sử dụng voucher từ **2 nguồn**:
+Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 | Nguồn | Loại mã | Cách lấy |
 |:---|:---|:---|
-| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH` đã săn, `SELLER_LIMITED` đã lưu | Đã có sẵn trong ví, `status = SAVED` |
-| **Mã sàn toàn cục (`UNLIMITED_ALL`)** | Mã sàn không giới hạn lượt (sinh nhật, tân thủ, campaign rộng) | Chưa có trong ví — gợi ý và auto-save khi dùng |
+| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, `SELLER_LIMITED`, `UNLIMITED_ALL` (nếu đã lưu trước), mã freeship sàn | Đã có sẵn trong ví, `status = SAVED` |
+| **Mã public của shop (`SHOP_PUBLIC`)** | Mã shop chưa lưu trong ví | Chỉ xuất hiện ở `GET /v1/promotions/shop-voucher-discovery`, user bấm `save-and-apply` để lưu |
 
-### 1.2. Stacking Rules (3 Slot cứng)
+> [!IMPORTANT]
+> Đối với tray Voucher Sàn/Freeship tại Checkout, API `GET /v1/promotions/voucher-suggestions` chỉ trả mã đã có trong ví (`source = WALLET`). Không có cơ chế gợi ý mã sàn chưa lưu rồi auto-save ở Submit.
 
-Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều shop)** áp dụng tối đa **3 voucher**, chia thành 3 slot riêng biệt:
+### 1.1.1. Claim Window vs Use Window (bắt buộc)
+
+- `promotions.start_time/end_time`: cửa sổ **tranh/lưu mã mới** (claim/save window).
+- `user_coupon_wallets.expired_at`: cửa sổ **được dùng sau khi đã sở hữu mã** (use window).
+- Policy hiện tại: với mã được acquire/save thành công, `expired_at = saved_at + 30 ngày`.
+- Vì vậy, voucher đã nằm trong ví và chưa quá `expired_at` vẫn có thể được evaluate/redeem dù promotion đã qua `end_time` claim window.
+
+### 1.2. Stacking Rules (Slot Model)
+
+Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều shop)** áp dụng theo slot:
+* mỗi shop tối đa 1 `SHOP_VOUCHER`
+* toàn đơn tối đa 1 `PLATFORM_VOUCHER`
+* toàn đơn tối đa 1 `FREESHIP_VOUCHER`
+
+Tổng số voucher áp dụng là biến thiên theo số shop trong đơn (`N_shop + [0|1 platform] + [0|1 freeship]`), không bị cố định ở 3.
+
+Sơ đồ slot:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  SLOT 1: SHOP_VOUCHER   (1 mã/shop — theo từng Sub-Cart)│
-│  SLOT 2: PLATFORM_VOUCHER   (1 mã — toàn đơn)          │
-│  SLOT 3: FREESHIP_VOUCHER   (1 mã — chỉ Platform)       │
+│  SLOT SHOP_VOUCHER        (1 mã/shop — theo từng Sub-Cart) │
+│  SLOT PLATFORM_VOUCHER    (tối đa 1 mã toàn đơn)           │
+│  SLOT FREESHIP_VOUCHER    (tối đa 1 mã, chỉ Platform)      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -41,6 +58,12 @@ Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều shop)** áp d�
 - **SHOP_VOUCHER**: `owner_type = SELLER` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
 - **PLATFORM_VOUCHER**: `owner_type = PLATFORM` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
 - **FREESHIP_VOUCHER**: `discount_type = FREE_SHIPPING` + `owner_type = PLATFORM` (shop không được tạo mã freeship)
+
+### 1.2.1. Dependency một chiều giữa các slot (Contract bắt buộc)
+
+- Shop voucher có thể làm đổi eligibility của platform/freeship vì thay đổi `total_after_shops`.
+- Platform voucher hoặc freeship voucher không làm đổi eligibility của shop voucher.
+- Mọi thay đổi chọn mã ở bất kỳ slot nào đều phải gọi lại Promotion evaluate để trả discount lines nhất quán theo cùng một waterfall.
 
 ### 1.3. Quy tắc Freeship (Freeship Rule)
 
@@ -140,25 +163,25 @@ Authorization: Bearer {access_token}
           "discount_type": "FIXED_AMOUNT",
           "discount_value": 50000,
           "min_purchase_amount": 300000,
-          "source": "UNLIMITED_ALL",
+          "source": "WALLET",
           "eligible": true,
           "estimated_discount": 50000
         }
       ]
     },
     "freeship_voucher": {
-      "vouchers": [
-        {
-          "promotion_id": 30,
-          "code": "FREESHIP_PLATFORM",
-          "owner_type": "PLATFORM",
-          "max_freeship_amount": 45000,
-          "min_purchase_amount": 200000,
-          "source": "WALLET",
-          "eligible": true,
-          "estimated_discount": 45000,
-          "badge": "ƯU ĐÃI SÀN"
-        },
+      "best_voucher": {
+        "promotion_id": 30,
+        "code": "FREESHIP_PLATFORM",
+        "owner_type": "PLATFORM",
+        "max_freeship_amount": 45000,
+        "min_purchase_amount": 200000,
+        "source": "WALLET",
+        "eligible": true,
+        "estimated_discount": 45000,
+        "badge": "ƯU ĐÃI SÀN"
+      },
+      "other_vouchers": [
         {
           "promotion_id": 31,
           "code": "FREESHIP_PLUS",
@@ -176,14 +199,24 @@ Authorization: Bearer {access_token}
   },
   "cache_meta": {
     "wallet_cached_at": "2026-03-12T09:30:00Z",
-    "ttl_remaining_seconds": 240
+    "ttl_remaining_seconds": 240,
+    "promotion_rule_version": "2026-03-12T09:29:55Z",
+    "promotion_budget_version": "2026-03-12T09:29:58Z",
+    "budget_guard_status": "OK",
+    "budget_guard_checked_promotions": 4,
+    "budget_guard_checked_at": "2026-03-12T09:30:00Z"
   }
 }
 ```
 
+> [!IMPORTANT]
+> `promotion_rule_version` và `promotion_budget_version` là contract bắt buộc cho Checkout Submit staleness check. Checkout cache snapshot phải lưu cả hai giá trị này để so sánh trước khi khóa token Submit.
+>
+> Theo hướng Option A, Discovery chạy thêm `budget_guard` dạng read-time best-effort để giảm stale hiển thị mã hết ngân sách. Tuy nhiên quyết định cuối cùng vẫn nằm ở Reserve khi Submit.
+
 **Giải thích trường `source`:**
 - `WALLET`: Mã đã có sẵn trong `user_coupon_wallets` (status=SAVED).
-- `UNLIMITED_ALL`: Mã sàn chưa có trong ví, sẽ được auto-save khi user xác nhận dùng.
+- `SHOP_PUBLIC`: Mã shop chưa có trong ví user (chỉ xuất hiện ở API `shop-voucher-discovery`), được lưu vào ví khi user gọi `save-and-apply`.
 
 ---
 
@@ -197,32 +230,26 @@ Promotion Service
   │
   ├─── STEP 1: Check Wallet Cache (Redis)
   │     Key: wallet:{user_id}:active_vouchers  TTL 5 phút
-  │     ├── Cache HIT  → bỏ qua Step 2
-  │     └── Cache MISS → STEP 2
+  │     Kèm version fence: so `wallet_cache.rule_version_snapshot` với `promo:rules:version` hiện tại.
+  │     ├── Cache HIT + version khớp  → bỏ qua Step 2
+  │     └── Cache MISS hoặc version lệch → STEP 2
   │
   ├─── STEP 2: Query Database
   │     SELECT w.promotion_id, w.status, w.expired_at,
   │            p.owner_type, p.owner_id, p.discount_type,
   │            p.discount_value, p.max_discount_amount,
-  │            p.min_purchase_amount, p.code, p.is_exclusive
+  │            p.min_purchase_amount, p.code
   │     FROM user_coupon_wallets w
   │     JOIN promotions p ON p.id = w.promotion_id
   │     WHERE w.user_id = :user_id
   │       AND w.status = 'SAVED'
   │       AND (w.expired_at IS NULL OR w.expired_at > NOW())
   │       AND p.status = 'ACTIVE'
-  │       AND p.end_time > NOW()
   │     -- Dùng Composite Index (user_id, status) → Index Scan
   │
   │     → Ghi kết quả vào Redis: wallet:{user_id}:active_vouchers
   │
-  ├─── STEP 3: Fetch UNLIMITED_ALL Promotions (Caffeine L1 Cache)
-  │     Đọc danh sách promotion type=UNLIMITED_ALL đang ACTIVE từ
-  │     L1 Caffeine Cache (đã nạp sẵn metadata, refresh mỗi 1 phút).
-  │     Loại trừ những promotion_id đã có trong ví (từ Step 1/2).
-  │     → Gọp thêm vào danh sách ứng viên với source='UNLIMITED_ALL'
-  │
-  ├─── STEP 4: Pre-filter Eligibility (Rule Engine In-Memory)
+  ├─── STEP 3: Pre-filter Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher ứng viên:
   │     (a) Check nhanh min_purchase_amount (field riêng, O(1)):
   │         - SHOP_VOUCHER:    so với sub_cart.subtotal của seller đó
@@ -234,59 +261,67 @@ Promotion Service
   │         - PERCENTAGE: min(subtotal * rate, max_discount_amount)
   │         - FIXED_AMOUNT: min(discount_value, subtotal)
   │         - FREE_SHIPPING: min(max_freeship_amount, total_shipping_fee)
+  │     (d) Thu thập version fence cho Submit path:
+  │         - `promotion_rule_version`: max(updated_at/rule_version) của các rule đã evaluate
+  │         - `promotion_budget_version`: max(budget_version_updated_at) của các budget liên quan
   │
-  ├─── STEP 5: Gom nhóm thành 3 Slot (Group & Sort)
+  ├─── STEP 4: Budget Availability Guard (Redis Read-time, Option A)
+  │     Chỉ áp dụng cho tập voucher đang `eligible=true` sau Step 3:
+  │     (a) Gom `promotion_id` duy nhất và đọc batch qua Redis Pipelining:
+  │         HMGET promo:{id}:budget total_qty reserved_qty used_qty total_amount reserved_amount used_amount
+  │     (b) Tính available runtime:
+  │         - available_qty = total_qty - used_qty - reserved_qty
+  │         - available_amount = total_amount - used_amount - reserved_amount (bỏ qua nếu total_amount = -1)
+  │     (c) Nếu thiếu quota hoặc thiếu amount cho voucher đang xét:
+  │         - set `eligible=false`
+  │         - set `ineligible_reason=BUDGET_EXHAUSTED`
+  │     (d) Nếu Redis timeout/lỗi nhất thời:
+  │         - fail-open (không chặn response)
+  │         - gắn `cache_meta.budget_guard_status=DEGRADED` để observability
+  │
+  ├─── STEP 5: Gom nhóm theo Slot Model (Group & Sort)
   │     SHOP_VOUCHER[]: nhóm theo seller_id, sort by estimated_discount DESC
   │     PLATFORM_VOUCHER: filter owner_type=PLATFORM + discount_type≠FREE_SHIPPING
   │                       sort: eligible first, then estimated_discount DESC
-  │     FREESHIP[]: filter owner_type=PLATFORM AND discount_type=FREE_SHIPPING
-  │                 sort: eligible first → estimated_discount DESC → ineligible last
+  │     FREESHIP_VOUCHER: filter owner_type=PLATFORM AND discount_type=FREE_SHIPPING
+  │                       chọn `best_voucher` + `other_vouchers` theo cùng rule sort
   │
-  └─── STEP 6: Build Response & Return
+  └─── STEP 6: Build Response & Return (kèm `promotion_rule_version`, `promotion_budget_version`, `budget_guard_status` trong `cache_meta`)
 ```
 
 ---
 
-## 4. Auto-Save Logic cho UNLIMITED_ALL Voucher
+## 4. Chính sách Không Auto-Save ở Submit
 
-Mã `UNLIMITED_ALL` không yêu cầu "tranh giành" trước, nhưng cần tạo dòng trong `user_coupon_wallets` để phục vụ luồng sử dụng voucher ở Checkout.
+`GET /v1/promotions/voucher-suggestions` là API read-only và chỉ phục vụ các mã đã có trong ví. Vì vậy, submit path của Checkout/Order chỉ thực hiện reserve/confirm/rollback theo tập mã đã chọn, không chèn thêm bản ghi ví ngầm.
 
-### 4.1. Khi nào INSERT vào `user_coupon_wallets`?
+### 4.1. Nguyên tắc contract
 
-> **Phương án được chọn: INSERT tại thời điểm Submit Checkout (Temporal Saga)**
+1. **Không auto-save mã sàn/freeship tại Submit.**
+2. **Không upsert `user_coupon_wallets` trong Discovery path.**
+3. **Mã muốn xuất hiện ở tray Voucher Sàn/Freeship phải tồn tại sẵn trong ví** (được lưu từ luồng claim/campaign/wallet management trước đó).
 
-Khi khách bấm Submit Checkout, Order Service khởi chạy Temporal Saga và gọi `ReservePromotionActivity` sang Promotion Service. Với mã có `source = UNLIMITED_ALL`, Promotion Service thực hiện **upsert** vào `user_coupon_wallets` trước khi Reserve ngân sách:
-
-```sql
-INSERT INTO user_coupon_wallets (user_id, promotion_id, status, saved_at)
-VALUES (:user_id, :promotion_id, 'SAVED', NOW())
-ON CONFLICT (user_id, promotion_id) DO NOTHING;
--- Unique Constraint (user_id, promotion_id) bảo vệ khỏi duplicate
-```
-
-Sau đó tiếp tục Reserve ngân sách bằng Lua Script 2 như bình thường.
-
-Nếu Reserve thất bại (ví dụ `BUDGET_EXHAUSTED`, timeout, hoặc lỗi downstream), Saga sẽ rollback các bước đã giữ chỗ và trả lỗi về Checkout để hiển thị cho khách hàng chọn lại voucher hoặc thực hiện Preview lại.
-
-> [!NOTE]
-> **Tại sao không INSERT ngay khi xem gợi ý (Step 3)?** Nếu INSERT ngay khi API trả gợi ý, mỗi lần khách mở màn hình voucher sẽ tự động lưu hàng chục mã vào ví — gây noise ví, db bloat và khó đối soát audit trail. Chỉ INSERT khi khách **thực sự submit checkout** và Saga đi vào bước Reserve.
-
-### 4.2. Trạng thái vòng đời sau auto-save
+### 4.2. Vòng đời mã trong ví (không có bước insert ngầm)
 
 ```
-[Không có trong ví]
-        │
-  │ -- Submit Checkout → ReservePromotionActivity --
-        ▼
-   SAVED  (upsert vào user_coupon_wallets)
-        │
-        │ -- ORDER_PAID --
-        ▼
-   USED
-        │
-        │ -- ORDER_CANCELLED / ORDER_REFUNDED --
-        ▼
-   SAVED  (trả lại — user có thể dùng lần sau)
+[Đã có trong ví: SAVED]
+     │
+     │ -- Submit Checkout → ReservePromotionActivity --
+     ▼
+   RESERVED (runtime trên Redis reservation)
+     │
+     │ -- ORDER_CANCELLED/PAYMENT_TIMEOUT --
+     ▼
+   SAVED (không đổi state DB; chỉ nhả reserved runtime)
+     │
+     │ -- Submit lại thành công → ORDER_PAID --
+     ▼
+   USED (DB wallet)
+
+  ORDER_REFUNDED:
+  - Chỉ `USED -> SAVED` khi promotion cho phép tái sử dụng **và** voucher còn hạn (`expired_at > NOW()`).
+  - Nếu đã quá hạn tại thời điểm restore: chuyển `EXPIRED` (hoặc giữ `USED` nếu không có row ví để cập nhật).
+  - Nếu promotion không cho phép tái sử dụng: giữ `USED`.
 ```
 
 ---
@@ -321,21 +356,28 @@ Nếu Reserve thất bại (ví dụ `BUDGET_EXHAUSTED`, timeout, hoặc lỗi d
 > [!NOTE]
 > Cache **không** lưu `estimated_discount` (vì phụ thuộc cart_context được gửi lên mỗi lần gọi). Cache chỉ lưu **metadata tĩnh** của ví — việc tính discount và eval rule vẫn chạy in-memory mỗi lần.
 
-**Invalidation Events (Consumer của Promotion Service):**
+**Invalidation Triggers:**
 
-| Event (Kafka) | Hành động |
+| Trigger | Hành động |
 |:---|:---|
 | `COUPON_CLAIMED` (user săn được mã mới) | `DEL wallet:{user_id}:active_vouchers` |
 | `ORDER_PAID` (mã chuyển sang USED) | `DEL wallet:{user_id}:active_vouchers` |
-| `ORDER_CANCELLED` (mã trả lại SAVED) | `DEL wallet:{user_id}:active_vouchers` |
-| `ORDER_REFUNDED` (mã trả lại SAVED) | `DEL wallet:{user_id}:active_vouchers` |
+| `ORDER_CANCELLED` (nhả reservation pre-payment, không đổi state ví) | `DEL wallet:{user_id}:active_vouchers` |
+| `ORDER_REFUNDED` (mã có thể đổi trạng thái theo policy tái sử dụng) | `DEL wallet:{user_id}:active_vouchers` |
 | Mã hết hạn (cron job expire sweep) | `DEL wallet:{user_id}:active_vouchers` |
+| `BUDGET_EXHAUSTED` (event cấp promotion) | **Không fanout `DEL` toàn cục** theo `promotion_id`; Discovery xử lý bằng Budget Guard read-time |
+| `PROMO_EVICT` / Admin update promotion | bump `promo:rules:version`; cache cũ bị coi như miss ở lần đọc kế tiếp |
 
 **Chiến lược Invalidation:** Dùng `DEL` (xóa hẳn) thay vì update, vì thay đổi ví thiếu tần suất đủ để justify complexity của partial update. Cache miss → query DB → populate lại. Latency DB query ví là ~3-5ms (Index Scan trên `user_id, status`), chấp nhận được.
 
-### 5.2. UNLIMITED_ALL Promotions Cache (L1 Caffeine)
+> [!NOTE]
+> Option A cố ý **không** invalidation fanout theo `promotion_id -> user_ids` khi ngân sách cạn để tránh write amplification và phụ thuộc reverse-index lớn trong Redis. Đổi lại, độ tươi cho exhausted budget được cải thiện bằng Budget Guard read-time + Submit Reserve authoritative.
 
-Mã `UNLIMITED_ALL` đã được cache sẵn trong Caffeine L1 dưới dạng `promo:meta:{id}` cùng với toàn bộ metadata promotion (xem `redis_caching_design.md` Section 2.1). Promotion Service chỉ cần filter lại `type = UNLIMITED_ALL` từ danh sách đang nạp trên RAM — **không phát sinh thêm I/O nào**.
+### 5.2. Rule Metadata Cache (L1 Caffeine)
+
+Promotion Service dùng Caffeine L1 để cache metadata + AST rule của các promotion nhằm giảm độ trễ evaluate. Dữ liệu L1 phục vụ pre-filter eligibility cho danh sách voucher lấy từ wallet cache/DB, không dùng để trộn thêm mã chưa lưu vào response `voucher-suggestions`.
+
+Khi Admin tạo/sửa promotion, bắt buộc phát `PROMO_EVICT` và bump `promo:rules:version` để đồng bộ L1 metadata và wallet cache fence ở Step 1.
 
 ---
 
@@ -345,10 +387,10 @@ Mã `UNLIMITED_ALL` đã được cache sẵn trong Caffeine L1 dưới dạng `
 |:---|:---|
 | Redis wallet cache HIT | ~2ms |
 | Redis wallet cache MISS → DB query → populate | ~5-8ms |
-| Fetch UNLIMITED_ALL từ Caffeine L1 | ~0.01ms |
 | Rule Engine eval (AST in-memory, n mã) | ~1-3ms |
+| Budget Guard (Redis pipeline theo tập eligible) | ~0.5-1.5ms |
 | Tính estimated_discount + Sort | ~0.5ms |
-| **Tổng (cache HIT path)** | **< 10ms** |
+| **Tổng (cache HIT path)** | **< 12ms** |
 | **Tổng (cache MISS path)** | **< 15ms** |
 
 > Latency mục tiêu: **< 15ms 99th percentile**. Checkout Service gọi API này **song song** với các call khác trong Preview Orchestration, nên nó không nằm trên critical path.
@@ -357,31 +399,31 @@ Mã `UNLIMITED_ALL` đã được cache sẵn trong Caffeine L1 dưới dạng `
 
 ## 7. Edge Cases & Xử lý
 
-### 7.1. Mã `is_exclusive = true`
-
-Nếu một mã trong ví có `is_exclusive = true` (không được dùng chung với mã khác), response cần đánh dấu rõ:
-```json
-{
-  "is_exclusive": true,
-  "exclusive_note": "Mã này không áp dụng cùng với mã khác"
-}
-```
-Frontend khi user chọn mã exclusive → disable tất cả slot còn lại. Logic validate conflict vẫn được kiểm tra lại ở bước `POST /v1/promotions/calculate-discount` (Promotion Service là source of truth).
-
-### 7.2. Chỉ Platform có Freeship (`discount_type = FREE_SHIPPING`)
+### 7.1. Chỉ Platform có Freeship (`discount_type = FREE_SHIPPING`)
 
 Do ràng buộc nghiệp vụ và DB constraint, seller không được tạo voucher freeship.
 - Chỉ **1 mã freeship platform** được áp dụng cho toàn đơn (theo stacking rule).
 - Nếu có nhiều mã freeship platform, chọn mã `eligible` có `estimated_discount` cao nhất làm gợi ý mặc định.
 - Nếu mã tốt nhất chưa đủ điều kiện, hiển thị thêm `amount_needed` để user biết số tiền còn thiếu.
+- Response freeship phải theo cùng shape với platform: `best_voucher` + `other_vouchers`.
 
-### 7.3. Ví quá lớn (user có hàng trăm mã SAVED)
+### 7.2. Ví quá lớn (user có hàng trăm mã SAVED)
 
 Áp page-based filter: chỉ trả tối đa **20 mã eligible** + **10 mã ineligible** trong response. Eligible sort trước. Các mã đã USED/EXPIRED được lọc bỏ ngay ở tầng DB query.
 
-### 7.4. UNLIMITED_ALL hết ngân sách
+### 7.3. Voucher trong ví hết ngân sách (Option A)
 
-Dù mã `UNLIMITED_ALL` không cần "săn", vẫn có thể hết budget (ví dụ: chiến dịch sinh nhật giới hạn 1 tỷ). API discovery **không check budget** (để tránh thêm 1 lần đọc Redis `promo:{id}:budget` cho mỗi mã). Budget check chỉ xảy ra tại bước **Submit Checkout** trong `ReservePromotionActivity` (Lua Script 2). Nếu hết budget hoặc có lỗi trong Saga, Checkout nhận lỗi và hiển thị lại cho khách để chọn voucher khác hoặc Preview lại.
+API Discovery chạy **Budget Guard read-time** trên tập voucher đang eligible để giảm khả năng gợi ý mã đã cạn ngân sách. Các mã bị cạn sẽ được downgrade sang `ineligible_reason = BUDGET_EXHAUSTED` và không nên trở thành `best_voucher`.
+
+Tuy nhiên, Discovery không lock budget và không thay thế được commit-time reserve. Vì vậy vẫn tồn tại race ngắn giữa Preview và Submit: mã có thể còn pass ở Discovery nhưng fail tại `ReservePromotionActivity` nếu ngân sách cạn ngay trước lúc commit. Khi đó Checkout trả `409 PROMOTION_RECALCULATION_NEEDED` và client phải quay lại Preview lấy token mới.
+
+### 7.4. Guard Degraded Mode (Fail-open)
+
+Nếu Budget Guard gặp timeout/lỗi Redis tạm thời, Discovery fail-open để giữ availability của API:
+
+- Không chặn response voucher tray.
+- Gắn `cache_meta.budget_guard_status = DEGRADED` để theo dõi vận hành.
+- Đảm bảo correctness cuối cùng vẫn do Submit Reserve kiểm soát.
 
 ---
 
@@ -391,14 +433,15 @@ Màn hình Checkout sử dụng **2 API Voucher Discovery riêng biệt** tùy t
 
 | API | Khi nào gọi | Mô tả |
 |:---|:---|:---|
-| `GET /v1/promotions/voucher-suggestions` | Khách mở tray **"Voucher của Sàn"** | Liệt kê Platform Voucher + Freeship (trong ví + UNLIMITED_ALL) |
+| `GET /v1/promotions/voucher-suggestions` | Khách mở tray **"Voucher của Sàn"** | Liệt kê Platform Voucher + Freeship **đã lưu trong ví** |
 | `GET /v1/promotions/shop-voucher-discovery` | Khách mở tray **"Voucher của Shop X"** | Liệt kê toàn bộ voucher hợp lệ của shop đó (cả đã lưu + chưa lưu) |
 
 ```
 Khách mở màn hình Checkout
-        │
-        ▼
-Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion, Shipping×N)
+  │
+  ▼
+Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion)
+  │ (Shipping quote được lấy gián tiếp qua Inventory routing)
         │
         ├─ Khách nhấn "Voucher của Shop X" (mở Shop Voucher tray)
         │       │ -- GET /v1/promotions/shop-voucher-discovery?seller_id=X --
@@ -416,9 +459,9 @@ Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion, Shipping
         └─ Khách nhấn "Voucher của Sàn" (mở Platform Voucher tray)
                 │ -- GET /v1/promotions/voucher-suggestions --
                 ▼
-            Promotion Service trả Platform Vouchers + Freeship (< 15ms)
+          Promotion Service trả Platform Vouchers + Freeship từ ví (< 15ms)
                 │
-                └─ Khách chọn mã → POST /v1/checkout/preview với IDs mới
+            └─ Khách chọn mã đã lưu → POST /v1/checkout/preview với IDs mới
 ```
 
 ---
@@ -427,7 +470,7 @@ Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion, Shipping
 
 ### 9.1. Mục đích
 
-API `GET /v1/promotions/shop-voucher-discovery` phục vụ tray **"Voucher của Shop"** trên màn hình Checkout. Khác với Platform Voucher Discovery (chỉ show mã trong ví + UNLIMITED_ALL), Shop Voucher Discovery hiển thị **toàn bộ voucher hiện có của shop đó** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
+API `GET /v1/promotions/shop-voucher-discovery` phục vụ tray **"Voucher của Shop"** trên màn hình Checkout. Khác với Platform Voucher Discovery (chỉ show mã đã lưu trong ví), Shop Voucher Discovery hiển thị **toàn bộ voucher hiện có của shop đó** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
 
 ### 9.2. Endpoint
 
@@ -458,7 +501,7 @@ GET /shop-voucher-discovery?seller_id=101
   │
   ├── STEP 1: Fetch Wallet (Filter by seller_id)
   │     Check Redis: wallet:{user_id}:active_vouchers (TTL 5 phút)
-  │     → Filter: owner_type=SELLER AND owner_id=101
+  │     → Filter: owner_type=SELLER AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
   │     → Source: WALLET, is_saved=true
   │
   ├── STEP 2: Fetch Shop Public Vouchers (chưa lưu trong ví)
@@ -481,7 +524,13 @@ GET /shop-voucher-discovery?seller_id=101
   │     (c) Tính estimated_discount in-memory
   │     (d) Gán eligible=true/false + ineligible_reason nếu false
   │
-  └── STEP 4: Sort & Group
+  ├── STEP 4: Budget Guard (Option A)
+  │     Chỉ với voucher đang eligible sau Step 3:
+  │     (a) Đọc batch `promo:{id}:budget` bằng Redis pipelining
+  │     (b) Nếu budget không còn khả dụng: set `eligible=false`, `ineligible_reason=BUDGET_EXHAUSTED`
+  │     (c) Nếu guard lỗi tạm thời: fail-open + đánh dấu degraded trong telemetry
+  │
+  └── STEP 5: Sort & Group
         eligible[]:   sort by estimated_discount DESC (Best Choice)
         ineligible[]: sort by (amount_needed ASC) — gần đủ điều kiện nhất lên đầu
         Return: {eligible[], ineligible[]}
@@ -505,7 +554,7 @@ GET /shop-voucher-discovery?seller_id=101
         "estimated_discount": 50000,
         "source": "WALLET",
         "is_saved": true,
-        "end_time": "2026-04-01T00:00:00Z"
+        "expired_at": "2026-04-10T00:00:00Z"
       }
     ],
     "ineligible": [
@@ -534,7 +583,8 @@ GET /shop-voucher-discovery?seller_id=101
 | `MIN_PURCHASE_NOT_MET` | Chưa đủ giá trị đơn tối thiểu (`amount_needed` = số tiền còn thiếu) |
 | `CATEGORY_NOT_MATCHED` | Sản phẩm không thuộc danh mục áp dụng |
 | `PAYMENT_METHOD_NOT_MATCHED` | Phương thức thanh toán không hợp lệ |
-| `EXPIRED` | Voucher hết hạn (hiếm — đã filter ở Step 2, nhưng để phòng race condition) |
+| `BUDGET_EXHAUSTED` | Voucher cạn ngân sách/lượt tại thời điểm guard read-time |
+| `EXPIRED` | Voucher quá `expired_at` (mã đã có trong ví) hoặc quá `end_time` claim window (mã shop public) |
 
 ### 9.6. Save & Apply Flow (Khi user nhấn "Lưu & Chọn" mã chưa lưu)
 
@@ -550,14 +600,16 @@ Promotion Service:
 1. Validate: promotion tồn tại, `owner_id = seller_id`, `status = ACTIVE`.
 2. Upsert vào `user_coupon_wallets`:
    ```sql
-   INSERT INTO user_coupon_wallets (user_id, promotion_id, status, saved_at)
-   VALUES (:user_id, :promotion_id, 'SAVED', NOW())
+  INSERT INTO user_coupon_wallets (user_id, promotion_id, status, saved_at, expired_at)
+  VALUES (:user_id, :promotion_id, 'SAVED', NOW(), NOW() + INTERVAL '30 days')
    ON CONFLICT (user_id, promotion_id) DO NOTHING;
    ```
 3. Invalidate Redis wallet cache: `DEL wallet:{user_id}:active_vouchers`.
 4. Trả `200 OK {saved: true}`.
 
 > [!NOTE]
+> `expired_at` được gán ngay lúc acquire/save để tách bạch claim window (`promotions.end_time`) và use window theo ví (`saved_at + 30 ngày`).
+>
 > Sau khi nhận `200 OK`, Checkout Service gọi ngay `POST /v1/checkout/preview` với `selected_shop_vouchers[seller_id] = promotion_id`. Budget Reserve xảy ra trong Temporal Saga khi Submit — không phải tại đây.
 
 ### 9.7. Performance Profile
@@ -571,3 +623,47 @@ Promotion Service:
 | **Tổng (cache MISS)** | **< 15ms** |
 
 > Rate Limiting: `checkout:ratelimit:voucher_shop:{user_id}` — 20 req/phút (xem `checkout_caching_schema.md`).
+
+---
+
+## 10. Submit-time Re-evaluation Contract (Reserve Fail)
+
+Khi reserve thất bại do all-or-nothing (Script 2B), Promotion Service và Checkout Service phải dùng chung contract reason để FE hiển thị minh bạch.
+
+### 10.1. Reason Codes chuẩn
+
+| Code | Nguồn | Ý nghĩa |
+|:---|:---|:---|
+| `BUDGET_EXHAUSTED` | Budget Guard (Discovery) / Reserve (Redis) | Mã không còn ngân sách/lượt ở read-time hoặc commit-time |
+| `CONDITIONS_NOT_MET` | Rule Engine | Mã không còn hợp lệ sau khi loại mã fail ban đầu |
+| `MIN_PURCHASE_NOT_MET` | Rule Engine | Không đạt giá trị đơn tối thiểu |
+| `PAYMENT_METHOD_NOT_MATCHED` | Rule Engine | Phương thức thanh toán không khớp điều kiện rule |
+| `CATEGORY_NOT_MATCHED` | Rule Engine | Không có sản phẩm thuộc danh mục áp dụng của mã |
+| `EXPIRED` | Rule Engine | Mã vừa hết hạn tại submit-time |
+
+> Ở Discovery, `BUDGET_EXHAUSTED` đến từ Budget Guard read-time (best-effort). Ở Submit, Reserve trả `failed_reason` chi tiết (`BUDGET_QTY_EXHAUSTED` hoặc `BUDGET_AMOUNT_EXHAUSTED`) phục vụ debug/observability; Checkout map về reason chuẩn `BUDGET_EXHAUSTED` để giữ contract ổn định.
+
+### 10.2. Payload 409 giữa Checkout và Frontend
+
+```json
+{
+  "error_code": "PROMOTION_RECALCULATION_NEEDED",
+  "message": "Giỏ hàng có sự thay đổi về mã giảm giá.",
+  "action": "RECALL_PREVIEW",
+  "dropped_promotions": [
+    {
+      "promotion_id": "FREESHIP_123",
+      "reason": "BUDGET_EXHAUSTED",
+      "user_message": "Mã Freeship đã hết ngân sách."
+    }
+  ],
+  "proposal_checkout_data": {
+    "new_total_amount": 550000,
+    "surviving_promotions": [
+      "SHOP_456"
+    ]
+  }
+}
+```
+
+> `dropped_promotions[]` chỉ chứa các mã bị loại. Mã vẫn hợp lệ không xuất hiện trong danh sách này.
