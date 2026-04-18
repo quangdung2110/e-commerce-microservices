@@ -141,10 +141,12 @@ DO UPDATE SET
     updated_at       = NOW()
 WHERE
     -- Primary guard: stream_id mới hơn
-    (COALESCE(cart_items.redis_stream_id, '') < $1)
-    OR (
-        cart_items.redis_stream_id IS NULL
-        AND ((cart_items.product_snapshot->>'updated_at')::bigint < $2)
+    (
+        (cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < $1)
+        OR (
+            cart_items.redis_stream_id IS NULL
+            AND ((cart_items.product_snapshot->>'updated_at')::bigint < $2)
+        )
     )
     -- Ngăn chặn cập nhật nếu đã bị đánh dấu Tombstone (Ghost item handler)
     AND (cart_items.is_deleted = false OR cart_items.tombstone_at < $2);
@@ -169,7 +171,7 @@ SET is_deleted = true,
     updated_at = NOW()
 WHERE item_id = '{cart:user:12345}:sku-1001'
   AND (
-      COALESCE(redis_stream_id, '') < '1708616400899-0'
+      (redis_stream_id IS NOT NULL AND redis_stream_id < '1708616400899-0')
       OR (
           redis_stream_id IS NULL
           AND (product_snapshot->>'updated_at')::bigint < 1708616400899
@@ -201,7 +203,7 @@ ON CONFLICT (item_id) DO NOTHING;
 Lúc sau, khi lệnh `ADD/UPDATE` cũ đến muộn. Câu lệnh Upsert của [Mục 2.3](#23-xử-lý-sai-thứ-tự-out-of-order) kiểm tra điều kiện `WHERE`:
 ```sql
 WHERE
-        (COALESCE(cart_items.redis_stream_id, '') < $1
+        ((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < $1)
             OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < $2))
         AND (cart_items.is_deleted = false OR cart_items.tombstone_at < $2);
 ```
@@ -216,7 +218,7 @@ Vì `cart_id` là định danh ổn định theo user, một cart có thể đi 
 Do đó cần quy tắc rõ ràng để tránh out-of-order làm sai trạng thái:
 
 1. Với `CART_ITEM_ADDED` / `CART_ITEM_UPDATED`:
-    - Chỉ set `carts.status = 'ACTIVE'` nếu data mới hơn theo `last_event_stream_id <= event.stream_id`.
+    - Chỉ set `carts.status = 'ACTIVE'` nếu data mới hơn theo `last_event_stream_id < event.stream_id`.
     - Cập nhật `carts.last_event_stream_id` theo stream mới nhất và đồng thời cập nhật `last_event_time_ms` để phục vụ analytics.
      - `user_id` lấy trực tiếp từ `payload.user_id`.
 2. Với `CART_CLEARED` / `CART_CHECKED_OUT`:
@@ -232,8 +234,8 @@ SET status = 'DELETED',
     updated_at = NOW()
 WHERE cart_id = $1
     AND (
-            COALESCE(last_event_stream_id, '') <= $3
-            OR (last_event_stream_id IS NULL AND last_event_time_ms <= $2)
+            (last_event_stream_id IS NOT NULL AND last_event_stream_id < $3)
+            OR (last_event_stream_id IS NULL AND last_event_time_ms < $2)
     );
 ```
 
@@ -246,8 +248,8 @@ SET status = 'CHECKED_OUT',
     updated_at = NOW()
 WHERE cart_id = $1
     AND (
-            COALESCE(last_event_stream_id, '') <= $3
-            OR (last_event_stream_id IS NULL AND last_event_time_ms <= $2)
+            (last_event_stream_id IS NOT NULL AND last_event_stream_id < $3)
+            OR (last_event_stream_id IS NULL AND last_event_time_ms < $2)
     );
 ```
 
@@ -264,9 +266,11 @@ DO UPDATE SET
     last_event_stream_id = EXCLUDED.last_event_stream_id,
     last_event_time_ms = EXCLUDED.last_event_time_ms,
     updated_at = NOW()
-WHERE COALESCE(carts.last_event_stream_id, '') <= $4
-   OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms <= $3);
+WHERE (carts.last_event_stream_id IS NOT NULL AND carts.last_event_stream_id < $4)
+   OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms < $3);
 ```
+
+> **Lưu ý triển khai:** Tránh pattern `COALESCE(last_event_stream_id, '') ... OR last_event_stream_id IS NULL ...` vì nhánh `COALESCE` đã nuốt luôn trường hợp NULL, làm fallback branch mất ý nghĩa. Luôn tách nhánh `IS NOT NULL`/`IS NULL` như ví dụ trên.
 
 ### Chú Ý Về Mặt Lập Trình (GORM):
 Sử dụng GORM, bạn có thể implement logic ADD/UPDATE idempotency bằng cách custom `clause.OnConflict`:
@@ -280,7 +284,6 @@ productSnapshot := CartItemSnapshot{
     IsAvailable:      event.Payload.IsAvailable,
     AddedAt:          event.Payload.AddedAt,           // String ms epoch
     UpdatedAt:        event.Payload.UpdatedAt,          // String ms epoch — fallback guard cho dữ liệu legacy
-    ProductUpdatedAt: event.Payload.ProductUpdatedAt,
     // unit_price_at_add KHÔNG nằm trong snapshot — lưu ở cột riêng
 }
 productSnapshotJSON, _ := json.Marshal(productSnapshot)
@@ -311,16 +314,8 @@ db.Clauses(clause.OnConflict{
     Where: clause.Where{
         Exprs: []clause.Expression{
             clause.Expr{
-                SQL:  "COALESCE(cart_items.redis_stream_id, '') < ?",
-                Vars: []interface{}{event.StreamID},
-            },
-            clause.Expr{
-                SQL:  "(cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?)",
-                Vars: []interface{}{event.Payload.UpdatedAt},
-            },
-            clause.Expr{
-                SQL:  "(cart_items.is_deleted = false OR cart_items.tombstone_at < ?)",
-                Vars: []interface{}{event.Payload.UpdatedAt},
+                SQL:  "((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < ?) OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?)) AND (cart_items.is_deleted = false OR cart_items.tombstone_at < ?)",
+                Vars: []interface{}{event.StreamID, event.Payload.UpdatedAt, event.Payload.UpdatedAt},
             },
         },
     },
@@ -335,15 +330,15 @@ db.Exec(`
         last_event_stream_id = EXCLUDED.last_event_stream_id,
         last_event_time_ms = EXCLUDED.last_event_time_ms,
         updated_at = NOW()
-    WHERE COALESCE(carts.last_event_stream_id, '') <= ?
-       OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms <= ?)
+     WHERE (carts.last_event_stream_id IS NOT NULL AND carts.last_event_stream_id < ?)
+         OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms < ?)
 `, event.Payload.CartID, event.Payload.UserID, event.StreamID, event.Payload.UpdatedAt, event.StreamID, event.Payload.UpdatedAt)
 ```
 
 Và xử lý DELETE event:
 ```go
 result := db.Model(&CartItem{}).
-    Where("item_id = ? AND (COALESCE(redis_stream_id, '') < ? OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?))",
+    Where("item_id = ? AND ((redis_stream_id IS NOT NULL AND redis_stream_id < ?) OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?))",
           itemID, event.StreamID, event.Payload.DeletedAt).
     Updates(map[string]interface{}{
         "is_deleted":   true,
@@ -363,7 +358,7 @@ if result.RowsAffected == 0 {
             tombstone_at = EXCLUDED.tombstone_at,
             redis_stream_id = EXCLUDED.redis_stream_id,
             updated_at = NOW()
-        WHERE COALESCE(cart_items.redis_stream_id, '') < EXCLUDED.redis_stream_id
+        WHERE (cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < EXCLUDED.redis_stream_id)
            OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?)
     `, itemID, event.Payload.CartID, event.Payload.SkuID,
        event.Payload.DeletedAt, event.StreamID,
