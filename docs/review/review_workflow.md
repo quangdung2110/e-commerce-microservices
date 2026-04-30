@@ -151,64 +151,38 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 4. Nếu `expires_at <= NOW()` tại lúc xử lý, set `EXPIRED` ngay để tránh eligibility rác.
 5. Commit rồi ACK.
 
-## 9. Event Workflow: AI Moderation -> State Transition
+## 9. Event Workflow: REVIEW_METRICS_UPDATED -> Search
 
-**Trigger:** `TEXT_MODERATED` / `MEDIA_MODERATED` từ `t.ai_agent.events`.
-
-**Xử lý:** [AI Moderation Synchronizer](review_workers.md#4-ai-moderation-synchronizer)
-
-**Trình tự:**
-1. Idempotency guard theo `event_id`.
-2. Lock review row.
-3. Guard out-of-order theo `moderation_sequence_id` trên từng stream TEXT/MEDIA.
-4. Cập nhật sub-state moderation (`SAFE`/`UNSAFE`).
-5. Finalize:
-   - Nếu có `UNSAFE` ở bất kỳ stream -> `REJECTED`.
-   - Nếu cả hai stream đều `SAFE` -> `APPROVED`.
-   - Nếu chưa đủ điều kiện finalize -> giữ `PENDING_MODERATION`.
-6. Khi finalize mới insert outbox `REVIEW_APPROVED` hoặc `REVIEW_REJECTED`.
-7. Debezium publish event.
-8. Aggregator worker cập nhật metrics và phát `REVIEW_METRICS_UPDATED`.
-
-## 10. Event Workflow: REVIEW_METRICS_UPDATED -> Search/Notification
-
-**Trigger:** Event nội bộ `REVIEW_METRICS_UPDATED` được phát từ aggregator.
+**Trigger:** Event nội bộ `REVIEW_METRICS_UPDATED` được phát từ aggregator. [Rating Aggregator Consumer](review_workers.md#4-rating-aggregatorConsumer)
 
 **Trình tự liên service:**
 1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document SKU theo `product_id`.
 2. Guard **duy nhất** theo `event_sequence_id`.
 3. Nếu thiếu `event_sequence_id`, phải chuyển DLQ (không fallback timestamp).
-4. Notification service consume các event review lifecycle:
-   - `REVIEW_CREATED`
-   - `REVIEW_APPROVED`
-   - `REVIEW_REJECTED`
-   - `REVIEW_HIDDEN`
-   - `SELLER_REPLY_CREATED`
 
-## 11. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
+## 10. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
 
 **Trigger:** `ACCOUNT_DELETED` từ `t.user.events`.
 
-**Xử lý:** [Privacy Anonymization Consumer](review_workers.md#8-privacy-anonymization-consumer)
+**Xử lý:** [Privacy Anonymization Consumer](review_workers.md#7-privacy-anonymization-consumer)
 
 **Trình tự:**
 1. Consumer nhận `user_id`, `deleted_at`, `retention_window_expires_at`, `state_version`.
 2. Normalize `user_id`.
-3. Update `reviews.user_name='Người dùng đã ẩn danh'`, `is_author_anonymized=true`, `anonymized_at`.
+3. Update `reviews.user_name='Người dùng đã ẩn danh'`
 4. Invalidate cache page theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
 5. Broadcast L1 invalidation.
 
-## 12. Ma Trận Nhất Quán (Consistency Matrix)
+## 11. Ma Trận Nhất Quán (Consistency Matrix)
 
 | Luồng | Source of Truth | Read-Your-Own-Writes | Cửa sổ eventual consistency | Cơ chế hội tụ |
 |---|---|---|---|---|
 | Create review | PostgreSQL (`reviews`, `review_eligibilities`) | Có ở API response | 1-3s để event xuất hiện downstream | CDC outbox + consumer retries |
-| AI moderation | PostgreSQL state + outbox | Có trên read DB ngay sau commit | 1-10s cho Search/Notification | Kafka + idempotent consumers |
 | Helpful vote | Redis delta (ngắn hạn), PostgreSQL (dài hạn) | Có ở API action result | <= 30s cho DB aggregate | Lua atomic + sync worker 30s |
 | Seller reply | PostgreSQL + outbox | Có sau commit | 1-5s cho cache/list downstream | Versioned cache invalidation |
 | Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để mọi page cache hội tụ | Batch anonymize + version bump per product |
 
-## 13. Kịch bản lỗi và tự phục hồi
+## 12. Kịch bản lỗi và tự phục hồi
 
 1. **Duplicate event:** idempotency table chặn xử lý lặp.
 2. **Out-of-order event:** guard bằng `event_sequence_id`/`state_version` trước khi apply.

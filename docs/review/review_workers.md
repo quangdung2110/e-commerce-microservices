@@ -22,7 +22,6 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 | **Produce** | `t.review.retry` | — | Retry topic nội bộ cho replay có kiểm soát |
 | **Produce** | `t.review.dlq` | — | Parking lot cho contract violation/poison message |
 | **Consume** | `t.order.events` | `review-order-sync` | Cấp quyền review theo item đã mua |
-| **Consume** | `t.ai_agent.events` | `review-moderation` | Nhận kết quả kiểm duyệt nội dung/media |
 | **Consume** | `t.user.events` | `review-privacy-sync` | Nhận `ACCOUNT_DELETED` để ẩn danh dữ liệu tác giả |
 | **Consume** | `t.review.events` | `review-rating-aggregator` | Self-consume để cập nhật aggregate rating |
 | **Consume** | `t.review.retry` | `review-retry-replayer` | Replay lỗi tạm thời có kiểm soát |
@@ -99,14 +98,11 @@ DROP TABLE IF EXISTS review_outbox_y2026m01;
 1. Validate payload bắt buộc: `order_id`, `user_id`, `status=COMPLETED`, `items[]`, `completed_at`.
 2. Normalize `user_id` về canonical `u-<digits>`.
 3. Mỗi item phải có `product_id`, `sku_id`; `variant_name` có thể null nhưng phải được log warning.
-4. Trong transaction, upsert `review_eligibilities` idempotent.
+4. Trong transaction, upsert `review_eligibilities` idempotent (idempotency tự nhiên với unique key ở tầng Database)
 5. Gán `expires_at = completed_at + review_window_days` (mặc định 30 ngày).
 6. Nếu tại thời điểm xử lý `expires_at <= NOW()`, set `status='EXPIRED'`.
 7. Commit rồi ACK.
 8. Nếu payload sai schema: retry theo policy; quá ngưỡng đẩy `t.review.dlq`.
-
-**Guard thứ tự cho replay ORDER_COMPLETED:**
-*   Review dùng `expires_at = GREATEST(current, incoming)` để chặn replay cũ làm lùi cửa sổ review.
 
 ```sql
 INSERT INTO review_eligibilities (
@@ -120,56 +116,19 @@ VALUES (
 ON CONFLICT (order_id, product_id, sku_id, user_id)
 DO UPDATE
 SET variant_name = COALESCE(EXCLUDED.variant_name, review_eligibilities.variant_name),
-    expires_at = GREATEST(review_eligibilities.expires_at, EXCLUDED.expires_at),
     updated_at = NOW()
-WHERE review_eligibilities.status IN ('PENDING', 'EXPIRED');
+WHERE review_eligibilities.status IN ('PENDING');
 ```
 
-## 4. AI Moderation Synchronizer
-
-**Topic:** `t.ai_agent.events`
-
-**Consumer Group:** `review-moderation`
-
-**Events:** `TEXT_MODERATED`, `MEDIA_MODERATED`
-
-**Sứ mệnh:** Đồng bộ kết quả kiểm duyệt AI theo mô hình 2 pha, chuyển trạng thái review đúng state machine và phát event downstream.
-
-**Chi tiết luồng hoạt động (transaction đơn):**
-1. Insert lock idempotency vào `ai_moderation_idempotency` với trạng thái `PROCESSING`.
-   - Duplicate + `processing_status IN ('COMPLETED', 'SKIPPED')` -> ACK ngay.
-   - Duplicate + `processing_status='PROCESSING'` và `updated_at < NOW()-15m` -> mark `FAILED` rồi retry.
-   - Duplicate + `processing_status='FAILED'` -> cho phép retry theo policy.
-2. `SELECT ... FOR UPDATE` review theo `review_id`.
-3. Nếu review đã finalize (`APPROVED`/`REJECTED`/`HIDDEN_BY_REPORT`) -> mark idempotency `SKIPPED`, ACK.
-4. Guard out-of-order:
-   - `TEXT_MODERATED`: chỉ apply nếu `moderation_sequence_id > last_text_moderation_seq`.
-   - `MEDIA_MODERATED`: chỉ apply nếu `moderation_sequence_id > last_media_moderation_seq`.
-5. Update sub-state:
-   - `is_safe=true` -> stream tương ứng về `SAFE`.
-   - `is_safe=false` -> stream tương ứng về `UNSAFE` + ghi reason.
-6. Finalization rule:
-   - Nếu có ít nhất một stream `UNSAFE`: set `reviews.status='REJECTED'`.
-   - Nếu cả TEXT và MEDIA đều `SAFE`: set `reviews.status='APPROVED'`.
-   - Nếu chưa đủ điều kiện: giữ `PENDING_MODERATION`, không emit lifecycle event.
-7. Nếu finalize `APPROVED`:
-   - `review_eligibilities.status='REVIEWED'`
-   - Insert outbox `REVIEW_APPROVED`
-8. Nếu finalize `REJECTED`:
-   - `attempt_count=1` -> `review_eligibilities.status='REJECTED_RETRY_PENDING'`, emit `REVIEW_REJECTED(can_retry=true)`
-   - `attempt_count>=2` -> `review_eligibilities.status='REJECTED_FINAL'`, emit `REVIEW_REJECTED(can_retry=false)`
-9. Cập nhật idempotency thành `COMPLETED`, commit, sau đó ACK.
-10. Nếu có lỗi tạm thời trong bước 4-8, mark idempotency `FAILED` và retry theo policy.
-
-## 5. Rating Aggregator Consumer
+## 4. Rating Aggregator Consumer
 
 **Topic:** `t.review.events`
 
 **Consumer Group:** `review-rating-aggregator`
 
-**Events:** `REVIEW_APPROVED`, `REVIEW_REJECTED`, `REVIEW_HIDDEN`
+**Events:** `REVIEW_APPROVED`, `REVIEW_HIDDEN`
 
-**Sứ mệnh:** Cập nhật bảng aggregate (`product_rating_aggregates`, `sku_rating_aggregates`) và phát `REVIEW_METRICS_UPDATED`.
+**Sứ mệnh:** Cập nhật bảng aggregate (`product_rating_aggregates`) và phát `REVIEW_METRICS_UPDATED`.
 
 **Chi tiết luồng hoạt động:**
 1. Begin transaction.
@@ -178,19 +137,17 @@ WHERE review_eligibilities.status IN ('PENDING', 'EXPIRED');
    - Duplicate + `processing_status='PROCESSING'` và `updated_at < NOW()-15m` -> mark `FAILED`, retry.
 3. Validate business guard:
    - `REVIEW_APPROVED`: cộng điểm/tổng số review.
-   - `REVIEW_REJECTED` hoặc `REVIEW_HIDDEN`: chỉ trừ khi `previous_status='APPROVED'`.
-4. Upsert aggregate product và SKU bằng SQL atomic, đồng thời `state_version = state_version + 1` trên aggregate row bị ảnh hưởng.
+   - `REVIEW_HIDDEN`: trừ điểm/tổng số review nếu review đang `APPROVED`.
+4. Upsert aggregate product và SKU bằng SQL atomic
 5. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction:
-   - `state_version = aggregate.state_version` sau khi tăng.
-   - `event_sequence_id = aggregate.state_version` (monotonic per `product_id`).
 6. Cập nhật idempotency `COMPLETED`.
 7. Commit transaction.
-8. Sau commit, overwrite cache Redis `review:prod:agg:*` và `review:sku:agg:*`.
+8. Sau commit, overwrite cache Redis `review:prod:agg:*`
 9. Publish lệnh invalidate L1 qua Redis Pub/Sub.
 
 **Tối ưu:** xử lý theo micro-batch 100-500 events/lần để giảm lock contention.
 
-## 6. Helpful Votes Sync Worker
+## 5. Helpful Votes Sync Worker
 
 **Loại hình:** Scheduled micro-batch mỗi 30 giây.
 
@@ -210,7 +167,7 @@ WHERE review_eligibilities.status IN ('PENDING', 'EXPIRED');
 *   Không xóa `review:liked_bits:{review_id}` trong chu kỳ sync.
 *   Nếu worker crash sau bước move, chu kỳ sau phải tiếp tục từ `processing_deltas`.
 
-## 7. L1 Cache Invalidation Broadcaster
+## 6. L1 Cache Invalidation Broadcaster
 
 **Loại hình:** Redis Pub/Sub subscriber trên mỗi pod.
 
@@ -235,7 +192,7 @@ WHERE review_eligibilities.status IN ('PENDING', 'EXPIRED');
 
 **Lưu ý:** Không dùng Kafka consumer group cho invalidation L1 vì mỗi pod đều phải nhận thông điệp.
 
-## 8. Privacy Anonymization Consumer
+## 7. Privacy Anonymization Consumer
 
 **Topic:** `t.user.events`
 
@@ -262,13 +219,13 @@ WHERE review_eligibilities.status IN ('PENDING', 'EXPIRED');
 *   Không có worker cập nhật tên theo `USER_PROFILE_UPDATED`.
 *   Chỉ chạy luồng anonymize khi có `ACCOUNT_DELETED` (hoặc legal takedown tương đương).
 
-## 9. Reconciliation Cronjob
+## 8. Reconciliation Cronjob
 
 **Tần suất:** 5 phút.
 
 **Sứ mệnh:** Thu hồi eligibility bị kẹt và đồng bộ lifecycle expiration.
 
-**9.1. Recover `PROCESSING` stale an toàn**
+**8.1. Recover `PROCESSING` stale an toàn**
 
 Chỉ recover row kẹt khi **không tồn tại review tương ứng** để tránh mở lại eligibility trong lúc review đã được tạo.
 
@@ -286,7 +243,7 @@ WHERE e.status = 'PROCESSING'
   );
 ```
 
-**9.2. Expire eligibility quá hạn**
+**8.2. Expire eligibility quá hạn**
 
 ```sql
 UPDATE review_eligibilities
@@ -295,7 +252,7 @@ WHERE status IN ('PENDING', 'REJECTED_RETRY_PENDING')
   AND expires_at <= NOW();
 ```
 
-**9.3. Reconcile outbox backlog bất thường**
+**8.3. Reconcile outbox backlog bất thường**
 
 Phát hiện event có nguy cơ chưa được publish do connector lag hoặc lỗi kéo dài.
 
@@ -307,7 +264,7 @@ WHERE created_at < NOW() - INTERVAL '15 minutes';
 
 Nếu `stale_outbox_count` vượt ngưỡng vận hành, raise alert và tạm dừng cleanup partition.
 
-## 10. Idempotency Cleanup Cronjob
+## 9. Idempotency Cleanup Cronjob
 
 **Tần suất:** hằng ngày (ví dụ 02:30).
 
@@ -328,7 +285,7 @@ WHERE created_at < NOW() - INTERVAL '30 days';
 
 **SLO bắt buộc:** export `idempotency_table_row_count` và `last_cleanup_timestamp`.
 
-## 11. Retry Replayer Worker
+## 10. Retry Replayer Worker
 
 **Topic Consume:** `t.review.retry`
 

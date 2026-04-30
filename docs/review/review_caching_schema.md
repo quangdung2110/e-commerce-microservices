@@ -16,7 +16,6 @@ Review Service là read-heavy nên caching phải đạt đồng thời 3 mục 
 
 **Keys:**
 *   `review:prod:agg:{product_id}`
-*   `review:sku:agg:{product_id}:{sku_id}`
 
 **Data type:** Redis String (JSON payload).
 
@@ -28,7 +27,7 @@ actual_ttl = 86400 + jitter_seconds
 ```
 
 **Update strategy:** soft refresh, không hard delete.
-*   Event áp dụng: `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_REJECTED` (chỉ khi `previous_status='APPROVED'`).
+*   Event áp dụng: `REVIEW_APPROVED`
 *   Worker cập nhật DB trước, commit xong mới ghi đè cache bằng `SET`.
 *   Cache miss luôn fallback về DB (source of truth).
 
@@ -43,8 +42,6 @@ actual_ttl = 86400 + jitter_seconds
 **TTL:** 1-2 giờ + jitter cùng công thức CRC32.
 
 **Invalidation bằng version bump (`INCR review:prod_ver:{product_id}`) khi có:**
-*   `REVIEW_APPROVED`
-*   `REVIEW_REJECTED`
 *   `REVIEW_HIDDEN`
 *   `SELLER_REPLY_CREATED`
 *   `ACCOUNT_DELETED` (áp dụng cho các product có review của user bị xóa tài khoản)
@@ -112,7 +109,7 @@ L1 cache nằm trong RAM từng pod, nên bắt buộc broadcast invalidation qu
 
 | Luồng | Cache đọc chính | Cửa sổ stale cho phép | Cơ chế làm tươi |
 |---|---|---|---|
-| Aggregate rating | `review:prod:agg:*`, `review:sku:agg:*` | <= 10s (bình thường), <= 30s khi stale-while-revalidate | Worker overwrite sau commit + async refresh |
+| Aggregate rating | `review:prod:agg:*`| <= 10s (bình thường), <= 30s khi stale-while-revalidate | Worker overwrite sau commit + async refresh |
 | Product review page 1 | `review:prod:*:page:1:*` | <= 60s | Version bump + lazy rebuild |
 | Helpful sort | DB + cache page 1 | <= 30s | Delta sync worker chạy mỗi 30s |
 | Anonymization display | Cache page 1 theo product | <= 60s | Batch product invalidation từ `ACCOUNT_DELETED` |
