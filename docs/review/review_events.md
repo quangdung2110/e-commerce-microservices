@@ -21,7 +21,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 | Topic Name | Partition Key | Event Types | Consumers chính | Ghi chú |
 |:---|:---|:---|:---|:---|
-| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `SELLER_REPLY_CREATED` |  Notification (`REVIEW_CREATED`,`REVIEW_HIDDEN`,`SELLER_REPLY_CREATED`), Seller (`REVIEW_CREATED`,`REVIEW_HIDDEN`), internal workers | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
+| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `SELLER_REPLY_CREATED` |  Notification (`REVIEW_CREATED`,`REVIEW_HIDDEN`,`SELLER_REPLY_CREATED`), Seller (`REVIEW_CREATED`,`REVIEW_HIDDEN`), internal workers | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
 
 ### 1.2. Topics Produce (Operational)
 
@@ -49,6 +49,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "aggregate_id": "review-uuid",
   "correlation_id": "req-or-workflow-id",
   "timestamp": "2026-03-28T10:00:00Z",
+  "event_sequence_id": 1743156000001,
   "source": "review-service",
   "payload": {}
 }
@@ -112,7 +113,6 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "deleted_at": "2026-03-28T10:30:00Z",
   "reason": "USER_REQUEST",
   "retention_window_expires_at": "2026-06-28T10:30:00Z",
-  "state_version": 23
 }
 ```
 
@@ -122,7 +122,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ## 5. Produced Events Contract
 
-### 5.1. REVIEW_CREATE
+### 5.1. REVIEW_CREATED
 
 ```json
 {
@@ -136,7 +136,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "content": "Sản phẩm tốt, giao hàng nhanh",
   "media_urls": ["s3://img1.jpg"],
   "created_at": "2026-03-28T09:00:00Z",
-  "status": "PENDING_MODERATION"
+  "status": "APPROVED"
 }
 ```
 
@@ -154,7 +154,22 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 }
 ```
 
-### 5.3. REVIEW_HIDDEN
+### 5.3. REVIEW_APPROVED
+
+```json
+{
+  "review_id": "uuid",
+  "product_id": "prod-uuid-001",
+  "sku_id": "sku-123",
+  "seller_id": "s-9001",
+  "user_id": "u-12345",
+  "rating": 5,
+  "has_media": true,
+  "approved_at": "2026-03-28T09:10:00Z"
+}
+```
+
+### 5.4. REVIEW_HIDDEN
 
 ```json
 {
@@ -170,7 +185,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 }
 ```
 
-### 5.4. REVIEW_METRICS_UPDATED
+### 5.5. REVIEW_METRICS_UPDATED
 
 **Fields bắt buộc:** `product_id`, `average_rating`, `total_reviews`, `state_version`, `event_sequence_id`, `updated_at`.
 
@@ -180,6 +195,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "average_rating": 4.75,
   "total_reviews": 1251,
   "total_with_media": 300,
+  "state_version": 1743156000123,
   "event_sequence_id": 1743156000123,
   "updated_at": "2026-03-28T10:05:00Z"
 }
@@ -187,9 +203,10 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 **Rule bắt buộc cho downstream:**
 - Guard out-of-order ưu tiên `event_sequence_id`.
+- `state_version` là version của aggregate theo `product_id`, bắt buộc tăng đơn điệu và mirror với `event_sequence_id`.
 - `updated_at` chỉ dùng cho observability/debug, không phải khóa ordering chính.
 
-### 5.5. SELLER_REPLY_CREATED
+### 5.6. SELLER_REPLY_CREATED
 
 ```json
 {

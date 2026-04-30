@@ -126,7 +126,7 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Consumer Group:** `review-rating-aggregator`
 
-**Events:** `REVIEW_APPROVED`, `REVIEW_HIDDEN`
+**Events:** `REVIEW_CREATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`
 
 **Sứ mệnh:** Cập nhật bảng aggregate (`product_rating_aggregates`) và phát `REVIEW_METRICS_UPDATED`.
 
@@ -136,8 +136,9 @@ WHERE review_eligibilities.status IN ('PENDING');
    - Duplicate + `processing_status IN ('COMPLETED', 'SKIPPED')` -> ACK.
    - Duplicate + `processing_status='PROCESSING'` và `updated_at < NOW()-15m` -> mark `FAILED`, retry.
 3. Validate business guard:
-   - `REVIEW_APPROVED`: cộng điểm/tổng số review.
-   - `REVIEW_HIDDEN`: trừ điểm/tổng số review nếu review đang `APPROVED`.
+   - `REVIEW_CREATED`: cộng điểm/tổng số review.
+   - `REVIEW_APPROVED`: cộng điểm/tổng số review (restore từ hidden).
+   - `REVIEW_HIDDEN`: trừ điểm/tổng số review.
 4. Upsert aggregate product và SKU bằng SQL atomic
 5. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction:
 6. Cập nhật idempotency `COMPLETED`.
@@ -147,27 +148,7 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Tối ưu:** xử lý theo micro-batch 100-500 events/lần để giảm lock contention.
 
-## 5. Helpful Votes Sync Worker
-
-**Loại hình:** Scheduled micro-batch mỗi 30 giây.
-
-**Sứ mệnh:** Đồng bộ delta like/unlike từ Redis xuống DB an toàn khi crash và an toàn khi multi-pod.
-
-**Chi tiết luồng hoạt động:**
-1. Acquire distributed lock `SET review:sync:lock:deltas 1 NX EX 55`.
-2. Nếu không lấy được lock, skip chu kỳ.
-3. Ưu tiên phục hồi từ `HGETALL review:processing_deltas`.
-4. Nếu rỗng, dùng Lua để move atomically từ `review:dirty_delta_keys` sang `review:processing_deltas`.
-5. Batch update DB:
-   - `helpful_count = GREATEST(helpful_count + delta, 0)`
-6. Commit DB thành công mới `HDEL` các phần tử đã xử lý trong `processing_deltas`.
-7. Refresh TTL bitmap theo policy khi có user interaction.
-
-**Ràng buộc an toàn:**
-*   Không xóa `review:liked_bits:{review_id}` trong chu kỳ sync.
-*   Nếu worker crash sau bước move, chu kỳ sau phải tiếp tục từ `processing_deltas`.
-
-## 6. L1 Cache Invalidation Broadcaster
+## 5. L1 Cache Invalidation Broadcaster
 
 **Loại hình:** Redis Pub/Sub subscriber trên mỗi pod.
 
@@ -192,7 +173,7 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Lưu ý:** Không dùng Kafka consumer group cho invalidation L1 vì mỗi pod đều phải nhận thông điệp.
 
-## 7. Privacy Anonymization Consumer
+## 6. Privacy Anonymization Consumer
 
 **Topic:** `t.user.events`
 
@@ -203,44 +184,43 @@ WHERE review_eligibilities.status IN ('PENDING');
 **Sứ mệnh:** Đảm bảo tuân thủ quyền riêng tư: ẩn danh thông tin tác giả review khi tài khoản bị xóa.
 
 **Chi tiết luồng hoạt động:**
-1. Validate payload có `user_id`, `deleted_at`, `retention_window_expires_at`, `state_version`.
+1. Validate payload có `user_id`, `deleted_at`, `retention_window_expires_at`
 2. Normalize `user_id` canonical.
 3. Query danh sách `product_id` bị ảnh hưởng của user (distinct).
 4. Trong transaction:
-   - `UPDATE reviews SET user_name='Người dùng đã ẩn danh', is_author_anonymized=true, anonymized_at=:deleted_at WHERE user_id=:user_id AND is_author_anonymized=false`
+   - `UPDATE reviews SET user_name='Tài khoản đã bị xóa'` WHERE `user_id` = :user_id`.
 5. Commit transaction.
 6. Invalidate Redis theo batch pipeline:
    - mỗi batch 200 product gọi `INCR review:prod_ver:{product_id}`.
 7. Broadcast invalidation L1 cho các product liên quan (retry tối đa 3 lần).
 8. Nếu broadcast fail sau retry, đẩy task sang `review:l1:invalidate:retry` để replayer xử lý.
-9. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at`, `state_version` để phục vụ kiểm toán dữ liệu.
+9. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
 
 **Ràng buộc quan trọng:**
 *   Không có worker cập nhật tên theo `USER_PROFILE_UPDATED`.
 *   Chỉ chạy luồng anonymize khi có `ACCOUNT_DELETED` (hoặc legal takedown tương đương).
 
-## 8. Reconciliation Cronjob
+## 7. Reconciliation Cronjob
 
 **Tần suất:** 5 phút.
 
 **Sứ mệnh:** Thu hồi eligibility bị kẹt và đồng bộ lifecycle expiration.
 
-**8.1. Recover `PROCESSING` stale an toàn**
+**8.1. Recover `REVIEWED` stale an toàn**
 
 Chỉ recover row kẹt khi **không tồn tại review tương ứng** để tránh mở lại eligibility trong lúc review đã được tạo.
 
 ```sql
 UPDATE review_eligibilities e
-SET status = CASE
-  WHEN e.attempt_count >= 2 THEN 'REJECTED_FINAL'
-  ELSE 'PENDING'
-END,
-updated_at = NOW()
-WHERE e.status = 'PROCESSING'
-  AND e.updated_at < NOW() - INTERVAL '30 minutes'
-  AND NOT EXISTS (
-    SELECT 1 FROM reviews r WHERE r.eligibility_id = e.id
-  );
+SET status = 'PENDING',
+      attempt_count = 0,
+      updated_at = NOW()
+WHERE e.status = 'REVIEWED'
+   AND e.attempt_count = 1
+   AND e.updated_at < NOW() - INTERVAL '30 minutes'
+   AND NOT EXISTS (
+      SELECT 1 FROM reviews r WHERE r.eligibility_id = e.id
+   );
 ```
 
 **8.2. Expire eligibility quá hạn**
@@ -264,7 +244,7 @@ WHERE created_at < NOW() - INTERVAL '15 minutes';
 
 Nếu `stale_outbox_count` vượt ngưỡng vận hành, raise alert và tạm dừng cleanup partition.
 
-## 9. Idempotency Cleanup Cronjob
+## 8. Idempotency Cleanup Cronjob
 
 **Tần suất:** hằng ngày (ví dụ 02:30).
 
@@ -276,16 +256,13 @@ Nếu `stale_outbox_count` vượt ngưỡng vận hành, raise alert và tạm 
 3. Nếu safety gate fail -> skip cleanup và raise alert.
 
 ```sql
-DELETE FROM ai_moderation_idempotency
-WHERE created_at < NOW() - INTERVAL '30 days';
-
 DELETE FROM rating_aggregator_idempotency
 WHERE created_at < NOW() - INTERVAL '30 days';
 ```
 
 **SLO bắt buộc:** export `idempotency_table_row_count` và `last_cleanup_timestamp`.
 
-## 10. Retry Replayer Worker
+## 9. Retry Replayer Worker
 
 **Topic Consume:** `t.review.retry`
 
@@ -296,7 +273,7 @@ WHERE created_at < NOW() - INTERVAL '30 days';
 2. `retry_round > 3` -> chuyển `t.review.dlq`.
 3. Replay giữ nguyên `event_id` để idempotency hoạt động đúng.
 
-## 12. Non-Functional Guardrails
+## 10. Non-Functional Guardrails
 
 1. **Lock order chuẩn:**
    - `review_eligibilities` -> `reviews` -> aggregate tables.
@@ -313,6 +290,5 @@ WHERE created_at < NOW() - INTERVAL '30 days';
 5. **SLO giám sát bắt buộc:**
    - Connector lag (Debezium)
    - Kafka consumer lag từng group
-   - `review:dirty_delta_keys` size
    - P95/P99 latency update aggregate
    - Tỷ lệ event vào `t.review.dlq`

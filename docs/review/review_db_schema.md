@@ -33,7 +33,7 @@ Quản lý quyền review theo rule 1-1-1-1 (order, product, sku, user).
 | `seller_id` | `VARCHAR(64)` | NULLABLE | Snapshot seller; legacy row có thể null và được backfill khi submit |
 | `variant_name` | `VARCHAR(255)` | NULLABLE | Snapshot phục vụ hiển thị danh sách chờ đánh giá |
 | `status` | `VARCHAR(30)` | DEFAULT `PENDING` | `PENDING`, `REVIEWED`, `EXPIRED`, `REJECTED_RETRY_PENDING`, `REJECTED_FINAL` |
-| `attempt_count` | `SMALLINT` | DEFAULT 0 | Số lần submit, tối đa 2 |
+| `attempt_count` | `SMALLINT` | DEFAULT 0 | Số lần submit review (create/edit), tối đa 2 |
 | `expires_at` | `TIMESTAMP` | NOT NULL | Hạn review |
 | `created_at` | `TIMESTAMP` | NOT NULL | Tạo từ `ORDER_COMPLETED` |
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
@@ -45,10 +45,15 @@ Quản lý quyền review theo rule 1-1-1-1 (order, product, sku, user).
 *   Index `B-Tree(user_id, status)`
 *   Index `B-Tree(product_id, status)`
 
-**Trường hợp khách hàng cập nhật lại đánh giá (lần đầu):**
+**Quy ước attempt_count (bắt buộc):**
+*   `0 -> 1` khi user submit review lần đầu.
+*   `1 -> 2` khi user chỉnh sửa review (duy nhất 1 lần).
+*   Không tăng thêm khi chỉ đổi trạng thái cuối (`REJECTED_FINAL`).
+
+**Trường hợp khách hàng chỉnh sửa review (duy nhất 1 lần):**
 ```sql
 UPDATE review_eligibilities
-SET status = 'REJECTED_RETRY_PENDING',
+SET status = 'REJECTED_FINAL',
     attempt_count = attempt_count + 1,
     updated_at = NOW()
 WHERE id = :eligibility_id
@@ -57,11 +62,10 @@ WHERE id = :eligibility_id
 RETURNING attempt_count, product_id, sku_id, seller_id;
 ```
 
-**Trường hợp khách hàng cập nhật lại đánh giá (lần thứ hai):**
+**Trường hợp chốt trạng thái sau khi hết quyền sửa:**
 ```sql
 UPDATE review_eligibilities
 SET status = 'REJECTED_FINAL',
-    attempt_count = attempt_count + 1,
     updated_at = NOW()
 WHERE id = :eligibility_id
   AND status IN ('REJECTED_RETRY_PENDING')
@@ -87,6 +91,7 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `helpful_count` | `INT` | DEFAULT 0 | Tổng vote hữu ích |
 | `report_count` | `INT` | DEFAULT 0 | Tổng report |
 | `has_media` | `BOOLEAN` | DEFAULT FALSE | Có media |
+| `is_seller_replied` | `BOOLEAN` | DEFAULT FALSE | Có phản hồi từ seller |
 | `created_at` | `TIMESTAMP` | NOT NULL | |
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
 
@@ -121,9 +126,21 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 *   FK `review_id` nên cấu hình `ON DELETE CASCADE`
 *   Index `B-Tree(review_id)`
 
-## 4. Bảng aggregate ratings
+## 4. Bảng review_likes
 
-### 4.1. product_rating_aggregates
+| Cột | Kiểu | Ràng buộc | Mô tả |
+| :--- | :--- | :--- | :--- |
+| `review_id` | `UUID` | PK, FK, NOT NULL | Liên kết với reviews |
+| `user_id` | `VARCHAR(64)` | PK, NOT NULL | Người dùng đã like (canonical) |
+| `created_at` | `TIMESTAMP` | NOT NULL | Thời điểm like, mặc định NOW() |
+
+**Ràng buộc và index:**
+*   `PRIMARY KEY (review_id, user_id)` (Chống duplicate like)
+*   `B-Tree(user_id)` (Dùng để audit hoặc tìm like của account khi cần)
+
+## 5. Bảng aggregate ratings
+
+### 5.1. product_rating_aggregates
 
 | Cột | Kiểu | Ràng buộc |
 | :--- | :--- | :--- |
@@ -139,7 +156,7 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `updated_at` | `TIMESTAMP` | NOT NULL |
 
 
-## 5. Bảng review_seller_replies
+## 6. Bảng review_seller_replies
 
 | Cột | Kiểu | Ràng buộc | Mô tả |
 | :--- | :--- | :--- | :--- |
@@ -184,7 +201,9 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
 
 **Semantics chuẩn:**
-*   `RESOLVED_ACCEPTED` nghĩa là report hợp lệ, review bị ẩn (`HIDDEN_BY_REPORT`), cập nhật trạng thái bảng review_eligibility thành `REJECTED_RETRY_PENDING`.
+*   `RESOLVED_ACCEPTED` nghĩa là report hợp lệ, review bị ẩn (`HIDDEN_BY_REPORT`), cập nhật trạng thái bảng review_eligibility theo `attempt_count`:
+  *   `attempt_count = 1` -> `REJECTED_RETRY_PENDING` (còn 1 lần sửa).
+  *   `attempt_count = 2` -> `REJECTED_FINAL` (hết quyền sửa).
 
 **Ràng buộc:**
 *   `CHECK((reporter_role='USER' AND reporter_id IS NOT NULL) OR (reporter_role='SELLER' AND reporter_id IS NOT NULL))`
@@ -210,7 +229,7 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 
 ## 9. Data Retention & Privacy Policy
 
-1. `ACCOUNT_DELETED`: ẩn danh hiển thị (`user_name`, cờ ẩn danh) ngay khi nhận event.
+1. `ACCOUNT_DELETED`: tài khoản bị xóa
 2. Hard delete review chỉ cho case `LEGAL_TAKEDOWN` có audit trail và approval.
 3. Legal takedown phải phát event bù (nếu ảnh hưởng aggregate) để downstream không drift.
 
@@ -221,4 +240,3 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 1. Không dùng Elasticsearch cho truy vấn review core; PostgreSQL với composite/partial index đáp ứng tốt use case hiện tại.
 2. `user_name` là snapshot tại thời điểm tạo review; không đồng bộ rename theo `USER_PROFILE_UPDATED`.
 3. Khi nhận `ACCOUNT_DELETED`, bắt buộc anonymize dữ liệu hiển thị tác giả review.
-4. Tách `moderation_reason_public` và `moderation_reason_internal` để tránh rò rỉ tín hiệu nội bộ AI.
