@@ -1,215 +1,45 @@
-# User Service - Caching Schema (Redis)
+# User Service - Caching Schema Design
 
-**Liên kết nhanh (Related Documents):**
-* [Workflows (API & Data Flow)](user_workflow.md)
-* [Background Workers & Jobs](user_workers.md)
-* [Caching Schema (Redis)](user_caching_schema.md)
-* [Database Schema (Write Store)](user_db_design.md)
-* [State Machine & Lifecycle](user_state_machine.md)
-* [Events Structure & Kafka Topics](user_events.md)
-* [Architecture Recommendations](user_architecture_recommendations.md)
+**Liên kết nhanh:**
+*   [Workflows (API & Data Flow)](user_workflows.md)
+*   [Caching Schema (Redis)](user_caching_schema.md)
+*   [Database Schema](user_db_design.md)
+*   [Events Structure & Kafka Topics](user_events.md)
 
 ---
+Tài liệu này mô tả chiến lược bộ đệm (Caching Plan) của User Service. Do Profile của người dùng thường được rất nhiều Service gọi đến với tần suất (thông lượng đọc) lên tới hàng chục nghìn TPS (như API Gateway gắn Header, Chat Service định danh người dùng), nên việc cấu hình caching bài bản là cực kì quan trọng. Trong thiết kế này, chúng ta sử dụng kiến trúc L2 Cache (Redis).
 
-Tài liệu này mô tả chi tiết chiến lược cache cho User Service. Mục tiêu chính là giảm độ trễ read path, bảo vệ PostgreSQL và vẫn giữ được tính nhất quán dữ liệu.
+## 1. Các cấp độ Caching
+- **L2 Cache (Redis Cluster Global):** Lưu trữ toàn cục trên Memory. Độ trễ 1-2ms. Làm lớp khiên chắn rác trước khi Query tuột xuống Database.
 
-## 1. Nguyên tắc thiết kế cache
+## 2. Chuỗi Khóa (Redis Keys & TTL)
 
-1. Redis cache-aside là chiến lược mặc định.
-2. Soft invalidation (`SET` ghi đè) là ưu tiên; hạn chế `DEL` trên hot key.
-3. Mọi key đều dùng prefix `user:` để phân tách namespace rõ ràng.
-4. TTL có jitter để tránh expired đồng loạt.
-5. Event-driven self-healing luôn tồn tại để sửa lệch cache nếu in-band update bị miss.
+Thông tin Profile sẽ chia Keys rõ ràng thay vì gộp chung một cục nhằm tránh phình to kích cỡ Byte đẩy cho băng thông Redis.
 
-## 2. Danh mục key và chi tiết field
+| Key Pattern | Cấu Trúc Data | TTL | Miêu tả (Description) |
+| :--- | :--- | :--- | :--- |
+| `user:caches:profile:{id}` | `String JSON` | 2 Ngày | Lưu thông tin cơ bản: Tên, Phone Number, Ngày sinh|
+| `user:caches:addresses:{user_id}` | `String JSON` (Mảng List) | 12 Giờ | Danh sách Full của tất cả Địa chỉ phục vụ trang Checkout và Info User. |
+| `user:caches:preferences:{user_id}` | `String JSON` | 1 Tuần | Tùy chọn quyền riêng tư, tiếng ngôn ngữ, email marketing... Ít khi sửa đổi nhất. |
 
-## 2.1 Key nhóm profile
+## 3. Chính sách Xóa Và Đồng Bộ (Invalidation Strategy)
 
-### Key `user:profile:{user_id}`
+Với mô hình Cache Aside:
 
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String JSON |
-| TTL | 3600s + jitter (0..300s) |
-| Tạo/Cập nhật | In-band sau profile write, và out-of-band từ worker |
-| Mục đích | Read path cho `GET /users/me` và gRPC profile |
+1.  Client gửi yêu cầu `PUT /api/v1/users/me/profile` (Thay đổi Avatar URL mới).
+2.  **User Service (Pod A)** xử lý việc thay Avatar vào DB Postgres. Transaction Commit OK.
+3.  Pod A gọi lệnh hạ sát Cache L2 Redis: `DEL user:caches:profile:{uuid}` (double-delete trước và sau commit nếu cần).
+4.  *Kết quả*: Khi Client F5 trang web và đi vào lấy ảnh đại diện, rớt tìm xuống L2 Redis Miss, xuống Database tóm được data MỚI -> Chép ngược lại vào Redis.
 
-**Payload đề xuất:**
+*Ghi chú thêm: Logic tương tự (DEL Redis L2) được áp dụng bắt buộc cho cả nhánh dữ liệu **Addresses** và **Preferences**.*
 
-```json
-{
-  "user_id": "u-10001",
-  "display_name": "nguyen_van_a",
-  "first_name": "Nguyen",
-  "last_name": "Van A",
-  "avatar_url": "https://cdn.example.com/u10001.jpg",
-  "status": "ACTIVE",
-  "kyc_status": "APPROVED",
-  "state_version": 17,
-  "updated_at": "2026-03-31T09:00:00Z"
-}
-```
+## 4. Chống Xuyên Thủng Lưới (Cache Penetration / Thundering Herd)
 
-### Key `user:profile:version:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String (số nguyên) |
-| TTL | 24h |
-| Mục đích | Version fence cho stale-check nhanh ở một số luồng đồng bộ |
-
-## 2.2 Key nhóm địa chỉ
-
-### Key `user:addresses:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | RedisJSON Array |
-| TTL | 86400s |
-| Mục đích | Trả danh sách địa chỉ cho checkout/profile |
-
-**Phần tử trong mảng gồm:**
-- `address_id`, `full_name`, `phone`, `street`, `district_code`, `province_code`.
-- `is_default_shipping`, `is_default_billing`, `updated_at`.
-
-### Key `user:address:{address_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | RedisJSON Object |
-| TTL | 86400s |
-| Mục đích | Point-read địa chỉ theo ID |
-
-## 2.3 Key nhóm preferences và KYC
-
-### Key `user:preferences:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String JSON |
-| TTL | 21600s |
-| Mục đích | Read nhanh cài đặt user |
-
-### Key `user:kyc:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String JSON |
-| TTL | 3600s |
-| Mục đích | KYC status read path cho onboarding/sensitive flows |
-
-## 2.4 Key nhóm compliance/deletion
-
-### Key `user:deletion_status:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String JSON |
-| TTL | 1800s |
-| Mục đích | Trả trạng thái xóa tài khoản theo retention lifecycle |
-
-## 2.5 Key nhóm vận hành
-
-### Key `user:idempotency:{idempotency_key}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | String JSON |
-| TTL | 5 phút (lease processing), sau commit tăng 24h |
-| Mục đích | Chống double-submit |
-
-### Key `user:rate_limit:profile_update:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | Counter |
-| TTL | 60s |
-| Mục đích | Chống spam profile updates |
-
-### Key `user:rate_limit:kyc_submit:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | Counter |
-| TTL | 1 ngày |
-| Mục đích | Chống lạm dụng upload hồ sơ KYC |
-
-### Key `user:lock:profile_refresh:{user_id}`
-
-| Thuộc tính | Giá trị |
-|---|---|
-| Loại | Distributed lock key |
-| TTL | 2s |
-| Mục đích | Chặn stampede cross-pod khi cache miss profile |
-
-## 3. Luồng đọc và ghi cache
-
-## 3.1 Read flow (cache-aside)
-
-1. Kiểm tra Redis key.
-2. Nếu hit, trả ngay.
-3. Nếu miss, dùng singleflight nội bộ.
-4. Pod thắng lock query DB, set cache, rồi trả kết quả.
-5. Pod còn lại chờ ngắn và đọc lại từ cache.
-
-## 3.2 Write flow (soft invalidation)
-
-1. Ghi DB + outbox trong cùng transaction.
-2. In-band ghi đè key quan trọng nếu đủ payload.
-3. Worker self-heal tiêu thụ event để cập nhật key liên quan.
-4. Chỉ dùng `DEL` khi key không còn hợp lệ tuyệt đối.
-
-## 4. Chống stampede, penetration, stale write
-
-## 4.1 Stampede protection
-
-1. Local singleflight theo `user_id`.
-2. Distributed lock (`SETNX user:lock:profile_refresh:{user_id} EX 2`).
-3. TTL jitter cho key profile và key hot-read.
-
-## 4.2 Cache penetration protection
-
-1. Với user không tồn tại, cache empty marker TTL ngắn (30-60s).
-2. Tránh việc request sai ID liên tục đập DB.
-
-## 4.3 Stale write protection
-
-1. Worker so sánh `state_version` hoặc `updated_at` trước khi overwrite.
-2. Có thể dùng Lua CAS để chặn ghi dữ liệu cũ đè dữ liệu mới.
-
-## 5. Kênh Pub/Sub và format thông điệp
-
-1. Kênh đề xuất: `channel:user:l1-evict` (nếu bật local cache).
-2. Chỉ publish sau commit transaction.
-
-**Schema thông điệp:**
-
-```json
-{
-  "type": "USER_PROFILE_UPDATED",
-  "user_id": "u-10001",
-  "state_version": 17,
-  "updated_at": "2026-03-31T09:00:00Z"
-}
-```
-
-## 6. Bảng tổng hợp key inventory
-
-| Key Pattern | Loại | TTL | Invalidation | Mục đích |
-|---|---|---|---|---|
-| `user:profile:{user_id}` | String JSON | 1h + jitter | Overwrite in-band + self-heal worker | Profile point-read |
-| `user:profile:version:{user_id}` | String | 24h | Overwrite theo profile event | Version fence |
-| `user:addresses:{user_id}` | RedisJSON Array | 24h | Overwrite theo address events | Danh sách địa chỉ |
-| `user:address:{address_id}` | RedisJSON Object | 24h | Overwrite theo address events | Point-read địa chỉ |
-| `user:preferences:{user_id}` | String JSON | 6h | Overwrite theo preferences event | Read preferences |
-| `user:kyc:{user_id}` | String JSON | 1h | Overwrite theo KYC events | Read KYC status |
-| `user:deletion_status:{user_id}` | String JSON | 30m | Overwrite theo deletion lifecycle events | Compliance status |
-| `user:idempotency:{key}` | String JSON | 5m -> 24h | Auto expire | Duplicate guard |
-
-## 7. SLO và giám sát
-
-1. Cache hit ratio profile > 90%.
-2. Cache hit ratio addresses > 92%.
-3. Redis p99 latency < 10ms.
-4. Cảnh báo lock contention khi tăng đột biến.
-5. Cảnh báo divergence khi `state_version` cache < DB kéo dài.
+1. **Khách hàng Cố Tính Trộm ID Không tồn Tại**: 
+    Hacker truyền UUID giả liên tục. L2 Miss, Database Miss. Tạo vòng lặp DoS vỡ ống DB RDBMS. 
+    -> **Phương thuốc**: Áp dụng cắm cờ `Null Value Cache`. Profile tìm không ra sẽ nhét 1 JSON Rỗng Cắm cờ "Not Found" vô Redis có thời hạn chết (TTL = 15 phút) ngay lập tức dập tắt cú Query Database ở đợt thứ 2.
+2. **Danh sách rỗng và Preferences chưa khởi tạo**:
+    * Với **Addresses**, nếu DB trả về danh sách rỗng, vẫn cache một mảng `[]` với TTL ngắn để tránh cache miss lặp lại.
+    * Với **Preferences**, nếu chưa có bản ghi, cache một object mặc định (hoặc sentinel) để tránh xuyên thủng.
+3. **Kẹp Ổ Khóa Singleflight (Concurrency Guard):**
+    Dùng thư viện hoặc cơ chế ngắt Singleflight của Go / Redisson để ép 50 Call song song trùng 1 ID UUID phải Wait lẫn nhau. Chỉ một luồng xuyên mạng chọc xuống Redis L2/DB, 49 thằng còn lại sẽ xài ké luồng đi cống nạp Data của gã số một.
