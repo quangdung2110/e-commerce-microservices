@@ -26,10 +26,12 @@ Do mỗi lần Client gọi /refresh, một cặp token mới lại sinh ra và 
 *   **Logic**:
     1.  Keystore dùng bảng `jwt_keys` trong Auth DB làm nguồn gốc (có thể cache ở Redis để tăng tốc đọc).
     2.  Định kỳ sinh khóa mới Asymmetric. Set trạng thái `ACTIVE`.
-    3.  Khóa cũ được chuyển trạng thái `PHASE_OUT` (Chỉ dùng để Verify chéo các token còn 15 phút cuối, KHÔNG dùng để Sign token cấp mới nữa).
-    4.  Cặp Public Keys (JWKS endpoint) trả về sẽ map cả 2 `kid` (Key ID) cũ và mới. Gateway sẽ lấy được cả 2. Tự Gateway biết tra JWT header mang `kid` nào thì Verify bằng RSA key có `kid` ấy.
-    5.  Worker phát tín hiệu nội bộ để **invalidate JWKS cache** ngay khi có key mới.
-    6.  Cron sẽ xóa bỏ bản ghi Keystore của `PHASE_OUT` key sau khi đủ TTL rảnh tay (1 ngày an toàn).
+    3.  Khóa cũ được chuyển trạng thái `PHASE_OUT` (Chỉ dùng để Verify chéo các token còn hạn, KHÔNG dùng để Sign token cấp mới nữa).
+    4.  Cặp Public Keys (JWKS endpoint) trả về sẽ map cả 2 `kid` (Key ID) cũ và mới. Gateway sẽ lấy được cả 2.
+    5.  **Publish Notification**: Sau khi cập nhật DB thành công, worker thực hiện:
+        *   Xóa cache Caffeine nội bộ của Auth Service.
+        *   Publish message lên Redis Pub/Sub channel `auth:jwks:update` với nội dung `{"event":"JWKS_UPDATED", "timestamp": now}`.
+    6.  **Grace Period**: Cron sẽ xóa bỏ bản ghi Keystore của `PHASE_OUT` key sau **7 ngày** (Đảm bảo Access Token 15 phút và Refresh Token tối đa 30 ngày đều có thời gian xoay vòng an toàn).
 
 ## 3. Worker Outbox (Đã Lỗi Thời - Chuyển sang Debezium CDC)
 Trong quá trình đăng ký (Register) hoặc Xác minh (Verify email):

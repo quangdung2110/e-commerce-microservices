@@ -65,9 +65,25 @@ Dành cho trường hợp Đổi mật khẩu, Bị Banned hoặc Force Logout m
     *   **TTL**: 15 - 30 phút.
 
 
-## 2. In-Memory JWKS (Caffeine)
-API Gateway sẽ gọi lên Auth để lấy Public Keys (JWKS). Dữ liệu Public Key có thể sống tới cả tuần lễ (trước chu kỳ Rotation).
+## 2. JWKS Caching Strategy
 
-*   **Local Cache**: Do Public Key JSON là dữ liệu Global ai xem cũng được, Auth Service có thể nhét hẳn chuỗi JSON này vào bộ nhớ nội bộ (Caffeine) với `TTL = 5-10 phút`.
-*   **Invalidation**: Khi xoay khóa, worker phát tín hiệu nội bộ (Pub/Sub hoặc event) để xóa cache JWKS ngay lập tức.
-*   **Workflow**: Get JWKS -> Trả từ Caffeine (0.1ms). Nếu rỗng -> Fetch Redis hoặc Database -> Set Caffeine. Tốc độ cực hạn.
+### 2.1 Auth Service Internal Cache (Caffeine)
+Phục vụ nhanh endpoint `GET /.well-known/jwks.json` mà không cần query DB mỗi lần.
+*   **Loại Cache**: Caffeine (In-Memory).
+*   **TTL**: **5 phút**.
+*   **Logic**: 
+    *   `HIT`: Trả về danh sách Public Keys (JWKS).
+    *   `MISS`: Query DB tìm các key có status `ACTIVE` hoặc `PHASE_OUT`, build JSON, ghi vào cache.
+*   **Invalidation**: Khi Key Rotation Worker chạy xong, nó sẽ xóa cache Caffeine này.
+
+### 2.2 API Gateway Local Cache
+API Gateway lưu trữ toàn bộ JWKS để verify JWT ngay tại Gateway mà không cần gọi sang Auth Service cho mỗi request.
+*   **Loại Cache**: Caffeine hoặc Guava (In-Memory trên mỗi node Gateway).
+*   **Cấu trúc**: Map `kid -> Public Key`.
+*   **TTL**: **10 phút**.
+*   **Invalidation (Gần như tức thì)**: 
+    *   Gateway subscribe vào Redis channel `auth:jwks:update`.
+    *   Khi nhận message `JWKS_UPDATED`, Gateway thực hiện xóa (clear) toàn bộ local cache JWKS.
+*   **Workflow Fetch**: 
+    *   Nếu `kid` trong JWT không có trong cache -> Gọi Auth Service JWKS endpoint -> Cập nhật cache -> Verify.
+    *   Nếu vẫn không thấy sau khi fetch -> Trả về 401 Unauthorized.

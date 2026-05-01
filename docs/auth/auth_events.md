@@ -115,6 +115,18 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 }
 ```
 
+### 1.5 `JWKS_UPDATED` (Cache Invalidation)
+Sự kiện đặc biệt dùng để thông báo cho API Gateway xóa cache local của JWKS ngay lập tức khi có sự thay đổi về Key (Rotation hoặc Admin manual trigger).
+*   **Kênh truyền tải**: **Redis Pub/Sub** (Channel: `auth:jwks:update`). Không dùng Kafka để đảm bảo tốc độ microsecond và giảm tải cho Kafka cluster với các event mang tính chất signal.
+*   **Người nghe**: `API Gateway` (Subscriber)
+*   **Payload Schema**:
+```json
+{
+  "event": "JWKS_UPDATED",
+  "timestamp": 1714567890
+}
+```
+
 ## 2. Events Auth Service Tiêu Thụ
 
 Lắng nghe trên Topic: `t.admin.events` hoặc tổ chức qua gRPC trực tiếp tùy mức độ khẩn cấp. Rất khuyên dùng Publish-Subscribe qua Kafka để Auth Service dễ Scale, khi Admin Ban user, 30 pods Auth có thể cùng phối hợp.

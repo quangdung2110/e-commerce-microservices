@@ -9,3 +9,22 @@ Giải pháp ở đây chính là chúng ta sẽ sử dụng một Key Pattern �
 Key Pattern này sẽ có TTL là 10 giây (còn được gọi là Grace Period)
 Khi đổi Refresh Token, ta sẽ sử dụng một Key Pattern để đánh dấu Refresh Token cũ đã bị đổi và có một khoảng thời gian 10 giây để hệ thống có thể hiểu được: đây chính là một hành vi hợp lệ bởi vì một request có thể gửi nhiều lần
 Chỉ khi nào hết thời gian 10s mà vẫn có request tiếp tục đến để đổi Refresh Token thì lúc này hệ thống mới xác định đây chính là hành vi đánh cắp và bị chặn.
+
+4. Đảm bảo bảo mật tuyệt đối với Public Key / Private Key và khắc phục API Gateway không phải gọi về Auth Service để xác thực mỗi request
+Auth Service sẽ tạo ra 1 bộ khóa:
+    Lấy Private Key từ bảng jwt_keys trong Auth DB để ký và xác vào mỗi Access Token trước khi gửi cho client
+    Công bố Public Key tương ứng qua endpoint /.well-known/jwks.json để API Gateway tự động load và sử dụng để xác thực Access Token
+
+Vậy đặt ra một câu hỏi làm sao để API Gateway có thể biết được nên lựa chọn Key nào để xác thực Access Token?
+Khi Auth Service tạo ra Access Token, nó sẽ chọn private key đang 'ACTIVE' trong bảng jwt_keys, ghi trường 'kid' vào header của JWT trước khi ký
+
+Gateway làm gì khi nhận được một Access Token từ client:
+1.Lúc đó, API Gateway đơn giản chỉ cần giải mã header của Access Token được gửi tới và lấy field 'kid' ra
+2.Trong cache của Gateway (fetch từ JWTS endpoint của Auth Service) sẽ có tất cả các: kid -> public key
+3.Gateway sẽ lựa chọn Key tương ứng để xác thực Access Token
+4.Nếu xác thực OK → token hợp lệ. Nếu sai (ví dụ token bị sửa, hoặc kid không tồn tại, hoặc key không khớp) → từ chối
+
+
+Tuy nhiên, mỗi request tới API Gateway đều cần phải xác thực bằng cách check Redis, nếu sau này load hệ thống tăng lên thì sẽ bị nghẽn
+Chính vì thế bản thân API Gateway phải lưu trữ cache (L1 in-memory) toàn bộ JWKS do Auth Service cung cấp theo dạng kid -> public key, TTL 10 phút
+Đồng thời, Auth Service sẽ phải phát một tín hiệu (thông qua redis pub/sub, hoặc kafka) để API Gateway có thể nghe thấy và xóa cache local ngay lập tức khi phát hiện có Key mới được tạo ra
