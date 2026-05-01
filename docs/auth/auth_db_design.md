@@ -58,8 +58,8 @@ Sử dụng mô hình Outbox để đảm bảo Transaction SQL cập nhật Use
 | `event_id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
 | `event_type` | `VARCHAR(100)` | Not Null | Tên luồng Event (Ex: `USER_VERIFIED_SUCCESS`) |
 | `aggregate_type` | `VARCHAR(100)` | Indexed | Tên kiểu Aggregate (VD: `User`) |
-| `aggregate_id` | `VARCHAR(255)` | Indexed | UUID của `user_id` |
-| `partition_key` | `VARCHAR(255)` | Indexed | Partition Key của Kafka để đảm bảo thứ tự gửi của user |
+| `aggregate_id` | `UUID` | Indexed | UUID của `user_id` |
+| `partition_key` | `UUID` | Indexed | Partition Key của Kafka để đảm bảo thứ tự gửi của user |
 | `payload` | `JSONB` | Not Null | Data bắn qua Kafka (Không chứa thông tin nhạy cảm) |
 | `created_at` | `TIMESTAMP` | Default NOW() | Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng. Cần cron dọn rác định kỳ. |
 
