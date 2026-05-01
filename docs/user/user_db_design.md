@@ -71,11 +71,12 @@ User Service dùng Outbox để đảm bảo Transaction SQL (update profile/add
 
 | Column Name | Data Type | Constraints / Indexes | Description |
 | :--- | :--- | :--- | :--- |
-| `id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
+| `event_id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
+| `event_type` | `VARCHAR(100)` | Not Null | Tên luồng Event (Ex: `USER_PROFILE_UPDATED`) |
 | `aggregate_type` | `VARCHAR(100)` | Indexed | Tên kiểu Aggregate (VD: `User`) |
-| `aggregate_id` | `VARCHAR(255)` | Indexed | UUID của `user_id` |
-| `type` | `VARCHAR(100)` | Not Null | Tên Event (Ex: `USER_PROFILE_UPDATED`) |
+| `aggregate_id` | `UUID` | Indexed | UUID của `user_id` |
+| `partition_key` | `UUID` | Indexed | Partition Key của Kafka để đảm bảo thứ tự gửi của user |
 | `payload` | `JSONB` | Not Null | Data bắn qua Kafka (Không chứa thông tin nhạy cảm) |
-| `created_at` | `TIMESTAMP` | Default NOW() | Thời điểm tạo event |
+| `created_at` | `TIMESTAMP` | Default NOW() | Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng. Cần cron dọn rác định kỳ. |
 
 **Chính sách dọn rác:** Định kỳ chạy cron xóa event cũ (ví dụ giữ 7-14 ngày) để tránh phình bảng. Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng.

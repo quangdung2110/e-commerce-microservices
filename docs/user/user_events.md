@@ -15,35 +15,39 @@ Tài liệu này định nghĩa cấu trúc dữ liệu Event Async và các Top
 
 **1.1. `USER_VERIFIED_SUCCESS` (Hoặc `USER_REGISTERED_SUCCESS`)**
 Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng ký" qua Captcha hợp lệ hoặc "Verify qua OTP Email" thành công (Tùy chính sách B2C của sàn Ecomm).
+*   **Payload Schema**:
 ```json
-// Topic: t.auth.events
 {
   "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
   "event_type": "USER_VERIFIED_SUCCESS",
-
-**1.2. `USER_DELETED` (GDPR / Xóa vĩnh viễn)**
-  "timestamp": "2026-04-22T08:00:00Z",
+  "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-// Topic: t.auth.events
-{
-  "event_id": "uuid-v4",
-  "event_type": "USER_DELETED",
-  "timestamp": "2026-04-22T08:30:00Z",
-  "payload": {
-    "user_id": "uuid-cua-user",
-    "reason": "GDPR_REQUEST"
-  }
-}
-```
-    "user_id": "uuid-cua-user",  // Đồng bộ hoàn toàn với Auth schema user_id (mapped vào user_profiles.id)
+    "user_id": "u-1234",
     "email": "customer@gmail.com",
     "roles": ["USER"]
   }
 }
 ```
 
-### Từ Topic `t.loyalty.events` hoặc `t.order.events` (Sản xuất bởi hệ thống bán hàng)
-
+**1.2. `USER_DELETED` (GDPR / Xóa vĩnh viễn)**
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_DELETED",
+  "occurred_at": "2026-04-21T10:00:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "reason": "GDPR_REQUEST"
+  }
+}
+```
 
 ## 2. Events Published (Công bố cho thế giới biết)
 
@@ -55,7 +59,9 @@ Công khai dữ liệu bị sửa đổi (Tên, Số điện thoại) để các
 // Topic: t.user.events
 {
   "event_id": "uuid-v4",
-  "event_sequence_id": 1493021, // Versioning tranh Out-of-order 
+  "aggregate_type": "USER",
+  "aggregate_id": "uuid-cua-user",
+  "partition_key": "uuid-cua-user",
   "event_type": "USER_PROFILE_UPDATED",
   "timestamp": "2026-04-22T08:05:00Z",
   "payload": {
@@ -65,7 +71,6 @@ Công khai dữ liệu bị sửa đổi (Tên, Số điện thoại) để các
     "phone_number": "0987654321", // Audit Service doc se ma hoa mask data
     "date_of_birth": "1997-10-19",
     "gender": "MALE",
-    "avatar_url": "https://cdn.commerce.vn/avt/xyz.webp"
   }
 }
 ```
@@ -76,7 +81,9 @@ Thông báo khi người dùng thay đổi preferences để Notification/Market
 // Topic: t.user.events
 {
   "event_id": "uuid-v4",
-  "event_sequence_id": 1493022,
+  "aggregate_type": "USER",
+  "aggregate_id": "uuid-cua-user",
+  "partition_key": "uuid-cua-user",
   "event_type": "USER_PREFERENCES_UPDATED",
   "timestamp": "2026-04-22T08:06:00Z",
   "payload": {
@@ -95,7 +102,9 @@ Ném lên không gian phòng khi hệ thống Shipping Logistcs/Fraud Detection 
 // Topic: t.user.events
 {
   "event_id": "uuid-v4",
-  "event_sequence_id": 1493022, 
+  "aggregate_type": "USER",
+  "aggregate_id": "uuid-cua-user",
+  "partition_key": "uuid-cua-user",
   "event_type": "USER_ADDRESS_DELETED",
   "timestamp": "2026-04-22T08:10:00Z",
   "payload": {
@@ -108,4 +117,4 @@ Ném lên không gian phòng khi hệ thống Shipping Logistcs/Fraud Detection 
 
 ---
 > [!NOTE] 
-> User Service không publish password hay bất kỳ credential mật mã nào (Vì nó vốn không sở hữu các field đó). Toàn bộ Auth Logic bị chắn tách biệt ở `t.auth.events` và Audit Tracking. Mảng dữ liệu User Events được xem là không quá nhạy cảm nếu so với Auth Token Leakage.
+> User Service không publish password hay bất kỳ credential mật mã nào (Vì nó vốn không sở hữu các field đó). Toàn bộ Auth Logic bị chắn tách biệt ở `t.auth.events`. Mảng dữ liệu User Events được xem là không quá nhạy cảm nếu so với Auth Token Leakage.
