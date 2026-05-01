@@ -44,10 +44,10 @@ Dành cho trường hợp Đổi mật khẩu, Bị Banned hoặc Force Logout m
 
 ### 1.3 Khóa Chống Brute-Force & Spam (Rate Limiting)
 *   **Key Pattern**:
-    *   `auth:rate_limit:login:{ip_address}` và `auth:rate_limit:login:{email}`
+    *   `auth:rate_limit:login:{ip_address}`
     *   `auth:rate_limit:register:{ip_address}` (Chống tạo hằng hà sa số tài khoản rác).
     *   `auth:rate_limit:forgot_pw:{ip_address}` (Chống dùng API làm tools SMS Bombing).
-    *   `auth:rate_limit:resend_otp:{email_or_phone}` (Chống spam resend OTP theo từng định danh).
+    *   `auth:rate_limit:resend_otp:{email}` (Chống spam resend OTP theo từng định danh).
     *   **Mô tả**: Đếm số Request gọi vào các API nhạy cảm.
     *   **Loại Dữ Liệu**: `INCR / Token Bucket` (bằng Redis Module hoặc basic counters).
     *   **TTL**: Thường là 1 - 5 phút (ví dụ Cấm 5 phút nếu gõ sai pass 10 lần, hoặc chỉ được request 1 mã OTP mỗi phút).
@@ -64,13 +64,6 @@ Dành cho trường hợp Đổi mật khẩu, Bị Banned hoặc Force Logout m
     *   **Loại Dữ Liệu**: `String`. Value: `{user_id}`.
     *   **TTL**: 15 - 30 phút.
 
-### 1.6 Khóa Xác Thực 2FA (MFA Pending)
-*   **Key Pattern**: `auth:mfa_pending:{mfa_token}`
-    *   **Mô tả**: Dùng ở màn hình Đăng nhập. Nếu Account đã bật 2FA, lần nhập Password đúng Server sẽ trả về một `mfa_token` sống siêu ngắn để Client cầm mã này gọi tiếp API xác nhận OTP (Google Authenticator). Tránh việc cấp Access_token trước khi hoàn tất 2FA.
-    *   **Loại Dữ Liệu**: `String`. Value: `{user_id}`.
-    *   **TTL**: 5 phút.
-
----
 
 ## 2. In-Memory JWKS (Caffeine)
 API Gateway sẽ gọi lên Auth để lấy Public Keys (JWKS). Dữ liệu Public Key có thể sống tới cả tuần lễ (trước chu kỳ Rotation).

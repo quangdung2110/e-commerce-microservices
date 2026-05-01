@@ -1,8 +1,7 @@
 # Authentication Service Architecture Design
 
 ## 1. Overview
-Auth Service đóng vai trò là Identity Provider trung tâm của hệ thống E-Commerce Microservices. Nhiệm vụ chính bao gồm Đăng ký, Đăng nhập, Quản lý Vòng đời Token (cấp phát, làm mới, thu hồi), và cung cấp Public Key (JWKS) cho API Gateway.
-
+Auth Service đóng vai trò là Identity Provider trung tâm của hệ thống E-Commerce Microservices. Nhiệm vụ chính bao gồm Đăng ký, Đăng nhập, Quản lý Vòng đời Token (cấp phát, làm mới, thu hồi), cung cấp Public Key (JWKS) cho API Gateway, và kiêm luôn vai trò **Hộp đen ghi âm (Security & Audit Center)** để lưu trữ các lịch sử đăng nhập, thay đổi mật khẩu và hành vi nhạy cảm của toàn bộ hệ thống.
 ## 2. Token Lifecycle Management
 
 Hệ thống triển khai kiến trúc bảo mật nhiều tầng (Dual Token pattern kết hợp Redis Denylist).

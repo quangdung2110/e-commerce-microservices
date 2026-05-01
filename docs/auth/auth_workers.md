@@ -35,3 +35,10 @@ Do mỗi lần Client gọi /refresh, một cặp token mới lại sinh ra và 
 Trong quá trình đăng ký (Register) hoặc Xác minh (Verify email):
 *   **Hệ thống hiện tại sử dụng Debezium CDC Connector rà logs PostgreSQL (WAL)** để bắn event mượt mà cho Outbox Pattern. Vì vậy, trong mã nguồn Ứng dụng **không tồn tại** một `auth-outbox-relay` Worker định kỳ quét bảng `outbox_events` nhằm tiết kiệm chi phí Polling. Bảng `outbox_events` sẽ tự động dọn rác qua Trigger DB hoặc Cron tương đương.
 *   **Khuyến nghị**: Dùng cron dọn rác rõ ràng (giữ 7-14 ngày) để tránh phình bảng outbox.
+
+## 4. Dọn Dẹp Rác Audit Log: `audit-log-cleanup-cron`
+Nhật ký của khách hàng (log_category = 'USER') sẽ rất lớn sau một thời gian, hệ thống cần tự động dọn dẹp để tiết kiệm dung lượng do chúng ta lưu thẳng vào bảng PostgreSQL.
+*   **Tính chất**: Scheduled Cron Job (Ví dụ: Chạy 1 lần vào lúc 3h sáng mỗi ngày).
+*   **Logic**:
+    1.  Khởi chạy Job `DELETE FROM audit_logs WHERE log_category = 'USER' AND occurred_at < NOW() - INTERVAL '6 months';`
+

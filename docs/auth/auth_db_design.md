@@ -19,11 +19,8 @@ Bảng này lưu trữ thông tin đăng nhập tối thiểu và trạng thái 
 | `id` | `UUID` | Primary Key, Auto Gen | Định danh toàn cầu của User dùng xuyên suốt hệ thống. |
 | `email` | `VARCHAR(255)` | Unique, Indexed | Email/Username dùng để đăng nhập. |
 | `password_hash` | `VARCHAR(255)` | Not Null | Chuỗi hash mật khẩu (Sử dụng Argon2id / BCrypt). **Tuyệt đối không lưu plain text**. |
-| `roles` | `JSONB` hoặc `VARCHAR[]` | Default `['USER']` | Danh sách quyền của User. Ví dụ: `["USER", "ADMIN", "SELLER"]`. Auth cấp phát claim này vào JWT. |
-| `merchant_id` | `UUID` | Nullable, Indexed | Định danh gian hàng của User nếu mang Role `SELLER`. Giúp API Gateway định tuyến và Authorization trực tiếp. |
+| `roles` | `JSONB` hoặc `VARCHAR[]` | Default `['USER']` | Danh sách quyền của User. Ví dụ: `["USER", "ADMIN"]`. Auth cấp phát claim này vào JWT. |
 | `status` | `VARCHAR(50)` | Default `'PENDING_VERIFICATION'` | `PENDING_VERIFICATION` (Chờ kích hoạt Email), `ACTIVE`, `LOCKED` (sai pass nhiều), `BANNED`. |
-| `is_2fa_enabled` | `BOOLEAN` | Default `FALSE` | Đánh dấu người dùng (Seller/Admin) đã kích hoạt xác thực 2 lớp qua TOTP hay chưa. |
-| `two_fa_secret` | `VARCHAR(255)` | Nullable | Chuỗi định dạng Base32 sinh ra từ hệ thống để User scan QR vào Google Authenticator. |
 | `email_verified_at` | `TIMESTAMP` | Nullable | Lưu thời điểm xác thực email thành công. |
 | `created_at` | `TIMESTAMP` | Default NOW() | |
 | `updated_at` | `TIMESTAMP` | Mapped qua Trigger | |
@@ -58,10 +55,11 @@ Sử dụng mô hình Outbox để đảm bảo Transaction SQL cập nhật Use
 
 | Column Name | Data Type | Constraints / Indexes | Description |
 | :--- | :--- | :--- | :--- |
-| `id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
+| `event_id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
+| `event_type` | `VARCHAR(100)` | Not Null | Tên luồng Event (Ex: `USER_VERIFIED_SUCCESS`) |
 | `aggregate_type` | `VARCHAR(100)` | Indexed | Tên kiểu Aggregate (VD: `User`) |
 | `aggregate_id` | `VARCHAR(255)` | Indexed | UUID của `user_id` |
-| `type` | `VARCHAR(100)` | Not Null | Tên luồng Event (Ex: `USER_VERIFIED_SUCCESS`) |
+| `partition_key` | `VARCHAR(255)` | Indexed | Partition Key của Kafka để đảm bảo thứ tự gửi của user |
 | `payload` | `JSONB` | Not Null | Data bắn qua Kafka (Không chứa thông tin nhạy cảm) |
 | `created_at` | `TIMESTAMP` | Default NOW() | Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng. Cần cron dọn rác định kỳ. |
 
@@ -81,3 +79,23 @@ Keystore là nguồn dữ liệu gốc để Auth Service xuất JWKS và ký JW
 | `created_at` | `TIMESTAMP` | Default NOW() | Thời điểm tạo key. |
 | `rotated_at` | `TIMESTAMP` | Nullable | Thời điểm đưa vào PHASE_OUT. |
 | `expires_at` | `TIMESTAMP` | Nullable | Thời điểm có thể xóa khỏi keystore. |
+
+## 5. Bảng `audit_logs` (Quản lý Nhật ký Kiểm toán & Bảo mật)
+
+Bảng này đóng vai trò như hộp đen ghi lại mọi hành vi liên quan tới danh tính và bảo mật. Nhờ cơ chế hợp nhất, Auth Service trực tiếp lưu trữ các log này thay vì phải gửi đi đâu xa. Dữ liệu payload có cấu trúc linh hoạt nhờ kiểu `JSONB`.
+
+| Column Name | Data Type | Constraints / Indexes | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `UUID` | Primary Key | Định danh của log (nhận giá trị từ `event_id` nếu là event ngoại bộ để đảm bảo lũy đẳng). |
+| `actor_id` | `VARCHAR(255)` | Indexed | UUID của người dùng hoặc hệ thống kích hoạt sự kiện này. |
+| `actor_type` | `VARCHAR(50)` | | Phân loại actor: `USER`, `ADMIN`, `SYSTEM`, `GUEST` (ẩn danh hacker rà password). |
+| `event_type` | `VARCHAR(100)` | Indexed | Khóa định danh sự kiện: `USER_LOGGED_IN`, `PROFILE_SENSITIVE_UPDATED`. |
+| `occurred_at` | `TIMESTAMP` | Indexed | Thời gian chính xác diễn ra sự kiện. |
+| `ip_address` | `VARCHAR(45)` | | Địa chỉ IP gửi Request gốc tạo ra sự kiện này. |
+| `device_id` | `VARCHAR(255)` | | Tùy chọn, Mã fingerprint tĩnh cố định thiết bị. |
+| `device_info` | `VARCHAR(255)` | | Tùy chọn, trích từ User-Agent. |
+| `security_level` | `VARCHAR(50)` | Indexed | Mức độ nguy hiểm: `INFO`, `WARNING`, `CRITICAL`. |
+| `payload` | `JSONB` | GIN Indexed (tuỳ chọn)| Trường ĐA HÌNH chứa thông tin cụ thể (Dynamic). |
+| `log_category` | `VARCHAR(50)` | Indexed | Phân loại retention: `USER` (Xoá sau 6 tháng), `SYSTEM` (Lưu giữ vĩnh viễn). |
+
+**Chính sách dọn rác đề xuất:** Sử dụng Cron job nội bộ chạy lệnh `DELETE FROM audit_logs WHERE log_category = 'USER' AND occurred_at < NOW() - INTERVAL '6 months';` để tự động dọn dẹp các log của người dùng đã quá hạn 6 tháng, tiết kiệm dung lượng lưu trữ cho Database.

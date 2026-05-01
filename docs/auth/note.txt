@@ -1,0 +1,11 @@
+1. Cấu hình một Key Pattern để từ chối một Access Token cụ thể khi user đăng xuất khỏi một thiết bị với TTL đúng bằng thời gian sống còn lại của JWT
+
+2. Đối trường hợp khách hàng đổi mật khẩu, bị force logout toàn bộ thiết bị, vì hệ thống không biết được JWT đang có hiệu lực còn tồn tại bao nhiêu cái, nên ta sẽ tạo một Key Pattern
+đặc biệt để lưu thời điểm (timestamp) khi khách hàng bị kick. Gateway sẽ chặn mọi request có "iat" (issued at) nhỏ hơn thời điểm này.
+
+3. Cơ chế đặc biệt khi Reset Refresh Token:
+Có khả năng khi client gửi nhiều request để đổi Refresh Token do Access Token hết hạn, nếu những Refresh Token đến sau mà chúng ta lại kiểm tra so với Refresh Token trước đó thì sẽ bị báo sai là có hành vi đánh cắp.
+Giải pháp ở đây chính là chúng ta sẽ sử dụng một Key Pattern để giải quyết vấn đề này
+Key Pattern này sẽ có TTL là 10 giây (còn được gọi là Grace Period)
+Khi đổi Refresh Token, ta sẽ sử dụng một Key Pattern để đánh dấu Refresh Token cũ đã bị đổi và có một khoảng thời gian 10 giây để hệ thống có thể hiểu được: đây chính là một hành vi hợp lệ bởi vì một request có thể gửi nhiều lần
+Chỉ khi nào hết thời gian 10s mà vẫn có request tiếp tục đến để đổi Refresh Token thì lúc này hệ thống mới xác định đây chính là hành vi đánh cắp và bị chặn.
