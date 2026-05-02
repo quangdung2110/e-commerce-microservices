@@ -14,6 +14,7 @@ Inventory Service chạy các workers tập trung vào event relay, ghi sổ cá
 ## 1. Redis Stream Relay Worker (Core Ingress Worker)
 
 **Loại hình:** Background worker chạy liên tục.
+**Redis Stream Consumer Group:** `inventory-stream-relay`
 
 **Sứ mệnh:** Đọc events từ Redis Stream Outbox và forward sang Kafka `t.inventory.events`.
 
@@ -33,12 +34,12 @@ Inventory Service chạy các workers tập trung vào event relay, ghi sổ cá
 **Consumer Group:** `inventory-ledger-writer`
 **Consume Topic:** `t.inventory.events`
 
-**Sứ mệnh:** Ghi `inventory_ledger`, cập nhật `inventory_reservations`, cập nhật aggregate inventory và tạo `outbox_events` cho `INVENTORY_QUANTITY_CHANGED`.
+**Sứ mệnh:** Ghi `inventory_ledger`, cập nhật `inventory_reservations`, cập nhật aggregate inventory và tạo `inventory_outbox` cho `INVENTORY_QUANTITY_CHANGED`.
 
 ### Luồng xử lý
 
 1. `poll(100ms)` lấy batch.
-2. Dedup bằng `inventory_idempotency` theo `event_id`.
+2. Dedup bằng `inventory_event_idempotency` theo `event_id`.
 3. Group by `sku_id`.
 4. Nếu SKU đang `SUSPENDED` -> park vào `suspended_events`.
 5. Tính toán balance trong RAM.
@@ -48,20 +49,21 @@ Inventory Service chạy các workers tập trung vào event relay, ghi sổ cá
    - `INVENTORY_DEDUCTED` -> `DEDUCTED`.
    - `INVENTORY_RELEASED` -> `CANCELLED`.
 8. Update `physical_inventory.reserved_quantity` và `logical_inventory` aggregate.
-9. Insert `outbox_events` (`INVENTORY_QUANTITY_CHANGED`) cùng transaction.
+9. Insert `inventory_outbox` (`INVENTORY_QUANTITY_CHANGED`) cùng transaction.
 
 ---
 
-## 3. Outbox Polling Worker (Quantity Changed Publisher)
+## 3. Debezium CDC Connector (Thay thế Outbox Polling Worker)
 
-**Loại hình:** Worker liên tục hoặc cron ngắn (1-2 giây).
+**Loại hình:** Kafka Connect Source Connector (Đọc Real-time dưới tầng Đĩa cứng).
 
-**Sứ mệnh:** Forward `outbox_events` từ PostgreSQL ra Kafka.
+**Sứ mệnh:** Chuyển Event đã sinh ra từ bảng `inventory_outbox` sang Kafka Topic (`t.inventory.events`) với độ trễ < 5ms thông qua luồng bắt Read-Log (Write-Ahead-Log).
 
-1. Query `outbox_events WHERE status IN ('PENDING', 'FAILED') AND next_retry_at <= NOW()`.
-2. Produce Kafka `t.inventory.events`.
-3. Success -> `status = 'PUBLISHED'`.
-4. Failure -> tăng `retry_count`, set `next_retry_at`, vượt ngưỡng -> `DEAD`.
+**Chi tiết luồng hoạt động:**
+1. Khi Worker nội bộ có tạo mới Event (Ví dụ `INVENTORY_QUANTITY_CHANGED`), nó đồng thời Insert Record vào bảng `inventory_outbox` (với UUID `event_id`). DB cập nhật WAL dưới ổ cứng.
+2. Debezium Connector gắn qua cổng Logical_Replication_Slot tiến hành đọc stream tự động, không chiếm dụng tài nguyên CPU cấp Application.
+3. **[CRITICAL Kafka Routing]:** Debezium trích xuất giá trị cột `partition_key` (có thể là `sku_id` hoặc `order_id` tuỳ event type) làm Kafka Message Key. Hệ thống tuyệt đối không bóc JSON payload ở tầng Connect.
+4. Retry/DLQ được xử lý 100% tại Kafka Connect, không dùng logic Polling/Update trạng thái db.
 
 ---
 
@@ -85,6 +87,20 @@ Inventory Service chạy các workers tập trung vào event relay, ghi sổ cá
 1. Load `logical_inventory` -> `inventory:logic:{sku_id}:stock`.
 2. Load `physical_inventory` -> `inventory:physic:{sku_id:warehouse_id}:stock`.
 3. Với hot SKU, build bucket keys cho read-path.
+
+---
+
+## 5.1. Product Mapping Sync Worker
+
+**Loại hình:** Kafka Consumer chạy liên tục.
+**Consumer Group:** `inventory-product-mapping-sync`
+**Consume Topic:** `t.product.events`
+
+**Sứ mệnh:** Đồng bộ bảng `sku_product_mapping` để Inventory luôn enrich đúng `product_id` khi phát event/outbox mà không phải gọi runtime sang Product Service.
+
+1. Consume sự kiện thay đổi SKU/Product từ Product Service.
+2. Upsert `sku_product_mapping (sku_id, product_id, source_version, updated_at)` theo version tăng dần.
+3. Nếu detect out-of-order version, bỏ qua update cũ và ghi metric drift.
 
 ---
 
@@ -131,6 +147,6 @@ Xử lý mỗi row:
 
 ## 9. Ops Cleanup Jobs
 
-1. Trimmer `outbox_events` đã publish.
+1. **Time-Window Clean Up**: Định kỳ dọn `inventory_outbox` cũ (vd. lưu giữ quá 7 ngày) dựa trên watermark an toàn đã replicate bởi Debezium để không cản trở dung lượng đĩa.
 2. Archiver `suspended_events` cũ.
 3. DLQ sweep và dashboard refresh.

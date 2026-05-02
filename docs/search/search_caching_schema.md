@@ -97,7 +97,7 @@ Tất cả Redis Key của Search Service bắt đầu bằng prefix: `search:`
   > 2. Chuẩn hóa kiểu dữ liệu: boolean -> `true/false`, số -> string không locale.
   > 3. Với `filters` map: sort theo key tăng dần; nếu value là mảng thì sort value tăng dần.
   > 4. Loại bỏ field null/rỗng khỏi payload hash.
-  > 5. Serialize JSON với sorted keys cho tập tham số: `q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`.
+  > 5. Serialize JSON với sorted keys cho tập tham số: `q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `platform_id`, `sort`, `page`, `size`.
   > 6. Băm SHA-256 ra `query_hash`.
 
 ### 1.2 Category Tree Cache

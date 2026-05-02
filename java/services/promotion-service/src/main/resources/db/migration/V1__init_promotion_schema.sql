@@ -40,7 +40,6 @@ CREATE TABLE promotions (
     min_purchase_amount  DECIMAL(10, 2)  NULL,
     conditions_rule      JSONB           NULL,
     priority             INT             NOT NULL DEFAULT 0,
-    is_exclusive         BOOLEAN         NOT NULL DEFAULT false,
     start_time           TIMESTAMPTZ     NOT NULL,
     end_time             TIMESTAMPTZ     NOT NULL,
     status               VARCHAR(50)     NOT NULL DEFAULT 'ACTIVE'

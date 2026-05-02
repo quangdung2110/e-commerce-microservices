@@ -19,7 +19,7 @@ Tài liệu này mô tả các Workflows của Shipping Service: tính phí vậ
 
 ## 1. API: Calculate Shipping Fee (`POST /v1/shipping/calculate-batch`)
 
-**Ngữ cảnh:** Inventory Smart Routing Engine và Checkout Service gọi API này để lấy báo giá phí ship. Được gọi TRƯỚC khi user chốt đơn (Checkout Preview). Xem [Inventory Smart Routing Bước 2](../inventory/smart_routing_engine.md#bước-2-scoring-algorithm-chấm-điểm-phân-bổ).
+**Ngữ cảnh:** Inventory Smart Routing Engine gọi API này để lấy báo giá phí ship. Checkout Service nhận kết quả gián tiếp qua response routing của Inventory trong bước Checkout Preview. Xem [Inventory Smart Routing Bước 2](../inventory/smart_routing_engine.md#bước-2-scoring-algorithm-chấm-điểm-phân-bổ).
 
 1. **[Backend]** Nhận request:
    ```json
@@ -88,13 +88,15 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant PL as 3PL API (GHN/NinjaVan)
 
-    TW->>SS: POST /v1/shipping/create-shipment<br>{order_id, parcel_id, items, courier, addresses}
+    TW->>SS: POST /v1/shipping/create-shipment<br>{order_id, order_item_id, items, courier, addresses}
     SS->>SS: Idempotency Check (Redis)
     SS->>PL: Create Order (provider-specific API)
     PL-->>SS: tracking_number, label_url
     SS->>DB: INSERT shipments (PENDING)
-    SS->>DB: INSERT outbox_events (SHIPMENT_CREATED)
+    SS->>DB: INSERT shipping_outbox (SHIPMENT_CREATED)
     SS-->>TW: {shipment_id, tracking_number}
+    Note right of DB: Debezium CDC chìm
+    DB-->>Kafka: Phát SHIPMENT_CREATED
 ```
 
 ### Bước Chi tiết:
@@ -102,7 +104,7 @@ sequenceDiagram
    ```json
    {
      "order_id": 10001,
-     "parcel_id": 2001,
+     "order_item_id": 2001,
      "courier_code": "GHN",
      "service_type": "STANDARD",
      "sender": {"warehouse_id": 5, "name": "Kho Tân Bình", "phone": "028-xxx"},
@@ -115,19 +117,20 @@ sequenceDiagram
      "note": "Giao giờ hành chính"
    }
    ```
-2. **[Redis]** Idempotency: `SETNX shipping:create:{parcel_id}` TTL 24h.
+2. **[Redis]** Idempotency: `SETNX shipping:create:{order_item_id}` TTL 24h.
 3. **[Provider Adapter]** Gọi 3PL API:
    - GHN: `POST /shiip/public-api/v2/shipping-order/create`
    - NinjaVan: `POST /v1/orders`
 4. **[PostgreSQL - Transaction]**
    ```sql
    BEGIN;
-   INSERT INTO shipments (order_id, parcel_id, tracking_number, courier_code, 
+   INSERT INTO shipments (order_id, order_item_id, tracking_number, courier_code, 
      standardized_status, shipping_fee, ...)
-   VALUES (:order_id, :parcel_id, :tracking, 'GHN', 'PENDING', :fee, ...);
-   INSERT INTO outbox_events (...'SHIPMENT_CREATED'...);
+   VALUES (:order_id, :order_item_id, :tracking, 'GHN', 'PENDING', :fee, ...);
+   INSERT INTO shipping_outbox (..., event_type='SHIPMENT_CREATED', partition_key=:order_id);
    COMMIT;
    ```
+5. **[CDC Connector]** Debezium đọc bản ghi từ DB và tự động forward lên `t.shipping.events` không cần worker cản trở.
 5. **[Response]** `{shipment_id, tracking_number, label_url, estimated_delivery_date}`.
 
 ---
@@ -137,9 +140,10 @@ sequenceDiagram
 **Ngữ cảnh:** Order bị hủy → Temporal Compensation → Hủy vận đơn đã tạo.
 
 1. **[Backend]** Nhận: `{shipment_id, reason: "ORDER_CANCELLED"}`.
-2. **[FSM Check]** `status` phải là `PENDING`. Nếu đã `READY_TO_SHIP` trở đi → Trả lỗi (3PL đã nhận kiện, cần xử lý manual).
+2. **[FSM Check]** `status` phải là `PENDING`. Nếu đã `READY_TO_SHIP` trở đi → Trả lỗi non-retryable `MANUAL_INTERVENTION_REQUIRED` (3PL đã nhận kiện, cần xử lý manual).
 3. **[Provider Adapter]** Gọi 3PL cancel API.
-4. **[PostgreSQL]** Update FSM: `PENDING` → `CANCELLED`. Insert outbox `SHIPMENT_CANCELLED`.
+4. **[PostgreSQL]** Update FSM: `PENDING` → `CANCELLED`. Insert bảng `shipping_outbox` -> `SHIPMENT_CANCELLED` (partition_key = order_id).
+5. **[CDC Connector]** Debezium tự đọc WAL và phát event lên Kafka.
 
 ---
 
@@ -176,8 +180,11 @@ sequenceDiagram
 1. **[API Endpoint]** `POST /v1/shipping/webhook/{provider}` nhận raw body.
 2. **[Trả 200 OK ngay]** Không xử lý inline — dump vào Kafka.
 3. **[Kafka]** `producer.send("t.shipping.webhooks.raw", key, rawBody)`.
-4. **[Webhook Ingest Worker]** Consume → Parse → Verify → Map Status → Update FSM → Write ScyllaDB → Outbox. Xem [Workers #2](shipping_workers.md#2-webhook-ingest-worker-kafka-consumer--internal).
-5. **[Downstream]** Outbox Worker pickup → Produce `SHIPMENT_STATUS_UPDATED` lên `t.shipping.events` → Order Service consume.
+4. **[Webhook Ingest Worker]** Consume → Parse → Verify → Map Status → Update Postgres FSM + Ghi `shipping_outbox`. Xem [Workers #2](shipping_workers.md#2-webhook-ingest-worker-kafka-consumer--internal).
+5. **[ScyllaDB Queue]** Ingest Worker đẩy dữ liệu Log qua Thread/Queue In-Memory để Async-Write xuống ScyllaDB ngăn ngừa Timeout-Block DB.
+6. **[CDC Connector]** Debezium nhặt data từ `shipping_outbox` -> Forward lên `t.shipping.events` → Order Service consume.
+
+> **Contract bổ sung cho luồng RETURNED:** Khi map webhook sang trạng thái `RETURNED`, worker bắt buộc enrich payload `SHIPMENT_RETURNED` bằng snapshot `items[]` (`sku_id`, `product_id`, `quantity`) từ shipment record trước khi publish để Inventory restock chính xác.
 
 > **Adapter Pattern:** Mỗi 3PL có webhook format khác nhau. Factory `WebhookAdapterFactory.getAdapter(provider)` trả về adapter phù hợp implement interface `ShippingWebhookAdapter`. Thêm 3PL mới = thêm 1 adapter class + INSERT mapping table.
 

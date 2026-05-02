@@ -16,7 +16,7 @@ Tài liệu này mô tả thiết kế cơ sở dữ liệu (PostgreSQL) cho Ord
 ---
 ## 1. Thiết kế Master-Sub Order (Tách Kiện Hàng)
 
-Để giải quyết bài toán định tuyến thông minh, tối ưu chi phí vận chuyển và thời gian giao hàng từ nhiều điểm kho khác nhau, kiến trúc Đơn hàng được chia làm 2 cấp: Bảng `orders` (Master) và `order_parcels` (Sub-order/Kiện hàng).
+Để giải quyết bài toán định tuyến thông minh, tối ưu chi phí vận chuyển và thời gian giao hàng từ nhiều điểm kho khác nhau, kiến trúc Đơn hàng được chia làm 3 lớp: Bảng `orders` (Master), `order_items` (shipment unit), và `order_item_lines` (chi tiết SKU snapshot).
 
 ### 1.1. `orders` (Master Order)
 Lưu trữ thông tin tổng quát của giao dịch để khách hàng thanh toán 1 lần duy nhất.
@@ -29,19 +29,23 @@ Lưu trữ thông tin tổng quát của giao dịch để khách hàng thanh to
 *   `payment_method`: VARCHAR(50) (VNPAY, MOMO, ZALOPAY) — **denormalized for read-model/UI only**
 *   `payment_status`: VARCHAR(50) (PENDING, PAID, FAILED, REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED) — **denormalized for read-model/UI only**
 *   `status`: VARCHAR(50) (CREATED, PENDING_PAYMENT, PAID, PROCESSING, COMPLETED, CANCELLED, RETURN_REQUESTED, REFUNDED)
+*   `checkout_token`: VARCHAR(255) UNIQUE NOT NULL (snapshot token do Checkout cấp, dùng route signal theo WorkflowID `order-checkout-{checkout_token}`)
+*   `cancel_reason`: VARCHAR(100) NULL (VD: `PAYMENT_TIMEOUT`, `USER_CANCEL`, `ADMIN_FORCE_CANCEL`, `PRE_PAYMENT_SAGA_FAILED`)
+*   `return_reason`: VARCHAR(100) NULL (summary reason mức master order cho lane return/refund; chi tiết per-item vẫn nằm ở item/shipment metadata)
 *   `version`: BIGINT DEFAULT 1 (Optimistic Locking cho FSM)
 *   `created_at`, `updated_at`: TIMESTAMPTZ
 
 > **Nguồn sự thật (Source of Truth):** Trạng thái và phương thức thanh toán thuộc quyền sở hữu của Payment Service. Hai cột `payment_method`, `payment_status` tại Order chỉ là bản sao phục vụ query nhanh. Cần có reconciliation job định kỳ để phát hiện và sửa drift dữ liệu giữa Order và Payment.
 
+> **Checkout signal routing contract:** `checkout_token` bắt buộc được persist ngay tại `CreateOrderActivity` để workers có thể lookup theo `order_id` và signal đúng workflow `order-checkout-{checkout_token}`.
+
 > **Customer return one-shot policy:** Guard nghiệp vụ cho `POST /v1/orders/{orderId}/return` được lưu riêng ở bảng `order_customer_return_guard` (mục 3.3.1). Policy này độc lập với `payment_status` và không được reset khi `REFUND_FAILED`/`REFUND_REVERSED`.
 
-### 1.2. `order_parcels` (Sub-order / Kiện hàng)
-Mỗi Order có thể tách thành 1 hoặc nhiều Parcel dựa trên Tọa độ Kho hàng và quyết định của khách hàng lúc Checkout (Smart Routing).
+### 1.2. `order_items` (Sub-order / Kiện hàng)
+Mỗi Order có thể tách thành 1 hoặc nhiều Item dựa trên Tọa độ Kho hàng và quyết định của khách hàng lúc Checkout (Smart Routing).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `order_id`: BIGINT (Foreign Key -> `orders.id`)
-*   `seller_id`: BIGINT (Chủ shop của kiện hàng, phục vụ phân quyền Seller APIs)
-*   `store_name_snapshot`: VARCHAR(255) (Tên shop tại thời điểm đặt hàng; dùng cho lịch sử và CQRS text-search)
+*   `store_name_snapshot`: VARCHAR(255) (Tên platform tại thời điểm đặt hàng; dùng cho lịch sử và CQRS text-search)
 *   `warehouse_id`: BIGINT (Kho xuất hàng)
 *   `shipping_fee`: DECIMAL (Phí vận chuyển riêng của kiện này)
 *   `tracking_number`: VARCHAR(100) (Mã vận đơn của đối tác - GHN/NinjaVan)
@@ -55,12 +59,12 @@ Mỗi Order có thể tách thành 1 hoặc nhiều Parcel dựa trên Tọa đ�
 >
 > **Source of Truth:** Lấy từ `checkout:session:{user_id}.shipping_address` tại thời điểm Order Service nhận Checkout Submit payload.
 
-> **Snapshot tên shop là bắt buộc:** `store_name_snapshot` không được backfill theo Seller profile mới. Trường này là nguồn dữ liệu chuẩn để build `store_name`/`primary_store_name` trong `orders_read` và `order_search_lines`.
+> **Snapshot tên platform là bắt buộc:** `store_name_snapshot` không được backfill theo admin profile mới. Trường này là nguồn dữ liệu chuẩn để build `store_name`/`primary_store_name` trong `orders_read` và `order_search_lines`.
 
-### 1.3. `order_items` (Order Snapshot / Chi tiết Sản phẩm)
-Lưu snapshot tĩnh của thông tin sản phẩm tại thời điểm mua, không phụ thuộc vào Product Service trong tương lai. Map với từng Parcel cụ thể.
+### 1.3. `order_item_lines` (Order Snapshot / Chi tiết Sản phẩm)
+Lưu snapshot tĩnh của thông tin sản phẩm tại thời điểm mua, không phụ thuộc vào Product Service trong tương lai. Map với từng `order_items` cụ thể.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `parcel_id`: BIGINT (Foreign Key -> `order_parcels.id`)
+*   `order_item_id`: BIGINT (Foreign Key -> `order_items.id`)
 *   `sku_id`: VARCHAR(255)
 *   `product_id`: VARCHAR(255)
 *   `quantity`: INT
@@ -70,14 +74,14 @@ Lưu snapshot tĩnh của thông tin sản phẩm tại thời điểm mua, khô
 *   `snapshot_attributes`: JSONB (Ví dụ: `{"color": "Red", "size": "XL"}`)
 
 ### 1.4. `order_promotions` (Chi tiết Áp dụng Khuyến mãi)
-Lưu dấu vết các voucher/deal đã dùng cho đơn hàng này để đối soát hoặc hỗ trợ hoàn voucher khi hủy đơn.
+Lưu dấu vết các voucher/deal đã dùng cho đơn hàng này để đối soát: nhả reservation ở pre-payment cancel và hoàn budget ở refund lane (không suy diễn rollback trạng thái ví từ đây).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `order_id`: BIGINT
 *   `promotion_id`: BIGINT
 *   `promotion_type`: VARCHAR(50) (CART_DISCOUNT, SHIPPING_DISCOUNT)
 *   `discount_amount`: DECIMAL (Số tiền đã giảm)
 *   `platform_funding`: DECIMAL (Phần giảm giá do Platform tài trợ)
-*   `seller_funding`: DECIMAL (Phần giảm giá do Seller tài trợ)
+*   `admin_funding`: DECIMAL (Phần giảm giá do admin tài trợ)
 
 ---
 ## 2. Quản lý trạng thái phức tạp với State Machine (FSM)
@@ -86,7 +90,7 @@ Lưu dấu vết các voucher/deal đã dùng cho đơn hàng này để đối 
 
 *   **Định nghĩa Trạng thái (States):**
     *   **Master Order:** `CREATED` -> `PENDING_PAYMENT` -> `PAID` -> `PROCESSING` -> `COMPLETED` (hoặc rẽ nhánh sang `CANCELLED` cho pre-payment cancel, và `RETURN_REQUESTED` -> `REFUNDED` cho return/refund lane).
-    *   **Parcel:** `PREPARING` -> `PACKAGED` -> `HANDED_OVER` -> `IN_TRANSIT` -> `DELIVERED` -> `RETURNED` (nhánh lỗi: `IN_TRANSIT` -> `DELIVERY_FAILED` -> `IN_TRANSIT|RETURNED`).
+    *   **Item:** `PREPARING` -> `PACKAGED` -> `HANDED_OVER` -> `IN_TRANSIT` -> `DELIVERED` -> `RETURNED` (nhánh lỗi: `IN_TRANSIT` -> `DELIVERY_FAILED` -> `IN_TRANSIT|RETURNED`).
 *   **Optimistic Locking (`version`):**
     Mọi lệnh Update trạng thái bắt buộc kiểm tra `version`. Ví dụ:
     `UPDATE orders SET status = 'PAID', version = version + 1 WHERE id = 123 AND version = X;`
@@ -101,7 +105,7 @@ Order Service là Orchestrator, kết nối với Payment, Inventory, và Promot
 Đảm bảo Event được gửi đi một cách tin cậy sau khi CSDL thay đổi theo mô hình **CDC append-only**, đồng bộ chuẩn với [Product](../product/product_db_design.md) và [Promotion](../promotion/promotion_db_design.md).
 *   `event_id`: UUID PRIMARY KEY
 *   `schema_version`: INT NOT NULL DEFAULT 1
-*   `aggregate_type`: VARCHAR(50) NOT NULL (VD: `Order`, `OrderParcel`, `ProductSalesMetrics`, `ArchiveBatch`)
+*   `aggregate_type`: VARCHAR(50) NOT NULL (VD: `Order`, `OrderItem`, `ProductSalesMetrics`, `ArchiveBatch`)
 *   `aggregate_id`: VARCHAR(255) NOT NULL
 *   `event_type`: VARCHAR(100) NOT NULL (VD: `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`)
 *   `partition_key`: VARCHAR(255) NOT NULL (VD: `order_id` cho `t.order.events`, `product_id` cho `t.search.metrics.events`, `archive_batch_id` cho `t.order.archive.retry`)
@@ -158,7 +162,7 @@ Chặn xử lý lặp cho Kafka consumers và signal handlers.
 - `SHIPMENT_STATUS_APPLY`
 - `SHIPMENT_DELIVERED_APPLY`
 - `SHIPMENT_RETURNED_APPLY`
-- `SHIPMENT_RETURNED_APPEND`
+- `INVENTORY_RETURN_RECEIVED_ALL_SIGNAL`
 - `SHIPMENT_DELAYED_APPLY`
 - `ARCHIVE_BATCH_REPLAY`
 
@@ -207,13 +211,13 @@ CREATE INDEX idx_order_customer_return_guard_user_created
 
 **Quy tắc bắt buộc:**
 - Guard này **chỉ áp dụng** cho trigger Buyer API (`REQUEST_RETURN`).
-- Trigger vận hành (`SHIPMENT_RETURNED`, `REQUEST_ADMIN_REFUND`) không ghi vào bảng này.
+- Trigger vận hành (`REQUEST_ADMIN_REFUND`) không ghi vào bảng này.
 - Nếu đã tồn tại `order_id` trong bảng guard, mọi request Buyer API mới phải trả `409 REFUND_CUSTOMER_REQUEST_ALREADY_USED`.
-- Nếu request đầu là `PARTIAL`, mọi request Buyer API theo sau phải trả `409 REFUND_PARTIAL_FOLLOWUP_MANUAL_REQUIRED` và chuyển manual lane.
+- Request Buyer API chỉ được chấp nhận khi toàn bộ order item đã ở trạng thái `DELIVERED`.
 - Không được xóa/reset guard khi refund kết thúc ở `REFUND_FAILED` hoặc `REFUND_REVERSED`.
 
 ### 3.3.2. `order_refund_cases` (Single Refund Transaction Case)
-Control plane cho policy B: mỗi order chỉ có một refund transaction do Order khởi tạo, nhưng có thể chốt `refund_type = FULL|PARTIAL` theo snapshot parcels returned tại thời điểm lock scope.
+Control plane cho policy B: mỗi order chỉ có một refund transaction do Order khởi tạo, với refund scope lock theo request đầu vào và gate Inventory-confirm trước khi gọi Payment refund.
 
 ```sql
 CREATE TABLE order_refund_cases (
@@ -221,14 +225,15 @@ CREATE TABLE order_refund_cases (
     workflow_id VARCHAR(255) NOT NULL,
     trigger_source VARCHAR(40) NOT NULL,
     case_status VARCHAR(30) NOT NULL
-        CHECK (case_status IN ('INITIATED', 'WAITING_PAYMENT_REFUND_RESULT', 'SUCCEEDED', 'FAILED', 'REVERSED')),
+        CHECK (case_status IN ('INITIATED', 'WAITING_INVENTORY_RETURN_CONFIRMATION', 'WAITING_PAYMENT_REFUND_RESULT', 'SUCCEEDED', 'FAILED', 'REVERSED')),
     refund_type_locked VARCHAR(20) NULL
         CHECK (refund_type_locked IN ('FULL', 'PARTIAL')),
-    returned_parcel_ids_locked JSONB NOT NULL DEFAULT '[]'::jsonb,
+    requested_order_item_ids_locked JSONB NOT NULL DEFAULT '[]'::jsonb,
     refund_amount_locked DECIMAL(18,2) NULL,
     refund_transaction_id VARCHAR(120) NULL UNIQUE,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     scope_locked_at TIMESTAMPTZ NULL,
+    inventory_return_confirmed_at TIMESTAMPTZ NULL,
     resolved_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -239,22 +244,22 @@ CREATE INDEX idx_order_refund_cases_status_updated
 
 **Quy tắc bắt buộc:**
 - `order_id` chỉ có tối đa 1 bản ghi case đang active.
-- `SHIPMENT_RETURNED` chỉ event đầu tiên được quyền tạo case/workflow.
-- `SHIPMENT_RETURNED` follow-up khi case đang active chỉ được append vào context/audit, không được tạo `refund_transaction_id` thứ hai.
-- Khi case đã terminal (`SUCCEEDED|FAILED|REVERSED`), `SHIPMENT_RETURNED` mới phải đi manual adjustment lane thay vì mở refund transaction mới.
+- Case chỉ được tạo từ `API_RETURN` hoặc `REQUEST_ADMIN_REFUND`; `SHIPMENT_RETURNED` không mở case/workflow refund.
+- Sau khi lock scope, workflow phải ở trạng thái `WAITING_INVENTORY_RETURN_CONFIRMATION` cho đến khi nhận event Inventory xác nhận đã nhận đủ item thuộc refund scope.
+- Chỉ sau khi có `inventory_return_confirmed_at` mới được tạo `refund_transaction_id` và chuyển `WAITING_PAYMENT_REFUND_RESULT`.
+- Khi case đã terminal (`SUCCEEDED|FAILED|REVERSED`), không được mở refund transaction thứ hai cho cùng `order_id`.
 
 **Migration/backfill gợi ý:**
 - Backfill từ lịch sử request cũ có `action_type = REQUEST_RETURN` (theo thời điểm sớm nhất mỗi `order_id`) vào `order_customer_return_guard`.
 - Dùng `ON CONFLICT (order_id) DO NOTHING` để bảo toàn first-write-wins khi chạy nhiều đợt.
 
 ### 3.4. `order_status_history` (Audit Trail FSM)
-Ghi log mọi transition trạng thái của Master Order và Parcel để phục vụ điều tra sự cố, compliance và đối soát.
+Ghi log mọi transition trạng thái của Master Order và Item để phục vụ điều tra sự cố, compliance và đối soát.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `order_id`: BIGINT (Index)
-*   `parcel_id`: BIGINT NULL (Index, nullable khi transition ở cấp Master Order)
+*   `order_item_id`: BIGINT NULL (Index, nullable khi transition ở cấp Master Order)
 *   `old_status`: VARCHAR(50)
 *   `new_status`: VARCHAR(50)
-*   `changed_by`: VARCHAR(100) (user_id/admin_id/system/temporal_workflow_id)
 *   `changed_by_type`: VARCHAR(20) (`USER`, `ADMIN`, `SYSTEM`, `TEMPORAL`)
 *   `reason`: VARCHAR(255) NULL
 *   `metadata`: JSONB NULL (provider response, signal payload, extra context)
@@ -344,6 +349,28 @@ Bảng membership của batch để replay theo `batch_id` mà không cần nhé
 
 **Unique Index (`archive_batch_id`, `order_id`)**: chống duplicate membership trong cùng một lô.
 
+### 3.8. `order_product_metrics` (Aggregate sold metrics theo sản phẩm)
+
+Bảng aggregate nội bộ cho worker `order-metrics-projector`, phục vụ phát `ORDER_PRODUCT_METRICS_UPDATED` theo `product_id`.
+
+```sql
+CREATE TABLE order_product_metrics (
+    product_id VARCHAR(255) PRIMARY KEY,
+    order_count BIGINT NOT NULL DEFAULT 0,
+    sold_quantity BIGINT NOT NULL DEFAULT 0,
+    event_sequence_id BIGINT NOT NULL DEFAULT 0,
+    last_order_completed_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_order_product_metrics_updated_at
+    ON order_product_metrics (updated_at DESC);
+```
+
+**Quy tắc cập nhật:**
+- Chỉ tăng từ stream `ORDER_COMPLETED` đã qua idempotency guard theo `event_id`.
+- `event_sequence_id` phải đơn điệu theo `product_id` để downstream Search guard out-of-order.
+
 ---
 ## 4. Kiến trúc Mở rộng (Scalability & Performance)
 
@@ -353,7 +380,7 @@ Bảng membership của batch để replay theo `batch_id` mà không cần nhé
 Mọi API phục vụ việc tìm kiếm văn bản (Full-text) hoặc lọc đa chiều (Multiple filters) không được thi hành trên PostgreSQL. Dữ liệu đơn hàng được phi chuẩn hóa và đồng bộ liên tục sang Elasticsearch theo kiến trúc **hybrid 2-index**:
 
 *   `orders_read_vN`: 1 document/order, tối ưu cho lọc chính xác và phân trang ổn định.
-*   `order_search_lines_vN`: 1 document/item (gắn `parcel_id`), tối ưu cho text search theo tên sản phẩm, tracking number, store name.
+*   `order_search_lines_vN`: 1 document/item (gắn `order_item_id`), tối ưu cho text search theo tên sản phẩm, tracking number, store name.
 
 Chiến lược query: filter-first trên `orders_read`; text query chạy trên `order_search_lines` rồi hydrate summary từ `orders_read`.
 

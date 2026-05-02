@@ -38,18 +38,18 @@ Tài liệu này mô tả state machine cho Payment Transaction và Refund Trans
 | T6 | `SUCCESS` | `REFUND_REQUEST_ACCEPTED` | Tổng refund hợp lệ | `REFUNDING` |
 | T7 | `REFUNDING` | `REFUND_SUCCESS_CONFIRMED` | Provider/poller/reconcile xác nhận | `REFUNDED` |
 | T8 | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận | `SUCCESS` |
+| T9 | `REFUNDED` | `REFUND_REVERSED_CONFIRMED`| Provider xác nhận Refund bị đảo chiều | `SUCCESS` |
 
-> Lưu ý: T8 đưa Payment về `SUCCESS` vì dòng tiền hoàn chưa thành công, đơn hàng có thể cần xử lý thủ công/điều phối lại.
+> **Lưu ý T8 & T9:** Cả 2 transition này sẽ trigger việc bật cờ (flag) `requires_manual_review = TRUE` trên `payment_transactions` để nhân viên CSKH/Kế toán vào xử lý thủ công, do hệ thống không thể tự động rút tiền lần 2 nếu gateway lỗi hoàn hoặc lỗi tài khoản đích.
 
-### 1.3. Extension cho `REFUND_REVERSED` (provider-dependent)
+### 1.3. Bổ sung cho `REFUND_REVERSED` (provider-dependent)
 
-Một số cổng có thể gửi tín hiệu đảo chiều refund sau khi trước đó đã accepted/success.
+Một số cổng có thể gửi tín hiệu đảo chiều refund sau khi trước đó đã báo success (ví dụ tài khoản user khóa).
 
-Nguyên tắc xử lý ở Phase hiện tại:
-
-1. Không phá vỡ FSM lõi ở runtime.
+Nguyên tắc xử lý:
+1. Áp dụng Transition T9 để kéo `payment_transaction` về lại `SUCCESS` (Tiền lại nằm ở Merchant).
 2. Ghi audit transition vào `payment_status_history`.
-3. Phát event `REFUND_REVERSED` cho luồng vận hành và đối soát.
+3. Phát event `REFUND_REVERSED` để Order Service cập nhật theo (VD `ORDER_REFUND_FAILED`).
 4. Đưa case vào hàng chờ xử lý thủ công (incident/manual review queue).
 
 ## 2. Refund Transaction FSM

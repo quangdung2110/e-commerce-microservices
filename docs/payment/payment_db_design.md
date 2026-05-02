@@ -37,19 +37,23 @@ Hoàn tiền (Refund) là một quy trình tách biệt, có thể hoàn toàn p
 *   `payment_transaction_id`: `VARCHAR(50)` (Foreign Key logic đến giao dịch thanh toán gốc).
 *   `order_id`: `BIGINT`
 *   `refund_amount`: `DECIMAL`
-*   `reason`: `VARCHAR(255)` (Lý do hoàn: User Cancel, Out of Stock, Return, v.v.)
+*   `reason`: `VARCHAR(255)` (Lý do hoàn: `CUSTOMER_RETURN`, `ADMIN_FORCE_REFUND`, `OUT_OF_STOCK`, v.v.)
 *   `provider_refund_id`: `VARCHAR(100)` (Mã đối soát hoàn tiền từ đối tác).
 *   `status`: `VARCHAR(50)` (`PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`).
+*   `idempotency_key`: `VARCHAR(255) UNIQUE` (Chống duplicate request từ Order Service).
 *   `created_at`, `updated_at`: `TIMESTAMPTZ`
 
 ### 1.3. `webhook_logs` (Nhật ký Callbacks/Webhooks)
 Cực kỳ quan trọng để debug khi đối tác báo đã trừ tiền nhưng app báo lỗi.
 *   `id`: `BIGSERIAL PRIMARY KEY`.
 *   `provider`: `VARCHAR(50)`
+*   `provider_transaction_id`: `VARCHAR(100)`
+*   `event_type`: `VARCHAR(100)` (VD: `payment.success`, `payment.failed`)
 *   `payload`: `JSONB` (Lưu nguyên vẹn raw body của đối tác gửi sang để phục hồi dữ liệu khi cần).
 *   `status`: `VARCHAR(50)` (`UNPROCESSED`, `PROCESSED`, `FAILED_SIGNATURE`, `IGNORED`).
 *   `idempotency_key`: `VARCHAR(255)` (Kết hợp `provider_transaction_id` + `status` của webhook để chặn xử lý đúp).
 *   `created_at`: `TIMESTAMPTZ`
+*   **Constraint:** `UNIQUE(provider, provider_transaction_id, event_type)` để đảm bảo DB level từ chối duplicate webhook.
 
 ### 1.4. `payment_status_history` (Audit Trail — FSM Transition Log)
 Ghi nhận mọi chuyển đổi trạng thái (FSM Transition) của `payment_transactions` và `refund_transactions` phục vụ debug, compliance, và đối soát. Xem [State Machine - Audit Trail](payment_state_machine.md#34-audit-trail-payment_status_history).
@@ -78,11 +82,12 @@ Ghi nhận mọi chuyển đổi trạng thái (FSM Transition) của `payment_t
     *   `created_at`: `TIMESTAMPTZ`
 
 *   **`payment_idempotency`**: Chặn duplicate requests từ Frontend (double-click) hoặc Kafka replay.
-    *   `key`: `VARCHAR(255) PRIMARY KEY`
+    *   `key`: `VARCHAR(255)`
     *   `action`: `VARCHAR(100)`
     *   `response_code`: `INT`
     *   `response_body`: `JSONB`
     *   `created_at`, `expires_at`: `TIMESTAMPTZ`
+    *   **Constraint:** `PRIMARY KEY (key, action)` để tránh client dùng lại một idempotency_key cho nhiều hành động khác nhau.
 
 ---
 ## 2. Kiến trúc Xử lý Refund (Hoàn tiền)
@@ -95,7 +100,7 @@ Trong giai đoạn đầu, tiến trình Hoàn tiền được thiết kế như
 *   **Tổ chức Code:** Tạo package/module/folder riêng bên trong Payment Service, ví dụ `src/refund/` tách biệt với `src/payment/`.
 *   **Tương tác:** Tương tác giữa `Payment` và `Refund` bên trong code thông qua Interface nội bộ thay vì gọi trực tiếp sang nhau.
 *   **Lợi ích:** Dễ code, dễ deploy, tận dụng được Local Transaction (ACID DB lock) để xử lý concurrency, dữ liệu `Refund` gần với `Payment`. Khi logic phình to, có thể dễ dàng "bứng" folder `src/refund/` thành 1 service mới mà không tốn nhiều công refactor.
-*   **Logic Hoạt Động:** Đa phần tập trung vào Auto-Refund khi Order Cancelled hoặc Payment lỗi timeout.
+*   **Logic Hoạt Động:** Đa phần tập trung vào explicit refund requests từ Order Refund Workflow, xử lý kết quả refund bất đồng bộ và đối soát payment drift.
 
 ### Phase 2: Microservice Độc lập (Refund Service)
 Khi hệ thống chạm ngưỡng Scale, mảng CSKH và Kế toán cần một giao diện CMS đồ sộ để quản lý khiếu nại (Dispute / Chargeback / Return & Refund) theo từng cấp độ (Luồng duyệt tiền phân cấp). Lúc này sẽ bóc tách `src/refund/` thành **Refund Service**.

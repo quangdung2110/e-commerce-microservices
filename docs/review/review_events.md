@@ -7,21 +7,19 @@
 *   [Workflows](review_workflow.md)
 
 ---
-Tài liệu này định nghĩa contract sự kiện chính thức của Review Service theo hướng contract-first. Mục tiêu là để mọi service downstream (Search, Notification, Seller, Analytics, internal workers) xử lý nhất quán trong môi trường bất đồng bộ.
+Tài liệu này định nghĩa contract sự kiện chính thức của Review Service theo hướng contract-first. Mục tiêu là để mọi service downstream (Search, Notification, Analytics, internal workers) xử lý nhất quán trong môi trường bất đồng bộ.
 
 ## 0. Canonical Identity Rules
 
 1. `user_id` của Review Service là định danh chuỗi dạng canonical `u-<digits>`.
 2. Với luồng cũ còn gửi số (`999`), Review consumer phải normalize thành `u-999` trước khi ghi DB hoặc phát event mới.
-3. `seller_id` là opaque string do Seller domain sở hữu; contract không ép format cụ thể (`s-...`, UUID, ...) nhưng downstream phải dùng nhất quán đúng giá trị chuỗi.
-
 ## 1. Kafka Topics Map
 
 ### 1.1. Topics Produce (Business)
 
 | Topic Name | Partition Key | Event Types | Consumers chính | Ghi chú |
 |:---|:---|:---|:---|:---|
-| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `SELLER_REPLY_CREATED` |  Notification (`REVIEW_CREATED`,`REVIEW_HIDDEN`,`SELLER_REPLY_CREATED`), Seller (`REVIEW_CREATED`,`REVIEW_HIDDEN`), internal workers | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
+| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `` |  Notification (`REVIEW_CREATED`,`REVIEW_HIDDEN`,``), internal workers | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
 
 ### 1.2. Topics Produce (Operational)
 
@@ -129,7 +127,6 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "review_id": "uuid",
   "product_id": "prod-uuid-001",
   "sku_id": "sku-123",
-  "seller_id": "s-9001",
   "variant_name": "Màu Đen, Size XXL",
   "user_id": "u-12345",
   "rating": 5,
@@ -147,45 +144,14 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "review_id": "uuid",
   "product_id": "prod-uuid-001",
   "sku_id": "sku-123",
-  "seller_id": "s-9001",
   "user_id": "u-12345",
   "fields_changed": ["content", "media_urls"],
   "updated_at": "2026-03-28T09:05:00Z"
 }
 ```
 
-### 5.3. REVIEW_APPROVED
 
-```json
-{
-  "review_id": "uuid",
-  "product_id": "prod-uuid-001",
-  "sku_id": "sku-123",
-  "seller_id": "s-9001",
-  "user_id": "u-12345",
-  "rating": 5,
-  "has_media": true,
-  "approved_at": "2026-03-28T09:10:00Z"
-}
-```
-
-### 5.4. REVIEW_HIDDEN
-
-```json
-{
-  "review_id": "uuid",
-  "product_id": "prod-uuid-001",
-  "sku_id": "sku-123",
-  "seller_id": "s-9001",
-  "user_id": "u-12345",
-  "rating": 5,
-  "has_media": true,
-  "reason": "REPORT_THRESHOLD_EXCEEDED",
-  "created_at": "2026-03-28T09:00:00Z"
-}
-```
-
-### 5.5. REVIEW_METRICS_UPDATED
+### 5.3. REVIEW_METRICS_UPDATED
 
 **Fields bắt buộc:** `product_id`, `average_rating`, `total_reviews`, `state_version`, `event_sequence_id`, `updated_at`.
 
@@ -206,7 +172,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 - `state_version` là version của aggregate theo `product_id`, bắt buộc tăng đơn điệu và mirror với `event_sequence_id`.
 - `updated_at` chỉ dùng cho observability/debug, không phải khóa ordering chính.
 
-### 5.6. SELLER_REPLY_CREATED
+### 5.4. 
 
 ```json
 {
@@ -214,8 +180,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "review_id": "uuid-review",
   "product_id": "prod-uuid-001",
   "user_id": "u-12345",
-  "seller_id": "s-9001",
-  "content": "Shop xin lỗi vì trải nghiệm chưa tốt, chúng tôi đã cập nhật lô hàng mới.",
+  "content": "platform xin lỗi vì trải nghiệm chưa tốt, chúng tôi đã cập nhật lô hàng mới.",
   "created_at": "2026-03-28T11:00:00Z"
 }
 ```

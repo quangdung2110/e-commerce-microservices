@@ -7,7 +7,7 @@
 *   [Events Structure & Kafka Topics](shipping_events.md)
 
 **Cross-Service References:**
-*   [Order Parcel FSM](../order/order_state_machine.md#2-parcel-fsm-bảng-order_parcels) — Mapping `shipments.standardized_status` ↔ `order_parcels.status`
+*   [Order Item Shipping FSM](../order/order_state_machine.md#2-order-item-shipping-fsm-bảng-order_items) — Mapping `shipments.standardized_status` ↔ `order_items.status`
 *   [Inventory Smart Routing](../inventory/smart_routing_engine.md) — Shipping rate calculation
 
 ---
@@ -42,7 +42,7 @@ stateDiagram-v2
 | S3 | `IN_TRANSIT` | `DELIVERED` | `DELIVERED` | 3PL Webhook | Giao hàng thành công, người nhận ký xác nhận |
 | S4 | `IN_TRANSIT` | `DELIVERY_FAILED` | `FAILED` | 3PL Webhook | Không giao được (sai địa chỉ, không liên lạc) |
 | S5 | `FAILED` | `RETRY_DELIVERY` | `IN_TRANSIT` | 3PL Webhook | 3PL thử giao lại (max 3 lần) |
-| S6 | `FAILED` | `RETURN_INITIATED` | `RETURNED` | 3PL Webhook | Trả kiện về kho Seller |
+| S6 | `FAILED` | `RETURN_INITIATED` | `RETURNED` | 3PL Webhook | Trả kiện về kho admin |
 | S7 | `DELIVERED` | `RETURN_PICKUP` | `RETURNED` | 3PL Webhook | Khách yêu cầu trả hàng, 3PL lấy kiện về |
 | S8 | `PENDING` | `CANCEL_SHIPMENT` | `CANCELLED` | Temporal Compensation | Order bị hủy trước khi kiện được 3PL nhận |
 
@@ -100,9 +100,9 @@ stateDiagram-v2
 
 ---
 
-## 3. Liên kết với Order Parcel FSM
+## 3. Liên kết với Order Item Shipping FSM
 
-| Shipping `standardized_status` | Order `parcel_status` | Ghi chú |
+| Shipping `standardized_status` | Order `item_status` | Ghi chú |
 |:---|:---|:---|
 | `PENDING` | `PREPARING` | Vận đơn mới tạo |
 | `READY_TO_SHIP` | `HANDED_OVER` | 3PL đã xác nhận nhận kiện |
@@ -110,19 +110,21 @@ stateDiagram-v2
 | `DELIVERED` | `DELIVERED` | Giao thành công |
 | `FAILED` | `DELIVERY_FAILED` | Giao thất bại |
 | `RETURNED` | `RETURNED` | Trả về kho |
-| `CANCELLED` | *(Parcel bị xóa/cancel)* | Vận đơn hủy |
+| `CANCELLED` | *(Order item shipment unit bị hủy)* | Vận đơn hủy |
 
-> Order Service consumer nhận `SHIPMENT_STATUS_UPDATED` event → Map theo bảng trên → Update `order_parcels.status`. Xem [Order Workers - Shipping Consumer](../order/order_workers.md#4-shipping-status-consumer).
+> Order Service consumer nhận `SHIPMENT_STATUS_UPDATED` event → Map theo bảng trên → Update `order_items.status`. Xem [Order Workers - Shipping Consumer](../order/order_workers.md#5-shipping-status-consumer-kafka-consumer).
+>
+> Với buyer-facing search/list của Order Service, các item shipment statuses `HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED` được gom vào tab `TO_RECEIVE` theo [Buyer Tab Precedence](../order/order_state_machine.md#24-buyer-tab-precedence-platformee-style).
 
 ---
 
 ## 4. Bảo Vệ FSM
 
 ### 4.1. Webhook Idempotency
-Mỗi webhook được check trùng:
+Mỗi webhook được check trùng theo `provider_event_fingerprint` (ưu tiên `provider_webhook_id`, fallback hash payload canonical):
 ```sql
-INSERT INTO idempotency_keys (key, action, locked_at, expires_at)
-VALUES (:idempotency_key, 'UPDATE_SHIPMENT_STATUS', NOW(), NOW() + INTERVAL '7 days')
+INSERT INTO shipping_event_idempotency (event_id, shipment_id, action_type, action_scope_key, processed_at)
+VALUES (:webhook_event_id, :shipment_id, 'UPDATE_SHIPMENT_STATUS', :provider_event_fingerprint, NOW())
 ON CONFLICT DO NOTHING;
 -- Nếu affected_rows = 0 → Duplicate webhook, skip
 ```

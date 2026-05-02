@@ -157,7 +157,6 @@ public class PromotionCommandService {
         existing.setMinPurchaseAmount(update.getMinPurchaseAmount());
         existing.setConditionsRule(update.getConditionsRule());
         existing.setPriority(update.getPriority());
-        existing.setIsExclusive(update.getIsExclusive());
         existing.setStartTime(update.getStartTime());
         existing.setEndTime(update.getEndTime());
         existing.setStatus(update.getStatus());

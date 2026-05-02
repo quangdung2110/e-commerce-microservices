@@ -36,16 +36,16 @@ Tài liệu này mô tả các worker nền của Payment Service để đảm b
 ### Luồng xử lý
 
 1. Consume từ topic raw webhook nội bộ.
-2. Verify signature (HMAC/RSA) trước mọi business logic.
+2. Verify signature (HMAC/RSA) trước mọi business logic. Nếu thất bại, ghi `FAILED_SIGNATURE` vào `webhook_logs`.
 3. Parse payload, map provider status -> FSM transition.
-4. Check idempotency (`provider_ref + status` hoặc event id).
-5. Update DB transaction + insert outbox event trong cùng transaction.
+4. Check Idempotency bằng DB Constraint: Thực hiện `INSERT INTO webhook_logs ... ON CONFLICT (provider, provider_transaction_id, event_type) DO NOTHING`. Nếu insert trả về 0 rows -> Webhook đã được xử lý -> Cắt chuỗi, báo thành công cho consumer.
+5. Update DB transaction (`payment_transactions` dùng optimistic lock `version`) + insert outbox event trong cùng 1 ACID transaction.
 
 ### Quy tắc bắt buộc
 
 1. Webhook API endpoint phải trả 2xx nhanh, worker mới xử lý logic nặng.
-2. Worker phải an toàn với duplicate/out-of-order.
-3. Nếu gặp lỗi tạm thời, retry theo cơ chế consumer/requeue.
+2. Worker phải an toàn với duplicate/out-of-order nhờ Idempotency và DB Unique Constraint.
+3. Nếu gặp lỗi tạm thời (lock DB/Provider timeout), retry theo cơ chế consumer/requeue có exponential backoff.
 
 ## 3. Payment Expiration Scanner (CronJob)
 
@@ -87,18 +87,28 @@ Tài liệu này mô tả các worker nền của Payment Service để đảm b
 
 ### Luồng xử lý
 
-1. Quét `refund_transactions` có `status = PROCESSING`.
-2. Query provider refund status theo `provider_refund_id`.
-3. Nếu success: transition `PROCESSING -> SUCCESS`, payment `REFUNDING -> REFUNDED`, emit `REFUND_SUCCESS`.
-4. Nếu failed: transition `PROCESSING -> FAILED`, payment `REFUNDING -> SUCCESS`, emit `REFUND_FAILED`.
-5. Nếu provider báo reverse (nếu có): ghi audit + emit `REFUND_REVERSED` + đẩy manual queue.
+1. Quét `refund_transactions` có `status = PROCESSING` (và `updated_at` > `1 mins` để tránh query gấp).
+2. Acquire Redis Distributed Lock: `lock:payment:refund_poll:{refund_transaction_id}` để chặn race-condition giữa nhiều instance.
+3. Query provider refund status theo `provider_refund_id`.
+4. Nếu success: transition `PROCESSING -> SUCCESS`, payment `REFUNDING -> REFUNDED`, emit `REFUND_SUCCESS`.
+5. Nếu failed: transition `PROCESSING -> FAILED`, payment `REFUNDING -> SUCCESS`, emit `REFUND_FAILED`.
+6. Nếu provider báo reverse (nếu có): ghi audit + emit `REFUND_REVERSED` + đẩy manual queue.
 
 ### Cấu hình gợi ý
 
 - Poll mỗi 5-15 phút tùy provider SLA.
 - Retry với jitter để tránh thundering herd.
 
-## 6. Dead-letter Replay Worker (Manual/On-demand)
+## 6. Webhook Auto-Retry Worker (CronJob)
+
+**Mục tiêu:** Xử lý lại các webhook bị rơi vào trạng thái lỗi (`FAILED_SIGNATURE` do sai key/outage hoặc `UNPROCESSED`).
+
+### Luồng xử lý
+1. Quét `webhook_logs` với `status IN ('FAILED_SIGNATURE', 'UNPROCESSED')`.
+2. Kiểm tra `retry_count` < `max_retries` và có backoff phù hợp.
+3. Đẩy lại webhook vào Kafka topic `t.payment.webhooks.raw` với ID giữ nguyên để xử lý lại.
+
+## 7. Dead-letter Replay Worker (Manual/On-demand)
 
 **Mục tiêu:** Cho phép replay an toàn các event/webhook đã rơi vào DEAD/DLQ.
 

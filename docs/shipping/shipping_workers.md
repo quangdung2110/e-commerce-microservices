@@ -12,14 +12,12 @@ Shipping Service chạy các workers tập trung vào: webhook ingestion, rate c
 
 ---
 
-## 1. Outbox Polling Worker (Producer)
-**Loại hình:** Background Thread chạy mỗi 3 giây.
+## 1. Debezium CDC Connector (Thay thế Outbox Polling Worker)
+**Loại hình:** Kafka Connect Dedicated Pod.
 
-**Sứ mệnh:** Forward events từ `outbox_events` lên Kafka `t.shipping.events`.
+**Sứ mệnh:** Bắt luồng WAL (Write-Ahead-Log) trực tiếp từ Postgres, phát sự kiện lên Kakfka `t.shipping.events` không có độ trễ, thay thế hoàn toàn vòng lặp truy vấn Polling hao tổn hiệu năng.
 
-**Cơ chế:** Tương tự [Order Outbox Worker](../order/order_workers.md#1-outbox-polling-worker-producer):
-- `SELECT ... WHERE status = 'PENDING' ... FOR UPDATE SKIP LOCKED`.
-- Publish Kafka key = `order_id`. Mark `PUBLISHED` / `FAILED` / `DEAD`.
+**Cơ chế:** Debezium theo dõi Table `shipping_outbox`. Mỗi khi có Record `INSERT` mới, tự động đẩy lên Kafka đúng theo `partition_key` được chỉ định sẳn.
 
 ---
 
@@ -40,26 +38,32 @@ Shipping Service chạy các workers tập trung vào: webhook ingestion, rate c
    - GHN: HMAC-SHA256 verification.
    - NinjaVan: IP whitelist + token verification.
    - Nếu FAIL → Log alert + SKIP.
-5. **Idempotency Check:**
+5. **Idempotency Check (Dual-Layer):**
+   - Tạo `provider_event_fingerprint` (ưu tiên `provider_webhook_id`; fallback `hash(tracking_number + provider_status + occurred_at + location)`).
+   - **Layer 1:** Redis `SETNX shipping:webhook_idemp:{tracking_number}:{provider_event_fingerprint}` (TTL 7 days). Nếu fail -> Bỏ qua.
+   - **Layer 2:** Ghi DB rào cuối với `shipping_event_idempotency` khoá cứng `shipment_id` + `UPDATE_SHIPMENT_STATUS` + `action_scope_key = provider_event_fingerprint`.
    ```sql
-   INSERT INTO idempotency_keys (key, action, locked_at, expires_at)
-   VALUES (:idempotency_key, 'UPDATE_SHIPMENT_STATUS', NOW(), NOW() + INTERVAL '7 days')
+   INSERT INTO shipping_event_idempotency (event_id, shipment_id, action_type, action_scope_key, processed_at)
+   VALUES (:webhook_id, :shipment_id, 'UPDATE_SHIPMENT_STATUS', :provider_event_fingerprint, NOW())
    ON CONFLICT DO NOTHING;
    ```
-   Nếu conflict → skip (duplicate webhook).
+   Nếu conflict DB → skip (duplicate webhook trễ).
 6. **Map Provider Status → Standardized Status** — Tra [Provider Mapping Table](shipping_state_machine.md#2-provider-status-mapping-table).
 7. **Validate FSM Transition** — Check transition hợp lệ theo [Shipment FSM](shipping_state_machine.md#1-shipment-fsm).
-8. **Update PostgreSQL (Transaction):**
+8. **Update PostgreSQL (Transaction) + CDC Outbox:**
    ```sql
    BEGIN;
    UPDATE shipments SET standardized_status = :new_status, 
        provider_status = :provider_status, version = version + 1
    WHERE id = :shipment_id AND version = :expected_version;
-   INSERT INTO outbox_events (...'SHIPMENT_STATUS_UPDATED'...);
+   -- Phát qua Debezium:
+   INSERT INTO shipping_outbox (..., event_type='SHIPMENT_STATUS_UPDATED', partition_key=:order_id);
    COMMIT;
    ```
-9. **Write ScyllaDB Event Log (Append-only):**
+9. **Write ScyllaDB Event Log (Async Write-Behind):**
+   ScyllaDB là DB thứ 2, không nên chặn ngang luồng Postgres TX. Đẩy message thông tin write vào **In-Memory Bounded Queue** hoặc ThreadPool (Async Write-Behind) để ném vào ScyllaDB nhằm tránh rủi ro Connection Timeout của NoSQL DB kéo sập khả năng xử lý Webhook.
    ```
+   -- Chạy Async Thread:
    INSERT INTO shipment_events (shipment_id, event_timestamp, provider_status, 
      standardized_status, raw_payload, location) VALUES (...);
    ```
@@ -112,22 +116,24 @@ LIMIT 100;
 3. Nếu 3PL trả "not found" hoặc stale:
    - Alert ops team (giữ nguyên logic gốc).
    - **[MỚI] Phát event `SHIPMENT_DELAYED`:**
-     - Kiểm tra `SETNX shipping:delayed:sent:{shipment_id}` TTL 7 ngày.
-     - Nếu SETNX thành công (chưa gửi lần nào) → INSERT `outbox_events` với `event_type = 'SHIPMENT_DELAYED'`.
-     - Nếu SETNX fail (event đã gửi trong 7 ngày qua) và `hours_since_update > 72` → Gửi lần 2 với `escalation_level: 2`.
-     - [Outbox Worker](shipping_workers.md#1-outbox-polling-worker-producer) forward lên `t.shipping.events`.
+       - Mốc 48h: kiểm tra `SETNX shipping:delayed:sent:{shipment_id}:L1` TTL 7 ngày.
+       - Nếu SETNX `:L1` thành công (chưa gửi level 1) → INSERT `shipping_outbox` với `event_type = 'SHIPMENT_DELAYED'`, `escalation_level = 1`.
+       - Mốc 72h: kiểm tra `SETNX shipping:delayed:sent:{shipment_id}:L2` TTL 7 ngày.
+       - Nếu SETNX `:L2` thành công → gửi level 2 đúng 1 lần.
+     - Debezium tự động forward thẳng lên Topic Kafka `t.shipping.events`.
    - Xem event payload tại [SHIPMENT_DELAYED](shipping_events.md#36-shipment_delayed).
 
 ---
 
 ## 5. Old Outbox Trimmer (CronJob hàng ngày)
+Dọn rác CDC qua mốc Watermark an toàn:
 ```sql
-DELETE FROM outbox_events 
-WHERE status = 'PUBLISHED' AND created_at < NOW() - INTERVAL '15 days';
+DELETE FROM shipping_outbox 
+WHERE created_at < NOW() - INTERVAL '15 days';
 ```
 
-## 6. Dead Letter Handler (CronJob mỗi 5 phút)
-Quét `outbox_events WHERE status = 'DEAD'` → Alert.
+## 6. Dead Letter Hook tại Kafka Connect
+Retry/DLQ cảnh báo cấu hình ở Debezium Connect Cluster (Gửi alert thông qua Dead Letter Topic), không check logic DB nữa.
 
 ## 7. ScyllaDB TTL Cleanup
 ScyllaDB `shipment_events` table tự động TTL sau 2 năm (set TTL khi write). Không cần CronJob.

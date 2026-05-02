@@ -1,42 +1,23 @@
-1. Bảng chỉ mục (được gọi là metadata lookup) sẽ lưu trữ thông tin về các đơn hàng đã được archive, được dùng làm khi API tìm kiếm đơn hàng không thấy trong DB nóng, nó sẽ check bảng này để quyết
-định có nên rẽ sang đọc dữ liệu lạnh hay không. Bảng này có cấu trúc nhẹ, loại bỏ được hàng chục cột dữ liệu nặng nề từ 4 bảng gốc, nó nén tất cả lại chỉ thành 1 dòng metadata nhỏ xíu đóng vai trò như "tấm bản đồ kho báu", 
-trỏ thẳng ra hệ thống lưu trữ bên ngoài
+1. Metadata lookup cho cold data (`archived_orders_lookup`) vẫn là tuyến hot->cold chuẩn, không thay đổi theo policy refund mới.
 
-2. Workflow Saga Temporal có 3 thành phần: 
-+ OrderCheckoutWorkflow: chịu trách nhiệm cho pre-payment và post-payment
-+ OrderRefundWorkflow: chịu trách nhiệm cho luồng refund
-+ OrderLatePaymentRecoveryWorkflow: chịu trách nhiệm cho lane khôi phục thanh toán muộn sau timeout
+2. Temporal vẫn có 3 workflow chính:
++ OrderCheckoutWorkflow: pre-payment + post-payment.
++ OrderRefundWorkflow: lane refund.
++ OrderLatePaymentRecoveryWorkflow: khôi phục payment success đến muộn.
 
-3. Chi tiết luồng hoạt động xử lý Payment Signal từ Payment Service:
-Giai đoạn 1: Kafka Consumer
-- Worker `order-payment-consumer` lắng nghe các event từ Payment Service 
-- Chặn idempotency bằng Redis + durable DB table
-- Route signal đến đúng workflow instance dựa trên payload
-    Nếu là PAYMENT_SUCCESS / FAILED / EXPIRED: Worker tra cứu checkout_token dựa vào order_id. Sau đó, nó gửi lệnh Signal (truyền tín hiệu) vào đúng OrderCheckoutWorkflow đang ngủ chờ
-    Nếu là nhóm REFUND_*: Worker gửi Signal vào OrderRefundWorkflow
+3. Refund policy mới (bắt buộc đồng bộ toàn hệ):
+- Buyer chỉ được gửi đúng 1 request refund cho mỗi order.
+- Request Buyer chỉ hợp lệ khi tất cả order item đã `DELIVERED`.
+- Buyer có thể chọn `PARTIAL` hoặc `FULL` ngay trong request duy nhất đó.
+- `SHIPMENT_RETURNED` không còn quyền start `OrderRefundWorkflow`.
 
-Giai đoạn 2: Temporal Workflow
-- Tín hiệu PAYMENT_FAILED / EXPIRED
-    Temporal kích hoạt compensation stack pre-payment. Nó chạy CancelPaymentActivity -> RollbackPromotionActivity (nhả budget) -> RollbackInventoryActivity
-    Chỉ khi dọn dẹp xong xuôi, Workflow mới gọi CancelOrderActivity để update PostgreSQL thành CANCELLED và bắn sự kiện ORDER_CANCELLED ra Kafka
-- Tín hiệu PAYMENT_SUCCESS
-    Commit mốc tài chính: Workflow gọi UpdateOrderStatusActivity để update PostgreSQL từ PENDING_PAYMENT sang PAID, đồng thời nó chèn sự kiện ORDER_PAID vào bảng Outbox
-    Commit mốc vận hành: DeductInventoryActivity -> ConfirmPromotionActivity -> CreateShippingLabelsActivity -> UpdateOrderStatusActivity (PAID -> PROCESSING). Mỗi bước đều đăng ký activity compensation tương ứng để rollback nếu có lỗi
-- PAYMENT_SUCCESS đến muộn sau timeout
-    Nếu checkout workflow đã đóng do PAYMENT_TIMEOUT, worker phải start lane `OrderLatePaymentRecoveryWorkflow` để khôi phục đơn về lane đã thu tiền rồi chạy lại post-payment saga; không được drop signal
-- Tín hiệu REFUND_SUCCESS
-    Workflow gọi FinalizeRefundResultActivity để commit trạng thái cuối: `RETURN_REQUESTED` -> `REFUNDED` + outbox `ORDER_REFUNDED`
-- Tín hiệu REFUND_FAILED / REFUND_REVERSED
-    Tương tự, Workflow gọi FinalizeRefundResultActivity để commit trạng thái cuối: giữ nguyên `RETURN_REQUESTED` + chuyển `payment_status` -> `REFUND_FAILED` + outbox `ORDER_REFUND_FAILED`
+4. Refund execution gate mới:
+- `OrderRefundWorkflow` lock refund scope từ request đầu vào (không lock theo stream shipping).
+- Workflow phải chờ event `INVENTORY_RETURN_RECEIVED_ALL` trước khi gọi Payment refund API.
+- Chỉ sau gate Inventory mới chuyển `payment_status` sang `REFUNDING` và tạo `refund_transaction_id`.
 
-
-4. Chi tiết luồng hoạt động xử lý Shipping Status từ Shipping Service
-- Worker `order-shipping-consumer` lắng nghe các event từ Shipping Service
-- Chặn idempotency bằng Redis + durable DB table
-    Cập nhật trạng thái vận chuyển của các kiện hàng (order parcel)
-    Cập nhật tương ứng trạng thái của đơn hàng chính (order)
-    Phát sự kiện PARCEL_STATUS_CHANGED và ORDER_COMPLETED (nếu có)
-- Nếu một kiện hàng chuyển trạng thái sang RETURNED (nghĩa là nhận sự kiện SHIPMENT_RETURNED):
-    Chỉ event đầu tiên được quyền start OrderRefundWorkflow
-    Event SHIPMENT_RETURNED tiếp theo chỉ append vào refund case hiện hữu, không mở workflow mới
-    Order chỉ được tạo một refund transaction cho mỗi order; follow-up returns sau khi đã có refund transaction sẽ đi manual adjustment lane
+5. Voucher refund rule mới:
+- `FULL`: hoàn toàn bộ voucher đã áp dụng (`SHOP`, `PLATFORM`, `SHIPPING`).
+- `PARTIAL`: chỉ hoàn `SHOP` voucher khi scope refund bao phủ toàn bộ item của shop đó.
+- `PARTIAL`: `PLATFORM` và `SHIPPING` allocation phải bằng `0`.
+- Voucher unavailable là non-blocking với tiền hoàn: ghi nhận failure metadata cho Ops, không rollback payment refund.

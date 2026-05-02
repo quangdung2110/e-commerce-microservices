@@ -25,6 +25,7 @@ Order Service chạy song song 3 lớp nền: **Temporal Workers** (điều ph�
 | **Consume** | `t.order.archive.retry` | `order-archive-replay-consumer` | Consumer chạy lại archive batch theo `archive_batch_id` |
 | **Consume** | `t.payment.events` | `order-payment-consumer` | Nhận kết quả thanh toán |
 | **Consume** | `t.shipping.events` | `order-shipping-consumer` | Nhận cập nhật vận chuyển |
+| **Consume** | `t.inventory.events` | `order-inventory-return-consumer` | Nhận xác nhận Inventory đã nhận đủ hàng trong refund scope |
 | **Consume** | `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Replay sự kiện CQRS sau backoff |
 
 Xem payload chi tiết tại [Order Events](order_events.md).
@@ -40,7 +41,7 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 1. Trong cùng DB transaction nghiệp vụ, application insert 1 record vào `outbox_events` (kèm `partition_key`, `event_type`, `aggregate_type`, `aggregate_id`, `payload`).
 2. Debezium đọc WAL thay đổi mới của `outbox_events`.
 3. Outbox Event Router publish sang topic đích:
-   - `aggregate_type IN ('Order', 'OrderParcel')` -> `t.order.events`
+   - `aggregate_type IN ('Order', 'OrderItem')` -> `t.order.events`
    - `aggregate_type = 'ProductSalesMetrics'` -> `t.search.metrics.events`
    - `aggregate_type = 'ArchiveBatch'` -> `t.order.archive.retry`
 4. Partition key lấy trực tiếp từ cột `partition_key` để giữ ordering theo stream ownership.
@@ -59,9 +60,9 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 - `order-cqrs-retry-replayer`: consume `t.order.cqrs.retry` và replay theo backoff.
 
 **Sứ mệnh:** Đồng bộ read-model Elasticsearch theo kiến trúc hybrid 2-index để phục vụ đồng thời:
-1. Lọc đa chiều chính xác theo buyer/seller/status/time.
+1. Lọc đa chiều chính xác theo buyer/admin/status/time.
 2. Text search theo tên sản phẩm, tracking number, store name.
-3. Trả về order-level card nhất quán với buyer tabs kiểu Shopee.
+3. Trả về order-level card nhất quán với buyer tabs kiểu platformee.
 
 Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch_design.md).
 
@@ -69,11 +70,11 @@ Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch
 
 1. Consume từ `t.order.events`.
 2. Parse và phân lane theo event type:
-   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, parcel summary, buyer_tab, card fields).
+   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, item summary, buyer_tab, card fields).
    - Lane `order_search_lines`: cập nhật line-level text documents cho product/tracking/store search, đồng bộ `buyer_tab` và `ui_status_rank` để sort ổn định.
 3. Áp guard theo stream ownership:
    - `order_version` cho order lifecycle events.
-   - `parcel_version` + `shipment_event_sequence_id` cho shipping/parcel events.
+   - `item_version` + `shipment_event_sequence_id` cho shipping/item events.
    - `payment_event_sequence_id` hoặc `refund_event_sequence_id` cho payment/refund updates.
 4. Bulk write:
    - `POST orders_write/_bulk`
@@ -82,12 +83,12 @@ Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch
 
 ### 2.2. Projection fields bắt buộc cho buyer list/search
 
-- Summary projector phải derive `buyer_tab` theo precedence trong [Order FSM](order_state_machine.md#24-buyer-tab-precedence-shopee-style).
+- Summary projector phải derive `buyer_tab` theo precedence trong [Order FSM](order_state_machine.md#24-buyer-tab-precedence-platformee-style).
 - Summary projector phải duy trì đầy đủ card fields trong `orders_read`:
    - `ui_primary_status`, `ui_status_rank`
    - `primary_item_name`, `primary_item_image_url`, `remaining_item_count`
    - `primary_store_name`, `primary_tracking_number`
-   - `parcel_count`, `item_count`, `has_multi_parcel`
+   - `item_count`, `has_multi_item_shipment`
 - Line projector phải đồng bộ `buyer_tab` và `ui_status_rank` để query class B có thể filter/sort đồng nhất với query class A.
 - Nếu thiếu dữ liệu để dựng card fields (ví dụ event incremental không đủ), event phải park vào `t.order.cqrs.retry` để snapshot rebuild, không được ghi document nửa vời.
 
@@ -156,7 +157,7 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
     - **`PAYMENT_FAILED` / `PAYMENT_EXPIRED`:**
        1. Signal checkout workflow: `PaymentSignal.FAILED`.
        2. Checkout workflow tự chạy compensation pre-payment và chỉ commit `CANCELLED` + outbox `ORDER_CANCELLED` sau khi compensation hoàn tất.
-    - **`REFUND_SUCCESS` / `REFUND_FAILED` / `REFUND_REVERSED`:**
+    - **`REFUND_PROCESSING` / `REFUND_SUCCESS` / `REFUND_FAILED` / `REFUND_REVERSED`:**
        1. Lookup refund workflow theo `order_id` (WorkflowID = `order-refund-{order_id}`).
        2. Signal `RefundResult` tương ứng cho `OrderRefundWorkflow`.
        3. Worker **không** update trực tiếp `orders.status/payment_status`; refund workflow là owner duy nhất của commit FSM/outbox trong lane refund.
@@ -174,29 +175,29 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `order-shipping-consumer`
 
-**Sứ mệnh:** Nhận cập nhật tracking từ Shipping Service → Update Parcel FSM → Check Auto-Complete.
+**Sứ mệnh:** Nhận cập nhật tracking từ Shipping Service → Update Order Item Shipping FSM → Check Auto-Complete.
 
 **Chi tiết luồng hoạt động:**
 1. Consume topic `t.shipping.events`.
 2. Áp dụng event theo loại:
-   - `SHIPMENT_STATUS_UPDATED`: Map `standardized_status` → Parcel status theo [mapping table](order_state_machine.md#23-mapping-với-shipping-service-standardized_status).
+   - `SHIPMENT_STATUS_UPDATED`: Map `standardized_status` → Item status theo [mapping table](order_state_machine.md#23-mapping-với-shipping-service-standardized_status).
    - `SHIPMENT_DELIVERED`: Force map sang `DELIVERED` (nếu transition hợp lệ).
    - `SHIPMENT_RETURNED`: Force map sang `RETURNED` (nếu transition hợp lệ).
-   - `SHIPMENT_DELAYED`: Không đổi parcel terminal status; update metadata SLA/escalation.
-3. Với các event đổi trạng thái parcel (`SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`):
+   - `SHIPMENT_DELAYED`: Không đổi item terminal status; update metadata SLA/escalation.
+3. Với các event đổi trạng thái item (`SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`):
    - Update FSM với Optimistic Locking:
      ```sql
-     UPDATE order_parcels SET status = :new_status, 
+     UPDATE order_items SET status = :new_status, 
        tracking_number = :tracking, version = version + 1
-     WHERE id = :parcel_id AND version = :expected_version;
+     WHERE id = :order_item_id AND version = :expected_version;
      ```
-   - Insert `order_status_history` cho parcel transition.
-   - Insert `outbox_events` cho `PARCEL_STATUS_CHANGED`.
-4. **Auto-Complete Check:** Sau mỗi parcel update:
+   - Insert `order_status_history` cho item transition.
+   - Insert `outbox_events` cho `ORDER_ITEM_STATUS_CHANGED`.
+4. **Auto-Complete Check:** Sau mỗi item update:
    ```sql
    SELECT COUNT(*) as total, 
           COUNT(CASE WHEN status = 'DELIVERED' THEN 1 END) as delivered
-   FROM order_parcels WHERE order_id = :order_id;
+   FROM order_items WHERE order_id = :order_id;
    ```
    Nếu `total = delivered` thì chạy CAS idempotent:
    ```sql
@@ -205,17 +206,32 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    WHERE id = :order_id AND status = 'PROCESSING';
    ```
    Chỉ khi số bản ghi update = 1 mới produce `ORDER_COMPLETED`.
-5. **Return Trigger Check (policy B):** Nếu parcel chuyển sang `RETURNED` sau `DELIVERED`:
-   - Trigger Refund luồng: chỉ `SHIPMENT_RETURNED` **event đầu tiên** được quyền start `OrderRefundWorkflow` (`trigger_source = SHIPMENT_RETURNED`).
-   - Trigger này là lane vận hành hệ thống, không bị ràng buộc bởi one-shot guard của Buyer API.
-   - Nếu order đã có refund workflow active: worker signal append-returned-parcel vào workflow hiện tại (không start workflow mới).
-   - Nếu order đã có `refund_transaction_id` terminal: worker không mở refund transaction thứ hai; ghi history + chuyển manual adjustment lane.
-   - `OrderRefundWorkflow` là nơi commit transition master `COMPLETED` -> `RETURN_REQUESTED`.
+5. **Return Handling (policy mới):** Nếu item chuyển sang `RETURNED` sau `DELIVERED`:
+   - Worker **không** được start `OrderRefundWorkflow` từ `SHIPMENT_RETURNED`.
+   - Worker chỉ update item status/historical audit như các shipping event khác.
+   - Inventory mới là nơi tổng hợp đủ/thiếu item hoàn và phát event xác nhận đã nhận đủ refund scope.
+   - `OrderRefundWorkflow` chỉ được mở từ `API_RETURN` hoặc `ADMIN_FORCE_REFUND_REQUESTED`.
 6. **Delayed Escalation:** Nếu event `SHIPMENT_DELAYED` có `escalation_level >= 2`:
    - Insert `order_status_history` với reason `SHIPMENT_DELAYED_ESCALATED`.
    - Produce `ORDER_STATUS_CHANGED` (metadata-only) cho CQRS/Ops dashboard.
 
 **Idempotency:** Key = `shipping:{shipment_id}:{new_status}:{occurred_at}`; durable guard ghi vào `order_event_idempotency` với `action_scope_key = {shipment_id}:{shipment_event_sequence_id}`.
+
+### 5.1. Inventory Return Confirmation Consumer (Kafka Consumer)
+**Loại hình:** Kafka Consumer chạy liên tục.
+**Consumer Group:** `order-inventory-return-consumer`
+
+**Sứ mệnh:** Nhận event tổng kết từ Inventory khi đã nhận đủ toàn bộ item trong refund scope, sau đó signal `OrderRefundWorkflow` để mở bước gọi Payment refund.
+
+**Chi tiết luồng hoạt động:**
+1. Consume topic `t.inventory.events`, lọc event `INVENTORY_RETURN_RECEIVED_ALL`.
+2. Idempotency guard:
+   - Fast path: Redis `SETNX inventory:return:confirm:{order_id}:{refund_request_id}`.
+   - Durable path: `order_event_idempotency` với `action_type = INVENTORY_RETURN_RECEIVED_ALL_SIGNAL`.
+3. Route signal:
+   - Lookup workflow `order-refund-{order_id}`.
+   - Signal `InventoryReturnReceivedAll` cho workflow với payload `refund_request_id`, `returned_order_item_ids`, `confirmed_at`.
+4. Worker **không** cập nhật trực tiếp `orders.status/payment_status`; quyền commit vẫn thuộc `OrderRefundWorkflow`.
 
 ---
 
@@ -230,20 +246,21 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    - `OrderRefundWorkflow` — Orchestrator cho lane hoàn tiền (`return` + `admin force refund`).
    - `OrderLatePaymentRecoveryWorkflow` — Orchestrator cho lane khôi phục đơn khi payment success đến muộn sau timeout.
 2. **Activity Registration:**
-   - `CreateOrderActivity` — INSERT Master Order + Parcels + Items vào DB.
+   - `CreateOrderActivity` — INSERT Master Order + Items + Item Lines vào DB.
    - `ReserveInventoryActivity` — gRPC/API sang Inventory `/reserve`.
    - `ReservePromotionActivity` — gRPC/API sang Promotion `/reserve`.
        * Nếu fail phải bubble lỗi có cấu trúc (`failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`) về workflow layer để Checkout dựng `409 PROMOTION_RECALCULATION_NEEDED`.
    - `InitiatePaymentActivity` — gRPC/API sang Payment `/initiate` → nhận `payment_url`.
    - `DeductInventoryActivity` — gRPC/API sang Inventory `/deduct` (sau Payment).
    - `ConfirmPromotionActivity` — gRPC/API sang Promotion `/confirm` (sau Payment), bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
-   - `CreateShippingLabelsActivity` — gRPC/API sang Shipping `/create-shipment` cho từng parcel.
+   - `CreateShippingLabelsActivity` — gRPC/API sang Shipping `/create-shipment` cho từng item.
    - `UpdateOrderStatusActivity` — FSM update an toàn với Optimistic Locking.
-   - `LockRefundScopeActivity` — chốt snapshot parcels returned để tính refund một lần cho mỗi order.
-   - `AppendReturnedParcelActivity` — append shipping return follow-up vào refund case đang active.
+   - `LockRefundScopeActivity` — chốt refund scope từ request đầu vào để tính refund một lần cho mỗi order.
+   - `RegisterRefundReturnExpectationActivity` — đăng ký expected return scope với Inventory.
+   - `WaitInventoryReturnReceivedAllSignal` — chờ signal Inventory xác nhận đã nhận đủ item refund scope.
    - `RecoverPaidOrderFromTimeoutActivity` — khôi phục order lane khi checkout timeout nhưng payment success đến muộn.
 3. **Compensation Activities:**
-   - `RollbackPromotionActivity` — Hoàn voucher, bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
+   - `RollbackPromotionActivity` — Nhả reservation budget voucher ở lane pre-payment (không đổi trạng thái ví DB), bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
    - `RollbackInventoryActivity` — Giải phóng reserved stock.
    - `CancelOrderActivity` — Mark order `CANCELLED` khi pre-payment saga fail.
    - `CancelPaymentActivity` — Hủy payment transaction nếu đã initiate.
@@ -278,7 +295,7 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 3. Insert membership vào `archive_batch_items` cho toàn bộ `order_id` đã chọn.
 4. Denormalize -> JSON/Parquet -> Upload S3.
 5. Verify S3 integrity, sau đó upsert `archived_orders_lookup` (`order_id`, `archive_batch_id`, `s3_file_key`, `order_created_at`, `archived_at`).
-6. Hard Delete từ PostgreSQL (CASCADE `order_parcels`, `order_items`, `order_promotions`) chỉ sau khi lookup đã ghi thành công.
+6. Hard Delete từ PostgreSQL (CASCADE `order_items`, `order_item_lines`, `order_promotions`) chỉ sau khi lookup đã ghi thành công.
 7. Cập nhật `archive_batch_items.archive_status` theo từng order và chốt `archive_batches.status = COMPLETED`.
 8. Nếu fail ở bất kỳ stage nào (`SNAPSHOT`, `UPLOAD`, `VERIFY`, `DELETE`):
    - Cập nhật `archive_batches.status = FAILED`, `failure_stage`, `failure_reason`.

@@ -35,7 +35,7 @@ Tất cả các Redis Key của Product Service bắt đầu bằng prefix: `pro
     *   **Cách thức**: RAM của App chọc tới L1 (0.1ms). Nếu L1 rỗng, gọi L2 Redis (1ms). Nếu L2 rỗng, Fetch Database -> Lưu L2 -> Lưu L1.
 
 *   `product:category:{category_id}:attributes`
-    *   **Mô tả**: Danh sách các Thuộc tính (kèm cờ `is_required`, `is_variant`) của phần danh mục để Validate `attributes_json` mà Seller gửi lên.
+    *   **Mô tả**: Danh sách các Thuộc tính (kèm cờ `is_required`, `is_variant`) của phần danh mục để Validate `attributes_json` mà admin gửi lên.
     *   **Loại Dữ Liệu**: `Set (JSON)` hoặc `Hash`.
     *   **TTL**: 24 giờ. Cập nhật Cache-Aside.
 
@@ -54,8 +54,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "product_id": "prod-uuid-001",
           "sku_code": "IP15PM-256-BLK",
           "product_name": "iPhone 15 Pro Max",
-          "seller_name": "Apple Flagship Store",
-          "main_image_url": "https://cdn.example.com/ip15-black.jpg",
+                    "main_image_url": "https://cdn.example.com/ip15-black.jpg",
           "original_price": 34990000.00,
           "promotional_price": 28891500.00,
           "best_price": 28891500.00,
@@ -66,8 +65,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "variant_attributes": {"color": "Đen", "storage": "256GB"},
           "display_quantity": 150,
           "last_inventory_sync_at": 1709420000000,
-                    "seller_id": "seller-uuid-001"
-        }
+                  }
         ```
     *   **TTL**: 1 tiếng (3600s).
     *   **Xử lý Invalidation**: **[M1 Fix Nhất Quán Thuật Ngữ]** Khi có cập nhật bảng cha hoặc SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Partial SET/Soft Invalidation), không dùng DEL hàng loạt. Ownership ghi cache cần tách bạch: (1) API In-band có thể ghi đè để đảm bảo Read-Your-Own-Writes; (2) với luồng async từ event hệ thống (Markdown/Inventory/FSM), `product-invalidation-group` là writer chuẩn cho `product:sku:{sku_id}` và `product:master:{product_id}`. Tránh để hai worker async độc lập cùng ghi đè một key cho cùng nguyên nhân cập nhật. Với `product:master`, bắt buộc dedupe theo `product_id` trong mỗi poll-batch và áp dụng stale guard `version/updated_at` trước khi ghi. Xem [Invalidation Consumer Worker](product_workers.md).
@@ -75,11 +73,12 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 > **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `JSON.MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
 *   `product:master:{product_id}`
-    *   **Mô tả**: Thông tin chung của sản phẩm gốc phục vụ việc hiển thị giỏ hàng mượt mà (tên, category, seller, status).
+    *   **Mô tả**: Thông tin chung của sản phẩm gốc phục vụ việc hiển thị giỏ hàng mượt mà (tên, category, admin, status).
     *   **Loại Dữ Liệu**: `RedisJSON`.
     *   **TTL**: 1 tiếng.
     *   **Metadata guard bắt buộc**: Payload phải lưu tối thiểu `version` và `updated_at` để chặn stale write.
     *   **Chiến lược ghi**: `product-invalidation-group` dedupe theo `product_id` trong poll-batch, có thể thêm debounce ngắn 50-100ms giữa các batch liền kề, và chỉ overwrite khi `(incoming.version, incoming.updated_at)` mới hơn cache hiện tại.
+    *   **Nguồn dữ liệu ghi**: ưu tiên payload event khi payload đầy đủ contract; nếu thiếu field bắt buộc thì fallback re-fetch từ PostgreSQL. Không dùng Search/Elasticsearch làm nguồn refresh cho key point-read.
 
 ### 1.3 Nhóm Khóa Cơ Chế Vận Hành (Operational / Transactional)
 
@@ -88,29 +87,35 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
     *   **Loại Dữ Liệu**: `String (JSON token gồm state + request_hash + response)`.
     *   **TTL**: **[H1 Fix Phân Trị 2 Pha]** Pha 1 khi bắt Request POST/PUT: `SETNX` cấp phát vòng đời duy nhất 5 phút (Lease time) để hạn chế giam cầm token nếu Container crash. Pha 2 khi Transaction DB Commits: `SET XX` kéo dài TTL lên 24 giờ vĩnh viễn (Finalize).
     *   **Cơ chế**: Dùng `SETNX`. Request đầu tiên set biến thành công -> Vào DB. Request hai set xịt -> so sánh `request_hash`: nếu khác payload thì trả `409 Conflict`; nếu cùng payload thì trả response đã cache hoặc poll lại key theo backoff có jitter đến khi transaction đầu hoàn tất. (Thư viện: Redisson/Spring Data Redis). Xem chi tiết luồng tại [Product Workflow](product_workflow.md).
-
-*   `product:rate_limit:seller:{seller_id}`
-    *   **Mô tả**: Quotas/Rate Limit chặn bão Spam tạo sản phẩm ảo. (VD: 1 Seller chỉ được tạo tối đa N sản phẩm / 1 ngày, hoặc / 1 Phút).
+    *   **Mô tả**: Quotas/Rate Limit chặn bão Spam tạo sản phẩm ảo. (VD: 1 admin chỉ được tạo tối đa N sản phẩm / 1 ngày, hoặc / 1 Phút).
     *   **Loại Dữ Liệu**: Sliding window / Redis INCR.
     *   **TTL**: 1 Ngày.
 
 ### 1.4 Nhóm Khóa Tích Hợp Giá Khuyến Mãi (Markdown Cache)
+
+> **Contract nhất quán:** `rule_id` trong cache markdown luôn lưu dạng string. Nếu upstream gửi số, worker phải normalize sang string trước khi ghi.
 
 *   `product:markdown:active:{sku_id}`
     *   **Mô tả**: Cache giá khuyến mãi đang active cho SKU cụ thể. Dùng cho API Detail Page (On-The-Fly pricing) khi cần check nhanh giá giảm hiện tại mà không cần query DB. Xem [Promotion DB Design - On-The-Fly](../promotion/promotion_db_design.md#22-xử-lý-zero-latency-tính-toán-best-deal-mà-không-cần-discount_items-mapping).
     *   **Loại Dữ Liệu**: `String (JSON)`.
     *   **Khuôn mẫu JSON**:
         ```json
-        {
-          "rule_id": 42,
-          "discount_type": "PERCENTAGE",
-          "discount_value": 15.00,
-          "calculated_price": 28891500.00,
-          "expires_at": "2026-03-07T23:59:59Z"
-        }
+                {
+                    "rule_id": "42",
+                    "discount_type": "PERCENTAGE",
+                    "discount_value": 15.00,
+                    "calculated_price": 28891500.00,
+                    "expires_at": "2026-03-07T23:59:59Z"
+                }
         ```
     *   **TTL**: Đặt bằng thời gian còn lại của rule (`expires_at - NOW()`). Redis tự xoá khi rule hết hạn.
     *   **Invalidation**: [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker) set/del key này khi rule active hoặc ended. Worker này chỉ quản lý key markdown marker; key point-read `product:sku:{sku_id}` vẫn do `product-invalidation-group` refresh theo `PRODUCT_PRICE_UPDATED`.
+
+*   `product:markdown:pending`
+    *   **Mô tả**: Redis ZSET lưu các markdown `MARKDOWN_CREATED` nhận sớm hơn `start_time` để delayed scheduler thực thi đúng thời điểm.
+    *   **Loại Dữ Liệu**: `ZSET` (`score = start_time_epoch_ms`, `member = {rule_id}:{scope_type}:{ref_id}`).
+    *   **TTL**: Không dùng TTL key-level; phần tử được remove ngay sau khi job apply thành công hoặc bị hủy.
+    *   **Yêu cầu vận hành**: Scheduler đọc theo cửa sổ `score <= now` và phải idempotent để chịu được retry/rebalance.
 
 ---
 
@@ -140,5 +145,6 @@ Product Service chứa hàng chục triệu mã SKU. Việc "đập" tất cả 
 | `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-invalidation-group` (fallback async) | Point-Read cho Cart/Order (Partial update theo field, không serialize blob string toàn khối) |
 | `product:master:{product_id}` | RedisJSON | 1h | Partial Update + dedupe theo `product_id` + stale guard `version/updated_at` | Info sản phẩm gốc |
 | `product:idempotency:{key}` | String (JSON) | 24h | Tự hết hạn | Chống duplicate request |
-| `product:rate_limit:seller:{id}` | Counter | 1d | Tự hết hạn | Rate limit tạo SP |
+| `product:rate_limit:admin:{id}` | Counter | 1d | Tự hết hạn | Rate limit tạo SP |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |
+| `product:markdown:pending` | ZSET | N/A | Delayed scheduler consume/remove | Hàng đợi markdown chờ `start_time` |

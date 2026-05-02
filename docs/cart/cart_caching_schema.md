@@ -43,8 +43,6 @@ Mỗi Field/Value trong Hash map với một món hàng.
 ```json
 {
   "product_id": "prod-uuid",
-  "seller_id":  "seller-uuid",
-  "seller_name": "Shop Tech Việt",
   "quantity":   2,
   "unit_price_at_add": 150000,
   "product_name": "Áo Thun Nam",
@@ -57,8 +55,6 @@ Mỗi Field/Value trong Hash map với một món hàng.
 ```
 
 *Lưu ý contract: `current_price` KHÔNG nằm trong Redis Hash Value. Đây là field runtime chỉ xuất hiện ở response của API đọc giỏ, được tính bằng Pull Model từ Product Service (`promotional_price ?? original_price`).*
-
-*Lưu ý: `seller_name` được **denormalize (snapshot) tại thời điểm Add** — lấy từ response gRPC `GetProductSku` của Product Service (trường `seller_name`). Giá trị này phục vụ hiển thị tên nhóm shop mà không cần join thêm reference. Nếu shop đổi tên sau khi item đã được thêm, tên cũ vẫn hiển thị trên giỏ — điều này chấp nhận được vì giỏ hàng là ephemeral (vòng đời 7 ngày).*
 
 *Lưu ý: `updated_at` (Epoch timestamp tính bằng **Milliseconds**) được lưu dưới dạng **chuỗi (String)** để tránh lỗi mất độ chính xác (Precision Loss) từ định dạng khoa học của thư viện `cjson` trên Redis.*
 

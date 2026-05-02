@@ -130,7 +130,7 @@ sequenceDiagram
 
 ## 4. API: Initiate Refund (`POST /v1/payments/{transactionId}/refund`)
 
-**Ngữ cảnh:** Order Service (Refund Workflow) gọi khi khách đổi trả hàng.
+**Ngữ cảnh:** Order Service (`OrderRefundWorkflow`) gọi khi cần hoàn tiền cho đơn đã thanh toán (ví dụ: khách đổi trả hàng hoặc admin force refund) **sau khi đã nhận xác nhận từ Inventory rằng toàn bộ item trong refund scope đã được nhận về kho**.
 
 ```mermaid
 sequenceDiagram
@@ -139,10 +139,13 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant GW as Payment Gateway
 
-    OS->>PS: POST /v1/payments/{txn_id}/refund<br>{amount, reason}
+    OS->>PS: POST /v1/payments/{txn_id}/refund<br>{amount, reason, header: Idempotency-Key}
+    PS->>PS: Idempotency Check (Redis SETNX hoặc DB Unique Check)
+    PS->>DB: Check Atomic (Idempotency Key exist?) -> Trả về data cũ nếu có
     PS->>DB: Validate: txn.status = SUCCESS
     PS->>DB: Validate: sum(refunds) + amount <= paid_amount
-    PS->>DB: INSERT refund_transactions (PENDING)
+    PS->>DB: INSERT refund_transactions (PENDING) kèm idempotency_key
+    PS->>PS: Acquire Distributed Lock Redis (chặn Retry loop)
     PS->>GW: Request Refund (provider API)
     GW-->>PS: refund_id (async processing)
     PS->>DB: UPDATE refund_transactions (PROCESSING)
@@ -152,29 +155,33 @@ sequenceDiagram
 ```
 
 ### Bước Chi tiết:
-1. **[Backend]** Nhận request:
+1. **[Backend]** Nhận request: Bắt buộc kèm `Idempotency-Key` (Header).
    ```json
    {
      "amount": 995000,
      "reason": "CUSTOMER_RETURN",
-     "order_id": 10001
+     "order_id": 10001,
+     "inventory_return_confirmed": true
    }
    ```
-2. **[Validation]**
+2. **[Validation & Idempotency]**
+   - Check `Idempotency-Key` trên Redis và DB `refund_transactions`. Nếu trùng client key -> trả cùng kết quả cũ, ko gọi provider.
+   - Nếu đang ở `PROCESSING` -> chờ/trả processing, tránh gửi request rút bù sang gateway.
    - Payment transaction `status` phải là `SUCCESS`. Nếu không → `400 Bad Request`.
    - `existing_refunds + new_amount <= paid_amount`. Nếu vượt → `400 Bad Request`.
+   - Refund request phải là explicit command từ Order sau gate Inventory-confirm (không suy luận từ shipping events).
 3. **[PostgreSQL - Transaction]**
    ```sql
    BEGIN;
-   INSERT INTO refund_transactions (payment_transaction_id, amount, reason, status, ...)
-   VALUES (:txn_id, :amount, 'CUSTOMER_RETURN', 'PENDING', ...);
+   INSERT INTO refund_transactions (payment_transaction_id, amount, reason, status, idempotency_key, ...)
+   VALUES (:txn_id, :amount, :reason, 'PENDING', :idem_key, ...);
    UPDATE payment_transactions SET status = 'REFUNDING', version = version + 1
    WHERE id = :txn_id AND version = :expected_version;
    INSERT INTO outbox_events (...'REFUND_INITIATED'...);
    INSERT INTO payment_status_history (...);
    COMMIT;
    ```
-4. **[Provider Adapter]** Gọi API refund:
+4. **[Provider Adapter]** Acquire Distributed Lock (`lock:payment:refund_call:{txn_id}`) và Gọi API refund:
    - VNPay: `POST /refund` endpoint.
    - MoMo: `POST /v2/gateway/api/refund`.
 5. **[Async]** Hầu hết cổng xử lý refund **async** (3-7 ngày). [Refund Status Poller](payment_workers.md#5-refund-status-poller-cronjob) sẽ theo dõi và emit `REFUND_SUCCESS`/`REFUND_FAILED`.

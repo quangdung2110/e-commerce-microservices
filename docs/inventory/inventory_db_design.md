@@ -9,7 +9,7 @@ Tài liệu này mô tả thiết kế PostgreSQL và các ràng buộc dữ li�
 ### 1.1. `warehouses`
 
 * `id`: BIGSERIAL PRIMARY KEY
-* `owner_type`: VARCHAR(50) (`PLATFORM`, `SELLER`)
+* `deleted_owner_type`: VARCHAR(50) (`PLATFORM`, `admin`)
 * `owner_id`: BIGINT
 * `name`: VARCHAR(255)
 * `address`, `latitude`, `longitude`
@@ -23,6 +23,8 @@ Bảng mapping local để Inventory phát `product_id` chính xác trong `INVEN
 * `product_id`: VARCHAR(64) NOT NULL
 * `source_version`: BIGINT NOT NULL
 * `updated_at`: TIMESTAMPTZ NOT NULL
+
+**Ownership:** cập nhật bởi Product Mapping Sync Worker (consume `t.product.events`) và chỉ dùng để enrich event/outbox của Inventory.
 
 ### 1.3. `physical_inventory`
 
@@ -69,7 +71,7 @@ Theo dõi reservation theo item + warehouse.
 
 * `id`: BIGSERIAL PRIMARY KEY
 * `order_id`: BIGINT NOT NULL
-* `parcel_id`: BIGINT NULL
+* `order_item_id`: BIGINT NULL
 * `sku_id`: VARCHAR(64) NOT NULL
 * `product_id`: VARCHAR(64) NOT NULL
 * `warehouse_id`: BIGINT NOT NULL
@@ -84,7 +86,7 @@ Theo dõi reservation theo item + warehouse.
 
 **Indexes / constraints:**
 * `INDEX (order_id)`
-* `INDEX (parcel_id)`
+* `INDEX (order_item_id)`
 * `INDEX (status, expires_at)`
 * `UNIQUE (idempotency_key)`
 * `UNIQUE (order_id, sku_id, warehouse_id, status) WHERE status = 'RESERVED'`
@@ -166,30 +168,55 @@ Danh sách event lỗi cần xử lý thủ công hoặc replay.
 * `UNIQUE (event_id)`
 * `INDEX (sku_id, status)`
 
-### 1.10. `inventory_idempotency`
+### 1.10. `inventory_event_idempotency`
 
-Dedup xử lý ở worker pipeline.
+Đảm bảo xử lý Idempotent vững chắc theo nguyên tắc Kép (Redis SETNX chặn ngoài, Database Unique chặn trong). Mọi Event xử lý từ nguồn ngoài như Kafka / Temporal đều ghi vào đây.
 
-* `event_id`: UUID PRIMARY KEY
-* `action_type`: VARCHAR(50) NOT NULL
+* `event_id`: VARCHAR(255) PRIMARY KEY (ID của message/event gốc nhận từ Kafka hoặc `request_id` từ Temporal)
+* `order_id`: BIGINT INDEX (Để dễ dàng đối soát luồng trả kho theo Order)
+* `action_type`: VARCHAR(50) NOT NULL (VD: `PROCESS_SHIPMENT_RETURN`)
+* `action_scope_key`: VARCHAR(100) NOT NULL (Khoá phạm vi xử lý, VD: `refund_request_id` hoặc trạng thái hoàn tiền cụ thể để giới hạn một lượt process)
+* `payload_hash`: VARCHAR(128) NULL (Checksum đối chiếu payload tránh thao tác replay bị lệch logic)
 * `processed_at`: TIMESTAMPTZ NOT NULL
+* **Unique Constraint (`order_id`, `action_type`, `action_scope_key`)**: Ràng buộc này đảm bảo một Request Scope (`refund_request_id`) chỉ được thực thi đúng 1 lần cho cùng 1 đơn hàng (order_id) với cùng 1 mục đích (action_type).
 
-### 1.11. `outbox_events`
+### 1.10.1. `inventory_refund_scopes`
 
-Transactional outbox cho event phụ thuộc DB transaction (`INVENTORY_QUANTITY_CHANGED`).
+Bảng theo dõi scope hoàn hàng theo từng `refund_request_id`, dùng để gate signal `INVENTORY_RETURN_RECEIVED_ALL` về Order.
 
-* `id`: UUID PRIMARY KEY
-* `aggregate_type`: VARCHAR(100) NOT NULL
-* `aggregate_id`: VARCHAR(255) NOT NULL
-* `event_type`: VARCHAR(100) NOT NULL
-* `payload`: JSONB NOT NULL
-* `status`: VARCHAR(20) NOT NULL DEFAULT 'PENDING' (`PENDING`, `PUBLISHED`, `FAILED`, `DEAD`)
-* `retry_count`: INT NOT NULL DEFAULT 0
-* `max_retries`: INT NOT NULL DEFAULT 5
-* `next_retry_at`: TIMESTAMPTZ NULL
-* `published_at`: TIMESTAMPTZ NULL
-* `error_message`: TEXT NULL
+* `id`: BIGSERIAL PRIMARY KEY
+* `order_id`: BIGINT NOT NULL
+* `refund_request_id`: VARCHAR(64) NOT NULL
+* `required_order_item_ids`: JSONB NOT NULL
+* `received_order_item_ids`: JSONB NOT NULL DEFAULT '[]'::jsonb
+* `status`: VARCHAR(32) NOT NULL (`OPEN`, `COMPLETED`, `MANUAL_OVERRIDE`)
 * `created_at`: TIMESTAMPTZ NOT NULL
+* `updated_at`: TIMESTAMPTZ NOT NULL
+* `closed_at`: TIMESTAMPTZ NULL
+
+**Indexes / constraints:**
+* `UNIQUE (order_id, refund_request_id)`
+* `INDEX (status, updated_at)`
+* `CHECK (jsonb_typeof(required_order_item_ids) = 'array')`
+* `CHECK (jsonb_typeof(received_order_item_ids) = 'array')`
+
+> Event `INVENTORY_RETURN_RECEIVED_ALL` chỉ được insert outbox đúng 1 lần khi scope chuyển `OPEN -> COMPLETED` (hoặc `MANUAL_OVERRIDE`).
+
+### 1.11. `inventory_outbox`
+
+Transactional Outbox pattern dùng chung với Debezium CDC Connector để phát event `INVENTORY_QUANTITY_CHANGED` và `INVENTORY_RETURN_RECEIVED_ALL` (Tuyệt đối không dùng Worker Polling).
+
+* `event_id`: UUID PRIMARY KEY (Định danh duy nhất sự kiện)
+* `schema_version`: INT DEFAULT 1 (Quản lý version schema top-level)
+* `aggregate_type`: VARCHAR(50) NOT NULL (VD: `Inventory`)
+* `aggregate_id`: VARCHAR(255) NOT NULL (ID đối tượng tác động, VD: `sku_id` hoặc `order_id`)
+* `event_type`: VARCHAR(100) NOT NULL (Loại sự kiện)
+* `partition_key`: VARCHAR(255) NOT NULL (Topic Kafka partition key. Không được để CDC tự suy từ JSON)
+* `payload`: JSONB NOT NULL (Nội dung Event gốc)
+* `created_at`: TIMESTAMPTZ NOT NULL
+
+> [!IMPORTANT]
+> **Append-Only cho Debezium CDC:** Bảng outbox đã loại bỏ hoàn toàn các cột phục vụ polling (`status`, `retry_count`, `next_retry_at`, v.v...). Tiến trình Retry, Dead Letter Queue được uỷ quyền và điều phối toàn bộ tại Kafka Connect runtime. Trấn áp hoàn toàn Dual-Write Problem mà không tốn CPU của DB.
 
 ---
 
@@ -210,9 +237,9 @@ Chi tiết key, script và cross-slot constraints nằm ở [inventory_redis_des
 
 ### 3.2. Luồng `INVENTORY_QUANTITY_CHANGED`
 
-1. Ledger Worker update DB trong transaction.
-2. Cùng transaction insert `outbox_events`.
-3. Outbox Polling Worker publish sang Kafka.
+1. Ledger Worker update DB `inventory_ledger` và `logical_inventory` trong PostgreSQL transaction.
+2. Cùng transaction insert vào bảng append-only `inventory_outbox`.
+3. Nhờ cơ chế CDC (Debezium), Kafka Connect đọc Write-Ahead Log (WAL) và sinh Kafka Message không độ trễ, hoàn toàn Offload được sức tải của PostgreSQL.
 
 ---
 
@@ -235,9 +262,9 @@ Chi tiết key, script và cross-slot constraints nằm ở [inventory_redis_des
 
 ---
 
-## 5. Retention và vận hành
+## 5. Retention và Vận hành
 
 1. `suspended_events` giữ nóng 7 ngày, sau đó archive.
 2. `dlq_events` giữ tối thiểu 30 ngày.
-3. `outbox_events` trạng thái `PUBLISHED` được dọn theo batch định kỳ.
+3. Bảng `inventory_outbox` áp dụng Time-Window Cleanup Cronjob: Background xóa rác an toàn theo Timestamp cộng Watermark offset của Debezium.
 4. Chỉ số vận hành và alert nằm ở [inventory_observability_slo.md](inventory_observability_slo.md).

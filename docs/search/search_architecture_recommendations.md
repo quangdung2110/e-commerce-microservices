@@ -23,7 +23,7 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng và
 **Lý do:**
 - PostgreSQL cực kỳ tệ cho Full-text search trên hàng triệu sản phẩm (LIKE '%keyword%' = Full Table Scan).
 - Elasticsearch sử dụng Inverted Index → < 10ms cho mọi truy vấn.
-- Tách biệt Read/Write cho phép scale độc lập. Search traffic (hàng triệu End-User) không ảnh hưởng Write throughput (hàng nghìn Seller).
+- Tách biệt Read/Write cho phép scale độc lập. Search traffic (hàng triệu End-User) không ảnh hưởng Write throughput (hàng nghìn admin).
 
 **Trade-off chấp nhận:** Eventual Consistency. Dữ liệu trên Elasticsearch có thể trễ 1-3 giây so với PostgreSQL. Đây là trade-off chấp nhận được vì:
 - User browsing sản phẩm không cần realtime accuracy.
@@ -135,15 +135,12 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng và
 
 ## 8. Multi-Source Data Integration
 
-**Vấn đề hiện tại:** Search document chứa `product_rating_*`, `product_sold_count`, `seller_name` — dữ liệu thuộc sở hữu của các service khác, nên cần contract consume riêng cho từng nguồn.
-
 **Trạng thái tích hợp:**
 
 | Data Field | Source Service | Topic | Ghi chú |
 |---|---|---|---|
 | `product_rating_avg`, `product_rating_count` | Review Service | `t.review.events` | Realtime qua `REVIEW_METRICS_UPDATED` |
 | `product_sold_count` | Order Metrics Projector | `t.search.metrics.events` | Realtime aggregate theo `product_id` |
-| `seller_name` | Seller Service | `t.seller.events` | Realtime qua `SELLER_PROFILE_UPDATED` |
 
 **Fallback vận hành:** Nếu một trong các consumer realtime bị disable, cho phép batch sync tạm thời, nhưng phải công bố SLO freshness rõ ràng (ví dụ <= 15 phút) để tránh hiểu nhầm dữ liệu realtime.
 

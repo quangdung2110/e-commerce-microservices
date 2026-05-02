@@ -11,6 +11,7 @@
 **Cross-Service References:**
 * [Product Events - Consumed](../product/product_events.md#44-inventory_quantity_changed) — Product consume `INVENTORY_QUANTITY_CHANGED`
 * [Shipping Events](../shipping/shipping_events.md#34-shipment_returned) — Inventory consume `SHIPMENT_RETURNED`
+* [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund
 
 ---
 
@@ -24,6 +25,7 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 | `INVENTORY_DEDUCTED` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
 | `INVENTORY_RELEASED` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
 | `INVENTORY_QUANTITY_CHANGED` | **PostgreSQL Outbox Pattern** | Đồng bộ chặt với Ledger write trong DB transaction |
+| `INVENTORY_RETURN_RECEIVED_ALL` | **PostgreSQL Outbox Pattern** | Xác nhận nghiệp vụ đã nhận đủ toàn bộ item thuộc refund scope để Order mở bước refund tiền |
 
 > **Quy tắc chống duplicate:** Lua script trả mã `2` khi idempotent hit. Backend và Relay Worker không được phát thêm event mới cho idempotent hit.
 
@@ -36,7 +38,7 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 | Topic Name | Partition Key | Consumers | Mô tả |
 |:---|:---|:---|:---|
 | `t.inventory.commands` | `sku_id` | Inventory Ledger Worker (internal), Analytics | Mutation events nội bộ từ đường nóng reserve/deduct/release |
-| `t.inventory.events` | `sku_id` | Product Service, Analytics | Public inventory projection events (`INVENTORY_QUANTITY_CHANGED`) |
+| `t.inventory.events` | `sku_id` hoặc `order_id` (theo event_type) | Product Service, Order Service, Analytics | Public inventory events (`INVENTORY_QUANTITY_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL`) |
 
 ### 2.2 Topics Consume
 
@@ -44,7 +46,7 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 |:---|:---|:---|:---|:---|
 | `t.shipping.events` | `order_id` | Shipping Service | `SHIPMENT_RETURNED` | Nhập trả kho khi kiện hàng hoàn về warehouse |
 
-> Partition key `sku_id` đảm bảo ordering cho cùng SKU ở downstream consumer.
+> Partition key theo event scope: `sku_id` cho sự kiện tồn kho mức SKU, `order_id` cho `INVENTORY_RETURN_RECEIVED_ALL`.
 
 ---
 
@@ -55,7 +57,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 * `event_id`: UUID của sự kiện.
 * `event_type`: Loại sự kiện.
 * `aggregate_type`: Cố định `Inventory`.
-* `aggregate_id`: Cố định `sku_id`.
+* `aggregate_id`: `sku_id` với sự kiện mức SKU, hoặc `order_id` với `INVENTORY_RETURN_RECEIVED_ALL`.
 * `correlation_id`: Temporal Workflow ID hoặc upstream request ID.
 * `timestamp`: ISO 8601 UTC.
 * `source`: Cố định `inventory-service`.
@@ -85,7 +87,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
     "sku_id": "sku-001",
     "product_id": "prod-uuid-001",
     "order_id": 10001,
-    "parcel_id": null,
+    "order_item_id": 2001,
     "warehouse_id": 5,
     "quantity": 2,
     "routing_tier": "FAST_LANE",
@@ -116,6 +118,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
     "sku_id": "sku-001",
     "product_id": "prod-uuid-001",
     "order_id": 10001,
+    "order_item_id": 2001,
     "warehouse_id": 5,
     "quantity": 2,
     "deducted_at": "2026-02-28T10:06:00Z"
@@ -142,6 +145,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
     "sku_id": "sku-001",
     "product_id": "prod-uuid-001",
     "order_id": 10001,
+    "order_item_id": 2001,
     "warehouse_id": 5,
     "quantity": 2,
     "reason": "ORDER_CANCELLED",
@@ -154,7 +158,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 
 ### 4.4. INVENTORY_QUANTITY_CHANGED
 
-**Ngữ cảnh:** Sau khi Ledger Worker ghi `inventory_ledger` + update inventory tables -> insert `outbox_events` -> Outbox Worker publish Kafka.
+**Ngữ cảnh:** Sau khi Ledger Worker ghi `inventory_ledger` + update inventory tables -> insert `inventory_outbox` -> Debezium CDC publish Kafka.
 **Consumer chính:** Product Service.
 
 ```json
@@ -183,6 +187,36 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 
 **Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
 
+**Order-flow contract:** Với các event phát sinh từ flow đơn hàng (`INVENTORY_RESERVED`, `INVENTORY_DEDUCTED`, `INVENTORY_RELEASED`), `order_item_id` là bắt buộc và không được null.
+
+### 4.5. INVENTORY_RETURN_RECEIVED_ALL
+
+**Ngữ cảnh:** Inventory đã nhận đủ toàn bộ item thuộc refund scope đã được Order đăng ký trước đó.
+**Consumer chính:** Order Service (`order-inventory-return-consumer`).
+
+```json
+{
+  "event_id": "123e4567-e89b-12d3-a456-426614174004",
+  "event_type": "INVENTORY_RETURN_RECEIVED_ALL",
+  "aggregate_type": "Inventory",
+  "aggregate_id": "10001",
+  "correlation_id": "wf-10001",
+  "timestamp": "2026-03-05T09:58:30Z",
+  "source": "inventory-service",
+  "schema_version": 1,
+  "payload": {
+    "order_id": 10001,
+    "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
+    "required_order_item_ids": [2001],
+    "received_order_item_ids": [2001],
+    "all_items_received": true,
+    "confirmed_at": "2026-03-05T09:58:30Z"
+  }
+}
+```
+
+`INVENTORY_RETURN_RECEIVED_ALL` chỉ phát đúng 1 lần cho mỗi `order_id + refund_request_id` sau khi đủ toàn bộ item; downstream phải idempotent theo `event_id` và `refund_request_id`.
+
 ---
 
 ## 5. Events Tiêu Thụ (Consumed Events)
@@ -199,7 +233,7 @@ Inventory consume thêm event logistics:
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
     "returned_to_warehouse_id": 5,
     "return_reason": "CUSTOMER_RETURN",
     "items": [
@@ -214,7 +248,7 @@ Inventory consume thêm event logistics:
 }
 ```
 
-`shipment_id` và `items[]` là bắt buộc để idempotency + restock chính xác.
+`shipment_id`, `order_item_id` và `items[]` là bắt buộc để idempotency + restock chính xác.
 
 ### 5.2. Internal command events
 

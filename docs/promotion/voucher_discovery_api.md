@@ -22,8 +22,8 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 | Nguồn | Loại mã | Cách lấy |
 |:---|:---|:---|
-| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, `SELLER_LIMITED`, `UNLIMITED_ALL` (nếu đã lưu trước), mã freeship sàn | Đã có sẵn trong ví, `status = SAVED` |
-| **Mã public của shop (`SHOP_PUBLIC`)** | Mã shop chưa lưu trong ví | Chỉ xuất hiện ở `GET /v1/promotions/shop-voucher-discovery`, user bấm `save-and-apply` để lưu |
+| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, ``, `UNLIMITED_ALL` (nếu đã lưu trước), mã freeship sàn | Đã có sẵn trong ví, `status = SAVED` |
+| **Mã public của platform (`platform_PUBLIC`)** | Mã platform chưa lưu trong ví | Chỉ xuất hiện ở `GET /v1/promotions/platform-voucher-discovery`, user bấm `save-and-apply` để lưu |
 
 > [!IMPORTANT]
 > Đối với tray Voucher Sàn/Freeship tại Checkout, API `GET /v1/promotions/voucher-suggestions` chỉ trả mã đã có trong ví (`source = WALLET`). Không có cơ chế gợi ý mã sàn chưa lưu rồi auto-save ở Submit.
@@ -37,41 +37,41 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 ### 1.2. Stacking Rules (Slot Model)
 
-Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều shop)** áp dụng theo slot:
-* mỗi shop tối đa 1 `SHOP_VOUCHER`
+Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều platform)** áp dụng theo slot:
+* mỗi platform tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `FREESHIP_VOUCHER`
 
-Tổng số voucher áp dụng là biến thiên theo số shop trong đơn (`N_shop + [0|1 platform] + [0|1 freeship]`), không bị cố định ở 3.
+Tổng số voucher áp dụng là biến thiên theo số platform trong đơn (`N_platform + [0|1 platform] + [0|1 freeship]`), không bị cố định ở 3.
 
 Sơ đồ slot:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  SLOT SHOP_VOUCHER        (1 mã/shop — theo từng Sub-Cart) │
+│  SLOT PLATFORM_VOUCHER        (1 mã/platform — theo từng Sub-Cart) │
 │  SLOT PLATFORM_VOUCHER    (tối đa 1 mã toàn đơn)           │
 │  SLOT FREESHIP_VOUCHER    (tối đa 1 mã, chỉ Platform)      │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **Mapping từ bảng `promotions`:**
-- **SHOP_VOUCHER**: `owner_type = SELLER` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
-- **PLATFORM_VOUCHER**: `owner_type = PLATFORM` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
-- **FREESHIP_VOUCHER**: `discount_type = FREE_SHIPPING` + `owner_type = PLATFORM` (shop không được tạo mã freeship)
+- **PLATFORM_VOUCHER**: `deleted_owner_type = admin` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
+- **PLATFORM_VOUCHER**: `deleted_owner_type = PLATFORM` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
+- **FREESHIP_VOUCHER**: `discount_type = FREE_SHIPPING` + `deleted_owner_type = PLATFORM` (platform không được tạo mã freeship)
 
 ### 1.2.1. Dependency một chiều giữa các slot (Contract bắt buộc)
 
-- Shop voucher có thể làm đổi eligibility của platform/freeship vì thay đổi `total_after_shops`.
-- Platform voucher hoặc freeship voucher không làm đổi eligibility của shop voucher.
+- platform voucher có thể làm đổi eligibility của platform/freeship vì thay đổi `total_after_platforms`.
+- Platform voucher hoặc freeship voucher không làm đổi eligibility của platform voucher.
 - Mọi thay đổi chọn mã ở bất kỳ slot nào đều phải gọi lại Promotion evaluate để trả discount lines nhất quán theo cùng một waterfall.
 
 ### 1.3. Quy tắc Freeship (Freeship Rule)
 
 > [!IMPORTANT]
-> Slot Freeship chỉ có **1 chỗ duy nhất** và chỉ nhận mã của Platform. Seller không được tạo/không được hiển thị mã freeship trong bất kỳ slot nào.
+> Slot Freeship chỉ có **1 chỗ duy nhất** và chỉ nhận mã của Platform. admin không được tạo/không được hiển thị mã freeship trong bất kỳ slot nào.
 
 **Thứ tự sort trong slot FREESHIP:**
-1. `owner_type = PLATFORM` và applicable → **Hiển thị đầu tiên, badge "Ưu đãi sàn"**
+1. `deleted_owner_type = PLATFORM` và applicable → **Hiển thị đầu tiên, badge "Ưu đãi sàn"**
 2. Mã eligible = false (chưa đủ điều kiện mua tối thiểu) → Hiển thị mờ cuối danh sách
 
 ---
@@ -92,12 +92,12 @@ Authorization: Bearer {access_token}
   "cart_context": {
     "sub_carts": [
       {
-        "seller_id": 101,
+        "platform_id": 101,
         "subtotal": 350000,
         "item_category_ids": [5, 12]
       },
       {
-        "seller_id": 205,
+        "platform_id": 205,
         "subtotal": 180000,
         "item_category_ids": [8]
       }
@@ -117,11 +117,10 @@ Authorization: Bearer {access_token}
 ```json
 {
   "voucher_tray": {
-    "shop_vouchers": [
+    "platform_vouchers": [
       {
-        "seller_id": 101,
-        "seller_name": "Shop Tech Việt",
-        "best_voucher": {
+        "platform_id": 101,
+                "best_voucher": {
           "promotion_id": 55,
           "code": "TECHVIET20",
           "discount_type": "PERCENTAGE",
@@ -135,9 +134,8 @@ Authorization: Bearer {access_token}
         "other_vouchers": []
       },
       {
-        "seller_id": 205,
-        "seller_name": "Fashion Store",
-        "best_voucher": null,
+        "platform_id": 205,
+                "best_voucher": null,
         "other_vouchers": [],
         "note": "NO_VOUCHER_AVAILABLE"
       }
@@ -173,7 +171,7 @@ Authorization: Bearer {access_token}
       "best_voucher": {
         "promotion_id": 30,
         "code": "FREESHIP_PLATFORM",
-        "owner_type": "PLATFORM",
+        "deleted_owner_type": "PLATFORM",
         "max_freeship_amount": 45000,
         "min_purchase_amount": 200000,
         "source": "WALLET",
@@ -185,7 +183,7 @@ Authorization: Bearer {access_token}
         {
           "promotion_id": 31,
           "code": "FREESHIP_PLUS",
-          "owner_type": "PLATFORM",
+          "deleted_owner_type": "PLATFORM",
           "max_freeship_amount": 30000,
           "min_purchase_amount": 500000,
           "source": "WALLET",
@@ -216,7 +214,7 @@ Authorization: Bearer {access_token}
 
 **Giải thích trường `source`:**
 - `WALLET`: Mã đã có sẵn trong `user_coupon_wallets` (status=SAVED).
-- `SHOP_PUBLIC`: Mã shop chưa có trong ví user (chỉ xuất hiện ở API `shop-voucher-discovery`), được lưu vào ví khi user gọi `save-and-apply`.
+- `platform_PUBLIC`: Mã platform chưa có trong ví user (chỉ xuất hiện ở API `platform-voucher-discovery`), được lưu vào ví khi user gọi `save-and-apply`.
 
 ---
 
@@ -236,7 +234,7 @@ Promotion Service
   │
   ├─── STEP 2: Query Database
   │     SELECT w.promotion_id, w.status, w.expired_at,
-  │            p.owner_type, p.owner_id, p.discount_type,
+  │            p.deleted_owner_type, p.owner_id, p.discount_type,
   │            p.discount_value, p.max_discount_amount,
   │            p.min_purchase_amount, p.code
   │     FROM user_coupon_wallets w
@@ -252,7 +250,7 @@ Promotion Service
   ├─── STEP 3: Pre-filter Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher ứng viên:
   │     (a) Check nhanh min_purchase_amount (field riêng, O(1)):
-  │         - SHOP_VOUCHER:    so với sub_cart.subtotal của seller đó
+  │         - PLATFORM_VOUCHER:    so với sub_cart.subtotal của admin đó
   │         - PLATFORM_VOUCHER/FREESHIP: so với total_subtotal
   │     (b) Eval conditions_rule AST (Caffeine L1, <1ms):
   │         - Dùng cart_context làm input
@@ -280,10 +278,10 @@ Promotion Service
   │         - gắn `cache_meta.budget_guard_status=DEGRADED` để observability
   │
   ├─── STEP 5: Gom nhóm theo Slot Model (Group & Sort)
-  │     SHOP_VOUCHER[]: nhóm theo seller_id, sort by estimated_discount DESC
-  │     PLATFORM_VOUCHER: filter owner_type=PLATFORM + discount_type≠FREE_SHIPPING
+  │     PLATFORM_VOUCHER[]: nhóm theo platform_id, sort by estimated_discount DESC
+  │     PLATFORM_VOUCHER: filter deleted_owner_type=PLATFORM + discount_type≠FREE_SHIPPING
   │                       sort: eligible first, then estimated_discount DESC
-  │     FREESHIP_VOUCHER: filter owner_type=PLATFORM AND discount_type=FREE_SHIPPING
+  │     FREESHIP_VOUCHER: filter deleted_owner_type=PLATFORM AND discount_type=FREE_SHIPPING
   │                       chọn `best_voucher` + `other_vouchers` theo cùng rule sort
   │
   └─── STEP 6: Build Response & Return (kèm `promotion_rule_version`, `promotion_budget_version`, `budget_guard_status` trong `cache_meta`)
@@ -342,7 +340,7 @@ Promotion Service
   {
     "promotion_id": 55,
     "code": "TECHVIET20",
-    "owner_type": "SELLER",
+    "deleted_owner_type": "admin",
     "owner_id": 101,
     "discount_type": "PERCENTAGE",
     "discount_value": 20,
@@ -401,7 +399,7 @@ Khi Admin tạo/sửa promotion, bắt buộc phát `PROMO_EVICT` và bump `prom
 
 ### 7.1. Chỉ Platform có Freeship (`discount_type = FREE_SHIPPING`)
 
-Do ràng buộc nghiệp vụ và DB constraint, seller không được tạo voucher freeship.
+Do ràng buộc nghiệp vụ và DB constraint, admin không được tạo voucher freeship.
 - Chỉ **1 mã freeship platform** được áp dụng cho toàn đơn (theo stacking rule).
 - Nếu có nhiều mã freeship platform, chọn mã `eligible` có `estimated_discount` cao nhất làm gợi ý mặc định.
 - Nếu mã tốt nhất chưa đủ điều kiện, hiển thị thêm `amount_needed` để user biết số tiền còn thiếu.
@@ -434,7 +432,7 @@ Màn hình Checkout sử dụng **2 API Voucher Discovery riêng biệt** tùy t
 | API | Khi nào gọi | Mô tả |
 |:---|:---|:---|
 | `GET /v1/promotions/voucher-suggestions` | Khách mở tray **"Voucher của Sàn"** | Liệt kê Platform Voucher + Freeship **đã lưu trong ví** |
-| `GET /v1/promotions/shop-voucher-discovery` | Khách mở tray **"Voucher của Shop X"** | Liệt kê toàn bộ voucher hợp lệ của shop đó (cả đã lưu + chưa lưu) |
+| `GET /v1/promotions/platform-voucher-discovery` | Khách mở tray **"Voucher của platform X"** | Liệt kê toàn bộ voucher hợp lệ của platform đó (cả đã lưu + chưa lưu) |
 
 ```
 Khách mở màn hình Checkout
@@ -443,18 +441,18 @@ Khách mở màn hình Checkout
 Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion)
   │ (Shipping quote được lấy gián tiếp qua Inventory routing)
         │
-        ├─ Khách nhấn "Voucher của Shop X" (mở Shop Voucher tray)
-        │       │ -- GET /v1/promotions/shop-voucher-discovery?seller_id=X --
+        ├─ Khách nhấn "Voucher của platform X" (mở platform Voucher tray)
+        │       │ -- GET /v1/promotions/platform-voucher-discovery?platform_id=X --
         │       ▼
         │   Promotion Service trả ELIGIBLE[] + INELIGIBLE[] (< 15ms)
         │       │
         │       ├─ Khách chọn mã ĐÃ CÓ trong ví (source=WALLET)
-        │       │       → POST /v1/checkout/preview với selected_shop_vouchers[X] = promo_id
+        │       │       → POST /v1/checkout/preview với selected_platform_vouchers[X] = promo_id
         │       │
-        │       └─ Khách nhấn "Lưu & Chọn" mã CHƯA CÓ trong ví (source=SHOP_PUBLIC)
-        │               → POST /v1/promotions/save-and-apply {seller_id, promotion_id}
+        │       └─ Khách nhấn "Lưu & Chọn" mã CHƯA CÓ trong ví (source=platform_PUBLIC)
+        │               → POST /v1/promotions/save-and-apply {platform_id, promotion_id}
         │               → Promotion: upsert user_coupon_wallets (SAVED)
-        │               → POST /v1/checkout/preview với selected_shop_vouchers[X] = promo_id
+        │               → POST /v1/checkout/preview với selected_platform_vouchers[X] = promo_id
         │
         └─ Khách nhấn "Voucher của Sàn" (mở Platform Voucher tray)
                 │ -- GET /v1/promotions/voucher-suggestions --
@@ -466,16 +464,16 @@ Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion)
 
 ---
 
-## 9. Shop Voucher Discovery API
+## 9. platform Voucher Discovery API
 
 ### 9.1. Mục đích
 
-API `GET /v1/promotions/shop-voucher-discovery` phục vụ tray **"Voucher của Shop"** trên màn hình Checkout. Khác với Platform Voucher Discovery (chỉ show mã đã lưu trong ví), Shop Voucher Discovery hiển thị **toàn bộ voucher hiện có của shop đó** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
+API `GET /v1/promotions/platform-voucher-discovery` phục vụ tray **"Voucher của platform"** trên màn hình Checkout. Khác với Platform Voucher Discovery (chỉ show mã đã lưu trong ví), platform Voucher Discovery hiển thị **toàn bộ voucher hiện có của platform đó** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
 
 ### 9.2. Endpoint
 
 ```
-GET /v1/promotions/shop-voucher-discovery?seller_id={seller_id}
+GET /v1/promotions/platform-voucher-discovery?platform_id={platform_id}
 Authorization: Bearer {access_token}
 ```
 
@@ -483,7 +481,7 @@ Authorization: Bearer {access_token}
 
 ```json
 {
-  "seller_id": 101,
+  "platform_id": 101,
   "cart_context": {
     "sub_cart_subtotal": 350000,
     "item_category_ids": [5, 12],
@@ -492,30 +490,30 @@ Authorization: Bearer {access_token}
 }
 ```
 
-> `sub_cart_subtotal` là tổng giá sub-cart của riêng shop này (không phải tổng đơn hàng) — dùng để evaluate `min_purchase_amount` và Rule Engine.
+> `sub_cart_subtotal` là tổng giá sub-cart của riêng platform này (không phải tổng đơn hàng) — dùng để evaluate `min_purchase_amount` và Rule Engine.
 
 ### 9.4. Backend Flow
 
 ```
-GET /shop-voucher-discovery?seller_id=101
+GET /platform-voucher-discovery?platform_id=101
   │
-  ├── STEP 1: Fetch Wallet (Filter by seller_id)
+  ├── STEP 1: Fetch Wallet (Filter by platform_id)
   │     Check Redis: wallet:{user_id}:active_vouchers (TTL 5 phút)
-  │     → Filter: owner_type=SELLER AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
+  │     → Filter: deleted_owner_type=admin AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
   │     → Source: WALLET, is_saved=true
   │
-  ├── STEP 2: Fetch Shop Public Vouchers (chưa lưu trong ví)
+  ├── STEP 2: Fetch platform Public Vouchers (chưa lưu trong ví)
   │     Query DB:
   │       SELECT p.*
   │       FROM promotions p
-  │       WHERE p.owner_type = 'SELLER'
+  │       WHERE p.deleted_owner_type = 'admin'
   │         AND p.owner_id = 101
   │         AND p.discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')
   │         AND p.status = 'ACTIVE'
   │         AND p.end_time > NOW()
   │         AND p.id NOT IN (wallet_promotion_ids_from_step1)
-  │     → Source: SHOP_PUBLIC, is_saved=false
-  │     → Index: (owner_type, owner_id, status) — cần thêm index này
+  │     → Source: platform_PUBLIC, is_saved=false
+  │     → Index: (deleted_owner_type, owner_id, status) — cần thêm index này
   │
   ├── STEP 3: Evaluate Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher (từ Step 1 + Step 2):
@@ -540,9 +538,8 @@ GET /shop-voucher-discovery?seller_id=101
 
 ```json
 {
-  "seller_id": 101,
-  "seller_name": "Shop Tech Việt",
-  "vouchers": {
+  "platform_id": 101,
+    "vouchers": {
     "eligible": [
       {
         "promotion_id": 55,
@@ -565,7 +562,7 @@ GET /shop-voucher-discovery?seller_id=101
         "discount_value": 100000,
         "min_purchase_amount": 500000,
         "estimated_discount": 0,
-        "source": "SHOP_PUBLIC",
+        "source": "platform_PUBLIC",
         "is_saved": false,
         "ineligible_reason": "MIN_PURCHASE_NOT_MET",
         "amount_needed": 150000,
@@ -584,45 +581,52 @@ GET /shop-voucher-discovery?seller_id=101
 | `CATEGORY_NOT_MATCHED` | Sản phẩm không thuộc danh mục áp dụng |
 | `PAYMENT_METHOD_NOT_MATCHED` | Phương thức thanh toán không hợp lệ |
 | `BUDGET_EXHAUSTED` | Voucher cạn ngân sách/lượt tại thời điểm guard read-time |
-| `EXPIRED` | Voucher quá `expired_at` (mã đã có trong ví) hoặc quá `end_time` claim window (mã shop public) |
+| `EXPIRED` | Voucher quá `expired_at` (mã đã có trong ví) hoặc quá `end_time` claim window (mã platform public) |
 
 ### 9.6. Save & Apply Flow (Khi user nhấn "Lưu & Chọn" mã chưa lưu)
 
 ```
 POST /v1/promotions/save-and-apply
 {
-  "seller_id": 101,
+  "platform_id": 101,
   "promotion_id": 60
 }
 ```
 
 Promotion Service:
-1. Validate: promotion tồn tại, `owner_id = seller_id`, `status = ACTIVE`.
+1. Validate: promotion tồn tại, `owner_id = platform_id`, `status = ACTIVE`, và đang trong claim/save window hợp lệ.
 2. Upsert vào `user_coupon_wallets`:
    ```sql
   INSERT INTO user_coupon_wallets (user_id, promotion_id, status, saved_at, expired_at)
   VALUES (:user_id, :promotion_id, 'SAVED', NOW(), NOW() + INTERVAL '30 days')
-   ON CONFLICT (user_id, promotion_id) DO NOTHING;
+  ON CONFLICT (user_id, promotion_id) DO UPDATE
+  SET status = 'SAVED',
+     saved_at = NOW(),
+     expired_at = NOW() + INTERVAL '30 days',
+     used_at = NULL
+  WHERE user_coupon_wallets.status = 'EXPIRED';
    ```
+  - Nếu row đã `SAVED` và còn hạn: trả success idempotent, không kéo dài `expired_at`.
+  - Nếu row đã `USED`: mặc định từ chối `409 ALREADY_USED_VOUCHER` (trừ khi promotion policy cho phép reacquire rõ ràng).
 3. Invalidate Redis wallet cache: `DEL wallet:{user_id}:active_vouchers`.
 4. Trả `200 OK {saved: true}`.
 
 > [!NOTE]
 > `expired_at` được gán ngay lúc acquire/save để tách bạch claim window (`promotions.end_time`) và use window theo ví (`saved_at + 30 ngày`).
 >
-> Sau khi nhận `200 OK`, Checkout Service gọi ngay `POST /v1/checkout/preview` với `selected_shop_vouchers[seller_id] = promotion_id`. Budget Reserve xảy ra trong Temporal Saga khi Submit — không phải tại đây.
+> Sau khi nhận `200 OK`, Checkout Service gọi ngay `POST /v1/checkout/preview` với `selected_vouchers = promotion_id`. Budget Reserve xảy ra trong Temporal Saga khi Submit — không phải tại đây.
 
 ### 9.7. Performance Profile
 
 | Bước | Latency |
 |:---|:---|
 | Wallet cache HIT + filter | ~2ms |
-| DB query Shop Public vouchers | ~3-5ms |
+| DB query platform Public vouchers | ~3-5ms |
 | Rule Engine eval (n mã) | ~1-3ms |
 | **Tổng (cache HIT)** | **< 12ms** |
 | **Tổng (cache MISS)** | **< 15ms** |
 
-> Rate Limiting: `checkout:ratelimit:voucher_shop:{user_id}` — 20 req/phút (xem `checkout_caching_schema.md`).
+> Rate Limiting: `promotion:ratelimit:voucher_discovery:{user_id}` — 20 req/phút (xem `checkout_caching_schema.md`).
 
 ---
 
@@ -652,7 +656,7 @@ Khi reserve thất bại do all-or-nothing (Script 2B), Promotion Service và Ch
   "action": "RECALL_PREVIEW",
   "dropped_promotions": [
     {
-      "promotion_id": "FREESHIP_123",
+      "promotion_id": 30,
       "reason": "BUDGET_EXHAUSTED",
       "user_message": "Mã Freeship đã hết ngân sách."
     }
@@ -660,7 +664,7 @@ Khi reserve thất bại do all-or-nothing (Script 2B), Promotion Service và Ch
   "proposal_checkout_data": {
     "new_total_amount": 550000,
     "surviving_promotions": [
-      "SHOP_456"
+      55
     ]
   }
 }

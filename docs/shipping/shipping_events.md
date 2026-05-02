@@ -7,8 +7,8 @@
 *   [Background Workers & Jobs](shipping_workers.md)
 
 **Cross-Service References:**
-*   [Order Events (Consumer)](../order/order_events.md) — Order consume `SHIPMENT_STATUS_UPDATED`
-*   [Order Workers - Shipping Consumer](../order/order_workers.md#4-shipping-status-consumer) — Cách Order xử lý shipping events
+*   [Order Events (Consumer)](../order/order_events.md) — Order consume `SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`, `SHIPMENT_DELAYED`
+*   [Order Workers - Shipping Consumer](../order/order_workers.md#5-shipping-status-consumer-kafka-consumer) — Cách Order xử lý shipping events
 
 ---
 
@@ -42,7 +42,9 @@ Shipping Service produce các events liên quan đến vòng đời vận đơn.
 
 ## 2. Cấu Trúc Header Chung
 
-Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, `timestamp`, `correlation_id` (= `order_id`), `payload`.
+Tương tự CloudEvents: `event_id`, `event_type`, `aggregate_type = Shipment`, `aggregate_id = shipment_id`, `source: shipping-service`, `timestamp`, `correlation_id` (workflow/order trace), `business_id = order_id`, `payload`.
+
+**Contract bắt buộc cho downstream ordering:** payload của toàn bộ status events phải có `shipment_event_sequence_id` tăng đơn điệu theo `order_item_id`.
 
 ---
 
@@ -59,7 +61,7 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
     "courier_name": "Giao Hàng Nhanh",
@@ -74,7 +76,7 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
 ### 3.2. SHIPMENT_STATUS_UPDATED
 
 **Ngữ cảnh:** 3PL webhook → [Provider Mapping](shipping_state_machine.md#2-provider-status-mapping-table) → FSM transition. Đây là **event được produce nhiều nhất** — mỗi lần 3PL update tracking là 1 event.
-**Consumer chính:** **Order Service** — [Shipping Status Consumer](../order/order_workers.md#4-shipping-status-consumer) update Parcel FSM.
+**Consumer chính:** **Order Service** — [Shipping Status Consumer](../order/order_workers.md#5-shipping-status-consumer-kafka-consumer) update Order Item Shipping FSM.
 
 ```json
 {
@@ -82,23 +84,28 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
+    "shipment_event_sequence_id": 20260301080000,
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
     "old_status": "READY_TO_SHIP",
     "new_status": "IN_TRANSIT",
+    "standardized_status": "IN_TRANSIT",
     "provider_original_status": "picked",
+    "provider_event_fingerprint": "sha256:7f4d...",
     "location": "Sorting Hub Tân Bình, HCM",
     "occurred_at": "2026-03-01T08:00:00Z"
   }
 }
 ```
 > **Field `provider_original_status`:** Giữ nguyên mã gốc của 3PL để debug/audit. Downstream chỉ dùng `new_status` (đã chuẩn hóa).
+>
+> **Field `provider_event_fingerprint`:** Khoá dedup nghiệp vụ cho webhook (`provider_webhook_id` hoặc hash fallback). Shipping dùng fingerprint này làm `action_scope_key` ở `shipping_event_idempotency`.
 
 ### 3.3. SHIPMENT_DELIVERED
 
 **Ngữ cảnh:** 3PL xác nhận giao hàng thành công. FSM: `IN_TRANSIT` → `DELIVERED`.
-**Consumer:** Order Service (trigger Auto-Complete check), Analytics, Seller Settlement.
+**Consumer:** Order Service (trigger Auto-Complete check), Analytics, admin Settlement.
 
 ```json
 {
@@ -106,8 +113,10 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
+    "shipment_event_sequence_id": 20260302143000,
     "tracking_number": "GHN12345",
+    "standardized_status": "DELIVERED",
     "delivered_at": "2026-03-02T14:30:00Z",
     "receiver_name": "Nguyen Van A",
     "proof_of_delivery_url": "https://cdn.ghn.vn/pod/GHN12345.jpg"
@@ -118,7 +127,7 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
 ### 3.4. SHIPMENT_RETURNED
 
 **Ngữ cảnh:** Kiện hàng trả về kho (giao thất bại hoặc khách đổi trả). FSM: `FAILED/DELIVERED` → `RETURNED`.
-**Consumer:** Order Service (trigger Return/Refund flow), Inventory (release stock if returned to warehouse).
+**Consumer:** Order Service (cập nhật item timeline/status), Inventory (restock vật lý khi hàng về kho).
 
 ```json
 {
@@ -126,15 +135,28 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
+    "shipment_event_sequence_id": 20260304100000,
     "tracking_number": "GHN12345",
+    "standardized_status": "RETURNED",
     "return_reason": "DELIVERY_FAILED_3_TIMES",
     "returned_to_warehouse_id": 5,
+    "items": [
+      {
+        "sku_id": "sku-001",
+        "product_id": "prod-uuid-001",
+        "quantity": 2
+      }
+    ],
     "returned_at": "2026-03-04T10:00:00Z"
   }
 }
 ```
 > **Field `return_reason`:** `DELIVERY_FAILED_3_TIMES`, `CUSTOMER_RETURN`, `DAMAGED_IN_TRANSIT`.
+>
+> `order_item_id`, `returned_to_warehouse_id`, `items[].sku_id`, `items[].product_id`, `items[].quantity` là bắt buộc để Inventory restock chính xác và dedup theo `shipment_id + order_item_id`.
+>
+> **Contract với Order refund lane:** `SHIPMENT_RETURNED` không mở `OrderRefundWorkflow`; refund chỉ đi từ `API_RETURN`/admin lane và được gate bởi xác nhận tổng kết từ Inventory.
 
 ### 3.5. SHIPMENT_CANCELLED
 
@@ -147,7 +169,7 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
     "tracking_number": "GHN12345",
     "reason": "ORDER_CANCELLED",
     "cancelled_at": "2026-02-28T10:25:00Z"
@@ -168,18 +190,21 @@ Tương tự CloudEvents: `event_id`, `event_type`, `source: shipping-service`, 
   "payload": {
     "shipment_id": 3001,
     "order_id": 10001,
-    "parcel_id": 2001,
+    "order_item_id": 2001,
+    "shipment_event_sequence_id": 20260228160000,
     "tracking_number": "GHN12345",
     "courier_code": "GHN",
     "current_status": "IN_TRANSIT",
+    "standardized_status": "IN_TRANSIT",
     "last_update_at": "2026-02-26T08:00:00Z",
     "hours_since_update": 56,
+    "escalation_level": 1,
     "detected_at": "2026-02-28T16:00:00Z"
   }
 }
 ```
 
-> **Tần suất:** Mỗi shipment chỉ phát event DELAYED **1 lần** (dùng Redis `SETNX shipping:delayed:sent:{shipment_id}` TTL 7 ngày để chống lặp). Nếu shipment tiếp tục không update thêm 24h nữa (tổng 72h), phát `SHIPMENT_DELAYED` lần 2 với `escalation_level: 2`.
+> **Tần suất:** Mỗi shipment phát `SHIPMENT_DELAYED` ở `escalation_level = 1` đúng 1 lần bằng key `shipping:delayed:sent:{shipment_id}:L1` (TTL 7 ngày). Nếu shipment tiếp tục không update thêm 24h nữa (tổng 72h), phát `escalation_level = 2` đúng 1 lần bằng key riêng `shipping:delayed:sent:{shipment_id}:L2`.
 
 ---
 

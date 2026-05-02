@@ -211,7 +211,6 @@ public class PromotionController {
         promo.setMinPurchaseAmount(request.getMinPurchaseAmount());
         promo.setConditionsRule(request.getConditionsRule());
         promo.setPriority(request.getPriority() != null ? request.getPriority() : 0);
-        promo.setIsExclusive(request.getIsExclusive() != null ? request.getIsExclusive() : false);
         promo.setStartTime(request.getStartTime());
         promo.setEndTime(request.getEndTime());
         return promo;

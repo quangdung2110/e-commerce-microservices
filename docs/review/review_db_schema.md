@@ -16,8 +16,7 @@ PostgreSQL là nguồn sự thật duy nhất của Review Service. Schema đư�
 ## 0. Canonical Identity Rules (DB level)
 
 1. `user_id` lưu dạng chuỗi canonical `u-<digits>`.
-2. `seller_id` lưu dạng chuỗi canonical `s-<digits>`.
-3. Mọi consumer ghi DB bắt buộc normalize ID trước khi insert/update.
+2. Mọi consumer ghi DB bắt buộc normalize ID trước khi insert/update.
 
 ## 1. Bảng review_eligibilities
 
@@ -30,7 +29,6 @@ Quản lý quyền review theo rule 1-1-1-1 (order, product, sku, user).
 | `order_id` | `BIGINT` | NOT NULL | Đơn hàng |
 | `product_id` | `VARCHAR(255)` | NOT NULL | Sản phẩm |
 | `sku_id` | `VARCHAR(255)` | NOT NULL | Biến thể đã mua |
-| `seller_id` | `VARCHAR(64)` | NULLABLE | Snapshot seller; legacy row có thể null và được backfill khi submit |
 | `variant_name` | `VARCHAR(255)` | NULLABLE | Snapshot phục vụ hiển thị danh sách chờ đánh giá |
 | `status` | `VARCHAR(30)` | DEFAULT `PENDING` | `PENDING`, `REVIEWED`, `EXPIRED`, `REJECTED_RETRY_PENDING`, `REJECTED_FINAL` |
 | `attempt_count` | `SMALLINT` | DEFAULT 0 | Số lần submit review (create/edit), tối đa 2 |
@@ -59,7 +57,7 @@ SET status = 'REJECTED_FINAL',
 WHERE id = :eligibility_id
   AND status IN ('REVIEWED')
   AND attempt_count == 1
-RETURNING attempt_count, product_id, sku_id, seller_id;
+RETURNING attempt_count, product_id, sku_id;
 ```
 
 **Trường hợp chốt trạng thái sau khi hết quyền sửa:**
@@ -70,7 +68,7 @@ SET status = 'REJECTED_FINAL',
 WHERE id = :eligibility_id
   AND status IN ('REJECTED_RETRY_PENDING')
   AND attempt_count == 2
-RETURNING attempt_count, product_id, sku_id, seller_id;
+RETURNING attempt_count, product_id, sku_id;
 ```
 
 ## 2. Bảng reviews
@@ -81,7 +79,6 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `eligibility_id` | `UUID` | UNIQUE, FK, NOT NULL | 1 eligibility chỉ sinh tối đa 1 review |
 | `product_id` | `VARCHAR(255)` | NOT NULL | Sản phẩm |
 | `sku_id` | `VARCHAR(255)` | NOT NULL | SKU |
-| `seller_id` | `VARCHAR(64)` | NOT NULL | Seller sở hữu sản phẩm |
 | `variant_name` | `VARCHAR(255)` | NULLABLE | Snapshot biến thể đã mua |
 | `user_id` | `VARCHAR(64)` | NOT NULL | Tác giả review (canonical) |
 | `user_name` | `VARCHAR(100)` | NOT NULL | Snapshot tên tại thời điểm tạo review |
@@ -91,7 +88,7 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `helpful_count` | `INT` | DEFAULT 0 | Tổng vote hữu ích |
 | `report_count` | `INT` | DEFAULT 0 | Tổng report |
 | `has_media` | `BOOLEAN` | DEFAULT FALSE | Có media |
-| `is_seller_replied` | `BOOLEAN` | DEFAULT FALSE | Có phản hồi từ seller |
+| `is_admin_replied` | `BOOLEAN` | DEFAULT FALSE | Có phản hồi từ admin |
 | `created_at` | `TIMESTAMP` | NOT NULL | |
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
 
@@ -100,7 +97,7 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 *   `CHECK(helpful_count >= 0 AND helpful_count <= 10000000)`
 *   `CHECK(report_count >= 0)`
 *   `B-Tree(user_id)`
-*   `B-Tree(seller_id, status, created_at DESC)`
+*   `B-Tree(status, created_at DESC)`
 *   `B-Tree(product_id, status, created_at DESC)`
 *   `B-Tree(product_id, status, helpful_count DESC, id DESC)`
 *   `B-Tree(product_id, sku_id, status, created_at DESC)`
@@ -156,25 +153,22 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 | `updated_at` | `TIMESTAMP` | NOT NULL |
 
 
-## 6. Bảng review_seller_replies
+## 6. Bảng review_admin_replies
 
 | Cột | Kiểu | Ràng buộc | Mô tả |
 | :--- | :--- | :--- | :--- |
 | `id` | `UUID` | PK | |
 | `review_id` | `UUID` | UNIQUE, FK, NOT NULL | 1 review chỉ 1 reply active |
-| `seller_id` | `VARCHAR(64)` | NOT NULL | Seller trả lời |
 | `content` | `TEXT` | NOT NULL | Nội dung phản hồi |
 | `created_at` | `TIMESTAMP` | NOT NULL | |
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
-
-**Khuyến nghị API:** upsert có điều kiện `WHERE review_seller_replies.seller_id = EXCLUDED.seller_id` để chặn ghi đè trái quyền.
 
 ## 6. Bảng review_outbox (CDC-first)
 
 | Cột | Kiểu | Ràng buộc | Mô tả |
 | :--- | :--- | :--- | :--- |
 | `event_id` | `UUID` | PK | ID event |
-| `aggregate_type` | `VARCHAR(50)` | NOT NULL | `REVIEW`, `REVIEW_METRIC`, `SELLER_REPLY` |
+| `aggregate_type` | `VARCHAR(50)` | NOT NULL | `REVIEW`, `REVIEW_METRIC`, `admin_REPLY` |
 | `aggregate_id` | `VARCHAR(255)` | NOT NULL | `review_id` hoặc `product_id` |
 | `partition_key` | `VARCHAR(255)` | NOT NULL | Kafka message key, chuẩn là `product_id` |
 | `event_type` | `VARCHAR(100)` | NOT NULL | Loại event |
@@ -185,31 +179,6 @@ RETURNING attempt_count, product_id, sku_id, seller_id;
 *   Không có các cột `status`, `retry_count`, `next_retry_at`, `last_error`.
 *   Retry/DLQ được quản trị ở Kafka Connect và consumer downstream.
 *   Partition table theo `created_at`; chỉ drop partition khi connector lag nằm trong ngưỡng an toàn.
-
-## 7. Bảng review_reports
-
-| Cột | Kiểu | Ràng buộc | Mô tả |
-| :--- | :--- | :--- | :--- |
-| `id` | `UUID` | PK | |
-| `review_id` | `UUID` | FK, NOT NULL | Review bị report |
-| `reporter_role` | `VARCHAR(20)` | NOT NULL | `USER` hoặc `SELLER` |
-| `reporter_id` | `VARCHAR(64)` | NOT NULL | `user_id` hoặc `seller_id` tùy `reporter_role` |
-| `reason_type` | `VARCHAR(50)` | NOT NULL | Loại vi phạm |
-| `status` | `VARCHAR(30)` | DEFAULT `PENDING_REVIEW` | `PENDING_REVIEW`, `RESOLVED_REJECTED`, `RESOLVED_ACCEPTED` |
-| `admin_decision_note` | `TEXT` | NULLABLE | Lý do xử lý của admin |
-| `created_at` | `TIMESTAMP` | NOT NULL | |
-| `updated_at` | `TIMESTAMP` | NOT NULL | |
-
-**Semantics chuẩn:**
-*   `RESOLVED_ACCEPTED` nghĩa là report hợp lệ, review bị ẩn (`HIDDEN_BY_REPORT`), cập nhật trạng thái bảng review_eligibility theo `attempt_count`:
-  *   `attempt_count = 1` -> `REJECTED_RETRY_PENDING` (còn 1 lần sửa).
-  *   `attempt_count = 2` -> `REJECTED_FINAL` (hết quyền sửa).
-
-**Ràng buộc:**
-*   `CHECK((reporter_role='USER' AND reporter_id IS NOT NULL) OR (reporter_role='SELLER' AND reporter_id IS NOT NULL))`
-*   Partial unique indexes chống duplicate khi có NULL:
-  *   `UNIQUE(review_id, reporter_id) WHERE reporter_role='USER'`
-*   Index `B-Tree(review_id, status)`
 
 ## 8. Bảng idempotency nội bộ
 

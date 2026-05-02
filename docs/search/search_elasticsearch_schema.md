@@ -15,12 +15,11 @@
 
 ---
 
-Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Review (rating metrics), Order Metrics Projector (sold metrics), và Seller (profile/status).
+Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Review (rating metrics), Order Metrics Projector (sold metrics), và admin (profile/status).
 
-> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng bộ guard theo từng luồng sự kiện (`version`, `category_version`, `price_event_sequence_id`, `review_metrics_event_sequence_id`, `sales_metrics_event_sequence_id`, `seller_profile_version`, `seller_status_version`) để chống out-of-order.
+> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng bộ guard theo từng luồng sự kiện (`version`, `category_version`, `price_event_sequence_id`, `review_metrics_event_sequence_id`, `sales_metrics_event_sequence_id`, `admin_profile_version`, `admin_status_version`) để chống out-of-order.
 >
-> **Identity contract:** `seller_id` trong Search là opaque string (không ép kiểu/đổi format). Consumer phải so khớp đúng giá trị chuỗi nguyên bản từ event upstream.
-
+> **Identity contract:*
 ## 1. Danh Sách Elasticsearch Indices
 
 | Index Name | Alias | Mô tả | Document Count (ước tính) |
@@ -100,7 +99,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "sku_id":              { "type": "keyword" },
       "product_id":          { "type": "keyword" },
       
-      "seller_id":           { "type": "keyword" },
+      "platform_id":           { "type": "keyword" },
       "category_id":         { "type": "keyword" },
       "category_name":       { "type": "keyword" },
       "category_path":       { "type": "keyword" },
@@ -138,11 +137,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "review_metrics_event_sequence_id": { "type": "long" },
       "product_sold_count":  { "type": "integer" },
       "sales_metrics_event_sequence_id": { "type": "long" },
-      "seller_name":         { "type": "keyword" },
-      "seller_status":       { "type": "keyword" },
-      "seller_profile_version": { "type": "long" },
-      "seller_status_version": { "type": "long" },
-
+      "platform_name":         { "type": "keyword" },
       "price_event_sequence_id": { "type": "long" },
       "created_at":          { "type": "date" },
       "updated_at":          { "type": "date" },
@@ -162,17 +157,14 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 |---|---|---|
 | `sku_id` | keyword | Là `_id` thực sự của document này. |
 | `product_id` | keyword | Pivot Key cho **Field Collapsing** và các phép đếm DISTINCT product-level ở API Response. |
-| `seller_id` | keyword | Định danh seller dạng opaque string để join logic theo event Seller; không ràng buộc format cụ thể. |
 | `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens) cho các thuộc tính dùng chung của toàn bộ Sản phẩm (Product-level attributes). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Dùng để hỗ trợ Filtering chung hoặc Full-text search mở rộng. **Search Worker chịu trách nhiệm transform từ `attributes_json` (raw JSON) thành token array khi consume event.** |
 | `variant_attributes` | keyword array | Mảng mô tả đặc tính riêng của từng SKU (SKU-level attributes). Ví dụ: `["mau:đen", "dungluong:256GB"]`. Dùng để hỗ trợ Facet Filtering chính xác cho người dùng. **Search Worker transform từ `variant_attributes_json` sang token array.** |
-| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection, đồng bộ theo `PRODUCT_SKU_STATUS_CHANGED` (`ACTIVE` -> true, ngược lại -> false). Không phải nguồn tồn kho realtime để chốt đơn; Checkout/Inventory vẫn là nguồn kiểm tra tồn kho cứng. |
+| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection, tính theo công thức sellable `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE` (được recompute khi nhận `PRODUCT_SKU_STATUS_CHANGED` và `PRODUCT_STATE_CHANGED`). Không phải nguồn tồn kho realtime để chốt đơn; Checkout/Inventory vẫn là nguồn kiểm tra tồn kho cứng. |
 | `is_deleted`, `deleted_at` | boolean/date | Cờ Tombstone để chặn zombie update khi event đến trễ sau delete. |
 | `version` | long | **Critical**: Giữ nguyên cơ chế Optimistic Concurrency cho Product Update. |
 | `price_event_sequence_id` | long | Guard thứ tự riêng cho `PRODUCT_PRICE_UPDATED` ở cấp SKU. |
 | `review_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `REVIEW_METRICS_UPDATED`, ưu tiên hơn timestamp. |
 | `sales_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `ORDER_PRODUCT_METRICS_UPDATED` theo `product_id`. |
-| `seller_status` | keyword | Đồng bộ trạng thái seller từ Seller Service (`PENDING_ONBOARDING`, `PENDING_VERIFICATION`, `VERIFIED`, `ACTIVE`, `SUSPENDED`, `BANNED`) phục vụ lọc/quan sát. |
-| `seller_profile_version`, `seller_status_version` | long/long | Guard out-of-order riêng cho các sự kiện seller profile/status. |
 | `category_version` | long | **Lifecycle và Init:** (1) Ưu tiên lấy từ Product payload khi có trường này. (2) Nếu payload chưa có, worker lookup snapshot API `GET /api/v1/internal/products/categories/tree` với timeout ngắn và fallback cache category cục bộ (không hard-code 0). (3) Chỉ cập nhật khi nhận `CATEGORY_UPDATED`/`CATEGORY_DELETED`. (4) Track độc lập với `version` của Product document để làm OCC Guard cho update-by-query theo category. |
 | `last_event_id`, `last_event_timestamp`, `indexed_at` | keyword/date/date | Phục vụ audit, replay DLQ, và điều tra drift dữ liệu. |
 
@@ -184,8 +176,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 {
   "sku_id": "sku-uuid-001",
   "product_id": "prod-uuid-001",
-  "seller_id": "seller-001",
-  "category_id": "cat-smartphone",
+    "category_id": "cat-smartphone",
   "category_version": 12,
   "name": "iPhone 15 Pro Max 256GB Chính Hãng",
   "product_status": "ACTIVE",
@@ -212,10 +203,9 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
   "product_rating_count": 1200,
   "product_sold_count": 15200,
   "sales_metrics_event_sequence_id": 1709420011,
-  "seller_name": "Apple Flagship Store",
-  "seller_status": "VERIFIED",
-  "seller_profile_version": 12,
-  "seller_status_version": 7,
+    "admin_status": "VERIFIED",
+  "admin_profile_version": 12,
+  "admin_status_version": 7,
 
   "price_event_sequence_id": 1709420001,
   "review_metrics_event_sequence_id": 1709420009,

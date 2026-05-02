@@ -85,8 +85,8 @@ Nếu reserve thất bại do ngân sách, mã lỗi `BUDGET_EXHAUSTED` đến t
 
 ## 9. Slot Dependency Contract for Checkout Preview
 
-- `SHOP_VOUCHER` evaluate trên sub-cart subtotal trước Platform/Freeship.
-- `PLATFORM_VOUCHER` và `FREESHIP_VOUCHER` evaluate trên tổng sau Shop Voucher và shipping fee mới nhất.
-- Đổi Shop Voucher hoặc đổi địa chỉ giao hàng (làm đổi shipping fee) có thể làm thay đổi eligibility của Platform/Freeship.
-- Đổi Platform Voucher hoặc Freeship Voucher không làm thay đổi eligibility tập Shop Voucher.
+- `PLATFORM_VOUCHER` evaluate trên sub-cart subtotal trước Platform/Freeship.
+- `PLATFORM_VOUCHER` và `FREESHIP_VOUCHER` evaluate trên tổng sau platform Voucher và shipping fee mới nhất.
+- Đổi platform Voucher hoặc đổi địa chỉ giao hàng (làm đổi shipping fee) có thể làm thay đổi eligibility của Platform/Freeship.
+- Đổi Platform Voucher hoặc Freeship Voucher không làm thay đổi eligibility tập platform Voucher.
 - `/calculate-discount` phải full evaluate cả 3 slot trong một pass để trả discount lines nhất quán.

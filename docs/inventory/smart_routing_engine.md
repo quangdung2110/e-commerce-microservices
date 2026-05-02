@@ -50,7 +50,7 @@ Routing must return a reusable route plan:
 2. For each candidate, request shipping cost and ETA.
 3. Discard candidates violating hard constraints:
    - stock not sufficient
-   - max split parcels exceeded
+   - max split item shipments exceeded
    - blocked lanes
    - provider timeout beyond policy
 
@@ -73,7 +73,7 @@ Suggested default weights:
 
 1. Lower shipping cost.
 2. Faster ETA.
-3. Fewer split parcels.
+3. Fewer split item shipments.
 4. Stable warehouse preference order.
 
 ## 7. Fast-Lane Fallback
@@ -98,5 +98,5 @@ Track metrics:
 - `candidates_generated`
 - `fallback_rate`
 - `average_shipping_cost`
-- `split_parcel_ratio`
+- `split_item_shipment_ratio`
 - `route_plan_expired_reject_total`

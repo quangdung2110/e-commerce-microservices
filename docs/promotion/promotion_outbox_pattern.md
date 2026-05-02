@@ -141,8 +141,8 @@ Không phải mọi hành động đều cần Outbox. Dưới đây là phân l
 |:---|:---:|:---|
 | Admin tạo/sửa `markdown_rules` và Scheduler kết thúc rule (`EXPIRED`) | ✅ | Product Service cần cập nhật `promotional_price` khi rule bắt đầu/thay đổi/kết thúc |
 | Admin tạo/sửa `promotions` | ❌ (mặc định) | Mặc định chỉ dùng Redis Pub/Sub `PROMO_EVICT`; hiện không có contract Kafka liên service chính thức cho nhóm event này |
-| Worker xử lý `COUPON_REDEEMED` | ✅ | Analytics, Seller Settlement cần biết |
+| Worker xử lý `COUPON_REDEEMED` | ✅ | Analytics, admin Settlement cần biết |
 | Worker xử lý `COUPON_CANCELLED` | ✅ | Analytics |
-| Worker xử lý `COUPON_REFUNDED` | ✅ | Seller Settlement cần hoàn chi phí |
+| Worker xử lý `COUPON_REFUNDED` | ✅ | admin Settlement cần hoàn chi phí |
 | User claim mã Flash Sale | ❌ | Event claim được produce trực tiếp sau Lua Script (không qua DB trước), rescue bằng Sweeper; consumer dedup theo `event_id` + `claim_id` |
 | Lua Script Budget Reserve | ❌ | Chỉ thao tác Redis, không ghi DB tại thời điểm Reserve (`COUPON_RESERVED` chỉ bật khi cần telemetry nội bộ) |

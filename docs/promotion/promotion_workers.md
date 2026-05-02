@@ -48,10 +48,10 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
     2. Hứng `ORDER_CANCELLED`: Đối soát trạng thái, xử lý fallback khi synchronous rollback bị gián đoạn.
     3. Hứng `ORDER_REFUNDED` (Trả hàng hoàn tiền): Đối soát và kích hoạt fallback hoàn ngân sách khi cần.
     4. Với event làm đổi trạng thái ví (`SAVED/USED/EXPIRED`) theo từng `user_id`, thực hiện invalidate user-scoped cache: `DEL wallet:{user_id}:active_vouchers`.
-*   **Lưu ý kiến trúc:** Đường xử lý chính cho Confirm/Rollback trong checkout là gọi đồng bộ qua Temporal Activities (`ConfirmPromotionActivity`, `RollbackPromotionActivity`) với `idempotency_key` theo từng `promotion_id`. Kafka consumer này đóng vai trò safety-net.
+*   **Lưu ý kiến trúc:** Đường xử lý chính cho checkout là gọi đồng bộ qua Temporal Activities (`ConfirmPromotionActivity`, `RollbackPromotionActivity`, `CancelConfirmedPromotionActivity`) với `idempotency_key` theo từng `promotion_id`. Kafka consumer này đóng vai trò safety-net.
 *   **Bảo vệ Idempotency:** Worker tích hợp Redis Lock (`SETNX`) kết hợp DB Constraint (`promotion_event_idempotency`) để chặn duplicate messages từ Kafka (đảm bảo hiệu ứng xử lý tương đương exactly-once ở tầng nghiệp vụ).
 *   **Contract bắt buộc:**
-    1. Luồng sync (`/confirm`, `/cancel`, `/refund`) dùng đúng `idempotency_key/request_id` từ Order để ghi `promotion_event_idempotency.event_id`.
+    1. Luồng sync (`/confirm`, `/cancel`, `/cancel-confirmed`, `/refund`) dùng đúng `idempotency_key/request_id` từ Order để ghi `promotion_event_idempotency.event_id`.
     2. Luồng async Kafka dùng đúng `event_id` envelope làm `promotion_event_idempotency.event_id`.
     3. Promotion không tự sinh `event_id` cho các nhánh này.
 *   **Fallback gating bắt buộc:**
@@ -60,7 +60,7 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
     3. Event có payload hash lệch với bản ghi hiện tại phải vào parking-lot + alert, không tự động ghi đè.
 
 > [!NOTE]
-> Với đơn có nhiều promotion, nhánh Confirm/Cancel/Refund phải gọi script theo từng `promotion_id` bằng Redis Pipelining (1 round-trip), dùng lock key cấp voucher `promo:lock:{action}:{promotion_id}:{order_id}` để tránh tự chặn nhau trong cùng một đơn.
+> Với đơn có nhiều promotion, nhánh Confirm/Cancel/Refund (bao gồm lane `cancel-confirmed`) phải gọi script theo từng `promotion_id` bằng Redis Pipelining (1 round-trip), dùng lock key cấp voucher `promo:lock:{action}:{promotion_id}:{order_id}` để tránh tự chặn nhau trong cùng một đơn.
 
 ### 1.3. Auth Events Consumer (Optional)
 **Loại hình:** Kafka Consumer (Long-running).

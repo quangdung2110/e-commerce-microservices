@@ -1,4 +1,10 @@
-1. Thiết kế tranh dành mã giảm giá
+1. Tại bước giữ chỗ (Reserve) khi thanh toán, hệ thống bắt buộc phải sử dụng Lua Script Batch, tuyệt đối không sử dụng Lua Script đơn lẻ được gói trong Pipeline
+Tính chất của Redis Pipeline chỉ là gói 3, 4 lệnh lại với nhau để giảm round-trip time, Redis vẫn sẽ thực thi từng lệnh một cách tuần tự, do đó sẽ có trường hợp:
+    - Một mã voucher thất bại do có người khác đã thanh toán trước đó, dẫn đến việc toàn bộ đơn hàng không thể được thanh toán trong khi các mã trước đó bị trừ và không bị lỗi,
+    hệ thống sẽ phải rollback bằng cách cộng lại số lượng đã trừ trước đó
+Để giải quyết điều này, ta thiết kế một script batch nhận đầu vào là một mảng chứa tất cả các mã voucher trong đơn hàng đó
+
+2. Thiết kế tranh dành mã giảm giá
 Giả sử: một voucher có 10000 người cùng lúc tranh dành 1 suất, hệ thống phải đảm bảo chỉ 1 người thành công và hạn chế tình trạng truy cập vào DB để check và update số lượng còn lại
 Chính vì thế, chúng ta sẽ sử dụng Lua Script trên Redis để đảm bảo tính nguyên tử khi check và update cũng như không để tần suất truy cập DB quá cao
 - Chuẩn bị các cấu trúc dữ liệu trên Redis:
@@ -26,7 +32,7 @@ Xử lý trường hợp lỗi: có khả năng hệ thống đã chạy Lua Scr
 Thiết kế này tuân theo nguyên tắc: Chỉ dọn dẹp bản nháp (trên RAM/Redis) khi bản chính (trên Đĩa cứng/DB) đã được chốt an toàn, tránh trường hợp dọn dẹp nhầm khi chưa chắc chắn bản chính đã được cập nhật hay chưa, điều này giúp đảm bảo tính nhất quán và độ tin cậy của hệ thống trong các tình huống lỗi có thể xảy ra
 
 
-2. Thiết kế xử lý các markdown rule hết hạn một cách chính xác và kịp thời
+3. Thiết kế xử lý các markdown rule hết hạn một cách chính xác và kịp thời
 Ở đây, chúng ta phải thiết kế đảm bảo rằng khi một markdown rule hết hạn, hệ thống sẽ ngay lập tức cập nhật lại giá khuyến mãi của sản phẩm
 Nếu sử dụng cron job với interval 1 phút, sẽ có khoảng thời gian tối đa 1 phút mà giá khuyến mãi không còn chính xác, điều này có thể ảnh hưởng đến trải nghiệm và doanh thu
 Để giải quyết vấn đề này, chúng ta sẽ sử dụng Redis ZSET:
@@ -51,7 +57,7 @@ Các trường hợp đặc biệt cần lưu ý:
 
 
 
-3. Xử lý trường hợp Service này không nhận được thông tin từ Temporal về việc một đơn hàng bị timeout hoặc bị hủy trước khi thanh toán thành công
+4. Xử lý trường hợp Service này không nhận được thông tin từ Temporal về việc một đơn hàng bị timeout hoặc bị hủy trước khi thanh toán thành công
 - Chuẩn bị có cấu trúc dữ liệu trên Redis:
     - promo:{promotion_id}:reservation:{order_id} chứa payload của thông tin giữ chỗ
     - ZSET promo:reservation:index để theo dõi thời gian hết hạn của các reservation
@@ -71,7 +77,7 @@ Chi tiết luồng hoạt động:
 
 
 
-4. Chi tiết luồng khách hàng mở khay "Mã của Shop" khi ở Checkout Review
+5. Chi tiết luồng khách hàng mở khay "Mã của Shop" khi ở Checkout Review
 Gom dữ liệu từ 2 nguồn chính
     - Promotion Service sẽ đọc cache wallet:{user_id}:active_vouchers để lấy danh sách voucher đang hoạt động của khách hàng đồng thời chọc xuống DB để lấy thêm các mã public của shop đó mà khách chưa từng lưu vào ví
     - Nếu khách chọn một mã Public chưa có trong ví, hệ thống gọi API POST /v1/promotions/save-and-apply. Hành động này trực tiếp ghi mã đó vào ví (user_coupon_wallets) và lập tức xóa cache ví trên Redis để đảm bảo tính nhất quán. Đây là luồng ghi ví có chủ đích duy nhất được phép xảy ra trong quá trình Checkout
@@ -84,7 +90,7 @@ Nếu guard timeout hoặc gặp lỗi Redis, hệ thống sẽ fail-open ở Di
 Luồng mở khay "Mã của Sàn" hoặc "Mã giảm giá phí ship" tương tự nhưng chỉ đọc từ cache ví mà không trộn thêm mã public nào vào response của hai tray này, đồng thời chỉ có mã sàn (owner_type = PLATFORM) mới được hiển thị ở hai tray này
 
 
-5. Luồng ghi DB quan trọng nhất là sync path do Order gọi qua Temporal Activity, không phải thông qua Kafka Worker nhận sự kiện từ Order Service
+6. Luồng ghi DB quan trọng nhất là sync path do Order gọi qua Temporal Activity, không phải thông qua Kafka Worker nhận sự kiện từ Order Service
     Sync Confirm sau thanh toán thành công: ghi vào promotion_event_idempotency, promotion_budget, user_coupon_wallets, coupon_usages
     Sync Rollback khi timeout hoặc hủy trước thanh toán: ghi vào promotion_event_idempotency, 
 

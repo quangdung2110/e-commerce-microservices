@@ -16,11 +16,11 @@ Bảng lưu vết sử dụng tại `product_status_history`. Giao diện FSM k�
 
 ## 1. Bản Đồ Các Trạng Thái (States)
 
-1.  **`DRAFT` (Bản Nháp)**: Trạng thái khởi tạo. Sản phẩm được lưu trữ, Seller đang trong quá trình soạn thảo hình ảnh, content. Hoàn toàn không hiển thị trên Storefront và Search.
-2.  **`PENDING_REVIEW` (Chờ Xét Duyệt)**: Seller đã bấm gửi. Sản phẩm đang nằm ở trạng chờ để System, AI (Kiểm duyệt Ảnh/Nội Dung), hoặc Human Admin xét duyệt tính hợp quy định (Không phải hàng cấm, không chứa từ khóa xấu).
+1.  **`DRAFT` (Bản Nháp)**: Trạng thái khởi tạo. Sản phẩm được lưu trữ, admin đang trong quá trình soạn thảo hình ảnh, content. Hoàn toàn không hiển thị trên Storefront và Search.
+2.  **`PENDING_REVIEW` (Chờ Xét Duyệt)**: admin đã bấm gửi. Sản phẩm đang nằm ở trạng chờ để System, AI (Kiểm duyệt Ảnh/Nội Dung), hoặc Human Admin xét duyệt tính hợp quy định (Không phải hàng cấm, không chứa từ khóa xấu).
 3.  **`ACTIVE` (Đang Bán)**: Sản phẩm công khai trên nền tảng. Có thể được Search, Add vào Giỏ và Thanh Toán bình thường.
-4.  **`HIDDEN` (Ẩn)**: Sản phẩm hợp quy lưu hành nhưng bị chính Seller chủ động tạm Ẩn, hoặc bị System tự động ẩn khi tất cả SKU hết Tồn Kho (trường hợp Inventory đồng bộ lại tín hiệu Out-Of-Stock kéo dài — xem [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)). Không hiển thị trên trang bán nhưng link trực tiếp vẫn sống (hiển thị hết hàng).
-5.  **`REJECTED` (Từ Chối Duyệt)**: Sản phẩm vi phạm chính sách ở khâu kiểm duyệt ban đầu (`PENDING_REVIEW` -> `REJECTED`). Seller phải sửa lại (trở lại DRAFT) để gửi duyệt tiếp.
+4.  **`HIDDEN` (Ẩn)**: Sản phẩm hợp quy lưu hành nhưng bị chính admin chủ động tạm Ẩn, hoặc bị System tự động ẩn khi tất cả SKU hết Tồn Kho (trường hợp Inventory đồng bộ lại tín hiệu Out-Of-Stock kéo dài — xem [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)). Không hiển thị trên trang bán nhưng link trực tiếp vẫn sống (hiển thị hết hàng).
+5.  **`REJECTED` (Từ Chối Duyệt)**: Sản phẩm vi phạm chính sách ở khâu kiểm duyệt ban đầu (`PENDING_REVIEW` -> `REJECTED`). admin phải sửa lại (trở lại DRAFT) để gửi duyệt tiếp.
 6.  **`BANNED` (Bị Khoá/Cấm)**: Sản phẩm đang `ACTIVE` hoặc `PENDING_REVIEW` nhưng bất ngờ bị phát hiện vi phạm luật nặng, gian lận, report từ người dùng, Admin khóa gỡ bỏ ngay lập tức. Khóa vĩnh viễn quyền edit.
 
 *(Lưu ý: Không có trạng thái `DELETED` trong State Machine. Thao tác xóa mềm được quản lý độc lập thông qua cờ `is_deleted` ở tầng cơ sở dữ liệu nhằm bảo lưu trạng thái nghiệp vụ cuối cùng).*
@@ -29,14 +29,14 @@ Bảng lưu vết sử dụng tại `product_status_history`. Giao diện FSM k�
 
 Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều kiện (Guards) để đi từ *T_Hiện_Tại* sang *T_Mục_Tiêu*.
 
-### 2.1 Transitions do Seller / Admin Trigger
+### 2.1 Transitions do admin / Admin Trigger
 
-*   **`SUBMIT_FOR_REVIEW`**: Seller bấm Nút Hoàn Tất / Gửi. (`DRAFT` → `PENDING_REVIEW`).
+*   **``**: admin bấm Nút Hoàn Tất / Gửi. (`DRAFT` → `PENDING_REVIEW`).
 *   **`APPROVE`**: Chấp nhận duyệt qua Admin/AI. (`PENDING_REVIEW` → `ACTIVE`).
 *   **`REJECT`**: Từ chối với lý do đính kèm. (`PENDING_REVIEW` → `REJECTED`).
 *   **`REQUEST_REVISION`**: Chỉnh sửa (Làm lại form). (`REJECTED` / `HIDDEN` → `DRAFT`).
-*   **`HIDE_PRODUCT`**: Chủ động tạm dừng kinh doanh. Khi Seller thao tác trigger này, hệ thống sẽ thiết lập cờ `seller_intention_hidden = true`. Đặc biệt, để giải bài toán Ý định người bán bị lật ngã bởi hệ thống: Nếu System đã tự ẩn FSM sang trạng thái `HIDDEN` do kho bằng 0, Action này **VẪN HỢP LỆ VÀ ĐƯỢC CHẤP NHẬN**. Sự chuyển dịch đặc biệt `HIDDEN -> HIDDEN` chỉ mang ý nghĩa lật ngã cờ Intention sang `true`, để hệ thống vĩnh viễn không mở lại sản phẩm này dù kho có nhập thêm hàng. (`ACTIVE` → `HIDDEN` hoặc `HIDDEN` → `HIDDEN`).
-*   **`RE_ACTIVATE`**: Bán lại. Lệnh này sẽ mở cờ `seller_intention_hidden = false`. **Sửa lỗi Hố Đen Deadlock:** Khi chạy lệnh này, BẮT BUỘC hệ thống API phải đếm tổng Tồn Kho của tất cả SKU (`SUM(display_quantity)`). TUY NHIÊN, trước lệnh Query `SUM`, API/Controller bắt buộc phải gọi `SELECT 1 FROM products WHERE product_id = :id FOR NO KEY UPDATE` để chốt cọc Lock ở Product Cha (tránh Deadlock ngược AB-BA với Inventory Worker). Bấm "Bán lại" chỉ được phép chuyển state sang `ACTIVE` NẾU VÀ CHỈ NẾU tổng tồn kho > 0 **và** `is_deleted = false`. Nếu tổng tồn kho = 0 nhưng Seller vẫn cố chỉnh cờ `seller_intention_hidden = false`, bản ghi Database chỉ lưu lại ý định (cập nhật cờ = false) nhưng **GIỮ NGUYÊN PRODUCT Ở TRẠNG THÁI `HIDDEN`** do kẹt điều kiện tồn kho. Sau khi ý định được cập nhật lại, bất kỳ event nhập kho nào đến sau cũng chỉ được phép đưa hàng lên web qua luồng `AUTO_REACTIVATE_IN_STOCK` khi `is_deleted = false`.
+*   **`HIDE_PRODUCT`**: Chủ động tạm dừng kinh doanh. Khi admin thao tác trigger này, hệ thống sẽ thiết lập cờ `admin_hidden = true`. Đặc biệt, để giải bài toán Ý định người bán bị lật ngã bởi hệ thống: Nếu System đã tự ẩn FSM sang trạng thái `HIDDEN` do kho bằng 0, Action này **VẪN HỢP LỆ VÀ ĐƯỢC CHẤP NHẬN**. Sự chuyển dịch đặc biệt `HIDDEN -> HIDDEN` chỉ mang ý nghĩa lật ngã cờ Intention sang `true`, để hệ thống vĩnh viễn không mở lại sản phẩm này dù kho có nhập thêm hàng. (`ACTIVE` → `HIDDEN` hoặc `HIDDEN` → `HIDDEN`).
+*   **`RE_ACTIVATE`**: Bán lại. Lệnh này sẽ mở cờ `admin_hidden = false`. **Sửa lỗi Hố Đen Deadlock:** Khi chạy lệnh này, BẮT BUỘC hệ thống API phải đếm tổng Tồn Kho của tất cả SKU (`SUM(display_quantity)`). TUY NHIÊN, trước lệnh Query `SUM`, API/Controller bắt buộc phải gọi `SELECT 1 FROM products WHERE product_id = :id FOR NO KEY UPDATE` để chốt cọc Lock ở Product Cha (tránh Deadlock ngược AB-BA với Inventory Worker). Bấm "Bán lại" chỉ được phép chuyển state sang `ACTIVE` NẾU VÀ CHỈ NẾU tổng tồn kho > 0 **và** `is_deleted = false`. Nếu tổng tồn kho = 0 nhưng admin vẫn cố chỉnh cờ `admin_hidden = false`, bản ghi Database chỉ lưu lại ý định (cập nhật cờ = false) nhưng **GIỮ NGUYÊN PRODUCT Ở TRẠNG THÁI `HIDDEN`** do kẹt điều kiện tồn kho. Sau khi ý định được cập nhật lại, bất kỳ event nhập kho nào đến sau cũng chỉ được phép đưa hàng lên web qua luồng `AUTO_REACTIVATE_IN_STOCK` khi `is_deleted = false`.
 *   **`BAN_PRODUCT`**: Hành động tối cao của Admin. Bất kể là `PENDING_REVIEW` hay `ACTIVE` đều bị ép sang `BANNED`.
 
 ### 2.2 Transitions do System/Worker Tự Động Trigger
@@ -44,7 +44,7 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 > 🔴 **Ràng buộc Kiến trúc (Concurrency Guard):** Tất cả các Transition thực hiện bởi Worker bắt buộc phải nằm trong một Database Transaction, sử dụng lock `SELECT 1 FROM products WHERE product_id = ? FOR NO KEY UPDATE` ở BƯỚC ĐẦU TIÊN (Trước khi lock bảng SKUs) để chống Deadlock AB-BA. Và Hibernate/JPA/SpringStateMachine sẽ tự động lưu cập nhật Entity, tự động kích `version = version + 1` qua `@Version`. Tuyệt đối KHÔNG ĐỤNG TỚI lệnh Native Cập nhật version thủ công `UPDATE products SET version = version + 1` nếu có gọi logic rẽ nhánh FSM trong Transaction đó.
 
 *   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0` và `is_deleted = false`. (`ACTIVE` → `HIDDEN`).
-*   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động bật lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn điều kiện `seller_intention_hidden = false` và `is_deleted = false`. Trước đây việc dựa vào `product_status_history.changed_by = 'SYSTEM'` là sai lầm vì ngăn chặn khả năng Seller được chủ động ẩn hàng vĩnh viễn lúc nó đang tạm hết.
+*   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động bật lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn điều kiện `admin_hidden = false` và `is_deleted = false`. Trước đây việc dựa vào `product_status_history.changed_by = 'SYSTEM'` là sai lầm vì ngăn chặn khả năng admin được chủ động ẩn hàng vĩnh viễn lúc nó đang tạm hết.
 
 
 > **Lưu ý:** Hai transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` hoạt động ở mức Product (cấp cha), không phải SKU (cấp con). Logic tổng hợp: nếu **ít nhất 1 SKU** khả dụng → Product vẫn ACTIVE. Chỉ khi **100% SKU** hết hàng → auto-hide. Trạng thái riêng lẻ của từng SKU (`ACTIVE`/`OUT_OF_STOCK`/`INACTIVE`) được quản lý trực tiếp trên field `product_skus.status` — xem [DB Design](product_db_design.md#12-nhóm-sản-phẩm--biến-thể-product--sku).
@@ -55,20 +55,20 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 stateDiagram-v2
     [*] --> DRAFT : Tạo Mới SP
 
-    DRAFT --> PENDING_REVIEW : SUBMIT_FOR_REVIEW (Seller)
+    DRAFT --> PENDING_REVIEW :  (admin)
 
     PENDING_REVIEW --> ACTIVE : APPROVE (Admin/Auto-AI)
     PENDING_REVIEW --> REJECTED : REJECT (Admin/Auto-AI)
     PENDING_REVIEW --> BANNED : BAN_PRODUCT (Admin)
 
-    REJECTED --> DRAFT : REQUEST_REVISION (Seller Sửa Lại)
+    REJECTED --> DRAFT : REQUEST_REVISION (admin Sửa Lại)
 
-    ACTIVE --> HIDDEN : HIDE_PRODUCT (Seller Tạm Ngưng)
+    ACTIVE --> HIDDEN : HIDE_PRODUCT (admin Tạm Ngưng)
     ACTIVE --> HIDDEN : AUTO_HIDE_OUT_OF_STOCK (System)
     ACTIVE --> BANNED : BAN_PRODUCT (Admin Xử Phạt Ngay)
 
-    HIDDEN --> HIDDEN : HIDE_PRODUCT (Seller Chốt Hủy Quầy)
-    HIDDEN --> ACTIVE : RE_ACTIVATE (Seller)
+    HIDDEN --> HIDDEN : HIDE_PRODUCT (admin Chốt Hủy Quầy)
+    HIDDEN --> ACTIVE : RE_ACTIVATE (admin)
     HIDDEN --> ACTIVE : AUTO_REACTIVATE_IN_STOCK (System)
     HIDDEN --> DRAFT : REQUEST_REVISION
 
@@ -82,7 +82,7 @@ stateDiagram-v2
 *   **Cache Invalidation:** Khi trạng thái thay đổi, [Invalidation Consumer Worker](product_workers.md) sẽ bắt lấy sự kiện outbox ngay tại Kafka, lập tức cập nhật soft invalidation cho các cache key `product:sku:{sku_id}` và `product:master:{product_id}` tự động mà không can thiệp API blocking.
 *   **Guards (Rào cản logic):** 
     *   `APPROVE` không thể trigger nếu sản phẩm chưa có đủ Category Attributes Required (sẽ báo cản trong Code).
-    *   `SUBMIT_FOR_REVIEW` yêu cầu sản phẩm phải có ít nhất 1 SKU với `original_price > 0`.
-    *   `AUTO_REACTIVATE_IN_STOCK` chỉ áp dụng khi điều kiện tức thời đang đúng: `status = HIDDEN`, `seller_intention_hidden = false` và `is_deleted = false` trong cùng transaction.
+    *   `` yêu cầu sản phẩm phải có ít nhất 1 SKU với `original_price > 0`.
+    *   `AUTO_REACTIVATE_IN_STOCK` chỉ áp dụng khi điều kiện tức thời đang đúng: `status = HIDDEN`, `admin_hidden = false` và `is_deleted = false` trong cùng transaction.
 
-    *   Hàng đã `BANNED` sẽ không bao giờ có thể quay lui lại được trạng thái nào khác. Nếu Seller muốn khiếu nại, họ phải tạo SP khác, hoặc Admin phải tác động cứng dưới DB (Data Patching).
+    *   Hàng đã `BANNED` sẽ không bao giờ có thể quay lui lại được trạng thái nào khác. Nếu admin muốn khiếu nại, họ phải tạo SP khác, hoặc Admin phải tác động cứng dưới DB (Data Patching).

@@ -43,7 +43,7 @@ actual_ttl = 86400 + jitter_seconds
 
 **Invalidation bằng version bump (`INCR review:prod_ver:{product_id}`) khi có:**
 *   `REVIEW_HIDDEN`
-*   `SELLER_REPLY_CREATED`
+*   `ADMIN_REPLY_CREATED`
 *   `ACCOUNT_DELETED` (áp dụng cho các product có review của user bị xóa tài khoản)
 
 **Không invalidate page public khi `REVIEW_CREATED`/`REVIEW_UPDATED`/`REVIEW_APPROVED`:**

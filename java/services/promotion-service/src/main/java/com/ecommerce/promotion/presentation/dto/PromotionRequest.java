@@ -10,7 +10,7 @@ import java.time.Instant;
  * Theo thiết kế promotion_db_design.md - Section 1.2
  *
  * Các trường mandatory: ownerType, code, type, discountType, discountValue, startTime, endTime.
- * Optional: campaignId, ownerId, maxDiscountAmount, minPurchaseAmount, conditionsRule, priority, isExclusive.
+ * Optional: campaignId, ownerId, maxDiscountAmount, minPurchaseAmount, conditionsRule, priority.
  */
 public class PromotionRequest {
 
@@ -45,8 +45,6 @@ public class PromotionRequest {
     private String conditionsRule;
 
     private Integer priority;
-
-    private Boolean isExclusive;
 
     @NotNull(message = "Start time is required")
     private Instant startTime;
@@ -90,9 +88,6 @@ public class PromotionRequest {
 
     public Integer getPriority() { return priority; }
     public void setPriority(Integer priority) { this.priority = priority; }
-
-    public Boolean getIsExclusive() { return isExclusive; }
-    public void setIsExclusive(Boolean isExclusive) { this.isExclusive = isExclusive; }
 
     public Instant getStartTime() { return startTime; }
     public void setStartTime(Instant startTime) { this.startTime = startTime; }

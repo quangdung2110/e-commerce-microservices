@@ -67,10 +67,6 @@ public class Promotion {
     @Column(nullable = false)
     private Integer priority = 0;
 
-    // Theo thiết kế: Nếu true, mã này không được dùng chung với mã nào khác
-    @Column(name = "is_exclusive", nullable = false)
-    private Boolean isExclusive = false;
-
     @Column(name = "start_time", nullable = false)
     private Instant startTime;
 
@@ -140,9 +136,6 @@ public class Promotion {
 
     public Integer getPriority() { return priority; }
     public void setPriority(Integer priority) { this.priority = priority; }
-
-    public Boolean getIsExclusive() { return isExclusive; }
-    public void setIsExclusive(Boolean isExclusive) { this.isExclusive = isExclusive; }
 
     public Instant getStartTime() { return startTime; }
     public void setStartTime(Instant startTime) { this.startTime = startTime; }

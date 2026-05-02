@@ -74,7 +74,6 @@ public class DiscountCalculationService {
 
         List<AppliedPromotionDto> appliedList = new ArrayList<>();
         BigDecimal totalDiscount = BigDecimal.ZERO;
-        boolean hasExclusive = false;
 
         // Sort by priority DESC — cao áp dụng trước
         // Theo thiết kế promotion_db_design.md - Section 1.2: priority
@@ -92,13 +91,6 @@ public class DiscountCalculationService {
                     && request.getCartTotalAmount().compareTo(promo.getMinPurchaseAmount()) < 0) {
                 continue;
             }
-
-            // Check exclusive constraint
-            // Theo thiết kế promotion_db_design.md - Section 1.2: is_exclusive
-            if (hasExclusive)
-                break; // Đã có exclusive → không cho thêm mã nào
-            if (promo.getIsExclusive() && !appliedList.isEmpty())
-                continue; // Có exclusive nhưng đã có mã khác
 
             // Evaluate Rule Engine AST
             // Theo thiết kế promotion_workflow.md - Luồng 3 Bước 3
@@ -153,10 +145,6 @@ public class DiscountCalculationService {
 
             appliedList.add(dto);
             totalDiscount = totalDiscount.add(discountAmount);
-
-            if (promo.getIsExclusive()) {
-                hasExclusive = true;
-            }
         }
 
         CalculateDiscountResponse response = new CalculateDiscountResponse();

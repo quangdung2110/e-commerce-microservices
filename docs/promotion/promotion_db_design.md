@@ -28,37 +28,37 @@ Nhóm các chương trình khuyến mãi nhỏ lẻ vào một chiến dịch l�
 ### 1.2. `promotions` (Mã giảm giá Khuyến mãi - Cart Vouchers)
 Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `JSONB`. Mã nhập vào lúc giỏ hàng/thanh toán.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Có thể NULL do Shop tự tạo voucher lẻ ngoài chiến dịch).
-*   `owner_type`: VARCHAR(255) ("PLATFORM" hoặc "SELLER") - Xác định mã này do Sàn tạo hay Shop tự tạo.
+*   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Có thể NULL do platform tự tạo voucher lẻ ngoài chiến dịch).
+*   `deleted_owner_type`: VARCHAR(255) ("PLATFORM" hoặc "admin") - Xác định mã này do Sàn tạo hay platform tự tạo.
 *   `owner_id`: BIGINT NULL (Xác định phân loại).
 *   `code`: VARCHAR(50) (VD: "HAPPYBDAY", "HUNT1111").
 *   `type`: VARCHAR(50) - Phân loại theo cấu trúc Vận hành kinh doanh cốt lõi:
     *   **`UNLIMITED_ALL`**: Mã do sàn tạo ra có thể gửi tới toàn user (VD: Chúc mừng sinh nhật, Chào mừng new user). Không cần quản lý tồn kho ngặt nghèo.
     *   **`LIMITED_FLASH`**: Mã "Săn" do Sàn tung ra, có giới hạn ngân sách (VD: Flash Sale toàn sàn mã giảm 500k chỉ có 100 lượt). User phải tranh giành.
-    *   **`SELLER_LIMITED`**: Mã do Seller (Shop) tự tạo cho riêng shop mình, có ngân sách giới hạn và chịu phí riêng.
+    *   **``**: Mã do admin (platform) tự tạo cho riêng platform mình, có ngân sách giới hạn và chịu phí riêng.
 *   `discount_type`: VARCHAR(50) - (PERCENTAGE, FIXED_AMOUNT, FREE_SHIPPING)
     > [!WARNING]
-    > **Constraint quan trọng:** Seller (`owner_type = 'SELLER'`) **không được phép** tạo Voucher `FREE_SHIPPING`. Lý do: Sàn đã có slot Voucher Freeship riêng dành cho Platform, cho phép Shop tạo freeship sẽ gây conflict và làm lộn xộn slot voucher của khách hàng.
+    > **Constraint quan trọng:** admin (`deleted_owner_type = 'admin'`) **không được phép** tạo Voucher `FREE_SHIPPING`. Lý do: Sàn đã có slot Voucher Freeship riêng dành cho Platform, cho phép platform tạo freeship sẽ gây conflict và làm lộn xộn slot voucher của khách hàng.
     > 
     > **Enforcement ở 2 tầng:**
-    > 1. **Application Layer:** API tạo Promotion validate: `if owner_type == 'SELLER' and discount_type == 'FREE_SHIPPING' ⇒ reject 400`.
+    > 1. **Application Layer:** API tạo Promotion validate: `if deleted_owner_type == 'admin' and discount_type == 'FREE_SHIPPING' ⇒ reject 400`.
     > 2. **Database Layer (Defense in Depth):**
     > ```sql
     > ALTER TABLE promotions
-    > ADD CONSTRAINT chk_seller_no_freeship
-    >   CHECK (owner_type != 'SELLER' OR discount_type != 'FREE_SHIPPING');
+    > ADD CONSTRAINT chk_admin_no_freeship
+    >   CHECK (deleted_owner_type != 'admin' OR discount_type != 'FREE_SHIPPING');
     > ```
     > 3. **Migration Rollout bắt buộc (Production):**
     > ```sql
     > -- Pre-check dữ liệu vi phạm trước khi ADD CONSTRAINT
-    > SELECT id, owner_type, owner_id, discount_type, code
+    > SELECT id, deleted_owner_type, owner_id, discount_type, code
     > FROM promotions
-    > WHERE owner_type = 'SELLER' AND discount_type = 'FREE_SHIPPING';
+    > WHERE deleted_owner_type = 'admin' AND discount_type = 'FREE_SHIPPING';
     > ```
     > Nếu query trên có dữ liệu, phải cleanup/backfill trước rồi mới apply constraint để tránh migration fail.
-*   **Mapping sang Mô hình Shopee:**
-    *   **Shop Voucher**: `owner_type = SELLER` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
-    *   **Shopee Voucher**: `owner_type = PLATFORM` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
+*   **Mapping sang Mô hình platformee:**
+    *   **platform Voucher**: `deleted_owner_type = admin` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
+    *   **platformee Voucher**: `deleted_owner_type = PLATFORM` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
     *   **Mã Freeship**: `discount_type = FREE_SHIPPING` (Sàn).
 *   `discount_value`: DECIMAL(10,2) (Giá trị giảm, vd: 10%, hoặc 50000đ)
 *   `max_discount_amount`: DECIMAL(10,2) (Giảm tối đa bao nhiêu, áp dụng cho loại PERCENTAGE)
@@ -115,7 +115,7 @@ Theo cách phân loại mới, mã `LIMITED_FLASH` là mã chung nhưng số lư
     
 
 ### 1.5. `user_coupon_wallets` (Ví Voucher của User)
-Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promotion_id)`. Một user có thể sở hữu nhiều voucher đồng thời (mô hình slot theo shop + platform + freeship), nhưng mỗi promotion chỉ có tối đa 1 dòng trạng thái cho user đó.
+Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promotion_id)`. Một user có thể sở hữu nhiều voucher đồng thời (mô hình slot theo platform + platform + freeship), nhưng mỗi promotion chỉ có tối đa 1 dòng trạng thái cho user đó.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `user_id`: BIGINT (Index)
 *   `promotion_id`: BIGINT (Foreign Key -> `promotions.id`)
@@ -127,6 +127,10 @@ Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promot
   *   Claim window lấy từ `promotions.start_time/end_time`.
   *   Use window lấy từ `user_coupon_wallets.expired_at`.
 *   **Unique Constraint (`user_id`, `promotion_id`)**: Đảm bảo dữ liệu trong ví luôn duy nhất theo từng promotion. Không áp dụng quy tắc "toàn ví chỉ 1 mã".
+*   **Save-and-Apply semantics (bắt buộc):**
+  * Nếu row đã `SAVED` và còn hạn: trả thành công idempotent, không gia hạn thêm `expired_at`.
+  * Nếu row `EXPIRED`: cho phép re-save bằng `ON CONFLICT DO UPDATE` để chuyển lại `SAVED`, reset `saved_at/expired_at` theo policy hiện hành.
+  * Nếu row `USED`: mặc định không re-save (trừ policy promotion cho phép reacquire rõ ràng).
 *   **Composite Index (`user_id`, `status`)**: Tối ưu truy vấn "Xem danh sách mã SAVED đang khả dụng trong ví của user" — API `GET /wallet?status=SAVED` sẽ chạy Index Scan chính xác thay vì quét toàn bộ ví.
 
 ### 1.6. `coupon_usages` (Sổ cái Phân tán - Ledger & Audit Trail)
@@ -137,7 +141,7 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   `order_id`: BIGINT (Index)
 *   `discount_amount`: DECIMAL(10,2) (Số tiền thực tế đã giảm)
 *   **`platform_funding`**: DECIMAL(10,2) (Số tiền Sàn chịu. VD: Mã giảm 50k, sàn chịu 20k)
-*   **`seller_funding`**: DECIMAL(10,2) (Số tiền Shop chịu. VD: Mã giảm 50k, shop chịu 30k)
+*   **`admin_funding`**: DECIMAL(10,2) (Số tiền platform chịu. VD: Mã giảm 50k, platform chịu 30k)
 *   `status`: VARCHAR(50) (REDEEMED, PARTIALLY_REFUNDED, REFUNDED)
     * `REDEEMED`: Đơn hàng thanh toán thành công, ngân sách đã xác nhận trừ.
     * `PARTIALLY_REFUNDED`: Đơn đã có hoàn tiền một phần, vẫn còn phần voucher đã sử dụng.
@@ -148,7 +152,7 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   `refunded_at`: TIMESTAMPTZ (Lúc nhận event Order Refunded — sau delivery)
 *   `refunded_amount`: DECIMAL(10,2) DEFAULT 0 (Tổng số tiền voucher đã hoàn lũy kế)
 *   `refund_count`: INT DEFAULT 0 (Số lần refund đã áp dụng cho bản ghi)
-*   **Funding Invariant bắt buộc:** `platform_funding >= 0`, `seller_funding >= 0`, và `platform_funding + seller_funding = discount_amount`.
+*   **Funding Invariant bắt buộc:** `platform_funding >= 0`, `admin_funding >= 0`, và `platform_funding + admin_funding = discount_amount`.
 *   **Refund Invariant bắt buộc:** `0 <= refunded_amount <= discount_amount`, `refund_count >= 0`, và `status` phải khớp trạng thái hoàn (`REDEEMED` khi `refunded_amount = 0`; `PARTIALLY_REFUNDED` khi `0 < refunded_amount < discount_amount`; `REFUNDED` khi `refunded_amount = discount_amount`).
 *   **DB CHECK gợi ý (khuyến nghị triển khai):**
   ```sql
@@ -163,10 +167,10 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 Đảm bảo khi Order Service gửi Event hoàn mã, nếu Kafka delivery 2 lần, ta không bị cộng dồn ngân sách 2 lần. Bảng này hoạt động như chốt chặn cuối cùng bảo vệ DB, kết hợp cùng lệnh `SETNX` của Redis ở vòng ngoài.
 *   `event_id`: VARCHAR(255) PRIMARY KEY
   * **Contract nguồn dữ liệu bắt buộc:** Promotion Service **không tự sinh** `event_id`.
-  * Luồng sync qua Temporal (`/confirm`, `/cancel`, `/refund`): nhận `idempotency_key/request_id` từ Order và ghi thẳng vào `event_id`.
+  * Luồng sync qua Temporal (`/confirm`, `/cancel`, `/cancel-confirmed`, `/refund`): nhận `idempotency_key/request_id` từ Order và ghi thẳng vào `event_id`.
   * Luồng async qua Kafka (`ORDER_PAID/CANCELLED/REFUNDED`): lấy đúng `event_id` từ Kafka envelope và ghi thẳng vào `event_id`.
 *   `order_id`: BIGINT **(Index)** — Hỗ trợ truy vấn đối soát "Tìm tất cả action đã xử lý cho đơn hàng X".
-*   `promotion_id`: BIGINT **(Index)** — Bắt buộc để phân biệt 1 đơn áp nhiều voucher (shop/platform/freeship).
+*   `promotion_id`: BIGINT **(Index)** — Bắt buộc để phân biệt 1 đơn áp nhiều voucher (platform/platform/freeship).
 *   `action_type`: VARCHAR(50) 
     *   `REDEEM_COUPON`: Đánh dấu đơn hàng thành công, trừ lượng Budget đã Reservation.
     *   `CANCEL_COUPON`: Đơn hàng bị huỷ, nhả lại Budget đã khóa về Available.
@@ -177,6 +181,11 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   **Unique Constraint (`order_id`, `promotion_id`, `action_type`, `action_scope_key`)**: Đảm bảo không xử lý lặp lại cùng một thao tác trong cùng phạm vi nghiệp vụ.
   * REDEEM/CANCEL dùng `action_scope_key = 'FINAL'`.
   * REFUND partial dùng `action_scope_key = refund_transaction_id` (hoặc `refund_batch_id`) để vừa chống duplicate, vừa cho phép nhiều lần refund hợp lệ.
+*   **Format idempotency key chuẩn hóa từ Order (khuyến nghị bắt buộc):**
+  * `REDEEM_FINAL:{order_id}:{promotion_id}`
+  * `CANCEL_FINAL:{order_id}:{promotion_id}`
+  * `REFUND_FULL:{order_id}:{promotion_id}:{refund_request_id}`
+  * `REFUND_PARTIAL:{order_id}:{promotion_id}:{refund_request_id}`
 *   **Vai trò trong Reconciliation:** `REDEEM_COUPON + action_scope_key='FINAL'` là gate bắt buộc để loại reservation đã chốt khỏi tập `reserved_*` runtime khi đối soát Redis.
 *   **Retention bắt buộc:** Thời gian giữ dữ liệu idempotency phải >= `refund_window + 15 ngày` (khuyến nghị 45 ngày) để không mở lại cửa duplicate khi replay trễ.
 
@@ -194,21 +203,21 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 
 ---
 ## 2. Quy tắc Áp dụng Voucher (Stacking & Sequencing)
-Mô hình voucher theo chuẩn Shopee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
+Mô hình voucher theo chuẩn platformee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
 
-### 2.1. Giới hạn Voucher theo Slot (Per-Shop + Platform + Freeship)
-Một đơn hàng (có thể gồm nhiều shop) áp dụng theo slot:
-* mỗi **shop** tối đa 1 `SHOP_VOUCHER`
+### 2.1. Giới hạn Voucher theo Slot (Per-platform + Platform + Freeship)
+Một đơn hàng (có thể gồm nhiều platform) áp dụng theo slot:
+* mỗi **platform** tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `FREESHIP_VOUCHER`
 
-Tổng số voucher có thể áp dụng là biến thiên theo số shop trong đơn: `N_shop_vouchers + [0|1 platform] + [0|1 freeship]`.
+Tổng số voucher có thể áp dụng là biến thiên theo số platform trong đơn: `N_platform_vouchers + [0|1 platform] + [0|1 freeship]`.
 
 Sơ đồ slot:
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  SLOT SHOP_VOUCHER     (≤ 1 mã / shop — lặp theo từng Sub-Cart)  │
+│  SLOT PLATFORM_VOUCHER     (≤ 1 mã / platform — lặp theo từng Sub-Cart)  │
 │  SLOT PLATFORM_VOUCHER (≤ 1 mã toàn đơn)                         │
 │  SLOT FREESHIP_VOUCHER (≤ 1 mã toàn đơn, chỉ Platform)           │
 └───────────────────────────────────────────────────────────────────┘
@@ -218,19 +227,19 @@ Sơ đồ slot:
 
 | Slot | Điều kiện | Giải thích |
 |:---|:---|:---|
-| **SLOT 1: Shop Voucher** | `owner_type = 'SELLER'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Một Shop chỉ được chọn **1 Voucher duy nhất**; mỗi shop trong đơn có 1 slot riêng |
-| **SLOT 2: Platform Voucher** | `owner_type = 'PLATFORM'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Giảm tổng giá trị sản phẩm sau khi trừ Voucher Shop |
-| **SLOT 3: Freeship Voucher** | `owner_type = 'PLATFORM'` + `discount_type = 'FREE_SHIPPING'` | Giảm/miễn phí vận chuyển toàn đơn; **chỉ Platform** được tạo |
+| **SLOT 1: platform Voucher** | `deleted_owner_type = 'admin'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Một platform chỉ được chọn **1 Voucher duy nhất**; mỗi platform trong đơn có 1 slot riêng |
+| **SLOT 2: Platform Voucher** | `deleted_owner_type = 'PLATFORM'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Giảm tổng giá trị sản phẩm sau khi trừ Voucher platform |
+| **SLOT 3: Freeship Voucher** | `deleted_owner_type = 'PLATFORM'` + `discount_type = 'FREE_SHIPPING'` | Giảm/miễn phí vận chuyển toàn đơn; **chỉ Platform** được tạo |
 
 > [!IMPORTANT]
-> **Shop không được tạo Freeship Voucher.** Slot 3 chỉ dành riêng cho Platform. Sàn đã có cơ chế mạnh để hỗ trợ phí ship cho khách, Shop không cần và không nên sành vào slot này.
+> **platform không được tạo Freeship Voucher.** Slot 3 chỉ dành riêng cho Platform. Sàn đã có cơ chế mạnh để hỗ trợ phí ship cho khách, platform không cần và không nên sành vào slot này.
 
 ### 2.2. Mapping với Order Service (`order_promotions.promotion_type`)
 `promotions.type` và `order_promotions.promotion_type` là hai chiều phân loại khác nhau, không được dùng thay thế cho nhau.
 
 | Trường | Ý nghĩa |
 |:---|:---|
-| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, `SELLER_LIMITED`) |
+| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, ``) |
 | `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`, `SHIPPING_DISCOUNT`) |
 
 Quy tắc map bắt buộc:
@@ -240,11 +249,11 @@ Quy tắc map bắt buộc:
 ### 2.3. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
 Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall):
 1.  **Giá gốc (Original Price):** Giá hiển thị trên trang sản phẩm (đã bao gồm Markdowns/Price Slashes nếu có).
-2.  **Bước 1: Áp Shop Voucher (per shop):** Giảm trực tiếp trên giá gốc của từng sub-cart.
-    *   `subtotal_after_shop[seller] = subtotal[seller] - shop_discount[seller]`
-    *   `total_after_shops = Σ subtotal_after_shop[seller]`
-3.  **Bước 2: Áp Platform Voucher:** Giảm trên tổng giá sau khi đã trừ Shop Voucher.
-    *   `final_product_price = total_after_shops - platform_discount`
+2.  **Bước 1: Áp platform Voucher (per platform):** Giảm trực tiếp trên giá gốc của từng sub-cart.
+    *   `subtotal_after_platform[admin] = subtotal[admin] - platform_discount[admin]`
+    *   `total_after_platforms = Σ subtotal_after_platform[admin]`
+3.  **Bước 2: Áp Platform Voucher:** Giảm trên tổng giá sau khi đã trừ platform Voucher.
+    *   `final_product_price = total_after_platforms - platform_discount`
 4.  **Bước 3: Áp Freeship Voucher:** Áp dụng riêng cho Phí vận chuyển, không ảnh hưởng đến giá trị sản phẩm.
     *   `final_shipping_fee = total_shipping_fee - freeship_discount`
 5.  **Tổng cộng:**
@@ -252,8 +261,8 @@ Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall)
 
 > [!IMPORTANT]
 > **Phụ thuộc slot trong Checkout Preview:**
-> - Thay đổi Shop Voucher có thể thay đổi điều kiện áp dụng của Platform/Freeship.
-> - Thay đổi Platform/Freeship không làm thay đổi điều kiện áp dụng của Shop Voucher.
+> - Thay đổi platform Voucher có thể thay đổi điều kiện áp dụng của Platform/Freeship.
+> - Thay đổi Platform/Freeship không làm thay đổi điều kiện áp dụng của platform Voucher.
 > - Checkout luôn gọi Promotion evaluate lại khi đổi mã để đảm bảo waterfall nhất quán.
 
 
@@ -269,8 +278,8 @@ Khác với `promotions` (Mã Voucher áp dụng ở Giỏ hàng), **Giảm giá
 Định nghĩa luật giảm cơ bản. Không map trực tiếp vào sản phẩm ở DB Quan hệ (PostgreSQL).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Cho phép gom Markdown rules vào cùng chiến dịch với Vouchers. VD: "Mega Sale 11/11" bao gồm cả mã giảm giá lẫn gạch giá trực tiếp).
-*   `owner_id`: BIGINT NULL (Sàn hoặc Shop tạo)
-*   `owner_type`: VARCHAR(50) (PLATFORM, SELLER)
+*   `owner_id`: BIGINT NULL (Sàn hoặc platform tạo)
+*   `deleted_owner_type`: VARCHAR(50) (PLATFORM, admin)
 *   `name`: VARCHAR(255) (VD: "Điện thoại Apple giảm 10%")
 *   `scope_type`: VARCHAR(50) (PRODUCT, CATEGORY)
 *   `ref_id`: VARCHAR(255) NULL (Chứa ID của Product/Category tương ứng với scope, đồng nhất định dạng ID string liên service)
@@ -310,8 +319,8 @@ Trang Danh sách (Search/Filter) không thể vừa query Data, vừa gọi Prom
 * Latency ở mức **dưới 10ms (Miliseconds)** vì toàn bộ cục gánh nặng "Tính toán Giảm giá" đã được đẩy về phía Backend chạy ngầm (Async) trước đó rồi!
 
 **Cơ chế On-The-Fly (Dùng cho Detail Page):**
-    * Khi user xem trang Chi tiết (1 sản phẩm). Back-end chọc Redis lấy list Active Markdowns của Sàn & Shop.
-    * Đưa qua thuật toán lấy giá: `P_Sàn = Giá gốc - Giảm Sàn (Category)`, `P_Shop = Giá gốc - Giảm Shop (SKU)`.
+    * Khi user xem trang Chi tiết (1 sản phẩm). Back-end chọc Redis lấy list Active Markdowns của Sàn & platform.
+    * Đưa qua thuật toán lấy giá: `P_Sàn = Giá gốc - Giảm Sàn (Category)`, `P_platform = Giá gốc - Giảm platform (SKU)`.
     * Người dùng luôn thấy "Best Deal".
 ---
 ## 3. Thiết kế Cơ sở dữ liệu Đa hình (Rule Engine JSONB cho Vouchers)

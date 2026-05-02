@@ -53,9 +53,9 @@ Rules Engine để quyết định chọn Courier nào cho tối ưu (Smart Cour
 Các bảng này phục vụ cho việc quản lý trạng thái kiện hàng khi Order Service bắt đầu quá trình giao hàng (thông qua Temporal Saga Orchestrator).
 
 ### 2.1. `shipments` (Kiện hàng / Vận đơn)
-Tương ứng 1-1 với `order_parcels` bên Order Service. Quản lý toàn bộ lifecycle của 1 lần gửi hàng.
+Tương ứng 1-1 với `order_items` bên Order Service. Quản lý toàn bộ lifecycle của 1 lần gửi hàng.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `parcel_id`: BIGINT UNIQUE (ID của kiện hàng từ Order Service)
+*   `order_item_id`: BIGINT UNIQUE (ID của kiện hàng từ Order Service)
 *   `order_id`: BIGINT (Để đối soát)
 *   `provider_id`: INT (Foreign Key -> `shipping_providers.id`)
 *   `tracking_number`: VARCHAR(100) UNIQUE (Mã vận đơn thật từ 3PL trả về)
@@ -81,30 +81,35 @@ Thay vào đó, thiết kế **ScyllaDB / Cassandra (Wide-Column NoSQL)**:
 ---
 ## 3. Hạ tầng cho Saga & Webhook 
 
-### 3.1. `idempotency_keys` (Chống lặp Webhook)
-Chống bão Webhook (Webhook Storm) từ 3P, đảm bảo 1 sự kiện update status chỉ được xử lý 1 lần.
-*   `key`: VARCHAR(255) PRIMARY KEY (VD: `hash(tracking_number + provider_status_code + occurred_at)`)
-*   `action`: VARCHAR(100) (VD: "UPDATE_SHIPMENT_STATUS")
-*   `locked_at`: TIMESTAMPTZ
-*   `expires_at`: TIMESTAMPTZ (Có thể TTL sau 3-7 ngày)
+### 3.1. `shipping_event_idempotency` (Chống lặp Webhook và Duplicates Cấp độ Hệ Thống)
+Chống bão Webhook (Webhook Storm) từ 3P, đảm bảo 1 sự kiện update status chỉ được xử lý 1 lần, kết hợp sử dụng chốt DB khoá cứng (kết hợp với Redis SETNX vòng ngoài).
+*   `event_id`: VARCHAR(255) PRIMARY KEY (Có thể là Webhook Request ID hoặc `hash(tracking_number + provider_status_code + occurred_at)`)
+*   `shipment_id`: BIGINT INDEX (Mapping tới `shipments.id` để dễ rà soát)
+*   `action_type`: VARCHAR(100) (VD: "UPDATE_SHIPMENT_STATUS", "CANCEL_SHIPMENT")
+*   `action_scope_key`: VARCHAR(160) (Giới hạn phạm vi theo **provider event fingerprint**, không dùng `provider_status` đơn thuần)
+    *   Ưu tiên dùng `provider_webhook_id` từ 3PL nếu có.
+    *   Fallback: `hash(tracking_number + provider_status + occurred_at + location)`.
+*   `payload_hash`: VARCHAR(128) NULL (Kiểm tra xem webhook payload có thay đổi nếu trùng event_id)
+*   `processed_at`: TIMESTAMPTZ NOT NULL
+* **Unique Constraint (`shipment_id`, `action_type`, `action_scope_key`)**: Cực kỳ quan trọng để chặn duplicate cùng event nhưng không làm mất các cập nhật hợp lệ có cùng `provider_status` ở thời điểm khác.
 
-### 3.2. `outbox_events` (Transactional Outbox)
-Sử dụng nếu thay đổi trạng thái kiện hàng cần báo cho Temporal (Orchestrator) qua Kafka. Xem [Outbox Polling Worker](shipping_workers.md#1-outbox-polling-worker-producer).
-*   `id`: UUID PRIMARY KEY
-*   `aggregate_type`: VARCHAR(100) (VD: "Shipment")
+### 3.2. `shipping_outbox` (Transactional Outbox chuẩn CDC)
+Hỗ trợ gửi trạng thái cho các Service khác (Order, Notification) qua Debezium Kafka Connect. (Tuyệt đối không dùng Polling Worker)
+*   `event_id`: UUID PRIMARY KEY (Định danh riêng của Outbox event)
+*   `schema_version`: INT DEFAULT 1
+*   `aggregate_type`: VARCHAR(50) (VD: "Shipment")
 *   `aggregate_id`: BIGINT (`shipments.id`)
 *   `event_type`: VARCHAR(100) (VD: "SHIPMENT_CREATED", "SHIPMENT_STATUS_UPDATED", "SHIPMENT_DELIVERED")
-*   `payload`: JSONB
-*   `status`: VARCHAR(20) DEFAULT 'PENDING' — `PENDING` / `PUBLISHED` / `FAILED` / `DEAD`
-*   `retry_count`: INT DEFAULT 0 (Số lần retry publish lên Kafka)
-*   `max_retries`: INT DEFAULT 5
-*   `published_at`: TIMESTAMPTZ (Thời điểm publish thành công)
-*   `next_retry_at`: TIMESTAMPTZ
-*   `created_at`: TIMESTAMPTZ
+*   `partition_key`: VARCHAR(255) NOT NULL (Chốt Kafka Key ngay lúc ghi, ví dụ `order_id` để Sync Order Worker không nhận Out-of-order)
+*   `payload`: JSONB NOT NULL
+*   `created_at`: TIMESTAMPTZ NOT NULL
+
+> [!IMPORTANT]
+> Bảng này được thiết kế theo mô hình Append-Only để tối đa tốc độ ghi Transaction. Debezium chạy ngầm dưới WAL tự động đẩy lên Topic Kafka mà không Lock bảng hay ngốn CPU Pool kết nối. Lịch sử tồn đọng được dọn bằng Job Watermark.
 
 ---
 ## 4. Kiến trúc & Workflow Kỹ thuật
 *   **Performance Pricing (Giá cước):** Endpoint `POST /v1/shipping/calculate-batch` sử dụng memory cache (Rate Card) giúp độ trễ <20ms, an toàn khi load cao.
 *   **Adapter Pattern:** Code Java/Go sẽ có `ShippingProviderAdapter` interface (hàm `CreateOrder`, `CancelOrder`, `GetTracking`). Việc xử lý API từng bên nằm gọn trong class implementation. Trạng thái của từng bên được map vào chuẩn `standardized_status`.
-*   **Bão Webhook:** Khi nhận request từ 3PL, lưu thô vào Kafka Topic `t.shipping.webhooks.raw` và xử lý bất đồng bộ kết hợp bảng `idempotency_keys`.
+*   **Bão Webhook:** Khi nhận request từ 3PL, lưu thô vào Kafka Topic `t.shipping.webhooks.raw` và xử lý bất đồng bộ kết hợp bảng `shipping_event_idempotency`.
 *   **Saga Orchestration (Temporal):** Shipping Service chỉ chạy Worker lắng nghe Activity Task từ Temporal (Ví dụ: task `CreateShippingLabel`). Nếu tạo lỗi, quăng exception báo cáo cho Temporal để nó điều phối rollback các service khác.

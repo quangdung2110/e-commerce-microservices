@@ -127,15 +127,13 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     - Quy tắc Read-Only TTL chỉ áp dụng cho read hit thông thường.
 
 ### 3.3. Grouping và Response
-1. Group item theo `seller_id`.
+1. Group item theo `platform_id`.
 2. Sắp xếp group theo `latest_item_at DESC` và item theo `added_at DESC`.
 3. Trả response gồm cả giá lịch sử và giá runtime mới nhất:
     ```json
     {
-       "shop_groups": [
+       "items": [
           {
-             "seller_id": "seller-001",
-             "seller_name": "Shop Tech Việt",
              "latest_item_at": 1708530000123,
              "items": [
                 {
@@ -159,7 +157,7 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     }
     ```
 
-> `shop_groups.items[].quantity` trong response Cart là nguồn chuẩn để Checkout Preview consume. Frontend không được gửi quantity override ở API Checkout.
+> `items.items[].quantity` trong response Cart là nguồn chuẩn để Checkout Preview consume. Frontend không được gửi quantity override ở API Checkout.
 
 ## 4. API: Batch Delete (Xóa lô sản phẩm sau Checkout tĩnh)
 **Endpoint:** `DELETE /api/v1/carts/items` (Body: `cart_id` + mảng `sku_ids`)

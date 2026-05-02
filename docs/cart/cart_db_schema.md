@@ -53,8 +53,6 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
 *   `cart_id`: VARCHAR(255) INDEX (Foreign Key tham chiếu ảo tới `carts.cart_id`).
 *   `product_id`: VARCHAR(255) INDEX.
 *   `sku_id`: VARCHAR(255) INDEX.
-*   `seller_id`: VARCHAR(255).
-*   `seller_name`: VARCHAR(255).    
 *   `quantity`: INT NOT NULL DEFAULT 0.
 *   `unit_price_at_add`: DECIMAL(15,2) NOT NULL DEFAULT 0.00 (Lưu số tiền lúc khách vừa bắt đầu click "Thêm vào giỏ", dùng hiển thị chênh lệch giá do Promotion hay do thời gian. Lưu ở **cột riêng** vì cần query analytics và idempotency, KHÔNG đưa vào `product_snapshot`).
 *   `product_snapshot`: JSONB (***Trường Quan Trọng***)

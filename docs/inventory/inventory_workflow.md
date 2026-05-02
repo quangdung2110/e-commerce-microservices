@@ -51,8 +51,10 @@ Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi fl
    - `1`: apply mới.
    - `2`: idempotent hit.
    - `0`: out_of_stock.
-   - `-1`: invariant drift.
-5. **[Rollback nội bộ khi có lỗi giữa chừng]** Nếu bất kỳ item trả `0` hoặc `-1`, service gọi Release script để rollback các item đã apply trong request hiện tại rồi trả lỗi tổng.
+   - `-1`: invariant drift (fail-safe lane, không auto-heal).
+5. **[Failure handling theo mã trả về]**
+   - Nếu gặp `0`: service gọi Release script để rollback các item đã apply trong request hiện tại rồi trả lỗi nghiệp vụ tổng.
+   - Nếu gặp `-1`: dừng request ngay, **không** chạy rollback mù quáng trên SKU lỗi; đưa SKU vào `suspended_sku_locks`, phát alert vận hành và tạo task reconciliation trước khi mở khóa lại.
 6. **[Redis Stream Outbox]** Với item trả `1`, Lua script đã append `INVENTORY_RESERVED` vào stream cùng slot.
 7. **[Async persistence]** Relay Worker forward event sang Kafka `t.inventory.events`; Ledger Worker consume và ghi `inventory_reservations` + `inventory_ledger`.
 8. **[Response]**
@@ -73,7 +75,7 @@ Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi fl
    - `1`: apply mới.
    - `2`: idempotent hit.
    - `0`: insufficient_reserved.
-   - `-1`: invariant drift.
+   - `-1`: invariant drift -> chuyển fail-safe lane (suspend SKU + reconciliation), không tự tiếp tục deduct.
 4. **[Redis Stream Outbox]** Event `INVENTORY_DEDUCTED` được append bởi Lua cho item trả `1`.
 5. **[Kafka + Ledger Worker]** Worker update `inventory_reservations.status = 'DEDUCTED'` + append ledger.
 6. **[Response]** `DEDUCTED` hoặc lỗi nghiệp vụ.
@@ -156,11 +158,11 @@ Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi fl
    INSERT INTO inventory_ledger (sku_id, warehouse_id, reference_type, quantity_change, balance_after, created_at)
    VALUES (:sku, :wh, 'VENDOR_RESTOCK', :qty, :new_balance, NOW());
 
-   INSERT INTO outbox_events (... event_type = 'INVENTORY_QUANTITY_CHANGED' ...);
+   INSERT INTO inventory_outbox (... event_type = 'INVENTORY_QUANTITY_CHANGED', partition_key = :sku_id ...);
    COMMIT;
    ```
 3. **[Redis]** Update cả physical key và logical key.
-4. **[Outbox Worker]** Publish `INVENTORY_QUANTITY_CHANGED`.
+4. **[CDC Connector]** Debezium đọc bản ghi từ `inventory_outbox` cấu trúc theo WAL và tự động Publish lên Kafka `INVENTORY_QUANTITY_CHANGED`.
 
 ---
 
@@ -168,18 +170,55 @@ Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi fl
 
 **Ngữ cảnh:** Shipping Service phát `SHIPMENT_RETURNED` khi kiện trả về kho.
 
+**Precondition contract với Order refund lane:**
+- Order đăng ký refund scope trước bằng API nội bộ `POST /v1/inventory/returns/refund-scopes`.
+- Inventory dùng scope này để xác định khi nào đủ điều kiện phát event `INVENTORY_RETURN_RECEIVED_ALL`.
+
+**Contract tối thiểu cho `POST /v1/inventory/returns/refund-scopes`:**
+
+Request:
+```json
+{
+   "order_id": 10001,
+   "refund_request_id": "rr-2026-0001",
+   "required_order_item_ids": [2001, 2002]
+}
+```
+
+Response (idempotent success):
+```json
+{
+   "order_id": 10001,
+   "refund_request_id": "rr-2026-0001",
+   "scope_status": "OPEN",
+   "required_count": 2,
+   "received_count": 0
+}
+```
+
+Rules:
+- Lần đầu: insert row vào `inventory_refund_scopes`.
+- Replay cùng tập `required_order_item_ids`: trả success idempotent.
+- Replay khác tập item cho cùng `(order_id, refund_request_id)`: trả `409 REFUND_SCOPE_MISMATCH`.
+
 1. **[Kafka Consumer]** Nhận event từ `t.shipping.events` với payload bắt buộc:
-   `{shipment_id, order_id, parcel_id, returned_to_warehouse_id, items[]}`.
-2. **[Idempotency]** Key: `inventory:return:{shipment_id}:{parcel_id}`.
+   `{shipment_id, order_id, order_item_id, returned_to_warehouse_id, items[]}`.
+2. **[Idempotency]** Kích hoạt Dual-layer Guard: dùng Redis SETNX `inventory:return:{order_id}:{shipment_id}` để khoá nhanh, và DataBase table `inventory_event_idempotency` để chặn vĩnh viễn với `action_scope_key = shipment_id`.
 3. **[PostgreSQL Transaction]** Với mỗi item:
    - `physical_inventory.actual_quantity += returned_qty` theo `returned_to_warehouse_id`.
    - `logical_inventory.total_quantity += returned_qty`.
    - append `inventory_ledger` với `reference_type = 'ORDER_RETURNED_RESTOCK'`.
-   - insert `outbox_events` cho `INVENTORY_QUANTITY_CHANGED`.
+   - insert `inventory_outbox` cho `INVENTORY_QUANTITY_CHANGED` (kèm partition_key = `sku_id`).
 4. **[Redis]** Re-sync physical + logical keys theo số mới.
-5. **[Kafka]** Outbox Worker publish `INVENTORY_QUANTITY_CHANGED` (change_type=`ORDER_RETURNED_RESTOCK`).
+5. **[CDC Connector]** Debezium xử lý tiếp đoạn WAL và ném Message `INVENTORY_QUANTITY_CHANGED` (change_type=`ORDER_RETURNED_RESTOCK`) lên Kafka.
+6. **[Refund Scope Aggregation]** Update bảng `inventory_refund_scopes` theo `order_id + refund_request_id`:
+   - Đánh dấu `order_item_id` đã nhận.
+   - Nếu `received_order_item_ids` bao phủ toàn bộ `required_order_item_ids`, transition scope `OPEN -> COMPLETED` và insert `inventory_outbox` `INVENTORY_RETURN_RECEIVED_ALL` (partition_key = `order_id`) để Debezium tự động publish lên `t.inventory.events`.
+   - Event này chỉ phát một lần cho mỗi `refund_request_id`.
 
 > Nguồn kích hoạt restock duy nhất là `SHIPMENT_RETURNED`. Event `ORDER_REFUNDED` chỉ là trạng thái tài chính.
+>
+> `INVENTORY_RETURN_RECEIVED_ALL` là signal nghiệp vụ để Order mở bước gọi Payment refund, không thay thế event tồn kho `INVENTORY_QUANTITY_CHANGED`.
 
 ---
 

@@ -52,6 +52,17 @@ Daily CronJob đối soát cần:
 - So khớp amount, status giữa DB nội bộ và cổng.
 - Spring `@Scheduled` + Spring Retry cho retry logic khi gọi API cổng.
 
+### 2.6. Chiến Lược Lock & Fallback (Redis vs Optimistic DB)
+Để xử lý Race Condition và Idempotency mạnh mẽ, hệ thống áp dụng chiến lược kết hợp:
+*   **Optimistic Locking (Cột `version` rdbms):** Được sử dụng làm default guard cho **tất cả** state transition để bảo vệ dữ liệu (VD: Webhook ghi đè nhau). Không tốn overhead gọi sang Redis.
+*   **Distributed Lock (Redis Redisson):** Được ưu tiên khi cần bảo vệ các tác vụ có side-effect bên ngoài mà không thể rollback qua DB (ví dụ: Gọi API từ webhook gửi tiền/hoàn tiền sang Provider, hoặc Cronjob quét transaction).
+    *   *Naming convention:* `lock:payment:{action}:{txn_id}` (VD: `lock:payment:refund:txn_123`).
+    *   *TTL:* 15s - 30s. Tránh lock bị treo vĩnh viễn khi worker crash. 
+*   **Redis Degradation / Fallback:** Trong trường hợp Redis sập:
+    *   Các API query Read/Reconciliation không bị ảnh hưởng.
+    *   **Idempotency API (Initiate Payment / Refund):** Sẽ fallback xuống việc cố gắng insert check unique constraint ở CSDL (bảng `payment_idempotency` và `refund_transactions`).
+    *   **Worker:** Nếu không lấy được lock, reject operation và đẩy xuống retry cycle / Dead Letter Queue để bảo vệ tính toàn vẹn thay vì ignore lock.
+
 ---
 
 ## 3. Tại Sao Không Chọn Golang (Gin)

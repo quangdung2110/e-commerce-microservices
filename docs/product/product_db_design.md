@@ -53,12 +53,11 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 *   `products` (Bảng Master Sản phẩm)
     *   `product_id`: VARCHAR(255) PRIMARY KEY.
     *   `idempotency_key`: VARCHAR(255) UNIQUE (Khóa chống trùng lặp, dùng để phục hồi state/product_id nếu Application văng lỗi/crash giữa chừng không kịp ghi vào Redis).
-    *   `seller_id`: VARCHAR(255) INDEX.
     *   `category_id`: VARCHAR(255) INDEX.
     *   `name`: VARCHAR(255).
     *   `description`: TEXT.
     *   `status`: VARCHAR(50) DEFAULT 'DRAFT'. Quản lý bởi [State Machine](product_state_machine.md). (Các trạng thái: DRAFT, PENDING_REVIEW, ACTIVE, HIDDEN, REJECTED, BANNED. Tuyệt đối KHÔNG có trạng thái DELETED).
-    *   `seller_intention_hidden`: BOOLEAN DEFAULT FALSE (Cờ độc lập ghi nhận ý muốn chủ quan của Seller là ẩn sản phẩm. Dùng để vượt mặt State Machine tự động bật hàng khi Inventory > 0).
+    *   `admin_hidden`: BOOLEAN DEFAULT FALSE (Cờ độc lập ghi nhận ý muốn chủ quan của Admin là ẩn sản phẩm. Dùng để vượt mặt State Machine tự động bật hàng khi Inventory > 0).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete, dùng chung với Annotation `@SQLRestriction("is_deleted = false")` ở tầng Entity để tách biệt vòng đời dữ liệu khỏi vòng đời nghiệp vụ. Trạng thái cũ được bảo lưu giúp Restore dễ dàng).
     *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm bị xóa mềm).
     *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ). **Đây là dữ liệu thô (raw key-value), không phải token search.** Việc transform sang token `k:v` cho Elasticsearch thuộc trách nhiệm Search Worker.
@@ -70,8 +69,8 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 *   `product_skus` (Bảng Biến thể vật lý - Stock Keeping Unit)
     *   `sku_id`: VARCHAR(255) PRIMARY KEY.
     *   `product_id`: VARCHAR(255) INDEX (Tham chiếu tới `products`).
-    *   `sku_code`: VARCHAR(255) UNIQUE (Mã định danh nội bộ từ Shop/Seller).
-    *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Seller đặt).
+    *   `sku_code`: VARCHAR(255) UNIQUE (Mã định danh nội sản phẩm).
+    *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Admin đặt).
     *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#6-workflow-xử-lý-markdown-event-từ-promotion-service)).
     *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ xoá mềm riêng biệt cấp độ SKU).
@@ -91,8 +90,8 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `product_id`: VARCHAR(255) INDEX.
     *   `old_status`: VARCHAR(50).
     *   `new_status`: VARCHAR(50).
-    *   `changed_by`: VARCHAR(255) (Ai là người thực hiện đổi: System, Admin, Seller).
-    *   `changed_by_type`: VARCHAR(50) (Loại đối tượng: SYSTEM, ADMIN, SELLER).
+    *   `changed_by`: VARCHAR(255) (Ai là người thực hiện đổi: System, Admin).
+    *   `changed_by_type`: VARCHAR(50) (Loại đối tượng: SYSTEM, ADMIN).
     *   `reason`: TEXT (Lý do thay đổi, đặc biệt khi REJECTED hoặc BANNED).
     *   `changed_at`: TIMESTAMPTZ.
 
@@ -118,9 +117,8 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
 *   `product_markdown_applied` (Bảng theo dõi Markdown Rule đang Active trên SKU)
     *   `id`: VARCHAR(255) PRIMARY KEY.
     *   `product_id`: VARCHAR(255) INDEX (FK ảo tới `products`).
-    *   `rule_id`: VARCHAR(255) INDEX NOT NULL (ID markdown rule từ Promotion Service; lưu dạng string để đồng nhất payload event liên service).
-    *   `sku_id`: VARCHAR(255) INDEX (FK ảo tới `product_skus`).
-    *   `original_price_snapshot`: DECIMAL(15,2) NOT NULL (Giá gốc tại lúc áp dụng rule. **Bắt buộc** phải được cập nhật lại nếu Seller thao tác thay đổi `original_price` lúc Rule đang chạy để tránh lỗi Data Drift khi Audit).
+    *   `rule_id`: VARCHAR(255) INDEX NOT NULL (ID markdown rule từ Promotion Service, luôn lưu ở dạng string để đồng nhất contract liên service và hỗ trợ tương lai khi rule_id đổi sang UUID).
+    *   `sku_id`: VARCHAR(255) INDEX (FK ảo tới `product_skus`). Admin thao tác thay đổi `original_price` lúc Rule đang chạy để tránh lỗi Data Drift khi Audit).
     *   `discount_type`: VARCHAR(50) (Loại giảm giá: PERCENTAGE, FIXED_AMOUNT).
     *   `discount_value`: DECIMAL(15,2) (Giá trị cấu hình giảm).
     *   `max_discount_amount`: DECIMAL(15,2) NULL (Giới hạn mức giảm tối đa trên mỗi sản phẩm - chỉ dùng khi PERCENTAGE).
@@ -128,6 +126,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
     *   `applied_at`: TIMESTAMPTZ.
     *   `expires_at`: TIMESTAMPTZ INDEX NOT NULL (Thời điểm hết hạn. **[M2 Lưu ý]** Index này KHÔNG PHỤC VỤ Flow mua hàng chính, nó DÀNH RIÊNG cho [Markdown Expiry Cronjob(Self-Healing)](product_workers.md#7-markdown-expiry-cronjob-self-healing), hỗ trợ quét dọn dữ liệu hết hạn cực nhẹ.).
     *   **Unique Index (`rule_id`, `sku_id`)**: Đảm bảo một rule chỉ áp dụng 1 lần trên 1 SKU.
+    *   **Normalization rule (bắt buộc):** Nếu event upstream gửi `rule_id` dạng số, worker phải convert sang string ngay tại boundary trước khi ghi DB/cache và trước khi so sánh; mọi phép so khớp `rule_id` trong Product Service đều dùng string.
 
 ### 1.4. Nhóm Hạ tầng Cốt lõi (Infrastructure)
 
@@ -140,13 +139,21 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
     *   `payload`: JSONB (Payload bắt buộc kèm `schema_version` ở top-level message envelope).
     *   `created_at`: TIMESTAMPTZ.
 
+*   `product_price_event_seq` (PostgreSQL Sequence phục vụ `PRODUCT_PRICE_UPDATED`)
+        *   SQL:
+            ```sql
+            CREATE SEQUENCE product_price_event_seq START 1 INCREMENT 1;
+            ```
+        *   Dùng để cấp `event_sequence_id` cho mọi event `PRODUCT_PRICE_UPDATED`.
+        *   Tính chất bắt buộc: global, đơn điệu tăng theo thứ tự cấp phát của DB sequence.
+        *   Lưu ý vận hành: Sequence không rollback khi transaction fail; khoảng trống số (gap) là chấp nhận được theo thiết kế idempotency downstream.
+
 ## 2. Chiến Lược Đánh Index (Indexing Strategy)
 
 Các Index được thiết kế để tối ưu cho các truy vấn phổ biến nhất của Product Service:
 
 | Bảng | Index | Loại | Mục đích |
 |---|---|---|---|
-| `products` | `idx_products_seller_id` | B-tree | Query tất cả sản phẩm của 1 Seller |
 | `products` | `idx_products_category_id` | B-tree | Query sản phẩm theo danh mục (phục vụ Markdown batch) |
 | `products` | `idx_products_status` | B-tree | Lọc sản phẩm theo trạng thái (ACTIVE, DRAFT...) |
 | `product_skus` | `idx_skus_product_id` | B-tree | JOIN product → SKUs |
@@ -165,6 +172,6 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
 3.  **Outbox Phát Sự Kiện:**
     *   Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events`. Debezium CDC sẽ đọc WAL và đẩy record sang Kafka. Không dùng polling job dựa trên cột trạng thái `PENDING`. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
 4.  **Markdown Price Integrity:**
-    *   Seller chỉ có quyền sửa `original_price`; API Seller không được tự ý set giá markdown thủ công.
-    *   `promotional_price` được cập nhật bởi Pricing Domain Module của Product Service, có thể chạy từ hai đường hợp lệ: (1) Markdown Worker async, (2) nhánh đồng bộ trong API update khi Seller đổi `original_price` và SKU đang có markdown active.
-    *   Khi `original_price` thay đổi (Seller sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction và cập nhật lại `original_price_snapshot` để chống drift.
+    *   admin chỉ có quyền sửa `original_price`; API admin không được tự ý set giá markdown thủ công.
+    *   `promotional_price` được cập nhật bởi Pricing Domain Module của Product Service, có thể chạy từ hai đường hợp lệ: (1) Markdown Worker async, (2) nhánh đồng bộ trong API update khi admin đổi `original_price` và SKU đang có markdown active.
+    *   Khi `original_price` thay đổi (admin sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction và cập nhật lại `original_price_snapshot` để chống drift.

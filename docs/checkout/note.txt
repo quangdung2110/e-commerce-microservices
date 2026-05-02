@@ -1,0 +1,48 @@
+1. Lý do vì sao đã có distributed lock là `chechout:lock:submit:{user_id}` nhưng vẫn còn có trường status trong `checkout:session:{user_id}`
+    - Luồng hoạt động sẽ là: xin quyền Distributed Lock -> Gọi gRPC sang Product Service để giá mới nhất cuối cùng -> Chạy Lua Script chuyển Token thành SUBMITTED,
+    nếu không có Distributed Lock, khi có nhiều request tới, chúng ta phải tốn tài nguyên để chạy nhiều lần gRPC mặc dù ở bước 3 đã được chặn lại bằng Lua Script
+    - Tách rời Lock và Session giúp quản lý trạng thái linh hoạt hơn, nếu bước 2 phát hiện giá bị thay đổi, hệ thống chỉ cần Nhả Lock và báo lỗi cho user, trạng thái của session
+    vẫn giữ như cũ là PREVIEW, không bị vội vàng chuyển sang SUBMITTED rồi lại phải rollback về PREVIEW, tránh được sự phức tạp và rủi ro của việc rollback trạng thái
+
+2. Thiết kế caching thông minh
+    - `checkout:response:{user_id}:{token}`
+        Ngữ cảnh: hệ thống bên Order Service đã làm xong việc xong xuôi, chuẩn bị trả về response cho user sau khi user submit đơn hàng nhưng bị mất kết nối
+        Ở đây nó sẽ giải quyết được 2 nhánh chính:
+            - Nhánh success: nó response của Order Service đã có đầy đủ thông tin, ngay cả khi user request lại thì vẫn có response cũ để trả về, tránh việc user submit lại và tạo một đơn hàng mới
+            - Nhánh conflict: khi Saga trên Order Service và phát hiện có sự thay đổi về giá hoặc một mã giảm giá hết hạn ngay lúc đó, Checkout Service sẽ loại bỏ mã đó và gọi sang Promotion Service
+            để tính toán lại và đánh giá lại những mã còn lại xem có bị ảnh hưởng chéo không, sau đó trả về response mới cho user, và key này sẽ lưu response đó. Nếu user request lại thì sẽ có response đã cache để trả về, tránh việc
+            tính toán lại như trên
+    - `checkout:payload:{user_id}:{token}`
+        Ngữ cảnh: để tránh trùng lặp đơn hàng, hệ thống sẽ chuyển trạng thái của session thành SUBMITTED trước khi gọi sang Order Service, chính vì thế sẽ có trường hợp hệ thống đã chuyển trạng thái nhưng gọi sang Order Service lại không được do mất kết nối
+        Key này sẽ lưu payload đã chuẩn bị sẵn sàng để gửi sang Order Service, nếu request lại thì sẽ có payload này để gửi sang Order Service mà không bị ảnh hưởng bởi trạng thái đã bị chuyển trên session
+
+
+3. Tổng quát luồng hoạt động một cách chi tiết
+    Giai đoạn 1: Rào chắn vòng ngoài (Gatekeeping)
+        Tiếp nhận Request & Xin Khóa: Frontend gửi request bao gồm checkout_token và payment_method. Ngay lập tức, hệ thống xin quyền Distributed Lock (checkout:lock:submit:{user_id}) với TTL 30 giây. Nếu xin thất bại, trả về lỗi 423 Locked để chặn các request bấm đúp.
+        Kiểm tra sơ bộ Trạng thái Token: Hệ thống kiểm tra session trên Redis. Nếu Token đã ở trạng thái SUBMITTED, nó sẽ rẽ nhánh sang luồng Client Retry (tìm checkout:response hoặc dùng checkout:payload để gọi lại Order Service).
+
+    Giai đoạn 2: Thẩm định chớp nhoáng (Validation)
+        Lightweight Price Staleness Check: * Checkout Service dùng gRPC bốc nhanh giá mới nhất từ Product Service và lấy các version mới nhất của cấu hình Shipping/Promotion.
+        Băm ra mã Hash mới và so sánh với pricing_hash trên Redis.
+        Nếu lệch Hash (Giá đã đổi): Nhả Lock, trả lỗi 409 PRICE_CHANGED. Token vẫn an toàn ở mức PREVIEW_READY, User chỉ cần làm mới trang.
+
+    Giai đoạn 3: Chốt sổ (Point of No Return)
+        Đốt Token (Lua Script Check-and-Mark): Nếu giá hợp lệ, hệ thống chạy Lua Script để chuyển trạng thái Token từ PREVIEW_READY sang SUBMITTED. Từ giây phút này, Token không thể lùi lại được nữa.
+        Lưu Cache Cứu hộ (Cache Payload): Lưu toàn bộ dữ liệu request chuẩn bị gửi cho Order Service vào checkout:payload:{user_id}:{token} (TTL 20 phút) để phòng hờ sập mạng chặng giữa.
+
+    Giai đoạn 4 & 5: Hành động & Phản hồi (Execution & Response)
+        Gọi Order Service: Checkout Service nã lệnh gRPC mang theo Payload sang Order Service để kích hoạt Temporal Saga (Tạo đơn -> Trừ Tồn Kho -> Khóa Voucher).
+        Xử lý Kết quả & Nhả Lock: Tùy vào phản hồi từ Order Service, hệ thống sẽ xử lý theo 3 kịch bản:
+
+            Kịch bản A (Thành công - Success): * Trả về order_id và link thanh toán.
+                Lưu kết quả vào checkout:response:{user_id}:{token}, đồng thời xóa cái checkout:payload đi vì không cần cứu hộ nữa. Xóa Lock.
+
+            Kịch bản B (Xung đột Nghiệp vụ - Business Conflict): * Order báo lỗi do hết Voucher (All-or-nothing fail).
+                Checkout gọi lại hàm tính toán, dựng lên một cấu trúc báo lỗi chi tiết gồm mã bị rớt (dropped_promotions) và đề xuất giá mới.
+                Lưu cục báo lỗi này vào checkout:response. Trả về 409 PROMOTION_RECALCULATION_NEEDED.
+                (Token vẫn là SUBMITTED, User bắt buộc phải gọi lại Preview để lấy Token mới). Xóa Lock.
+
+            Kịch bản C (Sập mạng/Timeout): * Checkout rớt mạng hoặc Order Service chết lâm sàng.
+                Checkout trả về lỗi 503 Service Unavailable cho App.
+                App sẽ tự động Retry. Lúc này, luồng đi lại từ Bước 1, đập vào Bước 2 (Token đã SUBMITTED), móc cái checkout:payload ở Bước 5 ra và kiên nhẫn gọi lại Order Service cho đến khi thành công (hoặc hết 20 phút).

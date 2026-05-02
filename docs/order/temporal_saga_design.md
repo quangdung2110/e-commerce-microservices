@@ -42,7 +42,7 @@ Workflow chuyên trách lane refund. Mọi request hoàn tiền (return sau giao
 *   WorkflowID chuẩn: `order-refund-{order_id}`.
 *   Chỉ cho phép 1 refund workflow active theo mỗi `order_id`.
 *   Payment consumer route `REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED` theo `payload.order_id` và signal `RefundResult` cho workflow này.
-*   Theo policy B, workflow này chỉ được phép tạo **một** `refund_transaction_id` cho mỗi `order_id`; `refund_type` có thể `FULL` hoặc `PARTIAL` theo refund scope đã lock.
+*   Theo policy B, workflow này chỉ được phép tạo **một** `refund_transaction_id` cho mỗi `order_id`; `refund_type` có thể `FULL` hoặc `PARTIAL` theo refund scope đã lock từ request đầu vào.
 *   Guard này chỉ chống concurrent workflow instance, **không thay thế** policy one-shot của Buyer API.
 *   Policy one-shot cho `POST /v1/orders/{orderId}/return` được enforce trước khi start workflow bằng `order_customer_return_guard` (first-write-wins theo `order_id`).
 
@@ -57,33 +57,42 @@ Workflow chuyên trách khôi phục đơn khi checkout workflow đã timeout/ca
 
 ### 2.4. Activities
 Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặc 1 Remote Call/gRPC sang Service khác:
-*   `CreateOrderActivity`: INSERT Master Order và Order Parcels xuống Database (Trạng thái thiết lập là `PENDING_PAYMENT`).
+*   `CreateOrderActivity`: INSERT Master Order và Order Items xuống Database (Trạng thái thiết lập là `PENDING_PAYMENT`).
 *   `ReserveInventoryActivity`: Khóa Tồn kho theo kế hoạch cấp phát Smart Routing.
 *   `ReservePromotionActivity`: Khóa ngân sách voucher trên Redis (Lua Script 2B all-or-nothing cho multi-voucher). Đây là điểm Reserve duy nhất — không xảy ra tại Preview để tránh lạm dụng (bot treo giỏ hàng làm cạn budget).
 *   `InitiatePaymentActivity`: Tạo phiên giao dịch thanh toán và trả về payment URL.
 *   `DeductInventoryActivity`: (Post-Payment) Trừ hẳn tồn kho đã bị giữ chỗ.
 *   `ConfirmPromotionActivity`: (Post-Payment) Commit reservation voucher trên Redis và ghi ledger `coupon_usages.status = REDEEMED` (bắt buộc truyền `idempotency_key` theo từng `promotion_id`).
+*   `CancelConfirmedPromotionActivity`: (Post-Payment compensation) Undo trạng thái đã `REDEEMED` theo từng `promotion_id` khi post-payment saga fail.
 *   `CreateShippingLabelsActivity`: (Post-Payment) Gửi thông tin sang 3PL để tạo mã vận đơn.
 *   `UpdateOrderStatusActivity`: Chuyển trạng thái Order (FSM Update an toàn với Optimistic Locking).
-*   `MarkRefundRequestedActivity`: Verify `trigger_source` + policy guard, commit transition vào lane refund (`PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`), set `payment_status = REFUNDING`, và insert outbox `ORDER_STATUS_CHANGED`.
-*   `LockRefundScopeActivity`: Chốt snapshot parcels đã `RETURNED` để tính `refund_type`/`refund_amount` một lần duy nhất cho mỗi order.
-*   `AppendReturnedParcelActivity`: Nhận signal từ shipping events phát sinh thêm khi refund workflow đang active, chỉ ghi audit context (không tạo refund transaction mới).
+*   `MarkRefundRequestedActivity`: Verify `trigger_source` + policy guard, commit transition vào lane refund (`PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`) và insert outbox `ORDER_STATUS_CHANGED` với metadata `refund_waiting_inventory_confirmation = true`.
+*   `LockRefundScopeActivity`: Chốt refund scope từ request đầu vào (`FULL` hoặc `PARTIAL + items_to_return[]`) để tính `refund_type`/`refund_amount` một lần duy nhất cho mỗi order.
+*   `RegisterRefundReturnExpectationActivity`: Đăng ký expected return scope với Inventory theo `order_id + refund_request_id`.
+*   `WaitInventoryReturnReceivedAllSignal`: Chờ signal từ Inventory khi đã nhận đủ toàn bộ item trong refund scope (timeout 30 ngày, quá hạn chuyển lane manual verification).
 *   `InitiateRefundActivity`: Gọi Payment Service `POST /v1/payments/{txn_id}/refund` với idempotency key ổn định.
 *   `FinalizeRefundResultActivity`: Commit `REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED` thành FSM/payment_status + outbox (`ORDER_REFUNDED` hoặc `ORDER_REFUND_FAILED`).
 *   `RecoverPaidOrderFromTimeoutActivity`: Áp lane khôi phục payment muộn, đưa order từ `CANCELLED(PAYMENT_TIMEOUT)` về lane đã thu tiền trước khi chạy post-payment.
 
 ### 2.5. Cặp Hàm Bù Trừ (Compensations)
 *   `RollbackInventoryActivity`: Giải phóng số lượng giữ chỗ ở các kho.
-*   `RollbackPromotionActivity`: Nhả ngân sách voucher đã được khóa bởi `ReservePromotionActivity` trong Saga (không liên quan đến Preview, bắt buộc truyền `idempotency_key` theo từng `promotion_id`).
+*   `RollbackPromotionActivity`: Nhả ngân sách voucher đã được khóa bởi `ReservePromotionActivity` trong Saga (không liên quan đến Preview, bắt buộc truyền `idempotency_key` theo từng `promotion_id`). Activity này chỉ release runtime reservation, không đảo trạng thái ví DB `USED -> SAVED` ở lane pre-payment cancel.
+*   `CancelConfirmedPromotionActivity`: Hoàn ngược commit promotion ở lane post-payment (`REDEEMED` -> refund/cancel allocation) bằng API sync riêng, không dùng chung semantics với `RollbackPromotionActivity`.
 *   `CancelOrderActivity`: Đánh dấu order `CANCELLED` nếu pre-payment saga thất bại giữa chừng.
 *   `CancelPaymentActivity`: Hủy phiên giao dịch thanh toán nếu đơn hàng timeout.
 *   `RollbackDeductedInventoryActivity`: Bù trừ phần stock đã deduct ở post-payment khi step sau lỗi.
 *   `RevertOrderStatusToPaidActivity`: Trả trạng thái từ `PROCESSING` về `PAID` nếu post-payment rollback.
 *   `CancelShippingActivity`: Hủy vận đơn đã tạo khi post-payment rollback.
+    *   Nếu shipment đã ở `READY_TO_SHIP` trở lên, activity trả lỗi non-retryable `MANUAL_INTERVENTION_REQUIRED`; workflow không dừng toàn bộ compensation mà tiếp tục rollback các bước còn lại và phát cảnh báo vận hành.
 
 ### 2.6. Contract `idempotency_key` với Promotion (Bắt buộc)
 *   Order Service phải sinh key ở phía Order và giữ ổn định xuyên retry của cùng activity.
-*   Key phải là duy nhất theo từng `promotion_id` cho mỗi action (`REDEEM_FINAL`, `CANCEL_FINAL`, `REFUND_PARTIAL/FULL`).
+*   Key phải là duy nhất theo từng `promotion_id` cho mỗi action.
+*   Format chuẩn hóa:
+    *   `REDEEM_FINAL:{order_id}:{promotion_id}`
+    *   `CANCEL_FINAL:{order_id}:{promotion_id}`
+    *   `REFUND_FULL:{order_id}:{promotion_id}:{refund_request_id}`
+    *   `REFUND_PARTIAL:{order_id}:{promotion_id}:{refund_request_id}`
 *   Promotion Service dùng trực tiếp key này để ghi `promotion_event_idempotency.event_id`, không được tự sinh lại.
 *   Với fallback async qua Kafka, Promotion dùng `event_id` từ envelope làm `event_id` trong DB idempotency.
 
@@ -94,7 +103,7 @@ Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặ
 Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCheckoutWorkflow`:
 
 1.  **Chạy `CreateOrderActivity`**: Lưu vào DB. Trạng thái `PENDING_PAYMENT` để sinh `order_id` chuẩn dùng xuyên suốt Saga.
-	*   Bắt buộc persist snapshot phục vụ CQRS search (`order_parcels.store_name_snapshot`, `order_items.snapshot_name`, `order_items.snapshot_image_url`) ngay ở bước này để reindex từ DB không mất ngữ cảnh hiển thị.
+	*   Bắt buộc persist snapshot phục vụ CQRS search (`order_items.store_name_snapshot`, `order_items.snapshot_name`, `order_items.snapshot_image_url`) ngay ở bước này để reindex từ DB không mất ngữ cảnh hiển thị.
     *   *Thành công → Đăng ký `CancelOrderActivity` vào mảng Đền bù (Stack - LIFO).*
     *   Nếu lỗi Database nội bộ → Workflow dừng trước khi gọi dịch vụ ngoài.
 2.  **Chạy `ReserveInventoryActivity`**: Nếu lỗi (Kho đột ngột hết hàng) → Chạy `CancelOrderActivity`.
@@ -115,34 +124,38 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
         1) **Mốc tài chính:** `UpdateOrderStatusActivity` commit `PENDING_PAYMENT` -> `PAID` và insert outbox `ORDER_PAID` trong cùng transaction.
         2) **Mốc vận hành (post-payment):** reset compensation stack cho post-payment và chạy tuần tự:
            - `DeductInventoryActivity` (register `RollbackDeductedInventoryActivity`)
-           - `ConfirmPromotionActivity` (register `RollbackPromotionActivity`, gọi với `idempotency_key` theo từng `promotion_id`)
+            - `ConfirmPromotionActivity` (register `CancelConfirmedPromotionActivity`, gọi với `idempotency_key` theo từng `promotion_id`)
            - `CreateShippingLabelsActivity` (register `CancelShippingActivity`)
            - `UpdateOrderStatusActivity` (`PAID` -> `PROCESSING`, register `RevertOrderStatusToPaidActivity`)
-    *   Nếu lỗi ở bất kỳ bước post-payment nào, rollback theo LIFO post-payment: `RevertOrderStatusToPaid` → `CancelShipping` → `RollbackPromotion` → `RollbackDeductedInventory`.
+        *   Nếu lỗi ở bất kỳ bước post-payment nào, rollback theo LIFO post-payment: `RevertOrderStatusToPaid` → `CancelShipping` → `CancelConfirmedPromotion` → `RollbackDeductedInventory`.
     *   Nếu thành công toàn bộ post-payment, workflow complete; mốc vận hành được phản ánh bởi `ORDER_STATUS_CHANGED` tại transition `PAID` -> `PROCESSING`.
 
 ## 3.1. Luồng `OrderLatePaymentRecoveryWorkflow`
 
 1. Trigger khi Payment consumer nhận `PAYMENT_SUCCESS` nhưng checkout workflow đã timeout/close và order đang `CANCELLED(PAYMENT_TIMEOUT)`.
 2. `RecoverPaidOrderFromTimeoutActivity` verify guard + payment evidence, sau đó khôi phục order về lane đã thu tiền.
-3. Workflow phát lại mốc tài chính theo contract recovery (`ORDER_PAID` với recovery metadata), rồi chạy post-payment saga tương tự checkout success.
-4. Nếu post-payment recovery thất bại ở bước bắt buộc, workflow chuyển sang auto-refund lane để đưa hệ thống về trạng thái tài chính an toàn.
+3. Workflow phát lại mốc tài chính theo contract recovery (`ORDER_PAID` với recovery metadata).
+4. Trước khi vào deduct, workflow bắt buộc đảm bảo reservation còn hiệu lực:
+    - gọi `ReserveInventoryActivity` lại theo route plan hợp lệ, hoặc
+    - `RecoverPaidOrderFromTimeoutActivity` phải tái lập reservation tương đương và trả evidence cho workflow.
+5. Sau khi reservation hợp lệ, workflow chạy post-payment saga (`DeductInventory` -> `ConfirmPromotion` -> `CreateShippingLabels` -> `UpdateOrderStatus`).
+6. Nếu post-payment recovery thất bại ở bước bắt buộc, workflow chuyển sang auto-refund lane để đưa hệ thống về trạng thái tài chính an toàn.
 
 ## 4. Luồng Refund bằng `OrderRefundWorkflow`
 
-1. Workflow được start từ một trong ba trigger: `POST /orders/{id}/return`, `SHIPMENT_RETURNED`, hoặc admin force refund lane từ API cancel khi đơn đang `PAID/PROCESSING`.
-2. Với trigger `API_RETURN`, API layer phải pass one-shot guard (`order_customer_return_guard`) trước khi start workflow. Trigger `SHIPMENT_RETURNED` và `ADMIN_FORCE_REFUND_REQUESTED` không dùng guard one-shot này.
-3. Với trigger `SHIPMENT_RETURNED`, chỉ event đầu tiên được quyền start workflow. Nếu workflow đã active, các event kế tiếp phải signal `AppendReturnedParcelActivity` thay vì start workflow mới.
-4. `MarkRefundRequestedActivity` verify lại policy theo `trigger_source`, rồi commit `RETURN_REQUESTED` + `payment_status = REFUNDING` và insert `ORDER_STATUS_CHANGED` với reason phù hợp (`RETURN_API_ACCEPTED`, `SHIPMENT_RETURNED`, `ADMIN_FORCE_REFUND_REQUESTED`).
-5. `LockRefundScopeActivity` chốt tập parcels returned tại thời điểm chốt refund để tính `refund_type` (`FULL|PARTIAL`) và `refund_amount`.
-6. `InitiateRefundActivity` gọi Payment API refund đúng một lần cho mỗi `order_id` và workflow vào trạng thái chờ signal kết quả refund.
-7. Nếu có thêm `SHIPMENT_RETURNED` trong lúc workflow đang chờ kết quả, chỉ append audit context; không được tạo `refund_transaction_id` thứ hai.
+1. Workflow được start từ một trong hai trigger: `POST /orders/{id}/return` hoặc admin force refund lane từ API cancel khi đơn đang `PAID/PROCESSING`.
+2. Với trigger `API_RETURN`, API layer phải pass one-shot guard (`order_customer_return_guard`) và precondition toàn bộ item đã `DELIVERED` trước khi start workflow. Trigger `ADMIN_FORCE_REFUND_REQUESTED` không dùng one-shot guard này.
+3. `MarkRefundRequestedActivity` verify lại policy theo `trigger_source`, commit `RETURN_REQUESTED`, ghi `order_refund_cases.case_status = WAITING_INVENTORY_RETURN_CONFIRMATION`, insert `ORDER_STATUS_CHANGED` với reason phù hợp (`RETURN_API_ACCEPTED` hoặc `ADMIN_FORCE_REFUND_REQUESTED`).
+4. `LockRefundScopeActivity` chốt tập item refund từ request (`FULL` hoặc `PARTIAL`) để tính `refund_type` (`FULL|PARTIAL`) và `refund_amount`.
+5. `RegisterRefundReturnExpectationActivity` đăng ký expected return scope với Inventory, sau đó workflow chờ `WaitInventoryReturnReceivedAllSignal`.
+6. `WaitInventoryReturnReceivedAllSignal` timeout sau 30 ngày -> phát cảnh báo ops + chuyển trạng thái `MANUAL_VERIFICATION_REQUIRED`; chỉ tiếp tục khi có admin override signal.
+7. Chỉ khi nhận signal Inventory xác nhận đã nhận đủ toàn bộ item trong refund scope (hoặc admin override hợp lệ), workflow mới chạy `InitiateRefundActivity` và gọi Payment API refund đúng một lần cho mỗi `order_id`.
 8. Payment consumer nhận `REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED` rồi signal `RefundResult` cho `order-refund-{order_id}`.
 9. `FinalizeRefundResultActivity` commit trạng thái cuối:
     - `REFUND_SUCCESS` -> `RETURN_REQUESTED` -> `REFUNDED` + outbox `ORDER_REFUNDED`.
     - `REFUND_FAILED`/`REFUND_REVERSED` -> giữ `RETURN_REQUESTED`, cập nhật `payment_status`, + outbox `ORDER_REFUND_FAILED`.
-10. Với lane bắt đầu từ `API_RETURN`, one-shot guard không được reset sau `REFUND_FAILED`/`REFUND_REVERSED`; mọi submit Buyer API tiếp theo phải đi manual lane.
-11. Nếu order đã có refund transaction terminal mà tiếp tục nhận `SHIPMENT_RETURNED`, workflow không mở refund transaction mới; chuyển manual adjustment lane.
+10. Với lane bắt đầu từ `API_RETURN`, one-shot guard không được reset sau `REFUND_FAILED`/`REFUND_REVERSED`; mọi submit Buyer API tiếp theo bị từ chối.
+11. Voucher restore ở downstream Promotion là best-effort non-blocking và validity-aware: chỉ restore `USED -> SAVED` khi voucher còn hạn (`expired_at > NOW()`), quá hạn thì chuyển `EXPIRED`/giữ `USED`; nếu voucher unavailable thì workflow tiền vẫn không bị rollback.
 12. API layer không được commit terminal state ở lane refund; workflow là source-of-truth duy nhất.
 
 ---

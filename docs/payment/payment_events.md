@@ -31,7 +31,7 @@ Payment Service produce các events liên quan đến kết quả thanh toán v�
 
 | Topic Name | Consumer Group | Producer | Events | Mô tả |
 |:---|:---|:---|:---|:---|
-| `t.order.events` | `payment-order-consumer` | Order Service | `ORDER_CANCELLED` | Trigger auto-refund nếu đã thanh toán |
+| `t.order.events` | `payment-order-consumer` | Order Service | `ORDER_CANCELLED` | Đối soát và đóng payment pending (nếu còn mở); không trigger auto-refund |
 
 ---
 
@@ -188,7 +188,33 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 }
 ```
 
-### 3.6. REFUND_SUCCESS
+### 3.6. REFUND_PROCESSING
+
+**Ngữ cảnh:** Đã gọi lệnh Refund thành công sang Cổng Thanh toán và đang đợi xử lý bất đồng bộ. Refund FSM: `PENDING` → `PROCESSING`. Payment FSM: `SUCCESS` → `REFUNDING`.
+**Consumer:** Order Service (Đánh dấu tiến trình đang chạy), Analytics.
+
+```json
+{
+  "event_id": "123e4567-e89b-12d3-a456-426614174004b",
+  "event_type": "REFUND_PROCESSING",
+  "aggregate_type": "Payment",
+  "aggregate_id": "RFD-DEF456",
+  "correlation_id": "wf-10001",
+  "timestamp": "2026-03-05T09:00:05Z",
+  "source": "payment-service",
+  "payload": {
+    "refund_transaction_id": "RFD-DEF456",
+    "payment_transaction_id": "TXN-ABC123",
+    "order_id": 10001,
+    "user_id": 999,
+    "refund_amount": 995000,
+    "provider_refund_id": "VNP-RFD-ASYNC-01",
+    "processing_at": "2026-03-05T09:00:05Z"
+  }
+}
+```
+
+### 3.7. REFUND_SUCCESS
 
 **Ngữ cảnh:** Cổng thanh toán xác nhận hoàn tiền xong. Refund FSM: `PROCESSING` → `SUCCESS`. Payment FSM: `REFUNDING` → `REFUNDED`.
 **Consumer chính:** **Order Service** — FSM Order `RETURN_REQUESTED` → `REFUNDED`. Produce `ORDER_REFUNDED`.
@@ -216,7 +242,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 
 > **Correlation note:** `aggregate_id` ở đây là `refund_transaction_id`; để tìm đúng order workflow/downstream order aggregate, consumer phải dùng `payload.order_id`.
 
-### 3.7. REFUND_FAILED
+### 3.8. REFUND_FAILED
 
 **Ngữ cảnh:** Cổng thanh toán từ chối hoàn tiền. Refund FSM: `PROCESSING` → `FAILED`.
 **Consumer:** Order Service (alert), SysAdmin Dashboard.
@@ -241,7 +267,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 }
 ```
 
-### 3.8. REFUND_REVERSED (Optional, Provider-dependent)
+### 3.9. REFUND_REVERSED (Optional, Provider-dependent) (Optional, Provider-dependent)
 
 **Ngữ cảnh:** Một số cổng có thể đảo chiều trạng thái refund sau khi trước đó đã thông báo success/processing (ví dụ account đích không còn hợp lệ, scheme trả tiền ngược về merchant account).
 
@@ -291,15 +317,18 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "previous_status": "PROCESSING",
-    "reason": "ADMIN_FORCE_CANCEL"
+    "previous_status": "PENDING_PAYMENT",
+    "reason": "PAYMENT_TIMEOUT"
   }
 }
 ```
 **Logic xử lý:** Kiểm tra payment transaction status:
+- Chỉ áp dụng cho pre-payment lane (`previous_status = PENDING_PAYMENT`). Nếu nhận event với `previous_status` khác lane này thì ignore + ghi cảnh báo reconciliation.
 - Nếu `PENDING` / `PROCESSING` → Cancel payment (FSM T6).
-- Nếu `SUCCESS` → Auto-initiate refund (FSM T7 → Tạo `refund_transaction`).
+- Nếu `SUCCESS` → Không auto-refund từ event này; ghi reconciliation marker để Order kiểm tra lane refund riêng.
 - Nếu đã `EXPIRED` / `CANCELLED` / `FAILED` → Ignore.
+
+> **Contract mới:** Refund chỉ được khởi tạo bởi explicit refund request từ `OrderRefundWorkflow` (Order Service), không suy luận từ `ORDER_CANCELLED`.
 
 ---
 
@@ -317,6 +346,6 @@ Các quy tắc sau là bắt buộc để giữ tính đúng đắn tài chính:
 
 1.  **Ordering nội bộ:** Producer luôn partition theo `order_id` để giữ strict ordering trong cùng order.
 2.  **Webhook reality:** Dữ liệu upstream từ cổng có thể out-of-order; worker phải so sánh trạng thái hiện tại + transition hợp lệ trước khi update.
-3.  **Idempotency consumer:** Consumer dùng `event_id` và/hoặc `provider_refund_id + event_type` để dedup.
+3.  **Idempotency consumer:** Consumer phải dùng `event_id` làm khóa chống trùng lặp. Khuyến nghị tạo bảng `consumed_events` (gồm `event_id` PRIMARY KEY, `created_at`). Mọi xử lý Event phải thực hiện trên cùng 1 DB transaction với việc `INSERT INTO consumed_events`.
 4.  **At-least-once compatible:** Mọi consumer phải an toàn khi nhận lặp lại cùng một event.
 5.  **Terminal state governance:** `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` đều là terminal signals cần được audit vào `payment_status_history`.

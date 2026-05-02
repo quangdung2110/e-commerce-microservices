@@ -55,20 +55,20 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
 1. **[Checkout Service]** Bắn API `/calculate-discount` gửi toàn bộ Payload giỏ hàng và định danh User sang Promotion.
 2. **[Promotion Backend]** Đọc Caffeine Cache (L1) lấy được JSON AST Rules đã được Parse sẵn thành `RuleNode` Object (VD: check tổng giỏ `> 500k` VÀ thanh toán `VNPAY`). Xem chi tiết thuật toán tại [Rule Engine Design](rule_engine_design.md).
 3. **[Evaluation]** Dùng Visitor Pattern quét Node Object cấp tốc dưới RAM dựa theo Payload.
-4. **[Shopee Calculation Flow]**: Xếp hạng và tính khấu trừ theo trình tự:
-    *   (1) Áp Shop Voucher lên Giá gốc.
-    *   (2) Áp Shopee Voucher lên giá đã trừ Shop Voucher.
+4. **[platformee Calculation Flow]**: Xếp hạng và tính khấu trừ theo trình tự:
+    *   (1) Áp platform Voucher lên Giá gốc.
+    *   (2) Áp platformee Voucher lên giá đã trừ platform Voucher.
     *   (3) Áp Freeship lên Phí vận chuyển.
 5. Trả response về cho Order/Cart bao gồm tổng tiền giảm và chi tiết từng loại mã.
 
 > [!NOTE]
 > **Dependency một chiều giữa các slot (bắt buộc):**
-> - Đổi Shop Voucher có thể làm đổi eligibility của Platform/Freeship do thay đổi `total_after_shops`.
-> - Đổi Platform Voucher hoặc Freeship Voucher không làm đổi eligibility của Shop Voucher vì Shop luôn evaluate trên sub-cart trước bước Platform/Freeship.
+> - Đổi platform Voucher có thể làm đổi eligibility của Platform/Freeship do thay đổi `total_after_platforms`.
+> - Đổi Platform Voucher hoặc Freeship Voucher không làm đổi eligibility của platform Voucher vì platform luôn evaluate trên sub-cart trước bước Platform/Freeship.
 
 ### 3.1. Recompute Contract với Checkout Preview
 
-- Khi user đổi voucher shop/platform/freeship, Checkout vẫn gọi `/calculate-discount`; Promotion full evaluate cả 3 slot trong một lần để trả kết quả nhất quán.
+- Khi user đổi voucher platform/platform/freeship, Checkout vẫn gọi `/calculate-discount`; Promotion full evaluate cả 3 slot trong một lần để trả kết quả nhất quán.
 - Khi user đổi địa chỉ giao hàng, Checkout phải gọi lại `/calculate-discount` sau khi Inventory trả về tổng phí ship mới.
 - Quantity mutation không diễn ra trong Checkout Preview; input số lượng luôn lấy từ Cart snapshot.
 
@@ -84,20 +84,37 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
 > **[QUYẾT ĐỊNH THIẾT KẾ — Chống lạm dụng (Anti-Abuse)]**
 > Promotion budget **KHÔNG được khóa tại bước Checkout Preview**. Nếu khóa tại Preview, kẻ xấu có thể dùng automated tool mở hàng loạt checkout session, áp voucher Flash Sale và treo đó không mua, làm cạn kiệt ngân sách mà không phát sinh đơn hàng thực sự. Tại bước Preview, Promotion Service chỉ **validate điều kiện và tính toán** số tiền giảm (đọc thuần túy, không thay đổi bất kỳ counter nào trên Redis). Reservation chỉ xảy ra trong **Temporal Saga** (`ReservePromotionActivity`) ngay sau khi User bấm Submit — thời điểm có cam kết mua hàng thực sự và đã có `order_id` cụ thể.
 
+### 4.0. Contract Sync API (Order -> Promotion, bắt buộc)
+
+Các activity sync từ Order phải dùng contract endpoint rõ ràng, không overload semantics giữa pre-payment và post-payment:
+
+- `POST /v1/promotions/reserve` (TRY pre-payment)
+- `POST /v1/promotions/confirm` (COMMIT sau payment success)
+- `POST /v1/promotions/cancel` (rollback pre-payment reservation)
+- `POST /v1/promotions/cancel-confirmed` (compensation post-payment cho allocation đã `REDEEMED`)
+- `POST /v1/promotions/refund` (tuỳ chọn lane sync refund)
+
+**Idempotency key format chuẩn hóa theo từng `promotion_id`:**
+- `REDEEM_FINAL:{order_id}:{promotion_id}` cho `/confirm`
+- `CANCEL_FINAL:{order_id}:{promotion_id}` cho `/cancel` và `/cancel-confirmed`
+- `REFUND_FULL:{order_id}:{promotion_id}:{refund_request_id}` cho refund full
+- `REFUND_PARTIAL:{order_id}:{promotion_id}:{refund_request_id}` cho refund partial
+
+Promotion Service phải ghi trực tiếp key này vào `promotion_event_idempotency.event_id`, không tự sinh lại.
+
 ### BƯỚC A: KHÓA NGÂN SÁCH KHI SUBMIT (TRY)
 1. **[Order Service / Temporal]** Sau khi User bấm "Xác nhận Đặt hàng", Temporal Workflow đã có `order_id` từ `CreateOrderActivity` (step đầu pre-payment), rồi chạy `ReservePromotionActivity` gọi API `/reserve` với tập mã đã chọn theo slot:
-    * `selected_shop_vouchers` (map `seller_id -> promotion_id`, mỗi shop tối đa 1 mã)
     * `selected_platform_voucher_id` (0 hoặc 1 mã)
     * `selected_freeship_voucher_id` (0 hoặc 1 mã)
     * `discount_amounts_by_promotion_id`
     *(không auto-reserve toàn bộ mã gợi ý)*.
-2. **[Promotion Backend -> Redis Lua]** Với đơn nhiều mã (shop/platform/freeship), bắt buộc gọi [Lua Script 2B](redis_caching_design.md#script-2b-batch-reserve-all-or-nothing-bắt-buộc-cho-multi-voucher) theo chế độ **all-or-nothing**. Script thực hiện 2 pass: `validate-only` toàn bộ mã trước, rồi mới `apply` đồng loạt khi tất cả đều hợp lệ.
+2. **[Promotion Backend -> Redis Lua]** Với đơn nhiều mã (platform/platform/freeship), bắt buộc gọi [Lua Script 2B](redis_caching_design.md#script-2b-batch-reserve-all-or-nothing-bắt-buộc-cho-multi-voucher) theo chế độ **all-or-nothing**. Script thực hiện 2 pass: `validate-only` toàn bộ mã trước, rồi mới `apply` đồng loạt khi tất cả đều hợp lệ.
 3. **[Reservation TTL Tracking]** Chỉ khi pass toàn bộ, **Lua Script 2B** tự ghi key [`promo:{promotion_id}:reservation:{order_id}`](redis_caching_design.md#24-reservation-ttl-tracking-chống-khóa-vĩnh-viễn-ngân-sách) cho từng mã và `ZADD promo:reservation:index <expire_at_epoch_ms> <promotion_id:order_id>` trong cùng phiên atomic. TTL key reservation dùng **business timeout 15 phút + cleanup grace window** để Sweeper luôn có payload release trong cửa sổ quét biên.
 4. **[Xử Lý lỗi có cấu trúc]** Nếu bất kỳ mã nào fail ở pass validate (ví dụ freeship hết ngân sách), Script 2B trả lỗi có cấu trúc, ví dụ:
      ```json
      {
          "error_code": "BUDGET_EXHAUSTED",
-         "failed_promotion_id": "FREESHIP_123",
+         "failed_promotion_id": 30,
          "failed_slot": "FREESHIP_VOUCHER",
          "failed_reason": "BUDGET_AMOUNT_EXHAUSTED",
          "reserve_mode": "ALL_OR_NOTHING"
@@ -127,12 +144,12 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
          "action": "RECALL_PREVIEW",
          "dropped_promotions": [
              {
-                 "promotion_id": "FREESHIP_123",
+                 "promotion_id": 30,
                  "reason": "BUDGET_EXHAUSTED",
                  "user_message": "Mã Freeship đã hết ngân sách."
              },
              {
-                 "promotion_id": "PLATFORM_789",
+                 "promotion_id": 10,
                  "reason": "CONDITIONS_NOT_MET",
                  "user_message": "Đơn hàng không còn đủ điều kiện áp dụng mã này do thay đổi tổng tiền."
              }
@@ -140,7 +157,7 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
          "proposal_checkout_data": {
              "new_total_amount": 550000,
              "surviving_promotions": [
-                 "SHOP_456"
+                 55
              ]
          }
      }
@@ -156,13 +173,25 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
     *   Lưu chốt Idempotent ở CSDL: `INSERT INTO promotion_event_idempotency (event_id = :idempotency_key_from_order, order_id, promotion_id, action_type = 'REDEEM_COUPON', action_scope_key = 'FINAL')`.
     *   Tăng Ledger Budget DB: `UPDATE promotion_budgets SET used_budget = ...`
     *   Cập nhật Ví User: `UPDATE user_coupon_wallets SET status = 'USED'` (kèm theo `used_at = NOW()`).
-    *   Gắn sổ cái dòng tiền: `INSERT INTO coupon_usages(platform_funding, seller_funding, status = 'REDEEMED')` (không có trạng thái RESERVED trong DB).
+    *   Gắn sổ cái dòng tiền: `INSERT INTO coupon_usages(platform_funding, admin_funding, status = 'REDEEMED')` (không có trạng thái RESERVED trong DB).
     *   Nếu insert idempotency conflict, phải đọc trạng thái DB hiện hữu và trả về thành công idempotent, tuyệt đối không rollback ngược Redis đã commit.
     *   Promotion Service **không tự sinh `event_id`** ở nhánh sync này; chỉ dùng đúng `idempotency_key` do Order truyền vào.
 6. **[Order Service]** Ngay khi branch `PAYMENT_SUCCESS` commit FSM `PENDING_PAYMENT` -> `PAID`, phát event `ORDER_PAID` cho downstream read-model/notification/cart cleanup (mốc tài chính). Mốc vận hành hoàn tất được phản ánh bằng `ORDER_STATUS_CHANGED` (`PAID` -> `PROCESSING`).
 
 > [!WARNING]
 > Nếu `ConfirmPromotionActivity` trả `RESERVATION_NOT_FOUND` (reservation đã hết hạn/được rollback trước đó), Order Service phải rẽ nhánh xử lý **late payment success**: chuyển đơn vào luồng hoàn tiền ngay lập tức thay vì cố redeem lại mã.
+
+### BƯỚC B.1: COMPENSATION POST-PAYMENT (`CancelConfirmedPromotionActivity`)
+
+Áp dụng khi post-payment saga fail sau khi promotion đã confirm (`REDEEMED`) và Order cần hoàn ngược allocation đã commit.
+
+1. **[Order Service / Temporal]** Gọi sync `POST /v1/promotions/cancel-confirmed` theo từng `promotion_id`, bắt buộc truyền `idempotency_key = CANCEL_FINAL:{order_id}:{promotion_id}`.
+2. **[Promotion Service]** Thực hiện reverse commit theo lane post-payment:
+    - hoàn budget đã dùng về available theo allocation thực tế đã redeem,
+    - cập nhật ledger/idempotency với `action_type = 'CANCEL_COUPON'`, `action_scope_key = 'FINAL'`,
+    - cập nhật ví theo policy validity-aware (voucher hết hạn không được ép về `SAVED`).
+3. Nếu gặp replay cùng `idempotency_key`, trả thành công idempotent; không áp dụng mutation lần hai.
+4. Lane này **không** dùng chung semantics với `RollbackPromotionActivity` (pre-payment reservation release).
 
 ### BƯỚC C: THANH TOÁN THẤT BẠI / TỰ HUỶ (CANCEL/ROLLBACK)
 1. **[Order Service / Temporal]** Hết hạn 15 phút hoặc User ấn Hủy Đơn, Temporal gọi đồng bộ `RollbackPromotionActivity` sang Promotion Service và **bắt buộc truyền `idempotency_key` từ Order** cho từng `promotion_id`.
@@ -203,9 +232,9 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 **Mục tiêu:** Khi đơn hàng đã giao thành công (`REDEEMED`) nhưng khách hàng đổi trả hàng hoàn tiền, cần hoàn lại ngân sách Promotion đã sử dụng.
 
-1. **[Order Service/Kafka]** Bắn Event [`ORDER_REFUNDED`](promotion_events.md#33-order_refunded-inbound) bắt buộc có `event_id` ở envelope, `refund_transaction_id` và `promotion_refund_allocations[]` (mỗi phần tử chứa `promotion_id`, `promotion_scope_type`, `scope_seller_id`, `refunded_discount_amount`, `platform_funding_refund`, `seller_funding_refund`, `partial_restore_rule`, `voucher_restore_mode`).
+1. **[Order Service/Kafka]** Bắn Event [`ORDER_REFUNDED`](promotion_events.md#33-order_refunded-inbound) bắt buộc có `event_id` ở envelope, `refund_transaction_id` và `promotion_refund_allocations[]` (mỗi phần tử chứa `promotion_id`, `promotion_scope_type`, `scope_admin_id`, `refunded_discount_amount`, `platform_funding_refund`, `admin_funding_refund`, `partial_restore_rule`, `voucher_restore_mode`).
 2. **[Promotion Backend -> Redis Lua]** Với `promotion_refund_allocations[]`, backend gọi [Lua Script 5](redis_caching_design.md#script-5-hoàn-ngân-sách-sau-đổi-trả-hàng-refund-budget) theo từng `promotion_id` bằng **Redis Pipelining** (1 round-trip mạng), mỗi lệnh dùng lock key `promo:lock:refund:{promotion_id}:{order_id}`. Script trả về `applied_refund_qty/applied_refund_amount` thực tế sau guard không âm.
-    - Nếu `refund_type = PARTIAL`, chỉ xử lý allocation `SHOP` thỏa `partial_restore_rule = RESTORE_ONLY_IF_FULL_SHOP_COVERED`.
+    - Nếu `refund_type = PARTIAL`, chỉ xử lý allocation `platform` thỏa `partial_restore_rule = RESTORE_ONLY_IF_FULL_platform_COVERED`.
     - Allocation `PLATFORM`/`SHIPPING` trong `PARTIAL` phải được coi là `0` (skip logic hoàn ngân sách).
 3. **[Kafka Consumer (Worker)]** Gõ DB:
     *   `INSERT INTO promotion_event_idempotency(event_id = :kafka_envelope_event_id, order_id, promotion_id, action_type = 'REFUND_COUPON', action_scope_key = :refund_transaction_id)`.
@@ -222,7 +251,7 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 > [!IMPORTANT]
 > **Contract tạo `event_id` cho Confirm/Cancel/Refund:**
-> - **Luồng Sync qua Temporal Saga (`/confirm`, `/cancel`, `/refund`)**: Promotion Service bắt buộc dùng đúng `idempotency_key`/`request_id` do Order truyền vào để ghi `promotion_event_idempotency.event_id`.
+> - **Luồng Sync qua Temporal Saga (`/confirm`, `/cancel`, `/cancel-confirmed`, `/refund`)**: Promotion Service bắt buộc dùng đúng `idempotency_key`/`request_id` do Order truyền vào để ghi `promotion_event_idempotency.event_id`.
 > - **Luồng Async qua Kafka (`ORDER_PAID/CANCELLED/REFUNDED`)**: Promotion Service bắt buộc dùng đúng `event_id` từ Kafka envelope để ghi DB.
 > - Promotion Service tuyệt đối không tự sinh `event_id` cho các nhánh trên.
 
@@ -236,7 +265,7 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 ## 6. Luồng Gợi ý Voucher tại Checkout (Voucher Discovery Flow)
 
-**Mục tiêu:** Hiển thị danh sách mã giảm giá khả dụng cho khách hàng khi mở khung voucher tại màn hình Checkout theo nguyên tắc read-only ở Discovery. Tray Voucher Sàn/Freeship chỉ dùng mã đã lưu trong ví; không có auto-save ở Submit.
+**Mục tiêu:** Hiển thị danh sách mã giảm giá khả dụng cho khách hàng khi mở khung voucher tại màn hình Checkout theo nguyên tắc read-only ở Discovery. Tray Voucher Platform/Freeship chỉ dùng mã đã lưu trong ví; không có auto-save ở Submit.
 
 > Chi tiết đầy đủ về API design, request/response, caching và edge cases xem tại: **[Voucher Discovery API](voucher_discovery_api.md)**.
 >
@@ -244,14 +273,14 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 ### Tóm tắt Luồng
 
-1. **[Checkout Service]** Khách mở tray "Chọn Mã Giảm Giá" — Checkout gọi `GET /v1/promotions/voucher-suggestions` kèm `cart_context` (subtotal từng shop, tổng shipping fee, payment_method).
+1. **[Checkout Service]** Khách mở tray "Chọn Mã Giảm Giá" — Checkout gọi `GET /v1/promotions/voucher-suggestions` kèm `cart_context` (subtotal từng platform, tổng shipping fee, payment_method).
 2. **[Promotion Backend → Redis]** Check `wallet:{user_id}:active_vouchers` (TTL 5 phút):
     *   **Cache HIT:** Lấy danh sách ví → bỏ qua DB query.
     *   **Cache MISS:** Query `user_coupon_wallets JOIN promotions` (Index Scan `user_id, status`) → Populate cache.
 3. **[Rule Engine In-Memory]** Eval `conditions_rule` AST với `cart_context`, tính `estimated_discount`, gắn cờ `eligible/ineligible` cho từng mã (`< 1ms/mã`).
 4. **[Budget Guard Read-time (Option A)]** Với tập mã đang `eligible`, Promotion đọc batch Redis budget hash bằng pipelining; mã cạn ngân sách/lượt bị downgrade sang `ineligible_reason = BUDGET_EXHAUSTED`. Nếu guard timeout, hệ thống fail-open và đánh dấu degraded cho observability.
 5. **[Grouping]** Gom theo **slot model động** trả về:
-    *   `SHOP_VOUCHER[]`: 1 slot/shop, sort by `estimated_discount DESC`.
+    *   `PLATFORM_VOUCHER[]`: 1 slot/platform, sort by `estimated_discount DESC`.
     *   `PLATFORM_VOUCHER`: 1 slot toàn đơn.
     *   `FREESHIP_VOUCHER`: 1 slot — **chỉ nhận mã sàn (`PLATFORM`)**.
 6. **[Khi khách chọn mã tại tray Sàn/Freeship]** Checkout gọi lại Preview với `promotion_id` đã lưu trong ví để tính giá dự kiến. Discovery không ghi ví và Submit cũng không auto-save thêm voucher.
@@ -261,7 +290,7 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 ### Quy tắc Freeship (Hard Rule)
 
-Slot `FREESHIP_VOUCHER` chỉ có 1 chỗ và chỉ chấp nhận mã do Platform phát hành (`owner_type = PLATFORM`). Seller không được tạo/áp dụng mã freeship trong mọi luồng checkout.
+Slot `FREESHIP_VOUCHER` chỉ có 1 chỗ và chỉ chấp nhận mã do Platform phát hành (`deleted_owner_type = PLATFORM`). admin không được tạo/áp dụng mã freeship trong mọi luồng checkout.
 
 ---
 

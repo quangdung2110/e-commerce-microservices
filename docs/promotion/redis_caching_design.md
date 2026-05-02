@@ -125,21 +125,285 @@ return 1 -- SUCCESS
 ```
 
 ### Script 2B: Batch Reserve all-or-nothing (Bắt buộc cho multi-voucher)
-**Ngữ cảnh:** 1 đơn có nhiều voucher (shop/platform/freeship). Mục tiêu là không được reserve nửa chừng.
+**Ngữ cảnh:** 1 đơn có nhiều voucher (platform/platform/freeship). Mục tiêu là không được reserve nửa chừng.
 
 ```lua
--- Input: danh sách voucher (budget_hash, reservation_key, req_qty, req_amount, reservation_member)
--- Slot cardinality chuẩn:
---   - SHOP_VOUCHER: tối đa 1 mã cho mỗi shop (seller_id)
---   - PLATFORM_VOUCHER: tối đa 1 mã toàn đơn
---   - FREESHIP_VOUCHER: tối đa 1 mã toàn đơn
--- Tổng số voucher/đơn là biến thiên theo số shop trong đơn.
--- Pass 1 (validate-only): duyệt toàn bộ voucher, nếu có 1 voucher fail thì trả lỗi ngay
--- Pass 2 (apply): chỉ khi pass toàn bộ mới HINCRBY/HINCRBYFLOAT + SETEX + ZADD index cho tất cả voucher
--- Nếu bất kỳ bước apply nào bất thường: rollback ngay trong script trước khi return
--- Output chuẩn:
---   SUCCESS: {"code":"OK","reserve_mode":"ALL_OR_NOTHING"}
---   FAIL:    {"code":"BUDGET_EXHAUSTED","failed_promotion_id":"...","failed_slot":"...","failed_reason":"BUDGET_QTY_EXHAUSTED|BUDGET_AMOUNT_EXHAUSTED","reserve_mode":"ALL_OR_NOTHING"}
+-- Script 2B - Batch Reserve All-or-Nothing
+-- Key layout:
+--   KEYS[1] = promo:reservation:index (ZSET shared)
+--   Với mỗi voucher i (1..N):
+--     KEYS[2 + (i-1)*2] = promo:{promotion_id}:budget
+--     KEYS[3 + (i-1)*2] = promo:{promotion_id}:reservation:{order_id}
+--
+-- Arg layout:
+--   ARGV[1] = voucher_count (N)
+--   ARGV[2] = reservation_key_ttl_seconds (business_ttl + cleanup_grace)
+--   ARGV[3] = expire_at_epoch_ms (cho ZSET member)
+--   Với mỗi voucher i (1..N), tuple 5 phần tử:
+--     promotion_id, slot_code, req_qty, req_amount, reservation_member
+--   => offset tuple i: base = 4 + (i-1)*5
+--
+-- Output JSON (string):
+--   SUCCESS:
+--     {"code":"OK","reserve_mode":"ALL_OR_NOTHING","idempotent":false}
+--     {"code":"OK","reserve_mode":"ALL_OR_NOTHING","idempotent":true}
+--   FAIL business:
+--     {"code":"BUDGET_EXHAUSTED","failed_promotion_id":"...","failed_slot":"...","failed_reason":"BUDGET_QTY_EXHAUSTED|BUDGET_AMOUNT_EXHAUSTED","reserve_mode":"ALL_OR_NOTHING"}
+--   FAIL state/input:
+--     {"code":"INVALID_INPUT|PARTIAL_RESERVATION_STATE|IDEMPOTENCY_PAYLOAD_MISMATCH|APPLY_FAILED_ROLLED_BACK", ...}
+
+local RESERVE_MODE = "ALL_OR_NOTHING"
+
+local function fail(code, promotion_id, slot, reason, detail)
+    return cjson.encode({
+        code = code,
+        failed_promotion_id = promotion_id,
+        failed_slot = slot,
+        failed_reason = reason,
+        reserve_mode = RESERVE_MODE,
+        detail = detail
+    })
+end
+
+local function ok(idempotent)
+    return cjson.encode({
+        code = "OK",
+        reserve_mode = RESERVE_MODE,
+        idempotent = idempotent
+    })
+end
+
+local function to_num(v)
+    local n = tonumber(v)
+    if n == nil then
+        return nil
+    end
+    return n
+end
+
+local function float_equal(a, b)
+    local diff = a - b
+    if diff < 0 then
+        diff = -diff
+    end
+    return diff <= 0.000001
+end
+
+local n = to_num(ARGV[1])
+local ttl_seconds = to_num(ARGV[2])
+local expire_at_epoch_ms = to_num(ARGV[3])
+
+if n == nil or n <= 0 or ttl_seconds == nil or ttl_seconds <= 0 or expire_at_epoch_ms == nil then
+    return fail("INVALID_INPUT", "", "", "INVALID_ARGS", "invalid N/TTL/expire_at")
+end
+
+local expected_key_count = 1 + (n * 2)
+if #KEYS ~= expected_key_count then
+    return fail("INVALID_INPUT", "", "", "INVALID_KEYS", "expected keys=" .. expected_key_count .. ", actual=" .. #KEYS)
+end
+
+local expected_argv_count = 3 + (n * 5)
+if #ARGV ~= expected_argv_count then
+    return fail("INVALID_INPUT", "", "", "INVALID_ARGS", "expected args=" .. expected_argv_count .. ", actual=" .. #ARGV)
+end
+
+local entries = {}
+for i = 1, n do
+    local arg_base = 4 + ((i - 1) * 5)
+    local key_base = 2 + ((i - 1) * 2)
+
+    local promotion_id = tostring(ARGV[arg_base] or "")
+    local slot_code = tostring(ARGV[arg_base + 1] or "")
+    local req_qty = to_num(ARGV[arg_base + 2])
+    local req_amt = to_num(ARGV[arg_base + 3])
+    local reservation_member = tostring(ARGV[arg_base + 4] or "")
+    local budget_key = KEYS[key_base]
+    local reservation_key = KEYS[key_base + 1]
+
+    if promotion_id == "" or slot_code == "" or req_qty == nil or req_qty <= 0 or req_amt == nil or req_amt < 0 or reservation_member == "" then
+        return fail("INVALID_INPUT", promotion_id, slot_code, "INVALID_VOUCHER_PAYLOAD", "bad tuple at index=" .. i)
+    end
+
+    entries[i] = {
+        promotion_id = promotion_id,
+        slot_code = slot_code,
+        req_qty = req_qty,
+        req_amt = req_amt,
+        member = reservation_member,
+        budget_key = budget_key,
+        reservation_key = reservation_key
+    }
+end
+
+-- Phase 0: Idempotency key-state check
+local existed_count = 0
+for i = 1, n do
+    local e = entries[i]
+    local existed = redis.call('EXISTS', e.reservation_key)
+    if existed == 1 then
+        existed_count = existed_count + 1
+
+        local payload = redis.call('GET', e.reservation_key)
+        if not payload then
+            return fail("PARTIAL_RESERVATION_STATE", e.promotion_id, e.slot_code, "MISSING_PAYLOAD_ON_EXISTING_KEY", "reservation key exists but payload missing")
+        end
+
+        local parsed = cjson.decode(payload)
+        local p_qty = to_num(parsed.req_qty)
+        local p_amt = to_num(parsed.req_amt)
+        local p_promo = tostring(parsed.promotion_id or "")
+        local p_slot = tostring(parsed.slot or "")
+        local p_member = tostring(parsed.member or "")
+
+        if p_qty == nil or p_amt == nil or p_promo == "" or p_slot == "" or p_member == "" then
+            return fail("IDEMPOTENCY_PAYLOAD_MISMATCH", e.promotion_id, e.slot_code, "CORRUPTED_EXISTING_PAYLOAD", "existing payload malformed")
+        end
+
+        if p_qty ~= e.req_qty or (not float_equal(p_amt, e.req_amt)) or p_promo ~= e.promotion_id or p_slot ~= e.slot_code or p_member ~= e.member then
+            return fail("IDEMPOTENCY_PAYLOAD_MISMATCH", e.promotion_id, e.slot_code, "EXISTING_PAYLOAD_NOT_MATCH_REQUEST", "reservation already exists with different payload")
+        end
+    end
+end
+
+if existed_count == n then
+    return ok(true)
+end
+
+if existed_count > 0 then
+    return fail("PARTIAL_RESERVATION_STATE", "", "", "MIXED_EXISTING_KEYS", "some reservation keys already exist")
+end
+
+-- Phase 1 (validate-only): dùng shadow consumption để chặn oversubscribe trong cùng batch
+local budget_cache = {}
+for i = 1, n do
+    local e = entries[i]
+    local b = budget_cache[e.budget_key]
+
+    if not b then
+        local row = redis.call('HMGET', e.budget_key, 'total_qty', 'reserved_qty', 'used_qty', 'total_amount', 'reserved_amount', 'used_amount')
+        b = {
+            total_qty = to_num(row[1]) or 0,
+            reserved_qty = to_num(row[2]) or 0,
+            used_qty = to_num(row[3]) or 0,
+            total_amount = to_num(row[4]) or 0,
+            reserved_amount = to_num(row[5]) or 0,
+            used_amount = to_num(row[6]) or 0,
+            shadow_qty = 0,
+            shadow_amt = 0
+        }
+        budget_cache[e.budget_key] = b
+    end
+
+    local available_qty = b.total_qty - b.used_qty - b.reserved_qty - b.shadow_qty
+    if available_qty < e.req_qty then
+        return fail("BUDGET_EXHAUSTED", e.promotion_id, e.slot_code, "BUDGET_QTY_EXHAUSTED", "available_qty=" .. available_qty)
+    end
+
+    if b.total_amount > -1 then
+        local available_amt = b.total_amount - b.used_amount - b.reserved_amount - b.shadow_amt
+        if available_amt < e.req_amt then
+            return fail("BUDGET_EXHAUSTED", e.promotion_id, e.slot_code, "BUDGET_AMOUNT_EXHAUSTED", "available_amount=" .. available_amt)
+        end
+    end
+
+    b.shadow_qty = b.shadow_qty + e.req_qty
+    b.shadow_amt = b.shadow_amt + e.req_amt
+end
+
+-- Phase 2 (apply-all): mutate toàn bộ. Nếu có lỗi bất thường thì rollback ngay trong script.
+local applied = {}
+
+for i = 1, n do
+    local e = entries[i]
+
+    local a = {
+        promotion_id = e.promotion_id,
+        slot_code = e.slot_code,
+        req_qty = e.req_qty,
+        req_amt = e.req_amt,
+        member = e.member,
+        budget_key = e.budget_key,
+        reservation_key = e.reservation_key,
+        did_qty = false,
+        did_amt = false,
+        did_set = false,
+        did_zadd = false
+    }
+
+    local r1 = redis.pcall('HINCRBY', e.budget_key, 'reserved_qty', e.req_qty)
+    if type(r1) == 'table' and r1.err then
+        -- rollback already-applied entries
+        for j = #applied, 1, -1 do
+            local x = applied[j]
+            if x.did_zadd then redis.pcall('ZREM', KEYS[1], x.member) end
+            if x.did_set then redis.pcall('DEL', x.reservation_key) end
+            if x.did_amt then redis.pcall('HINCRBYFLOAT', x.budget_key, 'reserved_amount', -x.req_amt) end
+            if x.did_qty then redis.pcall('HINCRBY', x.budget_key, 'reserved_qty', -x.req_qty) end
+        end
+        return fail("APPLY_FAILED_ROLLED_BACK", e.promotion_id, e.slot_code, "HINCRBY_RESERVED_QTY_FAILED", r1.err)
+    end
+    a.did_qty = true
+
+    local r2 = redis.pcall('HINCRBYFLOAT', e.budget_key, 'reserved_amount', e.req_amt)
+    if type(r2) == 'table' and r2.err then
+        -- rollback current + previous
+        redis.pcall('HINCRBY', e.budget_key, 'reserved_qty', -e.req_qty)
+        for j = #applied, 1, -1 do
+            local x = applied[j]
+            if x.did_zadd then redis.pcall('ZREM', KEYS[1], x.member) end
+            if x.did_set then redis.pcall('DEL', x.reservation_key) end
+            if x.did_amt then redis.pcall('HINCRBYFLOAT', x.budget_key, 'reserved_amount', -x.req_amt) end
+            if x.did_qty then redis.pcall('HINCRBY', x.budget_key, 'reserved_qty', -x.req_qty) end
+        end
+        return fail("APPLY_FAILED_ROLLED_BACK", e.promotion_id, e.slot_code, "HINCRBYFLOAT_RESERVED_AMOUNT_FAILED", r2.err)
+    end
+    a.did_amt = true
+
+    local payload = cjson.encode({
+        req_qty = e.req_qty,
+        req_amt = e.req_amt,
+        promotion_id = e.promotion_id,
+        slot = e.slot_code,
+        member = e.member
+    })
+
+    local r3 = redis.pcall('SETEX', e.reservation_key, ttl_seconds, payload)
+    if type(r3) == 'table' and r3.err then
+        -- rollback current + previous
+        redis.pcall('HINCRBYFLOAT', e.budget_key, 'reserved_amount', -e.req_amt)
+        redis.pcall('HINCRBY', e.budget_key, 'reserved_qty', -e.req_qty)
+        for j = #applied, 1, -1 do
+            local x = applied[j]
+            if x.did_zadd then redis.pcall('ZREM', KEYS[1], x.member) end
+            if x.did_set then redis.pcall('DEL', x.reservation_key) end
+            if x.did_amt then redis.pcall('HINCRBYFLOAT', x.budget_key, 'reserved_amount', -x.req_amt) end
+            if x.did_qty then redis.pcall('HINCRBY', x.budget_key, 'reserved_qty', -x.req_qty) end
+        end
+        return fail("APPLY_FAILED_ROLLED_BACK", e.promotion_id, e.slot_code, "SETEX_RESERVATION_FAILED", r3.err)
+    end
+    a.did_set = true
+
+    local r4 = redis.pcall('ZADD', KEYS[1], expire_at_epoch_ms, e.member)
+    if type(r4) == 'table' and r4.err then
+        -- rollback current + previous
+        redis.pcall('DEL', e.reservation_key)
+        redis.pcall('HINCRBYFLOAT', e.budget_key, 'reserved_amount', -e.req_amt)
+        redis.pcall('HINCRBY', e.budget_key, 'reserved_qty', -e.req_qty)
+        for j = #applied, 1, -1 do
+            local x = applied[j]
+            if x.did_zadd then redis.pcall('ZREM', KEYS[1], x.member) end
+            if x.did_set then redis.pcall('DEL', x.reservation_key) end
+            if x.did_amt then redis.pcall('HINCRBYFLOAT', x.budget_key, 'reserved_amount', -x.req_amt) end
+            if x.did_qty then redis.pcall('HINCRBY', x.budget_key, 'reserved_qty', -x.req_qty) end
+        end
+        return fail("APPLY_FAILED_ROLLED_BACK", e.promotion_id, e.slot_code, "ZADD_INDEX_FAILED", r4.err)
+    end
+    a.did_zadd = true
+
+    applied[#applied + 1] = a
+end
+
+return ok(false)
 ```
 
 > Script 2B là bắt buộc ở production. Nhánh fallback reserve tuần tự + rollback chỉ dùng cho dev/test hoặc migration ngắn hạn có kiểm soát feature-flag.

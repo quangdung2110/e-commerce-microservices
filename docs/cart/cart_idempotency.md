@@ -39,7 +39,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
 ```json
 {
   "event_type": "CART_ITEM_UPDATED",
-    "payload": "{\"cart_id\":\"{cart:user:12345}\",\"sku_id\":\"sku-1001\",\"user_id\":\"12345\",\"product_id\":\"prod-uuid\",\"seller_id\":\"seller-uuid\",\"seller_name\":\"Shop Tech Việt\",\"quantity\":3,\"unit_price_at_add\":150000.00,\"product_name\":\"Áo Thun Nam\",\"variant_info\":\"Màu Đen, Size L\",\"image_url\":\"https://cdn.domain.com/abc.jpg\",\"is_available\":true,\"added_at\":\"1708530000123\",\"updated_at\":\"1708616400456\"}"
+    "payload": "{\"cart_id\":\"{cart:user:12345}\",\"sku_id\":\"sku-1001\",\"user_id\":\"12345\",\"product_id\":\"prod-uuid\",\"platform_id\":\"admin-uuid\",\"platform_name\":\"platform Tech Việt\",\"quantity\":3,\"unit_price_at_add\":150000.00,\"product_name\":\"Áo Thun Nam\",\"variant_info\":\"Màu Đen, Size L\",\"image_url\":\"https://cdn.domain.com/abc.jpg\",\"is_available\":true,\"added_at\":\"1708530000123\",\"updated_at\":\"1708616400456\"}"
 }
 ```
 
@@ -61,9 +61,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
     "sku_id": "sku-1001",
     "user_id": "12345",
     "product_id": "prod-uuid",
-    "seller_id": "seller-uuid",
-    "seller_name": "Shop Tech Việt",
-    "quantity": 3,
+            "quantity": 3,
     "unit_price_at_add": 150000.00,
     "product_name": "Áo Thun Nam",
     "variant_info": "Màu Đen, Size L",
@@ -110,7 +108,7 @@ productSnapshotJSON, _ := json.Marshal(productSnapshot)
 Cú pháp SQL logic tương đương:
 ```sql
 INSERT INTO cart_items (
-    item_id, cart_id, product_id, sku_id, seller_id, seller_name,
+    item_id, cart_id, product_id, sku_id, platform_id, platform_name,
     quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
 )
 VALUES (
@@ -118,8 +116,8 @@ VALUES (
     '{cart:user:12345}',           -- cart_id          (payload.cart_id)
     'prod-uuid',                   -- product_id        (payload.product_id)
     'sku-1001',                    -- sku_id            (payload.sku_id)
-    'seller-uuid',                 -- seller_id         (payload.seller_id)
-    'Shop Tech Việt',              -- seller_name       (payload.seller_name)
+    'admin-uuid',                 -- platform_id         (payload.platform_id)
+    'platform Tech Việt',              -- platform_name       (payload.platform_name)
     2,                             -- quantity          (payload.quantity)
     150000.00,                     -- unit_price_at_add (payload.unit_price_at_add — cột riêng)
     -- Worker dựng JSONB từ các flat fields của payload (KHÔNG có unit_price_at_add):
@@ -134,7 +132,7 @@ VALUES (
 ON CONFLICT (item_id)
 DO UPDATE SET
     quantity         = EXCLUDED.quantity,
-    seller_name      = EXCLUDED.seller_name,
+    platform_name      = EXCLUDED.platform_name,
     product_snapshot = EXCLUDED.product_snapshot,
     redis_stream_id  = EXCLUDED.redis_stream_id,
     is_deleted       = false,
@@ -293,8 +291,8 @@ item := CartItem{
     CartID:          event.Payload.CartID,
     ProductID:       event.Payload.ProductID,
     SkuID:           event.Payload.SkuID,
-    SellerID:        event.Payload.SellerID,
-    SellerName:      event.Payload.SellerName,
+    adminID:        event.Payload.adminID,
+    adminName:      event.Payload.adminName,
     Quantity:        event.Payload.Quantity,
     UnitPriceAtAdd:  event.Payload.UnitPriceAtAdd,  // Cột riêng
     ProductSnapshot: productSnapshotJSON,            // JSONB đã được dựng bởi Worker
@@ -305,7 +303,7 @@ db.Clauses(clause.OnConflict{
     Columns:   []clause.Column{{Name: "item_id"}},
     DoUpdates: clause.Assignments(map[string]interface{}{
         "quantity":         gorm.Expr("EXCLUDED.quantity"),
-        "seller_name":      gorm.Expr("EXCLUDED.seller_name"),
+        "platform_name":      gorm.Expr("EXCLUDED.platform_name"),
         "product_snapshot": gorm.Expr("EXCLUDED.product_snapshot"),
         "redis_stream_id":  gorm.Expr("EXCLUDED.redis_stream_id"),
         "is_deleted":       false,

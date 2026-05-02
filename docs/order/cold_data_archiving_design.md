@@ -60,7 +60,7 @@ Lưu danh sách `order_id` thuộc mỗi batch và trạng thái từng item (`P
      - `status IN ('COMPLETED', 'CANCELLED', 'REFUNDED')`
      - `updated_at < NOW() - INTERVAL '6 months'`
 3. Ghi membership vào `archive_batch_items`.
-4. Denormalize dữ liệu từ `orders`, `order_parcels`, `order_items`, `order_promotions` -> snapshot JSON/Parquet.
+4. Denormalize dữ liệu từ `orders`, `order_items`, `order_item_lines`, `order_promotions` -> snapshot JSON/Parquet.
 5. Upload S3 và verify checksum.
 6. Upsert `archived_orders_lookup` cho từng đơn đã verify thành công.
 7. Hard delete dữ liệu nóng (cascade) chỉ sau khi lookup đã được ghi thành công.

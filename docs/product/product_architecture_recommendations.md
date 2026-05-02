@@ -29,13 +29,15 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 5. `product-invalidation-group` bắt buộc consume `PRODUCT_SKU_STATUS_CHANGED` để duy trì đường self-healing cache khi luồng queue in-memory của Inventory Worker bị gián đoạn.
 6. Với luồng invalidation của `product:master`, nếu trong cùng poll-batch có nhiều event của một `product_id`, chỉ xử lý bản mới nhất theo `(version, updated_at, kafka_offset)`.
 7. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
+8. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
+9. Invalidation consumer phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
 
 ## 3. Consistency & Concurrency
 
 1. Mọi cập nhật SKU ảnh hưởng business state phải tăng `products.version`.
 2. Chuẩn hóa lock order trong transaction: lock Product cha trước, rồi lock SKU con.
 3. Inventory sync nhận `product_id` trực tiếp trong payload `INVENTORY_QUANTITY_CHANGED`, sau đó vẫn phải validate cặp `product_id/sku_id` trong DB local trước khi lock/update.
-4. Luồng auto-reactivate chỉ chạy khi `status = HIDDEN`, `seller_intention_hidden = false` và `is_deleted = false` trong cùng transaction.
+4. Luồng auto-reactivate chỉ chạy khi `status = HIDDEN`, `admin_hidden = false` và `is_deleted = false` trong cùng transaction.
 5. Với Markdown batch worker chạy nhiều instance, cần giữ xử lý tuần tự theo `product_id` bằng lock row chuẩn (`FOR NO KEY UPDATE`) + `lock_timeout`/retry policy rõ ràng để tránh hai pod cùng mutate một product trong cùng thời điểm.
 6. Với guard TOCTOU của auto-reactivate, không được check ngoài transaction. Có thể dùng row Product đã lock sẵn hoặc chạy query predicate tường minh trong cùng transaction; cả hai cách đều phải giữ atomicity check+update.
 
@@ -47,6 +49,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 4. Validation cache category/attribute dùng 2 tầng L1/L2 + Pub/Sub invalidation + TTL fallback.
 5. Mỗi nguyên nhân cập nhật cache phải có một writer async chuẩn duy nhất. Với giá Markdown, `product:sku:{sku_id}` và `product:master:{product_id}` do Invalidation Consumer ghi đè theo `PRODUCT_PRICE_UPDATED`; Markdown Worker chỉ set/del `product:markdown:active:{sku_id}`.
 6. `product:master:{product_id}` phải có stale-write guard `(version, updated_at)` và cơ chế giảm write amplification (dedupe theo `product_id`, debounce ngắn 50-100ms liên batch).
+7. Nguồn dữ liệu refresh cache ưu tiên event payload; DB fallback chỉ dùng khi payload không đủ contract. Không dùng Search/Elasticsearch làm nguồn rebuild cache point-read.
 
 ## 5. Contract Governance
 

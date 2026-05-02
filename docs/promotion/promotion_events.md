@@ -60,7 +60,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "rule_id": 42,
     "campaign_id": 15,
-    "owner_type": "PLATFORM",
+    "deleted_owner_type": "PLATFORM",
     "owner_id": null,
     "scope_type": "CATEGORY",
     "ref_id": "cat-dien-thoai",
@@ -181,7 +181,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "user_id": 99,
     "discount_amount": 50000.00,
     "platform_funding": 20000.00,
-    "seller_funding": 30000.00,
+    "admin_funding": 30000.00,
     "reserved_at": "2026-02-28T10:00:00Z"
   }
 }
@@ -192,7 +192,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ### 2.6. COUPON_REDEEMED
 **Ngữ cảnh:** Đơn hàng thanh toán thành công, ngân sách xác nhận trừ. Xem [Workflow Luồng 4.B](promotion_workflow.md#bước-b-thanh-toán-thành-công-confirm).
-**Consumer chính:** Analytics, Seller Settlement Service (đối soát chi phí khuyến mãi).
+**Consumer chính:** Analytics, admin Settlement Service (đối soát chi phí khuyến mãi).
 
 ```json
 {
@@ -210,7 +210,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "user_id": 99,
     "discount_amount": 50000.00,
     "platform_funding": 20000.00,
-    "seller_funding": 30000.00,
+    "admin_funding": 30000.00,
     "redeemed_at": "2026-02-28T10:16:40Z"
   }
 }
@@ -244,7 +244,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ### 2.8. COUPON_REFUNDED
 **Ngữ cảnh:** Đơn hàng đã giao nhưng khách đổi trả hàng. Xem [Workflow Luồng 5](promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
-**Consumer:** Analytics, Seller Settlement Service (hoàn lại chi phí khuyến mãi cho Seller).
+**Consumer:** Analytics, admin Settlement Service (hoàn lại chi phí khuyến mãi cho admin).
 
 ```json
 {
@@ -262,14 +262,14 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "user_id": 99,
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
-    "promotion_scope_type": "SHOP",
-    "scope_seller_id": 501,
+    "promotion_scope_type": "platform",
+    "scope_admin_id": 501,
     "discount_amount": 50000.00,
     "refunded_discount_amount": 50000.00,
     "platform_funding": 20000.00,
-    "seller_funding": 30000.00,
+    "admin_funding": 30000.00,
     "platform_funding_refund": 20000.00,
-    "seller_funding_refund": 30000.00,
+    "admin_funding_refund": 30000.00,
     "restore_outcome": "RESTORED",
     "refunded_at": "2026-02-28T23:53:20Z"
   }
@@ -283,7 +283,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ### 2.9. BUDGET_EXHAUSTED
 **Ngữ cảnh:** Ngân sách (Quantity hoặc Budget Amount) của một promotion đã cạn kiệt hoàn toàn (`available = 0`).
-**Consumer:** Notification Service (Báo cho Admin/Seller), Frontend (Disable nút "Lưu mã").
+**Consumer:** Notification Service (Báo cho Admin/admin), Frontend (Disable nút "Lưu mã").
 
 > [!NOTE]
 > Event Kafka `BUDGET_EXHAUSTED` là tín hiệu bất đồng bộ cho monitoring/UI. Ở submit path thời gian thực, Checkout nhận lỗi reserve có cấu trúc qua call đồng bộ (`ReservePromotionActivity`), không chờ Kafka event này để quyết định phản hồi `409 PROMOTION_RECALCULATION_NEEDED`.
@@ -334,7 +334,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "order_id": 5001,
     "user_id": 99,
     "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "seller_funding": 30000.00}
+      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
     ],
     "paid_at": "2026-02-28T10:05:00Z"
   }
@@ -359,7 +359,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "order_id": 5001,
     "user_id": 99,
     "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "seller_funding": 30000.00}
+      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
     ],
     "cancelled_at": "2026-02-28T10:20:00Z",
     "reason": "PAYMENT_TIMEOUT"
@@ -388,17 +388,17 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "refund_type": "FULL",
     "refund_amount": 995000,
     "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "seller_funding": 30000.00}
+      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
     ],
     "promotion_refund_allocations": [
       {
         "promotion_id": 100,
-        "promotion_scope_type": "SHOP",
-        "scope_seller_id": 501,
+        "promotion_scope_type": "platform",
+        "scope_admin_id": 501,
         "refunded_discount_amount": 50000.00,
         "platform_funding_refund": 20000.00,
-        "seller_funding_refund": 30000.00,
-        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_SHOP_COVERED",
+        "admin_funding_refund": 30000.00,
+        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_platform_COVERED",
         "voucher_restore_mode": "BEST_EFFORT_NON_BLOCKING"
       }
     ],
@@ -424,7 +424,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 > **Refund rule (bắt buộc):** Nếu `refund_type = PARTIAL`, Promotion hoàn ngân sách theo `promotion_refund_allocations[]`. `returned_items[]` chỉ là dữ liệu giải thích/audit, không dùng làm nguồn tính toán duy nhất.
 >
-> **Partial voucher scope rule:** Với `refund_type = PARTIAL`, chỉ allocation `SHOP` đạt điều kiện `RESTORE_ONLY_IF_FULL_SHOP_COVERED` mới được phép hoàn. Allocation `PLATFORM`/`SHIPPING` trong partial phải bằng `0`.
+> **Partial voucher scope rule:** Với `refund_type = PARTIAL`, chỉ allocation `platform` đạt điều kiện `RESTORE_ONLY_IF_FULL_platform_COVERED` mới được phép hoàn. Allocation `PLATFORM`/`SHIPPING` trong partial phải bằng `0`.
 >
 > **Wallet validity contract:** Promotion chỉ restore `USED -> SAVED` khi voucher còn hạn (`expired_at > NOW()`). Nếu đã quá hạn tại thời điểm restore thì chuyển `EXPIRED` (hoặc giữ `USED` nếu không có row ví để cập nhật).
 >
@@ -463,8 +463,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "source": "product-service",
   "payload": {
     "product_id": "prod-uuid-001",
-    "seller_id": "seller-uuid-001",
-    "old_status": "PENDING_REVIEW",
+        "old_status": "PENDING_REVIEW",
     "new_status": "ACTIVE",
     "version": 4,
     "updated_at": "2026-02-28T05:00:00Z"

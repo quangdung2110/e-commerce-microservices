@@ -71,6 +71,14 @@ TTL khuyến nghị cho idempotency key: 30 ngày.
 
 > Backend chỉ được phát event mới khi script trả `1`. Nếu trả `2` phải trả response idempotent và tuyệt đối không phát thêm event.
 
+**Runbook bắt buộc khi nhận `-1`:**
+1. Dừng xử lý request hiện tại ngay lập tức.
+2. Không retry nóng và không auto-rollback mù quáng trên SKU lỗi.
+3. Đặt khóa `suspended_sku_locks` cho SKU liên quan để chặn mutate tiếp theo.
+4. Phát alert + tạo reconciliation task; chỉ mở khóa sau khi đã đối soát Redis/DB và xác nhận invariant khôi phục.
+
+> Boundary quyết định: mutate nóng chỉ diễn ra trên key `inventory:physic:{sku_id:warehouse_id}:stock`. Key `inventory:logic:{sku_id}:stock` là read model tổng hợp và phải được cập nhật qua worker/reconciliation, không dùng làm commit source cho Reserve/Deduct/Release.
+
 <a id="script-1-thuật-toán-khóa-giữ-chỗ-reserve-inventory"></a>
 ### Script 1: Thuật toán khóa giữ chỗ Reserve Inventory
 

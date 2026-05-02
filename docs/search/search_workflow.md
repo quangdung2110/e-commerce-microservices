@@ -18,7 +18,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 
 > **Nguyên tắc phân chia trách nhiệm:**
 > - **Search Service** → Mọi API liên quan đến **tìm kiếm, lọc, gợi ý** cho End-User (Buyer browsing).
-> - **Product Service** → Mọi API liên quan đến **ghi dữ liệu** (Seller CRUD) và **Point-Read nội bộ** (Cart/Order cần giá chính xác thời gian thực). Tuyệt đối **KHÔNG** dùng Search Service cho Point-Read nội bộ vì Elasticsearch có độ trễ 1-3s (Eventual Consistency). Xem [Product Workflow - Point-Read](../product/product_workflow.md#5-api-point-read-đọc-chính-xác--nhanh).
+> - **Product Service** → Mọi API liên quan đến **ghi dữ liệu** và **Point-Read nội bộ** (Cart/Order cần giá chính xác thời gian thực). Tuyệt đối **KHÔNG** dùng Search Service cho Point-Read nội bộ vì Elasticsearch có độ trễ 1-3s (Eventual Consistency). Xem [Product Workflow - Point-Read](../product/product_workflow.md#5-api-point-read-đọc-chính-xác--nhanh).
 
 ## 1. Gợi Ý Cấu Trúc Base API Path
 `[GET/POST] /api/v1/search/...`
@@ -38,7 +38,6 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 | `price_max` | number | Không | Giá tối đa |
 | `in_stock` | boolean | Không | Chỉ hiện sản phẩm còn hàng (default: true) |
 | `has_promotion` | boolean | Không | Chỉ hiện sản phẩm đang giảm giá |
-| `seller_id` | string | Không | Lọc theo gian hàng Seller |
 | `sort` | string | Không | `relevance` (default), `price_asc`, `price_desc`, `newest`, `best_selling`, `rating` |
 | `page` | int | Không | Trang hiện tại (default: 1) |
 | `size` | int | Không | Số lượng kết quả mỗi trang (default: 20, max: 100) |
@@ -47,7 +46,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 1. **[Input Validation & Normalization]:**
    - Validate input parameters (page > 0, size <= 100, etc.).
    - Normalize query `q`: lowercase, trim, remove extra whitespace.
-  - Chuẩn hóa canonical toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `seller_id`, `sort`, `page`, `size`) theo quy tắc tại [Caching Schema](search_caching_schema.md#11-nhóm-search-results-cache-hot-query-cache).
+  - Chuẩn hóa canonical toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `sort`, `page`, `size`) theo quy tắc tại [Caching Schema](search_caching_schema.md#11-nhóm-search-results-cache-hot-query-cache).
    - Hash normalized query + all params → `query_hash` cho cache lookup.
 2. **[Redis] - Check Hot Query Cache (Kèm SWR + 2 tầng chống stampede):**
    - Lệnh đọc: `GET search:query:{query_hash}`.
@@ -173,7 +172,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
       - `name^3`: Boost trọng số tên sản phẩm so với attributes.
       - `filter` context: Các điều kiện lọc cứng, được ES cache bitset tự động.
       - `in_stock`: khi tham số `in_stock=false` thì bỏ `term is_in_stock=true` khỏi filter.
-      - `is_in_stock` ở Search là cờ khả dụng bán hàng theo Product status stream, không thay cho kiểm tra tồn kho cứng ở checkout.
+      - `is_in_stock` ở Search là cờ sellable projection (`is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE`), không thay cho kiểm tra tồn kho cứng ở checkout.
       - `searchable_attributes`: Thay thế hoàn toàn cho kiểu `nested`, search/filter trực tiếp trên Composite Array.
       - `collapse`: Gom nhóm các SKU (Document) thuộc cùng 1 sản phẩm (`product_id`), chỉ trả về SKU best match cho UI.
       - Các count hiển thị cho facets/category phải map từ aggregation `product_count` (DISTINCT `product_id`), không dùng trực tiếp doc_count theo SKU.
@@ -189,6 +188,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
 4. **[Response Transformation] - Chuẩn hoá kết quả:**
    - Map Elasticsearch hits → API response format. Kết quả trả về đã là SKU (First-class document).
    - `best_price` và `has_promotion` đã được tính sẵn, không cần loop ở App Level nữa.
+  - `discount_percentage` (nếu trả ra API) phải tính theo công thức duy nhất: `floor(((original_price - best_price) / original_price) * 100)` khi `original_price > 0` và `best_price < original_price`; ngược lại trả `0`.
    - **Response JSON:**
      ```json
      {
@@ -342,15 +342,10 @@ Trả về danh sách bộ lọc (filters) khả dụng cho một danh mục c�
 | Tiêu chí | Search Service | Product Service |
 |---|---|---|
 | **Database** | Elasticsearch (Read Model) | PostgreSQL (Write Model / Source of Truth) |
-| **Đối tượng gọi** | End-User (Buyer) browsing | Seller CRUD, Cart/Order Service (internal) |
+| **Đối tượng gọi** | End-User (Buyer) browsing | Cart/Order Service (internal) |
 | **Dữ liệu** | Denormalized, pre-computed | Normalized, transactional |
 | **Tính nhất quán** | Eventual (delay 1-3s) | Strong (realtime) |
 | **Use case** | Full-text search, faceted filter, autocomplete | Point-Read giá chính xác, tạo/sửa sản phẩm |
 | **API prefix** | `/api/v1/search/...` | `/api/v1/products/...` |
 | **Caching** | Redis (hot queries: logical 30s, physical 24h) | Redis + Caffeine (validation, 1h TTL) |
 
-## 7. Custom Routing Cho Truy Vấn Seller (Dashboard)
-**[P4 Tối Ưu Routing]**: Đối với các truy vấn List từ Seller Dashboard (Danh sách tất cả sản phẩm của Shop đang đăng nhập), Application KHÔNG ĐƯỢC để Elasticsearch scatter-gather 3 shard lãng phí băng thông rẽ nhánh.
-- Ngay từ khi Worker Indexing đẩy document: `PUT products/_doc/{sku_id}?routing={seller_id}`.
-- Khi Application gọi Query cho Seller: Bổ sung Param `GET products/_search?routing={seller_id}`.
-- Giúp giảm 60-70% query latency cho Seller Dashboard bằng cách chỉ đánh vào đúng 1 Shard đích nơi hàng của Seller đó tọa lạc.

@@ -26,14 +26,14 @@ Product Service sử dụng **Finite State Machine (FSM)** phức tạp với nh
 - Config FSM bằng Java code:
   ```java
   transitions.withExternal()
-      .source(DRAFT).target(PENDING_REVIEW).event(SUBMIT_FOR_REVIEW)
+      .source(DRAFT).target(PENDING_REVIEW).event()
       .guard(hasRequiredAttributes());
   ```
 - Go không có FSM framework tương đương mature — phải tự implement bằng switch-case hoặc map transitions.
 
 ### 2.2. Caffeine L1 + Redis L2 — Dual-Layer Validation
 Tương tự Promotion Service, Product Service sử dụng **Caffeine Local Cache** cho Category Tree validation:
-- Category Tree được cache vào RAM JVM — truy vấn `O(1)` khi validate attribute requirements mỗi khi Seller tạo/sửa sản phẩm.
+- Category Tree được cache vào RAM JVM — truy vấn `O(1)` khi validate attribute requirements mỗi khi admin tạo/sửa sản phẩm.
 - `expireAfterWrite` (Mặc định 1 phút) của Caffeine đóng vai trò Safety Fallback phòng khi việc xoá cache mượt mà thông qua Redis Pub/Sub bị nghẽn mạng (Miss event).
 
 ### 2.3. Spring `@Transactional` & Debezium CDC — Outbox Pattern

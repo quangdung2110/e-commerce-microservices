@@ -18,8 +18,6 @@ Tài liệu này định nghĩa toàn bộ luồng sự kiện mà Search Servic
 
 > **Nguyên tắc:** Search phản chiếu dữ liệu từ Source Services theo ranh giới ownership. Product data đến từ Product Service; review metrics đến từ Review Service. Search không tự tính business logic ngoài payload contract nhận được.
 
-> **Quy ước identity cross-service (bắt buộc):** `seller_id` được xem là opaque string. Search không được ép kiểu/convert định dạng (`s-...`, UUID, số...) và chỉ so khớp theo giá trị chuỗi nguyên bản từ event payload.
-
 > **Policy shared-topic (bắt buộc):** nếu consumer nhận event hợp lệ theo envelope nhưng `event_type` không nằm trong allowlist của consumer group đó thì phải **ignore + ACK + ghi metric** (`search_event_ignored_total{topic,event_type}`), không đẩy DLQ.
 
 ## 1. Bản Đồ Kafka Topics
@@ -29,7 +27,6 @@ Tài liệu này định nghĩa toàn bộ luồng sự kiện mà Search Servic
 | `t.product.events` | `search-product-indexer` | Product Service | `PRODUCT_CREATED`, `PRODUCT_UPDATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_PRICE_UPDATED`, `PRODUCT_SKU_STATUS_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED` | Topic chính cho Product projection |
 | `t.category.events` | `search-category-indexer` | Product Service | `CATEGORY_UPDATED`, `CATEGORY_DELETED` | Topic chuyên biệt cho category projection |
 | `t.review.events` | `search-review-metrics-sync` | Review Service | `REVIEW_METRICS_UPDATED` | Đồng bộ điểm rating và số lượng review theo thời gian thực |
-| `t.seller.events` | `search-seller-profile-sync` | Seller Service | `SELLER_PROFILE_UPDATED`, `SELLER_STATUS_CHANGED` | Đồng bộ tên shop (`store_name` từ Seller event, map sang `seller_name` trong index) và trạng thái seller vào document Search |
 | `t.search.metrics.events` | `search-sales-metrics-sync` | Order Service (Order Metrics Projector nội bộ) | `ORDER_PRODUCT_METRICS_UPDATED` | Đồng bộ realtime `product_sold_count` theo `product_id` |
 | `t.search.retry` | `search-retry-replayer` | Search Service (internal) | retry envelopes (self-heal) | Kênh nội bộ xử lý lỗi có thể phục hồi như `document_missing_exception` |
 | `t.search.dlq` | `search-dlq-processor` | Search Service (internal) | failed envelopes (parking lot) | Kênh lỗi không tự phục hồi hoặc vượt ngưỡng retry để replay có kiểm soát |
@@ -64,6 +61,22 @@ Tài liệu này định nghĩa toàn bộ luồng sự kiện mà Search Servic
 **Logic xử lý:**
 1. Update `product_status` cho tất cả SKU thuộc `product_id` bằng `_update_by_query`.
 2. Guard bằng `version` để chặn stale update.
+3. Bắt buộc throttle `_update_by_query` bằng `requests_per_second` (khuyến nghị 300-500) + `conflicts=proceed` để tránh spike CPU Elasticsearch.
+4. Recompute `is_in_stock` theo trạng thái hợp lệ để bán: `is_deleted == false AND product_status == 'ACTIVE' AND sku_status == 'ACTIVE'`.
+
+```json
+POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
+{
+  "query": { "term": { "product_id": "prod-uuid-001" } },
+  "script": {
+    "source": "if (ctx._source.version != null && params.version <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.product_status = params.new_status; ctx._source.is_in_stock = (!ctx._source.is_deleted && ctx._source.product_status == 'ACTIVE' && ctx._source.sku_status == 'ACTIVE'); ctx._source.version = params.version;",
+    "params": {
+      "new_status": "ACTIVE",
+      "version": 4
+    }
+  }
+}
+```
 
 ### 2.4. PRODUCT_PRICE_UPDATED
 **Nguồn:** [Product Events - 3.4](../product/product_events.md#34-product_price_updated)
@@ -107,7 +120,7 @@ POST products_write/_update/{sku_id}
 
 **Logic xử lý:**
 1. Parse payload: `sku_id`, `new_status`, `version`.
-2. Map `is_in_stock = (new_status == 'ACTIVE')` như cờ khả dụng bán hàng theo Product status stream.
+2. Map `is_in_stock` theo công thức sellable: `(new_status == 'ACTIVE') AND (current_doc.product_status == 'ACTIVE') AND (current_doc.is_deleted == false)`.
 3. `is_in_stock` trong Search không phải số lượng tồn kho realtime ở kho; kiểm tra tồn kho cứng vẫn thuộc Checkout/Inventory path.
 4. Partial update chỉ các trường trạng thái + version.
 
@@ -115,10 +128,9 @@ POST products_write/_update/{sku_id}
 POST products_write/_update/{sku_id}
 {
   "script": {
-    "source": "if (ctx._source.version != null && params.version <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.sku_status = params.sku_status; ctx._source.is_in_stock = params.is_in_stock; ctx._source.version = params.version;",
+    "source": "if (ctx._source.version != null && params.version <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.sku_status = params.sku_status; ctx._source.is_in_stock = (params.sku_status == 'ACTIVE' && ctx._source.product_status == 'ACTIVE' && !ctx._source.is_deleted); ctx._source.version = params.version;",
     "params": {
       "sku_status": "OUT_OF_STOCK",
-      "is_in_stock": false,
       "version": 8
     }
   }
@@ -133,9 +145,10 @@ POST products_write/_update/{sku_id}
 **Logic xử lý:**
 1. Nhận `category_id`, `new_name`, `new_path`, `category_version`.
 2. Chạy `_update_by_query` và guard bằng `category_version` để tránh race condition ghi đè tên cũ.
+3. Bắt buộc dùng `conflicts=proceed` + `requests_per_second` cho batch lớn; parse kết quả và retry có kiểm soát nếu có shard failure.
 
 ```json
-POST products_write/_update_by_query
+POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
   "query": { "term": { "category_id": "cat-smartphone" } },
   "script": {
@@ -150,6 +163,10 @@ POST products_write/_update_by_query
 ```
 
 > Script update có guard version, không cập nhật các field không liên quan.
+>
+> **Kết quả `_update_by_query` phải được kiểm tra:**
+> - `version_conflicts` có thể chấp nhận khi guard chặn stale events.
+> - `failures` không rỗng phải được phân loại retry/dlq, không được coi là thành công toàn phần.
 
 ### 2.7. PRODUCT_DELETED / PRODUCT_SKU_DELETED
 **Kafka Topic:** `t.product.events`
@@ -159,6 +176,30 @@ POST products_write/_update_by_query
 *   `PRODUCT_SKU_DELETED` bắt buộc có `payload.version`; worker phải normalize `payload.version` thành guard version trước khi scripted-upsert tombstone.
 *   Chiến lược Tombstone Zero-Downtime này chặn trường hợp document bị xóa, nhưng do network lag, event tạo cũ (hoặc edit) lại tới trễ đào mồ sống dậy SKU. Update Script sẽ bẻ gãy Event trễ bằng `event.version > ctx._source.version`.
 *   Cronjob làm sạch rác (ILM/Cleanup Job) sẽ dọn dẹp các Tombstone cũ sau 30 ngày. Đồng thời Worker gọi Xóa Suggestion Cache.
+
+```json
+POST products_write/_update/{sku_id}
+{
+  "scripted_upsert": true,
+  "script": {
+    "source": "if (ctx._source.version != null && params.version <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.is_deleted = true; ctx._source.deleted_at = params.deleted_at; ctx._source.version = params.version; ctx._source.is_in_stock = false;",
+    "params": {
+      "version": 9,
+      "deleted_at": "2026-03-24T10:00:00Z"
+    }
+  },
+  "upsert": {
+    "sku_id": "sku-uuid-002",
+    "product_id": "prod-uuid-001",
+    "is_deleted": true,
+    "deleted_at": "2026-03-24T10:00:00Z",
+    "is_in_stock": false,
+    "version": 9
+  }
+}
+```
+
+> **Bulk partial failure policy:** khi xử lý `PRODUCT_DELETED` theo nhiều `sku_id`, các item failed phải được tách retry có chọn lọc; không được fail cả batch đã thành công.
 
 ### 2.8. REVIEW_METRICS_UPDATED
 **Nguồn:** Review Service.
@@ -171,12 +212,12 @@ POST products_write/_update_by_query
   - ưu tiên `envelope.event_sequence_id` (contract chuẩn),
   - fallback `payload.event_sequence_id` nếu producer cũ chưa mirror đầy đủ.
   - nếu cả hai cùng có nhưng khác nhau -> contract violation, chuyển `t.search.dlq`.
-3. Chạy `_update_by_query` theo `product_id` để update rating field cho toàn bộ SKU docs của product.
+3. Chạy `_update_by_query` theo `product_id` để update rating field cho toàn bộ SKU docs của product, bắt buộc dùng `conflicts=proceed` + `requests_per_second` để tránh spike CPU.
 4. `event_sequence_id` là bắt buộc theo contract Review, dùng làm guard ordering duy nhất.
 5. `updated_at` chỉ lưu cho observability/debug, không tham gia quyết định apply/skip.
 
 ```json
-POST products_write/_update_by_query
+POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
   "query": { "term": { "product_id": "prod-uuid-001" } },
   "script": {
@@ -193,32 +234,20 @@ POST products_write/_update_by_query
 
 6. Nếu thiếu `event_sequence_id` sau bước resolve: đánh dấu contract violation và park vào `t.search.dlq` (không fallback timestamp).
 7. Nếu ES unavailable: retry theo policy chung; quá ngưỡng đẩy `t.search.dlq`.
+8. Kết quả `_update_by_query` phải parse `failures`: nếu có lỗi shard/script thì tách retry có chọn lọc hoặc chuyển `t.search.dlq`; `version_conflicts` do guard có thể chấp nhận.
 
-### 2.9. SELLER_PROFILE_UPDATED / SELLER_STATUS_CHANGED
-**Nguồn:** Seller Service.
-
-**Topic:** `t.seller.events`
-
-**Logic xử lý:**
-1. `SELLER_PROFILE_UPDATED`: parse `seller_id`, `store_name` (hoặc fallback `seller_name` với payload cũ), `profile_version`.
-  - `seller_id` phải được dùng nguyên bản theo quy ước opaque string, không transform format.
-2. Map `seller_name = store_name` trước khi update index.
-3. Chạy `_update_by_query` theo `seller_id`, chỉ apply khi `profile_version > seller_profile_version` để tránh ghi đè tên cũ.
-4. `SELLER_STATUS_CHANGED`: parse `seller_id`, `new_status`, `status_version`, `changed_at`, `visibility_policy`.
-5. Luôn đồng bộ `seller_status` và guard theo `status_version` (trường bắt buộc theo contract Seller hiện tại). `changed_at` chỉ dùng cho audit/observability.
-6. Search không tự thay đổi `product_status` từ luồng Seller event để tránh vi phạm ownership của Product aggregate. Việc hide/show listing phải đi qua Product write-model và phản chiếu bằng `PRODUCT_STATE_CHANGED`.
-
-### 2.10. ORDER_PRODUCT_METRICS_UPDATED
+### 2.9. ORDER_PRODUCT_METRICS_UPDATED
 **Nguồn:** Order Metrics Projector.
 
 **Topic:** `t.search.metrics.events`
 
 **Logic xử lý:**
 1. Parse `product_id`, `total_sold`, `event_sequence_id`.
-2. `_update_by_query` theo `product_id` để set `product_sold_count = total_sold`.
+2. `_update_by_query` theo `product_id` để set `product_sold_count = total_sold`, bắt buộc dùng `conflicts=proceed` + `requests_per_second`.
 3. Guard bằng `event_sequence_id` để chặn event metrics cũ, đồng thời persist vào `sales_metrics_event_sequence_id` để dùng cho lần so sánh tiếp theo.
+4. Parse kết quả `_update_by_query`; nếu `failures` không rỗng thì retry có kiểm soát hoặc chuyển `t.search.dlq`.
 
-### 2.11. CATEGORY_DELETED
+### 2.10. CATEGORY_DELETED
 **Nguồn:** [Product Events - 3.9](../product/product_events.md#39-category_deleted)
 
 **Topic:** `t.category.events`
@@ -226,8 +255,9 @@ POST products_write/_update_by_query
 **Logic xử lý:**
 1. Nhận `category_version` từ event.
 2. **CẤM TUYỆT ĐỐI** tự ý `_update_by_query` đưa `product_status` của các sản phẩm mồ côi về `HIDDEN` (Hành động này vi phạm cực độ nguyên lý CQRS Schema). Search Service KHÔNG CÓ QUYỀN tự thay đổi State của Sản phẩm nếu ở Source Database chưa thay đổi thực sự. Việc đổi State thành ẨN mồ côi sẽ được Worker của Product Service xử lý và tự động Push sang thông qua các Event `PRODUCT_STATE_CHANGED` theo ngay sau.
-3. Ở bước này, Search Service chỉ chạy `_update_by_query` để xoá tên (nullify `category_name`, `category_path`) và nhích `category_version` của các Document liên đới để giữ consistency cấu trúc.
+3. Ở bước này, Search Service chỉ chạy `_update_by_query` để xoá tên (nullify `category_name`, `category_path`) và nhích `category_version` của các Document liên đới để giữ consistency cấu trúc; bắt buộc dùng `conflicts=proceed` + `requests_per_second`.
 4. Invalidate `search:categories:tree`.
+5. Parse kết quả `_update_by_query`: `version_conflicts` có thể chấp nhận, `failures` phải retry có chọn lọc hoặc vào `t.search.dlq`.
 
 ## 3. Chiến Lược Idempotency & Ordering
 
@@ -250,10 +280,6 @@ ELSE IF event_type = REVIEW_METRICS_UPDATED AND event.event_sequence_id IS NULL 
   SKIP event
 ELSE IF event_type = ORDER_PRODUCT_METRICS_UPDATED AND event.event_sequence_id <= current_doc.sales_metrics_event_sequence_id THEN
   SKIP event
-ELSE IF event_type = SELLER_PROFILE_UPDATED AND event.profile_version <= current_doc.seller_profile_version THEN
-  SKIP event
-ELSE IF event_type = SELLER_STATUS_CHANGED AND event.status_version <= current_doc.seller_status_version THEN
-  SKIP event
 ELSE IF event_type IN (CATEGORY_UPDATED, CATEGORY_DELETED) AND event.category_version <= current_doc.category_version THEN
   SKIP event
 ELSE IF event_type <> PRODUCT_PRICE_UPDATED AND event.version IS NOT NULL AND event.version <= current_doc.version THEN
@@ -275,8 +301,6 @@ Tương tự cho category-level update dùng `category_version`.
 | Price stream (`PRODUCT_PRICE_UPDATED`) | `price_event_sequence_id` (+ fence `version`) | Một transaction có thể phát nhiều event giá với cùng `version`; cần sequence riêng cấp SKU-event. |
 | Review metrics (`REVIEW_METRICS_UPDATED`) | `review_metrics_event_sequence_id` | Stream độc lập từ Review Service, cadence khác Product stream. |
 | Sales metrics (`ORDER_PRODUCT_METRICS_UPDATED`) | `sales_metrics_event_sequence_id` | Stream độc lập từ Order Metrics Projector, partition theo `product_id`. |
-| Seller profile (`SELLER_PROFILE_UPDATED`) | `seller_profile_version` | Version riêng của Seller profile aggregate. |
-| Seller status (`SELLER_STATUS_CHANGED`) | `seller_status_version` | Version riêng của Seller status lifecycle, không đồng hồ với Product version. |
 | Category projection (`CATEGORY_UPDATED`, `CATEGORY_DELETED`) | `category_version` | Category là aggregate độc lập, update theo partition key `category_id`. |
 
 **Nguyên tắc cứng:** không so sánh chéo sequence/version giữa các stream khác ownership.

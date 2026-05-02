@@ -11,7 +11,6 @@
 **Cross-Service References:**
 *   [Product Service - Events](../product/product_events.md)
 *   [Review Service - Events](../review/review_events.md)
-*   [Seller Service - Design](../seller/seller_design.md)
 *   [Order Service - Events](../order/order_events.md)
 
 ---
@@ -27,7 +26,6 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 | `t.product.events` | `search-product-indexer` | Đồng bộ product/SKU projection |
 | `t.category.events` | `search-category-indexer` | Đồng bộ denormalized category fields |
 | `t.review.events` | `search-review-metrics-sync` | Đồng bộ điểm đánh giá và số lượng review |
-| `t.seller.events` | `search-seller-profile-sync` | Đồng bộ thông tin seller |
 | `t.search.metrics.events` | `search-sales-metrics-sync` | Đồng bộ sold metrics theo product |
 | `t.search.retry` | `search-retry-replayer` | Retry/self-heal cho các lỗi có khả năng phục hồi (ví dụ `document_missing_exception`) |
 | `t.search.dlq` | `search-dlq-processor` | Parking lot cho lỗi không tự phục hồi và replay có kiểm soát |
@@ -82,9 +80,9 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 1. Consume `CATEGORY_UPDATED`/`CATEGORY_DELETED` từ `t.category.events`.
 2. Dùng `_update_by_query` với guard `category_version`:
    - chỉ apply nếu `incoming.category_version > doc.category_version`.
-3. Dùng retry có backoff cho version conflict transient.
-4. Invalidate `search:categories:tree` sau khi update thành công.
-5. Với batch diện rộng, bắt buộc đặt `requests_per_second` (ví dụ 300-500) cho `_update_by_query` để tránh spike CPU Elasticsearch.
+3. Với batch diện rộng, bắt buộc đặt `requests_per_second` (ví dụ 300-500) + `conflicts=proceed` cho `_update_by_query` để tránh spike CPU Elasticsearch.
+4. Parse kết quả `_update_by_query`: `version_conflicts` có thể chấp nhận (do guard), nhưng `failures` không rỗng phải tách retry có kiểm soát hoặc chuyển `t.search.dlq`.
+5. Invalidate `search:categories:tree` sau khi update thành công.
 
 ## 3. Review Metrics Sync Worker
 **Loại hình:** Long-running consumer
@@ -97,19 +95,7 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 - Nếu envelope và payload cùng có nhưng lệch nhau: contract violation -> DLQ.
 - `updated_at` chỉ phục vụ observability, không dùng làm fallback ordering key.
 
-## 4. Seller Profile Sync Worker
-**Loại hình:** Long-running consumer
-**Consumer Group:** `search-seller-profile-sync`
-
-**Nhiệm vụ:** đồng bộ `seller_name` và trạng thái seller vào search documents.
-
-**Event xử lý:**
-1. `SELLER_PROFILE_UPDATED` -> parse `store_name`, map sang `seller_name`, rồi `_update_by_query` theo `seller_id`.
-   - `seller_id` là opaque string; worker không được transform format.
-2. `SELLER_STATUS_CHANGED` -> chỉ cập nhật metadata `seller_status` theo `status_version`.
-3. Search không tự đổi `product_status` từ Seller event; hide/show listing phải phản chiếu qua `PRODUCT_STATE_CHANGED` từ Product Service.
-
-## 5. Sales Metrics Sync Worker
+## 4. Sales Metrics Sync Worker
 **Loại hình:** Long-running consumer
 **Consumer Group:** `search-sales-metrics-sync`
 
@@ -117,7 +103,7 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 
 **Lý do tách topic:** `t.order.events` partition theo `order_id`, không phù hợp để giữ ordering metrics theo `product_id` ở quy mô lớn.
 
-## 6. Category Tree Sync Worker
+## 5. Category Tree Sync Worker
 **Loại hình:** startup warmer + Pub/Sub listener + periodic self-heal
 
 **Nhiệm vụ:** nạp category tree làm nguồn enrichment cho Product Indexing Worker.
@@ -140,7 +126,7 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 **Chống stampede toàn cụm:**
 - Fallback refresh phải qua lock `SETNX search:lock:category-tree-refresh 1 EX 30`.
 
-### 6.1. Hot Query Refresh Worker (SWR)
+### 5.1. Hot Query Refresh Worker (SWR)
 **Loại hình:** In-process async worker pool (non-Kafka)
 
 **Nhiệm vụ:** xử lý refresh cho `search:query:{query_hash}` khi cache hit nhưng `valid_until` đã hết hạn.
@@ -184,34 +170,34 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 7. `finally`: `RUNNING -> IDLE` và xoá key `search:refresh:enqueue:{query_hash}`.
 8. Lock key chỉ được release bởi owner token (Lua compare-delete) hoặc tự hết hạn theo TTL; tuyệt đối không xoá lock key mù.
 
-## 7. Full Reindex Job (Zero-Downtime)
+## 6. Full Reindex Job (Zero-Downtime)
 **Loại hình:** manual trigger hoặc scheduled maintenance
 
 **Mục tiêu:** đổi mapping/index settings mà không downtime đọc/ghi, đồng thời không làm mất ordering guarantees của pipeline realtime.
 
-### 7.1. Preconditions (Bắt buộc trước khi chạy)
+### 6.1. Preconditions (Bắt buộc trước khi chạy)
 1. Cụm Elasticsearch xanh (`green`) và dung lượng đĩa đủ cho thêm 1 index full-size + replica.
 2. Kafka lag của các consumer group Search đang trong ngưỡng SLO (tránh vừa reindex vừa chữa cháy backlog lớn).
 3. Freeze các thay đổi mapping ngoài kế hoạch trong suốt phiên reindex.
 4. Tạo `reindex_run_id` để log/metric/audit toàn bộ pha chạy.
 
-### 7.2. Phase A - Khởi tạo target index
+### 6.2. Phase A - Khởi tạo target index
 1. Sinh index mới `products_v{N+1}` từ template mapping/settings đã review.
 2. Áp dụng đầy đủ analyzer/mapping mới như trong [Elasticsearch Schema](search_elasticsearch_schema.md).
 3. Chưa swap alias ở pha này, traffic vẫn đọc/ghi index cũ (`products_vN`).
 
-### 7.3. Phase B - Snapshot Backfill (Base load)
+### 6.3. Phase B - Snapshot Backfill (Base load)
 1. Chụp watermark bắt đầu (`wm_start`) gồm:
    - thời điểm UTC bắt đầu backfill,
-   - offset từng partition của các topic liên quan (`t.product.events`, `t.category.events`, `t.review.events`, `t.seller.events`, `t.search.metrics.events`).
-2. Seed snapshot từ index hiện tại `products_vN` (scroll/reindex theo chunk) để giữ nguyên các field denormalized do stream khác sở hữu (review/sales/seller/category).
+   - offset từng partition của các topic liên quan (`t.product.events`, `t.category.events`, `t.review.events`, `t.search.metrics.events`).
+2. Seed snapshot từ index hiện tại `products_vN` (scroll/reindex theo chunk) để giữ nguyên các field denormalized do stream khác sở hữu (review/sales/category).
 3. (Tuỳ chọn nhưng khuyến nghị) Chạy reconciliation pass từ Product internal export API cho các field Product-owned:
    - `GET /api/v1/internal/products/export?page={n}&size=500`.
    - Payload export phải có tối thiểu: `category_version`, `skus[].sku_status`, `skus[].best_price`, `skus[].has_promotion` để tránh drift khi rebuild read-model.
 4. Upsert vào `products_v{N+1}` bằng script guard `version` để chống ghi lùi.
 5. Ghi checkpoint sau mỗi chunk (`last_page`, `docs_written`, `error_count`) để có thể resume nếu job fail giữa chừng.
 
-### 7.4. Phase C - Catch-up Delta (Replay sau watermark)
+### 6.4. Phase C - Catch-up Delta (Replay sau watermark)
 1. Chạy consumer group tạm thời `search-reindex-catchup-{reindex_run_id}` đọc từ `wm_start`.
 2. Consumer này **không** ghi qua alias `products_write`, mà ghi trực tiếp vào `products_v{N+1}` để tránh ảnh hưởng luồng realtime hiện tại.
 3. Áp dụng đúng guard idempotency/out-of-order như [Events](search_events.md#3-chiến-lược-idempotency--ordering):
@@ -220,58 +206,57 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
    - `price_event_sequence_id`,
    - `review_metrics_event_sequence_id`,
    - `sales_metrics_event_sequence_id`,
-   - `seller_profile_version`, `seller_status_version`.
 4. Điều kiện hoàn tất catch-up:
    - lag của group catch-up = 0 ổn định tối thiểu 3 chu kỳ poll liên tiếp (poll interval 30s),
    - không còn retry backlog mở cho `products_v{N+1}`,
    - không phát sinh lỗi ingest mới trong tối thiểu 10 phút cuối.
 
-### 7.5. Phase D - Validation Gates trước cutover
+### 6.5. Phase D - Validation Gates trước cutover
 1. So sánh `doc_count` giữa `products_vN` và `products_v{N+1}` theo ngưỡng: `min(0.5%, 10_000 docs)`.
-2. Chạy sample diff theo `sku_id` (random + top hot products) cho các trường quan trọng: giá, status, rating, sold, seller fields.
+2. Chạy sample diff theo `sku_id` (random + top hot products) cho các trường quan trọng: giá, status, rating, sold.
 3. Chạy tập truy vấn smoke test (keyword search, filter, sort, collapse, facets) trên index mới.
 4. Nếu fail bất kỳ gate nào: dừng cutover, giữ alias cũ, sửa lỗi và chạy lại từ checkpoint.
 
-### 7.6. Phase E - Atomic Alias Cutover
+### 6.6. Phase E - Atomic Alias Cutover
 1. Thực hiện duy nhất một lệnh `_aliases` để swap đồng thời:
    - read alias `products` -> `products_v{N+1}`
    - write alias `products_write` -> `products_v{N+1}`
 2. Không tách 2 lệnh riêng lẻ để tránh trạng thái nửa vời read/write lệch index.
 
-### 7.7. Rollback Strategy (Không downtime)
+### 6.7. Rollback Strategy (Không downtime)
 1. Khi phát hiện lỗi nghiêm trọng ngay sau cutover, rollback bằng một lệnh `_aliases` atomic đưa cả `products` và `products_write` về `products_vN`.
 2. Để rollback vẫn an toàn trong cửa sổ quan sát (vd. 24h), phải chạy **shadow catch-up** cho `products_vN` từ offset cutover (hoặc cơ chế mirror tương đương). Nếu không shadow catch-up, rollback lâu sẽ gây mất dữ liệu mới.
 3. Shadow catch-up phải có consumer group riêng và cảnh báo nếu shadow lag > 5 phút.
 4. Sau rollback, giữ lại toàn bộ artifact (`reindex_run_id`, diff report, error sample) để root-cause.
 
-### 7.8. Post-cutover cleanup
+### 6.8. Post-cutover cleanup
 1. Tiếp tục theo dõi p95/p99 latency, error rate, ingest lag ít nhất 30-60 phút.
 2. Khi hết cửa sổ rollback và metric ổn định, mới xóa `products_vN`.
 3. Cập nhật runbook vận hành bằng dữ liệu thực tế của lần chạy.
 
-## 8. Search Suggestions Rebuilder
+## 7. Search Suggestions Rebuilder
 **Loại hình:** Cronjob hàng ngày (có thể chạy ad-hoc khi campaign lớn)
 
 **Mục tiêu:** tái tạo bộ gợi ý autocomplete chất lượng cao, có ranking rõ ràng, không gián đoạn API suggest.
 
-### 8.1. Inputs & ownership
+### 7.1. Inputs & ownership
 1. Analytics queries (top query theo traffic/CTR/conversion).
 2. Category tree (đảm bảo gợi ý danh mục luôn hiện diện).
 3. Hot products từ alias `products` (ưu tiên sản phẩm ACTIVE, in-stock, sold cao).
 4. Rebuilder chỉ build read-model; không tự ý sửa dữ liệu nghiệp vụ của Product/Category.
 
-### 8.2. Normalization & dedupe
+### 7.2. Normalization & dedupe
 1. Chuẩn hóa text: trim, lowercase, unicode-folding, collapse whitespace.
 2. Sinh `dedupe_key = normalized_text + type + scope`.
 3. Nếu trùng key từ nhiều nguồn, merge thành 1 doc duy nhất, cộng/trộn tín hiệu ranking theo trọng số nguồn.
 
-### 8.3. Ranking model (phiên bản tài liệu)
+### 7.3. Ranking model (phiên bản tài liệu)
 1. `weight` cuối cùng phải deterministic theo công thức thống nhất (ví dụ):
    - `weight = w_query * query_count_7d + w_ctr * ctr_30d + w_conv * conversion_rate_30d + w_sales * product_sold_count_30d + source_boost`.
 2. Gợi ý CATEGORY có `source_boost` nền để không bị chìm hoàn toàn trước PRODUCT ở cùng prefix.
 3. Cùng `weight` thì tie-break bằng `query_count_7d desc`, `text asc` để ổn định kết quả.
 
-### 8.4. Build pipeline (Zero-downtime)
+### 7.4. Build pipeline (Zero-downtime)
 1. Acquire distributed lock `search:lock:suggestions-rebuild` (SETNX + EX) để tránh chạy trùng job.
 2. Tạo `search_suggestions_v{N+1}` theo mapping chuẩn tại [Elasticsearch Schema](search_elasticsearch_schema.md#3-search-suggestions-index-mapping--ranking-contract).
 3. Nạp candidates theo từng nguồn, normalize + dedupe + tính weight.
@@ -283,12 +268,12 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 6. Atomic alias swap `search_suggestions` -> `search_suggestions_v{N+1}`.
 7. Warm Redis `search:suggest:{prefix}` cho top prefixes (2-4 ký tự đầu) để giảm cold-start.
 
-### 8.5. Failure semantics
+### 7.5. Failure semantics
 1. Nếu fail trước bước alias swap: giữ alias cũ, API suggest không bị gián đoạn.
 2. Nếu fail sau swap nhưng chất lượng kém: rollback alias về version trước.
 3. Ghi metric bắt buộc: số doc build, merge ratio, error ratio, build duration, warm-cache hit rate.
 
-## 9. Facet Pre-warmer
+## 8. Facet Pre-warmer
 **Loại hình:** Cronjob mỗi 5 phút
 
 **Nhiệm vụ:** precompute facets cho category hot.
@@ -300,7 +285,7 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 - Cờ `is_flash_sale_active` phải được đồng bộ từ control-plane (campaign scheduler/job vận hành) vào Redis key `search:flash_sale:category:{category_id}`.
 - Nếu không có cờ, mặc định coi là `false` (không bypass facet cache).
 
-## 10. Draft Cleanup Job
+## 9. Draft Cleanup Job
 **Loại hình:** daily off-peak job
 
 **Nhiệm vụ:** dọn docs DRAFT quá hạn.
@@ -313,49 +298,3 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 **Ràng buộc ownership:**
 - Chỉ được cleanup các docs DRAFT khi có tín hiệu ownership từ Product (ví dụ cờ `is_deleted` hoặc danh sách product_id quá hạn từ export API).
 - Không được tự xoá DRAFT chỉ dựa vào tuổi dữ liệu nếu Product vẫn coi là bản nháp hợp lệ cho admin.
-
-## 11. Elasticsearch Maintenance Jobs
-
-### 11.1. ILM/Rollover & Segment Hygiene
-- Không chạy `forcemerge max_num_segments=1` định kỳ trên index nóng.
-- Áp dụng ILM rollover theo size/time.
-- Chỉ forcemerge cho index đã read-only sau rollover.
-
-### 11.2. Health & Drift Monitor
-- Theo dõi: doc count, ingest lag, p95/p99 query latency, refresh backlog.
-- Alert nếu:
-  - p99 > 100ms kéo dài,
-  - projection lag vượt SLO,
-  - chênh lệch doc count > 5% so với source snapshot.
-
-### 11.3. DLQ Processor
-- Scan `t.search.dlq` theo lịch (5-10 phút/lần).
-- Phân loại lỗi: transient/permanent.
-- Hỗ trợ replay có kiểm soát theo batch nhỏ, có guard idempotency.
-
-**Quy tắc phân loại lỗi tối thiểu:**
-- Transient: 429, 503, timeout, connection reset.
-- Permanent: mapping conflict, payload schema violation, missing required guard fields.
-- Conditional: `document_missing_exception` -> chuyển nhánh self-heal fetch full product; chỉ xếp permanent khi self-heal thất bại vượt ngưỡng.
-
-**SOP replay:**
-1. Replay theo batch nhỏ (ví dụ 100 bản ghi), giới hạn tốc độ (ví dụ 10 msg/s).
-2. Replay phải đi qua cùng guard idempotency như luồng chính.
-3. Bản ghi thất bại quá 3 lần chuyển sang parking-lot để xử lý thủ công.
-4. Cảnh báo vận hành khi DLQ age > 1h hoặc DLQ depth vượt ngưỡng SLO.
-
-### 11.4. Retry Replayer (`t.search.retry`)
-- Consumer group: `search-retry-replayer`.
-- Chỉ xử lý các lỗi có thể tự phục hồi, mặc định gồm `document_missing_exception`.
-- Quy trình chuẩn:
-   1. Nhận bản ghi retry, gọi `GET /api/v1/internal/products/{product_id}/snapshot` để dựng lại đầy đủ docs SKU.
-   2. Chuẩn hoá payload snapshot: map `skus[].status -> skus[].sku_status` nếu cần; validate bắt buộc `skus[].best_price` và `skus[].has_promotion`.
-   3. Nếu snapshot không đạt contract tối thiểu, chuyển thẳng `t.search.dlq` (không upsert mù).
-   4. Upsert snapshot vào `products_write` theo guard `version`.
-   5. Re-apply event gốc theo guard stream tương ứng (`price_event_sequence_id`/`version`...).
-   6. Retry replayer tối đa 3 attempt; vượt ngưỡng hoặc gặp lỗi permanent thì chuyển sang `t.search.dlq`.
-
-**Retry budget thống nhất toàn Search:**
-- Inline consumer: tối đa 2 attempt tổng.
-- Retry replayer: tối đa 3 attempt.
-- Tổng tối đa trước DLQ: 5 attempt.

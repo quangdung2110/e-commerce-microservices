@@ -1,16 +1,16 @@
 1. Đảm bảo tính tự chủ của từng service. Ví dụ như sự kiện MARKDOWN_ENDED của Promotion Service không đến được Product Service, chúng ta cũng phải có một background worker
 để tự động quét và cập nhật lại giá sản phẩm đã hết khuyến mãi về giá gốc, tránh tình trạng giá cũ vẫn còn lưu.
 
-2. Sự kết hợp giữa In-band và Out-of-band của Invalidation Consumer Worker
-- In-band (luồng API đồng bộ): khi người bán cập nhật sản phẩm, chúng ta sẽ đồng bộ ngay lập tức vào Redis để đảm bảo người dùng luôn thấy giá mới nhất khi truy cập giỏ hàng. 
-Điều này giúp giảm độ trễ và tránh việc người dùng nhìn thấy giá cũ.
-- Out-of-band (luồng Event bất đồng bộ): chúng ta bắn một Event (Outbox) trong một Transaction, Worker sẽ đọc Event này và cập nhật lại thông tin sản phẩm trong Redis.
-Nếu luồng In-band bị lỗi (ví dụ do rớt mạng), luồng Out-of-band sẽ đảm bảo dữ liệu cuối cùng vẫn được đồng bộ về Redis, đảm bảo tính nhất quán về lâu dài.
+2. 
+2.1 Sự kết hợp giữa In-band và Out-of-band của Invalidation Consumer Worker:
+Khi Seller sửa sản phẩm thông qua API, API đó sẽ đi ghi xuống DB và tự động cập nhật cache ngay lập tức thông qua cơ chế "In-band", đồng thời trong transaction cập nhật DB đó, chúng ta cũng sẽ ghi một outbox event record vào một bảng
+Trường hợp xấu xảy ra khi transaction đó đã commit thành công nhưng server bị treo trước khi cập nhật cache, lúc này Invalidation Consumer Worker (hoạt động Out-of-band/bất đồng bộ) sẽ bắt được sự kiện Kafka
+từ Outbox Event và tiến hành ghi đề Cache để đảm bảo tính nhất quán giữa DB và Cache. Đây là một cơ chế tự chữa lành (self-healing) rất quan trọng để đảm bảo rằng cache luôn được cập nhật ngay cả khi có sự cố xảy ra
 
-3. Sử dụng Soft Invalidation thay vì Hard Invalidation
-- Hard Invalidation (Dùng lệnh DEL của Redis): Khi có thay đổi, bạn xóa thẳng key đó trong Redis. Nhược điểm chí mạng là rủi ro Thundering Herd (Hiệu ứng bầy đàn)
-- Soft Invalidation (Dùng lệnh SET đè dữ liệu mới): Worker không xóa key cũ. Nó chủ động query DB lấy dữ liệu mới nhất, sau đó dùng lệnh SET để ghi đè lên giá trị cũ trong Redis
-Tuy nhiên có một điều cần lưu ý khi dùng Soft Invalidation là phải tránh được Race Condition
+2.2 Xử lý Cache cho các luồng hoạt động ngầm
+Worker trên không chỉ xử lý các sự kiện đến từ API của Seller, mà còn phải xử lý các sự kiện đến từ các luồng hoạt động ngầm khác như:
++ Giá thay đổi do Promotion Service chạy luật khuyến mãi (markdown)
++ Tồn kho / trạng thái thay đổi do Inventory Service báo hết hàng hoặc có hàng
 
 4. Trong thiết kế của CronJob cho việc quét các sản phẩm hết hạn khuyến mãi ở bảng product_markdown_applied, khi lock nhiều row trong bảng products, thứ tự các ID được truyển vào
 IN (A, B, C...) thường là ngẫu nhiên (không theo thứ tự của bảng products). Nếu trong lúc Cronjob đang khóa các Product ID theo mảng (A, B, C...), mà đồng thời có API Sửa Tồn Kho / Sửa Sản Phẩm 
