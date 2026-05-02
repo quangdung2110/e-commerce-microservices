@@ -3,7 +3,7 @@
 **Liên kết nhanh:**
 *   [Workflows (API & Data Flow)](auth_workflows.md)
 *   [Background Workers & Jobs](auth_workers.md)
-*   [Caching Schema (Redis & Caffeine)](auth_caching_schema.md)
+*   [Caching Schema (Redis)](auth_caching_schema.md)
 *   [Database Schema](auth_db_design.md)
 *   [Events Structure & Kafka Topics](auth_events.md)
 
@@ -67,14 +67,14 @@ Dành cho trường hợp Đổi mật khẩu, Bị Banned hoặc Force Logout m
 
 ## 2. JWKS Caching Strategy
 
-### 2.1 Auth Service Internal Cache (Caffeine)
+### 2.1 Auth Service Internal Cache
 Phục vụ nhanh endpoint `GET /.well-known/jwks.json` mà không cần query DB mỗi lần.
-*   **Loại Cache**: Caffeine (In-Memory).
+*   **Loại Cache**: In-Memory.
 *   **TTL**: **5 phút**.
 *   **Logic**: 
     *   `HIT`: Trả về danh sách Public Keys (JWKS).
     *   `MISS`: Query DB tìm các key có status `ACTIVE` hoặc `PHASE_OUT`, build JSON, ghi vào cache.
-*   **Invalidation**: Khi Key Rotation Worker chạy xong, nó sẽ xóa cache Caffeine này.
+*   **Invalidation**: Khi Key Rotation Worker chạy xong, nó sẽ xóa cache này.
 
 ### 2.2 API Gateway Local Cache (nằm ở phần thiết kế của API Gateway)
 API Gateway lưu trữ toàn bộ JWKS để verify JWT ngay tại Gateway mà không cần gọi sang Auth Service cho mỗi request.

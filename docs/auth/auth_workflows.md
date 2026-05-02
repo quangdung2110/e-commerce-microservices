@@ -3,7 +3,7 @@
 **Liên kết nhanh:**
 *   [Workflows (API & Data Flow)](auth_workflows.md)
 *   [Background Workers & Jobs](auth_workers.md)
-*   [Caching Schema (Redis & Caffeine)](auth_caching_schema.md)
+*   [Caching Schema (Redis)](auth_caching_schema.md)
 *   [Database Schema](auth_db_design.md)
 *   [Events Structure & Kafka Topics](auth_events.md)
 
