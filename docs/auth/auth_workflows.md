@@ -89,29 +89,22 @@ sequenceDiagram
 4.  Người dùng click link, vào trang web POST mật khẩu mới kèm raw token tại `/reset-password`.
 5.  Server thực hiện Hash cái raw token từ body, kiểm tra nó xem có nằm trong Redis không. Nếu HIT, cho phép Update pass. Xóa Token ở Redis, Force Logout all related sessions bằng `auth:revoked_before:{user_id}`, đồng thời **trực tiếp ghi cảnh báo `USER_PASSWORD_CHANGED` vào `audit_logs`**. Nếu gửi token sai lệch quá nhiều, **trực tiếp ghi log `PASSWORD_RESET_FAILED` vào `audit_logs`**.
 
-## 6. Luồng Đăng nhập Đặc Quyền Mạo Danh (Impersonation)
-Luồng này sinh ra để bộ phận Customer Service (CS) giả lập giao diện của người dùng (Customer) để xử lý sự cố.
-1. CS Team (đã có Role `ADMIN` hoặc `CS_SUPPORT`) gọi lệnh `POST /impersonate` cùng ID của Customer muốn giả lập.
-2. Auth Service check phân quyền, nếu hợp lệ -> Sinh ra một JWT Access_Token đặc biệt không có Refresh_Token đi kèm.
-3. Trong JWT mang claim: `user_id = {customer_id}` nhưng kẹp thêm claim `impersonator_id = {platform_id}` và thời gian sống ngắn, ví dụ 1 giờ.
-4. Trực tiếp ghi log siêu nhạy cảm `ADMIN_IMPERSONATED_USER` vào `audit_logs` và bắn event Alert System (Lưu lại bằng chứng kiểm toán).
-
-## 7. Quản Lý Phiên (Session Management) - Xem & Thu hồi thiết bị cụ thể
+## 6. Quản Lý Phiên (Session Management) - Xem & Thu hồi thiết bị cụ thể
 1.  UI Người dùng mở "Thiết bị của tôi", gọi `GET /sessions`.
 2.  Server rà bảng `refresh_tokens`, lọc ra các Token thuộc `user_id` mà `revoked_at IS NULL` và `expires_at > NOW()`. Data trả về gồm `device_info`, `device_id`, `created_at`, `id`.
 3.  Nếu User nghi ngờ một thiết bị lạ, bấm "Đăng xuất máy này". Client gọi `DELETE /sessions/{refresh_token_id}`.
 4.  Server Update DB mark `revoked_at=NOW()` đúng với `id` đó. Cái Access Token đang pair với nó cũng sẽ vứt văng vào Denylist trong Redis để Gateway block ngay lập tức request tiếp theo nếu hacker cầm nó trên tay.
 
-## 8. Luồng API Cung Cấp Data Audit (Client API)
+## 7. Luồng API Cung Cấp Data Audit (Client API)
 
-### 8.1 API Tra cứu Lịch sử cho User (`GET /api/v1/auth/audit/my-login-history`)
+### 7.1 API Tra cứu Lịch sử cho User (`GET /api/v1/auth/audit/my-login-history`)
 Chức năng: Trả về danh sách thời gian và thiết bị để phục vụ UI Frontend "Giao diện Bảo mật tài khoản".
 *   **Caller**: API Gateway -> truyền `X-User-Id` Header xuống Auth Service.
 *   **Logic Xử lý**:
     1.  Query PostgreSQL: `SELECT * FROM audit_logs WHERE actor_id = X-User-Id AND event_type = 'USER_LOGGED_IN' ORDER BY occurred_at DESC LIMIT 20`.
     2.  Format kết quả thân thiện (translate timezone, parse Tên OS từ chuỗi UserAgent) và trả về Client.
 
-### 8.2 API Điều Tra Cho Admin (`GET /api/v1/auth/audit/admin/history-logs`)
+### 7.2 API Điều Tra Cho Admin (`GET /api/v1/auth/audit/admin/history-logs`)
 Chức năng: Dùng ở CMS Portal cho Ban Quản Trị Hệ Thống tra cứu lịch sử log toàn hệ thống.
 *   **Caller**: Chuyên viên hệ thống CMS tra cứu. Chỉ được fetch nếu Role = `ADMIN`.
 *   **Logic Xử lý**:

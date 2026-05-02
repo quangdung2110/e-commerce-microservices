@@ -76,7 +76,7 @@ Phục vụ nhanh endpoint `GET /.well-known/jwks.json` mà không cần query D
     *   `MISS`: Query DB tìm các key có status `ACTIVE` hoặc `PHASE_OUT`, build JSON, ghi vào cache.
 *   **Invalidation**: Khi Key Rotation Worker chạy xong, nó sẽ xóa cache Caffeine này.
 
-### 2.2 API Gateway Local Cache
+### 2.2 API Gateway Local Cache (nằm ở phần thiết kế của API Gateway)
 API Gateway lưu trữ toàn bộ JWKS để verify JWT ngay tại Gateway mà không cần gọi sang Auth Service cho mỗi request.
 *   **Loại Cache**: Caffeine hoặc Guava (In-Memory trên mỗi node Gateway).
 *   **Cấu trúc**: Map `kid -> Public Key`.

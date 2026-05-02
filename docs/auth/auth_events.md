@@ -38,7 +38,7 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 
 ### 1.2 `PASSWORD_RESET_REQUESTED`
 Được bắn ra khi hệ thống phát hiện có hành vi yêu cầu mã OTP từ một User
-*   **Người nghe**: `Notification Service` (Gửi OTP qua Email)
+*   **Người nghe**: `Notification Service` (Gửi Link Reset Password qua Email)
 *   **Payload Schema**:
 ```json
 {
