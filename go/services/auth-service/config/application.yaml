@@ -103,3 +103,34 @@ external_services:
 logging:
   level: info # debug, info, warn, error
   format: json # json, console
+
+# JWKS Configuration (RSA Key Pairs)
+jwks:
+  enabled: true
+  algorithm: RS256
+  rotation_interval: 2160h  # 90 days
+  phase_out_days: 7
+  key_size_bits: 4096
+
+# Background Workers
+workers:
+  enabled: true
+  token_cleanup:
+    enabled: true
+    cron: "0 2 * * *"      # 2 AM daily
+    retention_days: 7
+  audit_cleanup:
+    enabled: true
+    cron: "0 3 * * *"      # 3 AM daily
+    retention_days: 180
+  key_rotation:
+    enabled: true
+    cron: "0 0 1 */3 *"    # 00:00 on 1st of every 3rd month
+
+# Debezium CDC Configuration
+debezium:
+  enabled: false
+  connector_name: auth-outbox-connector
+  database_host: localhost
+  database_port: 5432
+  database_name: auth_db

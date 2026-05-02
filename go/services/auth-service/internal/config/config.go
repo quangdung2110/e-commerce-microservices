@@ -19,6 +19,9 @@ type Config struct {
 	ExternalServices ExternalServicesConfig
 	OTP              OTPConfig
 	CORS             CORSConfig
+	JWKS             JWKSConfig
+	Workers          WorkerConfig
+	Debezium         DebeziumConfig
 }
 
 // JWTConfig holds JWT configuration
@@ -67,6 +70,39 @@ type CORSConfig struct {
 	ExposeHeaders    []string `mapstructure:"expose_headers"`
 	AllowCredentials bool     `mapstructure:"allow_credentials"`
 	MaxAge           int      `mapstructure:"max_age"` // seconds
+}
+
+// JWKSConfig holds JWKS configuration for RSA key pairs
+type JWKSConfig struct {
+	Algorithm        string `mapstructure:"algorithm"`         // RS256
+	RotationInterval string `mapstructure:"rotation_interval"` // e.g., "2160h" for 90 days
+	PhaseOutDays     int    `mapstructure:"phase_out_days"`    // days to keep PHASE_OUT key
+	KeySizeBits      int    `mapstructure:"key_size_bits"`     // 2048 or 4096
+	Enabled          bool   `mapstructure:"enabled"`
+}
+
+// WorkerConfig holds background worker configuration
+type WorkerConfig struct {
+	Enabled         bool `mapstructure:"enabled"`
+	TokenCleanup    WorkerTaskConfig `mapstructure:"token_cleanup"`
+	AuditCleanup    WorkerTaskConfig `mapstructure:"audit_cleanup"`
+	KeyRotation     WorkerTaskConfig `mapstructure:"key_rotation"`
+}
+
+// WorkerTaskConfig holds configuration for individual worker tasks
+type WorkerTaskConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	Cron          string `mapstructure:"cron"`           // cron expression
+	RetentionDays int    `mapstructure:"retention_days"` // days to retain data
+}
+
+// DebeziumConfig holds Debezium CDC configuration
+type DebeziumConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	ConnectorName string `mapstructure:"connector_name"`
+	DatabaseHost  string `mapstructure:"database_host"`
+	DatabasePort  int    `mapstructure:"database_port"`
+	DatabaseName  string `mapstructure:"database_name"`
 }
 
 // LoadAuthConfig loads auth-service specific configuration
@@ -162,4 +198,30 @@ func setAuthDefaults() {
 	viper.SetDefault("cors.expose_headers", []string{"Content-Length", "Authorization"})
 	viper.SetDefault("cors.allow_credentials", true)
 	viper.SetDefault("cors.max_age", 86400) // 24 hours
+
+	// JWKS defaults
+	viper.SetDefault("jwks.algorithm", "RS256")
+	viper.SetDefault("jwks.rotation_interval", "2160h") // 90 days
+	viper.SetDefault("jwks.phase_out_days", 7)
+	viper.SetDefault("jwks.key_size_bits", 4096)
+	viper.SetDefault("jwks.enabled", true)
+
+	// Workers defaults
+	viper.SetDefault("workers.enabled", true)
+	viper.SetDefault("workers.token_cleanup.enabled", true)
+	viper.SetDefault("workers.token_cleanup.cron", "0 2 * * *")
+	viper.SetDefault("workers.token_cleanup.retention_days", 7)
+	viper.SetDefault("workers.audit_cleanup.enabled", true)
+	viper.SetDefault("workers.audit_cleanup.cron", "0 3 * * *")
+	viper.SetDefault("workers.audit_cleanup.retention_days", 180)
+	viper.SetDefault("workers.key_rotation.enabled", true)
+	viper.SetDefault("workers.key_rotation.cron", "0 0 1 */3 *")
+	viper.SetDefault("workers.key_rotation.retention_days", 0)
+
+	// Debezium defaults
+	viper.SetDefault("debezium.enabled", false)
+	viper.SetDefault("debezium.connector_name", "auth-outbox-connector")
+	viper.SetDefault("debezium.database_host", "localhost")
+	viper.SetDefault("debezium.database_port", 5432)
+	viper.SetDefault("debezium.database_name", "auth_db")
 }

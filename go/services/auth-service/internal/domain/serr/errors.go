@@ -542,6 +542,93 @@ var (
 		"Failed to publish event",
 		http.StatusInternalServerError,
 	)
+
+	// ========================= TOKEN THEFT & GRACE PERIOD ERRORS =========================
+
+	ErrTokenTheft = NewAppError(
+		ErrorTypeAuthentication,
+		"TOKEN_THEFT_DETECTED",
+		"Token theft detected. All sessions have been revoked for security reasons",
+		http.StatusUnauthorized,
+	)
+
+	ErrGracePeriodExpired = NewAppError(
+		ErrorTypeAuthentication,
+		"GRACE_PERIOD_EXPIRED",
+		"Grace period for token rotation has expired",
+		http.StatusUnauthorized,
+	)
+
+	ErrTokenReuse = NewAppError(
+		ErrorTypeAuthentication,
+		"TOKEN_REUSE_DETECTED",
+		"Refresh token reuse detected. All sessions have been revoked",
+		http.StatusUnauthorized,
+	)
+
+	// ========================= JWKS ERRORS =========================
+
+	ErrKeyNotFound = NewAppError(
+		ErrorTypeResource,
+		"KEY_NOT_FOUND",
+		"Signing key not found",
+		http.StatusNotFound,
+	)
+
+	ErrKeyExpired = NewAppError(
+		ErrorTypeAuthentication,
+		"KEY_EXPIRED",
+		"Signing key has expired",
+		http.StatusUnauthorized,
+	)
+
+	ErrKeyInvalid = NewAppError(
+		ErrorTypeInternal,
+		"KEY_INVALID",
+		"Invalid signing key",
+		http.StatusInternalServerError,
+	)
+
+	ErrKeyGenerationFailed = NewAppError(
+		ErrorTypeInternal,
+		"KEY_GENERATION_FAILED",
+		"Failed to generate signing key",
+		http.StatusInternalServerError,
+	)
+
+	// ========================= OUTBOX ERRORS =========================
+
+	ErrOutboxPublishFailed = NewAppError(
+		ErrorTypeInternal,
+		"OUTBOX_PUBLISH_FAILED",
+		"Failed to publish event to outbox",
+		http.StatusInternalServerError,
+	)
+
+	ErrOutboxConsumeFailed = NewAppError(
+		ErrorTypeInternal,
+		"OUTBOX_CONSUME_FAILED",
+		"Failed to consume outbox event",
+		http.StatusInternalServerError,
+	)
+
+	// ========================= AUDIT LOG ERRORS =========================
+
+	ErrAuditLogFailed = NewAppError(
+		ErrorTypeInternal,
+		"AUDIT_LOG_FAILED",
+		"Failed to write audit log",
+		http.StatusInternalServerError,
+	)
+
+	// ========================= WORKER ERRORS =========================
+
+	ErrWorkerLockFailed = NewAppError(
+		ErrorTypeInternal,
+		"WORKER_LOCK_FAILED",
+		"Failed to acquire worker lock",
+		http.StatusInternalServerError,
+	)
 )
 
 // ========================= HELPER FUNCTIONS =========================
