@@ -17,6 +17,8 @@ import (
 	v1_handler "github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/delivery/http/v1/handler"
 	v1_middleware "github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/delivery/http/v1/middleware"
 	v1_router "github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/delivery/http/v1/router"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/jwks"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/worker"
 )
 
 func main() {
@@ -145,6 +147,51 @@ func main() {
 		)
 	}
 
+	// ========================= BACKGROUND WORKERS =========================
+	var scheduler *worker.Scheduler
+	if cfg.Workers.Enabled {
+		logger.Info("Initializing background workers...")
+
+		// Create JWKS rotator
+		jwksRotator := jwks.NewRotator(
+			deps.JwksService,
+			deps.DistributedLockRepo,
+			cfg.Workers,
+			logger,
+		)
+
+		// Create token cleanup job
+		tokenCleaner := worker.NewTokenCleanupJob(
+			deps.SessionRepo,
+			nil, // passwordResetRepo - will be added via SessionRepo
+			cfg.Workers.TokenCleanup,
+			logger,
+		)
+
+		// Create audit cleanup job
+		auditCleaner := worker.NewAuditCleanupJob(
+			nil, // auditRepo - will be added
+			cfg.Workers.AuditCleanup,
+			logger,
+		)
+
+		// Create and start scheduler
+		scheduler = worker.NewScheduler(
+			jwksRotator,
+			tokenCleaner,
+			auditCleaner,
+			deps.DistributedLockRepo,
+			cfg.Workers,
+			logger,
+		)
+
+		if err := scheduler.Start(context.Background()); err != nil {
+			logger.Error("Failed to start background workers", zap.Error(err))
+		} else {
+			logger.Info("Background workers started successfully")
+		}
+	}
+
 	// Module 4: Register JWKS routes at root level (/.well-known/jwks.json)
 	// This must be registered before the API group
 	if jwksHandler != nil {
@@ -233,6 +280,13 @@ func main() {
 	<-quit
 
 	logger.Info("Shutting down server...")
+
+	// Stop background workers first
+	if scheduler != nil {
+		if err := scheduler.Stop(context.Background()); err != nil {
+			logger.Error("Error stopping background workers", zap.Error(err))
+		}
+	}
 
 	// Graceful shutdown with 30 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

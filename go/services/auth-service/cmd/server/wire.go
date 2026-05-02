@@ -22,6 +22,7 @@ import (
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/registration"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/security"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/session"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/infrastructure/redis_pubsub"
 )
 
 // Dependencies holds all application dependencies
@@ -49,6 +50,9 @@ type Dependencies struct {
 
 	// Security components (for middleware)
 	TokenGenerator common.TokenGenerator
+
+	// Distributed Lock
+	DistributedLockRepo repository.DistributedLockRepository
 
 	// Database connection
 	DB *pgDb.DB
@@ -88,6 +92,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 	blacklistRepo := redisAdapter.NewRedisBlacklistRepository(redisClient, logger)
 	graceCache := redisAdapter.NewGraceCacheRepository(redisClient)
 	revokeBeforeCache := redisAdapter.NewRevokeBeforeCacheRepository(redisClient)
+	distributedLockRepo := redisAdapter.NewDistributedLockRepository(redisClient)
 
 	// Repositories (PostgreSQL-based)
 	sessionRepo := pgAdapter.NewPostgresSessionRepository(db.Pool(), logger)
@@ -102,8 +107,27 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 
 	// JWKS Service (required for token generation)
 	var jwksService *jwks.Service
+	var jwksCache *jwks.Cache
+	var jwksPublisher *redis_pubsub.Publisher
+
 	if cfg.JWKS.Enabled {
+		// Initialize JWKS cache
+		jwksCache, err = jwks.NewCache(10 * time.Minute)
+		if err != nil {
+			logger.Warn("Failed to create JWKS cache, continuing without L1 cache", zap.Error(err))
+		}
+
+		// Initialize Redis Pub/Sub publisher
+		jwksPublisher = redis_pubsub.NewPublisher(redisClient)
+
+		// Create JWKS service
 		jwksService = jwks.NewService(jwtKeyRepo, cfg.JWKS, logger)
+
+		// Initialize with cache and pub/sub
+		if err := jwksService.InitializeWithCacheAndPubsub(jwksCache, jwksPublisher); err != nil {
+			logger.Warn("Failed to initialize JWKS service with cache and pub/sub", zap.Error(err))
+		}
+
 		// Generate initial key if none exists
 		_, _, err := jwksService.GetActivePrivateKey(context.Background())
 		if err != nil {
@@ -252,6 +276,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		RateLimitRepo:         rateLimitRepo,
 		BlacklistRepo:         blacklistRepo,
 		TokenGenerator:        tokenGenerator,
+		DistributedLockRepo:   distributedLockRepo,
 		DB:                    db,
 	}, nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/repository"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/serr"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/types"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/infrastructure/redis_pubsub"
 )
 
 // Service handles JWKS operations
@@ -26,7 +27,9 @@ type Service struct {
 	keyRepo  repository.JwtKeyRepository
 	cfg      config.JWKSConfig
 	logger   *zap.Logger
-	keyCache *entity.JwtKey // In-memory cache for active key
+	cache    *Cache
+	pubsub   *redis_pubsub.Publisher
+	keyCache *entity.JwtKey // In-memory cache for active signing key
 }
 
 // NewService creates a new JWKS service
@@ -40,6 +43,16 @@ func NewService(
 		cfg:     cfg,
 		logger:  logger,
 	}
+}
+
+// InitializeWithCacheAndPubsub initializes the service with cache and pub/sub
+func (s *Service) InitializeWithCacheAndPubsub(
+	cache *Cache,
+	pubsub *redis_pubsub.Publisher,
+) error {
+	s.cache = cache
+	s.pubsub = pubsub
+	return nil
 }
 
 // GetActivePrivateKey returns the active private key for signing tokens
@@ -92,6 +105,14 @@ func (s *Service) GetActivePrivateKey(ctx context.Context) (*rsa.PrivateKey, str
 
 // GetPublicKeys returns all active public keys for token verification (includes PHASE_OUT keys)
 func (s *Service) GetPublicKeys(ctx context.Context) ([]*entity.JWK, error) {
+	// Try cache first
+	if s.cache != nil {
+		jwks, err := s.cache.Get()
+		if err == nil && jwks != nil {
+			return jwks.Keys, nil
+		}
+	}
+
 	keys, err := s.keyRepo.GetAllActive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get public keys: %w", err)
@@ -107,6 +128,12 @@ func (s *Service) GetPublicKeys(ctx context.Context) ([]*entity.JWK, error) {
 			}
 			jwks = append(jwks, jwk)
 		}
+	}
+
+	// Update cache
+	if s.cache != nil && len(jwks) > 0 {
+		cached := &entity.JWKS{Keys: jwks}
+		s.cache.Set(cached)
 	}
 
 	return jwks, nil
@@ -126,7 +153,7 @@ func (s *Service) GetJWKS(ctx context.Context) (*entity.JWKS, error) {
 
 // generateAndStoreKey generates a new RSA key pair and stores it
 func (s *Service) generateAndStoreKey(ctx context.Context) (*entity.JwtKey, error) {
-	kid := uuid.New().String()
+	kid := s.generateKid()
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, s.cfg.KeySizeBits)
 	if err != nil {
@@ -164,6 +191,9 @@ func (s *Service) generateAndStoreKey(ctx context.Context) (*entity.JwtKey, erro
 
 	s.keyCache = key
 
+	// Invalidate cache and notify
+	s.invalidateCacheAndNotify(kid, "KEY_GENERATED")
+
 	s.logger.Info("Generated new JWT key",
 		zap.String("kid", kid),
 		zap.Int("key_size_bits", s.cfg.KeySizeBits),
@@ -186,6 +216,25 @@ func (s *Service) rotateKey(ctx context.Context) (*entity.JwtKey, error) {
 
 	// Generate new key
 	return s.generateAndStoreKey(ctx)
+}
+
+// RotateKey performs a key rotation
+// This method is safe to call and handles all cleanup
+func (s *Service) RotateKey(ctx context.Context) error {
+	s.logger.Info("Starting key rotation")
+
+	_, err := s.rotateKey(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to rotate key: %w", err)
+	}
+
+	s.logger.Info("Key rotation completed successfully")
+	return nil
+}
+
+// generateKid generates a unique key ID
+func (s *Service) generateKid() string {
+	return fmt.Sprintf("key-%s", uuid.New().String())
 }
 
 // parsePrivateKey parses a PEM-encoded private key
@@ -241,5 +290,94 @@ func (s *Service) GetKeyByKid(ctx context.Context, kid string) (*entity.JwtKey, 
 // InvalidateCache invalidates the in-memory key cache
 func (s *Service) InvalidateCache() {
 	s.keyCache = nil
+
+	// Invalidate JWKS cache
+	if s.cache != nil {
+		s.cache.Invalidate()
+	}
+
 	s.logger.Info("JWKS cache invalidated")
+}
+
+// invalidateCacheAndNotify invalidates cache and notifies via Pub/Sub
+func (s *Service) invalidateCacheAndNotify(kid string, reason string) {
+	// Invalidate cache
+	if s.cache != nil {
+		s.cache.Invalidate()
+	}
+
+	// Publish notification
+	if s.pubsub != nil {
+		ctx := context.Background()
+		if err := s.pubsub.PublishJwksUpdate(ctx, kid, reason); err != nil {
+			s.logger.Warn("Failed to publish JWKS update", zap.Error(err))
+		}
+	}
+}
+
+// IsKeyRotationNeeded checks if key rotation is needed based on expiry
+func (s *Service) IsKeyRotationNeeded(ctx context.Context) (bool, error) {
+	key, err := s.keyRepo.GetActive(ctx)
+	if err != nil {
+		if errors.Is(err, repository.ErrKeyNotFound) {
+			return true, nil // No key exists, need to generate
+		}
+		return false, err
+	}
+
+	if key.IsExpired() {
+		return true, nil
+	}
+
+	// Check if key is approaching expiry (within 7 days)
+	if key.ExpiresAt != nil {
+		daysUntilExpiry := time.Until(*key.ExpiresAt).Hours() / 24
+		if daysUntilExpiry <= 7 {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// GetKeyInfo returns information about the current active key
+func (s *Service) GetKeyInfo(ctx context.Context) (*KeyInfo, error) {
+	key, err := s.keyRepo.GetActive(ctx)
+	if err != nil {
+		if errors.Is(err, repository.ErrKeyNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	info := &KeyInfo{
+		Kid:        key.Kid,
+		Status:     string(key.Status),
+		Algorithm:  key.Algorithm,
+		KeySizeBits: key.KeySizeBits,
+		CreatedAt:  key.CreatedAt,
+		ExpiresAt:  key.ExpiresAt,
+	}
+
+	if key.RotatedAt != nil {
+		info.RotatedAt = key.RotatedAt
+	}
+
+	if key.ExpiresAt != nil {
+		info.DaysUntilExpiry = int(time.Until(*key.ExpiresAt).Hours() / 24)
+	}
+
+	return info, nil
+}
+
+// KeyInfo represents information about a key
+type KeyInfo struct {
+	Kid            string     `json:"kid"`
+	Status         string     `json:"status"`
+	Algorithm      string     `json:"algorithm"`
+	KeySizeBits    int        `json:"key_size_bits"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RotatedAt      *time.Time `json:"rotated_at,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	DaysUntilExpiry int       `json:"days_until_expiry,omitempty"`
 }
