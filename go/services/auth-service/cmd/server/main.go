@@ -106,34 +106,54 @@ func main() {
 		})
 	})
 
+	// Initialize handlers
+	registrationHandler := v1_handler.NewRegistrationHandler(
+		deps.RegistrationUsecase,
+		deps.ManagedAccountUsecase,
+		logger,
+	)
+
+	authHandler := v1_handler.NewAuthenticationHandler(
+		deps.LoginUsecase,
+		deps.LogoutUsecase,
+		deps.RefreshTokenUsecase,
+		logger,
+	)
+
+	passwordHandler := v1_handler.NewPasswordHandler(
+		deps.PasswordResetUsecase,
+		deps.PasswordChangeUsecase,
+		logger,
+	)
+
+	sessionHandler := v1_handler.NewSessionHandler(
+		deps.SessionManagerUsecase,
+		logger,
+	)
+
+	// Module 4: Audit and JWKS handlers
+	auditHandler := v1_handler.NewAuditHandler(
+		deps.AuditService,
+		logger,
+	)
+
+	var jwksHandler *v1_handler.JwksHandler
+	if deps.JwksService != nil {
+		jwksHandler = v1_handler.NewJwksHandler(
+			deps.JwksService,
+			logger,
+		)
+	}
+
+	// Module 4: Register JWKS routes at root level (/.well-known/jwks.json)
+	// This must be registered before the API group
+	if jwksHandler != nil {
+		v1_router.RegisterJwksRoutes(router, jwksHandler)
+	}
+
 	// API routes
 	v1Group := router.Group("/api/v1")
 	{
-		// Initialize handlers
-		registrationHandler := v1_handler.NewRegistrationHandler(
-			deps.RegistrationUsecase,
-			deps.ManagedAccountUsecase,
-			logger,
-		)
-
-		authHandler := v1_handler.NewAuthenticationHandler(
-			deps.LoginUsecase,
-			deps.LogoutUsecase,
-			deps.RefreshTokenUsecase,
-			logger,
-		)
-
-		passwordHandler := v1_handler.NewPasswordHandler(
-			deps.PasswordResetUsecase,
-			deps.PasswordChangeUsecase,
-			logger,
-		)
-
-		sessionHandler := v1_handler.NewSessionHandler(
-			deps.SessionManagerUsecase,
-			logger,
-		)
-
 		// Register routes using route modules
 		v1_router.RegisterAuthRoutes(
 			v1Group,
@@ -171,6 +191,21 @@ func main() {
 			deps.RateLimitRepo,
 			logger,
 		)
+
+		// Module 4: Register Audit routes
+		v1_router.RegisterAuditRoutes(
+			v1Group,
+			auditHandler,
+			logger,
+		)
+
+		// Module 4: Register JWKS routes (API v1)
+		if jwksHandler != nil {
+			v1_router.RegisterJwksAPIRoutes(
+				v1Group,
+				jwksHandler,
+			)
+		}
 	}
 
 	// Create HTTP server

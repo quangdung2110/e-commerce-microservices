@@ -11,6 +11,7 @@ import (
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/entity"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/repository"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/serr"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/types"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/common"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/dto"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/utils"
@@ -42,6 +43,9 @@ type LoginUsecase struct {
 	tokenGenerator  common.TokenGenerator
 	passwordEncoder common.PasswordEncoder
 
+	// Audit
+	auditService *AuditService
+
 	logger *zap.Logger
 }
 
@@ -55,6 +59,7 @@ func NewLoginUsecase(
 	eventPublisher common.EventPublisher,
 	tokenGenerator common.TokenGenerator,
 	passwordEncoder common.PasswordEncoder,
+	auditService *AuditService,
 	logger *zap.Logger,
 ) *LoginUsecase {
 	return &LoginUsecase{
@@ -66,6 +71,7 @@ func NewLoginUsecase(
 		eventPublisher:   eventPublisher,
 		tokenGenerator:   tokenGenerator,
 		passwordEncoder:  passwordEncoder,
+		auditService:    auditService,
 		logger:           logger,
 	}
 }
@@ -153,7 +159,16 @@ func (uc *LoginUsecase) Execute(ctx context.Context, req *dto.LoginRequest, reqC
 	// Reset rate limit after successful login
 	uc.resetRateLimit(ctx, reqCtx.DeviceInfo.IPAddress)
 
-	// Step 12: Publish event
+	// Step 12: Write audit log for successful login
+	uc.writeAuditLog(ctx, user.UserID.String(), types.EventTypeUserLoggedIn, types.SecurityLevelInfo, types.LogCategoryAuth,
+		reqCtx.DeviceInfo.IPAddress,
+		map[string]any{
+			"session_id":  session.SessionID.String(),
+			"device_type": string(reqCtx.DeviceInfo.DeviceType),
+			"user_agent":  reqCtx.DeviceInfo.UserAgent,
+		})
+
+	// Step 13: Publish event
 	if err := uc.publishLoginEvent(ctx, user.UserID, session.SessionID, reqCtx.DeviceInfo, reqCtx.Location); err != nil {
 		uc.logger.Error("Failed to publish login event", zap.Error(err))
 	}
@@ -226,6 +241,39 @@ func (uc *LoginUsecase) recordFailedAttempt(
 
 	if err := uc.loginAttemptRepo.Create(ctx, attempt); err != nil {
 		uc.logger.Error("Failed to log login attempt", zap.Error(err))
+	}
+
+	// Write audit log for failed login attempt
+	actorID := "unknown"
+	if userID != nil {
+		actorID = userID.String()
+	}
+
+	securityLevel := types.SecurityLevelWarning
+	if reason == entity.FailureIPBlocked {
+		securityLevel = types.SecurityLevelCritical
+	}
+
+	uc.writeAuditLog(ctx, actorID, types.EventTypeUserLoginFailed, securityLevel, types.LogCategoryAuth,
+		reqCtx.DeviceInfo.IPAddress,
+		map[string]any{
+			"reason":     string(reason),
+			"identifier": identifier,
+		})
+}
+
+// writeAuditLog is a helper to write audit logs
+func (uc *LoginUsecase) writeAuditLog(ctx context.Context, actorID string, eventType types.EventType, level types.SecurityLevel, category types.LogCategory, ipAddress string, payload map[string]any) {
+	if uc.auditService != nil {
+		_ = uc.auditService.Log(ctx, &AuditEvent{
+			ActorID:       actorID,
+			ActorType:    types.ActorTypeUser,
+			EventType:    eventType,
+			IPAddress:    ipAddress,
+			SecurityLevel: level,
+			LogCategory:  category,
+			Payload:     payload,
+		})
 	}
 }
 

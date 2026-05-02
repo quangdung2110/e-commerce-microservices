@@ -43,9 +43,9 @@ type ResetPasswordResponse struct {
 
 // ChangePasswordResponse represents password change response
 type ChangePasswordResponse struct {
-	Success         bool   `json:"success"`
-	Message         string `json:"message"`
-	SessionsRevoked bool   `json:"sessions_revoked"` // All other sessions revoked for security
+	Success              bool   `json:"success"`
+	Message             string `json:"message"`
+	SessionsRevokedCount int64  `json:"sessions_revoked_count"` // Number of other sessions revoked for security
 }
 
 // ValidateResetTokenResponse represents token validation response

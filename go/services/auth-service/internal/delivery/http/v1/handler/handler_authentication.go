@@ -112,13 +112,16 @@ func (h *AuthenticationHandler) Logout(c *gin.Context) {
 		return
 	}
 
+	// Get client IP
+	clientIP := c.ClientIP()
+
 	// Execute logout
 	req := &dto.LogoutRequest{
 		SessionID: sessionID.(uuid.UUID),
 		JTI:       jti.(string),
 	}
 
-	if err := h.logoutUsecase.Execute(c.Request.Context(), userID.(uuid.UUID), req); err != nil {
+	if err := h.logoutUsecase.Execute(c.Request.Context(), userID.(uuid.UUID), req, clientIP); err != nil {
 		h.handleAuthError(c, err)
 		return
 	}
@@ -148,7 +151,10 @@ func (h *AuthenticationHandler) LogoutAll(c *gin.Context) {
 		return
 	}
 
-	err := h.logoutUsecase.ExecuteAll(c.Request.Context(), userID.(uuid.UUID))
+	// Get client IP
+	clientIP := c.ClientIP()
+
+	err := h.logoutUsecase.ExecuteAll(c.Request.Context(), userID.(uuid.UUID), clientIP)
 	if err != nil {
 		h.handleAuthError(c, err)
 		return

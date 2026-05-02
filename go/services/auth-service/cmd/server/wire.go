@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -16,6 +17,7 @@ import (
 	redisAdapter "github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/repository/redis_adapter"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/authentication"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/common"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/jwks"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/password"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/registration"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/security"
@@ -33,6 +35,12 @@ type Dependencies struct {
 	PasswordResetUsecase  *password.ResetUsecase
 	PasswordChangeUsecase *password.ChangeUsecase
 	SessionManagerUsecase *session.ManagerUsecase
+
+	// Audit Service
+	AuditService *authentication.AuditService
+
+	// JWKS Service
+	JwksService *jwks.Service
 
 	// Repositories (for middleware)
 	SessionRepo   repository.SessionRepository
@@ -78,18 +86,37 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 	rateLimitRepo := redisAdapter.NewRedisRateLimitRepository(redisClient, logger)
 	refreshTokenRepo := redisAdapter.NewRedisRefreshTokenRepository(redisClient, logger)
 	blacklistRepo := redisAdapter.NewRedisBlacklistRepository(redisClient, logger)
+	graceCache := redisAdapter.NewGraceCacheRepository(redisClient)
+	revokeBeforeCache := redisAdapter.NewRevokeBeforeCacheRepository(redisClient)
 
 	// Repositories (PostgreSQL-based)
 	sessionRepo := pgAdapter.NewPostgresSessionRepository(db.Pool(), logger)
 	loginAttemptRepo := pgAdapter.NewPostgresLoginAttemptRepository(db.Pool(), logger)
 	passwordResetRepo := pgAdapter.NewPostgresPasswordResetTokenRepository(db.Pool(), logger)
+	auditRepo := pgAdapter.NewPostgresAuditRepository(db.Pool(), logger)
+	jwtKeyRepo := pgAdapter.NewPostgresJwtKeyRepository(db.Pool())
+	outboxRepo := pgAdapter.NewPostgresOutboxRepository(db.Pool())
 
 	// Security components
 	passwordEncoder := security.NewBcryptPasswordEncoder(cfg.Security.BcryptCost)
-	tokenGenerator := security.NewJWTTokenGenerator(
-		cfg.JWT.AccessTokenSecret,
-		cfg.JWT.RefreshTokenSecret,
+
+	// JWKS Service (required for token generation)
+	var jwksService *jwks.Service
+	if cfg.JWKS.Enabled {
+		jwksService = jwks.NewService(jwtKeyRepo, cfg.JWKS, logger)
+		// Generate initial key if none exists
+		_, _, err := jwksService.GetActivePrivateKey(context.Background())
+		if err != nil {
+			logger.Warn("No active JWKS key found, will be generated on first use", zap.Error(err))
+		}
+	}
+
+	// Token Generator using JWKS
+	tokenGenerator := security.NewRS256TokenGenerator(
+		jwksService,
 		cfg.JWT.Issuer,
+		time.Duration(cfg.JWT.AccessTokenExpiry)*time.Minute,
+		logger,
 	)
 
 	// External service clients
@@ -111,6 +138,9 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		eventPublisher = event.NewNoOpEventPublisher(logger)
 		logger.Info("Using NoOp event publisher (Kafka disabled)")
 	}
+
+	// ========================= AUDIT SERVICE =========================
+	auditService := authentication.NewAuditService(auditRepo, logger)
 
 	// ========================= USECASE LAYER =========================
 
@@ -145,6 +175,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		eventPublisher,
 		tokenGenerator,
 		passwordEncoder,
+		auditService,
 		logger,
 	)
 
@@ -152,16 +183,21 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		sessionRepo,
 		blacklistRepo,
 		refreshTokenRepo,
+		revokeBeforeCache,
 		eventPublisher,
+		auditService,
 		logger,
 	)
 
 	refreshTokenUsecase := authentication.NewRefreshTokenUsecase(
 		sessionRepo,
-		refreshTokenRepo,
-		userServiceClient,
+		graceCache,
+		revokeBeforeCache,
+		blacklistRepo,
 		eventPublisher,
 		tokenGenerator,
+		userServiceClient,
+		auditService,
 		logger,
 	)
 
@@ -170,21 +206,26 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		passwordResetRepo,
 		sessionRepo,
 		refreshTokenRepo,
+		revokeBeforeCache,
 		rateLimitRepo,
 		userServiceClient,
 		notificationServiceClient,
 		eventPublisher,
+		outboxRepo,
 		passwordEncoder,
+		auditService,
 		logger,
 	)
 
 	passwordChangeUsecase := password.NewChangeUsecase(
 		sessionRepo,
 		refreshTokenRepo,
+		revokeBeforeCache,
 		rateLimitRepo,
 		userServiceClient,
 		eventPublisher,
 		passwordEncoder,
+		auditService,
 		logger,
 	)
 
@@ -205,6 +246,8 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		PasswordResetUsecase:  passwordResetUsecase,
 		PasswordChangeUsecase: passwordChangeUsecase,
 		SessionManagerUsecase: sessionManagerUsecase,
+		AuditService:         auditService,
+		JwksService:           jwksService,
 		SessionRepo:           sessionRepo,
 		RateLimitRepo:         rateLimitRepo,
 		BlacklistRepo:         blacklistRepo,

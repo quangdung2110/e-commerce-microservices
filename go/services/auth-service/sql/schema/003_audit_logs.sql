@@ -1,67 +1,63 @@
--- Migration: 003_audit_logs.sql
--- Purpose: Create audit_logs table for security audit trail
--- Author: Auth Service Team
--- Date: 2026-05-02
+-- Migration: Create audit_logs table
+-- This table stores security audit logs for compliance and security monitoring
 
--- ============================================================================
--- Table: audit_logs
--- Purpose: Comprehensive audit trail for security and compliance
--- ============================================================================
 CREATE TABLE IF NOT EXISTS audit_logs (
+    -- Primary key
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
-    -- Actor Information
+    -- Actor information
     actor_id VARCHAR(255) NOT NULL,
-    actor_type VARCHAR(50) NOT NULL CHECK (actor_type IN ('USER', 'ADMIN', 'SYSTEM', 'GUEST')),
+    actor_type VARCHAR(50) NOT NULL, -- USER, ADMIN, SYSTEM, GUEST
     
-    -- Event Information
-    event_type VARCHAR(100) NOT NULL,
-    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    -- Event information
+    event_type VARCHAR(100) NOT NULL, -- USER_LOGGED_IN, TOKEN_REFRESHED, etc.
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     
-    -- Context Information
-    ip_address VARCHAR(45),
+    -- Request context
+    ip_address VARCHAR(45), -- Supports IPv6
     device_id VARCHAR(255),
-    device_info VARCHAR(255),
+    device_info TEXT,
     
-    -- Severity Level
-    security_level VARCHAR(50) NOT NULL DEFAULT 'INFO' CHECK (security_level IN ('INFO', 'WARNING', 'CRITICAL')),
+    -- Security information
+    security_level VARCHAR(20) NOT NULL, -- INFO, WARNING, CRITICAL
+    request_id VARCHAR(255),
     
-    -- Event Payload (JSONB for flexibility)
-    payload JSONB DEFAULT '{}',
+    -- Payload (flexible JSON data)
+    payload JSONB,
     
-    -- Category
-    log_category VARCHAR(50) NOT NULL DEFAULT 'USER' CHECK (log_category IN ('USER', 'SYSTEM', 'ADMIN', 'AUTH')),
+    -- Categorization
+    log_category VARCHAR(50) NOT NULL, -- USER, SYSTEM, ADMIN, AUTH
     
-    -- Metadata
-    request_id VARCHAR(100),
-    service_name VARCHAR(50) DEFAULT 'auth-service',
+    -- Service metadata
+    service_name VARCHAR(100) NOT NULL DEFAULT 'auth-service',
     
     -- Timestamp
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Indexes for audit_logs
-CREATE INDEX idx_audit_logs_actor_id ON audit_logs(actor_id);
-CREATE INDEX idx_audit_logs_actor_type ON audit_logs(actor_type);
-CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);
-CREATE INDEX idx_audit_logs_occurred_at ON audit_logs(occurred_at DESC);
-CREATE INDEX idx_audit_logs_security_level ON audit_logs(security_level);
-CREATE INDEX idx_audit_logs_log_category ON audit_logs(log_category);
+-- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_id ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_event_type ON audit_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_occurred_at ON audit_logs(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_security_level ON audit_logs(security_level);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_log_category ON audit_logs(log_category);
 
--- Composite indexes for common queries
-CREATE INDEX idx_audit_logs_category_occurred ON audit_logs(log_category, occurred_at DESC);
-CREATE INDEX idx_audit_logs_actor_event ON audit_logs(actor_id, event_type, occurred_at DESC);
-CREATE INDEX idx_audit_logs_security_time ON audit_logs(security_level, occurred_at DESC) 
-    WHERE security_level != 'INFO';
+-- Composite indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_event ON audit_logs(actor_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_time_level ON audit_logs(occurred_at, security_level);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_category_level ON audit_logs(log_category, security_level);
 
--- Partial index for critical security events (quick lookups)
-CREATE INDEX idx_audit_logs_critical ON audit_logs(occurred_at DESC) 
-    WHERE security_level = 'CRITICAL';
+-- Partial indexes for performance
+CREATE INDEX IF NOT EXISTS idx_audit_logs_critical ON audit_logs(occurred_at) 
+WHERE security_level = 'CRITICAL';
 
--- Comment on table
-COMMENT ON TABLE audit_logs IS 'Security audit trail for auth-service events';
-COMMENT ON COLUMN audit_logs.actor_id IS 'Identifier of the actor (user_id, admin_id, or system component)';
-COMMENT ON COLUMN audit_logs.actor_type IS 'Type of actor: USER, ADMIN, SYSTEM, or GUEST';
-COMMENT ON COLUMN audit_logs.event_type IS 'Type of event (e.g., USER_LOGGED_IN, TOKEN_REFRESHED)';
-COMMENT ON COLUMN audit_logs.security_level IS 'Severity: INFO (normal), WARNING (suspicious), CRITICAL (security breach)';
-COMMENT ON COLUMN audit_logs.payload IS 'Additional event data in JSON format';
+CREATE INDEX IF NOT EXISTS idx_audit_logs_auth_events ON audit_logs(occurred_at) 
+WHERE log_category = 'AUTH';
+
+-- Add comments
+COMMENT ON TABLE audit_logs IS 'Security audit log for compliance and monitoring';
+COMMENT ON COLUMN audit_logs.actor_id IS 'Identifier of the actor (user_id, system, etc.)';
+COMMENT ON COLUMN audit_logs.actor_type IS 'Type of actor: USER, ADMIN, SYSTEM, GUEST';
+COMMENT ON COLUMN audit_logs.event_type IS 'Type of event: LOGIN, LOGOUT, TOKEN_REFRESH, etc.';
+COMMENT ON COLUMN audit_logs.security_level IS 'Security severity: INFO, WARNING, CRITICAL';
+COMMENT ON COLUMN audit_logs.log_category IS 'Log category: USER, SYSTEM, ADMIN, AUTH';

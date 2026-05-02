@@ -11,6 +11,8 @@ import (
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/entity"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/repository"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/serr"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/domain/types"
+	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/authentication"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/common"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/usecase/dto"
 	"github.com/yourusername/spring-event-sourcing/go/services/auth-service/internal/utils"
@@ -27,12 +29,15 @@ type ResetUsecase struct {
 	passwordResetRepo   repository.PasswordResetTokenRepository
 	sessionRepo         repository.SessionRepository
 	refreshTokenRepo    repository.RefreshTokenRepository
-	rateLimitRepo       repository.RateLimitRepository
-	userService         common.UserService
+	revokeCache        repository.RevokeBeforeCacheRepository
+	rateLimitRepo      repository.RateLimitRepository
+	userService        common.UserService
 	notificationService common.NotificationService
-	eventPublisher      common.EventPublisher
-	passwordEncoder     common.PasswordEncoder
-	logger              *zap.Logger
+	eventPublisher     common.EventPublisher
+	outboxRepo         repository.OutboxRepository
+	passwordEncoder    common.PasswordEncoder
+	auditService       *authentication.AuditService
+	logger             *zap.Logger
 }
 
 // NewResetUsecase creates new password reset usecase
@@ -40,23 +45,29 @@ func NewResetUsecase(
 	passwordResetRepo repository.PasswordResetTokenRepository,
 	sessionRepo repository.SessionRepository,
 	refreshTokenRepo repository.RefreshTokenRepository,
+	revokeCache repository.RevokeBeforeCacheRepository,
 	rateLimitRepo repository.RateLimitRepository,
 	userService common.UserService,
 	notificationService common.NotificationService,
 	eventPublisher common.EventPublisher,
+	outboxRepo repository.OutboxRepository,
 	passwordEncoder common.PasswordEncoder,
+	auditService *authentication.AuditService,
 	logger *zap.Logger,
 ) *ResetUsecase {
 	return &ResetUsecase{
 		passwordResetRepo:   passwordResetRepo,
 		sessionRepo:         sessionRepo,
 		refreshTokenRepo:    refreshTokenRepo,
-		rateLimitRepo:       rateLimitRepo,
-		userService:         userService,
+		revokeCache:        revokeCache,
+		rateLimitRepo:      rateLimitRepo,
+		userService:        userService,
 		notificationService: notificationService,
-		eventPublisher:      eventPublisher,
-		passwordEncoder:     passwordEncoder,
-		logger:              logger,
+		eventPublisher:     eventPublisher,
+		outboxRepo:         outboxRepo,
+		passwordEncoder:    passwordEncoder,
+		auditService:       auditService,
+		logger:             logger,
 	}
 }
 
@@ -67,7 +78,6 @@ func (uc *ResetUsecase) ForgotPassword(ctx context.Context, req *dto.ForgotPassw
 	if err != nil {
 		uc.logger.Error("Failed to check password reset rate limit", zap.Error(err))
 		// Continue on error (fail open)
-		return nil, err
 	} else if !allowed {
 		hours := int(remaining.Hours())
 		days := hours / 24
@@ -129,6 +139,13 @@ func (uc *ResetUsecase) ForgotPassword(ctx context.Context, req *dto.ForgotPassw
 		uc.logger.Error("Failed to set password reset rate limit", zap.Error(err))
 	}
 
+	// Write audit log for password reset requested
+	uc.writeAuditLog(ctx, user.UserID.String(), types.EventTypePasswordResetRequested, types.SecurityLevelInfo, types.LogCategoryAuth,
+		reqCtx.DeviceInfo.IPAddress,
+		map[string]any{
+			"email": utils.MaskEmail(req.Email),
+		})
+
 	// Publish event
 	if err := uc.publishPasswordResetRequestedEvent(ctx, user.UserID, reqCtx.DeviceInfo.IPAddress); err != nil {
 		uc.logger.Error("Failed to publish event", zap.Error(err))
@@ -147,6 +164,7 @@ func (uc *ResetUsecase) ForgotPassword(ctx context.Context, req *dto.ForgotPassw
 }
 
 // ResetPassword resets password using token
+// CRITICAL: After reset, all sessions are revoked and revoke_before is set
 func (uc *ResetUsecase) ResetPassword(ctx context.Context, req *dto.ResetPasswordRequest, reqCtx *common.RequestContext) (*dto.ResetPasswordResponse, error) {
 	// Validate new password
 	if err := utils.ValidatePasswordStrength(req.NewPassword); err != nil {
@@ -159,17 +177,35 @@ func (uc *ResetUsecase) ResetPassword(ctx context.Context, req *dto.ResetPasswor
 	// Find reset record
 	resetRecord, err := uc.passwordResetRepo.GetByTokenHash(ctx, tokenHash)
 	if err != nil {
+		uc.writeAuditLog(ctx, "unknown", types.EventTypePasswordResetCompleted, types.SecurityLevelWarning, types.LogCategoryAuth,
+			reqCtx.DeviceInfo.IPAddress,
+			map[string]any{
+				"result": "FAILED",
+				"reason": "INVALID_TOKEN",
+			})
 		return nil, serr.ErrPasswordResetTokenInvalid
 	}
 
 	// Check if already used
 	if resetRecord.UsedAt != nil {
+		uc.writeAuditLog(ctx, resetRecord.UserID.String(), types.EventTypePasswordResetCompleted, types.SecurityLevelWarning, types.LogCategoryAuth,
+			reqCtx.DeviceInfo.IPAddress,
+			map[string]any{
+				"result": "FAILED",
+				"reason": "TOKEN_ALREADY_USED",
+			})
 		return nil, serr.ErrPasswordResetTokenAlreadyUsed
 	}
 
 	// Check if expired
 	if time.Now().UTC().After(resetRecord.ExpiresAt) {
 		uc.passwordResetRepo.Delete(ctx, resetRecord.TokenHash)
+		uc.writeAuditLog(ctx, resetRecord.UserID.String(), types.EventTypePasswordResetCompleted, types.SecurityLevelWarning, types.LogCategoryAuth,
+			reqCtx.DeviceInfo.IPAddress,
+			map[string]any{
+				"result": "FAILED",
+				"reason": "TOKEN_EXPIRED",
+			})
 		return nil, serr.ErrPasswordResetTokenExpired
 	}
 
@@ -190,18 +226,21 @@ func (uc *ResetUsecase) ResetPassword(ctx context.Context, req *dto.ResetPasswor
 		uc.logger.Error("Failed to update reset token", zap.Error(err))
 	}
 
-	// Revoke all sessions
-	if err := uc.sessionRepo.RevokeAllByUserID(ctx, resetRecord.UserID); err != nil {
-		uc.logger.Error("Failed to revoke sessions", zap.Error(err))
-	}
+	// CRITICAL: Revoke all sessions and set revoke_before
+	uc.revokeAllSessions(ctx, resetRecord.UserID, reqCtx.DeviceInfo.IPAddress)
 
-	// Delete all refresh tokens
-	if err := uc.refreshTokenRepo.DeleteAllByUserID(ctx, resetRecord.UserID); err != nil {
-		uc.logger.Error("Failed to delete refresh tokens", zap.Error(err))
-	}
+	// Write outbox event for password reset completed
+	uc.publishOutboxEvent(ctx, resetRecord.UserID, types.EventTypePasswordResetCompleted)
+
+	// Write audit log for successful password reset
+	uc.writeAuditLog(ctx, resetRecord.UserID.String(), types.EventTypePasswordResetCompleted, types.SecurityLevelWarning, types.LogCategoryAuth,
+		reqCtx.DeviceInfo.IPAddress,
+		map[string]any{
+			"result": "SUCCESS",
+		})
 
 	// Publish event
-	if err := uc.publishPasswordChangedEvent(ctx, resetRecord.UserID, reqCtx.DeviceInfo.IPAddress); err != nil {
+	if err := uc.publishPasswordChangedEvent(ctx, resetRecord.UserID, reqCtx.DeviceInfo.IPAddress, "RESET_FLOW"); err != nil {
 		uc.logger.Error("Failed to publish event", zap.Error(err))
 	}
 
@@ -212,6 +251,29 @@ func (uc *ResetUsecase) ResetPassword(ctx context.Context, req *dto.ResetPasswor
 		Success: true,
 		Message: "Password has been reset successfully. Please login with your new password.",
 	}, nil
+}
+
+// revokeAllSessions revokes all sessions for a user and sets revoke_before
+func (uc *ResetUsecase) revokeAllSessions(ctx context.Context, userID uuid.UUID, ipAddress string) {
+	// Revoke all sessions
+	if err := uc.sessionRepo.RevokeAllByUserID(ctx, userID); err != nil {
+		uc.logger.Error("Failed to revoke sessions", zap.Error(err))
+	}
+
+	// Delete all refresh tokens
+	if err := uc.refreshTokenRepo.DeleteAllByUserID(ctx, userID); err != nil {
+		uc.logger.Error("Failed to delete refresh tokens", zap.Error(err))
+	}
+
+	// Set revoke_before timestamp
+	now := time.Now()
+	if err := uc.revokeCache.SetRevokedBefore(ctx, userID.String(), now); err != nil {
+		uc.logger.Error("Failed to set revoke_before", zap.Error(err))
+	}
+
+	uc.logger.Info("All sessions revoked for user after password reset",
+		zap.String("user_id", userID.String()),
+		zap.Time("revoked_at", now))
 }
 
 // ValidateResetToken validates password reset token
@@ -250,6 +312,41 @@ func (uc *ResetUsecase) ValidateResetToken(ctx context.Context, req *dto.Validat
 	}, nil
 }
 
+// writeAuditLog is a helper to write audit logs
+func (uc *ResetUsecase) writeAuditLog(ctx context.Context, actorID string, eventType types.EventType, level types.SecurityLevel, category types.LogCategory, ipAddress string, payload map[string]any) {
+	if uc.auditService != nil {
+		_ = uc.auditService.Log(ctx, &authentication.AuditEvent{
+			ActorID:       actorID,
+			ActorType:    types.ActorTypeUser,
+			EventType:    eventType,
+			IPAddress:    ipAddress,
+			SecurityLevel: level,
+			LogCategory:  category,
+			Payload:     payload,
+		})
+	}
+}
+
+// publishOutboxEvent publishes an event to the outbox table
+func (uc *ResetUsecase) publishOutboxEvent(ctx context.Context, userID uuid.UUID, eventType types.EventType) {
+	if uc.outboxRepo == nil {
+		return
+	}
+
+	event := entity.NewOutboxEvent(
+		string(eventType),
+		"auth-service",
+		userID,
+		map[string]any{
+			"user_id": userID.String(),
+		},
+	)
+
+	if err := uc.outboxRepo.Create(ctx, event); err != nil {
+		uc.logger.Error("Failed to create outbox event", zap.Error(err))
+	}
+}
+
 func (uc *ResetUsecase) publishPasswordResetRequestedEvent(ctx context.Context, userID uuid.UUID, ipAddress string) error {
 	event := &common.PasswordResetRequestedEvent{
 		UserID:    &userID,
@@ -259,12 +356,12 @@ func (uc *ResetUsecase) publishPasswordResetRequestedEvent(ctx context.Context, 
 	return uc.eventPublisher.PublishPasswordResetRequested(ctx, event)
 }
 
-func (uc *ResetUsecase) publishPasswordChangedEvent(ctx context.Context, userID uuid.UUID, ipAddress string) error {
+func (uc *ResetUsecase) publishPasswordChangedEvent(ctx context.Context, userID uuid.UUID, ipAddress string, triggeredBy string) error {
 	event := &common.PasswordChangedEvent{
 		UserID:      &userID,
 		ChangedAt:   time.Now().UTC(),
 		IPAddress:   ipAddress,
-		TriggeredBy: "SELF",
+		TriggeredBy: triggeredBy,
 	}
 	return uc.eventPublisher.PublishPasswordChanged(ctx, event)
 }

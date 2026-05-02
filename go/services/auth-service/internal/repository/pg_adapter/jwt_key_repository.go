@@ -72,7 +72,7 @@ func (r *PostgresJwtKeyRepository) GetByKid(ctx context.Context, kid string) (*e
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, nil
+			return nil, repository.ErrKeyNotFound
 		}
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (r *PostgresJwtKeyRepository) GetActive(ctx context.Context) (*entity.JwtKe
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, nil
+			return nil, repository.ErrKeyNotFound
 		}
 		return nil, err
 	}

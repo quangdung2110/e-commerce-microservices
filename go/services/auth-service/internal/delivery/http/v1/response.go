@@ -121,3 +121,98 @@ func respondSuccessWithMessage(c *gin.Context, statusCode int, message string, d
 		Timestamp: getCurrentTimestamp(),
 	})
 }
+
+// PaginatedResponse represents a paginated API response
+type PaginatedResponse struct {
+	Success   bool        `json:"success"`
+	Data      interface{} `json:"data"`
+	Pagination Pagination `json:"pagination"`
+	Timestamp string      `json:"timestamp"`
+}
+
+// Pagination represents pagination metadata
+type Pagination struct {
+	Page       int   `json:"page"`
+	Limit      int   `json:"limit"`
+	Total      int64 `json:"total"`
+	TotalPages int   `json:"total_pages"`
+}
+
+// Paginated sends a paginated response
+func Paginated(c *gin.Context, data interface{}, total int64, limit, offset int) {
+	page := 0
+	if limit > 0 {
+		page = offset / limit
+	}
+
+	totalPages := 0
+	if total > 0 && limit > 0 {
+		totalPages = int((total + int64(limit) - 1) / int64(limit))
+	}
+
+	c.JSON(http.StatusOK, PaginatedResponse{
+		Success:   true,
+		Data:      data,
+		Pagination: Pagination{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+		Timestamp: getCurrentTimestamp(),
+	})
+}
+
+// Success sends a success response with data
+func Success(c *gin.Context, statusCode int, data interface{}) {
+	c.JSON(statusCode, Response{
+		Success:   true,
+		Data:      data,
+		Timestamp: getCurrentTimestamp(),
+	})
+}
+
+// Error sends an error response
+func Error(c *gin.Context, statusCode int, code, message string, err error) {
+	details := ""
+	if err != nil {
+		details = err.Error()
+	}
+
+	c.JSON(statusCode, Response{
+		Success: false,
+		Error: &ErrorInfo{
+			Type:    string(serr.ErrorTypeInternal),
+			Code:    code,
+			Message: message,
+			Details: details,
+		},
+		Timestamp: getCurrentTimestamp(),
+	})
+}
+
+// Unauthorized sends an unauthorized error response
+func Unauthorized(c *gin.Context) {
+	c.JSON(http.StatusUnauthorized, Response{
+		Success: false,
+		Error: &ErrorInfo{
+			Type:    string(serr.ErrorTypeAuthentication),
+			Code:    "UNAUTHORIZED",
+			Message: "Authentication required",
+		},
+		Timestamp: getCurrentTimestamp(),
+	})
+}
+
+// Forbidden sends a forbidden error response
+func Forbidden(c *gin.Context) {
+	c.JSON(http.StatusForbidden, Response{
+		Success: false,
+		Error: &ErrorInfo{
+			Type:    string(serr.ErrorTypeAuthorization),
+			Code:    "FORBIDDEN",
+			Message: "Access denied",
+		},
+		Timestamp: getCurrentTimestamp(),
+	})
+}

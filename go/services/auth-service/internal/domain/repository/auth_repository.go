@@ -42,6 +42,27 @@ type SessionRepository interface {
 
 	// DeleteExpired deletes expired sessions
 	DeleteExpired(ctx context.Context) error
+
+	// ========================= MODULE 3: TOKEN ROTATION =========================
+
+	// FindByTokenHashForUpdate retrieves a session by token hash with row lock (FOR UPDATE)
+	// Used during refresh token rotation to prevent race conditions
+	FindByTokenHashForUpdate(ctx context.Context, tokenHash string) (*entity.Session, error)
+
+	// CreateWithFamily creates a new session with family tracking
+	CreateWithFamily(ctx context.Context, session *entity.Session, familyID uuid.UUID) error
+
+	// RevokeWithGracePeriod revokes a session and sets grace period
+	RevokeWithGracePeriod(ctx context.Context, tokenHash string, graceExpiresAt time.Time) error
+
+	// MarkTokenAsUsed marks a token as used
+	MarkTokenAsUsed(ctx context.Context, sessionID uuid.UUID) error
+
+	// GetActiveSessionsWithGraceByUserID retrieves all active sessions and those in grace period
+	GetActiveSessionsWithGraceByUserID(ctx context.Context, userID uuid.UUID) ([]*entity.Session, error)
+
+	// DeleteExpiredGraceTokens deletes tokens past their grace period
+	DeleteExpiredGraceTokens(ctx context.Context) error
 }
 
 // LoginAttemptRepository defines the interface for login attempt operations

@@ -113,7 +113,7 @@ func (k *JwtKey) MarkAsRetired() {
 
 // JWKS represents a JSON Web Key Set
 type JWKS struct {
-	Keys []JWK `json:"keys"`
+	Keys []*JWK `json:"keys"`
 }
 
 // JWK represents a JSON Web Key

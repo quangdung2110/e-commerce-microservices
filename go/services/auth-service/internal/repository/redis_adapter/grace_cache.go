@@ -14,6 +14,7 @@ import (
 // Used during refresh token rotation to handle concurrent requests within 10-second window
 type GraceCacheRepository struct {
 	client *redis.Client
+	prefix string
 	ttl    time.Duration
 }
 
@@ -21,25 +22,23 @@ type GraceCacheRepository struct {
 func NewGraceCacheRepository(client *redis.Client) *GraceCacheRepository {
 	return &GraceCacheRepository{
 		client: client,
+		prefix: domain.RedisKeyPrefixRefreshGrace,
 		ttl:    domain.GracePeriodTTL,
 	}
 }
 
 // key generates the Redis key for a token hash
 func (r *GraceCacheRepository) key(tokenHash string) string {
-	return domain.RedisKeyPrefixRefreshGrace + tokenHash
+	return r.prefix + tokenHash
 }
 
 // Set stores grace period data with TTL (10 seconds)
+// This caches the new tokens generated during rotation for handling concurrent requests
 func (r *GraceCacheRepository) Set(ctx context.Context, tokenHash string, data *types.GracePeriodData) error {
-	data.CreatedAt = time.Now().Unix()
-	data.ExpiresAt = time.Now().Add(r.ttl).Unix()
-
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-
 	return r.client.Set(ctx, r.key(tokenHash), jsonData, r.ttl).Err()
 }
 
@@ -48,7 +47,7 @@ func (r *GraceCacheRepository) Get(ctx context.Context, tokenHash string) (*type
 	val, err := r.client.Get(ctx, r.key(tokenHash)).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return nil, nil
+			return nil, nil // Not found
 		}
 		return nil, err
 	}
@@ -57,7 +56,6 @@ func (r *GraceCacheRepository) Get(ctx context.Context, tokenHash string) (*type
 	if err := json.Unmarshal([]byte(val), &data); err != nil {
 		return nil, err
 	}
-
 	return &data, nil
 }
 
@@ -68,27 +66,14 @@ func (r *GraceCacheRepository) Delete(ctx context.Context, tokenHash string) err
 
 // Exists checks if grace period data exists
 func (r *GraceCacheRepository) Exists(ctx context.Context, tokenHash string) (bool, error) {
-	result, err := r.client.Exists(ctx, r.key(tokenHash)).Result()
+	exists, err := r.client.Exists(ctx, r.key(tokenHash)).Result()
 	if err != nil {
 		return false, err
 	}
-	return result > 0, nil
+	return exists > 0, nil
 }
 
-// SetWithCustomTTL sets grace period data with a custom TTL
-func (r *GraceCacheRepository) SetWithCustomTTL(ctx context.Context, tokenHash string, data *types.GracePeriodData, ttl time.Duration) error {
-	data.CreatedAt = time.Now().Unix()
-	data.ExpiresAt = time.Now().Add(ttl).Unix()
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	return r.client.Set(ctx, r.key(tokenHash), jsonData, ttl).Err()
-}
-
-// Ping checks if Redis connection is alive
-func (r *GraceCacheRepository) Ping(ctx context.Context) error {
-	return r.client.Ping(ctx).Err()
+// GetTTL returns the remaining TTL for a grace period cache entry
+func (r *GraceCacheRepository) GetTTL(ctx context.Context, tokenHash string) (time.Duration, error) {
+	return r.client.TTL(ctx, r.key(tokenHash)).Result()
 }

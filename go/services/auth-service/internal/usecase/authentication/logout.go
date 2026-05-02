@@ -18,10 +18,12 @@ import (
 // LogoutUsecase handles user logout
 type LogoutUsecase struct {
 	sessionRepo      repository.SessionRepository
-	blacklistRepo    repository.BlacklistRepository
+	blacklistRepo   repository.BlacklistRepository
 	refreshTokenRepo repository.RefreshTokenRepository
-	eventPublisher   common.EventPublisher
-	logger           *zap.Logger
+	revokeCache     repository.RevokeBeforeCacheRepository
+	eventPublisher  common.EventPublisher
+	auditService    *AuditService
+	logger          *zap.Logger
 }
 
 // NewLogoutUsecase creates new logout usecase
@@ -29,20 +31,24 @@ func NewLogoutUsecase(
 	sessionRepo repository.SessionRepository,
 	blacklistRepo repository.BlacklistRepository,
 	refreshTokenRepo repository.RefreshTokenRepository,
+	revokeCache repository.RevokeBeforeCacheRepository,
 	eventPublisher common.EventPublisher,
+	auditService *AuditService,
 	logger *zap.Logger,
 ) *LogoutUsecase {
 	return &LogoutUsecase{
 		sessionRepo:      sessionRepo,
-		blacklistRepo:    blacklistRepo,
+		blacklistRepo:   blacklistRepo,
 		refreshTokenRepo: refreshTokenRepo,
-		eventPublisher:   eventPublisher,
-		logger:           logger,
+		revokeCache:    revokeCache,
+		eventPublisher:  eventPublisher,
+		auditService:   auditService,
+		logger:         logger,
 	}
 }
 
 // Execute logs out current session
-func (uc *LogoutUsecase) Execute(ctx context.Context, userID uuid.UUID, req *dto.LogoutRequest) error {
+func (uc *LogoutUsecase) Execute(ctx context.Context, userID uuid.UUID, req *dto.LogoutRequest, ipAddress string) error {
 	// Step 1: Get session from table: auth_sessions
 	session, err := uc.sessionRepo.GetByID(ctx, req.SessionID)
 	if err != nil {
@@ -81,7 +87,15 @@ func (uc *LogoutUsecase) Execute(ctx context.Context, userID uuid.UUID, req *dto
 		return fmt.Errorf("failed to revoke session: %w", err)
 	}
 
-	// Step 6: Publish event
+	// Step 6: Write audit log
+	uc.writeAuditLog(ctx, userID.String(), types.EventTypeUserLoggedOut, types.SecurityLevelInfo, types.LogCategoryAuth,
+		ipAddress,
+		map[string]any{
+			"session_id": session.SessionID.String(),
+			"logout_type": "MANUAL",
+		})
+
+	// Step 7: Publish event
 	if err := uc.publishLogoutEvent(ctx, userID, req.SessionID); err != nil {
 		uc.logger.Error("Failed to publish logout event", zap.Error(err))
 	}
@@ -94,7 +108,7 @@ func (uc *LogoutUsecase) Execute(ctx context.Context, userID uuid.UUID, req *dto
 }
 
 // ExecuteAll logs out from all devices
-func (uc *LogoutUsecase) ExecuteAll(ctx context.Context, userID uuid.UUID) error {
+func (uc *LogoutUsecase) ExecuteAll(ctx context.Context, userID uuid.UUID, ipAddress string) error {
 	// Step 1: Blacklist user ID to prevent new token issuance
 	if err := uc.blacklistRepo.Add(ctx, types.UserBlacklist, userID.String(), 15*time.Minute); err != nil {
 		uc.logger.Error("Failed to blacklist user", zap.Error(err))
@@ -110,11 +124,32 @@ func (uc *LogoutUsecase) ExecuteAll(ctx context.Context, userID uuid.UUID) error
 		return fmt.Errorf("failed to revoke sessions: %w", err)
 	}
 
+	// Step 4: Write audit log
+	uc.writeAuditLog(ctx, userID.String(), types.EventTypeAllSessionsRevoked, types.SecurityLevelWarning, types.LogCategoryAuth,
+		ipAddress,
+		map[string]any{
+			"logout_type": "ALL_DEVICES",
+		})
+
 	uc.logger.Info("User logged out from all devices",
-		zap.String("user_id", userID.String()),
-	)
+		zap.String("user_id", userID.String()))
 
 	return nil
+}
+
+// writeAuditLog is a helper to write audit logs
+func (uc *LogoutUsecase) writeAuditLog(ctx context.Context, actorID string, eventType types.EventType, level types.SecurityLevel, category types.LogCategory, ipAddress string, payload map[string]any) {
+	if uc.auditService != nil {
+		_ = uc.auditService.Log(ctx, &AuditEvent{
+			ActorID:       actorID,
+			ActorType:    types.ActorTypeUser,
+			EventType:    eventType,
+			IPAddress:    ipAddress,
+			SecurityLevel: level,
+			LogCategory:  category,
+			Payload:     payload,
+		})
+	}
 }
 
 func (uc *LogoutUsecase) publishLogoutEvent(ctx context.Context, userID, sessionID uuid.UUID) error {
