@@ -50,9 +50,8 @@ Khi User chọn "Đặt làm địa chỉ mặc định":
     `UPDATE user_addresses SET is_default = FALSE WHERE user_id = {user_id} AND is_default = TRUE;`
 4.  Lệnh 2: Bật cờ cho Address ID được chọn.
     `UPDATE user_addresses SET is_default = TRUE WHERE id = {address_id} AND user_id = {user_id};`
-5.  Lệnh 3 (Nội bộ): Ghi log sự kiện thông qua Outbox Database (Debezium CDC pattern).
-6.  Commit Transaction gốc thành công. Sinh event `USER_ADDRESS_UPDATED`.
-7.  Hủy lệnh ở Redis: `DEL user:caches:addresses:{user_id}`.
+5.  Commit Transaction gốc thành công.
+6.  Hủy lệnh ở Redis: `DEL user:caches:addresses:{user_id}`.
 
 ### Quy trình Xóa Sổ Giao Hàng (Hard Delete)
 1.  Client DELETE `/api/v1/users/me/addresses/{address_id}`.
@@ -60,68 +59,56 @@ Khi User chọn "Đặt làm địa chỉ mặc định":
 3.  Server kiểm tra số lượng địa chỉ còn lại của user.
     * Nếu địa chỉ đang xóa là **default** và **không còn địa chỉ nào khác** -> trả lỗi 409 "Không thể xóa địa chỉ mặc định duy nhất".
     * Nếu địa chỉ đang xóa là **default** và **còn địa chỉ khác** -> tự động chọn 1 địa chỉ khác làm default trong cùng transaction.
-4.  Lưu sự kiện ra Outbox Table DB để chuẩn bị xuất bản (Event `USER_ADDRESS_DELETED`).
-5.  Tiến hành **DELETE XÓA CỨNG** bản ghi khỏi Postgres. Commit Database.
-6.  Debezium sẽ quăng message Kafka cho Audit, Shipping, Logistics v.v..
-7.  Clear Cache Toàn Mạng Bị Lỗi Stale bằng cách: xóa Redis L2 (`DEL user:caches:addresses:{user_id}`) (áp dụng double-delete nếu cần).
+4.  Tiến hành **DELETE XÓA CỨNG** bản ghi khỏi Postgres. Commit Database.
+5.  Clear Cache Toàn Mạng Bị Lỗi Stale bằng cách: xóa Redis L2 (`DEL user:caches:addresses:{user_id}`) (áp dụng double-delete nếu cần).
 
 ## 3. Luồng Cập Nhật Hồ Sơ Của User (Update Profile)
 
-Chức năng then chốt của Hệ thống để đồng bộ hiển thị và giải quyết triệt để Cache Invalidation diện rộng. 
+Chức năng then chốt của Hệ thống để đồng bộ hiển thị và giải quyết triệt để việc cập nhật dữ liệu hồ sơ người dùng. 
 
 ```mermaid
 sequenceDiagram
     participant App as Client
     participant API as User API
-    participant L2 as Redis L2
     participant DB as Postgres
     participant Kafka as Event Topic
 
     App->>API: PUT /api/v1/users/me/profile { phone, fullname... }
     API->>API: Ràng buộc Validation (Check SĐT, Validate Unicode..)
     API->>DB: UPDATE `user_profiles` + INSERT `outbox_events` trong Transaction
-    API->>L2: Xoá Key L2 (DEL `user:caches:profile:{uuid}`) trước commit
     API->>DB: Commit Transaction
-    API->>L2: Xoá Key L2 lần 2 (double-delete) để dọn cache stale
     API-->>App: OK 200 HTTP
 
     DB->>Kafka: CDC Debezium bắn ra thông điệp `USER_PROFILE_UPDATED`
 ```
-Tất cả các thành phần Analytics, Audit hoặc hệ thống Data Lake có thể đọc được cấu trúc cập nhật qua `t.user.events`.
-
 **Lưu ý xử lý nghiệp vụ:**
 * Nếu `phone_number` trùng với user khác (vi phạm unique), API trả lỗi 409 Conflict với thông điệp nghiệp vụ rõ ràng.
 
-## 4. Luồng Cung Cấp Dữ Liệu Cho Chat Service / API Gateway (gRPC Profile Pulling)
+## 4. Luồng Cung Cấp Dữ Liệu Cho Chat Service / API Gateway (Event-Driven Projection)
 
-Chat Service giữ `uuid` khách hàng nhưng không có tên/ảnh. Để Chat render UI nhanh nhất, cần luồng cấp dữ liệu tối ưu qua Cache. Không áp dụng Masking để tiết kiệm cycle CPU.
+Chat Service giữ `uuid` khách hàng và bao gồm cả thông tin name, .... Dữ liệu này được cung cấp qua Event-Driven Projection:
+1. Chat Service lắng nghe sự kiện `USER_PROFILE_UPDATED` để cập nhật bản sao dữ liệu (Name) trong DB nội bộ, giúp hiển thị nhanh và giảm tải cho User Service.
 
 ```mermaid
 sequenceDiagram
     participant ChatApp as Chat Client/BFF
     participant ChatSvc as Chat Service
-    participant UserSvc as User Service (gRPC Server)
-    participant Redis as Redis L2
     participant UserDB as User DB
 
     ChatApp->>ChatSvc: Load Room (participant_id = uuid)
-    ChatSvc->>UserSvc: gRPC call `GetBasicProfiles(List[UUID])`
-    
-    UserSvc->>Redis: Multi-GET (MGET user:caches:profile:{uuid})
-    alt MISS L2 Cache
-        UserSvc->>UserDB: Multi-GET (SELECT WHERE id IN (...))
-        UserDB-->>UserSvc: Trả về Result
-        UserSvc->>Redis: Lưu Cache L2
-    end
-    UserSvc-->>ChatSvc: Result Map <UUID, {first_name, last_name, avatar_url}>
+    ChatSvc->>UserDB: SELECT WHERE id IN (...)
+    UserDB-->>ChatSvc: Trả về Result
+    ChatSvc-->>ChatApp: Result Map <UUID, {first_name, last_name}>
     ChatSvc-->>ChatApp: Trả về Data đầy đủ
 ```
 
-    ## 5. Luồng Xóa Tài Khoản (GDPR / USER_DELETED)
+## 5. Luồng Xóa Tài Khoản (GDPR / USER_DELETED)
 
-    Khi Auth Service phát sự kiện `USER_DELETED` (hoặc Admin xóa vĩnh viễn), User Service phải dọn sạch PII.
+Khi Auth Service phát sự kiện `USER_DELETED` (hoặc Admin xóa vĩnh viễn), User Service phải dọn sạch PII và thông báo cho hệ sinh thái.
 
-    1.  Kafka Consumer nhận `USER_DELETED`.
-    2.  Mở Transaction và xóa theo thứ tự: `user_addresses` -> `user_preferences` -> `user_profiles`.
-    3.  Commit thành công.
-    4.  Xóa cache L2 tương ứng (`user:caches:profile:{id}`, `user:caches:addresses:{id}`, `user:caches:preferences:{id}`).
+1.  Kafka Consumer nhận `USER_DELETED`.
+2.  Mở Transaction và thực hiện:
+    *   Xóa theo thứ tự: `user_addresses` -> `user_preferences` -> `user_profiles`.
+    *   INSERT `outbox_events` sự kiện `USER_PROFILE_DELETED` để các bên (Chat,...) dọn dẹp dữ liệu.
+3.  Commit thành công.
+4.  Xóa cache L2 tương ứng (`user:caches:addresses:{id}`).

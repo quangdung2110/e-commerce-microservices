@@ -54,20 +54,21 @@ WHERE is_default = TRUE;
 
 ## 3. Bảng `user_preferences` (Tùy Chọn Cá Nhân)
 
-Quản lý các thiết lập ứng dụng của Người dùng. Dù không làm bảo mật PII phức tạp, nhưng vẫn cần bảng này để quản lý thói quen sử dụng và consent (đồng ý nhận thư).
+Quản lý các thiết lập ứng dụng của Người dùng. Dữ liệu từ bảng này sẽ được dùng làm Master Data để sinh event đồng bộ sang `notification_user_preferences` của Notification Service.
 
 | Column Name | Data Type | Constraints / Indexes | Description |
 | :--- | :--- | :--- | :--- |
 | `user_id` | `UUID` | Primary Key, FK -> `user_profiles(id)` | Mối quan hệ 1-1 với bảng Profile. |
-| `language` | `VARCHAR(10)` | Default `'vi'` | Cài đặt ngôn ngữ hiển thị gốc cho User (`vi`, `en`). |
+| `language` | `VARCHAR(10)` | Default `'vi'` | Cài đặt ngôn ngữ hiển thị gốc cho User (`vi`, `en`). Notification Service sẽ dùng trường này để load template. |
 | `currency` | `VARCHAR(3)` | Default `'VND'` | Cài đặt tiền tệ ưu tiên. |
-| `receive_promotions` | `BOOLEAN` | Default `TRUE` | Có đồng ý nhận email/SMS báo khuyến mãi không? (Phục vụ Notification Service tránh gửi rác). |
-| `receive_order_updates`| `BOOLEAN` | Default `TRUE` | Bật/tắt thông báo lộ trình đơn hàng. |
+| `email_enabled` | `BOOLEAN` | Default `TRUE` | Bật/tắt nhận thông báo qua kênh Email. |
+| `in_app_enabled` | `BOOLEAN` | Default `TRUE` | Bật/tắt nhận thông báo qua kênh In-App (Push Notification). |
+| `marketing_enabled` | `BOOLEAN` | Default `TRUE` | Có đồng ý nhận tin nhắn Quảng cáo/Khuyến mãi không? |
 | `updated_at` | `TIMESTAMP` | Mapped qua Trigger | Thời gian sửa đổi preferences gần nhất. |
 
 ## 4. Bảng `outbox_events` (Transactional Outbox Pattern qua Debezium)
 
-User Service dùng Outbox để đảm bảo Transaction SQL (update profile/addresses/preferences) và Publish Event là ALL-OR-NOTHING.
+User Service dùng Outbox để đảm bảo Transaction SQL (update profile/preferences) và Publish Event là ALL-OR-NOTHING.
 
 | Column Name | Data Type | Constraints / Indexes | Description |
 | :--- | :--- | :--- | :--- |

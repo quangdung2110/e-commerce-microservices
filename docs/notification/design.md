@@ -45,7 +45,7 @@ Vì Kafka đảm bảo **At-least-once**, system có thể nhận trùng event.
 
 ### 3.3 Rate Limiting
 Bảo vệ user khỏi spam và bảo vệ budget của hệ thống bằng thuật toán **Token Bucket** quản lý trong Redis:
-- Giới hạn OTP: Tối đa 3 SMS/Email trong 5 phút.
+- Giới hạn OTP: Tối đa 3 Email trong 5 phút.
 - Giới hạn Marketing: 1 Email / ngày / user.
 
 ## 4. Workflow

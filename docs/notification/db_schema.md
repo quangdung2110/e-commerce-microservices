@@ -11,7 +11,7 @@ Quản lý các mẫu thông báo đa ngôn ngữ.
 CREATE TABLE notification_templates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code VARCHAR(100) NOT NULL, -- e.g., 'ORDER_CREATED', 'OTP_LOGIN'
-    channel VARCHAR(20) NOT NULL, -- 'EMAIL', 'IN_APP', 'SMS'
+    channel VARCHAR(20) NOT NULL, -- 'EMAIL', 'IN_APP'
     language VARCHAR(10) NOT NULL DEFAULT 'vi', -- 'vi', 'en'
     subject_template VARCHAR(255), -- For Email
     body_template TEXT NOT NULL, -- Format HTML/Markdown with placeholders like {{order_id}}
@@ -29,7 +29,6 @@ CREATE TABLE notification_user_preferences (
     user_id UUID PRIMARY KEY,
     email_enabled BOOLEAN DEFAULT TRUE,
     in_app_enabled BOOLEAN DEFAULT TRUE,
-    sms_enabled BOOLEAN DEFAULT FALSE,
     marketing_enabled BOOLEAN DEFAULT TRUE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
