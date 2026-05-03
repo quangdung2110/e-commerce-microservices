@@ -109,6 +109,6 @@ Khi Auth Service phát sự kiện `USER_DELETED` (hoặc Admin xóa vĩnh viễ
 1.  Kafka Consumer nhận `USER_DELETED`.
 2.  Mở Transaction và thực hiện:
     *   Xóa theo thứ tự: `user_addresses` -> `user_preferences` -> `user_profiles`.
-    *   INSERT `outbox_events` sự kiện `USER_PROFILE_DELETED` để các bên (Chat,...) dọn dẹp dữ liệu.
+    *   INSERT `outbox_events` sự kiện `USER_PROFILE_DELETED` để các bên (Chat, Notification) dọn dẹp dữ liệu.
 3.  Commit thành công.
 4.  Xóa cache L2 tương ứng (`user:caches:addresses:{id}`).

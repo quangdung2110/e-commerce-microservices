@@ -43,6 +43,14 @@ type Dependencies struct {
 	// JWKS Service
 	JwksService *jwks.Service
 
+	// Kafka Consumer (Module 8)
+	KafkaConsumer *event.KafkaConsumer
+	ConsumerHandler *event.ConsumerHandler
+
+	// Outbox Publisher (Module 7)
+	OutboxPublisher *event.OutboxPublisher
+	EventRegistry   *event.EventRegistry
+
 	// Repositories (for middleware)
 	SessionRepo   repository.SessionRepository
 	RateLimitRepo repository.RateLimitRepository
@@ -163,8 +171,51 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		logger.Info("Using NoOp event publisher (Kafka disabled)")
 	}
 
+	// ========================= OUTBOX PUBLISHER (Module 7) =========================
+	outboxPublisher := event.NewOutboxPublisher(db.Pool(), logger)
+	eventRegistry := event.NewEventRegistry()
+
 	// ========================= AUDIT SERVICE =========================
 	auditService := authentication.NewAuditService(auditRepo, logger)
+
+	// ========================= KAFKA CONSUMER (Module 8) =========================
+	var kafkaConsumer *event.KafkaConsumer
+	var consumerHandler *event.ConsumerHandler
+
+	if len(cfg.Kafka.Brokers) > 0 && cfg.Kafka.Brokers[0] != "" {
+		adminTopic := cfg.Kafka.AdminEventsTopic
+		if adminTopic == "" {
+			adminTopic = "t.admin.events"
+		}
+
+		kafkaConsumer, err = event.NewKafkaConsumer(
+			cfg.Kafka.Brokers,
+			cfg.Kafka.ConsumerGroup,
+			adminTopic,
+			logger,
+		)
+		if err != nil {
+			logger.Warn("Failed to create Kafka consumer, admin events will not be processed", zap.Error(err))
+		} else {
+			// Create consumer handler with dependencies
+			consumerDeps := &event.ConsumerDependencies{
+				SessionRepo:  sessionRepo,
+				UserService:  userServiceClient,
+				CacheRepo:    revokeBeforeCache,
+				AuditService: auditService,
+				Logger:       logger,
+			}
+
+			consumerHandler = event.NewConsumerHandler(kafkaConsumer, consumerDeps, logger)
+			consumerHandler.RegisterDefaultHandlers()
+
+			logger.Info("Kafka consumer for admin events initialized",
+				zap.String("topic", adminTopic),
+				zap.String("group_id", cfg.Kafka.ConsumerGroup))
+		}
+	} else {
+		logger.Info("Kafka consumer disabled (no brokers configured)")
+	}
 
 	// ========================= USECASE LAYER =========================
 
@@ -272,6 +323,10 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		SessionManagerUsecase: sessionManagerUsecase,
 		AuditService:         auditService,
 		JwksService:           jwksService,
+		KafkaConsumer:         kafkaConsumer,
+		ConsumerHandler:       consumerHandler,
+		OutboxPublisher:       outboxPublisher,
+		EventRegistry:         eventRegistry,
 		SessionRepo:           sessionRepo,
 		RateLimitRepo:         rateLimitRepo,
 		BlacklistRepo:         blacklistRepo,

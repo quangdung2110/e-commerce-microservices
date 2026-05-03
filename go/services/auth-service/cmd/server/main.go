@@ -198,6 +198,28 @@ func main() {
 		v1_router.RegisterJwksRoutes(router, jwksHandler)
 	}
 
+	// ========================= KAFKA CONSUMER (Module 8) =========================
+	if deps.KafkaConsumer != nil {
+		consumerCtx, consumerCancel := context.WithCancel(context.Background())
+		defer consumerCancel()
+
+		if err := deps.KafkaConsumer.Start(consumerCtx); err != nil {
+			logger.Error("Failed to start Kafka consumer", zap.Error(err))
+		} else {
+			logger.Info("Kafka consumer started successfully",
+				zap.String("topic", deps.KafkaConsumer.GetTopic()),
+				zap.String("group_id", deps.KafkaConsumer.GetGroupID()))
+		}
+
+		// Cleanup consumer on shutdown
+		defer func() {
+			consumerCancel()
+			if err := deps.KafkaConsumer.Stop(); err != nil {
+				logger.Error("Error stopping Kafka consumer", zap.Error(err))
+			}
+		}()
+	}
+
 	// API routes
 	v1Group := router.Group("/api/v1")
 	{

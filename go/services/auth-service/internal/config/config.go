@@ -5,15 +5,46 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
-	pkgConfig "github.com/yourusername/spring-event-sourcing/go/pkg/config"
 )
+
+// KafkaConfig holds Kafka configuration
+type KafkaConfig struct {
+	Brokers          []string `mapstructure:"brokers"`
+	ConsumerGroup    string   `mapstructure:"consumer_group"`
+	AdminEventsTopic string   `mapstructure:"admin_events_topic"`
+}
+
+// ServerConfig holds HTTP server configuration
+type ServerConfig struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+	Mode string `mapstructure:"mode"`
+}
+
+// DatabaseConfig holds database configuration
+type DatabaseConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	Name     string `mapstructure:"name"`
+	SSLMode  string `mapstructure:"ssl_mode"`
+}
+
+// RedisConfig holds Redis configuration
+type RedisConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
 
 // Config holds auth-service specific configuration
 type Config struct {
-	Server           pkgConfig.ServerConfig
-	Database         pkgConfig.DatabaseConfig
-	Redis            pkgConfig.RedisConfig
-	Kafka            pkgConfig.KafkaConfig
+	Server           ServerConfig
+	Database         DatabaseConfig
+	Redis            RedisConfig
+	Kafka            KafkaConfig
 	JWT              JWTConfig
 	Security         SecurityConfig
 	ExternalServices ExternalServicesConfig
@@ -159,7 +190,8 @@ func setAuthDefaults() {
 
 	// Kafka defaults
 	viper.SetDefault("kafka.brokers", []string{"localhost:9092"})
-	viper.SetDefault("kafka.group_id", "auth-service-group")
+	viper.SetDefault("kafka.consumer_group", "auth-service-consumer")
+	viper.SetDefault("kafka.admin_events_topic", "t.admin.events")
 
 	// JWT defaults
 	viper.SetDefault("jwt.access_token_secret", "your-secret-key-min-32-chars-long")

@@ -98,7 +98,7 @@ Thông báo khi người dùng thay đổi preferences để Notification đồn
 ```
 
 **2.3. Sự Kiện `USER_PROFILE_DELETED`**
-Thông báo khi người dùng bị xóa hoàn toàn khỏi hệ thống (do yêu cầu GDPR hoặc Admin xóa). Các dịch vụ như `Chat` phải nghe sự kiện này để xóa vĩnh viễn các bản sao dữ liệu (PII) của người dùng đó.
+Thông báo khi người dùng bị xóa hoàn toàn khỏi hệ thống (do yêu cầu GDPR hoặc Admin xóa). Các dịch vụ như `Chat` hoặc `Notification` phải nghe sự kiện này để xóa vĩnh viễn các bản sao dữ liệu (PII) của người dùng đó.
 ```json
 // Topic: t.user.events
 {

@@ -78,7 +78,7 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 
 ### 1.3 `USER_DELETED` (GDPR / Xóa vĩnh viễn)
 Được bắn ra khi tài khoản bị xóa vĩnh viễn (yêu cầu GDPR hoặc Admin xóa tài khoản). User Service sẽ dọn sạch PII.
-*   **Người nghe**: `User Service`, `Notification Service` (dừng email)
+*   **Người nghe**: `User Service`
 *   **Payload Schema**:
 ```json
 {
