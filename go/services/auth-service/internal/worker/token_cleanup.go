@@ -55,9 +55,11 @@ func (j *TokenCleanupJob) Run(ctx context.Context) error {
 	}
 
 	// Delete expired password reset tokens
-	if err := j.resetRepo.DeleteExpired(ctx); err != nil {
-		j.logger.Error("Failed to delete expired password reset tokens", zap.Error(err))
-		return fmt.Errorf("failed to delete expired password reset tokens: %w", err)
+	if j.resetRepo != nil {
+		if err := j.resetRepo.DeleteExpired(ctx); err != nil {
+			j.logger.Error("Failed to delete expired password reset tokens", zap.Error(err))
+			return fmt.Errorf("failed to delete expired password reset tokens: %w", err)
+		}
 	}
 
 	duration := time.Since(startTime)

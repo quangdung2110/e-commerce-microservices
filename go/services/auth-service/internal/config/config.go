@@ -117,6 +117,7 @@ type WorkerConfig struct {
 	Enabled         bool `mapstructure:"enabled"`
 	TokenCleanup    WorkerTaskConfig `mapstructure:"token_cleanup"`
 	AuditCleanup    WorkerTaskConfig `mapstructure:"audit_cleanup"`
+	OutboxCleanup   WorkerTaskConfig `mapstructure:"outbox_cleanup"`
 	KeyRotation     WorkerTaskConfig `mapstructure:"key_rotation"`
 }
 
@@ -246,6 +247,9 @@ func setAuthDefaults() {
 	viper.SetDefault("workers.audit_cleanup.enabled", true)
 	viper.SetDefault("workers.audit_cleanup.cron", "0 3 * * *")
 	viper.SetDefault("workers.audit_cleanup.retention_days", 180)
+	viper.SetDefault("workers.outbox_cleanup.enabled", true)
+	viper.SetDefault("workers.outbox_cleanup.cron", "0 4 * * *")
+	viper.SetDefault("workers.outbox_cleanup.retention_days", 14)
 	viper.SetDefault("workers.key_rotation.enabled", true)
 	viper.SetDefault("workers.key_rotation.cron", "0 0 1 */3 *")
 	viper.SetDefault("workers.key_rotation.retention_days", 0)

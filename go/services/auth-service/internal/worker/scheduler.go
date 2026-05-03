@@ -15,14 +15,15 @@ import (
 
 // Scheduler manages background job scheduling using cron
 type Scheduler struct {
-	cron           *cron.Cron
-	logger         *zap.Logger
-	jwksRotator    *jwks.Rotator
-	tokenCleaner   *TokenCleanupJob
-	auditCleaner   *AuditCleanupJob
-	distributedLock repository.DistributedLockRepository
-	cfg            config.WorkerConfig
-	stopCh         chan struct{}
+	cron             *cron.Cron
+	logger           *zap.Logger
+	jwksRotator      *jwks.Rotator
+	tokenCleaner     *TokenCleanupJob
+	auditCleaner     *AuditCleanupJob
+	outboxCleaner    *OutboxCleanupJob
+	distributedLock  repository.DistributedLockRepository
+	cfg              config.WorkerConfig
+	stopCh           chan struct{}
 }
 
 // NewScheduler creates a new job scheduler
@@ -30,19 +31,21 @@ func NewScheduler(
 	jwksRotator *jwks.Rotator,
 	tokenCleaner *TokenCleanupJob,
 	auditCleaner *AuditCleanupJob,
+	outboxCleaner *OutboxCleanupJob,
 	distributedLock repository.DistributedLockRepository,
 	cfg config.WorkerConfig,
 	logger *zap.Logger,
 ) *Scheduler {
 	return &Scheduler{
-		cron:           cron.New(cron.WithSeconds()),
-		logger:         logger,
-		jwksRotator:    jwksRotator,
-		tokenCleaner:   tokenCleaner,
-		auditCleaner:   auditCleaner,
+		cron:            cron.New(cron.WithSeconds()),
+		logger:          logger,
+		jwksRotator:     jwksRotator,
+		tokenCleaner:    tokenCleaner,
+		auditCleaner:    auditCleaner,
+		outboxCleaner:   outboxCleaner,
 		distributedLock: distributedLock,
-		cfg:            cfg,
-		stopCh:         make(chan struct{}),
+		cfg:             cfg,
+		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -100,6 +103,21 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.logger.Info("Audit cleanup job scheduled", zap.String("cron", auditCleanupSpec))
 	}
 
+	// Schedule outbox cleanup job (part of Module 7)
+	if s.cfg.OutboxCleanup.Enabled {
+		outboxCleanupSpec := s.cfg.OutboxCleanup.Cron
+		if outboxCleanupSpec == "" {
+			outboxCleanupSpec = "0 0 4 * * *" // Default: 4 AM daily
+		}
+		_, err := s.cron.AddFunc(outboxCleanupSpec, func() {
+			s.runWithLock(ctx, "outbox_cleanup", s.runOutboxCleanup)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to schedule outbox cleanup job: %w", err)
+		}
+		s.logger.Info("Outbox cleanup job scheduled", zap.String("cron", outboxCleanupSpec))
+	}
+
 	// Start cron scheduler
 	s.cron.Start()
 
@@ -116,7 +134,8 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.logger.Info("Background job scheduler started",
 		zap.Bool("key_rotation_enabled", s.cfg.KeyRotation.Enabled),
 		zap.Bool("token_cleanup_enabled", s.cfg.TokenCleanup.Enabled),
-		zap.Bool("audit_cleanup_enabled", s.cfg.AuditCleanup.Enabled))
+		zap.Bool("audit_cleanup_enabled", s.cfg.AuditCleanup.Enabled),
+		zap.Bool("outbox_cleanup_enabled", s.cfg.OutboxCleanup.Enabled))
 
 	return nil
 }
@@ -210,6 +229,20 @@ func (s *Scheduler) runAuditCleanup() error {
 	return nil
 }
 
+// runOutboxCleanup runs the old outbox event cleanup job
+func (s *Scheduler) runOutboxCleanup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	if s.outboxCleaner != nil {
+		if err := s.outboxCleaner.Run(ctx); err != nil {
+			return fmt.Errorf("outbox cleanup failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // ListJobs returns information about scheduled jobs
 func (s *Scheduler) ListJobs() []JobInfo {
 	jobs := make([]JobInfo, 0)
@@ -235,6 +268,14 @@ func (s *Scheduler) ListJobs() []JobInfo {
 			Name:    "audit_cleanup",
 			Enabled: true,
 			Cron:    s.cfg.AuditCleanup.Cron,
+		})
+	}
+
+	if s.cfg.OutboxCleanup.Enabled {
+		jobs = append(jobs, JobInfo{
+			Name:    "outbox_cleanup",
+			Enabled: true,
+			Cron:    s.cfg.OutboxCleanup.Cron,
 		})
 	}
 

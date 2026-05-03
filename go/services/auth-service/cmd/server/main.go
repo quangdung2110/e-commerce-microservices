@@ -163,15 +163,22 @@ func main() {
 		// Create token cleanup job
 		tokenCleaner := worker.NewTokenCleanupJob(
 			deps.SessionRepo,
-			nil, // passwordResetRepo - will be added via SessionRepo
+			deps.PasswordResetRepo,
 			cfg.Workers.TokenCleanup,
 			logger,
 		)
 
 		// Create audit cleanup job
 		auditCleaner := worker.NewAuditCleanupJob(
-			nil, // auditRepo - will be added
+			deps.AuditRepo,
 			cfg.Workers.AuditCleanup,
+			logger,
+		)
+
+		// Create outbox cleanup job (Module 7)
+		outboxCleaner := worker.NewOutboxCleanupJob(
+			deps.OutboxRepo,
+			cfg.Workers.OutboxCleanup,
 			logger,
 		)
 
@@ -180,6 +187,7 @@ func main() {
 			jwksRotator,
 			tokenCleaner,
 			auditCleaner,
+			outboxCleaner,
 			deps.DistributedLockRepo,
 			cfg.Workers,
 			logger,

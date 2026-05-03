@@ -40,6 +40,9 @@ type Dependencies struct {
 	// Audit Service
 	AuditService *authentication.AuditService
 
+	// Audit Repository (for workers)
+	AuditRepo repository.AuditRepository
+
 	// JWKS Service
 	JwksService *jwks.Service
 
@@ -51,10 +54,14 @@ type Dependencies struct {
 	OutboxPublisher *event.OutboxPublisher
 	EventRegistry   *event.EventRegistry
 
+	// Outbox Repository (for workers)
+	OutboxRepo repository.OutboxRepository
+
 	// Repositories (for middleware)
 	SessionRepo   repository.SessionRepository
 	RateLimitRepo repository.RateLimitRepository
 	BlacklistRepo repository.BlacklistRepository
+	PasswordResetRepo repository.PasswordResetTokenRepository
 
 	// Security components (for middleware)
 	TokenGenerator common.TokenGenerator
@@ -322,14 +329,17 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		PasswordChangeUsecase: passwordChangeUsecase,
 		SessionManagerUsecase: sessionManagerUsecase,
 		AuditService:         auditService,
+		AuditRepo:            auditRepo,
 		JwksService:           jwksService,
 		KafkaConsumer:         kafkaConsumer,
 		ConsumerHandler:       consumerHandler,
 		OutboxPublisher:       outboxPublisher,
 		EventRegistry:         eventRegistry,
+		OutboxRepo:            outboxRepo,
 		SessionRepo:           sessionRepo,
 		RateLimitRepo:         rateLimitRepo,
 		BlacklistRepo:         blacklistRepo,
+		PasswordResetRepo:     passwordResetRepo,
 		TokenGenerator:        tokenGenerator,
 		DistributedLockRepo:   distributedLockRepo,
 		DB:                    db,
