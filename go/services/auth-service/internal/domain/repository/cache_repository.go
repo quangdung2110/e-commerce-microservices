@@ -76,6 +76,22 @@ type RateLimitRepository interface {
 
 	// CheckActivityFlag checks if activity flag exists
 	CheckActivityFlag(ctx context.Context, sessionID uuid.UUID) (bool, error)
+
+	// FailedLoginCounterRepository methods for brute-force protection
+	// IncrementFailedLogin increments failed login counter for email
+	IncrementFailedLogin(ctx context.Context, email string) (int, error)
+
+	// GetFailedLoginCount gets current failed login count for email
+	GetFailedLoginCount(ctx context.Context, email string) (int, error)
+
+	// ResetFailedLogin resets failed login counter for email and IP
+	ResetFailedLogin(ctx context.Context, email, ip string) error
+
+	// IncrementFailedLoginByIP increments failed login counter for IP
+	IncrementFailedLoginByIP(ctx context.Context, ip string) (int, error)
+
+	// GetFailedLoginCountByIP gets current failed login count for IP
+	GetFailedLoginCountByIP(ctx context.Context, ip string) (int, error)
 }
 
 // TokenBlacklistRepository defines the interface for blacklist operations (Redis)

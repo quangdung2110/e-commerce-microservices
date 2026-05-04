@@ -65,6 +65,22 @@ type SessionRepository interface {
 	DeleteExpiredGraceTokens(ctx context.Context) error
 }
 
+// UserRepository defines the interface for user operations (for account lock/unlock)
+type UserRepository interface {
+	// LockAccount locks a user account due to failed login attempts
+	LockAccount(ctx context.Context, userID uuid.UUID, lockedAt time.Time) error
+
+	// UnlockAccount unlocks a user account (for auto-unlock worker)
+	UnlockAccount(ctx context.Context, userID uuid.UUID) error
+
+	// GetLockedUsers retrieves all users that are locked and ready for auto-unlock
+	// lockedAt must be older than unlockAfter duration
+	GetLockedUsers(ctx context.Context, unlockAfter time.Time, limit int) ([]*entity.User, error)
+
+	// GetByID retrieves a user by ID
+	GetByID(ctx context.Context, userID uuid.UUID) (*entity.User, error)
+}
+
 // LoginAttemptRepository defines the interface for login attempt operations
 type LoginAttemptRepository interface {
 	// Create creates a new login attempt record

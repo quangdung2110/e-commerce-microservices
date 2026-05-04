@@ -13,8 +13,11 @@ Tài liệu này định nghĩa cấu trúc dữ liệu Event Async và các Top
 
 ### Từ Topic `t.auth.events` (Sản xuất bởi Auth Service)
 
-**1.1. `USER_VERIFIED_SUCCESS` (Hoặc `USER_REGISTERED_SUCCESS`)**
+**1.1. `USER_VERIFIED_SUCCESS`
 Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng ký" qua Captcha hợp lệ hoặc "Verify qua OTP Email" thành công (Tùy chính sách B2C của sàn Ecomm).
+
+> **Lưu ý:** Event này chỉ chứa thông tin cần thiết để tạo profile (user_id, roles). Email KHÔNG được lưu trong User Service - Auth Service là nguồn chân lý cho email.
+
 *   **Payload Schema**:
 ```json
 {
@@ -26,7 +29,6 @@ Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng 
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
     "user_id": "u-1234",
-    "email": "customer@gmail.com",
     "roles": ["USER"]
   }
 }
@@ -53,7 +55,14 @@ Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng 
 
 Hệ thống User đẩy luồng sự kiện thông qua CDC (Debezium Outbox pattern) vô Topic của chính nó: **`t.user.events`**.
 
-**2.1. `USER_PROFILE_UPDATED`**
+### 2.1. Bản đồ Subscription (Ai nghe event này?)
+
+| Event | Consumers | Mục đích |
+|:------|:---------|:---------|
+| `USER_PROFILE_UPDATED` | Chat Service | Cập nhật projection `sender_name` trong messages |
+| `USER_PREFERENCES_UPDATED` | Notification Service | Sync preferences để quyết định kênh gửi |
+
+**2.2. `USER_PROFILE_UPDATED`**
 Sự kiện này cho phép các dịch vụ đồng bộ và lưu trữ cục bộ các thông tin cơ bản của người dùng (Tên, SĐT). Đặc biệt, Chat Service sẽ sử dụng sự kiện này để duy trì bản sao thông tin (Projection) nhằm hiển thị tên người gửi mà không cần gọi gRPC liên tục, giúp tối ưu hiệu năng và tính sẵn sàng.
 ```json
 // Topic: t.user.events
@@ -70,13 +79,13 @@ Sự kiện này cho phép các dịch vụ đồng bộ và lưu trữ cục b�
     "last_name": "Quang Dung",
     "phone_number": "0987654321",
     "date_of_birth": "1997-10-19",
-    "gender": "MALE",
+    "gender": "MALE"
   }
 }
 ```
 
-**2.2. `USER_PREFERENCES_UPDATED`**
-Thông báo khi người dùng thay đổi preferences để Notification đồng bộ.
+**2.3. `USER_PREFERENCES_UPDATED`**
+Thông báo khi người dùng thay đổi preferences để Notification đồng bộ. Sự kiện này được Notification Service tiêu thụ để cập nhật bản sao `notification_user_preferences`.
 ```json
 // Topic: t.user.events
 {
@@ -93,24 +102,6 @@ Thông báo khi người dùng thay đổi preferences để Notification đồn
     "email_enabled": true,
     "in_app_enabled": true,
     "marketing_enabled": true
-  }
-}
-```
-
-**2.3. Sự Kiện `USER_PROFILE_DELETED`**
-Thông báo khi người dùng bị xóa hoàn toàn khỏi hệ thống (do yêu cầu GDPR hoặc Admin xóa). Các dịch vụ như `Chat` hoặc `Notification` phải nghe sự kiện này để xóa vĩnh viễn các bản sao dữ liệu (PII) của người dùng đó.
-```json
-// Topic: t.user.events
-{
-  "event_id": "uuid-v4",
-  "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
-  "event_type": "USER_PROFILE_DELETED",
-  "timestamp": "2026-04-22T08:15:00Z",
-  "payload": {
-    "id": "uuid-cua-user",
-    "reason": "GDPR_REQUEST"
   }
 }
 ```

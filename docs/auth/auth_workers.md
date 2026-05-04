@@ -44,3 +44,25 @@ Nhật ký của khách hàng (log_category = 'USER') sẽ rất lớn sau một
 *   **Logic**:
     1.  Khởi chạy Job `DELETE FROM audit_logs WHERE log_category = 'USER' AND occurred_at < NOW() - INTERVAL '6 months';`
 
+## 5. Worker Tự Động Mở Khóa Tài Khoản: `auto-unlock-account-worker`
+Khi tài khoản bị `LOCKED` do đăng nhập sai mật khẩu quá nhiều lần, hệ thống sẽ tự động mở khóa sau **30 phút** để user có thể thử lại.
+*   **Tính chất**: Scheduled Cron Job (Ví dụ: Chạy mỗi 5 phút một lần để kiểm tra).
+*   **Logic**:
+    1.  Query tất cả user có `status = 'LOCKED'` và `locked_at <= NOW() - INTERVAL '30 minutes'`.
+    2.  Với mỗi user đủ điều kiện:
+        *   Update DB: `UPDATE users SET status = 'ACTIVE', locked_at = NULL, failed_login_attempts = 0 WHERE id = ?`
+        *   Gửi Kafka Event `USER_UNLOCKED` cho Notification Service để thông báo qua **Email** cho user.
+        *   Ghi log `USER_AUTO_UNLOCKED` vào `audit_logs` với `actor_type = 'SYSTEM'`.
+*   **Lưu ý Vận hành**: 
+    *   Sử dụng Distributed Lock (ShedLock/Redisson) để tránh nhiều pods chạy cùng lúc.
+    *   Chỉ xử lý batch nhỏ (LIMIT 100) mỗi lần chạy để tránh quá tải database.
+    *   Không tự động unlock tài khoản `BANNED` - tài khoản BANNED chỉ được Admin mở khóa thủ công.
+
+## 6. Worker Reset Failed Login Counter: `failed-login-counter-reset-worker`
+Worker này chạy định kỳ để reset bộ đếm failed login attempts cho những IP hoặc email có số lần sai pass cao nhưng đã không còn bị attack trong một khoảng thời gian.
+*   **Tính chất**: Scheduled Cron Job (Ví dụ: Chạy mỗi 15 phút).
+*   **Logic**:
+    1.  Quét Redis tìm các key `auth:failed_login:{email}` có giá trị > 0 nhưng đã không được INCR trong 1 giờ.
+    2.  Xóa các key này để reset trạng thái.
+    3.  Log hành vi này vào `audit_logs` với `event_type = 'FAILED_LOGIN_COUNTER_RESET'`.
+

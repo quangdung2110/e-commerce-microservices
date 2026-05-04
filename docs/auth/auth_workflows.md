@@ -66,6 +66,88 @@ sequenceDiagram
 6.  INSERT vào Database -> `token_hash = sha256_result`, kèm `device_id` và `device_info` từ request.
 7.  Trả Opaque (chuỗi ngẫu nhiên chưa Hash) Refresh_Token cho Http Only Cookie/Body Client. Đồng thời, **trực tiếp ghi (insert) log `USER_LOGGED_IN` vào bảng `audit_logs` một cách đồng bộ**.
 
+## 2.1 Luồng Brute-Force Protection (Chống đoán mật khẩu)
+
+### 2.1.1 Bài Toán
+Hacker có thể sử dụng danh sách password phổ biến để thử đăng nhập vào tài khoản user. Nếu không có cơ chế bảo vệ, hacker có thể thử hàng triệu password mà không bị chặn.
+
+### 2.1.2 Giải Pháp: Cơ Chế Đếm Sai Pass Tự Động Lock
+
+```mermaid
+sequenceDiagram
+    participant Client as Client App
+    participant Auth as Auth Service
+    participant Redis as Redis Cache
+    participant DB as PostgreSQL
+    participant Notify as Notification Service
+
+    Client->>Auth: POST /login {email, password}
+    Auth->>DB: Query user by email
+    DB-->>Auth: User found
+
+    alt Tài khoản BANNED
+        Auth-->>Client: HTTP 403 - "Tài khoản đã bị cấm"
+    else Tài khoản LOCKED
+        Auth-->>Client: HTTP 403 - "Tài khoản tạm khóa"
+    else Tài khoản ACTIVE
+        Auth->>Auth: Verify password
+        alt Sai mật khẩu
+            Auth->>Redis: INCR auth:failed_login:{email}
+            Auth->>Redis: EXPIRE auth:failed_login:{email} 3600
+            Auth->>Redis: INCR auth:failed_login:{ip}
+            Auth->>Redis: EXPIRE auth:failed_login:{ip} 3600
+            Auth->>Redis: GET auth:failed_login:{email}
+
+            alt Count >= 5
+                Auth->>DB: UPDATE users SET status='LOCKED', locked_at=NOW()
+                Auth->>Redis: DEL auth:failed_login:{email}
+                Auth->>Redis: DEL auth:failed_login:{ip}
+                Auth->>Notify: Publish USER_ACCOUNT_LOCKED (Email)
+                Auth->>Auth: Log USER_ACCOUNT_LOCKED to audit_logs
+                Auth-->>Client: HTTP 403 - "Tài khoản tạm khóa"
+            else Count < 5
+                Auth->>Auth: Log LOGIN_FAILED to audit_logs
+                Auth-->>Client: HTTP 401 - "Sai email hoặc mật khẩu"
+            end
+        else Đúng mật khẩu
+            Auth->>Redis: DEL auth:failed_login:{email}
+            Auth->>Redis: DEL auth:failed_login:{ip}
+            Auth->>Auth: Log USER_LOGGED_IN to audit_logs
+            Auth-->>Client: HTTP 200 - Tokens
+        end
+    end
+```
+
+### 2.1.3 Ngưỡng và Thời Gian
+
+| Ngưỡng | Giá trị | Hành động |
+|--------|---------|-----------|
+| Số lần sai liên tiếp | **5 lần** | Khóa tài khoản (`LOCKED`) |
+| Thời gian tự mở khóa | **30 phút** | Worker auto-unlock |
+| TTL Redis counter | **60 phút** | Counter tự reset nếu không có attempt mới |
+
+### 2.1.4 Chi Tiết Kỹ Thuật
+
+**Redis Keys:**
+```
+auth:failed_login:{email}   # Counter theo email (TTL: 60 phút)
+auth:failed_login:{ip}     # Counter theo IP (TTL: 60 phút)
+```
+
+**Database Updates khi Lock:**
+```sql
+UPDATE users
+SET status = 'LOCKED',
+    locked_at = NOW(),
+    failed_login_attempts = 0
+WHERE email = ? AND status = 'ACTIVE';
+```
+
+**Lưu ý bảo mật:**
+- Không tiết lộ số lần sai còn lại cho client (trả generic message)
+- Có thể bị bypass nếu user đổi IP (sử dụng thêm email-based counter)
+- Worker auto-unlock chạy mỗi 5 phút sẽ kiểm tra và mở khóa tài khoản
+
 ## 3. Luồng Đăng Xuất & Thay Đổi Mật Khẩu (Logout Flow)
 
 1.  Client truyền lên `/logout` với xác thực Authentication.
@@ -110,3 +192,101 @@ Chức năng: Dùng ở CMS Portal cho Ban Quản Trị Hệ Thống tra cứu l
 *   **Logic Xử lý**:
     1.  Hỗ trợ các tham số lọc đa dạng: theo khoảng thời gian (`from_date`, `to_date`), loại rủi ro (`security_level=WARNING`), loại hành vi, ID người dùng cụ thể.
     2.  Query SQL sử dụng các Index hiện có trên bảng `audit_logs` để truy xuất nhanh và phân trang.
+
+## 8. Sơ Đồ Trạng Thái Tài Khoản (User Account State Machine)
+
+### 8.1 State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING_VERIFICATION: User Register
+
+    PENDING_VERIFICATION --> ACTIVE: Xác thực Email (OTP)
+    PENDING_VERIFICATION --> [*]: Hết thời gian xác thực (24h)
+
+    state ACTIVE {
+        [*] --> Active: User Verified
+        Active --> Active: Đăng nhập thành công
+        Active --> Active: Đổi mật khẩu
+    }
+
+    ACTIVE --> LOCKED: Sai mật khẩu >= 5 lần
+
+    state LOCKED {
+        [*] --> Locked: Sai pass 5 lần
+        Locked --> [*]: Auto-unlock sau 30 phút
+    }
+
+    LOCKED --> ACTIVE: Auto-unlock (30 phút)
+
+    ACTIVE --> BANNED: Admin Ban tài khoản
+
+    state BANNED {
+        [*] --> Banned: Admin action
+        Banned --> [*]: Không thể tự thoát
+    }
+
+    BANNED --> ACTIVE: Chỉ Admin Unban thủ công
+
+    PENDING_VERIFICATION --> [*]: User deleted (GDPR)
+    ACTIVE --> [*]: User deleted (GDPR)
+    LOCKED --> [*]: User deleted (GDPR)
+    BANNED --> [*]: User deleted (GDPR)
+```
+
+### 8.2 Chi Tiết Các Trạng Thái
+
+| Trạng thái | Mô tả | Chuyển sang ACTIVE | Chuyển sang trạng thái khác |
+|------------|--------|-------------------|------------------------------|
+| `PENDING_VERIFICATION` | Chờ xác thực email | Xác thực OTP | Tự xóa sau 24h không xác thực |
+| `ACTIVE` | Tài khoản hoạt động bình thường | - | LOCKED (sai pass), BANNED (admin) |
+| `LOCKED` | Tạm khóa do sai mật khẩu | Auto-unlock sau 30 phút | ACTIVE, BANNED (admin) |
+| `BANNED` | Cấm vĩnh viễn do vi phạm | **Chỉ Admin unban thủ công** | Không tự chuyển |
+
+### 8.3 Luồng Chuyển Trạng Thái Chi Tiết
+
+**1. PENDING_VERIFICATION → ACTIVE**
+- **Trigger**: User nhập đúng mã OTP từ email
+- **Action**: `UPDATE users SET status = 'ACTIVE', email_verified_at = NOW() WHERE id = ?`
+- **Event**: `USER_VERIFIED_SUCCESS` (Kafka)
+
+**2. ACTIVE → LOCKED**
+- **Trigger**: Đăng nhập sai mật khẩu >= 5 lần liên tiếp trong 60 phút
+- **Action**:
+  ```
+  UPDATE users SET status = 'LOCKED', locked_at = NOW() WHERE id = ?
+  ```
+- **Event**: `USER_ACCOUNT_LOCKED` (Kafka - Email notification)
+
+**3. LOCKED → ACTIVE (Auto-unlock)**
+- **Trigger**: `locked_at + 30 minutes <= NOW()` (Worker auto-unlock)
+- **Action**:
+  ```
+  UPDATE users SET status = 'ACTIVE', locked_at = NULL WHERE id = ?
+  ```
+- **Event**: `USER_UNLOCKED` (Kafka - Email notification)
+
+**4. ACTIVE → BANNED**
+- **Trigger**: Admin thực hiện Ban user từ Dashboard
+- **Action**:
+  ```
+  UPDATE users SET status = 'BANNED' WHERE id = ?
+  UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?
+  SET auth:revoked_before:{user_id} = NOW() -- Redis
+  ```
+- **Event**: `USER_BANNED_NOTIFICATION` (Kafka - Email notification)
+
+**5. BANNED → ACTIVE (Admin Unban)**
+- **Trigger**: Admin thực hiện Unban user từ Dashboard
+- **Action**:
+  ```
+  UPDATE users SET status = 'ACTIVE' WHERE id = ?
+  ```
+- **Event**: Không có event tự động (Admin chủ động thông báo)
+
+### 8.4 Lưu Ý Quan Trọng
+
+> **BANNED là trạng thái vĩnh viễn**: Tài khoản bị BANNED **không thể tự động quay về ACTIVE**. Chỉ Admin mới có quyền unban tài khoản. Điều này đảm bảo:
+> - Admin kiểm soát hoàn toàn việc cấm user vi phạm
+> - Tránh trường hợp hacker tự kích hoạt lại tài khoản sau một thời gian
+> - Yêu cầu user phải liên hệ support nếu muốn khôi phục tài khoản

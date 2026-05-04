@@ -14,6 +14,29 @@ Notification Service là một microservice trung tâm chịu trách nhiệm qu�
 - `notification.high-priority.events`: Chứa OTP, cảnh báo bảo mật, đăng nhập thiết bị mới (SLA < 5s).
 - `notification.low-priority.events`: Chứa cập nhật đơn hàng, thanh toán, khuyến mãi, tin báo từ system (SLA < 30s hoặc vài phút).
 
+### 2.2.1 Event Subscription Map (Bản đồ Subscription)
+
+Notification Service subscribe các topic sau để nhận events từ các service khác:
+
+| Topic | Consumer Group | Events | Priority | Mục đích & Kênh |
+|:------|:--------------|:-------|:---------|:-----------------|
+| `t.auth.events` | `notification-auth-sync` | `USER_OTP_REQUESTED`, `PASSWORD_RESET_REQUESTED`, `USER_VERIFIED_SUCCESS`, `USER_PASSWORD_CHANGED`, `USER_ACCOUNT_SUSPENDED` | High | OTP (Email), Reset Link (Email), Welcome (Email), Password Alert (**In-app**), Account Suspended (**In-app**) |
+| `t.user.events` | `notification-user-sync` | `USER_PREFERENCES_UPDATED`, `USER_PROFILE_DELETED` | Low | Sync preferences, GDPR cleanup |
+
+**Lưu ý về GDPR Cleanup:** Khi nhận event `USER_PROFILE_DELETED`, Notification Service cần gọi Auth Service (qua gRPC) để lấy email của user trước khi thực hiện cleanup PII. Email KHÔNG được include trong event payload vì User Service không lưu email (Auth Service là nguồn chân lý).
+| `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
+| `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
+| `t.promotion.events` | `notification-promotion-sync` | `PROMOTION_FLASH_SALE`, `VOUCHER_EXPIRING` | Low | Marketing campaigns |
+
+**Phân biệt các event liên quan đến Password:**
+
+| Event | Nguồn (Producer) | Trigger | Kênh gửi | Mục đích |
+|:------|:----------------|:--------|:----------|:---------|
+| `USER_PASSWORD_CHANGED` | Auth Service | User chủ động đổi mật khẩu | **In-app (Push Notification)** | Cảnh báo bảo mật - "Mật khẩu của bạn vừa được thay đổi" |
+| `PASSWORD_RESET_REQUESTED` | Auth Service | User yêu cầu reset (quên pass) | **Email** | Gửi link reset password đặt mật khẩu mới |
+
+> **Lưu ý:** Hai event này khác nhau về trigger và kênh gửi. `USER_PASSWORD_CHANGED` là thông báo chủ động từ user, gửi qua In-app. `PASSWORD_RESET_REQUESTED` là yêu cầu reset từ user quên pass, gửi qua Email với link đặt lại.
+
 ### 2.3 Single Deployment Architecture (API + Worker)
 Trong giai đoạn đầu, API Server và Kafka/Background Worker được gộp chung trong **1 Deployment** để đơn giản hóa CI/CD và quản lý tài nguyên.
 - **REST/gRPC API:** Cung cấp APIs để quản lý `templates`, lấy danh sách `notifications` (cho ứng dụng lấy lịch sử), và cấu hình `user_preferences`.

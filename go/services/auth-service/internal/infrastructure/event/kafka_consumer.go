@@ -284,9 +284,10 @@ type UserBannedPayload struct {
 
 // Event type constants for Kafka consumer
 const (
-	EventTypeAdminForceLogout = "ADMIN_FORCE_LOGOUT"
-	EventTypeUserBanned       = "USER_BANNED"
-	EventTypeUserUnbanned     = "USER_UNBANNED"
+	EventTypeAdminForceLogout     = "ADMIN_FORCE_LOGOUT"
+	EventTypeUserBanned           = "USER_BANNED"
+	EventTypeUserUnbanned         = "USER_UNBANNED"
+	EventTypeUserBannedNotification = "USER_BANNED_NOTIFICATION"
 )
 
 // ValidAdminEventTypes returns all valid admin event types
@@ -295,5 +296,6 @@ func ValidAdminEventTypes() []string {
 		EventTypeAdminForceLogout,
 		EventTypeUserBanned,
 		EventTypeUserUnbanned,
+		EventTypeUserBannedNotification,
 	}
 }

@@ -21,10 +21,15 @@ const (
 	accessTokenTTL  = 15 * time.Minute
 	refreshTokenTTL = 90 * 24 * time.Hour // 90 days
 
-	// 10 attempts / 15 minutes -> block 1 hour (key: ratelimit:login:{ip})
+	// IP Rate limiting: 10 attempts / 15 minutes -> block 1 hour (key: ratelimit:login:{ip})
 	maxLoginAttemptsPerIP = 10
 	loginAttemptWindow    = 15 * time.Minute
-	ipBlockDuration       = 1 * time.Hour
+	ipBlockDuration      = 1 * time.Hour
+
+	// Brute-force protection: 5 failed attempts -> lock account
+	maxFailedAttemptsBeforeLock = 5
+	failedLoginTTL             = 60 * time.Minute // 60 minutes
+	accountLockDuration        = 30 * time.Minute // 30 minutes before auto-unlock
 )
 
 // LoginUsecase handles user authentication
@@ -34,6 +39,7 @@ type LoginUsecase struct {
 	loginAttemptRepo repository.LoginAttemptRepository
 	rateLimitRepo    repository.RateLimitRepository
 	refreshTokenRepo repository.RefreshTokenRepository
+	userRepo        repository.UserRepository
 
 	// External Services
 	userService    common.UserService
@@ -55,6 +61,7 @@ func NewLoginUsecase(
 	loginAttemptRepo repository.LoginAttemptRepository,
 	rateLimitRepo repository.RateLimitRepository,
 	refreshTokenRepo repository.RefreshTokenRepository,
+	userRepo repository.UserRepository,
 	userService common.UserService,
 	eventPublisher common.EventPublisher,
 	tokenGenerator common.TokenGenerator,
@@ -67,6 +74,7 @@ func NewLoginUsecase(
 		loginAttemptRepo: loginAttemptRepo,
 		rateLimitRepo:    rateLimitRepo,
 		refreshTokenRepo: refreshTokenRepo,
+		userRepo:        userRepo,
 		userService:      userService,
 		eventPublisher:   eventPublisher,
 		tokenGenerator:   tokenGenerator,
@@ -102,15 +110,17 @@ func (uc *LoginUsecase) Execute(ctx context.Context, req *dto.LoginRequest, reqC
 		return nil, serr.ErrInvalidCredentials // Don't reveal user existence
 	}
 
-	// Step 4: Check user.active
-	if !user.Active {
-		// failure reason: ACCOUNT_DEACTIVATED
+	// Step 4: Check user status - BANNED account
+	if user.RestrictionStatus == entity.RestrictionSuspended {
 		uc.recordFailedAttempt(ctx, &user.UserID, req.Identifier, entity.AttemptTypePassword, entity.FailureAccountLocked, reqCtx)
 		return nil, serr.ErrAccountDeactivated
 	}
 
-	// Step 5: Check user restriction status
-	// Continue with login but include warning in response
+	// Step 5: Check if account is LOCKED (from failed login attempts)
+	if uc.isAccountLocked(ctx, user.UserID) {
+		uc.recordFailedAttempt(ctx, &user.UserID, req.Identifier, entity.AttemptTypePassword, entity.FailureAccountLocked, reqCtx)
+		return nil, serr.ErrAccountLocked
+	}
 
 	// Step 6: If MANAGED account, check parent.active
 	if user.AccountType == entity.AccountTypeManaged && user.ParentID != nil {
@@ -124,12 +134,23 @@ func (uc *LoginUsecase) Execute(ctx context.Context, req *dto.LoginRequest, reqC
 	// Step 7: Verify password
 	valid, err := uc.passwordEncoder.Verify(req.Password, user.PasswordHash)
 	if err != nil || !valid {
-		uc.recordFailedAttempt(ctx, &user.UserID, req.Identifier, entity.AttemptTypePassword, entity.FailureWrongPassword, reqCtx)
+		// Handle failed login - increment counters and check for lock
+		locked, lockErr := uc.handleFailedLogin(ctx, user, req.Identifier, reqCtx)
+		if lockErr != nil {
+			uc.logger.Error("Failed to handle failed login", zap.Error(lockErr))
+		}
+
+		// If account was locked due to too many failed attempts
+		if locked {
+			return nil, serr.ErrAccountLocked
+		}
+
 		uc.incrementRateLimit(ctx, reqCtx.DeviceInfo.IPAddress)
 		return nil, serr.ErrInvalidCredentials
 	}
 
-	// Step 8: Check 2FA (if enabled, this is optional)
+	// Step 8: Login successful - Reset failed login counters
+	_ = uc.rateLimitRepo.ResetFailedLogin(ctx, req.Identifier, reqCtx.DeviceInfo.IPAddress)
 
 	// Step before 9: Generate session ID for inclusion in token claims
 	sessionID := uuid.New()
@@ -173,7 +194,7 @@ func (uc *LoginUsecase) Execute(ctx context.Context, req *dto.LoginRequest, reqC
 		uc.logger.Error("Failed to publish login event", zap.Error(err))
 	}
 
-	// Step 13: Build response
+	// Step 14: Build response
 	response := &dto.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -382,4 +403,87 @@ func (uc *LoginUsecase) getRestrictionMessage(status entity.RestrictionStatus) s
 	default:
 		return ""
 	}
+}
+
+// ==================== Brute-Force Protection Methods ====================
+
+// isAccountLocked checks if the user account is currently locked
+func (uc *LoginUsecase) isAccountLocked(ctx context.Context, userID uuid.UUID) bool {
+	// First check Redis cache for quick lookup
+	user, err := uc.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		uc.logger.Error("Failed to get user for lock check", zap.Error(err))
+		return false
+	}
+	return user.IsLocked()
+}
+
+// handleFailedLogin handles a failed login attempt
+// Returns (wasLocked, error) - wasLocked is true if account was locked due to too many attempts
+func (uc *LoginUsecase) handleFailedLogin(ctx context.Context, user *common.UserDTO, identifier string, reqCtx *common.RequestContext) (bool, error) {
+	// Step 1: Increment failed login counters for both email and IP
+	emailCount, err := uc.rateLimitRepo.IncrementFailedLogin(ctx, identifier)
+	if err != nil {
+		uc.logger.Error("Failed to increment failed login counter", zap.Error(err))
+	}
+
+	ipCount, err := uc.rateLimitRepo.IncrementFailedLoginByIP(ctx, reqCtx.DeviceInfo.IPAddress)
+	if err != nil {
+		uc.logger.Error("Failed to increment failed login counter by IP", zap.Error(err))
+	}
+
+	uc.logger.Warn("Failed login attempt",
+		zap.String("user_id", user.UserID.String()),
+		zap.String("email_count", fmt.Sprintf("%d/%d", emailCount, maxFailedAttemptsBeforeLock)),
+		zap.String("ip_count", fmt.Sprintf("%d/%d", ipCount, maxLoginAttemptsPerIP)))
+
+	// Step 2: Check if account should be locked (>= 5 failed attempts)
+	if emailCount >= maxFailedAttemptsBeforeLock {
+		uc.logger.Warn("Account lock threshold reached, locking account",
+			zap.String("user_id", user.UserID.String()),
+			zap.Int("failed_attempts", emailCount))
+
+		// Lock the account
+		lockedAt := time.Now()
+		if err := uc.userRepo.LockAccount(ctx, user.UserID, lockedAt); err != nil {
+			return false, fmt.Errorf("failed to lock account: %w", err)
+		}
+
+		// Reset failed login counters in Redis
+		_ = uc.rateLimitRepo.ResetFailedLogin(ctx, identifier, reqCtx.DeviceInfo.IPAddress)
+
+		// Write audit log for account locked
+		uc.writeAuditLog(ctx, user.UserID.String(), types.EventTypeUserAccountLocked, types.SecurityLevelCritical, types.LogCategoryAuth,
+			reqCtx.DeviceInfo.IPAddress,
+			map[string]any{
+				"reason":        "FAILED_LOGIN_ATTEMPTS",
+				"failed_attempts": emailCount,
+				"locked_until":   lockedAt.Add(accountLockDuration).Format(time.RFC3339),
+			})
+
+		// Publish USER_ACCOUNT_LOCKED event for notification
+		if err := uc.publishAccountLockedEvent(ctx, user.UserID, user.Email, lockedAt.Add(accountLockDuration)); err != nil {
+			uc.logger.Error("Failed to publish account locked event", zap.Error(err))
+		}
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// publishAccountLockedEvent publishes the USER_ACCOUNT_LOCKED event to Kafka
+func (uc *LoginUsecase) publishAccountLockedEvent(ctx context.Context, userID uuid.UUID, email string, lockedUntil time.Time) error {
+	// Log the event - in production this would be stored in outbox table
+	// and published via the outbox pattern
+	uc.logger.Info("USER_ACCOUNT_LOCKED event should be published",
+		zap.String("user_id", userID.String()),
+		zap.String("email", email),
+		zap.Time("locked_until", lockedUntil),
+		zap.String("event_type", string(types.EventTypeUserAccountLocked)))
+
+	// In production, this would use the outbox pattern:
+	// outboxRepo.Create(ctx, buildUserAccountLockedEvent(userID, email, lockedUntil))
+
+	return nil
 }

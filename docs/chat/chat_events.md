@@ -20,7 +20,7 @@ Tài liệu này định nghĩa hợp đồng sự kiện (event contract) cho C
 
 | Tên Topic | Consumer Group | Nhà sản xuất (Producer) | Các loại sự kiện | Mục đích |
 |:---|:---|:---|:---|:---|
-| `t.user.events` | `chat-user-privacy-sync` | User Service | `ACCOUNT_DELETED` | Hành động quyền riêng tư (xóa dữ liệu) |
+| `t.user.events` | `chat-user-sync` | User Service | `USER_PROFILE_UPDATED`, `USER_PROFILE_DELETED` | Đồng bộ tên hiển thị & GDPR cleanup |
 
 ## 2. CloudEvents envelope (Bắt buộc)
 
@@ -121,3 +121,66 @@ Tài liệu này định nghĩa hợp đồng sự kiện (event contract) cho C
   "last_seen_at": "2026-03-31T10:01:40Z"
 }
 ```
+
+## 5. Hợp đồng các sự kiện tiêu thụ (Consumed events contract)
+
+### 5.1. USER_PROFILE_UPDATED (Từ User Service)
+
+Chat Service subscribe event này để cập nhật projection `sender_name` trong bảng `room_participants`, giúp hiển thị tên người gửi mà không cần gọi User Service mỗi lần.
+
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "uuid-cua-user",
+  "partition_key": "uuid-cua-user",
+  "event_type": "USER_PROFILE_UPDATED",
+  "timestamp": "2026-04-22T08:05:00Z",
+  "payload": {
+    "id": "uuid-cua-user",
+    "email": "user@example.com",
+    "first_name": "Nguyen",
+    "last_name": "Quang Dung",
+    "phone_number": "0987654321",
+    "date_of_birth": "1997-10-19",
+    "gender": "MALE"
+  }
+}
+```
+
+**Xử lý tại Chat Service:**
+1. Consumer nhận event `USER_PROFILE_UPDATED`
+2. Kiểm tra idempotency qua `event_id` trong bảng `chat_consumer_idempotency`
+3. Cập nhật `sender_name` trong các bảng:
+   - `room_participants` (cập nhật `participant_display_name`)
+   - `messages_by_room_bucket` (cập nhật `sender_name` cho messages mới chưa có)
+
+### 5.2. USER_PROFILE_DELETED (Từ User Service)
+
+Chat Service subscribe event này để xóa vĩnh viễn PII của user đã bị xóa (GDPR compliance).
+
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "uuid-cua-user",
+  "partition_key": "uuid-cua-user",
+  "event_type": "USER_PROFILE_DELETED",
+  "timestamp": "2026-04-22T08:15:00Z",
+  "payload": {
+    "id": "uuid-cua-user",
+    "email": "user@example.com",
+    "reason": "GDPR_REQUEST"
+  }
+}
+```
+
+**Xử lý tại Chat Service:**
+1. Consumer nhận event `USER_PROFILE_DELETED`
+2. Kiểm tra idempotency qua `event_id`
+3. Xóa tất cả dữ liệu liên quan đến `user_id`:
+   - `room_participants` (xóa participant)
+   - `room_state_by_participant` (xóa trạng thái inbox)
+   - `inbox_index_by_participant_time` (xóa chỉ mục)
+   - `presence:{user_id}` (xóa Redis presence)
+4. Anonymize messages (thay `sender_name` = "User đã xóa tài khoản")

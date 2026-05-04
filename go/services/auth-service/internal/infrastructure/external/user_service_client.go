@@ -212,3 +212,17 @@ func (c *UserServiceClient) IsUserActive(ctx context.Context, userID uuid.UUID) 
 	}
 	return user.Active, nil
 }
+
+// LockUserAccount locks a user account (not implemented in external client - handled by Auth DB directly)
+func (c *UserServiceClient) LockUserAccount(ctx context.Context, userID uuid.UUID, lockedAt time.Time) error {
+	// This is a stub - lock/unlock is handled by Auth Service directly via its own DB
+	c.logger.Info("LockUserAccount called on external client (stub)", zap.String("user_id", userID.String()))
+	return nil
+}
+
+// UnlockUserAccount unlocks a user account (not implemented in external client - handled by Auth DB directly)
+func (c *UserServiceClient) UnlockUserAccount(ctx context.Context, userID uuid.UUID) error {
+	// This is a stub - lock/unlock is handled by Auth Service directly via its own DB
+	c.logger.Info("UnlockUserAccount called on external client (stub)", zap.String("user_id", userID.String()))
+	return nil
+}

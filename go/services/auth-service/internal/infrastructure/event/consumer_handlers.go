@@ -47,9 +47,10 @@ func NewConsumerHandler(
 // RegisterDefaultHandlers registers the default admin event handlers
 func (h *ConsumerHandler) RegisterDefaultHandlers() {
 	h.consumer.RegisterHandlers(map[string]EventHandler{
-		EventTypeAdminForceLogout: h.handleAdminForceLogout,
-		EventTypeUserBanned:       h.handleUserBanned,
-		EventTypeUserUnbanned:     h.handleUserUnbanned,
+		EventTypeAdminForceLogout:       h.handleAdminForceLogout,
+		EventTypeUserBanned:           h.handleUserBanned,
+		EventTypeUserUnbanned:         h.handleUserUnbanned,
+		EventTypeUserBannedNotification: h.handleUserBannedNotification,
 	})
 }
 
@@ -236,6 +237,54 @@ func (h *ConsumerHandler) handleUserUnbanned(ctx context.Context, event *KafkaEv
 	h.logger.Info("User unban completed successfully",
 		zap.String("user_id", payload.UserID),
 		zap.String("actor_id", payload.ActorID))
+
+	return nil
+}
+
+// handleUserBannedNotification handles USER_BANNED_NOTIFICATION events
+// This event is received from Notification Service or internally after user ban
+// It logs the notification that was sent to the user
+func (h *ConsumerHandler) handleUserBannedNotification(ctx context.Context, event *KafkaEvent) error {
+	var payload struct {
+		UserID   string `json:"user_id"`
+		Email    string `json:"email"`
+		Reason   string `json:"reason"`
+		BannedBy string `json:"banned_by"`
+		BannedAt string `json:"banned_at"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	h.logger.Info("Processing USER_BANNED_NOTIFICATION",
+		zap.String("user_id", payload.UserID),
+		zap.String("email", payload.Email),
+		zap.String("banned_by", payload.BannedBy))
+
+	// Log to audit for tracking purposes
+	if h.deps.AuditService != nil {
+		auditEvent := &authentication.AuditEvent{
+			ActorID:       payload.BannedBy,
+			ActorType:    types.ActorTypeAdmin,
+			EventType:    types.EventTypeUserBannedNotification,
+			IPAddress:    "",
+			SecurityLevel: types.SecurityLevelInfo,
+			LogCategory:   types.LogCategorySystem,
+			Payload: map[string]any{
+				"target_user_id": payload.UserID,
+				"email":          payload.Email,
+				"reason":         payload.Reason,
+				"banned_by":      payload.BannedBy,
+				"banned_at":      payload.BannedAt,
+			},
+		}
+		if err := h.deps.AuditService.Log(ctx, auditEvent); err != nil {
+			h.logger.Error("Failed to log audit event", zap.Error(err))
+		}
+	}
+
+	h.logger.Info("User banned notification processed successfully",
+		zap.String("user_id", payload.UserID))
 
 	return nil
 }

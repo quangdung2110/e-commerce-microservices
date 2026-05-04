@@ -18,6 +18,10 @@ type UserService interface {
 	CreateUser(ctx context.Context, req *CreateUserRequest) (*UserDTO, error)
 	UpdateUserPassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
 	IsUserActive(ctx context.Context, userID uuid.UUID) (bool, error)
+
+	// Account lock/unlock methods for brute-force protection
+	LockUserAccount(ctx context.Context, userID uuid.UUID, lockedAt time.Time) error
+	UnlockUserAccount(ctx context.Context, userID uuid.UUID) error
 }
 
 // NotificationService defines interface for notification operations (external service)

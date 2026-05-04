@@ -44,13 +44,56 @@ Dành cho trường hợp Đổi mật khẩu, Bị Banned hoặc Force Logout m
 
 ### 1.3 Khóa Chống Brute-Force & Spam (Rate Limiting)
 *   **Key Pattern**:
-    *   `auth:rate_limit:login:{ip_address}`
-    *   `auth:rate_limit:register:{ip_address}` (Chống tạo hằng hà sa số tài khoản rác).
-    *   `auth:rate_limit:forgot_pw:{ip_address}` (Chống dùng API làm tools SMS Bombing).
-    *   `auth:rate_limit:resend_otp:{email}` (Chống spam resend OTP theo từng định danh).
-    *   **Mô tả**: Đếm số Request gọi vào các API nhạy cảm.
-    *   **Loại Dữ Liệu**: `INCR / Token Bucket` (bằng Redis Module hoặc basic counters).
-    *   **TTL**: Thường là 1 - 5 phút (ví dụ Cấm 5 phút nếu gõ sai pass 10 lần, hoặc chỉ được request 1 mã OTP mỗi phút).
+    *   `auth:rate_limit:login:{ip_address}` - Đếm số lần đăng nhập từ IP
+    *   `auth:rate_limit:register:{ip_address}` - Chống tạo hằng hà sa số tài khoản rác
+    *   `auth:rate_limit:forgot_pw:{ip_address}` - Chống dùng API làm tools SMS Bombing
+    *   `auth:rate_limit:resend_otp:{email}` - Chống spam resend OTP theo từng định danh
+*   **Mô tả**: Đếm số Request gọi vào các API nhạy cảm
+*   **Loại Dữ Liệu**: `INCR / Token Bucket` (bằng Redis Module hoặc basic counters)
+*   **TTL**: Thường là 1 - 5 phút (ví dụ Cấm 5 phút nếu gõ sai pass 10 lần, hoặc chỉ được request 1 mã OTP mỗi phút)
+
+### 1.3.2 Khóa Đếm Sai Mật Khẩu (Failed Login Attempts)
+Cơ chế này theo dõi số lần đăng nhập sai password của từng email để tự động khóa tài khoản khi vượt ngưỡng.
+
+*   **Key Pattern**: `auth:failed_login:{email}`
+    *   **Mô tả**: Đếm số lần đăng nhập thất bại (sai mật khẩu) của một email cụ thể
+    *   **Loại Dữ Liệu**: `INCR` Counter
+    *   **TTL**: **60 phút** - Counter tự reset sau 1 giờ không có attempt mới
+*   **Key Pattern**: `auth:failed_login:{ip_address}`
+    *   **Mô tả**: Đếm số lần đăng nhập thất bại từ một IP cụ thể (chống distributed attack)
+    *   **Loại Dữ Liệu**: `INCR` Counter
+    *   **TTL**: **60 phút**
+*   **Cấu trúc Value**: JSON Object
+    ```json
+    {
+      "count": 3,
+      "last_attempt_at": "2026-05-04T10:00:00Z",
+      "locked_until": null
+    }
+    ```
+
+**Quy trình xử lý khi đăng nhập thất bại:**
+
+1. Khi user nhập sai password:
+   *   Thực hiện `INCR auth:failed_login:{email}` và `EXPIRE 3600` (60 phút)
+   *   Thực hiện `INCR auth:failed_login:{ip_address}` và `EXPIRE 3600`
+   *   Lấy giá trị hiện tại của `auth:failed_login:{email}`
+
+2. Kiểm tra ngưỡng:
+   *   **Ngưỡng 1 (5 lần sai)**: Sau 5 lần sai liên tiếp trong vòng 60 phút, tài khoản bị `LOCKED`
+   *   Khi đạt ngưỡng:
+       *   Update DB: `UPDATE users SET status = 'LOCKED', locked_at = NOW() WHERE email = ? AND status = 'ACTIVE'`
+       *   Reset Redis counter: `DEL auth:failed_login:{email}`
+       *   Gửi Kafka Event `USER_ACCOUNT_LOCKED` cho Notification Service (thông qua **Email**)
+       *   Ghi log `USER_ACCOUNT_LOCKED` vào `audit_logs`
+
+3. Khi đăng nhập thành công:
+   *   Reset counter: `DEL auth:failed_login:{email}` và `DEL auth:failed_login:{ip_address}`
+
+4. **Lưu ý bảo mật**:
+   *   Không tiết lộ số lần sai còn lại cho client (trả về generic message)
+   *   Thời gian lock tối thiểu là **30 phút** (Worker auto-unlock sẽ xử lý)
+   *   IP bị rate limit độc lập với email (chống distributed brute force)
 
 ### 1.4 Khóa OTP Xác Thực Email/Phone (Verification)
 *   **Key Pattern**: `auth:otp:register:{email}`

@@ -7,7 +7,9 @@
 *   [Events Structure & Kafka Topics](user_events.md)
 
 ---
-Tài liệu này mô tả 3 luồng công việc (workflows) cốt lõi của User Service nhằm xử lý hồ sơ nhân khẩu học, khởi tạo dữ liệu sau đăng ký và cung cấp dữ liệu cho các hệ sinh thái khác (Order, Chat, Notification).
+Tài liệu này mô tả 9 luồng công việc (workflows) cốt lõi của User Service nhằm xử lý hồ sơ nhân khẩu học, khởi tạo dữ liệu sau đăng ký, quản lý sổ địa chỉ (với cache cho checkout), cài đặt cá nhân và cung cấp dữ liệu cho các hệ sinh thái khác (Order, Chat, Notification).
+
+---
 
 ## 1. Luồng Khởi Tạo Hồ Sơ (Event-Driven Profile Creation)
 
@@ -26,7 +28,7 @@ sequenceDiagram
     App->>Auth: POST /verify-email { otp }
     Auth->>Auth: Đổi trạng thái ACTIVE, sinh event
     Auth->>Kafka: Publish `USER_VERIFIED_SUCCESS` { id, email }
-    
+
     Kafka-->>UserWorker: Consume `USER_VERIFIED_SUCCESS`
     UserWorker->>UserWorker: Kiểm tra tính lũy đẳng: Cài đặt PostgreSQL với `ON CONFLICT (id) DO NOTHING`
     UserWorker->>UserDB: INSERT `user_profiles` (id = payload.user_id)
@@ -36,42 +38,163 @@ sequenceDiagram
 **Nguyên tắc xử lý:**
 * Luồng này đảm bảo độ phản hồi API `/verify-email` phía Auth cực nhanh vì không phải đợi User Service Insert.
 * Nếu User Service bị down (sập), thư Kafka `USER_VERIFIED_SUCCESS` vẫn nằm chờ. Khi User Service hồi sinh (restart), nó đọc tiếp thông điệp và bổ khuyết Data.
+* Tính lũy đẳng (Idempotency) được đảm bảo qua `ON CONFLICT DO NOTHING` - đảm bảo worker chạy lại nhiều lần vẫn không tạo duplicate.
 
-## 2. Luồng Quản Lý Sổ Địa Chỉ (Address Management - Hard Delete & Set Default)
+---
 
-Order Service yêu cầu dữ liệu Snapshot, nên User Service áp dụng **Hard Delete** (xóa thẳng từ CSDL) nhằm nhẹ gánh cho Database.
+## 2. Luồng Quản Lý Sổ Địa Chỉ - CRUD Operations (Address Management)
 
-### Quy trình Set Default (Address Rotation)
-Khi User chọn "Đặt làm địa chỉ mặc định":
+Order Service yêu cầu dữ liệu Snapshot, nên User Service áp dụng **Hard Delete** (xóa thẳng từ CSDL) nhằm nhẹ gánh cho Database. Danh sách địa chỉ được cache với Redis để tối ưu hiệu năng cho luồng Checkout.
 
-1.  Client POST `/api/v1/users/me/addresses/{address_id}/default`.
-2.  Server mở Database **Transaction**.
-3.  Lệnh 1: Update tước cờ default cũ (nếu có). 
-    `UPDATE user_addresses SET is_default = FALSE WHERE user_id = {user_id} AND is_default = TRUE;`
-4.  Lệnh 2: Bật cờ cho Address ID được chọn.
-    `UPDATE user_addresses SET is_default = TRUE WHERE id = {address_id} AND user_id = {user_id};`
-5.  Commit Transaction gốc thành công.
-6.  Hủy lệnh ở Redis: `DEL user:caches:addresses:{user_id}`.
-
-### Quy trình Xóa Sổ Giao Hàng (Hard Delete)
-1.  Client DELETE `/api/v1/users/me/addresses/{address_id}`.
-2.  Server kiểm tra ID này có thuộc về `user_id` hiện tại không (Tránh Hack chỉ xóa ID nhà người khác).
-3.  Server kiểm tra số lượng địa chỉ còn lại của user.
-    * Nếu địa chỉ đang xóa là **default** và **không còn địa chỉ nào khác** -> trả lỗi 409 "Không thể xóa địa chỉ mặc định duy nhất".
-    * Nếu địa chỉ đang xóa là **default** và **còn địa chỉ khác** -> tự động chọn 1 địa chỉ khác làm default trong cùng transaction.
-4.  Tiến hành **DELETE XÓA CỨNG** bản ghi khỏi Postgres. Commit Database.
-5.  Clear Cache Toàn Mạng Bị Lỗi Stale bằng cách: xóa Redis L2 (`DEL user:caches:addresses:{user_id}`) (áp dụng double-delete nếu cần).
-
-## 3. Luồng Cập Nhật Hồ Sơ Của User (Update Profile)
-
-Chức năng then chốt của Hệ thống để đồng bộ hiển thị và giải quyết triệt để việc cập nhật dữ liệu hồ sơ người dùng. 
+### 2.1. Luồng Thêm Địa Chỉ Mới (Create Address)
 
 ```mermaid
 sequenceDiagram
     participant App as Client
     participant API as User API
     participant DB as Postgres
-    participant Kafka as Event Topic
+    participant Redis as Redis L2 Cache
+
+    App->>API: POST /api/v1/users/me/addresses { address data }
+    API->>API: Validate address fields (ward_id, district_id, city_id)
+    API->>DB: INSERT `user_addresses`
+    alt First address for user
+        API->>DB: UPDATE is_default = TRUE
+    end
+    API->>DB: Commit Transaction
+    API->>Redis: DEL user:caches:addresses:{user_id}
+    API-->>App: 201 Created { address_id }
+```
+
+**Nguyên tắc xử lý:**
+* Nếu đây là địa chỉ đầu tiên của user, tự động set `is_default = TRUE`.
+* Sau khi insert thành công, xóa cache Redis để đảm bảo consistency.
+
+### 2.2. Luồng Cập Nhật Địa Chỉ (Update Address)
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+    participant Redis as Redis L2 Cache
+
+    App->>API: PUT /api/v1/users/me/addresses/{address_id} { updated data }
+    API->>API: Verify address belongs to current user (authorization check)
+    API->>DB: UPDATE `user_addresses` SET ... WHERE id = {address_id}
+    API->>DB: Commit Transaction
+    API->>Redis: DEL user:caches:addresses:{user_id}
+    API-->>App: 200 OK
+```
+
+**Lưu ý bảo mật:**
+* Kiểm tra `user_id` sở hữu address trước khi update để tránh hack sang address người khác.
+
+### 2.3. Luồng Set Default (Address Rotation)
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+    participant Redis as Redis L2 Cache
+
+    App->>API: POST /api/v1/users/me/addresses/{address_id}/default
+    API->>DB: BEGIN Transaction
+    API->>DB: UPDATE user_addresses SET is_default = FALSE WHERE user_id = {user_id} AND is_default = TRUE
+    API->>DB: UPDATE user_addresses SET is_default = TRUE WHERE id = {address_id} AND user_id = {user_id}
+    API->>DB: COMMIT Transaction
+    API->>Redis: DEL user:caches:addresses:{user_id}
+    API-->>App: 200 OK
+```
+
+**Nguyên tắc xử lý:**
+* Sử dụng Database Transaction để đảm bảo atomicity - không thể có 2 địa chỉ default cùng lúc.
+* Partial Unique Index `idx_unique_default_address` trên `user_addresses` đảm bảo ràng buộc ở cấp database.
+
+### 2.4. Luồng Xóa Địa Chỉ - Hard Delete
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+    participant Redis as Redis L2 Cache
+
+    App->>API: DELETE /api/v1/users/me/addresses/{address_id}
+    API->>API: Verify address belongs to current user
+    API->>DB: BEGIN Transaction
+
+    alt Address is default and no other addresses
+        API->>DB: ROLLBACK (Keep transaction open for proper error)
+        API-->>App: 409 Conflict "Không thể xóa địa chỉ mặc định duy nhất"
+    else Address is default and has other addresses
+        API->>DB: SELECT MIN(id) FROM user_addresses WHERE user_id = {user_id} AND id != {address_id}
+        API->>DB: UPDATE user_addresses SET is_default = TRUE WHERE id = (SELECT MIN(id)...)
+    end
+
+    API->>DB: DELETE FROM user_addresses WHERE id = {address_id}
+    API->>DB: COMMIT Transaction
+    API->>Redis: DEL user:caches:addresses:{user_id}
+    API-->>App: 204 No Content
+```
+
+**Quy tắc nghiệp vụ:**
+* Không cho phép xóa địa chỉ mặc định duy nhất.
+* Nếu xóa địa chỉ default và còn địa chỉ khác, tự động promote địa chỉ khác thành default.
+* Áp dụng Hard Delete để nhẹ gánh Database (Order Service đã snapshot vào bảng `orders`).
+
+### 2.5. Luồng Đọc Danh Sách Địa Chỉ với L2 Cache (Read Addresses for Checkout)
+
+Danh sách địa chỉ là dữ liệu được truy cập thường xuyên (Checkout page), nên được cache với chiến lược Cache-Aside.
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant Redis as Redis L2 Cache
+    participant DB as Postgres
+
+    App->>API: GET /api/v1/users/me/addresses
+    API->>Redis: GET user:caches:addresses:{user_id}
+    alt Cache Hit
+        Redis-->>API: Return cached address list
+        API-->>App: 200 OK (from cache)
+    else Cache Miss
+        API->>DB: SELECT * FROM user_addresses WHERE user_id = {user_id} ORDER BY is_default DESC, created_at DESC
+        alt Has addresses
+            API->>Redis: SETEX user:caches:addresses:{user_id} 43200 {json_array}
+        else No addresses
+            API->>Redis: SETEX user:caches:addresses:{user_id} 1800 [] (short TTL for empty cache)
+        end
+        API-->>App: 200 OK
+    end
+```
+
+**Cache Key Pattern:**
+* `user:caches:addresses:{user_id}` với TTL 12 giờ (43200 seconds)
+
+**Cache Invalidation Events:**
+* Tạo mới address -> `DEL user:caches:addresses:{user_id}`
+* Cập nhật address -> `DEL user:caches:addresses:{user_id}`
+* Xóa address -> `DEL user:caches:addresses:{user_id}`
+* Set default -> `DEL user:caches:addresses:{user_id}`
+
+**Empty Cache Policy:**
+* Nếu user chưa có địa chỉ, cache empty array `[]` với TTL ngắn (30 phút) để tránh cache penetration.
+
+---
+
+## 3. Luồng Cập Nhật Hồ Sơ Của User (Update Profile)
+
+Chức năng then chốt của Hệ thống để đồng bộ hiển thị và giải quyết triệt để việc cập nhật dữ liệu hồ sơ người dùng.
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+    participant Kafka as Event Topic (t.user.events)
 
     App->>API: PUT /api/v1/users/me/profile { phone, fullname... }
     API->>API: Ràng buộc Validation (Check SĐT, Validate Unicode..)
@@ -81,34 +204,190 @@ sequenceDiagram
 
     DB->>Kafka: CDC Debezium bắn ra thông điệp `USER_PROFILE_UPDATED`
 ```
+
 **Lưu ý xử lý nghiệp vụ:**
 * Nếu `phone_number` trùng với user khác (vi phạm unique), API trả lỗi 409 Conflict với thông điệp nghiệp vụ rõ ràng.
+* Sử dụng Transactional Outbox Pattern để đảm bảo UPDATE và INSERT outbox là atomic.
+* Debezium CDC sẽ đọc bảng `outbox_events` và publish sang Kafka topic `t.user.events`.
 
-## 4. Luồng Cung Cấp Dữ Liệu Cho Chat Service / API Gateway (Event-Driven Projection)
+---
 
-Chat Service giữ `uuid` khách hàng và bao gồm cả thông tin name, .... Dữ liệu này được cung cấp qua Event-Driven Projection:
-1. Chat Service lắng nghe sự kiện `USER_PROFILE_UPDATED` để cập nhật bản sao dữ liệu (Name) trong DB nội bộ, giúp hiển thị nhanh và giảm tải cho User Service.
+## 4. Luồng Quản Lý Preferences (Update Preferences)
+
+User Service quản lý các thiết lập ứng dụng của người dùng. Dữ liệu này được đồng bộ sang Notification Service qua Kafka events.
 
 ```mermaid
 sequenceDiagram
-    participant ChatApp as Chat Client/BFF
-    participant ChatSvc as Chat Service
-    participant UserDB as User DB
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+    participant Kafka as Event Topic (t.user.events)
 
-    ChatApp->>ChatSvc: Load Room (participant_id = uuid)
-    ChatSvc->>UserDB: SELECT WHERE id IN (...)
-    UserDB-->>ChatSvc: Trả về Result
-    ChatSvc-->>ChatApp: Result Map <UUID, {first_name, last_name}>
-    ChatSvc-->>ChatApp: Trả về Data đầy đủ
+    App->>API: PUT /api/v1/users/me/preferences { language, currency, notification flags }
+    API->>API: Validate preferences (valid language code, valid currency)
+    API->>DB: UPDATE `user_preferences` + INSERT `outbox_events` trong Transaction
+    API->>DB: Commit Transaction
+    API-->>App: 200 OK
+
+    DB->>Kafka: CDC Debezium bắn ra thông điệp `USER_PREFERENCES_UPDATED`
 ```
 
-## 5. Luồng Xóa Tài Khoản (GDPR / USER_DELETED)
+**Các trường Preferences:**
+| Field | Giá trị mặc định | Mô tả |
+|:------|:-----------------|:-------|
+| `language` | `'vi'` | Ngôn ngữ hiển thị |
+| `currency` | `'VND'` | Tiền tệ ưu tiên |
+| `email_enabled` | `TRUE` | Bật thông báo qua Email |
+| `in_app_enabled` | `TRUE` | Bật thông báo In-App |
+| `marketing_enabled` | `TRUE` | Bật tin quảng cáo/khuyến mãi |
+
+**Lưu ý:**
+* Preferences được tạo mặc định khi User Service nhận `USER_VERIFIED_SUCCESS` (Workflow 1).
+* Notification Service tiêu thụ `USER_PREFERENCES_UPDATED` để sync preferences cho việc gửi thông báo.
+
+---
+
+## 5. Luồng Cung Cấp Dữ Liệu Cho Chat Service (Event-Driven Projection)
+
+Chat Service duy trì bản sao thông tin user (Name) trong DB nội bộ thông qua Event-Driven Projection.
+
+```mermaid
+sequenceDiagram
+    participant UserApp as Client App
+    participant UserSvc as User Service
+    participant Kafka as Kafka (t.user.events)
+    participant ChatWorker as Chat Kafka Consumer
+    participant ChatDB as Chat ScyllaDB
+    participant ChatAPI as Chat Service API
+
+    UserApp->>UserSvc: PUT /profile { first_name, last_name }
+    UserSvc->>UserSvc: UPDATE user_profiles + INSERT outbox
+    UserSvc->>Kafka: Publish USER_PROFILE_UPDATED
+    Kafka-->>ChatWorker: Consume USER_PROFILE_UPDATED
+    ChatWorker->>ChatDB: UPDATE room_participants SET sender_name
+    ChatWorker->>ChatDB: UPDATE messages_by_room_bucket SET sender_name
+
+    UserApp->>ChatAPI: Load Room (participant_id = uuid)
+    ChatAPI->>ChatDB: SELECT sender_name FROM room_participants
+    ChatDB-->>ChatAPI: Return participant info
+    ChatAPI-->>UserApp: Return room data with display names
+```
+
+**Lưu ý kiến trúc:**
+- Chat Service **KHÔNG** gọi trực tiếp User Database.
+- Tất cả dữ liệu user được đồng bộ qua Kafka events.
+- Nếu Chat Worker chưa xử lý kịp, Chat Service có thể fallback gọi User Service qua gRPC để lấy thông tin (tùy chọn).
+
+---
+
+## 6. Luồng Xóa Tài Khoản (GDPR / Account Deletion)
 
 Khi Auth Service phát sự kiện `USER_DELETED` (hoặc Admin xóa vĩnh viễn), User Service phải dọn sạch PII và thông báo cho hệ sinh thái.
 
-1.  Kafka Consumer nhận `USER_DELETED`.
-2.  Mở Transaction và thực hiện:
-    *   Xóa theo thứ tự: `user_addresses` -> `user_preferences` -> `user_profiles`.
-    *   INSERT `outbox_events` sự kiện `USER_PROFILE_DELETED` để các bên (Chat, Notification) dọn dẹp dữ liệu.
-3.  Commit thành công.
-4.  Xóa cache L2 tương ứng (`user:caches:addresses:{id}`).
+```mermaid
+sequenceDiagram
+    participant Auth as Auth Service
+    participant Kafka as Kafka (t.auth.events)
+    participant UserWorker as User Svc (Kafka Consumer)
+    participant DB as Postgres
+    participant KafkaOut as Kafka (t.user.events)
+
+    Auth->>Kafka: Publish `USER_DELETED` { user_id, reason }
+    Kafka-->>UserWorker: Consume `USER_DELETED`
+    UserWorker->>DB: BEGIN Transaction
+    UserWorker->>DB: DELETE FROM user_addresses WHERE user_id = {user_id}
+    UserWorker->>DB: DELETE FROM user_preferences WHERE user_id = {user_id}
+    UserWorker->>DB: DELETE FROM user_profiles WHERE id = {user_id}
+    UserWorker->>DB: INSERT `outbox_events` (USER_PROFILE_DELETED)
+    UserWorker->>DB: COMMIT Transaction
+    UserWorker->>KafkaOut: CDC publishes USER_PROFILE_DELETED
+```
+
+**Thứ tự xóa (đảm bảo referential integrity):**
+1. `user_addresses` (FK từ profile)
+2. `user_preferences` (FK từ profile)
+3. `user_profiles` (bảng cha)
+
+**Lưu ý:**
+* Sự kiện `USER_PROFILE_DELETED` được Chat Service và Notification Service tiêu thụ để GDPR cleanup.
+* Email KHÔNG được xóa ở đây vì User Service không lưu email (Auth là source of truth).
+
+---
+
+
+---
+
+## 7. Luồng Đọc Hồ Sơ Trực Tiếp (Read Profile - No Cache)
+
+Hồ sơ user được đọc trực tiếp từ Database mà không qua cache vì:
+* Dữ liệu profile ít thay đổi nhưng tần suất đọc không cao như address (checkout)
+* Việc cache profile không mang lại lợi ích đáng kể về hiệu năng
+
+```mermaid
+sequenceDiagram
+    participant App as Client
+    participant API as User API
+    participant DB as Postgres
+
+    App->>API: GET /api/v1/users/me/profile
+    API->>DB: SELECT * FROM user_profiles WHERE id = {user_id}
+    alt Profile exists
+        API-->>App: 200 OK { profile data }
+    else Profile not found
+        API-->>App: 404 Not Found
+    end
+```
+
+---
+
+## 8. Tổng Kết Luồng Sự Kiện (Events Summary)
+
+### Event Flow Diagram
+
+```mermaid
+flowchart LR
+    subgraph AuthService[Auth Service]
+        A1[USER_VERIFIED_SUCCESS]
+        A2[USER_DELETED]
+    end
+
+    subgraph UserService[User Service]
+        W1[Kafka Consumer]
+        W2[API Server]
+        DB[(Postgres DB)]
+        Redis[(Redis L2)]
+    end
+
+    subgraph DownstreamServices[Downstream Services]
+        C1[Chat Service]
+        C2[Notification Service]
+    end
+
+    A1 -->|t.auth.events| W1
+    A2 -->|t.auth.events| W1
+    A3 -->|t.auth.events| W1
+
+    W1 -->|INSERT| DB
+    W2 -->|R/W| DB
+    W2 -->|DEL| Redis
+
+    DB -->|CDC Debezium| C1
+    DB -->|CDC Debezium| C2
+```
+
+### Bảng Mapping Events và Workflows
+
+| Event | Source | Target | Workflow |
+|:------|:-------|:-------|:---------|
+| `USER_VERIFIED_SUCCESS` | Auth Service | User Service | #1 Profile Creation |
+| `USER_DELETED` | Auth Service | User Service | #6 Account Deletion |
+| `USER_PROFILE_UPDATED` | User Service (CDC) | Chat Service | #3 Profile Update |
+| `USER_PREFERENCES_UPDATED` | User Service (CDC) | Notification Service | #4 Preferences Update |
+
+### Cache Strategy Summary
+
+| Data | Cached? | Key Pattern | TTL | Purpose |
+|:-----|:--------|:------------|:----|:--------|
+| **Addresses** | ✅ Yes | `user:caches:addresses:{user_id}` | 12h | Checkout optimization |
+| **Profile** | ❌ No | - | - | Direct DB read |
+| **Preferences** | ❌ No | - | - | Direct DB read |

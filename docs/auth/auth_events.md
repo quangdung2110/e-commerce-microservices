@@ -115,7 +115,102 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 }
 ```
 
-### 1.5 `JWKS_UPDATED` (Cache Invalidation)
+### 1.6 `USER_EMAIL_CHANGED` (Email thay đổi)
+Được bắn ra khi user thay đổi email thành công. Notification Service cần nhận được event này để thông báo đẩy **In-app** cho khách hàng biết
+*   **Người nghe**: `Notification Service`
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_EMAIL_CHANGED",
+  "occurred_at": "2026-04-21T10:00:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "old_email": "old@gmail.com",
+    "new_email": "new@gmail.com"
+  }
+}
+```
+
+### 1.7 `USER_PASSWORD_CHANGED` (Mật khẩu thay đổi)
+Được bắn ra khi user tự nguyện thay đổi mật khẩu thành công (khác với `PASSWORD_RESET_REQUESTED` - link reset qua email). Notification Service nhận event này để gửi thông báo đẩy **In-app** cho biết rằng họ đã đổi mật khẩu thành công
+
+| Event | Trigger | Người nghe | Kênh thông báo |
+|:------|:--------|:-----------|:---------------|
+| `USER_PASSWORD_CHANGED` | User chủ động đổi pass | Notification Service | **In-app (Push)** - Thông báo khách đã đổi mật khẩu |
+| `PASSWORD_RESET_REQUESTED` | User yêu cầu reset (quên pass) | Notification Service | **Email** - Gửi link reset |
+
+*   **Người nghe**: `Notification Service` (Gửi In-app notification cảnh báo)
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_PASSWORD_CHANGED",
+  "occurred_at": "2026-04-21T10:00:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "email": "user@example.com",
+    "device_info": "Chrome on Windows - IP: 192.168.1.1",
+    "changed_at": "2026-04-21T10:00:00Z"
+  }
+}
+```
+
+### 1.8 `USER_ACCOUNT_LOCKED` (Tài khoản bị tạm khóa do sai mật khẩu)
+Được bắn ra khi tài khoản user bị khóa tạm thời do đăng nhập sai mật khẩu quá nhiều lần (>= 5 lần). Event này được gửi cho Notification Service để thông báo qua **Email** cho user biết tài khoản đã bị khóa.
+
+> **Lưu ý:** Kênh thông báo là **Email** vì user không thể đăng nhập để xem In-app notification khi tài khoản bị khóa.
+
+*   **Người nghe**: `Notification Service` (Gửi Email thông báo)
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_ACCOUNT_LOCKED",
+  "occurred_at": "2026-04-21T10:00:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "email": "user@example.com",
+    "reason": "FAILED_LOGIN_ATTEMPTS",
+    "locked_until": "2026-04-21T10:30:00Z"
+  }
+}
+```
+
+### 1.9 `USER_UNLOCKED` (Tài khoản được tự động mở khóa)
+Được bắn ra khi tài khoản user được tự động mở khóa sau 30 phút (Worker auto-unlock) hoặc do Admin unlock thủ công. Event này được gửi cho Notification Service để thông báo qua **Email** cho user biết tài khoản đã được mở khóa.
+
+> **Lưu ý:** Kênh thông báo là **Email** vì user không thể đăng nhập để xem In-app notification khi tài khoản bị khóa.
+
+*   **Người nghe**: `Notification Service` (Gửi Email thông báo)
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_UNLOCKED",
+  "occurred_at": "2026-04-21T10:30:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "email": "user@example.com",
+    "unlock_type": "AUTO" | "ADMIN",
+    "unlocked_by": "SYSTEM" | "admin-user-id"
+  }
+}
+```
+
+### 1.10 `JWKS_UPDATED` (Cache Invalidation)
 Sự kiện đặc biệt dùng để thông báo cho API Gateway xóa cache local của JWKS ngay lập tức khi có sự thay đổi về Key (Rotation hoặc Admin manual trigger).
 *   **Kênh truyền tải**: **Redis Pub/Sub** (Channel: `auth:jwks:update`). Không dùng Kafka để đảm bảo tốc độ microsecond và giảm tải cho Kafka cluster với các event mang tính chất signal.
 *   **Người nghe**: `API Gateway` (Subscriber)
@@ -132,8 +227,16 @@ Sự kiện đặc biệt dùng để thông báo cho API Gateway xóa cache loc
 Lắng nghe trên Topic: `t.admin.events` hoặc tổ chức qua gRPC trực tiếp tùy mức độ khẩn cấp. Rất khuyên dùng Publish-Subscribe qua Kafka để Auth Service dễ Scale, khi Admin Ban user, 30 pods Auth có thể cùng phối hợp.
 
 ### 2.1 `ADMIN_FORCE_LOGOUT` / `USER_BANNED`
-Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Consumer cần đọc, làm thao tác: Revoke all của ID này trong PostgreSQL + Append tất cả `jti` của access token còn sống văng vào Redis Denylist.
-*   **Hành động**: `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=$1;` (Ghi vội vào DB). Push Redis.
+Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Consumer cần đọc, làm thao tác: Revoke all của ID này trong PostgreSQL + Append tất cả `jti` của access token còn sống văng vào Redis Denylist + Gửi thông báo cho user qua **Email**.
+
+> **Lưu ý:** Kênh thông báo là **Email** vì user bị Ban không thể đăng nhập để xem In-app notification.
+
+*   **Hành động**:
+    1. `UPDATE users SET status = 'BANNED' WHERE id = $1`
+    2. `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=$1` (Ghi vội vào DB)
+    3. Push Redis `auth:revoked_before:{user_id}` = NOW()
+    4. Push Redis Denylist tất cả `jti` đang sống
+    5. Gửi Kafka Event `USER_BANNED_NOTIFICATION` cho Notification Service (qua **Email**)
 *   **Payload Expected**:
 ```json
 {
@@ -146,6 +249,30 @@ Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Co
   "payload": {
     "user_id": "u-admin-hay-customer",
     "reason": "VIOLATION"
+  }
+}
+```
+
+### 2.2 `USER_BANNED_NOTIFICATION` (Gửi Email thông báo Ban)
+Event này được Auth Service gửi sang Notification Service sau khi đã cập nhật trạng thái BANNED thành công. Mục đích là thông báo qua **Email** cho user biết tài khoản đã bị cấm vĩnh viễn.
+
+*   **Topic**: `t.auth.events`
+*   **Người nghe**: `Notification Service` (Gửi Email thông báo)
+*   **Payload Schema**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "u-1234",
+  "partition_key": "u-1234",
+  "event_type": "USER_BANNED_NOTIFICATION",
+  "occurred_at": "2026-04-21T10:15:00Z",
+  "payload": {
+    "user_id": "u-1234",
+    "email": "user@example.com",
+    "reason": "VIOLATION",
+    "banned_by": "admin-user-id",
+    "banned_at": "2026-04-21T10:15:00Z"
   }
 }
 ```

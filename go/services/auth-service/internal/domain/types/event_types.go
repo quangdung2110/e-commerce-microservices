@@ -14,6 +14,17 @@ const (
 	EventTypeUserBanned               EventType = "USER_BANNED"
 	EventTypeUserUnbanned             EventType = "USER_UNBANNED"
 
+	// Account lock/unlock events (Brute-Force Protection)
+	EventTypeUserAccountLocked        EventType = "USER_ACCOUNT_LOCKED"
+	EventTypeUserUnlocked            EventType = "USER_UNLOCKED"
+
+	// Email/Password change events
+	EventTypeUserEmailChanged        EventType = "USER_EMAIL_CHANGED"
+	EventTypeUserPasswordChanged     EventType = "USER_PASSWORD_CHANGED"
+
+	// Notification events
+	EventTypeUserBannedNotification  EventType = "USER_BANNED_NOTIFICATION"
+
 	// Authentication events
 	EventTypeUserLoggedIn             EventType = "USER_LOGGED_IN"
 	EventTypeUserLoggedOut            EventType = "USER_LOGGED_OUT"
@@ -58,6 +69,9 @@ func (e EventType) IsValid() bool {
 	switch e {
 	case EventTypeUserRegistered, EventTypeUserActivated, EventTypeUserDeactivated,
 		EventTypeUserDeleted, EventTypeUserBanned, EventTypeUserUnbanned,
+		EventTypeUserAccountLocked, EventTypeUserUnlocked,
+		EventTypeUserEmailChanged, EventTypeUserPasswordChanged,
+		EventTypeUserBannedNotification,
 		EventTypeUserLoggedIn, EventTypeUserLoggedOut, EventTypeUserLoginFailed,
 		EventTypeTokenRefreshed, EventTypeTokenTheftDetected,
 		EventTypeOtpRequested, EventTypeOtpVerified, EventTypeOtpFailed,
@@ -81,6 +95,11 @@ var KafkaTopicMapping = map[EventType]string{
 	EventTypeUserDeleted:             "user.auth.deleted",
 	EventTypeUserBanned:              "user.auth.banned",
 	EventTypeUserUnbanned:           "user.auth.unbanned",
+	EventTypeUserAccountLocked:       "t.auth.events",
+	EventTypeUserUnlocked:           "t.auth.events",
+	EventTypeUserEmailChanged:       "t.auth.events",
+	EventTypeUserPasswordChanged:    "t.auth.events",
+	EventTypeUserBannedNotification: "t.auth.events",
 	EventTypeUserLoggedIn:            "auth.events.login",
 	EventTypeUserLoggedOut:          "auth.events.logout",
 	EventTypeUserLoginFailed:        "auth.events.login_failed",

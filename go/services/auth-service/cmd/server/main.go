@@ -182,12 +182,30 @@ func main() {
 			logger,
 		)
 
+		// Create auto-unlock worker
+		autoUnlockWorker := worker.NewAutoUnlockWorker(
+			deps.UserRepo,
+			nil, // audit logger - can be set later
+			logger,
+			time.Duration(cfg.Workers.AutoUnlock.LockDuration)*time.Minute,
+			cfg.Workers.AutoUnlock.BatchSize,
+		)
+
+		// Create failed login counter reset worker
+		failedLoginResetWorker := worker.NewFailedLoginCounterResetWorker(
+			deps.RateLimitRepo,
+			nil, // audit logger - can be set later
+			logger,
+		)
+
 		// Create and start scheduler
 		scheduler = worker.NewScheduler(
 			jwksRotator,
 			tokenCleaner,
 			auditCleaner,
 			outboxCleaner,
+			autoUnlockWorker,
+			failedLoginResetWorker,
 			deps.DistributedLockRepo,
 			cfg.Workers,
 			logger,

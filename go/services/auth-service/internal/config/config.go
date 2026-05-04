@@ -114,11 +114,21 @@ type JWKSConfig struct {
 
 // WorkerConfig holds background worker configuration
 type WorkerConfig struct {
-	Enabled         bool `mapstructure:"enabled"`
-	TokenCleanup    WorkerTaskConfig `mapstructure:"token_cleanup"`
-	AuditCleanup    WorkerTaskConfig `mapstructure:"audit_cleanup"`
-	OutboxCleanup   WorkerTaskConfig `mapstructure:"outbox_cleanup"`
-	KeyRotation     WorkerTaskConfig `mapstructure:"key_rotation"`
+	Enabled            bool `mapstructure:"enabled"`
+	TokenCleanup       WorkerTaskConfig `mapstructure:"token_cleanup"`
+	AuditCleanup       WorkerTaskConfig `mapstructure:"audit_cleanup"`
+	OutboxCleanup      WorkerTaskConfig `mapstructure:"outbox_cleanup"`
+	KeyRotation        WorkerTaskConfig `mapstructure:"key_rotation"`
+	AutoUnlock         AutoUnlockConfig `mapstructure:"auto_unlock"`
+	FailedLoginReset   WorkerTaskConfig `mapstructure:"failed_login_reset"`
+}
+
+// AutoUnlockConfig holds auto-unlock worker configuration
+type AutoUnlockConfig struct {
+	Enabled       bool   `mapstructure:"enabled"`
+	Cron          string `mapstructure:"cron"`           // cron expression
+	LockDuration  int    `mapstructure:"lock_duration"` // minutes before auto-unlock
+	BatchSize     int    `mapstructure:"batch_size"`    // max users to process per run
 }
 
 // WorkerTaskConfig holds configuration for individual worker tasks
@@ -253,6 +263,17 @@ func setAuthDefaults() {
 	viper.SetDefault("workers.key_rotation.enabled", true)
 	viper.SetDefault("workers.key_rotation.cron", "0 0 1 */3 *")
 	viper.SetDefault("workers.key_rotation.retention_days", 0)
+
+	// Auto-unlock worker defaults
+	viper.SetDefault("workers.auto_unlock.enabled", true)
+	viper.SetDefault("workers.auto_unlock.cron", "*/5 * * * *") // Every 5 minutes
+	viper.SetDefault("workers.auto_unlock.lock_duration", 30) // 30 minutes
+	viper.SetDefault("workers.auto_unlock.batch_size", 100) // Process 100 users per run
+
+	// Failed login reset worker defaults
+	viper.SetDefault("workers.failed_login_reset.enabled", true)
+	viper.SetDefault("workers.failed_login_reset.cron", "*/15 * * * *") // Every 15 minutes
+	viper.SetDefault("workers.failed_login_reset.retention_days", 0)
 
 	// Debezium defaults
 	viper.SetDefault("debezium.enabled", false)

@@ -7,7 +7,9 @@
 *   [Events Structure & Kafka Topics](user_events.md)
 
 ---
-Tài liệu này mô tả chiến lược bộ đệm (Caching Plan) của User Service. Hiện tại, hệ thống chỉ áp dụng caching cho danh sách địa chỉ của khách hàng nhằm tối ưu tốc độ cho luồng Checkout và giảm tải cho Database khi người dùng truy cập trang quản lý sổ địa chỉ.
+Tài liệu này mô tả chiến lược bộ đệm (Caching Plan) của User Service. **Hiện tại, hệ thống chỉ áp dụng caching cho danh sách địa chỉ** nhằm tối ưu tốc độ cho luồng Checkout và giảm tải cho Database.
+
+> **Lưu ý:** Profile và Preferences được đọc trực tiếp từ Database mà không qua cache vì tần suất truy cập thấp và không mang lại lợi ích hiệu năng đáng kể.
 
 ## 1. Cấp độ Caching
 - **L2 Cache (Redis Cluster Global):** Lưu trữ toàn cục trên Memory. Độ trễ 1-2ms. Làm lớp khiên chắn rác trước khi Query tuột xuống Database cho các dữ liệu có tần suất truy cập cao nhưng ít thay đổi như địa chỉ.

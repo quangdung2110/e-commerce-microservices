@@ -43,6 +43,9 @@ type Dependencies struct {
 	// Audit Repository (for workers)
 	AuditRepo repository.AuditRepository
 
+	// User Repository (for account lock/unlock)
+	UserRepo repository.UserRepository
+
 	// JWKS Service
 	JwksService *jwks.Service
 
@@ -116,6 +119,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 	auditRepo := pgAdapter.NewPostgresAuditRepository(db.Pool(), logger)
 	jwtKeyRepo := pgAdapter.NewPostgresJwtKeyRepository(db.Pool())
 	outboxRepo := pgAdapter.NewPostgresOutboxRepository(db.Pool())
+	userRepo := pgAdapter.NewPostgresUserRepository(db.Pool(), logger)
 
 	// Security components
 	passwordEncoder := security.NewBcryptPasswordEncoder(cfg.Security.BcryptCost)
@@ -253,6 +257,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		loginAttemptRepo,
 		rateLimitRepo,
 		refreshTokenRepo,
+		userRepo,
 		userServiceClient,
 		eventPublisher,
 		tokenGenerator,
@@ -330,6 +335,7 @@ func InitializeDependencies(cfg *authConfig.Config, redisClient *redis.Client, l
 		SessionManagerUsecase: sessionManagerUsecase,
 		AuditService:         auditService,
 		AuditRepo:            auditRepo,
+		UserRepo:              userRepo,
 		JwksService:           jwksService,
 		KafkaConsumer:         kafkaConsumer,
 		ConsumerHandler:       consumerHandler,

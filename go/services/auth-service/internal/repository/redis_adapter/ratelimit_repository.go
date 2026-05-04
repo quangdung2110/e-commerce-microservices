@@ -290,3 +290,96 @@ func (r *RedisRateLimitRepository) CheckActivityFlag(ctx context.Context, sessio
 
 	return exists > 0, nil
 }
+
+// ==================== Failed Login Counter (Brute-Force Protection) ====================
+// These methods implement the counter for tracking failed login attempts per email/IP
+// TTL: 60 minutes (1 hour) - counter resets if no new attempts within this period
+
+const (
+	failedLoginCounterTTL = 60 * time.Minute
+	failedLoginEmailKeyPrefix  = "auth:failed_login:"
+)
+
+// IncrementFailedLogin increments failed login counter for email
+// Returns the new count after incrementing
+func (r *RedisRateLimitRepository) IncrementFailedLogin(ctx context.Context, email string) (int, error) {
+	key := failedLoginEmailKeyPrefix + email
+
+	count, err := r.client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment failed login counter: %w", err)
+	}
+
+	// Set TTL on first increment (60 minutes)
+	if count == 1 {
+		r.client.Expire(ctx, key, failedLoginCounterTTL)
+	}
+
+	return int(count), nil
+}
+
+// GetFailedLoginCount gets current failed login count for email
+func (r *RedisRateLimitRepository) GetFailedLoginCount(ctx context.Context, email string) (int, error) {
+	key := failedLoginEmailKeyPrefix + email
+
+	count, err := r.client.Get(ctx, key).Int64()
+	if err != nil {
+		if err == redis.Nil {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to get failed login count: %w", err)
+	}
+
+	return int(count), nil
+}
+
+// ResetFailedLogin resets failed login counter for email and IP
+func (r *RedisRateLimitRepository) ResetFailedLogin(ctx context.Context, email, ip string) error {
+	emailKey := failedLoginEmailKeyPrefix + email
+	ipKey := failedLoginEmailKeyPrefix + ip
+
+	// Use pipeline to delete both keys atomically
+	pipe := r.client.Pipeline()
+	pipe.Del(ctx, emailKey)
+	pipe.Del(ctx, ipKey)
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to reset failed login counters: %w", err)
+	}
+
+	return nil
+}
+
+// IncrementFailedLoginByIP increments failed login counter for IP
+// Returns the new count after incrementing
+func (r *RedisRateLimitRepository) IncrementFailedLoginByIP(ctx context.Context, ip string) (int, error) {
+	key := failedLoginEmailKeyPrefix + ip
+
+	count, err := r.client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment failed login counter by IP: %w", err)
+	}
+
+	// Set TTL on first increment (60 minutes)
+	if count == 1 {
+		r.client.Expire(ctx, key, failedLoginCounterTTL)
+	}
+
+	return int(count), nil
+}
+
+// GetFailedLoginCountByIP gets current failed login count for IP
+func (r *RedisRateLimitRepository) GetFailedLoginCountByIP(ctx context.Context, ip string) (int, error) {
+	key := failedLoginEmailKeyPrefix + ip
+
+	count, err := r.client.Get(ctx, key).Int64()
+	if err != nil {
+		if err == redis.Nil {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to get failed login count by IP: %w", err)
+	}
+
+	return int(count), nil
+}

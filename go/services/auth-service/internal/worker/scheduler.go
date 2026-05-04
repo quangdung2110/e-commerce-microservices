@@ -21,6 +21,8 @@ type Scheduler struct {
 	tokenCleaner     *TokenCleanupJob
 	auditCleaner     *AuditCleanupJob
 	outboxCleaner    *OutboxCleanupJob
+	autoUnlockWorker *AutoUnlockWorker
+	failedLoginResetWorker *FailedLoginCounterResetWorker
 	distributedLock  repository.DistributedLockRepository
 	cfg              config.WorkerConfig
 	stopCh           chan struct{}
@@ -32,6 +34,8 @@ func NewScheduler(
 	tokenCleaner *TokenCleanupJob,
 	auditCleaner *AuditCleanupJob,
 	outboxCleaner *OutboxCleanupJob,
+	autoUnlockWorker *AutoUnlockWorker,
+	failedLoginResetWorker *FailedLoginCounterResetWorker,
 	distributedLock repository.DistributedLockRepository,
 	cfg config.WorkerConfig,
 	logger *zap.Logger,
@@ -43,6 +47,8 @@ func NewScheduler(
 		tokenCleaner:    tokenCleaner,
 		auditCleaner:    auditCleaner,
 		outboxCleaner:   outboxCleaner,
+		autoUnlockWorker: autoUnlockWorker,
+		failedLoginResetWorker: failedLoginResetWorker,
 		distributedLock: distributedLock,
 		cfg:             cfg,
 		stopCh:          make(chan struct{}),
@@ -118,6 +124,36 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.logger.Info("Outbox cleanup job scheduled", zap.String("cron", outboxCleanupSpec))
 	}
 
+	// Schedule auto-unlock job (every 5 minutes)
+	if s.cfg.AutoUnlock.Enabled {
+		autoUnlockSpec := s.cfg.AutoUnlock.Cron
+		if autoUnlockSpec == "" {
+			autoUnlockSpec = "*/5 * * * *" // Default: Every 5 minutes
+		}
+		_, err := s.cron.AddFunc(autoUnlockSpec, func() {
+			s.runWithLock(ctx, "auto_unlock", s.runAutoUnlock)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to schedule auto-unlock job: %w", err)
+		}
+		s.logger.Info("Auto-unlock job scheduled", zap.String("cron", autoUnlockSpec))
+	}
+
+	// Schedule failed login counter reset job (every 15 minutes)
+	if s.cfg.FailedLoginReset.Enabled {
+		failedLoginResetSpec := s.cfg.FailedLoginReset.Cron
+		if failedLoginResetSpec == "" {
+			failedLoginResetSpec = "*/15 * * * *" // Default: Every 15 minutes
+		}
+		_, err := s.cron.AddFunc(failedLoginResetSpec, func() {
+			s.runWithLock(ctx, "failed_login_reset", s.runFailedLoginReset)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to schedule failed login reset job: %w", err)
+		}
+		s.logger.Info("Failed login reset job scheduled", zap.String("cron", failedLoginResetSpec))
+	}
+
 	// Start cron scheduler
 	s.cron.Start()
 
@@ -135,7 +171,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		zap.Bool("key_rotation_enabled", s.cfg.KeyRotation.Enabled),
 		zap.Bool("token_cleanup_enabled", s.cfg.TokenCleanup.Enabled),
 		zap.Bool("audit_cleanup_enabled", s.cfg.AuditCleanup.Enabled),
-		zap.Bool("outbox_cleanup_enabled", s.cfg.OutboxCleanup.Enabled))
+		zap.Bool("outbox_cleanup_enabled", s.cfg.OutboxCleanup.Enabled),
+		zap.Bool("auto_unlock_enabled", s.cfg.AutoUnlock.Enabled),
+		zap.Bool("failed_login_reset_enabled", s.cfg.FailedLoginReset.Enabled))
 
 	return nil
 }
@@ -237,6 +275,34 @@ func (s *Scheduler) runOutboxCleanup() error {
 	if s.outboxCleaner != nil {
 		if err := s.outboxCleaner.Run(ctx); err != nil {
 			return fmt.Errorf("outbox cleanup failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// runAutoUnlock runs the auto-unlock job
+func (s *Scheduler) runAutoUnlock() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if s.autoUnlockWorker != nil {
+		if err := s.autoUnlockWorker.Run(ctx); err != nil {
+			return fmt.Errorf("auto-unlock failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// runFailedLoginReset runs the failed login counter reset job
+func (s *Scheduler) runFailedLoginReset() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if s.failedLoginResetWorker != nil {
+		if err := s.failedLoginResetWorker.Run(ctx); err != nil {
+			return fmt.Errorf("failed login reset failed: %w", err)
 		}
 	}
 
