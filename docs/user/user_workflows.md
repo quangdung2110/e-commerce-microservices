@@ -309,7 +309,6 @@ sequenceDiagram
 3. `user_profiles` (bảng cha)
 
 **Lưu ý:**
-* Sự kiện `USER_PROFILE_DELETED` được Chat Service và Notification Service tiêu thụ để GDPR cleanup.
 * Email KHÔNG được xóa ở đây vì User Service không lưu email (Auth là source of truth).
 
 ---
