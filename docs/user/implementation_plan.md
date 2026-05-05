@@ -118,7 +118,7 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 
 ### 3.1 Module Breakdown
 
-Dự án được chia thành **4 module chính** có thể phát triển song song:
+Dự án được chia thành **4 module chính**:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -128,11 +128,16 @@ Dự án được chia thành **4 module chính** có thể phát triển song s
 │   Domain   │   Infra     │  API/REST   │  Kafka Consumer    │
 │   (Core)   │  (DB/Redis) │  (HTTP)     │   (Worker)         │
 ├─────────────┼─────────────┼─────────────┼───────────────────┤
-│ • Entities │ • Postgres  │ • Gin       │ • Kafka Producer   │
-│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Consumer   │
-│ • DomainEvt│ • Outbox    │ • Middleware│ • Idempotency     │
-│ • Ports    │ • Migrations│ • DTOs      │ • Event Handlers   │
+│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer   │
+│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Producer   │
+│ • DomainEvt│ • Outbox    │ • Middleware│ • Event Handlers   │
+│ • Ports    │ • Migrations│ • DTOs      │ • Idempotency     │
 └─────────────┴─────────────┴─────────────┴───────────────────┘
+
+✅ Module A: Domain (Core) - HOÀN THÀNH
+✅ Module B: Infrastructure - HOÀN THÀNH
+✅ Module C: API/REST - HOÀN THÀNH
+✅ Module D: Kafka Consumer - HOÀN THÀNH
 ```
 
 ### 3.2 Module A: Domain (Core)
@@ -2723,20 +2728,20 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 
 ### 12.1 Workflow Coverage Checklist
 
-> ⚠️ Module B (Infrastructure), C (API), D (Kafka) chua implement
+> ✅ Tất cả 4 modules đã hoàn thành!
 
 | # | Workflow | API/Event | Status | Notes |
 |:--|:---------|:----------|:-------|:------|
-| 1 | Profile Creation | USER_VERIFIED_SUCCESS (Kafka) | ? | Module D pending |
-| 2.1 | Create Address | POST /api/v1/users/me/addresses | ? | Module B ready |
-| 2.2 | Read Addresses | GET /api/v1/users/me/addresses | ? | Module B ready |
-| 2.3 | Update Address | PUT /api/v1/users/me/addresses/{id} | ? | Module B ready |
-| 2.4 | Delete Address | DELETE /api/v1/users/me/addresses/{id} | ? | Module B ready |
-| 2.5 | Set Default | POST /api/v1/users/me/addresses/{id}/default | ? | Module B ready |
-| 3 | Update Profile | PUT /api/v1/users/me/profile | ? | Module B ready |
-| 4 | Update Preferences | PUT /api/v1/users/me/preferences | ? | Module B ready |
-| 5 | Chat Sync | USER_PROFILE_UPDATED (CDC) | ? | Module D pending |
-| 6 | GDPR Delete | USER_DELETED (Kafka) | ? | Module B ready |
+| 1 | Profile Creation | USER_VERIFIED_SUCCESS (Kafka) | ✅ | Kafka consumer implemented |
+| 2.1 | Create Address | POST /api/v1/users/me/addresses | ✅ | Module C ready |
+| 2.2 | Read Addresses | GET /api/v1/users/me/addresses | ✅ | Module C ready with cache |
+| 2.3 | Update Address | PUT /api/v1/users/me/addresses/{id} | ✅ | Module C ready |
+| 2.4 | Delete Address | DELETE /api/v1/users/me/addresses/{id} | ✅ | Module C ready |
+| 2.5 | Set Default | POST /api/v1/users/me/addresses/{id}/default | ✅ | Module C ready |
+| 3 | Update Profile | PUT /api/v1/users/me/profile | ✅ | Module C ready with outbox |
+| 4 | Update Preferences | PUT /api/v1/users/me/preferences | ✅ | Module C ready with outbox |
+| 5 | Chat Sync | USER_PROFILE_UPDATED (CDC) | ✅ | Outbox + Debezium config ready |
+| 6 | GDPR Delete | USER_DELETED (Kafka) | ✅ | Kafka consumer implemented |
 
 ### 12.2 Database Schema Checklist
 
@@ -2765,39 +2770,39 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 
 | # | Feature | Status | Notes |
 |:--|:--------|:-------|:------|
-| 1 | Consumer group | ☐ | Module D pending |
-| 2 | Idempotent handlers | ✅ | Logic defined |
-| 3 | Outbox table | ? | Migration implemented |
-| 4 | Debezium connector | ☐ | Module D pending |
+| 1 | Consumer group | ✅ | 2 consumer groups implemented |
+| 2 | Idempotent handlers | ✅ | ON CONFLICT DO NOTHING pattern |
+| 3 | Outbox table | ✅ | Migration implemented |
+| 4 | Debezium connector | ✅ | Config file created |
 | 5 | Event schemas | ✅ | All 4 events defined |
-| 6 | Topic creation | ☐ | Module D pending |
+| 6 | Topic creation | ☐ | Via docker-compose or Kafka scripts |
 
 ### 12.5 API Checklist
 
 | # | Endpoint | Method | Status | Notes |
 |:--|:---------|:-------|:-------|:------|
-| 1 | `/api/v1/users/me/profile` | GET | ☐ | Module C pending |
-| 2 | `/api/v1/users/me/profile` | PUT | ☐ | Module C pending |
-| 3 | `/api/v1/users/me/addresses` | GET | ☐ | Module C pending |
-| 4 | `/api/v1/users/me/addresses` | POST | ☐ | Module C pending |
-| 5 | `/api/v1/users/me/addresses/{id}` | PUT | ☐ | Module C pending |
-| 6 | `/api/v1/users/me/addresses/{id}` | DELETE | ☐ | Module C pending |
-| 7 | `/api/v1/users/me/addresses/{id}/default` | POST | ☐ | Module C pending |
-| 8 | `/api/v1/users/me/preferences` | GET | ☐ | Module C pending |
-| 9 | `/api/v1/users/me/preferences` | PUT | ☐ | Module C pending |
-| 10 | `/health` | GET | ✅ | Implemented |
-| 11 | `/ready` | GET | ✅ | Implemented |
+| 1 | `/api/v1/users/me/profile` | GET | ✅ | Implemented in profile_handler.go |
+| 2 | `/api/v1/users/me/profile` | PUT | ✅ | Implemented with transactional outbox |
+| 3 | `/api/v1/users/me/addresses` | GET | ✅ | Implemented with Redis cache |
+| 4 | `/api/v1/users/me/addresses` | POST | ✅ | Implemented with auto-default |
+| 5 | `/api/v1/users/me/addresses/{id}` | PUT | ✅ | Implemented with ownership check |
+| 6 | `/api/v1/users/me/addresses/{id}` | DELETE | ✅ | Implemented with business rules |
+| 7 | `/api/v1/users/me/addresses/{id}/default` | POST | ✅ | Implemented with transaction |
+| 8 | `/api/v1/users/me/preferences` | GET | ✅ | Implemented in preferences_handler.go |
+| 9 | `/api/v1/users/me/preferences` | PUT | ✅ | Implemented with transactional outbox |
+| 10 | `/health` | GET | ✅ | Implemented in health_handler.go |
+| 11 | `/ready` | GET | ✅ | Implemented with DB/Redis checks |
 
 ### 12.6 Security Checklist
 
 | # | Feature | Status | Notes |
 |:--|:--------|:-------|:------|
-| 1 | JWT Authentication | ☐ | Module C pending |
+| 1 | JWT Authentication | ✅ | Implemented in middleware/auth.go |
 | 2 | Authorization check | ✅ | Address ownership in service |
-| 3 | Input validation | ✅ | VO validation implemented |
-| 4 | SQL injection prevention | ? | Parameterized queries |
-| 5 | Rate limiting | ☐ | Module C pending |
-| 6 | Sensitive data logging | ☐ | Module C pending |
+| 3 | Input validation | ✅ | VO validation + Gin validator |
+| 4 | SQL injection prevention | ✅ | Parameterized queries with sqlx |
+| 5 | Rate limiting | ✅ | Implemented in middleware/ratelimit.go |
+| 6 | Sensitive data logging | ✅ | Logger configured in middleware |
 
 ### 12.7 Observability Checklist
 
@@ -2813,13 +2818,13 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 
 | # | Test Type | Status | Notes |
 |:--|:----------|:-------|:------|
-| 1 | Unit tests - Domain | ☐ | Module A pending |
-| 2 | Unit tests - Handlers | ☐ | Module C pending |
-| 3 | Unit tests - Mocks | ☐ | Module A pending |
-| 4 | Integration - PostgreSQL | ☐ | Module B pending |
-| 5 | Integration - Redis | ☐ | Module B pending |
-| 6 | Integration - Kafka | ☐ | Module D pending |
-| 7 | Edge case tests | ☐ | Module A pending |
+| 1 | Unit tests - Domain | ☐ | Module A ready for testing |
+| 2 | Unit tests - Handlers | ☐ | Handlers ready for testing |
+| 3 | Unit tests - Mocks | ☐ | Ready to generate mocks |
+| 4 | Integration - PostgreSQL | ☐ | Infrastructure ready |
+| 5 | Integration - Redis | ☐ | Cache layer ready |
+| 6 | Integration - Kafka | ☐ | Consumer ready for testing |
+| 7 | Edge case tests | ☐ | Business logic ready |
 
 ### 12.9 Deployment Checklist
 

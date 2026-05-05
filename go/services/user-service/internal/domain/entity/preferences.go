@@ -100,3 +100,38 @@ func IsValidLanguage(lang string) bool {
 func IsValidCurrency(currency string) bool {
 	return ValidCurrencies[currency]
 }
+
+// GetUserID returns the user ID
+func (p *Preferences) GetUserID() uuid.UUID {
+	return p.UserID
+}
+
+// GetLanguage returns the language
+func (p *Preferences) GetLanguage() string {
+	return p.Language
+}
+
+// GetCurrency returns the currency
+func (p *Preferences) GetCurrency() string {
+	return p.Currency
+}
+
+// IsEmailEnabled returns email notification enabled status
+func (p *Preferences) IsEmailEnabled() bool {
+	return p.EmailEnabled
+}
+
+// IsInAppEnabled returns in-app notification enabled status
+func (p *Preferences) IsInAppEnabled() bool {
+	return p.InAppEnabled
+}
+
+// IsMarketingEnabled returns marketing notification enabled status
+func (p *Preferences) IsMarketingEnabled() bool {
+	return p.MarketingEnabled
+}
+
+// GetUpdatedAt returns the updated timestamp
+func (p *Preferences) GetUpdatedAt() time.Time {
+	return p.UpdatedAt
+}

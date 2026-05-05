@@ -15,13 +15,22 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	apihandler "user-service/internal/api/handler"
+	"user-service/internal/api/router"
+	"user-service/internal/api/validator"
 	"user-service/internal/domain/port"
 	"user-service/internal/domain/service"
 	"user-service/internal/infrastructure/postgres"
 	redisinfra "user-service/internal/infrastructure/redis"
+	kafkaconsumer "user-service/internal/kafka/consumer"
+	kafkainternal "user-service/internal/kafka/handler"
+	kafkapkg "user-service/internal/kafka"
 )
 
 func main() {
+	// Register custom validators
+	validator.RegisterCustomValidators()
+
 	app := fx.New(
 		fx.Provide(
 			// Infrastructure
@@ -43,14 +52,30 @@ func main() {
 			NewAddressService,
 			NewPreferencesService,
 
-			// HTTP Layer
-			NewGinEngine,
+			// HTTP Handlers
+			NewProfileHandler,
+			NewAddressHandler,
+			NewPreferencesHandler,
+			NewHealthHandler,
+
+			// Router Config
+			NewRouterConfig,
+
+			// Kafka
+			NewKafkaConfig,
+			NewKafkaUserVerifiedHandler,
+			NewKafkaUserDeletedHandler,
+			NewUserVerifiedConsumer,
+			NewUserDeletedConsumer,
+
+			// HTTP Server
 			fx.Annotate(
 				NewHTTPServer,
 				fx.ParamTags(`group:"server"`),
 			),
 		),
 		fx.Invoke(RegisterHooks),
+		fx.Invoke(RegisterKafkaConsumers),
 	)
 
 	ctx := context.Background()
@@ -81,9 +106,30 @@ func NewLogger() (*zap.Logger, error) {
 
 // Config holds application configuration
 type Config struct {
-	Port string
-	DB   DBConfig
-	Redis RedisConfig
+	Port     string
+	JWTSecret string
+	DB       DBConfig
+	Redis    RedisConfig
+	RateLimit RateLimitConfig
+	Kafka    KafkaConfig
+}
+
+// KafkaConfig holds Kafka configuration
+type KafkaConfig struct {
+	Brokers         []string
+	AuthTopic       string
+	UserTopic      string
+	ConsumerGroup   string
+	OffsetReset    string
+	SessionTimeout time.Duration
+}
+
+// RateLimitConfig holds rate limiting configuration
+type RateLimitConfig struct {
+	Enabled  bool
+	Rate     int
+	Window   time.Duration
+	Capacity int
 }
 
 // DBConfig holds database configuration
@@ -109,7 +155,8 @@ type RedisConfig struct {
 
 func NewConfig() *Config {
 	return &Config{
-		Port: getEnv("APP_PORT", "8080"),
+		Port:     getEnv("APP_PORT", "8080"),
+		JWTSecret: getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
 		DB: DBConfig{
 			Host:            getEnv("DB_HOST", "localhost"),
 			Port:            getEnv("DB_PORT", "5432"),
@@ -126,6 +173,20 @@ func NewConfig() *Config {
 			Port:     getEnv("REDIS_PORT", "6379"),
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       0,
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:  getEnv("RATE_LIMIT_ENABLED", "true") == "true",
+			Rate:     100,
+			Window:   1 * time.Minute,
+			Capacity: 100,
+		},
+		Kafka: KafkaConfig{
+			Brokers:       []string{getEnv("KAFKA_BROKERS", "localhost:9092")},
+			AuthTopic:     getEnv("KAFKA_AUTH_TOPIC", "t.auth.events"),
+			UserTopic:     getEnv("KAFKA_USER_TOPIC", "t.user.events"),
+			ConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "user-service"),
+			OffsetReset:   getEnv("KAFKA_OFFSET_RESET", "earliest"),
+			SessionTimeout: 30 * time.Second,
 		},
 	}
 }
@@ -226,28 +287,152 @@ func NewPreferencesService(
 	return service.NewPreferencesService(prefsRepo, profileRepo, outboxRepo, db.Pool, logger)
 }
 
-// HTTP Layer constructors
+// Handler constructors
 
-func NewGinEngine(
-	profileService *service.ProfileService,
-	addressService *service.AddressService,
-	preferencesService *service.PreferencesService,
-	logger *zap.Logger,
-) *gin.Engine {
-	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
-	router.Use(gin.Recovery())
-	router.Use(requestLogger(logger))
-
-	// Health check endpoints
-	router.GET("/health", healthCheck)
-	router.GET("/ready", readinessCheck)
-
-	// TODO: Add API routes when Module C is implemented
-	// api.RegisterRoutes(router, profileService, addressService, preferencesService)
-
-	return router
+func NewProfileHandler(profileService *service.ProfileService, logger *zap.Logger) *apihandler.ProfileHandler {
+	return apihandler.NewProfileHandler(profileService, logger)
 }
+
+func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *apihandler.AddressHandler {
+	return apihandler.NewAddressHandler(addressService, logger)
+}
+
+func NewPreferencesHandler(preferencesService *service.PreferencesService, logger *zap.Logger) *apihandler.PreferencesHandler {
+	return apihandler.NewPreferencesHandler(preferencesService, logger)
+}
+
+func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *apihandler.HealthHandler {
+	return apihandler.NewHealthHandler(db.Pool, redisClient)
+}
+
+// Router configuration
+func NewRouterConfig(cfg *Config) *router.Config {
+	return &router.Config{
+		JWTSecret: cfg.JWTSecret,
+		RateLimit: cfg.RateLimit.Rate,
+		Window:    cfg.RateLimit.Window,
+		Capacity:  cfg.RateLimit.Capacity,
+	}
+}
+
+// Kafka configuration
+func NewKafkaConfig(cfg *Config) *kafkapkg.Config {
+	return &kafkapkg.Config{
+		Brokers:         cfg.Kafka.Brokers,
+		AuthEventsTopic: cfg.Kafka.AuthTopic,
+		UserEventsTopic: cfg.Kafka.UserTopic,
+		ConsumerGroup:   cfg.Kafka.ConsumerGroup,
+		OffsetReset:     cfg.Kafka.OffsetReset,
+		SessionTimeout:  cfg.Kafka.SessionTimeout,
+		HeartbeatInterval: 3 * time.Second,
+		MaxWaitTime:     10 * time.Second,
+		MinBytes:        1,
+		MaxBytes:        10485760, // 10MB
+	}
+}
+
+// Kafka Handler constructors
+
+func NewKafkaUserVerifiedHandler(
+	profileRepo port.ProfileRepository,
+	prefsRepo port.PreferencesRepository,
+	outboxRepo port.OutboxRepository,
+	addressRepo port.AddressRepository,
+	db *PostgresDB,
+	logger *zap.Logger,
+) *kafkainternal.UserVerifiedHandler {
+	return kafkainternal.NewUserVerifiedHandler(
+		profileRepo,
+		prefsRepo,
+		outboxRepo,
+		addressRepo,
+		db.Pool,
+		logger,
+	)
+}
+
+func NewKafkaUserDeletedHandler(
+	profileRepo port.ProfileRepository,
+	prefsRepo port.PreferencesRepository,
+	addressRepo port.AddressRepository,
+	outboxRepo port.OutboxRepository,
+	cache port.AddressCache,
+	db *PostgresDB,
+	logger *zap.Logger,
+) *kafkainternal.UserDeletedHandler {
+	return kafkainternal.NewUserDeletedHandler(
+		profileRepo,
+		prefsRepo,
+		addressRepo,
+		outboxRepo,
+		cache,
+		db.Pool,
+		logger,
+	)
+}
+
+// Kafka Consumer constructors
+
+func NewUserVerifiedConsumer(
+	kafkaCfg *kafkapkg.Config,
+	userVerifiedHandler *kafkainternal.UserVerifiedHandler,
+	logger *zap.Logger,
+) *kafkaconsumer.Consumer {
+	return kafkaconsumer.NewConsumer(
+		kafkaconsumer.ConsumerConfig{
+			Brokers:     kafkaCfg.Brokers,
+			GroupID:     kafkaCfg.ConsumerGroup + "-profile-creator",
+			Topic:       kafkaCfg.AuthEventsTopic,
+			OffsetReset: kafkaCfg.OffsetReset,
+			MaxWaitTime: kafkaCfg.MaxWaitTime,
+			MinBytes:    kafkaCfg.MinBytes,
+			MaxBytes:    kafkaCfg.MaxBytes,
+		},
+		userVerifiedHandler,
+		logger,
+	)
+}
+
+func NewUserDeletedConsumer(
+	kafkaCfg *kafkapkg.Config,
+	userDeletedHandler *kafkainternal.UserDeletedHandler,
+	logger *zap.Logger,
+) *kafkaconsumer.Consumer {
+	return kafkaconsumer.NewConsumer(
+		kafkaconsumer.ConsumerConfig{
+			Brokers:     kafkaCfg.Brokers,
+			GroupID:     kafkaCfg.ConsumerGroup + "-account-deletion",
+			Topic:       kafkaCfg.AuthEventsTopic,
+			OffsetReset: kafkaCfg.OffsetReset,
+			MaxWaitTime: kafkaCfg.MaxWaitTime,
+			MinBytes:    kafkaCfg.MinBytes,
+			MaxBytes:    kafkaCfg.MaxBytes,
+		},
+		userDeletedHandler,
+		logger,
+	)
+}
+
+// GinEngine creates the Gin router with all routes configured
+func GinEngine(
+	logger *zap.Logger,
+	profileHandler *apihandler.ProfileHandler,
+	addressHandler *apihandler.AddressHandler,
+	preferencesHandler *apihandler.PreferencesHandler,
+	healthHandler *apihandler.HealthHandler,
+	routerConfig *router.Config,
+) *gin.Engine {
+	return router.Setup(
+		logger,
+		profileHandler,
+		addressHandler,
+		preferencesHandler,
+		healthHandler,
+		routerConfig,
+	)
+}
+
+// HTTP Layer constructors
 
 func NewHTTPServer(lc fx.Lifecycle, router *gin.Engine, config *Config, logger *zap.Logger) *http.Server {
 	addr := fmt.Sprintf(":%s", config.Port)
@@ -290,6 +475,49 @@ func RegisterHooks(lifecycle fx.Lifecycle, logger *zap.Logger) {
 	})
 }
 
+// Kafka lifecycle hooks
+
+func RegisterKafkaConsumers(
+	lifecycle fx.Lifecycle,
+	userVerifiedConsumer *kafkaconsumer.Consumer,
+	userDeletedConsumer *kafkaconsumer.Consumer,
+	logger *zap.Logger,
+) {
+	lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			// Start user verified consumer
+			if err := userVerifiedConsumer.Start(ctx); err != nil {
+				return fmt.Errorf("failed to start user verified consumer: %w", err)
+			}
+			logger.Info("User verified Kafka consumer started")
+
+			// Start user deleted consumer
+			if err := userDeletedConsumer.Start(ctx); err != nil {
+				return fmt.Errorf("failed to start user deleted consumer: %w", err)
+			}
+			logger.Info("User deleted Kafka consumer started")
+
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			logger.Info("Stopping Kafka consumers...")
+
+			// Stop user deleted consumer first
+			if err := userDeletedConsumer.Stop(); err != nil {
+				logger.Error("Failed to stop user deleted consumer", zap.Error(err))
+			}
+
+			// Stop user verified consumer
+			if err := userVerifiedConsumer.Stop(); err != nil {
+				logger.Error("Failed to stop user verified consumer", zap.Error(err))
+			}
+
+			logger.Info("Kafka consumers stopped")
+			return nil
+		},
+	})
+}
+
 // Utility functions
 
 func getEnv(key, defaultValue string) string {
@@ -297,34 +525,4 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-func requestLogger(logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		path := c.Request.URL.Path
-
-		c.Next()
-
-		logger.Info("request",
-			zap.String("method", c.Request.Method),
-			zap.String("path", path),
-			zap.Int("status", c.Writer.Status()),
-			zap.Duration("latency", time.Since(start)),
-		)
-	}
-}
-
-func healthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "healthy",
-		"timestamp": time.Now().Format(time.RFC3339),
-	})
-}
-
-func readinessCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "ready",
-		"timestamp": time.Now().Format(time.RFC3339),
-	})
 }

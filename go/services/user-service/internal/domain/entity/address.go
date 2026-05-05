@@ -113,3 +113,58 @@ func (a *Address) BelongsTo(userID uuid.UUID) bool {
 func (a *Address) FormattedAddress() string {
 	return a.AddressLine
 }
+
+// GetID returns the address ID
+func (a *Address) GetID() uuid.UUID {
+	return a.ID
+}
+
+// GetUserID returns the user ID
+func (a *Address) GetUserID() uuid.UUID {
+	return a.UserID
+}
+
+// IsDefault returns whether this is the default address
+func (a *Address) IsDefaultAddress() bool {
+	return a.IsDefault
+}
+
+// GetRecipientName returns the recipient name
+func (a *Address) GetRecipientName() string {
+	return a.RecipientName
+}
+
+// GetPhoneNumber returns the phone number
+func (a *Address) GetPhoneNumber() string {
+	return a.PhoneNumber
+}
+
+// GetAddressLine returns the address line
+func (a *Address) GetAddressLine() string {
+	return a.AddressLine
+}
+
+// GetWardID returns the ward ID
+func (a *Address) GetWardID() string {
+	return a.WardID
+}
+
+// GetDistrictID returns the district ID
+func (a *Address) GetDistrictID() string {
+	return a.DistrictID
+}
+
+// GetCityID returns the city ID
+func (a *Address) GetCityID() string {
+	return a.CityID
+}
+
+// GetCreatedAt returns the created timestamp
+func (a *Address) GetCreatedAt() time.Time {
+	return a.CreatedAt
+}
+
+// GetUpdatedAt returns the updated timestamp
+func (a *Address) GetUpdatedAt() time.Time {
+	return a.UpdatedAt
+}

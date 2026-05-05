@@ -83,3 +83,47 @@ func (p *Profile) SetGender(gender vo.Gender) error {
 	p.Gender = gender
 	return nil
 }
+
+// GetID returns the profile ID
+func (p *Profile) GetID() uuid.UUID {
+	return p.ID
+}
+
+// GetFirstName returns the first name
+func (p *Profile) GetFirstName() string {
+	return p.FirstName
+}
+
+// GetLastName returns the last name
+func (p *Profile) GetLastName() string {
+	return p.LastName
+}
+
+// GetPhoneNumber returns the phone number
+func (p *Profile) GetPhoneNumber() *string {
+	return p.PhoneNumber
+}
+
+// GetDateOfBirth returns the date of birth as formatted string
+func (p *Profile) GetDateOfBirth() *string {
+	if p.DateOfBirth == nil {
+		return nil
+	}
+	dob := p.DateOfBirth.Format("2006-01-02")
+	return &dob
+}
+
+// GetGender returns the gender string
+func (p *Profile) GetGender() string {
+	return p.Gender.String()
+}
+
+// GetCreatedAt returns the created timestamp
+func (p *Profile) GetCreatedAt() time.Time {
+	return p.CreatedAt
+}
+
+// GetUpdatedAt returns the updated timestamp
+func (p *Profile) GetUpdatedAt() time.Time {
+	return p.UpdatedAt
+}
