@@ -22,6 +22,8 @@ Hơn nữa, các sự kiện có nguy cơ bị đảo lộn thứ tự (Out-of-o
 
 > **Phạm vi áp dụng:** Tài liệu này bao trùm cả event **ADD/UPDATE** lẫn **DELETE**. Mỗi loại event có chiến lược idempotency khác nhau do bản chất thao tác khác nhau.
 
+> **Đơn giản hóa (Cập nhật mới):** Đã loại bỏ hoàn toàn logic **Tombstone Guard** và **Ghost Item Handler**. Khi nhận event `CART_ITEM_DELETED`, Worker thực hiện **Hard Delete** thay vì Soft Delete với Tombstone. Trade-off: có thể tạo "Ghost Item" tạm thời nếu DELETE đến trước ADD trong DB, nhưng đây là edge case hiếm gặp trong thực tế và không ảnh hưởng đến trạng thái của Redis (Source of Truth).
+
 ## 2. Giải Pháp: Idempotency bằng Stream ID (Primary) + Timestamp (Fallback)
 
 May mắn thay, mô hình dữ liệu của PostgreSQL trong Cart Service (`cart_items`) được thiết kế là **Dumb Store (Kho lưu trữ thụ động)**. Nhiệm vụ của nó chỉ là phản chiếu (Mirroring) trạng thái cuối cùng của Redis.
@@ -135,7 +137,6 @@ DO UPDATE SET
     platform_name      = EXCLUDED.platform_name,
     product_snapshot = EXCLUDED.product_snapshot,
     redis_stream_id  = EXCLUDED.redis_stream_id,
-    is_deleted       = false,
     updated_at       = NOW()
 WHERE
     -- Primary guard: stream_id mới hơn
@@ -145,9 +146,7 @@ WHERE
             cart_items.redis_stream_id IS NULL
             AND ((cart_items.product_snapshot->>'updated_at')::bigint < $2)
         )
-    )
-    -- Ngăn chặn cập nhật nếu đã bị đánh dấu Tombstone (Ghost item handler)
-    AND (cart_items.is_deleted = false OR cart_items.tombstone_at < $2);
+    );
     -- Ví dụ: $1 = '1708530000123-0', $2 = 1708530000123
 ```
 
@@ -156,17 +155,13 @@ WHERE
 
 > **Ghi chú:** Trong cùng Transaction, Worker phải cập nhật bảng master `carts` theo [DB Schema — Workflow Đồng Bộ](cart_db_schema.md#3-workflow-đồng-bộ-postgresql-là-rdbms-phụ-thuộc). `user_id` lấy trực tiếp từ `payload.user_id` — không parse `cart_id`.
 
-### 2.4. Xử lý Sai Thứ Tự cho DELETE Event
+### 2.4. Xử lý CART_ITEM_DELETED Event
 
-Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_deleted)), cần xử lý các edge case:
+Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_deleted)), Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB) thay vì Soft Delete.
 
-**Trường hợp 1: DELETE event đến sau ADD/UPDATE (Hành vi bình thường)**
 ```sql
-UPDATE cart_items
-SET is_deleted = true,
-    tombstone_at = 1708616400899,   -- Milliseconds Epoch từ deleted_at event
-    redis_stream_id = '1708616400899-0',
-    updated_at = NOW()
+-- Hard Delete: xóa hẳn dòng khỏi DB nếu item tồn tại và event mới hơn
+DELETE FROM cart_items
 WHERE item_id = '{cart:user:12345}:sku-1001'
   AND (
       (redis_stream_id IS NOT NULL AND redis_stream_id < '1708616400899-0')
@@ -176,39 +171,12 @@ WHERE item_id = '{cart:user:12345}:sku-1001'
       )
   );
 ```
-→ **Tuyệt đối KHÔNG hard delete** (lệnh `DELETE FROM`). Luôn sử dụng Soft Delete: cập nhật `is_deleted = true`, gán `tombstone_at = deleted_at` và `updated_at = NOW()`. Điều này giúp lưu lại vết (Tombstone) để khi bản tin ADD đến trễ, nó có cơ sở để so sánh timestamp và bị Rejection hợp lý. Nếu DB đã có phiên bản mới hơn (user vừa re-add item), câu lệnh không match → không xóa nhầm.
 
-**Trường hợp 2: DELETE event đến TRƯỚC ADD event (Lỗi Ghost Item - Áp dụng Tombstone)**
-*Vấn đề:* Nếu DELETE đến trước, lệnh `DELETE` ở trên sẽ match 0 rows. Một lúc sau lệnh `ADD` bị delay mới đáp tới DB, nó sẽ vô tình `INSERT` một "Ghost Item" - thứ mà lẽ ra đã phải chết theo lệnh DELETE rồi.
-*Giải pháp Tombstone:* Worker sẽ bắt phản hồi của lệnh `DELETE` ban đầu. Nếu `RowsAffected == 0` (nghĩa là Item chưa từng tồn tại), Worker sẽ thực hiện một lệnh tạo **Tombstone** giả vào DB:
-```sql
-INSERT INTO cart_items (
-    item_id, cart_id, sku_id, is_deleted, tombstone_at,
-    quantity, unit_price_at_add, product_snapshot
-)
-VALUES (
-    '{cart:user:12345}:sku-1001',
-    '{cart:user:12345}',
-    'sku-1001',
-    true,
-    1708616400899,                           -- tombstone_at (ms epoch từ deleted_at event)
-    0,                                       -- quantity: default 0 cho tombstone
-    0.00,                                    -- unit_price_at_add: default 0.00 cho tombstone
-    '{"updated_at": "1708616400899"}'        -- product_snapshot tối thiểu với updated_at
-)
-ON CONFLICT (item_id) DO NOTHING;
-```
-Lúc sau, khi lệnh `ADD/UPDATE` cũ đến muộn. Câu lệnh Upsert của [Mục 2.3](#23-xử-lý-sai-thứ-tự-out-of-order) kiểm tra điều kiện `WHERE`:
-```sql
-WHERE
-        ((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < $1)
-            OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < $2))
-        AND (cart_items.is_deleted = false OR cart_items.tombstone_at < $2);
-```
-Nhờ rào chắn này, event `ADD` lỡ mướt mồ hôi tới nơi thấy cái cờ Tombstone mới cứng > timestamp của event gốc thì sẽ tự ngã ngựa, không tạo ra Ghost Item.
+> **Đơn giản hóa:** Vì Redis là Source of Truth, nếu item đã bị xóa khỏi Redis thì trong DB cũng không cần giữ bản ghi. Nếu event DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường.
 
-**Trường hợp 3: DELETE event trùng lặp (Duplicate)**
-→ Lần DELETE đầu xóa item (hoặc update is_deleted = true). Lần DELETE thứ hai dựa theo Timestamp sẽ không có tác dụng. An toàn.
+**Trường hợp DELETE trùng lặp (Duplicate):**
+- Lần DELETE đầu xóa item thành công.
+- Lần DELETE thứ hai không match dòng nào (đã bị xóa) → 0 rows affected → an toàn.
 
 ### 2.5. Idempotency cho trạng thái bảng `carts` (Re-activate + Guard Transition)
 
@@ -306,14 +274,13 @@ db.Clauses(clause.OnConflict{
         "platform_name":      gorm.Expr("EXCLUDED.platform_name"),
         "product_snapshot": gorm.Expr("EXCLUDED.product_snapshot"),
         "redis_stream_id":  gorm.Expr("EXCLUDED.redis_stream_id"),
-        "is_deleted":       false,
         "updated_at":       gorm.Expr("NOW()"),
     }),
     Where: clause.Where{
         Exprs: []clause.Expression{
             clause.Expr{
-                SQL:  "((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < ?) OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?)) AND (cart_items.is_deleted = false OR cart_items.tombstone_at < ?)",
-                Vars: []interface{}{event.StreamID, event.Payload.UpdatedAt, event.Payload.UpdatedAt},
+                SQL:  "((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < ?) OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?))",
+                Vars: []interface{}{event.StreamID, event.Payload.UpdatedAt},
             },
         },
     },
@@ -333,39 +300,21 @@ db.Exec(`
 `, event.Payload.CartID, event.Payload.UserID, event.StreamID, event.Payload.UpdatedAt, event.StreamID, event.Payload.UpdatedAt)
 ```
 
-Và xử lý DELETE event:
+Và xử lý DELETE event (Hard Delete):
 ```go
-result := db.Model(&CartItem{}).
-    Where("item_id = ? AND ((redis_stream_id IS NOT NULL AND redis_stream_id < ?) OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?))",
-          itemID, event.StreamID, event.Payload.DeletedAt).
-    Updates(map[string]interface{}{
-        "is_deleted":   true,
-        "tombstone_at": event.Payload.DeletedAt,  // Lưu ms epoch
-        "redis_stream_id": event.StreamID,
-        "updated_at":   gorm.Expr("NOW()"),
-    })
-
-// result.RowsAffected == 0 -> event cũ hoặc item đã được xóa logic -> Tombstone
-if result.RowsAffected == 0 {
-    db.Exec(`
-        INSERT INTO cart_items (item_id, cart_id, sku_id, is_deleted, tombstone_at,
-                                redis_stream_id, quantity, unit_price_at_add, product_snapshot)
-        VALUES (?, ?, ?, true, ?, ?, 0, 0.00, ?)
-        ON CONFLICT (item_id) DO UPDATE SET
-            is_deleted = true,
-            tombstone_at = EXCLUDED.tombstone_at,
-            redis_stream_id = EXCLUDED.redis_stream_id,
-            updated_at = NOW()
-        WHERE (cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < EXCLUDED.redis_stream_id)
-           OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?)
-    `, itemID, event.Payload.CartID, event.Payload.SkuID,
-       event.Payload.DeletedAt, event.StreamID,
-       fmt.Sprintf(`{"updated_at": "%d"}`, event.Payload.DeletedAt),
-       event.Payload.DeletedAt)
-}
+result := db.Exec(`
+    DELETE FROM cart_items
+    WHERE item_id = ?
+      AND (
+          (redis_stream_id IS NOT NULL AND redis_stream_id < ?)
+          OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?)
+      )
+`, itemID, event.StreamID, event.Payload.DeletedAt)
 ```
 
-Nhờ thiết kế này, worker an toàn trước cả **Tin nhắn trùng** lẫn **Tin nhắn lạc đường**, giữ DB luôn ở trạng thái Eventually Consistent 100% với Primary Store Redis.
+> **Đơn giản hóa:** Không còn logic Tombstone Insert. Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường. Nếu DELETE trùng lặp, RowsAffected = 0 → an toàn.
+
+Nhờ thiết kế này, worker an toàn trước **Tin nhắn trùng** và **Out-of-order cơ bản**, giữ DB luôn ở trạng thái Eventually Consistent với Redis (với trade-off: có thể tạo "Ghost Item" tạm thời nếu DELETE đến trước ADD trong DB, nhưng Redis đã thể hiện trạng thái đúng).
 
 > **Tham khảo thêm:**
 > - [Events Structure](cart_events.md) — Cấu trúc payload cho từng event type

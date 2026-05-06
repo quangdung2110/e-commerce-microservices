@@ -126,7 +126,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 
 ### 2.3. CART_ITEM_DELETED
 **Ngữ cảnh phát sinh:** Khách hàng chủ động nhấn nút Xóa rác (`HDEL`), hoặc tích chọn vài món đem đi Checkout dẫn đến giỏ hàng xóa thẳng các SKU này. Phục vụ cho tính năng [Batch Delete trong Caching Schema](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove).
-**Mục đích DB Consumer:** Đánh dấu xóa logic (Soft Delete/Tombstone) cho dòng sản phẩm `item_id = cart_id + sku_id` trong bảng `cart_items`. Áp dụng [Out-of-order validation](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event) để đảm bảo không xóa nhầm item vừa được re-add.
+**Mục đích DB Consumer:** **Hard Delete** (xóa hẳn dòng) khỏi bảng `cart_items` cho dòng sản phẩm `item_id = cart_id + sku_id`. Guard chính là `stream_id` trong Kafka header.
 
 > **Quy ước nghiệp vụ:** `CART_ITEM_DELETED` luôn biểu diễn thao tác xóa **toàn bộ dòng item theo `sku_id`** khỏi giỏ; không phải giảm từng đơn vị `quantity`.
 
@@ -152,7 +152,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 }
 ```
 
-> **Quan trọng:** Guard chính cho out-of-order là `stream_id` trong Kafka header. `deleted_at` vẫn được so sánh với `updated_at` trong `product_snapshot` làm fallback cho dữ liệu legacy chưa có `redis_stream_id`.
+> **Quan trọng:** Guard chính cho out-of-order là `stream_id` trong Kafka header. `deleted_at` được so sánh với `updated_at` trong `product_snapshot` làm fallback cho dữ liệu legacy chưa có `redis_stream_id`.
 
 ### 2.4. CART_CLEARED
 **Ngữ cảnh phát sinh:** 
@@ -219,7 +219,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
 
 ### 2.6. CART_ABANDONED
 **Ngữ cảnh phát sinh:** [Abandoned Cart Marker CronJob](cart_workers.md#3-abandoned-cart-marker-batch-cronjob) quét bảng `carts` và chuyển các giỏ `ACTIVE` không tương tác trong 30 ngày sang `ABANDONED`.
-**Mục đích downstream (phase hiện tại):** Notification Service dùng để kích hoạt flow chăm sóc lại người dùng.
+**Người nghe:** Notification Service dùng để kích hoạt flow chăm sóc lại người dùng.
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -237,14 +237,13 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "payload": {
     "cart_id": "{cart:user:12345}",
     "user_id": "12345",
-    "abandoned_at": "1773530400000",
-    "subtotal": 320000.00
+    "abandoned_at": "1773530400000"
   }
 }
 ```
 
 **Consumer Contract (Phase hiện tại):**
-- Notification Service dùng các field: `user_id`, `cart_id`, `abandoned_at`, `subtotal`.
+- Notification Service dùng các field: `user_id`, `cart_id`, `abandoned_at`.
 - `abandoned_at` bắt buộc là **milliseconds epoch UTC** (chuỗi 13 chữ số), không phải ISO-8601.
 - Consumer group đề xuất: `notification-cart-consumer`.
 

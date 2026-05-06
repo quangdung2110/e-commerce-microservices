@@ -60,36 +60,52 @@ Việc ráp giá mới nhất vào ngay giây phút khách mở app (Runtime) đ
 Gọi HGETALL để chia làm 2 nhánh:
   Nhánh cache hit: nếu HGETALL trả về dữ liệu
     Hệ thống lấy ra các sku_id và gọi 1 lần gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
-    Bảo vệ bằng Circuit Breaker: nếu gRPC call thất bại, hệ thống sẽ trả về dữ liệu cũ trong Redis, đồng thời bật cờ để báo cho FE biết rằng 'Hệ thống đang quá tải, giá có thể chưa được cập nhật'
-    Ở đây ta sử dụng cơ chế Runtime Overlay: dữ liệu được lấy từ Product Service (bao gồm giá hiện tại, còn hàng hay không hay các thông tin khác) chủ yếu sẽ được merge vào response để trả về cho khách hàng, còn dữ liệu trong Redis Hash sẽ 
+    Bảo vệ bằng Circuit Breaker: nếu gRPC call thất bại, hệ thống sẽ trả về dữ liệu cũ trong Redis, đồng thời bật cờ `is_price_degraded = true` để báo cho FE biết rằng 'Hệ thống đang quá tải, giá có thể chưa được cập nhật'
+    Ở đây ta sử dụng cơ chế Runtime Overlay: dữ liệu được lấy từ Product Service (bao gồm giá hiện tại, còn hàng hay không hay các thông tin khác) chủ yếu sẽ được merge vào response để trả về cho khách hàng, còn dữ liệu trong Redis Hash sẽ
     được bảo toàn
     Ngoại lệ duy nhất là nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field với is_available=false, không đụng vào TTL hay các field khác.
 
   Nhánh Cache Miss Rehydrate: nếu HGETALL trả về rỗng, có nghĩa là Redis đã bị xóa sạch (do hết TTL hoặc bị lỗi)
-    Hệ thống sẽ phải truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
-    Dựa vào những cart_item lấy được từ DB trên, tiếp tục gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
-    Merge dữ liệu từ DB và Product Service, sau đó trả về cho khách hàng đồng thời nạp lại Redis để những lần truy cập tiếp theo sẽ có cache hit
-      Giữ nguyên từ DB: quantity, added_at, unit_price_at_add
-      Cập nhật từ Product Service: product_name, image_url, variant_info, is_available
-      Tạo mới: updated_at (thời điểm tái tạo cache)
-    Khi nạp lại Redis, chúng ta sẽ bảo toàn các field lịch sử như `unit_price_at_add`, `added_at`, đồng thời làm mới các field hiển thị có thể thay đổi như `is_available`, `updated_at`
+    Hệ thống sẽ truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
+    Sử dụng Singleflight trên từng Pod để dồn các request miss trùng cart_id. Chỉ request tiên phong (leader) thực hiện DB query + gRPC call.
+    Singleflight Timeout (bắt buộc): Leader phải có context timeout cứng (khuyến nghị 1 giây), bao gồm cả DB query + gRPC.
+      - Nếu leader timeout sau khi gRPC đã gọi nhưng chưa nhận response: context cancel unblock tất cả waiter threads ngay lập tức. Waiter threads nhận kết quả từ DB mà không có data từ Product Service.
+      - Nếu leader timeout trước khi gRPC được gọi: waiter threads nhận kết quả DB tương tự.
+    Leader track trạng thái gRPC: grpc_success (true/false), grpc_skus (map sku_id -> {is_available, current_price}), grpc_error (string error code nếu fail)
+    Merge dữ liệu từ DB và Product Service:
+      - Nếu grpc_success = true:
+        - Với mỗi SKU, merge is_available từ grpc_skus vào item data
+        - Nếu grpc_skus[sku_id].is_available = false: **ghi đè** is_available = false vào merged data
+        - Nếu grpc_skus[sku_id].is_available = true: **giữ nguyên** is_available từ DB (vì DB có thể cũ hơn nhưng không có nghĩa là unavailable)
+      - Nếu grpc_success = false (timeout/error):
+        - **Không merge** is_available từ Product Service
+        - Giữ nguyên is_available từ product_snapshot trong DB
+        - Set is_price_degraded = true ở response để UI cảnh báo
+    Sau đó trả về cho khách hàng đồng thời nạp lại Redis (Silent Rehydrate Lua Script) để những lần truy cập tiếp theo sẽ có cache hit
+      Bảo toàn các field lịch sử: unit_price_at_add, added_at
+      is_available đã được merge chính xác từ bước trên, Lua chỉ ghi JSON đã chứa giá trị đúng
+      Tuyệt đối không XADD outbox trong script rehydrate
+    Response construction:
+      - Nếu grpc_success = true: is_price_degraded = false, current_price được populate từ gRPC data
+      - Nếu grpc_success = false: is_price_degraded = true, current_price bằng unit_price_at_add, UI hiển thị cảnh báo
 
 
 5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL: Postgres Sync (Consumer Worker)
 
-5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, chúng ta phải kiểm tra ở DB xem trường is_deleted của item đó, nếu is_deleted = true thì chúng ta phải kiểm tra thêm thời điểm của sự kiện này
-so sánh với trường tombstone_at của item đó. Nếu sự kiện này cũ hơn tombstone_at thì có nghĩa là item này đã bị xóa sau khi sự kiện này được sinh ra (do sự kiện này bị out-of-order), 
-do đó chúng ta sẽ bỏ qua sự kiện này và không thực hiện việc thêm item vào giỏ hàng trong DB. Cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng,
-tất nhiên chúng ta chỉ được cập nhật khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.updated_at > carts.last_event_time_ms
+> **Cập nhật mới:** Đã loại bỏ hoàn toàn logic Tombstone Guard và Ghost Item Handler. Khi nhận event `CART_ITEM_DELETED`, Worker thực hiện **Hard Delete** thay vì Soft Delete với Tombstone.
 
-5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, chúng ta chia thành 2 trường hợp:
-- Trường hợp 1: nếu item đó chưa tồn tại trong DB, có nghĩa là sự kiện này bị out-of-order và đã bị bỏ qua khi xử lý sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED trước đó, do đó chúng ta sẽ tạo một
-record sản phẩm mới với trường is_deleted = true và tombstone_at = thời điểm hiện tại để đánh dấu rằng item này đã bị xóa, khi sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED sau này được sinh ra với cùng item_id nhưng có thời điểm cập nhật cũ hơn tombstone_at thì chúng ta sẽ bỏ qua sự kiện đó. 
-như trên đã đề cập ở phần 5.1
-- Trường hợp 2: nếu item đó đã tồn tại trong DB, chúng ta chỉ sẽ cập nhật khi *primary*: event.stream_id > cart_items.redis_stream_id và *fallback*: event.deleted_at > cart_items.product_snapshot.updated_at
+5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, Worker thực hiện upsert với guard stream_id:
+- *primary*: event.stream_id > carts.last_event_stream_id
+- *fallback*: event.updated_at > carts.last_event_time_ms
+Đồng thời cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng.
 
-5.3 CART_CHECKED_OUT / CART_DELETED: khi nhận được sự kiện này, chúng ta chỉ sẽ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.checked_out_at > carts.last_event_time_ms
-Một điều lưu ý quan trọng ở sự kiện này là chúng ta sẽ không xóa các record trong bảng cart_items, nó sẽ được xóa mềm khi duyệt qua các sự kiện CART_ITEM_DELETED với trường hợp 1 như đã đề cập ở phần 5.2, điều này giúp chúng ta tránh được việc phải xử lý các trường hợp out-of-order khi có nhiều sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED được sinh ra sau khi có sự kiện CART_CHECKED_OUT / CART_DELETED nhưng có thời điểm cập nhật cũ hơn sự kiện đó.
+5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB):
+- *primary*: event.stream_id > cart_items.redis_stream_id
+- *fallback*: event.deleted_at > cart_items.product_snapshot.updated_at
+**Trade-off:** Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường. Đây là edge case hiếm gặp trong thực tế.
+
+5.3 CART_CHECKED_OUT / CART_CLEARED: khi nhận được sự kiện này, chúng ta chỉ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.checked_out_at > carts.last_event_time_ms
+Chú ý: chúng ta sẽ không xóa các record trong bảng cart_items ở đây. Các cart_items sẽ được xóa thông qua các sự kiện CART_ITEM_DELETED riêng lẻ.
 
 
 6. Thiết kế chi tiết về luồng hoạt động của Relay Worker

@@ -112,19 +112,43 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 4. **B4 - Singleflight + Pull Product:**
     - Dùng In-Memory Singleflight trên từng Pod để dồn các request miss trùng `cart_id`.
     - Chỉ request tiên phong thực hiện B2 + gRPC `GetBatchProductSkus`.
+    - **Singleflight Timeout (bắt buộc):**
+      - Leader phải có context timeout cứng (khuyến nghị 1 giây), bao gồm cả DB query + gRPC.
+      - Nếu leader timeout **sau khi gRPC đã gọi nhưng chưa nhận response**, context cancel sẽ unblock tất cả waiter threads ngay lập tức. Waiter threads sẽ nhận kết quả từ DB (B2) mà không có data từ Product Service.
+      - Nếu leader timeout **trước khi gRPC được gọi**, waiter threads sẽ nhận kết quả DB tương tự.
+    - **Track trạng thái gRPC:** Leader cần trả về kèm metadata:
+      - `grpc_success`: true/false
+      - `grpc_skus`: map `sku_id -> {is_available, current_price}` (chỉ khi grpc_success = true)
+      - `grpc_error`: string error code nếu fail (dùng cho logging)
 5. **B5 - Merge policy trước khi nạp lại Redis:**
-    - Bảo toàn các field lịch sử: `unit_price_at_add`, `added_at`.
-   - Làm mới các field hiển thị có thể thay đổi: `is_available`, `updated_at`.
-    - Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.
+    - **Bảo toàn các field lịch sử:** `unit_price_at_add`, `added_at`.
+    - **Làm mới các field hiển thị có thể thay đổi:** `is_available`, `updated_at`.
+    - **Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.**
+    - **Xử lý theo trạng thái gRPC:**
+      - **Nếu `grpc_success = true`:**
+        - Với mỗi SKU, merge `is_available` từ `grpc_skus` vào item data.
+        - **Đặc biệt:** Nếu `grpc_skus[sku_id].is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi `is_available = false` vào merged data** để Lua Script ghi đúng giá trị này xuống Redis.
+        - Nếu `grpc_skus[sku_id].is_available = true`, giữ nguyên giá trị từ DB (vì DB snapshot có thể cũ hơn nhưng không có nghĩa là unavailable).
+      - **Nếu `grpc_success = false` (timeout/error):**
+        - **KHÔNG merge** `is_available` từ Product Service.
+        - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
+        - Set `is_price_degraded = true` ở response (để UI cảnh báo user giá có thể chưa cập nhật).
+        - **Quan trọng:** KHÔNG ghi đè Redis bằng data không có metadata `is_price_degraded`. Lua Script chỉ ghi data đã merge, và data này không chứa thông tin degraded status. Hệ thống vẫn đảm bảo consistency vì Redis sẽ có data từ DB (đã có `is_available` snapshot).
+    - **Output của B5:** Danh sách items đã merge + `grpc_success` flag (dùng cho B6 và response construction).
 6. **B6 - Silent Rehydrate Lua Script (timestamp guard):**
-    - Script nhận danh sách item đã merge.
+    - Script nhận danh sách item đã merge (từ B5).
+    - Script cũng nhận `grpc_success` flag qua ARGV để có thể log/debug nếu cần.
     - Với mỗi `sku_id`:
        - Nếu chưa có field trên Redis -> `HSET`.
        - Nếu đã có -> chỉ `HSET` khi `incoming.updated_at > redis.updated_at`.
     - **Tuyệt đối không `XADD` outbox** trong script rehydrate.
+    - **is_available handling trong Lua:** Item đã được merge với `is_available` đúng từ B5, nên Lua chỉ việc ghi JSON đã chứa giá trị chính xác.
 7. **B7 - TTL policy:**
     - Rehydrate là một thao tác phục hồi dữ liệu (write-recovery), được phép `EXPIRE $cart_key 604800` đúng 1 lần sau khi rehydrate thành công.
     - Quy tắc Read-Only TTL chỉ áp dụng cho read hit thông thường.
+8. **B8 - Response construction:**
+    - Nếu `grpc_success = true`: `is_price_degraded = false`, `current_price` được populate từ gRPC data.
+    - Nếu `grpc_success = false`: `is_price_degraded = true`, `current_price` bằng `unit_price_at_add` (hoặc null nếu không có), UI hiển thị cảnh báo.
 
 ### 3.3. Grouping và Response
 1. Group item theo `platform_id`.

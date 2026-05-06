@@ -39,7 +39,6 @@ Lưu trữ định danh chung của một giỏ hàng, phục vụ cho việc tr
     *   `ABANDONED`: Khách để quá 30 ngày không checkout — được đánh dấu bởi [Abandoned Cart Marker CronJob](cart_workers.md#3-abandoned-cart-marker-batch-cronjob).
     *   `DELETED`: Giỏ hàng đã bị xóa sạch (toàn bộ items bị remove dẫn đến `HLEN == 0`). Kích hoạt bởi event [`CART_CLEARED`](cart_events.md#24-cart_cleared). Đây là **soft delete** (không hard-delete ngay). Sẽ bị hard-delete sau 3 tháng bởi [Data Archival CronJob](cart_workers.md#4-data-archival-cleaner-batch-cronjob).
     *   `CHECKED_OUT`: Giỏ hàng đã hoàn tất checkout **và rỗng hoàn toàn**. Được cập nhật khi nhận event `CART_CHECKED_OUT` (phát sau `ORDER_PAID` khi `HLEN == 0`) qua Kafka. Partial checkout (chỉ xóa một số SKU nhưng còn SKU khác) giữ trạng thái `ACTIVE`.
-*   `subtotal`: DECIMAL(15,2) DEFAULT 0. Tổng tiền phân tích chậm (Analytical Data), cập nhật bất đồng bộ qua Worker theo `unit_price_at_add`. **Không dùng làm giá realtime** thay thế cho `current_price` ở API đọc giỏ. Có thể tạm thời inaccurate khi nhiều events chạy song song — eventual consistency là chấp nhận được cho analytics.
 *   `last_event_stream_id`: VARCHAR(64) NULL. (**Trường Quan Trọng**) Lưu Redis Stream ID mới nhất đã áp dụng cho trạng thái cart (VD: `1708616400456-0`). Dùng làm guard chính chống out-of-order.
 *   `last_event_time_ms`: BIGINT DEFAULT 0. Lưu Logical Event Time theo **Milliseconds Epoch** để analytics và fallback tương thích.
 *   `abandoned_event_published_at`: TIMESTAMPTZ NULL. Dùng cho Cronjob ABANDONED để đánh dấu đã publish `CART_ABANDONED` thành công lên Redis Stream/Kafka. Nếu NULL, job reconcile sẽ publish bù.
@@ -61,11 +60,11 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
     *   Mục đích 2: Lưu `updated_at` (Milliseconds Epoch) để làm **fallback guard** cho out-of-order khi bản ghi legacy chưa có `redis_stream_id`.
     *   Ràng buộc: `current_price` không lưu trong `product_snapshot`; đây là field runtime của API đọc giỏ.
     *   Timestamps (`added_at`, `updated_at`) lưu dạng **chuỗi số nguyên Milliseconds Epoch** để nhất quán với Redis Hash Value và tránh precision loss qua JSON.
-*   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete / Tombstone để xử lý lỗi Ghost Item khi Event Delete đến trước Event Add).
-*   `tombstone_at`: BIGINT DEFAULT 0 (Lưu **Milliseconds Epoch** của thời điểm Event Delete được phát từ Redis, dùng để Consumer bắt Event Add/Update cũ hơn có thể loại bỏ an toàn).
 *   `redis_stream_id`: VARCHAR(64) NULL. Lưu Redis Stream ID mới nhất đã áp dụng cho item; là khóa idempotency/out-of-order chính khi Upsert.
 *   `created_at`: TIMESTAMPTZ
 *   `updated_at`: TIMESTAMPTZ
+
+> **Lưu ý về Hard Delete:** Khi nhận event `CART_ITEM_DELETED`, Worker sẽ thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB) thay vì Soft Delete. Điều này đơn giản hóa logic và giảm độ phức tạp của hệ thống. Vì Redis là Source of Truth, nếu item đã bị xóa khỏi Redis thì trong DB cũng không cần giữ bản ghi.
 
 ## 3. Workflow Đồng Bộ (PostgreSQL là RDBMS phụ thuộc)
 
