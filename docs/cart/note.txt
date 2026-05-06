@@ -92,19 +92,19 @@ Gọi HGETALL để chia làm 2 nhánh:
 
 5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL: Postgres Sync (Consumer Worker)
 
-> **Cập nhật mới:** Đã loại bỏ hoàn toàn logic Tombstone Guard và Ghost Item Handler. Khi nhận event `CART_ITEM_DELETED`, Worker thực hiện **Hard Delete** thay vì Soft Delete với Tombstone.
+> **Đơn giản hóa:** Đã loại bỏ hoàn toàn logic Tombstone Guard, Ghost Item Handler và Fallback timestamp. Chỉ dùng `stream_id` làm khóa ordering duy nhất.
 
 5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, Worker thực hiện upsert với guard stream_id:
-- *primary*: event.stream_id > carts.last_event_stream_id
-- *fallback*: event.updated_at > carts.last_event_time_ms
+- Guard: event.stream_id > carts.last_event_stream_id
+
 Đồng thời cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng.
 
 5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB):
-- *primary*: event.stream_id > cart_items.redis_stream_id
-- *fallback*: event.deleted_at > cart_items.product_snapshot.updated_at
-**Trade-off:** Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường. Đây là edge case hiếm gặp trong thực tế.
+- Guard: event.stream_id > cart_items.redis_stream_id
 
-5.3 CART_CHECKED_OUT / CART_CLEARED: khi nhận được sự kiện này, chúng ta chỉ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.checked_out_at > carts.last_event_time_ms
+**Trade-off:** Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường.
+
+5.3 CART_CHECKED_OUT / CART_CLEARED: khi nhận được sự kiện này, chúng ta chỉ cập nhật trạng thái trong bảng carts khi event.stream_id > carts.last_event_stream_id
 Chú ý: chúng ta sẽ không xóa các record trong bảng cart_items ở đây. Các cart_items sẽ được xóa thông qua các sự kiện CART_ITEM_DELETED riêng lẻ.
 
 

@@ -62,7 +62,7 @@ redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_UPDATED', 'payload', e
 
 > **Định danh Deterministic (Fix 2):** Cấu trúc Outbox phụ thuộc vào Relay Worker. Khi đọc Stream message (VD: ID `170853000-0`), Worker tuyệt đối KHÔNG được sinh ngẫu nhiên UUID làm `event_id` cho Kafka. Worker bắt buộc sinh `event_id` theo cách deterministic từ `Stream ID + cart_id` (ví dụ UUIDv5 hoặc băm ổn định tương đương) để mọi lần retry vẫn ánh xạ về cùng một ID.
 >
-> **Contract ordering mới:** Relay Worker bắt buộc propagate `stream_id`, `stream_timestamp_ms`, `event_sequence` vào Kafka message. Downstream idempotency/out-of-order guard dùng `stream_id` làm khóa chính; `updated_at` chỉ giữ vai trò fallback cho dữ liệu legacy chưa có `stream_id`.
+> **Contract ordering:** Relay Worker bắt buộc propagate `stream_id`, `stream_timestamp_ms`, `event_sequence` vào Kafka message. Downstream idempotency/out-of-order guard dùng `stream_id` làm khóa ordering.
 
 ### 2.2. Stream Memory Management (Kiểm soát bộ nhớ Stream)
 

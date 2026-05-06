@@ -20,30 +20,19 @@ Không có hệ thống Message Queue phân tán nào (kể cả Kafka) có th�
 
 Hơn nữa, các sự kiện có nguy cơ bị đảo lộn thứ tự (Out-of-order events). Ví dụ User nhấn "Tăng số lượng lên 2", rồi nhanh tay bấm "Tăng số lượng lên 3". Event "lên 2" bị lag mạng và đến sau event "lên 3". Nếu Worker nhắm mắt ghi đè, Database sẽ lưu kết quả sai là "2".
 
-> **Phạm vi áp dụng:** Tài liệu này bao trùm cả event **ADD/UPDATE** lẫn **DELETE**. Mỗi loại event có chiến lược idempotency khác nhau do bản chất thao tác khác nhau.
-
-> **Đơn giản hóa (Cập nhật mới):** Đã loại bỏ hoàn toàn logic **Tombstone Guard** và **Ghost Item Handler**. Khi nhận event `CART_ITEM_DELETED`, Worker thực hiện **Hard Delete** thay vì Soft Delete với Tombstone. Trade-off: có thể tạo "Ghost Item" tạm thời nếu DELETE đến trước ADD trong DB, nhưng đây là edge case hiếm gặp trong thực tế và không ảnh hưởng đến trạng thái của Redis (Source of Truth).
-
-## 2. Giải Pháp: Idempotency bằng Stream ID (Primary) + Timestamp (Fallback)
+## 2. Giải Pháp: Idempotency bằng Stream ID
 
 May mắn thay, mô hình dữ liệu của PostgreSQL trong Cart Service (`cart_items`) được thiết kế là **Dumb Store (Kho lưu trữ thụ động)**. Nhiệm vụ của nó chỉ là phản chiếu (Mirroring) trạng thái cuối cùng của Redis.
 
-Thay vì dùng một bảng `idempotency_keys` phức tạp (như Order Service), Cart Service áp dụng chiến lược **Idempotency dựa trên Redis Stream ID & Upsert**. Timestamp `updated_at` vẫn được giữ để tương thích dữ liệu cũ và phục vụ business timeline.
+Cart Service áp dụng chiến lược **Idempotency dựa trên Redis Stream ID**. `stream_id` là khóa ordering duy nhất — đơn giản, mạnh mẽ, không phụ thuộc clock.
 
 ### 2.1. Yêu cầu đầu vào từ Producer (Redis/Outbox)
-Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt buộc phải có trường `updated_at` (Milliseconds Epoch) để phục vụ business timeline và fallback guard. Đồng thời, event Kafka bắt buộc có thêm `stream_id` (lấy từ Redis `msg.ID`), `stream_timestamp_ms`, `event_sequence` do Relay Worker bổ sung. Payload bắt buộc chứa `cart_id`, `sku_id`, và **`user_id`**. `user_id` được lấy trực tiếp từ event payload — Worker **tuyệt đối không** tách chuỗi từ `cart_id` để lấy `user_id`.
+
+Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt buộc phải có trường `updated_at` (Milliseconds Epoch) để phục vụ business timeline. Event Kafka bắt buộc có thêm `stream_id` (lấy từ Redis `msg.ID`), `stream_timestamp_ms`, `event_sequence` do Relay Worker bổ sung. Payload bắt buộc chứa `cart_id`, `sku_id`, và **`user_id`**.
 
 > **Contract đồng bộ:** `current_price` không tham gia payload event và không dùng cho idempotency. Đây là field runtime ở API đọc giỏ.
 
-> **Lưu ý quan trọng:** JSON dưới đây là **định dạng Redis Stream (Outbox)** — tức là nội dung được Lua Script đẩy vào `XADD` với hai field: `event_type` và `payload`. Các header Kafka (`event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence`) được [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) **bổ sung** khi forward sang Kafka. Worker thực tế ([Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker)) đọc từ Kafka và dùng `stream_id` làm idempotency key chính.
-
-**Định dạng Redis Stream (sau XADD):**
-```json
-{
-  "event_type": "CART_ITEM_UPDATED",
-    "payload": "{\"cart_id\":\"{cart:user:12345}\",\"sku_id\":\"sku-1001\",\"user_id\":\"12345\",\"product_id\":\"prod-uuid\",\"platform_id\":\"admin-uuid\",\"platform_name\":\"platform Tech Việt\",\"quantity\":3,\"unit_price_at_add\":150000.00,\"product_name\":\"Áo Thun Nam\",\"variant_info\":\"Màu Đen, Size L\",\"image_url\":\"https://cdn.domain.com/abc.jpg\",\"is_available\":true,\"added_at\":\"1708530000123\",\"updated_at\":\"1708616400456\"}"
-}
-```
+> **Lưu ý quan trọng:** JSON dưới đây là **định dạng Redis Stream (Outbox)** — tức là nội dung được Lua Script đẩy vào `XADD` với hai field: `event_type` và `payload`. Các header Kafka (`event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence`) được [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) **bổ sung** khi forward sang Kafka.
 
 **Định dạng Kafka (sau Relay Worker bổ sung header):**
 ```json
@@ -55,15 +44,15 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
-    "stream_id": "1708616400456-0",
-    "stream_timestamp_ms": "1708616400456",
-    "event_sequence": "0",
+  "stream_id": "1708616400456-0",
+  "stream_timestamp_ms": "1708616400456",
+  "event_sequence": "0",
   "payload": {
     "cart_id": "{cart:user:12345}",
     "sku_id": "sku-1001",
     "user_id": "12345",
     "product_id": "prod-uuid",
-            "quantity": 3,
+    "quantity": 3,
     "unit_price_at_add": 150000.00,
     "product_name": "Áo Thun Nam",
     "variant_info": "Màu Đen, Size L",
@@ -75,256 +64,172 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
 }
 ```
 
-> **Nhận xét:** `payload` của Kafka event là **flat fields** (phiếu phẳng) — không có trường `product_snapshot` riêng. Worker phải **tự dựng lại** JSONB `product_snapshot` từ các flat field này trước khi INSERT vào `cart_items`. Xem chi tiết tại [Mục 2.3](#23-xử-lý-sai-thứ-tự-out-of-order).
-
-> **Tie-breaker policy:** Nếu `event.stream_id == db.redis_stream_id`, Worker xem đây là duplicate và bỏ qua (không update). `updated_at` chỉ dùng fallback khi dữ liệu cũ chưa có `redis_stream_id`.
+> **Tie-breaker policy:** Nếu `event.stream_id == db.redis_stream_id`, Worker xem đây là duplicate và bỏ qua (không update).
 
 ### 2.2. Xử lý Trùng lặp (Duplicate)
+
 Vì Worker dùng cú pháp `ON CONFLICT DO UPDATE` (Upsert).
 Nếu nhận 2 event có *nội dung y hệt nhau*, lệnh SQL Update `SET quantity = X` lần 2 sẽ đè lên lần 1 cùng một giá trị X. Kết quả cuối cùng DB vẫn đúng. Dữ liệu mang tính luỹ đẳng (Idempotent) tự nhiên.
 
-### 2.3. Xử lý Sai Thứ Tự (Out-of-order)
-Để giải quyết việc event cũ đến muộn đè lên event mới vừa được ghi, câu lệnh Upsert của PostgreSQL được tuỳ chỉnh mệnh đề `WHERE` theo thứ tự ưu tiên:
-1. So sánh `event.stream_id` với `cart_items.redis_stream_id` (primary).
-2. Nếu bản ghi cũ chưa có `redis_stream_id`, fallback sang so sánh `updated_at` trong `product_snapshot` (legacy compatibility).
+### 2.3. Xử lý Out-of-order
 
-**Bước 1 — Worker dựng `product_snapshot` JSONB từ flat fields:**
+Để giải quyết việc event cũ đến muộn đè lên event mới vừa được ghi, câu lệnh Upsert của PostgreSQL được tuỳ chỉnh mệnh đề `WHERE` theo `stream_id`.
 
-Kafka event payload chỉ có flat fields, không có column `product_snapshot` sẵn. Worker phải lắp ráp JSONB này:
+**Worker dựng `product_snapshot` JSONB từ flat fields:**
 ```go
-// Trong Go Worker: map flat payload fields -> product_snapshot JSONB
 productSnapshot := map[string]interface{}{
-    "product_name":       payload.ProductName,
-    "variant_info":       payload.VariantInfo,
-    "image_url":          payload.ImageURL,
-    "is_available":       payload.IsAvailable,
-    "added_at":           payload.AddedAt,      // chuỗi epoch ms
-    "updated_at":         payload.UpdatedAt,    // chuỗi epoch ms — fallback guard cho dữ liệu legacy
+    "product_name":  payload.ProductName,
+    "variant_info":  payload.VariantInfo,
+    "image_url":     payload.ImageURL,
+    "is_available": payload.IsAvailable,
+    "added_at":     payload.AddedAt,
+    "updated_at":    payload.UpdatedAt,
 }
 productSnapshotJSON, _ := json.Marshal(productSnapshot)
-// LƯU Ý: unit_price_at_add KHÔNG đưa vào product_snapshot — lưu ở cột riêng cart_items.unit_price_at_add
 ```
 
-**Bước 2 — Thực hiện Upsert với `stream_id` primary + `updated_at` fallback:**
-
-Cú pháp SQL logic tương đương:
+**Upsert với `stream_id` guard:**
 ```sql
 INSERT INTO cart_items (
     item_id, cart_id, product_id, sku_id, platform_id, platform_name,
     quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
 )
 VALUES (
-    '{cart:user:12345}:sku-1001',  -- item_id = cart_id + ':' + sku_id
-    '{cart:user:12345}',           -- cart_id          (payload.cart_id)
-    'prod-uuid',                   -- product_id        (payload.product_id)
-    'sku-1001',                    -- sku_id            (payload.sku_id)
-    'admin-uuid',                 -- platform_id         (payload.platform_id)
-    'platform Tech Việt',              -- platform_name       (payload.platform_name)
-    2,                             -- quantity          (payload.quantity)
-    150000.00,                     -- unit_price_at_add (payload.unit_price_at_add — cột riêng)
-    -- Worker dựng JSONB từ các flat fields của payload (KHÔNG có unit_price_at_add):
+    '{cart:user:12345}:sku-1001',
+    '{cart:user:12345}',
+    'prod-uuid',
+    'sku-1001',
+    'admin-uuid',
+    'platform Tech Việt',
+    2,
+    150000.00,
     '{"product_name":"Áo Thun Nam","variant_info":"Màu Đen, Size L",
       "image_url":"https://cdn.domain.com/abc.jpg",
       "is_available":true,
-            "added_at":"1708530000123","updated_at":"1708530000123"}',  -- product_snapshot
-    '1708530000123-0',             -- redis_stream_id từ Kafka header
-    NOW(),                         -- created_at
-    NOW()                          -- updated_at (row-level, cho CronJob ABANDONED check)
+      "added_at":"1708530000123","updated_at":"1708530000123"}',
+    '1708530000123-0',
+    NOW(),
+    NOW()
 )
 ON CONFLICT (item_id)
 DO UPDATE SET
     quantity         = EXCLUDED.quantity,
-    platform_name      = EXCLUDED.platform_name,
+    platform_name    = EXCLUDED.platform_name,
     product_snapshot = EXCLUDED.product_snapshot,
     redis_stream_id  = EXCLUDED.redis_stream_id,
     updated_at       = NOW()
-WHERE
-    -- Primary guard: stream_id mới hơn
-    (
-        (cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < $1)
-        OR (
-            cart_items.redis_stream_id IS NULL
-            AND ((cart_items.product_snapshot->>'updated_at')::bigint < $2)
-        )
-    );
-    -- Ví dụ: $1 = '1708530000123-0', $2 = 1708530000123
+WHERE cart_items.redis_stream_id < EXCLUDED.redis_stream_id;
 ```
 
 > **Tại sao không update `unit_price_at_add`?**
-> Trường này đại diện cho "giá tại thời điểm khách thêm vào giỏ". Ngay cả khi thông tin sản phẩm cập nhật (đổi tên, đổi giá hiện tại), chúng ta vẫn giữ lại mốc giá lịch sử này để hiển thị chênh lệch (Price Alert). Giá realtime (`current_price`) được lấy ở read path từ Product Service, không lưu vào `product_snapshot`.
-
-> **Ghi chú:** Trong cùng Transaction, Worker phải cập nhật bảng master `carts` theo [DB Schema — Workflow Đồng Bộ](cart_db_schema.md#3-workflow-đồng-bộ-postgresql-là-rdbms-phụ-thuộc). `user_id` lấy trực tiếp từ `payload.user_id` — không parse `cart_id`.
+> Trường này đại diện cho "giá tại thời điểm khách thêm vào giỏ". Ngay cả khi thông tin sản phẩm cập nhật, chúng ta vẫn giữ lại mốc giá lịch sử này để hiển thị chênh lệch (Price Alert).
 
 ### 2.4. Xử lý CART_ITEM_DELETED Event
 
-Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_deleted)), Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB) thay vì Soft Delete.
+Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_deleted)), Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB).
 
 ```sql
--- Hard Delete: xóa hẳn dòng khỏi DB nếu item tồn tại và event mới hơn
 DELETE FROM cart_items
 WHERE item_id = '{cart:user:12345}:sku-1001'
-  AND (
-      (redis_stream_id IS NOT NULL AND redis_stream_id < '1708616400899-0')
-      OR (
-          redis_stream_id IS NULL
-          AND (product_snapshot->>'updated_at')::bigint < 1708616400899
-      )
-  );
+  AND redis_stream_id < '1708616400899-0';
 ```
 
 > **Đơn giản hóa:** Vì Redis là Source of Truth, nếu item đã bị xóa khỏi Redis thì trong DB cũng không cần giữ bản ghi. Nếu event DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường.
 
-**Trường hợp DELETE trùng lặp (Duplicate):**
+**Trường hợp DELETE trùng lặp:**
 - Lần DELETE đầu xóa item thành công.
-- Lần DELETE thứ hai không match dòng nào (đã bị xóa) → 0 rows affected → an toàn.
+- Lần DELETE thứ hai không match dòng nào → 0 rows affected → an toàn.
 
-### 2.5. Idempotency cho trạng thái bảng `carts` (Re-activate + Guard Transition)
+### 2.5. Idempotency cho trạng thái bảng `carts`
 
 Vì `cart_id` là định danh ổn định theo user, một cart có thể đi qua nhiều vòng đời `ACTIVE -> DELETED -> ACTIVE`.
 Do đó cần quy tắc rõ ràng để tránh out-of-order làm sai trạng thái:
 
 1. Với `CART_ITEM_ADDED` / `CART_ITEM_UPDATED`:
-    - Chỉ set `carts.status = 'ACTIVE'` nếu data mới hơn theo `last_event_stream_id < event.stream_id`.
-    - Cập nhật `carts.last_event_stream_id` theo stream mới nhất và đồng thời cập nhật `last_event_time_ms` để phục vụ analytics.
-     - `user_id` lấy trực tiếp từ `payload.user_id`.
-2. Với `CART_CLEARED` / `CART_CHECKED_OUT`:
-    - Chỉ đổi trạng thái nếu `stream_id` mới hơn (primary), fallback event time cho bản ghi legacy chưa có `last_event_stream_id`.
-     - Nếu event cũ hơn thì bỏ qua.
+   - Chỉ set `carts.status = 'ACTIVE'` nếu `last_event_stream_id < event.stream_id`.
+   - Cập nhật `carts.last_event_stream_id` theo stream mới nhất.
+   - `user_id` lấy trực tiếp từ `payload.user_id`.
 
-Ví dụ SQL an toàn cho `CART_CLEARED`:
+2. Với `CART_CLEARED` / `CART_CHECKED_OUT`:
+   - Chỉ đổi trạng thái nếu `last_event_stream_id < event.stream_id`.
+   - Nếu event cũ hơn thì bỏ qua.
+
+**SQL cho `CART_CLEARED`:**
 ```sql
 UPDATE carts
 SET status = 'DELETED',
-        last_event_stream_id = $3,
-    last_event_time_ms = $2,  -- Milliseconds Epoch
+    last_event_stream_id = $2,
     updated_at = NOW()
 WHERE cart_id = $1
-    AND (
-            (last_event_stream_id IS NOT NULL AND last_event_stream_id < $3)
-            OR (last_event_stream_id IS NULL AND last_event_time_ms < $2)
-    );
+  AND last_event_stream_id < $2;
 ```
 
-Ví dụ SQL an toàn cho `CART_CHECKED_OUT`:
+**SQL cho `CART_CHECKED_OUT`:**
 ```sql
 UPDATE carts
 SET status = 'CHECKED_OUT',
-        last_event_stream_id = $3,
-    last_event_time_ms = $2,  -- Milliseconds Epoch
+    last_event_stream_id = $2,
     updated_at = NOW()
 WHERE cart_id = $1
-    AND (
-            (last_event_stream_id IS NOT NULL AND last_event_stream_id < $3)
-            OR (last_event_stream_id IS NULL AND last_event_time_ms < $2)
-    );
+  AND last_event_stream_id < $2;
 ```
 
-Ví dụ upsert/re-activate khi `CART_ITEM_UPDATED`:
+**SQL cho `CART_ITEM_ADDED/UPDATED` (Upsert cart):**
 ```sql
-INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, last_event_time_ms, created_at, updated_at)
-VALUES ($1, $2, 'ACTIVE', $4, $3, NOW(), NOW())
--- $1 = payload.cart_id, $2 = payload.user_id (lấy trực tiếp từ event, không parse chuỗi)
--- $3 = payload.updated_at (Milliseconds Epoch)
--- $4 = event.stream_id
+INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, created_at, updated_at)
+VALUES ($1, $2, 'ACTIVE', $3, NOW(), NOW())
 ON CONFLICT (cart_id)
 DO UPDATE SET
     status = 'ACTIVE',
     last_event_stream_id = EXCLUDED.last_event_stream_id,
-    last_event_time_ms = EXCLUDED.last_event_time_ms,
     updated_at = NOW()
-WHERE (carts.last_event_stream_id IS NOT NULL AND carts.last_event_stream_id < $4)
-   OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms < $3);
+WHERE carts.last_event_stream_id < EXCLUDED.last_event_stream_id;
 ```
 
-> **Lưu ý triển khai:** Tránh pattern `COALESCE(last_event_stream_id, '') ... OR last_event_stream_id IS NULL ...` vì nhánh `COALESCE` đã nuốt luôn trường hợp NULL, làm fallback branch mất ý nghĩa. Luôn tách nhánh `IS NOT NULL`/`IS NULL` như ví dụ trên.
-
-### Chú Ý Về Mặt Lập Trình (GORM):
-Sử dụng GORM, bạn có thể implement logic ADD/UPDATE idempotency bằng cách custom `clause.OnConflict`:
+### 2.6. Code mẫu (GORM)
 
 ```go
-// Trước khi Upsert: Worker dựng product_snapshot từ flat payload fields
-productSnapshot := CartItemSnapshot{
-    ProductName:      event.Payload.ProductName,
-    VariantInfo:      event.Payload.VariantInfo,
-    ImageURL:         event.Payload.ImageURL,
-    IsAvailable:      event.Payload.IsAvailable,
-    AddedAt:          event.Payload.AddedAt,           // String ms epoch
-    UpdatedAt:        event.Payload.UpdatedAt,          // String ms epoch — fallback guard cho dữ liệu legacy
-    // unit_price_at_add KHÔNG nằm trong snapshot — lưu ở cột riêng
-}
-productSnapshotJSON, _ := json.Marshal(productSnapshot)
-
-item := CartItem{
-    ItemID:          event.Payload.CartID + ":" + event.Payload.SkuID,
-    CartID:          event.Payload.CartID,
-    ProductID:       event.Payload.ProductID,
-    SkuID:           event.Payload.SkuID,
-    adminID:        event.Payload.adminID,
-    adminName:      event.Payload.adminName,
-    Quantity:        event.Payload.Quantity,
-    UnitPriceAtAdd:  event.Payload.UnitPriceAtAdd,  // Cột riêng
-    ProductSnapshot: productSnapshotJSON,            // JSONB đã được dựng bởi Worker
-}
-
-// Upsert với stream_id primary + updated_at fallback
+// Upsert cart_items với stream_id guard
 db.Clauses(clause.OnConflict{
     Columns:   []clause.Column{{Name: "item_id"}},
     DoUpdates: clause.Assignments(map[string]interface{}{
-        "quantity":         gorm.Expr("EXCLUDED.quantity"),
-        "platform_name":      gorm.Expr("EXCLUDED.platform_name"),
+        "quantity":        gorm.Expr("EXCLUDED.quantity"),
+        "platform_name":   gorm.Expr("EXCLUDED.platform_name"),
         "product_snapshot": gorm.Expr("EXCLUDED.product_snapshot"),
-        "redis_stream_id":  gorm.Expr("EXCLUDED.redis_stream_id"),
-        "updated_at":       gorm.Expr("NOW()"),
+        "redis_stream_id": gorm.Expr("EXCLUDED.redis_stream_id"),
+        "updated_at":      gorm.Expr("NOW()"),
     }),
     Where: clause.Where{
         Exprs: []clause.Expression{
             clause.Expr{
-                SQL:  "((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < ?) OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < ?))",
-                Vars: []interface{}{event.StreamID, event.Payload.UpdatedAt},
+                SQL:  "cart_items.redis_stream_id < ?",
+                Vars: []interface{}{event.StreamID},
             },
         },
     },
 }).Create(&item)
 
-// Sau khi upsert cart_items, upsert bảng carts với user_id từ payload:
+// Upsert bảng carts
 db.Exec(`
-    INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, last_event_time_ms, created_at, updated_at)
-    VALUES (?, ?, 'ACTIVE', ?, ?, NOW(), NOW())
+    INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, created_at, updated_at)
+    VALUES (?, ?, 'ACTIVE', ?, NOW(), NOW())
     ON CONFLICT (cart_id) DO UPDATE SET
         status = 'ACTIVE',
         last_event_stream_id = EXCLUDED.last_event_stream_id,
-        last_event_time_ms = EXCLUDED.last_event_time_ms,
         updated_at = NOW()
-     WHERE (carts.last_event_stream_id IS NOT NULL AND carts.last_event_stream_id < ?)
-         OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms < ?)
-`, event.Payload.CartID, event.Payload.UserID, event.StreamID, event.Payload.UpdatedAt, event.StreamID, event.Payload.UpdatedAt)
-```
+    WHERE carts.last_event_stream_id < EXCLUDED.last_event_stream_id
+`, event.Payload.CartID, event.Payload.UserID, event.StreamID)
 
-Và xử lý DELETE event (Hard Delete):
-```go
-result := db.Exec(`
+// DELETE cart_items
+db.Exec(`
     DELETE FROM cart_items
-    WHERE item_id = ?
-      AND (
-          (redis_stream_id IS NOT NULL AND redis_stream_id < ?)
-          OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?)
-      )
-`, itemID, event.StreamID, event.Payload.DeletedAt)
+    WHERE item_id = ? AND redis_stream_id < ?
+`, itemID, event.StreamID)
 ```
 
-> **Đơn giản hóa:** Không còn logic Tombstone Insert. Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường. Nếu DELETE trùng lặp, RowsAffected = 0 → an toàn.
+## 3. Chuẩn hóa Timezone
 
-Nhờ thiết kế này, worker an toàn trước **Tin nhắn trùng** và **Out-of-order cơ bản**, giữ DB luôn ở trạng thái Eventually Consistent với Redis (với trade-off: có thể tạo "Ghost Item" tạm thời nếu DELETE đến trước ADD trong DB, nhưng Redis đã thể hiện trạng thái đúng).
-
-> **Tham khảo thêm:**
-> - [Events Structure](cart_events.md) — Cấu trúc payload cho từng event type
-> - [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) — Worker áp dụng logic idempotency này
-> - [Database Schema](cart_db_schema.md) — Cấu trúc bảng `cart_items` và `product_snapshot` JSONB
-> - [Outbox Pattern](cart_outbox_pattern.md) — Cách event được sinh ra atomic trong Lua Script
-
-
-### 4. Chuẩn hóa Timezone
-- **Primary ordering key:** `stream_id` từ Redis Stream/Kafka header là khóa so sánh chính cho idempotency và out-of-order guard.
-- **UTC Milliseconds:** `updated_at` vẫn phải dùng UTC milliseconds để phục vụ analytics, timeline và fallback cho dữ liệu cũ chưa có `stream_id`.
-- **Bắt buộc khi parse ISO-8601:** Khi convert từ chuỗi ISO-8601 sang epoch ms trong các luồng cần timestamp guard, Worker **phải** dùng `time.Parse(time.RFC3339, str)` rồi `.UTC().UnixMilli()`. Tuyệt đối không dùng `time.Local()`.
-- **Deterministic Event Header:** `event_id` ở Kafka header được Relay Worker sinh theo cách deterministic từ `Redis Stream ID + cart_id` để phục vụ trace/dedup downstream, nhưng không dùng làm khóa so sánh trong `product_snapshot` của `cart_items`.
+- **Ordering key:** `stream_id` từ Redis Stream/Kafka header là khóa so sánh duy nhất cho idempotency và out-of-order guard.
+- **UTC Milliseconds:** `updated_at` dùng UTC milliseconds để phục vụ analytics và timeline.
+- **Bắt buộc khi parse ISO-8601:** Khi convert từ chuỗi ISO-8601 sang epoch ms, Worker **phải** dùng `time.Parse(time.RFC3339, str)` rồi `.UTC().UnixMilli()`. Tuyệt đối không dùng `time.Local()`.
+- **Deterministic Event Header:** `event_id` ở Kafka header được Relay Worker sinh theo cách deterministic từ `Redis Stream ID + cart_id` để phục vụ trace/dedup downstream.

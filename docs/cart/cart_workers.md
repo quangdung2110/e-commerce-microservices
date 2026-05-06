@@ -37,8 +37,8 @@ Dưới đây là sơ đồ liệt kê các Worker và Script cronjob tự độ
    - Nếu `XLEN {stream_key} == 0`: coi là intent rác (Lua fail/rollback path), chỉ `ZREM outbox_publish_intents <stream_key>`.
      - Cơ chế này thay thế hoàn toàn mô hình SCAN hourly toàn keyspace trong steady-state, giảm mạnh CPU spike trên Redis Cluster lớn.
 2. Khởi chạy các luồng Goroutine liên tục móc tên Stream từ Go Channel trên và thực hiện đọc bằng lệnh:
-   `XREADGROUP GROUP relay_group consumer_1 COUNT 50 STREAMS <các_stream_nhặt_được> >` 
-   *(Nếu trả mã lỗi `NOGROUP`, Worker tự động gọi `XGROUP CREATE {cart_key}:outbox relay_group 0 MKSTREAM` rồi vòng lại đọc. Trước khi đánh dấu stream là "có thể trim", Relay phải đảm bảo group đã được tạo thành công hoặc đã tồn tại).* 
+   `XREADGROUP GROUP relay_group consumer_1 COUNT 50 STREAMS <các_stream_nhặt_được> >`
+   *(Nếu trả mã lỗi `NOGROUP`, Worker tự động gọi `XGROUP CREATE {cart_key}:outbox relay_group 0 MKSTREAM` rồi vòng lại đọc. Trước khi đánh dấu stream là "có thể trim", Relay phải đảm bảo group đã được tạo thành công hoặc đã tồn tại).*
 3. Với mỗi block Event nhặt được (Ví dụ: `CART_ITEM_ADDED`, `CART_ITEM_DELETED`, `CART_CLEARED`).
 4. Bổ sung các trường Header cho Kafka message ([xem Events Header](cart_events.md#1-cấu-trúc-message-header-chung)): `event_id` (**Bắt buộc** sinh deterministic từ `Redis Stream ID + cart_id` như UUIDv5/băm ổn định tương đương; tuyệt đối KHÔNG tự sinh UUID random), `timestamp` (ISO 8601 UTC), `source = "cart-service"`, `stream_id` (chính là `msg.ID` từ Redis Stream), `stream_timestamp_ms`, `event_sequence`.
 5. Thực hiện `Kafka.Produce` ném vào Topic chung `t.cart.events` (Key phân vùng = `cart_id` để đảm bảo event cùng giỏ đi tuần tự qua cùng partition).
@@ -51,7 +51,7 @@ Dưới đây là sơ đồ liệt kê các Worker và Script cronjob tự độ
 **Xử lý Pending Messages (Crash Recovery):**
 Khi Worker crash sau khi `XREADGROUP` nhưng trước khi `XACK`, message ở trạng thái **Pending** (bị giữ vĩnh viễn).
 - Nhờ quá trình dò quét `ZSET active_outbox_streams` mỗi 30 giây ở luồng Fallback, với mỗi stream phát hiện được, Worker chạy thêm `XAUTOCLAIM {stream_key} relay_group consumer_1 60000 0-0 COUNT 100` để nhặt lại message Pending quá 60s.
-- Nếu một message bị retry quá 5 lần (kiểm tra qua `XPENDING` delivery count), chuyển vào Dead Letter Stream `cart_outbox_dlq` và ghi log cảnh báo. Xem [Worker #8 DLQ Handler](#8-dlq-handler-goroutine).
+- Nếu một message bị retry quá 5 lần (kiểm tra qua `XPENDING` delivery count), chuyển vào Dead Letter Stream `cart_outbox_dlq` và ghi log cảnh báo. Xem [Worker #7 DLQ Handler](#7-dlq-handler-goroutine).
 
 ---
 
@@ -62,19 +62,17 @@ Khi Worker crash sau khi `XREADGROUP` nhưng trước khi `XACK`, message ở tr
 
 **Chi tiết luồng hoạt động:**
 1. Consumer Listen (Lắng nghe) Kafka topic `t.cart.events` (Consumer Group: `cart-db-sync`).
-2. Áp dụng chiến lược luỹ đẳng theo **Redis Stream ID (primary)** và **Timestamp Milliseconds (fallback tương thích)**. Xem [Cart Idempotency](cart_idempotency.md).
+2. Áp dụng chiến lược luỹ đẳng theo **Redis Stream ID**. Xem [Cart Idempotency](cart_idempotency.md).
 3. Xử lý chia rẽ dựa trên Event Type:
    * **`CART_ITEM_DELETED`**: Thực hiện **Hard Delete** (xóa hẳn dòng) khỏi bảng `cart_items`:
-   - SQL: `DELETE FROM cart_items WHERE item_id = ? AND ((redis_stream_id IS NOT NULL AND redis_stream_id < ?) OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?))`.
-   - Nếu dòng không tồn tại hoặc event cũ hơn → 0 rows affected → an toàn.
-    * **`CART_ITEM_ADDED` / `CART_ITEM_UPDATED`**: Gọi SQL `ON CONFLICT DO UPDATE` ghi dữ liệu giỏ xuống bảng `cart_items` (kèm cập nhật `carts` master). Chỉ update item nếu:
-       - **Ưu tiên 1 (Primary):** `event.stream_id` mới hơn `db.redis_stream_id` (so sánh chuỗi theo format `<ms>-<seq>`).
-       - **Ưu tiên 2 (Fallback cho dữ liệu cũ chưa có stream_id):** `event.updated_at > db.product_snapshot->>'updated_at'`.
-   Đồng thời tiến hành re-activate cart: set `carts.status = 'ACTIVE'`, cập nhật `carts.last_event_stream_id` + `carts.last_event_time_ms` với Guard Transition theo version (`event.stream_id` mới hơn là primary; fallback `event.updated_at > carts.last_event_time_ms` cho bản ghi legacy chưa có stream_id). Tuyệt đối không bật ACTIVE nếu đây là event cũ đến trễ so với mốc Checkout/Clear. `user_id` lấy trực tiếp từ `payload.user_id` — không parse `cart_id`.
-   * **`CART_CLEARED`**: Chỉ đổi trạng thái khi event mới hơn theo `stream_id` (primary) hoặc theo `cleared_at > carts.last_event_time_ms` (fallback legacy). Khi thỏa điều kiện, set `status = 'DELETED'`, cập nhật `last_event_stream_id`, `last_event_time_ms` và `updated_at = NOW()`. **Không xóa `cart_items`** ở đây (các event `CART_ITEM_DELETED` riêng lẻ sẽ xử lý từng item).
-   * **`CART_CHECKED_OUT`**: Áp dụng guard tương tự `CART_CLEARED`: chỉ set `status = 'CHECKED_OUT'` nếu event mới hơn theo `stream_id` (hoặc fallback theo `checked_out_at > carts.last_event_time_ms`). Nếu cũ hơn thì **bỏ qua**. Kích hoạt từ [Order Event Consumer Worker](#6-order-event-consumer-worker-kafka-consumer) sau khi xử lý `ORDER_PAID`. **Không xóa `cart_items`** ở đây (các event `CART_ITEM_DELETED` riêng lẻ đã xử lý từng item trước đó).
+     - SQL: `DELETE FROM cart_items WHERE item_id = ? AND redis_stream_id < ?`.
+     - Nếu dòng không tồn tại hoặc event cũ hơn → 0 rows affected → an toàn.
+   * **`CART_ITEM_ADDED` / `CART_ITEM_UPDATED`**: Gọi SQL `ON CONFLICT DO UPDATE` ghi dữ liệu giỏ xuống bảng `cart_items` (kèm cập nhật `carts` master). Chỉ update item nếu `event.stream_id` mới hơn `db.redis_stream_id`.
+     Đồng thời tiến hành re-activate cart: set `carts.status = 'ACTIVE'`, cập nhật `carts.last_event_stream_id`. Tuyệt đối không bật ACTIVE nếu đây là event cũ đến trễ so với mốc Checkout/Clear. `user_id` lấy trực tiếp từ `payload.user_id`.
+   * **`CART_CLEARED`**: Chỉ đổi trạng thái khi `last_event_stream_id < event.stream_id`. Khi thỏa điều kiện, set `status = 'DELETED'`, cập nhật `last_event_stream_id` và `updated_at = NOW()`. **Không xóa `cart_items`** ở đây.
+   * **`CART_CHECKED_OUT`**: Áp dụng guard tương tự `CART_CLEARED`: chỉ set `status = 'CHECKED_OUT'` nếu `last_event_stream_id < event.stream_id`. Nếu cũ hơn thì **bỏ qua**. **Không xóa `cart_items`** ở đây.
 
-> **Nguyên tắc bắt buộc:** Mọi update trạng thái trên bảng `carts` phải có guard `last_event_stream_id` (primary) và `last_event_time_ms` (fallback legacy), không được update mù theo kiểu `WHERE cart_id = ?`.
+> **Nguyên tắc bắt buộc:** Mọi update trạng thái trên bảng `carts` phải có guard `last_event_stream_id`, không được update mù theo kiểu `WHERE cart_id = ?`.
 
 **Scaling Strategy:**
 
@@ -127,9 +125,7 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
        product_snapshot = EXCLUDED.product_snapshot,
        redis_stream_id = EXCLUDED.redis_stream_id,
        updated_at = NOW()
-   WHERE
-       ((cart_items.redis_stream_id IS NOT NULL AND cart_items.redis_stream_id < EXCLUDED.redis_stream_id)
-        OR (cart_items.redis_stream_id IS NULL AND (cart_items.product_snapshot->>'updated_at')::bigint < (EXCLUDED.product_snapshot->>'updated_at')::bigint));
+   WHERE cart_items.redis_stream_id < EXCLUDED.redis_stream_id;
    ```
 
 5. **Batch SQL syntax cho DELETE (Hard Delete):**
@@ -137,27 +133,20 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
    DELETE FROM cart_items
    WHERE cart_id = '{cart:user:12345}'
      AND sku_id IN ('sku-001', 'sku-002')
-     AND (
-         (redis_stream_id IS NOT NULL AND redis_stream_id < ?)
-         OR (redis_stream_id IS NULL AND (product_snapshot->>'updated_at')::bigint < ?)
-     );
+     AND redis_stream_id < ?;
    ```
-   > **Lưu ý:** Không còn logic Ghost Item Handler. Nếu DELETE đến trước ADD (do network lag), dòng ADD sau sẽ tự INSERT lại bình thường.
 
 6. **Carts status update:**
    ```sql
-   INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, last_event_time_ms, created_at, updated_at)
-   VALUES ($1, $2, 'ACTIVE', $3, $4, NOW(), NOW())
+   INSERT INTO carts (cart_id, user_id, status, last_event_stream_id, created_at, updated_at)
+   VALUES ($1, $2, 'ACTIVE', $3, NOW(), NOW())
    ON CONFLICT (cart_id)
    DO UPDATE SET
        status = 'ACTIVE',
        last_event_stream_id = EXCLUDED.last_event_stream_id,
-       last_event_time_ms = EXCLUDED.last_event_time_ms,
        updated_at = NOW()
-   WHERE (carts.last_event_stream_id IS NOT NULL AND carts.last_event_stream_id < $3)
-      OR (carts.last_event_stream_id IS NULL AND carts.last_event_time_ms < $4);
+   WHERE carts.last_event_stream_id < EXCLUDED.last_event_stream_id;
    ```
-   - `$3` = max `stream_id` trong batch, `$4` = max `updated_at` trong batch.
 
 7. **Offset commit:**
    - Chỉ commit Kafka offset SAU KHI tất cả batch SQL thành công.
@@ -227,10 +216,10 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
 1. **Giỏ `DELETED` / `CHECKED_OUT` quá 3 tháng:**
    ```sql
    -- Bước 1: Tìm giỏ hàng đủ điều kiện xóa
-   SELECT cart_id FROM carts 
-   WHERE updated_at < NOW() - INTERVAL '3 months' 
+   SELECT cart_id FROM carts
+   WHERE updated_at < NOW() - INTERVAL '3 months'
      AND status IN ('DELETED', 'CHECKED_OUT')
-   ```  
+   ```
    → Thực hiện Hard Delete trực tiếp (Sửa lỗi Orphan Data bằng SQL Transaction):
    ```sql
    BEGIN;
@@ -243,8 +232,8 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
 
 2. **Giỏ `ABANDONED` quá 6 tháng (Cold Data cực rác):**
    ```sql
-   SELECT cart_id FROM carts 
-   WHERE updated_at < NOW() - INTERVAL '6 months' 
+   SELECT cart_id FROM carts
+   WHERE updated_at < NOW() - INTERVAL '6 months'
      AND status IN ('ABANDONED')
    ```
    → Thực hiện Hard Delete trực tiếp (Vẫn phải bọc trong `BEGIN; ... COMMIT;` transaction như trên để tránh Orphan Data nếu có event lọt vào giữa chừng).
@@ -273,18 +262,14 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
 5. **Pipeline 4 (Trim - Chỉ Case B):** Gọi `XTRIM {stream_key} MINID ~ <lowest_safe_id_across_groups>` cho các stream đủ điều kiện an toàn.
 6. **Pipeline 5 (Atomic Cleanup - Chỉ Case A):** Dọn stream rỗng bằng Lua nguyên tử. **Lưu ý Asynchronous:** Không dùng flow `XLEN` rồi `DEL` tách rời vì có thể mất event nếu Lua Write vừa bắn event mới vào khe hở đó.
    ```lua
-   -- KEYS[1] = {stream_key}, KEYS[2] = active_outbox_streams
+   -- KEYS[1] = {stream_key}
    if redis.call('XLEN', KEYS[1]) == 0 then
        redis.call('DEL', KEYS[1])
-       -- Mặc dù không cùng Hash Tag, việc ZREM chỉ chạy khi dọn dẹp định kỳ
-       -- thay vì chạy ở luồng ghi chính, nên ta kéo lệnh ZREM ra Go Backend 
-       -- (Worker nhận kết quả 1 từ Lua rồi gọi vòng ngoài lệnh ZREM)
        return 1
    end
    return 0
    ```
    Nếu Lua trả về `1`, Worker sẽ gọi `ZREM active_outbox_streams {stream_key}`.
-   *(Trường hợp Worker die ngay trước khi gọi `ZREM`, tên stream lưu rác lại trong danh sách `active` nhưng key stream bên ngoài đã bị xóa. Lần quét Trimmer hoặc Fallback tiếp theo, khi gọi `XINFO`/`XREADGROUP` lên stream này sẽ nhận lỗi `ERR no such key`. Worker chỉ cần bắt lỗi này, ngầm hiểu là stream rỗng/bị xóa rồi tự động gọi `ZREM active_outbox_streams {stream_key}` để dọn rác danh sách Tracking).* 
 7. Log metric số message/stream đã dọn, số stream bị skip no-group, và backlog intent recovery để monitor.
 
 ---
