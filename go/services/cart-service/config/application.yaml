@@ -1,0 +1,101 @@
+# Cart Service Configuration
+app:
+  name: cart-service
+  env: development
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+redis:
+  addresses:
+    - "redis-primary:6379"
+    - "redis-replica:6379"
+  password: ""
+  db: 0
+  pool_size: 100
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+
+redis_cluster:
+  enabled: false
+  startup_nodes:
+    - "redis-cluster-0:6379"
+    - "redis-cluster-1:6379"
+    - "redis-cluster-2:6379"
+
+kafka:
+  brokers:
+    - "kafka-1:9092"
+    - "kafka-2:9092"
+    - "kafka-3:9092"
+  topic: "t.cart.events"
+  consumer_group: "cart-db-sync"
+  order_topic: "t.order.events"
+  order_consumer_group: "cart-order-consumer"
+  producer:
+    acks: "all"
+    retries: 3
+    retry_backoff: 100ms
+  consumer:
+    session_timeout: 30s
+    heartbeat_interval: 3s
+    max_poll_records: 50
+
+postgres:
+  dsn: "host=postgres port=5432 user=cart_user password=cart_pass dbname=cart_service sslmode=disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+product_service:
+  address: "product-service:50051"
+  timeout: 200ms
+  circuit_breaker:
+    max_failures: 5
+    failure_timeout: 30s
+    half_open_max_requests: 3
+
+cart:
+  max_quantity_per_item: 100
+  max_unique_skus: 50
+  ttl: 604800
+  negative_cache_ttl: 60
+  abandoned_threshold_days: 30
+  deleted_retention_days: 90
+  abandoned_retention_days: 180
+
+workers:
+  outbox_relay:
+    consumer_count: 10
+    batch_size: 50
+    poll_timeout: 1s
+    pending_timeout_ms: 60000
+    max_retries: 5
+  stream_trimmer:
+    interval: 5m
+    batch_size: 100
+  abandoned_marker:
+    schedule: "0 2 * * *"
+    batch_size: 1000
+  archival_cleaner:
+    schedule: "0 3 * * 0"
+    batch_size: 500
+  dlq_handler:
+    interval: 5m
+    auto_quarantine_hours: 24
+    max_dlq_size: 10000
+
+observability:
+  prometheus:
+    enabled: true
+    port: 9090
+    path: /metrics
+  tracing:
+    enabled: true
+    jaeger_endpoint: "http://jaeger:14268/api/traces"
+    sampling_rate: 0.1
+  logging:
+    level: info
+    format: json

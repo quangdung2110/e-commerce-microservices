@@ -31,7 +31,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 > **Boundary với Checkout Service:** Đây là API duy nhất cho nghiệp vụ mutate `quantity`. Checkout Preview không cho phép tăng/giảm số lượng trực tiếp.
 
 **Quy trình chuẩn kiện (Workflow):**
-1. **[Backend] - Chuẩn bị Payload:** 
+1. **[Backend] - Chuẩn bị Payload:**
    - Backend nhận `sku_id`, `quantity` từ Body và `user_id` từ Header `X-User-Id` (được Inject bởi API Gateway).
    - Gọi gRPC nội bộ sang *Product Service*: `GetProductSku(sku_id)`.
    - **Xử lý và Mapping dữ liệu:**
@@ -45,7 +45,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#31-thêm-add--cập-nhật-update-item-ngăn-chặn-race-condition)):**
    - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
    - App Server truyền params ngầm vào Lua Script.
-   - Redis kiểm tra ngưỡng cấu hình tối đa số lượng SKUs trong giỏ (`HLEN`). 
+   - Redis kiểm tra ngưỡng cấu hình tối đa số lượng SKUs trong giỏ (`HLEN`).
    - Redis cộng dồn Quantity nếu đã tồn tại, chặn trần max quantity per item.
    - Ghi/Cập nhật dữ liệu vào `HSET`.
    - Sinh Event `CART_ITEM_ADDED` hoặc `CART_ITEM_UPDATED` thông qua `XADD` xuống Outbox Stream trên cùng Lua context đó.
@@ -58,8 +58,8 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
    - Relay Worker sẽ lấy `stream_id` trực tiếp từ Redis message ID (`msg.ID`) để bổ sung vào Kafka header; Postgres Sync dùng `stream_id` làm khóa ordering/idempotency chính.
    - Sau khi hoàn tất publish path nhẹ (thường chỉ vài ms), API trả về Success cho User mà không cần chờ DB đã lưu xong.
 4. **[Background] - Bất đồng bộ xuống DB:**
-   - [Outbox Relay Worker](cart_workers.md) gắp Event từ Redis Stream bắn sang Kafka.
-   - [Postgres Sync Worker](cart_workers.md) gắp Kafka Event Upsert xuống Table `cart_items` và cập nhật bảng master `carts` theo guard `stream_id` (primary) + `updated_at` (fallback). Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
+   - [Outbox Relay Worker](cart_workers.md) gặp Event từ Redis Stream bắn sang Kafka.
+   - [Postgres Sync Worker](cart_workers.md) gặp Kafka Event Upsert xuống Table `cart_items` và cập nhật bảng master `carts` theo guard `stream_id`. Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
 
 ## 3. API: Lấy thông tin Giỏ hàng (Đọc)
 **Endpoint:** `GET /api/v1/carts/mine`
@@ -71,7 +71,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Request Gate] - Anti-Stampede và Negative Cache check:**
-    - Kiểm tra key `cart:user:{id}:notfound` trước khi đọc DB fallback.
+    - Kiểm tra key `cart:user:{id}:notfound` trước khi đọc DB.
     - Nếu key tồn tại thì trả giỏ rỗng ngay (TTL 60 giây) để chặn quét DB lặp.
 2. **[Redis] - Fetch Data:**
     - Gọi `HGETALL $cart_key`.
@@ -105,26 +105,52 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     ```sql
     SELECT sku_id, quantity, product_snapshot
     FROM cart_items
-    WHERE cart_id = $1 AND is_deleted = false;
+    WHERE cart_id = $1;
     ```
 3. **B3 - Negative Caching:**
     - Nếu DB không có row, set `cart:user:{id}:notfound` TTL 60 giây rồi trả rỗng.
-4. **B4 - Singleflight + Pull Product:**
-    - Dùng In-Memory Singleflight trên từng Pod để dồn các request miss trùng `cart_id`.
-    - Chỉ request tiên phong thực hiện B2 + gRPC `GetBatchProductSkus`.
+4. **B4 - Pull Product (gRPC):**
+    - Sau khi load dữ liệu từ DB (B2), gọi trực tiếp `GetBatchProductSkus` qua gRPC để lấy thông tin product mới nhất.
+    - **Circuit Breaker bắt buộc:** Request gRPC được bọc trong Circuit Breaker với timeout 200ms.
+    - **Track trạng thái gRPC:** Kết quả gRPC cần kèm metadata:
+      - `grpc_success`: true/false
+      - `grpc_skus`: map `sku_id -> {is_available, current_price}` (chỉ khi grpc_success = true)
+      - `grpc_error`: string error code nếu fail (dùng cho logging)
+    - **Xử lý khi gRPC thất bại (timeout/error):**
+      - Không merge `is_available` từ Product Service.
+      - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
+      - Set `grpc_success = false` để response có `is_price_degraded = true`.
+      - UI hiển thị cảnh báo: "Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất".
+    - **Lý do không dùng Singleflight:** Product Service đã có caching riêng để handle burst traffic. Việc deduplicate request trong process (per-Pod) không mang lại lợi ích đáng kể vì mỗi Pod vẫn phải gọi gRPC khi nhận request.
 5. **B5 - Merge policy trước khi nạp lại Redis:**
-    - Bảo toàn các field lịch sử: `unit_price_at_add`, `added_at`.
-   - Làm mới các field hiển thị có thể thay đổi: `is_available`, `updated_at`.
-    - Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.
+    - **Bảo toàn các field lịch sử:** `unit_price_at_add`, `added_at`.
+    - **Làm mới các field hiển thị có thể thay đổi:** `is_available`, `updated_at`.
+    - **Không thêm `current_price` vào Redis JSON; `current_price` chỉ build ở response.**
+    - **Xử lý theo trạng thái gRPC:**
+      - **Nếu `grpc_success = true`:**
+        - Với mỗi SKU, merge `is_available` từ `grpc_skus` vào item data.
+        - **Đặc biệt:** Nếu `grpc_skus[sku_id].is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi `is_available = false` vào merged data** để Lua Script ghi đúng giá trị này xuống Redis.
+        - Nếu `grpc_skus[sku_id].is_available = true`, giữ nguyên giá trị từ DB (vì DB snapshot có thể cũ hơn nhưng không có nghĩa là unavailable).
+      - **Nếu `grpc_success = false` (timeout/error):**
+        - **KHÔNG merge** `is_available` từ Product Service.
+        - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
+        - Set `is_price_degraded = true` ở response (để UI cảnh báo user giá có thể chưa cập nhật).
+        - **Quan trọng:** KHÔNG ghi đè Redis bằng data không có metadata `is_price_degraded`. Lua Script chỉ ghi data đã merge, và data này không chứa thông tin degraded status. Hệ thống vẫn đảm bảo consistency vì Redis sẽ có data từ DB (đã có `is_available` snapshot).
+    - **Output của B5:** Danh sách items đã merge + `grpc_success` flag (dùng cho B6 và response construction).
 6. **B6 - Silent Rehydrate Lua Script (timestamp guard):**
-    - Script nhận danh sách item đã merge.
+    - Script nhận danh sách item đã merge (từ B5).
+    - Script cũng nhận `grpc_success` flag qua ARGV để có thể log/debug nếu cần.
     - Với mỗi `sku_id`:
        - Nếu chưa có field trên Redis -> `HSET`.
        - Nếu đã có -> chỉ `HSET` khi `incoming.updated_at > redis.updated_at`.
     - **Tuyệt đối không `XADD` outbox** trong script rehydrate.
+    - **is_available handling trong Lua:** Item đã được merge với `is_available` đúng từ B5, nên Lua chỉ việc ghi JSON đã chứa giá trị chính xác.
 7. **B7 - TTL policy:**
     - Rehydrate là một thao tác phục hồi dữ liệu (write-recovery), được phép `EXPIRE $cart_key 604800` đúng 1 lần sau khi rehydrate thành công.
     - Quy tắc Read-Only TTL chỉ áp dụng cho read hit thông thường.
+8. **B8 - Response construction:**
+    - Nếu `grpc_success = true`: `is_price_degraded = false`, `current_price` được populate từ gRPC data.
+    - Nếu `grpc_success = false`: `is_price_degraded = true`, `current_price` bằng `unit_price_at_add` (hoặc null nếu không có), UI hiển thị cảnh báo.
 
 ### 3.3. Grouping và Response
 1. Group item theo `platform_id`.
@@ -164,8 +190,24 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 
 > **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` để xóa thẳng các SKU đã mua khỏi giỏ, tránh parse chuỗi ghép có dấu `:`.
 
+### 4.1. Bảng So Sánh ARGV Giữa Các Lua Scripts
+
+> **⚠️ CẢNH BÁO QUAN TRỌNG:** Hai Lua Scripts (Add/Update và Batch Delete) có cấu trúc ARGV hoàn toàn khác nhau. TUYỆT ĐỐI KHÔNG tái sử dụng mảng ARGV từ script này sang script kia.
+
+| Tham số | Add/Update Script | Batch Delete Script |
+|:--------|:-----------------|:-------------------|
+| `KEYS[1]` | `$cart_key` | `$cart_key` |
+| `KEYS[2]` | `$outbox_stream` | `$outbox_stream` |
+| `ARGV[1]` | `$sku_id` | `$current_timestamp_ms` |
+| `ARGV[2]` | `$payload_json` | `$clear_event_type` ("CART_CLEARED" hoặc "CART_CHECKED_OUT") |
+| `ARGV[3]` | `$max_qty` | `$user_id` |
+| `ARGV[4]` | `$max_skus` | `$sku_ids_json` (JSON array) |
+| `ARGV[5]` | `$step` | - |
+| `ARGV[6]` | `$event_time_ms` | - |
+| `ARGV[7]` | `$user_id` | - |
+
 **Quy trình chuẩn kiện (Workflow):**
-1. **[Backend] - Chuẩn bị Payload:** 
+1. **[Backend] - Chuẩn bị Payload:**
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)):**
    - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
@@ -177,19 +219,15 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
    - Nếu luồng do checkout (`ORDER_PAID`) và giỏ rỗng hoàn toàn: phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out). Nếu giỏ vẫn còn SKU khác (partial checkout), không phát event này và giỏ tiếp tục trạng thái `ACTIVE`.
    - Sau khi Lua thành công, Go phải chạy `ZADD active_outbox_streams` + `PUBLISH outbox_notifications`, rồi `ZREM outbox_publish_intents`.
 3. **[Background] - Bất đồng bộ Database:**
-   - Tương tự chiều Update, [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) gắp Event Delete đi xử lý, gỡ dòng trong bảng Cold Store (`cart_items`). Áp dụng [Out-of-order validation cho DELETE](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event).
+   - Tương tự chiều Update, [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) gặp Event Delete đi xử lý, gỡ dòng trong bảng Cold Store (`cart_items`). Áp dụng [Out-of-order validation cho DELETE](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event).
    - Nếu nhận event `CART_CLEARED`, Update bảng `carts` chuyển `status` sang `DELETED`.
    - Nếu nhận event `CART_CHECKED_OUT`, Update bảng `carts` chuyển `status` sang `CHECKED_OUT`.
 
+## 5. Cơ chế Circuit Breaker (Pull Model)
 
-
-
-### 4. Cơ chế Circuit Breaker & Fallback (Pull Model)
 Để phòng ngừa lỗi Cascading Failure (sập dây chuyền nếu Product Service sụp trặc), các truy vấn lấy giá mới nhất sẽ được cấu hình quy tắc sau:
 - **Thời gian chờ (Timeout):** Request gRPC sang Product Service bị giới hạn cứng thời gian thực thi (ví dụ tối đa 200ms).
-- **Fallback Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn.
+- **Circuit Breaker Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn.
 - **Half-Open Recovery:** Sau một khoảng `wait_duration_in_open_state`, Circuit Breaker phải vào trạng thái Half-Open và cho phép một số request thăm dò có giới hạn. Nếu thăm dò thành công thì đóng mạch (Closed); nếu tiếp tục lỗi thì quay lại Open.
-- **Cảnh báo UI:** Phản hồi Fallback đọc `product_snapshot` hiện đang lưu sẵn trong Redis/PostgreSQL ra hiện tạm để user vẫn lướt được giỏ hàng. Kèm theo đó là thông báo hiển thị nhẹ trên UI: _"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"_.
-- **Lợi ích kiến trúc:** Đảm bảo SLA cho màn hình xem giỏ hàng luôn nằm trong ngưỡng an toàn tuyệt đối. Cart Service không bao giờ sập kéo theo Product Service.
-
-
+- **Cảnh báo UI:** Phản hồi khi Circuit Breaker open đọc `product_snapshot` hiện đang lưu sẵn trong Redis/PostgreSQL ra hiện tạm để user vẫn lướt được giỏ hàng. Kèm theo đó là thông báo hiển thị nhẹ trên UI: _"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"_.
+- **Lợi ích kiến trúc:**: Cart Service không bao giờ sập kéo theo Product Service.

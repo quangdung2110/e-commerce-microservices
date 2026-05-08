@@ -60,36 +60,49 @@ Việc ráp giá mới nhất vào ngay giây phút khách mở app (Runtime) đ
 Gọi HGETALL để chia làm 2 nhánh:
   Nhánh cache hit: nếu HGETALL trả về dữ liệu
     Hệ thống lấy ra các sku_id và gọi 1 lần gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
-    Bảo vệ bằng Circuit Breaker: nếu gRPC call thất bại, hệ thống sẽ trả về dữ liệu cũ trong Redis, đồng thời bật cờ để báo cho FE biết rằng 'Hệ thống đang quá tải, giá có thể chưa được cập nhật'
-    Ở đây ta sử dụng cơ chế Runtime Overlay: dữ liệu được lấy từ Product Service (bao gồm giá hiện tại, còn hàng hay không hay các thông tin khác) chủ yếu sẽ được merge vào response để trả về cho khách hàng, còn dữ liệu trong Redis Hash sẽ 
+    Bảo vệ bằng Circuit Breaker: nếu gRPC call thất bại, hệ thống sẽ trả về dữ liệu cũ trong Redis, đồng thời bật cờ `is_price_degraded = true` để báo cho FE biết rằng 'Hệ thống đang quá tải, giá có thể chưa được cập nhật'
+    Ở đây ta sử dụng cơ chế Runtime Overlay: dữ liệu được lấy từ Product Service (bao gồm giá hiện tại, còn hàng hay không hay các thông tin khác) chủ yếu sẽ được merge vào response để trả về cho khách hàng, còn dữ liệu trong Redis Hash sẽ
     được bảo toàn
     Ngoại lệ duy nhất là nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field với is_available=false, không đụng vào TTL hay các field khác.
 
   Nhánh Cache Miss Rehydrate: nếu HGETALL trả về rỗng, có nghĩa là Redis đã bị xóa sạch (do hết TTL hoặc bị lỗi)
-    Hệ thống sẽ phải truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
-    Dựa vào những cart_item lấy được từ DB trên, tiếp tục gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về các sản phẩm đó
-    Merge dữ liệu từ DB và Product Service, sau đó trả về cho khách hàng đồng thời nạp lại Redis để những lần truy cập tiếp theo sẽ có cache hit
-      Giữ nguyên từ DB: quantity, added_at, unit_price_at_add
-      Cập nhật từ Product Service: product_name, image_url, variant_info, is_available
-      Tạo mới: updated_at (thời điểm tái tạo cache)
-    Khi nạp lại Redis, chúng ta sẽ bảo toàn các field lịch sử như `unit_price_at_add`, `added_at`, đồng thời làm mới các field hiển thị có thể thay đổi như `is_available`, `updated_at`
+    Hệ thống sẽ truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
+    Sau khi load từ DB, gọi trực tiếp `GetBatchProductSkus` qua gRPC để lấy thông tin product mới nhất
+    Circuit Breaker bắt buộc: timeout 200ms, nếu Product Service quá tải hoặc lỗi, trả dữ liệu từ DB với cờ `is_price_degraded = true`
+    Merge dữ liệu từ DB và Product Service:
+      - Nếu grpc_success = true:
+        - Với mỗi SKU, merge is_available từ grpc_skus vào item data
+        - Nếu grpc_skus[sku_id].is_available = false: **ghi đè** is_available = false vào merged data
+        - Nếu grpc_skus[sku_id].is_available = true: **giữ nguyên** is_available từ DB (vì DB có thể cũ hơn nhưng không có nghĩa là unavailable)
+      - Nếu grpc_success = false (timeout/error):
+        - **Không merge** is_available từ Product Service
+        - Giữ nguyên is_available từ product_snapshot trong DB
+        - Set is_price_degraded = true ở response để UI cảnh báo
+    Sau đó trả về cho khách hàng đồng thời nạp lại Redis (Silent Rehydrate Lua Script) để những lần truy cập tiếp theo sẽ có cache hit
+      Bảo toàn các field lịch sử: unit_price_at_add, added_at
+      is_available đã được merge chính xác từ bước trên, Lua chỉ ghi JSON đã chứa giá trị đúng
+      Tuyệt đối không XADD outbox trong script rehydrate
+    Response construction:
+      - Nếu grpc_success = true: is_price_degraded = false, current_price được populate từ gRPC data
+      - Nếu grpc_success = false: is_price_degraded = true, current_price bằng unit_price_at_add, UI hiển thị cảnh báo
 
 
 5. Cách xử lý out-of-order đối với các sự kiện được đồng bộ xuống PostgreSQL: Postgres Sync (Consumer Worker)
 
-5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, chúng ta phải kiểm tra ở DB xem trường is_deleted của item đó, nếu is_deleted = true thì chúng ta phải kiểm tra thêm thời điểm của sự kiện này
-so sánh với trường tombstone_at của item đó. Nếu sự kiện này cũ hơn tombstone_at thì có nghĩa là item này đã bị xóa sau khi sự kiện này được sinh ra (do sự kiện này bị out-of-order), 
-do đó chúng ta sẽ bỏ qua sự kiện này và không thực hiện việc thêm item vào giỏ hàng trong DB. Cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng,
-tất nhiên chúng ta chỉ được cập nhật khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.updated_at > carts.last_event_time_ms
+> **Đơn giản hóa:** Đã loại bỏ hoàn toàn logic Tombstone Guard, Ghost Item Handler và Fallback timestamp. Chỉ dùng `stream_id` làm khóa ordering duy nhất.
 
-5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, chúng ta chia thành 2 trường hợp:
-- Trường hợp 1: nếu item đó chưa tồn tại trong DB, có nghĩa là sự kiện này bị out-of-order và đã bị bỏ qua khi xử lý sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED trước đó, do đó chúng ta sẽ tạo một
-record sản phẩm mới với trường is_deleted = true và tombstone_at = thời điểm hiện tại để đánh dấu rằng item này đã bị xóa, khi sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED sau này được sinh ra với cùng item_id nhưng có thời điểm cập nhật cũ hơn tombstone_at thì chúng ta sẽ bỏ qua sự kiện đó. 
-như trên đã đề cập ở phần 5.1
-- Trường hợp 2: nếu item đó đã tồn tại trong DB, chúng ta chỉ sẽ cập nhật khi *primary*: event.stream_id > cart_items.redis_stream_id và *fallback*: event.deleted_at > cart_items.product_snapshot.updated_at
+5.1 CART_ITEM_ADDED / CART_ITEM_UPDATED: khi nhận được sự kiện này, Worker thực hiện upsert với guard stream_id:
+- Guard: event.stream_id > carts.last_event_stream_id
 
-5.3 CART_CHECKED_OUT / CART_DELETED: khi nhận được sự kiện này, chúng ta chỉ sẽ cập nhật trạng thái trong bảng carts khi *primary*: event.stream_id > carts.last_event_stream_id và *fallback*: event.checked_out_at > carts.last_event_time_ms
-Một điều lưu ý quan trọng ở sự kiện này là chúng ta sẽ không xóa các record trong bảng cart_items, nó sẽ được xóa mềm khi duyệt qua các sự kiện CART_ITEM_DELETED với trường hợp 1 như đã đề cập ở phần 5.2, điều này giúp chúng ta tránh được việc phải xử lý các trường hợp out-of-order khi có nhiều sự kiện CART_ITEM_ADDED / CART_ITEM_UPDATED được sinh ra sau khi có sự kiện CART_CHECKED_OUT / CART_DELETED nhưng có thời điểm cập nhật cũ hơn sự kiện đó.
+Đồng thời cập nhật vào bảng cha của nó tương ứng là bảng carts để re-activate lại trạng thái của giỏ hàng.
+
+5.2 CART_ITEM_DELETED: khi nhận được sự kiện này, Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB):
+- Guard: event.stream_id > cart_items.redis_stream_id
+
+**Trade-off:** Nếu DELETE đến trước ADD do network lag, dòng ADD sau sẽ tự INSERT lại bình thường.
+
+5.3 CART_CHECKED_OUT / CART_CLEARED: khi nhận được sự kiện này, chúng ta chỉ cập nhật trạng thái trong bảng carts khi event.stream_id > carts.last_event_stream_id
+Chú ý: chúng ta sẽ không xóa các record trong bảng cart_items ở đây. Các cart_items sẽ được xóa thông qua các sự kiện CART_ITEM_DELETED riêng lẻ.
 
 
 6. Thiết kế chi tiết về luồng hoạt động của Relay Worker
@@ -136,9 +149,97 @@ Worker này sẽ quét qua `active_outbox_streams` để lấy các batch Stream
     Tuy nhiên, việc xóa nguyên Key này tiềm ẩn rủi ro cực lớn: Nếu Backend kiểm tra thấy Stream rỗng, chuẩn bị gọi lệnh DEL xóa nó đi, nhưng ngay tại tích tắc đó có một User bấm "Thêm vào giỏ" và ghi một tin nhắn mới vào. Lệnh DEL đến sau sẽ xóa luôn cả tin nhắn mới tinh này.
     Do đó, thiết kế bắt buộc phải dùng Lua Script cho bước này
 
+8. Giải đáp một số thắc mắc về Redis Stream và Kafka
+
+Ở thiết kế này, số stream = số cart (hay nói cách khác = số user đã có giỏ hàng)
+Stream cho một user chỉ được tạo khi có event đầu tiên (lazy creation thông qua XADD)
+Stream có thể bị xóa hoàn toàn khi 
+  Stream Trimmer dọn dẹp sau khi đã XACK hết message
+  Giỏ hàng rỗng sau khi checkout / xóa
+
+Khi chuyển từ Redis Stream sang Kafka, phải đảm bảo được tất cả event cùng một cart luôn đi vào một partition (partition key = cart_id)
+Tuy nhiên khác ở Redis Stream là số lượng Partition ở đây có giới hạn (ví dụ trong thiết kế Service này là 12), chính vì thế các sự kiện của các cart khác nhau vẫn có khả năng nằm cùng một Partition (phân bổ theo hash cart_id) theo công thức:
+  partition = hash(cart_id) % total_partitions
+
+Giả sử có 12 partitions (0-11):
+─────────────────────────────────────────────────────────────
+cart_id hash = 12345
+12345 % 12 = 9  → đi vào Partition 9
+
+cart_id hash = 67890
+67890 % 12 = 6  → đi vào Partition 6
+
+cart_id hash = 11111
+11111 % 12 = 7  → đi vào Partition 7
+─────────────────────────────────────────────────────────────
+
+Có nhiều cart cùng 1 partition và các offset các cart nằm lẫn lộn không theo tuần tự theo cart, mà là tuần tự theo thời gian ghi vào partition
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KAFKA PARTITION 7                                                     │
+│                                                                         │
+│  Offset:  0    1    2    3    4    5    6    7    8    9   ...     │
+│         ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬          │
+│  Event: │ E1 │ E2 │ E3 │ E4 │ E5 │ E6 │ E7 │ E8 │ E9 │E10 │          │
+│         │    │    │    │    │    │    │    │    │    │    │          │
+│  Cart:  │ A  │ B  │ A  │ C  │ B  │ A  │ D  │ C  │ A  │ B  │          │
+│         └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴          │
+│                                                                         │
+│  ★ Cart A có events tại offset: 0, 2, 5, 8                            │
+│  ★ Cart B có events tại offset: 1, 4, 9                               │
+│  ★ Cart C có events tại offset: 3, 7                                  │
+│  ★ Cart D có events tại offset: 6                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Offset tăng TUẦN TỰ theo thời gian ghi, không phải theo cart:
+
+Timeline thực tế trong Partition 7:
+─────────────────────────────────────────────────────────────────────────
+T=10:00:01   Offset 0  →  CART_A  ADD sku-001
+T=10:00:02   Offset 1  →  CART_B  ADD sku-002
+T=10:00:03   Offset 2  →  CART_A  UPDATE sku-001 qty=3
+T=10:00:04   Offset 3  →  CART_C  ADD sku-003
+T=10:00:05   Offset 4  →  CART_B  DELETE sku-002
+T=10:00:06   Offset 5  →  CART_A  ADD sku-004
+T=10:00:07   Offset 6  →  CART_D  ADD sku-005
+T=10:00:08   Offset 7  →  CART_C  UPDATE sku-003 qty=2
+T=10:00:09   Offset 8  →  CART_A  DELETE sku-001
+T=10:00:10   Offset 9  →  CART_B  ADD sku-006
+─────────────────────────────────────────────────────────────────────────
 
 
-8. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
+9. Chi tiết về cơ chế Batch Processing ở Postgres Sync Worker
+Bước 1: poll() nhận batch, láy 50 events từ các partition khác nhau
+Bước 2: sau khi parse 50 events, group theo cart_id
+Bước 3: Xử lý từng cart trong transaction riêng
+  Giả sử có một cart xử lý thất bại: chúng ta thực hiện retry 3 lần với exponential backoff, nếu sau 3 lần vẫn thất bại thì đẩy vào DLQ và tiếp tục xử lý các cart khác
+Bước 4: Sau khi xử lý xong tất cả event của các cart, thực hiện commit offset
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Xử lý CART_A ────► ✓ COMMIT riêng trong transaction của A          │
+│  Xử lý CART_B ────► ✓ COMMIT riêng trong transaction của B          │
+│  Xử lý CART_C ────► ✗ FAIL, vào DLQ                                 │
+│  Xử lý CART_D ────► ✓ COMMIT riêng trong transaction của D          │
+│  Xử lý CART_E ────► ✓ COMMIT riêng trong transaction của E          │
+└─────────────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Tất cả 5 carts đã xử lý xong (C vào DLQ)                           │
+│           │                                                           │
+│           ▼                                                           │
+│  consumer.commitSync() ← COMMIT 1 LẦN với offset = 149                 │
+│           │                                                           │
+│           ▼                                                           │
+│  Kafka ghi nhận: "Consumer đã xử lý hết đến offset 149"              │
+└─────────────────────────────────────────────────────────────────────────┘
+Chúng ta vẫn thực hiện commit offset đối với Cart C events (đã vào DQL), nó vẫn an toàn bởi vì:
+     • Events đã được consume (poll đã nhận)                            
+     • Đã xử lý (thất bại → vào DLQ)                                   
+     • DLQ đang giữ events, ops sẽ replay
+
+
+
+10. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
 - Đánh dấu nháp ở DB: đổi status thành ABANDONED nhưng cố tình set abandoned_event_published_at = NULL để đánh dấu đây là một bản ghi nháp chưa hoàn chỉnh
 - Đăng ký ý định (Pre-register Intent): Giống như cách API hoạt động, nó ghi danh vào outbox_publish_intents trên Redis trước khi làm việc thực sự
 - Bắn Event vào Redis (XADD): Đẩy sự kiện CART_ABANDONED vào Redis Stream của riêng giỏ hàng đó

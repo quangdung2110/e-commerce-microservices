@@ -305,12 +305,28 @@ Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash t�
      redisValue, _ := json.Marshal(itemJSON)
      ```
    - *Nếu thiếu bước inject này, Redis Hash Value sẽ không có `unit_price_at_add`, khiến API đọc giỏ trả về `null` cho trường lịch sử giá.*
-2. **Thực thi ghi qua Lua Script Timestamp Guard (Atomic Batch):**
+
+2. **Merge với Product Service (gRPC Pull):**
+   - Sau khi load từ DB, gọi trực tiếp `GetBatchProductSkus` qua gRPC.
+   - **Xử lý kết quả gRPC:**
+     - **Nếu thành công:** Merge `is_available` từ response vào từng item:
+       - Nếu `is_available = false`: **ghi đè** `is_available` trong item JSON bằng `false`.
+       - Nếu `is_available = true`: **giữ nguyên** `is_available` từ DB snapshot (vì DB có thể cũ hơn nhưng không có nghĩa là unavailable).
+       - Lưu map `sku_id -> {is_available, current_price}` để build response.
+     - **Nếu thất bại (timeout/error):**
+       - **KHÔNG merge** `is_available` từ Product Service.
+       - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
+       - Set `grpc_success = false` để response có `is_price_degraded = true`.
+   - **Output của bước merge:** Danh sách items đã merge kèm `grpc_success` flag.
+
+3. **Thực thi ghi qua Lua Script Timestamp Guard (Atomic Batch):**
    - Tuyệt đối TRÁNH lệnh `HMSET` ghi đè thẳng thừng vì sẽ dẫm nát thao tác Thêm vào giỏ hàng đang chạy song song của User.
    - Thao tác Re-hydrate phải được gọi qua một Lua Rehydrate Script: lặp qua và chỉ `HSET` lại các field nếu Field chưa tồn tại, hoặc Timestamp cũ ở Redis < Timestamp lấy từ Cold Store.
+   - **is_available đã được merge chính xác từ bước 2**, nên Lua chỉ việc ghi JSON đã chứa giá trị đúng.
    - Luôn sử dụng Pipeline gọi Lua Script kèm thẻ `EXPIRE $cart_key 604800` để đặt lại 7 ngày vòng đời.
-3. **Consistency Guard:** 
+4. **Consistency Guard:**
    - Sau khi Re-populate, hệ thống trả về dữ liệu cho API Reader ngay lập tức.
+   - Nếu `grpc_success = false`, response sẽ có `is_price_degraded = true` để UI hiển thị cảnh báo.
    - Các hành động Write sau đó sẽ tiếp tục sử dụng Lua Script để đảm bảo tính nguyên tử.
 
 ### 3.6. Silent Rehydrate Lua Script (Chuẩn triển khai bắt buộc)
