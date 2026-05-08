@@ -188,6 +188,22 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 
 > **Quy ước nghiệp vụ:** Contract chuẩn hóa dùng `cart_id` + `sku_ids` để xóa thẳng các SKU đã mua khỏi giỏ, tránh parse chuỗi ghép có dấu `:`.
 
+### 4.1. Bảng So Sánh ARGV Giữa Các Lua Scripts
+
+> **⚠️ CẢNH BÁO QUAN TRỌNG:** Hai Lua Scripts (Add/Update và Batch Delete) có cấu trúc ARGV hoàn toàn khác nhau. TUYỆT ĐỐI KHÔNG tái sử dụng mảng ARGV từ script này sang script kia.
+
+| Tham số | Add/Update Script | Batch Delete Script |
+|:--------|:-----------------|:-------------------|
+| `KEYS[1]` | `$cart_key` | `$cart_key` |
+| `KEYS[2]` | `$outbox_stream` | `$outbox_stream` |
+| `ARGV[1]` | `$sku_id` | `$current_timestamp_ms` |
+| `ARGV[2]` | `$payload_json` | `$clear_event_type` ("CART_CLEARED" hoặc "CART_CHECKED_OUT") |
+| `ARGV[3]` | `$max_qty` | `$user_id` |
+| `ARGV[4]` | `$max_skus` | `$sku_ids_json` (JSON array) |
+| `ARGV[5]` | `$step` | - |
+| `ARGV[6]` | `$event_time_ms` | - |
+| `ARGV[7]` | `$user_id` | - |
+
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:**
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.

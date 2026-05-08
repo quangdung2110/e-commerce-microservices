@@ -64,6 +64,17 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
 
 > **Lưu ý về Hard Delete:** Khi nhận event `CART_ITEM_DELETED`, Worker sẽ thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB) thay vì Soft Delete. Điều này đơn giản hóa logic và giảm độ phức tạp của hệ thống. Vì Redis là Source of Truth, nếu item đã bị xóa khỏi Redis thì trong DB cũng không cần giữ bản ghi.
 
+> **Trình tự xóa giỏ hàng (CART_CLEARED):** Khi user xóa toàn bộ items khỏi giỏ (dẫn đến `HLEN == 0`):
+> 1. User xóa từng SKU thông qua Batch Delete API → phát `CART_ITEM_DELETED` event → Worker xóa từng dòng khỏi `cart_items`
+> 2. Khi giỏ rỗng hoàn toàn → Lua Script phát `CART_CLEARED` event → Worker chỉ cập nhật `status = 'DELETED'` trên bảng `carts`
+> 3. Các `cart_items` đã được xóa ở bước 1, KHÔNG cần xóa lại ở bước 2
+> 4. **Quan trọng:** `CART_CLEARED` event KHÔNG xóa `cart_items` - nó chỉ chuyển trạng thái giỏ hàng. Các items đã được xóa trước đó bởi các `CART_ITEM_DELETED` event riêng lẻ.
+
+> **Tương tự với CART_CHECKED_OUT:** Khi checkout hoàn tất và giỏ rỗng:
+> 1. Các SKU đã mua được xóa bởi Order Event Consumer Worker qua `CART_ITEM_DELETED` events
+> 2. Khi giỏ rỗng → phát `CART_CHECKED_OUT` event → Worker chỉ cập nhật `status = 'CHECKED_OUT'`
+> 3. Không xóa `cart_items` trong bước này
+
 ## 3. Workflow Đồng Bộ (PostgreSQL là RDBMS phụ thuộc)
 
 Vì dữ liệu chính chạy trên nền Redis, dữ liệu đẩy xuống PostgreSQL sẽ không làm "Chậm" lại quá trình API của người viết. Xem toàn bộ luồng tại [Cart Workflow](cart_workflow.md).

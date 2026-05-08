@@ -109,32 +109,44 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
      - **Update carts status:** 1 upsert cho cart master row.
    - **Atomicity:** Nếu bất kỳ SQL nào trong transaction fail → rollback toàn bộ batch cho cart đó.
 
+> **⚠️ Quan trọng về Transaction Boundary:**
+> - Kafka poll nhận N events cho M cart_ids khác nhau (M ≤ N).
+> - Mỗi cart_id được xử lý trong transaction riêng biệt.
+> - **Nếu cart_id=A fail nhưng cart_id=B thành công:** cart_id=B được commit, cart_id=A sẽ được redeliver bởi Kafka.
+> - **Offset commit strategy:** Commit offset SAU KHI tất cả M transactions thành công. Nếu bất kỳ transaction nào fail sau 3 retry → toàn bộ batch (bao gồm các cart_ids đã thành công) vẫn giữ nguyên offset và sẽ được redeliver.
+> - **Tại sao không commit offset riêng lẻ?** Vì Kafka consumer library không hỗ trợ partial commit. Nếu commit offset 100 nhưng transaction ở offset 95 fail → sẽ miss các events 95-99 ở lần redeliver.
+
+3.1. **Batch SQL syntax cho ADD/UPDATE (sử dụng item_id):**
+   - **Lưu ý:** Sử dụng `item_id = cart_id || ':' || sku_id` thay vì `cart_id + sku_id IN (...)` để nhất quán với Primary Key.
+
 4. **Batch SQL syntax cho ADD/UPDATE:**
    ```sql
    INSERT INTO cart_items (
-       item_id, cart_id, product_id, sku_id, platform_id, platform_name,
+       item_id, cart_id, product_id, sku_id,
        quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
    )
    VALUES
-       ('{cart:user:12345}:sku-001', '{cart:user:12345}', 'prod-1', 'sku-001', 'admin-1', 'Platform A', 2, 150000.00, '{"product_name":"A","is_available":true}', '1708616400456-0', NOW(), NOW()),
-       ('{cart:user:12345}:sku-002', '{cart:user:12345}', 'prod-2', 'sku-002', 'admin-1', 'Platform A', 1, 200000.00, '{"product_name":"B","is_available":true}', '1708616400457-0', NOW(), NOW())
+       ('{cart:user:12345}:sku-001', '{cart:user:12345}', 'prod-1', 'sku-001', 2, 150000.00, '{"product_name":"A","is_available":true}', '1708616400456-0', NOW(), NOW()),
+       ('{cart:user:12345}:sku-002', '{cart:user:12345}', 'prod-2', 'sku-002', 1, 200000.00, '{"product_name":"B","is_available":true}', '1708616400457-0', NOW(), NOW())
    ON CONFLICT (item_id)
    DO UPDATE SET
        quantity = EXCLUDED.quantity,
-       platform_name = EXCLUDED.platform_name,
        product_snapshot = EXCLUDED.product_snapshot,
        redis_stream_id = EXCLUDED.redis_stream_id,
        updated_at = NOW()
    WHERE cart_items.redis_stream_id < EXCLUDED.redis_stream_id;
    ```
 
-5. **Batch SQL syntax cho DELETE (Hard Delete):**
+5. **Batch SQL syntax cho DELETE (Hard Delete sử dụng item_id):**
    ```sql
    DELETE FROM cart_items
-   WHERE cart_id = '{cart:user:12345}'
-     AND sku_id IN ('sku-001', 'sku-002')
-     AND redis_stream_id < ?;
+   WHERE item_id IN (
+       '{cart:user:12345}:sku-001',
+       '{cart:user:12345}:sku-002'
+   )
+   AND redis_stream_id < ?;
    ```
+   > **Lưu ý:** Sử dụng `item_id` (format: `cart_id || ':' || sku_id`) thay vì `cart_id + sku_id IN (...)` để nhất quán với Primary Key và tránh ambiguous khi có các cart_ids trùng lặp trong payload.
 
 6. **Carts status update:**
    ```sql

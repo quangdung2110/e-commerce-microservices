@@ -126,9 +126,14 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 
 ### 2.3. CART_ITEM_DELETED
 **Ngữ cảnh phát sinh:** Khách hàng chủ động nhấn nút Xóa rác (`HDEL`), hoặc tích chọn vài món đem đi Checkout dẫn đến giỏ hàng xóa thẳng các SKU này. Phục vụ cho tính năng [Batch Delete trong Caching Schema](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove).
-**Mục đích DB Consumer:** **Hard Delete** (xóa hẳn dòng) khỏi bảng `cart_items` cho dòng sản phẩm `item_id = cart_id + sku_id`. Guard chính là `stream_id` trong Kafka header.
+**Mục đích DB Consumer:** **Hard Delete** (xóa hẳn dòng) khỏi bảng `cart_items` cho dòng sản phẩm `item_id = cart_id + ':' + sku_id`. Guard chính là `stream_id` trong Kafka header.
 
 > **Quy ước nghiệp vụ:** `CART_ITEM_DELETED` luôn biểu diễn thao tác xóa **toàn bộ dòng item theo `sku_id`** khỏi giỏ; không phải giảm từng đơn vị `quantity`.
+
+> **Lưu ý về payload:** Event này **KHÔNG chứa `product_id`** vì:
+> - Chỉ cần `sku_id` để xác định item cần xóa trong DB (qua `item_id = cart_id + ':' + sku_id`)
+> - Consumer không cần thông tin sản phẩm khi thực hiện delete
+> - Giảm kích thước payload và tránh nhầm lẫn với các events khác
 
 **Cấu trúc Payload (JSON):**
 ```json

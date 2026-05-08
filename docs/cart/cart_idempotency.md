@@ -91,7 +91,7 @@ productSnapshotJSON, _ := json.Marshal(productSnapshot)
 **Upsert với `stream_id` guard:**
 ```sql
 INSERT INTO cart_items (
-    item_id, cart_id, product_id, sku_id, platform_id, platform_name,
+    item_id, cart_id, product_id, sku_id,
     quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
 )
 VALUES (
@@ -99,8 +99,6 @@ VALUES (
     '{cart:user:12345}',
     'prod-uuid',
     'sku-1001',
-    'admin-uuid',
-    'platform Tech Việt',
     2,
     150000.00,
     '{"product_name":"Áo Thun Nam","variant_info":"Màu Đen, Size L",
@@ -114,7 +112,6 @@ VALUES (
 ON CONFLICT (item_id)
 DO UPDATE SET
     quantity         = EXCLUDED.quantity,
-    platform_name    = EXCLUDED.platform_name,
     product_snapshot = EXCLUDED.product_snapshot,
     redis_stream_id  = EXCLUDED.redis_stream_id,
     updated_at       = NOW()
@@ -193,11 +190,10 @@ WHERE carts.last_event_stream_id < EXCLUDED.last_event_stream_id;
 db.Clauses(clause.OnConflict{
     Columns:   []clause.Column{{Name: "item_id"}},
     DoUpdates: clause.Assignments(map[string]interface{}{
-        "quantity":        gorm.Expr("EXCLUDED.quantity"),
-        "platform_name":   gorm.Expr("EXCLUDED.platform_name"),
+        "quantity":         gorm.Expr("EXCLUDED.quantity"),
         "product_snapshot": gorm.Expr("EXCLUDED.product_snapshot"),
-        "redis_stream_id": gorm.Expr("EXCLUDED.redis_stream_id"),
-        "updated_at":      gorm.Expr("NOW()"),
+        "redis_stream_id":  gorm.Expr("EXCLUDED.redis_stream_id"),
+        "updated_at":       gorm.Expr("NOW()"),
     }),
     Where: clause.Where{
         Exprs: []clause.Expression{

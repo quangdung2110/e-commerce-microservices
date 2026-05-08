@@ -152,9 +152,97 @@ Worker này sẽ quét qua `active_outbox_streams` để lấy các batch Stream
     Tuy nhiên, việc xóa nguyên Key này tiềm ẩn rủi ro cực lớn: Nếu Backend kiểm tra thấy Stream rỗng, chuẩn bị gọi lệnh DEL xóa nó đi, nhưng ngay tại tích tắc đó có một User bấm "Thêm vào giỏ" và ghi một tin nhắn mới vào. Lệnh DEL đến sau sẽ xóa luôn cả tin nhắn mới tinh này.
     Do đó, thiết kế bắt buộc phải dùng Lua Script cho bước này
 
+8. Giải đáp một số thắc mắc về Redis Stream và Kafka
+
+Ở thiết kế này, số stream = số cart (hay nói cách khác = số user đã có giỏ hàng)
+Stream cho một user chỉ được tạo khi có event đầu tiên (lazy creation thông qua XADD)
+Stream có thể bị xóa hoàn toàn khi 
+  Stream Trimmer dọn dẹp sau khi đã XACK hết message
+  Giỏ hàng rỗng sau khi checkout / xóa
+
+Khi chuyển từ Redis Stream sang Kafka, phải đảm bảo được tất cả event cùng một cart luôn đi vào một partition (partition key = cart_id)
+Tuy nhiên khác ở Redis Stream là số lượng Partition ở đây có giới hạn (ví dụ trong thiết kế Service này là 12), chính vì thế các sự kiện của các cart khác nhau vẫn có khả năng nằm cùng một Partition (phân bổ theo hash cart_id) theo công thức:
+  partition = hash(cart_id) % total_partitions
+
+Giả sử có 12 partitions (0-11):
+─────────────────────────────────────────────────────────────
+cart_id hash = 12345
+12345 % 12 = 9  → đi vào Partition 9
+
+cart_id hash = 67890
+67890 % 12 = 6  → đi vào Partition 6
+
+cart_id hash = 11111
+11111 % 12 = 7  → đi vào Partition 7
+─────────────────────────────────────────────────────────────
+
+Có nhiều cart cùng 1 partition và các offset các cart nằm lẫn lộn không theo tuần tự theo cart, mà là tuần tự theo thời gian ghi vào partition
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KAFKA PARTITION 7                                                     │
+│                                                                         │
+│  Offset:  0    1    2    3    4    5    6    7    8    9   ...     │
+│         ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬          │
+│  Event: │ E1 │ E2 │ E3 │ E4 │ E5 │ E6 │ E7 │ E8 │ E9 │E10 │          │
+│         │    │    │    │    │    │    │    │    │    │    │          │
+│  Cart:  │ A  │ B  │ A  │ C  │ B  │ A  │ D  │ C  │ A  │ B  │          │
+│         └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴          │
+│                                                                         │
+│  ★ Cart A có events tại offset: 0, 2, 5, 8                            │
+│  ★ Cart B có events tại offset: 1, 4, 9                               │
+│  ★ Cart C có events tại offset: 3, 7                                  │
+│  ★ Cart D có events tại offset: 6                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Offset tăng TUẦN TỰ theo thời gian ghi, không phải theo cart:
+
+Timeline thực tế trong Partition 7:
+─────────────────────────────────────────────────────────────────────────
+T=10:00:01   Offset 0  →  CART_A  ADD sku-001
+T=10:00:02   Offset 1  →  CART_B  ADD sku-002
+T=10:00:03   Offset 2  →  CART_A  UPDATE sku-001 qty=3
+T=10:00:04   Offset 3  →  CART_C  ADD sku-003
+T=10:00:05   Offset 4  →  CART_B  DELETE sku-002
+T=10:00:06   Offset 5  →  CART_A  ADD sku-004
+T=10:00:07   Offset 6  →  CART_D  ADD sku-005
+T=10:00:08   Offset 7  →  CART_C  UPDATE sku-003 qty=2
+T=10:00:09   Offset 8  →  CART_A  DELETE sku-001
+T=10:00:10   Offset 9  →  CART_B  ADD sku-006
+─────────────────────────────────────────────────────────────────────────
 
 
-8. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
+9. Chi tiết về cơ chế Batch Processing ở Postgres Sync Worker
+Bước 1: poll() nhận batch, láy 50 events từ các partition khác nhau
+Bước 2: sau khi parse 50 events, group theo cart_id
+Bước 3: Xử lý từng cart trong transaction riêng
+  Giả sử có một cart xử lý thất bại: chúng ta thực hiện retry 3 lần với exponential backoff, nếu sau 3 lần vẫn thất bại thì đẩy vào DLQ và tiếp tục xử lý các cart khác
+Bước 4: Sau khi xử lý xong tất cả event của các cart, thực hiện commit offset
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Xử lý CART_A ────► ✓ COMMIT riêng trong transaction của A          │
+│  Xử lý CART_B ────► ✓ COMMIT riêng trong transaction của B          │
+│  Xử lý CART_C ────► ✗ FAIL, vào DLQ                                 │
+│  Xử lý CART_D ────► ✓ COMMIT riêng trong transaction của D          │
+│  Xử lý CART_E ────► ✓ COMMIT riêng trong transaction của E          │
+└─────────────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Tất cả 5 carts đã xử lý xong (C vào DLQ)                           │
+│           │                                                           │
+│           ▼                                                           │
+│  consumer.commitSync() ← COMMIT 1 LẦN với offset = 149                 │
+│           │                                                           │
+│           ▼                                                           │
+│  Kafka ghi nhận: "Consumer đã xử lý hết đến offset 149"              │
+└─────────────────────────────────────────────────────────────────────────┘
+Chúng ta vẫn thực hiện commit offset đối với Cart C events (đã vào DQL), nó vẫn an toàn bởi vì:
+     • Events đã được consume (poll đã nhận)                            
+     • Đã xử lý (thất bại → vào DLQ)                                   
+     • DLQ đang giữ events, ops sẽ replay
+
+
+
+10. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
 - Đánh dấu nháp ở DB: đổi status thành ABANDONED nhưng cố tình set abandoned_event_published_at = NULL để đánh dấu đây là một bản ghi nháp chưa hoàn chỉnh
 - Đăng ký ý định (Pre-register Intent): Giống như cách API hoạt động, nó ghi danh vào outbox_publish_intents trên Redis trước khi làm việc thực sự
 - Bắn Event vào Redis (XADD): Đẩy sự kiện CART_ABANDONED vào Redis Stream của riêng giỏ hàng đó
