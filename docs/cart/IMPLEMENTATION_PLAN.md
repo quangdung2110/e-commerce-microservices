@@ -516,10 +516,10 @@ Response (200 OK):
 | 3.5 | Implement DELETE /carts/items handler | 6 | M2 | [X] |
 | 3.6 | Implement gRPC Product Service client with Circuit Breaker | 6 | M1.7 | [X] |
 | 3.7 | Implement response construction and grouping | 4 | - | [X] |
-| 3.8 | Write unit tests for handlers (with mocks) | 8 | 3.1-3.7 | [ ] |
-| 3.9 | Write integration tests (with testcontainers) | 12 | 3.1-3.7 | [ ] |
+| 3.8 | Write unit tests for handlers (with mocks) | 8 | 3.1-3.7 | [X] |
+| 3.9 | Write integration tests (with testcontainers) | 12 | 3.1-3.7 | [X] |
 
-**Estimated Total: ~66 hours** (Implementation: 46h complete, 20h testing remaining)
+**Estimated Total: ~66 hours** (Implementation: 46h complete, Unit tests: 8h complete, Integration tests: 12h complete)
 
 #### 3.3.4 Testing Requirements
 
@@ -617,10 +617,10 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 | 4.5 | Implement Kafka Producer with header enrichment | 6 | M1 | [X] |
 | 4.6 | Implement XACK and XAUTOCLAIM logic | 4 | - | [X] |
 | 4.7 | Implement DLQ routing for failed messages | 4 | M1 | [X] |
-| 4.8 | Write unit tests | 8 | 4.1-4.7 | [ ] |
-| 4.9 | Write integration tests (Redis + Kafka) | 12 | 4.1-4.7 | [ ] |
+| 4.8 | Write unit tests | 8 | 4.1-4.7 | [X] |
+| 4.9 | Write integration tests (Redis + Kafka) | 12 | 4.1-4.7 | [X] |
 
-**Estimated Total: ~58 hours**
+**Estimated Total: ~58 hours** (Unit tests: 8h complete, Integration tests: 12h complete)
 
 #### 3.4.4 Testing Requirements
 
@@ -713,10 +713,10 @@ CREATE INDEX idx_cart_items_sku_id ON cart_items(sku_id);
 | 5.6 | Implement status transitions for carts | 4 | - | [X] |
 | 5.7 | Implement hard delete for CART_ITEM_DELETED | 3 | - | [X] |
 | 5.8 | Implement offset commit strategy | 4 | 5.2 | [X] |
-| 5.9 | Write unit tests | 8 | 5.1-5.8 | [ ] |
+| 5.9 | Write unit tests | 8 | 5.1-5.8 | [X] |
 | 5.10 | Write integration tests | 12 | 5.1-5.8 | [ ] |
 
-**Estimated Total: ~56 hours** (Implementation: 26h complete, 30h testing remaining)
+**Estimated Total: ~56 hours** (Implementation: 26h complete, Retry logic: 8h complete, Unit tests: 8h complete, DLQ push: 4h complete, Integration tests: 12h remaining)
 
 #### 3.5.4 Testing Requirements
 
@@ -782,10 +782,10 @@ WHERE cart_id = $1 AND last_event_stream_id < $2;
 | 6.3 | Implement Stream Trimmer goroutine | 12 | M1, M4 | [X] |
 | 6.4 | Implement Order Event Consumer | 10 | M1, M2, M4 | [X] |
 | 6.5 | Implement DLQ Handler | 6 | M1 | [X] |
-| 6.6 | Write unit tests for all workers | 12 | 6.1-6.5 | [ ] |
+| 6.6 | Write unit tests for all workers | 12 | 6.1-6.5 | [X] |
 | 6.7 | Write integration tests | 8 | 6.1-6.5 | [ ] |
 
-**Estimated Total: ~66 hours** (Implementation: 46h complete, 20h testing remaining)
+**Estimated Total: ~66 hours** (Implementation: 46h complete, Unit tests: 12h complete, Integration tests: 8h remaining)
 
 #### 3.6.3 Testing Requirements
 

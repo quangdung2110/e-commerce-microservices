@@ -19,6 +19,7 @@ import (
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/cronjobs"
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/order_consumer"
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/outbox_relay"
+	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/postgres_sync"
 )
 
 func main() {
@@ -197,6 +198,20 @@ func main() {
 	}
 	logger.Info("Order event consumer started")
 
+	// 7. Start Postgres Sync Worker (requires DB and Redis for DLQ)
+	var postgresSyncWorker *postgres_sync.Worker
+	if db != nil {
+		var err error
+		postgresSyncWorker, err = postgres_sync.NewWorker(cfg, logger, redisClient)
+		if err != nil {
+			logger.Fatal("Failed to create postgres sync worker", zap.Error(err))
+		}
+		if err := postgresSyncWorker.Start(workerCtx); err != nil {
+			logger.Fatal("Failed to start postgres sync worker", zap.Error(err))
+		}
+		logger.Info("Postgres sync worker started")
+	}
+
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -216,6 +231,9 @@ func main() {
 	streamTrimmer.Stop()
 	dlqHandler.Stop()
 	orderConsumer.Stop()
+	if postgresSyncWorker != nil {
+		postgresSyncWorker.Stop()
+	}
 
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -226,6 +244,9 @@ func main() {
 	if err := productClient.Close(); err != nil {
 		logger.Error("Failed to close Product Service client", zap.Error(err))
 	}
+
+	// Note: Postgres Sync worker is started conditionally, so it's stopped via the worker pattern
+	// The workerCtx cancellation will trigger the postgres sync worker's graceful shutdown
 
 	// Close database
 	if db != nil {

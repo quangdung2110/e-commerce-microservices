@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -17,6 +18,7 @@ import (
 // Worker is the main Postgres Sync worker
 type Worker struct {
 	db             *gorm.DB
+	redisClient   *redis.Client
 	consumer       *KafkaConsumer
 	batchProcessor *BatchProcessor
 	metrics       *WorkerMetrics
@@ -43,6 +45,7 @@ type WorkerMetrics struct {
 func NewWorker(
 	cfg *config.Config,
 	logger *zap.Logger,
+	redisClient *redis.Client,
 ) (*Worker, error) {
 	// Connect to PostgreSQL
 	dsn := cfg.Postgres.DSN
@@ -78,8 +81,13 @@ func NewWorker(
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	// Create batch processor
-	batchProcessor := NewBatchProcessor(db, logger)
+	// Create batch processor with Redis for DLQ support
+	var batchProcessor *BatchProcessor
+	if redisClient != nil {
+		batchProcessor = NewBatchProcessorWithRedis(db, redisClient, logger)
+	} else {
+		batchProcessor = NewBatchProcessor(db, logger)
+	}
 
 	// Create Kafka consumer
 	consumer, err := NewKafkaConsumer(
@@ -95,6 +103,7 @@ func NewWorker(
 
 	return &Worker{
 		db:              db,
+		redisClient:     redisClient,
 		consumer:        consumer,
 		batchProcessor:  batchProcessor,
 		metrics:         &WorkerMetrics{},
@@ -136,6 +145,13 @@ func (w *Worker) Stop() {
 	// Stop Kafka consumer
 	if err := w.consumer.Stop(); err != nil {
 		w.logger.Error("Failed to stop consumer", zap.Error(err))
+	}
+
+	// Close Redis connection
+	if w.redisClient != nil {
+		if err := w.redisClient.Close(); err != nil {
+			w.logger.Error("Failed to close Redis connection", zap.Error(err))
+		}
 	}
 
 	// Close database connection
