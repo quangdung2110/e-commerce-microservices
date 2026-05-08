@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/api"
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
 )
 
@@ -56,48 +57,68 @@ func main() {
 	}
 	logger.Info("Connected to Redis", zap.String("addr", cfg.Redis.Addresses[0]))
 
-	// Initialize dependencies (placeholder for Module 2-6)
-	_, err = InitializeDependencies(cfg, redisClient, logger)
+	// Initialize API dependencies
+	deps, err := api.Initialize(cfg, redisClient, logger)
 	if err != nil {
-		logger.Fatal("Failed to initialize dependencies", zap.Error(err))
+		logger.Fatal("Failed to initialize API dependencies", zap.Error(err))
 	}
+
+	// Initialize Product Service client
+	productClient := api.NewProductClient(
+		api.ProductClientConfig{
+			Address:        cfg.ProductService.Address,
+			Timeout:        config.ParseDuration(cfg.ProductService.Timeout),
+			MaxFailures:    cfg.ProductService.CircuitBreaker.MaxFailures,
+			FailureTimeout: config.ParseDuration(cfg.ProductService.CircuitBreaker.FailureTimeout),
+			HalfOpenMax:   cfg.ProductService.CircuitBreaker.HalfOpenMaxRequests,
+		},
+		logger,
+	)
+	deps.ProductClient = productClient
+
+	// Initialize DB client (placeholder)
+	// In production, this would be a real PostgreSQL client
+	// deps.DB = NewDBClient(cfg.Postgres, logger)
+
+	// Create router
+	router := api.NewRouter(deps, logger)
 
 	// Start HTTP server
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler: nil, // Will be set when implementing M3
+		Handler: router.Handler(),
 	}
 
-	// Graceful shutdown
+	// Start server in goroutine
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-
-		logger.Info("Shutting down...")
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error("Server shutdown error", zap.Error(err))
+		logger.Info("HTTP server starting",
+			zap.String("addr", server.Addr),
+		)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start HTTP server", zap.Error(err))
 		}
 	}()
 
-	logger.Info("Cart service started successfully",
-		zap.String("address", server.Addr),
-	)
-}
+	// Graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 
-// InitializeDependencies initializes all dependencies
-// This is a placeholder for Module 2-6 implementation
-func InitializeDependencies(cfg *config.Config, redisClient *redis.Client, logger *zap.Logger) (interface{}, error) {
-	// TODO: Initialize all dependencies
-	// - Module 2: Redis Lua Core
-	// - Module 3: REST API Layer
-	// - Module 4: Outbox Relay Worker
-	// - Module 5: Postgres Sync Worker
-	// - Module 6: Background Workers
+	logger.Info("Shutting down...")
 
-	return struct{}{}, nil
+	// Create shutdown context
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Shutdown HTTP server
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Server shutdown error", zap.Error(err))
+	}
+
+	// Close Product Service client
+	if err := productClient.Close(); err != nil {
+		logger.Error("Failed to close Product Service client", zap.Error(err))
+	}
+
+	logger.Info("Cart service shutdown complete")
 }

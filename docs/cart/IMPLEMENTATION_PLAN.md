@@ -1483,74 +1483,74 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W1-01 | Accept `sku_id`, `quantity` from request body | workflow.md Â§2 | M3 | `[ ]` |
-| W1-02 | Extract `user_id` from `X-User-Id` header | workflow.md Â§2 | M3 | `[ ]` |
-| W1-03 | Validate `user_id` is not empty | - | M3 | `[ ]` |
-| W1-04 | Call Product Service gRPC `GetProductSku(sku_id)` | workflow.md Â§2 | M3 | `[ ]` |
-| W1-05 | Extract `promotional_price ?? original_price` as unit_price_at_add | workflow.md Â§2 | M3 | `[ ]` |
-| W1-06 | Map `main_image_url` to `image_url` | workflow.md Â§2 | M3 | `[ ]` |
-| W1-07 | Convert `variant_attributes` to display string | workflow.md Â§2 | M3 | `[ ]` |
-| W1-08 | Validate `sku_status` and `product_status` = ACTIVE | workflow.md Â§2 | M3 | `[ ]` |
-| W1-09 | Validate `display_quantity` sufficient for requested quantity | workflow.md Â§2 | M3 | `[ ]` |
-| W1-10 | Build JSON payload with all required fields | workflow.md Â§2 | M3 | `[ ]` |
-| W1-11 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W1-12 | Execute Add/Update Lua script | caching_schema.md Â§3.1 | M2 | `[ ]` |
-| W1-13 | Handle "Cart Full" error (max 50 SKUs) | caching_schema.md Â§3.1 | M2 | `[ ]` |
-| W1-14 | Handle "Quantity Invalid" error (step â‰¤ 0 for existing) | caching_schema.md Â§3.1 | M2 | `[ ]` |
-| W1-15 | Handle "Step Invalid" error | caching_schema.md Â§3.1 | M2 | `[ ]` |
-| W1-16 | Delete negative cache: `DEL cart:user:{id}:notfound` | caching_schema.md Â§3.1 | M2 | `[ ]` |
-| W1-17 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W1-18 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W1-19 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W1-20 | Return HTTP 200 with item details | workflow.md Â§2 | M3 | `[ ]` |
-| W1-21 | Event CART_ITEM_ADDED or CART_ITEM_UPDATED emitted | events.md Â§2.1-Â§2.2 | M2 | `[ ]` |
+| W1-01 | Accept `sku_id`, `quantity` from request body | workflow.md §2 | M3 | [X] |
+| W1-02 | Extract `user_id` from `X-User-Id` header | workflow.md §2 | M3 | [X] |
+| W1-03 | Validate `user_id` is not empty | - | M3 | [X] |
+| W1-04 | Call Product Service gRPC `GetProductSku(sku_id)` | workflow.md §2 | M3 | [X] |
+| W1-05 | Extract `promotional_price ?? original_price` as unit_price_at_add | workflow.md §2 | M3 | [X] |
+| W1-06 | Map `main_image_url` to `image_url` | workflow.md §2 | M3 | [X] |
+| W1-07 | Convert `variant_attributes` to display string | workflow.md §2 | M3 | [X] |
+| W1-08 | Validate `sku_status` and `product_status` = ACTIVE | workflow.md §2 | M3 | [X] |
+| W1-09 | Validate `display_quantity` sufficient for requested quantity | workflow.md §2 | M3 | [X] |
+| W1-10 | Build JSON payload with all required fields | workflow.md §2 | M3 | [X] |
+| W1-11 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | [X] |
+| W1-12 | Execute Add/Update Lua script | caching_schema.md §3.1 | M2 | [X] |
+| W1-13 | Handle "Cart Full" error (max 50 SKUs) | caching_schema.md §3.1 | M2 | [X] |
+| W1-14 | Handle "Quantity Invalid" error (step ≤ 0 for existing) | caching_schema.md §3.1 | M2 | [X] |
+| W1-15 | Handle "Step Invalid" error | caching_schema.md §3.1 | M2 | [X] |
+| W1-16 | Delete negative cache: `DEL cart:user:{id}:notfound` | caching_schema.md §3.1 | M2 | [X] |
+| W1-17 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md §2.2 | M2 | [X] |
+| W1-18 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md §2.2 | M2 | [X] |
+| W1-19 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | [X] |
+| W1-20 | Return HTTP 200 with item details | workflow.md §2 | M3 | [X] |
+| W1-21 | Event CART_ITEM_ADDED or CART_ITEM_UPDATED emitted | events.md §2.1-§2.2 | M2 | [X] |
 
 #### D.3.2 GET /api/v1/carts/mine (Read Flow)
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W2-01 | Check negative cache `cart:user:{id}:notfound` | workflow.md Â§3 | M3 | `[ ]` |
-| W2-02 | If negative cache hit, return empty cart immediately | workflow.md Â§3 | M3 | `[ ]` |
-| W2-03 | Execute `HGETALL cart_key` | caching_schema.md Â§3.2 | M2 | `[ ]` |
-| W2-04 | **Cache Hit Path:** Decode Redis items | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-05 | Collect all `sku_id` from Redis values | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-06 | Call gRPC `GetBatchProductSkus` (timeout 200ms) | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-07 | Circuit Breaker wraps gRPC call | workflow.md Â§5 | M3 | `[ ]` |
-| W2-08 | Merge `current_price = promotional_price ?? original_price` | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-09 | If `is_available=false` from gRPC â†’ `HSET` to Redis (no EXPIRE) | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-10 | If gRPC fails â†’ set `is_price_degraded=true` | workflow.md Â§3.1 | M3 | `[ ]` |
-| W2-11 | **Cache Miss Path:** Query `carts` table for status | workflow.md Â§3.2 | M5 | `[ ]` |
-| W2-12 | If status DELETED/CHECKED_OUT â†’ return empty cart | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-13 | Query `cart_items` for cold data | workflow.md Â§3.2 | M5 | `[ ]` |
-| W2-14 | If DB empty â†’ set negative cache TTL 60s, return empty | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-15 | Call gRPC for product data (with Circuit Breaker) | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-16 | If gRPC success â†’ merge `is_available` into items | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-17 | If gRPC fail â†’ keep DB `is_available`, set degraded=true | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-18 | Preserve `unit_price_at_add` and `added_at` from DB | workflow.md Â§3.2 | M3 | `[ ]` |
-| W2-19 | Execute Silent Rehydrate Lua (no XADD) | caching_schema.md Â§3.6 | M2 | `[ ]` |
-| W2-20 | Rehydrate sets EXPIRE 7 days | workflow.md Â§3.2 | M2 | `[ ]` |
-| W2-21 | Group items by platform_id | workflow.md Â§3.3 | M3 | `[ ]` |
-| W2-22 | Sort by `latest_item_at DESC`, items by `added_at DESC` | workflow.md Â§3.3 | M3 | `[ ]` |
-| W2-23 | Return response with `is_price_degraded` flag | workflow.md Â§3.3 | M3 | `[ ]` |
+| W2-01 | Check negative cache `cart:user:{id}:notfound` | workflow.md §3 | M3 | [X] |
+| W2-02 | If negative cache hit, return empty cart immediately | workflow.md §3 | M3 | [X] |
+| W2-03 | Execute `HGETALL cart_key` | caching_schema.md §3.2 | M2 | [X] |
+| W2-04 | **Cache Hit Path:** Decode Redis items | workflow.md §3.1 | M3 | [X] |
+| W2-05 | Collect all `sku_id` from Redis values | workflow.md §3.1 | M3 | [X] |
+| W2-06 | Call gRPC `GetBatchProductSkus` (timeout 200ms) | workflow.md §3.1 | M3 | [X] |
+| W2-07 | Circuit Breaker wraps gRPC call | workflow.md §5 | M3 | [X] |
+| W2-08 | Merge `current_price = promotional_price ?? original_price` | workflow.md §3.1 | M3 | [X] |
+| W2-09 | If `is_available=false` from gRPC → `HSET` to Redis (no EXPIRE) | workflow.md §3.1 | M3 | [X] |
+| W2-10 | If gRPC fails → set `is_price_degraded=true` | workflow.md §3.1 | M3 | [X] |
+| W2-11 | **Cache Miss Path:** Query `carts` table for status | workflow.md §3.2 | M5 | [P] |
+| W2-12 | If status DELETED/CHECKED_OUT → return empty cart | workflow.md §3.2 | M3 | [X] |
+| W2-13 | Query `cart_items` for cold data | workflow.md §3.2 | M5 | [P] |
+| W2-14 | If DB empty → set negative cache TTL 60s, return empty | workflow.md §3.2 | M3 | [X] |
+| W2-15 | Call gRPC for product data (with Circuit Breaker) | workflow.md §3.2 | M3 | [X] |
+| W2-16 | If gRPC success → merge `is_available` into items | workflow.md §3.2 | M3 | [X] |
+| W2-17 | If gRPC fail → keep DB `is_available`, set degraded=true | workflow.md §3.2 | M3 | [X] |
+| W2-18 | Preserve `unit_price_at_add` and `added_at` from DB | workflow.md §3.2 | M3 | [X] |
+| W2-19 | Execute Silent Rehydrate Lua (no XADD) | caching_schema.md §3.6 | M2 | [X] |
+| W2-20 | Rehydrate sets EXPIRE 7 days | workflow.md §3.2 | M2 | [X] |
+| W2-21 | Group items by platform_id | workflow.md §3.3 | M3 | [X] |
+| W2-22 | Sort by `latest_item_at DESC`, items by `added_at DESC` | workflow.md §3.3 | M3 | [X] |
+| W2-23 | Return response with `is_price_degraded` flag | workflow.md §3.3 | M3 | [X] |
 
 #### D.3.3 DELETE /api/v1/carts/items (Batch Delete Flow)
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W3-01 | Accept `cart_id` and `sku_ids[]` from request | workflow.md Â§4 | M3 | `[ ]` |
-| W3-02 | Validate `cart_id` format | workflow.md Â§4 | M3 | `[ ]` |
-| W3-03 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W3-04 | Execute Batch Delete Lua script | caching_schema.md Â§3.3 | M2 | `[ ]` |
-| W3-05 | Delete only SKUs that exist in cart | caching_schema.md Â§3.3 | M2 | `[ ]` |
-| W3-06 | Emit CART_ITEM_DELETED per deleted SKU | events.md Â§2.3 | M2 | `[ ]` |
-| W3-07 | If cart becomes empty â†’ DEL cart key | caching_schema.md Â§3.3 | M2 | `[ ]` |
-| W3-08 | If user manual delete â†’ emit CART_CLEARED | events.md Â§2.4 | M2 | `[ ]` |
-| W3-09 | If ORDER_PAID + empty â†’ emit CART_CHECKED_OUT | events.md Â§2.5 | M2 | `[ ]` |
-| W3-10 | Partial checkout does NOT emit CART_CHECKED_OUT | caching_schema.md Â§3.3 | M2 | `[ ]` |
-| W3-11 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W3-12 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W3-13 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
-| W3-14 | Return HTTP 200 with deleted_count | workflow.md Â§4 | M3 | `[ ]` |
+| W3-01 | Accept `cart_id` and `sku_ids[]` from request | workflow.md §4 | M3 | [X] |
+| W3-02 | Validate `cart_id` format | workflow.md §4 | M3 | [X] |
+| W3-03 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | [X] |
+| W3-04 | Execute Batch Delete Lua script | caching_schema.md §3.3 | M2 | [X] |
+| W3-05 | Delete only SKUs that exist in cart | caching_schema.md §3.3 | M2 | [X] |
+| W3-06 | Emit CART_ITEM_DELETED per deleted SKU | events.md §2.3 | M2 | [X] |
+| W3-07 | If cart becomes empty → DEL cart key | caching_schema.md §3.3 | M2 | [X] |
+| W3-08 | If user manual delete → emit CART_CLEARED | events.md §2.4 | M2 | [X] |
+| W3-09 | If ORDER_PAID + empty → emit CART_CHECKED_OUT | events.md §2.5 | M2 | [X] |
+| W3-10 | Partial checkout does NOT emit CART_CHECKED_OUT | caching_schema.md §3.3 | M2 | [X] |
+| W3-11 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md §2.2 | M2 | [X] |
+| W3-12 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md §2.2 | M2 | [X] |
+| W3-13 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | [X] |
+| W3-14 | Return HTTP 200 with deleted_count | workflow.md §4 | M3 | [X] |
 
 ---
 
@@ -1768,13 +1768,13 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Component | Source | Configuration | Status |
 |---|-----------|--------|---------------|--------|
-| CB-01 | Product Service gRPC | workflow.md Â§5 | Timeout: 200ms | `[ ]` |
-| CB-02 | Circuit Breaker state machine | workflow.md Â§5 | Closed/Open/Half-Open | `[ ]` |
-| CB-03 | CB: max_failures=5 | - | Configurable | `[ ]` |
-| CB-04 | CB: failure_timeout=30s | - | Configurable | `[ ]` |
-| CB-05 | CB: half_open_max_requests=3 | - | Configurable | `[ ]` |
-| CB-06 | Degraded mode: is_price_degraded=true | workflow.md Â§5 | UI warning | `[ ]` |
-| CB-07 | Fallback: use DB snapshot when gRPC fails | workflow.md Â§3 | - | `[ ]` |
+| CB-01 | Product Service gRPC | workflow.md §5 | Timeout: 200ms | [X] |
+| CB-02 | Circuit Breaker state machine | workflow.md §5 | Closed/Open/Half-Open | [X] |
+| CB-03 | CB: max_failures=5 | - | Configurable | [X] |
+| CB-04 | CB: failure_timeout=30s | - | Configurable | [X] |
+| CB-05 | CB: half_open_max_requests=3 | - | Configurable | [X] |
+| CB-06 | Degraded mode: is_price_degraded=true | workflow.md §5 | UI warning | [X] |
+| CB-07 | Fallback: use DB snapshot when gRPC fails | workflow.md §3 | - | [X] |
 
 ---
 
@@ -1782,23 +1782,23 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Metric/Check | Source | Status |
 |---|--------------|--------|--------|
-| OBS-01 | Prometheus metrics endpoint | - | `[ ]` |
-| OBS-02 | cart_http_requests_total | - | `[ ]` |
-| OBS-03 | cart_http_request_duration_seconds | - | `[ ]` |
-| OBS-04 | cart_lua_script_duration_seconds | - | `[ ]` |
-| OBS-05 | cart_kafka_produce_duration_seconds | - | `[ ]` |
-| OBS-06 | cart_kafka_consumer_lag | - | `[ ]` |
-| OBS-07 | cart_outbox_dlq_length | - | `[ ]` |
-| OBS-08 | cart_circuit_breaker_state | - | `[ ]` |
-| OBS-09 | cart_grpc_product_duration_seconds | - | `[ ]` |
-| OBS-10 | DLQ alert rule (DLQ > 0) | - | `[ ]` |
-| OBS-11 | High latency alert (>500ms) | - | `[ ]` |
-| OBS-12 | Kafka lag alert (>1000) | - | `[ ]` |
-| OBS-13 | Circuit breaker open alert | - | `[ ]` |
-| OBS-14 | Health check: /health/live | - | `[ ]` |
-| OBS-15 | Health check: /health/ready | - | `[ ]` |
-| OBS-16 | Structured logging with correlation_id | - | `[ ]` |
-| OBS-17 | Structured logging with stream_id | - | `[ ]` |
+| OBS-01 | Prometheus metrics endpoint | - | [ ] |
+| OBS-02 | cart_http_requests_total | - | [ ] |
+| OBS-03 | cart_http_request_duration_seconds | - | [ ] |
+| OBS-04 | cart_lua_script_duration_seconds | - | [ ] |
+| OBS-05 | cart_kafka_produce_duration_seconds | - | [ ] |
+| OBS-06 | cart_kafka_consumer_lag | - | [ ] |
+| OBS-07 | cart_outbox_dlq_length | - | [ ] |
+| OBS-08 | cart_circuit_breaker_state | - | [X] |
+| OBS-09 | cart_grpc_product_duration_seconds | - | [ ] |
+| OBS-10 | DLQ alert rule (DLQ > 0) | - | [ ] |
+| OBS-11 | High latency alert (>500ms) | - | [ ] |
+| OBS-12 | Kafka lag alert (>1000) | - | [ ] |
+| OBS-13 | Circuit breaker open alert | - | [X] |
+| OBS-14 | Health check: /health/live | - | [X] |
+| OBS-15 | Health check: /health/ready | - | [X] |
+| OBS-16 | Structured logging with correlation_id | - | [X] |
+| OBS-17 | Structured logging with stream_id | - | [X] |
 
 ---
 
@@ -1810,11 +1810,11 @@ Fill in progress as implementation proceeds:
 |--------|------------|---------------|----------|--------|
 | M1: Common Library | 9 | 9 | 100% | Sprint 1 |
 | M2: Redis Lua Core | 9 | 9 | 100% | Sprint 2 |
-| M3: REST API Layer | 23 | 0 | 0% | Sprint 3 |
+| M3: REST API Layer | 23 | 23 | 100% | Sprint 3 |
 | M4: Outbox Relay | 14 | 0 | 0% | Sprint 2 |
 | M5: Postgres Sync | 12 | 0 | 0% | Sprint 3 |
 | M6: Background Workers | 40 | 0 | 0% | Sprint 4 |
-| **TOTAL** | **107** | **18** | **17%** | |
+| **TOTAL** | **107** | **41** | **38%** | |
 
 ---
 
