@@ -25,41 +25,41 @@
 ### 1.1 System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Cart Service                                    │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐               │
-│  │  REST API   │────▶│   Lua Core   │────▶│ Redis Hash  │◀── Write Path │
-│  │  (Echo/Chi) │     │   Scripts    │     │   + Streams │               │
-│  └──────────────┘     └──────────────┘     └──────────────┘               │
-│         │                                           │                       │
-│         │ Read Path                                 │                       │
-│         ▼                                           ▼                       │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐               │
-│  │  Product     │◀────│  gRPC Client │     │   Outbox    │                │
-│  │  Service     │     │ (Pull Model) │     │   Relay     │                │
-│  └──────────────┘     └──────────────┘     └──────┬───────┘               │
-│                                                    │                       │
-└────────────────────────────────────────────────────┼───────────────────────┘
-                                                     │
-                                        ┌────────────▼────────────┐
-                                        │      Kafka Cluster        │
-                                        │   t.cart.events (12 ptn) │
-                                        └────────────┬────────────┘
-                                                     │
-                          ┌───────────────────────────┼───────────────────────────┐
-                          │                           │                           │
-                          ▼                           ▼                           ▼
-                   ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-                   │  Postgres    │          │ Analytics/   │          │ Notification │
-                   │   Sync      │          │   Notif      │          │   Service    │
-                   └──────┬───────┘          └──────────────┘          └──────────────┘
-                          │
-                          ▼
-                   ┌──────────────┐
-                   │ PostgreSQL   │
-                   │ (Cold Store) │
-                   └──────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                              Cart Service                                    â”‚
+â”‚                                                                             â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”               â”‚
+â”‚  â”‚  REST API   â”‚â”€â”€â”€â”€â–¶â”‚   Lua Core   â”‚â”€â”€â”€â”€â–¶â”‚ Redis Hash  â”‚â—€â”€â”€ Write Path â”‚
+â”‚  â”‚  (Echo/Chi) â”‚     â”‚   Scripts    â”‚     â”‚   + Streams â”‚               â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜               â”‚
+â”‚         â”‚                                           â”‚                       â”‚
+â”‚         â”‚ Read Path                                 â”‚                       â”‚
+â”‚         â–¼                                           â–¼                       â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”               â”‚
+â”‚  â”‚  Product     â”‚â—€â”€â”€â”€â”€â”‚  gRPC Client â”‚     â”‚   Outbox    â”‚                â”‚
+â”‚  â”‚  Service     â”‚     â”‚ (Pull Model) â”‚     â”‚   Relay     â”‚                â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜               â”‚
+â”‚                                                    â”‚                       â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                     â”‚
+                                        â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                        â”‚      Kafka Cluster        â”‚
+                                        â”‚   t.cart.events (12 ptn) â”‚
+                                        â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                     â”‚
+                          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                          â”‚                           â”‚                           â”‚
+                          â–¼                           â–¼                           â–¼
+                   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                   â”‚  Postgres    â”‚          â”‚ Analytics/   â”‚          â”‚ Notification â”‚
+                   â”‚   Sync      â”‚          â”‚   Notif      â”‚          â”‚   Service    â”‚
+                   â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜          â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜          â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                          â”‚
+                          â–¼
+                   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                   â”‚ PostgreSQL   â”‚
+                   â”‚ (Cold Store) â”‚
+                   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### 1.2 Design Principles
@@ -67,7 +67,7 @@
 | Principle | Implementation |
 |-----------|----------------|
 | **Redis-First** | Redis is Source of Truth for Cart State; all CRUD happens on Redis |
-| **Event-Driven** | Outbox Pattern via Redis Streams → Kafka → PostgreSQL |
+| **Event-Driven** | Outbox Pattern via Redis Streams â†’ Kafka â†’ PostgreSQL |
 | **Pull Model** | Product prices fetched via gRPC at read-time, not pushed via workers |
 | **Lua Atomicity** | All cart mutations via Lua scripts to prevent race conditions |
 | **Stream ID Ordering** | Redis Stream ID is the single ordering/idempotency key |
@@ -77,8 +77,8 @@
 **In Scope:**
 - Cart CRUD APIs (Add, Read, Batch Delete)
 - Redis Lua Scripts (Add/Update, Batch Delete, Silent Rehydrate)
-- Outbox Relay Worker (Redis Stream → Kafka)
-- Postgres Sync Consumer (Kafka → PostgreSQL)
+- Outbox Relay Worker (Redis Stream â†’ Kafka)
+- Postgres Sync Consumer (Kafka â†’ PostgreSQL)
 - Background Workers (Abandoned Marker, Archival Cleaner, Stream Trimmer, Order Event Consumer, DLQ Handler)
 - Circuit Breaker for gRPC calls to Product Service
 - Observability (Prometheus metrics, structured logging, tracing)
@@ -109,58 +109,58 @@
 
 | Module | Name | Type | Parallelizable |
 |--------|------|------|----------------|
-| M1 | Common Library | Library | ✅ Independent |
-| M2 | Redis Lua Core | Library | ✅ After M1 |
-| M3 | REST API Layer | Service | ✅ After M1, M2 (mockable) |
-| M4 | Outbox Relay | Worker | ✅ After M1 |
-| M5 | Postgres Sync | Worker | ✅ After M1 |
-| M6 | Background Cronjobs | Workers | ✅ After M4 |
+| M1 | Common Library | Library | âœ… Independent |
+| M2 | Redis Lua Core | Library | âœ… After M1 |
+| M3 | REST API Layer | Service | âœ… After M1, M2 (mockable) |
+| M4 | Outbox Relay | Worker | âœ… After M1 |
+| M5 | Postgres Sync | Worker | âœ… After M1 |
+| M6 | Background Cronjobs | Workers | âœ… After M4 |
 
 ### 2.2 Dependency Graph
 
 ```
 M1: Common Library
-├── Structs: Cart, CartItem, Event payloads
-├── Constants: TTL, limits, config
-├── Interfaces: RedisClient, KafkaProducer, ProductServiceClient, PostgresDB
-└── Kafka message builder
+â”œâ”€â”€ Structs: Cart, CartItem, Event payloads
+â”œâ”€â”€ Constants: TTL, limits, config
+â”œâ”€â”€ Interfaces: RedisClient, KafkaProducer, ProductServiceClient, PostgresDB
+â””â”€â”€ Kafka message builder
 
 M2: Redis Lua Core (depends on M1)
-├── Add/Update Lua Script
-├── Batch Delete Lua Script
-├── Silent Rehydrate Lua Script
-├── Intent Index management (Go layer)
-└── Negative cache handling
+â”œâ”€â”€ Add/Update Lua Script
+â”œâ”€â”€ Batch Delete Lua Script
+â”œâ”€â”€ Silent Rehydrate Lua Script
+â”œâ”€â”€ Intent Index management (Go layer)
+â””â”€â”€ Negative cache handling
 
 M3: REST API Layer (depends on M1, M2)
-├── POST /api/v1/carts/items (Add/Update)
-├── GET /api/v1/carts/mine (Read)
-├── DELETE /api/v1/carts/items (Batch Delete)
-├── gRPC Product Service client
-├── Circuit Breaker integration
-└── Response construction
+â”œâ”€â”€ POST /api/v1/carts/items (Add/Update)
+â”œâ”€â”€ GET /api/v1/carts/mine (Read)
+â”œâ”€â”€ DELETE /api/v1/carts/items (Batch Delete)
+â”œâ”€â”€ gRPC Product Service client
+â”œâ”€â”€ Circuit Breaker integration
+â””â”€â”€ Response construction
 
 M4: Outbox Relay (depends on M1)
-├── Pub/Sub subscriber
-├── ZSET Fallback worker (30s interval)
-├── Intent Recovery worker (30s interval)
-├── Stream consumer (XREADGROUP)
-├── Kafka Producer with headers
-└── DLQ handling
+â”œâ”€â”€ Pub/Sub subscriber
+â”œâ”€â”€ ZSET Fallback worker (30s interval)
+â”œâ”€â”€ Intent Recovery worker (30s interval)
+â”œâ”€â”€ Stream consumer (XREADGROUP)
+â”œâ”€â”€ Kafka Producer with headers
+â””â”€â”€ DLQ handling
 
 M5: Postgres Sync (depends on M1)
-├── Kafka Consumer (group: cart-db-sync)
-├── Batch event processor
-├── Cart Items upsert with stream_id guard
-├── Carts status manager
-└── Hard delete handler
+â”œâ”€â”€ Kafka Consumer (group: cart-db-sync)
+â”œâ”€â”€ Batch event processor
+â”œâ”€â”€ Cart Items upsert with stream_id guard
+â”œâ”€â”€ Carts status manager
+â””â”€â”€ Hard delete handler
 
 M6: Background Workers (depends on M1, M4)
-├── Abandoned Cart Marker (Cronjob)
-├── Data Archival Cleaner (Cronjob)
-├── Stream Trimmer (Goroutine)
-├── Order Event Consumer (Kafka)
-└── DLQ Handler (Goroutine)
+â”œâ”€â”€ Abandoned Cart Marker (Cronjob)
+â”œâ”€â”€ Data Archival Cleaner (Cronjob)
+â”œâ”€â”€ Stream Trimmer (Goroutine)
+â”œâ”€â”€ Order Event Consumer (Kafka)
+â””â”€â”€ DLQ Handler (Goroutine)
 ```
 
 ### 2.3 Parallel Development Guidance
@@ -287,27 +287,27 @@ type ProductServiceClient interface {
 
 #### 3.1.3 Task List
 
-| # | Task | Effort (h) | Dependencies |
-|---|------|------------|--------------|
-| 1.1 | Create Go module structure (`go.mod`, `go.sum`) | 2 | - |
-| 1.2 | Define all shared structs (Cart, CartItem, Event payloads) | 4 | - |
-| 1.3 | Define constants (TTL, limits, config defaults) | 1 | - |
-| 1.4 | Implement Redis key builders with Hash Tag validation | 3 | - |
-| 1.5 | Implement Kafka message header builder | 3 | - |
-| 1.6 | Implement deterministic event_id generator (UUIDv5 from stream_id + cart_id) | 2 | - |
-| 1.7 | Implement circuit breaker wrapper for gRPC | 4 | 1.5 |
-| 1.8 | Create configuration loader (env vars + config file) | 3 | - |
-| 1.9 | Write unit tests for key builders and message builder | 4 | 1.2, 1.4, 1.6 |
+| # | Task | Effort (h) | Dependencies | Status |
+|---|------|------------|--------------|--------|
+| 1.1 | Create Go module structure (`go.mod`, `go.sum`) | 2 | - | [X] |
+| 1.2 | Define all shared structs (Cart, CartItem, Event payloads) | 4 | - | [X] |
+| 1.3 | Define constants (TTL, limits, config defaults) | 1 | - | [X] |
+| 1.4 | Implement Redis key builders with Hash Tag validation | 3 | - | [X] |
+| 1.5 | Implement Kafka message header builder | 3 | - | [X] |
+| 1.6 | Implement deterministic event_id generator (UUIDv5 from stream_id + cart_id) | 2 | - | [X] |
+| 1.7 | Implement circuit breaker wrapper for gRPC | 4 | 1.5 | [X] |
+| 1.8 | Create configuration loader (env vars + config file) | 3 | - | [X] |
+| 1.9 | Write unit tests for key builders and message builder | 4 | 1.2, 1.4, 1.6 | [X] |
 
 **Estimated Total: ~26 hours**
 
 #### 3.1.4 Testing Requirements
 
 **Unit Tests:**
-- Key builder validates Hash Tag format
-- Event ID generator produces deterministic output
-- Kafka headers are correctly populated
-- Circuit breaker state transitions
+- [X] Key builder validates Hash Tag format
+- [X] Event ID generator produces deterministic output
+- [X] Kafka headers are correctly populated
+- [X] Circuit breaker state transitions
 
 **Integration Tests (future):**
 - Mock Redis client works with miniredis
@@ -355,24 +355,24 @@ type RehydrateItem struct {
 
 **Lua Scripts to Implement:**
 
-1. **add_update.lua** — Atomic add/update with race condition prevention
-2. **batch_delete.lua** — Batch delete with event emission
-3. **silent_rehydrate.lua** — Cache recovery without event emission
-4. **stream_trim.lua** — Atomic empty stream cleanup
+1. **add_update.lua** â€” Atomic add/update with race condition prevention
+2. **batch_delete.lua** â€” Batch delete with event emission
+3. **silent_rehydrate.lua** â€” Cache recovery without event emission
+4. **stream_trim.lua** â€” Atomic empty stream cleanup
 
 #### 3.2.3 Task List
 
-| # | Task | Effort (h) | Dependencies |
-|---|------|------------|--------------|
-| 2.1 | Implement `add_update.lua` script | 8 | M1.4 |
-| 2.2 | Implement `batch_delete.lua` script | 6 | M1.4 |
-| 2.3 | Implement `silent_rehydrate.lua` script | 4 | M1.4 |
-| 2.4 | Implement Go wrapper for Add/Update (with Intent Index) | 6 | M1.2, 2.1 |
-| 2.5 | Implement Go wrapper for Batch Delete (with Intent Index) | 5 | M1.2, 2.2 |
-| 2.6 | Implement Go wrapper for Silent Rehydrate | 4 | M1.2, 2.3 |
-| 2.7 | Implement negative cache management | 2 | - |
-| 2.8 | Write Redis test instances with Lua unit tests | 8 | 2.1-2.7 |
-| 2.9 | Implement idempotency key management for ORDER_PAID | 4 | M1.2 |
+| # | Task | Effort (h) | Dependencies | Status |
+|---|------|------------|--------------|--------|
+| 2.1 | Implement `add_update.lua` script | 8 | M1.4 | [X] |
+| 2.2 | Implement `batch_delete.lua` script | 6 | M1.4 | [X] |
+| 2.3 | Implement `silent_rehydrate.lua` script | 4 | M1.4 | [X] |
+| 2.4 | Implement Go wrapper for Add/Update (with Intent Index) | 6 | M1.2, 2.1 | [X] |
+| 2.5 | Implement Go wrapper for Batch Delete (with Intent Index) | 5 | M1.2, 2.2 | [X] |
+| 2.6 | Implement Go wrapper for Silent Rehydrate | 4 | M1.2, 2.3 | [X] |
+| 2.7 | Implement negative cache management | 2 | - | [X] |
+| 2.8 | Write Redis test instances with Lua unit tests | 8 | 2.1-2.7 | [X] |
+| 2.9 | Implement idempotency key management for ORDER_PAID | 4 | M1.2 | [X] |
 
 **Estimated Total: ~47 hours**
 
@@ -395,16 +395,16 @@ type RehydrateItem struct {
 | Silent Rehydrate - no XADD | No events in stream |
 
 **Edge Cases:**
-- Race condition: 3 concurrent adds → final quantity = sum of all steps
-- Out-of-order: Older event arrives after newer → guard by stream_id downstream
+- Race condition: 3 concurrent adds â†’ final quantity = sum of all steps
+- Out-of-order: Older event arrives after newer â†’ guard by stream_id downstream
 
 #### 3.2.5 Implementation Notes
 
 > **CRITICAL IMPLEMENTATION NOTES FROM DESIGN:**
 
-1. **Never use MAXLEN on XADD** — Memory management is delegated to Stream Trimmer
-2. **ARGV differences** — Add/Update and Batch Delete have completely different ARGV layouts; do NOT reuse
-3. **Timestamp as string** — Use `tostring()` for timestamps in JSON to avoid scientific notation
+1. **Never use MAXLEN on XADD** â€” Memory management is delegated to Stream Trimmer
+2. **ARGV differences** â€” Add/Update and Batch Delete have completely different ARGV layouts; do NOT reuse
+3. **Timestamp as string** â€” Use `tostring()` for timestamps in JSON to avoid scientific notation
 4. **Intent Index Protocol (Go layer):**
    ```
    1. ZADD outbox_publish_intents <now_ms> <stream_key>
@@ -450,7 +450,7 @@ Response (200 OK):
   "item": {
     "sku_id": "sku-1001",
     "quantity": 2,
-    "product_name": "Áo Thun Nam",
+    "product_name": "Ão Thun Nam",
     "unit_price_at_add": 150000
   }
 }
@@ -468,8 +468,8 @@ Response (200 OK):
       "items": [
         {
           "sku_id": "sku-1001",
-          "product_name": "Áo Thun Nam",
-          "variant_info": "Màu Đen, Size L",
+          "product_name": "Ão Thun Nam",
+          "variant_info": "MÃ u Äen, Size L",
           "image_url": "https://cdn.example.com/ao.jpg",
           "quantity": 2,
           "unit_price_at_add": 150000,
@@ -541,9 +541,9 @@ Response (200 OK):
 
 | Scenario | Setup | Validation |
 |----------|-------|------------|
-| Add → Read roundtrip | Redis only | Item in Redis, event in Stream |
-| Add → Read → Kafka → DB | Full stack | Item in PostgreSQL |
-| Cache miss → DB → Rehydrate | Redis empty, DB has data | Redis populated, correct items |
+| Add â†’ Read roundtrip | Redis only | Item in Redis, event in Stream |
+| Add â†’ Read â†’ Kafka â†’ DB | Full stack | Item in PostgreSQL |
+| Cache miss â†’ DB â†’ Rehydrate | Redis empty, DB has data | Redis populated, correct items |
 | Circuit breaker open | Mock Product Service fails | is_price_degraded=true |
 
 #### 3.3.5 Implementation Notes
@@ -551,7 +551,7 @@ Response (200 OK):
 > **CRITICAL FLOW NOTES:**
 
 **Cache Hit Path (GET /carts/mine):**
-1. `HGETALL cart_key` → decode items
+1. `HGETALL cart_key` â†’ decode items
 2. Call `GetBatchProductSkus` gRPC (timeout 200ms, Circuit Breaker)
 3. Merge `current_price` and `is_available` into response
 4. **Exception:** If gRPC returns `is_available=false`, `HSET` the field back to Redis (no EXPIRE, no XADD)
@@ -559,9 +559,9 @@ Response (200 OK):
 
 **Cache Miss Path (GET /carts/mine):**
 1. Check `cart:user:{id}:notfound` negative cache
-2. If not found → query PostgreSQL
-3. If DB empty → set negative cache TTL 60s, return empty cart
-4. If DB has data → call gRPC, merge `is_available`
+2. If not found â†’ query PostgreSQL
+3. If DB empty â†’ set negative cache TTL 60s, return empty cart
+4. If DB has data â†’ call gRPC, merge `is_available`
 5. Execute Silent Rehydrate Lua (no XADD)
 6. Return merged response with `is_price_degraded` flag
 
@@ -576,34 +576,34 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 #### 3.4.2 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Outbox Relay Architecture                     │
-│                                                                  │
-│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐     │
-│  │   Lua API   │─────▶│   Intent    │      │    Pub/Sub  │     │
-│  │   Write     │      │   Index     │      │  Subscriber │     │
-│  └─────────────┘      └──────┬──────┘      └──────┬──────┘     │
-│                              │                     │             │
-│                              ▼                     ▼             │
-│                      ┌─────────────────────────────────────┐    │
-│                      │         Go Channel Buffer            │    │
-│                      │   (receives stream names)            │    │
-│                      └─────────────────────────────────────┘    │
-│                                      │                          │
-│         ┌───────────────────────────┼───────────────────────────┤
-│         │                           │                           │
-│         ▼                           ▼                           ▼
-│  ┌─────────────┐          ┌─────────────┐          ┌─────────────┐
-│  │ ZSET Fallback│         │  Intent     │          │   Stream    │
-│  │  Worker     │          │  Recovery   │          │  Consumer   │
-│  │ (30s loop)  │          │  Worker     │          │ (Goroutines)│
-│  └─────────────┘          │  (30s loop) │          └──────┬──────┘
-│                           └─────────────┘                 │
-│                                                           ▼
-│                                                  ┌─────────────┐
-│                                                  │    Kafka    │
-│                                                  │  Producer   │
-│                                                  └─────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                    Outbox Relay Architecture                     â”‚
+â”‚                                                                  â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”‚
+â”‚  â”‚   Lua API   â”‚â”€â”€â”€â”€â”€â–¶â”‚   Intent    â”‚      â”‚    Pub/Sub  â”‚     â”‚
+â”‚  â”‚   Write     â”‚      â”‚   Index     â”‚      â”‚  Subscriber â”‚     â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜     â”‚
+â”‚                              â”‚                     â”‚             â”‚
+â”‚                              â–¼                     â–¼             â”‚
+â”‚                      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”‚
+â”‚                      â”‚         Go Channel Buffer            â”‚    â”‚
+â”‚                      â”‚   (receives stream names)            â”‚    â”‚
+â”‚                      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â”‚
+â”‚                                      â”‚                          â”‚
+â”‚         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚         â”‚                           â”‚                           â”‚
+â”‚         â–¼                           â–¼                           â–¼
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  â”‚ ZSET Fallbackâ”‚         â”‚  Intent     â”‚          â”‚   Stream    â”‚
+â”‚  â”‚  Worker     â”‚          â”‚  Recovery   â”‚          â”‚  Consumer   â”‚
+â”‚  â”‚ (30s loop)  â”‚          â”‚  Worker     â”‚          â”‚ (Goroutines)â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜          â”‚  (30s loop) â”‚          â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜
+â”‚                           â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                 â”‚
+â”‚                                                           â–¼
+â”‚                                                  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                                                  â”‚    Kafka    â”‚
+â”‚                                                  â”‚  Producer   â”‚
+â”‚                                                  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 #### 3.4.3 Task List
@@ -641,16 +641,16 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 
 | Scenario | Setup | Validation |
 |----------|-------|------------|
-| Add item → event in Kafka | Full flow | Event in Kafka topic |
-| Worker crash → message recovered | Kill worker mid-processing | Message reprocessed |
-| Kafka down → message pending | Stop Kafka | Message stays in stream |
+| Add item â†’ event in Kafka | Full flow | Event in Kafka topic |
+| Worker crash â†’ message recovered | Kill worker mid-processing | Message reprocessed |
+| Kafka down â†’ message pending | Stop Kafka | Message stays in stream |
 | DLQ routing | Mock Kafka always fails | Message in DLQ stream |
 
 #### 3.4.5 Implementation Notes
 
 > **CRITICAL PROTOCOLS:**
 
-1. **Deterministic event_id:** Generate from `SHA256(stream_id + cart_id)` → UUIDv5 format. Never use random UUID.
+1. **Deterministic event_id:** Generate from `SHA256(stream_id + cart_id)` â†’ UUIDv5 format. Never use random UUID.
 2. **Kafka Partition Key:** Use `cart_id` to ensure ordering per cart
 3. **XACK only after Kafka ACK:** Use `acks=all` Kafka config
 4. **Pending Message Handling:** Use `XAUTOCLAIM` for messages pending > 60 seconds
@@ -793,7 +793,7 @@ WHERE cart_id = $1 AND last_event_stream_id < $2;
 
 | Scenario | Expected |
 |----------|----------|
-| Cart ACTIVE > 30 days | status → ABANDONED, CART_ABANDONED event emitted |
+| Cart ACTIVE > 30 days | status â†’ ABANDONED, CART_ABANDONED event emitted |
 | Cart already ABANDONED | Skip |
 | Cart DELETED | Skip |
 | Crash after DB update, before Redis | Next run finds abandoned_event_published_at=NULL, replays |
@@ -870,18 +870,18 @@ services:
 
 | # | Scenario | Steps | Validation |
 |---|----------|-------|------------|
-| E2E-1 | Add Item Flow | POST item → GET cart → Check DB | Item in Redis, Kafka, PostgreSQL |
-| E2E-2 | Update Item Flow | Add item → Update qty → Read cart | Quantity accumulated, events ordered |
-| E2E-3 | Batch Delete Flow | Add 5 items → Delete 3 → Read | 2 items remain, 3 deleted events |
-| E2E-4 | Checkout Flow | Add items → ORDER_PAID → Read cart | Cart empty, CHECKED_OUT status |
-| E2E-5 | Cache Miss Recovery | Clear Redis → GET cart | DB → Redis → Response |
-| E2E-6 | Circuit Breaker | Mock Product Service down → GET | is_price_degraded=true |
+| E2E-1 | Add Item Flow | POST item â†’ GET cart â†’ Check DB | Item in Redis, Kafka, PostgreSQL |
+| E2E-2 | Update Item Flow | Add item â†’ Update qty â†’ Read cart | Quantity accumulated, events ordered |
+| E2E-3 | Batch Delete Flow | Add 5 items â†’ Delete 3 â†’ Read | 2 items remain, 3 deleted events |
+| E2E-4 | Checkout Flow | Add items â†’ ORDER_PAID â†’ Read cart | Cart empty, CHECKED_OUT status |
+| E2E-5 | Cache Miss Recovery | Clear Redis â†’ GET cart | DB â†’ Redis â†’ Response |
+| E2E-6 | Circuit Breaker | Mock Product Service down â†’ GET | is_price_degraded=true |
 | E2E-7 | Race Condition | 3 concurrent adds same SKU | Final qty = sum |
 | E2E-8 | Out-of-Order | Send older event after newer | Older ignored |
-| E2E-9 | Abandoned Cart | Inactive cart 30+ days → Cron runs | Status = ABANDONED |
+| E2E-9 | Abandoned Cart | Inactive cart 30+ days â†’ Cron runs | Status = ABANDONED |
 | E2E-10 | Idempotency | Send same event twice | Only one DB record |
 | E2E-11 | DLQ Routing | Kafka fails 5 times | Message in DLQ |
-| E2E-12 | Stream Memory | Add many items → Check Redis | No memory leak |
+| E2E-12 | Stream Memory | Add many items â†’ Check Redis | No memory leak |
 
 ### 4.3 Contract Testing with Product Service
 
@@ -1444,13 +1444,13 @@ This checklist maps every design requirement from source documents to implementa
 
 | # | Source Document | Sections Covered | Tasks Mapped |
 |---|----------------|------------------|--------------|
-| 1 | cart_caching_schema.md | §2-§3 | M2 |
-| 2 | cart_db_schema.md | §2-§4 | M5, M6 |
-| 3 | cart_events.md | §1-§3 | M1, M4, M5 |
-| 4 | cart_idempotency.md | §1-§3 | M5 |
-| 5 | cart_outbox_pattern.md | §1-§3 | M2, M4 |
-| 6 | cart_workers.md | §1-§7 | M4, M5, M6 |
-| 7 | cart_workflow.md | §1-§5 | M3 |
+| 1 | cart_caching_schema.md | Â§2-Â§3 | M2 |
+| 2 | cart_db_schema.md | Â§2-Â§4 | M5, M6 |
+| 3 | cart_events.md | Â§1-Â§3 | M1, M4, M5 |
+| 4 | cart_idempotency.md | Â§1-Â§3 | M5 |
+| 5 | cart_outbox_pattern.md | Â§1-Â§3 | M2, M4 |
+| 6 | cart_workers.md | Â§1-Â§7 | M4, M5, M6 |
+| 7 | cart_workflow.md | Â§1-Â§5 | M3 |
 
 ---
 
@@ -1460,20 +1460,20 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Rule | Source | Verified By | Status |
 |---|------|--------|------------|--------|
-| DR-01 | Redis keys MUST use Hash Tag `{cart:user:{user_id}}` | outbox_pattern.md §2.3 | Code review + Unit test | `[ ]` |
-| DR-02 | Lua script MUST NOT use MAXLEN on XADD | caching_schema.md §3.1 | Code review | `[ ]` |
-| DR-03 | Cache-hit reads MUST NOT call EXPIRE | caching_schema.md §2.3, workflow.md §3.1 | Integration test | `[ ]` |
-| DR-04 | Silent Rehydrate script MUST NOT call XADD | outbox_pattern.md §2.1 | Code review | `[ ]` |
-| DR-05 | Intent Index protocol MUST be followed (ZADD→Lua→ZADD→PUBLISH→ZREM) | outbox_pattern.md §2.2 | Integration test | `[ ]` |
-| DR-06 | stream_id is the ONLY ordering/idempotency key | idempotency.md §2 | Unit test | `[ ]` |
-| DR-07 | cart_id in DB/Events/Kafka equals Redis key exactly | caching_schema.md §2.1, db_schema.md §2.1 | Unit test | `[ ]` |
-| DR-08 | unit_price_at_add in separate DB column, NOT in product_snapshot | db_schema.md §2.2 | Code review | `[ ]` |
-| DR-09 | is_available=false MUST be written to Redis on product ban (no XADD) | caching_schema.md §2.2, workflow.md §3.1 | Integration test | `[ ]` |
-| DR-10 | Negative cache invalidated after every successful Write | caching_schema.md §3.1 | Unit test | `[ ]` |
-| DR-11 | No CASCADE DELETE on cart_items (virtual FK only) | db_schema.md §3 | Code review | `[ ]` |
-| DR-12 | Batch Delete ARGV layout differs from Add/Update ARGV | workflow.md §4.1 | Unit test | `[ ]` |
-| DR-13 | user_id normalized to string before Lua calls | events.md §3.1 | Unit test | `[ ]` |
-| DR-14 | Timestamps in milliseconds (not microseconds) | caching_schema.md §2.2 | Unit test | `[ ]` |
+| DR-01 | Redis keys MUST use Hash Tag `{cart:user:{user_id}}` | outbox_pattern.md Â§2.3 | Code review + Unit test | [X] |
+| DR-02 | Lua script MUST NOT use MAXLEN on XADD | caching_schema.md Â§3.1 | Code review | [ ] |
+| DR-03 | Cache-hit reads MUST NOT call EXPIRE | caching_schema.md Â§2.3, workflow.md Â§3.1 | Integration test | [ ] |
+| DR-04 | Silent Rehydrate script MUST NOT call XADD | outbox_pattern.md Â§2.1 | Code review | [ ] |
+| DR-05 | Intent Index protocol MUST be followed (ZADDâ†’Luaâ†’ZADDâ†’PUBLISHâ†’ZREM) | outbox_pattern.md Â§2.2 | Integration test | [ ] |
+| DR-06 | stream_id is the ONLY ordering/idempotency key | idempotency.md Â§2 | Unit test | [X] |
+| DR-07 | cart_id in DB/Events/Kafka equals Redis key exactly | caching_schema.md Â§2.1, db_schema.md Â§2.1 | Unit test | [X] |
+| DR-08 | unit_price_at_add in separate DB column, NOT in product_snapshot | db_schema.md Â§2.2 | Code review | [ ] |
+| DR-09 | is_available=false MUST be written to Redis on product ban (no XADD) | caching_schema.md Â§2.2, workflow.md Â§3.1 | Integration test | [ ] |
+| DR-10 | Negative cache invalidated after every successful Write | caching_schema.md Â§3.1 | Unit test | [X] |
+| DR-11 | No CASCADE DELETE on cart_items (virtual FK only) | db_schema.md Â§3 | Code review | [ ] |
+| DR-12 | Batch Delete ARGV layout differs from Add/Update ARGV | workflow.md Â§4.1 | Unit test | [ ] |
+| DR-13 | user_id normalized to string before Lua calls | events.md Â§3.1 | Unit test | [X] |
+| DR-14 | Timestamps in milliseconds (not microseconds) | caching_schema.md Â§2.2 | Unit test | [X] |
 
 ---
 
@@ -1483,74 +1483,74 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W1-01 | Accept `sku_id`, `quantity` from request body | workflow.md §2 | M3 | `[ ]` |
-| W1-02 | Extract `user_id` from `X-User-Id` header | workflow.md §2 | M3 | `[ ]` |
+| W1-01 | Accept `sku_id`, `quantity` from request body | workflow.md Â§2 | M3 | `[ ]` |
+| W1-02 | Extract `user_id` from `X-User-Id` header | workflow.md Â§2 | M3 | `[ ]` |
 | W1-03 | Validate `user_id` is not empty | - | M3 | `[ ]` |
-| W1-04 | Call Product Service gRPC `GetProductSku(sku_id)` | workflow.md §2 | M3 | `[ ]` |
-| W1-05 | Extract `promotional_price ?? original_price` as unit_price_at_add | workflow.md §2 | M3 | `[ ]` |
-| W1-06 | Map `main_image_url` to `image_url` | workflow.md §2 | M3 | `[ ]` |
-| W1-07 | Convert `variant_attributes` to display string | workflow.md §2 | M3 | `[ ]` |
-| W1-08 | Validate `sku_status` and `product_status` = ACTIVE | workflow.md §2 | M3 | `[ ]` |
-| W1-09 | Validate `display_quantity` sufficient for requested quantity | workflow.md §2 | M3 | `[ ]` |
-| W1-10 | Build JSON payload with all required fields | workflow.md §2 | M3 | `[ ]` |
-| W1-11 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W1-12 | Execute Add/Update Lua script | caching_schema.md §3.1 | M2 | `[ ]` |
-| W1-13 | Handle "Cart Full" error (max 50 SKUs) | caching_schema.md §3.1 | M2 | `[ ]` |
-| W1-14 | Handle "Quantity Invalid" error (step ≤ 0 for existing) | caching_schema.md §3.1 | M2 | `[ ]` |
-| W1-15 | Handle "Step Invalid" error | caching_schema.md §3.1 | M2 | `[ ]` |
-| W1-16 | Delete negative cache: `DEL cart:user:{id}:notfound` | caching_schema.md §3.1 | M2 | `[ ]` |
-| W1-17 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W1-18 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W1-19 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W1-20 | Return HTTP 200 with item details | workflow.md §2 | M3 | `[ ]` |
-| W1-21 | Event CART_ITEM_ADDED or CART_ITEM_UPDATED emitted | events.md §2.1-§2.2 | M2 | `[ ]` |
+| W1-04 | Call Product Service gRPC `GetProductSku(sku_id)` | workflow.md Â§2 | M3 | `[ ]` |
+| W1-05 | Extract `promotional_price ?? original_price` as unit_price_at_add | workflow.md Â§2 | M3 | `[ ]` |
+| W1-06 | Map `main_image_url` to `image_url` | workflow.md Â§2 | M3 | `[ ]` |
+| W1-07 | Convert `variant_attributes` to display string | workflow.md Â§2 | M3 | `[ ]` |
+| W1-08 | Validate `sku_status` and `product_status` = ACTIVE | workflow.md Â§2 | M3 | `[ ]` |
+| W1-09 | Validate `display_quantity` sufficient for requested quantity | workflow.md Â§2 | M3 | `[ ]` |
+| W1-10 | Build JSON payload with all required fields | workflow.md Â§2 | M3 | `[ ]` |
+| W1-11 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W1-12 | Execute Add/Update Lua script | caching_schema.md Â§3.1 | M2 | `[ ]` |
+| W1-13 | Handle "Cart Full" error (max 50 SKUs) | caching_schema.md Â§3.1 | M2 | `[ ]` |
+| W1-14 | Handle "Quantity Invalid" error (step â‰¤ 0 for existing) | caching_schema.md Â§3.1 | M2 | `[ ]` |
+| W1-15 | Handle "Step Invalid" error | caching_schema.md Â§3.1 | M2 | `[ ]` |
+| W1-16 | Delete negative cache: `DEL cart:user:{id}:notfound` | caching_schema.md Â§3.1 | M2 | `[ ]` |
+| W1-17 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W1-18 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W1-19 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W1-20 | Return HTTP 200 with item details | workflow.md Â§2 | M3 | `[ ]` |
+| W1-21 | Event CART_ITEM_ADDED or CART_ITEM_UPDATED emitted | events.md Â§2.1-Â§2.2 | M2 | `[ ]` |
 
 #### D.3.2 GET /api/v1/carts/mine (Read Flow)
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W2-01 | Check negative cache `cart:user:{id}:notfound` | workflow.md §3 | M3 | `[ ]` |
-| W2-02 | If negative cache hit, return empty cart immediately | workflow.md §3 | M3 | `[ ]` |
-| W2-03 | Execute `HGETALL cart_key` | caching_schema.md §3.2 | M2 | `[ ]` |
-| W2-04 | **Cache Hit Path:** Decode Redis items | workflow.md §3.1 | M3 | `[ ]` |
-| W2-05 | Collect all `sku_id` from Redis values | workflow.md §3.1 | M3 | `[ ]` |
-| W2-06 | Call gRPC `GetBatchProductSkus` (timeout 200ms) | workflow.md §3.1 | M3 | `[ ]` |
-| W2-07 | Circuit Breaker wraps gRPC call | workflow.md §5 | M3 | `[ ]` |
-| W2-08 | Merge `current_price = promotional_price ?? original_price` | workflow.md §3.1 | M3 | `[ ]` |
-| W2-09 | If `is_available=false` from gRPC → `HSET` to Redis (no EXPIRE) | workflow.md §3.1 | M3 | `[ ]` |
-| W2-10 | If gRPC fails → set `is_price_degraded=true` | workflow.md §3.1 | M3 | `[ ]` |
-| W2-11 | **Cache Miss Path:** Query `carts` table for status | workflow.md §3.2 | M5 | `[ ]` |
-| W2-12 | If status DELETED/CHECKED_OUT → return empty cart | workflow.md §3.2 | M3 | `[ ]` |
-| W2-13 | Query `cart_items` for cold data | workflow.md §3.2 | M5 | `[ ]` |
-| W2-14 | If DB empty → set negative cache TTL 60s, return empty | workflow.md §3.2 | M3 | `[ ]` |
-| W2-15 | Call gRPC for product data (with Circuit Breaker) | workflow.md §3.2 | M3 | `[ ]` |
-| W2-16 | If gRPC success → merge `is_available` into items | workflow.md §3.2 | M3 | `[ ]` |
-| W2-17 | If gRPC fail → keep DB `is_available`, set degraded=true | workflow.md §3.2 | M3 | `[ ]` |
-| W2-18 | Preserve `unit_price_at_add` and `added_at` from DB | workflow.md §3.2 | M3 | `[ ]` |
-| W2-19 | Execute Silent Rehydrate Lua (no XADD) | caching_schema.md §3.6 | M2 | `[ ]` |
-| W2-20 | Rehydrate sets EXPIRE 7 days | workflow.md §3.2 | M2 | `[ ]` |
-| W2-21 | Group items by platform_id | workflow.md §3.3 | M3 | `[ ]` |
-| W2-22 | Sort by `latest_item_at DESC`, items by `added_at DESC` | workflow.md §3.3 | M3 | `[ ]` |
-| W2-23 | Return response with `is_price_degraded` flag | workflow.md §3.3 | M3 | `[ ]` |
+| W2-01 | Check negative cache `cart:user:{id}:notfound` | workflow.md Â§3 | M3 | `[ ]` |
+| W2-02 | If negative cache hit, return empty cart immediately | workflow.md Â§3 | M3 | `[ ]` |
+| W2-03 | Execute `HGETALL cart_key` | caching_schema.md Â§3.2 | M2 | `[ ]` |
+| W2-04 | **Cache Hit Path:** Decode Redis items | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-05 | Collect all `sku_id` from Redis values | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-06 | Call gRPC `GetBatchProductSkus` (timeout 200ms) | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-07 | Circuit Breaker wraps gRPC call | workflow.md Â§5 | M3 | `[ ]` |
+| W2-08 | Merge `current_price = promotional_price ?? original_price` | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-09 | If `is_available=false` from gRPC â†’ `HSET` to Redis (no EXPIRE) | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-10 | If gRPC fails â†’ set `is_price_degraded=true` | workflow.md Â§3.1 | M3 | `[ ]` |
+| W2-11 | **Cache Miss Path:** Query `carts` table for status | workflow.md Â§3.2 | M5 | `[ ]` |
+| W2-12 | If status DELETED/CHECKED_OUT â†’ return empty cart | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-13 | Query `cart_items` for cold data | workflow.md Â§3.2 | M5 | `[ ]` |
+| W2-14 | If DB empty â†’ set negative cache TTL 60s, return empty | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-15 | Call gRPC for product data (with Circuit Breaker) | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-16 | If gRPC success â†’ merge `is_available` into items | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-17 | If gRPC fail â†’ keep DB `is_available`, set degraded=true | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-18 | Preserve `unit_price_at_add` and `added_at` from DB | workflow.md Â§3.2 | M3 | `[ ]` |
+| W2-19 | Execute Silent Rehydrate Lua (no XADD) | caching_schema.md Â§3.6 | M2 | `[ ]` |
+| W2-20 | Rehydrate sets EXPIRE 7 days | workflow.md Â§3.2 | M2 | `[ ]` |
+| W2-21 | Group items by platform_id | workflow.md Â§3.3 | M3 | `[ ]` |
+| W2-22 | Sort by `latest_item_at DESC`, items by `added_at DESC` | workflow.md Â§3.3 | M3 | `[ ]` |
+| W2-23 | Return response with `is_price_degraded` flag | workflow.md Â§3.3 | M3 | `[ ]` |
 
 #### D.3.3 DELETE /api/v1/carts/items (Batch Delete Flow)
 
 | # | Task | Source | Module | Status |
 |---|------|--------|--------|--------|
-| W3-01 | Accept `cart_id` and `sku_ids[]` from request | workflow.md §4 | M3 | `[ ]` |
-| W3-02 | Validate `cart_id` format | workflow.md §4 | M3 | `[ ]` |
-| W3-03 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W3-04 | Execute Batch Delete Lua script | caching_schema.md §3.3 | M2 | `[ ]` |
-| W3-05 | Delete only SKUs that exist in cart | caching_schema.md §3.3 | M2 | `[ ]` |
-| W3-06 | Emit CART_ITEM_DELETED per deleted SKU | events.md §2.3 | M2 | `[ ]` |
-| W3-07 | If cart becomes empty → DEL cart key | caching_schema.md §3.3 | M2 | `[ ]` |
-| W3-08 | If user manual delete → emit CART_CLEARED | events.md §2.4 | M2 | `[ ]` |
-| W3-09 | If ORDER_PAID + empty → emit CART_CHECKED_OUT | events.md §2.5 | M2 | `[ ]` |
-| W3-10 | Partial checkout does NOT emit CART_CHECKED_OUT | caching_schema.md §3.3 | M2 | `[ ]` |
-| W3-11 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W3-12 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W3-13 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md §2.2 | M2 | `[ ]` |
-| W3-14 | Return HTTP 200 with deleted_count | workflow.md §4 | M3 | `[ ]` |
+| W3-01 | Accept `cart_id` and `sku_ids[]` from request | workflow.md Â§4 | M3 | `[ ]` |
+| W3-02 | Validate `cart_id` format | workflow.md Â§4 | M3 | `[ ]` |
+| W3-03 | Pre-register intent: `ZADD outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W3-04 | Execute Batch Delete Lua script | caching_schema.md Â§3.3 | M2 | `[ ]` |
+| W3-05 | Delete only SKUs that exist in cart | caching_schema.md Â§3.3 | M2 | `[ ]` |
+| W3-06 | Emit CART_ITEM_DELETED per deleted SKU | events.md Â§2.3 | M2 | `[ ]` |
+| W3-07 | If cart becomes empty â†’ DEL cart key | caching_schema.md Â§3.3 | M2 | `[ ]` |
+| W3-08 | If user manual delete â†’ emit CART_CLEARED | events.md Â§2.4 | M2 | `[ ]` |
+| W3-09 | If ORDER_PAID + empty â†’ emit CART_CHECKED_OUT | events.md Â§2.5 | M2 | `[ ]` |
+| W3-10 | Partial checkout does NOT emit CART_CHECKED_OUT | caching_schema.md Â§3.3 | M2 | `[ ]` |
+| W3-11 | Publish path: `ZADD active_outbox_streams` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W3-12 | Publish path: `PUBLISH outbox_notifications` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W3-13 | Clear intent: `ZREM outbox_publish_intents` | outbox_pattern.md Â§2.2 | M2 | `[ ]` |
+| W3-14 | Return HTTP 200 with deleted_count | workflow.md Â§4 | M3 | `[ ]` |
 
 ---
 
@@ -1560,36 +1560,36 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Event | Source | Payload Fields | Status |
 |---|-------|--------|----------------|--------|
-| E-01 | CART_ITEM_ADDED | events.md §2.1 | cart_id, sku_id, user_id, product_id, quantity, unit_price_at_add, product_name, variant_info, image_url, is_available, added_at, updated_at | `[ ]` |
-| E-02 | CART_ITEM_UPDATED | events.md §2.2 | Same as CART_ITEM_ADDED | `[ ]` |
-| E-03 | CART_ITEM_DELETED | events.md §2.3 | cart_id, sku_id, user_id, deleted_at (NO product_id!) | `[ ]` |
-| E-04 | CART_CLEARED | events.md §2.4 | cart_id, user_id, cleared_at | `[ ]` |
-| E-05 | CART_CHECKED_OUT | events.md §2.5 | cart_id, user_id, checked_out_at | `[ ]` |
-| E-06 | CART_ABANDONED | events.md §2.6 | cart_id, user_id, abandoned_at (ms epoch) | `[ ]` |
+| E-01 | CART_ITEM_ADDED | events.md Â§2.1 | cart_id, sku_id, user_id, product_id, quantity, unit_price_at_add, product_name, variant_info, image_url, is_available, added_at, updated_at | `[ ]` |
+| E-02 | CART_ITEM_UPDATED | events.md Â§2.2 | Same as CART_ITEM_ADDED | `[ ]` |
+| E-03 | CART_ITEM_DELETED | events.md Â§2.3 | cart_id, sku_id, user_id, deleted_at (NO product_id!) | `[ ]` |
+| E-04 | CART_CLEARED | events.md Â§2.4 | cart_id, user_id, cleared_at | `[ ]` |
+| E-05 | CART_CHECKED_OUT | events.md Â§2.5 | cart_id, user_id, checked_out_at | `[ ]` |
+| E-06 | CART_ABANDONED | events.md Â§2.6 | cart_id, user_id, abandoned_at (ms epoch) | `[ ]` |
 
 #### D.4.2 Events Consumed by Cart Service
 
 | # | Event | Source | Consumer | Action | Status |
 |---|-------|--------|----------|--------|--------|
-| C-01 | ORDER_PAID | events.md §3.1 | Order Event Consumer (M6) | Extract user_id, cart_id, sku_ids, call Lua Batch Delete | `[ ]` |
-| C-02 | ORDER_PAID validation | events.md §3.1 | Order Event Consumer (M6) | cart_id must match regex `^\{cart:user:[^{}]+\}$` | `[ ]` |
-| C-03 | ORDER_PAID idempotency | events.md §3.1 | Order Event Consumer (M6) | `SET cart:idemp:order_paid:{order_id} PROCESSING NX EX 300` | `[ ]` |
-| C-04 | ORDER_PAID user_id normalize | events.md §3.1 | Order Event Consumer (M6) | `strconv.FormatInt(user_id)` to string | `[ ]` |
+| C-01 | ORDER_PAID | events.md Â§3.1 | Order Event Consumer (M6) | Extract user_id, cart_id, sku_ids, call Lua Batch Delete | `[ ]` |
+| C-02 | ORDER_PAID validation | events.md Â§3.1 | Order Event Consumer (M6) | cart_id must match regex `^\{cart:user:[^{}]+\}$` | `[ ]` |
+| C-03 | ORDER_PAID idempotency | events.md Â§3.1 | Order Event Consumer (M6) | `SET cart:idemp:order_paid:{order_id} PROCESSING NX EX 300` | `[ ]` |
+| C-04 | ORDER_PAID user_id normalize | events.md Â§3.1 | Order Event Consumer (M6) | `strconv.FormatInt(user_id)` to string | `[ ]` |
 
 #### D.4.3 Kafka Message Headers
 
 | # | Header Field | Source | Set By | Status |
 |---|--------------|--------|--------|--------|
-| H-01 | event_id | events.md §1 | Relay Worker (deterministic from stream_id + cart_id) | `[ ]` |
-| H-02 | event_type | events.md §1 | Lua Script | `[ ]` |
-| H-03 | aggregate_type | events.md §1 | Relay Worker ("Cart") | `[ ]` |
-| H-04 | aggregate_id | events.md §1 | Relay Worker (cart_id) | `[ ]` |
-| H-05 | correlation_id | events.md §1 | From upstream | `[ ]` |
-| H-06 | timestamp | events.md §1 | Relay Worker (ISO 8601 UTC) | `[ ]` |
-| H-07 | source | events.md §1 | Relay Worker ("cart-service") | `[ ]` |
-| H-08 | stream_id | events.md §1 | Relay Worker (from Redis msg.ID) | `[ ]` |
-| H-09 | stream_timestamp_ms | events.md §1 | Relay Worker (parsed from stream_id) | `[ ]` |
-| H-10 | event_sequence | events.md §1 | Relay Worker (parsed from stream_id) | `[ ]` |
+| H-01 | event_id | events.md Â§1 | Relay Worker (deterministic from stream_id + cart_id) | `[ ]` |
+| H-02 | event_type | events.md Â§1 | Lua Script | `[ ]` |
+| H-03 | aggregate_type | events.md Â§1 | Relay Worker ("Cart") | `[ ]` |
+| H-04 | aggregate_id | events.md Â§1 | Relay Worker (cart_id) | `[ ]` |
+| H-05 | correlation_id | events.md Â§1 | From upstream | `[ ]` |
+| H-06 | timestamp | events.md Â§1 | Relay Worker (ISO 8601 UTC) | `[ ]` |
+| H-07 | source | events.md Â§1 | Relay Worker ("cart-service") | `[ ]` |
+| H-08 | stream_id | events.md Â§1 | Relay Worker (from Redis msg.ID) | `[ ]` |
+| H-09 | stream_timestamp_ms | events.md Â§1 | Relay Worker (parsed from stream_id) | `[ ]` |
+| H-10 | event_sequence | events.md Â§1 | Relay Worker (parsed from stream_id) | `[ ]` |
 
 ---
 
@@ -1597,27 +1597,27 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Script | Location | Key Validations | Status |
 |---|--------|----------|-----------------|--------|
-| L-01 | add_update.lua | caching_schema.md §3.1 | KEYS[1]=cart_key, KEYS[2]=outbox_stream (same hash tag) | `[ ]` |
-| L-02 | add_update.lua | caching_schema.md §3.1 | ARGV[1]=sku_id, ARGV[2]=payload_json, ARGV[3]=max_qty, ARGV[4]=max_skus, ARGV[5]=step, ARGV[6]=event_time_ms, ARGV[7]=user_id | `[ ]` |
-| L-03 | add_update.lua | caching_schema.md §3.1 | Validates step ≠ 0 | `[ ]` |
-| L-04 | add_update.lua | caching_schema.md §3.1 | Validates cart not full (HLEN < max_skus) | `[ ]` |
-| L-05 | add_update.lua | caching_schema.md §3.1 | Caps quantity at max_qty (100) | `[ ]` |
-| L-06 | add_update.lua | caching_schema.md §3.1 | Prevents decrement non-existing item | `[ ]` |
-| L-07 | add_update.lua | caching_schema.md §3.1 | Preserves added_at on update | `[ ]` |
-| L-08 | add_update.lua | caching_schema.md §3.1 | Uses tostring() for timestamps in JSON | `[ ]` |
-| L-09 | add_update.lua | caching_schema.md §3.1 | Sets EXPIRE 7 days | `[ ]` |
-| L-10 | add_update.lua | caching_schema.md §3.1 | XADD without MAXLEN | `[ ]` |
-| L-11 | batch_delete.lua | caching_schema.md §3.3 | KEYS[1]=cart_key, KEYS[2]=outbox_stream | `[ ]` |
-| L-12 | batch_delete.lua | caching_schema.md §3.3 | ARGV[1]=current_timestamp_ms, ARGV[2]=clear_event_type, ARGV[3]=user_id, ARGV[4]=sku_ids_json | `[ ]` |
-| L-13 | batch_delete.lua | caching_schema.md §3.3 | Only deletes existing SKUs | `[ ]` |
-| L-14 | batch_delete.lua | caching_schema.md §3.3 | Emits CART_ITEM_DELETED per deleted SKU | `[ ]` |
-| L-15 | batch_delete.lua | caching_schema.md §3.3 | DEL cart key when HLEN==0 | `[ ]` |
-| L-16 | batch_delete.lua | caching_schema.md §3.3 | Emits CART_CLEARED or CART_CHECKED_OUT when empty | `[ ]` |
-| L-17 | silent_rehydrate.lua | caching_schema.md §3.6 | KEYS[1]=cart_key only (NO outbox stream) | `[ ]` |
-| L-18 | silent_rehydrate.lua | caching_schema.md §3.6 | NO XADD (silent) | `[ ]` |
-| L-19 | silent_rehydrate.lua | caching_schema.md §3.6 | Only HSET when field not exists or incoming.updated_at > current.updated_at | `[ ]` |
-| L-20 | silent_rehydrate.lua | caching_schema.md §3.6 | Sets EXPIRE 7 days | `[ ]` |
-| L-21 | stream_trim.lua | workers.md §5 | Atomic XLEN check before DEL | `[ ]` |
+| L-01 | add_update.lua | internal/redis/scripts/add_update.lua | KEYS[1]=cart_key, KEYS[2]=outbox_stream (same hash tag) | [X] |
+| L-02 | add_update.lua | internal/redis/scripts/add_update.lua | ARGV[1]=sku_id, ARGV[2]=payload_json, ARGV[3]=max_qty, ARGV[4]=max_skus, ARGV[5]=step, ARGV[6]=event_time_ms, ARGV[7]=user_id | [X] |
+| L-03 | add_update.lua | internal/redis/scripts/add_update.lua | Validates step â‰  0 | [X] |
+| L-04 | add_update.lua | internal/redis/scripts/add_update.lua | Validates cart not full (HLEN < max_skus) | [X] |
+| L-05 | add_update.lua | internal/redis/scripts/add_update.lua | Caps quantity at max_qty (100) | [X] |
+| L-06 | add_update.lua | internal/redis/scripts/add_update.lua | Prevents decrement non-existing item | [X] |
+| L-07 | add_update.lua | internal/redis/scripts/add_update.lua | Preserves added_at on update | [X] |
+| L-08 | add_update.lua | internal/redis/scripts/add_update.lua | Uses tostring() for timestamps in JSON | [X] |
+| L-09 | add_update.lua | internal/redis/scripts/add_update.lua | Sets EXPIRE 7 days | [X] |
+| L-10 | add_update.lua | internal/redis/scripts/add_update.lua | XADD without MAXLEN | [X] |
+| L-11 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | KEYS[1]=cart_key, KEYS[2]=outbox_stream | [X] |
+| L-12 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | ARGV[1]=current_timestamp_ms, ARGV[2]=clear_event_type, ARGV[3]=user_id, ARGV[4]=sku_ids_json | [X] |
+| L-13 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | Only deletes existing SKUs | [X] |
+| L-14 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | Emits CART_ITEM_DELETED per deleted SKU | [X] |
+| L-15 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | DEL cart key when HLEN==0 | [X] |
+| L-16 | batch_delete.lua | internal/redis/scripts/batch_delete.lua | Emits CART_CLEARED or CART_CHECKED_OUT when empty | [X] |
+| L-17 | silent_rehydrate.lua | internal/redis/scripts/silent_rehydrate.lua | KEYS[1]=cart_key only (NO outbox stream) | [X] |
+| L-18 | silent_rehydrate.lua | internal/redis/scripts/silent_rehydrate.lua | NO XADD (silent) | [X] |
+| L-19 | silent_rehydrate.lua | internal/redis/scripts/silent_rehydrate.lua | Only HSET when field not exists or incoming.updated_at > current.updated_at | [X] |
+| L-20 | silent_rehydrate.lua | internal/redis/scripts/silent_rehydrate.lua | Sets EXPIRE 7 days | [X] |
+| L-21 | stream_trim.lua | internal/redis/scripts/stream_trim.lua | Atomic XLEN check before DEL | [X] |
 
 ---
 
@@ -1627,30 +1627,30 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Table/Column | Source | Status |
 |---|--------------|--------|--------|
-| DB-01 | carts.cart_id (PK) = Redis key | db_schema.md §2.1 | `[ ]` |
-| DB-02 | carts.user_id stored directly (not parsed from cart_id) | db_schema.md §2.1 | `[ ]` |
-| DB-03 | carts.status: ACTIVE, ABANDONED, DELETED, CHECKED_OUT | db_schema.md §2.1 | `[ ]` |
-| DB-04 | carts.last_event_stream_id for ordering guard | db_schema.md §2.1 | `[ ]` |
-| DB-05 | carts.abandoned_event_published_at for reconcile | db_schema.md §2.1 | `[ ]` |
-| DB-06 | cart_items.item_id = cart_id + ':' + sku_id (PK) | db_schema.md §2.2 | `[ ]` |
-| DB-07 | cart_items.unit_price_at_add separate column | db_schema.md §2.2 | `[ ]` |
-| DB-08 | cart_items.product_snapshot JSONB (NO unit_price_at_add) | db_schema.md §2.2 | `[ ]` |
-| DB-09 | cart_items.redis_stream_id for idempotency guard | db_schema.md §2.2 | `[ ]` |
-| DB-10 | cart_items has virtual FK (no CASCADE DELETE) | db_schema.md §3 | `[ ]` |
-| DB-11 | Indexes on cart_id, user_id, status, updated_at | db_schema.md §2 | `[ ]` |
+| DB-01 | carts.cart_id (PK) = Redis key | db_schema.md Â§2.1 | `[ ]` |
+| DB-02 | carts.user_id stored directly (not parsed from cart_id) | db_schema.md Â§2.1 | `[ ]` |
+| DB-03 | carts.status: ACTIVE, ABANDONED, DELETED, CHECKED_OUT | db_schema.md Â§2.1 | `[ ]` |
+| DB-04 | carts.last_event_stream_id for ordering guard | db_schema.md Â§2.1 | `[ ]` |
+| DB-05 | carts.abandoned_event_published_at for reconcile | db_schema.md Â§2.1 | `[ ]` |
+| DB-06 | cart_items.item_id = cart_id + ':' + sku_id (PK) | db_schema.md Â§2.2 | `[ ]` |
+| DB-07 | cart_items.unit_price_at_add separate column | db_schema.md Â§2.2 | `[ ]` |
+| DB-08 | cart_items.product_snapshot JSONB (NO unit_price_at_add) | db_schema.md Â§2.2 | `[ ]` |
+| DB-09 | cart_items.redis_stream_id for idempotency guard | db_schema.md Â§2.2 | `[ ]` |
+| DB-10 | cart_items has virtual FK (no CASCADE DELETE) | db_schema.md Â§3 | `[ ]` |
+| DB-11 | Indexes on cart_id, user_id, status, updated_at | db_schema.md Â§2 | `[ ]` |
 
 #### D.6.2 SQL Operations
 
 | # | Operation | Source | SQL Pattern | Status |
 |---|-----------|--------|-------------|--------|
-| SQL-01 | Upsert cart_items | idempotency.md §2.3 | INSERT ... ON CONFLICT (item_id) DO UPDATE SET ... WHERE redis_stream_id < EXCLUDED.redis_stream_id | `[ ]` |
-| SQL-02 | Upsert carts | idempotency.md §2.5 | INSERT ... ON CONFLICT (cart_id) DO UPDATE SET status='ACTIVE' WHERE last_event_stream_id < EXCLUDED | `[ ]` |
-| SQL-03 | Hard delete cart_items | idempotency.md §2.4 | DELETE FROM cart_items WHERE item_id = ? AND redis_stream_id < ? | `[ ]` |
-| SQL-04 | Update carts DELETED | idempotency.md §2.5 | UPDATE carts SET status='DELETED' WHERE cart_id=? AND last_event_stream_id < ? | `[ ]` |
-| SQL-05 | Update carts CHECKED_OUT | idempotency.md §2.5 | UPDATE carts SET status='CHECKED_OUT' WHERE cart_id=? AND last_event_stream_id < ? | `[ ]` |
-| SQL-06 | Hard delete carts | db_schema.md §4 | BEGIN; DELETE cart_items; DELETE carts; COMMIT; | `[ ]` |
-| SQL-07 | Batch upsert cart_items | workers.md §2 | INSERT multiple VALUES, single ON CONFLICT | `[ ]` |
-| SQL-08 | Batch delete cart_items | workers.md §2 | DELETE WHERE item_id IN (...) | `[ ]` |
+| SQL-01 | Upsert cart_items | idempotency.md Â§2.3 | INSERT ... ON CONFLICT (item_id) DO UPDATE SET ... WHERE redis_stream_id < EXCLUDED.redis_stream_id | `[ ]` |
+| SQL-02 | Upsert carts | idempotency.md Â§2.5 | INSERT ... ON CONFLICT (cart_id) DO UPDATE SET status='ACTIVE' WHERE last_event_stream_id < EXCLUDED | `[ ]` |
+| SQL-03 | Hard delete cart_items | idempotency.md Â§2.4 | DELETE FROM cart_items WHERE item_id = ? AND redis_stream_id < ? | `[ ]` |
+| SQL-04 | Update carts DELETED | idempotency.md Â§2.5 | UPDATE carts SET status='DELETED' WHERE cart_id=? AND last_event_stream_id < ? | `[ ]` |
+| SQL-05 | Update carts CHECKED_OUT | idempotency.md Â§2.5 | UPDATE carts SET status='CHECKED_OUT' WHERE cart_id=? AND last_event_stream_id < ? | `[ ]` |
+| SQL-06 | Hard delete carts | db_schema.md Â§4 | BEGIN; DELETE cart_items; DELETE carts; COMMIT; | `[ ]` |
+| SQL-07 | Batch upsert cart_items | workers.md Â§2 | INSERT multiple VALUES, single ON CONFLICT | `[ ]` |
+| SQL-08 | Batch delete cart_items | workers.md Â§2 | DELETE WHERE item_id IN (...) | `[ ]` |
 
 ---
 
@@ -1660,107 +1660,107 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| OR-01 | Subscribe to `outbox_notifications` Pub/Sub channel | workers.md §1 | `[ ]` |
-| OR-02 | ZSET Fallback worker runs every 30 seconds | workers.md §1 | `[ ]` |
-| OR-03 | Intent Recovery worker runs every 30 seconds | workers.md §1 | `[ ]` |
-| OR-04 | Intent Recovery: check XLEN > 0 before publish | workers.md §1 | `[ ]` |
-| OR-05 | Intent Recovery: ZREM intent on empty stream | workers.md §1 | `[ ]` |
-| OR-06 | XREADGROUP with COUNT 50 | workers.md §1 | `[ ]` |
-| OR-07 | Auto-create consumer group if NOGROUP | workers.md §1 | `[ ]` |
-| OR-08 | Add Kafka headers (event_id, timestamp, source, stream_id, etc.) | events.md §1, workers.md §1 | `[ ]` |
-| OR-09 | Deterministic event_id (not random UUID) | outbox_pattern.md §2.1 | `[ ]` |
-| OR-10 | Produce to `t.cart.events` with cart_id as partition key | workers.md §1 | `[ ]` |
-| OR-11 | XACK only after Kafka ACK (acks=all) | workers.md §1 | `[ ]` |
-| OR-12 | XAUTOCLAIM for pending messages > 60 seconds | workers.md §1 | `[ ]` |
-| OR-13 | Retry up to 5 times before DLQ | workers.md §1 | `[ ]` |
-| OR-14 | Route to `cart_outbox_dlq` after max retries | workers.md §1 | `[ ]` |
+| OR-01 | Subscribe to `outbox_notifications` Pub/Sub channel | workers.md Â§1 | `[ ]` |
+| OR-02 | ZSET Fallback worker runs every 30 seconds | workers.md Â§1 | `[ ]` |
+| OR-03 | Intent Recovery worker runs every 30 seconds | workers.md Â§1 | `[ ]` |
+| OR-04 | Intent Recovery: check XLEN > 0 before publish | workers.md Â§1 | `[ ]` |
+| OR-05 | Intent Recovery: ZREM intent on empty stream | workers.md Â§1 | `[ ]` |
+| OR-06 | XREADGROUP with COUNT 50 | workers.md Â§1 | `[ ]` |
+| OR-07 | Auto-create consumer group if NOGROUP | workers.md Â§1 | `[ ]` |
+| OR-08 | Add Kafka headers (event_id, timestamp, source, stream_id, etc.) | events.md Â§1, workers.md Â§1 | `[ ]` |
+| OR-09 | Deterministic event_id (not random UUID) | outbox_pattern.md Â§2.1 | `[ ]` |
+| OR-10 | Produce to `t.cart.events` with cart_id as partition key | workers.md Â§1 | `[ ]` |
+| OR-11 | XACK only after Kafka ACK (acks=all) | workers.md Â§1 | `[ ]` |
+| OR-12 | XAUTOCLAIM for pending messages > 60 seconds | workers.md Â§1 | `[ ]` |
+| OR-13 | Retry up to 5 times before DLQ | workers.md Â§1 | `[ ]` |
+| OR-14 | Route to `cart_outbox_dlq` after max retries | workers.md Â§1 | `[ ]` |
 
 #### D.7.2 Postgres Sync Worker
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| PS-01 | Consumer group: cart-db-sync | workers.md §2 | `[ ]` |
-| PS-02 | Poll batch of 50 events | workers.md §2 | `[ ]` |
-| PS-03 | Group events by cart_id | workers.md §2 | `[ ]` |
-| PS-04 | Process each cart_id in separate transaction | workers.md §2 | `[ ]` |
-| PS-05 | Commit offset only after ALL transactions succeed | workers.md §2 | `[ ]` |
-| PS-06 | Retry failed cart transaction 3 times | workers.md §2 | `[ ]` |
-| PS-07 | Push to DLQ after 3 retries, commit offset | workers.md §2 | `[ ]` |
-| PS-08 | Handle CART_ITEM_ADDED/UPDATED: upsert + status=ACTIVE | workers.md §2 | `[ ]` |
-| PS-09 | Handle CART_ITEM_DELETED: hard delete | workers.md §2 | `[ ]` |
-| PS-10 | Handle CART_CLEARED: update status=DELETED | workers.md §2 | `[ ]` |
-| PS-11 | Handle CART_CHECKED_OUT: update status=CHECKED_OUT | workers.md §2 | `[ ]` |
-| PS-12 | All status updates guarded by stream_id | workers.md §2 | `[ ]` |
+| PS-01 | Consumer group: cart-db-sync | workers.md Â§2 | `[ ]` |
+| PS-02 | Poll batch of 50 events | workers.md Â§2 | `[ ]` |
+| PS-03 | Group events by cart_id | workers.md Â§2 | `[ ]` |
+| PS-04 | Process each cart_id in separate transaction | workers.md Â§2 | `[ ]` |
+| PS-05 | Commit offset only after ALL transactions succeed | workers.md Â§2 | `[ ]` |
+| PS-06 | Retry failed cart transaction 3 times | workers.md Â§2 | `[ ]` |
+| PS-07 | Push to DLQ after 3 retries, commit offset | workers.md Â§2 | `[ ]` |
+| PS-08 | Handle CART_ITEM_ADDED/UPDATED: upsert + status=ACTIVE | workers.md Â§2 | `[ ]` |
+| PS-09 | Handle CART_ITEM_DELETED: hard delete | workers.md Â§2 | `[ ]` |
+| PS-10 | Handle CART_CLEARED: update status=DELETED | workers.md Â§2 | `[ ]` |
+| PS-11 | Handle CART_CHECKED_OUT: update status=CHECKED_OUT | workers.md Â§2 | `[ ]` |
+| PS-12 | All status updates guarded by stream_id | workers.md Â§2 | `[ ]` |
 
 #### D.7.3 Abandoned Cart Marker
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| AC-01 | Cron schedule: 2:00 AM daily | workers.md §3 | `[ ]` |
-| AC-02 | Scan carts: status=ACTIVE, updated_at < 30 days | workers.md §3 | `[ ]` |
-| AC-03 | Process in batches of 1000 | workers.md §3 | `[ ]` |
-| AC-04 | Update status=ABANDONED, abandoned_event_published_at=NULL | workers.md §3 | `[ ]` |
-| AC-05 | Pre-register intent to outbox_publish_intents | note.txt §10 | `[ ]` |
-| AC-06 | XADD CART_ABANDONED to Redis Stream | workers.md §3 | `[ ]` |
-| AC-07 | Publish path: ZADD + PUBLISH + ZREM | note.txt §10 | `[ ]` |
-| AC-08 | Set abandoned_event_published_at after Redis success | workers.md §3 | `[ ]` |
-| AC-09 | Reconcile: find status=ABANDONED AND abandoned_event_published_at IS NULL | workers.md §3 | `[ ]` |
-| AC-10 | Reconcile: publish CART_ABANDONED for missing events | workers.md §3 | `[ ]` |
+| AC-01 | Cron schedule: 2:00 AM daily | workers.md Â§3 | `[ ]` |
+| AC-02 | Scan carts: status=ACTIVE, updated_at < 30 days | workers.md Â§3 | `[ ]` |
+| AC-03 | Process in batches of 1000 | workers.md Â§3 | `[ ]` |
+| AC-04 | Update status=ABANDONED, abandoned_event_published_at=NULL | workers.md Â§3 | `[ ]` |
+| AC-05 | Pre-register intent to outbox_publish_intents | note.txt Â§10 | `[ ]` |
+| AC-06 | XADD CART_ABANDONED to Redis Stream | workers.md Â§3 | `[ ]` |
+| AC-07 | Publish path: ZADD + PUBLISH + ZREM | note.txt Â§10 | `[ ]` |
+| AC-08 | Set abandoned_event_published_at after Redis success | workers.md Â§3 | `[ ]` |
+| AC-09 | Reconcile: find status=ABANDONED AND abandoned_event_published_at IS NULL | workers.md Â§3 | `[ ]` |
+| AC-10 | Reconcile: publish CART_ABANDONED for missing events | workers.md Â§3 | `[ ]` |
 
 #### D.7.4 Data Archival Cleaner
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| AR-01 | Cron schedule: 3:00 AM Sunday | workers.md §4 | `[ ]` |
-| AR-02 | Delete DELETED/CHECKED_OUT > 3 months | workers.md §4 | `[ ]` |
-| AR-03 | Delete ABANDONED > 6 months | workers.md §4 | `[ ]` |
-| AR-04 | Delete cart_items FIRST, then carts | workers.md §4 | `[ ]` |
-| AR-05 | All deletes in transaction | workers.md §4 | `[ ]` |
+| AR-01 | Cron schedule: 3:00 AM Sunday | workers.md Â§4 | `[ ]` |
+| AR-02 | Delete DELETED/CHECKED_OUT > 3 months | workers.md Â§4 | `[ ]` |
+| AR-03 | Delete ABANDONED > 6 months | workers.md Â§4 | `[ ]` |
+| AR-04 | Delete cart_items FIRST, then carts | workers.md Â§4 | `[ ]` |
+| AR-05 | All deletes in transaction | workers.md Â§4 | `[ ]` |
 
 #### D.7.5 Stream Trimmer
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| ST-01 | Run every 5 minutes | workers.md §5 | `[ ]` |
-| ST-02 | ZSCAN active_outbox_streams (batch 100) | workers.md §5 | `[ ]` |
-| ST-03 | Case A: XLEN==0 → DEL + ZREM | workers.md §5 | `[ ]` |
-| ST-04 | Case B: XLEN>0 + has group → safe to trim | workers.md §5 | `[ ]` |
-| ST-05 | Case C: XLEN>0 + NO group → SKIP | workers.md §5 | `[ ]` |
-| ST-06 | Check pending messages per group | workers.md §5 | `[ ]` |
-| ST-07 | Find lowest_safe_id across all groups | workers.md §5 | `[ ]` |
-| ST-08 | XTRIM MINID for safe streams | workers.md §5 | `[ ]` |
-| ST-09 | Atomic Lua for empty stream DEL | workers.md §5 | `[ ]` |
-| ST-10 | Alert if Case C persists > 10 minutes | workers.md §5 | `[ ]` |
+| ST-01 | Run every 5 minutes | workers.md Â§5 | `[ ]` |
+| ST-02 | ZSCAN active_outbox_streams (batch 100) | workers.md Â§5 | `[ ]` |
+| ST-03 | Case A: XLEN==0 â†’ DEL + ZREM | workers.md Â§5 | `[ ]` |
+| ST-04 | Case B: XLEN>0 + has group â†’ safe to trim | workers.md Â§5 | `[ ]` |
+| ST-05 | Case C: XLEN>0 + NO group â†’ SKIP | workers.md Â§5 | `[ ]` |
+| ST-06 | Check pending messages per group | workers.md Â§5 | `[ ]` |
+| ST-07 | Find lowest_safe_id across all groups | workers.md Â§5 | `[ ]` |
+| ST-08 | XTRIM MINID for safe streams | workers.md Â§5 | `[ ]` |
+| ST-09 | Atomic Lua for empty stream DEL | workers.md Â§5 | `[ ]` |
+| ST-10 | Alert if Case C persists > 10 minutes | workers.md Â§5 | `[ ]` |
 
 #### D.7.6 Order Event Consumer
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| OE-01 | Consume from `t.order.events` | workers.md §6 | `[ ]` |
-| OE-02 | Consumer group: cart-order-consumer | workers.md §6 | `[ ]` |
-| OE-03 | Filter only event_type=ORDER_PAID | workers.md §6 | `[ ]` |
-| OE-04 | Validate cart_id format | workers.md §6 | `[ ]` |
-| OE-05 | Extract user_id, cart_id, sku_ids | workers.md §6 | `[ ]` |
-| OE-06 | Normalize user_id to string | events.md §3.1 | `[ ]` |
-| OE-07 | Check idempotency: `GET cart:idemp:order_paid:{order_id}` | workers.md §6 | `[ ]` |
-| OE-08 | Set idempotency lock: `SET NX EX 300` | workers.md §6 | `[ ]` |
-| OE-09 | Pre-register intent | workers.md §6 | `[ ]` |
-| OE-10 | Call Lua Batch Delete with ARGV[2]="CART_CHECKED_OUT" | workers.md §6 | `[ ]` |
-| OE-11 | Publish path after Lua success | workers.md §6 | `[ ]` |
-| OE-12 | Set idempotency DONE: `SETEX 86400 DONE` | workers.md §6 | `[ ]` |
-| OE-13 | Handle missing cart_id: reconstruct from user_id | workers.md §6 | `[ ]` |
-| OE-14 | Route invalid messages to DLQ | workers.md §6 | `[ ]` |
+| OE-01 | Consume from `t.order.events` | workers.md Â§6 | `[ ]` |
+| OE-02 | Consumer group: cart-order-consumer | workers.md Â§6 | `[ ]` |
+| OE-03 | Filter only event_type=ORDER_PAID | workers.md Â§6 | `[ ]` |
+| OE-04 | Validate cart_id format | workers.md Â§6 | `[ ]` |
+| OE-05 | Extract user_id, cart_id, sku_ids | workers.md Â§6 | `[ ]` |
+| OE-06 | Normalize user_id to string | events.md Â§3.1 | `[ ]` |
+| OE-07 | Check idempotency: `GET cart:idemp:order_paid:{order_id}` | workers.md Â§6 | `[ ]` |
+| OE-08 | Set idempotency lock: `SET NX EX 300` | workers.md Â§6 | `[ ]` |
+| OE-09 | Pre-register intent | workers.md Â§6 | `[ ]` |
+| OE-10 | Call Lua Batch Delete with ARGV[2]="CART_CHECKED_OUT" | workers.md Â§6 | `[ ]` |
+| OE-11 | Publish path after Lua success | workers.md Â§6 | `[ ]` |
+| OE-12 | Set idempotency DONE: `SETEX 86400 DONE` | workers.md Â§6 | `[ ]` |
+| OE-13 | Handle missing cart_id: reconstruct from user_id | workers.md Â§6 | `[ ]` |
+| OE-14 | Route invalid messages to DLQ | workers.md Â§6 | `[ ]` |
 
 #### D.7.7 DLQ Handler
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| DLQ-01 | Check cart_outbox_dlq length | workers.md §7 | `[ ]` |
-| DLQ-02 | Alert if DLQ > 0 (CRITICAL) | workers.md §7 | `[ ]` |
-| DLQ-03 | Admin API: POST /internal/dlq/replay | workers.md §7 | `[ ]` |
-| DLQ-04 | Auto-quarantine after 24 hours | workers.md §7 | `[ ]` |
-| DLQ-05 | Cap DLQ at 10,000 messages | workers.md §7 | `[ ]` |
-| DLQ-06 | Alert if DLQ exceeds cap | workers.md §7 | `[ ]` |
+| DLQ-01 | Check cart_outbox_dlq length | workers.md Â§7 | `[ ]` |
+| DLQ-02 | Alert if DLQ > 0 (CRITICAL) | workers.md Â§7 | `[ ]` |
+| DLQ-03 | Admin API: POST /internal/dlq/replay | workers.md Â§7 | `[ ]` |
+| DLQ-04 | Auto-quarantine after 24 hours | workers.md Â§7 | `[ ]` |
+| DLQ-05 | Cap DLQ at 10,000 messages | workers.md Â§7 | `[ ]` |
+| DLQ-06 | Alert if DLQ exceeds cap | workers.md Â§7 | `[ ]` |
 
 ---
 
@@ -1768,13 +1768,13 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Component | Source | Configuration | Status |
 |---|-----------|--------|---------------|--------|
-| CB-01 | Product Service gRPC | workflow.md §5 | Timeout: 200ms | `[ ]` |
-| CB-02 | Circuit Breaker state machine | workflow.md §5 | Closed/Open/Half-Open | `[ ]` |
+| CB-01 | Product Service gRPC | workflow.md Â§5 | Timeout: 200ms | `[ ]` |
+| CB-02 | Circuit Breaker state machine | workflow.md Â§5 | Closed/Open/Half-Open | `[ ]` |
 | CB-03 | CB: max_failures=5 | - | Configurable | `[ ]` |
 | CB-04 | CB: failure_timeout=30s | - | Configurable | `[ ]` |
 | CB-05 | CB: half_open_max_requests=3 | - | Configurable | `[ ]` |
-| CB-06 | Degraded mode: is_price_degraded=true | workflow.md §5 | UI warning | `[ ]` |
-| CB-07 | Fallback: use DB snapshot when gRPC fails | workflow.md §3 | - | `[ ]` |
+| CB-06 | Degraded mode: is_price_degraded=true | workflow.md Â§5 | UI warning | `[ ]` |
+| CB-07 | Fallback: use DB snapshot when gRPC fails | workflow.md Â§3 | - | `[ ]` |
 
 ---
 
@@ -1807,14 +1807,14 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 Fill in progress as implementation proceeds:
 
 | Module | Tasks Total | Tasks Complete | Progress | Sprint |
-|--------|-------------|---------------|----------|--------|
-| M1: Common Library | 9 | 0 | 0% | Sprint 1 |
-| M2: Redis Lua Core | 21 | 0 | 0% | Sprint 2 |
+|--------|------------|---------------|----------|--------|
+| M1: Common Library | 9 | 9 | 100% | Sprint 1 |
+| M2: Redis Lua Core | 9 | 9 | 100% | Sprint 2 |
 | M3: REST API Layer | 23 | 0 | 0% | Sprint 3 |
 | M4: Outbox Relay | 14 | 0 | 0% | Sprint 2 |
 | M5: Postgres Sync | 12 | 0 | 0% | Sprint 3 |
 | M6: Background Workers | 40 | 0 | 0% | Sprint 4 |
-| **TOTAL** | **119** | **0** | **0%** | |
+| **TOTAL** | **107** | **18** | **17%** | |
 
 ---
 
