@@ -576,49 +576,49 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 #### 3.4.2 Architecture
 
 ```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚                    Outbox Relay Architecture                     â”‚
-â”‚                                                                  â”‚
-â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”‚
-â”‚  â”‚   Lua API   â”‚â”€â”€â”€â”€â”€â–¶â”‚   Intent    â”‚      â”‚    Pub/Sub  â”‚     â”‚
-â”‚  â”‚   Write     â”‚      â”‚   Index     â”‚      â”‚  Subscriber â”‚     â”‚
-â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜     â”‚
-â”‚                              â”‚                     â”‚             â”‚
-â”‚                              â–¼                     â–¼             â”‚
-â”‚                      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”‚
-â”‚                      â”‚         Go Channel Buffer            â”‚    â”‚
-â”‚                      â”‚   (receives stream names)            â”‚    â”‚
-â”‚                      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â”‚
-â”‚                                      â”‚                          â”‚
-â”‚         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
-â”‚         â”‚                           â”‚                           â”‚
-â”‚         â–¼                           â–¼                           â–¼
-â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚  â”‚ ZSET Fallbackâ”‚         â”‚  Intent     â”‚          â”‚   Stream    â”‚
-â”‚  â”‚  Worker     â”‚          â”‚  Recovery   â”‚          â”‚  Consumer   â”‚
-â”‚  â”‚ (30s loop)  â”‚          â”‚  Worker     â”‚          â”‚ (Goroutines)â”‚
-â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜          â”‚  (30s loop) â”‚          â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜
-â”‚                           â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                 â”‚
-â”‚                                                           â–¼
-â”‚                                                  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚                                                  â”‚    Kafka    â”‚
-â”‚                                                  â”‚  Producer   â”‚
-â”‚                                                  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+┌─────────────────────────────────────────────────────────────────┐
+│                    Outbox Relay Architecture                     │
+│                                                                  │
+│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐     │
+│  │   Lua API   │─────▶│   Intent    │      │    Pub/Sub  │     │
+│  │   Write     │      │   Index     │      │  Subscriber │     │
+│  └─────────────┘      └──────┬──────┘      └──────┬──────┘     │
+│                              │                     │             │
+│                              ▼                     ▼             │
+│                      ┌─────────────────────────────────────┐    │
+│                      │         Go Channel Buffer            │    │
+│                      │   (receives stream names)            │    │
+│                      └─────────────────────────────────────┘    │
+│                                      │                          │
+│         ┌───────────────────────────┼───────────────────────────┤
+│         │                           │                           │
+│         ▼                           ▼                           ▼
+│  ┌─────────────┐          ┌─────────────┐          ┌─────────────┐
+│  │ ZSET Fallback│         │  Intent     │          │   Stream    │
+│  │  Worker     │          │  Recovery   │          │  Consumer   │
+│  │ (30s loop)  │          │  Worker     │          │ (Goroutines)│
+│  └─────────────┘          │  (30s loop) │          └──────┬──────┘
+│                           └─────────────┘                 │
+│                                                           ▼
+│                                                  ┌─────────────┐
+│                                                  │    Kafka    │
+│                                                  │  Producer   │
+│                                                  └─────────────┘
 ```
 
 #### 3.4.3 Task List
 
-| # | Task | Effort (h) | Dependencies |
-|---|------|------------|--------------|
-| 4.1 | Implement Pub/Sub subscriber to `outbox_notifications` | 6 | M1 |
-| 4.2 | Implement ZSET Fallback worker (30s interval) | 4 | M1 |
-| 4.3 | Implement Intent Recovery worker (30s interval) | 6 | M1 |
-| 4.4 | Implement Stream consumer (XREADGROUP) | 8 | M1 |
-| 4.5 | Implement Kafka Producer with header enrichment | 6 | M1 |
-| 4.6 | Implement XACK and XAUTOCLAIM logic | 4 | - |
-| 4.7 | Implement DLQ routing for failed messages | 4 | M1 |
-| 4.8 | Write unit tests | 8 | 4.1-4.7 |
-| 4.9 | Write integration tests (Redis + Kafka) | 12 | 4.1-4.7 |
+| # | Task | Effort (h) | Dependencies | Status |
+|---|------|------------|--------------|--------|
+| 4.1 | Implement Pub/Sub subscriber to `outbox_notifications` | 6 | M1 | [X] |
+| 4.2 | Implement ZSET Fallback worker (30s interval) | 4 | M1 | [X] |
+| 4.3 | Implement Intent Recovery worker (30s interval) | 6 | M1 | [X] |
+| 4.4 | Implement Stream consumer (XREADGROUP) | 8 | M1 | [X] |
+| 4.5 | Implement Kafka Producer with header enrichment | 6 | M1 | [X] |
+| 4.6 | Implement XACK and XAUTOCLAIM logic | 4 | - | [X] |
+| 4.7 | Implement DLQ routing for failed messages | 4 | M1 | [X] |
+| 4.8 | Write unit tests | 8 | 4.1-4.7 | [ ] |
+| 4.9 | Write integration tests (Redis + Kafka) | 12 | 4.1-4.7 | [ ] |
 
 **Estimated Total: ~58 hours**
 
@@ -650,7 +650,7 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 
 > **CRITICAL PROTOCOLS:**
 
-1. **Deterministic event_id:** Generate from `SHA256(stream_id + cart_id)` â†’ UUIDv5 format. Never use random UUID.
+1. **Deterministic event_id:** Generate from `SHA256(stream_id + cart_id)` → UUIDv5 format. Never use random UUID.
 2. **Kafka Partition Key:** Use `cart_id` to ensure ordering per cart
 3. **XACK only after Kafka ACK:** Use `acks=all` Kafka config
 4. **Pending Message Handling:** Use `XAUTOCLAIM` for messages pending > 60 seconds
@@ -1464,7 +1464,7 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 | DR-02 | Lua script MUST NOT use MAXLEN on XADD | caching_schema.md Â§3.1 | Code review | [ ] |
 | DR-03 | Cache-hit reads MUST NOT call EXPIRE | caching_schema.md Â§2.3, workflow.md Â§3.1 | Integration test | [ ] |
 | DR-04 | Silent Rehydrate script MUST NOT call XADD | outbox_pattern.md Â§2.1 | Code review | [ ] |
-| DR-05 | Intent Index protocol MUST be followed (ZADDâ†’Luaâ†’ZADDâ†’PUBLISHâ†’ZREM) | outbox_pattern.md Â§2.2 | Integration test | [ ] |
+| DR-05 | Intent Index protocol MUST be followed | outbox_pattern.md �2.2 | Integration test | [X] |
 | DR-06 | stream_id is the ONLY ordering/idempotency key | idempotency.md Â§2 | Unit test | [X] |
 | DR-07 | cart_id in DB/Events/Kafka equals Redis key exactly | caching_schema.md Â§2.1, db_schema.md Â§2.1 | Unit test | [X] |
 | DR-08 | unit_price_at_add in separate DB column, NOT in product_snapshot | db_schema.md Â§2.2 | Code review | [ ] |
@@ -1660,20 +1660,20 @@ These rules are NON-NEGOTIABLE and must be verified in code review.
 
 | # | Task | Source | Status |
 |---|------|--------|--------|
-| OR-01 | Subscribe to `outbox_notifications` Pub/Sub channel | workers.md Â§1 | `[ ]` |
-| OR-02 | ZSET Fallback worker runs every 30 seconds | workers.md Â§1 | `[ ]` |
-| OR-03 | Intent Recovery worker runs every 30 seconds | workers.md Â§1 | `[ ]` |
-| OR-04 | Intent Recovery: check XLEN > 0 before publish | workers.md Â§1 | `[ ]` |
-| OR-05 | Intent Recovery: ZREM intent on empty stream | workers.md Â§1 | `[ ]` |
-| OR-06 | XREADGROUP with COUNT 50 | workers.md Â§1 | `[ ]` |
-| OR-07 | Auto-create consumer group if NOGROUP | workers.md Â§1 | `[ ]` |
-| OR-08 | Add Kafka headers (event_id, timestamp, source, stream_id, etc.) | events.md Â§1, workers.md Â§1 | `[ ]` |
-| OR-09 | Deterministic event_id (not random UUID) | outbox_pattern.md Â§2.1 | `[ ]` |
-| OR-10 | Produce to `t.cart.events` with cart_id as partition key | workers.md Â§1 | `[ ]` |
-| OR-11 | XACK only after Kafka ACK (acks=all) | workers.md Â§1 | `[ ]` |
-| OR-12 | XAUTOCLAIM for pending messages > 60 seconds | workers.md Â§1 | `[ ]` |
-| OR-13 | Retry up to 5 times before DLQ | workers.md Â§1 | `[ ]` |
-| OR-14 | Route to `cart_outbox_dlq` after max retries | workers.md Â§1 | `[ ]` |
+| OR-01 | Subscribe to `outbox_notifications` Pub/Sub channel | workers.md §1 | [X] |
+| OR-02 | ZSET Fallback worker runs every 30 seconds | workers.md §1 | [X] |
+| OR-03 | Intent Recovery worker runs every 30 seconds | workers.md §1 | [X] |
+| OR-04 | Intent Recovery: check XLEN > 0 before publish | workers.md §1 | [X] |
+| OR-05 | Intent Recovery: ZREM intent on empty stream | workers.md §1 | [X] |
+| OR-06 | XREADGROUP with COUNT 50 | workers.md §1 | [X] |
+| OR-07 | Auto-create consumer group if NOGROUP | workers.md §1 | [X] |
+| OR-08 | Add Kafka headers (event_id, timestamp, source, stream_id, etc.) | events.md §1, workers.md §1 | [X] |
+| OR-09 | Deterministic event_id (not random UUID) | outbox_pattern.md §2.1 | [X] |
+| OR-10 | Produce to `t.cart.events` with cart_id as partition key | workers.md §1 | [X] |
+| OR-11 | XACK only after Kafka ACK (acks=all) | workers.md §1 | [X] |
+| OR-12 | XAUTOCLAIM for pending messages > 60 seconds | workers.md §1 | [X] |
+| OR-13 | Retry up to 5 times before DLQ | workers.md §1 | [X] |
+| OR-14 | Route to `cart_outbox_dlq` after max retries | workers.md §1 | [X] |
 
 #### D.7.2 Postgres Sync Worker
 
@@ -1811,10 +1811,10 @@ Fill in progress as implementation proceeds:
 | M1: Common Library | 9 | 9 | 100% | Sprint 1 |
 | M2: Redis Lua Core | 9 | 9 | 100% | Sprint 2 |
 | M3: REST API Layer | 23 | 23 | 100% | Sprint 3 |
-| M4: Outbox Relay | 14 | 0 | 0% | Sprint 2 |
+| M4: Outbox Relay | 14 | 14 | 100% | Sprint 2 |
 | M5: Postgres Sync | 12 | 0 | 0% | Sprint 3 |
 | M6: Background Workers | 40 | 0 | 0% | Sprint 4 |
-| **TOTAL** | **107** | **41** | **38%** | |
+| **TOTAL** | **107** | **55** | **51%** | |
 
 ---
 
@@ -1843,3 +1843,4 @@ Before considering implementation complete, obtain sign-off on:
 
 *Document prepared for: Cart Service Engineering Team*  
 *Based on design documents: cart_caching_schema.md, cart_db_schema.md, cart_events.md, cart_idempotency.md, cart_outbox_pattern.md, cart_workers.md, cart_workflow.md*
+
