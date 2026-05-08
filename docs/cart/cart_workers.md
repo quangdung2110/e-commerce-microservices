@@ -318,7 +318,6 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
 
 ---
 
-> **Singleflight Timeout:** Chi tiết tại [Cart Workflow - Nhánh Cache Miss Rehydrate, B4](cart_workflow.md#32-nhánh-cache-miss-rehydrate-chi-tiết).
 
 ---
 

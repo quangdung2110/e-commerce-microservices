@@ -67,11 +67,8 @@ Gọi HGETALL để chia làm 2 nhánh:
 
   Nhánh Cache Miss Rehydrate: nếu HGETALL trả về rỗng, có nghĩa là Redis đã bị xóa sạch (do hết TTL hoặc bị lỗi)
     Hệ thống sẽ truy vấn PostgreSQL để lấy lại thông tin giỏ hàng, lấy ra những giỏ hàng chưa bị xóa hoặc checkout
-    Sử dụng Singleflight trên từng Pod để dồn các request miss trùng cart_id. Chỉ request tiên phong (leader) thực hiện DB query + gRPC call.
-    Singleflight Timeout (bắt buộc): Leader phải có context timeout cứng (khuyến nghị 1 giây), bao gồm cả DB query + gRPC.
-      - Nếu leader timeout sau khi gRPC đã gọi nhưng chưa nhận response: context cancel unblock tất cả waiter threads ngay lập tức. Waiter threads nhận kết quả từ DB mà không có data từ Product Service.
-      - Nếu leader timeout trước khi gRPC được gọi: waiter threads nhận kết quả DB tương tự.
-    Leader track trạng thái gRPC: grpc_success (true/false), grpc_skus (map sku_id -> {is_available, current_price}), grpc_error (string error code nếu fail)
+    Sau khi load từ DB, gọi trực tiếp `GetBatchProductSkus` qua gRPC để lấy thông tin product mới nhất
+    Circuit Breaker bắt buộc: timeout 200ms, nếu Product Service quá tải hoặc lỗi, trả dữ liệu từ DB với cờ `is_price_degraded = true`
     Merge dữ liệu từ DB và Product Service:
       - Nếu grpc_success = true:
         - Với mỗi SKU, merge is_available từ grpc_skus vào item data

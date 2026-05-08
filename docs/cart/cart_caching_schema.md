@@ -307,7 +307,7 @@ Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash t�
    - *Nếu thiếu bước inject này, Redis Hash Value sẽ không có `unit_price_at_add`, khiến API đọc giỏ trả về `null` cho trường lịch sử giá.*
 
 2. **Merge với Product Service (gRPC Pull):**
-   - Sau khi load từ DB, Leader (trong Singleflight) gọi `GetBatchProductSkus` qua gRPC.
+   - Sau khi load từ DB, gọi trực tiếp `GetBatchProductSkus` qua gRPC.
    - **Xử lý kết quả gRPC:**
      - **Nếu thành công:** Merge `is_available` từ response vào từng item:
        - Nếu `is_available = false`: **ghi đè** `is_available` trong item JSON bằng `false`.

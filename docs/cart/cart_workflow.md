@@ -109,17 +109,19 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     ```
 3. **B3 - Negative Caching:**
     - Nếu DB không có row, set `cart:user:{id}:notfound` TTL 60 giây rồi trả rỗng.
-4. **B4 - Singleflight + Pull Product:**
-    - Dùng In-Memory Singleflight trên từng Pod để dồn các request miss trùng `cart_id`.
-    - Chỉ request tiên phong thực hiện B2 + gRPC `GetBatchProductSkus`.
-    - **Singleflight Timeout (bắt buộc):**
-      - Leader phải có context timeout cứng (khuyến nghị 1 giây), bao gồm cả DB query + gRPC.
-      - Nếu leader timeout **sau khi gRPC đã gọi nhưng chưa nhận response**, context cancel sẽ unblock tất cả waiter threads ngay lập tức. Waiter threads sẽ nhận kết quả từ DB (B2) mà không có data từ Product Service.
-      - Nếu leader timeout **trước khi gRPC được gọi**, waiter threads sẽ nhận kết quả DB tương tự.
-    - **Track trạng thái gRPC:** Leader cần trả về kèm metadata:
+4. **B4 - Pull Product (gRPC):**
+    - Sau khi load dữ liệu từ DB (B2), gọi trực tiếp `GetBatchProductSkus` qua gRPC để lấy thông tin product mới nhất.
+    - **Circuit Breaker bắt buộc:** Request gRPC được bọc trong Circuit Breaker với timeout 200ms.
+    - **Track trạng thái gRPC:** Kết quả gRPC cần kèm metadata:
       - `grpc_success`: true/false
       - `grpc_skus`: map `sku_id -> {is_available, current_price}` (chỉ khi grpc_success = true)
       - `grpc_error`: string error code nếu fail (dùng cho logging)
+    - **Xử lý khi gRPC thất bại (timeout/error):**
+      - Không merge `is_available` từ Product Service.
+      - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
+      - Set `grpc_success = false` để response có `is_price_degraded = true`.
+      - UI hiển thị cảnh báo: "Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất".
+    - **Lý do không dùng Singleflight:** Product Service đã có caching riêng để handle burst traffic. Việc deduplicate request trong process (per-Pod) không mang lại lợi ích đáng kể vì mỗi Pod vẫn phải gọi gRPC khi nhận request.
 5. **B5 - Merge policy trước khi nạp lại Redis:**
     - **Bảo toàn các field lịch sử:** `unit_price_at_add`, `added_at`.
     - **Làm mới các field hiển thị có thể thay đổi:** `is_available`, `updated_at`.
@@ -228,4 +230,4 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 - **Circuit Breaker Logic:** Nếu Product Service phản hồi quá 200ms hoặc báo lỗi, Circuit Breaker sẽ chuyển sang trạng thái Open. Cart Service tự động Bypass chốt chặn.
 - **Half-Open Recovery:** Sau một khoảng `wait_duration_in_open_state`, Circuit Breaker phải vào trạng thái Half-Open và cho phép một số request thăm dò có giới hạn. Nếu thăm dò thành công thì đóng mạch (Closed); nếu tiếp tục lỗi thì quay lại Open.
 - **Cảnh báo UI:** Phản hồi khi Circuit Breaker open đọc `product_snapshot` hiện đang lưu sẵn trong Redis/PostgreSQL ra hiện tạm để user vẫn lướt được giỏ hàng. Kèm theo đó là thông báo hiển thị nhẹ trên UI: _"Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất"_.
-- **Lợi ích kiến trúc:** Đảm bảo SLA cho màn hình xem giỏ hàng luôn nằm trong ngưỡng an toàn tuyệt đối. Cart Service không bao giờ sập kéo theo Product Service.
+- **Lợi ích kiến trúc:**: Cart Service không bao giờ sập kéo theo Product Service.
