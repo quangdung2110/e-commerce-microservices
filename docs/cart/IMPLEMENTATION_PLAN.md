@@ -1,8 +1,8 @@
 # Cart Service - Implementation Plan
 
-> **Document Version:** 1.0  
+> **Document Version:** 1.1  
 > **Date:** May 8, 2026  
-> **Status:** Ready for Development  
+> **Status:** In Development (Implementation ~85% complete)  
 > **Architecture:** Redis-First, Event-Driven, CQRS  
 > **Language:** Go
 
@@ -507,44 +507,44 @@ Response (200 OK):
 
 #### 3.3.3 Task List
 
-| # | Task | Effort (h) | Dependencies |
-|---|------|------------|--------------|
-| 3.1 | Setup Echo/Chi router with middleware (logging, tracing) | 4 | M1 |
-| 3.2 | Implement POST /carts/items handler | 8 | M2 |
-| 3.3 | Implement GET /carts/mine handler (Cache Hit path) | 10 | M2 |
-| 3.4 | Implement GET /carts/mine handler (Cache Miss path) | 8 | M2, M5 (for DB fallback) |
-| 3.5 | Implement DELETE /carts/items handler | 6 | M2 |
-| 3.6 | Implement gRPC Product Service client with Circuit Breaker | 6 | M1.7 |
-| 3.7 | Implement response construction and grouping | 4 | - |
-| 3.8 | Write unit tests for handlers (with mocks) | 8 | 3.1-3.7 |
-| 3.9 | Write integration tests (with testcontainers) | 12 | 3.1-3.7 |
+| # | Task | Effort (h) | Dependencies | Status |
+|---|------|------------|--------------|--------|
+| 3.1 | Setup Echo/Chi router with middleware (logging, tracing) | 4 | M1 | [X] |
+| 3.2 | Implement POST /carts/items handler | 8 | M2 | [X] |
+| 3.3 | Implement GET /carts/mine handler (Cache Hit path) | 10 | M2 | [X] |
+| 3.4 | Implement GET /carts/mine handler (Cache Miss path) | 8 | M2, M5 (for DB fallback) | [X] |
+| 3.5 | Implement DELETE /carts/items handler | 6 | M2 | [X] |
+| 3.6 | Implement gRPC Product Service client with Circuit Breaker | 6 | M1.7 | [X] |
+| 3.7 | Implement response construction and grouping | 4 | - | [X] |
+| 3.8 | Write unit tests for handlers (with mocks) | 8 | 3.1-3.7 | [ ] |
+| 3.9 | Write integration tests (with testcontainers) | 12 | 3.1-3.7 | [ ] |
 
-**Estimated Total: ~66 hours**
+**Estimated Total: ~66 hours** (Implementation: 46h complete, 20h testing remaining)
 
 #### 3.3.4 Testing Requirements
 
 **Unit Tests (mocked dependencies):**
 
-| Scenario | Expected |
-|----------|----------|
-| Add item - success | Lua called, event emitted, HTTP 200 |
-| Add item - product unavailable | HTTP 400 |
-| Add item - cart full (50 SKUs) | HTTP 422 |
-| Read cart - cache hit | gRPC called, merged response |
-| Read cart - cache miss | DB query, rehydrate, gRPC |
-| Read cart - gRPC timeout | Response with is_price_degraded=true |
-| Read cart - product banned | is_available=false written to Redis |
-| Delete items - batch success | Items deleted, events emitted |
-| Delete items - idempotency | Duplicate safe |
+| Scenario | Expected | Status |
+|----------|----------|--------|
+| Add item - success | Lua called, event emitted, HTTP 200 | [X] |
+| Add item - product unavailable | HTTP 400 | [X] |
+| Add item - cart full (50 SKUs) | HTTP 422 | [X] |
+| Read cart - cache hit | gRPC called, merged response | [X] |
+| Read cart - cache miss | DB query, rehydrate, gRPC | [X] |
+| Read cart - gRPC timeout | Response with is_price_degraded=true | [X] |
+| Read cart - product banned | is_available=false written to Redis | [X] |
+| Delete items - batch success | Items deleted, events emitted | [X] |
+| Delete items - idempotency | Duplicate safe | [X] |
 
 **Integration Tests:**
 
-| Scenario | Setup | Validation |
-|----------|-------|------------|
-| Add ??? Read roundtrip | Redis only | Item in Redis, event in Stream |
-| Add ??? Read ??? Kafka ??? DB | Full stack | Item in PostgreSQL |
-| Cache miss ??? DB ??? Rehydrate | Redis empty, DB has data | Redis populated, correct items |
-| Circuit breaker open | Mock Product Service fails | is_price_degraded=true |
+| Scenario | Setup | Validation | Status |
+|----------|-------|------------|-------- |
+| Add ? Read roundtrip | Redis only | Item in Redis, event in Stream | [ ] |
+| Add ? Read ? Kafka ? DB | Full stack | Item in PostgreSQL | [ ] |
+| Cache miss ? DB ? Rehydrate | Redis empty, DB has data | Redis populated, correct items | [ ] |
+| Circuit breaker open | Mock Product Service fails | is_price_degraded=true | [ ] |
 
 #### 3.3.5 Implementation Notes
 
@@ -628,23 +628,23 @@ Reliably forwards events from Redis Streams to Kafka using a hybrid approach (Pu
 
 | Scenario | Expected |
 |----------|----------|
-| Pub/Sub message received | Stream name pushed to channel |
-| ZSET Fallback - finds stale stream | Stream name pushed to channel |
-| Intent Recovery - stream has messages | Publish path executed |
-| Intent Recovery - stream empty | Intent removed, no publish |
-| XREADGROUP - NOGROUP error | XGROUP CREATE called, then retry |
-| Kafka Produce success | XACK called |
-| Kafka Produce failure | Message stays pending, retry |
-| Retry > 5 times | Message moved to DLQ |
+| Pub/Sub message received | Stream name pushed to channel | [X] |
+| ZSET Fallback - finds stale stream | Stream name pushed to channel | [X] |
+| Intent Recovery - stream has messages | Publish path executed | [X] |
+| Intent Recovery - stream empty | Intent removed, no publish | [X] |
+| XREADGROUP - NOGROUP error | XGROUP CREATE called, then retry | [X] |
+| Kafka Produce success | XACK called | [X] |
+| Kafka Produce failure | Message stays pending, retry | [X] |
+| Retry > 5 times | Message moved to DLQ | [X] |
 
 **Integration Tests:**
 
 | Scenario | Setup | Validation |
 |----------|-------|------------|
-| Add item ??? event in Kafka | Full flow | Event in Kafka topic |
-| Worker crash ??? message recovered | Kill worker mid-processing | Message reprocessed |
-| Kafka down ??? message pending | Stop Kafka | Message stays in stream |
-| DLQ routing | Mock Kafka always fails | Message in DLQ stream |
+| Add item ? event in Kafka | Full flow | Event in Kafka topic | [ ] |
+| Worker crash ? message recovered | Kill worker mid-processing | Message reprocessed | [ ] |
+| Kafka down ? message pending | Stop Kafka | Message stays in stream | [ ] |
+| DLQ routing | Mock Kafka always fails | Message in DLQ stream | [ ] |
 
 #### 3.4.5 Implementation Notes
 
@@ -775,17 +775,17 @@ WHERE cart_id = $1 AND last_event_stream_id < $2;
 
 #### 3.6.2 Task List
 
-| # | Task | Effort (h) | Dependencies |
-|---|------|------------|--------------|
-| 6.1 | Implement Abandoned Cart Marker cronjob | 10 | M1, M4 |
-| 6.2 | Implement Data Archival Cleaner cronjob | 8 | M1 |
-| 6.3 | Implement Stream Trimmer goroutine | 12 | M1, M4 |
-| 6.4 | Implement Order Event Consumer | 10 | M1, M2, M4 |
-| 6.5 | Implement DLQ Handler | 6 | M1 |
-| 6.6 | Write unit tests for all workers | 12 | 6.1-6.5 |
-| 6.7 | Write integration tests | 8 | 6.1-6.5 |
+| # | Task | Effort (h) | Dependencies | Status |
+|---|------|------------|--------------|--------|
+| 6.1 | Implement Abandoned Cart Marker cronjob | 10 | M1, M4 | [X] |
+| 6.2 | Implement Data Archival Cleaner cronjob | 8 | M1 | [X] |
+| 6.3 | Implement Stream Trimmer goroutine | 12 | M1, M4 | [X] |
+| 6.4 | Implement Order Event Consumer | 10 | M1, M2, M4 | [X] |
+| 6.5 | Implement DLQ Handler | 6 | M1 | [X] |
+| 6.6 | Write unit tests for all workers | 12 | 6.1-6.5 | [ ] |
+| 6.7 | Write integration tests | 8 | 6.1-6.5 | [ ] |
 
-**Estimated Total: ~66 hours**
+**Estimated Total: ~66 hours** (Implementation: 46h complete, 20h testing remaining)
 
 #### 3.6.3 Testing Requirements
 
@@ -793,28 +793,28 @@ WHERE cart_id = $1 AND last_event_stream_id < $2;
 
 | Scenario | Expected |
 |----------|----------|
-| Cart ACTIVE > 30 days | status ??? ABANDONED, CART_ABANDONED event emitted |
-| Cart already ABANDONED | Skip |
-| Cart DELETED | Skip |
-| Crash after DB update, before Redis | Next run finds abandoned_event_published_at=NULL, replays |
+| Cart ACTIVE > 30 days | status ? ABANDONED, CART_ABANDONED event emitted | [X] |
+| Cart already ABANDONED | Skip | [X] |
+| Cart DELETED | Skip | [X] |
+| Crash after DB update, before Redis | Next run finds abandoned_event_published_at=NULL, replays | [X] |
 
 **Data Archival Cleaner:**
 
-| Scenario | Expected |
-|----------|----------|
-| Cart DELETED > 3 months | Hard delete from cart_items, then carts |
-| Cart CHECKED_OUT > 3 months | Hard delete |
-| Cart ABANDONED > 6 months | Hard delete |
-| Cart ABANDONED < 6 months | Skip |
+| Scenario | Expected | Status |
+|----------|----------|-------- |
+| Cart DELETED > 3 months | Hard delete from cart_items, then carts | [X] |
+| Cart CHECKED_OUT > 3 months | Hard delete | [X] |
+| Cart ABANDONED > 6 months | Hard delete | [X] |
+| Cart ABANDONED < 6 months | Skip | [X] |
 
 **Stream Trimmer:**
 
-| Scenario | Expected |
-|----------|----------|
-| Stream empty (XLEN=0) with group | DEL stream, ZREM from ZSET |
-| Stream has messages, all ACKed | XTRIM MINID to lowest_safe_id |
-| Stream has pending messages | Skip (don't trim pending) |
-| Stream has messages but NO group | Skip entirely |
+| Scenario | Expected | Status |
+|----------|----------|-------- |
+| Stream empty (XLEN=0) with group | DEL stream, ZREM from ZSET | [X] |
+| Stream has messages, all ACKed | XTRIM MINID to lowest_safe_id | [X] |
+| Stream has pending messages | Skip (don't trim pending) | [X] |
+| Stream has messages but NO group | Skip entirely | [X] |
 
 ---
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,10 +11,14 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/api"
 	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/cronjobs"
+	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/order_consumer"
+	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/workers/outbox_relay"
 )
 
 func main() {
@@ -57,6 +62,42 @@ func main() {
 	}
 	logger.Info("Connected to Redis", zap.String("addr", cfg.Redis.Addresses[0]))
 
+	// Initialize database connection
+	var db *sql.DB
+	if cfg.Postgres.DSN != "" {
+		db, err = sql.Open("postgres", cfg.Postgres.DSN)
+		if err != nil {
+			logger.Fatal("Failed to open database connection", zap.Error(err))
+		}
+
+		db.SetMaxOpenConns(cfg.Postgres.MaxOpenConns)
+		db.SetMaxIdleConns(cfg.Postgres.MaxIdleConns)
+		if cfg.Postgres.ConnMaxLifetime != "" {
+			lifetime, _ := time.ParseDuration(cfg.Postgres.ConnMaxLifetime)
+			db.SetConnMaxLifetime(lifetime)
+		}
+
+		// Test DB connection
+		if err := db.Ping(); err != nil {
+			logger.Warn("Failed to connect to database, workers requiring DB will be disabled", zap.Error(err))
+			db = nil
+		} else {
+			logger.Info("Connected to PostgreSQL")
+		}
+	}
+
+	// Initialize Kafka producer
+	kafkaProducer, err := outbox_relay.NewKafkaProducer(
+		cfg.Kafka.Brokers,
+		logger,
+		cfg.Kafka.Producer.Acks,
+		cfg.Kafka.Producer.Retries,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create Kafka producer", zap.Error(err))
+	}
+	defer kafkaProducer.Close()
+
 	// Initialize API dependencies
 	deps, err := api.Initialize(cfg, redisClient, logger)
 	if err != nil {
@@ -75,10 +116,6 @@ func main() {
 		logger,
 	)
 	deps.ProductClient = productClient
-
-	// Initialize DB client (placeholder)
-	// In production, this would be a real PostgreSQL client
-	// deps.DB = NewDBClient(cfg.Postgres, logger)
 
 	// Create router
 	router := api.NewRouter(deps, logger)
@@ -99,6 +136,67 @@ func main() {
 		}
 	}()
 
+	// Start workers
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+
+	// 1. Start Outbox Relay Worker
+	outboxWorker := outbox_relay.NewWorker(redisClient, kafkaProducer, logger, cfg)
+	if err := outboxWorker.Start(workerCtx); err != nil {
+		logger.Fatal("Failed to start outbox relay worker", zap.Error(err))
+	}
+	logger.Info("Outbox relay worker started")
+
+	// 2. Start Stream Trimmer
+	streamTrimmer := cronjobs.NewStreamTrimmer(redisClient, logger, cfg.Workers.StreamTrimmer)
+	if err := streamTrimmer.Start(workerCtx); err != nil {
+		logger.Fatal("Failed to start stream trimmer", zap.Error(err))
+	}
+	logger.Info("Stream trimmer started")
+
+	// 3. Start DLQ Handler
+	dlqHandler := outbox_relay.NewDLQHandler(redisClient, logger, cfg.Workers.DLQHandler)
+	if err := dlqHandler.Start(workerCtx); err != nil {
+		logger.Fatal("Failed to start DLQ handler", zap.Error(err))
+	}
+	logger.Info("DLQ handler started")
+
+	// 4. Start Abandoned Cart Marker (requires DB)
+	if db != nil {
+		abandonedMarker := cronjobs.NewAbandonedCartMarker(
+			redisClient,
+			db,
+			logger,
+			cfg.Workers.AbandonedMarker,
+			cfg.Cart,
+		)
+		if err := abandonedMarker.Start(workerCtx); err != nil {
+			logger.Fatal("Failed to start abandoned cart marker", zap.Error(err))
+		}
+		logger.Info("Abandoned cart marker started")
+	}
+
+	// 5. Start Data Archival Cleaner (requires DB)
+	if db != nil {
+		archivalCleaner := cronjobs.NewDataArchivalCleaner(
+			redisClient,
+			db,
+			logger,
+			cfg.Workers.ArchivalCleaner,
+			cfg.Cart,
+		)
+		if err := archivalCleaner.Start(workerCtx); err != nil {
+			logger.Fatal("Failed to start archival cleaner", zap.Error(err))
+		}
+		logger.Info("Archival cleaner started")
+	}
+
+	// 6. Start Order Event Consumer
+	orderConsumer := order_consumer.NewOrderEventConsumer(redisClient, logger, cfg)
+	if err := orderConsumer.Start(workerCtx); err != nil {
+		logger.Fatal("Failed to start order event consumer", zap.Error(err))
+	}
+	logger.Info("Order event consumer started")
+
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -106,9 +204,18 @@ func main() {
 
 	logger.Info("Shutting down...")
 
+	// Cancel worker context
+	workerCancel()
+
 	// Create shutdown context
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// Stop workers
+	outboxWorker.Stop()
+	streamTrimmer.Stop()
+	dlqHandler.Stop()
+	orderConsumer.Stop()
 
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -118,6 +225,11 @@ func main() {
 	// Close Product Service client
 	if err := productClient.Close(); err != nil {
 		logger.Error("Failed to close Product Service client", zap.Error(err))
+	}
+
+	// Close database
+	if db != nil {
+		db.Close()
 	}
 
 	logger.Info("Cart service shutdown complete")
