@@ -23,12 +23,12 @@ Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng 
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_VERIFIED_SUCCESS",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "roles": ["USER"]
   }
 }
@@ -40,12 +40,12 @@ Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng 
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_DELETED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "reason": "GDPR_REQUEST"
   }
 }
@@ -69,12 +69,12 @@ Sự kiện này cho phép các dịch vụ đồng bộ và lưu trữ cục b�
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PROFILE_UPDATED",
   "timestamp": "2026-04-22T08:05:00Z",
   "payload": {
-    "id": "uuid-cua-user",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
     "first_name": "Nguyen",
     "last_name": "Quang Dung",
     "phone_number": "0987654321",
@@ -91,12 +91,12 @@ Thông báo khi người dùng thay đổi preferences để Notification đồn
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PREFERENCES_UPDATED",
   "timestamp": "2026-04-22T08:06:00Z",
   "payload": {
-    "id": "uuid-cua-user",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
     "language": "vi",
     "currency": "VND",
     "email_enabled": true,

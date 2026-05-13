@@ -64,7 +64,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174000",
   "event_type": "CART_ITEM_ADDED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "req-123",
   "timestamp": "2026-02-28T10:00:00Z",
   "source": "cart-service",
@@ -72,9 +72,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708530000123",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "sku_id": "sku-1001",
-    "user_id": "12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "product_id": "prod-uuid",
     "quantity": 2,
     "unit_price_at_add": 150000.00,
@@ -87,7 +87,8 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   }
 }
 ```
-*(Ghi chú: Event payload bao gồm `user_id` để Postgres Sync Worker có thể upsert bảng `carts` mà không cần parse chuỗi `cart_id`. Trường `unit_price_at_add` lưu ở cột riêng trong DB, các trường còn lại (đời vào `product_snapshot` JSONB). Timestamps dùng **Milliseconds Epoch** (13 chữ số).*
+
+> **Canonical user_id:** Cart Service dùng UUID làm user_id theo chuẩn thống nhất toàn hệ thống. `cart_id` được build từ UUID user_id.
 
 ### 2.2. CART_ITEM_UPDATED
 **Ngữ cảnh phát sinh:** 
@@ -100,7 +101,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174001",
   "event_type": "CART_ITEM_UPDATED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
@@ -108,9 +109,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708616400456",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "sku_id": "sku-1001",
-    "user_id": "12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "product_id": "prod-uuid",
     "quantity": 5,
     "unit_price_at_add": 150000.00,
@@ -141,7 +142,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174002",
   "event_type": "CART_ITEM_DELETED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "req-125",
   "timestamp": "2026-02-28T10:10:00Z",
   "source": "cart-service",
@@ -149,9 +150,9 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708616400899",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "sku_id": "sku-1001",
-    "user_id": "12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "deleted_at": "1708616400899"
   }
 }
@@ -170,7 +171,7 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "event_id": "123e4567-e89b-12d3-a456-426614174003",
   "event_type": "CART_CLEARED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "req-126",
   "timestamp": "2026-02-28T10:15:00Z",
   "source": "cart-service",
@@ -178,8 +179,8 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "stream_timestamp_ms": "1708616500000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
-    "user_id": "12345",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "cleared_at": "1708616500000"
   }
 }
@@ -199,7 +200,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "CART_CHECKED_OUT",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:25:00Z",
   "source": "cart-service",
@@ -207,8 +208,8 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "stream_timestamp_ms": "1708616700000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
-    "user_id": "12345",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "checked_out_at": "1708616700000"
   }
 }
@@ -232,7 +233,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174006",
   "event_type": "CART_ABANDONED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
   "correlation_id": "cron-20260315-020000",
   "timestamp": "2026-03-15T02:00:00Z",
   "source": "cart-service",
@@ -240,8 +241,8 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "stream_timestamp_ms": "1773530400000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
-    "user_id": "12345",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "abandoned_at": "1773530400000"
   }
 }
@@ -283,23 +284,21 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
-    "cart_id": "{cart:user:999}",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "status": "PAID",
     "sku_ids": ["sku-001", "sku-002"],
     "checkout_submitted_at": "2026-02-28T10:00:00Z",
     "paid_at": "2026-02-28T10:05:00Z"
-    // checkout_submitted_at / paid_at có thể được giữ cho mục đích timeline
-    // Cart cleanup không phụ thuộc timestamp, chỉ dựa vào sku_ids snapshot
   }
 }
 ```
 
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất. Cart nhận UUID và build `cart_id` từ đó.
+
 > **Lưu ý scope mẫu payload:** Đây là subset field mà Cart Service tiêu thụ. Payload đầy đủ của ORDER_PAID (bao gồm `items[]`, `parcels[]`) xem tại [Order Events](../order/order_events.md#32-order_paid).
 
 > **Contract ổn định:** Cart dùng `cart_id` + `sku_ids` để cleanup, không parse chuỗi ghép có dấu `:` nhằm tránh sai lệch định danh.
-
-> **Type normalization:** Upstream `ORDER_PAID.payload.user_id` có thể là số (`number`). Cart Worker phải normalize về chuỗi trước khi gọi Lua (`user_id = strconv.FormatInt(...)`) để nhất quán với key format Redis.
 
 > **Idempotency:** Worker xử lý `cart:idemp:order_paid:{order_id}` ở Go layer (không truyền vào Lua): `SET ... NX EX 300` trước khi gọi Lua Batch Delete và `SETEX ... DONE` sau khi publish path thành công.
 

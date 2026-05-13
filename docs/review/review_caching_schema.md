@@ -6,6 +6,7 @@
 *   [Workers](review_workers.md)
 *   [Workflows](review_workflow.md)
 
+---
 Review Service là read-heavy nên caching phải đạt đồng thời 3 mục tiêu:
 
 1. Giảm tải PostgreSQL.
@@ -53,44 +54,27 @@ actual_ttl = 86400 + jitter_seconds
 *   Sort newest: `WHERE id < :last_id_v7`
 *   Sort top_helpful: `WHERE (helpful_count, id) < (:last_likes, :last_id_v7)`
 
-## 3. Rate limit & Cache cho Like/Unlike
+## 3. Rate limit cho Like/Unlike
 
 ### 3.1. Keys
 
 *   `review:ratelimit:{user_id}:{review_id}`: khóa rate limit chống spam, TTL 10s.
-*   (Tùy chọn) `review:helpful:{review_id}`: kiểu String integer lưu `helpful_count` hiện tại (nếu cần tách rời cache đếm số like khỏi page cache).
+*   Rate limit là **shared across all pods** (dùng Redis shared key).
 
-### 3.2. Cấu trúc DB-First mới
+### 3.2. Cấu trúc DB-First
 
 *   Hủy bỏ hoàn toàn các key `review:likers:*`, `review:{review_id}:delta`, `review:dirty_delta_keys`, `review:processing_deltas`.
 *   Danh sách like được lưu trữ và dedup nguyên tử trên PostgreSQL thông qua bảng `review_likes`.
-*   Việc giảm bớt các Redis Set (trước đây có TTL lên tới 180 ngày) giúp tiết kiệm cực lớn tài nguyên RAM của hệ thống, giảm áp lực quản lý state phức tạp.
+*   Việc giảm bớt các Redis Set (trước đây có TTL lên tới 180 ngày) giúp tiết kiệm cực lớn tài nguyên RAM của hệ thống.
 
 ## 4. Đồng bộ helpful_count xuống DB
 
-*(Đã loại bỏ cơ chế worker đồng bộ)* 
+*(Đã loại bỏ cơ chế worker đồng bộ)*
 
-Việc cập nhật `helpful_count` nay được thực hiện nguyên tử bằng **Database Transaction** ngay khi user gọi API Like/Unlike. 
+Việc cập nhật `helpful_count` nay được thực hiện nguyên tử bằng **Database Transaction** ngay khi user gọi API Like/Unlike.
 Hệ thống không còn delta sync worker, không cần distributed lock, giải quyết triệt để rủi ro mất đồng bộ và dễ dàng scale số lượng pod mà không gặp race-condition. Lượt like của tài khoản bị xóa sẽ không bị trừ lùi (do không ảnh hưởng trải nghiệm chung).
 
-## 5. L1 cache invalidation (per-pod memory cache)
-
-L1 cache nằm trong RAM từng pod, nên bắt buộc broadcast invalidation qua Redis Pub/Sub:
-
-*   Channel: `review:l1:invalidate`
-*   Payload gồm `product_id`, `reason`, `timestamp`
-
-**Rule runtime:**
-1. Mỗi entry L1 lưu kèm `version`.
-2. Mỗi lần read L1 phải so `entry.version` với `GET review:prod_ver:{product_id}`:
-   - mismatch -> evict L1 entry và fallback Redis/DB.
-3. Pod startup phải warmup watermark version cho tập product nóng để giảm stale sau restart.
-
-**Định nghĩa product nóng:** top 500 `product_id` theo `review_read_qps_5m` từ metrics pipeline; nếu metrics unavailable thì fallback danh sách top 500 theo tuần gần nhất.
-
-**Rule:** mọi pod phải nhận được thông điệp; không dùng Kafka consumer group cho mục đích này.
-
-## 6. Consistency windows
+## 5. Consistency windows
 
 | Luồng | Cache đọc chính | Cửa sổ stale cho phép | Cơ chế làm tươi |
 |---|---|---|---|
@@ -99,7 +83,7 @@ L1 cache nằm trong RAM từng pod, nên bắt buộc broadcast invalidation qu
 | Helpful sort | DB + cache page 1 | Không độ trễ | Truy xuất trực tiếp DB hoặc phụ thuộc page 1 |
 | Anonymization display | Cache page 1 theo product | <= 60s | Batch product invalidation từ `ACCOUNT_DELETED` |
 
-## 7. Tối ưu hiệu năng bổ sung
+## 6. Tối ưu hiệu năng bổ sung
 
 1. Prewarm page 1 cho top product traffic cao mỗi 5 phút.
 2. Bật nén payload JSON ở response list.
@@ -107,7 +91,6 @@ L1 cache nằm trong RAM từng pod, nên bắt buộc broadcast invalidation qu
 4. Theo dõi metrics bắt buộc:
    *   Cache hit rate
    *   P95/P99 latency đọc aggregate/list
-   *   Tỷ lệ invalidation lag giữa L1 và Redis
 
 ## Tóm lược
 
@@ -115,6 +98,6 @@ L1 cache nằm trong RAM từng pod, nên bắt buộc broadcast invalidation qu
 | :--- | :--- | :--- |
 | Tốc độ đọc aggregate | Redis aggregate + soft refresh | Giảm truy vấn DB nóng |
 | Tối ưu page 1 | Versioned cache + INCR invalidation | Tránh scan/delete key hàng loạt |
-| Chống spam vote | Rate limit trên Redis | Cản spam request trước khi xuống tới DB |
+| Chống spam vote | Rate limit trên Redis (shared across pods) | Cản spam request trước khi xuống tới DB |
 | Độ tươi top helpful | Cập nhật nguyên tử DB transaction | Luôn nhất quán, không độ trễ, không cần worker |
-| Tuân thủ privacy | Invalidate theo product khi anonymize + L1 self-heal | Tránh lộ tên user đã xóa tài khoản |
+| Tuân thủ privacy | Invalidate theo product khi anonymize | Tránh lộ tên user đã xóa tài khoản |

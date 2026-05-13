@@ -24,12 +24,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_OTP_REQUEST",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "otp_type": "REGISTER_VERIFICATION" | "PASSWORD_RESET" | "LOGIN_2FA"
   }
@@ -44,12 +44,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_OTP_REQUEST",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "otp_type": "PASSWORD_RESET"
   }
@@ -64,12 +64,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_VERIFIED_SUCCESS",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "roles": ["USER"]
   }
@@ -84,12 +84,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_DELETED",
   "occurred_at": "2026-04-21T10:12:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "reason": "GDPR_REQUEST"
   }
 }
@@ -103,12 +103,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "TOKEN_THEFT_DETECTED",
   "occurred_at": "2026-04-21T10:10:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "theft_refresh_token_id": "xyz-uuid-bị_móc_túi",
     "action_taken": "ALL_TOKENS_REVOKED"
   }
@@ -123,12 +123,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_EMAIL_CHANGED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "old_email": "old@gmail.com",
     "new_email": "new@gmail.com"
   }
@@ -149,12 +149,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PASSWORD_CHANGED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "device_info": "Chrome on Windows - IP: 192.168.1.1",
     "changed_at": "2026-04-21T10:00:00Z"
@@ -173,12 +173,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_ACCOUNT_LOCKED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "reason": "FAILED_LOGIN_ATTEMPTS",
     "locked_until": "2026-04-21T10:30:00Z"
@@ -197,15 +197,15 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_UNLOCKED",
   "occurred_at": "2026-04-21T10:30:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "unlock_type": "AUTO" | "ADMIN",
-    "unlocked_by": "SYSTEM" | "admin-user-id"
+    "unlocked_by": "SYSTEM" | "550e8400-e29b-41d4-a716-446655440001"
   }
 }
 ```
@@ -242,12 +242,12 @@ Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Co
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_BANNED",
   "occurred_at": "2026-04-21T10:15:00Z",
   "payload": {
-    "user_id": "u-admin-hay-customer",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "reason": "VIOLATION"
   }
 }
@@ -263,15 +263,15 @@ Event này được Auth Service gửi sang Notification Service sau khi đã c�
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_BANNED_NOTIFICATION",
   "occurred_at": "2026-04-21T10:15:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "reason": "VIOLATION",
-    "banned_by": "admin-user-id",
+    "banned_by": "550e8400-e29b-41d4-a716-446655440002",
     "banned_at": "2026-04-21T10:15:00Z"
   }
 }

@@ -20,17 +20,19 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 |---|---|---|---|
 | **Produce** | `t.review.events` | — | Topic chính phát mọi event nghiệp vụ của Review |
 | **Produce** | `t.review.retry` | — | Retry topic nội bộ cho replay có kiểm soát |
-| **Produce** | `t.review.dlq` | — | Parking lot cho contract violation/poison message |
+| **Produce** | `t.review.dlq` | — | Parking lot cho poison message / contract violation |
 | **Consume** | `t.order.events` | `review-order-sync` | Cấp quyền review theo item đã mua |
 | **Consume** | `t.user.events` | `review-privacy-sync` | Nhận `ACCOUNT_DELETED` để ẩn danh dữ liệu tác giả |
 | **Consume** | `t.review.events` | `review-rating-aggregator` | Self-consume để cập nhật aggregate rating |
 | **Consume** | `t.review.retry` | `review-retry-replayer` | Replay lỗi tạm thời có kiểm soát |
+| **Consume** | `t.review.dlq` | `review-dlq-inspector` | Inspect và xử lý DLQ messages |
+| **Consume** | `t.report.events` | `review-report-processor` | Xử lý báo cáo vi phạm và phát REVIEW_HIDDEN |
 
 > **Policy đã chốt:** Review Service **không consume** `USER_PROFILE_UPDATED` để đồng bộ đổi tên hiển thị. `user_name` là snapshot tại thời điểm tạo review; chỉ xử lý ẩn danh khi nhận `ACCOUNT_DELETED`.
 
 ## Nguyên tắc vận hành bắt buộc
 
-1. Idempotency theo `event_id` cho mọi consumer.
+1. **Idempotency tự nhiên qua DB:** Consumer sử dụng unique constraints của DB để đảm bảo không ghi trùng khi xử lý at-least-once delivery.
 2. Out-of-order guard bằng `event_sequence_id` hoặc `state_version`.
 3. Không ACK message trước khi local transaction commit thành công.
 4. Retry config chuẩn cho mọi consumer:
@@ -96,9 +98,9 @@ DROP TABLE IF EXISTS review_outbox_y2026m01;
 
 **Chi tiết luồng hoạt động:**
 1. Validate payload bắt buộc: `order_id`, `user_id`, `status=COMPLETED`, `items[]`, `completed_at`.
-2. Normalize `user_id` về canonical `u-<digits>`.
+2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Mỗi item phải có `product_id`, `sku_id`; `variant_name` có thể null nhưng phải được log warning.
-4. Trong transaction, upsert `review_eligibilities` idempotent (idempotency tự nhiên với unique key ở tầng Database)
+4. Trong transaction, upsert `review_eligibilities` với idempotency tự nhiên qua `UNIQUE(order_id, product_id, sku_id, user_id)`.
 5. Gán `expires_at = completed_at + review_window_days` (mặc định 30 ngày).
 6. Nếu tại thời điểm xử lý `expires_at <= NOW()`, set `status='EXPIRED'`.
 7. Commit rồi ACK.
@@ -128,52 +130,39 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Events:** `REVIEW_CREATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`
 
-**Sứ mệnh:** Cập nhật bảng aggregate (`product_rating_aggregates`) và phát `REVIEW_METRICS_UPDATED`.
+**Sứ mệnh:** Cập nhật bảng aggregate (`product_rating_aggregates`) theo product và phát `REVIEW_METRICS_UPDATED`.
 
 **Chi tiết luồng hoạt động:**
 1. Begin transaction.
-2. Idempotency insert vào `rating_aggregator_idempotency` với `PROCESSING`.
-   - Duplicate + `processing_status IN ('COMPLETED', 'SKIPPED')` -> ACK.
-   - Duplicate + `processing_status='PROCESSING'` và `updated_at < NOW()-15m` -> mark `FAILED`, retry.
+2. **Idempotency check bằng `state_version`:**
+   ```sql
+   SELECT state_version FROM product_rating_aggregates WHERE product_id = :product_id FOR UPDATE;
+   ```
+   - Nếu `event_sequence_id` <= `state_version` -> ACK ngay (đã xử lý, skip).
 3. Validate business guard:
-   - `REVIEW_CREATED`: cộng điểm/tổng số review.
+   - `REVIEW_CREATED`: cộng điểm/tổng số review vào `product_rating_aggregates`.
    - `REVIEW_APPROVED`: cộng điểm/tổng số review (restore từ hidden).
    - `REVIEW_HIDDEN`: trừ điểm/tổng số review.
-4. Upsert aggregate product và SKU bằng SQL atomic
-5. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction:
-6. Cập nhật idempotency `COMPLETED`.
-7. Commit transaction.
-8. Sau commit, overwrite cache Redis `review:prod:agg:*`
-9. Publish lệnh invalidate L1 qua Redis Pub/Sub.
+4. Upsert aggregate theo `product_id` bằng SQL atomic:
+   ```sql
+   UPDATE product_rating_aggregates
+   SET average_rating = :new_avg,
+       total_reviews = :new_total,
+       total_X_star = total_X_star +/- 1,
+       total_with_media = total_with_media +/- :has_media,
+       state_version = :event_sequence_id,
+       updated_at = NOW()
+   WHERE product_id = :product_id;
+   ```
+5. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction.
+6. Commit transaction.
+7. Sau commit:
+   - Overwrite cache Redis `review:prod:agg:{product_id}`.
+   - Nếu là `REVIEW_HIDDEN` -> gọi `INCR review:prod_ver:{product_id}` để invalidate page cache.
 
 **Tối ưu:** xử lý theo micro-batch 100-500 events/lần để giảm lock contention.
 
-## 5. L1 Cache Invalidation Broadcaster
-
-**Loại hình:** Redis Pub/Sub subscriber trên mỗi pod.
-
-**Sứ mệnh:** Đồng bộ invalidation cache L1 (in-memory per pod) theo cơ chế broadcast + self-heal.
-
-**Kênh:** `review:l1:invalidate`
-
-**Payload mẫu:**
-```json
-{
-  "product_id": "prod-001",
-  "reason": "REVIEW_METRICS_UPDATED",
-  "timestamp": "2026-03-28T10:00:00Z"
-}
-```
-
-**Self-heal rule bắt buộc:**
-1. Mỗi entry L1 lưu kèm `version` tại thời điểm cache.
-2. Khi read L1, so với `review:prod_ver:{product_id}` trên Redis:
-   - nếu version lệch -> evict và fallback Redis/DB.
-3. Khi pod startup, phải warmup watermark version tối thiểu cho tập product nóng.
-
-**Lưu ý:** Không dùng Kafka consumer group cho invalidation L1 vì mỗi pod đều phải nhận thông điệp.
-
-## 6. Privacy Anonymization Consumer
+## 5. Privacy Anonymization Consumer
 
 **Topic:** `t.user.events`
 
@@ -184,21 +173,50 @@ WHERE review_eligibilities.status IN ('PENDING');
 **Sứ mệnh:** Đảm bảo tuân thủ quyền riêng tư: ẩn danh thông tin tác giả review khi tài khoản bị xóa.
 
 **Chi tiết luồng hoạt động:**
-1. Validate payload có `user_id`, `deleted_at`, `retention_window_expires_at`
-2. Normalize `user_id` canonical.
+1. Validate payload có `user_id`, `deleted_at`, `retention_window_expires_at`.
+2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Query danh sách `product_id` bị ảnh hưởng của user (distinct).
 4. Trong transaction:
    - `UPDATE reviews SET user_name='Tài khoản đã bị xóa'` WHERE `user_id` = :user_id`.
 5. Commit transaction.
 6. Invalidate Redis theo batch pipeline:
    - mỗi batch 200 product gọi `INCR review:prod_ver:{product_id}`.
-7. Broadcast invalidation L1 cho các product liên quan (retry tối đa 3 lần).
-8. Nếu broadcast fail sau retry, đẩy task sang `review:l1:invalidate:retry` để replayer xử lý.
-9. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
+7. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
 
 **Ràng buộc quan trọng:**
 *   Không có worker cập nhật tên theo `USER_PROFILE_UPDATED`.
 *   Chỉ chạy luồng anonymize khi có `ACCOUNT_DELETED` (hoặc legal takedown tương đương).
+
+## 6. Review Report Processor
+
+**Topic Consume:** `t.report.events`
+
+**Consumer Group:** `review-report-processor`
+
+**Event:** `REVIEW_REPORTED` (hoặc tương đương từ Report Service)
+
+**Sứ mệnh:** Xử lý báo cáo vi phạm, đếm số report và ẩn review khi đạt threshold.
+
+**Chi tiết luồng hoạt động:**
+1. Validate payload: `review_id`, `reporter_id`, `report_reason`.
+2. `SELECT review ... FOR UPDATE` để lấy thông tin review.
+3. Kiểm tra review có tồn tại và đang ở `status='APPROVED'`.
+4. Insert report vào bảng `review_reports` (nếu có) hoặc tăng `report_count` trên `reviews`.
+5. Check threshold:
+   - Nếu `report_count < REPORT_THRESHOLD` -> ACK, không làm gì thêm.
+   - Nếu `report_count >= REPORT_THRESHOLD`:
+     - Update `reviews.status = 'HIDDEN_BY_REPORT'`.
+     - Insert outbox `REVIEW_HIDDEN` với `hidden_reason='REPORT_THRESHOLD_EXCEEDED'`.
+6. Commit transaction.
+7. Sau commit:
+   - Gọi `INCR review:prod_ver:{product_id}` để invalidate page cache.
+   - Ghi audit log cho báo cáo.
+
+**Ràng buộc:**
+*   Threshold mặc định là 10 reports (configurable).
+*   Mỗi user chỉ được report 1 review 1 lần (idempotency qua `UNIQUE(review_id, reporter_id)`).
+
+> **Lưu ý:** Nếu Report Service không phát event, có thể dùng polling hoặc synchronous call từ API endpoint report.
 
 ## 7. Reconciliation Cronjob
 
@@ -206,24 +224,24 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Sứ mệnh:** Thu hồi eligibility bị kẹt và đồng bộ lifecycle expiration.
 
-**8.1. Recover `REVIEWED` stale an toàn**
+### 6.1. Recover `REVIEWED` stale an toàn
 
 Chỉ recover row kẹt khi **không tồn tại review tương ứng** để tránh mở lại eligibility trong lúc review đã được tạo.
 
 ```sql
 UPDATE review_eligibilities e
 SET status = 'PENDING',
-      attempt_count = 0,
-      updated_at = NOW()
+    attempt_count = 0,
+    updated_at = NOW()
 WHERE e.status = 'REVIEWED'
-   AND e.attempt_count = 1
+   AND e.attempt_count = 0
    AND e.updated_at < NOW() - INTERVAL '30 minutes'
    AND NOT EXISTS (
       SELECT 1 FROM reviews r WHERE r.eligibility_id = e.id
    );
 ```
 
-**8.2. Expire eligibility quá hạn**
+### 6.2. Expire eligibility quá hạn
 
 ```sql
 UPDATE review_eligibilities
@@ -232,7 +250,7 @@ WHERE status IN ('PENDING', 'REJECTED_RETRY_PENDING')
   AND expires_at <= NOW();
 ```
 
-**8.3. Reconcile outbox backlog bất thường**
+### 6.3. Reconcile outbox backlog bất thường
 
 Phát hiện event có nguy cơ chưa được publish do connector lag hoặc lỗi kéo dài.
 
@@ -244,51 +262,40 @@ WHERE created_at < NOW() - INTERVAL '15 minutes';
 
 Nếu `stale_outbox_count` vượt ngưỡng vận hành, raise alert và tạm dừng cleanup partition.
 
-## 8. Idempotency Cleanup Cronjob
-
-**Tần suất:** hằng ngày (ví dụ 02:30).
-
-**Mục tiêu:** tránh phình bảng idempotency.
-
-**Safety gate trước cleanup:**
-1. Max consumer lag của các group Review < 120 giây.
-2. Không có group ở trạng thái `DOWN`/`UNHEALTHY`.
-3. Nếu safety gate fail -> skip cleanup và raise alert.
-
-```sql
-DELETE FROM rating_aggregator_idempotency
-WHERE created_at < NOW() - INTERVAL '30 days';
-```
-
-**SLO bắt buộc:** export `idempotency_table_row_count` và `last_cleanup_timestamp`.
-
-## 9. Retry Replayer Worker
+## 7. Retry Replayer Worker
 
 **Topic Consume:** `t.review.retry`
+
+**Consumer Group:** `review-retry-replayer`
 
 **Sứ mệnh:** replay các event tạm lỗi có kiểm soát.
 
 **Rule:**
 1. Mỗi envelope retry có `retry_round`.
 2. `retry_round > 3` -> chuyển `t.review.dlq`.
-3. Replay giữ nguyên `event_id` để idempotency hoạt động đúng.
+3. Replay giữ nguyên `event_id` để idempotency tự nhiên hoạt động đúng.
+4. Chỉ replay các lỗi có thể phục hồi được (ví dụ: DB timeout, network partition).
+5. Không replay các lỗi contract violation (thiếu required field, invalid payload).
 
-## 10. Non-Functional Guardrails
+## 8. DLQ Inspector Consumer
 
-1. **Lock order chuẩn:**
-   - `review_eligibilities` -> `reviews` -> aggregate tables.
-   - Không đảo thứ tự lock giữa các worker.
-2. **Idempotency storage:**
-   - Mỗi nghiệp vụ dùng bảng idempotency riêng.
-   - Retention idempotency bắt buộc 30 ngày + cleanup job.
-3. **Backpressure:**
-   - Consumer batch size 100-500.
-   - `max_in_flight_records = 500`.
-4. **Retry/DLQ:**
-   - Retry ngắn hạn ở consumer.
-   - Lỗi schema hoặc poison message đi `t.review.dlq` để điều tra thủ công.
-5. **SLO giám sát bắt buộc:**
-   - Connector lag (Debezium)
-   - Kafka consumer lag từng group
-   - P95/P99 latency update aggregate
-   - Tỷ lệ event vào `t.review.dlq`
+**Topic Consume:** `t.review.dlq`
+
+**Consumer Group:** `review-dlq-inspector`
+
+**Sứ mệnh:** Inspect và xử lý các message bị reject vĩnh viễn.
+
+**Chi tiết luồng hoạt động:**
+1. Consumer đọc message từ `t.review.dlq` với batch nhỏ (10-50 messages).
+2. Phân loại message theo loại lỗi:
+   - **Contract violation:** thiếu required field, invalid payload -> ghi metrics, không retry.
+   - **Poison message:** parse được nhưng business logic lỗi không phục hồi được -> ghi metrics.
+   - **Transient lỗi:** có thể phục hồi được -> publish lại sang `t.review.retry` với `retry_round = 0`.
+3. Ghi metrics cho từng loại lỗi để monitoring.
+4. Nếu message không xử lý được sau khi inspect -> giữ trong DLQ hoặc chuyển sang dead storage.
+
+**Metrics bắt buộc:**
+*   `dlq_messages_total` (label: `error_type`)
+*   `dlq_messages_replayed_total`
+*   `dlq_messages_discarded_total`
+

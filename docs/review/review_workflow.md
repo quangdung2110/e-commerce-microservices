@@ -22,15 +22,17 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Mục tiêu:** User gửi đánh giá cho item đã mua.
 
+**Idempotency:** Sử dụng header `Idempotency-Key` kết hợp với `UNIQUE(eligibility_id)` để đảm bảo không tạo trùng review.
+
 **Workflow chuẩn:**
 1. **Validate request:** `user_id`, `order_id`, `product_id`, `sku_id`, `rating`, nội dung/media theo policy.
-2. **Normalize identity:** chuẩn hóa `user_id` về canonical format `u-<digits>`.
+2. **Validate user_id:** đảm bảo `user_id` là UUID hợp lệ theo chuẩn thống nhất toàn hệ thống.
 3. **Lock quyền review (DB atomic):** chạy `UPDATE review_eligibilities SET status='REVIEWED', attempt_count = attempt_count + 1, updated_at = NOW() WHERE status IN ('PENDING') AND attempt_count = 0 AND expires_at > NOW() RETURNING ...` trên `review_eligibilities`.
 4. **Nếu lock thất bại:**
    - `expires_at <= NOW()` -> trả `410 GONE`.
    - vượt số lần thử hoặc đã review -> trả `409 CONFLICT`.
 5. **Trong cùng transaction:**
-   - Insert `reviews` với `status='APPROVED'`.
+   - Insert `reviews` với `status='APPROVED'` (idempotent qua `UNIQUE(eligibility_id)`).
    - Insert `review_media` nếu có.
    - Insert outbox `REVIEW_CREATED` (kèm envelope fields version/sequence).
 6. Commit transaction.
@@ -38,39 +40,45 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 8. Debezium CDC publish event `REVIEW_CREATED` lên `t.review.events`.
 
 
-## 3. API: Sửa Review (Trước Khi Duyệt Hoặc Theo Retry Policy)
+## 3. API: Sửa Review (Duplicatable 1 Lần)
 
 **Endpoint:** `PATCH /api/v1/reviews/{review_id}`
 
+**Mục tiêu:** User chỉnh sửa review đã tạo, chỉ cho phép tối đa 1 lần chỉnh sửa.
+
+**Idempotency:** Sử dụng header `Idempotency-Key` kết hợp với `PRIMARY KEY (eligibility_id, attempt_count)` logic check.
+
 **Rule state:**
-1. Cho phép sửa khi:
-   - `reviews.status='APPROVED'` **và** eligibility `status='REVIEWED'` **và** `attempt_count = 1`.
-   - **hoặc** `reviews.status='HIDDEN_BY_REPORT'` **và** eligibility `status='REJECTED_RETRY_PENDING'` **và** `attempt_count = 1`.
+1. Review phải ở trạng thái `APPROVED`.
+2. Eligibility phải có `status='REVIEWED'` và `attempt_count = 1` (đã submit 1 lần, chưa edit).
 
 **Workflow chuẩn:**
 1. Validate ownership theo `user_id` canonical.
 2. `SELECT review + eligibility ... FOR UPDATE`.
-3. Kiểm tra state theo rule ở trên.
-4. Update eligibility:
-   - `attempt_count = attempt_count + 1`
-   - `status = 'REJECTED_FINAL'`
-5. Cập nhật `reviews`:
-   - Nếu trước đó `HIDDEN_BY_REPORT` thì set lại `status='APPROVED'`.
-6. Insert outbox `REVIEW_UPDATED`.
-7. Nếu có transition `HIDDEN_BY_REPORT -> APPROVED`, insert thêm outbox `REVIEW_APPROVED`.
-8. Commit.
+3. Kiểm tra:
+   - Review `status='APPROVED'`
+   - Eligibility `status='REVIEWED'` và `attempt_count = 1`
+4. **Trong cùng transaction:**
+   - Update eligibility: `status = 'REJECTED_FINAL'`, `attempt_count = 2`.
+   - Update review: cập nhật các fields mới (`rating`, `content`, `media`).
+   - Insert outbox `REVIEW_UPDATED`.
+5. Commit.
 
 **Lưu ý:** Không invalidate cache page public sau PATCH để tránh stampede. Client nhận payload trả về để đảm bảo RYOW cho tác giả.
+
 
 ## 4. API: Like/Unlike Review
 
 **Endpoint:** `POST /api/v1/reviews/{review_id}/helpful`
 
+**Idempotency:** `PRIMARY KEY (review_id, user_id)` trên bảng `review_likes` với `ON CONFLICT DO NOTHING`.
+
 **Guard bắt buộc trước khi mutate:**
 1. Review phải ở trạng thái `APPROVED`.
 
 **Workflow chuẩn (DB-First):**
-1. Rate limit (chống spam): `SET review:ratelimit:{user_id}:{review_id} "1" NX EX 10`.
+1. **Rate limit (chống spam, shared across all pods):** `SET review:ratelimit:{user_id}:{review_id} "1" NX EX 10`.
+   - Redis key là shared nên áp dụng rate limit across tất cả pods.
    - Nếu key đã tồn tại -> trả `429 Too Many Requests`.
 2. Gọi Database trong một transaction:
    - **Trường hợp Like:**
@@ -94,15 +102,17 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 5. (Lưu ý: Không xử lý xóa unlike khi tài khoản user bị xóa để tiết kiệm chi phí, do số lượt like không tác động xấu đến trải nghiệm người dùng hiện tại).
 
 
-## 5. API: admin Reply
+## 5. API: Admin Reply
 
 **Endpoint:** `POST /api/v1/reviews/{review_id}/admin-replies`
 
+**Idempotency:** `UNIQUE(review_id)` trên bảng `review_admin_replies` với upsert logic.
+
 **Workflow chuẩn:**
 1. `SELECT review ... FOR UPDATE`, chỉ cho reply khi `reviews.status='APPROVED'`.
-2. Upsert `review_admin_replies` (1 review chỉ 1 reply active).
+2. Upsert `review_admin_replies` (1 review chỉ 1 reply active) với `ON CONFLICT DO UPDATE`.
 3. Update `reviews.is_admin_replied=true`.
-4. Nếu là insert mới -> insert outbox `` (bắt buộc có `content`).
+4. Nếu là insert mới -> insert outbox `ADMIN_REPLY_CREATED` (bắt buộc có `content`).
 5. Nếu là update reply đã tồn tại -> không phát event notify mới để tránh spam; chỉ invalidate cache.
 6. Commit.
 7. `INCR review:prod_ver:{product_id}` để refresh page cache hiển thị reply.
@@ -136,8 +146,8 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Trình tự:**
 1. Consumer validate event.
-2. Normalize `user_id`.
-3. Upsert eligibility từng item.
+2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
+3. Upsert eligibility từng item với idempotency tự nhiên qua `UNIQUE(order_id, product_id, sku_id, user_id)`.
 4. Nếu `expires_at <= NOW()` tại lúc xử lý, set `EXPIRED` ngay để tránh eligibility rác.
 5. Commit rồi ACK.
 
@@ -146,7 +156,7 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 **Trigger:** Event nội bộ `REVIEW_METRICS_UPDATED` được phát từ aggregator. [Rating Aggregator Consumer](review_workers.md#4-rating-aggregatorConsumer)
 
 **Trình tự liên service:**
-1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document SKU theo `product_id`.
+1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document theo `product_id`.
 2. Guard **duy nhất** theo `event_sequence_id` trên **envelope**.
 3. Nếu thiếu `event_sequence_id`, phải chuyển DLQ (không fallback timestamp).
 
@@ -158,10 +168,9 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 
 **Trình tự:**
 1. Consumer nhận `user_id`, `deleted_at`, `retention_window_expires_at`
-2. Normalize `user_id`.
+2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Update `reviews.user_name='Tài khoản đã bị xóa'` để ẩn danh hiển thị ngay.
-4. Invalidate cache page theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
-5. Broadcast L1 invalidation.
+4. Invalidate Redis cache theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
 
 ## 10. Ma Trận Nhất Quán (Consistency Matrix)
 
@@ -169,12 +178,12 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 |---|---|---|---|---|
 | Create review | PostgreSQL (`reviews`, `review_eligibilities`) | Có ở API response | 1-3s để event xuất hiện downstream | CDC outbox + consumer retries |
 | Helpful vote | PostgreSQL (`reviews`, `review_likes`) | Có ở API action result | Nguyên tử (Atomic) | DB Transaction |
-| admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho cache/list downstream | Versioned cache invalidation |
+| Admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho cache/list downstream | Versioned cache invalidation |
 | Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để mọi page cache hội tụ | Batch anonymize + version bump per product |
 
 ## 11. Kịch bản lỗi và tự phục hồi
 
-1. **Duplicate event:** idempotency table chặn xử lý lặp.
+1. **Duplicate event:** idempotency tự nhiên qua DB unique constraints chặn xử lý lặp.
 2. **Out-of-order event:** guard bằng `event_sequence_id`/`state_version` trước khi apply.
 3. **Missing required sequencing field:** chuyển `t.review.dlq`, không xử lý mù.
 4. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
