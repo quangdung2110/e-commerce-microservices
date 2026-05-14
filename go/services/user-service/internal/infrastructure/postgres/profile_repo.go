@@ -286,3 +286,27 @@ func (r *PostgresProfileRepository) Ping(ctx context.Context) error {
 	defer cancel()
 	return r.db.Ping(ctx)
 }
+
+// Anonymize anonymizes a profile for GDPR compliance (clears PII but keeps record)
+func (r *PostgresProfileRepository) Anonymize(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	query := `
+		UPDATE user_profiles
+		SET first_name = 'Deleted',
+		    last_name = 'User',
+		    phone_number = NULL,
+		    date_of_birth = NULL,
+		    gender = 'UNKNOWN',
+		    updated_at = NOW()
+		WHERE id = $1`
+
+	result, err := tx.Exec(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to anonymize profile: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}

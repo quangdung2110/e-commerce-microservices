@@ -1,0 +1,61 @@
+# User Service Configuration
+# All configuration can be overridden via environment variables
+
+app:
+  host: "0.0.0.0"
+  port: 8080
+  name: "user-service"
+
+# Database Configuration (PostgreSQL)
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  name: "user_service"
+  sslmode: "disable"
+  max_conns: 25
+  min_conns: 5
+  max_conn_lifetime: "5m"
+
+# Redis Configuration
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+# Kafka Configuration
+kafka:
+  brokers:
+    - "localhost:9092"
+  auth_topic: "t.auth.events"
+  user_topic: "t.user.events"
+  consumer_group: "user-service"
+  offset_reset: "earliest"
+  session_timeout: "30s"
+  heartbeat_interval: "3s"
+  max_wait_time: "10s"
+  min_bytes: 1
+  max_bytes: 10485760  # 10MB
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  rate: 100           # requests per window
+  window: "1m"         # time window
+  capacity: 100        # max tokens per window
+
+# Security
+security:
+  jwt_secret: "your-secret-key-change-in-production"
+
+# Logging
+logging:
+  level: "info"
+  encoding: "json"
+
+# Health Check
+health:
+  liveness_path: "/health"
+  readiness_path: "/ready"

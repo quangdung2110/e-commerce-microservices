@@ -11,9 +11,9 @@ import (
 type OutboxEventType string
 
 const (
-	EventTypeUserProfileUpdated   OutboxEventType = "USER_PROFILE_UPDATED"
+	EventTypeUserProfileUpdated    OutboxEventType = "USER_PROFILE_UPDATED"
 	EventTypeUserPreferencesUpdated OutboxEventType = "USER_PREFERENCES_UPDATED"
-	EventTypeUserProfileDeleted   OutboxEventType = "USER_PROFILE_DELETED"
+	EventTypeAccountDeleted        OutboxEventType = "ACCOUNT_DELETED"
 )
 
 // AggregateType defines the type of aggregate
@@ -84,7 +84,18 @@ func NewUserProfileDeletedEvent(userID uuid.UUID) (*OutboxEvent, error) {
 		ID:        userID,
 		DeletedAt: time.Now(),
 	}
-	return NewOutboxEvent(EventTypeUserProfileDeleted, userID, payload)
+	return NewOutboxEvent(EventTypeAccountDeleted, userID, payload)
+}
+
+// NewAccountDeletedEvent creates an outbox event for GDPR account deletion (Stage 1)
+func NewAccountDeletedEvent(userID uuid.UUID, reason string, retentionWindowExpiresAt time.Time) (*OutboxEvent, error) {
+	payload := AccountDeletedPayload{
+		UserID:                   userID,
+		DeletedAt:                time.Now().Format(time.RFC3339),
+		Reason:                   reason,
+		RetentionWindowExpiresAt: retentionWindowExpiresAt.Format(time.RFC3339),
+	}
+	return NewOutboxEvent(EventTypeAccountDeleted, userID, payload)
 }
 
 // ProfileUpdatedPayload is the payload for profile update events
@@ -111,4 +122,12 @@ type PreferencesUpdatedPayload struct {
 type ProfileDeletedPayload struct {
 	ID        uuid.UUID `json:"id"`
 	DeletedAt time.Time `json:"deleted_at"`
+}
+
+// AccountDeletedPayload is the payload for GDPR account deletion events
+type AccountDeletedPayload struct {
+	UserID                   uuid.UUID `json:"user_id"`
+	DeletedAt                string   `json:"deleted_at"`
+	Reason                   string   `json:"reason"` // "GDPR_REQUEST" or "ADMIN_DELETION"
+	RetentionWindowExpiresAt string   `json:"retention_window_expires_at"`
 }

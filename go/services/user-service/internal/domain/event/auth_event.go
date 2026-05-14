@@ -37,9 +37,10 @@ func ParseAuthEvent(data []byte) (*AuthEvent, error) {
 
 // AuthPayload contains the data for authentication events
 type AuthPayload struct {
-	UserID uuid.UUID `json:"user_id"`
-	Roles  []string  `json:"roles,omitempty"`
-	Reason string    `json:"reason,omitempty"`
+	UserID                      uuid.UUID `json:"user_id"`
+	Roles                       []string `json:"roles,omitempty"`
+	Reason                      string   `json:"reason,omitempty"`
+	RetentionWindowExpiresAt    time.Time `json:"retention_window_expires_at,omitempty"`
 }
 
 // IsUserVerifiedSuccess checks if the event is a user verified success event

@@ -45,6 +45,7 @@ func main() {
 			NewAddressRepository,
 			NewPreferencesRepository,
 			NewOutboxRepository,
+			NewUserDeletionRepository,
 			NewAddressCache,
 
 			// Services
@@ -254,6 +255,10 @@ func NewOutboxRepository(db *PostgresDB) port.OutboxRepository {
 	return postgres.NewPostgresOutboxRepository(db.Pool)
 }
 
+func NewUserDeletionRepository(db *PostgresDB) port.UserDeletionRepository {
+	return postgres.NewPostgresUserDeletionRepository(db.Pool)
+}
+
 func NewAddressCache(client *redis.Client) port.AddressCache {
 	return redisinfra.NewRedisAddressCache(client)
 }
@@ -289,16 +294,16 @@ func NewPreferencesService(
 
 // Handler constructors
 
-func NewProfileHandler(profileService *service.ProfileService, logger *zap.Logger) *apihandler.ProfileHandler {
-	return apihandler.NewProfileHandler(profileService, logger)
+func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *PostgresDB, logger *zap.Logger) *apihandler.ProfileHandler {
+	return apihandler.NewProfileHandler(profileService, outboxRepo, db.Pool, logger)
 }
 
 func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *apihandler.AddressHandler {
 	return apihandler.NewAddressHandler(addressService, logger)
 }
 
-func NewPreferencesHandler(preferencesService *service.PreferencesService, logger *zap.Logger) *apihandler.PreferencesHandler {
-	return apihandler.NewPreferencesHandler(preferencesService, logger)
+func NewPreferencesHandler(preferencesService *service.PreferencesService, db *PostgresDB, logger *zap.Logger) *apihandler.PreferencesHandler {
+	return apihandler.NewPreferencesHandler(preferencesService, db.Pool, logger)
 }
 
 func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *apihandler.HealthHandler {
@@ -355,6 +360,7 @@ func NewKafkaUserDeletedHandler(
 	profileRepo port.ProfileRepository,
 	prefsRepo port.PreferencesRepository,
 	addressRepo port.AddressRepository,
+	deletionRepo port.UserDeletionRepository,
 	outboxRepo port.OutboxRepository,
 	cache port.AddressCache,
 	db *PostgresDB,
@@ -364,6 +370,7 @@ func NewKafkaUserDeletedHandler(
 		profileRepo,
 		prefsRepo,
 		addressRepo,
+		deletionRepo,
 		outboxRepo,
 		cache,
 		db.Pool,
