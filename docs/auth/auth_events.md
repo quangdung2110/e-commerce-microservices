@@ -76,9 +76,17 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 }
 ```
 
-### 1.3 `USER_DELETED` (GDPR / Xóa vĩnh viễn)
-Được bắn ra khi tài khoản bị xóa vĩnh viễn (yêu cầu GDPR hoặc Admin xóa tài khoản). User Service sẽ dọn sạch PII.
+### 1.4 `USER_DELETED` (GDPR / Xóa vĩnh viễn)
+Được bắn ra khi tài khoản bị xóa vĩnh viễn (yêu cầu GDPR hoặc Admin xóa tài khoản). User Service sẽ dọn sạch PII và thông báo cho các service downstream.
+
 *   **Người nghe**: `User Service`
+
+*   **Giá trị `reason` hợp lệ:**
+    | Giá trị | Mô tả |
+    |:--------|:------|
+    | `GDPR_REQUEST` | User tự yêu cầu xóa tài khoản (quyền GDPR) |
+    | `ADMIN_DELETION` | Admin xóa tài khoản người dùng |
+
 *   **Payload Schema**:
 ```json
 {
@@ -90,10 +98,18 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
   "occurred_at": "2026-04-21T10:12:00Z",
   "payload": {
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "reason": "GDPR_REQUEST"
+    "deleted_at": "2026-04-21T10:12:00Z",
+    "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
+    "retention_window_expires_at": "2026-07-21T10:12:00Z"
   }
 }
 ```
+
+> **Giải thích các trường:**
+> - `deleted_at`: Thời điểm xóa thực tế (trigger event).
+> - `retention_window_expires_at`: Thời điểm dữ liệu PII sẽ bị **hard delete vĩnh viễn**. Mặc định = `deleted_at` + 90 ngày (configurable).
+>
+> **Về retention window:** Sau khi User Service nhận event và anonymize PII (Giai đoạn 1), dữ liệu vẫn tồn tại với bản ghi "Deleted User" trong DB. Compliance Worker sẽ hard delete vĩnh viễn sau `retention_window_expires_at` (Giai đoạn 2). Kafka không phải permanent storage nên không thể dùng để trigger hard delete 90 ngày sau.
 
 ### 1.4 `TOKEN_THEFT_DETECTED` (Xử Lý Trừng Phạt Đánh Cắp Hàng Loạt)
 Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc phát hiện một cái Refresh Token HẾT HẠN ÂN HẠN 10s lại bị ai đó nộp để ăn cắp. Auth Service đã tự Ban sạch các DB Token của user đó, nhưng nó bắn thông báo này để cả hệ thống chung tay.
