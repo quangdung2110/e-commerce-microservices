@@ -13,7 +13,6 @@ Gateway đóng vai trò như một "bảng chỉ đường" trung tâm. Client c
   - `/api/orders/**` → `order-service`  
   - `/api/products/**` → `product-service`  
   - `/api/payments/**` → `payment-service`
-- **Method-based routing:** (VD: `POST /api/orders` tạo mới, `GET /api/orders/{id}` lấy thông tin)
 - **Dynamic Service Discovery:** Gateway không cấu hình cứng địa chỉ service, mà sử dụng **Service Registry** (Consul, Eureka, hoặc Kubernetes DNS) để lấy danh sách các instance đang healthy. Cơ chế `Round Robin` hoặc `Least Connection` được dùng để load balancing nội bộ.
 
 ## 3. Authentication Strategy (Uniform Security Checking)
