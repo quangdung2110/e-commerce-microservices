@@ -1,0 +1,227 @@
+# =============================================================================
+# API Gateway Docker Compose Configuration
+# =============================================================================
+# This docker-compose sets up the Traefik API Gateway with all required
+# infrastructure services (Redis, Jaeger) for local development.
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # API Gateway (Traefik v3.x)
+  # =============================================================================
+  traefik:
+    image: traefik:v3.0
+    container_name: api-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    user: "101:101"  # Non-root user (traefik user)
+    ports:
+      - "80:80"        # HTTP (redirects to HTTPS)
+      - "443:443"      # HTTPS
+      - "8080:8080"    # Dashboard & Metrics
+    volumes:
+      # Docker socket (read-only)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Configuration files
+      - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      # Plugins directory
+      - ./plugins:/plugins
+      # TLS certificates (if using custom certs)
+      - ./certs:/certs:ro
+      # Let's Encrypt certificates
+      - ./letsencrypt:/letsencrypt
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      - TRAEFIK_LOG_LEVEL=${TRAEFIK_LOG_LEVEL:-INFO}
+      # Environment variables for Traefik
+      - TLS_EMAIL=${TLS_EMAIL:-admin@ecommerce.local}
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+      - jaeger
+    labels:
+      # Enable Traefik
+      - "traefik.enable=true"
+      # Dashboard configuration
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=auth-dashboard"
+      # Redirect HTTP to HTTPS
+      - "traefik.http.routers.http-catchall.rule=true"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================================
+  # Redis (for Rate Limiting & Pub/Sub)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-redis-password}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 300
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-network
+    ports:
+      - "6379:6379"  # Expose for local debugging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.redis.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.redis.entrypoints=redis"
+      - "traefik.tcp.routers.redis.service=redis-tcp"
+      - "traefik.tcp.services.redis-tcp.loadbalancer.server.port=6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis-password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # =============================================================================
+  # Jaeger (Distributed Tracing)
+  # =============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+      - "14268:14268"  # Jaeger collector
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+      - ALL_IN_ONE_MEMORY_MAX_TRACES=50000
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:16686/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # Prometheus (Metrics Collection) - Optional
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - ecommerce-network
+
+  # =============================================================================
+  # Grafana (Dashboards) - Optional
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - ecommerce-network
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # Go Plugin Builder (for Windows users)
+  # =============================================================================
+  # Use this service to build Go plugins since -buildmode=plugin
+  # is not supported on Windows. Run with:
+  #   docker compose run --rm go-builder
+  # =============================================================================
+  go-builder:
+    image: golang:1.21
+    container_name: go-builder
+    working_dir: /app
+    volumes:
+      - ./cmd/traefik-plugin:/app
+      - ./plugins:/plugins
+    command: >
+      sh -c "cd /app &&
+             go mod download &&
+             go build -buildmode=plugin -o /plugins/jwt_auth.so . &&
+             echo 'Plugin built successfully!' &&
+             ls -la /plugins/"
+    networks:
+      - ecommerce-network
+    profiles:
+      - builder
+
+  # =============================================================================
+  # Auth Service Mock (for testing)
+  # =============================================================================
+  auth-mock:
+    image: mockserver/mockserver:5.15.0
+    container_name: auth-mock
+    restart: unless-stopped
+    ports:
+      - "1080:1080"
+    environment:
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/init.json
+    volumes:
+      - ./test/mockserver/init.json:/config/init.json:ro
+    networks:
+      - ecommerce-network
+    profiles:
+      - test
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

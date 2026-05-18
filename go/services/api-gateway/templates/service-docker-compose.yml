@@ -1,0 +1,176 @@
+# =============================================================================
+# Docker Compose Template for Services with Traefik Labels
+# =============================================================================
+# Copy and customize this template for each microservice.
+# =============================================================================
+
+# Example for user-service - copy to respective service docker-compose.yml
+
+services:
+  user-service:
+    image: user-service:latest
+    container_name: user-service
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/users
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    networks:
+      - ecommerce-network
+    depends_on:
+      - postgres
+      - redis
+    labels:
+      # Enable Traefik routing
+      - "traefik.enable=true"
+
+      # Router configuration
+      - "traefik.http.routers.user-service.rule=PathPrefix(`/api/users`)"
+      - "traefik.http.routers.user-service.entrypoints=websecure"
+      - "traefik.http.routers.user-service.tls=true"
+      - "traefik.http.routers.user-service.priority=10"
+
+      # Middlewares (reference middlewares from dynamic.yml)
+      - "traefik.http.routers.user-service.middlewares=user-auth,rate-limit-api,secure-headers"
+
+      # Service configuration
+      - "traefik.http.services.user-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.user-service.loadbalancer.server.scheme=http"
+
+      # Health check
+      - "traefik.http.services.user-service.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.user-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.user-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.user-service.loadbalancer.healthcheck.expectedStatusCodes=200"
+
+      # Load balancing (optional)
+      # - "traefik.http.services.user-service.loadbalancer.sticky.cookie=true"
+
+      # Circuit breaker (optional)
+      # - "traefik.http.services.user-service.loadbalancer.healthcheck.failureThreshold=3"
+      # - "traefik.http.services.user-service.loadbalancer.healthcheck.successThreshold=1"
+
+networks:
+  ecommerce-network:
+    external: true
+
+# =============================================================================
+# ORDER SERVICE TEMPLATE
+# =============================================================================
+
+services:
+  order-service:
+    image: order-service:latest
+    container_name: order-service
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.order-service.rule=PathPrefix(`/api/orders`)"
+      - "traefik.http.routers.order-service.entrypoints=websecure"
+      - "traefik.http.routers.order-service.tls=true"
+      - "traefik.http.routers.order-service.middlewares=order-auth,rate-limit-api"
+      - "traefik.http.services.order-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.interval=10s"
+
+# =============================================================================
+# PRODUCT SERVICE TEMPLATE (Mixed Auth - Public GET, Protected Write)
+# =============================================================================
+
+services:
+  product-service:
+    image: product-service:latest
+    container_name: product-service
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+
+      # Public router (GET requests only)
+      - "traefik.http.routers.product-service-public.rule=PathPrefix(`/api/products`) && Method(GET)"
+      - "traefik.http.routers.product-service-public.entrypoints=websecure"
+      - "traefik.http.routers.product-service-public.tls=true"
+      - "traefik.http.routers.product-service-public.middlewares=rate-limit-default"
+      - "traefik.http.routers.product-service-public.priority=20"
+
+      # Protected router (all methods)
+      - "traefik.http.routers.product-service.rule=PathPrefix(`/api/products`)"
+      - "traefik.http.routers.product-service.entrypoints=websecure"
+      - "traefik.http.routers.product-service.tls=true"
+      - "traefik.http.routers.product-service.middlewares=rate-limit-api"
+      - "traefik.http.routers.product-service.priority=10"
+
+      # Service
+      - "traefik.http.services.product-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/health"
+
+# =============================================================================
+# PAYMENT SERVICE TEMPLATE (Strictest Rate Limit)
+# =============================================================================
+
+services:
+  payment-service:
+    image: payment-service:latest
+    container_name: payment-service
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payment-service.rule=PathPrefix(`/api/payments`)"
+      - "traefik.http.routers.payment-service.entrypoints=websecure"
+      - "traefik.http.routers.payment-service.tls=true"
+      - "traefik.http.routers.payment-service.middlewares=payment-auth,rate-limit-payment"
+      - "traefik.http.routers.payment-service.priority=10"
+      - "traefik.http.services.payment-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.payment-service.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.payment-service.loadbalancer.healthcheck.interval=10s"
+
+# =============================================================================
+# AUTH SERVICE TEMPLATE (No Auth Middleware - JWKS Endpoint)
+# =============================================================================
+
+services:
+  auth-service:
+    image: auth-service:latest
+    container_name: auth-service
+    restart: unless-stopped
+    networks:
+      - ecommerce-network
+    expose:
+      - "8081"  # Internal only
+    labels:
+      - "traefik.enable=true"
+
+      # JWKS Endpoint
+      - "traefik.http.routers.auth-jwks.rule=Path(`/api/.well-known/jwks.json`)"
+      - "traefik.http.routers.auth-jwks.entrypoints=websecure"
+      - "traefik.http.routers.auth-jwks.tls=true"
+      - "traefik.http.routers.auth-jwks.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-jwks.loadbalancer.server.port=8081"
+
+      # OIDC Discovery
+      - "traefik.http.routers.auth-oidc.rule=PathPrefix(`/.well-known`)"
+      - "traefik.http.routers.auth-oidc.entrypoints=websecure"
+      - "traefik.http.routers.auth-oidc.tls=true"
+      - "traefik.http.routers.auth-oidc.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-oidc.loadbalancer.server.port=8081"
+
+      # Auth endpoints (login, register, refresh)
+      - "traefik.http.routers.auth-api.rule=PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.auth-api.entrypoints=websecure"
+      - "traefik.http.routers.auth-api.tls=true"
+      - "traefik.http.routers.auth-api.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-api.loadbalancer.server.port=8081"
+
+# =============================================================================
+# EXTERNAL SERVICES NETWORK CONFIG
+# =============================================================================
+
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    external: true

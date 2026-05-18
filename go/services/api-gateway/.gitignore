@@ -1,0 +1,35 @@
+# Go API Gateway Service
+# Binary output directory
+api-gateway
+
+# Go plugin output
+*.so
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# TLS Certificates
+certs/
+*.pem
+*.key
+*.crt
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/

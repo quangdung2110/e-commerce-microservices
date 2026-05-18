@@ -1,0 +1,223 @@
+# =============================================================================
+# Integrated Docker Compose for API Gateway + Auth Service
+# =============================================================================
+# Use this file to run both services for integration testing.
+# Run with: docker compose -f docker-compose.integrated.yml up -d
+# =============================================================================
+
+services:
+  # =============================================================================
+  # API Gateway (Traefik v3.x)
+  # =============================================================================
+  traefik:
+    image: traefik:v3.0
+    container_name: api-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8088:80"       # HTTP
+      - "8443:443"      # HTTPS (self-signed)
+      - "8090:8090"     # Dashboard & Metrics
+    volumes:
+      # Docker socket (read-only)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Configuration files
+      - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      # Plugins directory
+      - ./plugins:/plugins
+      # TLS certificates
+      - ./certs:/certs:ro
+      # Let's Encrypt certificates
+      - ./letsencrypt:/letsencrypt
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      - TRAEFIK_LOG_LEVEL=${TRAEFIK_LOG_LEVEL:-INFO}
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+      - auth-service
+    labels:
+      # Traefik dashboard
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=auth-dashboard"
+      # Traefik dashboard without HTTPS redirect for dev
+      - "traefik.http.routers.dashboard-http.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard-http.entrypoints=web"
+      - "traefik.http.routers.dashboard-http.service=api@internal"
+
+  # =============================================================================
+  # Auth Service
+  # =============================================================================
+  auth-service:
+    build:
+      context: ../auth-service
+      dockerfile: Dockerfile
+    image: auth-service:latest
+    container_name: auth-service
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "8081:8081"
+    environment:
+      # Server
+      - GIN_MODE=debug
+      # Database
+      - AUTH_DATABASE_HOST=auth-postgres
+      - AUTH_DATABASE_PORT=5432
+      - AUTH_DATABASE_NAME=auth_db
+      - AUTH_DATABASE_USER=postgres
+      - AUTH_DATABASE_PASSWORD=${AUTH_DB_PASSWORD:-postgres}
+      - AUTH_DATABASE_SSL_MODE=disable
+      # Redis
+      - AUTH_REDIS_HOST=redis
+      - AUTH_REDIS_PORT=6379
+      - AUTH_REDIS_PASSWORD=${REDIS_PASSWORD:-redis-password}
+      - AUTH_REDIS_DB=0
+      # JWT
+      - AUTH_JWT_ACCESS_TOKEN_SECRET=${JWT_ACCESS_SECRET:-your-access-token-secret-key-change-in-production-min-32chars}
+      - AUTH_JWT_REFRESH_TOKEN_SECRET=${JWT_REFRESH_SECRET:-your-refresh-token-secret-key-change-in-production-min-32}
+      - AUTH_JWT_ISSUER=auth-service
+      # JWKS
+      - AUTH_JWKS_ENABLED=true
+      # Workers - disable for dev to avoid DB migrations issues
+      - AUTH_WORKERS_ENABLED=false
+      # Kafka - disable for dev
+      - AUTH_KAFKA_ENABLED=false
+      # Logging
+      - LOG_LEVEL=debug
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      # Traefik labels
+      - "traefik.enable=true"
+      # JWKS endpoint - HTTP (no TLS for dev)
+      - "traefik.http.routers.auth-jwks.rule=Path(`/.well-known/jwks.json`)"
+      - "traefik.http.routers.auth-jwks.entrypoints=web"
+      - "traefik.http.routers.auth-jwks.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-jwks.loadbalancer.server.port=8081"
+      # OIDC discovery - HTTP
+      - "traefik.http.routers.auth-oidc.rule=Path(`/.well-known/openid-configuration`)"
+      - "traefik.http.routers.auth-oidc.entrypoints=web"
+      - "traefik.http.routers.auth-oidc.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-oidc.loadbalancer.server.port=8081"
+      # Auth API - HTTP
+      - "traefik.http.routers.auth-api.rule=PathPrefix(`/api/v1/auth`)"
+      - "traefik.http.routers.auth-api.entrypoints=web"
+      - "traefik.http.routers.auth-api.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-api.loadbalancer.server.port=8081"
+      # Password endpoints - HTTP
+      - "traefik.http.routers.auth-password.rule=PathPrefix(`/api/v1/password`)"
+      - "traefik.http.routers.auth-password.entrypoints=web"
+      - "traefik.http.routers.auth-password.middlewares=rate-limit-auth"
+      - "traefik.http.services.auth-password.loadbalancer.server.port=8081"
+      # Health check - HTTP
+      - "traefik.http.routers.auth-health.rule=Path(`/health`)"
+      - "traefik.http.routers.auth-health.entrypoints=web"
+      - "traefik.http.services.auth-health.loadbalancer.server.port=8081"
+      # Priority
+      - "traefik.http.routers.auth-jwks.priority=100"
+      - "traefik.http.routers.auth-oidc.priority=100"
+      - "traefik.http.routers.auth-health.priority=100"
+
+  # =============================================================================
+  # PostgreSQL (for Auth Service)
+  # =============================================================================
+  auth-postgres:
+    image: postgres:16-alpine
+    container_name: auth-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${AUTH_DB_PASSWORD:-postgres}
+      - POSTGRES_DB=auth_db
+    volumes:
+      - ../auth-service/sql:/docker-entrypoint-initdb.d:ro
+      - auth-postgres-data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =============================================================================
+  # Redis (shared)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-redis-password}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis-password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # =============================================================================
+  # Jaeger (Tracing) - Optional
+  # =============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+      - ALL_IN_ONE_MEMORY_MAX_TRACES=50000
+    networks:
+      - ecommerce-network
+    profiles:
+      - observability
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  auth-postgres-data:
+    driver: local
+  redis-data:
+    driver: local

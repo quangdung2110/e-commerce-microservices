@@ -1,0 +1,47 @@
+# =============================================================================
+# Traefik v3.x - Static Configuration
+# =============================================================================
+# This file is loaded on Traefik startup and defines the core configuration.
+# Changes require Traefik restart.
+# =============================================================================
+
+# Global settings
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
+
+# API Configuration
+api:
+  dashboard: true
+  insecure: true
+
+# EntryPoints - Define ports and protocols
+entryPoints:
+  web:
+    address: ":80"
+
+  metrics:
+    address: ":8090"
+
+# Providers - Service discovery mechanisms
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: ecommerce-network
+    watch: true
+
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+# Logging
+log:
+  level: INFO
+
+# Access Log
+accessLog: {}
+
+# Tracing (disabled for now)
+# tracing:
+#   serviceName: api-gateway
