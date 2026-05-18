@@ -1,0 +1,234 @@
+# =============================================================================
+# Traefik v3.x - Dynamic Configuration
+# =============================================================================
+# This file is watched for changes and hot-reloaded without restart.
+# Contains middlewares, services, and router configurations.
+# =============================================================================
+
+http:
+  # =============================================================================
+  # Middlewares
+  # =============================================================================
+  middlewares:
+    # -------------------------------------------------------------------------
+    # JWT Authentication Middleware (Go Plugin)
+    # -------------------------------------------------------------------------
+
+    # User Service JWT Auth
+    jwt-auth-user:
+      plugin:
+        jwt-auth:
+          authServiceURL: "http://auth-service:8081"
+          jwksPath: "/.well-known/jwks.json"
+          redisAddr: "redis:6379"
+          redisDB: 0
+          jwksCacheTTLMinutes: 10
+          denylistKeyPrefix: "auth:denylist"
+          revokedBeforePrefix: "auth:revoked_before"
+          jwksInvalidateChannel: "auth:jwks:update"
+          publicPaths:
+            - "/health"
+            - "/.well-known/"
+          userIdHeader: "X-User-Id"
+          userRolesHeader: "X-User-Roles"
+          userEmailHeader: "X-User-Email"
+          userDeviceHeader: "X-User-Device-Id"
+          userSessionHeader: "X-User-Session-Id"
+
+    # Order Service JWT Auth
+    jwt-auth-order:
+      plugin:
+        jwt-auth:
+          authServiceURL: "http://auth-service:8081"
+          jwksPath: "/.well-known/jwks.json"
+          redisAddr: "redis:6379"
+          redisDB: 0
+          jwksCacheTTLMinutes: 10
+          denylistKeyPrefix: "auth:denylist"
+          revokedBeforePrefix: "auth:revoked_before"
+          jwksInvalidateChannel: "auth:jwks:update"
+          publicPaths:
+            - "/health"
+            - "/.well-known/"
+          userIdHeader: "X-User-Id"
+          userRolesHeader: "X-User-Roles"
+          userEmailHeader: "X-User-Email"
+          userDeviceHeader: "X-User-Device-Id"
+          userSessionHeader: "X-User-Session-Id"
+
+    # Payment Service JWT Auth (strictest)
+    jwt-auth-payment:
+      plugin:
+        jwt-auth:
+          authServiceURL: "http://auth-service:8081"
+          jwksPath: "/.well-known/jwks.json"
+          redisAddr: "redis:6379"
+          redisDB: 0
+          jwksCacheTTLMinutes: 10
+          denylistKeyPrefix: "auth:denylist"
+          revokedBeforePrefix: "auth:revoked_before"
+          jwksInvalidateChannel: "auth:jwks:update"
+          publicPaths:
+            - "/health"
+            - "/.well-known/"
+          userIdHeader: "X-User-Id"
+          userRolesHeader: "X-User-Roles"
+          userEmailHeader: "X-User-Email"
+          userDeviceHeader: "X-User-Device-Id"
+          userSessionHeader: "X-User-Session-Id"
+
+    # -------------------------------------------------------------------------
+    # Rate Limiting Middlewares
+    # -------------------------------------------------------------------------
+
+    # Default rate limit: 100 req/s, burst 200
+    rate-limit-default:
+      rateLimit:
+        average: 100
+        burst: 200
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 2
+            excludedIPs:
+              - "127.0.0.1/32"
+              - "10.0.0.0/8"
+              - "172.16.0.0/12"
+              - "192.168.0.0/16"
+
+    # API rate limit (stricter): 50 req/s, burst 100
+    rate-limit-api:
+      rateLimit:
+        average: 50
+        burst: 100
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 2
+
+    # Payment rate limit (strictest): 20 req/s, burst 40
+    rate-limit-payment:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 2
+
+    # Auth rate limit: 10 req/s, burst 20 (brute-force protection)
+    rate-limit-auth:
+      rateLimit:
+        average: 10
+        burst: 20
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 2
+
+    # -------------------------------------------------------------------------
+    # Security Headers Middleware
+    # -------------------------------------------------------------------------
+    secure-headers:
+      headers:
+        sslRedirect: true
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Request-Id: ""
+
+    # -------------------------------------------------------------------------
+    # Compression Middleware
+    # -------------------------------------------------------------------------
+    compress:
+      compress: {}
+
+    # -------------------------------------------------------------------------
+    # Circuit Breaker (basic)
+    # -------------------------------------------------------------------------
+    circuit-breaker:
+      circuitBreaker:
+        expression: "NetworkErrorRatio() > 0.30"
+
+    # -------------------------------------------------------------------------
+    # Retry Middleware
+    # -------------------------------------------------------------------------
+    retry:
+      retry:
+        attempts: 3
+        initialInterval: 100ms
+
+    # -------------------------------------------------------------------------
+    # Redirect Middlewares
+    # -------------------------------------------------------------------------
+
+    # Redirect non-www to www (optional)
+    redirect-www:
+      redirectRegex:
+        regex: "^https?://www\\.(.+)"
+        replacement: "https://${1}"
+        permanent: true
+
+    # -------------------------------------------------------------------------
+    # IP WhiteList (for admin endpoints)
+    # -------------------------------------------------------------------------
+    ip-whitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
+        ipStrategy:
+          depth: 1
+
+    # -------------------------------------------------------------------------
+    # Basic Auth for Dashboard
+    # -------------------------------------------------------------------------
+    auth-dashboard:
+      basicAuth:
+        users:
+          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj."
+
+  # =============================================================================
+  # Services
+  # =============================================================================
+  services:
+    # Ping service for health checks
+    ping:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8082"
+        healthCheck:
+          path: /
+          interval: 30s
+          timeout: 5s
+
+  # =============================================================================
+  # Servers Transport
+  # =============================================================================
+  serversTransports:
+    # Default transport
+    default:
+      maxIdleConnsPerHost: 200
+      idleTimeout:: 200s
+      responseHeaderTimeout: 60s
+
+    # Insecure transport (for internal services)
+    insecure-transport:
+      insecureSkipVerify: true
+
+# =============================================================================
+# TCP Services (for non-HTTP protocols)
+# =============================================================================
+tcp:
+  services:
+    # Redis TCP service
+    redis-tcp:
+      loadBalancer:
+        servers:
+          - address: "redis:6379"

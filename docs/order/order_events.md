@@ -106,7 +106,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "PENDING_PAYMENT",
     "order_version": 1,
     "payment_event_sequence_id": 0,
@@ -187,14 +187,14 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "PAID",
     "order_version": 3,
     "payment_event_sequence_id": 20260228100500,
     "payment_recovery": false,
     "payment_method": "VNPAY",
     "payment_transaction_id": "TXN-ABC123",
-    "cart_id": "{cart:user:999}",
+    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "sku_ids": [
       "sku-001"
     ],
@@ -224,13 +224,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 }
 ```
 
-> **Contract ổn định cho Cart delete:** Truyền `cart_id` theo đúng format Redis key (`{cart:user:{user_id}}`) và mảng `sku_ids` để Cart xóa thẳng các SKU đã mua khỏi giỏ.
-
-> **Kiểu dữ liệu `user_id`:** Producer phát `user_id` dạng số (`number`) theo domain Order. Consumer phía Cart/Redis phải normalize sang chuỗi trước khi build key Redis.
-
-> **Mốc thời gian:** `checkout_submitted_at` và `paid_at` được giữ cho timeline/audit/analytics. Cart cleanup không phụ thuộc timestamp, chỉ dùng `cart_id` + `sku_ids` snapshot.
-
-> **Field Subset cho Cart Consumer:** Cart Service chỉ dùng `cart_id` + `sku_ids`. Field `items[]` (bao gồm `lines[].sku_id`, `lines[].quantity`) phục vụ consumer khác (inventory/analytics/notification), **không** tham gia logic cart cleanup.
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống. `cart_id` được build từ UUID user_id.
 
 > [!IMPORTANT]
 > `ORDER_PAID` là event mốc tài chính: được phát ngay khi workflow branch `PAYMENT_SUCCESS` commit thành công transition FSM `PENDING_PAYMENT` -> `PAID`.
@@ -260,7 +254,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "CANCELLED",
     "order_version": 4,
     "previous_status": "PENDING_PAYMENT",
@@ -298,7 +292,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "buyer_tab": "TO_SHIP",
     "old_status": "PAID",
     "new_status": "PROCESSING",
@@ -314,6 +308,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
+
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
 > **Reason contract mở rộng:** ngoài `POST_PAYMENT_SAGA_COMPLETE`, event này còn dùng cho lane refund/recovery với các reason như `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`, `INVENTORY_RETURN_CONFIRMED`, `LATE_PAYMENT_RECOVERED`.
 >
@@ -369,7 +365,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "REFUNDED",
     "order_version": 11,
     "refund_event_sequence_id": 20260305100000,
@@ -418,6 +414,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
+
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 > **Field `refund_type`:** `FULL` (toàn bộ đơn hàng) hoặc `PARTIAL` (1 số items).
 >
 > **Contract bắt buộc cho idempotency liên service:** `refund_transaction_id` phải luôn có trong payload để downstream dedup đúng một giao dịch hoàn tiền.
@@ -450,7 +448,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "COMPLETED",
     "order_version": 9,
     "final_amount": 995000,
@@ -468,10 +466,12 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 }
 ```
 
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
+
 > **Contract note cho Review Service:** `items[]` là bắt buộc trong `ORDER_COMPLETED` để Review cấp quyền đánh giá theo từng item đã mua.
->
+
 > **Field-level contract cho Review consumer:**
-> - `user_id` hiện được phát ở dạng số; Review consumer phải normalize về canonical `u-{id}` trước khi ghi DB/event.
+> - `user_id` là UUID theo chuẩn thống nhất.
 > - Trong `items[]`, `product_id` và `sku_id` là bắt buộc.
 > - `variant_name` có thể null ở một số case legacy; Review phải log warning nhưng không drop toàn bộ event.
 
@@ -517,7 +517,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "source": "order-service",
   "payload": {
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "RETURN_REQUESTED",
     "payment_status": "REFUND_FAILED",
     "order_version": 10,
@@ -534,6 +534,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   }
 }
 ```
+
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
 > Khi event là `ORDER_REFUND_FAILED` từ lane `API_RETURN`, policy one-shot vẫn giữ nguyên; Buyer API không được mở lại quyền submit mới cho cùng order.
 

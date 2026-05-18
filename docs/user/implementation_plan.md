@@ -1,8 +1,9 @@
 # User Service - Implementation Plan
 
-**Phiên bản:** 1.0  
-**Ngày tạo:** 2026-05-05  
-**Trạng thái:** Approved  
+**Phiên bản:** 1.1
+**Ngày tạo:** 2026-05-05
+**Ngày cập nhật:** 2026-05-14
+**Trạng thái:** Approved
 **Service:** User Service (Profile Service)  
 **Kiến trúc:** Microservice Event-Driven với Outbox Pattern
 
@@ -40,7 +41,8 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 | 3 | Cập Nhật Hồ Sơ | API Call | UPDATE profile + Outbox event |
 | 4 | Cập Nhật Preferences | API Call | UPDATE preferences + Outbox event |
 | 5 | Đồng Bộ Chat Service | CDC Event | Projection sender_name |
-| 6 | Xóa Tài Khoản (GDPR) | Kafka `USER_DELETED` | Hard delete all user data |
+| 6.1 | GDPR Anonymize (Stage 1) | Kafka `USER_DELETED` | Anonymize PII, insert user_deletions, publish `ACCOUNT_DELETED` |
+| 6.2 | GDPR Hard Delete (Stage 2) | Cron (Compliance Worker) | Hard delete sau 90 ngày retention |
 
 ### 1.3 Event Flow Summary
 
@@ -65,6 +67,7 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 | `user_addresses` | FK → profiles | Sổ địa chỉ giao hàng (Hard Delete) |
 | `user_preferences` | FK → profiles | Cài đặt ngôn ngữ, thông báo (1-1) |
 | `outbox_events` | Internal | Transactional Outbox cho CDC |
+| `user_deletions` | Internal | GDPR Event Store (2-giai đoạn) |
 
 ---
 
@@ -125,19 +128,25 @@ Dự án được chia thành **4 module chính**:
 │                     user-service                             │
 ├─────────────┬─────────────┬─────────────┬───────────────────┤
 │  Module A  │  Module B   │  Module C   │     Module D       │
-│   Domain   │   Infra     │  API/REST   │  Kafka Consumer    │
-│   (Core)   │  (DB/Redis) │  (HTTP)     │   (Worker)         │
+│   Domain   │   Infra     │  API/REST   │     Workers       │
+│   (Core)   │  (DB/Redis │  (HTTP)     │  (Kafka/Workers) │
+│            │  /Kafka)   │             │                   │
 ├─────────────┼─────────────┼─────────────┼───────────────────┤
-│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer   │
-│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Producer   │
-│ • DomainEvt│ • Outbox    │ • Middleware│ • Event Handlers   │
-│ • Ports    │ • Migrations│ • DTOs      │ • Idempotency     │
+│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer  │
+│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Handlers │
+│ • DomainEvt│ • Kafka   │ • Middleware│ • Compliance      │
+│ • Ports    │ • Migrations│ • DTOs      │   Worker          │
 └─────────────┴─────────────┴─────────────┴───────────────────┘
 
 ✅ Module A: Domain (Core) - HOÀN THÀNH
-✅ Module B: Infrastructure - HOÀN THÀNH
+✅ Module B: Infrastructure (Postgres, Redis, Kafka) - HOÀN THÀNH
 ✅ Module C: API/REST - HOÀN THÀNH
-✅ Module D: Kafka Consumer - HOÀN THÀNH
+✅ Module D: Workers (Kafka Consumer, Compliance) - HOÀN THÀNH
+
+> **Refactored (2026-05-17):** Module D được tách riêng thành:
+> - `internal/workers/kafka_consumer/` - Kafka consumer cho events từ auth-service
+> - `internal/workers/compliance/` - GDPR compliance worker (Hard Delete)
+> - `internal/infrastructure/kafka/` - Kafka config và handlers (event processing)
 ```
 
 ### 3.2 Module A: Domain (Core)
@@ -154,6 +163,7 @@ type ProfileRepository interface {
     Update(ctx context.Context, profile *Profile) error
     Delete(ctx context.Context, id uuid.UUID) error
     Exists(ctx context.Context, id uuid.UUID) (bool, error)
+    Anonymize(ctx context.Context, tx *sqlx.Tx, userID uuid.UUID) error
 }
 
 // Address Repository Port
@@ -164,6 +174,7 @@ type AddressRepository interface {
     Update(ctx context.Context, addr *Address) error
     Delete(ctx context.Context, id uuid.UUID) error
     SetDefault(ctx context.Context, userID, addrID uuid.UUID) error
+    DeleteByUserIDTx(ctx context.Context, tx *sqlx.Tx, userID uuid.UUID) error
 }
 
 // Preferences Repository Port
@@ -171,6 +182,16 @@ type PreferencesRepository interface {
     Create(ctx context.Context, prefs *Preferences) error
     GetByUserID(ctx context.Context, userID uuid.UUID) (*Preferences, error)
     Update(ctx context.Context, prefs *Preferences) error
+    DeleteByUserIDTx(ctx context.Context, tx *sqlx.Tx, userID uuid.UUID) error
+}
+
+// UserDeletion Repository Port (GDPR Event Store)
+type UserDeletionRepository interface {
+    Create(ctx context.Context, deletion *UserDeletion) error
+    CreateTx(ctx context.Context, tx *sqlx.Tx, deletion *UserDeletion) error
+    GetByUserID(ctx context.Context, userID uuid.UUID) (*UserDeletion, error)
+    GetPendingHardDeletes(ctx context.Context, limit int) ([]*UserDeletion, error)
+    Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // Outbox Repository Port
@@ -336,17 +357,88 @@ func (h *UserVerifiedHandler) Handle(ctx context.Context, msg *kafka.Message) er
     return tx.Commit()
 }
 
-// UserDeletedHandler - GDPR account deletion
+// UserDeletedHandler - GDPR 2-stage account deletion (Stage 1: Anonymize)
 type UserDeletedHandler struct {
-    addressRepo     AddressRepository
-    profileRepo     ProfileRepository
-    preferencesRepo PreferencesRepository
-    outboxRepo      OutboxRepository
-    db              *sqlx.DB
+    addressRepo       AddressRepository
+    profileRepo       ProfileRepository
+    preferencesRepo   PreferencesRepository
+    deletionRepo      UserDeletionRepository
+    outboxRepo        OutboxRepository
+    addressCache      AddressCache
+    db                *sqlx.DB
 }
 
+// Handle implements the GDPR 2-phase deletion workflow:
+// 1. INSERT into user_deletions (Event Store)
+// 2. UPDATE user_profiles: anonymize PII (first_name='Deleted', last_name='User', phone=null)
+// 3. DELETE user_addresses (Order Service has already snapshotted)
+// 4. DELETE user_preferences
+// 5. INSERT outbox_events with ACCOUNT_DELETED
 func (h *UserDeletedHandler) Handle(ctx context.Context, msg *kafka.Message) error {
-    // Implementation: Delete in correct order with outbox
+    var event AuthEvent
+    if err := json.Unmarshal(msg.Value, &event); err != nil {
+        return err
+    }
+
+    if event.EventType != "USER_DELETED" {
+        return nil
+    }
+
+    userID := event.Payload.UserID
+    deletionReason := event.Payload.Reason
+    retentionWindow := event.Payload.RetentionWindowExpiresAt
+
+    tx, err := h.db.BeginTxx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    // 1. Insert into user_deletions (Event Store)
+    deletion := &UserDeletion{
+        UserID:                   userID,
+        DeletedAt:                time.Now(),
+        RetentionWindowExpiresAt: retentionWindow,
+        Reason:                   deletionReason,
+    }
+    if err := h.deletionRepo.CreateTx(tx, deletion); err != nil {
+        return err
+    }
+
+    // 2. Anonymize user_profiles (PII removed, record remains for referential integrity)
+    if err := h.profileRepo.Anonymize(tx, userID); err != nil {
+        return err
+    }
+
+    // 3. Delete user_addresses
+    if err := h.addressRepo.DeleteByUserIDTx(tx, userID); err != nil {
+        return err
+    }
+
+    // 4. Delete user_preferences
+    if err := h.preferencesRepo.DeleteByUserIDTx(tx, userID); err != nil {
+        return err
+    }
+
+    // 5. Insert outbox event for CDC to publish ACCOUNT_DELETED
+    outboxEvent := &OutboxEvent{
+        EventID:       uuid.New(),
+        EventType:     "ACCOUNT_DELETED",
+        AggregateType: "USER",
+        AggregateID:   userID,
+        PartitionKey:  userID,
+        Payload: AccountDeletedPayload{
+            UserID:                   userID,
+            DeletedAt:                time.Now().Format(time.RFC3339),
+            Reason:                   deletionReason,
+            RetentionWindowExpiresAt: retentionWindow.Format(time.RFC3339),
+        },
+    }
+    if err := h.outboxRepo.CreateTx(tx, outboxEvent); err != nil {
+        return err
+    }
+
+    return tx.Commit()
 }
 ```
 
@@ -370,7 +462,8 @@ user-service/
 │   │   │   ├── profile.go          # Profile entity
 │   │   │   ├── address.go          # Address entity
 │   │   │   ├── preferences.go       # Preferences entity
-│   │   │   └── outbox.go           # OutboxEvent entity
+│   │   │   ├── outbox.go           # OutboxEvent entity
+│   │   │   └── user_deletion.go    # UserDeletion entity (GDPR Event Store)
 │   │   ├── vo/                      # Value Objects
 │   │   │   ├── phone.go            # Phone number value object
 │   │   │   ├── name.go              # Name value object
@@ -380,7 +473,8 @@ user-service/
 │   │   │   ├── address_repository.go
 │   │   │   ├── preferences_repository.go
 │   │   │   ├── outbox_repository.go
-│   │   │   └── address_cache.go
+│   │   │   ├── address_cache.go
+│   │   │   └── user_deletion_repository.go
 │   │   ├── service/                 # Domain Services
 │   │   │   ├── profile_service.go
 │   │   │   ├── address_service.go
@@ -395,13 +489,24 @@ user-service/
 │   │   │   ├── profile_repo.go      # Profile repository impl
 │   │   │   ├── address_repo.go      # Address repository impl
 │   │   │   ├── preferences_repo.go  # Preferences repository impl
-│   │   │   └── outbox_repo.go       # Outbox repository impl
+│   │   │   ├── outbox_repo.go       # Outbox repository impl
+│   │   │   └── user_deletion_repo.go # UserDeletion repository impl
 │   │   ├── redis/
 │   │   │   ├── connection.go        # Redis client
 │   │   │   └── address_cache.go     # Redis cache impl
-│   │   └── config/
-│   │       └── config.go            # Configuration loading
+│   │   └── kafka/
+│   │       ├── config.go            # Kafka configuration
+│   │       ├── handler/
+│   │       │   ├── user_verified_handler.go  # Profile creation handler
+│   │       │   └── user_deleted_handler.go    # GDPR anonymize handler
+│   │       └── event/
+│   │           └── auth_event.go    # Auth event types from Kafka
 │   │
+│   ├── workers/                     # Background workers
+│   │   ├── kafka_consumer/
+│   │   │   └── consumer.go         # Base Kafka consumer
+│   │   └── compliance/
+│   │       └── worker.go           # GDPR Hard Delete Worker (Stage 2)
 │   ├── api/                         # Module C: HTTP Layer
 │   │   ├── router/
 │   │   │   └── router.go            # Gin router setup
@@ -427,17 +532,6 @@ user-service/
 │   │   │       └── error.go
 │   │   └── validator/
 │   │       └── validator.go         # Custom validators
-│   │
-│   └── kafka/                       # Module D: Kafka Consumer
-│       ├── consumer/
-│       │   ├── consumer.go         # Base consumer
-│       │   └── consumer_group.go   # Consumer group manager
-│       ├── handler/
-│       │   ├── user_verified_handler.go
-│       │   └── user_deleted_handler.go
-│       └── event/
-│           ├── auth_event.go        # Consumed events
-│           └── user_event.go       # Produced events (outbox)
 │
 ├── migrations/
 │   ├── 000001_create_user_profiles.up.sql
@@ -447,7 +541,9 @@ user-service/
 │   ├── 000003_create_user_preferences.up.sql
 │   ├── 000003_create_user_preferences.down.sql
 │   ├── 000004_create_outbox_events.up.sql
-│   └── 000004_create_outbox_events.down.sql
+│   ├── 000004_create_outbox_events.down.sql
+│   ├── 000005_create_user_deletions.up.sql
+│   └── 000005_create_user_deletions.down.sql
 │
 ├── pkg/
 │   ├──apperrors/                    # Application errors
@@ -466,9 +562,9 @@ user-service/
 │   ├── wait-for-db.sh              # Startup dependency check
 │   └── cleanup-outbox.sql          # Outbox cleanup cron
 │
-├── docker/
-│   ├── Dockerfile
-│   └── docker-compose.yaml         # Local development
+├── Dockerfile                      # Main service Dockerfile
+├── Dockerfile.compliance           # Compliance worker Dockerfile
+├── docker-compose.yaml            # Local development
 │
 ├── tests/
 │   ├── unit/
@@ -496,13 +592,41 @@ main.go
         │           └── domain.Service
         │                 └── domain.Port
         │
-        ├── infrastructure.Module (DB + Redis)
+        ├── infrastructure.Module (DB + Redis + Kafka)
         │     └── domain.Port implementations
         │
-        └── kafka.Module (Consumer Workers)
+        └── workers.Module (Kafka Consumers + Compliance)
               └── handler.Module
                     └── domain.Service
 ```
+
+### 4.3 Module Architecture (Refactored)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     user-service                             │
+├─────────────┬─────────────┬─────────────┬───────────────────┤
+│  Module A  │  Module B   │  Module C   │     Module D       │
+│   Domain   │   Infra     │  API/REST   │  Workers           │
+│   (Core)   │  (DB/Redis) │  (HTTP)     │  (Kafka/Workers)  │
+├─────────────┼─────────────┼─────────────┼───────────────────┤
+│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer   │
+│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Handlers  │
+│ • DomainEvt│ • Kafka     │ • Middleware│ • Compliance      │
+│ • Ports    │ • Migrations│ • DTOs      │   Worker          │
+│ • Services │             │             │                   │
+└─────────────┴─────────────┴─────────────┴───────────────────┘
+
+✅ Module A: Domain (Core) - HOÀN THÀNH
+✅ Module B: Infrastructure (Postgres, Redis, Kafka) - HOÀN THÀNH
+✅ Module C: API/REST - HOÀN THÀNH
+✅ Module D: Workers (Kafka Consumer, Compliance) - HOÀN THÀNH
+```
+
+> **Lưu ý refactoring (2026-05-17):** Module D đã được refactored từ `internal/kafka/` sang cấu trúc mới:
+> - `internal/infrastructure/kafka/` - Kafka config và handlers
+> - `internal/workers/kafka_consumer/` - Kafka consumer
+> - `internal/workers/compliance/` - GDPR compliance worker
 
 ---
 
@@ -651,7 +775,7 @@ CREATE TABLE outbox_events (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     
     CONSTRAINT chk_event_type CHECK (
-        event_type IN ('USER_PROFILE_UPDATED', 'USER_PREFERENCES_UPDATED', 'USER_PROFILE_DELETED')
+        event_type IN ('USER_PROFILE_UPDATED', 'USER_PREFERENCES_UPDATED', 'ACCOUNT_DELETED')
     )
 );
 
@@ -668,7 +792,44 @@ COMMENT ON TABLE outbox_events IS 'Transactional Outbox for CDC via Debezium';
 COMMENT ON INDEX idx_outbox_events_unprocessed IS 'Debezium polls this index to pick up new events';
 ```
 
-### 5.5 Migration Rollback Scripts
+### 5.5 Migration 005: Create user_deletions (GDPR Event Store)
+
+Bảng này lưu trữ thông tin xóa tài khoản để hỗ trợ luồng GDPR 2 giai đoạn. Kafka không phải permanent storage nên cần bảng này làm Event Store để Compliance Worker có thể truy vấn và xóa vĩnh viễn sau 90 ngày.
+
+```sql
+-- 000005_create_user_deletions.up.sql
+
+CREATE TABLE user_deletions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    retention_window_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    reason VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_user_deletions_profile
+        FOREIGN KEY (user_id)
+        REFERENCES user_profiles(id)
+        ON DELETE RESTRICT,
+    CONSTRAINT chk_deletion_reason
+        CHECK (reason IN ('GDPR_REQUEST', 'ADMIN_DELETION')),
+    CONSTRAINT chk_retention_window
+        CHECK (retention_window_expires_at > deleted_at)
+);
+
+-- Unique constraint: 1 deletion record per user
+CREATE UNIQUE INDEX idx_user_deletions_user_id ON user_deletions(user_id);
+
+-- Index for Compliance Worker to find records needing hard delete
+CREATE INDEX idx_user_deletions_retention_expires
+ON user_deletions (retention_window_expires_at)
+WHERE retention_window_expires_at > NOW();
+
+COMMENT ON TABLE user_deletions IS 'GDPR Event Store - stores deletion requests for 2-phase hard delete';
+COMMENT ON INDEX idx_user_deletions_retention_expires IS 'Compliance Worker polls this to find records ready for hard delete';
+```
+
+### 5.6 Migration Rollback Scripts
 
 ```sql
 -- 000004_create_outbox_events.down.sql
@@ -698,6 +859,11 @@ DROP TRIGGER IF EXISTS update_user_profiles_updated_at ON user_profiles;
 DROP INDEX IF EXISTS idx_user_profiles_created_at;
 DROP INDEX IF EXISTS idx_user_profiles_phone;
 DROP TABLE IF EXISTS user_profiles;
+
+-- 000005_create_user_deletions.down.sql
+DROP INDEX IF EXISTS idx_user_deletions_retention_expires;
+DROP INDEX IF EXISTS idx_user_deletions_user_id;
+DROP TABLE IF EXISTS user_deletions;
 ```
 
 ---
@@ -1172,6 +1338,25 @@ type PreferencesPayload struct {
     InAppEnabled     bool      `json:"in_app_enabled"`
     MarketingEnabled bool      `json:"marketing_enabled"`
 }
+
+// AccountDeletedEvent - Published to t.user.events when user account is deleted
+// This event is consumed by downstream services (Review, Notification) to anonymize/hide user-generated content
+type AccountDeletedEvent struct {
+    EventID       uuid.UUID `json:"event_id"`
+    AggregateType string    `json:"aggregate_type"`
+    AggregateID   uuid.UUID `json:"aggregate_id"`
+    PartitionKey  uuid.UUID `json:"partition_key"`
+    EventType     string    `json:"event_type"`
+    Timestamp     string    `json:"timestamp"`
+    Payload       AccountDeletedPayload `json:"payload"`
+}
+
+type AccountDeletedPayload struct {
+    UserID                   uuid.UUID `json:"user_id"`
+    DeletedAt                string   `json:"deleted_at"`
+    Reason                   string   `json:"reason"` // "GDPR_REQUEST" or "ADMIN_DELETION"
+    RetentionWindowExpiresAt string   `json:"retention_window_expires_at"`
+}
 ```
 
 ### 7.5 Outbox Cleanup Cron
@@ -1197,6 +1382,116 @@ WHERE created_at < NOW() - INTERVAL '14 days';
 
 -- Schedule: 0 2 * * * (2 AM daily)
 ```
+
+### 7.6 Compliance Worker (GDPR Hard Delete - Stage 2)
+
+Compliance Worker thực hiện xóa vĩnh viễn dữ liệu sau khi retention window (90 ngày) hết hạn.
+
+```go
+// scripts/compliance-worker.go
+
+package worker
+
+import (
+    "context"
+    "time"
+
+    "github.com/google/uuid"
+    "github.com/jmoiron/sqlx"
+    "github.com/robfig/cron/v3"
+    "go.uber.org/zap"
+)
+
+type ComplianceWorker struct {
+    db         *sqlx.DB
+    profileRepo ProfileRepository
+    deletionRepo UserDeletionRepository
+    logger     *zap.Logger
+}
+
+func NewComplianceWorker(db *sqlx.DB, profileRepo ProfileRepository, deletionRepo UserDeletionRepository, logger *zap.Logger) *ComplianceWorker {
+    return &ComplianceWorker{
+        db:         db,
+        profileRepo: profileRepo,
+        deletionRepo: deletionRepo,
+        logger:     logger,
+    }
+}
+
+// Start schedules the worker to run daily at 02:00 AM
+func (w *ComplianceWorker) Start() error {
+    c := cron.New()
+    _, err := c.AddFunc("0 2 * * *", w.runHardDelete)
+    if err != nil {
+        return err
+    }
+    c.Start()
+    w.logger.Info("Compliance worker started", zap.String("schedule", "0 2 * * *"))
+    return nil
+}
+
+func (w *ComplianceWorker) runHardDelete() {
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+    defer cancel()
+
+    w.logger.Info("Starting GDPR hard delete batch")
+
+    for {
+        // Get batch of records ready for hard delete
+        deletions, err := w.deletionRepo.GetPendingHardDeletes(ctx, 100)
+        if err != nil {
+            w.logger.Error("Failed to get pending deletions", zap.Error(err))
+            break
+        }
+
+        if len(deletions) == 0 {
+            break
+        }
+
+        w.logger.Info("Processing hard delete batch", zap.Int("count", len(deletions)))
+
+        for _, deletion := range deletions {
+            if err := w.hardDeleteUser(ctx, deletion); err != nil {
+                w.logger.Error("Failed to hard delete user",
+                    zap.String("user_id", deletion.UserID.String()),
+                    zap.Error(err),
+                )
+                continue
+            }
+            w.logger.Info("Hard deleted user", zap.String("user_id", deletion.UserID.String()))
+        }
+    }
+
+    w.logger.Info("GDPR hard delete batch completed")
+}
+
+func (w *ComplianceWorker) hardDeleteUser(ctx context.Context, deletion *UserDeletion) error {
+    tx, err := w.db.BeginTxx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    // Hard delete user_profiles (addresses & preferences already deleted in Stage 1)
+    if err := w.profileRepo.DeleteTx(tx, deletion.UserID); err != nil {
+        return err
+    }
+
+    // Delete the deletion record from user_deletions
+    if err := w.deletionRepo.DeleteTx(tx, deletion.ID); err != nil {
+        return err
+    }
+
+    return tx.Commit()
+}
+```
+
+#### Cron Schedule
+
+| Worker | Schedule | Purpose |
+|:-------|:---------|:--------|
+| Compliance Worker | `0 2 * * *` (2 AM daily) | GDPR hard delete records past retention window |
+| Outbox Cleanup | `0 2 * * *` (2 AM daily) | Clean old outbox events (14 days) |
 
 ---
 
@@ -1575,7 +1870,8 @@ Phase 2: Domain & Business Logic (Week 2-3)
 │   ├── Address entity with validation
 │   ├── Preferences entity
 │   └── OutboxEvent entity
-│
+│   └── UserDeletion entity
+
 ├── 2.2 Domain Services
 │   ├── ProfileService (create, read, update)
 │   ├── AddressService (CRUD + cache)
@@ -1606,15 +1902,20 @@ Phase 4: Kafka Integration (Week 4-5)
 ├── 4.1 Kafka Consumer
 │   ├── Consumer group manager
 │   ├── UserVerifiedHandler (idempotent)
-│   └── UserDeletedHandler (GDPR)
+│   └── UserDeletedHandler (GDPR 2-stage)
 │
 ├── 4.2 Debezium Setup
 │   ├── Outbox CDC configuration
 │   └── Connector registration
 │
-└── 4.3 Idempotency Guards
-    ├── ON CONFLICT DO NOTHING
-    └── Duplicate event detection
+├── 4.3 Idempotency Guards
+│   ├── ON CONFLICT DO NOTHING
+│   └── Duplicate event detection
+│
+└── 4.4 Compliance Worker (GDPR Hard Delete)
+    ├── Cron scheduler setup
+    ├── GetPendingHardDeletes query
+    └── Hard delete execution with transaction
 
 Phase 5: Testing & Polish (Week 5-6)
 ├── 5.1 Unit Tests
@@ -2699,6 +3000,12 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 
 ## 12. Checklist Xác Minh
 
+> **Cập nhật refactoring (2026-05-17):** Service đã được refactored theo layout chuẩn:
+> - Kafka handlers: `internal/infrastructure/kafka/handler/`
+> - Kafka consumer: `internal/workers/kafka_consumer/`
+> - Compliance worker: `internal/workers/compliance/`
+> - Auth events: `internal/infrastructure/kafka/event/`
+
 ### Module A: Domain (Core) - ĐÃ HOÀN THÀNH ✅
 
 | Component | Status | Notes |
@@ -2708,16 +3015,18 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | Address Entity | ✅ | Auto-default + ownership check |
 | Preferences Entity | ✅ | Default values + validation |
 | OutboxEvent Entity | ✅ | CDC payload support |
+| UserDeletion Entity | ✅ | GDPR Event Store (2-giai đoạn) |
 | **Value Objects** | | |
 | PhoneNumber VO | ✅ | Regex validation |
 | Name VO | ✅ | Unicode + length validation |
 | Gender VO | ✅ | Enum: MALE, FEMALE, OTHER, UNKNOWN |
 | **Ports (Interfaces)** | | |
-| ProfileRepository | ✅ | CRUD + transaction support |
+| ProfileRepository | ✅ | CRUD + transaction support + Anonymize |
 | AddressRepository | ✅ | CRUD + SetDefault + Promote |
 | PreferencesRepository | ✅ | CRUD + transaction support |
 | OutboxRepository | ✅ | Create + GetPending + Cleanup |
 | AddressCache | ✅ | Get + Set + Delete |
+| UserDeletionRepository | ✅ | Create + GetPendingHardDeletes + Delete |
 | **Domain Services** | | |
 | ProfileService | ✅ | Create, Get, Update, Delete, Outbox |
 | AddressService | ✅ | CRUD + Cache-Aside + Singleflight |
@@ -2725,6 +3034,7 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | **Domain Events** | | |
 | Domain Events | ✅ | ProfileCreated, AddressCreated, etc. |
 | Auth Events | ✅ | USER_VERIFIED_SUCCESS, USER_DELETED |
+| AccountDeletedEvent | ✅ | Republished for downstream services |
 
 ### 12.1 Workflow Coverage Checklist
 
@@ -2741,19 +3051,22 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | 3 | Update Profile | PUT /api/v1/users/me/profile | ✅ | Module C ready with outbox |
 | 4 | Update Preferences | PUT /api/v1/users/me/preferences | ✅ | Module C ready with outbox |
 | 5 | Chat Sync | USER_PROFILE_UPDATED (CDC) | ✅ | Outbox + Debezium config ready |
-| 6 | GDPR Delete | USER_DELETED (Kafka) | ✅ | Kafka consumer implemented |
+| 6.1 | GDPR Anonymize (Stage 1) | USER_DELETED (Kafka) | ✅ | Anonymize + publish ACCOUNT_DELETED |
+| 6.2 | GDPR Hard Delete (Stage 2) | Compliance Worker (Cron) | ✅ | Hard delete after 90 days |
 
 ### 12.2 Database Schema Checklist
 
 | # | Component | Status | Notes |
-|:--|:----------|:-------|:------|
-| 1 | `user_profiles` table | ☐ | Migration implemented |
-| 2 | `user_addresses` table | ☐ | Migration implemented |
-| 3 | `user_preferences` table | ☐ | Migration implemented |
-| 4 | `outbox_events` table | ☐ | Migration implemented |
-| 5 | Partial unique index | ☐ | Migration implemented |
-| 6 | `updated_at` triggers | ☐ | Migration implemented |
-| 7 | Migrations rollback | ☐ | Migration implemented |
+:--|:----------|:-------|:------|
+| 1 | `user_profiles` table | ? | Migration implemented |
+| 2 | `user_addresses` table | ? | Migration implemented |
+| 3 | `user_preferences` table | ? | Migration implemented |
+| 4 | `outbox_events` table | ? | Migration implemented |
+| 5 | `user_deletions` table | ? | Migration implemented (GDPR Event Store) |
+| 6 | Partial unique index | ? | Migration implemented |
+| 7 | `updated_at` triggers | ? | Migration implemented |
+| 8 | Migrations rollback | ? | Migration implemented |
+| 9 | Retention index | ? | For Compliance Worker |
 
 ### 12.3 Caching Checklist
 
@@ -2774,8 +3087,10 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | 2 | Idempotent handlers | ✅ | ON CONFLICT DO NOTHING pattern |
 | 3 | Outbox table | ✅ | Migration implemented |
 | 4 | Debezium connector | ✅ | Config file created |
-| 5 | Event schemas | ✅ | All 4 events defined |
+| 5 | Event schemas | ✅ | All 5 events defined (USER_PROFILE_UPDATED, USER_PREFERENCES_UPDATED, ACCOUNT_DELETED) |
 | 6 | Topic creation | ☐ | Via docker-compose or Kafka scripts |
+| 7 | ACCOUNT_DELETED event | ✅ | Republished to downstream services |
+| 8 | Compliance Worker | ✅ | GDPR hard delete cron |
 
 ### 12.5 API Checklist
 
@@ -2965,4 +3280,5 @@ deps:
 
 ---
 
-**Document End - Implementation Plan v1.0**
+**Document End - Implementation Plan v1.1**
+

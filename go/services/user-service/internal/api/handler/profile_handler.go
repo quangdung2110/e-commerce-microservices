@@ -7,25 +7,31 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"user-service/internal/api/dto/request"
 	"user-service/internal/api/dto/response"
 	"user-service/internal/api/middleware"
+	"user-service/internal/domain/port"
 	"user-service/internal/domain/service"
 )
 
 // ProfileHandler handles profile-related HTTP requests
 type ProfileHandler struct {
 	profileService *service.ProfileService
-	logger        *zap.Logger
+	outboxRepo     port.OutboxRepository
+	db             *pgxpool.Pool
+	logger         *zap.Logger
 }
 
 // NewProfileHandler creates a new profile handler
-func NewProfileHandler(profileService *service.ProfileService, logger *zap.Logger) *ProfileHandler {
+func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *pgxpool.Pool, logger *zap.Logger) *ProfileHandler {
 	return &ProfileHandler{
 		profileService: profileService,
-		logger:        logger,
+		outboxRepo:     outboxRepo,
+		db:             db,
+		logger:         logger,
 	}
 }
 
@@ -61,6 +67,7 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 }
 
 // UpdateProfile handles PUT /api/v1/users/me/profile
+// Uses transactional outbox pattern to ensure profile update and outbox event are committed atomically
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -93,14 +100,29 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		dob = &parsed
 	}
 
-	profile, err := h.profileService.UpdateProfile(
-		c.Request.Context(),
+	// Begin transaction for atomic profile update + outbox event
+	ctx := c.Request.Context()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		h.logger.Error("failed to begin transaction", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
+			response.ErrCodeInternalError,
+			"An error occurred while updating profile",
+		))
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	profile, err := h.profileService.UpdateProfileWithOutbox(
+		ctx,
+		tx,
 		userID,
 		req.FirstName,
 		req.LastName,
 		req.PhoneNumber,
 		dob,
 		req.Gender,
+		h.outboxRepo,
 	)
 
 	if err != nil {
@@ -126,6 +148,16 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 			return
 		}
 		h.logger.Error("failed to update profile", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
+			response.ErrCodeInternalError,
+			"An error occurred while updating profile",
+		))
+		return
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		h.logger.Error("failed to commit transaction", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
 			response.ErrCodeInternalError,
 			"An error occurred while updating profile",

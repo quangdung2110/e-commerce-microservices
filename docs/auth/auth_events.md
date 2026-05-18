@@ -24,12 +24,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_OTP_REQUEST",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "otp_type": "REGISTER_VERIFICATION" | "PASSWORD_RESET" | "LOGIN_2FA"
   }
@@ -44,12 +44,12 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_OTP_REQUEST",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "otp_type": "PASSWORD_RESET"
   }
@@ -64,36 +64,52 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_VERIFIED_SUCCESS",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
     "roles": ["USER"]
   }
 }
 ```
 
-### 1.3 `USER_DELETED` (GDPR / Xóa vĩnh viễn)
-Được bắn ra khi tài khoản bị xóa vĩnh viễn (yêu cầu GDPR hoặc Admin xóa tài khoản). User Service sẽ dọn sạch PII.
+### 1.4 `USER_DELETED` (GDPR / Xóa vĩnh viễn)
+Được bắn ra khi tài khoản bị xóa vĩnh viễn (yêu cầu GDPR hoặc Admin xóa tài khoản). User Service sẽ dọn sạch PII và thông báo cho các service downstream.
+
 *   **Người nghe**: `User Service`
+
+*   **Giá trị `reason` hợp lệ:**
+    | Giá trị | Mô tả |
+    |:--------|:------|
+    | `GDPR_REQUEST` | User tự yêu cầu xóa tài khoản (quyền GDPR) |
+    | `ADMIN_DELETION` | Admin xóa tài khoản người dùng |
+
 *   **Payload Schema**:
 ```json
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_DELETED",
   "occurred_at": "2026-04-21T10:12:00Z",
   "payload": {
-    "user_id": "u-1234",
-    "reason": "GDPR_REQUEST"
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "deleted_at": "2026-04-21T10:12:00Z",
+    "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
+    "retention_window_expires_at": "2026-07-21T10:12:00Z"
   }
 }
 ```
+
+> **Giải thích các trường:**
+> - `deleted_at`: Thời điểm xóa thực tế (trigger event).
+> - `retention_window_expires_at`: Thời điểm dữ liệu PII sẽ bị **hard delete vĩnh viễn**. Mặc định = `deleted_at` + 90 ngày (configurable).
+>
+> **Về retention window:** Sau khi User Service nhận event và anonymize PII (Giai đoạn 1), dữ liệu vẫn tồn tại với bản ghi "Deleted User" trong DB. Compliance Worker sẽ hard delete vĩnh viễn sau `retention_window_expires_at` (Giai đoạn 2). Kafka không phải permanent storage nên không thể dùng để trigger hard delete 90 ngày sau.
 
 ### 1.4 `TOKEN_THEFT_DETECTED` (Xử Lý Trừng Phạt Đánh Cắp Hàng Loạt)
 Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc phát hiện một cái Refresh Token HẾT HẠN ÂN HẠN 10s lại bị ai đó nộp để ăn cắp. Auth Service đã tự Ban sạch các DB Token của user đó, nhưng nó bắn thông báo này để cả hệ thống chung tay.
@@ -103,12 +119,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "TOKEN_THEFT_DETECTED",
   "occurred_at": "2026-04-21T10:10:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "theft_refresh_token_id": "xyz-uuid-bị_móc_túi",
     "action_taken": "ALL_TOKENS_REVOKED"
   }
@@ -123,12 +139,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_EMAIL_CHANGED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "old_email": "old@gmail.com",
     "new_email": "new@gmail.com"
   }
@@ -149,12 +165,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PASSWORD_CHANGED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "device_info": "Chrome on Windows - IP: 192.168.1.1",
     "changed_at": "2026-04-21T10:00:00Z"
@@ -173,12 +189,12 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_ACCOUNT_LOCKED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "reason": "FAILED_LOGIN_ATTEMPTS",
     "locked_until": "2026-04-21T10:30:00Z"
@@ -197,15 +213,15 @@ Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_UNLOCKED",
   "occurred_at": "2026-04-21T10:30:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "unlock_type": "AUTO" | "ADMIN",
-    "unlocked_by": "SYSTEM" | "admin-user-id"
+    "unlocked_by": "SYSTEM" | "550e8400-e29b-41d4-a716-446655440001"
   }
 }
 ```
@@ -242,12 +258,12 @@ Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Co
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_BANNED",
   "occurred_at": "2026-04-21T10:15:00Z",
   "payload": {
-    "user_id": "u-admin-hay-customer",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "reason": "VIOLATION"
   }
 }
@@ -263,15 +279,15 @@ Event này được Auth Service gửi sang Notification Service sau khi đã c�
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_BANNED_NOTIFICATION",
   "occurred_at": "2026-04-21T10:15:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "reason": "VIOLATION",
-    "banned_by": "admin-user-id",
+    "banned_by": "550e8400-e29b-41d4-a716-446655440002",
     "banned_at": "2026-04-21T10:15:00Z"
   }
 }

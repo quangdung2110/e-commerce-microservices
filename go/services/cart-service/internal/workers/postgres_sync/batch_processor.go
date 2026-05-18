@@ -1,4 +1,4 @@
-package postgres_sync
+﻿package postgres_sync
 
 import (
 	"context"

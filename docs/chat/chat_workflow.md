@@ -6,112 +6,470 @@
 * [Cấu trúc Sự kiện (Events)](chat_events.md)
 
 ---
-Tài liệu này mô tả luồng API/sự kiện từ lúc gửi tin nhắn đến các giai đoạn biên nhận/xử lý sự cố/lưu trữ với các cơ chế bảo vệ cần thiết.
 
-## 1. Đường dẫn API cơ sở (Base API path)
+## 1. Quy trình gửi tin nhắn (Send Message)
 
-`[POST/GET/PATCH] /api/v1/chat/...`
+### 1.1 Client gửi tin nhắn
 
-## 2. Quy trình gửi tin nhắn (Outbound)
+Client có thể gửi qua REST hoặc qua WebSocket (gửi frame JSON).
 
-**Endpoint:** `POST /api/v1/chat/rooms/{room_id}/messages`
+#### REST Request
 
-1. Kiểm tra quyền gửi (`room_participants`).
-2. Kiểm soát lặp lại đầu vào (Ingress idempotency):
-   - Kiểm tra `ingress_idempotency_by_sender(sender_id, client_request_id)`.
-   - Nếu đã tồn tại -> trả về tin nhắn đã tạo trước đó.
-3. Sinh `message_id`, `bucket_ym`, cấp số thứ tự `message_seq`.
-4. Ghi dữ liệu nghiệp vụ trong một đơn vị logic:
-   - Chèn vào `messages_by_room_bucket`.
-   - Chèn vào `message_by_id`.
-   - Cập nhật (upsert) `ingress_idempotency_by_sender`.
-5. Cập nhật Inbox theo chiến lược ưu tiên đọc (read-first strategy):
-   - Đọc trạng thái cũ để lấy `old_last_message_at`.
-   - Cập nhật `room_state_by_participant`.
-   - Chèn dòng mới vào `inbox_index_by_participant_time`.
-   - Xóa dòng cũ theo `old_last_message_at`.
-6. Nếu là đa phương tiện/liên kết -> chèn vào `media_gallery_by_room`.
-7. Ghi sự kiện outbox `MESSAGE_CREATED`.
+```
+POST /api/conversations/{convId}/messages
+Header: Authorization: Bearer <jwt>
+Body: {
+  "idempotency_key": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "text",
+  "content": "Xin chào",
+  "media_url": null,
+  "reply_to": null
+}
+```
 
-> Lưu ý: API không xuất bản trực tiếp lên Kafka. Worker chuyển tiếp outbox (Outbox relay worker) sẽ thực hiện việc này và đánh dấu `PUBLISHED`.
+#### WebSocket Frame
 
-## 3. Quy trình chuyển tiếp Outbox (Outbox relay)
+```json
+{
+  "type": "send",
+  "conv_id": "conv123",
+  "idempotency_key": "550e8400-e29b-41d4-a716-446655440000",
+  "content": "Xin chào",
+  "msg_type": "text"
+}
+```
 
-1. Worker quét bảng `chat_outbox_events` với `status in (PENDING, FAILED)` và `next_retry_at <= now`.
-2. Xuất bản theo bản đồ topic.
-3. Thành công -> cập nhật `status=PUBLISHED`, `published_at`.
-4. Thất bại -> tăng `retry_count`, đặt lại `next_retry_at` (theo cơ chế backoff), nếu vượt ngưỡng -> chuyển trạng thái `DEAD`.
+### 1.2 Chat API xử lý
 
-## 4. Quy trình Biên nhận đã giao/đã đọc (UX-grade + bảo vệ phía máy chủ)
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    SEND MESSAGE WORKFLOW (Chat API)                                     │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  1. XÁC THỰC & VALIDATE                                                               │
+│  ─────────────────────────                                                              │
+│     ├── Validate JWT token                                                             │
+│     ├── Extract user_id từ token                                                      │
+│     └── Validate request body (type, content length, etc)                               │
+│                                                                                         │
+│  2. KIỂM TRA QUYỀN THAM GIA                                                         │
+│  ─────────────────────────────                                                         │
+│     └── Check user là participant của conversation                                      │
+│                                                                                         │
+│  3. KIỂM TRA IDEMPOTENCY                                                              │
+│  ────────────────────────────                                                          │
+│     ┌─────────────────────────────────────────────────────────────────────────┐        │
+│     │  GET idem:{convId}:{senderId}:{idempotency_key}                          │        │
+│     │                                                                          │        │
+│     │  IF tồn tại:                                                           │        │
+│     │      → Return 200 với message_id đã lưu (duplicate thành công)          │        │
+│     │                                                                          │        │
+│     │  IF chưa tồn tại:                                                      │        │
+│     │      → SET idem:{convId}:{senderId}:{idempotency_key} <PENDING> NX EX 86400      │
+│     │      → Nếu SET thất bại (race), retry GET và return                    │        │
+│     └─────────────────────────────────────────────────────────────────────────┘        │
+│                                                                                         │
+│  4. SINH MESSAGE_ID                                                                   │
+│  ───────────────────                                                                    │
+│     ├── Sử dụng Snowflake hoặc ULID                                                  │
+│     ├── ID sắp xếp được theo thời gian                                              │
+│     └── Duy nhất toàn cầu                                                            │
+│                                                                                         │
+│  5. TẠO MESSAGE OBJECT                                                               │
+│  ──────────────────────                                                                │
+│     {                                                                         │
+│       "message_id": "msg_xxx",                                                       │
+│       "conversation_id": "conv123",                                                 │
+│       "sender_id": "userA",                                                         │
+│       "type": "text",                                                              │
+│       "content": "Xin chào",                                                        │
+│       "created_at": 1715000000000,                                                  │
+│       "idempotency_key": "550e8400-...",                                            │
+│       "reply_to": null                                                             │
+│     }                                                                         │
+│                                                                                         │
+│  6. PRODUCE KAFKA                                                                    │
+│  ─────────────────                                                                      │
+│     ┌─────────────────────────────────────────────────────────────────────────┐        │
+│     │  Topic: chat.messages                                                  │        │
+│     │  Key: conversation_id (đảm bảo partition)                              │        │
+│     │  Value: JSON message object                                           │        │
+│     │  acks: all (đảm bảo ghi vào đa số ISR)                               │        │
+│     └─────────────────────────────────────────────────────────────────────────┘        │
+│                                                                                         │
+│  7. UPDATE IDEMPOTENCY CACHE                                                          │
+│  ────────────────────────────                                                          │
+│     SET idem:{convId}:{senderId}:{idempotency_key} {message_id} EX 86400             │
+│                                                                                         │
+│  8. TRẢ VỀ RESPONSE                                                                  │
+│  ────────────────────                                                                  │
+│     201 Created:                                                                     │
+│     {                                                                         │
+│       "message_id": "msg_xxx",                                                       │
+│       "created_at": "2026-05-18T10:00:00Z"                                         │
+│     }                                                                         │
+│                                                                                         │
+│     Client nhận response, hiển thị ngay (optimistic UI)                              │
+│     Client sẽ bỏ qua nếu nhận trùng qua WebSocket                                  │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-### 4.1. Đã giao (Delivered)
+---
 
-Client gửi xác nhận (ACK): `last_delivered_seq`.
+## 2. Quy trình Broadcast Real-time (WebSocket Server)
 
-Máy chủ phải kiểm tra bảo vệ:
-1. Người tham gia phải thuộc phòng chat.
-2. Phiên/Token xác thực hợp lệ.
-3. `new_seq >= old_last_delivered_seq`.
-4. `new_seq <= room_state.last_message_seq` (giới hạn nếu cần).
+### 2.1 Kiến trúc Consumer
 
-Nếu hợp lệ:
-1. Cập nhật `room_watermarks.last_delivered_seq`.
-2. Ghi outbox `MESSAGE_DELIVERED` (có thể gom nhóm - batch).
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                 WEBSOCKET SERVER AS KAFKA CONSUMER                                     │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  Mỗi WebSocket Server (instance) là một Kafka Consumer Group riêng:                   │
+│  group.id = ws-{hostname} hoặc ws-{instance-id}                                        │
+│                                                                                         │
+│  Configuration:                                                                         │
+│  - auto.offset.reset = latest (chỉ nhận message mới, không lịch sử)                   │
+│  - enable.auto.commit = true (auto commit sau 1 giây)                                │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-### 4.2. Đã đọc (Read)
+### 2.2 Logic xử lý message từ Kafka
 
-**Endpoint:** `POST /api/v1/chat/rooms/{room_id}/read`
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    BROADCAST WORKFLOW (WebSocket Server)                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  KHI NHẬN MESSAGE TỪ KAFKA:                                                           │
+│  ─────────────────────────────                                                          │
+│                                                                                         │
+│  1. PARSE MESSAGE                                                                      │
+│     Parse JSON từ Kafka message value                                                 │
+│                                                                                         │
+│  2. TÌM SUBSCRIBERS                                                                  │
+│     Lookup roomSockets[conversation_id]                                                │
+│     → Lấy tập hợp các connection đang subscribe phòng đó                              │
+│                                                                                         │
+│  3. BROADCAST ĐẾN CLIENT                                                               │
+│     ┌─────────────────────────────────────────────────────────────────────────┐        │
+│     │  for each connection in subscribers:                                     │        │
+│     │      if connection.user_id != message.sender_id:  // Không gửi lại cho sender │   │
+│     │          send to connection.SendChannel (non-blocking)                    │        │
+│     │                                                                          │        │
+│     │  Non-blocking: nếu channel đầy, bỏ qua hoặc drop connection              │        │
+│     └─────────────────────────────────────────────────────────────────────────┘        │
+│                                                                                         │
+│  4. CLIENT DEDUP                                                                      │
+│     Client duy trì LRU cache các message_id đã nhận                                   │
+│     Khi nhận message: kiểm tra đã tồn tại trong cache → bỏ qua                      │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-Client gửi `last_read_seq`.
+### 2.3 Cấu trúc dữ liệu trong memory
 
-Máy chủ phải kiểm tra bảo vệ tương tự quy trình "Đã giao":
-1. Kiểm tra thành viên + xác thực.
-2. Số thứ tự phải tăng dần.
-3. Giới hạn theo `last_message_seq`.
+```go
+type Connection struct {
+    ID       string
+    UserID   string
+    DeviceID string
+    Conn     *websocket.Conn
+    SendCh   chan []byte
+}
 
-Nếu hợp lệ:
-1. Cập nhật `room_watermarks.last_read_seq`.
-2. Cập nhật `room_state_by_participant.last_read_seq`.
-3. Ghi outbox `MESSAGE_READ`.
+type WebSocketServer struct {
+    // Local maps
+    roomSockets map[string]map[*Connection]bool  // conversationId -> connections
+    userSockets map[string]map[*Connection]bool  // userId -> connections
+    
+    // Kafka consumer
+    consumer *kafka.Consumer
+    
+    // Redis client
+    redis *redis.Client
+}
+```
 
-Số tin chưa đọc (Unread) được tính:
-1. `max(0, room_state.last_message_seq - room_state.last_read_seq)`.
+---
 
+## 3. Quy trình lưu trữ (Message Persister)
 
+### 3.1 Consumer Group
 
-## 7. Quy trình lưu giữ (Retention)
+```
+Consumer Group: msg-persister
+- Có thể scale thành nhiều instance để tăng throughput
+- Chia partition giữa các instance
+- auto.offset.reset = earliest (để replay nếu cần)
+```
 
-1. Chính sách giải quyết theo TTL mặc định cho từng loại hội thoại.
-2. Dọn dẹp các nhóm thời gian (bucket) cũ trong ScyllaDB sau khi hết hạn.
+### 3.2 Logic xử lý
 
-## 8. Các kịch bản lỗi và Tự phục hồi (Self-healing)
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    MESSAGE PERSISTER WORKFLOW                                          │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  KHI NHẬN MESSAGE TỪ KAFKA:                                                           │
+│  ─────────────────────────────                                                          │
+│                                                                                         │
+│  1. PARSE MESSAGE                                                                      │
+│     Parse JSON từ Kafka message value                                                 │
+│                                                                                         │
+│  2. KIỂM TRA IDEMPOTENCY                                                              │
+│     Check message_id đã tồn tại trong Cassandra chưa                                 │
+│     → Nếu tồn tại: skip (idempotent)                                                 │
+│                                                                                         │
+│  3. GHI VÀO CASSANDRA                                                                │
+│     INSERT INTO messages (                                                             │
+│       conversation_id, message_id, sender_id, content, type,                            │
+│       created_at, reply_to                                                             │
+│     ) VALUES (...)                                                                     │
+│                                                                                         │
+│  4. CẬP NHẬT INBOX STATE (optional)                                                  │
+│     Update inbox_index_by_participant cho các participants                             │
+│                                                                                         │
+│  TẠI SAO KHÔNG GHI TRỰC TIẾP TỪ CHAT API?                                            │
+│  ──────────────────────────────────────────                                            │
+│  • Giảm độ trễ cho người gửi: Chat API chỉ cần produce Kafka, không phải chờ DB     │
+│  • DB ghi bất đồng bộ                                                                │
+│  • Có thể scale persister độc lập                                                    │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-1. Gửi lặp từ phía Client: chặn bằng tính lặp lại đầu vào (ingress idempotency).
-2. Tiêu thụ sự kiện lặp: chặn bằng `chat_consumer_idempotency`.
-3. Inbox index drift: worker thực hiện đối soát lại trạng thái và chỉ mục.
-4. Lỗi chuyển tiếp Outbox: thực hiện thử lại (retry) + hàng đợi thư chết (DLQ).
+---
 
-## 9. Quy trình Trạng thái hoạt động (Presence Workflow)
+## 4. Quy trình Push Notification (Notification Service)
 
-1. Client gửi Heartbeat định kỳ (30-60s): `POST /api/v1/chat/presence/heartbeat`.
-2. Hệ thống cập nhật Redis:
-   - `SET presence:{user_id} {timestamp} EX 120`
-   - `SET presence:{user_id}:last_seen {timestamp} EX 2592000` (30 ngày).
-3. Nếu người dùng chuyển từ Offline sang Online: Ghi outbox `USER_PRESENCE_UPDATED`.
+### 4.1 Consumer Group
 
-## 10. Quy trình Đẩy tin nhắn Real-time (WebSocket Delivery)
+```
+Consumer Group: push-sender
+- Đọc từ topic chat.messages
+- Gửi push notification khi user offline
+```
 
-1. **WebSocket Gateway** tiêu thụ sự kiện từ Kafka topic `t.chat.events`.
-2. Khi nhận sự kiện (ví dụ `MESSAGE_CREATED`):
-   - Gateway lấy danh sách người tham gia trong `room_id`.
-   - Với mỗi người tham gia (ngoại trừ người gửi):
-     - Kiểm tra kết nối Socket cục bộ của Gateway.
-     - Nếu tồn tại -> Đẩy (Push) dữ liệu tin nhắn qua Socket.
-     - Nếu không tồn tại -> Gửi qua Firebase Cloud Messaging (FCM) hoặc bỏ qua.
+### 4.2 Logic xử lý
 
-## 11. Đề xuất SLO
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    NOTIFICATION SERVICE WORKFLOW                                       │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  KHI NHẬN MESSAGE TỪ KAFKA:                                                           │
+│  ─────────────────────────────                                                          │
+│                                                                                         │
+│  1. GET PARTICIPANTS                                                                  │
+│     Query danh sách participants trong conversation                                    │
+│     (có thể cache trong Redis)                                                        │
+│                                                                                         │
+│  2. VỚI MỖI PARTICIPANT (trừ sender):                                                │
+│     ┌─────────────────────────────────────────────────────────────────────────┐        │
+│     │                                                                          │        │
+│     │  a. CHECK PRESENCE                                                        │        │
+│     │     EXISTS user:presence:{participantId}                                  │        │
+│     │     → Nếu online: skip (WebSocket sẽ nhận)                               │        │
+│     │     → Nếu offline: tiếp tục bước tiếp theo                               │        │
+│     │                                                                          │        │
+│     │  b. DELAY (optional)                                                      │        │
+│     │     Chờ 2-3 giây, kiểm tra lại presence                                   │        │
+│     │     (Tránh gửi push khi user đang online nhưng WebSocket chưa kịp báo)   │        │
+│     │                                                                          │        │
+│     │  c. GET FCM/APNs TOKEN                                                    │        │
+│     │     Query device tokens từ database                                       │        │
+│     │                                                                          │        │
+│     │  d. GỬI PUSH                                                              │        │
+│     │     Gửi notification qua FCM (Android) hoặc APNs (iOS)                    │        │
+│     │     Payload: sender_name, content_preview, badge_count                    │        │
+│     │                                                                          │        │
+│     └─────────────────────────────────────────────────────────────────────────┘        │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-1. Lưu trữ tin nhắn (Message persist) p95 < 30ms.
-2. Đọc Inbox (Inbox read) p95 < 120ms.
-3. Giao qua Websocket p95 < 150ms.
-4. Độ trễ xuất bản outbox (Outbox publish lag) p95 < 3s.
+---
+
+## 5. Quy trình Presence Management
+
+### 5.1 Khi client kết nối
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    CLIENT CONNECTION WORKFLOW                                          │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  1. WEBSOCKET HANDSHAKE                                                                │
+│     Client kết nối WebSocket với JWT token                                            │
+│                                                                                         │
+│  2. XÁC THỰC                                                                            │
+│     Validate JWT, extract user_id, device_id                                           │
+│                                                                                         │
+│  3. TẠO CONNECTION                                                                     │
+│     Tạo Connection struct với userId, deviceId                                        │
+│                                                                                         │
+│  4. SUBSCRIBE                                                                          │
+│     Client gửi:                                                                        │
+│     {                                                                         │
+│       "type": "subscribe",                                                           │
+│       "conversations": ["conv1", "conv2", "conv3"]                                  │
+│     }                                                                         │
+│                                                                                         │
+│     Server:                                                                            │
+│     - Thêm connection vào roomSockets[convId]                                        │
+│     - Thêm connection vào userSockets[userId]                                         │
+│                                                                                         │
+│  5. UPDATE PRESENCE                                                                   │
+│     SET user:presence:{userId} "online" EX 60                                        │
+│                                                                                         │
+│  6. START HEARTBEAT                                                                     │
+│     Client gửi heartbeat mỗi 30 giây:                                               │
+│     {                                                                         │
+│       "type": "heartbeat"                                                            │
+│     }                                                                         │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Khi client ngắt kết nối
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    CLIENT DISCONNECTION WORKFLOW                                       │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  1. PHÁT HIỆN DISCONNECT                                                              │
+│     - WebSocket close event                                                           │
+│     - Hoặc pong timeout (không nhận được heartbeat)                                   │
+│                                                                                         │
+│  2. XÓA KHỎI MAPS                                                                    │
+│     - Xóa connection khỏi roomSockets[convId] (tất cả rooms)                        │
+│     - Xóa connection khỏi userSockets[userId]                                        │
+│                                                                                         │
+│  3. KIỂM TRA USER CÒN ONLINE KHÔNG                                                    │
+│     if len(userSockets[userId]) == 0:                                                 │
+│         → Không còn connection nào                                                    │
+│                                                                                         │
+│  4. CẬP NHẬT PRESENCE                                                                │
+│     DEL user:presence:{userId}                                                        │
+│                                                                                         │
+│  5. BROADCAST OFFLINE STATUS (optional)                                               │
+│     Publish "user_offline" event vào Redis channel: presence:{userId}                 │
+│     → Các server khác có thể cập nhật UI                                            │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. Quy trình Reconnect và Sync
+
+### 6.1 Client reconnect
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                    RECONNECT & SYNC WORKFLOW                                          │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  1. CLIENT PHÁT HIỆN DISCONNECT                                                      │
+│     - WebSocket close event                                                           │
+│     - Network error                                                                   │
+│                                                                                         │
+│  2. EXPONENTIAL BACKOFF                                                               │
+│     Retry: 1s, 2s, 4s, 8s, max 30s                                                 │
+│                                                                                         │
+│  3. RECONNECT                                                                         │
+│     Kết nối WebSocket mới với JWT token                                              │
+│                                                                                         │
+│  4. GỬI SYNC REQUEST                                                                  │
+│     Client gửi:                                                                        │
+│     {                                                                         │
+│       "type": "sync",                                                               │
+│       "last_message_id": "msg_old",                                                 │
+│       "conversations": ["conv123", "conv456"]                                       │
+│     }                                                                         │
+│                                                                                         │
+│  5. SERVER XỬ LÝ SYNC                                                                 │
+│     ┌─────────────────────────────────────────────────────────────────────────┐        │
+│     │  for each conversation in conversations:                                │        │
+│     │                                                                          │        │
+│     │      // Query messages bị miss                                         │        │
+│     │      SELECT * FROM messages                                            │        │
+│     │      WHERE conversation_id = ?                                         │        │
+│     │        AND message_id > last_message_id                                 │        │
+│     │      ORDER BY message_id ASC                                          │        │
+│     │      LIMIT 100                                                        │        │
+│     │                                                                          │        │
+│     │      // Trả về messages tuần tự                                       │        │
+│     │      for each message:                                                 │        │
+│     │          send to client                                                │        │
+│     │                                                                          │        │
+│     │  OPTIONAL: Dùng Redis hot cache để giảm tải Cassandra                  │        │
+│     └─────────────────────────────────────────────────────────────────────────┘        │
+│                                                                                         │
+│  6. TIẾP TỤC NHẬN REAL-TIME                                                          │
+│     Sau khi sync xong, bắt đầu nhận message mới từ Kafka                           │
+│     Client vẫn dedup trong quá trình bắt kịp                                        │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 Hot Cache (optional)
+
+```
+Để giảm tải Cassandra khi sync:
+- Redis lưu last 50 messages của mỗi conversation
+- Key: room_hot:{conversation_id}
+- Khi sync: ưu tiên đọc từ Redis trước
+- Persister cập nhật Redis mỗi khi có message mới
+```
+
+---
+
+## 7. Quy trình Rate Limiting
+
+### 7.1 Các loại rate limit
+
+| Loại | Limit | Window |
+|------|-------|--------|
+| Message send | 60/phút | Sliding window |
+| Connection attempts | 10/phút | Sliding window |
+| Subscribe requests | 100/phút | Sliding window |
+
+### 7.2 Implementation
+
+```
+Redis Sliding Window:
+ZADD ratelimit:msg:{userId} {timestamp} {requestId}
+ZREMRANGEBYSCORE ratelimit:msg:{userId} 0 {now - 60000}
+ZCARD ratelimit:msg:{userId}
+IF count > 60 → Return 429 Too Many Requests
+```
+
+---
+
+## 8. Đường dẫn API
+
+```
+Base path: /api/v1/chat
+
+POST   /rooms/{room_id}/messages          - Gửi tin nhắn
+GET    /rooms/{room_id}/messages          - Lấy lịch sử tin nhắn
+POST   /rooms/{room_id}/read              - Đánh dấu đã đọc
+POST   /presence/heartbeat                - Heartbeat presence
+GET    /presence/{user_id}                - Kiểm tra presence
+```
+
+---
+
+## 9. Đề xuất SLO
+
+| Metric | Target |
+|--------|--------|
+| Send Message Latency (API → Kafka) | p95 < 100ms |
+| Real-time Push Latency (Kafka → Client) | p95 < 200ms |
+| Message Persist Latency | p95 < 500ms |
+| Kafka End-to-End Latency | p95 < 50ms |

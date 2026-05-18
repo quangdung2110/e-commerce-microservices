@@ -280,9 +280,19 @@ sequenceDiagram
 
 ---
 
-## 6. Luồng Xóa Tài Khoản (GDPR / Account Deletion)
+## 6. Luồng Xóa Tài Khoản (GDPR 2-Giai Đoạn)
 
-Khi Auth Service phát sự kiện `USER_DELETED` (hoặc Admin xóa vĩnh viễn), User Service phải dọn sạch PII và thông báo cho hệ sinh thái.
+Khi Auth Service phát sự kiện `USER_DELETED`, User Service thực hiện xóa theo 2 giai đoạn để tuân thủ GDPR:
+
+| Giai đoạn | Thời điểm | Mô tả |
+|:----------|:-----------|:-------|
+| **Giai đoạn 1: Anonymize** | Ngay khi nhận event | Anonymize PII, publish `ACCOUNT_DELETED` cho downstream |
+| **Giai đoạn 2: Hard Delete** | Sau 90 ngày (`retention_window_expires_at`) | Compliance Worker xóa vĩnh viễn dữ liệu |
+
+> **Tại sao cần 2 giai đoạn?**
+> Kafka không phải permanent storage (mặc định retention 7 ngày). Bảng `user_deletions` đóng vai trò Event Store để Compliance Worker có thể truy vấn và xóa vĩnh viễn sau 90 ngày.
+
+### 6.1. Giai đoạn 1: Anonymize (Ngay lập tức)
 
 ```mermaid
 sequenceDiagram
@@ -292,24 +302,54 @@ sequenceDiagram
     participant DB as Postgres
     participant KafkaOut as Kafka (t.user.events)
 
-    Auth->>Kafka: Publish `USER_DELETED` { user_id, reason }
+    Auth->>Kafka: Publish `USER_DELETED` { user_id, reason, retention_window_expires_at }
     Kafka-->>UserWorker: Consume `USER_DELETED`
     UserWorker->>DB: BEGIN Transaction
+    UserWorker->>DB: INSERT user_deletions { status: 'ANONYMIZED' }
+    UserWorker->>DB: UPDATE user_profiles SET (first_name='Deleted', last_name='User', phone=null...)
     UserWorker->>DB: DELETE FROM user_addresses WHERE user_id = {user_id}
     UserWorker->>DB: DELETE FROM user_preferences WHERE user_id = {user_id}
-    UserWorker->>DB: DELETE FROM user_profiles WHERE id = {user_id}
-    UserWorker->>DB: INSERT `outbox_events` (USER_PROFILE_DELETED)
+    UserWorker->>DB: INSERT outbox_events (ACCOUNT_DELETED)
     UserWorker->>DB: COMMIT Transaction
-    UserWorker->>KafkaOut: CDC publishes USER_PROFILE_DELETED
+    DB->>KafkaOut: CDC publishes ACCOUNT_DELETED
 ```
 
-**Thứ tự xóa (đảm bảo referential integrity):**
-1. `user_addresses` (FK từ profile)
-2. `user_preferences` (FK từ profile)
-3. `user_profiles` (bảng cha)
+**Thứ tự xử lý:**
+1. INSERT vào `user_deletions` với `status = 'ANONYMIZED'`
+2. UPDATE `user_profiles`: anonymize PII (tên → "Deleted User", SĐT → null)
+3. DELETE `user_addresses` (Order Service đã snapshot vào bảng `orders`)
+4. DELETE `user_preferences`
+5. INSERT `outbox_events` để CDC republish `ACCOUNT_DELETED`
+
+### 6.2. Giai đoạn 2: Hard Delete (Sau 90 ngày)
+
+```mermaid
+sequenceDiagram
+    participant Scheduler as Cron Scheduler
+    participant Worker as Compliance Worker
+    participant DB as Postgres
+
+    Scheduler->>Worker: Trigger Daily (e.g., 02:00 AM)
+    Worker->>DB: SELECT * FROM user_deletions<br/>WHERE retention_window_expires_at <= NOW()<br/>AND status = 'ANONYMIZED'
+    DB-->>Worker: List of records to hard delete
+
+    loop For each record
+        Worker->>DB: BEGIN Transaction
+        Worker->>DB: DELETE FROM user_profiles WHERE id = {user_id}
+        Worker->>DB: DELETE FROM user_deletions WHERE id = {id}
+        Worker->>DB: COMMIT Transaction
+    end
+```
+
+**Hành động của Compliance Worker:**
+1. Chạy định kỳ (recommend: daily lúc 02:00 AM)
+2. Query các bản ghi có `retention_window_expires_at <= NOW()`
+3. HARD DELETE `user_profiles` (bảng cha, sau khi đã anonymize thì không còn PII)
+4. DELETE bản ghi trong `user_deletions`
 
 **Lưu ý:**
-* Email KHÔNG được xóa ở đây vì User Service không lưu email (Auth là source of truth).
+- `user_addresses` và `user_preferences` đã bị DELETE ở Giai đoạn 1 (không cần xóa lại)
+- Hard Delete chỉ cần xóa `user_profiles` vì FK relations đã được cascade
 
 ---
 
@@ -379,9 +419,17 @@ flowchart LR
 | Event | Source | Target | Workflow |
 |:------|:-------|:-------|:---------|
 | `USER_VERIFIED_SUCCESS` | Auth Service | User Service | #1 Profile Creation |
-| `USER_DELETED` | Auth Service | User Service | #6 Account Deletion |
+| `USER_DELETED` | Auth Service | User Service | #6.1 Account Deletion (Anonymize) |
 | `USER_PROFILE_UPDATED` | User Service (CDC) | Chat Service | #3 Profile Update |
 | `USER_PREFERENCES_UPDATED` | User Service (CDC) | Notification Service | #4 Preferences Update |
+| `ACCOUNT_DELETED` | User Service (CDC) | Review Service, Notification Service | #6.1 Account Deletion (Notify Downstream) |
+
+### Workers Summary
+
+| Worker | Trigger | Frequency | Mục đích |
+|:-------|:--------|:-----------|:---------|
+| **GDPR Deletion Consumer** | Kafka (`t.auth.events`) | On-demand | Consume `USER_DELETED`, anonymize PII, publish `ACCOUNT_DELETED` |
+| **Compliance Worker** | Cron Scheduler | Daily (02:00 AM) | Hard delete records where `retention_window_expires_at` passed |
 
 ### Cache Strategy Summary
 

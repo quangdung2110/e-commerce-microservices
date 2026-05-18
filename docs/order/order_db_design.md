@@ -21,7 +21,7 @@ Tài liệu này mô tả thiết kế cơ sở dữ liệu (PostgreSQL) cho Ord
 ### 1.1. `orders` (Master Order)
 Lưu trữ thông tin tổng quát của giao dịch để khách hàng thanh toán 1 lần duy nhất.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `user_id`: BIGINT (Người mua, dùng để Sharding/Partitioning sau này)
+*   `user_id`: UUID (Người mua, thống nhất canonical user_id toàn hệ thống)
 *   `total_amount`: DECIMAL (Tổng tiền hàng)
 *   `total_shipping_fee`: DECIMAL (Tổng phí ship cộng dồn từ các kiện)
 *   `total_discount`: DECIMAL (Tổng giảm giá từ Promotion)
@@ -192,7 +192,7 @@ Khóa nghiệp vụ first-write-wins cho `POST /v1/orders/{orderId}/return`. M�
 ```sql
 CREATE TABLE order_customer_return_guard (
     order_id BIGINT PRIMARY KEY,
-    user_id BIGINT NOT NULL,
+    user_id UUID NOT NULL,
     first_request_id UUID NOT NULL,
     first_idempotency_key VARCHAR(255) NOT NULL,
     first_refund_type VARCHAR(20) NOT NULL

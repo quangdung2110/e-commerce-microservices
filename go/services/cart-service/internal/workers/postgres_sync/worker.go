@@ -1,4 +1,4 @@
-package postgres_sync
+﻿package postgres_sync
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
 )
 
 // Worker is the main Postgres Sync worker

@@ -68,7 +68,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
                   }
         ```
     *   **TTL**: 1 tiếng (3600s).
-    *   **Xử lý Invalidation**: **[M1 Fix Nhất Quán Thuật Ngữ]** Khi có cập nhật bảng cha hoặc SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Partial SET/Soft Invalidation), không dùng DEL hàng loạt. Ownership ghi cache cần tách bạch: (1) API In-band có thể ghi đè để đảm bảo Read-Your-Own-Writes; (2) với luồng async từ event hệ thống (Markdown/Inventory/FSM), `product-invalidation-group` là writer chuẩn cho `product:sku:{sku_id}` và `product:master:{product_id}`. Tránh để hai worker async độc lập cùng ghi đè một key cho cùng nguyên nhân cập nhật. Với `product:master`, bắt buộc dedupe theo `product_id` trong mỗi poll-batch và áp dụng stale guard `version/updated_at` trước khi ghi. Xem [Invalidation Consumer Worker](product_workers.md).
+    *   **Xử lý Invalidation**: Khi có cập nhật bảng cha hoặc SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Partial SET/Soft Invalidation), không dùng DEL hàng loạt. Ownership ghi cache cần tách bạch: (1) API In-band có thể ghi đè để đảm bảo Read-Your-Own-Writes; (2) với luồng async từ event hệ thống (Markdown/Inventory/FSM), `product-event-handler-group` là writer chuẩn cho `product:sku:{sku_id}` và `product:master:{product_id}`. Tránh để hai worker async độc lập cùng ghi đè một key cho cùng nguyên nhân cập nhật. Với `product:master`, bắt buộc dedupe theo `product_id` trong mỗi poll-batch và áp dụng stale guard `version/updated_at` trước khi ghi. Xem [Event Handler Worker](product_workers.md).
 
 > **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `JSON.MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
@@ -77,7 +77,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
     *   **Loại Dữ Liệu**: `RedisJSON`.
     *   **TTL**: 1 tiếng.
     *   **Metadata guard bắt buộc**: Payload phải lưu tối thiểu `version` và `updated_at` để chặn stale write.
-    *   **Chiến lược ghi**: `product-invalidation-group` dedupe theo `product_id` trong poll-batch, có thể thêm debounce ngắn 50-100ms giữa các batch liền kề, và chỉ overwrite khi `(incoming.version, incoming.updated_at)` mới hơn cache hiện tại.
+    *   **Chiến lược ghi**: `product-event-handler-group` dedupe theo `product_id` trong poll-batch, có thể thêm debounce ngắn 50-100ms giữa các batch liền kề, và chỉ overwrite khi `(incoming.version, incoming.updated_at)` mới hơn cache hiện tại.
     *   **Nguồn dữ liệu ghi**: ưu tiên payload event khi payload đầy đủ contract; nếu thiếu field bắt buộc thì fallback re-fetch từ PostgreSQL. Không dùng Search/Elasticsearch làm nguồn refresh cho key point-read.
 
 ### 1.3 Nhóm Khóa Cơ Chế Vận Hành (Operational / Transactional)
@@ -109,13 +109,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
                 }
         ```
     *   **TTL**: Đặt bằng thời gian còn lại của rule (`expires_at - NOW()`). Redis tự xoá khi rule hết hạn.
-    *   **Invalidation**: [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker) set/del key này khi rule active hoặc ended. Worker này chỉ quản lý key markdown marker; key point-read `product:sku:{sku_id}` vẫn do `product-invalidation-group` refresh theo `PRODUCT_PRICE_UPDATED`.
-
-*   `product:markdown:pending`
-    *   **Mô tả**: Redis ZSET lưu các markdown `MARKDOWN_CREATED` nhận sớm hơn `start_time` để delayed scheduler thực thi đúng thời điểm.
-    *   **Loại Dữ Liệu**: `ZSET` (`score = start_time_epoch_ms`, `member = {rule_id}:{scope_type}:{ref_id}`).
-    *   **TTL**: Không dùng TTL key-level; phần tử được remove ngay sau khi job apply thành công hoặc bị hủy.
-    *   **Yêu cầu vận hành**: Scheduler đọc theo cửa sổ `score <= now` và phải idempotent để chịu được retry/rebalance.
+    *   **Invalidation**: [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker) set/del key này khi rule active hoặc ended. Worker này chỉ quản lý key markdown marker; key point-read `product:sku:{sku_id}` vẫn do `product-event-handler-group` refresh theo `PRODUCT_PRICE_UPDATED`.
 
 ---
 
@@ -142,9 +136,8 @@ Product Service chứa hàng chục triệu mã SKU. Việc "đập" tất cả 
 |---|---|---|---|---|
 | `product:categories:tree` | String (JSON) | 24h | Pub/Sub L1 + TTL fallback | Cây danh mục validate |
 | `product:category:{id}:attributes` | Hash/Set | 24h | Cache-Aside | Thuộc tính theo Category |
-| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-invalidation-group` (fallback async) | Point-Read cho Cart/Order (Partial update theo field, không serialize blob string toàn khối) |
+| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-event-handler-group` (fallback async) | Point-Read cho Cart/Order (Partial update theo field, không serialize blob string toàn khối) |
 | `product:master:{product_id}` | RedisJSON | 1h | Partial Update + dedupe theo `product_id` + stale guard `version/updated_at` | Info sản phẩm gốc |
 | `product:idempotency:{key}` | String (JSON) | 24h | Tự hết hạn | Chống duplicate request |
 | `product:rate_limit:admin:{id}` | Counter | 1d | Tự hết hạn | Rate limit tạo SP |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |
-| `product:markdown:pending` | ZSET | N/A | Delayed scheduler consume/remove | Hàng đợi markdown chờ `start_time` |

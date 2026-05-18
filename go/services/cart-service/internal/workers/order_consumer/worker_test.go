@@ -1,4 +1,4 @@
-package order_consumer
+﻿package order_consumer
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/keybuilder"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/keybuilder"
 	"go.uber.org/zap"
 )
 

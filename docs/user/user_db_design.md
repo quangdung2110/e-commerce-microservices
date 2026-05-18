@@ -66,7 +66,7 @@ Quản lý các thiết lập ứng dụng của Người dùng. Dữ liệu t�
 | `marketing_enabled` | `BOOLEAN` | Default `TRUE` | Có đồng ý nhận tin nhắn Quảng cáo/Khuyến mãi không? |
 | `updated_at` | `TIMESTAMP` | Mapped qua Trigger | Thời gian sửa đổi preferences gần nhất. |
 
-## 4. Bảng `outbox_events` (Transactional Outbox Pattern qua Debezium)
+## 5. Bảng `outbox_events` (Transactional Outbox Pattern qua Debezium)
 
 User Service dùng Outbox để đảm bảo Transaction SQL (update profile/preferences) và Publish Event là ALL-OR-NOTHING.
 
@@ -81,3 +81,34 @@ User Service dùng Outbox để đảm bảo Transaction SQL (update profile/pre
 | `created_at` | `TIMESTAMP` | Default NOW() | Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng. Cần cron dọn rác định kỳ. |
 
 **Chính sách dọn rác:** Định kỳ chạy cron xóa event cũ (ví dụ giữ 7-14 ngày) để tránh phình bảng. Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng.
+
+## 6. Bảng `user_deletions` (GDPR Compliance - Event Store)
+
+Bảng này lưu trữ thông tin xóa tài khoản để hỗ trợ luồng GDPR 2 giai đoạn:
+- **Giai đoạn 1 (Anonymize):** Ngay khi nhận `USER_DELETED` event, PII được anonymize nhưng bản ghi vẫn tồn tại để đảm bảo referential integrity.
+- **Giai đoạn 2 (Hard Delete):** Sau `retention_window_expires_at` (90 ngày), Compliance Worker sẽ xóa vĩnh viễn dữ liệu và DELETE bản ghi này.
+
+> **Tại sao cần bảng này thay vì đọc từ Kafka?**
+> Kafka không phải permanent storage (mặc định retention 7 ngày). Bảng `user_deletions` là **Event Store** để Compliance Worker có thể truy vấn và xóa vĩnh viễn sau 90 ngày.
+
+| Column Name | Data Type | Constraints / Indexes | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `UUID` | Primary Key, Auto Gen | Định danh bản ghi |
+| `user_id` | `UUID` | Unique, Indexed | User ID bị xóa |
+| `deleted_at` | `TIMESTAMP` | Not Null | Thời điểm nhận event xóa |
+| `retention_window_expires_at` | `TIMESTAMP` | Indexed, Not Null | Thời điểm hard delete (deleted_at + 90 ngày) |
+| `reason` | `VARCHAR(50)` | Not Null | Lý do xóa: `GDPR_REQUEST`, `ADMIN_DELETION` |
+| `created_at` | `TIMESTAMP` | Default NOW() | |
+
+### Index đặc biệt cho Compliance Worker:
+```sql
+-- Nhanh chóng tìm các bản ghi cần hard delete
+CREATE INDEX idx_retention_expires_pending
+ON user_deletions (retention_window_expires_at);
+```
+
+### Lifecycle của bản ghi:
+| Thời điểm | Hành động | Trạng thái |
+|:-----------|:-----------|:-----------|
+| Giai đoạn 1 (Ngay) | INSERT bản ghi | Chờ hard delete |
+| Giai đoạn 2 (90 ngày sau) | DELETE `user_profiles`, rồi DELETE bản ghi này | Hoàn tất |

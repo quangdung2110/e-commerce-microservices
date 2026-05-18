@@ -1,4 +1,4 @@
-package postgres_sync
+﻿package postgres_sync
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/IBM/sarama"
 	"go.uber.org/zap"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
 )
 
 // KafkaConsumer represents a Kafka consumer for cart events

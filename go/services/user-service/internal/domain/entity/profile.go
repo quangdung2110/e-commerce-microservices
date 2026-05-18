@@ -127,3 +127,13 @@ func (p *Profile) GetCreatedAt() time.Time {
 func (p *Profile) GetUpdatedAt() time.Time {
 	return p.UpdatedAt
 }
+
+// Anonymize clears all PII data for GDPR compliance while keeping the record for referential integrity
+func (p *Profile) Anonymize() {
+	p.FirstName = "Deleted"
+	p.LastName = "User"
+	p.PhoneNumber = nil
+	p.DateOfBirth = nil
+	p.Gender = vo.GenderUnknown
+	p.UpdatedAt = time.Now()
+}

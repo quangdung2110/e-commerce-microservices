@@ -28,9 +28,9 @@
     
     "snapshot.mode": "initial",
     
-    "topic.creation.default.replication.factor": 3,
+    "topic.creation.default.replication.factor": 1,
     "topic.creation.default.partitions": 6,
-    "topic.creation.outbox.replication.factor": 3,
+    "topic.creation.outbox.replication.factor": 1,
     "topic.creation.outbox.partitions": 6,
     
     "poll.interval.ms": 1000,

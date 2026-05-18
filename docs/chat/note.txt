@@ -1,0 +1,52 @@
+1. Phân tích lý do vì sao chọn ScyllaDB thay vì MongoDB
+
+1.1 Mô hình dữ liệu và Schema
+
+1.1.1 ScyllaDB
++ Dữ liệu được tổ chức thành các hàng, mỗi partition chứa nhiều hàng và các hàng nằm trong đây đều được sắp xếp theo
+clustering -> dữ liệu được trên đĩa nên đọc tuần tự và truy xuất tin nhắn theo phân trang rất nhanh
++ Schema phải được định nghĩa trước (static schema), thiết kế schema phải biết trước mọi loại truy vấn ngay từ đầu, nếu cần truy vấn mới phải tạo bảng materialized view hoặc bảng riêng
+
+1.1.2 MongoDB
++ Dữ liệu là dạng tài liệu (JSON) linh hoạt, schema thay đổi rất dễ dàng, chỉ cần thêm trường mới tài liệu mà không cần migration phức tạp
++ Việc truy xuất tin nhắn theo thời gian nhanh nếu có đặt index, tuy nhiên vẫn không thể nhanh bằng ScyllaDB
+
+1.2 Hiệu năng ghi
+
+1.2.1 ScyllaDB
++ Ghi theo cơ chế Append-Only, không có khóa hàng hay khóa bảng phức tạp với độ trễ rất thấp
++ Không bị ràng buộc với các transaction
++ Tuy nhiên, nếu partition key được thiết kế không tốt, ghi có thể dồn vào một node gây nghẽn. Cần hiểu rõ domain để chọn key phân tán giữa các node
+một cách đều đặn.
+
+1.2.2 MongoDB
++ Khi thực hiện thao tác ghi, MongoDB thiết lập khóa độc quyền trên chính xác trên document đang bị sửa đổi (document-lock level), nhìn chung ghi nhanh như thường overhead hơn
+wide-column vì phải cập nhật index
+
+1.3 Hỗ trợ native real-timeout
+
+1.3.1 MongoDB
++ MongoDB Change Streams cho phép lắng nghe sự thay đổi trên collection, từ đó backend có thể chuyển tiếp qua Websocket tới client
+
+1.3.2 ScyllaDB
++ ScyllaDB không có hỗ trợ tương tự, chính vì nếu muốn real-time, chúng ta có thể xây dựng theo Option sau:
+    Option A: 
+        + Từ Client gửi tin nhắn -> Chat Service (Write API)
+        + ScyllaDB ghi record đó vào bảng dữ liệu -> Ngay lập tức phát sự kiện lên Kafka/Redis -> BroadCast tới những Client đang kết nối đến Websocket
+
+Vậy chúng ta nên chọn Kafka/Redis cho việc phát sự kiện ?
+
+1.3.2.1 Redis
+Redis Pub/Sub hoạt động theo mô hình kênh: một publisher gửi message vào kênh, tất cả subcriber hiện lắng nghe kênh đó đều nhận được tin nhắn đó
+Ưu điểm: Cực kỳ đơn giản, latency rất thấp. Không cần lo về consumer group, partition.
+Nhược điểm: Redis Pub/Sub không bền vững (fire‑and‑forget). Nếu một WebSocket server mất kết nối tạm thời, nó sẽ bỏ lỡ tin nhắn trong lúc đó – nhưng trong chat real‑time, 
+điều này chấp nhận được vì client mất kết nối cũng sẽ không nhận được, và khi reconnect sẽ load lịch sử từ DB chính. Lúc này Kafka có thể đóng vai trò là backup / replay.
+
+1.3.2.2 Kafka
+Kafka không hỗ trợ BroadCast tự nhiên như Redis. Trong Kafka, các consumer trong cùng một group sẽ chia nhau partition (nghĩa là một message chỉ được xử lý bởi 1 consumer). Muốn tất cả instance đều nhận được message, 
+chúng ta mỗi instance WebSocket server nằm trong consumer group riêng biệt.
+Luồng:
++ Mỗi WebSocket server, khi khởi động, tự đăng ký vào một consumer group có tên duy nhất, ví dụ dùng hostname hoặc UUID: ws-server-group-<instance-id>. Tất cả cùng subscribe vào topic chat-messages.
++ Kafka sẽ coi mỗi group là một “người đăng ký” độc lập, và gửi toàn bộ message từ tất cả partition đến từng group. Vì mỗi group chỉ có một consumer (server), nó nhận được đầy đủ dữ liệu.
+
+Lưu ý: khi chúng ta sử dụng Kafka làm Message Broker, số lượng consumer group tăng lên khi tương ứng với số lượng Websocket server, việc mỗi message được gửi vào Kafka và Kafka cần gửi message đó qua mạng bằng với số lượng consumer group dẫn tới băng thông tăng lên

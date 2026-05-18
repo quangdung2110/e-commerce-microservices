@@ -23,33 +23,63 @@ Kích hoạt tự động tạo hồ sơ profile ngay sau khi User ấn "Đăng 
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_VERIFIED_SUCCESS",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "roles": ["USER"]
   }
 }
 ```
 
 **1.2. `USER_DELETED` (GDPR / Xóa vĩnh viễn)**
-*   **Payload Schema**:
+Event được consume từ Auth Service (`t.auth.events`). Sau khi xử lý cleanup PII, User Service sẽ republish event này lên `t.user.events` với tên `ACCOUNT_DELETED` để thông báo cho các service downstream (Review, Notification, etc.).
+
+*   **Giá trị `reason` hợp lệ:**
+    | Giá trị | Mô tả |
+    |:--------|:------|
+    | `GDPR_REQUEST` | User tự yêu cầu xóa tài khoản (quyền GDPR) |
+    | `ADMIN_DELETION` | Admin xóa tài khoản người dùng |
+
+*   **Payload Schema (từ Auth Service):**
 ```json
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "u-1234",
-  "partition_key": "u-1234",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_DELETED",
   "occurred_at": "2026-04-21T10:00:00Z",
   "payload": {
-    "user_id": "u-1234",
-    "reason": "GDPR_REQUEST"
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "deleted_at": "2026-04-21T10:00:00Z",
+    "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
+    "retention_window_expires_at": "2026-07-21T10:00:00Z"
   }
 }
 ```
+
+*   **Luồng xử lý 2 giai đoạn (GDPR Compliance):**
+
+> **Tại sao cần 2 giai đoạn?**
+> Kafka/Message Queue không phải permanent storage (mặc định retention 7 ngày). Không thể dùng Kafka event để trigger hard delete sau 90 ngày. Giải pháp: lưu vào bảng `user_deletions` trong Database làm Event Store.
+
+| Giai đoạn | Thời điểm | Hành động | Chi tiết |
+|:----------|:-----------|:-----------|:---------|
+| **Giai đoạn 1: Anonymize** | Ngay khi nhận event | Anonymize PII | Thay PII bằng placeholder để user không còn hiển thị trên hệ thống. Bản ghi vẫn tồn tại để đảm bảo referential integrity với các bảng khác. |
+| **Giai đoạn 2: Hard Delete** | Sau `retention_window_expires_at` (90 ngày) | Hard Delete | Compliance Worker đọc từ bảng `user_deletions`, xóa vĩnh viễn dữ liệu còn lại. |
+
+*   **Hành động khi nhận:**
+    1. INSERT vào bảng `user_deletions`
+    2. UPDATE `user_profiles`: anonymize PII (tên → "Deleted User", SĐT → null, etc.)
+    3. DELETE `user_addresses` (hard delete vì Order Service đã snapshot)
+    4. DELETE `user_preferences`
+    5. INSERT vào `outbox_events` với event type `ACCOUNT_DELETED`
+    6. Debezium CDC publish `ACCOUNT_DELETED` lên `t.user.events`
+
+> **Lưu ý:** Email KHÔNG cần xóa ở đây vì User Service không lưu email (Auth là source of truth).
 
 ## 2. Events Published (Công bố cho thế giới biết)
 
@@ -61,6 +91,7 @@ Hệ thống User đẩy luồng sự kiện thông qua CDC (Debezium Outbox pat
 |:------|:---------|:---------|
 | `USER_PROFILE_UPDATED` | Chat Service | Cập nhật projection `sender_name` trong messages |
 | `USER_PREFERENCES_UPDATED` | Notification Service | Sync preferences để quyết định kênh gửi |
+| `ACCOUNT_DELETED` | Review Service, Notification Service | Anonymize/Hide user-generated content khi tài khoản bị xóa |
 
 **2.2. `USER_PROFILE_UPDATED`**
 Sự kiện này cho phép các dịch vụ đồng bộ và lưu trữ cục bộ các thông tin cơ bản của người dùng (Tên, SĐT). Đặc biệt, Chat Service sẽ sử dụng sự kiện này để duy trì bản sao thông tin (Projection) nhằm hiển thị tên người gửi mà không cần gọi gRPC liên tục, giúp tối ưu hiệu năng và tính sẵn sàng.
@@ -69,12 +100,12 @@ Sự kiện này cho phép các dịch vụ đồng bộ và lưu trữ cục b�
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PROFILE_UPDATED",
   "timestamp": "2026-04-22T08:05:00Z",
   "payload": {
-    "id": "uuid-cua-user",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
     "first_name": "Nguyen",
     "last_name": "Quang Dung",
     "phone_number": "0987654321",
@@ -91,12 +122,12 @@ Thông báo khi người dùng thay đổi preferences để Notification đồn
 {
   "event_id": "uuid-v4",
   "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
   "event_type": "USER_PREFERENCES_UPDATED",
   "timestamp": "2026-04-22T08:06:00Z",
   "payload": {
-    "id": "uuid-cua-user",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
     "language": "vi",
     "currency": "VND",
     "email_enabled": true,
@@ -106,6 +137,39 @@ Thông báo khi người dùng thay đổi preferences để Notification đồn
 }
 ```
 
+**2.4. `ACCOUNT_DELETED`**
+Được republish từ Auth Service sau khi User Service xử lý xóa PII. Event này thông báo cho các service downstream (Review, Notification, etc.) để anonymize/hide user-generated content.
+
+> **Nguồn gốc event:** Auth Service phát `USER_DELETED` → User Service consume và republish lại với tên `ACCOUNT_DELETED`.
+
+*   **Giá trị `reason` hợp lệ:**
+    | Giá trị | Mô tả |
+    |:--------|:------|
+    | `GDPR_REQUEST` | User tự yêu cầu xóa tài khoản (quyền GDPR) |
+    | `ADMIN_DELETION` | Admin xóa tài khoản người dùng |
+
+```json
+// Topic: t.user.events
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
+  "event_type": "ACCOUNT_DELETED",
+  "timestamp": "2026-04-21T10:00:00Z",
+  "payload": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "deleted_at": "2026-04-21T10:00:00Z",
+    "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
+    "retention_window_expires_at": "2026-07-21T10:00:00Z"
+  }
+}
+```
+
+*   **Hành động của downstream:**
+    - `retention_window_expires_at` được giữ cho compliance pipeline.
+    - Luồng anonymize/hide chạy ngay khi nhận event.
+
 ---
-> [!NOTE] 
+> [!NOTE]
 > User Service không publish password hay bất kỳ credential mật mã nào (Vì nó vốn không sở hữu các field đó). Toàn bộ Auth Logic bị chắn tách biệt ở `t.auth.events`. Mảng dữ liệu User Events được xem là không quá nhạy cảm nếu so với Auth Token Leakage.

@@ -142,7 +142,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "promotion_id": 100,
     "claim_id": 549,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "production_source": "API_DIRECT",
     "claimed_at": "2026-02-28T09:46:40Z"
   }
@@ -178,7 +178,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "promotion_id": 100,
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "discount_amount": 50000.00,
     "platform_funding": 20000.00,
     "admin_funding": 30000.00,
@@ -207,7 +207,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "promotion_id": 100,
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "discount_amount": 50000.00,
     "platform_funding": 20000.00,
     "admin_funding": 30000.00,
@@ -233,7 +233,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "promotion_id": 100,
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "discount_amount": 50000.00,
     "reason": "ORDER_CANCELLED",
     "cancelled_at": "2026-02-28T10:33:20Z"
@@ -259,7 +259,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "promotion_id": 100,
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
     "promotion_scope_type": "platform",
@@ -332,7 +332,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "source": "order-service",
   "payload": {
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "promotions_applied": [
       {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
     ],
@@ -357,7 +357,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "source": "order-service",
   "payload": {
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "promotions_applied": [
       {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
     ],
@@ -383,7 +383,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "source": "order-service",
   "payload": {
     "order_id": 5001,
-    "user_id": 99,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
     "refund_amount": 995000,
@@ -439,11 +439,13 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 {
   "event_type": "USER_REGISTERED",
   "payload": {
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "registered_at": "2026-03-05T10:00:00Z"
   }
 }
 ```
+
+> **Canonical user_id:** Promotion Service nhận `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
 > **Compatibility note:** Auth có thể phát envelope dạng `data` + `timestamp_ms` + `event_version` (xem [auth_events.md](../auth/auth_events.md)). Promotion consumer phải map adapter: `data -> payload`, `timestamp_ms -> payload.registered_at` (ISO-8601), rồi mới chạy business handler.
 

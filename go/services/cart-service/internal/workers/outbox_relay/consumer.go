@@ -1,4 +1,4 @@
-package outbox_relay
+﻿package outbox_relay
 
 import (
 	"context"
@@ -12,10 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/constants"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/event"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/keybuilder"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/domain/event"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/keybuilder"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
 )
 
 // StreamConsumer consumes messages from Redis Streams and produces to Kafka

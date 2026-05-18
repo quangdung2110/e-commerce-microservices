@@ -6,113 +6,290 @@
 * [Quy trình nghiệp vụ (Workflows)](chat_workflow.md)
 
 ---
-Tài liệu này chốt thiết kế Chat Service theo hướng Chat là source of truth cho transcript và schema ScyllaDB tối ưu cho truy vấn realtime. Giai đoạn này tập trung vào thử nghiệm chat giữa người dùng với nhau.
 
-## 1. Mục tiêu và phạm vi
+## 1. Tổng quan kiến trúc
 
-Chat Service phục vụ các luồng chính:
-1. Người dùng <-> Người dùng (Chat P2P).
-2. Quản lý trạng thái hoạt động (Presence - Online/Offline).
-3. Đẩy tin nhắn realtime qua WebSocket Gateway.
+Hệ thống gồm các thành phần chính:
 
-## 2. Ranh giới dịch vụ (Service boundary)
+### 1.1 Các thành phần
 
-### 2.1. Quyền sở hữu của Chat Service
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    CLIENTS                                             │
+│                         Mobile / Web Application                                        │
+│                    REST API │ WebSocket │ HTTP Upload                                   │
+└───────────────────────────────────┬───────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                              SERVICE LAYER                                             │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  ┌───────────────────────┐     ┌───────────────────────┐     ┌─────────────────────┐  │
+│  │   Chat API Service     │     │   WebSocket Server    │     │   Other Services   │  │
+│  │                       │     │      Cluster          │     │                    │  │
+│  │  - REST APIs          │     │                       │     │  - User Service   │  │
+│  │  - Send message       │     │  - Persistent conn    │     │  - Order Service  │  │
+│  │  - Query history      │     │  - Subscribe rooms    │     │  - Product Service│  │
+│  │  - Validate           │     │  - Broadcast          │     │                    │  │
+│  │  - Idempotency check │     │  - Presence update    │     │                    │  │
+│  └──────────┬────────────┘     └──────────┬────────────┘     └─────────────────────┘  │
+│             │                               │                                           │
+│             │                               │                                           │
+└─────────────┼───────────────────────────────┼───────────────────────────────────────────┘
+              │                               │
+              │                               │
+              ▼                               ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                              MESSAGE BROKER                                             │
+│                                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
+│  │                         APACHE KAFKA                                            │    │
+│  │                                                                                 │    │
+│  │  Topic: chat.messages                                                            │    │
+│  │  - Partitions: 12 (có thể tăng)                                                │    │
+│  │  - Partition Key: conversation_id                                               │    │
+│  │  - Retention: 7 ngày                                                            │    │
+│  │  - acks: all                                                                    │    │
+│  │                                                                                 │    │
+│  └─────────────────────────────────────────────────────────────────────────────────┘    │
+│                    ▲                               │                                    │
+│                    │                               │                                    │
+│                    │                               │                                    │
+└────────────────────┼───────────────────────────────┼────────────────────────────────────┘
+                     │                               │
+                     │            ┌──────────────────┬┴──────────────────┐
+                     │            │                  │                   │
+                     │            ▼                  ▼                   ▼
+                     │     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+                     │     │  WebSocket   │  │   Message    │  │ Notification │
+                     │     │  Gateway     │  │  Persister   │  │   Service    │
+                     │     │  (Consumer)  │  │  (Consumer)  │  │  (Consumer)  │
+                     │     └──────────────┘  └──────────────┘  └──────────────┘
+                     │            │                  │                   │
+                     │            │                  │                   │
+                     │            ▼                  ▼                   ▼
+                     │     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+                     │     │   Clients    │  │  ScyllaDB    │  │   FCM/APNs   │
+                     │     │ (WebSocket) │  │ (Cassandra) │  │   (Push)     │
+                     │     └──────────────┘  └──────────────┘  └──────────────┘
+                     │
+                     │
+┌────────────────────┼───────────────────────────────────────────────────────────────────┐
+│                    │                         STORAGE LAYER                            │
+│                    ▼                                                                  │
+│  ┌───────────────────────┐     ┌───────────────────────┐     ┌─────────────────────┐  │
+│  │        Redis           │     │      ScyllaDB         │     │       S3           │  │
+│  │                       │     │                       │     │                    │  │
+│  │  - Idempotency Cache │     │  - Messages History   │     │  - File Attachments│  │
+│  │  - Presence          │     │  - Room State        │     │  - Media Files    │  │
+│  │  - Rate Limit        │     │  - Inbox Index       │     │                    │  │
+│  │  - Hot Cache (opt)   │     │                       │     │                    │  │
+│  └───────────────────────┘     └───────────────────────┘     └─────────────────────┘  │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-Chat Service sở hữu:
-1. Vòng đời hội thoại (Conversation lifecycle) và đồ thị người tham gia (participant graph).
-2. Lưu trữ tin nhắn, biên nhận đã giao/đã đọc (delivery/read receipts), trạng thái thu hồi/chỉnh sửa.
-3. Xuất bản bản ghi (transcript export) và dọn dẹp theo TTL.
-4. Quản lý trạng thái hiện diện (Presence) qua Redis.
+### 1.2 Mô tả các thành phần
 
-## 3. Quy ước domain
+| Component | Mô tả |
+|-----------|--------|
+| **Client (Mobile/Web)** | Kết nối WebSocket để nhận real-time, gửi tin nhắn qua REST hoặc qua chính WebSocket |
+| **Chat API Service** | Nhận yêu cầu gửi tin nhắn, validate, kiểm tra idempotency, sinh ID tin nhắn, đẩy vào Kafka |
+| **WebSocket Server Cluster** | Mỗi server mở nhiều kết nối WebSocket từ client, đồng thời là một Kafka consumer group riêng biệt để nhận toàn bộ tin nhắn mới |
+| **Apache Kafka** | Lưu trữ tạm thời và phân phối message. Topic chính `chat.messages` |
+| **Message Persister** | Kafka Consumer Group riêng, đọc từ chat.messages và ghi vào Cassandra |
+| **Notification Service** | Consumer group khác, gửi push notification khi người nhận offline |
+| **Presence Service** | Dùng Redis để theo dõi trạng thái online/offline của user |
+| **Redis** | Dùng cho idempotency cache, presence, và hot cache (optional) |
+| **ScyllaDB** | Lưu trữ lịch sử tin nhắn (chính) |
+| **S3** | Lưu file đính kèm |
 
-### 3.1. Loại hội thoại (Conversation type)
+---
 
-1. `USER_TO_USER` (Người dùng <-> Người dùng)
+## 2. Lựa chọn Message Broker: Kafka
 
-### 3.2. Vai trò người tham gia (Participant role)
+### 2.1 So sánh Redis Pub/Sub vs Kafka
 
-1. `USER` (Khách hàng/Người mua)
+| Tiêu chí | Redis Pub/Sub | Kafka |
+|-----------|---------------|-------|
+| **Độ bền vững** | Không lưu message, fire-and-forget. Nếu consumer ngắt, mất message. | Lưu message trên đĩa, có thể replay, giữ lại theo thời gian (vd 7 ngày). |
+| **Thứ tự** | Không đảm bảo thứ tự khi publish liên tục. | Đảm bảo thứ tự trong cùng partition - quan trọng cho chat. |
+| **Broadcast** | Tự nhiên: nhiều subscriber nhận cùng message. | Cần tạo consumer group riêng cho từng WebSocket server. |
+| **Khả năng tích hợp** | Chỉ là pub/sub, cần tự xây pipeline lưu trữ. | Dùng chung topic cho cả broadcast lẫn lưu trữ, notification. |
+| **Chi phí vận hành** | Nhẹ, dễ cài. | Nặng hơn, cần quản lý cluster, nhưng mạnh mẽ hơn về lâu dài. |
 
-### 3.3. Trạng thái hội thoại (Conversation state)
+### 2.2 Quyết định
 
-1. `OPEN`
-2. `CLOSED`
+**Dùng Kafka làm trục chính.**
 
-## 4. Kiến trúc dữ liệu và quyết định đã chốt
+Để broadcast real-time, mỗi WebSocket server là một consumer group riêng (như đã giải thích kỹ). Kafka đủ nhanh (độ trễ < 10ms với cấu hình tốt) cho chat.
 
-### 4.1. Chiến lược Inbox (Ưu tiên độ trễ khi đọc)
+**Tối ưu thêm (optional):** Có thể đặt một lớp Redis Pub/Sub phía trước (Chat API publish vào Redis, các WebSocket server subscribe Redis) và vẫn đẩy vào Kafka riêng để lưu trữ, nhưng sẽ tăng độ phức tạp. Ở đây chọn giải pháp thuần Kafka cho rõ ràng.
 
-Quyết định:
-1. Ưu tiên độ trễ khi đọc (read-latency) cho inbox.
-2. Chấp nhận đường dẫn ghi (write-path) phức tạp hơn để giữ UX ổn định.
+### 2.3 Cấu hình Topic
 
-Hệ quả thiết kế:
-1. Dùng cặp bảng `room_state_by_participant` (canonical) + `inbox_index_by_participant_time` (chỉ mục đã sắp xếp).
-2. Đường dẫn ghi bắt buộc: đọc trạng thái cũ -> cập nhật trạng thái mới -> chèn chỉ mục mới -> xóa chỉ mục cũ.
-3. Có worker đối soát (reconcile) để sửa lỗi lệch chỉ mục (index drift) nếu thất bại giữa chừng.
+```
+Topic: chat.messages
+- Số partition: 12 (có thể tăng sau, nhưng phải cân nhắc vì tăng partition làm mất thứ tự nếu không cẩn thận khi re-partition)
+- Mỗi partition xử lý một tập các conversation_id
+- Producer gửi message với key = conversation_id
+- Retention: 7 ngày (đủ cho replay khi cần, đồng thời không quá tốn đĩa)
+```
 
+---
 
-### 4.2. Chiến lược biên nhận đã đọc (Read receipt - UX-grade)
+## 3. Quản lý kết nối WebSocket
 
-Quyết định:
-1. Giai đoạn hiện tại coi biên nhận đã đọc là cấp độ UX (UX-grade).
-2. Vẫn bắt buộc có bảo vệ phía máy chủ (server-side guard) để tránh gian lận cơ bản.
+### 3.1 Cấu trúc dữ liệu trong memory
 
-Bảo vệ bắt buộc:
-1. Kiểm tra thành viên: người dùng phải thuộc phòng chat.
-2. Kiểm tra phiên/xác thực hợp lệ.
-3. Thứ tự tăng dần (Monotonic sequence - `new_seq >= old_seq`).
-4. Giới hạn `new_seq <= room.last_message_seq`.
+Mỗi WebSocket server duy trì hai map:
 
-### 4.3. Chiến lược lưu trữ (Retention strategy)
+```
+roomSockets: map[conversationId]map[*Connection]bool
+userSockets: map[userId]map[*Connection]bool  // để biết user online tổng thể
+```
 
-Quyết định:
-1. Dọn dẹp dữ liệu theo TTL (Time-To-Live) mặc định.
-2. `USER_TO_USER`: transcript 6 tháng.
+### 3.2 Khi client kết nối
 
-## 5. Đánh giá ScyllaDB và nguyên tắc mô hình hóa
+1. Xác thực JWT trong URL param hoặc message đầu tiên.
+2. Tạo Connection struct, lưu userId.
+3. Client gửi message "subscribe" kèm danh sách conversationId cần theo dõi.
+4. Server thêm connection vào các map tương ứng.
 
-1. Ưu tiên truy vấn (Query-first), mỗi mô hình đọc có bảng riêng.
-2. Tránh phân vùng lớn (large partition) bằng cách gom nhóm thời gian (time bucket).
-3. Không dùng counter làm source of truth cho số tin nhắn chưa đọc (unread).
-4. Dùng outbox + tính lặp lại của người tiêu dùng (consumer idempotency) để đảm bảo độ tin cậy của sự kiện trong mô hình at-least-once.
+### 3.3 Khi client gửi tin nhắn qua WebSocket
 
-## 6. Chiến lược Metadata
+Client gửi frame:
+```json
+{"type": "send", "conv_id": "...", "idempotency_key": "...", "content": "..."}
+```
 
-`metadata_json` cho phép tin nhắn mang ngữ cảnh bổ sung:
-1. Payload thẻ sản phẩm/đơn hàng để UI hiển thị thẻ.
-2. Thuộc tính đa phương tiện (thời lượng, kích thước, dung lượng file, loại mime).
+WebSocket server gọi thẳng vào Chat API nội bộ để tập trung idempotency.
 
-Khuyến nghị:
-1. Các trường cần lọc/truy vấn thường xuyên phải tách ra cột riêng hoặc bảng chiếu (projection table).
+### 3.4 Khi client ngắt kết nối
 
-## 7. Mô hình nhất quán và tin cậy
+1. Xóa connection khỏi roomSockets và userSockets.
+2. Nếu không còn connection nào cho userId, thông báo Presence Service: `DEL user:presence:userId`
+3. Publish một event "user:offline" vào Redis để các server khác cập nhật UI.
 
-1. Mô hình phân phối: At-Least-Once.
-2. Tính lặp lại đầu vào (Ingress idempotency): `client_request_id` + `sender_id`.
-3. Tính lặp lại sự kiện: `event_id` cho mỗi người tiêu dùng.
-4. Bảo vệ chống sai lệch thứ tự: `message_seq` và `event_sequence_id`.
-5. Worker chuyển tiếp outbox (Outbox relay worker) là bắt buộc để tránh mất sự kiện khi gặp sự cố.
+---
 
-## 9. Kiến trúc Presence & Real-time (Bổ sung)
+## 4. Presence Service
 
-### 9.1. Presence Service (Redis-based)
-1. **Cấu trúc lưu trữ:** Dùng Redis để tối ưu tốc độ đọc/ghi tần suất cao.
-   - Key: `presence:{user_id}`
-   - Value: `last_seen_timestamp`
-   - TTL: 120 giây (2 phút).
-2. **Logic Online:** Nếu key tồn tại -> `online`.
-3. **Logic Offline:** Nếu key hết hạn (expired) -> `offline`. Để hiển thị "last seen X phút trước", hệ thống có thể lưu một key phụ `presence:{user_id}:last_seen` với TTL dài hơn (ví dụ 30 ngày).
+### 4.1 Cơ chế hoạt động
 
-### 9.2. WebSocket Gateway (Delivery Layer)
-1. **Vai trò:** Giữ kết nối socket và tiêu thụ sự kiện từ Kafka để đẩy xuống client.
-2. **Phân tách:** Gateway không chứa logic nghiệp vụ chat, chỉ thực hiện định tuyến tin nhắn theo `user_id`.
+Dùng Redis với SET key + TTL:
 
-## 10. Tiêu chí nghiệm thu
+```
+Khi user online: SET user:presence:{userId} "online" EX 60
+Khi heartbeat:  SET user:presence:{userId} "online" EX 60
+Khi offline:     DEL user:presence:{userId}
+```
 
-1. Inbox không bị lặp phòng chat khi phòng có tin mới liên tục.
-2. Số tin chưa đọc không bị lệch sau khi thử lại hoặc lặp lại sự kiện.
-3. Phân trang phòng chat lớn ổn định qua nhiều nhóm thời gian.
-4. Việc xuất bản sự kiện không làm mất sự kiện và không phát lặp không kiểm soát.
+### 4.2 Kiểm tra trạng thái
+
+```
+EXISTS user:presence:{userId}
+→ EXISTS = 1: online
+→ EXISTS = 0: offline
+```
+
+### 4.3 Thông tin thiết bị (optional)
+
+Có thể lưu thêm thông tin thiết bị cho multi-device support và push notification targeting.
+
+---
+
+## 5. Xử lý Idempotency
+
+### 5.1 Tại phía Chat API (Producer)
+
+1. Client gửi kèm `idempotency_key` (UUID v4)
+2. Chat API kiểm tra Redis: `GET idem:{convId}:{senderId}:{idempotency_key}`
+3. Nếu tồn tại: trả về message_id đã lưu
+4. Nếu chưa tồn tại: `SET idem:{convId}:{senderId}:{idempotency_key} <message_id> NX EX 86400`
+5. Nếu SET thành công: produce Kafka
+6. Nếu SET thất bại (key đã có): retry get và return
+
+### 5.2 Tại phía Client (nhận tin nhắn)
+
+1. Client duy trì LRU cache các message_id đã hiển thị
+2. Khi nhận message qua WebSocket: kiểm tra dedup cục bộ
+3. Khi reconnect: gửi `last_message_id` lên server để sync
+
+### 5.3 Tại phía WebSocket Server
+
+1. Không cần dedup (chỉ forward)
+2. Dùng auto-commit với interval nhỏ (1 giây)
+3. Chấp nhận at-least-once, client tự dedup
+
+---
+
+## 6. Đảm bảo thứ tự tin nhắn
+
+### 6.1 Cơ chế của Kafka
+
+- Dùng `conversation_id` làm partition key
+- Mọi message trong cùng conversation vào cùng một partition
+- Kafka đảm bảo thứ tự trong partition
+
+### 6.2 Consumer
+
+Consumer đọc từ partition theo đúng offset tăng dần.
+
+### 6.3 Reconnect
+
+- Tin nhắn lịch sử query từ Cassandra
+- Dùng message_id (Snowflake/ULID) để sắp xếp
+- Client tự sắp xếp theo `created_at` hoặc `message_id`
+
+---
+
+## 7. Sơ đồ luồng
+
+```
+Client A                    Client B
+  |                            |
+  | WebSocket                  | WebSocket
+  v                            v
+WebSocket Server 1         WebSocket Server 2
+  |                            |
+  | (Consumer Group: ws-1)     | (Consumer Group: ws-2)
+  |                            |
+  +-------> Kafka Topic <------+--------------+--------------+
+              chat.messages                    |              |
+                  ^                            |              |
+                  |                            v              v
+           Chat API Service              Persister       Notification
+           (Producer)                    (Cassandra)     (Push)
+           (REST/WS)
+```
+
+### Luồng chi tiết:
+
+1. Client A gửi tin nhắn -> Chat API (qua REST)
+2. Chat API kiểm tra idempotency Redis -> produce Kafka
+3. Kafka partition (key=conv123) lưu message
+4. WS Server 1 và WS Server 2 (các consumer group riêng) đều kéo message
+5. WS Server 1 có Client A, không cần gửi lại cho A vì A đã thấy optimistic; WS Server 2 có Client B -> gửi cho B
+6. Persister ghi vào Cassandra
+7. Notification Service kiểm tra presence, nếu user offline -> push
+
+---
+
+## 8. Đề xuất SLO
+
+| Metric | Target |
+|--------|--------|
+| Send Message Latency (API) | p95 < 100ms |
+| Real-time Push Latency | p95 < 200ms |
+| Message Persist Latency | p95 < 500ms |
+| Kafka End-to-End Latency | p95 < 50ms |
+
+---
+
+## 9. Đường dẫn tài liệu liên quan
+
+- [Cấu trúc Database](chat_db_schema.md) - Schema ScyllaDB và Redis
+- [Cấu trúc Sự kiện](chat_events.md) - Kafka topics và event contracts
+- [Quy trình nghiệp vụ](chat_workflow.md) - Chi tiết các workflow

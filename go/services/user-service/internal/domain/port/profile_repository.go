@@ -37,4 +37,7 @@ type ProfileRepository interface {
 
 	// ExistsByPhoneNumber checks if a phone number is already used by another user
 	ExistsByPhoneNumber(ctx context.Context, phone string, excludeUserID *uuid.UUID) (bool, error)
+
+	// Anonymize anonymizes a profile for GDPR compliance (clears PII but keeps record)
+	Anonymize(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error
 }

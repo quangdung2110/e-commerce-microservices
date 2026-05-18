@@ -27,4 +27,32 @@ Gateway làm gì khi nhận được một Access Token từ client:
 
 Tuy nhiên, mỗi request tới API Gateway đều cần phải xác thực bằng cách check Redis, nếu sau này load hệ thống tăng lên thì sẽ bị nghẽn
 Chính vì thế bản thân API Gateway phải lưu trữ cache (L1 in-memory) toàn bộ JWKS do Auth Service cung cấp theo dạng kid -> public key, TTL 10 phút
-Đồng thời, Auth Service sẽ phải phát một tín hiệu (thông qua redis pub/sub, hoặc kafka) để API Gateway có thể nghe thấy và xóa cache local ngay lập tức khi phát hiện có Key mới được tạo ra
+Đồng thời, Auth Service sẽ phải phát một tín hiệu (thông qua redis pub/sub, hoặc kafka) để API Gateway có thể nghe thấy và xóa cache local ngay lập tức khi phát hiện có Key mới được tạo ra.
+
+5. Lý do vì sao chuyển một key từ PHASE_OUT sang RETIRED sau 30 ngày ?
+Khi một key được chuyển từ PHASE_OUT sang RETIRED có nghĩa là:
++ Key đó không còn được sử dụng để ký JWT nữa
++ Tuy nhiên, vẫn tồn tại những JWT cũ được ký bằng key đó đang còn hiệu lực. Các JWT đó cần được verify bằng public key cũ tương ứng.
+Hệ thống có hai loại token:
++ Access token – TTL thường ngắn: 15 phút.
++ Refresh token – TTL có thể dài hơn nhiều, ví dụ: 7 ngày, 30 ngày, hoặc thậm chí 1 năm tùy chính sách bảo mật.
+
+-> Do đó, để đảm bảo mọi token cũ đều có thể verify được cho đến khi chúng tự hết hạn, key PHASE_OUT cần được giữ lại trong JWKS ít nhất bằng TTL tối đa của token mà nó đã ký.
+
+6. Quy trình key rotation (Auth Service)
+Trước rotation:
++ Key cũ kid=abc đang ACTIVE.
++ Mọi access token và refresh token (kể cả token cũ và token mới sinh ra trong các lần refresh) đều được ký bằng private key của abc.
+
+Thực hiện rotation (ví dụ lúc 10:00):
++ Tạo key mới kid=xyz, set status = 'ACTIVE'.
++ Key cũ abc chuyển sang PHASE_OUT.
++ Từ thời điểm này, Auth Service dùng key mới xyz để ký tất cả JWT mới (access token, refresh token).
++ Key cũ abc chỉ còn dùng để verify các token đã được ký trước 10:00 (vẫn còn hiệu lực đến khi hết hạn).
+
+Refresh token rotation (khi client gửi refresh token cũ):
++ Giả sử client gửi một refresh token cũ (được ký bằng abc trước 10:00) lúc 10:05.
++ Auth Service xác thực refresh token cũ (verify chữ ký bằng abc – vẫn hoạt động vì key abc đang PHASE_OUT).
++ Sau đó, nó xoay cặp token: thu hồi token cũ, tạo access token mới và refresh token mới.
++ Cả hai token mới này đều được ký bằng key mới xyz (ACTIVE).
+

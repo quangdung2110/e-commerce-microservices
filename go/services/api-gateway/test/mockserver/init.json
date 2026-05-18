@@ -1,0 +1,73 @@
+{
+  "info": {
+    "description": "Mock Auth Service for API Gateway Testing",
+    "version": "1.0"
+  },
+  "mappings": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/jwks.json"
+      },
+      "response": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": ["application/json"]
+        },
+        "body": {
+          "keys": [
+            {
+              "kty": "RSA",
+              "kid": "test-key-001",
+              "use": "sig",
+              "alg": "RS256",
+              "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+              "e": "AQAB"
+            },
+            {
+              "kty": "RSA",
+              "kid": "test-key-002",
+              "use": "sig",
+              "alg": "RS256",
+              "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+              "e": "AQAB"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "response": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": ["application/json"]
+        },
+        "body": {
+          "status": "healthy",
+          "service": "auth-mock"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login"
+      },
+      "response": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": ["application/json"]
+        },
+        "body": {
+          "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3Qta2V5LTAwMSJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiZW1haWwiOiJ0ZXN0QGV4YW1wbGUuY29tIiwicm9sZXMiOlsiYWRtaW4iLCJ1c2VyIl0sImRldmljZV9pZCI6ImRldmljZS0wMDEiLCJzZXNzaW9uX2lkIjoic2Vzc2lvbi0wMDEiLCJpYXQiOjE3MTI2MzIwMDAsImV4cCI6MTcxMjYzNTYwMH0.signature",
+          "token_type": "Bearer",
+          "expires_in": 3600
+        }
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-package outbox_relay
+﻿package outbox_relay
 
 import (
 	"sync"

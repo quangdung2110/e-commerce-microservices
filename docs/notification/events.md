@@ -1,7 +1,5 @@
 # Notification Service CloudEvents Schema
 
-Notification Service tiếp nhận các **Fat Events** từ các core services khác. Chuẩn chung là CloudEvents. Các Kafka Payload này chứa đầy đủ thông tin để render notification content mà không cần gọi Request/Reply qua các dịch vụ khác.
-
 ## 1. High-Priority Events
 
 Sử dụng topic: `notification.high-priority.events`
@@ -16,7 +14,7 @@ Sử dụng topic: `notification.high-priority.events`
   "time": "2026-04-27T10:00:00Z",
   "datacontenttype": "application/json",
   "data": {
-    "user_id": "u-12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "user@example.com",
     "otp_code": "489213",
     "action": "LOGIN",
@@ -43,7 +41,7 @@ Gửi thông báo xác nhận đơn hàng thành công. Fat Event chứa đủ t
   "datacontenttype": "application/json",
   "data": {
     "order_id": "ORD-20260427-001",
-    "user_id": "u-12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "customer_email": "user@example.com",
     "customer_name": "Nguyen Van A",
     "total_amount": 1500000.00,
@@ -68,7 +66,7 @@ Cảnh báo user nạp tiền/thanh toán gặp sự cố, kèm link thử lại
   "datacontenttype": "application/json",
   "data": {
     "order_id": "ORD-20260427-001",
-    "user_id": "u-12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "amount_failed": 1500000.00,
     "reason": "INSUFFICIENT_FUNDS",
     "retry_url": "https://ecommerce.com/checkout/retry/ORD-20260427-001"
@@ -88,7 +86,7 @@ Event Bulk-push. Có thể chứa metadata của promotion.
   "time": "2026-04-27T08:00:00Z",
   "datacontenttype": "application/json",
   "data": {
-    "user_id": "u-12345",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "campaign_name": "Siêu sale cuối tháng 4",
     "discount_percent": 30,
     "highlight_product": "Laptop Gaming",

@@ -1,4 +1,4 @@
-package order_consumer
+﻿package order_consumer
 
 import (
 	"sync"
