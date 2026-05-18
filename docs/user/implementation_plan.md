@@ -128,19 +128,25 @@ Dự án được chia thành **4 module chính**:
 │                     user-service                             │
 ├─────────────┬─────────────┬─────────────┬───────────────────┤
 │  Module A  │  Module B   │  Module C   │     Module D       │
-│   Domain   │   Infra     │  API/REST   │  Kafka Consumer    │
-│   (Core)   │  (DB/Redis) │  (HTTP)     │   (Worker)         │
+│   Domain   │   Infra     │  API/REST   │     Workers       │
+│   (Core)   │  (DB/Redis │  (HTTP)     │  (Kafka/Workers) │
+│            │  /Kafka)   │             │                   │
 ├─────────────┼─────────────┼─────────────┼───────────────────┤
-│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer   │
-│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Producer   │
-│ • DomainEvt│ • Outbox    │ • Middleware│ • Event Handlers   │
-│ • Ports    │ • Migrations│ • DTOs      │ • Idempotency     │
+│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer  │
+│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Handlers │
+│ • DomainEvt│ • Kafka   │ • Middleware│ • Compliance      │
+│ • Ports    │ • Migrations│ • DTOs      │   Worker          │
 └─────────────┴─────────────┴─────────────┴───────────────────┘
 
 ✅ Module A: Domain (Core) - HOÀN THÀNH
-✅ Module B: Infrastructure - HOÀN THÀNH
+✅ Module B: Infrastructure (Postgres, Redis, Kafka) - HOÀN THÀNH
 ✅ Module C: API/REST - HOÀN THÀNH
-✅ Module D: Kafka Consumer - HOÀN THÀNH
+✅ Module D: Workers (Kafka Consumer, Compliance) - HOÀN THÀNH
+
+> **Refactored (2026-05-17):** Module D được tách riêng thành:
+> - `internal/workers/kafka_consumer/` - Kafka consumer cho events từ auth-service
+> - `internal/workers/compliance/` - GDPR compliance worker (Hard Delete)
+> - `internal/infrastructure/kafka/` - Kafka config và handlers (event processing)
 ```
 
 ### 3.2 Module A: Domain (Core)
@@ -488,9 +494,19 @@ user-service/
 │   │   ├── redis/
 │   │   │   ├── connection.go        # Redis client
 │   │   │   └── address_cache.go     # Redis cache impl
-│   │   └── config/
-│   │       └── config.go            # Configuration loading
+│   │   └── kafka/
+│   │       ├── config.go            # Kafka configuration
+│   │       ├── handler/
+│   │       │   ├── user_verified_handler.go  # Profile creation handler
+│   │       │   └── user_deleted_handler.go    # GDPR anonymize handler
+│   │       └── event/
+│   │           └── auth_event.go    # Auth event types from Kafka
 │   │
+│   ├── workers/                     # Background workers
+│   │   ├── kafka_consumer/
+│   │   │   └── consumer.go         # Base Kafka consumer
+│   │   └── compliance/
+│   │       └── worker.go           # GDPR Hard Delete Worker (Stage 2)
 │   ├── api/                         # Module C: HTTP Layer
 │   │   ├── router/
 │   │   │   └── router.go            # Gin router setup
@@ -516,17 +532,6 @@ user-service/
 │   │   │       └── error.go
 │   │   └── validator/
 │   │       └── validator.go         # Custom validators
-│   │
-│   └── kafka/                       # Module D: Kafka Consumer
-│       ├── consumer/
-│       │   ├── consumer.go         # Base consumer
-│       │   └── consumer_group.go   # Consumer group manager
-│       ├── handler/
-│       │   ├── user_verified_handler.go
-│       │   └── user_deleted_handler.go
-│       └── event/
-│           ├── auth_event.go        # Consumed events
-│           └── user_event.go       # Produced events (outbox)
 │
 ├── migrations/
 │   ├── 000001_create_user_profiles.up.sql
@@ -555,11 +560,11 @@ user-service/
 │
 ├── scripts/
 │   ├── wait-for-db.sh              # Startup dependency check
-│   ├── cleanup-outbox.sql          # Outbox cleanup cron
-│   └── compliance-worker.go        # GDPR Hard Delete Worker (Cron)
-├── docker/
-│   ├── Dockerfile
-│   └── docker-compose.yaml         # Local development
+│   └── cleanup-outbox.sql          # Outbox cleanup cron
+│
+├── Dockerfile                      # Main service Dockerfile
+├── Dockerfile.compliance           # Compliance worker Dockerfile
+├── docker-compose.yaml            # Local development
 │
 ├── tests/
 │   ├── unit/
@@ -587,13 +592,41 @@ main.go
         │           └── domain.Service
         │                 └── domain.Port
         │
-        ├── infrastructure.Module (DB + Redis)
+        ├── infrastructure.Module (DB + Redis + Kafka)
         │     └── domain.Port implementations
         │
-        └── kafka.Module (Consumer Workers)
+        └── workers.Module (Kafka Consumers + Compliance)
               └── handler.Module
                     └── domain.Service
 ```
+
+### 4.3 Module Architecture (Refactored)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     user-service                             │
+├─────────────┬─────────────┬─────────────┬───────────────────┤
+│  Module A  │  Module B   │  Module C   │     Module D       │
+│   Domain   │   Infra     │  API/REST   │  Workers           │
+│   (Core)   │  (DB/Redis) │  (HTTP)     │  (Kafka/Workers)  │
+├─────────────┼─────────────┼─────────────┼───────────────────┤
+│ • Entities │ • Postgres  │ • Gin       │ • Kafka Consumer   │
+│ • ValueObj │ • Redis     │ • Handlers  │ • Kafka Handlers  │
+│ • DomainEvt│ • Kafka     │ • Middleware│ • Compliance      │
+│ • Ports    │ • Migrations│ • DTOs      │   Worker          │
+│ • Services │             │             │                   │
+└─────────────┴─────────────┴─────────────┴───────────────────┘
+
+✅ Module A: Domain (Core) - HOÀN THÀNH
+✅ Module B: Infrastructure (Postgres, Redis, Kafka) - HOÀN THÀNH
+✅ Module C: API/REST - HOÀN THÀNH
+✅ Module D: Workers (Kafka Consumer, Compliance) - HOÀN THÀNH
+```
+
+> **Lưu ý refactoring (2026-05-17):** Module D đã được refactored từ `internal/kafka/` sang cấu trúc mới:
+> - `internal/infrastructure/kafka/` - Kafka config và handlers
+> - `internal/workers/kafka_consumer/` - Kafka consumer
+> - `internal/workers/compliance/` - GDPR compliance worker
 
 ---
 
@@ -2966,6 +2999,12 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 ---
 
 ## 12. Checklist Xác Minh
+
+> **Cập nhật refactoring (2026-05-17):** Service đã được refactored theo layout chuẩn:
+> - Kafka handlers: `internal/infrastructure/kafka/handler/`
+> - Kafka consumer: `internal/workers/kafka_consumer/`
+> - Compliance worker: `internal/workers/compliance/`
+> - Auth events: `internal/infrastructure/kafka/event/`
 
 ### Module A: Domain (Core) - ĐÃ HOÀN THÀNH ✅
 
