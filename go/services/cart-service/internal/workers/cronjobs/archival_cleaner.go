@@ -1,4 +1,4 @@
-package cronjobs
+﻿package cronjobs
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/constants"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
 )
 
 // DataArchivalCleaner handles hard deletion of expired cart data

@@ -1,11 +1,11 @@
-package keybuilder
+﻿package keybuilder
 
 import (
 	"fmt"
 	"regexp"
 	"strings"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/constants"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
 )
 
 var (

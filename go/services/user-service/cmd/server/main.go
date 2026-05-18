@@ -15,16 +15,16 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	apihandler "user-service/internal/api/handler"
+	"user-service/internal/api/handler"
 	"user-service/internal/api/router"
 	"user-service/internal/api/validator"
 	"user-service/internal/domain/port"
 	"user-service/internal/domain/service"
 	"user-service/internal/infrastructure/postgres"
 	redisinfra "user-service/internal/infrastructure/redis"
-	kafkaconsumer "user-service/internal/kafka/consumer"
-	kafkainternal "user-service/internal/kafka/handler"
-	kafkapkg "user-service/internal/kafka"
+	kafkainfra "user-service/internal/infrastructure/kafka"
+	kafkahandler "user-service/internal/infrastructure/kafka/handler"
+	kafkaconsumer "user-service/internal/workers/kafka_consumer"
 )
 
 func main() {
@@ -62,7 +62,7 @@ func main() {
 			// Router Config
 			NewRouterConfig,
 
-			// Kafka
+			// Kafka Infrastructure
 			NewKafkaConfig,
 			NewKafkaUserVerifiedHandler,
 			NewKafkaUserDeletedHandler,
@@ -107,20 +107,20 @@ func NewLogger() (*zap.Logger, error) {
 
 // Config holds application configuration
 type Config struct {
-	Port     string
+	Port      string
 	JWTSecret string
-	DB       DBConfig
-	Redis    RedisConfig
+	DB        DBConfig
+	Redis     RedisConfig
 	RateLimit RateLimitConfig
-	Kafka    KafkaConfig
+	Kafka     KafkaConfig
 }
 
 // KafkaConfig holds Kafka configuration
 type KafkaConfig struct {
-	Brokers         []string
-	AuthTopic       string
+	Brokers        []string
+	AuthTopic      string
 	UserTopic      string
-	ConsumerGroup   string
+	ConsumerGroup  string
 	OffsetReset    string
 	SessionTimeout time.Duration
 }
@@ -156,7 +156,7 @@ type RedisConfig struct {
 
 func NewConfig() *Config {
 	return &Config{
-		Port:     getEnv("APP_PORT", "8080"),
+		Port:      getEnv("APP_PORT", "8080"),
 		JWTSecret: getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
 		DB: DBConfig{
 			Host:            getEnv("DB_HOST", "localhost"),
@@ -294,20 +294,20 @@ func NewPreferencesService(
 
 // Handler constructors
 
-func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *PostgresDB, logger *zap.Logger) *apihandler.ProfileHandler {
-	return apihandler.NewProfileHandler(profileService, outboxRepo, db.Pool, logger)
+func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *PostgresDB, logger *zap.Logger) *handler.ProfileHandler {
+	return handler.NewProfileHandler(profileService, outboxRepo, db.Pool, logger)
 }
 
-func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *apihandler.AddressHandler {
-	return apihandler.NewAddressHandler(addressService, logger)
+func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *handler.AddressHandler {
+	return handler.NewAddressHandler(addressService, logger)
 }
 
-func NewPreferencesHandler(preferencesService *service.PreferencesService, db *PostgresDB, logger *zap.Logger) *apihandler.PreferencesHandler {
-	return apihandler.NewPreferencesHandler(preferencesService, db.Pool, logger)
+func NewPreferencesHandler(preferencesService *service.PreferencesService, db *PostgresDB, logger *zap.Logger) *handler.PreferencesHandler {
+	return handler.NewPreferencesHandler(preferencesService, db.Pool, logger)
 }
 
-func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *apihandler.HealthHandler {
-	return apihandler.NewHealthHandler(db.Pool, redisClient)
+func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *handler.HealthHandler {
+	return handler.NewHealthHandler(db.Pool, redisClient)
 }
 
 // Router configuration
@@ -321,18 +321,18 @@ func NewRouterConfig(cfg *Config) *router.Config {
 }
 
 // Kafka configuration
-func NewKafkaConfig(cfg *Config) *kafkapkg.Config {
-	return &kafkapkg.Config{
-		Brokers:         cfg.Kafka.Brokers,
-		AuthEventsTopic: cfg.Kafka.AuthTopic,
-		UserEventsTopic: cfg.Kafka.UserTopic,
-		ConsumerGroup:   cfg.Kafka.ConsumerGroup,
-		OffsetReset:     cfg.Kafka.OffsetReset,
-		SessionTimeout:  cfg.Kafka.SessionTimeout,
+func NewKafkaConfig(cfg *Config) *kafkainfra.Config {
+	return &kafkainfra.Config{
+		Brokers:           cfg.Kafka.Brokers,
+		AuthEventsTopic:   cfg.Kafka.AuthTopic,
+		UserEventsTopic:   cfg.Kafka.UserTopic,
+		ConsumerGroup:     cfg.Kafka.ConsumerGroup,
+		OffsetReset:       cfg.Kafka.OffsetReset,
+		SessionTimeout:    cfg.Kafka.SessionTimeout,
 		HeartbeatInterval: 3 * time.Second,
-		MaxWaitTime:     10 * time.Second,
-		MinBytes:        1,
-		MaxBytes:        10485760, // 10MB
+		MaxWaitTime:       10 * time.Second,
+		MinBytes:          1,
+		MaxBytes:          10485760, // 10MB
 	}
 }
 
@@ -345,8 +345,8 @@ func NewKafkaUserVerifiedHandler(
 	addressRepo port.AddressRepository,
 	db *PostgresDB,
 	logger *zap.Logger,
-) *kafkainternal.UserVerifiedHandler {
-	return kafkainternal.NewUserVerifiedHandler(
+) *kafkahandler.UserVerifiedHandler {
+	return kafkahandler.NewUserVerifiedHandler(
 		profileRepo,
 		prefsRepo,
 		outboxRepo,
@@ -365,8 +365,8 @@ func NewKafkaUserDeletedHandler(
 	cache port.AddressCache,
 	db *PostgresDB,
 	logger *zap.Logger,
-) *kafkainternal.UserDeletedHandler {
-	return kafkainternal.NewUserDeletedHandler(
+) *kafkahandler.UserDeletedHandler {
+	return kafkahandler.NewUserDeletedHandler(
 		profileRepo,
 		prefsRepo,
 		addressRepo,
@@ -381,8 +381,8 @@ func NewKafkaUserDeletedHandler(
 // Kafka Consumer constructors
 
 func NewUserVerifiedConsumer(
-	kafkaCfg *kafkapkg.Config,
-	userVerifiedHandler *kafkainternal.UserVerifiedHandler,
+	kafkaCfg *kafkainfra.Config,
+	userVerifiedHandler *kafkahandler.UserVerifiedHandler,
 	logger *zap.Logger,
 ) *kafkaconsumer.Consumer {
 	return kafkaconsumer.NewConsumer(
@@ -401,8 +401,8 @@ func NewUserVerifiedConsumer(
 }
 
 func NewUserDeletedConsumer(
-	kafkaCfg *kafkapkg.Config,
-	userDeletedHandler *kafkainternal.UserDeletedHandler,
+	kafkaCfg *kafkainfra.Config,
+	userDeletedHandler *kafkahandler.UserDeletedHandler,
 	logger *zap.Logger,
 ) *kafkaconsumer.Consumer {
 	return kafkaconsumer.NewConsumer(
@@ -423,10 +423,10 @@ func NewUserDeletedConsumer(
 // GinEngine creates the Gin router with all routes configured
 func GinEngine(
 	logger *zap.Logger,
-	profileHandler *apihandler.ProfileHandler,
-	addressHandler *apihandler.AddressHandler,
-	preferencesHandler *apihandler.PreferencesHandler,
-	healthHandler *apihandler.HealthHandler,
+	profileHandler *handler.ProfileHandler,
+	addressHandler *handler.AddressHandler,
+	preferencesHandler *handler.PreferencesHandler,
+	healthHandler *handler.HealthHandler,
 	routerConfig *router.Config,
 ) *gin.Engine {
 	return router.Setup(

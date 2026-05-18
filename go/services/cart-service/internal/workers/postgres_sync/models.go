@@ -1,4 +1,4 @@
-package postgres_sync
+﻿package postgres_sync
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/constants"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
 )
 
 // CartStatus represents the status of a cart

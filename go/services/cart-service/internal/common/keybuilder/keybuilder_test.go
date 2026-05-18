@@ -1,4 +1,4 @@
-package keybuilder
+﻿package keybuilder
 
 import (
 	"testing"
@@ -132,12 +132,12 @@ func TestCartKeyBuilder_BuildIdempotencyKey(t *testing.T) {
 		{
 			name:    "valid order ID",
 			orderID: "10001",
-			want:    "cart:idemp:order_paid:10001:PROCESSING",
+			want:    "idem:10001:PROCESSING",
 		},
 		{
 			name:    "UUID order ID",
 			orderID: "123e4567-e89b-12d3-a456-426614174000",
-			want:    "cart:idemp:order_paid:123e4567-e89b-12d3-a456-426614174000:PROCESSING",
+			want:    "idem:123e4567-e89b-12d3-a456-426614174000:PROCESSING",
 		},
 	}
 

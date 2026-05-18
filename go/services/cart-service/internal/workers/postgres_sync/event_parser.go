@@ -1,4 +1,4 @@
-package postgres_sync
+﻿package postgres_sync
 
 import (
 	"encoding/json"
@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/constants"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
 )
 
 // CartEvent represents a cart event from Kafka

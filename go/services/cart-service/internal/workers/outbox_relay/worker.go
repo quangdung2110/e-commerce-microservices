@@ -1,4 +1,4 @@
-package outbox_relay
+﻿package outbox_relay
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/common/keybuilder"
-	"github.com/yourusername/spring-event-sourcing/go/services/cart-service/internal/config"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/common/keybuilder"
+	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
 )
 
 // StreamMessage represents a message from Redis Stream

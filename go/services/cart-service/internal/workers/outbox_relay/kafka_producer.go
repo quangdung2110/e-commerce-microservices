@@ -1,4 +1,4 @@
-package outbox_relay
+﻿package outbox_relay
 
 import (
 	"context"
@@ -9,15 +9,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// KafkaProducerClient implements KafkaProducer for Sarama
+// KafkaProducerClient implements KafkaProducer for Sarama SyncProducer
+// Using SyncProducer ensures messages are ACKed by broker before returning,
+// which is required for XACK-after-ACK semantics in Outbox Relay
 type KafkaProducerClient struct {
-	producer sarama.AsyncProducer
+	producer sarama.SyncProducer
 	logger   *zap.Logger
 
-	mu         sync.RWMutex
-	wg         sync.WaitGroup
-	closed     bool
-	errorCount int64
+	mu     sync.RWMutex
+	closed bool
 }
 
 // NewKafkaProducer creates a new Kafka producer
@@ -29,7 +29,7 @@ func NewKafkaProducer(
 ) (*KafkaProducerClient, error) {
 	config := sarama.NewConfig()
 
-	// Producer settings
+	// SyncProducer settings - ensures acks=all behavior
 	config.Producer.Return.Successes = true
 	config.Producer.Return.Errors = true
 
@@ -48,7 +48,10 @@ func NewKafkaProducer(
 	// Retry settings
 	config.Producer.Retry.Max = retries
 
-	producer, err := sarama.NewAsyncProducer(brokers, config)
+	// Required for SyncProducer
+	config.Producer.Idempotent = false
+
+	producer, err := sarama.NewSyncProducer(brokers, config)
 	if err != nil {
 		return nil, err
 	}
@@ -58,41 +61,11 @@ func NewKafkaProducer(
 		logger:   logger,
 	}
 
-	// Start error handler
-	client.wg.Add(1)
-	go client.handleErrors()
-
 	return client, nil
 }
 
-// handleErrors handles producer errors
-func (p *KafkaProducerClient) handleErrors() {
-	defer p.wg.Done()
-
-	for {
-		select {
-		case err, ok := <-p.producer.Errors():
-			if !ok {
-				return
-			}
-			p.logger.Error("Kafka producer error",
-				zap.String("topic", err.Msg.Topic),
-				zap.Error(err.Err),
-			)
-		case success, ok := <-p.producer.Successes():
-			if !ok {
-				return
-			}
-			p.logger.Debug("Kafka message produced",
-				zap.String("topic", success.Topic),
-				zap.Int32("partition", success.Partition),
-				zap.Int64("offset", success.Offset),
-			)
-		}
-	}
-}
-
-// Produce sends a message to Kafka
+// Produce sends a message to Kafka synchronously
+// This method BLOCKS until the message is ACKed by the broker (acks=all)
 func (p *KafkaProducerClient) Produce(
 	ctx context.Context,
 	topic string,
@@ -123,35 +96,29 @@ func (p *KafkaProducerClient) Produce(
 		Headers: saramaHeaders,
 	}
 
-	select {
-	case p.producer.Input() <- msg:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	// SyncProducer.SendAndWait blocks until message is ACKed by broker
+	// This ensures XACK only happens AFTER broker acknowledgment
+	partition, offset, err := p.producer.SendMessage(msg)
+	if err != nil {
+		p.logger.Error("Kafka produce failed",
+			zap.String("topic", topic),
+			zap.Error(err),
+		)
+		return err
 	}
+
+	p.logger.Debug("Kafka message produced and ACKed",
+		zap.String("topic", topic),
+		zap.Int32("partition", partition),
+		zap.Int64("offset", offset),
+	)
+
+	return nil
 }
 
-// Flush flushes all pending messages
+// Flush is a no-op for SyncProducer as messages are sent immediately
 func (p *KafkaProducerClient) Flush(timeout time.Duration) error {
-	// Async producer doesn't have Flush method, but we can sync on the channel
-	maxWait := time.After(timeout)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-maxWait:
-			return nil
-		case <-ticker.C:
-			// Check if producer is idle
-			p.mu.RLock()
-			closed := p.closed
-			p.mu.RUnlock()
-			if closed {
-				return nil
-			}
-		}
-	}
+	return nil
 }
 
 // Close closes the producer
@@ -168,7 +135,5 @@ func (p *KafkaProducerClient) Close() error {
 		return err
 	}
 
-	// Wait for error handler to finish
-	p.wg.Wait()
 	return nil
 }
