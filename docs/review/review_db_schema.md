@@ -101,7 +101,7 @@ RETURNING attempt_count, product_id, sku_id;
 
 **Ràng buộc và index:**
 *   `CHECK(rating >= 1 AND rating <= 5)`
-*   `CHECK(helpful_count >= 0 AND helpful_count <= 10000000)`
+*   `CHECK(helpful_count >= 0)`
 *   `CHECK(report_count >= 0)`
 *   `B-Tree(user_id)`
 *   `B-Tree(status, created_at DESC)`
@@ -198,15 +198,14 @@ RETURNING attempt_count, product_id, sku_id;
 | Cột | Kiểu | Ràng buộc | Mô tả |
 |:---|:---|:---|:---|
 | `event_id` | `UUID` | PK | ID event |
+| `event_type` | `VARCHAR(100)` | NOT NULL | Loại event |
 | `aggregate_type` | `VARCHAR(50)` | NOT NULL | `REVIEW`, `REVIEW_METRIC`, `ADMIN_REPLY` |
 | `aggregate_id` | `VARCHAR(255)` | NOT NULL | `review_id` hoặc `product_id` |
 | `partition_key` | `VARCHAR(255)` | NOT NULL | Kafka message key, chuẩn là `product_id` |
-| `event_type` | `VARCHAR(100)` | NOT NULL | Loại event |
 | `payload` | `JSONB` | NOT NULL | Business payload; envelope metadata lấy từ các cột outbox |
 | `created_at` | `TIMESTAMP` | DEFAULT NOW() | |
 
 **Lưu ý vận hành:**
-*   Không có các cột `status`, `retry_count`, `next_retry_at`, `last_error`.
 *   Retry/DLQ được quản trị ở Kafka Connect và consumer downstream.
 *   Partition table theo `created_at`; chỉ drop partition khi connector lag nằm trong ngưỡng an toàn.
 
@@ -229,10 +228,6 @@ Review Service chỉ sử dụng **idempotency tự nhiên qua DB constraints** 
 2. **API idempotency:** Các API write (Create/Edit/Like/Unlike) sử dụng idempotency key từ request header (`Idempotency-Key`) kết hợp với unique constraints.
 3. **Consumer idempotency:** Consumer xử lý at-least-once delivery bằng cách ghi trước rồi check số row affected.
 
-### 8.3. Lưu ý vận hành
-
-*   Không cần job cleanup idempotency table (vì không có bảng riêng).
-*   Không cần tracking `PROCESSING`/`COMPLETED` state trong DB.
 
 ## 9. Data Retention & Privacy Policy
 

@@ -61,8 +61,6 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 6. Nếu publish thất bại quá ngưỡng, connector chuyển bản ghi lỗi sang DLQ của Connect theo policy vận hành.
 
 **Ràng buộc quan trọng:**
-*   Không dùng worker polling outbox ở app layer như baseline cũ.
-*   Không dùng các cột `status`, `retry_count`, `next_retry_at`, `last_error` trong DB.
 *   Retry/DLQ ownership thuộc Kafka Connect runtime.
 
 ## 2. Outbox Retention Trimmer (Partition Cleanup)

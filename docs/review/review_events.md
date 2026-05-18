@@ -100,21 +100,28 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 ```
 
 **Hành động:**
-*   Nhận `user_id` dưới dạng UUID theo chuẩn thống nhất.
 *   Insert `review_eligibilities` theo từng item bằng upsert idempotent.
 *   `review_window_days` mặc định là 30 ngày (configurable).
 
 ### 4.2. ACCOUNT_DELETED
 
-**Topic:** `t.user.events` | **Consume từ:** User Service | **Consumer Group:** `review-privacy-sync`
+**Topic:** `t.user.events` | **Consume từ:** User Service (republish từ Auth `USER_DELETED`) | **Consumer Group:** `review-privacy-sync`
+
+> **Nguồn gốc:** Auth Service phát `USER_DELETED` → User Service consume, xử lý cleanup PII, republish lại với tên `ACCOUNT_DELETED`.
+
+*   **Giá trị `reason` hợp lệ:**
+    | Giá trị | Mô tả |
+    |:--------|:------|
+    | `GDPR_REQUEST` | User tự yêu cầu xóa tài khoản (quyền GDPR) |
+    | `ADMIN_DELETION` | Admin xóa tài khoản người dùng |
 
 **Payload tối thiểu:**
 ```json
 {
   "user_id": "550e8400-e29b-41d4-a716-446655440000",
   "deleted_at": "2026-03-28T10:30:00Z",
-  "reason": "USER_REQUEST",
-  "retention_window_expires_at": "2026-06-28T10:30:00Z",
+  "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
+  "retention_window_expires_at": "2026-06-28T10:30:00Z"
 }
 ```
 
@@ -126,7 +133,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ### 5.1. REVIEW_CREATED
 
-**Topic:** `t.review.events` | **Produce cho:** Notification Service, Search Service, Analytics Service
+**Topic:** `t.review.events` | **Produce cho:** Notification Service
 
 ```json
 {
@@ -145,7 +152,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ### 5.2. REVIEW_UPDATED
 
-**Topic:** `t.review.events` | **Produce cho:** Notification Service (nếu user được notify), Search Service, Analytics Service
+**Topic:** `t.review.events` | **Produce cho:** Notification Service (nếu user được notify)
 
 ```json
 {
@@ -160,7 +167,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ### 5.3. REVIEW_HIDDEN
 
-**Topic:** `t.review.events` | **Produce cho:** Notification Service, Search Service, Analytics Service, Product Service (cache invalidation)
+**Topic:** `t.review.events` | **Produce cho:** Notification Service
 
 **Trigger:** Review bị ẩn do báo cáo vi phạm (report threshold reached).
 
@@ -182,7 +189,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ### 5.4. REVIEW_METRICS_UPDATED
 
-**Topic:** `t.review.events` | **Produce cho:** Search Service (re-index), Analytics Service, Product Service (cache refresh), Notification Service
+**Topic:** `t.review.events` | **Produce cho:** Search Service (re-index)
 
 **Fields bắt buộc:** `product_id`, `average_rating`, `total_reviews`, `state_version`, `event_sequence_id`, `updated_at`.
 
@@ -205,7 +212,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 ### 5.5. REVIEW_APPROVED
 
-**Topic:** `t.review.events` | **Produce cho:** Notification Service, Search Service (re-index), Analytics Service
+**Topic:** `t.review.events` | **Produce cho:** Notification Service
 
 **Trigger:** Review được duyệt (auto-approve hoặc admin approve).
 
