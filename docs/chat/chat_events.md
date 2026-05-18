@@ -3,184 +3,248 @@
 **Liên kết nhanh (Related Documents):**
 * [Thiết kế kiến trúc](chat_design.md)
 * [Cấu trúc Database](chat_db_schema.md)
-* [Quy trình nghiệp vụ (Workflows)](chat_workflow.md)
+* [Quy trình nghiệp vụ](chat_workflow.md)
 
 ---
-Tài liệu này định nghĩa hợp đồng sự kiện (event contract) cho Chat Service theo hướng contract-first, đầy đủ payload cho các sự kiện đã khai báo.
 
-## 1. Bản đồ Kafka topics
+## 1. Kafka Topics
 
-### 1.1. Các Topics xuất bản (Produce)
+### 1.1 Topic chính
 
-| Tên Topic | Partition Key | Các loại sự kiện | Người tiêu thụ (Consumers) |
+```
+Topic: chat.messages
+- Số partition: 12
+- Partition key: conversation_id (đảm bảo thứ tự trong conversation)
+- Retention: 7 ngày
+- Cleanup policy: delete
+```
+
+### 1.2 Consumer Groups
+
+| Consumer Group | Instances | Topic | Mục đích |
 |:---|:---|:---|:---|
-| `t.chat.events` | `room_id` | `MESSAGE_CREATED`, `MESSAGE_REVOKED`, `MESSAGE_DELIVERED`, `MESSAGE_READ`,`CONVERSATION_STATE_CHANGED` | Notification, Analytics, các worker nội bộ |
+| `ws-{hostname}` | N (1 per WS server) | chat.messages | Real-time broadcast |
+| `msg-persister` | 2-4 | chat.messages | Persist vào Cassandra |
+| `push-sender` | 2 | chat.messages | Push notification |
 
-### 1.2. Các Topics tiêu thụ (Consume)
+---
 
-| Tên Topic | Consumer Group | Nhà sản xuất (Producer) | Các loại sự kiện | Mục đích |
-|:---|:---|:---|:---|:---|
-| `t.user.events` | `chat-user-sync` | User Service | `USER_PROFILE_UPDATED`, `USER_PROFILE_DELETED` | Đồng bộ tên hiển thị & GDPR cleanup |
+## 2. Message Contract
 
-## 2. CloudEvents envelope (Bắt buộc)
-
-```json
-{
-  "event_id": "uuid-v7",
-  "event_type": "MESSAGE_CREATED",
-  "event_schema_version": 1,
-  "aggregate_type": "CHAT_ROOM",
-  "aggregate_id": "room-uuid",
-  "correlation_id": "request-or-workflow-id",
-  "timestamp": "2026-03-31T10:00:00Z",
-  "source": "chat-service",
-  "state_version": 128,
-  "event_sequence_id": 1743415200123,
-  "payload": {}
-}
-```
-
-## 3. Ngữ nghĩa phân phối (Delivery semantics)
-
-1. Mô hình phân phối: At-Least-Once (Ít nhất một lần).
-2. Nhà sản xuất dùng outbox relay (không xuất bản trực tiếp sau khi ghi logic nghiệp vụ).
-3. Người tiêu thụ bắt buộc phải có tính lặp lại (idempotent) theo `event_id`.
-4. Bảo vệ chống sai lệch thứ tự bằng `event_sequence_id` hoặc `state_version`.
-
-## 4. Hợp đồng các sự kiện xuất bản (Produced events contract)
-
-### 4.1. MESSAGE_CREATED (Tin nhắn được tạo)
+### 2.1 Chat Message (chat.messages)
 
 ```json
 {
-  "room_id": "uuid",
-  "conversation_type": "USER_TO_USER",
-  "message_id": "uuid",
-  "message_seq": 1024,
-  "created_at": "2026-03-31T10:00:00Z",
-  "sender_role": "USER",
-  "sender_id": "uuid",
-  "msg_type": "TEXT",
-  "metadata_visibility": "PUBLIC"
+  "message_id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "conversation_id": "conv_abc123",
+  "sender_id": "user_xyz",
+  "sender_name": "Nguyen Van A",
+  "type": "TEXT",
+  "content": "Xin chào mọi người",
+  "created_at": 1716000000000,
+  "idempotency_key": "550e8400-e29b-41d4-a716-446655440000",
+  "reply_to": null,
+  "metadata": {}
 }
 ```
 
-### 4.2. MESSAGE_REVOKED (Tin nhắn bị thu hồi)
+### 2.2 Message Types
+
+| Type | Mô tả |
+|------|-------|
+| TEXT | Tin nhắn text thông thường |
+| IMAGE | Tin nhắn chứa hình ảnh |
+| FILE | Tin nhắn chứa file đính kèm |
+| SYSTEM | Tin nhắn hệ thống |
+
+---
+
+## 3. Kafka Configuration
+
+### 3.1 Producer Configuration (Chat API)
+
+```yaml
+producer:
+  acks: all                           # Đảm bảo durability
+  retries: 3                          # Retry khi fail
+  linger.ms: 5                        # Batch for throughput
+  compression.type: lz4               # Fast compression
+  enable.idempotence: true            # Exactly-once semantics
+```
+
+### 3.2 Consumer Configuration
+
+```yaml
+# WebSocket Gateway
+consumer:
+  group.id: ws-{hostname}
+  auto.offset.reset: latest           # Chỉ nhận message mới
+  enable.auto.commit: true
+  auto.commit.interval.ms: 1000      # Commit sau 1 giây
+
+# Message Persister
+consumer:
+  group.id: msg-persister
+  auto.offset.reset: earliest         # Replay từ đầu nếu cần
+  enable.auto.commit: true
+  auto.commit.interval.ms: 5000
+
+# Notification Service
+consumer:
+  group.id: push-sender
+  auto.offset.reset: latest
+  enable.auto.commit: true
+```
+
+---
+
+## 4. Consumer Groups Chi tiết
+
+### 4.1 WebSocket Gateway Consumer
+
+```
+Group ID: ws-{instance-id}
+Instances: N (1 per WebSocket server)
+
+Responsibilities:
+- Subscribe chat.messages
+- Broadcast đến connected clients
+- Không cần deduplication (client dedup)
+
+Configuration:
+- auto.offset.reset: latest
+- enable.auto.commit: true (1s interval)
+```
+
+### 4.2 Message Persister Consumer
+
+```
+Group ID: msg-persister
+Instances: 2-4 (scale theo partition)
+
+Responsibilities:
+- Subscribe chat.messages
+- Persist messages vào Cassandra
+- Idempotent write (check message_id)
+
+Configuration:
+- auto.offset.reset: earliest
+- enable.auto.commit: true (5s interval)
+
+Failure Handling:
+- Nếu Cassandra write fail → retry với backoff
+- Nếu exceed max retries → log error, commit offset (chấp nhận message loss)
+```
+
+### 4.3 Notification Service Consumer
+
+```
+Group ID: push-sender
+Instances: 2
+
+Responsibilities:
+- Subscribe chat.messages
+- Check presence của recipients
+- Send push notification khi offline
+
+Configuration:
+- auto.offset.reset: latest
+- enable.auto.commit: true
+
+Logic:
+- Get participants từ message
+- Check Redis presence: EXISTS user:presence:{userId}
+- Nếu offline → send FCM/APNs
+- Delay 2-3s trước khi gửi (tránh race với WebSocket)
+```
+
+---
+
+## 5. Delivery Semantics
+
+### 5.1 At-Least-Once
+
+- Kafka đảm bảo at-least-once delivery
+- Message có thể được deliver nhiều lần
+- Client và Consumer phải handle duplicate
+
+### 5.2 Idempotency Handling
+
+**Consumer-side:**
+- Message Persister: check `message_id` trước khi insert
+- WebSocket Gateway: không cần check (client dedup)
+- Notification Service: có thể send duplicate notification (acceptable)
+
+---
+
+## 6. Partitioning Strategy
+
+### 6.1 Key Selection
+
+```
+Key: conversation_id
+```
+
+### 6.2 Benefits
+
+- Tất cả messages trong cùng conversation vào cùng partition
+- Kafka đảm bảo thứ tự trong partition
+- Consumer đọc theo offset đúng thứ tự
+
+### 6.3 Considerations
+
+- Không tăng partition count sau khi đã produce (sẽ change partition assignment)
+- Nếu cần tăng: phải có strategy để reassign key
+- Hot conversation có thể là bottleneck (nhiều messages vào 1 partition)
+
+---
+
+## 7. Event Sequence
+
+### 7.1 Ordering
+
+Thứ tự được đảm bảo trong cùng conversation qua Kafka partition.
+
+### 7.2 Sequence ID
+
+Có thể thêm sequence number trong message để detect missing messages:
 
 ```json
 {
-  "room_id": "uuid",
-  "message_id": "uuid",
-  "message_seq": 1024,
-  "revoked_by": "uuid",
-  "revoked_at": "2026-03-31T10:03:00Z",
-  "reason": "USER_ACTION"
+  "message_id": "msg_xxx",
+  "sequence": 1024,
+  "conversation_id": "conv_abc",
+  ...
 }
 ```
 
-### 4.3. MESSAGE_DELIVERED (Tin nhắn đã được giao)
+Client có thể detect gap và request resync.
 
-```json
-{
-  "room_id": "uuid",
-  "participant_id": "uuid",
-  "last_delivered_seq": 1024,
-  "delivered_at": "2026-03-31T10:01:00Z"
-}
+---
+
+## 8. Retry và Error Handling
+
+### 8.1 Producer Retry
+
+```
+- retries: 3
+- retry.backoff.ms: 100
+- Nếu fail sau retries → return error cho client
+- Client sẽ retry với same idempotency_key
 ```
 
-### 4.4. MESSAGE_READ (Tin nhắn đã được đọc)
+### 8.2 Consumer Error Handling
 
-```json
-{
-  "room_id": "uuid",
-  "participant_id": "uuid",
-  "last_read_seq": 1024,
-  "last_read_at": "2026-03-31T10:01:20Z"
-}
+```
+- Transient error (timeout, connection) → retry với backoff
+- Permanent error (invalid data) → log + skip
+- Nếu exceed max retries → log error + commit offset
 ```
 
-### 4.5. CONVERSATION_STATE_CHANGED (Trạng thái hội thoại thay đổi)
+---
 
-```json
-{
-  "room_id": "uuid",
-  "from_state": "OPEN",
-  "to_state": "CLOSED",
-  "changed_by": "USER",
-  "changed_at": "2026-03-31T10:01:40Z"
-}
-```
+## 9. Đường dẫn tài liệu
 
-### 4.6. USER_PRESENCE_UPDATED (Trạng thái hoạt động thay đổi)
-
-```json
-{
-  "user_id": "uuid",
-  "status": "online",
-  "last_seen_at": "2026-03-31T10:01:40Z"
-}
-```
-
-## 5. Hợp đồng các sự kiện tiêu thụ (Consumed events contract)
-
-### 5.1. USER_PROFILE_UPDATED (Từ User Service)
-
-Chat Service subscribe event này để cập nhật projection `sender_name` trong bảng `room_participants`, giúp hiển thị tên người gửi mà không cần gọi User Service mỗi lần.
-
-```json
-{
-  "event_id": "uuid-v4",
-  "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
-  "event_type": "USER_PROFILE_UPDATED",
-  "timestamp": "2026-04-22T08:05:00Z",
-  "payload": {
-    "id": "uuid-cua-user",
-    "email": "user@example.com",
-    "first_name": "Nguyen",
-    "last_name": "Quang Dung",
-    "phone_number": "0987654321",
-    "date_of_birth": "1997-10-19",
-    "gender": "MALE"
-  }
-}
-```
-
-**Xử lý tại Chat Service:**
-1. Consumer nhận event `USER_PROFILE_UPDATED`
-2. Kiểm tra idempotency qua `event_id` trong bảng `chat_consumer_idempotency`
-3. Cập nhật `sender_name` trong các bảng:
-   - `room_participants` (cập nhật `participant_display_name`)
-   - `messages_by_room_bucket` (cập nhật `sender_name` cho messages mới chưa có)
-
-### 5.2. USER_PROFILE_DELETED (Từ User Service)
-
-Chat Service subscribe event này để xóa vĩnh viễn PII của user đã bị xóa (GDPR compliance).
-
-```json
-{
-  "event_id": "uuid-v4",
-  "aggregate_type": "USER",
-  "aggregate_id": "uuid-cua-user",
-  "partition_key": "uuid-cua-user",
-  "event_type": "USER_PROFILE_DELETED",
-  "timestamp": "2026-04-22T08:15:00Z",
-  "payload": {
-    "id": "uuid-cua-user",
-    "email": "user@example.com",
-    "reason": "GDPR_REQUEST"
-  }
-}
-```
-
-**Xử lý tại Chat Service:**
-1. Consumer nhận event `USER_PROFILE_DELETED`
-2. Kiểm tra idempotency qua `event_id`
-3. Xóa tất cả dữ liệu liên quan đến `user_id`:
-   - `room_participants` (xóa participant)
-   - `room_state_by_participant` (xóa trạng thái inbox)
-   - `inbox_index_by_participant_time` (xóa chỉ mục)
-   - `presence:{user_id}` (xóa Redis presence)
-4. Anonymize messages (thay `sender_name` = "User đã xóa tài khoản")
+- [Thiết kế kiến trúc](chat_design.md)
+- [Cấu trúc Database](chat_db_schema.md)
+- [Quy trình nghiệp vụ](chat_workflow.md)
