@@ -52,7 +52,6 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 
 *   `products` (Bảng Master Sản phẩm)
     *   `product_id`: VARCHAR(255) PRIMARY KEY.
-    *   `idempotency_key`: VARCHAR(255) UNIQUE (Khóa chống trùng lặp, dùng để phục hồi state/product_id nếu Application văng lỗi/crash giữa chừng không kịp ghi vào Redis).
     *   `category_id`: VARCHAR(255) INDEX.
     *   `name`: VARCHAR(255).
     *   `description`: TEXT.
@@ -84,16 +83,6 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
 > **Lưu ý quan trọng về Versioning (Optimistic Locking & Search Event Sourcing):**
 > Bảng `product_skus` KHÔNG ĐƯỢC PHÉP có cột `version` riêng. Theo thiết kế Aggregate Root, mọi thao tác tạo, sửa, xóa bất kỳ SKU nào cũng BẮT BUỘC phải làm tăng cột `version` của bảng cha `products`. Chuỗi `version` đồng bộ duy nhất này sẽ được dùng làm căn cứ thứ tự tuần tự (Optimistic Concurrency Control) cho Search Service, nhằm triệt tiêu hoàn toàn sự cố lỗi từ chối Event (Out-of-Order Event Reject) do Elasticsearch version clash.
     *   **Quy tắc định danh SKU**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
-
-*   `product_status_history` (Bảng Ghi nhận Lịch sử Đổi trạng thái)
-    *   `history_id`: VARCHAR(255) PRIMARY KEY.
-    *   `product_id`: VARCHAR(255) INDEX.
-    *   `old_status`: VARCHAR(50).
-    *   `new_status`: VARCHAR(50).
-    *   `changed_by`: VARCHAR(255) (Ai là người thực hiện đổi: System, Admin).
-    *   `changed_by_type`: VARCHAR(50) (Loại đối tượng: SYSTEM, ADMIN).
-    *   `reason`: TEXT (Lý do thay đổi, đặc biệt khi REJECTED hoặc BANNED).
-    *   `changed_at`: TIMESTAMPTZ.
 
 *   `product_media` (Bảng Quản lý Hình ảnh/Video Sản phẩm)
     *   `media_id`: VARCHAR(255) PRIMARY KEY.
@@ -139,15 +128,6 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
     *   `payload`: JSONB (Payload bắt buộc kèm `schema_version` ở top-level message envelope).
     *   `created_at`: TIMESTAMPTZ.
 
-*   `product_price_event_seq` (PostgreSQL Sequence phục vụ `PRODUCT_PRICE_UPDATED`)
-        *   SQL:
-            ```sql
-            CREATE SEQUENCE product_price_event_seq START 1 INCREMENT 1;
-            ```
-        *   Dùng để cấp `event_sequence_id` cho mọi event `PRODUCT_PRICE_UPDATED`.
-        *   Tính chất bắt buộc: global, đơn điệu tăng theo thứ tự cấp phát của DB sequence.
-        *   Lưu ý vận hành: Sequence không rollback khi transaction fail; khoảng trống số (gap) là chấp nhận được theo thiết kế idempotency downstream.
-
 ## 2. Chiến Lược Đánh Index (Indexing Strategy)
 
 Các Index được thiết kế để tối ưu cho các truy vấn phổ biến nhất của Product Service:
@@ -159,7 +139,6 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
 | `product_skus` | `idx_skus_product_id` | B-tree | JOIN product → SKUs |
 | `product_skus` | `idx_skus_status` | B-tree | Lọc SKU theo trạng thái |
 | `product_markdown_applied` | `idx_markdown_expires` | B-tree (expires_at) | Quét dọn markdown hết hạn |
-| `product_status_history` | `idx_history_product_id` | B-tree | Tra cứu lịch sử trạng thái 1 SP |
 
 ## 3. Ràng Buộc & Quy Tắc Ghi Dữ Liệu
 
@@ -174,4 +153,4 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
 4.  **Markdown Price Integrity:**
     *   admin chỉ có quyền sửa `original_price`; API admin không được tự ý set giá markdown thủ công.
     *   `promotional_price` được cập nhật bởi Pricing Domain Module của Product Service, có thể chạy từ hai đường hợp lệ: (1) Markdown Worker async, (2) nhánh đồng bộ trong API update khi admin đổi `original_price` và SKU đang có markdown active.
-    *   Khi `original_price` thay đổi (admin sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction và cập nhật lại `original_price_snapshot` để chống drift.
+    *   Khi `original_price` thay đổi (admin sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction sử dụng `original_price` live từ `product_skus`.

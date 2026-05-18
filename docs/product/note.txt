@@ -2,10 +2,12 @@
 để tự động quét và cập nhật lại giá sản phẩm đã hết khuyến mãi về giá gốc, tránh tình trạng giá cũ vẫn còn lưu.
 
 2. 
-2.1 Sự kết hợp giữa In-band và Out-of-band của Invalidation Consumer Worker:
+2.1 Sự kết hợp giữa In-band và Out-of-band của Event Handler Worker:
 Khi Seller sửa sản phẩm thông qua API, API đó sẽ đi ghi xuống DB và tự động cập nhật cache ngay lập tức thông qua cơ chế "In-band", đồng thời trong transaction cập nhật DB đó, chúng ta cũng sẽ ghi một outbox event record vào một bảng
-Trường hợp xấu xảy ra khi transaction đó đã commit thành công nhưng server bị treo trước khi cập nhật cache, lúc này Invalidation Consumer Worker (hoạt động Out-of-band/bất đồng bộ) sẽ bắt được sự kiện Kafka
+Trường hợp xấu xảy ra khi transaction đó đã commit thành công nhưng server bị treo trước khi cập nhật cache, lúc này Event Handler Worker (hoạt động Out-of-band/bất đồng bộ) sẽ bắt được sự kiện Kafka
 từ Outbox Event và tiến hành ghi đề Cache để đảm bảo tính nhất quán giữa DB và Cache. Đây là một cơ chế tự chữa lành (self-healing) rất quan trọng để đảm bảo rằng cache luôn được cập nhật ngay cả khi có sự cố xảy ra
+
+Event Handler Worker cũng xử lý `CATEGORY_DELETED` để đồng bộ Write Model (chuyển sản phẩm liên quan sang REJECTED)
 
 2.2 Xử lý Cache cho các luồng hoạt động ngầm
 Worker trên không chỉ xử lý các sự kiện đến từ API của Seller, mà còn phải xử lý các sự kiện đến từ các luồng hoạt động ngầm khác như:
@@ -33,21 +35,14 @@ sau đó mới commit transaction nhả cho product_id tiếp theo.
 
 6. Thiết kế xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Service (Fast Sync):
 - Ở từng transaction, thực hiện lock theo thứ tự product_id (FOR KEY NO UPDATE) rồi tới sku_id (FOR UPDATE) để tránh deadlock với các transaction khác
--  Sau khi commit database thành công, thông tin cập nhật này sẽ được bắn vào trong một Queue In-memory trên RAM của tầng Application, sau đó chúng ta sẽ có một background worker chuyên đọc Queue này để thực hiện việc invalidate cache. 
-- Tuy nhiên khi sử dụng Queue In-memory, chúng ta sẽ phải đối mặt với một số vấn đề như sau:
-1. Nếu có quá nhiều cập nhật về sản phẩm đến cùng một lúc, Queue có thể bị tràn, dẫn đến việc mất dữ liệu cập nhật và cache không được invalidate đúng cách.
-2. Nếu server bị treo hoặc khởi động lại, tất cả dữ liệu trong Queue sẽ bị mất, dẫn đến việc cache không được invalidate và người dùng có thể nhìn thấy dữ liệu cũ.
-- Để giải quyết vấn đề 1, ta có thể giới hạn kích thước của Queue và sử dụng cơ chế backpressure để điều chỉnh tốc độ cập nhật sản phẩm. Khi Queue đạt đến giới hạn, 
-chúng ta có thể tạm thời ngừng nhận các cập nhật mới cho đến khi có đủ dung lượng trong Queue để xử lý chúng.
-- Để giải quyết vấn đề 2, chúng ta có thể cân nhắc việc sử dụng một hệ thống lưu trữ bền vững hơn cho Queue, chẳng hạn như Redis Stream hoặc Kafka, để đảm bảo rằng dữ liệu cập nhật không bị mất khi server bị treo hoặc khởi động lại. 
-Tuy nhiên, việc này cũng sẽ làm tăng độ phức tạp của hệ thống và có thể ảnh hưởng đến hiệu suất, vì vậy chúng ta cần cân nhắc kỹ lưỡng trước khi quyết định sử dụng giải pháp này. Nếu vẫn muốn sử dụng
-Queue In-memory, chúng ta sẽ ngừng nhận các event mới trên worker khi server bị treo, nhưng phải đảm bảo các thread đã đẩy toàn bộ các task còn tồn đọng trong Queue vào Redis bằng Pipeline trước khi server hoàn toàn sập. 
+- Sau khi commit database thành công, gọi Redis SET đồng bộ ngay lập tức với retry ngắn (2-3 lần). Sử dụng Redis Pipelining để gửi các lệnh cập nhật theo batch.
+- Áp dụng stale guard theo `last_inventory_sync_at` đã lưu trong cache để chặn out-of-order write.
+- Nếu Redis write thất bại sau retry, event đã được ghi vào outbox (`PRODUCT_STATE_CHANGED`) sẽ được `product-event-handler-group` tiêu thụ để self-heal cache. 
 
 7. Quyết định chốt sau khi review tài liệu Product Service:
-- Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` và `product:master:{product_id}` được làm mới qua Invalidation Consumer khi self-consume `PRODUCT_PRICE_UPDATED`.
+- Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` và `product:master:{product_id}` được làm mới qua Event Handler Worker khi self-consume `PRODUCT_PRICE_UPDATED`.
 - Markdown Worker chỉ còn quản lý key phụ `product:markdown:active:{sku_id}` (SET/DEL) để phản ánh trạng thái rule markdown.
-- Bổ sung bắt buộc `PRODUCT_SKU_STATUS_CHANGED` vào danh sách subscribe của `product-invalidation-group` để self-healing cache khi Inventory Worker crash trước khi flush xong queue in-memory.
-- Để giảm write amplification, Invalidation Consumer phải dedupe theo `product_id` trong từng poll-batch, chỉ refresh `product:master:{product_id}` một lần; có thể debounce ngắn 50-100ms cho các batch liền kề.
+- Để giảm write amplification, Event Handler Worker phải dedupe theo `product_id` trong từng poll-batch, chỉ refresh `product:master:{product_id}` một lần; có thể debounce ngắn 50-100ms cho các batch liền kề.
 - Trước khi overwrite `product:master:{product_id}`, bắt buộc so sánh guard `(version, updated_at)` giữa event và cache; event bằng/cũ hơn phải skip để chặn stale/equal write.
 
 8. Thiết kế tối ưu cho luồng read 1 SKU thông qua gRPC:

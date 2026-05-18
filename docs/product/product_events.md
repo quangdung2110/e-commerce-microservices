@@ -40,8 +40,8 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 |---|---|---|---|
 | `t.promotion.markdown.events` | `product-markdown-group` | Promotion Service | Lắng nghe đúng allowlist `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED` để tính [promotional_price](product_db_design.md#13-nhóm-tích-hợp-giá-khuyến-mãi-markdown-integration); event ngoài allowlist phải skip + emit metric + chuyển DLQ |
 | `t.inventory.events` | `product-inventory-sync-group` | Inventory Service | Lắng nghe `INVENTORY_QUANTITY_CHANGED` để cập nhật `display_quantity` và auto-hide sản phẩm hết hàng |
-| `t.product.events` | `product-invalidation-group` | Product Service (chính nó) | Self-consume để cập nhật lại Cache Redis theo cơ chế soft invalidation fallback (bắt buộc gồm `PRODUCT_PRICE_UPDATED`, `PRODUCT_SKU_STATUS_CHANGED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_UPDATED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`). Khi ghi `product:master`, phải dedupe theo `product_id` trong poll-batch và áp dụng stale guard `version/updated_at`. Xem [Invalidation Consumer Worker](product_workers.md) |
-| `t.category.events` | `product-category-lifecycle-group` | Product Service (chính nó) | Self-consume `CATEGORY_DELETED` để cập nhật Write Model (chuyển sản phẩm liên quan sang `REJECTED`) trước khi downstream phản chiếu |
+| `t.product.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume để cập nhật lại Cache Redis và xử lý category lifecycle (bắt buộc gồm `PRODUCT_PRICE_UPDATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_UPDATED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`). Khi ghi `product:master`, phải dedupe theo `product_id` trong poll-batch và áp dụng stale guard `version/updated_at`. Xem [Event Handler Worker](product_workers.md) |
+| `t.category.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume `CATEGORY_DELETED` để cập nhật Write Model (chuyển sản phẩm liên quan sang `REJECTED`) trước khi downstream phản chiếu |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
@@ -283,9 +283,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "has_promotion": true,
     "previous_original_price": 34990000.00,
     "previous_promotional_price": null,
-    "change_source": "MARKDOWN_APPLIED",
     "version": 4,
-    "event_sequence_id": 1709420001,
     "updated_at": "2026-02-28T06:00:00Z"
   }
 }
@@ -295,48 +293,10 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 > `best_price = LEAST(original_price, original_price - discount_value)` khi `discount_type = FIXED_AMOUNT`;
 > kết quả làm tròn 2 chữ số thập phân, clamp tối thiểu về `0` và cuối cùng đồng bộ vào `promotional_price`/`best_price` theo transaction. Downstream (Search/Checkout/Analytics) chỉ được đọc và phản chiếu, không tự tính lại.
 >
-> **Field `event_sequence_id` (BẮT BUỘC):** Số tăng đơn điệu cấp phát bởi DB sequence `product_price_event_seq` (global monotonic). Search guard out-of-order theo tuple `(sku_id, event_sequence_id)` và chỉ so sánh thứ tự trong cùng `sku_id`. Event `PRODUCT_PRICE_UPDATED` thiếu field này phải bị coi là payload không hợp lệ.
->
-> **Field `change_source`:** Giúp downstream phân biệt nguồn thay đổi giá: `ADMIN_UPDATE` (admin tự sửa giá gốc), `MARKDOWN_APPLIED` (Promotion rule mới áp dụng), `MARKDOWN_EXPIRED_FALLBACK` (Promotion rule hết hạn trôi tuột và tự dọn dẹp bởi Cronjob, reset price về null).
->
-> Với event `MARKDOWN_ENDED` xử lý theo luồng chuẩn, `change_source` phải dùng `MARKDOWN_ENDED`.
->
-> 🔴 **Cảnh báo Concurrency & C5 Fix (`event_sequence_id`):** Khi bảng `product_skus` bị update hàng loạt bởi Promotion Worker, `products.version` của bảng cha chỉ tăng 1 lần duy nhất cho toàn bộ batch SKU. Do đó tất cả các event `PRODUCT_PRICE_UPDATED` cho N SKUs này đều mang cùng một số `version` (Ví dụ = 4). Search Service nếu dùng `version` này để làm Guard Check cho từng SKU Document sẽ rơi vào lỗi: Event đầu lấy version = 4, Event thứ hai lấy version = 4 -> bị Drop (Discarded). Do vậy, Event cho SKU bắt buộc phải mang theo `event_sequence_id` (cấp phát từ sequence `product_price_event_seq`) để Search Downstream guard đúng cấp SKU (xem Thống nhất C5 Audit Report).
->
-> **Ownership Cache Refresh (BẮT BUỘC):** Với thay đổi giá do Markdown, key `product:sku:{sku_id}` và `product:master:{product_id}` phải do `product-invalidation-group` ghi đè dựa trên `PRODUCT_PRICE_UPDATED`. Markdown Worker chỉ quản lý key phụ `product:markdown:active:{sku_id}` để tránh double-write bất đồng bộ.
-> Khi nhiều event cùng `product_id` xuất hiện liên tiếp, Invalidation Consumer phải coalesce để giới hạn số lần ghi `product:master:{product_id}` và chỉ apply bản mới nhất theo guard `version/updated_at`.
+> **Ownership Cache Refresh (BẮT BUỘC):** Với thay đổi giá do Markdown, key `product:sku:{sku_id}` và `product:master:{product_id}` phải do `product-event-handler-group` ghi đè dựa trên `PRODUCT_PRICE_UPDATED`. Markdown Worker chỉ quản lý key phụ `product:markdown:active:{sku_id}` để tránh double-write bất đồng bộ.
+> Khi nhiều event cùng `product_id` xuất hiện liên tiếp, Event Handler phải coalesce để giới hạn số lần ghi `product:master:{product_id}` và chỉ apply bản mới nhất theo guard `version/updated_at`.
 
-### 3.5. PRODUCT_SKU_STATUS_CHANGED
-**Ngữ cảnh phát sinh:** Trạng thái của một SKU cụ thể thay đổi (VD: `ACTIVE` → `OUT_OF_STOCK` do Inventory sync, hoặc `ACTIVE` → `INACTIVE` do admin tạm ngưng).
-**Consumers chính:** Search Service (cập nhật availability), Product Service (`product-invalidation-group`) để self-healing cache fallback.
-
-**Cấu trúc Payload (JSON):**
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174004",
-  "event_type": "PRODUCT_SKU_STATUS_CHANGED",
-  "aggregate_type": "ProductSku",
-  "aggregate_id": "sku-uuid-001",
-  "correlation_id": "req-123460",
-  "timestamp": "2026-02-28T07:00:00Z",
-  "source": "product-service",
-  "schema_version": 1,
-  "payload": {
-    "product_id": "prod-uuid-001",
-    "sku_id": "sku-uuid-001",
-    "sku_code": "IP15PM-256-BLK",
-    "old_status": "ACTIVE",
-    "new_status": "OUT_OF_STOCK",
-    "change_source": "INVENTORY_SYNC",
-    "version": 5,
-    "updated_at": "2026-02-28T07:00:00Z"
-  }
-}
-```
-> **Self-Healing Cache (BẮT BUỘC):** Invalidation Consumer phải subscribe event này để refresh `product:sku:{sku_id}` và `product:master:{product_id}` khi luồng queue in-memory của Inventory Worker bị gián đoạn do crash/restart.
-> Dù là luồng fallback, refresh `product:master:{product_id}` vẫn phải dùng dedupe theo `product_id` + stale guard `version/updated_at` để tránh ghi lùi khi event đến lệch nhịp.
-
-### 3.6. PRODUCT_DELETED
+### 3.5. PRODUCT_DELETED
 **Ngữ cảnh phát sinh:** Sản phẩm bị Soft Delete (cập nhật cờ `is_deleted = true`, trạng thái nghiệp vụ cũ được giữ nguyên).
 **Consumers chính:** [Search Service](../search/search_events.md#26-product_deleted) (xoá khỏi Elasticsearch index).
 
@@ -363,7 +323,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 > **Nguồn dữ liệu `sku_ids` cho xóa mềm (BẮT BUỘC):** FE chỉ gửi `product_id`. Backend phải tự lấy danh sách SKU thuộc Product trong transaction xóa mềm và đóng gói vào payload `PRODUCT_DELETED` để invalidation refresh đầy đủ các key SKU liên quan.
 
-### 3.7. CATEGORY_UPDATED
+### 3.6. CATEGORY_UPDATED
 **Ngữ cảnh phát sinh:** Tên, thuộc tính, hoặc đường dẫn của Danh mục (Category) bị thay đổi bởi Admin.
 **Consumers chính:** Search Service (nhận Event để update tên và thông tin danh mục cho hàng loạt sản phẩm bằng lệnh Update By Query trên Elasticsearch).
 
@@ -388,7 +348,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 }
 ```
 
-### 3.8. PRODUCT_SKU_DELETED
+### 3.7. PRODUCT_SKU_DELETED
 **Ngữ cảnh phát sinh:** Một SKU cụ thể bị Soft Delete khỏi Sản phẩm bởi admin (các SKU khác trong sản phẩm vẫn tồn tại).
 **Consumers chính:** Search Service (nhận Event để xóa hoặc đánh dấu DELETED cho SKU Document, tránh việc User search ra kết quả lỗi).
 **Cấu trúc Payload (JSON):**
@@ -414,9 +374,9 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 > **Contract guard cho tombstone (BẮT BUỘC):** `PRODUCT_SKU_DELETED` phải luôn có `payload.version` để downstream guard out-of-order khi scripted-upsert tombstone.
 
-### 3.9. CATEGORY_DELETED
+### 3.8. CATEGORY_DELETED
 **Ngữ cảnh phát sinh:** Danh mục bị Xóa Cứng hoặc Xóa Mềm bởi Admin (System Constraint: thông thường Admin chỉ được xoá khi danh mục không còn Product nào, nhưng đề phòng trường hợp Force Delete).
-**Consumers chính:** Product Service (`product-category-lifecycle-group`) và Search Service (`search-category-indexer`). Product Service phải xử lý Write Model trước: đổi `status` thành `REJECTED` cho toàn bộ sản phẩm thuộc danh mục bị xoá ngay tại PostgreSQL và sinh tiếp event `PRODUCT_STATE_CHANGED`. Search Service chỉ phản chiếu projection (xóa/đổi metadata category, invalidate category tree), tuyệt đối KHÔNG tự ý đổi state sản phẩm nếu chưa nhận `PRODUCT_STATE_CHANGED`.
+**Consumers chính:** Product Service (`product-event-handler-group`) và Search Service (`search-category-indexer`). Product Service phải xử lý Write Model trước: đổi `status` thành `REJECTED` cho toàn bộ sản phẩm thuộc danh mục bị xoá ngay tại PostgreSQL và sinh tiếp event `PRODUCT_STATE_CHANGED`. Search Service chỉ phản chiếu projection (xóa/đổi metadata category, invalidate category tree), tuyệt đối KHÔNG tự ý đổi state sản phẩm nếu chưa nhận `PRODUCT_STATE_CHANGED`.
 
 > **Scope contract:** Payload nên mang `descendant_category_ids` khi xoá cả cây danh mục. Nếu field này thiếu (legacy), consumer tối thiểu phải xử lý `category_id` gốc và có cơ chế self-heal subtree theo snapshot category tree nội bộ.
 **Cấu trúc Payload (JSON):**
