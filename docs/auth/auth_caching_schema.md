@@ -105,7 +105,7 @@ Cơ chế này theo dõi số lần đăng nhập sai password của từng emai
 *   **Key Pattern**: `auth:reset_pw:{token_hash}`
     *   **Mô tả**: Khi User quên mật khẩu, hệ thống sinh ra một token random 32 bytes (rồi mã hoá hash), gửi email. Redis lưu token hash này trỏ về `user_id`.
     *   **Loại Dữ Liệu**: `String`. Value: `{user_id}`.
-    *   **TTL**: 15 - 30 phút.
+    *   **TTL**: 15 phút.
 
 
 ## 2. JWKS Caching Strategy
