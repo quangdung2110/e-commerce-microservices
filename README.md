@@ -62,8 +62,7 @@ e-commerce-microservices/
     ├── notification/            # Notifications
     ├── chat/                    # Real-time chat
     ├── analytics/               # Analytics & reporting
-    ├── gateway/                 # API Gateway design
-    └── golang-common-layout.md  # Go project layout guidelines
+    └── gateway/                 # API Gateway design
 ```
 
 ## Microservices
