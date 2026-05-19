@@ -203,4 +203,4 @@ Tài liệu thiết kế chi tiết cho từng service nằm trong thư mục `d
 
 ## License
 
-Project license chưa được xác định. (Chưa có file `LICENSE` trong repository.)
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
