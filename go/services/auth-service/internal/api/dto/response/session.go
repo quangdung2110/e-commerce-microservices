@@ -1,4 +1,4 @@
-package dto
+package response
 
 type SessionResponse struct {
 	SessionID  string `json:"session_id"`

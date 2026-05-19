@@ -1,9 +1,4 @@
-package dto
-
-type ErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+package response
 
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`

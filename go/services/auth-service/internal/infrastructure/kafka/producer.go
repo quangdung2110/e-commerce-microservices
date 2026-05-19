@@ -1,10 +1,13 @@
 package kafka
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/IBM/sarama"
 	"github.com/ecommerce/auth-service/internal/common/config"
+	eventPkg "github.com/ecommerce/auth-service/internal/domain/event"
 )
 
 type Producer struct {
@@ -40,6 +43,29 @@ func (p *Producer) SendMessage(topic string, key string, value []byte) error {
 
 	_, _, err := p.producer.SendMessage(msg)
 	return err
+}
+
+func (p *Producer) Publish(ctx context.Context, event interface{}) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	var eventType string
+	switch event.(type) {
+	case *eventPkg.UserOTPRequested:
+		eventType = "user.otp.requested"
+	case *eventPkg.UserVerifiedSuccess:
+		eventType = "user.verified.success"
+	case *eventPkg.UserPasswordChanged:
+		eventType = "user.password.changed"
+	case *eventPkg.UserAccountLocked:
+		eventType = "user.account.locked"
+	default:
+		eventType = "unknown"
+	}
+
+	return p.SendMessage(eventType, "", data)
 }
 
 func (p *Producer) Close() error {

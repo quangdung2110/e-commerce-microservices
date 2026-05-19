@@ -18,9 +18,12 @@ import (
 	"github.com/ecommerce/auth-service/internal/api/handler"
 	"github.com/ecommerce/auth-service/internal/api/router"
 	"github.com/ecommerce/auth-service/internal/common/config"
+	infracommon "github.com/ecommerce/auth-service/internal/infrastructure/common"
 	"github.com/ecommerce/auth-service/internal/infrastructure/kafka"
 	"github.com/ecommerce/auth-service/internal/infrastructure/postgres"
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
+	"github.com/ecommerce/auth-service/internal/domain/port"
+	"github.com/ecommerce/auth-service/internal/domain/service"
 )
 
 func main() {
@@ -59,14 +62,36 @@ func main() {
 	}
 	defer redisClient.Close()
 
+	var eventPublisher port.EventPublisher
 	kafkaProducer, err := kafka.NewProducer(cfg.Kafka)
 	if err != nil {
 		logger.Warn("Failed to create Kafka producer, running without Kafka", zap.Error(err))
-		kafkaProducer = nil
-	}
-	if kafkaProducer != nil {
+		eventPublisher = &port.NoOpEventPublisher{}
+	} else {
 		defer kafkaProducer.Close()
+		eventPublisher = kafkaProducer
 	}
+
+	userRepo := postgres.NewUserRepository(db.Pool)
+
+	otpCache := redis.NewOTPCache(redisClient)
+
+	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
+		Memory:      65536,
+		Iterations:  3,
+		Parallelism: 4,
+		SaltLength:  16,
+		KeyLength:   32,
+	})
+
+	otpService := service.NewOTPService(otpCache)
+
+	userService := service.NewUserService(
+		userRepo,
+		otpService,
+		passwordHasher,
+		eventPublisher,
+	)
 
 	healthHandler := handler.NewHealthHandler(
 		db.Ping,
@@ -75,7 +100,9 @@ func main() {
 		},
 	)
 
-	r := router.NewRouter(healthHandler)
+	userHandler := handler.NewUserHandler(userService)
+
+	r := router.NewRouter(healthHandler, userHandler)
 	r.SetupRoutes()
 
 	server := &graceful.Server{

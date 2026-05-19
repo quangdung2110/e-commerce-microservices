@@ -97,3 +97,7 @@ func ErrSessionNotFound() *AppError {
 func ErrMaxSessionsReached() *AppError {
 	return NewAppError("MAX_SESSIONS", "Maximum number of sessions reached", http.StatusConflict, ErrConflict)
 }
+
+func IsNotFoundError(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}

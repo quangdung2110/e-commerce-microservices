@@ -35,6 +35,7 @@ type OTPCache interface {
 	Get(ctx context.Context, email string) (string, error)
 	Delete(ctx context.Context, email string) error
 	Verify(ctx context.Context, email string, otp string) (bool, error)
+	GetRemainingTTL(ctx context.Context, email string) (time.Duration, error)
 }
 
 type ResetTokenCache interface {

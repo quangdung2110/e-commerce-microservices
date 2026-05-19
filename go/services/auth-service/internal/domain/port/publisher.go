@@ -3,6 +3,11 @@ package port
 import "context"
 
 type EventPublisher interface {
-	Publish(ctx context.Context, topic string, key string, value []byte) error
-	Close() error
+	Publish(ctx context.Context, event interface{}) error
+}
+
+type NoOpEventPublisher struct{}
+
+func (p *NoOpEventPublisher) Publish(ctx context.Context, event interface{}) error {
+	return nil
 }

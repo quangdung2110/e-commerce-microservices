@@ -10,9 +10,13 @@ import (
 type Router struct {
 	engine        *gin.Engine
 	healthHandler *handler.HealthHandler
+	userHandler   *handler.UserHandler
 }
 
-func NewRouter(healthHandler *handler.HealthHandler) *Router {
+func NewRouter(
+	healthHandler *handler.HealthHandler,
+	userHandler *handler.UserHandler,
+) *Router {
 	engine := gin.New()
 
 	engine.Use(gin.Recovery())
@@ -22,6 +26,7 @@ func NewRouter(healthHandler *handler.HealthHandler) *Router {
 	return &Router{
 		engine:        engine,
 		healthHandler: healthHandler,
+		userHandler:   userHandler,
 	}
 }
 
@@ -32,21 +37,18 @@ func (r *Router) SetupRoutes() {
 
 	v1 := r.engine.Group("/api/v1/auth")
 	{
-		// Public routes (no auth required)
 		public := v1.Group("/public")
 		{
-			public.POST("/register", r.notImplementedHandler("POST /register"))
+			public.POST("/register", r.userHandler.Register)
+			public.POST("/verify-email", r.userHandler.VerifyEmail)
+			public.POST("/resend-otp", r.userHandler.ResendOTP)
 			public.POST("/login", r.notImplementedHandler("POST /login"))
 			public.POST("/forgot-password", r.notImplementedHandler("POST /forgot-password"))
 			public.POST("/reset-password", r.notImplementedHandler("POST /reset-password"))
-			public.POST("/verify-email", r.notImplementedHandler("POST /verify-email"))
-			public.POST("/resend-otp", r.notImplementedHandler("POST /resend-otp"))
 		}
 
-		// JWKS endpoint (no auth, but may require API key from gateway)
 		v1.GET("/.well-known/jwks.json", r.notImplementedHandler("GET /.well-known/jwks.json"))
 
-		// Protected routes (require auth)
 		protected := v1.Group("")
 		protected.Use(middleware.Auth())
 		{
@@ -54,15 +56,12 @@ func (r *Router) SetupRoutes() {
 			protected.POST("/refresh", r.notImplementedHandler("POST /refresh"))
 			protected.POST("/change-password", r.notImplementedHandler("POST /change-password"))
 
-			// Session management
 			protected.GET("/sessions", r.notImplementedHandler("GET /sessions"))
 			protected.DELETE("/sessions/:session_id", r.notImplementedHandler("DELETE /sessions/:session_id"))
 
-			// User audit
 			protected.GET("/audit/my-login-history", r.notImplementedHandler("GET /audit/my-login-history"))
 		}
 
-		// Admin routes (require admin role)
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Auth(), middleware.RequireRole("ADMIN"))
 		{

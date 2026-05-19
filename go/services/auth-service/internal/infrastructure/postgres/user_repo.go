@@ -224,7 +224,7 @@ func (r *UserRepository) GetLockedUsers(ctx context.Context, lockDuration time.D
 
 	var users []*entity.User
 	for rows.Next() {
-		user, err := r.scanUserRows(rows)
+		user, err := r.scanUser(rows)
 		if err != nil {
 			return nil, err
 		}
