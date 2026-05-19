@@ -1,0 +1,8 @@
+package port
+
+import "context"
+
+type EventPublisher interface {
+	Publish(ctx context.Context, topic string, key string, value []byte) error
+	Close() error
+}
