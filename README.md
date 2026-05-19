@@ -46,6 +46,7 @@ e-commerce-microservices/
 │       └── shipping-service/    # Vận chuyển & theo dõi đơn hàng
 │
 └── docs/                        # Tài liệu thiết kế chi tiết
+    ├── golang-common-layout.md  # Go project layout reference
     ├── auth/                    # Authentication & Authorization
     ├── user/                    # User management
     ├── product/                 # Product catalog
