@@ -46,6 +46,7 @@ e-commerce-microservices/
 │       └── shipping-service/    # Vận chuyển & theo dõi đơn hàng
 │
 └── docs/                        # Tài liệu thiết kế chi tiết
+    ├── golang-common-layout.md  # Go project layout reference
     ├── auth/                    # Authentication & Authorization
     ├── user/                    # User management
     ├── product/                 # Product catalog
@@ -70,7 +71,7 @@ e-commerce-microservices/
 
 | Service | Mô tả | Port |
 |---------|--------|------|
-| **API Gateway** | Traefik v3.x - routing, rate limiting, JWT auth, tracing | 80/443/8080 |
+| **API Gateway** | Traefik v3.x - routing, rate limiting, JWT auth, tracing | 80, 8090 |
 | **Cart Service** | Giỏ hàng real-time với WebSocket, idempotency, outbox pattern | 8080 |
 | **User Service** | Quản lý người dùng, GDPR compliance, Debezium CDC | 8080 |
 
@@ -202,4 +203,4 @@ Tài liệu thiết kế chi tiết cho từng service nằm trong thư mục `d
 
 ## License
 
-Distributed under the MIT License.
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
