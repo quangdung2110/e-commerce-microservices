@@ -71,7 +71,7 @@ e-commerce-microservices/
 
 | Service | Mô tả | Port |
 |---------|--------|------|
-| **API Gateway** | Traefik v3.x - routing, rate limiting, JWT auth, tracing | 80, 8090 |
+| **API Gateway** | Traefik v3.x - routing, rate limiting, JWT auth, tracing | 80 (web), 8090 (metrics) |
 | **Cart Service** | Giỏ hàng real-time với WebSocket, idempotency, outbox pattern | 8080 |
 | **User Service** | Quản lý người dùng, GDPR compliance, Debezium CDC | 8080 |
 
