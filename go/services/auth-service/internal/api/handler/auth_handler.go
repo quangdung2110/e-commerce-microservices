@@ -20,16 +20,23 @@ const (
 )
 
 type AuthHandler struct {
-	authService *service.AuthService
-	jwtService  *service.JWTService
-	logger      *zap.Logger
+	authService     *service.AuthService
+	refreshService  *service.RefreshService
+	jwtService     *service.JWTService
+	logger         *zap.Logger
 }
 
-func NewAuthHandler(authService *service.AuthService, jwtService *service.JWTService, logger *zap.Logger) *AuthHandler {
+func NewAuthHandler(
+	authService *service.AuthService,
+	refreshService *service.RefreshService,
+	jwtService *service.JWTService,
+	logger *zap.Logger,
+) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
-		jwtService:  jwtService,
-		logger:      logger.With(zap.String("handler", "AuthHandler")),
+		authService:    authService,
+		refreshService: refreshService,
+		jwtService:     jwtService,
+		logger:         logger.With(zap.String("handler", "AuthHandler")),
 	}
 }
 
@@ -158,22 +165,46 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 }
 
 // Refresh handles POST /api/v1/auth/refresh
+// Uses RefreshService with Grace Period logic
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	refreshToken, err := c.Cookie(RefreshTokenCookieName)
-	if err != nil || refreshToken == "" {
-		h.logger.Warn("Refresh token missing from cookie")
+	// Get refresh token from cookie or header
+	refreshToken := c.GetHeader("X-Refresh-Token")
+	if refreshToken == "" {
+		refreshToken, _ = c.Cookie(RefreshTokenCookieName)
+	}
+
+	if refreshToken == "" {
+		h.logger.Warn("Refresh token missing")
 		handleServiceError(c, apperrors.NewAppError("BAD_REQUEST", "Refresh token required", http.StatusBadRequest, nil))
 		return
 	}
 
-	jti, _ := c.Get("jti")
-	exp, _ := c.Get("exp")
-	expTime, _ := exp.(time.Time)
+	// Get current access token info for denylist
+	accessTokenJTI, exists := c.Get("jti")
+	if !exists || accessTokenJTI == "" {
+		h.logger.Warn("Access token JTI missing")
+		handleServiceError(c, apperrors.ErrUnauthorized)
+		return
+	}
 
-	refreshResp, err := h.authService.RefreshTokens(
+	accessTokenExp, exists := c.Get("exp")
+	if !exists {
+		h.logger.Warn("Access token expiry missing")
+		handleServiceError(c, apperrors.ErrUnauthorized)
+		return
+	}
+	expTime, ok := accessTokenExp.(time.Time)
+	if !ok {
+		h.logger.Warn("Invalid access token expiry format")
+		handleServiceError(c, apperrors.ErrInternal)
+		return
+	}
+
+	// Use RefreshService with Grace Period
+	refreshResp, err := h.refreshService.RefreshTokens(
 		c.Request.Context(),
 		refreshToken,
-		jti.(string),
+		accessTokenJTI.(string),
 		expTime,
 	)
 	if err != nil {
@@ -182,22 +213,53 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
+	// Update refresh token cookie
 	c.SetCookie(
 		RefreshTokenCookieName,
 		refreshResp.NewRefreshToken,
-		int(time.Until(refreshResp.ExpiresAt).Seconds()),
+		int(time.Until(time.Now().Add(time.Duration(refreshResp.ExpiresIn) * time.Second)).Seconds()),
 		"/",
 		"",
 		true,
 		true,
 	)
 
-	h.logger.Info("Tokens refreshed successfully")
+	h.logger.Info("Tokens refreshed successfully with Grace Period")
 
 	c.JSON(http.StatusOK, response.RefreshResponse{
 		AccessToken: refreshResp.AccessToken,
-		ExpiresIn:   int64(time.Until(refreshResp.ExpiresAt).Seconds()),
-		TokenType:   "Bearer",
+		ExpiresIn:   refreshResp.ExpiresIn,
+		TokenType:   refreshResp.TokenType,
+	})
+}
+
+// RevokeSession handles POST /api/v1/auth/revoke-session
+// Revokes a specific session/device
+func (h *AuthHandler) RevokeSession(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		handleServiceError(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	var req request.RevokeSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		handleServiceError(c, apperrors.NewAppError("BAD_REQUEST", err.Error(), http.StatusBadRequest, nil))
+		return
+	}
+
+	err := h.refreshService.RevokeAllUserTokens(c.Request.Context(), userID.(string), req.Reason)
+	if err != nil {
+		h.logger.Error("Failed to revoke session",
+			zap.String("user_id", userID.(string)),
+			zap.Error(err),
+		)
+		handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, response.MessageResponse{
+		Message: "Session revoked successfully",
 	})
 }
 

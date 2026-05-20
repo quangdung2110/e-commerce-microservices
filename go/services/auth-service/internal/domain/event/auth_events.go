@@ -322,3 +322,30 @@ func NewUserBanned(userID, email, reason string) *UserBanned {
 func (e *UserBanned) ToJSON() ([]byte, error) {
 	return json.Marshal(e)
 }
+
+// TokenTheftDetected event
+type TokenTheftDetected struct {
+	EventBase
+	Payload TokenTheftPayload `json:"payload"`
+}
+
+type TokenTheftPayload struct {
+	UserID               string `json:"user_id"`
+	TheftRefreshTokenID  string `json:"theft_refresh_token_id"`
+	ActionTaken          string `json:"action_taken"`
+}
+
+func NewTokenTheftDetected(userID, tokenID, action string) *TokenTheftDetected {
+	return &TokenTheftDetected{
+		EventBase: NewEventBase(EventTokenTheftDetected, "AUTH", userID),
+		Payload: TokenTheftPayload{
+			UserID:              userID,
+			TheftRefreshTokenID: tokenID,
+			ActionTaken:         action,
+		},
+	}
+}
+
+func (e *TokenTheftDetected) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}

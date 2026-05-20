@@ -162,6 +162,28 @@ func (s *AuditService) LogTokenRefresh(ctx context.Context, userID, ipAddress st
 	return s.auditRepo.Create(ctx, auditLog)
 }
 
+// LogTokenTheft logs a token theft detection event
+func (s *AuditService) LogTokenTheft(ctx context.Context, userID, tokenID string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorSystem,
+		"TOKEN_THEFT_DETECTED",
+		entity.SecurityLevelCritical,
+		entity.LogCategorySecurity,
+	)
+
+	payload := map[string]string{
+		"token_id":     tokenID,
+		"action_taken": "ALL_TOKENS_REVOKED",
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
 // LogBruteForceAttempt logs a potential brute-force attack detection
 func (s *AuditService) LogBruteForceAttempt(ctx context.Context, email, ipAddress string, attemptCount int) error {
 	if s.auditRepo == nil {

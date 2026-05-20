@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ecommerce/auth-service/internal/common/constants"
 	"github.com/ecommerce/auth-service/internal/domain/entity"
+	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
 var (
@@ -20,32 +22,57 @@ var (
 	ErrExpiredToken = errors.New("token has expired")
 )
 
+// JWTClaims represents the claims in an access token
 type JWTClaims struct {
-	UserID string   `json:"sub"`
-	Email  string   `json:"email"`
-	Roles  []string `json:"roles"`
-	JTI    string   `json:"jti"`
-	IAT    int64    `json:"iat"`
-	EXP    int64    `json:"exp"`
+	jwt.RegisteredClaims
+	UserID uuid.UUID `json:"user_id"`
+	Email  string    `json:"email"`
+	Roles  []string  `json:"roles"`
+	JTI    string    `json:"jti"`
 }
 
 type JWTService struct {
-	privateKey []byte
-	publicKey  []byte
-	logger     *zap.Logger
+	privateKey    *rsa.PrivateKey
+	publicKey     *rsa.PublicKey
+	jwtKeyRepo    port.JWTKeyRepository
+	graceCache    port.GracePeriodCache
+	denylist      port.TokenCache
+	eventPublisher port.EventPublisher
+	auditService  *AuditService
+	logger        *zap.Logger
 }
 
-func NewJWTService(logger *zap.Logger) *JWTService {
+func NewJWTService(jwtKeyRepo port.JWTKeyRepository, graceCache port.GracePeriodCache, denylist port.TokenCache, logger *zap.Logger) *JWTService {
 	return &JWTService{
-		logger: logger.With(zap.String("service", "JWTService")),
+		jwtKeyRepo:   jwtKeyRepo,
+		graceCache:   graceCache,
+		denylist:     denylist,
+		logger:       logger.With(zap.String("service", "JWTService")),
 	}
 }
 
-// TODO: Load keys from JWKS or key management system (Module 9)
-// For now, using a placeholder key for development
-func (s *JWTService) LoadKeys(privateKey, publicKey []byte) {
-	s.privateKey = privateKey
-	s.publicKey = publicKey
+// SetEventPublisher sets the event publisher for token-related events
+func (s *JWTService) SetEventPublisher(publisher port.EventPublisher) {
+	s.eventPublisher = publisher
+}
+
+// SetAuditService sets the audit service for logging
+func (s *JWTService) SetAuditService(auditService *AuditService) {
+	s.auditService = auditService
+}
+
+// LoadKeys loads RSA keys directly (for development/testing)
+func (s *JWTService) LoadKeys(privateKey, publicKey []byte) error {
+	var err error
+	s.privateKey, err = jwt.ParseRSAPrivateKeyFromPEM(privateKey)
+	if err != nil {
+		return err
+	}
+	s.publicKey, err = jwt.ParseRSAPublicKeyFromPEM(publicKey)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // GenerateAccessToken creates a new JWT access token for the user
@@ -53,52 +80,147 @@ func (s *JWTService) GenerateAccessToken(ctx context.Context, user *entity.User)
 	now := time.Now()
 	jti := uuid.New().String()
 
-	claims := jwt.MapClaims{
-		"sub":   user.ID,
-		"email": user.Email.String(),
-		"roles": user.Roles,
-		"jti":   jti,
-		"iat":   now.Unix(),
-		"exp":   now.Add(constants.AccessTokenTTLDefault).Unix(),
+	var privateKey *rsa.PrivateKey
+	var kid string
+
+	// Try to get key from JWKS repository first
+	if s.jwtKeyRepo != nil {
+		key, err := s.jwtKeyRepo.GetActive(ctx)
+		if err == nil && key != nil {
+			if jwtKey, ok := key.(*entity.JWTKey); ok {
+				kid = jwtKey.Kid
+				if parsedKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtKey.PrivateKey)); err == nil {
+					privateKey = parsedKey
+				}
+			}
+		}
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	if len(s.privateKey) > 0 {
-		return token.SignedString(s.privateKey)
+	// Fallback to loaded keys
+	if privateKey == nil && s.privateKey != nil {
+		privateKey = s.privateKey
+		kid = "default-key"
 	}
 
-	// Fallback for development - use a simple secret
-	secret := []byte("development-secret-key-change-in-production")
-	return token.SignedString(secret)
+	// Development fallback
+	if privateKey == nil {
+		return "", errors.New("no private key available")
+	}
+
+	claims := jwt.RegisteredClaims{
+		Issuer:    "auth-service",
+		Subject:   user.ID,
+		Audience:  jwt.ClaimStrings{"ecommerce-api"},
+		ExpiresAt: jwt.NewNumericDate(now.Add(constants.AccessTokenTTLDefault)),
+		IssuedAt:  jwt.NewNumericDate(now),
+		NotBefore: jwt.NewNumericDate(now),
+		ID:        jti,
+	}
+
+	userID, _ := uuid.Parse(user.ID)
+	customClaims := JWTClaims{
+		RegisteredClaims: claims,
+		UserID:           userID,
+		Email:           user.Email.String(),
+		Roles:           user.Roles,
+		JTI:             jti,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, customClaims)
+	if kid != "" {
+		token.Header["kid"] = kid
+	}
+
+	return token.SignedString(privateKey)
 }
 
 // ValidateAccessToken validates a JWT access token and returns the claims
 func (s *JWTService) ValidateAccessToken(ctx context.Context, tokenString string) (*JWTClaims, error) {
-	var claims jwt.MapClaims
-	var token *jwt.Token
-	var err error
+	var publicKey *rsa.PublicKey
+	var kid string
 
-	if len(s.publicKey) > 0 {
-		token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, ErrInvalidToken
-			}
-			return s.publicKey, nil
-		})
-	} else {
-		secret := []byte("development-secret-key-change-in-production")
-		token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return secret, nil
-		})
-	}
-
+	// Parse token without validation first to get the kid
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenString, &JWTClaims{})
 	if err != nil {
-		s.logger.Debug("Token validation failed", zap.Error(err))
 		return nil, ErrInvalidToken
 	}
 
-	if !token.Valid {
+	// Get kid from header
+	if k, ok := token.Header["kid"].(string); ok {
+		kid = k
+	}
+
+	// Try to get key from JWKS repository
+	if s.jwtKeyRepo != nil && kid != "" {
+		key, err := s.jwtKeyRepo.GetByKid(ctx, kid)
+		if err == nil && key != nil {
+			if jwtKey, ok := key.(*entity.JWTKey); ok {
+				if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
+					publicKey = parsedKey
+				}
+			}
+		}
+	}
+
+	// Fallback to loaded keys
+	if publicKey == nil && s.publicKey != nil {
+		publicKey = s.publicKey
+	}
+
+	// Development fallback
+	if publicKey == nil {
+		// Try to parse with HMAC for backward compatibility
+		return s.validateWithHMAC(tokenString)
+	}
+
+	// Validate with RSA
+	validToken, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return publicKey, nil
+	})
+
+	if err != nil || !validToken.Valid {
+		return nil, ErrInvalidToken
+	}
+
+	claims, ok := validToken.Claims.(*JWTClaims)
+	if !ok {
+		return nil, ErrInvalidToken
+	}
+
+	// Check denylist
+	if s.denylist != nil {
+		isDenylisted, err := s.denylist.IsDenylisted(ctx, claims.JTI)
+		if err == nil && isDenylisted {
+			return nil, ErrInvalidToken
+		}
+	}
+
+	// Check revoked before timestamp
+	if s.denylist != nil {
+		revokedBefore, err := s.denylist.GetRevokedBefore(ctx, claims.UserID.String())
+		if err == nil && !revokedBefore.IsZero() {
+			iat := claims.IssuedAt.Time
+			if iat.Before(revokedBefore) {
+				return nil, ErrInvalidToken
+			}
+		}
+	}
+
+	return claims, nil
+}
+
+// validateWithHMAC validates token with HMAC for backward compatibility
+func (s *JWTService) validateWithHMAC(tokenString string) (*JWTClaims, error) {
+	secret := []byte("development-secret-key-change-in-production")
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return secret, nil
+	})
+
+	if err != nil || !token.Valid {
 		return nil, ErrInvalidToken
 	}
 
@@ -106,35 +228,81 @@ func (s *JWTService) ValidateAccessToken(ctx context.Context, tokenString string
 	if !ok {
 		return nil, ErrInvalidToken
 	}
-	claims = mapClaims
 
-	jwtClaims := &JWTClaims{}
-
-	if sub, ok := claims["sub"].(string); ok {
-		jwtClaims.UserID = sub
+	claims := &JWTClaims{}
+	if sub, ok := mapClaims["sub"].(string); ok {
+		claims.Subject = sub
+		claims.UserID, _ = uuid.Parse(sub)
 	}
-	if email, ok := claims["email"].(string); ok {
-		jwtClaims.Email = email
+	if email, ok := mapClaims["email"].(string); ok {
+		claims.Email = email
 	}
-	if roles, ok := claims["roles"].([]interface{}); ok {
-		jwtClaims.Roles = make([]string, len(roles))
+	if roles, ok := mapClaims["roles"].([]interface{}); ok {
+		claims.Roles = make([]string, len(roles))
 		for i, r := range roles {
 			if role, ok := r.(string); ok {
-				jwtClaims.Roles[i] = role
+				claims.Roles[i] = role
 			}
 		}
 	}
-	if jti, ok := claims["jti"].(string); ok {
-		jwtClaims.JTI = jti
-	}
-	if iat, ok := claims["iat"].(float64); ok {
-		jwtClaims.IAT = int64(iat)
-	}
-	if exp, ok := claims["exp"].(float64); ok {
-		jwtClaims.EXP = int64(exp)
+	if jti, ok := mapClaims["jti"].(string); ok {
+		claims.JTI = jti
 	}
 
-	return jwtClaims, nil
+	return claims, nil
+}
+
+// ValidateAccessTokenSimple validates a JWT without checking denylist (for refresh endpoint)
+func (s *JWTService) ValidateAccessTokenSimple(ctx context.Context, tokenString string) (*JWTClaims, error) {
+	var publicKey *rsa.PublicKey
+	var kid string
+
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenString, &JWTClaims{})
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+
+	if k, ok := token.Header["kid"].(string); ok {
+		kid = k
+	}
+
+	if s.jwtKeyRepo != nil && kid != "" {
+		key, err := s.jwtKeyRepo.GetByKid(ctx, kid)
+		if err == nil && key != nil {
+			if jwtKey, ok := key.(*entity.JWTKey); ok {
+				if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
+					publicKey = parsedKey
+				}
+			}
+		}
+	}
+
+	if publicKey == nil && s.publicKey != nil {
+		publicKey = s.publicKey
+	}
+
+	if publicKey == nil {
+		return s.validateWithHMAC(tokenString)
+	}
+
+	validToken, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return publicKey, nil
+	})
+
+	if err != nil || !validToken.Valid {
+		return nil, ErrInvalidToken
+	}
+
+	claims, ok := validToken.Claims.(*JWTClaims)
+	if !ok {
+		return nil, ErrInvalidToken
+	}
+
+	return claims, nil
 }
 
 // HashToken creates SHA-256 hash of a token
@@ -145,11 +313,11 @@ func HashToken(token string) string {
 
 // GetTokenExpiry returns the expiry time from a token string
 func (s *JWTService) GetTokenExpiry(tokenString string) (time.Time, error) {
-	claims, err := s.ValidateAccessToken(context.Background(), tokenString)
+	claims, err := s.ValidateAccessTokenSimple(context.Background(), tokenString)
 	if err != nil {
 		return time.Time{}, err
 	}
-	return time.Unix(claims.EXP, 0), nil
+	return claims.ExpiresAt.Time, nil
 }
 
 // IsTokenExpired checks if a token is expired
@@ -159,4 +327,36 @@ func (s *JWTService) IsTokenExpired(tokenString string) bool {
 		return true
 	}
 	return time.Now().After(expiry)
+}
+
+// GetJTIFromToken extracts the JTI from a token without validation
+func (s *JWTService) GetJTIFromToken(tokenString string) (string, error) {
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenString, &JWTClaims{})
+	if err != nil {
+		return "", err
+	}
+
+	claims, ok := token.Claims.(*JWTClaims)
+	if !ok {
+		return "", errors.New("invalid claims")
+	}
+
+	return claims.JTI, nil
+}
+
+// GetExpiryFromToken extracts the expiry time from a token without validation
+func (s *JWTService) GetExpiryFromToken(tokenString string) (time.Time, error) {
+	parser := jwt.NewParser()
+	token, _, err := parser.ParseUnverified(tokenString, &JWTClaims{})
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	claims, ok := token.Claims.(*JWTClaims)
+	if !ok {
+		return time.Time{}, errors.New("invalid claims")
+	}
+
+	return claims.ExpiresAt.Time, nil
 }

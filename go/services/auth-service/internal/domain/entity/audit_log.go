@@ -25,8 +25,9 @@ const (
 type LogCategory string
 
 const (
-	LogCategoryUser   LogCategory = "USER"
-	LogCategorySystem LogCategory = "SYSTEM"
+	LogCategoryUser    LogCategory = "USER"
+	LogCategorySystem  LogCategory = "SYSTEM"
+	LogCategorySecurity LogCategory = "SECURITY"
 )
 
 type AuditLog struct {

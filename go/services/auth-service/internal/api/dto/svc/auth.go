@@ -34,6 +34,6 @@ type LogoutRequest struct {
 type RefreshResponse struct {
 	AccessToken     string
 	NewRefreshToken string
-	ExpiresAt       time.Time
+	ExpiresIn       int64
 	TokenType       string
 }

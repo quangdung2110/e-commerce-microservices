@@ -251,6 +251,117 @@ func (m *mockFailedLoginCache) GetRemainingTTL(ctx context.Context, identifier s
 	return args.Get(0).(time.Duration), args.Error(1)
 }
 
+type mockGracePeriodCache struct {
+	mock.Mock
+}
+
+func (m *mockGracePeriodCache) Set(ctx context.Context, oldTokenHash string, accessToken, refreshToken string) error {
+	args := m.Called(ctx, oldTokenHash, accessToken, refreshToken)
+	return args.Error(0)
+}
+
+func (m *mockGracePeriodCache) Get(ctx context.Context, oldTokenHash string) (string, string, bool, error) {
+	args := m.Called(ctx, oldTokenHash)
+	return args.String(0), args.String(1), args.Bool(2), args.Error(3)
+}
+
+func (m *mockGracePeriodCache) Delete(ctx context.Context, oldTokenHash string) error {
+	args := m.Called(ctx, oldTokenHash)
+	return args.Error(0)
+}
+
+type mockJWTKeyRepository struct {
+	mock.Mock
+}
+
+func (m *mockJWTKeyRepository) Create(ctx context.Context, key *entity.JWTKey) error {
+	args := m.Called(ctx, key)
+	return args.Error(0)
+}
+
+func (m *mockJWTKeyRepository) GetActive(ctx context.Context) (*entity.JWTKey, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*entity.JWTKey), args.Error(1)
+}
+
+func (m *mockJWTKeyRepository) GetByKid(ctx context.Context, kid string) (*entity.JWTKey, error) {
+	args := m.Called(ctx, kid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*entity.JWTKey), args.Error(1)
+}
+
+func (m *mockJWTKeyRepository) UpdateStatus(ctx context.Context, kid string, status string) error {
+	args := m.Called(ctx, kid, status)
+	return args.Error(0)
+}
+
+func (m *mockJWTKeyRepository) Delete(ctx context.Context, kid string) error {
+	args := m.Called(ctx, kid)
+	return args.Error(0)
+}
+
+type mockAuditLogRepository struct {
+	mock.Mock
+}
+
+func (m *mockAuditLogRepository) Create(ctx context.Context, log *entity.AuditLog) error {
+	args := m.Called(ctx, log)
+	return args.Error(0)
+}
+
+func (m *mockAuditLogRepository) GetByActorID(ctx context.Context, actorID string, limit, offset int) ([]*entity.AuditLog, error) {
+	args := m.Called(ctx, actorID, limit, offset)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*entity.AuditLog), args.Error(1)
+}
+
+func (m *mockAuditLogRepository) GetByEventType(ctx context.Context, eventType string, limit, offset int) ([]*entity.AuditLog, error) {
+	args := m.Called(ctx, eventType, limit, offset)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*entity.AuditLog), args.Error(1)
+}
+
+func (m *mockAuditLogRepository) GetByTimeRange(ctx context.Context, from, to time.Time, limit, offset int) ([]*entity.AuditLog, error) {
+	args := m.Called(ctx, from, to, limit, offset)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*entity.AuditLog), args.Error(1)
+}
+
+func (m *mockAuditLogRepository) GetLoginHistory(ctx context.Context, userID string, limit int) ([]*entity.AuditLog, error) {
+	args := m.Called(ctx, userID, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*entity.AuditLog), args.Error(1)
+}
+
+func (m *mockAuditLogRepository) GetByFilters(ctx context.Context, filters *port.AuditLogFilters, limit, offset int) ([]*entity.AuditLog, int, error) {
+	args := m.Called(ctx, filters, limit, offset)
+	if args.Get(0) == nil {
+		return nil, args.Int(1), args.Error(2)
+	}
+	return args.Get(0).([]*entity.AuditLog), args.Int(1), args.Error(2)
+}
+
+func (m *mockAuditLogRepository) DeleteOlderThan(ctx context.Context, olderThan time.Time) (int64, error) {
+	args := m.Called(ctx, olderThan)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 var _ port.RefreshTokenRepository = (*mockRefreshTokenRepository)(nil)
 var _ port.TokenCache = (*mockTokenCache)(nil)
 var _ port.FailedLoginCache = (*mockFailedLoginCache)(nil)
+var _ port.GracePeriodCache = (*mockGracePeriodCache)(nil)
+var _ port.JWTKeyRepository = (*mockJWTKeyRepository)(nil)
+var _ port.AuditLogRepository = (*mockAuditLogRepository)(nil)

@@ -80,6 +80,7 @@ func main() {
 	tokenCache := redis.NewCacheRepository(redisClient)
 	failedLoginCache := redis.NewFailedLoginCounter(redisClient)
 	rateLimiter := redis.NewRateLimit(redisClient)
+	gracePeriodCache := redis.NewGracePeriod(redisClient)
 
 	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
 		Memory:      65536,
@@ -89,7 +90,7 @@ func main() {
 		KeyLength:   32,
 	})
 
-	jwtService := service.NewJWTService(logger)
+	jwtService := service.NewJWTService(nil, gracePeriodCache, tokenCache, logger)
 	auditService := service.NewAuditService(auditLogRepo, logger)
 	otpService := service.NewOTPService(redis.NewOTPCache(redisClient))
 	_ = service.NewBruteForceService(
@@ -109,12 +110,26 @@ func main() {
 		jwtService,
 		logger,
 	)
+	refreshService := service.NewRefreshService(
+		userRepo,
+		refreshTokenRepo,
+		tokenCache,
+		gracePeriodCache,
+		jwtService,
+		eventPublisher,
+		auditService,
+		logger,
+	)
 	userService := service.NewUserService(
 		userRepo,
 		otpService,
 		passwordHasher,
 		eventPublisher,
 	)
+
+	// Set dependencies
+	jwtService.SetEventPublisher(eventPublisher)
+	jwtService.SetAuditService(auditService)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, tokenCache, logger)
 	rateLimiterMiddleware := middleware.NewRateLimiterMiddleware(rateLimiter, logger)
@@ -127,7 +142,7 @@ func main() {
 	)
 
 	userHandler := handler.NewUserHandler(userService)
-	authHandler := handler.NewAuthHandler(authService, jwtService, logger)
+	authHandler := handler.NewAuthHandler(authService, refreshService, jwtService, logger)
 
 	r := router.NewRouter(
 		healthHandler,

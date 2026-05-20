@@ -345,7 +345,7 @@ func (s *AuthService) RefreshTokens(ctx context.Context, refreshToken string, ol
 	return &svc.RefreshResponse{
 		AccessToken:     newAccessToken,
 		NewRefreshToken: newRefreshToken,
-		ExpiresAt:       newExpiresAt,
+		ExpiresIn:       int64(constants.AccessTokenTTLDefault.Seconds()),
 		TokenType:       "Bearer",
 	}, nil
 }

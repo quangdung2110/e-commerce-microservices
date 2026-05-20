@@ -3,7 +3,6 @@ package middleware
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -57,6 +56,8 @@ func (m *AuthMiddleware) Auth() gin.HandlerFunc {
 			return
 		}
 
+		userID := claims.UserID.String()
+
 		if m.tokenCache != nil {
 			isDenylisted, err := m.tokenCache.IsDenylisted(c.Request.Context(), claims.JTI)
 			if err != nil {
@@ -64,18 +65,18 @@ func (m *AuthMiddleware) Auth() gin.HandlerFunc {
 			} else if isDenylisted {
 				logger.Info("Token is denylisted (revoked)",
 					zap.String("jti", claims.JTI),
-					zap.String("user_id", claims.UserID),
+					zap.String("user_id", userID),
 				)
 				abortWithError(c, http.StatusUnauthorized, "TOKEN_REVOKED", "Token has been revoked")
 				return
 			}
 
-			revokedBefore, err := m.tokenCache.GetRevokedBefore(c.Request.Context(), claims.UserID)
+			revokedBefore, err := m.tokenCache.GetRevokedBefore(c.Request.Context(), userID)
 			if err == nil && !revokedBefore.IsZero() {
-				issuedAt := time.Unix(claims.IAT, 0)
+				issuedAt := claims.IssuedAt.Time
 				if issuedAt.Before(revokedBefore) || issuedAt.Equal(revokedBefore) {
 					logger.Info("Token issued before revocation timestamp",
-						zap.String("user_id", claims.UserID),
+						zap.String("user_id", userID),
 						zap.Time("issued_at", issuedAt),
 						zap.Time("revoked_before", revokedBefore),
 					)
@@ -85,13 +86,13 @@ func (m *AuthMiddleware) Auth() gin.HandlerFunc {
 			}
 		}
 
-		c.Set("user_id", claims.UserID)
+		c.Set("user_id", userID)
 		c.Set("roles", claims.Roles)
 		c.Set("jti", claims.JTI)
-		c.Set("exp", time.Unix(claims.EXP, 0))
+		c.Set("exp", claims.ExpiresAt.Time)
 
 		logger.Debug("Token validated successfully",
-			zap.String("user_id", claims.UserID),
+			zap.String("user_id", userID),
 			zap.Strings("roles", claims.Roles),
 		)
 
