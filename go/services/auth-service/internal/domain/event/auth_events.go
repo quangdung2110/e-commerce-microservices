@@ -349,3 +349,30 @@ func NewTokenTheftDetected(userID, tokenID, action string) *TokenTheftDetected {
 func (e *TokenTheftDetected) ToJSON() ([]byte, error) {
 	return json.Marshal(e)
 }
+
+// PasswordResetRequested event
+type PasswordResetRequested struct {
+	EventBase
+	Payload PasswordResetRequestedPayload `json:"payload"`
+}
+
+type PasswordResetRequestedPayload struct {
+	UserID  string `json:"user_id"`
+	Email   string `json:"email"`
+	ResetToken string `json:"reset_token"`
+}
+
+func NewPasswordResetRequested(userID, email, resetToken string) *PasswordResetRequested {
+	return &PasswordResetRequested{
+		EventBase: NewEventBase(EventPasswordResetRequested, "USER", userID),
+		Payload: PasswordResetRequestedPayload{
+			UserID:     userID,
+			Email:      email,
+			ResetToken: resetToken,
+		},
+	}
+}
+
+func (e *PasswordResetRequested) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}

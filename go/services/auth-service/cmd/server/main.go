@@ -73,15 +73,20 @@ func main() {
 		eventPublisher = kafkaProducer
 	}
 
+	// Initialize repositories
 	userRepo := postgres.NewUserRepository(db.Pool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepository(db.Pool)
 	auditLogRepo := postgres.NewAuditLogRepository(db.Pool)
 
+	// Initialize Redis caches
 	tokenCache := redis.NewCacheRepository(redisClient)
 	failedLoginCache := redis.NewFailedLoginCounter(redisClient)
 	rateLimiter := redis.NewRateLimit(redisClient)
 	gracePeriodCache := redis.NewGracePeriod(redisClient)
+	resetTokenCache := redis.NewResetTokenCache(redisClient)
+	otpCache := redis.NewOTPCache(redisClient)
 
+	// Initialize password hasher
 	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
 		Memory:      65536,
 		Iterations:  3,
@@ -90,15 +95,22 @@ func main() {
 		KeyLength:   32,
 	})
 
+	// Initialize services
 	jwtService := service.NewJWTService(nil, gracePeriodCache, tokenCache, logger)
 	auditService := service.NewAuditService(auditLogRepo, logger)
-	otpService := service.NewOTPService(redis.NewOTPCache(redisClient))
-	_ = service.NewBruteForceService(
+	otpService := service.NewOTPService(otpCache)
+
+	// Brute force service (optional)
+	bruteForceService := service.NewBruteForceService(
 		userRepo,
 		failedLoginCache,
+		auditService,
 		eventPublisher,
 		logger,
 	)
+	_ = bruteForceService
+
+	// Auth service
 	authService := service.NewAuthService(
 		userRepo,
 		refreshTokenRepo,
@@ -110,6 +122,8 @@ func main() {
 		jwtService,
 		logger,
 	)
+
+	// Refresh service
 	refreshService := service.NewRefreshService(
 		userRepo,
 		refreshTokenRepo,
@@ -120,6 +134,8 @@ func main() {
 		auditService,
 		logger,
 	)
+
+	// User service
 	userService := service.NewUserService(
 		userRepo,
 		otpService,
@@ -127,13 +143,35 @@ func main() {
 		eventPublisher,
 	)
 
+	// Session service
+	sessionService := service.NewSessionService(
+		refreshTokenRepo,
+		tokenCache,
+		auditService,
+		logger,
+	)
+
+	// Password service
+	passwordService := service.NewPasswordService(
+		userRepo,
+		refreshTokenRepo,
+		tokenCache,
+		passwordHasher,
+		resetTokenCache,
+		eventPublisher,
+		auditService,
+		logger,
+	)
+
 	// Set dependencies
 	jwtService.SetEventPublisher(eventPublisher)
 	jwtService.SetAuditService(auditService)
 
+	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, tokenCache, logger)
 	rateLimiterMiddleware := middleware.NewRateLimiterMiddleware(rateLimiter, logger)
 
+	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(
 		db.Ping,
 		func(ctx context.Context) error {
@@ -143,11 +181,18 @@ func main() {
 
 	userHandler := handler.NewUserHandler(userService)
 	authHandler := handler.NewAuthHandler(authService, refreshService, jwtService, logger)
+	sessionHandler := handler.NewSessionHandler(sessionService, logger)
+	passwordHandler := handler.NewPasswordHandler(passwordService, logger)
+	auditHandler := handler.NewAuditHandler(auditService, logger)
 
+	// Initialize router
 	r := router.NewRouter(
 		healthHandler,
 		userHandler,
 		authHandler,
+		sessionHandler,
+		passwordHandler,
+		auditHandler,
 		authMiddleware,
 		rateLimiterMiddleware,
 	)

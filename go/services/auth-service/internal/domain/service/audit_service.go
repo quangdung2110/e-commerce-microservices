@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -223,6 +224,24 @@ func (s *AuditService) GetLoginHistory(ctx context.Context, userID string, limit
 	return logs, nil
 }
 
+// GetAuditLogs retrieves audit logs with filters
+func (s *AuditService) GetAuditLogs(ctx context.Context, filters port.AuditLogFilters, limit, offset int) ([]*entity.AuditLog, int, error) {
+	if s.auditRepo == nil {
+		return []*entity.AuditLog{}, 0, nil
+	}
+
+	return s.auditRepo.GetByFilters(ctx, filters, limit, offset)
+}
+
+// GetAuditLogsByTimeRange retrieves audit logs within a time range
+func (s *AuditService) GetAuditLogsByTimeRange(ctx context.Context, from, to time.Time, limit, offset int) ([]*entity.AuditLog, error) {
+	if s.auditRepo == nil {
+		return []*entity.AuditLog{}, nil
+	}
+
+	return s.auditRepo.GetByTimeRange(ctx, from, to, limit, offset)
+}
+
 // ParseAuditLogPayload parses the JSON payload of an audit log
 func ParseAuditLogPayload(log *entity.AuditLog) (map[string]interface{}, error) {
 	if log.Payload == nil {
@@ -235,4 +254,145 @@ func ParseAuditLogPayload(log *entity.AuditLog) (map[string]interface{}, error) 
 	}
 
 	return payload, nil
+}
+
+// LogPasswordChanged logs a successful password change event
+func (s *AuditService) LogPasswordChanged(ctx context.Context, userID, ipAddress, deviceInfo string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"PASSWORD_CHANGED",
+		entity.SecurityLevelInfo,
+		entity.LogCategoryUser,
+	).WithIP(ipAddress)
+
+	payload := map[string]string{
+		"action": "change",
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogPasswordChangeFailed logs a failed password change event
+func (s *AuditService) LogPasswordChangeFailed(ctx context.Context, userID, ipAddress string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"PASSWORD_CHANGE_FAILED",
+		entity.SecurityLevelWarning,
+		entity.LogCategoryUser,
+	).WithIP(ipAddress)
+
+	payload := map[string]string{
+		"reason": "invalid_current_password",
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogPasswordResetRequested logs a password reset request event
+func (s *AuditService) LogPasswordResetRequested(ctx context.Context, userID, ipAddress string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"PASSWORD_RESET_REQUESTED",
+		entity.SecurityLevelInfo,
+		entity.LogCategoryUser,
+	).WithIP(ipAddress)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogPasswordResetSuccess logs a successful password reset event
+func (s *AuditService) LogPasswordResetSuccess(ctx context.Context, userID, ipAddress string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"PASSWORD_RESET_COMPLETED",
+		entity.SecurityLevelWarning,
+		entity.LogCategoryUser,
+	).WithIP(ipAddress)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogPasswordResetFailed logs a failed password reset event
+func (s *AuditService) LogPasswordResetFailed(ctx context.Context, userID, ipAddress, reason string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	actorType := entity.ActorGuest
+	if userID != "" {
+		actorType = entity.ActorUser
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		actorType,
+		"PASSWORD_RESET_FAILED",
+		entity.SecurityLevelWarning,
+		entity.LogCategoryUser,
+	).WithIP(ipAddress)
+
+	payload := map[string]string{
+		"reason": reason,
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogSessionRevoked logs a session revocation event
+func (s *AuditService) LogSessionRevoked(ctx context.Context, userID, sessionID, deviceInfo string) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"SESSION_REVOKED",
+		entity.SecurityLevelInfo,
+		entity.LogCategoryUser,
+	)
+
+	payload := map[string]string{
+		"session_id": sessionID,
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
+}
+
+// LogAllSessionsRevoked logs all sessions revocation event
+func (s *AuditService) LogAllSessionsRevoked(ctx context.Context, userID string, revokedCount int) error {
+	if s.auditRepo == nil {
+		return nil
+	}
+	auditLog := entity.NewAuditLog(
+		userID,
+		entity.ActorUser,
+		"ALL_SESSIONS_REVOKED",
+		entity.SecurityLevelWarning,
+		entity.LogCategoryUser,
+	)
+
+	payload := map[string]interface{}{
+		"revoked_count": revokedCount,
+	}
+	auditLog.WithPayload(payload)
+
+	return s.auditRepo.Create(ctx, auditLog)
 }

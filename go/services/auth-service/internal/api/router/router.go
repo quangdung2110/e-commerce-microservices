@@ -13,7 +13,11 @@ type Router struct {
 	userHandler   *handler.UserHandler
 	authHandler   *handler.AuthHandler
 
-	authMiddleware       *middleware.AuthMiddleware
+	sessionHandler *handler.SessionHandler
+	passwordHandler *handler.PasswordHandler
+	auditHandler  *handler.AuditHandler
+
+	authMiddleware        *middleware.AuthMiddleware
 	rateLimiterMiddleware *middleware.RateLimiterMiddleware
 }
 
@@ -21,6 +25,9 @@ func NewRouter(
 	healthHandler *handler.HealthHandler,
 	userHandler *handler.UserHandler,
 	authHandler *handler.AuthHandler,
+	sessionHandler *handler.SessionHandler,
+	passwordHandler *handler.PasswordHandler,
+	auditHandler *handler.AuditHandler,
 	authMiddleware *middleware.AuthMiddleware,
 	rateLimiterMiddleware *middleware.RateLimiterMiddleware,
 ) *Router {
@@ -35,6 +42,9 @@ func NewRouter(
 		healthHandler:        healthHandler,
 		userHandler:          userHandler,
 		authHandler:          authHandler,
+		sessionHandler:       sessionHandler,
+		passwordHandler:     passwordHandler,
+		auditHandler:         auditHandler,
 		authMiddleware:       authMiddleware,
 		rateLimiterMiddleware: rateLimiterMiddleware,
 	}
@@ -58,8 +68,8 @@ func (r *Router) SetupRoutes() {
 				r.authHandler.Login,
 			)
 
-			public.POST("/forgot-password", r.notImplementedHandler("POST /forgot-password"))
-			public.POST("/reset-password", r.notImplementedHandler("POST /reset-password"))
+			public.POST("/forgot-password", r.passwordHandler.ForgotPassword)
+			public.POST("/reset-password", r.passwordHandler.ResetPassword)
 		}
 
 		v1.GET("/.well-known/jwks.json", r.notImplementedHandler("GET /.well-known/jwks.json"))
@@ -69,18 +79,20 @@ func (r *Router) SetupRoutes() {
 		{
 			protected.POST("/logout", r.authHandler.Logout)
 			protected.POST("/refresh", r.authHandler.Refresh)
-			protected.POST("/change-password", r.notImplementedHandler("POST /change-password"))
+			protected.POST("/change-password", r.passwordHandler.ChangePassword)
 
-			protected.GET("/sessions", r.notImplementedHandler("GET /sessions"))
-			protected.DELETE("/sessions/:session_id", r.notImplementedHandler("DELETE /sessions/:session_id"))
+			protected.GET("/sessions", r.sessionHandler.ListSessions)
+			protected.GET("/sessions/:session_id", r.sessionHandler.GetSession)
+			protected.DELETE("/sessions/:session_id", r.sessionHandler.RevokeSession)
+			protected.DELETE("/sessions", r.sessionHandler.RevokeAllSessions)
 
-			protected.GET("/audit/my-login-history", r.notImplementedHandler("GET /audit/my-login-history"))
+			protected.GET("/audit/my-login-history", r.auditHandler.GetMyLoginHistory)
 		}
 
 		admin := v1.Group("/admin")
 		admin.Use(r.authMiddleware.Auth(), r.authMiddleware.RequireRole("ADMIN"))
 		{
-			admin.GET("/audit/history-logs", r.notImplementedHandler("GET /admin/audit/history-logs"))
+			admin.GET("/audit/history-logs", r.auditHandler.GetAuditLogs)
 			admin.POST("/users/:user_id/ban", r.notImplementedHandler("POST /admin/users/:user_id/ban"))
 			admin.POST("/users/:user_id/unban", r.notImplementedHandler("POST /admin/users/:user_id/unban"))
 			admin.POST("/users/:user_id/unlock", r.notImplementedHandler("POST /admin/users/:user_id/unlock"))

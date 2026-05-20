@@ -14,6 +14,7 @@ import (
 type BruteForceService struct {
 	userRepo       port.UserRepository
 	failedLogin    port.FailedLoginCache
+	auditService   *AuditService
 	eventPublisher port.EventPublisher
 	logger         *zap.Logger
 }
@@ -21,12 +22,14 @@ type BruteForceService struct {
 func NewBruteForceService(
 	userRepo port.UserRepository,
 	failedLogin port.FailedLoginCache,
+	auditService *AuditService,
 	eventPublisher port.EventPublisher,
 	logger *zap.Logger,
 ) *BruteForceService {
 	return &BruteForceService{
 		userRepo:       userRepo,
 		failedLogin:    failedLogin,
+		auditService:   auditService,
 		eventPublisher: eventPublisher,
 		logger:         logger.With(zap.String("service", "BruteForceService")),
 	}
@@ -56,6 +59,10 @@ func (s *BruteForceService) HandleFailedLogin(
 	ipCount, err := s.failedLogin.Increment(ctx, ipAddress)
 	if err != nil {
 		logger.Error("Failed to increment IP counter", zap.Error(err))
+	}
+
+	if s.auditService != nil {
+		_ = s.auditService.LogLoginFailed(ctx, email, ipAddress, "", deviceInfo, "INVALID_CREDENTIALS")
 	}
 
 	if s.eventPublisher != nil && userID != "" {
@@ -122,6 +129,10 @@ func (s *BruteForceService) lockAccount(ctx context.Context, email string, logge
 	if err := s.userRepo.LockAccount(ctx, user.ID); err != nil {
 		logger.Error("Failed to lock account in database", zap.Error(err))
 		return err
+	}
+
+	if s.auditService != nil {
+		_ = s.auditService.LogAccountLocked(ctx, user.ID, user.Email.String(), "FAILED_LOGIN_ATTEMPTS")
 	}
 
 	if s.eventPublisher != nil {
