@@ -2,17 +2,16 @@ package vo
 
 import (
 	"errors"
-	"regexp"
+
+	"github.com/ecommerce/auth-service/internal/common/validator"
 )
 
 type Email struct {
 	value string
 }
 
-var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-
 func NewEmail(value string) (*Email, error) {
-	if !emailRegex.MatchString(value) {
+	if !validator.IsValidEmail(value) {
 		return nil, errors.New("invalid email format")
 	}
 	return &Email{value: value}, nil

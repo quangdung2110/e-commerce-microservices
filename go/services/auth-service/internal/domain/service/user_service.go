@@ -9,6 +9,7 @@ import (
 
 	"github.com/ecommerce/auth-service/internal/common/constants"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/common/validator"
 	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/event"
 	"github.com/ecommerce/auth-service/internal/domain/port"
@@ -49,8 +50,8 @@ func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*enti
 		return nil, "", apperrors.NewAppError("INVALID_EMAIL", "Invalid email format", 400, err)
 	}
 
-	if err := validatePassword(req.Password); err != nil {
-		return nil, "", apperrors.ErrWeakPassword()
+	if valid, msg := validator.ValidatePassword(req.Password); !valid {
+		return nil, "", apperrors.NewAppError("WEAK_PASSWORD", msg, 400, nil)
 	}
 
 	existing, err := s.userRepo.GetByEmail(ctx, email.String())
@@ -169,35 +170,6 @@ func (s *UserService) GetUserByEmail(ctx context.Context, emailStr string) (*ent
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 	return user, nil
-}
-
-func validatePassword(password string) error {
-	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
-	}
-	if len(password) > 128 {
-		return fmt.Errorf("password must not exceed 128 characters")
-	}
-
-	hasUpper := false
-	hasLower := false
-	hasDigit := false
-	for _, c := range password {
-		switch {
-		case c >= 'A' && c <= 'Z':
-			hasUpper = true
-		case c >= 'a' && c <= 'z':
-			hasLower = true
-		case c >= '0' && c <= '9':
-			hasDigit = true
-		}
-	}
-
-	if !hasUpper || !hasLower || !hasDigit {
-		return fmt.Errorf("password must contain uppercase, lowercase, and digit")
-	}
-
-	return nil
 }
 
 // ConstantTimeCompare performs constant-time string comparison (exported for testing)
