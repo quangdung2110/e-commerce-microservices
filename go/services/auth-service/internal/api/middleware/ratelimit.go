@@ -1,85 +1,108 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
+	"github.com/ecommerce/auth-service/internal/common/constants"
+	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
-type rateLimiter struct {
-	visitors map[string]*visitor
-	mu       sync.RWMutex
+type RateLimiterMiddleware struct {
+	limiter       port.RateLimiter
+	defaultLimit  int
+	defaultWindow time.Duration
+	logger        *zap.Logger
 }
 
-type visitor struct {
-	count    int
-	lastSeen time.Time
-}
-
-func newRateLimiter() *rateLimiter {
-	rl := &rateLimiter{
-		visitors: make(map[string]*visitor),
-	}
-
-	go rl.cleanupLoop()
-
-	return rl
-}
-
-func (rl *rateLimiter) cleanupLoop() {
-	ticker := time.NewTicker(time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		for ip, v := range rl.visitors {
-			if time.Since(v.lastSeen) > time.Minute*5 {
-				delete(rl.visitors, ip)
-			}
-		}
-		rl.mu.Unlock()
+func NewRateLimiterMiddleware(limiter port.RateLimiter, logger *zap.Logger) *RateLimiterMiddleware {
+	return &RateLimiterMiddleware{
+		limiter:       limiter,
+		defaultLimit:  constants.DefaultRateLimitPerMinute,
+		defaultWindow: 1 * time.Minute,
+		logger:        logger.With(zap.String("middleware", "RateLimiter")),
 	}
 }
 
-func (rl *rateLimiter) isAllowed(ip string, maxRequests int, window time.Duration) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	v, exists := rl.visitors[ip]
-	if !exists {
-		rl.visitors[ip] = &visitor{count: 1, lastSeen: time.Now()}
-		return true
-	}
-
-	if time.Since(v.lastSeen) > window {
-		v.count = 1
-		v.lastSeen = time.Now()
-		return true
-	}
-
-	if v.count >= maxRequests {
-		return false
-	}
-
-	v.count++
-	v.lastSeen = time.Now()
-	return true
-}
-
-var limiter = newRateLimiter()
-
-func RateLimit(maxRequests int, window time.Duration) gin.HandlerFunc {
+// RateLimit returns a rate limiting middleware with custom limits
+func (m *RateLimiterMiddleware) RateLimit(action string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
+		logger := m.logger.With(
+			zap.String("action", action),
+			zap.Int("limit", limit),
+			zap.Duration("window", window),
+		)
 
-		if !limiter.isAllowed(ip, maxRequests, window) {
+		identifier := c.ClientIP()
+		if userID, exists := c.Get("user_id"); exists {
+			identifier = userID.(string)
+		}
+
+		allowed, err := m.limiter.Allow(c.Request.Context(), action, identifier, limit, window)
+		if err != nil {
+			logger.Error("Rate limiter error",
+				zap.String("identifier", identifier),
+				zap.Error(err),
+			)
+			c.Next()
+			return
+		}
+
+		remaining, _ := m.limiter.GetCount(c.Request.Context(), action, identifier)
+		retryAfter := int(window.Seconds())
+
+		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
+		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", max(0, limit-remaining)))
+		c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
+
+		if !allowed {
+			logger.Warn("Rate limit exceeded",
+				zap.String("identifier", identifier),
+				zap.Int("retry_after", retryAfter),
+			)
+
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"code":    "RATE_LIMIT_EXCEEDED",
-				"message": "Too many requests",
+				"error": gin.H{
+					"code":              "RATE_LIMIT_EXCEEDED",
+					"message":           "Too many requests. Please try again later.",
+					"retry_after_seconds": retryAfter,
+				},
 			})
 			return
 		}
 
 		c.Next()
 	}
+}
+
+// RateLimitByIP returns a rate limiting middleware for IP-based limiting
+func (m *RateLimiterMiddleware) RateLimitByIP(limit int, window time.Duration) gin.HandlerFunc {
+	return m.RateLimit("ip", limit, window)
+}
+
+// RateLimitByUser returns a rate limiting middleware for user-based limiting
+func (m *RateLimiterMiddleware) RateLimitByUser(limit int, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, exists := c.Get("user_id")
+		if !exists {
+			c.Next()
+			return
+		}
+
+		m.RateLimit("user", limit, window)(c)
+	}
+}
+
+// LoginRateLimit applies strict rate limiting for login endpoint
+func (m *RateLimiterMiddleware) LoginRateLimit() gin.HandlerFunc {
+	return m.RateLimit("login", constants.LoginRateLimitPerMinute, 1*time.Minute)
+}
+
+// APIRateLimit applies general rate limiting for API endpoints
+func (m *RateLimiterMiddleware) APIRateLimit() gin.HandlerFunc {
+	return m.RateLimit("api", constants.DefaultRateLimitPerMinute, 1*time.Minute)
 }

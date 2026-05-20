@@ -15,6 +15,8 @@ type User struct {
 	LockedAt            *time.Time
 	FailedLoginAttempts int
 	EmailVerifiedAt     *time.Time
+	LastLoginAt         *time.Time
+	LastLoginIP         string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	Revision            int64

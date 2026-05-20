@@ -8,16 +8,20 @@ import (
 )
 
 const (
-	EventUserOTPRequested       = "USER_OTP_REQUESTED"
-	EventUserVerifiedSuccess   = "USER_VERIFIED_SUCCESS"
-	EventUserPasswordChanged   = "USER_PASSWORD_CHANGED"
-	EventUserAccountLocked     = "USER_ACCOUNT_LOCKED"
-	EventUserUnlocked          = "USER_UNLOCKED"
-	EventUserBanned           = "USER_BANNED"
-	EventUserDeleted          = "USER_DELETED"
-	EventUserEmailChanged      = "USER_EMAIL_CHANGED"
-	EventPasswordResetRequested = "PASSWORD_RESET_REQUESTED"
-	EventTokenTheftDetected    = "TOKEN_THEFT_DETECTED"
+	EventUserOTPRequested         = "USER_OTP_REQUESTED"
+	EventUserVerifiedSuccess     = "USER_VERIFIED_SUCCESS"
+	EventUserPasswordChanged     = "USER_PASSWORD_CHANGED"
+	EventUserAccountLocked       = "USER_ACCOUNT_LOCKED"
+	EventUserUnlocked            = "USER_UNLOCKED"
+	EventUserBanned              = "USER_BANNED"
+	EventUserDeleted             = "USER_DELETED"
+	EventUserEmailChanged        = "USER_EMAIL_CHANGED"
+	EventPasswordResetRequested  = "PASSWORD_RESET_REQUESTED"
+	EventTokenTheftDetected      = "TOKEN_THEFT_DETECTED"
+	EventLoginSuccess            = "LOGIN_SUCCESS"
+	EventLoginFailed             = "LOGIN_FAILED"
+	EventLogout                  = "LOGOUT"
+	EventForceLogout             = "FORCE_LOGOUT"
 )
 
 const (
@@ -149,5 +153,172 @@ func NewUserAccountLocked(userID, email, reason string) *UserAccountLocked {
 }
 
 func (e *UserAccountLocked) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type LoginSuccess struct {
+	EventBase
+	Payload LoginSuccessPayload `json:"payload"`
+}
+
+type LoginSuccessPayload struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	IPAddress string `json:"ip_address"`
+	DeviceID  string `json:"device_id"`
+	UserAgent string `json:"user_agent"`
+}
+
+func NewLoginSuccess(userID, email, ipAddress, deviceID, deviceInfo string) *LoginSuccess {
+	return &LoginSuccess{
+		EventBase: NewEventBase(EventLoginSuccess, "AUTH", userID),
+		Payload: LoginSuccessPayload{
+			UserID:    userID,
+			Email:     email,
+			IPAddress: ipAddress,
+			DeviceID:  deviceID,
+			UserAgent: deviceInfo,
+		},
+	}
+}
+
+func (e *LoginSuccess) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type LoginFailed struct {
+	EventBase
+	Payload LoginFailedPayload `json:"payload"`
+}
+
+type LoginFailedPayload struct {
+	UserID    string `json:"user_id,omitempty"`
+	Email     string `json:"email"`
+	IPAddress string `json:"ip_address"`
+	DeviceID  string `json:"device_id"`
+	UserAgent string `json:"user_agent"`
+	Reason    string `json:"reason"`
+}
+
+func NewLoginFailed(userID, email, ipAddress, deviceID, deviceInfo string) *LoginFailed {
+	return &LoginFailed{
+		EventBase: NewEventBase(EventLoginFailed, "AUTH", userID),
+		Payload: LoginFailedPayload{
+			UserID:    userID,
+			Email:     email,
+			IPAddress: ipAddress,
+			DeviceID:  deviceID,
+			UserAgent: deviceInfo,
+			Reason:    "INVALID_CREDENTIALS",
+		},
+	}
+}
+
+func (e *LoginFailed) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type LogoutEvent struct {
+	EventBase
+	Payload LogoutPayload `json:"payload"`
+}
+
+type LogoutPayload struct {
+	UserID    string `json:"user_id"`
+	IPAddress string `json:"ip_address"`
+	DeviceID  string `json:"device_id"`
+}
+
+func NewLogoutEvent(userID string) *LogoutEvent {
+	return &LogoutEvent{
+		EventBase: NewEventBase(EventLogout, "AUTH", userID),
+		Payload: LogoutPayload{
+			UserID: userID,
+		},
+	}
+}
+
+func (e *LogoutEvent) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type ForceLogoutEvent struct {
+	EventBase
+	Payload ForceLogoutPayload `json:"payload"`
+}
+
+type ForceLogoutPayload struct {
+	UserID    string `json:"user_id"`
+	Reason    string `json:"reason"`
+	Initiator string `json:"initiator"`
+}
+
+func NewForceLogoutEvent(userID, reason string) *ForceLogoutEvent {
+	return &ForceLogoutEvent{
+		EventBase: NewEventBase(EventForceLogout, "AUTH", userID),
+		Payload: ForceLogoutPayload{
+			UserID: userID,
+			Reason: reason,
+		},
+	}
+}
+
+func (e *ForceLogoutEvent) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type UserUnlocked struct {
+	EventBase
+	Payload UserUnlockedPayload `json:"payload"`
+}
+
+type UserUnlockedPayload struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	UnlockedAt string `json:"unlocked_at"`
+	Reason    string `json:"reason"`
+}
+
+func NewUserUnlocked(userID, email, reason string) *UserUnlocked {
+	return &UserUnlocked{
+		EventBase: NewEventBase(EventUserUnlocked, "USER", userID),
+		Payload: UserUnlockedPayload{
+			UserID:     userID,
+			Email:      email,
+			UnlockedAt: time.Now().UTC().Format(time.RFC3339),
+			Reason:     reason,
+		},
+	}
+}
+
+func (e *UserUnlocked) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+type UserBanned struct {
+	EventBase
+	Payload UserBannedPayload `json:"payload"`
+}
+
+type UserBannedPayload struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	Reason    string `json:"reason"`
+	BannedAt  string `json:"banned_at"`
+}
+
+func NewUserBanned(userID, email, reason string) *UserBanned {
+	return &UserBanned{
+		EventBase: NewEventBase(EventUserBanned, "USER", userID),
+		Payload: UserBannedPayload{
+			UserID:   userID,
+			Email:    email,
+			Reason:   reason,
+			BannedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+}
+
+func (e *UserBanned) ToJSON() ([]byte, error) {
 	return json.Marshal(e)
 }

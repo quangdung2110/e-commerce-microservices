@@ -51,4 +51,5 @@ type FailedLoginCache interface {
 	Reset(ctx context.Context, identifier string) error
 	IsLocked(ctx context.Context, identifier string) (bool, error)
 	IncrementAndCheck(ctx context.Context, identifier string) (int, bool, error)
+	GetRemainingTTL(ctx context.Context, identifier string) (time.Duration, error)
 }

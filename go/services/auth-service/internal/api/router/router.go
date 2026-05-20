@@ -11,11 +11,18 @@ type Router struct {
 	engine        *gin.Engine
 	healthHandler *handler.HealthHandler
 	userHandler   *handler.UserHandler
+	authHandler   *handler.AuthHandler
+
+	authMiddleware       *middleware.AuthMiddleware
+	rateLimiterMiddleware *middleware.RateLimiterMiddleware
 }
 
 func NewRouter(
 	healthHandler *handler.HealthHandler,
 	userHandler *handler.UserHandler,
+	authHandler *handler.AuthHandler,
+	authMiddleware *middleware.AuthMiddleware,
+	rateLimiterMiddleware *middleware.RateLimiterMiddleware,
 ) *Router {
 	engine := gin.New()
 
@@ -24,9 +31,12 @@ func NewRouter(
 	engine.Use(middleware.Tracing())
 
 	return &Router{
-		engine:        engine,
-		healthHandler: healthHandler,
-		userHandler:   userHandler,
+		engine:                engine,
+		healthHandler:        healthHandler,
+		userHandler:          userHandler,
+		authHandler:          authHandler,
+		authMiddleware:       authMiddleware,
+		rateLimiterMiddleware: rateLimiterMiddleware,
 	}
 }
 
@@ -42,7 +52,12 @@ func (r *Router) SetupRoutes() {
 			public.POST("/register", r.userHandler.Register)
 			public.POST("/verify-email", r.userHandler.VerifyEmail)
 			public.POST("/resend-otp", r.userHandler.ResendOTP)
-			public.POST("/login", r.notImplementedHandler("POST /login"))
+
+			public.POST("/login",
+				r.rateLimiterMiddleware.LoginRateLimit(),
+				r.authHandler.Login,
+			)
+
 			public.POST("/forgot-password", r.notImplementedHandler("POST /forgot-password"))
 			public.POST("/reset-password", r.notImplementedHandler("POST /reset-password"))
 		}
@@ -50,10 +65,10 @@ func (r *Router) SetupRoutes() {
 		v1.GET("/.well-known/jwks.json", r.notImplementedHandler("GET /.well-known/jwks.json"))
 
 		protected := v1.Group("")
-		protected.Use(middleware.Auth())
+		protected.Use(r.authMiddleware.Auth())
 		{
-			protected.POST("/logout", r.notImplementedHandler("POST /logout"))
-			protected.POST("/refresh", r.notImplementedHandler("POST /refresh"))
+			protected.POST("/logout", r.authHandler.Logout)
+			protected.POST("/refresh", r.authHandler.Refresh)
 			protected.POST("/change-password", r.notImplementedHandler("POST /change-password"))
 
 			protected.GET("/sessions", r.notImplementedHandler("GET /sessions"))
@@ -63,7 +78,7 @@ func (r *Router) SetupRoutes() {
 		}
 
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Auth(), middleware.RequireRole("ADMIN"))
+		admin.Use(r.authMiddleware.Auth(), r.authMiddleware.RequireRole("ADMIN"))
 		{
 			admin.GET("/audit/history-logs", r.notImplementedHandler("GET /admin/audit/history-logs"))
 			admin.POST("/users/:user_id/ban", r.notImplementedHandler("POST /admin/users/:user_id/ban"))

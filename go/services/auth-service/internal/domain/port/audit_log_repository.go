@@ -3,6 +3,8 @@ package port
 import (
 	"context"
 	"time"
+
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 )
 
 type AuditLogFilters struct {
@@ -16,11 +18,11 @@ type AuditLogFilters struct {
 }
 
 type AuditLogRepository interface {
-	Create(ctx context.Context, log interface{}) error
-	GetByActorID(ctx context.Context, actorID string, limit, offset int) ([]interface{}, error)
-	GetByEventType(ctx context.Context, eventType string, limit, offset int) ([]interface{}, error)
-	GetByTimeRange(ctx context.Context, from, to time.Time, limit, offset int) ([]interface{}, error)
-	GetLoginHistory(ctx context.Context, userID string, limit int) ([]interface{}, error)
-	GetByFilters(ctx context.Context, filters AuditLogFilters, limit, offset int) ([]interface{}, int, error)
+	Create(ctx context.Context, log *entity.AuditLog) error
+	GetByActorID(ctx context.Context, actorID string, limit, offset int) ([]*entity.AuditLog, error)
+	GetByEventType(ctx context.Context, eventType string, limit, offset int) ([]*entity.AuditLog, error)
+	GetByTimeRange(ctx context.Context, from, to time.Time, limit, offset int) ([]*entity.AuditLog, error)
+	GetLoginHistory(ctx context.Context, userID string, limit int) ([]*entity.AuditLog, error)
+	GetByFilters(ctx context.Context, filters AuditLogFilters, limit, offset int) ([]*entity.AuditLog, int, error)
 	DeleteOlderThan(ctx context.Context, olderThan time.Time) (int64, error)
 }

@@ -9,10 +9,11 @@ const (
 )
 
 const (
-	MaxFailedLoginAttempts = 5
-	LockoutDuration        = 30 * time.Minute
-	FailedLoginWindow      = 60 * time.Minute
-	MaxConcurrentSessions  = 10
+	MaxFailedLoginAttempts       = 5
+	LockoutDuration             = 30 * time.Minute
+	FailedLoginWindow           = 60 * time.Minute
+	MaxConcurrentSessions       = 10
+	DistributedAttackThreshold   = 20
 )
 
 const (
@@ -23,9 +24,8 @@ const (
 
 const (
 	RefreshTokenRetention = 7 * 24 * time.Hour
-	AuditLogRetention     = 180 * 24 * time.Hour
-	OutboxRetention       = 14 * 24 * time.Hour
-	AutoUnlockInterval    = 5 * time.Minute
+	AuditLogRetention    = 180 * 24 * time.Hour
+	AutoUnlockInterval  = 5 * time.Minute
 )
 
 const (
@@ -37,6 +37,12 @@ const (
 const (
 	ResetTokenLength = 32
 	ResetTokenTTL    = 15 * time.Minute
+)
+
+const (
+	DefaultRateLimitPerMinute = 60
+	LoginRateLimitPerMinute   = 5
+	StrictRateLimitPerMinute  = 10
 )
 
 const (

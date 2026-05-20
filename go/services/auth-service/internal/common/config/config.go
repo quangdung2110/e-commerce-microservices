@@ -104,7 +104,6 @@ type KeysConfig struct {
 type CleanupConfig struct {
 	RefreshTokenRetention time.Duration
 	AuditLogRetention    time.Duration
-	OutboxRetention      time.Duration
 	AutoUnlockInterval   time.Duration
 }
 
@@ -178,7 +177,6 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("cleanup.refresh_token_retention", "168h")
 	v.SetDefault("cleanup.audit_log_retention", "4320h")
-	v.SetDefault("cleanup.outbox_retention", "336h")
 	v.SetDefault("cleanup.auto_unlock_interval", "30m")
 
 	v.SetDefault("logging.level", "info")

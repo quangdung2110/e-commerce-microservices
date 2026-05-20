@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/ecommerce/auth-service/internal/api/handler"
+	"github.com/ecommerce/auth-service/internal/api/middleware"
 	"github.com/ecommerce/auth-service/internal/api/router"
 	"github.com/ecommerce/auth-service/internal/common/config"
 	infracommon "github.com/ecommerce/auth-service/internal/infrastructure/common"
@@ -73,8 +74,12 @@ func main() {
 	}
 
 	userRepo := postgres.NewUserRepository(db.Pool)
+	refreshTokenRepo := postgres.NewRefreshTokenRepository(db.Pool)
+	auditLogRepo := postgres.NewAuditLogRepository(db.Pool)
 
-	otpCache := redis.NewOTPCache(redisClient)
+	tokenCache := redis.NewCacheRepository(redisClient)
+	failedLoginCache := redis.NewFailedLoginCounter(redisClient)
+	rateLimiter := redis.NewRateLimit(redisClient)
 
 	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
 		Memory:      65536,
@@ -84,14 +89,35 @@ func main() {
 		KeyLength:   32,
 	})
 
-	otpService := service.NewOTPService(otpCache)
-
+	jwtService := service.NewJWTService(logger)
+	auditService := service.NewAuditService(auditLogRepo, logger)
+	otpService := service.NewOTPService(redis.NewOTPCache(redisClient))
+	_ = service.NewBruteForceService(
+		userRepo,
+		failedLoginCache,
+		eventPublisher,
+		logger,
+	)
+	authService := service.NewAuthService(
+		userRepo,
+		refreshTokenRepo,
+		tokenCache,
+		passwordHasher,
+		failedLoginCache,
+		eventPublisher,
+		auditService,
+		jwtService,
+		logger,
+	)
 	userService := service.NewUserService(
 		userRepo,
 		otpService,
 		passwordHasher,
 		eventPublisher,
 	)
+
+	authMiddleware := middleware.NewAuthMiddleware(jwtService, tokenCache, logger)
+	rateLimiterMiddleware := middleware.NewRateLimiterMiddleware(rateLimiter, logger)
 
 	healthHandler := handler.NewHealthHandler(
 		db.Ping,
@@ -101,8 +127,15 @@ func main() {
 	)
 
 	userHandler := handler.NewUserHandler(userService)
+	authHandler := handler.NewAuthHandler(authService, jwtService, logger)
 
-	r := router.NewRouter(healthHandler, userHandler)
+	r := router.NewRouter(
+		healthHandler,
+		userHandler,
+		authHandler,
+		authMiddleware,
+		rateLimiterMiddleware,
+	)
 	r.SetupRoutes()
 
 	server := &graceful.Server{

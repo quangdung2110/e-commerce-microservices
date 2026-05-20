@@ -106,13 +106,12 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 func CleanupTables(ctx context.Context, pool *pgxpool.Pool, tables ...string) error {
 	if len(tables) == 0 {
-		tables = []string{
-			"audit_logs",
-			"outbox_events",
-			"refresh_tokens",
-			"jwt_keys",
-			"users",
-		}
+	tables = []string{
+		"audit_logs",
+		"refresh_tokens",
+		"jwt_keys",
+		"users",
+	}
 	}
 
 	for _, table := range tables {

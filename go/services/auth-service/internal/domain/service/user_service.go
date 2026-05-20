@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ecommerce/auth-service/internal/api/dto/svc"
 	"github.com/ecommerce/auth-service/internal/common/constants"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/common/validator"
@@ -37,14 +38,7 @@ func NewUserService(
 	}
 }
 
-type RegisterRequest struct {
-	Email      string
-	Password   string
-	IPAddress  string
-	DeviceInfo string
-}
-
-func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*entity.User, string, error) {
+func (s *UserService) Register(ctx context.Context, req *svc.RegisterRequest) (*entity.User, string, error) {
 	email, err := vo.NewEmail(req.Email)
 	if err != nil {
 		return nil, "", apperrors.NewAppError("INVALID_EMAIL", "Invalid email format", 400, err)

@@ -8,7 +8,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	svc "github.com/ecommerce/auth-service/internal/domain/service"
+	svc "github.com/ecommerce/auth-service/internal/api/dto/svc"
+	svcpkg "github.com/ecommerce/auth-service/internal/domain/service"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/vo"
@@ -21,8 +22,8 @@ func TestUserService_Register_Success(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -61,8 +62,8 @@ func TestUserService_Register_DuplicateEmail(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -91,8 +92,8 @@ func TestUserService_Register_WeakPassword(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -130,8 +131,8 @@ func TestUserService_Register_InvalidEmail(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -156,8 +157,8 @@ func TestUserService_VerifyEmail(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -191,8 +192,8 @@ func TestUserService_VerifyEmail_AlreadyVerified(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -222,8 +223,8 @@ func TestUserService_ResendOTP(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,
@@ -254,8 +255,8 @@ func TestUserService_ResendOTP_AlreadyVerified(t *testing.T) {
 	mockPasswordHasher := new(mockPasswordHasher)
 	mockEventPublisher := new(mockEventPublisher)
 
-	otpService := svc.NewOTPService(mockOTPCache)
-	userService := svc.NewUserService(
+	otpService := svcpkg.NewOTPService(mockOTPCache)
+	userService := svcpkg.NewUserService(
 		mockUserRepo,
 		otpService,
 		mockPasswordHasher,

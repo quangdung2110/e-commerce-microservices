@@ -7,6 +7,7 @@ import (
 
 	"github.com/ecommerce/auth-service/internal/api/dto/request"
 	"github.com/ecommerce/auth-service/internal/api/dto/response"
+	"github.com/ecommerce/auth-service/internal/api/dto/svc"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/service"
 )
@@ -31,7 +32,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 	ipAddress := c.ClientIP()
 	deviceInfo := c.GetHeader("User-Agent")
 
-	user, _, err := h.userService.Register(c.Request.Context(), &service.RegisterRequest{
+	user, _, err := h.userService.Register(c.Request.Context(), &svc.RegisterRequest{
 		Email:      req.Email,
 		Password:   req.Password,
 		IPAddress:  ipAddress,

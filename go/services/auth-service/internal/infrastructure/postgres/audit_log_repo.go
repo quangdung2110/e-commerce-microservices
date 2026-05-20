@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ecommerce/auth-service/internal/domain/entity"
+	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
 type AuditLogRepository struct {
@@ -124,15 +125,7 @@ func (r *AuditLogRepository) GetLoginHistory(ctx context.Context, userID string,
 	return r.scanAuditLogs(rows)
 }
 
-func (r *AuditLogRepository) GetByFilters(ctx context.Context, filters struct {
-	ActorID       string
-	ActorType     string
-	EventType     string
-	SecurityLevel string
-	LogCategory   string
-	From          time.Time
-	To            time.Time
-}, limit, offset int) ([]*entity.AuditLog, int, error) {
+func (r *AuditLogRepository) GetByFilters(ctx context.Context, filters port.AuditLogFilters, limit, offset int) ([]*entity.AuditLog, int, error) {
 	var conditions []string
 	var args []interface{}
 	argIndex := 1
