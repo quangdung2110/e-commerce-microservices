@@ -42,3 +42,7 @@ func OTPEmail(email string) string {
 func ResetToken(tokenHash string) string {
 	return fmt.Sprintf(ResetTokenPattern, tokenHash)
 }
+
+func JWKSUpdateChannel() string {
+	return JWKSChannel
+}

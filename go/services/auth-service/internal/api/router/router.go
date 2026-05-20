@@ -13,9 +13,10 @@ type Router struct {
 	userHandler   *handler.UserHandler
 	authHandler   *handler.AuthHandler
 
-	sessionHandler *handler.SessionHandler
+	sessionHandler  *handler.SessionHandler
 	passwordHandler *handler.PasswordHandler
-	auditHandler  *handler.AuditHandler
+	auditHandler    *handler.AuditHandler
+	jwksHandler     *handler.JWKSHandler
 
 	authMiddleware        *middleware.AuthMiddleware
 	rateLimiterMiddleware *middleware.RateLimiterMiddleware
@@ -28,6 +29,7 @@ func NewRouter(
 	sessionHandler *handler.SessionHandler,
 	passwordHandler *handler.PasswordHandler,
 	auditHandler *handler.AuditHandler,
+	jwksHandler *handler.JWKSHandler,
 	authMiddleware *middleware.AuthMiddleware,
 	rateLimiterMiddleware *middleware.RateLimiterMiddleware,
 ) *Router {
@@ -44,7 +46,8 @@ func NewRouter(
 		authHandler:          authHandler,
 		sessionHandler:       sessionHandler,
 		passwordHandler:     passwordHandler,
-		auditHandler:         auditHandler,
+		auditHandler:        auditHandler,
+		jwksHandler:         jwksHandler,
 		authMiddleware:       authMiddleware,
 		rateLimiterMiddleware: rateLimiterMiddleware,
 	}
@@ -72,7 +75,8 @@ func (r *Router) SetupRoutes() {
 			public.POST("/reset-password", r.passwordHandler.ResetPassword)
 		}
 
-		v1.GET("/.well-known/jwks.json", r.notImplementedHandler("GET /.well-known/jwks.json"))
+		// JWKS endpoint - public, no auth required
+		v1.GET("/.well-known/jwks.json", r.jwksHandler.GetJWKS)
 
 		protected := v1.Group("")
 		protected.Use(r.authMiddleware.Auth())

@@ -25,6 +25,8 @@ import (
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/service"
+	"github.com/ecommerce/auth-service/internal/workers/key_retirement"
+	"github.com/ecommerce/auth-service/internal/workers/key_rotation"
 )
 
 func main() {
@@ -77,6 +79,7 @@ func main() {
 	userRepo := postgres.NewUserRepository(db.Pool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepository(db.Pool)
 	auditLogRepo := postgres.NewAuditLogRepository(db.Pool)
+	jwtKeyRepo := postgres.NewJWTKeyRepository(db.Pool)
 
 	// Initialize Redis caches
 	tokenCache := redis.NewCacheRepository(redisClient)
@@ -96,9 +99,13 @@ func main() {
 	})
 
 	// Initialize services
-	jwtService := service.NewJWTService(nil, gracePeriodCache, tokenCache, logger)
+	jwtService := service.NewJWTService(jwtKeyRepo, gracePeriodCache, tokenCache, logger)
 	auditService := service.NewAuditService(auditLogRepo, logger)
 	otpService := service.NewOTPService(otpCache)
+
+	// JWKS and Key services
+	keyService := service.NewKeyService(jwtKeyRepo, logger)
+	jwksService := service.NewJWKSService(jwtKeyRepo, logger)
 
 	// Brute force service (optional)
 	bruteForceService := service.NewBruteForceService(
@@ -184,6 +191,40 @@ func main() {
 	sessionHandler := handler.NewSessionHandler(sessionService, logger)
 	passwordHandler := handler.NewPasswordHandler(passwordService, logger)
 	auditHandler := handler.NewAuditHandler(auditService, logger)
+	jwksHandler := handler.NewJWKSHandler(jwksService, logger)
+
+	// Initialize workers
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Key rotation worker
+	keyRotationWorker := keyrotation.NewKeyRotationWorker(
+		keyService,
+		jwksService,
+		redisClient,
+		cfg.Keys,
+		logger,
+	)
+
+	// Key retirement worker
+	keyRetirementWorker := keyretirement.NewKeyRetirementWorker(
+		keyService,
+		jwksService,
+		redisClient,
+		cfg.Keys,
+		logger,
+	)
+
+	// Start workers
+	if err := keyRotationWorker.Start(ctx); err != nil {
+		logger.Error("Failed to start key rotation worker", zap.Error(err))
+	}
+	defer keyRotationWorker.Stop()
+
+	if err := keyRetirementWorker.Start(ctx); err != nil {
+		logger.Error("Failed to start key retirement worker", zap.Error(err))
+	}
+	defer keyRetirementWorker.Stop()
 
 	// Initialize router
 	r := router.NewRouter(
@@ -193,6 +234,7 @@ func main() {
 		sessionHandler,
 		passwordHandler,
 		auditHandler,
+		jwksHandler,
 		authMiddleware,
 		rateLimiterMiddleware,
 	)
@@ -224,10 +266,10 @@ func main() {
 
 	logger.Info("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer shutdownCancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Server forced to shutdown", zap.Error(err))
 	}
 

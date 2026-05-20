@@ -85,13 +85,11 @@ func (s *JWTService) GenerateAccessToken(ctx context.Context, user *entity.User)
 
 	// Try to get key from JWKS repository first
 	if s.jwtKeyRepo != nil {
-		key, err := s.jwtKeyRepo.GetActive(ctx)
-		if err == nil && key != nil {
-			if jwtKey, ok := key.(*entity.JWTKey); ok {
-				kid = jwtKey.Kid
-				if parsedKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtKey.PrivateKey)); err == nil {
-					privateKey = parsedKey
-				}
+		jwtKey, err := s.jwtKeyRepo.GetActive(ctx)
+		if err == nil && jwtKey != nil {
+			kid = jwtKey.Kid
+			if parsedKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtKey.PrivateKey)); err == nil {
+				privateKey = parsedKey
 			}
 		}
 	}
@@ -153,12 +151,10 @@ func (s *JWTService) ValidateAccessToken(ctx context.Context, tokenString string
 
 	// Try to get key from JWKS repository
 	if s.jwtKeyRepo != nil && kid != "" {
-		key, err := s.jwtKeyRepo.GetByKid(ctx, kid)
-		if err == nil && key != nil {
-			if jwtKey, ok := key.(*entity.JWTKey); ok {
-				if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
-					publicKey = parsedKey
-				}
+		jwtKey, err := s.jwtKeyRepo.GetByKid(ctx, kid)
+		if err == nil && jwtKey != nil {
+			if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
+				publicKey = parsedKey
 			}
 		}
 	}
@@ -268,12 +264,10 @@ func (s *JWTService) ValidateAccessTokenSimple(ctx context.Context, tokenString 
 	}
 
 	if s.jwtKeyRepo != nil && kid != "" {
-		key, err := s.jwtKeyRepo.GetByKid(ctx, kid)
-		if err == nil && key != nil {
-			if jwtKey, ok := key.(*entity.JWTKey); ok {
-				if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
-					publicKey = parsedKey
-				}
+		jwtKey, err := s.jwtKeyRepo.GetByKid(ctx, kid)
+		if err == nil && jwtKey != nil {
+			if parsedKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(jwtKey.PublicKey)); err == nil {
+				publicKey = parsedKey
 			}
 		}
 	}
