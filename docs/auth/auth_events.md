@@ -12,7 +12,8 @@ Tài liệu cung cấp danh mục cấu trúc các thông điệp sự kiện m�
 
 ## 1. Events Auth Service Public Ra Bắt Cầu
 
-Broker khuyên dùng: **Kafka**. Được tích hợp với Debezium CDC (Change Data Capture) để đảm bảo Outbox Pattern hoạt động tin cậy mà không tốn tài nguyên Polling.
+Broker khuyên dùng: **Kafka** (Direct Producer). Events được publish trực tiếp qua Kafka Producer với at-least-once delivery semantics.
+
 Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions chia theo `user_id` để được gửi theo thứ tự).
 
 
