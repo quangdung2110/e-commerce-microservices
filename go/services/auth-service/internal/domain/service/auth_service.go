@@ -18,6 +18,9 @@ import (
 	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
+// DefaultLockoutDuration is the default lockout duration for brute force protection
+var DefaultLockoutDuration = 30 * time.Minute
+
 type AuthService struct {
 	userRepo         port.UserRepository
 	refreshTokenRepo port.RefreshTokenRepository
@@ -123,7 +126,8 @@ func (s *AuthService) Login(ctx context.Context, req *svc.LoginRequest) (*svc.Lo
 			}
 
 			if s.eventPublisher != nil {
-				lockEvent := event.NewUserAccountLocked(user.ID, user.Email.String(), "FAILED_LOGIN_ATTEMPTS")
+				lockedUntil := time.Now().Add(DefaultLockoutDuration)
+				lockEvent := event.NewUserAccountLocked(user.ID, user.Email.String(), "FAILED_LOGIN_ATTEMPTS", lockedUntil)
 				_ = s.eventPublisher.Publish(ctx, lockEvent)
 			}
 

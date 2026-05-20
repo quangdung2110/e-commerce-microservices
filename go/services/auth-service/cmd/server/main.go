@@ -21,7 +21,9 @@ import (
 	"github.com/ecommerce/auth-service/internal/common/config"
 	infracommon "github.com/ecommerce/auth-service/internal/infrastructure/common"
 	"github.com/ecommerce/auth-service/internal/infrastructure/kafka"
+	"github.com/ecommerce/auth-service/internal/infrastructure/kafka/handler as kafkaHandler"
 	"github.com/ecommerce/auth-service/internal/infrastructure/postgres"
+	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/service"
@@ -66,7 +68,8 @@ func main() {
 	defer redisClient.Close()
 
 	var eventPublisher port.EventPublisher
-	kafkaProducer, err := kafka.NewProducer(cfg.Kafka)
+
+	kafkaProducer, err := kafka.NewProducer(cfg.Kafka, logger)
 	if err != nil {
 		logger.Warn("Failed to create Kafka producer, running without Kafka", zap.Error(err))
 		eventPublisher = &port.NoOpEventPublisher{}
@@ -75,13 +78,11 @@ func main() {
 		eventPublisher = kafkaProducer
 	}
 
-	// Initialize repositories
 	userRepo := postgres.NewUserRepository(db.Pool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepository(db.Pool)
 	auditLogRepo := postgres.NewAuditLogRepository(db.Pool)
 	jwtKeyRepo := postgres.NewJWTKeyRepository(db.Pool)
 
-	// Initialize Redis caches
 	tokenCache := redis.NewCacheRepository(redisClient)
 	failedLoginCache := redis.NewFailedLoginCounter(redisClient)
 	rateLimiter := redis.NewRateLimit(redisClient)
@@ -89,25 +90,21 @@ func main() {
 	resetTokenCache := redis.NewResetTokenCache(redisClient)
 	otpCache := redis.NewOTPCache(redisClient)
 
-	// Initialize password hasher
 	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
-		Memory:      65536,
-		Iterations:  3,
-		Parallelism: 4,
-		SaltLength:  16,
-		KeyLength:   32,
+		Memory:       65536,
+		Iterations:   3,
+		Parallelism:  4,
+		SaltLength:   16,
+		KeyLength:    32,
 	})
 
-	// Initialize services
 	jwtService := service.NewJWTService(jwtKeyRepo, gracePeriodCache, tokenCache, logger)
 	auditService := service.NewAuditService(auditLogRepo, logger)
 	otpService := service.NewOTPService(otpCache)
 
-	// JWKS and Key services
 	keyService := service.NewKeyService(jwtKeyRepo, logger)
 	jwksService := service.NewJWKSService(jwtKeyRepo, logger)
 
-	// Brute force service (optional)
 	bruteForceService := service.NewBruteForceService(
 		userRepo,
 		failedLoginCache,
@@ -117,7 +114,6 @@ func main() {
 	)
 	_ = bruteForceService
 
-	// Auth service
 	authService := service.NewAuthService(
 		userRepo,
 		refreshTokenRepo,
@@ -130,7 +126,6 @@ func main() {
 		logger,
 	)
 
-	// Refresh service
 	refreshService := service.NewRefreshService(
 		userRepo,
 		refreshTokenRepo,
@@ -142,7 +137,6 @@ func main() {
 		logger,
 	)
 
-	// User service
 	userService := service.NewUserService(
 		userRepo,
 		otpService,
@@ -150,7 +144,6 @@ func main() {
 		eventPublisher,
 	)
 
-	// Session service
 	sessionService := service.NewSessionService(
 		refreshTokenRepo,
 		tokenCache,
@@ -158,7 +151,6 @@ func main() {
 		logger,
 	)
 
-	// Password service
 	passwordService := service.NewPasswordService(
 		userRepo,
 		refreshTokenRepo,
@@ -170,15 +162,12 @@ func main() {
 		logger,
 	)
 
-	// Set dependencies
 	jwtService.SetEventPublisher(eventPublisher)
 	jwtService.SetAuditService(auditService)
 
-	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, tokenCache, logger)
 	rateLimiterMiddleware := middleware.NewRateLimiterMiddleware(rateLimiter, logger)
 
-	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(
 		db.Ping,
 		func(ctx context.Context) error {
@@ -193,29 +182,54 @@ func main() {
 	auditHandler := handler.NewAuditHandler(auditService, logger)
 	jwksHandler := handler.NewJWKSHandler(jwksService, logger)
 
-	// Initialize workers
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Key rotation worker
+	pubsubPublisher := pubsub.NewPublisher(redisClient, logger)
+
 	keyRotationWorker := keyrotation.NewKeyRotationWorker(
 		keyService,
 		jwksService,
 		redisClient,
+		pubsubPublisher,
 		cfg.Keys,
 		logger,
 	)
 
-	// Key retirement worker
 	keyRetirementWorker := keyretirement.NewKeyRetirementWorker(
 		keyService,
 		jwksService,
 		redisClient,
+		pubsubPublisher,
 		cfg.Keys,
 		logger,
 	)
 
-	// Start workers
+	adminEventHandler := kafkaHandler.NewAdminEventHandler(
+		func(ctx context.Context, userID, reason string) error {
+			return authService.ForceLogoutAll(ctx, userID, reason)
+		},
+		func(ctx context.Context, userID, reason string) error {
+			return userService.BanUser(ctx, userID, reason)
+		},
+		logger,
+	)
+
+	var kafkaConsumer *kafka.Consumer
+	if kafkaProducer != nil {
+		adminTopic := cfg.Kafka.TopicPrefix + "." + cfg.Kafka.AdminTopic
+		kafkaConsumer, err = kafka.NewConsumer(cfg.Kafka, []string{adminTopic}, adminEventHandler, logger)
+		if err != nil {
+			logger.Warn("Failed to create Kafka consumer", zap.Error(err))
+		} else {
+			go func() {
+				if err := kafkaConsumer.Start(ctx); err != nil {
+					logger.Error("Failed to start Kafka consumer", zap.Error(err))
+				}
+			}()
+		}
+	}
+
 	if err := keyRotationWorker.Start(ctx); err != nil {
 		logger.Error("Failed to start key rotation worker", zap.Error(err))
 	}
@@ -226,7 +240,6 @@ func main() {
 	}
 	defer keyRetirementWorker.Stop()
 
-	// Initialize router
 	r := router.NewRouter(
 		healthHandler,
 		userHandler,
@@ -268,6 +281,12 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer shutdownCancel()
+
+	if kafkaConsumer != nil {
+		if err := kafkaConsumer.Close(); err != nil {
+			logger.Error("Failed to close Kafka consumer", zap.Error(err))
+		}
+	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Server forced to shutdown", zap.Error(err))

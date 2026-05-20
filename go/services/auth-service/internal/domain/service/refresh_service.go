@@ -263,7 +263,6 @@ func (s *RefreshService) handleTokenTheft(ctx context.Context, stolenToken *enti
 		theftEvent := event.NewTokenTheftDetected(
 			stolenToken.UserID,
 			stolenToken.ID,
-			"ALL_TOKENS_REVOKED",
 		)
 		if err := s.eventPublisher.Publish(ctx, theftEvent); err != nil {
 			logger.Warn("Failed to publish theft event", zap.Error(err))

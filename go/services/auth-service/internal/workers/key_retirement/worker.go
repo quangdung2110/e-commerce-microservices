@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
-	"github.com/ecommerce/auth-service/internal/common/keybuilder"
 	"github.com/ecommerce/auth-service/internal/domain/service"
+	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 )
 
@@ -18,6 +18,7 @@ type KeyRetirementWorker struct {
 	keyService *service.KeyService
 	jwksService *service.JWKSService
 	redisClient *redis.Client
+	pubsub      *pubsub.Publisher
 	config      config.KeysConfig
 	logger      *zap.Logger
 	stopCh      chan struct{}
@@ -28,26 +29,26 @@ func NewKeyRetirementWorker(
 	keyService *service.KeyService,
 	jwksService *service.JWKSService,
 	redisClient *redis.Client,
+	pubsubPublisher *pubsub.Publisher,
 	cfg config.KeysConfig,
 	logger *zap.Logger,
 ) *KeyRetirementWorker {
 	return &KeyRetirementWorker{
-		keyService:  keyService,
-		jwksService: jwksService,
-		redisClient: redisClient,
-		config:      cfg,
-		logger:      logger.With(zap.String("worker", "KeyRetirement")),
-		stopCh:      make(chan struct{}),
+		keyService:   keyService,
+		jwksService:  jwksService,
+		redisClient:  redisClient,
+		pubsub:       pubsubPublisher,
+		config:       cfg,
+		logger:       logger.With(zap.String("worker", "KeyRetirement")),
+		stopCh:       make(chan struct{}),
 	}
 }
 
-// Start starts the key retirement worker
 func (w *KeyRetirementWorker) Start(ctx context.Context) error {
 	w.logger.Info("Starting key retirement worker",
 		zap.Duration("retirement_delay", w.config.RetirementDelay),
 	)
 
-	// Run every hour
 	ticker := time.NewTicker(1 * time.Hour)
 	w.stopWg.Add(1)
 
@@ -77,7 +78,6 @@ func (w *KeyRetirementWorker) Start(ctx context.Context) error {
 func (w *KeyRetirementWorker) retireKeys(ctx context.Context) error {
 	w.logger.Info("Starting key retirement check")
 
-	// Acquire distributed lock
 	lockKey := "lock:key_retirement"
 	acquired, err := w.acquireLock(ctx, lockKey, 5*time.Minute)
 	if err != nil {
@@ -89,16 +89,13 @@ func (w *KeyRetirementWorker) retireKeys(ctx context.Context) error {
 	}
 	defer w.releaseLock(ctx, lockKey)
 
-	// Retire old keys
 	if err := w.keyService.RetireOldKeys(ctx); err != nil {
 		return fmt.Errorf("failed to retire keys: %w", err)
 	}
 
-	// Invalidate JWKS cache
 	w.jwksService.InvalidateCache()
 	w.logger.Info("JWKS cache invalidated")
 
-	// Publish JWKS update notification
 	if err := w.publishJWKSUpdate(ctx); err != nil {
 		w.logger.Warn("Failed to publish JWKS update", zap.Error(err))
 	}
@@ -122,21 +119,19 @@ func (w *KeyRetirementWorker) releaseLock(ctx context.Context, key string) {
 }
 
 func (w *KeyRetirementWorker) publishJWKSUpdate(ctx context.Context) error {
-	channel := keybuilder.JWKSUpdateChannel()
-	message := fmt.Sprintf(`{"event":"JWKS_UPDATED","timestamp":%d}`, time.Now().Unix())
+	if w.pubsub == nil {
+		w.logger.Warn("PubSub publisher not available, skipping JWKS update notification")
+		return nil
+	}
 
-	_, err := w.redisClient.Publish(ctx, channel, message).Result()
-	if err != nil {
+	if err := w.pubsub.PublishJWKSUpdate(ctx); err != nil {
 		return fmt.Errorf("failed to publish JWKS update: %w", err)
 	}
 
-	w.logger.Info("JWKS update published to Redis Pub/Sub",
-		zap.String("channel", channel),
-	)
+	w.logger.Info("JWKS update published to Redis Pub/Sub")
 	return nil
 }
 
-// Stop stops the worker gracefully
 func (w *KeyRetirementWorker) Stop() {
 	w.logger.Info("Stopping key retirement worker")
 	close(w.stopCh)

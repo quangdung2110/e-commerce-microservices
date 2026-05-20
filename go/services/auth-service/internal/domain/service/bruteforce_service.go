@@ -136,7 +136,8 @@ func (s *BruteForceService) lockAccount(ctx context.Context, email string, logge
 	}
 
 	if s.eventPublisher != nil {
-		lockEvent := event.NewUserAccountLocked(user.ID, user.Email.String(), "FAILED_LOGIN_ATTEMPTS")
+		lockedUntil := time.Now().Add(constants.LockoutDuration)
+		lockEvent := event.NewUserAccountLocked(user.ID, user.Email.String(), "FAILED_LOGIN_ATTEMPTS", lockedUntil)
 		_ = s.eventPublisher.Publish(ctx, lockEvent)
 	}
 

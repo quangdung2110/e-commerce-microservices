@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
-	"github.com/ecommerce/auth-service/internal/common/keybuilder"
 	"github.com/ecommerce/auth-service/internal/domain/service"
+	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 )
 
@@ -18,6 +18,7 @@ type KeyRotationWorker struct {
 	keyService  *service.KeyService
 	jwksService *service.JWKSService
 	redisClient *redis.Client
+	pubsub      *pubsub.Publisher
 	config      config.KeysConfig
 	logger      *zap.Logger
 	stopCh      chan struct{}
@@ -28,6 +29,7 @@ func NewKeyRotationWorker(
 	keyService *service.KeyService,
 	jwksService *service.JWKSService,
 	redisClient *redis.Client,
+	pubsubPublisher *pubsub.Publisher,
 	cfg config.KeysConfig,
 	logger *zap.Logger,
 ) *KeyRotationWorker {
@@ -35,24 +37,22 @@ func NewKeyRotationWorker(
 		keyService:  keyService,
 		jwksService: jwksService,
 		redisClient: redisClient,
+		pubsub:      pubsubPublisher,
 		config:      cfg,
 		logger:      logger.With(zap.String("worker", "KeyRotation")),
 		stopCh:      make(chan struct{}),
 	}
 }
 
-// Start starts the key rotation worker
 func (w *KeyRotationWorker) Start(ctx context.Context) error {
 	w.logger.Info("Starting key rotation worker",
 		zap.Duration("rotation_interval", w.config.RotationInterval),
 	)
 
-	// Run immediately on start to ensure there's always an active key
 	if err := w.keyService.EnsureActiveKey(ctx); err != nil {
 		w.logger.Error("Failed to ensure active key on startup", zap.Error(err))
 	}
 
-	// Schedule periodic rotation
 	ticker := time.NewTicker(w.config.RotationInterval)
 	w.stopWg.Add(1)
 
@@ -82,7 +82,6 @@ func (w *KeyRotationWorker) Start(ctx context.Context) error {
 func (w *KeyRotationWorker) rotateKeys(ctx context.Context) error {
 	w.logger.Info("Starting key rotation")
 
-	// Acquire distributed lock
 	lockKey := "lock:key_rotation"
 	acquired, err := w.acquireLock(ctx, lockKey, 30*time.Second)
 	if err != nil {
@@ -94,7 +93,6 @@ func (w *KeyRotationWorker) rotateKeys(ctx context.Context) error {
 	}
 	defer w.releaseLock(ctx, lockKey)
 
-	// Create new active key
 	newKey, err := w.keyService.CreateNewActiveKey(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create new key: %w", err)
@@ -104,12 +102,10 @@ func (w *KeyRotationWorker) rotateKeys(ctx context.Context) error {
 		zap.Time("created_at", newKey.CreatedAt),
 	)
 
-	// Invalidate JWKS cache
 	w.jwksService.InvalidateCache()
 	w.logger.Info("JWKS cache invalidated")
 
-	// Publish JWKS update notification to Redis Pub/Sub
-	if err := w.publishJWKSUpdate(ctx); err != nil {
+	if err := w.publishJWKSUpdate(ctx, newKey.Kid); err != nil {
 		w.logger.Warn("Failed to publish JWKS update", zap.Error(err))
 	}
 
@@ -131,22 +127,19 @@ func (w *KeyRotationWorker) releaseLock(ctx context.Context, key string) {
 	}
 }
 
-func (w *KeyRotationWorker) publishJWKSUpdate(ctx context.Context) error {
-	channel := keybuilder.JWKSUpdateChannel()
-	message := fmt.Sprintf(`{"event":"JWKS_UPDATED","timestamp":%d}`, time.Now().Unix())
+func (w *KeyRotationWorker) publishJWKSUpdate(ctx context.Context, kid string) error {
+	if w.pubsub == nil {
+		w.logger.Warn("PubSub publisher not available, skipping JWKS update notification")
+		return nil
+	}
 
-	_, err := w.redisClient.Publish(ctx, channel, message).Result()
-	if err != nil {
+	if err := w.pubsub.PublishJWKSUpdateWithKID(ctx, kid); err != nil {
 		return fmt.Errorf("failed to publish JWKS update: %w", err)
 	}
 
-	w.logger.Info("JWKS update published to Redis Pub/Sub",
-		zap.String("channel", channel),
-	)
 	return nil
 }
 
-// Stop stops the worker gracefully
 func (w *KeyRotationWorker) Stop() {
 	w.logger.Info("Stopping key rotation worker")
 	close(w.stopCh)

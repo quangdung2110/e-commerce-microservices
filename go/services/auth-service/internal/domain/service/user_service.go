@@ -166,6 +166,38 @@ func (s *UserService) GetUserByEmail(ctx context.Context, emailStr string) (*ent
 	return user, nil
 }
 
+func (s *UserService) BanUser(ctx context.Context, userID string, reason string) error {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		if apperrors.IsNotFoundError(err) {
+			return apperrors.ErrUserNotFound()
+		}
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if user.IsBanned() {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	user.Status = entity.UserStatusBanned
+	user.BannedAt = &now
+	user.BanReason = &reason
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to ban user: %w", err)
+	}
+
+	if s.eventPublisher != nil {
+		banEvent := event.NewUserBannedNotification(user.ID, user.Email.String(), reason, "SYSTEM")
+		if err := s.eventPublisher.Publish(ctx, banEvent); err != nil {
+			fmt.Printf("Failed to publish user banned event: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
 // ConstantTimeCompare performs constant-time string comparison (exported for testing)
 func ConstantTimeCompare(a, b string) bool {
 	if len(a) != len(b) {

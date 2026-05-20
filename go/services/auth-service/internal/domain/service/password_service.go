@@ -132,7 +132,7 @@ func (s *PasswordService) ChangePassword(ctx context.Context, req *PasswordChang
 
 	// Publish password changed event
 	if s.eventPublisher != nil {
-		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String())
+		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.DeviceInfo)
 		_ = s.eventPublisher.Publish(ctx, passwordChanged)
 	}
 
@@ -167,7 +167,7 @@ func (s *PasswordService) RequestPasswordReset(ctx context.Context, req *ForgotP
 
 	// Publish password reset requested event (for email sending)
 	if s.eventPublisher != nil {
-		resetEvent := event.NewPasswordResetRequested(user.ID, user.Email.String(), resetToken)
+		resetEvent := event.NewPasswordResetRequested(user.ID, user.Email.String())
 		_ = s.eventPublisher.Publish(ctx, resetEvent)
 	}
 
@@ -241,7 +241,7 @@ func (s *PasswordService) ResetPassword(ctx context.Context, req *PasswordResetR
 
 	// Publish password changed event
 	if s.eventPublisher != nil {
-		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String())
+		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.DeviceInfo)
 		_ = s.eventPublisher.Publish(ctx, passwordChanged)
 	}
 
