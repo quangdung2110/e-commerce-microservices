@@ -85,8 +85,7 @@ auth-service/
 │   │   │       ├── session.go
 │   │   │       ├── audit.go
 │   │   │       └── error.go
-│   │   └── validator/
-│   │       └── validator.go          # Request validation
+│   │   │   # Note: Validator moved to common/validator/
 │   │
 │   ├── domain/                        # Domain Layer (Core Business Logic)
 │   │   ├── entity/
@@ -94,7 +93,6 @@ auth-service/
 │   │   │   ├── refresh_token.go     # RefreshToken entity
 │   │   │   ├── jwt_key.go           # JWT Key entity
 │   │   │   ├── audit_log.go         # AuditLog entity
-│   │   │   └── outbox_event.go      # OutboxEvent entity
 │   │   ├── service/
 │   │   │   ├── auth_service.go      # Login, Logout, Refresh logic
 │   │   │   ├── user_service.go      # Registration, verification
@@ -108,7 +106,6 @@ auth-service/
 │   │   │   ├── refresh_token_repository.go
 │   │   │   ├── jwt_key_repository.go
 │   │   │   ├── audit_log_repository.go
-│   │   │   ├── outbox_repository.go
 │   │   │   ├── cache.go             # Redis cache interface
 │   │   │   ├── publisher.go         # Event publisher interface
 │   │   │   └── password_hasher.go
@@ -131,7 +128,6 @@ auth-service/
 │   │   │   ├── refresh_token_repo.go
 │   │   │   ├── jwt_key_repo.go
 │   │   │   ├── audit_log_repo.go
-│   │   │   ├── outbox_repo.go
 │   │   │   └── migrations/          # SQL migrations
 │   │   │       ├── 001_initial_schema.up.sql
 │   │   │       └── 001_initial_schema.down.sql
@@ -163,8 +159,6 @@ auth-service/
 │   │   │   └── worker.go           # Key retirement (31 ngày sau rotation)
 │   │   ├── audit_cleanup/
 │   │   │   └── worker.go           # Dọn audit logs (6 tháng)
-│   │   ├── outbox_cleanup/
-│   │   │   └── worker.go           # Dọn outbox events (14 ngày)
 │   │   └── auto_unlock/
 │   │       └── worker.go           # Auto-unlock tài khoản (30 phút)
 │   │
@@ -180,7 +174,7 @@ auth-service/
 │       ├── crypto/
 │       │   └── crypto.go           # Cryptographic utilities
 │       └── validator/
-│           └── validator.go         # Cross-cutting validators
+│           └── validator.go         # CROSS-CUTTING VALIDATORS (SINGLE SOURCE OF TRUTH)
 │
 ├── configs/
 │   ├── application.yaml             # Main configuration
@@ -190,12 +184,27 @@ auth-service/
 │   └── compliance-worker.go        # Standalone compliance worker
 │
 ├── test/
-│   ├── mocks/                      # Mock implementations
-│   │   ├── user_repo_mock.go
-│   │   ├── cache_mock.go
-│   │   └── publisher_mock.go
-│   └── integration/
-│       └── integration_test.go
+│   ├── mocks/                          # Mock implementations
+│   │   └── mocks_test.go               # Generated mocks for ports
+│   ├── helper/                         # Test helpers
+│   │   ├── postgres.go
+│   │   └── redis.go
+│   ├── entity/                         # Entity tests
+│   │   └── *_test.go
+│   ├── repository/                     # Repository tests
+│   │   └── *_test.go
+│   ├── cache/                          # Cache/Redis tests
+│   │   └── *_test.go
+│   ├── unit/                           # Unit tests
+│   │   └── domain/
+│   │       └── service/
+│   │           └── *_test.go          # AuthService, UserService, etc.
+│   ├── integration/                    # Integration tests
+│   │   ├── integration_test.go
+│   │   └── kafka/
+│   │       └── *_test.go
+│   └── load/                           # Load tests
+│       └── auth_service.js
 │
 ├── go.mod
 ├── go.sum
@@ -301,7 +310,7 @@ auth-service/
 │          ┌────────────────────────────────────────────┐         │
 │          │            Background Workers                │         │
 │          │  TokenCleanup | KeyRotation | KeyRetirement │         │
-│          │  AuditCleanup | AutoUnlock | OutboxCleanup │         │
+│          │  AuditCleanup | AutoUnlock │         │
 │          └────────────────────────────────────────────┘         │
 │                              │                                 │
 │                              ▼                                  │
@@ -438,16 +447,16 @@ internal/
 ## Checklist
 
 - [x] Module 0: Project Setup
-- [ ] Module 1: Database Layer
-- [ ] Module 2: Redis Cache Layer
-- [ ] Module 3: User Management
-- [ ] Module 4: Authentication
-- [ ] Module 5: Token Management
-- [ ] Module 6: Session Management
-- [ ] Module 7: Password Management
-- [ ] Module 8: Audit Logging
-- [ ] Module 9: JWKS Management
-- [ ] Module 10: Event Publishing
+- [x] Module 1: Database Layer
+- [x] Module 2: Redis Cache Layer
+- [x] Module 3: User Management
+- [x] Module 4: Authentication
+- [x] Module 5: Token Management
+- [x] Module 6: Session Management
+- [x] Module 7: Password Management
+- [x] Module 8: Audit Logging
+- [x] Module 9: JWKS Management
+- [x] Module 10: Event Publishing
 - [ ] Module 11: Background Workers
 - [ ] Module 12: Testing
 - [ ] Module 13: Deployment

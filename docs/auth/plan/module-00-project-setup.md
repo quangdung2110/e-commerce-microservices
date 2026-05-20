@@ -79,7 +79,7 @@ mkdir -p internal/workers/token_cleanup
 mkdir -p internal/workers/key_rotation
 mkdir -p internal/workers/key_retirement
 mkdir -p internal/workers/audit_cleanup
-mkdir -p internal/workers/outbox_cleanup
+mkdir -p internal/workers/audit_cleanup
 mkdir -p internal/workers/auto_unlock
 mkdir -p internal/common/constants
 mkdir -p internal/common/errors
@@ -244,7 +244,6 @@ keys:
 cleanup:
   refresh_token_retention: 168h   # 7 days
   audit_log_retention: 4320h      # 6 months
-  outbox_retention: 336h          # 14 days
   auto_unlock_interval: 30m
 
 # Logging Configuration
@@ -363,7 +362,6 @@ type KeysConfig struct {
 type CleanupConfig struct {
     RefreshTokenRetention time.Duration
     AuditLogRetention    time.Duration
-    OutboxRetention      time.Duration
     AutoUnlockInterval   time.Duration
 }
 
@@ -448,7 +446,6 @@ func setDefaults(v *viper.Viper) {
     // Cleanup defaults
     v.SetDefault("cleanup.refresh_token_retention", "168h")
     v.SetDefault("cleanup.audit_log_retention", "4320h")
-    v.SetDefault("cleanup.outbox_retention", "336h")
     v.SetDefault("cleanup.auto_unlock_interval", "30m")
     
     // Logging defaults
@@ -507,7 +504,6 @@ const (
 const (
     RefreshTokenRetention = 7 * 24 * time.Hour
     AuditLogRetention     = 180 * 24 * time.Hour // 6 months
-    OutboxRetention       = 14 * 24 * time.Hour
     AutoUnlockInterval    = 5 * time.Minute
 )
 

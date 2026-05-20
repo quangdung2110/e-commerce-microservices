@@ -47,7 +47,7 @@ Module này triển khai chức năng quản lý người dùng:
                                        ▼
                                  ┌─────────────┐
                                  │ Kafka       │
-                                 │ (Outbox)    │
+                                 │ (Direct)    │
                                  └─────────────┘
 ```
 
@@ -181,7 +181,7 @@ func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*enti
         return nil, "", fmt.Errorf("failed to generate OTP: %w", err)
     }
 
-    // Publish USER_OTP_REQUESTED event (via outbox)
+    // Publish USER_OTP_REQUESTED event
     otpEvent := event.NewUserOTPRequested(user.ID, user.Email.String(), "REGISTER_VERIFICATION")
     if err := s.eventPublisher.Publish(ctx, otpEvent); err != nil {
         // Log error but don't fail registration
@@ -1280,7 +1280,7 @@ func main() {
 ### 9.1 User Service Test
 
 ```go
-// internal/domain/service/user_service_test.go
+// test/unit/domain/service/user_service_test.go
 package service
 
 import (
@@ -1500,7 +1500,7 @@ func TestUserService_VerifyEmail(t *testing.T) {
 ### 9.2 OTP Service Test
 
 ```go
-// internal/domain/service/otp_service_test.go
+// test/unit/domain/service/otp_service_test.go
 package service
 
 import (

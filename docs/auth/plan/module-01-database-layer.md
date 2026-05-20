@@ -37,7 +37,6 @@ Module này thiết lập tầng Database cho Auth Service:
 | `users` | User credentials and status |
 | `refresh_tokens` | Refresh token storage with rotation tracking |
 | `jwt_keys` | JWKS keystore for key rotation |
-| `outbox_events` | Transactional outbox for event publishing |
 | `audit_logs` | Security audit trail |
 
 ---
@@ -149,33 +148,7 @@ COMMENT ON COLUMN jwt_keys.status IS 'ACTIVE: Current signing key, PHASE_OUT: Ol
 COMMENT ON COLUMN jwt_keys.kid IS 'Key ID used in JWT header';
 ```
 
-### 2.4 Outbox Events Table
-
-```sql
--- Outbox events table: Transactional outbox pattern for reliable event publishing
-CREATE TABLE outbox_events (
-    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type VARCHAR(100) NOT NULL,
-    aggregate_type VARCHAR(100) NOT NULL,
-    aggregate_id UUID NOT NULL,
-    partition_key UUID NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX idx_outbox_events_aggregate_type ON outbox_events(aggregate_type);
-CREATE INDEX idx_outbox_events_aggregate_id ON outbox_events(aggregate_id);
-CREATE INDEX idx_outbox_events_partition_key ON outbox_events(partition_key);
-CREATE INDEX idx_outbox_events_created_at ON outbox_events(created_at);
-CREATE INDEX idx_outbox_events_event_type ON outbox_events(event_type);
-
--- Comments
-COMMENT ON TABLE outbox_events IS 'Transactional outbox for reliable event publishing via Debezium CDC';
-COMMENT ON COLUMN outbox_events.partition_key IS 'Kafka partition key for ordered delivery per user';
-```
-
-### 2.5 Audit Logs Table
+### 2.4 Audit Logs Table
 
 ```sql
 -- Audit logs table: Security audit trail
@@ -325,25 +298,6 @@ CREATE INDEX idx_jwt_keys_created_at ON jwt_keys(created_at);
 CREATE INDEX idx_jwt_keys_rotated_at ON jwt_keys(rotated_at) WHERE rotated_at IS NOT NULL;
 
 -- =====================================================
--- OUTBOX EVENTS TABLE
--- =====================================================
-CREATE TABLE outbox_events (
-    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type VARCHAR(100) NOT NULL,
-    aggregate_type VARCHAR(100) NOT NULL,
-    aggregate_id UUID NOT NULL,
-    partition_key UUID NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_outbox_events_aggregate_type ON outbox_events(aggregate_type);
-CREATE INDEX idx_outbox_events_aggregate_id ON outbox_events(aggregate_id);
-CREATE INDEX idx_outbox_events_partition_key ON outbox_events(partition_key);
-CREATE INDEX idx_outbox_events_created_at ON outbox_events(created_at);
-CREATE INDEX idx_outbox_events_event_type ON outbox_events(event_type);
-
--- =====================================================
 -- AUDIT LOGS TABLE
 -- =====================================================
 CREATE TABLE audit_logs (
@@ -407,8 +361,6 @@ COMMENT ON COLUMN refresh_tokens.family_id IS 'Groups tokens from same login ses
 
 COMMENT ON TABLE jwt_keys IS 'JWKS keystore - stores RSA key pairs for JWT signing';
 
-COMMENT ON TABLE outbox_events IS 'Transactional outbox for reliable event publishing via Debezium CDC';
-
 COMMENT ON TABLE audit_logs IS 'Security audit trail - records all sensitive events';
 ```
 
@@ -423,7 +375,6 @@ DROP FUNCTION IF EXISTS update_updated_at_column();
 
 -- Drop tables in reverse order (respecting foreign keys)
 DROP TABLE IF EXISTS audit_logs;
-DROP TABLE IF EXISTS outbox_events;
 DROP TABLE IF EXISTS jwt_keys;
 DROP TABLE IF EXISTS refresh_tokens;
 DROP TABLE IF EXISTS users;
@@ -739,52 +690,6 @@ func (a *AuditLog) WithPayload(payload interface{}) *AuditLog {
 }
 ```
 
-### 4.5 OutboxEvent Entity
-
-```go
-// internal/domain/entity/outbox_event.go
-package entity
-
-import (
-    "encoding/json"
-    "time"
-
-    "github.com/google/uuid"
-)
-
-type OutboxEvent struct {
-    EventID       uuid.UUID       `json:"event_id"`
-    EventType     string          `json:"event_type"`
-    AggregateType string          `json:"aggregate_type"`
-    AggregateID   uuid.UUID       `json:"aggregate_id"`
-    PartitionKey  uuid.UUID       `json:"partition_key"`
-    Payload       json.RawMessage `json:"payload"`
-    CreatedAt    time.Time       `json:"created_at"`
-}
-
-func NewOutboxEvent(
-    eventType string,
-    aggregateType string,
-    aggregateID uuid.UUID,
-    payload interface{},
-) (*OutboxEvent, error) {
-    payloadBytes, err := json.Marshal(payload)
-    if err != nil {
-        return nil, err
-    }
-
-    return &OutboxEvent{
-        EventID:       uuid.New(),
-        EventType:     eventType,
-        AggregateType: aggregateType,
-        AggregateID:   aggregateID,
-        PartitionKey:  aggregateID, // Use aggregateID as partition key for ordering
-        Payload:       payloadBytes,
-        CreatedAt:    time.Now().UTC(),
-    }, nil
-}
-```
-
 ---
 
 ## 5. Repository Interfaces
@@ -968,36 +873,6 @@ type AuditLogFilters struct {
     From          time.Time
     To            time.Time
     LogCategory   entity.LogCategory
-}
-```
-
-### 5.5 Outbox Repository Interface
-
-```go
-// internal/domain/port/outbox_repository.go
-package port
-
-import (
-    "context"
-    "time"
-
-    "github.com/google/uuid"
-
-    "github.com/ecommerce/auth-service/internal/domain/entity"
-)
-
-type OutboxRepository interface {
-    // Create creates a new outbox event (within the same transaction)
-    Create(ctx context.Context, event *entity.OutboxEvent) error
-
-    // GetPending retrieves pending events
-    GetPending(ctx context.Context, limit int) ([]*entity.OutboxEvent, error)
-
-    // Delete deletes an outbox event after successful publishing
-    Delete(ctx context.Context, eventID uuid.UUID) error
-
-    // DeleteOld deletes events older than the specified time
-    DeleteOld(ctx context.Context, olderThan time.Time) (int64, error)
 }
 ```
 
@@ -2046,8 +1921,8 @@ func (r *pgxResult) RowsAffected() int64 {
 ### 8.1 User Repository Test
 
 ```go
-// internal/infrastructure/postgres/user_repo_test.go
-package postgres
+// test/repository/user_repo_test.go
+package repository
 
 import (
     "context"
@@ -2202,7 +2077,6 @@ func RunMigrations(t *testing.T, pool *pgxpool.Pool) {
 - [x] Create `users` table with all columns and constraints
 - [x] Create `refresh_tokens` table with all columns
 - [x] Create `jwt_keys` table for JWKS
-- [x] Create `outbox_events` table for event publishing
 - [x] Create `audit_logs` table with GIN index
 - [x] Create `update_updated_at_column()` trigger function
 - [x] Create trigger for `users` table
@@ -2222,7 +2096,6 @@ func RunMigrations(t *testing.T, pool *pgxpool.Pool) {
 - [x] Create `internal/domain/entity/refresh_token.go`
 - [x] Create `internal/domain/entity/jwt_key.go`
 - [x] Create `internal/domain/entity/audit_log.go`
-- [x] Create `internal/domain/entity/outbox_event.go`
 - [x] Add entity methods (IsActive, IsLocked, CanLogin, etc.)
 - [x] Add business logic methods (SetLocked, SetActive, etc.)
 
@@ -2232,7 +2105,6 @@ func RunMigrations(t *testing.T, pool *pgxpool.Pool) {
 - [x] Create `internal/domain/port/refresh_token_repository.go`
 - [x] Create `internal/domain/port/jwt_key_repository.go`
 - [x] Create `internal/domain/port/audit_log_repository.go`
-- [x] Create `internal/domain/port/outbox_repository.go`
 - [x] Add comprehensive method signatures
 
 ### Repository Implementations
@@ -2241,7 +2113,6 @@ func RunMigrations(t *testing.T, pool *pgxpool.Pool) {
 - [x] Create `internal/infrastructure/postgres/user_repo.go`
 - [x] Create `internal/infrastructure/postgres/refresh_token_repo.go`
 - [x] Create `internal/infrastructure/postgres/audit_log_repo.go`
-- [x] Create `internal/infrastructure/postgres/outbox_repo.go`
 - [x] Create `internal/infrastructure/postgres/jwt_key_repo.go`
 - [x] Implement all interface methods
 - [x] Add proper error handling

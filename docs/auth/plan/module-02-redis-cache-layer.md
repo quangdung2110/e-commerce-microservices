@@ -1129,8 +1129,8 @@ func (r *CacheRepository) TTL(ctx context.Context, key string) (time.Duration, e
 ### 11.1 Redis Cache Test
 
 ```go
-// internal/infrastructure/redis/denylist_test.go
-package redis
+// test/cache/denylist_test.go
+package cache
 
 import (
     "context"
