@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	svc "github.com/ecommerce/auth-service/internal/api/dto/svc"
-	svcpkg "github.com/ecommerce/auth-service/internal/domain/service"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/entity"
+	svcpkg "github.com/ecommerce/auth-service/internal/domain/service"
 	"github.com/ecommerce/auth-service/internal/domain/vo"
 )
 

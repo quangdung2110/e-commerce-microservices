@@ -32,22 +32,22 @@ type JWTClaims struct {
 }
 
 type JWTService struct {
-	privateKey    *rsa.PrivateKey
-	publicKey     *rsa.PublicKey
-	jwtKeyRepo    port.JWTKeyRepository
-	graceCache    port.GracePeriodCache
-	denylist      port.TokenCache
+	privateKey     *rsa.PrivateKey
+	publicKey      *rsa.PublicKey
+	jwtKeyRepo     port.JWTKeyRepository
+	graceCache     port.GracePeriodCache
+	denylist       port.TokenCache
 	eventPublisher port.EventPublisher
-	auditService  *AuditService
-	logger        *zap.Logger
+	auditService   *AuditService
+	logger         *zap.Logger
 }
 
 func NewJWTService(jwtKeyRepo port.JWTKeyRepository, graceCache port.GracePeriodCache, denylist port.TokenCache, logger *zap.Logger) *JWTService {
 	return &JWTService{
-		jwtKeyRepo:   jwtKeyRepo,
-		graceCache:   graceCache,
-		denylist:     denylist,
-		logger:       logger.With(zap.String("service", "JWTService")),
+		jwtKeyRepo: jwtKeyRepo,
+		graceCache: graceCache,
+		denylist:   denylist,
+		logger:     logger.With(zap.String("service", "JWTService")),
 	}
 }
 
@@ -119,9 +119,9 @@ func (s *JWTService) GenerateAccessToken(ctx context.Context, user *entity.User)
 	customClaims := JWTClaims{
 		RegisteredClaims: claims,
 		UserID:           userID,
-		Email:           user.Email.String(),
-		Roles:           user.Roles,
-		JTI:             jti,
+		Email:            user.Email.String(),
+		Roles:            user.Roles,
+		JTI:              jti,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, customClaims)

@@ -67,8 +67,8 @@ func (m *RateLimiterMiddleware) RateLimit(action string, limit int, window time.
 
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": gin.H{
-					"code":              "RATE_LIMIT_EXCEEDED",
-					"message":           "Too many requests. Please try again later.",
+					"code":                "RATE_LIMIT_EXCEEDED",
+					"message":             "Too many requests. Please try again later.",
 					"retry_after_seconds": retryAfter,
 				},
 			})

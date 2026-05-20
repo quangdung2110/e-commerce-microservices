@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
@@ -17,11 +16,11 @@ import (
 // AuditCleanupWorker cleans up old audit logs from the database
 type AuditCleanupWorker struct {
 	auditLogRepo port.AuditLogRepository
-	redisClient *redis.Client
-	config      config.CleanupConfig
-	logger      *zap.Logger
-	stopCh      chan struct{}
-	stopWg      sync.WaitGroup
+	redisClient  *redis.Client
+	config       config.CleanupConfig
+	logger       *zap.Logger
+	stopCh       chan struct{}
+	stopWg       sync.WaitGroup
 }
 
 // NewAuditCleanupWorker creates a new audit cleanup worker
@@ -34,9 +33,9 @@ func NewAuditCleanupWorker(
 	return &AuditCleanupWorker{
 		auditLogRepo: auditLogRepo,
 		redisClient:  redisClient,
-		config:      cfg,
-		logger:      logger.With(zap.String("worker", "AuditCleanup")),
-		stopCh:      make(chan struct{}),
+		config:       cfg,
+		logger:       logger.With(zap.String("worker", "AuditCleanup")),
+		stopCh:       make(chan struct{}),
 	}
 }
 

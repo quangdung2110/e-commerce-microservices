@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
@@ -25,11 +24,11 @@ const (
 type AutoUnlockWorker struct {
 	userRepo       port.UserRepository
 	eventPublisher port.EventPublisher
-	redisClient   *redis.Client
-	config        config.CleanupConfig
-	logger        *zap.Logger
-	stopCh        chan struct{}
-	stopWg        sync.WaitGroup
+	redisClient    *redis.Client
+	config         config.CleanupConfig
+	logger         *zap.Logger
+	stopCh         chan struct{}
+	stopWg         sync.WaitGroup
 }
 
 // NewAutoUnlockWorker creates a new auto-unlock worker
@@ -131,7 +130,7 @@ func (w *AutoUnlockWorker) unlockUser(ctx context.Context, user *entity.User) er
 	)
 
 	unlockEvent := event.NewUserUnlocked(
-		user.ID.String(),
+		user.ID,
 		user.Email.String(),
 		event.UnlockTypeAuto,
 		"SYSTEM",

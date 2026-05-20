@@ -9,13 +9,13 @@ import (
 )
 
 type HealthHandler struct {
-	dbPingFn func(ctx context.Context) error
+	dbPingFn    func(ctx context.Context) error
 	redisPingFn func(ctx context.Context) error
 }
 
 type HealthResponse struct {
 	Status    string            `json:"status"`
-	Timestamp time.Time        `json:"timestamp"`
+	Timestamp time.Time         `json:"timestamp"`
 	Checks    map[string]string `json:"checks,omitempty"`
 }
 

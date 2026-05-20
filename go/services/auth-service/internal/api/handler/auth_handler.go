@@ -20,8 +20,8 @@ const (
 )
 
 type AuthHandler struct {
-	authService     *service.AuthService
-	refreshService  *service.RefreshService
+	authService    *service.AuthService
+	refreshService *service.RefreshService
 	jwtService     *service.JWTService
 	logger         *zap.Logger
 }
@@ -217,7 +217,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	c.SetCookie(
 		RefreshTokenCookieName,
 		refreshResp.NewRefreshToken,
-		int(time.Until(time.Now().Add(time.Duration(refreshResp.ExpiresIn) * time.Second)).Seconds()),
+		int(time.Until(time.Now().Add(time.Duration(refreshResp.ExpiresIn)*time.Second)).Seconds()),
 		"/",
 		"",
 		true,

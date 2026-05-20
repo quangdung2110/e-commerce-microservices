@@ -4,9 +4,9 @@ type UserStatus string
 
 const (
 	StatusPendingVerification UserStatus = "PENDING_VERIFICATION"
-	StatusActive             UserStatus = "ACTIVE"
-	StatusLocked            UserStatus = "LOCKED"
-	StatusBanned            UserStatus = "BANNED"
+	StatusActive              UserStatus = "ACTIVE"
+	StatusLocked              UserStatus = "LOCKED"
+	StatusBanned              UserStatus = "BANNED"
 )
 
 func (s UserStatus) IsActive() bool {

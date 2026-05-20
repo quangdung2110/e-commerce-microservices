@@ -118,11 +118,11 @@ func TestRefreshService_RefreshTokens_GracePeriodHit(t *testing.T) {
 	now := time.Now()
 
 	storedToken := &entity.RefreshToken{
-		ID:         uuid.New().String(),
-		UserID:     userID,
-		TokenHash:  oldTokenHash,
-		ExpiresAt:  now.Add(-time.Hour),
-		RevokedAt:  &now, // Already revoked - concurrency case
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		TokenHash: oldTokenHash,
+		ExpiresAt: now.Add(-time.Hour),
+		RevokedAt: &now, // Already revoked - concurrency case
 	}
 
 	// Setup expectations
@@ -176,11 +176,11 @@ func TestRefreshService_RefreshTokens_TokenTheft(t *testing.T) {
 	now := time.Now()
 
 	storedToken := &entity.RefreshToken{
-		ID:         uuid.New().String(),
-		UserID:     userID,
-		TokenHash:  oldTokenHash,
-		ExpiresAt:  now.Add(-time.Hour),
-		RevokedAt:  &now, // Revoked
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		TokenHash: oldTokenHash,
+		ExpiresAt: now.Add(-time.Hour),
+		RevokedAt: &now, // Revoked
 	}
 
 	// Setup expectations

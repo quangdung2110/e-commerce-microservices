@@ -24,9 +24,9 @@ type SessionInfo struct {
 // SessionService handles session operations
 type SessionService struct {
 	refreshTokenRepo port.RefreshTokenRepository
-	tokenCache      port.TokenCache
-	auditService    *AuditService
-	logger          *zap.Logger
+	tokenCache       port.TokenCache
+	auditService     *AuditService
+	logger           *zap.Logger
 }
 
 func NewSessionService(

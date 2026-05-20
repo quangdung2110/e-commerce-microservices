@@ -17,7 +17,7 @@ const (
 type SecurityLevel string
 
 const (
-	SecurityLevelInfo      SecurityLevel = "INFO"
+	SecurityLevelInfo     SecurityLevel = "INFO"
 	SecurityLevelWarning  SecurityLevel = "WARNING"
 	SecurityLevelCritical SecurityLevel = "CRITICAL"
 )
@@ -25,8 +25,8 @@ const (
 type LogCategory string
 
 const (
-	LogCategoryUser    LogCategory = "USER"
-	LogCategorySystem  LogCategory = "SYSTEM"
+	LogCategoryUser     LogCategory = "USER"
+	LogCategorySystem   LogCategory = "SYSTEM"
 	LogCategorySecurity LogCategory = "SECURITY"
 )
 

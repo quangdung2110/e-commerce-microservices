@@ -249,7 +249,9 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *UserRepository) scanUser(row interface{ Scan(dest ...interface{}) error }) (*entity.User, error) {
+func (r *UserRepository) scanUser(row interface {
+	Scan(dest ...interface{}) error
+}) (*entity.User, error) {
 	var user entity.User
 	var emailStr string
 	var rolesJSON []byte

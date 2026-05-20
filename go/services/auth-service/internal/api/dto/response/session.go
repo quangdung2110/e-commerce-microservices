@@ -17,7 +17,7 @@ type SessionResponse struct {
 
 type SessionsResponse struct {
 	Sessions []*SessionResponse `json:"sessions"`
-	Total    int               `json:"total"`
+	Total    int                `json:"total"`
 }
 
 type AuditLogItem struct {
@@ -49,9 +49,9 @@ type LoginHistoryItem struct {
 
 type LoginHistoryResponse struct {
 	History []*LoginHistoryItem `json:"history"`
-	Total   int                `json:"total"`
-	Limit   int                `json:"limit"`
-	Offset  int                `json:"offset"`
+	Total   int                 `json:"total"`
+	Limit   int                 `json:"limit"`
+	Offset  int                 `json:"offset"`
 }
 
 func ParsePayload(payload json.RawMessage) map[string]interface{} {

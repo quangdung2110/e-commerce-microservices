@@ -187,7 +187,9 @@ func (r *RefreshTokenRepository) DeleteExpired(ctx context.Context, olderThan ti
 	return result.RowsAffected(), nil
 }
 
-func (r *RefreshTokenRepository) scanRefreshToken(row interface{ Scan(dest ...interface{}) error }) (*entity.RefreshToken, error) {
+func (r *RefreshTokenRepository) scanRefreshToken(row interface {
+	Scan(dest ...interface{}) error
+}) (*entity.RefreshToken, error) {
 	var token entity.RefreshToken
 	err := row.Scan(
 		&token.ID,

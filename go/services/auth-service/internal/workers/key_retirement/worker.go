@@ -15,7 +15,7 @@ import (
 )
 
 type KeyRetirementWorker struct {
-	keyService *service.KeyService
+	keyService  *service.KeyService
 	jwksService *service.JWKSService
 	redisClient *redis.Client
 	pubsub      *pubsub.Publisher
@@ -34,13 +34,13 @@ func NewKeyRetirementWorker(
 	logger *zap.Logger,
 ) *KeyRetirementWorker {
 	return &KeyRetirementWorker{
-		keyService:   keyService,
-		jwksService:  jwksService,
-		redisClient:  redisClient,
-		pubsub:       pubsubPublisher,
-		config:       cfg,
-		logger:       logger.With(zap.String("worker", "KeyRetirement")),
-		stopCh:       make(chan struct{}),
+		keyService:  keyService,
+		jwksService: jwksService,
+		redisClient: redisClient,
+		pubsub:      pubsubPublisher,
+		config:      cfg,
+		logger:      logger.With(zap.String("worker", "KeyRetirement")),
+		stopCh:      make(chan struct{}),
 	}
 }
 

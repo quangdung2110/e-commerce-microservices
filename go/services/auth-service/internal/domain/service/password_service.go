@@ -40,14 +40,14 @@ type ForgotPasswordRequest struct {
 
 // PasswordService handles password management operations
 type PasswordService struct {
-	userRepo        port.UserRepository
+	userRepo         port.UserRepository
 	refreshTokenRepo port.RefreshTokenRepository
-	tokenCache     port.TokenCache
-	passwordHasher port.PasswordHasher
-	resetTokenCache port.ResetTokenCache
-	eventPublisher port.EventPublisher
-	auditService   *AuditService
-	logger         *zap.Logger
+	tokenCache       port.TokenCache
+	passwordHasher   port.PasswordHasher
+	resetTokenCache  port.ResetTokenCache
+	eventPublisher   port.EventPublisher
+	auditService     *AuditService
+	logger           *zap.Logger
 }
 
 func NewPasswordService(
@@ -61,14 +61,14 @@ func NewPasswordService(
 	logger *zap.Logger,
 ) *PasswordService {
 	return &PasswordService{
-		userRepo:        userRepo,
+		userRepo:         userRepo,
 		refreshTokenRepo: refreshTokenRepo,
-		tokenCache:      tokenCache,
-		passwordHasher:  passwordHasher,
-		resetTokenCache: resetTokenCache,
-		eventPublisher:  eventPublisher,
-		auditService:    auditService,
-		logger:          logger.With(zap.String("service", "PasswordService")),
+		tokenCache:       tokenCache,
+		passwordHasher:   passwordHasher,
+		resetTokenCache:  resetTokenCache,
+		eventPublisher:   eventPublisher,
+		auditService:     auditService,
+		logger:           logger.With(zap.String("service", "PasswordService")),
 	}
 }
 
@@ -241,7 +241,7 @@ func (s *PasswordService) ResetPassword(ctx context.Context, req *PasswordResetR
 
 	// Publish password changed event
 	if s.eventPublisher != nil {
-		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.DeviceInfo)
+		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.IPAddress)
 		_ = s.eventPublisher.Publish(ctx, passwordChanged)
 	}
 

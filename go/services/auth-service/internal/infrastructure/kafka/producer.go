@@ -74,7 +74,6 @@ func (p *Producer) Publish(ctx context.Context, event interface{}) error {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	eventType := p.getEventType(event)
 	partitionKey := p.getPartitionKey(event)
 
 	topic := TopicAuthEvents

@@ -10,9 +10,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/api/dto/response"
+	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/service"
-	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
 )
 
 type AuditHandler struct {

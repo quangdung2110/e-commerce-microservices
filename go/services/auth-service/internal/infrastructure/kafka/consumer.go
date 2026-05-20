@@ -95,12 +95,16 @@ func (c *Consumer) Close() error {
 	return c.consumerGroup.Close()
 }
 
+// MarkOffset is deprecated - offset marking is now handled automatically by the session
+// This method is kept for API compatibility but does nothing
 func (c *Consumer) MarkOffset(msg *sarama.ConsumerMessage) {
-	c.consumerGroup.MarkMessage(msg, "")
+	// No-op: In newer Sarama versions, offsets are marked automatically via session.MarkMessage
 }
 
+// MarkOffsetWithMetadata is deprecated - offset marking is now handled automatically by the session
+// This method is kept for API compatibility but does nothing
 func (c *Consumer) MarkOffsetWithMetadata(msg *sarama.ConsumerMessage, metadata string) {
-	c.consumerGroup.MarkMessage(msg, metadata)
+	// No-op: In newer Sarama versions, offsets are marked automatically via session.MarkMessage
 }
 
 func (h *consumerGroupHandler) Setup(session sarama.ConsumerGroupSession) error {

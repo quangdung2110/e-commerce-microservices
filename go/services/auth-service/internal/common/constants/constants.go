@@ -9,23 +9,23 @@ const (
 )
 
 const (
-	MaxFailedLoginAttempts       = 5
-	LockoutDuration             = 30 * time.Minute
-	FailedLoginWindow           = 60 * time.Minute
-	MaxConcurrentSessions       = 10
-	DistributedAttackThreshold   = 20
+	MaxFailedLoginAttempts     = 5
+	LockoutDuration            = 30 * time.Minute
+	FailedLoginWindow          = 60 * time.Minute
+	MaxConcurrentSessions      = 10
+	DistributedAttackThreshold = 20
 )
 
 const (
 	KeyRotationIntervalDefault = 30 * 24 * time.Hour
-	KeyRetirementDelayDefault = 31 * 24 * time.Hour
-	RSAKeySizeDefault         = 2048
+	KeyRetirementDelayDefault  = 31 * 24 * time.Hour
+	RSAKeySizeDefault          = 2048
 )
 
 const (
 	RefreshTokenRetention = 7 * 24 * time.Hour
-	AuditLogRetention    = 180 * 24 * time.Hour
-	AutoUnlockInterval  = 5 * time.Minute
+	AuditLogRetention     = 180 * 24 * time.Hour
+	AutoUnlockInterval    = 5 * time.Minute
 )
 
 const (
@@ -47,9 +47,9 @@ const (
 
 const (
 	StatusPendingVerification = "PENDING_VERIFICATION"
-	StatusActive             = "ACTIVE"
-	StatusLocked            = "LOCKED"
-	StatusBanned            = "BANNED"
+	StatusActive              = "ACTIVE"
+	StatusLocked              = "LOCKED"
+	StatusBanned              = "BANNED"
 )
 
 const (
@@ -60,7 +60,7 @@ const (
 )
 
 const (
-	SecurityLevelInfo      = "INFO"
+	SecurityLevelInfo     = "INFO"
 	SecurityLevelWarning  = "WARNING"
 	SecurityLevelCritical = "CRITICAL"
 )

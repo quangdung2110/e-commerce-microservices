@@ -199,7 +199,7 @@ func (s *AuditService) LogBruteForceAttempt(ctx context.Context, email, ipAddres
 	).WithIP(ipAddress)
 
 	payload := map[string]interface{}{
-		"email":        email,
+		"email":         email,
 		"attempt_count": attemptCount,
 	}
 	auditLog.WithPayload(payload)

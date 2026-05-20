@@ -41,14 +41,14 @@ func NewRouter(
 
 	return &Router{
 		engine:                engine,
-		healthHandler:        healthHandler,
-		userHandler:          userHandler,
-		authHandler:          authHandler,
-		sessionHandler:       sessionHandler,
-		passwordHandler:     passwordHandler,
-		auditHandler:        auditHandler,
-		jwksHandler:         jwksHandler,
-		authMiddleware:       authMiddleware,
+		healthHandler:         healthHandler,
+		userHandler:           userHandler,
+		authHandler:           authHandler,
+		sessionHandler:        sessionHandler,
+		passwordHandler:       passwordHandler,
+		auditHandler:          auditHandler,
+		jwksHandler:           jwksHandler,
+		authMiddleware:        authMiddleware,
 		rateLimiterMiddleware: rateLimiterMiddleware,
 	}
 }

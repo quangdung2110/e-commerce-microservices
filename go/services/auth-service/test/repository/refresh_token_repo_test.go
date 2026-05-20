@@ -69,13 +69,13 @@ func TestRefreshTokenRepository_GetByID(t *testing.T) {
 
 	ctx := context.Background()
 	token := &entity.RefreshToken{
-		ID:         "550e8400-e29b-41d4-a716-446655440102",
-		UserID:     "550e8400-e29b-41d4-a716-446655440100",
-		TokenHash:  "hash_123456789012345678901234567890123456789012345678901234567",
-		FamilyID:   "family-456",
-		DeviceID:   "device-xyz",
-		ExpiresAt:  time.Now().Add(24 * time.Hour),
-		CreatedAt:  time.Now(),
+		ID:        "550e8400-e29b-41d4-a716-446655440102",
+		UserID:    "550e8400-e29b-41d4-a716-446655440100",
+		TokenHash: "hash_123456789012345678901234567890123456789012345678901234567",
+		FamilyID:  "family-456",
+		DeviceID:  "device-xyz",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
 	}
 
 	err := tokenRepo.Create(ctx, token)
@@ -104,13 +104,13 @@ func TestRefreshTokenRepository_GetByTokenHash(t *testing.T) {
 	ctx := context.Background()
 	tokenHash := "unique_hash_123456789012345678901234567890123456789012345678901234"
 	token := &entity.RefreshToken{
-		ID:         "550e8400-e29b-41d4-a716-446655440103",
-		UserID:     "550e8400-e29b-41d4-a716-446655440100",
-		TokenHash:  tokenHash,
-		FamilyID:   "family-789",
-		DeviceID:   "device-def",
-		ExpiresAt:  time.Now().Add(24 * time.Hour),
-		CreatedAt:  time.Now(),
+		ID:        "550e8400-e29b-41d4-a716-446655440103",
+		UserID:    "550e8400-e29b-41d4-a716-446655440100",
+		TokenHash: tokenHash,
+		FamilyID:  "family-789",
+		DeviceID:  "device-def",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
 	}
 
 	err := tokenRepo.Create(ctx, token)
@@ -131,13 +131,13 @@ func TestRefreshTokenRepository_GetActiveByUserID(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		token := &entity.RefreshToken{
-			ID:         "550e8400-e29b-41d4-a716-44665544011" + string(rune('0'+i)),
-			UserID:     userID,
-			TokenHash:  "hash_active_" + string(rune('0'+i)) + "_123456789012345678901234567890123",
-			FamilyID:   "family-active-" + string(rune('0'+i)),
-			DeviceID:   "device-" + string(rune('0'+i)),
-			ExpiresAt:  time.Now().Add(24 * time.Hour),
-			CreatedAt:  time.Now(),
+			ID:        "550e8400-e29b-41d4-a716-44665544011" + string(rune('0'+i)),
+			UserID:    userID,
+			TokenHash: "hash_active_" + string(rune('0'+i)) + "_123456789012345678901234567890123",
+			FamilyID:  "family-active-" + string(rune('0'+i)),
+			DeviceID:  "device-" + string(rune('0'+i)),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+			CreatedAt: time.Now(),
 		}
 		err := tokenRepo.Create(ctx, token)
 		require.NoError(t, err)
@@ -154,13 +154,13 @@ func TestRefreshTokenRepository_Revoke(t *testing.T) {
 
 	ctx := context.Background()
 	token := &entity.RefreshToken{
-		ID:         "550e8400-e29b-41d4-a716-446655440110",
-		UserID:     "550e8400-e29b-41d4-a716-446655440100",
-		TokenHash:  "revoke_hash_12345678901234567890123456789012345678901234567890123",
-		FamilyID:   "family-revoke",
-		DeviceID:   "device-revoke",
-		ExpiresAt:  time.Now().Add(24 * time.Hour),
-		CreatedAt:  time.Now(),
+		ID:        "550e8400-e29b-41d4-a716-446655440110",
+		UserID:    "550e8400-e29b-41d4-a716-446655440100",
+		TokenHash: "revoke_hash_12345678901234567890123456789012345678901234567890123",
+		FamilyID:  "family-revoke",
+		DeviceID:  "device-revoke",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
 	}
 
 	err := tokenRepo.Create(ctx, token)
@@ -183,13 +183,13 @@ func TestRefreshTokenRepository_RevokeAllForUser(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		token := &entity.RefreshToken{
-			ID:         "550e8400-e29b-41d4-a716-44665544012" + string(rune('0'+i)),
-			UserID:     userID,
-			TokenHash:  "revoke_all_hash_" + string(rune('0'+i)) + "_123456789012345678901234567890",
-			FamilyID:   "family-revoke-all-" + string(rune('0'+i)),
-			DeviceID:   "device-revoke-all-" + string(rune('0'+i)),
-			ExpiresAt:  time.Now().Add(24 * time.Hour),
-			CreatedAt:  time.Now(),
+			ID:        "550e8400-e29b-41d4-a716-44665544012" + string(rune('0'+i)),
+			UserID:    userID,
+			TokenHash: "revoke_all_hash_" + string(rune('0'+i)) + "_123456789012345678901234567890",
+			FamilyID:  "family-revoke-all-" + string(rune('0'+i)),
+			DeviceID:  "device-revoke-all-" + string(rune('0'+i)),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+			CreatedAt: time.Now(),
 		}
 		err := tokenRepo.Create(ctx, token)
 		require.NoError(t, err)
@@ -213,13 +213,13 @@ func TestRefreshTokenRepository_RevokeFamily(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		token := &entity.RefreshToken{
-			ID:         "550e8400-e29b-41d4-a716-44665544013" + string(rune('0'+i)),
-			UserID:     userID,
-			TokenHash:  "family_hash_" + string(rune('0'+i)) + "_1234567890123456789012345678901234",
-			FamilyID:   familyID,
-			DeviceID:   "device-family-" + string(rune('0'+i)),
-			ExpiresAt:  time.Now().Add(24 * time.Hour),
-			CreatedAt:  time.Now(),
+			ID:        "550e8400-e29b-41d4-a716-44665544013" + string(rune('0'+i)),
+			UserID:    userID,
+			TokenHash: "family_hash_" + string(rune('0'+i)) + "_1234567890123456789012345678901234",
+			FamilyID:  familyID,
+			DeviceID:  "device-family-" + string(rune('0'+i)),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+			CreatedAt: time.Now(),
 		}
 		err := tokenRepo.Create(ctx, token)
 		require.NoError(t, err)
@@ -239,13 +239,13 @@ func TestRefreshTokenRepository_UpdateReplacedBy(t *testing.T) {
 
 	ctx := context.Background()
 	oldToken := &entity.RefreshToken{
-		ID:         "550e8400-e29b-41d4-a716-446655440140",
-		UserID:     "550e8400-e29b-41d4-a716-446655440100",
-		TokenHash:  "old_token_hash_1234567890123456789012345678901234567890123456789012",
-		FamilyID:   "family-replace",
-		DeviceID:   "device-replace",
-		ExpiresAt:  time.Now().Add(24 * time.Hour),
-		CreatedAt:  time.Now(),
+		ID:        "550e8400-e29b-41d4-a716-446655440140",
+		UserID:    "550e8400-e29b-41d4-a716-446655440100",
+		TokenHash: "old_token_hash_1234567890123456789012345678901234567890123456789012",
+		FamilyID:  "family-replace",
+		DeviceID:  "device-replace",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
 	}
 	err := tokenRepo.Create(ctx, oldToken)
 	require.NoError(t, err)
@@ -268,14 +268,14 @@ func TestRefreshTokenRepository_DeleteExpired(t *testing.T) {
 	ctx := context.Background()
 
 	expiredToken := &entity.RefreshToken{
-		ID:         "550e8400-e29b-41d4-a716-446655440150",
-		UserID:     "550e8400-e29b-41d4-a716-446655440100",
-		TokenHash:  "expired_hash_123456789012345678901234567890123456789012345678901234",
-		FamilyID:   "family-expired",
-		DeviceID:   "device-expired",
-		ExpiresAt:  time.Now().Add(-48 * time.Hour),
-		RevokedAt:  timePtr(time.Now().Add(-24 * time.Hour)),
-		CreatedAt:  time.Now().Add(-72 * time.Hour),
+		ID:        "550e8400-e29b-41d4-a716-446655440150",
+		UserID:    "550e8400-e29b-41d4-a716-446655440100",
+		TokenHash: "expired_hash_123456789012345678901234567890123456789012345678901234",
+		FamilyID:  "family-expired",
+		DeviceID:  "device-expired",
+		ExpiresAt: time.Now().Add(-48 * time.Hour),
+		RevokedAt: timePtr(time.Now().Add(-24 * time.Hour)),
+		CreatedAt: time.Now().Add(-72 * time.Hour),
 	}
 	err := tokenRepo.Create(ctx, expiredToken)
 	require.NoError(t, err)

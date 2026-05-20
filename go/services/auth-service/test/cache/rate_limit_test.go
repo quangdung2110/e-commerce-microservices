@@ -124,4 +124,3 @@ func TestRateLimit_GetRemainingTTL(t *testing.T) {
 	assert.True(t, ttl > 0)
 	assert.True(t, ttl <= window)
 }
-

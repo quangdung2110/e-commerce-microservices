@@ -35,14 +35,14 @@ type AuditServicePort interface {
 
 // RefreshService handles refresh token operations with Grace Period
 type RefreshService struct {
-	userRepo          port.UserRepository
-	refreshTokenRepo  port.RefreshTokenRepository
-	tokenCache        port.TokenCache
-	gracePeriodCache  port.GracePeriodCache
-	jwtService        JWTServicePort
-	eventPublisher    port.EventPublisher
-	auditService      AuditServicePort
-	logger            *zap.Logger
+	userRepo         port.UserRepository
+	refreshTokenRepo port.RefreshTokenRepository
+	tokenCache       port.TokenCache
+	gracePeriodCache port.GracePeriodCache
+	jwtService       JWTServicePort
+	eventPublisher   port.EventPublisher
+	auditService     AuditServicePort
+	logger           *zap.Logger
 }
 
 func NewRefreshService(
@@ -56,14 +56,14 @@ func NewRefreshService(
 	logger *zap.Logger,
 ) *RefreshService {
 	return &RefreshService{
-		userRepo:          userRepo,
-		refreshTokenRepo:  refreshTokenRepo,
-		tokenCache:        tokenCache,
-		gracePeriodCache:  gracePeriodCache,
-		jwtService:        jwtService,
-		eventPublisher:    eventPublisher,
-		auditService:      auditService,
-		logger:            logger.With(zap.String("service", "RefreshService")),
+		userRepo:         userRepo,
+		refreshTokenRepo: refreshTokenRepo,
+		tokenCache:       tokenCache,
+		gracePeriodCache: gracePeriodCache,
+		jwtService:       jwtService,
+		eventPublisher:   eventPublisher,
+		auditService:     auditService,
+		logger:           logger.With(zap.String("service", "RefreshService")),
 	}
 }
 

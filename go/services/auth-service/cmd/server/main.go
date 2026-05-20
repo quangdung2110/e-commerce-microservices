@@ -21,7 +21,7 @@ import (
 	"github.com/ecommerce/auth-service/internal/common/config"
 	infracommon "github.com/ecommerce/auth-service/internal/infrastructure/common"
 	"github.com/ecommerce/auth-service/internal/infrastructure/kafka"
-	"github.com/ecommerce/auth-service/internal/infrastructure/kafka/handler as kafkaHandler"
+	kafkaHandler "github.com/ecommerce/auth-service/internal/infrastructure/kafka/handler"
 	"github.com/ecommerce/auth-service/internal/infrastructure/postgres"
 	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"

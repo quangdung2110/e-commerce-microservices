@@ -58,14 +58,14 @@ func TestUserRepository_GetByID(t *testing.T) {
 	email, _ := vo.NewEmail("getbyid@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440001",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440001",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -96,14 +96,14 @@ func TestUserRepository_GetByEmail(t *testing.T) {
 	email, _ := vo.NewEmail("getbyemail@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440002",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440002",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -133,14 +133,14 @@ func TestUserRepository_Update(t *testing.T) {
 	email, _ := vo.NewEmail("update@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440003",
-		Email:               *email,
-		PasswordHash:        "old_hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusPendingVerification,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440003",
+		Email:        *email,
+		PasswordHash: "old_hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusPendingVerification,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -168,14 +168,14 @@ func TestUserRepository_UpdateStatus(t *testing.T) {
 	email, _ := vo.NewEmail("status@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440004",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusPendingVerification,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440004",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusPendingVerification,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -197,14 +197,14 @@ func TestUserRepository_LockAccount(t *testing.T) {
 	email, _ := vo.NewEmail("lock@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440005",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440005",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -239,14 +239,14 @@ func TestUserRepository_UnlockAccount(t *testing.T) {
 	email, _ := vo.NewEmail("unlock@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440006",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440006",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -272,14 +272,14 @@ func TestUserRepository_BanAccount(t *testing.T) {
 	email, _ := vo.NewEmail("ban@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440007",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440007",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -301,14 +301,14 @@ func TestUserRepository_Delete(t *testing.T) {
 	email, _ := vo.NewEmail("delete@example.com")
 
 	user := &entity.User{
-		ID:                  "550e8400-e29b-41d4-a716-446655440008",
-		Email:               *email,
-		PasswordHash:        "hash",
-		Roles:               []string{"USER"},
-		Status:              vo.StatusActive,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		Revision:            0,
+		ID:           "550e8400-e29b-41d4-a716-446655440008",
+		Email:        *email,
+		PasswordHash: "hash",
+		Roles:        []string{"USER"},
+		Status:       vo.StatusActive,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		Revision:     0,
 	}
 
 	err := repo.Create(ctx, user)
@@ -331,14 +331,14 @@ func TestUserRepository_GetLockedUsers(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		email, _ := vo.NewEmail("lockeduser" + string(rune('0'+i)) + "@example.com")
 		user := &entity.User{
-			ID:                  "550e8400-e29b-41d4-a716-44665544001" + string(rune('0'+i)),
-			Email:               *email,
-			PasswordHash:        "hash",
-			Roles:               []string{"USER"},
-			Status:              vo.StatusActive,
-			CreatedAt:           time.Now(),
-			UpdatedAt:           time.Now(),
-			Revision:            0,
+			ID:           "550e8400-e29b-41d4-a716-44665544001" + string(rune('0'+i)),
+			Email:        *email,
+			PasswordHash: "hash",
+			Roles:        []string{"USER"},
+			Status:       vo.StatusActive,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+			Revision:     0,
 		}
 		err := repo.Create(ctx, user)
 		require.NoError(t, err)

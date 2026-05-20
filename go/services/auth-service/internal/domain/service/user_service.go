@@ -179,10 +179,7 @@ func (s *UserService) BanUser(ctx context.Context, userID string, reason string)
 		return nil
 	}
 
-	now := time.Now().UTC()
-	user.Status = entity.UserStatusBanned
-	user.BannedAt = &now
-	user.BanReason = &reason
+	user.Ban()
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to ban user: %w", err)

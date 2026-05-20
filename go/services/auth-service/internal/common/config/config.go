@@ -29,9 +29,9 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	IdleTimeout    time.Duration
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
 	ShutdownTimeout time.Duration
 }
 
@@ -67,8 +67,8 @@ type JWTConfig struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	GracePeriod     time.Duration
-	Issuer         string
-	Algorithm      string
+	Issuer          string
+	Algorithm       string
 }
 
 type SecurityConfig struct {
@@ -97,14 +97,14 @@ type SessionConfig struct {
 
 type KeysConfig struct {
 	RotationInterval time.Duration
-	RetirementDelay time.Duration
-	KeySize         int
+	RetirementDelay  time.Duration
+	KeySize          int
 }
 
 type CleanupConfig struct {
 	RefreshTokenRetention time.Duration
-	AuditLogRetention    time.Duration
-	AutoUnlockInterval   time.Duration
+	AuditLogRetention     time.Duration
+	AutoUnlockInterval    time.Duration
 }
 
 type LoggingConfig struct {

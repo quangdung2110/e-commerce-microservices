@@ -163,7 +163,9 @@ func (r *JWTKeyRepository) Delete(ctx context.Context, kid string) error {
 	return nil
 }
 
-func (r *JWTKeyRepository) scanJWTKey(row interface{ Scan(dest ...interface{}) error }) (*entity.JWTKey, error) {
+func (r *JWTKeyRepository) scanJWTKey(row interface {
+	Scan(dest ...interface{}) error
+}) (*entity.JWTKey, error) {
 	var key entity.JWTKey
 	err := row.Scan(
 		&key.Kid,

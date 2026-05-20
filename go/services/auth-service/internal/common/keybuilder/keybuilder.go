@@ -7,12 +7,12 @@ const AuthPrefix = "auth:"
 const (
 	DenylistPattern         = "auth:denylist:%s"
 	RevokedBeforePattern    = "auth:revoked_before:%s"
-	GracePeriodPattern     = "auth:refresh_grace:%s"
+	GracePeriodPattern      = "auth:refresh_grace:%s"
 	FailedLoginEmailPattern = "auth:failed_login:%s"
 	RateLimitPattern        = "auth:rate_limit:%s:%s"
 	OTPEmailPattern         = "auth:otp:register:%s"
 	ResetTokenPattern       = "auth:reset_pw:%s"
-	JWKSChannel            = "auth:jwks:update"
+	JWKSChannel             = "auth:jwks:update"
 )
 
 func Denylist(jti string) string {

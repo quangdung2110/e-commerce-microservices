@@ -13,38 +13,38 @@ import (
 const (
 	// USER Events
 	EventUserOTPRequested       = "USER_OTP_REQUEST"         // OTP requested
-	EventUserVerifiedSuccess   = "USER_VERIFIED_SUCCESS"   // Email verified
-	EventUserDeleted           = "USER_DELETED"            // Account deleted (GDPR)
-	EventUserEmailChanged      = "USER_EMAIL_CHANGED"       // Email changed
-	EventUserPasswordChanged   = "USER_PASSWORD_CHANGED"    // Password changed
-	EventUserAccountLocked     = "USER_ACCOUNT_LOCKED"     // Account locked
-	EventUserUnlocked         = "USER_UNLOCKED"           // Account unlocked
+	EventUserVerifiedSuccess    = "USER_VERIFIED_SUCCESS"    // Email verified
+	EventUserDeleted            = "USER_DELETED"             // Account deleted (GDPR)
+	EventUserEmailChanged       = "USER_EMAIL_CHANGED"       // Email changed
+	EventUserPasswordChanged    = "USER_PASSWORD_CHANGED"    // Password changed
+	EventUserAccountLocked      = "USER_ACCOUNT_LOCKED"      // Account locked
+	EventUserUnlocked           = "USER_UNLOCKED"            // Account unlocked
 	EventUserBannedNotification = "USER_BANNED_NOTIFICATION" // Account banned notification
 	EventPasswordResetRequested = "PASSWORD_RESET_REQUESTED" // Password reset requested
-	EventTokenTheftDetected   = "TOKEN_THEFT_DETECTED"    // Token theft detected
+	EventTokenTheftDetected     = "TOKEN_THEFT_DETECTED"     // Token theft detected
 
 	// Internal events (not published to Kafka)
-	eventLoginSuccess         = "LOGIN_SUCCESS"           // Internal use only
-	eventLoginFailed          = "LOGIN_FAILED"            // Internal use only
-	eventLogout               = "LOGOUT"                  // Internal use only
-	eventForceLogout          = "FORCE_LOGOUT"            // Internal use only
+	eventLoginSuccess = "LOGIN_SUCCESS" // Internal use only
+	eventLoginFailed  = "LOGIN_FAILED"  // Internal use only
+	eventLogout       = "LOGOUT"        // Internal use only
+	eventForceLogout  = "FORCE_LOGOUT"  // Internal use only
 )
 
 const (
-	OTPTypeRegister       = "REGISTER_VERIFICATION"
-	OTPTypePasswordReset  = "PASSWORD_RESET"
-	OTPTypeEmailChange    = "EMAIL_CHANGE"
-	OTPTypeLogin2FA       = "LOGIN_2FA"
+	OTPTypeRegister      = "REGISTER_VERIFICATION"
+	OTPTypePasswordReset = "PASSWORD_RESET"
+	OTPTypeEmailChange   = "EMAIL_CHANGE"
+	OTPTypeLogin2FA      = "LOGIN_2FA"
 )
 
 const (
-	DeleteReasonGDPRRequest    = "GDPR_REQUEST"
+	DeleteReasonGDPRRequest   = "GDPR_REQUEST"
 	DeleteReasonAdminDeletion = "ADMIN_DELETION"
 )
 
 const (
-	UnlockTypeAuto   = "AUTO"
-	UnlockTypeAdmin  = "ADMIN"
+	UnlockTypeAuto  = "AUTO"
+	UnlockTypeAdmin = "ADMIN"
 )
 
 type EventBase struct {
@@ -155,10 +155,10 @@ type UserDeleted struct {
 }
 
 type UserDeletedPayload struct {
-	UserID                     string `json:"user_id"`
-	DeletedAt                  string `json:"deleted_at"`
-	Reason                     string `json:"reason"`
-	RetentionWindowExpiresAt   string `json:"retention_window_expires_at"`
+	UserID                   string `json:"user_id"`
+	DeletedAt                string `json:"deleted_at"`
+	Reason                   string `json:"reason"`
+	RetentionWindowExpiresAt string `json:"retention_window_expires_at"`
 }
 
 func NewUserDeleted(userID, reason string, retentionDays int) *UserDeleted {
@@ -188,7 +188,7 @@ type TokenTheftDetected struct {
 type TokenTheftPayload struct {
 	UserID              string `json:"user_id"`
 	TheftRefreshTokenID string `json:"theft_refresh_token_id"`
-	ActionTaken        string `json:"action_taken"`
+	ActionTaken         string `json:"action_taken"`
 }
 
 const ActionAllTokensRevoked = "ALL_TOKENS_REVOKED"
@@ -242,20 +242,20 @@ type UserPasswordChanged struct {
 }
 
 type UserPasswordChangedPayload struct {
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
+	UserID     string `json:"user_id"`
+	Email      string `json:"email"`
 	DeviceInfo string `json:"device_info"`
-	ChangedAt string `json:"changed_at"`
+	ChangedAt  string `json:"changed_at"`
 }
 
 func NewUserPasswordChanged(userID, email, deviceInfo string) *UserPasswordChanged {
 	return &UserPasswordChanged{
 		EventBase: NewEventBase(EventUserPasswordChanged, "USER", userID),
 		Payload: UserPasswordChangedPayload{
-			UserID:    userID,
-			Email:     email,
+			UserID:     userID,
+			Email:      email,
 			DeviceInfo: deviceInfo,
-			ChangedAt: time.Now().UTC().Format(time.RFC3339),
+			ChangedAt:  time.Now().UTC().Format(time.RFC3339),
 		},
 	}
 }
@@ -271,9 +271,9 @@ type UserAccountLocked struct {
 }
 
 type UserAccountLockedPayload struct {
-	UserID     string `json:"user_id"`
-	Email      string `json:"email"`
-	Reason     string `json:"reason"`
+	UserID      string `json:"user_id"`
+	Email       string `json:"email"`
+	Reason      string `json:"reason"`
 	LockedUntil string `json:"locked_until"`
 }
 
@@ -281,9 +281,9 @@ func NewUserAccountLocked(userID, email, reason string, lockedUntil time.Time) *
 	return &UserAccountLocked{
 		EventBase: NewEventBase(EventUserAccountLocked, "USER", userID),
 		Payload: UserAccountLockedPayload{
-			UserID:     userID,
-			Email:      email,
-			Reason:     reason,
+			UserID:      userID,
+			Email:       email,
+			Reason:      reason,
 			LockedUntil: lockedUntil.Format(time.RFC3339),
 		},
 	}

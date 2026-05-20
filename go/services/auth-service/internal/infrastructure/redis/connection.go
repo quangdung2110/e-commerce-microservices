@@ -45,7 +45,6 @@ func (c *Client) Pipeline() redis.Pipeliner {
 	return c.Client.Pipeline()
 }
 
-
 func (c *Client) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
 	return c.Client.SetEx(ctx, key, value, expiration)
 }

@@ -171,8 +171,8 @@ func (s *AuthService) Login(ctx context.Context, req *svc.LoginRequest) (*svc.Lo
 
 	return &svc.LoginResponse{
 		AccessToken: accessToken,
-		ExpiresIn:  int64(constants.AccessTokenTTLDefault.Seconds()),
-		TokenType:  "Bearer",
+		ExpiresIn:   int64(constants.AccessTokenTTLDefault.Seconds()),
+		TokenType:   "Bearer",
 		User: &svc.UserInfo{
 			ID:     user.ID,
 			Email:  user.Email.String(),

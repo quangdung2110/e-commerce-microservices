@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/api/dto/response"
-	"github.com/ecommerce/auth-service/internal/domain/service"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/domain/service"
 )
 
 const refreshTokenCookieName = "refresh_token"

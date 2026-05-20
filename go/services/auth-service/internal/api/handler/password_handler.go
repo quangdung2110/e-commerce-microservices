@@ -8,8 +8,8 @@ import (
 
 	"github.com/ecommerce/auth-service/internal/api/dto/request"
 	"github.com/ecommerce/auth-service/internal/api/dto/response"
-	"github.com/ecommerce/auth-service/internal/domain/service"
 	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/domain/service"
 )
 
 type PasswordHandler struct {
@@ -20,7 +20,7 @@ type PasswordHandler struct {
 func NewPasswordHandler(passwordService *service.PasswordService, logger *zap.Logger) *PasswordHandler {
 	return &PasswordHandler{
 		passwordService: passwordService,
-		logger:         logger.With(zap.String("handler", "PasswordHandler")),
+		logger:          logger.With(zap.String("handler", "PasswordHandler")),
 	}
 }
 

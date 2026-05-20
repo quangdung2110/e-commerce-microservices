@@ -12,9 +12,9 @@ type LoginRequest struct {
 
 type LoginResponse struct {
 	AccessToken string
-	ExpiresIn  int64
-	TokenType  string
-	User       *UserInfo
+	ExpiresIn   int64
+	TokenType   string
+	User        *UserInfo
 }
 
 type UserInfo struct {
