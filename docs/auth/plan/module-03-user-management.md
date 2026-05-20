@@ -95,9 +95,11 @@ import (
 
     "github.com/ecommerce/auth-service/internal/common/constants"
     "apperrors "github.com/ecommerce/auth-service/internal/common/errors"
+    "github.com/ecommerce/auth-service/internal/common/validator"
     "github.com/ecommerce/auth-service/internal/domain/entity"
     "github.com/ecommerce/auth-service/internal/domain/event"
     "github.com/ecommerce/auth-service/internal/domain/port"
+    "github.com/ecommerce/auth-service/internal/domain/vo"
 )
 
 type UserService struct {
@@ -131,18 +133,19 @@ type RegisterRequest struct {
 
 // Register creates a new user account
 func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*entity.User, string, error) {
-    // Validate email format
-    if !isValidEmail(req.Email) {
-        return nil, "", apperrors.ErrBadRequest.WithMessage("Invalid email format")
+    // Validate email format using Value Object
+    email, err := vo.NewEmail(req.Email)
+    if err != nil {
+        return nil, "", apperrors.NewAppError("INVALID_EMAIL", "Invalid email format", 400, err)
     }
 
-    // Validate password strength
-    if err := validatePassword(req.Password); err != nil {
-        return nil, "", apperrors.ErrWeakPassword.WithMessage(err.Error())
+    // Validate password strength using centralized validator
+    if valid, msg := validator.ValidatePassword(req.Password); !valid {
+        return nil, "", apperrors.NewAppError("WEAK_PASSWORD", msg, 400, nil)
     }
 
     // Check if email already exists
-    existing, err := s.userRepo.GetByEmail(ctx, req.Email)
+    existing, err := s.userRepo.GetByEmail(ctx, email.String())
     if err != nil && !errors.Is(err, port.ErrNotFound) {
         return nil, "", fmt.Errorf("failed to check existing user: %w", err)
     }
@@ -159,7 +162,7 @@ func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*enti
     // Create user entity
     user := &entity.User{
         ID:           uuid.New(),
-        Email:        req.Email,
+        Email:        *email,
         PasswordHash: passwordHash,
         Roles:        []string{"USER"},
         Status:       entity.StatusPendingVerification,
@@ -179,7 +182,7 @@ func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*enti
     }
 
     // Publish USER_OTP_REQUESTED event (via outbox)
-    otpEvent := event.NewUserOTPRequested(user.ID, user.Email, "REGISTER_VERIFICATION")
+    otpEvent := event.NewUserOTPRequested(user.ID, user.Email.String(), "REGISTER_VERIFICATION")
     if err := s.eventPublisher.Publish(ctx, otpEvent); err != nil {
         // Log error but don't fail registration
         fmt.Printf("Failed to publish OTP event: %v\n", err)
@@ -283,73 +286,10 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (*entity
     return user, nil
 }
 
-// Helper functions
-
-func isValidEmail(email string) bool {
-    // Simple email validation
-    if len(email) < 3 || len(email) > 255 {
-        return false
-    }
-    atIndex := -1
-    dotIndex := -1
-    for i, c := range email {
-        if c == '@' {
-            if atIndex != -1 {
-                return false // Multiple @
-            }
-            atIndex = i
-        }
-        if c == '.' && atIndex != -1 {
-            dotIndex = i
-        }
-    }
-    return atIndex > 0 && dotIndex > atIndex && dotIndex < len(email)-1
-}
-
-func validatePassword(password string) error {
-    if len(password) < 8 {
-        return errors.New("password must be at least 8 characters")
-    }
-    if len(password) > 128 {
-        return errors.New("password must not exceed 128 characters")
-    }
-    
-    hasUpper := false
-    hasLower := false
-    hasDigit := false
-    for _, c := range password {
-        switch {
-        case c >= 'A' && c <= 'Z':
-            hasUpper = true
-        case c >= 'a' && c <= 'z':
-            hasLower = true
-        case c >= '0' && c <= '9':
-            hasDigit = true
-        }
-    }
-    
-    if !hasUpper || !hasLower || !hasDigit {
-        return errors.New("password must contain uppercase, lowercase, and digit")
-    }
-    
-    return nil
-}
-
-// generateSecureOTP generates a cryptographically secure 6-digit OTP
-func generateSecureOTP() (string, error) {
-    const digits = "0123456789"
-    otp := make([]byte, constants.OTPLength)
-    
-    for i := 0; i < constants.OTPLength; i++ {
-        num, err := rand.Int(rand.Reader, big.NewInt(int64(len(digits))))
-        if err != nil {
-            return "", err
-        }
-        otp[i] = digits[num.Int64()]
-    }
-    
-    return string(otp), nil
-}
+// Note: Validation is handled by:
+// - Email: vo.NewEmail() -> validator.IsValidEmail()
+// - Password: validator.ValidatePassword()
+// See Section 7 for validation architecture.
 ```
 
 ### 2.2 Password Hasher Port
@@ -1026,110 +966,160 @@ type ErrorDetail struct {
 
 ## 7. Validation
 
-### 7.1 Validator
+### 7.1 Centralized Validator (Single Source of Truth)
+
+> **IMPORTANT**: All validation logic is centralized in `internal/common/validator/validator.go`. DO NOT create duplicate validation functions elsewhere.
 
 ```go
-// internal/api/validator/validator.go
+// internal/common/validator/validator.go
 package validator
 
 import (
-    "regexp"
-    "strings"
-
-    "github.com/go-playground/validator/v10"
+	"regexp"
+	"strings"
+	"unicode"
 )
 
-var validate *validator.Validate
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 
-func init() {
-    validate = validator.New()
-
-    // Register custom validation for password
-    validate.RegisterValidation("password", validatePassword)
-
-    // Register custom validation for email
-    validate.RegisterValidation("email", validateEmail)
+func IsValidEmail(email string) bool {
+	if email == "" {
+		return false
+	}
+	email = strings.TrimSpace(email)
+	return emailRegex.MatchString(email)
 }
 
-func validatePassword(fl validator.FieldLevel) bool {
-    password := fl.Field().String()
-    
-    // Minimum length
-    if len(password) < 8 {
-        return false
-    }
-    
-    // Maximum length
-    if len(password) > 128 {
-        return false
-    }
-    
-    // Complexity requirements
-    hasUpper := false
-    hasLower := false
-    hasDigit := false
-    
-    for _, c := range password {
-        switch {
-        case c >= 'A' && c <= 'Z':
-            hasUpper = true
-        case c >= 'a' && c <= 'z':
-            hasLower = true
-        case c >= '0' && c <= '9':
-            hasDigit = true
-        }
-    }
-    
-    return hasUpper && hasLower && hasDigit
+func ValidatePassword(password string) (bool, string) {
+	if len(password) < 8 {
+		return false, "password must be at least 8 characters"
+	}
+	if len(password) > 128 {
+		return false, "password must not exceed 128 characters"
+	}
+
+	hasUpper := false
+	hasLower := false
+	hasDigit := false
+
+	for _, c := range password {
+		switch {
+		case unicode.IsUpper(c):
+			hasUpper = true
+		case unicode.IsLower(c):
+			hasLower = true
+		case unicode.IsDigit(c):
+			hasDigit = true
+		}
+	}
+
+	if !hasUpper {
+		return false, "password must contain at least one uppercase letter"
+	}
+	if !hasLower {
+		return false, "password must contain at least one lowercase letter"
+	}
+	if !hasDigit {
+		return false, "password must contain at least one digit"
+	}
+
+	return true, ""
 }
 
-func validateEmail(fl validator.FieldLevel) bool {
-    email := fl.Field().String()
-    
-    emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-    return emailRegex.MatchString(email)
+func IsValidPassword(password string) bool {
+	valid, _ := ValidatePassword(password)
+	return valid
+}
+```
+
+### 7.2 Email Value Object
+
+```go
+// internal/domain/vo/email.go
+package vo
+
+import (
+	"errors"
+
+	"github.com/ecommerce/auth-service/internal/common/validator"
+)
+
+type Email struct {
+	value string
 }
 
-func Validate(s interface{}) error {
-    return validate.Struct(s)
+func NewEmail(value string) (*Email, error) {
+	if !validator.IsValidEmail(value) {
+		return nil, errors.New("invalid email format")
+	}
+	return &Email{value: value}, nil
 }
 
-// ValidationError represents a validation error
-type ValidationError struct {
-    Field   string `json:"field"`
-    Message string `json:"message"`
+func (e *Email) String() string {
+	return e.value
 }
 
-func FormatValidationErrors(err error) []ValidationError {
-    var errors []ValidationError
-    
-    if validationErrors, ok := err.(validator.ValidationErrors); ok {
-        for _, e := range validationErrors {
-            errors = append(errors, ValidationError{
-                Field:   strings.ToLower(e.Field()),
-                Message: getErrorMessage(e),
-            })
-        }
-    }
-    
-    return errors
+func (e *Email) Equals(other *Email) bool {
+	return e.value == other.value
+}
+```
+
+### 7.3 Service Layer Usage
+
+```go
+// internal/domain/service/user_service.go
+package service
+
+import (
+	// ...
+
+	"github.com/ecommerce/auth-service/internal/common/validator"
+	"github.com/ecommerce/auth-service/internal/domain/vo"
+	// ...
+)
+
+func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*entity.User, string, error) {
+	// Validate email using Value Object
+	email, err := vo.NewEmail(req.Email)
+	if err != nil {
+		return nil, "", apperrors.NewAppError("INVALID_EMAIL", "Invalid email format", 400, err)
+	}
+
+	// Validate password using centralized validator
+	if valid, msg := validator.ValidatePassword(req.Password); !valid {
+		return nil, "", apperrors.NewAppError("WEAK_PASSWORD", msg, 400, nil)
+	}
+
+	// ... rest of registration logic
+}
+```
+
+### 7.4 DTO Layer (Gin Binding)
+
+> **Note**: DTOs use Gin binding tags for quick validation. Full validation is done at the service layer.
+
+```go
+// internal/api/dto/request/register.go
+package request
+
+type RegisterRequest struct {
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=8,max=128"`
 }
 
-func getErrorMessage(e validator.FieldError) string {
-    switch e.Tag() {
-    case "required":
-        return "This field is required"
-    case "email":
-        return "Invalid email format"
-    case "min":
-        return "Value is too short"
-    case "max":
-        return "Value is too long"
-    case "password":
-        return "Password must contain uppercase, lowercase, and digit"
-    default:
-        return "Invalid value"
-    }
+// internal/api/dto/request/verify_email.go
+package request
+
+type VerifyEmailRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	OTP   string `json:"otp" binding:"required,len=6"`
+}
+
+// internal/api/dto/request/resend_otp.go
+package request
+
+type ResendOTPRequest struct {
+	Email string `json:"email" binding:"required,email"`
 }
 ```
 
@@ -1648,10 +1638,13 @@ func TestOTPService_VerifyInvalidOTP(t *testing.T) {
 
 ### Validation
 
-- [x] Create `internal/api/validator/validator.go`
-- [x] Add password validation rules
-- [x] Add email validation rules
-- [x] Implement error formatting
+- [x] Create `internal/common/validator/validator.go` (SINGLE SOURCE OF TRUTH)
+- [x] Add `IsValidEmail()` function
+- [x] Add `ValidatePassword()` function with full rules
+- [x] Add `IsValidPassword()` convenience function
+- [x] Create `internal/domain/vo/email.go` using centralized validator
+- [x] Update service layer to use centralized validator
+- [x] Document validation architecture in plan
 
 ### Integration
 
