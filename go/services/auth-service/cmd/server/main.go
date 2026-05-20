@@ -27,8 +27,12 @@ import (
 	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/service"
+	"github.com/ecommerce/auth-service/internal/workers"
+	"github.com/ecommerce/auth-service/internal/workers/audit_cleanup"
+	"github.com/ecommerce/auth-service/internal/workers/auto_unlock"
 	"github.com/ecommerce/auth-service/internal/workers/key_retirement"
 	"github.com/ecommerce/auth-service/internal/workers/key_rotation"
+	"github.com/ecommerce/auth-service/internal/workers/token_cleanup"
 )
 
 func main() {
@@ -187,6 +191,38 @@ func main() {
 
 	pubsubPublisher := pubsub.NewPublisher(redisClient, logger)
 
+	// Initialize worker runner
+	workerRunner := workers.NewRunner(logger)
+
+	// Token cleanup worker
+	tokenCleanupWorker := tokencleanup.NewTokenCleanupWorker(
+		refreshTokenRepo,
+		redisClient,
+		cfg.Cleanup,
+		logger,
+	)
+	workerRunner.Register(tokenCleanupWorker)
+
+	// Auto-unlock worker
+	autoUnlockWorker := autounlock.NewAutoUnlockWorker(
+		userRepo,
+		eventPublisher,
+		redisClient,
+		cfg.Cleanup,
+		logger,
+	)
+	workerRunner.Register(autoUnlockWorker)
+
+	// Audit cleanup worker
+	auditCleanupWorker := auditcleanup.NewAuditCleanupWorker(
+		auditLogRepo,
+		redisClient,
+		cfg.Cleanup,
+		logger,
+	)
+	workerRunner.Register(auditCleanupWorker)
+
+	// Key rotation worker
 	keyRotationWorker := keyrotation.NewKeyRotationWorker(
 		keyService,
 		jwksService,
@@ -195,7 +231,9 @@ func main() {
 		cfg.Keys,
 		logger,
 	)
+	workerRunner.Register(keyRotationWorker)
 
+	// Key retirement worker
 	keyRetirementWorker := keyretirement.NewKeyRetirementWorker(
 		keyService,
 		jwksService,
@@ -204,6 +242,10 @@ func main() {
 		cfg.Keys,
 		logger,
 	)
+	workerRunner.Register(keyRetirementWorker)
+
+	// Start all workers using the worker runner
+	workerRunner.Start(ctx)
 
 	adminEventHandler := kafkaHandler.NewAdminEventHandler(
 		func(ctx context.Context, userID, reason string) error {
@@ -215,6 +257,7 @@ func main() {
 		logger,
 	)
 
+	// Kafka consumer for admin events
 	var kafkaConsumer *kafka.Consumer
 	if kafkaProducer != nil {
 		adminTopic := cfg.Kafka.TopicPrefix + "." + cfg.Kafka.AdminTopic
@@ -229,16 +272,6 @@ func main() {
 			}()
 		}
 	}
-
-	if err := keyRotationWorker.Start(ctx); err != nil {
-		logger.Error("Failed to start key rotation worker", zap.Error(err))
-	}
-	defer keyRotationWorker.Stop()
-
-	if err := keyRetirementWorker.Start(ctx); err != nil {
-		logger.Error("Failed to start key retirement worker", zap.Error(err))
-	}
-	defer keyRetirementWorker.Stop()
 
 	r := router.NewRouter(
 		healthHandler,
@@ -293,6 +326,9 @@ func main() {
 	}
 
 	logger.Info("Server exited properly")
+
+	// Stop all workers
+	workerRunner.Stop()
 }
 
 func initLogger() (*zap.Logger, error) {
