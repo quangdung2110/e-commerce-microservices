@@ -96,7 +96,49 @@ Event Bulk-push. Có thể chứa metadata của promotion.
 }
 ```
 
-## 3. Worker Processing Strategy
+## 3. Chat Events
+
+Sử dụng topic: `chat.message.received`
+
+### 3.1 Chat Message Received (Từ Chat Service)
+Thông báo khi có tin nhắn mới trong chat, dùng để gửi push/in-app notification khi user offline.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "evt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "source": "/chat-service/messages",
+  "type": "CHAT_MESSAGE_RECEIVED",
+  "time": "2026-05-20T10:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "message_id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "conversation_id": "conv_abc123",
+    "conversation_name": "Nhóm A",
+    "conversation_type": "GROUP",
+    "sender_id": "user_xyz",
+    "sender_name": "Nguyen Van A",
+    "message_type": "TEXT",
+    "message_preview": "Xin chào mọi người",
+    "receiver_ids": ["user_123", "user_456", "user_789"],
+    "created_at": 1716000000000
+  }
+}
+```
+
+**Consumer Configuration:**
+| Consumer Group | Topic | Priority | Mục đích & Kênh |
+|:---|:---|:---|:---|
+| `notification-chat-sync` | `chat.message.received` | Low | Push notification (FCM/APNs) + In-app notification |
+
+**Logic xử lý:**
+1. Nhận event `CHAT_MESSAGE_RECEIVED`
+2. Check presence của từng receiver qua Redis
+3. Nếu offline → gửi push notification
+4. Sử dụng user preferences chung (opt-out, quiet hours)
+5. Render message preview bằng template
+
+## 4. Worker Processing Strategy
 Dựa vào data từ event, Worker sẽ thực thi:
 1. Lookup Template theo `type` (VD: `ORDER_CREATED`).
 2. Regex replace hoặc sử dụng Handlebars (hoặc Jinja2) để thay thế data từ object `data` vào chuỗi Template.
