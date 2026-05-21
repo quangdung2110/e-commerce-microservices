@@ -9,7 +9,7 @@
 
 ## 1. Kafka Topics
 
-### 1.1 Topic chính
+### 1.1 Topics chính
 
 ```
 Topic: chat.messages
@@ -17,6 +17,13 @@ Topic: chat.messages
 - Partition key: conversation_id (đảm bảo thứ tự trong conversation)
 - Retention: 7 ngày
 - Cleanup policy: delete
+
+Topic: chat.message.received
+- Số partition: 6
+- Partition key: receiver_id (để cân bằng tải cho Notification Service)
+- Retention: 1 ngày
+- Cleanup policy: delete
+- Mục đích: Gửi notification khi user offline
 ```
 
 ### 1.2 Consumer Groups
@@ -25,11 +32,11 @@ Topic: chat.messages
 |:---|:---|:---|:---|
 | `ws-{hostname}` | N (1 per WS server) | chat.messages | Real-time broadcast |
 | `msg-persister` | 2-4 | chat.messages | Persist vào Cassandra |
-| `push-sender` | 2 | chat.messages | Push notification |
+| `notification-chat-sync` | 2 | chat.message.received | Push/In-app notification |
 
 ---
 
-## 2. Message Contract
+## 2. Message Contracts
 
 ### 2.1 Chat Message (chat.messages)
 
@@ -56,6 +63,33 @@ Topic: chat.messages
 | IMAGE | Tin nhắn chứa hình ảnh |
 | FILE | Tin nhắn chứa file đính kèm |
 | SYSTEM | Tin nhắn hệ thống |
+
+### 2.3 Chat Message Received Event (chat.message.received)
+
+Event được produce bởi Chat Service sau khi message được persist thành công, dành cho Notification Service.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "evt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "source": "/chat-service/messages",
+  "type": "CHAT_MESSAGE_RECEIVED",
+  "time": "2026-05-20T10:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "message_id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "conversation_id": "conv_abc123",
+    "conversation_name": "Nhóm A",
+    "conversation_type": "GROUP",
+    "sender_id": "user_xyz",
+    "sender_name": "Nguyen Van A",
+    "message_type": "TEXT",
+    "message_preview": "Xin chào mọi người",
+    "receiver_ids": ["user_123", "user_456", "user_789"],
+    "created_at": 1716000000000
+  }
+}
+```
 
 ---
 
@@ -89,9 +123,9 @@ consumer:
   enable.auto.commit: true
   auto.commit.interval.ms: 5000
 
-# Notification Service
+# Notification Service (Chat consumer)
 consumer:
-  group.id: push-sender
+  group.id: notification-chat-sync
   auto.offset.reset: latest
   enable.auto.commit: true
 ```
@@ -126,6 +160,7 @@ Responsibilities:
 - Subscribe chat.messages
 - Persist messages vào Cassandra
 - Idempotent write (check message_id)
+- Produce event CHAT_MESSAGE_RECEIVED vào topic chat.message.received
 
 Configuration:
 - auto.offset.reset: earliest
@@ -139,23 +174,28 @@ Failure Handling:
 ### 4.3 Notification Service Consumer
 
 ```
-Group ID: push-sender
+Group ID: notification-chat-sync
 Instances: 2
 
 Responsibilities:
-- Subscribe chat.messages
+- Subscribe chat.message.received
 - Check presence của recipients
 - Send push notification khi offline
+- Send in-app notification
 
 Configuration:
 - auto.offset.reset: latest
 - enable.auto.commit: true
 
 Logic:
-- Get participants từ message
+- Get receiver_ids từ message
 - Check Redis presence: EXISTS user:presence:{userId}
 - Nếu offline → send FCM/APNs
-- Delay 2-3s trước khi gửi (tránh race với WebSocket)
+
+Tích hợp với Notification Service:
+- Sử dụng user preferences chung (opt-out, quiet hours)
+- Template rendering qua notification service
+- Delivery logs tập trung
 ```
 
 ---
@@ -173,29 +213,36 @@ Logic:
 **Consumer-side:**
 - Message Persister: check `message_id` trước khi insert
 - WebSocket Gateway: không cần check (client dedup)
-- Notification Service: có thể send duplicate notification (acceptable)
+- Notification Service: dùng `event_id` trong CloudEvents để deduplicate
 
 ---
 
 ## 6. Partitioning Strategy
 
-### 6.1 Key Selection
+### 6.1 chat.messages
 
 ```
 Key: conversation_id
 ```
 
-### 6.2 Benefits
-
+**Benefits:**
 - Tất cả messages trong cùng conversation vào cùng partition
 - Kafka đảm bảo thứ tự trong partition
 - Consumer đọc theo offset đúng thứ tự
 
-### 6.3 Considerations
-
+**Considerations:**
 - Không tăng partition count sau khi đã produce (sẽ change partition assignment)
-- Nếu cần tăng: phải có strategy để reassign key
 - Hot conversation có thể là bottleneck (nhiều messages vào 1 partition)
+
+### 6.2 chat.message.received
+
+```
+Key: receiver_id
+```
+
+**Benefits:**
+- Cân bằng tải cho Notification Service
+- Mỗi instance xử lý một tập user_ids riêng
 
 ---
 
@@ -248,3 +295,4 @@ Client có thể detect gap và request resync.
 - [Thiết kế kiến trúc](chat_design.md)
 - [Cấu trúc Database](chat_db_schema.md)
 - [Quy trình nghiệp vụ](chat_workflow.md)
+- [Notification Service Events](../notification/events.md) - Event contracts của Notification Service

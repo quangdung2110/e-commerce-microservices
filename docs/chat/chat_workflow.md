@@ -465,11 +465,8 @@ GET    /presence/{user_id}                - Kiểm tra presence
 
 ---
 
-## 9. Đề xuất SLO
+## 9. Đường dẫn tài liệu
 
-| Metric | Target |
-|--------|--------|
-| Send Message Latency (API → Kafka) | p95 < 100ms |
-| Real-time Push Latency (Kafka → Client) | p95 < 200ms |
-| Message Persist Latency | p95 < 500ms |
-| Kafka End-to-End Latency | p95 < 50ms |
+- [Thiết kế kiến trúc](chat_design.md) - Tổng quan kiến trúc Chat Service
+- [Cấu trúc Sự kiện](chat_events.md) - Kafka topics và event contracts
+- [Cấu trúc Database](chat_db_schema.md) - Schema ScyllaDB và Redis

@@ -38,7 +38,6 @@ Hệ thống gồm các thành phần chính:
 │             │                               │                                           │
 └─────────────┼───────────────────────────────┼───────────────────────────────────────────┘
               │                               │
-              │                               │
               ▼                               ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
 │                              MESSAGE BROKER                                             │
@@ -55,39 +54,33 @@ Hệ thống gồm các thành phần chính:
 │  └─────────────────────────────────────────────────────────────────────────────────┘    │
 │                    ▲                               │                                    │
 │                    │                               │                                    │
-│                    │                               │                                    │
 └────────────────────┼───────────────────────────────┼────────────────────────────────────┘
                      │                               │
                      │            ┌──────────────────┬┴──────────────────┐
                      │            │                  │                   │
-                     │            ▼                  ▼                   ▼
-                     │     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-                     │     │  WebSocket   │  │   Message    │  │ Notification │
-                     │     │  Gateway     │  │  Persister   │  │   Service    │
-                     │     │  (Consumer)  │  │  (Consumer)  │  │  (Consumer)  │
-                     │     └──────────────┘  └──────────────┘  └──────────────┘
+                     │            ▼                  ▼                   │
+                     │     ┌──────────────┐  ┌──────────────┐         │
+                     │     │  WebSocket   │  │   Message     │         │
+                     │     │  Gateway     │  │  Persister    │         │
+                     │     │  (Consumer)  │  │  (Consumer)   │         │
+                     │     └──────────────┘  └──────────────┘         │
                      │            │                  │                   │
-                     │            │                  │                   │
-                     │            ▼                  ▼                   ▼
-                     │     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-                     │     │   Clients    │  │  ScyllaDB    │  │   FCM/APNs   │
-                     │     │ (WebSocket) │  │ (Cassandra) │  │   (Push)     │
-                     │     └──────────────┘  └──────────────┘  └──────────────┘
-                     │
-                     │
-┌────────────────────┼───────────────────────────────────────────────────────────────────┐
-│                    │                         STORAGE LAYER                            │
-│                    ▼                                                                  │
-│  ┌───────────────────────┐     ┌───────────────────────┐     ┌─────────────────────┐  │
-│  │        Redis           │     │      ScyllaDB         │     │       S3           │  │
-│  │                       │     │                       │     │                    │  │
-│  │  - Idempotency Cache │     │  - Messages History   │     │  - File Attachments│  │
-│  │  - Presence          │     │  - Room State        │     │  - Media Files    │  │
-│  │  - Rate Limit        │     │  - Inbox Index       │     │                    │  │
-│  │  - Hot Cache (opt)   │     │                       │     │                    │  │
-│  └───────────────────────┘     └───────────────────────┘     └─────────────────────┘  │
-│                                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
+                     │            ▼                  ▼                   │
+                     │     ┌──────────────┐  ┌──────────────┐         │
+                     │     │   Clients   │  │  ScyllaDB    │         │
+                     │     │ (WebSocket)│  │ (Cassandra) │         │
+                     │     └──────────────┘  └──────────────┘         │
+                     │                                                      │
+                     │  Chat Service produce ───────────────────────────────┘
+                     │  event (chat.message.received)                        │
+                     │                                                      │ Notification
+                     │                                                      │ Service
+                     │                                                      │ (Subscriber)
+                     ▼                                                      ▼
+              ┌─────────────────────────────────────────────────────────────────────────┐
+              │                     KAFKA: chat.message.received                       │
+              │                     (Notification Service subscribe)                     │
+              └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 Mô tả các thành phần
@@ -99,7 +92,8 @@ Hệ thống gồm các thành phần chính:
 | **WebSocket Server Cluster** | Mỗi server mở nhiều kết nối WebSocket từ client, đồng thời là một Kafka consumer group riêng biệt để nhận toàn bộ tin nhắn mới |
 | **Apache Kafka** | Lưu trữ tạm thời và phân phối message. Topic chính `chat.messages` |
 | **Message Persister** | Kafka Consumer Group riêng, đọc từ chat.messages và ghi vào Cassandra |
-| **Notification Service** | Consumer group khác, gửi push notification khi người nhận offline |
+| **Event Publisher** | Chat Service produce event `CHAT_MESSAGE_RECEIVED` vào topic riêng để Notification Service xử lý notification |
+| **Notification Service** | Subscribe topic `chat.message.received`, gửi push/in-app notification qua kênh thống nhất của hệ thống |
 | **Presence Service** | Dùng Redis để theo dõi trạng thái online/offline của user |
 | **Redis** | Dùng cho idempotency cache, presence, và hot cache (optional) |
 | **ScyllaDB** | Lưu trữ lịch sử tin nhắn (chính) |
@@ -123,7 +117,7 @@ Hệ thống gồm các thành phần chính:
 
 **Dùng Kafka làm trục chính.**
 
-Để broadcast real-time, mỗi WebSocket server là một consumer group riêng (như đã giải thích kỹ). Kafka đủ nhanh (độ trễ < 10ms với cấu hình tốt) cho chat.
+Để broadcast real-time, mỗi WebSocket server là một consumer group riêng (như đã giải thích kỹ).
 
 **Tối ưu thêm (optional):** Có thể đặt một lớp Redis Pub/Sub phía trước (Chat API publish vào Redis, các WebSocket server subscribe Redis) và vẫn đẩy vào Kafka riêng để lưu trữ, nhưng sẽ tăng độ phức tạp. Ở đây chọn giải pháp thuần Kafka cho rõ ràng.
 
@@ -135,6 +129,9 @@ Topic: chat.messages
 - Mỗi partition xử lý một tập các conversation_id
 - Producer gửi message với key = conversation_id
 - Retention: 7 ngày (đủ cho replay khi cần, đồng thời không quá tốn đĩa)
+
+Topic: chat.message.received
+- Notification Service subscribe để gửi push/in-app notification
 ```
 
 ---
@@ -256,13 +253,21 @@ WebSocket Server 1         WebSocket Server 2
   |                            |
   | (Consumer Group: ws-1)     | (Consumer Group: ws-2)
   |                            |
-  +-------> Kafka Topic <------+--------------+--------------+
-              chat.messages                    |              |
-                  ^                            |              |
-                  |                            v              v
-           Chat API Service              Persister       Notification
-           (Producer)                    (Cassandra)     (Push)
+  +-------> Kafka Topic <------+--------------+
+              chat.messages                    |
+                  ^                            |
+                  |                            v
+           Chat API Service              Persister
+           (Producer)                    (Cassandra)
            (REST/WS)
+                  │
+                  │ (Produce)
+                  ▼
+         chat.message.received
+                  │
+                  ▼
+         Notification Service
+         (In-app + Push)
 ```
 
 ### Luồng chi tiết:
@@ -273,22 +278,12 @@ WebSocket Server 1         WebSocket Server 2
 4. WS Server 1 và WS Server 2 (các consumer group riêng) đều kéo message
 5. WS Server 1 có Client A, không cần gửi lại cho A vì A đã thấy optimistic; WS Server 2 có Client B -> gửi cho B
 6. Persister ghi vào Cassandra
-7. Notification Service kiểm tra presence, nếu user offline -> push
+7. Chat Service produce event `CHAT_MESSAGE_RECEIVED` vào topic `chat.message.received`
+8. Notification Service subscribe topic này, kiểm tra presence, gửi push/in-app notification nếu cần
 
 ---
 
-## 8. Đề xuất SLO
-
-| Metric | Target |
-|--------|--------|
-| Send Message Latency (API) | p95 < 100ms |
-| Real-time Push Latency | p95 < 200ms |
-| Message Persist Latency | p95 < 500ms |
-| Kafka End-to-End Latency | p95 < 50ms |
-
----
-
-## 9. Đường dẫn tài liệu liên quan
+## 8. Đường dẫn tài liệu liên quan
 
 - [Cấu trúc Database](chat_db_schema.md) - Schema ScyllaDB và Redis
 - [Cấu trúc Sự kiện](chat_events.md) - Kafka topics và event contracts

@@ -23,21 +23,35 @@ Hệ thống sử dụng chiến lược **Stateless Authentication** thông qua
 Khi một request có mang JWT đi qua API Gateway, quy trình sau sẽ được thực hiện:
 
 1. **Token Extraction:** Trích xuất JWT từ header `Authorization: Bearer <token>`.
-2. **Signature Verification (Local Cache First):** 
+2. **Signature Verification (Local Cache First):**
    - Extract `kid` (Key ID) từ JWT header.
    - Tìm kiếm Public Key trong **Local Cache (Caffeine/Guava)** của Gateway.
    - **Trường hợp Cache Hit:** Dùng Public Key để verify chữ ký.
-   - **Trường hợp Cache Miss:** 
+   - **Trường hợp Cache Miss:**
      - Gọi Auth Service endpoint `GET /.well-known/jwks.json`.
      - Cập nhật toàn bộ JWKS vào Local Cache.
      - Nếu tìm thấy `kid` mới -> Verify. Nếu vẫn không thấy -> Reject request (401 Unauthorized).
 3. **Claim Validation:** Kiểm tra các thông tin thời gian như `exp` (Expiration Time) và `nbf` (Not Before). Nếu token đã hết hạn, lập tức reject (401 Unauthorized).
-4. **Denylist Check (Redis Lookup):** 
+4. **Denylist Check (Redis Lookup):**
    - Extract claim `jti` (JWT ID - định danh duy nhất của token).
    - Thực hiện query tới Redis Cluster: `GET auth:denylist:{jti}`.
    - Nếu tồn tại: Token đã bị thu hồi ➔ Reject request (401 Unauthorized).
 5. **Revocation Check (User Revision):** Kiểm tra claim `iat` (Issued At) với giá trị `auth:revoked_before:{user_id}` trên Redis để xử lý Force Logout/Password Change.
 6. **Header Enrichment:** API Gateway extract payload (`user_id`, `roles`, `device_id`) đưa vào header (vd: `X-User-Id`, `X-User-Roles`) để truyền xuống các downstream service.
+
+### 3.2. WebSocket Authentication
+
+**API Gateway chỉ verify JWT tại thời điểm WebSocket handshake (HTTP Upgrade)**. Sau khi WebSocket được thiết lập thành công, Gateway proxy trực tiếp các frame giữa client và downstream service mà không filter từng frame.
+
+**Hệ quả bảo mật:**
+- Nếu token bị revoke sau khi WebSocket đã established, các frame vẫn đi qua Gateway
+- Hacker đã mở WebSocket trước khi bị phát hiện vẫn có thể gửi/nhận data với Chat Service với identity đã được enriched lúc handshake
+- Do đó, khi Auth Service phát hiện `TOKEN_THEFT_DETECTED`, nó sẽ:
+  1. SET `auth:revoked_before:{user_id}` để chặn mọi **request HTTP** tiếp theo
+  2. Publish `TOKEN_THEFT_DETECTED` event để downstream services (đặc biệt là Chat Service) chủ động **đóng WebSocket connection** của user đó
+
+**Giải pháp thay thế (nếu cần):**
+- Nếu muốn Gateway active filter mọi WebSocket frame, cần implement stateful proxy tại Gateway, tốn thêm tài nguyên và phức tạp hơn nhiều.
 
 ## 4. Performance & Optimizations
 - **JWKS Local Cache:** Gateway duy trì một bản sao của JWKS trong bộ nhớ nội bộ (TTL 10 phút). Điều này giúp loại bỏ hoàn toàn network call đến Auth Service trong điều kiện bình thường.
