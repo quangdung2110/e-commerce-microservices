@@ -64,7 +64,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174000",
   "event_type": "CART_ITEM_ADDED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-123",
   "timestamp": "2026-02-28T10:00:00Z",
   "source": "cart-service",
@@ -72,7 +72,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708530000123",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "sku_id": "sku-1001",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "product_id": "prod-uuid",
@@ -101,7 +101,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174001",
   "event_type": "CART_ITEM_UPDATED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
@@ -109,7 +109,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708616400456",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "sku_id": "sku-1001",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "product_id": "prod-uuid",
@@ -142,7 +142,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "event_id": "123e4567-e89b-12d3-a456-426614174002",
   "event_type": "CART_ITEM_DELETED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-125",
   "timestamp": "2026-02-28T10:10:00Z",
   "source": "cart-service",
@@ -150,7 +150,7 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
   "stream_timestamp_ms": "1708616400899",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "sku_id": "sku-1001",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "deleted_at": "1708616400899"
@@ -171,7 +171,7 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "event_id": "123e4567-e89b-12d3-a456-426614174003",
   "event_type": "CART_CLEARED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-126",
   "timestamp": "2026-02-28T10:15:00Z",
   "source": "cart-service",
@@ -179,7 +179,7 @@ Gửi sau cùng khi kết thúc một lô xóa mặt hàng (`HDEL`) mà dẫn đ
   "stream_timestamp_ms": "1708616500000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "cleared_at": "1708616500000"
   }
@@ -200,7 +200,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "CART_CHECKED_OUT",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:25:00Z",
   "source": "cart-service",
@@ -208,7 +208,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "stream_timestamp_ms": "1708616700000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "checked_out_at": "1708616700000"
   }
@@ -233,7 +233,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "event_id": "123e4567-e89b-12d3-a456-426614174006",
   "event_type": "CART_ABANDONED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "cron-20260315-020000",
   "timestamp": "2026-03-15T02:00:00Z",
   "source": "cart-service",
@@ -241,7 +241,7 @@ Khác với `CART_CLEARED` (phát sinh khi user chủ động xóa hết sản p
   "stream_timestamp_ms": "1773530400000",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "abandoned_at": "1773530400000"
   }
@@ -285,7 +285,7 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "status": "PAID",
     "sku_ids": ["sku-001", "sku-002"],
     "checkout_submitted_at": "2026-02-28T10:00:00Z",

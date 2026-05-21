@@ -40,7 +40,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
   "event_id": "018e7b4a-1234-7def-8abc-123456789abc",
   "event_type": "CART_ITEM_UPDATED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
@@ -48,7 +48,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
   "stream_timestamp_ms": "1708616400456",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "sku_id": "sku-1001",
     "user_id": "12345",
     "product_id": "prod-uuid",
@@ -95,8 +95,8 @@ INSERT INTO cart_items (
     quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
 )
 VALUES (
-    '{cart:user:12345}:sku-1001',
-    '{cart:user:12345}',
+    '{cart}:550e8400-e29b-41d4-a716-446655440000:sku-1001',
+    '{cart}:550e8400-e29b-41d4-a716-446655440000',
     'prod-uuid',
     'sku-1001',
     2,
@@ -127,7 +127,7 @@ Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_d
 
 ```sql
 DELETE FROM cart_items
-WHERE item_id = '{cart:user:12345}:sku-1001'
+WHERE item_id = '{cart}:550e8400-e29b-41d4-a716-446655440000:sku-1001'
   AND redis_stream_id < '1708616400899-0';
 ```
 

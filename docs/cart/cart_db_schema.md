@@ -32,7 +32,7 @@ Mô hình thiết kế phi chuẩn một phần để tối ưu hóa việc khô
 ### 2.1. Bảng `carts`
 Lưu trữ định danh chung của một giỏ hàng, phục vụ cho việc tracking vòng đời trạng thái.
 
-*   `cart_id`: VARCHAR(255) PRIMARY KEY. Lưu Key gốc của Redis (VD: `{cart:user:12345}`). **Quy ước cứng:** `cart_id = Redis Key` là convention bất biến trong toàn hệ thống (DB, Events, Kafka payload). Nếu format key Redis thay đổi, cần migration đồng bộ.
+*   `cart_id`: VARCHAR(255) PRIMARY KEY. Lưu Key gốc của Redis (VD: `{cart}:550e8400-e29b-41d4-a716-446655440000`). **Quy ước cứng:** `cart_id = Redis Key` là convention bất biến trong toàn hệ thống (DB, Events, Kafka payload). Nếu format key Redis thay đổi, cần migration đồng bộ.
 *   `user_id`: VARCHAR(255) INDEX. Lưu trực tiếp `user_id` từ event payload. **Tuyệt đối KHÔNG tách chuỗi từ `cart_id`** vì anti-pattern và dễ sai nếu format key thay đổi. `user_id` phải có trong mọi event payload (thêm vào Lua Script ARGV[7]).
 *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Cập nhật qua các State). Xem [Events Structure](cart_events.md) để biết event nào kích hoạt chuyển đổi trạng thái.
     *   `ACTIVE`: Đang được sử dụng tương tác.
