@@ -49,26 +49,7 @@ Bảng này đặc biệt quan trọng để áp dụng cơ chế **Refresh Toke
 ### Mối quan hệ với Grace Period Timeout:
 Tại DB, ta có thể dùng công thức toán dựa theo `revoked_at` để check tính hợp lệ của Grace Period: `NOW() <= revoked_at + INTERVAL '10 seconds'`. Tuy nhiên, để tối ưu tốc độ và lấy lại được chuỗi Opaque token gốc gửi về client, chúng ta **chỉ xử lý logic này tại Redis cache** (xem chi tiết ở schema Caching). Bảng DB đóng vai trò là Source of Truth lưu trữ hành trình biến đổi của token.
 
-## 3. Bảng `outbox_events` (Transactional Outbox Pattern qua Debezium)
-
-Sử dụng mô hình Outbox để đảm bảo Transaction SQL cập nhật User và Publish Event (e.g. `USER_VERIFIED_SUCCESS`, `USER_REGISTERED`) là một quá trình ALL-OR-NOTHING. 
-
-*   Chúng ta sử dụng **Debezium CDC** (Change Data Capture) cắm vào Write-Ahead Log (WAL) của PostgreSQL thay vì làm background Polling Worker để tiết kiệm Resource Database. Do đó bảng `outbox_events` cần được thiết kế chỉ tuân thủ đúng yêu cầu của bộ Connector.
-
-| Column Name | Data Type | Constraints / Indexes | Description |
-| :--- | :--- | :--- | :--- |
-| `event_id` | `UUID` | Primary Key, Auto Gen | Định danh Event |
-| `event_type` | `VARCHAR(100)` | Not Null | Tên luồng Event (Ex: `USER_VERIFIED_SUCCESS`) |
-| `aggregate_type` | `VARCHAR(100)` | Indexed | Tên kiểu Aggregate (VD: `User`) |
-| `aggregate_id` | `UUID` | Indexed | UUID của `user_id` |
-| `partition_key` | `UUID` | Indexed | Partition Key của Kafka để đảm bảo thứ tự gửi của user |
-| `payload` | `JSONB` | Not Null | Data bắn qua Kafka (Không chứa thông tin nhạy cảm) |
-| `created_at` | `TIMESTAMP` | Default NOW() | Debezium không tự xóa bản ghi nếu không cấu hình rõ ràng. Cần cron dọn rác định kỳ. |
-
-**Chính sách dọn rác đề xuất:** Cron xóa outbox cũ hơn 7-14 ngày (tùy SLA audit), ví dụ:
-`DELETE FROM outbox_events WHERE created_at < NOW() - INTERVAL '14 days';`
-
-## 4. Bảng `jwt_keys` (Keystore cho JWKS Rotation)
+## 3. Bảng `jwt_keys` (Keystore cho JWKS Rotation)
 
 Keystore là nguồn dữ liệu gốc để Auth Service xuất JWKS và ký JWT. Dữ liệu nhạy cảm (private_key) cần mã hóa ở tầng ứng dụng hoặc KMS.
 
@@ -82,7 +63,7 @@ Keystore là nguồn dữ liệu gốc để Auth Service xuất JWKS và ký JW
 | `rotated_at` | `TIMESTAMP` | Nullable | Thời điểm đưa vào PHASE_OUT. |
 | `expires_at` | `TIMESTAMP` | Nullable | Thời điểm có thể xóa khỏi keystore. |
 
-## 5. Bảng `audit_logs` (Quản lý Nhật ký Kiểm toán & Bảo mật)
+## 4. Bảng `audit_logs` (Quản lý Nhật ký Kiểm toán & Bảo mật)
 
 Bảng này đóng vai trò như hộp đen ghi lại mọi hành vi liên quan tới danh tính và bảo mật. Nhờ cơ chế hợp nhất, Auth Service trực tiếp lưu trữ các log này thay vì phải gửi đi đâu xa. Dữ liệu payload có cấu trúc linh hoạt nhờ kiểu `JSONB`.
 

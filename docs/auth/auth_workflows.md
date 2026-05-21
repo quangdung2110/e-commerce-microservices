@@ -157,12 +157,11 @@ WHERE email = ? AND status = 'ACTIVE';
 5.  *(Khi Đổi Pass)*: Revoke toàn bộ các bản ghi thuộc `user_id` đang NULL ở `revoked_at` để Kick sạch thiết bị ra khỏi DB. Sau đó Gắn cờ **User Revision Timestamp** vào Redis: `SET auth:revoked_before:{user_id} {NOW()}`. Mọi Access Token Đang Sống ở các máy khác lập tức bị chặn ở Gateway. Đồng thời **trực tiếp ghi cảnh báo `USER_PASSWORD_CHANGED` vào `audit_logs`**.
 
 ## 4. Luồng Đăng Ký & Xác Minh (Email Verification)
-1.  Người dùng POST `/register` với Email, Password & token xác nhận `ReCaptcha v3 / Turnstile` (Bắt buộc để chống Botnet tạo account rác).
-2.  Server Verify Captcha qua dịch vụ bên thứ 3. Kiểm tra Rate Limit Đăng ký để chặn Spam.
-3.  Server tạo bản ghi `users` với `status = PENDING_VERIFICATION`. Sinh mã OTP ngẫu nhiên 6 số.
-4.  Lưu OTP vào Redis `auth:otp:register:{email}`. Bắn Kafka event `USER_OTP_REQUESTED`.
-5.  Người dùng nhận Email, nhập mã lên `/verify-email`.
-6.  Server check Redis. Nếu đúng -> Update DB `status = ACTIVE`, `email_verified_at = NOW()`. Ghi log trực tiếp `USER_VERIFIED_SUCCESS` vào `audit_logs` và bắn event Kafka tương ứng để các dịch vụ khác biết.
+1.  Người dùng POST `/register` với Email, Password.
+2.  Server tạo bản ghi `users` với `status = PENDING_VERIFICATION`. Sinh mã OTP ngẫu nhiên 6 số.
+3.  Lưu OTP vào Redis `auth:otp:register:{email}`. Bắn Kafka event `USER_OTP_REQUESTED`.
+4.  Người dùng nhận Email, nhập mã lên `/verify-email`.
+5.  Server check Redis. Nếu đúng -> Update DB `status = ACTIVE`, `email_verified_at = NOW()`. Ghi log trực tiếp `USER_VERIFIED_SUCCESS` vào `audit_logs` và bắn event Kafka tương ứng để các dịch vụ khác biết.
 
 ## 5. Luồng Quên & Đặt Lại Mật Khẩu (Forgot Password)
 1.  Người dùng POST `/forgot-password` gửi Email kèm token `ReCaptcha / Turnstile` (Chống API Spamming gây cháy túi tiền gửi Email/SMS).

@@ -12,7 +12,8 @@ Tài liệu cung cấp danh mục cấu trúc các thông điệp sự kiện m�
 
 ## 1. Events Auth Service Public Ra Bắt Cầu
 
-Broker khuyên dùng: **Kafka**. Được tích hợp với Debezium CDC (Change Data Capture) để đảm bảo Outbox Pattern hoạt động tin cậy mà không tốn tài nguyên Polling.
+Broker khuyên dùng: **Kafka** (Direct Producer). Events được publish trực tiếp qua Kafka Producer với at-least-once delivery semantics.
+
 Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions chia theo `user_id` để được gửi theo thứ tự).
 
 
@@ -58,7 +59,7 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 
 ### 1.3 `USER_VERIFIED_SUCCESS`
 Được bắn ra ngay sau khi User xác thực thành công (điền OTP Email hoặc đăng ký qua SSO hoàn tất). Đây là event quan trọng nhất trigger luồng sinh profile rỗng ở User Service.
-*   **Người nghe**: `User Service` (Tạo bảng thông tin cá nhân), `Notification Service` (Bắn Mail "Welcome you!").
+*   **Người nghe**: `User Service` (Tạo bảng thông tin cá nhân), `Notification Service` (Bắn In-app "Welcome you!").
 *   **Payload Schema**:
 ```json
 {
@@ -112,8 +113,15 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
 > **Về retention window:** Sau khi User Service nhận event và anonymize PII (Giai đoạn 1), dữ liệu vẫn tồn tại với bản ghi "Deleted User" trong DB. Compliance Worker sẽ hard delete vĩnh viễn sau `retention_window_expires_at` (Giai đoạn 2). Kafka không phải permanent storage nên không thể dùng để trigger hard delete 90 ngày sau.
 
 ### 1.4 `TOKEN_THEFT_DETECTED` (Xử Lý Trừng Phạt Đánh Cắp Hàng Loạt)
-Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc phát hiện một cái Refresh Token HẾT HẠN ÂN HẠN 10s lại bị ai đó nộp để ăn cắp. Auth Service đã tự Ban sạch các DB Token của user đó, nhưng nó bắn thông báo này để cả hệ thống chung tay.
-*   **Người nghe**: `API Gateway` (Bổ sung Denylist cho tất cả request nào khác đến)
+Sự kiện bắn ra từ Luồng Grace Period (Xem Workflow) vào thời khắc phát hiện một cái Refresh Token HẾT HẠN ÂN HẠN 10s lại bị ai đó nộp để ăn cắp. Auth Service đã tự Ban sạch các DB Token của user đó, đồng thời SET `auth:revoked_before:{user_id}` để Gateway chặn mọi request HTTP tiếp theo.
+
+**Tại sao cần event này cho WebSocket?**
+
+API Gateway chỉ verify JWT tại thời điểm **WebSocket handshake (HTTP Upgrade)**. Sau khi WebSocket được thiết lập thành công, Gateway không filter từng frame WebSocket — các frame đi qua gateway mà không được kiểm tra lại token. Do đó, hacker đã mở WebSocket trước khi bị phát hiện vẫn có thể gửi/nhận data với Chat Service với identity đã được enriched lúc handshake.
+
+Event này cho phép Chat Service (và các service có WebSocket khác) chủ động đóng kết nối WebSocket của user bị compromise.
+
+*   **Người nghe**: `Chat Service` (Đóng WebSocket connection), các service khác có WebSocket connection
 *   **Payload Schema**:
 ```json
 {
@@ -238,41 +246,11 @@ Sự kiện đặc biệt dùng để thông báo cho API Gateway xóa cache loc
 }
 ```
 
-## 2. Events Auth Service Tiêu Thụ
-
-Lắng nghe trên Topic: `t.admin.events` hoặc tổ chức qua gRPC trực tiếp tùy mức độ khẩn cấp. Rất khuyên dùng Publish-Subscribe qua Kafka để Auth Service dễ Scale, khi Admin Ban user, 30 pods Auth có thể cùng phối hợp.
-
-### 2.1 `ADMIN_FORCE_LOGOUT` / `USER_BANNED`
-Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Consumer cần đọc, làm thao tác: Revoke all của ID này trong PostgreSQL + Append tất cả `jti` của access token còn sống văng vào Redis Denylist + Gửi thông báo cho user qua **Email**.
+### 1.11 `USER_BANNED_NOTIFICATION` (Thông báo tài khoản bị cấm)
+Event được phát ra sau khi Auth Service hoàn tất xử lý `USER_BANNED` (từ Admin Dashboard). Notification Service nhận event này để gửi thông báo qua **Email** cho user biết tài khoản đã bị cấm vĩnh viễn.
 
 > **Lưu ý:** Kênh thông báo là **Email** vì user bị Ban không thể đăng nhập để xem In-app notification.
 
-*   **Hành động**:
-    1. `UPDATE users SET status = 'BANNED' WHERE id = $1`
-    2. `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=$1` (Ghi vội vào DB)
-    3. Push Redis `auth:revoked_before:{user_id}` = NOW()
-    4. Push Redis Denylist tất cả `jti` đang sống
-    5. Gửi Kafka Event `USER_BANNED_NOTIFICATION` cho Notification Service (qua **Email**)
-*   **Payload Expected**:
-```json
-{
-  "event_id": "uuid-v4",
-  "aggregate_type": "USER",
-  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
-  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
-  "event_type": "USER_BANNED",
-  "occurred_at": "2026-04-21T10:15:00Z",
-  "payload": {
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "reason": "VIOLATION"
-  }
-}
-```
-
-### 2.2 `USER_BANNED_NOTIFICATION` (Gửi Email thông báo Ban)
-Event này được Auth Service gửi sang Notification Service sau khi đã cập nhật trạng thái BANNED thành công. Mục đích là thông báo qua **Email** cho user biết tài khoản đã bị cấm vĩnh viễn.
-
-*   **Topic**: `t.auth.events`
 *   **Người nghe**: `Notification Service` (Gửi Email thông báo)
 *   **Payload Schema**:
 ```json
@@ -289,6 +267,37 @@ Event này được Auth Service gửi sang Notification Service sau khi đã c�
     "reason": "VIOLATION",
     "banned_by": "550e8400-e29b-41d4-a716-446655440002",
     "banned_at": "2026-04-21T10:15:00Z"
+  }
+}
+```
+
+## 2. Events Auth Service Tiêu Thụ
+
+Lắng nghe trên Topic: `t.admin.events` hoặc tổ chức qua gRPC trực tiếp tùy mức độ khẩn cấp. Rất khuyên dùng Publish-Subscribe qua Kafka để Auth Service dễ Scale, khi Admin Ban user, 30 pods Auth có thể cùng phối hợp.
+
+### 2.1 `ADMIN_FORCE_LOGOUT` / `USER_BANNED`
+Khi Backend Dashboard gọi Ban User, sẽ phát Event này đi. Auth Service Consumer cần đọc, làm thao tác: Revoke all của ID này trong PostgreSQL + Append tất cả `jti` của access token còn sống văng vào Redis Denylist + Gửi thông báo cho user qua **Email**.
+
+> **Lưu ý:** Kênh thông báo là **Email** vì user bị Ban không thể đăng nhập để xem In-app notification.
+
+*   **Hành động**:
+    1. `UPDATE users SET status = 'BANNED' WHERE id = $1`
+    2. `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=$1` (Ghi vội vào DB)
+    3. Push Redis `auth:revoked_before:{user_id}` = NOW()
+    4. Push Redis Denylist tất cả `jti` đang sống
+    5. Publish `USER_BANNED_NOTIFICATION` lên `t.auth.events` cho Notification Service (xem [1.11](#111-user_banned_notification))
+*   **Payload Expected**:
+```json
+{
+  "event_id": "uuid-v4",
+  "aggregate_type": "USER",
+  "aggregate_id": "550e8400-e29b-41d4-a716-446655440000",
+  "partition_key": "550e8400-e29b-41d4-a716-446655440000",
+  "event_type": "USER_BANNED",
+  "occurred_at": "2026-04-21T10:15:00Z",
+  "payload": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "reason": "VIOLATION"
   }
 }
 ```

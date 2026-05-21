@@ -55,10 +55,9 @@ Worker này chạy thường xuyên hơn để dọn dẹp các key đã hết G
     *   Xử lý batch nhỏ (LIMIT 50) mỗi lần chạy để tránh quá tải database.
     *   Không xóa vĩnh viễn key (không DELETE row), chỉ chuyển sang `RETIRED` để phục vụ audit/security review nếu cần.
 
-## 3. Worker Outbox (Đã Lỗi Thời - Chuyển sang Debezium CDC)
-Trong quá trình đăng ký (Register) hoặc Xác minh (Verify email):
-*   **Hệ thống hiện tại sử dụng Debezium CDC Connector rà logs PostgreSQL (WAL)** để bắn event mượt mà cho Outbox Pattern. Vì vậy, trong mã nguồn Ứng dụng **không tồn tại** một `auth-outbox-relay` Worker định kỳ quét bảng `outbox_events` nhằm tiết kiệm chi phí Polling. Bảng `outbox_events` sẽ tự động dọn rác qua Trigger DB hoặc Cron tương đương.
-*   **Khuyến nghị**: Dùng cron dọn rác rõ ràng (giữ 7-14 ngày) để tránh phình bảng outbox.
+## 3. Worker Outbox (Đã Lỗi Thời - Không sử dụng)
+
+**Lưu ý:** Auth Service sử dụng **Direct Kafka Producer** để publish events thay vì Outbox Pattern. Events được gửi trực tiếp qua Kafka với at-least-once delivery semantics. Điều này phù hợp với bản chất của auth events (OTP, login, etc.) không yêu cầu transactional consistency.
 
 ## 4. Dọn Dẹp Rác Audit Log: `audit-log-cleanup-cron`
 Nhật ký của khách hàng (log_category = 'USER') sẽ rất lớn sau một thời gian, hệ thống cần tự động dọn dẹp để tiết kiệm dung lượng do chúng ta lưu thẳng vào bảng PostgreSQL.
@@ -76,14 +75,5 @@ Khi tài khoản bị `LOCKED` do đăng nhập sai mật khẩu quá nhiều l�
         *   Gửi Kafka Event `USER_UNLOCKED` cho Notification Service để thông báo qua **Email** cho user.
         *   Ghi log `USER_AUTO_UNLOCKED` vào `audit_logs` với `actor_type = 'SYSTEM'`.
 *   **Lưu ý Vận hành**: 
-    *   Sử dụng Distributed Lock (ShedLock/Redisson) để tránh nhiều pods chạy cùng lúc.
     *   Chỉ xử lý batch nhỏ (LIMIT 100) mỗi lần chạy để tránh quá tải database.
     *   Không tự động unlock tài khoản `BANNED` - tài khoản BANNED chỉ được Admin mở khóa thủ công.
-
-## 6. Worker Reset Failed Login Counter: `failed-login-counter-reset-worker`
-Worker này chạy định kỳ để reset bộ đếm failed login attempts cho những IP hoặc email có số lần sai pass cao nhưng đã không còn bị attack trong một khoảng thời gian.
-*   **Tính chất**: Scheduled Cron Job (Ví dụ: Chạy mỗi 15 phút).
-*   **Logic**:
-    1.  Quét Redis tìm các key `auth:failed_login:{email}` có giá trị > 0 nhưng đã không được INCR trong 1 giờ.
-    2.  Xóa các key này để reset trạng thái.
-    3.  Log hành vi này vào `audit_logs` với `event_type = 'FAILED_LOGIN_COUNTER_RESET'`.
