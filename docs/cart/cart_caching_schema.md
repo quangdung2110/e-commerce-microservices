@@ -176,14 +176,14 @@ event_obj.sku_id = ARGV[1]
 event_obj.user_id = ARGV[7]
 local event_payload = cjson.encode(event_obj)
 
-local event_name = "CART_ITEM_ADDED"
+local event_type = "CART_ITEM_ADDED"
 if is_new == 0 then
-    event_name = "CART_ITEM_UPDATED"
+    event_type = "CART_ITEM_UPDATED"
 end
 
 -- 7. Atomicity: Đẩy Event xuống GLOBAL STREAM SHARD (bỏ MAXLEN để tránh mất event khi relay bị chậm)
 --    stream_id được Relay Worker đọc từ Redis message ID (msg.ID) để làm ordering/idempotency key.
-local stream_id = redis.call('XADD', KEYS[2], '*', 'event_type', event_name, 'payload', event_payload)
+local stream_id = redis.call('XADD', KEYS[2], '*', 'event_type', event_type, 'payload', event_payload)
 
 return encoded_json
 ```

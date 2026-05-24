@@ -53,7 +53,6 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 3. **[Backend] - Hậu xử lý Write & Trả HTTP 200 OK:**
    - Xóa negative cache: `DEL {cart}:{user_id}:notfound` để tránh trả giỏ rỗng giả ở request đọc kế tiếp.
    - Trả về Success cho User. Event đã được ghi vào Global Stream Shard, Relay Worker sẽ tự động đọc và forward sang Kafka.
-   - **Đơn giản hóa:** Không còn `ZADD intent`, `ZADD active`, `PUBLISH`, `ZREM intent` như kiến trúc cũ. Consumer Group của Redis Streams tự động phát hiện messages mới.
 4. **[Background] - Bất đồng bộ xuống DB:**
    - [Outbox Relay Worker](cart_workers.md) đọc events từ Global Stream Shards và forward sang Kafka.
    - [Postgres Sync Worker](cart_workers.md) gặp Kafka Event Upsert xuống Table `cart_items` và cập nhật bảng master `carts` theo guard `stream_id`. Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
@@ -118,7 +117,6 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
       - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
       - Set `grpc_success = false` để response có `is_price_degraded = true`.
       - UI hiển thị cảnh báo: "Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất".
-    - **Lý do không dùng Singleflight:** Product Service đã có caching riêng để handle burst traffic. Việc deduplicate request trong process (per-Pod) không mang lại lợi ích đáng kể vì mỗi Pod vẫn phải gọi gRPC khi nhận request.
 5. **B5 - Merge policy trước khi nạp lại Redis:**
     - **Bảo toàn các field lịch sử:** `unit_price_at_add`, `added_at`.
     - **Làm mới các field hiển thị có thể thay đổi:** `is_available`, `updated_at`.

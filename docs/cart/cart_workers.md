@@ -95,7 +95,6 @@ Kafka topic `t.cart.events` nên chuẩn bị **tối thiểu 12 partitions** (s
 | Flash Sale | 6 pods (HPA scale up) | 2 partitions/pod |
 
 **Auto-scaling trigger:**
-- Prometheus metric: `kafka_consumer_group_lag{group="cart-db-sync"}`
 - Threshold: lag > 1000 messages sustained 2 phút → scale up
 - Cool-down: lag < 100 sustained 5 phút → scale down
 
@@ -137,8 +136,8 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
        quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
    )
    VALUES
-       ('{cart}:550e8400-e29b-41d4-a716-446655440000:sku-001', '{cart}:550e8400-e29b-41d4-a716-446655440000', 'prod-1', 'sku-001', 2, 150000.00, '{"product_name":"A","is_available":true}', '1708616400456-0', NOW(), NOW()),
-       ('{cart}:550e8400-e29b-41d4-a716-446655440000:sku-002', '{cart}:550e8400-e29b-41d4-a716-446655440000', 'prod-2', 'sku-002', 1, 200000.00, '{"product_name":"B","is_available":true}', '1708616400457-0', NOW(), NOW())
+       ('{cart}:550e8400-e29b-41d4-a716-446655440000:sku-001', '{cart}:550e8400-e29b-41d4-a716-446655440000', 'prod-1', 'sku-001', 2, 150000.00, '{"product_id":"prod-1","product_name":"Áo Thun Nam","variant_info":"Màu Đen, Size L","image_url":"https://cdn.example.com/ao.jpg","is_available":true,"added_at":"1708530000123","updated_at":"1708616400456"}', '1708616400456-0', NOW(), NOW()),
+       ('{cart}:550e8400-e29b-41d4-a716-446655440000:sku-002', '{cart}:550e8400-e29b-41d4-a716-446655440000', 'prod-2', 'sku-002', 1, 200000.00, '{"product_id":"prod-2","product_name":"Quần Jeans","variant_info":"Size 32","image_url":"https://cdn.example.com/quan.jpg","is_available":true,"added_at":"1708530000123","updated_at":"1708616400457"}', '1708616400457-0', NOW(), NOW())
    ON CONFLICT (item_id)
    DO UPDATE SET
        quantity = EXCLUDED.quantity,
@@ -147,6 +146,9 @@ Worker poll batch 50 events từ Kafka, sau đó group by `cart_id` và batch up
        updated_at = NOW()
    WHERE cart_items.redis_stream_id < EXCLUDED.redis_stream_id;
    ```
+
+   > **Lưu ý:** Trường `product_snapshot` JSONB chỉ lưu các field hiển thị tĩnh: `product_id`, `product_name`, `variant_info`, `image_url`, `is_available`, `added_at`, `updated_at`.
+   > - **KHÔNG lưu:** `unit_price_at_add` (cột riêng), `current_price` (runtime), `cart_id`, `sku_id`, `user_id` (implicit).
 
 5. **Batch SQL syntax cho DELETE (Hard Delete sử dụng item_id):**
    ```sql

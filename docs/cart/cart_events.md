@@ -46,7 +46,10 @@ Message Kafka do Relay Worker phát đi sẽ mang theo đầy đủ header chu�
 *   `event_sequence`: Thành phần sequence của `stream_id`.
 *   `payload`: Nội dung chi tiết biến động dữ liệu (ở Redis Stream là chuỗi JSON; sau Relay sang Kafka là object JSON đã parse).
 
-> **Lưu ý quan trọng:** Ở tầng Redis Stream (Outbox), message chỉ chứa `event_type` và `payload`. Các field `event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence` được **Relay Worker bổ sung** khi forward sang Kafka. Xem chi tiết tại [Outbox Pattern](cart_outbox_pattern.md#21-kiến-trúc-luồng-mới).
+> **Lưu ý quan trọng:** Ở tầng Redis Stream (Outbox), message chứa 2 fields: `event_type` và `payload`.
+> - **TRƯỚC KHI `XADD`**, Lua Script bổ sung thêm 3 trường vào payload JSON: `cart_id`, `sku_id`, `user_id` (để downstream Consumer biết ghi vào DB mà không cần parse key/field name).
+> - Các header Kafka (`event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence`) được **Relay Worker bổ sung** khi forward sang Kafka.
+> Xem chi tiết tại [Outbox Pattern](cart_outbox_pattern.md#21-kiến-trúc-luồng-mới).
 
 ## 2. Chi tiết các loại Event (Event Types) & Phân tích Payload
 
@@ -135,6 +138,10 @@ Dưới đây là mô tả chi tiết của phần tử JSON `payload` tùy thu�
 > - Chỉ cần `sku_id` để xác định item cần xóa trong DB (qua `item_id = cart_id + ':' + sku_id`)
 > - Consumer không cần thông tin sản phẩm khi thực hiện delete
 > - Giảm kích thước payload và tránh nhầm lẫn với các events khác
+>
+> **Lưu ý quan trọng:** Payload **CÓ** chứa `user_id` vì:
+> - Worker cần `user_id` để tính shard ID khi upsert bảng `carts` (re-activate nếu cần)
+> - Lua Script tự động bổ sung `user_id` vào payload trước khi `XADD`
 
 **Cấu trúc Payload (JSON):**
 ```json
