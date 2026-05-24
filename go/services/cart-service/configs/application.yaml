@@ -1,0 +1,90 @@
+app:
+  name: "cart-service"
+  env: "${APP_ENV:development}"
+  host: "0.0.0.0"
+  port: 8080
+  shutdown_timeout: 30s
+
+redis:
+  addrs:
+    - "${REDIS_ADDR:localhost:6379}"
+  password: "${REDIS_PASSWORD:}"
+  db: 0
+  pool_size: 100
+  min_idle_conns: 20
+  read_timeout: 3s
+  write_timeout: 3s
+  num_shards: 4
+
+database:
+  host: "${DB_HOST:localhost}"
+  port: ${DB_PORT:5432}
+  user: "${DB_USER:postgres}"
+  password: "${DB_PASSWORD:postgres}"
+  name: "${DB_NAME:cart_db}"
+  max_open_conns: 50
+  max_idle_conns: 20
+  conn_max_lifetime: 30m
+
+kafka:
+  brokers:
+    - "${KAFKA_BROKERS:localhost:9092}"
+  topic_cart_events: "t.cart.events"
+  topic_order_events: "t.order.events"
+  consumer_group_cart_sync: "cart-db-sync"
+  consumer_group_order: "cart-order-consumer"
+  min_insync_replicas: 1
+  required_acks: "all"
+  max_poll_records: 50
+
+grpc:
+  product_service_addr: "${PRODUCT_GRPC_ADDR:localhost:9090}"
+  dial_timeout: 5s
+  max_call_timeout: 200ms
+  circuit_breaker:
+    name: "product-service"
+    max_requests: 3
+    interval: 10s
+    timeout: 30s
+
+cart:
+  ttl: 604800
+  max_skus_per_cart: 50
+  max_qty_per_item: 100
+  negative_cache_ttl: 60
+  rehydrate_ttl: 604800
+
+worker:
+  outbox_relay:
+    count: 4
+    block_timeout: 5s
+    batch_size: 100
+  postgres_sync:
+    enabled: true
+    batch_size: 50
+    max_retries: 3
+  abandoned_marker:
+    enabled: true
+    cron: "0 2 * * *"
+    batch_size: 1000
+    inactive_threshold_days: 30
+  archival_cleaner:
+    enabled: true
+    cron: "0 3 * * 0"
+    deleted_ttl_days: 90
+    checked_out_ttl_days: 90
+    abandoned_ttl_days: 180
+  stream_trimmer:
+    enabled: true
+    interval: 5m
+    pending_threshold: 30m
+
+logging:
+  level: "${LOG_LEVEL:info}"
+  format: "json"
+  output: "stdout"
+
+tracing:
+  enabled: ${TRACING_ENABLED:false}
+  endpoint: "${OTEL_ENDPOINT:localhost:4317}"
+  service_name: "cart-service"
