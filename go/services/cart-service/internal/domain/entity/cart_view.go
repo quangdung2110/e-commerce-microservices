@@ -33,8 +33,11 @@ type GrpcResult struct {
 
 // SkuInfo holds product info from gRPC Product Service.
 type SkuInfo struct {
-	IsAvailable  bool
-	CurrentPrice float64
-	ProductName  string
-	ImageURL     string
+	ProductID     string  `json:"product_id"`
+	VariantInfo   string  `json:"variant_info"`
+	IsAvailable   bool    `json:"is_available"`
+	CurrentPrice  float64 `json:"current_price"`
+	ProductName   string  `json:"product_name"`
+	ImageURL      string  `json:"image_url"`
+	AvailableQty  int64   `json:"available_qty"`
 }

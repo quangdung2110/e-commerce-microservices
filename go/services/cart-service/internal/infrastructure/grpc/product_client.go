@@ -240,10 +240,13 @@ func (c *ProductClientImpl) skuDataToInfo(pbSku *pb.SkuData) (*entity.SkuInfo, e
 	}
 
 	return &entity.SkuInfo{
+		ProductID:    pbSku.ProductId,
+		VariantInfo:  pbSku.VariantInfo,
 		IsAvailable:  pbSku.IsActive(),
 		CurrentPrice: pbSku.Price,
 		ProductName:  pbSku.ProductName,
 		ImageURL:     pbSku.ImageUrl,
+		AvailableQty: pbSku.StockQty,
 	}, nil
 }
 
