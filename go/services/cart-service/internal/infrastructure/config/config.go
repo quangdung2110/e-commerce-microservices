@@ -1,3 +1,6 @@
 package config
 
-// Placeholder - implement in Module 10
+// Config holds the application configuration.
+// Placeholder type alias — full config lives in loader.go.
+// Implement in Module 10.
+type Config = AppConfig
