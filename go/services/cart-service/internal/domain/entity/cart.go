@@ -62,6 +62,13 @@ func RestoreCart(cartID, userID string, status CartStatus, lastStreamID string, 
 	}
 }
 
+// RestoreCartWithAbandoned creates a cart from cold storage with abandoned event timestamp.
+func RestoreCartWithAbandoned(cartID, userID string, status CartStatus, lastStreamID string, createdAt, updatedAt time.Time, abandonedPubAt *time.Time) *Cart {
+	cart := RestoreCart(cartID, userID, status, lastStreamID, createdAt, updatedAt)
+	cart.abandonedEventPubAt = abandonedPubAt
+	return cart
+}
+
 // Getters (immutable access)
 func (c *Cart) CartID()        string     { return c.cartID }
 func (c *Cart) UserID()        string     { return c.userID }
@@ -70,6 +77,9 @@ func (c *Cart) LastStreamID()  string     { return c.lastEventStreamID }
 func (c *Cart) CreatedAt()    time.Time  { return c.createdAt }
 func (c *Cart) UpdatedAt()    time.Time  { return c.updatedAt }
 func (c *Cart) Items()        []*CartItem { return c.items }
+
+// AbandonedEventPubAt returns the timestamp when the abandoned event was published.
+func (c *Cart) AbandonedEventPubAt() *time.Time { return c.abandonedEventPubAt }
 
 // CanTransitionTo checks if the cart can transition from current status to next status.
 func (c *Cart) CanTransitionTo(next CartStatus) bool {
