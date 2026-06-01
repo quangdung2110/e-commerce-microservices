@@ -13,6 +13,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// GormDB is a type alias for *gorm.DB so that it can be referenced
+// from the cmd layer without importing the gorm package directly.
+type GormDB = gorm.DB
+
 // Config holds PostgreSQL connection configuration.
 type Config struct {
 	Host            string
@@ -94,4 +98,22 @@ type Pinger struct {
 
 func (p *Pinger) Ping(ctx context.Context) error {
 	return p.db.PingContext(ctx)
+}
+
+// GormDBPing wraps *gorm.DB to implement HealthChecker.
+type GormDBPing struct {
+	db *gorm.DB
+}
+
+func (g *GormDBPing) Ping(ctx context.Context) error {
+	sqlDB, err := g.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.PingContext(ctx)
+}
+
+// NewHealthChecker creates a HealthChecker from a GORM DB instance.
+func NewHealthChecker(db *gorm.DB) *GormDBPing {
+	return &GormDBPing{db: db}
 }

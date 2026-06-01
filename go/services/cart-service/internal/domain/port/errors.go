@@ -1,6 +1,12 @@
 package port
 
+import "context"
 import "errors"
+
+// HealthChecker defines the interface for health checks used in the health handler.
+type HealthChecker interface {
+	Ping(ctx context.Context) error
+}
 
 // Sentinel errors for port-level (infrastructure) errors.
 // These complement domain/errors.go with errors specific to

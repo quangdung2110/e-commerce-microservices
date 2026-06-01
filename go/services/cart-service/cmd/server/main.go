@@ -3,34 +3,42 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"cart-service/internal/common/keybuilder"
-	"cart-service/internal/infrastructure/config"
-	redisinfra "cart-service/internal/infrastructure/redis"
-
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"cart-service/internal/api/handler"
+	"cart-service/internal/api/router"
+	"cart-service/internal/common/keybuilder"
+	"cart-service/internal/domain/service"
+	"cart-service/internal/infrastructure/config"
+	grpcinfra "cart-service/internal/infrastructure/grpc"
+	"cart-service/internal/infrastructure/kafka"
+	"cart-service/internal/infrastructure/postgres"
+	redisinfra "cart-service/internal/infrastructure/redis"
+	"cart-service/internal/workers/cronjobs"
+	"cart-service/internal/workers/order_consumer"
+	outboxrelay "cart-service/internal/workers/outbox_relay"
+	"cart-service/internal/workers/postgres_sync"
 )
 
-// Global logger instance. Initialized in initLogger().
+// Global logger instance.
 var logger *zap.Logger
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("server terminated: %v", err)
+		fmt.Fprintf(os.Stderr, "server terminated: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
-	// ---------------------------------------------------------------------------
-	// 1. Load configuration
-	// ---------------------------------------------------------------------------
+	// Step 1: Load configuration
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = "configs/application.yaml"
@@ -41,27 +49,87 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// ---------------------------------------------------------------------------
-	// 2. Initialize logger
-	// ---------------------------------------------------------------------------
+	// Step 2: Initialize logger
 	logger = initLogger(cfg.Logging.Level, cfg.Logging.Format)
 	defer logger.Sync()
-
 	logger.Info("starting cart-service",
 		zap.String("env", cfg.App.Env),
 		zap.String("app", cfg.App.Name),
 	)
 
-	// ---------------------------------------------------------------------------
-	// 3. Create context with cancellation for graceful shutdown
-	// ---------------------------------------------------------------------------
+	// Step 3: Create root context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ---------------------------------------------------------------------------
-	// MODULE 06: Initialize Redis infrastructure
-	// ---------------------------------------------------------------------------
-	// 3a. Build Redis configuration from app config
+	// Step 4: Initialize infrastructure
+	deps, err := initializeInfrastructure(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("initialize infrastructure: %w", err)
+	}
+	defer shutdownInfrastructure(deps)
+
+	// Step 5: Initialize domain services
+	cartService := initializeDomainServices(deps, cfg)
+
+	// Step 6: Initialize workers
+	workers, err := initializeWorkers(ctx, deps, cfg, cartService)
+	if err != nil {
+		return fmt.Errorf("initialize workers: %w", err)
+	}
+
+	// Step 7: Initialize API handlers and router
+	cartHandler := handler.NewCartHandler(cartService, logger)
+	healthHandler := handler.NewHealthHandler(deps.RedisHealth, deps.PGHealth)
+	appRouter := router.NewRouter(cartHandler, healthHandler, logger, deps.RedisHealth, deps.PGHealth, cfg)
+
+	// Step 8: Create HTTP server
+	server := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port),
+		Handler:      appRouter.Engine(),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Step 9: Start HTTP server
+	go func() {
+		logger.Info("HTTP server starting",
+			zap.String("addr", server.Addr),
+		)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("HTTP server failed", zap.Error(err))
+		}
+	}()
+
+	// Step 10: Start all workers
+	for name, stopFn := range workers {
+		if err := stopFn.Start(ctx); err != nil {
+			logger.Error("failed to start worker", zap.String("worker", name), zap.Error(err))
+			return fmt.Errorf("start worker %s: %w", name, err)
+		}
+		logger.Info("worker started", zap.String("worker", name))
+	}
+
+	// Step 11: Start cron jobs
+	cronScheduler := setupCronJobs(ctx, deps, cfg)
+	logger.Info("cron scheduler started")
+
+	// Step 12: Graceful shutdown
+	shutdown(server, deps, workers, cronScheduler, cfg)
+	return nil
+}
+
+// workerControl holds the stop function for each worker.
+type workerControl struct {
+	Start func(ctx context.Context) error
+	Stop  func()
+}
+
+// initializeInfrastructure sets up all infrastructure clients.
+func initializeInfrastructure(ctx context.Context, cfg *config.AppConfig) (*Infrastructure, error) {
+	infra := &Infrastructure{}
+
+	// --- Redis ---
 	redisCfg := redisinfra.RedisConfig{
 		Addrs:        cfg.Redis.Addrs,
 		Password:     cfg.Redis.Password,
@@ -73,91 +141,272 @@ func run() error {
 		NumShards:    cfg.Redis.NumShards,
 	}
 
-	// 3b. Create Redis client
 	redisClient, err := redisinfra.NewClient(redisCfg)
 	if err != nil {
-		return fmt.Errorf("create redis client: %w", err)
+		return nil, fmt.Errorf("redis client: %w", err)
 	}
-	defer func() {
-		if err := redisClient.Close(); err != nil {
-			logger.Warn("failed to close redis client", zap.Error(err))
-		}
-	}()
+	infra.RedisClient = redisClient
+	infra.RedisHealth = redisClient
 
-	// 3c. Ping Redis to verify connectivity
+	// Ping to verify connectivity
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer pingCancel()
 	if err := redisClient.Ping(pingCtx); err != nil {
-		return fmt.Errorf("redis ping failed: %w", err)
+		return nil, fmt.Errorf("redis ping: %w", err)
 	}
-	logger.Info("redis connection established",
+
+	// ShardManager for stream sharding
+	shardManager := redisinfra.NewShardManager(cfg.Redis.NumShards)
+
+	// KeyBuilder
+	kb := keybuilder.New(uint32(cfg.Redis.NumShards))
+
+	// Ensure consumer groups for all shards (required by outbox_relay workers)
+	if err := shardManager.EnsureConsumerGroups(ctx, redisClient, "cart_relay_group"); err != nil {
+		return nil, fmt.Errorf("ensure consumer groups: %w", err)
+	}
+
+	// Cart Lua Repository
+	infra.CartLuaRepo = redisinfra.NewCartLuaRepo(redisClient, shardManager)
+
+	// Cache Repository
+	infra.CacheRepo = redisinfra.NewCacheRepo(redisClient, kb, cfg.Cart.NegativeCacheTTL)
+
+	// Outbox Writer
+	infra.OutboxWriter = redisinfra.NewOutboxWriter(redisClient, kb)
+
+	logger.Info("redis infrastructure initialized",
 		zap.Strings("addrs", cfg.Redis.Addrs),
-		zap.Int("pool_size", cfg.Redis.PoolSize),
 		zap.Int("num_shards", cfg.Redis.NumShards),
 	)
 
-	// 3d. Create ShardManager for stream sharding
-	shardManager := redisinfra.NewShardManager(cfg.Redis.NumShards)
-	logger.Info("redis shard manager initialized",
-		zap.Uint32("num_shards", shardManager.NumShards()),
-	)
-
-	// 3e. Create KeyBuilder for Redis key construction
-	keyBuilder := keybuilder.New(uint32(cfg.Redis.NumShards))
-
-	// 3f. Create CartLuaRepo — the primary write adapter
-	cartLuaRepo := redisinfra.NewCartLuaRepo(redisClient, shardManager)
-
-	// 3g. Create CacheRepo — simple read/write operations
-	cacheRepo := redisinfra.NewCacheRepo(redisClient, keyBuilder, cfg.Cart.NegativeCacheTTL)
-
-	logger.Info("module 06 (Redis infrastructure) initialized",
-		zap.Int("cart_ttl_seconds", cfg.Cart.TTL),
-		zap.Int("max_skus_per_cart", cfg.Cart.MaxSKUsPerCart),
-		zap.Int("max_qty_per_item", cfg.Cart.MaxQtyPerItem),
-		zap.Int("negative_cache_ttl_seconds", cfg.Cart.NegativeCacheTTL),
-		zap.Int("rehydrate_ttl_seconds", cfg.Cart.RehydrateTTL),
-	)
-
-	// Suppress unused-variable warnings — these are used by Module 11 (CartService domain)
-	_, _ = cartLuaRepo, cacheRepo
-
-	// ---------------------------------------------------------------------------
-	// Modules 07+ (future): PostgreSQL, Kafka, gRPC, Domain Service, API, Workers
-	// ---------------------------------------------------------------------------
-	// TODO(module 07): Initialize PostgreSQL connection + CartRepository adapter
-	// TODO(module 08): Initialize Kafka producer + publisher adapter
-	// TODO(module 09): Initialize gRPC product client + circuit breaker
-	// TODO(module 11): Initialize CartService domain service
-	// TODO(module 12-14): Initialize API layer (router, handlers, middleware)
-	// TODO(module 15-21): Initialize background workers
-	// TODO(module 22): Start HTTP server (replacing this dev health endpoint)
-
-	// Development health check server on a separate port
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", healthHandler(redisClient))
-		addr := fmt.Sprintf("%s:%d", "0.0.0.0", cfg.App.Port+1)
-		logger.Info("health check server starting", zap.String("addr", addr))
-		if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
-			logger.Error("health check server failed", zap.Error(err))
-		}
-	}()
-
-	// ---------------------------------------------------------------------------
-	// 4. Graceful shutdown handling
-	// ---------------------------------------------------------------------------
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case sig := <-quit:
-		logger.Info("received shutdown signal", zap.String("signal", sig.String()))
-		cancel()
-	case <-ctx.Done():
+	// --- PostgreSQL ---
+	pgCfg := postgres.Config{
+		Host:            cfg.Database.Host,
+		Port:           cfg.Database.Port,
+		User:           cfg.Database.User,
+		Password:       cfg.Database.Password,
+		Name:           cfg.Database.Name,
+		MaxOpenConns:   cfg.Database.MaxOpenConns,
+		MaxIdleConns:   cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: parseDuration(cfg.Database.ConnMaxLifetime),
+		SSLMode:        "disable",
 	}
 
-	// Shutdown timeout
+	pgDB, err := postgres.NewGORM(ctx, pgCfg)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
+	infra.PGDB = pgDB
+	infra.PGHealth = postgres.NewHealthChecker(pgDB)
+	infra.CartRepo = postgres.NewCartRepository(pgDB)
+
+	logger.Info("postgres infrastructure initialized",
+		zap.String("host", cfg.Database.Host),
+		zap.Int("port", cfg.Database.Port),
+	)
+
+	// --- Kafka ---
+	kafkaCfg := kafka.Config{
+		Brokers:           cfg.Kafka.Brokers,
+		TopicCartEvents:  cfg.Kafka.TopicCartEvents,
+		TopicOrderEvents: cfg.Kafka.TopicOrderEvents,
+		Producer: kafka.ProducerConfig{
+			RequiredAcks: 1,
+			Timeout:      10 * time.Second,
+			RetryMax:     3,
+		},
+	}
+
+	infra.KafkaPublisher, err = kafka.NewPublisher(kafkaCfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka publisher: %w", err)
+	}
+
+	logger.Info("kafka infrastructure initialized",
+		zap.Strings("brokers", cfg.Kafka.Brokers),
+	)
+
+	// --- gRPC ---
+	grpcCfg := config.GRPCSection{
+		ProductServiceAddr: cfg.GRPC.ProductServiceAddr,
+		DialTimeout:        cfg.GRPC.DialTimeout,
+		MaxCallTimeout:     cfg.GRPC.MaxCallTimeout,
+		CircuitBreaker:     cfg.GRPC.CircuitBreaker,
+	}
+
+	infra.ProductClient, err = grpcinfra.NewProductClient(grpcCfg)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC product client: %w", err)
+	}
+
+	logger.Info("gRPC infrastructure initialized",
+		zap.String("addr", cfg.GRPC.ProductServiceAddr),
+	)
+
+	return infra, nil
+}
+
+// initializeDomainServices creates domain service instances.
+func initializeDomainServices(deps *Infrastructure, cfg *config.AppConfig) *service.CartService {
+	return service.NewCartServiceWithKB(
+		deps.CartLuaRepo,
+		deps.CacheRepo,
+		deps.CartRepo,
+		deps.ProductClient,
+		service.CartServiceConfig{
+			MaxSKUsPerCart:   cfg.Cart.MaxSKUsPerCart,
+			MaxQtyPerItem:    cfg.Cart.MaxQtyPerItem,
+			RehydrateTTL:     cfg.Cart.RehydrateTTL,
+			NegativeCacheTTL: cfg.Cart.NegativeCacheTTL,
+		},
+		keybuilder.New(uint32(cfg.Redis.NumShards)),
+	)
+}
+
+// initializeWorkers starts all background workers.
+func initializeWorkers(
+	ctx context.Context,
+	deps *Infrastructure,
+	cfg *config.AppConfig,
+	cartService *service.CartService,
+) (map[string]*workerControl, error) {
+
+	workers := make(map[string]*workerControl)
+	kb := keybuilder.New(uint32(cfg.Redis.NumShards))
+
+	// Worker #1: Outbox Relay Pool
+	outboxPool := outboxrelay.NewWorkerPool(
+		deps.RedisClient.Raw(),
+		deps.KafkaPublisher,
+		cfg.Worker.OutboxRelay,
+		cfg.Redis.NumShards,
+		logger,
+	)
+	workers["outbox_relay"] = &workerControl{
+		Start: func(ctx context.Context) error {
+			outboxPool.Start(ctx)
+			return nil
+		},
+		Stop: outboxPool.Stop,
+	}
+
+	// Worker #2: Postgres Sync
+	if cfg.Worker.PostgresSync.Enabled {
+		kafkaConsumerCfg := kafka.Config{
+			Brokers:           cfg.Kafka.Brokers,
+			TopicCartEvents:  cfg.Kafka.TopicCartEvents,
+			Consumer: kafka.ConsumerConfig{
+				GroupID:         cfg.Kafka.ConsumerGroupCartSync,
+				SessionTimeout:   30 * time.Second,
+				HeartbeatInterval: 3 * time.Second,
+				RebalanceTimeout: 30 * time.Second,
+				AutoOffsetReset: "earliest",
+				EnableAutoCommit: true,
+			},
+		}
+		consumer, err := kafka.NewConsumer(kafkaConsumerCfg, []string{cfg.Kafka.TopicCartEvents}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("postgres sync consumer: %w", err)
+		}
+		pgSyncWorker := postgres_sync.NewWorker(consumer, deps.CartRepo, cfg.Worker.PostgresSync, logger)
+		workers["postgres_sync"] = &workerControl{
+			Start: pgSyncWorker.Start,
+			Stop:  pgSyncWorker.Stop,
+		}
+	}
+
+	// Worker #6: Order Event Consumer
+	orderKafkaCfg := kafka.Config{
+		Brokers: cfg.Kafka.Brokers,
+		Consumer: kafka.ConsumerConfig{
+			GroupID:         cfg.Kafka.ConsumerGroupOrder,
+			SessionTimeout:   30 * time.Second,
+			HeartbeatInterval: 3 * time.Second,
+			RebalanceTimeout: 30 * time.Second,
+			AutoOffsetReset: "earliest",
+			EnableAutoCommit: true,
+		},
+	}
+	orderConsumer, err := kafka.NewConsumer(orderKafkaCfg, []string{cfg.Kafka.TopicOrderEvents}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("order consumer: %w", err)
+	}
+	orderWorker := order_consumer.NewWorker(
+		orderConsumer,
+		deps.RedisClient.Raw(),
+		deps.CartLuaRepo,
+		deps.CacheRepo,
+		kb,
+		cfg.Redis.NumShards,
+		logger,
+	)
+	workers["order_consumer"] = &workerControl{
+		Start: orderWorker.Start,
+		Stop:  orderWorker.Stop,
+	}
+
+	logger.Info("all workers initialized",
+		zap.Int("count", len(workers)),
+	)
+
+	return workers, nil
+}
+
+// setupCronJobs registers scheduled jobs with robfig/cron.
+func setupCronJobs(ctx context.Context, deps *Infrastructure, cfg *config.AppConfig) *cronjobs.Scheduler {
+	scheduler := cronjobs.NewScheduler(logger)
+
+	// Abandoned Cart Marker — daily at 2:00 AM
+	if cfg.Worker.AbandonedMarker.Enabled {
+		abandonedJob := cronjobs.NewAbandonedMarker(
+			deps.CartRepo,
+			deps.OutboxWriter,
+			cfg.Worker.AbandonedMarker,
+			cfg.Redis.NumShards,
+			logger,
+		)
+		if err := scheduler.Add("abandoned_marker", cfg.Worker.AbandonedMarker.Cron, abandonedJob); err != nil {
+			logger.Warn("failed to register abandoned_marker cron", zap.Error(err))
+		} else {
+			logger.Info("abandoned marker cron registered",
+				zap.String("cron", cfg.Worker.AbandonedMarker.Cron))
+		}
+	}
+
+	// Data Archival Cleaner — weekly on Sunday at 3:00 AM
+	if cfg.Worker.ArchivalCleaner.Enabled {
+		archivalJob := cronjobs.NewArchivalCleaner(
+			deps.CartRepo,
+			cfg.Worker.ArchivalCleaner,
+			logger,
+		)
+		if err := scheduler.Add("archival_cleaner", cfg.Worker.ArchivalCleaner.Cron, archivalJob); err != nil {
+			logger.Warn("failed to register archival_cleaner cron", zap.Error(err))
+		} else {
+			logger.Info("archival cleaner cron registered",
+				zap.String("cron", cfg.Worker.ArchivalCleaner.Cron))
+		}
+	}
+
+	scheduler.Start()
+	return scheduler
+}
+
+// shutdown handles graceful shutdown of all components.
+func shutdown(
+	server *http.Server,
+	deps *Infrastructure,
+	workers map[string]*workerControl,
+	cronScheduler *cronjobs.Scheduler,
+	cfg *config.AppConfig,
+) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	sig := <-sigCh
+	logger.Info("shutdown signal received", zap.String("signal", sig.String()))
+
+	// Parse shutdown timeout
 	shutdownTimeout := 30 * time.Second
 	if cfg.App.ShutdownTimeout != "" {
 		if d, err := time.ParseDuration(cfg.App.ShutdownTimeout); err == nil {
@@ -168,16 +417,46 @@ func run() error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
-	// TODO(module 22): Gracefully stop HTTP server
-	// TODO(module 15-21): Gracefully stop all workers
-
-	<-shutdownCtx.Done()
-	if shutdownCtx.Err() == context.DeadlineExceeded {
-		logger.Warn("graceful shutdown timed out", zap.Duration("timeout", shutdownTimeout))
+	// Stop accepting new HTTP requests
+	logger.Info("shutting down HTTP server...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("HTTP server shutdown error", zap.Error(err))
+	} else {
+		logger.Info("HTTP server stopped")
 	}
 
-	logger.Info("cart-service stopped")
-	return nil
+	// Stop cron scheduler
+	if cronScheduler != nil {
+		cronScheduler.Stop()
+		logger.Info("cron scheduler stopped")
+	}
+
+	// Stop all workers
+	for name, wc := range workers {
+		logger.Info("stopping worker", zap.String("worker", name))
+		wc.Stop()
+		logger.Info("worker stopped", zap.String("worker", name))
+	}
+
+	logger.Info("graceful shutdown complete")
+}
+
+// shutdownInfrastructure closes all infrastructure connections.
+func shutdownInfrastructure(deps *Infrastructure) {
+	if deps.ProductClient != nil {
+		_ = deps.ProductClient.Close()
+	}
+	if deps.KafkaPublisher != nil {
+		_ = deps.KafkaPublisher.Close()
+	}
+	if deps.RedisClient != nil {
+		_ = deps.RedisClient.Close()
+	}
+	if deps.PGDB != nil {
+		if sqlDB, err := deps.PGDB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}
 }
 
 // initLogger creates a zap logger based on configuration.
@@ -187,32 +466,32 @@ func initLogger(level, format string) *zap.Logger {
 		zapLevel = zapcore.InfoLevel
 	}
 
-	var config zap.Config
+	var zapCfg zap.Config
 	if format == "json" {
-		config = zap.NewProductionConfig()
+		zapCfg = zap.NewProductionConfig()
 	} else {
-		config = zap.NewDevelopmentConfig()
+		zapCfg = zap.NewDevelopmentConfig()
 	}
-	config.Level = zap.NewAtomicLevelAt(zapLevel)
-	config.EncoderConfig.TimeKey = "timestamp"
-	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
+	zapCfg.EncoderConfig.TimeKey = "timestamp"
+	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 
-	logger, err := config.Build()
+	l, err := zapCfg.Build()
 	if err != nil {
-		log.Fatalf("failed to build logger: %v", err)
+		fmt.Fprintf(os.Stderr, "failed to build logger: %v\n", err)
+		os.Exit(1)
 	}
-	return logger
+	return l
 }
 
-// healthHandler exposes a /healthz endpoint for liveness probes.
-func healthHandler(client *redisinfra.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		if err := client.Ping(ctx); err != nil {
-			http.Error(w, `{"status":"unhealthy","redis":"down"}`, http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy","redis":"up"}`))
+// parseDuration parses a duration string.
+func parseDuration(s string) time.Duration {
+	if s == "" {
+		return 30 * time.Minute
 	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 30 * time.Minute
+	}
+	return d
 }

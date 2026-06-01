@@ -68,6 +68,39 @@ func (sm *ShardManager) ShardForUser(userID string) uint32 {
 	return sm.kb.StreamShardByUserID(userID)
 }
 
+// EnsureConsumerGroups creates consumer groups on all stream shards.
+// This must be called before starting the outbox_relay workers.
+// groupName is the consumer group name (e.g. "cart_relay_group").
+func (sm *ShardManager) EnsureConsumerGroups(ctx context.Context, client *Client, groupName string) error {
+	for i := uint32(0); i < sm.numShards; i++ {
+		streamKey := sm.kb.StreamShard(i)
+		err := client.Raw().XGroupCreateMkStream(ctx, streamKey, groupName, "0").Err()
+		if err != nil && !isConsumerGroupExistsErr(err) {
+			return fmt.Errorf("create consumer group %s on %s: %w", groupName, streamKey, err)
+		}
+	}
+	return nil
+}
+
+// isConsumerGroupExistsErr checks if the error indicates the consumer group already exists.
+func isConsumerGroupExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return len(s) >= 44 && (s == "BUSYGROUP Consumer Group name already exists" ||
+		(len(s) > 44 && containsSubstring(s, "BUSYGROUP Consumer Group name already exists")))
+}
+
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // NewClient creates a new Redis client from the given configuration.
 // It creates a single-node redis.Client (suitable for local dev and
 // single-node Redis). For Redis Cluster, replace with NewClusterClient.
