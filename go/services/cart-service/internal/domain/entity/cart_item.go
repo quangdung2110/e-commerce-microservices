@@ -81,6 +81,11 @@ func (ci *CartItem) StreamID()       string          { return ci.redisStreamID }
 func (ci *CartItem) CreatedAt()     time.Time       { return ci.createdAt }
 func (ci *CartItem) UpdatedAt()     time.Time       { return ci.updatedAt }
 
+// MarkUnavailable sets the product snapshot's IsAvailable flag to false.
+func (ci *CartItem) MarkUnavailable() {
+	ci.productSnapshot.IsAvailable = false
+}
+
 // UpdateQuantity updates the item quantity with boundary checks.
 func (ci *CartItem) UpdateQuantity(newQty int) error {
 	if newQty <= 0 {

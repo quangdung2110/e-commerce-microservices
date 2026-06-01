@@ -1,6 +1,7 @@
 package response
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -43,19 +44,20 @@ func NewErrorResponse(code ErrorCode, message string, requestID string) *ErrorRe
 
 // FromDomainError converts domain errors to API error responses.
 func FromDomainError(err error, requestID string) *ErrorResponse {
-	switch err {
-	case entity.ErrProductNotFound:
+	switch {
+	case errors.Is(err, entity.ErrProductNotFound):
 		return NewErrorResponse(ErrProductNotFound, "Sản phẩm không tồn tại", requestID)
-	case entity.ErrProductUnavailable:
+	case errors.Is(err, entity.ErrProductUnavailable):
 		return NewErrorResponse(ErrProductUnavailable, "Sản phẩm không còn khả dụng", requestID)
-	case entity.ErrInsufficientStock:
+	case errors.Is(err, entity.ErrInsufficientStock):
 		return NewErrorResponse(ErrInsufficientStock, "Số lượng tồn kho không đủ", requestID)
-	case entity.ErrCartFull:
+	case errors.Is(err, entity.ErrCartFull):
 		return NewErrorResponse(ErrCartFull, "Giỏ hàng đã đầy", requestID)
-	case entity.ErrCartNotFound:
+	case errors.Is(err, entity.ErrCartNotFound):
 		return NewErrorResponse(ErrCartNotFound, "Giỏ hàng không tồn tại", requestID)
-	case entity.ErrInvalidQuantity, entity.ErrQuantityExceedsLimit,
-		entity.ErrMissingRequiredField:
+	case errors.Is(err, entity.ErrInvalidQuantity),
+		errors.Is(err, entity.ErrQuantityExceedsLimit),
+		errors.Is(err, entity.ErrMissingRequiredField):
 		return NewErrorResponse(ErrInvalidRequest, "Yêu cầu không hợp lệ", requestID)
 	default:
 		return NewErrorResponse(ErrInternal, "Lỗi hệ thống nội bộ", requestID)
