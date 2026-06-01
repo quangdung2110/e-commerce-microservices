@@ -278,7 +278,7 @@ return deleted_count
 > **Lưu ý về Sharding:** Shard ID được tính từ CRC32 hash của user_id modulo số shards. Backend phải tính shard ID và truyền đúng stream key shard vào KEYS[2] trước khi gọi Lua. Công thức: `shard_id = crc32(user_id) % 4`, `stream_key = "{cart}:events:" .. shard_id`.
 
 
-### 3.5. Chiến lược Re-populate Cache (từ Cold Store)
+### 3.4. Chiến lược Re-populate Cache (từ Cold Store)
 
 Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash từ dữ liệu PostgreSQL. Để đảm bảo tính nhất quán dữ liệu (như đã định nghĩa ở [Mục 2.2](#22-value-structure-thành-phần-json)), quy trình mapping được chuẩn hóa như sau:
 
@@ -318,7 +318,7 @@ Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash t�
    - Nếu `grpc_success = false`, response sẽ có `is_price_degraded = true` để UI hiển thị cảnh báo.
    - Các hành động Write sau đó sẽ tiếp tục sử dụng Lua Script để đảm bảo tính nguyên tử.
 
-### 3.6. Silent Rehydrate Lua Script (Chuẩn triển khai bắt buộc)
+### 3.5. Silent Rehydrate Lua Script (Chuẩn triển khai bắt buộc)
 
 Script này chỉ dùng cho nhánh cache miss, mục tiêu là nạp lại Redis từ Cold Store + dữ liệu Product đã merge.
 

@@ -357,7 +357,7 @@ cart-service/
 | 13 | `13-api-middleware.md` | Auth, logging, recovery, rate-limit, tracing middleware | - | `internal/api/middleware/` |
 | 14 | `14-api-handlers.md` | Gin handlers + router setup | 11, 12, 13 | `internal/api/handler/`, `router/` |
 | 15 | `15-21-workers.md` | Tất cả 6 workers: OutboxRelay, PostgresSync, AbandonedMarker, ArchivalCleaner, StreamTrimmer, OrderEventConsumer | 03, 06, 07, 08, 09, 10, 11 | `internal/workers/` |
-| 16 | `22-cmd-main.md` | main.go, DI wiring, graceful shutdown, server bootstrap | Tất cả trên | `cmd/server/main.go` |
+| 16 | `22-cmd-main.md` | main.go, DI wiring, graceful shutdown, server bootstrap | Tất cả trên | `cmd/server/main.go` | ✅ (2026-06-01) |
 | 17 | `23-testing-plan.md` | Unit test, integration test (testcontainers), load test, health checks | Tất cả trên | `test/`, CI configs |
 | 18 | `24-deployment-plan.md` | Dockerfile (distroless), docker-compose, K8s manifests, HPA | 16, 17 | `deployments/`, `Dockerfile` |
 
@@ -442,16 +442,16 @@ Cho phép:
 ```markdown
 ## Phase 1: Foundation (Tuần 1)
 - [x] 01-project-scaffolding.md  → Tạo project skeleton, go.mod, Makefile ✅ (2026-05-24)
-- [ ] 02-domain-models.md        → Entities, errors
-- [ ] 03-domain-ports.md         → Interfaces
-- [ ] 04-domain-events.md        → Event definitions
+- [x] 02-domain-models.md        → Entities, errors ✅ (pre-existing)
+- [x] 03-domain-ports.md         → Interfaces ✅ (2026-05-24)
+- [x] 04-domain-events.md        → Event definitions ✅ (2026-05-24)
 
 ## Phase 2: Lua Scripts (Tuần 1-2)
-- [ ] 05-lua-scripts.md          → 3 Lua scripts (add_or_update, batch_delete, rehydrate)
+- [x] 05-lua-scripts.md          → 3 Lua scripts (add_or_update, batch_delete, rehydrate) ✅ (2026-05-25)
 
 ## Phase 3: Infrastructure (Tuần 2)
 - [ ] 06-infra-redis.md          → Redis client + Lua wrappers
-- [ ] 07-infra-postgres.md       → PG connection + repos + migrations
+- [x] 07-infra-postgres.md       → PG connection + repos + migrations ✅ (2026-05-29)
 - [ ] 08-infra-kafka.md          → Kafka producer/consumer
 - [ ] 09-infra-grpc.md           → gRPC client + circuit breaker
 - [ ] 10-infra-config.md         → Config loading
@@ -468,7 +468,7 @@ Cho phép:
 - [ ] 15-21-workers.md            → All 6 workers
 
 ## Phase 7: Bootstrap + QA (Tuần 4)
-- [ ] 22-cmd-main.md             → main.go + wiring
+- [x] 22-cmd-main.md             → main.go + wiring ✅ (2026-06-01)
 - [ ] 23-testing-plan.md          → Test strategy + test utilities
 - [ ] 24-deployment-plan.md        → Docker + K8s
 
