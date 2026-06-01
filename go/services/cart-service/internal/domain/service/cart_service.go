@@ -131,6 +131,12 @@ func (s *CartService) AddItem(ctx context.Context, userID string, req *AddItemRe
 		nowMs, userID,
 	)
 	if err != nil {
+		if err == port.ErrCartFull {
+			return nil, entity.ErrCartFull
+		}
+		if err == port.ErrQuantityInvalid {
+			return nil, entity.ErrInvalidQuantity
+		}
 		return nil, fmt.Errorf("add item: %w", err)
 	}
 
@@ -321,8 +327,7 @@ func (s *CartService) mergeProductData(items []*entity.CartItem, grpcResult *ent
 		for _, item := range items {
 			if skuInfo, ok := grpcResult.Skus[item.SkuID()]; ok {
 				if !skuInfo.IsAvailable {
-					snap := item.Snapshot()
-					snap.IsAvailable = false
+					item.MarkUnavailable()
 				}
 			}
 		}
