@@ -1,151 +1,146 @@
-﻿package keybuilder
+package keybuilder
 
 import (
 	"fmt"
-	"regexp"
+	"hash/crc32"
+	"strconv"
 	"strings"
-
-	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
 )
 
-var (
-	// cartKeyPattern validates cart key format with Hash Tag
-	cartKeyPattern = regexp.MustCompile(`^\{cart:user:[^{}]+\}$`)
-
-	// skuIDPattern validates SKU ID format
-	skuIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+const (
+	KeyPrefixCart     = "{cart}"
+	KeyPrefixNegative = "{nc}"
+	KeyPrefixEvents   = "{cart}:events"
 )
 
-// CartKeyBuilder builds Redis keys for cart operations
-type CartKeyBuilder struct{}
-
-// NewCartKeyBuilder creates a new CartKeyBuilder
-func NewCartKeyBuilder() *CartKeyBuilder {
-	return &CartKeyBuilder{}
+// KeyBuilder builds all Redis keys for the cart domain.
+// Thread-safe (stateless, pure functions).
+//
+// Key format reference:
+//   - Cart hash:           {cart}:{user_id}
+//   - Negative cache:      {nc}:{user_id}
+//   - Event stream shard:  {cart}:events:{shard}
+type KeyBuilder struct {
+	numShards uint32
 }
 
-// BuildCartKey builds a cart hash key with Hash Tag validation
-// Format: {cart:user:{user_id}}
-func (b *CartKeyBuilder) BuildCartKey(userID string) (string, error) {
-	if userID == "" {
-		return "", fmt.Errorf("user_id cannot be empty")
-	}
-
-	key := fmt.Sprintf("{cart:user:%s}", userID)
-	return key, nil
+// New creates a KeyBuilder with the configured number of stream shards.
+func New(numShards uint32) *KeyBuilder {
+	return &KeyBuilder{numShards: numShards}
 }
 
-// BuildOutboxStreamKey builds an outbox stream key for a cart
-// Format: {cart:user:{user_id}}:outbox
-func (b *CartKeyBuilder) BuildOutboxStreamKey(userID string) (string, error) {
-	cartKey, err := b.BuildCartKey(userID)
-	if err != nil {
-		return "", err
-	}
-	return cartKey + constants.KeySuffixOutbox, nil
+// CartKey returns the Redis hash key for a user's cart.
+// Uses Hash Tag {cart} so Redis Cluster can route by user_id.
+func (kb *KeyBuilder) CartKey(userID string) string {
+	return fmt.Sprintf("%s:%s", KeyPrefixCart, userID)
 }
 
-// BuildOutboxStreamKeyFromCartID builds an outbox stream key from cart ID
-func (b *CartKeyBuilder) BuildOutboxStreamKeyFromCartID(cartID string) (string, error) {
-	if !b.IsValidCartKey(cartID) {
-		return "", fmt.Errorf("invalid cart_id format: %s", cartID)
-	}
-	return cartID + constants.KeySuffixOutbox, nil
+// NegativeCacheKey returns the negative cache key for a user.
+// Negative cache short-circuits "cart not found" responses after DB confirmed absence.
+func (kb *KeyBuilder) NegativeCacheKey(userID string) string {
+	return fmt.Sprintf("%s:%s", KeyPrefixNegative, userID)
 }
 
-// BuildNegativeCacheKey builds a negative cache key for a cart
-// Format: {cart:user:{user_id}}:notfound
-func (b *CartKeyBuilder) BuildNegativeCacheKey(userID string) (string, error) {
-	cartKey, err := b.BuildCartKey(userID)
-	if err != nil {
-		return "", err
-	}
-	return cartKey + constants.KeySuffixNotFound, nil
+// StreamShard returns the event stream shard key for the given shard index.
+// Streams are sharded by user_id (via CRC32) to parallelize relay workers.
+func (kb *KeyBuilder) StreamShard(shard uint32) string {
+	return fmt.Sprintf("%s:%d", KeyPrefixEvents, shard)
 }
 
-// BuildIdempotencyKey builds an idempotency key for ORDER_PAID
-// Format: cart:idemp:order_paid:{order_id}
-func (b *CartKeyBuilder) BuildIdempotencyKey(orderID string) string {
-	return fmt.Sprintf("%s%s%s", constants.KeyPrefixIdempotency, orderID, ":PROCESSING")
+// StreamShardByUserID computes the shard index for a user using CRC32.
+// Shard = crc32(userID) % numShards.
+// This determines which stream shard receives events for a given user.
+// The same formula must be used in outbox_relay workers to read from the right shard.
+func (kb *KeyBuilder) StreamShardByUserID(userID string) uint32 {
+	return crc32.ChecksumIEEE([]byte(userID)) % kb.numShards
 }
 
-// BuildIdempotencyDoneKey builds an idempotency done key
-// Format: cart:idemp:order_paid:{order_id}:DONE
-func (b *CartKeyBuilder) BuildIdempotencyDoneKey(orderID string) string {
-	return fmt.Sprintf("%s%s:DONE", constants.KeyPrefixIdempotency, orderID)
+// StreamShardKey returns the event stream shard key for a given user.
+// Convenience method combining StreamShardByUserID + StreamShard.
+func (kb *KeyBuilder) StreamShardKey(userID string) string {
+	return kb.StreamShard(kb.StreamShardByUserID(userID))
 }
 
-// ExtractUserIDFromCartID extracts user_id from a cart key
-func (b *CartKeyBuilder) ExtractUserIDFromCartID(cartID string) (string, error) {
-	if !b.IsValidCartKey(cartID) {
-		return "", fmt.Errorf("invalid cart_id format: %s", cartID)
-	}
-
-	// Extract user_id from {cart:user:{user_id}}
-	parts := strings.Split(cartID, ":")
-	if len(parts) < 3 {
-		return "", fmt.Errorf("cannot parse user_id from cart_id: %s", cartID)
-	}
-
-	// parts[0] = "{cart"
-	// parts[1] = "user"
-	// parts[2] = "user_id}"
-	userIDWithBrace := parts[2]
-	userID := strings.TrimSuffix(userIDWithBrace, "}")
-	return userID, nil
+// StreamShardKeyExplicit returns the stream shard key for a user using an explicit shard index.
+// Use this when the shard is already known and you want to avoid recomputing CRC32.
+func (kb *KeyBuilder) StreamShardKeyExplicit(userID string, shard uint32) string {
+	return kb.StreamShard(shard)
 }
 
-// IsValidCartKey validates if a cart key has correct Hash Tag format
-func (b *CartKeyBuilder) IsValidCartKey(cartID string) bool {
-	return cartKeyPattern.MatchString(cartID)
-}
-
-// IsValidSkuID validates if a SKU ID has correct format
-func (b *CartKeyBuilder) IsValidSkuID(skuID string) bool {
-	return skuIDPattern.MatchString(skuID)
-}
-
-// IsSameHashSlot checks if two keys share the same Hash Tag (for CROSSSLOT validation)
-func (b *CartKeyBuilder) IsSameHashSlot(key1, key2 string) bool {
-	hashTag1 := extractHashTag(key1)
-	hashTag2 := extractHashTag(key2)
-	return hashTag1 != "" && hashTag1 == hashTag2
-}
-
-// extractHashTag extracts the hash tag from a key
-func extractHashTag(key string) string {
-	start := strings.Index(key, "{")
-	end := strings.Index(key, "}")
-	if start == -1 || end == -1 || end <= start {
+// ParseCartKey extracts the user_id from a cart key.
+// Inverse of CartKey. Returns empty string if key format is invalid.
+func (kb *KeyBuilder) ParseCartKey(cartKey string) string {
+	// Format: {cart}:{user_id}
+	// We need to strip the leading "{cart}:" (7 chars) to get user_id.
+	prefix := KeyPrefixCart + ":"
+	if !strings.HasPrefix(cartKey, prefix) {
 		return ""
 	}
-	return key[start : end+1]
+	return cartKey[len(prefix):]
 }
 
-// ValidateKeyPair validates that two keys have the same Hash Tag (for Lua script execution)
-func (b *CartKeyBuilder) ValidateKeyPair(key1, key2 string) error {
-	if !b.IsSameHashSlot(key1, key2) {
-		return fmt.Errorf("CROSSSLOT error: keys %s and %s do not share the same Hash Tag", key1, key2)
+// ShardCount returns the configured number of stream shards.
+func (kb *KeyBuilder) ShardCount() uint32 {
+	return kb.numShards
+}
+
+// RehydrateItemsJSON is a helper that builds the JSON array format expected by the rehydrate Lua script.
+// items is a map of skuID -> CartItemValue JSON string.
+// Returns a JSON array string: [{"sku_id":"...","value":"..."}, ...]
+func RehydrateItemsJSON(items map[string]string) string {
+	if len(items) == 0 {
+		return "[]"
 	}
-	return nil
+	// Build JSON array manually to avoid allocating a struct and extra encoder.
+	// Format: [{"sku_id":"...","value":"..."}]
+	var b []byte
+	b = append(b, '[')
+	first := true
+	for skuID, value := range items {
+		if !first {
+			b = append(b, ',')
+		}
+		first = false
+		b = append(b, `{"sku_id":`...)
+		b = append(b, strconv.AppendQuote(nil, skuID)...)
+		b = append(b, `,"value":`...)
+		b = append(b, strconv.AppendQuote(nil, value)...)
+		b = append(b, `}`...)
+	}
+	b = append(b, ']')
+	return string(b)
 }
 
-// GetHashTag returns the Hash Tag from a key
-func (b *CartKeyBuilder) GetHashTag(key string) string {
-	return extractHashTag(key)
+// IdempotencyKey returns the Redis key used to track processed order IDs.
+// Format: {idem}:order:{order_id}
+// Used by order_consumer for ORDER_PAID deduplication.
+func IdempotencyKey(orderID int64) string {
+	return fmt.Sprintf("{idem}:order:%d", orderID)
 }
 
-// Global Keys (no Hash Tag required)
-var (
-	// OutboxPublishIntentsKey is the global key for tracking publish intents
-	OutboxPublishIntentsKey = constants.KeyOutboxPublishIntents
+// ComputeShardID computes the stream shard index for a user.
+// Convenience wrapper around StreamShardByUserID that takes int.
+func ComputeShardID(userID string, numShards int) int {
+	return int(crc32.ChecksumIEEE([]byte(userID)) % uint32(numShards))
+}
 
-	// ActiveOutboxStreamsKey is the global key for active outbox streams
-	ActiveOutboxStreamsKey = constants.KeyActiveOutboxStreams
+// IdempotencyKeyString is the key prefix pattern for idempotency keys.
+const IdempotencyKeyPrefix = "{idem}"
 
-	// OutboxNotificationsChannel is the Pub/Sub channel for outbox notifications
-	OutboxNotificationsChannel = constants.KeyOutboxNotifications
-
-	// OutboxDLQKey is the dead letter queue key
-	OutboxDLQKey = constants.KeyOutboxDLQ
-)
+// SkuIDsJSON is a helper that encodes a list of SKU IDs into a JSON array.
+// Returns: ["sku1","sku2",...]
+func SkuIDsJSON(skuIDs []string) string {
+	if len(skuIDs) == 0 {
+		return "[]"
+	}
+	var b []byte
+	b = append(b, '[')
+	for i, sku := range skuIDs {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, strconv.AppendQuote(nil, sku)...)
+	}
+	b = append(b, ']')
+	return string(b)
+}

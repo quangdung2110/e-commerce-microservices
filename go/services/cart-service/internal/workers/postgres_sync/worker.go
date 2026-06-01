@@ -1,321 +1,387 @@
-﻿package postgres_sync
+package postgres_sync
 
 import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 
-	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
+	"cart-service/internal/domain/entity"
+	"cart-service/internal/domain/event"
+	"cart-service/internal/domain/port"
+	"cart-service/internal/infrastructure/config"
+	"cart-service/internal/infrastructure/kafka"
 )
 
-// Worker is the main Postgres Sync worker
+// Worker represents the Postgres Sync consumer worker.
+// It consumes cart events from Kafka and persists them to PostgreSQL cold storage.
 type Worker struct {
-	db             *gorm.DB
-	redisClient   *redis.Client
-	consumer       *KafkaConsumer
-	batchProcessor *BatchProcessor
-	metrics       *WorkerMetrics
-	logger        *zap.Logger
-	config        *config.Config
-
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	consumer  *kafka.Consumer
+	cartRepo  port.CartRepository
+	cfg       config.PostgresSyncCfg
+	logger    *zap.Logger
+	metrics   *Metrics
+	wg        sync.WaitGroup
+	stopCh    chan struct{}
+	batchSize int
+	timeout   time.Duration
 }
 
-// WorkerMetrics holds metrics for the worker
-type WorkerMetrics struct {
-	mu                  sync.RWMutex
-	EventsProcessed     int64
-	EventsFailed       int64
-	BatchesProcessed   int64
-	TransactionsSucceeded int64
-	TransactionsFailed int64
-	LastProcessedAt    time.Time
-	AvgLatencyMs       float64
-}
-
-// NewWorker creates a new Postgres Sync worker
+// NewWorker creates a new Postgres Sync worker.
 func NewWorker(
-	cfg *config.Config,
+	consumer *kafka.Consumer,
+	cartRepo port.CartRepository,
+	cfg config.PostgresSyncCfg,
 	logger *zap.Logger,
-	redisClient *redis.Client,
-) (*Worker, error) {
-	// Connect to PostgreSQL
-	dsn := cfg.Postgres.DSN
-	if dsn == "" {
-		dsn = buildDSN(cfg.Postgres)
-	}
-
-	gormConfig := &gorm.Config{}
-
-	db, err := gorm.Open(postgres.Open(dsn), gormConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
-	}
-
-	// Configure connection pool
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
-	}
-
-	sqlDB.SetMaxOpenConns(cfg.Postgres.MaxOpenConns)
-	sqlDB.SetMaxIdleConns(cfg.Postgres.MaxIdleConns)
-
-	if cfg.Postgres.ConnMaxLifetime != "" {
-		lifetime, err := time.ParseDuration(cfg.Postgres.ConnMaxLifetime)
-		if err == nil {
-			sqlDB.SetConnMaxLifetime(lifetime)
-		}
-	}
-
-	// Run migrations
-	if err := Migrate(db); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	// Create batch processor with Redis for DLQ support
-	var batchProcessor *BatchProcessor
-	if redisClient != nil {
-		batchProcessor = NewBatchProcessorWithRedis(db, redisClient, logger)
-	} else {
-		batchProcessor = NewBatchProcessor(db, logger)
-	}
-
-	// Create Kafka consumer
-	consumer, err := NewKafkaConsumer(
-		cfg.Kafka.Brokers,
-		cfg.Kafka.Topic,
-		cfg.Kafka.ConsumerGroup,
-		cfg.Kafka.Consumer,
-		logger,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Kafka consumer: %w", err)
-	}
-
+) *Worker {
 	return &Worker{
-		db:              db,
-		redisClient:     redisClient,
-		consumer:        consumer,
-		batchProcessor:  batchProcessor,
-		metrics:         &WorkerMetrics{},
-		logger:          logger,
-		config:          cfg,
-		stopCh:         make(chan struct{}),
-	}, nil
-}
-
-// buildDSN builds a PostgreSQL DSN from config
-func buildDSN(cfg config.PostgresConfig) string {
-	return fmt.Sprintf(
-		"host=localhost port=5432 user=postgres password=postgres dbname=cart_service sslmode=disable",
-	)
-}
-
-// Start starts the worker
-func (w *Worker) Start(ctx context.Context) error {
-	w.logger.Info("Starting Postgres Sync worker")
-
-	// Set up consumer handlers
-	w.consumer.SetHandlers(w)
-
-	// Start Kafka consumer
-	if err := w.consumer.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start consumer: %w", err)
+		consumer:  consumer,
+		cartRepo:  cartRepo,
+		cfg:       cfg,
+		logger:    logger,
+		metrics:   NewMetrics(logger),
+		stopCh:    make(chan struct{}),
+		batchSize: cfg.BatchSize,
+		timeout:   5 * time.Second,
 	}
+}
 
-	w.logger.Info("Postgres Sync worker started successfully")
+// NewWorkerWithTimeouts creates a new Postgres Sync worker with custom timeouts.
+func NewWorkerWithTimeouts(
+	consumer *kafka.Consumer,
+	cartRepo port.CartRepository,
+	cfg config.PostgresSyncCfg,
+	logger *zap.Logger,
+	batchSize int,
+	timeout time.Duration,
+) *Worker {
+	return &Worker{
+		consumer:  consumer,
+		cartRepo:  cartRepo,
+		cfg:       cfg,
+		logger:    logger,
+		metrics:   NewMetrics(logger),
+		stopCh:    make(chan struct{}),
+		batchSize: batchSize,
+		timeout:   timeout,
+	}
+}
+
+// Start begins consuming Kafka messages.
+func (w *Worker) Start(ctx context.Context) error {
+	w.wg.Add(1)
+	go w.consumeLoop(ctx)
+	w.logger.Info("postgres sync worker started",
+		zap.Int("batch_size", w.batchSize),
+		zap.Duration("timeout", w.timeout),
+	)
 	return nil
 }
 
-// Stop stops the worker gracefully
+// Stop gracefully stops the worker.
 func (w *Worker) Stop() {
-	w.logger.Info("Stopping Postgres Sync worker...")
-
 	close(w.stopCh)
-
-	// Stop Kafka consumer
-	if err := w.consumer.Stop(); err != nil {
-		w.logger.Error("Failed to stop consumer", zap.Error(err))
-	}
-
-	// Close Redis connection
-	if w.redisClient != nil {
-		if err := w.redisClient.Close(); err != nil {
-			w.logger.Error("Failed to close Redis connection", zap.Error(err))
-		}
-	}
-
-	// Close database connection
-	sqlDB, err := w.db.DB()
-	if err == nil {
-		sqlDB.Close()
-	}
-
-	w.logger.Info("Postgres Sync worker stopped")
+	w.wg.Wait()
+	w.logger.Info("postgres sync worker stopped")
 }
 
-// HandleBatch implements ConsumerHandlers
-func (w *Worker) HandleBatch(ctx context.Context, messages []*ConsumedMessage) error {
-	start := time.Now()
+func (w *Worker) consumeLoop(ctx context.Context) {
+	defer w.wg.Done()
 
-	// Parse events from messages
-	events := make([]*CartEvent, 0, len(messages))
-	for _, msg := range messages {
-		event, err := ParseCartEvent(msg.Value)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+			w.processBatch(ctx)
+		}
+	}
+}
+
+func (w *Worker) processBatch(ctx context.Context) {
+	batch, err := w.consumer.PollBatch(ctx, w.batchSize, w.timeout)
+	if err != nil {
+		if err == context.DeadlineExceeded || err == context.Canceled {
+			return
+		}
+		w.logger.Warn("poll error", zap.Error(err))
+		return
+	}
+
+	if batch.Count() == 0 {
+		return
+	}
+
+	cartBatches := groupByCartID(batch)
+
+	for cartID, events := range cartBatches {
+		w.processCartBatch(ctx, cartID, events)
+	}
+
+	batch.Commit()
+}
+
+func groupByCartID(batch *kafka.MessageBatch) map[string][]*event.CartEventEnvelope {
+	result := make(map[string][]*event.CartEventEnvelope)
+	for _, msg := range batch.Messages() {
+		env, err := kafka.ParseCartEvent(msg)
 		if err != nil {
-			w.logger.Warn("Failed to parse event",
-				zap.Int32("partition", msg.Partition),
-				zap.Int64("offset", msg.Offset),
-				zap.Error(err),
-			)
-			// Count as processed but failed
-			w.metrics.IncEventsFailed()
 			continue
 		}
-		events = append(events, event)
+		cartID := env.AggregateID
+		result[cartID] = append(result[cartID], env)
 	}
+	return result
+}
 
-	if len(events) == 0 {
+func (w *Worker) processCartBatch(ctx context.Context, cartID string, events []*event.CartEventEnvelope) {
+	for _, env := range events {
+		if err := w.processEvent(ctx, env); err != nil {
+			w.logger.Error("failed to process event",
+				zap.String("cart_id", cartID),
+				zap.String("event_type", env.EventType),
+				zap.String("stream_id", env.StreamID),
+				zap.Error(err),
+			)
+			w.metrics.RecordFailed(env.EventType)
+			continue
+		}
+		w.metrics.RecordProcessed(env.EventType)
+	}
+}
+
+func (w *Worker) processEvent(ctx context.Context, env *event.CartEventEnvelope) error {
+	switch env.EventType {
+	case event.EventTypeCartItemAdded, event.EventTypeCartItemUpdated:
+		return w.handleItemUpsert(ctx, env)
+	case event.EventTypeCartItemDeleted:
+		return w.handleItemDelete(ctx, env)
+	case event.EventTypeCartCleared:
+		return w.handleCartCleared(ctx, env)
+	case event.EventTypeCartCheckedOut:
+		return w.handleCartCheckedOut(ctx, env)
+	case event.EventTypeCartAbandoned:
+		return w.handleCartAbandoned(ctx, env)
+	default:
 		return nil
 	}
+}
 
-	// Process events in batches
-	results := w.batchProcessor.ProcessEvents(ctx, events)
-
-	// Track results
-	successCount := 0
-	failCount := 0
-	for _, result := range results {
-		if result.Success {
-			successCount++
-			w.metrics.IncTransactionsSucceeded()
-		} else {
-			failCount++
-			w.metrics.IncTransactionsFailed()
-		}
+func (w *Worker) handleItemUpsert(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return fmt.Errorf("parse item payload: %w", err)
 	}
 
-	// Update metrics
-	w.metrics.AddEventsProcessed(int64(len(events)))
-	w.metrics.AddEventsFailed(int64(len(messages) - len(events) - failCount))
-	w.metrics.IncBatchesProcessed()
-	w.metrics.SetLastProcessedAt(time.Now())
-
-	// Update latency
-	latencyMs := float64(time.Since(start).Milliseconds())
-	w.metrics.UpdateAvgLatency(latencyMs)
-
-	w.logger.Debug("Batch processed",
-		zap.Int("events", len(events)),
-		zap.Int("success", successCount),
-		zap.Int("failed", failCount),
-		zap.Float64("latency_ms", latencyMs),
+	item := entity.RestoreCartItem(
+		payload.CartID+":"+payload.SkuID,
+		payload.CartID,
+		payload.ProductID,
+		payload.SkuID,
+		payload.Quantity,
+		payload.UnitPriceAtAdd,
+		entity.ProductSnapshot{
+			ProductID:   payload.ProductID,
+			ProductName: payload.ProductName,
+			VariantInfo: payload.VariantInfo,
+			ImageURL:    payload.ImageURL,
+			IsAvailable: payload.IsAvailable,
+			AddedAt:     payload.AddedAt,
+			UpdatedAt:   payload.UpdatedAt,
+		},
+		env.StreamID,
+		time.Now(), time.Now(),
 	)
 
+	if err := w.cartRepo.UpsertCartItem(ctx, item, env.StreamID); err != nil {
+		return fmt.Errorf("upsert cart item: %w", err)
+	}
+
+	cart := entity.RestoreCart(
+		payload.CartID, payload.UserID,
+		entity.CartStatusActive, env.StreamID,
+		time.Now(), time.Now(),
+	)
+	return w.cartRepo.UpsertCartMaster(ctx, cart, env.StreamID)
+}
+
+func (w *Worker) handleItemDelete(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseDeletedPayloadFromEnvelope(env)
+	if err != nil {
+		return fmt.Errorf("parse delete payload: %w", err)
+	}
+
+	itemID := payload.CartID + ":" + payload.SkuID
+	_, err = w.cartRepo.DeleteCartItem(ctx, itemID, env.StreamID)
+	return err
+}
+
+func (w *Worker) handleCartCleared(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return fmt.Errorf("parse cleared payload: %w", err)
+	}
+	_, err = w.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusDeleted, env.StreamID)
+	return err
+}
+
+func (w *Worker) handleCartCheckedOut(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return fmt.Errorf("parse checked_out payload: %w", err)
+	}
+	_, err = w.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusCheckedOut, env.StreamID)
+	return err
+}
+
+func (w *Worker) handleCartAbandoned(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseAbandonedPayloadFromEnvelope(env)
+	if err != nil {
+		return fmt.Errorf("parse abandoned payload: %w", err)
+	}
+	_, err = w.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusAbandoned, env.StreamID)
+	return err
+}
+
+// Consumer returns the underlying Kafka consumer.
+func (w *Worker) Consumer() *kafka.Consumer {
+	return w.consumer
+}
+
+// Metrics returns the worker's metrics.
+func (w *Worker) Metrics() *Metrics {
+	return w.metrics
+}
+
+// BatchProcessor handles batch processing logic for postgres_sync.
+type BatchProcessor struct {
+	cartRepo port.CartRepository
+	logger   *zap.Logger
+	metrics  *Metrics
+}
+
+// NewBatchProcessor creates a new batch processor.
+func NewBatchProcessor(cartRepo port.CartRepository, logger *zap.Logger) *BatchProcessor {
+	return &BatchProcessor{
+		cartRepo: cartRepo,
+		logger:   logger,
+		metrics:  NewMetrics(logger),
+	}
+}
+
+// ProcessCartEvents processes all events for a single cart in a transaction.
+func (bp *BatchProcessor) ProcessCartEvents(
+	ctx context.Context,
+	cartID string,
+	events []*event.CartEventEnvelope,
+) error {
+	for _, env := range events {
+		if err := bp.processEvent(ctx, cartID, env); err != nil {
+			bp.logger.Error("failed to process event",
+				zap.String("cart_id", cartID),
+				zap.String("event_type", env.EventType),
+				zap.Error(err),
+			)
+			bp.metrics.RecordFailed(env.EventType)
+			continue
+		}
+		bp.metrics.RecordProcessed(env.EventType)
+	}
 	return nil
 }
 
-// GetMetrics returns the worker metrics
-func (w *Worker) GetMetrics() WorkerMetricsSnapshot {
-	return w.metrics.Snapshot()
-}
-
-// IncEventsProcessed increments events processed counter
-func (m *WorkerMetrics) IncEventsProcessed() {
-	atomic.AddInt64(&m.EventsProcessed, 1)
-}
-
-// AddEventsProcessed adds to events processed counter
-func (m *WorkerMetrics) AddEventsProcessed(n int64) {
-	atomic.AddInt64(&m.EventsProcessed, n)
-}
-
-// IncEventsFailed increments events failed counter
-func (m *WorkerMetrics) IncEventsFailed() {
-	atomic.AddInt64(&m.EventsFailed, 1)
-}
-
-// AddEventsFailed adds to events failed counter
-func (m *WorkerMetrics) AddEventsFailed(n int64) {
-	atomic.AddInt64(&m.EventsFailed, n)
-}
-
-// IncBatchesProcessed increments batches processed counter
-func (m *WorkerMetrics) IncBatchesProcessed() {
-	atomic.AddInt64(&m.BatchesProcessed, 1)
-}
-
-// IncTransactionsSucceeded increments transactions succeeded counter
-func (m *WorkerMetrics) IncTransactionsSucceeded() {
-	atomic.AddInt64(&m.TransactionsSucceeded, 1)
-}
-
-// IncTransactionsFailed increments transactions failed counter
-func (m *WorkerMetrics) IncTransactionsFailed() {
-	atomic.AddInt64(&m.TransactionsFailed, 1)
-}
-
-// SetLastProcessedAt sets the last processed timestamp
-func (m *WorkerMetrics) SetLastProcessedAt(t time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.LastProcessedAt = t
-}
-
-// UpdateAvgLatency updates the average latency
-func (m *WorkerMetrics) UpdateAvgLatency(latencyMs float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.AvgLatencyMs == 0 {
-		m.AvgLatencyMs = latencyMs
-	} else {
-		// Simple moving average
-		m.AvgLatencyMs = m.AvgLatencyMs*0.9 + latencyMs*0.1
+func (bp *BatchProcessor) processEvent(ctx context.Context, cartID string, env *event.CartEventEnvelope) error {
+	switch env.EventType {
+	case event.EventTypeCartItemAdded, event.EventTypeCartItemUpdated:
+		return bp.handleItemUpsert(ctx, env)
+	case event.EventTypeCartItemDeleted:
+		return bp.handleItemDelete(ctx, env)
+	case event.EventTypeCartCleared:
+		return bp.handleCartCleared(ctx, env)
+	case event.EventTypeCartCheckedOut:
+		return bp.handleCartCheckedOut(ctx, env)
+	case event.EventTypeCartAbandoned:
+		return bp.handleCartAbandoned(ctx, env)
+	default:
+		return nil
 	}
 }
 
-// Snapshot returns a snapshot of the metrics
-func (m *WorkerMetrics) Snapshot() WorkerMetricsSnapshot {
-	return WorkerMetricsSnapshot{
-		EventsProcessed:       atomic.LoadInt64(&m.EventsProcessed),
-		EventsFailed:         atomic.LoadInt64(&m.EventsFailed),
-		BatchesProcessed:    atomic.LoadInt64(&m.BatchesProcessed),
-		TransactionsSucceeded: atomic.LoadInt64(&m.TransactionsSucceeded),
-		TransactionsFailed:   atomic.LoadInt64(&m.TransactionsFailed),
-		LastProcessedAt:      m.getLastProcessedAt(),
-		AvgLatencyMs:        m.getAvgLatency(),
+func (bp *BatchProcessor) handleItemUpsert(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return err
 	}
+
+	item := entity.RestoreCartItem(
+		payload.CartID+":"+payload.SkuID,
+		payload.CartID,
+		payload.ProductID,
+		payload.SkuID,
+		payload.Quantity,
+		payload.UnitPriceAtAdd,
+		entity.ProductSnapshot{
+			ProductID:   payload.ProductID,
+			ProductName: payload.ProductName,
+			VariantInfo: payload.VariantInfo,
+			ImageURL:    payload.ImageURL,
+			IsAvailable: payload.IsAvailable,
+			AddedAt:     payload.AddedAt,
+			UpdatedAt:   payload.UpdatedAt,
+		},
+		env.StreamID,
+		time.Now(), time.Now(),
+	)
+
+	if err := bp.cartRepo.UpsertCartItem(ctx, item, env.StreamID); err != nil {
+		return err
+	}
+
+	cart := entity.RestoreCart(
+		payload.CartID, payload.UserID,
+		entity.CartStatusActive, env.StreamID,
+		time.Now(), time.Now(),
+	)
+	return bp.cartRepo.UpsertCartMaster(ctx, cart, env.StreamID)
 }
 
-func (m *WorkerMetrics) getLastProcessedAt() time.Time {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.LastProcessedAt
+func (bp *BatchProcessor) handleItemDelete(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseDeletedPayloadFromEnvelope(env)
+	if err != nil {
+		return err
+	}
+	itemID := payload.CartID + ":" + payload.SkuID
+	_, err = bp.cartRepo.DeleteCartItem(ctx, itemID, env.StreamID)
+	return err
 }
 
-func (m *WorkerMetrics) getAvgLatency() float64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.AvgLatencyMs
+func (bp *BatchProcessor) handleCartCleared(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return err
+	}
+	_, err = bp.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusDeleted, env.StreamID)
+	return err
 }
 
-// WorkerMetricsSnapshot is a snapshot of worker metrics
-type WorkerMetricsSnapshot struct {
-	EventsProcessed        int64     `json:"events_processed"`
-	EventsFailed         int64     `json:"events_failed"`
-	BatchesProcessed    int64     `json:"batches_processed"`
-	TransactionsSucceeded int64     `json:"transactions_succeeded"`
-	TransactionsFailed  int64     `json:"transactions_failed"`
-	LastProcessedAt      time.Time `json:"last_processed_at"`
-	AvgLatencyMs         float64   `json:"avg_latency_ms"`
+func (bp *BatchProcessor) handleCartCheckedOut(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		return err
+	}
+	_, err = bp.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusCheckedOut, env.StreamID)
+	return err
+}
+
+func (bp *BatchProcessor) handleCartAbandoned(ctx context.Context, env *event.CartEventEnvelope) error {
+	payload, err := ParseAbandonedPayloadFromEnvelope(env)
+	if err != nil {
+		return err
+	}
+	_, err = bp.cartRepo.UpdateCartStatus(ctx, payload.CartID, entity.CartStatusAbandoned, env.StreamID)
+	return err
 }

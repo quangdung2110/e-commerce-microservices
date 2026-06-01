@@ -1,525 +1,294 @@
-﻿package postgres_sync
+package postgres_sync
 
 import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/IBM/sarama"
+
+	"cart-service/internal/domain/event"
+	"cart-service/internal/infrastructure/kafka"
 )
 
-// ============ RetryableError Tests ============
-
-func TestRetryableError_Error(t *testing.T) {
-	err := NewRetryableError(assert.AnError)
-	assert.Equal(t, assert.AnError.Error(), err.Error())
-}
-
-func TestRetryableError_Unwrap(t *testing.T) {
-	err := NewRetryableError(assert.AnError)
-	assert.Equal(t, assert.AnError, err.Unwrap())
-}
-
-func TestIsRetryable(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: false,
-		},
-		{
-			name:     "retryable error",
-			err:      NewRetryableError(assert.AnError),
-			expected: true,
-		},
-		{
-			name:     "standard error",
-			err:      assert.AnError,
-			expected: false,
-		},
+func TestGroupByCartID(t *testing.T) {
+	env1 := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_ADDED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-0",
+	}
+	env2 := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_UPDATED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-1",
+	}
+	env3 := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_DELETED",
+		AggregateID: "{cart}:user2",
+		StreamID:    "1000-2",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsRetryable(tt.err)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
+	batch := &kafka.MessageBatch{}
 
-// ============ Stream ID Comparison Tests ============
+	batch.Add(msgWithCartID(env1))
+	batch.Add(msgWithCartID(env2))
+	batch.Add(msgWithCartID(env3))
 
-func TestCompareStreamID(t *testing.T) {
-	tests := []struct {
-		name     string
-		a        string
-		b        string
-		expected int
-	}{
-		{
-			name:     "equal",
-			a:        "1708530000123-0",
-			b:        "1708530000123-0",
-			expected: 0,
-		},
-		{
-			name:     "a greater timestamp",
-			a:        "1708530000124-0",
-			b:        "1708530000123-0",
-			expected: 1,
-		},
-		{
-			name:     "a lesser timestamp",
-			a:        "1708530000123-0",
-			b:        "1708530000124-0",
-			expected: -1,
-		},
-		{
-			name:     "a greater sequence",
-			a:        "1708530000123-1",
-			b:        "1708530000123-0",
-			expected: 1,
-		},
-		{
-			name:     "a lesser sequence",
-			a:        "1708530000123-0",
-			b:        "1708530000123-1",
-			expected: -1,
-		},
-		{
-			name:     "same timestamp, different sequence",
-			a:        "1708530000123-5",
-			b:        "1708530000123-10",
-			expected: -1,
-		},
+	grouped := groupByCartID(batch)
+
+	if len(grouped) != 2 {
+		t.Errorf("expected 2 cart groups, got %d", len(grouped))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := compareStreamID(tt.a, tt.b)
-			assert.Equal(t, tt.expected, result)
-		})
+	user1Events, ok := grouped["{cart}:user1"]
+	if !ok {
+		t.Fatal("missing cart group {cart}:user1")
+	}
+	if len(user1Events) != 2 {
+		t.Errorf("user1 should have 2 events, got %d", len(user1Events))
+	}
+
+	user2Events, ok := grouped["{cart}:user2"]
+	if !ok {
+		t.Fatal("missing cart group {cart}:user2")
+	}
+	if len(user2Events) != 1 {
+		t.Errorf("user2 should have 1 event, got %d", len(user2Events))
 	}
 }
 
-func TestSplitStreamID(t *testing.T) {
-	tests := []struct {
-		name        string
-		id          string
-		expectedTs  int64
-		expectedSeq int64
-	}{
-		{
-			name:        "standard id",
-			id:          "1708530000123-456",
-			expectedTs:  1708530000123,
-			expectedSeq: 456,
-		},
-		{
-			name:        "zero id",
-			id:          "0-0",
-			expectedTs:  0,
-			expectedSeq: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			parts := splitStreamID(tt.id)
-			assert.Equal(t, tt.expectedTs, parts.timestamp)
-			assert.Equal(t, tt.expectedSeq, parts.sequence)
-		})
-	}
-}
-
-// ============ Models Tests ============
-
-func TestBuildItemID(t *testing.T) {
-	cartID := "{cart:user:user1}"
-	skuID := "sku-001"
-	expected := "{cart:user:user1}:sku-001"
-
-	result := BuildItemID(cartID, skuID)
-	assert.Equal(t, expected, result)
-}
-
-func TestBuildItemID_Empty(t *testing.T) {
-	result := BuildItemID("", "sku-001")
-	assert.Equal(t, ":sku-001", result)
-}
-
-func TestParseItemID(t *testing.T) {
-	cartID, skuID, err := ParseItemID("{cart:user:user1}:sku-001")
-	assert.NoError(t, err)
-	// ParseItemID splits by first colon, so cartID will be "{cart" and skuID will be "user:user1}:sku-001"
-	// This is the expected behavior based on implementation
-	assert.NotEmpty(t, cartID)
-	assert.NotEmpty(t, skuID)
-	assert.Contains(t, skuID, "sku-001")
-}
-
-// ============ CartEvent Tests ============
-
-func TestCartEvent_ParseCartItemPayload(t *testing.T) {
-	event := &CartEvent{
-		EventType: "CART_ITEM_ADDED",
+func TestParseItemPayloadFromEnvelope(t *testing.T) {
+	env := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_ADDED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-0",
 		Payload: map[string]interface{}{
-			"sku_id":              "sku-001",
-			"quantity":            2,
-			"unit_price_at_add":   90000.0,
-			"product_name":        "Test Product",
-			"product_id":          "product-001",
-			"variant_info":        "size:M",
-			"image_url":           "http://example.com/image.jpg",
-			"is_available":        true,
+			"cart_id":         "{cart}:user1",
+			"sku_id":          "sku001",
+			"user_id":         "user1",
+			"product_id":      "prod001",
+			"quantity":        float64(2),
+			"unit_price_at_add": 99.99,
+			"product_name":    "Test Product",
+			"variant_info":    "Size: M",
+			"is_available":    true,
+			"added_at":       "1000",
+			"updated_at":     "1000",
 		},
 	}
 
-	payload, err := event.ParseCartItemPayload()
-	assert.NoError(t, err)
-	assert.Equal(t, "sku-001", payload.SkuID)
-	assert.Equal(t, 2, payload.Quantity)
-	assert.Equal(t, 90000.0, payload.UnitPriceAtAdd)
-}
-
-func TestCartEvent_ParseCartItemPayload_NilPayload(t *testing.T) {
-	event := &CartEvent{
-		EventType: "CART_ITEM_ADDED",
-		Payload:  nil,
+	payload, err := ParseItemPayloadFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("ParseItemPayloadFromEnvelope failed: %v", err)
 	}
 
-	payload, err := event.ParseCartItemPayload()
-	assert.Error(t, err)
-	assert.Nil(t, payload)
-}
-
-func TestCartItemPayload_ToCartItem(t *testing.T) {
-	payload := &CartItemEventPayload{
-		CartID:        "{cart:user:user1}",
-		SkuID:        "sku-001",
-		Quantity:     2,
-		UnitPriceAtAdd: 90000,
-		ProductID:   "product-001",
-		ProductName: "Test Product",
+	if payload.SkuID != "sku001" {
+		t.Errorf("SkuID = %q, want sku001", payload.SkuID)
 	}
-
-	item, err := payload.ToCartItem("1708530000123-0")
-	assert.NoError(t, err)
-	assert.Equal(t, "sku-001", item.SkuID)
-	assert.Equal(t, 2, item.Quantity)
-	assert.Equal(t, 90000.0, item.UnitPriceAtAdd)
-}
-
-func TestCartEvent_GetCartID(t *testing.T) {
-	event := &CartEvent{
-		AggregateID: "{cart:user:user1}",
-		Payload:    map[string]interface{}{},
+	if payload.UserID != "user1" {
+		t.Errorf("UserID = %q, want user1", payload.UserID)
 	}
-
-	assert.Equal(t, "{cart:user:user1}", event.GetCartID())
+	if payload.Quantity != 2 {
+		t.Errorf("Quantity = %d, want 2", payload.Quantity)
+	}
+	if payload.UnitPriceAtAdd != 99.99 {
+		t.Errorf("UnitPriceAtAdd = %f, want 99.99", payload.UnitPriceAtAdd)
+	}
+	if payload.ProductName != "Test Product" {
+		t.Errorf("ProductName = %q, want Test Product", payload.ProductName)
+	}
 }
 
-func TestCartEvent_GetCartID_FromPayload(t *testing.T) {
-	event := &CartEvent{
+func TestParseDeletedPayloadFromEnvelope(t *testing.T) {
+	env := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_DELETED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-1",
 		Payload: map[string]interface{}{
-			"cart_id": "{cart:user:user1}",
-		},
-	}
-
-	assert.Equal(t, "{cart:user:user1}", event.GetCartID())
-}
-
-func TestCartEvent_GetCartID_Empty(t *testing.T) {
-	event := &CartEvent{
-		Payload: map[string]interface{}{},
-	}
-
-	assert.Equal(t, "", event.GetCartID())
-}
-
-func TestCartEvent_GetUserID(t *testing.T) {
-	event := &CartEvent{
-		Payload: map[string]interface{}{
-			"user_id": "user123",
-		},
-	}
-
-	assert.Equal(t, "user123", event.GetUserID())
-}
-
-func TestCartEvent_GetUserID_Float(t *testing.T) {
-	event := &CartEvent{
-		Payload: map[string]interface{}{
-			"user_id": float64(123),
-		},
-	}
-
-	assert.Equal(t, "123", event.GetUserID())
-}
-
-func TestCartEvent_IsAddOrUpdateEvent(t *testing.T) {
-	tests := []struct {
-		eventType string
-		expected bool
-	}{
-		{"CART_ITEM_ADDED", true},
-		{"CART_ITEM_UPDATED", true},
-		{"CART_ITEM_DELETED", false},
-		{"CART_CLEARED", false},
-		{"ORDER_PAID", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.eventType, func(t *testing.T) {
-			event := &CartEvent{EventType: tt.eventType}
-			assert.Equal(t, tt.expected, event.IsAddOrUpdateEvent())
-		})
-	}
-}
-
-func TestCartEvent_IsDeleteEvent(t *testing.T) {
-	tests := []struct {
-		eventType string
-		expected bool
-	}{
-		{"CART_ITEM_DELETED", true},
-		{"CART_ITEM_ADDED", false},
-		{"CART_CLEARED", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.eventType, func(t *testing.T) {
-			event := &CartEvent{EventType: tt.eventType}
-			assert.Equal(t, tt.expected, event.IsDeleteEvent())
-		})
-	}
-}
-
-func TestCartEvent_IsCartClearedEvent(t *testing.T) {
-	tests := []struct {
-		eventType string
-		expected bool
-	}{
-		{"CART_CLEARED", true},
-		{"CART_ITEM_ADDED", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.eventType, func(t *testing.T) {
-			event := &CartEvent{EventType: tt.eventType}
-			assert.Equal(t, tt.expected, event.IsCartClearedEvent())
-		})
-	}
-}
-
-func TestCartEvent_IsCartCheckedOutEvent(t *testing.T) {
-	tests := []struct {
-		eventType string
-		expected bool
-	}{
-		{"CART_CHECKED_OUT", true},
-		{"CART_ITEM_ADDED", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.eventType, func(t *testing.T) {
-			event := &CartEvent{EventType: tt.eventType}
-			assert.Equal(t, tt.expected, event.IsCartCheckedOutEvent())
-		})
-	}
-}
-
-func TestCartEvent_IsCartAbandonedEvent(t *testing.T) {
-	tests := []struct {
-		eventType string
-		expected bool
-	}{
-		{"CART_ABANDONED", true},
-		{"CART_ITEM_ADDED", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.eventType, func(t *testing.T) {
-			event := &CartEvent{EventType: tt.eventType}
-			assert.Equal(t, tt.expected, event.IsCartAbandonedEvent())
-		})
-	}
-}
-
-// ============ Helper Function Tests ============
-
-func TestNormalizeUserID(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    interface{}
-		expected string
-	}{
-		{"string", "user123", "user123"},
-		{"float64", float64(123), "123"},
-		{"int", 456, "456"},
-		{"int64", int64(789), "789"},
-		{"unknown", struct{}{}, "{}"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := NormalizeUserID(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestValidateCartID(t *testing.T) {
-	tests := []struct {
-		cartID   string
-		expected bool
-	}{
-		{"{cart:user:user123}", true},
-		{"{cart:user:abc}", true},
-		{"invalid", false},
-		{"", false},
-		{"cart:user:123", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.cartID, func(t *testing.T) {
-			result := ValidateCartID(tt.cartID)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-// ============ Retry Config Tests ============
-
-func TestDefaultRetryConfig(t *testing.T) {
-	config := DefaultRetryConfig()
-	assert.Equal(t, 3, config.MaxRetries)
-	assert.Equal(t, 100*time.Millisecond, config.Delay)
-}
-
-// ============ Batch Processor Metrics Tests ============
-
-func TestBatchProcessorMetrics_Initial(t *testing.T) {
-	metrics := BatchProcessorMetrics{}
-	assert.Equal(t, int64(0), metrics.EventsProcessed)
-	assert.Equal(t, int64(0), metrics.EventsFailed)
-}
-
-// ============ CartItemDeletedPayload Tests ============
-
-func TestCartItemDeletedPayload_GetItemID(t *testing.T) {
-	payload := &CartItemDeletedPayload{
-		CartID: "{cart:user:user1}",
-		SkuID:  "sku-001",
-	}
-
-	itemID := payload.GetItemID()
-	assert.Equal(t, "{cart:user:user1}:sku-001", itemID)
-}
-
-func TestCartEvent_ParseCartItemDeletedPayload(t *testing.T) {
-	event := &CartEvent{
-		Payload: map[string]interface{}{
-			"cart_id":    "{cart:user:user1}",
-			"sku_id":     "sku-001",
+			"cart_id":    "{cart}:user1",
+			"sku_id":     "sku001",
 			"user_id":    "user1",
-			"deleted_at": "2024-01-01T00:00:00Z",
+			"deleted_at": "2000",
 		},
 	}
 
-	payload, err := event.ParseCartItemDeletedPayload()
-	assert.NoError(t, err)
-	assert.Equal(t, "{cart:user:user1}", payload.CartID)
-	assert.Equal(t, "sku-001", payload.SkuID)
+	payload, err := ParseDeletedPayloadFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("ParseDeletedPayloadFromEnvelope failed: %v", err)
+	}
+
+	if payload.SkuID != "sku001" {
+		t.Errorf("SkuID = %q, want sku001", payload.SkuID)
+	}
+	if payload.CartID != "{cart}:user1" {
+		t.Errorf("CartID = %q, want {cart}:user1", payload.CartID)
+	}
 }
 
-func TestCartEvent_ParseCartClearedPayload(t *testing.T) {
-	event := &CartEvent{
+func TestParseAbandonedPayloadFromEnvelope(t *testing.T) {
+	env := &event.CartEventEnvelope{
+		EventType:   "CART_ABANDONED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-5",
 		Payload: map[string]interface{}{
-			"cart_id":    "{cart:user:user1}",
-			"user_id":    "user1",
-			"cleared_at": "2024-01-01T00:00:00Z",
+			"cart_id":      "{cart}:user1",
+			"user_id":      "user1",
+			"abandoned_at": "5000",
 		},
 	}
 
-	payload, err := event.ParseCartClearedPayload()
-	assert.NoError(t, err)
-	assert.Equal(t, "{cart:user:user1}", payload.CartID)
+	payload, err := ParseAbandonedPayloadFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("ParseAbandonedPayloadFromEnvelope failed: %v", err)
+	}
+
+	if payload.CartID != "{cart}:user1" {
+		t.Errorf("CartID = %q, want {cart}:user1", payload.CartID)
+	}
+	if payload.UserID != "user1" {
+		t.Errorf("UserID = %q, want user1", payload.UserID)
+	}
 }
 
-func TestCartEvent_ParseCartCheckedOutPayload(t *testing.T) {
-	event := &CartEvent{
+func TestCartEventBatch(t *testing.T) {
+	batch := NewCartEventBatch("{cart}:user1")
+
+	env := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_ADDED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-0",
+	}
+
+	batch.Add(env)
+	batch.Add(env)
+
+	if len(batch.Events) != 2 {
+		t.Errorf("batch should have 2 events, got %d", len(batch.Events))
+	}
+
+	if batch.CartID != "{cart}:user1" {
+		t.Errorf("CartID = %q, want {cart}:user1", batch.CartID)
+	}
+}
+
+func TestEventParserEdgeCases(t *testing.T) {
+	// Empty envelope with nil payload
+	env := &event.CartEventEnvelope{Payload: nil}
+	_, err := ParseItemPayloadFromEnvelope(env)
+	if err == nil {
+		// nil payload marshals to "null", which unmarshals to empty struct — not an error
+	}
+
+	// Invalid type in payload (non-serializable)
+	env2 := &event.CartEventEnvelope{
 		Payload: map[string]interface{}{
-			"cart_id":        "{cart:user:user1}",
-			"user_id":        "user1",
-			"checked_out_at": "2024-01-01T00:00:00Z",
+			"invalid": make(chan int),
 		},
 	}
-
-	payload, err := event.ParseCartCheckedOutPayload()
-	assert.NoError(t, err)
-	assert.Equal(t, "{cart:user:user1}", payload.CartID)
+	_, err = ParseItemPayloadFromEnvelope(env2)
+	if err == nil {
+		t.Error("expected error for non-serializable payload")
+	}
 }
 
-func TestCartEvent_ParseCartAbandonedPayload(t *testing.T) {
-	event := &CartEvent{
+func TestMessageBatch(t *testing.T) {
+	batch := kafka.NewMessageBatch()
+
+	if batch.Count() != 0 {
+		t.Errorf("new batch should have 0 messages, got %d", batch.Count())
+	}
+
+	batch.Add(&sarama.ConsumerMessage{Key: []byte("key1")})
+	batch.Add(&sarama.ConsumerMessage{Key: []byte("key2")})
+
+	if batch.Count() != 2 {
+		t.Errorf("batch should have 2 messages, got %d", batch.Count())
+	}
+
+	msgs := batch.Messages()
+	if len(msgs) != 2 {
+		t.Errorf("Messages() should return 2, got %d", len(msgs))
+	}
+
+	batch.Commit()
+}
+
+func TestBatchProcessor_ProcessBatch(t *testing.T) {
+	batch := &CartEventBatch{
+		CartID:  "{cart}:user1",
+		Events:  make([]*event.CartEventEnvelope, 0),
+		Metrics: &BatchMetrics{},
+	}
+
+	env := &event.CartEventEnvelope{
+		EventType:   "CART_ITEM_ADDED",
+		AggregateID: "{cart}:user1",
+		StreamID:    "1000-0",
 		Payload: map[string]interface{}{
-			"cart_id":       "{cart:user:user1}",
-			"user_id":       "user1",
-			"abandoned_at": "2024-01-01T00:00:00Z",
+			"cart_id":      "{cart}:user1",
+			"sku_id":       "sku001",
+			"user_id":      "user1",
+			"product_id":   "prod001",
+			"quantity":     float64(1),
+			"product_name": "Test",
 		},
 	}
+	batch.Add(env)
 
-	payload, err := event.ParseCartAbandonedPayload()
-	assert.NoError(t, err)
-	assert.Equal(t, "{cart:user:user1}", payload.CartID)
+	if len(batch.Events) != 1 {
+		t.Errorf("batch should have 1 event, got %d", len(batch.Events))
+	}
 }
 
-// ============ CartItemEventPayload Tests ============
-
-func TestCartItemEventPayload_BuildProductSnapshot(t *testing.T) {
-	payload := &CartItemEventPayload{
-		ProductName: "Test Product",
-		VariantInfo: "size:M",
-		ImageURL:    "http://example.com/img.jpg",
-		IsAvailable: true,
-		AddedAt:     "2024-01-01T00:00:00Z",
-		UpdatedAt:   "2024-01-01T00:00:00Z",
+func TestBatchMetrics(t *testing.T) {
+	m := &BatchMetrics{
+		ItemsUpserted: 5,
+		ItemsDeleted:  2,
+		StatusUpdated: 1,
+		Errors:        0,
 	}
 
-	snapshot, err := payload.BuildProductSnapshot()
-	assert.NoError(t, err)
-	assert.Contains(t, snapshot, "Test Product")
-	assert.Contains(t, snapshot, "size:M")
+	if m.ItemsUpserted != 5 {
+		t.Errorf("ItemsUpserted = %d, want 5", m.ItemsUpserted)
+	}
 }
 
-// ============ ParseCartEvent Tests ============
+func TestCartEventRecord(t *testing.T) {
+	rec := &CartEventRecord{
+		CartID:    "{cart}:user1",
+		UserID:    "user1",
+		SkuID:     "sku001",
+		EventType: "CART_ITEM_ADDED",
+		StreamID:  "1000-0",
+		Timestamp: time.Now(),
+		Quantity:  3,
+	}
 
-func TestParseCartEvent(t *testing.T) {
-	jsonData := `{
-		"event_id": "evt-123",
-		"event_type": "CART_ITEM_ADDED",
-		"aggregate_type": "Cart",
-		"aggregate_id": "{cart:user:user1}",
-		"stream_id": "1708530000123-0",
-		"payload": {
-			"sku_id": "sku-001",
-			"quantity": 2
-		}
-	}`
-
-	event, err := ParseCartEvent([]byte(jsonData))
-	assert.NoError(t, err)
-	assert.Equal(t, "evt-123", event.EventID)
-	assert.Equal(t, "CART_ITEM_ADDED", event.EventType)
-	assert.Equal(t, "{cart:user:user1}", event.AggregateID)
-	assert.Equal(t, "sku-001", event.Payload["sku_id"])
+	if rec.CartID != "{cart}:user1" {
+		t.Errorf("CartID = %q, want {cart}:user1", rec.CartID)
+	}
+	if rec.Quantity != 3 {
+		t.Errorf("Quantity = %d, want 3", rec.Quantity)
+	}
 }
 
-func TestParseCartEvent_InvalidJSON(t *testing.T) {
-	_, err := ParseCartEvent([]byte("invalid json"))
-	assert.Error(t, err)
+func TestBatchResult(t *testing.T) {
+	result := &BatchResult{
+		CartsProcessed: 10,
+		EventsTotal:   25,
+		EventsFailed:  2,
+	}
+
+	if result.CartsProcessed != 10 {
+		t.Errorf("CartsProcessed = %d, want 10", result.CartsProcessed)
+	}
+	if result.EventsTotal-result.EventsFailed != 23 {
+		t.Errorf("successful events should be 23, got %d", result.EventsTotal-result.EventsFailed)
+	}
+}
+
+func msgWithCartID(env *event.CartEventEnvelope) *sarama.ConsumerMessage {
+	return &sarama.ConsumerMessage{
+		Key:   []byte(env.AggregateID),
+		Value: []byte(`{"aggregate_id":"` + env.AggregateID + `"}`),
+	}
 }

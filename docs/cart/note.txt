@@ -105,57 +105,72 @@ Gọi HGETALL để chia làm 2 nhánh:
 Chú ý: chúng ta sẽ không xóa các record trong bảng cart_items ở đây. Các cart_items sẽ được xóa thông qua các sự kiện CART_ITEM_DELETED riêng lẻ.
 
 
-6. Thiết kế chi tiết về luồng hoạt động của Relay Worker
-6.1 Relay Worker không dùng SCAN để quét toàn bộ dữ liệu trong Redis vì có thể sẽ gây quá tải cho CPU. Thay vào đó, nó sẽ sử dụng cơ chế 3 lớp để phát hiện Stream nào đang có tin nhắn mới
-  Đường Pub / Sub: Worker sẽ subscribe vào kênh `outbox_notifications`, sau khi Lua Script thực hiện xong sẽ publish một messsage (tên Stream) lên kênh này. Worker này ngay lập tức nhận được tên Stream này và đưa vào Go Channel Buffer
-  Đường trì hoãn (ZSET Worker): để tránh trường hợp lỡ mất message trên Pub/Sub, chúng ta sẽ có một ZSET để lưu trữ tên các Stream đã được publish lên kênh `outbox_notifications` với timestamp hiện tại, một tiến trình phụ chạy mỗi 30 giây sẽ quét ZSET này để lấy ra những Stream nào đã được publish nhưng chưa được Worker chính xử lý (dựa vào timestamp), 
-  sau đó đưa vào Go Channel Buffer. Lưu ý, bắt buộc phải cập nhật timestamp trong ZSET này để tránh lặp ở những chu kỳ sau. Ở đây tuyệt đối không được xóa tên Stream này trong ZSET bởi vì Stream Trimmer sẽ dựa vào ZSET này để biết được Stream nào đã được xử lý xong và có thể dọn dẹp RAM
-  Đường chống lỗi tuyệt đối: nếu vì một lý do nào đó Pod bị sập ngay sau khi Lua Script thành công nhưng lại chưa kịp kích hoạt Pub / Sub. Ở đây, hệ thống sẽ đăng ký trước một ý định vào `outbox_publish_intent` trước khi gọi Lua Script và chỉ xóa ý định này sau khi Lua Script lẫn Pub/Sub thành công, một tiến trình phụ sẽ quét
-  mỗi 30 giây để lấy ra những ý định quá hạn, sau đó kiểm tra còn bất kỳ tin nhắn nào trong Stream tương ứng với ý định này hay không, nếu có thì kích hoạt Pub/Sub thủ công và dọn dẹp intent này
+6. Thiết kế chi tiết về luồng hoạt động của Relay Worker (Global Stream Architecture)
+6.1 Với kiến trúc Global Stream, Relay Worker được đơn giản hóa đáng kể:
+  - Thay vì per-cart stream, tất cả users gửi events vào 4 global stream shards: {cart}:events:0, {cart}:events:1, {cart}:events:2, {cart}:events:3
+  - Worker sử dụng XREADGROUP trực tiếp trên các global stream shards
+  - Mỗi shard có Consumer Group riêng: cart_relay_group:0, cart_relay_group:1, cart_relay_group:2, cart_relay_group:3
+  - Redis Streams Consumer Group tự động quản lý pending messages và retry
+  - Shard assignment: shard_id = crc32(user_id) % 4
 
 6.2 Tiêu thụ dữ liệu
-  Các Goroutine liên tục lắng nghe trên Go Channel Buffer, khi có tên Stream mới được đưa vào, chúng sẽ chạy lệnh XREADGROUP để lấy ra các event mới từ Stream đó. Nếu Redis báo lỗi NOGROUP, Worker sẽ tự động khởi tạo nhóm bằng lệnh XGROUP CREATE rồi vòng lại đọc tiếp
-  Tin nhắn trong Redis Stream chỉ có event_type và payload, Relay Worker sẽ chịu trách nhiệm bổ sung các Header bắt buộc cho Kafka
+  - Các goroutines chạy XREADGROUP BLOCK trên từng shard stream
+  - Nếu Redis báo lỗi NOGROUP, Worker sẽ tự động khởi tạo nhóm bằng lệnh XGROUP CREATE rồi vòng lại đọc tiếp
 
-6.3 Đẩy lên Kafka và chốt 
-  Worker đẩy các event đã được bổ sung Header vào Topic Kafka `t.cart.events` vói cart_id làm partition key để đảm bảo các sự kiện trong một giỏ hàng luôn được xử lý theo thứ tự
-  Chỉ khi nào Kafka xác nhận đã nhận được message, Worker mới gọi lệnh XACK để xác nhận đã xử lý xong các event này trên Redis Stream
-  Lưu ý là lệnh XACK sẽ không xóa message trên Redis Stream, nó chỉ đánh dấu là đã được xử lý. Việc dọn dẹp RAM thực sự sẽ do một tiến trình khác là Stream Trimmer đảm nhận để tránh rò rỉ bộ nhớ
+6.3 Đẩy lên Kafka và chốt
+  - Worker đẩy các event đã được bổ sung Header vào Topic Kafka t.cart.events với cart_id làm partition key
+  - Chỉ khi nào Kafka xác nhận đã nhận được message, Worker mới gọi lệnh XACK để xác nhận đã xử lý xong trên Redis Stream
 
 6.4 Cơ chế phục hồi lỗi
-  Nếu Relay Worker bị sập (crash) ngay sau khi đọc XREADGROUP nhưng chưa kịp gọi XACK, tin nhắn đó sẽ bị treo ở trạng thái Pending
-  Thông qua quá trình quét active_outbox_streams mỗi 30 giây, Worker sẽ dùng lệnh XAUTOCLAIM để gom lại các tin nhắn Pending quá 60 giây và xử lý lại
-  Nếu việc đẩy lên Kafka thất bại liên tục và một tin nhắn bị retry quá 5 lần, Worker sẽ gắp nó bỏ vào luồng cách ly cart_outbox_dlq và phát cảnh báo để đội vận hành vào xử lý thủ công
+  - Nếu Relay Worker bị sập (crash) sau khi đọc XREADGROUP nhưng chưa kịp gọi XACK, tin nhắn đó sẽ bị treo ở trạng thái Pending
+  - Khi Worker restart hoặc worker khác gọi XREADGROUP, Redis sẽ tự động trả lại các Pending messages cho worker mới
+  - Ngoài ra, Worker có thể dùng lệnh XAUTOCLAIM để chủ động gom lại các tin nhắn Pending quá 60 giây
 
-Lưu ý: 
-  Điểm yếu chí mạng của thiết kế trên là Go Channel sẽ mất dữ liệu khi Pod Crash, tuy nhiên dữ liệu của chúng ta vẫn được đảm bảo an toàn trong Redis Stream, do đó khi Pod khởi động lại, hệ thống có "Đường Trì Hoãn (Delay ZSET Worker)" quét định kỳ `active_outbox_streams` mỗi 30 giây để nhặt lại những Stream có event chực chờ, 
-  ngoài ra còn có "Đường Chống Lỗi Tuyệt Đối (Intent Recovery Worker)" quét outbox_publish_intents để đề phòng trường hợp sập cả trước khi kịp đẩy tín hiệu Pub/Sub
-  Thêm một điểm yếu đó là có khả năng một Stream bị đẩy vào Go Channel nhiều lần (do Pub/Sub, Delay ZSET Worker), tuy nhiên điều này không quá quan trọng, bởi đây là ví dụ:
-    Lần đọc thứ 1: Goroutine số 1 nhặt được tín hiệu Stream A đầu tiên. Nó chạy ra Redis, gọi lệnh XREADGROUP. Nó lấy được các event mới, đẩy thành công lên Kafka và gọi XACK để xác nhận
-    Lần đọc thứ 2 (Tín hiệu trùng): Goroutine số 2 nhặt được tín hiệu Stream A thứ hai. Nó cũng chạy Redis gọi XREADGROUP. Tuy nhiên, vì Goroutine số 1 đã đọc hết các tin nhắn chờ xử lý rồi, Redis sẽ chỉ trả về một tập RỖNG. Goroutine số 2 thấy không có việc gì làm nên sẽ kết thúc chu trình một cách êm đẹp mà không gây ra bất kỳ lỗi nhân đôi dữ liệu nào
+6.5 Đơn giản hóa so với kiến trúc cũ:
+  - Không cần Go Channel
+  - Không cần Intent Index (outbox_publish_intents)
+  - Không cần ZSET Worker (active_outbox_streams)
+  - Không cần Pub/Sub notification
+  - Không cần Recovery Worker phức tạp
+  - Consumer Group của Redis Streams tự động phát hiện messages mới
+
+Lưu ý:
+  - Điểm mạnh của thiết kế Global Stream là đơn giản hóa đáng kể
+  - Nếu Pod Crash, khi khởi động lại Worker vẫn nhận được các Pending messages vì chúng được Redis giữ lại trong Consumer Group
+  - Điểm yếu là Go Channel sẽ mất dữ liệu khi Pod Crash, tuy nhiên dữ liệu vẫn an toàn trong Redis Stream
+  - Có khả năng một Stream bị đẩy vào Go Channel nhiều lần, tuy nhiên XREADGROUP sẽ trả về tập rỗng nếu đã xử lý xong, không gây lỗi nhân đôi
 
 
-7. Thiết kế chi tiết về luồng hoạt động của Stream Trimmer
+7. Thiết kế chi tiết về luồng hoạt động của Stream Trimmer (Global Stream Architecture)
+Với kiến trúc Global Stream, việc trim đơn giản hơn đáng kể vì chỉ có 4 shards cố định thay vì N streams (N = số users).
+Worker này mỗi 5 phút duyệt qua 4 shards: {cart}:events:0, {cart}:events:1, {cart}:events:2, {cart}:events:3.
+Với mỗi shard, thực hiện:
+  - Bước 1: Gọi XLEN và XINFO GROUPS để kiểm tra trạng thái
+  - Bước 2: Tính safe ID để trim (dựa trên last-delivered-id hoặc oldest pending message)
+  - Bước 3: Gọi XTRIM MINID để cắt bớt các messages đã xử lý xong
+Đơn giản hóa so với kiến trúc cũ:
+  - Không cần scan ZSET active_outbox_streams (vì không có ZSET này nữa)
+  - Chỉ duyệt cố định 4 shards thay vì N streams
 Lệnh XACK của Relay Worker chi đánh dấu là đã xử lý xong các event trên Redis Stream, tuy nhiên nó không xóa chúng đi, do đó chúng ta cần Worker này để quét và dọn dẹp những event đã được xử lý xong để tránh rò rỉ bộ nhớ
-Worker này sẽ quét qua `active_outbox_streams` để lấy các batch Stream, sau đó sử dụng Redis Pipeline để tối ưu RTT:
+Với mỗi shard, sử dụng Redis Pipeline để tối ưu RTT:
   Pipeline 1: Chạy lệnh XLEN và XINFO GROUPS để chia Stream này thành 3 case
     Case A: Nếu XLEN = 0, có nghĩa là không còn event nào trong Stream này, Worker sẽ gọi lệnh DEL để xóa hẳn Stream này đi
     Case B: Nếu XLEN > 0 và có GROUP, có tin nhắn và có Consumer Group đang theo dõi. Đây là đối tượng chính để cắt tỉa
     Case C: Nếu XLEN > 0 nhưng không có GROUP, bắt buộc phải skip Stream này, vì đây trạng thái khi API vừa gọi lệnh Lua Script với XADD xong nhưng Relay Worker chưa kịp tạo GROUP để theo dõi. Nếu Trimmer cắt Stream lúc này, dữ liệu sẽ bốc hơi trước khi Relay Worker kịp đọc
-  Pipeline 2 & 3: Đối với các Stream thuộc Case B, hệ thống cần tìm ra ID của tin nhắn để làm mốc cắt bỏ. Nguyên tắc là: Chỉ được xóa những tin nhắn mà TẤT CẢ các Consumer Group đã xử lý xong (Đã ACK)\
+  Pipeline 2 & 3: Đối với các Stream thuộc Case B, hệ thống cần tìm ra ID của tin nhắn để làm mốc cắt bỏ. Nguyên tắc là: Chỉ được xóa những tin nhắn mà TẤT CẢ các Consumer Group đã xử lý xong (Đã ACK)
     Dò tìm tin nhắn Pending (XPENDING): Nếu Group đang có tin nhắn bị treo (Pending > 0), hệ thống phải quét sâu hơn để tìm ra ID của tin nhắn cũ nhất chưa được ACK (lowest_safe_id_across_groups). Mốc ID này chính là lằn ranh giới: mọi thứ cũ hơn nó đều đã an toàn để xóa
-  Pipeline 4: Sau khi đã có ID mốc, hệ thống sẽ gọi lệnh XTRIM với tham số MAXLEN để cắt tỉa các tin nhắn cũ hơn ID mốc này, qua đó giải phóng bộ nhớ
-  Pipeline 5: nếu sau khi cắt tía, Stream này đã trống (XLEN = 0), Worker sẽ gọi lệnh DEL để xóa hẳn Stream này đi, đồng thời xóa luôn tên Stream này khỏi ZSET `active_outbox_streams` để tránh việc quét lại những Stream đã được dọn dẹp sạch sẽ
-    Tuy nhiên, việc xóa nguyên Key này tiềm ẩn rủi ro cực lớn: Nếu Backend kiểm tra thấy Stream rỗng, chuẩn bị gọi lệnh DEL xóa nó đi, nhưng ngay tại tích tắc đó có một User bấm "Thêm vào giỏ" và ghi một tin nhắn mới vào. Lệnh DEL đến sau sẽ xóa luôn cả tin nhắn mới tinh này.
-    Do đó, thiết kế bắt buộc phải dùng Lua Script cho bước này
+  Pipeline 4: Sau khi đã có ID mốc, hệ thống sẽ gọi lệnh XTRIM với tham số MINID để cắt tỉa các tin nhắn cũ hơn ID mốc này, qua đó giải phóng bộ nhớ
+  Pipeline 5: nếu sau khi cắt tỉa, Stream này đã trống (XLEN = 0), Worker sẽ gọi lệnh DEL để xóa hẳn Stream này đi. Tuy nhiên, việc xóa nguyên Key này tiềm ẩn rủi ro: Nếu Backend kiểm tra thấy Stream rỗng, chuẩn bị gọi lệnh DEL xóa nó đi, nhưng ngay tại tích tắc đó có một User bấm "Thêm vào giỏ" và ghi một tin nhắn mới vào. Lệnh DEL đến sau sẽ xóa luôn cả tin nhắn mới tinh này. Do đó, thiết kế bắt buộc phải dùng Lua Script cho bước này
 
 8. Giải đáp một số thắc mắc về Redis Stream và Kafka
 
-Ở thiết kế này, số stream = số cart (hay nói cách khác = số user đã có giỏ hàng)
-Stream cho một user chỉ được tạo khi có event đầu tiên (lazy creation thông qua XADD)
-Stream có thể bị xóa hoàn toàn khi 
-  Stream Trimmer dọn dẹp sau khi đã XACK hết message
-  Giỏ hàng rỗng sau khi checkout / xóa
+Với kiến trúc Global Stream, chúng ta chỉ có 4 shards cố định thay vì N streams (N = số users) như kiến trúc cũ:
+  - {cart}:events:0, {cart}:events:1, {cart}:events:2, {cart}:events:3
+  - Shard assignment: shard_id = crc32(user_id) % 4
+Stream được tạo tự động khi có event đầu tiên (lazy creation thông qua XADD với MKSTREAM)
+Stream có thể bị xóa hoàn toàn khi:
+  - Stream Trimmer dọn dẹp sau khi đã XACK hết message và stream rỗng
+  - Giỏ hàng rỗng sau khi checkout / xóa
 
 Khi chuyển từ Redis Stream sang Kafka, phải đảm bảo được tất cả event cùng một cart luôn đi vào một partition (partition key = cart_id)
 Tuy nhiên khác ở Redis Stream là số lượng Partition ở đây có giới hạn (ví dụ trong thiết kế Service này là 12), chính vì thế các sự kiện của các cart khác nhau vẫn có khả năng nằm cùng một Partition (phân bổ theo hash cart_id) theo công thức:
@@ -240,13 +255,18 @@ Chúng ta vẫn thực hiện commit offset đối với Cart C events (đã và
 
 
 10. Cơ chế ghi an toàn để giải quyết bài toán Write-Dual (ghi đồng thời cả vào PostgreSQL và Redis) của Abandoned Worker
+
+Với kiến trúc Global Stream, Abandoned Worker sử dụng luồng đơn giản hơn:
+
 - Đánh dấu nháp ở DB: đổi status thành ABANDONED nhưng cố tình set abandoned_event_published_at = NULL để đánh dấu đây là một bản ghi nháp chưa hoàn chỉnh
-- Đăng ký ý định (Pre-register Intent): Giống như cách API hoạt động, nó ghi danh vào outbox_publish_intents trên Redis trước khi làm việc thực sự
-- Bắn Event vào Redis (XADD): Đẩy sự kiện CART_ABANDONED vào Redis Stream của riêng giỏ hàng đó
+- Tính shard ID: shard_id = crc32(user_id) % 4
+- Xác định Global Stream Shard: {cart}:events:{shard_id}
+- Bắn Event vào Redis (XADD): Đẩy sự kiện CART_ABANDONED vào Global Stream Shard tương ứng
 - Xóa nợ ở DB: Nếu bắn Redis thành công, nó quay lại Postgres cập nhật abandoned_event_published_at = NOW(). (Tờ giấy nợ đã được thanh toán)
-- Kích hoạt luồng chảy (Publish path): Đẩy thông báo Pub/Sub và xóa Intent rác trên Redis để luồng Outbox Relay Worker tới gắp đi
-- Cơ chế phục hồi lỗi: Nếu Worker bị sập sau khi ghi DB nhưng trước khi bắn Redis, lúc này, ở Postgres, giỏ hàng đã mang trạng thái ABANDONED nhưng tờ giấy nợ abandoned_event_published_at vẫn mang giá trị NULL
-    Ở lần chạy Cronjob tiếp theo (vào ngày mai, hoặc giờ tiếp theo), hệ thống sẽ có một bước quét lại (Reconcile)
-    Nó tìm tất cả các dòng có status = 'ABANDONED' VÀ abandoned_event_published_at IS NULL
-    Sau đó, nó thực hiện bắn lại (Publish bù) Event lên Redis
+- Relay Worker sẽ tự động phát hiện event mới qua Consumer Group và forward lên Kafka
+
+Cơ chế phục hồi lỗi: Nếu Worker bị sập sau khi ghi DB nhưng trước khi bắn Redis, lúc này, ở Postgres, giỏ hàng đã mang trạng thái ABANDONED nhưng tờ giấy nợ abandoned_event_published_at vẫn mang giá trị NULL
+  Ở lần chạy Cronjob tiếp theo (vào ngày mai, hoặc giờ tiếp theo), hệ thống sẽ có một bước quét lại (Reconcile)
+  Nó tìm tất cả các dòng có status = 'ABANDONED' VÀ abandoned_event_published_at IS NULL
+  Sau đó, nó thực hiện bắn lại (Publish bù) Event lên Redis Stream
 

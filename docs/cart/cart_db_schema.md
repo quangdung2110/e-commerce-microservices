@@ -32,7 +32,7 @@ Mô hình thiết kế phi chuẩn một phần để tối ưu hóa việc khô
 ### 2.1. Bảng `carts`
 Lưu trữ định danh chung của một giỏ hàng, phục vụ cho việc tracking vòng đời trạng thái.
 
-*   `cart_id`: VARCHAR(255) PRIMARY KEY. Lưu Key gốc của Redis (VD: `{cart:user:12345}`). **Quy ước cứng:** `cart_id = Redis Key` là convention bất biến trong toàn hệ thống (DB, Events, Kafka payload). Nếu format key Redis thay đổi, cần migration đồng bộ.
+*   `cart_id`: VARCHAR(255) PRIMARY KEY. Lưu Key gốc của Redis (VD: `{cart}:550e8400-e29b-41d4-a716-446655440000`). **Quy ước cứng:** `cart_id = Redis Key` là convention bất biến trong toàn hệ thống (DB, Events, Kafka payload). Nếu format key Redis thay đổi, cần migration đồng bộ.
 *   `user_id`: VARCHAR(255) INDEX. Lưu trực tiếp `user_id` từ event payload. **Tuyệt đối KHÔNG tách chuỗi từ `cart_id`** vì anti-pattern và dễ sai nếu format key thay đổi. `user_id` phải có trong mọi event payload (thêm vào Lua Script ARGV[7]).
 *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Cập nhật qua các State). Xem [Events Structure](cart_events.md) để biết event nào kích hoạt chuyển đổi trạng thái.
     *   `ACTIVE`: Đang được sử dụng tương tác.
@@ -54,7 +54,7 @@ Lưu trữ danh sách hàng hóa bên trong 1 giỏ, tái tạo lại độ ph�
 *   `quantity`: INT NOT NULL DEFAULT 0.
 *   `unit_price_at_add`: DECIMAL(15,2) NOT NULL DEFAULT 0.00 (Lưu số tiền lúc khách vừa bắt đầu click "Thêm vào giỏ", dùng hiển thị chênh lệch giá do Promotion hay do thời gian. Lưu ở **cột riêng** vì cần query analytics và idempotency, KHÔNG đưa vào `product_snapshot`).
 *   `product_snapshot`: JSONB (***Trường Quan Trọng***)
-    *   Lý do: PostgreSQL không cần biết chi tiết sản phẩm. Hệ thống nhét toàn bộ các thuộc tính như `{"product_name": "Áo Bò", "image_url": "link", "variant_info": "Xanh lơ", "added_at": "1708530000123", "updated_at": "1708616400456", "is_available": true}` vào JSONB.
+    *   Lý do: PostgreSQL không cần biết chi tiết sản phẩm. Hệ thống nhét toàn bộ các thuộc tính như `{"product_id": "prod-uuid", "product_name": "Áo Bò", "image_url": "link", "variant_info": "Xanh lơ", "added_at": "1708530000123", "updated_at": "1708616400456", "is_available": true}` vào JSONB.
     *   Mục đích: Tái cấu trúc lại object Struct để nhét lên lại Redis. **LƯU Ý:** Khi rehydrate từ DB lên Redis, Worker phải inject thêm `unit_price_at_add` từ cột riêng vào JSON trước khi ghi.
     *   Ràng buộc: `current_price` không lưu trong `product_snapshot`; đây là field runtime của API đọc giỏ.
     *   Timestamps (`added_at`, `updated_at`) lưu dạng **chuỗi số nguyên Milliseconds Epoch** để nhất quán với Redis Hash Value và tránh precision loss qua JSON.

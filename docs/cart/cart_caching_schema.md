@@ -30,9 +30,9 @@ Dữ liệu được lưu dưới dạng **Redis Hash** (`HSET`, `HGETALL`). M�
 > **Quy ước cứng không thay đổi:** `cart_id` trong toàn bộ hệ thống (DB, Events, Kafka) có giá trị bằng đúng Redis Key này. Nếu format key Redis thay đổi, cần migration đồng bộ toàn bộ hệ thống.
 
 Chỉ hỗ trợ người dùng đã đăng nhập:
-*   **Logged-in User:** `{cart:user:{user_id}}` (Ví dụ: `{cart:user:12345}`)
+*   **Logged-in User:** `{cart}:{user_id}` (Ví dụ: `{cart}:550e8400-e29b-41d4-a716-446655440000`)
 
-> **Redis Cluster Hash Tag:** Key sử dụng Hash Tag `{cart:user:{user_id}}` để đảm bảo cart key và outbox stream key nằm cùng hash slot trong Redis Cluster, cho phép Lua Script thực thi atomic mà không gặp lỗi `CROSSSLOT`. Xem chi tiết tại [Outbox Pattern — Redis Cluster](cart_outbox_pattern.md#23-redis-cluster-hash-tag).
+> **Redis Cluster Hash Tag:** Key sử dụng Hash Tag `{cart}` để đảm bảo cart key và global stream shard key nằm cùng hash slot trong Redis Cluster, cho phép Lua Script thực thi atomic mà không gặp lỗi `CROSSSLOT`. Global Stream Shard key là `{cart}:events:{shard_id}` (shard_id = crc32(user_id) % 4). Xem chi tiết tại [Outbox Pattern — Redis Cluster](cart_outbox_pattern.md#24-redis-cluster-hash-tag).
 
 ### 2.2. Value Structure (Thành phần JSON)
 Mỗi Field/Value trong Hash map với một món hàng.
@@ -75,14 +75,16 @@ Nếu áp dụng cách thức Read-Modify-Write thông thường ở mức Appli
 Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành một khối **Lua Script** nhỏ thực thi nguyên tử trực tiếp trên Redis server:
 
 **Kịch bản thao tác của Lua Script:**
-*   **KEYS[1]:** `$cart_key` — Key Hash giỏ hàng (VD: `{cart:user:12345}`)
-*   **KEYS[2]:** `$outbox_stream` — Stream Outbox đích (VD: `{cart:user:12345}:outbox` — cùng Hash Tag để đảm bảo cùng slot)
+*   **KEYS[1]:** `$cart_key` — Key Hash giỏ hàng (VD: `{cart}:550e8400-e29b-41d4-a716-446655440000`)
+*   **KEYS[2]:** `$global_stream_shard` — Global Stream Shard đích (VD: `{cart}:events:0` — cùng Hash Tag `{cart}` để đảm bảo cùng slot)
 *   **ARGV[1]:** `$sku_id` — Mã SKU cần thêm/sửa
 *   **ARGV[2]:** `$payload_json` — Chuỗi JSON đầy đủ của item mới (Backend tự build theo [Value Structure](#22-value-structure-thành-phần-json))
 *   **ARGV[3]:** `$max_qty` — Giới hạn tối đa số lượng mỗi SKU (Default: 100)
 *   **ARGV[4]:** `$max_skus` — Giới hạn tối đa số loại SKU trong giỏ (Default: 50)
 *   **ARGV[5]:** `$step` — Số lượng cộng thêm (VD: 1 hoặc -1)
 *   **ARGV[6]:** `$event_time_ms` — Epoch **milliseconds** từ Backend (business timestamp; không phải ordering arbiter)
+*   **ARGV[7]:** `$user_id` — User ID dùng để build event payload
+*   **ARGV[8]:** `$num_shards` — Số lượng shards (Default: 4) — dùng để tính shard ID
 
 **Luồng xử lý:**
 0. Validate input bắt buộc: `step` phải là số nguyên khác 0, `payload_json` phải là JSON hợp lệ và giới hạn kích thước ở tầng Backend (khuyến nghị <= 8KB/item).
@@ -92,14 +94,14 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 4. Nếu đã tồn tại → Parse JSON hiện tại và JSON mới. Cộng dồn: `new_qty = current_qty + step`. Cập nhật `updated_at` bằng chuỗi (String), bảo toàn `added_at`, đồng thời áp dụng snapshot mới nhất cho các field hiển thị như `is_available`.
 5. Validate chặn trần giới hạn mua của từng Item: `if new_qty > tonumber(ARGV[3]) then new_qty = tonumber(ARGV[3]) end`.
 6. Stringify lại JSON và ghi đè (`redis.call('HSET', KEYS[1], ARGV[1], encoded_json)`).
-7. **Build event payload** bổ sung `cart_id`, `sku_id` và `user_id` vào JSON rồi đẩy vào Outbox Stream bằng `XADD`. ID do `XADD` trả về (Stream Entry ID) là ordering token chính cho downstream. Cắt bỏ MAXLEN để tránh mất event chưa ACK, delegate việc dọn dẹp bộ nhớ cho Stream Trimmer (sử dụng XTRIM MINID).
+7. **Build event payload** bổ sung `cart_id`, `sku_id` và `user_id` vào JSON rồi đẩy vào Global Stream Shard bằng `XADD`. ID do `XADD` trả về (Stream Entry ID) là ordering token chính cho downstream. Cắt bỏ MAXLEN để tránh mất event chưa ACK, delegate việc dọn dẹp bộ nhớ cho Stream Trimmer (sử dụng XTRIM MINID).
 8. Gia hạn vòng đời (EXPIRE 7 days).
 
 **Code Lua Script tham khảo:**
 ```lua
 -- Tham số truyền vào
--- KEYS[1]: cart_key (VD: {cart:user:12345})
--- KEYS[2]: outbox_stream (VD: {cart:user:12345}:outbox — cùng Hash Tag với cart_key)
+-- KEYS[1]: cart_key (VD: {cart}:550e8400-e29b-41d4-a716-446655440000)
+-- KEYS[2]: global_stream_shard (VD: {cart}:events:0 — cùng Hash Tag {cart})
 -- ARGV[1]: sku_id
 -- ARGV[2]: payload JSON (Backend tự build, timestamp dùng Epoch Milliseconds)
 -- ARGV[3]: max_qty (Giới hạn của từng món)
@@ -107,10 +109,11 @@ Do đó, để đảm bảo tính Atomicity tuyệt đối, Service thi hành m�
 -- ARGV[5]: step (Số lượng cộng thêm, VD: 1 hoặc -1)
 -- ARGV[6]: event_time_ms (Milliseconds epoch từ Backend; dùng cho business timestamp)
 -- ARGV[7]: user_id (Cần bổ sung vào event payload để Worker upsert bảng carts)
+-- ARGV[8]: num_shards (Số lượng shards, mặc định 4)
 
 -- 1. Chặn Hack/Bot làm phình to Hash Key (Giới hạn số SKUs)
-if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) and redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then 
-    return {err="Cart Full"} 
+if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) and redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then
+    return {err="Cart Full"}
 end
 
 -- 1.1 Validate step
@@ -129,27 +132,27 @@ if current_item then
     is_new = 0
     local old_item_obj = cjson.decode(current_item)
     local new_item_obj = cjson.decode(ARGV[2])
-    
+
     local step = parsed_step
     local new_qty = old_item_obj.quantity + step
     local max_qty = tonumber(ARGV[3])
-    
+
     -- Chặn trần số lượng
-    if new_qty > max_qty then 
-        new_qty = max_qty 
+    if new_qty > max_qty then
+        new_qty = max_qty
     end
-    
+
     -- Không cho âm (Sẽ xử lý xóa ở API khác hoặc trả lỗi)
     if new_qty <= 0 then
         return {err="Quantity Invalid"}
     end
-    
+
     -- Cập nhật Object với dữ liệu snapshot mới nhất từ request
     new_item_obj.quantity = new_qty
     -- Lưu timestamp dạng chuỗi để tránh lỗi hiển thị khoa học của cjson
     new_item_obj.updated_at = tostring(ARGV[6])
     new_item_obj.added_at = tostring(old_item_obj.added_at) -- giữ lại timestamp Add ban đầu
-    
+
     encoded_json = cjson.encode(new_item_obj)
 else
     -- Item mới: step phải dương (không cho giảm item chưa tồn tại)
@@ -173,36 +176,29 @@ event_obj.sku_id = ARGV[1]
 event_obj.user_id = ARGV[7]
 local event_payload = cjson.encode(event_obj)
 
-local event_name = "CART_ITEM_ADDED"
+local event_type = "CART_ITEM_ADDED"
 if is_new == 0 then
-    event_name = "CART_ITEM_UPDATED"
+    event_type = "CART_ITEM_UPDATED"
 end
 
--- 7. Atomicity: Đẩy Event xuống Outbox Stream (bỏ MAXLEN để tránh mất event khi relay bị chậm)
+-- 7. Atomicity: Đẩy Event xuống GLOBAL STREAM SHARD (bỏ MAXLEN để tránh mất event khi relay bị chậm)
 --    stream_id được Relay Worker đọc từ Redis message ID (msg.ID) để làm ordering/idempotency key.
-local stream_id = redis.call('XADD', KEYS[2], '*', 'event_type', event_name, 'payload', event_payload)
+local stream_id = redis.call('XADD', KEYS[2], '*', 'event_type', event_type, 'payload', event_payload)
 
 return encoded_json
 ```
 
 Vì Redis thực thi Lua Script ở dạng đơn luồng (Single-threaded), kịch bản này triệt tiêu hoàn toàn Race Condition giữa các HTTP Requests và quá trình tạo Event Outbox mà không cần phân mảnh bước gọi.
 
-> **Giao thức Intent Index bắt buộc (Fix bỏ SCAN toàn keyspace):** Với mọi luồng có `XADD`, tầng Go phải chạy trình tự sau:
-> 1) Trước khi gọi Lua: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
-> 2) Gọi Lua script (Hash + `XADD` atomic).
-> 3) Nếu Lua thành công: gọi `ZADD active_outbox_streams <now_ms> <stream_key>` + `PUBLISH outbox_notifications <stream_key>`.
-> 4) Sau bước 3 thành công: `ZREM outbox_publish_intents <stream_key>`.
-> 5) Nếu Lua fail: vẫn phải `ZREM outbox_publish_intents <stream_key>` để dọn intent rác.
+> **Lưu ý về Sharding:** Shard ID được tính từ CRC32 hash của user_id modulo số shards. Backend phải tính shard ID và truyền đúng stream key shard vào KEYS[2] trước khi gọi Lua.
 
-> **Lưu ý CROSSSLOT:** Các thao tác `ZADD active_outbox_streams`, `PUBLISH outbox_notifications`, `ZADD/ZREM outbox_publish_intents` **bắt buộc** thực hiện ở tầng Application (Go). Không mang các lệnh global key vào Lua vì sẽ phát sinh lỗi CROSSSLOT trên Redis Cluster.
-
-> **Lưu ý Negative Cache Invalidation:** Sau mỗi lần Write thành công (Add/Update/Delete), Backend phải gọi `DEL cart:user:{user_id}:notfound` để xóa cache âm 60 giây, tránh tình trạng vừa thêm hàng nhưng API đọc tiếp theo vẫn trả giỏ rỗng giả.
+> **Lưu ý Negative Cache Invalidation:** Sau mỗi lần Write thành công (Add/Update/Delete), Backend phải gọi `DEL {cart}:{user_id}:notfound` để xóa cache âm 60 giây, tránh tình trạng vừa thêm hàng nhưng API đọc tiếp theo vẫn trả giỏ rỗng giả.
 
 
 ### 3.2. Đọc (Get) Giỏ hàng
 Luồng đọc gọi cực nhiều nhưng tốn rất ít I/O.
 ```redis
-HGETALL {cart:user:12345}
+HGETALL {cart}:550e8400-e29b-41d4-a716-446655440000
 ```
 *(Nếu kết quả trả về rỗng, Service sẽ qua bước Cache-Miss Fallback để lấy từ Cold Store PostgreSQL lên và gọi Silent Rehydrate Lua Script (không `XADD`) để nạp lại dữ liệu vào Redis. Mục tiêu là phục hồi cache an toàn mà không sinh event rác.)*
 
@@ -214,8 +210,8 @@ Một giỏ hàng có thể có nhiều SKU. Khi người dùng bấm xóa nhi�
 **Code Lua Script tham khảo (Batch Delete / Full-SKU Delete):**
 ```lua
 -- Tham số truyền vào
--- KEYS[1]: cart_key (VD: {cart:user:12345})
--- KEYS[2]: outbox_stream (VD: {cart:user:12345}:outbox — cùng Hash Tag)
+-- KEYS[1]: cart_key (VD: {cart}:550e8400-e29b-41d4-a716-446655440000)
+-- KEYS[2]: global_stream_shard (VD: {cart}:events:0 — cùng Hash Tag {cart})
 -- ARGV[1]: current_timestamp_ms (Epoch milliseconds truyền vào phải ở dạng chuỗi dài)
 -- ARGV[2]: clear_event_type — Loại event phát khi giỏ hàng bị rỗng hoàn toàn
 --          "CART_CLEARED"     : User chủ động xóa hết sản phẩm (default)
@@ -278,18 +274,11 @@ return deleted_count
 ```
 
 > **Lưu ý về partial checkout:** Nếu user chỉ checkout một phần giỏ, script chỉ xóa các `sku_id` có trong snapshot checkout. Các SKU không nằm trong danh sách vẫn giữ nguyên. Nếu `remaining_items > 0` sau xử lý, không phát `CART_CHECKED_OUT` và giỏ tiếp tục trạng thái `ACTIVE`. `CART_CHECKED_OUT` chỉ phát khi **toàn bộ** giỏ rỗng sau checkout.
-> 
-> **Idempotency cho ORDER_PAID bắt buộc xử lý ở Go layer (không nằm trong Lua):**
-> 1) Trước Lua: `GET cart:idemp:order_paid:{order_id}`.
-> 2) Nếu chưa có: `SET cart:idemp:order_paid:{order_id} PROCESSING NX EX 300`.
-> 3) Gọi Lua Batch Delete (không truyền idempotency key vào ARGV).
-> 4) Sau publish path thành công: `SETEX cart:idemp:order_paid:{order_id} 86400 DONE`.
-> 5) Nếu lỗi: để TTL PROCESSING tự hết hạn hoặc ghi trạng thái lỗi ngắn hạn theo policy retry.
->
-> **Lưu ý CROSSSLOT + Intent Index:** Giống script Add/Update, thao tác `ZADD active_outbox_streams`, `PUBLISH outbox_notifications` và `ZADD/ZREM outbox_publish_intents` phải chạy ở tầng Application (Go). Batch Delete cũng bắt buộc pre-register intent trước khi gọi Lua và clear intent sau khi publish path thành công.
+
+> **Lưu ý về Sharding:** Shard ID được tính từ CRC32 hash của user_id modulo số shards. Backend phải tính shard ID và truyền đúng stream key shard vào KEYS[2] trước khi gọi Lua. Công thức: `shard_id = crc32(user_id) % 4`, `stream_key = "{cart}:events:" .. shard_id`.
 
 
-### 3.5. Chiến lược Re-populate Cache (từ Cold Store)
+### 3.4. Chiến lược Re-populate Cache (từ Cold Store)
 
 Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash từ dữ liệu PostgreSQL. Để đảm bảo tính nhất quán dữ liệu (như đã định nghĩa ở [Mục 2.2](#22-value-structure-thành-phần-json)), quy trình mapping được chuẩn hóa như sau:
 
@@ -329,12 +318,12 @@ Khi xảy ra Cache-Miss, App Server thực hiện tái tạo lại Redis Hash t�
    - Nếu `grpc_success = false`, response sẽ có `is_price_degraded = true` để UI hiển thị cảnh báo.
    - Các hành động Write sau đó sẽ tiếp tục sử dụng Lua Script để đảm bảo tính nguyên tử.
 
-### 3.6. Silent Rehydrate Lua Script (Chuẩn triển khai bắt buộc)
+### 3.5. Silent Rehydrate Lua Script (Chuẩn triển khai bắt buộc)
 
 Script này chỉ dùng cho nhánh cache miss, mục tiêu là nạp lại Redis từ Cold Store + dữ liệu Product đã merge.
 
 **Input:**
-- `KEYS[1]`: `cart_key` (với Hash Tag, VD: `{cart:user:12345}`)
+- `KEYS[1]`: `cart_key` (với Hash Tag, VD: `{cart}:550e8400-e29b-41d4-a716-446655440000`)
 - `ARGV[1]`: JSON array của item candidates đã merge (`[{"sku_id":"...","value":"{...}"}, ...]`)
 - `ARGV[2]`: TTL seconds (mặc định `604800`)
 

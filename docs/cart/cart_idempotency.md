@@ -32,7 +32,10 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
 
 > **Contract đồng bộ:** `current_price` không tham gia payload event và không dùng cho idempotency. Đây là field runtime ở API đọc giỏ.
 
-> **Lưu ý quan trọng:** JSON dưới đây là **định dạng Redis Stream (Outbox)** — tức là nội dung được Lua Script đẩy vào `XADD` với hai field: `event_type` và `payload`. Các header Kafka (`event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence`) được [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) **bổ sung** khi forward sang Kafka.
+> **Lưu ý quan trọng về định dạng Redis Stream Outbox:**
+> - Tại tầng Lua Script, message được `XADD` với 2 fields: `event_type` và `payload`.
+> - **TRƯỚC KHI XADD**, Lua Script bổ sung thêm 3 trường vào payload JSON: `cart_id`, `sku_id`, `user_id` (để downstream Consumer biết ghi vào DB mà không cần parse key/field name).
+> - Các header Kafka (`event_id`, `aggregate_type`, `aggregate_id`, `correlation_id`, `timestamp`, `source`, `stream_id`, `stream_timestamp_ms`, `event_sequence`) được [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) **bổ sung** khi forward sang Kafka.
 
 **Định dạng Kafka (sau Relay Worker bổ sung header):**
 ```json
@@ -40,7 +43,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
   "event_id": "018e7b4a-1234-7def-8abc-123456789abc",
   "event_type": "CART_ITEM_UPDATED",
   "aggregate_type": "Cart",
-  "aggregate_id": "{cart:user:12345}",
+  "aggregate_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
   "correlation_id": "req-124",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "cart-service",
@@ -48,7 +51,7 @@ Cấu trúc JSON payload event ([xem Events Structure](cart_events.md)) bắt bu
   "stream_timestamp_ms": "1708616400456",
   "event_sequence": "0",
   "payload": {
-    "cart_id": "{cart:user:12345}",
+    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
     "sku_id": "sku-1001",
     "user_id": "12345",
     "product_id": "prod-uuid",
@@ -77,16 +80,29 @@ Nếu nhận 2 event có *nội dung y hệt nhau*, lệnh SQL Update `SET quant
 
 **Worker dựng `product_snapshot` JSONB từ flat fields:**
 ```go
+// Lưu ý: product_snapshot JSONB chỉ lưu các field hiển thị tĩnh.
+// KHÔNG lưu vào snapshot:
+// - unit_price_at_add  -> lưu ở cột riêng (dùng để hiển thị price alert)
+// - current_price      -> field runtime, chỉ xuất hiện ở API response
+// - cart_id, sku_id, user_id -> đã implicit trong Key/Field/Payload
 productSnapshot := map[string]interface{}{
+    "product_id":    payload.ProductID,    // ID của sản phẩm gốc
     "product_name":  payload.ProductName,
     "variant_info":  payload.VariantInfo,
-    "image_url":     payload.ImageURL,
+    "image_url":     payload.ImageURL,     // URL ảnh sản phẩm
     "is_available": payload.IsAvailable,
-    "added_at":     payload.AddedAt,
-    "updated_at":    payload.UpdatedAt,
+    "added_at":     payload.AddedAt,      // Milliseconds epoch dạng string
+    "updated_at":    payload.UpdatedAt,   // Milliseconds epoch dạng string
 }
 productSnapshotJSON, _ := json.Marshal(productSnapshot)
 ```
+
+> **Tại sao `unit_price_at_add` không nằm trong `product_snapshot`?**
+> Trường này đại diện cho "giá tại thời điểm khách thêm vào giỏ" và được lưu ở **cột riêng** (`unit_price_at_add`) để:
+> 1. Phục vụ Analytics query theo giá lịch sử.
+> 2. Phục vụ so sánh Price Alert (hiển thị chênh lệch giá).
+> 3. Dùng cho idempotency guard (so sánh quantity theo timestamp).
+> Ngay cả khi thông tin sản phẩm cập nhật, chúng ta vẫn giữ lại mốc giá lịch sử này.
 
 **Upsert với `stream_id` guard:**
 ```sql
@@ -95,8 +111,8 @@ INSERT INTO cart_items (
     quantity, unit_price_at_add, product_snapshot, redis_stream_id, created_at, updated_at
 )
 VALUES (
-    '{cart:user:12345}:sku-1001',
-    '{cart:user:12345}',
+    '{cart}:550e8400-e29b-41d4-a716-446655440000:sku-1001',
+    '{cart}:550e8400-e29b-41d4-a716-446655440000',
     'prod-uuid',
     'sku-1001',
     2,
@@ -118,16 +134,13 @@ DO UPDATE SET
 WHERE cart_items.redis_stream_id < EXCLUDED.redis_stream_id;
 ```
 
-> **Tại sao không update `unit_price_at_add`?**
-> Trường này đại diện cho "giá tại thời điểm khách thêm vào giỏ". Ngay cả khi thông tin sản phẩm cập nhật, chúng ta vẫn giữ lại mốc giá lịch sử này để hiển thị chênh lệch (Price Alert).
-
 ### 2.4. Xử lý CART_ITEM_DELETED Event
 
 Khi nhận event `CART_ITEM_DELETED` ([xem Events](cart_events.md#23-cart_item_deleted)), Worker thực hiện **Hard Delete** (xóa hẳn dòng khỏi DB).
 
 ```sql
 DELETE FROM cart_items
-WHERE item_id = '{cart:user:12345}:sku-1001'
+WHERE item_id = '{cart}:550e8400-e29b-41d4-a716-446655440000:sku-1001'
   AND redis_stream_id < '1708616400899-0';
 ```
 

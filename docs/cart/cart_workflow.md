@@ -42,23 +42,19 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
       - Kiểm tra `sku_status` và `product_status` phải là `ACTIVE`.
       - Kiểm tra tồn kho `display_quantity` (Snapshot) có đủ cho `quantity` yêu cầu không.
    - Build chuỗi JSON Payload hoàn chỉnh đại diện cho SKU đó.
+   - **Tính shard ID** cho Global Stream: `shard_id = crc32(user_id) % 4`
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#31-thêm-add--cập-nhật-update-item-ngăn-chặn-race-condition)):**
-   - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
-   - App Server truyền params ngầm vào Lua Script.
+   - Backend truyền params vào Lua Script.
    - Redis kiểm tra ngưỡng cấu hình tối đa số lượng SKUs trong giỏ (`HLEN`).
    - Redis cộng dồn Quantity nếu đã tồn tại, chặn trần max quantity per item.
    - Ghi/Cập nhật dữ liệu vào `HSET`.
-   - Sinh Event `CART_ITEM_ADDED` hoặc `CART_ITEM_UPDATED` thông qua `XADD` xuống Outbox Stream trên cùng Lua context đó.
+   - Sinh Event `CART_ITEM_ADDED` hoặc `CART_ITEM_UPDATED` thông qua `XADD` xuống **Global Stream Shard** trên cùng Lua context đó.
    - Gia hạn vòng đời giỏ hàng 7 ngày.
 3. **[Backend] - Hậu xử lý Write & Trả HTTP 200 OK:**
-   - Xóa negative cache: `DEL cart:user:{id}:notfound` để tránh trả giỏ rỗng giả ở request đọc kế tiếp.
-   - Hoàn tất publish path: `ZADD active_outbox_streams <now_ms> <stream_key>` + `PUBLISH outbox_notifications <stream_key>`.
-   - Dọn intent sau publish thành công: `ZREM outbox_publish_intents <stream_key>`.
-   - Nếu Pod chết giữa Lua thành công và publish path, [Outbox Relay Worker](cart_workers.md#1-outbox-relay-producer-worker) sẽ tự recovery từ `outbox_publish_intents` thay vì quét SCAN toàn keyspace.
-   - Relay Worker sẽ lấy `stream_id` trực tiếp từ Redis message ID (`msg.ID`) để bổ sung vào Kafka header; Postgres Sync dùng `stream_id` làm khóa ordering/idempotency chính.
-   - Sau khi hoàn tất publish path nhẹ (thường chỉ vài ms), API trả về Success cho User mà không cần chờ DB đã lưu xong.
+   - Xóa negative cache: `DEL {cart}:{user_id}:notfound` để tránh trả giỏ rỗng giả ở request đọc kế tiếp.
+   - Trả về Success cho User. Event đã được ghi vào Global Stream Shard, Relay Worker sẽ tự động đọc và forward sang Kafka.
 4. **[Background] - Bất đồng bộ xuống DB:**
-   - [Outbox Relay Worker](cart_workers.md) gặp Event từ Redis Stream bắn sang Kafka.
+   - [Outbox Relay Worker](cart_workers.md) đọc events từ Global Stream Shards và forward sang Kafka.
    - [Postgres Sync Worker](cart_workers.md) gặp Kafka Event Upsert xuống Table `cart_items` và cập nhật bảng master `carts` theo guard `stream_id`. Xem cơ chế chống lỗi ở [Idempotency](cart_idempotency.md).
 
 ## 3. API: Lấy thông tin Giỏ hàng (Đọc)
@@ -71,7 +67,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
 
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Request Gate] - Anti-Stampede và Negative Cache check:**
-    - Kiểm tra key `cart:user:{id}:notfound` trước khi đọc DB.
+    - Kiểm tra key `{cart}:{user_id}:notfound` trước khi đọc DB.
     - Nếu key tồn tại thì trả giỏ rỗng ngay (TTL 60 giây) để chặn quét DB lặp.
 2. **[Redis] - Fetch Data:**
     - Gọi `HGETALL $cart_key`.
@@ -91,7 +87,7 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi từ l�
        - `is_available` runtime theo trạng thái mới nhất từ Product
     - **Đặc biệt:** Nếu gRPC trả về `is_available = false` (product bị BANNED, deleted, hoặc out-of-stock), **bắt buộc ghi lại field `is_available = false` vào Redis Hash** bằng `HSET cart_key sku_id updated_json` ngay sau đó (không EXPIRE). Đây là ngoại lệ duy nhất của Read-Only TTL rule — chỉ cập nhật 1 field với is_available=false, không đụng vào TTL hay các field khác.
     - Nếu gRPC lỗi/timeout: dùng snapshot cũ trong Redis và trả cờ `is_price_degraded = true` để UI cảnh báo mềm.
-    - **Nguyên tắc bắt buộc:** Ngoại trừ việc ghi lại `is_available = false` khi Product BANNED, Cache-hit read **không được HMSET/EXPIRE** vào `cart:user:{id}`.
+    - **Nguyên tắc bắt buộc:** Ngoại trừ việc ghi lại `is_available = false` khi Product BANNED, Cache-hit read **không được HMSET/EXPIRE** vào `{cart}:{user_id}`.
 
 > **Lý do kiến trúc:** Redis vẫn là Source of Truth của trạng thái cart (SKU, quantity, timeline). Product Service vẫn là Source of Truth của dữ liệu catalog thời gian thực. Overlay lúc đọc không làm mất vai trò Source of Truth của Redis.
 
@@ -108,7 +104,7 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
     WHERE cart_id = $1;
     ```
 3. **B3 - Negative Caching:**
-    - Nếu DB không có row, set `cart:user:{id}:notfound` TTL 60 giây rồi trả rỗng.
+    - Nếu DB không có row, set `{cart}:{user_id}:notfound` TTL 60 giây rồi trả rỗng.
 4. **B4 - Pull Product (gRPC):**
     - Sau khi load dữ liệu từ DB (B2), gọi trực tiếp `GetBatchProductSkus` qua gRPC để lấy thông tin product mới nhất.
     - **Circuit Breaker bắt buộc:** Request gRPC được bọc trong Circuit Breaker với timeout 200ms.
@@ -121,7 +117,6 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
       - Giữ nguyên `is_available` từ `product_snapshot` trong DB.
       - Set `grpc_success = false` để response có `is_price_degraded = true`.
       - UI hiển thị cảnh báo: "Hệ thống đang quá tải, giá sản phẩm có thể chưa được cập nhật mới nhất".
-    - **Lý do không dùng Singleflight:** Product Service đã có caching riêng để handle burst traffic. Việc deduplicate request trong process (per-Pod) không mang lại lợi ích đáng kể vì mỗi Pod vẫn phải gọi gRPC khi nhận request.
 5. **B5 - Merge policy trước khi nạp lại Redis:**
     - **Bảo toàn các field lịch sử:** `unit_price_at_add`, `added_at`.
     - **Làm mới các field hiển thị có thể thay đổi:** `is_available`, `updated_at`.
@@ -197,7 +192,7 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 | Tham số | Add/Update Script | Batch Delete Script |
 |:--------|:-----------------|:-------------------|
 | `KEYS[1]` | `$cart_key` | `$cart_key` |
-| `KEYS[2]` | `$outbox_stream` | `$outbox_stream` |
+| `KEYS[2]` | `$global_stream_shard` | `$global_stream_shard` |
 | `ARGV[1]` | `$sku_id` | `$current_timestamp_ms` |
 | `ARGV[2]` | `$payload_json` | `$clear_event_type` ("CART_CLEARED" hoặc "CART_CHECKED_OUT") |
 | `ARGV[3]` | `$max_qty` | `$user_id` |
@@ -209,15 +204,15 @@ Xảy ra khi Redis key hết TTL hoặc bị evict, nhưng Cold Store vẫn còn
 **Quy trình chuẩn kiện (Workflow):**
 1. **[Backend] - Chuẩn bị Payload:**
    - Nhận `cart_id` và mảng `sku_ids` từ event `ORDER_PAID`.
+   - **Tính shard ID** cho Global Stream: `shard_id = crc32(user_id) % 4`
 2. **[Redis] - Nguyên tử hóa qua Lua Script ([Xem code](cart_caching_schema.md#33-xóa-item-batch-delete-sau-checkout-hoặc-remove)):**
-   - Trước khi gọi Lua, App Server pre-register intent: `ZADD outbox_publish_intents <now_ms> <stream_key>`.
-   - App Server chốt idempotency ở Go layer bằng key `cart:idemp:order_paid:{order_id}`: `SET NX EX 300` trước Lua, `SETEX DONE 24h` sau publish path thành công.
-   - Truyền danh sách `sku_ids` vào Redis (không truyền idempotency key vào Lua).
+   - Backend chốt idempotency ở Go layer bằng key `cart:idemp:order_paid:{order_id}`: `SET NX EX 300` trước Lua, `SETEX DONE 24h` sau khi event được relay thành công.
+   - Truyền danh sách `sku_ids` vào Redis.
    - Redis xóa thẳng từng field SKU (`HDEL`) có trong danh sách nếu SKU đó tồn tại và phát [`CART_ITEM_DELETED`](cart_events.md#23-cart_item_deleted).
    - Check chốt hạ nếu giỏ hàng rỗng `HLEN == 0` → Xóa nguyên Key bằng `DEL`.
    - Nếu luồng do user xóa thủ công: phát [`CART_CLEARED`](cart_events.md#24-cart_cleared).
    - Nếu luồng do checkout (`ORDER_PAID`) và giỏ rỗng hoàn toàn: phát [`CART_CHECKED_OUT`](cart_events.md#25-cart_checked_out). Nếu giỏ vẫn còn SKU khác (partial checkout), không phát event này và giỏ tiếp tục trạng thái `ACTIVE`.
-   - Sau khi Lua thành công, Go phải chạy `ZADD active_outbox_streams` + `PUBLISH outbox_notifications`, rồi `ZREM outbox_publish_intents`.
+   - **Đơn giản hóa:** Không còn `ZADD intent`, `ZADD active`, `PUBLISH`, `ZREM intent`. Event được ghi vào Global Stream Shard, Relay Worker tự động phát hiện qua Consumer Group.
 3. **[Background] - Bất đồng bộ Database:**
    - Tương tự chiều Update, [Postgres Sync Worker](cart_workers.md#2-postgres-sync-consumer-worker) gặp Event Delete đi xử lý, gỡ dòng trong bảng Cold Store (`cart_items`). Áp dụng [Out-of-order validation cho DELETE](cart_idempotency.md#24-xử-lý-sai-thứ-tự-cho-delete-event).
    - Nếu nhận event `CART_CLEARED`, Update bảng `carts` chuyển `status` sang `DELETED`.

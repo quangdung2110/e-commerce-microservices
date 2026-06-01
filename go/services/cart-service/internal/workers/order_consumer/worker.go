@@ -1,11 +1,8 @@
-﻿package order_consumer
+package order_consumer
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -13,469 +10,224 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/common/keybuilder"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/infrastructure/config"
+	"cart-service/internal/common/keybuilder"
+	"cart-service/internal/domain/event"
+	"cart-service/internal/domain/port"
+	"cart-service/internal/infrastructure/kafka"
 )
 
-// OrderEventConsumer consumes ORDER_PAID events from Order Service
-// and triggers cart cleanup via Redis Lua scripts.
-type OrderEventConsumer struct {
-	kafkaBrokers []string
-	consumerGroup string
-	topic         string
-
-	redisClient *redis.Client
+// Worker consumes ORDER_PAID events from Kafka and clears the corresponding cart in Redis.
+type Worker struct {
+	consumer    *kafka.Consumer
+	redisClient redis.UniversalClient
+	luaRepo     port.CartLuaRepository
+	cacheRepo   port.CacheRepository
+	kb          *keybuilder.KeyBuilder
+	numShards   int
 	logger      *zap.Logger
-	config      config.DLQHandlerConfig
-
-	keyBuilder *keybuilder.CartKeyBuilder
-	metrics    *OrderConsumerMetrics
-
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	metrics     *Metrics
+	wg          sync.WaitGroup
+	stopCh      chan struct{}
+	batchSize   int
+	timeout     time.Duration
 }
 
-// OrderPaidEvent represents the ORDER_PAID event from Order Service
-type OrderPaidEvent struct {
-	EventID   string           `json:"event_id"`
-	EventType string          `json:"event_type"`
-	Payload   OrderPaidPayload `json:"payload"`
-}
-
-// OrderPaidPayload represents the payload of ORDER_PAID event
-type OrderPaidPayload struct {
-	OrderID    int64    `json:"order_id"`
-	UserID    int64    `json:"user_id"`
-	CartID    string   `json:"cart_id"`
-	Status    string   `json:"status"`
-	SkuIDs    []string `json:"sku_ids"`
-	PaidAt    string   `json:"paid_at"`
-}
-
-// NewOrderEventConsumer creates a new order event consumer
-func NewOrderEventConsumer(
-	redisClient *redis.Client,
+// NewWorker creates a new order consumer worker.
+func NewWorker(
+	consumer *kafka.Consumer,
+	redisClient redis.UniversalClient,
+	luaRepo port.CartLuaRepository,
+	cacheRepo port.CacheRepository,
+	kb *keybuilder.KeyBuilder,
+	numShards int,
 	logger *zap.Logger,
-	cfg *config.Config,
-) *OrderEventConsumer {
-	return &OrderEventConsumer{
-		kafkaBrokers: cfg.Kafka.Brokers,
-		consumerGroup: cfg.Kafka.OrderConsumerGroup,
-		topic:        cfg.Kafka.OrderTopic,
-		redisClient:  redisClient,
-		logger:       logger,
-		config:       cfg.Workers.DLQHandler,
-		keyBuilder:   keybuilder.NewCartKeyBuilder(),
-		metrics:      &OrderConsumerMetrics{},
+) *Worker {
+	return &Worker{
+		consumer:    consumer,
+		redisClient: redisClient,
+		luaRepo:     luaRepo,
+		cacheRepo:   cacheRepo,
+		kb:          kb,
+		numShards:   numShards,
+		logger:      logger,
+		metrics:     NewMetrics(logger),
 		stopCh:      make(chan struct{}),
+		batchSize:   50,
+		timeout:     5 * time.Second,
 	}
 }
 
-// Start begins consuming ORDER_PAID events
-func (c *OrderEventConsumer) Start(ctx context.Context) error {
-	c.logger.Info("Starting Order Event Consumer",
-		zap.Strings("brokers", c.kafkaBrokers),
-		zap.String("topic", c.topic),
-		zap.String("consumer_group", c.consumerGroup),
+// Start begins consuming ORDER_PAID events.
+func (w *Worker) Start(ctx context.Context) error {
+	w.wg.Add(1)
+	go w.run(ctx)
+	w.logger.Info("order consumer worker started",
+		zap.Int("batch_size", w.batchSize),
 	)
-
-	// Create Kafka consumer
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{sarama.NewBalanceStrategyRoundRobin()}
-	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetNewest
-
-	// Start consumer group
-	consumerGroup, err := sarama.NewConsumerGroup(c.kafkaBrokers, c.consumerGroup, saramaConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create consumer group: %w", err)
-	}
-
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		c.runConsumerGroup(ctx, consumerGroup)
-	}()
-
 	return nil
 }
 
-// runConsumerGroup runs the Kafka consumer group
-func (c *OrderEventConsumer) runConsumerGroup(ctx context.Context, consumerGroup sarama.ConsumerGroup) {
-	handler := &consumerGroupHandler{
-		consumer: c,
-		ready:    make(chan bool),
-	}
-
-	for {
-		if err := consumerGroup.Consume(ctx, []string{c.topic}, handler); err != nil {
-			c.logger.Error("Error from consumer", zap.Error(err))
-		}
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		handler.ready = make(chan bool)
-	}
+// Stop gracefully stops the worker.
+func (w *Worker) Stop() {
+	close(w.stopCh)
+	w.wg.Wait()
+	w.logger.Info("order consumer worker stopped")
 }
 
-// consumerGroupHandler implements sarama.ConsumerGroupHandler
-type consumerGroupHandler struct {
-	consumer *OrderEventConsumer
-	ready    chan bool
-}
+func (w *Worker) run(ctx context.Context) {
+	defer w.wg.Done()
 
-func (h *consumerGroupHandler) Setup(sarama.ConsumerGroupSession) error {
-	close(h.ready)
-	return nil
-}
-
-func (h *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
-		case message, ok := <-claim.Messages():
-			if !ok {
-				return nil
-			}
-			h.consumer.processMessage(session.Context(), message)
-			session.MarkMessage(message, "")
-
-		case <-session.Context().Done():
-			return nil
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+			w.consume(ctx)
 		}
 	}
 }
 
-// processMessage processes a single ORDER_PAID message
-func (c *OrderEventConsumer) processMessage(ctx context.Context, message *sarama.ConsumerMessage) {
-	c.metrics.IncMessagesReceived()
-
-	// Parse event
-	var event OrderPaidEvent
-	if err := json.Unmarshal(message.Value, &event); err != nil {
-		c.logger.Error("Failed to unmarshal ORDER_PAID event",
-			zap.Error(err),
-			zap.Int64("offset", message.Offset),
-		)
-		c.metrics.IncErrors()
-		return
-	}
-
-	// Only process ORDER_PAID events
-	if event.EventType != constants.EventTypeOrderPaid {
-		c.metrics.IncMessagesSkipped()
-		return
-	}
-
-	// Validate cart_id
-	cartID := event.Payload.CartID
-	if cartID == "" {
-		// Try to reconstruct from user_id
-		if event.Payload.UserID != 0 {
-			cartID = fmt.Sprintf("{cart:user:%d}", event.Payload.UserID)
-		} else {
-			c.logger.Error("Missing both cart_id and user_id in ORDER_PAID event",
-				zap.Int64("order_id", event.Payload.OrderID),
-				zap.Int64("offset", message.Offset),
-			)
-			c.metrics.IncErrors()
-			c.metrics.IncDLQMessages()
-			return
-		}
-	}
-
-	// Validate cart_id format
-	cartIDPattern := regexp.MustCompile(`^\{cart:user:[^{}]+\}$`)
-	if !cartIDPattern.MatchString(cartID) {
-		c.logger.Error("Invalid cart_id format",
-			zap.String("cart_id", cartID),
-			zap.Int64("order_id", event.Payload.OrderID),
-		)
-		c.metrics.IncErrors()
-		c.metrics.IncDLQMessages()
-		return
-	}
-
-	// Validate sku_ids
-	if len(event.Payload.SkuIDs) == 0 {
-		c.logger.Warn("Empty sku_ids in ORDER_PAID event",
-			zap.String("cart_id", cartID),
-			zap.Int64("order_id", event.Payload.OrderID),
-		)
-		c.metrics.IncMessagesSkipped()
-		return
-	}
-
-	// Extract user_id from cart_id
-	userID, err := c.keyBuilder.ExtractUserIDFromCartID(cartID)
+func (w *Worker) consume(ctx context.Context) {
+	batch, err := w.consumer.PollBatch(ctx, w.batchSize, w.timeout)
 	if err != nil {
-		c.logger.Error("Failed to extract user_id from cart_id",
-			zap.String("cart_id", cartID),
-			zap.Error(err),
-		)
-		c.metrics.IncErrors()
-		return
-	}
-
-	// Idempotency check
-	orderIDStr := strconv.FormatInt(event.Payload.OrderID, 10)
-	if err := c.checkAndSetIdempotency(ctx, orderIDStr); err != nil {
-		// Already processed
-		if err == ErrAlreadyProcessed || err == ErrAlreadyProcessing {
-			c.metrics.IncMessagesSkipped()
+		if err == context.DeadlineExceeded || err == context.Canceled {
 			return
 		}
-		c.logger.Error("Failed to check idempotency",
-			zap.Int64("order_id", event.Payload.OrderID),
-			zap.Error(err),
-		)
-		c.metrics.IncErrors()
+		w.logger.Warn("poll error", zap.Error(err))
 		return
 	}
 
-	// Process the order - call Lua Batch Delete
-	if err := c.processOrder(ctx, cartID, userID, event.Payload.SkuIDs, orderIDStr); err != nil {
-		c.logger.Error("Failed to process order",
-			zap.String("cart_id", cartID),
-			zap.Int64("order_id", event.Payload.OrderID),
-			zap.Error(err),
-		)
-		c.metrics.IncErrors()
-		// Clear intent if exists
-		outboxKey := cartID + constants.KeySuffixOutbox
-		_ = c.clearIntent(ctx, outboxKey)
+	if batch.Count() == 0 {
 		return
 	}
 
-	// Mark idempotency as done
-	if err := c.markIdempotencyDone(ctx, orderIDStr); err != nil {
-		c.logger.Warn("Failed to mark idempotency as done",
-			zap.Int64("order_id", event.Payload.OrderID),
-			zap.Error(err),
-		)
+	for _, msg := range batch.Messages() {
+		w.processMessage(ctx, msg)
 	}
 
-	c.metrics.IncMessagesProcessed()
-	c.logger.Info("Processed ORDER_PAID event",
-		zap.String("cart_id", cartID),
-		zap.Int64("order_id", event.Payload.OrderID),
-		zap.Int("sku_count", len(event.Payload.SkuIDs)),
+	batch.Commit()
+}
+
+func (w *Worker) processMessage(ctx context.Context, msg *sarama.ConsumerMessage) {
+	var wrapper OrderPaidWrapper
+	if err := json.Unmarshal(msg.Value, &wrapper); err != nil {
+		w.logger.Warn("unmarshal failed",
+			zap.Int64("offset", msg.Offset),
+			zap.Error(err),
+		)
+		return
+	}
+
+	if wrapper.EventType != event.EventTypeOrderPaid {
+		return
+	}
+
+	payload := wrapper.Payload
+
+	if !isValidCartID(payload.CartID) {
+		w.logger.Warn("invalid cart_id",
+			zap.String("cart_id", payload.CartID),
+			zap.Int64("order_id", payload.OrderID),
+		)
+		return
+	}
+
+	if w.isOrderProcessed(ctx, payload.OrderID) {
+		w.logger.Debug("order already processed",
+			zap.Int64("order_id", payload.OrderID),
+		)
+		return
+	}
+
+	if err := w.acquireIdempotencyLock(ctx, payload.OrderID); err != nil {
+		w.logger.Warn("failed to acquire lock",
+			zap.Int64("order_id", payload.OrderID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	userID := extractUserIDFromCartID(payload.CartID)
+	shardID := int(w.kb.StreamShardByUserID(userID))
+	streamShard := w.kb.StreamShard(uint32(shardID))
+
+	skuIDsJSON, _ := json.Marshal(payload.SkuIDs)
+	timestampMs := time.Now().UTC().UnixMilli()
+
+	_, deleteErr := w.luaRepo.BatchDelete(
+		ctx,
+		payload.CartID, streamShard,
+		timestampMs, event.EventTypeCartCheckedOut,
+		userID, string(skuIDsJSON),
+	)
+	if deleteErr != nil {
+		w.logger.Error("batch delete failed",
+			zap.Int64("order_id", payload.OrderID),
+			zap.String("cart_id", payload.CartID),
+			zap.Error(deleteErr),
+		)
+		w.metrics.RecordErrors()
+		return
+	}
+
+	w.markOrderProcessed(ctx, payload.OrderID)
+	w.cacheRepo.DeleteNegativeCache(ctx, userID)
+
+	w.metrics.RecordSuccess()
+	w.logger.Info("order processed, cart cleared",
+		zap.Int64("order_id", payload.OrderID),
+		zap.String("cart_id", payload.CartID),
+		zap.Int("sku_count", len(payload.SkuIDs)),
 	)
 }
 
-// checkAndSetIdempotency checks if order was already processed and sets lock
-func (c *OrderEventConsumer) checkAndSetIdempotency(ctx context.Context, orderID string) error {
-	processingKey := c.keyBuilder.BuildIdempotencyKey(orderID)
-	doneKey := c.keyBuilder.BuildIdempotencyDoneKey(orderID)
-
-	// Check if already done
-	result, err := c.redisClient.Get(ctx, doneKey).Result()
-	if err == nil && result == "DONE" {
-		return ErrAlreadyProcessed
-	}
-
-	// Try to set processing lock (NX = only if not exists)
-	set, err := c.redisClient.SetNX(ctx, processingKey, "PROCESSING", 5*time.Minute).Result()
-	if err != nil {
-		return fmt.Errorf("failed to set idempotency lock: %w", err)
-	}
-
-	if !set {
-		return ErrAlreadyProcessing
-	}
-
-	return nil
+func (w *Worker) isOrderProcessed(ctx context.Context, orderID int64) bool {
+	key := keybuilder.IdempotencyKey(orderID)
+	val, err := w.redisClient.Get(ctx, key).Result()
+	return err == nil && val == "DONE"
 }
 
-// markIdempotencyDone marks the idempotency key as done
-func (c *OrderEventConsumer) markIdempotencyDone(ctx context.Context, orderID string) error {
-	processingKey := c.keyBuilder.BuildIdempotencyKey(orderID)
-	doneKey := c.keyBuilder.BuildIdempotencyDoneKey(orderID)
-
-	// Delete processing key
-	c.redisClient.Del(ctx, processingKey)
-
-	// Set done key
-	_, err := c.redisClient.Set(ctx, doneKey, "DONE", 24*time.Hour).Result()
-	return err
+func (w *Worker) acquireIdempotencyLock(ctx context.Context, orderID int64) error {
+	key := keybuilder.IdempotencyKey(orderID)
+	return w.redisClient.SetNX(ctx, key, "PROCESSING", 5*time.Minute).Err()
 }
 
-// processOrder processes the order and clears cart items
-func (c *OrderEventConsumer) processOrder(ctx context.Context, cartID, userID string, skuIDs []string, orderID string) error {
-	now := time.Now()
-	nowMs := now.UnixMilli()
+func (w *Worker) markOrderProcessed(ctx context.Context, orderID int64) {
+	key := keybuilder.IdempotencyKey(orderID)
+	_ = w.redisClient.SetEx(ctx, key, "DONE", 24*time.Hour)
+}
 
-	outboxKey := cartID + constants.KeySuffixOutbox
+// Metrics returns the worker's metrics.
+func (w *Worker) Metrics() *Metrics {
+	return w.metrics
+}
 
-	// Step 1: Pre-register intent
-	if err := c.preRegisterIntent(ctx, outboxKey); err != nil {
-		c.logger.Warn("Failed to pre-register intent",
-			zap.String("cart_id", cartID),
-			zap.Error(err),
-		)
+// OrderPaidWrapper wraps the ORDER_PAID event for unmarshaling.
+type OrderPaidWrapper struct {
+	EventType string               `json:"event_type"`
+	Payload   event.OrderPaidPayload `json:"payload"`
+}
+
+// isValidCartID validates the cart ID format.
+func isValidCartID(cartID string) bool {
+	return len(cartID) > 7 && cartID[:6] == "{cart}"
+}
+
+// extractUserIDFromCartID extracts the user ID from a cart ID.
+// Cart ID format: {cart}:{user_id}
+// Returns everything after the first colon.
+func extractUserIDFromCartID(cartID string) string {
+	for i := 0; i < len(cartID); i++ {
+		if cartID[i] == ':' {
+			return cartID[i+1:]
+		}
 	}
-
-	// Step 2: Marshal SKU IDs to JSON
-	skuIDsJSON, err := json.Marshal(skuIDs)
-	if err != nil {
-		return fmt.Errorf("failed to marshal SKU IDs: %w", err)
-	}
-
-	// Step 3: Call Lua Batch Delete script
-	// Note: We use EVAL here since we need to pass the batch delete arguments
-	result, err := c.redisClient.Eval(ctx, getBatchDeleteScript(), []string{cartID, outboxKey},
-		nowMs,
-		constants.EventTypeCartCheckedOut,
-		userID,
-		string(skuIDsJSON),
-	).Result()
-
-	if err != nil {
-		return fmt.Errorf("failed to execute batch delete: %w", err)
-	}
-
-	// Step 4: Mark active and notify
-	if err := c.markActive(ctx, outboxKey); err != nil {
-		c.logger.Warn("Failed to mark active",
-			zap.String("cart_id", cartID),
-			zap.Error(err),
-		)
-	}
-
-	// Step 5: Clear intent
-	if err := c.clearIntent(ctx, outboxKey); err != nil {
-		c.logger.Warn("Failed to clear intent",
-			zap.String("cart_id", cartID),
-			zap.Error(err),
-		)
-	}
-
-	// Check if cart was cleared
-	deletedCount, _ := result.(int64)
-	if deletedCount > 0 {
-		c.metrics.IncCartsCleared()
-	}
-
-	return nil
+	return ""
 }
 
-// preRegisterIntent registers an intent before Lua execution
-func (c *OrderEventConsumer) preRegisterIntent(ctx context.Context, streamKey string) error {
-	score := float64(time.Now().UnixMilli())
-	_, err := c.redisClient.ZAdd(ctx, keybuilder.OutboxPublishIntentsKey, redis.Z{
-		Score:  score,
-		Member: streamKey,
-	}).Result()
-	return err
+// Consumer returns the underlying Kafka consumer.
+func (w *Worker) Consumer() *kafka.Consumer {
+	return w.consumer
 }
-
-// markActive marks stream as active and notifies workers
-func (c *OrderEventConsumer) markActive(ctx context.Context, streamKey string) error {
-	score := float64(time.Now().UnixMilli())
-
-	// Add to active outbox streams
-	_, err := c.redisClient.ZAdd(ctx, keybuilder.ActiveOutboxStreamsKey, redis.Z{
-		Score:  score,
-		Member: streamKey,
-	}).Result()
-	if err != nil {
-		return err
-	}
-
-	// Notify workers via Pub/Sub
-	_, err = c.redisClient.Publish(ctx, keybuilder.OutboxNotificationsChannel, streamKey).Result()
-	return err
-}
-
-// clearIntent removes the intent after successful publish
-func (c *OrderEventConsumer) clearIntent(ctx context.Context, streamKey string) error {
-	_, err := c.redisClient.ZRem(ctx, keybuilder.OutboxPublishIntentsKey, streamKey).Result()
-	return err
-}
-
-// getBatchDeleteScript returns the Lua batch delete script
-func getBatchDeleteScript() string {
-	return `
--- Lua Script: Batch Delete Cart Items for Checkout
---
--- KEYS[1]: cart_key - Cart hash key
--- KEYS[2]: outbox_stream - Outbox stream key
---
--- ARGV[1]: current_timestamp_ms
--- ARGV[2]: clear_event_type - Should be CART_CHECKED_OUT
--- ARGV[3]: user_id
--- ARGV[4]: sku_ids_json - JSON array of SKU IDs to delete
---
--- Returns: deleted_count
-
-local current_time_str = tostring(ARGV[1])
-local clear_event_type = ARGV[2]
-local user_id = ARGV[3]
-local sku_ids = cjson.decode(ARGV[4])
-
-local deleted_count = 0
-local skus_to_delete = {}
-
-local deleted_event_obj = {
-    sku_id = "",
-    cart_id = "",
-    user_id = user_id,
-    deleted_at = current_time_str
-}
-deleted_event_obj.cart_id = KEYS[1]
-
--- 1. Scan through sku_ids array and collect existing SKUs to delete
-for i = 1, #sku_ids do
-    local sku_id = sku_ids[i]
-    local current_item = redis.call('HGET', KEYS[1], sku_id)
-
-    if current_item then
-        table.insert(skus_to_delete, sku_id)
-        deleted_count = deleted_count + 1
-
-        deleted_event_obj.sku_id = sku_id
-        local deleted_payload = cjson.encode(deleted_event_obj)
-        redis.call('XADD', KEYS[2], '*', 'event_type', 'CART_ITEM_DELETED', 'payload', deleted_payload)
-    end
-end
-
--- 2. Batch HDEL for items to remove completely
-if deleted_count > 0 then
-    redis.call('HDEL', KEYS[1], unpack(skus_to_delete))
-
-    -- Cleanup Key if cart becomes empty
-    local remaining_items = redis.call('HLEN', KEYS[1])
-    if remaining_items == 0 then
-        redis.call('DEL', KEYS[1])
-        local clear_obj = {cart_id = KEYS[1], user_id = user_id}
-        clear_obj.checked_out_at = current_time_str
-        redis.call('XADD', KEYS[2], '*', 'event_type', clear_event_type, 'payload', cjson.encode(clear_obj))
-    end
-end
-
-return deleted_count
-`
-}
-
-// Stop stops the consumer
-func (c *OrderEventConsumer) Stop() {
-	c.logger.Info("Stopping Order Event Consumer")
-	close(c.stopCh)
-	c.wg.Wait()
-}
-
-// GetMetrics returns the consumer metrics
-func (c *OrderEventConsumer) GetMetrics() OrderConsumerSnapshot {
-	return c.metrics.Snapshot()
-}
-
-// Custom errors
-var (
-	ErrAlreadyProcessed = fmt.Errorf("order already processed")
-	ErrAlreadyProcessing = fmt.Errorf("order already being processed")
-)

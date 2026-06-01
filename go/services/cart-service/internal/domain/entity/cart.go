@@ -1,184 +1,132 @@
 package entity
 
 import (
-	"encoding/json"
 	"time"
 )
 
-// Cart represents a shopping cart stored in Redis
-type Cart struct {
-	CartID      string    `json:"cart_id"`
-	UserID      string    `json:"user_id"`
-	Status      string    `json:"status"`
-	Items       []CartItem `json:"items,omitempty"`
-	LastUpdated time.Time `json:"last_updated"`
-}
+// CartStatus represents the lifecycle state of a cart.
+type CartStatus string
 
-// CartItem represents an item in the shopping cart
-type CartItem struct {
-	// Stored in Redis Hash Value as JSON
-	SkuID          string `json:"sku_id"`
-	ProductID      string `json:"product_id"`
-	Quantity       int    `json:"quantity"`
-	UnitPriceAtAdd float64 `json:"unit_price_at_add"`
-	ProductName    string `json:"product_name"`
-	VariantInfo   string `json:"variant_info"`
-	ImageURL      string `json:"image_url"`
-	IsAvailable   bool   `json:"is_available"`
-	AddedAt       string `json:"added_at"` // Epoch milliseconds as string
-	UpdatedAt     string `json:"updated_at"` // Epoch milliseconds as string
+const (
+	CartStatusActive     CartStatus = "ACTIVE"
+	CartStatusAbandoned  CartStatus = "ABANDONED"
+	CartStatusDeleted    CartStatus = "DELETED"
+	CartStatusCheckedOut CartStatus = "CHECKED_OUT"
+)
 
-	// Runtime fields (not stored in Redis, computed at read time)
-	CurrentPrice float64 `json:"current_price,omitempty"`
-}
-
-// CartItemPayload is used for Add/Update operations
-type CartItemPayload struct {
-	SkuID          string  `json:"sku_id"`
-	ProductID      string  `json:"product_id"`
-	Quantity       int     `json:"quantity"`
-	UnitPriceAtAdd float64 `json:"unit_price_at_add"`
-	ProductName    string  `json:"product_name"`
-	VariantInfo   string  `json:"variant_info"`
-	ImageURL      string  `json:"image_url"`
-	IsAvailable   bool    `json:"is_available"`
-	AddedAt       string  `json:"added_at"`
-	UpdatedAt     string  `json:"updated_at"`
-}
-
-// ToJSON converts CartItemPayload to JSON string
-func (p *CartItemPayload) ToJSON() (string, error) {
-	data, err := json.Marshal(p)
-	return string(data), err
-}
-
-// CartItemFromJSON creates CartItemPayload from JSON string
-func CartItemFromJSON(data string) (*CartItemPayload, error) {
-	var payload CartItemPayload
-	err := json.Unmarshal([]byte(data), &payload)
-	if err != nil {
-		return nil, err
+func (s CartStatus) IsValid() bool {
+	switch s {
+	case CartStatusActive, CartStatusAbandoned,
+		CartStatusDeleted, CartStatusCheckedOut:
+		return true
 	}
-	return &payload, nil
+	return false
 }
 
-// CartResponse represents the API response for getting cart
-type CartResponse struct {
-	CartID          string              `json:"cart_id"`
-	Items           []CartItemGroup     `json:"items"`
-	IsPriceDegraded bool                `json:"is_price_degraded"`
-	TotalItems      int                 `json:"total_items"`
-	TotalUniqueSKUs int                `json:"total_unique_skus"`
+// Cart is the aggregate root for cart operations.
+type Cart struct {
+	cartID              string
+	userID              string
+	status              CartStatus
+	lastEventStreamID   string
+	abandonedEventPubAt *time.Time
+	createdAt           time.Time
+	updatedAt           time.Time
+	items               []*CartItem
 }
 
-// CartItemGroup groups items by latest_item_at
-type CartItemGroup struct {
-	LatestItemAt int64        `json:"latest_item_at"`
-	Items       []CartItemResponse `json:"items"`
+// NewCart creates a new cart for a user.
+func NewCart(cartID, userID string) *Cart {
+	now := time.Now().UTC()
+	return &Cart{
+		cartID:            cartID,
+		userID:            userID,
+		status:            CartStatusActive,
+		lastEventStreamID: "",
+		createdAt:         now,
+		updatedAt:         now,
+		items:             []*CartItem{},
+	}
 }
 
-// CartItemResponse is the response format for a single cart item
-type CartItemResponse struct {
-	SkuID        string  `json:"sku_id"`
-	ProductName  string  `json:"product_name"`
-	VariantInfo string  `json:"variant_info"`
-	ImageURL    string  `json:"image_url"`
-	Quantity    int     `json:"quantity"`
-	UnitPriceAtAdd float64 `json:"unit_price_at_add"`
-	CurrentPrice float64 `json:"current_price,omitempty"`
-	IsAvailable bool    `json:"is_available"`
-	AddedAt     string  `json:"added_at"`
-	UpdatedAt   string  `json:"updated_at"`
+// RestoreCart creates a cart from cold storage (PostgreSQL).
+func RestoreCart(cartID, userID string, status CartStatus, lastStreamID string, createdAt, updatedAt time.Time) *Cart {
+	return &Cart{
+		cartID:            cartID,
+		userID:            userID,
+		status:            status,
+		lastEventStreamID: lastStreamID,
+		createdAt:         createdAt,
+		updatedAt:         updatedAt,
+		items:             []*CartItem{},
+	}
 }
 
-// AddItemRequest represents the request to add/update an item in cart
-type AddItemRequest struct {
-	SkuID    string `json:"sku_id" validate:"required"`
-	Quantity int    `json:"quantity" validate:"required,min=1"`
+// RestoreCartWithAbandoned creates a cart from cold storage with abandoned event timestamp.
+func RestoreCartWithAbandoned(cartID, userID string, status CartStatus, lastStreamID string, createdAt, updatedAt time.Time, abandonedPubAt *time.Time) *Cart {
+	cart := RestoreCart(cartID, userID, status, lastStreamID, createdAt, updatedAt)
+	cart.abandonedEventPubAt = abandonedPubAt
+	return cart
 }
 
-// AddItemResponse represents the response after adding an item
-type AddItemResponse struct {
-	Success bool              `json:"success"`
-	CartID  string           `json:"cart_id"`
-	Item    *CartItemPayload `json:"item,omitempty"`
-	Error   string           `json:"error,omitempty"`
+// Getters (immutable access)
+func (c *Cart) CartID()        string     { return c.cartID }
+func (c *Cart) UserID()        string     { return c.userID }
+func (c *Cart) Status()        CartStatus { return c.status }
+func (c *Cart) LastStreamID()  string     { return c.lastEventStreamID }
+func (c *Cart) CreatedAt()    time.Time  { return c.createdAt }
+func (c *Cart) UpdatedAt()    time.Time  { return c.updatedAt }
+func (c *Cart) Items()        []*CartItem { return c.items }
+
+// AbandonedEventPubAt returns the timestamp when the abandoned event was published.
+func (c *Cart) AbandonedEventPubAt() *time.Time { return c.abandonedEventPubAt }
+
+// CanTransitionTo checks if the cart can transition from current status to next status.
+func (c *Cart) CanTransitionTo(next CartStatus) bool {
+	switch c.status {
+	case CartStatusActive:
+		return next == CartStatusAbandoned
+	case CartStatusAbandoned:
+		return next == CartStatusActive
+	case CartStatusDeleted:
+		return next == CartStatusActive
+	case CartStatusCheckedOut:
+		return next == CartStatusActive
+	}
+	return false
 }
 
-// DeleteItemsRequest represents the request to delete items from cart
-type DeleteItemsRequest struct {
-	CartID string   `json:"cart_id" validate:"required"`
-	SkuIDs []string `json:"sku_ids" validate:"required,min=1"`
+// TransitionTo transitions the cart to a new status if allowed.
+func (c *Cart) TransitionTo(next CartStatus, streamID string) error {
+	if !next.IsValid() {
+		return ErrInvalidCartStatus
+	}
+	if c.CanTransitionTo(next) {
+		c.status = next
+		c.lastEventStreamID = streamID
+		c.updatedAt = time.Now().UTC()
+		return nil
+	}
+	return ErrInvalidCartTransition
 }
 
-// DeleteItemsResponse represents the response after deleting items
-type DeleteItemsResponse struct {
-	Success      bool   `json:"success"`
-	DeletedCount int64  `json:"deleted_count"`
-	Error        string `json:"error,omitempty"`
+// Reactivate sets status to ACTIVE when cart receives new activity after DELETED/CHECKED_OUT.
+func (c *Cart) Reactivate(streamID string) {
+	if streamIDNewer(c.lastEventStreamID, streamID) {
+		c.status = CartStatusActive
+		c.lastEventStreamID = streamID
+		c.updatedAt = time.Now().UTC()
+	}
 }
 
-// ProductInfo represents product information from Product Service
-type ProductInfo struct {
-	SkuID          string  `json:"sku_id"`
-	ProductID      string  `json:"product_id"`
-	ProductName    string  `json:"product_name"`
-	VariantInfo   string  `json:"variant_info"`
-	ImageURL      string  `json:"image_url"`
-	OriginalPrice float64 `json:"original_price"`
-	PromotionalPrice float64 `json:"promotional_price"`
-	CurrentPrice  float64 `json:"current_price"`
-	DisplayQuantity int    `json:"display_quantity"`
-	SkuStatus     string  `json:"sku_status"`
-	ProductStatus string  `json:"product_status"`
-	IsAvailable   bool    `json:"is_available"`
+// MarkAbandoned marks the cart as abandoned.
+func (c *Cart) MarkAbandoned() {
+	c.status = CartStatusAbandoned
+	c.updatedAt = time.Now().UTC()
 }
 
-// BatchProductSkusResponse represents the response from GetBatchProductSkus gRPC call
-type BatchProductSkusResponse struct {
-	Products map[string]*ProductInfo `json:"products"`
-	Errors   map[string]string     `json:"errors,omitempty"`
-}
-
-// RehydrateItem represents an item to rehydrate from DB to Redis
-type RehydrateItem struct {
-	SkuID  string `json:"sku_id"`
-	Value  string `json:"value"`
-}
-
-// RehydrateItems is a collection of RehydrateItem for JSON serialization
-type RehydrateItems []RehydrateItem
-
-// MergedCartItem represents an item merged from DB and Product Service
-type MergedCartItem struct {
-	SkuID          string
-	Quantity       int
-	ProductName    string
-	VariantInfo    string
-	ImageURL       string
-	UnitPriceAtAdd float64
-	IsAvailable    bool
-	AddedAt       string
-	UpdatedAt      string
-}
-
-// CartItemRecord represents a cart item from DB
-type CartItemRecord struct {
-	ItemID         string  `json:"item_id"`
-	CartID         string  `json:"cart_id"`
-	ProductID      string  `json:"product_id"`
-	SkuID          string  `json:"sku_id"`
-	Quantity       int     `json:"quantity"`
-	UnitPriceAtAdd float64 `json:"unit_price_at_add"`
-	ProductSnapshot string  `json:"product_snapshot"`
-	RedisStreamID  string  `json:"redis_stream_id"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
-// GrpcResult wraps gRPC call results
-type GrpcResult struct {
-	Success   bool
-	Products  map[string]*ProductInfo
-	Error     error
+// streamIDNewer returns true if candidate is lexicographically greater than current.
+// Redis stream IDs are monotonically increasing: "1708616400456-0" > "1708530000123-0"
+func streamIDNewer(current, candidate string) bool {
+	return candidate > current
 }

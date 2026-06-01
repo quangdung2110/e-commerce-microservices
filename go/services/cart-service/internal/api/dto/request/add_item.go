@@ -1,18 +1,24 @@
 package request
 
-// AddItemRequest represents the request to add/update an item
+import "github.com/go-playground/validator/v10"
+
+// AddItemRequest represents POST /api/v1/carts/items
 type AddItemRequest struct {
-	SkuID    string `json:"sku_id"`
-	Quantity int    `json:"quantity"`
+	SkuID    string `json:"sku_id" validate:"required,max=64"`
+	Quantity int    `json:"quantity" validate:"required,min=1,max=100"`
 }
 
-// Validate validates the request
+// Validate validates the request.
 func (r *AddItemRequest) Validate() error {
-	if r.SkuID == "" {
-		return ErrSkuIDRequired
-	}
-	if r.Quantity <= 0 {
-		return ErrQuantityPositive
-	}
-	return nil
+	validate := validator.New()
+	return validate.Struct(r)
+}
+
+// AddItemResponse represents the response for add item.
+type AddItemResponse struct {
+	Success   bool   `json:"success"`
+	SkuID     string `json:"sku_id"`
+	Quantity  int    `json:"quantity"`
+	UpdatedAt string `json:"updated_at"`
+	Message   string `json:"message,omitempty"`
 }
