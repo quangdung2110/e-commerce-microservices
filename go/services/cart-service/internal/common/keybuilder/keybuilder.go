@@ -111,6 +111,22 @@ func RehydrateItemsJSON(items map[string]string) string {
 	return string(b)
 }
 
+// IdempotencyKey returns the Redis key used to track processed order IDs.
+// Format: {idem}:order:{order_id}
+// Used by order_consumer for ORDER_PAID deduplication.
+func IdempotencyKey(orderID int64) string {
+	return fmt.Sprintf("{idem}:order:%d", orderID)
+}
+
+// ComputeShardID computes the stream shard index for a user.
+// Convenience wrapper around StreamShardByUserID that takes int.
+func ComputeShardID(userID string, numShards int) int {
+	return int(crc32.ChecksumIEEE([]byte(userID)) % uint32(numShards))
+}
+
+// IdempotencyKeyString is the key prefix pattern for idempotency keys.
+const IdempotencyKeyPrefix = "{idem}"
+
 // SkuIDsJSON is a helper that encodes a list of SKU IDs into a JSON array.
 // Returns: ["sku1","sku2",...]
 func SkuIDsJSON(skuIDs []string) string {
