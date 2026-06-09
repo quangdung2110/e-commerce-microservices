@@ -83,8 +83,8 @@ POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 
 **Logic xử lý:**
 1. Parse payload: `sku_id`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `version`, `event_sequence_id`.
-  - `best_price` là field Product Service tính sẵn theo contract; Search chỉ ghi nhận, không tự tính business pricing.
-  - `event_sequence_id` là field bắt buộc cho guard thứ tự ở cấp SKU-event.
+   - `best_price` là field Product Service tính sẵn theo contract; Search chỉ ghi nhận, không tự tính business pricing.
+   - `event_sequence_id` là field bắt buộc cho guard thứ tự ở cấp SKU-event.
 2. Partial update document SKU.
 3. **Cấm `upsert`/`doc_as_upsert` cho event partial update giá** để tránh tạo document cụt khi event đến trước `PRODUCT_CREATED`.
 
@@ -108,12 +108,6 @@ POST products_write/_update/{sku_id}
 > Nếu gặp `document_missing_exception`: không được skip. Log error và đẩy event vào Retry Topic/DLQ hoặc trigger fetch full product để self-healing.
 >
 > Nếu payload thiếu `event_sequence_id` hoặc `best_price`, Worker phải đánh dấu contract violation và đẩy message vào DLQ/parking lot (không apply partial update mù).
-
-> Quy tắc tự phục hồi bắt buộc cho `document_missing_exception`:
-> 1) Retry inline tối đa 2 attempt tổng trên consumer hiện tại (lần đầu + 1 retry, backoff 1s).
-> 2) Nếu vẫn thiếu document, publish sang `t.search.retry` với `retry_reason=document_missing`.
-> 3) Retry worker gọi `GET /api/v1/internal/products/{product_id}/snapshot` để dựng lại snapshot đầy đủ, rồi re-apply price event theo guard sequence.
-> 4) Quá ngưỡng retry tổng thì park vào `t.search.dlq`.
 
 ### 2.5. PRODUCT_SKU_STATUS_CHANGED
 **Nguồn:** [Product Events - 3.5](../product/product_events.md#35-product_sku_status_changed)
@@ -143,8 +137,8 @@ POST products_write/_update/{sku_id}
 **Topic:** `t.category.events`
 
 **Logic xử lý:**
-1. Nhận `category_id`, `new_name`, `new_path`, `category_version`.
-2. Chạy `_update_by_query` và guard bằng `category_version` để tránh race condition ghi đè tên cũ.
+1. Nhận `category_id`, `new_name`, `new_path`.
+2. Chạy `_update_by_query` để update `category_name` và `category_path` cho toàn bộ product documents thuộc `category_id`.
 3. Bắt buộc dùng `conflicts=proceed` + `requests_per_second` cho batch lớn; parse kết quả và retry có kiểm soát nếu có shard failure.
 
 ```json
@@ -152,18 +146,15 @@ POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
   "query": { "term": { "category_id": "cat-smartphone" } },
   "script": {
-    "source": "if (ctx._source.category_version != null && params.category_version <= ctx._source.category_version) { ctx.op = 'none'; return; } ctx._source.category_name = params.new_name; ctx._source.category_path = params.new_path; ctx._source.category_version = params.category_version;",
+    "source": "ctx._source.category_name = params.new_name; ctx._source.category_path = params.new_path;",
     "params": {
       "new_name": "Điện thoại di động",
-      "new_path": "dien-tu/dien-thoai-di-dong",
-      "category_version": 12
+      "new_path": "dien-tu/dien-thoai-di-dong"
     }
   }
 }
 ```
 
-> Script update có guard version, không cập nhật các field không liên quan.
->
 > **Kết quả `_update_by_query` phải được kiểm tra:**
 > - `version_conflicts` có thể chấp nhận khi guard chặn stale events.
 > - `failures` không rỗng phải được phân loại retry/dlq, không được coi là thành công toàn phần.
@@ -209,9 +200,9 @@ POST products_write/_update/{sku_id}
 **Logic xử lý:**
 1. Parse payload: `product_id`, `average_rating`, `total_reviews`, `updated_at`.
 2. Resolve `event_sequence_id` theo thứ tự ưu tiên tương thích ngược:
-  - ưu tiên `envelope.event_sequence_id` (contract chuẩn),
-  - fallback `payload.event_sequence_id` nếu producer cũ chưa mirror đầy đủ.
-  - nếu cả hai cùng có nhưng khác nhau -> contract violation, chuyển `t.search.dlq`.
+   - ưu tiên `envelope.event_sequence_id` (contract chuẩn),
+   - fallback `payload.event_sequence_id` nếu producer cũ chưa mirror đầy đủ.
+   - nếu cả hai cùng có nhưng khác nhau -> contract violation, chuyển `t.search.dlq`.
 3. Chạy `_update_by_query` theo `product_id` để update rating field cho toàn bộ SKU docs của product, bắt buộc dùng `conflicts=proceed` + `requests_per_second` để tránh spike CPU.
 4. `event_sequence_id` là bắt buộc theo contract Review, dùng làm guard ordering duy nhất.
 5. `updated_at` chỉ lưu cho observability/debug, không tham gia quyết định apply/skip.
@@ -253,11 +244,10 @@ POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 **Topic:** `t.category.events`
 
 **Logic xử lý:**
-1. Nhận `category_version` từ event.
-2. **CẤM TUYỆT ĐỐI** tự ý `_update_by_query` đưa `product_status` của các sản phẩm mồ côi về `HIDDEN` (Hành động này vi phạm cực độ nguyên lý CQRS Schema). Search Service KHÔNG CÓ QUYỀN tự thay đổi State của Sản phẩm nếu ở Source Database chưa thay đổi thực sự. Việc đổi State thành ẨN mồ côi sẽ được Worker của Product Service xử lý và tự động Push sang thông qua các Event `PRODUCT_STATE_CHANGED` theo ngay sau.
-3. Ở bước này, Search Service chỉ chạy `_update_by_query` để xoá tên (nullify `category_name`, `category_path`) và nhích `category_version` của các Document liên đới để giữ consistency cấu trúc; bắt buộc dùng `conflicts=proceed` + `requests_per_second`.
-4. Invalidate `search:categories:tree`.
-5. Parse kết quả `_update_by_query`: `version_conflicts` có thể chấp nhận, `failures` phải retry có chọn lọc hoặc vào `t.search.dlq`.
+1. **CẤM TUYỆT ĐỐI** tự ý `_update_by_query` đưa `product_status` của các sản phẩm mồ côi về `HIDDEN` (Hành động này vi phạm cực độ nguyên lý CQRS Schema). Search Service KHÔNG CÓ QUYỀN tự thay đổi State của Sản phẩm nếu ở Source Database chưa thay đổi thực sự. Việc đổi State thành Ẩn mồ côi sẽ được Worker của Product Service xử lý và tự động Push sang thông qua các Event `PRODUCT_STATE_CHANGED` theo ngay sau.
+2. Ở bước này, Search Service chỉ chạy `_update_by_query` để xoá tên (nullify `category_name`, `category_path`) của các Document liên đới để giữ consistency cấu trúc; bắt buộc dùng `conflicts=proceed` + `requests_per_second`.
+3. Invalidate `search:categories:tree`.
+4. Parse kết quả `_update_by_query`: `version_conflicts` có thể chấp nhận, `failures` phải retry có chọn lọc hoặc vào `t.search.dlq`.
 
 ## 3. Chiến Lược Idempotency & Ordering
 
@@ -280,8 +270,8 @@ ELSE IF event_type = REVIEW_METRICS_UPDATED AND event.event_sequence_id IS NULL 
   SKIP event
 ELSE IF event_type = ORDER_PRODUCT_METRICS_UPDATED AND event.event_sequence_id <= current_doc.sales_metrics_event_sequence_id THEN
   SKIP event
-ELSE IF event_type IN (CATEGORY_UPDATED, CATEGORY_DELETED) AND event.category_version <= current_doc.category_version THEN
-  SKIP event
+ELSE IF event_type IN (CATEGORY_UPDATED, CATEGORY_DELETED) THEN
+  APPLY event
 ELSE IF event_type <> PRODUCT_PRICE_UPDATED AND event.version IS NOT NULL AND event.version <= current_doc.version THEN
   SKIP event
 ELSE
@@ -291,7 +281,7 @@ END
 
 **Lưu ý bắt buộc cho `PRODUCT_PRICE_UPDATED`:** Event có `version` bằng current document vẫn hợp lệ nếu `event_sequence_id` lớn hơn current `price_event_sequence_id`.
 
-Tương tự cho category-level update dùng `category_version`.
+Category-level update không dùng guard riêng vì hiếm khi xảy ra race condition.
 
 ### 3.3. Ma Trận Guard Theo Event Stream (Bắt buộc)
 
@@ -301,7 +291,7 @@ Tương tự cho category-level update dùng `category_version`.
 | Price stream (`PRODUCT_PRICE_UPDATED`) | `price_event_sequence_id` (+ fence `version`) | Một transaction có thể phát nhiều event giá với cùng `version`; cần sequence riêng cấp SKU-event. |
 | Review metrics (`REVIEW_METRICS_UPDATED`) | `review_metrics_event_sequence_id` | Stream độc lập từ Review Service, cadence khác Product stream. |
 | Sales metrics (`ORDER_PRODUCT_METRICS_UPDATED`) | `sales_metrics_event_sequence_id` | Stream độc lập từ Order Metrics Projector, partition theo `product_id`. |
-| Category projection (`CATEGORY_UPDATED`, `CATEGORY_DELETED`) | `category_version` | Category là aggregate độc lập, update theo partition key `category_id`. |
+| Category projection (`CATEGORY_UPDATED`, `CATEGORY_DELETED`) | *(không dùng guard riêng)* | Category update hiếm khi xảy ra race condition; sử dụng `updated_at` của event hoặc apply bất kỳ. |
 
 **Nguyên tắc cứng:** không so sánh chéo sequence/version giữa các stream khác ownership.
 

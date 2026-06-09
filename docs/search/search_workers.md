@@ -74,12 +74,11 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 **Loại hình:** Long-running consumer
 **Consumer Group:** `search-category-indexer`
 
-**Nhiệm vụ:** đồng bộ `category_name`, `category_path`, `category_version` cho toàn bộ docs theo `category_id`.
+**Nhiệm vụ:** đồng bộ `category_name`, `category_path` cho toàn bộ docs theo `category_id`.
 
 **Luồng xử lý chuẩn:**
 1. Consume `CATEGORY_UPDATED`/`CATEGORY_DELETED` từ `t.category.events`.
-2. Dùng `_update_by_query` với guard `category_version`:
-   - chỉ apply nếu `incoming.category_version > doc.category_version`.
+2. Dùng `_update_by_query` để update `category_name` và `category_path` cho toàn bộ docs thuộc `category_id`.
 3. Với batch diện rộng, bắt buộc đặt `requests_per_second` (ví dụ 300-500) + `conflicts=proceed` cho `_update_by_query` để tránh spike CPU Elasticsearch.
 4. Parse kết quả `_update_by_query`: `version_conflicts` có thể chấp nhận (do guard), nhưng `failures` không rỗng phải tách retry có kiểm soát hoặc chuyển `t.search.dlq`.
 5. Invalidate `search:categories:tree` sau khi update thành công.
@@ -193,7 +192,7 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 2. Seed snapshot từ index hiện tại `products_vN` (scroll/reindex theo chunk) để giữ nguyên các field denormalized do stream khác sở hữu (review/sales/category).
 3. (Tuỳ chọn nhưng khuyến nghị) Chạy reconciliation pass từ Product internal export API cho các field Product-owned:
    - `GET /api/v1/internal/products/export?page={n}&size=500`.
-   - Payload export phải có tối thiểu: `category_version`, `skus[].sku_status`, `skus[].best_price`, `skus[].has_promotion` để tránh drift khi rebuild read-model.
+   - Payload export phải có tối thiểu `skus[].sku_status`, `skus[].best_price`, `skus[].has_promotion` để tránh drift khi rebuild read-model.
 4. Upsert vào `products_v{N+1}` bằng script guard `version` để chống ghi lùi.
 5. Ghi checkpoint sau mỗi chunk (`last_page`, `docs_written`, `error_count`) để có thể resume nếu job fail giữa chừng.
 
@@ -202,7 +201,6 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 2. Consumer này **không** ghi qua alias `products_write`, mà ghi trực tiếp vào `products_v{N+1}` để tránh ảnh hưởng luồng realtime hiện tại.
 3. Áp dụng đúng guard idempotency/out-of-order như [Events](search_events.md#3-chiến-lược-idempotency--ordering):
    - `version`,
-   - `category_version`,
    - `price_event_sequence_id`,
    - `review_metrics_event_sequence_id`,
    - `sales_metrics_event_sequence_id`,

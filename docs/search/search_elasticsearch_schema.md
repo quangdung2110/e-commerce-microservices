@@ -17,7 +17,7 @@
 
 Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Review (rating metrics), Order Metrics Projector (sold metrics), và admin (profile/status).
 
-> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng bộ guard theo từng luồng sự kiện (`version`, `category_version`, `price_event_sequence_id`, `review_metrics_event_sequence_id`, `sales_metrics_event_sequence_id`, `admin_profile_version`, `admin_status_version`) để chống out-of-order.
+> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng bộ guard theo từng luồng sự kiện (`version`, `price_event_sequence_id`, `review_metrics_event_sequence_id`, `sales_metrics_event_sequence_id`, `admin_profile_version`, `admin_status_version`) để chống out-of-order.
 >
 > **Identity contract:*
 ## 1. Danh Sách Elasticsearch Indices
@@ -103,7 +103,6 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "category_id":         { "type": "keyword" },
       "category_name":       { "type": "keyword" },
       "category_path":       { "type": "keyword" },
-      "category_version":    { "type": "long" },
       
       "name": {
         "type": "text",
@@ -165,7 +164,6 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 | `price_event_sequence_id` | long | Guard thứ tự riêng cho `PRODUCT_PRICE_UPDATED` ở cấp SKU. |
 | `review_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `REVIEW_METRICS_UPDATED`, ưu tiên hơn timestamp. |
 | `sales_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `ORDER_PRODUCT_METRICS_UPDATED` theo `product_id`. |
-| `category_version` | long | **Lifecycle và Init:** (1) Ưu tiên lấy từ Product payload khi có trường này. (2) Nếu payload chưa có, worker lookup snapshot API `GET /api/v1/internal/products/categories/tree` với timeout ngắn và fallback cache category cục bộ (không hard-code 0). (3) Chỉ cập nhật khi nhận `CATEGORY_UPDATED`/`CATEGORY_DELETED`. (4) Track độc lập với `version` của Product document để làm OCC Guard cho update-by-query theo category. |
 | `last_event_id`, `last_event_timestamp`, `indexed_at` | keyword/date/date | Phục vụ audit, replay DLQ, và điều tra drift dữ liệu. |
 
 **Count semantics cho browse/facets (bắt buộc):** Vì index là SKU-first, mọi count hiển thị cho category/facets ở API phải đếm DISTINCT `product_id` (không dùng trực tiếp `doc_count` theo SKU).
@@ -176,8 +174,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 {
   "sku_id": "sku-uuid-001",
   "product_id": "prod-uuid-001",
-    "category_id": "cat-smartphone",
-  "category_version": 12,
+  "category_id": "cat-smartphone",
   "name": "iPhone 15 Pro Max 256GB Chính Hãng",
   "product_status": "ACTIVE",
   "sku_status": "ACTIVE",
