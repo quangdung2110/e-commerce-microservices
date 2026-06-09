@@ -3,7 +3,7 @@
 **Liên kết nhanh (Related Documents):**
 *   [Workflows (API & Data Flow)](product_workflow.md)
 *   [Background Workers & Jobs](product_workers.md)
-*   [Caching Schema (Redis & Caffeine)](product_caching_schema.md)
+*   [Caching Schema (Redis)](product_caching_schema.md)
 *   [Database Schema (Write Store)](product_db_design.md)
 *   [State Machine & Lifecycle](product_state_machine.md)
 *   [Events Structure & Kafka Topics](product_events.md)
@@ -27,10 +27,9 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 3. Với `PRODUCT_PRICE_UPDATED`, bắt buộc phát `event_sequence_id` đơn điệu tăng để downstream guard đúng ở cấp SKU event.
 4. Consumer downstream phải idempotent, ignore stale event và retry/DLQ rõ ràng.
 5. `product-invalidation-group` bắt buộc consume `PRODUCT_SKU_STATUS_CHANGED` để duy trì đường self-healing cache khi luồng queue in-memory của Inventory Worker bị gián đoạn.
-6. Với luồng invalidation của `product:master`, nếu trong cùng poll-batch có nhiều event của một `product_id`, chỉ xử lý bản mới nhất theo `(version, updated_at, kafka_offset)`.
-7. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
-8. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
-9. Invalidation consumer phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
+6. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
+7. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
+8. Invalidation consumer phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
 
 ## 3. Consistency & Concurrency
 
@@ -46,10 +45,9 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 1. Soft invalidation là chuẩn mặc định (`SET`/partial update), hạn chế `DEL` để tránh cache stampede.
 2. Chống stampede chuẩn mặc định là cross-pod distributed lock (`SETNX product:lock:fetch:{sku_id}` với lease ngắn), có thể kết hợp in-process singleflight trong từng pod.
 3. Point-read cache `product:sku:{sku_id}` chỉ là implementation detail nội bộ Product Service.
-4. Validation cache category/attribute dùng 2 tầng L1/L2 + Pub/Sub invalidation + TTL fallback.
-5. Mỗi nguyên nhân cập nhật cache phải có một writer async chuẩn duy nhất. Với giá Markdown, `product:sku:{sku_id}` và `product:master:{product_id}` do Invalidation Consumer ghi đè theo `PRODUCT_PRICE_UPDATED`; Markdown Worker chỉ set/del `product:markdown:active:{sku_id}`.
-6. `product:master:{product_id}` phải có stale-write guard `(version, updated_at)` và cơ chế giảm write amplification (dedupe theo `product_id`, debounce ngắn 50-100ms liên batch).
-7. Nguồn dữ liệu refresh cache ưu tiên event payload; DB fallback chỉ dùng khi payload không đủ contract. Không dùng Search/Elasticsearch làm nguồn rebuild cache point-read.
+4. Validation category/attribute được thực hiện trực tiếp từ PostgreSQL mà không cần cache trung gian.
+5. Mỗi nguyên nhân cập nhật cache phải có một writer async chuẩn duy nhất. Với giá Markdown, `product:sku:{sku_id}` do Invalidation Consumer ghi đè theo `PRODUCT_PRICE_UPDATED`; Markdown Worker chỉ set/del `product:markdown:active:{sku_id}`.
+6. Nguồn dữ liệu refresh cache ưu tiên event payload; DB fallback chỉ dùng khi payload không đủ contract. Không dùng Search/Elasticsearch làm nguồn rebuild cache point-read.
 
 ## 5. Contract Governance
 
