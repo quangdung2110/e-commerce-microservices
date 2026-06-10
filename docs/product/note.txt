@@ -33,11 +33,14 @@ sau đó mới commit transaction nhả cho product_id tiếp theo.
         Product Service tạo một bảng markdown_job_tracking. Chạy xong product_id nào, cập nhật vào bảng đó: last_processed_product_id = 300. Khi Worker sập và nhận lại Event, 
         nó query bảng này: "À, lần trước anh em làm đến số 300 rồi, tao sẽ làm tiếp từ 301"
 
-6. Thiết kế xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Service (Fast Sync):
-- Ở từng transaction, thực hiện lock theo thứ tự product_id (FOR KEY NO UPDATE) rồi tới sku_id (FOR UPDATE) để tránh deadlock với các transaction khác
-- Sau khi commit database thành công, gọi Redis SET đồng bộ ngay lập tức với retry ngắn (2-3 lần). Sử dụng Redis Pipelining để gửi các lệnh cập nhật theo batch.
-- Áp dụng stale guard theo `last_inventory_sync_at` đã lưu trong cache để chặn out-of-order write.
-- Nếu Redis write thất bại sau retry, event đã được ghi vào outbox (`PRODUCT_STATE_CHANGED`) sẽ được `product-event-handler-group` tiêu thụ để self-heal cache. 
+6. Thiết kế xử lý sự kiện đồng bộ dữ liệu đến từ Inventory Service (Two-Phase Lock-Free):
+- Thiết kế cũ sử dụng Pessimistic Locking cho từng event, gây deadlock và contention cao trên hot SKU khi hệ thống có nhiều đơn hàng/giây.
+- Thiết kế mới áp dụng Two-Phase Lock-Free Architecture:
+  * Phase 1 (Fast Path): Kafka Event → Lua CAS (Redis) → Update Cache + ZADD pending. Latency < 5ms, Zero DB lock, immediate cache warm.
+  * Phase 2 (Slow Path): Drain ZSET → Batch UPDATE product_skus → FSM triggers (AUTO_HIDE/AUTO_REACTIVATE) → Outbox. Latency 500ms-2s, batch Optimistic Locking.
+- Lua CAS atomic: staleness guard theo event_timestamp, idempotent processing.
+- Auto-hide/reactivate có độ trễ 500ms-2s nhưng SKU status đã được update ngay trên Redis.
+- Chi tiết: xem [Inventory Sync Optimization](inventory_sync_optimization.md). 
 
 7. Quyết định chốt sau khi review tài liệu Product Service:
 - Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` được làm mới qua Event Handler Worker khi self-consume `PRODUCT_PRICE_UPDATED`.

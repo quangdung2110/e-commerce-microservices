@@ -26,17 +26,18 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 	- `t.category.events` cho category events.
 3. Với `PRODUCT_PRICE_UPDATED`, bắt buộc phát `event_sequence_id` đơn điệu tăng để downstream guard đúng ở cấp SKU event.
 4. Consumer downstream phải idempotent, ignore stale event và retry/DLQ rõ ràng.
-5. `product-invalidation-group` bắt buộc consume `PRODUCT_SKU_STATUS_CHANGED` để duy trì đường self-healing cache khi luồng queue in-memory của Inventory Worker bị gián đoạn.
+5. `product-event-handler-group` bắt buộc consume `PRODUCT_SKU_STATUS_CHANGED` để duy trì đường self-healing cache khi luồng queue in-memory của Inventory Worker bị gián đoạn.
 6. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
 7. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
 8. Invalidation consumer phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
+9. **Inventory Sync (Two-Phase Lock-Free)**: Event `INVENTORY_QUANTITY_CHANGED` được xử lý qua Phase 1 (Lock-Free: Kafka → Redis Lua CAS) và Phase 2 (Async DB Sync: Redis ZSET → PostgreSQL). Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
 
 ## 3. Consistency & Concurrency
 
-1. Mọi thao tác ghi trong Product Service phải sử dụng Pessimistic Locking theo thứ tự **Product -> SKU** để đảm bảo atomicity và chống deadlock. Markdown Worker cần thêm Distributed Lock (Redis) khi chạy nhiều instance đồng thời.
+1. **API và Markdown Worker**: Sử dụng Pessimistic Locking theo thứ tự **Product -> SKU** để đảm bảo atomicity và chống deadlock.
 2. Chuẩn hóa lock order trong transaction: lock Product cha trước, rồi lock SKU con.
-3. Inventory sync nhận `product_id` trực tiếp trong payload `INVENTORY_QUANTITY_CHANGED`, sau đó vẫn phải validate cặp `product_id/sku_id` trong DB local trước khi lock/update.
-4. Luồng auto-reactivate chỉ chạy khi `status = HIDDEN`, `admin_hidden = false` và `is_deleted = false` trong cùng transaction.
+3. **Inventory Sync Worker**: Áp dụng **Two-Phase Lock-Free Architecture** — Phase 1 lock-free trên Redis, Phase 2 batch Optimistic Locking trên PostgreSQL. Không dùng Pessimistic Locking cho từng event vì hot SKU contention quá cao. Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
+4. Luồng auto-reactivate chỉ chạy khi `status = HIDDEN`, `admin_hidden = false` và `is_deleted = false` trong cùng transaction (Phase 2).
 5. Với Markdown batch worker chạy nhiều instance, cần giữ xử lý tuần tự theo `product_id` bằng lock row chuẩn (`FOR NO KEY UPDATE`) + `lock_timeout`/retry policy rõ ràng để tránh hai pod cùng mutate một product trong cùng thời điểm.
 6. Với guard TOCTOU của auto-reactivate, không được check ngoài transaction. Có thể dùng row Product đã lock sẵn hoặc chạy query predicate tường minh trong cùng transaction; cả hai cách đều phải giữ atomicity check+update.
 
@@ -61,13 +62,4 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 	- `INVENTORY_QUANTITY_CHANGED`
 	- `CATEGORY_UPDATED` / `CATEGORY_DELETED`
 
-## 6. Operability
-
-1. Bắt buộc theo dõi metric:
-	- outbox lag
-	- consumer lag
-	- cache hit ratio
-	- stale-event drop rate
-2. Có runbook rõ cho DLQ replay và reconciliation (Product ↔ Search).
-3. Duy trì retention job theo cửa sổ thời gian cho outbox để kiểm soát dung lượng lưu trữ.
 

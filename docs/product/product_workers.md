@@ -25,7 +25,7 @@ Dưới đây là danh sách Worker nội bộ thuộc vòng tay quản lý củ
 || **Consume** | `t.product.events` | `product-event-handler-group` | Self-consume để refresh cache và xử lý category lifecycle |
 || **Consume** | `t.category.events` | `product-event-handler-group` | Self-consume `CATEGORY_DELETED` để đồng bộ lại Write Model |
 || **Consume** | `t.promotion.markdown.events` | `product-markdown-group` | Nhận đúng allowlist `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED`; event lạ phải skip + metric + DLQ |
-|| **Consume** | `t.inventory.events` | `product-inventory-sync-group` | Nhận tín hiệu tồn kho từ Inventory |
+|| **Consume** | `t.inventory.events` | `product-inventory-fast-sync-group` | Phase 1: Lock-Free Fast Sync (Kafka → Redis). Xem [Two-Phase Architecture](inventory_sync_optimization.md) |
 
 Xem cấu trúc payload chi tiết cho tất cả events tại [Product Events](product_events.md).
 
@@ -150,40 +150,177 @@ WHERE poe.event_id = to_delete.event_id;
 
 > **No-op bắt buộc cho `MARKDOWN_ENDED`:** nếu query theo `rule_id` không trả về SKU nào, worker phải ACK và kết thúc (không coi là lỗi, không phát outbox rỗng).
 
-## 6. Inventory Sync Worker
+## 6. Inventory Sync Worker (Two-Phase Lock-Free Architecture)
 
-**Loại hình:** Kafka Consumer lắng nghe Topic `t.inventory.events`.
+> **Kiến trúc mới:** Worker này đã được tối ưu hóa với **Two-Phase Lock-Free Architecture** thay thế Pessimistic Locking. Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md).
 
-**Sứ mệnh:** Đồng bộ dữ liệu tồn kho từ Inventory Service về Product Service. Cập nhật `display_quantity` trên `product_skus` và trigger tự động ẩn/hiện sản phẩm khi hết hàng/có hàng trở lại. Xem chi tiết tại [Workflow Inventory Sync](product_workflow.md#7-workflow-xử-lý-inventory-sync-event).
+**Loại hình:** Gồm 2 Worker chạy song song:
+1. **Phase 1** — Kafka Consumer (Lock-Free Fast Path)
+2. **Phase 2** — Scheduled Worker (Async DB Sync)
 
-> **Chuẩn Lock Hierarchy bắt buộc:** Với mỗi transaction cùng chạm `products` và `product_skus`, Inventory Sync Worker phải lock theo thứ tự **Product -> SKU** để tránh vòng deadlock AB-BA với Markdown Worker và API Update Product.
+**Vấn đề với thiết kế Pessimistic Locking cũ:**
+- Mỗi event = 1 transaction = 2 locks (Product + SKU) = hot SKU contention cực cao
+- Với SKU bán chạy nhận hàng trăm event/giây → latency tăng phi tuyến tính
+- Deadlock AB-BA với Admin API khi cùng lock product theo thứ tự ngược nhau
+- Lock hold time lâu vì auto-hide/reactivate logic trong cùng transaction
+
+**Giải pháp Two-Phase:**
+
+```
+Phase 1 (Fast Path): Kafka Event → Lua CAS (Redis) → Update Cache + ZADD pending
+  Latency: < 5ms | Zero DB lock | Immediate cache warm
+
+Phase 2 (Slow Path): Drain ZSET → Batch UPDATE → FSM triggers → Outbox
+  Latency: 500ms-2s | Batch Optimistic Locking | Eventual DB sync
+```
+
+### 6.1. Phase 1: Inventory Fast-Sync Consumer (Kafka → Redis)
+
+**Sứ mệnh:** Nhận event từ Kafka, cập nhật Redis cache ngay lập tức mà KHÔNG đụng đến PostgreSQL.
+
+**Consumer Group:** `product-inventory-fast-sync-group`
 
 **Chi tiết luồng hoạt động:**
 
-1. Worker (`groupId="product-inventory-sync-group"`) nhận `INVENTORY_QUANTITY_CHANGED` event.
-2. `@Transactional`:
-   - Bước 1: Lock Product cha từ payload event: `SELECT product_id, status, is_deleted FROM products WHERE product_id = :product_id FOR NO KEY UPDATE;`
-   - Bước 2: Lock SKU con và validate cặp khóa: `SELECT sku_id, product_id, status, last_inventory_sync_at FROM product_skus WHERE sku_id = :sku_id AND product_id = :product_id FOR UPDATE;`
-   - Bước 2.1: Nếu không tìm thấy row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> không update DB, đưa DLQ/parking-lot để điều tra producer contract.
-   - Bước 3: So sánh thứ tự sự kiện. Nếu `event_timestamp <= last_inventory_sync_at` thì bỏ qua message (stale).
-   - Bước 4: Dùng lệnh `UPDATE product_skus SET display_quantity = :available_quantity, last_inventory_sync_at = :event_timestamp WHERE sku_id = :sku_id`.
-   - Bước 5: Sử dụng Pessimistic Locking. Nếu transaction chỉ chạy SQL và không gọi FSM/JPA thì áp dụng lock row `SELECT ... FOR NO KEY UPDATE` ở đầu transaction. Nếu transaction gọi FSM/JPA thì lock được đảm bảo bởi logic rẽ nhánh FSM.
-3. Logic auto-hide/reactivate (Dựa trên dữ liệu đã lock ở Bước 1 + Bước 2, chặn đúng TOCTOU):
-   - **[Rào Cản Out-Of-Order]**: Trước tiên, Worker phải so sánh `event_timestamp` từ Event với trường `last_inventory_sync_at` của SKU trên database (vừa lock ở bước 2). Nếu `event_timestamp <= last_inventory_sync_at`, vứt Message và return bỏ qua để triệt tiêu lỗi Kafka Lag cập nhật tồn kho lạc hướu. Nếu hợp lệ, gán `last_inventory_sync_at = event_timestamp`.
-   - Tuyệt đối không được thực hiện thêm một vòng `SELECT` mới bên ngoài Transaction để kiểm tra lại trạng thái SKU. Toàn bộ chuỗi **Đọc Product -> Đọc SKU -> Tính toán auto-hide/reactivate -> Update Product/SKU** phải nằm trong cùng Transaction đang giữ lock.
-   - Nếu cần guard tường minh trước `AUTO_REACTIVATE_IN_STOCK`, được phép chạy thêm query predicate trong CHÍNH transaction hiện tại (ví dụ `SELECT 1 ... FOR NO KEY UPDATE`), hoặc dùng trực tiếp row Product đã lock ở bước 1. Cả hai cách đều hợp lệ nếu không thoát transaction.
-   - Nếu `products.is_deleted = true`, worker vẫn cập nhật `display_quantity/sku_status` theo inventory nhưng **không trigger** bất kỳ transition Product-level nào.
-   - `available_quantity = 0` + SKU `ACTIVE` -> chuyển SKU sang `OUT_OF_STOCK`. Cập nhật ngay snapshot SKUs trong memory của Transaction; nếu 100% SKU đều hết hàng và `is_deleted = false` thì trigger `AUTO_HIDE_OUT_OF_STOCK` trên FSM.
-   - `available_quantity > 0` + SKU `OUT_OF_STOCK` -> chuyển SKU về `ACTIVE`. Cập nhật snapshot, kiểm tra Product đang `HIDDEN` và `is_deleted = false` thì trigger `AUTO_REACTIVATE_IN_STOCK`.
-   - **Outbox boundary bắt buộc:** Ngay trong transaction đang xử lý logic ở bước 2-3, nếu SKU status thay đổi thì phải `INSERT` `PRODUCT_STATE_CHANGED` vào `product_outbox_events` trước khi commit. Không phát event ở ngoài transaction.
-4. Commit transaction thành công rồi mới ack offset; nếu rollback thì không ack để message được retry theo policy.
-5. **Cache Update (Đồng bộ - Không Queue):**
-   - Sau khi Commit Database thành công, gọi Redis SET đồng bộ ngay lập tức với retry ngắn (2-3 lần).
-   - Sử dụng **Redis Pipelining** để gửi các lệnh cập nhật theo batch, tối thiểu gồm: `display_quantity`, `sku_status` (nếu đổi), và `last_inventory_sync_at` trên key `product:sku:{sku_id}`.
-   - **Fallback self-healing bắt buộc:** nếu Pod crash sau DB commit nhưng chưa flush Redis xong, `PRODUCT_STATE_CHANGED` đã nằm trong Outbox/Kafka sẽ được `product-event-handler-group` tiêu thụ để tự động refresh lại `product:sku:{sku_id}`.
-6. **Chặn Out-of-Order khi update cache cùng SKU:**
-   - Sử dụng staleness guard dựa trên `last_inventory_sync_at` đã lưu trong cache.
-   - Chỉ apply cache update nếu `incoming.event_timestamp >= cached.last_inventory_sync_at`; nếu cũ hơn thì bỏ qua, chặn stale write.
+1. **Kafka Consumer** nhận `INVENTORY_QUANTITY_CHANGED` event.
+2. **Parse payload** bắt buộc: `product_id`, `sku_id`, `available_quantity`, `event_timestamp`.
+3. **Lua CAS Atomic Update** trên Redis:
+   - Thực thi Lua script để atomic compare-and-swap trên key `product:sku:{sku_id}`.
+   - **Staleness guard**: chỉ apply nếu `event_timestamp > cached.last_inventory_sync_at`.
+   - Atomic write: cập nhật `display_quantity`, `sku_status`, `last_inventory_sync_at`, `is_available`.
+   - **Preserve existing fields**: giữ nguyên các trường không thuộc inventory (price, name, image...).
+4. **Redis Pipelining**: ghi cache + ZADD pending sync trong cùng 1 round-trip.
+5. **Kafka ACK** offset ngay lập tức sau khi Redis write thành công.
+
+**Lua Script Core Logic:**
+
+```lua
+-- inventory_fast_sync.lua
+-- KEYS[1] = product:sku:{sku_id}
+-- KEYS[2] = product:inventory:pending:{product_id}  (ZSET)
+-- KEYS[3] = member "{sku_id}:{event_timestamp}"
+-- ARGV[1] = event_timestamp (epoch millis)
+-- ARGV[2] = available_quantity
+-- ARGV[3] = product_id
+-- ARGV[4] = sku_status
+-- Returns: 1 = applied, 0 = stale skipped, -1 = upsert (new key)
+
+local cacheKey = KEYS[1]
+local pendingZSet = KEYS[2]
+local pendingMember = KEYS[3]
+local eventTimestamp = tonumber(ARGV[1])
+local availableQty = tonumber(ARGV[2])
+local productId = ARGV[3]
+local skuStatus = ARGV[4]
+
+local existingJson = redis.call('JSON.GET', cacheKey)
+local cachedTs = 0
+if existingJson then
+    local d = cjson.decode(existingJson)
+    cachedTs = tonumber(d.last_inventory_sync_at) or 0
+end
+
+-- Out-of-order guard
+if cachedTs > 0 and eventTimestamp <= cachedTs then
+    return 0  -- stale event, skip
+end
+
+-- Determine SKU status based on quantity
+local newSkuStatus = skuStatus
+if availableQty == 0 then
+    newSkuStatus = 'OUT_OF_STOCK'
+elseif newSkuStatus == 'OUT_OF_STOCK' then
+    newSkuStatus = 'ACTIVE'
+end
+
+-- Build new cache (preserve non-inventory fields)
+local newData = {
+    sku_id = existingJson and cjson.decode(existingJson).sku_id
+               or string.match(cacheKey, "product:sku:(.+)"),
+    product_id = productId,
+    sku_code = existingJson and cjson.decode(existingJson).sku_code or "",
+    product_name = existingJson and cjson.decode(existingJson).product_name or "",
+    main_image_url = existingJson and cjson.decode(existingJson).main_image_url or "",
+    original_price = existingJson and cjson.decode(existingJson).original_price or 0,
+    promotional_price = existingJson and cjson.decode(existingJson).promotional_price,
+    best_price = existingJson and cjson.decode(existingJson).best_price or 0,
+    has_promotion = existingJson and cjson.decode(existingJson).has_promotion or false,
+    display_quantity = availableQty,
+    last_inventory_sync_at = eventTimestamp,
+    sku_status = newSkuStatus,
+    product_status = existingJson and cjson.decode(existingJson).product_status or "",
+    is_available = availableQty > 0,
+    is_deleted = existingJson and cjson.decode(existingJson).is_deleted or false,
+    variant_attributes = existingJson and cjson.decode(existingJson).variant_attributes or {}
+}
+
+-- Atomic write + add to pending sync ZSET
+redis.call('JSON.SET', cacheKey, '$', cjson.encode(newData))
+redis.call('EXPIRE', cacheKey, 3600)
+redis.call('ZADD', pendingZSet, eventTimestamp, pendingMember)
+redis.call('EXPIRE', pendingZSet, 86400)
+
+return existingJson and 1 or -1
+```
+
+**Idempotency:** Lua script đảm bảo:
+- Stale event (timestamp cũ) không ghi đè cache
+- Upsert: nếu cache key chưa tồn tại, vẫn ghi được (preserve non-inventory fields = empty)
+
+**Concurrency:** 8-16 consumer threads trong cùng consumer group để parallelize.
+
+**Tại sao không cần DB lock ở Phase 1:**
+- Event payload chứa `available_quantity` — không cần đọc giá trị cũ từ DB
+- `event_timestamp` (epoch millis) là monotonic increasing — dùng làm out-of-order guard
+- Cache-first: downstream (Cart, Checkout) đọc từ Redis, không cần DB
+
+### 6.2. Phase 2: Inventory Async DB Sync Worker (Redis → PostgreSQL)
+
+**Sứ mệnh:** Drain Redis ZSET pending sync, batch update PostgreSQL với Optimistic Locking và trigger FSM.
+
+**Loại hình:** Scheduled Worker (chạy mỗi 500ms - 1s).
+
+**Chi tiết luồng hoạt động:**
+
+1. **Drain Redis ZSET**: `ZRANGE product:inventory:pending:* 0 499 BYSCORE` với pagination (100-500 items mỗi run).
+2. **Group by product_id** trong RAM (iterator grouping để không phình memory).
+3. **Transaction per Product** với Optimistic Locking:
+   - Lock Product cha (1 row lock cho cả batch SKU thuộc product đó).
+   - Batch update tất cả SKU thuộc product.
+   - FSM auto-hide/reactivate nếu SKU status thay đổi.
+   - Batch insert `product_outbox_events` (nếu có state change).
+4. **Ack pending** từ Redis ZSET sau khi DB commit thành công.
+5. **Optimistic lock fail**: nếu conflict, requeue vào ZSET với exponential backoff.
+
+**Cache Update (Redis Pipeline - Ownership rõ ràng):**
+- Phase 2 KHÔNG ghi đè trực tiếp `product:sku:{sku_id}`.
+- Việc refresh cache được giao cho **Event Handler** (`product-event-handler-group`) khi self-consume `PRODUCT_STATE_CHANGED` từ `t.product.events`.
+- Phase 2 chỉ quản lý việc ack pending sync từ ZSET.
+
+**Tại sao dùng Optimistic Locking ở Phase 2:**
+- Mỗi product xử lý batch SKU (1-N SKU cùng product trong 1 transaction), không còn hot contention.
+- Lock Product 1 lần cho cả batch → giảm lock operations 10-100x so với 1 event = 1 lock.
+
+### 6.3. Đảm Bảo Consistency & Self-Healing
+
+| Cơ chế | Mô tả |
+|---|---|
+| **Eventual Consistency Model** | Cache: immediate (Phase 1) → DB: 500ms-2s (Phase 2) → Search: 2-5s (Debezium CDC) |
+| **Multi-layer Staleness Guard** | Layer 1: Lua CAS timestamp check; Layer 2: Phase 2 DB check; Layer 3: Outbox event guard |
+| **No Event Loss** | Kafka at-least-once: event được ghi vào ZSET trước khi ACK. Nếu crash sau ZADD trước ACK, Kafka redelivers. |
+| **Idempotent Processing** | Lua CAS + DB staleness guard đảm bảo event cũ không bị apply lại. |
+| **Pending Ack** | Chỉ xóa khỏi ZSET SAU khi DB commit. Crash giữa chừng → worker restart → đọc lại ZSET. |
+| **Self-Healing** | Nếu Phase 1 tạm dừng → Phase 2 vẫn drain pending queue → DB eventually consistent. |
+
+### 6.4. Trade-offs Chấp Nhận Được
+
+| Trade-off | Chi tiết | Mitigation |
+|---|---|---|
+| **Auto-hide/reactivate delay** | FSM triggers có thể chậm 500ms-2s (thay vì real-time) | Chấp nhận được. SKU status `OUT_OF_STOCK` đã được update ngay trên Redis. Product Detail hiển thị "hết hàng" ngay. |
+| **Cache/DB drift ngắn** | Cache hiển thị quantity chưa sync xuống DB (vài trăm ms) | Chấp nhận được. `display_quantity` chỉ dùng hiển thị, không dùng reserve stock. |
+| **Complexity tăng** | 2 workers thay vì 1 | Mỗi worker logic đơn giản, dễ test. Đánh đổi xứng đáng với hiệu suất. |
+| **Redis as intermediate** | Thêm Redis như tầng trung gian | Redis vốn đã là tầng cache. Không thêm dependency mới. |
+
 
 ## 7. Markdown Expiry Cronjob (Self-Healing)
 

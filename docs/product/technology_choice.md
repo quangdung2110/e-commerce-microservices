@@ -10,7 +10,7 @@
 |:---|:---|
 | **Kiến trúc dữ liệu** | PostgreSQL-First (Write Model / Source of Truth) + Redis Cache |
 | **State Machine** | Spring State Machine (FSM) quản lý lifecycle sản phẩm (DRAFT → ACTIVE → BANNED) |
-| **Concurrency** | Optimistic Locking (`version`) cho State Transitions, Pessimistic Locking (`FOR NO KEY UPDATE`) cho Inventory Sync, Cache Stampede Protection bằng cross-pod distributed lock (`SETNX`) + in-process singleflight |
+| **Concurrency** | Optimistic Locking (`version`) cho State Transitions, **Two-Phase Lock-Free Architecture** cho Inventory Sync (Lua CAS + Redis ZSET), Cache Stampede Protection bằng cross-pod distributed lock (`SETNX`) + in-process singleflight |
 | **Caching** | Redis (Point-Read, Rate Limiting, Markdown Marker) |
 | **Outbox Pattern** | Debezium (Change Data Capture) — Real-time event streaming |
 | **Cross-Service** | Consumer: Promotion Markdown Events, Inventory Events. Producer: Product Events cho Search/Notification/Promotion (state-change hooks) |

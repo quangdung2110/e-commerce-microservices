@@ -71,9 +71,20 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 
 ---
 
-## 3. Tổng Hợp Redis Key Inventory
+## 3. Nhóm Khóa Inventory Sync (Pending Sync)
+
+| Key Pattern | Loại | TTL | Invalidation | Mục đích |
+|---|---|---|---|---|
+| `product:inventory:pending` | Redis Sorted Set (ZSET) | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Two-Phase Lock-Free Inventory Sync. Xem [Inventory Sync Optimization](inventory_sync_optimization.md) |
+
+> **Chi tiết Two-Phase Inventory Sync**: Phase 1 ghi vào ZSET này sau khi update cache thành công. Phase 2 drain ZSET để sync xuống PostgreSQL. Xem [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture).
+
+---
+
+## 4. Tổng Hợp Redis Key Inventory
 
 | Key Pattern | Loại | TTL | Invalidation | Mục đích |
 |---|---|---|---|---|
 | `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-event-handler-group` (fallback async) | Point-Read cho Cart/Order |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |
+| `product:inventory:pending` | ZSET | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Inventory Sync (Two-Phase) |

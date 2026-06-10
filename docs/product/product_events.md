@@ -39,7 +39,7 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 | Topic Name | Consumer Group | Producer | Mô tả |
 |---|---|---|---|
 | `t.promotion.markdown.events` | `product-markdown-group` | Promotion Service | Lắng nghe đúng allowlist `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED` để tính [promotional_price](product_db_design.md#13-nhóm-tích-hợp-giá-khuyến-mãi-markdown-integration)|
-| `t.inventory.events` | `product-inventory-sync-group` | Inventory Service | Lắng nghe `INVENTORY_QUANTITY_CHANGED` để cập nhật `display_quantity` và auto-hide sản phẩm hết hàng |
+| `t.inventory.events` | `product-inventory-fast-sync-group` | Inventory Service | Phase 1: Lock-Free Fast Sync (Two-Phase). Xem [Inventory Sync Optimization](inventory_sync_optimization.md) |
 | `t.product.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume để cập nhật lại Cache Redis và xử lý category lifecycle (bắt buộc gồm `PRODUCT_PRICE_UPDATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_UPDATED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`). Xem [Event Handler Worker](product_workers.md) |
 | `t.category.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume `CATEGORY_DELETED` để cập nhật Write Model (chuyển sản phẩm liên quan sang `HIDDEN`) trước khi downstream phản chiếu |
 
@@ -476,8 +476,8 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 4.4. INVENTORY_QUANTITY_CHANGED (Từ Inventory Service)
 **Topic:** `t.inventory.events`
-**Consumer Group:** `product-inventory-sync-group`
-**Xử lý bởi:** [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)
+**Consumer Group:** `product-inventory-fast-sync-group` (Phase 1: Lock-Free Fast Sync)
+**Xử lý bởi:** [Inventory Sync Worker - Two-Phase Architecture](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture). Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md).
 
 **Cấu trúc Payload kỳ vọng (JSON):**
 ```json
@@ -501,7 +501,12 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   }
 }
 ```
-**Logic xử lý:** Update `product_skus.display_quantity = available_quantity`. Product Service lock theo thứ tự **Product -> SKU** và validate cặp `product_id/sku_id` ngay trong transaction trước khi apply update. **Rào cản Out-Of-Order (X6 Fix):** Chỉ thực hiện apply update nếu `event_timestamp > product_skus.last_inventory_sync_at`. Nếu `available_quantity = 0` và SKU đang `ACTIVE` → chuyển SKU status sang `OUT_OF_STOCK`; nếu `available_quantity > 0` và SKU đang `OUT_OF_STOCK` → chuyển về `ACTIVE` và chỉ auto-reactivate khi thỏa predicate `status = HIDDEN AND is_deleted = false` trong cùng transaction (dùng row đã lock hoặc query guard trong cùng transaction). Nếu SKU status thay đổi, phải insert outbox `PRODUCT_SKU_STATUS_CHANGED` ngay trong transaction trước commit. Cache `product:sku:{sku_id}` bắt buộc lưu `last_inventory_sync_at` để Lua CAS fence chống stale write. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
+**Luồng xử lý Two-Phase:**
+- **Phase 1 (Fast Path)**: Kafka Consumer nhận event → Lua CAS atomic update trên Redis → immediate cache warm + ZADD pending sync. Latency < 5ms, zero DB lock.
+- **Phase 2 (Slow Path)**: Scheduled Worker drain ZSET → batch update `product_skus` với Optimistic Locking → FSM triggers (AUTO_HIDE/AUTO_REACTIVATE) → outbox `PRODUCT_STATE_CHANGED`. Latency 500ms-2s.
+- **Staleness guard**: Layer 1 (Lua CAS timestamp check), Layer 2 (Phase 2 DB check), Layer 3 (outbox event guard). Chỉ apply update khi `event_timestamp > last_inventory_sync_at`.
+- **Cache staleness**: `product:sku:{sku_id}` bắt buộc lưu `last_inventory_sync_at` để Lua CAS fence chống stale write.
+- **Auto-hide/Reactivate**: SKU status `OUT_OF_STOCK`/`ACTIVE` được set ngay ở Phase 1 (Lua CAS). FSM triggers (AUTO_HIDE_OUT_OF_STOCK / AUTO_REACTIVATE_IN_STOCK) được trigger ở Phase 2 với độ trễ 500ms-2s. Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
 
 ## 5. Schema Versioning & Backward Compatibility
 

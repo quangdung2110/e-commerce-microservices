@@ -19,7 +19,7 @@ Tài liệu này quy chiếu quá trình biến thiên vòng đời (Lifecycle) 
 
 1.  **`DRAFT` (Bản Nháp)**: Trạng thái khởi tạo. Sản phẩm được lưu trữ, admin đang soạn thảo hình ảnh, content, giá. Hoàn toàn không hiển thị trên Storefront và Search.
 2.  **`ACTIVE` (Đang Bán)**: Sản phẩm công khai trên nền tảng. Có thể được Search, Add vào Giỏ và Thanh Toán bình thường.
-3.  **`HIDDEN` (Ẩn)**: Sản phẩm bị ẩn khỏi trang bán. Link trực tiếp vẫn sống (hiển thị hết hàng). Có thể do admin chủ động ẩn, hoặc do System tự động ẩn khi tất cả SKU hết Tồn Kho (xem [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)).
+3.  **`HIDDEN` (Ẩn)**: Sản phẩm bị ẩn khỏi trang bán. Link trực tiếp vẫn sống (hiển thị hết hàng). Có thể do admin chủ động ẩn, hoặc do System tự động ẩn khi tất cả SKU hết Tồn Kho (xem [Inventory Sync Worker - Two-Phase](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture)).
 
 *(Lưu ý: Không có trạng thái `DELETED` trong State Machine. Thao tác xóa mềm được quản lý độc lập thông qua cờ `is_deleted` ở tầng cơ sở dữ liệu nhằm bảo lưu trạng thái nghiệp vụ cuối cùng).*
 
@@ -31,13 +31,13 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 
 *   **`SUBMIT`**: Admin bấm publish. (`DRAFT` → `ACTIVE`).
 *   **`HIDE`**: Admin chủ động ẩn sản phẩm. (`ACTIVE` → `HIDDEN` hoặc `HIDDEN` → `HIDDEN` — cho phép re-hide để cập nhật trạng thái).
-*   **`SHOW`**: Admin hiện lại sản phẩm. (`HIDDEN` → `ACTIVE`). **Sửa lỗi Hố Đen Deadlock:** Khi chạy lệnh này, BẮT BUỘC hệ thống API phải đếm tổng Tồn Kho của tất cả SKU (`SUM(display_quantity)`). TUY NHIÊN, trước lệnh Query `SUM`, API/Controller bắt buộc phải gọi `SELECT 1 FROM products WHERE product_id = :id FOR NO KEY UPDATE` để chốt cọc Lock ở Product Cha (tránh Deadlock ngược AB-BA với Inventory Worker). Hiện lại chỉ được phép chuyển state sang `ACTIVE` NẾU VÀ CHỈ NẾU tổng tồn kho > 0 **và** `is_deleted = false`. Nếu tổng tồn kho = 0 nhưng admin vẫn cố hiện, bản ghi Database chỉ lưu lại trạng thái `HIDDEN` do kẹt điều kiện tồn kho. Sau khi inventory nhả hàng trở lại, luồng `AUTO_REACTIVATE_IN_STOCK` sẽ tự động hiện sản phẩm khi `is_deleted = false`.
+*   **`SHOW`**: Admin hiện lại sản phẩm. (`HIDDEN` → `ACTIVE`). Khi chạy lệnh này, BẮT BUỘC hệ thống API phải đếm tổng Tồn Kho của tất cả SKU (`SUM(display_quantity)`). Trước lệnh Query `SUM`, API/Controller bắt buộc phải gọi `SELECT 1 FROM products WHERE product_id = :id FOR NO KEY UPDATE` để chốt cọc Lock ở Product Cha. Hiện lại chỉ được phép chuyển state sang `ACTIVE` NẾU VÀ CHỈ NẾU tổng tồn kho > 0 **và** `is_deleted = false`. Nếu tổng tồn kho = 0 nhưng admin vẫn cố hiện, bản ghi Database chỉ lưu lại trạng thái `HIDDEN` do kẹt điều kiện tồn kho. Sau khi inventory nhả hàng trở lại, luồng `AUTO_REACTIVATE_IN_STOCK` sẽ tự động hiện sản phẩm khi `is_deleted = false`.
 
 ### 2.2 Transitions do System/Worker Tự Động Trigger
 
-> 🔴 **Ràng buộc Kiến trúc (Concurrency Guard):** Tất cả các Transition thực hiện bởi Worker bắt buộc phải nằm trong một Database Transaction, sử dụng lock `SELECT 1 FROM products WHERE product_id = ? FOR NO KEY UPDATE` ở BƯỚC ĐẦU TIÊN (Trước khi lock bảng SKUs) để chống Deadlock AB-BA. State Machine chỉ quản lý trạng thái nghiệp vụ; không có `@Version` hay optimistic locking nữa. Tuyệt đối KHÔNG ĐỤNG TỚI lệnh native cập nhật version trong transaction có gọi logic rẽ nhánh FSM.
+> **Ràng buộc Kiến trúc (Concurrency Guard):** Các Transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` do Worker tự động trigger chạy trong Phase 2 của Inventory Sync Worker, sử dụng Optimistic Locking (batch per product). Không còn Pessimistic Locking trên từng event. Transition `SUBMIT`/`HIDE`/`SHOW` do Admin trigger vẫn dùng Pessimistic Locking theo thứ tự Product -> SKU. State Machine chỉ quản lý trạng thái nghiệp vụ; không có `@Version` hay optimistic locking nữa.
 
-*   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0` và `is_deleted = false`. (`ACTIVE` → `HIDDEN`).
+*   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker - Two-Phase](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0` và `is_deleted = false`. (`ACTIVE` → `HIDDEN`).
 *   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động hiện lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn điều kiện `is_deleted = false` trong cùng transaction.
 
 > **Lưu ý:** Hai transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` hoạt động ở mức Product (cấp cha), không phải SKU (cấp con). Logic tổng hợp: nếu **ít nhất 1 SKU** khả dụng → Product vẫn ACTIVE. Chỉ khi **100% SKU** hết hàng → auto-hide. Trạng thái riêng lẻ của từng SKU (`ACTIVE`/`OUT_OF_STOCK`/`INACTIVE`) được quản lý trực tiếp trên field `product_skus.status` — xem [DB Design](product_db_design.md#12-nhóm-sản-phẩm--biến-thể-product--sku).
