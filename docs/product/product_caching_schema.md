@@ -49,8 +49,8 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
         ```
     *   **TTL**: 1 tiếng (3600s).
     *   **Xử lý Invalidation**: Khi có cập nhật SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Soft Invalidation), không dùng DEL hàng loạt để tránh Cache Stampede. Writer cho `product:sku:{sku_id}`:
-    * **In-band API**: Xử lý ngay trong API trả HTTP response (PRODUCT_STATUS_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED).
-    * **Event Handler Worker**: Phụ trách refresh khi nhận `SKU_PRICE_UPDATED` (từ Markdown Worker) và `SKU_STATUS_CHANGED` (từ Inventory Sync Phase 2). Staleness guard: so sánh `event.updated_at > cached.price_updated_at`. Xem [Event Handler Worker](product_workers.md#2-event-handler-worker).
+    * **In-band API**: Xử lý ngay trong API trả HTTP response (PRODUCT_STATUS_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED, SKU_UPDATED).
+    * **Event Handler Worker**: Phụ trách refresh khi nhận `SKU_UPDATED` (từ Markdown Worker hoặc Inventory Phase 2). Staleness guard: so sánh `event.updated_at` với `cached.price_updated_at` (cho price change) hoặc `cached.last_inventory_sync_at` (cho status change) dựa trên `changed_fields[]`. Xem [Event Handler Worker](product_workers.md#2-event-handler-worker).
 
 > **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `JSON.MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
@@ -90,6 +90,6 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 
 | Key Pattern | Loại | TTL | Writer | Mục đích |
 |---|---|---|---|---|
-| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API (PRODUCT_STATUS_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED) + Event Handler (SKU_PRICE_UPDATED từ Markdown, SKU_STATUS_CHANGED từ Inventory Phase 2) | Point-Read cho Cart/Order |
+| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API (PRODUCT_STATUS_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED, SKU_UPDATED) + Event Handler (SKU_UPDATED từ Markdown Worker hoặc Inventory Phase 2) | Point-Read cho Cart/Order |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |
 | `product:inventory:pending` | ZSET | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Inventory Sync (Two-Phase) |

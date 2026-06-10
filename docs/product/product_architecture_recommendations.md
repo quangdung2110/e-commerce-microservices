@@ -26,7 +26,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 2. Tách topic:
    - `t.product.events` cho product/sku events.
    - `t.category.events` cho category events.
-3. `PRODUCT_STATUS_CHANGED` và `SKU_PRICE_UPDATED` và `SKU_STATUS_CHANGED`. **Search Service dùng DUY NHẤT `updated_at` timestamp làm guard ordering**. Các event khác (PRODUCT_CREATED, PRODUCT_UPDATED...) dùng `updated_at` timestamp.
+3. `PRODUCT_STATUS_CHANGED` và `SKU_UPDATED` (thay thế cũ: `SKU_PRICE_UPDATED` + `SKU_STATUS_CHANGED`). **Search Service dùng DUY NHẤT `updated_at` timestamp làm guard ordering**. Các event khác (PRODUCT_CREATED, PRODUCT_UPDATED...) dùng `updated_at` timestamp.
 4. `product-event-handler-group` chỉ xử lý `CATEGORY_DELETED` (Write Model: update PostgreSQL `product.status = HIDDEN`), `SKU_PRICE_UPDATED` (Markdown cache refresh), và `SKU_STATUS_CHANGED` (Phase 2 Inventory cache refresh sau DB commit). Cache refresh cho PRODUCT_STATUS_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED đã được xử lý In-band trong API.
 5. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
 6. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
@@ -60,8 +60,8 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 	- `PRODUCT_CREATED`
 	- `PRODUCT_UPDATED`
 	- `PRODUCT_STATUS_CHANGED`
-	- `SKU_PRICE_UPDATED`
-	- `SKU_STATUS_CHANGED`
+	- `SKU_UPDATED`
+	- `SKU_CREATED`
 	- `SKU_DELETED`
 	- `INVENTORY_QUANTITY_CHANGED`
 	- `CATEGORY_UPDATED` / `CATEGORY_DELETED`

@@ -216,7 +216,40 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 
 ---
 
-### 1.8. Xóa Mềm SKU
+### 1.8. Cập Nhật SKU
+**Method:** `PUT`
+**Endpoint:** `/api/v1/products/{id}/skus/{sku_id}`
+**Auth:** Admin (JWT)
+**Mô tả:** Cập nhật thông tin một SKU cụ thể (giá, thuộc tính biến thể, hình ảnh). Partial update — chỉ cần gửi các field muốn thay đổi.
+
+**Request Body:**
+```json
+{
+  "original_price": 33990000.00,
+  "variant_attributes_json": {"color": "Đen mờ", "storage": "256GB"},
+  "media": [
+    {
+      "media_type": "IMAGE",
+      "url": "https://cdn.example.com/ip15-black-matte.jpg",
+      "thumbnail_url": "https://cdn.example.com/ip15-black-matte-thumb.jpg",
+      "sort_order": 1
+    }
+  ]
+}
+```
+
+**Chi tiết hoạt động:**
+1. **Lock Product + SKU** — `SELECT ... FOR NO KEY UPDATE` (Product), `SELECT ... FOR UPDATE` (SKU).
+2. **Validate** — Kiểm tra `product_id` tồn tại và không bị `is_deleted`. Kiểm tra `sku_id` thuộc product. Guard giá: `original_price` (nếu có) phải > 0.
+3. **Markdown Re-calculate** — Nếu `original_price` thay đổi VÀ SKU đang có `product_markdown_applied` active → re-calculate `promotional_price` trong cùng transaction theo công thức chuẩn.
+4. **Update SKU** — Trong `@Transactional`, cập nhật các field được gửi trong payload. Nếu không gửi field nào → Return 400 Bad Request.
+5. **Outbox** — Insert `SKU_UPDATED` vào outbox. Payload chứa đầy đủ snapshot SKU (tất cả field, không phải delta) kèm `changed_fields[]` array liệt kê các field thực sự thay đổi. `partition_key = sku_id` (vì `aggregate_type = ProductSku`).
+6. **In-band Cache Refresh** — Overwrite `product:sku:{sku_id}` ngay sau commit.
+7. **Response** — HTTP 200 với SKU đã cập nhật.
+
+---
+
+### 1.9. Xóa Mềm SKU
 **Method:** `DELETE`
 **Endpoint:** `/api/v1/products/{id}/skus/{sku_id}`
 **Auth:** Admin (JWT)
@@ -413,6 +446,7 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 | DELETE | `/api/v1/products/{id}` | Xóa mềm sản phẩm | Admin | Write |
 | PATCH | `/api/v1/products/{id}/status` | Chuyển trạng thái FSM | Admin | Write |
 | POST | `/api/v1/products/{id}/skus` | Thêm SKU | Admin | Write |
+| PUT | `/api/v1/products/{id}/skus/{sku_id}` | Cập nhật SKU | Admin | Write |
 | DELETE | `/api/v1/products/{id}/skus/{sku_id}` | Xóa mềm SKU | Admin | Write |
 | GET | `/api/v1/categories` | List danh mục | Admin | Read |
 | GET | `/api/v1/categories/tree` | Cây danh mục | Admin | Read |

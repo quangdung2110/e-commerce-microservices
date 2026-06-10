@@ -386,16 +386,17 @@ public class InventoryAsyncDbSyncWorker {
         }
 
         // === BƯỚC 4: Batch Insert Outbox ===
-        // Phát SKU_STATUS_CHANGED khi có ít nhất 1 SKU thực sự được update
+        // Phát SKU_UPDATED khi có ít nhất 1 SKU thực sự được update
         // (anyInventoryChanged đã bao gồm việc có SKU nào được thay đổi trong batch).
-        // Payload chứa sku_ids[], product_status_changed, new_product_status nếu FSM trigger
-        // đồng thời đổi product status (ví dụ: AUTO_HIDE → product HIDDEN).
+        // Payload chứa sku_ids[], changed_fields, product_status_changed, new_product_status
+        // nếu FSM trigger đồng thời đổi product status (ví dụ: AUTO_HIDE → product HIDDEN).
         List<OutboxEvent> outboxEvents = new ArrayList<>();
         if (anyInventoryChanged) {
-            outboxEvents.add(OutboxEvent.skuStatusChanged(
+            outboxEvents.add(OutboxEvent.skuUpdated(
                 productId,
                 updatedSkus.stream().map(ProductSku::getSkuId).toList(),
                 skuStatusChanged,       // new_sku_status
+                changedFields,          // List<String>
                 productStatusChanged,   // boolean
                 newProductStatus       // nullable, chỉ set khi product_status cũng thay đổi
             ));
@@ -492,7 +493,7 @@ end
 -- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM) or SKU_STATUS_CHANGED (Phase 2 FSM trigger).
 -- Phase 1 does NOT update product_status to avoid overwriting a newer state change with a stale cached value.
 -- price_updated_at is also preserved — it is only set by Event Handler when refreshing
--- from PRODUCT_PRICE_UPDATED.
+-- from SKU_UPDATED (price change).
 local newData = {
     sku_id = existingData and existingData.sku_id or string.match(cacheKey, "product:sku:(.+)"),
     product_id = productId,
