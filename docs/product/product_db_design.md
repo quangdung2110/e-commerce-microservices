@@ -55,6 +55,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `description`: TEXT.
     *   `status`: VARCHAR(50) DEFAULT 'DRAFT'. Quản lý bởi [State Machine](product_state_machine.md). (Các trạng thái: DRAFT, ACTIVE, HIDDEN.).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete).
+    *   `admin_hidden`: BOOLEAN DEFAULT FALSE (Cờ Admin chủ động ẩn sản phẩm. Dùng để phân biệt giữa việc Admin ẩn thủ công và System tự động ẩn do hết hàng. Chỉ được set = TRUE khi Admin chủ động thực hiện lệnh HIDE. Khi System chạy AUTO_HIDE_OUT_OF_STOCK, cờ này giữ nguyên giá trị.)
     *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm bị xóa mềm).
     *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ). **Đây là dữ liệu thô (raw key-value), không phải token search.** Việc transform sang token `k:v` cho Elasticsearch thuộc trách nhiệm Search Worker.
     *   `created_at`: TIMESTAMPTZ.
@@ -65,11 +66,11 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `product_id`: VARCHAR(255) INDEX (Tham chiếu tới `products`).
     *   `sku_code`: VARCHAR(255) UNIQUE (Mã định danh nội sản phẩm).
     *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Admin đặt).
-    *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#6-workflow-xử-lý-markdown-event-từ-promotion-service)).
+    *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#1-workflow-xử-lý-markdown-event-từ-promotion-service)).
     *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ xoá mềm riêng biệt cấp độ SKU).
     *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm SKU bị xóa mềm).
-    *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ từ [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker)).
+    *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ ở [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture).
     *   `last_inventory_sync_at`: BIGINT DEFAULT 0 (Lưu lại `event_timestamp` từ Kafka Event cuối cùng của Inventory Service để chặn lùi version do lỗi Out-of-order Kafka message).
     *   `variant_attributes_json`: JSONB (Cấu hình riêng của SKU này, vd: `{"color": "Xanh", "size": "M"}`). **Giữ nguyên dạng object tại Write Model; Search Worker sẽ chuyển đổi sang `variant_attributes` token array khi index.**
     *   `created_at`: TIMESTAMPTZ.
@@ -111,7 +112,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
     *   `max_discount_amount`: DECIMAL(15,2) NULL (Giới hạn mức giảm tối đa trên mỗi sản phẩm - chỉ dùng khi PERCENTAGE).
     *   `calculated_price`: DECIMAL(15,2) NOT NULL (Giá đã giảm lưu nháp để check sai số nếu đổi công thức).
     *   `applied_at`: TIMESTAMPTZ.
-    *   `expires_at`: TIMESTAMPTZ INDEX NOT NULL (Thời điểm hết hạn. **[M2 Lưu ý]** Index này KHÔNG PHỤC VỤ Flow mua hàng chính, nó DÀNH RIÊNG cho [Markdown Expiry Cronjob(Self-Healing)](product_workers.md#7-markdown-expiry-cronjob-self-healing), hỗ trợ quét dọn dữ liệu hết hạn cực nhẹ.).
+    *   `expires_at`: TIMESTAMPTZ INDEX NOT NULL (Thời điểm hết hạn. Index này KHÔNG PHỤC VỤ Flow mua hàng chính, nó DÀNH RIÊNG cho [Markdown Expiry Cronjob(Self-Healing)](product_workers.md#6-markdown-expiry-cronjob-self-healing), hỗ trợ quét dọn dữ liệu hết hạn cực nhẹ.).
     *   **Unique Index (`rule_id`, `sku_id`)**: Đảm bảo một rule chỉ áp dụng 1 lần trên 1 SKU.
 
 

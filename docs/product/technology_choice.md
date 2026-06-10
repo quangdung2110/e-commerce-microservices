@@ -9,7 +9,7 @@
 | Đặc tính | Mô tả |
 |:---|:---|
 | **Kiến trúc dữ liệu** | PostgreSQL-First (Write Model / Source of Truth) + Redis Cache |
-| **State Machine** | Spring State Machine (FSM) quản lý lifecycle sản phẩm (DRAFT → ACTIVE → BANNED) |
+| **State Machine** | Spring State Machine (FSM) quản lý lifecycle sản phẩm (DRAFT → ACTIVE → HIDDEN). Không có trạng thái PENDING_REVIEW hay BANNED vì kiến trúc áp dụng mô hình Admin-only, không có seller/shop. Admin tạo sản phẩm, có thể ẩn/hiện sản phẩm. Xem [State Machine](product_state_machine.md). |
 | **Concurrency** | Optimistic Locking (`version`) cho State Transitions, **Two-Phase Lock-Free Architecture** cho Inventory Sync (Lua CAS + Redis ZSET), Cache Stampede Protection bằng cross-pod distributed lock (`SETNX`) + in-process singleflight |
 | **Caching** | Redis (Point-Read, Rate Limiting, Markdown Marker) |
 | **Outbox Pattern** | Debezium (Change Data Capture) — Real-time event streaming |
@@ -21,12 +21,12 @@
 ## 2. Lý Do Chọn Java (Spring Boot)
 
 ### 2.1. Spring State Machine — Quản Lý Lifecycle Sản Phẩm
-Product Service sử dụng **Finite State Machine (FSM)** phức tạp với nhiều transitions (DRAFT → PENDING_REVIEW → ACTIVE → HIDDEN → BANNED) và Guard Conditions:
+Product Service sử dụng **Finite State Machine (FSM)** đơn giản với 3 trạng thái (DRAFT → ACTIVE → HIDDEN) và Guard Conditions. Áp dụng mô hình Admin-only, không có seller/shop nên không có PENDING_REVIEW hay BANNED:
 - **Spring Statemachine** framework cung cấp sẵn FSM declarative configuration, Guard functions, State listeners.
 - Config FSM bằng Java code:
   ```java
   transitions.withExternal()
-      .source(DRAFT).target(PENDING_REVIEW).event()
+      .source(DRAFT).target(ACTIVE).event(SUBMIT)
       .guard(hasRequiredAttributes());
   ```
 - Go không có FSM framework tương đương mature — phải tự implement bằng switch-case hoặc map transitions.
@@ -35,7 +35,7 @@ Product Service sử dụng **Finite State Machine (FSM)** phức tạp với nh
 ### 2.2. Spring `@Transactional` & Debezium CDC — Outbox Pattern
 Luồng Create/Update Product ghi **cùng lúc 3-4 bảng** (products, product_skus, product_outbox_events, product_status_history) trong 1 Transaction:
 - `@Transactional` của Spring = 1 annotation, không cần viết `BEGIN/COMMIT/ROLLBACK`.
-- Worker Debezium CDC đọc trực tiếp WAL từ database để publish event ra Kafka — realtime, không làm ảnh hưởng hiệu năng database như DB Polling.
+- Debezium CDC đọc trực tiếp WAL từ database để publish event ra Kafka — realtime, không làm ảnh hưởng hiệu năng database.
 - Optimistic Locking = `@Version` annotation trên entity — JPA tự handle `version = version + 1` check.
 
 ### 2.3. Markdown Price Calculation — Domain Logic Phức Tạp

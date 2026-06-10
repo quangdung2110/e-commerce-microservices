@@ -3,22 +3,21 @@
 
 2. 
 2.1 Sự kết hợp giữa In-band và Out-of-band của Event Handler Worker:
-Khi Seller sửa sản phẩm thông qua API, API đó sẽ đi ghi xuống DB và tự động cập nhật cache ngay lập tức thông qua cơ chế "In-band", đồng thời trong transaction cập nhật DB đó, chúng ta cũng sẽ ghi một outbox event record vào một bảng
-Trường hợp xấu xảy ra khi transaction đó đã commit thành công nhưng server bị treo trước khi cập nhật cache, lúc này Event Handler Worker (hoạt động Out-of-band/bất đồng bộ) sẽ bắt được sự kiện Kafka
-từ Outbox Event và tiến hành ghi đề Cache để đảm bảo tính nhất quán giữa DB và Cache. Đây là một cơ chế tự chữa lành (self-healing) rất quan trọng để đảm bảo rằng cache luôn được cập nhật ngay cả khi có sự cố xảy ra
+Khi Admin sửa sản phẩm thông qua API, API đó sẽ đi ghi xuống DB và tự động cập nhật cache ngay lập tức thông qua cơ chế "In-band", đồng thời trong transaction cập nhật DB đó, chúng ta cũng sẽ ghi một outbox event record vào một bảng.
+Trường hợp xấu xảy ra khi transaction đó đã commit thành công nhưng server bị treo trước khi cập nhật cache, lúc này Event Handler Worker (hoạt động Out-of-band/bất đồng bộ) sẽ self-consume Kafka event từ bảng Outbox thông qua Debezium CDC và tiến hành ghi đè Cache để đảm bảo tính nhất quán giữa DB và Cache. Đây là một cơ chế tự chữa lành (self-healing) rất quan trọng để đảm bảo rằng cache luôn được cập nhật ngay cả khi có sự cố xảy ra.
 
-Event Handler Worker cũng xử lý `CATEGORY_DELETED` để đồng bộ Write Model (chuyển sản phẩm liên quan sang REJECTED)
+Event Handler Worker cũng xử lý `CATEGORY_DELETED` để đồng bộ Write Model (chuyển sản phẩm liên quan sang HIDDEN)
 
 2.2 Xử lý Cache cho các luồng hoạt động ngầm
-Worker trên không chỉ xử lý các sự kiện đến từ API của Seller, mà còn phải xử lý các sự kiện đến từ các luồng hoạt động ngầm khác như:
+Worker trên không chỉ xử lý các sự kiện đến từ API của Admin, mà còn phải xử lý các sự kiện đến từ các luồng hoạt động ngầm khác như:
 + Giá thay đổi do Promotion Service chạy luật khuyến mãi (markdown)
 + Tồn kho / trạng thái thay đổi do Inventory Service báo hết hàng hoặc có hàng
 
-4. Trong thiết kế của CronJob cho việc quét các sản phẩm hết hạn khuyến mãi ở bảng product_markdown_applied, khi lock nhiều row trong bảng products, thứ tự các ID được truyển vào
-IN (A, B, C...) thường là ngẫu nhiên (không theo thứ tự của bảng products). Nếu trong lúc Cronjob đang khóa các Product ID theo mảng (A, B, C...), mà đồng thời có API Sửa Tồn Kho / Sửa Sản Phẩm 
-của Seller chạm đúng vào các Product ID đó theo thứ tự ngược lại (C, B, A...), Deadlock sẽ lập tức bùng nổ khiến hệ thống DB treo transaction hàng loạt.
-Để giải quyết vấn đề này, chúng ta cần đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự. 
-Trong trường hợp này, chúng ta có thể sắp xếp các Product ID theo thứ tự tăng dần trước khi khóa, để đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự.
+4. Trong thiết kế của CronJob cho việc quét các sản phẩm hết hạn khuyến mãi ở bảng product_markdown_applied, khi lock nhiều row trong bảng products, thứ tự các ID được truyền vào
+IN (A, B, C...) thường là ngẫu nhiên (không theo thứ tự của bảng products). Nếu trong lúc Cronjob đang khóa các Product ID theo mảng (A, B, C...), mà đồng thời có API Sửa Tồn Kho / Sửa Sản Phẩm
+của Admin chạm đúng vào các Product ID đó theo thứ tự ngược lại (C, B, A...), Deadlock sẽ lập tức bùng nổ khiến hệ thống DB treo transaction hàng loạt.
+Để giải quyết vấn đề này, chúng ta cần đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự.
+Trong trường hợp này, chúng ta cần sắp xếp các Product ID theo thứ tự tăng dần trước khi khóa, để đảm bảo rằng tất cả các transaction đều khóa tài nguyên theo cùng một thứ tự.
 
 5. Thiết kế xử lý Markdown Event đến từ Promotion Service (Slow Sync):
 - Query ra những product SKU có trạng thái active thỏa mãn với điều kiện khuyến mãi đang áp dụng theo từng type (CATEGORY và PRODUCT)
@@ -74,6 +73,5 @@ Ví dụ: nếu 10000 request đến trong một khoảng thời gian ngắn và
     - Khi ghi: dùng Redis Pipeline để nhồi tất cả lệnh JSON.SET vào một lần duy nhất
 - Đây là điểm khác biệt so với luồng read 1 SKU
     - Với luồng 1 SKU, chúng ta sử dụng khóa phân tán để gom nhiều request trên các pod lại thành 1
-    - Với luồng Batch SKU, chúng ta không thể sử dụng như vậy vì mỗi giỏ hàng sẽ có một tập SKU khác nhau, nếu sử dụng SingleFlight ở đây, chúng ta sẽ khó có thể tìm thấy nhiều request giống nhau để gom lại 
-    - Thay vào đó, chúng ta sẽ xé nhỏ các mảng SKU đó ra và sử dụng In-process SingleFlight chọc Database riêng lẽ cho từng SKU bị miss
-    - Hệ thống sẽ chỉ gọi DB 1 lần cho mỗi SKU bị miss, sau đó chia sẻ kết quả đó cho tất cả các request khác cũng bị miss SKU đó trong cùng một khoảng thời gian ngắn (ví dụ 50ms) để tránh việc nhiều request cùng query thẳng vào DB cho cùng một SKU bị miss
+    - Với luồng Batch SKU, chúng ta sẽ collect tất cả SKU bị miss vào một tập trong RAM, rồi gọi 1 câu truy vấn batch WHERE sku_id IN (...) để fetch tất cả SKU miss trong một lần round-trip duy nhất, sau đó đi qua In-process Singleflight để tránh trùng lặp
+    - Hệ thống sẽ chỉ gọi DB 1 lần cho toàn bộ SKU miss, sau đó dùng Redis Pipelining để nạp ngược cache, giảm triệt để N lần network I/O latency

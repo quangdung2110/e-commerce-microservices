@@ -1,12 +1,14 @@
 # Product Service - Architecture Recommendations
 
 **Liên kết nhanh (Related Documents):**
-*   [Workflows (API & Data Flow)](product_workflow.md)
+*   [API Endpoints](product_endpoints.md)
+*   [Background Workers Workflows](product_workflow.md)
 *   [Background Workers & Jobs](product_workers.md)
 *   [Caching Schema (Redis)](product_caching_schema.md)
 *   [Database Schema (Write Store)](product_db_design.md)
 *   [State Machine & Lifecycle](product_state_machine.md)
 *   [Events Structure & Kafka Topics](product_events.md)
+*   [Inventory Sync Optimization](inventory_sync_optimization.md)
 
 ---
 
@@ -26,10 +28,10 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 	- `t.category.events` cho category events.
 3. Với `PRODUCT_PRICE_UPDATED`, bắt buộc phát `event_sequence_id` đơn điệu tăng để downstream guard đúng ở cấp SKU event.
 4. Consumer downstream phải idempotent, ignore stale event và retry/DLQ rõ ràng.
-5. `product-event-handler-group` bắt buộc consume `PRODUCT_SKU_STATUS_CHANGED` để duy trì đường self-healing cache khi luồng queue in-memory của Inventory Worker bị gián đoạn.
+5. `product-event-handler-group` chỉ xử lý `CATEGORY_DELETED` (Write Model) và `PRODUCT_PRICE_UPDATED` (Markdown cache refresh). Cache refresh cho PRODUCT_STATE_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED đã được xử lý In-band trong API.
 6. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
 7. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
-8. Invalidation consumer phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
+8. Event Handler Worker phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
 9. **Inventory Sync (Two-Phase Lock-Free)**: Event `INVENTORY_QUANTITY_CHANGED` được xử lý qua Phase 1 (Lock-Free: Kafka → Redis Lua CAS) và Phase 2 (Async DB Sync: Redis ZSET → PostgreSQL). Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
 
 ## 3. Consistency & Concurrency
@@ -47,7 +49,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 2. Chống stampede chuẩn mặc định là cross-pod distributed lock (`SETNX product:lock:fetch:{sku_id}` với lease ngắn), có thể kết hợp in-process singleflight trong từng pod.
 3. Point-read cache `product:sku:{sku_id}` chỉ là implementation detail nội bộ Product Service.
 4. Validation category/attribute được thực hiện trực tiếp từ PostgreSQL mà không cần cache trung gian.
-5. Mỗi nguyên nhân cập nhật cache phải có một writer async chuẩn duy nhất. Với giá Markdown, `product:sku:{sku_id}` do Invalidation Consumer ghi đè theo `PRODUCT_PRICE_UPDATED`; Markdown Worker chỉ set/del `product:markdown:active:{sku_id}`.
+5. Mỗi nguyên nhân cập nhật cache phải có một writer async chuẩn duy nhất. Với giá Markdown, `product:sku:{sku_id}` do Event Handler Worker ghi đè theo `PRODUCT_PRICE_UPDATED`; Markdown Worker chỉ set/del `product:markdown:active:{sku_id}`.
 6. Nguồn dữ liệu refresh cache ưu tiên event payload; DB fallback chỉ dùng khi payload không đủ contract. Không dùng Search/Elasticsearch làm nguồn rebuild cache point-read.
 
 ## 5. Contract Governance

@@ -45,7 +45,9 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
         }
         ```
     *   **TTL**: 1 tiếng (3600s).
-    *   **Xử lý Invalidation**: Khi có cập nhật SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Soft Invalidation), không dùng DEL hàng loạt để tránh Cache Stampede. Với luồng async từ event hệ thống (Markdown/Inventory/FSM), `product-event-handler-group` là writer chuẩn cho `product:sku:{sku_id}`. Xem [Event Handler Worker](product_workers.md).
+    *   **Xử lý Invalidation**: Khi có cập nhật SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Soft Invalidation), không dùng DEL hàng loạt để tránh Cache Stampede. Writer cho `product:sku:{sku_id}`:
+    * **In-band API**: Xử lý ngay trong API trả HTTP response (PRODUCT_STATE_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED).
+    * **Event Handler Worker**: Chỉ phụ trách refresh khi nhận `PRODUCT_PRICE_UPDATED` (từ Markdown Worker). Xem [Event Handler Worker](product_workers.md#2-event-handler-worker).
 
 > **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `JSON.MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
@@ -67,7 +69,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
                 }
         ```
     *   **TTL**: Đặt bằng thời gian còn lại của rule (`expires_at - NOW()`). Redis tự xoá khi rule hết hạn.
-    *   **Invalidation**: [Markdown Price Worker](product_workers.md#5-markdown-price-calculator-worker) set/del key này khi rule active hoặc ended. Worker này chỉ quản lý key markdown marker; key point-read `product:sku:{sku_id}` vẫn do `product-event-handler-group` refresh theo `PRODUCT_PRICE_UPDATED`.
+    *   **Invalidation**: [Markdown Price Worker](product_workers.md#4-markdown-price-calculator-worker) set/del key này khi rule active hoặc ended. Worker này chỉ quản lý key markdown marker; key point-read `product:sku:{sku_id}` do [Event Handler](product_workers.md#2-event-handler-worker) refresh theo `PRODUCT_PRICE_UPDATED`.
 
 ---
 
@@ -75,16 +77,16 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 
 | Key Pattern | Loại | TTL | Invalidation | Mục đích |
 |---|---|---|---|---|
-| `product:inventory:pending` | Redis Sorted Set (ZSET) | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Two-Phase Lock-Free Inventory Sync. Xem [Inventory Sync Optimization](inventory_sync_optimization.md) |
+| `product:inventory:pending` | Redis Sorted Set (ZSET) | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Two-Phase Lock-Free Inventory Sync. Global ZSET dùng chung cho tất cả SKU. Xem [Inventory Sync Optimization](inventory_sync_optimization.md) |
 
-> **Chi tiết Two-Phase Inventory Sync**: Phase 1 ghi vào ZSET này sau khi update cache thành công. Phase 2 drain ZSET để sync xuống PostgreSQL. Xem [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture).
+> **Chi tiết Two-Phase Inventory Sync**: Phase 1 ghi vào ZSET này sau khi update cache thành công. Phase 2 drain ZSET để sync xuống PostgreSQL. Xem [Inventory Sync Worker](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture).
 
 ---
 
 ## 4. Tổng Hợp Redis Key Inventory
 
-| Key Pattern | Loại | TTL | Invalidation | Mục đích |
+| Key Pattern | Loại | TTL | Writer | Mục đích |
 |---|---|---|---|---|
-| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-event-handler-group` (fallback async) | Point-Read cho Cart/Order |
+| `product:sku:{sku_id}` | RedisJSON | 1h | In-band API (PRODUCT_STATE_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED) + Event Handler (PRODUCT_PRICE_UPDATED từ Markdown) | Point-Read cho Cart/Order |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |
 | `product:inventory:pending` | ZSET | 24h | Ack tự động sau Phase 2 DB sync | Pending sync queue cho Inventory Sync (Two-Phase) |

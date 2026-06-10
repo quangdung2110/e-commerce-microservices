@@ -1,10 +1,11 @@
 # Product Service - Tối Ưu Hóa Inventory Sync Worker
 
-**Tài liệu thiết kế giải pháp thay thế Pessimistic Locking cho Inventory Sync Event**
+**Tài liệu thiết kế giải pháp Two-Phase Lock-Free thay thế Pessimistic Locking cho Inventory Sync Event**
 
 **Liên kết nhanh (Related Documents):**
-* [Workflows (API & Data Flow)](product_workflow.md)
+* [Background Workers Workflows](product_workflow.md)
 * [Background Workers & Jobs](product_workers.md)
+* [API Endpoints](product_endpoints.md)
 * [Caching Schema (Redis)](product_caching_schema.md)
 * [Database Schema (Write Store)](product_db_design.md)
 * [State Machine & Lifecycle](product_state_machine.md)
@@ -17,7 +18,7 @@
 
 ### 1.1. Vấn đề hiện tại
 
-Thiết kế Inventory Sync Worker hiện tại (xem `product_workers.md` phần 6) sử dụng **Pessimistic Locking** cho mọi event:
+Thiết kế Inventory Sync Worker cũ sử dụng **Pessimistic Locking** cho mọi event.
 
 ```mermaid
 flowchart LR
@@ -90,7 +91,7 @@ flowchart LR
 │                          │ 4. FSM triggers   │                          │
 │                          │ (AUTO_HIDE/      │                          │
 │                          │  AUTO_REACTIVATE) │                          │
-│                          │ + Pessimistic    │                          │
+│                          │ + Optimistic     │                          │
 │                          │   Locking        │                          │
 │                          └──────────────────┘                          │
 │                                                                         │
@@ -119,7 +120,7 @@ flowchart LR
 
 **Nguyên lý hoạt động:**
 
-1. **Scheduled Worker** chạy mỗi **500ms - 1s** (hoặc dùng Redis Stream consumer)
+1. **Scheduled Worker** chạy mỗi **500ms - 1s**
 2. **Drain Redis ZSET** với pagination (100-500 items mỗi run)
 3. **Group by product_id** trong RAM
 4. **Batch write với Optimistic Locking** — mỗi product 1 transaction nhỏ:
@@ -287,10 +288,10 @@ public class InventoryAsyncDbSyncWorker {
     private static final int BATCH_SIZE = 100;   // SKU items mỗi run
     private static final int ZSET_RUN_LIMIT = 500; // Max items drain từ ZSET
 
-    // Redis Stream group cho Phase 2 (thay thế Scheduled)
-    // Dùng Redis Stream thay ZSET để đảm bảo at-least-once delivery
-    // và consumer group cho multi-instance workers
-    private static final String STREAM_KEY = "product:inventory:pending:stream";
+    // Global Redis ZSET cho Phase 2: pending sync queue
+    // Sử dụng ZSET đơn giản, scale bằng pagination + multi-instance scheduled workers
+    // (Trong tương lai có thể chuyển sang Redis Stream nếu cần consumer group)
+    private static final String ZSET_KEY = "product:inventory:pending";
 
     @Scheduled(fixedDelay = 500)  // Chạy mỗi 500ms
     public void syncToDatabase() {
@@ -428,7 +429,7 @@ public class InventoryAsyncDbSyncWorker {
 -- inventory_fast_sync.lua
 -- Atomic compare-and-swap cho inventory sync
 -- KEYS[1] = product:sku:{sku_id}  (cache key)
--- KEYS[2] = product:inventory:pending:{product_id}  (ZSET for pending DB sync)
+-- KEYS[2] = product:inventory:pending  (Global ZSET)
 -- KEYS[3] = member string "{sku_id}:{event_timestamp}"
 -- ARGV[1] = event_timestamp (epoch millis)
 -- ARGV[2] = available_quantity

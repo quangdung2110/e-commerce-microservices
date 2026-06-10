@@ -29,7 +29,7 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 
 | Topic Name | Partition Key | Consumers | Mô tả |
 |---|---|---|---|
-| `t.product.events` | `product_id` | Search Service, Notification Service, Promotion Service (allowlist: `PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`), Product Service (self-consume invalidation) | Topic chính chứa mọi sự kiện thay đổi dữ liệu sản phẩm |
+| `t.product.events` | `product_id` | Search Service, Notification Service, Promotion Service (allowlist: `PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`) | Topic chính chứa mọi sự kiện thay đổi dữ liệu sản phẩm |
 | `t.category.events` | `category_id` | Search Service, Product Service | Topic phát sự kiện thay đổi cấu trúc danh mục, tách biệt hoàn toàn để tránh xung đột partition key |
 
 > **Ghi chú Partition Key:** Sử dụng `product_id` làm key cho `t.product.events` đảm bảo tất cả events của cùng 1 sản phẩm luôn vào đúng 1 Partition → **Strict Ordering** cho từng sản phẩm. Tương tự, dùng `category_id` cho `t.category.events`.
@@ -40,7 +40,6 @@ Kiến trúc sự kiện này đảm nhận nhiệm vụ đồng bộ CQRS từ 
 |---|---|---|---|
 | `t.promotion.markdown.events` | `product-markdown-group` | Promotion Service | Lắng nghe đúng allowlist `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED` để tính [promotional_price](product_db_design.md#13-nhóm-tích-hợp-giá-khuyến-mãi-markdown-integration)|
 | `t.inventory.events` | `product-inventory-fast-sync-group` | Inventory Service | Phase 1: Lock-Free Fast Sync (Two-Phase). Xem [Inventory Sync Optimization](inventory_sync_optimization.md) |
-| `t.product.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume để cập nhật lại Cache Redis và xử lý category lifecycle (bắt buộc gồm `PRODUCT_PRICE_UPDATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_UPDATED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`). Xem [Event Handler Worker](product_workers.md) |
 | `t.category.events` | `product-event-handler-group` | Product Service (chính nó) | Self-consume `CATEGORY_DELETED` để cập nhật Write Model (chuyển sản phẩm liên quan sang `HIDDEN`) trước khi downstream phản chiếu |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
@@ -63,7 +62,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ## 3. Chi Tiết Các Loại Event Phát Đi (Produced Events)
 
 ### 3.1. PRODUCT_CREATED
-**Ngữ cảnh phát sinh:** admin tạo mới một sản phẩm bản nháp (DRAFT) thành công. Xem [Workflow Tạo Sản Phẩm](product_workflow.md#2-api-tạo-mới-sản-phẩm-bản-nháp-create-concept).
+**Ngữ cảnh phát sinh:** admin tạo mới một sản phẩm bản nháp (DRAFT) thành công. Xem [Endpoint Tạo Sản Phẩm](product_endpoints.md#11-tạo-sản-phẩm-bản-nháp).
 **Consumers chính:** [Search Service](../search/search_events.md#21-product_created) (index sản phẩm mới, dù DRAFT chưa hiển thị public nhưng cần để Admin search).
 
 **Cấu trúc Payload (JSON):**
@@ -148,7 +147,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 > **Contract phạm vi snapshot (BẮT BUỘC):** Payload `PRODUCT_UPDATED` phải là snapshot đầy đủ của Product tại thời điểm commit (không phải delta patch từ FE). Nếu producer tạm thời chưa phát được full snapshot, consumer invalidation phải coi đó là payload không đầy đủ và fallback đọc snapshot từ PostgreSQL.
 
 ### 3.2. PRODUCT_UPDATED
-**Ngữ cảnh phát sinh:** admin cập nhật thông tin sản phẩm (tên, mô tả, attributes, giá SKU, thêm/xoá SKU). Xem [Workflow Sửa Sản Phẩm](product_workflow.md#3-api-sửa-đổi-thông-tin-sản-phẩm).
+**Ngữ cảnh phát sinh:** admin cập nhật thông tin sản phẩm (tên, mô tả, attributes, giá SKU, thêm/xoá SKU). Xem [Endpoint Cập Nhật Sản Phẩm](product_endpoints.md#14-cập-nhật-sản-phẩm).
 **Consumers chính:** [Search Service](../search/search_events.md#22-product_updated) (re-index), Product Service (self-invalidate cache).
 
 **Cấu trúc Payload (JSON):**
@@ -249,8 +248,8 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 > **Nguồn dữ liệu `sku_ids` (BẮT BUỘC):** FE không gửi `sku_ids` khi gọi API đổi trạng thái Product. Backend phải tự truy vấn danh sách SKU liên đới trong cùng transaction và đóng gói vào payload `PRODUCT_STATE_CHANGED` trước khi insert outbox.
 
 ### 3.4. PRODUCT_PRICE_UPDATED
-**Ngữ cảnh phát sinh:** Giá sản phẩm thay đổi — bao gồm cả khi admin sửa `original_price` LẪN khi [Markdown Worker](product_workers.md#5-markdown-price-calculator-worker) tính lại `promotional_price`. Xem [Promotion DB Design - Cơ chế Zero-Latency](../promotion/promotion_db_design.md#22-xử-lý-zero-latency-tính-toán-best-deal-mà-không-cần-discount_items-mapping).
-**Consumers chính:** [Search Service](../search/search_events.md#24-product_price_updated) (cập nhật giá hiển thị trên Elasticsearch).
+**Ngữ cảnh phát sinh:** Giá sản phẩm thay đổi — bao gồm cả khi admin sửa `original_price` LẪN khi [Markdown Worker](product_workers.md#4-markdown-price-calculator-worker) tính lại `promotional_price`. Xem [Promotion DB Design - Cơ chế Zero-Latency](../promotion/promotion_db_design.md#22-xử-lý-zero-latency-tính-toán-best-deal-mà-không-cần-discount_items-mapping).
+**Consumers chính:** [Search Service](../search/search_events.md) (cập nhật giá hiển thị trên Elasticsearch), [Event Handler Worker](product_workers.md#2-event-handler-worker) (refresh `product:sku:{sku_id}`).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -271,8 +270,6 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "promotional_price": 28891500.00,
     "best_price": 28891500.00,
     "has_promotion": true,
-    "previous_original_price": 34990000.00,
-    "previous_promotional_price": null,
     "updated_at": "2026-02-28T06:00:00Z"
   }
 }
@@ -301,7 +298,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "schema_version": 1,
   "payload": {
     "product_id": "prod-uuid-001",
-        "sku_ids": ["sku-uuid-001", "sku-uuid-002"],
+    "sku_ids": ["sku-uuid-001", "sku-uuid-002"],
     "updated_at": "2026-02-28T08:00:00Z",
     "deleted_at": "2026-02-28T08:00:00Z"
   }
@@ -383,13 +380,13 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 }
 ```
 
-### 3.10. Contract Nạp Payload Từ FE -> BE -> Outbox
+### 3.9. Contract Nạp Payload Từ FE -> BE -> Outbox
 
 | Event | Dữ liệu từ FE | Dữ liệu BE bắt buộc tự bổ sung | Mục tiêu downstream |
 |---|---|---|---|
-| `PRODUCT_UPDATED` | Payload chỉnh sửa (có thể là delta theo SKU) | Chuẩn hóa thành snapshot đầy đủ Product + `skus[]` tại thời điểm commit (từ projection trong transaction hoặc re-read DB nhất quán), kèm `updated_at` timestamp để Search guard out-of-order | Search re-index và Invalidation refresh cache không cần đoán thêm dữ liệu |
-| `PRODUCT_STATE_CHANGED` | Command đổi trạng thái (`SUBMIT`, `HIDE`, `SHOW`) + `product_id` | Truy vấn danh sách `sku_ids[]` liên đới trong cùng transaction FSM | Invalidation refresh toàn bộ `product:sku:{sku_id}` ngay sau event |
-| `PRODUCT_DELETED` | `product_id` | Truy vấn danh sách `sku_ids[]` thuộc Product trước/sát thời điểm soft-delete | Invalidation dọn/refresh đầy đủ các cache key SKU của product bị xóa mềm |
+| `PRODUCT_UPDATED` | Payload chỉnh sửa (có thể là delta theo SKU) | Chuẩn hóa thành snapshot đầy đủ Product + `skus[]` tại thời điểm commit (từ projection trong transaction hoặc re-read DB nhất quán), kèm `updated_at` timestamp để Search guard out-of-order | Search re-index. Cache refresh do In-band API đã xử lý |
+| `PRODUCT_STATE_CHANGED` | Command đổi trạng thái (`SUBMIT`, `HIDE`, `SHOW`) + `product_id` | Truy vấn danh sách `sku_ids[]` liên đới trong cùng transaction FSM | Event Handler refresh cache `product:sku:{sku_id}` (In-band fallback) |
+| `PRODUCT_DELETED` | `product_id` | Truy vấn danh sách `sku_ids[]` thuộc Product trước/sát thời điểm soft-delete | Search xóa khỏi index. Cache refresh do In-band API đã xử lý |
 
 > **Nguyên tắc nhất quán:** Payload outbox là hợp đồng backend phát hành, không phải bản sao thô 1:1 từ request FE.
 
@@ -400,9 +397,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ### 4.1. MARKDOWN_CREATED (Từ Promotion Service)
 **Topic:** `t.promotion.markdown.events`
 **Consumer Group:** `product-markdown-group`
-**Xử lý bởi:** [Markdown Price Calculator Worker](product_workers.md#5-markdown-price-calculator-worker)
-
-> **Compatibility rule:** Ưu tiên đọc `schema_version`. Nếu upstream legacy thiếu field này, consumer tạm map mặc định `schema_version = 1` và ghi metric compatibility để theo dõi rollout.
+**Xử lý bởi:** [Markdown Price Calculator Worker](product_workers.md#4-markdown-price-calculator-worker)
 
 **Cấu trúc Payload kỳ vọng (JSON):**
 ```json
@@ -428,7 +423,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ### 4.2. MARKDOWN_UPDATED (Từ Promotion Service)
 **Topic:** `t.promotion.markdown.events`
 **Consumer Group:** `product-markdown-group`
-**Xử lý bởi:** [Markdown Price Calculator Worker](product_workers.md#5-markdown-price-calculator-worker)
+**Xử lý bởi:** [Markdown Price Calculator Worker](product_workers.md#4-markdown-price-calculator-worker)
 
 **Cấu trúc Payload kỳ vọng (JSON):**
 ```json
@@ -444,7 +439,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   }
 }
 ```
-**Logic xử lý (Kèm Sửa Lỗi C2):** Product Service query `product_markdown_applied WHERE rule_id = '42'` → lấy danh sách `sku_id` bị ảnh hưởng → tính lại `promotional_price` với các thông số thay đổi. **Lưu ý tối cao:** `original_price` dùng để tính toán BẮT BUỘC phải được query trực tiếp từ field tĩnh `product_skus.original_price` tính tại thời điểm Worker đang xử lý, TUYỆT ĐỐI KHÔNG dùng lại `original_price_snapshot` của lịch sử; đồng thời worker cập nhật lại `original_price_snapshot` = `original_price` tại thời điểm đó → batch update `product_skus` và `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events cho từng SKU bị ảnh hưởng.
+**Logic xử lý:** Product Service query `product_markdown_applied WHERE rule_id = '42'` → lấy danh sách `sku_id` bị ảnh hưởng → tính lại `promotional_price` với các thông số thay đổi. **Lưu ý tối cao:** `original_price` dùng để tính toán BẮT BUỘC phải được query trực tiếp từ field tĩnh `product_skus.original_price` tính tại thời điểm Worker đang xử lý → batch update `product_skus` và `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events cho từng SKU bị ảnh hưởng.
 
 ### 4.3. MARKDOWN_ENDED (Từ Promotion Service)
 **Topic:** `t.promotion.markdown.events`
@@ -464,20 +459,20 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 }
 ```
 
-> **Thống nhất tên event:** Event này tên chính thức là `MARKDOWN_ENDED` (không phải `MARKDOWN_EXPIRED`). Tên `MARKDOWN_ENDED` bao gồm cả "hết hạn" lẫn "Admin tắt thủ công", phân biệt qua field `reason`:
+> **Thống nhất tên event:** Event này tên chính thức là `MARKDOWN_ENDED`. Tên `MARKDOWN_ENDED` bao gồm cả "hết hạn" lẫn "Admin tắt thủ công", phân biệt qua field `reason`:
 > - `reason: "EXPIRED"` → [Markdown Expiry Scheduler](../promotion/promotion_workers.md#34-markdown-expiry-scheduler-redis-zset-va-cron-fallback) (Redis ZSET loop + cron fallback) phát hiện `end_time < NOW()`
 > - `reason: "ADMIN_DISABLED"` → Admin tắt thủ công trên dashboard
 >
-> Xem định nghĩa event gốc tại [Promotion Events - MARKDOWN_ENDED](../promotion/promotion_events.md#23-markdown_ended).
+> Xem định nghĩa event gốc tại [Promotion Events - MARKDOWN_ENDED](../promotion/promotion_events.md#23-markdown-ended).
 
-**Logic xử lý:** Query `product_markdown_applied WHERE rule_id = '42'` → lấy danh sách `sku_id` bị ảnh hưởng → reset `product_skus.promotional_price = NULL` → delete records từ `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events (với `change_source = MARKDOWN_ENDED` hoặc `MARKDOWN_EXPIRED_FALLBACK` nếu đến từ job self-healing).
+**Logic xử lý:** Query `product_markdown_applied WHERE rule_id = '42'` → lấy danh sách `sku_id` bị ảnh hưởng → reset `product_skus.promotional_price = NULL` → delete records từ `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events (với `change_source = MARKDOWN_ENDED` nếu đến từ event này hoặc `MARKDOWN_EXPIRED_FALLBACK` nếu đến từ job self-healing).
 
 > **No-op guard cho `MARKDOWN_ENDED`:** Nếu không còn bản ghi nào trong `product_markdown_applied` cho `rule_id`, consumer phải ACK và no-op (không phát `PRODUCT_PRICE_UPDATED` rỗng, không coi là lỗi).
 
 ### 4.4. INVENTORY_QUANTITY_CHANGED (Từ Inventory Service)
 **Topic:** `t.inventory.events`
 **Consumer Group:** `product-inventory-fast-sync-group` (Phase 1: Lock-Free Fast Sync)
-**Xử lý bởi:** [Inventory Sync Worker - Two-Phase Architecture](product_workers.md#6-inventory-sync-worker-two-phase-lock-free-architecture). Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md).
+**Xử lý bởi:** [Inventory Sync Worker - Two-Phase Architecture](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture). Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md).
 
 **Cấu trúc Payload kỳ vọng (JSON):**
 ```json
