@@ -167,9 +167,9 @@ public class InventoryFastSyncConsumer {
 
     // Lua script: atomic compare-and-swap trên Redis
     // Trả về:
-    //   1 = update thành công (event mới hơn)
-    //   0 = skip (event cũ hơn hoặc không tìm thấy key)
-    //  -1 = key chưa tồn tại (cache miss - upsert)
+    //   1 = update thành công (cache hit + event mới hơn + product_id khớp)
+    //   0 = skip (stale hoặc product_id không khớp)
+    //  -1 = cache miss — chỉ ZADD pending, KHÔNG ghi cache (để tránh SKU mới bị set quantity=0 sai)
     private static final String LUA_COMPARE_AND_SWAP =
         """
         local key = KEYS[1]
@@ -185,35 +185,38 @@ public class InventoryFastSyncConsumer {
             if eventTimestamp <= cachedTs then
                 return 0  -- stale event, skip
             end
+            -- Cache hit + event mới: apply full update
+            local newData = {
+                sku_id = data.sku_id,
+                product_id = productId,
+                display_quantity = availableQty,
+                last_inventory_sync_at = eventTimestamp,
+                sku_status = skuStatus,
+                original_price = data.original_price,
+                promotional_price = data.promotional_price,
+                best_price = data.best_price,
+                has_promotion = data.has_promotion,
+                sku_code = data.sku_code or "",
+                product_name = data.product_name or "",
+                main_image_url = data.main_image_url or "",
+                product_status = data.product_status or "",
+                is_available = availableQty > 0,
+                is_deleted = data.is_deleted or false,
+                variant_attributes = data.variant_attributes or {},
+                price_updated_at = data.price_updated_at
+            }
+            redis.call('JSON.SET', key, '$', cjson.encode(newData))
+            redis.call('EXPIRE', key, 3600)
+            redis.call('ZADD', KEYS[2], eventTimestamp, KEYS[3])
+            redis.call('EXPIRE', KEYS[2], 86400)
+            return 1
         end
 
-        -- Build new cache value
-        local newData = {
-            sku_id = data and data.sku_id or key,
-            product_id = productId,
-            display_quantity = availableQty,
-            last_inventory_sync_at = eventTimestamp,
-            sku_status = skuStatus,
-            -- preserve existing fields if present
-            original_price = data and data.original_price or nil,
-            promotional_price = data and data.promotional_price or nil,
-            sku_code = data and data.sku_code or nil,
-            product_name = data and data.product_name or nil,
-            main_image_url = data and data.main_image_url or nil,
-            product_status = data and data.product_status or nil,
-            is_available = availableQty > 0,
-            is_deleted = data and data.is_deleted or false,
-            variant_attributes = data and data.variant_attributes or {}
-        }
-
-        redis.call('JSON.SET', key, '$', cjson.encode(newData))
-        redis.call('EXPIRE', key, 3600)  -- 1h TTL
-
-        -- Add to pending sync ZSET
+        -- Cache miss: KHÔNG ghi display_quantity/sku_status vào cache.
+        -- Chỉ ZADD pending để Phase 2 query DB rồi populate cache đúng.
         redis.call('ZADD', KEYS[2], eventTimestamp, KEYS[3])
-        redis.call('EXPIRE', KEYS[2], 86400)  -- 24h TTL for ZSET
-
-        return 1
+        redis.call('EXPIRE', KEYS[2], 86400)
+        return -1
         """;
 
     @KafkaListener(
@@ -347,15 +350,18 @@ public class InventoryAsyncDbSyncWorker {
             PendingSyncItem pending = pendingMap.get(sku.getSkuId());
             if (pending == null) {
                 // SKU không có event trong drain batch hiện tại
-                // Kiểm tra SKU này có đang OUT_OF_STOCK không -> có thể cần auto-reactivate
-                // Không làm gì thêm, chỉ giữ nguyên state
                 continue;
             }
 
             // Staleness guard: chỉ update nếu event mới hơn DB
+            // So sánh epoch epoch: pending.eventTimestamp (epoch millis) vs sku.lastInventorySyncAt (epoch millis)
             if (pending.getEventTimestamp() <= sku.getLastInventorySyncAt()) {
                 continue; // event cũ, skip
             }
+
+            // Auto-hide guard (bổ sung check OUT_OF_STOCK):
+            // AUTO_HIDE chỉ trigger khi tất cả SKU quantity=0 VÀ tất cả đang OUT_OF_STOCK
+            // product_state_machine.md định nghĩa guard chính là quantity=0, OUT_OF_STOCK là trạng thái kết quả
 
             String oldStatus = sku.getStatus();
             sku.setDisplayQuantity(pending.getAvailableQuantity());
@@ -451,7 +457,7 @@ public class InventoryAsyncDbSyncWorker {
 -- ARGV[2] = available_quantity
 -- ARGV[3] = product_id
 -- ARGV[4] = sku_status
--- Returns: 1 = applied, 0 = stale skipped, -1 = new key upsert
+-- Returns: 1 = applied (cache hit + newer), 0 = stale skipped, -1 = cache miss
 
 local cacheKey = KEYS[1]
 local pendingZSet = KEYS[2]
@@ -463,68 +469,67 @@ local skuStatus = ARGV[4]
 
 -- Get existing cache data
 local existingJson = redis.call('JSON.GET', cacheKey)
-local cachedTs = 0
-local existingData = nil
 
 if existingJson then
-    existingData = cjson.decode(existingJson)
-    cachedTs = tonumber(existingData.last_inventory_sync_at) or 0
-end
+    local data = cjson.decode(existingJson)
+    local cachedTs = tonumber(data.last_inventory_sync_at) or 0
 
--- Out-of-order guard
-if cachedTs > 0 and eventTimestamp <= cachedTs then
-    return 0  -- stale event
-end
-
--- Determine SKU status
-local newSkuStatus = skuStatus
-if availableQty == 0 then
-    newSkuStatus = 'OUT_OF_STOCK'
-elseif availableQty > 0 then
-    -- Chỉ auto-reactivate nếu SKU đang OUT_OF_STOCK. INACTIVE do admin set không tự động nhảy.
-    if newSkuStatus == 'OUT_OF_STOCK' then
-        newSkuStatus = 'ACTIVE'
+    -- Staleness guard: skip if event is not newer
+    if eventTimestamp <= cachedTs then
+        return 0  -- stale event, skip
     end
-    -- Nếu là INACTIVE (admin chủ động deactivate), giữ nguyên INACTIVE.
+
+    -- Product ID guard: verify event is for the correct product
+    if data.product_id and data.product_id ~= "" and data.product_id ~= productId then
+        return 0  -- product_id mismatch, possible data corruption, skip
+    end
+
+    -- Cache hit + event mới: apply full inventory update
+    -- Determine SKU status
+    local newSkuStatus = skuStatus
+    if availableQty == 0 then
+        newSkuStatus = 'OUT_OF_STOCK'
+    elseif availableQty > 0 then
+        if newSkuStatus == 'OUT_OF_STOCK' then
+            newSkuStatus = 'ACTIVE'
+        end
+    end
+
+    -- Build cache value (preserve non-inventory fields)
+    local newData = {
+        sku_id = data.sku_id,
+        product_id = productId,
+        sku_code = data.sku_code or "",
+        product_name = data.product_name or "",
+        main_image_url = data.main_image_url or "",
+        original_price = data.original_price or 0,
+        promotional_price = data.promotional_price,
+        best_price = data.best_price or 0,
+        has_promotion = data.has_promotion or false,
+        display_quantity = availableQty,
+        last_inventory_sync_at = eventTimestamp,
+        sku_status = newSkuStatus,
+        product_status = data.product_status or "",
+        is_available = availableQty > 0,
+        is_deleted = data.is_deleted or false,
+        variant_attributes = data.variant_attributes or {},
+        price_updated_at = data.price_updated_at
+    }
+
+    -- Atomic write
+    redis.call('JSON.SET', cacheKey, '$', cjson.encode(newData))
+    redis.call('EXPIRE', cacheKey, 3600)
+    redis.call('ZADD', pendingZSet, eventTimestamp, pendingMember)
+    redis.call('EXPIRE', pendingZSet, 86400)
+    return 1
 end
 
--- Build cache value (preserve existing fields)
--- CRITICAL: product_status is PRESERVED from existing cache, NOT overwritten.
--- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM) or SKU_STATUS_CHANGED (Phase 2 FSM trigger).
--- Phase 1 does NOT update product_status to avoid overwriting a newer state change with a stale cached value.
--- price_updated_at is also preserved — it is only set by Event Handler when refreshing
--- from SKU_UPDATED (price change).
-local newData = {
-    sku_id = existingData and existingData.sku_id or string.match(cacheKey, "product:sku:(.+)"),
-    product_id = productId,
-    sku_code = existingData and existingData.sku_code or "",
-    product_name = existingData and existingData.product_name or "",
-    main_image_url = existingData and existingData.main_image_url or "",
-    original_price = existingData and existingData.original_price or 0,
-    promotional_price = existingData and existingData.promotional_price,
-    best_price = existingData and existingData.best_price or 0,
-    has_promotion = existingData and existingData.has_promotion or false,
-    display_quantity = availableQty,
-    last_inventory_sync_at = eventTimestamp,
-    sku_status = newSkuStatus,
-    -- product_status: PRESERVED, never overwritten by Phase 1
-    product_status = existingData and existingData.product_status or "",
-    is_available = availableQty > 0,
-    is_deleted = existingData and existingData.is_deleted or false,
-    variant_attributes = existingData and existingData.variant_attributes or {},
-    -- price_updated_at: PRESERVED, only set by Event Handler on PRODUCT_PRICE_UPDATED
-    price_updated_at = existingData and existingData.price_updated_at or nil
-}
-
--- Atomic write
-redis.call('JSON.SET', cacheKey, '$', cjson.encode(newData))
-redis.call('EXPIRE', cacheKey, 3600)
-
--- Add to pending ZSET for async DB sync
+-- Cache miss: KHÔNG ghi inventory fields vào cache.
+-- Chỉ ZADD pending để Phase 2 query DB rồi populate cache đầy đủ.
+-- Tránh bug: SKU mới tạo chưa có cache bị set quantity=0 sai khi event đầu tiên đến.
 redis.call('ZADD', pendingZSet, eventTimestamp, pendingMember)
 redis.call('EXPIRE', pendingZSet, 86400)
-
-return existingJson and 1 or -1
+return -1
 ```
 
 ---

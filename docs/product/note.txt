@@ -42,7 +42,7 @@ sau đó mới commit transaction nhả cho product_id tiếp theo.
 - Chi tiết: xem [Inventory Sync Optimization](inventory_sync_optimization.md). 
 
 7. Quyết định chốt sau khi review tài liệu Product Service:
-- Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` được làm mới qua Event Handler Worker khi self-consume `PRODUCT_PRICE_UPDATED`.
+- Với luồng Markdown, bỏ ghi đè trực tiếp `product:sku:{sku_id}` ở Markdown Worker để tránh double-write bất đồng bộ. `product:sku:{sku_id}` được làm mới qua Event Handler Worker khi self-consume `SKU_UPDATED` (từ Markdown Worker) và `SKU_CREATED` (từ Thêm SKU).
 - Markdown Worker chỉ còn quản lý key phụ `product:markdown:active:{sku_id}` (SET/DEL) để phản ánh trạng thái rule markdown.
 - Để giảm write amplification, Event Handler Worker phải dedupe theo `product_id` trong từng poll-batch.
 - Trước khi overwrite `product:sku:{sku_id}`, bắt buộc so sánh guard `(version, updated_at)` giữa event và cache; event bằng/cũ hơn phải skip để chặn stale/equal write.

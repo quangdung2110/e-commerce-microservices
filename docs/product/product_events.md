@@ -22,6 +22,8 @@ Kiến trúc sự kiện này đảm nhậm nhiệm vụ đồng bộ CQRS từ 
 
 > **Identity contract (bắt buộc):*
 > **`rule_id` contract (bắt buộc):** Trong Product Service, `rule_id` được chuẩn hoá về string ở consumer boundary. Nếu upstream gửi số (legacy), worker phải convert sang string trước khi ghi DB/cache và trước khi so sánh.
+>
+> **Chuẩn hoá event tên:** Hệ thống chỉ dùng duy nhất event `SKU_UPDATED` cho mọi thay đổi cấp SKU (bao gồm cả thay đổi giá và thay đổi trạng thái). Các tên event cũ `SKU_PRICE_UPDATED` và `SKU_STATUS_CHANGED` đã bị loại bỏ hoàn toàn khỏi mọi tài liệu. Mọi reference trong các file khác phải thống nhất dùng `SKU_UPDATED`.
 
 ## 1. Bản Đồ Kafka Topics
 
@@ -233,6 +235,10 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 **Consumers chính:** [Search Service](../search/search_events.md) (cập nhật Elasticsearch), [Event Handler Worker](product_workers.md#2-event-handler-worker) (refresh `product:sku:{sku_id}`).
 
+> **Partition Key contract (BẮT BUỘC):** Vì `aggregate_type = ProductSku`, `partition_key` trong outbox phải là `sku_id` (không phải `product_id`) để đảm bảo event được định tuyến đúng partition. Quy tắc thống nhất: toàn bộ SKU-level events (`SKU_CREATED`, `SKU_UPDATED`, `SKU_DELETED`) dùng `sku_id` làm `partition_key`; toàn bộ Product-level events dùng `product_id`.
+
+> **`change_source` (BẮT BUỘC khi `sku_status` trong `changed_fields`):** Nguồn phát của thay đổi SKU. Giá trị bắt buộc nằm trong payload, KHÔNG nằm trong header CloudEvents.
+
 **Cấu trúc Payload (JSON):**
 ```json
 {
@@ -240,6 +246,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "event_type": "SKU_UPDATED",
   "aggregate_type": "ProductSku",
   "aggregate_id": "sku-uuid-001",
+  "partition_key": "sku-uuid-001",
   "correlation_id": "req-123459",
   "timestamp": "2026-02-28T06:00:00Z",
   "source": "product-service",
@@ -256,6 +263,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "variant_attributes_json": {"color": "Đen", "storage": "256GB"},
     "product_status_changed": false,
     "new_product_status": null,
+    "change_source": "ADMIN_UPDATE",
     "updated_at": "2026-02-28T06:00:00Z",
     "changed_fields": ["original_price", "promotional_price", "best_price", "has_promotion"]
   }
@@ -353,9 +361,10 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ```json
 {
   "event_id": "evt_skudel_xxx",
-  "aggregate_id": "sku-uuid-002",
-  "aggregate_type": "ProductSku",
   "event_type": "SKU_DELETED",
+  "aggregate_type": "ProductSku",
+  "aggregate_id": "sku-uuid-002",
+  "partition_key": "sku-uuid-002",
   "correlation_id": "req-123492",
   "source": "product-service",
   "schema_version": 1,
@@ -374,6 +383,8 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ```
 
 > **Contract guard cho tombstone (BẮT BUỘC):** `SKU_DELETED` phải luôn có `payload.updated_at` để downstream guard out-of-order khi scripted-upsert tombstone.
+>
+> **Partition Key (BẮT BUỘC):** `partition_key = sku_id` — tuân thủ quy tắc chuẩn hóa SKU-level events.
 >
 > **Enrichment fields bắt buộc:** Backend phải bổ sung `product_name`, `category_id`, `category_name`, `sku_code` trong cùng transaction trước khi insert outbox. Đây là dữ liệu cần thiết để Search Service cleanup Suggestion Cache và audit log mà không phải query ES document riêng.
 
@@ -462,7 +473,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 **Mô tả luồng xử lý:**
 - Product Service xử lý Write Model (đổi `product.status` thành `HIDDEN` tại PostgreSQL) — **KHÔNG phát thêm event `PRODUCT_STATUS_CHANGED`** vì không cần thiết.
-- Search Service nhận `CATEGORY_DELETED`, tự động update cả `category_name/category_path` lẫn `product_status` trên Elasticsearch từ chính event này.
+- Cả Product Service (DB) và Search Service (ES) nhận `CATEGORY_DELETED` qua Kafka cùng lúc. Thứ tự không xác định, nhưng Search Service guard bằng `event.updated_at` (chỉ update khi mới hơn). Đây là **acceptable eventual consistency**: Cart/Checkout không phụ thuộc Elasticsearch cho luồng mua hàng.
 
 **Payload contract:**
 - Payload nên mang `descendant_category_ids` khi xoá cả cây danh mục. Nếu field này thiếu (legacy), consumer tối thiểu phải xử lý `category_id` gốc và có cơ chế self-heal subtree theo snapshot category tree nội bộ.

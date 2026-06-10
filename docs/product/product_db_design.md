@@ -76,10 +76,11 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
-> **Lưu ý quan trọng về Concurrency Control (Loại bỏ Optimistic Locking):**
+> **Lưu ý quan trọng về Concurrency Control (Loại bỏ `@Version` column):**
 > Bảng `products` và `product_skus` KHÔNG còn sử dụng cột `version` cho optimistic locking. Thay vào đó, hệ thống áp dụng:
 > - **Pessimistic Locking (Database Row Lock)** cho các thao tác trong cùng Product Service: lock theo thứ tự **Product -> SKU** (`SELECT ... FOR NO KEY UPDATE` / `SELECT ... FOR UPDATE`) để đảm bảo atomicity và chống deadlock.
 > - **Distributed Lock (Redis)** cho Markdown Worker khi nhiều instance worker cùng xử lý, tránh race condition trên cùng một product.
+> - **Optimistic Locking (không có `@Version` column)** cho Phase 2 Inventory Sync: dùng version field trong Java object để detect conflict, kết hợp `@Retryable` hoặc manual retry khi conflict xảy ra.
 > - **Out-of-Order Guard cho Search Service** sử dụng `updated_at` timestamp (TIMESTAMPTZ) thay vì version number. Elasticsearch document guard so sánh `event.updated_at > current_doc.updated_at` để chặn event đến trễ.
     *   **Quy tắc định danh SKU**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
 
@@ -120,7 +121,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
 
 *   `product_outbox_events` (Bảng Ghi nhận Event Phát đi cho Outbox Pattern kết hợp Debezium)
     *   `event_id`: UUID PRIMARY KEY.
-    *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATUS_CHANGED`, `SKU_PRICE_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
+    *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATUS_CHANGED`, `SKU_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
     *   `aggregate_type`: VARCHAR(50) (VD: Product, ProductSku).
     *   `aggregate_id`: VARCHAR(255) (Bắt buộc theo `aggregate_type`: Product -> `product_id`, ProductSku -> `sku_id`, Category -> `category_id`).
     *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect. **Application-level validation bắt buộc trước INSERT:** kiểm tra `partition_key IS NOT NULL AND partition_key <> ''`. Ngoài ràng buộc `NOT NULL`, nên thêm `CHECK (LENGTH(partition_key) > 0)` để phòng ngừa edge case. Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
