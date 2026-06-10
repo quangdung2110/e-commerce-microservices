@@ -1,179 +1,150 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/ecommerce-platform/go/services/cart-service/internal/api/dto/request"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/api/dto/response"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/api/middleware"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/common/constants"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/domain/service"
+	"cart-service/internal/api/dto/request"
+	"cart-service/internal/api/dto/response"
+	"cart-service/internal/api/middleware"
+	"cart-service/internal/domain/entity"
+	"cart-service/internal/domain/service"
 )
 
-// CartHandler handles cart-related HTTP requests
+// CartHandler handles cart HTTP endpoints.
 type CartHandler struct {
 	cartService *service.CartService
-	logger     *zap.Logger
+	logger      *zap.Logger
 }
 
-// NewCartHandler creates a new CartHandler
+// NewCartHandler creates a new cart handler.
 func NewCartHandler(cartService *service.CartService, logger *zap.Logger) *CartHandler {
 	return &CartHandler{
 		cartService: cartService,
-		logger:     logger,
+		logger:      logger,
 	}
 }
 
 // AddItem handles POST /api/v1/carts/items
-func (h *CartHandler) AddItem(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+func (h *CartHandler) AddItem(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := middleware.GetRequestID(c)
+	userID := middleware.GetUserID(c)
 
-	// Extract user_id from header
-	userID := r.Header.Get(constants.HeaderUserID)
-	if userID == "" {
-		middleware.Error(w, r, http.StatusBadRequest, "X-User-Id header is required")
-		return
-	}
-
-	// Parse request
 	var req request.AddItemRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		middleware.Error(w, r, http.StatusBadRequest, "Invalid request body")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("invalid request body",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
 		return
 	}
 
-	// Validate request
 	if err := req.Validate(); err != nil {
-		middleware.Error(w, r, http.StatusBadRequest, err.Error())
+		h.logger.Warn("validation failed",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
 		return
 	}
 
-	// Execute business logic
-	result, err := h.cartService.AddItem(ctx, userID, req.SkuID, req.Quantity)
+	result, err := h.cartService.AddItem(ctx, userID, &service.AddItemRequest{
+		SkuID:    req.SkuID,
+		Quantity: req.Quantity,
+	})
 	if err != nil {
-		h.logger.Error("Failed to add item to cart",
+		h.logger.Error("AddItem failed",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("sku_id", req.SkuID),
 			zap.Error(err),
 		)
-		middleware.Error(w, r, http.StatusInternalServerError, "Failed to add item to cart")
+		h.abortWithError(c, err, requestID)
 		return
 	}
 
-	// Handle business errors
-	if !result.Success {
-		statusCode := http.StatusBadRequest
-		switch result.ErrorCode {
-		case "PRODUCT_UNAVAILABLE":
-			statusCode = http.StatusBadRequest
-		case "INSUFFICIENT_INVENTORY":
-			statusCode = http.StatusBadRequest
-		case "CART_FULL":
-			statusCode = http.StatusUnprocessableEntity
-		}
-		middleware.Error(w, r, statusCode, result.Error.Error())
-		return
-	}
-
-	// Build response
-	resp := response.NewAddItemResponse(result)
-
-	h.logger.Info("Item added to cart",
-		zap.String("cart_id", result.CartID),
-		zap.String("sku_id", req.SkuID),
-		zap.Int("quantity", result.Item.Quantity),
-		zap.String("stream_id", result.StreamID),
-	)
-
-	middleware.JSON(w, r, http.StatusOK, resp)
+	c.JSON(http.StatusOK, request.AddItemResponse{
+		Success:   true,
+		SkuID:     result.SkuID,
+		Quantity:  result.Quantity,
+		UpdatedAt: result.UpdatedAt,
+		Message:   "Thêm vào giỏ hàng thành công",
+	})
 }
 
 // GetCart handles GET /api/v1/carts/mine
-func (h *CartHandler) GetCart(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+func (h *CartHandler) GetCart(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := middleware.GetRequestID(c)
+	userID := middleware.GetUserID(c)
 
-	// Extract user_id from header
-	userID := r.Header.Get(constants.HeaderUserID)
-	if userID == "" {
-		middleware.Error(w, r, http.StatusBadRequest, "X-User-Id header is required")
-		return
-	}
-
-	// Execute business logic
-	result, err := h.cartService.GetCart(ctx, userID)
+	cartView, err := h.cartService.GetCart(ctx, userID)
 	if err != nil {
-		h.logger.Error("Failed to get cart",
+		h.logger.Error("GetCart failed",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.Error(err),
 		)
-		middleware.Error(w, r, http.StatusInternalServerError, "Failed to get cart")
+		h.abortWithError(c, err, requestID)
 		return
 	}
 
-	// Build response
-	resp := response.NewGetCartResponse(result)
-
-	h.logger.Info("Cart retrieved",
-		zap.String("cart_id", result.CartID),
-		zap.Int("item_count", result.TotalUniqueSKUs),
-		zap.Bool("is_price_degraded", result.IsPriceDegraded),
-	)
-
-	middleware.JSON(w, r, http.StatusOK, resp)
+	cartResp := response.FromCartView(cartView)
+	c.JSON(http.StatusOK, cartResp)
 }
 
-// DeleteItems handles DELETE /api/v1/carts/items
-func (h *CartHandler) DeleteItems(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// BatchDelete handles DELETE /api/v1/carts/items
+func (h *CartHandler) BatchDelete(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := middleware.GetRequestID(c)
+	userID := middleware.GetUserID(c)
 
-	// Extract user_id from header
-	userID := r.Header.Get(constants.HeaderUserID)
-	if userID == "" {
-		middleware.Error(w, r, http.StatusBadRequest, "X-User-Id header is required")
-		return
-	}
-
-	// Parse request
-	var req request.DeleteItemsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		middleware.Error(w, r, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	// Validate request
-	if err := req.Validate(); err != nil {
-		middleware.Error(w, r, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	// Execute business logic
-	result, err := h.cartService.DeleteItems(ctx, userID, req.CartID, req.SkuIDs)
-	if err != nil {
-		h.logger.Error("Failed to delete items from cart",
-			zap.String("cart_id", req.CartID),
+	var req request.BatchDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("invalid request body",
+			zap.String("request_id", requestID),
 			zap.Error(err),
 		)
-		middleware.Error(w, r, http.StatusInternalServerError, "Failed to delete items")
+		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
 		return
 	}
 
-	// Handle business errors
-	if !result.Success {
-		middleware.Error(w, r, http.StatusBadRequest, result.Error.Error())
+	if err := req.Validate(); err != nil {
+		h.logger.Warn("validation failed",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
+		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
 		return
 	}
 
-	// Build response
-	resp := response.NewDeleteItemsResponse(result)
+	count, err := h.cartService.BatchDelete(ctx, userID, req.SkuIDs, "CART_CLEARED")
+	if err != nil {
+		h.logger.Error("BatchDelete failed",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		h.abortWithError(c, err, requestID)
+		return
+	}
 
-	h.logger.Info("Items deleted from cart",
-		zap.String("cart_id", req.CartID),
-		zap.Int64("deleted_count", result.DeletedCount),
-		zap.Strings("sku_ids", req.SkuIDs),
-	)
+	c.JSON(http.StatusOK, response.BatchDeleteResponse{
+		Success:      true,
+		DeletedCount: count,
+		Message:      "Xóa sản phẩm thành công",
+	})
+}
 
-	middleware.JSON(w, r, http.StatusOK, resp)
+// abortWithError converts domain errors to HTTP responses.
+func (h *CartHandler) abortWithError(c *gin.Context, err error, requestID string) {
+	errResp := response.FromDomainError(err, requestID)
+	statusCode := response.HTTPStatusCode(errResp.Code)
+	c.AbortWithStatusJSON(statusCode, errResp)
 }

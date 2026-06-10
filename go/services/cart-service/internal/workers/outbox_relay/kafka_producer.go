@@ -1,139 +1,77 @@
-﻿package outbox_relay
+package outbox_relay
 
 import (
 	"context"
-	"sync"
-	"time"
 
-	"github.com/IBM/sarama"
 	"go.uber.org/zap"
+
+	"cart-service/internal/domain/port"
+	"cart-service/internal/infrastructure/kafka"
 )
 
-// KafkaProducerClient implements KafkaProducer for Sarama SyncProducer
-// Using SyncProducer ensures messages are ACKed by broker before returning,
-// which is required for XACK-after-ACK semantics in Outbox Relay
-type KafkaProducerClient struct {
-	producer sarama.SyncProducer
-	logger   *zap.Logger
-
-	mu     sync.RWMutex
-	closed bool
+// KafkaProducer wraps kafka.Publisher and implements port.KafkaPublisher.
+type KafkaProducer struct {
+	inner   *kafka.Publisher
+	logger  *zap.Logger
 }
 
-// NewKafkaProducer creates a new Kafka producer
-func NewKafkaProducer(
-	brokers []string,
-	logger *zap.Logger,
-	acks string,
-	retries int,
-) (*KafkaProducerClient, error) {
-	config := sarama.NewConfig()
-
-	// SyncProducer settings - ensures acks=all behavior
-	config.Producer.Return.Successes = true
-	config.Producer.Return.Errors = true
-
-	// Acks configuration
-	switch acks {
-	case "all", "-1":
-		config.Producer.RequiredAcks = sarama.WaitForAll
-	case "1":
-		config.Producer.RequiredAcks = sarama.WaitForLocal
-	case "0":
-		config.Producer.RequiredAcks = sarama.NoResponse
-	default:
-		config.Producer.RequiredAcks = sarama.WaitForAll
+// NewKafkaProducer creates a new Kafka producer wrapper.
+func NewKafkaProducer(inner *kafka.Publisher, logger *zap.Logger) *KafkaProducer {
+	return &KafkaProducer{
+		inner:  inner,
+		logger: logger,
 	}
-
-	// Retry settings
-	config.Producer.Retry.Max = retries
-
-	// Required for SyncProducer
-	config.Producer.Idempotent = false
-
-	producer, err := sarama.NewSyncProducer(brokers, config)
-	if err != nil {
-		return nil, err
-	}
-
-	client := &KafkaProducerClient{
-		producer: producer,
-		logger:   logger,
-	}
-
-	return client, nil
 }
 
-// Produce sends a message to Kafka synchronously
-// This method BLOCKS until the message is ACKed by the broker (acks=all)
-func (p *KafkaProducerClient) Produce(
-	ctx context.Context,
-	topic string,
-	key []byte,
-	value []byte,
-	headers map[string]string,
-) error {
-	p.mu.RLock()
-	if p.closed {
-		p.mu.RUnlock()
-		return nil
-	}
-	p.mu.RUnlock()
-
-	// Convert headers to Sarama format
-	saramaHeaders := make([]sarama.RecordHeader, 0, len(headers))
-	for k, v := range headers {
-		saramaHeaders = append(saramaHeaders, sarama.RecordHeader{
-			Key:   []byte(k),
-			Value: []byte(v),
-		})
-	}
-
-	msg := &sarama.ProducerMessage{
-		Topic:   topic,
-		Key:     sarama.ByteEncoder(key),
-		Value:   sarama.ByteEncoder(value),
-		Headers: saramaHeaders,
-	}
-
-	// SyncProducer.SendAndWait blocks until message is ACKed by broker
-	// This ensures XACK only happens AFTER broker acknowledgment
-	partition, offset, err := p.producer.SendMessage(msg)
-	if err != nil {
-		p.logger.Error("Kafka produce failed",
-			zap.String("topic", topic),
-			zap.Error(err),
-		)
-		return err
-	}
-
-	p.logger.Debug("Kafka message produced and ACKed",
-		zap.String("topic", topic),
-		zap.Int32("partition", partition),
-		zap.Int64("offset", offset),
+// Publish publishes a cart event message to Kafka.
+func (p *KafkaProducer) Publish(ctx context.Context, msg *port.CartEventMessage) error {
+	p.logger.Debug("publishing event to Kafka",
+		zap.String("event_type", msg.EventType),
+		zap.String("aggregate_id", msg.AggregateID),
+		zap.String("stream_id", msg.StreamID),
 	)
-
-	return nil
+	return p.inner.Publish(ctx, msg)
 }
 
-// Flush is a no-op for SyncProducer as messages are sent immediately
-func (p *KafkaProducerClient) Flush(timeout time.Duration) error {
-	return nil
+// Close closes the underlying Kafka producer.
+func (p *KafkaProducer) Close() error {
+	return p.inner.Close()
 }
 
-// Close closes the producer
-func (p *KafkaProducerClient) Close() error {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil
-	}
-	p.closed = true
-	p.mu.Unlock()
+// AsyncKafkaProducer wraps kafka.AsyncPublisher.
+type AsyncKafkaProducer struct {
+	inner  *kafka.AsyncPublisher
+	logger *zap.Logger
+}
 
-	if err := p.producer.Close(); err != nil {
-		return err
+// NewAsyncKafkaProducer creates a new async Kafka producer wrapper.
+func NewAsyncKafkaProducer(inner *kafka.AsyncPublisher, logger *zap.Logger) *AsyncKafkaProducer {
+	return &AsyncKafkaProducer{
+		inner:  inner,
+		logger: logger,
 	}
+}
 
-	return nil
+// PublishAsync sends a message asynchronously.
+func (p *AsyncKafkaProducer) PublishAsync(ctx context.Context, msg *port.CartEventMessage) error {
+	p.logger.Debug("publishing async event to Kafka",
+		zap.String("event_type", msg.EventType),
+		zap.String("aggregate_id", msg.AggregateID),
+	)
+	return p.inner.PublishAsync(ctx, msg)
+}
+
+// Errors returns the error channel for async errors.
+func (p *AsyncKafkaProducer) Errors() <-chan error {
+	return p.inner.Errors()
+}
+
+// Successes returns the success channel.
+func (p *AsyncKafkaProducer) Successes() <-chan struct{} {
+	return p.inner.Successes()
+}
+
+// Close closes the underlying async producer.
+func (p *AsyncKafkaProducer) Close() error {
+	return p.inner.Close()
 }

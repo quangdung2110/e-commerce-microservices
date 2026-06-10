@@ -1,109 +1,91 @@
-﻿package outbox_relay
+package outbox_relay
 
 import (
-	"sync"
 	"sync/atomic"
+	"time"
+
+	"go.uber.org/zap"
 )
 
-// Metrics holds metrics for the outbox relay worker
+// Metrics holds counters for the outbox relay worker.
 type Metrics struct {
-	mu                     sync.RWMutex
-	messagesProduced       int64
-	messagesFailed        int64
-	dlqCount              int64
-	streamsProcessed      int64
-	kafkaErrors           int64
-	redisErrors           int64
-	pendingCount          int64
+	logger *zap.Logger
+
+	messagesProcessed  atomic.Int64
+	messagesFailed     atomic.Int64
+	kafkaPublishErrors atomic.Int64
+	redisReadErrors   atomic.Int64
+	ackErrors         atomic.Int64
+	lastProcessedAt   atomic.Int64
+	lastErrorAt       atomic.Int64
 }
 
-// NewMetrics creates a new metrics instance
-func NewMetrics() *Metrics {
-	return &Metrics{}
+// NewMetrics creates new outbox relay metrics.
+func NewMetrics(logger *zap.Logger) *Metrics {
+	return &Metrics{logger: logger}
 }
 
-// IncMessagesProduced increments the messages produced counter
-func (m *Metrics) IncMessagesProduced() {
-	atomic.AddInt64(&m.messagesProduced, 1)
+// RecordProcessed increments the processed message counter.
+func (m *Metrics) RecordProcessed(eventType string) {
+	m.messagesProcessed.Add(1)
+	m.lastProcessedAt.Store(time.Now().UnixMilli())
 }
 
-// IncMessagesFailed increments the messages failed counter
-func (m *Metrics) IncMessagesFailed() {
-	atomic.AddInt64(&m.messagesFailed, 1)
+// RecordFailed increments the failed message counter.
+func (m *Metrics) RecordFailed(eventType string) {
+	m.messagesFailed.Add(1)
+	m.lastErrorAt.Store(time.Now().UnixMilli())
 }
 
-// IncDLQCount increments the DLQ count
-func (m *Metrics) IncDLQCount() {
-	atomic.AddInt64(&m.dlqCount, 1)
+// RecordKafkaError increments the Kafka publish error counter.
+func (m *Metrics) RecordKafkaError(eventType string) {
+	m.kafkaPublishErrors.Add(1)
+	m.messagesFailed.Add(1)
+	m.lastErrorAt.Store(time.Now().UnixMilli())
 }
 
-// IncStreamsProcessed increments the streams processed counter
-func (m *Metrics) IncStreamsProcessed() {
-	atomic.AddInt64(&m.streamsProcessed, 1)
+// RecordRedisError increments the Redis read error counter.
+func (m *Metrics) RecordRedisError() {
+	m.redisReadErrors.Add(1)
 }
 
-// IncKafkaErrors increments the Kafka errors counter
-func (m *Metrics) IncKafkaErrors() {
-	atomic.AddInt64(&m.kafkaErrors, 1)
+// RecordAckError increments the ACK error counter.
+func (m *Metrics) RecordAckError() {
+	m.ackErrors.Add(1)
 }
 
-// IncRedisErrors increments the Redis errors counter
-func (m *Metrics) IncRedisErrors() {
-	atomic.AddInt64(&m.redisErrors, 1)
-}
-
-// SetPendingCount sets the pending message count
-func (m *Metrics) SetPendingCount(count int64) {
-	atomic.StoreInt64(&m.pendingCount, count)
-}
-
-// GetMessagesProduced returns the messages produced count
-func (m *Metrics) GetMessagesProduced() int64 {
-	return atomic.LoadInt64(&m.messagesProduced)
-}
-
-// GetMessagesFailed returns the messages failed count
-func (m *Metrics) GetMessagesFailed() int64 {
-	return atomic.LoadInt64(&m.messagesFailed)
-}
-
-// GetDLQCount returns the DLQ count
-func (m *Metrics) GetDLQCount() int64 {
-	return atomic.LoadInt64(&m.dlqCount)
-}
-
-// GetStreamsProcessed returns the streams processed count
-func (m *Metrics) GetStreamsProcessed() int64 {
-	return atomic.LoadInt64(&m.streamsProcessed)
-}
-
-// GetKafkaErrors returns the Kafka errors count
-func (m *Metrics) GetKafkaErrors() int64 {
-	return atomic.LoadInt64(&m.kafkaErrors)
-}
-
-// GetRedisErrors returns the Redis errors count
-func (m *Metrics) GetRedisErrors() int64 {
-	return atomic.LoadInt64(&m.redisErrors)
-}
-
-// GetPendingCount returns the pending message count
-func (m *Metrics) GetPendingCount() int64 {
-	return atomic.LoadInt64(&m.pendingCount)
-}
-
-// Snapshot returns a snapshot of all metrics
-func (m *Metrics) Snapshot() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return map[string]interface{}{
-		"messages_produced":    m.GetMessagesProduced(),
-		"messages_failed":     m.GetMessagesFailed(),
-		"dlq_count":           m.GetDLQCount(),
-		"streams_processed":   m.GetStreamsProcessed(),
-		"kafka_errors":        m.GetKafkaErrors(),
-		"redis_errors":        m.GetRedisErrors(),
-		"pending_count":       m.GetPendingCount(),
+// Snapshot returns a point-in-time snapshot of all metrics.
+func (m *Metrics) Snapshot() MetricsSnapshot {
+	return MetricsSnapshot{
+		MessagesProcessed:  m.messagesProcessed.Load(),
+		MessagesFailed:     m.messagesFailed.Load(),
+		KafkaPublishErrors: m.kafkaPublishErrors.Load(),
+		RedisReadErrors:   m.redisReadErrors.Load(),
+		AckErrors:         m.ackErrors.Load(),
+		LastProcessedAt:    m.lastProcessedAt.Load(),
+		LastErrorAt:       m.lastErrorAt.Load(),
 	}
+}
+
+// MetricsSnapshot holds a point-in-time snapshot of relay metrics.
+type MetricsSnapshot struct {
+	MessagesProcessed  int64
+	MessagesFailed     int64
+	KafkaPublishErrors int64
+	RedisReadErrors   int64
+	AckErrors         int64
+	LastProcessedAt   int64
+	LastErrorAt       int64
+}
+
+// Log logs the current metrics snapshot.
+func (m *Metrics) Log() {
+	s := m.Snapshot()
+	m.logger.Info("outbox_relay metrics",
+		zap.Int64("messages_processed", s.MessagesProcessed),
+		zap.Int64("messages_failed", s.MessagesFailed),
+		zap.Int64("kafka_errors", s.KafkaPublishErrors),
+		zap.Int64("redis_errors", s.RedisReadErrors),
+		zap.Int64("ack_errors", s.AckErrors),
+	)
 }

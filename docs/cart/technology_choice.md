@@ -11,7 +11,7 @@
 | **Kiến trúc dữ liệu** | Redis-First — Redis là Source of Truth, PostgreSQL là Cold Store phụ |
 | **Mô hình I/O** | Write-heavy nhưng rải rác, Read cực nhẹ (HGETALL), yêu cầu latency < 10ms |
 | **Concurrency** | Lua Scripts trên Redis đảm bảo atomicity; không có OOP pattern phức tạp |
-| **Background Workers** | Goroutines chạy Outbox Relay, Stream Trimmer, DLQ Monitor |
+| **Background Workers** | Goroutines chạy Outbox Relay, Stream Trimmer, ~~DLQ Monitor~~ _(sẽ bổ sung sau)_ |
 | **Kafka** | Producer (Outbox Relay) + Consumer (Order Event) |
 | **Database** | PostgreSQL chỉ làm Cold Store — logic ghi đơn giản (Upsert/Delete) |
 | **Logic nghiệp vụ** | Đơn giản — CRUD giỏ hàng, batch delete |
@@ -21,7 +21,7 @@
 ## 2. Lý Do Chọn Golang
 
 ### 2.1. Goroutines — Sinh Ra Để Làm Worker
-Thiết kế Cart Service phụ thuộc nặng vào **Background Workers chạy liên tục** (Outbox Relay, Stream Trimmer, DLQ Monitor, Kafka Consumers). Goroutines của Go là lựa chọn hoàn hảo:
+Thiết kế Cart Service phụ thuộc nặng vào **Background Workers chạy liên tục** (Outbox Relay, Stream Trimmer, ~~DLQ Monitor~~ _(sẽ bổ sung sau)_, Kafka Consumers). Goroutines của Go là lựa chọn hoàn hảo:
 - Khởi tạo hàng nghìn Goroutines mà chỉ tốn vài KB RAM mỗi cái (so với Thread Java tốn ~1MB/thread).
 - Đã được minh chứng trong tài liệu: Worker dùng `XREADGROUP BLOCK`, `XAUTOCLAIM` — pattern chuẩn của Go Redis client.
 - `sync.WaitGroup` và channels giúp điều phối worker lifecycle cực kỳ gọn gàng.

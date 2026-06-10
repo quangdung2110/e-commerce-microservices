@@ -1,61 +1,75 @@
 package router
 
 import (
-	"net/http"
-
-	"github.com/gorilla/mux"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/ecommerce-platform/go/services/cart-service/internal/api/handler"
-	"github.com/ecommerce-platform/go/services/cart-service/internal/api/middleware"
+	"cart-service/internal/api/handler"
+	"cart-service/internal/api/middleware"
+	"cart-service/internal/infrastructure/config"
 )
 
-// Router sets up the HTTP routes
+// Router holds all handlers and the Gin engine.
 type Router struct {
-	mux          *mux.Router
-	cartHandler  *handler.CartHandler
+	engine        *gin.Engine
+	cartHandler   *handler.CartHandler
 	healthHandler *handler.HealthHandler
-	middleware   *middleware.Middleware
+	logger        *zap.Logger
 }
 
-// NewRouter creates a new Router
+// NewRouter creates a new router with all routes configured.
 func NewRouter(
 	cartHandler *handler.CartHandler,
 	healthHandler *handler.HealthHandler,
 	logger *zap.Logger,
+	redisHealth, pgHealth handler.HealthChecker,
+	cfg *config.AppConfig,
 ) *Router {
-	return &Router{
-		mux:          mux.NewRouter(),
-		cartHandler:  cartHandler,
+	if cfg.App.Env == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	engine := gin.New()
+
+	mwCfg := middleware.MiddlewareConfig{
+		RateLimit: middleware.RateLimitConfig{
+			Enabled:       cfg.App.Env != "development",
+			MaxReqsPerMin: 1000,
+		},
+	}
+	engine.Use(middleware.Stack(logger, mwCfg)...)
+
+	r := &Router{
+		engine:        engine,
+		cartHandler:   cartHandler,
 		healthHandler: healthHandler,
-		middleware:   middleware.NewMiddleware(logger),
+		logger:        logger,
+	}
+
+	r.setupRoutes()
+
+	return r
+}
+
+// setupRoutes configures all API routes.
+func (r *Router) setupRoutes() {
+	r.engine.GET("/healthz", r.healthHandler.Liveness)
+	r.engine.GET("/readyz", r.healthHandler.Readiness)
+	r.engine.GET("/metrics", r.healthHandler.Metrics)
+
+	v1 := r.engine.Group("/api/v1")
+	{
+		carts := v1.Group("/carts")
+		carts.Use(middleware.Auth())
+		{
+			carts.GET("/mine", r.cartHandler.GetCart)
+			carts.POST("/items", r.cartHandler.AddItem)
+			carts.DELETE("/items", r.cartHandler.BatchDelete)
+		}
 	}
 }
 
-// setupRoutes configures all routes
-func (r *Router) setupRoutes() {
-	// Apply middleware to all routes
-	r.mux.Use(r.middleware.RecoveryMiddleware)
-	r.mux.Use(r.middleware.RequestIDMiddleware)
-	r.mux.Use(r.middleware.LoggingMiddleware)
-	r.mux.Use(r.middleware.CORSMiddleware)
-
-	// Health endpoints
-	r.mux.HandleFunc("/health/live", r.healthHandler.Live).Methods(http.MethodGet)
-	r.mux.HandleFunc("/health/ready", r.healthHandler.Ready).Methods(http.MethodGet)
-
-	// API v1 routes
-	v1 := r.mux.PathPrefix("/api/v1").Subrouter()
-
-	// Cart routes
-	carts := v1.PathPrefix("/carts").Subrouter()
-	carts.HandleFunc("/items", r.cartHandler.AddItem).Methods(http.MethodPost)
-	carts.HandleFunc("/mine", r.cartHandler.GetCart).Methods(http.MethodGet)
-	carts.HandleFunc("/items", r.cartHandler.DeleteItems).Methods(http.MethodDelete)
-}
-
-// Handler returns the http.Handler
-func (r *Router) Handler() http.Handler {
-	r.setupRoutes()
-	return r.mux
+// Engine returns the Gin engine.
+func (r *Router) Engine() *gin.Engine {
+	return r.engine
 }
