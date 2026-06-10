@@ -134,7 +134,6 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
         ]
       }
     ],
-    "version": 0,
     "created_at": "2026-02-28T03:51:00Z",
     "updated_at": "2026-02-28T03:51:00Z"
   }
@@ -204,19 +203,15 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
         ]
       }
     ],
-    "version": 3,
     "updated_at": "2026-02-28T04:15:00Z"
   }
 }
 ```
 > **Contract diff fields cho downstream cache/category invalidation:** khuyến nghị phát thêm `old_category_id` và `old_status` trong `PRODUCT_UPDATED`. Khi producer chưa phát được (legacy), downstream buộc dùng chiến lược invalidate bảo toàn đúng đắn (conservative invalidation).
 
-> **Quan trọng về Idempotency:** Downstream consumers PHẢI kiểm tra `version` của event. Nếu `version` trong event ≤ `version` đã lưu local, event này là stale (cũ hơn) và phải bỏ qua. Đây là cơ chế chống sai thứ tự (Out-of-order) tự nhiên, tương tự `updated_at` check trong [Cart Service Events](../cart/cart_events.md#22-cart_item_updated).
-> Với `product-invalidation-group` khi refresh `product:sku:{sku_id}`, guard bắt buộc dùng cặp `(version, updated_at)`: chỉ ghi nếu event mới hơn cache hiện tại.
-
 > **Source-selection contract cho `product-invalidation-group` (BẮT BUỘC):**
 > - Ưu tiên nguồn payload khi payload là full snapshot hợp lệ.
-> - Nếu payload thiếu trường bắt buộc (`status`, `category_id`, `version`, `updated_at`, hoặc `skus[]` không đầy đủ field canonical), consumer phải DB re-fetch snapshot đầy đủ Product + SKUs rồi mới ghi cache.
+> - Nếu payload thiếu trường bắt buộc (`status`, `category_id`, `updated_at`, hoặc `skus[]` không đầy đủ field canonical), consumer phải DB re-fetch snapshot đầy đủ Product + SKUs rồi mới ghi cache.
 > - Trong cùng 1 event `PRODUCT_UPDATED`, không được trộn một phần SKU từ payload và phần còn lại từ DB.
 > - Không fallback sang Search/Elasticsearch.
 
@@ -244,7 +239,6 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "changed_by": "admin-uuid-007",
     "changed_by_type": "ADMIN",
     "reason": null,
-    "version": 4,
     "updated_at": "2026-02-28T05:00:00Z",
     "changed_at": "2026-02-28T05:00:00Z"
   }
@@ -279,7 +273,6 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "has_promotion": true,
     "previous_original_price": 34990000.00,
     "previous_promotional_price": null,
-    "version": 4,
     "updated_at": "2026-02-28T06:00:00Z"
   }
 }
@@ -309,7 +302,6 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "payload": {
     "product_id": "prod-uuid-001",
         "sku_ids": ["sku-uuid-001", "sku-uuid-002"],
-    "version": 5,
     "updated_at": "2026-02-28T08:00:00Z",
     "deleted_at": "2026-02-28T08:00:00Z"
   }
@@ -359,14 +351,13 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "payload": {
     "product_id": "prod-uuid-001",
     "sku_id": "sku-uuid-002",
-    "version": 6,
     "updated_at": "2026-03-24T10:00:00Z",
     "deleted_at": "2026-03-24T10:00:00Z"
   }
 }
 ```
 
-> **Contract guard cho tombstone (BẮT BUỘC):** `PRODUCT_SKU_DELETED` phải luôn có `payload.version` để downstream guard out-of-order khi scripted-upsert tombstone.
+> **Contract guard cho tombstone (BẮT BUỘC):** `PRODUCT_SKU_DELETED` phải luôn có `payload.updated_at` để downstream guard out-of-order khi scripted-upsert tombstone.
 
 ### 3.8. CATEGORY_DELETED
 **Ngữ cảnh phát sinh:** Danh mục bị Xóa Cứng hoặc Xóa Mềm bởi Admin (System Constraint: thông thường Admin chỉ được xoá khi danh mục không còn Product nào, nhưng đề phòng trường hợp Force Delete).
@@ -396,7 +387,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 | Event | Dữ liệu từ FE | Dữ liệu BE bắt buộc tự bổ sung | Mục tiêu downstream |
 |---|---|---|---|
-| `PRODUCT_UPDATED` | Payload chỉnh sửa (có thể là delta theo SKU) | Chuẩn hóa thành snapshot đầy đủ Product + `skus[]` tại thời điểm commit (từ projection trong transaction hoặc re-read DB nhất quán) | Search re-index và Invalidation refresh cache không cần đoán thêm dữ liệu |
+| `PRODUCT_UPDATED` | Payload chỉnh sửa (có thể là delta theo SKU) | Chuẩn hóa thành snapshot đầy đủ Product + `skus[]` tại thời điểm commit (từ projection trong transaction hoặc re-read DB nhất quán), kèm `updated_at` timestamp để Search guard out-of-order | Search re-index và Invalidation refresh cache không cần đoán thêm dữ liệu |
 | `PRODUCT_STATE_CHANGED` | Command đổi trạng thái (`SUBMIT`, `HIDE`, `SHOW`) + `product_id` | Truy vấn danh sách `sku_ids[]` liên đới trong cùng transaction FSM | Invalidation refresh toàn bộ `product:sku:{sku_id}` ngay sau event |
 | `PRODUCT_DELETED` | `product_id` | Truy vấn danh sách `sku_ids[]` thuộc Product trước/sát thời điểm soft-delete | Invalidation dọn/refresh đầy đủ các cache key SKU của product bị xóa mềm |
 
@@ -481,7 +472,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 **Logic xử lý:** Query `product_markdown_applied WHERE rule_id = '42'` → lấy danh sách `sku_id` bị ảnh hưởng → reset `product_skus.promotional_price = NULL` → delete records từ `product_markdown_applied` → phát `PRODUCT_PRICE_UPDATED` events (với `change_source = MARKDOWN_ENDED` hoặc `MARKDOWN_EXPIRED_FALLBACK` nếu đến từ job self-healing).
 
-> **Idempotency guard bắt buộc cho `MARKDOWN_ENDED`:** Nếu không còn bản ghi nào trong `product_markdown_applied` cho `rule_id`, consumer phải ACK và no-op (không phát `PRODUCT_PRICE_UPDATED` rỗng, không coi là lỗi).
+> **No-op guard cho `MARKDOWN_ENDED`:** Nếu không còn bản ghi nào trong `product_markdown_applied` cho `rule_id`, consumer phải ACK và no-op (không phát `PRODUCT_PRICE_UPDATED` rỗng, không coi là lỗi).
 
 ### 4.4. INVENTORY_QUANTITY_CHANGED (Từ Inventory Service)
 **Topic:** `t.inventory.events`

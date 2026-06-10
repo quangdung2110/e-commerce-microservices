@@ -13,8 +13,7 @@
 Tài liệu này mô tả chi tiết chiến lược Caching áp dụng bên trong Product Service. Trong kiến trúc CQRS, Product Service nhận trọng trách làm **Write Model (Command)**. Do đó, Cache tại service này không sinh ra để phục vụ việc search/lọc sản phẩm của End-User (việc đó do Elasticsearch của Search Service lo), mà tập trung vào **3 nhiệm vụ cốt lõi** sau:
 
 1. **Cung cấp dữ liệu Tức thì (Point-Read) cho hệ sinh thái**: Phục vụ các API Gọi Nội Bộ (RPC/HTTP) dưới dạng các endpoint đơn và Batch cho Order, Cart, Inventory Service. Đóng vai trò như một Read-Replica In-Memory siêu tốc, ngăn chặn lỗi N+1 Query.
-2. **Đảm bảo toàn vẹn Dữ liệu và Idempotency**: Sử dụng Redis để chặn các request dị thường từ vòng ngoài bằng cơ chế Idempotency (Chống duplicate/double-click).
-3. **Tích hợp trực tiếp Giá Khuyến Mãi (Markdown Pricing)**: Cache giá On-The-Fly cho luồng tra cứu Checkout và Product Detail với TTL động theo thời hạn chương trình khuyến mãi.
+2. **Tích hợp trực tiếp Giá Khuyến Mãi (Markdown Pricing)**: Cache giá On-The-Fly cho luồng tra cứu Checkout và Product Detail với TTL động theo thời hạn chương trình khuyến mãi.
 
 ---
 
@@ -77,5 +76,4 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 | Key Pattern | Loại | TTL | Invalidation | Mục đích |
 |---|---|---|---|---|
 | `product:sku:{sku_id}` | RedisJSON | 1h | In-band API overwrite + `product-event-handler-group` (fallback async) | Point-Read cho Cart/Order |
-| `product:idempotency:{key}` | String (JSON) | 24h | Tự hết hạn | Chống duplicate request |
 | `product:markdown:active:{sku_id}` | String (JSON) | Dynamic | Markdown Worker DEL/SET (marker key) | Giá khuyến mãi active |

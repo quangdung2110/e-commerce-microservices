@@ -62,7 +62,7 @@ Xem cấu trúc payload chi tiết cho tất cả events tại [Product Events](
    - `PRODUCT_SKU_DELETED`: dùng payload tombstone (`sku_id`, `product_id`, `deleted_at`) để refresh key SKU về trạng thái đã xóa.
    - `PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`: bắt buộc có `payload.sku_ids[]`. Worker loop theo danh sách này để refresh toàn bộ `product:sku:{sku_id}`. Nếu thiếu `sku_ids[]` -> coi là contract violation, chuyển DLQ.
    - `PRODUCT_UPDATED`: dùng chiến lược **payload-first, DB-fallback**:
-     - Nếu payload có **full snapshot** (`product_id`, `status`, `category_id`, `version`, `updated_at`, `skus[]` và mỗi SKU có đủ `sku_id`, `sku_code`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `sku_status`) thì refresh cache hoàn toàn từ payload.
+     - Nếu payload có **full snapshot** (`product_id`, `status`, `category_id`, `updated_at`, `skus[]` và mỗi SKU có đủ `sku_id`, `sku_code`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `sku_status`) thì refresh cache hoàn toàn từ payload.
      - Nếu payload thiếu bất kỳ trường bắt buộc nào, worker phải DB re-fetch snapshot đầy đủ Product + SKUs trong một lần đọc rồi ghi cache từ snapshot DB.
      - Trong cùng một event, **không được trộn nguồn** (một phần từ payload, một phần từ DB). Chọn đúng một nguồn cho toàn bộ thao tác ghi.
      - Tuyệt đối không fallback sang Search/Elasticsearch vì không đảm bảo freshness cho write model.
@@ -141,14 +141,12 @@ WHERE poe.event_id = to_delete.event_id;
      - `PERCENTAGE`: `discount_amount = MIN(original_price * discount_value / 100, max_discount_amount)` (nếu có cap), `promotional_price = MAX(0, ROUND(original_price - discount_amount, 2))`.
      - `FIXED_AMOUNT`: `promotional_price = MAX(0, ROUND(original_price - discount_value, 2))`.
    - Bước 3 - Batch update `product_skus` (giá markdown), batch upsert `product_markdown_applied`, batch insert `product_outbox_events` ngay trong cùng transaction.
-   - Bước 4 - Tăng `products.version` và phát `PRODUCT_PRICE_UPDATED`.
+   - Bước 4 - Insert outbox [`PRODUCT_PRICE_UPDATED`](product_events.md#33-product_price_updated) cho các SKU bị ảnh hưởng.
 4. **Cache Update sau Commit (Redis Pipeline - Ownership rõ ràng):**
    - Sau mỗi lần COMMIT của từng Product, Markdown Worker KHÔNG ghi đè trực tiếp `product:sku:{sku_id}` để tránh trùng lặp với Event Handler.
    - Làm mới `product:sku:{sku_id}` được giao cho Event Handler khi self-consume `PRODUCT_PRICE_UPDATED` từ `t.product.events`.
    - Markdown Worker chỉ quản lý key phụ `product:markdown:active:{sku_id}` bằng pipeline theo batch để phản ánh rule markdown đang active.
    - Nếu nhận `MARKDOWN_ENDED` do Admin tắt thủ công (`reason = ADMIN_DISABLED`), phải `DEL product:markdown:active:{sku_id}` cho SKU bị ảnh hưởng, và nên đưa các lệnh `DEL` này vào cùng pipeline batch.
-
-> **Idempotency:** Sử dụng `rule_id` + `sku_id` Unique Index trên `product_markdown_applied` để chống apply trùng.
 
 > **No-op bắt buộc cho `MARKDOWN_ENDED`:** nếu query theo `rule_id` không trả về SKU nào, worker phải ACK và kết thúc (không coi là lỗi, không phát outbox rỗng).
 
@@ -169,14 +167,14 @@ WHERE poe.event_id = to_delete.event_id;
    - Bước 2.1: Nếu không tìm thấy row ở Bước 2, coi là payload sai cặp `product_id/sku_id` -> không update DB, đưa DLQ/parking-lot để điều tra producer contract.
    - Bước 3: So sánh thứ tự sự kiện. Nếu `event_timestamp <= last_inventory_sync_at` thì bỏ qua message (stale).
    - Bước 4: Dùng lệnh `UPDATE product_skus SET display_quantity = :available_quantity, last_inventory_sync_at = :event_timestamp WHERE sku_id = :sku_id`.
-   - Bước 5: Quy tắc versioning nhất quán: nếu transaction chỉ chạy SQL và không gọi FSM/JPA thì tăng `products.version` đúng 1 lần. Nếu transaction có gọi FSM/JPA (`@Version`) thì bỏ native increment để tránh `OptimisticLockException`.
+   - Bước 5: Sử dụng Pessimistic Locking. Nếu transaction chỉ chạy SQL và không gọi FSM/JPA thì áp dụng lock row `SELECT ... FOR NO KEY UPDATE` ở đầu transaction. Nếu transaction gọi FSM/JPA thì lock được đảm bảo bởi logic rẽ nhánh FSM.
 3. Logic auto-hide/reactivate (Dựa trên dữ liệu đã lock ở Bước 1 + Bước 2, chặn đúng TOCTOU):
    - **[Rào Cản Out-Of-Order]**: Trước tiên, Worker phải so sánh `event_timestamp` từ Event với trường `last_inventory_sync_at` của SKU trên database (vừa lock ở bước 2). Nếu `event_timestamp <= last_inventory_sync_at`, vứt Message và return bỏ qua để triệt tiêu lỗi Kafka Lag cập nhật tồn kho lạc hướu. Nếu hợp lệ, gán `last_inventory_sync_at = event_timestamp`.
    - Tuyệt đối không được thực hiện thêm một vòng `SELECT` mới bên ngoài Transaction để kiểm tra lại trạng thái SKU. Toàn bộ chuỗi **Đọc Product -> Đọc SKU -> Tính toán auto-hide/reactivate -> Update Product/SKU** phải nằm trong cùng Transaction đang giữ lock.
    - Nếu cần guard tường minh trước `AUTO_REACTIVATE_IN_STOCK`, được phép chạy thêm query predicate trong CHÍNH transaction hiện tại (ví dụ `SELECT 1 ... FOR NO KEY UPDATE`), hoặc dùng trực tiếp row Product đã lock ở bước 1. Cả hai cách đều hợp lệ nếu không thoát transaction.
    - Nếu `products.is_deleted = true`, worker vẫn cập nhật `display_quantity/sku_status` theo inventory nhưng **không trigger** bất kỳ transition Product-level nào.
    - `available_quantity = 0` + SKU `ACTIVE` -> chuyển SKU sang `OUT_OF_STOCK`. Cập nhật ngay snapshot SKUs trong memory của Transaction; nếu 100% SKU đều hết hàng và `is_deleted = false` thì trigger `AUTO_HIDE_OUT_OF_STOCK` trên FSM.
-   - `available_quantity > 0` + SKU `OUT_OF_STOCK` -> chuyển SKU về `ACTIVE`. Cập nhật snapshot, kiểm tra Product đang `HIDDEN` và `is_deleted = false` thì trigger `AUTO_REACTIVATE_IN_STOCK` (JPA sẽ tự tăng version).
+   - `available_quantity > 0` + SKU `OUT_OF_STOCK` -> chuyển SKU về `ACTIVE`. Cập nhật snapshot, kiểm tra Product đang `HIDDEN` và `is_deleted = false` thì trigger `AUTO_REACTIVATE_IN_STOCK`.
    - **Outbox boundary bắt buộc:** Ngay trong transaction đang xử lý logic ở bước 2-3, nếu SKU status thay đổi thì phải `INSERT` `PRODUCT_STATE_CHANGED` vào `product_outbox_events` trước khi commit. Không phát event ở ngoài transaction.
 4. Commit transaction thành công rồi mới ack offset; nếu rollback thì không ack để message được retry theo policy.
 5. **Cache Update (Đồng bộ - Không Queue):**
@@ -213,7 +211,6 @@ LIMIT 100; -- Chunking theo Batch để tránh giữ Lock quá lâu
    - **BẮT BUỘC CHUNKING**: Cronjob có thể lấy ra hàng chục nghìn records. Tuyệt đối không được nối tất cả vào chung một Transaction. Phải xử lý xong một khối 100 records và **COMMIT Giao Diện** ngay lập tức, nhằm xả Lock cho Connection Pool và tránh Block API của admin.
    - **BẮT BUỘC LOCK THEO THỨ TỰ**: Bên trong mỗi Transaction khối, thao tác trên từng `product_id` phải duyệt theo thứ tự TĂNG DẦN (ASC) để ngăn Deadlock chéo. Lock bảng CHA `products` trước: `SELECT 1 FROM products WHERE product_id = :product_id FOR NO KEY UPDATE;`
    - Reset `promotional_price = NULL` ở `product_skus`.
-   - Cập nhật tăng `version` của bảng cha `products`.
    - Delete dòng mapping ở bảng `product_markdown_applied`.
    - Ban Outbox trigger Event `PRODUCT_PRICE_UPDATED`.
    - Xóa Cache liên quan.

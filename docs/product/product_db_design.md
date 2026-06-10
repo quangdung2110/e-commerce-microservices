@@ -57,7 +57,6 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ Soft Delete).
     *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm bị xóa mềm).
     *   `attributes_json`: JSONB (Lưu trữ các giá trị thuộc tính dùng chung của toàn bộ sản phẩm, nhưng không phải variant. VD: Chất liệu, Xuất xứ). **Đây là dữ liệu thô (raw key-value), không phải token search.** Việc transform sang token `k:v` cho Elasticsearch thuộc trách nhiệm Search Worker.
-    *   `version`: BIGINT DEFAULT 0 (Dùng cho Optimistic Locking, tăng tự động khi update).
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
@@ -76,8 +75,11 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `created_at`: TIMESTAMPTZ.
     *   `updated_at`: TIMESTAMPTZ.
 
-> **Lưu ý quan trọng về Versioning (Optimistic Locking & Search Event Sourcing):**
-> Bảng `product_skus` KHÔNG ĐƯỢC PHÉP có cột `version` riêng. Theo thiết kế Aggregate Root, mọi thao tác tạo, sửa, xóa bất kỳ SKU nào cũng BẮT BUỘC phải làm tăng cột `version` của bảng cha `products`. Chuỗi `version` đồng bộ duy nhất này sẽ được dùng làm căn cứ thứ tự tuần tự (Optimistic Concurrency Control) cho Search Service, nhằm triệt tiêu hoàn toàn sự cố lỗi từ chối Event (Out-of-Order Event Reject) do Elasticsearch version clash.
+> **Lưu ý quan trọng về Concurrency Control (Loại bỏ Optimistic Locking):**
+> Bảng `products` và `product_skus` KHÔNG còn sử dụng cột `version` cho optimistic locking. Thay vào đó, hệ thống áp dụng:
+> - **Pessimistic Locking (Database Row Lock)** cho các thao tác trong cùng Product Service: lock theo thứ tự **Product -> SKU** (`SELECT ... FOR NO KEY UPDATE` / `SELECT ... FOR UPDATE`) để đảm bảo atomicity và chống deadlock.
+> - **Distributed Lock (Redis)** cho Markdown Worker khi nhiều instance worker cùng xử lý, tránh race condition trên cùng một product.
+> - **Out-of-Order Guard cho Search Service** sử dụng `updated_at` timestamp (TIMESTAMPTZ) thay vì version number. Elasticsearch document guard so sánh `event.updated_at > current_doc.updated_at` để chặn event đến trễ.
     *   **Quy tắc định danh SKU**: Không ép định dạng `sku_id` phải nhúng `product_id` trong chuỗi mã nghiệp vụ. Point-read theo `sku_id` phải dựa vào index truy vấn trực tiếp và resolve `product_id` từ DB trước khi thao tác lock/cập nhật bảng cha.
 
 *   `product_media` (Bảng Quản lý Hình ảnh/Video Sản phẩm)
@@ -140,13 +142,11 @@ Các Index được thiết kế để tối ưu cho các truy vấn phổ biế
 
 1.  **Tính nguyên vẹn (Validation):**
     *   Dữ liệu ghi vào bảng `products` (kể cả thuộc tính động) phải được validate chống chéo với nhóm cấu hình (`categories`, `category_attributes`). Tham khảo [Workflow Ghi](product_workflow.md) để biết cơ chế ứng dụng Redis Cache cho khâu kiểm tra này.
-2.  **Cơ chế Khoá (Locking Strategy):** 
-    *   **Lock-Free với Khoá lạc quan (Optimistic Locking):** Bảng `products` sử dụng field `version` để bảo vệ **tính toàn vẹn (Row-level integrity)** cho Aggregate Root. Bất kể thay đổi ở `products` hay `product_skus`, `version` của bảng cha `products` đều phải được tăng lên. Khác với Distributed Lock chậm chạp, Optimistic Lock nhẹ và tăng throughput. Mọi luồng API sẽ tự check `version` và Reject Transaction bẩn. Tránh việc sử dụng 2 chuỗi version độc lập gây xung đột ở Search Service.
-    *   **Quy tắc chống xung đột ORM/SQL:** Trong một transaction chỉ dùng một cơ chế tăng version. Nếu transaction đi qua FSM/JPA (`@Version`) thì không được chạy native `UPDATE ... version = version + 1`. Nếu transaction thuần SQL batch, không gọi FSM/JPA, thì tăng version bằng native SQL đúng 1 lần.
-    *   **Khoá bi quan (Pessimistic Locking) cho Strict Consistency:** Riêng đối với thao tác có tính ganh đua cao và yêu cầu nhất quán lượng tồn kho tuyệt đối (Workflow xử lý `INVENTORY_QUANTITY_CHANGED`), hệ thống áp dụng lock theo thứ tự chuẩn **Product -> SKU** (`products FOR NO KEY UPDATE` trước, `product_skus FOR UPDATE` sau). Điều này chặn vòng deadlock AB-BA và triệt tiêu Stale Read tại DB thay vì dùng Redis Redlock ở App.
-3.  **Outbox Phát Sự Kiện:**
-    *   Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events`. Debezium CDC sẽ đọc WAL và đẩy record sang Kafka. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
-4.  **Markdown Price Integrity:**
+2.  **Cơ chế Khoá (Locking Strategy):**
+    *   **Khoá bi quan (Pessimistic Locking) cho mọi thao tác:** Tất cả thao tác ghi trong Product Service sử dụng database row-level locking theo thứ tự chuẩn **Product -> SKU** (`SELECT ... FOR NO KEY UPDATE` trước, `SELECT ... FOR UPDATE` sau). Điều này chặn deadlock AB-BA và triệt tiểu Stale Read tại DB.
+    *   **Markdown Worker: Distributed Lock (Redis):** Khi nhiều instance worker cùng xử lý, sử dụng Redis distributed lock `SETNX product:lock:markdown:{product_id}` với TTL + retry policy để tránh race condition. Lock order: Product -> SKU giữ nguyên trong transaction.
+    *   **Outbox Phát Sự Kiện:** Mọi Operation làm thay đổi dữ liệu của `products` hoặc `product_skus` TRONG CÙNG TX DATABASE phải sinh thêm 1 record tại bảng `product_outbox_events`. Debezium CDC sẽ đọc WAL và đẩy record sang Kafka. (Xem [Product Workers](product_workers.md)). Cấu trúc payload chi tiết xem tại [Product Events](product_events.md).
+3.  **Markdown Price Integrity:**
     *   Admin chỉ có quyền sửa `original_price`; API admin không được tự ý set giá markdown thủ công.
     *   `promotional_price` được cập nhật bởi Pricing Domain Module của Product Service, có thể chạy từ hai đường hợp lệ: (1) Markdown Worker async, (2) nhánh đồng bộ trong API update khi admin đổi `original_price` và SKU đang có markdown active.
-    *   Khi `original_price` thay đổi (admin sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction sử dụng `original_price` live từ `product_skus`.
+    *   Khi `original_price` thay đổi (admin sửa giá), nếu SKU đang có `product_markdown_applied` active -> phải re-calculate `promotional_price` trong cùng transaction.

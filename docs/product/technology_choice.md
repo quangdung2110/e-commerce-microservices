@@ -11,7 +11,7 @@
 | **Kiến trúc dữ liệu** | PostgreSQL-First (Write Model / Source of Truth) + Redis Cache |
 | **State Machine** | Spring State Machine (FSM) quản lý lifecycle sản phẩm (DRAFT → ACTIVE → BANNED) |
 | **Concurrency** | Optimistic Locking (`version`) cho State Transitions, Pessimistic Locking (`FOR NO KEY UPDATE`) cho Inventory Sync, Cache Stampede Protection bằng cross-pod distributed lock (`SETNX`) + in-process singleflight |
-| **Caching** | Redis (Point-Read, Idempotency, Rate Limiting, Markdown Marker) |
+| **Caching** | Redis (Point-Read, Rate Limiting, Markdown Marker) |
 | **Outbox Pattern** | Debezium (Change Data Capture) — Real-time event streaming |
 | **Cross-Service** | Consumer: Promotion Markdown Events, Inventory Events. Producer: Product Events cho Search/Notification/Promotion (state-change hooks) |
 | **Logic nghiệp vụ** | Category validation, SKU management, Markdown price calculation, Auto-hide/reactivate |
@@ -63,7 +63,7 @@ Worker nhận `MARKDOWN_CREATED` từ Promotion Service phải:
 | Component | Công nghệ |
 |:---|:---|
 | **Framework** | Spring Boot 3.x + gRPC + Spring State Machine |
-| **Cache L2** | Redis (via Lettuce, RedisJSON) — Point-Read, Idempotency, Rate Limiting |
+| **Cache L2** | Redis (via Lettuce, RedisJSON) — Point-Read, Rate Limiting |
 | **Database** | PostgreSQL + Spring Data JPA / Hibernate |
 | **Kafka** | Spring Kafka (`@KafkaListener` for Promotion/Inventory events) |
 | **Outbox** | Debezium CDC (Change Data Capture) |

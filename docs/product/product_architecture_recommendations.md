@@ -33,7 +33,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 
 ## 3. Consistency & Concurrency
 
-1. Mọi cập nhật SKU ảnh hưởng business state phải tăng `products.version`.
+1. Mọi thao tác ghi trong Product Service phải sử dụng Pessimistic Locking theo thứ tự **Product -> SKU** để đảm bảo atomicity và chống deadlock. Markdown Worker cần thêm Distributed Lock (Redis) khi chạy nhiều instance đồng thời.
 2. Chuẩn hóa lock order trong transaction: lock Product cha trước, rồi lock SKU con.
 3. Inventory sync nhận `product_id` trực tiếp trong payload `INVENTORY_QUANTITY_CHANGED`, sau đó vẫn phải validate cặp `product_id/sku_id` trong DB local trước khi lock/update.
 4. Luồng auto-reactivate chỉ chạy khi `status = HIDDEN`, `admin_hidden = false` và `is_deleted = false` trong cùng transaction.

@@ -35,7 +35,7 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 
 ### 2.2 Transitions do System/Worker Tự Động Trigger
 
-> 🔴 **Ràng buộc Kiến trúc (Concurrency Guard):** Tất cả các Transition thực hiện bởi Worker bắt buộc phải nằm trong một Database Transaction, sử dụng lock `SELECT 1 FROM products WHERE product_id = ? FOR NO KEY UPDATE` ở BƯỚC ĐẦU TIÊN (Trước khi lock bảng SKUs) để chống Deadlock AB-BA. Và Hibernate/JPA/SpringStateMachine sẽ tự động lưu cập nhật Entity, tự động kích `version = version + 1` qua `@Version`. Tuyệt đối KHÔNG ĐỤNG TỚI lệnh Native Cập nhật version thủ công `UPDATE products SET version = version + 1` nếu có gọi logic rẽ nhánh FSM trong Transaction đó.
+> 🔴 **Ràng buộc Kiến trúc (Concurrency Guard):** Tất cả các Transition thực hiện bởi Worker bắt buộc phải nằm trong một Database Transaction, sử dụng lock `SELECT 1 FROM products WHERE product_id = ? FOR NO KEY UPDATE` ở BƯỚC ĐẦU TIÊN (Trước khi lock bảng SKUs) để chống Deadlock AB-BA. State Machine chỉ quản lý trạng thái nghiệp vụ; không có `@Version` hay optimistic locking nữa. Tuyệt đối KHÔNG ĐỤNG TỚI lệnh native cập nhật version trong transaction có gọi logic rẽ nhánh FSM.
 
 *   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker](product_workers.md#6-inventory-sync-worker) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0` và `is_deleted = false`. (`ACTIVE` → `HIDDEN`).
 *   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động hiện lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn điều kiện `is_deleted = false` trong cùng transaction.
