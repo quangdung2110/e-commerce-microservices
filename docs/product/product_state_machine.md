@@ -21,7 +21,7 @@ Tài liệu này quy chiếu quá trình biến thiên vòng đời (Lifecycle) 
 2.  **`ACTIVE` (Đang Bán)**: Sản phẩm công khai trên nền tảng. Có thể được Search, Add vào Giỏ và Thanh Toán bình thường.
 3.  **`HIDDEN` (Ẩn)**: Sản phẩm bị ẩn khỏi trang bán. Link trực tiếp vẫn sống (hiển thị hết hàng). Có thể do admin chủ động ẩn, hoặc do System tự động ẩn khi tất cả SKU hết Tồn Kho (xem [Inventory Sync Worker - Two-Phase](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture)).
 
-*(Lưu ý: Không có trạng thái `DELETED` trong State Machine. Thao tác xóa mềm được quản lý độc lập thông qua cờ `is_deleted` ở tầng cơ sở dữ liệu nhằm bảo lưu trạng thái nghiệp vụ cuối cùng).*
+*(Lưu ý: Không có trạng thái `DELETED` trong State Machine. Thao tác xóa mềm (soft delete) được quản lý độc lập thông qua cờ `is_deleted` ở tầng cơ sở dữ liệu. Khi soft delete, trạng thái nghiệp vụ (DRAFT/ACTIVE/HIDDEN) được giữ nguyên — không chuyển sang HIDDEN — để bảo lưu trạng thái nghiệp vụ cuối cùng và đảm bảo Search Service tombstone đúng document.)*
 
 ## 2. Các Lệnh Chuyển Tiếp (Events / Transitions)
 
@@ -41,7 +41,7 @@ Khi hệ thống nội bộ gởi một Event, State Machine sẽ xét Điều k
 *   **`AUTO_HIDE_OUT_OF_STOCK`**: Hệ thống tự động ẩn sản phẩm khi [Inventory Sync Worker - Two-Phase](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture) phát hiện **tất cả** SKU của Product đều có `display_quantity = 0`, `is_deleted = false`, và `status = ACTIVE` (chỉ trigger khi Product đang ACTIVE). Nếu Product đã ở HIDDEN do admin (SHOW) nhưng inventory lại hết hàng, FSM không chạy AUTO_HIDE (product đã HIDDEN rồi). (`ACTIVE` → `HIDDEN`).
 *   **`AUTO_REACTIVATE_IN_STOCK`**: Hệ thống tự động hiện lại sản phẩm khi Inventory báo có hàng trở lại. (`HIDDEN` → `ACTIVE`). **Điều kiện sống còn:** Chỉ auto-reactivate nếu đánh giá Product thỏa mãn đồng thời cả ba điều kiện: `status = HIDDEN`, `is_deleted = false`, và `admin_hidden = false` trong cùng transaction. Nếu Admin đã chủ động ẩn sản phẩm (`admin_hidden = true`), hệ thống tuyệt đối không được tự động hiện lại — admin phải tự nhấn SHOW.
 
-> **Lưu ý:** Hai transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` hoạt động ở mức Product (cấp cha), không phải SKU (cấp con). Logic tổng hợp: nếu **ít nhất 1 SKU** khả dụng → Product vẫn ACTIVE. Chỉ khi **100% SKU** hết hàng → auto-hide. Trạng thái riêng lẻ của từng SKU (`ACTIVE`/`OUT_OF_STOCK`/`INACTIVE`) được quản lý trực tiếp trên field `product_skus.status` — xem [DB Design](product_db_design.md#12-nhóm-sản-phẩm--biến-thể-product--sku).
+> **Lưu ý:** Hai transition `AUTO_HIDE_OUT_OF_STOCK` và `AUTO_REACTIVATE_IN_STOCK` hoạt động ở mức Product (cấp cha), không phải SKU (cấp con). Logic tổng hợp: nếu **ít nhất 1 SKU** khả dụng → Product vẫn ACTIVE. Chỉ khi **100% SKU** hết hàng → auto-hide. Trạng thái riêng lẻ của từng SKU (`ACTIVE`/`OUT_OF_STOCK`/`INACTIVE`) được quản lý trên field `product_skus.status` (tên DB). Trong event payload và API, field này dùng tên chuẩn là `sku_status`. — xem [DB Design](product_db_design.md#12-nhóm-sản-phẩm--biến-thể-product--sku).
 >
 > **`admin_hidden` flag:** Khi Admin chủ động thực hiện lệnh `HIDE`, cờ `admin_hidden` được set = TRUE. Cờ này dùng để phân biệt giữa Admin ẩn thủ công và System auto-hide do hết hàng. Luồng `AUTO_REACTIVATE_IN_STOCK` **tuyệt đối không được** trigger khi `admin_hidden = true`, đảm bảo admin giữ quyền kiểm soát trạng thái hiển thị.
 
@@ -59,7 +59,7 @@ stateDiagram-v2
     HIDDEN --> ACTIVE : SHOW (Admin hiện lại, admin_hidden=FALSE)
     HIDDEN --> ACTIVE : AUTO_REACTIVATE_IN_STOCK (System)
 
-    DRAFT --> HIDDEN : DELETE (soft delete)
+    DRAFT --> DRAFT : Soft Delete (set is_deleted=TRUE, trạng thái nghiệp vụ giữ nguyên)
     HIDDEN --> HIDDEN : HIDE (Admin re-hide)
 ```
 

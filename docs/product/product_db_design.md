@@ -67,7 +67,7 @@ Mô hình dữ liệu bao gồm các nhóm: Quản lý Danh mục (Catalog), S�
     *   `sku_code`: VARCHAR(255) UNIQUE (Mã định danh nội sản phẩm).
     *   `original_price`: DECIMAL(15,2) (Giá gốc / Giá niêm yết do Admin đặt).
     *   `promotional_price`: DECIMAL(15,2) NULL (Giá sau khi áp dụng Markdown Rule từ [Promotion Service](../promotion/promotion_db_design.md#21-markdown_rules-luật-giảm-giá-gạch-chéo). Khi NULL = không có chương trình giảm giá nào đang active. Xem [Workflow xử lý Markdown](product_workflow.md#1-workflow-xử-lý-markdown-event-từ-promotion-service)).
-    *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán).
+    *   `status`: VARCHAR(50) DEFAULT 'ACTIVE' (Trạng thái riêng của SKU: `ACTIVE`, `INACTIVE`, `OUT_OF_STOCK`. Cho phép quản lý lifecycle SKU độc lập với Product. VD: Product đang ACTIVE nhưng SKU Size XXL bị tạm ngưng bán. **Tên canonical trong event payload là `sku_status`** — đây là tên chuẩn dùng trong mọi API response và Kafka payload; trường DB giữ nguyên là `status` để tương thích implementation).
     *   `is_deleted`: BOOLEAN DEFAULT FALSE (Cờ xoá mềm riêng biệt cấp độ SKU).
     *   `deleted_at`: TIMESTAMPTZ NULL (Thời điểm SKU bị xóa mềm).
     *   `display_quantity`: INT DEFAULT 0 (Số lượng tồn kho **hiển thị** — đây là bản sao cached đồng bộ ở [Inventory Service](../inventory/inventory_db_design.md). **Source of Truth thực sự** về tồn kho nằm ở Inventory Service. Field này được cập nhật bởi [Inventory Sync Worker](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture).
@@ -123,7 +123,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
     *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_PRICE_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
     *   `aggregate_type`: VARCHAR(50) (VD: Product, ProductSku).
     *   `aggregate_id`: VARCHAR(255) (Bắt buộc theo `aggregate_type`: Product -> `product_id`, ProductSku -> `sku_id`, Category -> `category_id`).
-    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect. Ràng buộc `NOT NULL` là lá chắn sống còn bảo vệ CQRS: Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
+    *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect. **Application-level validation bắt buộc trước INSERT:** kiểm tra `partition_key IS NOT NULL AND partition_key <> ''`. Ngoài ràng buộc `NOT NULL`, nên thêm `CHECK (LENGTH(partition_key) > 0)` để phòng ngừa edge case. Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.
     *   `payload`: JSONB (Payload bắt buộc kèm `schema_version` ở top-level message envelope).
     *   `created_at`: TIMESTAMPTZ.
 

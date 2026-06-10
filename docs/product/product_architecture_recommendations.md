@@ -24,15 +24,16 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 
 1. Dùng Debezium CDC + outbox table để phát event, không polling thủ công theo trạng thái hàng.
 2. Tách topic:
-	- `t.product.events` cho product/sku events.
-	- `t.category.events` cho category events.
-3. Với `PRODUCT_PRICE_UPDATED`, bắt buộc phát `event_sequence_id` đơn điệu tăng để downstream guard đúng ở cấp SKU event.
+   - `t.product.events` cho product/sku events.
+   - `t.category.events` cho category events.
+3. `PRODUCT_STATE_CHANGED` và `PRODUCT_PRICE_UPDATED`. **Search Service dùng DUY NHẤT `updated_at` timestamp làm guard ordering**. Các event khác (PRODUCT_CREATED, PRODUCT_UPDATED...) dùng `updated_at` timestamp.
 4. Consumer downstream phải idempotent, ignore stale event và retry/DLQ rõ ràng.
 5. `product-event-handler-group` chỉ xử lý `CATEGORY_DELETED` (Write Model) và `PRODUCT_PRICE_UPDATED` (Markdown cache refresh). Cache refresh cho PRODUCT_STATE_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED đã được xử lý In-band trong API.
 6. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
 7. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
 8. Event Handler Worker phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
 9. **Inventory Sync (Two-Phase Lock-Free)**: Event `INVENTORY_QUANTITY_CHANGED` được xử lý qua Phase 1 (Lock-Free: Kafka → Redis Lua CAS) và Phase 2 (Async DB Sync: Redis ZSET → PostgreSQL). Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
+10. Cache key `product:sku:{sku_id}` bắt buộc lưu `price_updated_at` (ISO 8601 timestamp) để Event Handler guard khi refresh từ `PRODUCT_PRICE_UPDATED`. Phase 1 không ghi đè `product_status` và `price_updated_at` — chỉ Event Handler được phép ghi đè.
 
 ## 3. Consistency & Concurrency
 

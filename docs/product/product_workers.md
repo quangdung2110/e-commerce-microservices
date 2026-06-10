@@ -111,7 +111,7 @@ Payload nhận được:
     "promotional_price": 28891500,
     "best_price": 28891500,
     "has_promotion": true,
-    "updated_at": "2026-02-28T06:00:00Z"
+    "updated_at": "2026-02-28T06:00:00Z",
   }
 }
 
@@ -125,9 +125,7 @@ Luồng xử lý:
    để giảm write amplification
 ```
 
-- **Staleness guard bắt buộc:** so sánh `event.updated_at` với
-  `cached.last_inventory_sync_at` — event bằng hoặc cũ hơn phải skip.
-- Nếu Redis GET trả null (cache miss), vẫn query DB và nạp cache bình thường.
+- **Staleness guard bắt buộc:** so sánh `event.updated_at` với `cached.price_updated_at` — event bằng hoặc cũ hơn phải skip. Field `price_updated_at` được lưu trong cache key `product:sku:{sku_id}` để phân biệt rõ ràng với inventory sync timestamp. Nếu Redis GET trả null (cache miss), vẫn query DB và nạp cache bình thường.
 
 **Quy tắc ownership:** Với luồng giá Markdown, `PRODUCT_PRICE_UPDATED` là tín hiệu chuẩn để Event Handler ghi đè `product:sku:{sku_id}`. Markdown Worker không được ghi đè key này trực tiếp.
 
@@ -293,6 +291,13 @@ elseif availableQty > 0 then
 end
 
 -- Build new cache (preserve non-inventory fields)
+-- CRITICAL: product_status is PRESERVED from existing cache, NOT from event payload.
+-- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM), which triggers
+-- Event Handler to do an in-band cache overwrite. Phase 1 does NOT update product_status
+-- to avoid overwriting a newer state change with a stale cached value.
+-- The cached product_status is therefore potentially stale by up to Phase 2 delay
+-- (500ms-2s). Downstream consumers (Cart, Checkout) should be aware of this eventual
+-- consistency window. Event Handler will reconcile the cache on next PRODUCT_STATE_CHANGED.
 local newData = {
     sku_id = existingJson and cjson.decode(existingJson).sku_id
                or string.match(cacheKey, "product:sku:(.+)"),
@@ -310,7 +315,10 @@ local newData = {
     product_status = existingJson and cjson.decode(existingJson).product_status or "",
     is_available = availableQty > 0,
     is_deleted = existingJson and cjson.decode(existingJson).is_deleted or false,
-    variant_attributes = existingJson and cjson.decode(existingJson).variant_attributes or {}
+    variant_attributes = existingJson and cjson.decode(existingJson).variant_attributes or {},
+    -- price_updated_at is only set by Event Handler when refreshing from PRODUCT_PRICE_UPDATED.
+    -- It is NOT set here by Phase 1 to avoid overwriting a newer price change.
+    price_updated_at = existingJson and cjson.decode(existingJson).price_updated_at or nil
 }
 
 -- Atomic write + add to pending sync ZSET
@@ -345,8 +353,9 @@ return existingJson and 1 or -1
 2. **Group by product_id** trong RAM (iterator grouping để không phình memory).
 3. **Transaction per Product** với Optimistic Locking:
    - Lock Product cha (1 row lock cho cả batch SKU thuộc product đó).
-   - Batch update tất cả SKU thuộc product.
-   - FSM auto-hide/reactivate nếu SKU status thay đổi.
+   - Query **tất cả SKU** thuộc product từ DB (không chỉ SKU trong batch drain) để đánh giá FSM toàn diện.
+   - Batch update **tất cả SKU** (cả SKU trong drain batch và SKU không có event nhưng đang OUT_OF_STOCK trong DB).
+   - FSM auto-hide/reactivate đánh giá trên toàn bộ SKU pool của product.
    - Batch insert `product_outbox_events` (nếu có state change).
 4. **Ack pending** từ Redis ZSET sau khi DB commit thành công.
 5. **Optimistic lock fail**: nếu conflict, requeue vào ZSET với exponential backoff.

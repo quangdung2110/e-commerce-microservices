@@ -50,7 +50,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 *   `event_type`: Loại sự kiện (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`...).
 *   `aggregate_type`: Loại Aggregate Root (VD: `Product`, `ProductSku`, `Category`).
 *   `aggregate_id`: ID của entity chủ thể theo `aggregate_type` (Product events dùng `product_id`, ProductSku events dùng `sku_id`, Category events dùng `category_id`).
-*   `partition_key`: Khóa định tuyến Kafka lấy từ cột `product_outbox_events.partition_key` (`product_id` cho `t.product.events`, `category_id` cho `t.category.events`).
+*   `partition_key`: Khóa định tuyến Kafka lấy từ cột `product_outbox_events.partition_key` (`product_id` cho `t.product.events`, `category_id` cho `t.category.events`). **Application-level validation bắt buộc phải kiểm tra NOT NULL + NOT EMPTY trước khi insert outbox** để đảm bảo event không rơi lung tung sang các partition khác nhau làm trật tự đồng bộ (Ordering) bị phá vỡ.
 *   `correlation_id`: ID để truy vết chuỗi Saga xuyên suốt nhiều service (thường lấy từ upstream hoặc log tracing).
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: Định danh service gốc phát event (Cố định: `product-service`).
@@ -239,13 +239,14 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "changed_by_type": "ADMIN",
     "reason": null,
     "updated_at": "2026-02-28T05:00:00Z",
-    "changed_at": "2026-02-28T05:00:00Z"
+    "changed_at": "2026-02-28T05:00:00Z",
   }
 }
 ```
 *(Ghi chú: Sự kiện này bắt buộc phải nạp thêm mảng `sku_ids` vào payload để **Worker Invalidation Cache** không bị mù, nó có thể xoá Cache cho các SKU đó ngay lập tức mà không phải tốn thêm Query xuống DB mò mẫm.)*
 
 > **Nguồn dữ liệu `sku_ids` (BẮT BUỘC):** FE không gửi `sku_ids` khi gọi API đổi trạng thái Product. Backend phải tự truy vấn danh sách SKU liên đới trong cùng transaction và đóng gói vào payload `PRODUCT_STATE_CHANGED` trước khi insert outbox.
+
 
 ### 3.4. PRODUCT_PRICE_UPDATED
 **Ngữ cảnh phát sinh:** Giá sản phẩm thay đổi — bao gồm cả khi admin sửa `original_price` LẪN khi [Markdown Worker](product_workers.md#4-markdown-price-calculator-worker) tính lại `promotional_price`. Xem [Promotion DB Design - Cơ chế Zero-Latency](../promotion/promotion_db_design.md#22-xử-lý-zero-latency-tính-toán-best-deal-mà-không-cần-discount_items-mapping).
@@ -270,14 +271,13 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
     "promotional_price": 28891500.00,
     "best_price": 28891500.00,
     "has_promotion": true,
-    "updated_at": "2026-02-28T06:00:00Z"
+    "updated_at": "2026-02-28T06:00:00Z",
   }
 }
 ```
+>
 > **Field `best_price` (BẮT BUỘC):** Đây là giá thấp nhất đã được Product Service tính sẵn theo công thức chuẩn:
-> `best_price = LEAST(original_price, original_price - discount_amount)` khi `discount_type = PERCENTAGE`, trong đó `discount_amount = original_price * discount_value / 100` nếu không có `max_discount_amount`, hoặc `discount_amount = LEAST(original_price * discount_value / 100, max_discount_amount)` nếu có cap;
-> `best_price = LEAST(original_price, original_price - discount_value)` khi `discount_type = FIXED_AMOUNT`;
-> kết quả làm tròn 2 chữ số thập phân, clamp tối thiểu về `0` và cuối cùng đồng bộ vào `promotional_price`/`best_price` theo transaction. Downstream (Search/Checkout/Analytics) chỉ được đọc và phản chiếu, không tự tính lại.
+> `best_price = LEAST(original_price, COALESCE(promotional_price, original_price))`. Kết quả làm tròn 2 chữ số thập phân, clamp tối thiểu về `0` và cuối cùng đồng bộ vào `promotional_price`/`best_price` theo transaction. Downstream (Search/Checkout/Analytics) chỉ được đọc và phản chiếu, không tự tính lại.
 >
 > **Ownership Cache Refresh (BẮT BUỘC):** Với thay đổi giá do Markdown, key `product:sku:{sku_id}` phải do `product-event-handler-group` ghi đè dựa trên `PRODUCT_PRICE_UPDATED`. Markdown Worker chỉ quản lý key phụ `product:markdown:active:{sku_id}` để tránh double-write bất đồng bộ.
 
@@ -347,7 +347,11 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "timestamp": "2026-03-24T10:00:00Z",
   "payload": {
     "product_id": "prod-uuid-001",
+    "product_name": "iPhone 15 Pro Max 256GB",
+    "category_id": "cat-dien-thoai",
+    "category_name": "Điện thoại",
     "sku_id": "sku-uuid-002",
+    "sku_code": "IP15PM-256-BLK",
     "updated_at": "2026-03-24T10:00:00Z",
     "deleted_at": "2026-03-24T10:00:00Z"
   }
@@ -355,11 +359,15 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 ```
 
 > **Contract guard cho tombstone (BẮT BUỘC):** `PRODUCT_SKU_DELETED` phải luôn có `payload.updated_at` để downstream guard out-of-order khi scripted-upsert tombstone.
+>
+> **Enrichment fields bắt buộc:** Backend phải bổ sung `product_name`, `category_id`, `category_name`, `sku_code` trong cùng transaction trước khi insert outbox. Đây là dữ liệu cần thiết để Search Service cleanup Suggestion Cache và audit log mà không phải query ES document riêng.
 
 ### 3.8. CATEGORY_DELETED
 **Ngữ cảnh phát sinh:** Danh mục bị Xóa Cứng hoặc Xóa Mềm bởi Admin (System Constraint: thông thường Admin chỉ được xoá khi danh mục không còn Product nào, nhưng đề phòng trường hợp Force Delete).
 **Consumers chính:** Product Service (`product-event-handler-group`) và Search Service (`search-category-indexer`). Product Service phải xử lý Write Model trước: đổi `status` thành `HIDDEN` cho toàn bộ sản phẩm thuộc danh mục bị xoá ngay tại PostgreSQL và sinh tiếp event `PRODUCT_STATE_CHANGED`. Search Service chỉ phản chiếu projection (xóa/đổi metadata category, invalidate category tree), tuyệt đối KHÔNG tự ý đổi state sản phẩm nếu chưa nhận `PRODUCT_STATE_CHANGED`.
 
+> **Cảnh báo về Ordering:** Cả `CATEGORY_DELETED` và `PRODUCT_STATE_CHANGED` đều nằm trong transaction của Product Service (CATEGORY_DELETED gọi batch INSERT outbox, rồi Event Handler gọi batch UPDATE + INSERT outbox tiếp). Do Debezium CDC đọc WAL, thứ tự commit sẽ quyết định thứ tự Kafka. Nếu Kafka partition reorders events, Search có thể nhận `PRODUCT_STATE_CHANGED` trước `CATEGORY_DELETED`. Cả hai đều dùng `updated_at` timestamp guard nên event trễ sẽ bị bỏ qua — không gây data corruption, chỉ có thể có lag trong việc nullify category metadata. Search Service phải có ILM/Cleanup để dọn category metadata orphan sau 30 ngày.
+>
 > **Scope contract:** Payload nên mang `descendant_category_ids` khi xoá cả cây danh mục. Nếu field này thiếu (legacy), consumer tối thiểu phải xử lý `category_id` gốc và có cơ chế self-heal subtree theo snapshot category tree nội bộ.
 **Cấu trúc Payload (JSON):**
 ```json

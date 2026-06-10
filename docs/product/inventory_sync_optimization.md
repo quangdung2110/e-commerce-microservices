@@ -108,7 +108,7 @@ flowchart LR
    - Event mới hơn (`event_timestamp > cached.last_inventory_sync_at`)
    - Atomic update `display_quantity` + `last_inventory_sync_at`
 3. **Immediate cache warm**: Ghi đè `product:sku:{sku_id}` ngay lập tức (không cần chờ DB)
-4. **Đăng ký pending sync**: Thêm vào Redis ZSET `product:inventory:pending:{sku_id}` với score = `event_timestamp`
+4. **Đăng ký pending sync**: Thêm vào Redis ZSET `product:inventory:pending` (Global ZSET — không phải per-SKU ZSET) với score = `event_timestamp` và member = `{sku_id}:{event_timestamp}`
 5. **Consumer ACK Kafka offset** ngay lập tức
 
 **Tại sao không cần DB lock ở Phase 1:**
@@ -321,7 +321,7 @@ public class InventoryAsyncDbSyncWorker {
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public void syncProductBatch(String productId, List<PendingSyncItem> skuItems) {
 
-        // === BƯỚC 1: Lock Product cha (1 row lock cho cả batch) ===
+        // === BƯỚC 1: Lock Product cha ===
         Product product = productRepo.findByIdForUpdate(productId)
             .orElseThrow(() -> new IllegalStateException("Product not found: " + productId));
 
@@ -331,27 +331,30 @@ public class InventoryAsyncDbSyncWorker {
             return;
         }
 
-        // === BƯỚC 2: Batch update SKUs ===
-        List<String> skuIds = skuItems.stream()
-            .map(PendingSyncItem::getSkuId)
-            .toList();
+        // === BƯỚC 2: Query TẤT CẢ SKU của Product từ DB ===
+        // QUAN TRỌNG: Phải query toàn bộ SKU pool (không chỉ SKU trong drain batch)
+        // để FSM đánh giá auto-hide/reactivate toàn diện.
+        List<ProductSku> allProductSkus = skuRepository.findAllByProductId(productId);
 
-        List<ProductSku> skus = skuRepository.findBySkuIdsForUpdate(productId, skuIds);
-
-        // Map SKU ID -> PendingSyncItem
-        Map<String, PendingSyncItem> skuMap = skuItems.stream()
+        // Map drain batch: SKU ID -> PendingSyncItem
+        Map<String, PendingSyncItem> pendingMap = skuItems.stream()
             .collect(Collectors.toMap(PendingSyncItem::getSkuId, item -> item));
 
-        boolean anyStatusChanged = false;
         List<ProductSku> updatedSkus = new ArrayList<>();
+        boolean anyInventoryChanged = false;
 
-        for (ProductSku sku : skus) {
-            PendingSyncItem pending = skuMap.get(sku.getSkuId());
-            if (pending == null) continue;
-
-            // Staleness guard: chỉ update nếu event mới hơn
-            if (pending.getEventTimestamp() <= sku.getLastInventorySyncAt()) {
+        for (ProductSku sku : allProductSkus) {
+            PendingSyncItem pending = pendingMap.get(sku.getSkuId());
+            if (pending == null) {
+                // SKU không có event trong drain batch hiện tại
+                // Kiểm tra SKU này có đang OUT_OF_STOCK không -> có thể cần auto-reactivate
+                // Không làm gì thêm, chỉ giữ nguyên state
                 continue;
+            }
+
+            // Staleness guard: chỉ update nếu event mới hơn DB
+            if (pending.getEventTimestamp() <= sku.getLastInventorySyncAt()) {
+                continue; // event cũ, skip
             }
 
             String oldStatus = sku.getStatus();
@@ -361,36 +364,55 @@ public class InventoryAsyncDbSyncWorker {
             // SKU status logic
             if (pending.getAvailableQuantity() == 0 && "ACTIVE".equals(sku.getStatus())) {
                 sku.setStatus("OUT_OF_STOCK");
-                anyStatusChanged = true;
+                anyInventoryChanged = true;
             } else if (pending.getAvailableQuantity() > 0 && "OUT_OF_STOCK".equals(sku.getStatus())) {
+                // Chỉ auto-reactivate nếu SKU đang OUT_OF_STOCK. INACTIVE do admin set không tự động nhảy.
                 sku.setStatus("ACTIVE");
-                anyStatusChanged = true;
+                anyInventoryChanged = true;
             }
+            // INACTIVE: giữ nguyên không tự động kích hoạt
 
             updatedSkus.add(sku);
         }
 
-        skuRepository.saveAll(updatedSkus);
+        if (!updatedSkus.isEmpty()) {
+            skuRepository.saveAll(updatedSkus);
+        }
 
         // === BƯỚC 3: FSM Auto-Hide / Auto-Reactivate ===
-        if (anyStatusChanged || needsAutoHideReactivate(product, skus)) {
-            evaluateAndTriggerStateTransition(product, skus);
+        // Đánh giá trên toàn bộ SKU pool (allProductSkus), không phải chỉ drain batch
+        if (anyInventoryChanged) {
+            evaluateAndTriggerStateTransition(product, allProductSkus);
         }
 
         // === BƯỚC 4: Batch Insert Outbox ===
-        List<OutboxEvent> outboxEvents = buildOutboxEvents(productId, updatedSkus, skus);
+        // Chỉ phát PRODUCT_STATE_CHANGED nếu có ít nhất 1 SKU thực sự được update
+        // (anyInventoryChanged đã bao gồm việc có SKU nào được thay đổi trong batch)
+        List<OutboxEvent> outboxEvents = new ArrayList<>();
+        if (anyInventoryChanged) {
+            outboxEvents.add(OutboxEvent.productStateChanged(
+                productId,
+                updatedSkus.stream().map(ProductSku::getSkuId).toList()
+            ));
+        }
         outboxService.batchInsert(outboxEvents);
 
         // === BƯỚC 5: Ack pending items ===
         ackPendingItems(skuItems);
     }
 
-    private void evaluateAndTriggerStateTransition(Product product, List<ProductSku> skus) {
-        // Kiểm tra tất cả SKU có hết hàng không
-        boolean allOutOfStock = skus.stream()
+    private void evaluateAndTriggerStateTransition(Product product, List<ProductSku> allProductSkus) {
+        // Kiểm tra tất cả SKU thuộc product:
+        // - Nếu TẤT CẢ SKU đều OUT_OF_STOCK (quantity=0, status=OUT_OF_STOCK) -> auto-hide
+        // - Nếu ÍT NHẤT 1 SKU có hàng (quantity>0, status!=OUT_OF_STOCK) -> auto-reactivate
+        //
+        // Chỉ kiểm tra các SKU thực sự có trong DB (allProductSkus).
+        // SKU nào không có event trong drain batch giữ nguyên trạng thái (không bị đánh giá sai).
+
+        boolean allOutOfStock = allProductSkus.stream()
             .allMatch(s -> s.getDisplayQuantity() == 0 && "OUT_OF_STOCK".equals(s.getStatus()));
 
-        boolean anyInStock = skus.stream()
+        boolean anyInStock = allProductSkus.stream()
             .anyMatch(s -> s.getDisplayQuantity() > 0 && !"OUT_OF_STOCK".equals(s.getStatus()));
 
         if (allOutOfStock && "ACTIVE".equals(product.getStatus())) {
@@ -402,26 +424,14 @@ public class InventoryAsyncDbSyncWorker {
             stateMachine.sendEvent(product, "AUTO_REACTIVATE_IN_STOCK");
         }
     }
-
-    private List<OutboxEvent> buildOutboxEvents(String productId,
-            List<ProductSku> updatedSkus, List<ProductSku> allSkus) {
-
-        boolean productStateChanged = updatedSkus.stream()
-            .anyMatch(s -> !s.getStatus().equals(
-                allSkus.stream().filter(x -> x.getSkuId().equals(s.getSkuId())).findFirst()
-                    .map(ProductSku::getStatus).orElse(s.getStatus())
-            ));
-
-        if (productStateChanged) {
-            return List.of(OutboxEvent.productStateChanged(
-                productId,
-                updatedSkus.stream().map(ProductSku::getSkuId).toList()
-            ));
-        }
-        return Collections.emptyList();
-    }
 }
 ```
+
+**Điểm khác biệt quan trọng so với thiết kế cũ:**
+- Bước 2 query **toàn bộ** SKU pool, không chỉ drain batch — đảm bảo FSM nhìn thấy full picture.
+- Logic `evaluateAndTriggerStateTransition` dùng `allProductSkus` thay vì `allSkus` (code cũ không rõ ràng).
+- Đã loại bỏ `buildOutboxEvents` phức tạp, thay bằng `anyInventoryChanged` flag.
+- Comment rõ ràng cho trường hợp SKU không có event trong batch.
 
 ### 3.3. Redis Lua Script cho Phase 1 (Chi tiết)
 
@@ -464,11 +474,21 @@ end
 local newSkuStatus = skuStatus
 if availableQty == 0 then
     newSkuStatus = 'OUT_OF_STOCK'
-elseif newSkuStatus == 'OUT_OF_STOCK' then
-    newSkuStatus = 'ACTIVE'
+elseif availableQty > 0 then
+    -- Chỉ auto-reactivate nếu SKU đang OUT_OF_STOCK. INACTIVE do admin set không tự động nhảy.
+    if newSkuStatus == 'OUT_OF_STOCK' then
+        newSkuStatus = 'ACTIVE'
+    end
+    -- Nếu là INACTIVE (admin chủ động deactivate), giữ nguyên INACTIVE.
 end
 
 -- Build cache value (preserve existing fields)
+-- CRITICAL: product_status is PRESERVED from existing cache, NOT overwritten.
+-- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM), which triggers
+-- Event Handler to do an in-band cache overwrite. Phase 1 does NOT update product_status
+-- to avoid overwriting a newer state change with a stale cached value.
+-- price_updated_at is also preserved — it is only set by Event Handler when refreshing
+-- from PRODUCT_PRICE_UPDATED.
 local newData = {
     sku_id = existingData and existingData.sku_id or string.match(cacheKey, "product:sku:(.+)"),
     product_id = productId,
@@ -482,10 +502,13 @@ local newData = {
     display_quantity = availableQty,
     last_inventory_sync_at = eventTimestamp,
     sku_status = newSkuStatus,
+    -- product_status: PRESERVED, never overwritten by Phase 1
     product_status = existingData and existingData.product_status or "",
     is_available = availableQty > 0,
     is_deleted = existingData and existingData.is_deleted or false,
-    variant_attributes = existingData and existingData.variant_attributes or {}
+    variant_attributes = existingData and existingData.variant_attributes or {},
+    -- price_updated_at: PRESERVED, only set by Event Handler on PRODUCT_PRICE_UPDATED
+    price_updated_at = existingData and existingData.price_updated_at or nil
 }
 
 -- Atomic write

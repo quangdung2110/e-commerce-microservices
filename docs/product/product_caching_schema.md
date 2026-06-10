@@ -23,7 +23,7 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
 > **Boundary bắt buộc:** Các service khác không đọc Redis của Product trực tiếp; chỉ truy cập qua gRPC (`GetProductSku`, `GetBatchProductSkus`) để bảo toàn hợp đồng và versioning.
 
 *   `product:sku:{sku_id}`
-    *   **Mô tả**: Chứa thông tin denormalized quan trọng nhất của một biến thể chuẩn bị vào giỏ. (Ví dụ: Định danh, Status, Giá Niêm Yết `original_price`, Giá Khuyến Mãi `promotional_price`, Product Name, Image).
+    *   **Mô tả**: Chứa thông tin denormalized quan trọng nhất của một biến thể chuẩn bị vào giỏ. (Ví dụ: Định danh, Status, Giá Niêm Yết `original_price`, Giá Khuyến Mãi `promotional_price`, `best_price`, `has_promotion`, Product Name, Image).
     *   **Loại Dữ Liệu**: `RedisJSON` (Ưu tiên tuyệt đối RedisJSON vì `variant_attributes` lưu dưới dạng Nested JSON, giúp Cart có thể thực hiện `JSON.MGET` thay cho lệnh HGET parse tay đắt đỏ).
     *   **Khuôn mẫu JSON**:
         ```json
@@ -35,6 +35,8 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "main_image_url": "https://cdn.example.com/ip15-black.jpg",
           "original_price": 34990000.00,
           "promotional_price": 28891500.00,
+          "best_price": 28891500.00,
+          "has_promotion": true,
           "sku_status": "ACTIVE",
           "product_status": "ACTIVE",
           "is_available": true,
@@ -42,12 +44,13 @@ Order, Cart, Inventory Service không có quyền Query DB trực tiếp của P
           "variant_attributes": {"color": "Đen", "storage": "256GB"},
           "display_quantity": 150,
           "last_inventory_sync_at": 1709420000000,
+          "price_updated_at": "2026-02-28T06:00:00Z"
         }
         ```
     *   **TTL**: 1 tiếng (3600s).
     *   **Xử lý Invalidation**: Khi có cập nhật SKU từ DB, hệ thống bắt buộc dùng OVERWRITE (Soft Invalidation), không dùng DEL hàng loạt để tránh Cache Stampede. Writer cho `product:sku:{sku_id}`:
     * **In-band API**: Xử lý ngay trong API trả HTTP response (PRODUCT_STATE_CHANGED, PRODUCT_DELETED, PRODUCT_UPDATED).
-    * **Event Handler Worker**: Chỉ phụ trách refresh khi nhận `PRODUCT_PRICE_UPDATED` (từ Markdown Worker). Xem [Event Handler Worker](product_workers.md#2-event-handler-worker).
+    * **Event Handler Worker**: Chỉ phụ trách refresh khi nhận `PRODUCT_PRICE_UPDATED` (từ Markdown Worker). Staleness guard: so sánh `event.updated_at > cached.price_updated_at`. Xem [Event Handler Worker](product_workers.md#2-event-handler-worker).
 
 > **Batch Point-Read Strategy:** Khi Cart Service cần lấy thông tin N SKU cùng lúc (VD: hiển thị giỏ hàng có 10 món), API nội bộ dùng gRPC `GetBatchProductSkus` nhận danh sách `sku_ids`. Backend sử dụng Redis `JSON.MGET` để fetch N keys cùng lúc trong 1 round-trip, tránh N+1 problem. Với các SKU bị cache miss, chỉ query DB cho những SKU thiếu (partial miss), không query lại toàn bộ.
 
