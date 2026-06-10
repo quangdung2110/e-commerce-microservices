@@ -46,17 +46,17 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho **B
        - Khóa con + lấy giá live: `SELECT sku_id, original_price FROM product_skus WHERE sku_id IN (...) AND product_id = :product_id FOR UPDATE`.
        - Tính giá theo tập row đã lock, sau đó batch `UPDATE product_skus SET promotional_price = :calc, updated_at = NOW() WHERE product_id = :product_id AND sku_id IN (...)`.
        - Tracking: batch upsert `product_markdown_applied` (tracking rule → SKU mapping).
-      - Outbox: batch insert `product_outbox_events` cho các SKU bị ảnh hưởng, chứa [`PRODUCT_PRICE_UPDATED`](product_events.md#33-product_price_updated); payload phải dùng `updated_at` timestamp để downstream guard out-of-order.
+      - Outbox: batch insert `product_outbox_events` cho các SKU bị ảnh hưởng, chứa [`SKU_PRICE_UPDATED`](product_events.md#33-SKU_PRICE_UPDATED); payload phải dùng `updated_at` timestamp để downstream guard out-of-order.
      - COMMIT Transaction để nhả cọc cho Product kế tiếp. Mất thêm milisecond vòng lặp nhưng an toàn hệ thống tuyệt đối 100%.
 5. **[Worker] - Invalidate Cache (Soft Invalidation - Ownership tách bạch):**
    - Sau mỗi lần commit của từng Product, Markdown Worker chỉ quản lý key phụ markdown theo batch Redis pipeline.
    - Markdown Worker **không** ghi đè trực tiếp `product:sku:{id}` để tránh double-write với luồng Kafka invalidation.
-    - Invalidation Consumer (`product-event-handler-group`) sẽ self-consume `PRODUCT_PRICE_UPDATED` từ outbox để refresh `product:sku:{id}` theo một đường ghi bất đồng bộ duy nhất.
+    - Invalidation Consumer (`product-event-handler-group`) sẽ self-consume `SKU_PRICE_UPDATED` từ outbox để refresh `product:sku:{id}` theo một đường ghi bất đồng bộ duy nhất.
    - Để tránh write amplification, Invalidation Consumer phải dedupe theo `product_id` trong từng poll-batch.
    - Trước khi overwrite `product:sku:{id}`, áp dụng stale guard theo `updated_at`: chỉ ghi khi event mới hơn cache hiện tại; event bằng/cũ hơn phải bỏ qua.
    - Với `MARKDOWN_ENDED` do tắt thủ công, đưa các lệnh `DEL product:markdown:active:{sku_id}` vào cùng pipeline batch để đồng bộ tức thời.
 6. **[Background] - Phát Event CQRS:**
-   - Debezium CDC Connector forward `PRODUCT_PRICE_UPDATED` từ outbox sang Kafka → Search Service cập nhật giá hiển thị trên Elasticsearch.
+   - Debezium CDC Connector forward `SKU_PRICE_UPDATED` từ outbox sang Kafka → Search Service cập nhật giá hiển thị trên Elasticsearch.
 
 > **Lưu ý khi `MARKDOWN_UPDATED` / `MARKDOWN_ENDED`:** Luồng tương tự áp dụng cho việc lấy danh sách SKU từ bảng `product_markdown_applied`. Đặc thù với UPDATE, Worker BẮT BUỘC query lại `original_price` live từ bảng `product_skus`, KHÔNG DÙNG snapshot rác cũ; tiếp theo tính toán sửa lại DB rồi tung outbox bình thường. Reset Null Price nếu là event ENDED.
 >
@@ -94,10 +94,10 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho **B
    - Mỗi product: 1 transaction, lock Product cha (1 row lock cho cả batch SKU).
    - Batch update `product_skus`: `display_quantity`, `sku_status`, `last_inventory_sync_at`.
    - FSM triggers: `AUTO_HIDE_OUT_OF_STOCK` hoặc `AUTO_REACTIVATE_IN_STOCK` nếu SKU status thay đổi.
-   - Batch insert `product_outbox_events` (`PRODUCT_STATE_CHANGED`) nếu có state change.
+   - Batch insert `product_outbox_events` (`PRODUCT_STATUS_CHANGED`) nếu có state change.
 7. **[Redis] - Ack Pending Sync:**
    - `ZREM` khỏi Redis ZSET sau DB commit.
-   - Cache `product:sku:{sku_id}` được refresh bởi **Event Handler** khi self-consume `PRODUCT_STATE_CHANGED`.
+   - Cache `product:sku:{sku_id}` được refresh bởi **Event Handler** khi self-consume `PRODUCT_STATUS_CHANGED`.
 
 ### Đảm Bảo Consistency
 

@@ -120,7 +120,7 @@ Khi Promotion Service phát event `MARKDOWN_CREATED` / `MARKDOWN_ENDED`, Product
 
 *   `product_outbox_events` (Bảng Ghi nhận Event Phát đi cho Outbox Pattern kết hợp Debezium)
     *   `event_id`: UUID PRIMARY KEY.
-    *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_PRICE_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
+    *   `event_type`: VARCHAR(100) (VD: `PRODUCT_CREATED`, `PRODUCT_STATUS_CHANGED`, `SKU_PRICE_UPDATED`). Xem danh sách đầy đủ tại [Product Events](product_events.md).
     *   `aggregate_type`: VARCHAR(50) (VD: Product, ProductSku).
     *   `aggregate_id`: VARCHAR(255) (Bắt buộc theo `aggregate_type`: Product -> `product_id`, ProductSku -> `sku_id`, Category -> `category_id`).
     *   `partition_key`: VARCHAR(255) NOT NULL (Chứa `product_id` cho `t.product.events` hoặc `category_id` cho `t.category.events`). Được chèn vào bởi Application lúc Insert để Debezium định tuyến Kafka Message Partition Key nguyên bản, không cần tốn CPU parse JSON ở Connect. **Application-level validation bắt buộc trước INSERT:** kiểm tra `partition_key IS NOT NULL AND partition_key <> ''`. Ngoài ràng buộc `NOT NULL`, nên thêm `CHECK (LENGTH(partition_key) > 0)` để phòng ngừa edge case. Nếu quên truyền, Event rơi lung tung sang các Partition khác nhau làm trật tự đồng bộ (Ordering) của Elasticsearch bị phá vỡ hoàn toàn.

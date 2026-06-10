@@ -386,13 +386,18 @@ public class InventoryAsyncDbSyncWorker {
         }
 
         // === BƯỚC 4: Batch Insert Outbox ===
-        // Chỉ phát PRODUCT_STATE_CHANGED nếu có ít nhất 1 SKU thực sự được update
-        // (anyInventoryChanged đã bao gồm việc có SKU nào được thay đổi trong batch)
+        // Phát SKU_STATUS_CHANGED khi có ít nhất 1 SKU thực sự được update
+        // (anyInventoryChanged đã bao gồm việc có SKU nào được thay đổi trong batch).
+        // Payload chứa sku_ids[], product_status_changed, new_product_status nếu FSM trigger
+        // đồng thời đổi product status (ví dụ: AUTO_HIDE → product HIDDEN).
         List<OutboxEvent> outboxEvents = new ArrayList<>();
         if (anyInventoryChanged) {
-            outboxEvents.add(OutboxEvent.productStateChanged(
+            outboxEvents.add(OutboxEvent.skuStatusChanged(
                 productId,
-                updatedSkus.stream().map(ProductSku::getSkuId).toList()
+                updatedSkus.stream().map(ProductSku::getSkuId).toList(),
+                skuStatusChanged,       // new_sku_status
+                productStatusChanged,   // boolean
+                newProductStatus       // nullable, chỉ set khi product_status cũng thay đổi
             ));
         }
         outboxService.batchInsert(outboxEvents);
@@ -484,9 +489,8 @@ end
 
 -- Build cache value (preserve existing fields)
 -- CRITICAL: product_status is PRESERVED from existing cache, NOT overwritten.
--- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM), which triggers
--- Event Handler to do an in-band cache overwrite. Phase 1 does NOT update product_status
--- to avoid overwriting a newer state change with a stale cached value.
+-- product_status can only change via PRODUCT_STATE_CHANGED (API/FSM) or SKU_STATUS_CHANGED (Phase 2 FSM trigger).
+-- Phase 1 does NOT update product_status to avoid overwriting a newer state change with a stale cached value.
 -- price_updated_at is also preserved — it is only set by Event Handler when refreshing
 -- from PRODUCT_PRICE_UPDATED.
 local newData = {

@@ -109,7 +109,7 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 **Method:** `PUT`
 **Endpoint:** `/api/v1/products/{id}`
 **Auth:** Admin (JWT)
-**Mô tả:** Cập nhật tên, mô tả, hình ảnh, thuộc tính, giá SKU, thêm/xóa SKU.
+**Mô tả:** Cập nhật thông tin cấp sản phẩm (tên, mô tả, danh mục, thuộc tính, hình ảnh).
 
 **Request Body:**
 ```json
@@ -117,14 +117,16 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
   "name": "iPhone 15 Pro Max 256GB (Updated)",
   "description": "Mô tả cập nhật...",
   "category_id": "cat-dien-thoai",
-  "attributes_json": {},
-  "media": [],
-  "skus": [
+  "attributes_json": {
+    "material": "Titanium Grade 5",
+    "origin": "Vietnam"
+  },
+  "media": [
     {
-      "sku_id": "sku-uuid-001",
-      "sku_code": "IP15PM-256-BLK",
-      "original_price": 33990000.00,
-      "variant_attributes_json": {}
+      "media_type": "IMAGE",
+      "url": "https://cdn.example.com/ip15-main-updated.jpg",
+      "thumbnail_url": "https://cdn.example.com/ip15-main-updated-thumb.jpg",
+      "sort_order": 1
     }
   ]
 }
@@ -132,10 +134,10 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 
 **Chi tiết hoạt động:**
 1. **Lock Product** — `SELECT ... FOR NO KEY UPDATE` để lock Product cha trước.
-2. **Update Product + SKUs** — Trong `@Transactional`, cập nhật `products`, cập nhật/thêm/xóa `product_skus`.
-3. **Pricing Recalculation** — Nếu `original_price` thay đổi và SKU đang có markdown active → recompute `promotional_price` trong cùng transaction.
-4. **Snapshot & Outbox** — Materialize full snapshot Product + SKUs tại thời điểm commit. Insert `PRODUCT_UPDATED` vào outbox. Nếu giá thay đổi → thêm `PRODUCT_PRICE_UPDATED` vào outbox.
-5. **In-band Cache Refresh** — Ngay sau commit và trước HTTP response, overwrite `product:sku:{sku_id}` trong Redis bằng dữ liệu mới nhất (JSON.SET với TTL 3600s).
+2. **Validate** — Kiểm tra `category_id` tồn tại (nếu thay đổi). Kiểm tra payload attributes đủ các trường `is_required = true` theo Category.
+3. **Update Product** — Trong `@Transactional`, cập nhật các trường `products`: `name`, `description`, `category_id`, `attributes_json`, `media`. Không xử lý SKU tại endpoint này.
+4. **Snapshot & Outbox** — Materialize snapshot Product. Query danh sách `sku_ids[]` thuộc product trong cùng transaction. Insert `PRODUCT_UPDATED` vào outbox với `sku_ids[]` để Search Service có thể query theo `sku_id` cập nhật document.
+5. **In-band Cache Refresh** — Ngay sau commit và trước HTTP response, overwrite `product:sku:{sku_id}` trong Redis bằng dữ liệu mới nhất (JSON.SET với TTL 3600s) cho từng SKU của product.
 6. **Response** — HTTP 200 với JSON cập nhật.
 7. **CQRS** — Debezium CDC phát event sang Kafka.
 
@@ -181,10 +183,10 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
    - `HIDE`: Set `admin_hidden = TRUE`.
    - `SHOW`: Reset `admin_hidden = FALSE`.
    - `SUBMIT`: Giữ nguyên `admin_hidden = FALSE`.
-4. **Outbox** — Insert `PRODUCT_STATE_CHANGED` với `sku_ids[]` (query trong transaction), `changed_by`, `changed_by_type`, `reason`.
+4. **Outbox** — Insert `PRODUCT_STATUS_CHANGED` với `sku_ids[]` (query trong transaction), `changed_by`, `changed_by_type`, `reason`.
 5. **In-band Cache Refresh** — Overwrite `product:sku:{sku_id}` ngay sau commit.
 6. **Response** — HTTP 200 với trạng thái mới.
-7. **CQRS** — Debezium CDC phát event. Promotion Service lắng nghe `PRODUCT_STATE_CHANGED` (DRAFT→ACTIVE) để áp markdown nếu có.
+7. **CQRS** — Debezium CDC phát event. Promotion Service lắng nghe `PRODUCT_STATUS_CHANGED` (DRAFT→ACTIVE) để áp markdown nếu có.
 
 ---
 
@@ -208,7 +210,7 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 1. **Lock Product** — `SELECT ... FOR NO KEY UPDATE`.
 2. **Validate** — Kiểm tra `product_id` tồn tại và không bị `is_deleted`. Kiểm tra `sku_code` chưa tồn tại.
 3. **Insert SKU** — `INSERT INTO product_skus` (status: ACTIVE).
-4. **Outbox** — Insert `PRODUCT_UPDATED` vào outbox với full snapshot.
+4. **Outbox** — Insert `SKU_CREATED` vào outbox với full snapshot SKU. `partition_key = sku_id` (vì `aggregate_type = ProductSku`). Payload chứa đầy đủ thông tin SKU để Search Service index document mới mà không cần gọi lại API.
 5. **In-band Cache Refresh** — Overwrite `product:sku:{sku_id}`.
 6. **Response** — HTTP 201 với SKU vừa tạo.
 
@@ -223,7 +225,7 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 **Chi tiết hoạt động:**
 1. **Lock Product + SKU** — `SELECT ... FOR NO KEY UPDATE` (Product), `SELECT ... FOR UPDATE` (SKU).
 2. **Soft Delete** — `UPDATE product_skus SET is_deleted = true, deleted_at = NOW()`. Xóa orphan markdown: `DELETE FROM product_markdown_applied WHERE sku_id = ?`. Reset `promotional_price = NULL`.
-3. **Outbox** — Insert `PRODUCT_SKU_DELETED` vào outbox.
+3. **Outbox** — Insert `SKU_DELETED` vào outbox.
 4. **Cache Invalidate** — Overwrite `product:sku:{sku_id}` với `is_deleted = true`. Xóa key markdown.
 5. **Response** — HTTP 204 No Content.
 
@@ -288,7 +290,7 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 
 **Chi tiết hoạt động:**
 1. **Validate** — Kiểm tra `parent_id` tồn tại (nếu có). Kiểm tra không tạo circular dependency.
-2. **Insert** — `INSERT INTO categories`. Insert Outbox `CATEGORY_UPDATED`.
+2. **Insert** — `INSERT INTO categories`. Tính toán `path` (full breadcrumb path từ root đến category) trong cùng transaction. Insert Outbox `CATEGORY_CREATED` với `path`.
 3. **Response** — HTTP 201 với category mới.
 
 ---
@@ -315,9 +317,9 @@ Tài liệu này tổng hợp toàn bộ API endpoints của Product Service, ba
 **Chi tiết hoạt động:**
 1. **Validate** — Kiểm tra không có sản phẩm active thuộc `category_id`.
 2. **Delete** — `DELETE FROM categories`. Insert Outbox `CATEGORY_DELETED` với `descendant_category_ids`.
-3. **Write Model Update** — Product Event Handler nhận `CATEGORY_DELETED`, chuyển sản phẩm liên quan sang `HIDDEN`, phát `PRODUCT_STATE_CHANGED`.
+3. **Write Model Update** — Product Event Handler nhận `CATEGORY_DELETED`, chuyển sản phẩm liên quan sang `HIDDEN` tại PostgreSQL (không phát thêm `PRODUCT_STATUS_CHANGED`).
 4. **Response** — HTTP 204.
-5. **CQRS** — Search Service nhận `CATEGORY_DELETED`, xóa/đánh dấu metadata category trên Elasticsearch.
+5. **CQRS** — Search Service nhận `CATEGORY_DELETED`, nullify category metadata và update `product_status = HIDDEN` trên Elasticsearch từ chính event này.
 
 ---
 
