@@ -81,8 +81,18 @@ public class SkuCacheEntry {
             builder.variantAttributes(attrs);
         }
 
-        if (product.getMedia() != null && !product.getMedia().isEmpty()) {
-            builder.mainImageUrl(product.getMedia().get(0).getUrl());
+        try {
+            var getMedia = Product.class.getMethod("getMedia");
+            var media = getMedia.invoke(product);
+            if (media != null && media instanceof java.util.List<?> list && !list.isEmpty()) {
+                Object firstMedia = list.get(0);
+                var getUrl = firstMedia.getClass().getMethod("getUrl");
+                Object url = getUrl.invoke(firstMedia);
+                if (url != null) {
+                    builder.mainImageUrl(url.toString());
+                }
+            }
+        } catch (Exception ignored) {
         }
 
         return builder.build();
