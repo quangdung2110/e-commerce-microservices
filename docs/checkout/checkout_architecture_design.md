@@ -26,7 +26,7 @@ Checkout Service hoạt động như một **Aggregator** (Người gom dữ li�
 *   **Data Aggregation (Gom dữ liệu):** Nhận 1 request duy nhất từ Frontend, song song (`Goroutines` hoặc `CompletableFuture`) gọi sang Cart, Promotion, Inventory (Inventory tự orchestration Shipping quote) để lấy thông số và ráp lại thành bảng báo giá (Quotation).
 *   **Idempotency & Rate Limiting (Chống spam/Trùng lặp):** Validation ban đầu (Check token, check JWT, chống spam click).
 *   **Tính toán tập trung (Centralized Calculation):** Đảm bảo mọi phép trừ phần trăm giảm giá, trừ phí ship, tính thuế VAT đều được tính bởi Backend, ngăn chặn client truyền số sai lệch (Tampering).
-*   **Boundary ghi dữ liệu rõ ràng (Explicit Write Boundary):** Checkout chỉ orchestration tính toán và commit đơn. Việc ghi mới vào ví voucher không được làm ngầm ở Submit; chỉ các luồng explicit như Save & Apply voucher platform hoặc worker campaign của Promotion mới được tạo thêm bản ghi ví.
+*   **Boundary ghi dữ liệu rõ ràng (Explicit Write Boundary):** Checkout chỉ orchestration tính toán và commit đơn. Việc ghi mới vào ví voucher không được làm ngầm ở Submit; chỉ các luồng explicit như Save & Apply voucher hoặc worker campaign của Promotion mới được tạo thêm bản ghi ví.
 *   **Conflict Recovery có chủ đích:** Khi reserve voucher fail trong Saga (all-or-nothing), Checkout gọi lại Promotion evaluate để trả `409 PROMOTION_RECALCULATION_NEEDED` với `dropped_promotions[]` và đề xuất tổng tiền mới; không dùng phép trừ cục bộ. Client bắt buộc gọi lại Preview để lấy token mới trước khi submit tiếp.
 *   **Cô lập dội tải (Traffic Isolation):** Chặn đứng 99% lượng "Traffic xem thử" trước khi nó chạm vào CSDL của Order Service.
 

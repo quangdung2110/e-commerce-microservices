@@ -19,7 +19,7 @@ Bảng này lưu trữ thông tin đăng nhập tối thiểu và trạng thái 
 | `id` | `UUID` | Primary Key, Auto Gen | Định danh toàn cầu của User dùng xuyên suốt hệ thống. |
 | `email` | `VARCHAR(255)` | Unique, Indexed | Email/Username dùng để đăng nhập. |
 | `password_hash` | `VARCHAR(255)` | Not Null | Chuỗi hash mật khẩu (Sử dụng Argon2id / BCrypt). **Tuyệt đối không lưu plain text**. |
-| `roles` | `JSONB` hoặc `VARCHAR[]` | Default `['USER']` | Danh sách quyền của User. Ví dụ: `["USER", "ADMIN"]`. Auth cấp phát claim này vào JWT. |
+| `roles` | `JSONB` hoặc `VARCHAR[]` | Default `['CUSTOMER']` | Danh sách quyền của User. Ví dụ: `["ADMIN", "CUSTOMER"]`. Auth cấp phát claim này vào JWT. Các role hợp lệ: `ADMIN`, `CUSTOMER`, `SYSTEM`. |
 | `status` | `VARCHAR(50)` | Default `'PENDING_VERIFICATION'` | `PENDING_VERIFICATION` (Chờ kích hoạt Email), `ACTIVE`, `LOCKED` (sai pass nhiều), `BANNED`. |
 | `locked_at` | `TIMESTAMP` | Nullable, Indexed | Lưu thời điểm tài khoản bị khóa (`LOCKED`). Dùng để tính thời gian tự động mở khóa sau 30 phút. |
 | `failed_login_attempts` | `INTEGER` | Default `0` | Số lần đăng nhập sai liên tiếp. Reset về 0 khi đăng nhập thành công hoặc bị khóa. |

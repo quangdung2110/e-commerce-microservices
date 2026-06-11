@@ -35,17 +35,12 @@ Lưu trữ thông tin tổng quát của giao dịch để khách hàng thanh to
 *   `version`: BIGINT DEFAULT 1 (Optimistic Locking cho FSM)
 *   `created_at`, `updated_at`: TIMESTAMPTZ
 
-> **Nguồn sự thật (Source of Truth):** Trạng thái và phương thức thanh toán thuộc quyền sở hữu của Payment Service. Hai cột `payment_method`, `payment_status` tại Order chỉ là bản sao phục vụ query nhanh. Cần có reconciliation job định kỳ để phát hiện và sửa drift dữ liệu giữa Order và Payment.
-
-> **Checkout signal routing contract:** `checkout_token` bắt buộc được persist ngay tại `CreateOrderActivity` để workers có thể lookup theo `order_id` và signal đúng workflow `order-checkout-{checkout_token}`.
-
-> **Customer return one-shot policy:** Guard nghiệp vụ cho `POST /v1/orders/{orderId}/return` được lưu riêng ở bảng `order_customer_return_guard` (mục 3.3.1). Policy này độc lập với `payment_status` và không được reset khi `REFUND_FAILED`/`REFUND_REVERSED`.
+> **Lý do snapshot tên platform là bắt buộc:** Trường này vẫn được giữ để đảm bảo tính nhất quán trong lịch sử đơn hàng.
 
 ### 1.2. `order_items` (Sub-order / Kiện hàng)
 Mỗi Order có thể tách thành 1 hoặc nhiều Item dựa trên Tọa độ Kho hàng và quyết định của khách hàng lúc Checkout (Smart Routing).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `order_id`: BIGINT (Foreign Key -> `orders.id`)
-*   `store_name_snapshot`: VARCHAR(255) (Tên platform tại thời điểm đặt hàng; dùng cho lịch sử và CQRS text-search)
 *   `warehouse_id`: BIGINT (Kho xuất hàng)
 *   `shipping_fee`: DECIMAL (Phí vận chuyển riêng của kiện này)
 *   `tracking_number`: VARCHAR(100) (Mã vận đơn của đối tác - GHN/NinjaVan)
@@ -80,8 +75,7 @@ Lưu dấu vết các voucher/deal đã dùng cho đơn hàng này để đối 
 *   `promotion_id`: BIGINT
 *   `promotion_type`: VARCHAR(50) (CART_DISCOUNT, SHIPPING_DISCOUNT)
 *   `discount_amount`: DECIMAL (Số tiền đã giảm)
-*   `platform_funding`: DECIMAL (Phần giảm giá do Platform tài trợ)
-*   `admin_funding`: DECIMAL (Phần giảm giá do admin tài trợ)
+*   `admin_funding`: DECIMAL (Phần giảm giá do Admin tài trợ)
 
 ---
 ## 2. Quản lý trạng thái phức tạp với State Machine (FSM)
@@ -386,7 +380,7 @@ Chiến lược query: filter-first trên `orders_read`; text query chạy trên
 
 Contract hiển thị list buyer:
 - List luôn trả order-level card (1 card/1 order).
-- Card fields (`primary_item_name`, `primary_store_name`, `primary_tracking_number`, `remaining_item_count`) được derive từ snapshot DB + event stream.
+- Card fields (`primary_item_name`, `primary_tracking_number`, `remaining_item_count`) được derive từ snapshot DB + event stream.
 - Tab buyer chuẩn hóa thành 6 nhóm (`TO_PAY`, `TO_SHIP`, `TO_RECEIVE`, `COMPLETED`, `CANCELLED`, `RETURN_REFUND`).
 - Cửa sổ query mặc định là 90 ngày gần nhất nếu không truyền `from/to`.
 

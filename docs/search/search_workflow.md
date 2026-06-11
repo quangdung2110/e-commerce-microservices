@@ -48,45 +48,40 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho t�
    - Normalize query `q`: lowercase, trim, remove extra whitespace.
   - Chuẩn hóa canonical toàn bộ tham số ảnh hưởng kết quả (`q`, `category`, `filters`, `price_min`, `price_max`, `in_stock`, `has_promotion`, `sort`, `page`, `size`) theo quy tắc tại [Caching Schema](search_caching_schema.md#11-nhóm-search-results-cache-hot-query-cache).
    - Hash normalized query + all params → `query_hash` cho cache lookup.
-2. **[Redis] - Check Hot Query Cache (Kèm SWR + 2 tầng chống stampede):**
+2. **[Redis] - Check Hot Query Cache (Kèm SWR + Redis dedup):**
    - Lệnh đọc: `GET search:query:{query_hash}`.
-  - Mỗi request phải cập nhật bộ đếm hot-query cluster-wide: `ZADD` + `ZREMRANGEBYSCORE(now-60s)` + `PEXPIRE 120s` cho `search:qcount:{query_hash}`.
+  - Mỗi request phải cập nhật bộ đếm hot-query cluster-wide: `INCR search:qcount:{query_hash}:{current_bucket}` + `GET search:qcount:{query_hash}:{previous_bucket}` (sliding bucket, 2 bucket = 60 giây trượt).
   - Nếu Data rỗng (Cache Miss thực sự) → Chuyển sang Bước 3. Chỉ cache khi truy vấn đủ độ hot (`> 50 requests/phút`) để tránh cache pollution từ long-tail query.
    - Nếu Cache Hit: Bóc tách trường `valid_until` bên trong JSON.
     - **Early Refresh (bắt buộc):** Khi còn <= 5 giây tới `valid_until`, kích hoạt refresh sớm với xác suất 20% để dàn tải burst.
      - Nếu `now() <= valid_until`: Trả về kết quả cho User ngay lập tức (< 1ms). **Kết thúc.**
-     - Nếu `now() > valid_until` (Dữ liệu đã cũ cần lấy mới ngầm): 
+     - Nếu `now() > valid_until` (Dữ liệu đã cũ cần lấy mới ngầm):
        - Trả về kết quả Cũ (Stale Data) cho User ngay lập tức để giữ API Latency < 1ms.
        - Gửi ngầm một tín hiệu Async vào bounded refresh queue để lấy Data mới từ Elasticsearch.
        - **Tầng 1 (Pod-local):** Singleflight gom request trùng theo `query_hash` trong cùng Pod.
-     - **Tầng 2 (Multi-pod):** Worker chỉ được query Elasticsearch khi lấy được lock `SETNX search:lock:refresh:{query_hash} {owner_token} EX {lock_ttl_seconds}` (TTL động theo p99 ES refresh).
-       - Nếu lock thất bại, worker thoát ngay, không query ES.
+     - **Tầng 2 (Multi-pod):** Worker chỉ được query Elasticsearch khi key dedup `search:refresh:{query_hash}` còn tồn tại (key được SETNX bởi scheduler, worker xác nhận bằng GET; nếu key đã expired vì TTL tự hết, worker vẫn tiếp tục execute).
+       - Nếu key đã hết hạn, worker vẫn thực thi — TTL tự bảo vệ trường hợp Pod crash giữa enqueue và execution.
      - Nếu `now() > stale_max_until` thì không trả stale quá hạn; request path phải fallback query ES trực tiếp (timeout ngắn).
 
-### 2.1. Chi tiết Refresh Scheduler (Bắt buộc cho tính đúng đắn)
+### 2.1. Chi tiết Refresh Scheduler
 
-Để tránh enqueue trùng cùng một `query_hash` trong cùng Pod, scheduler phải có **Refresh Registry** (in-memory map + CAS) với trạng thái:
-
-`IDLE -> ENQUEUED -> RUNNING -> IDLE`
+Scheduler gọi `scheduleRefresh(query_hash)` khi phát hiện cache stale. Mục tiêu: mỗi `query_hash` stale chỉ được enqueue một lần trong toàn cụm.
 
 **Quy tắc:**
-1. Chỉ enqueue khi CAS `IDLE -> ENQUEUED` thành công.
-2. Nếu trạng thái đã là `ENQUEUED` hoặc `RUNNING`, bỏ enqueue mới.
-3. Sau CAS local, bắt buộc CAS Redis `search:refresh:enqueue:{query_hash}` với `EX {enqueue_ttl_seconds}` để chống enqueue trùng đa pod (`enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`).
-4. `search:refresh:enqueue:{query_hash}` chỉ dùng cho dedupe ở pha scheduler; không thay vai trò lock execution.
-5. Nếu queue full khi `offer`, rollback `ENQUEUED -> IDLE`, xoá CAS Redis key, tăng metric drop và kết thúc.
-6. Worker sau khi lấy task phải CAS `ENQUEUED -> RUNNING`.
-7. Kết thúc task (thành công/lỗi) luôn phải `RUNNING -> IDLE` và xoá CAS Redis key trong `finally`.
-8. Lock execution `search:lock:refresh:{query_hash}` chỉ release bằng compare-delete theo `owner_token` hoặc để TTL tự hết hạn.
+1. Đi qua Singleflight để gom request trùng `query_hash` trong cùng Pod.
+2. Thử `SETNX search:refresh:{query_hash} 1 EX {ttl}` với `ttl = max(30, 2 * es_refresh_p99_seconds)`. Đây là cơ chế dedupe đa pod duy nhất — không cần in-memory state machine.
+3. Nếu SETNX fail → key đã tồn tại, có pod khác đã enqueue. Dừng, không enqueue thêm.
+4. Nếu SETNX success → `offer` task vào bounded queue. Nếu queue full: `DEL search:refresh:{query_hash}` (reset dedup key) và tăng metric `search_refresh_queue_dropped_total`.
+5. Worker hoàn tất task (thành công hoặc lỗi) phải `DEL search:refresh:{query_hash}` trong `finally`. Nếu Pod crash trước DEL, TTL tự hết hạn và key không còn ngăn pod khác enqueue lần tiếp theo.
 
 ### 2.2. Semantics của Bounded Queue và Worker
 
 1. Queue là thread-safe, thao tác lấy task là destructive (`take/pop`).
 2. Một queue-node chỉ có một worker lấy; worker khác không thể lấy cùng queue-node đó.
-3. Trùng lặp chỉ có thể đến từ enqueue nhiều node khác nhau cho cùng `query_hash`; phần này đã được chặn bằng Refresh Registry + coalescing.
+3. Trùng lặp chỉ có thể đến từ enqueue nhiều node khác nhau cho cùng `query_hash`; đã được chặn bằng Redis dedup key (SETNX).
 4. Queue full policy: không block request path, vẫn trả stale data, chỉ bỏ refresh task có kiểm soát và ghi metric/alert.
 5. Không được phục vụ stale nếu đã vượt `stale_max_until`; phải chuyển sang query ES trực tiếp với timeout.
-6. Queue nằm trên RAM Pod; nếu Pod down thì task có thể mất. Với SWR đây là chấp nhận được, vì request kế tiếp sẽ trigger refresh lại.
+6. Queue nằm trên RAM Pod; nếu Pod down thì task có thể mất. Với SWR đây là chấp nhận được, vì request kế tiếp sẽ trigger refresh lại. Redis dedup key có TTL riêng nên task không bị enqueue trùng bởi pod khác trong thời gian TTL.
 
 **Tiếp tục luồng chính API search:**
 3. **[Elasticsearch] - Build & Execute Query:**

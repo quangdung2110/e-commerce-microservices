@@ -8,12 +8,14 @@ Tài liệu này mô tả thiết kế PostgreSQL và các ràng buộc dữ li�
 
 ### 1.1. `warehouses`
 
+Lưu trữ thông tin kho hàng do Admin quản lý.
+
 * `id`: BIGSERIAL PRIMARY KEY
-* `deleted_owner_type`: VARCHAR(50) (`PLATFORM`, `admin`)
-* `owner_id`: BIGINT
 * `name`: VARCHAR(255)
 * `address`, `latitude`, `longitude`
 * `city_code`, `district_code`, `ward_code`
+* `is_active`: BOOLEAN DEFAULT true
+* `created_at`, `updated_at`: TIMESTAMPTZ
 
 ### 1.2. `sku_product_mapping`
 
@@ -34,7 +36,6 @@ Nguồn commit nóng theo kho.
 * `sku_id`: VARCHAR(64) NOT NULL
 * `product_id`: VARCHAR(64) NOT NULL
 * `warehouse_id`: BIGINT NOT NULL
-* `owner_id`: BIGINT NOT NULL
 * `actual_quantity`: INT NOT NULL
 * `reserved_quantity`: INT NOT NULL DEFAULT 0
 * `available_quantity`: INT GENERATED ALWAYS AS (actual_quantity - reserved_quantity) STORED
@@ -53,7 +54,6 @@ Aggregate read model theo SKU.
 * `id`: BIGSERIAL PRIMARY KEY
 * `sku_id`: VARCHAR(64) UNIQUE NOT NULL
 * `product_id`: VARCHAR(64) NOT NULL
-* `owner_id`: BIGINT NOT NULL
 * `total_quantity`: INT NOT NULL
 * `reserved_quantity`: INT NOT NULL
 * `available_quantity`: INT GENERATED ALWAYS AS (total_quantity - reserved_quantity) STORED
@@ -111,7 +111,7 @@ Append-only audit trail.
 * `ORDER_DEDUCTED`
 * `ORDER_CANCELLED`
 * `RESERVATION_EXPIRED`
-* `VENDOR_RESTOCK`
+* `ADMIN_RESTOCK`
 * `ORDER_RETURNED_RESTOCK`
 * `ADMIN_ADJUSTMENT`
 

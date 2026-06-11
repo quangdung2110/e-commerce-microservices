@@ -34,21 +34,14 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
   "status": "PREVIEW_READY",
   "shipping_address_id": "addr-uuid-123",
   "cart_snapshot": "{\"items\":[...]}",
-  "platform_routing": "{
-    \"admin-001\": {\"total_shipping_fee\": 35000, \"item_shipments\": [...]},
-    \"admin-002\": {\"total_shipping_fee\": 28000, \"item_shipments\": [...]} 
-  }",
   "route_version": "route-signature-v3-4",
   "route_signature": "sha256-route-xyz...",
   "shipping_rate_version": "2026-03-14T09:00:00Z",
   "promotion_rule_version": "2026-03-14T09:00:00Z",
   "promotion_budget_version": "2026-03-14T09:00:02Z",
-  "selected_platform_vouchers": "{
-    \"admin-002\": {\"promotion_id\": 55, \"discount_amount\": 50000}
-  }",
-  "selected_platform_voucher_id": null,
+  "selected_voucher_id": null,
   "selected_freeship_voucher_id": null,
-  "pricing_summary": "{\"total_product_amount\":44000000, \"total_platform_discount\":50000, \"platform_discount\":0, \"total_shipping_fee\":63000, \"shipping_discount\":0, \"final_amount\":44013000}",
+  "pricing_summary": "{\"total_product_amount\":44000000, \"total_voucher_discount\":50000, \"total_shipping_fee\":63000, \"shipping_discount\":0, \"final_amount\":44013000}",
   "pricing_hash": "sha256-abc123...",
   "items_hash": "sha256-def456...",
   "created_at": "2026-02-28T10:00:00Z",
@@ -57,12 +50,12 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 ```
 
 > **Field `items_hash`:** SHA-256 của `sort_by(sku_id)("sku_id:quantity,...")`. Dùng để validate downstream cache (Inventory + Shipping) — khi user đổi quantity/thêm/xóa item tại Cart Service, `items_hash` đổi → cache miss tự nhiên.
-> 
-> **Field `selected_platform_vouchers`:** Map `platform_id → voucher_info`. Mỗi lần user đổi voucher của 1 platform, chỉ cần `HSET ... selected_platform_vouchers ...` — không serialize lại toàn bộ session. Atomic update per field là lợi thế của Redis Hash. Quy ước serialization bắt buộc: chỉ lưu admin đang chọn mã; admin không áp mã thì bỏ key (không lưu `null` theo admin). Nếu không có platform voucher nào được chọn, lưu `{}`.
+
+> **Field `selected_vouchers`:** Map voucher đã chọn. Mỗi lần user đổi voucher, chỉ cần `HSET ... selected_voucher_id ...` — không serialize lại toàn bộ session. Atomic update per field là lợi thế của Redis Hash.
 
 > Session Checkout không lưu cờ voucher độc quyền. Quy tắc cộng dồn voucher được xác định bởi Promotion Service theo mô hình 3 slot và kết quả `pricing_summary` trả về.
 
-> **Field `route_version`:** Dấu phiên bản routing snapshot hiện hành (có thể là signature tổng hợp cho multi-platform). Dùng trong Submit để phát hiện route plan đã thay đổi dù giá sản phẩm chưa đổi.
+> **Field `route_version`:** Dấu phiên bản routing snapshot hiện hành. Dùng trong Submit để phát hiện route plan đã thay đổi dù giá sản phẩm chưa đổi.
 
 > **Field `route_signature`:** Chữ ký route deterministic được sinh từ route plan đã chuẩn hóa (bao gồm assignment item->warehouse/courier). Đây là trường dùng trong `pricing_hash` để chặn drift route giữa Preview và Submit.
 
@@ -90,20 +83,20 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 ## 2. Downstream Response Cache (Tránh gọi lại Service không cần thiết)
 
-### 2.1. Inventory Route Cache (per-platform)
+### 2.1. Inventory Route Cache
 
-**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options` (Inventory tự gọi Shipping nội bộ), cache kết quả route plan + shipping quote **per-platform** trong 5 phút.
+**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options` (Inventory tự gọi Shipping nội bộ), cache kết quả route plan + shipping quote trong 5 phút.
 **TTL:** 5 phút
-**Invalidation:** 
+**Invalidation:**
 - User thay đổi quantity hoặc thêm/xóa item tại Cart Service → `items_hash` thay đổi → cache miss tự nhiên.
 - User đổi địa chỉ giao hàng → `address_hash` thay đổi → cache miss tự nhiên.
 - Inventory Service produce `INVENTORY_QUANTITY_CHANGED` → Global L1 flag (Caffeine) → bypass cache.
 
-> **Key per-platform_id thay vì per toàn giỏ:** Nếu user có 3 platforms, sẽ có 3 cache keys riêng. Khi user đổi voucher platform A, cache route của platform B và C vẫn hiệu lực.
+> **Key pattern:** `checkout:routing:{items_hash}:{address_hash}`. Cache được invalidate tự nhiên khi items hoặc address thay đổi.
 
-> **Quy tắc recompute kèm theo:** Đổi voucher (platform/platform/freeship) chỉ trigger Promotion evaluate lại; không invalidate route cache. Riêng đổi địa chỉ vẫn phải evaluate Promotion lại sau khi có tổng phí ship mới.
+> **Quy tắc recompute kèm theo:** Đổi voucher chỉ trigger Promotion evaluate lại; không invalidate route cache. Riêng đổi địa chỉ vẫn phải evaluate Promotion lại sau khi có tổng phí ship mới.
 
-### 2.2. Shipping Fee Cache (per-platform)
+### 2.2. Shipping Fee Cache
 
 **Trạng thái:** Deprecated.
 
@@ -120,9 +113,9 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 **TTL:** 5 phút
 **Chi tiết thiết kế:** Xem [Promotion Redis Design](../promotion/redis_caching_design.md) và [Voucher Discovery API](../promotion/voucher_discovery_api.md#51-wallet-cache-l2-redis).
 
-> **platform Voucher Tray tái sử dụng Wallet Cache:** Khi user mở tray "Voucher của platform X", Promotion Service lấy `wallet:{user_id}:active_vouchers` → filter `owner_id = admin_id_X` → merge thêm mã public của platform chưa lưu. Cache hit path không tạo thêm I/O nào.
+> **Voucher Tray tái sử dụng Wallet Cache:** Khi user mở tray "Chọn Voucher", Promotion Service lấy `wallet:{user_id}:active_vouchers` → filter các mã phù hợp → merge thêm mã public của sàn chưa lưu. Cache hit path không tạo thêm I/O nào.
 
-> **Platform/Freeship chỉ đọc từ Wallet:** Khi user mở tray "Voucher của Sàn" hoặc "Voucher giảm phí ship", Promotion Service chỉ đọc danh sách đã lưu từ `wallet:{user_id}:active_vouchers` rồi evaluate rule. Không trộn thêm mã chưa lưu vào response của hai tray này.
+> **Voucher/Freeship chỉ đọc từ Wallet:** Khi user mở tray "Voucher" hoặc "Voucher giảm phí ship", Promotion Service chỉ đọc danh sách đã lưu từ `wallet:{user_id}:active_vouchers` rồi evaluate rule. Không trộn thêm mã chưa lưu vào response của hai tray này.
 
 > **Claim Window vs Use Window:** Promotion chỉ dùng `promotions.start_time/end_time` để quyết định còn được claim/save mã mới; quyền sử dụng mã đã sở hữu khi checkout dựa trên `user_coupon_wallets.expired_at` (policy hiện tại: 30 ngày từ lúc acquire/save).
 
@@ -132,7 +125,7 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 
 > **Boundary ghi ví rõ ràng:**
 > - Checkout Submit không được ghi `user_coupon_wallets`.
-> - Chỉ explicit action như `save-and-apply` (platform voucher) hoặc campaign/claim worker của Promotion mới tạo thêm bản ghi ví.
+> - Chỉ explicit action như `save-and-apply` (voucher) hoặc campaign/claim worker của Promotion mới tạo thêm bản ghi ví.
 > - Sau khi `save-and-apply` thành công, bắt buộc `DEL wallet:{user_id}:active_vouchers` để lần mở tray tiếp theo nhìn thấy trạng thái đã lưu.
 
 ### 2.4. User Address Cache

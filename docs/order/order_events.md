@@ -126,8 +126,6 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
     "items": [
       {
         "order_item_id": 2001,
-        "platform_id": 501,
-        "store_name_snapshot": "Apple Flagship Store",
         "warehouse_id": 5,
         "shipping_fee": 25000,
         "courier_code": "GHN",
@@ -146,8 +144,6 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
       },
       {
         "order_item_id": 2002,
-        "platform_id": 502,
-        "store_name_snapshot": "admin B",
         "warehouse_id": 8,
         "shipping_fee": 20000,
         "courier_code": "NINJAVAN",
@@ -160,8 +156,7 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
         "promotion_id": 100,
         "promotion_type": "CART_DISCOUNT",
         "discount_amount": 50000,
-        "platform_funding": 20000,
-        "admin_funding": 30000
+        "admin_funding": 50000
       }
     ],
     "created_at": "2026-02-28T10:00:00Z"
@@ -203,15 +198,12 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
       {
         "promotion_id": 100,
         "discount_amount": 50000,
-        "platform_funding": 20000,
-        "admin_funding": 30000
+        "admin_funding": 50000
       }
     ],
     "items": [
       {
         "order_item_id": 2001,
-        "platform_id": 501,
-        "store_name_snapshot": "Apple Flagship Store",
         "warehouse_id": 5,
         "lines": [
           {"sku_id": "sku-001", "quantity": 2}
@@ -260,7 +252,7 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
     "previous_status": "PENDING_PAYMENT",
     "reason": "PAYMENT_TIMEOUT",
     "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000, "platform_funding": 20000, "admin_funding": 30000}
+      {"promotion_id": 100, "discount_amount": 50000, "admin_funding": 50000}
     ],
     "items": [
       {
@@ -381,17 +373,15 @@ T蘯･t c蘯｣ messages phﾃ｡t lﾃｪn Kafka ﾄ黛ｻ「 tuﾃ｢n theo chu蘯ｩn CloudEvents vﾃ ﾄ
     "inventory_return_confirmed_at": "2026-03-05T09:58:30Z",
     "refund_amount": 995000,
     "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000, "platform_funding": 20000, "admin_funding": 30000}
+      {"promotion_id": 100, "discount_amount": 50000, "admin_funding": 50000}
     ],
     "promotion_refund_allocations": [
       {
         "promotion_id": 100,
-        "promotion_scope_type": "platform",
         "scope_admin_id": 501,
         "refunded_discount_amount": 50000,
-        "platform_funding_refund": 20000,
-        "admin_funding_refund": 30000,
-        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_platform_COVERED",
+        "admin_funding_refund": 50000,
+        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_COVERED",
         "voucher_restore_mode": "BEST_EFFORT_NON_BLOCKING"
       }
     ],

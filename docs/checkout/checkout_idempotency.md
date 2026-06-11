@@ -76,8 +76,8 @@ return 1  -- OK
 
 | Hành động | Hệ quả |
 |:---|:---|
-| **User đổi voucher (platform/platform/freeship)** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
-| **User bấm "Lưu & Chọn" voucher platform chưa lưu** | Promotion xử lý `save-and-apply` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
+| **User đổi voucher (voucher/freeship)** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
+| **User bấm "Lưu & Chọn" voucher chưa lưu** | Promotion xử lý `save-and-apply` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
 | **User chọn voucher sàn/freeship** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at` (mặc định 30 ngày từ lúc sở hữu); Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time; không có nhánh Save & Apply tại tray này |
 | **User đổi địa chỉ nhận hàng** | Backend gọi Preview API lại, recompute Inventory (routing + shipping quote) + Promotion → **Tạo token MỚI** → Ghi đè session Redis |
 | **User đổi quantity/add/remove SKU** | Frontend gọi Cart API trước (ngoài phạm vi Checkout), sau đó gọi Preview lại với snapshot Cart mới → **Tạo token MỚI** |

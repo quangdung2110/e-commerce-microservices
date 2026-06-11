@@ -183,7 +183,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 }
 ```
 
-`change_type` hợp lệ: `ORDER_RESERVED`, `ORDER_DEDUCTED`, `ORDER_CANCELLED`, `VENDOR_RESTOCK`, `ORDER_RETURNED_RESTOCK`, `ADMIN_ADJUSTMENT`, `RESERVATION_EXPIRED`.
+`change_type` hợp lệ: `ORDER_RESERVED`, `ORDER_DEDUCTED`, `ORDER_CANCELLED`, `ADMIN_RESTOCK`, `ORDER_RETURNED_RESTOCK`, `ADMIN_ADJUSTMENT`, `RESERVATION_EXPIRED`.
 
 **Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
 

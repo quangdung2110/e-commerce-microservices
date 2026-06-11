@@ -37,12 +37,12 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 ### 1.2. Stacking Rules (Slot Model)
 
-Một đơn hàng **(bao gồm nhiều sản phẩm từ nhiều platform)** áp dụng theo slot:
+Một đơn hàng **có thể gồm sản phẩm từ nhiều warehouse khác nhau** áp dụng theo slot:
 * mỗi platform tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `FREESHIP_VOUCHER`
 
-Tổng số voucher áp dụng là biến thiên theo số platform trong đơn (`N_platform + [0|1 platform] + [0|1 freeship]`), không bị cố định ở 3.
+Tổng số voucher áp dụng là tối đa 2: 1 Voucher giảm giá + 1 Voucher freeship.
 
 Sơ đồ slot:
 
@@ -70,9 +70,9 @@ Sơ đồ slot:
 > [!IMPORTANT]
 > Slot Freeship chỉ có **1 chỗ duy nhất** và chỉ nhận mã của Platform. admin không được tạo/không được hiển thị mã freeship trong bất kỳ slot nào.
 
-**Thứ tự sort trong slot FREESHIP:**
-1. `deleted_owner_type = PLATFORM` và applicable → **Hiển thị đầu tiên, badge "Ưu đãi sàn"**
-2. Mã eligible = false (chưa đủ điều kiện mua tối thiểu) → Hiển thị mờ cuối danh sách
+**Thứ tự sort trong Freeship slot:**
+1. Mã freeship applicable → **Hiển thị đầu tiên, badge "Miễn phí vận chuyển"**
+2. Mã eligible = false (chưa đủ điều kiện) → Hiển thị mờ cuối danh sách
 
 ---
 
@@ -490,7 +490,7 @@ Authorization: Bearer {access_token}
 }
 ```
 
-> `sub_cart_subtotal` là tổng giá sub-cart của riêng platform này (không phải tổng đơn hàng) — dùng để evaluate `min_purchase_amount` và Rule Engine.
+> `sub_cart_subtotal` là tổng giá sub-cart theo warehouse nhóm (không phải tổng đơn hàng) — dùng để evaluate `min_purchase_amount` và Rule Engine.
 
 ### 9.4. Backend Flow
 
