@@ -61,4 +61,13 @@ public interface SkuCacheRepository {
      * @return map of SKU ID to cache entry
      */
     Map<String, SkuCacheEntry> findByIdsAsMap(List<String> skuIds);
+
+    /**
+     * Batch writes SKU cache entries using Redis Pipeline.
+     * Uses a single round-trip for all SET + EXPIRE commands to minimize network I/O.
+     *
+     * @param entries list of cache entries to write
+     * @param ttl     the time-to-live applied to all entries
+     */
+    void saveBatch(List<SkuCacheEntry> entries, Duration ttl);
 }
