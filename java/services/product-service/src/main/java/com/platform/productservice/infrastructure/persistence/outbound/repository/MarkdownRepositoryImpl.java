@@ -4,7 +4,7 @@ import com.platform.productservice.domain.entity.MarkdownApplied;
 import com.platform.productservice.domain.vo.ProductId;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.MarkdownAppliedJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.MarkdownAppliedJpaMapper;
-import com.platform.productservice.port.outbound.MarkdownRepository;
+import com.platform.productservice.port.outbound.database.MarkdownRepository;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 

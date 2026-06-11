@@ -3,7 +3,7 @@ package com.platform.productservice.infrastructure.persistence.outbound.reposito
 import com.platform.productservice.domain.entity.ProductMedia;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.ProductMediaJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.ProductMediaJpaMapper;
-import com.platform.productservice.port.outbound.ProductMediaRepository;
+import com.platform.productservice.port.outbound.database.ProductMediaRepository;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 

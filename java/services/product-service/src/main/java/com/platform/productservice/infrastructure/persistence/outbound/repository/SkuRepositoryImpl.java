@@ -6,7 +6,7 @@ import com.platform.productservice.domain.vo.SkuCode;
 import com.platform.productservice.domain.vo.SkuId;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.SkuJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.SkuJpaMapper;
-import com.platform.productservice.port.outbound.SkuRepository;
+import com.platform.productservice.port.outbound.database.SkuRepository;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 

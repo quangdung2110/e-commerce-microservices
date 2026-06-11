@@ -7,7 +7,7 @@ import com.platform.productservice.domain.vo.Slug;
 import com.platform.productservice.infrastructure.persistence.jpa.custom.ProductJpaRepositoryCustom;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.ProductJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.ProductJpaMapper;
-import com.platform.productservice.port.outbound.ProductRepository;
+import com.platform.productservice.port.outbound.database.ProductRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Repository;

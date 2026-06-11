@@ -1,4 +1,4 @@
-package com.platform.productservice.port.outbound;
+package com.platform.productservice.port.outbound.database;
 
 import com.platform.productservice.domain.entity.Product;
 import com.platform.productservice.domain.vo.CategoryId;

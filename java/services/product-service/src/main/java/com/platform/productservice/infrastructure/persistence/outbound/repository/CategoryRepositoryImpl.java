@@ -5,7 +5,7 @@ import com.platform.productservice.domain.vo.CategoryId;
 import com.platform.productservice.domain.vo.Slug;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.CategoryJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.CategoryJpaMapper;
-import com.platform.productservice.port.outbound.CategoryRepository;
+import com.platform.productservice.port.outbound.database.CategoryRepository;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 

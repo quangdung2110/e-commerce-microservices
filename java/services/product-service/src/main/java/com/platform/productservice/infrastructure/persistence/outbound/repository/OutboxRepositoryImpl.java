@@ -3,7 +3,7 @@ package com.platform.productservice.infrastructure.persistence.outbound.reposito
 import com.platform.productservice.domain.entity.OutboxEvent;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.OutboxEventJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.OutboxEventJpaMapper;
-import com.platform.productservice.port.outbound.OutboxRepository;
+import com.platform.productservice.port.outbound.database.OutboxRepository;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
