@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package com.platform.productservice.proto;
+
+option java_package = "com.platform.productservice.proto";
+option java_multiple_files = true;
+option java_outer_classname = "InventoryServiceProto";
+
+// Service for calling external Inventory Service from Product Service.
+// This proto is defined here so product-service can generate client stubs.
+// The actual implementation lives in the inventory-service.
+
+// =============================================
+// Inventory Query (Product Service -> Inventory Service)
+// =============================================
+
+message GetInventoryRequest {
+  string sku_id = 1;
+}
+
+message GetBatchInventoryRequest {
+  repeated string sku_ids = 1;
+}
+
+message InventoryData {
+  string sku_id = 1;
+  int32 available_quantity = 2;
+  string status = 3;  // ACTIVE, OUT_OF_STOCK
+  int64 last_updated = 4;
+}
+
+message GetInventoryResponse {
+  InventoryData inventory = 1;
+}
+
+message GetBatchInventoryResponse {
+  repeated InventoryData inventories = 1;
+}
+
+// =============================================
+// Service Definition
+// =============================================
+
+service InventoryGrpcService {
+  rpc GetInventory(GetInventoryRequest) returns (GetInventoryResponse);
+  rpc GetBatchInventory(GetBatchInventoryRequest) returns (GetBatchInventoryResponse);
+}

@@ -1,6 +1,7 @@
 # Module 11: Markdown Price Calculator Worker
 
-> **Status:** Module 11 of 15
+> **Status:** Module 11 of 15 - **IMPLEMENTED**
+> **Implementation Date:** June 11, 2026
 > **Prerequisites:** Module 04 (Redis), Module 06 (business services)
 > **Dependents:** None (leaf module)
 
@@ -18,13 +19,13 @@ This module implements the Markdown Price Calculator Worker — a Kafka consumer
 
 **Path:** `product-service/src/main/java/com/platform/productservice/config/MarkdownKafkaConsumerConfig.java`
 
-- [ ] Create `@Configuration` class
-- [ ] Configure consumer factory for `product-markdown-group`:
+- [x] Create `@Configuration` class
+- [x] Configure consumer factory for `product-markdown-group`:
   - `auto.offset.reset: earliest`
   - `enable.auto.commit: false`
   - `max.poll.records: 50`
-- [ ] Configure `ConcurrentKafkaListenerContainerFactory` with concurrency: 2
-- [ ] Configure `DefaultErrorHandler`: retry 3 times, exponential backoff (1s, 2s, 4s), then DLQ
+- [x] Configure `ConcurrentKafkaListenerContainerFactory` with concurrency: 2
+- [x] Configure `DefaultErrorHandler`: retry 3 times, exponential backoff (1s, 2s, 4s), then DLQ
 
 ---
 
@@ -34,11 +35,11 @@ This module implements the Markdown Price Calculator Worker — a Kafka consumer
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/consumer/MarkdownWorker.java`
 
-- [ ] Create `@Service` class
-- [ ] Annotate with `@KafkaListener` for topic `t.promotion.markdown.events`, group ID `product-markdown-group`
-- [ ] **Event types handled**: `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED`
-- [ ] Inject: `ObjectMapper`, `MarkdownPriceCalculatorProcessor`, `MarkdownStartGateProcessor`
-- [ ] **Consumer logic**:
+- [x] Create `@Service` class
+- [x] Annotate with `@KafkaListener` for topic `t.promotion.markdown.events`, group ID `product-markdown-group`
+- [x] **Event types handled**: `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED`
+- [x] Inject: `ObjectMapper`, `MarkdownPriceCalculatorProcessor`, `MarkdownStartGateProcessor`
+- [x] **Consumer logic**:
   - Deserialize CloudEvents JSON
   - Extract `eventType`, `payload`
   - Check `start_time` gate: if `now < payload.start_time`, delegate to `MarkdownStartGateProcessor` and ACK immediately
@@ -53,9 +54,9 @@ This module implements the Markdown Price Calculator Worker — a Kafka consumer
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/processor/MarkdownPriceCalculatorProcessor.java`
 
-- [ ] Create `@Component` class
-- [ ] Inject: `MarkdownService`, `DistributedLockRepository`, `SkuCacheRepository`, `ProductRepository`, `SkuRepository`, `MarkdownRepository`, `OutboxRepository`, `MarkdownCalculator`, `OutboxService`
-- [ ] Method `void processCreated(CloudEvent event)`:
+- [x] Create `@Component` class
+- [x] Inject: `MarkdownRepository`, `DistributedLockRepository`, `MarkdownCacheRepository`, `ProductRepository`, `SkuRepository`, `MarkdownCalculator`, `OutboxService`, `ObjectMapper`
+- [x] Method `void processCreated(CloudEvent event)`:
   - Extract payload: `ruleId`, `scopeType` (CATEGORY or PRODUCT), `scopeId`, `discountType`, `discountValue`, `maxDiscountAmount`, `startTime`, `expiresAt`
   - Determine affected SKU IDs: query by `scopeType`:
     - CATEGORY: `SELECT sku_id FROM product_skus ps JOIN products p ON ps.product_id = p.product_id WHERE p.category_id = :categoryId AND ps.deleted = false`
@@ -72,17 +73,17 @@ This module implements the Markdown Price Calculator Worker — a Kafka consumer
     - Set Redis `product:markdown:active:{skuId}` with TTL = `expiresAt - now`
     - Release lock
     - Log: ruleId, number of SKUs updated
-- [ ] Method `void processUpdated(CloudEvent event)`:
+- [x] Method `void processUpdated(CloudEvent event)`:
   - Query `product_markdown_applied WHERE rule_id = :ruleId`
   - Recalculate all affected SKUs (same as CREATED but with existing rule data)
-- [ ] Method `void processEnded(CloudEvent event)`:
+- [x] Method `void processEnded(CloudEvent event)`:
   - Query `product_markdown_applied WHERE rule_id = :ruleId`
   - If no records found: log and ACK (no-op idempotent)
   - Reset `promotionalPrice = NULL` on all affected SKUs
   - Delete from `product_markdown_applied`
   - Insert `SKU_UPDATED` outbox events with `changeSource = MARKDOWN_ENDED`
   - Delete Redis `product:markdown:active:{skuId}` entries
-- [ ] Error handling: release lock in `finally` block, requeue on lock acquisition failure
+- [x] Error handling: release lock in `finally` block, requeue on lock acquisition failure
 
 ---
 
@@ -92,29 +93,30 @@ This module implements the Markdown Price Calculator Worker — a Kafka consumer
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/processor/MarkdownStartGateProcessor.java`
 
-- [ ] Create `@Component` class
-- [ ] Inject: `RedisKeyBuilder`, `RedisTemplate<String, String>`
-- [ ] Method `void scheduleForLater(CloudEvent event)`:
+- [x] Create `@Component` class
+- [x] Inject: `RedisKeyBuilder`, `RedisTemplate<String, String>`, `MarkdownPriceCalculatorProcessor`, `ObjectMapper`
+- [x] Method `void scheduleForLater(CloudEvent event)`:
   - Parse `startTime` from payload
   - Calculate delay = `startTime - now`
   - If delay > 0 and delay < 7 days: store in Redis ZSET `product:markdown:gate:{ruleId}` with score = `startTime`
   - If delay > 7 days: do nothing (will be processed by scheduled scanner)
-- [ ] Method `void processScheduledEvents()`:
+- [x] Method `int processScheduledEvents()`:
   - Scheduled job runs every minute
   - `ZRANGEBYSCORE product:markdown:gate:* -inf {now}`
   - For each event: process immediately (same as direct event)
   - Remove from ZSET after processing
+  - Returns number of events processed
 
 ### 5.2 File: `worker/scheduler/MarkdownGateScannerJob.java`
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/MarkdownGateScannerJob.java`
 
-- [ ] Create `@Component` class
-- [ ] Cron: `* * * * * *` (every minute)
-- [ ] Inject: `MarkdownStartGateProcessor`, `DistributedLockRunner`
-- [ ] Acquire distributed lock: `product:lock:markdown-gate-scanner`
-- [ ] Call `processScheduledEvents()`
-- [ ] Log: number of events processed
+- [x] Create `@Component` class
+- [x] Cron: `* * * * *` (every minute)
+- [x] Inject: `MarkdownStartGateProcessor`, `DistributedLockRepository`
+- [x] Acquire distributed lock: `product:lock:markdown-gate-scanner` (TTL: 10s)
+- [x] Call `processScheduledEvents()`
+- [x] Log: number of events processed
 
 ---
 
@@ -142,13 +144,13 @@ promotional_price = MAX(0, ROUND(original_price - discount_value, 2))
 
 ## 7. Acceptance Criteria
 
-- [ ] Markdown worker acquires distributed lock before processing to prevent concurrent recalculation
-- [ ] Lock order: Product → SKU (acquired in that order)
-- [ ] `MARKDOWN_CREATED` correctly calculates and applies promotional prices
-- [ ] `MARKDOWN_ENDED` correctly resets prices to NULL
-- [ ] `MARKDOWN_ENDED` is idempotent: no error if rule already removed
-- [ ] Redis `product:markdown:active:{skuId}` is set with correct TTL
-- [ ] Start-time gate correctly delays processing until `startTime`
-- [ ] Lock is always released in `finally` block
-- [ ] Failed lock acquisition is retried with backoff
-- [ ] SKU_UPDATED events include `changeSource = MARKDOWN_CREATED/UPDATED/ENDED`
+- [x] Markdown worker acquires distributed lock before processing to prevent concurrent recalculation
+- [x] Lock order: Product → SKU (acquired in that order)
+- [x] `MARKDOWN_CREATED` correctly calculates and applies promotional prices
+- [x] `MARKDOWN_ENDED` correctly resets prices to NULL
+- [x] `MARKDOWN_ENDED` is idempotent: no error if rule already removed
+- [x] Redis `product:markdown:active:{skuId}` is set with correct TTL
+- [x] Start-time gate correctly delays processing until `startTime`
+- [x] Lock is always released in `finally` block
+- [x] Failed lock acquisition is retried with backoff
+- [x] SKU_UPDATED events include `changeSource = MARKDOWN_CREATED/UPDATED/ENDED`

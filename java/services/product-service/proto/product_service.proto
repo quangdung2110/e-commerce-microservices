@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package com.platform.productservice.proto;
+
+option java_package = "com.platform.productservice.proto";
+option java_multiple_files = true;
+option java_outer_classname = "ProductServiceProto";
+
+// =============================================
+// Product SKU Messages
+// =============================================
+
+message ProductSkuRequest {
+  string sku_id = 1;
+  string product_id = 2;
+}
+
+message BatchProductSkuRequest {
+  repeated string sku_ids = 1;
+}
+
+message ProductSkuResponse {
+  string sku_id = 1;
+  string product_id = 2;
+  string sku_code = 3;
+  string product_name = 4;
+  string main_image_url = 5;
+  double original_price = 6;
+  double promotional_price = 7;
+  double best_price = 8;
+  bool has_promotion = 9;
+  string sku_status = 10;
+  string product_status = 11;
+  bool is_available = 12;
+  bool is_deleted = 13;
+  map<string, string> variant_attributes = 14;
+  int32 display_quantity = 15;
+  int64 last_inventory_sync_at = 16;
+  int64 price_updated_at = 17;
+}
+
+message BatchProductSkuResponse {
+  repeated ProductSkuResponse skus = 1;
+}
+
+// =============================================
+// Category Tree Messages
+// =============================================
+
+message CategoryTreeSnapshotRequest {
+  bool include_disabled = 1;
+}
+
+message CategoryNode {
+  string category_id = 1;
+  string parent_id = 2;
+  string name = 3;
+  string slug = 4;
+  int32 level = 5;
+  bool is_leaf = 6;
+  repeated CategoryNode children = 7;
+}
+
+message CategoryTreeSnapshotResponse {
+  repeated CategoryNode root_categories = 1;
+  int64 snapshot_timestamp = 2;
+}
+
+// =============================================
+// Product Snapshot Messages
+// =============================================
+
+message ProductSnapshotRequest {
+  string product_id = 1;
+  bool include_skus = 2;
+  bool include_media = 3;
+}
+
+message ProductSnapshotResponse {
+  string product_id = 1;
+  string product_name = 2;
+  string slug = 3;
+  string description = 4;
+  string category_id = 5;
+  string status = 6;
+  bool is_deleted = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+  repeated ProductSkuResponse skus = 10;
+  repeated MediaResponse media = 11;
+}
+
+message MediaResponse {
+  string media_id = 1;
+  string media_type = 2;
+  string url = 3;
+  string thumbnail_url = 4;
+  int32 sort_order = 5;
+}
+
+// =============================================
+// gRPC Services
+// =============================================
+
+service ProductGrpcService {
+  // Get a single SKU by ID
+  rpc GetProductSku(ProductSkuRequest) returns (ProductSkuResponse);
+
+  // Get multiple SKUs in batch
+  rpc GetBatchProductSkus(BatchProductSkuRequest) returns (BatchProductSkuResponse);
+
+  // Get full category tree
+  rpc GetCategoryTree(CategoryTreeSnapshotRequest) returns (CategoryTreeSnapshotResponse);
+
+  // Get product snapshot with SKUs and media
+  rpc GetProductSnapshot(ProductSnapshotRequest) returns (ProductSnapshotResponse);
+}
+
+// =============================================
+// Internal Product Export Messages
+// =============================================
+
+message ProductExportRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string status_filter = 3;
+  int64 updated_since = 4;
+}
+
+message ProductExportResponse {
+  repeated ProductSnapshotResponse products = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int32 total_count = 4;
+  bool has_more = 5;
+}

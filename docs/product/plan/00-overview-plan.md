@@ -137,8 +137,8 @@ flowchart TD
 |---|---|---|
 | 1 | 01-project-foundation | Maven scaffold, dependencies, base config |
 | 2 | 02-domain-model | Entities, value objects, enums, domain events, exceptions |
-| 3 | 03-repository-layer | JPA repositories, custom queries, locking |
-| 4 | 04-redis-caching-layer | Redis config, cache keys, Lua scripts |
+| 3 | 03-repository-layer | JPA layer (`jpa/`), outbound adapters (`outbound/`), custom queries |
+| 4 | 04-redis-caching-layer | Redis config, cache adapters (`port/outbound/cache/`), Lua scripts |
 | 5 | 05-state-machine | Spring State Machine configuration |
 | 6 | 06-business-services | Core service classes (product, SKU, category, markdown) |
 | 7 | 07-rest-api-endpoints | Admin REST controllers, DTOs |
@@ -216,12 +216,51 @@ com.platform.product-service/
 ├── port/                      # Interfaces (ports in Hexagonal)
 │   ├── inbound/
 │   └── outbound/
+│       ├── database/          # Database access ports (Module 03)
+│       │   ├── ProductRepository.java
+│       │   ├── SkuRepository.java
+│       │   ├── CategoryRepository.java
+│       │   ├── ProductMediaRepository.java
+│       │   ├── MarkdownRepository.java
+│       │   └── OutboxRepository.java
+│       │
+│       └── cache/             # Cache access ports (Module 04)
+│           ├── SkuCacheRepository.java
+│           ├── MarkdownCacheRepository.java
+│           ├── InventorySyncRepository.java
+│           └── DistributedLockRepository.java
+│
 ├── infrastructure/            # Adapters (implementations)
 │   ├── persistence/
-│   │   ├── entity/
-│   │   ├── repository/
-│   │   └── mapper/
+│   │   ├── jpa/             # Layer 1: JPA / Database
+│   │   │   ├── entity/      # JPA entity classes (9 entities)
+│   │   │   ├── spring/      # Spring Data JPA repository interfaces
+│   │   │   └── custom/      # Custom query interfaces + implementations
+│   │   │                     (Criteria API / native CTE — must share package)
+│   │   └── outbound/        # Layer 3: Outbound Adapter
+│   │       ├── mapper/      # Domain ↔ JPA entity bidirectional mappers
+│   │       └── repository/  # Implements port/outbound/database interfaces
+│   │
 │   ├── redis/
+│   │   ├── config/          # Redis configuration (RedisConfig)
+│   │   ├── cache/
+│   │   │   ├── model/       # Cache data models
+│   │   │   │   ├── SkuCacheEntry.java
+│   │   │   │   ├── MarkdownCacheEntry.java
+│   │   │   │   └── PendingSyncItem.java
+│   │   │   └── adapter/     # Implements port/outbound/cache interfaces
+│   │   │       ├── SkuCacheRepositoryImpl.java
+│   │   │       └── MarkdownCacheRepositoryImpl.java
+│   │   ├── lock/            # Distributed lock adapter
+│   │   │   └── DistributedLockRepositoryImpl.java
+│   │   ├── sync/            # Inventory sync adapter + Lua executor
+│   │   │   ├── InventorySyncRepositoryImpl.java
+│   │   │   └── InventoryFastSyncLuaExecutor.java
+│   │   ├── script/          # Lua script loader
+│   │   │   └── LuaScriptLoader.java
+│   │   ├── IdempotencyGuard.java
+│   │   └── RedisKeyBuilder.java
+│   │
 │   ├── kafka/
 │   │   ├── producer/
 │   │   └── consumer/
@@ -232,6 +271,10 @@ com.platform.product-service/
 │   └── processor/
 └── common/                     # Shared utilities
 ```
+
+> **Layer separation in `persistence/`:**
+> - `jpa/` — pure infrastructure: handles DB interaction (no domain imports)
+> - `outbound/` — implements `port/outbound` interfaces, bridges domain ↔ infrastructure
 
 ---
 

@@ -1,0 +1,43 @@
+# Ignore build output and IDE files
+target/
+*.class
+*.jar
+*.war
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.cursors/
+
+# Documentation
+docs/
+*.md
+LICENSE
+README.md
+
+# Docker
+**/Dockerfile*
+**/.dockerignore
+**/docker-compose*.yml
+**/.env*
+
+# Test files
+**/src/test/
+**/src/it/
+**/src/integTest/
+**/*.test.*
+**/*.spec.*
+
+# Gradle / Maven wrapper sources (not needed in container)
+.mvn/wrapper/maven-wrapper.jar
+
+# Misc
+*.log
+*.tmp
+*.bak
+**/node_modules/

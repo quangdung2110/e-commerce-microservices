@@ -3,6 +3,7 @@ package pb
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -151,7 +152,7 @@ type grpcClient struct {
 
 func (c *grpcClient) GetSku(ctx context.Context, in *GetSkuRequest, opts ...grpc.CallOption) (*GetSkuResponse, error) {
 	out := new(GetSkuResponse)
-	err := c.cc.Invoke(ctx, "/product.ProductService/GetSku", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/com.platform.productservice.proto.CartServiceGrpc/GetSku", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,9 +161,292 @@ func (c *grpcClient) GetSku(ctx context.Context, in *GetSkuRequest, opts ...grpc
 
 func (c *grpcClient) GetBatchSkus(ctx context.Context, in *GetBatchSkusRequest, opts ...grpc.CallOption) (*GetBatchSkusResponse, error) {
 	out := new(GetBatchSkusResponse)
-	err := c.cc.Invoke(ctx, "/product.ProductService/GetBatchSkus", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/com.platform.productservice.proto.CartServiceGrpc/GetBatchSkus", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// ─── Custom Marshalers and Unmarshalers for Hand-Written Protobuf ───
+
+func (x *GetSkuRequest) Marshal() ([]byte, error) {
+	strBytes := []byte(x.SkuId)
+	length := len(strBytes)
+
+	var lengthBytes []byte
+	for length >= 128 {
+		lengthBytes = append(lengthBytes, byte(length&0x7f|0x80))
+		length >>= 7
+	}
+	lengthBytes = append(lengthBytes, byte(length))
+
+	buf := make([]byte, 0, 1+len(lengthBytes)+len(strBytes))
+	buf = append(buf, 0x0a)
+	buf = append(buf, lengthBytes...)
+	buf = append(buf, strBytes...)
+	return buf, nil
+}
+
+func (x *GetSkuResponse) Unmarshal(data []byte) error {
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+
+		fieldNum := tag >> 3
+		wireType := tag & 7
+
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+
+			switch fieldNum {
+			case 1:
+				sku := &SkuData{}
+				if err := sku.Unmarshal(valueBytes); err == nil {
+					x.Result = &SkuResult{Sku: sku}
+				}
+			case 2:
+				nf := &SkuNotFound{}
+				if err := nf.Unmarshal(valueBytes); err == nil {
+					x.Result = &NotFoundResult{NotFound: nf}
+				}
+			case 3:
+				ua := &SkuUnavailable{}
+				if err := ua.Unmarshal(valueBytes); err == nil {
+					x.Result = &UnavailableResult{Unavailable: ua}
+				}
+			}
+		} else {
+			// Skip unknown wire types
+		}
+	}
+	return nil
+}
+
+func (x *SkuData) Unmarshal(data []byte) error {
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+
+		fieldNum := tag >> 3
+		wireType := tag & 7
+
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+
+			switch fieldNum {
+			case 1:
+				x.SkuId = string(valueBytes)
+			case 2:
+				x.ProductId = string(valueBytes)
+			case 3:
+				x.ProductName = string(valueBytes)
+			case 4:
+				x.VariantInfo = string(valueBytes)
+			case 5:
+				x.ImageUrl = string(valueBytes)
+			case 7:
+				x.Status = string(valueBytes)
+			}
+		} else if wireType == 1 {
+			if offset+8 <= len(data) {
+				bits := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
+					uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 | uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
+				x.Price = math.Float64frombits(bits)
+				offset += 8
+			}
+		} else if wireType == 0 {
+			val, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+			if fieldNum == 8 {
+				x.StockQty = int64(val)
+			}
+		}
+	}
+	return nil
+}
+
+func (x *SkuNotFound) Unmarshal(data []byte) error {
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+		fieldNum := tag >> 3
+		wireType := tag & 7
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+			if fieldNum == 1 {
+				x.SkuId = string(valueBytes)
+			}
+		}
+	}
+	return nil
+}
+
+func (x *SkuUnavailable) Unmarshal(data []byte) error {
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+		fieldNum := tag >> 3
+		wireType := tag & 7
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+			switch fieldNum {
+			case 1:
+				x.SkuId = string(valueBytes)
+			case 2:
+				x.Reason = string(valueBytes)
+			}
+		}
+	}
+	return nil
+}
+
+func (x *GetBatchSkusRequest) Marshal() ([]byte, error) {
+	var buf []byte
+	for _, skuID := range x.SkuIds {
+		strBytes := []byte(skuID)
+		length := len(strBytes)
+
+		var lengthBytes []byte
+		for length >= 128 {
+			lengthBytes = append(lengthBytes, byte(length&0x7f|0x80))
+			length >>= 7
+		}
+		lengthBytes = append(lengthBytes, byte(length))
+
+		buf = append(buf, 0x0a)
+		buf = append(buf, lengthBytes...)
+		buf = append(buf, strBytes...)
+	}
+	return buf, nil
+}
+
+func (x *GetBatchSkusResponse) Unmarshal(data []byte) error {
+	if x.Skus == nil {
+		x.Skus = make(map[string]*SkuData)
+	}
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+		fieldNum := tag >> 3
+		wireType := tag & 7
+
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+
+			switch fieldNum {
+			case 1:
+				key, val := decodeMapEntry(valueBytes)
+				if val != nil {
+					x.Skus[key] = val
+				}
+			case 2:
+				x.NotFound = append(x.NotFound, string(valueBytes))
+			case 3:
+				x.Unavailable = append(x.Unavailable, string(valueBytes))
+			}
+		}
+	}
+	return nil
+}
+
+func decodeMapEntry(data []byte) (string, *SkuData) {
+	var key string
+	var val *SkuData
+	offset := 0
+	for offset < len(data) {
+		tag, n := decodeVarint(data[offset:])
+		if n == 0 {
+			break
+		}
+		offset += n
+		fieldNum := tag >> 3
+		wireType := tag & 7
+
+		if wireType == 2 {
+			length, n := decodeVarint(data[offset:])
+			if n == 0 {
+				break
+			}
+			offset += n
+			valueBytes := data[offset : offset+int(length)]
+			offset += int(length)
+
+			if fieldNum == 1 {
+				key = string(valueBytes)
+			} else if fieldNum == 2 {
+				val = &SkuData{}
+				_ = val.Unmarshal(valueBytes)
+			}
+		}
+	}
+	return key, val
+}
+
+func decodeVarint(data []byte) (uint64, int) {
+	var val uint64
+	var shift uint
+	for i, b := range data {
+		val |= uint64(b&0x7f) << shift
+		if b&0x80 == 0 {
+			return val, i + 1
+		}
+		shift += 7
+	}
+	return 0, 0
 }
