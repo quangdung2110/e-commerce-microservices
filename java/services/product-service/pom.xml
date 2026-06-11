@@ -201,6 +201,16 @@
             <version>${snakeyaml.version}</version>
         </dependency>
 
+        <!-- Micrometer for Kafka observability (metrics & tracing) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- ULID for unique identifiers -->
         <dependency>
             <groupId>com.github.f4b6a3</groupId>

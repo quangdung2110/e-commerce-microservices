@@ -11,5 +11,5 @@ public interface OutboxRepository {
 
     List<OutboxEvent> saveAll(List<OutboxEvent> events);
 
-    void deleteOlderThan(LocalDateTime threshold, int limit);
+    int deleteOlderThan(LocalDateTime threshold, int limit);
 }

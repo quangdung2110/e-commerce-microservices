@@ -17,8 +17,6 @@ public class OutboxRepositoryImpl implements OutboxRepository {
     private final OutboxEventJpaRepository jpaRepository;
     private final OutboxEventJpaMapper mapper;
 
-    private static final int DEFAULT_DELETION_LIMIT = 10000;
-
     public OutboxRepositoryImpl(OutboxEventJpaRepository jpaRepository, OutboxEventJpaMapper mapper) {
         this.jpaRepository = jpaRepository;
         this.mapper = mapper;
@@ -42,7 +40,7 @@ public class OutboxRepositoryImpl implements OutboxRepository {
 
     @Override
     @Transactional
-    public void deleteOlderThan(LocalDateTime threshold, int limit) {
-        jpaRepository.deleteOlderThan(threshold, limit);
+    public int deleteOlderThan(LocalDateTime threshold, int limit) {
+        return jpaRepository.deleteOlderThan(threshold, limit);
     }
 }

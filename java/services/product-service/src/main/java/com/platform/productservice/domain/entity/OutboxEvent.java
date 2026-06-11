@@ -18,6 +18,8 @@ public class OutboxEvent {
     private String partitionKey;
     private String payload;
     private LocalDateTime createdAt;
+    private String source;
+    private Boolean processed;
 
     public OutboxEvent() {}
 
@@ -30,6 +32,8 @@ public class OutboxEvent {
         outboxEvent.partitionKey = partitionKey;
         outboxEvent.payload = payloadJson;
         outboxEvent.createdAt = LocalDateTime.now();
+        outboxEvent.source = event.getSource();
+        outboxEvent.processed = false;
         return outboxEvent;
     }
 
@@ -40,6 +44,8 @@ public class OutboxEvent {
     public String getPartitionKey() { return partitionKey; }
     public String getPayload() { return payload; }
     public LocalDateTime getCreatedAt() { return createdAt; }
+    public String getSource() { return source; }
+    public Boolean getProcessed() { return processed; }
 
     public void setEventId(UUID eventId) { this.eventId = eventId; }
     public void setEventType(String eventType) { this.eventType = eventType; }
@@ -48,4 +54,6 @@ public class OutboxEvent {
     public void setPartitionKey(String partitionKey) { this.partitionKey = partitionKey; }
     public void setPayload(String payload) { this.payload = payload; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public void setSource(String source) { this.source = source; }
+    public void setProcessed(Boolean processed) { this.processed = processed; }
 }

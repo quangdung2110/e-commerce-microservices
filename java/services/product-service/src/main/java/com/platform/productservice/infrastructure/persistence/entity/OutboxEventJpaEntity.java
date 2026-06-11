@@ -41,6 +41,12 @@ public class OutboxEventJpaEntity {
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    @Column(name = "__source")
+    private String source;
+
+    @Column(name = "__processed", nullable = false)
+    private Boolean processed = false;
+
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();

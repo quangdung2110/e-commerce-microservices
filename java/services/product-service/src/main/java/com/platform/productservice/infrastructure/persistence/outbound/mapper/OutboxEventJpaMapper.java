@@ -1,6 +1,5 @@
 package com.platform.productservice.infrastructure.persistence.outbound.mapper;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.productservice.domain.entity.OutboxEvent;
 import com.platform.productservice.infrastructure.persistence.entity.OutboxEventJpaEntity;
 import org.springframework.stereotype.Component;
@@ -8,10 +7,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class OutboxEventJpaMapper {
 
-    private final ObjectMapper objectMapper;
-
-    public OutboxEventJpaMapper(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    public OutboxEventJpaMapper() {
     }
 
     public OutboxEvent toDomain(OutboxEventJpaEntity entity) {
@@ -25,6 +21,8 @@ public class OutboxEventJpaMapper {
         event.setPartitionKey(entity.getPartitionKey());
         event.setPayload(entity.getPayload());
         event.setCreatedAt(entity.getCreatedAt());
+        event.setSource(entity.getSource());
+        event.setProcessed(entity.getProcessed());
         return event;
     }
 
@@ -39,6 +37,8 @@ public class OutboxEventJpaMapper {
         entity.setPartitionKey(domain.getPartitionKey());
         entity.setPayload(payloadJson);
         entity.setCreatedAt(domain.getCreatedAt());
+        entity.setSource(domain.getSource());
+        entity.setProcessed(domain.getProcessed() != null ? domain.getProcessed() : false);
         return entity;
     }
 }
