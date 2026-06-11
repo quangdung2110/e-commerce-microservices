@@ -157,9 +157,6 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng và
   - Tránh cache pollution cho long-tail queries.
 4. **ILM + Rollover thay vì force-merge định kỳ trên index nóng:**
   - Giảm IO spike, giảm ảnh hưởng latency query trong giờ cao điểm.
-5. **Projection observability chuẩn:**
-  - Theo dõi `consumer lag`, `projection freshness`, `DLQ volume`, `refresh queue depth`.
-  - Tạo alert theo SLO để phát hiện drift sớm.
 
 ---
 

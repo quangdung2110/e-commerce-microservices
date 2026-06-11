@@ -156,7 +156,7 @@ Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi fl
                  updated_at = NOW();
 
    INSERT INTO inventory_ledger (sku_id, warehouse_id, reference_type, quantity_change, balance_after, created_at)
-   VALUES (:sku, :wh, 'VENDOR_RESTOCK', :qty, :new_balance, NOW());
+   VALUES (:sku, :wh, 'ADMIN_RESTOCK', :qty, :new_balance, NOW());
 
    INSERT INTO inventory_outbox (... event_type = 'INVENTORY_QUANTITY_CHANGED', partition_key = :sku_id ...);
    COMMIT;

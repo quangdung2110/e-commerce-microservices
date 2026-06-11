@@ -17,7 +17,7 @@
 
 Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Review (rating metrics), Order Metrics Projector (sold metrics), và admin (profile/status).
 
-> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer và dùng bộ guard theo từng luồng sự kiện (`version`, `price_event_sequence_id`, `review_metrics_event_sequence_id`, `sales_metrics_event_sequence_id`, `admin_profile_version`, `admin_status_version`) để chống out-of-order.
+> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer. Search dùng **DUY NHẤT `updated_at` timestamp** làm guard ordering cho mọi event stream (so sánh `event.updated_at > current_doc.{guard_field}`).
 >
 > **Identity contract:*
 ## 1. Danh Sách Elasticsearch Indices
@@ -98,8 +98,8 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
     "properties": {
       "sku_id":              { "type": "keyword" },
       "product_id":          { "type": "keyword" },
-      
-      "platform_id":           { "type": "keyword" },
+      "admin_id":            { "type": "keyword" },
+      "admin_name":          { "type": "keyword" },
       "category_id":         { "type": "keyword" },
       "category_name":       { "type": "keyword" },
       "category_path":       { "type": "keyword" },
@@ -133,18 +133,18 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "product_rating_avg":  { "type": "half_float" },
       "product_rating_count": { "type": "integer" },
       "review_metrics_updated_at": { "type": "date" },
-      "review_metrics_event_sequence_id": { "type": "long" },
       "product_sold_count":  { "type": "integer" },
-      "sales_metrics_event_sequence_id": { "type": "long" },
-      "platform_name":         { "type": "keyword" },
-      "price_event_sequence_id": { "type": "long" },
+      "sales_metrics_updated_at": { "type": "date" },
+      "admin_status":          { "type": "keyword" },
+      "admin_profile_version": { "type": "long" },
+      "admin_status_version":  { "type": "long" },
       "created_at":          { "type": "date" },
       "updated_at":          { "type": "date" },
       "indexed_at":          { "type": "date" },
       "last_event_id":       { "type": "keyword" },
       "last_event_timestamp": { "type": "date" },
 
-      "version":             { "type": "long" }
+      "version":             { "type": "date" }
     }
   }
 }
@@ -158,12 +158,11 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 | `product_id` | keyword | Pivot Key cho **Field Collapsing** và các phép đếm DISTINCT product-level ở API Response. |
 | `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens) cho các thuộc tính dùng chung của toàn bộ Sản phẩm (Product-level attributes). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Dùng để hỗ trợ Filtering chung hoặc Full-text search mở rộng. **Search Worker chịu trách nhiệm transform từ `attributes_json` (raw JSON) thành token array khi consume event.** |
 | `variant_attributes` | keyword array | Mảng mô tả đặc tính riêng của từng SKU (SKU-level attributes). Ví dụ: `["mau:đen", "dungluong:256GB"]`. Dùng để hỗ trợ Facet Filtering chính xác cho người dùng. **Search Worker transform từ `variant_attributes_json` sang token array.** |
-| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection, tính theo công thức sellable `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE` (được recompute khi nhận `PRODUCT_SKU_STATUS_CHANGED` và `PRODUCT_STATE_CHANGED`). Không phải nguồn tồn kho realtime để chốt đơn; Checkout/Inventory vẫn là nguồn kiểm tra tồn kho cứng. |
+| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection, tính theo công thức sellable `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE` (được recompute khi nhận `PRODUCT_STATE_CHANGED` và `PRODUCT_UPDATED`/`PRODUCT_CREATED`). Giá trị `sku_status` trong ES chỉ được cập nhật khi product được tạo hoặc cập nhật toàn phần. Không phải nguồn tồn kho realtime để chốt đơn; Checkout/Inventory vẫn là nguồn kiểm tra tồn kho cứng. |
 | `is_deleted`, `deleted_at` | boolean/date | Cờ Tombstone để chặn zombie update khi event đến trễ sau delete. |
-| `version` | long | **Critical**: Giữ nguyên cơ chế Optimistic Concurrency cho Product Update. |
-| `price_event_sequence_id` | long | Guard thứ tự riêng cho `PRODUCT_PRICE_UPDATED` ở cấp SKU. |
-| `review_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `REVIEW_METRICS_UPDATED`, ưu tiên hơn timestamp. |
-| `sales_metrics_event_sequence_id` | long | Guard thứ tự riêng cho `ORDER_PRODUCT_METRICS_UPDATED` theo `product_id`. |
+| `version` | date | Timestamp `updated_at` từ Product Service, dùng làm guard out-of-order cho Product aggregate events (PRODUCT_STATE_CHANGED, PRODUCT_UPDATED, PRODUCT_CREATED). So sánh `event.updated_at > current_doc.version` để chặn event đến trễ. |
+| `review_metrics_updated_at` | date | Guard ordering cho `REVIEW_METRICS_UPDATED`: `event.updated_at > current_doc.review_metrics_updated_at`. |
+| `sales_metrics_updated_at` | date | Guard ordering cho `ORDER_PRODUCT_METRICS_UPDATED`: `event.updated_at > current_doc.sales_metrics_updated_at`. |
 | `last_event_id`, `last_event_timestamp`, `indexed_at` | keyword/date/date | Phục vụ audit, replay DLQ, và điều tra drift dữ liệu. |
 
 **Count semantics cho browse/facets (bắt buộc):** Vì index là SKU-first, mọi count hiển thị cho category/facets ở API phải đếm DISTINCT `product_id` (không dùng trực tiếp `doc_count` theo SKU).
@@ -174,6 +173,8 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 {
   "sku_id": "sku-uuid-001",
   "product_id": "prod-uuid-001",
+  "admin_id": "admin-001",
+  "admin_name": "Platform Admin",
   "category_id": "cat-smartphone",
   "name": "iPhone 15 Pro Max 256GB Chính Hãng",
   "product_status": "ACTIVE",
@@ -199,20 +200,19 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
   "product_rating_avg": 4.9,
   "product_rating_count": 1200,
   "product_sold_count": 15200,
-  "sales_metrics_event_sequence_id": 1709420011,
-    "admin_status": "VERIFIED",
+  "review_metrics_updated_at": "2026-03-28T10:05:00Z",
+  "sales_metrics_updated_at": "2026-03-28T10:05:00Z",
+  "admin_status": "VERIFIED",
   "admin_profile_version": 12,
   "admin_status_version": 7,
 
-  "price_event_sequence_id": 1709420001,
-  "review_metrics_event_sequence_id": 1709420009,
   "created_at": "2026-02-28T03:51:00Z",
   "updated_at": "2026-03-28T10:05:00Z",
   "indexed_at": "2026-03-28T10:05:01Z",
   "last_event_id": "123e4567-e89b-12d3-a456-426614174003",
   "last_event_timestamp": "2026-03-28T10:05:00Z",
   
-  "version": 4
+  "version": "2026-03-28T10:05:00Z"
 }
 ```
 

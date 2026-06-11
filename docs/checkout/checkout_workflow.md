@@ -35,11 +35,11 @@ Tài liệu này mô tả chi tiết chuỗi sự kiện (Sequence Flow) của h
 
 > `checkout_token`: Nếu truyền `null`, Server hiểu là tạo mới từ Giỏ hàng. Nếu đã có Session hiện hành, Server sẽ **REJECT (409)** để chống gian lận nhiều phiên. Nếu truyền `token` cũ, Server cho phép cập nhật thông tin phiên đó.
 
-> `items` được lấy từ Cart Service response (giỏ đã flat-list thiết kế). Trường chọn mã theo platform dùng map `selected_vouchers = promotion_id`; platform không áp mã thì **không xuất hiện key** trong map (không serialize `null` theo từng platform).
+> `items` được lấy từ Cart Service response (giỏ đã flat-list thiết kế). Trường chọn mã theo voucher dùng map `selected_vouchers = promotion_id`; voucher không áp mã thì **không xuất hiện key** trong map (không serialize `null`).
 
 > Checkout Preview chỉ consume snapshot SKU + quantity đã chuẩn hóa từ Cart. Mọi payload cố gắng mutate `quantity` trực tiếp ở Checkout sẽ bị reject `400 INVALID_CHECKOUT_MUTATION_SCOPE`.
 
-> Promotion contract hiện tại **không còn** cờ voucher độc quyền ở bảng `promotions`. Checkout chỉ gửi các lựa chọn theo 3 slot (platform/freeship); toàn bộ validate xung đột còn lại do Promotion Service xử lý theo stacking rules.
+> Promotion contract hiện tại **không còn** cờ voucher độc quyền ở bảng `promotions`. Checkout chỉ gửi các lựa chọn theo 3 slot (voucher/freeship); toàn bộ validate xung đột còn lại do Promotion Service xử lý theo stacking rules.
 
 ### 1.2. Distributed Lock & Rate Limit
 
@@ -51,7 +51,7 @@ Trước khi thực hiện gom dữ liệu (Sourcing), Preview API đi qua 2 l�
 
 ### 1.3. Parallel Orchestration Pattern (Chi tiết kỹ thuật)
 
-Preview API gọi các services theo **Dependency Graph** dưới đây. Các node độc lập được gọi song song (Wave 1). Inventory là owner của routing + shipping quote orchestration cho mỗi platform.
+Preview API gọi các services theo **Dependency Graph** dưới đây. Các node độc lập được gọi song song (Wave 1). Inventory là owner của routing + shipping quote orchestration cho mỗi warehouse.
 
 ```
 Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1 — độc lập)
@@ -76,14 +76,14 @@ Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1
   - [E] sử dụng danh sách `sku_ids` đã chọn từ request payload, nhưng `quantity` của từng SKU luôn lấy từ cart snapshot [B] (không tin `quantity` client override).
   - Nếu bất kỳ SKU nào có `status != ACTIVE` (BANNED, deleted, unavailable) → trả lỗi **422 Unprocessable Entity** kèm danh sách SKU không khả dụng, yêu cầu user xóa khỏi giỏ trước khi checkout.
   - `current_price` từ [E] được dùng trong Calculation Engine (Waterfall), không dùng `unit_price_at_add` từ Cart cho giá thực tế checkout.
-- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion `/calculate-discount` với `sub_cart_subtotals` + `total_shipping_fee` mới nhất.
+- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion `/calculate-discount` với `subtotals` + `total_shipping_fee` mới nhất.
 - **Wave 3:** Waterfall price calculation → sinh session token.
 
 > **[DEEP DIVE] Tại sao luồng Sourcing phức tạp này lại cực nhanh (< 150ms)?**
 > 1. **Bảng giá nội bộ (Internal Rate Cards):** Shipping Service không gọi API 3PL ở bước Preview, chỉ tra cứu bảng giá cấu hình trên RAM/Redis (< 20ms).
-> 2. **Downstream Response Cache (per-platform):** Routing response của Inventory (đã gồm shipping quote) được cache theo `platform_id + items_hash + address_hash` (TTL 5-10 phút). Đổi voucher không trigger gọi lại Inventory.
+> 2. **Downstream Response Cache (per-warehouse):** Routing response của Inventory (đã gồm shipping quote) được cache theo `items_hash + address_hash` (TTL 5-10 phút). Đổi voucher không trigger gọi lại Inventory.
 > 3. **Optimization Decision Tree:** Tuỳ theo loại thay đổi, chỉ gọi lại services cần thiết (xem 1.5 bên dưới).
-> 4. **Flash Sale Fast-Lane:** Sub-cart chứa Hot SKU bỏ qua Smart Routing hoàn toàn, dùng flat-rate từ config.
+> 4. **Flash Sale Fast-Lane:** Cart chứa Hot SKU bỏ qua Smart Routing hoàn toàn, dùng flat-rate từ config.
 
 > **[DEEP DIVE] Soft vs Hard Allocation**
 > Checkout Preview dùng **Soft Allocation** (Sourcing mô phỏng, không khóa kho) — tránh giam hàng ảo do spam request. Hard Allocation (lock inventory) chỉ xảy ra trong Temporal Saga sau Submit.
@@ -97,11 +97,10 @@ Sau khi join tất cả results, Checkout tính giá theo trình tự Waterfall:
 
 ```
 1. cart_subtotal = Σ (quantity × unit_price)
-2. total_after_platform = cart_subtotal − platform_discount
-3. total_product_price = cart_subtotal − platform_discount
-4. total_shipping_fee = Σ shipping_fee_per_warehouse
-6. final_shipping_fee = total_shipping_fee − freeship_discount
-7. final_amount = total_product_price + final_shipping_fee
+2. total_product_price = cart_subtotal − voucher_discount
+3. total_shipping_fee = Σ shipping_fee_per_warehouse
+4. final_shipping_fee = total_shipping_fee − freeship_discount
+5. final_amount = total_product_price + final_shipping_fee
 ```
 
 ### 1.5. Optimization Decision Tree (Khi Preview được gọi lại)
@@ -111,21 +110,20 @@ Tuỳ theo loại thay đổi, Checkout Service chỉ gọi lại đúng service
 ```
 Preview Request (đợt sau)
       │
-    ├── [Đổi Voucher platform]
+    ├── [Đổi Voucher]
     │     → Chỉ gọi [C] Promotion /calculate-discount (full evaluate 3 slot)
     │     → Cache A (address), B (cart), D×N (routing+shipping) vẫn dùng
-    │     → Có thể làm đổi eligibility Voucher Platform/Freeship
+    │     → Có thể làm đổi eligibility Voucher
     │     → Latency target: < 20ms
     │
-    ├── [Đổi Voucher Platform hoặc Freeship]
+    ├── [Đổi Freeship]
     │     → Chỉ gọi [C] Promotion /calculate-discount (full evaluate 3 slot)
     │     → Không gọi lại Cart hoặc Inventory routing/Shipping quote
-    │     → Không làm đổi eligibility Voucher platform
     │     → Latency target: < 20ms
     │
     ├── [Đổi địa chỉ giao hàng]
     │     → Gọi [A] User Service (validate), invalidate cache D×N
-    │     → Gọi lại Inventory D×N cho tất cả platforms (Inventory tự gọi Shipping nội bộ)
+    │     → Gọi lại Inventory D×N cho tất cả warehouses (Inventory tự gọi Shipping nội bộ)
     │     → Gọi lại Promotion [C] để tính lại theo tổng phí ship mới
     │     → Latency target: < 120ms
     │
@@ -139,33 +137,33 @@ Preview Request (đợt sau)
 
 Để đồng bộ UX và tránh side-effect khó kiểm soát, Checkout dùng policy cố định theo từng tray:
 
-1. **Tray Voucher Platform**
-   * Hiển thị **mã đã lưu trong ví** + **mã public của platform** chưa lưu.
+1. **Tray Voucher**
+   * Hiển thị **mã đã lưu trong ví** + **mã public của sàn** chưa lưu.
    * Cho phép thao tác **"Lưu & Chọn"** (`POST /v1/promotions/save-and-apply`) ngay tại tray.
    * Sau khi Save & Apply thành công, Frontend gọi lại `POST /v1/checkout/preview` để nhận token mới và tổng tiền mới.
 
 2. **Tray Voucher (Giảm đơn hàng) + Freeship (Giảm phí ship)**
-   * Tách rõ 2 vùng chọn mã độc lập: `PLATFORM_VOUCHER` và `FREESHIP_VOUCHER`.
+   * Tách rõ 2 vùng chọn mã độc lập: `VOUCHER` và `FREESHIP_VOUCHER`.
    * Chỉ hiển thị các mã đã tồn tại trong ví user (`wallet:{user_id}:active_vouchers`).
   * Hạn dùng mã lấy theo `user_coupon_wallets.expired_at` (mặc định 30 ngày từ lúc sở hữu); `promotions.start_time/end_time` chỉ chi phối cửa sổ claim/save mã mới.
-  * Promotion Discovery có thể downgrade mã sang `BUDGET_EXHAUSTED` bằng budget guard read-time (Option A) trước khi trả gợi ý mặc định.
+   * Promotion Discovery có thể downgrade mã sang `BUDGET_EXHAUSTED` bằng budget guard read-time (Option A) trước khi trả gợi ý mặc định.
    * **Không hỗ trợ Save & Apply** tại tray này để giữ luồng Checkout thuần read/evaluate.
 
 3. **Submit Path**
    * `POST /v1/checkout/submit` là luồng commit nghiệp vụ (Reserve/Confirm qua Saga), **không được auto-save voucher** vào ví user.
-   * Mọi ghi mới vào ví voucher phải đến từ explicit action ngoài Submit (ví dụ: Save & Apply voucher platform, claim campaign, worker cấp mã).
+   * Mọi ghi mới vào ví voucher phải đến từ explicit action ngoài Submit (ví dụ: Save & Apply voucher, claim campaign, worker cấp mã).
 
 ### 1.6. Flash Sale — Hot SKU Bypass
 
 ```go
-for _, platformGroup := range req.platformGroups {
-    hasHotSku := inventoryClient.CheckHotSkuFlag(platformGroup.SkuIds) // L1 Caffeine hit
+for _, warehouseGroup := range req.warehouseGroups {
+    hasHotSku := inventoryClient.CheckHotSkuFlag(warehouseGroup.SkuIds) // L1 Caffeine hit
     if hasHotSku {
     // Fast-Lane: vẫn gọi routing-options để lấy warehouse_id + quote đã chuẩn hóa
-    routingResult = inventoryClient.GetRoutingOptions(platformGroup, req.ShippingAddressId)
+    routingResult = inventoryClient.GetRoutingOptions(warehouseGroup, req.ShippingAddressId)
     } else {
     // Smart routing path với downstream cache
-        routingResult = getRoutingWithCache(platformGroup, addressHash)
+        routingResult = getRoutingWithCache(warehouseGroup, addressHash)
     }
 }
 ```
@@ -183,42 +181,32 @@ for _, platformGroup := range req.platformGroups {
   },
   "items": [
     {
-                  "items": [
-        {
-          "sku_id": "sku-101",
-          "product_name": "iPhone 15",
-          "variant_info": "128GB - Đen",
-          "image_url": "...",
-          "quantity": 2,
-          "unit_price": 22000000,
-          "subtotal": 44000000
-        }
-      ],
-      "subtotal": 44000000,
-      "platform_voucher_applied": {
-        "promotion_id": null,
-        "discount_amount": 0
-      },
-      "subtotal_after_platform_voucher": 44000000,
-      "shipping": {
-        "total_fee": 35000,
-        "estimated_delivery_date": "2026-03-15",
-        "item_shipments": [
-          {
-            "warehouse_id": 5,
-            "provider": "GHN",
-            "service": "STANDARD",
-            "fee": 35000,
-            "estimated_delivery": "2026-03-15",
-            "split_note": null
-          }
-        ]
-      }
+      "sku_id": "sku-101",
+      "product_name": "iPhone 15",
+      "variant_info": "128GB - Đen",
+      "image_url": "...",
+      "quantity": 2,
+      "unit_price": 22000000,
+      "subtotal": 44000000
     }
   ],
-  "platform_voucher_applied": {
+  "subtotal": 44000000,
+  "voucher_applied": {
     "promotion_id": null,
     "discount_amount": 0
+  },
+  "shipping": {
+    "total_fee": 35000,
+    "estimated_delivery_date": "2026-03-15",
+    "item_shipments": [
+      {
+        "warehouse_id": 5,
+        "provider": "GHN",
+        "service": "STANDARD",
+        "fee": 35000,
+        "estimated_delivery": "2026-03-15"
+      }
+    ]
   },
   "freeship_voucher_applied": {
     "promotion_id": null,
@@ -226,10 +214,7 @@ for _, platformGroup := range req.platformGroups {
   },
   "price_breakdown": {
     "total_product_amount": 44000000,
-    "total_platform_discount": 0,
-    "total_after_platform_vouchers": 44000000,
-    "platform_discount": 0,
-    "total_after_platform_voucher": 44000000,
+    "total_voucher_discount": 0,
     "total_shipping_fee": 35000,
     "shipping_discount": 0,
     "final_shipping_fee": 35000,
@@ -245,7 +230,7 @@ for _, platformGroup := range req.platformGroups {
 |:---|:---|:---|
 | User Service (address) | **500ms** | Địa chỉ cũ từ session (nếu có) |
 | Cart Service (Redis) | **50ms** | Lỗi Preview (Bắt buộc phải nhanh do gọi In-memory) |
-| Inventory /routing-options (per platform) | **3s** | Flat-rate config fallback |
+| Inventory /routing-options (per warehouse) | **3s** | Flat-rate config fallback |
 | Promotion /calculate-discount | **2s** | Không áp voucher, báo user |
 | **Tổng Preview API** | **5s** | Fallback từng phần, không block toàn bộ |
 

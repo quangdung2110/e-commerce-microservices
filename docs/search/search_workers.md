@@ -39,32 +39,24 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 **Luồng xử lý chuẩn:**
 1. Poll batch Kafka (`max.poll.records` gợi ý: 200-500).
    - Nếu gặp `event_type` không thuộc allowlist của worker này, phải ignore + ACK + ghi metric `search_event_ignored_total{topic,event_type}`.
-2. Dedup trong RAM theo cặp (`entity_key`, `event_type`) để không nuốt mất semantic event:
-   - `entity_key = sku_id` cho `PRODUCT_PRICE_UPDATED`, `PRODUCT_SKU_STATUS_CHANGED`, `PRODUCT_SKU_DELETED`.
-   - `entity_key = product_id` cho `PRODUCT_CREATED`, `PRODUCT_UPDATED`, `PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`.
-   - `PRODUCT_PRICE_UPDATED`: giữ event có `event_sequence_id` cao nhất.
-   - `PRODUCT_SKU_DELETED`: luôn giữ event tombstone; nếu cùng batch có event khác cùng `sku_id` với `version <= sku_deleted.version` thì bỏ event kia.
-   - Nếu `PRODUCT_SKU_DELETED` thiếu `payload.version`, chuyển thẳng DLQ vì không thể guard out-of-order an toàn.
-   - Các event Product aggregate còn lại: giữ event có `version` cao nhất trong cùng `event_type`.
-   - `CATEGORY_UPDATED`/`CATEGORY_DELETED` không đi qua worker này (được xử lý bởi `search-category-indexer`).
-   - Dedup RAM chỉ là tối ưu giảm tải; tính đúng đắn cuối cùng vẫn dựa trên guard idempotency trong script update Elasticsearch.
-3. Transform payload -> lệnh `_update`/`_update_by_query` theo contract trong [Events](search_events.md).
+2. Transform payload -> lệnh `_update`/`_update_by_query` theo contract trong [Events](search_events.md).
    - Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`: chuẩn hoá `skus[].status -> skus[].sku_status` trước khi index.
    - Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`: nếu `skus` rỗng/null hoặc thiếu `skus[].best_price`/`skus[].has_promotion`, đánh dấu contract violation và chuyển `t.search.dlq`.
-4. Gọi `_bulk` cho các lệnh cấp SKU, tách riêng `_update_by_query` cho event diện rộng.
-5. Parse kết quả:
+   - Idempotency và chống out-of-order được đảm bảo hoàn toàn bởi guard scripts trong Elasticsearch (xem [Events - Chiến lược Idempotency](search_events.md#3-chiến-lược-idempotency--ordering)). Không cần dedup trong RAM.
+3. Gọi `_bulk` cho các lệnh cấp SKU, tách riêng `_update_by_query` cho event diện rộng.
+4. Parse kết quả:
    - Lỗi tạm thời (timeout, 429, 503): không commit offset, để Kafka retry.
    - `document_missing_exception` cho partial update: đẩy `t.search.retry` để worker tự phục hồi bằng full snapshot fetch.
    - Lỗi dữ liệu không tự hồi phục (mapping conflict/schema poison): gửi bản ghi lỗi sang `t.search.dlq` kèm nguyên payload và metadata.
    - Batch processing phải tiếp tục xử lý hết records còn lại trừ khi gặp transient lỗi mức cụm (cluster unavailable).
    - Bản ghi được coi là "park an toàn" chỉ khi produce vào `t.search.retry`/`t.search.dlq` đã nhận ACK bền vững (`acks=all`, producer idempotent).
-6. Chỉ commit offset khi toàn bộ records trong batch đã:
+5. Chỉ commit offset khi toàn bộ records trong batch đã:
    - apply thành công, hoặc
    - được park an toàn vào `t.search.retry` hoặc `t.search.dlq`.
    - Nếu batch có ít nhất 1 record transient chưa xử lý xong thì không commit offset batch đó.
-7. Nếu event làm thay đổi category footprint thì invalidate `search:categories:tree` để category browsing không giữ số đếm cũ quá lâu:
+6. Nếu event làm thay đổi category footprint thì invalidate `search:categories:tree` để category browsing không giữ số đếm cũ quá lâu:
    - Luôn invalidate với `PRODUCT_STATE_CHANGED`, `PRODUCT_DELETED`, `PRODUCT_SKU_DELETED`.
-   - Với `PRODUCT_UPDATED`: nếu payload có cặp old/new (`old_category_id`/`category_id`, `old_status`/`status`) thì chỉ invalidate khi footprint thực sự đổi.
+   - Với `PRODUCT_UPDATED`: invalidate luôn (không so sánh old/new fields) — đơn giản hóa, tránh logic phức tạp. Over-invalidate là vô hại.
    - Với payload legacy thiếu old/new, dùng chính sách bảo toàn đúng đắn: invalidate mỗi `PRODUCT_UPDATED`.
 
 **Throttle bắt buộc cho diện rộng:**
@@ -90,7 +82,6 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 **Nhiệm vụ:** đồng bộ `product_rating_avg`, `product_rating_count` theo `product_id`.
 
 **Guard chuẩn:**
-- Resolve `event_sequence_id` theo thứ tự: envelope trước, payload mirror sau.
 - Nếu envelope và payload cùng có nhưng lệch nhau: contract violation -> DLQ.
 - `updated_at` chỉ phục vụ observability, không dùng làm fallback ordering key.
 
@@ -132,42 +123,38 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 
 **Thành phần bắt buộc:**
 1. **Singleflight (pod-local):** gom request trùng `query_hash` trong cùng pod.
-2. **Refresh Registry (pod-local):** state machine `IDLE -> ENQUEUED -> RUNNING -> IDLE` để chặn enqueue trùng.
-3. **Bounded Refresh Queue:** hàng đợi in-memory giới hạn cứng (ví dụ 2,000 tasks/pod).
-4. **Enqueue CAS (multi-pod):** `SETNX search:refresh:enqueue:{query_hash} 1 EX {enqueue_ttl_seconds}` trước khi enqueue local queue, với `enqueue_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`.
-5. **Distributed Lock (multi-pod):** `SETNX search:lock:refresh:{query_hash} {owner_token} EX {lock_ttl_seconds}` trước khi query ES, với `lock_ttl_seconds = max(30, 2 * es_refresh_p99_seconds)`.
+2. **Bounded Refresh Queue:** hàng đợi in-memory giới hạn cứng (ví dụ 2,000 tasks/pod).
+3. **Redis Dedup Key (multi-pod):** `search:refresh:{query_hash}` — key duy nhất thay thế cho cả `search:refresh:enqueue:` và `search:lock:refresh:`.
+   - Scheduler: `SETNX search:refresh:{query_hash} 1 EX {ttl}` trước khi enqueue queue, `ttl = max(30, 2 * es_refresh_p99_seconds)`.
+   - Worker: `GET search:refresh:{query_hash}` để xác nhận key còn tồn tại trước khi query ES. Nếu key đã expired, worker vẫn tiếp tục execute (TTL tự bảo vệ).
+   - Hoàn tất: `DEL search:refresh:{query_hash}` trong `finally`.
 
-**Phân biệt vai trò 2 key (bắt buộc):**
-1. `search:refresh:enqueue:{query_hash}`: dedupe ở pha scheduler (trước khi vào queue), mục tiêu ngăn nhiều pod cùng enqueue một tác vụ logic.
-2. `search:lock:refresh:{query_hash}`: mutual exclusion ở pha execution (ngay trước query ES), mục tiêu đảm bảo tại một thời điểm chỉ một worker thực thi refresh thật sự.
-3. Mất key enqueue không đồng nghĩa mất lock execution; đây là hai lớp bảo vệ ở hai thời điểm khác nhau.
-
-**Worker semantics (tránh hiểu sai):**
+**Worker semantics:**
 1. Queue thread-safe dùng destructive `take/pop`: một queue-node chỉ có một worker lấy.
 2. Worker khác không lấy cùng queue-node đó.
-3. Duplicate logic task chỉ xảy ra nếu enqueue trùng key; đã chặn bằng Registry + CAS.
+3. Duplicate logic task chỉ xảy ra nếu enqueue trùng key; đã chặn bằng Redis dedup key (SETNX).
 
 **Queue full & backpressure policy:**
 1. Scheduler dùng `offer` non-blocking.
-2. Nếu queue full: rollback registry state về `IDLE`, tăng metric `search_refresh_queue_dropped_total`, không block request path, vẫn trả stale data.
+2. Nếu queue full: xoá dedup key (`DEL search:refresh:{query_hash}`), tăng metric `search_refresh_queue_dropped_total`, không block request path, vẫn trả stale data.
 3. Alert khi tỉ lệ drop vượt ngưỡng SLO.
 4. Chính sách này là có chủ đích cho Search (stale-tolerant read path). Không dùng policy block/pause như Product Service vì Search ưu tiên giữ latency đọc ổn định và không có ràng buộc write-critical.
 5. Không phục vụ stale nếu đã vượt `stale_max_until`; request path phải fallback query ES trực tiếp với timeout ngắn.
 
 **Pod crash behavior:**
 1. Task trong queue RAM có thể mất khi pod down/restart.
-2. Đây là chấp nhận được với SWR: request kế tiếp tự trigger refresh lại.
-3. Thiết kế hiện tại không thêm Redis Streams/Kafka refresh topic để tránh tăng độ phức tạp vận hành.
+2. Redis dedup key `search:refresh:{query_hash}` có TTL độc lập với Pod lifecycle — nếu Pod A enqueued task và down trước khi worker take, key vẫn còn TTL. Pod B khi receive stale request sẽ SETNX fail và không enqueue thêm. Worker của Pod B hoặc Pod C sẽ take task khi TTL hết hạn.
+3. Đây là chấp nhận được với SWR: request kế tiếp sẽ trigger refresh lại.
+4. Thiết kế hiện tại không thêm Redis Streams/Kafka refresh topic để tránh tăng độ phức tạp vận hành.
 
 **Pseudo-flow ngắn:**
 1. Request stale gọi `scheduleRefresh(query_hash)`.
-2. Singleflight callback thử CAS `IDLE -> ENQUEUED`.
-3. CAS Redis `search:refresh:enqueue:{query_hash}` thành công mới được enqueue local queue.
-4. Worker `take()` task, CAS `ENQUEUED -> RUNNING`.
-5. Worker lấy distributed lock; lock fail thì kết thúc.
-6. Lock success -> query ES -> overwrite cache + `valid_until` mới + `stale_max_until` mới.
-7. `finally`: `RUNNING -> IDLE` và xoá key `search:refresh:enqueue:{query_hash}`.
-8. Lock key chỉ được release bởi owner token (Lua compare-delete) hoặc tự hết hạn theo TTL; tuyệt đối không xoá lock key mù.
+2. Singleflight callback thử `SETNX search:refresh:{query_hash} 1 EX {ttl}`. Nếu fail → dừng.
+3. SETNX success → `offer` task vào local queue.
+4. Worker `take()` task từ queue.
+5. Worker xác nhận key còn tồn tại (`GET`). Nếu đã hết hạn → vẫn tiếp tục execute.
+6. Query ES → overwrite cache + `valid_until` mới + `stale_max_until` mới.
+7. `finally`: `DEL search:refresh:{query_hash}`.
 
 ## 6. Full Reindex Job (Zero-Downtime)
 **Loại hình:** manual trigger hoặc scheduled maintenance
@@ -201,9 +188,6 @@ Search Service là read model thuần túy. Worker chỉ làm 3 việc: đồng 
 2. Consumer này **không** ghi qua alias `products_write`, mà ghi trực tiếp vào `products_v{N+1}` để tránh ảnh hưởng luồng realtime hiện tại.
 3. Áp dụng đúng guard idempotency/out-of-order như [Events](search_events.md#3-chiến-lược-idempotency--ordering):
    - `version`,
-   - `price_event_sequence_id`,
-   - `review_metrics_event_sequence_id`,
-   - `sales_metrics_event_sequence_id`,
 4. Điều kiện hoàn tất catch-up:
    - lag của group catch-up = 0 ổn định tối thiểu 3 chu kỳ poll liên tiếp (poll interval 30s),
    - không còn retry backlog mở cho `products_v{N+1}`,

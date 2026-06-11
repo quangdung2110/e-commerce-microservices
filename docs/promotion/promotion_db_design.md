@@ -29,37 +29,14 @@ Nhóm các chương trình khuyến mãi nhỏ lẻ vào một chiến dịch l�
 Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `JSONB`. Mã nhập vào lúc giỏ hàng/thanh toán.
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Có thể NULL do platform tự tạo voucher lẻ ngoài chiến dịch).
-*   `deleted_owner_type`: VARCHAR(255) ("PLATFORM" hoặc "admin") - Xác định mã này do Sàn tạo hay platform tự tạo.
-*   `owner_id`: BIGINT NULL (Xác định phân loại).
+*   `deleted_owner_type`: Xác định mã do Platform tạo hay hệ thống. Với mô hình không có Seller, chỉ còn `PLATFORM` (Admin tạo voucher toàn nền tảng).
 *   `code`: VARCHAR(50) (VD: "HAPPYBDAY", "HUNT1111").
 *   `type`: VARCHAR(50) - Phân loại theo cấu trúc Vận hành kinh doanh cốt lõi:
     *   **`UNLIMITED_ALL`**: Mã do sàn tạo ra có thể gửi tới toàn user (VD: Chúc mừng sinh nhật, Chào mừng new user). Không cần quản lý tồn kho ngặt nghèo.
     *   **`LIMITED_FLASH`**: Mã "Săn" do Sàn tung ra, có giới hạn ngân sách (VD: Flash Sale toàn sàn mã giảm 500k chỉ có 100 lượt). User phải tranh giành.
-    *   **``**: Mã do admin (platform) tự tạo cho riêng platform mình, có ngân sách giới hạn và chịu phí riêng.
+    *   **`PLATFORM_VOUCHER`**: Mã do Platform (Admin) tự tạo cho riêng nền tảng mình, có ngân sách giới hạn.
 *   `discount_type`: VARCHAR(50) - (PERCENTAGE, FIXED_AMOUNT, FREE_SHIPPING)
-    > [!WARNING]
-    > **Constraint quan trọng:** admin (`deleted_owner_type = 'admin'`) **không được phép** tạo Voucher `FREE_SHIPPING`. Lý do: Sàn đã có slot Voucher Freeship riêng dành cho Platform, cho phép platform tạo freeship sẽ gây conflict và làm lộn xộn slot voucher của khách hàng.
-    > 
-    > **Enforcement ở 2 tầng:**
-    > 1. **Application Layer:** API tạo Promotion validate: `if deleted_owner_type == 'admin' and discount_type == 'FREE_SHIPPING' ⇒ reject 400`.
-    > 2. **Database Layer (Defense in Depth):**
-    > ```sql
-    > ALTER TABLE promotions
-    > ADD CONSTRAINT chk_admin_no_freeship
-    >   CHECK (deleted_owner_type != 'admin' OR discount_type != 'FREE_SHIPPING');
-    > ```
-    > 3. **Migration Rollout bắt buộc (Production):**
-    > ```sql
-    > -- Pre-check dữ liệu vi phạm trước khi ADD CONSTRAINT
-    > SELECT id, deleted_owner_type, owner_id, discount_type, code
-    > FROM promotions
-    > WHERE deleted_owner_type = 'admin' AND discount_type = 'FREE_SHIPPING';
-    > ```
-    > Nếu query trên có dữ liệu, phải cleanup/backfill trước rồi mới apply constraint để tránh migration fail.
-*   **Mapping sang Mô hình platformee:**
-    *   **platform Voucher**: `deleted_owner_type = admin` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
-    *   **platformee Voucher**: `deleted_owner_type = PLATFORM` + `discount_type` (PERCENTAGE hoặc FIXED_AMOUNT).
-    *   **Mã Freeship**: `discount_type = FREE_SHIPPING` (Sàn).
+    > Với mô hình Platform do Admin quản lý trực tiếp (không có Seller), Admin có thể tạo voucher thuộc mọi loại `discount_type` bao gồm cả `FREE_SHIPPING`, `PERCENTAGE`, và `FIXED_AMOUNT`.
 *   `discount_value`: DECIMAL(10,2) (Giá trị giảm, vd: 10%, hoặc 50000đ)
 *   `max_discount_amount`: DECIMAL(10,2) (Giảm tối đa bao nhiêu, áp dụng cho loại PERCENTAGE)
 *   `min_purchase_amount`: DECIMAL(10,2) (Điều kiện giá trị đơn hàng tối thiểu để được áp dụng mã. Đưa ra ngoài JSONB để truy vấn nhanh trên giao diện "Gợi ý mã khuyến mãi").
@@ -140,7 +117,7 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   `promotion_id`: BIGINT
 *   `order_id`: BIGINT (Index)
 *   `discount_amount`: DECIMAL(10,2) (Số tiền thực tế đã giảm)
-*   **`platform_funding`**: DECIMAL(10,2) (Số tiền Sàn chịu. VD: Mã giảm 50k, sàn chịu 20k)
+*   **`platform_funding`**: DECIMAL(10,2) (Số tiền Platform chịu toàn bộ. Với mô hình không có Seller, 100% chi phí voucher do Platform chịu)
 *   **`admin_funding`**: DECIMAL(10,2) (Số tiền platform chịu. VD: Mã giảm 50k, platform chịu 30k)
 *   `status`: VARCHAR(50) (REDEEMED, PARTIALLY_REFUNDED, REFUNDED)
     * `REDEEMED`: Đơn hàng thanh toán thành công, ngân sách đã xác nhận trừ.
@@ -205,21 +182,20 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 ## 2. Quy tắc Áp dụng Voucher (Stacking & Sequencing)
 Mô hình voucher theo chuẩn platformee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
 
-### 2.1. Giới hạn Voucher theo Slot (Per-platform + Platform + Freeship)
+### 2.1. Giới hạn Voucher theo Slot (Voucher + Freeship)
 Một đơn hàng (có thể gồm nhiều platform) áp dụng theo slot:
 * mỗi **platform** tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `PLATFORM_VOUCHER`
 * toàn đơn tối đa 1 `FREESHIP_VOUCHER`
 
-Tổng số voucher có thể áp dụng là biến thiên theo số platform trong đơn: `N_platform_vouchers + [0|1 platform] + [0|1 freeship]`.
+Tổng số voucher có thể áp dụng là tối đa 2: 1 Voucher giảm giá + 1 Voucher freeship.
 
 Sơ đồ slot:
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  SLOT PLATFORM_VOUCHER     (≤ 1 mã / platform — lặp theo từng Sub-Cart)  │
-│  SLOT PLATFORM_VOUCHER (≤ 1 mã toàn đơn)                         │
-│  SLOT FREESHIP_VOUCHER (≤ 1 mã toàn đơn, chỉ Platform)           │
+│  SLOT 1: VOUCHER (≤ 1 mã giảm giá toàn đơn — PERCENTAGE/FIXED)  │
+│  SLOT 2: FREESHIP (≤ 1 mã miễn phí vận chuyển toàn đơn)        │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -239,7 +215,7 @@ Sơ đồ slot:
 
 | Trường | Ý nghĩa |
 |:---|:---|
-| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, ``) |
+| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, `PLATFORM_VOUCHER`) |
 | `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`, `SHIPPING_DISCOUNT`) |
 
 Quy tắc map bắt buộc:
@@ -249,21 +225,14 @@ Quy tắc map bắt buộc:
 ### 2.3. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
 Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall):
 1.  **Giá gốc (Original Price):** Giá hiển thị trên trang sản phẩm (đã bao gồm Markdowns/Price Slashes nếu có).
-2.  **Bước 1: Áp platform Voucher (per platform):** Giảm trực tiếp trên giá gốc của từng sub-cart.
-    *   `subtotal_after_platform[admin] = subtotal[admin] - platform_discount[admin]`
-    *   `total_after_platforms = Σ subtotal_after_platform[admin]`
-3.  **Bước 2: Áp Platform Voucher:** Giảm trên tổng giá sau khi đã trừ platform Voucher.
-    *   `final_product_price = total_after_platforms - platform_discount`
-4.  **Bước 3: Áp Freeship Voucher:** Áp dụng riêng cho Phí vận chuyển, không ảnh hưởng đến giá trị sản phẩm.
+2.  **Bước 1: Áp Voucher giảm giá:** Giảm trên tổng giá trị sản phẩm.
+    *   `subtotal_after_voucher = subtotal - voucher_discount`
+3.  **Bước 2: Áp Freeship Voucher:** Áp dụng riêng cho Phí vận chuyển, không ảnh hưởng đến giá trị sản phẩm.
     *   `final_shipping_fee = total_shipping_fee - freeship_discount`
-5.  **Tổng cộng:**
-    *   `final_amount = final_product_price + final_shipping_fee`
+4.  **Tổng cộng:**
+    *   `final_amount = subtotal_after_voucher + final_shipping_fee`
 
-> [!IMPORTANT]
-> **Phụ thuộc slot trong Checkout Preview:**
-> - Thay đổi platform Voucher có thể thay đổi điều kiện áp dụng của Platform/Freeship.
-> - Thay đổi Platform/Freeship không làm thay đổi điều kiện áp dụng của platform Voucher.
-> - Checkout luôn gọi Promotion evaluate lại khi đổi mã để đảm bảo waterfall nhất quán.
+> Với mô hình không có Seller, waterfall chỉ còn 2 bước đơn giản.
 
 
 ---
@@ -278,8 +247,8 @@ Khác với `promotions` (Mã Voucher áp dụng ở Giỏ hàng), **Giảm giá
 Định nghĩa luật giảm cơ bản. Không map trực tiếp vào sản phẩm ở DB Quan hệ (PostgreSQL).
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Cho phép gom Markdown rules vào cùng chiến dịch với Vouchers. VD: "Mega Sale 11/11" bao gồm cả mã giảm giá lẫn gạch giá trực tiếp).
-*   `owner_id`: BIGINT NULL (Sàn hoặc platform tạo)
-*   `deleted_owner_type`: VARCHAR(50) (PLATFORM, admin)
+*   `owner_id`: BIGINT NULL
+*   `deleted_owner_type`: VARCHAR(50) (PLATFORM — không còn Seller)
 *   `name`: VARCHAR(255) (VD: "Điện thoại Apple giảm 10%")
 *   `scope_type`: VARCHAR(50) (PRODUCT, CATEGORY)
 *   `ref_id`: VARCHAR(255) NULL (Chứa ID của Product/Category tương ứng với scope, đồng nhất định dạng ID string liên service)

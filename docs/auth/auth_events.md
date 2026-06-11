@@ -72,7 +72,7 @@ Tất cả event được ném lên Topic: `t.auth.events` (Có thể Partitions
   "payload": {
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "email": "customer@gmail.com",
-    "roles": ["USER"]
+    "roles": ["ADMIN"]
   }
 }
 ```
