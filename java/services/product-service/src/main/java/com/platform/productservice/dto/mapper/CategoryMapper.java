@@ -3,50 +3,66 @@ package com.platform.productservice.dto.mapper;
 import com.platform.productservice.domain.entity.Category;
 import com.platform.productservice.domain.vo.CategoryId;
 import com.platform.productservice.domain.vo.Slug;
+import com.platform.productservice.dto.request.CreateCategoryRequest;
+import com.platform.productservice.dto.request.UpdateCategoryRequest;
+import com.platform.productservice.dto.response.CategoryResponse;
+import com.platform.productservice.dto.response.CategoryTreeResponse;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Mapper for converting between Category domain entities and DTOs.
- * Note: This is a manual implementation following the existing codebase pattern.
  */
 @Component
 public class CategoryMapper {
 
-    /**
-     * Converts a create category request to a Category domain entity.
-     * Generates a new CategoryId and initializes timestamps.
-     */
     public Category toDomain(CreateCategoryRequest request) {
         if (request == null) return null;
 
         Category category = new Category();
         category.setName(request.name());
-        category.setSlug(request.slug() != null ? Slug.of(request.slug()) : null);
-        category.setParentId(request.parentId() != null ? CategoryId.of(request.parentId()) : null);
-        category.setLevel(request.level());
-        category.setLeaf(true);
+        if (request.slug() != null && !request.slug().isBlank()) {
+            category.setSlug(Slug.of(request.slug()));
+        }
+        if (request.parentId() != null && !request.parentId().isBlank()) {
+            category.setParentId(CategoryId.of(request.parentId()));
+        }
+        if (request.isLeaf() != null) {
+            category.setLeaf(request.isLeaf());
+        } else {
+            category.setLeaf(true);
+        }
         category.initialize();
         return category;
     }
 
-    /**
-     * Converts an update category request to update a Category domain entity.
-     * Does not modify ID or timestamps.
-     */
     public void toDomainUpdate(UpdateCategoryRequest request, Category category) {
         if (request == null || category == null) return;
 
         if (request.name() != null) category.rename(request.name());
-        if (request.slug() != null) category.setSlug(Slug.of(request.slug()));
-        if (request.parentId() != null) category.setParentId(CategoryId.of(request.parentId()));
+        if (request.slug() != null && !request.slug().isBlank()) {
+            category.setSlug(Slug.of(request.slug()));
+        }
+        if (request.parentId() != null) {
+            if (request.parentId().isBlank()) {
+                category.setParentId(null);
+            } else {
+                category.setParentId(CategoryId.of(request.parentId()));
+            }
+        }
+        if (request.isLeaf() != null) {
+            if (request.isLeaf()) {
+                category.makeLeaf();
+            } else {
+                category.makeNonLeaf();
+            }
+        }
         category.setUpdatedAt(java.time.LocalDateTime.now());
     }
 
-    /**
-     * Converts a Category domain entity to a response DTO.
-     */
     public CategoryResponse toResponse(Category category) {
         if (category == null) return null;
 
@@ -57,71 +73,59 @@ public class CategoryMapper {
                 category.getSlug() != null ? category.getSlug().getValue() : null,
                 category.getLevel(),
                 category.isLeaf(),
+                null,
                 category.getCreatedAt(),
                 category.getUpdatedAt()
         );
     }
 
-    /**
-     * Converts a Category domain entity to a tree response DTO with children.
-     */
-    public CategoryTreeResponse toTreeResponse(Category category) {
+    public CategoryResponse toTreeResponse(Category category) {
         if (category == null) return null;
 
-        return new CategoryTreeResponse(
+        return new CategoryResponse(
                 category.getId() != null ? category.getId().getValue() : null,
                 category.getParentId() != null ? category.getParentId().getValue() : null,
                 category.getName(),
                 category.getSlug() != null ? category.getSlug().getValue() : null,
                 category.getLevel(),
                 category.isLeaf(),
-                List.of()
+                List.of(),
+                category.getCreatedAt(),
+                category.getUpdatedAt()
         );
     }
 
-    /**
-     * Create category request DTO.
-     */
-    public record CreateCategoryRequest(
-            String name,
-            String slug,
-            String parentId,
-            int level
-    ) {}
+    public CategoryTreeResponse toTreeResponse(List<Category> roots, java.util.Map<String, java.util.List<Category>> childrenMap) {
+        if (roots == null) return new CategoryTreeResponse(List.of());
 
-    /**
-     * Update category request DTO.
-     */
-    public record UpdateCategoryRequest(
-            String name,
-            String slug,
-            String parentId
-    ) {}
+        List<CategoryResponse> rootResponses = roots.stream()
+                .map(c -> buildTree(c, childrenMap))
+                .collect(Collectors.toList());
 
-    /**
-     * Category response DTO.
-     */
-    public record CategoryResponse(
-            String id,
-            String parentId,
-            String name,
-            String slug,
-            int level,
-            boolean isLeaf,
-            java.time.LocalDateTime createdAt,
-            java.time.LocalDateTime updatedAt
-    ) {}
+        return new CategoryTreeResponse(rootResponses);
+    }
 
-    /**
-     * Category tree response DTO with nested children.
-     */
-    public record CategoryTreeResponse(
-            String id,
-            String parentId,
-            String name,
-            String slug,
-            int level,
-            boolean isLeaf,
-            List<CategoryTreeResponse> children
-    ) {}
+    private CategoryResponse buildTree(Category category, java.util.Map<String, java.util.List<Category>> childrenMap) {
+        List<CategoryResponse> childResponses = null;
+        if (childrenMap != null && category.getId() != null) {
+            List<Category> children = childrenMap.get(category.getId().getValue());
+            if (children != null && !children.isEmpty()) {
+                childResponses = children.stream()
+                        .map(c -> buildTree(c, childrenMap))
+                        .collect(Collectors.toList());
+            }
+        }
+
+        return new CategoryResponse(
+                category.getId() != null ? category.getId().getValue() : null,
+                category.getParentId() != null ? category.getParentId().getValue() : null,
+                category.getName(),
+                category.getSlug() != null ? category.getSlug().getValue() : null,
+                category.getLevel(),
+                category.isLeaf(),
+                childResponses != null ? childResponses : List.of(),
+                category.getCreatedAt(),
+                category.getUpdatedAt()
+        );
+    }
 }

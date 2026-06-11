@@ -131,7 +131,7 @@ public class SkuServiceImpl implements SkuServicePort {
         if (updatedData.getSkuCode() != null) sku.setSkuCode(updatedData.getSkuCode());
         if (updatedData.getOriginalPrice() != null) sku.setOriginalPrice(updatedData.getOriginalPrice());
         if (updatedData.getPromotionalPrice() != null) sku.setPromotionalPrice(updatedData.getPromotionalPrice());
-        if (updatedData.getDisplayQuantity() != existing.getDisplayQuantity()) {
+        if (updatedData.getDisplayQuantity() != null && updatedData.getDisplayQuantity() != sku.getDisplayQuantity()) {
             sku.setDisplayQuantity(updatedData.getDisplayQuantity());
         }
         if (updatedData.getVariantAttributes() != null) sku.setVariantAttributes(updatedData.getVariantAttributes());

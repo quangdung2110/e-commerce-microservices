@@ -20,6 +20,8 @@ public interface SkuRepository {
 
     Optional<Sku> findByIdForUpdate(SkuId id);
 
+    Optional<Sku> findWithLockById(SkuId id);
+
     Optional<Sku> findByIdAndNotDeleted(SkuId id);
 
     List<Sku> findByIds(List<SkuId> ids);

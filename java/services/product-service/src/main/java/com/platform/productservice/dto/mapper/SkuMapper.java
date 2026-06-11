@@ -1,17 +1,25 @@
 package com.platform.productservice.dto.mapper;
 
+import com.platform.productservice.domain.entity.ProductMedia;
 import com.platform.productservice.domain.entity.Sku;
 import com.platform.productservice.domain.vo.ProductId;
 import com.platform.productservice.domain.vo.SkuCode;
 import com.platform.productservice.domain.vo.SkuId;
+import com.platform.productservice.dto.request.CreateMediaRequest;
+import com.platform.productservice.dto.request.CreateSkuRequest;
+import com.platform.productservice.dto.request.UpdateSkuRequest;
+import com.platform.productservice.dto.response.MediaResponse;
+import com.platform.productservice.dto.response.SkuResponse;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Mapper for converting between Sku domain entities and DTOs.
- * Note: This is a manual implementation following the existing codebase pattern.
  */
 @Component
 public class SkuMapper {
@@ -26,9 +34,7 @@ public class SkuMapper {
         Sku sku = new Sku();
         sku.setSkuCode(request.skuCode() != null ? SkuCode.of(request.skuCode()) : null);
         sku.setOriginalPrice(request.originalPrice());
-        sku.setPromotionalPrice(request.promotionalPrice());
-        sku.setDisplayQuantity(request.displayQuantity());
-        sku.setVariantAttributes(request.variantAttributes() != null ? request.variantAttributes() : Map.of());
+        sku.setVariantAttributes(request.variantAttributes() != null ? request.variantAttributes() : new HashMap<>());
         sku.initialize(productId != null ? ProductId.of(productId) : null);
         return sku;
     }
@@ -42,8 +48,6 @@ public class SkuMapper {
 
         if (request.skuCode() != null) sku.setSkuCode(SkuCode.of(request.skuCode()));
         if (request.originalPrice() != null) sku.setOriginalPrice(request.originalPrice());
-        if (request.promotionalPrice() != null) sku.setPromotionalPrice(request.promotionalPrice());
-        if (request.displayQuantity() != null) sku.setDisplayQuantity(request.displayQuantity());
         if (request.variantAttributes() != null) sku.setVariantAttributes(request.variantAttributes());
         sku.setUpdatedAt(java.time.LocalDateTime.now());
     }
@@ -54,61 +58,57 @@ public class SkuMapper {
     public SkuResponse toResponse(Sku sku) {
         if (sku == null) return null;
 
+        List<MediaResponse> mediaResponses = null;
+        if (sku.getMedia() != null) {
+            mediaResponses = sku.getMedia().stream()
+                    .map(this::toMediaResponse)
+                    .collect(Collectors.toList());
+        }
+
         return new SkuResponse(
                 sku.getId() != null ? sku.getId().getValue() : null,
-                sku.getProductId() != null ? sku.getProductId().getValue() : null,
-                sku.getSkuCode(),
+                sku.getSkuCode() != null ? sku.getSkuCode().getValue() : null,
                 sku.getOriginalPrice(),
                 sku.getPromotionalPrice(),
                 sku.getBestPrice(),
                 sku.hasPromotion(),
                 sku.getStatus() != null ? sku.getStatus().name() : null,
-                sku.isDeleted(),
                 sku.getDisplayQuantity(),
-                sku.getVariantAttributes(),
+                sku.getVariantAttributes() != null ? sku.getVariantAttributes() : new HashMap<>(),
+                mediaResponses,
                 sku.getCreatedAt(),
                 sku.getUpdatedAt()
         );
     }
 
-    /**
-     * Create SKU request DTO.
-     */
-    public record CreateSkuRequest(
-            String skuCode,
-            BigDecimal originalPrice,
-            BigDecimal promotionalPrice,
-            int displayQuantity,
-            Map<String, Object> variantAttributes
-    ) {}
+    private MediaResponse toMediaResponse(ProductMedia media) {
+        if (media == null) return null;
+        return new MediaResponse(
+                media.getId() != null ? media.getId().getValue() : null,
+                media.getSkuId() != null ? media.getSkuId().getValue() : null,
+                media.getMediaType() != null ? media.getMediaType().name() : null,
+                media.getUrl(),
+                media.getThumbnailUrl(),
+                media.getSortOrder()
+        );
+    }
 
-    /**
-     * Update SKU request DTO.
-     */
-    public record UpdateSkuRequest(
-            String skuCode,
-            BigDecimal originalPrice,
-            BigDecimal promotionalPrice,
-            Integer displayQuantity,
-            Map<String, Object> variantAttributes
-    ) {}
+    public List<ProductMedia> toMediaList(List<CreateMediaRequest> requests, String skuId) {
+        if (requests == null) return new ArrayList<>();
 
-    /**
-     * SKU response DTO.
-     */
-    public record SkuResponse(
-            String id,
-            String productId,
-            String skuCode,
-            BigDecimal originalPrice,
-            BigDecimal promotionalPrice,
-            BigDecimal bestPrice,
-            boolean hasPromotion,
-            String status,
-            boolean isDeleted,
-            int displayQuantity,
-            Map<String, Object> variantAttributes,
-            java.time.LocalDateTime createdAt,
-            java.time.LocalDateTime updatedAt
-    ) {}
+        List<ProductMedia> mediaList = new ArrayList<>();
+        for (CreateMediaRequest req : requests) {
+            ProductMedia media = new ProductMedia();
+            if (skuId != null) {
+                media.setSkuId(SkuId.of(skuId));
+            }
+            media.setMediaType(com.platform.productservice.domain.enums.MediaType.valueOf(req.mediaType()));
+            media.setUrl(req.url());
+            media.setThumbnailUrl(req.thumbnailUrl());
+            media.setSortOrder(req.sortOrder() != null ? req.sortOrder() : 0);
+            media.initialize();
+            mediaList.add(media);
+        }
+        return mediaList;
+    }
 }

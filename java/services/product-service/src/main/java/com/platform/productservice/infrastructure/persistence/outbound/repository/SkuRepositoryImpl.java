@@ -55,6 +55,11 @@ public class SkuRepositoryImpl implements SkuRepository {
     }
 
     @Override
+    public Optional<Sku> findWithLockById(SkuId id) {
+        return jpaRepository.findWithLockById(id.getValue()).map(mapper::toDomain);
+    }
+
+    @Override
     public Optional<Sku> findByIdAndNotDeleted(SkuId id) {
         return jpaRepository.findByIdAndDeletedFalse(id.getValue()).map(mapper::toDomain);
     }
