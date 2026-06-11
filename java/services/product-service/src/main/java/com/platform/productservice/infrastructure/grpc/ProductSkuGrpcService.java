@@ -9,6 +9,7 @@ import com.platform.productservice.dto.grpc.GrpcProtoMapper;
 import com.platform.productservice.infrastructure.redis.cache.model.SkuCacheEntry;
 import com.platform.productservice.port.inbound.CategoryServicePort;
 import com.platform.productservice.port.outbound.database.CategoryRepository;
+import com.platform.productservice.port.outbound.database.ProductMediaRepository;
 import com.platform.productservice.port.outbound.database.ProductRepository;
 import com.platform.productservice.proto.*;
 import com.platform.productservice.service.ProductSkuReadService;
@@ -20,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,7 @@ public class ProductSkuGrpcService extends ProductGrpcServiceGrpc.ProductGrpcSer
     private final CategoryServicePort categoryService;
     private final CategoryRepository categoryRepository;
     private final ProductRepository productRepository;
+    private final ProductMediaRepository productMediaRepository;
     private final GrpcProtoMapper protoMapper;
 
     @Autowired
@@ -48,11 +51,13 @@ public class ProductSkuGrpcService extends ProductGrpcServiceGrpc.ProductGrpcSer
             CategoryServicePort categoryService,
             CategoryRepository categoryRepository,
             ProductRepository productRepository,
+            ProductMediaRepository productMediaRepository,
             GrpcProtoMapper protoMapper) {
         this.productSkuReadService = productSkuReadService;
         this.categoryService = categoryService;
         this.categoryRepository = categoryRepository;
         this.productRepository = productRepository;
+        this.productMediaRepository = productMediaRepository;
         this.protoMapper = protoMapper;
     }
 
@@ -119,7 +124,7 @@ public class ProductSkuGrpcService extends ProductGrpcServiceGrpc.ProductGrpcSer
                 }
             }
 
-            ProductSkuResponse response = responseBuilder.build();
+            BatchProductSkuResponse response = responseBuilder.build();
             responseObserver.onNext(response);
             responseObserver.onCompleted();
 
@@ -196,14 +201,16 @@ public class ProductSkuGrpcService extends ProductGrpcServiceGrpc.ProductGrpcSer
                 }
             }
 
-            if (request.getIncludeMedia() && product.getMedia() != null) {
-                for (var media : product.getMedia()) {
+            if (request.getIncludeMedia()) {
+                List<com.platform.productservice.domain.entity.ProductMedia> mediaList =
+                        productMediaRepository.findByProductId(productId);
+                for (var media : mediaList) {
                     builder.addMedia(com.platform.productservice.proto.MediaResponse.newBuilder()
                             .setMediaId(media.getId() != null ? media.getId().getValue() : "")
                             .setMediaType(media.getMediaType() != null ? media.getMediaType().name() : "")
                             .setUrl(media.getUrl() != null ? media.getUrl() : "")
                             .setThumbnailUrl(media.getThumbnailUrl() != null ? media.getThumbnailUrl() : "")
-                            .setSortOrder(media.getSortOrder() != null ? media.getSortOrder() : 0)
+                            .setSortOrder(media.getSortOrder())
                             .build());
                 }
             }

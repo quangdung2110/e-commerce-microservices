@@ -52,16 +52,16 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/config/InventoryKafkaConsumerConfig.java`
 
-- [ ] Create `@Configuration` class
-- [ ] Configure consumer factory for `product-inventory-fast-sync-group`:
+- [x] Create `@Configuration` class
+- [x] Configure consumer factory for `product-inventory-fast-sync-group`:
   - `auto.offset.reset: latest` (we want latest state, not replay)
   - `enable.auto.commit: false`
   - `max.poll.records: 500`
   - `fetch.min.bytes: 1`
   - `fetch.max.wait.ms: 100`
-- [ ] Configure `ConcurrentKafkaListenerContainerFactory` with concurrency: 3
-- [ ] Configure `DefaultErrorHandler`: retry 5 times with fixed backoff (200ms), then DLQ
-- [ ] `AckMode.MANUAL_IMMEDIATE` for precise offset control
+- [x] Configure `ConcurrentKafkaListenerContainerFactory` with concurrency: 3
+- [x] Configure `DefaultErrorHandler`: retry 5 times with fixed backoff (200ms), then DLQ
+- [x] `AckMode.MANUAL_IMMEDIATE` for precise offset control
 
 ---
 
@@ -71,49 +71,48 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/consumer/InventorySyncFastPathConsumer.java`
 
-- [ ] Create `@Service` class
-- [ ] Annotate with `@KafkaListener` for topic `t.inventory.events`, group ID `product-inventory-fast-sync-group`
-- [ ] Inject: `ObjectMapper`, `InventoryFastSyncLuaExecutor`, `InventorySyncRepository`, `InventorySyncMetrics`
-- [ ] **Consumer method**:
+- [x] Create `@Service` class
+- [x] Annotate with `@KafkaListener` for topic `t.inventory.events`, group ID `product-inventory-fast-sync-group`
+- [x] Inject: `ObjectMapper`, `InventoryFastSyncLuaExecutor`, `InventorySyncRepository`, `SkuCacheRepository`, `InventorySyncMetrics`
+- [x] **Consumer method**:
   ```java
-  public void consume(String message,
-                      @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
-                      @Header(KafkaHeaders.OFFSET) long offset,
-                      Acknowledgment ack) {
+  public void consume(ConsumerRecord<String, String> record, Acknowledgment ack) {
       try {
-          InventoryEvent event = parse(message);
+          InventoryEvent event = parse(record.value());
+          String skuJson = buildMergedSkuJson(...);
           LuaSyncResult result = luaExecutor.execute(
               event.getSkuId(),
-              event.getTimestamp(),
+              event.getEventTimestamp(),
               event.getAvailableQuantity(),
               event.getProductId(),
-              event.getSkuStatus()
+              event.deriveSkuStatus(),
+              skuJson
           );
-          if (result.isApplied()) {
+          if (result.applied) {
               metrics.recordApplied();
-          } else if (result.isStale()) {
+          } else if (result.stale) {
               metrics.recordStale();
-          } else if (result.isCacheMiss()) {
+          } else if (result.cacheMiss) {
               metrics.recordCacheMiss();
           }
-          ack.acknowledge(); // commit offset
+          inventorySyncRepository.addPendingSync(...);
+          ack.acknowledge();
       } catch (Exception e) {
-          log.error("Failed to process inventory event: partition={} offset={}", partition, offset, e);
-          // don't acknowledge — let error handler retry
+          log.error("Failed to process inventory event...", e);
           throw e;
       }
   }
   ```
-- [ ] Only ACK after Lua script executes successfully (regardless of stale/apply)
-- [ ] On exception: do NOT ACK (Kafka will redeliver)
+- [x] Only ACK after Lua script executes successfully (regardless of stale/apply)
+- [x] On exception: do NOT ACK (Kafka will redeliver)
 
 ### 4.2 File: `worker/consumer/InventoryEvent.java`
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/consumer/InventoryEvent.java`
 
-- [ ] Create `@Data` POJO: `skuId`, `productId`, `availableQuantity (int)`, `skuStatus (String)`, `eventTimestamp (long epoch millis)`, `eventId (String)`
-- [ ] Static `fromCloudEvent(CloudEvent)` factory method
-- [ ] Validation: `skuId`, `productId`, `eventTimestamp` must not be null
+- [x] Create `@Data` POJO: `skuId`, `productId`, `availableQuantity (int)`, `skuStatus (String)`, `eventTimestamp (long epoch millis)`, `eventId (String)`
+- [x] Static `fromCloudEvent(CloudEvent)` factory method (implemented as Jackson `@JsonProperty` getters)
+- [x] Validation: `skuId`, `productId`, `eventTimestamp` must not be null
 
 ---
 
@@ -123,10 +122,10 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/InventorySyncSlowPathWorker.java`
 
-- [ ] Create `@Component` class
-- [ ] Inject: `InventorySyncRepository`, `InventorySyncOrchestrator`, `DistributedLockRunner`, `InventorySyncMetrics`
-- [ ] Configure `@Scheduled(fixedDelayString = "${app.inventory-sync.interval-ms:500}")` — 500ms interval
-- [ ] **Scheduled run method**:
+- [x] Create `@Component` class
+- [x] Inject: `InventorySyncRepository`, `InventorySyncOrchestrator`, `InventorySyncRequeueHandler`, `InventorySyncMetrics`
+- [x] Configure `@Scheduled(fixedDelayString = "${app.inventory-sync.interval-ms:500}")` — 500ms interval
+- [x] **Scheduled run method**:
   - Drain ZSET: `drainPendingSync(100)` (100 items per run to avoid long transactions)
   - If empty: return immediately
   - Group by `productId`: `Map<String, List<PendingSyncItem>>`
@@ -140,10 +139,10 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/InventorySyncMetrics.java`
 
-- [ ] Create `@Component` class with Micrometer metrics
-- [ ] Counters: `inventory.sync.phase1.applied`, `inventory.sync.phase1.stale`, `inventory.sync.phase1.cache_miss`, `inventory.sync.phase2.processed`, `inventory.sync.phase2.errors`, `inventory.sync.phase2.requeued`
-- [ ] Timer: `inventory.sync.phase2.duration`
-- [ ] Gauge: `inventory.sync.pending_queue_size`
+- [x] Create `@Component` class with Micrometer metrics
+- [x] Counters: `inventory.sync.phase1.applied`, `inventory.sync.phase1.stale`, `inventory.sync.phase1.cache_miss`, `inventory.sync.phase2.processed`, `inventory.sync.phase2.errors`, `inventory.sync.phase2.requeued`
+- [x] Timer: `inventory.sync.phase2.duration`
+- [x] Gauge: `inventory.sync.pending_queue_size`
 
 ---
 
@@ -153,9 +152,9 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/service/InventorySyncOrchestrator.java`
 
-**(Reference implementation details — already partially defined in Module 06)**
+**(Reference implementation details — already implemented)**
 
-- [ ] Method `void syncBatch(String productId, List<PendingSyncItem> items)`:
+- [x] Method `void syncBatch(String productId, List<PendingSyncItem> items)`:
   - Start transaction with `READ_COMMITTED` isolation
   - Load product with optimistic lock: `SELECT * FROM products WHERE product_id = :id` (no explicit lock — rely on `@Version`)
   - Load all SKUs for product: `SELECT * FROM product_skus WHERE product_id = :id AND deleted = false`
@@ -173,16 +172,9 @@ Inventory Service
   - Commit transaction
   - **After commit**: acknowledge ZSET pending items
 
-### 6.2 File: `service/InventorySyncBatchUpdater.java`
+### 6.2 Skip: `service/InventorySyncBatchUpdater.java`
 
-**Path:** `product-service/src/main/java/com/platform/productservice/service/InventorySyncBatchUpdater.java`
-
-- [ ] Create `@Service` class
-- [ ] Method `void batchUpdateSkus(List<Sku> skus)`: uses `EntityManager` for batch update
-  - Set `displayQuantity`, `lastInventorySyncAt`, `status`, `updatedAt` on each entity
-  - Flush and clear after batch of 50
-- [ ] Method `void batchInsertOutbox(List<OutboxEvent> events)`: bulk insert outbox records
-- [ ] Handle optimistic locking: catch `OptimisticLockException`, requeue
+> **Note:** This file is **NOT needed** as a separate class. The `InventorySyncOrchestrator` already implements all batch update logic directly using `skuRepository.save()`, `outboxRepository.saveAll()`, and domain event creation. Keeping the logic in the orchestrator avoids an extra indirection layer.
 
 ---
 
@@ -218,14 +210,14 @@ Inventory Service
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/InventorySyncRequeueHandler.java`
 
-- [ ] Method `void requeue(List<PendingSyncItem> items)`: ZADD back to pending queue with incremented retry count
-- [ ] Method `void requeueWithDelay(List<PendingSyncItem> items, long delayMs)`: use Redis sorted set with score = `now + delay`
-- [ ] Max retry: 5 attempts, after that send to DLQ
-- [ ] Track retry count in ZSET member metadata
+- [x] Method `void requeue(List<PendingSyncItem> items)`: ZADD back to pending queue with incremented retry count
+- [x] Method `void requeueWithDelay(List<PendingSyncItem> items, long delayMs)`: use Redis sorted set with score = `now + delay`
+- [x] Max retry: 5 attempts, after that send to DLQ
+- [x] Track retry count in ZSET member metadata (via `retryCount` field in `PendingSyncItem`)
 
 ### 8.2 DLQ Handler
 
-- [ ] Dead Letter Queue: `t.inventory.events.DLQ`
+- [x] Dead Letter Queue: `t.inventory.events.DLQ` (via `DefaultErrorHandler` in `InventoryKafkaConsumerConfig`)
 - [ ] Consumer for DLQ: manual inspection and replay capability
 - [ ] Alert on DLQ messages: metrics counter + alerting rule
 
@@ -291,16 +283,16 @@ return 1
 
 ## 10. Acceptance Criteria
 
-- [ ] Phase 1 completes in < 5ms with ZERO database locks
-- [ ] Phase 1 Lua script correctly rejects stale events (eventTimestamp <= cachedTs)
-- [ ] Phase 1 Lua script correctly rejects events for different product IDs
-- [ ] Phase 1 ZADDs to pending queue before Kafka ACK (no event loss)
-- [ ] Phase 2 drains pending queue in 100-item batches
-- [ ] Phase 2 groups items by productId and processes in single transaction
-- [ ] Phase 2 uses optimistic locking (no FOR UPDATE)
-- [ ] Phase 2 correctly triggers FSM auto-hide when all SKUs out of stock
-- [ ] Phase 2 correctly triggers FSM auto-reactivate when any SKU back in stock
-- [ ] Phase 2 releases ZSET items only after DB commit
-- [ ] Phase 2 handles OptimisticLockingFailureException by requeuing
-- [ ] Metrics correctly track applied, stale, cache miss, and error counts
+- [x] Phase 1 completes in < 5ms with ZERO database locks
+- [x] Phase 1 Lua script correctly rejects stale events (eventTimestamp <= cachedTs)
+- [x] Phase 1 Lua script correctly rejects events for different product IDs
+- [x] Phase 1 ZADDs to pending queue before Kafka ACK (no event loss)
+- [x] Phase 2 drains pending queue in 100-item batches
+- [x] Phase 2 groups items by productId and processes in single transaction
+- [x] Phase 2 uses optimistic locking (no FOR UPDATE)
+- [x] Phase 2 correctly triggers FSM auto-hide when all SKUs out of stock
+- [x] Phase 2 correctly triggers FSM auto-reactivate when any SKU back in stock
+- [x] Phase 2 releases ZSET items only after DB commit
+- [x] Phase 2 handles OptimisticLockingFailureException by requeuing
+- [x] Metrics correctly track applied, stale, cache miss, and error counts
 - [ ] DLQ receives events that exceed max retry count

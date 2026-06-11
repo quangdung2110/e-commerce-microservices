@@ -1,9 +1,11 @@
 package com.platform.productservice.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import com.platform.productservice.domain.service.MarkdownCalculator;
+import com.platform.productservice.domain.statemachine.FsmTriggerCalculator;
 
 import java.time.Clock;
 
@@ -11,14 +13,18 @@ import java.time.Clock;
 public class AppConfig {
 
     @Bean
-    public ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        return mapper;
+    public Clock clock() {
+        return Clock.systemUTC();
     }
 
     @Bean
-    public Clock clock() {
-        return Clock.systemUTC();
+    public MarkdownCalculator markdownCalculator() {
+        return new MarkdownCalculator();
+    }
+
+    @Bean
+    public FsmTriggerCalculator fsmTriggerCalculator() {
+        return new FsmTriggerCalculator();
     }
 
     @Configuration

@@ -89,7 +89,7 @@ public class ProductServiceImpl implements ProductServicePort {
         }
 
         if (product.getSlug() != null && productRepository.existsBySlug(product.getSlug())) {
-            throw new DomainException("Duplicate slug: " + product.getSlug().getValue());
+            throw new DomainException("Duplicate slug: " + product.getSlug());
         }
 
         product.initialize();
@@ -157,7 +157,7 @@ public class ProductServiceImpl implements ProductServicePort {
 
         if (updatedData.getSlug() != null && !updatedData.getSlug().equals(existing.getSlug())) {
             if (productRepository.existsBySlug(updatedData.getSlug())) {
-                throw new DomainException("Duplicate slug: " + updatedData.getSlug().getValue());
+                throw new DomainException("Duplicate slug: " + updatedData.getSlug());
             }
             existing.setSlug(updatedData.getSlug());
         }

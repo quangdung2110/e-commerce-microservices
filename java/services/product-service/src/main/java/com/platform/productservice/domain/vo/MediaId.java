@@ -17,7 +17,7 @@ public final class MediaId implements Serializable {
     }
 
     public static MediaId generate() {
-        return new MediaId(com.github.f4b6a3.ulid.UlidCreator.getUlid().create().toString());
+        return new MediaId(com.github.f4b6a3.ulid.UlidCreator.getUlid().toString());
     }
 
     public static MediaId of(String value) {

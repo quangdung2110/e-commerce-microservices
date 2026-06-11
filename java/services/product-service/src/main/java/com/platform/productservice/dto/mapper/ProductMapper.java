@@ -5,7 +5,6 @@ import com.platform.productservice.domain.entity.Product;
 import com.platform.productservice.domain.entity.ProductMedia;
 import com.platform.productservice.domain.entity.Sku;
 import com.platform.productservice.domain.vo.CategoryId;
-import com.platform.productservice.domain.vo.Slug;
 import com.platform.productservice.dto.request.CreateProductRequest;
 import com.platform.productservice.dto.request.CreateSkuRequest;
 import com.platform.productservice.dto.request.UpdateProductRequest;
@@ -42,7 +41,7 @@ public class ProductMapper {
         Product product = new Product();
         product.setName(request.name());
         if (request.slug() != null && !request.slug().isBlank()) {
-            product.setSlug(Slug.of(request.slug()));
+            product.setSlug(request.slug());
         }
         product.setDescription(request.description());
         if (request.categoryId() != null && !request.categoryId().isBlank()) {
@@ -50,7 +49,6 @@ public class ProductMapper {
         }
         product.setAttributes(request.attributes() != null ? request.attributes() : new HashMap<>());
         product.setSkus(toSkuList(request.skus(), product));
-        product.setMedia(toMediaList(request.media()));
         return product;
     }
 
@@ -59,7 +57,7 @@ public class ProductMapper {
 
         if (request.name() != null) product.setName(request.name());
         if (request.slug() != null && !request.slug().isBlank()) {
-            product.setSlug(Slug.of(request.slug()));
+            product.setSlug(request.slug());
         }
         if (request.description() != null) product.setDescription(request.description());
         if (request.categoryId() != null && !request.categoryId().isBlank()) {
@@ -90,17 +88,10 @@ public class ProductMapper {
                     .collect(Collectors.toList());
         }
 
-        List<MediaResponse> mediaResponses = null;
-        if (product.getMedia() != null) {
-            mediaResponses = product.getMedia().stream()
-                    .map(this::toMediaResponse)
-                    .collect(Collectors.toList());
-        }
-
         return new ProductResponse(
                 product.getId() != null ? product.getId().getValue() : null,
                 product.getName(),
-                product.getSlug() != null ? product.getSlug().getValue() : null,
+                product.getSlug(),
                 product.getDescription(),
                 product.getCategoryId() != null ? product.getCategoryId().getValue() : null,
                 categoryName,
@@ -109,7 +100,7 @@ public class ProductMapper {
                 product.isAdminHidden(),
                 product.getAttributes(),
                 skuResponses,
-                mediaResponses,
+                null,
                 product.getCreatedAt(),
                 product.getUpdatedAt()
         );
@@ -131,7 +122,7 @@ public class ProductMapper {
         return new ProductResponse(
                 product.getId() != null ? product.getId().getValue() : null,
                 product.getName(),
-                product.getSlug() != null ? product.getSlug().getValue() : null,
+                product.getSlug(),
                 product.getDescription(),
                 product.getCategoryId() != null ? product.getCategoryId().getValue() : null,
                 categoryName,

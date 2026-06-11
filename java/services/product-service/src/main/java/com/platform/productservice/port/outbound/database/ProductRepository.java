@@ -3,7 +3,6 @@ package com.platform.productservice.port.outbound.database;
 import com.platform.productservice.domain.entity.Product;
 import com.platform.productservice.domain.vo.CategoryId;
 import com.platform.productservice.domain.vo.ProductId;
-import com.platform.productservice.domain.vo.Slug;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -16,9 +15,9 @@ public interface ProductRepository {
 
     Optional<Product> findById(ProductId id);
 
-    Optional<Product> findBySlug(Slug slug);
+    Optional<Product> findBySlug(String slug);
 
-    boolean existsBySlug(Slug slug);
+    boolean existsBySlug(String slug);
 
     Page<Product> findByCategoryId(CategoryId categoryId, Pageable pageable);
 

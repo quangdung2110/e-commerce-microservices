@@ -72,7 +72,7 @@ public class GrpcProtoMapper {
                 .setProductStatus(product != null && product.getStatus() != null ? product.getStatus().name() : "")
                 .setIsAvailable(sku.isAvailable())
                 .setIsDeleted(sku.isDeleted() || (product != null && product.isDeleted()))
-                .setDisplayQuantity(sku.getDisplayQuantity())
+                .setDisplayQuantity(sku.getDisplayQuantity() != null ? sku.getDisplayQuantity() : 0)
                 .setLastInventorySyncAt(sku.getLastInventorySyncAt());
 
         if (sku.getVariantAttributes() != null) {
@@ -82,13 +82,6 @@ public class GrpcProtoMapper {
                             e -> e.getValue() != null ? String.valueOf(e.getValue()) : ""
                     ));
             builder.putAllVariantAttributes(stringAttrs);
-        }
-
-        if (product != null && product.getMedia() != null && !product.getMedia().isEmpty()) {
-            var firstMedia = product.getMedia().get(0);
-            if (firstMedia.getUrl() != null) {
-                builder.setMainImageUrl(firstMedia.getUrl());
-            }
         }
 
         return builder.build();

@@ -127,7 +127,7 @@ public class Product {
         if (skus == null) return 0;
         return skus.stream()
                 .filter(sku -> !sku.isDeleted())
-                .mapToInt(Sku::getDisplayQuantity)
+                .mapToInt(sku -> sku.getDisplayQuantity() != null ? sku.getDisplayQuantity() : 0)
                 .sum();
     }
 

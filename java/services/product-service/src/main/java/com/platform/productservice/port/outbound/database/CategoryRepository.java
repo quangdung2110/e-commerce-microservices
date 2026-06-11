@@ -2,7 +2,6 @@ package com.platform.productservice.port.outbound.database;
 
 import com.platform.productservice.domain.entity.Category;
 import com.platform.productservice.domain.vo.CategoryId;
-import com.platform.productservice.domain.vo.Slug;
 
 import java.util.List;
 import java.util.Optional;
@@ -13,9 +12,9 @@ public interface CategoryRepository {
 
     Optional<Category> findById(CategoryId id);
 
-    Optional<Category> findBySlug(Slug slug);
+    Optional<Category> findBySlug(String slug);
 
-    boolean existsBySlug(Slug slug);
+    boolean existsBySlug(String slug);
 
     List<Category> findChildren(CategoryId parentId);
 

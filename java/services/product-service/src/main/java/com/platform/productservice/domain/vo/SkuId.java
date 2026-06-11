@@ -51,6 +51,6 @@ public final class SkuId implements Serializable {
     }
 
     private static String ulid() {
-        return com.github.f4b6a3.ulid.UlidCreator.getUlid().create().toString();
+        return com.github.f4b6a3.ulid.UlidCreator.getUlid().toString();
     }
 }

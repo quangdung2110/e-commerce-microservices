@@ -9,7 +9,7 @@ import java.math.RoundingMode;
  * Pure domain service for markdown price calculation.
  * Contains no infrastructure dependencies.
  */
-@DomainService
+@DomainServiceMarker
 public class MarkdownCalculator {
 
     private static final int SCALE = 2;

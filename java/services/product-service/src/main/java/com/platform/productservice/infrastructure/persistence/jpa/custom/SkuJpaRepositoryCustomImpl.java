@@ -1,18 +1,17 @@
 package com.platform.productservice.infrastructure.persistence.jpa.custom;
 
+import com.platform.productservice.infrastructure.persistence.jpa.spring.SkuJpaRepositoryCustom;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
-import org.springframework.stereotype.Repository;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-@Repository
-public class SkuJpaRepositoryImpl implements SkuJpaRepositoryCustom {
+public class SkuJpaRepositoryCustomImpl implements SkuJpaRepositoryCustom {
 
     @PersistenceContext
     private EntityManager em;

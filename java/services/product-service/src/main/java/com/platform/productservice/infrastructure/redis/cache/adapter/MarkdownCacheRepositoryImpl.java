@@ -4,9 +4,10 @@ import com.platform.productservice.infrastructure.redis.RedisKeyBuilder;
 import com.platform.productservice.infrastructure.redis.cache.model.MarkdownCacheEntry;
 import com.platform.productservice.port.outbound.cache.MarkdownCacheRepository;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -25,22 +26,19 @@ public class MarkdownCacheRepositoryImpl implements MarkdownCacheRepository {
 
     private final RedisTemplate<String, String> redisTemplate;
     private final RedisKeyBuilder keyBuilder;
-    private final RedisCommands<String, String> redisCommands;
 
     public MarkdownCacheRepositoryImpl(
             RedisTemplate<String, String> redisTemplate,
-            RedisKeyBuilder keyBuilder,
-            RedisCommands<String, String> redisCommands) {
+            RedisKeyBuilder keyBuilder) {
         this.redisTemplate = redisTemplate;
         this.keyBuilder = keyBuilder;
-        this.redisCommands = redisCommands;
     }
 
     @Override
     public Optional<MarkdownCacheEntry> findBySkuId(String skuId) {
         try {
             String key = keyBuilder.markdownActive(skuId);
-            String json = redisCommands.get(key);
+            String json = redisTemplate.opsForValue().get(key);
             if (json == null || json.isBlank()) {
                 return Optional.empty();
             }
@@ -75,7 +73,7 @@ public class MarkdownCacheRepositoryImpl implements MarkdownCacheRepository {
     public void delete(String skuId) {
         try {
             String key = keyBuilder.markdownActive(skuId);
-            redisCommands.del(key);
+            redisTemplate.delete(key);
         } catch (RedisException e) {
             log.error("Redis error deleting markdown cache entry: skuId={}", skuId, e);
         }
@@ -87,12 +85,13 @@ public class MarkdownCacheRepositoryImpl implements MarkdownCacheRepository {
             return;
         }
         try {
-            String[] keys = skuIds.stream()
+            byte[][] keys = skuIds.stream()
                     .map(keyBuilder::markdownActive)
-                    .toArray(String[]::new);
-            redisTemplate.executePipelined((connection) -> {
-                for (String key : keys) {
-                    connection.del(key.getBytes());
+                    .map(String::getBytes)
+                    .toArray(byte[][]::new);
+            redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
+                for (byte[] key : keys) {
+                    connection.del(key);
                 }
                 return null;
             });

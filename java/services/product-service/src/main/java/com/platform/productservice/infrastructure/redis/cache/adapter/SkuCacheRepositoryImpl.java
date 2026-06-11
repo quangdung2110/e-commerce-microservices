@@ -5,10 +5,10 @@ import com.platform.productservice.infrastructure.redis.RedisKeyBuilder;
 import com.platform.productservice.infrastructure.redis.cache.model.SkuCacheEntry;
 import com.platform.productservice.port.outbound.cache.SkuCacheRepository;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -31,24 +31,21 @@ public class SkuCacheRepositoryImpl implements SkuCacheRepository {
     private final RedisTemplate<String, String> redisTemplate;
     private final RedisKeyBuilder keyBuilder;
     private final ObjectMapper objectMapper;
-    private final RedisCommands<String, String> redisCommands;
 
     public SkuCacheRepositoryImpl(
             RedisTemplate<String, String> redisTemplate,
             RedisKeyBuilder keyBuilder,
-            ObjectMapper objectMapper,
-            RedisConnectionFactory connectionFactory) {
+            ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
         this.keyBuilder = keyBuilder;
         this.objectMapper = objectMapper;
-        this.redisCommands = connectionFactory.getConnection().sync();
     }
 
     @Override
     public Optional<SkuCacheEntry> findById(String skuId) {
         try {
             String key = keyBuilder.sku(skuId);
-            String json = redisCommands.get(key);
+            String json = redisTemplate.opsForValue().get(key);
             if (json == null || json.isBlank()) {
                 return Optional.empty();
             }
@@ -74,7 +71,7 @@ public class SkuCacheRepositoryImpl implements SkuCacheRepository {
     public void delete(String skuId) {
         try {
             String key = keyBuilder.sku(skuId);
-            redisCommands.del(key);
+            redisTemplate.delete(key);
         } catch (RedisException e) {
             log.error("Redis error deleting SKU cache entry: skuId={}", skuId, e);
         }
@@ -102,7 +99,19 @@ public class SkuCacheRepositoryImpl implements SkuCacheRepository {
             String[] keys = skuIds.stream()
                     .map(keyBuilder::sku)
                     .toArray(String[]::new);
-            List<String> jsons = redisCommands.mget(keys);
+            byte[][] byteKeys = new byte[keys.length][];
+            for (int i = 0; i < keys.length; i++) {
+                byteKeys[i] = keys[i].getBytes();
+            }
+            List<String> jsons = redisTemplate.execute((RedisCallback<List<String>>) connection -> {
+                @SuppressWarnings("unchecked")
+                List<byte[]> byteResults = (List<byte[]>) (List<?>) connection.mGet(byteKeys);
+                List<String> jsonList = new ArrayList<>(byteResults.size());
+                for (Object result : byteResults) {
+                    jsonList.add(result != null ? new String((byte[]) result) : null);
+                }
+                return jsonList;
+            });
             List<SkuCacheEntry> results = new ArrayList<>(skuIds.size());
             for (String json : jsons) {
                 results.add(SkuCacheEntry.fromJson(json));
@@ -114,55 +123,63 @@ public class SkuCacheRepositoryImpl implements SkuCacheRepository {
         }
     }
 
-        @Override
-        public Map<String, SkuCacheEntry> findByIdsAsMap(List<String> skuIds) {
-            if (skuIds == null || skuIds.isEmpty()) {
-                return Map.of();
-            }
-            try {
-                String[] keys = skuIds.stream()
-                        .map(keyBuilder::sku)
-                        .toArray(String[]::new);
-                List<String> jsons = redisCommands.mget(keys);
-                Map<String, SkuCacheEntry> result = new HashMap<>();
-                for (int i = 0; i < skuIds.size(); i++) {
-                    SkuCacheEntry entry = SkuCacheEntry.fromJson(jsons.get(i));
-                    if (entry != null) {
-                        result.put(skuIds.get(i), entry);
-                    }
-                }
-                return result;
-            } catch (RedisException e) {
-                log.error("Redis error batch finding SKU cache entries as map: count={}", skuIds.size(), e);
-                return Map.of();
-            }
+    @Override
+    public Map<String, SkuCacheEntry> findByIdsAsMap(List<String> skuIds) {
+        if (skuIds == null || skuIds.isEmpty()) {
+            return Map.of();
         }
-
-        @Override
-        public void saveBatch(List<SkuCacheEntry> entries, Duration ttl) {
-            if (entries == null || entries.isEmpty()) {
-                return;
+        try {
+            String[] keys = skuIds.stream()
+                    .map(keyBuilder::sku)
+                    .toArray(String[]::new);
+            byte[][] byteKeys = new byte[keys.length][];
+            for (int i = 0; i < keys.length; i++) {
+                byteKeys[i] = keys[i].getBytes();
             }
-            try {
-                var async = redisCommands.getStatefulConnection().async();
-                List<io.lettuce.core.RedisFuture<?>> futures = new ArrayList<>(entries.size() * 2);
+            List<String> jsons = redisTemplate.execute((RedisCallback<List<String>>) connection -> {
+                @SuppressWarnings("unchecked")
+                List<byte[]> byteResults = (List<byte[]>) (List<?>) connection.mGet(byteKeys);
+                List<String> jsonList = new ArrayList<>(byteResults.size());
+                for (Object result : byteResults) {
+                    jsonList.add(result != null ? new String((byte[]) result) : null);
+                }
+                return jsonList;
+            });
+            Map<String, SkuCacheEntry> result = new HashMap<>();
+            for (int i = 0; i < skuIds.size(); i++) {
+                String json = jsons.get(i);
+                SkuCacheEntry entry = SkuCacheEntry.fromJson(json);
+                if (entry != null) {
+                    result.put(skuIds.get(i), entry);
+                }
+            }
+            return result;
+        } catch (RedisException e) {
+            log.error("Redis error batch finding SKU cache entries as map: count={}", skuIds.size(), e);
+            return Map.of();
+        }
+    }
 
+    @Override
+    public void saveBatch(List<SkuCacheEntry> entries, Duration ttl) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        try {
+            redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
                 for (SkuCacheEntry entry : entries) {
                     String key = keyBuilder.sku(entry.getSkuId());
-                    String json = entry.toJson();
-                    futures.add(async.set(key, json));
-                    futures.add(async.expire(key, ttl.getSeconds()));
+                    byte[] keyBytes = key.getBytes();
+                    byte[] valueBytes = entry.toJson().getBytes();
+                    connection.set(keyBytes, valueBytes);
+                    connection.expire(keyBytes, ttl.getSeconds());
                 }
-
-                // Block until all commands complete in a single network round-trip
-                for (io.lettuce.core.RedisFuture<?> future : futures) {
-                    future.get();
-                }
-
-                log.debug("Redis pipeline saveBatch completed: entries={}", entries.size());
-            } catch (Exception e) {
-                log.error("Redis pipeline error during saveBatch: count={}", entries.size(), e);
-                throw new RedisException("Redis pipeline saveBatch failed", e);
-            }
+                return null;
+            });
+            log.debug("Redis pipeline saveBatch completed: entries={}", entries.size());
+        } catch (Exception e) {
+            log.error("Redis pipeline error during saveBatch: count={}", entries.size(), e);
+            throw new RedisException("Redis pipeline saveBatch failed", e);
         }
+    }
 }

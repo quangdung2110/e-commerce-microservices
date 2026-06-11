@@ -13,10 +13,10 @@ import com.platform.productservice.port.outbound.cache.SkuCacheRepository;
 import com.platform.productservice.port.outbound.database.ProductRepository;
 import com.platform.productservice.port.outbound.database.SkuRepository;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -59,7 +59,7 @@ public class ProductSkuReadService {
     private final ProductJpaMapper productJpaMapper;
     private final DistributedLockRepository distributedLockRepository;
     private final RedisKeyBuilder redisKeyBuilder;
-    private final RedisConnectionFactory redisConnectionFactory;
+    private final RedisTemplate<String, String> redisTemplate;
 
     public ProductSkuReadService(
             SkuCacheRepository skuCacheRepository,
@@ -69,7 +69,7 @@ public class ProductSkuReadService {
             ProductJpaMapper productJpaMapper,
             DistributedLockRepository distributedLockRepository,
             RedisKeyBuilder redisKeyBuilder,
-            RedisConnectionFactory redisConnectionFactory) {
+            RedisTemplate<String, String> redisTemplate) {
         this.skuCacheRepository = skuCacheRepository;
         this.skuRepository = skuRepository;
         this.productRepository = productRepository;
@@ -77,7 +77,7 @@ public class ProductSkuReadService {
         this.productJpaMapper = productJpaMapper;
         this.distributedLockRepository = distributedLockRepository;
         this.redisKeyBuilder = redisKeyBuilder;
-        this.redisConnectionFactory = redisConnectionFactory;
+        this.redisTemplate = redisTemplate;
     }
 
     /**
@@ -145,8 +145,7 @@ public class ProductSkuReadService {
     private boolean shouldRefreshEarly(SkuCacheEntry entry, String skuId) {
         try {
             String key = redisKeyBuilder.sku(skuId);
-            RedisCommands<String, String> commands = redisConnectionFactory.getConnection().sync();
-            Long ttl = commands.ttl(key);
+            Long ttl = redisTemplate.getExpire(key);
 
             if (ttl == null || ttl < 0) {
                 return true;

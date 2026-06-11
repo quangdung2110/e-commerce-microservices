@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -27,7 +28,7 @@ public interface ProductJpaRepository extends JpaRepository<ProductJpaEntity, St
 
     List<ProductJpaEntity> findByCategoryIdAndStatus(String categoryId, String status);
 
-    List<ProductJpaEntity> findByIdIn(List<String> ids);
+    List<ProductJpaEntity> findByProductIdIn(List<String> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT p FROM ProductJpaEntity p WHERE p.productId = :id")
@@ -36,4 +37,8 @@ public interface ProductJpaRepository extends JpaRepository<ProductJpaEntity, St
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query(value = "SELECT * FROM products WHERE product_id = :id FOR NO KEY UPDATE", nativeQuery = true)
     Optional<ProductJpaEntity> findByIdForNoKeyUpdate(@Param("id") String id);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE ProductJpaEntity p SET p.status = 'HIDDEN', p.adminHidden = true WHERE p.productId IN :ids AND p.isDeleted = false")
+    int hideProductsByIds(@Param("ids") List<String> ids);
 }

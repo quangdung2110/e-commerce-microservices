@@ -20,15 +20,15 @@ public interface SkuJpaRepository extends JpaRepository<SkuJpaEntity, String> {
 
     List<SkuJpaEntity> findByProductId(String productId);
 
-    List<SkuJpaEntity> findByProductIdAndDeletedFalse(String productId);
+    List<SkuJpaEntity> findByProductIdAndIsDeletedFalse(String productId);
 
-    List<SkuJpaEntity> findByIdIn(List<String> ids);
+    List<SkuJpaEntity> findBySkuIdIn(List<String> ids);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM SkuJpaEntity s WHERE s.skuId = :id")
     Optional<SkuJpaEntity> findWithLockById(@Param("id") String id);
 
-    Optional<SkuJpaEntity> findByIdAndDeletedFalse(String id);
+    Optional<SkuJpaEntity> findBySkuIdAndIsDeletedFalse(String id);
 
     @Query("SELECT s FROM SkuJpaEntity s WHERE s.productId IN :productIds AND s.isDeleted = false")
     List<SkuJpaEntity> findActiveByProductIds(@Param("productIds") List<String> productIds);

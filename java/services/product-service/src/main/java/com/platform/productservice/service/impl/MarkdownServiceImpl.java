@@ -14,7 +14,7 @@ import com.platform.productservice.domain.service.MarkdownCalculator;
 import com.platform.productservice.domain.vo.ProductId;
 import com.platform.productservice.domain.vo.SkuId;
 import com.platform.productservice.infrastructure.redis.cache.model.MarkdownCacheEntry;
-import com.platform.productservice.port.inbound.MarkdownApplication;
+import com.platform.productservice.port.inbound.MarkdownServicePort.MarkdownApplication;
 import com.platform.productservice.port.inbound.MarkdownServicePort;
 import com.platform.productservice.port.outbound.cache.DistributedLockRepository;
 import com.platform.productservice.port.outbound.cache.MarkdownCacheRepository;
@@ -220,7 +220,12 @@ public class MarkdownServiceImpl implements MarkdownServicePort {
             Sku sku = skuRepository.findByIdForUpdate(markdown.getSkuId()).orElse(null);
             if (sku == null) continue;
 
-            BigDecimal calculatedPrice = markdownCalculator.recalculatePrice(sku.getOriginalPrice());
+            BigDecimal calculatedPrice = markdownCalculator.calculate(
+                    sku.getOriginalPrice(),
+                    markdown.getDiscountType(),
+                    markdown.getDiscountValue(),
+                    markdown.getMaxDiscountAmount()
+            );
             sku.setPromotionalPrice(calculatedPrice);
             sku.setUpdatedAt(LocalDateTime.now());
             Sku savedSku = skuRepository.save(sku);

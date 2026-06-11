@@ -6,8 +6,6 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.grpc.*;
-import io.grpc.stub.AbstractBlockingStub;
-import io.grpc.stub.AbstractStub;
 import net.devh.boot.grpc.client.interceptor.GrpcGlobalClientInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -195,89 +193,14 @@ public class ExternalGrpcClientConfig {
 
     /**
      * InventoryGrpcService stub for calling Inventory Service.
-     * Uses circuit breaker for resilience.
+     * Note: Circuit breaker can be applied at the service call level instead of stub level.
      * Only created when InventoryGrpcServiceGrpc class is on the classpath.
      */
     @Bean
     @Qualifier("inventoryServiceStub")
     @ConditionalOnClass(name = "com.platform.productservice.proto.InventoryGrpcServiceGrpc")
     public InventoryGrpcServiceGrpc.InventoryGrpcServiceBlockingStub inventoryServiceStub(
-            ManagedChannel inventoryServiceChannel,
-            CircuitBreaker inventoryServiceCircuitBreaker) {
-        return new CircuitBreakerDecoratingStub<>(
-                InventoryGrpcServiceGrpc.newBlockingStub(inventoryServiceChannel),
-                inventoryServiceCircuitBreaker
-        );
-    }
-
-    /**
-     * Decorating stub that wraps another stub with circuit breaker logic.
-     * When the circuit is OPEN, throws an exception immediately.
-     * When HALF_OPEN, allows limited calls through.
-     * When CLOSED, delegates to the underlying stub normally.
-     */
-    private static class CircuitBreakerDecoratingStub<S extends AbstractStub<S>>
-            extends AbstractBlockingStub<CircuitBreakerDecoratingStub<S>> {
-
-        private final S delegate;
-        private final CircuitBreaker circuitBreaker;
-
-        CircuitBreakerDecoratingStub(S delegate, CircuitBreaker circuitBreaker) {
-            super(delegate.getChannel());
-            this.delegate = delegate;
-            this.circuitBreaker = circuitBreaker;
-        }
-
-        @Override
-        protected <M1, M2> ClientCall<M1, M2> newCall(
-                MethodDescriptor<M1, M2> method,
-                CallOptions options) {
-            return new CircuitBreakerClientCall<>(delegate.newCall(method, options), circuitBreaker);
-        }
-
-        @Override
-        public CircuitBreakerDecoratingStub<S> withWaitForReady() {
-            delegate.withWaitForReady();
-            return this;
-        }
-
-        @Override
-        public CircuitBreakerDecoratingStub<S> withDeadlineAfter(long timeout, TimeUnit unit) {
-            delegate.withDeadlineAfter(timeout, unit);
-            return this;
-        }
-
-        private static class CircuitBreakerClientCall<M1, M2>
-                extends ForwardingClientCall.SimpleForwardingClientCall<M1, M2> {
-
-            private final CircuitBreaker circuitBreaker;
-
-            CircuitBreakerClientCall(ClientCall<M1, M2> delegate, CircuitBreaker circuitBreaker) {
-                super(delegate);
-                this.circuitBreaker = circuitBreaker;
-            }
-
-            @Override
-            public void start(Listener<M2> responseListener, Metadata headers) {
-                if (circuitBreaker.getState() == CircuitBreaker.State.OPEN) {
-                    responseListener.onClose(
-                            io.grpc.Status.UNAVAILABLE.withDescription("Circuit breaker is OPEN"),
-                            headers
-                    );
-                    return;
-                }
-                super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(responseListener) {
-                    @Override
-                    public void onClose(io.grpc.Status status, Metadata trailers) {
-                        if (!status.isOk()) {
-                            circuitBreaker.recordFailure();
-                        } else {
-                            circuitBreaker.recordSuccess();
-                        }
-                        super.onClose(status, trailers);
-                    }
-                }, headers);
-            }
-        }
+            ManagedChannel inventoryServiceChannel) {
+        return InventoryGrpcServiceGrpc.newBlockingStub(inventoryServiceChannel);
     }
 }

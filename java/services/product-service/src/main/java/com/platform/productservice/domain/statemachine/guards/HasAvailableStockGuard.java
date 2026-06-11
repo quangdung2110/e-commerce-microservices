@@ -40,7 +40,7 @@ public class HasAvailableStockGuard implements Guard<ProductState, ProductEvent>
         if (product.getSkus() != null && !product.getSkus().isEmpty()) {
             int totalQuantity = product.getSkus().stream()
                     .filter(sku -> !sku.isDeleted())
-                    .mapToInt(sku -> sku.getDisplayQuantity())
+                    .mapToInt(sku -> sku.getDisplayQuantity() != null ? sku.getDisplayQuantity() : 0)
                     .sum();
 
             if (totalQuantity > 0) {

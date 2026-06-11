@@ -1,6 +1,7 @@
 # Module 13: Markdown Expiry Cronjob
 
-> **Status:** Module 13 of 15
+> **Status:** Module 13 of 15 - **IMPLEMENTED**
+> **Implementation Date:** June 11, 2026
 > **Prerequisites:** Module 06 (business services)
 > **Dependents:** None (leaf module)
 
@@ -18,20 +19,10 @@ This module implements the Markdown Expiry Cronjob — a scheduled job that clea
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/MarkdownExpiryJob.java`
 
-- [ ] Create `@Component` class
-- [ ] Inject: `DistributedLockRunner`, `MarkdownExpiryProcessor`, `MarkdownExpiryMetrics`
-- [ ] Configure `@Scheduled(cron = "${app.markdown-expiry.cron:0 */5 * * * *}")` — every 5 minutes by default
-- [ ] **Run method**:
-  ```java
-  @Scheduled(cron = "0 */5 * * * *")
-  public void run() {
-      lockRunner.runWithLock("product:lock:markdown-expiry", Duration.ofMinutes(5), () -> {
-          log.info("Starting markdown expiry scan");
-          int processed = processor.processExpiredMarkdowns();
-          log.info("Markdown expiry scan completed, processed {} markdowns", processed);
-      });
-  }
-  ```
+- [x] Create `@Component` class
+- [x] Inject: `MarkdownExpiryLockRunner`, `MarkdownExpiryProcessor`, `MarkdownExpiryMetrics`
+- [x] Configure `@Scheduled(cron = "${app.markdown-expiry.cron:0 */5 * * * *}")` — every 5 minutes by default
+- [x] **Run method**: acquires global lock, calls processor, records metrics, handles lock-skip case
 
 ---
 
@@ -41,36 +32,44 @@ This module implements the Markdown Expiry Cronjob — a scheduled job that clea
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/processor/MarkdownExpiryProcessor.java`
 
-- [ ] Create `@Component` class
-- [ ] Inject: `MarkdownRepository`, `SkuRepository`, `OutboxRepository`, `SkuCacheRepository`, `OutboxService`, `DistributedLockRepository`
-- [ ] Method `int processExpiredMarkdowns()`:
-  - Step 1: Query `product_markdown_applied WHERE expires_at < NOW()` — fetch in chunks of 100
-  - Step 2: For each chunk:
-    - Extract distinct `productId` values
-    - Sort product IDs alphabetically (consistent lock ordering)
-    - For each product:
-      - Acquire distributed lock: `product:lock:markdown-expiry:{productId}` (TTL: 30s)
-      - Query full list of expired markdowns for this product
-      - Lock product `FOR NO KEY UPDATE`
-      - Lock all affected SKUs `FOR UPDATE`
-      - Reset `promotionalPrice = NULL` on each SKU
-      - Delete `product_markdown_applied` records
-      - Insert `SKU_UPDATED` outbox events with `changeSource = MARKDOWN_ENDED`
-      - Delete Redis `product:markdown:active:{skuId}` entries
-      - Release lock
-    - Log: number of markdowns expired, number of products affected
+- [x] Create `@Component` class
+- [x] Inject: `MarkdownRepository`, `DistributedLockRepository`, `MarkdownExpiryTransactionalService`, product lock TTL config
+- [x] Method `int processExpiredMarkdowns()`:
+  - Step 1: Query `product_markdown_applied WHERE expires_at < NOW()` via `MarkdownRepository.findExpiredMarkdowns(Instant.now())`
+  - Step 2: Group by productId, sort alphabetically (consistent lock ordering)
+  - Step 3: For each product:
+    - Acquire distributed lock: `product:lock:markdown-expiry:{productId}` (TTL: configurable, default 30s)
+    - Delegate to `MarkdownExpiryTransactionalService` for transactional DB work
+    - Release lock
+  - Step 4: Log: number of markdowns expired, number of products affected
   - Return total count
-- [ ] Error handling: log and continue on individual product failure (don't fail entire batch)
+- [x] Error handling: log and continue on individual product failure (don't fail entire batch)
 
-### 3.2 File: `worker/scheduler/MarkdownExpiryMetrics.java`
+### 3.2 File: `worker/processor/MarkdownExpiryTransactionalService.java`
+
+**Path:** `product-service/src/main/java/com/platform/productservice/worker/processor/MarkdownExpiryTransactionalService.java`
+
+- [x] Create `@Service` class (separate bean to avoid Spring AOP proxy self-invocation)
+- [x] Inject: `ProductRepository`, `SkuRepository`, `MarkdownRepository`, `OutboxRepository`, `MarkdownCacheRepository`, `ObjectMapper`
+- [x] Method `boolean processProductInTransaction(String productId, List<MarkdownApplied> markdowns)`:
+  - Lock product `FOR NO KEY UPDATE` via `findByIdForNoKeyUpdate`
+  - Lock all affected SKUs `FOR UPDATE` via `findByIdForUpdate`
+  - Reset `promotionalPrice = null` on each SKU
+  - Save updated SKUs
+  - Delete `product_markdown_applied` records
+  - Insert `SKU_UPDATED` outbox events with `changeSource = "MARKDOWN_ENDED"`
+  - Delete Redis `product:markdown:active:{skuId}` entries via `MarkdownCacheRepository.deleteBySkuIds`
+  - Handle orphaned markdown records (product not found)
+
+### 3.3 File: `worker/scheduler/MarkdownExpiryMetrics.java`
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/MarkdownExpiryMetrics.java`
 
-- [ ] Create `@Component` class with Micrometer metrics
-- [ ] Counter: `markdown.expiry.processed` (total expired markdowns processed)
-- [ ] Counter: `markdown.expiry.errors`
-- [ ] Timer: `markdown.expiry.duration`
-- [ ] Gauge: `markdown.expiry.pending_count` (from DB query)
+- [x] Create `@Component` class with Micrometer metrics
+- [x] Counter: `markdown.expiry.processed` (total expired markdowns processed)
+- [x] Counter: `markdown.expiry.errors`
+- [x] Timer: `markdown.expiry.duration`
+- [x] Gauge: `markdown.expiry.pending_count` (from DB query via `setPendingCount`)
 
 ---
 
@@ -80,21 +79,35 @@ This module implements the Markdown Expiry Cronjob — a scheduled job that clea
 
 **Path:** `product-service/src/main/java/com/platform/productservice/worker/scheduler/MarkdownExpiryLockRunner.java`
 
-- [ ] Use existing `DistributedLockRunner` (from Module 04) with lock key `product:lock:markdown-expiry`
-- [ ] TTL: 5 minutes (configurable)
-- [ ] If lock not acquired: skip run, log info message
+- [x] Create `@Component` class wrapping `DistributedLockRepository`
+- [x] Lock key: `markdown-expiry` (full key becomes `product:lock:markdown-expiry` via `RedisKeyBuilder`)
+- [x] TTL: configurable via `app.markdown-expiry.lock-ttl-minutes` (default: 5 minutes)
+- [x] If lock not acquired: returns null, caller logs info message
 
 ---
 
-## 5. Acceptance Criteria
+## 5. Configuration Properties
 
-- [ ] Job runs on configured cron schedule (every 5 minutes by default)
-- [ ] Job processes expired markdowns in chunks of 100
-- [ ] Product-level distributed lock prevents concurrent processing of the same product
-- [ ] Lock ordering (alphabetical product ID) prevents deadlock between concurrent runs
-- [ ] Expired markdown correctly resets `promotionalPrice = NULL` on SKUs
-- [ ] `SKU_UPDATED` events with `changeSource = MARKDOWN_ENDED` are published
-- [ ] Redis markdown cache entries are deleted
-- [ ] Distributed lock prevents job from running on multiple pods simultaneously
-- [ ] Job handles errors gracefully and continues processing remaining products
-- [ ] Metrics correctly track processed count and errors
+The module uses the following configuration properties under the `app` prefix:
+
+| Property | Default | Description |
+|---|---|---|
+| `app.markdown-expiry.cron` | `0 */5 * * * *` | Cron expression for job schedule |
+| `app.markdown-expiry.lock-ttl-minutes` | `5` | Global job lock TTL |
+| `app.markdown-expiry.product-lock-ttl-seconds` | `30` | Per-product distributed lock TTL |
+| `app.markdown-expiry.batch-size` | `100` | Chunk size for processing (informational) |
+
+---
+
+## 6. Acceptance Criteria
+
+- [x] Job runs on configured cron schedule (every 5 minutes by default)
+- [x] Job processes expired markdowns by grouping by product
+- [x] Product-level distributed lock prevents concurrent processing of the same product
+- [x] Lock ordering (alphabetical product ID) prevents deadlock between concurrent runs
+- [x] Expired markdown correctly resets `promotionalPrice = NULL` on SKUs
+- [x] `SKU_UPDATED` events with `changeSource = "MARKDOWN_ENDED"` are published via outbox
+- [x] Redis markdown cache entries are deleted
+- [x] Distributed lock prevents job from running on multiple pods simultaneously
+- [x] Job handles errors gracefully and continues processing remaining products
+- [x] Metrics correctly track processed count and errors

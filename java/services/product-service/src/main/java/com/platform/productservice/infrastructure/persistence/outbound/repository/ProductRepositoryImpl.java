@@ -3,8 +3,7 @@ package com.platform.productservice.infrastructure.persistence.outbound.reposito
 import com.platform.productservice.domain.entity.Product;
 import com.platform.productservice.domain.vo.CategoryId;
 import com.platform.productservice.domain.vo.ProductId;
-import com.platform.productservice.domain.vo.Slug;
-import com.platform.productservice.infrastructure.persistence.jpa.custom.ProductJpaRepositoryCustom;
+import com.platform.productservice.infrastructure.persistence.jpa.spring.ProductJpaRepositoryCustom;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.ProductJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.ProductJpaMapper;
 import com.platform.productservice.port.outbound.database.ProductRepository;
@@ -46,13 +45,13 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
-    public Optional<Product> findBySlug(Slug slug) {
-        return jpaRepository.findBySlug(slug.getValue()).map(mapper::toDomain);
+    public Optional<Product> findBySlug(String slug) {
+        return jpaRepository.findBySlug(slug).map(mapper::toDomain);
     }
 
     @Override
-    public boolean existsBySlug(Slug slug) {
-        return jpaRepository.existsBySlug(slug.getValue());
+    public boolean existsBySlug(String slug) {
+        return jpaRepository.existsBySlug(slug);
     }
 
     @Override
@@ -86,7 +85,7 @@ public class ProductRepositoryImpl implements ProductRepository {
     @Override
     public List<Product> findByIdIn(List<ProductId> ids) {
         List<String> idStrings = ids.stream().map(ProductId::getValue).collect(Collectors.toList());
-        return jpaRepository.findByIdIn(idStrings).stream().map(mapper::toDomain).collect(Collectors.toList());
+        return jpaRepository.findByProductIdIn(idStrings).stream().map(mapper::toDomain).collect(Collectors.toList());
     }
 
     @Override

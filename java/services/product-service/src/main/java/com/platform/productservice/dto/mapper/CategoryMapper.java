@@ -25,7 +25,7 @@ public class CategoryMapper {
         Category category = new Category();
         category.setName(request.name());
         if (request.slug() != null && !request.slug().isBlank()) {
-            category.setSlug(Slug.of(request.slug()));
+            category.setSlug(request.slug());
         }
         if (request.parentId() != null && !request.parentId().isBlank()) {
             category.setParentId(CategoryId.of(request.parentId()));
@@ -44,7 +44,7 @@ public class CategoryMapper {
 
         if (request.name() != null) category.rename(request.name());
         if (request.slug() != null && !request.slug().isBlank()) {
-            category.setSlug(Slug.of(request.slug()));
+            category.setSlug(request.slug());
         }
         if (request.parentId() != null) {
             if (request.parentId().isBlank()) {
@@ -70,7 +70,7 @@ public class CategoryMapper {
                 category.getId() != null ? category.getId().getValue() : null,
                 category.getParentId() != null ? category.getParentId().getValue() : null,
                 category.getName(),
-                category.getSlug() != null ? category.getSlug().getValue() : null,
+                category.getSlug(),
                 category.getLevel(),
                 category.isLeaf(),
                 null,
@@ -86,7 +86,7 @@ public class CategoryMapper {
                 category.getId() != null ? category.getId().getValue() : null,
                 category.getParentId() != null ? category.getParentId().getValue() : null,
                 category.getName(),
-                category.getSlug() != null ? category.getSlug().getValue() : null,
+                category.getSlug(),
                 category.getLevel(),
                 category.isLeaf(),
                 List.of(),
@@ -120,7 +120,7 @@ public class CategoryMapper {
                 category.getId() != null ? category.getId().getValue() : null,
                 category.getParentId() != null ? category.getParentId().getValue() : null,
                 category.getName(),
-                category.getSlug() != null ? category.getSlug().getValue() : null,
+                category.getSlug(),
                 category.getLevel(),
                 category.isLeaf(),
                 childResponses != null ? childResponses : List.of(),

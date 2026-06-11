@@ -3,7 +3,6 @@ package com.platform.productservice.dto.mapper;
 import com.platform.productservice.domain.entity.ProductMedia;
 import com.platform.productservice.domain.entity.Sku;
 import com.platform.productservice.domain.vo.ProductId;
-import com.platform.productservice.domain.vo.SkuCode;
 import com.platform.productservice.domain.vo.SkuId;
 import com.platform.productservice.dto.request.CreateMediaRequest;
 import com.platform.productservice.dto.request.CreateSkuRequest;
@@ -32,9 +31,9 @@ public class SkuMapper {
         if (request == null) return null;
 
         Sku sku = new Sku();
-        sku.setSkuCode(request.skuCode() != null ? SkuCode.of(request.skuCode()) : null);
+        sku.setSkuCode(request.skuCode());
         sku.setOriginalPrice(request.originalPrice());
-        sku.setVariantAttributes(request.variantAttributes() != null ? request.variantAttributes() : new HashMap<>());
+        sku.setVariantAttributes(convertVariantAttributes(request.variantAttributes()));
         sku.initialize(productId != null ? ProductId.of(productId) : null);
         return sku;
     }
@@ -46,9 +45,9 @@ public class SkuMapper {
     public void toDomainUpdate(UpdateSkuRequest request, Sku sku) {
         if (request == null || sku == null) return;
 
-        if (request.skuCode() != null) sku.setSkuCode(SkuCode.of(request.skuCode()));
+        if (request.skuCode() != null) sku.setSkuCode(request.skuCode());
         if (request.originalPrice() != null) sku.setOriginalPrice(request.originalPrice());
-        if (request.variantAttributes() != null) sku.setVariantAttributes(request.variantAttributes());
+        if (request.variantAttributes() != null) sku.setVariantAttributes(convertVariantAttributes(request.variantAttributes()));
         sku.setUpdatedAt(java.time.LocalDateTime.now());
     }
 
@@ -67,7 +66,7 @@ public class SkuMapper {
 
         return new SkuResponse(
                 sku.getId() != null ? sku.getId().getValue() : null,
-                sku.getSkuCode() != null ? sku.getSkuCode().getValue() : null,
+                sku.getSkuCode(),
                 sku.getOriginalPrice(),
                 sku.getPromotionalPrice(),
                 sku.getBestPrice(),
@@ -110,5 +109,12 @@ public class SkuMapper {
             mediaList.add(media);
         }
         return mediaList;
+    }
+
+    private Map<String, Object> convertVariantAttributes(Map<String, String> source) {
+        if (source == null || source.isEmpty()) {
+            return new HashMap<>();
+        }
+        return new HashMap<>(source);
     }
 }

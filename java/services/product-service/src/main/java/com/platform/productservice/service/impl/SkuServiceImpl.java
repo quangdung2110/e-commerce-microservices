@@ -84,8 +84,8 @@ public class SkuServiceImpl implements SkuServicePort {
             throw new DomainException("Cannot add SKU to a deleted product: " + productId);
         }
 
-        if (sku.getSkuCode() != null && skuRepository.findBySkuCode(sku.getSkuCode()).isPresent()) {
-            throw new DomainException("Duplicate SKU code: " + sku.getSkuCode().getValue());
+        if (sku.getSkuCode() != null && skuRepository.findBySkuCode(SkuCode.of(sku.getSkuCode())).isPresent()) {
+            throw new DomainException("Duplicate SKU code: " + sku.getSkuCode());
         }
 
         SkuId generatedId = SkuId.generate();
@@ -131,9 +131,7 @@ public class SkuServiceImpl implements SkuServicePort {
         if (updatedData.getSkuCode() != null) sku.setSkuCode(updatedData.getSkuCode());
         if (updatedData.getOriginalPrice() != null) sku.setOriginalPrice(updatedData.getOriginalPrice());
         if (updatedData.getPromotionalPrice() != null) sku.setPromotionalPrice(updatedData.getPromotionalPrice());
-        if (updatedData.getDisplayQuantity() != null && updatedData.getDisplayQuantity() != sku.getDisplayQuantity()) {
-            sku.setDisplayQuantity(updatedData.getDisplayQuantity());
-        }
+        // Note: displayQuantity updates are handled via inventory sync, not SKU updates
         if (updatedData.getVariantAttributes() != null) sku.setVariantAttributes(updatedData.getVariantAttributes());
         sku.setUpdatedAt(LocalDateTime.now());
 
@@ -277,7 +275,7 @@ public class SkuServiceImpl implements SkuServicePort {
         if (updated.getPromotionalPrice() != null && !updated.getPromotionalPrice().equals(existing.getPromotionalPrice())) {
             changedFields.add("promotionalPrice");
         }
-        if (updated.getDisplayQuantity() != existing.getDisplayQuantity()) {
+        if (updated.getDisplayQuantity() != null && !updated.getDisplayQuantity().equals(existing.getDisplayQuantity())) {
             changedFields.add("displayQuantity");
         }
         if (updated.getVariantAttributes() != null && !updated.getVariantAttributes().equals(existing.getVariantAttributes())) {

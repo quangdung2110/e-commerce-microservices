@@ -59,7 +59,7 @@ public class CategoryServiceImpl implements CategoryServicePort {
         }
 
         if (category.getSlug() != null && categoryRepository.existsBySlug(category.getSlug())) {
-            throw new DomainException("Duplicate slug: " + category.getSlug().getValue());
+            throw new DomainException("Duplicate slug: " + category.getSlug());
         }
 
         category.initialize();
@@ -130,7 +130,7 @@ public class CategoryServiceImpl implements CategoryServicePort {
 
         if (updatedData.getSlug() != null && !updatedData.getSlug().equals(existing.getSlug())) {
             if (categoryRepository.existsBySlug(updatedData.getSlug())) {
-                throw new DomainException("Duplicate slug: " + updatedData.getSlug().getValue());
+                throw new DomainException("Duplicate slug: " + updatedData.getSlug());
             }
             existing.setSlug(updatedData.getSlug());
             changedFields.add("slug");

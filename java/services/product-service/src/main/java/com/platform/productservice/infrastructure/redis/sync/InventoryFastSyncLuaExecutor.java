@@ -3,11 +3,12 @@ package com.platform.productservice.infrastructure.redis.sync;
 import com.platform.productservice.infrastructure.redis.RedisKeyBuilder;
 import com.platform.productservice.infrastructure.redis.script.LuaScriptLoader;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
@@ -106,15 +107,14 @@ public class InventoryFastSyncLuaExecutor {
         try {
             DefaultRedisScript<Long> script = new DefaultRedisScript<>(scriptContent, Long.class);
             List<Object> pipelineResults = redisTemplate.executePipelined(
-                    (connection) -> {
+                    (RedisCallback<Object>) connection -> {
                         for (InventoryUpdate update : updates) {
                             String skuKey = keyBuilder.sku(update.skuId);
                             String pendingKey = keyBuilder.inventoryPending();
                             String member = keyBuilder.pendingMember(update.skuId, update.eventTimestamp);
-                            connection.lettuce().commands().eval(
-                                    scriptContent,
-                                    io.lettuce.core.ScriptOutputType.INTEGER,
-                                    new String[]{skuKey, pendingKey},
+
+                            List<String> keys = List.of(skuKey, pendingKey);
+                            List<String> args = List.of(
                                     update.skuId,
                                     String.valueOf(update.availableQuantity),
                                     String.valueOf(update.eventTimestamp),
@@ -122,6 +122,26 @@ public class InventoryFastSyncLuaExecutor {
                                     update.skuStatus,
                                     update.skuJson,
                                     member
+                            );
+
+                            byte[][] keysArray = new byte[keys.size()][];
+                            byte[][] argsArray = new byte[args.size()][];
+                            for (int i = 0; i < keys.size(); i++) {
+                                keysArray[i] = keys.get(i).getBytes(StandardCharsets.UTF_8);
+                            }
+                            for (int i = 0; i < args.size(); i++) {
+                                argsArray[i] = args.get(i).getBytes(StandardCharsets.UTF_8);
+                            }
+
+                            byte[][] allArgs = new byte[keysArray.length + argsArray.length][];
+                            System.arraycopy(keysArray, 0, allArgs, 0, keysArray.length);
+                            System.arraycopy(argsArray, 0, allArgs, keysArray.length, argsArray.length);
+
+                            connection.eval(
+                                    scriptContent.getBytes(StandardCharsets.UTF_8),
+                                    org.springframework.data.redis.connection.ReturnType.INTEGER,
+                                    2,
+                                    allArgs
                             );
                         }
                         return null;

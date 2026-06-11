@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import jakarta.annotation.Nullable;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Security configuration for gRPC server.
@@ -32,9 +33,13 @@ public class GrpcSecurityConfig {
     @Value("${grpc.security.internal-secret:change-me-in-production}")
     private String internalSecret;
 
+    @Value("${grpc.security.enabled:true}")
+    private boolean securityEnabled;
+
     /**
      * Global server interceptor that validates internal service requests.
      * Each service-to-service call must include the shared secret in metadata.
+     * Can be disabled via grpc.security.enabled=false for development/testing.
      */
     @Bean
     @GrpcGlobalServerInterceptor
@@ -47,7 +52,11 @@ public class GrpcSecurityConfig {
                     ServerCallHandler<ReqT, RespT> next) {
 
                 String methodName = call.getMethodDescriptor().getFullMethodName();
-                String serviceName = methodName.contains("/") ? methodName.split("/")[0] : methodName;
+
+                if (!securityEnabled) {
+                    log.trace("gRPC security disabled, allowing request to {}", methodName);
+                    return next.startCall(call, headers);
+                }
 
                 String providedSecret = headers.get(Metadata.Key.of(INTERNAL_SECRET_HEADER, Metadata.ASCII_STRING_MARSHALLER));
 

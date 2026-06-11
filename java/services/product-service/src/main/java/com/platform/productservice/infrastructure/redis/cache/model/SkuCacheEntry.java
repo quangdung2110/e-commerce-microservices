@@ -1,6 +1,5 @@
 package com.platform.productservice.infrastructure.redis.cache.model;
 
-import com.fasterxml.jackson.annotation.JsonNaming;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -26,7 +25,6 @@ import java.util.Map;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class SkuCacheEntry {
 
     private String skuId;
@@ -67,7 +65,7 @@ public class SkuCacheEntry {
                 .productStatus(product.getStatus().name())
                 .isAvailable(sku.isAvailable())
                 .isDeleted(sku.isDeleted() || product.isDeleted())
-                .displayQuantity(sku.getDisplayQuantity())
+                .displayQuantity(sku.getDisplayQuantity() != null ? sku.getDisplayQuantity() : 0)
                 .lastInventorySyncAt(sku.getLastInventorySyncAt())
                 .priceUpdatedAt(Instant.ofEpochMilli(sku.getLastInventorySyncAt())
                         .atOffset(ZoneOffset.UTC)
@@ -76,23 +74,20 @@ public class SkuCacheEntry {
         if (sku.getVariantAttributes() != null) {
             Map<String, String> attrs = new HashMap<>();
             for (Map.Entry<String, Object> entry : sku.getVariantAttributes().entrySet()) {
-                attrs.put(entry.getKey(), String.valueOf(entry.getValue()));
+                attrs.put(entry.getKey(), entry.getValue() != null ? entry.getValue().toString() : null);
             }
             builder.variantAttributes(attrs);
         }
 
-        try {
-            var getMedia = Product.class.getMethod("getMedia");
-            var media = getMedia.invoke(product);
-            if (media != null && media instanceof java.util.List<?> list && !list.isEmpty()) {
-                Object firstMedia = list.get(0);
-                var getUrl = firstMedia.getClass().getMethod("getUrl");
-                Object url = getUrl.invoke(firstMedia);
-                if (url != null) {
-                    builder.mainImageUrl(url.toString());
+        // Get main image from product's media list
+        if (product.getSkus() != null && !product.getSkus().isEmpty()) {
+            Sku firstSku = product.getSkus().get(0);
+            if (firstSku.getMedia() != null && !firstSku.getMedia().isEmpty()) {
+                var media = firstSku.getMedia().get(0);
+                if (media.getUrl() != null && !media.getUrl().isBlank()) {
+                    builder.mainImageUrl(media.getUrl());
                 }
             }
-        } catch (Exception ignored) {
         }
 
         return builder.build();

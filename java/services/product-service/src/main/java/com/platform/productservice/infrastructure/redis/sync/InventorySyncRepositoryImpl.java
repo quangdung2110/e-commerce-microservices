@@ -4,18 +4,14 @@ import com.platform.productservice.infrastructure.redis.RedisKeyBuilder;
 import com.platform.productservice.infrastructure.redis.cache.model.PendingSyncItem;
 import com.platform.productservice.port.outbound.cache.InventorySyncRepository;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
-import io.lettuce.core.api.sync.RedisSetCommands;
-import io.lettuce.core.api.sync.RedisSortedSetCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -43,7 +39,6 @@ public class InventorySyncRepositoryImpl implements InventorySyncRepository {
     public void addPendingSync(String skuId, long eventTimestamp, int quantity, String skuStatus) {
         try {
             String member = keyBuilder.pendingMember(skuId, eventTimestamp);
-            // Store metadata as JSON in a separate hash for retrieval
             String metaKey = pendingKey + ":meta:" + member;
             PendingSyncItem item = PendingSyncItem.builder()
                     .skuId(skuId)
@@ -52,7 +47,6 @@ public class InventorySyncRepositoryImpl implements InventorySyncRepository {
                     .skuStatus(skuStatus)
                     .build();
             redisTemplate.opsForValue().set(metaKey, item.toJson());
-            // ZADD to pending queue with score = eventTimestamp
             redisTemplate.opsForZSet().add(pendingKey, member, eventTimestamp);
             log.debug("Added pending sync: skuId={}, timestamp={}, quantity={}", skuId, eventTimestamp, quantity);
         } catch (RedisException e) {
@@ -64,16 +58,15 @@ public class InventorySyncRepositoryImpl implements InventorySyncRepository {
     public List<PendingSyncItem> drainPendingSync(int limit) {
         try {
             List<PendingSyncItem> items = new ArrayList<>();
-            Set<io.lettuce.core.ScoredValue<String>> results =
+            Set<ZSetOperations.TypedTuple<String>> results =
                     redisTemplate.opsForZSet().popMin(pendingKey, limit);
             if (results == null || results.isEmpty()) {
                 return items;
             }
-            for (io.lettuce.core.ScoredValue<String> sv : results) {
-                String member = sv.getValue();
+            for (ZSetOperations.TypedTuple<String> tuple : results) {
+                String member = tuple.getValue();
                 PendingSyncItem item = PendingSyncItem.fromMemberString(member);
                 if (item != null) {
-                    // Restore additional fields from metadata hash
                     String metaKey = pendingKey + ":meta:" + member;
                     String metaJson = redisTemplate.opsForValue().get(metaKey);
                     if (metaJson != null && !metaJson.isBlank()) {

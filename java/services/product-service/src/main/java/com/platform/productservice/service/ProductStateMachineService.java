@@ -104,7 +104,9 @@ public class ProductStateMachineService {
                     .setHeader("productId", productId.getValue())
                     .build();
 
-            org.springframework.statemachine.StateMachineEventResult<ProductEvent> result =
+            @SuppressWarnings("unchecked")
+            org.springframework.statemachine.StateMachineEventResult<ProductState, ProductEvent> result =
+                    (org.springframework.statemachine.StateMachineEventResult<ProductState, ProductEvent>)
                     sm.sendEvent(Mono.just(message)).blockLast();
 
             boolean success = result != null && result.getResultType()
@@ -115,9 +117,10 @@ public class ProductStateMachineService {
                         sm.getExtendedState().get("product", Product.class);
 
                 ProductState from = sm.getState().getId();
+                ProductState to = ProductState.fromString(updatedProduct.getStatus().name());
                 log.info("sendEvent: product {} transitioned {} -> {} via event {}",
-                        productId.getValue(), from, updatedProduct.getStatus().name(), event.name());
-                return TransitionResult.accepted(event, from, updatedProduct.getStatus(), updatedProduct);
+                        productId.getValue(), from, to.name(), event.name());
+                return TransitionResult.accepted(event, from, to, updatedProduct);
             } else {
                 String error = (String) sm.getExtendedState().getVariables().get("guardError");
                 return TransitionResult.rejected(event, error != null ? error : "Transition rejected by guard");
@@ -166,7 +169,9 @@ public class ProductStateMachineService {
                     .withPayload(event)
                     .build();
 
-            org.springframework.statemachine.StateMachineEventResult<ProductEvent> result =
+            @SuppressWarnings("unchecked")
+            org.springframework.statemachine.StateMachineEventResult<ProductState, ProductEvent> result =
+                    (org.springframework.statemachine.StateMachineEventResult<ProductState, ProductEvent>)
                     sm.sendEvent(Mono.just(message)).blockLast();
 
             return result != null && result.getResultType()

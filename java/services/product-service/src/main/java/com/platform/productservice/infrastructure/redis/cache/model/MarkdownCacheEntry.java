@@ -1,6 +1,6 @@
 package com.platform.productservice.infrastructure.redis.cache.model;
 
-import com.fasterxml.jackson.annotation.JsonNaming;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;

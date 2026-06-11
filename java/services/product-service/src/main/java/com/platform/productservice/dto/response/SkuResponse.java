@@ -19,7 +19,7 @@ public record SkuResponse(
         BigDecimal bestPrice,
         boolean hasPromotion,
         String status,
-        int displayQuantity,
+        Integer displayQuantity,
         Map<String, Object> variantAttributes,
         List<MediaResponse> media,
         LocalDateTime createdAt,

@@ -1,6 +1,6 @@
 package com.platform.productservice.infrastructure.redis.cache.model;
 
-import com.fasterxml.jackson.annotation.JsonNaming;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -25,6 +25,9 @@ public class PendingSyncItem {
     private long eventTimestamp;
     private int availableQuantity;
     private String skuStatus;
+
+    @Builder.Default
+    private int retryCount = 0;
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);

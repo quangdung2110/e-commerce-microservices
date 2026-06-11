@@ -61,13 +61,13 @@ public class SkuRepositoryImpl implements SkuRepository {
 
     @Override
     public Optional<Sku> findByIdAndNotDeleted(SkuId id) {
-        return jpaRepository.findByIdAndDeletedFalse(id.getValue()).map(mapper::toDomain);
+        return jpaRepository.findBySkuIdAndIsDeletedFalse(id.getValue()).map(mapper::toDomain);
     }
 
     @Override
     public List<Sku> findByIds(List<SkuId> ids) {
         List<String> idStrings = ids.stream().map(SkuId::getValue).collect(Collectors.toList());
-        return jpaRepository.findByIdIn(idStrings).stream().map(mapper::toDomain).collect(Collectors.toList());
+        return jpaRepository.findBySkuIdIn(idStrings).stream().map(mapper::toDomain).collect(Collectors.toList());
     }
 
     @Override

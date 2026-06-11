@@ -1,4 +1,4 @@
-package com.platform.productservice.infrastructure.persistence.jpa.custom;
+package com.platform.productservice.infrastructure.persistence.jpa.spring;
 
 import com.platform.productservice.infrastructure.persistence.entity.ProductJpaEntity;
 import org.springframework.data.domain.Page;

@@ -1,14 +1,12 @@
-package com.platform.productservice.infrastructure.persistence.jpa.custom;
+package com.platform.productservice.infrastructure.persistence.jpa.spring;
 
 import com.platform.productservice.infrastructure.persistence.entity.CategoryJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
 import java.util.List;
 
-@Repository
 public class CategoryJpaRepositoryImpl implements CategoryJpaRepositoryCustom {
 
     @PersistenceContext
@@ -94,7 +92,7 @@ public class CategoryJpaRepositoryImpl implements CategoryJpaRepositoryCustom {
             e.setParentId((String) row[1]);
             e.setName((String) row[2]);
             e.setSlug((String) row[3]);
-            e.setLevel((Number) row[4]);
+            e.setLevel(((Number) row[4]).intValue());
             e.setIsLeaf((Boolean) row[5]);
             e.setCreatedAt(((java.sql.Timestamp) row[6]).toLocalDateTime());
             e.setUpdatedAt(((java.sql.Timestamp) row[7]).toLocalDateTime());

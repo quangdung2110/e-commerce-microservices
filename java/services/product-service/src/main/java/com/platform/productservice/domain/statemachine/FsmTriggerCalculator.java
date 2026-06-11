@@ -3,7 +3,7 @@ package com.platform.productservice.domain.statemachine;
 import com.platform.productservice.domain.entity.Product;
 import com.platform.productservice.domain.entity.Sku;
 import com.platform.productservice.domain.enums.ProductStatus;
-import com.platform.productservice.domain.service.DomainService;
+import com.platform.productservice.domain.service.DomainServiceMarker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,7 +23,7 @@ import java.util.Optional;
  *       -> return AUTO_REACTIVATE_IN_STOCK</li>
  * </ul>
  */
-@DomainService
+@DomainServiceMarker
 public class FsmTriggerCalculator {
 
     private static final Logger log = LoggerFactory.getLogger(FsmTriggerCalculator.class);
@@ -43,11 +43,17 @@ public class FsmTriggerCalculator {
 
         boolean allOutOfStock = skus == null || skus.stream()
                 .filter(sku -> !sku.isDeleted())
-                .allMatch(sku -> sku.getDisplayQuantity() <= 0);
+                .allMatch(sku -> {
+                    Integer qty = sku.getDisplayQuantity();
+                    return qty != null && qty <= 0;
+                });
 
         boolean anyInStock = skus != null && skus.stream()
                 .filter(sku -> !sku.isDeleted())
-                .anyMatch(sku -> sku.getDisplayQuantity() > 0);
+                .anyMatch(sku -> {
+                    Integer qty = sku.getDisplayQuantity();
+                    return qty != null && qty > 0;
+                });
 
         if (allOutOfStock
                 && product.getStatus() == ProductStatus.ACTIVE

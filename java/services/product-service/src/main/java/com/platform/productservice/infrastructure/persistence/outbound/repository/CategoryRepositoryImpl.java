@@ -2,7 +2,6 @@ package com.platform.productservice.infrastructure.persistence.outbound.reposito
 
 import com.platform.productservice.domain.entity.Category;
 import com.platform.productservice.domain.vo.CategoryId;
-import com.platform.productservice.domain.vo.Slug;
 import com.platform.productservice.infrastructure.persistence.jpa.spring.CategoryJpaRepository;
 import com.platform.productservice.infrastructure.persistence.outbound.mapper.CategoryJpaMapper;
 import com.platform.productservice.port.outbound.database.CategoryRepository;
@@ -38,13 +37,13 @@ public class CategoryRepositoryImpl implements CategoryRepository {
     }
 
     @Override
-    public Optional<Category> findBySlug(Slug slug) {
-        return jpaRepository.findBySlug(slug.getValue()).map(mapper::toDomain);
+    public Optional<Category> findBySlug(String slug) {
+        return jpaRepository.findBySlug(slug).map(mapper::toDomain);
     }
 
     @Override
-    public boolean existsBySlug(Slug slug) {
-        return jpaRepository.existsBySlug(slug.getValue());
+    public boolean existsBySlug(String slug) {
+        return jpaRepository.existsBySlug(slug);
     }
 
     @Override

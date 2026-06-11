@@ -3,7 +3,7 @@ package com.platform.productservice.infrastructure.redis.lock;
 import com.platform.productservice.infrastructure.redis.RedisKeyBuilder;
 import com.platform.productservice.port.outbound.cache.DistributedLockRepository;
 import io.lettuce.core.RedisException;
-import io.lettuce.core.api.sync.RedisCommands;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;

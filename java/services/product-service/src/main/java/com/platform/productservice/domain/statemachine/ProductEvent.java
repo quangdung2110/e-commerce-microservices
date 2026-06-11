@@ -1,13 +1,11 @@
 package com.platform.productservice.domain.statemachine;
 
-import org.springframework.statemachine.StateMachineEvent;
-
 import java.util.Arrays;
 
 /**
  * Product lifecycle events that trigger state transitions.
  */
-public enum ProductEvent implements StateMachineEvent<String, String> {
+public enum ProductEvent {
 
     SUBMIT,
     HIDE,
@@ -15,7 +13,6 @@ public enum ProductEvent implements StateMachineEvent<String, String> {
     AUTO_HIDE_OUT_OF_STOCK,
     AUTO_REACTIVATE_IN_STOCK;
 
-    @Override
     public String getEventId() {
         return name();
     }
@@ -35,7 +32,7 @@ public enum ProductEvent implements StateMachineEvent<String, String> {
     }
 
     public static ProductEvent fromString(String value) {
-        if (value == null || value.isBlank()) {
+        if (value == null || isBlank(value)) {
             throw new IllegalArgumentException("Event value must not be blank");
         }
         return Arrays.stream(values())
@@ -44,5 +41,9 @@ public enum ProductEvent implements StateMachineEvent<String, String> {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Unknown product event: " + value + ". Valid values: " +
                         Arrays.toString(values())));
+    }
+
+    private static boolean isBlank(String str) {
+        return str == null || str.trim().isEmpty();
     }
 }

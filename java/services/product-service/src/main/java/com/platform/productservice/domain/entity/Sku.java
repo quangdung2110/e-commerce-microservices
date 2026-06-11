@@ -24,7 +24,7 @@ public class Sku {
     private SkuStatus status;
     private boolean isDeleted;
     private LocalDateTime deletedAt;
-    private int displayQuantity;
+    private Integer displayQuantity;
     private long lastInventorySyncAt;
     private java.util.Map<String, Object> variantAttributes;
     private java.util.List<ProductMedia> media;
@@ -95,7 +95,7 @@ public class Sku {
     public SkuStatus getStatus() { return status; }
     public boolean isDeleted() { return isDeleted; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
-    public int getDisplayQuantity() { return displayQuantity; }
+    public Integer getDisplayQuantity() { return displayQuantity; }
     public long getLastInventorySyncAt() { return lastInventorySyncAt; }
     public java.util.Map<String, Object> getVariantAttributes() { return variantAttributes; }
     public java.util.List<ProductMedia> getMedia() { return media; }
@@ -110,7 +110,7 @@ public class Sku {
     public void setStatus(SkuStatus status) { this.status = status; }
     public void setDeleted(boolean deleted) { isDeleted = deleted; }
     public void setDeletedAt(LocalDateTime deletedAt) { this.deletedAt = deletedAt; }
-    public void setDisplayQuantity(int displayQuantity) { this.displayQuantity = displayQuantity; }
+    public void setDisplayQuantity(Integer displayQuantity) { this.displayQuantity = displayQuantity; }
     public void setLastInventorySyncAt(long lastInventorySyncAt) { this.lastInventorySyncAt = lastInventorySyncAt; }
     public void setVariantAttributes(java.util.Map<String, Object> variantAttributes) {
         this.variantAttributes = variantAttributes != null ? variantAttributes : new java.util.HashMap<>();

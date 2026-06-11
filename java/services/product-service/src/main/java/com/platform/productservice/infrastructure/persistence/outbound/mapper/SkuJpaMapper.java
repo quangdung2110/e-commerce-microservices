@@ -60,19 +60,15 @@ public class SkuJpaMapper {
         return entity;
     }
 
-    private Map<String, Object> deserializeJson(Object data) {
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> deserializeJson(Map<String, Object> data) {
         if (data == null) return new HashMap<>();
-        if (data instanceof Map) {
-            return objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {});
-        }
-        return new HashMap<>();
+        return new HashMap<>(data);
     }
 
-    private Map<String, Object> serializeToMap(Object data) {
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> serializeToMap(Map<String, Object> data) {
         if (data == null) return new HashMap<>();
-        if (data instanceof Map) {
-            return objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {});
-        }
-        return new HashMap<>();
+        return new HashMap<>(data);
     }
 }
