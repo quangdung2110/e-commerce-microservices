@@ -21,12 +21,12 @@ Tài liệu này định nghĩa SLI/SLO, metrics và alerting tối thiểu đ�
 7. `ledger_consumer_lag`
 8. `inventory_reconcile_drift_ratio`
 9. `inventory_reservation_expiry_rate`
-10. `suspended_events_backlog`
+10. `inventory_suspended_skus_total` (Redis key count)
 
 ## 2. SLO Targets
 
 | Capability | Target |
-|---|---|
+|:---|:---|
 | Reserve API | p95 <= 60ms, success >= 99.9% |
 | Deduct API | p99 <= 120ms, success >= 99.95% |
 | Release API | p95 <= 120ms, success >= 99.5% |
@@ -73,12 +73,10 @@ Tài liệu này định nghĩa SLI/SLO, metrics và alerting tối thiểu đ�
 - `inventory_negative_available_detected_total`
 - `inventory_negative_reserved_detected_total`
 
-### 3.5 Recovery/parking lot metrics
+### 3.5 Recovery/parking lot metrics (Redis-based)
 
-- `inventory_suspended_skus_total`
-- `inventory_suspended_events_parked_total`
-- `inventory_suspended_events_recovered_total`
-- `inventory_dlq_unresolved_total`
+- `inventory_suspended_skus_total` — số Redis keys `inventory:suspended:*`
+- `inventory_failed_events_parked_total` — số entries trong `inventory:failed:*` streams
 
 ## 4. Alert Rules
 
@@ -87,7 +85,7 @@ Tài liệu này định nghĩa SLI/SLO, metrics và alerting tối thiểu đ�
 3. `inventory_stream_relay_lag_seconds > 30` trong 10 phút -> high.
 4. `ledger_consumer_lag > 20000` trong 10 phút -> high.
 5. `inventory_lua_invariant_drift_total` tăng liên tục -> high.
-6. `suspended_events_backlog > 1000` trong 30 phút -> high.
+6. `inventory_suspended_skus_total > 100` trong 30 phút -> high.
 7. `inventory_reconcile_drift_ratio > 0.5%` sau mỗi kỳ reconcile -> critical.
 
 ## 5. Tracing Contract
@@ -114,6 +112,6 @@ Span bắt buộc:
 
 1. Sự cố lag Kafka relay.
 2. Sự cố drift Redis/DB.
-3. Sự cố parked events tăng đột biến.
+3. Sự cố suspended SKU tăng đột biến.
 4. Sự cố reserve thất bại hàng loạt.
 5. Sự cố deduct underflow/invariant breach.

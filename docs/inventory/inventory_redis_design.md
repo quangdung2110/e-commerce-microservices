@@ -17,10 +17,11 @@ Tài liệu này mô tả lớp Redis của Inventory Service: cấu trúc key, 
 2. Chống duplicate request và replay bằng idempotency key theo item.
 3. Mọi biến động tồn kho nóng phải có event tương ứng được append atomically.
 4. Không dùng DB lock trong đường nóng checkout/order.
+5. Poison handling (SKU suspension + failed event parking) được xử lý hoàn toàn trên Redis.
 
 ## 2. Cấu trúc key Redis
 
-## 2.1. Key tồn kho vật lý theo kho (nguồn commit nóng)
+### 2.1. Key tồn kho vật lý theo kho (nguồn commit nóng)
 
 * Key pattern: `inventory:physic:{sku_id:warehouse_id}:stock`
 * Ví dụ: `inventory:physic:{sku-001:5}:stock`
@@ -31,7 +32,7 @@ Tài liệu này mô tả lớp Redis của Inventory Service: cấu trúc key, 
   * `available`
   * `updated_at_ms`
 
-## 2.2. Key tồn kho logic (aggregate read model)
+### 2.2. Key tồn kho logic (aggregate read model)
 
 * Key pattern: `inventory:logic:{sku_id}:stock`
 * Ví dụ: `inventory:logic:{sku-001}:stock`
@@ -44,19 +45,47 @@ Tài liệu này mô tả lớp Redis của Inventory Service: cấu trúc key, 
 
 > `inventory:logic:*` là read model phục vụ query/preview, không phải commit source cho Reserve/Deduct/Release.
 
-## 2.3. Idempotency keys (per item)
+### 2.3. Idempotency keys (per item)
 
 * Reserve: `inventory:idemp:reserve:{sku_id:warehouse_id}:order:{order_id}`
 * Release: `inventory:idemp:release:{sku_id:warehouse_id}:order:{order_id}`
 * Deduct: `inventory:idemp:deduct:{sku_id:warehouse_id}:order:{order_id}`
 
-TTL khuyến nghị cho idempotency key: 30 ngày.
+TTL khuyến nghị: 30 ngày.
 
-## 2.4. Redis Stream Outbox keys
+### 2.4. Redis Stream Outbox keys
 
 * Key pattern: `inventory:stream:{sku_id:warehouse_id}:events`
 * Ví dụ: `inventory:stream:{sku-001:5}:events`
 * Mỗi Lua script append `XADD` vào stream này khi và chỉ khi mutation được apply mới.
+
+### 2.5. SKU Suspension Keys (thay thế `suspended_sku_locks`)
+
+* Key pattern: `inventory:suspended:{sku_id:warehouse_id}`
+* Ví dụ: `inventory:suspended:{sku-001:5}`
+* Type: Hash
+* Fields:
+  * `lock_reason` — lý do suspend (VD: `INVARIANT_DRIFT`)
+  * `locked_at` — epoch_ms thời điểm lock
+  * `status` — `SUSPENDED` / `UNLOCKED`
+* TTL: 24 giờ (auto-cleanup nếu không có human intervention)
+* Check: Lua script kiểm tra `EXISTS` trước khi mutate
+
+### 2.6. Failed Events Stream (thay thế `dlq_events` + `suspended_events`)
+
+* Key pattern: `inventory:failed:{sku_id:warehouse_id}:events`
+* Ví dụ: `inventory:failed:{sku-001:5}:events`
+* Type: Redis Stream
+* Mỗi entry chứa:
+  * `event_type` — loại event gốc
+  * `event_payload` — JSON payload
+  * `failure_reason` — `DLQ` | `SKU_SUSPENDED`
+  * `id` — Kafka message ID gốc
+  * `parked_at` — epoch_ms
+* TTL: 7 ngày (auto-cleanup)
+* Recovery: Suspended Events Recovery Worker đọc stream này và replay
+
+> **Một Redis Stream duy nhất** thay thế 2 bảng PostgreSQL (`dlq_events`, `suspended_events`). `failure_reason` phân biệt event thuộc DLQ hay chỉ bị park مؤقتí vì SKU đang suspend.
 
 ---
 
@@ -74,13 +103,13 @@ TTL khuyến nghị cho idempotency key: 30 ngày.
 **Runbook bắt buộc khi nhận `-1`:**
 1. Dừng xử lý request hiện tại ngay lập tức.
 2. Không retry nóng và không auto-rollback mù quáng trên SKU lỗi.
-3. Đặt khóa `suspended_sku_locks` cho SKU liên quan để chặn mutate tiếp theo.
-4. Phát alert + tạo reconciliation task; chỉ mở khóa sau khi đã đối soát Redis/DB và xác nhận invariant khôi phục.
+3. Đặt Redis key `inventory:suspended:{sku_id:warehouse_id}` với TTL 24h.
+4. `XADD` event lỗi vào Redis Stream `inventory:failed:{sku_id:warehouse_id}:events` với `failure_reason=DLQ`.
+5. Phát alert vận hành; chỉ mở khóa sau khi đã đối soát Redis/DB và xác nhận invariant khôi phục.
 
 > Boundary quyết định: mutate nóng chỉ diễn ra trên key `inventory:physic:{sku_id:warehouse_id}:stock`. Key `inventory:logic:{sku_id}:stock` là read model tổng hợp và phải được cập nhật qua worker/reconciliation, không dùng làm commit source cho Reserve/Deduct/Release.
 
-<a id="script-1-thuật-toán-khóa-giữ-chỗ-reserve-inventory"></a>
-### Script 1: Thuật toán khóa giữ chỗ Reserve Inventory
+### Script 1: Reserve Inventory
 
 **Ngữ cảnh:** `ReserveInventoryActivity` (pre-payment).
 
@@ -102,6 +131,7 @@ TTL khuyến nghị cho idempotency key: 30 ngày.
 6. Trả `1`.
 
 **Pseudo Lua:**
+
 ```lua
 if redis.call('SETNX', KEYS[2], '1') == 0 then
   return 2
@@ -122,8 +152,7 @@ redis.call('XADD', KEYS[3], '*', 'event_type', 'INVENTORY_RESERVED', 'payload', 
 return 1
 ```
 
-<a id="script-2-hủy-đơn--hoàn-hàng-timeout-release--rollback-reservation"></a>
-### Script 2: Hủy đơn / Hoàn timeout (Release / Rollback Reservation)
+### Script 2: Release / Rollback Reservation
 
 **Ngữ cảnh:** `RollbackInventoryActivity` hoặc Reservation Expiry Scanner.
 
@@ -145,6 +174,7 @@ return 1
 6. Trả `1`.
 
 **Pseudo Lua:**
+
 ```lua
 if redis.call('SETNX', KEYS[2], '1') == 0 then
   return 2
@@ -165,8 +195,7 @@ redis.call('XADD', KEYS[3], '*', 'event_type', 'INVENTORY_RELEASED', 'payload', 
 return 1
 ```
 
-<a id="script-3-xác-nhận-bán-đứt--tiền-trao-cháo-múc-commit-deduct"></a>
-### Script 3: Xác nhận bán đứt (Commit Deduct)
+### Script 3: Deduct Inventory (Commit)
 
 **Ngữ cảnh:** `DeductInventoryActivity` sau payment success.
 
@@ -190,6 +219,7 @@ return 1
 8. Trả `1`.
 
 **Pseudo Lua:**
+
 ```lua
 if redis.call('SETNX', KEYS[2], '1') == 0 then
   return 2
@@ -239,11 +269,18 @@ return 1
 3. `total >= 0`
 4. `available + reserved == total`
 
+---
+
 ## 5. Reconciliation & self-healing
 
 1. Job định kỳ (5-15 phút) so sánh Redis với PostgreSQL snapshot cho cả logical và physical.
 2. Nếu lệch vượt ngưỡng -> ưu tiên PostgreSQL làm chuẩn và rebuild Redis.
 3. Mọi lần rebuild phải ghi metric và audit log.
+4. **Recovery Worker** kiểm tra Redis Stream `inventory:failed:*` theo `failure_reason`:
+   - `DLQ`: cần human review trước khi replay
+   - `SKU_SUSPENDED`: replay tự động khi Redis suspension key hết hạn
+
+---
 
 ## 6. Observability
 
@@ -255,14 +292,20 @@ return 1
 * `inventory_lua_invariant_drift_total`
 * `inventory_stream_outbox_pending_total`
 * `inventory_stream_relay_lag_seconds`
+* `inventory_suspended_skus_total` (đếm Redis keys `inventory:suspended:*`)
+* `inventory_failed_events_parked_total` (đếm entries trong `inventory:failed:*`)
+
+---
 
 ## 7. Lưu ý triển khai Redis Cluster
 
 1. `KEYS[1]`, `KEYS[2]`, `KEYS[3]` phải cùng hash slot.
-2. Áp dụng hash-tag thống nhất theo `{sku_id:warehouse_id}` cho stock/idemp/stream key.
+2. Áp dụng hash-tag thống nhất theo `{sku_id:warehouse_id}` cho stock/idemp/stream/suspended/failed key.
 3. Không đưa key global khác slot vào Lua.
 
 Ví dụ key hợp lệ cùng slot:
 * `inventory:physic:{sku-001:5}:stock`
 * `inventory:idemp:reserve:{sku-001:5}:order:10001`
 * `inventory:stream:{sku-001:5}:events`
+* `inventory:suspended:{sku-001:5}`
+* `inventory:failed:{sku-001:5}:events`

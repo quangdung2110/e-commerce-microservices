@@ -1,152 +1,322 @@
-# Inventory Service - Danh Sách Background Workers & Jobs
+# Inventory Service - Background Workers & Jobs
 
 **Liên kết nhanh (Related Documents):**
 * [Database & Cache Schema](inventory_db_design.md)
 * [Redis Caching & Lua Scripts](inventory_redis_design.md)
 * [Events Structure & Kafka Topics](inventory_events.md)
-* [Workflows (API & Data Flow)](inventory_workflow.md)
+* [Internal Data Flow](inventory_workflow.md)
 * [Observability & SLO](inventory_observability_slo.md)
 
 ---
 
 Inventory Service chạy các workers tập trung vào event relay, ghi sổ cái, recovery và đồng bộ cache.
 
-## 1. Redis Stream Relay Worker (Core Ingress Worker)
+---
+
+## 1. Redis Stream Relay Worker
 
 **Loại hình:** Background worker chạy liên tục.
 **Redis Stream Consumer Group:** `inventory-stream-relay`
 
-**Sứ mệnh:** Đọc events từ Redis Stream Outbox và forward sang Kafka `t.inventory.events`.
+### Sứ mệnh
 
-1. Đọc stream key `inventory:stream:{sku_id:warehouse_id}:events`.
-2. Parse payload + gán CloudEvents header.
-3. Produce Kafka với key = `sku_id`.
-4. Ack stream entry khi produce thành công.
-5. Retry/backoff khi Kafka lỗi.
-
-> Worker này là cầu nối bắt buộc để biến mutation Redis thành Kafka event mà không mất atomicity.
-
----
-
-## 2. Kafka Ledger Worker (Core Persistence Worker)
-
-**Loại hình:** Kafka Consumer chạy liên tục.
-**Consumer Group:** `inventory-ledger-writer`
-**Consume Topic:** `t.inventory.events`
-
-**Sứ mệnh:** Ghi `inventory_ledger`, cập nhật `inventory_reservations`, cập nhật aggregate inventory và tạo `inventory_outbox` cho `INVENTORY_QUANTITY_CHANGED`.
+Đọc events từ Redis Stream Outbox và forward sang Kafka `t.inventory.commands`. Worker này là cầu nối bắt buộc để biến mutation Redis thành Kafka event mà không mất atomicity.
 
 ### Luồng xử lý
 
-1. `poll(100ms)` lấy batch.
-2. Dedup bằng `inventory_event_idempotency` theo `event_id`.
-3. Group by `sku_id`.
-4. Nếu SKU đang `SUSPENDED` -> park vào `suspended_events`.
-5. Tính toán balance trong RAM.
-6. Bulk insert `inventory_ledger`.
-7. Update `inventory_reservations`:
-   - `INVENTORY_RESERVED` -> upsert `RESERVED`.
-   - `INVENTORY_DEDUCTED` -> `DEDUCTED`.
-   - `INVENTORY_RELEASED` -> `CANCELLED`.
-8. Update `physical_inventory.reserved_quantity` và `logical_inventory` aggregate.
-9. Insert `inventory_outbox` (`INVENTORY_QUANTITY_CHANGED`) cùng transaction.
+```
+1. READ  stream key inventory:stream:{sku_id:warehouse_id}:events
+2. PARSE payload + gán CloudEvents header
+3. PRODUCE Kafka topic=t.inventory.commands, key=sku_id
+4. XACK  stream entry khi produce thành công
+5. RETRY backoff khi Kafka lỗi
+```
+
+### Chi tiết cơ chế
+
+- Lua script (Reserve/Deduct/Release) thực hiện `XADD` vào stream cùng slot với stock hash, đảm bảo atomic: mutation Redis đã apply VÀ event đã được queue trong cùng một Lua execution.
+- Relay Worker đọc stream và produce lên Kafka. Kafka key = `sku_id` để đảm bảo ordering per-SKU.
+- Khi Kafka produce thất bại, Worker retry với exponential backoff cho đến khi thành công hoặc đạt max retry.
+
+### Metric cần theo dõi
+
+- `inventory_stream_relay_lag_seconds` — độ trễ từ khi event được XADD đến khi được produce lên Kafka
+- `inventory_stream_relay_success_total` — số event produce thành công
+- `inventory_stream_relay_failed_total` — số event produce thất bại
 
 ---
 
-## 3. Debezium CDC Connector (Thay thế Outbox Polling Worker)
+## 2. Kafka Ledger Worker
 
-**Loại hình:** Kafka Connect Source Connector (Đọc Real-time dưới tầng Đĩa cứng).
+**Loại hình:** Kafka Consumer chạy liên tục.
+**Consumer Group:** `inventory-ledger-writer`
+**Consume Topic:** `t.inventory.commands`
+**Poll Interval:** 100ms
 
-**Sứ mệnh:** Chuyển Event đã sinh ra từ bảng `inventory_outbox` sang Kafka Topic (`t.inventory.events`) với độ trễ < 5ms thông qua luồng bắt Read-Log (Write-Ahead-Log).
+### Sứ mệnh
 
-**Chi tiết luồng hoạt động:**
-1. Khi Worker nội bộ có tạo mới Event (Ví dụ `INVENTORY_QUANTITY_CHANGED`), nó đồng thời Insert Record vào bảng `inventory_outbox` (với UUID `event_id`). DB cập nhật WAL dưới ổ cứng.
-2. Debezium Connector gắn qua cổng Logical_Replication_Slot tiến hành đọc stream tự động, không chiếm dụng tài nguyên CPU cấp Application.
-3. **[CRITICAL Kafka Routing]:** Debezium trích xuất giá trị cột `partition_key` (có thể là `sku_id` hoặc `order_id` tuỳ event type) làm Kafka Message Key. Hệ thống tuyệt đối không bóc JSON payload ở tầng Connect.
-4. Retry/DLQ được xử lý 100% tại Kafka Connect, không dùng logic Polling/Update trạng thái db.
+Ghi `inventory_ledger`, cập nhật `inventory_reservations`, cập nhật aggregate inventory và tạo `inventory_outbox` cho `INVENTORY_QUANTITY_CHANGED`.
+
+### Luồng xử lý chi tiết
+
+```
+1. poll(100ms) lấy batch messages từ Kafka
+2. Dedup: kiểm tra Redis idempotency keys + inventory_refund_scopes.idempotency_key
+3. Group messages by sku_id
+4. Với mỗi sku_id:
+   a. Kiểm tra Redis key inventory:suspended:{sku_id:warehouse_id}
+      Nếu tồn tại (SKU đang SUSPENDED):
+        XADD vào inventory:failed:{sku_id:warehouse_id}:events
+        CONTINUE (skip SKU này)
+   b. Fetch base balance từ inventory_ledger (bản ghi cuối cùng theo sku_id)
+   c. Tính running balance trong RAM theo thứ tự event
+5. Bulk INSERT inventory_ledger (reference_type phân theo event_type)
+6. Bulk UPDATE inventory_reservations:
+   - INVENTORY_RESERVED  -> upsert row mới, status=RESERVED
+   - INVENTORY_DEDUCTED  -> UPDATE status='DEDUCTED'
+   - INVENTORY_RELEASED  -> UPDATE status='CANCELLED'
+7. Bulk UPDATE physical_inventory.reserved_quantity (per warehouse)
+8. Bulk UPDATE logical_inventory aggregate (total_quantity, reserved_quantity)
+9. Bulk INSERT inventory_outbox
+   event_type='INVENTORY_QUANTITY_CHANGED'
+   partition_key=sku_id
+   payload chứa: sku_id, product_id, available_quantity, previous_available_quantity
+10. PostgreSQL Transaction COMMIT (tất cả bước 5-9 trong cùng 1 transaction)
+```
+
+### Cơ chế idempotency
+
+- Redis Lua script đã chặn duplicate ở tầng hot path (trả mã `2` cho idempotent hit).
+- Ledger Worker dùng `inventory_refund_scopes.idempotency_key` làm lớp bảo vệ thứ hai cho luồng return (đã gộp từ `inventory_event_idempotency`).
+
+### Poison handling trong batch (Redis-based)
+
+- Nếu toàn bộ batch fail: chia nhỏ bằng binary split (logarithmic) để xác định event gây lỗi.
+- Event gây lỗi: `XADD` vào Redis Stream `inventory:failed:{sku_id:warehouse_id}:events` với `failure_reason=DLQ`.
+- SKU đặt vào Redis: `SET inventory:suspended:{sku_id:warehouse_id}` TTL=24h.
+- Event đi sau cùng SKU trong batch: `XADD` vào Redis Stream failed với `failure_reason=SKU_SUSPENDED`.
 
 ---
 
-## 4. Suspended Events Recovery Worker (CronJob)
+## 3. Debezium CDC Connector
+
+**Loại hình:** Kafka Connect Source Connector (đọc WAL — Write-Ahead Log).
+
+### Sứ mệnh
+
+Chuyển event từ bảng `inventory_outbox` sang Kafka Topic (`t.inventory.events`) với độ trễ < 5ms, hoàn toàn offload khỏi PostgreSQL application.
+
+### Luồng hoạt động
+
+```
+1. APPLICATION: Ledger Worker INSERT record vào inventory_outbox
+   (UUID event_id, aggregate_type, event_type, partition_key, payload, created_at)
+   DB ghi WAL dưới ổ cứng
+2. DEBEZIUM: Connector gắn qua Logical Replication Slot
+   Tiến hành đọc WAL stream TỰ ĐỘNG, không chiếm dụng tài nguyên CPU cấp Application
+3. ROUTING: Debezium trích xuất giá trị cột partition_key
+   (sku_id cho INVENTORY_QUANTITY_CHANGED, order_id cho INVENTORY_RETURN_RECEIVED_ALL)
+   làm Kafka Message Key
+   Hệ thống tuyệt đối KHÔNG bóc JSON payload ở tầng Connect
+4. KAFKA: Produce message lên t.inventory.events
+   partition được xác định bởi message key đã extract ở bước 3
+5. RETRY/DLQ: 100% xử lý tại Kafka Connect runtime
+   Không dùng logic Polling/Update trạng thái db
+```
+
+### Tại sao không dùng polling?
+
+- Polling tốn CPU application liên tục để SELECT + UPDATE status.
+- CDC đọc WAL trực tiếp từ storage engine — zero additional load trên PostgreSQL.
+- Event được publish ngay khi WAL flush, độ trễ < 5ms so với polling 100ms+.
+
+---
+
+## 4. Suspended Events Recovery Worker
 
 **Loại hình:** CronJob mỗi 5 phút.
 
-1. Quét `suspended_events WHERE status = 'PARKED'`.
-2. Kiểm tra `dlq_events` của SKU còn `UNRESOLVED` không.
-3. Nếu đã resolve -> replay qua pipeline Ledger Worker.
-4. Update `suspended_events.status = 'RECOVERED'` và unlock `suspended_sku_locks`.
+### Sứ mệnh
+
+Replay các event đã bị park trong Redis Stream `inventory:failed:*` khi SKU được un-suspend (TTL expired hoặc unlock thủ công).
+
+### Luồng xử lý
+
+```
+1. SCAN inventory:suspended:* keys
+   -- Tìm các SKU đang bị suspend
+2. Với mỗi suspended key:
+   a. Kiểm tra TTL:
+      - Nếu TTL đã hết (Redis tự động xóa key):
+        XREADBLOCKING inventory:failed:{sku_id:warehouse_id}:events
+        Replay event qua Kafka t.inventory.commands
+        DEL inventory:suspended:{sku_id:warehouse_id} (nếu key còn)
+      - Nếu TTL còn: CONTINUE (chờ)
+   b. Kiểm tra failure_reason của entry đầu tiên:
+      - DLQ: chờ human review, KHÔNG auto-replay
+      - SKU_SUSPENDED: auto-replay khi key expired
+3. Với trường hợp unlock thủ công:
+   DEL inventory:suspended:{sku_id:warehouse_id}
+   THEN XREAD + replay như bước 2a
+```
+
+### Metric cần theo dõi
+
+- `inventory_suspended_skus_total` — số Redis keys `inventory:suspended:*`
+- `inventory_failed_events_parked_total` — số entries trong `inventory:failed:*` streams
 
 ---
 
-## 5. Redis Cache Warm-Up Worker (Startup + CronJob)
+## 5. Redis Cache Warm-Up Worker
 
-**Loại hình:** chạy khi service khởi động + cron hàng ngày.
+**Loại hình:** Chạy khi service khởi động + cron hàng ngày.
 
-**Mục tiêu:** Nạp nóng cả logical và physical cache.
+### Sứ mệnh
 
-1. Load `logical_inventory` -> `inventory:logic:{sku_id}:stock`.
-2. Load `physical_inventory` -> `inventory:physic:{sku_id:warehouse_id}:stock`.
-3. Với hot SKU, build bucket keys cho read-path.
+Nạp nóng cả logical và physical cache từ PostgreSQL lên Redis để đảm bảo hot path luôn có data sẵn sàng.
+
+### Luồng xử lý
+
+```
+1. SELECT sku_id, total_quantity, reserved_quantity, available_quantity
+   FROM logical_inventory ORDER BY updated_at DESC
+2. Với mỗi logical record:
+   HMSET inventory:logic:{sku_id}:stock
+     total, reserved, available, updated_at_ms
+3. SELECT sku_id, warehouse_id, actual_quantity, reserved_quantity, available_quantity
+   FROM physical_inventory ORDER BY updated_at DESC
+4. Với mỗi physical record:
+   HMSET inventory:physic:{sku_id:warehouse_id}:stock
+     total, reserved, available, updated_at_ms
+5. Với hot SKU: build bucket keys cho read-path
+```
 
 ---
 
-## 5.1. Product Mapping Sync Worker
+## 6. Product Mapping Sync Worker
 
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `inventory-product-mapping-sync`
 **Consume Topic:** `t.product.events`
 
-**Sứ mệnh:** Đồng bộ bảng `sku_product_mapping` để Inventory luôn enrich đúng `product_id` khi phát event/outbox mà không phải gọi runtime sang Product Service.
+### Sứ mệnh
 
-1. Consume sự kiện thay đổi SKU/Product từ Product Service.
-2. Upsert `sku_product_mapping (sku_id, product_id, source_version, updated_at)` theo version tăng dần.
-3. Nếu detect out-of-order version, bỏ qua update cũ và ghi metric drift.
+Đồng bộ bảng `sku_product_mapping` để Inventory luôn enrich đúng `product_id` khi phát event/outbox mà không phải gọi runtime sang Product Service.
+
+### Luồng xử lý
+
+```
+1. Consume sự kiện thay đổi SKU/Product từ Product Service
+2. Parse payload: {sku_id, product_id, version}
+3. INSERT INTO sku_product_mapping ... ON CONFLICT DO UPDATE
+   WHERE EXCLUDED.source_version > sku_product_mapping.source_version
+4. Nếu version cũ hơn: bỏ qua + ghi metric drift
+```
 
 ---
 
-## 6. Reservation Expiry Scanner (CronJob)
+## 7. Reservation Expiry Scanner
 
 **Loại hình:** CronJob mỗi 2 phút.
 
-**Mục tiêu:** Giải phóng reservation quá hạn không bị deduct/cancel.
+### Sứ mệnh
 
-```sql
-SELECT * FROM inventory_reservations
-WHERE status = 'RESERVED'
-  AND expires_at + INTERVAL '60 seconds' < NOW()
-LIMIT 100
-FOR UPDATE SKIP LOCKED;
+Giải phóng reservation quá hạn không bị deduct/cancel.
+
+### Luồng xử lý
+
 ```
-
-Xử lý mỗi row:
-1. Gọi Release Lua script (reason = `RESERVATION_EXPIRED`).
-2. Lua trả `1` -> event `INVENTORY_RELEASED` vào stream.
-3. Update reservation `CANCELLED`.
+1. SELECT FROM inventory_reservations
+   WHERE status = 'RESERVED'
+     AND expires_at + INTERVAL '60 seconds' < NOW()
+   LIMIT 100 FOR UPDATE SKIP LOCKED
+2. Với mỗi expired reservation:
+   a. Gọi Lua Script 2 (Release)
+   b. Lua trả 1 -> event INVENTORY_RELEASED đã XADD vào stream
+   c. UPDATE inventory_reservations SET status = 'CANCELLED'
+   d. Relay Worker -> Kafka -> Ledger Worker ghi ledger
+```
 
 ---
 
-## 7. Stock Reconciliation Worker (Weekly CronJob)
+## 8. Stock Reconciliation Worker
 
 **Loại hình:** CronJob hàng tuần.
 
-1. So khớp logical + physical giữa Redis và PostgreSQL.
-2. Nếu drift -> ưu tiên DB làm chuẩn, rebuild cache.
-3. Ghi metric drift + alert.
+### Sứ mệnh
+
+Phát hiện và tự động khắc phục drift giữa Redis cache và PostgreSQL source of truth.
+
+### Luồng xử lý
+
+```
+1. SELECT FROM physical_inventory
+2. So sánh Redis vs DB: actual_quantity, reserved_quantity
+3. Nếu drift > threshold: ưu tiên DB làm chuẩn, rebuild Redis cache
+4. Tương tự với logical_inventory vs inventory:logic:*:stock
+5. Ghi báo cáo drift metrics
+```
 
 ---
 
-## 8. Hot SKU Flag Manager (CronJob + Real-time)
+## 9. Hot SKU Flag Manager
 
 **Loại hình:** Cron mỗi 10 phút + trigger real-time.
 
-1. Auto-flag hot SKU theo ngưỡng `reserved/total`.
-2. Sync flag vào Redis + L1 cache.
-3. Unflag khi traffic giảm.
+### Sứ mệnh
+
+Auto-flag hot SKU để ưu tiên xử lý và tối ưu routing.
+
+### Luồng xử lý
+
+```
+1. Cron 10 phút: query top SKU theo reserved_ratio
+2. Real-time: trigger khi reserved tăng đột biến
+3. SET inventory:hot:{sku_id}:flag = '1' TTL 1h
+4. Unflag khi traffic giảm
+```
 
 ---
 
-## 9. Ops Cleanup Jobs
+## 10. Ops Cleanup Jobs
 
-1. **Time-Window Clean Up**: Định kỳ dọn `inventory_outbox` cũ (vd. lưu giữ quá 7 ngày) dựa trên watermark an toàn đã replicate bởi Debezium để không cản trở dung lượng đĩa.
-2. Archiver `suspended_events` cũ.
-3. DLQ sweep và dashboard refresh.
+### 10.1. Time-Window Outbox Cleanup
+
+| Chi tiết | Mô tả |
+|:---|:---|
+| Tần suất | CronJob hàng ngày |
+| Logic | DELETE FROM inventory_outbox WHERE created_at < :watermark |
+| An toàn | Chỉ xóa event đã được Debezium publish (watermark đảm bảo không cản trở CDC) |
+
+### 10.2. Failed Events Stream Cleanup (Redis-based)
+
+| Chi tiết | Mô tả |
+|:---|:---|
+| Tần suất | CronJob hàng ngày |
+| Logic | XTRIM inventory:failed:* MAXLEN ~1000 |
+| Lưu giữ | 7 ngày qua TTL trên key |
+
+### 10.3. Ops Dashboard Refresh
+
+| Chi tiết | Mô tả |
+|:---|:---|
+| Tần suất | CronJob hàng giờ |
+| Logic | SCAN inventory:suspended:* + XLEN inventory:failed:* |
+
+---
+
+## Tóm tắt Workers
+
+| Worker | Loại | Tần suất | Dependency |
+|:---|:---|:---|:---|
+| Redis Stream Relay Worker | Continuous | Real-time | Redis Stream, Kafka |
+| Kafka Ledger Worker | Continuous | poll(100ms) | Kafka, PostgreSQL |
+| Debezium CDC Connector | Kafka Connect | Real-time (WAL) | PostgreSQL WAL, Kafka |
+| Suspended Events Recovery | CronJob | 5 phút | Redis, Kafka |
+| Redis Cache Warm-Up | Startup + Cron | Daily | PostgreSQL, Redis |
+| Product Mapping Sync | Continuous | Real-time | Kafka, PostgreSQL |
+| Reservation Expiry Scanner | CronJob | 2 phút | PostgreSQL, Redis, Kafka |
+| Stock Reconciliation | CronJob | Weekly | PostgreSQL, Redis |
+| Hot SKU Flag Manager | CronJob | 10 phút | PostgreSQL, Redis |
+| Outbox Cleanup | CronJob | Daily | PostgreSQL |
+| Failed Events Stream Cleanup | CronJob | Daily | Redis |
