@@ -1,102 +1,117 @@
 # Smart Routing Engine
 
+**Liên kết nhanh (Related Documents):**
+* [Workflow §4: Routing Options](inventory_workflow.md)
+* [Endpoints §1: routing-options](inventory_endpoints.md)
+
+---
+
 ## 1. Goal
 
-Select the best fulfillment option per sub-cart using inventory availability, shipping fee, SLA, and deterministic tie-break rules.
+Pick the best warehouse for each item in the cart, balancing shipping cost and delivery speed.
 
 ## 2. Inputs
 
 Required:
-
 - SKU list and quantity.
-- Customer destination.
+- Customer destination (city, district, lat/lng).
 - Candidate warehouses from `physical_inventory.available_quantity`.
-- Shipping quotes from Shipping Service.
 
-Versioned snapshot inputs:
-
-- `inventory_snapshot_at`
-- `shipping_rate_version`
-- `algorithm_version`
 
 ## 3. Output Contract
-
-Routing must return a reusable route plan:
 
 ```json
 {
   "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
-  "route_version": 3,
-  "algorithm_version": "routing-v2.1.0",
-  "inventory_snapshot_at": "2026-04-01T08:00:00Z",
-  "shipping_rate_version": "2026-04-01T07:55:00Z",
   "expires_at": "2026-04-01T08:20:00Z",
+  "rate_card_version": "2026-04-01T07:55:00Z",
   "items": [
     {
       "sku_id": "sku-001",
+      "product_id": "prod-uuid-001",
       "quantity": 2,
+      "warehouse_id": 5
+    }
+  ],
+  "shipping_options": [
+    {
       "warehouse_id": 5,
-      "routing_tier": "SMART_ROUTE"
+      "options": [
+        { "provider": "GHN", "service_type": "STANDARD", "fee": 35000, "delivery_days": 2 },
+        { "provider": "GHTK", "service_type": "EXPRESS", "fee": 45000, "delivery_days": 1 }
+      ]
     }
   ]
 }
 ```
 
-`warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish.
+`warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish. `product_id` được denormalized từ `physical_inventory.product_id` (lưu từ lần restock đầu) để `ReserveInventoryActivity` không cần lookup lại.
 
-## 4. Candidate Generation
+> **Đơn giản hóa:** Schema đã bỏ `route_version` (chỉ có 1 algorithm, không cần version), `route_signature` (thừa). Shipping trả về `rate_card_version` được relay trực tiếp cho Checkout dùng trong `pricing_hash`. Schema đầy đủ và tường minh xem [Inventory Endpoints §1 Response](inventory_endpoints.md#response).
 
-1. Build feasible warehouse combinations where stock is sufficient.
-2. For each candidate, request shipping cost and ETA.
-3. Discard candidates violating hard constraints:
-   - stock not sufficient
-   - max split item shipments exceeded
-   - blocked lanes
-   - provider timeout beyond policy
+## 4. Algorithm
 
-## 5. Scoring Model
+### 4.1. Candidate Generation
 
-Example weighted score:
+```
+SELECT sku_id, warehouse_id, available_quantity
+FROM physical_inventory
+WHERE sku_id = ANY(:requested_skus)
+  AND available_quantity > 0
+```
 
-`score = w1 * shipping_cost + w2 * delivery_days + w3 * split_penalty + w4 * warehouse_priority`
+Với index `UNIQUE (sku_id, warehouse_id)` đã có, query này chạy < 5ms cho vài chục SKU.
 
-Lower score is better.
+### 4.2. Build Feasible Combinations
 
-Suggested default weights:
+Với mỗi SKU, danh sách warehouse có đủ `available_quantity >= requested_quantity`. Tổ hợp warehouse hợp lệ = chọn 1 warehouse cho mỗi SKU sao cho tất cả SKU đều thoả mãn.
 
-- `w1 = 0.55`
-- `w2 = 0.30`
-- `w3 = 0.10`
-- `w4 = 0.05`
+Với cart nhỏ (< 10 SKU) và mỗi SKU có 1-3 warehouse candidates, số tổ hợp thường < 50.
 
-## 6. Tie-Breakers
+### 4.3. Score Each Combination
 
-1. Lower shipping cost.
-2. Faster ETA.
-3. Fewer split item shipments.
-4. Stable warehouse preference order.
+Với mỗi tổ hợp, gọi `POST /v1/shipping/calculate-batch` để lấy shipping fee + delivery_days cho mỗi `warehouse_id` trong combination.
 
-## 7. Fast-Lane Fallback
+**Chọn option trong quote:**
+- Ưu tiên option có `service_type` khớp với `service_type` trong request input.
+- Nếu không có option khớp, lấy option rẻ nhất.
+- Nếu options rỗng → đánh dấu combination này INFEASIBLE.
 
-If no full smart route is feasible and policy allows fast fallback:
+**Scoring formula:**
 
-1. Select warehouse from pre-ranked fast lane pool.
-2. Still return concrete `warehouse_id` for each item.
-3. Mark `routing_tier = FAST_LANE` in route plan.
+```
+score = shipping_cost + delivery_days * cost_per_day
+```
 
-## 8. Determinism
+- `shipping_cost`: fee của option đã chọn.
+- `cost_per_day` mặc định = `5000` (VND). Có thể config theo business policy.
 
-Given identical input snapshot, rate cards, and algorithm version, engine must produce identical route.
+### 4.4. Pick Best
 
-Checkout submit must pass back `route_plan_id + route_version`. If plan is expired, Inventory must reject with `CONTRACT_INVALID_ROUTE_PLAN` and require re-preview.
+Chọn tổ hợp có `score` thấp nhất. Tie-break: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
 
-## 9. Observability
+> Đã lược bỏ weighted scoring 4 trọng số (`w1*cost + w2*eta + w3*split + w4*warehouse_priority`). Lý do: `split_penalty` chỉ áp dụng khi đơn phải chia nhiều kiện — thực tế cart < 10 SKU hiếm khi split quá 1-2 kho. `warehouse_priority` là heuristic không có data thực tế để config tốt. Linear score đơn giản đủ cho hầu hết use case.
 
-Track metrics:
+## 5. Cache
 
-- `routing_latency_ms`
-- `candidates_generated`
-- `fallback_rate`
-- `average_shipping_cost`
-- `split_item_shipment_ratio`
-- `route_plan_expired_reject_total`
+- Key: `route_plan:{route_plan_id}`
+- Value: JSON response object
+- TTL: `expires_at - now` (mặc định 20 phút)
+- Implementation: `SET route_plan:{id} <json> EX <ttl_seconds>`
+
+Khi Checkout submit với `route_plan_id`:
+- Lookup `route_plan:{id}` trong cache.
+- Nếu hit: trả plan (sử dụng ngay).
+- Nếu miss (TTL expired): reject `CONTRACT_INVALID_ROUTE_PLAN`, Checkout phải gọi lại `/routing-options`.
+
+
+## 6. Plan Expiry Handling
+
+| Trường hợp | Hành vi |
+|:---|:---|
+| Plan trong cache, TTL chưa hết | Proceed bình thường |
+| Plan không có trong cache (TTL expired hoặc bị xoá) | Reject `CONTRACT_INVALID_ROUTE_PLAN`. Client phải gọi lại `/routing-options` |
+| Redis cache unavailable | Reject `INVENTORY_UNAVAILABLE`. Không fallback về logic khác (đơn giản hoá) |
+| Shipping trả `options[]` rỗng cho ít nhất 1 warehouse trong feasible combinations | Reject `NO_SHIPPING_OPTIONS_FOR_ROUTE` (HTTP 422). Client phải đổi địa chỉ hoặc liên hệ CSKH |
+
+> Đã lược bỏ deterministic replay check (kiểm tra `algorithm_version` cũ → chạy lại cùng algorithm). Lý do: giờ chỉ có 1 algorithm, không có version drift.
