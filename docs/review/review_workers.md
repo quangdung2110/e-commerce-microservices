@@ -3,7 +3,6 @@
 **Liên kết nhanh (Related Documents):**
 *   [Workflows (API & Data Flow)](review_workflow.md)
 *   [Background Workers & Jobs](review_workers.md)
-*   [Caching Schema](review_caching_schema.md)
 *   [Database Schema](review_db_schema.md)
 *   [Events Structure](review_events.md)
 
@@ -12,7 +11,7 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 
 1. Không mất event khi publish (Outbox + CDC).
 2. Không ghi sai thứ tự trong môi trường at-least-once.
-3. Không drift giữa PostgreSQL, Redis và các read-model downstream.
+3. Không drift giữa PostgreSQL và các read-model downstream.
 
 ## Tổng Hợp Kafka Topics
 
@@ -33,15 +32,14 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 ## Nguyên tắc vận hành bắt buộc
 
 1. **Idempotency tự nhiên qua DB:** Consumer sử dụng unique constraints của DB để đảm bảo không ghi trùng khi xử lý at-least-once delivery.
-2. Out-of-order guard bằng `event_sequence_id` hoặc `state_version`.
-3. Không ACK message trước khi local transaction commit thành công.
-4. Retry config chuẩn cho mọi consumer:
+2. Không ACK message trước khi local transaction commit thành công.
+3. Retry config chuẩn cho mọi consumer:
    - `max_retries = 10`
    - `initial_backoff = 1s`
    - `max_backoff = 5m`
    - `backoff = min(initial_backoff * 2^attempt, max_backoff)`
-5. Poison message phải đi `t.review.dlq`, không retry vô hạn.
-6. Cấu hình backpressure tối thiểu:
+4. Poison message phải đi `t.review.dlq`, không retry vô hạn.
+5. Cấu hình backpressure tối thiểu:
    - `batch_size = 100..500`
    - `max_in_flight_records = 500`
    - `max_poll_interval_ms` đủ lớn để tránh rebalance giả.
@@ -132,31 +130,24 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 **Chi tiết luồng hoạt động:**
 1. Begin transaction.
-2. **Idempotency check bằng `state_version`:**
-   ```sql
-   SELECT state_version FROM product_rating_aggregates WHERE product_id = :product_id FOR UPDATE;
-   ```
-   - Nếu `event_sequence_id` <= `state_version` -> ACK ngay (đã xử lý, skip).
-3. Validate business guard:
+2. Validate business guard:
    - `REVIEW_CREATED`: cộng điểm/tổng số review vào `product_rating_aggregates`.
    - `REVIEW_APPROVED`: cộng điểm/tổng số review (restore từ hidden).
    - `REVIEW_HIDDEN`: trừ điểm/tổng số review.
-4. Upsert aggregate theo `product_id` bằng SQL atomic:
+3. Upsert aggregate theo `product_id` bằng SQL atomic:
    ```sql
    UPDATE product_rating_aggregates
    SET average_rating = :new_avg,
        total_reviews = :new_total,
        total_X_star = total_X_star +/- 1,
        total_with_media = total_with_media +/- :has_media,
-       state_version = :event_sequence_id,
        updated_at = NOW()
    WHERE product_id = :product_id;
    ```
-5. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction.
-6. Commit transaction.
-7. Sau commit:
-   - Overwrite cache Redis `review:prod:agg:{product_id}`.
-   - Nếu là `REVIEW_HIDDEN` -> gọi `INCR review:prod_ver:{product_id}` để invalidate page cache.
+4. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction.
+5. Commit transaction.
+
+> **Lưu ý:** Producer không lưu `state_version` trên aggregate, không chạy idempotency check bằng version. Consumer chấp nhận over-count hiếm gặp do at-least-once; Reconciliation Cronjob và dashboard monitoring `product_rating_aggregates` drift là lưới an toàn cuối cùng.
 
 **Tối ưu:** xử lý theo micro-batch 100-500 events/lần để giảm lock contention.
 
@@ -177,9 +168,7 @@ WHERE review_eligibilities.status IN ('PENDING');
 4. Trong transaction:
    - `UPDATE reviews SET user_name='Tài khoản đã bị xóa'` WHERE `user_id` = :user_id`.
 5. Commit transaction.
-6. Invalidate Redis theo batch pipeline:
-   - mỗi batch 200 product gọi `INCR review:prod_ver:{product_id}`.
-7. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
+6. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
 
 **Ràng buộc quan trọng:**
 *   Không có worker cập nhật tên theo `USER_PROFILE_UPDATED`.
@@ -206,9 +195,7 @@ WHERE review_eligibilities.status IN ('PENDING');
      - Update `reviews.status = 'HIDDEN_BY_REPORT'`.
      - Insert outbox `REVIEW_HIDDEN` với `hidden_reason='REPORT_THRESHOLD_EXCEEDED'`.
 6. Commit transaction.
-7. Sau commit:
-   - Gọi `INCR review:prod_ver:{product_id}` để invalidate page cache.
-   - Ghi audit log cho báo cáo.
+7. Ghi audit log cho báo cáo.
 
 **Ràng buộc:**
 *   Threshold mặc định là 10 reports (configurable).

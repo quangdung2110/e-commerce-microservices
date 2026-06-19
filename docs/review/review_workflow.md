@@ -3,14 +3,13 @@
 **Liên kết nhanh (Related Documents):**
 *   [Workflows (API & Data Flow)](review_workflow.md)
 *   [Background Workers & Jobs](review_workers.md)
-*   [Caching Schema](review_caching_schema.md)
 *   [Database Schema](review_db_schema.md)
 *   [Events Structure](review_events.md)
 
 ---
-Tài liệu này mô tả chi tiết trình tự từ lúc client gọi API Review cho đến khi dữ liệu hội tụ qua PostgreSQL, Redis cache và Kafka event pipeline.
+Tài liệu này mô tả chi tiết trình tự từ lúc client gọi API Review cho đến khi dữ liệu hội tụ qua PostgreSQL và Kafka event pipeline.
 
-Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn, kết hợp cache versioning để tối ưu đọc và CDC outbox để đồng bộ bất đồng bộ an toàn.
+Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn, kết hợp CDC outbox để đồng bộ bất đồng bộ an toàn. Read API đọc thẳng từ PostgreSQL, không có cache trung gian.
 
 ## 1. Gợi ý Base API Path
 
@@ -64,45 +63,12 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
    - Insert outbox `REVIEW_UPDATED`.
 5. Commit.
 
-**Lưu ý:** Không invalidate cache page public sau PATCH để tránh stampede. Client nhận payload trả về để đảm bảo RYOW cho tác giả.
+**Lưu ý:** Read-Your-Own-Writes cho tác giả đảm bảo bằng payload trả về ngay trong response. Downstream (Search Service) tự reindex khi nhận event `REVIEW_UPDATED` phát qua outbox.
 
 
-## 4. API: Like/Unlike Review
-
-**Endpoint:** `POST /api/v1/reviews/{review_id}/helpful`
-
-**Idempotency:** `PRIMARY KEY (review_id, user_id)` trên bảng `review_likes` với `ON CONFLICT DO NOTHING`.
-
-**Guard bắt buộc trước khi mutate:**
-1. Review phải ở trạng thái `APPROVED`.
-
-**Workflow chuẩn (DB-First):**
-1. **Rate limit (chống spam, shared across all pods):** `SET review:ratelimit:{user_id}:{review_id} "1" NX EX 10`.
-   - Redis key là shared nên áp dụng rate limit across tất cả pods.
-   - Nếu key đã tồn tại -> trả `429 Too Many Requests`.
-2. Gọi Database trong một transaction:
-   - **Trường hợp Like:**
-     ```sql
-     BEGIN;
-     INSERT INTO review_likes (review_id, user_id) VALUES (:rid, :uid) ON CONFLICT DO NOTHING;
-     -- Chỉ update count nếu insert thành công (số dòng thực sự được thêm là 1)
-     UPDATE reviews SET helpful_count = helpful_count + 1 WHERE id = :rid AND status = 'APPROVED';
-     COMMIT;
-     ```
-   - **Trường hợp Unlike:**
-     ```sql
-     BEGIN;
-     DELETE FROM review_likes WHERE review_id = :rid AND user_id = :uid;
-     -- Chỉ update count nếu delete thành công (số dòng thực sự bị xóa là 1)
-     UPDATE reviews SET helpful_count = helpful_count - 1 WHERE id = :rid AND helpful_count > 0;
-     COMMIT;
-     ```
-3. API trả kết quả ngay với giá trị `helpful_count` đã được cập nhật từ DB.
-4. Cập nhật Cache (tùy chọn): Tuỳ định hướng, ta có thể cập nhật `review:helpful:{review_id}` hoặc phụ thuộc vào payload cache của trang 1 được refresh theo TTL.
-5. (Lưu ý: Không xử lý xóa unlike khi tài khoản user bị xóa để tiết kiệm chi phí, do số lượt like không tác động xấu đến trải nghiệm người dùng hiện tại).
 
 
-## 5. API: Admin Reply
+## 4. API: Admin Reply
 
 **Endpoint:** `POST /api/v1/reviews/{review_id}/admin-replies`
 
@@ -113,32 +79,31 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 2. Upsert `review_admin_replies` (1 review chỉ 1 reply active) với `ON CONFLICT DO UPDATE`.
 3. Update `reviews.is_admin_replied=true`.
 4. Nếu là insert mới -> insert outbox `ADMIN_REPLY_CREATED` (bắt buộc có `content`).
-5. Nếu là update reply đã tồn tại -> không phát event notify mới để tránh spam; chỉ invalidate cache.
+5. Nếu là update reply đã tồn tại -> không phát event notify mới để tránh spam; chỉ cập nhật nội dung reply.
 6. Commit.
-7. `INCR review:prod_ver:{product_id}` để refresh page cache hiển thị reply.
 
-## 6. API Đọc: Aggregate và Danh Sách Review
+## 5. API Đọc: Aggregate và Danh Sách Review
 
-### 6.1. Aggregate
+Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination dùng keyset/cursor để ổn định khi dữ liệu lớn.
+
+### 5.1. Aggregate
 
 **Endpoint:** `GET /api/v1/reviews/products/{product_id}/aggregate`
 
 **Workflow:**
-1. Read `review:prod:agg:{product_id}` từ Redis.
-2. Cache miss -> query `product_rating_aggregates`, rồi SET cache với TTL + deterministic jitter.
-3. Nếu DB quá tải, bật stale-while-revalidate tối đa 30s.
+1. Query trực tiếp bảng `product_rating_aggregates` theo `product_id`.
+2. Nếu tải tăng cao, dùng read replica hoặc connection pool tuning; không duy trì cache trong service.
 
-### 6.2. List Reviews
+### 5.2. List Reviews
 
 **Endpoint:** `GET /api/v1/reviews/products/{product_id}`
 
 **Workflow:**
-1. Lấy `version = GET review:prod_ver:{product_id}` (default 1).
-2. Với page 1: đọc cache theo key có version (`review:prod:{product_id}:v:{version}:...`).
-3. Cache miss page 1: query DB theo index phù hợp, SET cache.
-4. Với page 2+: luôn query DB bằng cursor (`id` hoặc `(helpful_count,id)`).
+1. Query bảng `reviews` theo `product_id` với index phù hợp (`B-Tree(product_id, sku_id, created_at DESC)` hoặc `B-Tree(product_id, rating, created_at DESC)`).
+2. Filter thêm `has_media = TRUE` nếu client yêu cầu review có media (dùng partial index tương ứng).
+3. Trả về danh sách phân trang, sắp xếp theo `created_at DESC` mặc định.
 
-## 7. Event Workflow: ORDER_COMPLETED -> Eligibility
+## 6. Event Workflow: ORDER_COMPLETED -> Eligibility
 
 **Trigger:** `ORDER_COMPLETED` từ `t.order.events`.
 
@@ -151,16 +116,15 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 4. Nếu `expires_at <= NOW()` tại lúc xử lý, set `EXPIRED` ngay để tránh eligibility rác.
 5. Commit rồi ACK.
 
-## 8. Event Workflow: REVIEW_METRICS_UPDATED -> Search
+## 7. Event Workflow: REVIEW_METRICS_UPDATED -> Search
 
 **Trigger:** Event nội bộ `REVIEW_METRICS_UPDATED` được phát từ aggregator. [Rating Aggregator Consumer](review_workers.md#4-rating-aggregatorConsumer)
 
 **Trình tự liên service:**
 1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document theo `product_id`.
-2. Guard **duy nhất** theo `event_sequence_id` trên **envelope**.
-3. Nếu thiếu `event_sequence_id`, phải chuyển DLQ (không fallback timestamp).
+2. Ordering đảm bảo bằng partition key `product_id` (Kafka partition ordering); Search Service không cần guard bằng sequence field trên envelope.
 
-## 9. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
+## 8. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
 
 **Trigger:** `ACCOUNT_DELETED` từ `t.user.events`.
 
@@ -170,21 +134,18 @@ Review Service áp dụng mô hình **PostgreSQL-first** cho dữ liệu chuẩn
 1. Consumer nhận `user_id`, `deleted_at`, `retention_window_expires_at`
 2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Update `reviews.user_name='Tài khoản đã bị xóa'` để ẩn danh hiển thị ngay.
-4. Invalidate Redis cache theo danh sách product bị ảnh hưởng (`INCR review:prod_ver:{product_id}`).
 
-## 10. Ma Trận Nhất Quán (Consistency Matrix)
+## 9. Ma Trận Nhất Quán (Consistency Matrix)
 
 | Luồng | Source of Truth | Read-Your-Own-Writes | Cửa sổ eventual consistency | Cơ chế hội tụ |
 |---|---|---|---|---|
 | Create review | PostgreSQL (`reviews`, `review_eligibilities`) | Có ở API response | 1-3s để event xuất hiện downstream | CDC outbox + consumer retries |
-| Helpful vote | PostgreSQL (`reviews`, `review_likes`) | Có ở API action result | Nguyên tử (Atomic) | DB Transaction |
-| Admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho cache/list downstream | Versioned cache invalidation |
-| Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để mọi page cache hội tụ | Batch anonymize + version bump per product |
+| Admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho downstream reindex | CDC outbox publish `ADMIN_REPLY_CREATED` |
+| Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để downstream (Search) reindex các review bị ẩn danh | Consumer `ACCOUNT_DELETED` cập nhật trực tiếp + event nội bộ |
 
 ## 11. Kịch bản lỗi và tự phục hồi
 
 1. **Duplicate event:** idempotency tự nhiên qua DB unique constraints chặn xử lý lặp.
-2. **Out-of-order event:** guard bằng `event_sequence_id`/`state_version` trước khi apply.
-3. **Missing required sequencing field:** chuyển `t.review.dlq`, không xử lý mù.
-4. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
-5. **Poison message:** đẩy DLQ sau ngưỡng retry, không block toàn bộ partition.
+2. **Missing required sequencing field:** chuyển `t.review.dlq`, không xử lý mù.
+3. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
+4. **Poison message:** đẩy DLQ sau ngưỡng retry, không block toàn bộ partition.
