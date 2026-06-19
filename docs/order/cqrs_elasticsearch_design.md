@@ -29,7 +29,7 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 | Query Class | Mục tiêu | Nguồn index chính |
 |---|---|---|
 | A - Multi-dimensional Filter | Lọc chính xác lịch sử đơn theo buyer/admin/admin + trạng thái + khoảng thời gian + khoảng giá trị | `orders_read` |
-| B - Text Search | Tìm theo `snapshot_product_name`, `tracking_number`, `store_name` và vẫn kết hợp filter class A | `order_search_lines` (sau đó hydrate từ `orders_read`) |
+| B - Text Search | Tìm theo `snapshot_product_name`, `store_name` và vẫn kết hợp filter class A | `order_search_lines` (sau đó hydrate từ `orders_read`) |
 
 ### 1.2. SLO nhất quán dữ liệu
 
@@ -41,7 +41,7 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 - Đơn vị hiển thị ở list luôn là **order-level card** (1 card/1 order), kể cả khi đơn có nhiều item.
 - Buyer tabs được chuẩn hóa thành 6 nhóm cố định: `TO_PAY`, `TO_SHIP`, `TO_RECEIVE`, `COMPLETED`, `CANCELLED`, `RETURN_REFUND`.
 - Mặc định query buyer history là cửa sổ thời gian `90 ngày` gần nhất nếu client không truyền `from/to`.
-- `q` hoạt động theo semantics **ANY field**: chỉ cần khớp một trong ba trường `snapshot_product_name`, `tracking_number`, `store_name`.
+- `q` hoạt động theo semantics **ANY field**: chỉ cần khớp một trong hai trường `snapshot_product_name`, `store_name`.
 - Kết quả text search luôn collapse theo `order_id`, sau đó hydrate summary từ `orders_read` để đảm bảo response vẫn là order-level card.
 
 ---
@@ -55,7 +55,7 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	- `order-cqrs-line-projector` -> ghi `order_search_lines_write`.
 	- `order-cqrs-retry-replayer` -> xử lý `t.order.cqrs.retry`.
 
-> **Lưu ý ownership:** Event sequencing cho CQRS được ràng buộc theo stream ownership (order lifecycle, item/shipping, payment/refund), không so sánh thứ tự event chỉ bằng UUID `event_id`.
+> **Lưu ý ownership:** Event sequencing cho CQRS được ràng buộc theo stream ownership (order lifecycle, item/delivery, payment/refund), không so sánh thứ tự event chỉ bằng UUID `event_id`.
 
 ---
 
@@ -180,31 +180,24 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 			"completed_at": { "type": "date" },
 			"cancelled_at": { "type": "date" },
 			"refunded_at": { "type": "date" },
-			"last_tracking_updated_at": { "type": "date" },
 
 			"total_amount": { "type": "scaled_float", "scaling_factor": 100 },
-			"total_shipping_fee": { "type": "scaled_float", "scaling_factor": 100 },
 			"total_discount": { "type": "scaled_float", "scaling_factor": 100 },
 			"final_amount": { "type": "scaled_float", "scaling_factor": 100 },
 
 			"item_count": { "type": "integer" },
 			"remaining_item_count": { "type": "integer" },
-			"has_multi_item_shipment": { "type": "boolean" },
 
 			"primary_item_name": { "type": "keyword" },
 			"primary_item_image_url": { "type": "keyword", "index": false },
 			"primary_store_name": { "type": "keyword" },
 			"primary_store_name_normalized": { "type": "keyword", "normalizer": "folding_lc" },
-			"primary_tracking_number": { "type": "keyword" },
-			"primary_tracking_number_normalized": { "type": "keyword", "normalizer": "folding_lc" },
 
 			"store_names": { "type": "keyword" },
 			"store_names_normalized": { "type": "keyword", "normalizer": "folding_lc" },
-			"tracking_numbers": { "type": "keyword" },
-			"tracking_numbers_normalized": { "type": "keyword", "normalizer": "folding_lc" },
 
-			"shipping_province_code": { "type": "keyword" },
-			"shipping_district_code": { "type": "keyword" },
+			"delivery_province_code": { "type": "keyword" },
+			"delivery_district_code": { "type": "keyword" },
 
 			"is_terminal_order": { "type": "boolean" },
 			"is_return_flow": { "type": "boolean" },
@@ -224,7 +217,7 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 }
 ```
 
-**PII boundary:** Không lưu `shipping_address_snapshot.address`, `shipping_address_snapshot.phone`, `shipping_address_snapshot.name` vào index.
+**PII boundary:** Không lưu `delivery_address_snapshot.address`, `delivery_address_snapshot.phone`, `delivery_address_snapshot.name` vào index.
 
 ### 5.2. Mẫu document `orders_read`
 
@@ -242,26 +235,19 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"ui_status_rank": 30,
 	"created_at": "2026-02-28T10:00:00Z",
 	"paid_at": "2026-02-28T10:05:00Z",
-	"last_tracking_updated_at": "2026-03-01T10:00:00Z",
-	"final_amount": 995000,
+	"final_amount": 950000,
 	"total_amount": 1000000,
-	"total_shipping_fee": 45000,
 	"total_discount": 50000,
 	"item_count": 2,
 	"remaining_item_count": 2,
-	"has_multi_item_shipment": true,
 	"primary_item_name": "Ao thun nam cotton premium",
 	"primary_item_image_url": "https://cdn.domain.com/order/10001/item-001.jpg",
 	"primary_store_name": "Apple Flagship Store",
 	"primary_store_name_normalized": "apple flagship store",
-	"primary_tracking_number": "GHN12345",
-	"primary_tracking_number_normalized": "ghn12345",
-	"store_names": ["Apple Flagship Store", "admin B"],
-	"store_names_normalized": ["apple flagship store", "admin b"],
-	"tracking_numbers": ["GHN12345"],
-	"tracking_numbers_normalized": ["ghn12345"],
-	"shipping_province_code": "HCM",
-	"shipping_district_code": "Q1",
+	"store_names": ["Apple Flagship Store"],
+	"store_names_normalized": ["apple flagship store"],
+	"delivery_province_code": "HCM",
+	"delivery_district_code": "Q1",
 	"is_terminal_order": false,
 	"is_return_flow": false,
 	"is_deleted": false,
@@ -269,8 +255,8 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"payment_event_sequence_id": 20260228100500,
 	"refund_event_sequence_id": 0,
 	"item_guard_map": {
-		"2001": { "item_version": 5, "shipment_event_sequence_id": 20260301100000 },
-		"2002": { "item_version": 2, "shipment_event_sequence_id": 20260301103000 }
+		"2001": { "item_version": 5 },
+		"2002": { "item_version": 2 }
 	},
 	"last_event_id": "123e4567-e89b-12d3-a456-426614174003",
 	"last_event_timestamp": "2026-02-28T10:05:30Z",
@@ -316,9 +302,6 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 			"store_name_normalized": { "type": "keyword", "normalizer": "folding_lc" },
 			"store_name_text": { "type": "text", "analyzer": "vi_text_analyzer", "search_analyzer": "vi_text_search_analyzer" },
 
-			"tracking_number": { "type": "keyword" },
-			"tracking_number_normalized": { "type": "keyword", "normalizer": "folding_lc" },
-
 			"product_id": { "type": "keyword" },
 			"sku_id": { "type": "keyword" },
 			"quantity": { "type": "integer" },
@@ -330,7 +313,6 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 
 			"order_version": { "type": "long" },
 			"item_version": { "type": "long" },
-			"shipment_event_sequence_id": { "type": "long" },
 
 			"is_deleted": { "type": "boolean" },
 			"last_event_id": { "type": "keyword" },
@@ -360,8 +342,6 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"store_name": "Apple Flagship Store",
 	"store_name_normalized": "apple flagship store",
 	"store_name_text": "Apple Flagship Store",
-	"tracking_number": "GHN12345",
-	"tracking_number_normalized": "ghn12345",
 	"product_id": "prod-001",
 	"sku_id": "sku-001",
 	"quantity": 2,
@@ -371,7 +351,6 @@ Tài liệu này mô tả read-model Elasticsearch cho Order Service theo CQRS �
 	"updated_at": "2026-02-28T10:05:30Z",
 	"order_version": 8,
 	"item_version": 5,
-	"shipment_event_sequence_id": 20260301100000,
 	"is_deleted": false,
 	"last_event_id": "123e4567-e89b-12d3-a456-426614174004",
 	"last_event_timestamp": "2026-03-01T10:00:00Z",
@@ -429,8 +408,6 @@ GET order_search_lines/_search
 				{ "range": { "created_at": { "gte": "now-90d/d", "lte": "now" } } }
 			],
 			"should": [
-				{ "term": { "tracking_number_normalized": { "value": "ghn12345", "boost": 12 } } },
-				{ "prefix": { "tracking_number_normalized": { "value": "ghn12", "boost": 10 } } },
 				{ "term": { "store_name_normalized": { "value": "apple flagship store", "boost": 8 } } },
 				{ "prefix": { "store_name_normalized": { "value": "apple", "boost": 6 } } },
 				{ "match_phrase": { "snapshot_product_name": { "query": "ao thun nam", "boost": 5 } } },
@@ -520,16 +497,15 @@ Khi text search:
 - `items[]` luôn trả theo `order_id` (không trả theo line).
 - Card hiển thị item đại diện dùng `primary_item_name` + `primary_item_image_url`.
 - Nếu `item_count > 1`, UI hiển thị thêm `remaining_item_count` (ví dụ: `+2 sản phẩm`).
-- `primary_tracking_number` chỉ là mã tracking đại diện; chi tiết toàn bộ tracking vẫn đọc từ API order detail.
-- `match_reason` trả các giá trị chuẩn: `TRACKING_EXACT`, `TRACKING_PREFIX`, `STORE_EXACT`, `STORE_PREFIX`, `PRODUCT_PHRASE`, `PRODUCT_PREFIX`, `FUZZY_FALLBACK`.
+- `match_reason` trả các giá trị chuẩn: `STORE_EXACT`, `STORE_PREFIX`, `PRODUCT_PHRASE`, `PRODUCT_PREFIX`, `FUZZY_FALLBACK`.
 
 ### 6.5. Bảng thứ tự tab buyer (để derive `buyer_tab`)
 
 | Ưu tiên | Điều kiện | buyer_tab |
 |---|---|---|
 | 1 | `order_status = PENDING_PAYMENT` | `TO_PAY` |
-| 2 | `order_status in (PAID, PROCESSING)` và chưa có item ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_SHIP` |
-| 3 | `order_status in (PAID, PROCESSING)` và có ít nhất 1 item ở nhóm đang giao (`HANDED_OVER`, `IN_TRANSIT`, `DELIVERY_FAILED`) | `TO_RECEIVE` |
+| 2 | `order_status in (PAID, PROCESSING)` và chưa có item ở trạng thái `DELIVERED` | `TO_SHIP` |
+| 3 | `order_status in (PAID, PROCESSING)` và có ít nhất 1 item ở trạng thái `DELIVERED` | `TO_RECEIVE` |
 | 4 | `order_status = COMPLETED` và không nằm return/refund flow | `COMPLETED` |
 | 5 | `order_status = CANCELLED` | `CANCELLED` |
 | 6 | `order_status in (RETURN_REQUESTED, REFUNDED)` hoặc `payment_status in (REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED)` | `RETURN_REFUND` |
@@ -545,7 +521,7 @@ Nếu một đơn đồng thời thỏa nhiều điều kiện, projector chọn
 | Event nhóm | Index bị ảnh hưởng | Guard bắt buộc | Ghi chú |
 |---|---|---|---|
 | `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_COMPLETED` | Cả 2 index | `order_version` đơn điệu theo `order_id` | Không apply nếu `incoming.order_version <= current.order_version` |
-| `ORDER_ITEM_STATUS_CHANGED` | Cả 2 index | `item_version` theo `order_item_id` + `shipment_event_sequence_id` | Guard theo từng item, không dùng global sequence |
+| `ORDER_ITEM_STATUS_CHANGED` | Cả 2 index | `item_version` theo `order_item_id` | Guard theo từng item, không dùng global sequence |
 | `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `orders_read` (chính) + line status | `refund_event_sequence_id` | Tránh refund stale ghi đè trạng thái mới |
 | Payment status derived updates | `orders_read` | `payment_event_sequence_id` | Stream payment tách ownership với order lifecycle |
 

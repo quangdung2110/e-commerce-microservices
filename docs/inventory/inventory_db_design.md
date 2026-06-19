@@ -34,7 +34,7 @@ Nguồn commit nóng theo kho. Mỗi bản ghi đại diện cho tồn kho vật
 |:---|:---|:---|:---|
 | `id` | BIGSERIAL | PRIMARY KEY | Định danh bản ghi |
 | `sku_id` | VARCHAR(64) | NOT NULL | Định danh SKU |
-| `product_id` | VARCHAR(64) | NOT NULL | Định danh Product (denormalized từ restock request, Order activity call, SHIPMENT_RETURNED event) |
+| `product_id` | VARCHAR(64) | NOT NULL | Định danh Product (denormalized từ restock request và Order activity call) |
 | `warehouse_id` | BIGINT | NOT NULL, FK(`warehouses.id`) | Kho chứa |
 | `actual_quantity` | INT | NOT NULL, CHECK (`actual_quantity >= 0`) | Tồn kho thực tế |
 | `reserved_quantity` | INT | NOT NULL, DEFAULT 0, CHECK (`reserved_quantity >= 0`) | Số lượng đã giữ chỗ |
@@ -103,7 +103,7 @@ Theo dõi reservation theo item + warehouse. Ghi nhận trạng thái giữ ch�
 **Quy ước refund:**
 
 - `refund_expected = true` được set khi Order gọi API `POST /v1/inventory/returns/refund-expectations` (xem [Endpoints §3](inventory_endpoints.md)).
-- `refund_returned_at` được set khi `SHIPMENT_RETURNED` consumer cập nhật row tương ứng.
+- `refund_returned_at` được set khi admin restock với `reference_type='ORDER_RETURNED_RESTOCK'` cập nhật row tương ứng.
 - Signal `INVENTORY_RETURN_RECEIVED_ALL` được emit khi tất cả reservation cùng `(order_id, refund_request_id)` có `refund_expected = true` đều có `refund_returned_at IS NOT NULL`.
 
 ---

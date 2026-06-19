@@ -26,7 +26,6 @@ This document defines the AST schema and evaluation rules for `promotions.condit
 
 ## 3. Supported Input Fields
 - `cart.total_amount`
-- `cart.shipping_fee`
 - `cart.payment_method`
 - `cart.checkout_channel`
 - `cart.items.category_id`
@@ -85,8 +84,6 @@ Nếu reserve thất bại do ngân sách, mã lỗi `BUDGET_EXHAUSTED` đến t
 
 ## 9. Slot Dependency Contract for Checkout Preview
 
-- `PLATFORM_VOUCHER` evaluate trên sub-cart subtotal trước Platform/Freeship.
-- `PLATFORM_VOUCHER` và `FREESHIP_VOUCHER` evaluate trên tổng sau platform Voucher và shipping fee mới nhất.
-- Đổi platform Voucher hoặc đổi địa chỉ giao hàng (làm đổi shipping fee) có thể làm thay đổi eligibility của Platform/Freeship.
-- Đổi Platform Voucher hoặc Freeship Voucher không làm thay đổi eligibility tập platform Voucher.
-- `/calculate-discount` phải full evaluate cả 3 slot trong một pass để trả discount lines nhất quán.
+- `PLATFORM_VOUCHER` evaluate trên sub-cart subtotal.
+- Sau Phase 14, chỉ còn 1 slot PLATFORM_VOUCHER duy nhất (không còn dependency giữa các slot).
+- `/calculate-discount` evaluate slot PLATFORM_VOUCHER trong một pass để trả discount lines nhất quán.

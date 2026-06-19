@@ -23,7 +23,7 @@
         Kiểm tra sơ bộ Trạng thái Token: Hệ thống kiểm tra session trên Redis. Nếu Token đã ở trạng thái SUBMITTED, nó sẽ rẽ nhánh sang luồng Client Retry (tìm checkout:response hoặc dùng checkout:payload để gọi lại Order Service).
 
     Giai đoạn 2: Thẩm định chớp nhoáng (Validation)
-        Lightweight Price Staleness Check: * Checkout Service dùng gRPC bốc nhanh giá mới nhất từ Product Service và lấy các version mới nhất của cấu hình Shipping/Promotion.
+        Lightweight Price Staleness Check: * Checkout Service dùng gRPC bốc nhanh giá mới nhất từ Product Service và lấy version mới nhất của cấu hình Promotion.
         Băm ra mã Hash mới và so sánh với pricing_hash trên Redis.
         Nếu lệch Hash (Giá đã đổi): Nhả Lock, trả lỗi 409 PRICE_CHANGED. Token vẫn an toàn ở mức PREVIEW_READY, User chỉ cần làm mới trang.
 

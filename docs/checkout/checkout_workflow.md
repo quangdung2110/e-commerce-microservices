@@ -9,8 +9,7 @@
 **Cross-Service References:**
 *   [Order Workflow](../order/order_workflow.md#4-workflow-nhận-checkout-submit-full-saga-flow) — Nhận Submit payload
 *   [Promotion Workflow](../promotion/promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow) — Budget Reservation
-*   [Inventory Smart Routing](../inventory/smart_routing_engine.md) — Stock check + Routing Options
-*   [Shipping Workflow](../shipping/shipping_workflow.md#1-api-calculate-shipping-fee) — Fee calculation
+*   [Inventory Warehouse Selection](../inventory/smart_routing_engine.md) — Stock check + Routing
 
 ---
 
@@ -25,7 +24,7 @@ Tài liệu này mô tả chi tiết chuỗi sự kiện (Sequence Flow) của h
 ```json
 {
   "checkout_token": null, 
-  "shipping_address_id": "addr-uuid-123",
+  "delivery_address_id": "addr-uuid-123",
   "items": [
     ...
   ],
@@ -39,7 +38,7 @@ Tài liệu này mô tả chi tiết chuỗi sự kiện (Sequence Flow) của h
 
 > Checkout Preview chỉ consume snapshot SKU + quantity đã chuẩn hóa từ Cart. Mọi payload cố gắng mutate `quantity` trực tiếp ở Checkout sẽ bị reject `400 INVALID_CHECKOUT_MUTATION_SCOPE`.
 
-> Promotion contract hiện tại **không còn** cờ voucher độc quyền ở bảng `promotions`. Checkout chỉ gửi các lựa chọn theo 3 slot (voucher/freeship); toàn bộ validate xung đột còn lại do Promotion Service xử lý theo stacking rules.
+> Promotion contract hiện tại chỉ còn 1 slot `PLATFORM_VOUCHER`. Checkout chỉ gửi lựa chọn voucher PLATFORM; toàn bộ validate xung đột còn lại do Promotion Service xử lý theo stacking rules.
 
 ### 1.2. Distributed Lock & Rate Limit
 
@@ -51,7 +50,7 @@ Trước khi thực hiện gom dữ liệu (Sourcing), Preview API đi qua 2 l�
 
 ### 1.3. Parallel Orchestration Pattern (Chi tiết kỹ thuật)
 
-Preview API gọi các services theo **Dependency Graph** dưới đây. Các node độc lập được gọi song song (Wave 1). Inventory là owner của routing + shipping quote orchestration cho mỗi warehouse.
+Preview API gọi các services theo **Dependency Graph** dưới đây. Các node độc lập được gọi song song (Wave 1). Inventory là owner của routing cho mỗi warehouse.
 
 ```
 Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1 — độc lập)
@@ -63,10 +62,10 @@ Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1
                 │      (trả current_price để tính giá realtime)
                 │
                 └─ [D×N] Per warehouse group (song song N kho):      (Wave 1 — độc lập)
-                    └─ Inventory: /routing-options          (Inventory gọi Shipping nội bộ)
+                    └─ Inventory: /routing-options
 
             Join (A, B, D×N, E)
-              → Build cart_context (bao gồm shipping totals mới nhất)
+              → Build cart_context
               → [C] Promotion: /calculate-discount (Wave 2 — validate only, không lock budget)
               → Validate Product Status → Calculation Engine → Sign Token → Response
 ```
@@ -76,14 +75,13 @@ Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1
   - [E] sử dụng danh sách `sku_ids` đã chọn từ request payload, nhưng `quantity` của từng SKU luôn lấy từ cart snapshot [B] (không tin `quantity` client override).
   - Nếu bất kỳ SKU nào có `status != ACTIVE` (BANNED, deleted, unavailable) → trả lỗi **422 Unprocessable Entity** kèm danh sách SKU không khả dụng, yêu cầu user xóa khỏi giỏ trước khi checkout.
   - `current_price` từ [E] được dùng trong Calculation Engine (Waterfall), không dùng `unit_price_at_add` từ Cart cho giá thực tế checkout.
-- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion `/calculate-discount` với `subtotals` + `total_shipping_fee` mới nhất.
+- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion `/calculate-discount` với `subtotals` mới nhất.
 - **Wave 3:** Waterfall price calculation → sinh session token.
 
 > **[DEEP DIVE] Tại sao luồng Sourcing phức tạp này lại cực nhanh (< 150ms)?**
-> 1. **Bảng giá nội bộ (Internal Rate Cards):** Shipping Service không gọi API 3PL ở bước Preview, chỉ tra cứu bảng giá cấu hình trên RAM/Redis (< 20ms).
-> 2. **Downstream Response Cache (per-warehouse):** Routing response của Inventory (đã gồm shipping quote) được cache theo `items_hash + address_hash` (TTL 5-10 phút). Đổi voucher không trigger gọi lại Inventory.
+> 1. **Không còn bảng giá shipping:** Phase 14 đã loại bỏ Shipping Service. Inventory chỉ chọn kho có stock đủ.
+> 2. **Downstream Response Cache (per-warehouse):** Routing response của Inventory được cache theo `items_hash + address_hash` (TTL 20 phút). Đổi voucher không trigger gọi lại Inventory.
 > 3. **Optimization Decision Tree:** Tuỳ theo loại thay đổi, chỉ gọi lại services cần thiết (xem 1.5 bên dưới).
-> 4. **Flash Sale Fast-Lane:** Cart chứa Hot SKU bỏ qua Smart Routing hoàn toàn, dùng flat-rate từ config.
 
 > **[DEEP DIVE] Soft vs Hard Allocation**
 > Checkout Preview dùng **Soft Allocation** (Sourcing mô phỏng, không khóa kho) — tránh giam hàng ảo do spam request. Hard Allocation (lock inventory) chỉ xảy ra trong Temporal Saga sau Submit.
@@ -98,10 +96,10 @@ Sau khi join tất cả results, Checkout tính giá theo trình tự Waterfall:
 ```
 1. cart_subtotal = Σ (quantity × unit_price)
 2. total_product_price = cart_subtotal − voucher_discount
-3. total_shipping_fee = Σ shipping_fee_per_warehouse
-4. final_shipping_fee = total_shipping_fee − freeship_discount
-5. final_amount = total_product_price + final_shipping_fee
+3. final_amount = total_product_price
 ```
+
+> Phase 14 đã đơn giản hóa pricing formula. Không còn shipping fee, không còn freeship discount.
 
 ### 1.5. Optimization Decision Tree (Khi Preview được gọi lại)
 
@@ -110,21 +108,14 @@ Tuỳ theo loại thay đổi, Checkout Service chỉ gọi lại đúng service
 ```
 Preview Request (đợt sau)
       │
-    ├── [Đổi Voucher]
-    │     → Chỉ gọi [C] Promotion /calculate-discount (full evaluate 3 slot)
-    │     → Cache A (address), B (cart), D×N (routing+shipping) vẫn dùng
-    │     → Có thể làm đổi eligibility Voucher
-    │     → Latency target: < 20ms
-    │
-    ├── [Đổi Freeship]
-    │     → Chỉ gọi [C] Promotion /calculate-discount (full evaluate 3 slot)
-    │     → Không gọi lại Cart hoặc Inventory routing/Shipping quote
+    ├── [Đổi Voucher PLATFORM]
+    │     → Chỉ gọi [C] Promotion /calculate-discount
+    │     → Cache A (address), B (cart), D×N (routing) vẫn dùng
     │     → Latency target: < 20ms
     │
     ├── [Đổi địa chỉ giao hàng]
     │     → Gọi [A] User Service (validate), invalidate cache D×N
-    │     → Gọi lại Inventory D×N cho tất cả warehouses (Inventory tự gọi Shipping nội bộ)
-    │     → Gọi lại Promotion [C] để tính lại theo tổng phí ship mới
+    │     → Gọi lại Inventory D×N cho tất cả warehouses
     │     → Latency target: < 120ms
     │
     └── [Đổi items (qty/add/remove)]
@@ -135,45 +126,28 @@ Preview Request (đợt sau)
 
 ### 1.5.1. Policy Chọn Voucher theo Tray (Contract UI/BE)
 
-Để đồng bộ UX và tránh side-effect khó kiểm soát, Checkout dùng policy cố định theo từng tray:
+Để đồng bộ UX và tránh side-effect khó kiểm soát, Checkout dùng policy cố định:
 
-1. **Tray Voucher**
+1. **Tray Voucher Sàn (PLATFORM_VOUCHER)**
    * Hiển thị **mã đã lưu trong ví** + **mã public của sàn** chưa lưu.
    * Cho phép thao tác **"Lưu & Chọn"** (`POST /v1/promotions/save-and-apply`) ngay tại tray.
    * Sau khi Save & Apply thành công, Frontend gọi lại `POST /v1/checkout/preview` để nhận token mới và tổng tiền mới.
-
-2. **Tray Voucher (Giảm đơn hàng) + Freeship (Giảm phí ship)**
-   * Tách rõ 2 vùng chọn mã độc lập: `VOUCHER` và `FREESHIP_VOUCHER`.
-   * Chỉ hiển thị các mã đã tồn tại trong ví user (`wallet:{user_id}:active_vouchers`).
-  * Hạn dùng mã lấy theo `user_coupon_wallets.expired_at` (mặc định 30 ngày từ lúc sở hữu); `promotions.start_time/end_time` chỉ chi phối cửa sổ claim/save mã mới.
    * Promotion Discovery có thể downgrade mã sang `BUDGET_EXHAUSTED` bằng budget guard read-time (Option A) trước khi trả gợi ý mặc định.
-   * **Không hỗ trợ Save & Apply** tại tray này để giữ luồng Checkout thuần read/evaluate.
 
-3. **Submit Path**
+2. **Submit Path**
    * `POST /v1/checkout/submit` là luồng commit nghiệp vụ (Reserve/Confirm qua Saga), **không được auto-save voucher** vào ví user.
    * Mọi ghi mới vào ví voucher phải đến từ explicit action ngoài Submit (ví dụ: Save & Apply voucher, claim campaign, worker cấp mã).
 
-### 1.6. Flash Sale — Hot SKU Bypass
+### 1.6. Warehouse Selection (Phase 14 — thay thế Service Type Pass-through)
 
-```go
-for _, warehouseGroup := range req.warehouseGroups {
-    hasHotSku := inventoryClient.CheckHotSkuFlag(warehouseGroup.SkuIds) // L1 Caffeine hit
-    if hasHotSku {
-    // Fast-Lane: vẫn gọi routing-options để lấy warehouse_id + quote đã chuẩn hóa
-    routingResult = inventoryClient.GetRoutingOptions(warehouseGroup, req.ShippingAddressId)
-    } else {
-    // Smart routing path với downstream cache
-        routingResult = getRoutingWithCache(warehouseGroup, addressHash)
-    }
-}
-```
+Phase 14 đã loại bỏ `service_type` khỏi Preview request. Logic mới: Inventory `routing-options` chọn kho có stock đủ (ưu tiên same-province). Checkout không can thiệp; toàn bộ scoring nằm trong [Warehouse Selection Engine](../inventory/smart_routing_engine.md).
 
 ### 1.7. Response Payload
 
 ```json
 {
   "checkout_token": "uuid-v4-xxx",
-  "shipping_address": {
+  "delivery_address": {
     "address_id": "addr-uuid-123",
     "full_name": "Nguyen Van A",
     "phone": "0901234567",
@@ -187,7 +161,8 @@ for _, warehouseGroup := range req.warehouseGroups {
       "image_url": "...",
       "quantity": 2,
       "unit_price": 22000000,
-      "subtotal": 44000000
+      "subtotal": 44000000,
+      "warehouse_id": 5
     }
   ],
   "subtotal": 44000000,
@@ -195,30 +170,16 @@ for _, warehouseGroup := range req.warehouseGroups {
     "promotion_id": null,
     "discount_amount": 0
   },
-  "shipping": {
-    "total_fee": 35000,
-    "estimated_delivery_date": "2026-03-15",
-    "item_shipments": [
-      {
-        "warehouse_id": 5,
-        "provider": "GHN",
-        "service": "STANDARD",
-        "fee": 35000,
-        "estimated_delivery": "2026-03-15"
-      }
-    ]
-  },
-  "freeship_voucher_applied": {
-    "promotion_id": null,
-    "shipping_discount": 0
-  },
+  "warehouse_assignments": [
+    {
+      "warehouse_id": 5,
+      "estimated_delivery_days": 2
+    }
+  ],
   "price_breakdown": {
     "total_product_amount": 44000000,
     "total_voucher_discount": 0,
-    "total_shipping_fee": 35000,
-    "shipping_discount": 0,
-    "final_shipping_fee": 35000,
-    "final_amount": 44035000
+    "final_amount": 44000000
   },
   "available_payment_methods": ["VNPAY", "MOMO", "ZALOPAY"]
 }
@@ -230,7 +191,7 @@ for _, warehouseGroup := range req.warehouseGroups {
 |:---|:---|:---|
 | User Service (address) | **500ms** | Địa chỉ cũ từ session (nếu có) |
 | Cart Service (Redis) | **50ms** | Lỗi Preview (Bắt buộc phải nhanh do gọi In-memory) |
-| Inventory /routing-options (per warehouse) | **3s** | Flat-rate config fallback |
+| Inventory /routing-options | **3s** | Flat-rate config fallback |
 | Promotion /calculate-discount | **2s** | Không áp voucher, báo user |
 | **Tổng Preview API** | **5s** | Fallback từng phần, không block toàn bộ |
 
@@ -255,10 +216,10 @@ Khách hàng thấy giá tiền hợp lý, nhấn nút "Xác Nhận Đặt Hàng
 
 2. **Kiểm tra sơ bộ & Cờ Degraded:**
     * Đọc session từ Redis. Nếu `status == SUBMITTED` (Token đã dùng), lập tức rẽ nhánh sang luồng **Client Retry (Bước 7)** để hồi phục hoặc báo lỗi.
-    * Kiểm tra cờ `user_ack_degraded_pricing == true` nếu session cảnh báo lỗi `DEGRADED_PROMOTION`/`DEGRADED_SHIPPING`. Nếu thiếu cờ, nhả Lock và từ chối `409 DEGRADED_PRICING_NOT_CONFIRMED`.
+    * Kiểm tra cờ `user_ack_degraded_pricing == true` nếu session cảnh báo lỗi `DEGRADED_PROMOTION`/`DEGRADED_STOCK`. Nếu thiếu cờ, nhả Lock và từ chối `409 DEGRADED_PRICING_NOT_CONFIRMED`.
 
 3. **Lightweight Price Staleness Check (Xem Mục 4):**
-    * Batch fetch giá gốc/khuyến mãi từ Product Cache. Validate các version của Shipping/Promotion. Tính lại Hash.
+    * Batch fetch giá gốc/khuyến mãi từ Product Cache. Validate version Promotion. Tính lại Hash.
     * Nếu **Khác Hash**: Nhả Lock, trả `409 PRICE_CHANGED`. (Session vẫn an toàn ở trạng thái `PREVIEW_READY`, client phải gọi lại Preview).
     * Nếu **Khớp Hash**: Tiếp tục.
 
@@ -270,8 +231,8 @@ Khách hàng thấy giá tiền hợp lý, nhấn nút "Xác Nhận Đặt Hàng
   * Lưu checkout payload vào Redis key riêng: `checkout:payload:{user_id}:{token}` TTL 20 phút. Payload này dùng để phục hồi (Recovery) nếu gọi Order bị đứt kết nối mạng.
 
 6. **Khởi tạo Request Đặt Hàng (Gọi Order Service):**
-    * Bắn lệnh Internal gRPC sang Order Service (Truyền toàn bộ Payload đã khóa). Kích hoạt Temporal Workflow tại Order Service theo thứ tự chuẩn: `CreateOrder -> ReserveInventory -> ReservePromotion -> InitiatePayment -> WaitPaymentSignal`.
-    * Submit path giữ nguyên nguyên tắc **read/validate/reserve**; không có thao tác auto-save voucher sàn/freeship trong bước này.
+    * Bắn lệnh Internal gRPC sang Order Service (Truyền toàn bộ Payload đã khóa, bao gồm `route_plan_id` được lưu trong session từ Preview — client không cần gửi). Kích hoạt Temporal Workflow tại Order Service theo thứ tự chuẩn: `CreateOrder -> ReserveInventory -> ReservePromotion -> InitiatePayment -> WaitPaymentSignal`.
+    * Submit path giữ nguyên nguyên tắc **read/validate/reserve**; không có thao tác auto-save voucher sàn trong bước này.
   * Nếu pre-payment timeout/cancel, nhánh `RollbackPromotionActivity` chỉ nhả reservation runtime (`reserved_*`), không đổi trạng thái ví voucher trong DB.
     * **Nếu Order Service nhận:** Trả về `[order_id, payment_url]`.
       * Dọn dẹp Lock, dọn dẹp Payload. Cache lại Response (Idempotent response cache). Checkout trả URL về cho Frontend.
@@ -308,7 +269,7 @@ Ví dụ payload 409:
     {
       "promotion_id": 30,
       "reason": "BUDGET_EXHAUSTED",
-      "user_message": "Mã Freeship đã hết ngân sách."
+      "user_message": "Mã giảm giá đã hết ngân sách."
     },
     {
       "promotion_id": 10,
@@ -331,14 +292,14 @@ Ví dụ payload 409:
 
 Do API Preview phải gọi sang nhiều dịch vụ downstream, mạng nội bộ (Internal Network) luôn có tỉ lệ gặp sự cố (Network Partition). Checkout Service áp dụng kỹ thuật **Circuit Breaker / Fallback**:
 *   *Nếu Promotion Service timeout:* Trả trạng thái `DEGRADED_PROMOTION` và bắt buộc UI hiển thị hộp xác nhận "Thanh toán không áp mã giảm giá tạm thời" trước khi cho Submit.
-*   *Nếu Inventory routing timeout hoặc Shipping quote timeout trong nhánh Inventory:* Trả trạng thái `DEGRADED_SHIPPING` kèm phí fallback cấu hình (ví dụ nội thành 20k, ngoại thành 35k) và bắt buộc UI xác nhận rõ với user trước khi Submit.
-*   Mọi Submit ở chế độ degraded phải mang cờ `user_ack_degraded_pricing = true`. Thiếu cờ này, backend trả `409 DEGRADED_PRICING_NOT_CONFIRMED`.
+* *Nếu Inventory routing timeout:* Trả trạng thái `DEGRADED_STOCK` và bắt buộc UI hiển thị hộp xác nhận "Thanh toán với giá tạm thời" trước khi cho Submit.
+* Mọi Submit ở chế độ degraded phải mang cờ `user_ack_degraded_pricing = true`. Thiếu cờ này, backend trả `409 DEGRADED_PRICING_NOT_CONFIRMED`.
 
 ---
 
 ## 4. Lightweight Price Staleness Check (Submit Path)
 
-Checkout Preview tạo `pricing_summary` snapshot lưu Redis TTL 20 phút. Submit dùng `pricing_summary` từ Redis — nhưng khoảng thời gian 20 phút đủ để: giá markdown hết hạn, admin thay đổi giá, phí ship thay đổi, coupon hết hạn. Để phát hiện giá đã thay đổi trước khi tạo Order, Submit path thực hiện kiểm tra nhẹ sau:
+Checkout Preview tạo `pricing_summary` snapshot lưu Redis TTL 20 phút. Submit dùng `pricing_summary` từ Redis — nhưng khoảng thời gian 20 phút đủ để: giá markdown hết hạn, admin thay đổi giá, coupon hết hạn. Để phát hiện giá đã thay đổi trước khi tạo Order, Submit path thực hiện kiểm tra nhẹ sau:
 
 > [!NOTE]
 > Dù Discovery đã có budget guard read-time (Option A), exhausted budget vẫn có thể xảy ra trong race ngắn giữa Preview và Submit. Vì vậy Submit bắt buộc giữ Reserve làm nguồn quyết định cuối cùng.
@@ -353,9 +314,8 @@ Sau khi Frontend xin cấp Lock thành công (bước 1), **trước khi** chạ
   - Gọi Product Service gRPC `GetBatchProductSkus` để lấy `original_price` + `promotional_price` + `best_price` hiện tại.
   - Product Service tự xử lý Redis/cache miss nội bộ và trả dữ liệu chuẩn hợp đồng.
 2. **Batch fetch phiên bản tính giá hiện tại**:
-  - Inventory Routing: lấy `route_signature` (hoặc rebuild deterministic từ route plan) + `shipping_rate_version`.
   - Promotion: lấy `promotion_rule_version` hiện hành (hard check); `promotion_budget_version` chỉ dùng telemetry/diagnostic.
-3. **Tính lại hash** = SHA-256(sorted sku prices + shipping + discount + route_signature + shipping_rate_version + promotion_rule_version).
+3. **Tính lại hash** = SHA-256(sorted sku prices + discount + promotion_rule_version).
 4. **So sánh** với `pricing_hash` trong session (xem [Caching Schema](checkout_caching_schema.md#11-cấu-trúc-key--data)):
    - **Khớp** → Đi tiếp sang Bước 4 (Lua Script khóa token).
    - **Không khớp** → Gỡ Distributed Lock, trả lỗi **409 Conflict** với body:
@@ -372,11 +332,11 @@ Sau khi Frontend xin cấp Lock thành công (bước 1), **trước khi** chạ
 
 | Thao tác | Latency |
 |:---|:---|
-| Product/Shipping/Promotion version lookup (cache hit) | ~2-4ms |
+| Product/Promotion version lookup (cache hit) | ~2-4ms |
 | Hash calculation | ~0.2ms |
 | **Tổng overhead** | **< 8ms** — chấp nhận được cho Submit path |
 
-> **Lưu ý:** Submit path **bắt buộc** check lại phiên bản Shipping/Promotion (hoặc hash tương đương), không chỉ giá sản phẩm. Mục tiêu là tránh lệch tiền cuối cùng giữa Preview và Commit.
+> **Lưu ý:** Submit path **bắt buộc** check lại phiên bản Promotion, không chỉ giá sản phẩm. Mục tiêu là tránh lệch tiền cuối cùng giữa Preview và Commit.
 
 > **[DEEP DIVE] Triết lý đánh đổi của Price Staleness Check (Phát hiện "hàng thiu")**
 > Mặc dù Snapshot báo giá nằm trong Redis 20 phút, nếu platform sửa giá gốc trên hệ thống thì Snapshot trở thành "hàng thiu". Tuy nhiên, hệ thống **KHÔNG** soi lại toàn bộ hóa đơn từ đầu (việc quét Inventory & Shipping lại rất tốn kém).

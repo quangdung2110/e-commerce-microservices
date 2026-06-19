@@ -87,7 +87,9 @@ Gom dữ liệu từ 2 nguồn chính
 Lưu ý về Budget Guard read-time: Đây là bước bổ sung để giảm thiểu tình trạng hiển thị mã đã cạn ngân sách ở Discovery, từ đó cải thiện trải nghiệm người dùng. Tuy nhiên, cơ chế này không thay thế cho commit-time reserve ở Submit. Quyết định cuối cùng về exhausted budget vẫn do ReservePromotionActivity khi khách hàng submit đơn hàng. 
 Nếu guard timeout hoặc gặp lỗi Redis, hệ thống sẽ fail-open ở Discovery nhưng vẫn giữ correctness ở Submit
 
-Luồng mở khay "Mã của Sàn" hoặc "Mã giảm giá phí ship" tương tự nhưng chỉ đọc từ cache ví mà không trộn thêm mã public nào vào response của hai tray này, đồng thời chỉ có mã sàn (owner_type = PLATFORM) mới được hiển thị ở hai tray này
+Luồng mở khay "Mã của Sàn" tương tự nhưng chỉ đọc từ cache ví mà không trộn thêm mã public nào vào response, đồng thời chỉ có mã sàn (owner_type = PLATFORM) mới được hiển thị.
+
+> **SUPERSEDED by Phase 14:** Khay "Mã giảm giá phí ship" đã bị xóa. Sau Phase 14, hệ thống chỉ còn 1 slot PLATFORM_VOUCHER (PERCENTAGE/FIXED_AMOUNT). Pricing formula đơn giản hóa còn `final_amount = subtotal - voucher_discount`.
 
 
 6. Luồng ghi DB quan trọng nhất là sync path do Order gọi qua Temporal Activity, không phải thông qua Kafka Worker nhận sự kiện từ Order Service

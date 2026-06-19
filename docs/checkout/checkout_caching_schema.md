@@ -10,7 +10,6 @@
 *   [Cart Caching Schema](../cart/cart_caching_schema.md) — Cart data source
 *   [Promotion Redis Design](../promotion/redis_caching_design.md) — Budget reservation
 *   [Inventory Redis Design](../inventory/inventory_redis_design.md) — Stock check
-*   [Shipping Workflow](../shipping/shipping_workflow.md#1-api-calculate-shipping-fee) — Shipping fee calculation
 
 ---
 
@@ -32,16 +31,12 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 {
   "token": "uuid-v4-checkout-token-xxxxx",
   "status": "PREVIEW_READY",
-  "shipping_address_id": "addr-uuid-123",
+  "delivery_address_id": "addr-uuid-123",
   "cart_snapshot": "{\"items\":[...]}",
-  "route_version": "route-signature-v3-4",
-  "route_signature": "sha256-route-xyz...",
-  "shipping_rate_version": "2026-03-14T09:00:00Z",
   "promotion_rule_version": "2026-03-14T09:00:00Z",
   "promotion_budget_version": "2026-03-14T09:00:02Z",
   "selected_voucher_id": null,
-  "selected_freeship_voucher_id": null,
-  "pricing_summary": "{\"total_product_amount\":44000000, \"total_voucher_discount\":50000, \"total_shipping_fee\":63000, \"shipping_discount\":0, \"final_amount\":44013000}",
+  "pricing_summary": "{\"total_product_amount\":44000000, \"total_voucher_discount\":50000, \"final_amount\":43950000}",
   "pricing_hash": "sha256-abc123...",
   "items_hash": "sha256-def456...",
   "created_at": "2026-02-28T10:00:00Z",
@@ -53,15 +48,13 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 > **Field `selected_vouchers`:** Map voucher đã chọn. Mỗi lần user đổi voucher, chỉ cần `HSET ... selected_voucher_id ...` — không serialize lại toàn bộ session. Atomic update per field là lợi thế của Redis Hash.
 
-> Session Checkout không lưu cờ voucher độc quyền. Quy tắc cộng dồn voucher được xác định bởi Promotion Service theo mô hình 3 slot và kết quả `pricing_summary` trả về.
+> Session Checkout không lưu cờ voucher độc quyền. Quy tắc cộng dồn voucher được xác định bởi Promotion Service theo mô hình 1 slot PLATFORM và kết quả `pricing_summary` trả về.
 
-> **Field `route_version`:** Dấu phiên bản routing snapshot hiện hành. Dùng trong Submit để phát hiện route plan đã thay đổi dù giá sản phẩm chưa đổi.
+> **Phase 14:** `rate_card_version` đã bị loại bỏ (Shipping Service đã bị xóa).
 
-> **Field `route_signature`:** Chữ ký route deterministic được sinh từ route plan đã chuẩn hóa (bao gồm assignment item->warehouse/courier). Đây là trường dùng trong `pricing_hash` để chặn drift route giữa Preview và Submit.
+> **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_voucher_discount + promotion_rule_version`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path). Canonical: dùng `total_voucher_discount` (không dùng `total_discount_amount` hay `total_platform_discount` — đã deprecated).
 
-> **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_shipping_fee + total_discount_amount + route_signature + shipping_rate_version + promotion_rule_version`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path).
-
-> **Field `promotion_budget_version`:** Lưu để telemetry/diagnostic stale budget (read-time). Trường này không phải hard blocker trong phép so sánh `pricing_hash`; exhausted budget cuối cùng vẫn được chốt ở `ReservePromotionActivity` khi Submit.
+> **Đơn giản hóa:** Bỏ field `route_version` (chỉ có 1 Warehouse Selection algorithm) và `route_signature` (thừa vì scoring đã deterministic).
 
 ### 1.2. Lifecycle
 
@@ -75,9 +68,9 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 ### 1.3. Tại sao Hash thay vì String?
 
-- **Selective Update:** Khi user thay đổi shipping address, chỉ cần `HSET ... shipping_address ... selected_shipping ...` — không cần serialize/deserialize toàn bộ session.
+- **Selective Update:** Khi user thay đổi delivery address, chỉ cần `HSET ... delivery_address ... selected_voucher ...` — không cần serialize/deserialize toàn bộ session.
 - **Atomic Read:** `HGETALL` lấy về toàn bộ checkout summary trong 1 round-trip.
-- **Selective Read:** API `GET /checkout/shipping-options` chỉ cần `HGET ... shipping_options`.
+- **Selective Read:** API `GET /checkout/warehouse-options` chỉ cần `HGET ... warehouse_options`.
 
 ---
 
@@ -85,22 +78,19 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 ### 2.1. Inventory Route Cache
 
-**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options` (Inventory tự gọi Shipping nội bộ), cache kết quả route plan + shipping quote trong 5 phút.
-**TTL:** 5 phút
+**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options`, cache kết quả route plan trong **20 phút** (Phase 14 đã loại bỏ TTL 10 phút ngắn do Shipping).
+**TTL:** 20 phút
 **Invalidation:**
 - User thay đổi quantity hoặc thêm/xóa item tại Cart Service → `items_hash` thay đổi → cache miss tự nhiên.
 - User đổi địa chỉ giao hàng → `address_hash` thay đổi → cache miss tự nhiên.
-- Inventory Service produce `INVENTORY_QUANTITY_CHANGED` → Global L1 flag (Caffeine) → bypass cache.
 
 > **Key pattern:** `checkout:routing:{items_hash}:{address_hash}`. Cache được invalidate tự nhiên khi items hoặc address thay đổi.
 
-> **Quy tắc recompute kèm theo:** Đổi voucher chỉ trigger Promotion evaluate lại; không invalidate route cache. Riêng đổi địa chỉ vẫn phải evaluate Promotion lại sau khi có tổng phí ship mới.
+> **Quy tắc recompute kèm theo:** Đổi voucher chỉ trigger Promotion evaluate lại; không invalidate route cache.
 
-### 2.2. Shipping Fee Cache
+### 2.2. Warehouse Options Cache
 
-**Trạng thái:** Deprecated.
-
-Checkout không duy trì cache shipping riêng nữa. Shipping quote được embed trong Inventory route response và nằm cùng key tại mục 2.1 để tránh lệch dữ liệu giữa routing và shipping.
+**Phase 14 đã loại bỏ:** section Shipping Fee Cache. Pricing formula không còn shipping fee; checkout không duy trì cache shipping riêng nữa.
 
 > [!NOTE]
 > Cache này chỉ áp dụng cho **cùng 1 user session** trong quá trình checkout. Không phải global cache. Khi session hết hạn, cache tự xóa.
@@ -115,7 +105,7 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 
 > **Voucher Tray tái sử dụng Wallet Cache:** Khi user mở tray "Chọn Voucher", Promotion Service lấy `wallet:{user_id}:active_vouchers` → filter các mã phù hợp → merge thêm mã public của sàn chưa lưu. Cache hit path không tạo thêm I/O nào.
 
-> **Voucher/Freeship chỉ đọc từ Wallet:** Khi user mở tray "Voucher" hoặc "Voucher giảm phí ship", Promotion Service chỉ đọc danh sách đã lưu từ `wallet:{user_id}:active_vouchers` rồi evaluate rule. Không trộn thêm mã chưa lưu vào response của hai tray này.
+> **Voucher Tray chỉ đọc từ Wallet:** Khi user mở tray "Voucher Sàn", Promotion Service chỉ đọc danh sách đã lưu từ `wallet:{user_id}:active_vouchers` rồi evaluate rule. Không trộn thêm mã chưa lưu vào response.
 
 > **Claim Window vs Use Window:** Promotion chỉ dùng `promotions.start_time/end_time` để quyết định còn được claim/save mã mới; quyền sử dụng mã đã sở hữu khi checkout dựa trên `user_coupon_wallets.expired_at` (policy hiện tại: 30 ngày từ lúc acquire/save).
 
@@ -213,13 +203,13 @@ Giới hạn số lượng thread chạy song song của cùng 1 user, tránh ra
 
 ### 5.2. Anti-Tampering
 
-Tất cả tính toán (giá, shipping fee, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code, payment_method). Backend tự tính lại, so khớp, rồi mới tạo order.
+Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code, payment_method). Backend tự tính lại, so khớp, rồi mới tạo order.
 
 ```
 Client gửi: { token, address_id: 5, promotion_code: "HAPPYBDAY", payment_method: "VNPAY" }
 Server: Bóc token → Redis session → Lấy pricing_summary đã tính sẵn ở Preview
 Server: Validate address_id thuộc user + promotion_code match session → Pass
-Server: Gửi toàn bộ sang Order Service: { items, amount, shipping_fee, discount, ... } -- tất cả từ Redis
+Server: Gửi toàn bộ sang Order Service: { items, amount, discount, ... } -- tất cả từ Redis
 ```
 
 > **Không tin client-sent amounts.** Mọi số tiền đều từ server calculation.

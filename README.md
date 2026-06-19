@@ -43,7 +43,7 @@ e-commerce-microservices/
 │   │   └── src/
 │   └── services/
 │       ├── promotion-service/   # Khuyến mãi & voucher
-│       └── shipping-service/    # Vận chuyển & theo dõi đơn hàng
+│       └── (shipping-service removed in Phase 14)
 │
 └── docs/                        # Tài liệu thiết kế chi tiết
     ├── golang-common-layout.md  # Go project layout reference
@@ -55,7 +55,6 @@ e-commerce-microservices/
     ├── checkout/                # Checkout flow
     ├── payment/                 # Payment processing
     ├── inventory/               # Inventory management
-    ├── shipping/                # Shipping & delivery
     ├── promotion/               # Promotions & coupons
     ├── search/                  # Full-text search
     ├── review/                  # Product reviews
@@ -81,7 +80,6 @@ e-commerce-microservices/
 |---------|--------|
 | **Common Module** | Shared library - BaseEvent, EventPublisher, EventStore, Kafka config |
 | **Promotion Service** | Rule engine, quản lý coupon/voucher, chiến dịch khuyến mãi |
-| **Shipping Service** | Tích hợp nhà vận chuyển, theo dõi đơn hàng, state machine |
 
 ### Services được thiết kế (Documentation)
 
@@ -108,7 +106,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | Công nghệ | Vai trò |
 |------------|---------|
 | **Go** | High-concurrency services (cart, user, gateway) |
-| **Java 21 / Spring Boot 4** | Business logic services (promotion, shipping) |
+| **Java 21 / Spring Boot 4** | Business logic services (promotion) |
 | **Traefik v3.x** | API Gateway, reverse proxy, load balancing |
 | **gRPC + Protobuf** | Inter-service communication |
 
@@ -161,9 +159,6 @@ cd java/common
 # Build từng service
 cd java/services/promotion-service
 mvn clean package
-
-cd java/services/shipping-service
-mvn clean package
 ```
 
 ### Chạy với Docker Compose
@@ -177,8 +172,8 @@ docker-compose up -d
 cd go/services/user-service
 docker-compose up -d
 
-# Shipping Service
-cd java/services/shipping-service
+# Promotion Service
+cd java/services/promotion-service
 docker-compose up -d
 ```
 

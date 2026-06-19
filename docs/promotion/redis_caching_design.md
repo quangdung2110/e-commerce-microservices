@@ -125,7 +125,7 @@ return 1 -- SUCCESS
 ```
 
 ### Script 2B: Batch Reserve all-or-nothing (Bắt buộc cho multi-voucher)
-**Ngữ cảnh:** 1 đơn có nhiều voucher (platform/platform/freeship). Mục tiêu là không được reserve nửa chừng.
+**Ngữ cảnh:** 1 đơn có thể áp tối đa 1 voucher PLATFORM (sau Phase 14). Mục tiêu là không được reserve nửa chừng.
 
 ```lua
 -- Script 2B - Batch Reserve All-or-Nothing

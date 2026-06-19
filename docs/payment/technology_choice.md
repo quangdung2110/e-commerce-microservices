@@ -86,7 +86,7 @@ Daily CronJob đối soát cần:
 | **Kafka** | Spring Kafka (Webhook raw dump, Outbox relay, Event production) |
 | **Redis** | Lettuce (Idempotency, Distributed Lock) |
 | **Security** | Java Crypto (`javax.crypto`) — HMAC-SHA256/512 |
-| **HTTP Client** | Spring WebClient / OkHttp (gọi 3PL payment APIs) |
+| **HTTP Client** | Spring WebClient / OkHttp (gọi payment gateway APIs) |
 | **Scheduling** | Spring `@Scheduled` (Reconciliation, Expiration Scanner, Refund Poller) |
 | **Build** | Maven + JDK 21 |
 

@@ -38,7 +38,7 @@ Quản lý danh sách địa chỉ nhận hàng của User.
 | `recipient_name` | `VARCHAR(200)` | Not Null | Tên người nhận hàng (có thể nhận giùm). |
 | `phone_number` | `VARCHAR(20)` | Not Null | SĐT người nhận hàng. |
 | `address_line` | `VARCHAR(500)` | Not Null | Địa chỉ chi tiết (Tòa nhà, số nhà, tên đường). |
-| `ward_id` | `VARCHAR(20)` | Indexed, Not Null | ID Phường/Xã (liên kết hệ thống Shipping Master Data). |
+| `ward_id` | `VARCHAR(20)` | Indexed, Not Null | ID Phường/Xã (master data địa giới hành chính Việt Nam). |
 | `district_id` | `VARCHAR(20)` | Indexed, Not Null | ID Quận/Huyện. |
 | `city_id` | `VARCHAR(20)` | Indexed, Not Null | ID Tỉnh/Thành phố. |
 | `created_at` | `TIMESTAMP` | Default NOW() | |

@@ -9,8 +9,7 @@
 
 **Cross-Service References:**
 * [Product Events - Consumed](../product/product_events.md) — Product consume `INVENTORY_STOCK_CHANGED` (cập nhật display cache)
-* [Shipping Events](../shipping/shipping_events.md#34-shipment_returned) — Inventory consume `SHIPMENT_RETURNED`
-* [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund
+* [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund; Order consume `INVENTORY_SHIP_TO_CUSTOMER` để trigger item FSM PROCESSING → DELIVERED
 
 ---
 
@@ -26,6 +25,7 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 | `INVENTORY_STOCK_MUTATION` (`change_type = ORDER_CANCELLED` hoặc `RESERVATION_EXPIRED`) | Redis Stream Relay Worker | `sku_id` |
 | `INVENTORY_STOCK_CHANGED` (với `change_type` tương ứng) | Debezium CDC (DB outbox) | `sku_id` |
 | `INVENTORY_RETURN_RECEIVED_ALL` (giữ nguyên) | Debezium CDC (DB outbox) | `order_id` |
+| `INVENTORY_SHIP_TO_CUSTOMER` (Phase 14 — mới) | Debezium CDC (DB outbox) | `order_id` |
 
 **Cơ chế Produce theo loại Event:**
 
@@ -49,26 +49,23 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 
 ### 2.2 Topics Consume
 
-| Topic Name | Partition Key | Producer | Event Types | Mô tả |
-|:---|:---|:---|:---|:---|
-| `t.shipping.events` | `order_id` | Shipping Service | `SHIPMENT_RETURNED` | Nhập trả kho khi kiện hàng hoàn về warehouse |
-
-> Partition key theo event scope: `sku_id` cho sự kiện tồn kho mức SKU, `order_id` cho `INVENTORY_RETURN_RECEIVED_ALL`.
+> **Phase 14 đã loại bỏ:** Inventory Service không còn consume `t.shipping.events` (Shipping Service đã bị xóa). Trigger restock giờ là admin API `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'`.
 
 ---
 
 ## 3. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
-Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
+Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem canonical tại [Service Contract Matrix §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper)):
 
 * `event_id`: UUID của sự kiện.
 * `event_type`: Loại sự kiện.
 * `aggregate_type`: Cố định `Inventory`.
 * `aggregate_id`: `sku_id` với sự kiện mức SKU, hoặc `order_id` với `INVENTORY_RETURN_RECEIVED_ALL`.
 * `correlation_id`: Temporal Workflow ID hoặc upstream request ID.
+* `business_id`: `order_id` cho cross-service routing; `sku_id` cho stream-internal events.
 * `timestamp`: ISO 8601 UTC.
 * `source`: Cố định `inventory-service`.
-* `schema_version`: Phiên bản schema payload (khuyến nghị, hiện tại `1`).
+* `schema_version`: Bắt buộc `1` (xem [Service Contract Matrix §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper)).
 * `payload`: JSON Object chi tiết.
 
 ---
@@ -170,7 +167,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
 | `ORDER_CANCELLED` | sau Ledger Worker ghi release |
 | `RESERVATION_EXPIRED` | sau Ledger Worker ghi release do timeout |
 | `ADMIN_RESTOCK` | Restock API |
-| `ORDER_RETURNED_RESTOCK` | SHIPMENT_RETURNED consumer |
+| `ORDER_RETURNED_RESTOCK` | Admin Restock với `reference_type='ORDER_RETURNED_RESTOCK'` (Phase 14: không còn SHIPMENT_RETURNED consumer) |
 | `ADMIN_ADJUSTMENT` | (chưa implement) |
 
 **Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
@@ -264,34 +261,41 @@ Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay th
 
 ---
 
-## 5. Events Tiêu Thụ (Consumed Events)
+### 4.4. INVENTORY_SHIP_TO_CUSTOMER (Phase 14 — mới)
 
-Inventory Service consume thêm event logistics từ Shipping:
-
-### 5.1. SHIPMENT_RETURNED
+**Ngữ cảnh:** Admin xác nhận kho đã xuất hàng cho khách (qua API `POST /v1/inventory/ship-to-customer`). Trigger này thay thế cho `SHIPMENT_STATUS_UPDATED` từ Shipping Service (đã bị xóa).
+**Consumer chính:** Order Service (`order-inventory-ship-consumer`) → cập nhật `order_items.status = DELIVERED`.
 
 ```json
 {
-  "event_type": "SHIPMENT_RETURNED",
+  "event_id": "123e4567-e89b-12d3-a456-426614174005",
+  "event_type": "INVENTORY_SHIP_TO_CUSTOMER",
+  "aggregate_type": "Inventory",
+  "aggregate_id": "10001",
+  "correlation_id": "wf-10001",
+  "timestamp": "2026-03-02T16:00:00Z",
+  "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
-    "shipment_id": 3001,
     "order_id": 10001,
-    "order_item_id": 2001,
-    "returned_to_warehouse_id": 5,
-    "return_reason": "CUSTOMER_RETURN",
-    "items": [
-      {
-        "sku_id": "sku-001",
-        "product_id": "prod-uuid-001",
-        "quantity": 2
-      }
-    ],
-    "returned_at": "2026-03-04T10:00:00Z"
+    "warehouse_id": 5,
+    "shipped_at": "2026-03-02T16:00:00Z",
+    "courier_note": "Đã bàn giao cho đơn vị vận chuyển nội bộ"
   }
 }
 ```
 
-`shipment_id`, `order_item_id` và `items[]` là bắt buộc để idempotency + restock chính xác.
+> Order Service consumer sẽ tự động xác định `order_item_ids[]` thông qua `inventory_reservations` table (tất cả reservation rows chưa DEDUCTED? — thực ra là PROCESSING state của order_item).
+
+---
+
+## 5. Events Tiêu Thụ (Consumed Events)
+
+> **Phase 14 đã loại bỏ:** Inventory Service không còn consume events từ Shipping Service.
+
+### 5.1. (Removed in Phase 14)
+
+Trước Phase 14, Inventory Service consume `SHIPMENT_RETURNED` từ `t.shipping.events`. Sau khi loại bỏ Shipping Service, trigger restock giờ là admin API `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` (xem [Endpoints §2](inventory_endpoints.md#2-post-v1inventoryrestock)).
 
 ### 5.2. Internal command events (trong cùng topic)
 

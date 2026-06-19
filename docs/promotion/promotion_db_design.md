@@ -35,8 +35,8 @@ Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `
     *   **`UNLIMITED_ALL`**: Mã do sàn tạo ra có thể gửi tới toàn user (VD: Chúc mừng sinh nhật, Chào mừng new user). Không cần quản lý tồn kho ngặt nghèo.
     *   **`LIMITED_FLASH`**: Mã "Săn" do Sàn tung ra, có giới hạn ngân sách (VD: Flash Sale toàn sàn mã giảm 500k chỉ có 100 lượt). User phải tranh giành.
     *   **`PLATFORM_VOUCHER`**: Mã do Platform (Admin) tự tạo cho riêng nền tảng mình, có ngân sách giới hạn.
-*   `discount_type`: VARCHAR(50) - (PERCENTAGE, FIXED_AMOUNT, FREE_SHIPPING)
-    > Với mô hình Platform do Admin quản lý trực tiếp (không có Seller), Admin có thể tạo voucher thuộc mọi loại `discount_type` bao gồm cả `FREE_SHIPPING`, `PERCENTAGE`, và `FIXED_AMOUNT`.
+*   `discount_type`: VARCHAR(50) - (PERCENTAGE, FIXED_AMOUNT)
+    > Với mô hình không có Seller, Admin chỉ tạo voucher thuộc loại `discount_type` là `PERCENTAGE` hoặc `FIXED_AMOUNT`.
 *   `discount_value`: DECIMAL(10,2) (Giá trị giảm, vd: 10%, hoặc 50000đ)
 *   `max_discount_amount`: DECIMAL(10,2) (Giảm tối đa bao nhiêu, áp dụng cho loại PERCENTAGE)
 *   `min_purchase_amount`: DECIMAL(10,2) (Điều kiện giá trị đơn hàng tối thiểu để được áp dụng mã. Đưa ra ngoài JSONB để truy vấn nhanh trên giao diện "Gợi ý mã khuyến mãi").
@@ -92,9 +92,9 @@ Theo cách phân loại mới, mã `LIMITED_FLASH` là mã chung nhưng số lư
     
 
 ### 1.5. `user_coupon_wallets` (Ví Voucher của User)
-Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promotion_id)`. Một user có thể sở hữu nhiều voucher đồng thời (mô hình slot theo platform + platform + freeship), nhưng mỗi promotion chỉ có tối đa 1 dòng trạng thái cho user đó.
+Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promotion_id)`. Mỗi user có thể sở hữu nhiều voucher PLATFORM, nhưng mỗi `promotion_id` chỉ có tối đa 1 dòng trong ví cho user đó.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `user_id`: BIGINT (Index)
+*   `user_id`: `UUID` (Index, canonical chuẩn hóa toàn hệ thống; xem [Service Contract Matrix §0.1](../_contracts/CONTRACT_MATRIX.md#01-id-convention))
 *   `promotion_id`: BIGINT (Foreign Key -> `promotions.id`)
 *   `status`: VARCHAR(50) (SAVED, USED, EXPIRED)
 *   `saved_at`: TIMESTAMPTZ (Mốc user sở hữu mã; đóng vai trò `acquired_at` theo policy hiện tại)
@@ -113,7 +113,7 @@ Bảng này quản lý trạng thái voucher theo từng cặp `(user_id, promot
 ### 1.6. `coupon_usages` (Sổ cái Phân tán - Ledger & Audit Trail)
 Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là bảng quan trọng nhất để đối soát dòng tiền và hoàn mã.
 *   `id`: BIGSERIAL PRIMARY KEY
-*   `user_id`: BIGINT **(Index)** — Phục vụ truy vấn "Lịch sử voucher của tôi" (`GET /users/{id}/coupon-history`).
+*   `user_id`: `UUID` **(Index)** — Canonical chuẩn hóa toàn hệ thống; phục vụ truy vấn "Lịch sử voucher của tôi" (`GET /users/{id}/coupon-history`). Xem [Service Contract Matrix §0.1](../_contracts/CONTRACT_MATRIX.md#01-id-convention).
 *   `promotion_id`: BIGINT
 *   `order_id`: BIGINT (Index)
 *   `discount_amount`: DECIMAL(10,2) (Số tiền thực tế đã giảm)
@@ -147,7 +147,7 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
   * Luồng sync qua Temporal (`/confirm`, `/cancel`, `/cancel-confirmed`, `/refund`): nhận `idempotency_key/request_id` từ Order và ghi thẳng vào `event_id`.
   * Luồng async qua Kafka (`ORDER_PAID/CANCELLED/REFUNDED`): lấy đúng `event_id` từ Kafka envelope và ghi thẳng vào `event_id`.
 *   `order_id`: BIGINT **(Index)** — Hỗ trợ truy vấn đối soát "Tìm tất cả action đã xử lý cho đơn hàng X".
-*   `promotion_id`: BIGINT **(Index)** — Bắt buộc để phân biệt 1 đơn áp nhiều voucher (platform/platform/freeship).
+*   `promotion_id`: BIGINT **(Index)** — Bắt buộc để phân biệt 1 đơn áp nhiều voucher PLATFORM.
 *   `action_type`: VARCHAR(50) 
     *   `REDEEM_COUPON`: Đánh dấu đơn hàng thành công, trừ lượng Budget đã Reservation.
     *   `CANCEL_COUPON`: Đơn hàng bị huỷ, nhả lại Budget đã khóa về Available.
@@ -181,34 +181,28 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 ---
 ## 2. Quy tắc Áp dụng Voucher (Stacking & Sequencing)
 Mô hình voucher theo chuẩn platformee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
+### 2.1. Giới hạn Voucher theo Slot (PLATFORM only)
 
-### 2.1. Giới hạn Voucher theo Slot (Voucher + Freeship)
-Một đơn hàng (có thể gồm nhiều platform) áp dụng theo slot:
-* mỗi **platform** tối đa 1 `PLATFORM_VOUCHER`
+Một đơn hàng áp dụng theo slot:
+
 * toàn đơn tối đa 1 `PLATFORM_VOUCHER`
-* toàn đơn tối đa 1 `FREESHIP_VOUCHER`
 
-Tổng số voucher có thể áp dụng là tối đa 2: 1 Voucher giảm giá + 1 Voucher freeship.
+Tổng số voucher có thể áp dụng là tối đa 1 (chỉ còn PLATFORM sau Phase 14).
 
 Sơ đồ slot:
 
 ```
-┌───────────────────────────────────────────────────────────────────┐
-│  SLOT 1: VOUCHER (≤ 1 mã giảm giá toàn đơn — PERCENTAGE/FIXED)  │
-│  SLOT 2: FREESHIP (≤ 1 mã miễn phí vận chuyển toàn đơn)        │
-└───────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SLOT 1: PLATFORM VOUCHER (≤ 1 mã giảm giá toàn đơn — PERCENTAGE/FIXED) │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Mapping chi tiết từng Slot:**
+**Mapping chi tiết Slot:**
 
 | Slot | Điều kiện | Giải thích |
 |:---|:---|:---|
-| **SLOT 1: platform Voucher** | `deleted_owner_type = 'admin'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Một platform chỉ được chọn **1 Voucher duy nhất**; mỗi platform trong đơn có 1 slot riêng |
-| **SLOT 2: Platform Voucher** | `deleted_owner_type = 'PLATFORM'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Giảm tổng giá trị sản phẩm sau khi trừ Voucher platform |
-| **SLOT 3: Freeship Voucher** | `deleted_owner_type = 'PLATFORM'` + `discount_type = 'FREE_SHIPPING'` | Giảm/miễn phí vận chuyển toàn đơn; **chỉ Platform** được tạo |
+| **SLOT 1: PLATFORM Voucher** | `deleted_owner_type = 'PLATFORM'` + `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Một đơn hàng chỉ được chọn **1 Voucher duy nhất** (toàn đơn) |
 
-> [!IMPORTANT]
-> **platform không được tạo Freeship Voucher.** Slot 3 chỉ dành riêng cho Platform. Sàn đã có cơ chế mạnh để hỗ trợ phí ship cho khách, platform không cần và không nên sành vào slot này.
 
 ### 2.2. Mapping với Order Service (`order_promotions.promotion_type`)
 `promotions.type` và `order_promotions.promotion_type` là hai chiều phân loại khác nhau, không được dùng thay thế cho nhau.
@@ -216,23 +210,22 @@ Sơ đồ slot:
 | Trường | Ý nghĩa |
 |:---|:---|
 | `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `LIMITED_FLASH`, `PLATFORM_VOUCHER`) |
-| `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`, `SHIPPING_DISCOUNT`) |
+| `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`) |
 
 Quy tắc map bắt buộc:
-* `discount_type = FREE_SHIPPING` -> `order_promotions.promotion_type = SHIPPING_DISCOUNT`
 * `discount_type IN (PERCENTAGE, FIXED_AMOUNT)` -> `order_promotions.promotion_type = CART_DISCOUNT`
+
 
 ### 2.3. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
 Giá trị thanh toán cuối cùng tính theo trình tự ưu tiên (Waterfall):
-1.  **Giá gốc (Original Price):** Giá hiển thị trên trang sản phẩm (đã bao gồm Markdowns/Price Slashes nếu có).
-2.  **Bước 1: Áp Voucher giảm giá:** Giảm trên tổng giá trị sản phẩm.
-    *   `subtotal_after_voucher = subtotal - voucher_discount`
-3.  **Bước 2: Áp Freeship Voucher:** Áp dụng riêng cho Phí vận chuyển, không ảnh hưởng đến giá trị sản phẩm.
-    *   `final_shipping_fee = total_shipping_fee - freeship_discount`
-4.  **Tổng cộng:**
-    *   `final_amount = subtotal_after_voucher + final_shipping_fee`
 
-> Với mô hình không có Seller, waterfall chỉ còn 2 bước đơn giản.
+1.  **Giá gốc (Original Price):** Giá hiển thị trên trang sản phẩm (đã bao gồm Markdowns/Price Slashes nếu có).
+2.  **Bước 1: Áp Voucher PLATFORM:** Giảm trên tổng giá trị sản phẩm.
+    *   `subtotal_after_voucher = subtotal - voucher_discount`
+3.  **Tổng cộng:**
+    *   `final_amount = subtotal_after_voucher`
+
+> Với mô hình không có Seller và không có freeship (sau Phase 14), waterfall chỉ còn 1 bước đơn giản.
 
 
 ---

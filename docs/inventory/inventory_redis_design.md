@@ -10,7 +10,7 @@
 **Cross-Service References:**
 * [Order Temporal Saga](../order/temporal_saga_design.md) — Activities gọi Reserve/Deduct/Release
 * [Checkout Workflow](../checkout/checkout_workflow.md) — Preview stock check và submit
-* [Shipping Events](../shipping/shipping_events.md) — Inventory consume `SHIPMENT_RETURNED` để nhập trả kho
+* [Inventory Events](inventory_events.md) — Inventory produce `INVENTORY_STOCK_*` events; từ Phase 14 không còn consume Shipping events.
 
 ---
 

@@ -22,11 +22,10 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 | Nguồn | Loại mã | Cách lấy |
 |:---|:---|:---|
-| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, ``, `UNLIMITED_ALL` (nếu đã lưu trước), mã freeship sàn | Đã có sẵn trong ví, `status = SAVED` |
-| **Mã public của platform (`platform_PUBLIC`)** | Mã platform chưa lưu trong ví | Chỉ xuất hiện ở `GET /v1/promotions/platform-voucher-discovery`, user bấm `save-and-apply` để lưu |
+| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, `UNLIMITED_ALL` (nếu đã lưu trước) | Đã có sẵn trong ví, `status = SAVED` |
 
 > [!IMPORTANT]
-> Đối với tray Voucher Sàn/Freeship tại Checkout, API `GET /v1/promotions/voucher-suggestions` chỉ trả mã đã có trong ví (`source = WALLET`). Không có cơ chế gợi ý mã sàn chưa lưu rồi auto-save ở Submit.
+> Đối với tray Voucher Sàn tại Checkout, API `GET /v1/promotions/voucher-suggestions` chỉ trả mã đã có trong ví (`source = WALLET`). Không có cơ chế gợi ý mã sàn chưa lưu rồi auto-save ở Submit.
 
 ### 1.1.1. Claim Window vs Use Window (bắt buộc)
 
@@ -37,42 +36,28 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 ### 1.2. Stacking Rules (Slot Model)
 
-Một đơn hàng **có thể gồm sản phẩm từ nhiều warehouse khác nhau** áp dụng theo slot:
-* mỗi platform tối đa 1 `PLATFORM_VOUCHER`
-* toàn đơn tối đa 1 `PLATFORM_VOUCHER`
-* toàn đơn tối đa 1 `FREESHIP_VOUCHER`
+Một đơn hàng áp dụng theo slot:
 
-Tổng số voucher áp dụng là tối đa 2: 1 Voucher giảm giá + 1 Voucher freeship.
+* toàn đơn tối đa 1 `PLATFORM_VOUCHER`
+
+Tổng số voucher áp dụng là tối đa 1 (chỉ PLATFORM sau Phase 14).
 
 Sơ đồ slot:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  SLOT PLATFORM_VOUCHER        (1 mã/platform — theo từng Sub-Cart) │
 │  SLOT PLATFORM_VOUCHER    (tối đa 1 mã toàn đơn)           │
-│  SLOT FREESHIP_VOUCHER    (tối đa 1 mã, chỉ Platform)      │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **Mapping từ bảng `promotions`:**
-- **PLATFORM_VOUCHER**: `deleted_owner_type = admin` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
 - **PLATFORM_VOUCHER**: `deleted_owner_type = PLATFORM` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
-- **FREESHIP_VOUCHER**: `discount_type = FREE_SHIPPING` + `deleted_owner_type = PLATFORM` (platform không được tạo mã freeship)
 
-### 1.2.1. Dependency một chiều giữa các slot (Contract bắt buộc)
+### 1.2.1. Dependency giữa các slot
 
-- platform voucher có thể làm đổi eligibility của platform/freeship vì thay đổi `total_after_platforms`.
-- Platform voucher hoặc freeship voucher không làm đổi eligibility của platform voucher.
-- Mọi thay đổi chọn mã ở bất kỳ slot nào đều phải gọi lại Promotion evaluate để trả discount lines nhất quán theo cùng một waterfall.
+- Sau Phase 14, chỉ còn 1 slot PLATFORM_VOUCHER duy nhất. Không còn dependency giữa các slot.
 
-### 1.3. Quy tắc Freeship (Freeship Rule)
 
-> [!IMPORTANT]
-> Slot Freeship chỉ có **1 chỗ duy nhất** và chỉ nhận mã của Platform. admin không được tạo/không được hiển thị mã freeship trong bất kỳ slot nào.
-
-**Thứ tự sort trong Freeship slot:**
-1. Mã freeship applicable → **Hiển thị đầu tiên, badge "Miễn phí vận chuyển"**
-2. Mã eligible = false (chưa đủ điều kiện) → Hiển thị mờ cuối danh sách
 
 ---
 
@@ -90,20 +75,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "cart_context": {
-    "sub_carts": [
-      {
-        "platform_id": 101,
-        "subtotal": 350000,
-        "item_category_ids": [5, 12]
-      },
-      {
-        "platform_id": 205,
-        "subtotal": 180000,
-        "item_category_ids": [8]
-      }
-    ],
-    "total_subtotal": 530000,
-    "total_shipping_fee": 45000,
+    "subtotal": 530000,
     "payment_method": "VNPAY"
   }
 }
@@ -117,33 +89,10 @@ Authorization: Bearer {access_token}
 ```json
 {
   "voucher_tray": {
-    "platform_vouchers": [
-      {
-        "platform_id": 101,
-                "best_voucher": {
-          "promotion_id": 55,
-          "code": "TECHVIET20",
-          "discount_type": "PERCENTAGE",
-          "discount_value": 20,
-          "max_discount_amount": 50000,
-          "min_purchase_amount": 200000,
-          "source": "WALLET",
-          "eligible": true,
-          "estimated_discount": 50000
-        },
-        "other_vouchers": []
-      },
-      {
-        "platform_id": 205,
-                "best_voucher": null,
-        "other_vouchers": [],
-        "note": "NO_VOUCHER_AVAILABLE"
-      }
-    ],
     "platform_voucher": {
       "best_voucher": {
         "promotion_id": 10,
-        "code": "SIÊUSALE11",
+        "code": "SIEUSALE11",
         "discount_type": "FIXED_AMOUNT",
         "discount_value": 100000,
         "max_discount_amount": null,
@@ -166,33 +115,6 @@ Authorization: Bearer {access_token}
           "estimated_discount": 50000
         }
       ]
-    },
-    "freeship_voucher": {
-      "best_voucher": {
-        "promotion_id": 30,
-        "code": "FREESHIP_PLATFORM",
-        "deleted_owner_type": "PLATFORM",
-        "max_freeship_amount": 45000,
-        "min_purchase_amount": 200000,
-        "source": "WALLET",
-        "eligible": true,
-        "estimated_discount": 45000,
-        "badge": "ƯU ĐÃI SÀN"
-      },
-      "other_vouchers": [
-        {
-          "promotion_id": 31,
-          "code": "FREESHIP_PLUS",
-          "deleted_owner_type": "PLATFORM",
-          "max_freeship_amount": 30000,
-          "min_purchase_amount": 500000,
-          "source": "WALLET",
-          "eligible": false,
-          "ineligible_reason": "MIN_PURCHASE_NOT_MET",
-          "estimated_discount": 0,
-          "badge": "ƯU ĐÃI SÀN"
-        }
-      ]
     }
   },
   "cache_meta": {
@@ -201,7 +123,7 @@ Authorization: Bearer {access_token}
     "promotion_rule_version": "2026-03-12T09:29:55Z",
     "promotion_budget_version": "2026-03-12T09:29:58Z",
     "budget_guard_status": "OK",
-    "budget_guard_checked_promotions": 4,
+    "budget_guard_checked_promotions": 2,
     "budget_guard_checked_at": "2026-03-12T09:30:00Z"
   }
 }
@@ -249,16 +171,14 @@ Promotion Service
   │
   ├─── STEP 3: Pre-filter Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher ứng viên:
-  │     (a) Check nhanh min_purchase_amount (field riêng, O(1)):
-  │         - PLATFORM_VOUCHER:    so với sub_cart.subtotal của admin đó
-  │         - PLATFORM_VOUCHER/FREESHIP: so với total_subtotal
-  │     (b) Eval conditions_rule AST (Caffeine L1, <1ms):
-  │         - Dùng cart_context làm input
-  │         - Gắn eligible=true/false + ineligible_reason
-  │     (c) Tính estimated_discount (in-memory):
-  │         - PERCENTAGE: min(subtotal * rate, max_discount_amount)
-  │         - FIXED_AMOUNT: min(discount_value, subtotal)
-  │         - FREE_SHIPPING: min(max_freeship_amount, total_shipping_fee)
+│     (a) Check nhanh min_purchase_amount (field riêng, O(1)):
+    │         - PLATFORM_VOUCHER: so với total_subtotal
+    │     (b) Eval conditions_rule AST (Caffeine L1, <1ms):
+    │         - Dùng cart_context làm input
+    │         - Gắn eligible=true/false + ineligible_reason
+    │     (c) Tính estimated_discount (in-memory):
+    │         - PERCENTAGE: min(subtotal * rate, max_discount_amount)
+    │         - FIXED_AMOUNT: min(discount_value, subtotal)
   │     (d) Thu thập version fence cho Submit path:
   │         - `promotion_rule_version`: max(updated_at/rule_version) của các rule đã evaluate
   │         - `promotion_budget_version`: max(budget_version_updated_at) của các budget liên quan
@@ -277,12 +197,10 @@ Promotion Service
   │         - fail-open (không chặn response)
   │         - gắn `cache_meta.budget_guard_status=DEGRADED` để observability
   │
-  ├─── STEP 5: Gom nhóm theo Slot Model (Group & Sort)
-  │     PLATFORM_VOUCHER[]: nhóm theo platform_id, sort by estimated_discount DESC
-  │     PLATFORM_VOUCHER: filter deleted_owner_type=PLATFORM + discount_type≠FREE_SHIPPING
-  │                       sort: eligible first, then estimated_discount DESC
-  │     FREESHIP_VOUCHER: filter deleted_owner_type=PLATFORM AND discount_type=FREE_SHIPPING
-  │                       chọn `best_voucher` + `other_vouchers` theo cùng rule sort
+├─── STEP 5: Gom nhóm theo Slot Model (Group & Sort)
+    │     PLATFORM_VOUCHER: filter deleted_owner_type=PLATFORM + discount_type IN (PERCENTAGE, FIXED_AMOUNT)
+    │                       sort: eligible first, then estimated_discount DESC
+    │                       chọn `best_voucher` + `other_vouchers` theo cùng rule sort
   │
   └─── STEP 6: Build Response & Return (kèm `promotion_rule_version`, `promotion_budget_version`, `budget_guard_status` trong `cache_meta`)
 ```
@@ -295,7 +213,7 @@ Promotion Service
 
 ### 4.1. Nguyên tắc contract
 
-1. **Không auto-save mã sàn/freeship tại Submit.**
+1. **Không auto-save mã sàn tại Submit.**
 2. **Không upsert `user_coupon_wallets` trong Discovery path.**
 3. **Mã muốn xuất hiện ở tray Voucher Sàn/Freeship phải tồn tại sẵn trong ví** (được lưu từ luồng claim/campaign/wallet management trước đó).
 
@@ -340,7 +258,7 @@ Promotion Service
   {
     "promotion_id": 55,
     "code": "TECHVIET20",
-    "deleted_owner_type": "admin",
+    "deleted_owner_type": "PLATFORM",
     "owner_id": 101,
     "discount_type": "PERCENTAGE",
     "discount_value": 20,
@@ -397,25 +315,17 @@ Khi Admin tạo/sửa promotion, bắt buộc phát `PROMO_EVICT` và bump `prom
 
 ## 7. Edge Cases & Xử lý
 
-### 7.1. Chỉ Platform có Freeship (`discount_type = FREE_SHIPPING`)
-
-Do ràng buộc nghiệp vụ và DB constraint, admin không được tạo voucher freeship.
-- Chỉ **1 mã freeship platform** được áp dụng cho toàn đơn (theo stacking rule).
-- Nếu có nhiều mã freeship platform, chọn mã `eligible` có `estimated_discount` cao nhất làm gợi ý mặc định.
-- Nếu mã tốt nhất chưa đủ điều kiện, hiển thị thêm `amount_needed` để user biết số tiền còn thiếu.
-- Response freeship phải theo cùng shape với platform: `best_voucher` + `other_vouchers`.
-
-### 7.2. Ví quá lớn (user có hàng trăm mã SAVED)
+### 7.1. Ví quá lớn (user có hàng trăm mã SAVED)
 
 Áp page-based filter: chỉ trả tối đa **20 mã eligible** + **10 mã ineligible** trong response. Eligible sort trước. Các mã đã USED/EXPIRED được lọc bỏ ngay ở tầng DB query.
 
-### 7.3. Voucher trong ví hết ngân sách (Option A)
+### 7.2. Voucher trong ví hết ngân sách (Option A)
 
 API Discovery chạy **Budget Guard read-time** trên tập voucher đang eligible để giảm khả năng gợi ý mã đã cạn ngân sách. Các mã bị cạn sẽ được downgrade sang `ineligible_reason = BUDGET_EXHAUSTED` và không nên trở thành `best_voucher`.
 
 Tuy nhiên, Discovery không lock budget và không thay thế được commit-time reserve. Vì vậy vẫn tồn tại race ngắn giữa Preview và Submit: mã có thể còn pass ở Discovery nhưng fail tại `ReservePromotionActivity` nếu ngân sách cạn ngay trước lúc commit. Khi đó Checkout trả `409 PROMOTION_RECALCULATION_NEEDED` và client phải quay lại Preview lấy token mới.
 
-### 7.4. Guard Degraded Mode (Fail-open)
+### 7.3. Guard Degraded Mode (Fail-open)
 
 Nếu Budget Guard gặp timeout/lỗi Redis tạm thời, Discovery fail-open để giữ availability của API:
 
@@ -499,14 +409,14 @@ GET /platform-voucher-discovery?platform_id=101
   │
   ├── STEP 1: Fetch Wallet (Filter by platform_id)
   │     Check Redis: wallet:{user_id}:active_vouchers (TTL 5 phút)
-  │     → Filter: deleted_owner_type=admin AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
+  │     → Filter: deleted_owner_type=PLATFORM AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
   │     → Source: WALLET, is_saved=true
   │
   ├── STEP 2: Fetch platform Public Vouchers (chưa lưu trong ví)
   │     Query DB:
   │       SELECT p.*
   │       FROM promotions p
-  │       WHERE p.deleted_owner_type = 'admin'
+  │       WHERE p.deleted_owner_type = 'PLATFORM'
   │         AND p.owner_id = 101
   │         AND p.discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')
   │         AND p.status = 'ACTIVE'

@@ -14,7 +14,6 @@
 *   [Promotion Workflow](../promotion/promotion_workflow.md) — Luồng 4 (Saga TCC)
 *   [Inventory Workflow](../inventory/inventory_workflow.md) — Reserve/Deduct/Release
 *   [Payment Workflow](../payment/payment_workflow.md) — Initiate/Verify/Refund
-*   [Shipping Workflow](../shipping/shipping_workflow.md) — Create Shipment, Webhook
 
 ---
 
@@ -59,7 +58,7 @@ Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Se
 2. **[Backend]** Chuẩn hóa query params thành 2 query classes (xem [CQRS Design](cqrs_elasticsearch_design.md#1-mục-tiêu-nghiệp-vụ-và-query-classes)) và áp chuẩn product contract:
    - Tab buyer cố định: `TO_PAY`, `TO_SHIP`, `TO_RECEIVE`, `COMPLETED`, `CANCELLED`, `RETURN_REFUND`.
    - Nếu thiếu `from/to` thì mặc định `created_at` trong `90 ngày` gần nhất.
-   - Nếu có `q`, semantics là **ANY field** (`product name` hoặc `tracking number` hoặc `store name`).
+   - Nếu có `q`, semantics là **ANY field** (`product name` hoặc `store name`).
 
 ### 2.1. Query Class A - Lọc đa chiều chính xác
 
@@ -92,7 +91,7 @@ Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Se
 ### 2.2. Query Class B - Text search + Filter
 
 6. **[Backend -> Elasticsearch `order_search_lines`]** Nếu có `q`, chạy chiến lược exact-first:
-    - Ưu tiên exact/prefix cho `tracking_number_normalized`, `store_name_normalized`.
+    - Ưu tiên exact/prefix cho `store_name_normalized`.
     - Match/match_phrase cho `snapshot_product_name`.
       - Chỉ cần khớp một trường là đủ (`minimum_should_match = 1`).
     - Kết hợp toàn bộ filter của Query Class A trong `filter` context.
@@ -119,7 +118,7 @@ Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Se
 - Response mỗi order card cần có tối thiểu:
    - `order_id`, `buyer_tab`, `ui_primary_status`, `created_at`
    - `primary_item_name`, `primary_item_image_url`, `remaining_item_count`
-   - `primary_store_name`, `primary_tracking_number`
+   - `primary_store_name`
    - `item_count`, `final_amount`
 - Khi có `q`, trả thêm `match_reason` và `matched_context[]` để frontend highlight đúng vị trí match.
 - Nếu `from/to` vượt quá hot window 90 ngày, backend phải chuyển sang nhánh cold-data query theo [Cold Data Archiving](cold_data_archiving_design.md) thay vì ép query sâu trên index nóng.
@@ -202,7 +201,6 @@ sequenceDiagram
     participant PM as Promotion Service
     participant IV as Inventory Service
     participant PY as Payment Service
-    participant SH as Shipping Service
 
     CK->>OS: POST /create-from-checkout<br>(checkout_token, items, promotions)
     OS->>OS: Validate checkout_token (Redis)
@@ -232,8 +230,7 @@ sequenceDiagram
     Note over TW: Post-Payment Saga
     TW->>IV: DeductInventoryActivity
     TW->>PM: ConfirmPromotionActivity
-   TW->>SH: CreateShippingLabelsActivity
-   TW->>OS: UpdateOrderStatusActivity → PROCESSING
+    TW->>OS: UpdateOrderStatusActivity → PROCESSING
     end
 ```
 
@@ -247,7 +244,7 @@ sequenceDiagram
 4. **[Backend]** Chỉ sau khi start/attach thành công mới mark `checkout_token` as USED (SETNX) và persist idempotency `IN_PROGRESS` với `workflow_id`.
     - `order_id` được sinh ngay ở bước `CreateOrderActivity` đầu tiên (4.2 step 1), trước mọi bước reserve liên service.
     - `CreateOrderActivity` bắt buộc persist `checkout_token` vào bảng `orders` cùng transaction tạo đơn để worker có thể route signal theo `order_id`.
-   - Payment/Shipping workers signal workflow qua lookup `checkout_token` theo `order_id` trong DB.
+   - Payment worker signal workflow qua lookup `checkout_token` theo `order_id` trong DB.
 
 ### 4.1.1. Contract Payload `create-from-checkout` (Bắt buộc, versioned)
 
@@ -257,10 +254,10 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
 {
    "schema_version": 1,
    "checkout_token": "uuid-v4",
-   "user_id": 999,
+   "user_id": "550e8400-e29b-41d4-a716-446655440000",
    "payment_method": "VNPAY",
    "user_ack_degraded_pricing": false,
-   "shipping_address_snapshot": {
+"delivery_address_snapshot": {
       "name": "Nguyen Van A",
       "phone": "0901234567",
       "address": "123 Nguyen Hue, Q1, HCM",
@@ -273,46 +270,41 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
          "order_item_client_ref": "admin-001:line-01",
          "platform_id": 501,
          "warehouse_id": 5,
-         "courier_code": "GHN",
-         "courier_service_type": "STANDARD",
-         "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
-         "route_version": 3,
          "lines": [
-            {
-               "sku_id": "sku-001",
-               "product_id": "prod-001",
-               "quantity": 2,
-               "unit_price": 250000
-            }
-         ]
-      }
-   ],
+           {
+              "sku_id": "sku-001",
+              "product_id": "prod-001",
+              "quantity": 2,
+              "unit_price": 250000
+           }
+        ]
+     }
+  ],
    "promotions": {
-      "selected_platform_vouchers": {
-         "admin-001": 55
-      },
-      "selected_platform_voucher_id": null,
-      "selected_freeship_voucher_id": 30
+      "selected_platform_voucher_id": 55
    },
    "pricing_summary": {
       "total_product_amount": 500000,
-      "total_platform_discount": 50000,
-      "platform_discount": 0,
-      "total_shipping_fee": 35000,
-      "shipping_discount": 30000,
-      "final_amount": 455000
+      "total_voucher_discount": 50000,
+      "final_amount": 450000
    },
    "pricing_hash": "sha256-...",
-   "route_signature": "sha256-...",
-   "shipping_rate_version": "2026-03-14T09:00:00Z",
-   "promotion_rule_version": "2026-03-14T09:00:00Z"
-}
-```
+   "promotion_rule_version": "2026-03-14T09:00:00Z",
+   "promotion_budget_version": "2026-03-14T09:00:02Z"
+ }
+ ```
+
+  > **Canonical schema source**: [Service Contract Matrix §3.1](../_contracts/CONTRACT_MATRIX.md#31-order--checkout).
+  > **Cross-check rule**: Checkout Service phải chuyển `pricing_hash` = SHA-256(`sorted sku_id:unit_price` + `total_voucher_discount` + `promotion_rule_version`).
+  > `promotion_budget_version` chỉ mang tính chất telemetry/diagnostics cho Submit staleness check, không tham gia hash gate.
+  > `delivery_address_snapshot` lưu trực tiếp từ `checkout:session:{user_id}.delivery_address` tại thời điểm Submit — KHÔNG tham chiếu `address_id` (đã được resolve sẵn ở Preview).
+  > `pricing_summary` đã loại bỏ field trùng `total_platform_discount`/`platform_discount` (cũ). Canonical: `total_voucher_discount` cho tổng giảm giá từ voucher.
+  > `final_amount = total_product_amount - total_voucher_discount` được sinh tại Preview.
 
 **Validation tối thiểu:**
-- `checkout_token`, `user_id`, `payment_method`, `shipping_address_snapshot`, `items[]` là bắt buộc.
+- `checkout_token`, `user_id`, `payment_method`, `delivery_address_snapshot`, `items[]` là bắt buộc.
 - Mọi `items[].lines[]` bắt buộc có `sku_id`, `product_id`, `quantity > 0`, `unit_price`.
-- `route_plan_id`, `route_version`, `warehouse_id`, `courier_code` là bắt buộc cho từng shipment item.
+- `warehouse_id` là bắt buộc cho từng item.
 - `promotions` cho phép rỗng khi `user_ack_degraded_pricing = true`; trong trường hợp này `ReservePromotionActivity` chạy no-op có kiểm soát.
 
 **4.2. Pre-Payment Saga (Temporal Orchestrate):**
@@ -351,17 +343,14 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
 |:--|:---|:---|:---|:---|
 | 1 | `DeductInventoryActivity` | Inventory | Chuyển Reserved → Deducted (commit stock movement) | `RollbackDeductedInventoryActivity` |
 | 2 | `ConfirmPromotionActivity` | Promotion | Commit reservation trong Redis + ghi ledger `coupon_usages.status = REDEEMED` (bắt buộc truyền `idempotency_key` theo từng `promotion_id`) | `CancelConfirmedPromotionActivity` |
-| 3 | `CreateShippingLabelsActivity` | Shipping | Tạo vận đơn cho từng item. Nhận `tracking_number` | `CancelShippingActivity` |
-| 4 | `UpdateOrderStatusActivity` | Order (self) | FSM `PAID` → `PROCESSING` | `RevertOrderStatusToPaidActivity` |
+| 3 | `UpdateOrderStatusActivity` | Order (self) | FSM `PAID` → `PROCESSING` | `RevertOrderStatusToPaidActivity` |
 
-> **Compensation registration order (Post-Payment):** `RollbackDeductedInventory` → `CancelConfirmedPromotion` → `CancelShipping` → `RevertOrderStatusToPaid`.
-> Khi rollback, Temporal chạy LIFO: `RevertOrderStatusToPaid` → `CancelShipping` → `CancelConfirmedPromotion` → `RollbackDeductedInventory`.
+> **Compensation registration order (Post-Payment):** `RollbackDeductedInventory` → `CancelConfirmedPromotion` → `RevertOrderStatusToPaid`.
+> Khi rollback, Temporal chạy LIFO: `RevertOrderStatusToPaid` → `CancelConfirmedPromotion` → `RollbackDeductedInventory`.
 
 > **Tách semantics bắt buộc:**
 > - `RollbackPromotionActivity`: chỉ dùng lane pre-payment (release reservation runtime).
 > - `CancelConfirmedPromotionActivity`: chỉ dùng lane post-payment khi promotion đã `REDEEMED`; phải gọi Promotion API hủy commit với idempotency key theo từng `promotion_id`.
-
-> **Cancel shipping non-retryable rule:** nếu `CancelShippingActivity` fail vì shipment đã từ `READY_TO_SHIP` trở lên, workflow ghi `MANUAL_INTERVENTION_REQUIRED` vào audit metadata, raise alert ops, và tiếp tục rollback các bước còn lại (không kẹt toàn bộ compensation stack).
 
 > [!IMPORTANT]
 > **Contract Idempotency-Key khi gọi Promotion (sync path):**
@@ -410,17 +399,15 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
 
 ---
 
-## 6. Workflow: Xử Lý Shipping Status Update
+## 6. Workflow: Xử Lý Inventory Ship-To-Customer Signal
 
-**Ngữ cảnh:** Shipping Service webhook → Shipping Service → Kafka → Order Service consumer.
+**Ngữ cảnh:** Admin xác nhận kho đã xuất hàng cho khách → Inventory phát `INVENTORY_SHIP_TO_CUSTOMER` → Order Service consumer cập nhật Order Item FSM `PROCESSING` → `DELIVERED`.
 
-1. **[Kafka Consumer]** Nhận `SHIPMENT_STATUS_UPDATED`, `SHIPMENT_DELIVERED`, `SHIPMENT_RETURNED`, `SHIPMENT_DELAYED` từ `t.shipping.events`. Xem [Shipping Status Consumer](order_workers.md#5-shipping-status-consumer-kafka-consumer).
-2. **[Mapping]** Áp dụng [Status Mapping Table](order_state_machine.md#23-mapping-với-shipping-service-standardized_status).
-3. **[FSM Validation]** Kiểm tra transition hợp lệ theo [Order Item Shipping FSM](order_state_machine.md#22-bảng-chi-tiết-transitions).
-4. **[PostgreSQL]** Update `order_items.status` + increment `version`.
-5. **[Auto-Complete Check]** Nếu tất cả items `DELIVERED` ổn định trong cửa sổ coalescing 5 giây → Master Order FSM `PROCESSING` → `COMPLETED`.
-6. **[Outbox]** Insert append-only `outbox_events` cho `ORDER_ITEM_STATUS_CHANGED` và/hoặc `ORDER_COMPLETED` (`partition_key = order_id`) để CDC publish.
-7. **[Delayed Escalation]** Với `SHIPMENT_DELAYED` level cao, cập nhật metadata SLA và produce `ORDER_STATUS_CHANGED` reason `SHIPMENT_DELAYED_ESCALATED` để CQRS/Ops theo dõi.
+1. **[Kafka Consumer]** Nhận `INVENTORY_SHIP_TO_CUSTOMER` từ `t.inventory.events`. Xem [Inventory Ship Consumer](order_workers.md#5-inventory-ship-consumer-kafka-consumer).
+2. **[FSM Validation]** Kiểm tra transition hợp lệ theo [Order Item Delivery FSM](order_state_machine.md#2-order-item-delivery-fsm).
+3. **[PostgreSQL]** Update `order_items.status = DELIVERED` + increment `version`.
+4. **[Auto-Complete Check]** Nếu tất cả items `DELIVERED` ổn định trong cửa sổ coalescing 5 giây → Master Order FSM `PROCESSING` → `COMPLETED`.
+5. **[Outbox]** Insert append-only `outbox_events` cho `ORDER_ITEM_STATUS_CHANGED` và/hoặc `ORDER_COMPLETED` (`partition_key = order_id`) để CDC publish.
 
 ---
 
@@ -447,8 +434,8 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
 1. **[Trigger]** Có 2 nguồn trigger hợp lệ để mở refund workflow:
    - User API: `POST /v1/orders/{orderId}/return` (bắt buộc `Idempotency-Key`, `action_type = REQUEST_RETURN`, áp one-shot customer guard).
    - Admin lane từ `POST /v1/orders/{orderId}/cancel`: với `status IN (PAID, PROCESSING)` tạo command `REQUEST_ADMIN_REFUND`.
-   - `SHIPMENT_RETURNED` **không** còn là trigger mở refund workflow; event này chỉ cập nhật item status và phục vụ restock vật lý ở Inventory.
-   - **Policy B (đã chốt):** Mỗi order chỉ có **một** refund transaction do Order khởi tạo.
+- `SHIPMENT_RETURNED` **không** còn tồn tại (Phase 14 đã loại bỏ Shipping Service). Trigger restock vật lý là admin API `/v1/inventory/restock` hoặc `/v1/inventory/returns/refund-expectations`.
+    - **Policy B (đã chốt):** Mỗi order chỉ có **một** refund transaction do Order khởi tạo.
 
 2. **[Temporal - bắt buộc]** Start `OrderRefundWorkflow` (không có inline path):
    - Validate FSM + policy + `trigger_source`.
@@ -458,16 +445,16 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
    - Produce `ORDER_STATUS_CHANGED` cho transition vào lane refund (kèm metadata `refund_waiting_inventory_confirmation = true`).
 
 3. **[Refund Activities]** Trong `OrderRefundWorkflow`:
-   - `LockRefundScopeActivity`: chốt `refund_type` + tập item refund từ request customer/admin (không lock theo stream `SHIPMENT_RETURNED`).
-   - `RegisterRefundReturnExpectationActivity`: gửi expected return scope sang Inventory để theo dõi đủ/thiếu hàng hoàn.
-   - `WaitInventoryReturnReceivedAllSignal`: chờ signal từ Inventory khi đã nhận đủ toàn bộ item trong refund scope (timeout chuẩn: 30 ngày).
+- `LockRefundScopeActivity`: chốt `refund_type` + tập item refund từ request customer/admin.
+    - `RegisterRefundReturnExpectationActivity`: gửi expected return scope sang Inventory để theo dõi đủ/thiếu hàng hoàn.
+    - `WaitInventoryReturnReceivedAllSignal`: chờ signal từ Inventory khi đã nhận đủ toàn bộ item trong refund scope (timeout chuẩn: 30 ngày).
    - Nếu timeout 30 ngày: workflow chuyển `MANUAL_VERIFICATION_REQUIRED`, notify ops, và chỉ tiếp tục khi nhận admin override signal hợp lệ.
-   - Nhánh delivery failure tự nhiên (`return_reason = DELIVERY_FAILED_3_TIMES`) không tự mở refund workflow qua `SHIPMENT_RETURNED`; nếu admin quyết định hoàn tiền thì dùng lane `REQUEST_ADMIN_REFUND` với policy riêng (có thể bypass wait signal sau xác minh thủ công).
+   - Nhánh delivery failure tự nhiên: trigger qua admin lane `REQUEST_ADMIN_REFUND` với policy riêng (có thể bypass wait signal sau xác minh thủ công).
    - Chỉ sau khi nhận signal trên mới tính `refund_amount` và gọi Payment Service: `POST /v1/payments/{txn_id}/refund` đúng **1 lần** cho mỗi order.
    - Tại thời điểm gọi Payment refund, chuyển `orders.payment_status` sang `REFUNDING`.
-   - Rule allocation voucher:
-     - `FULL`: hoàn toàn bộ voucher đã áp dụng (`platform`, `PLATFORM`, `SHIPPING`).
-     - `PARTIAL`: chỉ hoàn `platform` voucher khi refund scope bao phủ toàn bộ item của platform đó; `PLATFORM` và `SHIPPING` allocation phải bằng `0`.
+- Rule allocation voucher:
+      - `FULL`: hoàn toàn bộ PLATFORM allocation đã redeem.
+      - `PARTIAL`: chỉ hoàn PLATFORM allocation khi refund scope bao phủ toàn bộ item của platform đó.
    - Nếu bật sync Promotion `/refund`, bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
 
 4. **[Chờ refund result signal]** Payment consumer nhận `REFUND_PROCESSING|REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED` rồi signal `OrderRefundWorkflow` theo `order_id`.
@@ -493,13 +480,13 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
    - Không rollback giao dịch hoàn tiền đã thành công ở Payment chỉ vì voucher restore fail/unavailable.
 
 8. **[Downstream consume `ORDER_REFUNDED`]**
-   - **Promotion:** [Hoàn budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow) theo `promotion_refund_allocations[]` và rule scope.
-   - **Inventory:** Không restock trực tiếp từ `ORDER_REFUNDED`. Restock vật lý đi theo `SHIPMENT_RETURNED` khi hàng về kho.
+   - **Promotion:** [Hoàn budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow) theo `promotion_refund_allocations[]` và rule scope (xem canonical [ADR Refund Voucher Policy](refund_voucher_policy.md)).
+   - **Inventory:** Không restock trực tiếp từ `ORDER_REFUNDED`. Restock vật lý đi theo admin API `/v1/inventory/restock` hoặc `/v1/inventory/returns/refund-expectations` sau khi hàng thực tế về kho.
 
 9. **[Policy Matrix]**
    - **Áp dụng one-shot:** `trigger_source = API_RETURN` (Buyer).
    - **Không áp dụng one-shot:** `trigger_source = ADMIN_FORCE_REFUND_REQUESTED`.
-   - **Không còn trigger refund từ shipping:** `SHIPMENT_RETURNED` chỉ phục vụ item status + inventory restock.
+   - **Trigger refund:** chỉ từ API_RETURN hoặc ADMIN_FORCE_REFUND_REQUESTED; không có event nào tự động mở refund.
    - **Mục tiêu:** chặn spam submit từ client, tránh multi-refund transaction, và đảm bảo chỉ hoàn tiền sau khi Inventory xác nhận đã nhận đủ hàng hoàn.
 
 ---
@@ -508,6 +495,6 @@ Order Service nhận payload đã khóa từ Checkout theo schema chuẩn dướ
 
 Order Service Workflow kết hợp 3 mô hình kiến trúc:
 1.  **Temporal Saga** cho luồng phân tán đa service (Pre-Payment + Post-Payment). Đảm bảo Compensation tự động.
-2.  **Event-Driven (Kafka)** cho luồng phản ứng (Payment webhook, Shipping tracking). Loose coupling giữa services.
+2.  **Event-Driven (Kafka)** cho luồng phản hứng (Payment webhook, Inventory ship-to-customer). Loose coupling giữa services.
 3.  **FSM Database Layer** làm chốt chặn cuối cùng (Guard), bảo vệ data integrity dù request đến từ API, Kafka, hay Temporal.
 4.  **Recovery Lane cho late payment** để khôi phục đơn khi đã timeout nhưng Payment xác nhận thu tiền thành công.

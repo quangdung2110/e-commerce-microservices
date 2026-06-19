@@ -6,14 +6,13 @@
 * [Events Structure & Kafka Topics](inventory_events.md)
 * [Internal Data Flow](inventory_workflow.md)
 * [Background Workers & Jobs](inventory_workers.md)
-* [Smart Routing Engine](smart_routing_engine.md)
-* [Observability & SLO](inventory_observability_slo.md)
+* [Warehouse Selection Engine](smart_routing_engine.md)
 
 ---
 
 Tài liệu này mô tả chi tiết toàn bộ HTTP API endpoints của Inventory Service: method, endpoint path, authentication, request/response body, và mô tả luồng hoạt động nội bộ.
 
-**Lưu ý về đơn giản hóa:** API `routing-options` đã loại bỏ các version field và tier; API `restock` giữ nguyên; thay thế `returns/refund-scopes` (bảng phức tạp) bằng `returns/refund-expectations` (đánh dấu row trực tiếp); thêm `admin/unlock-sku` cho manual recovery.
+**Lưu ý về đơn giản hóa (Phase 14):** API `routing-options` đã loại bỏ `shipping_options[]`, `rate_card_version`, `service_type` (do Shipping Service đã bị xóa). Logic mới: chỉ chọn kho có stock đủ. API `restock` giữ nguyên. Thay thế `returns/refund-scopes` bằng `returns/refund-expectations`. Thêm `admin/unlock-sku` cho manual recovery. Thêm endpoint mới `ship-to-customer` để admin trigger Order Item FSM PROCESSING → DELIVERED.
 
 ---
 
@@ -23,6 +22,7 @@ Tài liệu này mô tả chi tiết toàn bộ HTTP API endpoints của Invento
 |:---|:---|:---|:---|
 | `POST` | `/v1/inventory/routing-options` | JWT (User) | Tạo route plan fulfillment cho checkout preview |
 | `POST` | `/v1/inventory/restock` | JWT (Admin) | Admin nhập hàng vào kho |
+| `POST` | `/v1/inventory/ship-to-customer` | JWT (Admin) | Admin xác nhận kho đã xuất hàng cho khách (trigger Order Item FSM PROCESSING → DELIVERED) |
 | `POST` | `/v1/inventory/returns/refund-expectations` | Internal (Service-to-Service) | Order đăng ký tập item cần hoàn |
 | `POST` | `/v1/inventory/admin/unlock-sku` | JWT (Admin) | Manual unlock SKU bị suspend (recovery) |
 
@@ -55,8 +55,7 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
     "longitude": 106.6602,
     "city_code": "HCM",
     "district_code": "Q1"
-  },
-  "service_type": "STANDARD"
+  }
 }
 ```
 
@@ -70,7 +69,6 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
 | `customer_location.longitude` | Decimal | ✅ | Kinh độ |
 | `customer_location.city_code` | String(20) | ✅ | Mã tỉnh/thành (vd: `HCM`) |
 | `customer_location.district_code` | String(20) | ✅ | Mã quận/huyện |
-| `service_type` | String | ✅ | Mức dịch vụ: `STANDARD`, `EXPRESS` |
 
 ### Response
 
@@ -80,7 +78,6 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
 {
   "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
   "expires_at": "2026-04-01T08:20:00Z",
-  "rate_card_version": "2026-04-01T07:55:00Z",
   "items": [
     {
       "sku_id": "sku-001",
@@ -95,53 +92,36 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
       "warehouse_id": 5
     }
   ],
-  "shipping_options": [
+  "warehouse_options": [
     {
       "warehouse_id": 5,
-      "options": [
-        {
-          "provider": "GHN",
-          "service_type": "STANDARD",
-          "fee": 35000,
-          "delivery_days": 2
-        },
-        {
-          "provider": "GHTK",
-          "service_type": "EXPRESS",
-          "fee": 45000,
-          "delivery_days": 1
-        }
-      ]
+      "available_quantity": 50,
+      "estimated_delivery_days": 2
     }
   ]
 }
 ```
 
 | Field | Type | Mô tả |
-|:---|:---|:---|
+|---|:---|:---|
 | `route_plan_id` | UUID | ID duy nhất của route plan, dùng để submit checkout |
 | `expires_at` | ISO 8601 | Hết hiệu lực. Sau thời điểm này, checkout submit sẽ bị reject |
-| `rate_card_version` | ISO 8601 | Phiên bản bảng giá shipping (do Shipping trả, để Checkout detect rate drift trong `pricing_hash`) |
 | `items[].sku_id` | String | SKU đã được assign |
 | `items[].product_id` | String | Product denormalized (lấy từ `physical_inventory.product_id`, dùng cho `ReserveInventoryActivity` không cần lookup thêm) |
 | `items[].quantity` | Integer | Số lượng từ request |
 | `items[].warehouse_id` | Integer | Kho fulfill item này |
-| `shipping_options[]` | Array[Object] | Các option vận chuyển khả dụng, **per-warehouse** |
-| `shipping_options[].warehouse_id` | Integer | Kho tương ứng với options[] |
-| `shipping_options[].options[].provider` | String | 3PL provider code (vd: `GHN`, `NINJAVAN`) |
-| `shipping_options[].options[].service_type` | String | Mức dịch vụ: `STANDARD` \| `EXPRESS` |
-| `shipping_options[].options[].fee` | Integer | Phí ship flat-rate theo cặp tuyến + service_type |
-| `shipping_options[].options[].delivery_days` | Integer | Số ngày dự kiến giao |
+| `warehouse_options[]` | Array[Object] | Thông tin kho đã chọn để fulfill |
+| `warehouse_options[].warehouse_id` | Integer | Kho tương ứng |
+| `warehouse_options[].available_quantity` | Integer | Tồn kho khả dụng |
+| `warehouse_options[].estimated_delivery_days` | Integer | Số ngày dự kiến giao (config tĩnh theo kho) |
 
 **4xx Error Responses**
 
 | Status | Code | Mô tả |
 |:---:|:---|:---|
 | `400` | `INVALID_REQUEST` | Missing required fields hoặc validation lỗi |
-| `400` | `INVALID_SERVICE_TYPE` | `service_type` không hợp lệ |
 | `404` | `SKU_NOT_FOUND` | Một hoặc nhiều SKU không tồn tại trong inventory |
 | `409` | `INSUFFICIENT_STOCK` | Không đủ tồn kho khả dụng cho routing |
-| `422` | `NO_SHIPPING_OPTIONS_FOR_ROUTE` | Shipping trả về `options[]` rỗng cho ít nhất 1 warehouse trong feasible combinations |
 
 ### Chi tiết hoạt động nội bộ
 
@@ -152,16 +132,13 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
      FROM physical_inventory
      WHERE sku_id = ANY(:sku_ids) AND available_quantity > 0
    - Build feasible warehouse combinations đủ stock cho mọi items
-3. [Shipping Quote Call]
-   - Gọi Shipping Service: POST /v1/shipping/calculate-batch
-   - Input: warehouse list + customer_location + service_type
-   - Output: shipping fee + delivery_days per warehouse (flat-rate theo from→to)
-4. [Smart Routing Engine Scoring]
-   score = shipping_cost + delivery_days * cost_per_day
-   Tie-break: warehouse_id ASC (deterministic)
-5. [Cache]
+3. [Warehouse Selection (Phase 14)]
+   - Pick warehouse có physical_inventory.quantity >= requested quantity
+   - Nếu nhiều kho qualify → ưu tiên kho same-province với customer_location
+   - Không còn score theo shipping_cost + delivery_days (đã loại bỏ Shipping Service)
+4. [Cache]
    SET route_plan:{route_plan_id} = JSON, TTL = expires_at - now
-6. [Response] Trả route plan với concrete warehouse_id cho mỗi item + product_id denormalized
+5. [Response] Trả route plan với concrete warehouse_id cho mỗi item + product_id denormalized
 ```
 
 ### Plan Expiry
@@ -171,7 +148,7 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
   - Nếu plan còn trong cache (TTL chưa hết): proceed.
   - Nếu plan đã expire: reject `CONTRACT_INVALID_ROUTE_PLAN`, Checkout phải gọi lại `/routing-options`.
 
-> Đã lược bỏ: `algorithm_version`, `inventory_snapshot_at`, `route_version` (chỉ có 1 algorithm, không cần version determinism), `route_signature` (thừa vì Smart Routing scoring đã deterministic). Chỉ giữ `rate_card_version` (lấy trực tiếp từ Shipping `rate_card_version`) vì đó là thông tin từ bên thứ 3 cần thiết để Checkout revalidate rate trong `pricing_hash`. Chi tiết tại [Smart Routing Engine](smart_routing_engine.md).
+> Phase 14 đã lược bỏ `rate_card_version`, `shipping_options[]`, `service_type`. Schema response giờ chỉ trả warehouse_id + available_quantity + estimated_delivery_days.
 
 ---
 
@@ -288,9 +265,9 @@ Admin nhập hàng vào kho. Đây là entry point khởi tạo duy nhất cho i
 
 ## 3. `POST /v1/inventory/returns/refund-expectations`
 
-Đăng ký một tập hợp item cần hoàn với Inventory. Inventory đánh dấu các `inventory_reservations` row tương ứng với `refund_expected = true` để khi `SHIPMENT_RETURNED` đến, hệ thống biết khi nào đủ điều kiện phát signal `INVENTORY_RETURN_RECEIVED_ALL`.
+Đăng ký một tập hợp item cần hoàn với Inventory. Inventory đánh dấu các `inventory_reservations` row tương ứng với `refund_expected = true` để khi admin restock hàng hoàn về kho, hệ thống biết khi nào đủ điều kiện phát signal `INVENTORY_RETURN_RECEIVED_ALL`.
 
-API này thay thế cho bảng `inventory_refund_scopes` cũ (vốn có JSONB aggregation và state machine phức tạp). Logic bây giờ gói gọn trong 3 cột của `inventory_reservations`: `refund_expected`, `refund_request_id`, `refund_returned_at`.
+> **Phase 14 note:** Trigger không còn là `SHIPMENT_RETURNED` event (Shipping Service đã bị xóa). Restock vật lý giờ do admin thực hiện qua API `/v1/inventory/restock` (với `reference_type` là `BUYER_RETURN` hoặc tương đương) hoặc tự động detect qua dòng ledger.
 
 ### Auth
 
@@ -314,7 +291,7 @@ API này thay thế cho bảng `inventory_refund_scopes` cũ (vốn có JSONB ag
 |:---|:---|:---:|:---|
 | `order_id` | Integer | ✅ | ID đơn hàng cần hoàn |
 | `refund_request_id` | String(64) | ✅ | ID yêu cầu hoàn từ Order Service |
-| `order_item_ids` | Array[Integer] | ✅ | Danh sách `order_item_id` cần hoàn đầy đủ |
+| `order_item_ids` | Array[Integer) | ✅ | Danh sách `order_item_id` cần hoàn đầy đủ |
 
 ### Response
 
@@ -329,7 +306,7 @@ API này thay thế cho bảng `inventory_refund_scopes` cũ (vốn có JSONB ag
 ```
 
 | Field | Type | Mô tả |
-|:---|:---|:---|
+|---|:---|:---|
 | `order_id` | Integer | Từ request |
 | `refund_request_id` | String | Từ request |
 | `marked_count` | Integer | Số reservation row được update `refund_expected = true` |
@@ -385,11 +362,89 @@ API này thay thế cho bảng `inventory_refund_scopes` cũ (vốn có JSONB ag
 | Replay cùng `(order_id, refund_request_id, order_item_ids)` | Trả 200 OK idempotent |
 | Replay khác `order_item_ids` cho cùng `(order_id, refund_request_id)` | Trả `409 REFUND_SCOPE_MISMATCH` |
 
-> Khi tất cả `refund_expected = true` reservation cùng `(order_id, refund_request_id)` đều có `refund_returned_at IS NOT NULL` (do `SHIPMENT_RETURNED` consumer cập nhật), hệ thống insert `inventory_outbox` event `INVENTORY_RETURN_RECEIVED_ALL` để Debezium publish lên Kafka, signal cho Order mở bước refund tiền. Chi tiết tại [Workflow §6](inventory_workflow.md).
+> Khi tất cả `refund_expected = true` reservation cùng `(order_id, refund_request_id)` đều có `refund_returned_at IS NOT NULL` (do admin restock với `reference_type=BUYER_RETURN` cập nhật), hệ thống insert `inventory_outbox` event `INVENTORY_RETURN_RECEIVED_ALL` để Debezium publish lên Kafka, signal cho Order mở bước refund tiền. Chi tiết tại [Workflow](inventory_workflow.md).
 
 ---
 
-## 4. `POST /v1/inventory/admin/unlock-sku`
+## 4. `POST /v1/inventory/ship-to-customer` (Phase 14 — mới)
+
+Admin xác nhận kho đã xuất hàng cho khách. Trigger event `INVENTORY_SHIP_TO_CUSTOMER` → Order Service consume → chuyển `order_items.status` từ `PROCESSING` sang `DELIVERED`.
+
+### Auth
+
+| Loại | Chi tiết |
+|:---|:---|
+| **Required** | JWT Bearer Token |
+| **Scope** | `inventory:admin`, `inventory:write` |
+| **Role** | `ADMIN` hoặc `WMS_OPERATOR` |
+
+### Request
+
+```json
+{
+  "order_id": 10001,
+  "warehouse_id": 5,
+  "shipped_at": "2026-03-02T16:00:00Z",
+  "courier_note": "Đã bàn giao cho đơn vị vận chuyển nội bộ"
+}
+```
+
+| Field | Type | Required | Mô tả |
+|:---|:---|:---:|:---|
+| `order_id` | Integer | ✅ | ID đơn hàng đã shipped |
+| `warehouse_id` | Integer | ✅ | Kho xuất hàng |
+| `shipped_at` | ISO 8601 | ✅ | Mốc thời gian xuất kho |
+| `courier_note` | String(512) | ❌ | Ghi chú nội bộ (audit) |
+
+### Response
+
+**200 OK**
+
+```json
+{
+  "order_id": 10001,
+  "warehouse_id": 5,
+  "shipped_at": "2026-03-02T16:00:00Z",
+  "event_id": "123e4567-e89b-12d3-a456-426614174003",
+  "affected_items": 2
+}
+```
+
+**4xx Error Responses**
+
+| Status | Code | Mô tả |
+|:---:|:---|:---|
+| `400` | `INVALID_REQUEST` | Validation lỗi |
+| `404` | `ORDER_NOT_FOUND` | `order_id` không tồn tại |
+
+### Chi tiết hoạt động nội bộ
+
+```
+1. [API Layer] Validate JWT + scope + role
+2. [DB Insert outbox]
+   INSERT INTO inventory_outbox (
+     event_id, schema_version, aggregate_type, aggregate_id,
+     event_type, partition_key, payload, created_at
+   ) VALUES (
+     :event_id, 1, 'Inventory', :order_id,
+     'INVENTORY_SHIP_TO_CUSTOMER', :order_id,
+     '{"order_id":..., "warehouse_id":..., "shipped_at":..., "courier_note":...}'::jsonb,
+     NOW()
+   );
+3. [Debezium CDC]
+   Read WAL of inventory_outbox
+   Produce Kafka: topic=t.inventory.events, key=order_id
+   Event: INVENTORY_SHIP_TO_CUSTOMER
+4. [Order Service consume]
+   order-inventory-ship-consumer (consumer group)
+   → Với mỗi order_item_id trong payload, update order_items.status PROCESSING → DELIVERED
+   → Idempotent theo event_id + item_version
+   → Sau đó Auto-Complete check: nếu tất cả items DELIVERED → ORDER_COMPLETED
+```
+
+---
+
+## 5. `POST /v1/inventory/admin/unlock-sku`
 
 Manual recovery: mở khoá SKU bị suspend (do invariant drift). Đây là bước thay thế cho auto-recovery cũ — bắt buộc có sự can thiệp của con người sau khi đã đối soát Redis/DB.
 

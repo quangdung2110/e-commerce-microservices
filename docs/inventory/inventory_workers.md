@@ -146,17 +146,17 @@ Xoá các row `inventory_outbox` đã được Debezium CDC publish thành công
 
 ---
 
-## 5. Kafka Return Consumer
+## 5. Kafka Return Consumer (Phase 14 — REMOVED)
 
-**Loại hình:** Kafka Consumer chạy liên tục (song song với Ledger Worker, có thể chạy cùng process pool hoặc tách process tuỳ throughput).
-**Consumer Group:** `inventory-return-consumer`
-**Consume Topic:** `t.shipping.events` (lọc `event_type = SHIPMENT_RETURNED`)
+> **Phase 14 đã loại bỏ worker này.** Trước Phase 14, worker này consume `SHIPMENT_RETURNED` từ `t.shipping.events` để restock physical_inventory khi hàng hoàn về kho. Sau khi Shipping Service bị xóa, restock giờ do admin thực hiện qua API `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` (xem [Workflow §6](inventory_workflow.md) và [Endpoints §2](inventory_endpoints.md#2-post-v1inventoryrestock)).
 
-### Sứ mệnh
+Logic cũ (chỉ để tham khảo):
+
+### Sứ mệnh (Phase 13 cũ)
 
 Khi Shipping xác nhận hàng hoàn về kho, consumer này thực hiện restock physical_inventory, đánh dấu reservation `refund_returned_at`, kiểm tra completion và emit `INVENTORY_RETURN_RECEIVED_ALL` nếu đủ.
 
-### Luồng xử lý
+### Luồng xử lý (Phase 13 cũ)
 
 ```
 1. poll lấy batch SHIPMENT_RETURNED từ Kafka
@@ -188,6 +188,6 @@ Khi Shipping xác nhận hàng hoàn về kho, consumer này thực hiện resto
 | Redis Stream Relay Worker | Continuous | Real-time | Redis Stream, Kafka | Giữ nguyên |
 | Kafka Ledger Worker | Continuous | poll(100ms) | Kafka, PostgreSQL | Giữ nguyên (đã đơn giản poison handling) |
 | Debezium CDC Connector | Kafka Connect | Real-time (WAL) | PostgreSQL WAL, Kafka | Giữ nguyên |
-| Kafka Return Consumer | Continuous | poll(100ms) | Kafka, PostgreSQL, Redis | Mới tách ra rõ từ Ledger Worker logic cũ |
+| ~~Kafka Return Consumer~~ | ~~Continuous~~ | ~~poll(100ms)~~ | ~~Kafka, PostgreSQL, Redis~~ | **REMOVED in Phase 14** (replaced by admin restock API) |
 | Outbox Cleanup Job | CronJob | Daily | PostgreSQL | Giữ nguyên (gộp các cleanup job cũ) |
 

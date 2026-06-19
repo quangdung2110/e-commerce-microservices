@@ -10,7 +10,7 @@
 **Cross-Service References:**
 * [Order Temporal Saga](../order/temporal_saga_design.md) — Activities gọi Reserve/Deduct/Release
 * [Checkout Workflow](../checkout/checkout_workflow.md) — Preview stock check và submit
-* [Shipping Events](../shipping/shipping_events.md) — Inventory consume `SHIPMENT_RETURNED` để nhập trả kho
+* [Inventory Events](inventory_events.md) — Inventory produce `INVENTORY_STOCK_*` events; từ Phase 14 không còn consume Shipping events.
 
 ---
 
@@ -243,13 +243,9 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  WHERE sku_id = ANY(:sku_ids) AND available_quantity > 0
         |  Build feasible warehouse combinations (stock sufficient cho mỗi item)
         v
-[Shipping Quote Call]
-        |  Gọi POST /v1/shipping/calculate-batch để lấy shipping fee + ETA
-        |  (Input: from_warehouse_id, to_province/district, items_count, service_type — không có weight/dimensions/COD)
-        v
-[Smart Routing Engine]
-        |  Score = shipping_cost + delivery_days * cost_per_day
-        |  Tie-break: warehouse_id ASC (deterministic)
+[Warehouse Selection Engine]
+        |  Pick warehouse có stock đủ
+        |  Tie-break: same-province preferred, warehouse_id ASC
         |  Output: route_plan với concrete warehouse_id cho mỗi item + product_id denormalized
         v
 [Cache Route Plan]
@@ -259,13 +255,12 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  {
         |    "route_plan_id": "...",
         |    "expires_at": "...",
-        |    "rate_card_version": "...",
         |    "items": [{sku_id, product_id, quantity, warehouse_id}],
-        |    "shipping_options": [{warehouse_id, options: [{provider, service_type, fee, delivery_days}]}]
+        |    "warehouse_options": [{warehouse_id, available_quantity, estimated_delivery_days}]
         |  }
 ```
 
-> Route plan có TTL 20 phút, không cần version determinism. Khi checkout submit, nếu plan không có trong cache (đã expire) → reject `CONTRACT_INVALID_ROUTE_PLAN` và yêu cầu re-preview. Chi tiết tại [Smart Routing Engine](smart_routing_engine.md).
+> Phase 14 đã lược bỏ Smart Routing Scoring (chọn theo `shipping_cost + delivery_days`). Thuật toán mới: chọn kho có stock đủ, ưu tiên same-province. Route plan TTL 20 phút, không cần version determinism. Khi checkout submit, nếu plan không có trong cache (đã expire) → reject `CONTRACT_INVALID_ROUTE_PLAN` và yêu cầu re-preview. Chi tiết tại [Warehouse Selection Engine](smart_routing_engine.md).
 
 ---
 
@@ -316,7 +311,7 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
 
 ## Luồng 6: Return Restock (Nhận hàng hoàn về kho)
 
-**Ngữ cảnh:** Shipping Service phát `SHIPMENT_RETURNED` khi kiện trả về kho.
+**Ngữ cảnh:** Admin/WMS xác nhận đã nhận hàng hoàn từ khách (Phase 14 không còn `SHIPMENT_RETURNED` event). Quy trình: admin restock với `reference_type='ORDER_RETURNED_RESTOCK'` hoặc khách tự mang hàng tới kho.
 
 ### Điều kiện tiên quyết
 
@@ -325,17 +320,12 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
 ### Luồng dữ liệu
 
 ```
-[Shipping Service]
-        |  Produce Kafka event SHIPMENT_RETURNED
+[Admin/WMS hoặc buyer bring back]
+        |  Request: {warehouse_id, sku_id, quantity, reference_type='ORDER_RETURNED_RESTOCK', order_id, order_item_id, refund_request_id}
         v
-[Kafka: t.shipping.events]
-        v
-[Kafka Return Consumer]
-        |  Payload: {shipment_id, order_id, order_item_id, returned_to_warehouse_id, items[]}
-        v
-[Idempotency Guard]
-        |  Layer 1: inventory_ledger.event_id UNIQUE
-        |  (Đã lược bỏ inventory_refund_scopes.idempotency_key + Redis SETNX 2 lớp)
+[Contract Guard]
+        |  Validate warehouse_id tồn tại & active
+        |  Validate quantity > 0
         v
 [PostgreSQL Transaction]
         |  BEGIN;
@@ -398,7 +388,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
 
 ### Nguyên tắc nghiệp vụ
 
-- Nguồn kích hoạt restock duy nhất là `SHIPMENT_RETURNED`. Event `ORDER_REFUNDED` chỉ là trạng thái tài chính.
+- Phase 14 đã loại bỏ trigger từ `SHIPMENT_RETURNED`. Restock vật lý giờ do admin thực hiện qua `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` hoặc khách tự mang hàng tới kho và admin xác nhận.
 - `INVENTORY_RETURN_RECEIVED_ALL` là signal nghiệp vụ để Order mở bước gọi Payment refund, không thay thế event tồn kho `INVENTORY_STOCK_CHANGED`.
 
 ---
@@ -412,7 +402,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
 | `INVENTORY_STOCK_MUTATION` | Lua Script 1/2/3 | `t.inventory.events` | Redis Stream Outbox + Relay Worker |
 | `INVENTORY_STOCK_CHANGED` | Ledger Worker / Restock / Return Consumer | `t.inventory.events` | PostgreSQL Outbox + Debezium CDC |
 | `INVENTORY_RETURN_RECEIVED_ALL` | Return Consumer | `t.inventory.events` | PostgreSQL Outbox + Debezium CDC |
-| `SHIPMENT_RETURNED` | Shipping Service | `t.shipping.events` | Kafka (consumed by Inventory) |
+| `INVENTORY_SHIP_TO_CUSTOMER` | Inventory Service | `t.inventory.events` | Debezium CDC (DB outbox) | Admin API `POST /v1/inventory/ship-to-customer` (Phase 14) |
 
 ---
 

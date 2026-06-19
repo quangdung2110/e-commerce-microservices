@@ -64,7 +64,6 @@ Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặ
 *   `DeductInventoryActivity`: (Post-Payment) Trừ hẳn tồn kho đã bị giữ chỗ.
 *   `ConfirmPromotionActivity`: (Post-Payment) Commit reservation voucher trên Redis và ghi ledger `coupon_usages.status = REDEEMED` (bắt buộc truyền `idempotency_key` theo từng `promotion_id`).
 *   `CancelConfirmedPromotionActivity`: (Post-Payment compensation) Undo trạng thái đã `REDEEMED` theo từng `promotion_id` khi post-payment saga fail.
-*   `CreateShippingLabelsActivity`: (Post-Payment) Gửi thông tin sang 3PL để tạo mã vận đơn.
 *   `UpdateOrderStatusActivity`: Chuyển trạng thái Order (FSM Update an toàn với Optimistic Locking).
 *   `MarkRefundRequestedActivity`: Verify `trigger_source` + policy guard, commit transition vào lane refund (`PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`) và insert outbox `ORDER_STATUS_CHANGED` với metadata `refund_waiting_inventory_confirmation = true`.
 *   `LockRefundScopeActivity`: Chốt refund scope từ request đầu vào (`FULL` hoặc `PARTIAL + items_to_return[]`) để tính `refund_type`/`refund_amount` một lần duy nhất cho mỗi order.
@@ -82,8 +81,6 @@ Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặ
 *   `CancelPaymentActivity`: Hủy phiên giao dịch thanh toán nếu đơn hàng timeout.
 *   `RollbackDeductedInventoryActivity`: Bù trừ phần stock đã deduct ở post-payment khi step sau lỗi.
 *   `RevertOrderStatusToPaidActivity`: Trả trạng thái từ `PROCESSING` về `PAID` nếu post-payment rollback.
-*   `CancelShippingActivity`: Hủy vận đơn đã tạo khi post-payment rollback.
-    *   Nếu shipment đã ở `READY_TO_SHIP` trở lên, activity trả lỗi non-retryable `MANUAL_INTERVENTION_REQUIRED`; workflow không dừng toàn bộ compensation mà tiếp tục rollback các bước còn lại và phát cảnh báo vận hành.
 
 ### 2.6. Contract `idempotency_key` với Promotion (Bắt buộc)
 *   Order Service phải sinh key ở phía Order và giữ ổn định xuyên retry của cùng activity.
@@ -122,12 +119,11 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
     *   *Nếu hết 15p mốc Timer nổ:* Temporal chạy rollback theo LIFO pre-payment: `CancelPayment` → `RollbackPromotion` → `RollbackInventory` → `CancelOrder`. Đóng Workflow là Cancelled.
     *   *Nếu nghe Signal `PAYMENT_SUCCESS` trước 15 phút:* Bỏ qua Timer và xử lý theo 2 mốc:
         1) **Mốc tài chính:** `UpdateOrderStatusActivity` commit `PENDING_PAYMENT` -> `PAID` và insert outbox `ORDER_PAID` trong cùng transaction.
-        2) **Mốc vận hành (post-payment):** reset compensation stack cho post-payment và chạy tuần tự:
+2) **Mốc vận hành (post-payment):** reset compensation stack cho post-payment và chạy tuần tự:
            - `DeductInventoryActivity` (register `RollbackDeductedInventoryActivity`)
             - `ConfirmPromotionActivity` (register `CancelConfirmedPromotionActivity`, gọi với `idempotency_key` theo từng `promotion_id`)
-           - `CreateShippingLabelsActivity` (register `CancelShippingActivity`)
-           - `UpdateOrderStatusActivity` (`PAID` -> `PROCESSING`, register `RevertOrderStatusToPaidActivity`)
-        *   Nếu lỗi ở bất kỳ bước post-payment nào, rollback theo LIFO post-payment: `RevertOrderStatusToPaid` → `CancelShipping` → `CancelConfirmedPromotion` → `RollbackDeductedInventory`.
+            - `UpdateOrderStatusActivity` (`PAID` -> `PROCESSING`, register `RevertOrderStatusToPaidActivity`)
+        *   Nếu lỗi ở bất kỳ bước post-payment nào, rollback theo LIFO post-payment: `RevertOrderStatusToPaid` → `CancelConfirmedPromotion` → `RollbackDeductedInventory`.
     *   Nếu thành công toàn bộ post-payment, workflow complete; mốc vận hành được phản ánh bởi `ORDER_STATUS_CHANGED` tại transition `PAID` -> `PROCESSING`.
 
 ## 3.1. Luồng `OrderLatePaymentRecoveryWorkflow`
@@ -138,7 +134,7 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
 4. Trước khi vào deduct, workflow bắt buộc đảm bảo reservation còn hiệu lực:
     - gọi `ReserveInventoryActivity` lại theo route plan hợp lệ, hoặc
     - `RecoverPaidOrderFromTimeoutActivity` phải tái lập reservation tương đương và trả evidence cho workflow.
-5. Sau khi reservation hợp lệ, workflow chạy post-payment saga (`DeductInventory` -> `ConfirmPromotion` -> `CreateShippingLabels` -> `UpdateOrderStatus`).
+5. Sau khi reservation hợp lệ, workflow chạy post-payment saga (`DeductInventory` -> `ConfirmPromotion` -> `UpdateOrderStatus`).
 6. Nếu post-payment recovery thất bại ở bước bắt buộc, workflow chuyển sang auto-refund lane để đưa hệ thống về trạng thái tài chính an toàn.
 
 ## 4. Luồng Refund bằng `OrderRefundWorkflow`

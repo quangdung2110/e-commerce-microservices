@@ -1,4 +1,4 @@
-# Smart Routing Engine
+# Warehouse Selection Engine (Phase 14 — đổi tên từ Smart Routing Engine)
 
 **Liên kết nhanh (Related Documents):**
 * [Workflow §4: Routing Options](inventory_workflow.md)
@@ -8,7 +8,11 @@
 
 ## 1. Goal
 
-Pick the best warehouse for each item in the cart, balancing shipping cost and delivery speed.
+Pick a warehouse that has the required stock for each item in the cart. Since Phase 14 đã loại bỏ Shipping Service, scoring theo `shipping_cost + delivery_days` không còn ý nghĩa. Thuật toán mới:
+
+1. Tìm warehouse có `physical_inventory.available_quantity >= requested_quantity`.
+2. Nếu nhiều kho qualify → ưu tiên kho **same-province** với customer_location.
+3. Tie-break: `warehouse_id ASC` (deterministic).
 
 ## 2. Inputs
 
@@ -24,7 +28,6 @@ Required:
 {
   "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
   "expires_at": "2026-04-01T08:20:00Z",
-  "rate_card_version": "2026-04-01T07:55:00Z",
   "items": [
     {
       "sku_id": "sku-001",
@@ -33,13 +36,11 @@ Required:
       "warehouse_id": 5
     }
   ],
-  "shipping_options": [
+  "warehouse_options": [
     {
       "warehouse_id": 5,
-      "options": [
-        { "provider": "GHN", "service_type": "STANDARD", "fee": 35000, "delivery_days": 2 },
-        { "provider": "GHTK", "service_type": "EXPRESS", "fee": 45000, "delivery_days": 1 }
-      ]
+      "available_quantity": 50,
+      "estimated_delivery_days": 2
     }
   ]
 }
@@ -47,7 +48,7 @@ Required:
 
 `warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish. `product_id` được denormalized từ `physical_inventory.product_id` (lưu từ lần restock đầu) để `ReserveInventoryActivity` không cần lookup lại.
 
-> **Đơn giản hóa:** Schema đã bỏ `route_version` (chỉ có 1 algorithm, không cần version), `route_signature` (thừa). Shipping trả về `rate_card_version` được relay trực tiếp cho Checkout dùng trong `pricing_hash`. Schema đầy đủ và tường minh xem [Inventory Endpoints §1 Response](inventory_endpoints.md#response).
+> **Phase 14 đã loại bỏ:** `shipping_options[]`, `rate_card_version`, `service_type` (Shipping Service bị xóa). Thuật toán warehouse selection không còn score theo phí vận chuyển.
 
 ## 4. Algorithm
 
@@ -68,29 +69,19 @@ Với mỗi SKU, danh sách warehouse có đủ `available_quantity >= requested
 
 Với cart nhỏ (< 10 SKU) và mỗi SKU có 1-3 warehouse candidates, số tổ hợp thường < 50.
 
-### 4.3. Score Each Combination
+### 4.3. Warehouse Selection (Phase 14 — thay thế Smart Routing Scoring)
 
-Với mỗi tổ hợp, gọi `POST /v1/shipping/calculate-batch` để lấy shipping fee + delivery_days cho mỗi `warehouse_id` trong combination.
+Với mỗi tổ hợp feasible, áp dụng rule ưu tiên:
 
-**Chọn option trong quote:**
-- Ưu tiên option có `service_type` khớp với `service_type` trong request input.
-- Nếu không có option khớp, lấy option rẻ nhất.
-- Nếu options rỗng → đánh dấu combination này INFEASIBLE.
+1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.province_code = customer_location.city_code`.
+2. **Stock availability**: Tất cả SKU phải đủ stock tại warehouse đó.
+3. **Tie-break**: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
 
-**Scoring formula:**
-
-```
-score = shipping_cost + delivery_days * cost_per_day
-```
-
-- `shipping_cost`: fee của option đã chọn.
-- `cost_per_day` mặc định = `5000` (VND). Có thể config theo business policy.
+**Không còn scoring formula `score = shipping_cost + delivery_days * cost_per_day`** (đã xóa khi không còn shipping fee).
 
 ### 4.4. Pick Best
 
-Chọn tổ hợp có `score` thấp nhất. Tie-break: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
-
-> Đã lược bỏ weighted scoring 4 trọng số (`w1*cost + w2*eta + w3*split + w4*warehouse_priority`). Lý do: `split_penalty` chỉ áp dụng khi đơn phải chia nhiều kiện — thực tế cart < 10 SKU hiếm khi split quá 1-2 kho. `warehouse_priority` là heuristic không có data thực tế để config tốt. Linear score đơn giản đủ cho hầu hết use case.
+Chọn tổ hợp có warehouse ưu tiên (same-province) trước, nếu không có thì lấy warehouse_id nhỏ nhất.
 
 ## 5. Cache
 
@@ -112,6 +103,6 @@ Khi Checkout submit với `route_plan_id`:
 | Plan trong cache, TTL chưa hết | Proceed bình thường |
 | Plan không có trong cache (TTL expired hoặc bị xoá) | Reject `CONTRACT_INVALID_ROUTE_PLAN`. Client phải gọi lại `/routing-options` |
 | Redis cache unavailable | Reject `INVENTORY_UNAVAILABLE`. Không fallback về logic khác (đơn giản hoá) |
-| Shipping trả `options[]` rỗng cho ít nhất 1 warehouse trong feasible combinations | Reject `NO_SHIPPING_OPTIONS_FOR_ROUTE` (HTTP 422). Client phải đổi địa chỉ hoặc liên hệ CSKH |
+| Không có kho nào có đủ stock cho 1 SKU | Reject `INSUFFICIENT_STOCK` (HTTP 409). Client phải giảm số lượng hoặc đợi restock |
 
-> Đã lược bỏ deterministic replay check (kiểm tra `algorithm_version` cũ → chạy lại cùng algorithm). Lý do: giờ chỉ có 1 algorithm, không có version drift.
+> Phase 14 đã lược bỏ: scoring theo shipping fee, deterministic replay check (algorithm_version). Lý do: đơn giản hóa + không còn shipping data.
