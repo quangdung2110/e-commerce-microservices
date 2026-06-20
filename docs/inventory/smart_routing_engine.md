@@ -36,11 +36,10 @@ Required:
       "warehouse_id": 5
     }
   ],
-  "warehouse_options": [
+  "warehouse_assignments": [
     {
       "warehouse_id": 5,
-      "available_quantity": 50,
-      "estimated_delivery_days": 2
+      "available_quantity": 50
     }
   ]
 }

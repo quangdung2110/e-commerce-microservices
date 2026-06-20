@@ -88,11 +88,10 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
       "warehouse_id": 5
     }
   ],
-  "warehouse_options": [
+  "warehouse_assignments": [
     {
       "warehouse_id": 5,
-      "available_quantity": 50,
-      "estimated_delivery_days": 2
+      "available_quantity": 50
     }
   ]
 }
@@ -106,10 +105,9 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
 | `items[].product_id` | String | Product denormalized (lấy từ `physical_inventory.product_id`, dùng cho `ReserveInventoryActivity` không cần lookup thêm) |
 | `items[].quantity` | Integer | Số lượng từ request |
 | `items[].warehouse_id` | Integer | Kho fulfill item này |
-| `warehouse_options[]` | Array[Object] | Thông tin kho đã chọn để fulfill |
-| `warehouse_options[].warehouse_id` | Integer | Kho tương ứng |
-| `warehouse_options[].available_quantity` | Integer | Tồn kho khả dụng |
-| `warehouse_options[].estimated_delivery_days` | Integer | Số ngày dự kiến giao (config tĩnh theo kho) |
+| `warehouse_assignments[]` | Array[Object] | Thông tin kho đã chọn để fulfill |
+| `warehouse_assignments[].warehouse_id` | Integer | Kho tương ứng |
+| `warehouse_assignments[].available_quantity` | Integer | Tồn kho khả dụng |
 
 **4xx Error Responses**
 

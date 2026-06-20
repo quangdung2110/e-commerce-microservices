@@ -256,7 +256,7 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |    "route_plan_id": "...",
         |    "expires_at": "...",
         |    "items": [{sku_id, product_id, quantity, warehouse_id}],
-        |    "warehouse_options": [{warehouse_id, available_quantity, estimated_delivery_days}]
+        |    "warehouse_assignments": [{warehouse_id, available_quantity}]
         |  }
 ```
 
