@@ -13,7 +13,7 @@
 
 ---
 
-Inventory Service produce các events liên quan đến biến động tồn kho và consume event trả hàng từ Shipping.
+Inventory Service chỉ produce events (không consume từ service ngoài sau Phase 14). Xem chi tiết cơ chế tại [§2.2](inventory_events.md#22-topics-consume).
 
 
 ## 1. Bản Đối Chiếu Event
@@ -22,7 +22,8 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 |:---|:---|:---|
 | `INVENTORY_STOCK_MUTATION` (`change_type = ORDER_RESERVED`) | Redis Stream Relay Worker | `sku_id` |
 | `INVENTORY_STOCK_MUTATION` (`change_type = ORDER_DEDUCTED`) | Redis Stream Relay Worker | `sku_id` |
-| `INVENTORY_STOCK_MUTATION` (`change_type = ORDER_CANCELLED` hoặc `RESERVATION_EXPIRED`) | Redis Stream Relay Worker | `sku_id` |
+| `INVENTORY_STOCK_MUTATION` (`change_type = ORDER_CANCELLED`) | Redis Stream Relay Worker | `sku_id` |
+| `INVENTORY_STOCK_MUTATION` (`change_type = RESERVATION_EXPIRED`) | Redis Stream Relay Worker | `sku_id` |
 | `INVENTORY_STOCK_CHANGED` (với `change_type` tương ứng) | Debezium CDC (DB outbox) | `sku_id` |
 | `INVENTORY_RETURN_RECEIVED_ALL` (giữ nguyên) | Debezium CDC (DB outbox) | `order_id` |
 | `INVENTORY_SHIP_TO_CUSTOMER` (Phase 14 — mới) | Debezium CDC (DB outbox) | `order_id` |
@@ -34,6 +35,7 @@ Inventory Service produce các events liên quan đến biến động tồn kho
 | `INVENTORY_STOCK_MUTATION` | **Redis Stream Outbox + Relay Worker** | Atomic với Redis mutation trong Lua script |
 | `INVENTORY_STOCK_CHANGED` | **PostgreSQL Outbox Pattern** | Đồng bộ chặt với DB write; aggregate per-SKU đã chuẩn hoá |
 | `INVENTORY_RETURN_RECEIVED_ALL` | **PostgreSQL Outbox Pattern** | Xác nhận nghiệp vụ đã nhận đủ toàn bộ item refund để Order mở bước refund tiền |
+| `INVENTORY_SHIP_TO_CUSTOMER` | **PostgreSQL Outbox Pattern** | Signal nghiệp vụ cho Order Service chuyển `order_items.status` PROCESSING → DELIVERED |
 
 > **Quy tắc chống duplicate:** Lua script trả mã `2` khi idempotent hit. Backend và Relay Worker không được phát thêm event mới cho idempotent hit.
 
@@ -60,9 +62,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 * `event_id`: UUID của sự kiện.
 * `event_type`: Loại sự kiện.
 * `aggregate_type`: Cố định `Inventory`.
-* `aggregate_id`: `sku_id` với sự kiện mức SKU, hoặc `order_id` với `INVENTORY_RETURN_RECEIVED_ALL`.
+* `aggregate_id`: `sku_id` với sự kiện mức SKU, hoặc `order_id` với `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER`.
 * `correlation_id`: Temporal Workflow ID hoặc upstream request ID.
-* `business_id`: `order_id` cho cross-service routing; `sku_id` cho stream-internal events.
 * `timestamp`: ISO 8601 UTC.
 * `source`: Cố định `inventory-service`.
 * `schema_version`: Bắt buộc `1` (xem [Service Contract Matrix §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper)).
@@ -75,7 +76,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 ### 4.1. INVENTORY_STOCK_MUTATION
 
 **Ngữ cảnh:** Lua script Reserve/Deduct/Release trả `1`. Đây là event cấp thấp (per-warehouse) phục vụ Ledger Worker ghi sổ cái.
-**Consumer chính:** Inventory Ledger Worker (internal). Analytics cũng subscribe để thống kê real-time.
+**Consumer chính:** Inventory Ledger Worker (internal).
 
 ```json
 {
@@ -96,8 +97,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
     "available_after": 798,
     "reserved_after": 2,
     "order_id": 10001,
-    "order_item_id": 2001,
-    "occurred_at": "2026-02-28T10:05:00Z"
+    "order_item_id": 2001
   }
 }
 ```
@@ -112,6 +112,20 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 | `RESERVATION_EXPIRED` | Script Release (do Temporal timeout) — hiện do Order compensation xử lý, nhưng enum giữ để tương thích |
 
 **Contract note:** Với mọi event phát sinh từ flow đơn hàng, `order_item_id` là bắt buộc và không được null.
+
+> **Lưu ý chung về timestamp trên event:**
+> - **Wrapper `timestamp`** (ISO 8601 UTC) là thời điểm phát event chính thức — áp dụng cho TẤT CẢ 4 event (`INVENTORY_STOCK_MUTATION`, `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL`, `INVENTORY_SHIP_TO_CUSTOMER`).
+> - **Payload KHÔNG chứa** `event_timestamp`, `timestamp_iso`, `occurred_at` (đã loại bỏ để tránh trùng lặp với wrapper).
+> - Consumer cần epoch_ms thì convert từ wrapper `timestamp` (parse ISO 8601 sang epoch).
+
+> **Lưu ý phân biệt field `available_after` giữa 2 event liên quan:**
+> 
+> | Event | Field | Scope | Mục đích |
+> |:---|:---|:---|:---|
+> | `INVENTORY_STOCK_MUTATION` (event này) | `available_after` | **per-warehouse** (chỉ kho vừa mutate) | Nội bộ Inventory — Ledger Worker dùng để ghi nhận balance tại kho |
+> | `INVENTORY_STOCK_CHANGED` (xem §4.2) | `available_quantity` | **per-SKU aggregate** (tổng mọi kho) | Public — Product Service dùng để hiển thị tổng tồn kho |
+> 
+> Hai field **khác scope** dù cùng đo lường "khả dụng". Consumer Product/Analytics chỉ consume `INVENTORY_STOCK_CHANGED.available_quantity` cho UI; không dùng `INVENTORY_STOCK_MUTATION.available_after` cho display.
 
 #### 4.1.1. Kiến trúc Event Streaming (Lua → Kafka commands)
 
@@ -151,12 +165,12 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
     "product_id": "prod-uuid-001",
     "sku_id": "sku-001",
     "available_quantity": 798,
-    "change_type": "ORDER_RESERVED",
-    "event_timestamp": 1709114701000,
-    "timestamp_iso": "2026-02-28T10:05:01Z"
+    "change_type": "ORDER_RESERVED"
   }
 }
 ```
+
+> **Lưu ý timestamp:** Event này dùng **chỉ CloudEvents wrapper `timestamp`** (ISO 8601 UTC) làm thời điểm phát. Payload KHÔNG chứa thêm `event_timestamp` hay `timestamp_iso` để tránh trùng lặp với wrapper. Consumer nào cần epoch_ms thì convert từ wrapper `timestamp`.
 
 `available_quantity` ở đây là tổng khả dụng per-SKU (sum từ `physical_inventory` tại emit time). `change_type` hợp lệ:
 
@@ -168,17 +182,16 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 | `RESERVATION_EXPIRED` | sau Ledger Worker ghi release do timeout |
 | `ADMIN_RESTOCK` | Restock API |
 | `ORDER_RETURNED_RESTOCK` | Admin Restock với `reference_type='ORDER_RETURNED_RESTOCK'` (Phase 14: không còn SHIPMENT_RETURNED consumer) |
-| `ADMIN_ADJUSTMENT` | (chưa implement) |
 
 **Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
 
 #### 4.2.1. Kiến trúc Event Streaming (DB outbox → Kafka public)
 
-Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) sau khi Ledger Worker / Return Consumer / Admin Restock đã ghi xong PostgreSQL. Được phát đi thông qua **PostgreSQL Outbox Pattern + Debezium CDC** — đảm bảo đồng bộ chặt với DB write và zero load lên application.
+Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) sau khi Ledger Worker / Restock API đã ghi xong PostgreSQL. Được phát đi thông qua **PostgreSQL Outbox Pattern + Debezium CDC** — đảm bảo đồng bộ chặt với DB write và zero load lên application.
 
 | Bước | Thành phần | Hành động |
 |:---:|:---|:---|
-| 1 | Ledger Worker / Return Consumer / Restock API | Mở PostgreSQL transaction, UPDATE `physical_inventory` (reserved_quantity / actual_quantity) + INSERT `inventory_ledger` + UPSERT `inventory_reservations` |
+| 1 | Ledger Worker / Restock API | Mở PostgreSQL transaction, UPDATE `physical_inventory` (reserved_quantity / actual_quantity) + INSERT `inventory_ledger` + UPSERT `inventory_reservations` |
 | 2 | Cùng transaction | INSERT vào bảng append-only `inventory_outbox` với `event_type = INVENTORY_STOCK_CHANGED`, `partition_key = sku_id`, payload chứa `product_id`, `sku_id`, `available_quantity`, `change_type` |
 | 3 | PostgreSQL | COMMIT transaction — tất cả bước 1-3 atomic |
 | 4 | Debezium CDC Connector | Đọc WAL qua Logical Replication Slot, extract `partition_key` làm Kafka message key (KHÔNG bóc JSON payload) |
@@ -230,29 +243,29 @@ Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) s
 
 #### 4.3.1. Kiến trúc Event Streaming (DB outbox → Kafka public)
 
-Event này là signal nghiệp vụ để Order mở bước gọi Payment refund sau khi đã nhận đủ toàn bộ item refund về kho. Cơ chế phát đi tương tự `INVENTORY_STOCK_CHANGED`: **PostgreSQL Outbox Pattern + Debezium CDC**.
+Event này là signal nghiệp vụ để Order mở bước gọi Payment refund sau khi đã nhận đủ toàn bộ item refund về kho. Cơ chế phát i tương tự `INVENTORY_STOCK_CHANGED`: **PostgreSQL Outbox Pattern + Debezium CDC**.
 
 | Bước | Thành phần | Hành động |
 |:---:|:---|:---|
-| 1 | Kafka Return Consumer | Nhận event `SHIPMENT_RETURNED` từ `t.shipping.events`, idempotency check qua `inventory_ledger.event_id` UNIQUE |
-| 2 | Cùng PostgreSQL transaction | UPDATE `physical_inventory.actual_quantity` (cộng `quantity` trả về) + UPDATE `inventory_reservations` set `refund_returned_at = NOW()` cho row match `(order_id, order_item_id, status='DEDUCTED', refund_returned_at IS NULL)` |
+| 1 | Admin (qua `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'`) | Request nhập hàng hoàn về kho, body mang theo `order_id`, `order_item_id`, `refund_request_id` |
+| 2 | API Layer | Cùng PostgreSQL transaction: UPDATE `physical_inventory.actual_quantity` (cộng `quantity` trả về, có `ON CONFLICT` upsert) + UPDATE `inventory_reservations` set `refund_returned_at = NOW()` cho row match `(order_id, order_item_id, status='DEDUCTED', refund_returned_at IS NULL)` |
 | 3 | Cùng transaction | INSERT `inventory_ledger` với `reference_type = ORDER_RETURNED_RESTOCK` |
 | 4 | Cùng transaction | INSERT `inventory_outbox` với `event_type = INVENTORY_STOCK_CHANGED`, `partition_key = sku_id` (cho Product Service) |
 | 5 | Cùng transaction | Refund completion check: `SELECT COUNT(*) FROM inventory_reservations WHERE order_id = :order_id AND refund_request_id = :refund_request_id AND refund_expected = TRUE AND status = 'DEDUCTED' AND refund_returned_at IS NULL` |
-| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chứa `order_id`, `refund_request_id`, `required_order_item_ids`, `received_order_item_ids`, `all_items_received`, `confirmed_at` |
+| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chứa `order_id`, `refund_request_id`, `required_order_item_ids`, `received_order_item_ids`, `all_items_received`, `confirmed_at`. Có unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chống duplicate emit. |
 | 7 | PostgreSQL | COMMIT transaction |
 | 8 | Debezium CDC | Đọc WAL, produce message lên Kafka `t.inventory.events` với `key = order_id` (cho event RETURN_RECEIVED_ALL) hoặc `key = sku_id` (cho event STOCK_CHANGED) |
 
 **Lưu ý vận hành:**
 
 - Bước 1-7 cùng 1 transaction: đảm bảo inventory đã được restock VÀ ledger đã ghi VÀ outbox đã có event outbox trước khi commit.
-- Bước 5-6 chỉ emit `INVENTORY_RETURN_RECEIVED_ALL` tối đa 1 lần cho mỗi `(order_id, refund_request_id)` — nếu SHIPMENT_RETURNED cuối cùng về, count = 0, insert outbox. Nếu SHIPMENT_RETURNED tiếp theo cùng `(order_id, refund_request_id)` đã complete trước đó, query trả về count > 0 hoặc không còn row `refund_expected = TRUE` để check (cần thêm điều kiện check idempotent để chặn duplicate emit).
+- Bước 5-6 chỉ emit `INVENTORY_RETURN_RECEIVED_ALL` tối đa 1 lần cho mỗi `(order_id, refund_request_id)`. Khi admin restock item cuối cùng của `refund_request_id`, count = 0 → insert outbox. Lần restock tiếp theo cùng `(order_id, refund_request_id)`: nếu `refund_expected = TRUE` row nào đã có `refund_returned_at IS NOT NULL` thì count > 0, không insert. Nếu không còn row `refund_expected = TRUE` (do `REFUND_NOT_EXPECTED` chẳng hạn) thì unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chặn duplicate emit (xem [DB §1.5](inventory_db_design.md#15-inventory_outbox)).
 - Bước 8 Kafka key = `order_id` cho event RETURN_RECEIVED_ALL đảm bảo ordering per-order; key = `sku_id` cho event STOCK_CHANGED đảm bảo ordering per-SKU. Product Service filter theo `event_type` để chỉ consume STOCK_CHANGED, Order Service filter để chỉ consume RETURN_RECEIVED_ALL.
 - Consumer Order Service phải idempotent theo `event_id` và `refund_request_id` vì Kafka delivery có thể retry.
 
 **Tại sao không có ledger write riêng cho `INVENTORY_RETURN_RECEIVED_ALL`?** Đây là event tín hiệu nghiệp vụ, không phải biến động tồn kho. Biến động tồn kho đã được ghi vào `inventory_ledger` ở bước 3 với `reference_type = ORDER_RETURNED_RESTOCK`. Việc insert thêm một `inventory_ledger` row cho `INVENTORY_RETURN_RECEIVED_ALL` sẽ gây trùng lặp audit và vi phạm invariant "mỗi event chỉ tạo 1 ledger entry" (xem [inventory_db_design.md §1.4](inventory_db_design.md)).
 
-**Quan hệ với `INVENTORY_STOCK_CHANGED`:** Cùng 1 lần xử lý SHIPMENT_RETURNED có thể emit 2 outbox row:
+**Quan hệ với `INVENTORY_STOCK_CHANGED`:** Cùng 1 lần admin restock `ORDER_RETURNED_RESTOCK` có thể emit 2 outbox row:
 
 1. `INVENTORY_STOCK_CHANGED` với `change_type = ORDER_RETURNED_RESTOCK` — cho Product Service cập nhật display cache.
 2. `INVENTORY_RETURN_RECEIVED_ALL` (nếu là lần cuối cùng) — cho Order Service mở bước refund tiền.
@@ -261,7 +274,7 @@ Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay th
 
 ---
 
-### 4.4. INVENTORY_SHIP_TO_CUSTOMER (Phase 14 — mới)
+### 4.4. INVENTORY_SHIP_TO_CUSTOMER
 
 **Ngữ cảnh:** Admin xác nhận kho đã xuất hàng cho khách (qua API `POST /v1/inventory/ship-to-customer`). Trigger này thay thế cho `SHIPMENT_STATUS_UPDATED` từ Shipping Service (đã bị xóa).
 **Consumer chính:** Order Service (`order-inventory-ship-consumer`) → cập nhật `order_items.status = DELIVERED`.
@@ -285,19 +298,35 @@ Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay th
 }
 ```
 
-> Order Service consumer sẽ tự động xác định `order_item_ids[]` thông qua `inventory_reservations` table (tất cả reservation rows chưa DEDUCTED? — thực ra là PROCESSING state của order_item).
+> Order Service consumer xác định `order_item_ids[]` cần chuyển sang `DELIVERED` bằng cách query `inventory_reservations` theo `order_id` trong payload, lọc các row có `status = 'DEDUCTED'`. Mỗi `order_item_id` tương ứng sẽ được `UPDATE order_items.status PROCESSING → DELIVERED` (idempotent theo `event_id`).
+>
+> Lưu ý: `inventory_reservations.status` chỉ có 3 giá trị `RESERVED / DEDUCTED / CANCELLED`. Cụm từ "PROCESSING state of order_item" ở các bản trước là sai — `PROCESSING` thuộc về `order_items.status` bên Order Service, không thuộc inventory.
+
+#### 4.4.1. Kiến trúc Event Streaming (DB outbox → Kafka public)
+
+Event này là signal nghiệp vụ (không phải biến động tồn kho) phát ra khi admin xác nhận đã xuất hàng từ kho. Cơ chế phát đi tương tự `INVENTORY_STOCK_CHANGED`: **PostgreSQL Outbox Pattern + Debezium CDC**.
+
+| Bước | Thành phần | Hành động |
+|:---:|:---|:---|
+| 1 | Admin/WMS gọi `POST /v1/inventory/ship-to-customer` với `{order_id, warehouse_id, shipped_at, courier_note?}` | API Layer validate JWT + warehouse + order tồn tại |
+| 2 | Cùng PostgreSQL transaction | INSERT vào `inventory_outbox` với `event_type = INVENTORY_SHIP_TO_CUSTOMER`, `partition_key = order_id`, payload chứa `order_id, warehouse_id, shipped_at, courier_note` |
+| 3 | PostgreSQL | COMMIT transaction |
+| 4 | Debezium CDC Connector | Đọc WAL qua Logical Replication Slot, extract `partition_key = order_id` làm Kafka message key (không bóc JSON) |
+| 5 | Debezium CDC | Produce lên Kafka topic `t.inventory.events` với `key = order_id`, độ trễ < 5ms |
+| 6 | Order Service (downstream) | Consume `INVENTORY_SHIP_TO_CUSTOMER`, lookup `inventory_reservations` theo `(order_id, warehouse_id)` (lọc cả warehouse_id để tránh DELIVERED nhầm trong multi-warehouse order) để lấy `order_item_ids` đang ở `status = 'DEDUCTED'`, update `order_items.status PROCESSING → DELIVERED` idempotent theo `event_id` |
+
+**Lưu ý vận hành:**
+
+- Khác với các event stock, `INVENTORY_SHIP_TO_CUSTOMER` **không đi kèm** `INVENTORY_STOCK_CHANGED` (vì không có biến động tồn kho — stock đã DEDUCTED lúc payment success).
+- Không có `INVENTORY_LEDGER` entry cho event này (chi tiết tại [Workflow §7](inventory_workflow.md#luồng-7-ship-to-customer-xuất-hàng-cho-khách)).
+- Order Service consumer phải idempotent theo `event_id` để chặn replay khi Kafka redeliver.
+- `affected_items` trong response API là số `order_item_ids` thuộc `(order_id, warehouse_id)` đang ở trạng thái `DEDUCTED` trên `inventory_reservations`, query tại API Layer trước khi emit outbox. Filter `warehouse_id` là bắt buộc cho multi-warehouse order.
 
 ---
 
 ## 5. Events Tiêu Thụ (Consumed Events)
 
-> **Phase 14 đã loại bỏ:** Inventory Service không còn consume events từ Shipping Service.
-
-### 5.1. (Removed in Phase 14)
-
-Trước Phase 14, Inventory Service consume `SHIPMENT_RETURNED` từ `t.shipping.events`. Sau khi loại bỏ Shipping Service, trigger restock giờ là admin API `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` (xem [Endpoints §2](inventory_endpoints.md#2-post-v1inventoryrestock)).
-
-### 5.2. Internal command events (trong cùng topic)
+### 5.1. Internal command events (trong cùng topic)
 
 Inventory Ledger Worker consume từ `t.inventory.events` (cùng topic với public events) và chỉ xử lý `INVENTORY_STOCK_MUTATION`:
 

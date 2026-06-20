@@ -9,9 +9,8 @@
 
 ---
 
-Inventory Service chạy 3 worker/cron chính, tập trung vào event relay, ghi sổ cái và dọn dẹp dữ liệu. Toàn bộ logic "tự phục hồi" (reconciliation, hot SKU, cache warm-up, expiry scanner) đã được lược bỏ — drift và inconsistency xử lý qua cảnh báo + manual intervention.
+Inventory Service chạy 4 worker/cron chính, tập trung vào event relay, ghi sổ cái và dọn dẹp dữ liệu. Toàn bộ logic "tự phục hồi" (reconciliation, hot SKU, cache warm-up, expiry scanner) đã được lược bỏ — drift và inconsistency xử lý qua cảnh báo + manual intervention.
 
-**Lưu ý về đơn giản hóa:** Bản này giảm từ 11 worker xuống còn 3 (1 Kafka Connect + 1 stream relay + 1 ledger consumer) + 1 cron cleanup. Phần lớn công việc trước đây nằm trong các worker giờ do chính API layer xử lý eager (lazy load) hoặc không cần (drift quá hiếm để tự động hoá).
 
 ---
 
@@ -103,13 +102,13 @@ Chuyển event từ bảng `inventory_outbox` sang Kafka Topic `t.inventory.even
 ### Luồng hoạt động
 
 ```
-1. APPLICATION: Ledger Worker / Return Consumer INSERT record vào inventory_outbox
+1. APPLICATION: Ledger Worker / Restock API INSERT record vào inventory_outbox
    (UUID event_id, aggregate_type, event_type, partition_key, payload, created_at)
    DB ghi WAL dưới ổ cứng
 2. DEBEZIUM: Connector gắn qua Logical Replication Slot
    Tiến hành đọc WAL stream TỰ ĐỘNG, không chiếm dụng tài nguyên CPU cấp Application
 3. ROUTING: Debezium trích xuất giá trị cột partition_key
-   (sku_id cho INVENTORY_STOCK_CHANGED, order_id cho INVENTORY_RETURN_RECEIVED_ALL)
+   (sku_id cho INVENTORY_STOCK_CHANGED, order_id cho INVENTORY_RETURN_RECEIVED_ALL và INVENTORY_SHIP_TO_CUSTOMER)
    làm Kafka Message Key
    Hệ thống tuyệt đối KHÔNG bóc JSON payload ở tầng Connect
 4. KAFKA: Produce message lên t.inventory.events
@@ -121,7 +120,7 @@ Chuyển event từ bảng `inventory_outbox` sang Kafka Topic `t.inventory.even
 
 ## 4. Outbox Cleanup Job (Cron)
 
-**Loại hình:** CronJob hàng ngày.
+**Loại hình:** CronJob chạy **đúng 1 lần/ngày lúc 02:00 UTC** (không polling liên tục).
 
 ### Sứ mệnh
 
@@ -130,54 +129,24 @@ Xoá các row `inventory_outbox` đã được Debezium CDC publish thành công
 ### Luồng xử lý
 
 ```
-1. Cron trigger hàng ngày (ví dụ 02:00 AM UTC)
-2. DELETE FROM inventory_outbox
+1. Cron trigger đúng 1 lần/ngày lúc 02:00 UTC
+2. Watermark = NOW() - INTERVAL '24 hours'
+   (Debezium CDC lag < 1 phút trong steady state, nên 24h là đủ an toàn
+    để đảm bảo mọi row đã được CDC đọc xong trước khi xoá)
+3. Lặp lại cho đến khi không còn row nào thoả điều kiện
+   (tránh DELETE một lần quá nhiều row gây lock bảng):
+   DELETE FROM inventory_outbox
    WHERE created_at < :watermark
    AND event_id IN (
      SELECT event_id FROM inventory_outbox
      WHERE created_at < :watermark
      LIMIT 10000
    );
-3. Watermark đảm bảo chỉ xoá các row đã được CDC đọc xong
-   (Debezium commit offset cùng transaction; offset lag < 1 phút trong steady state)
 ```
 
 > Lưu ý: Có thể thay bằng TTL 7 ngày đơn giản (`created_at < NOW() - INTERVAL '7 days'`) vì CDC thường lag < 1 phút. Tuỳ ngữ cảnh deployment có thể chọn cách conservative hơn (track offset).
 
 ---
-
-## 5. Kafka Return Consumer (Phase 14 — REMOVED)
-
-> **Phase 14 đã loại bỏ worker này.** Trước Phase 14, worker này consume `SHIPMENT_RETURNED` từ `t.shipping.events` để restock physical_inventory khi hàng hoàn về kho. Sau khi Shipping Service bị xóa, restock giờ do admin thực hiện qua API `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` (xem [Workflow §6](inventory_workflow.md) và [Endpoints §2](inventory_endpoints.md#2-post-v1inventoryrestock)).
-
-Logic cũ (chỉ để tham khảo):
-
-### Sứ mệnh (Phase 13 cũ)
-
-Khi Shipping xác nhận hàng hoàn về kho, consumer này thực hiện restock physical_inventory, đánh dấu reservation `refund_returned_at`, kiểm tra completion và emit `INVENTORY_RETURN_RECEIVED_ALL` nếu đủ.
-
-### Luồng xử lý (Phase 13 cũ)
-
-```
-1. poll lấy batch SHIPMENT_RETURNED từ Kafka
-2. Với mỗi event:
-   a. Idempotency: inventory_ledger.event_id UNIQUE
-      Nếu đã tồn tại: skip
-   b. PostgreSQL Transaction:
-      - UPDATE physical_inventory SET actual_quantity += qty
-      - UPDATE inventory_reservations SET refund_returned_at = NOW()
-        WHERE order_id, order_item_id, status='DEDUCTED', refund_returned_at IS NULL
-        RETURNING refund_request_id
-      - INSERT inventory_ledger (reference_type=ORDER_RETURNED_RESTOCK)
-      - INSERT inventory_outbox (event_type=INVENTORY_STOCK_CHANGED, partition_key=sku_id)
-      - SELECT COUNT(*) WHERE refund_expected=TRUE AND refund_returned_at IS NULL
-        for the same (order_id, refund_request_id)
-      - IF count = 0: INSERT inventory_outbox (event_type=INVENTORY_RETURN_RECEIVED_ALL,
-                                                partition_key=order_id)
-      - COMMIT
-   c. Update Redis cache: HMSET inventory:physic:{sku:wh}:stock
-3. Chi tiết đầy đủ: [Workflow §6](inventory_workflow.md)
-```
 
 ---
 
@@ -188,6 +157,5 @@ Khi Shipping xác nhận hàng hoàn về kho, consumer này thực hiện resto
 | Redis Stream Relay Worker | Continuous | Real-time | Redis Stream, Kafka | Giữ nguyên |
 | Kafka Ledger Worker | Continuous | poll(100ms) | Kafka, PostgreSQL | Giữ nguyên (đã đơn giản poison handling) |
 | Debezium CDC Connector | Kafka Connect | Real-time (WAL) | PostgreSQL WAL, Kafka | Giữ nguyên |
-| ~~Kafka Return Consumer~~ | ~~Continuous~~ | ~~poll(100ms)~~ | ~~Kafka, PostgreSQL, Redis~~ | **REMOVED in Phase 14** (replaced by admin restock API) |
 | Outbox Cleanup Job | CronJob | Daily | PostgreSQL | Giữ nguyên (gộp các cleanup job cũ) |
 

@@ -48,20 +48,19 @@ Required:
 
 `warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish. `product_id` được denormalized từ `physical_inventory.product_id` (lưu từ lần restock đầu) để `ReserveInventoryActivity` không cần lookup lại.
 
-> **Phase 14 đã loại bỏ:** `shipping_options[]`, `rate_card_version`, `service_type` (Shipping Service bị xóa). Thuật toán warehouse selection không còn score theo phí vận chuyển.
 
 ## 4. Algorithm
 
 ### 4.1. Candidate Generation
 
 ```
-SELECT sku_id, warehouse_id, available_quantity
+SELECT sku_id, product_id, warehouse_id, available_quantity
 FROM physical_inventory
 WHERE sku_id = ANY(:requested_skus)
   AND available_quantity > 0
 ```
 
-Với index `UNIQUE (sku_id, warehouse_id)` đã có, query này chạy < 5ms cho vài chục SKU.
+Với index `UNIQUE (sku_id, warehouse_id)` đã có, query này chạy < 5ms cho vài chục SKU. Cột `product_id` cần select để denormalize vào response `route_plan.items[]` (giúp `ReserveInventoryActivity` không cần lookup thêm).
 
 ### 4.2. Build Feasible Combinations
 
@@ -69,15 +68,13 @@ Với mỗi SKU, danh sách warehouse có đủ `available_quantity >= requested
 
 Với cart nhỏ (< 10 SKU) và mỗi SKU có 1-3 warehouse candidates, số tổ hợp thường < 50.
 
-### 4.3. Warehouse Selection (Phase 14 — thay thế Smart Routing Scoring)
+### 4.3. Warehouse Selection
 
 Với mỗi tổ hợp feasible, áp dụng rule ưu tiên:
 
-1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.province_code = customer_location.city_code`.
+1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.city_code = customer_location.city_code`.
 2. **Stock availability**: Tất cả SKU phải đủ stock tại warehouse đó.
 3. **Tie-break**: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
-
-**Không còn scoring formula `score = shipping_cost + delivery_days * cost_per_day`** (đã xóa khi không còn shipping fee).
 
 ### 4.4. Pick Best
 
@@ -104,5 +101,3 @@ Khi Checkout submit với `route_plan_id`:
 | Plan không có trong cache (TTL expired hoặc bị xoá) | Reject `CONTRACT_INVALID_ROUTE_PLAN`. Client phải gọi lại `/routing-options` |
 | Redis cache unavailable | Reject `INVENTORY_UNAVAILABLE`. Không fallback về logic khác (đơn giản hoá) |
 | Không có kho nào có đủ stock cho 1 SKU | Reject `INSUFFICIENT_STOCK` (HTTP 409). Client phải giảm số lượng hoặc đợi restock |
-
-> Phase 14 đã lược bỏ: scoring theo shipping fee, deterministic replay check (algorithm_version). Lý do: đơn giản hóa + không còn shipping data.
