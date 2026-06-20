@@ -53,7 +53,7 @@ sequenceDiagram
      "currency": "VND",
      "payment_method": "VNPAY",
      "return_url": "https://app.domain.com/payment/result",
-     "metadata": {"user_id": 999, "description": "Thanh toán đơn #10001"}
+      "metadata": {"user_id": "550e8400-e29b-41d4-a716-446655440000", "description": "Thanh toán đơn #10001"}
    }
    ```
 2. **[Redis]** Idempotency check: `SETNX payment:initiate:{order_id}` TTL = `payment_session_ttl` (15 phút) + 60 giây đệm mạng.
@@ -92,7 +92,7 @@ sequenceDiagram
 **Ngữ cảnh:** Cổng thanh toán callback sau khi user thanh toán (hoặc hủy).
 
 ### Bước Chi tiết:
-1. **[API Endpoint]** Nhận raw body + headers từ 3PL.
+1. **[API Endpoint]** Nhận raw body + headers từ payment gateway.
 2. **[Trả 200 OK ngay lập tức]** Không xử lý logic tại đây — trả 200 trong < 500ms để tránh cổng retry.
 3. **[Kafka Producer]** Dump raw webhook vào topic nội bộ:
    ```
@@ -169,7 +169,7 @@ sequenceDiagram
    - Nếu đang ở `PROCESSING` -> chờ/trả processing, tránh gửi request rút bù sang gateway.
    - Payment transaction `status` phải là `SUCCESS`. Nếu không → `400 Bad Request`.
    - `existing_refunds + new_amount <= paid_amount`. Nếu vượt → `400 Bad Request`.
-   - Refund request phải là explicit command từ Order sau gate Inventory-confirm (không suy luận từ shipping events).
+   - Refund request phải là explicit command từ Order sau gate Inventory-confirm (không suy luận từ bất kỳ shipping events nào).
 3. **[PostgreSQL - Transaction]**
    ```sql
    BEGIN;

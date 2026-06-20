@@ -1,233 +1,504 @@
-# Inventory Service - Quy Trình Hoạt Động (Workflows & API Data Flow)
+# Inventory Service - Luồng Dữ Liệu Nội Bộ (Internal Data Flow)
 
 **Liên kết nhanh (Related Documents):**
 * [Database & Cache Schema](inventory_db_design.md)
 * [Redis Caching & Lua Scripts](inventory_redis_design.md)
-* [Hybrid Routing Strategy](hybrid_routing_strategy.md)
-* [Smart Routing Engine](smart_routing_engine.md)
 * [Events Structure & Kafka Topics](inventory_events.md)
 * [Background Workers & Jobs](inventory_workers.md)
-* [Observability & SLO](inventory_observability_slo.md)
+* [Smart Routing Engine](smart_routing_engine.md)
 
 **Cross-Service References:**
 * [Order Temporal Saga](../order/temporal_saga_design.md) — Activities gọi Reserve/Deduct/Release
 * [Checkout Workflow](../checkout/checkout_workflow.md) — Preview stock check và submit
-* [Shipping Workflow](../shipping/shipping_workflow.md#1-api-calculate-shipping-fee) — Routing Options gọi Shipping tính phí
-* [Shipping Events](../shipping/shipping_events.md#34-shipment_returned) — Inventory consume `SHIPMENT_RETURNED` để nhập trả kho
+* [Inventory Events](inventory_events.md) — Inventory produce `INVENTORY_STOCK_*` events; từ Phase 14 không còn consume Shipping events.
 
 ---
 
-Tài liệu này mô tả các workflow chính của Inventory Service. Mỗi flow ghi rõ boundary: `[Redis Lua]`, `[PostgreSQL]`, `[Redis Stream]`, `[Kafka]`.
+Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Inventory Service. Mỗi luồng ghi rõ dữ liệu được vận chuyển qua các thành phần như thế nào: `[Redis Lua]`, `[PostgreSQL]`, `[Redis Stream]`, `[Kafka]`, `[CDC]`.
 
-## Quy ước chung trước khi đọc flow
+## Quy ước chung
 
 1. `warehouse_id` là bắt buộc cho mọi item mutation (reserve/deduct/release).
 2. Multi-item request áp dụng chính sách **all-or-nothing**.
-3. Event `INVENTORY_RESERVED/DEDUCTED/RELEASED` không produce trực tiếp từ API vào Kafka; event được append vào Redis Stream trong chính Lua script, sau đó Relay Worker forward sang Kafka.
+3. Event `INVENTORY_STOCK_MUTATION` được append vào Redis Stream trong chính Lua script, sau đó Relay Worker forward sang Kafka `t.inventory.events`.
+4. Event `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` được insert vào PostgreSQL Outbox rồi Debezium CDC tự động publish lên cùng topic `t.inventory.events`.
 
 ---
 
-## 1. API: Reserve Inventory (Temporal Activity `ReserveInventoryActivity`)
+## Luồng 1: Reserve Inventory (Giữ chỗ tồn kho)
 
-**Ngữ cảnh:** Order Temporal Saga Pre-Payment bước 1.
+**Ngữ cảnh:** Order Temporal Saga — bước Pre-Payment (`ReserveInventoryActivity`).
 
-1. **[Backend]** Nhận request (gRPC/REST):
-   ```json
-   {
-     "order_id": 10001,
-     "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
-     "route_version": 3,
-     "items": [
-       {"sku_id": "sku-001", "product_id": "prod-uuid-001", "quantity": 2, "warehouse_id": 5}
-     ]
-   }
-   ```
-2. **[Contract Guard]** Validate:
-   - mọi item phải có `warehouse_id`.
-   - `route_plan_id` còn hiệu lực.
-   - không cho phép mutation partial nếu có item sai contract.
-3. **[All-or-Nothing Sequencing]** Sort items theo `(sku_id, warehouse_id)` và gọi [Redis Lua Script 1](inventory_redis_design.md#script-1-thuật-toán-khóa-giữ-chỗ-reserve-inventory) cho từng item.
-4. **[Lua return-code handling]**
-   - `1`: apply mới.
-   - `2`: idempotent hit.
-   - `0`: out_of_stock.
-   - `-1`: invariant drift (fail-safe lane, không auto-heal).
-5. **[Failure handling theo mã trả về]**
-   - Nếu gặp `0`: service gọi Release script để rollback các item đã apply trong request hiện tại rồi trả lỗi nghiệp vụ tổng.
-   - Nếu gặp `-1`: dừng request ngay, **không** chạy rollback mù quáng trên SKU lỗi; đưa SKU vào `suspended_sku_locks`, phát alert vận hành và tạo task reconciliation trước khi mở khóa lại.
-6. **[Redis Stream Outbox]** Với item trả `1`, Lua script đã append `INVENTORY_RESERVED` vào stream cùng slot.
-7. **[Async persistence]** Relay Worker forward event sang Kafka `t.inventory.events`; Ledger Worker consume và ghi `inventory_reservations` + `inventory_ledger`.
-8. **[Response]**
-   - Thành công: `RESERVED` + danh sách item.
-   - Thất bại: `OUT_OF_STOCK` hoặc `INVARIANT_BREACH` + failed items.
+### Luồng dữ liệu
+
+```
+[Order/Temporal]
+        |  Temporal Activity call
+        v
+[Inventory API Layer]
+        |  Nhận request {order_id, route_plan_id, items[{sku_id, product_id, quantity, warehouse_id}]}
+        v
+[Contract Guard]
+        |  Validate warehouse_id tồn tại & active, route_plan_id đúng format
+        v
+[Redis Lua Script 1 - Reserve]
+        |  KEYS[1] = inventory:physic:{sku:wh}:stock (Hash)
+        |  KEYS[2] = inventory:idemp:reserve:{sku:wh}:order:{order_id} (String)
+        |  KEYS[3] = inventory:stream:{sku:wh}:events (Stream)
+        |  KEYS[4] = inventory:suspended:{sku:wh} (Hash, optional)
+        |  ARGV = {quantity, now_ms, idemp_ttl_sec, event_payload_json}
+        |  Lua atomic:
+        |    1. EXISTS suspended? -> return {0, 'SKU_SUSPENDED'}
+        |    2. SETNX idempotency key -> return {2, ''} (idempotent hit)
+        |    3. HGET available >= quantity? -> return {0, 'OUT_OF_STOCK'}
+        |    4. HINCRBY available -= qty, reserved += qty
+        |    5. XADD stream event_type=INVENTORY_STOCK_MUTATION, change_type=ORDER_RESERVED, payload=...
+        |    return {1, ''} (applied)
+        v
+[Redis Hash]
+        |  updated: {total, reserved, available, updated_at_ms}
+        v
+[Redis Stream Outbox]
+        |  XADD entry: {event_type, change_type, payload}
+        v
+[Redis Stream Relay Worker]
+        |  Consumer Group: inventory-stream-relay
+        |  READ stream -> PARSE payload + CloudEvents header
+        |  PRODUCE Kafka topic=t.inventory.events, key=sku_id
+        v
+[Kafka: t.inventory.events]
+        v
+[Kafka Ledger Worker]
+        |  Filter event_type=INVENTORY_STOCK_MUTATION only
+        |  Dedup via inventory_ledger.event_id UNIQUE
+        |  Group by sku_id
+        |  Skip event khi Redis suspended flag tồn tại (giữ cho invariant safety)
+        |  Bulk INSERT inventory_ledger (reference_type=ORDER_RESERVED)
+        |  UPSERT inventory_reservations (status=RESERVED)
+        |  UPDATE physical_inventory.reserved_quantity
+        |  INSERT inventory_outbox (event_type=INVENTORY_STOCK_CHANGED, partition_key=sku_id)
+        |    với payload SUM(available_quantity) từ physical_inventory
+        |  PostgreSQL Transaction COMMIT
+        v
+[PostgreSQL: inventory_ledger + inventory_reservations + inventory_outbox]
+        v
+[Debezium CDC Connector]
+        |  Read WAL of inventory_outbox
+        |  Produce Kafka topic=t.inventory.events (cùng topic)
+        v
+[Product Service]
+        |  Consume INVENTORY_STOCK_CHANGED
+        |  Update product stock cache
+```
+
+### Mã trả về Lua xử lý
+
+| Mã | Lý do | Hành động tiếp theo |
+|:---:|:---|:---|
+| `{1, ''}` | Apply mới | Tiếp tục; Relay Worker forward event |
+| `{2, ''}` | Idempotent hit | Trả idempotent response; KHÔNG phát thêm event |
+| `{0, 'OUT_OF_STOCK'}` | Hết hàng | Rollback các item đã apply trong request, trả lỗi tổng |
+| `{0, 'SKU_SUSPENDED'}` | SKU đang bị khoá | Trả lỗi nghiệp vụ, KHÔNG rollback (vì không có item nào apply) |
+| `{-1, 'INVARIANT_DRIFT'}` | Invariant drift | Suspend SKU, phát alert, tạo task reconciliation manual |
+
+### Rollback strategy
+
+- Nếu gặp `OUT_OF_STOCK`: gọi Release Lua script để rollback các item đã apply trong request hiện tại, trả lỗi nghiệp vụ tổng.
+- Nếu gặp `INVARIANT_DRIFT`: dừng request ngay, KHÔNG chạy rollback mù quáng; API Layer đặt `inventory:suspended:*` rồi trả lỗi.
 
 ---
 
-## 2. API: Deduct Inventory (Temporal Activity `DeductInventoryActivity`)
+## Luồng 2: Deduct Inventory (Xác nhận bán đứt)
 
-**Ngữ cảnh:** Order Temporal Saga Post-Payment bước 1.
+**Ngữ cảnh:** Order Temporal Saga — bước Post-Payment (`DeductInventoryActivity`).
 
-1. **[Backend]** Nhận request: `{order_id, items[{sku_id, quantity, warehouse_id}]}`.
-2. **[Redis Lua Script 3]** ([Deduct Script](inventory_redis_design.md#script-3-xác-nhận-bán-đứt--tiền-trao-cháo-múc-commit-deduct)):
-   - Trừ `reserved` và `total`.
-   - Dùng idempotency key theo item.
-3. **[Lua return-code handling]**
-   - `1`: apply mới.
-   - `2`: idempotent hit.
-   - `0`: insufficient_reserved.
-   - `-1`: invariant drift -> chuyển fail-safe lane (suspend SKU + reconciliation), không tự tiếp tục deduct.
-4. **[Redis Stream Outbox]** Event `INVENTORY_DEDUCTED` được append bởi Lua cho item trả `1`.
-5. **[Kafka + Ledger Worker]** Worker update `inventory_reservations.status = 'DEDUCTED'` + append ledger.
-6. **[Response]** `DEDUCTED` hoặc lỗi nghiệp vụ.
+### Luồng dữ liệu
+
+```
+[Order/Temporal]
+        |  Temporal Activity call sau payment success
+        v
+[Inventory API Layer]
+        |  Nhận request {order_id, items[{sku_id, product_id, quantity, warehouse_id}]}
+        v
+[Redis Lua Script 3 - Deduct]
+        |  KEYS[1] = inventory:physic:{sku:wh}:stock
+        |  KEYS[2] = inventory:idemp:deduct:{sku:wh}:order:{order_id}
+        |  KEYS[3] = inventory:stream:{sku:wh}:events
+        |  KEYS[4] = inventory:suspended:{sku:wh}
+        |  Lua atomic:
+        |    1. EXISTS suspended? -> return {0, 'SKU_SUSPENDED'}
+        |    2. SETNX idempotency key -> return {2, ''}
+        |    3. INVARIANT CHECK: available == total - reserved? -> return {-1, 'INVARIANT_DRIFT'}
+        |    4. reserved >= quantity? -> return {0, 'INSUFFICIENT_RESERVED'}
+        |    5. new_reserved = reserved - qty
+        |       new_total = total - qty
+        |       new_available = new_total - new_reserved
+        |    6. POST-MUTATE INVARIANT CHECK -> return {-1, 'INVARIANT_DRIFT'}
+        |    7. HSET stock hash
+        |    8. XADD stream event_type=INVENTORY_STOCK_MUTATION, change_type=ORDER_DEDUCTED
+        |    return {1, ''} (applied)
+        v
+[Redis Hash]
+        v
+[Redis Stream Outbox]
+        v
+[Redis Stream Relay Worker]
+        v
+[Kafka: t.inventory.events]
+        v
+[Kafka Ledger Worker]
+        |  UPDATE inventory_reservations.status = 'DEDUCTED'
+        |  INSERT inventory_ledger (reference_type=ORDER_DEDUCTED)
+        |  UPDATE physical_inventory.reserved_quantity, actual_quantity
+        |  INSERT inventory_outbox (INVENTORY_STOCK_CHANGED, change_type=ORDER_DEDUCTED)
+        |  PostgreSQL Transaction COMMIT
+        v
+[Debezium CDC Connector]
+        v
+[Kafka: t.inventory.events]
+        v
+[Product Service]
+```
+
+### Mã trả về Lua xử lý
+
+| Mã | Lý do | Hành động tiếp theo |
+|:---:|:---|:---|
+| `{1, ''}` | Apply mới | Tiếp tục; Relay Worker forward event |
+| `{2, ''}` | Idempotent hit | Trả idempotent response; KHÔNG phát thêm event |
+| `{0, 'INSUFFICIENT_RESERVED'}` | Reservation không đủ | Trả lỗi nghiệp vụ (không rollback — deduct chỉ chạy sau payment đã thành công) |
+| `{0, 'SKU_SUSPENDED'}` | SKU đang bị khoá | Trả lỗi nghiệp vụ |
+| `{-1, 'INVARIANT_DRIFT'}` | Invariant drift | Suspend SKU + alert; KHÔNG tự tiếp tục deduct |
 
 > Không có DOM re-routing sau deduct. Nếu cần đổi kho phải release + reserve lại theo route plan mới.
 
 ---
 
-## 3. API: Release Inventory (Temporal Compensation `RollbackInventoryActivity`)
+## Luồng 3: Release Inventory (Giải phóng giữ chỗ)
 
-**Ngữ cảnh:** Order cancelled/timeout hoặc scanner cleanup.
+**Ngữ cảnh:** Order Temporal compensation (khi checkout fail, payment timeout, hoặc order bị cancel trước payment).
 
-1. **[Backend]** Nhận request: `{order_id, items[{sku_id, quantity, warehouse_id}], reason}`.
-2. **[Redis Lua Script 2]** ([Release Script](inventory_redis_design.md#script-2-hủy-đơn--hoàn-hàng-timeout-release--rollback-reservation)):
-   - Trừ `reserved`, cộng `available`.
-   - Không clamp im lặng.
-3. **[Lua return-code handling]**
-   - `1`: apply mới.
-   - `2`: idempotent hit.
-   - `0`: release_underflow.
-4. **[Redis Stream Outbox]** Event `INVENTORY_RELEASED` được append khi trả `1`.
-5. **[Kafka + Ledger Worker]** Update `inventory_reservations.status = 'CANCELLED'` + append ledger.
+### Luồng dữ liệu
+
+```
+[Order/Temporal]
+        |  Temporal Compensation call (RollbackInventoryActivity)
+        v
+[Inventory API Layer]
+        |  Nhận request {order_id, items[{sku_id, product_id, quantity, warehouse_id}], change_type}
+        |  change_type: ORDER_CANCELLED | RESERVATION_EXPIRED
+        v
+[Redis Lua Script 2 - Release]
+        |  KEYS[1] = inventory:physic:{sku:wh}:stock
+        |  KEYS[2] = inventory:idemp:release:{sku:wh}:order:{order_id}
+        |  KEYS[3] = inventory:stream:{sku:wh}:events
+        |  KEYS[4] = inventory:suspended:{sku:wh}
+        |  ARGV[5] = change_type
+        |  Lua atomic:
+        |    1. EXISTS suspended? -> return {0, 'SKU_SUSPENDED'}
+        |    2. SETNX idempotency key -> return {2, ''}
+        |    3. reserved >= quantity? -> return {0, 'RELEASE_UNDERFLOW'}
+        |    4. reserved -= qty, available += qty
+        |    5. XADD stream event_type=INVENTORY_STOCK_MUTATION, change_type=<ARGV[5]>
+        |    return {1, ''} (applied)
+        v
+[Redis Hash]
+        v
+[Redis Stream Outbox]
+        v
+[Redis Stream Relay Worker]
+        v
+[Kafka: t.inventory.events]
+        v
+[Kafka Ledger Worker]
+        |  UPDATE inventory_reservations.status = 'CANCELLED'
+        |  INSERT inventory_ledger (reference_type theo change_type)
+        |  UPDATE physical_inventory.reserved_quantity
+        |  INSERT inventory_outbox (INVENTORY_STOCK_CHANGED, change_type=change_type)
+        v
+[Debezium CDC Connector]
+        v
+[Kafka: t.inventory.events]
+        v
+[Product Service]
+```
+
 
 ---
 
-## 4. API: Get Routing Options (`POST /v1/inventory/routing-options`)
+## Luồng 4: Routing Options (Tạo plan fulfillment)
 
 **Ngữ cảnh:** Checkout Preview gọi để lấy plan fulfillment đầy đủ.
 
-1. **[Backend]** Nhận: `{items[{sku_id, quantity}], customer_location, service_level}`.
-2. **[Candidate Generation]** Query tồn kho khả dụng theo kho (`physical_inventory.available_quantity`) và constraints.
-3. **[Shipping Quote]** Inventory gọi [Shipping `POST /v1/shipping/calculate-batch`](../shipping/shipping_workflow.md#1-api-calculate-shipping-fee).
-4. **[Scoring]** Áp dụng [Smart Routing Engine](smart_routing_engine.md) + tie-break determinism.
-5. **[Response]** Trả route plan có version để submit tái sử dụng:
-   ```json
-   {
-     "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
-     "route_version": 3,
-     "algorithm_version": "routing-v2.1.0",
-     "inventory_snapshot_at": "2026-04-01T08:00:00Z",
-     "shipping_rate_version": "2026-04-01T07:55:00Z",
-     "expires_at": "2026-04-01T08:20:00Z",
-     "items": [
-       {
-         "sku_id": "sku-001",
-         "quantity": 2,
-         "warehouse_id": 5,
-         "routing_tier": "FAST_LANE"
-       }
-     ],
-     "shipping_options": [
-       {"provider": "GHN", "service": "STANDARD", "fee": 35000, "delivery_days": 2}
-     ]
-   }
-   ```
+### Luồng dữ liệu
 
----
-
-## 5. API: Admin Restock (`POST /v1/inventory/restock`)
-
-**Ngữ cảnh:** Admin/WMS nhập hàng.
-
-1. **[Backend]** Validate `warehouse_id`, `sku_id`, `product_id`.
-2. **[PostgreSQL Transaction]** Upsert cả physical + logical:
-   ```sql
-   BEGIN;
-   INSERT INTO physical_inventory (sku_id, product_id, warehouse_id, actual_quantity, reserved_quantity, updated_at)
-   VALUES (:sku, :product, :wh, :qty, 0, NOW())
-   ON CONFLICT (sku_id, warehouse_id)
-   DO UPDATE SET actual_quantity = physical_inventory.actual_quantity + EXCLUDED.actual_quantity,
-                 updated_at = NOW();
-
-   INSERT INTO logical_inventory (sku_id, product_id, total_quantity, reserved_quantity, version, updated_at)
-   VALUES (:sku, :product, :qty, 0, 1, NOW())
-   ON CONFLICT (sku_id)
-   DO UPDATE SET total_quantity = logical_inventory.total_quantity + EXCLUDED.total_quantity,
-                 version = logical_inventory.version + 1,
-                 updated_at = NOW();
-
-   INSERT INTO inventory_ledger (sku_id, warehouse_id, reference_type, quantity_change, balance_after, created_at)
-   VALUES (:sku, :wh, 'ADMIN_RESTOCK', :qty, :new_balance, NOW());
-
-   INSERT INTO inventory_outbox (... event_type = 'INVENTORY_QUANTITY_CHANGED', partition_key = :sku_id ...);
-   COMMIT;
-   ```
-3. **[Redis]** Update cả physical key và logical key.
-4. **[CDC Connector]** Debezium đọc bản ghi từ `inventory_outbox` cấu trúc theo WAL và tự động Publish lên Kafka `INVENTORY_QUANTITY_CHANGED`.
-
----
-
-## 6. Workflow: Return Restock (Consume `SHIPMENT_RETURNED`)
-
-**Ngữ cảnh:** Shipping Service phát `SHIPMENT_RETURNED` khi kiện trả về kho.
-
-**Precondition contract với Order refund lane:**
-- Order đăng ký refund scope trước bằng API nội bộ `POST /v1/inventory/returns/refund-scopes`.
-- Inventory dùng scope này để xác định khi nào đủ điều kiện phát event `INVENTORY_RETURN_RECEIVED_ALL`.
-
-**Contract tối thiểu cho `POST /v1/inventory/returns/refund-scopes`:**
-
-Request:
-```json
-{
-   "order_id": 10001,
-   "refund_request_id": "rr-2026-0001",
-   "required_order_item_ids": [2001, 2002]
-}
+```
+[Checkout Service]
+        |  Request: {items[{sku_id, quantity}], customer_location}
+        v
+[Candidate Generation]
+        |  SELECT sku_id, product_id, warehouse_id, available_quantity
+        |  FROM physical_inventory
+        |  WHERE sku_id = ANY(:sku_ids) AND available_quantity > 0
+        |  Build feasible warehouse combinations (stock sufficient cho mỗi item)
+        v
+[Warehouse Selection Engine]
+        |  Pick warehouse có stock đủ
+        |  Tie-break: same-province preferred, warehouse_id ASC
+        |  Output: route_plan với concrete warehouse_id cho mỗi item + product_id denormalized
+        v
+[Cache Route Plan]
+        |  SET route_plan:{route_plan_id} = JSON, TTL = expires_at
+        v
+[Response]
+        |  {
+        |    "route_plan_id": "...",
+        |    "expires_at": "...",
+        |    "items": [{sku_id, product_id, quantity, warehouse_id}],
+        |    "warehouse_assignments": [{warehouse_id, available_quantity}]
+        |  }
 ```
 
-Response (idempotent success):
-```json
-{
-   "order_id": 10001,
-   "refund_request_id": "rr-2026-0001",
-   "scope_status": "OPEN",
-   "required_count": 2,
-   "received_count": 0
-}
-```
-
-Rules:
-- Lần đầu: insert row vào `inventory_refund_scopes`.
-- Replay cùng tập `required_order_item_ids`: trả success idempotent.
-- Replay khác tập item cho cùng `(order_id, refund_request_id)`: trả `409 REFUND_SCOPE_MISMATCH`.
-
-1. **[Kafka Consumer]** Nhận event từ `t.shipping.events` với payload bắt buộc:
-   `{shipment_id, order_id, order_item_id, returned_to_warehouse_id, items[]}`.
-2. **[Idempotency]** Kích hoạt Dual-layer Guard: dùng Redis SETNX `inventory:return:{order_id}:{shipment_id}` để khoá nhanh, và DataBase table `inventory_event_idempotency` để chặn vĩnh viễn với `action_scope_key = shipment_id`.
-3. **[PostgreSQL Transaction]** Với mỗi item:
-   - `physical_inventory.actual_quantity += returned_qty` theo `returned_to_warehouse_id`.
-   - `logical_inventory.total_quantity += returned_qty`.
-   - append `inventory_ledger` với `reference_type = 'ORDER_RETURNED_RESTOCK'`.
-   - insert `inventory_outbox` cho `INVENTORY_QUANTITY_CHANGED` (kèm partition_key = `sku_id`).
-4. **[Redis]** Re-sync physical + logical keys theo số mới.
-5. **[CDC Connector]** Debezium xử lý tiếp đoạn WAL và ném Message `INVENTORY_QUANTITY_CHANGED` (change_type=`ORDER_RETURNED_RESTOCK`) lên Kafka.
-6. **[Refund Scope Aggregation]** Update bảng `inventory_refund_scopes` theo `order_id + refund_request_id`:
-   - Đánh dấu `order_item_id` đã nhận.
-   - Nếu `received_order_item_ids` bao phủ toàn bộ `required_order_item_ids`, transition scope `OPEN -> COMPLETED` và insert `inventory_outbox` `INVENTORY_RETURN_RECEIVED_ALL` (partition_key = `order_id`) để Debezium tự động publish lên `t.inventory.events`.
-   - Event này chỉ phát một lần cho mỗi `refund_request_id`.
-
-> Nguồn kích hoạt restock duy nhất là `SHIPMENT_RETURNED`. Event `ORDER_REFUNDED` chỉ là trạng thái tài chính.
->
-> `INVENTORY_RETURN_RECEIVED_ALL` là signal nghiệp vụ để Order mở bước gọi Payment refund, không thay thế event tồn kho `INVENTORY_QUANTITY_CHANGED`.
+> Thuật toán mới: chọn kho có stock đủ, ưu tiên same-province. Route plan TTL 20 phút. Khi checkout submit, nếu plan không có trong cache (đã expire) → reject `CONTRACT_INVALID_ROUTE_PLAN` và yêu cầu re-preview. Chi tiết tại [Warehouse Selection Engine](smart_routing_engine.md).
 
 ---
 
-## Ghi chú Thiết kế: Khởi tạo Inventory Records
+## Luồng 5: Admin Restock (Nhập hàng vào kho)
 
-Inventory records (`logical_inventory`, `physical_inventory`) không auto-create khi Product tạo SKU mới.
+**Ngữ cảnh:** Admin nhập hàng. Entry point khởi tạo inventory duy nhất.
+
+### Luồng dữ liệu
+
+```
+[Admin]
+        |  Request: {warehouse_id, sku_id, product_id, quantity}
+        v
+[Contract Guard]
+        |  Validate warehouse_id tồn tại & active
+        |  Validate quantity > 0
+        v
+[PostgreSQL Transaction]
+        |  BEGIN;
+        |  -- Upsert physical_inventory (gồm cả product_id denormalized)
+        |  INSERT INTO physical_inventory (sku_id, product_id, warehouse_id, actual_quantity, reserved_quantity, updated_at)
+        |    VALUES (:sku, :product, :wh, :qty, 0, NOW())
+        |    ON CONFLICT (sku_id, warehouse_id)
+        |    DO UPDATE SET actual_quantity = physical_inventory.actual_quantity + EXCLUDED.actual_quantity,
+        |                  updated_at = NOW();
+        |  -- Ledger audit trail
+        |  INSERT INTO inventory_ledger (event_id, sku_id, product_id, warehouse_id, reference_type, quantity_change, balance_after, correlation_id, created_at)
+        |    VALUES (:event_id, :sku, :product, :wh, 'ADMIN_RESTOCK', :qty, :new_balance, :correlation_id, NOW());
+        |  -- Outbox for CDC
+        |  INSERT INTO inventory_outbox (event_type='INVENTORY_STOCK_CHANGED', partition_key=:sku_id, payload=...);
+        |  COMMIT;
+        v
+[Redis Cache Update]
+        |  HMSET inventory:physic:{sku_id:warehouse_id}:stock
+        |    total {new_actual}, reserved 0, available {new_actual}, updated_at_ms {now_ms}
+v
+[Debezium CDC Connector]
+        |  Read WAL of inventory_outbox
+        |  Produce Kafka topic=t.inventory.events, key=sku_id
+        v
+[Kafka: t.inventory.events]
+        v
+[Product Service]
+        |  Consume INVENTORY_STOCK_CHANGED
+```
+
+---
+
+## Luồng 6: Return Restock (Nhận hàng hoàn về kho)
+
+**Ngữ cảnh:** Admin xác nhận đã nhận hàng hoàn từ khách. Quy trình: admin restock với `reference_type='ORDER_RETURNED_RESTOCK'` hoặc khách tự mang hàng tới kho.
+
+### Điều kiện tiên quyết
+
+Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inventory/returns/refund-expectations` (xem [Endpoints §3](inventory_endpoints.md)). Inventory đánh dấu các reservation row với `refund_expected = true, refund_request_id = X` để xác định khi nào đủ điều kiện emit `INVENTORY_RETURN_RECEIVED_ALL`.
+
+### Luồng dữ liệu
+
+```
+[Admin hoặc buyer bring back]
+        |  Request: {warehouse_id, sku_id, product_id, quantity, reference_type='ORDER_RETURNED_RESTOCK', order_id, order_item_id, refund_request_id}
+        v
+[Contract Guard]
+        |  Validate warehouse_id tồn tại & active
+        |  Validate quantity > 0
+        |  Validate reservation (order_id, order_item_id, status='DEDUCTED', refund_expected=true) tồn tại
+        v
+[PostgreSQL Transaction]
+        |  BEGIN;
+        |  -- Restock physical per item (upsert để xử lý trường hợp SKU chưa từng được restock tại kho này)
+        |  INSERT INTO physical_inventory (sku_id, product_id, warehouse_id, actual_quantity, reserved_quantity, updated_at)
+        |    VALUES (:sku, :product, :wh, :qty, 0, NOW())
+        |    ON CONFLICT (sku_id, warehouse_id)
+        |    DO UPDATE SET
+        |      actual_quantity = physical_inventory.actual_quantity + EXCLUDED.actual_quantity,
+        |      updated_at = NOW();
+        |  -- Mark reservation row as returned (chỉ mark nếu chưa được restock trước đó)
+        |  UPDATE inventory_reservations
+        |    SET refund_returned_at = NOW(),
+        |        updated_at = NOW()
+        |    WHERE order_id = :order_id
+        |      AND order_item_id = :order_item_id
+        |      AND status = 'DEDUCTED'
+        |      AND refund_returned_at IS NULL
+        |    RETURNING refund_request_id;
+        |  -- Ledger audit (product_id lấy từ request, validate khớp với physical_inventory.product_id)
+        |  INSERT INTO inventory_ledger (event_id, sku_id, product_id, warehouse_id, reference_type, quantity_change, balance_after, correlation_id, created_at)
+        |    VALUES (:event_id, :sku, :product, :wh, 'ORDER_RETURNED_RESTOCK', :qty, :new_balance, :correlation_id, NOW());
+        |  -- Outbox for INVENTORY_STOCK_CHANGED (cho Product Service cập nhật display cache)
+        |  INSERT INTO inventory_outbox
+        |    (event_type='INVENTORY_STOCK_CHANGED', partition_key=:sku_id, payload=...);
+        |
+        |  -- Refund completion check + build payload (3 query trong cùng transaction)
+        |  -- (a) Pending count
+        |  SELECT COUNT(*) INTO :pending
+        |  FROM inventory_reservations
+        |  WHERE order_id = :order_id
+        |    AND refund_request_id = :refund_request_id
+        |    AND refund_expected = TRUE
+        |    AND status = 'DEDUCTED'
+        |    AND refund_returned_at IS NULL;
+        |  -- (b) Required items (toàn bộ item trong scope, bất kể đã restock hay chưa)
+        |  SELECT array_agg(order_item_id) INTO :required_items
+        |  FROM inventory_reservations
+        |  WHERE order_id = :order_id
+        |    AND refund_request_id = :refund_request_id
+        |    AND refund_expected = TRUE;
+        |  -- (c) Received items (item đã restock)
+        |  SELECT array_agg(order_item_id) INTO :received_items
+        |  FROM inventory_reservations
+        |  WHERE order_id = :order_id
+        |    AND refund_request_id = :refund_request_id
+        |    AND refund_expected = TRUE
+        |    AND refund_returned_at IS NOT NULL;
+        |
+        |  IF :pending = 0 THEN
+        |    -- Unique constraint (order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'
+        |    -- đảm bảo emit đúng 1 lần dù có concurrent insert (xem DB §1.5)
+        |    INSERT INTO inventory_outbox (
+        |      event_type='INVENTORY_RETURN_RECEIVED_ALL', partition_key=:order_id, refund_request_id=:refund_request_id,
+        |      payload=jsonb_build_object(
+        |        'order_id', :order_id,
+        |        'refund_request_id', :refund_request_id,
+        |        'required_order_item_ids', :required_items,
+        |        'received_order_item_ids', :received_items,
+        |        'all_items_received', true,
+        |        'confirmed_at', NOW()
+        |      )
+        |    );
+        |  END IF;
+        |  COMMIT;
+        v
+[PostgreSQL: physical_inventory + inventory_ledger + inventory_reservations + inventory_outbox]
+        v
+[Redis Cache Update]
+        |  HMSET inventory:physic:{sku_id:warehouse_id}:stock
+        |    total {new_actual}, reserved 0, available {new_actual}, updated_at_ms {now_ms}
+        v
+[Debezium CDC Connector]
+        v
+[Kafka: t.inventory.events]
+        |-- INVENTORY_STOCK_CHANGED (change_type=ORDER_RETURNED_RESTOCK)
+        v  [Product Service]
+        |-- INVENTORY_RETURN_RECEIVED_ALL
+           [Order Service]
+           |  Trigger Payment refund step
+```
+
+### Contract Refund Expectation
+
+- **Insert lần đầu:** UPDATE các `inventory_reservations` row match `(order_id, order_item_id[], status='DEDUCTED')` set `refund_expected = true, refund_request_id = X`.
+- **Replay cùng `refund_request_id` + cùng tập item:** idempotent success.
+- **Replay khác tập item cho cùng `(order_id, refund_request_id)`:** trả `409 REFUND_SCOPE_MISMATCH`.
+
+### Nguyên tắc nghiệp vụ
+
+- Phase 14 đã loại bỏ trigger từ `SHIPMENT_RETURNED`. Restock vật lý giờ do admin thực hiện qua `POST /v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'` hoặc khách tự mang hàng tới kho và admin xác nhận.
+- `INVENTORY_RETURN_RECEIVED_ALL` là signal nghiệp vụ để Order mở bước gọi Payment refund, không thay thế event tồn kho `INVENTORY_STOCK_CHANGED`.
+
+---
+
+## Luồng 7: Ship to Customer (Xuất hàng cho khách)
+
+**Ngữ cảnh:** Admin xác nhận kho đã xuất hàng cho khách. Endpoint: `POST /v1/inventory/ship-to-customer` (xem [Endpoints §4](inventory_endpoints.md#4-post-v1inventoryship-to-customer-phase-14--mới)).
+
+**Lưu ý quan trọng:** Luồng này **không mutate tồn kho** (stock đã được DEDUCTED lúc payment success). Nó chỉ phát signal nghiệp vụ `INVENTORY_SHIP_TO_CUSTOMER` để Order Service chuyển `order_items.status` từ `PROCESSING` → `DELIVERED`.
+
+### Luồng dữ liệu
+
+```
+[Admin]
+        |  Request: {order_id, warehouse_id, shipped_at, courier_note?}
+        v
+[Contract Guard]
+        |  Validate warehouse_id tồn tại & active
+        |  Validate order_id có ít nhất 1 reservation DEDUCTED tại (order_id, warehouse_id) này
+        |  (Nếu không có → trả 404 RESERVATION_NOT_FOUND, xem [Endpoints §4](inventory_endpoints.md#4-post-v1inventoryship-to-customer-phase-14--mới))
+        v
+[PostgreSQL Transaction]
+        |  BEGIN;
+        |  -- Chỉ insert outbox, KHÔNG update physical_inventory / inventory_reservations / inventory_ledger
+        |  INSERT INTO inventory_outbox (
+        |    event_id, schema_version, aggregate_type, aggregate_id,
+        |    event_type, partition_key, payload, created_at
+        |  ) VALUES (
+        |    :event_id, 1, 'Inventory', :order_id,
+        |    'INVENTORY_SHIP_TO_CUSTOMER', :order_id,
+        |    '{"order_id":..., "warehouse_id":..., "shipped_at":..., "courier_note":...}'::jsonb,
+        |    NOW()
+        |  );
+        |  COMMIT;
+        v
+[Debezium CDC Connector]
+        |  Read WAL of inventory_outbox
+        |  Produce Kafka topic=t.inventory.events, key=order_id
+        v
+[Kafka: t.inventory.events]
+        v
+[Order Service: order-inventory-ship-consumer]
+        |  Consume INVENTORY_SHIP_TO_CUSTOMER
+        |  Query `SELECT order_item_id FROM inventory_reservations WHERE order_id = :order_id AND warehouse_id = :warehouse_id AND status = 'DEDUCTED'`
+        |  (LỌC warehouse_id là bắt buộc để tránh DELIVERED nhầm item ở kho khác trong multi-warehouse order)
+        |  Với mỗi order_item_id: UPDATE order_items.status PROCESSING → DELIVERED (idempotent theo event_id)
+        |  Auto-Complete check: nếu tất cả items của order (mọi warehouse) đều DELIVERED → ORDER_COMPLETED
+```
+
+### Tại sao không có Redis / Lua / Ledger
+
+- **Không ghi `inventory_ledger`**: ship-to-customer không phải biến động tồn kho (stock đã DEDUCTED lúc payment), nên không có ledger entry. Việc ghi ledger với `reference_type` không tồn tại sẽ vi phạm invariant "mỗi ledger entry đại diện cho 1 biến động tồn kho".
+- **Không qua Redis Lua**: ship-to-customer không mutate Redis hash, không cần Lua script.
+- **Không cập nhật `inventory_reservations`**: status reservation vẫn là `DEDUCTED` (vì stock đã trừ thật). Trạng thái shipping thuộc về Order Service (`order_items.status`).
+- **Không emit `INVENTORY_STOCK_CHANGED`**: vì không có thay đổi tồn kho.
+
+### Nguyên tắc nghiệp vụ
+
+- Idempotency: 2 admin clicks (cùng hay khác `event_id`) đều an toàn — Order Service consumer filter theo `event_id` và bỏ qua event đã xử lý.
+- `affected_items` trong response là số `order_item_id` thuộc `(order_id, warehouse_id)` đang ở trạng thái DEDUCTED trên reservation (query tại API Layer trước khi emit outbox). Filter `warehouse_id` bắt buộc để không đếm nhầm item ở kho khác.
+
+---
+
+---
+
+## Tóm tắt luồng produce event
+
+| Event | Nguồn tạo | Kafka Topic | Cơ chế |
+|:---|:---|:---|:---|
+| `INVENTORY_STOCK_MUTATION` | Lua Script 1/2/3 | `t.inventory.events` | Redis Stream Outbox + Relay Worker |
+| `INVENTORY_STOCK_CHANGED` | Ledger Worker / Restock API | `t.inventory.events` | PostgreSQL Outbox + Debezium CDC |
+| `INVENTORY_RETURN_RECEIVED_ALL` | Return Restock API (admin gọi `/v1/inventory/restock` với `reference_type='ORDER_RETURNED_RESTOCK'`) | `t.inventory.events` | PostgreSQL Outbox + Debezium CDC |
+| `INVENTORY_SHIP_TO_CUSTOMER` | Ship to Customer API (`POST /v1/inventory/ship-to-customer`) | `t.inventory.events` | Debezium CDC (DB outbox) |
+
+---
+
+## Ghi chú: Khởi tạo Inventory Records
+
+Inventory records (`physical_inventory`) **không auto-create** khi Product tạo SKU mới.
 
 Entry point khởi tạo:
 1. Admin Restock API.
-2. WMS Integration API.
 
-Khi restock lần đầu cho SKU, hệ thống upsert tạo record nếu chưa tồn tại.
+Khi restock lần đầu cho SKU, hệ thống upsert tạo record nếu chưa tồn tại. `product_id` được lưu cùng row lần restock đầu tiên và dùng cho mọi event về sau (denormalized, không cần lookup runtime).

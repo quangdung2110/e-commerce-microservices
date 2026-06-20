@@ -1,102 +1,102 @@
-# Smart Routing Engine
+# Warehouse Selection Engine (Phase 14 — đổi tên từ Smart Routing Engine)
+
+**Liên kết nhanh (Related Documents):**
+* [Workflow §4: Routing Options](inventory_workflow.md)
+* [Endpoints §1: routing-options](inventory_endpoints.md)
+
+---
 
 ## 1. Goal
 
-Select the best fulfillment option per sub-cart using inventory availability, shipping fee, SLA, and deterministic tie-break rules.
+Pick a warehouse that has the required stock for each item in the cart. Since Phase 14 đã loại bỏ Shipping Service, scoring theo `shipping_cost + delivery_days` không còn ý nghĩa. Thuật toán mới:
+
+1. Tìm warehouse có `physical_inventory.available_quantity >= requested_quantity`.
+2. Nếu nhiều kho qualify → ưu tiên kho **same-province** với customer_location.
+3. Tie-break: `warehouse_id ASC` (deterministic).
 
 ## 2. Inputs
 
 Required:
-
 - SKU list and quantity.
-- Customer destination.
+- Customer destination (city, district, lat/lng).
 - Candidate warehouses from `physical_inventory.available_quantity`.
-- Shipping quotes from Shipping Service.
 
-Versioned snapshot inputs:
-
-- `inventory_snapshot_at`
-- `shipping_rate_version`
-- `algorithm_version`
 
 ## 3. Output Contract
-
-Routing must return a reusable route plan:
 
 ```json
 {
   "route_plan_id": "7b7dddad-6f6c-4f63-a728-df0fe96b9f31",
-  "route_version": 3,
-  "algorithm_version": "routing-v2.1.0",
-  "inventory_snapshot_at": "2026-04-01T08:00:00Z",
-  "shipping_rate_version": "2026-04-01T07:55:00Z",
   "expires_at": "2026-04-01T08:20:00Z",
   "items": [
     {
       "sku_id": "sku-001",
+      "product_id": "prod-uuid-001",
       "quantity": 2,
+      "warehouse_id": 5
+    }
+  ],
+  "warehouse_assignments": [
+    {
       "warehouse_id": 5,
-      "routing_tier": "SMART_ROUTE"
+      "available_quantity": 50
     }
   ]
 }
 ```
 
-`warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish.
+`warehouse_id` phải có cho mọi item; không cho phép `null` trong plan đã publish. `product_id` được denormalized từ `physical_inventory.product_id` (lưu từ lần restock đầu) để `ReserveInventoryActivity` không cần lookup lại.
 
-## 4. Candidate Generation
 
-1. Build feasible warehouse combinations where stock is sufficient.
-2. For each candidate, request shipping cost and ETA.
-3. Discard candidates violating hard constraints:
-   - stock not sufficient
-   - max split item shipments exceeded
-   - blocked lanes
-   - provider timeout beyond policy
+## 4. Algorithm
 
-## 5. Scoring Model
+### 4.1. Candidate Generation
 
-Example weighted score:
+```
+SELECT sku_id, product_id, warehouse_id, available_quantity
+FROM physical_inventory
+WHERE sku_id = ANY(:requested_skus)
+  AND available_quantity > 0
+```
 
-`score = w1 * shipping_cost + w2 * delivery_days + w3 * split_penalty + w4 * warehouse_priority`
+Với index `UNIQUE (sku_id, warehouse_id)` đã có, query này chạy < 5ms cho vài chục SKU. Cột `product_id` cần select để denormalize vào response `route_plan.items[]` (giúp `ReserveInventoryActivity` không cần lookup thêm).
 
-Lower score is better.
+### 4.2. Build Feasible Combinations
 
-Suggested default weights:
+Với mỗi SKU, danh sách warehouse có đủ `available_quantity >= requested_quantity`. Tổ hợp warehouse hợp lệ = chọn 1 warehouse cho mỗi SKU sao cho tất cả SKU đều thoả mãn.
 
-- `w1 = 0.55`
-- `w2 = 0.30`
-- `w3 = 0.10`
-- `w4 = 0.05`
+Với cart nhỏ (< 10 SKU) và mỗi SKU có 1-3 warehouse candidates, số tổ hợp thường < 50.
 
-## 6. Tie-Breakers
+### 4.3. Warehouse Selection
 
-1. Lower shipping cost.
-2. Faster ETA.
-3. Fewer split item shipments.
-4. Stable warehouse preference order.
+Với mỗi tổ hợp feasible, áp dụng rule ưu tiên:
 
-## 7. Fast-Lane Fallback
+1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.city_code = customer_location.city_code`.
+2. **Stock availability**: Tất cả SKU phải đủ stock tại warehouse đó.
+3. **Tie-break**: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
 
-If no full smart route is feasible and policy allows fast fallback:
+### 4.4. Pick Best
 
-1. Select warehouse from pre-ranked fast lane pool.
-2. Still return concrete `warehouse_id` for each item.
-3. Mark `routing_tier = FAST_LANE` in route plan.
+Chọn tổ hợp có warehouse ưu tiên (same-province) trước, nếu không có thì lấy warehouse_id nhỏ nhất.
 
-## 8. Determinism
+## 5. Cache
 
-Given identical input snapshot, rate cards, and algorithm version, engine must produce identical route.
+- Key: `route_plan:{route_plan_id}`
+- Value: JSON response object
+- TTL: `expires_at - now` (mặc định 20 phút)
+- Implementation: `SET route_plan:{id} <json> EX <ttl_seconds>`
 
-Checkout submit must pass back `route_plan_id + route_version`. If plan is expired, Inventory must reject with `CONTRACT_INVALID_ROUTE_PLAN` and require re-preview.
+Khi Checkout submit với `route_plan_id`:
+- Lookup `route_plan:{id}` trong cache.
+- Nếu hit: trả plan (sử dụng ngay).
+- Nếu miss (TTL expired): reject `CONTRACT_INVALID_ROUTE_PLAN`, Checkout phải gọi lại `/routing-options`.
 
-## 9. Observability
 
-Track metrics:
+## 6. Plan Expiry Handling
 
-- `routing_latency_ms`
-- `candidates_generated`
-- `fallback_rate`
-- `average_shipping_cost`
-- `split_item_shipment_ratio`
-- `route_plan_expired_reject_total`
+| Trường hợp | Hành vi |
+|:---|:---|
+| Plan trong cache, TTL chưa hết | Proceed bình thường |
+| Plan không có trong cache (TTL expired hoặc bị xoá) | Reject `CONTRACT_INVALID_ROUTE_PLAN`. Client phải gọi lại `/routing-options` |
+| Redis cache unavailable | Reject `INVENTORY_UNAVAILABLE`. Không fallback về logic khác (đơn giản hoá) |
+| Không có kho nào có đủ stock cho 1 SKU | Reject `INSUFFICIENT_STOCK` (HTTP 409). Client phải giảm số lượng hoặc đợi restock |

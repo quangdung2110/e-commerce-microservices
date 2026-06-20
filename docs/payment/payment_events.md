@@ -37,16 +37,17 @@ Payment Service produce các events liên quan đến kết quả thanh toán v�
 
 ## 2. Cấu Trúc Header Chung
 
-Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
+Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem canonical tại [Service Contract Matrix §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper)):
 
 *   `event_id`: UUID của sự kiện.
 *   `event_type`: Loại sự kiện (VD: `PAYMENT_SUCCESS`, `REFUND_INITIATED`).
 *   `aggregate_type`: Loại Aggregate Root (Cố định: `Payment`).
-*   `aggregate_id`: ID của entity chủ thể (Cố định: `payment_transaction_id`).
+*   `aggregate_id`: ID của entity chủ thể (Cố định: `payment_transaction_id` cho PAYMENT_*, `refund_transaction_id` cho REFUND_*).
 *   `correlation_id`: Temporal Workflow ID (vd: `wf-10001`) để truy vết E2E xuyên service.
-*   `business_id`: `order_id` dùng cho nghiệp vụ đối soát.
+*   `business_id`: `order_id` dùng cho nghiệp vụ đối soát. **Canonical routing key cho Order consumer** — Order Service route workflow theo `payload.order_id`, KHÔNG route theo `aggregate_id`.
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: Định danh service gốc phát event (Cố định: `payment-service`).
+*   `schema_version`: INT (hiện tại = `1`). Bắt buộc cho mọi event theo [Service Contract Matrix §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper).
 *   `payload`: JSON Object chứa nội dung chi tiết.
 
 > **Routing contract cho Order consumer:** Dù `aggregate_id` của Payment events là transaction-level (`payment_transaction_id` hoặc `refund_transaction_id`), Order Service route workflow theo `payload.order_id`.
@@ -72,7 +73,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "amount": 995000,
     "currency": "VND",
     "payment_method": "VNPAY",
@@ -97,21 +98,23 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:07:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "amount": 995000,
     "currency": "VND",
     "provider": "VNPAY",
     "provider_transaction_id": "VNP-XYZ789",
+    "payment_event_sequence_id": 20260228100700,
     "paid_at": "2026-02-28T10:07:00Z"
   }
 }
 ```
 
 > [!IMPORTANT]
-> Đây là **event quan trọng nhất** trong toàn bộ hệ thống thanh toán. Order Service nhận event này → Signal Temporal → FSM Order `PENDING_PAYMENT` → `PAID` → Trigger Post-Payment Saga (Deduct Inventory, Confirm Promotion, Create Shipping Labels).
+> Đây là **event quan trọng nhất** trong toàn bộ hệ thống thanh toán. Order Service nhận event này → Signal Temporal → FSM Order `PENDING_PAYMENT` → `PAID` → Trigger Post-Payment Saga (Deduct Inventory, Confirm Promotion).
 
 ### 3.3. PAYMENT_FAILED
 
@@ -127,13 +130,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:08:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "error_code": "INSUFFICIENT_BALANCE",
     "error_message": "Số dư tài khoản không đủ",
     "provider": "VNPAY",
+    "payment_event_sequence_id": 20260228100800,
     "failed_at": "2026-02-28T10:08:00Z"
   }
 }
@@ -153,10 +158,12 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:20:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "payment_event_sequence_id": 20260228102000,
     "expired_at": "2026-02-28T10:20:00Z"
   }
 }
@@ -176,13 +183,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T09:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_amount": 995000,
     "reason": "CUSTOMER_RETURN",
+    "refund_event_sequence_id": 20260305090000,
     "initiated_at": "2026-03-05T09:00:00Z"
   }
 }
@@ -202,13 +211,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T09:00:05Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_amount": 995000,
     "provider_refund_id": "VNP-RFD-ASYNC-01",
+    "refund_event_sequence_id": 20260305090005,
     "processing_at": "2026-03-05T09:00:05Z"
   }
 }
@@ -228,13 +239,15 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": 999,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_amount": 995000,
     "provider_refund_id": "VNP-RFD-001",
+    "refund_event_sequence_id": 20260305100000,
     "refunded_at": "2026-03-05T10:00:00Z"
   }
 }
@@ -256,18 +269,21 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "error_code": "REFUND_WINDOW_EXPIRED",
     "error_message": "Quá hạn hoàn tiền 30 ngày",
+    "refund_event_sequence_id": 20260305100000,
     "failed_at": "2026-03-05T10:00:00Z"
   }
 }
 ```
 
-### 3.9. REFUND_REVERSED (Optional, Provider-dependent) (Optional, Provider-dependent)
+### 3.9. REFUND_REVERSED (Optional, Provider-dependent)
 
 **Ngữ cảnh:** Một số cổng có thể đảo chiều trạng thái refund sau khi trước đó đã thông báo success/processing (ví dụ account đích không còn hợp lệ, scheme trả tiền ngược về merchant account).
 
@@ -282,13 +298,16 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents:
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-06T08:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "provider_refund_id": "VNP-RFD-001",
     "reason_code": "REFUND_REVERSED_BY_PROVIDER",
     "reason_message": "Destination account invalid or rejected by scheme",
+    "refund_event_sequence_id": 20260306080000,
     "reversed_at": "2026-03-06T08:00:00Z"
   }
 }

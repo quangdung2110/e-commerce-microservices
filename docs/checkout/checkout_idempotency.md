@@ -27,9 +27,9 @@ sequenceDiagram
     participant OS as Order Service
 
     Client->>CS: POST /checkout/preview<br>{cart_items, address, promotions}
-    CS->>CS: Aggregate data from Cart/Inventory(routing+shipping quote)/Promotion
+    CS->>CS: Aggregate data from Cart/Inventory(routing)/Promotion
     CS->>Redis: HSET checkout:session:{user_id}<br>token=UUID, status=PREVIEW_READY, pricing=...
-    CS-->>Client: {token, pricing_summary, shipping_options}
+    CS-->>Client: {token, pricing_summary, warehouse_options}
 
     Client->>CS: POST /checkout/submit<br>{token, payment_method}
     CS->>Redis: HGET checkout:session:{user_id} token, status
@@ -76,10 +76,10 @@ return 1  -- OK
 
 | Hành động | Hệ quả |
 |:---|:---|
-| **User đổi voucher (voucher/freeship)** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
+| **User đổi voucher PLATFORM** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
 | **User bấm "Lưu & Chọn" voucher chưa lưu** | Promotion xử lý `save-and-apply` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
-| **User chọn voucher sàn/freeship** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at` (mặc định 30 ngày từ lúc sở hữu); Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time; không có nhánh Save & Apply tại tray này |
-| **User đổi địa chỉ nhận hàng** | Backend gọi Preview API lại, recompute Inventory (routing + shipping quote) + Promotion → **Tạo token MỚI** → Ghi đè session Redis |
+| **User chọn voucher Sàn** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at` (mặc định 30 ngày từ lúc sở hữu); Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time; không có nhánh Save & Apply tại tray này |
+| **User đổi địa chỉ nhận hàng** | Backend gọi Preview API lại, recompute Inventory (routing) + Promotion → **Tạo token MỚI** → Ghi đè session Redis |
 | **User đổi quantity/add/remove SKU** | Frontend gọi Cart API trước (ngoài phạm vi Checkout), sau đó gọi Preview lại với snapshot Cart mới → **Tạo token MỚI** |
 | **User không thao tác 20 phút** | Redis TTL hết → Session biến mất → Client gọi Submit → 404 Not Found |
 | **User submit, rồi bấm Back + Submit lại** | Token cũ đã SUBMITTED → `409 Conflict` |
@@ -101,14 +101,13 @@ Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên
 | `address_id: 5` | ✅ Server tra DB lấy address chi tiết |
 | `promotion_code: "HAPPY"` | ✅ Server gọi Promotion API validate + lấy `discount_amount` |
 | ~~`total_amount: 450000`~~ | ❌ **IGNORE** — Server tự tính từ Redis session |
-| ~~`shipping_fee: 0`~~ | ❌ **IGNORE** — Server dùng fee từ Inventory routing snapshot (Shipping quote đi gián tiếp qua Inventory) |
 | `payment_method: "VNPAY"` | ✅ Server validate method hợp lệ |
 
 ### 3.2. Luồng Validation khi Submit (Zero-Trust Validation)
 
 1. **Bóc Token** → Lấy session báo giá từ Redis (đã được tính ở Preview).
 2. **Lightweight Price Staleness Check (Phát hiện hàng thiu):**
-    - Checkout tự tính hash cấu hình mới nhất từ (Giá gốc Product + `promotion_rule_version` + `route_signature` + `shipping_rate_version`) từ cache nội bộ. So sánh với `pricing_hash` trên Session.
+    - Checkout tự tính hash cấu hình mới nhất từ (Giá gốc Product + `promotion_rule_version`) từ cache nội bộ. So sánh với `pricing_hash` trên Session.
     - `promotion_budget_version` chỉ dùng để quan sát drift/read-time diagnostics, không tham gia hard hash gate.
    - Nếu hash lệch (giá thay đổi), văng lỗi từ chối ngay lập tức.
     - Các thao tác Re-validate nặng (chạm DB) như kiểm tra Address, Stock hoặc **Khóa ngân sách Khuyến mãi (Reserve)** được uỷ quyền hoàn toàn cho luồng **Temporal Saga của Order Service** chạy ngầm để phục vụ tốc độ siêu tốc và chống giam tiền.

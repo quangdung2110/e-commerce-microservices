@@ -16,11 +16,11 @@ Tài liệu này tổng hợp các rủi ro bảo mật và giải pháp tương
 
 Mô hình thương mại điện tử rất nhạy cảm với việc người dùng chỉnh sửa giá client-side. Checkout Service áp dụng nguyên tắc **Zero-Trust Client**:
 
-* **Từ chối Input định lượng:** Bất kỳ POST request nào từ Frontend chứa thông tin về `price`, `discount_amount`, hoặc `shipping_fee` đều sẽ bị máy chủ phớt lờ hoàn toàn. 
-* **Server-Side Aggregation:** Tại API Checkout Preview, Checkout Service đóng vai trò là Aggregator gọi sang Cart, Promotion, Inventory (Inventory gọi Shipping nội bộ) để **tự tính toán giá mới nhất**.
+* **Từ chối Input định lượng:** Bất kỳ POST request nào từ Frontend chứa thông tin về `price`, `discount_amount` đều sẽ bị máy chủ phớt lờ hoàn toàn.
+* **Server-Side Aggregation:** Tại API Checkout Preview, Checkout Service đóng vai trò là Aggregator gọi sang Cart, Promotion, Inventory để **tự tính toán giá mới nhất**.
 * **Boundary cứng với Cart:** Checkout không nhận nghiệp vụ mutate `quantity`; mọi thay đổi số lượng phải đi qua Cart API trước khi quay lại Preview.
-* **Đóng dấu Snapshot:** Sau khi tính toán xong, toàn bộ Data (sản phẩm gì, giá bao nhiêu) được lưu thành Snapshot trên Mem-cache (Redis) có sinh kèm một `CheckoutToken` bảo mật (UUIDv4) để niêm phong với thuật toán `pricing_hash` (bao gồm `route_signature`, `shipping_rate_version`, `promotion_rule_version`). `promotion_budget_version` chỉ dùng cho telemetry/read-time diagnostics. Dữ liệu tính toán không bao giờ rời khỏi tầm kiểm soát của Backend.
-* **Explicit Voucher Write Boundary:** Tray voucher cho phép hành động `save-and-apply` (ghi ví có chủ đích). Ngược lại, tray voucher sàn/freeship chỉ đọc mã đã lưu trong ví; submit path không được tự động ghi thêm voucher.
+* **Đóng dấu Snapshot:** Sau khi tính toán xong, toàn bộ Data (sản phẩm gì, giá bao nhiêu) được lưu thành Snapshot trên Mem-cache (Redis) có sinh kèm một `CheckoutToken` bảo mật (UUIDv4) để niêm phong với thuật toán `pricing_hash` (bao gồm `promotion_rule_version`). `promotion_budget_version` chỉ dùng cho telemetry/read-time diagnostics. Dữ liệu tính toán không bao giờ rời khỏi tầm kiểm soát của Backend.
+* **Explicit Voucher Write Boundary:** Tray voucher cho phép hành động `save-and-apply` (ghi ví có chủ đích). Ngược lại, tray voucher Sàn chỉ đọc mã đã lưu trong ví; submit path không được tự động ghi thêm voucher.
 * **Option A Budget Guard:** Promotion Discovery có bước guard read-time để hạ mã đã cạn ngân sách thành `BUDGET_EXHAUSTED`; nếu guard degraded thì hệ thống fail-open ở discovery nhưng vẫn giữ correctness ở submit.
 * **No Local Arithmetic Fallback:** Nếu reserve voucher thất bại lúc submit, Checkout không được tự trừ/cộng lại discount. Checkout bắt buộc gọi lại Promotion evaluate để trả `409 PROMOTION_RECALCULATION_NEEDED` cùng `dropped_promotions[]`.
 * **Token Lifecycle Cứng:** Khi đã vào nhánh submit conflict (`PROMOTION_RECALCULATION_NEEDED`), token hiện tại vẫn là `SUBMITTED` (one-time-use). Muốn đặt tiếp bắt buộc tạo token mới qua Preview.
@@ -47,13 +47,13 @@ Bất cứ một request nào tiếp theo dùng Token này đều bị từ ch�
 Đỉnh điểm các sự kiện Flash Sale, Hacker có thể viết bot mở 10 luồng thanh toán cùng lúc nhắm vào một món hàng với 10 mã giảm giá khác nhau để bào mòn khuyến mãi.
 Checkout áp dụng:
 * **Rate Limits:** Tối đa 10 Preview requests / Phút.
-* **Preview Lock:** Sử dụng `checkout:lock:preview:{user_id}` (5s) chặn ngay tại Cửa Ngõ API. Tại 1 thời điểm ở 1 account, ĐẢM BẢO chỉ duy nhất 1 luồng được gọi vào các Service Backend (Promotion/Inventory; Shipping quote đi gián tiếp qua Inventory). Chấm dứt triệt để Race Condition trên Session.
+* **Preview Lock:** Sử dụng `checkout:lock:preview:{user_id}` (5s) chặn ngay tại Cửa Ngõ API. Tại 1 thời điểm ở 1 account, ĐẢM BẢO chỉ duy nhất 1 luồng được gọi vào các Service Backend (Promotion, Inventory). Chấm dứt triệt để Race Condition trên Session.
 
 ### 3.2. Lock tại Submit & Deadlock Prevention
 Trước khi Lua Script khóa Token vĩnh viễn, hệ thống dựng màng bảo vệ vòng cung `checkout:lock:submit:{user_id}`.
 Thứ tự thực thi cực kỳ cẩn trọng:
 1. Đóng băng luồng hiện tại bằng Lock.
-2. Kiểm tra nhanh sự thay đổi về giá bằng hàm so sánh Hash (giá SKU + route_signature + version cứng shipping/promotion-rule). Dù giá có lệch hay mạng có chập chờn, ở bước này Session vẫn an toàn vì Lua Script chưa chạy.
+2. Kiểm tra nhanh sự thay đổi về giá bằng hàm so sánh Hash (giá SKU + version cứng promotion-rule). Dù giá có lệch hay mạng có chập chờn, ở bước này Session vẫn an toàn vì Lua Script chưa chạy.
 3. Nếu giá hợp lệ, Lua Script giập chết Token và đẩy Request sang Order.
 4. Xóa Lock.
 
@@ -63,8 +63,8 @@ Nhờ tách bạch cơ chế Read Validator và Write Commiter, hệ thống kh�
 
 ## 4. Giảm Bề mặt Abuse ở Luồng Voucher
 
-Việc không auto-save voucher sàn/freeship trong Submit mang lại lợi ích vận hành trực tiếp:
+Việc không auto-save voucher Sàn trong Submit mang lại lợi ích vận hành trực tiếp:
 
 * **Loại bỏ hidden write tại Submit:** Luồng thanh toán chỉ tập trung vào reserve/confirm, dễ theo dõi audit hơn.
 * **Giảm nguy cơ DB bloat:** Tránh việc user mở checkout nhiều lần làm phát sinh hàng loạt dòng ví không có chủ đích sử dụng.
-* **Giảm áp lực cho Discovery API:** API gợi ý voucher sàn/freeship chỉ đọc ví đã lưu + evaluate rule, không cần trộn thêm mã chưa lưu tại runtime.
+* **Giảm áp lực cho Discovery API:** API gợi ý voucher Sàn chỉ đọc ví đã lưu + evaluate rule, không cần trộn thêm mã chưa lưu tại runtime.

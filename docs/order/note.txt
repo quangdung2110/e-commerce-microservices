@@ -9,15 +9,17 @@
 - Buyer chỉ được gửi đúng 1 request refund cho mỗi order.
 - Request Buyer chỉ hợp lệ khi tất cả order item đã `DELIVERED`.
 - Buyer có thể chọn `PARTIAL` hoặc `FULL` ngay trong request duy nhất đó.
-- `SHIPMENT_RETURNED` không còn quyền start `OrderRefundWorkflow`.
+- Refund workflow chỉ được mở từ `API_RETURN` (Buyer) hoặc `ADMIN_FORCE_REFUND_REQUESTED` (admin lane).
 
-4. Refund execution gate mới:
-- `OrderRefundWorkflow` lock refund scope từ request đầu vào (không lock theo stream shipping).
+4. Refund execution gate:
+- `OrderRefundWorkflow` lock refund scope từ request đầu vào.
 - Workflow phải chờ event `INVENTORY_RETURN_RECEIVED_ALL` trước khi gọi Payment refund API.
 - Chỉ sau gate Inventory mới chuyển `payment_status` sang `REFUNDING` và tạo `refund_transaction_id`.
 
-5. Voucher refund rule mới:
-- `FULL`: hoàn toàn bộ voucher đã áp dụng (`SHOP`, `PLATFORM`, `SHIPPING`).
-- `PARTIAL`: chỉ hoàn `SHOP` voucher khi scope refund bao phủ toàn bộ item của shop đó.
-- `PARTIAL`: `PLATFORM` và `SHIPPING` allocation phải bằng `0`.
+5. Voucher refund rule (xem ADR [refund_voucher_policy.md](refund_voucher_policy.md)):
+- Hệ thống chỉ có 2 role: `ADMIN` (Platform) và `CUSTOMER` — không có `SHOP`. Voucher type chỉ còn: `PLATFORM` (PERCENTAGE / FIXED_AMOUNT).
+- `FULL`: hoàn toàn bộ PLATFORM allocation.
+- `PARTIAL`: chỉ hoàn PLATFORM allocation khi scope refund bao phủ toàn bộ item của platform đó.
 - Voucher unavailable là non-blocking với tiền hoàn: ghi nhận failure metadata cho Ops, không rollback payment refund.
+
+> **SUPERSEDED by Phase 14:** Phase 14 (Remove Shipping Service) đã loại bỏ `SHIPPING` voucher type và FREE_SHIPPING discount. Pricing formula đã đơn giản hóa còn `final_amount = total_amount - total_discount` (không còn shipping fee, freeship discount).

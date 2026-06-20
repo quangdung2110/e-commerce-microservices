@@ -1,8 +1,9 @@
-1. Tại bước giữ chỗ (Reserve) khi thanh toán, hệ thống bắt buộc phải sử dụng Lua Script Batch, tuyệt đối không sử dụng Lua Script đơn lẻ được gói trong Pipeline
+1. Tại bước giữ chỗ (Reserve) khi thanh toán, hệ thống bắt buộc phải sử dụng Lua Script Batch (Script 2B), tuyệt đối không sử dụng Lua Script đơn lẻ được gói trong Pipeline
 Tính chất của Redis Pipeline chỉ là gói 3, 4 lệnh lại với nhau để giảm round-trip time, Redis vẫn sẽ thực thi từng lệnh một cách tuần tự, do đó sẽ có trường hợp:
     - Một mã voucher thất bại do có người khác đã thanh toán trước đó, dẫn đến việc toàn bộ đơn hàng không thể được thanh toán trong khi các mã trước đó bị trừ và không bị lỗi,
     hệ thống sẽ phải rollback bằng cách cộng lại số lượng đã trừ trước đó
 Để giải quyết điều này, ta thiết kế một script batch nhận đầu vào là một mảng chứa tất cả các mã voucher trong đơn hàng đó
+(Lưu ý: dù slot model cố định 1 `PLATFORM_VOUCHER`/đơn (sau Phase 14), Script 2B vẫn bắt buộc thay vì Script đơn lẻ gói trong Pipeline, vì Script đơn lẻ thiếu: (1) auto-rollback khi 1 trong 4 thao tác HINCRBY/HINCRBYFLOAT/SETEX/ZADD fail giữa chừng, (2) idempotency check payload match để chống reserve lặp cùng `order_id` với số tiền khác, (3) JSON error contract có cấu trúc để Checkout trigger full re-evaluation ở Step A.1.)
 
 2. Thiết kế tranh dành mã giảm giá
 Giả sử: một voucher có 10000 người cùng lúc tranh dành 1 suất, hệ thống phải đảm bảo chỉ 1 người thành công và hạn chế tình trạng truy cập vào DB để check và update số lượng còn lại
@@ -79,15 +80,17 @@ Chi tiết luồng hoạt động:
 
 5. Chi tiết luồng khách hàng mở khay "Mã của Shop" khi ở Checkout Review
 Gom dữ liệu từ 2 nguồn chính
-    - Promotion Service sẽ đọc cache wallet:{user_id}:active_vouchers để lấy danh sách voucher đang hoạt động của khách hàng đồng thời chọc xuống DB để lấy thêm các mã public của shop đó mà khách chưa từng lưu vào ví
-    - Nếu khách chọn một mã Public chưa có trong ví, hệ thống gọi API POST /v1/promotions/save-and-apply. Hành động này trực tiếp ghi mã đó vào ví (user_coupon_wallets) và lập tức xóa cache ví trên Redis để đảm bảo tính nhất quán. Đây là luồng ghi ví có chủ đích duy nhất được phép xảy ra trong quá trình Checkout
+    - Promotion Service sẽ query trực tiếp DB `user_coupon_wallets` (Index Scan `user_id, status`) để lấy danh sách voucher đang hoạt động của khách hàng đồng thời chọc xuống DB để lấy thêm các mã public của shop đó mà khách chưa từng lưu vào ví
+    - Nếu khách chọn một mã Public chưa có trong ví, hệ thống gọi API POST /v1/promotions/save-and-apply. Hành động này trực tiếp ghi mã đó vào ví (user_coupon_wallets). Đây là luồng ghi ví có chủ đích duy nhất được phép xảy ra trong quá trình Checkout
     - Với mỗi mã lấy được, Promotion Service sẽ eval rule một lần với context của các sản phẩm trong giỏ hàng của shop đó để tính toán được estimated_discount và gắn cờ eligible/ineligible cho từng mã
     - Với những mã đang eligible, Promotion Service sẽ thực hiện bước guard đọc batch Redis budget để downgrade những mã đã cạn ngân sách thành ineligible_reason = BUDGET_EXHAUSTED
     - Cuối cùng, Promotion Service sẽ gom nhóm các mã theo slot model động và trả về cho Checkout
 Lưu ý về Budget Guard read-time: Đây là bước bổ sung để giảm thiểu tình trạng hiển thị mã đã cạn ngân sách ở Discovery, từ đó cải thiện trải nghiệm người dùng. Tuy nhiên, cơ chế này không thay thế cho commit-time reserve ở Submit. Quyết định cuối cùng về exhausted budget vẫn do ReservePromotionActivity khi khách hàng submit đơn hàng. 
 Nếu guard timeout hoặc gặp lỗi Redis, hệ thống sẽ fail-open ở Discovery nhưng vẫn giữ correctness ở Submit
 
-Luồng mở khay "Mã của Sàn" hoặc "Mã giảm giá phí ship" tương tự nhưng chỉ đọc từ cache ví mà không trộn thêm mã public nào vào response của hai tray này, đồng thời chỉ có mã sàn (owner_type = PLATFORM) mới được hiển thị ở hai tray này
+Luồng mở khay "Mã của Sàn" tương tự nhưng chỉ query DB `user_coupon_wallets` mà không trộn thêm mã public nào vào response, đồng thời chỉ có mã sàn (owner_type = PLATFORM) mới được hiển thị.
+
+> **SUPERSEDED by Phase 14:** Khay "Mã giảm giá phí ship" đã bị xóa. Sau Phase 14, hệ thống chỉ còn 1 slot PLATFORM_VOUCHER (PERCENTAGE/FIXED_AMOUNT). Pricing formula đơn giản hóa còn `final_amount = subtotal - voucher_discount`.
 
 
 6. Luồng ghi DB quan trọng nhất là sync path do Order gọi qua Temporal Activity, không phải thông qua Kafka Worker nhận sự kiện từ Order Service

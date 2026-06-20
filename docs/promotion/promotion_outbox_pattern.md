@@ -95,8 +95,6 @@ Retry, backoff, DLQ và error handling thuộc Kafka Connect:
 > `COUPON_CLAIMED` không đi qua outbox CDC này. Event claim thuộc luồng direct-produce (partition key = `claim_id`, `business_id = claim_id`) và được rescue bởi Pending Claims Sweeper khi gặp crash window.
 > Mỗi lần republish phải tạo `event_id` mới, giữ nguyên `claim_id`, gắn `payload.production_source = SWEEPER_RESCUE`.
 > Downstream bắt buộc dedup hai tầng: `event_id` (delivery-level) + `claim_id` (business-level).
->
-> `COUPON_RESERVED` chỉ là optional telemetry event (nếu bật), không thuộc default outbox contract liên service.
 
 ### 4.3. Deduplication (Chống trùng lặp ở Downstream)
 CDC pipeline vẫn là **At-Least-Once Delivery**: khi connector restart/rebalance có thể phát lại một phần bản ghi trước khi offset commit ổn định.
@@ -140,9 +138,9 @@ Không phải mọi hành động đều cần Outbox. Dưới đây là phân l
 | Hành động | Cần Outbox? | Lý do |
 |:---|:---:|:---|
 | Admin tạo/sửa `markdown_rules` và Scheduler kết thúc rule (`EXPIRED`) | ✅ | Product Service cần cập nhật `promotional_price` khi rule bắt đầu/thay đổi/kết thúc |
-| Admin tạo/sửa `promotions` | ❌ (mặc định) | Mặc định chỉ dùng Redis Pub/Sub `PROMO_EVICT`; hiện không có contract Kafka liên service chính thức cho nhóm event này |
+| Admin tạo/sửa `promotions` | ❌ (mặc định) | Mặc định không cần broadcast liên service; chỉ invalidate snapshot cache nội bộ bằng `DEL promo:{promotion_id}:snapshot` + `INCR promo:rules:version` trong cùng TX. Hiện không có contract Kafka liên service chính thức cho nhóm event này. |
 | Worker xử lý `COUPON_REDEEMED` | ✅ | Analytics, admin Settlement cần biết |
 | Worker xử lý `COUPON_CANCELLED` | ✅ | Analytics |
 | Worker xử lý `COUPON_REFUNDED` | ✅ | admin Settlement cần hoàn chi phí |
 | User claim mã Flash Sale | ❌ | Event claim được produce trực tiếp sau Lua Script (không qua DB trước), rescue bằng Sweeper; consumer dedup theo `event_id` + `claim_id` |
-| Lua Script Budget Reserve | ❌ | Chỉ thao tác Redis, không ghi DB tại thời điểm Reserve (`COUPON_RESERVED` chỉ bật khi cần telemetry nội bộ) |
+| Lua Script Budget Reserve | ❌ | Chỉ thao tác Redis, không ghi DB tại thời điểm Reserve; trạng thái `RESERVED` chỉ là runtime, không có event Kafka liên service tại bước này |
