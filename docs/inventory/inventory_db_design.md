@@ -77,7 +77,6 @@ Theo dõi reservation theo item + warehouse. Ghi nhận trạng thái giữ ch�
 | `quantity` | INT | NOT NULL | Số lượng giữ chỗ |
 | `route_plan_id` | UUID | NOT NULL | Route plan đã sử dụng |
 | `status` | VARCHAR(50) | NOT NULL | `RESERVED` / `DEDUCTED` / `CANCELLED` |
-| `idempotency_key` | VARCHAR(255) | NOT NULL, UNIQUE | Khoá chống trùng lặp. **Format:** `{op}:{sku_id}:{warehouse_id}:{order_id}` với `{op}` ∈ {`reserve`, `release`, `deduct`}. VD: `reserve:sku-001:5:10001`. Trùng với pattern Redis idempotency key (xem [Redis §2.2](inventory_redis_design.md)) — server copy từ Redis key khi ghi reservation row. |
 | `expires_at` | TIMESTAMPTZ | NOT NULL | Hết hạn giữ chỗ |
 | `refund_expected` | BOOLEAN | NOT NULL DEFAULT false | Item có nằm trong refund scope không |
 | `refund_request_id` | VARCHAR(64) | NULL | Mã refund request (FK logic từ Order) |
@@ -94,8 +93,9 @@ Theo dõi reservation theo item + warehouse. Ghi nhận trạng thái giữ ch�
 | INDEX | `(order_item_id)` | Tra cứu theo item |
 | INDEX | `(status, expires_at)` | Compensate reservation quá hạn |
 | INDEX | `(order_id, refund_request_id) WHERE refund_expected = true` | Query check refund completion |
-| UNIQUE | `(idempotency_key)` | Chống duplicate reservation |
 | UNIQUE | `(order_id, sku_id, warehouse_id) WHERE status = 'RESERVED'` | Ngăn 2 reservation cùng SKU-kho-đơn ở trạng thái RESERVED |
+
+> **Ghi chú idempotency:** Idempotency ở hot path được đảm bảo bởi Redis SETNX trong Lua (TTL 30 ngày, xem [Redis §2.2](inventory_redis_design.md)). Idempotency ở cold path được đảm bảo bởi partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status = 'RESERVED'` ở trên — reservation là 1 row duy nhất trong cả lifecycle `(RESERVED → DEDUCTED|CANCELLED)` cho mỗi `(order_id, sku_id, warehouse_id)`. Ledger cold path dùng `inventory_ledger.event_id` UNIQUE.
 
 **Quy ước refund:**
 

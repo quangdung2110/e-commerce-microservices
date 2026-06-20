@@ -193,9 +193,6 @@ public class InventoryReservationJpaEntity {
     @Column(nullable = false, length = 50)
     private ReservationStatus status;
 
-    @Column(name = "idempotency_key", nullable = false, length = 255, unique = true)
-    private String idempotencyKey;
-
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 
@@ -358,7 +355,8 @@ public interface InventoryReservationJpaRepository
         extends JpaRepository<InventoryReservationJpaEntity, Long>,
                 InventoryReservationJpaCustom {
 
-    Optional<InventoryReservationJpaEntity> findByIdempotencyKey(String idempotencyKey);
+    Optional<InventoryReservationJpaEntity> findFirstByOrderIdAndSkuIdAndWarehouseId(
+        Long orderId, String skuId, Long warehouseId);
 
     List<InventoryReservationJpaEntity> findByOrderId(Long orderId);
 
@@ -516,7 +514,7 @@ public class PhysicalInventoryJpaCustomImpl implements PhysicalInventoryJpaCusto
 ```java
 public interface InventoryReservationJpaCustom {
 
-    /** Idempotent insert với ON CONFLICT DO NOTHING (idempotency_key UNIQUE). */
+    /** Idempotent insert với ON CONFLICT DO NOTHING (partial UNIQUE trên (order_id, sku_id, warehouse_id) WHERE status='RESERVED'). */
     Optional<Long> insertIfAbsent(InventoryReservationJpaEntity entity);
 
     /** Bulk update status theo danh sách (order_id, sku_id, warehouse_id). */
@@ -553,8 +551,11 @@ public Optional<Long> insertIfAbsent(InventoryReservationJpaEntity e) {
         return Optional.of(e.getId());
     } catch (PersistenceException ex) {
         if (isUniqueViolation(ex)) {
-            // Idempotent hit — return existing ID
-            return findByIdempotencyKey(e.getIdempotencyKey()).map(InventoryReservationJpaEntity::getId);
+            // Idempotent hit — partial UNIQUE (order_id, sku_id, warehouse_id) WHERE status='RESERVED'
+            // Đã có 1 row RESERVED cho cùng (order, sku, warehouse) → trả về ID của row đó.
+            return findFirstByOrderIdAndSkuIdAndWarehouseId(
+                e.getOrderId(), e.getSkuId(), e.getWarehouseId()
+            ).map(InventoryReservationJpaEntity::getId);
         }
         throw ex;
     }
@@ -707,8 +708,10 @@ public interface PhysicalInventoryRepository {
 }
 
 public interface InventoryReservationRepository {
-    Optional<Long> insertIfAbsent(InventoryReservation reservation);
-    Optional<InventoryReservation> findByIdempotencyKey(String key);
+    /** Idempotent insert. Trả về Optional.empty nếu insert fail do partial UNIQUE violation (đã có row RESERVED). */
+    Optional<Long> insertIfAbsent(InventoryReservation domain);
+    /** Lookup reservation đang active (status bất kỳ) theo (orderId, skuId, warehouseId) — single row per lifecycle. */
+    Optional<InventoryReservation> findActiveByOrderSkuWarehouse(long orderId, String skuId, long warehouseId);
     List<InventoryReservation> findByOrderId(long orderId);
     void updateStatus(long id, ReservationStatus status);
     int markRefundExpected(long orderId, String refundRequestId, List<Long> orderItemIds);
@@ -911,7 +914,7 @@ public class OutboxRepositoryImpl implements OutboxRepository {
 |:---|:---|
 | Flyway chạy OK | `@DataJpaTest` boot thành công với schema mới |
 | Mapping domain ↔ JPA | Test round-trip entity: `mapper.toDomain(mapper.toJpa(d))` equals `d` |
-| UNIQUE constraint | Insert 2 row cùng `idempotency_key` → row 2 fail với constraint violation |
+| Partial UNIQUE constraint | Insert 2 row cùng `(order_id, sku_id, warehouse_id)` ở status `RESERVED` → row 2 fail với constraint violation |
 | Partial unique index | Insert 2 `RESERVED` cùng `(order, sku, wh)` → fail |
 | Custom query perf | Insert 10K fake rows, query < 50ms |
 | Outbox transaction | Test: insert outbox fail → ledger insert cũng rollback |

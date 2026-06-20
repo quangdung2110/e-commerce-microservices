@@ -28,7 +28,6 @@ Inventory Service là **nguồn chân lý duy nhất** (single source of truth) 
 ### 1.2 Không thuộc scope (Phase 14 đã lược bỏ)
 
 - ❌ Không consume event từ service ngoài (không còn Shipping Service).
-- ❌ Không implement gRPC `InventoryGrpcService` — Product Service đọc tồn kho qua event `INVENTORY_STOCK_CHANGED` + cache local. Proto trong `product-service/proto/inventory_service.proto` được giữ như dead-code cho tương thích ngược.
 - ❌ Không có background reconciliation / hot-SKU scanner / cache warm-up — drift xử lý qua alert + manual intervention.
 - ❌ Không có worker scan reservation expiry — Temporal Saga timer 30 phút trong Order Service tự gọi `RollbackInventoryActivity` với `change_type='RESERVATION_EXPIRED'`.
 
@@ -162,7 +161,7 @@ flowchart TD
 | Redis hot path | Lua script single-thread + `SETNX` idempotency key | Exactly-once-per-idempotency-key |
 | Postgres cold path | Outbox INSERT trong cùng TX với ledger | All-or-nothing |
 | Kafka | Debezium offset commit + consumer idempotent theo `event_id` | At-least-once delivery, exactly-once-effect |
-| Temporal compensation | Reserve → Deduct mapping; idempotency_key `{op}:{sku}:{wh}:{order}` | Replay-safe |
+| Temporal compensation | Reserve → Deduct mapping; status transition trên reservation row, dedup bởi partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` | Replay-safe |
 
 ### 4.3 Redis Cluster Hash-Tag Invariant
 
@@ -390,7 +389,7 @@ com.platform.inventoryservice/
 2. **Hexagonal Boundaries:** Mọi infrastructure phụ thuộc vào `port/`, không phụ thuộc ngược.
 3. **Two-Track Eventing:** Hot path (Redis Stream) cho atomicity, cold path (Postgres Outbox + Debezium) cho public event broadcast.
 4. **Lua-First Mutations:** Mọi thay đổi `available_quantity` / `reserved_quantity` / `actual_quantity` đều phải đi qua Lua script với invariant check. Không bao giờ `HINCRBY` trực tiếp từ application code.
-5. **Idempotency Everywhere:** Mỗi mutation có idempotency key `{op}:{sku}:{wh}:{order}`. Mỗi event có `event_id` UNIQUE.
+5. **Idempotency Everywhere:** Mỗi mutation hot path có Redis idempotency key `{op}:{sku}:{wh}:{order}`. Mỗi cold-path row có constraint UNIQUE phù hợp: ledger dùng `event_id`, reservation dùng partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'`.
 6. **Outbox First:** Public event INSERT vào `inventory_outbox` trong cùng transaction với mutation DB.
 7. **No Cross-Service Direct Call:** Internal service-to-service duy nhất là `POST /v1/inventory/returns/refund-expectations` (Order → Inventory, OIDC m2m token).
 8. **Manual Recovery Over Auto-Recon:** Drift & inconsistency → suspend flag + alert + manual unlock. Không có background reconciliation.

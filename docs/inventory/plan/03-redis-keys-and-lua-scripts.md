@@ -74,7 +74,7 @@ HGETALL inventory:physic:{sku-001:5}:stock
 - `inventory:idemp:release:{sku:wh}:order:{order_id}`
 - `inventory:idemp:deduct:{sku:wh}:order:{order_id}`
 
-> `{op}` ∈ `{reserve, release, deduct}`. Format khớp với `inventory_reservations.idempotency_key` column (M02) — server copy trực tiếp.
+> `{op}` ∈ `{reserve, release, deduct}`. Đây là **key hot path** trong Redis (TTL 30 ngày, xem M06) — primary mechanism chống duplicate op. Cold path ở DB dùng partial UNIQUE `inventory_reservations(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` (xem M02) cho reservation row và `inventory_ledger.event_id` UNIQUE cho ledger row.
 
 ### 3.3 `inventory:stream:{sku_id:warehouse_id}:events`
 

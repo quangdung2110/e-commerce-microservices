@@ -218,7 +218,7 @@ public record RoutingOptionsResponse(
     UUID routePlanId,
     Instant expiresAt,
     List<RoutePlanItemDto> items,
-    List<WarehouseOptionDto> warehouseOptions
+    List<WarehouseAssignmentDto> warehouseAssignments
 ) {
     public record RoutePlanItemDto(
         String skuId,
@@ -227,10 +227,9 @@ public record RoutingOptionsResponse(
         long warehouseId
     ) {}
 
-    public record WarehouseOptionDto(
+    public record WarehouseAssignmentDto(
         long warehouseId,
-        long availableQuantity,
-        int estimatedDeliveryDays
+        long availableQuantity
     ) {}
 
     public static RoutingOptionsResponse from(RoutePlan plan) {
@@ -242,9 +241,9 @@ public record RoutingOptionsResponse(
                     i.skuId(), i.productId(),
                     (int) i.quantity(), i.warehouseId()))
                 .toList(),
-            plan.warehouseOptions().stream()
-                .map(w -> new WarehouseOptionDto(
-                    w.warehouseId(), w.availableQuantity(), w.estimatedDeliveryDays()))
+            plan.warehouseAssignments().stream()
+                .map(w -> new WarehouseAssignmentDto(
+                    w.warehouseId(), w.availableQuantity()))
                 .toList()
         );
     }

@@ -88,7 +88,6 @@ public record ReserveResultItem(
     String productId,
     long warehouseId,
     int quantity,
-    String idempotencyKey,
     ReservationStatus status
 ) {}
 ```
@@ -126,7 +125,6 @@ public record DeductResultItem(
     String skuId,
     long warehouseId,
     int quantity,
-    String idempotencyKey,
     ReservationStatus status
 ) {}
 ```
@@ -170,7 +168,6 @@ public record RollbackResultItem(
     String skuId,
     long warehouseId,
     int quantity,
-    String idempotencyKey,
     ReservationStatus status
 ) {}
 ```
@@ -236,26 +233,24 @@ public class ReserveActivityImpl implements ReserveInventoryActivity {
                 switch (res.returnCode()) {
                     case APPLIED -> {
                         applied.add(item);
-                        String idempotencyKey = idempKey("reserve", item, cmd.orderId());
 
-                        // 2. Insert reservation row (idempotent via UNIQUE)
+                        // 2. Insert reservation row (idempotent via partial UNIQUE)
                         InventoryReservation reservation = InventoryReservation.newReserved(
                             cmd.orderId(), item.orderItemId(),
                             item.skuId(), item.productId(), item.warehouseId(),
-                            item.quantity(), cmd.routePlanId(), idempotencyKey, expiresAt);
+                            item.quantity(), cmd.routePlanId(), expiresAt);
                         reservationRepo.insertIfAbsent(reservation);
 
                         results.add(new ReserveResultItem(
-                            item.orderItemId(), item.skuId(), item.warehouseId(),
-                            item.quantity(), idempotencyKey, ReservationStatus.RESERVED));
+                            item.orderItemId(), item.skuId(), item.productId(), item.warehouseId(),
+                            item.quantity(), ReservationStatus.RESERVED));
                     }
                     case IDEMPOTENT_HIT -> {
                         log.info("Reserve idempotent hit for sku={} order={}",
                                  item.skuId(), cmd.orderId());
-                        String idempotencyKey = idempKey("reserve", item, cmd.orderId());
                         results.add(new ReserveResultItem(
-                            item.orderItemId(), item.skuId(), item.warehouseId(),
-                            item.quantity(), idempotencyKey, ReservationStatus.RESERVED));
+                            item.orderItemId(), item.skuId(), item.productId(), item.warehouseId(),
+                            item.quantity(), ReservationStatus.RESERVED));
                     }
                     case OUT_OF_STOCK -> {
                         // Rollback đã apply trước đó
@@ -299,14 +294,10 @@ public class ReserveActivityImpl implements ReserveInventoryActivity {
             }
         }
     }
-
-    private String idempKey(String op, ReserveCommandItem item, long orderId) {
-        return op + ":" + item.skuId() + ":" + item.warehouseId() + ":" + orderId;
-    }
 }
 ```
 
-> ⚠️ Lua `reserve` đã append event vào Redis Stream — Ledger Worker sẽ pick up và ghi DB ledger + outbox. Activity chỉ insert `inventory_reservations` row (idempotent qua UNIQUE constraint).
+> ⚠️ Lua `reserve` đã append event vào Redis Stream — Ledger Worker sẽ pick up và ghi DB ledger + outbox. Activity chỉ insert `inventory_reservations` row (idempotent qua partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'`).
 
 ---
 
@@ -338,11 +329,10 @@ public class DeductActivityImpl implements DeductInventoryActivity {
 
             switch (res.returnCode()) {
                 case APPLIED -> {
-                    String idempotencyKey = idempKey("deduct", item, cmd.orderId());
-                    // Reservation row UPDATE status RESERVED → DEDUCTED
-                    Optional<InventoryReservation> existing =
-                        reservationRepo.findByIdempotencyKey(
-                            idempKey("reserve", item, cmd.orderId()));
+                    // Reservation row UPDATE status RESERVED → DEDUCTED.
+                    // Lookup theo (orderId, skuId, warehouseId) — single row per reservation lifecycle.
+                    Optional<InventoryReservation> existing = reservationRepo
+                        .findActiveByOrderSkuWarehouse(cmd.orderId(), item.skuId(), item.warehouseId());
                     if (existing.isPresent()) {
                         existing.get().markDeducted();
                         reservationRepo.save(existing.get());
@@ -350,15 +340,14 @@ public class DeductActivityImpl implements DeductInventoryActivity {
                     // Ledger row + outbox row được Ledger Worker (M09) handle qua event stream
                     results.add(new DeductResultItem(
                         item.orderItemId(), item.skuId(), item.warehouseId(),
-                        item.quantity(), idempotencyKey, ReservationStatus.DEDUCTED));
+                        item.quantity(), ReservationStatus.DEDUCTED));
                 }
                 case IDEMPOTENT_HIT -> {
-                    String idempotencyKey = idempKey("deduct", item, cmd.orderId());
                     log.info("Deduct idempotent hit sku={} order={}",
                              item.skuId(), cmd.orderId());
                     results.add(new DeductResultItem(
                         item.orderItemId(), item.skuId(), item.warehouseId(),
-                        item.quantity(), idempotencyKey, ReservationStatus.DEDUCTED));
+                        item.quantity(), ReservationStatus.DEDUCTED));
                 }
                 case INSUFFICIENT_RESERVED -> {
                     throw new InsufficientReservedException(item.skuId(), item.warehouseId());
@@ -377,10 +366,6 @@ public class DeductActivityImpl implements DeductInventoryActivity {
 
         metrics.recordDeductSuccess(cmd.items().size());
         return new DeductResult(cmd.orderId(), results, deductedAt);
-    }
-
-    private String idempKey(String op, DeductCommandItem item, long orderId) {
-        return op + ":" + item.skuId() + ":" + item.warehouseId() + ":" + orderId;
     }
 }
 ```
@@ -418,23 +403,22 @@ public class RollbackActivityImpl implements RollbackInventoryActivity {
 
             switch (res.returnCode()) {
                 case APPLIED -> {
-                    String reserveIdemp = idempKey("reserve", item, cmd.orderId());
-                    Optional<InventoryReservation> existing =
-                        reservationRepo.findByIdempotencyKey(reserveIdemp);
+                    // Reservation row UPDATE status RESERVED → CANCELLED.
+                    // Lookup theo (orderId, skuId, warehouseId) — single row per reservation lifecycle.
+                    Optional<InventoryReservation> existing = reservationRepo
+                        .findActiveByOrderSkuWarehouse(cmd.orderId(), item.skuId(), item.warehouseId());
                     if (existing.isPresent()) {
                         existing.get().markCancelled();
                         reservationRepo.save(existing.get());
                     }
-                    String releaseIdemp = idempKey("release", item, cmd.orderId());
                     results.add(new RollbackResultItem(
                         item.orderItemId(), item.skuId(), item.warehouseId(),
-                        item.quantity(), releaseIdemp, ReservationStatus.CANCELLED));
+                        item.quantity(), ReservationStatus.CANCELLED));
                 }
                 case IDEMPOTENT_HIT -> {
-                    String releaseIdemp = idempKey("release", item, cmd.orderId());
                     results.add(new RollbackResultItem(
                         item.orderItemId(), item.skuId(), item.warehouseId(),
-                        item.quantity(), releaseIdemp, ReservationStatus.CANCELLED));
+                        item.quantity(), ReservationStatus.CANCELLED));
                 }
                 case RELEASE_UNDERFLOW -> {
                     throw new ReleaseUnderflowException(item.skuId(), item.warehouseId());
@@ -450,10 +434,6 @@ public class RollbackActivityImpl implements RollbackInventoryActivity {
 
         metrics.recordRollbackSuccess(cmd.items().size(), cmd.changeType().name());
         return new RollbackResult(cmd.orderId(), results, cmd.changeType(), rolledBackAt);
-    }
-
-    private String idempKey(String op, RollbackCommandItem item, long orderId) {
-        return op + ":" + item.skuId() + ":" + item.warehouseId() + ":" + orderId;
     }
 }
 ```

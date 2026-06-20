@@ -104,16 +104,8 @@ Base package: `com.platform.inventoryservice`
 
 > JWT issuer config qua `spring.security.oauth2.resourceserver.jwt.issuer-uri`.
 
-### 3.7 Observability
 
-| Dependency | Scope | Mục đích |
-|:---|:---:|:---|
-| `io.micrometer:micrometer-registry-prometheus` | runtime | Prometheus scrape |
-| `io.micrometer:micrometer-tracing-bridge-otel` | runtime | OpenTelemetry tracing bridge |
-| `io.opentelemetry:opentelemetry-exporter-otlp` | runtime | OTLP exporter (jaeger/tempo) |
-| `net.ttddyy.observation:datasource-micrometer-spring-boot` | compile | DB tracing (Datasource proxy) |
-
-### 3.8 Resilience
+### 3.7 Resilience
 
 | Dependency | Scope | Mục đích |
 |:---|:---:|:---|
@@ -121,7 +113,7 @@ Base package: `com.platform.inventoryservice`
 | `io.github.resilience4j:resilience4j-reactor` | compile | (optional, nếu dùng WebFlux) |
 | `io.github.resilience4j:resilience4j-micrometer` | compile | Metrics integration |
 
-### 3.9 Testing
+### 3.8 Testing
 
 | Dependency | Scope | Mục đích |
 |:---|:---:|:---|
@@ -606,7 +598,7 @@ public enum ErrorCode {
 
 Spring HandlerInterceptor đọc header `Idempotency-Key` (nếu có) cho Admin POST endpoints, gắn vào MDC.
 
-> Lưu ý: idempotency chính nằm ở Redis Lua (hot path) và `inventory_reservations.idempotency_key` UNIQUE (cold path). Interceptor chỉ để propagate key vào context cho log/metric.
+> Lưu ý: idempotency chính nằm ở Redis Lua SETNX (hot path, 30 ngày TTL) và partial UNIQUE `inventory_reservations(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` (cold path).
 
 ---
 
@@ -705,7 +697,6 @@ Sau khi hoàn thành module này:
 | Maven test | `./mvnw -B -ntp test` → BUILD SUCCESS (chưa có test nào, nhưng context load OK) |
 | App boot | `./mvnw spring-boot:run` → Started InventoryServiceApplication, port 8083 listening |
 | Actuator | `curl localhost:8083/actuator/health` → `{"status":"UP"}` |
-| Prometheus | `curl localhost:8083/actuator/prometheus` → có metrics |
 | Docker build | `docker build -t inventory-service:dev .` → success |
 
 ---

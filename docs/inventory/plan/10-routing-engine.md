@@ -27,7 +27,7 @@ com.platform.inventoryservice.routing/
 ├── FeasibleCombinationBuilder.java     # Step 2
 ├── WarehouseSelector.java              # Step 3
 ├── RoutePlanBuilder.java               # Step 4
-└── EstimatedDeliveryDaysResolver.java  # Lookup từ warehouse config (in-memory map)
+└── RoutingItem.java (record)
 ```
 
 ---
@@ -200,8 +200,7 @@ public class FeasibleCombinationBuilder {
                     .findFirst().map(AvailableStock::quantity).orElse(0L))
                 .min().orElse(0L);
 
-            int estimatedDays = EstimatedDeliveryDaysResolver.forWarehouse(whId);
-            plans.add(new RoutePlanProto(whId, totalAvailable, estimatedDays, planItems));
+            plans.add(new RoutePlanProto(whId, totalAvailable, planItems));
         }
         return plans;
     }
@@ -262,10 +261,9 @@ public class RoutePlanBuilder {
             routePlanId,
             expiresAt,
             proto.items(),
-            List.of(new RoutePlan.WarehouseOption(
+            List.of(new RoutePlan.WarehouseAssignment(
                 proto.warehouseId(),
-                proto.totalAvailable(),
-                proto.estimatedDeliveryDays()
+                proto.totalAvailable()
             ))
         );
     }
@@ -274,31 +272,7 @@ public class RoutePlanBuilder {
 
 ---
 
-## 9. EstimatedDeliveryDaysResolver
-
-> Cấu hình tĩnh theo warehouse. Phase 14 đơn giản hoá — không tính toán dynamic.
-
-```java
-public final class EstimatedDeliveryDaysResolver {
-
-    private static final Map<Long, Integer> DELIVERY_DAYS = Map.of(
-        // Populate từ application.yml hoặc DB nếu cần
-        // Mặc định: 2 ngày cho mọi warehouse nội đô, 5 ngày cho ngoại tỉnh
-    );
-
-    private EstimatedDeliveryDaysResolver() {}
-
-    public static int forWarehouse(long warehouseId) {
-        return DELIVERY_DAYS.getOrDefault(warehouseId, 2);   // default 2 days
-    }
-}
-```
-
-> Trong prod, `DELIVERY_DAYS` load từ config service hoặc warehouse master table.
-
----
-
-## 10. Internal DTOs
+## 9. Internal DTOs
 
 ```java
 public record RoutingItem(String skuId, int quantity) {}
@@ -306,14 +280,13 @@ public record RoutingItem(String skuId, int quantity) {}
 record RoutePlanProto(
     long warehouseId,
     long totalAvailable,
-    int estimatedDeliveryDays,
     List<RoutePlan.RoutePlanItem> items
 ) {}
 ```
 
 ---
 
-## 11. RoutePlanCache (M06 đã triển khai)
+## 10. RoutePlanCache (M06 đã triển khai)
 
 ```java
 public interface RoutePlanCache {
@@ -327,7 +300,7 @@ public interface RoutePlanCache {
 
 ---
 
-## 12. Algorithm Correctness Notes
+## 11. Algorithm Correctness Notes
 
 | Scenario | Hành vi |
 |:---|:---|
@@ -340,7 +313,7 @@ public interface RoutePlanCache {
 
 ---
 
-## 13. Performance
+## 12. Performance
 
 | Operation | Latency target |
 |:---|:---|
@@ -352,7 +325,7 @@ public interface RoutePlanCache {
 
 ---
 
-## 14. Testing
+## 13. Testing
 
 | Test | Mục đích |
 |:---|:---|
@@ -367,7 +340,7 @@ public interface RoutePlanCache {
 
 ---
 
-## 15. Verification
+## 14. Verification
 
 | Check | Cách verify |
 |:---|:---|
@@ -380,7 +353,7 @@ public interface RoutePlanCache {
 
 ---
 
-## 16. Files Created
+## 15. Files Created
 
 ```
 src/main/java/com/platform/inventoryservice/routing/
@@ -389,6 +362,5 @@ src/main/java/com/platform/inventoryservice/routing/
 ├── FeasibleCombinationBuilder.java
 ├── WarehouseSelector.java
 ├── RoutePlanBuilder.java
-├── EstimatedDeliveryDaysResolver.java
 └── RoutingItem.java (record)
 ```

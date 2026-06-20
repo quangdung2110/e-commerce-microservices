@@ -162,7 +162,7 @@ public class IdempotencyKeyBuilderImpl {
 }
 ```
 
-> Format khớp với `inventory_reservations.idempotency_key` column (M02): `{op}:{sku_id}:{warehouse_id}:{order_id}`.
+> Format này chỉ dùng cho Redis key (xem M03) — KHÔNG copy xuống DB column. Cold path ở DB do partial UNIQUE `inventory_reservations(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` đảm nhiệm (xem M02), và `inventory_ledger.event_id` UNIQUE cho ledger row.
 
 ---
 
@@ -484,7 +484,7 @@ public class RoutePlanCacheImpl implements RoutePlanCache {
 | `QueryTimeoutException` | Lua script timeout | Throw `InventoryUnavailableException` → HTTP 503 |
 | `IllegalArgumentException` | Caller vi phạm pre-condition (quantity <= 0) | Reject ngay tại Java, không tới Redis |
 
-> KHÔNG retry Lua script tự động — Lua scripts là idempotent (qua `idempotency_key`), nhưng retry sẽ trả về sai return code cho caller (IDEMPOTENT_HIT thay vì APPLIED). Caller phải tự quyết định retry ở Activity level (Temporal).
+> KHÔNG retry Lua script tự động — Lua scripts là idempotent (qua Redis SETNX idempotency key), nhưng retry sẽ trả về sai return code cho caller (IDEMPOTENT_HIT thay vì APPLIED). Caller phải tự quyết định retry ở Activity level (Temporal).
 
 ---
 
