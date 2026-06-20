@@ -38,9 +38,7 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 Một đơn hàng áp dụng theo slot:
 
-* toàn đơn tối đa 1 `PLATFORM_VOUCHER`
-
-Tổng số voucher áp dụng là tối đa 1 (chỉ PLATFORM sau Phase 14).
+Tổng số voucher áp dụng là tối đa 1 (chỉ PLATFORM).
 
 Sơ đồ slot:
 
@@ -51,12 +49,7 @@ Sơ đồ slot:
 ```
 
 **Mapping từ bảng `promotions`:**
-- **PLATFORM_VOUCHER**: `deleted_owner_type = PLATFORM` + `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
-
-### 1.2.1. Dependency giữa các slot
-
-- Sau Phase 14, chỉ còn 1 slot PLATFORM_VOUCHER duy nhất. Không còn dependency giữa các slot.
-
+- **PLATFORM_VOUCHER**: `discount_type IN (PERCENTAGE, FIXED_AMOUNT)`
 
 
 ---
@@ -118,8 +111,6 @@ Authorization: Bearer {access_token}
     }
   },
   "cache_meta": {
-    "wallet_cached_at": "2026-03-12T09:30:00Z",
-    "ttl_remaining_seconds": 240,
     "promotion_rule_version": "2026-03-12T09:29:55Z",
     "promotion_budget_version": "2026-03-12T09:29:58Z",
     "budget_guard_status": "OK",
@@ -148,15 +139,15 @@ Client
   ▼
 Promotion Service
   │
-  ├─── STEP 1: Check Wallet Cache (Redis)
-  │     Key: wallet:{user_id}:active_vouchers  TTL 5 phút
-  │     Kèm version fence: so `wallet_cache.rule_version_snapshot` với `promo:rules:version` hiện tại.
-  │     ├── Cache HIT + version khớp  → bỏ qua Step 2
-  │     └── Cache MISS hoặc version lệch → STEP 2
+  ├─── STEP 1: Lazy Expiry Sweep (Inline)
+  │     Với mỗi row `user_coupon_wallets` trả về có `status = 'SAVED'`
+  │     nhưng `expired_at <= NOW()`: chuyển sang `EXPIRED` bằng
+  │     `UPDATE ... SET status = 'EXPIRED' WHERE id = :id AND status = 'SAVED'`
+  │     (idempotent, không cần job nền).
   │
   ├─── STEP 2: Query Database
   │     SELECT w.promotion_id, w.status, w.expired_at,
-  │            p.deleted_owner_type, p.owner_id, p.discount_type,
+  │            p.owner_id, p.discount_type,
   │            p.discount_value, p.max_discount_amount,
   │            p.min_purchase_amount, p.code
   │     FROM user_coupon_wallets w
@@ -167,15 +158,13 @@ Promotion Service
   │       AND p.status = 'ACTIVE'
   │     -- Dùng Composite Index (user_id, status) → Index Scan
   │
-  │     → Ghi kết quả vào Redis: wallet:{user_id}:active_vouchers
-  │
   ├─── STEP 3: Pre-filter Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher ứng viên:
 │     (a) Check nhanh min_purchase_amount (field riêng, O(1)):
     │         - PLATFORM_VOUCHER: so với total_subtotal
-    │     (b) Eval conditions_rule AST (Caffeine L1, <1ms):
-    │         - Dùng cart_context làm input
-    │         - Gắn eligible=true/false + ineligible_reason
+│     (b) Pipeline `MGET promo:rules:version + promo:{id}:snapshot × N` từ Redis, parse JSONB AST on-the-fly trong request scope thành `RuleNode`, eval với `cart_context` (request-scoped < 2ms):
+  │         - Dùng cart_context làm input
+  │         - Gắn eligible=true/false + ineligible_reason
     │     (c) Tính estimated_discount (in-memory):
     │         - PERCENTAGE: min(subtotal * rate, max_discount_amount)
     │         - FIXED_AMOUNT: min(discount_value, subtotal)
@@ -198,7 +187,7 @@ Promotion Service
   │         - gắn `cache_meta.budget_guard_status=DEGRADED` để observability
   │
 ├─── STEP 5: Gom nhóm theo Slot Model (Group & Sort)
-    │     PLATFORM_VOUCHER: filter deleted_owner_type=PLATFORM + discount_type IN (PERCENTAGE, FIXED_AMOUNT)
+    │     PLATFORM_VOUCHER: filter discount_type IN (PERCENTAGE, FIXED_AMOUNT)
     │                       sort: eligible first, then estimated_discount DESC
     │                       chọn `best_voucher` + `other_vouchers` theo cùng rule sort
   │
@@ -225,13 +214,13 @@ Promotion Service
      │ -- Submit Checkout → ReservePromotionActivity --
      ▼
    RESERVED (runtime trên Redis reservation)
-     │
-     │ -- ORDER_CANCELLED/PAYMENT_TIMEOUT --
-     ▼
+      │
+      │ -- Reservation TTL hết / RollbackPromotionActivity (lane pre-payment) --
+      ▼
    SAVED (không đổi state DB; chỉ nhả reserved runtime)
-     │
-     │ -- Submit lại thành công → ORDER_PAID --
-     ▼
+      │
+      │ -- Submit lại thành công → ConfirmPromotionActivity --
+      ▼
    USED (DB wallet)
 
   ORDER_REFUNDED:
@@ -244,56 +233,28 @@ Promotion Service
 
 ## 5. Caching Strategy
 
-### 5.1. Wallet Cache (L2 Redis)
+### 5.1. Lazy Expiry Update (Inline trong Discovery)
 
-Đây là cache quan trọng nhất vì API này là Read-Heavy — user mở khung voucher nhiều lần.
+Vì API này là Read-Heavy, thay vì giữ wallet cache trong Redis, Promotion áp dụng cơ chế **lazy expiry inline** để đảm bảo `user_coupon_wallets.status` luôn đúng trạng thái nghiệp vụ mà không cần job nền.
 
-**Key:** `wallet:{user_id}:active_vouchers`
-**Type:** `String (JSON Array)`
-**TTL:** `5 phút`
+**Cơ chế:**
+- Mỗi lần Discovery query `user_coupon_wallets`, với mỗi row trả về có `status = 'SAVED'` nhưng `expired_at <= NOW()`: thực hiện `UPDATE ... SET status = 'EXPIRED' WHERE id = :id AND status = 'SAVED'` (idempotent, nhiều request cùng chạy không xung đột).
+- Sau update, row đó bị filter ra khỏi response (vì điều kiện `status = 'SAVED' AND expired_at > NOW()`).
+- Row `EXPIRED` được giữ lại trong DB phục vụ audit/analytics; không xóa cứng.
 
-**Nội dung cache:**
-```json
-[
-  {
-    "promotion_id": 55,
-    "code": "TECHVIET20",
-    "deleted_owner_type": "PLATFORM",
-    "owner_id": 101,
-    "discount_type": "PERCENTAGE",
-    "discount_value": 20,
-    "max_discount_amount": 50000,
-    "min_purchase_amount": 200000,
-    "expired_at": "2026-04-01T00:00:00Z"
-  }
-]
-```
-
-> [!NOTE]
-> Cache **không** lưu `estimated_discount` (vì phụ thuộc cart_context được gửi lên mỗi lần gọi). Cache chỉ lưu **metadata tĩnh** của ví — việc tính discount và eval rule vẫn chạy in-memory mỗi lần.
-
-**Invalidation Triggers:**
-
-| Trigger | Hành động |
-|:---|:---|
-| `COUPON_CLAIMED` (user săn được mã mới) | `DEL wallet:{user_id}:active_vouchers` |
-| `ORDER_PAID` (mã chuyển sang USED) | `DEL wallet:{user_id}:active_vouchers` |
-| `ORDER_CANCELLED` (nhả reservation pre-payment, không đổi state ví) | `DEL wallet:{user_id}:active_vouchers` |
-| `ORDER_REFUNDED` (mã có thể đổi trạng thái theo policy tái sử dụng) | `DEL wallet:{user_id}:active_vouchers` |
-| Mã hết hạn (cron job expire sweep) | `DEL wallet:{user_id}:active_vouchers` |
-| `BUDGET_EXHAUSTED` (event cấp promotion) | **Không fanout `DEL` toàn cục** theo `promotion_id`; Discovery xử lý bằng Budget Guard read-time |
-| `PROMO_EVICT` / Admin update promotion | bump `promo:rules:version`; cache cũ bị coi như miss ở lần đọc kế tiếp |
-
-**Chiến lược Invalidation:** Dùng `DEL` (xóa hẳn) thay vì update, vì thay đổi ví thiếu tần suất đủ để justify complexity của partial update. Cache miss → query DB → populate lại. Latency DB query ví là ~3-5ms (Index Scan trên `user_id, status`), chấp nhận được.
+**Trade-off:**
+- Ưu: Không tốn Redis memory cho cache ví, đơn giản hóa vận hành (thay thế job nền `Wallet Expiry Sweep` cũ).
+- Nhược: User không mở app trong thời gian dài sẽ giữ `status = 'SAVED'` dù đã quá hạn (cosmetic, không ảnh hưởng business vì filter query loại ra).
+- Khi cần đối soát/audit, query bổ sung `WHERE status = 'EXPIRED'` chỉ ra đúng trạng thái đã chốt.
 
 > [!NOTE]
 > Option A cố ý **không** invalidation fanout theo `promotion_id -> user_ids` khi ngân sách cạn để tránh write amplification và phụ thuộc reverse-index lớn trong Redis. Đổi lại, độ tươi cho exhausted budget được cải thiện bằng Budget Guard read-time + Submit Reserve authoritative.
 
-### 5.2. Rule Metadata Cache (L1 Caffeine)
+### 5.2. Snapshot Cache (Redis — Single-tier)
 
-Promotion Service dùng Caffeine L1 để cache metadata + AST rule của các promotion nhằm giảm độ trễ evaluate. Dữ liệu L1 phục vụ pre-filter eligibility cho danh sách voucher lấy từ wallet cache/DB, không dùng để trộn thêm mã chưa lưu vào response `voucher-suggestions`.
+Promotion Service dùng Redis snapshot `STRING promo:{promotion_id}:snapshot` để cache bundle `{metadata, rule_ast_json, snapshot_version}` phục vụ pre-filter eligibility cho danh sách voucher lấy từ DB, không dùng để trộn thêm mã chưa lưu vào response `voucher-suggestions`.
 
-Khi Admin tạo/sửa promotion, bắt buộc phát `PROMO_EVICT` và bump `promo:rules:version` để đồng bộ L1 metadata và wallet cache fence ở Step 1.
+Khi Admin tạo/sửa promotion, transaction Postgres `DEL promo:{promotion_id}:snapshot` rồi `INCR promo:rules:version` (sau commit). Version fence `STRING promo:rules:version` là single source of truth cross-instance để snapshot cache biết khi nào cần refresh.
 
 ---
 
@@ -301,15 +262,16 @@ Khi Admin tạo/sửa promotion, bắt buộc phát `PROMO_EVICT` và bump `prom
 
 | Bước | Latency ước tính |
 |:---|:---|
-| Redis wallet cache HIT | ~2ms |
-| Redis wallet cache MISS → DB query → populate | ~5-8ms |
-| Rule Engine eval (AST in-memory, n mã) | ~1-3ms |
+| DB query user_coupon_wallets (Index Scan `user_id, status`) | ~3-5ms |
+| Snapshot cache HIT (MGET version + snapshot) | ~0.5-1ms |
+| Snapshot cache MISS → DB query → populate | ~3-5ms |
+| Rule Engine eval (parse AST on-the-fly + eval, n mã) | ~1-2.5ms |
 | Budget Guard (Redis pipeline theo tập eligible) | ~0.5-1.5ms |
 | Tính estimated_discount + Sort | ~0.5ms |
-| **Tổng (cache HIT path)** | **< 12ms** |
-| **Tổng (cache MISS path)** | **< 15ms** |
+| **Tổng (snapshot cache HIT)** | **< 13ms** |
+| **Tổng (snapshot cache MISS)** | **< 16ms** |
 
-> Latency mục tiêu: **< 15ms 99th percentile**. Checkout Service gọi API này **song song** với các call khác trong Preview Orchestration, nên nó không nằm trên critical path.
+> Latency mục tiêu: **< 15ms 99th percentile** cho happy-path (snapshot cache HIT). Snapshot cache MISS path có thể chạm ngưỡng ~16ms nhưng vẫn chấp nhận được vì hiếm khi xảy ra và Checkout Service gọi API này **song song** với các call khác trong Preview Orchestration, nên nó không nằm trên critical path.
 
 ---
 
@@ -408,27 +370,35 @@ Authorization: Bearer {access_token}
 GET /platform-voucher-discovery?platform_id=101
   │
   ├── STEP 1: Fetch Wallet (Filter by platform_id)
-  │     Check Redis: wallet:{user_id}:active_vouchers (TTL 5 phút)
-  │     → Filter: deleted_owner_type=PLATFORM AND owner_id=101 AND (expired_at IS NULL OR expired_at > NOW())
+  │     Query DB trực tiếp (không qua cache):
+  │       SELECT w.promotion_id, w.status, w.expired_at, ...
+  │       FROM user_coupon_wallets w
+  │       JOIN promotions p ON p.id = w.promotion_id
+  │       WHERE w.user_id = :user_id
+  │         AND p.owner_id = 101
+  │         AND w.status = 'SAVED'
+  │         AND (w.expired_at IS NULL OR w.expired_at > NOW())
+  │         AND p.status = 'ACTIVE'
+  │     → Lazy expiry: với row `SAVED` mà `expired_at <= NOW()` → UPDATE sang `EXPIRED` (idempotent)
   │     → Source: WALLET, is_saved=true
   │
   ├── STEP 2: Fetch platform Public Vouchers (chưa lưu trong ví)
   │     Query DB:
   │       SELECT p.*
   │       FROM promotions p
-  │       WHERE p.deleted_owner_type = 'PLATFORM'
-  │         AND p.owner_id = 101
+  │       WHERE
+  │         p.owner_id = 101
   │         AND p.discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')
   │         AND p.status = 'ACTIVE'
   │         AND p.end_time > NOW()
-  │         AND p.id NOT IN (wallet_promotion_ids_from_step1)
+  │         AND p.id NOT IN (saved_wallet_promotion_ids_from_step1)
   │     → Source: platform_PUBLIC, is_saved=false
-  │     → Index: (deleted_owner_type, owner_id, status) — cần thêm index này
+  │     → Index: (owner_id, status) — cần thêm index này
   │
   ├── STEP 3: Evaluate Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher (từ Step 1 + Step 2):
   │     (a) Check nhanh: sub_cart_subtotal >= min_purchase_amount
-  │     (b) Eval conditions_rule AST (Caffeine L1, <1ms)
+  │     (b) Pipeline `MGET promo:rules:version + promo:{id}:snapshot × N`, parse JSONB AST on-the-fly trong request scope, eval với `cart_context` (< 2ms)
   │     (c) Tính estimated_discount in-memory
   │     (d) Gán eligible=true/false + ineligible_reason nếu false
   │
@@ -518,8 +488,7 @@ Promotion Service:
    ```
   - Nếu row đã `SAVED` và còn hạn: trả success idempotent, không kéo dài `expired_at`.
   - Nếu row đã `USED`: mặc định từ chối `409 ALREADY_USED_VOUCHER` (trừ khi promotion policy cho phép reacquire rõ ràng).
-3. Invalidate Redis wallet cache: `DEL wallet:{user_id}:active_vouchers`.
-4. Trả `200 OK {saved: true}`.
+3. Trả `200 OK {saved: true}`. Lần Discovery kế tiếp sẽ tự thấy row mới (query trực tiếp DB, không qua cache).
 
 > [!NOTE]
 > `expired_at` được gán ngay lúc acquire/save để tách bạch claim window (`promotions.end_time`) và use window theo ví (`saved_at + 30 ngày`).
@@ -530,11 +499,11 @@ Promotion Service:
 
 | Bước | Latency |
 |:---|:---|
-| Wallet cache HIT + filter | ~2ms |
+| DB query user_coupon_wallets (Index Scan `user_id, status`) | ~3-5ms |
 | DB query platform Public vouchers | ~3-5ms |
-| Rule Engine eval (n mã) | ~1-3ms |
-| **Tổng (cache HIT)** | **< 12ms** |
-| **Tổng (cache MISS)** | **< 15ms** |
+| Snapshot cache (MGET version + snapshot) + parse AST + eval | ~1-2.5ms |
+| **Tổng (snapshot cache HIT)** | **< 13ms** |
+| **Tổng (snapshot cache MISS)** | **< 16ms** |
 
 > Rate Limiting: `promotion:ratelimit:voucher_discovery:{user_id}` — 20 req/phút (xem `checkout_caching_schema.md`).
 

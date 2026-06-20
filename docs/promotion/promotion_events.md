@@ -5,7 +5,6 @@
 *   [Redis Caching & Lua Scripts](redis_caching_design.md)
 *   [Promotion Workflows](promotion_workflow.md)
 *   [Outbox Pattern](promotion_outbox_pattern.md)
-*   [Coupon Claims Deletion Strategy](coupon_claims_deletion_strategy.md)
 
 ---
 
@@ -32,7 +31,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 > Promotion dùng top-level `timestamp` làm chuẩn thời gian event. Các consumer dùng envelope `occurred_at` (vd Notification) phải map tương thích `timestamp -> occurred_at`.
 > Với hệ dùng `event_schema_version`, map tương thích `schema_version -> event_schema_version` ở tầng adapter canonical.
 >
-> Với các event inbound từ Kafka (`ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_REFUNDED`), Promotion bắt buộc dùng đúng `event_id` ở envelope để ghi `promotion_event_idempotency.event_id`. Không được tự sinh lại ID mới ở consumer.
+> Với event inbound từ Kafka (`ORDER_REFUNDED`), Promotion bắt buộc dùng đúng `event_id` ở envelope để ghi `promotion_event_idempotency.event_id`. Không được tự sinh lại ID mới ở consumer.
 
 > [!NOTE]
 > Mặc định event outbound của Promotion được ghi vào bảng [`promotion_outbox`](promotion_db_design.md#18-promotion_outbox-outbox-pattern--reliable-event-publishing) cùng transaction PostgreSQL, sau đó [Outbox CDC Connector](promotion_outbox_pattern.md) publish lên Kafka theo cơ chế **At-Least-Once**.
@@ -45,7 +44,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ### 2.1. MARKDOWN_CREATED
 **Ngữ cảnh:** Admin tạo mã giảm giá gạch chéo (Markdown Rule) mới. Xem [Workflow Luồng 1](promotion_workflow.md#1-luồng-tạo-mới-và-cập-nhật-khuyến-mãi-admin-workflow).
-**Consumer chính:** Product Service (Tính `promotional_price` cho sản phẩm thuộc scope).
+**Consumer chính:** Product Service (Tính `promotional_price`).
 
 ```json
 {
@@ -60,7 +59,6 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "payload": {
     "rule_id": 42,
     "campaign_id": 15,
-    "deleted_owner_type": "PLATFORM",
     "owner_id": null,
     "scope_type": "CATEGORY",
     "ref_id": "cat-dien-thoai",
@@ -74,7 +72,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 ```
 
 ### 2.2. MARKDOWN_UPDATED
-**Ngữ cảnh:** Admin chỉnh sửa giá trị giảm, scope, hoặc thời gian áp dụng.
+**Ngữ cảnh:** Admin chỉnh sửa giá trị giảm, hoặc thời gian áp dụng.
 **Consumer chính:** Product Service (Tính lại `promotional_price`).
 
 ```json
@@ -98,7 +96,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 ```
 
 ### 2.3. MARKDOWN_ENDED
-**Ngữ cảnh:** Markdown rule hết hạn (do Markdown Expiry Scheduler dùng Redis ZSET + Cron fallback kích hoạt) hoặc bị Admin tắt (`status → ENDED/INACTIVE`).
+**Ngữ cảnh:** Markdown rule hết hạn (do Markdown Expiry Scheduler dùng Redis ZSET + Cron fallback kích hoạt) hoặc bị Admin tắt (`status → ENDED/`).
 **Consumer chính:** Product Service (Xóa `promotional_price`, khôi phục giá gốc).
 
 ```json
@@ -113,7 +111,6 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "source": "promotion-service",
   "payload": {
     "rule_id": 42,
-    "scope_type": "CATEGORY",
     "ref_id": "cat-dien-thoai",
     "reason": "EXPIRED"
   }
@@ -126,7 +123,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ### 2.4. COUPON_CLAIMED
 **Ngữ cảnh:** User giành được mã Flash Sale (SPOP). Xem [Workflow Luồng 2](promotion_workflow.md#2-luồng-tranh-mã-flash-sale-spop-claiming).
-**Consumer chính:** Notification Service (Gửi thông báo "Chúc mừng bạn đã lưu mã thành công!"), Analytics.
+**Consumer chính:** Notification Service (Gửi thông báo "Chúc mừng bạn đã lưu mã thành công!").
 **Publish path:** Direct-produce từ API/Rescue Job (không đi qua outbox DB).
 
 ```json
@@ -160,43 +157,13 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 > - `API_DIRECT`: phát từ API ngay sau Lua Script SPOP.
 > - `SWEEPER_RESCUE`: phát lại từ Pending Claims Sweeper để cứu crash window.
 
-### 2.5. COUPON_RESERVED
-**Ngữ cảnh:** Budget được khóa khi user bấm "Xác nhận Đặt hàng". Xem [Workflow Luồng 4.A](promotion_workflow.md#bước-a-khóa-ngân-sách-khi-submit-try).
-**Trạng thái phát hành:** Event này là **optional telemetry**. Mặc định kiến trúc hiện tại KHÔNG publish `COUPON_RESERVED` ra Kafka liên service để tránh hiểu nhầm trạng thái nghiệp vụ (reserve chỉ tồn tại ở Redis, chưa commit ledger DB).
-**Consumer chính (nếu bật):** Internal audit/analytics.
+### 2.5. COUPON_REDEEMED
+**Ngữ cảnh:** Đơn hàng thanh toán thành công, ngân sách xác nhận trừ. Xem [Workflow Luồng 4.B](promotion_workflow.md#bước-b-thanh-toán-thành-công-confirm).
+**Consumer chính:** Analytics.
 
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174004",
-  "event_type": "COUPON_RESERVED",
-  "aggregate_type": "Promotion",
-  "aggregate_id": "100",
-  "correlation_id": "wf-5001",
-  "business_id": "5001",
-  "timestamp": "2026-02-28T10:00:00Z",
-  "source": "promotion-service",
-  "payload": {
-    "promotion_id": 100,
-    "order_id": 5001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "discount_amount": 50000.00,
-    "platform_funding": 20000.00,
-    "admin_funding": 30000.00,
-    "reserved_at": "2026-02-28T10:00:00Z"
-  }
-}
-```
-
-> [!NOTE]
-> Nếu hệ thống không bật telemetry này, downstream không được phụ thuộc vào `COUPON_RESERVED`; các mốc chuẩn để đối soát liên service là `COUPON_REDEEMED`, `COUPON_CANCELLED`, `COUPON_REFUNDED`.
-
-### 2.6. COUPON_REDEEMED
-**Ngữ cảnh:** Đơn hàng thanh toán thành công, ngân sách xác nhận trừ. Xem [Workflow Luồng 4.B](promotion_workflow.md#bước-b-thanh-toán-thành-công-confirm).
-**Consumer chính:** Analytics, admin Settlement Service (đối soát chi phí khuyến mãi).
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "COUPON_REDEEMED",
   "aggregate_type": "Promotion",
   "aggregate_id": "100",
@@ -216,13 +183,13 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 }
 ```
 
-### 2.7. COUPON_CANCELLED
+### 2.6. COUPON_CANCELLED
 **Ngữ cảnh:** Đơn hàng bị hủy hoặc TTL Reservation hết hạn. Xem [Workflow Luồng 4.C/4.D](promotion_workflow.md#bước-c-thanh-toán-thất-bại--tự-huỷ-cancelrollback).
 **Consumer:** Analytics.
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174006",
+  "event_id": "123e4567-e89b-12d3-a456-426614174005",
   "event_type": "COUPON_CANCELLED",
   "aggregate_type": "Promotion",
   "aggregate_id": "100",
@@ -242,13 +209,13 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 ```
 *(`reason` có thể là `ORDER_CANCELLED` hoặc `RESERVATION_TTL_EXPIRED`)*
 
-### 2.8. COUPON_REFUNDED
+### 2.7. COUPON_REFUNDED
 **Ngữ cảnh:** Đơn hàng đã giao nhưng khách đổi trả hàng. Xem [Workflow Luồng 5](promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
-**Consumer:** Analytics, admin Settlement Service (hoàn lại chi phí khuyến mãi cho admin).
+**Consumer:** Analytics.
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174007",
+  "event_id": "123e4567-e89b-12d3-a456-426614174006",
   "event_type": "COUPON_REFUNDED",
   "aggregate_type": "Promotion",
   "aggregate_id": "100",
@@ -262,7 +229,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
-    "promotion_scope_type": "platform",
+        "promotion_scope_type": "PLATFORM",
     "scope_admin_id": 501,
     "discount_amount": 50000.00,
     "refunded_discount_amount": 50000.00,
@@ -281,7 +248,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 > **Restore outcome contract:** `restore_outcome` có thể là `RESTORED`, `RETAINED_USED`, `EXPIRED_AT_RESTORE_TIME`, `SKIPPED_SCOPE_RULE`, hoặc `VOUCHER_UNAVAILABLE`.
 > Trạng thái `VOUCHER_UNAVAILABLE` không được dùng để rollback tiền hoàn đã thành công.
 
-### 2.9. BUDGET_EXHAUSTED
+### 2.8. BUDGET_EXHAUSTED
 **Ngữ cảnh:** Ngân sách (Quantity hoặc Budget Amount) của một promotion đã cạn kiệt hoàn toàn (`available = 0`).
 **Consumer:** Notification Service (Báo cho Admin/admin), Frontend (Disable nút "Lưu mã").
 
@@ -289,11 +256,11 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 > Event Kafka `BUDGET_EXHAUSTED` là tín hiệu bất đồng bộ cho monitoring/UI. Ở submit path thời gian thực, Checkout nhận lỗi reserve có cấu trúc qua call đồng bộ (`ReservePromotionActivity`), không chờ Kafka event này để quyết định phản hồi `409 PROMOTION_RECALCULATION_NEEDED`.
 > `failed_reason` chi tiết (`BUDGET_QTY_EXHAUSTED|BUDGET_AMOUNT_EXHAUSTED`) thuộc contract đồng bộ của API reserve; event Kafka chỉ dùng để broadcast trạng thái exhausted ở mức promotion.
 >
-> Theo Option A, Promotion **không fanout `DEL wallet:{user_id}:active_vouchers` toàn cục** theo `promotion_id` khi nhận/emit `BUDGET_EXHAUSTED`. Độ tươi của tray voucher được cải thiện bằng Budget Guard read-time trong Discovery; correctness cuối cùng vẫn do Reserve ở Submit.
+> Theo Option A, Promotion **không fanout invalidate wallet ví toàn cục** theo `promotion_id` khi nhận/emit `BUDGET_EXHAUSTED`. Độ tươi của tray voucher được cải thiện bằng Budget Guard read-time trong Discovery; correctness cuối cùng vẫn do Reserve ở Submit.
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174008",
+  "event_id": "123e4567-e89b-12d3-a456-426614174007",
   "event_type": "BUDGET_EXHAUSTED",
   "aggregate_type": "Promotion",
   "aggregate_id": "100",
@@ -316,58 +283,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 ## 3. Events Lắng Nghe (Inbound — Other Services → Promotion)
 
-### 3.1. ORDER_PAID (Inbound)
-**Producer:** Order Service (sau khi nhận `PAYMENT_SUCCESS` từ Payment → Signal Temporal → FSM `PAID`).
-**Topic:** `t.order.events`
-**Ngữ cảnh:** Khách hàng thanh toán đơn hàng thành công. Event này dùng cho đối soát/audit/fallback recovery; đường xử lý chính của Confirm Redeem là gọi đồng bộ `ConfirmPromotionActivity` trong Temporal Saga. Xem [Order Events - ORDER_PAID](../order/order_events.md#32-order_paid).
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174201",
-  "event_type": "ORDER_PAID",
-  "aggregate_type": "Order",
-  "aggregate_id": "5001",
-  "correlation_id": "wf-5001",
-  "timestamp": "2026-02-28T10:05:00Z",
-  "source": "order-service",
-  "payload": {
-    "order_id": 5001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
-    ],
-    "paid_at": "2026-02-28T10:05:00Z"
-  }
-}
-```
-
-### 3.2. ORDER_CANCELLED (Inbound)
-**Producer:** Order Service.
-**Topic:** `t.order.events`
-**Ngữ cảnh:** Đơn hàng bị hủy (user hủy, hoặc Temporal timeout 15 phút). Event này dùng cho đối soát/audit/fallback recovery; đường xử lý chính của rollback budget là gọi đồng bộ `RollbackPromotionActivity` trong Temporal Compensation Stack. Xem [Order Events - ORDER_CANCELLED](../order/order_events.md#33-order_cancelled).
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174202",
-  "event_type": "ORDER_CANCELLED",
-  "aggregate_type": "Order",
-  "aggregate_id": "5001",
-  "correlation_id": "wf-5001",
-  "timestamp": "2026-02-28T10:20:00Z",
-  "source": "order-service",
-  "payload": {
-    "order_id": 5001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
-    ],
-    "cancelled_at": "2026-02-28T10:20:00Z",
-    "reason": "PAYMENT_TIMEOUT"
-  }
-}
-```
-
-### 3.3. ORDER_REFUNDED (Inbound)
+### 3.1. ORDER_REFUNDED (Inbound)
 **Producer:** Order Service.
 **Topic:** `t.order.events`
 **Ngữ cảnh:** Đơn hàng đã giao thành công nhưng khách đổi trả hàng hoàn tiền. Trigger [Workflow 5](promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow). Xem [Order Events - ORDER_REFUNDED](../order/order_events.md#36-order_refunded).
@@ -393,12 +309,12 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "promotion_refund_allocations": [
       {
         "promotion_id": 100,
-        "promotion_scope_type": "platform",
+    "promotion_scope_type": "PLATFORM",
         "scope_admin_id": 501,
         "refunded_discount_amount": 50000.00,
         "platform_funding_refund": 20000.00,
         "admin_funding_refund": 30000.00,
-        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_platform_COVERED",
+        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_PLATFORM_COVERED",
         "voucher_restore_mode": "BEST_EFFORT_NON_BLOCKING"
       }
     ],
@@ -430,7 +346,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 >
 > **Unavailable voucher handling:** Nếu voucher không còn khả dụng ở thời điểm restore, Promotion ghi nhận `restore_outcome = VOUCHER_UNAVAILABLE`, phát cảnh báo vận hành, và không rollback tiền refund đã thành công ở Payment.
 
-### 3.4. USER_REGISTERED (Inbound - Optional)
+### 3.2. USER_REGISTERED (Inbound - Optional)
 **Producer:** Auth Service.
 **Topic:** `t.auth.events`
 **Ngữ cảnh:** Đồng bộ use-case welcome voucher/new-user promotion. Event này optional theo feature-flag, không ảnh hưởng luồng checkout cốt lõi.
@@ -445,11 +361,10 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 }
 ```
 
-> **Canonical user_id:** Promotion Service nhận `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
 > **Compatibility note:** Auth có thể phát envelope dạng `data` + `timestamp_ms` + `event_version` (xem [auth_events.md](../auth/auth_events.md)). Promotion consumer phải map adapter: `data -> payload`, `timestamp_ms -> payload.registered_at` (ISO-8601), rồi mới chạy business handler.
 
-### 3.5. PRODUCT_STATE_CHANGED (Inbound)
+### 3.3. PRODUCT_STATE_CHANGED (Inbound)
 **Producer:** Product Service.
 **Topic:** `t.product.events`
 **Ngữ cảnh:** Sản phẩm chuyển trạng thái qua FSM. Promotion cần bắt sự kiện này để apply markdown cho sản phẩm vừa chuyển `ACTIVE` khi rule vẫn còn hiệu lực.
@@ -485,7 +400,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 | `t.promotion.coupon.events` | `COUPON_CLAIMED` | `claim_id` |
 | `t.promotion.coupon.events` | `COUPON_REDEEMED`, `COUPON_CANCELLED`, `COUPON_REFUNDED` | `order_id` |
 | `t.promotion.budget.events` | `BUDGET_EXHAUSTED` | `promotion_id` |
-| `t.order.events` | `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_REFUNDED` (Inbound) | `order_id` |
+| `t.order.events` | `ORDER_REFUNDED` (Inbound) | `order_id` |
 | `t.product.events` | `PRODUCT_STATE_CHANGED` (Inbound) | `product_id` |
 | `t.auth.events` | `USER_REGISTERED` (Inbound, optional) | `user_id` |
 

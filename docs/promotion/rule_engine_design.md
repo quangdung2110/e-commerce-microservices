@@ -81,9 +81,3 @@ Nếu reserve thất bại do ngân sách, mã lỗi `BUDGET_EXHAUSTED` đến t
 
 > [!NOTE]
 > Theo Option A, ở luồng Discovery có thể xuất hiện `BUDGET_EXHAUSTED` từ bước Budget Guard read-time (thực thi sau Rule Engine). Lõi Rule Engine vẫn không tự tính exhausted budget.
-
-## 9. Slot Dependency Contract for Checkout Preview
-
-- `PLATFORM_VOUCHER` evaluate trên sub-cart subtotal.
-- Sau Phase 14, chỉ còn 1 slot PLATFORM_VOUCHER duy nhất (không còn dependency giữa các slot).
-- `/calculate-discount` evaluate slot PLATFORM_VOUCHER trong một pass để trả discount lines nhất quán.
