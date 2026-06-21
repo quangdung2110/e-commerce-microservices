@@ -22,7 +22,7 @@ Thiết kế Inventory Sync Worker cũ sử dụng **Pessimistic Locking** cho m
 
 ```mermaid
 flowchart LR
-    A[INVENTORY_QUANTITY_CHANGED] --> B[Lock Product FOR NO KEY UPDATE]
+    A[INVENTORY_STOCK_CHANGED] --> B[Lock Product FOR NO KEY UPDATE]
     B --> C[Lock SKU FOR UPDATE]
     C --> D[Update display_quantity]
     D --> E[Check Auto-Hide/Reactivate]
@@ -42,7 +42,7 @@ flowchart LR
 
 ### 1.2. Tại sao Pessimistic Locking không phù hợp cho Volume cao
 
-- **Đặc thù Inventory event**: `INVENTORY_QUANTITY_CHANGED` về bản chất là **idempotent field update** (`display_quantity = available_quantity`). Không có business logic phức tạp trong transaction.
+- **Đặc thù Inventory event**: `INVENTORY_STOCK_CHANGED` về bản chất là **idempotent field update** (`display_quantity = available_quantity`). Không có business logic phức tạp trong transaction.
 - **Tần suất**: Mỗi lần mua hàng → 1 event. Với 1000 đơn/giây → 1000 lock/giây trên cùng hot SKU.
 - **So sánh với Markdown Worker**: Markdown Worker đã xử lý đúng bằng cách chia transaction-per-product, nhưng Inventory event còn cao hơn Markdown hàng chục lần.
 
@@ -58,7 +58,7 @@ flowchart LR
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  PHASE 1: Fast Path - Lock-Free Update (Kafka Consumer)                │
 │                                                                         │
-│  INVENTORY_QUANTITY_CHANGED                                             │
+│  INVENTORY_STOCK_CHANGED                                             │
 │        │                                                                │
 │        ▼                                                                │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────┐ │
@@ -108,12 +108,12 @@ flowchart LR
    - Event mới hơn (`event_timestamp > cached.last_inventory_sync_at`)
    - Atomic update `display_quantity` + `last_inventory_sync_at`
 3. **Immediate cache warm**: Ghi đè `product:sku:{sku_id}` ngay lập tức (không cần chờ DB)
-4. **Đăng ký pending sync**: Thêm vào Redis ZSET `product:inventory:pending` (Global ZSET — không phải per-SKU ZSET) với score = `event_timestamp` và member = `{sku_id}:{event_timestamp}`
+4. **Đăng ký pending sync**: Thêm vào Redis ZSET `product:inventory:pending` (Global ZSET — không phải per-SKU ZSET) với score = `eventTimestamp` (epoch_ms, convert từ wrapper `timestamp`) và member = `{sku_id}:{eventTimestamp}`
 5. **Consumer ACK Kafka offset** ngay lập tức
 
 **Tại sao không cần DB lock ở Phase 1:**
 - Event payload đã chứa `available_quantity` — không cần đọc giá trị cũ từ DB để tính toán
-- `event_timestamp` là monotonic increasing — dùng làm out-of-order guard
+- `eventTimestamp` (epoch_ms, convert từ CloudEvents wrapper `timestamp` ISO 8601) là monotonic increasing — dùng làm out-of-order guard
 - Cache-first: downstream consumers (Cart, Checkout) đọc từ Redis, không cần DB
 
 ### 2.3. Phase 2: Slow Path (Async DB Sync)
@@ -227,22 +227,27 @@ public class InventoryFastSyncConsumer {
     public void onInventoryEvent(ConsumerRecord<String, String> record) {
         try {
             InventoryEvent event = objectMapper.readValue(record.value(), InventoryEvent.class);
-            if (!"INVENTORY_QUANTITY_CHANGED".equals(event.getEventType())) {
+            if (!"INVENTORY_STOCK_CHANGED".equals(event.getEventType())) {
                 return;
             }
+
+            // === BƯỚC 1: Convert CloudEvents wrapper timestamp (ISO 8601) → epoch_ms ===
+            // Payload KHÔNG chứa event_timestamp; chỉ có wrapper.timestamp.
+            // Epoch_ms này dùng cho staleness guard + ZSET score.
+            long eventTimestamp = Instant.parse(event.getTimestamp()).toEpochMilli();
 
             String skuId = event.getPayload().getSkuId();
             String cacheKey = "product:sku:" + skuId;
             String pendingKey = "product:inventory:pending";
-            String pendingMember = skuId + ":" + event.getPayload().getEventTimestamp();
+            String pendingMember = skuId + ":" + eventTimestamp;
 
-            // === BƯỚC 1: Lua CAS atomic update ===
+            // === BƯỚC 2: Lua CAS atomic update ===
             String skuStatus = determineSkuStatus(event.getPayload().getAvailableQuantity());
 
             Long result = redis.execute(
                 new DefaultRedisScript<>(LUA_COMPARE_AND_SWAP, Long.class),
                 Arrays.asList(cacheKey, pendingKey, pendingMember),
-                String.valueOf(event.getPayload().getEventTimestamp()),
+                String.valueOf(eventTimestamp),
                 String.valueOf(event.getPayload().getAvailableQuantity()),
                 event.getPayload().getProductId(),
                 skuStatus
@@ -250,7 +255,7 @@ public class InventoryFastSyncConsumer {
 
             if (result == null || result == 0) {
                 log.debug("Skipping stale inventory event for sku={}, ts={}",
-                    skuId, event.getPayload().getEventTimestamp());
+                    skuId, eventTimestamp);
                 // Vẫn ACK để không block Kafka
             }
 
@@ -544,7 +549,7 @@ return -1
 │                                                                  │
 │  Inventory Service                                                │
 │       │                                                          │
-│       ▼ (1) Kafka INVENTORY_QUANTITY_CHANGED                    │
+│       ▼ (1) Kafka INVENTORY_STOCK_CHANGED                    │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ Phase 1: Redis Fast Sync                                     │ │
 │  │   Lua CAS → product:sku:{sku_id} (IMMEDIATE)                │ │
@@ -596,16 +601,10 @@ return -1
 
 ### 4.4. Staleness Guard Đa Tầng
 
-```
-Layer 1: Lua Script (Phase 1)
-  event_timestamp > cached.last_inventory_sync_at
-
-Layer 2: Phase 2 DB Sync
-  event_timestamp > product_skus.last_inventory_sync_at
-
-Layer 3: Outbox event guard (Search Service)
-  event.updated_at > current_doc.updated_at
-```
+- **Staleness guard** đa tầng dùng `eventTimestamp` (epoch_ms convert từ wrapper `timestamp` ISO 8601):
+  - Layer 1 (Lua CAS Phase 1): `eventTimestamp > cached.last_inventory_sync_at`
+  - Layer 2 (Phase 2 DB Sync): `eventTimestamp > product_skus.last_inventory_sync_at`
+  - Layer 3 (Outbox event guard Search Service): `event.updated_at > current_doc.updated_at`
 
 ---
 

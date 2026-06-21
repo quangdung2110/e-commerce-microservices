@@ -282,15 +282,20 @@ Phase 2 (Slow Path): Drain ZSET → Batch UPDATE → FSM triggers → Outbox
 
 **Chi tiết luồng hoạt động:**
 
-1. **Kafka Consumer** nhận `INVENTORY_QUANTITY_CHANGED` event.
-2. **Parse payload** bắt buộc: `product_id`, `sku_id`, `available_quantity`, `event_timestamp`.
-3. **Lua CAS Atomic Update** trên Redis:
+1. **Kafka Consumer** nhận `INVENTORY_STOCK_CHANGED` event.
+2. **Convert wrapper timestamp**: parse `timestamp` (ISO 8601 UTC) từ CloudEvents wrapper sang epoch milliseconds:
+   ```java
+   long eventTimestamp = Instant.parse(event.getTimestamp()).toEpochMilli();
+   ```
+   `eventTimestamp` này dùng cho staleness guard và ZSET score (KHÔNG đọc từ payload).
+3. **Parse payload** bắt buộc: `product_id`, `sku_id`, `available_quantity`, `change_type`.
+4. **Lua CAS Atomic Update** trên Redis:
    - Thực thi Lua script để atomic compare-and-swap trên key `product:sku:{sku_id}`.
-   - **Staleness guard**: chỉ apply nếu `event_timestamp > cached.last_inventory_sync_at`.
+   - **Staleness guard**: chỉ apply nếu `eventTimestamp > cached.last_inventory_sync_at`.
    - Atomic write: cập nhật `display_quantity`, `sku_status`, `last_inventory_sync_at`, `is_available`.
    - **Preserve existing fields**: giữ nguyên các trường không thuộc inventory (price, name, image...).
-4. **Redis Pipelining**: ghi cache + ZADD pending sync trong cùng 1 round-trip.
-5. **Kafka ACK** offset ngay lập tức sau khi Redis write thành công.
+5. **Redis Pipelining**: ghi cache + ZADD pending sync trong cùng 1 round-trip.
+6. **Kafka ACK** offset ngay lập tức sau khi Redis write thành công.
 
 **Lua Script Core Logic:**
 
@@ -383,7 +388,8 @@ return -1
 
 **Tại sao không cần DB lock ở Phase 1:**
 - Event payload chứa `available_quantity` — không cần đọc giá trị cũ từ DB
-- `event_timestamp` (epoch millis) là monotonic increasing — dùng làm out-of-order guard
+2. `eventTimestamp` (epoch millis) là monotonic increasing — dùng làm out-of-order guard.
+   Nguồn: convert từ CloudEvents wrapper `timestamp` (ISO 8601 UTC) sang epoch ms bằng `Instant.parse(...).toEpochMilli()`. KHÔNG đọc từ payload.
 - Cache-first: downstream (Cart, Checkout) đọc từ Redis, không cần DB
 
 ### 5.2. Phase 2: Inventory Async DB Sync Worker (Redis → PostgreSQL)

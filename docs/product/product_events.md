@@ -590,45 +590,56 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 > **No-op guard cho `MARKDOWN_ENDED`:** Nếu không còn bản ghi nào trong `product_markdown_applied` cho `rule_id`, consumer phải ACK và no-op (không phát `SKU_UPDATED` rỗng, không coi là lỗi).
 
-### 4.4. INVENTORY_QUANTITY_CHANGED (Từ Inventory Service)
+### 4.4. INVENTORY_STOCK_CHANGED (Từ Inventory Service)
 **Topic:** `t.inventory.events`
 **Consumer Group:** `product-inventory-fast-sync-group` (Phase 1: Lock-Free Fast Sync)
 **Xử lý bởi:** [Inventory Sync Worker - Two-Phase Architecture](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture). Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md).
 
-**Cấu trúc Payload kỳ vọng (JSON):**
+**Cấu trúc Payload kỳ vọng (JSON) — theo canonical Inventory spec:**
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174006",
-  "event_type": "INVENTORY_QUANTITY_CHANGED",
+  "event_id": "123e4567-e89b-12d3-a456-426614174003",
+  "event_type": "INVENTORY_STOCK_CHANGED",
   "aggregate_type": "Inventory",
-  "aggregate_id": "sku-uuid-001",
+  "aggregate_id": "sku-001",
   "correlation_id": "sys-abc",
-  "timestamp": "2026-02-28T08:00:00Z",
+  "timestamp": "2026-02-28T10:05:01Z",
   "source": "inventory-service",
   "schema_version": 1,
   "payload": {
     "product_id": "prod-uuid-001",
-    "sku_id": "sku-uuid-001",
-    "available_quantity": 0,
-    "previous_available_quantity": 15,
-    "change_type": "ORDER_DEDUCTED",
-    "event_timestamp": 1709420000000,
-    "timestamp_iso": "2026-02-28T08:00:00Z"
+    "sku_id": "sku-001",
+    "available_quantity": 798,
+    "change_type": "ORDER_RESERVED"
   }
 }
 ```
 
+> **Quan trọng — Nguồn gốc `event_timestamp` (epoch_ms) cho Staleness Guard:**
+>
+> Theo canonical Inventory contract (xem [inventory_events.md §4.2](../inventory/inventory_events.md#42-inventory_stock_changed)):
+> - **Payload KHÔNG chứa** `event_timestamp`, `timestamp_iso`, `previous_available_quantity` hay bất kỳ trường thời gian nào.
+> - Consumer Phase 1 **PHẢI convert** `timestamp` ở CloudEvents wrapper (ISO 8601 UTC) sang epoch milliseconds:
+>   ```java
+>   Instant ts = Instant.parse(event.getTimestamp());        // "2026-02-28T10:05:01Z"
+>   long eventTimestamp = ts.toEpochMilli();                 // → 1772289901000
+>   ```
+> - Epoch_ms này được truyền vào Lua script làm `ARGV[1]` và dùng cho:
+>   - **Staleness guard** Layer 1 (Lua CAS): `eventTimestamp > cached.last_inventory_sync_at`
+>   - **ZSET member/score**: member = `{sku_id}:{eventTimestamp}`, score = `eventTimestamp`
+> - Phase 2 DB Sync cũng dùng cùng epoch_ms để compare với `product_skus.last_inventory_sync_at`.
+
 > **`sku_status` derivation (BẮT BUỘC cho Consumer Phase 1 Lua):**
-> Payload này không chứa `sku_status`. Consumer Phase 1 (Lua script) tự derive giá trị theo quy tắc:
+> Payload không chứa `sku_status`. Consumer Phase 1 (Lua script) tự derive theo quy tắc:
 > - `available_quantity = 0` → `sku_status = 'OUT_OF_STOCK'`
-> - `available_quantity > 0` → `sku_status = 'ACTIVE'` (hoặc giữ nguyên nếu đang `INACTIVE` do admin set)
-> Giá trị `sku_status` được truyền vào Lua qua `ARGV[4]` và được ghi vào Redis cache. Việc phát event `SKU_UPDATED` (với `changed_fields = ["sku_status"]`) vào Kafka được thực hiện bởi **Phase 2** sau khi DB commit.
+> - `available_quantity > 0` → `sku_status = 'ACTIVE'` (giữ nguyên nếu đang `INACTIVE` do admin set)
+> Giá trị `sku_status` được truyền vào Lua qua `ARGV[4]` và ghi vào Redis cache. Việc phát event `SKU_UPDATED` (với `changed_fields = ["sku_status"]`) do **Phase 2** xử lý sau DB commit.
 
 **Luồng xử lý Two-Phase:**
-- **Phase 1 (Lua CAS):** Kafka Consumer nhận event → Lua CAS atomic update trên Redis → immediate cache warm + ZADD pending sync. Latency < 5ms, zero DB lock.
+- **Phase 1 (Lua CAS):** Kafka Consumer nhận event → convert wrapper `timestamp` → epoch_ms → Lua CAS atomic update trên Redis → immediate cache warm + ZADD pending sync. Latency < 5ms, zero DB lock.
 - **Phase 2 (DB Sync):** Scheduled Worker drain ZSET → batch update `product_skus` với Optimistic Locking → FSM triggers (AUTO_HIDE/AUTO_REACTIVATE) → outbox `SKU_UPDATED` (với `changed_fields`, `product_status_changed`, `new_product_status` nếu FSM đồng thời đổi product status). Latency 500ms-2s.
-- **Staleness guard**: Layer 1 (Lua CAS timestamp check), Layer 2 (Phase 2 DB check), Layer 3 (outbox event guard). Chỉ apply update khi `event_timestamp > last_inventory_sync_at`.
-- **Cache staleness**: `product:sku:{sku_id}` bắt buộc lưu `last_inventory_sync_at` để Lua CAS fence chống stale write.
+- **Staleness guard**: Layer 1 (Lua CAS epoch_ms check), Layer 2 (Phase 2 DB check), Layer 3 (outbox event guard). Chỉ apply update khi `event_timestamp > last_inventory_sync_at`.
+- **Cache staleness**: `product:sku:{sku_id}` bắt buộc lưu `last_inventory_sync_at` (epoch_ms) để Lua CAS fence chống stale write.
 - **Auto-hide/Reactivate & SKU_UPDATED**: SKU status `OUT_OF_STOCK`/`ACTIVE` được set ngay ở Phase 1 (Lua CAS). FSM triggers (AUTO_HIDE_OUT_OF_STOCK / AUTO_REACTIVATE_IN_STOCK) được trigger ở Phase 2 và phát event `SKU_UPDATED` (với `changed_fields = ["sku_status", "product_status"]` nếu FSM đổi cả product status) vào Kafka (không còn `PRODUCT_STATUS_CHANGED` cho luồng này nữa). Xem thêm [State Machine - Auto Hide](product_state_machine.md#2-các-lệnh-chuyển-tiếp-events--transitions).
 
 ## 5. Schema Versioning & Backward Compatibility
