@@ -356,9 +356,9 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
       "category_id": { "type": "keyword" },
       "product_id": { "type": "keyword" },
       "weight": { "type": "long" },
-      "query_count_7d": { "type": "integer" },
-      "ctr_30d": { "type": "half_float" },
-      "conversion_rate_30d": { "type": "half_float" },
+      "product_rating_avg": { "type": "half_float" },
+      "product_rating_count": { "type": "integer" },
+      "product_count": { "type": "long" },
       "build_version": { "type": "long" },
       "updated_at": { "type": "date" }
     }
@@ -370,7 +370,6 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
 
 1. `weight` là khóa xếp hạng chính, tính ở Suggestions Rebuilder và lưu sẵn trong document.
 2. Nếu `weight` bằng nhau, query phải tie-break ổn định theo:
-   - `query_count_7d` giảm dần,
    - `text.keyword` tăng dần.
 3. Không tính ranking động trong API path; API chỉ đọc index đã pre-compute để giữ latency thấp.
 
@@ -382,14 +381,14 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
   "text": "iphone 15 pro max",
   "text_normalized": "iphone 15 pro max",
   "type": "PRODUCT",
-  "source": "ANALYTICS",
+  "source": "PRODUCTS_ALIAS",
   "scope": "GLOBAL",
   "category_id": "cat-smartphone",
   "product_id": "prod-uuid-001",
   "weight": 91520,
-  "query_count_7d": 14500,
-  "ctr_30d": 0.31,
-  "conversion_rate_30d": 0.072,
+  "product_rating_avg": 4.9,
+  "product_rating_count": 1200,
+  "product_count": 0,
   "build_version": 2026032901,
   "updated_at": "2026-03-29T03:10:00Z"
 }
@@ -405,7 +404,6 @@ GET search_suggestions/_search
   },
   "sort": [
     { "weight": "desc" },
-    { "query_count_7d": "desc" },
     { "text.keyword": "asc" }
   ],
   "size": 8,

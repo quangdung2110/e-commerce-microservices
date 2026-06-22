@@ -112,15 +112,15 @@ Search Service là read model thuần túy. Worker chỉ làm 2 việc chính: �
 **Mục tiêu:** tái tạo bộ gợi ý autocomplete chất lượng cao, không gián đoạn API suggest.
 
 **Inputs:**
-1. Analytics queries (top query theo traffic/CTR/conversion).
-2. Category tree từ alias `categories`.
-3. Hot products từ alias `products` (ACTIVE, in-stock).
+1. Category tree từ alias `categories`.
+2. Hot products từ alias `products` (ACTIVE, in-stock).
 
 **Build pipeline:**
 1. Tạo `search_suggestions_v{N+1}` theo mapping chuẩn tại [Elasticsearch Schema](search_elasticsearch_schema.md#4-search-suggestions-index-mapping--ranking-contract).
-2. Nạp candidates theo từng nguồn, normalize + dedupe + tính `weight`:
-   ```
-   weight = w_query * query_count_7d + w_ctr * ctr_30d + w_conv * conversion_rate_30d + source_boost
+2. Nạp candidates theo từng nguồn, normalize + dedupe + tính `weight` dựa trên catalog metrics:
+   ```text
+   Với Category: weight = categories.product_count * w_cat
+   Với Product: weight = (product_rating_avg * log(product_rating_count + 1) * w_review) + (has_promotion ? boost_promo : 0)
    ```
 3. Bulk index theo chunk (1k-5k docs/chunk), retry có backoff cho lỗi 429/503.
 4. Validation gate trước swap: tổng số doc >= ngưỡng, không có prefix hot bị rỗng.
