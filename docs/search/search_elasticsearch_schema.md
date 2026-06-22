@@ -1,8 +1,6 @@
-# Search Service - Elasticsearch Schema Design (Extreme Scale)
+# Search Service - Elasticsearch Schema Design
 
 **Liên kết nhanh (Related Documents):**
-*   [Elasticsearch Schema (Read Store)](search_elasticsearch_schema.md)
-*   [Caching Schema (Redis)](search_caching_schema.md)
 *   [Workflows (API & Data Flow)](search_workflow.md)
 *   [Background Workers & Jobs](search_workers.md)
 *   [Events Consumed & Kafka Topics](search_events.md)
@@ -11,29 +9,38 @@
 **Cross-Service References:**
 *   [Product Service - Database Schema (Write Store / Source of Truth)](../product/product_db_design.md)
 *   [Product Service - Events Structure](../product/product_events.md)
-*   [Product Service - Workers (Outbox Producer)](../product/product_workers.md)
 
 ---
 
-Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL**; Elasticsearch là nguồn dữ liệu duy nhất. Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Review (rating metrics), Order Metrics Projector (sold metrics), và admin (profile/status).
+Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL** và **không sở hữu Redis**; Elasticsearch là nguồn dữ liệu duy nhất, phục vụ trực tiếp cho mọi API request.
 
-> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer. Search dùng **DUY NHẤT `updated_at` timestamp** làm guard ordering cho mọi event stream (so sánh `event.updated_at > current_doc.{guard_field}`).
+Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog) và Review (rating metrics).
+
+> **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer.
 >
-> **Identity contract:*
+> **Guard ordering (đơn giản hoá):** Mỗi event dùng **đúng 1 trường timestamp** duy nhất làm guard, lưu vào field `version` (ISO 8601 UTC) của Elasticsearch document. Quy tắc: `event_timestamp > current_doc.version`. Cụ thể:
+> - Đa số event: dùng `event.updated_at`.
+> - Riêng `SKU_CREATED`: dùng `event.created_at` (event khởi tạo, entity chưa có `updated_at`).
+>
+> **Lưu ý về `admin_name`:** Hệ thống chỉ có 1 admin (toàn quyền, không bao giờ bị ban). Search Service **không subscribe** `t.admin.events`. `admin_name` được snapshot 1 lần từ `PRODUCT_CREATED` payload lúc index; khi admin đổi tên hiển thị → chạy [Full Reindex Job](search_workers.md#2-full-reindex-job-zero-downtime-3-pha-đơn-giản) để refresh toàn bộ index.
+>
 ## 1. Danh Sách Elasticsearch Indices
 
 | Index Name | Alias | Mô tả | Document Count (ước tính) |
 |---|---|---|---|
 | `products_v1` | `products` (read alias), `products_write` (write alias) | Sản phẩm denormalized phẳng | Hàng triệu |
-| `search_suggestions_v1` | `search_suggestions` | Autocomplete / Gợi ý tìm kiếm | Hàng trăm ngàn |
+| `categories_v1` | `categories` (read alias), `categories_write` (write alias) | Cây danh mục + product_count | Hàng trăm |
+| `search_suggestions_v1` | `search_suggestions` (read alias) | Autocomplete / Gợi ý tìm kiếm | Hàng trăm ngàn |
 
-> **Index Alias Strategy:** Sử dụng Alias để cho phép [Zero-Downtime Reindex](search_workers.md#7-full-reindex-job-zero-downtime). Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`. Không gián đoạn traffic.
+> **Lưu ý về `search_suggestions`:** Index này **không có write alias** vì không có luồng incremental update. Suggestions Rebuilder build hằng ngày tạo `search_suggestions_v{N+1}` mới hoàn toàn (xem [Workers §4](../search_workers.md#4-search-suggestions-rebuilder)), ghi trực tiếp vào index versioned, sau đó atomic alias swap `search_suggestions` → `search_suggestions_v{N+1}`.
+
+> **Index Alias Strategy:** Sử dụng Alias để cho phép Zero-Downtime Reindex. Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`.
 
 ## 2. Products Index — Mapping & Document Structure
 
 - **Tránh tính toán và JOIN dữ liệu:** Dữ liệu được "phi chuẩn hóa" (denormalized) dựa trên chiến lược **SKU-First (Biến thể làm trung tâm)**. Giá trị `best_price` và cờ `is_in_stock` (còn hàng) được lưu sẵn để Elasticsearch duyệt siêu tốc.
-- **Hiệu Năng Cực Hạn (Extreme Scale):** Loại bỏ hoàn toàn kiểu dữ liệu `nested` để chặn đứng "Thảm họa OOM" (Out of Memory) sinh ra từ Block Join. Hỗ trợ tìm kiếm thông qua các chuỗi hợp thể sinh sẵn (Composite Keyword Token) giúp tìm kiếm tổ hợp Mọi tính năng cực kỳ mượt mà.
-- **Bảo vệ hệ thống (Zero-downtime):** Ứng dụng Alias Strategy (`products`) để dễ dàng nâng cấp cấu trúc, đồng bộ dữ liệu ngầm trên index mới và chuyển đổi Alias mà không làm gián đoạn người dùng.
+- **Hiệu Năng Cực Hạn (Extreme Scale):** Loại bỏ hoàn toàn kiểu dữ liệu `nested` để chặn đứng "Thảm hoạ OOM". Sử dụng Composite Keyword Token array cho phép tìm kiếm/filter tổ hợp thuộc tính mà không cần JOIN.
+- **Bảo vệ hệ thống (Zero-downtime):** Alias Strategy (`products`) để dễ dàng nâng cấp cấu trúc và đổi index mà không làm gián đoạn người dùng.
 
 ### 2.1. Index Settings
 
@@ -81,16 +88,16 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 ```
 
 **Giải thích cấu hình:**
-- **`icu_tokenizer`**: Tách từ chính xác cho tiếng Việt (xử lý dấu, Unicode). Vượt trội hơn `standard` tokenizer cho ngôn ngữ Đông Nam Á.
-- **`icu_folding`**: Chuẩn hóa Unicode — "phở" matches "pho", "điện thoại" matches "dien thoai".
-- **`edge_ngram`**: Sinh ra prefix tokens cho autocomplete. VD: "iPhone" → ["ip", "iph", "ipho", "iphon", "iphone"]. Cho phép user gõ "iph" đã thấy gợi ý.
-- **`vi_stop`**: Loại bỏ stop words tiếng Việt khỏi full-text search để tăng precision.
+- **`icu_tokenizer`**: Tách từ chính xác cho tiếng Việt (xử lý dấu, Unicode).
+- **`icu_folding`**: Chuẩn hoá Unicode — "phở" matches "pho".
+- **`edge_ngram`**: Sinh prefix tokens cho autocomplete. VD: "iPhone" → ["ip", "iph", "ipho", "iphon", "iphone"].
+- **`vi_stop`**: Loại bỏ stop words tiếng Việt.
 - **`refresh_interval: 1s` (mặc định)**: Document mới xuất hiện trong kết quả search sau tối đa 1 giây. Khi ingest spike lớn, có thể tăng tạm `3s-5s` để tăng throughput indexing, rồi trả về `1s` sau khi ổn định.
 
 ### 2.2. Field Mapping (Document Schema: Denormalized SKU)
 
 > **[Extreme Scale Strategy: SKU as First-Class Document]**
-> Để chống chịu tải Flash Sale và tránh "Thảm họa OOM" do `nested` types, cấu trúc Document đã được làm phẳng hoàn toàn (Flattened) và xoay trục: **Mỗi Elasticsearch Document sẽ tự thân là một SKU độc lập**. Để kết nhóm hiển thị theo Product như thông thường, chúng ta sử dụng Query **Field Collapsing** (gom nhóm theo `product_id`).
+> Mỗi Elasticsearch Document là một SKU độc lập. Để kết nhóm hiển thị theo Product, sử dụng Query **Field Collapsing** (gom nhóm theo `product_id`).
 
 ```json
 {
@@ -98,12 +105,11 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
     "properties": {
       "sku_id":              { "type": "keyword" },
       "product_id":          { "type": "keyword" },
-      "admin_id":            { "type": "keyword" },
       "admin_name":          { "type": "keyword" },
       "category_id":         { "type": "keyword" },
       "category_name":       { "type": "keyword" },
       "category_path":       { "type": "keyword" },
-      
+
       "name": {
         "type": "text",
         "analyzer": "vietnamese_analyzer",
@@ -118,7 +124,7 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
       "product_status":      { "type": "keyword" },
       "sku_status":          { "type": "keyword" },
 
-      "searchable_attributes": { "type": "keyword" }, 
+      "searchable_attributes": { "type": "keyword" },
       "variant_attributes":    { "type": "keyword" },
 
       "original_price":      { "type": "scaled_float", "scaling_factor": 100 },
@@ -132,17 +138,11 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 
       "product_rating_avg":  { "type": "half_float" },
       "product_rating_count": { "type": "integer" },
-      "review_metrics_updated_at": { "type": "date" },
-      "product_sold_count":  { "type": "integer" },
-      "sales_metrics_updated_at": { "type": "date" },
-      "admin_status":          { "type": "keyword" },
-      "admin_profile_version": { "type": "long" },
-      "admin_status_version":  { "type": "long" },
+
       "created_at":          { "type": "date" },
       "updated_at":          { "type": "date" },
       "indexed_at":          { "type": "date" },
       "last_event_id":       { "type": "keyword" },
-      "last_event_timestamp": { "type": "date" },
 
       "version":             { "type": "date" }
     }
@@ -150,20 +150,17 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 }
 ```
 
-### 2.3. Giải Thích Chiến Lược Mapping Cực Hạn
+### 2.3. Giải Thích Mapping
 
 | Field | Loại | Lý do & Ý nghĩa |
 |---|---|---|
 | `sku_id` | keyword | Là `_id` thực sự của document này. |
 | `product_id` | keyword | Pivot Key cho **Field Collapsing** và các phép đếm DISTINCT product-level ở API Response. |
-| `searchable_attributes` | keyword array | Mảng 1 chiều chứa chuỗi hợp thể (Composite Array Tokens) cho các thuộc tính dùng chung của toàn bộ Sản phẩm (Product-level attributes). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. Dùng để hỗ trợ Filtering chung hoặc Full-text search mở rộng. **Search Worker chịu trách nhiệm transform từ `attributes_json` (raw JSON) thành token array khi consume event.** |
-| `variant_attributes` | keyword array | Mảng mô tả đặc tính riêng của từng SKU (SKU-level attributes). Ví dụ: `["mau:đen", "dungluong:256GB"]`. Dùng để hỗ trợ Facet Filtering chính xác cho người dùng. **Search Worker transform từ `variant_attributes_json` sang token array.** |
-| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection, tính theo công thức sellable `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE` (được recompute khi nhận `PRODUCT_STATE_CHANGED` và `PRODUCT_UPDATED`/`PRODUCT_CREATED`). Giá trị `sku_status` trong ES chỉ được cập nhật khi product được tạo hoặc cập nhật toàn phần. Không phải nguồn tồn kho realtime để chốt đơn; Checkout/Inventory vẫn là nguồn kiểm tra tồn kho cứng. |
-| `is_deleted`, `deleted_at` | boolean/date | Cờ Tombstone để chặn zombie update khi event đến trễ sau delete. |
-| `version` | date | Timestamp `updated_at` từ Product Service, dùng làm guard out-of-order cho Product aggregate events (PRODUCT_STATE_CHANGED, PRODUCT_UPDATED, PRODUCT_CREATED). So sánh `event.updated_at > current_doc.version` để chặn event đến trễ. |
-| `review_metrics_updated_at` | date | Guard ordering cho `REVIEW_METRICS_UPDATED`: `event.updated_at > current_doc.review_metrics_updated_at`. |
-| `sales_metrics_updated_at` | date | Guard ordering cho `ORDER_PRODUCT_METRICS_UPDATED`: `event.updated_at > current_doc.sales_metrics_updated_at`. |
-| `last_event_id`, `last_event_timestamp`, `indexed_at` | keyword/date/date | Phục vụ audit, replay DLQ, và điều tra drift dữ liệu. |
+| `searchable_attributes` | keyword array | Composite tokens cho các thuộc tính dùng chung của Product (Product-level). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. **Search Worker transform từ `attributes_json` sang token array khi consume event.** |
+| `variant_attributes` | keyword array | Mô tả đặc tính riêng của từng SKU. Ví dụ: `["mausac:đen", "dungluong:256GB"]`. **Search Worker transform từ `variant_attributes_json` sang token array.** |
+| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection: `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE`. Được recompute khi nhận `PRODUCT_STATUS_CHANGED`, `PRODUCT_UPDATED`, `SKU_UPDATED`. Không phải nguồn tồn kho realtime để chốt đơn. |
+| `is_deleted`, `deleted_at` | boolean/date | Tombstone chặn zombie update khi event đến trễ sau delete. |
+| `version` | date | **Guard ordering chính.** Lưu timestamp phù hợp với event ghi: `updated_at` cho đa số event, `created_at` cho `SKU_CREATED`. Quy tắc: `event_timestamp > current_doc.version`. Xem [Events §4](search_events.md#4-chiến-lược-idempotency--ordering). |
 
 **Count semantics cho browse/facets (bắt buộc):** Vì index là SKU-first, mọi count hiển thị cho category/facets ở API phải đếm DISTINCT `product_id` (không dùng trực tiếp `doc_count` theo SKU).
 
@@ -173,13 +170,16 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
 {
   "sku_id": "sku-uuid-001",
   "product_id": "prod-uuid-001",
-  "admin_id": "admin-001",
   "admin_name": "Platform Admin",
   "category_id": "cat-smartphone",
+  "category_name": "Điện thoại",
+  "category_path": "dien-tu/dien-thoai",
   "name": "iPhone 15 Pro Max 256GB Chính Hãng",
+  "description": "iPhone 15 Pro Max chính hãng, bảo hành 12 tháng",
+  "thumbnail_url": "https://cdn.example.com/ip15.jpg",
   "product_status": "ACTIVE",
   "sku_status": "ACTIVE",
-  
+
   "searchable_attributes": [
     "thuonghieu:apple",
     "xuatxu:vietnam"
@@ -188,40 +188,32 @@ Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Servic
     "mausac:đen",
     "bonho:256GB"
   ],
-  
+
   "original_price": 34990000,
   "promotional_price": 28891500,
   "best_price": 28891500,
-  
+
   "is_in_stock": true,
   "has_promotion": true,
   "is_deleted": false,
-  
-  "product_rating_avg": 4.9,
-  "product_rating_count": 1200,
-  "product_sold_count": 15200,
-  "review_metrics_updated_at": "2026-03-28T10:05:00Z",
-  "sales_metrics_updated_at": "2026-03-28T10:05:00Z",
-  "admin_status": "VERIFIED",
-  "admin_profile_version": 12,
-  "admin_status_version": 7,
+  "deleted_at": null,
+
+"product_rating_avg": 4.9,
+    "product_rating_count": 1200,
 
   "created_at": "2026-02-28T03:51:00Z",
   "updated_at": "2026-03-28T10:05:00Z",
   "indexed_at": "2026-03-28T10:05:01Z",
   "last_event_id": "123e4567-e89b-12d3-a456-426614174003",
-  "last_event_timestamp": "2026-03-28T10:05:00Z",
-  
+
   "version": "2026-03-28T10:05:00Z"
 }
 ```
 
 ### 2.5. Demo Tính Năng Field Collapsing (Gom Nhóm)
 
-Khi Website muốn hiển thị dạng danh sách Sản Phẩm (chứ không phải danh sách SKU tràn lan nát bộ lọc), API Search sẽ gửi Query kèm `collapse`:
-
 ```json
-GET products_v1/_search
+GET products/_search
 {
   "query": {
     "bool": {
@@ -242,13 +234,73 @@ GET products_v1/_search
   "sort": [{ "best_price": "asc" }]
 }
 ```
-*   **Kết quả:** Sẽ trả về 1 kết quả đại diện cho `iPhone 15` (sản phẩm rẻ nhất màu đen), và trong `inner_hits` sẽ chứa thêm tối đa 3 loại dung lượng khác nhau cùng thuộc màu đen, giúp Web UI tha hồ "mô tả" mà không cần gọi thêm API!
 
-## 3. Search Suggestions Index: Mapping & Ranking Contract
+Kết quả: trả về 1 document đại diện cho `iPhone 15` (SKU rẻ nhất màu đen), kèm `inner_hits` tối đa 3 biến thể cùng màu đen.
 
-Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model riêng, không reuse mapping của `products_vN` để tránh query nặng không cần thiết.
+## 3. Categories Index — Mapping & Document Structure
+
+Update qua `t.category.events`. `product_count` được tính lazy qua aggregation khi cần, hoặc update realtime bằng update_by_query khi có `t.product.events`.
 
 ### 3.1. Index Settings
+
+```json
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "5s"
+  }
+}
+```
+
+### 3.2. Field Mapping
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "category_id": { "type": "keyword" },
+      "name": {
+        "type": "text",
+        "analyzer": "vietnamese_analyzer",
+        "fields": { "keyword": { "type": "keyword" } }
+      },
+      "slug":      { "type": "keyword" },
+      "parent_id": { "type": "keyword" },
+      "level":     { "type": "integer" },
+      "is_leaf":   { "type": "boolean" },
+      "path":      { "type": "keyword" },
+      "product_count": { "type": "long" },
+      "is_deleted": { "type": "boolean" },
+      "deleted_at": { "type": "date" },
+      "version":   { "type": "date" }
+    }
+  }
+}
+```
+
+### 3.3. Mẫu Document
+
+```json
+{
+  "category_id": "cat-smartphone",
+  "name": "Điện thoại",
+  "slug": "dien-thoai",
+  "parent_id": "cat-dien-tu",
+  "level": 2,
+  "is_leaf": true,
+  "path": "dien-tu/dien-thoai",
+  "product_count": 1250,
+  "is_deleted": false,
+  "version": "2026-03-28T10:05:00Z"
+}
+```
+
+## 4. Search Suggestions Index: Mapping & Ranking Contract
+
+Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}` cho mọi version tương lai) phục vụ autocomplete. Read-model riêng, không reuse mapping của `products_v{N}` để tránh query nặng không cần thiết.
+
+### 4.1. Index Settings
 
 ```json
 {
@@ -282,7 +334,7 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
 }
 ```
 
-### 3.2. Field Mapping
+### 4.2. Field Mapping
 
 ```json
 {
@@ -305,7 +357,6 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
       "product_id": { "type": "keyword" },
       "weight": { "type": "long" },
       "query_count_7d": { "type": "integer" },
-      "product_sold_count_30d": { "type": "integer" },
       "ctr_30d": { "type": "half_float" },
       "conversion_rate_30d": { "type": "half_float" },
       "build_version": { "type": "long" },
@@ -315,7 +366,7 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
 }
 ```
 
-### 3.3. Ranking Contract
+### 4.3. Ranking Contract
 
 1. `weight` là khóa xếp hạng chính, tính ở Suggestions Rebuilder và lưu sẵn trong document.
 2. Nếu `weight` bằng nhau, query phải tie-break ổn định theo:
@@ -323,7 +374,7 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
    - `text.keyword` tăng dần.
 3. Không tính ranking động trong API path; API chỉ đọc index đã pre-compute để giữ latency thấp.
 
-### 3.4. Mẫu Document
+### 4.4. Mẫu Document
 
 ```json
 {
@@ -337,7 +388,6 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
   "product_id": "prod-uuid-001",
   "weight": 91520,
   "query_count_7d": 14500,
-  "product_sold_count_30d": 4200,
   "ctr_30d": 0.31,
   "conversion_rate_30d": 0.072,
   "build_version": 2026032901,
@@ -345,23 +395,13 @@ Index `search_suggestions_vN` phục vụ autocomplete. Đây là read-model ri�
 }
 ```
 
-### 3.5. Query Template (Autocomplete)
+### 4.5. Query Template (Autocomplete)
 
 ```json
 GET search_suggestions/_search
 {
   "query": {
-    "bool": {
-      "must": [
-        {
-          "match": {
-            "text": {
-              "query": "iph"
-            }
-          }
-        }
-      ]
-    }
+    "match": { "text": { "query": "iph" } }
   },
   "sort": [
     { "weight": "desc" },
@@ -372,3 +412,21 @@ GET search_suggestions/_search
   "_source": ["text", "type", "weight"]
 }
 ```
+
+## 5. Scaling Elasticsearch Cluster
+
+**Cấu hình khuyến nghị theo quy mô (do Search chịu toàn bộ traffic đọc):**
+
+| Quy mô catalog | Shard/Index | Replica | Data Nodes | RAM/Node | p99 target |
+|---|---|---|---|---|---|
+| < 1M SKU / 1K req/s | 3 | 1 | 5 | 16GB | 50ms |
+| 1-5M SKU / 5K req/s | 5 | 1 | 15 | 32GB | 80ms |
+| 5-10M SKU / 10K req/s | 10 | 2 | 30 | 64GB | 120ms |
+
+**Best Practices:**
+- **Shard sizing:** Mỗi shard nên chứa 10-50GB data.
+- **Dedicated Master Nodes:** 3 master-eligible nodes riêng, không chạy data.
+- **JVM Heap:** Cấp 50% RAM cho JVM heap (tối đa 31GB). 50% còn lại cho filesystem cache.
+- **Coordinator nodes:** Tách riêng data và coordinator nodes khi cluster > 10 nodes.
+- **Tune caches:** `indices.queries.cache.size: 15%`, `indices.requests.cache.size: 5%`.
+- **Index per version:** Pattern `products_v1`, `products_v2` + alias swap cho zero-downtime schema changes.
