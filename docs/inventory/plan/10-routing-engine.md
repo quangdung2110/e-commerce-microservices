@@ -76,20 +76,36 @@ public class RoutingService {
             throw new IllegalArgumentException("items must not be empty");
         }
 
+        // 0. Pre-process items: Validate quantity > 0 and merge duplicate SKUs
+        Map<String, Integer> mergedItemsMap = items.stream()
+            .peek(item -> {
+                if (item.quantity() <= 0) {
+                    throw new IllegalArgumentException("Item quantity must be > 0: " + item.skuId());
+                }
+            })
+            .collect(Collectors.groupingBy(
+                RoutingItem::skuId,
+                Collectors.summingInt(RoutingItem::quantity)
+            ));
+            
+        List<RoutingItem> consolidatedItems = mergedItemsMap.entrySet().stream()
+            .map(e -> new RoutingItem(e.getKey(), e.getValue()))
+            .toList();
+
         // 1. Candidate generation
-        List<String> skuIds = items.stream().map(RoutingItem::skuId).toList();
+        List<String> skuIds = consolidatedItems.stream().map(RoutingItem::skuId).toList();
         Map<String, List<AvailableStock>> candidates = candidateGenerator.generate(skuIds);
 
         // 2. Validate all SKUs have at least 1 candidate
-        for (RoutingItem item : items) {
+        for (RoutingItem item : consolidatedItems) {
             if (!candidates.containsKey(item.skuId())
                 || candidates.get(item.skuId()).isEmpty()) {
-                throw new SkuNotFoundException(item.skuId());
+                throw new InsufficientStockException(item.skuId());
             }
         }
 
         // 3. Build feasible combinations
-        List<RoutePlanProto> plans = combinationBuilder.buildAll(items, candidates, location);
+        List<RoutePlanProto> plans = combinationBuilder.buildAll(consolidatedItems, candidates, location);
 
         // 4. Pick best plan
         RoutePlanProto best = selector.pickBest(plans, location);
@@ -228,14 +244,25 @@ public class WarehouseSelector {
     public RoutePlanProto pickBest(List<RoutePlanProto> plans, CustomerLocation location) {
         // Lookup warehouses để biết city_code
         Set<Long> whIds = plans.stream().map(p -> p.warehouseId()).collect(Collectors.toSet());
-        Map<Long, String> cityCodes = warehouseRepo.findByIds(whIds).stream()
-            .collect(Collectors.toMap(Warehouse::getId, Warehouse::getCityCode));
+        
+        // Use HashMap and loop to safely handle null cityCode values (avoid NPE)
+        Map<Long, String> cityCodes = new HashMap<>();
+        for (Warehouse wh : warehouseRepo.findByIds(whIds)) {
+            cityCodes.put(wh.getId(), wh.getCityCode());
+        }
+
+        String targetCityCode = (location != null) ? location.cityCode() : null;
 
         return plans.stream()
             .min(Comparator
-                .comparing((RoutePlanProto p) ->
-                    Objects.equals(cityCodes.get(p.warehouseId()), location.cityCode())
-                        ? 0 : 1)                              // same-province first
+                .comparing((RoutePlanProto p) -> {
+                    String whCityCode = cityCodes.get(p.warehouseId());
+                    // Only match same-province if both are non-null and equal
+                    boolean isSameProvince = targetCityCode != null 
+                            && whCityCode != null 
+                            && targetCityCode.equals(whCityCode);
+                    return isSameProvince ? 0 : 1;
+                })
                 .thenComparingLong(RoutePlanProto::warehouseId))   // tie-break
             .orElseThrow(() -> new IllegalStateException("No feasible plans"));
     }
@@ -310,6 +337,10 @@ public interface RoutePlanCache {
 | Cart N SKU, nhiều kho qualify | Pick same-province → tie-break |
 | All warehouses inactive | 409 `INSUFFICIENT_STOCK` |
 | `customer_location.city_code` = NULL | Không match same-province rule → tie-break fallback |
+| Duplicate SKUs in request | Gom nhóm và tính tổng `quantity` trước khi build feasible plan |
+| Invalid quantity (<= 0) | Throw `IllegalArgumentException` → HTTP 400 |
+| SKU không tồn tại trong kho nào | Ném `InsufficientStockException` (HTTP 409) thay vì SkuNotFound |
+| Kho có `city_code = null` | Tránh NPE bằng cách dùng `HashMap.put()`, không được match same-province |
 
 ---
 

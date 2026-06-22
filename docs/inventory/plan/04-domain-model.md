@@ -695,12 +695,11 @@ package com.platform.inventoryservice.domain.event;
 import java.time.Instant;
 import java.util.List;
 
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record ReturnReceivedAllPayload(
     long orderId,
     String refundRequestId,
-    List<Long> requiredOrderItemIds,
-    List<Long> receivedOrderItemIds,
-    boolean allItemsReceived,
+    List<Long> orderItemIds,    // gộp từ required+received; tại emit time = toàn bộ refund scope
     Instant confirmedAt
 ) {}
 ```

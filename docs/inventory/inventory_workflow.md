@@ -353,7 +353,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         |  INSERT INTO inventory_outbox
         |    (event_type='INVENTORY_STOCK_CHANGED', partition_key=:sku_id, payload=...);
         |
-        |  -- Refund completion check + build payload (3 query trong cùng transaction)
+        |  -- Refund completion check + build payload (2 query trong cùng transaction)
         |  -- (a) Pending count
         |  SELECT COUNT(*) INTO :pending
         |  FROM inventory_reservations
@@ -362,18 +362,13 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         |    AND refund_expected = TRUE
         |    AND status = 'DEDUCTED'
         |    AND refund_returned_at IS NULL;
-        |  -- (b) Required items (toàn bộ item trong scope, bất kể đã restock hay chưa)
-        |  SELECT array_agg(order_item_id) INTO :required_items
-        |  FROM inventory_reservations
-        |  WHERE order_id = :order_id
-        |    AND refund_request_id = :refund_request_id
-        |    AND refund_expected = TRUE;
-        |  -- (c) Received items (item đã restock)
-        |  SELECT array_agg(order_item_id) INTO :received_items
+        |  -- (b) Order item ids (toàn bộ item trong refund scope; tại emit time = received vì pending = 0)
+        |  SELECT array_agg(order_item_id) INTO :order_item_ids
         |  FROM inventory_reservations
         |  WHERE order_id = :order_id
         |    AND refund_request_id = :refund_request_id
         |    AND refund_expected = TRUE
+        |    AND status = 'DEDUCTED'
         |    AND refund_returned_at IS NOT NULL;
         |
         |  IF :pending = 0 THEN
@@ -384,9 +379,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         |      payload=jsonb_build_object(
         |        'order_id', :order_id,
         |        'refund_request_id', :refund_request_id,
-        |        'required_order_item_ids', :required_items,
-        |        'received_order_item_ids', :received_items,
-        |        'all_items_received', true,
+        |        'order_item_ids', :order_item_ids,
         |        'confirmed_at', NOW()
         |      )
         |    );

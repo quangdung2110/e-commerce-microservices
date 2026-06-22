@@ -113,6 +113,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Contract note:** Với mọi event phát sinh từ flow đơn hàng, `order_item_id` là bắt buộc và không được null.
 
+> **Phạm vi `change_type` của `INVENTORY_STOCK_MUTATION`:** Enum này chỉ chứa 4 giá trị phát sinh từ Lua scripts (Reserve/Deduct/Release). Các biến động tồn kho từ `ADMIN_RESTOCK` / `ORDER_RETURNED_RESTOCK` không qua Lua → chỉ phát `INVENTORY_STOCK_CHANGED` với các `change_type` tương ứng, không emit `INVENTORY_STOCK_MUTATION`. Consumer cần đủ cả 6 giá trị thì consume `INVENTORY_STOCK_CHANGED`.
+
 > **Lưu ý chung về timestamp trên event:**
 > - **Wrapper `timestamp`** (ISO 8601 UTC) là thời điểm phát event chính thức — áp dụng cho TẤT CẢ 4 event (`INVENTORY_STOCK_MUTATION`, `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL`, `INVENTORY_SHIP_TO_CUSTOMER`).
 > - **Payload KHÔNG chứa** `event_timestamp`, `timestamp_iso`, `occurred_at` (đã loại bỏ để tránh trùng lặp với wrapper).
@@ -231,9 +233,7 @@ Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) s
   "payload": {
     "order_id": 10001,
     "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
-    "required_order_item_ids": [2001],
-    "received_order_item_ids": [2001],
-    "all_items_received": true,
+    "order_item_ids": [2001],
     "confirmed_at": "2026-03-05T09:58:30Z"
   }
 }
@@ -252,7 +252,7 @@ Event này là signal nghiệp vụ để Order mở bước gọi Payment refun
 | 3 | Cùng transaction | INSERT `inventory_ledger` với `reference_type = ORDER_RETURNED_RESTOCK` |
 | 4 | Cùng transaction | INSERT `inventory_outbox` với `event_type = INVENTORY_STOCK_CHANGED`, `partition_key = sku_id` (cho Product Service) |
 | 5 | Cùng transaction | Refund completion check: `SELECT COUNT(*) FROM inventory_reservations WHERE order_id = :order_id AND refund_request_id = :refund_request_id AND refund_expected = TRUE AND status = 'DEDUCTED' AND refund_returned_at IS NULL` |
-| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chứa `order_id`, `refund_request_id`, `required_order_item_ids`, `received_order_item_ids`, `all_items_received`, `confirmed_at`. Có unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chống duplicate emit. |
+| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chứa `order_id`, `refund_request_id`, `order_item_ids`, `confirmed_at`. `order_item_ids` aggregate từ các `order_item_id` có `refund_expected = TRUE AND refund_returned_at IS NOT NULL` (tại emit time = toàn bộ refund scope, vì completion check `pending = 0` đảm bảo). Có unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chống duplicate emit. |
 | 7 | PostgreSQL | COMMIT transaction |
 | 8 | Debezium CDC | Đọc WAL, produce message lên Kafka `t.inventory.events` với `key = order_id` (cho event RETURN_RECEIVED_ALL) hoặc `key = sku_id` (cho event STOCK_CHANGED) |
 

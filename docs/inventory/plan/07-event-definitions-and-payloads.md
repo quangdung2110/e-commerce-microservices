@@ -86,6 +86,10 @@ public final class SourceConstants {
 ```java
 package com.platform.inventoryservice.domain.event;
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
+
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record StockMutationPayload(
     String skuId,
     String productId,
@@ -112,6 +116,7 @@ public record StockMutationPayload(
 **Partition key:** `sku_id`
 
 ```java
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record StockChangedPayload(
     String productId,
     String skuId,
@@ -127,12 +132,11 @@ public record StockChangedPayload(
 **Partition key:** `order_id`
 
 ```java
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record ReturnReceivedAllPayload(
     long orderId,
     String refundRequestId,
-    List<Long> requiredOrderItemIds,
-    List<Long> receivedOrderItemIds,
-    boolean allItemsReceived,
+    List<Long> orderItemIds,
     Instant confirmedAt
 ) {}
 ```
@@ -144,6 +148,7 @@ public record ReturnReceivedAllPayload(
 **Partition key:** `order_id`
 
 ```java
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record ShipToCustomerPayload(
     long orderId,
     long warehouseId,
@@ -306,17 +311,19 @@ public class InventoryEventBuilder {
 
     /**
      * Build CloudEvent cho INVENTORY_RETURN_RECEIVED_ALL (signal nghiệp vụ).
+     * Caller truyền `orderItemIds` đã được aggregate từ `inventory_reservations`
+     * (tại emit time luôn bằng refund scope, vì completion check đảm bảo pending = 0).
      */
     public CloudEventImpl<ReturnReceivedAllPayload> buildReturnReceivedAll(
         long orderId, String refundRequestId,
-        List<Long> requiredOrderItemIds, List<Long> receivedOrderItemIds,
+        List<Long> orderItemIds,
         Instant confirmedAt,
         String correlationId
     ) {
         ReturnReceivedAllPayload payload = new ReturnReceivedAllPayload(
             orderId, refundRequestId,
-            requiredOrderItemIds, receivedOrderItemIds,
-            true, confirmedAt
+            orderItemIds,
+            confirmedAt
         );
         // Aggregate_id = order_id cho signal events
         return CloudEventImpl.create(
@@ -485,20 +492,20 @@ public class PartitionKeyResolver {
   "source": "inventory-service",
   "schema_version": 1,
   "payload": {
-    "skuId": "sku-001",
-    "productId": "prod-uuid-001",
-    "warehouseId": 5,
-    "changeType": "ORDER_RESERVED",
+    "sku_id": "sku-001",
+    "product_id": "prod-uuid-001",
+    "warehouse_id": 5,
+    "change_type": "ORDER_RESERVED",
     "quantity": 2,
-    "availableAfter": 798,
-    "reservedAfter": 2,
-    "orderId": 10001,
-    "orderItemId": 2001
+    "available_after": 798,
+    "reserved_after": 2,
+    "order_id": 10001,
+    "order_item_id": 2001
   }
 }
 ```
 
-> Jackson default sử dụng field name (camelCase) không phải `snake_case`. Nếu contract matrix yêu cầu snake_case cho consumer compatibility, dùng `@JsonProperty` hoặc `@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)` trên record.
+> **Canonical naming:** Tất cả 4 payload record (`StockMutationPayload`, `StockChangedPayload`, `ReturnReceivedAllPayload`, `ShipToCustomerPayload`) đã được annotate `@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)` — Jackson tự động serialize field Java (camelCase) ra JSON `snake_case` để khớp với canonical contract (`inventory_events.md` §4) và consumer (Product, Order). Khi thêm payload record mới cho event tương lai, bắt buộc áp dụng annotation tương tự.
 
 ### 12.2 INVENTORY_STOCK_CHANGED
 
@@ -513,10 +520,10 @@ public class PartitionKeyResolver {
   "source": "inventory-service",
   "schema_version": 1,
   "payload": {
-    "productId": "prod-uuid-001",
-    "skuId": "sku-001",
-    "availableQuantity": 798,
-    "changeType": "ORDER_RESERVED"
+    "product_id": "prod-uuid-001",
+    "sku_id": "sku-001",
+    "available_quantity": 798,
+    "change_type": "ORDER_RESERVED"
   }
 }
 ```
@@ -534,12 +541,10 @@ public class PartitionKeyResolver {
   "source": "inventory-service",
   "schema_version": 1,
   "payload": {
-    "orderId": 10001,
-    "refundRequestId": "rr-2026-0001",
-    "requiredOrderItemIds": [2001, 2002],
-    "receivedOrderItemIds": [2001, 2002],
-    "allItemsReceived": true,
-    "confirmedAt": "2026-03-05T09:58:30Z"
+    "order_id": 10001,
+    "refund_request_id": "rr-2026-0001",
+    "order_item_ids": [2001, 2002],
+    "confirmed_at": "2026-03-05T09:58:30Z"
   }
 }
 ```
@@ -557,10 +562,10 @@ public class PartitionKeyResolver {
   "source": "inventory-service",
   "schema_version": 1,
   "payload": {
-    "orderId": 10001,
-    "warehouseId": 5,
-    "shippedAt": "2026-03-02T16:00:00Z",
-    "courierNote": "Đã bàn giao cho đơn vị vận chuyển nội bộ"
+    "order_id": 10001,
+    "warehouse_id": 5,
+    "shipped_at": "2026-03-02T16:00:00Z",
+    "courier_note": "Đã bàn giao cho đơn vị vận chuyển nội bộ"
   }
 }
 ```

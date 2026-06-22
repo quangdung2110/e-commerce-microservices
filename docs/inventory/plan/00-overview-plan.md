@@ -138,7 +138,7 @@ flowchart TD
 | 12 | `12-admin-services` | Restock / Ship / Refund-expectations / Unlock services |
 | 13 | `13-http-api-controllers` | Spring REST + JWT + error mapping |
 | 14 | `14-outbox-cleanup-cronjob` | Spring `@Scheduled` daily cleanup |
-| 15 | `15-observability-and-deployment` | Metrics, tracing, alerting, Docker, k8s, TestContainers |
+| 15 | `15-observability-and-deployment` | Metrics, tracing, alerting, Docker, TestContainers |
 
 > Modules L1 (M02, M03, M04) có thể phát triển song song vì zero inter-dependency.
 > Modules L4 (M10, M11, M12) cũng có thể phát triển song song.
@@ -379,7 +379,7 @@ com.platform.inventoryservice/
 | 12 | `12-admin-services.md` | Restock / Ship / Refund-expectations / Unlock |
 | 13 | `13-http-api-controllers.md` | REST controllers + JWT + error mapping |
 | 14 | `14-outbox-cleanup-cronjob.md` | Daily outbox cleanup |
-| 15 | `15-observability-and-deployment.md` | Metrics, tracing, Docker, k8s, TestContainers |
+| 15 | `15-observability-and-deployment.md` | Metrics, tracing, Docker, TestContainers |
 
 ---
 
