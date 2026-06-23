@@ -1,6 +1,7 @@
 # Search Service - Elasticsearch Schema Design
 
 **Liên kết nhanh (Related Documents):**
+*   [Service Overview (Tech Stack, Deployment, Observability)](search_service_overview.md)
 *   [Workflows (API & Data Flow)](search_workflow.md)
 *   [Background Workers & Jobs](search_workers.md)
 *   [Events Consumed & Kafka Topics](search_events.md)
@@ -9,30 +10,42 @@
 **Cross-Service References:**
 *   [Product Service - Database Schema (Write Store / Source of Truth)](../product/product_db_design.md)
 *   [Product Service - Events Structure](../product/product_events.md)
+*   [Review Service - Events Structure](../review/review_events.md)
+*   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 
 ---
 
 Tài liệu này mô tả thiết kế **Elasticsearch Index** cho Search Service — phiên bản **Read Model (Query Database)** trong kiến trúc CQRS. Search Service **không sở hữu PostgreSQL** và **không sở hữu Redis**; Elasticsearch là nguồn dữ liệu duy nhất, phục vụ trực tiếp cho mọi API request.
 
-Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog) và Review (rating metrics).
+Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstream streams qua Kafka: Product (core catalog), Category (taxonomy) và Review (rating metrics).
 
 > **Nguyên tắc cốt lõi:** Search Service chỉ có 1 nhiệm vụ duy nhất: **Đọc cực nhanh**. Không có transaction phân tán; ghi vào index chỉ đến từ Kafka consumer.
 >
-> **Guard ordering (đơn giản hoá):** Mỗi event dùng **đúng 1 trường timestamp** duy nhất làm guard, lưu vào field `version` (ISO 8601 UTC) của Elasticsearch document. Quy tắc: `event_timestamp > current_doc.version`. Cụ thể:
+> **Guard ordering (đơn giản hoá):** Hầu hết event dùng **đúng 1 trường timestamp** làm guard, lưu vào field `version` (ISO 8601 UTC) của Elasticsearch document. Quy tắc: `event_timestamp > current_doc.version`. Cụ thể:
 > - Đa số event: dùng `event.updated_at`.
 > - Riêng `SKU_CREATED`: dùng `event.created_at` (event khởi tạo, entity chưa có `updated_at`).
+> - **NGOẠI LỆ (Phase 21):** `REVIEW_METRICS_UPDATED` và `PRODUCT_STATUS_CHANGED` (qua `SKU_UPDATED.product_status_changed=true`) KHÔNG dùng script guard — chỉ dựa vào Kafka partition ordering. Xem [Search Events §3.3, §3.10](search_events.md) để biết chi tiết.
 >
-> **Lưu ý về `admin_name`:** Hệ thống chỉ có 1 admin (toàn quyền, không bao giờ bị ban). Search Service **không subscribe** `t.admin.events`. `admin_name` được snapshot 1 lần từ `PRODUCT_CREATED` payload lúc index; khi admin đổi tên hiển thị → chạy [Full Reindex Job](search_workers.md#2-full-reindex-job-zero-downtime-3-pha-đơn-giản) để refresh toàn bộ index.
+> **Lưu ý về admin:** Hệ thống chỉ có 1 admin (toàn quyền, không bao giờ bị ban). Search Service **không subscribe** `t.admin.events` và **không lưu trữ bất kỳ field admin nào** trong document. Xem [Search Events §3](search_events.md) cuối file để biết chi tiết.
 >
+> **Trạng thái Phase đã áp dụng (đồng bộ với [CHANGELOG](../_contracts/CHANGELOG.md)):**
+> - **Phase 19**: Search Service xử lý `product_status` thay đổi qua `SKU_UPDATED` (không cần handler riêng cho `PRODUCT_STATUS_CHANGED`).
+> - **Phase 21**: Bỏ `t.search.metrics.events` topic + `search-metrics-indexer` consumer group + field `product_sold_count` (giờ Search Service chỉ cần 3 topics: `t.product.events`, `t.category.events`, `t.review.events`).
+> - **Phase 22b**: Bỏ hoàn toàn `t.search.dlq` + `search-dlq-processor`. Mọi lỗi không tự hồi phục xử lý bằng `log + metric + skip + ACK`.
+>
+> **Lưu ý về `search_suggestions`:** Index này **không có write alias** vì không có luồng incremental update. Suggestions Rebuilder build hằng ngày tạo `search_suggestions_v{N+1}` mới hoàn toàn (xem [Workers §3](search_workers.md#3-search-suggestions-rebuilder)), ghi trực tiếp vào index versioned, sau đó atomic alias swap `search_suggestions` → `search_suggestions_v{N+1}`. Vì rebuild nguyên tử, index này **không cần field `version`** (khác với `products` và `categories`).
+
+> **Index Alias Strategy:** Sử dụng Alias để cho phép Zero-Downtime Reindex. Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`.
+
 ## 1. Danh Sách Elasticsearch Indices
 
-| Index Name | Alias | Mô tả | Document Count (ước tính) |
-|---|---|---|---|
-| `products_v1` | `products` (read alias), `products_write` (write alias) | Sản phẩm denormalized phẳng | Hàng triệu |
-| `categories_v1` | `categories` (read alias), `categories_write` (write alias) | Cây danh mục + product_count | Hàng trăm |
-| `search_suggestions_v1` | `search_suggestions` (read alias) | Autocomplete / Gợi ý tìm kiếm | Hàng trăm ngàn |
+| Index Name | Alias | Mô tả | Document Count (ước tính) | `version` field |
+|---|---|---|---|---|
+| `products_v1` | `products` (read alias), `products_write` (write alias) | Sản phẩm denormalized phẳng | Hàng triệu | ✅ Có (guard ordering) |
+| `categories_v1` | `categories` (read alias), `categories_write` (write alias) | Cây danh mục + product_count | Hàng trăm | ✅ Có (guard ordering) |
+| `search_suggestions_v1` | `search_suggestions` (read alias) | Autocomplete / Gợi ý tìm kiếm | Hàng trăm ngàn | ❌ Không (rebuild nguyên tử) |
 
-> **Lưu ý về `search_suggestions`:** Index này **không có write alias** vì không có luồng incremental update. Suggestions Rebuilder build hằng ngày tạo `search_suggestions_v{N+1}` mới hoàn toàn (xem [Workers §4](../search_workers.md#4-search-suggestions-rebuilder)), ghi trực tiếp vào index versioned, sau đó atomic alias swap `search_suggestions` → `search_suggestions_v{N+1}`.
+> **Lưu ý về `search_suggestions`:** Index này **không có write alias** vì không có luồng incremental update. Suggestions Rebuilder build hằng ngày tạo `search_suggestions_v{N+1}` mới hoàn toàn (xem [Workers §3](../search/search_workers.md#3-search-suggestions-rebuilder)), ghi trực tiếp vào index versioned, sau đó atomic alias swap `search_suggestions` → `search_suggestions_v{N+1}`.
 
 > **Index Alias Strategy:** Sử dụng Alias để cho phép Zero-Downtime Reindex. Khi cần thay đổi mapping, tạo `products_v2`, reindex toàn bộ dữ liệu, rồi swap alias `products` từ `v1` sang `v2`.
 
@@ -105,7 +118,6 @@ Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstre
     "properties": {
       "sku_id":              { "type": "keyword" },
       "product_id":          { "type": "keyword" },
-      "admin_name":          { "type": "keyword" },
       "category_id":         { "type": "keyword" },
       "category_name":       { "type": "keyword" },
       "category_path":       { "type": "keyword" },
@@ -158,7 +170,7 @@ Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstre
 | `product_id` | keyword | Pivot Key cho **Field Collapsing** và các phép đếm DISTINCT product-level ở API Response. |
 | `searchable_attributes` | keyword array | Composite tokens cho các thuộc tính dùng chung của Product (Product-level). Ví dụ: `["thuonghieu:apple", "chatlieu:titanium"]`. **Search Worker transform từ `attributes_json` sang token array khi consume event.** |
 | `variant_attributes` | keyword array | Mô tả đặc tính riêng của từng SKU. Ví dụ: `["mausac:đen", "dungluong:256GB"]`. **Search Worker transform từ `variant_attributes_json` sang token array.** |
-| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection: `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE`. Được recompute khi nhận `PRODUCT_STATUS_CHANGED`, `PRODUCT_UPDATED`, `SKU_UPDATED`. Không phải nguồn tồn kho realtime để chốt đơn. |
+| `is_in_stock` | boolean | Cờ khả dụng bán hàng trong search projection: `is_deleted=false AND product_status=ACTIVE AND sku_status=ACTIVE`. Được recompute khi nhận `SKU_UPDATED` (bao gồm cả trường hợp `product_status_changed=true`). Không phải nguồn tồn kho realtime để chốt đơn. |
 | `is_deleted`, `deleted_at` | boolean/date | Tombstone chặn zombie update khi event đến trễ sau delete. |
 | `version` | date | **Guard ordering chính.** Lưu timestamp phù hợp với event ghi: `updated_at` cho đa số event, `created_at` cho `SKU_CREATED`. Quy tắc: `event_timestamp > current_doc.version`. Xem [Events §4](search_events.md#4-chiến-lược-idempotency--ordering). |
 
@@ -170,7 +182,6 @@ Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstre
 {
   "sku_id": "sku-uuid-001",
   "product_id": "prod-uuid-001",
-  "admin_name": "Platform Admin",
   "category_id": "cat-smartphone",
   "category_name": "Điện thoại",
   "category_path": "dien-tu/dien-thoai",
@@ -198,8 +209,8 @@ Dữ liệu được đồng bộ bất đồng bộ (Async) từ nhiều upstre
   "is_deleted": false,
   "deleted_at": null,
 
-"product_rating_avg": 4.9,
-    "product_rating_count": 1200,
+  "product_rating_avg": 4.9,
+  "product_rating_count": 1200,
 
   "created_at": "2026-02-28T03:51:00Z",
   "updated_at": "2026-03-28T10:05:00Z",
@@ -231,15 +242,18 @@ GET products/_search
       "sort": [{ "best_price": "asc" }]
     }
   },
-  "sort": [{ "best_price": "asc" }]
+  "sort": [
+    { "best_price": "asc" },
+    { "sku_id": "asc" }
+  ]
 }
 ```
 
-Kết quả: trả về 1 document đại diện cho `iPhone 15` (SKU rẻ nhất màu đen), kèm `inner_hits` tối đa 3 biến thể cùng màu đen.
+Kết quả: trả về 1 document đại diện cho `iPhone 15` (SKU rẻ nhất màu đen), kèm `inner_hits` tối đa 3 biến thể cùng màu đen. **Tie-break `sku_id asc`** ở cuối sort đảm bảo pagination ổn định khi dùng `search_after` (xem [Search Workflow §2](search_workflow.md)).
 
 ## 3. Categories Index — Mapping & Document Structure
 
-Update qua `t.category.events`. `product_count` được tính lazy qua aggregation khi cần, hoặc update realtime bằng update_by_query khi có `t.product.events`.
+Update qua `t.category.events`. `product_count` được update **realtime** bằng `_update_by_query` theo `category_id` khi nhận các `t.product.events` liên quan (xem [Search Events §3.11](search_events.md#311-categories-product_count-realtime-update-consolidated)).
 
 ### 3.1. Index Settings
 
@@ -295,6 +309,24 @@ Update qua `t.category.events`. `product_count` được tính lazy qua aggregat
   "version": "2026-03-28T10:05:00Z"
 }
 ```
+
+### 3.4. Cơ Chế Cập Nhật `product_count` Realtime
+
+`product_count` trên categories index được cập nhật **realtime** qua `_update_by_query` theo `category_id` trên chính `categories` index mỗi khi có product event thay đổi trạng thái visibility:
+
+| Trigger Event | Hành động trên `categories` index | Chi tiết |
+|---|---|---|
+| `PRODUCT_CREATED` (status = `ACTIVE`) | Tăng `product_count` | `_update_by_query` theo `category_id` + script `ctx._source.product_count += 1` |
+| `PRODUCT_CREATED` (status ≠ `ACTIVE`, ví dụ DRAFT) | Không thay đổi | DRAFT không hiển thị trên UI |
+| `SKU_UPDATED` với `product_status_changed=true` (target = `ACTIVE`) | Tăng `product_count` | Auto-reactivate từ `HIDDEN` → `ACTIVE` |
+| `SKU_UPDATED` với `product_status_changed=true` (target = `HIDDEN`) | Giảm `product_count` | Auto-hide từ `ACTIVE` → `HIDDEN` |
+| `PRODUCT_DELETED` (trước khi là HIDDEN) | Giảm `product_count` | Soft delete |
+| `PRODUCT_DELETED` (đã là HIDDEN trước đó) | Không thay đổi | Tránh double-decrement |
+| `CATEGORY_DELETED` | Đánh dấu `is_deleted=true` | `product_count` giữ nguyên (audit); docs thuộc category đã được nullify `category_*` và set HIDDEN |
+
+**Throttle bắt buộc:** Mọi `_update_by_query` trên `categories` index dùng `requests_per_second=300` + `conflicts=proceed` (giống pattern diện rộng ở products).
+
+**Idempotency:** Vì partition key của `t.product.events` là `product_id` (Product-level) hoặc `sku_id` (SKU-level), các event của cùng product đảm bảo ordering. Nếu có cả `PRODUCT_DELETED` (đã HIDDEN trước đó) → idempotent skip. Nếu duplicate do retry → `_update_by_query` với `ctx._source.product_count` arithmetic có thể sai lệch (tăng 2 lần thay vì 1) — **chấp nhận** sai số nhỏ này vì Full Reindex Job sẽ reconcile khi cần; đánh đổi giữa simplicity và perfect accuracy.
 
 ## 4. Search Suggestions Index: Mapping & Ranking Contract
 
@@ -366,6 +398,8 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
 }
 ```
 
+> **Tại sao không có field `version`:** Suggestions Rebuilder chạy daily build nguyên tử (tạo `search_suggestions_v{N+1}` mới hoàn toàn → bulk index đầy đủ → atomic alias swap). Không có partial update nên không cần guard ordering. `build_version` (long) đã đủ để identify build batch khi cần debug.
+
 ### 4.3. Ranking Contract
 
 1. `weight` là khóa xếp hạng chính, tính ở Suggestions Rebuilder và lưu sẵn trong document.
@@ -375,6 +409,7 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
 
 ### 4.4. Mẫu Document
 
+**Mẫu PRODUCT type (chỉ CATEGORY type mới dùng `product_count`):**
 ```json
 {
   "suggestion_id": "sgg:d4f9f7d7f5f2",
@@ -388,7 +423,23 @@ Index `search_suggestions_v1` (hiện tại — pattern `search_suggestions_v{N}
   "weight": 91520,
   "product_rating_avg": 4.9,
   "product_rating_count": 1200,
-  "product_count": 0,
+  "build_version": 2026032901,
+  "updated_at": "2026-03-29T03:10:00Z"
+}
+```
+
+**Mẫu CATEGORY type (có dùng `product_count`):**
+```json
+{
+  "suggestion_id": "sgg:cat-smartphone",
+  "text": "điện thoại",
+  "text_normalized": "dien thoai",
+  "type": "CATEGORY",
+  "source": "CATEGORIES_ALIAS",
+  "scope": "GLOBAL",
+  "category_id": "cat-smartphone",
+  "weight": 125000,
+  "product_count": 1250,
   "build_version": 2026032901,
   "updated_at": "2026-03-29T03:10:00Z"
 }
@@ -425,6 +476,11 @@ GET search_suggestions/_search
 - **Shard sizing:** Mỗi shard nên chứa 10-50GB data.
 - **Dedicated Master Nodes:** 3 master-eligible nodes riêng, không chạy data.
 - **JVM Heap:** Cấp 50% RAM cho JVM heap (tối đa 31GB). 50% còn lại cho filesystem cache.
-- **Coordinator nodes:** Tách riêng data và coordinator nodes khi cluster > 10 nodes.
+- **Coordinator nodes:** Tách riêng data và coordinator nodes khi cluster > 10 nodes. (Có thể dùng read replica cho search-serving khi scale > 10K req/s — sẽ benchmark sau khi có load thực tế.)
 - **Tune caches:** `indices.queries.cache.size: 15%`, `indices.requests.cache.size: 5%`.
 - **Index per version:** Pattern `products_v1`, `products_v2` + alias swap cho zero-downtime schema changes.
+
+**Timeout config cho Search Service client:**
+- Product search API: 5s timeout (fail-fast nếu vượt → trả 503).
+- Suggest API: 2s timeout (p99 budget 25ms; 2s là safety net cho cold start).
+- `_update_by_query` diện rộng: 30s timeout (chấp nhận chậm hơn vì batch).

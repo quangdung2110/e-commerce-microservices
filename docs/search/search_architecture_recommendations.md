@@ -1,6 +1,7 @@
 # Search Service - Architecture Recommendations
 
 **Liên kết nhanh (Related Documents):**
+*   [Service Overview (Tech Stack, Deployment, Observability)](search_service_overview.md)
 *   [Elasticsearch Schema (Read Store)](search_elasticsearch_schema.md)
 *   [Workflows (API & Data Flow)](search_workflow.md)
 *   [Background Workers & Jobs](search_workers.md)
@@ -8,24 +9,33 @@
 
 **Cross-Service References:**
 *   [Product Service - Architecture Recommendations](../product/product_architecture_recommendations.md)
-*   [Order Service - Workflows](../order/order_workflow.md)
+*   [Product Service - Workflow (Background Workers)](../product/product_workflow.md)
+*   [Review Service - Architecture & Workers](../review/review_workers.md)
+*   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
+*   [Idempotency Guidelines (SSOT)](../_contracts/IDEMPOTENCY_GUIDELINES.md)
+*   [CHANGELOG — Phase 22b (Search DLQ Removal)](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq)
 
 ---
 
 Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho Search Service.
+
+> **Trạng thái Phase đã áp dụng (đồng bộ với [CHANGELOG](../_contracts/CHANGELOG.md)):**
+> - **Phase 19** (Order Service Simplification): Search Service đã loại bỏ handler riêng cho `PRODUCT_STATUS_CHANGED`. Mọi thay đổi `product_status` được propagate qua `SKU_UPDATED` với cờ `product_status_changed=true` (xem [Search Events §3.3](search_events.md)).
+> - **Phase 21** (Order Service Schema Simplification): Search Service đã loại bỏ `t.search.metrics.events` topic + `search-metrics-indexer` consumer group + field `product_sold_count` (xem [Search Events §1](search_events.md)). Search Service giờ chỉ subscribe 3 topics: `t.product.events`, `t.category.events`, `t.review.events`.
+> - **Phase 22b** (Search Service — Remove DLQ): Search Service đã loại bỏ hoàn toàn DLQ topic `t.search.dlq` + consumer group `search-dlq-processor`. Mọi lỗi không tự hồi phục được xử lý bằng `log error + metric + skip + ACK` (xem [CHANGELOG §Phase 22b Search](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq)).
 
 ## 1. CQRS với Elasticsearch — Read Model thuần túy
 
 **Quyết định:** Search Service là **Read Model** thuần túy trong kiến trúc CQRS. Không sở hữu PostgreSQL; Elasticsearch là nguồn dữ liệu duy nhất.
 
 **Lý do:**
-- PostgreSQL cực kỳ tệ cho Full-text search trên hàng triệu sản phẩm (LIKE '%keyword%' = Full Table Scan).
+- PostgreSQL cực kỳ tệ cho Full-text search trên hàng triệu sản phẩm (LIKE'%keyword%' = Full Table Scan).
 - Elasticsearch sử dụng Inverted Index → < 50ms cho mọi truy vấn.
 - Tách biệt Read/Write cho phép scale độc lập. Search traffic (hàng triệu End-User) không ảnh hưởng Write throughput (hàng nghìn admin).
 
 **Trade-off chấp nhận:** Eventual Consistency. Dữ liệu trên Elasticsearch có thể trễ 1-3 giây so với PostgreSQL. Đây là trade-off chấp nhận được vì:
 - User browsing sản phẩm không cần realtime accuracy.
-- Các luồng cần realtime (Cart add, Order checkout) gọi trực tiếp [Product Service Point-Read API](../product/product_workflow.md#5-api-point-read-đọc-chính-xác--nhanh), không qua Search.
+- Các luồng cần realtime (Cart add, Order checkout) gọi trực tiếp [Product Service Point-Read API qua gRPC](../product/product_workflow.md), không qua Search.
 
 ## 2. Denormalization & Pre-computation
 
@@ -36,6 +46,17 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 - Pre-computed boolean fields (`is_in_stock`, `has_promotion`) biến filter phức tạp thành simple term filter → tận dụng Elasticsearch filter cache.
 - `best_price` được tính trước cho phép sort by price rẻ nhất mà không cần dựa vào logic runtime array.
 
+## 3. SKU-First Document Strategy & Field Collapsing
+
+**Quyết định:** Mỗi Elasticsearch Document là một SKU độc lập (SKU-first). Gom nhóm hiển thị theo Product qua Query **Field Collapsing** (gom theo `product_id`).
+
+**Lý do:**
+- Một Product có thể có nhiều SKU (ví dụ: iPhone 15 Pro Max có SKU theo màu/dung lượng). Mỗi SKU có giá, tồn kho, hình ảnh riêng → cần là first-class document.
+- Field Collapsing trong Elasticsearch tự động nhóm các SKU cùng `product_id` lại khi trả về response → tiết kiệm memory, giảm OOM risk so với nested.
+- Composite Keyword Token array (`searchable_attributes`, `variant_attributes`) cho phép filter/search trên thuộc tính mà không cần join → tránh nested overhead.
+
+**Chi tiết mapping:** Xem [Elasticsearch Schema §2.2 Field Mapping](search_elasticsearch_schema.md#22-field-mapping-document-schema-denormalized-sku).
+
 ## 4. Vietnamese Language Support
 
 **Quyết định:** Sử dụng ICU Tokenizer + ICU Folding thay vì Standard Tokenizer.
@@ -45,6 +66,8 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 - ICU Tokenizer xử lý Unicode chính xác cho ngôn ngữ Đông Nam Á.
 - ICU Folding chuẩn hoá accent marks, cho phép tìm kiếm không dấu.
 - Custom stop words tiếng Việt loại bỏ noise ("và", "của", "là"...).
+
+**Phạm vi ngôn ngữ:** Chỉ hỗ trợ tiếng Việt trong phiên bản hiện tại. Multi-language (Anh/Nhật/Hàn/Trung) sẽ được cân nhắc trong tương lai khi có nhu cầu mở rộng marketplace quốc tế.
 
 ## 5. Autocomplete với Edge N-gram
 
@@ -66,35 +89,36 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 
 **Lý do:**
 - Đơn giản hoá đáng kể logic worker — không phải track nhiều sequence field cho cùng một document.
-- Trade-off: metrics update (rating/sold) có thể bị skip nếu `updated_at` trùng millisecond. Chấp nhận được vì:
+- Trade-off: metrics update (rating) có thể bị skip nếu `updated_at` trùng millisecond. Chấp nhận được vì:
   - Kafka đảm bảo ordering trong cùng partition.
   - Search projection chấp nhận độ trễ vài giây cho metrics.
+  - **Ngoại lệ (theo Phase 21):** `REVIEW_METRICS_UPDATED` không cần script guard vì partition key `product_id` đảm bảo ordering. Worker chỉ apply `_update_by_query` theo `product_id` mà không cần script check `updated_at > version` (xem [Search Events §3.10](search_events.md#310-review_metrics_updated)).
 
-## 7. 2 Consumer Group Chính + 1 Tạm (đơn giản hoá qua Phase 21)
+## 7. 1 Consumer Group Chính (đơn giản hoá qua Phase 21+)
 
-**Quyết định:** **2 Kafka consumer group chính** (giảm từ 3 xuống 2 tại Phase 21 — gộp review metrics vào product-indexer) + **1 consumer group tạm** dùng riêng cho Full Reindex Job.
+**Quyết định:** **1 Kafka consumer group chính** (`search-product-indexer`) + **1 consumer group tạm** dùng riêng cho Full Reindex Job.
 
 | Group | Loại | Topics | Events |
 |---|---|---|---|
 | `search-product-indexer` | Chính | `t.product.events`, `t.category.events`, `t.review.events` | Product + category + review events |
-| `search-dlq-processor` | Chính | `t.search.dlq` | Failed envelopes (parking lot) |
 | `search-reindex-{run_id}` | Tạm (chỉ chạy khi Full Reindex) | `t.product.events`, `t.category.events`, `t.review.events` | Catch-up vào index mới |
 
 **Lý do:**
-- 2 group chính hiện tại (sau Phase 21): `search-dlq-processor` là consumer riêng của Search Service cho kênh DLQ — không thể gộp vào group khác vì topic và cơ chế xử lý (replay thủ công) hoàn toàn tách biệt. Gộp vào `search-product-indexer` sẽ khiến message bị nuốt hoặc xử lý nhầm.
-- Giảm từ 4 group chính xuống 3 ban đầu bằng cách gộp `search-product-indexer` (product + category); Phase 21 tiếp tục gộp review metrics vào `search-product-indexer` (chỉ còn 1 event type `REVIEW_METRICS_UPDATED`, không cần tách riêng) **đồng thời loại bỏ hoàn toàn** group admin (hệ thống 1 admin duy nhất, không cần `_update_by_query theo admin_id`) — tổng còn 2 nhóm chính.
+- 1 group chính: `search-product-indexer` gộp toàn bộ 3 topic vào 1 consumer group (Phase 21 gộp `t.review.events` — chỉ còn 1 event type `REVIEW_METRICS_UPDATED`).
 - Group tạm `search-reindex-{run_id}` chỉ tồn tại trong thời gian Full Reindex Job chạy, dùng để catch-up event vào index mới mà không ghi qua alias `products_write`.
-- **Không subscribe `t.admin.events`:** Hệ thống chỉ có 1 admin duy nhất (toàn quyền, không bao giờ bị ban) nên không cần `_update_by_query theo admin_id` + 2 guard field `admin_*_version`. Trade-off: khi admin đổi tên hiển thị, phải trigger Full Reindex Job thủ công (xem [Workers §2](search_workers.md#2-full-reindex-job-zero-downtime-3-pha-đơn-giản)).
-- Trade-off: handler file lớn hơn, nhưng logic dispatch theo `event_type` đã đơn giản (1 script PATCH chung cho đa số event + 1 script đặc thù cho `SKU_CREATED`).
+- **Không subscribe `t.admin.events`:** Hệ thống chỉ có 1 admin duy nhất (toàn quyền, không bao giờ bị ban). Search Service không lưu bất kỳ field admin nào trên document, không cần `_update_by_query theo admin_id` cũng như không cần 2 guard field `admin_*_version`.
+- **Không subscribe `t.search.metrics.events` (Phase 21):** Search Service giờ chỉ cần 3 topics trên; topic `t.search.metrics.events` đã bị loại bỏ hoàn toàn cùng bảng `order_product_metrics` ở Order Service.
+- Trade-off: handler file lớn hơn, nhưng logic dispatch theo `event_type` đã đơn giản (1 script PATCH chung cho đa số event + 1 script đặc thù cho `SKU_CREATED` + 1 script đặc thù cho `PRODUCT_STATUS_CHANGED` qua `SKU_UPDATED.product_status_changed=true`).
 
-## 8. 1 Topic DLQ (đơn giản hoá)
+## 8. Không Có DLQ (đơn giản hoá Phase 22b)
 
-**Quyết định:** Chỉ dùng `t.search.dlq`. Bỏ `t.search.retry` (self-heal fetch full product).
+**Quyết định:** **Bỏ hoàn toàn** `t.search.dlq` + `search-dlq-processor`. Mọi lỗi không tự hồi phục đều được xử lý bằng `log error + metric + skip + ACK`. Xem entry [CHANGELOG §Phase 22b Search](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq) để biết chi tiết quyết định.
 
 **Lý do:**
-- `document_missing_exception` rất hiếm trong thực tế.
-- Khi xảy ra, đẩy thẳng DLQ + cảnh báo để admin replay thủ công.
-- Trade-off: không có automatic recovery cho partial update miss, nhưng số lượng miss đủ nhỏ để xử lý thủ công.
+- Hệ thống single-admin, ít downstream consumers, payload schema đã được CDC + Debezium đảm bảo ở producer.
+- `document_missing_exception` cho partial update rất hiếm; nếu xảy ra, log + metric là đủ để vận hành xử lý thủ công (hoặc chạy Full Reindex Job).
+- Mapping conflict / schema poison: log + metric, không tự retry vô hạn.
+- Trade-off: không có automatic recovery cho partial update miss, nhưng số lượng miss đủ nhỏ để xử lý thủ công (hoặc chạy Full Reindex Job).
 
 ## 9. 3-Pha Reindex (đơn giản hoá)
 
@@ -135,8 +159,9 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 
 | Data Field | Source Service | Topic | Ghi chú |
 |---|---|---|---|
-| `product_rating_avg`, `product_rating_count` | Review Service | `t.review.events` | Realtime (denormalize qua `_update_by_query` theo `product_id`) |
-| `admin_name` | Product Service (lúc tạo product) | `t.product.events` (`PRODUCT_CREATED` payload) | Snapshot 1 lần lúc index. Khi admin đổi tên → Full Reindex Job. |
+| `product_rating_avg`, `product_rating_count` | Review Service | `t.review.events` | Realtime (denormalize qua `_update_by_query` theo `product_id`). **Không dùng script guard** vì partition key `product_id` đảm bảo ordering. |
+| `category_name`, `category_path` | Product Service (categories index trong Search Service) | `t.category.events` | Enrichment từ `categories` index (read); nếu lookup miss → skip event + log + metric `search_category_enrichment_miss_total{topic,event_type,category_id}`; `CATEGORY_UPDATED`/`CATEGORY_CREATED` sau đó sẽ populate lại |
+| `categories.product_count` | Realtime update qua `t.product.events` | `t.product.events` | `_update_by_query` theo `category_id` trên mỗi `PRODUCT_CREATED` (nếu ACTIVE) / `PRODUCT_STATUS_CHANGED → ACTIVE` (tăng count) / `PRODUCT_STATUS_CHANGED → HIDDEN` / `PRODUCT_DELETED` (giảm count) |
 
 
 **Fallback vận hành:** Nếu một trong các consumer realtime bị disable, cho phép batch sync tạm thời, nhưng phải công bố SLO freshness rõ ràng.
@@ -156,8 +181,10 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 Search Service được thiết kế là một **stateless Read-Only projection** của Product Service data, với triết lý **đơn giản hoá tối đa**:
 
 - **Elasticsearch** là "database" duy nhất — chịu 100% traffic đọc và ghi.
-- **Không có Redis, không có cache layer, không có refresh worker pool.**
-- **Kafka consumer** (2 group chính + 1 tạm cho reindex) làm cầu nối dữ liệu — đảm bảo eventual consistency với Source of Truth.
+- **Không có Redis, không có cache layer ngoài ES query cache, không có refresh worker pool.**
+- **Kafka consumer** (1 group chính + 1 tạm cho reindex) làm cầu nối dữ liệu — đảm bảo eventual consistency với Source of Truth.
 - **1 script PATCH chung** cho đa số event + **1 guard field `version`** (timestamp ISO 8601; `updated_at` cho đa số event, `created_at` cho `SKU_CREATED`).
+- **`_update_by_query` không script guard** cho `PRODUCT_STATUS_CHANGED` (qua `SKU_UPDATED.product_status_changed=true`) và `REVIEW_METRICS_UPDATED` — partition key đảm bảo ordering.
 - **Zero-downtime operations** — 3-pha reindex qua alias swap.
-- **Không subscribe `t.admin.events`** — hệ thống 1 admin duy nhất, `admin_name` snapshot lúc index.
+- **Không subscribe `t.admin.events`** — hệ thống 1 admin duy nhất, không lưu field admin trên document.
+- **Không có DLQ** (Phase 22b) — log + metric + skip + ACK.
