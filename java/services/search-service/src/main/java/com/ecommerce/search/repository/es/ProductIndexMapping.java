@@ -35,7 +35,7 @@ public final class ProductIndexMapping {
     public static final String MAPPING_JSON = """
         {
           "settings": {
-            "number_of_shards": 3,
+            "number_of_shards": 1,
             "number_of_replicas": 1,
             "refresh_interval": "1s",
             "analysis": {
@@ -76,8 +76,8 @@ public final class ProductIndexMapping {
             "properties": {
               "sku_id":              { "type": "keyword" },
               "product_id":          { "type": "keyword" },
-              "category_id":         { "type": "keyword" },
-              "category_name":       { "type": "keyword" },
+              "category_id":         { "type": "keyword", "eager_global_ordinals": true },
+              "category_name":       { "type": "keyword", "eager_global_ordinals": true },
               "category_path":       { "type": "keyword" },
               "name": {
                 "type": "text",
@@ -95,8 +95,8 @@ public final class ProductIndexMapping {
               "thumbnail_url":       { "type": "keyword" },
               "product_status":      { "type": "keyword" },
               "sku_status":          { "type": "keyword" },
-              "searchable_attributes": { "type": "keyword" },
-              "variant_attributes":    { "type": "keyword" },
+              "searchable_attributes": { "type": "keyword", "eager_global_ordinals": true },
+              "variant_attributes":    { "type": "keyword", "eager_global_ordinals": true },
               "original_price":      { "type": "scaled_float", "scaling_factor": 100 },
               "promotional_price":   { "type": "scaled_float", "scaling_factor": 100 },
               "best_price":          { "type": "scaled_float", "scaling_factor": 100 },

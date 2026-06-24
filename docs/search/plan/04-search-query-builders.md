@@ -1,14 +1,17 @@
 # Module 04: Search Query Builders
 
-> **Status:** Module 4 of 14 - **NOT YET IMPLEMENTED**
+> **Status:** Module 4 of 14 - **✅ COMPLETED** (June 23, 2026)
 > **Prerequisites:** Module 03 (Elasticsearch Config)
 > **Dependents:** Module 05 (Public API Controllers)
 > **Estimated Effort:** 2 person-days
 
 > ## Implementation Note
-> Chưa implement. Plan chi tiết bên dưới. Khi implement, đánh dấu `[x]` cho từng task.
+> ✅ **Implemented June 23, 2026.** All files compiled successfully with zero errors.
 >
-> **Đây là module phức tạp nhất** vì phải build ES query DSL chính xác theo [Search Workflow §2](../search_workflow.md) và đảm bảo pagination ổn định với `search_after` + tie-break `sku_id asc`.
+> **Key design decisions:**
+> - Dynamic attribute filters use `bool/should` checking both `searchable_attributes` and `variant_attributes` — no hardcoded attribute keys, works with any category.
+> - Facet aggregations return raw `key:value` tokens from both attribute fields; frontend groups by prefix to render dynamic filter groups.
+> - `SortMapper` always appends `sku_id asc` tie-breaker for stable cursor pagination.
 
 ---
 
@@ -229,22 +232,20 @@ public class ProductQueryBuilder {
             filter.add(Query.of(q -> q.term(t -> t.field("has_promotion").value(true))));
         }
 
-        // Dynamic filters (searchable_attributes, variant_attributes)
+        // Dynamic filters — check cả searchable_attributes AND variant_attributes
+        // Dùng bool/should vì không biết trước attribute là product-level hay SKU-level.
+        // Format key:value giống nhau ở cả 2 field ("thuonghieu:apple", "mausac:đen").
+        // Với mỗi filter value, tạo 1 bool query: minimumShouldMatch=1 → match nếu tồn tại ở 1 trong 2 field.
         if (params.filters() != null) {
             params.filters().forEach((key, values) -> {
-                if ("brand".equals(key) || "ram".equals(key)) {
-                    // searchable_attributes
-                    values.forEach(v -> filter.add(Query.of(q -> q.term(t -> t
-                        .field("searchable_attributes")
-                        .value(key + ":" + v)
-                    ))));
-                } else {
-                    // variant_attributes
-                    values.forEach(v -> filter.add(Query.of(q -> q.term(t -> t
-                        .field("variant_attributes")
-                        .value(key + ":" + v)
-                    ))));
-                }
+                values.forEach(v -> {
+                    String termValue = key + ":" + v;
+                    filter.add(Query.of(q -> q.bool(b -> b
+                        .minimumShouldMatch("1")
+                        .should(s -> s.term(t -> t.field("searchable_attributes").value(termValue)))
+                        .should(s -> s.term(t -> t.field("variant_attributes").value(termValue)))
+                    )));
+                });
             });
         }
 
@@ -478,9 +479,19 @@ public class FacetQueryBuilder {
     private Map<String, Aggregation> buildAggregations() {
         Map<String, Aggregation> aggs = new HashMap<>();
 
-        // Brand facet (searchable_attributes key = "thuonghieu:*")
-        aggs.put("brands", Aggregation.of(a -> a
-            .terms(t -> t.field("searchable_attributes").size(20))
+        // Dynamic attribute facets — aggregation trên cả 2 field để frontend render động
+        // Mỗi token là "key:value" (VD: "thuonghieu:apple", "mausac:đen").
+        // Frontend nhận về, nhóm theo prefix (key trước dấu :) để hiển thị bộ lọc.
+        // Cần cardinality product_count vì index là SKU-first (đếm DISTINCT product).
+        aggs.put("searchable_attributes", Aggregation.of(a -> a
+            .terms(t -> t.field("searchable_attributes").size(50))
+            .aggregations("product_count", Aggregation.of(sub -> sub
+                .cardinality(c -> c.field("product_id").precisionThreshold(40000))
+            ))
+        ));
+
+        aggs.put("variant_attributes", Aggregation.of(a -> a
+            .terms(t -> t.field("variant_attributes").size(50))
             .aggregations("product_count", Aggregation.of(sub -> sub
                 .cardinality(c -> c.field("product_id").precisionThreshold(40000))
             ))
@@ -508,15 +519,16 @@ public class FacetQueryBuilder {
 
 ## 8. Acceptance Criteria
 
-- [ ] `ProductQueryBuilder.build()` produces valid ES query JSON
-- [ ] `SortMapper.map("price_asc")` returns `[best_price asc, sku_id asc]`
-- [ ] `DiscountCalculator.calculate(100, 80)` returns `20` (20% discount)
-- [ ] `SuggestQueryBuilder.build("iph", 8)` produces match query với size 8
-- [ ] `CategoryQueryBuilder.build()` returns size 1000
-- [ ] `FacetQueryBuilder.build(catId)` returns aggregations với cardinality on `product_id`
-- [ ] `search_after` cursor format: `[sort_value, sku_id]` array
-- [ ] Tie-break `sku_id asc` luôn ở cuối mỗi sort
-- [ ] Unit test với mocked ES client verify đúng query structure
+- [x] `ProductQueryBuilder.build()` produces valid ES query JSON
+- [x] `SortMapper.map("price_asc")` returns `[best_price asc, sku_id asc]`
+- [x] `DiscountCalculator.calculate(100, 80)` returns `20` (20% discount)
+- [x] `SuggestQueryBuilder.build("iph", 8)` produces match query với size 8
+- [x] `CategoryQueryBuilder.build()` returns size 1000
+- [x] `FacetQueryBuilder.build(catId)` returns aggregations với cardinality on `product_id`
+- [x] `search_after` cursor format: `[sort_value, sku_id]` array
+- [x] Tie-break `sku_id asc` luôn ở cuối mỗi sort
+- [x] Unit test với mocked ES client verify đúng query structure
+- [x] Dynamic filters dùng `bool/should` — không hardcode attribute keys
 
 ---
 
@@ -524,16 +536,16 @@ public class FacetQueryBuilder {
 
 | # | File | Status |
 |---|------|--------|
-| 1 | `service/SortMapper.java` | ⏳ Not yet |
-| 2 | `service/DiscountCalculator.java` | ⏳ Not yet |
-| 3 | `service/ProductQueryBuilder.java` | ⏳ Not yet |
-| 4 | `service/SearchParams.java` | ⏳ Not yet |
-| 5 | `service/SuggestQueryBuilder.java` | ⏳ Not yet |
-| 6 | `service/CategoryQueryBuilder.java` | ⏳ Not yet |
-| 7 | `service/FacetQueryBuilder.java` | ⏳ Not yet |
-| 8 | `service/SortMapperTest.java` | ⏳ Not yet |
-| 9 | `service/DiscountCalculatorTest.java` | ⏳ Not yet |
-| 10 | `service/ProductQueryBuilderTest.java` | ⏳ Not yet |
-| 11 | `service/SuggestQueryBuilderTest.java` | ⏳ Not yet |
-| 12 | `service/CategoryQueryBuilderTest.java` | ⏳ Not yet |
-| 13 | `service/FacetQueryBuilderTest.java` | ⏳ Not yet |
+| 1 | `service/SortMapper.java` | ✅ Completed |
+| 2 | `service/DiscountCalculator.java` | ✅ Completed |
+| 3 | `service/ProductQueryBuilder.java` | ✅ Completed |
+| 4 | `service/SearchParams.java` | ✅ Completed |
+| 5 | `service/SuggestQueryBuilder.java` | ✅ Completed |
+| 6 | `service/CategoryQueryBuilder.java` | ✅ Completed |
+| 7 | `service/FacetQueryBuilder.java` | ✅ Completed |
+| 8 | `service/SortMapperTest.java` | ✅ Completed |
+| 9 | `service/DiscountCalculatorTest.java` | ✅ Completed |
+| 10 | `service/ProductQueryBuilderTest.java` | ✅ Completed |
+| 11 | `service/SuggestQueryBuilderTest.java` | ✅ Completed |
+| 12 | `service/CategoryQueryBuilderTest.java` | ✅ Completed |
+| 13 | `service/FacetQueryBuilderTest.java` | ✅ Completed |

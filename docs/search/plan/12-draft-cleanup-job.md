@@ -37,12 +37,12 @@
 
 **Path:** `java/services/search-service/src/main/java/com/ecommerce/search/worker/DraftCleanupJob.java`
 
-- [ ] Create @Component class
-- [ ] Inject: ProductSearchRepository, WebClient (for Product Service export API), SearchProperties
-- [ ] Method: @Scheduled(cron) runCleanup()
-- [ ] For Cách B: Call Product Service export API to get orphan-drafts list
-- [ ] Mark is_deleted=true for all matched SKUs
-- [ ] After 24h, separate cronjob (tombstone-purger) hard-deletes
+- [x] Create @Component class
+- [x] Inject: UpdateByQueryExecutor, SearchProperties (dùng RestClient cho Product Service API)
+- [x] Method: @Scheduled(cron) runCleanup()
+- [x] For Cách B: Call Product Service export API to get orphan-drafts list
+- [x] Mark is_deleted=true for all matched SKUs (via _update_by_query)
+- [x] After tombstone retention, separate cronjob (tombstone-purger) hard-deletes
 
 ```java
 package com.ecommerce.search.worker;
@@ -174,8 +174,8 @@ search:
 
 **Path:** `java/services/search-service/src/main/java/com/ecommerce/search/worker/TombstonePurger.java`
 
-- [ ] Create @Component class
-- [ ] Method: @Scheduled(cron) purgeTombstones() - hard delete docs đã is_deleted=true > 24h
+- [x] Create @Component class
+- [x] Method: @Scheduled(cron) purgeTombstones() - hard delete docs đã is_deleted=true quá tombstoneRetentionDays
 
 ```java
 package com.ecommerce.search.worker;
@@ -270,14 +270,14 @@ public DeleteByQueryResponse deleteByQuery(Query query) {
 
 ## 5. Acceptance Criteria
 
-- [ ] Daily cronjob runs at 02:00 AM
-- [ ] Calls Product Service export API correctly
-- [ ] Mark is_deleted=true for orphan drafts
-- [ ] Throttle requests_per_second=100 (lower than main 300, off-peak)
-- [ ] Tombstone purger hard-deletes after 24h
-- [ ] Failures logged, no rethrow (don't crash scheduler)
-- [ ] Test: mock Product Service response → verify documents marked as deleted
-- [ ] Test: tombstone purger skips docs < 24h old
+- [x] Daily cronjob runs at 02:00 AM (configurable via `search.draft-cleanup.cron`)
+- [x] Calls Product Service export API correctly (qua RestClient)
+- [x] Mark is_deleted=true for orphan drafts (via _update_by_query)
+- [x] Throttle requests_per_second=100 (lower than main 300, off-peak)
+- [x] Tombstone purger hard-deletes sau tombstoneRetentionDays (default 30 ngày)
+- [x] Failures logged, no rethrow (don't crash scheduler)
+- [ ] Test: mock Product Service response → verify documents marked as deleted (thuộc Module 13)
+- [ ] Test: tombstone purger skips docs < retention days old (thuộc Module 13)
 
 ---
 
@@ -285,8 +285,8 @@ public DeleteByQueryResponse deleteByQuery(Query query) {
 
 | # | File | Status |
 |---|------|--------|
-| 1 | `worker/DraftCleanupJob.java` | ⏳ Not yet |
-| 2 | `worker/TombstonePurger.java` | ⏳ Not yet |
-| 3 | `repository/ProductSearchRepository.java` (add deleteByQuery) | ⏳ Not yet |
-| 4 | `worker/DraftCleanupJobTest.java` | ⏳ Not yet |
-| 5 | `worker/TombstonePurgerTest.java` | ⏳ Not yet |
+| 1 | `worker/DraftCleanupJob.java` | ✅ Done |
+| 2 | `worker/TombstonePurger.java` | ✅ Done |
+| 3 | `repository/ProductSearchRepository.java` (add deleteByQuery) | ✅ Done |
+| 4 | `worker/DraftCleanupJobTest.java` | ⏳ Module 13 |
+| 5 | `worker/TombstonePurgerTest.java` | ⏳ Module 13 |

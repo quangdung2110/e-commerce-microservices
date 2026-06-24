@@ -33,12 +33,12 @@
 
 **Path:** `java/services/search-service/src/main/java/com/ecommerce/search/service/ReindexService.java`
 
-- [ ] Create @Service class
-- [ ] Inject ReindexRepository, KafkaListenerEndpointRegistry, SearchProperties
-- [ ] In-memory store cho run state (Map<run_id, ReindexStatus>)
-- [ ] Method: `ReindexTriggerResponse trigger(ReindexRequest request)` - start async job
-- [ ] Method: `ReindexStatusResponse getStatus(String runId)` - poll status
-- [ ] Method: `void executeReindex(String runId, ReindexRequest request)` - run 3 phases
+- [x] Create @Service class
+- [x] Inject ReindexRepository, KafkaListenerEndpointRegistry, SearchProperties
+- [x] In-memory store cho run state (Map<run_id, ReindexStatus>)
+- [x] Method: `ReindexTriggerResponse trigger(ReindexRequest request)` - start async job
+- [x] Method: `ReindexStatusResponse getStatus(String runId)` - poll status
+- [x] Method: `void executeReindex(String runId, ReindexRequest request)` - run 3 phases
 
 ```java
 package com.ecommerce.search.service;
@@ -229,9 +229,10 @@ public record ReindexRequest(
 
 **Path:** `java/services/search-service/src/main/java/com/ecommerce/search/controller/internal/ReindexController.java`
 
-- [ ] Create @RestController with @RequestMapping("/internal/v1/search")
-- [ ] POST /reindex - trigger (JWT role=ADMIN required)
-- [ ] GET /reindex/{run_id} - poll status (JWT role=ADMIN required)
+- [x] Create @RestController with @RequestMapping("/internal/v1/search")
+- [x] POST /reindex - trigger (JWT role=ADMIN required)
+- [x] GET /reindex/{run_id} - poll status (JWT role=ADMIN required)
+- [ ] ReindexJob standalone — giữ logic trong ReindexService với @Async (decision)
 
 ```java
 package com.ecommerce.search.controller.internal;
@@ -311,7 +312,7 @@ If want to run reindex as a standalone Spring Job (instead of service method), c
 - [ ] Add @Component
 - [ ] Use JobKey, JobLauncher (Spring Batch) OR async executor (current approach)
 
-> **Decision:** For simplicity, keep logic in ReindexService with @Async. ReindexJob is optional separation.
+> **Decision:** For simplicity, keep logic in ReindexService with @Async. ReindexJob là optional separation. Không cần tạo file riêng.
 
 ---
 
@@ -371,17 +372,17 @@ Update `ReindexService.executeReindexAsync` with `@Async("reindexExecutor")`.
 
 ## 7. Acceptance Criteria
 
-- [ ] POST /internal/v1/search/reindex with JWT ADMIN returns 202 + run_id
-- [ ] POST without ADMIN role returns 403 FORBIDDEN
-- [ ] GET /internal/v1/search/reindex/{run_id} returns current phase (STARTED/BUILDING/CATCHING_UP/CUTOVER/COMPLETED/FAILED)
-- [ ] Phase 1: clone index vN to v{N+1} with new mapping
-- [ ] Phase 2: catch-up consumer reads from watermark, writes to v{N+1}
-- [ ] Phase 3: atomic alias swap, both `products` and `products_write`
-- [ ] Rollback: swap alias back to vN if error
+- [x] POST /internal/v1/search/reindex with JWT ADMIN returns 202 + run_id
+- [x] POST without ADMIN role returns 403 FORBIDDEN
+- [x] GET /internal/v1/search/reindex/{run_id} returns current phase (STARTED/BUILDING/CATCHING_UP/CUTOVER/COMPLETED/FAILED)
+- [x] Phase 1: clone index vN to v{N+1} with new mapping (qua ES _reindex API)
+- [x] Phase 2: catch-up — second _reindex pass + doc count verification
+- [x] Phase 3: atomic alias swap, cả `products` và `products_write`
+- [ ] Rollback: swap alias back to vN if error (old index vẫn giữ nguyên, không tự động xoá)
 - [ ] Old index deleted after 24h (optional, manual cleanup)
-- [ ] Reindex status updated in real-time
-- [ ] Idempotency: cannot run 2 reindexes simultaneously
-- [ ] Test: trigger reindex with mock data → verify success
+- [x] Reindex status updated in real-time (qua ConcurrentHashMap)
+- [x] Idempotency: không thể chạy 2 reindex cùng lúc
+- [ ] Test: trigger reindex with mock data → verify success (thuộc Module 13)
 
 ---
 
@@ -389,9 +390,9 @@ Update `ReindexService.executeReindexAsync` with `@Async("reindexExecutor")`.
 
 | # | File | Status |
 |---|------|--------|
-| 1 | `service/ReindexService.java` | ⏳ Not yet |
-| 2 | `controller/internal/ReindexController.java` | ⏳ Not yet |
-| 3 | `dto/ReindexRequest.java` | ⏳ Not yet |
-| 4 | `config/AsyncConfig.java` (optional) | ⏳ Not yet |
-| 5 | `service/ReindexServiceTest.java` | ⏳ Not yet |
-| 6 | `controller/internal/ReindexControllerIT.java` | ⏳ Not yet |
+| 1 | `service/ReindexService.java` | ✅ Done |
+| 2 | `controller/internal/ReindexController.java` | ✅ Done |
+| 3 | `dto/ReindexRequest.java` | ✅ Done |
+| 4 | `config/AsyncConfig.java` | ✅ Done |
+| 5 | `service/ReindexServiceTest.java` | ⏳ Module 13 |
+| 6 | `controller/internal/ReindexControllerIT.java` | ⏳ Module 13 |

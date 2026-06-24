@@ -368,9 +368,9 @@ com.ecommerce.search/
   - [ ] `GET /api/v1/search/suggest?q=iph` returns autocomplete
   - [ ] `GET /api/v1/search/categories` returns category tree
   - [ ] `GET /api/v1/search/facets/{id}` returns facets
-- [ ] Internal API works:
-  - [ ] `POST /internal/v1/search/reindex` with JWT ADMIN returns 202 + run_id
-  - [ ] `GET /internal/v1/search/reindex/{run_id}` returns status
+- [x] Internal API works:
+  - [x] `POST /internal/v1/search/reindex` with JWT ADMIN returns 202 + run_id
+  - [x] `GET /internal/v1/search/reindex/{run_id}` returns status
 - [ ] Kafka consumer indexes events:
   - [ ] Testcontainers test: produce event → verify ES doc updated
 - [ ] Cursor pagination works:

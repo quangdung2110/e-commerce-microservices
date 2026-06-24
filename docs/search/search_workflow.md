@@ -159,8 +159,24 @@ API cốt lõi nhất của Search Service — phục vụ trang Danh sách sả
            { "term": { "is_in_stock": true } },
            { "term": { "category_id": "cat-smartphone" } },
            { "range": { "best_price": { "gte": 20000000, "lte": 40000000 } } },
-           { "term": { "searchable_attributes": "thuonghieu:apple" } },
-           { "term": { "variant_attributes": "mausac:titan-tu-nhien" } }
+           {
+             "bool": {
+               "minimum_should_match": 1,
+               "should": [
+                 { "term": { "searchable_attributes": "thuonghieu:apple" } },
+                 { "term": { "variant_attributes": "thuonghieu:apple" } }
+               ]
+             }
+           },
+           {
+             "bool": {
+               "minimum_should_match": 1,
+               "should": [
+                 { "term": { "searchable_attributes": "mausac:titan-tu-nhien" } },
+                 { "term": { "variant_attributes": "mausac:titan-tu-nhien" } }
+               ]
+             }
+           }
          ]
        }
      },
@@ -219,7 +235,7 @@ API cốt lõi nhất của Search Service — phục vụ trang Danh sách sả
      - `filter` context: Các điều kiện lọc cứng, được ES cache bitset tự động.
      - `in_stock`: khi tham số `in_stock=false` thì bỏ `term is_in_stock=true` khỏi filter.
      - `is_in_stock` ở Search là cờ sellable projection, không thay cho kiểm tra tồn kho cứng ở checkout.
-     - `searchable_attributes`: Thay thế hoàn toàn cho kiểu `nested`, search/filter trực tiếp trên Composite Array.
+     - `searchable_attributes` / `variant_attributes`: Thay thế hoàn toàn cho kiểu `nested`. Mỗi filter value được wrap trong `bool/should` kiểm tra cả 2 field — vì không biết trước attribute đó là product-level (VD: "thuonghieu:apple") hay SKU-level (VD: "mausac:den"). `minimumShouldMatch=1` đảm bảo chỉ cần match 1 trong 2.
      - `collapse`: Gom nhóm các SKU theo `product_id`, chỉ trả về SKU best match cho UI.
      - **Mọi sort đều có `sku_id asc` ở cuối** làm tie-break để pagination ổn định.
      - Mọi count trong facets phải đếm DISTINCT `product_id` qua `product_count` cardinality aggregation.

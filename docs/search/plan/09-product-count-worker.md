@@ -36,10 +36,10 @@
 
 **Path:** `java/services/search-service/src/main/java/com/ecommerce/search/worker/ProductCountUpdater.java`
 
-- [ ] Create @Component class
-- [ ] Inject UpdateByQueryExecutor, SearchProperties
-- [ ] Methods: `incrementCount`, `decrementCount`
-- [ ] Each method: build query, execute _update_by_query with arithmetic script
+- [x] Create @Component class
+- [x] Inject UpdateByQueryExecutor, SearchProperties
+- [x] Methods: `incrementCount`, `decrementCount`
+- [x] Each method: build query, execute _update_by_query with arithmetic script
 
 ```java
 package com.ecommerce.search.worker;
@@ -201,12 +201,12 @@ if (event.categoryId() != null) {
 
 ## 5. Acceptance Criteria
 
-- [ ] `incrementCount` correctly updates `categories.product_count += 1` via _update_by_query
-- [ ] `decrementCount` correctly updates `categories.product_count -= 1` (with min 0 guard)
-- [ ] Throttle `requests_per_second=300` applied via UpdateByQueryExecutor
-- [ ] Conflicts proceed (no rollback on conflict)
-- [ ] Idempotency acceptable: ±1-2 drift per category
-- [ ] Failures logged + metric (no rethrow to avoid blocking event processing)
+- [x] `incrementCount` correctly updates `categories.product_count += 1` via _update_by_query
+- [x] `decrementCount` correctly updates `categories.product_count -= 1` (with min 0 guard)
+- [x] Throttle `requests_per_second=300` applied via UpdateByQueryExecutor
+- [x] Conflicts proceed (no rollback on conflict)
+- [x] Idempotency acceptable: ±1-2 drift per category
+- [x] Failures logged + metric (no rethrow to avoid blocking event processing)
 - [ ] Integration test: PRODUCT_CREATED (ACTIVE) → product_count increases
 - [ ] Integration test: PRODUCT_DELETED → product_count decreases
 
@@ -216,7 +216,7 @@ if (event.categoryId() != null) {
 
 | # | File | Status |
 |---|------|--------|
-| 1 | `worker/ProductCountUpdater.java` | ⏳ Not yet |
+| 1 | `worker/ProductCountUpdater.java` | ✅ Done |
 | 2 | `worker/ProductCountUpdaterTest.java` | ⏳ Not yet |
 | 3 | `worker/ProductCountUpdaterIT.java` (Testcontainers) | ⏳ Not yet |
-| 4 | `worker/handler/ProductEventHandlers.java` (add calls) | ⏳ Not yet |
+| 4 | `worker/handler/ProductEventHandlers.java` (add calls) | ✅ Done (calls already present) |
