@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: ${spring.datasource.url}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  data:
+    redis:
+      cluster:
+        nodes: ${spring.data.redis.cluster.nodes}
+
+debezium:
+  skip: true

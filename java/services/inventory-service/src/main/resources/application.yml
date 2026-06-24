@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: inventory-service
+  profiles:
+    active: dev
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8083
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        inventory.lua.duration: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+inventory:
+  redis:
+    cluster:
+      nodes: ${REDIS_CLUSTER_NODES:localhost:6379}
+      max-redirects: 3
+    lettuce:
+      pool:
+        max-active: 32
+        max-idle: 16
+        min-idle: 4
+    timeout-ms: 2000
+    idempotency-ttl-days: 30
+    suspension-ttl-hours: 24
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    topic-events: t.inventory.events
+    consumer-group-relay: inventory-stream-relay
+    consumer-group-ledger: inventory-ledger-writer
+    poll-interval-ms: 100
+  temporal:
+    target: ${TEMPORAL_TARGET:localhost:7233}
+    namespace: inventory
+    task-queue: inventory-activities
+    worker-identity: ${HOSTNAME:inventory-worker-1}
+  restock:
+    reservation-ttl-minutes: 30
+  routing:
+    plan-ttl-minutes: 20
+  cleanup:
+    cron: "0 0 2 * * *"
+    watermark-hours: 24
+    batch-size: 10000
