@@ -130,7 +130,6 @@ CREATE TABLE inventory_reservations (
     quantity            INT          NOT NULL,
     route_plan_id       UUID         NOT NULL,
     status              VARCHAR(50)  NOT NULL,
-    idempotency_key     VARCHAR(255) NOT NULL,
     expires_at          TIMESTAMPTZ  NOT NULL,
     refund_expected     BOOLEAN      NOT NULL DEFAULT FALSE,
     refund_request_id   VARCHAR(64),
@@ -141,15 +140,11 @@ CREATE TABLE inventory_reservations (
     CONSTRAINT ck_inventory_reservations_quantity_positive
         CHECK (quantity > 0),
     CONSTRAINT ck_inventory_reservations_status_enum
-        CHECK (status IN ('RESERVED', 'DEDUCTED', 'CANCELLED')),
-    CONSTRAINT uq_inventory_reservations_idempotency_key
-        UNIQUE (idempotency_key)
+        CHECK (status IN ('RESERVED', 'DEDUCTED', 'CANCELLED'))
 );
 
 COMMENT ON TABLE inventory_reservations IS
     'Per-item reservation tracker. Also gates INVENTORY_RETURN_RECEIVED_ALL via refund_expected + refund_returned_at.';
-COMMENT ON COLUMN inventory_reservations.idempotency_key IS
-    'Format: {op}:{sku_id}:{warehouse_id}:{order_id}, op ∈ {reserve, release, deduct}. Copied from Redis idempotency key for cold-path replay safety.';
 COMMENT ON COLUMN inventory_reservations.expires_at IS
     'Reservation TTL (default 30 min from ReserveInventoryActivity). Order Temporal Saga owns the timer; Inventory does NOT scan expiry.';
 COMMENT ON COLUMN inventory_reservations.status IS
@@ -177,7 +172,7 @@ CREATE UNIQUE INDEX uq_inventory_reservations_active
     WHERE status = 'RESERVED';
 ```
 
-> ⚠️ **Idempotency key format** phải khớp với Redis Lua key format để server copy trực tiếp từ Redis sang DB. Format: `{op}:{sku_id}:{warehouse_id}:{order_id}` (xem M06).
+> **Idempotency:** Hot path do Redis Lua SETNX (30 ngày TTL, xem M06). Cold path do partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` ở trên — reservation là 1 row duy nhất cho cả lifecycle `(RESERVED → DEDUCTED|CANCELLED)`. Ledger cold path dùng `inventory_ledger.event_id` UNIQUE (xem §3.5).
 
 ### 3.5 Bảng `inventory_ledger`
 
@@ -304,7 +299,6 @@ INSERT INTO warehouses (name, address, city_code, district_code, ward_code, is_a
 | `uq_physical_inventory_sku_warehouse` (UNIQUE) | Stock lookup + routing aggregate | `WHERE sku_id = ANY(:skus) AND available_quantity > 0` |
 | `idx_physical_inventory_sku_available` (partial) | Routing candidate | Same query, partial index nhanh hơn |
 | `idx_warehouses_city_active` (partial) | Routing same-province | `WHERE city_code = :cc AND is_active = TRUE` |
-| `uq_inventory_reservations_idempotency_key` (UNIQUE) | Cold-path idempotency | `WHERE idempotency_key = :key` |
 | `idx_inventory_reservations_order` | Order saga lookup | `WHERE order_id = :oid` |
 | `idx_inventory_reservations_refund_completion` (partial) | Refund check | `WHERE order_id = :oid AND refund_request_id = :rrid AND refund_expected = TRUE` |
 | `uq_inventory_reservations_active` (partial UNIQUE) | Ngăn duplicate RESERVED | Conditional insert |
@@ -323,8 +317,7 @@ INSERT INTO warehouses (name, address, city_code, district_code, ward_code, is_a
 | `physical_inventory` | `CHECK (reserved_quantity >= 0)` | Reserved không âm |
 | `physical_inventory` | `CHECK (actual_quantity >= reserved_quantity)` | Invariant 1: stock vật lý ≥ đã giữ |
 | `inventory_reservations` | `CHECK (status IN ('RESERVED','DEDUCTED','CANCELLED'))` | Enum |
-| `inventory_reservations` | `UNIQUE (idempotency_key)` | Chống duplicate |
-| `inventory_reservations` | Partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` | Chống 2 RESERVED trùng |
+| `inventory_reservations` | Partial UNIQUE `(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` | Chống 2 RESERVED trùng cho cùng SKU-kho-đơn |
 | `inventory_ledger` | `UNIQUE (event_id)` | Idempotent append |
 | `inventory_ledger` | `CHECK (reference_type IN (...))` | Enum, chống typo |
 | `inventory_outbox` | `CHECK (event_type IN (...))` | Enum, chống typo |

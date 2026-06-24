@@ -292,26 +292,39 @@ Nhập hàng vào kho. Hỗ trợ **2 loại nghiệp vụ** thông qua field `r
      '{"change_type":":reference_type","sku_id":"...","quantity_added":...}'::jsonb,
      NOW()
    );
-   -- Nếu ORDER_RETURNED_RESTOCK: check refund completion
-   IF :reference_type = 'ORDER_RETURNED_RESTOCK' THEN
-     SELECT COUNT(*) INTO :pending
-     FROM inventory_reservations
-     WHERE order_id = :order_id
-       AND refund_request_id = :refund_request_id
-       AND refund_expected = TRUE
-       AND status = 'DEDUCTED'
-       AND refund_returned_at IS NULL;
-     IF :pending = 0 THEN
-       INSERT INTO inventory_outbox (
-         event_id, schema_version, aggregate_type, aggregate_id,
-         event_type, partition_key, payload, created_at
-       ) VALUES (
-         :event_id_ret, 1, 'Inventory', :order_id,
-         'INVENTORY_RETURN_RECEIVED_ALL', :order_id,
-         '{"order_id":..., "refund_request_id":"...", "all_items_received":true, "confirmed_at":"..."}'::jsonb,
-         NOW()
-       );
-     END IF;
+    -- Nếu ORDER_RETURNED_RESTOCK: check refund completion
+    IF :reference_type = 'ORDER_RETURNED_RESTOCK' THEN
+      SELECT COUNT(*) INTO :pending
+      FROM inventory_reservations
+      WHERE order_id = :order_id
+        AND refund_request_id = :refund_request_id
+        AND refund_expected = TRUE
+        AND status = 'DEDUCTED'
+        AND refund_returned_at IS NULL;
+      -- Aggregate order_item_ids cho payload (chỉ chạy khi pending = 0 bên dưới)
+      SELECT COALESCE(array_agg(order_item_id), '{}') INTO :order_item_ids
+      FROM inventory_reservations
+      WHERE order_id = :order_id
+        AND refund_request_id = :refund_request_id
+        AND refund_expected = TRUE
+        AND status = 'DEDUCTED'
+        AND refund_returned_at IS NOT NULL;
+      IF :pending = 0 THEN
+        INSERT INTO inventory_outbox (
+          event_id, schema_version, aggregate_type, aggregate_id,
+          event_type, partition_key, payload, created_at
+        ) VALUES (
+          :event_id_ret, 1, 'Inventory', :order_id,
+          'INVENTORY_RETURN_RECEIVED_ALL', :order_id,
+          jsonb_build_object(
+            'order_id', :order_id,
+            'refund_request_id', :refund_request_id,
+            'order_item_ids', :order_item_ids,
+            'confirmed_at', NOW()
+          ),
+          NOW()
+        );
+      END IF;
    END IF;
    COMMIT;
 4. [Redis Cache Update]

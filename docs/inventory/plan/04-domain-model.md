@@ -289,17 +289,17 @@ public record RoutePlan(
     UUID routePlanId,
     Instant expiresAt,
     List<RoutePlanItem> items,
-    List<WarehouseOption> warehouseOptions
+    List<WarehouseAssignment> warehouseAssignments
 ) {
     public RoutePlan {
         if (routePlanId == null) throw new IllegalArgumentException("routePlanId required");
         if (expiresAt == null) throw new IllegalArgumentException("expiresAt required");
         if (items == null || items.isEmpty()) throw new IllegalArgumentException("items required");
-        if (warehouseOptions == null || warehouseOptions.isEmpty()) {
-            throw new IllegalArgumentException("warehouseOptions required");
+        if (warehouseAssignments == null || warehouseAssignments.isEmpty()) {
+            throw new IllegalArgumentException("warehouseAssignments required");
         }
         items = List.copyOf(items);
-        warehouseOptions = List.copyOf(warehouseOptions);
+        warehouseAssignments = List.copyOf(warehouseAssignments);
     }
 
     public record RoutePlanItem(
@@ -316,10 +316,9 @@ public record RoutePlan(
         }
     }
 
-    public record WarehouseOption(
+    public record WarehouseAssignment(
         long warehouseId,
-        long availableQuantity,
-        int estimatedDeliveryDays
+        long availableQuantity
     ) {}
 }
 ```
@@ -455,7 +454,6 @@ public class InventoryReservation {
     private int quantity;
     private UUID routePlanId;
     private ReservationStatus status;
-    private String idempotencyKey;
     private Instant expiresAt;
     private boolean refundExpected;
     private String refundRequestId;
@@ -466,7 +464,7 @@ public class InventoryReservation {
     public static InventoryReservation newReserved(
         long orderId, long orderItemId,
         String skuId, String productId, long warehouseId,
-        int quantity, UUID routePlanId, String idempotencyKey,
+        int quantity, UUID routePlanId,
         Instant expiresAt
     ) {
         InventoryReservation r = new InventoryReservation();
@@ -478,7 +476,6 @@ public class InventoryReservation {
         r.quantity = quantity;
         r.routePlanId = routePlanId;
         r.status = ReservationStatus.RESERVED;
-        r.idempotencyKey = idempotencyKey;
         r.expiresAt = expiresAt;
         r.refundExpected = false;
         return r;
@@ -698,12 +695,11 @@ package com.platform.inventoryservice.domain.event;
 import java.time.Instant;
 import java.util.List;
 
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record ReturnReceivedAllPayload(
     long orderId,
     String refundRequestId,
-    List<Long> requiredOrderItemIds,
-    List<Long> receivedOrderItemIds,
-    boolean allItemsReceived,
+    List<Long> orderItemIds,    // gộp từ required+received; tại emit time = toàn bộ refund scope
     Instant confirmedAt
 ) {}
 ```

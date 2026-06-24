@@ -1,395 +1,452 @@
-# Search Service - Events Consumed (Updated for Extreme Scale)
+# Search Service - Events Consumed
 
 **Liên kết nhanh (Related Documents):**
+*   [Service Overview (Tech Stack, Deployment, Observability)](search_service_overview.md)
 *   [Elasticsearch Schema (Read Store)](search_elasticsearch_schema.md)
-*   [Caching Schema (Redis)](search_caching_schema.md)
 *   [Workflows (API & Data Flow)](search_workflow.md)
 *   [Background Workers & Jobs](search_workers.md)
-*   [Events Consumed & Kafka Topics](search_events.md)
 *   [Architecture Recommendations](search_architecture_recommendations.md)
 
 **Cross-Service References:**
 *   [Product Service - Events Structure (Source of Truth)](../product/product_events.md)
 *   [Product Service - Workers (Outbox Producer)](../product/product_workers.md)
+*   [Review Service - Events Structure](../review/review_events.md)
+*   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
+*   [Idempotency Guidelines (SSOT)](../_contracts/IDEMPOTENCY_GUIDELINES.md)
+*   [CHANGELOG — Phase 22b (Search DLQ Removal)](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq)
 
 ---
 
 Tài liệu này định nghĩa toàn bộ luồng sự kiện mà Search Service tiêu thụ. Search Service là Read Model thuần túy, không phát sinh event nghiệp vụ mới.
 
-> **Nguyên tắc:** Search phản chiếu dữ liệu từ Source Services theo ranh giới ownership. Product data đến từ Product Service; review metrics đến từ Review Service. Search không tự tính business logic ngoài payload contract nhận được.
+> **Trạng thái Phase đã áp dụng (đồng bộ với [CHANGELOG](../_contracts/CHANGELOG.md)):**
+> - **Phase 19** (Order Service Simplification): Search Service đã loại bỏ handler riêng cho `PRODUCT_STATUS_CHANGED`. Mọi thay đổi `product_status` được propagate qua `SKU_UPDATED` với cờ `product_status_changed=true`. Xem [§3.3, §3.4](#33-product_status_changed-via-sku_updated-phase-19).
+> - **Phase 21** (Order Service Schema Simplification): Search Service đã loại bỏ `t.search.metrics.events` topic + `search-metrics-indexer` consumer group + field `product_sold_count` + sort `best_selling`. Search Service giờ chỉ subscribe 3 topics.
+> - **Phase 22b** (Search Service — Remove DLQ): Search Service đã loại bỏ hoàn toàn DLQ topic `t.search.dlq` + consumer group `search-dlq-processor`. Mọi lỗi không tự hồi phục được xử lý bằng `log error + metric + skip + ACK`. Xem [CHANGELOG §Phase 22b Search](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq).
+
+> **Nguyên tắc đơn giản hoá:** Đa số event dùng **CHUNG 1 script PATCH** với **1 guard field `version`** duy nhất. Riêng `SKU_CREATED` dùng biến thể script (dùng `created_at` thay vì `updated_at`).
 >
-> **Policy shared-topic (bắt buộc):** nếu consumer nhận event hợp lệ theo envelope nhưng `event_type` không nằm trong allowlist của consumer group đó thì phải **ignore + ACK + ghi metric** (`search_event_ignored_total{topic,event_type}`), không đẩy DLQ.
+> **Guard Strategy — Single Timestamp (mỗi event dùng đúng 1 timestamp làm guard):** Search Service sử dụng **đúng 1 trường timestamp** làm guard ordering cho hầu hết event, cụ thể:
+> - Hầu hết event: `event.updated_at` (ISO 8601 UTC) — đại diện cho thời điểm entity thay đổi lần cuối.
+> - Riêng `SKU_CREATED`: `event.created_at` (ISO 8601 UTC) — vì đây là event khởi tạo, entity chưa có `updated_at`; dùng `created_at` đảm bảo idempotency cho upsert.
+> - **NGOẠI LỆ (Phase 19, 21):** `REVIEW_METRICS_UPDATED` và `PRODUCT_STATUS_CHANGED` (qua `SKU_UPDATED.product_status_changed=true`) **KHÔNG dùng script guard** — chỉ dựa vào Kafka partition ordering. Partition key `product_id` đảm bảo events cùng product đến theo đúng thứ tự.
 >
-> **Guard Strategy — Timestamp-Only:** Search Service sử dụng duy nhất `event.updated_at` (ISO 8601 UTC) làm guard ordering cho tất cả event streams. Trường `version` trong Elasticsearch document lưu timestamp ISO 8601. So sánh: `event.updated_at > current_doc.version`. Event `PRODUCT_DELETED` luôn apply (tombstone) để đảm bảo xóa. Phương pháp này đơn giản, nhất quán, không cần quản lý nhiều sequence field.
+> Trường `version` trong Elasticsearch document lưu timestamp ISO 8601 (là `updated_at` cho đa số event, là `created_at` cho `SKU_CREATED`). Quy tắc so sánh thống nhất: `event_timestamp > current_doc.version`. Phương pháp này đơn giản, nhất quán — mỗi event chỉ cần nhớ đúng 1 timestamp để chống out-of-order.
 
 ## 1. Bản Đồ Kafka Topics
 
-|| Topic Name | Consumer Group | Producer | Events trong Topic | Mô tả |
-||---|---|---|---|---|
-|| `t.product.events` | `search-product-indexer` | Product Service | `PRODUCT_CREATED`, `PRODUCT_UPDATED`, `PRODUCT_STATUS_CHANGED`, `SKU_UPDATED`, `PRODUCT_DELETED`, `SKU_DELETED`, `SKU_CREATED` | Topic chính cho Product projection |
-|| `t.category.events` | `search-category-indexer` | Product Service | `CATEGORY_CREATED`, `CATEGORY_UPDATED`, `CATEGORY_DELETED` | Topic chuyên biệt cho category projection |
-|| `t.review.events` | `search-review-metrics-sync` | Review Service | `REVIEW_METRICS_UPDATED` | Đồng bộ điểm rating và số lượng review theo thời gian thực |
-|| `t.search.metrics.events` | `search-sales-metrics-sync` | Order Service (Order Metrics Projector nội bộ) | `ORDER_PRODUCT_METRICS_UPDATED` | Đồng bộ realtime `product_sold_count` theo `product_id` |
-|| `t.search.retry` | `search-retry-replayer` | Search Service (internal) | retry envelopes (self-heal) | Kênh nội bộ xử lý lỗi có thể phục hồi như `document_missing_exception` |
-|| `t.search.dlq` | `search-dlq-processor` | Search Service (internal) | failed envelopes (parking lot) | Kênh lỗi không tự phục hồi hoặc vượt ngưỡng retry để replay có kiểm soát |
+| Topic Name | Consumer Group | Producer | Events trong Topic | Mô tả |
+|---|---|---|---|---|
+| `t.product.events` | `search-product-indexer` | Product Service | `PRODUCT_CREATED`, `PRODUCT_UPDATED`, `SKU_UPDATED` (bao gồm `product_status_changed=true`), `PRODUCT_DELETED`, `SKU_DELETED` | Topic chính cho Product projection. **Lưu ý (Phase 19):** `PRODUCT_STATUS_CHANGED` đã được gộp vào `SKU_UPDATED` với cờ `product_status_changed=true`; không còn event riêng. |
+| `t.category.events` | `search-product-indexer` | Product Service | `CATEGORY_CREATED`, `CATEGORY_UPDATED`, `CATEGORY_DELETED` | Topic cho category projection (cùng group) |
+| `t.review.events` | `search-product-indexer` | Review Service | `REVIEW_METRICS_UPDATED` | Đồng bộ rating theo `product_id`. Chỉ 1 event type — Search Service consumer cho mọi review-related metric. |
 
-## 2. Chi Tiết Xử Lý Theo Event Type
+> **Số consumer group = 1 (Phase 21+):**
+> - `search-product-indexer` gộp product + category + review events (3 topics vào 1 group).
+> - **KHÔNG có DLQ (Phase 22b).** Mọi lỗi không tự hồi phục (document_missing_exception, mapping conflict, payload validation fail) đều được xử lý bằng `log error + skip` rồi ACK event bình thường.
+> - **KHÔNG subscribe `t.admin.events`** (hệ thống single-admin, không lưu field admin trên document).
+> - **KHÔNG subscribe `t.search.metrics.events`** (Phase 21 — topic này đã bị loại bỏ cùng bảng `order_product_metrics` ở Order Service).
 
-### 2.1. PRODUCT_CREATED
-**Nguồn:** [Product Events - 3.1](../product/product_events.md#31-product_created)
+## 2. Script PATCH Chung (Áp Dụng Cho Đa Số Event)
+
+**Phạm vi áp dụng:** Đa số event (PRODUCT_*, SKU_UPDATED, CATEGORY_*, REVIEW_*) dùng script dưới đây. Producer side wrap event payload thành cùng format `{ event_id, updated_at, indexed_at, fields: {...} }`.
+
+**NGOẠI LỆ — KHÔNG dùng script này:**
+- `SKU_CREATED`: dùng biến thể `created_at` (xem §3.5).
+- `REVIEW_METRICS_UPDATED`: không dùng script guard — chỉ `_update_by_query` không script (xem §3.10).
+- `PRODUCT_STATUS_CHANGED` (qua `SKU_UPDATED.product_status_changed=true`): không dùng script guard thông thường — dùng script đặc thù recompute `is_in_stock` (xem §3.3).
+
+```painless
+if (ctx._source.version != null && params.updated_at <= ctx._source.version) {
+  ctx.op = 'none';
+  return;
+}
+for (entry in params.fields) {
+  ctx._source[entry.key] = entry.value;
+}
+ctx._source.version = params.updated_at;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_event_id = params.event_id;
+```
+
+**Ý nghĩa:**
+- Nếu doc chưa có `version` (lần đầu insert) → apply bình thường.
+- Nếu `event.updated_at <= current_doc.version` → skip (event cũ/stale).
+- Ngược lại → PATCH các field trong `params.fields` lên `_source`, cập nhật `version`, `indexed_at`, `last_event_id`.
+
+**Đặc tính:**
+- **Idempotent:** Cùng event gửi nhiều lần → chỉ apply lần đầu.
+- **Out-of-order safe:** Event trễ so với doc hiện tại → skip.
+- **Partial update:** Chỉ field có trong `params.fields` mới được ghi đè.
+
+## 3. Chi Tiết Xử Lý Theo Event Type
+
+### 3.1. PRODUCT_CREATED
 
 **Logic xử lý:**
 1. Parse payload, extract Product + danh sách SKUs.
-2. Nếu `skus` rỗng/null -> đánh dấu contract violation, đẩy `t.search.dlq` (không được skip im lặng vì sẽ gây drift read-model).
-3. Enrichment category từ [Category Cache](search_caching_schema.md#12-category-tree-cache).
-4. **Data transformation ownership (bắt buộc):** Search Worker transform `attributes_json` và `variant_attributes_json` từ raw JSON sang token arrays `searchable_attributes` / `variant_attributes`.
-5. **Chuẩn hoá field trạng thái SKU:** ưu tiên đọc `skus[].sku_status`; nếu payload tương thích ngược chỉ có `skus[].status` thì map alias `status -> sku_status` trước khi index.
-6. **Contract giá trong snapshot:** `skus[]` bắt buộc có `best_price` và `has_promotion`; thiếu field thì đánh dấu contract violation và đẩy `t.search.dlq` (không tự tính business pricing).
-7. **Cấm dùng Index thuần tuý:** Bắt buộc sử dụng Scripted Upsert với Guard Timestamp để chống lỗi Zombie Hole nếu event `PRODUCT_DELETED` hoặc `PRODUCT_UPDATED` đến trước. Chỉ Insert/Update nếu `event.updated_at > current_doc.version` (so sánh timestamp ISO).
+2. Validate: `skus[]` bắt buộc phải có; mỗi `sku` phải có `best_price` và `has_promotion`. Nếu thiếu → log warning + metric `search_product_payload_invalid_total` + skip.
+3. Chuẩn hoá `skus[].status -> skus[].sku_status` nếu cần (backward compat).
+4. Enrichment category từ `categories` alias (read): lookup theo `category_id` để lấy `category_name` và `category_path`. Nếu lookup miss → bỏ qua `category_name`/`category_path` (không ghi vào doc), log warning + metric `search_category_enrichment_miss_total{topic,event_type,category_id}`; `CATEGORY_UPDATED`/`CATEGORY_CREATED` sau đó sẽ populate lại.
+5. **Data transformation:** Transform `attributes_json` → `searchable_attributes` token array; `variant_attributes_json` → `variant_attributes` token array.
+6. **Resolve `thumbnail_url`:** Với mỗi SKU, lấy `product.media[0].thumbnail_url` (ưu tiên), fallback `product.media[0].url`, fallback cuối cùng `skus[i].media[0].url`. Nếu tất cả rỗng → để trống.
+7. **Derive `is_in_stock`:** Tính ở application logic trước khi gọi ES: `is_in_stock = (!is_deleted && product_status == 'ACTIVE' && sku_status == 'ACTIVE')`. (Cùng công thức với script §3.3.)
+8. Loop qua `skus[]`, với mỗi SKU gọi script PATCH ở trên (với `scripted_upsert: true`):
+   ```json
+   POST products_write/_update/{sku_id}
+   {
+     "scripted_upsert": true,
+     "script": {
+       "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } for (entry in params.fields) { ctx._source[entry.key] = entry.value; } ctx._source.version = params.updated_at; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
+       "params": {
+          "fields": {
+            "sku_id": "sku-uuid-001",
+            "product_id": "prod-uuid-001",
+            "name": "iPhone 15 Pro Max 256GB",
+            "category_id": "cat-smartphone",
+            "category_name": "Điện thoại",
+            "category_path": "dien-tu/dien-thoai",
+            "product_status": "ACTIVE",
+            "sku_status": "ACTIVE",
+            "original_price": 34990000,
+            "promotional_price": 28891500,
+            "best_price": 28891500,
+            "has_promotion": true,
+            "is_in_stock": true,
+            "is_deleted": false,
+            "searchable_attributes": ["thuonghieu:apple"],
+            "variant_attributes": ["mausac:đen", "bonho:256GB"],
+            "thumbnail_url": "https://cdn.example.com/ip15.jpg",
+            "created_at": "2026-02-28T03:51:00Z",
+            "updated_at": "2026-02-28T03:51:00Z"
+          },
+          "updated_at": "2026-02-28T03:51:00Z",
+          "indexed_at": "2026-02-28T03:51:01Z",
+          "event_id": "evt-001"
+       }
+     },
+     "upsert": {
+       "sku_id": "sku-uuid-001",
+       "product_id": "prod-uuid-001",
+       "version": "2026-02-28T03:51:00Z"
+     }
+   }
+   ```
+9. **Sau khi xử lý xong SKU documents:** Nếu `product_status == 'ACTIVE'` (chỉ áp dụng cho product visibility), trigger `_update_by_query` trên `categories` index theo `category_id` để tăng `product_count` (xem §3.11).
 
-### 2.2. PRODUCT_UPDATED
-**Nguồn:** [Product Events - 3.2](../product/product_events.md#32-product_updated)
+### 3.2. PRODUCT_UPDATED
 
 **Logic xử lý:**
-1. Parse payload: extract `product_id`, product-level fields (`name`, `description`, `category_id`, `attributes_json`, `media`), và `sku_ids[]`.
-2. Validate: `sku_ids[]` bắt buộc phải có trong payload.
-3. **Bulk partial update theo `sku_ids[]`:** Loop qua từng `sku_id` trong mảng, gọi `_update` trên document `_id = sku_id` để set các product-level fields. Payload chỉ chứa product-level fields, không chứa SKU-level fields — script chỉ update đúng các trường có mặt trong payload.
-4. **Contract giá trong snapshot:** Payload không còn chứa SKU-level fields. Các trường giá (`original_price`, `promotional_price`, `best_price`, `has_promotion`) và trạng thái (`sku_status`) không bị ảnh hưởng bởi event này.
-5. Guard out-of-order bằng script: chỉ apply khi `event.updated_at > current_doc.version`.
-6. **Không tự tính lại giá:** Search Worker chỉ ghi đúng giá trị nhận được từ payload. Không có phép tính business pricing ở Search.
+1. Parse payload: extract `product_id`, product-level fields, `sku_ids[]`.
+2. Nếu payload chứa `category_id` mới: **enrichment từ `categories` index** (lookup theo `category_id` mới) để lấy `category_name` và `category_path`. Nếu miss → skip enrichment (giữ nguyên giá trị cũ trong doc, log warning + metric `search_category_enrichment_miss_total`).
+3. **Data transformation:** Transform `attributes_json` (nếu có trong payload) → `searchable_attributes` token array. (Cùng rule với §3.1.)
+4. **Resolve `thumbnail_url`:** Lấy `product.media[0].thumbnail_url` (ưu tiên), fallback `product.media[0].url`. Nếu rỗng → giữ nguyên giá trị cũ trong doc (không xoá).
+5. Loop qua `sku_ids[]`, với mỗi SKU gọi script PATCH (không upsert, partial update).
+6. Payload `fields` chỉ chứa product-level fields (`name`, `description`, `category_id`, `category_name`, `category_path`, `searchable_attributes`, `thumbnail_url`...).
+7. Các SKU-level fields (giá, status) **không bị ảnh hưởng** bởi event này.
 
 ```json
--- Loop qua từng sku_id trong sku_ids[]
 POST products_write/_update/{sku_id}
 {
   "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } if (params.name != null) ctx._source.name = params.name; if (params.description != null) ctx._source.description = params.description; if (params.category_id != null) ctx._source.category_id = params.category_id; if (params.attributes_json != null) ctx._source.attributes_json = params.attributes_json; if (params.media != null) ctx._source.media = params.media; ctx._source.version = params.updated_at;",
+    "source": "...",
     "params": {
-      "name": "iPhone 15 Pro Max 256GB (Updated)",
-      "description": "Mô tả cập nhật...",
-      "category_id": "cat-dien-thoai",
-      "attributes_json": { "material": "Titanium Grade 5", "origin": "Vietnam" },
-      "media": [{ "media_type": "IMAGE", "url": "https://cdn.example.com/ip15-main-updated.jpg", "thumbnail_url": "https://cdn.example.com/ip15-main-updated-thumb.jpg", "sort_order": 1 }],
-      "updated_at": "2026-02-28T04:15:00Z"
+      "fields": {
+        "name": "iPhone 15 Pro Max 256GB (Updated)",
+        "description": "Mô tả cập nhật...",
+        "category_id": "cat-dien-thoai",
+        "category_name": "Điện thoại",
+        "category_path": "dien-tu/dien-thoai",
+        "searchable_attributes": ["thuonghieu:apple", "xuatxu:vietnam"],
+        "thumbnail_url": "https://cdn.example.com/ip15-main-updated.jpg"
+      },
+      "updated_at": "2026-02-28T04:15:00Z",
+      "indexed_at": "2026-02-28T04:15:01Z",
+      "event_id": "evt-002"
     }
   }
 }
 ```
 
-> **Tại sao không dùng `_update_by_query`:** Document Elasticsearch có `_id = sku_id`, mỗi document đại diện cho 1 SKU. `_update_by_query` update TẤT CẢ documents matching `product_id` — bao gồm cả các SKU mới được thêm hoặc những SKU không thuộc payload này. Việc loop theo `sku_ids[]` đảm bảo chỉ update đúng các document tương ứng với product snapshot tại thời điểm event được phát.
+> **Tại sao không dùng `_update_by_query`:** Document Elasticsearch có `_id = sku_id`. `_update_by_query` update TẤT CẢ documents matching `product_id` — bao gồm cả các SKU không thuộc payload này. Loop theo `sku_ids[]` đảm bảo đúng intent.
 
-### 2.3. PRODUCT_STATUS_CHANGED
-**Nguồn:** [Product Events - 3.3](../product/product_events.md#33-product_state_changed)
+### 3.3. PRODUCT_STATUS_CHANGED (via SKU_UPDATED, Phase 19+)
 
-**Logic xử lý:**
-1. Update `product_status` cho tất cả SKU thuộc `product_id` bằng `_update_by_query`.
-2. Guard bằng `updated_at` timestamp: chỉ apply khi `event.updated_at > current_doc.version`.
-3. Bắt buộc throttle `_update_by_query` bằng `requests_per_second` (khuyến nghị 300-500) + `conflicts=proceed` để tránh spike CPU Elasticsearch.
-4. Recompute `is_in_stock` theo trạng thái hợp lệ để bán: `is_deleted == false AND product_status == 'ACTIVE' AND sku_status == 'ACTIVE'`.
+> **Phase 19 note:** Kể từ Phase 19, Product Service **KHÔNG phát event `PRODUCT_STATUS_CHANGED` riêng** nữa. Mọi thay đổi `product_status` được đính kèm trong `SKU_UPDATED` thông qua 2 field: `product_status_changed: true` + `new_product_status: "ACTIVE" | "HIDDEN" | ...`. Search Service xử lý logic này **trong handler SKU_UPDATED** (xem §3.4), KHÔNG có handler riêng cho `PRODUCT_STATUS_CHANGED` nữa.
+>
+> Logic được trình bày dưới đây chỉ để tham khảo lịch sử — KHÔNG được implement dưới dạng handler riêng.
+
+**Logic tham khảo (kích hoạt khi SKU_UPDATED.product_status_changed=true):**
+
+1. `_update_by_query` theo `product_id` (KHÔNG dùng script PATCH thông thường; cần recompute `is_in_stock`).
+2. Bắt buộc throttle `requests_per_second=300` + `conflicts=proceed`.
+3. **KHÔNG guard bằng script `updated_at > version`** (Phase 19 đơn giản hoá): chỉ dựa vào partition ordering. Vì partition key của `SKU_UPDATED` là `sku_id`, các event liên quan đến cùng product có thể đến trên nhiều partition; tuy nhiên logic FSM đảm bảo state transition từ Product Service là deterministic, nên không cần guard script.
 
 ```json
 POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
   "query": { "term": { "product_id": "prod-uuid-001" } },
   "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.product_status = params.new_status; ctx._source.is_in_stock = (!ctx._source.is_deleted && ctx._source.product_status == 'ACTIVE' && ctx._source.sku_status == 'ACTIVE'); ctx._source.version = params.updated_at;",
+    "source": "ctx._source.product_status = params.new_status; ctx._source.is_in_stock = (!ctx._source.is_deleted && ctx._source.product_status == 'ACTIVE' && ctx._source.sku_status == 'ACTIVE'); ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
       "new_status": "ACTIVE",
-      "updated_at": "2026-02-28T05:00:00Z"
+      "indexed_at": "2026-02-28T05:00:01Z",
+      "event_id": "evt-003"
     }
   }
 }
 ```
 
+4. **Sau khi xử lý xong:** Nếu `new_status == 'ACTIVE'`, trigger `_update_by_query` trên `categories` index theo `category_id` để tăng `product_count`. Nếu `new_status == 'HIDDEN'`, giảm `product_count` (xem §3.11).
 
-### 2.4. SKU_UPDATED
-**Nguồn:** [Product Events - 3.4](../product/product_events.md#34-sku_updated)
+### 3.4. SKU_UPDATED
 
 **Logic xử lý:**
-1. Parse payload: `sku_id`, `product_id`, các trường SKU, `changed_fields[]`, `product_status_changed`, `updated_at`.
-2. **Partial update theo `changed_fields`:**
-   - Nếu `changed_fields` chứa price fields (`original_price`, `promotional_price`, `best_price`, `has_promotion`): update các trường giá trên document SKU.
-   - Nếu `changed_fields` chứa `sku_status`: update `sku_status`, recompute `is_in_stock`.
-   - Nếu `changed_fields` chứa `product_status` (FSM trigger): update `product_status` và recompute `is_in_stock`.
-   - Nếu `changed_fields` chứa `variant_attributes` hoặc `media`: update các trường tương ứng.
-3. Guard: chỉ apply khi `event.updated_at > current_doc.version`.
-4. **Cấm `upsert`/`doc_as_upsert`** cho event partial update để tránh tạo document cụt khi event đến trước `PRODUCT_CREATED`/`SKU_CREATED`.
-5. Nếu `product_status_changed = true`: đồng thời update `product_status = new_product_status` trên toàn bộ SKU documents của product bằng `_update_by_query` (theo `product_id`).
+1. Parse payload: `sku_id`, `product_id`, SKU fields, `changed_fields[]`, `product_status_changed`, `new_product_status`, `updated_at`.
+2. **Partial update theo `changed_fields`:** chỉ include field có trong `changed_fields` vào `params.fields`.
+3. Nếu `changed_fields` chứa `sku_status` hoặc `product_status`: cần recompute `is_in_stock` → dùng script đặc thù như `PRODUCT_STATUS_CHANGED` (cũng qua `_update_by_query` nếu `product_status_changed=true`).
+4. Nếu `product_status_changed = true`: đồng thời update `product_status` trên toàn bộ SKU documents của product (qua `_update_by_query`) — logic §3.3.
+5. **Nếu `changed_fields` chứa `media`:** resolve `thumbnail_url` mới theo rule §3.1 (ưu tiên `product.media[0].thumbnail_url`, fallback `product.media[0].url`, fallback cuối `skus[i].media[0].url` — `i` là SKU tương ứng), thêm vào `params.fields` rồi PATCH lên doc SKU đó. Nếu cả `payload.media` rỗng → giữ nguyên `thumbnail_url` cũ (không xoá).
 
+**Partial update cho price fields:**
 ```json
--- Khi changed_fields chỉ chứa price fields
 POST products_write/_update/{sku_id}
 {
   "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } if (params.changed_fields.includes('original_price')) ctx._source.original_price = params.original_price; if (params.changed_fields.includes('promotional_price')) ctx._source.promotional_price = params.promotional_price; if (params.changed_fields.includes('best_price')) ctx._source.best_price = params.best_price; if (params.changed_fields.includes('has_promotion')) ctx._source.has_promotion = params.has_promotion; ctx._source.version = params.updated_at;",
+    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } for (entry in params.fields) { ctx._source[entry.key] = entry.value; } ctx._source.version = params.updated_at; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
-      "original_price": 33990000,
-      "promotional_price": 28891500,
-      "best_price": 28891500,
-      "has_promotion": true,
-      "changed_fields": ["original_price", "promotional_price", "best_price", "has_promotion"],
-      "updated_at": "2026-02-28T06:00:00Z"
-    }
-  }
-}
-
--- Khi changed_fields chứa sku_status (FSM trigger - bulk update theo product_id)
-POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
-{
-  "query": { "term": { "product_id": "prod-uuid-001" } },
-  "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.sku_status = params.new_sku_status; ctx._source.is_in_stock = (!ctx._source.is_deleted && params.product_status == 'ACTIVE' && ctx._source.sku_status == 'ACTIVE'); ctx._source.version = params.updated_at;",
-    "params": {
-      "new_sku_status": "OUT_OF_STOCK",
-      "product_status": "HIDDEN",
-      "updated_at": "2026-02-28T09:00:00Z"
+      "fields": {
+        "original_price": 33990000,
+        "promotional_price": 28891500,
+        "best_price": 28891500,
+        "has_promotion": true
+      },
+      "updated_at": "2026-02-28T06:00:00Z",
+      "indexed_at": "2026-02-28T06:00:01Z",
+      "event_id": "evt-sku-001"
     }
   }
 }
 ```
 
-> **Nếu `product_status_changed = true`:** Script phải đồng thời set `product_status = params.new_product_status` trên toàn bộ SKU documents. Downstream không cần consume thêm `PRODUCT_STATUS_CHANGED` riêng cho luồng FSM.
->
-> Nếu gặp `document_missing_exception`: không được skip. Log error và đẩy event vào Retry Topic/DLQ hoặc trigger fetch full product để self-healing.
-
-### 2.5. CATEGORY_CREATED
-**Nguồn:** [Product Events - 3.9](../product/product_events.md#39-category_created)
-
-**Topic:** `t.category.events`
+### 3.5. SKU_CREATED
 
 **Logic xử lý:**
-1. Parse payload: `category_id`, `name`, `slug`, `parent_id`, `level`, `is_leaf`, `path`.
-2. Validate: `path` bắt buộc phải có trong payload. Nếu thiếu → đánh dấu contract violation, đẩy `t.search.dlq`.
-3. Invalidate `search:categories:tree` trong Redis (toàn bộ category tree cache vì cấu trúc cây thay đổi).
-4. Không cần update documents trên Elasticsearch — không có product document nào reference đến category mới tại thời điểm tạo. Category tree cache sẽ được rebuild bởi Search Category Sync Worker.
-
-> **Tại sao không cần `_update_by_query`:** Khi category mới được tạo, chưa có sản phẩm nào thuộc category này (hoặc nếu có, chúng sẽ được update thông qua `PRODUCT_CREATED`/`PRODUCT_UPDATED` event). Event này chỉ phục vụ rebuild category tree cache và Search facet data.
-
-### 2.6. CATEGORY_UPDATED
-**Nguồn:** [Product Events - 3.10](../product/product_events.md#310-category_updated)
-
-**Topic:** `t.category.events`
-
-**Logic xử lý:**
-1. Nhận `category_id`, `new_name`, `new_path`.
-2. Chạy `_update_by_query` để update `category_name` và `category_path` cho toàn bộ product documents thuộc `category_id`.
-3. Bắt buộc dùng `conflicts=proceed` + `requests_per_second` cho batch lớn; parse kết quả và retry có kiểm soát nếu có shard failure.
-
-```json
-POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
-{
-  "query": { "term": { "category_id": "cat-smartphone" } },
-  "script": {
-    "source": "ctx._source.category_name = params.new_name; ctx._source.category_path = params.new_path;",
-    "params": {
-      "new_name": "Điện thoại di động",
-      "new_path": "dien-tu/dien-thoai-di-dong"
-    }
-  }
-}
-```
-
-> **Kết quả `_update_by_query` phải được kiểm tra:**
-> - `version_conflicts` có thể chấp nhận khi guard chặn stale events.
-> - `failures` không rỗng phải được phân loại retry/dlq, không được coi là thành công toàn phần.
-
-### 2.7. PRODUCT_DELETED / SKU_DELETED
-**Kafka Topic:** `t.product.events`
-**Hành động Elasticsearch:** Delete / Tombstone.
-*   **`PRODUCT_DELETED`**: Payload chứa mảng `sku_ids`. Worker BẮT BUỘC loop theo từng `sku_id` và gọi Bulk API để scripted-upsert tombstone cho từng SKU document (`_id = sku_id`).
-*   **`SKU_DELETED`**: Payload chứa **một** `sku_id` (không phải `sku_ids`). Worker chỉ update/tombstone đúng document `_id = sku_id` đó, không mở vòng lặp theo mảng.
-*   `PRODUCT_SKU_DELETED` bắt buộc có `payload.updated_at`; worker phải dùng `payload.updated_at` làm guard timestamp trước khi scripted-upsert tombstone.
-*   Chiến lược Tombstone Zero-Downtime này chặn trường hợp document bị xóa, nhưng do network lag, event tạo cũ (hoặc edit) lại tới trễ đào mồ sống dậy SKU. Update Script sẽ bẻ gãy Event trễ bằng `event.updated_at > ctx._source.version`.
-*   Cronjob làm sạch rác (ILM/Cleanup Job) sẽ dọn dẹp các Tombstone cũ sau 30 ngày. Đồng thời Worker gọi Xóa Suggestion Cache.
+1. Parse payload: `sku_id`, `product_id`, SKU fields, `updated_at`, `created_at`.
+2. Enrichment category từ `categories` alias (read): lookup theo `category_id` để lấy `category_name` và `category_path`. Nếu lookup miss → bỏ qua `category_name`/`category_path`, log warning + metric `search_category_enrichment_miss_total{topic,event_type,category_id}`; `CATEGORY_UPDATED`/`CATEGORY_CREATED` sau đó sẽ populate lại.
+3. Transform `variant_attributes_json` → `variant_attributes` token array.
+4. **Resolve `thumbnail_url`:** Lấy `payload.media[0].url` (ưu tiên vì SKU_CREATED chỉ có SKU-level media), fallback `payload.media[0].thumbnail_url` (nếu schema cho phép). Nếu rỗng → để trống.
+5. **Derive `is_in_stock`:** Tính ở application logic: `is_in_stock = (!is_deleted && product_status == 'ACTIVE' && sku_status == 'ACTIVE')`. (Cùng công thức với §3.3.)
+6. **Biến thể** của script PATCH chung (dùng `created_at` thay vì `updated_at`) với `scripted_upsert: true`, guard: `event.created_at > current_doc.version` (hoặc insert nếu doc chưa tồn tại).
 
 ```json
 POST products_write/_update/{sku_id}
 {
   "scripted_upsert": true,
   "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.is_deleted = true; ctx._source.deleted_at = params.deleted_at; ctx._source.version = params.updated_at; ctx._source.is_in_stock = false;",
+    "source": "if (ctx._source.version != null && params.created_at <= ctx._source.version) { ctx.op = 'none'; return; } for (entry in params.fields) { ctx._source[entry.key] = entry.value; } ctx._source.version = params.created_at; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
+    "params": {
+      "fields": {
+        "sku_id": "sku-uuid-003",
+        "product_id": "prod-uuid-002",
+        "name": "iPhone 15 Pro Max 512GB",
+        "category_id": "cat-smartphone",
+        "category_name": "Điện thoại",
+        "category_path": "dien-tu/dien-thoai",
+        "product_status": "ACTIVE",
+        "sku_status": "ACTIVE",
+        "original_price": 39990000,
+        "promotional_price": 34990000,
+        "best_price": 34990000,
+        "has_promotion": true,
+        "is_in_stock": true,
+        "is_deleted": false,
+        "variant_attributes": ["mausac:trang", "bonho:512GB"],
+        "thumbnail_url": "https://cdn.example.com/ip15-512.jpg",
+        "created_at": "2026-03-01T08:00:00Z",
+        "updated_at": "2026-03-01T08:00:00Z"
+      },
+      "created_at": "2026-03-01T08:00:00Z",
+      "indexed_at": "2026-03-01T08:00:01Z",
+      "event_id": "evt-sku-created-001"
+    }
+  },
+  "upsert": {
+    "sku_id": "sku-uuid-003",
+    "product_id": "prod-uuid-002",
+    "version": "2026-03-01T08:00:00Z"
+  }
+}
+```
+
+### 3.6. PRODUCT_DELETED / SKU_DELETED
+
+**Hành động Elasticsearch:** Tombstone (set `is_deleted=true`, `is_in_stock=false`).
+
+- **`PRODUCT_DELETED`**: Payload chứa mảng `sku_ids`. Worker loop theo từng `sku_id` và gọi script PATCH với `scripted_upsert: true`, fields = `{ is_deleted: true, is_in_stock: false, deleted_at: ... }`.
+- **`SKU_DELETED`**: Payload chứa **một** `sku_id`. Chỉ update đúng document `_id = sku_id` đó.
+
+```json
+POST products_write/_update/{sku_id}
+{
+  "scripted_upsert": true,
+  "script": {
+    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.is_deleted = true; ctx._source.deleted_at = params.deleted_at; ctx._source.is_in_stock = false; ctx._source.version = params.updated_at; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
       "updated_at": "2026-03-24T10:00:00Z",
-      "deleted_at": "2026-03-24T10:00:00Z"
+      "deleted_at": "2026-03-24T10:00:00Z",
+      "indexed_at": "2026-03-24T10:00:01Z",
+      "event_id": "evt-del-002"
     }
   },
   "upsert": {
     "sku_id": "sku-uuid-002",
     "product_id": "prod-uuid-001",
     "is_deleted": true,
-    "deleted_at": "2026-03-24T10:00:00Z",
     "is_in_stock": false,
     "version": "2026-03-24T10:00:00Z"
   }
 }
 ```
 
-> **Bulk partial failure policy:** khi xử lý `PRODUCT_DELETED` theo nhiều `sku_id`, các item failed phải được tách retry có chọn lọc; không được fail cả batch đã thành công.
+> **Cronjob `Draft Cleanup Job`** (xem [Workers](search_workers.md#4-draft-cleanup-job)) sẽ dọn các Tombstone cũ sau 30 ngày.
 
-### 2.8. REVIEW_METRICS_UPDATED
-**Nguồn:** Review Service.
+**Sau khi xử lý xong:**
+- Nếu doc trước khi xoá có `product_status = 'ACTIVE'`, trigger `_update_by_query` trên `categories` index theo `category_id` để **giảm** `product_count` (xem §3.11).
+- Nếu doc trước khi xoá đã là `HIDDEN`, **không thay đổi** `product_count` (tránh double-decrement).
 
-**Topic:** `t.review.events`
+### 3.7. CATEGORY_CREATED
 
 **Logic xử lý:**
-1. Parse payload: `product_id`, `average_rating`, `total_reviews`, `updated_at`.
-2. Guard: chỉ apply khi `event.updated_at > current_doc.review_metrics_updated_at`. Nếu document chưa có field này (first event), cho apply.
-3. Chạy `_update_by_query` theo `product_id` để update rating field cho toàn bộ SKU docs của product, bắt buộc dùng `conflicts=proceed` + `requests_per_second` để tránh spike CPU.
-4. `updated_at` vừa dùng làm guard vừa lưu vào document cho lần so sánh tiếp theo.
-5. Nếu ES unavailable: retry theo policy chung; quá ngưỡng đẩy `t.search.dlq`.
-6. Kết quả `_update_by_query` phải parse `failures`: nếu có lỗi shard/script thì tách retry có chọn lọc hoặc chuyển `t.search.dlq`; `version_conflicts` do guard có thể chấp nhận.
+1. Parse payload: `category_id`, `name`, `slug`, `parent_id`, `level`, `is_leaf`, `path`.
+2. Validate `path` bắt buộc phải có; nếu thiếu → log warning + metric `search_payload_invalid_total{topic=category.events,event_type=CATEGORY_CREATED}`.
+3. Index document vào `categories_write` alias (đang trỏ tới `categories_v1`) qua script PATCH với `scripted_upsert: true`.
+
+### 3.8. CATEGORY_UPDATED
+
+**Logic xử lý:**
+1. Nhận `category_id`, `new_name`, `new_path`.
+2. Hai hành động song song:
+   - **Update `categories_write`** qua script PATCH (`scripted_upsert: true`).
+   - **Update `products_write`** qua `_update_by_query` theo `category_id` để đồng bộ `category_name` và `category_path` cho toàn bộ SKU docs. Bắt buộc `conflicts=proceed` + `requests_per_second=300`.
+
+> **Quy ước bất biến cấu trúc cây (BẮT BUỘC):** Sau khi `CATEGORY_CREATED`, các field cấu trúc cây (`slug`, `parent_id`, `level`, `is_leaf`) được coi là **bất biến**. Nếu admin cần thay đổi các field này (kéo theo di chuyển cây danh mục), payload `CATEGORY_UPDATED` chỉ mang `new_name` + `new_path` là **không đủ** — Search Service sẽ giữ cây cũ trong index. Trong trường hợp này, **vận hành phải chạy [Full Reindex Job](search_workers.md#2-full-reindex-job-zero-downtime-3-pha-đơn-giản) thủ công** để rebuild lại index từ PostgreSQL, đảm bảo toàn bộ SKU docs được đồng bộ `category_name`/`category_path` theo cây mới.
+
+### 3.9. CATEGORY_DELETED
+
+**Logic xử lý:**
+1. Nhận `category_id`, `descendant_category_ids`, `updated_at`.
+2. Hai hành động song song:
+   - **Tombstone document** trong `categories_write` qua script PATCH với `scripted_upsert: true` (set `is_deleted = true`, `deleted_at = now`). KHÔNG gọi `_delete` trực tiếp để chặn zombie update từ event trễ.
+   - **`_update_by_query`** trên `products_write` để nullify `category_*` fields và update `product_status = 'HIDDEN'` cho toàn bộ SKU docs thuộc các category bị xoá. Guard bằng `updated_at`. Bắt buộc `conflicts=proceed` + `requests_per_second=300`.
+3. **KHÔNG thay đổi `categories.product_count`** (giữ nguyên để audit; các SKU docs đã được set HIDDEN nên sẽ bị filter khỏi search results).
+
+### 3.10. REVIEW_METRICS_UPDATED
+
+> **Phase 21 note:** Search Service **KHÔNG dùng script guard `updated_at > version`** cho event này. Partition key `product_id` đảm bảo ordering. Worker chỉ apply `_update_by_query` theo `product_id` một cách idempotent (ES tự xử lý version conflict qua `_seq_no`).
+
+**Logic xử lý:**
+1. Parse `product_id`, `average_rating`, `total_reviews`, `updated_at`.
+2. `_update_by_query` theo `product_id` để update `product_rating_avg`, `product_rating_count`.
+3. Bắt buộc `conflicts=proceed` + `requests_per_second=300`.
+4. **Không cần script guard** vì partition ordering đảm bảo.
 
 ```json
 POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
   "query": { "term": { "product_id": "prod-uuid-001" } },
   "script": {
-    "source": "if (ctx._source.review_metrics_updated_at != null && params.updated_at <= ctx._source.review_metrics_updated_at) { ctx.op = 'none'; return; } ctx._source.product_rating_avg = params.average_rating; ctx._source.product_rating_count = params.total_reviews; ctx._source.review_metrics_updated_at = params.updated_at;",
+    "source": "ctx._source.product_rating_avg = params.average_rating; ctx._source.product_rating_count = params.total_reviews; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
       "average_rating": 4.75,
       "total_reviews": 1251,
-      "updated_at": "2026-03-28T10:05:00Z"
+      "indexed_at": "2026-03-28T10:05:01Z",
+      "event_id": "evt-review-001"
     }
   }
 }
 ```
 
-### 2.9. ORDER_PRODUCT_METRICS_UPDATED
-**Nguồn:** Order Metrics Projector.
+> **Các field KHÔNG xử lý:** `total_with_media` (có trong payload từ Review Service nhưng Search Service không cần). Worker chỉ đọc `product_id`, `average_rating`, `total_reviews`, `updated_at` — các field khác bị bỏ qua.
 
-**Topic:** `t.search.metrics.events`
+### 3.11. Categories `product_count` Realtime Update (Consolidated)
 
-**Logic xử lý:**
-1. Parse `product_id`, `total_sold`, `updated_at`.
-2. Guard: chỉ apply khi `event.updated_at > current_doc.sales_metrics_updated_at`. Nếu document chưa có field này, cho apply.
-3. `_update_by_query` theo `product_id` để set `product_sold_count = total_sold`, bắt buộc dùng `conflicts=proceed` + `requests_per_second`.
-4. Parse kết quả `_update_by_query`; nếu `failures` không rỗng thì retry có kiểm soát hoặc chuyển `t.search.dlq`.
+> **Mục đích:** Giữ cho `categories.product_count` luôn phản ánh số lượng product ACTIVE thuộc mỗi category, phục vụ cho navigation sidebar và facets (xem [Search Workflow §4](search_workflow.md)).
 
+**Cơ chế:** `_update_by_query` trên `categories` index theo `category_id`, kích hoạt bởi các product event:
+
+| Trigger Event | Hành động | Throttle | Ghi chú |
+|---|---|---|---|
+| `PRODUCT_CREATED` với `status = 'ACTIVE'` | `product_count += 1` | 300 rps, conflicts=proceed | Loop cùng transaction với index SKU docs |
+| `PRODUCT_CREATED` với `status != 'ACTIVE'` (DRAFT) | Không thay đổi | — | DRAFT không hiển thị trên UI |
+| `SKU_UPDATED` với `product_status_changed=true` (target = `ACTIVE`) | `product_count += 1` | 300 rps, conflicts=proceed | Auto-reactivate từ HIDDEN |
+| `SKU_UPDATED` với `product_status_changed=true` (target = `HIDDEN`) | `product_count -= 1` | 300 rps, conflicts=proceed | Auto-hide (Inventory Phase 2 FSM) |
+| `PRODUCT_DELETED` (khi doc ACTIVE trước đó) | `product_count -= 1` | 300 rps, conflicts=proceed | Soft delete |
+| `PRODUCT_DELETED` (khi doc đã HIDDEN) | Không thay đổi | — | Tránh double-decrement |
+| `CATEGORY_DELETED` | Không thay đổi | — | `product_count` giữ nguyên cho audit |
+
+**Script mẫu cho tăng count:**
 ```json
-POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
+POST categories_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
-  "query": { "term": { "product_id": "prod-uuid-001" } },
+  "query": { "term": { "category_id": "cat-smartphone" } },
   "script": {
-    "source": "if (ctx._source.sales_metrics_updated_at != null && params.updated_at <= ctx._source.sales_metrics_updated_at) { ctx.op = 'none'; return; } ctx._source.product_sold_count = params.total_sold; ctx._source.sales_metrics_updated_at = params.updated_at;",
+    "source": "if (ctx._source.product_count == null) { ctx._source.product_count = 0; } ctx._source.product_count += 1; ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
-      "total_sold": 15200,
-      "updated_at": "2026-03-28T10:05:00Z"
+      "indexed_at": "2026-03-28T10:05:01Z",
+      "event_id": "evt-001"
     }
   }
 }
 ```
 
-### 2.11. CATEGORY_DELETED
-**Nguồn:** [Product Events - 3.12](../product/product_events.md#312-category_deleted)
-
-**Topic:** `t.category.events`
-
-**Logic xử lý:**
-1. Nhận `category_id`, `descendant_category_ids`, `updated_at`, `deleted_at`.
-2. Chạy `_update_by_query` để nullify `category_name`, `category_path` và **đồng thời** update `product_status = 'HIDDEN'` cho toàn bộ product documents thuộc các category bị xoá. Guard bằng `updated_at` timestamp: chỉ apply khi `event.updated_at > current_doc.version`.
-3. Recompute `is_in_stock` đồng thời: `is_deleted == false AND product_status == 'ACTIVE' AND sku_status == 'ACTIVE'`.
-4. Bắt buộc dùng `conflicts=proceed` + `requests_per_second`; parse kết quả `_update_by_query` để tách retry có chọn lọc hoặc vào `t.search.dlq`.
-5. Invalidate `search:categories:tree`.
-
+**Script mẫu cho giảm count:**
 ```json
-POST products_write/_update_by_query?conflicts=proceed&requests_per_second=300
+POST categories_write/_update_by_query?conflicts=proceed&requests_per_second=300
 {
-  "query": {
-    "bool": {
-      "should": [
-        { "term": { "category_id": "cat_001" } },
-        { "terms": { "category_id": ["cat_001_a", "cat_001_b"] } }
-      ]
-    }
-  },
+  "query": { "term": { "category_id": "cat-smartphone" } },
   "script": {
-    "source": "if (ctx._source.version != null && params.updated_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.category_name = null; ctx._source.category_path = null; ctx._source.category_id = null; ctx._source.product_status = 'HIDDEN'; ctx._source.is_in_stock = false; ctx._source.version = params.updated_at;",
+    "source": "if (ctx._source.product_count == null) { ctx._source.product_count = 0; } if (ctx._source.product_count > 0) { ctx._source.product_count -= 1; } ctx._source.indexed_at = params.indexed_at; ctx._source.last_event_id = params.event_id;",
     "params": {
-      "updated_at": "2026-03-24T10:00:00Z"
+      "indexed_at": "2026-03-28T10:05:01Z",
+      "event_id": "evt-del-002"
     }
   }
 }
 ```
 
-> **Tại sao Search được phép update `product_status` từ `CATEGORY_DELETED`:** Khác với các event khác, `CATEGORY_DELETED` là event DUY NHẤT mà Product Service đã xử lý Write Model (đổi `status = HIDDEN` tại PostgreSQL) trước khi phát event. Search Service vì thế có quyền phản chiếu thay đổi này lên Elasticsearch trong cùng một bước `_update_by_query`. Việc không còn event `PRODUCT_STATE_CHANGED` riêng cho luồng `CATEGORY_DELETED` giúp loại bỏ ordering problem giữa 2 topic.
+**Idempotency & sai số chấp nhận được:** Do `_update_by_query` arithmetic (`+= 1` / `-= 1`) có thể double-apply khi Kafka redeliver event, `product_count` có thể lệch ±1-2. Chấp nhận sai số nhỏ này (không gây ảnh hưởng UX). Nếu sai số lớn, vận hành chạy [Full Reindex Job](search_workers.md#2-full-reindex-job-zero-downtime-3-pha-đơn-giản) để reconcile hoàn toàn.
 
-### 2.10. SKU_CREATED
-**Nguồn:** [Product Events - 3.5](../product/product_events.md#35-sku_created)
 
-**Topic:** `t.product.events`
+## 4. Chiến Lược Idempotency & Ordering
 
-**Logic xử lý:**
-1. Parse payload: `sku_id`, `product_id`, `sku_code`, `original_price`, `promotional_price`, `best_price`, `has_promotion`, `sku_status`, `product_status`, `variant_attributes_json`, `media`, `updated_at`, `created_at`.
-2. Enrichment category từ [Category Cache](search_caching_schema.md#12-category-tree-cache).
-3. **Data transformation ownership (bắt buộc):** Search Worker transform `variant_attributes_json` từ raw JSON sang token arrays `variant_attributes` cho Elasticsearch.
-4. Chuẩn hoá field trạng thái SKU: ưu tiên `sku_status`.
-5. **Contract giá:** Payload bắt buộc có `best_price` và `has_promotion`; Search chỉ ghi nhận, không tự tính business pricing.
-6. **Scripted upsert document:** Dùng `_update` với `upsert: true` để tạo document mới tại `_id = sku_id`. Guard timestamp: `event.created_at > current_doc.version` (hoặc cho phép insert nếu document chưa tồn tại).
-7. Recompute `is_in_stock`: `is_deleted == false AND product_status == 'ACTIVE' AND sku_status == 'ACTIVE'`.
+### 4.1. Chống Duplicate
+Script PATCH + guard timestamp = idempotent. Gửi lại event nhiều lần → chỉ apply lần đầu.
 
-```json
-POST products_write/_update/{sku_id}
-{
-  "scripted_upsert": true,
-  "script": {
-    "source": "if (ctx._source.version != null && params.created_at <= ctx._source.version) { ctx.op = 'none'; return; } ctx._source.sku_id = params.sku_id; ctx._source.product_id = params.product_id; ctx._source.sku_code = params.sku_code; ctx._source.name = params.product_name; ctx._source.category_id = params.category_id; ctx._source.category_name = params.category_name; ctx._source.original_price = params.original_price; ctx._source.promotional_price = params.promotional_price; ctx._source.best_price = params.best_price; ctx._source.has_promotion = params.has_promotion; ctx._source.sku_status = params.sku_status; ctx._source.product_status = params.product_status; ctx._source.variant_attributes = params.variant_attributes; ctx._source.media = params.media; ctx._source.is_in_stock = (!params.is_deleted && params.product_status == 'ACTIVE' && params.sku_status == 'ACTIVE'); ctx._source.is_deleted = params.is_deleted; ctx._source.version = params.created_at;",
-    "params": {
-      "sku_id": "sku-uuid-003",
-      "product_id": "prod-uuid-001",
-      "product_name": "iPhone 15 Pro Max 256GB",
-      "category_id": "cat-dien-thoai",
-      "category_name": "Điện thoại",
-      "sku_code": "IP15PM-256-WHT",
-      "original_price": 34990000,
-      "promotional_price": null,
-      "best_price": 34990000,
-      "has_promotion": false,
-      "sku_status": "ACTIVE",
-      "product_status": "DRAFT",
-      "variant_attributes": ["color:Trắng", "storage:256GB"],
-      "media": [{ "media_type": "IMAGE", "url": "https://cdn.example.com/ip15-white.jpg", "sort_order": 1 }],
-      "is_deleted": false,
-      "created_at": "2026-06-10T21:00:00Z"
-    }
-  },
-  "upsert": {
-    "sku_id": "sku-uuid-003",
-    "product_id": "prod-uuid-001",
-    "name": "iPhone 15 Pro Max 256GB",
-    "category_id": "cat-dien-thoai",
-    "original_price": 34990000,
-    "best_price": 34990000,
-    "has_promotion": false,
-    "sku_status": "ACTIVE",
-    "product_status": "DRAFT",
-    "is_deleted": false,
-    "is_in_stock": false,
-    "version": "2026-06-10T21:00:00Z"
-  }
-}
-```
+### 4.2. Chống Out-of-Order (Single Timestamp Guard)
 
-> **Phân biệt với PRODUCT_CREATED:** `PRODUCT_CREATED` nhận `payload.skus[]` và loop để index N documents — dùng khi tạo sản phẩm mới kèm SKUs trong 1 transaction. `SKU_CREATED` chỉ index 1 document duy nhất — dùng khi thêm SKU vào sản phẩm đã tồn tại. Cả hai đều dùng scripted upsert để tạo document mới.
-
-## 3. Chiến Lược Idempotency & Ordering
-
-### 3.1. Chống Duplicate
-`PUT _doc/{id}` và `POST _update/{id}` là idempotent khi kết hợp guard timestamp.
-
-### 3.2. Chống Out-of-Order (Timestamp-Only Guard)
-
-**Nguyên tắc đơn giản:** Search Service dùng **DUY NHẤT** `event.updated_at` (ISO 8601 UTC) làm guard ordering cho mọi event stream. Không có ngoại lệ nào dùng sequence ID làm guard.
+**Nguyên tắc đơn giản:** Mỗi event dùng **đúng 1 timestamp** làm guard. Đa số event dùng `event.updated_at` so với `current_doc.version`. Riêng `SKU_CREATED` dùng `event.created_at` (event khởi tạo).
 
 ```text
-IF event_type = PRODUCT_DELETED OR event_type = PRODUCT_SKU_DELETED THEN
-  -- Tombstone luôn apply guard timestamp
+IF event_type IN (PRODUCT_DELETED, SKU_DELETED) THEN
+  -- Tombstone cũng apply guard
   IF event.updated_at > current_doc.version THEN
     APPLY tombstone
   ELSE
     SKIP stale tombstone
   END
+ELSE IF event_type = SKU_CREATED THEN
+  IF event.created_at > current_doc.version THEN
+    APPLY upsert
+  ELSE
+    SKIP event (stale)
+  END
+ELSE IF event_type IN (REVIEW_METRICS_UPDATED, PRODUCT_STATUS_CHANGED-via-SKU_UPDATED) THEN
+  -- Phase 19/21: Không dùng script guard
+  -- Chỉ dựa vào Kafka partition ordering
+  APPLY update (idempotent qua _update_by_query)
 ELSE
-  -- Tất cả event khác: guard bằng timestamp
+  -- Tất cả event khác: guard bằng updated_at
   IF event.updated_at > current_doc.version THEN
     APPLY event
   ELSE
@@ -398,30 +455,30 @@ ELSE
 END
 ```
 
-**Chi tiết guard theo event type:**
+**Guard áp dụng đồng nhất:**
 
-| Event | Guard | Chi tiết |
-|---|---|---|
-| `PRODUCT_CREATED` | `updated_at > version` | Scripted upsert — Insert nếu chưa có doc |
-| `PRODUCT_UPDATED` | `updated_at > version` | Bulk partial update theo `sku_ids[]` — chỉ update product-level fields, không ảnh hưởng SKU-level fields |
-| `PRODUCT_STATE_CHANGED` | `updated_at > version` | `_update_by_query`, recompute `is_in_stock` |
-| `SKU_UPDATED` | `updated_at > version` | Partial update theo `changed_fields[]`: price fields, `sku_status`, `product_status`. Bulk `_update_by_query` (FSM trigger) hoặc partial update (admin). Đồng thời update `product_status`/`is_in_stock` nếu `product_status_changed = true` |
-| `SKU_CREATED` | `created_at > version` (hoặc insert nếu doc chưa tồn tại) | Scripted upsert — tạo document SKU mới trên Elasticsearch |
-| `PRODUCT_DELETED` | `updated_at > version` | Tombstone — bảo đảm delete |
-| `SKU_DELETED` | `updated_at > version` (từ `payload.updated_at`) | Tombstone SKU document |
-| `CATEGORY_UPDATED` | *(không guard)* | Category update hiếm khi race; apply bất kỳ |
-| `CATEGORY_DELETED` | `updated_at > version` | Nullify category metadata + update `product_status = HIDDEN` |
-| `REVIEW_METRICS_UPDATED` | `updated_at > review_metrics_updated_at` | Guard riêng field |
-| `ORDER_PRODUCT_METRICS_UPDATED` | `updated_at > sales_metrics_updated_at` | Guard riêng field |
+| Event | Guard |
+|---|---|
+| `PRODUCT_CREATED` | `updated_at > version` (scripted upsert) |
+| `PRODUCT_UPDATED` | `updated_at > version` |
+| `PRODUCT_STATUS_CHANGED` (qua `SKU_UPDATED.product_status_changed=true`) | **Không dùng script guard** (Phase 19) — chỉ partition ordering |
+| `SKU_UPDATED` | `updated_at > version` |
+| `SKU_CREATED` | `created_at > version` (scripted upsert) |
+| `PRODUCT_DELETED` / `SKU_DELETED` | `updated_at > version` |
+| `CATEGORY_*` | `updated_at > version` |
+| `REVIEW_METRICS_UPDATED` | **Không dùng script guard** (Phase 21) — chỉ partition ordering |
+| `categories.product_count` realtime update | **Không dùng script guard** — arithmetic idempotent chấp nhận sai số ±1-2 |
 
-**Về precision timestamp:** Elasticsearch `date` type lưu precision đến millisecond. Product Service phải đảm bảo `updated_at` ghi vào PostgreSQL và payload event là TIMESTAMPTZ có precision tương đương. Nếu hai event có cùng timestamp (cùng millisecond), event đến sau trong Kafka stream sẽ có cơ hội được apply nếu guard không reject — đây là trade-off chấp nhận được vì Kafka đảm bảo ordering trong cùng partition.
+> **Trade-off chấp nhận:** Metrics update (rating) có thể bị skip nếu timestamp trùng millisecond với update trước đó (vì guard so sánh `>` chứ không phải `>=`). Chấp nhận được vì Kafka đảm bảo ordering trong cùng partition và metrics có độ trễ vài giây là chấp nhận được.
 
+### 4.3. Xử Lý Lỗi (Phase 22b — Không có DLQ)
 
-### 3.3. Xử Lý Lỗi
-- **Elasticsearch unreachable (timeout/429/503):** nack event để Kafka retry theo policy transient.
-- **`document_missing_exception` cho partial update:** không được bỏ qua. Retry inline tối đa 2 attempt tổng (lần đầu + 1 retry), sau đó đẩy vào `t.search.retry` để self-healing fetch full product; quá ngưỡng tổng mới vào `t.search.dlq`.
-- **Retry budget chuẩn (thống nhất toàn Search):**
-  - Inline consumer: tối đa 2 attempt tổng.
-  - Retry replayer (`t.search.retry`): tối đa 3 attempt.
-  - Tổng tối đa: 5 attempt trước khi park `t.search.dlq`.
-- **Lỗi liên tiếp vượt ngưỡng:** đẩy vào `t.search.dlq` và cảnh báo vận hành.
+| Loại lỗi | Xử lý |
+|---|---|
+| **Transient (ES timeout / 429 / 503 / network)** | Nack event → Kafka tự retry theo policy `delivery.timeout.ms` (mặc định 5 phút, có thể tăng). Không commit offset. |
+| **`document_missing_exception` cho partial update** | Log error + metric `search_document_missing_total{topic,event_type,doc_id}` + skip + ACK. Không tự fetch full product để self-heal. |
+| **Mapping conflict / schema poison (không retry được)** | Log error + metric `search_payload_invalid_total{topic,event_type}` + skip + ACK. |
+| **Category lookup miss (cho PRODUCT_CREATED/PRODUCT_UPDATED/SKU_CREATED)** | Bỏ qua `category_name`/`category_path` (không ghi vào doc), log warning + metric `search_category_enrichment_miss_total{topic,event_type,category_id}` + ACK. `CATEGORY_UPDATED`/`CATEGORY_CREATED` sau đó sẽ populate lại. |
+| **Lỗi liên tiếp / cluster ES down** | Log error liên tục + metric tăng theo thời gian. Cảnh báo dashboard qua metric; vận hành tự restart consumer / fix cluster. Không tự retry vô hạn. |
+
+> **Tại sao KHÔNG có DLQ (Phase 22b):** Xem entry [CHANGELOG §Phase 22b Search](../_contracts/CHANGELOG.md#phase-22b--search-service--remove-dlq). Tóm tắt: single-admin system, ít downstream consumers, CDC + Debezium đảm bảo payload ở producer. Manual recovery qua log + metric + Full Reindex Job khi cần.

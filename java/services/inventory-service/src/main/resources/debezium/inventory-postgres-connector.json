@@ -1,0 +1,51 @@
+{
+  "name": "inventory-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "${postgres_host}",
+    "database.port": "${postgres_port}",
+    "database.user": "${postgres_user}",
+    "database.password": "${postgres_password}",
+    "database.dbname": "inventory_db",
+
+    "topic.prefix": "inventory",
+
+    "plugin.name": "pgoutput",
+    "publication.autocreate.mode": "disabled",
+    "publication.name": "inventory_publication",
+
+    "slot.name": "inventory_slot",
+    "publication.enable.auto.commit": "true",
+
+    "table.include.list": "public.inventory_outbox",
+
+    "column.include.list": "public.inventory_outbox.event_id,public.inventory_outbox.event_type,public.inventory_outbox.schema_version,public.inventory_outbox.aggregate_type,public.inventory_outbox.aggregate_id,public.inventory_outbox.partition_key,public.inventory_outbox.refund_request_id,public.inventory_outbox.payload,public.inventory_outbox.created_at",
+
+    "tombstones.on.delete": "false",
+
+    "transforms": "routeTopic,extractKey,extractValue",
+    "transforms.routeTopic.type": "io.debezium.transforms.ByLogicalTableRouter",
+    "transforms.routeTopic.topic.regex": "inventory.public.inventory_outbox",
+    "transforms.routeTopic.topic.replacement": "t.inventory.events",
+
+    "transforms.extractKey.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
+    "transforms.extractKey.field": "partition_key",
+
+    "transforms.extractValue.type": "org.apache.kafka.connect.transforms.ExtractField$Value",
+    "transforms.extractValue.field": "payload",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+
+    "snapshot.mode": "never",
+
+    "heartbeat.interval.ms": "10000",
+    "max.queue.size.in.bytes": "104857600"
+  }
+}

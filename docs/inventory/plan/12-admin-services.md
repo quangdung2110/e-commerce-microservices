@@ -112,7 +112,7 @@ public class RestockService implements RestockPort {
     private final PhysicalInventoryRepository physicalRepo;
     private final InventoryReservationRepository reservationRepo;
     private final InventoryLedgerRepository ledgerRepo;
-    private final OutboxRepository outboxRepo;
+    /** Mọi outbox write PHẢI đi qua writer — KHÔNG inject OutboxRepository trực tiếp. */
     private final TransactionalOutboxWriter outboxWriter;
     private final InventoryEventBuilder eventBuilder;
     private final StringRedisTemplate redis;
@@ -220,9 +220,10 @@ public class RestockService implements RestockPort {
     ) {
         var completion = reservationRepo.checkRefundCompletion(cmd.orderId(), cmd.refundRequestId());
 
+        // Tại emit time: requiredItemIds = receivedItemIds (completion check đảm bảo tất cả đã returned)
         CloudEventImpl<ReturnReceivedAllPayload> envelope = eventBuilder.buildReturnReceivedAll(
             cmd.orderId(), cmd.refundRequestId(),
-            completion.requiredItemIds(), completion.receivedItemIds(),
+            completion.requiredItemIds(),
             Instant.now(),
             correlationId
         );
@@ -292,7 +293,7 @@ public class ShipToCustomerService implements ShipToCustomerPort {
 
     private final WarehouseRepository warehouseRepo;
     private final InventoryReservationRepository reservationRepo;
-    private final OutboxRepository outboxRepo;
+    /** Mọi outbox write PHẢI đi qua writer — KHÔNG inject OutboxRepository trực tiếp. */
     private final TransactionalOutboxWriter outboxWriter;
     private final InventoryEventBuilder eventBuilder;
     private final InventoryMetrics metrics;

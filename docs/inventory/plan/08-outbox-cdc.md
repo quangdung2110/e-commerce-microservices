@@ -197,7 +197,7 @@ public void emitReturnReceivedAllIfComplete(long orderId, String refundRequestId
     // 3. Build & insert outbox
     CloudEventImpl<ReturnReceivedAllPayload> envelope = eventBuilder.buildReturnReceivedAll(
         orderId, refundRequestId,
-        snapshot.requiredItemIds(), snapshot.receivedItemIds(),
+        snapshot.requiredItemIds(),    // = receivedItemIds() tại emit time (completion check đảm bảo)
         Instant.now(), correlationId
     );
     outboxWriter.writeReturnReceivedAll(

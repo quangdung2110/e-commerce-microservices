@@ -1,0 +1,13 @@
+spring:
+  elasticsearch:
+    uris: ${ES_URIS:http://localhost:9200}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+
+search:
+  cors:
+    allowed-origins: "*"
+
+logging:
+  level:
+    com.ecommerce.search: DEBUG

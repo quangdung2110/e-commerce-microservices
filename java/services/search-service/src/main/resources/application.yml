@@ -1,0 +1,96 @@
+spring:
+  application:
+    name: search-service
+
+  main:
+    web-application-type: servlet
+
+  elasticsearch:
+    uris: ${ES_URIS:http://localhost:9200}
+    connection-timeout: 5s
+    socket-timeout: 30s
+    username: ${ES_USERNAME:}
+    password: ${ES_PASSWORD:}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: search-product-indexer
+      auto-offset-reset: earliest
+      max-poll-records: 500
+      concurrency: 5
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.ecommerce.search.domain.event"
+        spring.json.value.default.type: com.ecommerce.search.domain.event.CloudEventEnvelope
+        max.poll.interval.ms: 600000
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: 8080
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    elasticsearch:
+      enabled: true
+    kafka:
+      enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        es.query.duration: true
+
+search:
+  topics:
+    product: t.product.events
+    category: t.category.events
+    review: t.review.events
+  jwt:
+    trust-gateway: true
+    claims-header: X-User-Claims
+  es:
+    query-timeout-product-ms: 5000
+    query-timeout-suggest-ms: 2000
+    update-by-query-throttle-rps: 300
+    index-aliases:
+      products: products
+      products-write: products_write
+      categories: categories
+      categories-write: categories_write
+      suggestions: search_suggestions
+  cors:
+    allowed-origins: "*"
+  pagination:
+    default-size: 20
+    max-size: 100
+  reindex:
+    checkpoint-interval-docs: 5000
+    build-chunk-size: 2000
+  suggestions:
+    rebuild-cron: "0 0 3 * * *"
+  draft-cleanup:
+    cron: "0 0 2 * * *"
+    tombstone-purger-cron: "0 30 2 * * *"
+    grace-period-hours: 24
+    tombstone-retention-days: 30
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce.search: DEBUG
+    org.elasticsearch.client: INFO
+    org.springframework.kafka: INFO

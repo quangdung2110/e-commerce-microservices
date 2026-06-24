@@ -36,12 +36,13 @@ com.platform.inventoryservice.infrastructure.persistence/
 │   │   ├── InventoryReservationJpaRepository.java
 │   │   ├── InventoryLedgerJpaRepository.java
 │   │   └── OutboxJpaRepository.java
-│   └── custom/
-│       ├── PhysicalInventoryJpaCustom.java
-│       ├── PhysicalInventoryJpaCustomImpl.java
-│       ├── InventoryReservationJpaCustom.java
-│       ├── InventoryReservationJpaCustomImpl.java
-│       └── OutboxJpaCustom.java
+    │   └── custom/
+    │       ├── PhysicalInventoryJpaCustom.java
+    │       ├── PhysicalInventoryJpaCustomImpl.java
+    │       ├── InventoryReservationJpaCustom.java
+    │       ├── InventoryReservationJpaCustomImpl.java
+    │       ├── OutboxJpaCustom.java
+    │       └── OutboxJpaCustomImpl.java
 └── outbound/
     ├── mapper/
     │   ├── WarehouseMapper.java
@@ -192,9 +193,6 @@ public class InventoryReservationJpaEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 50)
     private ReservationStatus status;
-
-    @Column(name = "idempotency_key", nullable = false, length = 255, unique = true)
-    private String idempotencyKey;
 
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
@@ -358,7 +356,8 @@ public interface InventoryReservationJpaRepository
         extends JpaRepository<InventoryReservationJpaEntity, Long>,
                 InventoryReservationJpaCustom {
 
-    Optional<InventoryReservationJpaEntity> findByIdempotencyKey(String idempotencyKey);
+    Optional<InventoryReservationJpaEntity> findFirstByOrderIdAndSkuIdAndWarehouseId(
+        Long orderId, String skuId, Long warehouseId);
 
     List<InventoryReservationJpaEntity> findByOrderId(Long orderId);
 
@@ -516,7 +515,7 @@ public class PhysicalInventoryJpaCustomImpl implements PhysicalInventoryJpaCusto
 ```java
 public interface InventoryReservationJpaCustom {
 
-    /** Idempotent insert với ON CONFLICT DO NOTHING (idempotency_key UNIQUE). */
+    /** Idempotent insert với ON CONFLICT DO NOTHING (partial UNIQUE trên (order_id, sku_id, warehouse_id) WHERE status='RESERVED'). */
     Optional<Long> insertIfAbsent(InventoryReservationJpaEntity entity);
 
     /** Bulk update status theo danh sách (order_id, sku_id, warehouse_id). */
@@ -545,20 +544,34 @@ public record RefundCompletionProjection(
 #### Implementation highlights
 
 ```java
-@Override
-public Optional<Long> insertIfAbsent(InventoryReservationJpaEntity e) {
-    try {
-        em.persist(e);
-        em.flush();
-        return Optional.of(e.getId());
-    } catch (PersistenceException ex) {
-        if (isUniqueViolation(ex)) {
-            // Idempotent hit — return existing ID
-            return findByIdempotencyKey(e.getIdempotencyKey()).map(InventoryReservationJpaEntity::getId);
+@Repository
+@RequiredArgsConstructor
+public class InventoryReservationJpaCustomImpl implements InventoryReservationJpaCustom {
+
+    @PersistenceContext
+    private EntityManager em;
+
+    /** Inject để dùng derived query findFirstByOrderIdAndSkuIdAndWarehouseId trong insertIfAbsent. */
+    private final InventoryReservationJpaRepository repository;
+
+    @Override
+    public Optional<Long> insertIfAbsent(InventoryReservationJpaEntity e) {
+        try {
+            em.persist(e);
+            em.flush();
+            return Optional.of(e.getId());
+        } catch (PersistenceException ex) {
+            if (isUniqueViolation(ex)) {
+                // Idempotent hit — partial UNIQUE (order_id, sku_id, warehouse_id) WHERE status='RESERVED'
+                // Đã có 1 row RESERVED cho cùng (order, sku, warehouse) → trả về ID của row đó.
+                return repository
+                    .findFirstByOrderIdAndSkuIdAndWarehouseId(
+                        e.getOrderId(), e.getSkuId(), e.getWarehouseId())
+                    .map(InventoryReservationJpaEntity::getId);
+            }
+            throw ex;
         }
-        throw ex;
     }
-}
 
 @Override
 public RefundCompletionProjection findRefundCompletion(long orderId, String refundRequestId) {
@@ -707,8 +720,10 @@ public interface PhysicalInventoryRepository {
 }
 
 public interface InventoryReservationRepository {
-    Optional<Long> insertIfAbsent(InventoryReservation reservation);
-    Optional<InventoryReservation> findByIdempotencyKey(String key);
+    /** Idempotent insert. Trả về Optional.empty nếu insert fail do partial UNIQUE violation (đã có row RESERVED). */
+    Optional<Long> insertIfAbsent(InventoryReservation domain);
+    /** Lookup reservation đang active (status bất kỳ) theo (orderId, skuId, warehouseId) — single row per lifecycle. */
+    Optional<InventoryReservation> findActiveByOrderSkuWarehouse(long orderId, String skuId, long warehouseId);
     List<InventoryReservation> findByOrderId(long orderId);
     void updateStatus(long id, ReservationStatus status);
     int markRefundExpected(long orderId, String refundRequestId, List<Long> orderItemIds);
@@ -786,18 +801,20 @@ public class PhysicalInventoryRepositoryImpl implements PhysicalInventoryReposit
     @Override
     @Transactional
     public PhysicalInventory upsert(SkuWarehouseKey key, String productId, int actualQtyDelta) {
-        // Single-row upsert via native query (used by RestockService)
-        // For batch, use PhysicalInventoryJpaCustom.bulkUpsert
-        return jpa.findBySkuIdAndWarehouseId(key.skuId(), key.warehouseId())
-            .map(existing -> {
-                existing.addActual(actualQtyDelta);  // wait, this is JPA entity not domain
-                return mapper.toDomain(jpa.save(existing));
-            })
-            .orElseGet(() -> {
-                PhysicalInventoryJpaEntity e = new PhysicalInventoryJpaEntity();
-                // set fields
-                return mapper.toDomain(jpa.save(e));
-            });
+        // Single-row upsert via domain-mediated flow (RestockService dùng path này).
+        // For batch, dùng PhysicalInventoryJpaCustom.bulkUpsert.
+        Optional<PhysicalInventoryJpaEntity> existing =
+            jpa.findBySkuIdAndWarehouseId(key.skuId(), key.warehouseId());
+
+        if (existing.isPresent()) {
+            // Domain-mediated update: mapper.toDomain → mutate → mapper.toJpa → save
+            PhysicalInventory domain = mapper.toDomain(existing.get());
+            domain.addActualQuantity(actualQtyDelta);
+            PhysicalInventoryJpaEntity updated = mapper.toJpa(domain);
+            return mapper.toDomain(jpa.save(updated));
+        }
+        PhysicalInventory newDomain = PhysicalInventory.forUpsert(key, productId, actualQtyDelta);
+        return mapper.toDomain(jpa.save(mapper.toJpa(newDomain)));
     }
     // ...
 }
@@ -847,8 +864,11 @@ public class OutboxRepositoryImpl implements OutboxRepository {
     private final OutboxMapper mapper;
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.MANDATORY)
     public void insert(OutboxEvent event) {
+        // MUST chạy trong transaction của caller (RestockService, LedgerWorker, ShipToCustomerService)
+        // để đảm bảo all-or-nothing với ledger/physical_inventory row (Outbox Pattern).
+        // MANDATORY: nếu caller quên mở TX → IllegalTransactionStateException ngay, không tự tạo TX mới.
         jpa.save(mapper.toJpa(event));
     }
 
@@ -886,9 +906,9 @@ public class OutboxRepositoryImpl implements OutboxRepository {
 | `insertIfAbsent` (reservation) | `@Transactional` | Idempotent insert với UNIQUE constraint |
 | `markRefundExpected` | `@Transactional` | Multi-row update |
 | `findRefundCompletion` | `@Transactional(readOnly = true)` | Pure query |
-| `insertOutbox` | Caller's transaction | **MUST** be in same TX as ledger insert (Outbox Pattern) |
+| `insertOutbox` | `@Transactional(MANDATORY)` — caller owns TX | Bắt buộc cùng TX với ledger insert; fail-fast nếu caller quên mở TX |
 
-> Quy tắc Outbox: mọi `outboxRepository.insert(...)` phải được gọi trong transaction của caller (Ledger Worker, RestockService, ShipToCustomerService). KHÔNG có `@Transactional` riêng trên `insert`.
+> Quy tắc Outbox: mọi `outboxRepository.insert(...)` phải được gọi trong transaction của caller (Ledger Worker, RestockService, ShipToCustomerService). Annotation `@Transactional(MANDATORY)` chỉ là cơ chế fail-fast — không tự mở TX mới; caller BẮT BUỘc đã có `@Transactional` ở method-level hoặc chạy trong TX ngầm (ví dụ Temporal Activity wrapper).
 
 ---
 
@@ -911,7 +931,7 @@ public class OutboxRepositoryImpl implements OutboxRepository {
 |:---|:---|
 | Flyway chạy OK | `@DataJpaTest` boot thành công với schema mới |
 | Mapping domain ↔ JPA | Test round-trip entity: `mapper.toDomain(mapper.toJpa(d))` equals `d` |
-| UNIQUE constraint | Insert 2 row cùng `idempotency_key` → row 2 fail với constraint violation |
+| Partial UNIQUE constraint | Insert 2 row cùng `(order_id, sku_id, warehouse_id)` ở status `RESERVED` → row 2 fail với constraint violation |
 | Partial unique index | Insert 2 `RESERVED` cùng `(order, sku, wh)` → fail |
 | Custom query perf | Insert 10K fake rows, query < 50ms |
 | Outbox transaction | Test: insert outbox fail → ledger insert cũng rollback |
@@ -925,7 +945,7 @@ src/main/java/com/platform/inventoryservice/infrastructure/persistence/
 ├── jpa/
 │   ├── entity/  (5 files)
 │   ├── spring/  (5 files)
-│   └── custom/  (7 files: 3 interfaces + 3 impls + 1 OutboxJpaCustom)
+│   └── custom/  (6 files: 3 interfaces + 3 impls)
 └── outbound/
     ├── mapper/  (5 files using MapStruct)
     └── repository/  (5 files)

@@ -31,7 +31,7 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
 5. Với `PRODUCT_CREATED`/`PRODUCT_UPDATED`, mỗi phần tử `skus[]` bắt buộc có `best_price` và `has_promotion` để Search phản chiếu giá trực tiếp, không tự tính lại business pricing.
 6. `PRODUCT_UPDATED` phải ưu tiên payload full snapshot; nếu payload thiếu field bắt buộc thì invalidation consumer fallback đọc snapshot PostgreSQL. Không trộn payload + DB trong cùng một event.
 7. Event Handler Worker phải có execution contract tường minh: commit offset sau success/DLQ, retry có giới hạn cho lỗi transient, pause/resume partition khi dependency suy giảm.
-8. **Inventory Sync (Two-Phase Lock-Free)**: Event `INVENTORY_QUANTITY_CHANGED` được xử lý qua Phase 1 (Lock-Free: Kafka → Redis Lua CAS) và Phase 2 (Async DB Sync: Redis ZSET → PostgreSQL → phát `SKU_UPDATED` với `changed_fields` chứa `sku_status`/`product_status`). Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
+8. **Inventory Sync (Two-Phase Lock-Free)**: Event `INVENTORY_STOCK_CHANGED` được xử lý qua Phase 1 (Lock-Free: Kafka → Redis Lua CAS) và Phase 2 (Async DB Sync: Redis ZSET → PostgreSQL → phát `SKU_UPDATED` với `changed_fields` chứa `sku_status`/`product_status`). Xem [Inventory Sync Optimization](inventory_sync_optimization.md).
 9. Cache key `product:sku:{sku_id}` bắt buộc lưu `price_updated_at` (ISO 8601 timestamp) để Event Handler guard khi refresh từ `SKU_UPDATED`. Phase 1 không ghi đè `product_status` và `price_updated_at` — chỉ Event Handler được phép ghi đè. `SKU_UPDATED` do Phase 2 phát sau DB commit cũng không ghi đè `price_updated_at` (vì nó thuộc về giá).
 
 ## 3. Consistency & Concurrency
@@ -66,5 +66,5 @@ Tài liệu này tổng hợp các khuyến nghị kiến trúc cốt lõi để
         - downstream không throw exception khi nhận unknown value trong `changed_fields`
     - `SKU_CREATED`
     - `SKU_DELETED`
-    - `INVENTORY_QUANTITY_CHANGED`
+    - `INVENTORY_STOCK_CHANGED`
     - `CATEGORY_UPDATED` / `CATEGORY_DELETED`

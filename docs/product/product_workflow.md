@@ -66,15 +66,16 @@ Tài liệu này mô tả chi tiết trình tự các bước thực thi cho **B
 
 > **Kiến trúc mới:** Luồng này đã được tối ưu hóa với **Two-Phase Lock-Free Architecture**. Xem chi tiết tại [Inventory Sync Optimization](inventory_sync_optimization.md) và [Inventory Sync Worker](product_workers.md#5-inventory-sync-worker-two-phase-lock-free-architecture).
 
-**Trigger:** Kafka Event [`INVENTORY_QUANTITY_CHANGED`](product_events.md#44-inventory_quantity_changed-từ-inventory-service) từ Topic `t.inventory.events`.
+**Trigger:** Kafka Event [`INVENTORY_STOCK_CHANGED`](product_events.md#44-inventory_stock_changed-từ-inventory-service) từ Topic `t.inventory.events`.
 
 **Quy trình chuẩn kiện (Workflow):**
 
 ### Phase 1: Fast Path (Lock-Free, < 5ms)
 
 1. **[Kafka Consumer] - Nhận Event:**
-   - Worker (`groupId: product-inventory-fast-sync-group`) nhận `INVENTORY_QUANTITY_CHANGED`.
-   - Parse payload bắt buộc: `product_id`, `sku_id`, `available_quantity`, `event_timestamp`.
+   - Worker (`groupId: product-inventory-fast-sync-group`) nhận `INVENTORY_STOCK_CHANGED`.
+   - **Convert wrapper timestamp**: parse `timestamp` (ISO 8601 UTC) từ CloudEvents wrapper sang epoch milliseconds (`Instant.parse(event.getTimestamp()).toEpochMilli()`). Đây là `event_timestamp` dùng cho mọi staleness guard phía dưới.
+   - Parse payload bắt buộc: `product_id`, `sku_id`, `available_quantity`, `change_type`.
 2. **[Lua Script] - Atomic Compare-and-Swap trên Redis:**
    - Staleness guard: chỉ apply nếu `event_timestamp > cached.last_inventory_sync_at`.
    - Atomic write `display_quantity`, `sku_status`, `last_inventory_sync_at`, `is_available`.

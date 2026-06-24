@@ -14,7 +14,7 @@ Triển khai:
 3. **Logging**: structured JSON logs với correlation ID.
 4. **Health checks**: liveness / readiness / startup probes.
 5. **Alerting rules**: Prometheus alert rules cho các tình huống bất thường.
-6. **Docker & deployment**: Dockerfile, docker-compose cho dev, Kubernetes manifests cho prod.
+6. **Docker & deployment**: Dockerfile, docker-compose cho dev.
 7. **Integration testing**: TestContainers setup với Postgres + Redis Cluster + Kafka + Debezium.
 
 ---
@@ -39,11 +39,6 @@ src/main/resources/
 │   ├── Dockerfile
 │   ├── docker-compose.dev.yml
 │   └── docker-compose.test.yml
-└── deploy/
-    ├── k8s-deployment.yml
-    ├── k8s-service.yml
-    ├── k8s-configmap.yml
-    └── k8s-secret.example.yml
 
 src/test/java/com/platform/inventoryservice/
 ├── IntegrationTestBase.java          # TestContainers base class
@@ -577,166 +572,9 @@ volumes:
 
 ---
 
-## 10. Kubernetes Manifests
+## 10. Integration Testing (TestContainers)
 
-### 10.1 Deployment
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: inventory-service
-  namespace: platform
-  labels:
-    app: inventory-service
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: inventory-service
-  template:
-    metadata:
-      labels:
-        app: inventory-service
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8083"
-        prometheus.io/path: "/actuator/prometheus"
-    spec:
-      containers:
-        - name: inventory-service
-          image: registry.platform.io/inventory-service:1.0.0
-          ports:
-            - containerPort: 8083
-          env:
-            - name: SPRING_PROFILES_ACTIVE
-              value: prod
-            - name: INVENTORY_DB_URL
-              valueFrom:
-                secretKeyRef:
-                  name: inventory-secrets
-                  key: db-url
-            - name: INVENTORY_DB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: inventory-secrets
-                  key: db-user
-            - name: INVENTORY_DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: inventory-secrets
-                  key: db-password
-            - name: REDIS_CLUSTER_NODES
-              valueFrom:
-                configMapKeyRef:
-                  name: inventory-config
-                  key: redis-cluster-nodes
-            - name: KAFKA_BOOTSTRAP
-              valueFrom:
-                configMapKeyRef:
-                  name: inventory-config
-                  key: kafka-bootstrap
-            - name: TEMPORAL_TARGET
-              valueFrom:
-                configMapKeyRef:
-                  name: inventory-config
-                  key: temporal-target
-            - name: OTLP_ENDPOINT
-              value: http://otel-collector:4318/v1/traces
-          readinessProbe:
-            httpGet:
-              path: /actuator/health/readiness
-              port: 8083
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /actuator/health/liveness
-              port: 8083
-            initialDelaySeconds: 60
-            periodSeconds: 30
-          resources:
-            requests:
-              cpu: "500m"
-              memory: "1Gi"
-            limits:
-              cpu: "2"
-              memory: "3Gi"
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-```
-
-### 10.2 Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: inventory-service
-  namespace: platform
-spec:
-  selector:
-    app: inventory-service
-  ports:
-    - name: http
-      port: 80
-      targetPort: 8083
-  type: ClusterIP
-```
-
-### 10.3 ConfigMap
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: inventory-config
-  namespace: platform
-data:
-  redis-cluster-nodes: "redis-cluster-0.redis:6379,redis-cluster-1.redis:6379,redis-cluster-2.redis:6379"
-  kafka-bootstrap: "kafka-bootstrap.kafka:9092"
-  temporal-target: "temporal-frontend.temporal:7233"
-```
-
-### 10.4 HorizontalPodAutoscaler
-
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: inventory-service-hpa
-  namespace: platform
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: inventory-service
-  minReplicas: 3
-  maxReplicas: 10
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Pods
-      pods:
-        metric:
-          name: inventory_lua_invocations_per_second
-        target:
-          type: AverageValue
-          averageValue: "100"
-```
-
----
-
-## 11. Integration Testing (TestContainers)
-
-### 11.1 Base Class
+### 10.1 Base Class
 
 ```java
 @SpringBootTest
@@ -782,7 +620,7 @@ public abstract class IntegrationTestBase {
 }
 ```
 
-### 11.2 End-to-End Test
+### 10.2 End-to-End Test
 
 ```java
 class ReserveToLedgerE2ETest extends IntegrationTestBase {
@@ -846,8 +684,8 @@ class ReserveToLedgerE2ETest extends IntegrationTestBase {
 
 ### 13.3 Temporal Worker Down
 
-1. Check `inventory-service` pod status.
-2. Restart pod → Temporal Worker reconnect.
+1. Check `inventory-service` container status.
+2. Restart container → Temporal Worker reconnect.
 3. In-flight Temporal Activities sẽ timeout & retry sau khi worker online.
 
 ---
@@ -866,12 +704,10 @@ src/main/java/com/platform/inventoryservice/tracing/
 src/main/resources/
 ├── alertmanager/inventory-alerts.yml
 ├── prometheus/inventory-recording-rules.yml
-├── docker/docker-compose.dev.yml
-└── deploy/
-    ├── k8s-deployment.yml
-    ├── k8s-service.yml
-    ├── k8s-configmap.yml
-    └── k8s-secret.example.yml
+└── docker/
+    ├── Dockerfile
+    ├── docker-compose.dev.yml
+    └── docker-compose.test.yml
 
 src/test/java/com/platform/inventoryservice/
 └── IntegrationTestBase.java

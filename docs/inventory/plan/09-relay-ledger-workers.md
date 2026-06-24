@@ -371,7 +371,7 @@ public class MutationEventProcessor {
             ledgerRepo.append(ledger);
 
             // 2. Update reservation (status transition)
-            // Dùng idempotency_key từ cmd để lookup
+            // Lookup bằng (orderId, skuId, warehouseId) — reservation là single row per lifecycle
             // ...
 
             // 3. Update physical_inventory.reserved_quantity hoặc actual_quantity
@@ -424,31 +424,28 @@ private void applyMutationToPhysical(StockMutationPayload p) {
 
 ```java
 private void updateReservationForMutation(CloudEventImpl<?> envelope, StockMutationPayload p) {
-    // Reconstruct idempotency_key from payload
-    String op = switch (p.changeType()) {
-        case "ORDER_RESERVED"  -> "reserve";
-        case "ORDER_DEDUCTED"  -> "deduct";
-        default                -> "release";
-    };
-    String idempotencyKey = op + ":" + p.skuId() + ":" + p.warehouseId() + ":" + p.orderId();
+    // KHÔNG dùng idempotency_key. Reservation là single-row per (orderId, skuId, warehouseId)
+    // lifecycle: RESERVED → DEDUCTED | CANCELLED. Lookup theo composite key.
+    Optional<InventoryReservation> existing = reservationRepo
+        .findActiveByOrderSkuWarehouse(p.orderId(), p.skuId(), p.warehouseId());
 
-    Optional<InventoryReservation> existing = reservationRepo.findByIdempotencyKey(idempotencyKey);
     if (existing.isEmpty()) {
-        log.warn("Reservation not found for idempotency_key={}, skipping", idempotencyKey);
-        return;   // Lua mutation đã thành công nhưng DB row chưa có — coi như anomaly
+        log.warn("Reservation not found for orderId={}, skuId={}, warehouseId={}, skipping",
+            p.orderId(), p.skuId(), p.warehouseId());
+        return;   // Lua mutation đã thành công nhưng DB row chưa có — coi như anomaly, cần investigate
     }
 
     ReservationStatus newStatus = switch (p.changeType()) {
-        case "ORDER_RESERVED"                -> ReservationStatus.RESERVED;
-        case "ORDER_DEDUCTED"                -> ReservationStatus.DEDUCTED;
-        case "ORDER_CANCELLED", "RESERVATION_EXPIRED" -> ReservationStatus.CANCELLED;
+        case "ORDER_RESERVED"                                -> ReservationStatus.RESERVED;
+        case "ORDER_DEDUCTED"                                -> ReservationStatus.DEDUCTED;
+        case "ORDER_CANCELLED", "RESERVATION_EXPIRED"        -> ReservationStatus.CANCELLED;
         default -> throw new IllegalStateException("Unknown changeType: " + p.changeType());
     };
     reservationRepo.updateStatus(existing.get().getId(), newStatus);
 }
 ```
 
-> ⚠️ Cold path: Reservation row INSERT thực hiện **trong cùng transaction** với ledger/outbox. Đây là nơi `idempotency_key` từ Redis được copy vào DB column.
+> Cold path: Reservation row INSERT/UPDATE thực hiện **trong cùng transaction** với ledger/outbox. Idempotency ở DB được đảm bảo bởi partial UNIQUE `inventory_reservations(order_id, sku_id, warehouse_id) WHERE status='RESERVED'` (M02) cho INSERT, và `inventory_ledger.event_id` UNIQUE cho ledger row.
 
 ### 4.6 Outbox Emit (per-SKU Aggregate)
 

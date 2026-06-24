@@ -190,11 +190,7 @@ private Instant computeWatermark() {
 
 ## 8. Multi-Instance Coordination
 
-Nếu deploy nhiều instance Inventory Service (HA), cleanup có thể chạy đồng thời. Giải pháp:
-
-**Option A**: CronJob bên ngoài (Kubernetes CronJob) gọi HTTP endpoint `/internal/admin/outbox-cleanup` thay vì `@Scheduled`.
-
-**Option B**: Database advisory lock:
+Nếu deploy nhiều instance Inventory Service (HA), cleanup có thể chạy đồng thời. Giải pháp: dùng **database advisory lock** để chỉ một instance thực thi cleanup tại một thời điểm:
 
 ```java
 @Scheduled(cron = "0 0 2 * * *")
