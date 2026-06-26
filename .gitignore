@@ -27,3 +27,11 @@ Thumbs.db
 
 # Env files
 .env
+
+# Agent
+.agents/
+.agents/**
+.agents/*
+.agents
+.agents/
+.agents/
