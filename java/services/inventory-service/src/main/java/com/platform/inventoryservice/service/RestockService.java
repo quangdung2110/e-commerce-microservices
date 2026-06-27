@@ -154,14 +154,10 @@ public class RestockService implements RestockPort {
     private void emitReturnReceivedAll(
         RestockCommand cmd, RefundSnapshot snapshot, String correlationId
     ) {
-        var completion = reservationRepo.checkRefundCompletion(cmd.orderId(), cmd.refundRequestId());
-
         CloudEventImpl<ReturnReceivedAllPayload> envelope = eventBuilder.buildReturnReceivedAllEvent(
             new ReturnReceivedAllPayload(
                 cmd.orderId(),
-                cmd.refundRequestId(),
-                completion.requiredItemIds(),
-                Instant.now()
+                cmd.refundRequestId()
             ),
             correlationId
         );

@@ -426,6 +426,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
 ```
 [Admin]
         |  Request: {order_id, warehouse_id, shipped_at, courier_note?}
+        |  → `courier_note` (optional, audit only) — Phase 20: nếu có thì lưu API log nội bộ, KHÔNG đưa vào Kafka payload
         v
 [Contract Guard]
         |  Validate warehouse_id tồn tại & active
@@ -441,7 +442,7 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         |  ) VALUES (
         |    :event_id, 1, 'Inventory', :order_id,
         |    'INVENTORY_SHIP_TO_CUSTOMER', :order_id,
-        |    '{"order_id":..., "warehouse_id":..., "shipped_at":..., "courier_note":...}'::jsonb,
+        |    '{"order_id":..., "warehouse_id":..., "shipped_at":...}'::jsonb,
         |    NOW()
         |  );
         |  COMMIT;

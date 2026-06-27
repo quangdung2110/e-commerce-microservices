@@ -551,6 +551,8 @@ public class PartitionKeyResolver {
 
 ### 12.4 INVENTORY_SHIP_TO_CUSTOMER
 
+> **Phase 20 (Event Payload Simplification):** Field `courier_note` đã được loại khỏi Kafka payload. Event hiện tại chỉ chứa 3 field: `order_id`, `warehouse_id`, `shipped_at`. Xem canonical [inventory_events.md §4.4](../../inventory_events.md#44-inventory_ship_to_customer) cho schema mới. Example dưới đây là bản Phase 18 (chưa áp Phase 20) — tham khảo lịch sử.
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174005",

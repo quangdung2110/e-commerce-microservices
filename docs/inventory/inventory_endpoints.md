@@ -468,7 +468,7 @@ Admin xác nhận kho đã xuất hàng cho khách. Trigger event `INVENTORY_SHI
 | `order_id` | Integer | ✅ | ID đơn hàng đã shipped |
 | `warehouse_id` | Integer | ✅ | Kho xuất hàng |
 | `shipped_at` | ISO 8601 | ✅ | Mốc thời gian xuất kho |
-| `courier_note` | String(512) | ❌ | Ghi chú nội bộ (audit) |
+| `courier_note` | String(512) | ❌ | Ghi chú nội bộ (audit). **Phase 20:** Nếu có, lưu vào internal API log; KHÔNG đưa vào Kafka payload (`INVENTORY_SHIP_TO_CUSTOMER` chỉ chứa `order_id`/`warehouse_id`/`shipped_at`). |
 
 ### Response
 
@@ -508,7 +508,7 @@ Admin xác nhận kho đã xuất hàng cho khách. Trigger event `INVENTORY_SHI
    ) VALUES (
      :event_id, 1, 'Inventory', :order_id,
      'INVENTORY_SHIP_TO_CUSTOMER', :order_id,
-     '{"order_id":..., "warehouse_id":..., "shipped_at":..., "courier_note":...}'::jsonb,
+     '{"order_id":..., "warehouse_id":..., "shipped_at":...}'::jsonb,
      NOW()
    );
    COMMIT;

@@ -49,9 +49,14 @@ public class ShipToCustomerService implements ShipToCustomerPort {
                 + " at warehouse=" + cmd.warehouseId());
         }
 
-        // 3. Build outbox event (signal only — no stock mutation)
+        // 3. Internal API log cho courier_note (Phase 20: KHÔNG đưa vào Kafka payload)
+        if (cmd.courierNote() != null) {
+            log.info("courierNote for order={}: {}", cmd.orderId(), cmd.courierNote());
+        }
+
+        // 4. Build outbox event (signal only — no stock mutation, courierNote excluded per Phase 20)
         CloudEventImpl<ShipToCustomerPayload> envelope = eventBuilder.buildShipToCustomerEvent(
-            new ShipToCustomerPayload(cmd.orderId(), cmd.warehouseId(), cmd.shippedAt(), cmd.courierNote()),
+            new ShipToCustomerPayload(cmd.orderId(), cmd.warehouseId(), cmd.shippedAt()),
             cmd.correlationId()
         );
         String payloadJson;

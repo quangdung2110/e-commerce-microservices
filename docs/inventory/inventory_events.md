@@ -11,6 +11,8 @@
 * [Product Events - Consumed](../product/product_events.md) — Product consume `INVENTORY_STOCK_CHANGED` (cập nhật display cache)
 * [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund; Order consume `INVENTORY_SHIP_TO_CUSTOMER` để trigger item FSM PROCESSING → DELIVERED
 
+> **Phase 20 (Event Payload Simplification):** Payload `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` đã được tinh giản theo nguyên tắc "minimum viable" — bỏ các field Order Service không cần (VD `order_item_ids[]`, `confirmed_at`, `courier_note`). Chi tiết xem §4.3 và §4.4 dưới đây. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart).
+
 ---
 
 Inventory Service chỉ produce events (không consume từ service ngoài sau Phase 14). Xem chi tiết cơ chế tại [§2.2](inventory_events.md#22-topics-consume).
@@ -220,6 +222,8 @@ Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) s
 **Ngữ cảnh:** Inventory đã nhận đủ toàn bộ item thuộc refund scope đã được Order đăng ký trước đó (qua `POST /v1/inventory/returns/refund-expectations`).
 **Consumer chính:** Order Service (mở bước gọi Payment refund).
 
+> **Phase 20 (Payload Simplification):** Bỏ `order_item_ids[]` (Order Service derive từ `refund_request_id` + `order_id` trong `OrderRefundWorkflow` đã lock scope), `confirmed_at` (trùng envelope `timestamp`). Chỉ giữ `order_id` + `refund_request_id` để Order route signal đến `OrderRefundWorkflow` đúng instance và idempotency guard.
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174004",
@@ -232,9 +236,7 @@ Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) s
   "schema_version": 1,
   "payload": {
     "order_id": 10001,
-    "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
-    "order_item_ids": [2001],
-    "confirmed_at": "2026-03-05T09:58:30Z"
+    "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a"
   }
 }
 ```
@@ -252,7 +254,7 @@ Event này là signal nghiệp vụ để Order mở bước gọi Payment refun
 | 3 | Cùng transaction | INSERT `inventory_ledger` với `reference_type = ORDER_RETURNED_RESTOCK` |
 | 4 | Cùng transaction | INSERT `inventory_outbox` với `event_type = INVENTORY_STOCK_CHANGED`, `partition_key = sku_id` (cho Product Service) |
 | 5 | Cùng transaction | Refund completion check: `SELECT COUNT(*) FROM inventory_reservations WHERE order_id = :order_id AND refund_request_id = :refund_request_id AND refund_expected = TRUE AND status = 'DEDUCTED' AND refund_returned_at IS NULL` |
-| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chứa `order_id`, `refund_request_id`, `order_item_ids`, `confirmed_at`. `order_item_ids` aggregate từ các `order_item_id` có `refund_expected = TRUE AND refund_returned_at IS NOT NULL` (tại emit time = toàn bộ refund scope, vì completion check `pending = 0` đảm bảo). Có unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chống duplicate emit. |
+| 6 | Nếu completion count = 0 | INSERT `inventory_outbox` với `event_type = INVENTORY_RETURN_RECEIVED_ALL`, `partition_key = order_id`, payload chỉ chứa `order_id`, `refund_request_id` (Phase 20 — đã bỏ `order_item_ids[]`/`confirmed_at`). Có unique constraint `(order_id, refund_request_id) WHERE event_type = 'INVENTORY_RETURN_RECEIVED_ALL'` chống duplicate emit. |
 | 7 | PostgreSQL | COMMIT transaction |
 | 8 | Debezium CDC | Đọc WAL, produce message lên Kafka `t.inventory.events` với `key = order_id` (cho event RETURN_RECEIVED_ALL) hoặc `key = sku_id` (cho event STOCK_CHANGED) |
 
@@ -279,6 +281,8 @@ Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay th
 **Ngữ cảnh:** Admin xác nhận kho đã xuất hàng cho khách (qua API `POST /v1/inventory/ship-to-customer`). Trigger này thay thế cho `SHIPMENT_STATUS_UPDATED` từ Shipping Service (đã bị xóa).
 **Consumer chính:** Order Service (`order-inventory-ship-consumer`) → cập nhật `order_items.status = DELIVERED`.
 
+> **Phase 20 (Payload Simplification):** Bỏ `courier_note` (audit only, không ảnh hưởng FSM Order). Giữ `order_id` + `warehouse_id` (Order cần `warehouse_id` để query `inventory_reservations` chính xác cho multi-warehouse order) + `shipped_at` (Order dùng làm part của idempotency key kết hợp `order_id` + `warehouse_id`).
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174005",
@@ -292,8 +296,7 @@ Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay th
   "payload": {
     "order_id": 10001,
     "warehouse_id": 5,
-    "shipped_at": "2026-03-02T16:00:00Z",
-    "courier_note": "Đã bàn giao cho đơn vị vận chuyển nội bộ"
+    "shipped_at": "2026-03-02T16:00:00Z"
   }
 }
 ```
@@ -308,8 +311,8 @@ Event này là signal nghiệp vụ (không phải biến động tồn kho) ph�
 
 | Bước | Thành phần | Hành động |
 |:---:|:---|:---|
-| 1 | Admin/WMS gọi `POST /v1/inventory/ship-to-customer` với `{order_id, warehouse_id, shipped_at, courier_note?}` | API Layer validate JWT + warehouse + order tồn tại |
-| 2 | Cùng PostgreSQL transaction | INSERT vào `inventory_outbox` với `event_type = INVENTORY_SHIP_TO_CUSTOMER`, `partition_key = order_id`, payload chứa `order_id, warehouse_id, shipped_at, courier_note` |
+| 1 | Admin/WMS gọi `POST /v1/inventory/ship-to-customer` với `{order_id, warehouse_id, shipped_at, courier_note?}` | API Layer validate JWT + warehouse + order tồn tại. `courier_note` nếu có sẽ lưu vào internal API log; KHÔNG đưa vào Kafka payload (Phase 20). |
+| 2 | Cùng PostgreSQL transaction | INSERT vào `inventory_outbox` với `event_type = INVENTORY_SHIP_TO_CUSTOMER`, `partition_key = order_id`, payload chỉ chứa `order_id, warehouse_id, shipped_at` (Phase 20 — đã bỏ `courier_note`) |
 | 3 | PostgreSQL | COMMIT transaction |
 | 4 | Debezium CDC Connector | Đọc WAL qua Logical Replication Slot, extract `partition_key = order_id` làm Kafka message key (không bóc JSON) |
 | 5 | Debezium CDC | Produce lên Kafka topic `t.inventory.events` với `key = order_id`, độ trễ < 5ms |

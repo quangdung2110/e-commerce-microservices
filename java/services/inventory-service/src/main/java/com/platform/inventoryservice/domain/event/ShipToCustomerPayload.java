@@ -9,6 +9,5 @@ import java.time.Instant;
 public record ShipToCustomerPayload(
         long orderId,
         long warehouseId,
-        Instant shippedAt,
-        String courierNote) {
+        Instant shippedAt) {
 }
