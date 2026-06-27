@@ -4,7 +4,9 @@
 -- KEYS[2] = product:inventory:pending
 -- ARGV[1] = sku_id
 -- ARGV[2] = available_quantity
--- ARGV[3] = event_timestamp (epoch millis)
+-- ARGV[3] = event_timestamp (epoch millis, derived from CloudEvents wrapper `timestamp`
+--            ISO 8601 UTC via Instant.parse(...).toEpochMilli() in the consumer.
+--            Payload intentionally does NOT carry event_timestamp anymore.)
 -- ARGV[4] = product_id
 -- ARGV[5] = sku_status
 -- ARGV[6] = sku_json (full JSON string for cache overwrite)

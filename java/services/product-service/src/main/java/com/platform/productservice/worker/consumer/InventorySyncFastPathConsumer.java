@@ -24,7 +24,7 @@ import java.time.format.DateTimeFormatter;
 /**
  * Phase 1: Fast Path Kafka Consumer for inventory sync.
  *
- * <p>This consumer processes INVENTORY_QUANTITY_CHANGED events from Inventory Service
+ * <p>This consumer processes INVENTORY_STOCK_CHANGED events from Inventory Service
  * with zero database locks and sub-5ms latency. The flow:</p>
  * <ol>
  *   <li>Parse Kafka message into InventoryEvent</li>
@@ -47,8 +47,6 @@ import java.time.format.DateTimeFormatter;
 public class InventorySyncFastPathConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(InventorySyncFastPathConsumer.class);
-
-    private static final String EVENT_TYPE_INVENTORY_QUANTITY_CHANGED = "INVENTORY_QUANTITY_CHANGED";
 
     private final ObjectMapper objectMapper;
     private final InventoryFastSyncLuaExecutor luaExecutor;
@@ -92,7 +90,7 @@ public class InventorySyncFastPathConsumer {
             return;
         }
 
-        if (!EVENT_TYPE_INVENTORY_QUANTITY_CHANGED.equals(event.getEventType())) {
+        if (!ServiceConstants.EVENT_TYPE_INVENTORY_STOCK_CHANGED.equals(event.getEventType())) {
             log.debug("InventorySyncFastPathConsumer: skipping non-inventory event type={}, eventId={}",
                     event.getEventType(), event.getEventId());
             ack.acknowledge();
@@ -123,6 +121,11 @@ public class InventorySyncFastPathConsumer {
     private void processInventoryEvent(InventoryEvent event) {
         String skuId = event.getSkuId();
         String productId = event.getProductId();
+        // eventTimestamp is derived from the CloudEvents wrapper `timestamp` (ISO 8601 UTC)
+        // via InventoryEvent.getEventTimestamp() -> Instant.parse(...).toEpochMilli().
+        // The payload intentionally does NOT carry event_timestamp anymore — DO NOT read it
+        // from payload. The epoch_ms is used as Lua ARGV[1] (staleness guard) and as ZSET
+        // score / member ({sku_id}:{eventTimestamp}) for Phase 2.
         long eventTimestamp = event.getEventTimestamp();
         int availableQuantity = event.getAvailableQuantity();
         String skuStatus = event.deriveSkuStatus();

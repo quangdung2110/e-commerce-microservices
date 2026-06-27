@@ -20,7 +20,7 @@ This module implements the **Two-Phase Lock-Free Inventory Sync Architecture** �
 ```
 Inventory Service
        │
-       │ INVENTORY_QUANTITY_CHANGED (Kafka)
+       │ INVENTORY_STOCK_CHANGED (Kafka)
        ▼
 ┌─────────────────────────────────────────────────┐
 │  Phase 1: Fast Path (Kafka Consumer)             │

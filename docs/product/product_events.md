@@ -66,7 +66,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.1. PRODUCT_CREATED
 **Ngữ cảnh phát sinh:** admin tạo mới một sản phẩm ở trạng thái DRAFT thành công. Xem [Endpoint Tạo Sản Phẩm](product_endpoints.md#11-tạo-sản-phẩm-bản-nháp).
-**Consumers chính:** [Search Service](../search/search_events.md#21-product_created) (index sản phẩm mới, dù DRAFT chưa hiển thị public nhưng cần để Admin search).
+**Consumers chính:** [Search Service](../search/search_events.md#31-product_created) (index sản phẩm mới, dù DRAFT chưa hiển thị public nhưng cần để Admin search).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -151,7 +151,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.2. PRODUCT_UPDATED
 **Ngữ cảnh phát sinh:** admin cập nhật thông tin cấp sản phẩm (tên, mô tả, danh mục, thuộc tính, hình ảnh). Xem [Endpoint Cập Nhật Sản Phẩm](product_endpoints.md#14-cập-nhật-sản-phẩm).
-**Consumers chính:** [Search Service](../search/search_events.md#22-product_updated) (re-index product-level fields trên các SKU documents thuộc product), Product Service (self-invalidate cache).
+**Consumers chính:** [Search Service](../search/search_events.md#32-product_updated) (re-index product-level fields trên các SKU documents thuộc product), Product Service (self-invalidate cache).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -199,7 +199,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.3. PRODUCT_STATUS_CHANGED
 **Ngữ cảnh phát sinh:** Trạng thái sản phẩm thay đổi qua [State Machine](product_state_machine.md). VD: DRAFT → ACTIVE, ACTIVE → HIDDEN, HIDDEN → ACTIVE.
-**Consumers chính:** [Search Service](../search/search_events.md#23-PRODUCT_STATUS_CHANGED) (ẩn/hiện sản phẩm trên Elasticsearch), Notification Service (gửi mail cho admin), Promotion Service (Lắng nghe để bắt các Sản phẩm mới được duyệt lên `ACTIVE`, qua đó áp bù giá Markdown nếu chúng thuộc Category đang có Flash Sale).
+**Consumers chính:** [Search Service](../search/search_events.md#33-product_status_changed) (ẩn/hiện sản phẩm trên Elasticsearch), Notification Service (gửi mail cho admin), Promotion Service (Lắng nghe để bắt các Sản phẩm mới được duyệt lên `ACTIVE`, qua đó áp bù giá Markdown nếu chúng thuộc Category đang có Flash Sale).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -307,7 +307,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.5. SKU_CREATED
 **Ngữ cảnh phát sinh:** Admin thêm một SKU mới vào sản phẩm đã tồn tại qua [Endpoint Thêm SKU](product_endpoints.md#17-thêm-sku-vào-sản-phẩm). Event này phát ra thay cho `PRODUCT_UPDATED` — không phải thay đổi product-level fields mà là việc tạo một document SKU mới trên Search Service.
-**Consumers chính:** [Search Service](../search/search_events.md#26-sku_created) (tạo document SKU mới trên Elasticsearch), Product Service Event Handler (refresh `product:sku:{sku_id}`).
+**Consumers chính:** [Search Service](../search/search_events.md#35-sku_created) (tạo document SKU mới trên Elasticsearch), Product Service Event Handler (refresh `product:sku:{sku_id}`).
 
 **Cấu trúc Payload (JSON):**
 ```json
@@ -322,7 +322,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
   "schema_version": 1,
   "payload": {
     "product_id": "prod-uuid-001",
-    "product_name": "iPhone 15 Pro Max 256GB",
+    "name": "iPhone 15 Pro Max 256GB",
     "category_id": "cat-dien-thoai",
     "sku_id": "sku-uuid-003",
     "sku_code": "IP15PM-256-WHT",
@@ -348,7 +348,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 > **Partition Key contract (BẮT BUỘC):** Vì `aggregate_type = ProductSku`, `partition_key` trong outbox phải là `sku_id` (không phải `product_id`) để đảm bảo event được định tuyến đúng partition khi Search Service cần xử lý.
 >
-> **Contract enrichment fields (BẮT BUỘC):** Backend phải bổ sung `product_name`, `category_id`, `sku_code` trong cùng transaction trước khi insert outbox. Đây là dữ liệu cần thiết để Search Service index document đầy đủ mà không cần gọi lại API.
+> **Contract enrichment fields (BẮT BUỘC):** Backend phải bổ sung `name` (tên hiển thị — chính là tên sản phẩm cha), `category_id`, `sku_code` trong cùng transaction trước khi insert outbox. Đây là dữ liệu cần thiết để Search Service index document đầy đủ mà không cần gọi lại API.
 >
 > **Contract giá trong SKU snapshot (BẮT BUỘC):** Payload phải có đủ `original_price`, `promotional_price`, `best_price`, `has_promotion` để Search phản chiếu đúng giá mà không cần tự tính lại.
 >
@@ -390,7 +390,7 @@ Tất cả các tin nhắn phát lên Kafka đều tuân theo chuẩn [CloudEven
 
 ### 3.7. PRODUCT_DELETED
 **Ngữ cảnh phát sinh:** Sản phẩm bị Soft Delete (cập nhật cờ `is_deleted = true`, trạng thái nghiệp vụ cũ được giữ nguyên).
-**Consumers chính:** [Search Service](../search/search_events.md#26-product_deleted) (xoá khỏi Elasticsearch index).
+**Consumers chính:** [Search Service](../search/search_events.md#36-product_deleted--sku_deleted) (xoá khỏi Elasticsearch index).
 
 **Cấu trúc Payload (JSON):**
 ```json

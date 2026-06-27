@@ -23,6 +23,9 @@ public final class ServiceConstants {
     public static final String TOPIC_MARKDOWN_EVENTS = "t.promotion.markdown.events";
     public static final String TOPIC_INVENTORY_EVENTS = "t.inventory.events";
 
+    // Inventory event types (canonical, aligned with inventory-service)
+    public static final String EVENT_TYPE_INVENTORY_STOCK_CHANGED = "INVENTORY_STOCK_CHANGED";
+
     // Consumer group IDs
     public static final String CG_EVENT_HANDLER = "product-event-handler-group";
     public static final String CG_MARKDOWN = "product-markdown-group";
