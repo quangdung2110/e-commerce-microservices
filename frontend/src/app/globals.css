@@ -130,3 +130,20 @@
     @apply font-sans;
   }
 }
+
+@utility glass {
+  background-color: color-mix(in srgb, var(--color-background) 5%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, white 10%, transparent);
+}
+
+@utility glass-card {
+  background-color: color-mix(in srgb, var(--color-background) 40%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, white 10%, transparent);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+@utility text-glow {
+  text-shadow: 0 0 10px var(--color-primary);
+}
