@@ -6,31 +6,27 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"user-service/internal/api/dto/request"
 	"user-service/internal/api/dto/response"
 	"user-service/internal/api/middleware"
-	"user-service/internal/domain/port"
 	"user-service/internal/domain/service"
+	"user-service/internal/infrastructure/kafka"
 )
 
 // ProfileHandler handles profile-related HTTP requests
 type ProfileHandler struct {
 	profileService *service.ProfileService
-	outboxRepo     port.OutboxRepository
-	db             *pgxpool.Pool
+	producer       *kafka.UserEventProducer
 	logger         *zap.Logger
 }
 
 // NewProfileHandler creates a new profile handler
-func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *pgxpool.Pool, logger *zap.Logger) *ProfileHandler {
+func NewProfileHandler(profileService *service.ProfileService, producer *kafka.UserEventProducer, logger *zap.Logger) *ProfileHandler {
 	return &ProfileHandler{
 		profileService: profileService,
-		outboxRepo:     outboxRepo,
-		db:             db,
+		producer:       producer,
 		logger:         logger,
 	}
 }
@@ -67,7 +63,6 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 }
 
 // UpdateProfile handles PUT /api/v1/users/me/profile
-// Uses transactional outbox pattern to ensure profile update and outbox event are committed atomically
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -100,29 +95,16 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		dob = &parsed
 	}
 
-	// Begin transaction for atomic profile update + outbox event
 	ctx := c.Request.Context()
-	tx, err := h.db.Begin(ctx)
-	if err != nil {
-		h.logger.Error("failed to begin transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating profile",
-		))
-		return
-	}
-	defer tx.Rollback(ctx)
 
-	profile, err := h.profileService.UpdateProfileWithOutbox(
+	profile, err := h.profileService.UpdateProfile(
 		ctx,
-		tx,
 		userID,
 		req.FirstName,
 		req.LastName,
 		req.PhoneNumber,
 		dob,
 		req.Gender,
-		h.outboxRepo,
 	)
 
 	if err != nil {
@@ -140,13 +122,6 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 			))
 			return
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeProfileNotFound,
-				"Hồ sơ người dùng không tồn tại",
-			))
-			return
-		}
 		h.logger.Error("failed to update profile", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
 			response.ErrCodeInternalError,
@@ -155,14 +130,16 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		h.logger.Error("failed to commit transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating profile",
-		))
-		return
+	// Publish profile updated event to Kafka (best-effort async)
+	if err := h.producer.PublishUserProfileUpdated(ctx, kafka.ProfileUpdatedPayload{
+		ID:          profile.ID,
+		FirstName:   profile.FirstName,
+		LastName:    profile.LastName,
+		PhoneNumber: profile.PhoneNumber,
+		DateOfBirth: profile.DateOfBirth,
+		Gender:      string(profile.Gender),
+	}); err != nil {
+		h.logger.Error("failed to publish profile updated event", zap.Error(err))
 	}
 
 	c.JSON(http.StatusOK, response.ToProfileResponse(profile))

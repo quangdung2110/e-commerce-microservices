@@ -21,7 +21,6 @@ import (
 type UserVerifiedHandler struct {
 	profileRepo  port.ProfileRepository
 	prefsRepo   port.PreferencesRepository
-	outboxRepo  port.OutboxRepository
 	addressRepo port.AddressRepository
 	db          *pgxpool.Pool
 	logger      *zap.Logger
@@ -31,7 +30,6 @@ type UserVerifiedHandler struct {
 func NewUserVerifiedHandler(
 	profileRepo port.ProfileRepository,
 	prefsRepo port.PreferencesRepository,
-	outboxRepo port.OutboxRepository,
 	addressRepo port.AddressRepository,
 	db *pgxpool.Pool,
 	logger *zap.Logger,
@@ -39,7 +37,6 @@ func NewUserVerifiedHandler(
 	return &UserVerifiedHandler{
 		profileRepo:  profileRepo,
 		prefsRepo:   prefsRepo,
-		outboxRepo:  outboxRepo,
 		addressRepo: addressRepo,
 		db:          db,
 		logger:      logger,

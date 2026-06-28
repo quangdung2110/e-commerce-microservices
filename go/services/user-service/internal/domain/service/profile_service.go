@@ -61,7 +61,7 @@ func (s *ProfileService) GetProfile(ctx context.Context, userID uuid.UUID) (*ent
 	return profile, nil
 }
 
-// UpdateProfile updates a profile with transactional outbox
+// UpdateProfile updates a profile
 func (s *ProfileService) UpdateProfile(ctx context.Context, userID uuid.UUID, firstName, lastName, phone string, dateOfBirth *time.Time, genderStr string) (*entity.Profile, error) {
 	// Get existing profile
 	profile, err := s.profileRepo.GetByID(ctx, userID)
@@ -125,88 +125,6 @@ func (s *ProfileService) UpdateProfile(ctx context.Context, userID uuid.UUID, fi
 	if err := s.profileRepo.Update(ctx, profile); err != nil {
 		return nil, err
 	}
-
-	return profile, nil
-}
-
-// UpdateProfileWithOutbox updates profile and creates outbox event in single transaction
-func (s *ProfileService) UpdateProfileWithOutbox(ctx context.Context, tx pgx.Tx, userID uuid.UUID, firstName, lastName, phone string, dateOfBirth *time.Time, genderStr string, outboxRepo port.OutboxRepository) (*entity.Profile, error) {
-	// Get existing profile
-	profile, err := s.profileRepo.GetByID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if profile == nil {
-		return nil, ErrProfileNotFound
-	}
-
-	// Validate and set name
-	if firstName != "" || lastName != "" {
-		nameVO, err := vo.NewName(firstName, lastName)
-		if err != nil {
-			return nil, err
-		}
-		if firstName != "" {
-			profile.FirstName = nameVO.FirstName
-		}
-		if lastName != "" {
-			profile.LastName = nameVO.LastName
-		}
-	}
-
-	// Validate and set phone number
-	if phone != "" {
-		// Check if phone is already used by another user
-		exists, err := s.profileRepo.ExistsByPhoneNumber(ctx, phone, &userID)
-		if err != nil {
-			return nil, err
-		}
-		if exists {
-			return nil, ErrPhoneNumberExists
-		}
-
-		phoneVO, err := vo.NewPhoneNumber(phone)
-		if err != nil {
-			return nil, err
-		}
-		profile.PhoneNumber = &phoneVO.Value
-	}
-
-	// Validate and set date of birth
-	if dateOfBirth != nil {
-		if dateOfBirth.After(time.Now()) {
-			return nil, ErrInvalidDateOfBirth
-		}
-		profile.DateOfBirth = dateOfBirth
-	}
-
-	// Validate and set gender
-	if genderStr != "" {
-		genderVO, err := vo.NewGender(genderStr)
-		if err != nil {
-			return nil, err
-		}
-		profile.Gender = genderVO
-	}
-
-	// Update profile within transaction
-	if err := s.profileRepo.UpdateTx(ctx, tx, profile); err != nil {
-		return nil, err
-	}
-
-	// Create outbox event for CDC
-	outboxEvent, err := entity.NewUserProfileUpdatedEvent(profile)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := outboxRepo.CreateTx(ctx, tx, outboxEvent); err != nil {
-		return nil, err
-	}
-
-	s.logger.Info("Profile updated with outbox event",
-		zap.String("user_id", userID.String()),
-		zap.String("event_id", outboxEvent.EventID.String()))
 
 	return profile, nil
 }

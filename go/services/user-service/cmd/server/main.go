@@ -20,10 +20,10 @@ import (
 	"user-service/internal/api/validator"
 	"user-service/internal/domain/port"
 	"user-service/internal/domain/service"
-	"user-service/internal/infrastructure/postgres"
-	redisinfra "user-service/internal/infrastructure/redis"
 	kafkainfra "user-service/internal/infrastructure/kafka"
 	kafkahandler "user-service/internal/infrastructure/kafka/handler"
+	"user-service/internal/infrastructure/postgres"
+	redisinfra "user-service/internal/infrastructure/redis"
 	kafkaconsumer "user-service/internal/workers/kafka_consumer"
 )
 
@@ -44,7 +44,6 @@ func main() {
 			NewProfileRepository,
 			NewAddressRepository,
 			NewPreferencesRepository,
-			NewOutboxRepository,
 			NewUserDeletionRepository,
 			NewAddressCache,
 
@@ -64,6 +63,7 @@ func main() {
 
 			// Kafka Infrastructure
 			NewKafkaConfig,
+			NewUserEventProducer,
 			NewKafkaUserVerifiedHandler,
 			NewKafkaUserDeletedHandler,
 			NewUserVerifiedConsumer,
@@ -251,10 +251,6 @@ func NewPreferencesRepository(db *PostgresDB) port.PreferencesRepository {
 	return postgres.NewPostgresPreferencesRepository(db.Pool)
 }
 
-func NewOutboxRepository(db *PostgresDB) port.OutboxRepository {
-	return postgres.NewPostgresOutboxRepository(db.Pool)
-}
-
 func NewUserDeletionRepository(db *PostgresDB) port.UserDeletionRepository {
 	return postgres.NewPostgresUserDeletionRepository(db.Pool)
 }
@@ -285,25 +281,23 @@ func NewAddressService(
 func NewPreferencesService(
 	prefsRepo port.PreferencesRepository,
 	profileRepo port.ProfileRepository,
-	outboxRepo port.OutboxRepository,
-	db *PostgresDB,
 	logger *zap.Logger,
 ) *service.PreferencesService {
-	return service.NewPreferencesService(prefsRepo, profileRepo, outboxRepo, db.Pool, logger)
+	return service.NewPreferencesService(prefsRepo, profileRepo, logger)
 }
 
 // Handler constructors
 
-func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *PostgresDB, logger *zap.Logger) *handler.ProfileHandler {
-	return handler.NewProfileHandler(profileService, outboxRepo, db.Pool, logger)
+func NewProfileHandler(profileService *service.ProfileService, producer *kafkainfra.UserEventProducer, logger *zap.Logger) *handler.ProfileHandler {
+	return handler.NewProfileHandler(profileService, producer, logger)
 }
 
 func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *handler.AddressHandler {
 	return handler.NewAddressHandler(addressService, logger)
 }
 
-func NewPreferencesHandler(preferencesService *service.PreferencesService, db *PostgresDB, logger *zap.Logger) *handler.PreferencesHandler {
-	return handler.NewPreferencesHandler(preferencesService, db.Pool, logger)
+func NewPreferencesHandler(preferencesService *service.PreferencesService, producer *kafkainfra.UserEventProducer, logger *zap.Logger) *handler.PreferencesHandler {
+	return handler.NewPreferencesHandler(preferencesService, producer, logger)
 }
 
 func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *handler.HealthHandler {
@@ -336,12 +330,15 @@ func NewKafkaConfig(cfg *Config) *kafkainfra.Config {
 	}
 }
 
+func NewUserEventProducer(kafkaCfg *kafkainfra.Config, logger *zap.Logger) *kafkainfra.UserEventProducer {
+	return kafkainfra.NewUserEventProducer(kafkaCfg, logger)
+}
+
 // Kafka Handler constructors
 
 func NewKafkaUserVerifiedHandler(
 	profileRepo port.ProfileRepository,
 	prefsRepo port.PreferencesRepository,
-	outboxRepo port.OutboxRepository,
 	addressRepo port.AddressRepository,
 	db *PostgresDB,
 	logger *zap.Logger,
@@ -349,7 +346,6 @@ func NewKafkaUserVerifiedHandler(
 	return kafkahandler.NewUserVerifiedHandler(
 		profileRepo,
 		prefsRepo,
-		outboxRepo,
 		addressRepo,
 		db.Pool,
 		logger,
@@ -361,7 +357,7 @@ func NewKafkaUserDeletedHandler(
 	prefsRepo port.PreferencesRepository,
 	addressRepo port.AddressRepository,
 	deletionRepo port.UserDeletionRepository,
-	outboxRepo port.OutboxRepository,
+	producer *kafkainfra.UserEventProducer,
 	cache port.AddressCache,
 	db *PostgresDB,
 	logger *zap.Logger,
@@ -371,7 +367,7 @@ func NewKafkaUserDeletedHandler(
 		prefsRepo,
 		addressRepo,
 		deletionRepo,
-		outboxRepo,
+		producer,
 		cache,
 		db.Pool,
 		logger,
@@ -488,6 +484,7 @@ func RegisterKafkaConsumers(
 	lifecycle fx.Lifecycle,
 	userVerifiedConsumer *kafkaconsumer.Consumer,
 	userDeletedConsumer *kafkaconsumer.Consumer,
+	producer *kafkainfra.UserEventProducer,
 	logger *zap.Logger,
 ) {
 	lifecycle.Append(fx.Hook{
@@ -519,7 +516,12 @@ func RegisterKafkaConsumers(
 				logger.Error("Failed to stop user verified consumer", zap.Error(err))
 			}
 
-			logger.Info("Kafka consumers stopped")
+			// Close Kafka producer
+			if err := producer.Close(); err != nil {
+				logger.Error("Failed to close Kafka producer", zap.Error(err))
+			}
+
+			logger.Info("Kafka consumers and producer stopped")
 			return nil
 		},
 	})

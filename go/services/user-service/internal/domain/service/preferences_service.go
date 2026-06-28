@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"user-service/internal/domain/entity"
@@ -21,8 +20,6 @@ var (
 type PreferencesService struct {
 	prefsRepo   port.PreferencesRepository
 	profileRepo port.ProfileRepository
-	outboxRepo  port.OutboxRepository
-	db          *pgxpool.Pool
 	logger      *zap.Logger
 }
 
@@ -30,15 +27,11 @@ type PreferencesService struct {
 func NewPreferencesService(
 	prefsRepo port.PreferencesRepository,
 	profileRepo port.ProfileRepository,
-	outboxRepo port.OutboxRepository,
-	db *pgxpool.Pool,
 	logger *zap.Logger,
 ) *PreferencesService {
 	return &PreferencesService{
 		prefsRepo:   prefsRepo,
 		profileRepo: profileRepo,
-		outboxRepo:  outboxRepo,
-		db:          db,
 		logger:      logger,
 	}
 }
@@ -95,50 +88,6 @@ func (s *PreferencesService) UpdatePreferences(
 
 	s.logger.Info("preferences updated",
 		zap.String("user_id", userID.String()))
-
-	return prefs, nil
-}
-
-// UpdatePreferencesWithOutbox updates preferences and creates outbox event in single transaction
-func (s *PreferencesService) UpdatePreferencesWithOutbox(
-	ctx context.Context,
-	tx pgx.Tx,
-	userID uuid.UUID,
-	language, currency string,
-	emailEnabled, inAppEnabled, marketingEnabled *bool,
-) (*entity.Preferences, error) {
-	// Get existing preferences
-	prefs, err := s.prefsRepo.GetByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if prefs == nil {
-		return nil, ErrPreferencesNotFound
-	}
-
-	// Update fields
-	if err := prefs.Update(language, currency, emailEnabled, inAppEnabled, marketingEnabled); err != nil {
-		return nil, err
-	}
-
-	// Update within transaction
-	if err := s.prefsRepo.UpdateTx(ctx, tx, prefs); err != nil {
-		return nil, err
-	}
-
-	// Create outbox event for CDC
-	outboxEvent, err := entity.NewUserPreferencesUpdatedEvent(prefs)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.outboxRepo.CreateTx(ctx, tx, outboxEvent); err != nil {
-		return nil, err
-	}
-
-	s.logger.Info("preferences updated with outbox event",
-		zap.String("user_id", userID.String()),
-		zap.String("event_id", outboxEvent.EventID.String()))
 
 	return prefs, nil
 }

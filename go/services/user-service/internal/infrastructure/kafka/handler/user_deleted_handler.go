@@ -14,7 +14,8 @@ import (
 
 	"user-service/internal/domain/entity"
 	"user-service/internal/domain/port"
-	"user-service/internal/infrastructure/kafka/event"
+	userevent "user-service/internal/infrastructure/kafka"
+	kafkaevent "user-service/internal/infrastructure/kafka/event"
 )
 
 const (
@@ -28,7 +29,7 @@ const (
 //   - Anonymize user_profiles (clear PII, keep record)
 //   - Delete user_addresses
 //   - Delete user_preferences
-//   - Insert outbox event ACCOUNT_DELETED for downstream services
+//   - Publish ACCOUNT_DELETED event to Kafka for downstream services
 //
 // Stage 2: Hard delete (handled by Compliance Worker after retention window expires)
 type UserDeletedHandler struct {
@@ -36,7 +37,7 @@ type UserDeletedHandler struct {
 	prefsRepo    port.PreferencesRepository
 	addressRepo  port.AddressRepository
 	deletionRepo port.UserDeletionRepository
-	outboxRepo   port.OutboxRepository
+	producer     *userevent.UserEventProducer
 	cache        port.AddressCache
 	db           *pgxpool.Pool
 	logger       *zap.Logger
@@ -48,7 +49,7 @@ func NewUserDeletedHandler(
 	prefsRepo port.PreferencesRepository,
 	addressRepo port.AddressRepository,
 	deletionRepo port.UserDeletionRepository,
-	outboxRepo port.OutboxRepository,
+	producer *userevent.UserEventProducer,
 	cache port.AddressCache,
 	db *pgxpool.Pool,
 	logger *zap.Logger,
@@ -58,7 +59,7 @@ func NewUserDeletedHandler(
 		prefsRepo:    prefsRepo,
 		addressRepo:  addressRepo,
 		deletionRepo: deletionRepo,
-		outboxRepo:   outboxRepo,
+		producer:     producer,
 		cache:        cache,
 		db:           db,
 		logger:       logger,
@@ -70,9 +71,9 @@ func NewUserDeletedHandler(
 // 2. Anonymize user_profiles (PII removed, record remains for referential integrity)
 // 3. Delete user_addresses (Order Service has already snapshotted)
 // 4. Delete user_preferences
-// 5. Insert outbox_events with ACCOUNT_DELETED for downstream services
+// 5. Publish ACCOUNT_DELETED event to Kafka for downstream services
 func (h *UserDeletedHandler) Handle(ctx context.Context, msg kafka.Message) error {
-	var authEvent event.AuthEvent
+	var authEvent kafkaevent.AuthEvent
 	if err := json.Unmarshal(msg.Value, &authEvent); err != nil {
 		h.logger.Error("Failed to unmarshal auth event",
 			zap.Error(err),
@@ -132,13 +133,21 @@ func (h *UserDeletedHandler) Handle(ctx context.Context, msg kafka.Message) erro
 		return fmt.Errorf("failed to delete preferences: %w", err)
 	}
 
-	// 5. Insert outbox event for CDC to publish ACCOUNT_DELETED
-	if err = h.createOutboxEvent(ctx, tx, userID, reason, retentionWindow); err != nil {
-		return fmt.Errorf("failed to create outbox event: %w", err)
-	}
-
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// 5. Publish ACCOUNT_DELETED event to Kafka for downstream services
+	if err = h.producer.PublishAccountDeleted(ctx, userevent.AccountDeletedPayload{
+		UserID:                   userID,
+		DeletedAt:                time.Now().Format(time.RFC3339),
+		Reason:                   reason,
+		RetentionWindowExpiresAt: retentionWindow.Format(time.RFC3339),
+	}); err != nil {
+		h.logger.Error("Failed to publish ACCOUNT_DELETED event",
+			zap.String("user_id", userID.String()),
+			zap.Error(err),
+		)
 	}
 
 	// Invalidate cache after successful deletion
@@ -212,21 +221,4 @@ func (h *UserDeletedHandler) deletePreferences(ctx context.Context, tx pgx.Tx, u
 	return nil
 }
 
-// createOutboxEvent creates an outbox event for CDC notification to downstream services
-func (h *UserDeletedHandler) createOutboxEvent(ctx context.Context, tx pgx.Tx, userID uuid.UUID, reason string, retentionWindow time.Time) error {
-	outboxEvent, err := entity.NewAccountDeletedEvent(userID, reason, retentionWindow)
-	if err != nil {
-		return fmt.Errorf("failed to create outbox event: %w", err)
-	}
 
-	if err := h.outboxRepo.CreateTx(ctx, tx, outboxEvent); err != nil {
-		return fmt.Errorf("failed to create outbox event: %w", err)
-	}
-
-	h.logger.Debug("Created ACCOUNT_DELETED outbox event",
-		zap.String("user_id", userID.String()),
-		zap.String("event_id", outboxEvent.EventID.String()),
-	)
-
-	return nil
-}

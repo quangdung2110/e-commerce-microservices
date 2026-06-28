@@ -5,27 +5,27 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"user-service/internal/api/dto/request"
 	"user-service/internal/api/dto/response"
 	"user-service/internal/api/middleware"
 	"user-service/internal/domain/service"
+	"user-service/internal/infrastructure/kafka"
 )
 
 // PreferencesHandler handles preferences-related HTTP requests
 type PreferencesHandler struct {
 	preferencesService *service.PreferencesService
-	db                 *pgxpool.Pool
+	producer           *kafka.UserEventProducer
 	logger             *zap.Logger
 }
 
 // NewPreferencesHandler creates a new preferences handler
-func NewPreferencesHandler(preferencesService *service.PreferencesService, db *pgxpool.Pool, logger *zap.Logger) *PreferencesHandler {
+func NewPreferencesHandler(preferencesService *service.PreferencesService, producer *kafka.UserEventProducer, logger *zap.Logger) *PreferencesHandler {
 	return &PreferencesHandler{
 		preferencesService: preferencesService,
-		db:                 db,
+		producer:           producer,
 		logger:             logger,
 	}
 }
@@ -62,7 +62,6 @@ func (h *PreferencesHandler) GetPreferences(c *gin.Context) {
 }
 
 // UpdatePreferences handles PUT /api/v1/users/me/preferences
-// Uses transactional outbox pattern to ensure preferences update and outbox event are committed atomically
 func (h *PreferencesHandler) UpdatePreferences(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -82,22 +81,10 @@ func (h *PreferencesHandler) UpdatePreferences(c *gin.Context) {
 		return
 	}
 
-	// Begin transaction for atomic preferences update + outbox event
 	ctx := c.Request.Context()
-	tx, err := h.db.Begin(ctx)
-	if err != nil {
-		h.logger.Error("failed to begin transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
-		return
-	}
-	defer tx.Rollback(ctx)
 
-	prefs, err := h.preferencesService.UpdatePreferencesWithOutbox(
+	prefs, err := h.preferencesService.UpdatePreferences(
 		ctx,
-		tx,
 		userID,
 		req.Language,
 		req.Currency,
@@ -122,14 +109,16 @@ func (h *PreferencesHandler) UpdatePreferences(c *gin.Context) {
 		return
 	}
 
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		h.logger.Error("failed to commit transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
-		return
+	// Publish preferences updated event to Kafka (best-effort async)
+	if err := h.producer.PublishUserPreferencesUpdated(ctx, kafka.PreferencesUpdatedPayload{
+		ID:               prefs.UserID,
+		Language:         prefs.Language,
+		Currency:         prefs.Currency,
+		EmailEnabled:     prefs.EmailEnabled,
+		InAppEnabled:     prefs.InAppEnabled,
+		MarketingEnabled: prefs.MarketingEnabled,
+	}); err != nil {
+		h.logger.Error("failed to publish preferences updated event", zap.Error(err))
 	}
 
 	c.JSON(http.StatusOK, response.PreferencesResponseFromEntity(prefs))
