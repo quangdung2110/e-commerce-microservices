@@ -5,7 +5,7 @@
 **Ngày cập nhật:** 2026-05-14
 **Trạng thái:** Approved
 **Service:** User Service (Profile Service)  
-**Kiến trúc:** Microservice Event-Driven với Outbox Pattern
+**Kiến trúc:** Microservice Event-Driven với Direct Kafka Publishing
 
 ---
 
@@ -17,7 +17,7 @@
 4. [Cấu Trúc Thư Mục](#4-cấu-trúc-thư-mục)
 5. [Database Migrations](#5-database-migrations)
 6. [Redis Caching Plan](#6-redis-caching-plan)
-7. [Outbox Pattern & Kafka](#7-outbox-pattern--kafka)
+7. [Direct Kafka Publishing](#7-direct-kafka-publishing)
 8. [API Endpoints](#8-api-endpoints)
 9. [Kế Hoạch Triển Khai](#9-kế-hoạch-triển-khai)
 10. [Kế Hoạch Kiểm Thử](#10-kế-hoạch-kiểm-thử)
@@ -38,9 +38,9 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 |:--|:---------|:--------|:-------|
 | 1 | Khởi Tạo Hồ Sơ | Kafka `USER_VERIFIED_SUCCESS` | Tạo profile + preferences (idempotent) |
 | 2 | CRUD Sổ Địa Chỉ | API Call | Create/Read/Update/Delete addresses + Redis cache |
-| 3 | Cập Nhật Hồ Sơ | API Call | UPDATE profile + Outbox event |
-| 4 | Cập Nhật Preferences | API Call | UPDATE preferences + Outbox event |
-| 5 | Đồng Bộ Chat Service | CDC Event | Projection sender_name |
+| 3 | Cập Nhật Hồ Sơ | API Call | UPDATE profile + Kafka event |
+| 4 | Cập Nhật Preferences | API Call | UPDATE preferences + Kafka event |
+| 5 | Đồng Bộ Chat Service | Kafka Event | Projection sender_name |
 | 6.1 | GDPR Anonymize (Stage 1) | Kafka `USER_DELETED` | Anonymize PII, insert user_deletions, publish `ACCOUNT_DELETED` |
 | 6.2 | GDPR Hard Delete (Stage 2) | Cron (Compliance Worker) | Hard delete sau 90 ngày retention |
 
@@ -54,8 +54,8 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
                                                          │
                                                          ▼
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-│ Chat Svc    │◀────────│   Kafka     │◀────────│   Postgres  │
-│ (Consumer)  │ t.user  │ t.user.events│         │   (Debezium)│
+│ Chat Svc    │◀────────│   Kafka     │◀────────│  User Svc   │
+│ (Consumer)  │ t.user  │ t.user.events│         │ (Producer)  │
 └─────────────┘         └─────────────┘         └─────────────┘
 ```
 
@@ -66,7 +66,6 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 | `user_profiles` | Primary | Lưu hồ sơ khách hàng (1-1 với Auth) |
 | `user_addresses` | FK → profiles | Sổ địa chỉ giao hàng (Hard Delete) |
 | `user_preferences` | FK → profiles | Cài đặt ngôn ngữ, thông báo (1-1) |
-| `outbox_events` | Internal | Transactional Outbox cho CDC |
 | `user_deletions` | Internal | GDPR Event Store (2-giai đoạn) |
 
 ---
@@ -113,7 +112,7 @@ User Service (Profile Service) chịu trách nhiệm quản lý thông tin hồ 
 | PostgreSQL | 15+ | Primary database |
 | Redis | 7.2+ | L2 Cache cho addresses |
 | Kafka | 3.6+ | Event streaming |
-| Debezium | 2.5+ | CDC for Outbox Pattern |
+
 
 ---
 
@@ -192,12 +191,6 @@ type UserDeletionRepository interface {
     GetByUserID(ctx context.Context, userID uuid.UUID) (*UserDeletion, error)
     GetPendingHardDeletes(ctx context.Context, limit int) ([]*UserDeletion, error)
     Delete(ctx context.Context, id uuid.UUID) error
-}
-
-// Outbox Repository Port
-type OutboxRepository interface {
-    Create(ctx context.Context, event *OutboxEvent) error
-    GetPendingEvents(ctx context.Context, limit int) ([]*OutboxEvent, error)
 }
 
 // Cache Port
@@ -363,7 +356,7 @@ type UserDeletedHandler struct {
     profileRepo       ProfileRepository
     preferencesRepo   PreferencesRepository
     deletionRepo      UserDeletionRepository
-    outboxRepo        OutboxRepository
+    eventProducer     UserEventProducer
     addressCache      AddressCache
     db                *sqlx.DB
 }
@@ -373,7 +366,8 @@ type UserDeletedHandler struct {
 // 2. UPDATE user_profiles: anonymize PII (first_name='Deleted', last_name='User', phone=null)
 // 3. DELETE user_addresses (Order Service has already snapshotted)
 // 4. DELETE user_preferences
-// 5. INSERT outbox_events with ACCOUNT_DELETED
+// 5. COMMIT transaction
+// 6. Publish ACCOUNT_DELETED directly to Kafka via eventProducer
 func (h *UserDeletedHandler) Handle(ctx context.Context, msg *kafka.Message) error {
     var event AuthEvent
     if err := json.Unmarshal(msg.Value, &event); err != nil {
@@ -420,25 +414,17 @@ func (h *UserDeletedHandler) Handle(ctx context.Context, msg *kafka.Message) err
         return err
     }
 
-    // 5. Insert outbox event for CDC to publish ACCOUNT_DELETED
-    outboxEvent := &OutboxEvent{
-        EventID:       uuid.New(),
-        EventType:     "ACCOUNT_DELETED",
-        AggregateType: "USER",
-        AggregateID:   userID,
-        PartitionKey:  userID,
-        Payload: AccountDeletedPayload{
-            UserID:                   userID,
-            DeletedAt:                time.Now().Format(time.RFC3339),
-            Reason:                   deletionReason,
-            RetentionWindowExpiresAt: retentionWindow.Format(time.RFC3339),
-        },
-    }
-    if err := h.outboxRepo.CreateTx(tx, outboxEvent); err != nil {
+    // 5. Commit transaction
+    if err := tx.Commit(); err != nil {
         return err
     }
 
-    return tx.Commit()
+    // 6. Publish ACCOUNT_DELETED directly to Kafka after successful DB commit
+    if err := h.eventProducer.PublishAccountDeleted(ctx, userID, deletionReason, retentionWindow); err != nil {
+        return err
+    }
+
+    return nil
 }
 ```
 
@@ -462,7 +448,6 @@ user-service/
 │   │   │   ├── profile.go          # Profile entity
 │   │   │   ├── address.go          # Address entity
 │   │   │   ├── preferences.go       # Preferences entity
-│   │   │   ├── outbox.go           # OutboxEvent entity
 │   │   │   └── user_deletion.go    # UserDeletion entity (GDPR Event Store)
 │   │   ├── vo/                      # Value Objects
 │   │   │   ├── phone.go            # Phone number value object
@@ -472,7 +457,6 @@ user-service/
 │   │   │   ├── profile_repository.go
 │   │   │   ├── address_repository.go
 │   │   │   ├── preferences_repository.go
-│   │   │   ├── outbox_repository.go
 │   │   │   ├── address_cache.go
 │   │   │   └── user_deletion_repository.go
 │   │   ├── service/                 # Domain Services
@@ -489,7 +473,6 @@ user-service/
 │   │   │   ├── profile_repo.go      # Profile repository impl
 │   │   │   ├── address_repo.go      # Address repository impl
 │   │   │   ├── preferences_repo.go  # Preferences repository impl
-│   │   │   ├── outbox_repo.go       # Outbox repository impl
 │   │   │   └── user_deletion_repo.go # UserDeletion repository impl
 │   │   ├── redis/
 │   │   │   ├── connection.go        # Redis client
@@ -540,10 +523,8 @@ user-service/
 │   ├── 000002_create_user_addresses.down.sql
 │   ├── 000003_create_user_preferences.up.sql
 │   ├── 000003_create_user_preferences.down.sql
-│   ├── 000004_create_outbox_events.up.sql
-│   ├── 000004_create_outbox_events.down.sql
-│   ├── 000005_create_user_deletions.up.sql
-│   └── 000005_create_user_deletions.down.sql
+│   ├── 000004_create_user_deletions.up.sql
+│   └── 000004_create_user_deletions.down.sql
 │
 ├── pkg/
 │   ├──apperrors/                    # Application errors
@@ -555,12 +536,9 @@ user-service/
 │
 ├── configs/
 │   ├── config.yaml                  # Configuration file
-│   └── debezium/
-│       └── debezium-connector.json  # Debezium CDC config
 │
 ├── scripts/
 │   ├── wait-for-db.sh              # Startup dependency check
-│   └── cleanup-outbox.sql          # Outbox cleanup cron
 │
 ├── Dockerfile                      # Main service Dockerfile
 ├── Dockerfile.compliance           # Compliance worker Dockerfile
@@ -760,44 +738,12 @@ CREATE TRIGGER update_user_preferences_updated_at
 COMMENT ON TABLE user_preferences IS 'Stores user app preferences for notifications and display';
 ```
 
-### 5.4 Migration 004: Create outbox_events
-
-```sql
--- 000004_create_outbox_events.up.sql
-
-CREATE TABLE outbox_events (
-    event_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    event_type VARCHAR(100) NOT NULL,
-    aggregate_type VARCHAR(100) NOT NULL,
-    aggregate_id UUID NOT NULL,
-    partition_key UUID NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    
-    CONSTRAINT chk_event_type CHECK (
-        event_type IN ('USER_PROFILE_UPDATED', 'USER_PREFERENCES_UPDATED', 'ACCOUNT_DELETED')
-    )
-);
-
--- Indexes for Debezium polling
-CREATE INDEX idx_outbox_events_created_at ON outbox_events(created_at ASC);
-CREATE INDEX idx_outbox_events_aggregate ON outbox_events(aggregate_type, aggregate_id);
-CREATE INDEX idx_outbox_events_unprocessed ON outbox_events(created_at) WHERE payload IS NOT NULL;
-
--- Index for cleanup job
-CREATE INDEX idx_outbox_events_cleanup ON outbox_events(created_at) 
-WHERE created_at < NOW() - INTERVAL '14 days';
-
-COMMENT ON TABLE outbox_events IS 'Transactional Outbox for CDC via Debezium';
-COMMENT ON INDEX idx_outbox_events_unprocessed IS 'Debezium polls this index to pick up new events';
-```
-
-### 5.5 Migration 005: Create user_deletions (GDPR Event Store)
+### 5.4 Migration 004: Create user_deletions (GDPR Event Store)
 
 Bảng này lưu trữ thông tin xóa tài khoản để hỗ trợ luồng GDPR 2 giai đoạn. Kafka không phải permanent storage nên cần bảng này làm Event Store để Compliance Worker có thể truy vấn và xóa vĩnh viễn sau 90 ngày.
 
 ```sql
--- 000005_create_user_deletions.up.sql
+-- 000004_create_user_deletions.up.sql
 
 CREATE TABLE user_deletions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -832,13 +778,6 @@ COMMENT ON INDEX idx_user_deletions_retention_expires IS 'Compliance Worker poll
 ### 5.6 Migration Rollback Scripts
 
 ```sql
--- 000004_create_outbox_events.down.sql
-DROP INDEX IF EXISTS idx_outbox_events_cleanup;
-DROP INDEX IF EXISTS idx_outbox_events_unprocessed;
-DROP INDEX IF EXISTS idx_outbox_events_aggregate;
-DROP INDEX IF EXISTS idx_outbox_events_created_at;
-DROP TABLE IF EXISTS outbox_events;
-
 -- 000003_create_user_preferences.down.sql
 DROP INDEX IF EXISTS idx_user_preferences_language;
 DROP TRIGGER IF EXISTS update_user_preferences_updated_at ON user_preferences;
@@ -860,7 +799,7 @@ DROP INDEX IF EXISTS idx_user_profiles_created_at;
 DROP INDEX IF EXISTS idx_user_profiles_phone;
 DROP TABLE IF EXISTS user_profiles;
 
--- 000005_create_user_deletions.down.sql
+-- 000004_create_user_deletions.down.sql
 DROP INDEX IF EXISTS idx_user_deletions_retention_expires;
 DROP INDEX IF EXISTS idx_user_deletions_user_id;
 DROP TABLE IF EXISTS user_deletions;
@@ -1079,43 +1018,34 @@ appendfsync: everysec
 
 ---
 
-## 7. Outbox Pattern & Kafka
+## 7. Direct Kafka Publishing
 
-### 7.1 Transactional Outbox Flow
+User Service sử dụng **Direct Kafka Publishing** thay vì Transactional Outbox Pattern. Thay vì insert outbox_events vào DB và dùng Debezium CDC để publish, service publish trực tiếp lên Kafka topic `t.user.events` sau khi DB transaction thành công.
+
+### 7.1 Direct Kafka Publishing Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     Transactional Outbox Pattern                         │
+│                     Direct Kafka Publishing Flow                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  API Request: PUT /profile { first_name: "Dung" }                       │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                     SINGLE TRANSACTION                           │   │
+│  │                     DB UPDATE                                     │   │
 │  │                                                                   │   │
 │  │  1. UPDATE user_profiles SET first_name = 'Dung'                 │   │
-│  │  2. INSERT INTO outbox_events (event_type, payload, ...)         │   │
 │  │                                                                   │   │
-│  │                              COMMIT ─────────────────────────────│───┼──▶
-│  │                                                                  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│                                    │                                    │
-│                                    ▼                                    │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    PostgreSQL Commit                              │   │
-│  │                                                                   │   │
-│  │  ✅ Both UPDATE and INSERT are committed atomically              │   │
-│  │  ✅ If any fails, both are rolled back                           │   │
+│  │  2. COMMIT                                                        │   │
 │  │                                                                   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
-│                                    │                                    │
+│                                    │ SUCCESS                             │
 │                                    ▼                                    │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    Debezium CDC Connector                        │   │
+│  │                    Direct Kafka Publish                           │   │
 │  │                                                                   │   │
-│  │  Polls: SELECT * FROM outbox_events WHERE id > last_offset       │   │
+│  │  UserEventProducer.PublishProfileUpdated(userID, payload)         │   │
 │  │  Publishes to: t.user.events topic                               │   │
 │  │                                                                   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
@@ -1125,7 +1055,7 @@ appendfsync: everysec
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                    Kafka Topic: t.user.events                   │   │
 │  │                                                                   │   │
-│  │  Partition Key: aggregate_id (user_id)                          │   │
+│  │  Partition Key: user_id                                         │   │
 │  │  Message: { event_type: "USER_PROFILE_UPDATED", payload: {...} } │   │
 │  │                                                                   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
@@ -1133,184 +1063,111 @@ appendfsync: everysec
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Debezium CDC Configuration
+**Luồng xử lý:**
+1. Handler nhận request, validate dữ liệu
+2. Gọi service để UPDATE DB
+3. Nếu DB UPDATE thành công → `UserEventProducer` publish event trực tiếp lên Kafka
+4. Nếu DB UPDATE thất bại → return lỗi, không publish event
+5. Nếu publish Kafka thất bại → log error, không rollback DB (eventual consistency qua retry/circuit breaker)
 
-```json
-// configs/debezium/debezium-connector.json
-
-{
-  "name": "user-service-outbox-connector",
-  "config": {
-    "connector.class": "io.debezium.connector.postgresql.SourceConnector",
-    "database.hostname": "postgres",
-    "database.port": "5432",
-    "database.user": "${env:DB_USER}",
-    "database.password": "${env:DB_PASSWORD}",
-    "database.dbname": "user_service",
-    "database.server.name": "user_svc_db",
-    
-    "table.include.list": "public.outbox_events",
-    
-    "topic.prefix": "user-svc",
-    "schema.include.list": "public",
-    
-    "publication.autocreate.mode": "filtered",
-    "slot.name": "debezium_user_service",
-    
-    "transforms": "outbox",
-    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
-    "transforms.outbox.route.topic.replacement": "t.user.events",
-    "transforms.outbox.route.by.field": "aggregate_type",
-    "transforms.outbox.route.by.value": "USER",
-    "transforms.outbox.route.by.field.replace": "aggregate_id",
-    "transforms.outbox.key.envelope": "both",
-    "transforms.outbox.value.fields.additional.placement": "type:event_type",
-    
-    "snapshot.mode": "initial",
-    
-    "topic.creation.default.replication.factor": 3,
-    "topic.creation.default.partitions": 6,
-    "topic.creation.outbox.replication.factor": 3,
-    "topic.creation.outbox.partitions": 6,
-    
-    "poll.interval.ms": 1000,
-    "max.batch.size": 1024,
-    
-    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "key.converter.schemas.enable": "false",
-    "value.converter.schemas.enable": "false"
-  }
-}
-```
-
-### 7.3 Outbox Repository Implementation
+### 7.2 UserEventProducer Implementation
 
 ```go
-// internal/infrastructure/postgres/outbox_repo.go
+// internal/infrastructure/kafka/producer.go
 
-package postgres
+package kafka
 
 import (
     "context"
     "encoding/json"
     "time"
-    
+
     "github.com/google/uuid"
-    "github.com/jmoiron/sqlx"
-    
+    "github.com/segmentio/kafka-go"
+
     "user-service/internal/domain/entity"
 )
 
-type OutboxRepository interface {
-    Create(ctx context.Context, event *entity.OutboxEvent) error
-    CreateTx(ctx context.Context, tx *sqlx.Tx, event *entity.OutboxEvent) error
-    GetPendingEvents(ctx context.Context, limit int) ([]*entity.OutboxEvent, error)
-    DeleteOldEvents(ctx context.Context, olderThan time.Time) (int64, error)
+// UserEventProducer publishes user domain events to t.user.events
+type UserEventProducer struct {
+    writer *kafka.Writer
 }
 
-type PostgresOutboxRepository struct {
-    db *sqlx.DB
+func NewUserEventProducer(brokers []string) *UserEventProducer {
+    return &UserEventProducer{
+        writer: &kafka.Writer{
+            Addr:     kafka.TCP(brokers...),
+            Topic:    "t.user.events",
+            Balancer: &kafka.Hash{},
+        },
+    }
 }
 
-func (r *PostgresOutboxRepository) CreateTx(ctx context.Context, tx *sqlx.Tx, event *entity.OutboxEvent) error {
-    payloadJSON, err := json.Marshal(event.Payload)
+func (p *UserEventProducer) PublishProfileUpdated(ctx context.Context, userID uuid.UUID, payload ProfileUpdatedPayload) error {
+    event := map[string]interface{}{
+        "event_id":       uuid.New(),
+        "aggregate_type": "USER",
+        "aggregate_id":   userID,
+        "partition_key":  userID,
+        "event_type":     "USER_PROFILE_UPDATED",
+        "timestamp":      time.Now().Format(time.RFC3339),
+        "payload":        payload,
+    }
+    return p.publish(ctx, userID, event)
+}
+
+func (p *UserEventProducer) PublishPreferencesUpdated(ctx context.Context, userID uuid.UUID, payload PreferencesUpdatedPayload) error {
+    event := map[string]interface{}{
+        "event_id":       uuid.New(),
+        "aggregate_type": "USER",
+        "aggregate_id":   userID,
+        "partition_key":  userID,
+        "event_type":     "USER_PREFERENCES_UPDATED",
+        "timestamp":      time.Now().Format(time.RFC3339),
+        "payload":        payload,
+    }
+    return p.publish(ctx, userID, event)
+}
+
+func (p *UserEventProducer) PublishAccountDeleted(ctx context.Context, userID uuid.UUID, reason string, retentionExpiresAt time.Time) error {
+    event := map[string]interface{}{
+        "event_id":       uuid.New(),
+        "aggregate_type": "USER",
+        "aggregate_id":   userID,
+        "partition_key":  userID,
+        "event_type":     "ACCOUNT_DELETED",
+        "timestamp":      time.Now().Format(time.RFC3339),
+        "payload": AccountDeletedPayload{
+            UserID:                   userID,
+            DeletedAt:                time.Now().Format(time.RFC3339),
+            Reason:                   reason,
+            RetentionWindowExpiresAt: retentionExpiresAt.Format(time.RFC3339),
+        },
+    }
+    return p.publish(ctx, userID, event)
+}
+
+func (p *UserEventProducer) publish(ctx context.Context, key uuid.UUID, event interface{}) error {
+    data, err := json.Marshal(event)
     if err != nil {
         return err
     }
-    
-    query := `
-        INSERT INTO outbox_events (event_id, event_type, aggregate_type, aggregate_id, partition_key, payload, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())`
-    
-    _, err = tx.ExecContext(ctx, query,
-        event.EventID,
-        event.EventType,
-        event.AggregateType,
-        event.AggregateID,
-        event.PartitionKey,
-        payloadJSON,
-    )
-    
-    return err
-}
-
-func (r *PostgresOutboxRepository) Create(ctx context.Context, event *entity.OutboxEvent) error {
-    payloadJSON, err := json.Marshal(event.Payload)
-    if err != nil {
-        return err
-    }
-    
-    query := `
-        INSERT INTO outbox_events (event_id, event_type, aggregate_type, aggregate_id, partition_key, payload, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())`
-    
-    _, err = r.db.ExecContext(ctx, query,
-        event.EventID,
-        event.EventType,
-        event.AggregateType,
-        event.AggregateID,
-        event.PartitionKey,
-        payloadJSON,
-    )
-    
-    return err
-}
-
-func (r *PostgresOutboxRepository) GetPendingEvents(ctx context.Context, limit int) ([]*entity.OutboxEvent, error) {
-    query := `
-        SELECT event_id, event_type, aggregate_type, aggregate_id, partition_key, payload, created_at
-        FROM outbox_events
-        ORDER BY created_at ASC
-        LIMIT $1`
-    
-    rows, err := r.db.QueryxContext(ctx, query, limit)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    
-    var events []*entity.OutboxEvent
-    for rows.Next() {
-        var e entity.OutboxEvent
-        var payloadJSON []byte
-        
-        if err := rows.Scan(&e.EventID, &e.EventType, &e.AggregateType, &e.AggregateID, &e.PartitionKey, &payloadJSON, &e.CreatedAt); err != nil {
-            return nil, err
-        }
-        
-        if err := json.Unmarshal(payloadJSON, &e.Payload); err != nil {
-            return nil, err
-        }
-        
-        events = append(events, &e)
-    }
-    
-    return events, rows.Err()
+    return p.writer.WriteMessages(ctx, kafka.Message{
+        Key:   []byte(key.String()),
+        Value: data,
+    })
 }
 ```
 
-### 7.4 Event Payload Structures
+### 7.3 Event Payload Structures
+
+Các payload structures được định nghĩa trong `internal/infrastructure/kafka/producer.go`:
 
 ```go
-// internal/kafka/event/user_event.go
+// Payload structures (defined in producer.go)
 
-package event
-
-import "github.com/google/uuid"
-
-// UserProfileUpdatedEvent - Published to t.user.events
-type UserProfileUpdatedEvent struct {
-    EventID       uuid.UUID `json:"event_id"`
-    AggregateType string    `json:"aggregate_type"`
-    AggregateID   uuid.UUID `json:"aggregate_id"`
-    PartitionKey  uuid.UUID `json:"partition_key"`
-    EventType     string    `json:"event_type"`
-    Timestamp     string    `json:"timestamp"`
-    Payload       ProfilePayload `json:"payload"`
-}
-
-type ProfilePayload struct {
+// ProfileUpdatedPayload - sent with USER_PROFILE_UPDATED
+type ProfileUpdatedPayload struct {
     ID          uuid.UUID `json:"id"`
     FirstName   string    `json:"first_name"`
     LastName    string    `json:"last_name"`
@@ -1319,18 +1176,8 @@ type ProfilePayload struct {
     Gender      string    `json:"gender"`
 }
 
-// UserPreferencesUpdatedEvent - Published to t.user.events
-type UserPreferencesUpdatedEvent struct {
-    EventID       uuid.UUID            `json:"event_id"`
-    AggregateType string               `json:"aggregate_type"`
-    AggregateID   uuid.UUID            `json:"aggregate_id"`
-    PartitionKey  uuid.UUID            `json:"partition_key"`
-    EventType     string               `json:"event_type"`
-    Timestamp     string               `json:"timestamp"`
-    Payload       PreferencesPayload   `json:"payload"`
-}
-
-type PreferencesPayload struct {
+// PreferencesUpdatedPayload - sent with USER_PREFERENCES_UPDATED
+type PreferencesUpdatedPayload struct {
     ID               uuid.UUID `json:"id"`
     Language         string    `json:"language"`
     Currency         string    `json:"currency"`
@@ -1339,51 +1186,16 @@ type PreferencesPayload struct {
     MarketingEnabled bool      `json:"marketing_enabled"`
 }
 
-// AccountDeletedEvent - Published to t.user.events when user account is deleted
-// This event is consumed by downstream services (Review, Notification) to anonymize/hide user-generated content
-type AccountDeletedEvent struct {
-    EventID       uuid.UUID `json:"event_id"`
-    AggregateType string    `json:"aggregate_type"`
-    AggregateID   uuid.UUID `json:"aggregate_id"`
-    PartitionKey  uuid.UUID `json:"partition_key"`
-    EventType     string    `json:"event_type"`
-    Timestamp     string    `json:"timestamp"`
-    Payload       AccountDeletedPayload `json:"payload"`
-}
-
+// AccountDeletedPayload - sent with ACCOUNT_DELETED
 type AccountDeletedPayload struct {
     UserID                   uuid.UUID `json:"user_id"`
-    DeletedAt                string   `json:"deleted_at"`
-    Reason                   string   `json:"reason"` // "GDPR_REQUEST" or "ADMIN_DELETION"
-    RetentionWindowExpiresAt string   `json:"retention_window_expires_at"`
+    DeletedAt                string    `json:"deleted_at"`
+    Reason                   string    `json:"reason"` // "GDPR_REQUEST" or "ADMIN_DELETION"
+    RetentionWindowExpiresAt string    `json:"retention_window_expires_at"`
 }
 ```
 
-### 7.5 Outbox Cleanup Cron
-
-```sql
--- scripts/cleanup-outbox.sql
--- Run daily via cron job
-
--- Delete events older than 14 days
-DELETE FROM outbox_events 
-WHERE created_at < NOW() - INTERVAL '14 days';
-
--- Return deleted count for monitoring
-SELECT 
-    'Deleted outbox events' AS operation,
-    COUNT(*) AS deleted_count,
-    NOW() AS executed_at
-FROM outbox_events 
-WHERE created_at < NOW() - INTERVAL '14 days';
-
--- Reclaim space (optional, based on vacuum strategy)
--- VACUUM outbox_events;
-
--- Schedule: 0 2 * * * (2 AM daily)
-```
-
-### 7.6 Compliance Worker (GDPR Hard Delete - Stage 2)
+### 7.4 Compliance Worker (GDPR Hard Delete - Stage 2)
 
 Compliance Worker thực hiện xóa vĩnh viễn dữ liệu sau khi retention window (90 ngày) hết hạn.
 
@@ -1437,7 +1249,6 @@ func (w *ComplianceWorker) runHardDelete() {
     w.logger.Info("Starting GDPR hard delete batch")
 
     for {
-        // Get batch of records ready for hard delete
         deletions, err := w.deletionRepo.GetPendingHardDeletes(ctx, 100)
         if err != nil {
             w.logger.Error("Failed to get pending deletions", zap.Error(err))
@@ -1472,12 +1283,10 @@ func (w *ComplianceWorker) hardDeleteUser(ctx context.Context, deletion *UserDel
     }
     defer tx.Rollback()
 
-    // Hard delete user_profiles (addresses & preferences already deleted in Stage 1)
     if err := w.profileRepo.DeleteTx(tx, deletion.UserID); err != nil {
         return err
     }
 
-    // Delete the deletion record from user_deletions
     if err := w.deletionRepo.DeleteTx(tx, deletion.ID); err != nil {
         return err
     }
@@ -1491,7 +1300,6 @@ func (w *ComplianceWorker) hardDeleteUser(ctx context.Context, deletion *UserDel
 | Worker | Schedule | Purpose |
 |:-------|:---------|:--------|
 | Compliance Worker | `0 2 * * *` (2 AM daily) | GDPR hard delete records past retention window |
-| Outbox Cleanup | `0 2 * * *` (2 AM daily) | Clean old outbox events (14 days) |
 
 ---
 
@@ -1536,7 +1344,7 @@ Authorization: Bearer <jwt_token>
 
 #### PUT /api/v1/users/me/profile
 
-**Mô tả:** Cập nhật hồ sơ người dùng (transactional outbox)
+**Mô tả:** Cập nhật hồ sơ người dùng (publishes Kafka event on success)
 
 **Request Headers:**
 ```
@@ -1777,7 +1585,7 @@ Content-Type: application/json
 
 #### PUT /api/v1/users/me/preferences
 
-**Mô tả:** Cập nhật preferences (transactional outbox → Kafka)
+**Mô tả:** Cập nhật preferences (publishes Kafka event on success)
 
 **Request Body:**
 ```json
@@ -1854,11 +1662,10 @@ Phase 1: Foundation (Week 1-2)
 │
 ├── 1.2 Database Layer
 │   ├── Setup sqlx connection pool
-│   ├── Write all 4 migrations
+│   ├── Write all migrations
 │   ├── Implement ProfileRepository
 │   ├── Implement AddressRepository
-│   ├── Implement PreferencesRepository
-│   └── Implement OutboxRepository
+│   └── Implement PreferencesRepository
 │
 └── 1.3 Redis Layer
     ├── Setup go-redis client
@@ -1869,7 +1676,6 @@ Phase 2: Domain & Business Logic (Week 2-3)
 │   ├── Profile entity with validation
 │   ├── Address entity with validation
 │   ├── Preferences entity
-│   └── OutboxEvent entity
 │   └── UserDeletion entity
 
 ├── 2.2 Domain Services
@@ -1878,8 +1684,7 @@ Phase 2: Domain & Business Logic (Week 2-3)
 │   └── PreferencesService (read, update)
 │
 └── 2.3 Transaction Support
-    ├── ProfileService with outbox transaction
-    └── AddressService with outbox transaction
+    └── AddressService with transaction support
 
 Phase 3: API Layer (Week 3-4)
 ├── 3.1 HTTP Handlers
@@ -1904,9 +1709,8 @@ Phase 4: Kafka Integration (Week 4-5)
 │   ├── UserVerifiedHandler (idempotent)
 │   └── UserDeletedHandler (GDPR 2-stage)
 │
-├── 4.2 Debezium Setup
-│   ├── Outbox CDC configuration
-│   └── Connector registration
+├── 4.2 Kafka Producer
+│   └── UserEventProducer (direct Kafka publishing)
 │
 ├── 4.3 Idempotency Guards
 │   ├── ON CONFLICT DO NOTHING
@@ -1976,7 +1780,7 @@ Developer C: Kafka Integration (Week 3-4)
 ├── Consumer implementation
 ├── Event handlers
 ├── Idempotency logic
-└── Debezium configuration
+└── Producer implementation
 ```
 
 ---
@@ -2010,7 +1814,8 @@ tests/
 │       ├── profile_repo_mock.go
 │       ├── address_repo_mock.go
 │       ├── preferences_repo_mock.go
-│       └── address_cache_mock.go
+│       ├── address_cache_mock.go
+│       └── event_producer_mock.go
 ```
 
 ### 10.2 Unit Test Examples
@@ -2587,10 +2392,6 @@ KAFKA_OFFSET_RESET=earliest
 KAFKA_SESSION_TIMEOUT=30s
 KAFKA_HEARTBEAT_INTERVAL=3s
 
-# Debezium (for CDC)
-DEBEZIUM_ENABLED=true
-DEBEZIUM_CONNECT_URL=http://debezium:8083
-
 # Observability
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 OTEL_SERVICE_NAME=user-service
@@ -3014,7 +2815,7 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | Profile Entity | ✅ | Full validation + business logic |
 | Address Entity | ✅ | Auto-default + ownership check |
 | Preferences Entity | ✅ | Default values + validation |
-| OutboxEvent Entity | ✅ | CDC payload support |
+| UserEventProducer | ✅ | Direct Kafka publishing |
 | UserDeletion Entity | ✅ | GDPR Event Store (2-giai đoạn) |
 | **Value Objects** | | |
 | PhoneNumber VO | ✅ | Regex validation |
@@ -3024,13 +2825,13 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | ProfileRepository | ✅ | CRUD + transaction support + Anonymize |
 | AddressRepository | ✅ | CRUD + SetDefault + Promote |
 | PreferencesRepository | ✅ | CRUD + transaction support |
-| OutboxRepository | ✅ | Create + GetPending + Cleanup |
+| UserEventProducer | ✅ | Direct Kafka publishing (profile, preferences, account_deleted) |
 | AddressCache | ✅ | Get + Set + Delete |
 | UserDeletionRepository | ✅ | Create + GetPendingHardDeletes + Delete |
 | **Domain Services** | | |
-| ProfileService | ✅ | Create, Get, Update, Delete, Outbox |
+| ProfileService | ✅ | Create, Get, Update, Delete |
 | AddressService | ✅ | CRUD + Cache-Aside + Singleflight |
-| PreferencesService | ✅ | Create, Get, Update + Outbox |
+| PreferencesService | ✅ | Create, Get, Update |
 | **Domain Events** | | |
 | Domain Events | ✅ | ProfileCreated, AddressCreated, etc. |
 | Auth Events | ✅ | USER_VERIFIED_SUCCESS, USER_DELETED |
@@ -3048,9 +2849,9 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | 2.3 | Update Address | PUT /api/v1/users/me/addresses/{id} | ✅ | Module C ready |
 | 2.4 | Delete Address | DELETE /api/v1/users/me/addresses/{id} | ✅ | Module C ready |
 | 2.5 | Set Default | POST /api/v1/users/me/addresses/{id}/default | ✅ | Module C ready |
-| 3 | Update Profile | PUT /api/v1/users/me/profile | ✅ | Module C ready with outbox |
-| 4 | Update Preferences | PUT /api/v1/users/me/preferences | ✅ | Module C ready with outbox |
-| 5 | Chat Sync | USER_PROFILE_UPDATED (CDC) | ✅ | Outbox + Debezium config ready |
+| 3 | Update Profile | PUT /api/v1/users/me/profile | ✅ | Module C ready with Kafka producer |
+| 4 | Update Preferences | PUT /api/v1/users/me/preferences | ✅ | Module C ready with Kafka producer |
+| 5 | Chat Sync | USER_PROFILE_UPDATED (Kafka) | ✅ | Direct Kafka publish ready |
 | 6.1 | GDPR Anonymize (Stage 1) | USER_DELETED (Kafka) | ✅ | Anonymize + publish ACCOUNT_DELETED |
 | 6.2 | GDPR Hard Delete (Stage 2) | Compliance Worker (Cron) | ✅ | Hard delete after 90 days |
 
@@ -3061,8 +2862,7 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | 1 | `user_profiles` table | ? | Migration implemented |
 | 2 | `user_addresses` table | ? | Migration implemented |
 | 3 | `user_preferences` table | ? | Migration implemented |
-| 4 | `outbox_events` table | ? | Migration implemented |
-| 5 | `user_deletions` table | ? | Migration implemented (GDPR Event Store) |
+| 4 | `user_deletions` table | ? | Migration implemented (GDPR Event Store) |
 | 6 | Partial unique index | ? | Migration implemented |
 | 7 | `updated_at` triggers | ? | Migration implemented |
 | 8 | Migrations rollback | ? | Migration implemented |
@@ -3079,32 +2879,31 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 | 5 | Singleflight pattern | ✅ | Implemented in service |
 | 6 | Cache miss → DB → Cache | ✅ | Implemented in service |
 
-### 12.4 Kafka/CDC Checklist
+### 12.4 Kafka Checklist
 
 | # | Feature | Status | Notes |
 |:--|:--------|:-------|:------|
 | 1 | Consumer group | ✅ | 2 consumer groups implemented |
 | 2 | Idempotent handlers | ✅ | ON CONFLICT DO NOTHING pattern |
-| 3 | Outbox table | ✅ | Migration implemented |
-| 4 | Debezium connector | ✅ | Config file created |
-| 5 | Event schemas | ✅ | All 5 events defined (USER_PROFILE_UPDATED, USER_PREFERENCES_UPDATED, ACCOUNT_DELETED) |
-| 6 | Topic creation | ☐ | Via docker-compose or Kafka scripts |
-| 7 | ACCOUNT_DELETED event | ✅ | Republished to downstream services |
-| 8 | Compliance Worker | ✅ | GDPR hard delete cron |
+| 3 | UserEventProducer | ✅ | Direct Kafka publishing to t.user.events |
+| 4 | Event schemas | ✅ | All 3 events defined (USER_PROFILE_UPDATED, USER_PREFERENCES_UPDATED, ACCOUNT_DELETED) |
+| 5 | Topic creation | ☐ | Via docker-compose or Kafka scripts |
+| 6 | ACCOUNT_DELETED event | ✅ | Published directly to downstream services |
+| 7 | Compliance Worker | ✅ | GDPR hard delete cron |
 
 ### 12.5 API Checklist
 
 | # | Endpoint | Method | Status | Notes |
 |:--|:---------|:-------|:-------|:------|
 | 1 | `/api/v1/users/me/profile` | GET | ✅ | Implemented in profile_handler.go |
-| 2 | `/api/v1/users/me/profile` | PUT | ✅ | Implemented with transactional outbox |
+| 2 | `/api/v1/users/me/profile` | PUT | ✅ | Implemented with direct Kafka publish |
 | 3 | `/api/v1/users/me/addresses` | GET | ✅ | Implemented with Redis cache |
 | 4 | `/api/v1/users/me/addresses` | POST | ✅ | Implemented with auto-default |
 | 5 | `/api/v1/users/me/addresses/{id}` | PUT | ✅ | Implemented with ownership check |
 | 6 | `/api/v1/users/me/addresses/{id}` | DELETE | ✅ | Implemented with business rules |
 | 7 | `/api/v1/users/me/addresses/{id}/default` | POST | ✅ | Implemented with transaction |
 | 8 | `/api/v1/users/me/preferences` | GET | ✅ | Implemented in preferences_handler.go |
-| 9 | `/api/v1/users/me/preferences` | PUT | ✅ | Implemented with transactional outbox |
+| 9 | `/api/v1/users/me/preferences` | PUT | ✅ | Implemented with direct Kafka publish |
 | 10 | `/health` | GET | ✅ | Implemented in health_handler.go |
 | 11 | `/ready` | GET | ✅ | Implemented with DB/Redis checks |
 
@@ -3271,6 +3070,7 @@ mocks:
 	mockgen -source=internal/domain/port/profile_repository.go -destination=tests/mocks/profile_repo_mock.go
 	mockgen -source=internal/domain/port/address_repository.go -destination=tests/mocks/address_repo_mock.go
 	mockgen -source=internal/domain/port/address_cache.go -destination=tests/mocks/address_cache_mock.go
+	mockgen -source=internal/infrastructure/kafka/producer.go -destination=tests/mocks/event_producer_mock.go
 
 # Dependencies
 deps:

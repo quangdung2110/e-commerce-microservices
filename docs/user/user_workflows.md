@@ -198,17 +198,21 @@ sequenceDiagram
 
     App->>API: PUT /api/v1/users/me/profile { phone, fullname... }
     API->>API: Ràng buộc Validation (Check SĐT, Validate Unicode..)
-    API->>DB: UPDATE `user_profiles` + INSERT `outbox_events` trong Transaction
-    API->>DB: Commit Transaction
+    API->>DB: UPDATE `user_profiles`
+    alt Success
+        API->>DB: Commit Transaction
+        API->>Kafka: Publish `USER_PROFILE_UPDATED` directly
+    else Failure
+        API->>DB: Rollback
+        API-->>App: Error response
+    end
     API-->>App: OK 200 HTTP
-
-    DB->>Kafka: CDC Debezium bắn ra thông điệp `USER_PROFILE_UPDATED`
 ```
 
 **Lưu ý xử lý nghiệp vụ:**
 * Nếu `phone_number` trùng với user khác (vi phạm unique), API trả lỗi 409 Conflict với thông điệp nghiệp vụ rõ ràng.
-* Sử dụng Transactional Outbox Pattern để đảm bảo UPDATE và INSERT outbox là atomic.
-* Debezium CDC sẽ đọc bảng `outbox_events` và publish sang Kafka topic `t.user.events`.
+* Sử dụng direct Kafka publishing: sau khi DB UPDATE thành công, UserEventProducer publish trực tiếp lên Kafka topic `t.user.events`.
+* Nếu publish thất bại, DB không rollback (eventual consistency qua retry/circuit breaker).
 
 ---
 
@@ -225,11 +229,15 @@ sequenceDiagram
 
     App->>API: PUT /api/v1/users/me/preferences { language, currency, notification flags }
     API->>API: Validate preferences (valid language code, valid currency)
-    API->>DB: UPDATE `user_preferences` + INSERT `outbox_events` trong Transaction
-    API->>DB: Commit Transaction
+    API->>DB: UPDATE `user_preferences`
+    alt Success
+        API->>DB: Commit Transaction
+        API->>Kafka: Publish `USER_PREFERENCES_UPDATED` directly
+    else Failure
+        API->>DB: Rollback
+        API-->>App: Error response
+    end
     API-->>App: 200 OK
-
-    DB->>Kafka: CDC Debezium bắn ra thông điệp `USER_PREFERENCES_UPDATED`
 ```
 
 **Các trường Preferences:**
@@ -261,8 +269,8 @@ sequenceDiagram
     participant ChatAPI as Chat Service API
 
     UserApp->>UserSvc: PUT /profile { first_name, last_name }
-    UserSvc->>UserSvc: UPDATE user_profiles + INSERT outbox
-    UserSvc->>Kafka: Publish USER_PROFILE_UPDATED
+    UserSvc->>UserSvc: UPDATE user_profiles
+    UserSvc->>Kafka: Publish USER_PROFILE_UPDATED directly
     Kafka-->>ChatWorker: Consume USER_PROFILE_UPDATED
     ChatWorker->>ChatDB: UPDATE room_participants SET sender_name
     ChatWorker->>ChatDB: UPDATE messages_by_room_bucket SET sender_name
@@ -309,9 +317,8 @@ sequenceDiagram
     UserWorker->>DB: UPDATE user_profiles SET (first_name='Deleted', last_name='User', phone=null...)
     UserWorker->>DB: DELETE FROM user_addresses WHERE user_id = {user_id}
     UserWorker->>DB: DELETE FROM user_preferences WHERE user_id = {user_id}
-    UserWorker->>DB: INSERT outbox_events (ACCOUNT_DELETED)
     UserWorker->>DB: COMMIT Transaction
-    DB->>KafkaOut: CDC publishes ACCOUNT_DELETED
+    UserWorker->>KafkaOut: Publish ACCOUNT_DELETED directly
 ```
 
 **Thứ tự xử lý:**
@@ -319,7 +326,8 @@ sequenceDiagram
 2. UPDATE `user_profiles`: anonymize PII (tên → "Deleted User", SĐT → null)
 3. DELETE `user_addresses` (Order Service đã snapshot vào bảng `orders`)
 4. DELETE `user_preferences`
-5. INSERT `outbox_events` để CDC republish `ACCOUNT_DELETED`
+5. COMMIT transaction
+6. Publish `ACCOUNT_DELETED` trực tiếp lên Kafka qua UserEventProducer
 
 ### 6.2. Giai đoạn 2: Hard Delete (Sau 90 ngày)
 
@@ -410,8 +418,8 @@ flowchart LR
     W2 -->|R/W| DB
     W2 -->|DEL| Redis
 
-    DB -->|CDC Debezium| C1
-    DB -->|CDC Debezium| C2
+    W2 -->|Kafka Producer| C1
+    W2 -->|Kafka Producer| C2
 ```
 
 ### Bảng Mapping Events và Workflows
@@ -420,9 +428,9 @@ flowchart LR
 |:------|:-------|:-------|:---------|
 | `USER_VERIFIED_SUCCESS` | Auth Service | User Service | #1 Profile Creation |
 | `USER_DELETED` | Auth Service | User Service | #6.1 Account Deletion (Anonymize) |
-| `USER_PROFILE_UPDATED` | User Service (CDC) | Chat Service | #3 Profile Update |
-| `USER_PREFERENCES_UPDATED` | User Service (CDC) | Notification Service | #4 Preferences Update |
-| `ACCOUNT_DELETED` | User Service (CDC) | Review Service, Notification Service | #6.1 Account Deletion (Notify Downstream) |
+| `USER_PROFILE_UPDATED` | User Service (Kafka Producer) | Chat Service | #3 Profile Update |
+| `USER_PREFERENCES_UPDATED` | User Service (Kafka Producer) | Notification Service | #4 Preferences Update |
+| `ACCOUNT_DELETED` | User Service (Kafka Producer) | Review Service, Notification Service | #6.1 Account Deletion (Notify Downstream) |
 
 ### Workers Summary
 

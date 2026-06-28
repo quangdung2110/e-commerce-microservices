@@ -76,14 +76,14 @@ Event được consume từ Auth Service (`t.auth.events`). Sau khi xử lý cle
     2. UPDATE `user_profiles`: anonymize PII (tên → "Deleted User", SĐT → null, etc.)
     3. DELETE `user_addresses` (hard delete vì Order Service đã snapshot)
     4. DELETE `user_preferences`
-    5. INSERT vào `outbox_events` với event type `ACCOUNT_DELETED`
-    6. Debezium CDC publish `ACCOUNT_DELETED` lên `t.user.events`
+    5. COMMIT transaction
+    6. Publish `ACCOUNT_DELETED` trực tiếp lên `t.user.events` qua Kafka producer
 
 > **Lưu ý:** Email KHÔNG cần xóa ở đây vì User Service không lưu email (Auth là source of truth).
 
 ## 2. Events Published (Công bố cho thế giới biết)
 
-Hệ thống User đẩy luồng sự kiện thông qua CDC (Debezium Outbox pattern) vô Topic của chính nó: **`t.user.events`**.
+Hệ thống User đẩy luồng sự kiện thông qua direct Kafka publishing (UserEventProducer) vào Topic của chính nó: **`t.user.events`**.
 
 ### 2.1. Bản đồ Subscription (Ai nghe event này?)
 
