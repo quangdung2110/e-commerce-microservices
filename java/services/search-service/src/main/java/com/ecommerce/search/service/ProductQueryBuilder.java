@@ -205,6 +205,13 @@ public class ProductQueryBuilder {
             ))
         ));
 
+        aggs.put("attributes", Aggregation.of(a -> a
+            .terms(t -> t.field("searchable_attributes").size(100))
+            .aggregations("product_count", Aggregation.of(sub -> sub
+                .cardinality(c -> c.field("product_id").precisionThreshold(40000))
+            ))
+        ));
+
         return aggs;
     }
 }

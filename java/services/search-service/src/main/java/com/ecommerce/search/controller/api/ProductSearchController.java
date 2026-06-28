@@ -59,9 +59,9 @@ public class ProductSearchController {
     public ResponseEntity<ProductSearchResponse> search(
             @RequestParam(required = false) String q,
             @RequestParam(required = false) String category,
-            @RequestParam(required = false) Long priceMin,
-            @RequestParam(required = false) Long priceMax,
-            @RequestParam(required = false) Boolean inStock,
+            @RequestParam(name = "price_min", required = false) Long priceMin,
+            @RequestParam(name = "price_max", required = false) Long priceMax,
+            @RequestParam(name = "in_stock", required = false) Boolean inStock,
             @RequestParam(required = false) Boolean hasPromotion,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String cursor,

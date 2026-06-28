@@ -27,6 +27,8 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
+import org.springframework.util.StringUtils;
 
 /**
  * Service for the product search API ({@code GET /api/v1/search/products}).
@@ -250,6 +252,35 @@ public class ProductSearchService {
                     .name("Khoảng giá")
                     .type("RANGE")
                     .options(priceOptions)
+                    .build());
+            }
+        }
+
+        // Parse dynamic attributes aggregation
+        Aggregate attributesAgg = aggs.get("attributes");
+        if (attributesAgg != null && attributesAgg.isSterms()) {
+            Map<String, List<FacetResponse.FilterOption>> attributeGroups = new HashMap<>();
+            for (StringTermsBucket bucket : attributesAgg.sterms().buckets().array()) {
+                String term = bucket.key().stringValue();
+                String[] parts = term.split(":", 2);
+                if (parts.length == 2) {
+                    String attrName = parts[0];
+                    String attrValue = parts[1];
+                    long productCount = extractCardinalityCount(bucket);
+                    attributeGroups.computeIfAbsent(attrName, k -> new ArrayList<>())
+                        .add(FacetResponse.FilterOption.builder()
+                            .value(attrValue)
+                            .label(StringUtils.capitalize(attrValue))
+                            .count(productCount)
+                            .build());
+                }
+            }
+            
+            for (Map.Entry<String, List<FacetResponse.FilterOption>> entry : attributeGroups.entrySet()) {
+                filters.add(FacetResponse.FilterGroup.builder()
+                    .name(entry.getKey()) // e.g. "brand"
+                    .type("CHECKBOX")
+                    .options(entry.getValue())
                     .build());
             }
         }
