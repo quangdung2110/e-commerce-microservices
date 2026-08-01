@@ -6,7 +6,7 @@
 *   [Rule Engine Design](rule_engine_design.md)
 *   [Rule Engine Demo (Java)](RuleEngineDemo.java)
 *   [Kafka Events Schema](promotion_events.md)
-*   [Outbox Pattern](promotion_outbox_pattern.md)
+*   [Background Workers & Jobs](promotion_workers.md)
 
 ---
 
@@ -25,7 +25,8 @@ Nhóm các chương trình khuyến mãi nhỏ lẻ vào một chiến dịch l�
 *   `created_at`, `updated_at`
 
 ### 1.2. `promotions` (Mã giảm giá Khuyến mãi - Cart Vouchers)
-Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `JSONB`. Mã nhập vào lúc giỏ hàng/thanh toán.
+Lưu trữ thông tin cốt lõi, loại khuyến mãi, và Rule Engine bằng `JSONB`. Mã nhập vào lúc giỏ hàng/thanh toán. Tất cả mã do **admin** tạo và quản trị; hệ thống không có seller/merchant nên không cần trường `owner_id` riêng cho bên phát hành.
+
 *   `id`: BIGSERIAL PRIMARY KEY
 *   `campaign_id`: BIGINT NULL (Foreign Key -> `campaigns.id`. Có thể NULL do platform tự tạo voucher lẻ ngoài chiến dịch).
 *   `code`: VARCHAR(50) (VD: "HAPPYBDAY", "HUNT1111").
@@ -99,8 +100,8 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   `refunded_at`: TIMESTAMPTZ (Lúc nhận event Order Refunded — sau delivery)
 *   `refunded_amount`: DECIMAL(10,2) DEFAULT 0 (Tổng số tiền voucher đã hoàn lũy kế)
 *   `refund_count`: INT DEFAULT 0 (Số lần refund đã áp dụng cho bản ghi)
-*   **Funding Invariant bắt buộc:** `platform_funding >= 0`, `admin_funding >= 0`, và `platform_funding + admin_funding = discount_amount`.
-*   **Refund Invariant bắt buộc:** `0 <= refunded_amount <= discount_amount`, `refund_count >= 0`, và `status` phải khớp trạng thái hoàn (`REDEEMED` khi `refunded_amount = 0`; `PARTIALLY_REFUNDED` khi `0 < refunded_amount < discount_amount`; `REFUNDED` khi `refunded_amount = discount_amount`).
+*   **Discount Invariant bắt buộc:** `0 <= refunded_amount <= discount_amount`, `refund_count >= 0`, và `status` phải khớp trạng thái hoàn (`REDEEMED` khi `refunded_amount = 0`; `PARTIALLY_REFUNDED` khi `0 < refunded_amount < discount_amount`; `REFUNDED` khi `refunded_amount = discount_amount`).
+
 
 *   **Unique Constraint (`order_id`, `promotion_id`):** Đảm bảo không áp dụng trùng 1 mã cho 1 đơn trong ledger chính. Refund flow sẽ UPDATE bản ghi hiện có, không INSERT thêm bản ghi mới cho cùng cặp này.
 *   **Vai trò Source-of-Truth bắt buộc:** Với worker reconciliation, `coupon_usages` (kèm gate idempotency) là nguồn chuẩn để rebuild `used_qty/used_amount`; không lấy Redis `used_*` làm chuẩn để ghi ngược DB.
@@ -131,21 +132,10 @@ Lưu lại Dấu vết quá trình áp dụng mã vào Đơn hàng. Đây là b�
 *   **Vai trò trong Reconciliation:** `REDEEM_COUPON + action_scope_key='FINAL'` là gate bắt buộc để loại reservation đã chốt khỏi tập `reserved_*` runtime khi đối soát Redis.
 *   **Retention bắt buộc:** Thời gian giữ dữ liệu idempotency phải >= `refund_window + 15 ngày` (khuyến nghị 45 ngày) để không mở lại cửa duplicate khi replay trễ.
 
-### 1.8. `promotion_outbox` (Outbox Pattern — Reliable Event Publishing)
-Đảm bảo mọi sự kiện Kafka được phát đi đáng tin cậy sau khi ghi DB thành công, tránh mất Event khi Worker crash giữa chừng. Chi tiết thiết kế xem tại [Outbox Pattern](promotion_outbox_pattern.md).
-*   `event_id`: UUID PRIMARY KEY
-*   `event_type`: VARCHAR(100) (VD: `MARKDOWN_CREATED`, `COUPON_REDEEMED` — xem [Events Schema](promotion_events.md))
-*   `schema_version`: INT DEFAULT 1 (đồng bộ với envelope top-level trong [promotion_events.md](promotion_events.md))
-*   `aggregate_type`: VARCHAR(50) (VD: `Promotion`, `MarkdownRule`, `CouponUsage`)
-*   `aggregate_id`: VARCHAR(255) (ID của entity liên quan)
-*   `partition_key`: VARCHAR(255) (Khóa partition được chốt ngay lúc ghi outbox, không suy luận lại từ payload ở CDC Connector)
-*   `payload`: JSONB (Nội dung Event)
-*   `created_at`: TIMESTAMPTZ
-*   **Nguyên tắc CDC:** Bảng outbox giữ dạng append-only, không chứa các cột polling-specific như `status/retry_count/max_retries/next_retry_at/published_at/error_message`. Retry/DLQ được quản trị tại Kafka Connect.
 
 ---
 ## 2. Quy tắc Áp dụng Voucher (Stacking & Sequencing)
-Mô hình voucher theo chuẩn platformee, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
+Mô hình voucher theo chuẩn platform, áp dụng bộ quy tắc cứng (Hard-coded) về số lượng và thứ tự khấu trừ.
 ### 2.1. Giới hạn Voucher theo Slot (PLATFORM only)
 
 Một đơn hàng áp dụng theo slot:
@@ -169,16 +159,11 @@ Sơ đồ slot:
 | **SLOT 1: PLATFORM Voucher** | `discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')` | Một đơn hàng chỉ được chọn **1 Voucher duy nhất** (toàn đơn) |
 
 
-### 2.2. Mapping với Order Service (`order_promotions.promotion_type`)
-`promotions.type` và `order_promotions.promotion_type` là hai chiều phân loại khác nhau, không được dùng thay thế cho nhau.
+### 2.2. Mapping với Order Service (`order_promotions`)
+**Phase 21:** Order Service đã DROP columns `promotion_type` (chỉ có giá trị `CART_DISCOUNT` duy nhất) + `admin_funding` (luôn = `discount_amount` ở PLATFORM-only system). Bảng `order_promotions` giờ chỉ còn schema tối thiểu: `id`, `order_id`, `promotion_id`, `discount_amount`. Order Service là source-of-truth duy nhất cho `discount_amount` của PLATFORM allocation, không cần đồng bộ `promotion_type`/`admin_funding` cross-service.
 
-| Trường | Ý nghĩa |
-|:---|:---|
-| `promotions.type` | Kiểu vận hành ngân sách/phát hành mã (`UNLIMITED_ALL`, `PLATFORM_VOUCHER`) |
-| `order_promotions.promotion_type` | Vai trò giảm giá trong đơn (`CART_DISCOUNT`) |
-
-Quy tắc map bắt buộc:
-* `discount_type IN (PERCENTAGE, FIXED_AMOUNT)` -> `order_promotions.promotion_type = CART_DISCOUNT`
+Quy tắc map bắt buộc (giữ làm documentation reference):
+* `discount_type IN (PERCENTAGE, FIXED_AMOUNT)` -> row `order_promotions` với `discount_amount` = số tiền đã giảm.
 
 
 ### 2.3. Thứ tự Khấu trừ (Discount Sequencing — Waterfall)
@@ -215,7 +200,7 @@ Khác với `promotions` (Mã Voucher áp dụng ở Giỏ hàng), **Giảm giá
 *   `start_time`, `end_time`: TIMESTAMPTZ
 *   `status`: VARCHAR(50) (ACTIVE, INACTIVE, ENDED) — Phân biệt Rule đang áp dụng, tạm ngưng, hoặc đã hết hạn. Được [Redis Cache](redis_caching_design.md#25-cache-giảm-giá-trực-tiếp-markdown--price-slashes) lọc để chỉ cache các Rule `ACTIVE`.
 
-### 2.2. Xử lý "Zero-Latency" tính toán Best Deal mà không cần `discount_items` mapping
+### 3.2. Xử lý "Zero-Latency" tính toán Best Deal mà không cần `discount_items` mapping
 Thay vì ép DB Promotion Service phải JOIN hàng triệu dòng, chúng ta chia tách hệ thống theo mô hình CQRS nơi **Product Service là Write Model**, và **Search Service là Read Model**.
 
 **Cơ chế Tính toán Async (Zero-Latency ở trang Danh sách Product/Catalog):**
@@ -226,14 +211,14 @@ Trang Danh sách (Search/Filter) không thể vừa query Data, vừa gọi Prom
     * **Tại sao không ném thẳng qua Search Service?** Bởi vì Promotion Service chỉ biết "luật giảm 15%", nó hoàn toàn không biết Category 10 gồm những sản phẩm nào, và quan trọng nhất là không nắm giữ `original_price` (Giá gốc). **Product Service mới là Nguồn Chân Lý (Source of Truth)** về Sản phẩm và Giá. Nếu giao việc tính toán này cho Search Service (Read Model), ElasticSearch sẽ phải gánh vác các logic nhân chia cộng trừ giá tùy chỉnh, làm mất đi đặc tính "Chỉ Đọc" siêu tốc của nó.
     * Bằng một Batch Job Update, Product Service ngầm nhồi công thức tính toán ra giá chéo (ví dụ: `promotional_price = original_price * 0.85`).
     * Sau đó cập nhật hàng loạt trường `promotional_price` này thẳng vào Database của Product Service.
-4. **[Product Service -> Kafka]** Khi giá sản phẩm thay đổi, Product Service ném Event: `PRODUCT_PRICE_UPDATED { product_id, sku_id, original_price, promotional_price, best_price, has_promotion, change_source }` (Luồng CDC - Change Data Capture).
+4. **[Product Service -> Kafka]** Khi giá sản phẩm thay đổi, Product Service ném Event: `SKU_UPDATED { product_id, sku_id, original_price, promotional_price, best_price, has_promotion, change_source }` (Luồng CDC - Change Data Capture). Theo convention chốt tại [product_events.md §0](../product/product_events.md), hệ thống chỉ dùng duy nhất event `SKU_UPDATED` cho mọi thay đổi cấp SKU (bao gồm cả thay đổi giá và thay đổi trạng thái); các tên event cũ `PRODUCT_PRICE_UPDATED` / `SKU_STATUS_CHANGED` đã bị loại bỏ hoàn toàn khỏi mọi tài liệu.
 5. **[Search Service - Read Model]** Hứng luồng thay đổi giá này, và **Update trực tiếp vào Elasticsearch**.
 
 **Kết quả tuyệt đối:** Khi người dùng vào Giao diện (App/Web), họ gọi request tìm kiếm. **Search Service** chỉ đơn thuần móc từ Elasticsearch ra một danh sách sản phẩm gồm `[Tên SP, Hình ảnh, Giá gốc (original_price), Giá đã giảm (promotional_price)]`. 
 * Latency ở mức **dưới 10ms (Miliseconds)** vì toàn bộ cục gánh nặng "Tính toán Giảm giá" đã được đẩy về phía Backend chạy ngầm (Async) trước đó rồi!
 
 ---
-## 3. Thiết kế Cơ sở dữ liệu Đa hình (Rule Engine JSONB cho Vouchers)
+## 4. Thiết kế Cơ sở dữ liệu Đa hình (Rule Engine JSONB cho Vouchers)
 Cột `conditions_rule` trong bảng `promotions` sẽ lưu trữ một cây Abstract Syntax Tree (AST). Việc lồng ghép ngẫu nhiên này giúp cấu hình 100% linh hoạt. Chi tiết thuật toán đánh giá xem tại [Rule Engine Design](rule_engine_design.md).
 
 **Ví dụ JSON payload `conditions_rule`:**
@@ -272,7 +257,7 @@ Cột `conditions_rule` trong bảng `promotions` sẽ lưu trữ một cây Abs
           "node_type": "CONDITION",
           "operator": "EQUAL",
           "field": "cart.payment_method",
-          "value": "VNPAY"
+          "value": "STRIPE"
         },
         {
           "node_type": "CONDITION",
@@ -287,7 +272,7 @@ Cột `conditions_rule` trong bảng `promotions` sẽ lưu trữ một cây Abs
 ```
 *   **Performance:** Tại thời điểm `/calculate-discount`, payload API từ Order/Cart gửi lên có đủ thông tin giá trị `cart` và `user`. Code Java (có thể tự viết Visitor pattern hoặc xài EasyRules) sẽ loop qua JSON tree này trong `O(n)` với latency ở mức micro-second (dưới bộ nhớ RAM), hoàn toàn không phải query DB nữa.
 ---
-## 4. Cấu trúc Redis Caching Schema (Chống sập DB & Tối ưu hiện năng)
+## 5. Cấu trúc Redis Caching Schema (Chống sập DB & Tối ưu hiện năng)
 Chi tiết kiến trúc Caching đơn tầng trên Redis Cluster và các mã giả Lua Script cho giao dịch nguyên tử (Atomic Transactions) đã được tách riêng ra file thiết kế chuyên sâu: **[redis_caching_design.md](redis_caching_design.md)**.
 
 Bao gồm các luồng:

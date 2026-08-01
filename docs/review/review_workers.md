@@ -18,13 +18,9 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 | Hướng | Topic | Consumer Group | Mô tả |
 |---|---|---|---|
 | **Produce** | `t.review.events` | — | Topic chính phát mọi event nghiệp vụ của Review |
-| **Produce** | `t.review.retry` | — | Retry topic nội bộ cho replay có kiểm soát |
-| **Produce** | `t.review.dlq` | — | Parking lot cho poison message / contract violation |
 | **Consume** | `t.order.events` | `review-order-sync` | Cấp quyền review theo item đã mua |
 | **Consume** | `t.user.events` | `review-privacy-sync` | Nhận `ACCOUNT_DELETED` để ẩn danh dữ liệu tác giả |
 | **Consume** | `t.review.events` | `review-rating-aggregator` | Self-consume để cập nhật aggregate rating |
-| **Consume** | `t.review.retry` | `review-retry-replayer` | Replay lỗi tạm thời có kiểm soát |
-| **Consume** | `t.review.dlq` | `review-dlq-inspector` | Inspect và xử lý DLQ messages |
 | **Consume** | `t.report.events` | `review-report-processor` | Xử lý báo cáo vi phạm và phát REVIEW_HIDDEN |
 
 > **Policy đã chốt:** Review Service **không consume** `USER_PROFILE_UPDATED` để đồng bộ đổi tên hiển thị. `user_name` là snapshot tại thời điểm tạo review; chỉ xử lý ẩn danh khi nhận `ACCOUNT_DELETED`.
@@ -38,8 +34,7 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
    - `initial_backoff = 1s`
    - `max_backoff = 5m`
    - `backoff = min(initial_backoff * 2^attempt, max_backoff)`
-4. Poison message phải đi `t.review.dlq`, không retry vô hạn.
-5. Cấu hình backpressure tối thiểu:
+4. Cấu hình backpressure tối thiểu:
    - `batch_size = 100..500`
    - `max_in_flight_records = 500`
    - `max_poll_interval_ms` đủ lớn để tránh rebalance giả.
@@ -56,10 +51,7 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 3. Debezium đọc WAL qua replication slot, compose CloudEvents envelope từ metadata cột outbox + payload business.
 4. Connector lấy `partition_key` từ cột outbox (bắt buộc là `product_id`) để giữ ordering theo sản phẩm.
 5. Connector publish sang `t.review.events`.
-6. Nếu publish thất bại quá ngưỡng, connector chuyển bản ghi lỗi sang DLQ của Connect theo policy vận hành.
 
-**Ràng buộc quan trọng:**
-*   Retry/DLQ ownership thuộc Kafka Connect runtime.
 
 ## 2. Outbox Retention Trimmer (Partition Cleanup)
 
@@ -100,8 +92,6 @@ DROP TABLE IF EXISTS review_outbox_y2026m01;
 5. Gán `expires_at = completed_at + review_window_days` (mặc định 30 ngày).
 6. Nếu tại thời điểm xử lý `expires_at <= NOW()`, set `status='EXPIRED'`.
 7. Commit rồi ACK.
-8. Nếu payload sai schema: retry theo policy; quá ngưỡng đẩy `t.review.dlq`.
-
 ```sql
 INSERT INTO review_eligibilities (
   id, user_id, order_id, product_id, sku_id, variant_name,
@@ -246,41 +236,3 @@ WHERE created_at < NOW() - INTERVAL '15 minutes';
 ```
 
 Nếu `stale_outbox_count` vượt ngưỡng vận hành, raise alert và tạm dừng cleanup partition.
-
-## 7. Retry Replayer Worker
-
-**Topic Consume:** `t.review.retry`
-
-**Consumer Group:** `review-retry-replayer`
-
-**Sứ mệnh:** replay các event tạm lỗi có kiểm soát.
-
-**Rule:**
-1. Mỗi envelope retry có `retry_round`.
-2. `retry_round > 3` -> chuyển `t.review.dlq`.
-3. Replay giữ nguyên `event_id` để idempotency tự nhiên hoạt động đúng.
-4. Chỉ replay các lỗi có thể phục hồi được (ví dụ: DB timeout, network partition).
-5. Không replay các lỗi contract violation (thiếu required field, invalid payload).
-
-## 8. DLQ Inspector Consumer
-
-**Topic Consume:** `t.review.dlq`
-
-**Consumer Group:** `review-dlq-inspector`
-
-**Sứ mệnh:** Inspect và xử lý các message bị reject vĩnh viễn.
-
-**Chi tiết luồng hoạt động:**
-1. Consumer đọc message từ `t.review.dlq` với batch nhỏ (10-50 messages).
-2. Phân loại message theo loại lỗi:
-   - **Contract violation:** thiếu required field, invalid payload -> ghi metrics, không retry.
-   - **Poison message:** parse được nhưng business logic lỗi không phục hồi được -> ghi metrics.
-   - **Transient lỗi:** có thể phục hồi được -> publish lại sang `t.review.retry` với `retry_round = 0`.
-3. Ghi metrics cho từng loại lỗi để monitoring.
-4. Nếu message không xử lý được sau khi inspect -> giữ trong DLQ hoặc chuyển sang dead storage.
-
-**Metrics bắt buộc:**
-*   `dlq_messages_total` (label: `error_type`)
-*   `dlq_messages_replayed_total`
-*   `dlq_messages_discarded_total`
-

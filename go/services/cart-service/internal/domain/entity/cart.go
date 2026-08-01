@@ -112,6 +112,9 @@ func (c *Cart) TransitionTo(next CartStatus, streamID string) error {
 
 // Reactivate sets status to ACTIVE when cart receives new activity after DELETED/CHECKED_OUT.
 func (c *Cart) Reactivate(streamID string) {
+	if c.status == CartStatusAbandoned {
+		return
+	}
 	if streamIDNewer(c.lastEventStreamID, streamID) {
 		c.status = CartStatusActive
 		c.lastEventStreamID = streamID

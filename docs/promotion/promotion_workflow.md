@@ -5,7 +5,6 @@
 *   [Redis Caching & Lua Scripts](redis_caching_design.md)
 *   [Rule Engine Design](rule_engine_design.md)
 *   [Kafka Events Schema](promotion_events.md)
-*   [Outbox Pattern](promotion_outbox_pattern.md)
 *   [Background Workers & Jobs](promotion_workers.md)
 
 ---
@@ -19,11 +18,11 @@ Tài liệu này tổng hợp toàn cảnh các luồng xử lý (Workflows) t�
 **Mục tiêu:** Admin tạo mã giảm giá hoặc thay đổi cấu hình mà không làm sập Database do `Thundering Herd` (Bão truy cập).
 
 1. **[Admin UI]** Admin thêm mới / chỉnh sửa `promotions` hoặc `markdown_rules`.
-2. **[Backend API]** Ghi dữ liệu vào PostgreSQL. Các event cần tích hợp liên service (đặc biệt `MARKDOWN_*`, `COUPON_REDEEMED/CANCELLED/REFUNDED`, `BUDGET_EXHAUSTED`) phải ghi vào bảng [`promotion_outbox`](promotion_db_design.md#18-promotion_outbox-outbox-pattern--reliable-event-publishing) trong cùng Transaction (Xem chi tiết [Outbox Pattern](promotion_outbox_pattern.md)).
+2. **[Backend API]** Ghi dữ liệu vào PostgreSQL, sau đó publish event lên Kafka trực tiếp. Theo dõi [Direct-Produce Pattern](../_contracts/OUTBOX_PATTERNS.md#22-direct-produce-pattern-kafka-producer-inline).
 3. **[Redis Snapshot Invalidation]** Backend `DEL promo:{promotion_id}:snapshot` (trong cùng TX) rồi `INCR promo:rules:version` (sau commit). Version fence là single source of truth để mọi instance biết metadata + AST đã đổi; không cần Pub/Sub `PROMO_EVICT`, không cần cross-instance event broadcast.
 4. **[Read-path on next call]** Client tiếp theo gọi `/calculate-discount` hoặc `/voucher-suggestions`: service pipeline `MGET promo:rules:version + promo:{id}:snapshot`, parse AST on-the-fly (request-scoped), evaluate.
-5. **[Zero-Latency CQRS (Dành riêng cho Markdown)]** Nếu Admin tạo/cập nhật mã Gạch Chéo (`markdown_rules`), [Outbox CDC Connector](promotion_outbox_pattern.md) đọc WAL của PostgreSQL cho bảng Outbox và phát Event [`MARKDOWN_CREATED`](promotion_events.md#21-markdown_created) / [`MARKDOWN_UPDATED`](promotion_events.md#22-markdown_updated) lên Kafka kèm `start_time/end_time`. Product Service hứng event và chỉ apply giá khi đạt `start_time` (nếu event đến sớm thì xếp lịch local), sau đó đẩy Event sang Search Service dán thẳng vào Elasticsearch. Trang Danh sách sản phẩm của người dùng không cần tính toán lại giá.
-6. **[Markdown Expiry Scheduler - Redis ZSET + Cron Fallback]** Cùng write-path ở bước 2, service đồng bộ lịch hết hạn vào Redis `ZSET promo:markdown:expiry:index` (score = `end_time_epoch_ms`, member = `rule_id`). Scheduler loop 250ms-1s quét rule đến hạn, chốt `status='ENDED'` + insert outbox `MARKDOWN_ENDED(reason='EXPIRED')` trong cùng transaction; Cron fallback 10-30 giây chỉ dùng để self-heal khi miss index hoặc scheduler gián đoạn.
+5. **[Zero-Latency CQRS (Dành riêng cho Markdown)]** Nếu Admin tạo/cập nhật mã Gạch Chéo (`markdown_rules`), service **publish trực tiếp** Event [`MARKDOWN_CREATED`](promotion_events.md#21-markdown_created) / [`MARKDOWN_UPDATED`](promotion_events.md#22-markdown_updated) lên Kafka. Product Service hứng event và chỉ apply giá khi đạt `start_time` (nếu event đến sớm thì xếp lịch local), sau đó đẩy Event sang Search Service dán thẳng vào Elasticsearch. Trang Danh sách sản phẩm của người dùng không cần tính toán lại giá.
+6. **[Markdown Expiry Scheduler - Redis ZSET + Cron Fallback]** Cùng write-path ở bước 2, service đồng bộ lịch hết hạn vào Redis `ZSET promo:markdown:expiry:index` (score = `end_time_epoch_ms`, member = `rule_id`). Scheduler loop 250ms-1s quét rule đến hạn, chốt `status='ENDED'` trong DB rồi publish `MARKDOWN_ENDED(reason='EXPIRED')` lên Kafka trực tiếp; Cron fallback 10-30 giây chỉ dùng để self-heal khi miss index hoặc scheduler gián đoạn.
 
 ---
 
@@ -51,9 +50,9 @@ Chạy micro-batch mỗi 1 phút, quét `promo:{promotion_id}:pending_claims:ind
 **Mục tiêu:** Tính toán giá tiền giảm với điều kiện nghiệp vụ đa hình (JSON) mà độ trễ chỉ `< 1ms`.
 
 1. **[Checkout Service]** Bắn API `/calculate-discount` gửi toàn bộ Payload giỏ hàng và định danh User sang Promotion.
-2. **[Promotion Backend]** Pipeline `MGET promo:rules:version + promo:{id}:snapshot × N` từ Redis (1 round-trip). Parse JSONB AST on-the-fly trong scope request thành `RuleNode` Object (VD: check tổng giỏ `> 500k` VÀ thanh toán `VNPAY`). AST chỉ sống trong request scope, không cache ở JVM heap nữa. Xem chi tiết thuật toán tại [Rule Engine Design](rule_engine_design.md).
+2. **[Promotion Backend]** Pipeline `MGET promo:rules:version + promo:{id}:snapshot × N` từ Redis (1 round-trip). Parse JSONB AST on-the-fly trong scope request thành `RuleNode` Object (VD: check tổng giỏ `> 500k` VÀ thanh toán qua Stripe). AST chỉ sống trong request scope, không cache ở JVM heap nữa. Xem chi tiết thuật toán tại [Rule Engine Design](rule_engine_design.md).
 3. **[Evaluation]** Dùng Visitor Pattern quét Node Object cấp tốc trong RAM dựa theo Payload.
-4. **[platformee Calculation Flow]**: Xếp hạng và tính khấu trừ theo trình tự:
+4. **[Calculation Flow]**: Xếp hạng và tính khấu trừ theo trình tự:
     *   (1) Áp PLATFORM Voucher lên Giá gốc.
 5. Trả response về cho Order/Cart bao gồm tổng tiền giảm và chi tiết từng loại mã.
 
@@ -164,7 +163,7 @@ Promotion Service phải ghi trực tiếp key này vào `promotion_event_idempo
     *   Lưu chốt Idempotent ở CSDL: `INSERT INTO promotion_event_idempotency (event_id = :idempotency_key_from_order, order_id, promotion_id, action_type = 'REDEEM_COUPON', action_scope_key = 'FINAL')`.
     *   Tăng Ledger Budget DB: `UPDATE promotion_budgets SET used_budget = ...`
     *   Cập nhật Ví User: `UPDATE user_coupon_wallets SET status = 'USED'` (kèm theo `used_at = NOW()`).
-    *   Gắn sổ cái dòng tiền: `INSERT INTO coupon_usages(platform_funding, admin_funding, status = 'REDEEMED')` (không có trạng thái RESERVED trong DB).
+    *   Gắn sổ cái dòng tiền: `INSERT INTO coupon_usages(discount_amount, status = 'REDEEMED')` (không có trạng thái RESERVED trong DB; `discount_amount` là nguồn chuẩn duy nhất vì hệ thống chỉ có admin).
     *   Nếu insert idempotency conflict, phải đọc trạng thái DB hiện hữu và trả về thành công idempotent, tuyệt đối không rollback ngược Redis đã commit.
     *   Promotion Service **không tự sinh `event_id`** ở nhánh sync này; chỉ dùng đúng `idempotency_key` do Order truyền vào.
 6. **[Order Service]** Ngay khi branch `PAYMENT_SUCCESS` commit FSM `PENDING_PAYMENT` -> `PAID`, phát event `ORDER_PAID` cho downstream read-model/notification/cart cleanup (mốc tài chính). Mốc vận hành hoàn tất được phản ánh bằng `ORDER_STATUS_CHANGED` (`PAID` -> `PROCESSING`).
@@ -222,20 +221,16 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 **Mục tiêu:** Khi đơn hàng đã giao thành công (`REDEEMED`) nhưng khách hàng đổi trả hàng hoàn tiền, cần hoàn lại ngân sách Promotion đã sử dụng.
 
-1. **[Order Service/Kafka]** Bắn Event [`ORDER_REFUNDED`](promotion_events.md#31-order_refunded-inbound) bắt buộc có `event_id` ở envelope, `refund_transaction_id` và `promotion_refund_allocations[]` (mỗi phần tử chứa `promotion_id`, `scope_admin_id`, `refunded_discount_amount`, `platform_funding_refund`, `admin_funding_refund`, `partial_restore_rule`, `voucher_restore_mode`).
+1. **[Order Service/Kafka]** Bắn Event [`ORDER_REFUNDED`](promotion_events.md#31-order_refunded-inbound) bắt buộc có `event_id` ở envelope, `refund_transaction_id` và `promotion_refund_allocations[]` (mỗi phần tử chứa 2 field sau Phase 21: `promotion_id`, `refunded_discount_amount`).
 2. **[Promotion Backend -> Redis Lua]** Với `promotion_refund_allocations[]`, backend gọi [Lua Script 5](redis_caching_design.md#script-5-hoàn-ngân-sách-sau-đổi-trả-hàng-refund-budget) theo từng `promotion_id` bằng **Redis Pipelining** (1 round-trip mạng), mỗi lệnh dùng lock key `promo:lock:refund:{promotion_id}:{order_id}`. Script trả về `applied_refund_qty/applied_refund_amount` thực tế sau guard không âm.
-    - Nếu `refund_type = PARTIAL`, chỉ xử lý allocation PLATFORM thỏa `partial_restore_rule = RESTORE_ONLY_IF_FULL_PLATFORM_COVERED`.
+    - Nếu `refund_type = PARTIAL`, chỉ xử lý allocation PLATFORM thỏa internal rule `RESTORE_ONLY_IF_FULL_PLATFORM_COVERED` (Promotion tự áp — không nhận từ payload sau Phase 20).
 3. **[Kafka Consumer (Worker)]** Gõ DB:
     *   `INSERT INTO promotion_event_idempotency(event_id = :kafka_envelope_event_id, order_id, promotion_id, action_type = 'REFUND_COUPON', action_scope_key = :refund_transaction_id)`.
     *   `UPDATE promotion_budgets SET used_quantity = used_quantity - :applied_refund_qty, used_budget = used_budget - :applied_refund_amount`.
-    *   Cập nhật ví theo policy tái sử dụng + hiệu lực:
-        *   Chỉ trả về `'SAVED'` khi promo cho phép tái sử dụng **và** `(expired_at IS NULL OR expired_at > NOW())`.
-        *   Nếu promo cho phép tái sử dụng nhưng voucher đã quá hạn (`expired_at <= NOW()`), chuyển ví sang `'EXPIRED'` (hoặc giữ `'USED'` nếu không còn row ví để chuyển trạng thái).
-        *   Nếu promo không cho phép tái sử dụng, giữ `'USED'`.
+    *   Giữ nguyên trạng thái ví `USED`, không restore về `SAVED`. (Phase 23: voucher không còn được tái sử dụng sau refund.)
     *   Cập nhật `coupon_usages.refunded_amount += :applied_refund_amount`, `refund_count += 1`, set `status = PARTIALLY_REFUNDED` hoặc `REFUNDED` khi hoàn đủ, kèm `refunded_at = NOW()`.
-4. **[Voucher unavailable - non-blocking]** Nếu script/DB xác định voucher không còn khả dụng ở thời điểm restore:
+4. **[Voucher unavailable - non-blocking]** Nếu script/DB xác định voucher không còn khả dụng (row ví không tồn tại):
     - Ghi nhận `restore_outcome = VOUCHER_UNAVAILABLE` + reason code vào log/audit.
-    - Phát cảnh báo vận hành để xử lý thủ công nếu cần.
     - **Không** yêu cầu rollback tiền hoàn đã thành công ở Payment.
 
 > [!IMPORTANT]
@@ -254,7 +249,7 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 ## 6. Luồng Gợi ý Voucher tại Checkout (Voucher Discovery Flow)
 
-**Mục tiêu:** Hiển thị danh sách mã giảm giá khả dụng cho khách hàng khi mở khung voucher tại màn hình Checkout theo nguyên tắc read-only ở Discovery. Tray Voucher Platform/Freeship chỉ dùng mã đã lưu trong ví; không có auto-save ở Submit.
+**Mục tiêu:** Hiển thị danh sách mã giảm giá khả dụng cho khách hàng khi mở khung voucher tại màn hình Checkout theo nguyên tắc read-only ở Discovery. Tray Voucher Sàn (PLATFORM_VOUCHER) chỉ dùng mã đã lưu trong ví; không có auto-save ở Submit.
 
 > Chi tiết đầy đủ về API design, request/response, caching và edge cases xem tại: **[Voucher Discovery API](voucher_discovery_api.md)**.
 >
@@ -262,7 +257,7 @@ Xử lý trường hợp user abandon checkout mà **không có Event nào** t�
 
 ### Tóm tắt Luồng
 
-1. **[Checkout Service]** Khách mở tray "Chọn Mã Giảm Giá" — Checkout gọi `GET /v1/promotions/voucher-suggestions` kèm `cart_context` (subtotal, payment_method).
+1. **[Checkout Service]** Khách mở tray "Chọn Mã Giảm Giá" — Checkout gọi `GET /v1/promotions/voucher-suggestions` kèm `cart_context` (subtotal, payment_method). Lưu ý Phase 18: `payment_method` luôn = `"STRIPE"` (single-provider).
 2. **[Promotion Backend → PostgreSQL]** Query `user_coupon_wallets JOIN promotions` (Index Scan `user_id, status`) lọc `status = 'SAVED'` và `expired_at > NOW()`. Với row `SAVED` mà `expired_at <= NOW()` trả về: chuyển sang `EXPIRED` inline (lazy expiry).
 3. **[Rule Engine In-Memory]** Eval `conditions_rule` AST với `cart_context`, tính `estimated_discount`, gắn cờ `eligible/ineligible` cho từng mã (`< 1ms/mã`).
 4. **[Budget Guard Read-time (Option A)]** Với tập mã đang `eligible`, Promotion đọc batch Redis budget hash bằng pipelining; mã cạn ngân sách/lượt bị downgrade sang `ineligible_reason = BUDGET_EXHAUSTED`. Nếu guard timeout, hệ thống fail-open và đánh dấu degraded cho observability.
@@ -282,7 +277,7 @@ Kiến trúc Workflow trên thể hiện đỉnh cao của thiết kế **Data-I
 2. Đẩy các luồng tranh chấp đồng thời (CONCURRENCY WRITE) lên Lua Script chạy Single Thread.
 3. Bảo vệ chuỗi phân tán (SAGA) bằng idempotency nhiều tầng, trong đó PostgreSQL `promotion_event_idempotency` là chốt quyết định cuối cùng và Redis đóng vai trò guard tốc độ.
 4. Khắc phục độ võng của Network Event bằng Background Job đền bù dữ liệu (Pending Claims Sweep + Reservation TTL Sweep).
-5. Đảm bảo Reliable Event Publishing bằng [Outbox Pattern + CDC](promotion_outbox_pattern.md) thay vì phụ thuộc vào Kafka Produce trực tiếp.
+5. Event được publish trực tiếp lên Kafka theo cơ chế Best-Effort — đơn giản hạ tầng, chấp nhận mất event trong crash window.
 
 
 

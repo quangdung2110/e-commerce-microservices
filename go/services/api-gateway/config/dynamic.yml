@@ -143,6 +143,13 @@ http:
         customResponseHeaders:
           X-Request-Id: ""
 
+    # Dev Auth Middleware (injects default X-User-Id for dev testing)
+    dev-auth:
+      headers:
+        customRequestHeaders:
+          X-User-Id: "user-123"
+
+
     # -------------------------------------------------------------------------
     # Compression Middleware
     # -------------------------------------------------------------------------
@@ -215,8 +222,9 @@ http:
     # Default transport
     default:
       maxIdleConnsPerHost: 200
-      idleTimeout:: 200s
-      responseHeaderTimeout: 60s
+      forwardingTimeouts:
+        idleConnTimeout: 200s
+        responseHeaderTimeout: 60s
 
     # Insecure transport (for internal services)
     insecure-transport:

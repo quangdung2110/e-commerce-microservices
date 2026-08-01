@@ -37,7 +37,7 @@ Tài liệu này mô tả state machine cho Payment Transaction và Refund Trans
 | T5 | `PENDING`/`PROCESSING` | `PAYMENT_CANCELED` | Hủy hợp lệ | `CANCELED` |
 | T6 | `SUCCESS` | `REFUND_REQUEST_ACCEPTED` | Tổng refund hợp lệ | `REFUNDING` |
 | T7 | `REFUNDING` | `REFUND_SUCCESS_CONFIRMED` | Provider/poller/reconcile xác nhận | `REFUNDED` |
-| T8 | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận | `SUCCESS` |
+| T8 | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận refund thất bại | `FAILED` |
 | T9 | `REFUNDED` | `REFUND_REVERSED_CONFIRMED`| Provider xác nhận Refund bị đảo chiều | `SUCCESS` |
 
 > **Lưu ý T8 & T9:** Cả 2 transition này sẽ trigger việc bật cờ (flag) `requires_manual_review = TRUE` trên `payment_transactions` để nhân viên CSKH/Kế toán vào xử lý thủ công, do hệ thống không thể tự động rút tiền lần 2 nếu gateway lỗi hoàn hoặc lỗi tài khoản đích.
@@ -74,10 +74,10 @@ Nguyên tắc xử lý:
 
 ## 3. Guard Rules (bắt buộc)
 
-### 3.1. Signature & Authenticity Guard
+### 3.1. Signature & Authenticity Guard (Stripe chuẩn)
 
-1. Verify HMAC/RSA signature trước khi parse business payload.
-2. Reject ngay callback không hợp lệ (`FAILED_SIGNATURE` trong webhook logs).
+1. Verify `Stripe-Signature` header theo cơ chế `t=<timestamp>,v1=<signature>` của Stripe. Tính lại HMAC-SHA256 với `signed_payload = t + "." + raw_body` dùng `whsec_...` (lưu trong Vault/Secret Manager).
+2. Reject ngay callback không hợp lệ (`FAILED_SIGNATURE` trong webhook logs). Nếu `|now - t| > 300s` cũng reject (chống replay attack).
 
 ### 3.2. Amount & Reference Guard
 

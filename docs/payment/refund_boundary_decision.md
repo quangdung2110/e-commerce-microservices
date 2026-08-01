@@ -18,6 +18,8 @@ Mục tiêu của ADR này:
 
 Refund tiếp tục là logical module trong Payment Service (Phase 1), nhưng phải giữ code boundary rõ (`src/refund/`, interface riêng, contract độc lập) để có thể tách thành service độc lập khi đạt ngưỡng.
 
+> **Phase 18 Update:** Hệ thống chuyển sang single-payment-provider (Stripe). Điều này **KHÔNG thay đổi** quyết định giữ Refund trong Payment Service, vì các Phase 2 trigger (refund ratio, workflow complexity, ownership) vẫn valid. Tuy nhiên, single-provider có thể giảm nhẹ phần "Provider variance" trong benchmark section (§3).
+
 ### 2.1 Inputs được xác nhận
 
 - Refund ratio hiện tại: `< 2%`

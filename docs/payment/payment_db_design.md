@@ -14,19 +14,18 @@ Tài liệu này mô tả thiết kế cơ sở dữ liệu (PostgreSQL) cho Pay
 ---
 ## 1. Thiết kế Cơ sở dữ liệu (Database Schema)
 
-Payment Service cần hoạt động độc lập với Order Service. Order Service chỉ biết "Đơn hàng này cần thanh toán X đồng", còn Payment Service sẽ chịu trách nhiệm gọi cổng thanh toán, đồng bộ trạng thái giao dịch với đối tác.
+Payment Service cần hoạt động độc lập với Order Service. Order Service chỉ biết "Đơn hàng này cần thanh toán X đồng", còn Payment Service sẽ chịu trách nhiệm gọi Stripe API (PaymentIntent + Webhook), đồng bộ trạng thái giao dịch với Stripe.
 
 ### 1.1. `payment_transactions` (Giao dịch Thanh toán)
 Lưu trữ thông tin chi tiết mỗi lần người dùng cố gắng thanh toán (1 Order có thể có nhiều payment_transactions nếu họ thanh toán lỗi và thử lại).
-*   `id`: `VARCHAR(50)` PRIMARY KEY (Chuỗi gen tự động, đóng vai trò là `txn_ref` gửi lên cổng thanh toán. VD: `TNX12345ABC`).
+*   `id`: `VARCHAR(50)` PRIMARY KEY (Chuỗi gen tự động, đóng vai trò là `txn_ref` gửi lên Stripe. VD: `TNX12345ABC`).
 *   `order_id`: `BIGINT` (Foreign Key logic về Order Service).
-*   `user_id`: `BIGINT` (Dùng để filter, sharding sau này).
+*   `user_id`: `UUID` (Canonical chuẩn hóa toàn hệ thống; dùng để filter, sharding sau này). Xem [Service Contract Matrix §0.1](../_contracts/CONTRACT_MATRIX.md#01-id-convention).
 *   `amount`: `DECIMAL` (Số tiền thực tế phải thanh toán).
-*   `currency`: `VARCHAR(10)` (VD: `VND`, `USD`).
-*   `provider`: `VARCHAR(50)` (VD: `VNPAY`, `MOMO`, `STRIPE`, `ZALOPAY`).
-*   `provider_transaction_id`: `VARCHAR(100)` (Mã giao dịch sinh ra từ phía đối tác để tiện đối soát/Reconciliation).
+*   `currency`: `VARCHAR(10)` (Cố định = `VND`; Stripe hỗ trợ VND ở VN region).
+*   `provider`: `VARCHAR(50)` NOT NULL DEFAULT `'STRIPE'` với `CHECK (provider = 'STRIPE')` — hệ thống chỉ dùng 1 payment provider duy nhất (Stripe).
+*   `provider_transaction_id`: `VARCHAR(100)` (Mã giao dịch sinh ra từ Stripe = `pi_xxx` PaymentIntent ID; dùng để đối soát với Stripe Dashboard).
 *   `status`: `VARCHAR(50)` (`PENDING`, `SUCCESS`, `FAILED`, `CANCELED`, `REFUNDING`, `REFUNDED`).
-*   `version`: `BIGINT` DEFAULT 1 (Optimistic Locking cho FSM, chống race-condition từ webhook).
 *   `error_code`, `error_message`: `VARCHAR(255)` (Lưu trữ lỗi nếu thanh toán rớt để phân tích).
 *   `expires_at`: `TIMESTAMPTZ` (Thời gian hết hạn của phiên thanh toán, ví dụ 15 phút, dùng cho worker dọn dẹp quét lại).
 *   `created_at`, `updated_at`: `TIMESTAMPTZ`
@@ -38,7 +37,7 @@ Hoàn tiền (Refund) là một quy trình tách biệt, có thể hoàn toàn p
 *   `order_id`: `BIGINT`
 *   `refund_amount`: `DECIMAL`
 *   `reason`: `VARCHAR(255)` (Lý do hoàn: `CUSTOMER_RETURN`, `ADMIN_FORCE_REFUND`, `OUT_OF_STOCK`, v.v.)
-*   `provider_refund_id`: `VARCHAR(100)` (Mã đối soát hoàn tiền từ đối tác).
+*   `provider_refund_id`: `VARCHAR(100)` (Mã refund từ Stripe = `re_xxx` Refund ID; dùng để đối soát với Stripe Dashboard).
 *   `status`: `VARCHAR(50)` (`PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`).
 *   `idempotency_key`: `VARCHAR(255) UNIQUE` (Chống duplicate request từ Order Service).
 *   `created_at`, `updated_at`: `TIMESTAMPTZ`
@@ -46,14 +45,16 @@ Hoàn tiền (Refund) là một quy trình tách biệt, có thể hoàn toàn p
 ### 1.3. `webhook_logs` (Nhật ký Callbacks/Webhooks)
 Cực kỳ quan trọng để debug khi đối tác báo đã trừ tiền nhưng app báo lỗi.
 *   `id`: `BIGSERIAL PRIMARY KEY`.
-*   `provider`: `VARCHAR(50)`
-*   `provider_transaction_id`: `VARCHAR(100)`
-*   `event_type`: `VARCHAR(100)` (VD: `payment.success`, `payment.failed`)
-*   `payload`: `JSONB` (Lưu nguyên vẹn raw body của đối tác gửi sang để phục hồi dữ liệu khi cần).
+*   `provider`: `VARCHAR(50)` NOT NULL DEFAULT `'STRIPE'` (cố định = Stripe, hệ thống single-provider).
+*   `provider_transaction_id`: `VARCHAR(100)` (Stripe PaymentIntent ID = `pi_xxx`).
+*   `stripe_event_id`: `VARCHAR(120)` (Stripe Event ID = `evt_xxx`; dùng để dedup khi Stripe retry cùng event).
+*   `stripe_signature`: `TEXT` (Toàn bộ `Stripe-Signature` header nhận được, lưu để audit khi cần).
+*   `event_type`: `VARCHAR(100)` (Stripe event type, VD: `payment_intent.succeeded`, `charge.refunded`).
+*   `payload`: `JSONB` (Lưu nguyên vẹn raw body của Stripe gửi sang để phục hồi dữ liệu khi cần).
 *   `status`: `VARCHAR(50)` (`UNPROCESSED`, `PROCESSED`, `FAILED_SIGNATURE`, `IGNORED`).
-*   `idempotency_key`: `VARCHAR(255)` (Kết hợp `provider_transaction_id` + `status` của webhook để chặn xử lý đúp).
+*   `idempotency_key`: `VARCHAR(255)` (Kết hợp `stripe_event_id` + `event_type` để chặn xử lý đúp).
 *   `created_at`: `TIMESTAMPTZ`
-*   **Constraint:** `UNIQUE(provider, provider_transaction_id, event_type)` để đảm bảo DB level từ chối duplicate webhook.
+*   **Constraint:** `UNIQUE(provider, provider_transaction_id, event_type)` để đảm bảm DB level từ chối duplicate webhook.
 
 ### 1.4. `payment_status_history` (Audit Trail — FSM Transition Log)
 Ghi nhận mọi chuyển đổi trạng thái (FSM Transition) của `payment_transactions` và `refund_transactions` phục vụ debug, compliance, và đối soát. Xem [State Machine - Audit Trail](payment_state_machine.md#34-audit-trail-payment_status_history).
@@ -63,23 +64,20 @@ Ghi nhận mọi chuyển đổi trạng thái (FSM Transition) của `payment_t
 *   `old_status`: `VARCHAR(50)` (Trạng thái trước chuyển đổi).
 *   `new_status`: `VARCHAR(50)` (Trạng thái sau chuyển đổi).
 *   `triggered_by`: `VARCHAR(50)` (VD: `WEBHOOK`, `CRONJOB`, `API`, `TEMPORAL`).
-*   `provider_response`: `JSONB` (Raw response từ cổng thanh toán nếu có — dùng khi debug dispute).
+*   `provider_response`: `JSONB` (Raw response từ Stripe API nếu có — dùng khi debug dispute).
 *   `created_at`: `TIMESTAMPTZ`
 
 ### 1.5. Bảng Kỹ Thuật (Infrastructure)
 
-*   **`outbox_events`**: Transactional Outbox đảm bảo gửi Kafka events an toàn sau khi DB commit. Xem [Outbox Polling Worker](payment_workers.md#1-outbox-polling-worker-producer).
-    *   `id`: `UUID PRIMARY KEY`
-    *   `aggregate_type`: `VARCHAR(100)` (VD: `PAYMENT`, `REFUND`)
-    *   `aggregate_id`: `VARCHAR(50)` (`payment_transactions.id` hoặc `refund_transactions.id`)
+*   **`outbox_events`**: Transactional Outbox đảm bảo gửi Kafka events an toàn sau khi DB commit. Tuân theo canonical [OUTBOX_PATTERNS.md §2.1 CDC Pattern](../_contracts/OUTBOX_PATTERNS.md#21-cdc-pattern-debezium-kafka-connect). **Cấm cột polling-style** — retry/DLQ/backoff chuyển sang Kafka Connect runtime.
+    *   `event_id`: `UUID PRIMARY KEY`
+    *   `schema_version`: `INT NOT NULL DEFAULT 1`
+    *   `aggregate_type`: `VARCHAR(100)` (Cố định: `Payment` cho PAYMENT_*, vẫn dùng `Payment` cho REFUND_* nhưng `aggregate_id` = `refund_transaction_id`)
+    *   `aggregate_id`: `VARCHAR(50)` (`payment_transactions.id` cho PAYMENT_*, `refund_transactions.id` cho REFUND_*)
     *   `event_type`: `VARCHAR(100)` (VD: `PAYMENT_SUCCESS`, `REFUND_INITIATED`)
-    *   `payload`: `JSONB` (Nội dung event)
-    *   `status`: `VARCHAR(20) DEFAULT 'PENDING'` — `PENDING` / `PUBLISHED` / `FAILED` / `DEAD`
-    *   `retry_count`: `INT DEFAULT 0` (Số lần retry publish lên Kafka)
-    *   `max_retries`: `INT DEFAULT 5` (Giới hạn retry trước khi chuyển `DEAD`)
-    *   `published_at`: `TIMESTAMPTZ` (Thời điểm publish thành công)
-    *   `next_retry_at`: `TIMESTAMPTZ` (Thời điểm retry tiếp theo — exponential backoff)
-    *   `created_at`: `TIMESTAMPTZ`
+    *   `partition_key`: `VARCHAR(255) NOT NULL` — Canonical: `order_id` để group mọi event của cùng 1 order (xem [CONTRACT_MATRIX §1](../_contracts/CONTRACT_MATRIX.md#1-kafka-topic-map-ssot))
+    *   `payload`: `JSONB` (Nội dung event theo canonical envelope — xem [CONTRACT_MATRIX §0.2](../_contracts/CONTRACT_MATRIX.md#02-kafka-envelope-cloudevents-wrapper))
+    *   `created_at`: `TIMESTAMPTZ NOT NULL`
 
 *   **`payment_idempotency`**: Chặn duplicate requests từ Frontend (double-click) hoặc Kafka replay.
     *   `key`: `VARCHAR(255)`
@@ -90,89 +88,36 @@ Ghi nhận mọi chuyển đổi trạng thái (FSM Transition) của `payment_t
     *   **Constraint:** `PRIMARY KEY (key, action)` để tránh client dùng lại một idempotency_key cho nhiều hành động khác nhau.
 
 ---
-## 2. Kiến trúc Xử lý Refund (Hoàn tiền)
-
-Việc tách tiến trình Hoàn tiền (Refund) ra thành một Refund Service độc lập là cần thiết khi hệ thống lớn, nhưng để tối ưu chi phí bảo trì và tránh overhead (chi phí mạng gRPC/Kafka, Duplicate Data, Distributed Transaction) trong giai đoạn đầu, hệ thống áp dụng kiến trúc **2 Giai Đoạn (Phases)** tiến hóa phân quyền:
-
-### Phase 1: Modular Monolith (Giữ trong Payment Service)
-Trong giai đoạn đầu, tiến trình Hoàn tiền được thiết kế như một **Logical Boundary** (module/package) riêng biệt nằm bên trong Payment Service.
-
-*   **Tổ chức Code:** Tạo package/module/folder riêng bên trong Payment Service, ví dụ `src/refund/` tách biệt với `src/payment/`.
-*   **Tương tác:** Tương tác giữa `Payment` và `Refund` bên trong code thông qua Interface nội bộ thay vì gọi trực tiếp sang nhau.
-*   **Lợi ích:** Dễ code, dễ deploy, tận dụng được Local Transaction (ACID DB lock) để xử lý concurrency, dữ liệu `Refund` gần với `Payment`. Khi logic phình to, có thể dễ dàng "bứng" folder `src/refund/` thành 1 service mới mà không tốn nhiều công refactor.
-*   **Logic Hoạt Động:** Đa phần tập trung vào explicit refund requests từ Order Refund Workflow, xử lý kết quả refund bất đồng bộ và đối soát payment drift.
-
-### Phase 2: Microservice Độc lập (Refund Service)
-Khi hệ thống chạm ngưỡng Scale, mảng CSKH và Kế toán cần một giao diện CMS đồ sộ để quản lý khiếu nại (Dispute / Chargeback / Return & Refund) theo từng cấp độ (Luồng duyệt tiền phân cấp). Lúc này sẽ bóc tách `src/refund/` thành **Refund Service**.
-
-*   **Kích hoạt:** `Order Service` phát kiện hàng bị trả về (Return) -> Bắn Kafka Event `OrderReturned`.
-*   **Quy trình Xét duyệt (Workflow):** `Refund Service` bắt Event, tự động sinh ra một `RefundRequest (Status = PENDING_APPROVAL)`. Dashboard nội bộ cho phép Nhân viên Kho vào xác nhận "Hàng không hỏng hóc", Kế toán duyệt lệnh.
-*   **Thực thi:** `Refund Service` mới gọi gRPC (hoặc Call API) sang `Payment Service` với thông điệp: *"Tiền này an toàn, hãy thực thi lệnh Refund với Bank/VNPAY đi"*.
-
-### 2.1. Quyết định kiến trúc hiện tại (03/2026)
-
-Theo dữ liệu vận hành hiện tại:
-
-*   Tỷ lệ refund thấp (`< 2%` trên tổng giao dịch thanh toán).
-*   Chưa có nhu cầu workflow duyệt refund nhiều cấp (Kho/CSKH/Kế toán/Compliance).
-*   Chưa tách ownership team Refund khỏi team Payment.
-
-=> **Quyết định hiện tại: giữ Refund trong Payment Service theo mô hình Modular Boundary (Phase 1).**
-
-Lý do: Tách Refund Service quá sớm sẽ tăng overhead hệ phân tán (distributed lock, idempotency chéo service, reconciliation chéo service, contract drift), trong khi chưa tạo ra lợi ích vận hành tương xứng.
-
-### 2.2. Thực tiễn tham chiếu từ hệ thống lớn
-
-Tham chiếu từ Stripe, Adyen, PayPal, Square, Amazon Pay cho thấy các điểm chung sau:
-
-1.  Refund luôn là **asynchronous lifecycle** (không coi API response ban đầu là kết quả cuối cùng).
-2.  Luôn cần **idempotency key** cho API refund để chống duplicate request.
-3.  **Webhook không đảm bảo thứ tự tuyệt đối** và có thể retry/duplicate; hệ thống phải tự dedup.
-4.  Có thể phát sinh trạng thái **failed/reversed sau khi đã accepted/processing**.
-5.  Luôn có lớp **reconciliation** để sửa lệch giữa DB nội bộ và PSP.
-
-Thiết kế hiện tại của Payment Service đã bám sát các nguyên tắc này: Outbox, Idempotency, Webhook Signature Verification, Retry, Cronjob Sync.
-
-### 2.3. Trigger tách sang Refund Service (Phase 2)
-
-Chỉ chuyển sang Phase 2 khi đạt ít nhất 1 trong các điều kiện chính dưới đây trong 2 chu kỳ liên tiếp:
-
-| Trigger | Ngưỡng gợi ý | Ý nghĩa |
-|:---|:---|:---|
-| Refund volume tăng cao | `refund_ratio > 5%` | Khối lượng nghiệp vụ refund đủ lớn để tách scale độc lập |
-| Workflow phức tạp | `manual/dispute refund > 1%` và cần multi-step approval | Cần domain riêng cho dispute, chargeback, duyệt nhiều cấp |
-| Tách ownership | Team Refund vận hành độc lập team Payment | Cần ranh giới deploy/incident/SLA rõ ràng |
-| Áp lực vận hành | Backlog refund xử lý thủ công tăng theo xu hướng | Cần service riêng để giảm MTTR và tách runbook |
-
-### 2.4. Bất biến kiến trúc cần giữ khi tách service
-
-Khi bóc tách `src/refund/` thành Refund Service, các bất biến sau **không được thay đổi**:
-
-1.  **Ordering key:** Event Refund vẫn partition theo `order_id`.
-2.  **Idempotency:** Giữ dedup ở cả API layer và consumer layer.
-3.  **Security:** Webhook signature verification bắt buộc trước mọi state transition.
-4.  **Outbox contract:** Event chỉ được phát sau DB commit thành công.
-5.  **Reconciliation:** Vẫn phải có job đối soát độc lập với provider.
 
 ---
-## 3. Các kỹ thuật chuyên sâu (Advanced Techniques)
+## 2. Các kỹ thuật chuyên sâu (Advanced Techniques)
 
 Payment Service cần đảm bảo các kĩ thuật độ tin cậy tuyệt đối (Reliability):
 
 1.  **Idempotency Tuyệt Đối & Race Condition Control:**
-    *   Sử dụng Distributed Lock (Redis Redisson) khóa theo `payment_transaction_id` chặn race condition giữa User Frontend và Webhook Bank.
+    *   Sử dụng Distributed Lock (Redis Redisson) khóa theo `payment_transaction_id` chặn race condition giữa User Frontend và Stripe Webhook.
     *   Sử dụng Optimistic Locking (Cột `version`) trên các bảng transaction để luôn luôn đảm bảo tính nhất quán của State Machine.
-2.  **Webhook Signature Verification (Bảo mật Anti-Spoofing):**
-    *   Xác minh HMAC-SHA256 hoặc RSA signature từ request header của tất cả mọi webhook từ đối tác trước khi parse body để chống Fake Payload tấn công vào DB.
+2.  **Webhook Signature Verification (Bảo mật Anti-Spoofing — Stripe chuẩn):**
+    *   Verify `Stripe-Signature` header theo cơ chế `t=<timestamp>,v1=<signature>` của Stripe. Tính lại HMAC-SHA256 với `signed_payload = t + "." + raw_body` dùng secret key `whsec_...` (lưu trong Vault/Secret Manager).
+    *   Reject ngay webhook nếu `|now() - t| > 300 giây` (chống replay attack).
+    *   Nếu signature không hợp lệ → ghi `webhook_logs.status = FAILED_SIGNATURE` và KHÔNG parse business payload.
+    *   Stripe có retry tự động với exponential backoff (3-5 lần); hệ thống phải chịu được retry duplicate (xử lý qua idempotency).
 3.  **Cronjob Sync & Fallback (Xử lý Drop-off Giao dịch):**
-    *   Worker quét các giao dịch quá hạn `expires_at` (nhưng chưa DONE) để chủ động Query sang API của Đối tác nhằm cập nhật trạng thái cuối cùng, tránh trường hợp rớt mạng làm treo giao dịch của user.
+    *   Worker quét các giao dịch quá hạn `expires_at` (nhưng chưa DONE) để chủ động Query sang Stripe API (`PaymentIntent.retrieve`) nhằm cập nhật trạng thái cuối cùng, tránh trường hợp rớt mạng làm treo giao dịch của user.
 4.  **Reconciliation (Đối soát Tự động):**
-    *   Tự động tải file CSV/SFTP Settlement từ đối tác vào cuối ngày để join dữ liệu kiểm tra chênh lệch (Discrepancies).
+    *   Cronjob định kỳ (hourly) dùng Stripe API `BalanceTransaction.list` / `PaymentIntent.list` để đối soát amount/status với DB nội bộ. Phát hiện sai lệch → correction transition + outbox event.
+5.  **Stripe SDK Direct Call (Single-Provider, Phase 18):**
+    *   Payment Service gọi trực tiếp `com.stripe:stripe-java` SDK. KHÔNG còn Provider Adapter/Factory pattern.
+    *   Khởi tạo 1 `StripeClient` singleton với API key lấy từ secret manager (Secret Manager / Vault).
+    *   Toàn bộ call site (`PaymentIntent.create`, `Refund.create`, `PaymentIntent.retrieve`, `Webhook.constructEvent`) dùng chung instance này.
+    *   Khuyến nghị: encapsulate Stripe-specific logic trong package `com.payment.stripe` (PaymentIntentClient, RefundClient, WebhookVerifier) để dễ refactor nếu sau này đổi provider.
 
 ---
-## 4. Cold Data Archiving Strategy
+## 3. Data Retention & Long-term Storage Strategy
 
-Bảng `payment_transactions` sẽ grow rất nhanh (mỗi lần user thử thanh toán = 1 record). Để giữ hiệu năng query cao cho Expired Transaction Scanner và các operations hàng ngày, áp dụng chiến lược archiving tương tự [Order Service Cold Data Archiving](../order/cold_data_archiving_design.md).
+Bảng `payment_transactions` sẽ grow rất nhanh (mỗi lần user thử thanh toán = 1 record). Để giữ hiệu năng query cao cho Expired Transaction Scanner và các operations hàng ngày, áp dụng chiến lược partitioning + tiered storage theo nhu cầu retention riêng của Payment Service.
+
+> **Lưu ý Phase 16:** Order Service đã bỏ cơ chế Cold Data Archiving (xem [CHANGELOG Phase 16](../_contracts/CHANGELOG.md)). Payment Service giữ chiến lược riêng dưới đây do đặc thù retention lâu dài (>6 tháng) cho transaction log phục vụ CSKH/audit. Quyết định này **không** phụ thuộc pattern của Order.
 
 ### 4.1. Table Partitioning (Monthly)
 

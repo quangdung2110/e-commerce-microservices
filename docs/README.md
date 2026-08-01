@@ -18,7 +18,7 @@
 
 | File | Service | Decision |
 |---|---|---|
-| [order/refund_voucher_policy.md](./order/refund_voucher_policy.md) | Order + Promotion | Voucher types: PLATFORM + SHIPPING (no SHOP). FULL/PARTIAL refund allocation rule. Non-blocking voucher restore. |
+| [order/refund_voucher_policy.md](./order/refund_voucher_policy.md) | Order + Promotion | Voucher types: PLATFORM (no SHOP). FULL/PARTIAL refund allocation rule. Non-blocking budget refund. Phase 23: không restore voucher. |
 
 ---
 
@@ -51,12 +51,12 @@
 | [order/order_db_design.md](./order/order_db_design.md) | Schema PostgreSQL: orders, order_items, order_item_lines, order_promotions, outbox, idempotency tables, refund cases. |
 | [order/order_state_machine.md](./order/order_state_machine.md) | Master Order FSM + Order Item Delivery FSM + Buyer Tab Precedence + Auto-Complete. |
 | [order/order_events.md](./order/order_events.md) | Event catalog cho `t.order.events` (10 events) + `t.search.metrics.events`. |
-| [order/order_workers.md](./order/order_workers.md) | Background workers: CDC pipeline, CQRS projection, Payment/Inventory consumers, Archive batcher. |
+| [order/order_workers.md](./order/order_workers.md) | Background workers: CDC pipeline, Metrics projector, Payment/Inventory consumers, Archive batcher. |
 | [order/temporal_saga_design.md](./order/temporal_saga_design.md) | Temporal workflow design: `OrderCheckoutWorkflow`, `OrderRefundWorkflow`, `OrderLatePaymentRecoveryWorkflow`. |
 
 ### Order cross-refs
-- `docs/cqrs_elasticsearch_design.md` (CQRS read model) — file mở rộng
-- `docs/cold_data_archiving_design.md` (Cold data) — file mở rộng
+- `docs/order/order_search_design.md` (Phase 15 — Search/Filter trực tiếp PostgreSQL) — file mở rộng
+- ~~`docs/cold_data_archiving_design.md`~~ — **đã xoá tại Phase 16** (bỏ cold data archiving, giữ toàn bộ data trong OLTP)
 
 ---
 
@@ -99,12 +99,11 @@
 | File | Mô tả |
 |---|---|
 | [promotion/promotion_workflow.md](./promotion/promotion_workflow.md) | Workflows: Admin CRUD, Flash Sale Claim, Cart Calculate, Saga Checkout (Reserve/Confirm/Cancel), Refund, Voucher Discovery. |
-| [promotion/promotion_db_design.md](./promotion/promotion_db_design.md) | Schema: campaigns, promotions, promotion_budgets, coupon_claims, user_coupon_wallets, coupon_usages, promotion_event_idempotency, promotion_outbox (CDC). |
+| [promotion/promotion_db_design.md](./promotion/promotion_db_design.md) | Schema: campaigns, promotions, promotion_budgets, coupon_claims, user_coupon_wallets, coupon_usages, promotion_event_idempotency. |
 | [promotion/promotion_state_machine.md](./promotion/promotion_state_machine.md) | State machine cho voucher lifecycle + discount sequencing waterfall. |
 | [promotion/promotion_events.md](./promotion/promotion_events.md) | Event catalog: `t.promotion.markdown.events` (3 events), `t.promotion.coupon.events` (5 events), `t.promotion.budget.events` (1 event). |
 | [promotion/redis_caching_design.md](./promotion/redis_caching_design.md) | L1/L2 cache + 5 Lua scripts (Claim, Reserve, Batch Reserve 2B, Confirm Redeem, Rollback, Refund Budget). |
-| [promotion/promotion_outbox_pattern.md](./promotion/promotion_outbox_pattern.md) | Outbox CDC pattern chi tiết cho Promotion. |
-| [promotion/promotion_workers.md](./promotion/promotion_workers.md) | Background workers: Outbox CDC, Order Events Consumer, Auth Events Consumer, Product State Consumer, Flash Sale Claim, Rule Cache Warmer, Claim Sweeper, Reservation TTL Sweep, Wallet Expiry Sweep, Cleanup, Reconciliation, Markdown Expiry Scheduler. |
+| [promotion/promotion_workers.md](./promotion/promotion_workers.md) | Background workers: Order Events Consumer (Refund Flow), Auth Events Consumer, Product State Consumer, Flash Sale Claim, Rule Cache Warmer, Claim Sweeper, Reservation TTL Sweep, Wallet Expiry (Lazy Inline), Cleanup, Reconciliation, Markdown Expiry Scheduler. |
 | [promotion/rule_engine_design.md](./promotion/rule_engine_design.md) | Rule Engine: AST JSONB + Visitor pattern + Discount logic. |
 | [promotion/voucher_discovery_api.md](./promotion/voucher_discovery_api.md) | Voucher Discovery API: voucher-suggestions, platform-voucher-discovery, save-and-apply. |
 | [promotion/coupon_claims_deletion_strategy.md](./promotion/coupon_claims_deletion_strategy.md) | Hard deletion strategy cho coupon_claims. |
@@ -117,9 +116,8 @@ Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md
 
 | Producer | Topic | Consumer |
 |---|---|---|
-| Order | `t.order.events` (10 events) | Promotion, Inventory, Cart, Notification, Analytics, Search |
+| Order | `t.order.events` (10 events) | Promotion, Inventory, Cart, Notification, Analytics, Review |
 | Order | `t.search.metrics.events` | Search |
-| Order | `t.order.archive.retry`, `t.order.cqrs.retry`, `t.order.cqrs.dlq` | Internal Ops |
 | Payment | `t.payment.events` (9 events) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |

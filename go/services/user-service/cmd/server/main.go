@@ -60,23 +60,38 @@ func main() {
 
 			// Router Config
 			NewRouterConfig,
+			GinEngine,
 
 			// Kafka Infrastructure
 			NewKafkaConfig,
 			NewUserEventProducer,
 			NewKafkaUserVerifiedHandler,
 			NewKafkaUserDeletedHandler,
-			NewUserVerifiedConsumer,
-			NewUserDeletedConsumer,
-
-			// HTTP Server
 			fx.Annotate(
-				NewHTTPServer,
-				fx.ParamTags(`group:"server"`),
+				NewUserVerifiedConsumer,
+				fx.ResultTags(`name:"user_verified_consumer"`),
 			),
+			fx.Annotate(
+				NewUserDeletedConsumer,
+				fx.ResultTags(`name:"user_deleted_consumer"`),
+			),
+
+			NewHTTPServer,
 		),
 		fx.Invoke(RegisterHooks),
-		fx.Invoke(RegisterKafkaConsumers),
+		fx.Invoke(
+			fx.Annotate(
+				RegisterKafkaConsumers,
+				fx.ParamTags(
+					``, // lifecycle
+					`name:"user_verified_consumer"`,
+					`name:"user_deleted_consumer"`,
+					``, // producer
+					``, // logger
+				),
+			),
+		),
+		fx.Invoke(func(*http.Server) {}),
 	)
 
 	ctx := context.Background()

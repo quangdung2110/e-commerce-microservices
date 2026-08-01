@@ -4,7 +4,6 @@
 *   [Database Schema](promotion_db_design.md)
 *   [Redis Caching & Lua Scripts](redis_caching_design.md)
 *   [Promotion Workflows](promotion_workflow.md)
-*   [Outbox Pattern](promotion_outbox_pattern.md)
 
 ---
 
@@ -32,11 +31,13 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 > Với hệ dùng `event_schema_version`, map tương thích `schema_version -> event_schema_version` ở tầng adapter canonical.
 >
 > Với event inbound từ Kafka (`ORDER_REFUNDED`), Promotion bắt buộc dùng đúng `event_id` ở envelope để ghi `promotion_event_idempotency.event_id`. Không được tự sinh lại ID mới ở consumer.
+>
+
+
+> **Phase 21 (Schema Simplification):** `promotion_refund_allocations[]` giờ chỉ còn **2 field** (`promotion_id`, `refunded_discount_amount`) — bỏ `admin_funding_refund` vì luôn = `refunded_discount_amount` ở PLATFORM-only system. Column `order_promotions.admin_funding` cũng đã DROP. Promotion xử lý tương tự Phase 20: không suy luận allocation từ field bị bỏ; mọi voucher logic dựa trên `refunded_discount_amount`. Xem [CHANGELOG Phase 21](../_contracts/CHANGELOG.md#phase-21--order-service-schema-simplification).
 
 > [!NOTE]
-> Mặc định event outbound của Promotion được ghi vào bảng [`promotion_outbox`](promotion_db_design.md#18-promotion_outbox-outbox-pattern--reliable-event-publishing) cùng transaction PostgreSQL, sau đó [Outbox CDC Connector](promotion_outbox_pattern.md) publish lên Kafka theo cơ chế **At-Least-Once**.
->
-> Ngoại lệ: `COUPON_CLAIMED` đi theo luồng direct-produce ngay sau Lua Script claim và có rescue job phát lại theo `claim_id` khi cần. Downstream bắt buộc idempotent theo `event_id`/`claim_id`.
+> Event outbound của Promotion được publish trực tiếp lên Kafka sau khi DB transaction commit, theo cơ chế **Best-Effort**. Downstream phải tự idempotent theo `event_id`/`business_id`.
 
 ---
 
@@ -119,7 +120,7 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 
 > `payload.reason` enum chuẩn: `EXPIRED` | `ADMIN_DISABLED`.
 
-> Với `reason = EXPIRED`, Producer phải chốt `UPDATE markdown_rules` + `INSERT promotion_outbox(event_type='MARKDOWN_ENDED')` trong cùng transaction để giữ tính nhất quán trạng thái và event.
+> Với `reason = EXPIRED`, Producer phải chốt `UPDATE markdown_rules` (DB) rồi publish `MARKDOWN_ENDED` lên Kafka. Nếu crash sau DB commit trước khi Kafka send, event bị mất — chấp nhận best-effort.
 
 ### 2.4. COUPON_CLAIMED
 **Ngữ cảnh:** User giành được mã Flash Sale (SPOP). Xem [Workflow Luồng 2](promotion_workflow.md#2-luồng-tranh-mã-flash-sale-spop-claiming).
@@ -176,8 +177,6 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "order_id": 5001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "discount_amount": 50000.00,
-    "platform_funding": 20000.00,
-    "admin_funding": 30000.00,
     "redeemed_at": "2026-02-28T10:16:40Z"
   }
 }
@@ -229,24 +228,15 @@ Tất cả messages trên Kafka đều mang header chuẩn:
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
-        "promotion_scope_type": "PLATFORM",
-    "scope_admin_id": 501,
     "discount_amount": 50000.00,
     "refunded_discount_amount": 50000.00,
-    "platform_funding": 20000.00,
-    "admin_funding": 30000.00,
-    "platform_funding_refund": 20000.00,
-    "admin_funding_refund": 30000.00,
-    "restore_outcome": "RESTORED",
+    "restore_outcome": "RETAINED_USED",
     "refunded_at": "2026-02-28T23:53:20Z"
   }
 }
 ```
 
 > **Idempotency contract:** `refund_transaction_id` bắt buộc có để downstream settlement/analytics dedup đúng theo giao dịch hoàn tiền.
->
-> **Restore outcome contract:** `restore_outcome` có thể là `RESTORED`, `RETAINED_USED`, `EXPIRED_AT_RESTORE_TIME`, `SKIPPED_SCOPE_RULE`, hoặc `VOUCHER_UNAVAILABLE`.
-> Trạng thái `VOUCHER_UNAVAILABLE` không được dùng để rollback tiền hoàn đã thành công.
 
 ### 2.8. BUDGET_EXHAUSTED
 **Ngữ cảnh:** Ngân sách (Quantity hoặc Budget Amount) của một promotion đã cạn kiệt hoàn toàn (`available = 0`).
@@ -297,40 +287,22 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "correlation_id": "wf-5001",
   "timestamp": "2026-03-05T10:00:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 5001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "REFUNDED",
+    "last_event_sequence_id": 11,
     "refund_transaction_id": "RFD-DEF456",
     "refund_type": "FULL",
     "refund_amount": 995000,
-    "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000.00, "platform_funding": 20000.00, "admin_funding": 30000.00}
-    ],
+    "refund_trigger_source": "API_RETURN",
+    "customer_return_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
+    "returned_item_ids": [2001],
     "promotion_refund_allocations": [
       {
         "promotion_id": 100,
-    "promotion_scope_type": "PLATFORM",
-        "scope_admin_id": 501,
-        "refunded_discount_amount": 50000.00,
-        "platform_funding_refund": 20000.00,
-        "admin_funding_refund": 30000.00,
-        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_PLATFORM_COVERED",
-        "voucher_restore_mode": "BEST_EFFORT_NON_BLOCKING"
-      }
-    ],
-    "returned_items": [
-      {
-        "order_item_id": 2001,
-        "items": [
-          {
-            "product_id": "prod-001",
-            "sku_id": "sku-001",
-            "variant_name": "Mau Den, Size L",
-            "quantity": 2,
-            "line_subtotal": 1045000,
-            "line_discount_allocated": 50000
-          }
-        ]
+        "refunded_discount_amount": 50000
       }
     ],
     "refunded_at": "2026-03-05T10:00:00Z"
@@ -338,13 +310,16 @@ Tất cả messages trên Kafka đều mang header chuẩn:
 }
 ```
 
-> **Refund rule (bắt buộc):** Nếu `refund_type = PARTIAL`, Promotion hoàn ngân sách theo `promotion_refund_allocations[]`. `returned_items[]` chỉ là dữ liệu giải thích/audit, không dùng làm nguồn tính toán duy nhất.
+> **Refund rule (bắt buộc, Phase 20):** Promotion hoàn ngân sách theo `promotion_refund_allocations[]` — không suy luận từ `returned_item_ids[]` (Order đã lock scope từ request, chỉ publish allocation cho Promotion execute).
 >
-> **Partial voucher scope rule:** Với `refund_type = PARTIAL`, chỉ allocation `platform` đạt điều kiện `RESTORE_ONLY_IF_FULL_platform_COVERED` mới được phép hoàn. Allocation `PLATFORM`/`SHIPPING` trong partial phải bằng `0`.
+
 >
-> **Wallet validity contract:** Promotion chỉ restore `USED -> SAVED` khi voucher còn hạn (`expired_at > NOW()`). Nếu đã quá hạn tại thời điểm restore thì chuyển `EXPIRED` (hoặc giữ `USED` nếu không có row ví để cập nhật).
+> **Partial voucher scope rule:** Với `refund_type = PARTIAL`, chỉ allocation PLATFORM đạt điều kiện `RESTORE_ONLY_IF_FULL_PLATFORM_COVERED` (internal rule) mới có `refunded_discount_amount > 0`; ngược lại phải = `0`.
 >
-> **Unavailable voucher handling:** Nếu voucher không còn khả dụng ở thời điểm restore, Promotion ghi nhận `restore_outcome = VOUCHER_UNAVAILABLE`, phát cảnh báo vận hành, và không rollback tiền refund đã thành công ở Payment.
+
+> **Unavailable voucher handling:** Nếu voucher không còn khả dụng (row ví không tồn tại) ở thời điểm xử lý refund, Promotion ghi nhận `restore_outcome = VOUCHER_UNAVAILABLE` và không rollback tiền refund đã thành công ở Payment.
+>
+> **Idempotency key format (Promotion dùng cho Redis Lua + DB):** `REFUND_FULL:{order_id}:{promotion_id}:{refund_request_id}` hoặc `REFUND_PARTIAL:{order_id}:{promotion_id}:{refund_request_id}` — Promotion tự sinh từ `payload.refund_transaction_id` + `payload.customer_return_request_id` + `payload.promotion_refund_allocations[].promotion_id` (xem canonical [ADR Refund Voucher Policy §2.2](../order/refund_voucher_policy.md)).
 
 ### 3.2. USER_REGISTERED (Inbound - Optional)
 **Producer:** Auth Service.
@@ -374,12 +349,12 @@ Tất cả messages trên Kafka đều mang header chuẩn:
   "event_id": "123e4567-e89b-12d3-a456-426614174204",
   "event_type": "PRODUCT_STATE_CHANGED",
   "aggregate_type": "Product",
-  "aggregate_id": "prod-uuid-001",
+  "aggregate_id": "prod-001",
   "correlation_id": "req-123458",
   "timestamp": "2026-02-28T05:00:00Z",
   "source": "product-service",
   "payload": {
-    "product_id": "prod-uuid-001",
+    "product_id": "prod-001",
         "old_status": "PENDING_REVIEW",
     "new_status": "ACTIVE",
     "version": 4,

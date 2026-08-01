@@ -1,11 +1,13 @@
-1. Metadata lookup cho cold data (`archived_orders_lookup`) vẫn là tuyến hot->cold chuẩn, không thay đổi theo policy refund mới.
+> **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng Stripe làm payment provider duy nhất. Cột `orders.payment_method` đã được DROP (Phase 18). Tất cả examples trong docs dùng Stripe PaymentIntent/Refund thay vì VNPay/MoMo/ZaloPay. Webhook URL cố định `/v1/payments/webhook/stripe`. Xem [CHANGELOG Phase 18](../_contracts/CHANGELOG.md#phase-18--single-payment-provider-stripe).
 
-2. Temporal vẫn có 3 workflow chính:
+> **Phase 20 (Event Payload Simplification):** Mỗi event Order produce chỉ chứa field tối thiểu cần thiết (xem [Order Events §3](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events)). Các field như `delivery_address_snapshot`, `items[]` snapshot, `promotions_applied[]`, `returned_items[]` chi tiết, `single_refund_transaction`, `customer_return_guard_applied`/`customer_return_policy` đã được loại khỏi payload — consumer cần thêm info fetch qua API riêng (VD `GET /v1/orders/{id}`). Tương tự, các event Order consume từ Payment/Inventory đã được Payment/Inventory thu gọn (bỏ `user_id`, `currency`, `provider`, `payment_event_sequence_id`, `courier_note`, v.v.). Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart) cho toàn bộ diff.
+
+1. Order Service là FSM-driven, không có Saga phức tạp ở tầng app. Temporal chỉ orchestrate 3 workflow chính:
 + OrderCheckoutWorkflow: pre-payment + post-payment.
 + OrderRefundWorkflow: lane refund.
 + OrderLatePaymentRecoveryWorkflow: khôi phục payment success đến muộn.
 
-3. Refund policy mới (bắt buộc đồng bộ toàn hệ):
+2. Refund policy mới (bắt buộc đồng bộ toàn hệ):
 - Buyer chỉ được gửi đúng 1 request refund cho mỗi order.
 - Request Buyer chỉ hợp lệ khi tất cả order item đã `DELIVERED`.
 - Buyer có thể chọn `PARTIAL` hoặc `FULL` ngay trong request duy nhất đó.

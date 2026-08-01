@@ -150,6 +150,12 @@ func NewClient(cfg RedisConfig) (*Client, error) {
 	return &Client{rdb: rdb}, nil
 }
 
+// NewClientFromRaw creates a new Client wrapping an existing raw redis client.
+func NewClientFromRaw(rdb redis.UniversalClient) *Client {
+	return &Client{rdb: rdb}
+}
+
+
 // NewClusterClient creates a Redis Cluster client.
 // Use this in production when Redis is deployed in cluster mode.
 func NewClusterClient(cfg RedisConfig) (*Client, error) {

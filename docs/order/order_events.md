@@ -1,16 +1,17 @@
 # Order Service - Định Nghĩa Các Sự Kiện & Kafka Topics (Events Structure)
 
+> **Phase 22 (Simplify Idempotency Schema):** Bỏ `order_event_idempotency`. Consumer guard giờ dựa vào **Redis SETNX** (TTL 30 ngày) + **FSM row-level lock** (`UPDATE ... WHERE status='OLD_STATUS'`) + **CloudEvents `event_id`** envelope. Outbox duplicate event (nếu Redis mất key) được xử lý bởi Notification consumer thông qua guard key `(order_item_id, last_event_sequence_id)` cho `ORDER_ITEM_STATUS_CHANGED` (xem §3.5) và `(order_id, last_event_sequence_id)` cho `ORDER_COMPLETED` (xem §3.7). Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order).
+
 **Liên kết nhanh (Related Documents):**
 *   [Database Schema](order_db_design.md)
 *   [Temporal Saga Design](temporal_saga_design.md)
-*   [CQRS & Elasticsearch](cqrs_elasticsearch_design.md)
-*   [Cold Data Archiving](cold_data_archiving_design.md)
+*   [Search/Filter Design (PostgreSQL direct)](order_search_design.md)
 *   [State Machine & Lifecycle](order_state_machine.md)
 *   [Workflows (API & Data Flow)](order_workflow.md)
 *   [Background Workers & Jobs](order_workers.md)
 
 **Cross-Service References:**
-*   [Promotion Events (Consumed)](../promotion/promotion_events.md) — Promotion consume `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_REFUNDED`
+*   [Promotion Events (Consumed)](../promotion/promotion_events.md) — Promotion consume `ORDER_REFUNDED`
 *   [Payment Events](../payment/payment_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_PROCESSING`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
 *   [Inventory Events](../inventory/inventory_events.md) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` (refund gate) và `INVENTORY_SHIP_TO_CUSTOMER` (item delivery FSM trigger)
 *   [Cart Events](../cart/cart_events.md) — Cart consume `ORDER_PAID` để batch delete SKU lines trong giỏ
@@ -27,16 +28,11 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 
 | Topic Name | Partition Key | Consumers chính | Mô tả |
 |---|---|---|---|
-| `t.order.events` | `order_id` | Promotion, Inventory, Cart, CQRS Projection Worker (internal), Notification, Analytics, Review | Topic chính chứa mọi thay đổi trạng thái đơn hàng |
-| `t.search.metrics.events` | `product_id` | Search Service | Topic metrics chuyên dụng cho projection realtime theo product, được phát bởi internal Order Metrics Projector thuộc Order Service |
-| `t.order.archive.retry` | `archive_batch_id` | Internal `order-archive-replay-consumer` | Retry topic cho archive batch lỗi; event chỉ mang metadata batch |
-| `t.order.cqrs.retry` | `order_id` | Internal `order-cqrs-retry-replayer` | Parking lot cho CQRS projector để replay/self-heal sau backoff |
-| `t.order.cqrs.dlq` | `order_id` | Ops / Internal triage tools | Dead-letter cho CQRS projector khi lỗi permanent/contract violation |
+| `t.order.events` | `order_id` | Promotion, Inventory (refund), Cart, Notification, Analytics, Review | Topic chính chứa mọi thay đổi trạng thái đơn hàng |
 
 > **Ghi chú Partition Key:**
 > - `t.order.events` dùng `order_id` để giữ strict ordering theo từng đơn.
-> - `t.search.metrics.events` dùng `product_id` để giữ ordering của sold metrics.
-> - `t.order.archive.retry` dùng `archive_batch_id` để giữ ordering replay theo batch.
+
 
 ### 1.2 Topics mà Order Service **Consume** (Lắng nghe)
 
@@ -45,8 +41,6 @@ Order Service là **Orchestrator trung tâm** — nó produce nhiều event nh�
 | `t.payment.events` | `order-payment-consumer` | Payment Service | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_PROCESSING`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` | Nhận kết quả thanh toán / hoàn tiền |
 | `t.inventory.events` | `order-inventory-return-consumer` | Inventory Service | `INVENTORY_RETURN_RECEIVED_ALL` | Nhận xác nhận Inventory đã nhận đủ hàng trong refund scope |
 | `t.inventory.events` | `order-inventory-ship-consumer` | Inventory Service | `INVENTORY_SHIP_TO_CUSTOMER` | Trigger Order Item FSM PROCESSING → DELIVERED khi admin xác nhận kho đã xuất hàng |
-| `t.order.archive.retry` | `order-archive-replay-consumer` | Order Service (internal) | `ORDER_ARCHIVE_BATCH_FAILED` | Trigger replay cho archive batch thất bại |
-| `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Order Service (internal projector) | Envelope chứa original event + retry metadata | Replay sự kiện CQRS sau backoff/self-heal |
 
 ## 2. Cấu Trúc Message Header Chung (CloudEvents Wrapper)
 
@@ -54,7 +48,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 *   `event_id`: UUID của sự kiện (từ `outbox_events.event_id`).
 *   `event_type`: Loại sự kiện (VD: `ORDER_CREATED`, `ORDER_PAID`).
-*   `aggregate_type`: Với **produced events** của Order: `Order`, `OrderItem`, `ProductSalesMetrics`, hoặc `ArchiveBatch`. Với **consumed events**, giữ nguyên giá trị từ producer gốc (ví dụ `Payment`).
+*   `aggregate_type`: Với **produced events** của Order: `Order` hoặc `OrderItem`. Với **consumed events**, giữ nguyên giá trị từ producer gốc (ví dụ `Payment`).
 *   `aggregate_id`: ID theo `aggregate_type` (ví dụ `order_id`, `order_item_id`, `payment_transaction_id`, `refund_transaction_id`, `product_id`).
 *   `timestamp`: Thời điểm event được tạo (ISO 8601 UTC).
 *   `source`: `order-service`.
@@ -62,37 +56,25 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 *   `business_id`: `order_id` dùng cho nghiệp vụ đối soát.
 *   `payload`: JSON Object chi tiết theo từng `event_type`.
 
-### 2.1. CQRS Ordering Contract (bắt buộc cho projection)
+### 2.1. Guard Keys cho FSM
 
-Để CQRS projector chống out-of-order an toàn, các produced events phải mang guard keys theo stream ownership.
-
-| Event nhóm | Guard key bắt buộc | Ownership |
+| Event nhóm | Guard key bắt buộc | Stream ownership |
 |---|---|---|
-| `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_COMPLETED` | `order_version` | Order lifecycle stream |
-| `ORDER_ITEM_STATUS_CHANGED` | `item_version` | Item/delivery stream theo `order_item_id` |
-| `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `refund_event_sequence_id` | Refund stream |
-| Payment-derived updates | `payment_event_sequence_id` | Payment stream |
+| `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_COMPLETED`, `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `last_event_sequence_id` | Order lifecycle (per `order_id`) |
+| `ORDER_ITEM_STATUS_CHANGED` | `last_event_sequence_id` + `order_item_id` | Item/delivery (per `order_item_id`) |
 
-> Guard keys này phục vụ CQRS projection và replay logic. Không suy luận thứ tự event bằng UUID `event_id` theo từ điển.
+> **Lưu ý:** `payment_event_sequence_id`/`refund_event_sequence_id` trong payload event Order **consume** từ Payment Service (`PAYMENT_*`/`REFUND_*`) là do Payment Service tự phát, không thuộc guard key của Order — Order guard cho consumed events dựa vào **Redis SETNX** TTL 30 ngày + **FSM row-level lock** (xem §4 routing note).
 
-### 2.2. Search projection contract (order-level card)
-
-Để dựng được list/search kiểu platformee (1 card/1 order), downstream projector cần các trường tối thiểu sau:
-
-| Event | Trường bắt buộc cho CQRS |
-|---|---|
-| `ORDER_STATUS_CHANGED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_COMPLETED` | `order_version`, `status/new_status`, `changed_at/paid_at/completed_at/cancelled_at` |
-| `ORDER_ITEM_STATUS_CHANGED` | `order_item_id`, `new_status`, `item_version`, `changed_at` |
-| `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `refund_event_sequence_id`, `payment_status`, `status` |
-
-`buyer_tab`, `ui_primary_status`, `ui_status_rank` được derive trong projector theo [Order FSM](order_state_machine.md#24-buyer-tab-precedence-platformee-style), không hard-code ở producer.
+> Các guard key này phục vụ FSM consistency tại write-side và ordering hint cho consumer. Không suy luận thứ tự event bằng UUID `event_id` theo từ điển.
 
 ## 3. Chi Tiết Các Loại Event Phát Đi (Produced Events)
 
 ### 3.1. ORDER_CREATED
 
 **Ngữ cảnh:** Checkout Service submit → Temporal Workflow tạo Master Order + Items + Item Lines thành công. Trạng thái: `CREATED` → `PENDING_PAYMENT`. Xem [Workflow Checkout Submit](order_workflow.md#4-workflow-nhận-checkout-submit).
-**Consumers chính:** CQRS Projection Worker (index vào ES), Notification (gửi SMS xác nhận đơn).
+**Consumers chính:** Notification (gửi SMS xác nhận đơn).
+
+> **Phase 20 (Payload Simplification):** Bỏ `delivery_address_snapshot` (Notification fetch qua `GET /v1/orders/{id}`), `items[]` (snapshot đã persist trong DB), `promotions_applied[]` (Promotion tự reserve qua Saga), `total_amount`/`total_discount` (chỉ `final_amount` cần cho display), `created_at` (trùng envelope `timestamp`).
 
 ```json
 {
@@ -103,67 +85,25 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:00:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "PENDING_PAYMENT",
-    "order_version": 1,
-    "payment_event_sequence_id": 0,
-    "refund_event_sequence_id": 0,
-    "payment_method": "VNPAY",
-    "total_amount": 1000000,
-    "total_discount": 50000,
-    "final_amount": 950000,
-    "delivery_address_snapshot": {
-      "name": "Nguyen Van A",
-      "phone": "0901234567",
-      "address": "123 Nguyen Hue, Q1, HCM",
-      "province_code": "HCM",
-      "district_code": "Q1"
-    },
-    "items": [
-      {
-        "order_item_id": 2001,
-        "warehouse_id": 5,
-        "status": "PROCESSING",
-        "lines": [
-          {
-            "sku_id": "sku-001",
-            "product_id": "prod-001",
-            "quantity": 2,
-            "unit_price": 250000,
-            "snapshot_name": "Áo thun nam",
-            "snapshot_image_url": "https://cdn.domain.com/img.jpg",
-            "snapshot_attributes": {"color": "Đen", "size": "L"}
-          }
-        ]
-      },
-      {
-        "order_item_id": 2002,
-        "warehouse_id": 8,
-        "status": "PROCESSING",
-        "lines": [...]
-      }
-    ],
-    "promotions_applied": [
-      {
-        "promotion_id": 100,
-        "promotion_type": "CART_DISCOUNT",
-        "discount_amount": 50000,
-        "admin_funding": 50000
-      }
-    ],
-    "created_at": "2026-02-28T10:00:00Z"
+    "last_event_sequence_id": 1,
+    "final_amount": 950000
   }
 }
 ```
 
 ### 3.2. ORDER_PAID
 
-**Ngữ cảnh:** Payment Service xác nhận thanh toán thành công → Temporal Signal → FSM `PENDING_PAYMENT` → `PAID`. Xem [State Machine T2](order_state_machine.md#22-bảng-chi-tiết-transitions).
+**Ngữ cảnh:** Payment Service xác nhận thanh toán thành công → Temporal Signal → FSM `PENDING_PAYMENT` → `PAID`. Xem [State Machine T2](order_state_machine.md#3-bảng-chi-tiết-transitions).
 **Consumers chính:**
-- **Cart Service:** Trigger [Batch Delete](../cart/cart_workflow.md#4-api-batch-delete-xóa-lô-sản-phẩm-sau-checkout-tĩnh) — cleanup theo `sku_ids` từ snapshot checkout (xóa thẳng SKU line khỏi giỏ).
-- **Notification/CQRS/Analytics:** Đồng bộ trạng thái hiển thị và thông báo.
+- **Cart Service:** Trigger [Batch Delete](../cart/cart_workflow.md#4-api-batch-delete-xóa-lô-sản-phẩm-sau-checkout-tĩnh) — cleanup theo `user_id` (Cart tự build `cart_id` từ `user_id`) + `sku_ids` từ payload.
+- **Notification:** Đồng bộ trạng thái hiển thị và thông báo.
+
+> **Phase 20 (Payload Simplification):** Bỏ `cart_id` (Cart derive từ `user_id`), `promotions_applied[]` (Promotion đã có ledger riêng), `items[]` (Cart chỉ cần `sku_ids[]`), `checkout_submitted_at` (Notification có thể fetch từ DB).
 
 ```json
 {
@@ -174,43 +114,22 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "PAID",
-    "order_version": 3,
-    "payment_event_sequence_id": 20260228100500,
+    "last_event_sequence_id": 3,
     "payment_recovery": false,
-    "payment_method": "VNPAY",
     "payment_transaction_id": "TXN-ABC123",
-    "cart_id": "{cart:user:550e8400-e29b-41d4-a716-446655440000}",
     "sku_ids": [
       "sku-001"
     ],
     "final_amount": 995000,
-    "promotions_applied": [
-      {
-        "promotion_id": 100,
-        "discount_amount": 50000,
-        "admin_funding": 50000
-      }
-    ],
-    "items": [
-      {
-        "order_item_id": 2001,
-        "warehouse_id": 5,
-        "lines": [
-          {"sku_id": "sku-001", "quantity": 2}
-        ]
-      }
-    ],
-    "checkout_submitted_at": "2026-02-28T10:00:00Z",
     "paid_at": "2026-02-28T10:05:00Z"
   }
 }
 ```
-
-> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống. `cart_id` được build từ UUID user_id.
 
 > [!IMPORTANT]
 > `ORDER_PAID` là event mốc tài chính: được phát ngay khi workflow branch `PAYMENT_SUCCESS` commit thành công transition FSM `PENDING_PAYMENT` -> `PAID`.
@@ -220,10 +139,12 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 ### 3.3. ORDER_CANCELLED
 
-**Ngữ cảnh:** Lane cancel pre-payment (`status = PENDING_PAYMENT`): timeout 15 phút / user cancel / admin cancel / payment failed. FSM -> `CANCELLED`. Xem [State Machine T3/T4/T4.1](order_state_machine.md#22-bảng-chi-tiết-transitions).
+**Ngữ cảnh:** Lane cancel pre-payment (`status = PENDING_PAYMENT`): timeout 15 phút / user cancel / admin cancel / payment failed. FSM -> `CANCELLED`. Xem [State Machine T3/T4/T4.1](order_state_machine.md#3-bảng-chi-tiết-transitions).
 **Consumers chính:**
 - **Payment Service:** Reconciliation/cancel pending payment transaction (nếu còn mở).
-- **CQRS/Notification/Analytics:** Đồng bộ trạng thái hiển thị và thông báo.
+- **Notification:** Đồng bộ trạng thái hiển thị và thông báo.
+
+> **Phase 20 (Payload Simplification):** Bỏ `items[]` (Payment chỉ cần `order_id` để cancel pending txn; Promotion đã rollback qua activity), `promotions_applied[]`.
 
 > [!NOTE]
 > Với timeout/user-cancel trong checkout saga, rollback Promotion/Inventory được thực thi đồng bộ qua Temporal Compensation Activities trước khi `ORDER_CANCELLED` được phát ra.
@@ -238,23 +159,14 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:20:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "CANCELLED",
-    "order_version": 4,
     "previous_status": "PENDING_PAYMENT",
     "reason": "PAYMENT_TIMEOUT",
-    "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000, "admin_funding": 50000}
-    ],
-    "items": [
-      {
-        "order_item_id": 2001,
-        "warehouse_id": 5,
-        "lines": [{"sku_id": "sku-001", "quantity": 2}]
-      }
-    ],
+    "last_event_sequence_id": 4,
     "cancelled_at": "2026-02-28T10:20:00Z"
   }
 }
@@ -265,7 +177,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 ### 3.4. ORDER_STATUS_CHANGED
 
 **Ngữ cảnh:** Mọi transition FSM của Master Order (trừ CREATED, PAID, CANCELLED, COMPLETED đã có event riêng). VD: `PAID` -> `PROCESSING`, `PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`, `CANCELLED` -> `PAID` (late-payment recovery).
-**Consumers chính:** CQRS Projection Worker, Notification Service.
+**Consumers chính:** Notification Service.
+
+> **Phase 20 (Payload Simplification):** Bỏ `buyer_tab` (Notification derive từ FSM qua `v_orders_buyer_tab`), `changed_by`/`changed_by_type` (luôn = `system` vì Order Service là producer duy nhất, Temporal workflow owner duy nhất). Các field refund-metadata (`refund_trigger_source`, `customer_return_request_id`, `customer_return_guard_applied`, `customer_return_policy`) sẽ được xem xét tách thành event `ORDER_RETURN_REQUESTED` riêng trong phase structural refactor sau; hiện tại loại khỏi payload vì chỉ relevant cho 1 transition trong nhiều.
 
 ```json
 {
@@ -276,20 +190,14 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:30Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "buyer_tab": "TO_SHIP",
     "old_status": "PAID",
     "new_status": "PROCESSING",
-    "order_version": 5,
-    "changed_by": "system",
-    "changed_by_type": "TEMPORAL",
     "reason": "POST_PAYMENT_SAGA_COMPLETE",
-    "refund_trigger_source": null,
-    "customer_return_request_id": null,
-    "customer_return_guard_applied": false,
-    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
+    "last_event_sequence_id": 5,
     "changed_at": "2026-02-28T10:05:30Z"
   }
 }
@@ -298,13 +206,11 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 > **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
 > **Reason contract mở rộng:** ngoài `POST_PAYMENT_SAGA_COMPLETE`, event này còn dùng cho lane refund/recovery với các reason như `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`, `INVENTORY_RETURN_CONFIRMED`, `LATE_PAYMENT_RECOVERED`.
->
-> **Refund metadata contract (additive-only):** Khi `new_status = RETURN_REQUESTED`, producer nên phát thêm `refund_trigger_source` (`API_RETURN`/`ADMIN_FORCE_REFUND_REQUESTED`), `refund_waiting_inventory_confirmation` và các field policy one-shot để downstream phân tích hành vi trigger.
 
 ### 3.5. ORDER_ITEM_STATUS_CHANGED
 
 **Ngữ cảnh:** Mỗi khi Order Item Delivery FSM transition (trigger bởi `INVENTORY_SHIP_TO_CUSTOMER` hoặc buyer API trả hàng). Xem [Order Item Delivery FSM](order_state_machine.md#2-order-item-delivery-fsm).
-**Consumers chính:** CQRS Projection Worker (update ES item status), Notification (gửi push notification cho khách).
+**Consumers chính:** Notification (gửi push notification cho khách).
 
 ```json
 {
@@ -315,25 +221,30 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T14:00:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "order_item_id": 2001,
     "old_status": "PROCESSING",
     "new_status": "DELIVERED",
-    "item_version": 5,
+    "last_event_sequence_id": 5,
     "changed_at": "2026-02-28T14:00:00Z"
   }
 }
 ```
 
-> **Ordering contract cho consumers:** Topic vẫn partition theo `order_id` để giữ lifecycle theo đơn, nhưng CQRS/Notification consumers phải guard theo `order_item_id + item_version` để chống out-of-order.
+> **Ordering contract cho consumers:** Topic vẫn partition theo `order_id` để giữ lifecycle theo đơn, nhưng Notification consumer (và mọi consumer khác) phải guard theo `order_item_id + last_event_sequence_id` để chống out-of-order.
 
 ### 3.6. ORDER_REFUNDED
 
-**Ngữ cảnh:** Lane refund hoàn tất thành công (return sau giao hàng hoặc admin force refund). FSM `RETURN_REQUESTED` -> `REFUNDED`. Xem [State Machine](order_state_machine.md#22-bảng-chi-tiết-transitions).
+**Ngữ cảnh:** Lane refund hoàn tất thành công (return sau giao hàng hoặc admin force refund). FSM `RETURN_REQUESTED` -> `REFUNDED`. Xem [State Machine](order_state_machine.md#3-bảng-chi-tiết-transitions).
 **Consumers chính:**
-- **Promotion Service:** Trigger [Refund Budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow).
-- **Inventory Service:** Không restock trực tiếp từ event này; Inventory restock vật lý theo admin API `/v1/inventory/restock` hoặc `/v1/inventory/returns/refund-expectations` sau khi hàng thực tế về kho.
+- **Promotion Service:** Trigger [Refund Budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow) theo `promotion_refund_allocations[]`.
+- **Notification:** Đồng bộ trạng thái hoàn tiền thành công.
+
+> **Phase 20 (Payload Simplification):** Bỏ `single_refund_transaction` (đã invariant — 1 refund per order), `customer_return_guard_applied`/`customer_return_policy` (consumer không dùng), `refund_scope_locked_at`/`inventory_return_confirmed_at` (audit only, có trong workflow history), `returned_items[]` chi tiết (audit only, **KHÔNG dùng để tính toán** theo contract), `promotions_applied[]` (Promotion chỉ cần `promotion_refund_allocations[]`). Trong `promotion_refund_allocations[]` thu gọn: bỏ `scope_admin_id` (luôn PLATFORM, Phase 14), `partial_restore_rule` (Promotion tự xử lý qua `idempotency_key`), `voucher_restore_mode` (Promotion tự quyết — Phase 23: luôn giữ `USED`, không restore), `platform_funding_refund` (luôn = `admin_funding_refund`).
+
+> **Phase 21:** Bỏ `admin_funding_refund` khỏi `promotion_refund_allocations[]` (luôn = `refunded_discount_amount` ở PLATFORM-only system). Schema `order_promotions` đã DROP column `admin_funding` (xem [DB Design §1.4](order_db_design.md#14-order_promotions-chi-tiết-áp-dụng-khuyến-mãi)). Allocation giờ chỉ còn 2 field: `promotion_id` + `refunded_discount_amount`.
 
 ```json
 {
@@ -344,49 +255,22 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:00:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "REFUNDED",
-    "order_version": 11,
-    "refund_event_sequence_id": 20260305100000,
+    "last_event_sequence_id": 11,
     "refund_transaction_id": "RFD-DEF456",
-    "single_refund_transaction": true,
+    "refund_type": "FULL",
+    "refund_amount": 995000,
     "refund_trigger_source": "API_RETURN",
     "customer_return_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
-    "customer_return_guard_applied": true,
-    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
-    "refund_type": "FULL",
-    "refund_scope_locked_at": "2026-03-05T09:59:40Z",
     "returned_item_ids": [2001],
-    "inventory_return_confirmed_at": "2026-03-05T09:58:30Z",
-    "refund_amount": 995000,
-    "promotions_applied": [
-      {"promotion_id": 100, "discount_amount": 50000, "admin_funding": 50000}
-    ],
     "promotion_refund_allocations": [
       {
         "promotion_id": 100,
-        "scope_admin_id": 501,
-        "refunded_discount_amount": 50000,
-        "admin_funding_refund": 50000,
-        "partial_restore_rule": "RESTORE_ONLY_IF_FULL_PLATFORM_COVERED",
-        "voucher_restore_mode": "BEST_EFFORT_NON_BLOCKING"
-      }
-    ],
-    "returned_items": [
-      {
-        "order_item_id": 2001,
-        "lines": [
-          {
-            "product_id": "prod-001",
-            "sku_id": "sku-001",
-            "variant_name": "Mau Den, Size L",
-            "quantity": 2,
-            "line_subtotal": 1045000,
-            "line_discount_allocated": 50000
-          }
-        ]
+        "refunded_discount_amount": 50000
       }
     ],
     "refunded_at": "2026-03-05T10:00:00Z"
@@ -399,22 +283,24 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 >
 > **Contract bắt buộc cho idempotency liên service:** `refund_transaction_id` phải luôn có trong payload để downstream dedup đúng một giao dịch hoàn tiền.
 >
-> **Contract deterministic cho Promotion:** Với `refund_type = PARTIAL`, Order phải phát `promotion_refund_allocations[]` để chỉ rõ số tiền hoàn theo từng promotion. Promotion **không** tự suy luận từ tỷ lệ item khi thiếu allocation.
+> **Contract deterministic cho Promotion:** Với `refund_type = PARTIAL`, Order phải phát `promotion_refund_allocations[]` để chỉ rõ số tiền hoàn theo từng promotion. Promotion **không** tự suy luận từ tỷ lệ item khi thiếu allocation. Mỗi entry trong allocation chỉ chứa: `promotion_id` + `refunded_discount_amount`.
 >
-> **Partial voucher policy:** `PARTIAL` chỉ hoàn voucher `platform` khi refund scope bao phủ toàn bộ item của platform đó trong order. `PLATFORM` và `SHIPPING` allocation trong partial phải bằng `0`.
+> **Partial voucher policy:** `PARTIAL` chỉ hoàn voucher `PLATFORM` khi refund scope bao phủ toàn bộ item của platform đó trong order. PLATFORM allocation trong partial phải bằng `0` nếu scope không bao phủ hết platform. (Phase 14: chỉ còn voucher type `PLATFORM`; `SHIPPING`/`FREE_SHIPPING` đã bị loại bỏ.)
 >
-> **Wallet validity contract:** Luồng restore voucher phía Promotion phải tôn trọng `user_coupon_wallets.expired_at` (mặc định 30 ngày từ lúc sở hữu). Chỉ restore `USED -> SAVED` khi còn hạn; nếu quá hạn thì chuyển `EXPIRED` hoặc giữ `USED` theo trạng thái thực tế.
+> **Wallet validity contract (Phase 23):** Promotion **không** restore `USED -> SAVED` khi xử lý `ORDER_REFUNDED`. Voucher luôn giữ trạng thái `USED`. Xem [Refund Voucher Policy ADR §1.2](../order/refund_voucher_policy.md#12-wallet-validity-voucher-restore-policy).
 >
-> **One-shot scope:** Chính sách one-shot chỉ áp khi `refund_trigger_source = API_RETURN`. Trigger từ admin có thể không dùng guard này (`customer_return_guard_applied = false`).
+> **One-shot scope:** Chính sách one-shot chỉ áp khi `refund_trigger_source = API_RETURN`. Trigger từ admin không dùng guard này (Buyer API không được mở lại quyền submit mới cho cùng order, bất kể kết quả refund). Guard được enforce qua cột `orders.buyer_return_locked_at` (CAS row-level lock — xem [DB Design §1.1](order_db_design.md#11-orders-master-order) và [Workflow §3.1](order_workflow.md#31-api-return-order-post-v1ordersorderidreturn)) — internal DB invariant, không truyền qua event payload.
 >
 > **Policy B invariant:** Mỗi `order_id` chỉ có một `refund_transaction_id` do Order khởi tạo. Refund workflow chỉ mở từ `API_RETURN` hoặc `ADMIN_FORCE_REFUND_REQUESTED`.
 >
-> **Non-blocking invariant:** Dù restore voucher thành `SAVED`/`EXPIRED`/`USED` hay gặp `VOUCHER_UNAVAILABLE`, transaction hoàn tiền ở Payment không bị rollback.
+> **Non-blocking invariant:** Dù xử lý budget/voucher ra sao (`RETAINED_USED`/`VOUCHER_UNAVAILABLE`), transaction hoàn tiền ở Payment không bị rollback.
 
 ### 3.7. ORDER_COMPLETED
 
-**Ngữ cảnh:** Tất cả items `DELIVERED`. FSM `PROCESSING` → `COMPLETED`. Tự động bởi [Auto-Complete Logic](order_state_machine.md#31-auto-complete-logic-processing--completed).
+**Ngữ cảnh:** Tất cả items `DELIVERED`. FSM `PROCESSING` → `COMPLETED`. Tự động bởi [Auto-Complete Logic](order_state_machine.md#5-auto-complete-logic-processing--completed).
 **Consumers chính:** Analytics, admin Settlement, Review Service.
+
+> **Phase 20 (Payload Simplification):** Bỏ `variant_name` trong `items[]` (Review Service không cần — đã lưu ở `order_item_lines.snapshot_name` và có thể fetch qua `GET /v1/orders/{id}`).
 
 ```json
 {
@@ -425,18 +311,18 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-02T16:00:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "COMPLETED",
-    "order_version": 9,
+    "last_event_sequence_id": 9,
     "final_amount": 995000,
     "item_count": 2,
     "items": [
       {
         "product_id": "prod-001",
         "sku_id": "sku-001",
-        "variant_name": "Mau Den, Size L",
         "quantity": 2
       }
     ],
@@ -452,38 +338,14 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 > **Field-level contract cho Review consumer:**
 > - `user_id` là UUID theo chuẩn thống nhất.
 > - Trong `items[]`, `product_id` và `sku_id` là bắt buộc.
-> - `variant_name` có thể null ở một số case legacy; Review phải log warning nhưng không drop toàn bộ event.
+> - `variant_name` không còn ở đây (Phase 20). Review Service cần thì gọi `GET /v1/orders/{id}` để lấy detail.
 
-### 3.8. ORDER_PRODUCT_METRICS_UPDATED
-
-**Ngữ cảnh:** Internal Order Metrics Projector aggregate từ luồng `ORDER_COMPLETED` và phát delta/hợp nhất theo `product_id` để Search sync `product_sold_count` theo đúng partition key.
-**Consumers chính:** Search Service (`search-sales-metrics-sync`).
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174016",
-  "event_type": "ORDER_PRODUCT_METRICS_UPDATED",
-  "aggregate_type": "ProductSalesMetrics",
-  "aggregate_id": "prod-001",
-  "correlation_id": "metrics-20260302-160000",
-  "timestamp": "2026-03-02T16:00:01Z",
-  "source": "order-service",
-  "payload": {
-    "product_id": "prod-001",
-    "total_sold": 15200,
-    "delta_sold": 2,
-    "event_sequence_id": 1740931201000,
-    "updated_at": "2026-03-02T16:00:01Z"
-  }
-}
-```
-
-> **Ordering contract:** `event_sequence_id` phải đơn điệu theo từng `product_id` để downstream guard out-of-order an toàn.
-
-### 3.9. ORDER_REFUND_FAILED
+### 3.8. ORDER_REFUND_FAILED
 
 **Ngữ cảnh:** Payment trả `REFUND_FAILED` hoặc `REFUND_REVERSED` trong lane refund (bao gồm return flow và admin force refund). Order giữ FSM ở `RETURN_REQUESTED` và phát event escalation để Notification/Ops xử lý.
 **Consumers chính:** Notification Service (critical lane), Ops Dashboard.
+
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id` (Order không cần route workflow — đã trong `OrderRefundWorkflow`), `customer_return_guard_applied`/`customer_return_policy` (consumer không dùng), `reason` (trùng `error_code`).
 
 ```json
 {
@@ -494,20 +356,17 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:10:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "status": "RETURN_REQUESTED",
     "payment_status": "REFUND_FAILED",
-    "order_version": 10,
-    "refund_event_sequence_id": 20260305101000,
-    "payment_transaction_id": "TXN-ABC123",
+    "last_event_sequence_id": 10,
     "refund_transaction_id": "RFD-DEF456",
     "refund_trigger_source": "API_RETURN",
     "customer_return_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
-    "customer_return_guard_applied": true,
-    "customer_return_policy": "CUSTOMER_RETURN_ONCE_V1",
-    "reason": "REFUND_WINDOW_EXPIRED",
+    "error_code": "REFUND_WINDOW_EXPIRED",
     "error_message": "Cong thanh toan tu choi hoan",
     "failed_at": "2026-03-05T10:10:00Z"
   }
@@ -518,37 +377,6 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 > Khi event là `ORDER_REFUND_FAILED` từ lane `API_RETURN`, policy one-shot vẫn giữ nguyên; Buyer API không được mở lại quyền submit mới cho cùng order.
 
-### 3.10. ORDER_ARCHIVE_BATCH_FAILED
-
-**Ngữ cảnh:** Cold Data Archiver thất bại ở một stage của batch archive và cần trigger replay.
-**Topic:** `t.order.archive.retry`
-**Consumers chính:** Internal `order-archive-replay-consumer`.
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174015",
-  "event_type": "ORDER_ARCHIVE_BATCH_FAILED",
-  "aggregate_type": "ArchiveBatch",
-  "aggregate_id": "ARCHIVE-20260331-030000",
-  "correlation_id": "archive-20260331-030000-attempt-1",
-  "timestamp": "2026-03-31T03:02:10Z",
-  "source": "order-service",
-  "payload": {
-    "archive_batch_id": "ARCHIVE-20260331-030000",
-    "attempt": 1,
-    "failure_stage": "VERIFY",
-    "failed_order_count": 37,
-    "error_code": "S3_CHECKSUM_MISMATCH",
-    "error_message": "Checksum verification failed after upload",
-    "failed_at": "2026-03-31T03:02:10Z"
-  }
-}
-```
-
-> **Design rule:** Event chỉ mang metadata batch (`archive_batch_id`, `attempt`, `failure_stage`), không nhét danh sách `order_id`; replay consumer sẽ đọc membership từ `archive_batch_items`.
-
----
-
 ## 4. Chi Tiết Các Loại Event Tiêu Thụ (Consumed Events)
 
 ### 4.1. PAYMENT_SUCCESS (Từ Payment Service)
@@ -556,6 +384,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 **Xử lý bởi:** [Payment Status Consumer Worker](order_workers.md#4-payment-status-consumer-kafka-consumer)
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id` (Order có sẵn từ DB), `currency` (luôn VND), `provider` (luôn STRIPE), `provider_transaction_id`/`provider_charge_id` (Payment Service giữ; Order không cần cross-ref Stripe), `payment_method_type` (Order không phân loại), `payment_event_sequence_id` (Order không guard theo; chỉ telemetry).
 
 ```json
 {
@@ -566,13 +396,11 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "payment_event_sequence_id": 20260228100500,
     "amount": 995000,
-    "provider": "VNPAY",
-    "provider_transaction_id": "VNP-XYZ789",
     "paid_at": "2026-02-28T10:05:00Z"
   }
 }
@@ -587,12 +415,18 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 > - `REFUND_PROCESSING|REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED`: signal trực tiếp `order-refund-{order_id}` theo `payload.order_id`.
 > - Không route theo `aggregate_id` vì aggregate của Payment là transaction-level.
 
-> **Ordering contract payment stream:** `payment_event_sequence_id`/`refund_event_sequence_id` phải đơn điệu theo từng `order_id` để Order/CQRS xử lý an toàn khi nhận event đồng thời hoặc replay.
+> **Ordering contract payment stream:** `payment_event_sequence_id` (cho `PAYMENT_*`) và `refund_event_sequence_id` (cho `REFUND_*`) là counter do **Payment Service** phát ra, đơn điệu theo từng `order_id`. Order Service **không** dùng 2 field này làm guard — chỉ dùng để telemetry/debug khi cần trace.
+>
+> **Guard key chính của Order cho consumed events** (Phase 22): dùng `event_id` (CloudEvents envelope) + **Redis SETNX** TTL 30 ngày (`payment:signal:{order_id}:{txn_id}:{event_type}` cho Payment, `inventory:ship:applied:{order_id}:{warehouse_id}:{shipped_at}` cho Inventory Ship, `inventory:return:confirm:{order_id}:{refund_request_id}` cho Inventory Return) + FSM row-level lock (`UPDATE ... WHERE status='OLD_STATUS'`).
+>
+> **Counter `orders.last_event_sequence_id` (per `order_id`)** chỉ dùng cho **Order's own produced events** (`ORDER_*`) — tăng mỗi lần Order insert `outbox_events`, không liên quan đến event Order consume từ service khác.
 
 ### 4.2. PAYMENT_FAILED (Từ Payment Service)
 
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `provider`, `payment_event_sequence_id`, `error_message` (Notification tự map từ `error_code` qua i18n key).
 
 ```json
 {
@@ -603,12 +437,11 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:06:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "payment_event_sequence_id": 20260228100600,
     "error_code": "INSUFFICIENT_BALANCE",
-    "error_message": "Số dư không đủ",
     "failed_at": "2026-02-28T10:06:00Z"
   }
 }
@@ -620,6 +453,8 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `payment_event_sequence_id`, `last_event_sequence_id` (legacy field lẫn lộn Order scope).
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174009",
@@ -629,10 +464,10 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:15:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "payment_event_sequence_id": 20260228101500,
     "expired_at": "2026-02-28T10:15:00Z"
   }
 }
@@ -644,6 +479,8 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id` (Order không cần cross-ref payment txn khi đã route theo `order_id`), `user_id`, `refund_amount` (Order đã lock từ workflow), `provider_refund_id`, `refund_event_sequence_id`.
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174009b",
@@ -653,12 +490,10 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T09:00:05Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
-    "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "order_id": 10001,
-    "refund_event_sequence_id": 20260305090005,
-    "refund_amount": 995000,
     "processing_at": "2026-03-05T09:00:05Z"
   }
 }
@@ -669,6 +504,8 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `provider_refund_id`, `refund_event_sequence_id`.
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174010",
@@ -678,11 +515,10 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
-    "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "order_id": 10001,
-    "refund_event_sequence_id": 20260305100000,
     "refund_amount": 995000,
     "refunded_at": "2026-03-05T10:00:00Z"
   }
@@ -695,6 +531,8 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `refund_event_sequence_id`, `error_message` (Notification tự map từ `error_code`).
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174010b",
@@ -704,13 +542,11 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T10:10:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
-    "payment_transaction_id": "TXN-ABC123",
     "refund_transaction_id": "RFD-DEF456",
     "order_id": 10001,
-    "refund_event_sequence_id": 20260305101000,
     "error_code": "REFUND_WINDOW_EXPIRED",
-    "error_message": "Cổng thanh toán từ chối hoàn",
     "failed_at": "2026-03-05T10:10:00Z"
   }
 }
@@ -722,6 +558,8 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 **Topic:** `t.payment.events`
 **Consumer Group:** `order-payment-consumer`
 
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `provider_refund_id`, `refund_event_sequence_id`, `reason_message` (Notification tự map từ `reason_code`).
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174010c",
@@ -731,24 +569,24 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-06T08:00:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
-    "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "refund_event_sequence_id": 20260306080000,
     "reason_code": "REFUND_REVERSED_BY_PROVIDER",
-    "reason_message": "Destination account invalid",
     "reversed_at": "2026-03-06T08:00:00Z"
   }
 }
 ```
-**Logic xử lý:** Worker signal `OrderRefundWorkflow` (`RefundResult.REVERSED`) -> refund workflow commit `orders.payment_status = 'REFUND_REVERSED'`, giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` với reason escalation cho Notification/Ops.
+**Logic xử lý:** Worker signal `OrderRefundWorkflow` (`RefundResult.REVERSED`) -> refund workflow commit `orders.payment_status = 'REFUND_FAILED'` (gộp về cùng status, lý do gốc lưu trong `ORDER_REFUND_FAILED` event payload `error_code`/`reason_code` để Ops xử lý), giữ FSM ở `RETURN_REQUESTED`, phát `ORDER_REFUND_FAILED` với reason escalation cho Notification/Ops.
 
-### 4.7. INVENTORY_SHIP_TO_CUSTOMER (Từ Inventory Service)
+### 4.8. INVENTORY_SHIP_TO_CUSTOMER (Từ Inventory Service)
 
 **Topic:** `t.inventory.events`
 **Consumer Group:** `order-inventory-ship-consumer`
 **Xử lý bởi:** [Inventory Ship Consumer Worker](order_workers.md#5-inventory-ship-consumer-kafka-consumer)
+
+> **Phase 20 (Payload Simplification):** Bỏ `courier_note` (audit only, không ảnh hưởng FSM).
 
 ```json
 {
@@ -759,21 +597,22 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-02T16:00:00Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
-    "order_item_ids": [2001, 2002],
-    "shipped_at": "2026-03-02T16:00:00Z",
     "warehouse_id": 5,
-    "courier_note": "Ghi chú nội bộ từ admin khi xác nhận xuất hàng"
+    "shipped_at": "2026-03-02T16:00:00Z"
   }
 }
 ```
-**Logic xử lý:** Worker nhận event → Với mỗi `order_item_id` trong payload, Update `order_items.status` từ `PROCESSING` sang `DELIVERED` (idempotent theo `order_item_id` + `item_version`) → Produce `ORDER_ITEM_STATUS_CHANGED` → Chạy Auto-Complete CAS cho master order (transition `PROCESSING` → `COMPLETED` khi tất cả items đã `DELIVERED`).
+**Logic xử lý:** Worker nhận event → Query `inventory_reservations` theo `(order_id, warehouse_id)` lọc `status='DEDUCTED'` để lấy `order_item_ids` cần chuyển sang `DELIVERED` (filter `warehouse_id` là bắt buộc cho multi-warehouse order, tránh DELIVERED nhầm cho item ở kho khác) → Với mỗi `order_item_id`, Update `order_items.status` từ `PROCESSING` sang `DELIVERED` (idempotent theo `event_id`) → Produce `ORDER_ITEM_STATUS_CHANGED` → Chạy Auto-Complete CAS cho master order (transition `PROCESSING` → `COMPLETED` khi tất cả items đã `DELIVERED`).
 
-### 4.8. INVENTORY_RETURN_RECEIVED_ALL (Từ Inventory Service)
+### 4.9. INVENTORY_RETURN_RECEIVED_ALL (Từ Inventory Service)
 
 **Topic:** `t.inventory.events`
 **Consumer Group:** `order-inventory-return-consumer`
+
+> **Phase 20 (Payload Simplification):** Bỏ `order_item_ids[]` (Order Service derive từ `refund_request_id` + `order_id` trong `OrderRefundWorkflow` đã lock scope), `confirmed_at` (trùng envelope `timestamp`).
 
 ```json
 {
@@ -784,43 +623,15 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
   "correlation_id": "wf-10001",
   "timestamp": "2026-03-05T09:58:30Z",
   "source": "inventory-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
-    "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a",
-    "required_order_item_ids": [2001],
-    "received_order_item_ids": [2001],
-    "all_items_received": true,
-    "confirmed_at": "2026-03-05T09:58:30Z"
+    "refund_request_id": "fdf4d7d3-4d35-4a61-a55a-8d2b1a315b6a"
   }
 }
 ```
 
 **Logic xử lý:** Worker kiểm tra idempotency rồi signal `InventoryReturnReceivedAll` cho `OrderRefundWorkflow` theo `order_id`. Chỉ sau signal này workflow mới được gọi Payment refund API.
-
-### 4.11. ORDER_ARCHIVE_BATCH_FAILED (Internal Retry Trigger)
-
-**Topic:** `t.order.archive.retry`
-**Consumer Group:** `order-archive-replay-consumer`
-
-```json
-{
-  "event_id": "123e4567-e89b-12d3-a456-426614174015",
-  "event_type": "ORDER_ARCHIVE_BATCH_FAILED",
-  "aggregate_type": "ArchiveBatch",
-  "aggregate_id": "ARCHIVE-20260331-030000",
-  "timestamp": "2026-03-31T03:02:10Z",
-  "source": "order-service",
-  "payload": {
-    "archive_batch_id": "ARCHIVE-20260331-030000",
-    "attempt": 1,
-    "failure_stage": "VERIFY",
-    "failed_order_count": 37,
-    "error_code": "S3_CHECKSUM_MISMATCH"
-  }
-}
-```
-
-**Logic xử lý:** Replay consumer đọc membership từ `archive_batch_items` theo `archive_batch_id`, không lấy danh sách `order_id` trực tiếp từ event payload. Nếu replay vẫn fail, consumer ghi một record outbox `ORDER_ARCHIVE_BATCH_FAILED` mới để CDC publish lại theo backoff.
 
 ---
 
@@ -828,4 +639,4 @@ Nếu checkout workflow đã đóng timeout và order đang `CANCELLED(PAYMENT_T
 
 *   **Backward Compatibility Rule:** Chỉ được phép **thêm field mới**. Không được xóa hoặc đổi tên field hiện có.
 *   **Consumer Resilience:** Tất cả consumers PHẢI ignore unknown fields.
-*   **Idempotency:** Mỗi event mang `event_id` unique. Downstream consumers dùng `SETNX` (fast-path) + bảng `order_event_idempotency` (durable guard) để chống xử lý trùng.
+*   **Idempotency:** Mỗi event mang `event_id` unique. Phase 22: downstream consumers chỉ dùng **Redis SETNX** (`SETNX payment:signal:{order_id}:{txn_id}:{event_type}` cho Order Payment consumer, `SETNX inventory:ship:applied:{order_id}:{warehouse_id}:{shipped_at}` cho Order Inventory Ship consumer, `SETNX inventory:return:confirm:{order_id}:{refund_request_id}` cho Order Inventory Return consumer) với TTL 30 ngày để chống xử lý trùng. Đảm bảo ở tầng DB nhờ FSM row-level lock + CloudEvents `event_id` envelope.

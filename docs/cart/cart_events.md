@@ -275,9 +275,11 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
 **Nguồn gốc:** [Order Events - ORDER_PAID](../order/order_events.md#32-order_paid)
 
 **Hành động của Cart Service:**
-1. Extract `user_id`, `cart_id` và danh sách `sku_ids` từ payload.
+1. Extract `user_id` (Cart build `cart_id` từ `user_id` theo format `{cart}:{user_id}`) và danh sách `sku_ids` từ payload.
 2. Gọi Lua Batch Delete với `clear_event_type = "CART_CHECKED_OUT"` để xóa thẳng các SKU đã mua khỏi Redis Hash.
-4. Nếu giỏ rỗng hoàn toàn: phát `CART_CHECKED_OUT` → Postgres Sync cập nhật `status = 'CHECKED_OUT'`.
+3. Nếu giỏ rỗng hoàn toàn: phát `CART_CHECKED_OUT` → Postgres Sync cập nhật `status = 'CHECKED_OUT'`.
+
+> **Phase 20 (Payload Simplification cho Order consumer):** `cart_id` đã được Order loại khỏi payload — Cart **tự build** từ `user_id` (công thức `cart_id = "{cart}:" + user_id`). `payment_recovery` (chỉ Order workflow dùng), `payment_transaction_id` (Order internal), `status`/`last_event_sequence_id`/`final_amount` (Notification/Analytics), `paid_at` (audit only — Cart không cần). Cart chỉ dùng `order_id` (idempotency key), `user_id` (build cart_id), `sku_ids[]` (cleanup).
 
 **Cấu trúc Payload kỳ vọng (chỉ các trường Cart Service dùng):**
 ```json
@@ -289,23 +291,20 @@ Phần này định nghĩa cấu trúc các event mà Cart Service **lắng nghe
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "order-service",
+  "schema_version": 1,
   "payload": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "cart_id": "{cart}:550e8400-e29b-41d4-a716-446655440000",
-    "status": "PAID",
-    "sku_ids": ["sku-001", "sku-002"],
-    "checkout_submitted_at": "2026-02-28T10:00:00Z",
-    "paid_at": "2026-02-28T10:05:00Z"
+    "sku_ids": ["sku-001", "sku-002"]
   }
 }
 ```
 
-> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất. Cart nhận UUID và build `cart_id` từ đó.
+> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất. Cart nhận UUID và build `cart_id = "{cart}:" + user_id`.
 
-> **Lưu ý scope mẫu payload:** Đây là subset field mà Cart Service tiêu thụ. Payload đầy đủ của ORDER_PAID (bao gồm `items[]`, `parcels[]`) xem tại [Order Events](../order/order_events.md#32-order_paid).
+> **Lưu ý scope mẫu payload:** Đây là subset field mà Cart Service tiêu thụ. Payload đầy đủ của ORDER_PAID xem tại [Order Events](../order/order_events.md#32-order_paid).
 
-> **Contract ổn định:** Cart dùng `cart_id` + `sku_ids` để cleanup, không parse chuỗi ghép có dấu `:` nhằm tránh sai lệch định danh.
+> **Contract ổn định:** Cart dùng `order_id` (idempotency) + `user_id` (build cart_id) + `sku_ids[]` (cleanup); KHÔNG parse chuỗi ghép có dấu `:` từ payload để tránh sai lệch định danh.
 
 > **Idempotency:** Worker xử lý `cart:idemp:order_paid:{order_id}` ở Go layer (không truyền vào Lua): `SET ... NX EX 300` trước khi gọi Lua Batch Delete và `SETEX ... DONE` sau khi publish path thành công.
 

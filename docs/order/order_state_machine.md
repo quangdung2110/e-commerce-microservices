@@ -1,5 +1,7 @@
 # Order Service - State Machine & Lifecycle
 
+> **Phase 22 (Simplify Idempotency Schema):** One-shot guard Buyer return giờ là cột `orders.buyer_return_locked_at` (CAS row-level lock) thay cho bảng `order_request_idempotency`. Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order) và [DB Design §1.1](order_db_design.md#11-orders-master-order).
+
 **Liên kết nhanh (Related Documents):**
 *   [Database Schema](order_db_design.md)
 *   [Events Structure](order_events.md)
@@ -10,6 +12,8 @@
 ---
 
 Tài liệu này mô tả state machine của `orders` và `order_items` ở mức chuẩn hóa để các worker và events dùng chung một ngôn ngữ trạng thái.
+
+> **Phase 20 (Event Payload Simplification):** Reason enum trong event `ORDER_STATUS_CHANGED` và `ORDER_CANCELLED` vẫn giữ nguyên tập giá trị (`PAYMENT_TIMEOUT`, `USER_CANCEL`, `ADMIN_FORCE_CANCEL`, `PRE_PAYMENT_SAGA_FAILED`, `PAYMENT_FAILED` cho cancel; `POST_PAYMENT_SAGA_COMPLETE`, `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`, `INVENTORY_RETURN_CONFIRMED`, `LATE_PAYMENT_RECOVERED`, `PAYMENT_SUCCESS_LATE_RECOVERY` cho status change). Phase 20 **không thay đổi** enum FSM hay transition — chỉ thu gọn payload event (bỏ field không cần thiết xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart)).
 
 ## 1. Master Order FSM
 
@@ -30,7 +34,7 @@ Các trạng thái chính của item (đã đơn giản hóa từ 7 xuống 3 tr
 - `DELIVERED`
 - `RETURNED`
 
-## 22. Bảng Chi Tiết Transitions
+## 3. Bảng Chi Tiết Transitions
 
 | Transition | From | To | Trigger |
 |---|---|---|---|
@@ -49,7 +53,7 @@ Các trạng thái chính của item (đã đơn giản hóa từ 7 xuống 3 tr
 | I2 | `DELIVERED` | `RETURNED` | `RETURN_API_ACCEPTED` (Buyer API) |
 | T9 | `COMPLETED` | `RETURN_REQUESTED` | `RETURN_API_ACCEPTED` (pass customer one-shot guard + precondition tất cả order item đã `DELIVERED`) |
 | T10 | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` |
-| T10.1 | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` hoặc `REFUND_REVERSED` (giữ nguyên FSM lõi, chỉ cập nhật `payment_status`) |
+| T10.1 | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` (gồm cả `REFUND_REVERSED` đã map về `REFUND_FAILED`) (giữ nguyên FSM lõi, chỉ cập nhật `payment_status`) |
 
 > [!IMPORTANT]
 > **Ownership transition cho mốc thanh toán/vận hành:**
@@ -63,7 +67,7 @@ Các trạng thái chính của item (đã đơn giản hóa từ 7 xuống 3 tr
 > - Trigger `RETURN_API_ACCEPTED` chỉ hợp lệ khi Buyer API chưa dùng one-shot guard của order và toàn bộ order item đã `DELIVERED`.
 > - Theo policy B, mỗi order chỉ có một refund transaction do Order khởi tạo từ `API_RETURN` hoặc `ADMIN_FORCE_REFUND_REQUESTED`.
 
-## 22.1 Guard cho Buyer API One-shot
+## 3.1 Guard cho Buyer API One-shot
 
 Ràng buộc one-shot chỉ áp cho nguồn trigger từ Buyer API (`POST /v1/orders/{orderId}/return`):
 
@@ -74,11 +78,26 @@ Ràng buộc one-shot chỉ áp cho nguồn trigger từ Buyer API (`POST /v1/or
 
 Request Buyer chỉ được chấp nhận khi toàn bộ item của order đã `DELIVERED`. Sau khi guard đã được dùng, mọi request Buyer tiếp theo cho cùng order đều bị từ chối.
 
+**Cơ chế enforce (Phase 22):**
+
+- Guard được lưu trên cột `orders.buyer_return_locked_at TIMESTAMPTZ NULL`. Cơ chế first-write-wins qua CAS row-level lock:
+  ```sql
+  UPDATE orders
+  SET buyer_return_locked_at = NOW()
+  WHERE id = :order_id
+    AND buyer_return_locked_at IS NULL
+  RETURNING id;
+  ```
+- API layer tại request đầu tiên: `RETURNING` trả 1 row → guard được set → tiếp tục start `OrderRefundWorkflow`.
+- Request Buyer tiếp theo: `RETURNING` không trả row (vì `buyer_return_locked_at IS NOT NULL`) → trả `409 REFUND_CUSTOMER_REQUEST_ALREADY_USED`.
+- Guard không bị reset khi refund kết thúc ở `REFUND_FAILED` hoặc `REFUND_REVERSED` (giá trị `buyer_return_locked_at` đã set giữ nguyên vĩnh viễn cùng vòng đời order).
+- Trigger admin (`REQUEST_ADMIN_REFUND`) không đụng vào cột này, không bị khóa bởi guard.
+
 > **Refund invariant:** `sum(refund_transaction)` do Order khởi tạo cho mỗi `order_id` tối đa một lần; refund chỉ được mở từ `API_RETURN` hoặc `ADMIN_FORCE_REFUND_REQUESTED`.
 
-## 24. Buyer Tab Precedence (platformee-style)
+## 4. Buyer Tab Precedence (platformee-style)
 
-Để tránh 1 order xuất hiện đồng thời ở nhiều tab, projector phải derive duy nhất `buyer_tab` theo thứ tự ưu tiên sau:
+Để tránh 1 order xuất hiện đồng thời ở nhiều tab, `v_orders_buyer_tab` (PostgreSQL view, xem [Search/Filter Design §2.3](order_search_design.md#23-view-v_orders_buyer_tab)) phải derive duy nhất `buyer_tab` theo thứ tự ưu tiên sau:
 
 | Ưu tiên | Điều kiện | buyer_tab |
 |---|---|---|
@@ -87,44 +106,57 @@ Request Buyer chỉ được chấp nhận khi toàn bộ item của order đã 
 | 3 | `orders.status in (PAID, PROCESSING)` và **có ít nhất 1** item ở trạng thái `DELIVERED` | `TO_RECEIVE` |
 | 4 | `orders.status = COMPLETED` và không ở return/refund flow | `COMPLETED` |
 | 5 | `orders.status = CANCELLED` | `CANCELLED` |
-| 6 | `orders.status in (RETURN_REQUESTED, REFUNDED)` hoặc `orders.payment_status in (REFUNDING, REFUNDED, REFUND_FAILED, REFUND_REVERSED)` | `RETURN_REFUND` |
+| 6 | `orders.status in (RETURN_REQUESTED, REFUNDED)` hoặc `orders.payment_status in (REFUNDING, REFUNDED, REFUND_FAILED)` (gồm cả `REFUND_REVERSED` đã map về `REFUND_FAILED`) | `RETURN_REFUND` |
 
 Nếu có nhiều điều kiện cùng đúng, luôn chọn tab có ưu tiên cao hơn trong bảng.
 
-## 31. Auto-Complete Logic: PROCESSING -> COMPLETED
+## 5. Auto-Complete Logic: PROCESSING -> COMPLETED
 
 Master order tự chuyển `PROCESSING -> COMPLETED` khi tất cả items đã `DELIVERED`.
 
 Ràng buộc:
-- Logic chạy idempotent bằng CAS update trên `orders.status`:
+- Logic chạy idempotent trong transaction với row-level lock + count check:
 	```sql
-	UPDATE orders
-	SET status = 'COMPLETED', version = version + 1, updated_at = NOW()
-	WHERE id = :order_id AND status = 'PROCESSING';
+	BEGIN;
+	-- Đếm items, chỉ proceed khi tất cả DELIVERED
+	SELECT COUNT(*) FILTER (WHERE status <> 'DELIVERED') AS not_delivered
+	  FROM order_items WHERE order_id = :order_id FOR UPDATE;
+	-- Nếu not_delivered = 0:
+	UPDATE orders SET status = 'COMPLETED', updated_at = NOW()
+	 WHERE id = :order_id AND status = 'PROCESSING';
+	COMMIT;
 	```
 - Chỉ khi update thành công (affected rows = 1) mới được phát `ORDER_COMPLETED`.
 - Không chuyển `COMPLETED` nếu còn item chưa kết thúc.
 - Coalescing window 5 giây để tránh rung trạng thái khi nhiều `INVENTORY_SHIP_TO_CUSTOMER` đến sát nhau.
 
-## 32. Mapping FSM sang CQRS Read Model
+## 6. Mapping FSM sang Search/Filter API Response (Phase 15)
 
-Để đồng bộ với [CQRS & Elasticsearch](cqrs_elasticsearch_design.md), projector phải map trạng thái như sau:
+Để phục vụ Search/Filter API trực tiếp từ PostgreSQL (xem [Search/Filter Design](order_search_design.md)), API dựng response theo mapping sau:
 
-| Nguồn FSM | Field trong `orders_read` | Field trong `order_search_lines` |
-|---|---|---|
-| `orders.status` | `order_status` | `order_status` |
-| `orders.payment_status` | `payment_status` | `payment_status` |
-| Tập trạng thái từ `order_items.status` | `item_statuses` (keyword array) | `item_status` (theo từng line gắn `order_item_id`) |
-| Kết quả bảng precedence mục 24 | `buyer_tab` | `buyer_tab` |
-| Trạng thái ưu tiên hiển thị card | `ui_primary_status`, `ui_status_rank` | `ui_status_rank` |
+| Nguồn FSM | Field response (trong `items[]` của `GET /v1/orders/search`) |
+|---|---|
+| `orders.status` | `order_status` |
+| `orders.payment_status` | `payment_status` |
+| `orders.created_at`, `paid_at`, `completed_at`, `cancelled_at`, `refunded_at` | các timestamp tương ứng |
+| `orders.total_amount`, `total_discount`, `final_amount` | `total_amount`, `total_discount`, `final_amount` |
+| Tập `order_items.status` (qua view `v_orders_buyer_tab`) | `buyer_tab` |
+| `buyer_tab` (qua `CASE WHEN` trong search query) | `ui_primary_status`, `ui_status_rank` |
+| Hardcoded constant `'PLATFORM'` | `primary_store_name` |
+| `MIN(order_item_lines.snapshot_name)` | `primary_item_name` |
+| `MIN(order_item_lines.snapshot_image_url)` | `primary_item_image_url` |
+| `COUNT(order_items)` | `item_count`, `remaining_item_count` (= `item_count - 1`) |
 
-Guard keys áp dụng khi projection:
+> Các field `buyer_tab`, `ui_primary_status`, `ui_status_rank` derive y hệt bảng precedence tại §4. SQL đầy đủ xem [Search/Filter Design §3.1](order_search_design.md#31-sql-chính).
+
+Guard keys cho FSM consistency (sau khi bỏ `version` field):
 
 | Stream ownership | Guard key | Mục đích |
 |---|---|---|
-| Order lifecycle | `order_version` | Chặn update cũ ghi đè trạng thái mới |
-| Item/delivery | `item_version` | Chặn out-of-order ở cấp item |
-| Payment | `payment_event_sequence_id` | Tách ownership khỏi order lifecycle |
-| Refund | `refund_event_sequence_id` | Tránh stale refund update |
+| Order lifecycle | `last_event_sequence_id` (per `order_id`) | Counter đơn điệu cho mọi event phát ra từ 1 order — thay thế `payment_event_sequence_id` + `refund_event_sequence_id` cũ |
+| Item/delivery | (derive từ outbox event sequence per `order_item_id`) | Chặn out-of-order ở cấp item; Notification consumer guard theo `order_item_id` + `last_event_sequence_id` |
 
-> Khi có xung đột giữa timestamp và sequence/version, projector luôn ưu tiên sequence/version để quyết định mới-cũ.
+
+> Khi có xung đột giữa timestamp và sequence, FSM consumer luôn ưu tiên sequence để quyết định mới-cũ. Các guard key này nằm trong payload event (xem [Order Events §2.1](order_events.md#21-guard-keys-cho-fsm)).
+>
+> **Lý do bỏ `version`/`order_version`/`item_version`:** Temporal workflow đã serialize mọi FSM transition; Kafka consumer đã idempotent theo `event_id`; row-level lock đủ chặn concurrent transition. Bỏ field này giảm payload size + giảm logic validate ở downstream (xem chi tiết [DB Design §2](order_db_design.md#2-quản-lý-trạng-thái-phức-tạp-với-state-machine-fsm)).

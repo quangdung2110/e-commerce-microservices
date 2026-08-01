@@ -1,15 +1,24 @@
 # Giao dịch phân tán (Distributed Saga) với Temporal
 
+> **Phase 22 (Simplify Idempotency Schema):** Bỏ `order_request_idempotency`. Policy one-shot cho `POST /v1/orders/{orderId}/return` giờ được enforce qua cột `orders.buyer_return_locked_at` (CAS row-level lock — xem [DB Design §1.1](order_db_design.md#11-orders-master-order) và [State Machine §3.1](order_state_machine.md#31-guard-cho-buyer-api-one-shot)). Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order).
+
 **Liên kết nhanh (Related Documents):**
 *   [Database Schema](order_db_design.md)
 *   [State Machine & Lifecycle](order_state_machine.md)
-*   [CQRS & Elasticsearch](cqrs_elasticsearch_design.md)
-*   [Cold Data Archiving](cold_data_archiving_design.md)
+*   [Search/Filter Design (PostgreSQL direct)](order_search_design.md)
 *   [Workflows (API & Data Flow)](order_workflow.md)
 *   [Background Workers & Jobs](order_workers.md)
 *   [Events Structure & Kafka Topics](order_events.md)
 
 ---
+
+> **Phase 20 (Event Payload Simplification):** Activity trong Temporal workflow (`CreateOrderActivity`, `UpdateOrderStatusActivity`, `MarkRefundRequestedActivity`, `FinalizeRefundResultActivity`, v.v.) khi insert `outbox_events` chỉ ghi các field tối thiểu theo schema đã chốt ở [Order Events §3](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events). Cụ thể:
+> - `CreateOrderActivity` insert `outbox_events(ORDER_CREATED)` — payload không nhúng `items[]` snapshot (đã persist ở `order_item_lines`), không nhúng `delivery_address_snapshot` (Notification fetch qua API), không nhúng `promotions_applied[]` (Promotion tự reserve qua Saga).
+> - `UpdateOrderStatusActivity` insert `outbox_events(ORDER_STATUS_CHANGED)` — payload chỉ chứa `old_status`/`new_status`/`reason`; KHÔNG nhúng `buyer_tab`/`changed_by`/`refund_trigger_source`/`customer_return_*` (xem [Order Events §3.4](order_events.md#34-order_status_changed)).
+> - `FinalizeRefundResultActivity` insert `outbox_events(ORDER_REFUNDED)` — `promotion_refund_allocations[]` chỉ chứa **2 field** (`promotion_id`, `refunded_discount_amount`).
+> - `FinalizeRefundResultActivity` insert `outbox_events(ORDER_REFUND_FAILED)` — chỉ chứa `error_code` (không cần `error_message`/`reason` riêng; xem [Order Events §3.9](order_events.md#39-order_refund_failed)).
+>
+> Phase 20 **không thay đổi** activity signature hay compensation order — chỉ thu gọn field payload. Workflow vẫn là owner duy nhất của FSM transition + outbox insert trong cùng transaction.
 
 Tài liệu này mô tả thiết kế Orchestration Saga Pattern sử dụng Temporal để xử lý ba lane nghiệp vụ cốt lõi của Order Service: checkout saga (tạo đơn + thanh toán), refund saga (return/admin force refund), và late-payment recovery saga (khôi phục đơn khi payment đến muộn sau timeout). Việc kết hợp Temporal thay thế cho Kafka Message thuần túy giúp giảm tải boilerplate code khi quản lý trạng thái luồng, xử lý timeout và nghịch đảo thao tác bù trừ (compensation).
 
@@ -44,7 +53,7 @@ Workflow chuyên trách lane refund. Mọi request hoàn tiền (return sau giao
 *   Payment consumer route `REFUND_SUCCESS|REFUND_FAILED|REFUND_REVERSED` theo `payload.order_id` và signal `RefundResult` cho workflow này.
 *   Theo policy B, workflow này chỉ được phép tạo **một** `refund_transaction_id` cho mỗi `order_id`; `refund_type` có thể `FULL` hoặc `PARTIAL` theo refund scope đã lock từ request đầu vào.
 *   Guard này chỉ chống concurrent workflow instance, **không thay thế** policy one-shot của Buyer API.
-*   Policy one-shot cho `POST /v1/orders/{orderId}/return` được enforce trước khi start workflow bằng `order_customer_return_guard` (first-write-wins theo `order_id`).
+*   Policy one-shot cho `POST /v1/orders/{orderId}/return` được enforce trước khi start workflow qua cột `orders.buyer_return_locked_at` (Phase 22 — first-write-wins qua CAS row-level lock, xem [State Machine §3.1](order_state_machine.md#31-guard-cho-buyer-api-one-shot)).
 
 ### 2.3. Workflow: `OrderLatePaymentRecoveryWorkflow`
 Workflow chuyên trách khôi phục đơn khi checkout workflow đã timeout/cancel nhưng Payment Service xác nhận `PAYMENT_SUCCESS` đến muộn.
@@ -60,11 +69,11 @@ Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặ
 *   `CreateOrderActivity`: INSERT Master Order và Order Items xuống Database (Trạng thái thiết lập là `PENDING_PAYMENT`).
 *   `ReserveInventoryActivity`: Khóa Tồn kho theo kế hoạch cấp phát Smart Routing.
 *   `ReservePromotionActivity`: Khóa ngân sách voucher trên Redis (Lua Script 2B all-or-nothing cho multi-voucher). Đây là điểm Reserve duy nhất — không xảy ra tại Preview để tránh lạm dụng (bot treo giỏ hàng làm cạn budget).
-*   `InitiatePaymentActivity`: Tạo phiên giao dịch thanh toán và trả về payment URL.
+*   `InitiatePaymentActivity`: Tạo phiên giao dịch thanh toán Stripe (PaymentIntent) và trả về `client_secret` + `publishable_key` (xem [Phase 18 banner cuối file](#5-ưu-điểm-thiết-kế) — không còn `payment_url` kiểu VNPay).
 *   `DeductInventoryActivity`: (Post-Payment) Trừ hẳn tồn kho đã bị giữ chỗ.
 *   `ConfirmPromotionActivity`: (Post-Payment) Commit reservation voucher trên Redis và ghi ledger `coupon_usages.status = REDEEMED` (bắt buộc truyền `idempotency_key` theo từng `promotion_id`).
 *   `CancelConfirmedPromotionActivity`: (Post-Payment compensation) Undo trạng thái đã `REDEEMED` theo từng `promotion_id` khi post-payment saga fail.
-*   `UpdateOrderStatusActivity`: Chuyển trạng thái Order (FSM Update an toàn với Optimistic Locking).
+*   `UpdateOrderStatusActivity`: Chuyển trạng thái Order (FSM Update an toàn với row-level lock + idempotency theo `event_id`, bỏ `version`/optimistic locking).
 *   `MarkRefundRequestedActivity`: Verify `trigger_source` + policy guard, commit transition vào lane refund (`PAID/PROCESSING/COMPLETED` -> `RETURN_REQUESTED`) và insert outbox `ORDER_STATUS_CHANGED` với metadata `refund_waiting_inventory_confirmation = true`.
 *   `LockRefundScopeActivity`: Chốt refund scope từ request đầu vào (`FULL` hoặc `PARTIAL + items_to_return[]`) để tính `refund_type`/`refund_amount` một lần duy nhất cho mỗi order.
 *   `RegisterRefundReturnExpectationActivity`: Đăng ký expected return scope với Inventory theo `order_id + refund_request_id`.
@@ -100,14 +109,14 @@ Mỗi Activity đóng vai trò như 1 Local Transaction đối với Order hoặ
 Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCheckoutWorkflow`:
 
 1.  **Chạy `CreateOrderActivity`**: Lưu vào DB. Trạng thái `PENDING_PAYMENT` để sinh `order_id` chuẩn dùng xuyên suốt Saga.
-	*   Bắt buộc persist snapshot phục vụ CQRS search (`order_items.store_name_snapshot`, `order_items.snapshot_name`, `order_items.snapshot_image_url`) ngay ở bước này để reindex từ DB không mất ngữ cảnh hiển thị.
+	*   Bắt buộc persist snapshot phục vụ Search/Filter API response (`order_item_lines.snapshot_name`, `order_item_lines.snapshot_image_url`) ngay ở bước này để API luôn đọc được card fields mà không cần reindex. `primary_store_name` hardcode constant `'PLATFORM'` ở runtime.
     *   *Thành công → Đăng ký `CancelOrderActivity` vào mảng Đền bù (Stack - LIFO).*
     *   Nếu lỗi Database nội bộ → Workflow dừng trước khi gọi dịch vụ ngoài.
 2.  **Chạy `ReserveInventoryActivity`**: Nếu lỗi (Kho đột ngột hết hàng) → Chạy `CancelOrderActivity`.
     *   *Thành công → Đăng ký `RollbackInventoryActivity` vào mảng Đền bù.*
 3.  **Chạy `ReservePromotionActivity`**: Gọi Promotion Service khóa ngân sách voucher. Nếu lỗi (ví dụ 1 mã fail budget trong batch all-or-nothing) → Chạy rollback theo LIFO: `RollbackInventoryActivity` rồi `CancelOrderActivity`. Workflow dừng với lỗi nghiệp vụ có cấu trúc (`failed_promotion_id`, `failed_reason`, `reserve_mode`) để Checkout trả `409 PROMOTION_RECALCULATION_NEEDED`. Re-evaluation discount và dựng `dropped_promotions[]` là trách nhiệm của Checkout (qua Promotion `/calculate-discount`), không nằm trong Temporal workflow của Order.
     *   *Thành công → Đăng ký `RollbackPromotionActivity` vào mảng Đền bù.*
-4.  **Chạy `InitiatePaymentActivity`**: Gọi Payment Service lấy URL thanh toán.
+4.  **Chạy `InitiatePaymentActivity`**: Gọi Payment Service tạo Stripe PaymentIntent, trả về `client_secret` + `publishable_key`.
     *   Nếu lỗi → Chạy rollback theo LIFO: `RollbackPromotion` → `RollbackInventory` → `CancelOrder`.
     *   *Thành công → Đăng ký `CancelPaymentActivity` vào mảng Đền bù.*
 5.  **Tạm Ngủ (Sleep/Suspend) Chờ Thanh Toán**:
@@ -140,7 +149,7 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
 ## 4. Luồng Refund bằng `OrderRefundWorkflow`
 
 1. Workflow được start từ một trong hai trigger: `POST /orders/{id}/return` hoặc admin force refund lane từ API cancel khi đơn đang `PAID/PROCESSING`.
-2. Với trigger `API_RETURN`, API layer phải pass one-shot guard (`order_customer_return_guard`) và precondition toàn bộ item đã `DELIVERED` trước khi start workflow. Trigger `ADMIN_FORCE_REFUND_REQUESTED` không dùng one-shot guard này.
+2. Với trigger `API_RETURN`, API layer phải pass one-shot guard (cột `orders.buyer_return_locked_at`, Phase 22 — CAS row-level lock, xem [State Machine §3.1](order_state_machine.md#31-guard-cho-buyer-api-one-shot)) và precondition toàn bộ item đã `DELIVERED` trước khi start workflow. Trigger `ADMIN_FORCE_REFUND_REQUESTED` không dùng one-shot guard này.
 3. `MarkRefundRequestedActivity` verify lại policy theo `trigger_source`, commit `RETURN_REQUESTED`, ghi `order_refund_cases.case_status = WAITING_INVENTORY_RETURN_CONFIRMATION`, insert `ORDER_STATUS_CHANGED` với reason phù hợp (`RETURN_API_ACCEPTED` hoặc `ADMIN_FORCE_REFUND_REQUESTED`).
 4. `LockRefundScopeActivity` chốt tập item refund từ request (`FULL` hoặc `PARTIAL`) để tính `refund_type` (`FULL|PARTIAL`) và `refund_amount`.
 5. `RegisterRefundReturnExpectationActivity` đăng ký expected return scope với Inventory, sau đó workflow chờ `WaitInventoryReturnReceivedAllSignal`.
@@ -151,7 +160,7 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
     - `REFUND_SUCCESS` -> `RETURN_REQUESTED` -> `REFUNDED` + outbox `ORDER_REFUNDED`.
     - `REFUND_FAILED`/`REFUND_REVERSED` -> giữ `RETURN_REQUESTED`, cập nhật `payment_status`, + outbox `ORDER_REFUND_FAILED`.
 10. Với lane bắt đầu từ `API_RETURN`, one-shot guard không được reset sau `REFUND_FAILED`/`REFUND_REVERSED`; mọi submit Buyer API tiếp theo bị từ chối.
-11. Voucher restore ở downstream Promotion là best-effort non-blocking và validity-aware: chỉ restore `USED -> SAVED` khi voucher còn hạn (`expired_at > NOW()`), quá hạn thì chuyển `EXPIRED`/giữ `USED`; nếu voucher unavailable thì workflow tiền vẫn không bị rollback.
+11. (Phase 23) Promotion **không** restore voucher `USED -> SAVED` khi refund — luôn giữ `USED`. Budget hoàn là tác vụ chính; voucher restore đã bị loại bỏ. Non-blocking invariant vẫn giữ: mọi kết quả (`RETAINED_USED`/`VOUCHER_UNAVAILABLE`) không rollback tiền refund.
 12. API layer không được commit terminal state ở lane refund; workflow là source-of-truth duy nhất.
 
 ---
@@ -160,3 +169,8 @@ Dưới đây là mô phỏng luồng Activity trong đoạn code của `OrderCh
 *   **Visibility (Minh Bạch):** Có thể mở xem chi tiết hàng nghìn workflow đang bị phong tỏa ở bước "Chờ Thanh Toán - Sleeping Timer" ngay trên giao diện Web UI của Temporal.
 *   **Auto-Resume:** Server Order Service crash hoặc cập nhật Release Code giữa chừng không khiến đơn hàng đang thanh toán bị kẹt. Temporal sẽ ghim Timer và đền bù bình thường khi pod start lại.
 *   **Tách rời FSM và Saga:** Temporal nhận việc điều phối luồng (retries, compensation fallback), còn FSM DB Layer bảo vệ chặn các request đổi status sai hoặc lóng ngóng (như khách gởi 2 signal liên tục). Hai tầng bổ trợ cực hiệu quả.
+
+> **Phase 18 (Single Payment Provider - Stripe):**
+> - `InitiatePaymentActivity` gọi `PaymentService.createPaymentIntent()` (Stripe `PaymentIntent.create()` qua Stripe Java SDK). Payment Service tự xử lý Stripe SDK; Order không cần biết provider cụ thể.
+> - `InitiateRefundActivity` gọi `PaymentService.refund()` (Stripe `Refund.create()` với `Idempotency-Key`).
+> - Webhook URL cố định `/v1/payments/webhook/stripe` (không còn path variable `{provider}`).

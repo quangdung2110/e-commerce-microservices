@@ -1,0 +1,404 @@
+services:
+  # ── Elasticsearch ──────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elasticsearch
+    command: >
+      bash -c "bin/elasticsearch-plugin install --batch analysis-icu || true;
+      /bin/tini -- /usr/local/bin/docker-entrypoint.sh eswrapper"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - ecommerce-network
+
+  # ── Zookeeper (for Kafka) ──────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    networks:
+      - ecommerce-network
+
+  # ── Kafka ──────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ecommerce-network
+
+  # ── Kafka Connect (Debezium CDC for Product Service) ───────
+  kafka-connect:
+    image: debezium/connect:3.0.0.Final
+    container_name: kafka-connect
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: product-service-connect-cluster
+      CONFIG_STORAGE_TOPIC: product-service-connect-configs
+      OFFSET_STORAGE_TOPIC: product-service-connect-offsets
+      STATUS_STORAGE_TOPIC: product-service-connect-status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_PRODUCER_ACKS: all
+      CONNECT_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_HEAP_MAX_SIZE: 512m
+    ports:
+      - "8084:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/ || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ecommerce-network
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: product_service
+      POSTGRES_MAX_CONNECTIONS: "100"
+      POSTGRES_SHARED_BUFFERS: "256MB"
+      POSTGRES_WAL_LEVEL: "logical"
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d product_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ecommerce-network
+
+  # ── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ecommerce-network
+
+  # ── Search Service ─────────────────────────────────────────
+  search-service:
+    build:
+      context: ./java/services/search-service
+    container_name: search-service
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      ES_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: kafka:9092
+      SPRING_PROFILES_ACTIVE: dev
+    ports:
+      - "8081:8080"
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.search-service.rule=PathPrefix(`/api/v1/search`)"
+      - "traefik.http.routers.search-service.entrypoints=web"
+      - "traefik.http.services.search-service.loadbalancer.server.port=8080"
+
+  # ── Product Service ────────────────────────────────────────
+  product-service:
+    build:
+      context: ./java/services/product-service
+      dockerfile: Dockerfile
+    container_name: product-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8081
+      GRPC_PORT: 9091
+
+      # Database
+      DB_URL: jdbc:postgresql://postgres:5432/product_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
+
+      # gRPC
+      # GRPC_PORT: 9091
+      GRPC_SECURITY_INTERNAL_SECRET: dev-secret
+
+      # Debezium
+      DEBEZIUM_CONNECT_HOST: kafka-connect
+      DEBEZIUM_CONNECT_PORT: 8083
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8082:8081"
+      - "9091:9091"
+    volumes:
+      - ./java/services/product-service/src/main/resources/lua:/app/lua:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+
+  # ── Cart Service ───────────────────────────────────────────
+  cart-service:
+    build:
+      context: ./go/services/cart-service
+      dockerfile: Dockerfile
+    container_name: cart-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: debug
+
+      # Override yaml config via CART_-prefixed env vars (viper maps . → _)
+      # Database: overrides configs/application.yaml database.*
+      CART_DATABASE_HOST: postgres
+      CART_DATABASE_PORT: "5432"
+      CART_DATABASE_USER: postgres
+      CART_DATABASE_PASSWORD: postgres
+      CART_DATABASE_NAME: cart_db
+
+      # Redis: overrides configs/application.yaml redis.*
+      CART_REDIS_ADDRS: redis:6379
+
+      # Kafka: overrides configs/application.yaml kafka.*
+      CART_KAFKA_BROKERS: kafka:9092
+
+      # gRPC Product Service: overrides configs/application.yaml grpc.*
+      CART_GRPC_PRODUCT_SERVICE_ADDR: product-service:9091
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./go/services/cart-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cart-service.rule=PathPrefix(`/api/v1/carts`)"
+      - "traefik.http.routers.cart-service.entrypoints=web"
+      - "traefik.http.routers.cart-service.middlewares=dev-auth@file"
+      - "traefik.http.services.cart-service.loadbalancer.server.port=8080"
+
+  # ── Auth Service ───────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./go/services/auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: auth_db
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+      DB_PASSWORD: postgres
+      DATABASE_MAX_OPEN_CONNS: "100"
+      DATABASE_MAX_IDLE_CONNS: "10"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ''
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "8086:8080"
+    volumes:
+      - ./go/services/auth-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth-service.rule=PathPrefix(`/api/v1/auth`)"
+      - "traefik.http.routers.auth-service.entrypoints=web"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
+
+  # ── User Service ───────────────────────────────────────────
+  user-service:
+    build:
+      context: ./go/services/user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      APP_PORT: 8080
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: user_service
+      DB_SSLMODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_AUTH_TOPIC: t.auth.events
+      KAFKA_USER_TOPIC: t.user.events
+      KAFKA_CONSUMER_GROUP: user-service
+      KAFKA_OFFSET_RESET: earliest
+      JWT_SECRET: your-secret-key-change-in-production
+      RATE_LIMIT_ENABLED: "true"
+    # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
+    volumes:
+      - ./go/services/user-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.user-service.rule=PathPrefix(`/api/v1/users`)"
+      - "traefik.http.routers.user-service.entrypoints=web"
+      - "traefik.http.routers.user-service.middlewares=jwt-auth-user@file"
+      - "traefik.http.services.user-service.loadbalancer.server.port=8080"
+
+  # ── Frontend (Next.js) ────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    depends_on:
+      - search-service
+      - cart-service
+      - auth-service
+      - user-service
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - ecommerce-network
+
+  # ── API Gateway (Traefik) ─────────────────────────────────
+  api-gateway:
+    image: traefik:v3.0
+    container_name: api-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8088:80"       # HTTP
+      - "8443:443"      # HTTPS
+      - "8090:8090"     # Dashboard & Metrics
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./go/services/api-gateway/config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - ./go/services/api-gateway/plugins:/plugins
+      - ./go/services/api-gateway/certs:/certs:ro
+      - ./go/services/api-gateway/letsencrypt:/letsencrypt
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+
+# ── Volumes ────────────────────────────────────────────────
+volumes:
+  es-data:
+  postgres-data:
+  redis-data:
+  kafka-data:
+
+# ── Networks ───────────────────────────────────────────────
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    driver: bridge

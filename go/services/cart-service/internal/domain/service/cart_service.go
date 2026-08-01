@@ -227,7 +227,7 @@ func (s *CartService) rehydrateAndBuildCart(ctx context.Context, userID string) 
 	cartKey := s.kb.CartKey(userID)
 
 	status, err := s.cartRepo.GetCartStatus(ctx, cartKey)
-	if err == port.ErrDBNoRows || (err == nil && status == entity.CartStatusDeleted) ||
+	if err == port.ErrDBNoRows || err == entity.ErrCartNotFound || (err == nil && status == entity.CartStatusDeleted) ||
 		(err == nil && status == entity.CartStatusCheckedOut) {
 		_ = s.cache.SetNegativeCache(ctx, userID)
 		return &entity.CartView{

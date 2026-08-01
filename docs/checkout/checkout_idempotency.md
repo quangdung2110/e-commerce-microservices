@@ -29,15 +29,16 @@ sequenceDiagram
     Client->>CS: POST /checkout/preview<br>{cart_items, address, promotions}
     CS->>CS: Aggregate data from Cart/Inventory(routing)/Promotion
     CS->>Redis: HSET checkout:session:{user_id}<br>token=UUID, status=PREVIEW_READY, pricing=...
-    CS-->>Client: {token, pricing_summary, warehouse_options}
+    CS-->>Client: {token, pricing_summary, warehouse_assignments}
 
-    Client->>CS: POST /checkout/submit<br>{token, payment_method}
+    Client->>CS: POST /checkout/submit<br>{token}
+    Note over Client,CS: Phase 18: payment_method đã bỏ khỏi Submit payload
     CS->>Redis: HGET checkout:session:{user_id} token, status
     alt Token match AND status = PREVIEW_READY
         CS->>Redis: HSET status=SUBMITTED (one-time-use)
         CS->>OS: POST /orders/create-from-checkout<br>{validated payload from Redis session}
-        OS-->>CS: {order_id, payment_url}
-        CS-->>Client: {order_id, payment_url}
+        OS-->>CS: {order_id, client_secret (Stripe), publishable_key}
+        CS-->>Client: {order_id, client_secret, publishable_key}
     else Token mismatch OR status ≠ PREVIEW_READY
         CS-->>Client: 409 Conflict (Token used/expired)
     end
@@ -97,11 +98,11 @@ return 1  -- OK
 Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên:
 
 | Client gửi | Server dùng |
-|:---|:---|
+|---|---|
 | `address_id: 5` | ✅ Server tra DB lấy address chi tiết |
 | `promotion_code: "HAPPY"` | ✅ Server gọi Promotion API validate + lấy `discount_amount` |
 | ~~`total_amount: 450000`~~ | ❌ **IGNORE** — Server tự tính từ Redis session |
-| `payment_method: "VNPAY"` | ✅ Server validate method hợp lệ |
+| ~~`payment_method: "VNPAY"`~~ | ❌ **N/A** — Field đã bỏ tại Phase 18. Provider cố định = Stripe, Order/Payment Service tự xử lý |
 
 ### 3.2. Luồng Validation khi Submit (Zero-Trust Validation)
 
@@ -168,7 +169,7 @@ Khi submit hoàn tất (thành công hoặc conflict nghiệp vụ), backend cac
 **Key:** `checkout:response:{user_id}:{token}`
 **TTL:** 20 phút
 **Value:**
-- Success: `{order_id, payment_url}`
+- Success: `{order_id, client_secret, publishable_key}` (Phase 18: Stripe trả `client_secret` thay vì `payment_url`)
 - Conflict: `{error_code: "PROMOTION_RECALCULATION_NEEDED", action: "RECALL_PREVIEW", dropped_promotions: [...], proposal_checkout_data: {...}}`
 
 Trong nhánh Conflict:
@@ -180,7 +181,7 @@ Nếu client nhận timeout và retry với cùng token:
 1. Lua Script trả `-2` (ALREADY_SUBMITTED).
 2. Backend check `checkout:response:{user_id}:{token}` → Trả lại response cũ (idempotent), bất kể là success hay conflict nghiệp vụ.
 
-> Kết quả: Client nhận đúng `order_id` + `payment_url` dù gọi bao nhiêu lần.
+> Kết quả: Client nhận đúng `order_id` + `client_secret` + `publishable_key` dù gọi bao nhiêu lần.
 
 ---
 
@@ -207,7 +208,7 @@ Xử lý trường hợp Lua Script đã mark session `SUBMITTED` nhưng lần g
 ### Flow Recovery Chi tiết
 
 ```
-Client retry POST /checkout/submit {token, payment_method}
+Client retry POST /checkout/submit {token}
   │
   ├─ Lua Script trả -2 (ALREADY_SUBMITTED)
   │

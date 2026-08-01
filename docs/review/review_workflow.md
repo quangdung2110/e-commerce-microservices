@@ -143,9 +143,3 @@ Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination
 | Admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho downstream reindex | CDC outbox publish `ADMIN_REPLY_CREATED` |
 | Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để downstream (Search) reindex các review bị ẩn danh | Consumer `ACCOUNT_DELETED` cập nhật trực tiếp + event nội bộ |
 
-## 11. Kịch bản lỗi và tự phục hồi
-
-1. **Duplicate event:** idempotency tự nhiên qua DB unique constraints chặn xử lý lặp.
-2. **Missing required sequencing field:** chuyển `t.review.dlq`, không xử lý mù.
-3. **Connector lag tăng cao:** cảnh báo theo lag SLO, tăng tài nguyên Kafka Connect hoặc giảm batch producer.
-4. **Poison message:** đẩy DLQ sau ngưỡng retry, không block toàn bộ partition.

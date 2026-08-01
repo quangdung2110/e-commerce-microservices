@@ -44,7 +44,7 @@ func TestAddItem_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	product := &mocks.ProductClientMock{
@@ -119,7 +119,7 @@ func TestGetCart_CacheHit_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	// Pre-populate Redis with items
@@ -209,7 +209,7 @@ func TestBatchDelete_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	cartKey := kb.CartKey("user1")
@@ -279,7 +279,7 @@ func TestGetCart_CacheMiss_Rehydrate_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	cache := &mocks.CacheRepoMock{
@@ -370,7 +370,7 @@ func TestGetCart_NegativeCache_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	cache := &mocks.CacheRepoMock{
@@ -412,7 +412,7 @@ func TestAddItem_Concurrent_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	cache := &mocks.CacheRepoMock{
@@ -487,7 +487,7 @@ func TestGetCart_EmptyCart_Integration(t *testing.T) {
 	defer rc.Close()
 
 	sm := redisinfra.NewShardManager(4)
-	luaRepo := redisinfra.NewCartLuaRepo(&redisinfra.Client{rdb: rc}, sm)
+	luaRepo := redisinfra.NewCartLuaRepo(redisinfra.NewClientFromRaw(rc), sm)
 	kb := keybuilder.New(4)
 
 	cache := &mocks.CacheRepoMock{

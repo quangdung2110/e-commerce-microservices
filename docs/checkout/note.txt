@@ -19,7 +19,7 @@
 
 3. Tổng quát luồng hoạt động một cách chi tiết
     Giai đoạn 1: Rào chắn vòng ngoài (Gatekeeping)
-        Tiếp nhận Request & Xin Khóa: Frontend gửi request bao gồm checkout_token và payment_method. Ngay lập tức, hệ thống xin quyền Distributed Lock (checkout:lock:submit:{user_id}) với TTL 30 giây. Nếu xin thất bại, trả về lỗi 423 Locked để chặn các request bấm đúp.
+        Tiếp nhận Request & Xin Khóa: Frontend gửi request bao gồm checkout_token (Phase 18: không còn payment_method vì hệ thống chỉ dùng Stripe). Ngay lập tức, hệ thống xin quyền Distributed Lock (checkout:lock:submit:{user_id}) với TTL 30 giây. Nếu xin thất bại, trả về lỗi 423 Locked để chặn các request bấm đúp.
         Kiểm tra sơ bộ Trạng thái Token: Hệ thống kiểm tra session trên Redis. Nếu Token đã ở trạng thái SUBMITTED, nó sẽ rẽ nhánh sang luồng Client Retry (tìm checkout:response hoặc dùng checkout:payload để gọi lại Order Service).
 
     Giai đoạn 2: Thẩm định chớp nhoáng (Validation)

@@ -15,6 +15,18 @@ Gateway đóng vai trò như một "bảng chỉ đường" trung tâm. Client c
   - `/api/payments/**` → `payment-service`
 - **Dynamic Service Discovery:** Gateway không cấu hình cứng địa chỉ service, mà sử dụng **Service Registry** (Consul, Eureka, hoặc Kubernetes DNS) để lấy danh sách các instance đang healthy. Cơ chế `Round Robin` hoặc `Least Connection` được dùng để load balancing nội bộ.
 
+### 2.2. Webhook Passthrough — Stripe (Phase 18)
+
+> Hệ thống chỉ dùng 1 payment provider duy nhất là Stripe. Webhook URL cố định: `POST /api/payments/webhook/stripe`.
+
+Gateway phải route **nguyên vẹn raw body + headers** của Stripe webhook đến Payment Service. Quy tắc bắt buộc:
+
+1. **Không filter body**: KHÔNG parse JSON, KHÔNG modify payload. Stripe SDK dùng raw body để verify signature, nếu Gateway parse/sanitize body sẽ phá HMAC.
+2. **Không verify JWT cho route này**: Webhook authenticate bằng `Stripe-Signature` header (HMAC-SHA256 với `whsec_...`) ở Payment Service, không phải JWT.
+3. **IP Whitelist (khuyến nghị)**: Stripe publish danh sách IP ranges trong dashboard; Gateway nên whitelist các IP này để giảm noise.
+4. **Timeout ngắn (< 5s)**: Stripe retry với exponential backoff nếu response > 5s. Gateway phải forward nhanh, không buffer.
+5. **Response 2xx ngay khi Payment Service trả**: KHÔNG retry webhook ở Gateway layer; retry policy thuộc Stripe.
+
 ## 3. Authentication Strategy (Uniform Security Checking)
 
 Hệ thống sử dụng chiến lược **Stateless Authentication** thông qua JSON Web Token (JWT) kết hợp với **Redis Denylist** để xử lý bài toán thu hồi token (Token Revocation).

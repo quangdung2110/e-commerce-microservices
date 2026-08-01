@@ -18,13 +18,6 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 |:---|:---|:---|:---|:---|
 | `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `ADMIN_REPLY_CREATED` | **Notification Service** (`REVIEW_CREATED`, `REVIEW_HIDDEN`, `ADMIN_REPLY_CREATED`), **Search Service** (`REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`), **Analytics Service** (`REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`), **Product Service** (đồng bộ read-model metrics sản phẩm qua `REVIEW_METRICS_UPDATED`) | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
 
-### 1.2. Topics Produce (Operational)
-
-| Topic Name | Partition Key | Mục đích |
-|:---|:---|:---|
-| `t.review.retry` | `product_id` | Retry có kiểm soát cho lỗi tạm thời của Review consumers |
-| `t.review.dlq` | `product_id` | Parking lot cho poison message / contract violation |
-
 ### 1.3. Topics Consume
 
 | Topic Name | Consumer Group | Producer | Events | Mục đích |
@@ -57,16 +50,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 3. Không ACK message trước khi local transaction commit.
 4. Retry policy mặc định cho consumer:
    - Retry tối đa 10 lần theo exponential backoff 1s -> 5m.
-   - Quá ngưỡng chuyển `t.review.dlq`.
-5. Retry Replayer Worker (`t.review.retry`):
-   - Dùng cho các event tạm thời lỗi (ví dụ: DB timeout, network partition).
-   - Replay tối đa 3 vòng (`retry_round > 3` -> chuyển `t.review.dlq`).
-   - Giữ nguyên `event_id` để idempotency tự nhiên hoạt động đúng.
 
-> **Phân biệt retry tier:**
-> - Consumer level: xử lý lỗi tạm thời ngay, retry 10 lần rồi chuyển DLQ.
-> - Retry Replayer: xử lý lỗi có thể phục hồi được, replay 3 vòng rồi chuyển DLQ.
-> - DLQ Consumer: inspect và replay thủ công (không auto-retry).
 
 ## 4. Consumed Events Contract
 

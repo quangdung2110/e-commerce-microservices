@@ -75,7 +75,7 @@ return claim_id
 ```
 
 ### Script 2B: Reserve all-or-nothing (1 voucher PLATFORM, slot cố định)
-**Ngữ cảnh:** Slot model cố định 1 `PLATFORM_VOUCHER`/đơn (sau Phase 14). Mục tiêu của script là: (1) validate đầy đủ trước khi mutate, (2) tự rollback khi 1 trong 4 thao tác HINCRBY/HINCRBYFLOAT/SETEX/ZADD fail giữa chừng, (3) so khớp payload idempotency để chống reserve lặp cùng `order_id` với số tiền khác.
+**Ngữ cảnh:** Slot model cố định 1 `PLATFORM_VOUCHER`/đơn . Mục tiêu của script là: (1) validate đầy đủ trước khi mutate, (2) tự rollback khi 1 trong 4 thao tác HINCRBY/HINCRBYFLOAT/SETEX/ZADD fail giữa chừng, (3) so khớp payload idempotency để chống reserve lặp cùng `order_id` với số tiền khác.
 
 ```lua
 -- Script 2B - Reserve All-or-Nothing (slot cố định 1 PLATFORM_VOUCHER/đơn)
@@ -422,7 +422,7 @@ Vì để cấu trúc này chạy nhanh nhất, **Database PostgreSQL không lư
 | `used_qty`, `used_amount` | `coupon_usages` + `promotion_event_idempotency` (PostgreSQL) | Ledger nghiệp vụ quyết định số đã dùng |
 | `reserved_qty`, `reserved_amount` | Redis reservation index/payload còn hiệu lực (đã lọc idempotency `REDEEM_COUPON FINAL`) | Trạng thái runtime tạm thời |
 
-1. Chọn tập `promotion_id` có biến động gần đây dựa trên outbox/idempotency window và bổ sung full-scan off-peak.
+1. Chọn tập `promotion_id` có biến động gần đây dựa trên idempotency window và bổ sung full-scan off-peak.
 2. Dựng `expected snapshot` theo ma trận nguồn chuẩn bên trên.
 3. Đọc `actual snapshot` từ `promo:{promotion_id}:budget` trên Redis và tính drift từng chiều (`used/reserved`, qty/amount).
 4. Nếu drift vượt ngưỡng: acquire lock repair (`promo:budget:reconcile:lock:{promotion_id}`) -> re-read snapshot -> apply script đưa counters về expected với guard không âm/không vượt total.
@@ -445,14 +445,14 @@ Vì để cấu trúc này chạy nhanh nhất, **Database PostgreSQL không lư
 3. **Claim rule:** Với từng `rule_id`, acquire lock `SETNX promo:markdown:expiry:lock:{rule_id}`. Lock fail thì skip để tránh duplicate processing.
 4. **DB-first transaction:**
     - `UPDATE markdown_rules SET status = 'ENDED' WHERE id = :rule_id AND status = 'ACTIVE' AND end_time <= NOW()`
-    - Nếu `row_count = 1`, `INSERT` outbox `MARKDOWN_ENDED` (`payload.reason = EXPIRED`) trong cùng transaction.
+    - Nếu `row_count = 1`, publish `MARKDOWN_ENDED(reason='EXPIRED')` lên Kafka.
 5. **Post-commit cleanup:** Commit thành công mới `ZREM promo:markdown:expiry:index :rule_id`.
 6. **Crash-window handling:** Nếu crash sau commit trước `ZREM`, vòng sau trở thành no-op nhờ DB guard rồi tự dọn index.
 7. **Cron fallback self-healing:** Job 10-30 giây quét DB `status='ACTIVE' AND end_time<=NOW()` để vá miss index/scheduler gián đoạn.
 8. **Startup rebuild:** Sau restart/failover Redis, bootstrap lại index từ tập rule `ACTIVE` có `end_time > NOW()`.
 
 > [!IMPORTANT]
-> Khóa Redis chỉ là lớp chống đua ngắn hạn. Tính đúng đắn cuối cùng của expiry phụ thuộc vào DB guard (`status='ACTIVE' AND end_time<=NOW()`) và transaction outbox.
+> Khóa Redis chỉ là lớp chống đua ngắn hạn. Tính đúng đắn cuối cùng của expiry phụ thuộc vào DB guard (`status='ACTIVE' AND end_time<=NOW()`). DB commit xong mới publish Kafka, chấp nhận best-effort.
 
 ## 4. Rate Limiting & Bloom Filters Tối Ưu
 

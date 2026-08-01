@@ -1,39 +1,34 @@
 # Order Service - Danh sách Background Workers & Jobs
 
+> **Phase 22 (Simplify Idempotency Schema):** Bỏ `order_event_idempotency`. Idempotency cho cả 3 Kafka consumer (Payment Status, Inventory Ship, Inventory Return) giờ dựa vào **Redis SETNX** (TTL 30 ngày) thay cho durable DB layer. Idempotency ở tầng DB vẫn đảm bảo nhờ FSM CAS (`UPDATE ... WHERE status='OLD_STATUS'` + row-level lock) + CloudEvents `event_id` envelope. Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order).
+
 **Liên kết nhanh (Related Documents):**
 *   [Database Schema](order_db_design.md)
 *   [Temporal Saga Design](temporal_saga_design.md)
-*   [CQRS & Elasticsearch](cqrs_elasticsearch_design.md)
-*   [Cold Data Archiving](cold_data_archiving_design.md)
+*   [Search/Filter Design (PostgreSQL direct)](order_search_design.md)
 *   [State Machine & Lifecycle](order_state_machine.md)
 *   [Workflows (API & Data Flow)](order_workflow.md)
 *   [Events Structure & Kafka Topics](order_events.md)
 
 ---
 
-Order Service chạy song song 3 lớp nền: **Temporal Workers** (điều phối Saga), **Kafka Workers** (event-driven sync), và **CDC Connector Runtime** (publish outbox theo WAL). Ngoài ra có các CronJob dọn dẹp và archive dữ liệu.
+Order Service chạy song song 3 lớp nền: **Temporal Workers** (điều phối Saga), **Kafka Workers** (event-driven sync), và **CDC Connector Runtime** (publish outbox theo WAL). Ngoài ra có các CronJob dọn dẹp dữ liệu idempotency/outbox.
 
 ## Tổng Hợp Kafka Topics
 
 | Hướng | Topic | Consumer Group | Mô tả |
 |---|---|---|---|
 | **Produce** | `t.order.events` | — | Topic chính chứa mọi event phát đi |
-| **Produce** | `t.search.metrics.events` | — | Topic metrics theo `product_id` cho Search projection |
-| **Produce** | `t.order.archive.retry` | — | Topic replay cho archive batch lỗi (payload chỉ chứa `archive_batch_id`) |
-| **Produce** | `t.order.cqrs.retry` | — | Retry lane cho CQRS projector khi self-heal/replay |
-| **Produce** | `t.order.cqrs.dlq` | — | Dead-letter lane cho CQRS projector (contract/permanent errors) |
-| **Consume** | `t.order.archive.retry` | `order-archive-replay-consumer` | Consumer chạy lại archive batch theo `archive_batch_id` |
 | **Consume** | `t.payment.events` | `order-payment-consumer` | Nhận kết quả thanh toán |
 | **Consume** | `t.inventory.events` | `order-inventory-return-consumer` | Nhận xác nhận Inventory đã nhận đủ hàng trong refund scope |
 | **Consume** | `t.inventory.events` | `order-inventory-ship-consumer` | Nhận event INVENTORY_SHIP_TO_CUSTOMER để trigger item FSM PROCESSING → DELIVERED |
-| **Consume** | `t.order.cqrs.retry` | `order-cqrs-retry-replayer` | Replay sự kiện CQRS sau backoff |
 
 Xem payload chi tiết tại [Order Events](order_events.md).
 
 ---
 
 ## 1. Outbox CDC Pipeline (Producer Path)
-**Loại hình:** CDC Connector (Debezium/Kafka Connect), không polling SQL trong application.
+**Loại hình:** CDC Connector (Debezium/Kafka Connect).
 
 **Sứ mệnh:** Đẩy event từ bảng `outbox_events` append-only ra Kafka một cách tin cậy theo WAL CDC.
 
@@ -42,105 +37,22 @@ Xem payload chi tiết tại [Order Events](order_events.md).
 2. Debezium đọc WAL thay đổi mới của `outbox_events`.
 3. Outbox Event Router publish sang topic đích:
    - `aggregate_type IN ('Order', 'OrderItem')` -> `t.order.events`
-   - `aggregate_type = 'ProductSalesMetrics'` -> `t.search.metrics.events`
-   - `aggregate_type = 'ArchiveBatch'` -> `t.order.archive.retry`
 4. Partition key lấy trực tiếp từ cột `partition_key` để giữ ordering theo stream ownership.
 5. Retry, DLQ, backoff vận hành tại Kafka Connect runtime, không dùng cột `status/retry_count` trong DB.
 
-> **Invariant:** `partition_key` bắt buộc `NOT NULL`; thiếu key sẽ phá ordering của CQRS/consumer downstream.
+> **Invariant:** `partition_key` bắt buộc `NOT NULL`; thiếu key sẽ phá ordering của consumer downstream.
 
 ---
 
-## 2. CQRS Projection Workers (Kafka Consumers)
-**Loại hình:** Kafka Consumer chạy liên tục.
+## 2. Search/Filter — Query trực tiếp PostgreSQL (Phase 15)
 
-**Consumer groups chính:**
-- `order-cqrs-summary-projector`: ghi `orders_write` (1 document/order).
-- `order-cqrs-line-projector`: ghi `order_search_lines_write` (1 document/item).
-- `order-cqrs-retry-replayer`: consume `t.order.cqrs.retry` và replay theo backoff.
+Search/Filter API (`GET /v1/orders/search`) được phục vụ trực tiếp bởi các B-tree/GIN indexes + view `v_orders_buyer_tab` trong PostgreSQL. Từ Phase 21, Order Service **không còn** worker nào liên quan đến Search projection (đã bỏ `order-metrics-projector` và topic `t.search.metrics.events` — Search Service không còn cần `product_sold_count`).
 
-**Sứ mệnh:** Đồng bộ read-model Elasticsearch theo kiến trúc hybrid 2-index để phục vụ đồng thời:
-1. Lọc đa chiều chính xác theo buyer/admin/status/time.
-2. Text search theo tên sản phẩm, store name.
-3. Trả về order-level card nhất quán với buyer tabs kiểu platformee.
-
-Xem chi tiết schema/query/guard/reindex tại [CQRS Design](cqrs_elasticsearch_design.md).
-
-### 2.1. Luồng xử lý chuẩn
-
-1. Consume từ `t.order.events`.
-2. Parse và phân lane theo event type:
-   - Lane `orders_read`: cập nhật order-level summary (`ORDER_*`, payment/refund derived status, item summary, buyer_tab, card fields).
-   - Lane `order_search_lines`: cập nhật line-level text documents cho product/store search, đồng bộ `buyer_tab` và `ui_status_rank` để sort ổn định.
-3. Áp guard theo stream ownership:
-   - `order_version` cho order lifecycle events.
-   - `item_version` cho item/delivery events.
-   - `payment_event_sequence_id` hoặc `refund_event_sequence_id` cho payment/refund updates.
-4. Bulk write:
-   - `POST orders_write/_bulk`
-   - `POST order_search_lines_write/_bulk`
-5. Cập nhật metadata (`last_event_id`, `last_event_timestamp`, `indexed_at`, `projection_version`).
-
-### 2.2. Projection fields bắt buộc cho buyer list/search
-
-- Summary projector phải derive `buyer_tab` theo precedence trong [Order FSM](order_state_machine.md#24-buyer-tab-precedence-platformee-style).
-- Summary projector phải duy trì đầy đủ card fields trong `orders_read`:
-   - `ui_primary_status`, `ui_status_rank`
-   - `primary_item_name`, `primary_item_image_url`, `remaining_item_count`
-   - `primary_store_name`
-   - `item_count`
-- Line projector phải đồng bộ `buyer_tab` và `ui_status_rank` để query class B có thể filter/sort đồng nhất với query class A.
-- Nếu thiếu dữ liệu để dựng card fields (ví dụ event incremental không đủ), event phải park vào `t.order.cqrs.retry` để snapshot rebuild, không được ghi document nửa vời.
-
-### 2.3. Idempotency và out-of-order
-
-- Idempotency không dựa trên so sánh thứ tự UUID `event_id` theo từ điển.
-- Quy tắc skip event cũ: chỉ skip khi guard key của stream đó không tăng (`incoming <= current`).
-- Event thiếu guard key bắt buộc bị xem là contract violation và chuyển DLQ.
-
-### 2.4. Retry, self-heal và DLQ
-
-1. Lỗi ES transient (`429`, timeout, network reset): inline retry tối đa 3 lần.
-2. Không tìm thấy document hoặc thiếu data để apply event incrementally:
-   - Park vào `t.order.cqrs.retry`.
-   - Retry replayer thực hiện snapshot rebuild theo `order_id` rồi replay event.
-3. Lỗi schema/permanent hoặc vượt retry budget:
-   - Chuyển `t.order.cqrs.dlq`.
-   - Gắn reason code để Ops triage.
-
-### 2.5. Commit semantics
-
-Offset chỉ được commit khi:
-- bulk apply thành công, hoặc
-- event đã park thành công vào retry/DLQ.
-
-Nếu cả apply lẫn park đều fail, không commit offset để tránh mất event.
+Xem chi tiết schema/index/query tại [Search/Filter Design](order_search_design.md).
 
 ---
 
-## 3. Order Metrics Projector (Kafka Consumer + Producer)
-**Loại hình:** Kafka Consumer chạy liên tục, đồng thời produce metrics event.
-**Consumer Group:** `order-metrics-projector`
-
-**Sứ mệnh:** Aggregate sold metrics theo `product_id` từ luồng `ORDER_COMPLETED` và phát `ORDER_PRODUCT_METRICS_UPDATED` lên `t.search.metrics.events`.
-
-**Chi tiết luồng hoạt động:**
-1. Consume `t.order.events`, lọc `ORDER_COMPLETED`.
-2. Tách `items[]` theo `product_id`, cộng dồn `quantity` theo từng product trong event.
-3. Transaction:
-   - Upsert bảng aggregate nội bộ `order_product_metrics`.
-   - Tăng `event_sequence_id` đơn điệu theo từng `product_id`.
-   - Insert outbox event `ORDER_PRODUCT_METRICS_UPDATED` cho từng `product_id` bị ảnh hưởng.
-4. CDC connector publish sang `t.search.metrics.events` với partition key `product_id`.
-
-**Idempotency & Ordering:**
-- Dedup theo `event_id` của `ORDER_COMPLETED`.
-- Event metrics bắt buộc mang `event_sequence_id` đơn điệu theo `product_id`.
-- Nếu xử lý lỗi tạm thời, retry tại consumer trước khi ghi DB/outbox; nếu connector lỗi, xử lý qua Kafka Connect DLQ và replay pipeline.
-
----
-
-## 4. Payment Status Consumer (Kafka Consumer)
+## 3. Payment Status Consumer (Kafka Consumer)
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `order-payment-consumer`
 
@@ -161,17 +73,16 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
        1. Lookup refund workflow theo `order_id` (WorkflowID = `order-refund-{order_id}`).
        2. Signal `RefundResult` tương ứng cho `OrderRefundWorkflow`.
        3. Worker **không** update trực tiếp `orders.status/payment_status`; refund workflow là owner duy nhất của commit FSM/outbox trong lane refund.
-       4. Worker **không** được reset `order_customer_return_guard`; policy one-shot của Buyer API vẫn giữ nguyên ngay cả khi refund fail/reversed.
+       4. Worker **không** được reset one-shot guard của Buyer API; guard được enforce qua cột `orders.buyer_return_locked_at` (CAS row-level lock — xem [Workflow §3.1](order_workflow.md#31-api-return-order-post-v1ordersorderidreturn) và [State Machine §3.1](order_state_machine.md#31-guard-cho-buyer-api-one-shot)). Policy vẫn giữ nguyên ngay cả khi refund fail/reversed.
 
-**Idempotency:**
-- Fast-path: Redis `SETNX payment:signal:{order_id}:{payment_transaction_id}:{event_type}` TTL 30 phút.
-- Durable guard: ghi/check bảng `order_event_idempotency` với `action_type` theo loại payment/refund để chống lặp sau restart.
-- Khi gặp cùng `event_id` nhưng khác `payload_hash`, phải đưa vào contract-violation lane (không skip mù).
+**Idempotency (Phase 22):**
+- Fast-path (duy nhất): Redis `SETNX payment:signal:{order_id}:{payment_transaction_id}:{event_type}` TTL 30 ngày.
+- Idempotency dựa vào `event_id` unique từ CloudEvents envelope. Phase 19 đã bỏ `payload_hash` (chỉ dùng `event_id` cho dedup at-least-once).
 - Nếu đã xử lý → skip, tránh signal Temporal nhiều lần.
 
 ---
 
-## 5. Inventory Ship-To-Customer Consumer (Kafka Consumer)
+## 4. Inventory Ship-To-Customer Consumer (Kafka Consumer)
 **Loại hình:** Kafka Consumer chạy liên tục.
 **Consumer Group:** `order-inventory-ship-consumer`
 
@@ -179,34 +90,33 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 
 **Chi tiết luồng hoạt động:**
 1. Consume topic `t.inventory.events`, lọc `event_type = INVENTORY_SHIP_TO_CUSTOMER`.
-2. Với mỗi `order_item_id` trong `payload.order_item_ids[]`:
-   - Update FSM với Optimistic Locking:
-     ```sql
-     UPDATE order_items SET status = 'DELIVERED', version = version + 1
-     WHERE id = :order_item_id 
-       AND status = 'PROCESSING'
-       AND version = :expected_version;
-     ```
-   - Insert `order_status_history` cho item transition.
-   - Insert `outbox_events` cho `ORDER_ITEM_STATUS_CHANGED`.
-3. **Auto-Complete Check:** Sau mỗi lô update item:
-   ```sql
-   SELECT COUNT(*) as total, 
-          COUNT(CASE WHEN status = 'DELIVERED' THEN 1 END) as delivered
-   FROM order_items WHERE order_id = :order_id;
-   ```
-   Nếu `total = delivered` thì chạy CAS idempotent:
-   ```sql
-   UPDATE orders
-   SET status = 'COMPLETED', version = version + 1, updated_at = NOW()
-   WHERE id = :order_id AND status = 'PROCESSING';
-   ```
+2. Query `inventory_reservations` theo `(order_id, warehouse_id)` lọc `status='DEDUCTED'` để lấy danh sách `order_item_id` cần chuyển `DELIVERED` (filter cả `warehouse_id` là bắt buộc cho multi-warehouse order để tránh DELIVERED nhầm cho item ở kho khác).
+ 3. Với mỗi `order_item_id` lấy được:
+    - Update FSM với row-level lock + idempotency nhờ CAS (`WHERE status = 'PROCESSING'`). Nếu row đã `DELIVERED` thì `affected_rows = 0`, skip. Không còn `version`/optimistic locking — Temporal serialization + Redis SETNX dedup đã chặn duplicate:
+      ```sql
+      UPDATE order_items SET status = 'DELIVERED'
+      WHERE id = :order_item_id 
+        AND status = 'PROCESSING';
+      ```
+    - Insert `outbox_events` cho `ORDER_ITEM_STATUS_CHANGED`.
+ 4. **Auto-Complete Check:** Sau mỗi lô update item:
+    ```sql
+    SELECT COUNT(*) as total, 
+           COUNT(CASE WHEN status = 'DELIVERED' THEN 1 END) as delivered
+    FROM order_items WHERE order_id = :order_id;
+    ```
+    Nếu `total = delivered` thì chạy CAS idempotent:
+    ```sql
+    UPDATE orders
+    SET status = 'COMPLETED', updated_at = NOW()
+    WHERE id = :order_id AND status = 'PROCESSING';
+    ```
    Chỉ khi số bản ghi update = 1 mới produce `ORDER_COMPLETED`.
-4. **Coalescing window:** 5 giây để tránh phát `ORDER_COMPLETED` rung khi có nhiều item đến sát nhau.
+5. **Coalescing window:** 5 giây để tránh phát `ORDER_COMPLETED` rung khi có nhiều item đến sát nhau.
 
-**Idempotency:**
-- Fast-path: Redis `SETNX inventory:ship:applied:{order_id}:{shipped_at}` TTL 7 ngày.
-- Durable guard: ghi vào `order_event_idempotency` với `action_type = INVENTORY_SHIP_TO_CUSTOMER_APPLY` và `action_scope_key = {order_id}:{shipped_at}`.
+**Idempotency (Phase 22):**
+- Fast-path (duy nhất): Redis `SETNX inventory:ship:applied:{order_id}:{warehouse_id}:{shipped_at}` TTL 30 ngày. `warehouse_id` được include để tránh xung đột idempotency khi multi-warehouse order gửi nhiều event `INVENTORY_SHIP_TO_CUSTOMER` cho cùng `order_id`.
+- DB-layer idempotency nhờ FSM CAS ở step 3 (`UPDATE order_items ... WHERE status='PROCESSING'`) — duplicate processing sẽ không có effect.
 
 ### 5.1. Inventory Return Confirmation Consumer (Kafka Consumer)
 **Loại hình:** Kafka Consumer chạy liên tục.
@@ -216,17 +126,16 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 
 **Chi tiết luồng hoạt động:**
 1. Consume topic `t.inventory.events`, lọc event `INVENTORY_RETURN_RECEIVED_ALL`.
-2. Idempotency guard:
-   - Fast path: Redis `SETNX inventory:return:confirm:{order_id}:{refund_request_id}`.
-   - Durable path: `order_event_idempotency` với `action_type = INVENTORY_RETURN_RECEIVED_ALL_SIGNAL`.
+2. Idempotency guard (Phase 22):
+   - Duy nhất: Redis `SETNX inventory:return:confirm:{order_id}:{refund_request_id}` TTL 30 ngày.
 3. Route signal:
    - Lookup workflow `order-refund-{order_id}`.
-   - Signal `InventoryReturnReceivedAll` cho workflow với payload `refund_request_id`, `returned_order_item_ids`, `confirmed_at`.
+   - Signal `InventoryReturnReceivedAll` cho workflow với payload `{refund_request_id}`. **Phase 20:** `INVENTORY_RETURN_RECEIVED_ALL` payload đã bỏ `order_item_ids[]` (Order workflow tự derive từ `refund_request_id` + scope đã lock ở `LockRefundScopeActivity`) và `confirmed_at` (audit only, có trong workflow history).
 4. Worker **không** cập nhật trực tiếp `orders.status/payment_status`; quyền commit vẫn thuộc `OrderRefundWorkflow`.
 
 ---
 
-## 6. Temporal Worker (Workflow & Activity Registration)
+## 5. Temporal Worker (Workflow & Activity Registration)
 **Loại hình:** Long-running process đăng ký với Temporal Server.
 
 **Sứ mệnh:** Chạy `OrderCheckoutWorkflow` và các Activities liên quan. Xem [Temporal Saga Design](temporal_saga_design.md).
@@ -241,10 +150,10 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
    - `ReserveInventoryActivity` — gRPC/API sang Inventory `/reserve`.
    - `ReservePromotionActivity` — gRPC/API sang Promotion `/reserve`.
        * Nếu fail phải bubble lỗi có cấu trúc (`failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`) về workflow layer để Checkout dựng `409 PROMOTION_RECALCULATION_NEEDED`.
-   - `InitiatePaymentActivity` — gRPC/API sang Payment `/initiate` → nhận `payment_url`.
+   - `InitiatePaymentActivity` — gRPC/API sang Payment `/initiate` → nhận `client_secret` (Stripe) + `publishable_key`.
    - `DeductInventoryActivity` — gRPC/API sang Inventory `/deduct` (sau Payment).
    - `ConfirmPromotionActivity` — gRPC/API sang Promotion `/confirm` (sau Payment), bắt buộc truyền `idempotency_key` theo từng `promotion_id`.
-   - `UpdateOrderStatusActivity` — FSM update an toàn với Optimistic Locking.
+    - `UpdateOrderStatusActivity` — FSM update an toàn với row-level lock + idempotency theo `event_id` (bỏ `version`/optimistic locking, xem [DB Design §2](order_db_design.md#2-quản-lý-trạng-thái-phức-tạp-với-state-machine-fsm)).
    - `LockRefundScopeActivity` — chốt refund scope từ request đầu vào để tính refund một lần cho mỗi order.
    - `RegisterRefundReturnExpectationActivity` — đăng ký expected return scope với Inventory.
    - `WaitInventoryReturnReceivedAllSignal` — chờ signal Inventory xác nhận đã nhận đủ item refund scope.
@@ -267,54 +176,7 @@ Nếu cả apply lẫn park đều fail, không commit offset để tránh mất
 
 ---
 
-## 7. Cold Data Archiver (Batch CronJob)
-**Loại hình:** Lịch biểu chạy hàng tuần (VD: Chủ Nhật 3:00 AM).
-
-**Sứ mệnh:** Di dời đơn hàng cũ sang Cold Storage. Xem [Cold Data Archiving Design](cold_data_archiving_design.md).
-
-**Chi tiết luồng hoạt động:**
-1. Khởi tạo `archive_batch_id` và insert control record vào `archive_batches` (`status = RUNNING`, `attempt_count + 1`).
-2. Quét đơn hàng đủ điều kiện:
-   ```sql
-   SELECT id FROM orders 
-   WHERE status IN ('COMPLETED', 'CANCELLED', 'REFUNDED') 
-     AND updated_at < NOW() - INTERVAL '6 months' 
-   LIMIT 10000;
-   ```
-3. Insert membership vào `archive_batch_items` cho toàn bộ `order_id` đã chọn.
-4. Denormalize -> JSON/Parquet -> Upload S3.
-5. Verify S3 integrity, sau đó upsert `archived_orders_lookup` (`order_id`, `archive_batch_id`, `s3_file_key`, `order_created_at`, `archived_at`).
-6. Hard Delete từ PostgreSQL (CASCADE `order_items`, `order_item_lines`, `order_promotions`) chỉ sau khi lookup đã ghi thành công.
-7. Cập nhật `archive_batch_items.archive_status` theo từng order và chốt `archive_batches.status = COMPLETED`.
-8. Nếu fail ở bất kỳ stage nào (`SNAPSHOT`, `UPLOAD`, `VERIFY`, `DELETE`):
-   - Cập nhật `archive_batches.status = FAILED`, `failure_stage`, `failure_reason`.
-   - Insert outbox event `ORDER_ARCHIVE_BATCH_FAILED` (`aggregate_type = ArchiveBatch`, `partition_key = archive_batch_id`) để CDC publish lên `t.order.archive.retry`.
-
----
-
-## 8. Archive Replay Consumer (Kafka Consumer)
-**Loại hình:** Kafka Consumer chạy liên tục.
-**Consumer Group:** `order-archive-replay-consumer`
-
-**Sứ mệnh:** Lắng nghe `ORDER_ARCHIVE_BATCH_FAILED` từ `t.order.archive.retry`, sau đó replay lô lỗi theo `archive_batch_id`.
-
-**Chi tiết luồng hoạt động:**
-1. Consume event chứa: `archive_batch_id`, `attempt`, `failure_stage`, `failed_at`.
-2. Idempotency guard:
-   - Fast path: Redis `SETNX archive:replay:{archive_batch_id}:{attempt}`.
-   - Durable path: `order_event_idempotency` với `action_type = ARCHIVE_BATCH_REPLAY`, `action_scope_key = {archive_batch_id}:{attempt}`.
-3. Load `archive_batches` + danh sách `order_id` từ `archive_batch_items`.
-4. Chỉ replay các item `archive_status IN ('PENDING', 'FAILED')`.
-5. Re-run theo stage thất bại:
-   - `SNAPSHOT`/`UPLOAD`/`VERIFY`: re-upload + verify rồi mới cho phép delete.
-   - `DELETE`: chỉ chạy delete cho orders đã có `archived_orders_lookup` + checksum hợp lệ.
-6. Khi thành công, update `archive_batches.status = COMPLETED`; nếu vẫn fail:
-   - Tăng `attempt_count`, cập nhật `archive_batches.status = FAILED` + `failure_stage` mới.
-   - Insert outbox event `ORDER_ARCHIVE_BATCH_FAILED` mới (`aggregate_type = ArchiveBatch`, `partition_key = archive_batch_id`) để CDC publish lại retry event theo backoff policy.
-
----
-
-## 9. Outbox Data Retention Trimmer (Batch CronJob)
+## 6. Outbox Data Retention Trimmer (Batch CronJob)
 **Loại hình:** Job hàng ngày (VD: 4:00 AM).
 
 ```sql
@@ -326,26 +188,4 @@ WHERE created_at < NOW() - INTERVAL '15 days';
 
 ---
 
-## 10. CDC DLQ & Connector Health Monitor (Alerting CronJob)
-**Loại hình:** Cron Job mỗi 5 phút.
 
-**Chi tiết:**
-1. Kiểm tra trạng thái Debezium/Kafka Connect connector của outbox.
-2. Theo dõi DLQ topics của CDC pipeline (ví dụ: `t.order.outbox.cdc.dlq`).
-3. Ghi metrics:
-   - `order_outbox_cdc_connector_down_total`
-   - `order_outbox_cdc_dlq_events_total`
-4. Alert Slack/PagerDuty nếu connector `FAILED` hoặc DLQ tăng vượt ngưỡng.
-
----
-
-## 11. Idempotency Cleanup (Batch CronJob)
-**Loại hình:** Job hàng ngày (VD: 5:00 AM).
-
-```sql
-DELETE FROM order_request_idempotency
-WHERE expires_at < NOW();
-
-DELETE FROM order_event_idempotency
-WHERE processed_at < NOW() - INTERVAL '45 days';
-```

@@ -295,11 +295,10 @@ Với kiến trúc Global Stream (4 shards), việc trim đơn giản hơn đán
 
 **Chi tiết luồng hoạt động:**
 1. **Consume** event `ORDER_PAID` từ `t.order.events` (filter `event_type = 'ORDER_PAID'`).
-2. **Extract & Validate:** Lấy `user_id`, `cart_id` và danh sách `sku_ids` từ payload.
-   - **Bắt buộc validate `cart_id` không null/rỗng và đúng format Redis key:** `^\{cart\}:[^{}]+$`.
-   - Nếu `cart_id` null nhưng `user_id` có, thử tái tạo `cart_id = "{cart}:{user_id}"`. Nếu cả hai đều thiếu → log lỗi và skip message (commit offset để tránh infinite redelivery).
+2. **Extract & Validate:** Lấy `user_id` (build `cart_id = "{cart}:" + user_id`) và danh sách `sku_ids` từ payload.
+   - `user_id` bắt buộc không null/rỗng (UUID). Nếu thiếu → log lỗi và skip message (commit offset để tránh infinite redelivery).
    - `sku_ids` phải không rỗng. Event thiếu `sku_ids` hoặc chứa SKU không hợp lệ → log lỗi và skip message.
-   - **Bắt buộc bỏ qua** các field `items[]`, `parcels[]` và `quantity` trong payload ORDER_PAID khi chạy cart cleanup.
+   - **Phase 20:** Order Service đã bỏ `cart_id` khỏi payload (Cart tự build từ `user_id`), bỏ `items[]`/`parcels[]`/`quantity`/`status`/`paid_at`/`payment_transaction_id`/`payment_recovery`/`final_amount` (Cart không cần). Cart **bỏ qua** mọi field ngoài `order_id`/`user_id`/`sku_ids` nếu có xuất hiện (consumer resilience theo [CONTRACT_MATRIX §7.3](../_contracts/CONTRACT_MATRIX.md#7-cross-service-validation-bắt-buộc)).
 3. **Idempotency Check (Go layer):**
    - Kiểm tra `GET cart:idemp:order_paid:{order_id}`.
    - Nếu chưa có: set lock `SET cart:idemp:order_paid:{order_id} PROCESSING NX EX 300`. Nếu đã tồn tại `DONE` thì skip.

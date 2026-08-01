@@ -5,7 +5,6 @@
 *   [Redis Caching & Lua Scripts](redis_caching_design.md)
 *   [Promotion Workflows](promotion_workflow.md)
 *   [Promotion Events](promotion_events.md)
-*   [Outbox Pattern](promotion_outbox_pattern.md)
 
 ---
 
@@ -26,16 +25,16 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 
 ## 1. Trụ cột Message & Event (Kafka)
 
-### 1.1. Outbox CDC Connector (Producer)
-**Loại hình:** Kafka Connect Source Connector (Debezium CDC).
+### 1.1. Promotion Kafka Producer (Direct Produce)
+**Loại hình:** Inline Kafka Producer (không qua outbox DB).
 
-**Sứ mệnh:** Đảm bảo mọi sự kiện **đi qua bảng `promotion_outbox`** (markdown/coupon ledger/budget events) được đưa lên Kafka một cách an toàn (At-Least-Once Delivery) mà không cần polling trạng thái trong DB.
-*   **Chi tiết thiết kế:** Xem tại [Outbox Pattern](promotion_outbox_pattern.md#4-outbox-cdc-connector-chi-tiết).
-*   **Hoạt động:** Debezium đọc WAL PostgreSQL, lọc `INSERT` từ `promotion_outbox`, map `event_type` sang topic đích (`t.promotion.markdown.events` / `t.promotion.coupon.events` / `t.promotion.budget.events`) và dùng `partition_key` làm Kafka message key.
-*   **Retry/DLQ:** Quản trị tại Kafka Connect runtime (task retry, DLQ topic, connector lag alert), không ghi trạng thái retry vào bảng outbox.
-
-> [!NOTE]
-> Sự kiện claim Flash Sale (`COUPON_CLAIMED`) là luồng direct-produce sau Lua Script, không bắt buộc qua outbox DB.
+**Sứ mệnh:** Publish tất cả event (markdown, coupon, budget) trực tiếp lên Kafka sau khi DB transaction commit.
+*   **Hoạt động:** Service gọi `PromotionKafkaProducer.publish*()` ngay sau khi ghi DB thành công.
+*   **Topic routing:**
+    *   `MARKDOWN_*` → `t.promotion.markdown.events` (partition key = `rule_id`)
+    *   `COUPON_*` → `t.promotion.coupon.events` (partition key = `order_id` hoặc `claim_id`)
+    *   `BUDGET_EXHAUSTED` → `t.promotion.budget.events` (partition key = `promotion_id`)
+*   **Delivery guarantee:** Best-Effort. Nếu service crash sau DB commit trước khi Kafka send, event bị mất.
 
 ### 1.2. Order Events Consumer — Refund Flow
 **Loại hình:** Kafka Consumer (Long-running).
@@ -167,16 +166,7 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
     *   Retention tối thiểu phải >= `refund_window + 15 ngày` (khuyến nghị 45 ngày) để tránh mở lại cửa duplicate khi replay trễ.
     *   Ví dụ chuẩn vận hành: `DELETE FROM promotion_event_idempotency WHERE processed_at < NOW() - INTERVAL '45 days';`
 
-### 3.3. Outbox Garbage Collection
-**Loại hình:** Cronjob chạy hàng ngày.
-
-**Sứ mệnh:** Dọn rác bảng Outbox.
-*   **Hoạt động:**
-*   Xóa record quá hạn theo `created_at`, nhưng phải chặn bằng mốc an toàn của connector để không xóa sớm event chưa được ship:
-*   `DELETE FROM promotion_outbox WHERE created_at < NOW() - INTERVAL '7 days' AND created_at < :connector_safe_watermark;`
-    *   *(Đã bao gồm trong thiết kế [Outbox Pattern](promotion_outbox_pattern.md#44-dọn-rác-outbox-garbage-collection)).*
-
-### 3.4. Markdown Expiry Scheduler (Redis ZSET va Cron Fallback)
+### 3.3. Markdown Expiry Scheduler (Redis ZSET va Cron Fallback)
 **Loại hình:** Redis-driven scheduler loop (near-real-time 250ms-1s) + CronJob fallback self-healing (10-30 giây).
 
 **Sứ mệnh:** Kết thúc `markdown_rules` đúng mốc `end_time` gần chuẩn giây để phát event [`MARKDOWN_ENDED`](promotion_events.md#23-markdown_ended) (reason: `EXPIRED`). Cron fallback chỉ đóng vai trò cứu hộ khi miss index hoặc scheduler loop gián đoạn.
@@ -191,7 +181,7 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 3. **Claim + guard:** Với từng `rule_id` quá hạn, acquire lock `SETNX promo:markdown:expiry:lock:{rule_id}`. Nếu lock fail thì skip vòng hiện tại.
 4. **DB transaction (source-of-truth):**
     - `UPDATE markdown_rules SET status = 'ENDED' WHERE id = :rule_id AND status = 'ACTIVE' AND end_time <= NOW()`
-    - Nếu `row_count = 1`, insert outbox: `INSERT INTO promotion_outbox (... event_type='MARKDOWN_ENDED', payload.reason='EXPIRED' ...)` trong cùng transaction.
+    - Nếu `row_count = 1`, publish `MARKDOWN_ENDED(reason='EXPIRED')` lên Kafka trực tiếp.
 5. **Post-commit cleanup:** Commit thành công mới `ZREM promo:markdown:expiry:index :rule_id`.
 6. **Crash-window an toàn:** Nếu crash sau commit trước `ZREM`, lần xử lý sau trở thành no-op nhờ DB guard `status='ACTIVE' AND end_time<=NOW()`, rồi tự dọn index.
 7. **Cron fallback self-healing:** Job định kỳ 10-30 giây quét DB để vá miss schedule/index drift:
@@ -204,18 +194,9 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
     Sau đó chạy cùng transaction ở bước 4.
 8. **Startup rebuild index:** Khi service khởi động hoặc sau Redis failover, bootstrap lại `promo:markdown:expiry:index` từ tập rule `ACTIVE` có `end_time > NOW()`.
 
-*   **Idempotency & đa instance:** Khóa Redis chỉ chống đua ngắn hạn. Tính đúng đắn cuối cùng do DB guard + transaction outbox quyết định; `row_count = 0` luôn là no-op hợp lệ.
+*   **Idempotency & đa instance:** Khóa Redis chỉ chống đua ngắn hạn. Tính đúng đắn cuối cùng do DB guard quyết định; `row_count = 0` luôn là no-op hợp lệ. DB commit xong mới publish Kafka, chấp nhận best-effort.
 
-### 3.5. CDC Dead Letter Monitor
-**Loại hình:** CronJob mỗi 5 phút.
-
-**Sứ mệnh:** Theo dõi tình trạng sức khoẻ của hệ thống Event-driven.
-*   **Hoạt động:**
-    *   Quét DLQ topic của Kafka Connect (ví dụ `t.promotion.outbox.dlq`) và trạng thái connector task (`FAILED/UNASSIGNED`), đồng thời theo dõi connector lag.
-*   Bắn cảnh báo tới SysAdmin qua Slack/PagerDuty; xử lý bằng cách replay message từ DLQ hoặc restart task connector theo runbook.
-*   Không dùng `status = 'DEAD'` trong bảng outbox vì retry/DLQ ownership đã chuyển sang Kafka Connect.
-
-### 3.6. Redis-DB Budget Reconciliation Job
+### 3.4. Redis-DB Budget Reconciliation Job
 **Loại hình:** CronJob micro-batch mỗi 15 phút (kèm full-scan off-peak hằng ngày).
 
 **Sứ mệnh:** Phát hiện và sửa drift giữa Redis counters (`used/reserved`) và trạng thái nghiệp vụ bền vững sau các tình huống crash window (Redis script thành công nhưng DB commit lỗi, replay trễ, hoặc timeout giữa các bước Saga).
@@ -229,7 +210,7 @@ Promotion Service chịu tải cực lớn từ Giỏ hàng (Cart) và Thanh to�
 | `reserved_qty`, `reserved_amount` | Reservation còn hiệu lực trong Redis index/payload, đã lọc qua idempotency `REDEEM_COUPON FINAL` | Trạng thái tạm thời runtime (không lưu trong DB ledger) |
 
 *   **Hoạt động:**
-    1. Chọn tập `promotion_id` cần đối soát từ cửa sổ biến động gần đây (idempotency/outbox) và bổ sung full-scan định kỳ để bắt drift âm thầm.
+    1. Chọn tập `promotion_id` cần đối soát từ cửa sổ biến động gần đây (idempotency) và bổ sung full-scan định kỳ để bắt drift âm thầm.
     2. Dựng `expected snapshot`:
         * `expected_total_*` từ `promotion_budgets`.
         * `expected_used_*` từ `coupon_usages` (đã trừ phần refund lũy kế) có đối chiếu idempotency.

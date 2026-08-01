@@ -22,7 +22,7 @@ Khách hàng có thể sử dụng voucher từ **2 nguồn nghiệp vụ**:
 
 | Nguồn | Loại mã | Cách lấy |
 |:---|:---|:---|
-| **Ví voucher (`user_coupon_wallets`)** | `LIMITED_FLASH`, `UNLIMITED_ALL` (nếu đã lưu trước) | Đã có sẵn trong ví, `status = SAVED` |
+| **Ví voucher (`user_coupon_wallets`)** | `PLATFORM_VOUCHER`, `UNLIMITED_ALL` (nếu đã lưu trước) | Đã có sẵn trong ví, `status = SAVED` |
 
 > [!IMPORTANT]
 > Đối với tray Voucher Sàn tại Checkout, API `GET /v1/promotions/voucher-suggestions` chỉ trả mã đã có trong ví (`source = WALLET`). Không có cơ chế gợi ý mã sàn chưa lưu rồi auto-save ở Submit.
@@ -69,7 +69,7 @@ Authorization: Bearer {access_token}
 {
   "cart_context": {
     "subtotal": 530000,
-    "payment_method": "VNPAY"
+    "payment_method": "STRIPE"
   }
 }
 ```
@@ -147,12 +147,13 @@ Promotion Service
   │
   ├─── STEP 2: Query Database
   │     SELECT w.promotion_id, w.status, w.expired_at,
-  │            p.owner_id, p.discount_type,
+  │            p.type, p.discount_type,
   │            p.discount_value, p.max_discount_amount,
   │            p.min_purchase_amount, p.code
   │     FROM user_coupon_wallets w
   │     JOIN promotions p ON p.id = w.promotion_id
   │     WHERE w.user_id = :user_id
+  │       AND p.type = 'PLATFORM_VOUCHER'
   │       AND w.status = 'SAVED'
   │       AND (w.expired_at IS NULL OR w.expired_at > NOW())
   │       AND p.status = 'ACTIVE'
@@ -204,7 +205,7 @@ Promotion Service
 
 1. **Không auto-save mã sàn tại Submit.**
 2. **Không upsert `user_coupon_wallets` trong Discovery path.**
-3. **Mã muốn xuất hiện ở tray Voucher Sàn/Freeship phải tồn tại sẵn trong ví** (được lưu từ luồng claim/campaign/wallet management trước đó).
+  3. **Mã muốn xuất hiện ở tray Voucher Sàn phải tồn tại sẵn trong ví** (được lưu từ luồng claim/campaign/wallet management trước đó).
 
 ### 4.2. Vòng đời mã trong ví (không có bước insert ngầm)
 
@@ -223,10 +224,9 @@ Promotion Service
       ▼
    USED (DB wallet)
 
-  ORDER_REFUNDED:
-  - Chỉ `USED -> SAVED` khi promotion cho phép tái sử dụng **và** voucher còn hạn (`expired_at > NOW()`).
-  - Nếu đã quá hạn tại thời điểm restore: chuyển `EXPIRED` (hoặc giữ `USED` nếu không có row ví để cập nhật).
-  - Nếu promotion không cho phép tái sử dụng: giữ `USED`.
+  ORDER_REFUNDED (Phase 23):
+  - Giữ nguyên `USED`, không restore về `SAVED`.
+  - Voucher không còn được tái sử dụng sau refund.
 ```
 
 ---
@@ -303,8 +303,8 @@ Màn hình Checkout sử dụng **2 API Voucher Discovery riêng biệt** tùy t
 
 | API | Khi nào gọi | Mô tả |
 |:---|:---|:---|
-| `GET /v1/promotions/voucher-suggestions` | Khách mở tray **"Voucher của Sàn"** | Liệt kê Platform Voucher + Freeship **đã lưu trong ví** |
-| `GET /v1/promotions/platform-voucher-discovery` | Khách mở tray **"Voucher của platform X"** | Liệt kê toàn bộ voucher hợp lệ của platform đó (cả đã lưu + chưa lưu) |
+| `GET /v1/promotions/voucher-suggestions` | Khách mở tray **"Voucher của Sàn"** (đã lưu) | Liệt kê Platform Voucher **đã lưu trong ví** |
+| `GET /v1/promotions/platform-voucher-discovery` | Khách mở tray **"Khám phá Voucher Sàn"** | Liệt kê toàn bộ `PLATFORM_VOUCHER` hợp lệ (cả đã lưu + chưa lưu) |
 
 ```
 Khách mở màn hình Checkout
@@ -313,39 +313,40 @@ Khách mở màn hình Checkout
 Checkout Preview (gọi song song: Cart, User, Inventory×N, Promotion)
   │ (Shipping quote được lấy gián tiếp qua Inventory routing)
         │
-        ├─ Khách nhấn "Voucher của platform X" (mở platform Voucher tray)
-        │       │ -- GET /v1/promotions/platform-voucher-discovery?platform_id=X --
+        ├─ Khách nhấn "Khám phá Voucher Sàn" (mở platform Voucher tray)
+        │       │ -- GET /v1/promotions/platform-voucher-discovery --
         │       ▼
         │   Promotion Service trả ELIGIBLE[] + INELIGIBLE[] (< 15ms)
         │       │
         │       ├─ Khách chọn mã ĐÃ CÓ trong ví (source=WALLET)
         │       │       → POST /v1/checkout/preview với selected_platform_vouchers[X] = promo_id
         │       │
-        │       └─ Khách nhấn "Lưu & Chọn" mã CHƯA CÓ trong ví (source=platform_PUBLIC)
-        │               → POST /v1/promotions/save-and-apply {platform_id, promotion_id}
+        │       └─ Khách nhấn "Lưu & Chọn" mã CHƯA CÓ trong ví (source=PLATFORM_PUBLIC)
+        │               → POST /v1/promotions/save-and-apply {promotion_id}
         │               → Promotion: upsert user_coupon_wallets (SAVED)
         │               → POST /v1/checkout/preview với selected_platform_vouchers[X] = promo_id
         │
         └─ Khách nhấn "Voucher của Sàn" (mở Platform Voucher tray)
                 │ -- GET /v1/promotions/voucher-suggestions --
                 ▼
-          Promotion Service trả Platform Vouchers + Freeship từ ví (< 15ms)
+          Promotion Service trả Platform Vouchers từ ví (< 15ms)
                 │
             └─ Khách chọn mã đã lưu → POST /v1/checkout/preview với IDs mới
 ```
 
 ---
 
-## 9. platform Voucher Discovery API
+## 9. PLATFORM Voucher Discovery API
 
 ### 9.1. Mục đích
 
-API `GET /v1/promotions/platform-voucher-discovery` phục vụ tray **"Voucher của platform"** trên màn hình Checkout. Khác với Platform Voucher Discovery (chỉ show mã đã lưu trong ví), platform Voucher Discovery hiển thị **toàn bộ voucher hiện có của platform đó** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
+API `GET /v1/promotions/platform-voucher-discovery` phục vụ tray **"Voucher Sàn"** trên màn hình Checkout. Khác với `voucher-suggestions` (chỉ show mã đã lưu trong ví), `platform-voucher-discovery` hiển thị **toàn bộ voucher `PLATFORM_VOUCHER` đang `ACTIVE`** — bao gồm cả mã user chưa lưu — để tối đa hóa cơ hội khách hàng tìm được mã tốt nhất.
+
 
 ### 9.2. Endpoint
 
 ```
-GET /v1/promotions/platform-voucher-discovery?platform_id={platform_id}
+GET /v1/promotions/platform-voucher-discovery
 Authorization: Bearer {access_token}
 ```
 
@@ -353,11 +354,10 @@ Authorization: Bearer {access_token}
 
 ```json
 {
-  "platform_id": 101,
   "cart_context": {
     "sub_cart_subtotal": 350000,
     "item_category_ids": [5, 12],
-    "payment_method": "VNPAY"
+    "payment_method": "STRIPE"
   }
 }
 ```
@@ -367,33 +367,33 @@ Authorization: Bearer {access_token}
 ### 9.4. Backend Flow
 
 ```
-GET /platform-voucher-discovery?platform_id=101
+GET /platform-voucher-discovery
   │
-  ├── STEP 1: Fetch Wallet (Filter by platform_id)
+  ├── STEP 1: Fetch Wallet (tất cả PLATFORM voucher đã lưu)
   │     Query DB trực tiếp (không qua cache):
   │       SELECT w.promotion_id, w.status, w.expired_at, ...
   │       FROM user_coupon_wallets w
   │       JOIN promotions p ON p.id = w.promotion_id
   │       WHERE w.user_id = :user_id
-  │         AND p.owner_id = 101
+  │         AND p.type = 'PLATFORM_VOUCHER'
   │         AND w.status = 'SAVED'
   │         AND (w.expired_at IS NULL OR w.expired_at > NOW())
   │         AND p.status = 'ACTIVE'
   │     → Lazy expiry: với row `SAVED` mà `expired_at <= NOW()` → UPDATE sang `EXPIRED` (idempotent)
   │     → Source: WALLET, is_saved=true
   │
-  ├── STEP 2: Fetch platform Public Vouchers (chưa lưu trong ví)
+  ├── STEP 2: Fetch PLATFORM Public Vouchers (chưa lưu trong ví)
   │     Query DB:
   │       SELECT p.*
   │       FROM promotions p
   │       WHERE
-  │         p.owner_id = 101
+  │         p.type = 'PLATFORM_VOUCHER'
   │         AND p.discount_type IN ('PERCENTAGE', 'FIXED_AMOUNT')
   │         AND p.status = 'ACTIVE'
   │         AND p.end_time > NOW()
   │         AND p.id NOT IN (saved_wallet_promotion_ids_from_step1)
-  │     → Source: platform_PUBLIC, is_saved=false
-  │     → Index: (owner_id, status) — cần thêm index này
+  │     → Source: PLATFORM_PUBLIC, is_saved=false
+  │     → Index: (type, status, end_time) — cần thêm composite index này
   │
   ├── STEP 3: Evaluate Eligibility (Rule Engine In-Memory)
   │     Với mỗi voucher (từ Step 1 + Step 2):
@@ -418,8 +418,7 @@ GET /platform-voucher-discovery?platform_id=101
 
 ```json
 {
-  "platform_id": 101,
-    "vouchers": {
+  "vouchers": {
     "eligible": [
       {
         "promotion_id": 55,
@@ -442,7 +441,7 @@ GET /platform-voucher-discovery?platform_id=101
         "discount_value": 100000,
         "min_purchase_amount": 500000,
         "estimated_discount": 0,
-        "source": "platform_PUBLIC",
+        "source": "PLATFORM_PUBLIC",
         "is_saved": false,
         "ineligible_reason": "MIN_PURCHASE_NOT_MET",
         "amount_needed": 150000,
@@ -461,20 +460,19 @@ GET /platform-voucher-discovery?platform_id=101
 | `CATEGORY_NOT_MATCHED` | Sản phẩm không thuộc danh mục áp dụng |
 | `PAYMENT_METHOD_NOT_MATCHED` | Phương thức thanh toán không hợp lệ |
 | `BUDGET_EXHAUSTED` | Voucher cạn ngân sách/lượt tại thời điểm guard read-time |
-| `EXPIRED` | Voucher quá `expired_at` (mã đã có trong ví) hoặc quá `end_time` claim window (mã platform public) |
+| `EXPIRED` | Voucher quá `expired_at` (mã đã có trong ví) hoặc quá `end_time` claim window (mã PLATFORM_PUBLIC) |
 
 ### 9.6. Save & Apply Flow (Khi user nhấn "Lưu & Chọn" mã chưa lưu)
 
 ```
 POST /v1/promotions/save-and-apply
 {
-  "platform_id": 101,
   "promotion_id": 60
 }
 ```
 
 Promotion Service:
-1. Validate: promotion tồn tại, `owner_id = platform_id`, `status = ACTIVE`, và đang trong claim/save window hợp lệ.
+1. Validate: promotion tồn tại, `p.type = 'PLATFORM_VOUCHER'`, `p.status = ACTIVE`, và đang trong claim/save window hợp lệ (`p.start_time <= NOW() AND p.end_time > NOW()`).
 2. Upsert vào `user_coupon_wallets`:
    ```sql
   INSERT INTO user_coupon_wallets (user_id, promotion_id, status, saved_at, expired_at)
@@ -537,7 +535,7 @@ Khi reserve thất bại do all-or-nothing (Script 2B), Promotion Service và Ch
     {
       "promotion_id": 30,
       "reason": "BUDGET_EXHAUSTED",
-      "user_message": "Mã Freeship đã hết ngân sách."
+      "user_message": "Mã giảm giá đã hết ngân sách."
     }
   ],
   "proposal_checkout_data": {

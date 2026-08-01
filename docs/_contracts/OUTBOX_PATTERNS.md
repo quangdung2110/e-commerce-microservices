@@ -77,7 +77,7 @@ Khi một service cần ghi DB **VÀ ĐỒNG THỜI** publish event lên Kafka:
 | Order | CDC | `outbox_events` (append-only, không có status/retry_count) | Đã chuẩn từ thiết kế ban đầu |
 | Payment | Polling (legacy) | `outbox_events` (có `status/retry_count/max_retries/next_retry_at`) | **Cần migrate sang CDC** |
 | Inventory | CDC | `inventory_outbox` (chỉ fields CDC) | Đã chuẩn |
-| Promotion | CDC (default) + Direct-Produce (`COUPON_CLAIMED`) | `promotion_outbox` (chỉ fields CDC) | Đã chuẩn |
+| Promotion | Direct-Produce | — | Chuyển từ CDC sang Direct-Produce (Phase 24) |
 | Checkout | (không có outbox — stateless, không có DB) | — | Dùng Redis + Sync API |
 
 ## 4. Migration path cho Payment
@@ -117,7 +117,7 @@ Payment Service cần chuyển từ Polling sang CDC:
 
 ## 6. Cross-service consistency
 
-- **Tất cả event đều qua outbox** (trừ Promotion `COUPON_CLAIMED` direct-produce + Checkout không có outbox + Payment webhook dump).
+- **Tất cả event đều qua outbox** (trừ Promotion direct-produce + Checkout không có outbox + Payment webhook dump).
 - **Tất cả event envelope** đều có `schema_version: 1` — backward compat chỉ thêm field, không xóa/rename.
 - **Partition key đa dạng** theo event scope:
   - Order lifecycle: `order_id`

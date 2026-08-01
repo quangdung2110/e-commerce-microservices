@@ -47,7 +47,7 @@ Gửi thông báo xác nhận đơn hàng thành công. Fat Event chứa đủ t
     "total_amount": 1500000.00,
     "currency": "VND",
     "items_summary": "iPhone 15 Pro Max và 2 sản phẩm khác",
-    "payment_method": "VNPAY",
+    "payment_method": "STRIPE",
     "shipping_address": "123 Le Loi, Quận 1, TP. HCM"
   }
 }

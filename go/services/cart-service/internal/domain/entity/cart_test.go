@@ -214,6 +214,7 @@ func TestStreamIDComparison(t *testing.T) {
 }
 
 func TestCart_Reactivate(t *testing.T) {
+	now := time.Now().UTC()
 	// Test: new cart (no streamID) can be reactivated with a stream ID
 	cart := NewCart("{cart}:user1", "user1")
 
@@ -227,14 +228,14 @@ func TestCart_Reactivate(t *testing.T) {
 
 	// Test: re-activate a DELETED cart (restored from DB) with newer stream ID
 	// Cart restored with DELETED status and streamID "1001-0"
-	deletedCart := RestoreCart("{cart}:user2", "user2", CartStatusDeleted, "1001-0", nil)
+	deletedCart := RestoreCart("{cart}:user2", "user2", CartStatusDeleted, "1001-0", now, now)
 	deletedCart.Reactivate("1002-0")
 	if deletedCart.Status() != CartStatusActive {
 		t.Errorf("Status = %v, want ACTIVE after reactivate from DELETED", deletedCart.Status())
 	}
 
 	// Test: re-activate a CHECKED_OUT cart with newer stream ID
-	checkedOutCart := RestoreCart("{cart}:user3", "user3", CartStatusCheckedOut, "1003-0", nil)
+	checkedOutCart := RestoreCart("{cart}:user3", "user3", CartStatusCheckedOut, "1003-0", now, now)
 	checkedOutCart.Reactivate("1004-0")
 	if checkedOutCart.Status() != CartStatusActive {
 		t.Errorf("Status = %v, want ACTIVE after reactivate from CHECKED_OUT", checkedOutCart.Status())
@@ -247,14 +248,14 @@ func TestCart_Reactivate(t *testing.T) {
 	}
 
 	// Test: ACTIVE cart - Reactivate does nothing (function checks status internally)
-	activeCart := RestoreCart("{cart}:user4", "user4", CartStatusActive, "1005-0", nil)
+	activeCart := RestoreCart("{cart}:user4", "user4", CartStatusActive, "1005-0", now, now)
 	activeCart.Reactivate("1006-0")
 	if activeCart.Status() != CartStatusActive {
 		t.Errorf("Status = %v, want ACTIVE (no change for active cart)", activeCart.Status())
 	}
 
 	// Test: ABANDONED cart - Reactivate does nothing (only DELETED/CHECKED_OUT)
-	abandonedCart := RestoreCart("{cart}:user5", "user5", CartStatusAbandoned, "1007-0", nil)
+	abandonedCart := RestoreCart("{cart}:user5", "user5", CartStatusAbandoned, "1007-0", now, now)
 	abandonedCart.Reactivate("1008-0")
 	if abandonedCart.Status() != CartStatusAbandoned {
 		t.Errorf("Status = %v, want ABANDONED (Reactivate has no effect on ABANDONED)", abandonedCart.Status())

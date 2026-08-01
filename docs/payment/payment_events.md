@@ -11,6 +11,10 @@
 *   [Order Events (Consumer chính)](../order/order_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
 *   [Order Temporal Saga](../order/temporal_saga_design.md) — Payment Signal flow
 
+> **Phase 18 (Single Payment Provider):** Hệ thống chỉ dùng **Stripe**. Tất cả provider trong event payload = `"STRIPE"`, `provider_transaction_id` = `pi_xxx` (PaymentIntent), `provider_refund_id` = `re_xxx` (Refund), `stripe_event_id` = `evt_xxx`. Cột `payment_method` không còn trong payload (xem [CHANGELOG Phase 18](../_contracts/CHANGELOG.md#phase-18--single-payment-provider-stripe)).
+
+> **Phase 20 (Event Payload Simplification):** Payload tối thiểu cho Order consumer. Field Order không cần để route workflow/commit FSM đã được loại bỏ (`user_id`, `currency`, `provider`, `payment_method_type`, `provider_transaction_id`, `provider_charge_id`, `payment_event_sequence_id`, `refund_event_sequence_id`, `error_message`, `reason_message`). Payment Service vẫn giữ đầy đủ field ở internal log/audit; chỉ Kafka payload được tinh giản. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart).
+
 ---
 
 Payment Service produce các events liên quan đến kết quả thanh toán và hoàn tiền. Đây là nguồn sự thật duy nhất (Single Source of Truth) cho trạng thái tiền tệ. Tất cả events đi qua Outbox Pattern đảm bảo At-Least-Once Delivery.
@@ -61,6 +65,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 **Ngữ cảnh:** Order Service (Temporal Activity) gọi `POST /v1/payments/initiate` → Tạo `payment_transaction` mới. FSM: `[*]` → `PENDING`.
 **Consumer chính:** Analytics (tracking funnel conversion).
 
+> **Phase 20 (Payload Simplification):** Bỏ `user_id` (Analytics tự join từ `order_id` qua batch), `currency` (luôn VND), `provider` (luôn STRIPE), `provider_transaction_id` (chỉ cần cho refund call, không cần broadcast). Giữ `client_secret` (cần cho Stripe SDK ở Order Service), `expires_at`.
+
 ```json
 {
   "event_id": "123e4567-e89b-12d3-a456-426614174000",
@@ -70,16 +76,13 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "correlation_id": "wf-10001",
   "timestamp": "2026-02-28T10:05:00Z",
   "source": "payment-service",
+  "schema_version": 1,
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "amount": 995000,
-    "currency": "VND",
-    "payment_method": "VNPAY",
-    "payment_url": "https://pay.vnpay.vn/checkout?token=xyz",
-    "expires_at": "2026-02-28T10:20:00Z",
-    "created_at": "2026-02-28T10:05:00Z"
+    "client_secret": "pi_ABC123XYZ_secret_xxx",
+    "expires_at": "2026-02-28T10:20:00Z"
   }
 }
 ```
@@ -88,6 +91,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Cổng thanh toán webhook confirm → FSM: `PROCESSING/PENDING` → `SUCCESS`. Xem [State Machine T2](payment_state_machine.md#12-bảng-chi-tiết-transitions).
 **Consumer chính:** **Order Service** — Signal Temporal Workflow resume → Post-Payment Saga. Xem [Order Workers - Payment Consumer](../order/order_workers.md#3-payment-status-consumer).
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `currency`, `provider`, `provider_transaction_id`, `provider_charge_id`, `payment_method_type`, `payment_event_sequence_id`. Order chỉ cần `payment_transaction_id` (idempotency), `order_id` (route), `amount` (verify amount match), `paid_at` (audit).
 
 ```json
 {
@@ -102,12 +107,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "amount": 995000,
-    "currency": "VND",
-    "provider": "VNPAY",
-    "provider_transaction_id": "VNP-XYZ789",
-    "payment_event_sequence_id": 20260228100700,
     "paid_at": "2026-02-28T10:07:00Z"
   }
 }
@@ -120,6 +120,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Cổng thanh toán webhook báo thất bại. FSM: `PROCESSING` → `FAILED`.
 **Consumer chính:** Order Service — Signal Temporal → Cancel Order → Compensation.
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `error_message` (Notification map từ `error_code` qua i18n key), `provider`, `payment_event_sequence_id`.
 
 ```json
 {
@@ -134,11 +136,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "error_code": "INSUFFICIENT_BALANCE",
-    "error_message": "Số dư tài khoản không đủ",
-    "provider": "VNPAY",
-    "payment_event_sequence_id": 20260228100800,
     "failed_at": "2026-02-28T10:08:00Z"
   }
 }
@@ -148,6 +146,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** CronJob quét `expires_at < NOW()`. FSM: `PENDING/PROCESSING` → `EXPIRED`.
 **Consumer chính:** Order Service — Signal Temporal → Cancel Order.
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `payment_event_sequence_id`. Giữ `expired_at` cho audit timeline (Order dùng để log).
 
 ```json
 {
@@ -162,8 +162,6 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "payload": {
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "payment_event_sequence_id": 20260228102000,
     "expired_at": "2026-02-28T10:20:00Z"
   }
 }
@@ -173,6 +171,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Order Service request refund → Tạo `refund_transaction`. Refund FSM: `[*]` → `PENDING`.
 **Consumer:** Analytics.
+
+> **Phase 20 (Payload Simplification):** Bỏ `user_id`, `payment_event_sequence_id` (đây là payment sequence, không cần cho refund), `refund_event_sequence_id` (Order không guard theo). Giữ `payment_transaction_id` (cross-ref cho analytics), `refund_amount` (analytics), `reason` (categorize), `stripe_reason` (analytics), `initiated_at`.
 
 ```json
 {
@@ -188,10 +188,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
     "refund_transaction_id": "RFD-DEF456",
     "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_amount": 995000,
     "reason": "CUSTOMER_RETURN",
-    "refund_event_sequence_id": 20260305090000,
+    "stripe_reason": "requested_by_customer",
     "initiated_at": "2026-03-05T09:00:00Z"
   }
 }
@@ -201,6 +200,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Đã gọi lệnh Refund thành công sang Cổng Thanh toán và đang đợi xử lý bất đồng bộ. Refund FSM: `PENDING` → `PROCESSING`. Payment FSM: `SUCCESS` → `REFUNDING`.
 **Consumer:** Order Service (Đánh dấu tiến trình đang chạy), Analytics.
+
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id` (Order không cần cross-ref payment txn khi đã route theo `order_id`), `user_id`, `refund_amount` (Order đã lock từ workflow), `provider_refund_id` (Payment internal audit), `refund_event_sequence_id` (Order không guard theo). Giữ `processing_at` cho timeline.
 
 ```json
 {
@@ -214,12 +215,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
-    "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "refund_amount": 995000,
-    "provider_refund_id": "VNP-RFD-ASYNC-01",
-    "refund_event_sequence_id": 20260305090005,
     "processing_at": "2026-03-05T09:00:05Z"
   }
 }
@@ -229,6 +225,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Cổng thanh toán xác nhận hoàn tiền xong. Refund FSM: `PROCESSING` → `SUCCESS`. Payment FSM: `REFUNDING` → `REFUNDED`.
 **Consumer chính:** **Order Service** — FSM Order `RETURN_REQUESTED` → `REFUNDED`. Produce `ORDER_REFUNDED`.
+
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `provider_refund_id`, `refund_event_sequence_id`. Order cần `refund_transaction_id` (idempotency), `order_id` (route), `refund_amount` (để tính allocation), `refunded_at` (audit timeline).
 
 ```json
 {
@@ -242,12 +240,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
-    "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "refund_amount": 995000,
-    "provider_refund_id": "VNP-RFD-001",
-    "refund_event_sequence_id": 20260305100000,
     "refunded_at": "2026-03-05T10:00:00Z"
   }
 }
@@ -259,6 +253,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 
 **Ngữ cảnh:** Cổng thanh toán từ chối hoàn tiền. Refund FSM: `PROCESSING` → `FAILED`.
 **Consumer:** Order Service (alert), SysAdmin Dashboard.
+
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `refund_event_sequence_id`, `error_message` (Notification map từ `error_code` qua i18n key). Giữ `error_code` để categorize.
 
 ```json
 {
@@ -272,12 +268,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
-    "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "error_code": "REFUND_WINDOW_EXPIRED",
-    "error_message": "Quá hạn hoàn tiền 30 ngày",
-    "refund_event_sequence_id": 20260305100000,
     "failed_at": "2026-03-05T10:00:00Z"
   }
 }
@@ -288,6 +280,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 **Ngữ cảnh:** Một số cổng có thể đảo chiều trạng thái refund sau khi trước đó đã thông báo success/processing (ví dụ account đích không còn hợp lệ, scheme trả tiền ngược về merchant account).
 
 **Consumer:** Order Service (trigger manual-review flow + `ORDER_REFUND_FAILED` escalation), SysAdmin Dashboard, Accounting/Reconciliation.
+
+> **Phase 20 (Payload Simplification):** Bỏ `payment_transaction_id`, `user_id`, `provider_refund_id`, `refund_event_sequence_id`, `reason_message` (Notification map từ `reason_code` qua i18n key). Giữ `reason_code` để categorize.
 
 ```json
 {
@@ -301,13 +295,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
   "schema_version": 1,
   "payload": {
     "refund_transaction_id": "RFD-DEF456",
-    "payment_transaction_id": "TXN-ABC123",
     "order_id": 10001,
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "provider_refund_id": "VNP-RFD-001",
     "reason_code": "REFUND_REVERSED_BY_PROVIDER",
-    "reason_message": "Destination account invalid or rejected by scheme",
-    "refund_event_sequence_id": 20260306080000,
     "reversed_at": "2026-03-06T08:00:00Z"
   }
 }

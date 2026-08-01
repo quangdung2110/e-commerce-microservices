@@ -11,6 +11,8 @@
 *   [Promotion Workflow](../promotion/promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow) — Budget Reservation
 *   [Inventory Warehouse Selection](../inventory/smart_routing_engine.md) — Stock check + Routing
 
+> **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng 1 payment provider duy nhất (Stripe). Checkout **KHÔNG** nhận `payment_method` từ client nữa; `payment_method` đã bỏ khỏi Submit payload và response. Xem [CHANGELOG Phase 18](../_contracts/CHANGELOG.md#phase-18--single-payment-provider-stripe).
+
 ---
 
 Tài liệu này mô tả chi tiết chuỗi sự kiện (Sequence Flow) của hai API quan trọng nhất do Checkout Service quản lý: **Checkout Preview** (Khởi tạo bản nháp) và **Checkout Submit** (xác nhận đặt hàng).
@@ -99,8 +101,6 @@ Sau khi join tất cả results, Checkout tính giá theo trình tự Waterfall:
 3. final_amount = total_product_price
 ```
 
-> Phase 14 đã đơn giản hóa pricing formula. Không còn shipping fee, không còn freeship discount.
-
 ### 1.5. Optimization Decision Tree (Khi Preview được gọi lại)
 
 Tuỳ theo loại thay đổi, Checkout Service chỉ gọi lại đúng services cần thiết:
@@ -138,11 +138,8 @@ Preview Request (đợt sau)
    * `POST /v1/checkout/submit` là luồng commit nghiệp vụ (Reserve/Confirm qua Saga), **không được auto-save voucher** vào ví user.
    * Mọi ghi mới vào ví voucher phải đến từ explicit action ngoài Submit (ví dụ: Save & Apply voucher, claim campaign, worker cấp mã).
 
-### 1.6. Warehouse Selection (Phase 14 — thay thế Service Type Pass-through)
 
-Phase 14 đã loại bỏ `service_type` khỏi Preview request. Logic mới: Inventory `routing-options` chọn kho có stock đủ (ưu tiên same-province). Checkout không can thiệp; toàn bộ scoring nằm trong [Warehouse Selection Engine](../inventory/smart_routing_engine.md).
-
-### 1.7. Response Payload
+### 1.6. Response Payload
 
 ```json
 {
@@ -172,20 +169,18 @@ Phase 14 đã loại bỏ `service_type` khỏi Preview request. Logic mới: In
   },
   "warehouse_assignments": [
     {
-      "warehouse_id": 5,
-      "estimated_delivery_days": 2
+      "warehouse_id": 5
     }
   ],
   "price_breakdown": {
     "total_product_amount": 44000000,
     "total_voucher_discount": 0,
     "final_amount": 44000000
-  },
-  "available_payment_methods": ["VNPAY", "MOMO", "ZALOPAY"]
+  }
 }
 ```
 
-### 1.8. Timeout Policy
+### 1.7. Timeout Policy
 
 | Scope | Timeout | Fallback |
 |:---|:---|:---|
@@ -203,15 +198,14 @@ Khách hàng thấy giá tiền hợp lý, nhấn nút "Xác Nhận Đặt Hàng
 
 ### Flow Thực thi (Tránh Deadlock & Tối ưu an toàn):
 1. **Tiếp nhận & Khóa (Distributed Lock):**
-   * Frontend gửi `[CheckoutToken, payment_method, user_ack_degraded_pricing]`.
+   * Frontend gửi `[CheckoutToken, user_ack_degraded_pricing]` (Phase 18: không còn `payment_method`).
    ```json
    {
      "checkout_token": "uuid-v4-xxx",
-     "payment_method": "VNPAY",
      "user_ack_degraded_pricing": false
    }
    ```
-   > **`payment_method` chỉ chấp nhận:** `VNPAY` | `MOMO` | `ZALOPAY`.
+   > **Phase 18:** `payment_method` đã được loại bỏ khỏi Submit payload. Hệ thống chỉ dùng Stripe, Checkout không cần truyền provider identifier.
    * Backend xin quyền **Distributed Lock** (`checkout:lock:submit:{user_id}`). Nếu fail trả `423 Locked`.
 
 2. **Kiểm tra sơ bộ & Cờ Degraded:**
@@ -234,8 +228,8 @@ Khách hàng thấy giá tiền hợp lý, nhấn nút "Xác Nhận Đặt Hàng
     * Bắn lệnh Internal gRPC sang Order Service (Truyền toàn bộ Payload đã khóa, bao gồm `route_plan_id` được lưu trong session từ Preview — client không cần gửi). Kích hoạt Temporal Workflow tại Order Service theo thứ tự chuẩn: `CreateOrder -> ReserveInventory -> ReservePromotion -> InitiatePayment -> WaitPaymentSignal`.
     * Submit path giữ nguyên nguyên tắc **read/validate/reserve**; không có thao tác auto-save voucher sàn trong bước này.
   * Nếu pre-payment timeout/cancel, nhánh `RollbackPromotionActivity` chỉ nhả reservation runtime (`reserved_*`), không đổi trạng thái ví voucher trong DB.
-    * **Nếu Order Service nhận:** Trả về `[order_id, payment_url]`.
-      * Dọn dẹp Lock, dọn dẹp Payload. Cache lại Response (Idempotent response cache). Checkout trả URL về cho Frontend.
+    * **Nếu Order Service nhận:** Trả về `[order_id, client_secret, publishable_key]` (Stripe).
+      * Dọn dẹp Lock, dọn dẹp Payload. Cache lại Response (Idempotent response cache). Checkout trả `client_secret` + `publishable_key` về cho Frontend (Frontend dùng Stripe Elements / Stripe Checkout SDK).
     * **Nếu Order Service trả lỗi nghiệp vụ từ ReservePromotion (all-or-nothing fail):** Checkout xử lý theo 4 bước bắt buộc:
       * (a) Nhận `failed_promotion_id` + `failed_reason` + `reserve_mode` từ lỗi có cấu trúc.
       * (b) Loại `failed_promotion_id` khỏi tập mã đã chọn và gọi lại Promotion `/calculate-discount` với cart context hiện tại + tập mã còn lại.

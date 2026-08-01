@@ -50,11 +50,9 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 > Session Checkout không lưu cờ voucher độc quyền. Quy tắc cộng dồn voucher được xác định bởi Promotion Service theo mô hình 1 slot PLATFORM và kết quả `pricing_summary` trả về.
 
-> **Phase 14:** `rate_card_version` đã bị loại bỏ (Shipping Service đã bị xóa).
 
 > **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_voucher_discount + promotion_rule_version`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path). Canonical: dùng `total_voucher_discount` (không dùng `total_discount_amount` hay `total_platform_discount` — đã deprecated).
 
-> **Đơn giản hóa:** Bỏ field `route_version` (chỉ có 1 Warehouse Selection algorithm) và `route_signature` (thừa vì scoring đã deterministic).
 
 ### 1.2. Lifecycle
 
@@ -70,7 +68,7 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 - **Selective Update:** Khi user thay đổi delivery address, chỉ cần `HSET ... delivery_address ... selected_voucher ...` — không cần serialize/deserialize toàn bộ session.
 - **Atomic Read:** `HGETALL` lấy về toàn bộ checkout summary trong 1 round-trip.
-- **Selective Read:** API `GET /checkout/warehouse-options` chỉ cần `HGET ... warehouse_options`.
+- **Selective Read:** API `GET /checkout/warehouse-assignments` chỉ cần `HGET ... warehouse_assignments`.
 
 ---
 
@@ -78,7 +76,7 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 ### 2.1. Inventory Route Cache
 
-**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options`, cache kết quả route plan trong **20 phút** (Phase 14 đã loại bỏ TTL 10 phút ngắn do Shipping).
+**Ý tưởng:** Sau khi Checkout Preview gọi Inventory Service `/routing-options`, cache kết quả route plan trong **20 phút**
 **TTL:** 20 phút
 **Invalidation:**
 - User thay đổi quantity hoặc thêm/xóa item tại Cart Service → `items_hash` thay đổi → cache miss tự nhiên.
@@ -88,24 +86,13 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 > **Quy tắc recompute kèm theo:** Đổi voucher chỉ trigger Promotion evaluate lại; không invalidate route cache.
 
-### 2.2. Warehouse Options Cache
+### 2.2. Voucher Discovery (Không có cache ví)
 
-**Phase 14 đã loại bỏ:** section Shipping Fee Cache. Pricing formula không còn shipping fee; checkout không duy trì cache shipping riêng nữa.
+Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checkout Service gọi Promotion Service `GET /v1/promotions/voucher-suggestions`. Promotion Service **không còn dùng wallet cache** nữa; mỗi request sẽ query trực tiếp DB `user_coupon_wallets` (Index Scan `user_id, status`, ~3-5ms) và áp dụng lazy expiry inline cho các row `SAVED` đã quá `expired_at`.
 
-> [!NOTE]
-> Cache này chỉ áp dụng cho **cùng 1 user session** trong quá trình checkout. Không phải global cache. Khi session hết hạn, cache tự xóa.
+**Chi tiết thiết kế:** Xem [Promotion Redis Design](../promotion/redis_caching_design.md) và [Voucher Discovery API §5.1](../promotion/voucher_discovery_api.md#51-lazy-expiry-update-inline-trong-discovery).
 
-### 2.3. Wallet Cache (Voucher Discovery)
-
-Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checkout Service gọi Promotion Service `GET /v1/promotions/voucher-suggestions`. Promotion Service sử dụng cache này để tránh query DB `user_coupon_wallets` nhiều lần trong cùng 1 session.
-
-**Key:** `wallet:{user_id}:active_vouchers` *(owned by Promotion Service)*
-**TTL:** 5 phút
-**Chi tiết thiết kế:** Xem [Promotion Redis Design](../promotion/redis_caching_design.md) và [Voucher Discovery API](../promotion/voucher_discovery_api.md#51-wallet-cache-l2-redis).
-
-> **Voucher Tray tái sử dụng Wallet Cache:** Khi user mở tray "Chọn Voucher", Promotion Service lấy `wallet:{user_id}:active_vouchers` → filter các mã phù hợp → merge thêm mã public của sàn chưa lưu. Cache hit path không tạo thêm I/O nào.
-
-> **Voucher Tray chỉ đọc từ Wallet:** Khi user mở tray "Voucher Sàn", Promotion Service chỉ đọc danh sách đã lưu từ `wallet:{user_id}:active_vouchers` rồi evaluate rule. Không trộn thêm mã chưa lưu vào response.
+> **Voucher Tray đọc trực tiếp DB:** Khi user mở tray "Chọn Voucher" hoặc "Voucher Sàn", Promotion Service query `user_coupon_wallets JOIN promotions` trực tiếp rồi eval rule + Budget Guard. Không qua Redis cache ở giữa, nên không có bước DEL invalidation.
 
 > **Claim Window vs Use Window:** Promotion chỉ dùng `promotions.start_time/end_time` để quyết định còn được claim/save mã mới; quyền sử dụng mã đã sở hữu khi checkout dựa trên `user_coupon_wallets.expired_at` (policy hiện tại: 30 ngày từ lúc acquire/save).
 
@@ -116,9 +103,9 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 > **Boundary ghi ví rõ ràng:**
 > - Checkout Submit không được ghi `user_coupon_wallets`.
 > - Chỉ explicit action như `save-and-apply` (voucher) hoặc campaign/claim worker của Promotion mới tạo thêm bản ghi ví.
-> - Sau khi `save-and-apply` thành công, bắt buộc `DEL wallet:{user_id}:active_vouchers` để lần mở tray tiếp theo nhìn thấy trạng thái đã lưu.
+> - Sau khi `save-and-apply` thành công, lần Discovery kế tiếp sẽ tự thấy mã mới (vì query trực tiếp DB, không qua cache).
 
-### 2.4. User Address Cache
+### 2.3. User Address Cache
 
 Address list được cache bởi **User Service** (không phải Checkout Service) — Checkout chỉ gọi User Service là được hưởng cache này thông qua. Việc thiết kế double caching cho Address tại Checkout là dư thừa và dễ gây loạn trạng thái (Cache Invalidation complexity), do đó Checkout không duy trì layer cache riêng cho address.
 
@@ -203,10 +190,12 @@ Giới hạn số lượng thread chạy song song của cùng 1 user, tránh ra
 
 ### 5.2. Anti-Tampering
 
-Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code, payment_method). Backend tự tính lại, so khớp, rồi mới tạo order.
+Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code). Backend tự tính lại, so khớp, rồi mới tạo order.
+
+> **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng Stripe, nên field `payment_method` không còn cần thiết trong Checkout session. Checkout không cần validate `payment_method` ở Submit. Redis session chỉ lưu `pricing_summary` + `delivery_address_snapshot` + voucher selection; provider được fix cứng = Stripe ở Order Service và Payment Service.
 
 ```
-Client gửi: { token, address_id: 5, promotion_code: "HAPPYBDAY", payment_method: "VNPAY" }
+Client gửi: { token, address_id: 5, promotion_code: "HAPPYBDAY" }
 Server: Bóc token → Redis session → Lấy pricing_summary đã tính sẵn ở Preview
 Server: Validate address_id thuộc user + promotion_code match session → Pass
 Server: Gửi toàn bộ sang Order Service: { items, amount, discount, ... } -- tất cả từ Redis
