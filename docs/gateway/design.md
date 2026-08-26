@@ -34,6 +34,14 @@ Gateway được giữ mỏng: không tổng hợp business data, không query d
 
 Route dùng host/path/method rules và chỉ map đến service đã khai báo. Docker label discovery hỗ trợ local development; Kubernetes Gateway API/CRDs là nguồn production. Mọi service có health checks, timeouts giới hạn và retry behavior theo idempotency. Quy ước định nghĩa route priority, hành vi với path không xác định, WebSocket và Stripe webhook exceptions.
 
+### Ngân sách timeout và hủy request
+
+Gateway áp dụng một ngân sách timeout xuyên suốt thay vì để từng lớp dùng giá trị mặc định không giới hạn. Đọc request client tối đa 15 giây, ghi response tối đa 60 giây và keep-alive idle tối đa 120 giây. Kết nối upstream tối đa 3 giây; response header của public/auth API, business API và payment API lần lượt tối đa 10, 25 và 20 giây.
+
+Stripe webhook có tổng ngân sách proxy 5 giây, không retry và không buffer/biến đổi body. ForwardAuth có deadline 3 giây; JWKS là 3 giây và Redis là 1 giây. Nếu bất kỳ dependency xác thực nào hết thời gian, route protected trả `503` và tuyệt đối không fail open.
+
+Khi client hủy request hoặc gateway hết deadline, context bị hủy được truyền xuống upstream và `gateway-auth`. Service đặt deadline nội bộ ngắn hơn gateway ít nhất một giây. Retry chỉ được bắt đầu nếu còn đủ ngân sách cho lần thử kế tiếp và chỉ áp dụng cho method idempotent. Quy ước vận hành quy định đầy đủ các giá trị, mã lỗi và graceful shutdown trong [runtime-contract.md](runtime-contract.md#51-ngân-sách-timeout).
+
 ## Xác thực và phân quyền
 
 Traefik gọi `gateway-auth` thông qua ForwardAuth trên protected routes. Service này verify JWT issuer, audience, signature algorithm, expiry, JWKS, denylist và user-wide revocation, sau đó phát một tập identity headers tối thiểu trong allowlist.
@@ -55,6 +63,8 @@ Application services phải được instrument riêng để trace có thể đi
 ## WebSocket và webhook
 
 WebSocket authenticate tại HTTP Upgrade handshake, sau đó frame được proxy mà không inspect từng frame. Chat Service có trách nhiệm đóng sessions sau revocation events.
+
+WebSocket handshake có timeout 10 giây. Sau khi kết nối được nâng cấp, HTTP timeout không quản lý frame; Chat Service gửi ping mỗi 30 giây và đóng connection không có pong trong 90 giây. Khi gateway drain lúc rollout, client cần reconnect.
 
 `POST /api/payments/webhook/stripe` bypass JWT vì Payment Service verify `Stripe-Signature` trên raw body không thay đổi. Gateway áp dụng IP/rate policy riêng, forward nhanh và không retry.
 

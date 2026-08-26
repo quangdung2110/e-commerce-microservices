@@ -33,7 +33,7 @@
 |---|---|---|---|
 | 2.1 | Triển khai route matrix | Mọi route khai báo chỉ đến target; path không xác định trả 404 | Đã lập kế hoạch |
 | 2.2 | Chuẩn hóa tên middleware khác provider | Docker references dùng `@file`; config validation đạt | Đã lập kế hoạch |
-| 2.3 | Thêm health checks, timeouts, idempotent retry policy | Upstream unhealthy/chậm bị giới hạn; POST không retry | Đã lập kế hoạch |
+| 2.3 | Thêm health checks, timeout budget và idempotent retry policy | Mọi giá trị trong timeout contract được cấu hình; upstream unhealthy/chậm bị giới hạn; POST không retry | Đã lập kế hoạch |
 | 2.4 | Cấu hình/test circuit breakers | Circuit mở và phục hồi ở threshold đã ghi nhận | Đã lập kế hoạch |
 | 2.5 | Thêm product public/private priority, Stripe, WebSocket routes | Exceptional behavior bắt buộc đạt integration tests | Đã lập kế hoạch |
 
@@ -41,7 +41,7 @@
 
 | ID | Công việc | Acceptance criteria | Trạng thái |
 |---|---|---|---|
-| 3.1 | Định nghĩa và deploy `gateway-auth` | ForwardAuth protocol, health check, headers, timeouts được test | Đã lập kế hoạch |
+| 3.1 | Định nghĩa và deploy `gateway-auth` | ForwardAuth protocol, health check, headers và timeout JWKS/Redis được test | Đã lập kế hoạch |
 | 3.2 | Triển khai JWT/JWKS validation | Issuer/audience/algorithm/expiry/not-before không hợp lệ bị reject | Đã lập kế hoạch |
 | 3.3 | Triển khai JWKS cache và Redis revocation checks | Rotation, denylisted token, force logout hoạt động | Đã lập kế hoạch |
 | 3.4 | Enforce dependency failure và header-sanitization policy | Dependency outage là 503; client `X-User-*` injection không tới service | Đã lập kế hoạch |
@@ -76,7 +76,7 @@
 
 ## Kiểm thử end-to-end bắt buộc
 
-Routing: mọi matrix route, sai path/method, priority collision, unhealthy upstream. TLS/network: redirect, TLS handshake, forwarded-header spoofing, private operations endpoints. Authentication: missing/malformed/expired/revoked/wrong issuer/audience token, JWKS rotation, outage, header spoofing. Stripe: raw body/signature, JWT bypass, no retry. Limits: threshold, IP/identity dimensions, two replicas, Redis outage. Observability: W3C propagation, log correlation, redaction, connected trace. Resilience: timeout, retry eligibility, circuit recovery, restart. Performance: baseline, auth overhead, steady/spike load, p95/p99, memory và CPU.
+Routing: mọi matrix route, sai path/method, priority collision, unhealthy upstream. TLS/network: redirect, TLS handshake, forwarded-header spoofing, private operations endpoints. Authentication: missing/malformed/expired/revoked/wrong issuer/audience token, JWKS rotation, outage, header spoofing. Stripe: raw body/signature, JWT bypass, no retry và timeout 5 giây. Limits: threshold, IP/identity dimensions, two replicas, Redis outage. Observability: W3C propagation, log correlation, redaction, connected trace. Resilience: client read timeout, từng upstream response timeout, cancellation propagation, retry khi còn ngân sách, circuit recovery, graceful shutdown và WebSocket ping/pong. Performance: baseline, auth overhead, steady/spike load, p95/p99, memory và CPU.
 
 ## Migration và rollback
 

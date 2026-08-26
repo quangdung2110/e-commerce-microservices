@@ -69,6 +69,32 @@ Path không xác định trả về `404` từ gateway; không có catch-all rou
 
 Mỗi service có health check và upstream transport timeout giới hạn. Retry chỉ áp dụng cho `GET`, `HEAD`, `OPTIONS` khi lỗi connection/5xx đã được cấu hình. Payment write và Stripe webhook không bao giờ bị gateway retry. Circuit breaker chỉ được thêm theo upstream sau khi threshold và recovery behavior đã được test.
 
+### 5.1. Ngân sách timeout
+
+Timeout là một phần của API contract, không phải giá trị mặc định của Traefik. Các giá trị dưới đây là giới hạn tối đa ban đầu; bất kỳ service nào cần thời gian ngắn hơn phải khai báo timeout riêng. Không route nào được đặt timeout bằng `0` (không giới hạn).
+
+| Lớp hoặc route | Giới hạn | Hành vi khi hết thời gian |
+|---|---:|---|
+| Đọc request của client tại `websecure` | 15 giây | Dừng đọc request không hoàn chỉnh; bảo vệ trước slow client |
+| Ghi response về client tại `websecure` | 60 giây | Ngắt response chưa hoàn tất; API không được streaming kéo dài |
+| Kết nối keep-alive không hoạt động | 120 giây | Gateway đóng kết nối idle |
+| Kết nối từ gateway đến upstream | 3 giây | Xem là lỗi upstream; chỉ GET/HEAD/OPTIONS còn ngân sách mới được retry |
+| Chờ response header từ public-read/auth API | 10 giây | Trả `504` cho client |
+| Chờ response header từ business API | 25 giây | Trả `504` cho client |
+| Chờ response header từ payment API | 20 giây | Trả `504`; gateway không retry |
+| Stripe webhook — toàn bộ thời gian proxy | 5 giây | Trả `504`; gateway không retry, Stripe tự delivery lại |
+| ForwardAuth → `gateway-auth` | 3 giây | Trả `503`; không được cho request đi tiếp |
+| `gateway-auth` → JWKS | 3 giây tổng, connect tối đa 1 giây | Áp dụng policy cache/fail-closed trong phần xác thực |
+| `gateway-auth` → Redis | 1 giây cho dial/read/write | Trả `503` cho protected route |
+| WebSocket handshake | 10 giây | Từ chối handshake không hoàn tất |
+| WebSocket sau khi nâng cấp | Ping 30 giây, không có pong trong 90 giây | Chat Service đóng kết nối; không dùng HTTP timeout để quản lý frame |
+
+Khi gateway nhận cancellation từ client hoặc hết deadline, nó phải hủy request context tới upstream và `gateway-auth`. Downstream service phải quan sát context cancellation và dừng công việc có thể hủy. Deadline nội bộ của service phải nhỏ hơn deadline gateway ít nhất một giây để service có thời gian trả response có kiểm soát.
+
+Không bắt đầu retry nếu phần thời gian còn lại không đủ cho một lần kết nối và response-header timeout nữa. Không retry request không idempotent, kể cả khi deadline chưa hết. `408` chỉ dùng cho request client gửi không hoàn chỉnh; `504` chỉ dùng khi upstream không đáp ứng trong ngân sách; timeout của `gateway-auth`, JWKS hoặc Redis là lỗi dependency và trả `503`.
+
+Khi shutdown hoặc rollout, gateway ngừng nhận request mới trong 10 giây để load balancer loại instance khỏi rotation, sau đó cho các request HTTP đang chạy tối đa 30 giây để hoàn tất. WebSocket client phải reconnect sau khi connection được drain.
+
 ## 6. Quy ước xác thực
 
 `gateway-auth` phải:
