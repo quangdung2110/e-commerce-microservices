@@ -1,142 +1,48 @@
-# Phân tích Traefik cho API Gateway
+# Quyết định công nghệ cho API Gateway
 
-Dựa trên thiết kế chi tiết (JWT verification, Redis denylist, JWKS local cache + Pub/Sub invalidation, rate limiting, OpenTelemetry), Traefik mang lại nhiều lợi thế đặc biệt trong môi trường cloud-native.
-Traefik thuộc loại Server-side Discovery.
----
+## Quyết định
 
-## 1. Native Integration với Docker / Kubernetes
+Dùng **Traefik Proxy v3.7.1** làm edge gateway, service **`gateway-auth` ForwardAuth** độc lập cho JWT validation và identity enrichment, **Redis-backed distributed rate limiting**, và **OpenTelemetry Collector** làm telemetry ingress. Hành vi vận hành nằm trong [runtime-contract.md](runtime-contract.md).
 
-**Yêu cầu từ thiết kế:** Dynamic Service Discovery (Consul/Eureka/K8s DNS), load balancing (Round Robin, Least Connection).
+## Bối cảnh
 
-Traefik tự động phát hiện endpoints từ Docker labels, Kubernetes Ingress/CRD, Consul, Etcd... mà không cần Service Registry client riêng.
+Nền tảng cần dynamic routing, TLS, health-aware forwarding, bảo vệ chống abuse, JWT/JWKS validation kèm revocation, và request observability. Thiết kế Traefik v3.0 cũ phụ thuộc vào Go plugin `.so` compiled, không phải deployment model phù hợp/được hỗ trợ cho Traefik middleware plugins và tạo coupling không cần thiết giữa security logic với proxy runtime.
 
-Khi deploy `user-service` lên K8s, chỉ cần gán label `traefik.http.services.user-service.loadbalancer.server.port=8080`, Traefik tự động route `/api/users/**` đến service đó. Không cần viết code định tuyến động như Spring Cloud Gateway.
-Client chỉ cần gửi request đến địa chỉ Traefik (ví dụ `http://api-gateway:80/api/users/...`). Traefik tra cứu danh sách instance (đã được đồng bộ) và forward đến một instance khỏe mạnh.
+## Vì sao chọn Traefik
 
-**Lợi ích:** Giảm đáng kể công sức cấu hình và bảo trì, đặc biệt khi hệ thống có nhiều service.
+Traefik cung cấp cloud-native discovery, routing, TLS, health checks, edge middleware chuẩn, Prometheus metrics và OpenTelemetry tracing, đồng thời giữ routing tách khỏi application services. Đây là edge traffic manager, không phải nơi đặt domain logic.
 
----
+## Quyết định xác thực
 
-## 2. Hiệu Năng Cao và Footprint Thấp
-
-Traefik viết bằng Go, chạy như một binary duy nhất, không cần JVM. So sánh với Spring Cloud Gateway (Java):
-
-| Tiêu chí | Traefik | Spring Cloud Gateway |
-|---|:---:|:---:|
-| Memory footprint (idle) | ~30-50 MB | ~300-500 MB (JVM heap) |
-| Startup time | < 1s | 5-15s |
-| Throughput (plain reverse proxy) | ~50k req/s | ~20k req/s |
-| CPU cho 10k req/s (JWT verify) | ~0.5 core | ~1-1.5 cores |
-
-Với yêu cầu rate limiting và JWT verify cho mọi request, Traefik giúp tiết kiệm tài nguyên đáng kể.
-
----
-
-## 3. Middleware Plugin System
-
-Thiết kế yêu cầu các logic tùy chỉnh:
-
-- Xác thực JWT với JWKS cache (go-cache hoặc ristretto)
-- Query Redis denylist (`auth:denylist:{jti}`, `auth:revoked_before:{user_id}`)
-- Subscribe Redis Pub/Sub để xóa cache JWKS
-- Enrich headers (`X-User-Id`, `X-User-Roles`)
-
-Traefik cho phép viết custom middleware bằng Go (dùng plugin system) hoặc gọi đến HTTP service (Pilot mode):
-
-- Viết package Go, build thành `.so`, Traefik load động
-- Truy cập được request/response, có thể đọc header, thân request, gọi Redis, cache local
-- Hiệu năng gần như native
-
-### Ví dụ Plugin JWT Authentication
-
-```go
-func (m *JwtAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request, next http.HandlerFunc) {
-    token := extractBearer(req.Header)
-    kid := getKid(token)
-    pubKey := m.getPublicKey(kid) // từ local cache
-    if pubKey == nil {
-        pubKey = m.fetchJWKS(kid) // gọi AuthService
-    }
-    if !verifyJWT(token, pubKey) {
-        rw.WriteHeader(401)
-        return
-    }
-    if m.isDenylisted(jti) || m.isRevoked(userId, iat) { // Redis query
-        rw.WriteHeader(401)
-        return
-    }
-    enrichHeaders(req, userId, roles)
-    next(rw, req)
-}
-```
-
-> **So sánh:** Spring Cloud Gateway cũng có thể viết filter, nhưng Traefik plugin nhẹ hơn, không bị ràng buộc bởi reactive programming.
-
----
-
-## 4. Tích Hợp OpenTelemetry Native
-
-Traefik v3.x hỗ trợ OpenTelemetry tracing và metrics out-of-the-box (cấu hình qua file hoặc env). Export trace về Jaeger hoặc Zipkin mà không cần thêm thư viện.
-
-Đặc biệt, Traefik tự động sinh `traceparent` header cho mỗi request và truyền xuống backend. Logging có thể định dạng JSON và thêm `trace_id`, `span_id` thông qua `accessLogs.fields`.
-
-> **So sánh:** Spring Cloud Gateway cũng làm được nhưng cần thêm Sleuth + Brave, phức tạp hơn.
-
----
-
-## 5. Rate Limiting Linh Hoạt
-
-Traefik có sẵn middleware RateLimit dựa trên local hoặc Redis. Cấu hình đơn giản qua YAML:
-
-```yaml
-http:
-  middlewares:
-    my-ratelimit:
-      rateLimit:
-        average: 100
-        burst: 200
-        period: 1s
-        sourceCriterion:
-          ipStrategy: {}
-          redis:
-            endpoints: ["redis:6379"]
-```
-
-Không cần viết code. Spring Cloud Gateway cũng có RedisRateLimiter nhưng phải cấu hình thông qua Java.
-
----
-
-## 6. Quản Lý Cấu Hình Dynamic
-
-Traefik đọc cấu hình từ file, Kubernetes CRD, Consul KV, Redis... và reload nóng (không restart). Khi thêm route mới hoặc cập nhật rate limit, Traefik áp dụng ngay.
-
-> **So sánh:** Spring Cloud Gateway cũng có thể refresh context nhưng phức tạp hơn (Spring Cloud Bus, Actuator refresh).
-
----
-
-## 7. Bảo Mật Mặc Định
-
-Traefik hỗ trợ tự động phát hiện và gia hạn Let's Encrypt SSL. Nếu hệ thống yêu cầu TLS termination tại Gateway, Traefik làm việc này rất tốt.
-
----
-
-## Hạn Chế Cần Cân Nhắc
-
-| Hạn chế | Mức độ | Giải pháp |
+| Lựa chọn | Quyết định | Lý do |
 |---|---|---|
-| Redis Pub/Sub để invalidate JWKS cache không có sẵn, phải tự code plugin | Trung bình | Viết plugin Go (~200 dòng) |
-| Cần build plugin riêng cho mỗi phiên bản Traefik (plugin ABI phụ thuộc version Go) | Thấp | Dùng HTTP middleware thay vì Go plugin |
-| Không có sẵn circuit breaker hoặc retry phức tạp như Resilience4j | Thấp | Dùng ForwardAuth middleware hoặc tích hợp service mesh (Linkerd) |
-| Team quen Java sẽ khó khăn khi viết plugin Go | Cao | Chọn Spring Cloud Gateway sẽ dễ hơn |
+| Go plugin `.so` compiled | Loại bỏ | Loading model không hợp lệ/khó ổn định, ABI/build coupling |
+| Local/catalog plugin | Không dùng cho auth | Experimental loader và interpreter/dependency restrictions không phù hợp security-critical path |
+| `gateway-auth` qua ForwardAuth | Chọn | Service lifecycle chuẩn, test độc lập, timeout policy rõ ràng, telemetry và rollback |
+| Chỉ validate ở từng service | Loại bỏ | Lặp public-edge checks, dù service vẫn phải authorization business actions |
 
----
+`gateway-auth` sở hữu validation issuer, audience, algorithm, expiry, JWKS, denylist và revocation; nó chỉ trả identity headers tối thiểu sau khi thành công.
 
-## Kết Luận
+## Quyết định giới hạn tốc độ
 
-Traefik phù hợp với hệ thống microservices cloud-native cần:
-- Performance cao, resource thấp
-- Dynamic configuration không restart
-- Custom middleware nhẹ (Go)
-- Observability (OpenTelemetry) có sẵn
+| Lựa chọn | Quyết định | Lý do |
+|---|---|---|
+| In-memory limiter theo instance | Loại bỏ khi scale-out | Mỗi gateway replica cấp quota riêng |
+| Redis-backed Traefik rate limit | Chọn | Shared quota ở edge |
+| Dedicated rate-limit service | Phương án dự phòng | Dùng khi quota dimensions/algorithms vượt native support |
 
-**Không phù hợp** nếu team chuyên Java và không muốn đầu tư thời gian vào Go plugin.
+Cần upgrade khỏi Traefik v3.0 vì RateLimit configuration của phiên bản này không có Redis-backed distributed state. Limits và failure behavior do runtime contract kiểm soát.
+
+## Quyết định khả năng quan sát và triển khai
+
+Traefik và services export OTLP tới OpenTelemetry Collector thay vì coupling từng producer trực tiếp với Jaeger. Điều này tập trung batching, routing, thay đổi backend và policy enforcement. Access logs là JSON; Prometheus scrape private metrics endpoint.
+
+Docker Compose vẫn là local integration tooling. Kubernetes Gateway API/CRDs là production route source. Production images dùng exact tags kèm digests; cấm `latest`.
+
+## Hệ quả
+
+Lợi ích: edge cloud-native nhẹ, authentication độc lập và dễ test, quota đúng khi nhiều replica, một correlation model cho logs/metrics/traces, không phụ thuộc Docker socket ở production.
+
+Chi phí: `gateway-auth`, Redis, OTel Collector là operational components; protected traffic fail closed khi authentication dependency lỗi; limits cần load test; downstream services phải tự authorization và telemetry.
+
+Spring Cloud Gateway vẫn là lựa chọn trong tương lai nếu programmable gateway tích hợp Java sâu quan trọng hơn footprint của Traefik. Nó không được chọn trong refactor này.
