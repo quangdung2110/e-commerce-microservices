@@ -18,7 +18,7 @@ Các downstream service chỉ được tin cậy header `X-User-*` đến từ m
 | Discovery production | Kubernetes Gateway API/CRD; Docker labels chỉ là template cho môi trường development |
 | Authentication | Service `gateway-auth` triển khai độc lập, gọi qua Traefik `ForwardAuth` |
 | Trạng thái rate limit | Redis-backed, dùng chung giữa mọi gateway replica |
-| Telemetry | OTLP tới OpenTelemetry Collector; Jaeger/Prometheus/Grafana là backend phía sau |
+| Telemetry | OTLP traces tới OpenTelemetry Collector; access log (stdout) được Collector thu qua `filelog` receiver; Jaeger (traces), Prometheus (metrics), Loki (logs) là backend phía sau, hiển thị qua Grafana |
 | Cấu hình | Static config được version hóa; dynamic routes/middlewares được review và version hóa |
 
 Hướng Go plugin `.so` compiled legacy không thuộc kiến trúc này.
@@ -138,9 +138,15 @@ Các giá trị là chính sách khởi điểm và phải được load test x�
 
 ### Nhật ký
 
-Access log là JSON xuất stdout và được thu thập tập trung. Mỗi request gồm: `timestamp`, `service`, `trace_id`, `span_id`, `request_id`, `method`, normalized `path`, `route`, `status`, `duration_ms`, `client_ip`, `upstream_service`, `rate_limit_outcome`.
+Access log là JSON xuất stdout. Mỗi request gồm: `timestamp`, `service`, `trace_id`, `span_id`, `request_id`, `method`, normalized `path`, `route`, `status`, `duration_ms`, `client_ip`, `upstream_service`, `rate_limit_outcome`.
 
 Không log Authorization headers, cookies, tokens, passwords, request bodies, Stripe signatures hoặc full query strings. Email không xuất hiện trong access logs; user ID chỉ được đưa vào khi data policy cho phép.
+
+**Log pipeline.** OpenTelemetry Collector đọc container stdout bằng `filelog` receiver — cùng instance Collector nhận OTLP traces từ Traefik/`gateway-auth` — parse JSON log thành log record, giữ nguyên `trace_id`/`span_id` sẵn có trong record, rồi export sang Loki qua Loki exporter. Đây là điểm hợp nhất duy nhất: Collector nhận cả traces (OTLP push) và logs (filelog tail trên cùng container), tách theo signal type và route tới đúng backend; metrics vẫn đi ngoài đường này vì Prometheus scrape trực tiếp endpoint `metrics` (mục 2, mục 3), không qua Collector.
+
+Loki index theo label tối thiểu: `service`, `route`, `status`. Không đưa `user_id`, `trace_id`, `client_ip` hay field high-cardinality khác vào label — các field này chỉ nằm trong log line, để tránh label cardinality explosion trên Loki. Vì `trace_id`/`span_id` có mặt trong cả log line và trace export, Grafana correlate log ↔ trace cho cùng request qua Loki + Jaeger datasource mà không cần thêm hệ thống trung gian.
+
+Retention Loki mặc định 30 ngày cho access log. Kéo dài thời gian giữ log liên quan sự cố bảo mật do runbook incident quyết định riêng, không phải retention mặc định. Loki là private observability service — áp dụng cùng ràng buộc network/auth như Prometheus và Traefik dashboard ở mục 9.
 
 ### Metrics và cảnh báo
 
@@ -156,4 +162,4 @@ Release chỉ hoàn thành khi: mọi route trong matrix đến đúng service; 
 
 ## 10. Khoảng cách với trạng thái hiện tại
 
-Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, và phụ thuộc vào plugin `.so` không được hỗ trợ. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.
+Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, phụ thuộc vào plugin `.so` không được hỗ trợ, và chưa có OpenTelemetry Collector hay log pipeline tập trung (Loki) — hiện tại chỉ có Jaeger nhận trace trực tiếp, access log chưa được thu thập/export ở đâu. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.

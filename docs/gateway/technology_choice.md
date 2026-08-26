@@ -35,7 +35,17 @@ Cần upgrade khỏi Traefik v3.0 vì RateLimit configuration của phiên bản
 
 ## Quyết định khả năng quan sát và triển khai
 
-Traefik và services export OTLP tới OpenTelemetry Collector thay vì coupling từng producer trực tiếp với Jaeger. Điều này tập trung batching, routing, thay đổi backend và policy enforcement. Access logs là JSON; Prometheus scrape private metrics endpoint.
+Traefik và services export OTLP tới OpenTelemetry Collector thay vì coupling từng producer trực tiếp với Jaeger. Điều này tập trung batching, routing, thay đổi backend và policy enforcement. Access logs là JSON xuất stdout; Prometheus scrape private metrics endpoint trực tiếp, không qua Collector.
+
+### Quyết định log backend
+
+| Lựa chọn | Quyết định | Lý do |
+|---|---|---|
+| Elasticsearch (dùng chung cluster search-service) | Loại bỏ cho logging | Trộn mục đích search-relevance với logging vận hành; rủi ro tenant/index/capacity conflict với product search |
+| Log shipper riêng (Promtail/Fluent Bit) → Loki | Loại bỏ | Thêm component vận hành mới trong khi OTel Collector đã có sẵn cho traces và có `filelog` receiver phù hợp |
+| OTel Collector (`filelog` receiver) → Loki | Chọn | Tái dùng Collector đã vận hành cho traces; một component duy nhất cho traces + logs; tích hợp Grafana có sẵn; chi phí vận hành thấp hơn ES |
+
+Collector đọc container stdout qua `filelog` receiver, parse access log JSON, giữ `trace_id`/`span_id` sẵn có rồi export sang Loki. Metrics vẫn ngoài luồng này vì Prometheus scrape trực tiếp — Collector không phải single point of failure cho metrics.
 
 Docker Compose vẫn là local integration tooling. Kubernetes Gateway API/CRDs là production route source. Production images dùng exact tags kèm digests; cấm `latest`.
 
@@ -43,6 +53,6 @@ Docker Compose vẫn là local integration tooling. Kubernetes Gateway API/CRDs 
 
 Lợi ích: edge cloud-native nhẹ, authentication độc lập và dễ test, quota đúng khi nhiều replica, một correlation model cho logs/metrics/traces, không phụ thuộc Docker socket ở production.
 
-Chi phí: `gateway-auth`, Redis, OTel Collector là operational components; protected traffic fail closed khi authentication dependency lỗi; limits cần load test; downstream services phải tự authorization và telemetry.
+Chi phí: `gateway-auth`, Redis, OTel Collector, Loki là operational components; protected traffic fail closed khi authentication dependency lỗi; limits cần load test; downstream services phải tự authorization và telemetry; Loki retention/label cardinality cần theo dõi riêng.
 
 Spring Cloud Gateway vẫn là lựa chọn trong tương lai nếu programmable gateway tích hợp Java sâu quan trọng hơn footprint của Traefik. Nó không được chọn trong refactor này.

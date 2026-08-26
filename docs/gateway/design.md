@@ -25,7 +25,8 @@ gateway-auth ───► Auth Service (JWKS)
 User / Order / Product / Payment / Chat services
        │
        ▼
-OpenTelemetry Collector → tracing, logging, metric backends
+OpenTelemetry Collector → traces (Jaeger), access logs qua filelog receiver (Loki)
+(Prometheus scrape metrics trực tiếp từ gateway/auth, không qua Collector)
 ```
 
 Gateway được giữ mỏng: không tổng hợp business data, không query database của service và không quyết định resource ownership.
@@ -56,7 +57,7 @@ Redis-backed shared state làm quota đúng trên nhiều gateway replicas. Chí
 
 ## Khả năng quan sát
 
-Gateway tiếp tục hoặc bắt đầu W3C Trace Context và export OTLP tới OpenTelemetry Collector. Access logs là JSON có correlation với traces; private metrics hỗ trợ SLOs và alerts. Tokens, cookies, request bodies, Stripe signatures, passwords và full query strings được redact.
+Gateway tiếp tục hoặc bắt đầu W3C Trace Context và export OTLP traces tới OpenTelemetry Collector. Access logs là JSON xuất ra stdout; cùng một Collector đọc log qua `filelog` receiver và export sang Loki, giữ nguyên `trace_id`/`span_id` để correlate log với trace. Private metrics (Prometheus scrape trực tiếp endpoint `metrics`, không qua Collector) hỗ trợ SLOs và alerts. Tokens, cookies, request bodies, Stripe signatures, passwords và full query strings được redact khỏi cả log lẫn trace.
 
 Application services phải được instrument riêng để trace có thể đi xuyên gateway, authentication và business operation.
 
