@@ -1,0 +1,109 @@
+version: 1
+
+# status: documented | implemented | verified
+# contract_adoption: not_started | pilot | partial | complete
+services:
+  - id: api-gateway
+    bounded_context: edge
+    runtime: traefik-go
+    status: implemented
+    contract_adoption: not_started
+    docs: docs/gateway/design.md
+
+  - id: auth-service
+    bounded_context: identity-access
+    runtime: go
+    status: implemented
+    contract_adoption: pilot
+    docs: docs/auth/README.md
+
+  - id: user-service
+    bounded_context: customer-profile
+    runtime: go
+    status: implemented
+    contract_adoption: not_started
+    docs: docs/user/user_workflows.md
+
+  - id: cart-service
+    bounded_context: cart
+    runtime: go
+    status: implemented
+    contract_adoption: pilot
+    docs: docs/cart/cart_workflow.md
+
+  - id: product-service
+    bounded_context: catalog
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
+    docs: docs/product/product_workflow.md
+
+  - id: inventory-service
+    bounded_context: inventory
+    runtime: java
+    status: implemented
+    contract_adoption: not_started
+    docs: docs/inventory/inventory_workflow.md
+
+  - id: search-service
+    bounded_context: search
+    runtime: java
+    status: implemented
+    contract_adoption: not_started
+    docs: docs/search/search_service_overview.md
+
+  - id: checkout-service
+    bounded_context: checkout
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/checkout/checkout_architecture_design.md
+
+  - id: order-service
+    bounded_context: order
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/order/order_workflow.md
+
+  - id: payment-service
+    bounded_context: payment
+    runtime: java-planned
+    status: documented
+    contract_adoption: not_started
+    docs: docs/payment/payment_workflow.md
+
+  - id: promotion-service
+    bounded_context: promotion
+    runtime: java-planned
+    status: documented
+    contract_adoption: not_started
+    docs: docs/promotion/promotion_workflow.md
+
+  - id: review-service
+    bounded_context: review
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/review/review_workflow.md
+
+  - id: notification-service
+    bounded_context: notification
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/notification/design.md
+
+  - id: chat-service
+    bounded_context: chat
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/chat/chat_design.md
+
+  - id: analytics-service
+    bounded_context: analytics
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/analytics/analytics_design.md

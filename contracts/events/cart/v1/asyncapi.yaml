@@ -1,0 +1,78 @@
+asyncapi: 3.0.0
+info:
+  title: Cart Events
+  version: 1.0.0
+  description: Contract đích cho event do Cart Service publish.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+    description: Local development broker
+channels:
+  cartEvents:
+    address: t.cart.events
+    description: >-
+      Partition key là cart_id. Ordering chỉ được cam kết trong cùng cart_id.
+      Delivery semantic là at-least-once.
+    x-message-key: cart_id
+    x-ordering-scope: cart_id
+    x-delivery-semantic: at-least-once
+    x-max-message-bytes: 262144
+    x-retention: 7d
+    x-retry-policy:
+      max-attempts: 3
+      strategy: exponential-backoff-with-jitter
+      dead-letter-topic: t.cart.events.dlq
+    messages:
+      cartItemAdded:
+        $ref: '#/components/messages/cartItemAdded'
+operations:
+  publishCartEvents:
+    action: send
+    summary: Cart Service publish thay đổi của cart
+    channel:
+      $ref: '#/channels/cartEvents'
+    messages:
+      - $ref: '#/channels/cartEvents/messages/cartItemAdded'
+components:
+  messages:
+    cartItemAdded:
+      name: cartItemAddedV1
+      title: Cart item added
+      summary: Một SKU mới được thêm vào cart
+      contentType: application/cloudevents+json
+      payload:
+        $ref: './schemas/cart-item-added.schema.json'
+      examples:
+        - name: default
+          summary: Một SKU được thêm với quantity 2
+          payload:
+            specversion: '1.0'
+            id: 0198e098-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.cart.item-added.v1
+            source: /services/cart
+            subject: carts/cart-0198e098/items/SKU-RED-M
+            time: '2026-08-25T14:30:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/cart/v1/schemas/cart-item-added.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            sequence: 1
+            data:
+              cart_id: cart-0198e098
+              user_id: 0198e098-94f4-7f8f-9e16-ae42dfbd93c1
+              sku_id: SKU-RED-M
+              product_id: PRODUCT-TSHIRT
+              quantity: 2
+              unit_price_at_add:
+                amount_minor: 125000
+                currency: VND
+              product_name: Áo thun đỏ
+              variant_attributes:
+                color: red
+                size: M
+              image_url: https://example.test/products/tshirt-red.png
+              is_available: true
+              added_at: '2026-08-25T14:30:00Z'
+              updated_at: '2026-08-25T14:30:00Z'

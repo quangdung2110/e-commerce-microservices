@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/auth/v1/schemas/auth-event-common.schema.json",
+  "title": "Auth event common envelope v1",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "source": { "const": "/services/auth" },
+        "subject": {
+          "type": "string",
+          "pattern": "^accounts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "correlationid": { "type": "string", "format": "uuid" }
+      }
+    }
+  ]
+}

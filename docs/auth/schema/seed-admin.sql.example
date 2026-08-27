@@ -1,0 +1,27 @@
+-- Execute this template only through a secure bootstrap process.
+-- Do not commit a real email, UUID, password or password hash to source control.
+-- :admin_password_hash must be an Argon2id PHC string generated before execution.
+
+BEGIN;
+
+INSERT INTO auth.accounts (
+    id,
+    email,
+    email_normalized,
+    password_hash,
+    status
+)
+VALUES (
+    :admin_account_id,
+    :admin_email,
+    lower(btrim(:admin_email)),
+    :admin_password_hash,
+    'ACTIVE'
+);
+
+INSERT INTO auth.account_roles (account_id, role_code)
+VALUES
+    (:admin_account_id, 'USER'),
+    (:admin_account_id, 'ADMIN');
+
+COMMIT;

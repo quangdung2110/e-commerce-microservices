@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User Email Changed v1",
+  "allOf": [
+    { "$ref": "./auth-event-common.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "com.ecommerce.auth.user-email-changed.v1" },
+        "dataschema": { "const": "/contracts/events/auth/v1/schemas/user-email-changed.schema.json" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["delivery_id", "user_id", "changed_at"],
+          "properties": {
+            "delivery_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "changed_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

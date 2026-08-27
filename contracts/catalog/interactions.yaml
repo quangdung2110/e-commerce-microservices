@@ -1,0 +1,93 @@
+version: 1
+
+# status: legacy_documented | proposed | implemented | verified
+interactions:
+  - id: cart-queries-product-skus
+    protocol: grpc
+    provider: product-service
+    consumers: [cart-service]
+    contract: grpc/ecommerce/product/v1/product_service.proto
+    status: proposed
+    notes: Canonical replacement for duplicated Product/Cart proto files.
+
+  - id: cart-publishes-cart-events
+    protocol: kafka
+    provider: cart-service
+    consumers: [cart-service, analytics-service, notification-service]
+    contract: events/cart/v1/asyncapi.yaml
+    status: proposed
+    notes: Pilot contains CART_ITEM_ADDED only; more event types migrate incrementally.
+
+  - id: auth-publishes-identity-events
+    protocol: kafka
+    provider: auth-service
+    consumers: [user-service]
+    contract: events/auth/v1/asyncapi.yaml
+    status: proposed
+    notes: USER_VERIFIED_SUCCESS và USER_DELETED trên t.auth.events; CloudEvents v1 là target contract.
+
+  - id: auth-requests-security-notifications
+    protocol: kafka
+    provider: auth-service
+    consumers: [notification-service]
+    contract: events/auth/v1/asyncapi.yaml
+    status: proposed
+    notes: Notification event chỉ có delivery_id; không mang email, OTP hoặc reset token.
+
+  - id: notification-resolves-auth-delivery-content
+    protocol: http
+    provider: auth-service
+    consumers: [notification-service]
+    contract: http/auth/internal/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS API để resolve PII/secret theo delivery_id, không qua public Gateway.
+
+  - id: order-paid-clears-cart
+    protocol: kafka
+    provider: order-service
+    consumers: [cart-service]
+    contract: null
+    status: legacy_documented
+    notes: Currently described in docs/cart/cart_events.md.
+
+  - id: checkout-creates-order
+    protocol: http
+    provider: order-service
+    consumers: [checkout-service]
+    contract: null
+    status: legacy_documented
+
+  - id: order-initiates-payment
+    protocol: http
+    provider: payment-service
+    consumers: [order-service]
+    contract: null
+    status: legacy_documented
+
+  - id: payment-publishes-payment-events
+    protocol: kafka
+    provider: payment-service
+    consumers: [order-service]
+    contract: null
+    status: legacy_documented
+
+  - id: checkout-queries-inventory-routing
+    protocol: http
+    provider: inventory-service
+    consumers: [checkout-service]
+    contract: null
+    status: legacy_documented
+
+  - id: checkout-calculates-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [checkout-service]
+    contract: null
+    status: legacy_documented
+
+  - id: inventory-publishes-stock-events
+    protocol: kafka
+    provider: inventory-service
+    consumers: [product-service, order-service, analytics-service]
+    contract: null
+    status: legacy_documented

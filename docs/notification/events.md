@@ -1,25 +1,39 @@
 # Notification Service CloudEvents Schema
 
-## 1. High-Priority Events
+> **Auth delivery contract (target):** ví dụ `USER_OTP_REQUESTED` cũ bên dưới
+> không còn là contract được phép dùng. Auth publish request tại
+> [`contracts/events/auth/v1/asyncapi.yaml`](../../contracts/events/auth/v1/asyncapi.yaml)
+> trên `t.auth.notification.events`, chỉ chứa `delivery_id` và metadata. Notification
+> resolve email cùng OTP/reset URL qua
+> [`Auth Internal Notification Delivery API`](../../contracts/http/auth/internal/v1/openapi.yaml)
+> bằng mTLS/service identity. Không ghi log hoặc đưa email, OTP, reset token,
+> reset URL hay password vào Kafka, DLQ hoặc log. Resolve có thể retry trong TTL
+> và không consume OTP/reset token.
 
-Sử dụng topic: `notification.high-priority.events`
+## 1. Auth security delivery events
 
-### 1.1 User OTP/MFA Requested (Từ Auth Service)
+Topic canonical: `t.auth.notification.events`. Notification consume request,
+deduplicate CloudEvent `id`, gọi internal Auth API theo `delivery_id`, rồi gửi
+email. Topic cũ `notification.high-priority.events` không phải nguồn contract
+cho event Auth v1.
+
+### 1.1 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
 ```json
 {
   "specversion": "1.0",
-  "id": "e44c20b4-419b-43af-b74c-471249b6ab50",
-  "source": "/auth-service/mfa",
-  "type": "USER_OTP_REQUESTED",
-  "time": "2026-04-27T10:00:00Z",
+  "id": "0198e09a-97e4-7d66-8a2c-997d792ae826",
+  "source": "/services/auth",
+  "type": "com.ecommerce.auth.user-otp-requested.v1",
+  "subject": "accounts/0198e098-96f2-7ad3-91d8-570608021328",
+  "time": "2026-08-27T12:40:00Z",
   "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/auth/v1/schemas/user-otp-requested.schema.json",
   "data": {
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com",
-    "otp_code": "489213",
-    "action": "LOGIN",
-    "device_info": "Chrome on Macbook - IP: 192.168.1.1",
-    "expires_in_minutes": 5
+    "delivery_id": "0198e09a-96f2-7ad3-91d8-570608021328",
+    "user_id": "0198e098-96f2-7ad3-91d8-570608021328",
+    "purpose": "EMAIL_CHANGE_VERIFICATION",
+    "requested_at": "2026-08-27T12:40:00Z",
+    "expires_at": "2026-08-27T12:45:00Z"
   }
 }
 ```

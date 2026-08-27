@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/shared/json-schema/v1/money.schema.json",
+  "title": "Money",
+  "description": "Số tiền theo đơn vị nhỏ nhất; không dùng floating point.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["amount_minor", "currency"],
+  "properties": {
+    "amount_minor": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "examples": ["VND", "USD"]
+    }
+  }
+}

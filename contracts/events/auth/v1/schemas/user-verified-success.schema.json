@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User Verified Success v1",
+  "allOf": [
+    { "$ref": "./auth-event-common.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "com.ecommerce.auth.user-verified-success.v1" },
+        "dataschema": { "const": "/contracts/events/auth/v1/schemas/user-verified-success.schema.json" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["user_id", "roles", "verified_at"],
+          "properties": {
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "roles": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["USER", "ADMIN"], "x-data-classification": "INTERNAL" }
+            },
+            "verified_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

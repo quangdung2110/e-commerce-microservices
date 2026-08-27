@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cart Item Added v1",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "required": ["data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.cart.item-added.v1" },
+        "source": { "const": "/services/cart" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cart_id",
+            "user_id",
+            "sku_id",
+            "product_id",
+            "quantity",
+            "unit_price_at_add",
+            "product_name",
+            "is_available",
+            "added_at",
+            "updated_at"
+          ],
+          "properties": {
+            "cart_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "user_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sku_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "quantity": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "unit_price_at_add": {
+              "$ref": "../../../../shared/json-schema/v1/money.schema.json"
+            },
+            "product_name": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "variant_attributes": {
+              "type": "object",
+              "maxProperties": 30,
+              "additionalProperties": { "type": "string", "maxLength": 200 }
+            },
+            "image_url": { "type": "string", "format": "uri", "maxLength": 2048 },
+            "is_available": { "type": "boolean" },
+            "added_at": { "type": "string", "format": "date-time" },
+            "updated_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    }
+  ]
+}
