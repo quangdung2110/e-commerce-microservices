@@ -39,7 +39,8 @@ flowchart LR
   KA --> N
   KA --> RV[Review Service]
   EC --> A
-  W[Compliance worker] --> A
+  W[Retention purge worker] --> A
+  RC[Projection reconciliation worker] --> A
 ```
 
 ## 2. Thành phần và trách nhiệm
@@ -52,7 +53,8 @@ flowchart LR
 | Address cache adapter | Đọc cache-aside và invalidation sau commit | Là nguồn chân lý cho address | Redis |
 | Auth-event consumer | Nhận verification/deletion và gọi command idempotent | Thay đổi state ngoài application layer | Kafka, application layer |
 | User-event producer | Phát profile/preferences event theo contract | Tự thay đổi transaction data hoặc republish account deletion | Kafka |
-| Compliance worker | Tìm retention record đến hạn, hard delete an toàn | Hard delete trước deadline hoặc bỏ qua observability | Application layer |
+| Retention purge worker | Tìm retention record đến hạn, hard delete an toàn | Hard delete trước deadline hoặc bỏ qua observability | PostgreSQL, application layer |
+| Projection reconciliation worker | Quét current state active và phát corrective snapshot cho projection | Phát `USER_DELETED`, đọc log PII hoặc tạo outbox/checkpoint mới | PostgreSQL, Kafka publisher |
 
 ## 3. Mô hình xử lý
 
@@ -61,9 +63,12 @@ một PostgreSQL transaction. Address cache bị invalidated sau commit; cache l
 không được rollback transaction. Read address dùng cache-aside và fallback DB.
 
 Consumer xử lý `USER_VERIFIED_SUCCESS` và `USER_DELETED` bất đồng bộ, phải
-idempotent theo business key/event identity. Compliance worker chạy bất đồng bộ
-theo schedule. Thiết kế cũ phát User event trực tiếp sau commit, không outbox;
-điều này tạo cửa sổ mất event nếu Kafka publish thất bại — xem ADR-004.
+idempotent theo business key/event identity. Retention purge chạy mỗi giờ theo
+UTC; projection reconciliation chạy hằng ngày ngoài giờ và chỉ phát current
+snapshot của profile/preferences active. Thiết kế phát User event trực tiếp sau
+commit, không outbox; reconciliation là cơ chế hội tụ cho cửa sổ mất event khi
+Kafka publish thất bại — xem [ADR-004](./decisions/ADR-004-direct-event-publication.md)
+và [ADR-007](./decisions/ADR-007-projection-reconciliation-without-outbox.md).
 
 ## 4. Tính nhất quán và đồng thời
 
@@ -77,14 +82,17 @@ Projection downstream, cache refresh và Kafka delivery là eventual consistency
 Address cache được phép stale từ lúc commit đến invalidation/read refill; khi
 Redis unavailable, đọc trực tiếp DB và mutation vẫn hoàn tất. Consumer trùng
 phải không tạo duplicate profile/retention record hay phát side effect vô hạn.
+Consumer profile/preference bỏ qua snapshot `updated_at` cũ hơn; consumer
+deletion xem `USER_DELETED` là terminal.
 
 ## 5. Mô hình triển khai
 
-Mục tiêu gồm API server, Kafka consumer và compliance scheduler/worker; chúng có
-thể cùng image nhưng cần scale độc lập về vận hành. API scale theo RPS/DB pool;
-consumer theo partition và lag, đồng thời giữ ordering theo `user_id`; worker
-cần distributed lock hoặc cơ chế claim row để không hard-delete cùng record hai
-lần. PostgreSQL, Redis và Kafka là runtime dependency.
+Mục tiêu gồm API server, Kafka consumer, retention purge worker và projection
+reconciliation worker; chúng có thể cùng image nhưng cần scale độc lập về vận
+hành. API scale theo RPS/DB pool; consumer theo partition và lag, đồng thời giữ
+ordering theo `user_id`; purge worker claim row để không hard-delete cùng record
+hai lần; reconciliation chỉ có một run active để tránh full sweep trùng.
+PostgreSQL, Redis và Kafka là runtime dependency.
 
 ## 6. Ràng buộc kiến trúc
 
@@ -99,4 +107,5 @@ lần. PostgreSQL, Redis và Kafka là runtime dependency.
 
 Các đánh đổi được quản lý tại [Decision index](./decisions/README.md): bootstrap
 bằng Auth event, cache-aside cho address, invariant default address, GDPR retention
-và reliability của direct event publishing. Tất cả vẫn là `proposed`.
+và reliability của direct event publishing/reconciliation. Tất cả vẫn là
+`proposed`.

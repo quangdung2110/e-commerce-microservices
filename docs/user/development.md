@@ -36,7 +36,10 @@ Test tối thiểu phải bao phủ ownership address, partial unique default, t
 default address, profile ID từ Auth event, cache hit/miss/invalidation/fallback,
 duplicate/out-of-order Auth event, deletion retention và worker resume. Consumer
 test phải xác minh ack sau commit, retry/DLQ và idempotency; contract test chỉ có
-thể hoàn thiện với OpenAPI/AsyncAPI User v1 và Auth AsyncAPI v1.
+thể hoàn thiện với OpenAPI/AsyncAPI User v1 và Auth AsyncAPI v1. Worker test phải
+bao phủ purge trước/sau deadline, `SKIP LOCKED`/crash-resume, profile/preferences
+đã bị deletion loại khỏi reconciliation, corrective event ID mới và `updated_at`
+không bị thay đổi.
 
 ## 4. Phát triển schema và contract
 

@@ -23,3 +23,4 @@ bằng chứng implementation đã được verified.
 | [ADR-004](./ADR-004-direct-event-publication.md) | Độ tin cậy của direct event publishing | Đã chấp thuận | 2026-08-28 | — |
 | [ADR-005](./ADR-005-gdpr-two-stage-deletion.md) | GDPR anonymization và retention purge hai giai đoạn | Đã chấp thuận | 2026-08-28 | — |
 | [ADR-006](./ADR-006-auth-owns-account-deletion-event.md) | Auth sở hữu event xóa account | Đã chấp thuận | 2026-08-28 | ADR-005 (phần republish) |
+| [ADR-007](./ADR-007-projection-reconciliation-without-outbox.md) | Reconcile projection định kỳ khi không dùng outbox | Đã chấp thuận | 2026-08-28 | — |

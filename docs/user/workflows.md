@@ -25,6 +25,7 @@ verified_against_commit: null
 | `WF-USER-005` | Cập nhật preferences | HTTP | Chủ sở hữu profile | proposed |
 | `WF-USER-006` | Anonymize sau khi xóa account | Kafka event | Auth consumer | proposed |
 | `WF-USER-007` | Hard delete sau retention window | Schedule | Compliance worker | proposed |
+| `WF-USER-008` | Reconcile profile/preference projection | Schedule | Projection reconciliation worker | proposed |
 
 ## WF-USER-001 — Bootstrap profile sau identity verification
 
@@ -129,14 +130,37 @@ Worker theo schedule lấy batch retention records, claim/lock từng record, ki
 tra deadline, rồi trong transaction delete profile và deletion record. Address
 và preferences đã bị xóa ở WF-USER-006; foreign-key cascade chỉ là safety net.
 
-Worker retry lỗi transient, metric số due/processed/failed/oldest due và alert
-khi backlog vượt SLO. Crash giữa các batch phải resume an toàn; record đã bị
-purge là no-op. Không hard-delete sớm và không tạo lại profile từ event verification
-cũ sau purge. Schedule, batch size, lock và retry limit là operation configuration
-cần được chốt.
+`user-retention-purge` chạy mỗi giờ theo UTC, lấy tối đa 100 record đến hạn theo
+thứ tự `hard_delete_after`. Nhiều instance claim record bằng lock/`SKIP LOCKED`;
+mỗi record có transaction riêng để crash giữa các batch vẫn resume an toàn. Worker
+retry lỗi transient, metric số due/processed/failed/oldest due và alert khi backlog
+vượt SLO. Record đã purge là no-op. Không hard-delete sớm và không tạo lại profile
+từ event verification cũ sau purge.
+
+## WF-USER-008 — Reconcile profile/preference projection
+
+**Mục tiêu:** khôi phục eventual consistency của Chat và Notification khi direct
+publish sau commit đã retry cạn. `user-projection-reconciliation` chạy một lần
+mỗi ngày ngoài giờ cao điểm, quét toàn bộ profile và preferences hiện còn active
+theo batch/cursor chỉ tồn tại trong lần chạy; không tạo checkpoint, outbox hay bảng
+dedup mới.
+
+Mỗi batch loại user đã có `user_deletions`, rồi phát current snapshot theo đúng
+contract hiện tại: `USER_PROFILE_UPDATED(user_id, sender_name, updated_at)` và
+`USER_PREFERENCES_UPDATED(user_id, email_enabled, in_app_enabled,
+marketing_enabled, updated_at)`. Profile chưa có tên dùng fallback `Người dùng`.
+Mỗi event reconciliation có CloudEvent `id` mới vì là corrective snapshot, không
+phải retry delivery cũ; `updated_at` giữ nguyên từ database để consumer bỏ qua
+state cũ hơn.
+
+Worker áp dụng batch size/rate limit để không làm nghẽn PostgreSQL hoặc Kafka.
+Kafka publish lỗi phải retry theo policy producer; failure cạn được metric/alert
+và batch chưa hoàn tất sẽ được quét lại trong lần chạy sau. Không phát lại
+`USER_DELETED`, không đọc log PII để suy đoán event, và không tự động redrive DLQ.
 
 ## Tình huống kiểm thử bắt buộc
 
 Mỗi workflow cần happy path, invalid input, duplicate event/request, Kafka/Redis/
 PostgreSQL outage, retry, timeout, concurrent default-address mutation,
-out-of-order verification/deletion và manual reconciliation scenario.
+out-of-order verification/deletion, retention purge lock/crash-resume và projection
+reconciliation scenario.

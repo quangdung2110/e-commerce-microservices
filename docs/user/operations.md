@@ -17,8 +17,9 @@ verified_against_commit: null
 ## 1. SLO, health và cấu hình
 
 Cần định nghĩa SLI cho HTTP availability/latency/error rate, Postgres pool,
-Redis fallback/cache error, Kafka producer failure, Auth-event consumer lag/DLQ
-và age/count retention record quá hạn. SLO, error budget và owner chưa được chốt.
+Redis fallback/cache error, Kafka producer failure, Auth-event consumer lag/DLQ,
+age/count retention record quá hạn và projection reconciliation duration/failure.
+SLO, error budget và owner chưa được chốt.
 
 Liveness chỉ xác nhận process còn chạy. Readiness phải kiểm tra các dependency
 cần thiết cho API ghi (PostgreSQL); Kafka consumer readiness và Redis cache nên
@@ -30,10 +31,11 @@ và yêu cầu restart phải được lập bảng từ runtime configuration �
 
 Metrics tối thiểu: HTTP request/error/latency theo route/status; DB pool/timeout;
 address cache hit/miss/fallback/invalidation failure; Kafka consume/publish result,
-lag, retry và DLQ; event duplicate; anonymization/hard-delete result và oldest
-due record. Log cấu trúc cần correlation/request ID, event ID và hashed/redacted
-user reference; không log profile, phone hoặc full address. Trace cần bao phủ HTTP
-command, DB transaction, Redis, Kafka consume/publish và worker batch.
+lag, retry và DLQ; event duplicate; anonymization/hard-delete result, oldest due
+record, reconciliation scanned/published/failed/duration. Log cấu trúc cần
+correlation/request ID, event ID và hashed/redacted user reference; không log
+profile, phone hoặc full address. Trace cần bao phủ HTTP command, DB transaction,
+Redis, Kafka consume/publish và worker batch.
 
 | Cảnh báo | Điều kiện cần chốt bằng số đo | Mức độ | Runbook |
 |---|---|---|---|
@@ -42,6 +44,7 @@ command, DB transaction, Redis, Kafka consume/publish và worker batch.
 | Cache invalidation failure | Error rate vượt ngưỡng trong cửa sổ | Trung bình | Cache degradation |
 | DB pool exhaustion | Pool saturation/timeout vượt ngưỡng | Cao | Database exhaustion |
 | GDPR purge overdue | Oldest due retention record vượt SLO | Cao | Compliance worker |
+| Projection reconciliation failed | Job không hoàn tất hoặc publish failure cạn | Cao | Event publishing |
 | DLQ non-empty | Bất kỳ message chưa triage | Cao | DLQ handling |
 
 ## 3. Hành vi khi lỗi và suy giảm
@@ -52,13 +55,15 @@ command, DB transaction, Redis, Kafka consume/publish và worker batch.
 | Redis unavailable/corrupt | Address read fallback DB; mutation commit vẫn thành công, invalidation lỗi được ghi metric/alert |
 | Kafka producer unavailable | DB command profile/preference vẫn commit theo direct-publish design; retry/reconciliation phải phát hiện projection/event gap |
 | Kafka consumer unavailable/lag | API còn hoạt động; profile bootstrap/deletion bị trì hoãn, lag/DLQ alert |
+| Reconciliation worker unavailable | Projection có thể stale lâu hơn một ngày; alert và chạy lại job, không phát sự kiện suy đoán từ log |
 | Mixed-version deployment | Chỉ rollout field/event backward compatible; consumer bỏ qua optional unknown field |
 
 ## 4. Scaling, triển khai và rollback
 
 API scale theo RPS, latency và PostgreSQL pool. Consumer scale theo Kafka
 partition/lag, không phá ordering cùng `user_id`. Compliance worker không chạy
-chồng batch nếu chưa có row claim/distributed lock. Deployment cần migration
+chồng cùng một retention row nhờ row claim/lock; reconciliation worker chỉ có một
+run active toàn service để tránh full sweep trùng. Deployment cần migration
 backward-compatible trước application; event field mới optional trước; rollback
 không được quay về version không đọc được data/event mới. Chưa có load test,
 partition count hoặc capacity baseline được xác minh.
@@ -67,22 +72,25 @@ partition count hoặc capacity baseline được xác minh.
 
 | Tác vụ | Trigger | Concurrency/idempotency | Quan sát hệ thống |
 |---|---|---|---|
-| Auth-event consumer | Kafka `t.auth.events` | Keyed `user_id`; dedup event/business key; retry + DLQ | Lag, duplicate, success/failure |
-| Compliance hard-delete | Schedule (thiết kế cũ đề xuất daily 02:00) | Row claim/lock; deadline check; per-record transaction | Due/processed/failed/oldest due |
-| Event reconciliation | Chưa được thiết kế | Cần chốt nguồn đối chiếu và replay an toàn | Missing-event/backlog metric |
+| `user-auth-lifecycle-consumer` | Kafka `t.auth.events` liên tục | Keyed `user_id`; PK/unique business key; ACK chỉ sau commit; retry tối đa 10 lần theo exponential backoff 1s→5m, sau đó `t.auth.events.dlq` | Lag, duplicate, result, retry, DLQ |
+| `user-retention-purge` | Mỗi giờ theo UTC | Batch tối đa 100; `FOR UPDATE SKIP LOCKED`; deadline check và transaction từng record | Due/processed/failed/oldest due, lock contention |
+| `user-projection-reconciliation` | Mỗi ngày ngoài giờ cao điểm | Một run active; full sweep active profile/preferences theo batch; event corrective có ID mới, `updated_at` giữ nguyên | Scanned/published/failed/duration, Kafka throttle |
+| DLQ redrive | Thao tác vận hành có phê duyệt | Không tự động redrive; sửa nguyên nhân, đánh giá poison message rồi replay có kiểm soát | DLQ age/count, replay result |
 
 ## 6. Runbook bắt buộc
 
 - **Consumer lag/DLQ:** kiểm tra broker health, partition assignment, oldest event
-  và error class; không bỏ message; replay sau khi fix với dedup; xác nhận lag/DLQ
-  giảm và profile/deletion được reconcile.
+  và error class; không bỏ message hoặc auto-redrive. Sau khi sửa nguyên nhân,
+  đánh giá poison message và replay có phê duyệt với dedup; xác nhận lag/DLQ giảm
+  và profile/deletion được reconcile.
 - **Cache degradation/corruption:** xác nhận Redis error, bypass hoặc xóa key
   phạm vi một user khi an toàn, không flush namespace rộng; kiểm tra fallback DB
   và invalidation metric.
 - **Database exhaustion:** dừng scale mù quáng, kiểm tra pool/query/lock, giảm
   traffic khi cần, khôi phục pool rồi xác nhận write và consumer retry thành công.
-- **Direct event publishing failure:** xác định committed mutation không có event,
-  dùng công cụ reconciliation đã được chấp thuận để republish idempotently; không
-  tự phát event suy đoán từ log PII.
+- **Direct event publishing failure:** xác định metric publish failure; để
+  `user-projection-reconciliation` phát current snapshot của profile/preferences
+  trong sweep kế tiếp hoặc chạy lại job có phê duyệt. Không tự phát event suy đoán
+  từ log PII và không phát lại `USER_DELETED`.
 - **Compliance worker backlog:** kiểm tra clock/deadline, lock và DB errors; chạy
   batch có giới hạn sau khi phê duyệt, xác nhận không delete trước hạn.
