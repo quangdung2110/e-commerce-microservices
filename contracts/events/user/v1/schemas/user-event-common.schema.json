@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/user/v1/schemas/user-event-common.schema.json",
+  "title": "User event common envelope v1",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "source": { "const": "/services/user" },
+        "subject": {
+          "type": "string",
+          "pattern": "^users/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "correlationid": { "type": "string", "format": "uuid" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+asyncapi: 3.0.0
+info:
+  title: User Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho event do User Service publish. Mọi message dùng CloudEvents
+    1.0 JSON structured. Việc xóa account không được republish ở đây: consumer
+    phải nhận USER_DELETED trực tiếp từ Auth Events v1.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+    description: Local development broker
+channels:
+  userEvents:
+    address: t.user.events
+    description: >-
+      Event projection tối thiểu do User Service sở hữu. Partition key là
+      user_id; ordering chỉ được cam kết trong cùng user_id.
+    x-owner: user-service
+    x-message-key: user_id
+    x-ordering-scope: user_id
+    x-delivery-semantic: best-effort-after-commit
+    x-kafka-delivery-after-publish: at-least-once
+    x-publication-reliability: >-
+      User publish trực tiếp sau PostgreSQL commit, retry tối đa 3 lần với cùng
+      CloudEvent id. Retry cạn có thể làm mất event và phải được metric, alert,
+      reconciliation vận hành xử lý; không dùng outbox.
+    x-max-message-bytes: 65536
+    x-retention: 7d
+    x-consumer-dlq-topic: t.user.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      userProfileUpdated:
+        $ref: '#/components/messages/userProfileUpdated'
+      userPreferencesUpdated:
+        $ref: '#/components/messages/userPreferencesUpdated'
+operations:
+  publishUserEvents:
+    action: send
+    summary: User Service publish thay đổi profile và notification preferences
+    channel:
+      $ref: '#/channels/userEvents'
+    messages:
+      - $ref: '#/channels/userEvents/messages/userProfileUpdated'
+      - $ref: '#/channels/userEvents/messages/userPreferencesUpdated'
+components:
+  messages:
+    userProfileUpdated:
+      name: userProfileUpdatedV1
+      title: USER_PROFILE_UPDATED
+      summary: Tên hiển thị suy ra từ profile đã thay đổi.
+      contentType: application/cloudevents+json
+      x-consumers: [chat-service]
+      payload:
+        $ref: './schemas/user-profile-updated.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e0a0-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.user.profile-updated.v1
+            source: /services/user
+            subject: users/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-28T08:00:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/user/v1/schemas/user-profile-updated.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              sender_name: Nguyen Van A
+              updated_at: '2026-08-28T08:00:00Z'
+    userPreferencesUpdated:
+      name: userPreferencesUpdatedV1
+      title: USER_PREFERENCES_UPDATED
+      summary: Ba notification preference được Notification Service replicate đã thay đổi.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-preferences-updated.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e0a1-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.user.preferences-updated.v1
+            source: /services/user
+            subject: users/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-28T08:05:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/user/v1/schemas/user-preferences-updated.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              email_enabled: true
+              in_app_enabled: true
+              marketing_enabled: false
+              updated_at: '2026-08-28T08:05:00Z'
