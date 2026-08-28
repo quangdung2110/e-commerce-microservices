@@ -18,8 +18,9 @@ channels:
   authIdentityEvents:
     address: t.auth.events
     description: >-
-      Event identity tối thiểu cho User Service. Partition key là user_id;
-      ordering chỉ được cam kết trong cùng user_id.
+      Event identity tối thiểu. USER_VERIFIED_SUCCESS chỉ dành cho User Service;
+      USER_DELETED được phát trực tiếp cho mọi service sở hữu dữ liệu theo user.
+      Partition key là user_id; ordering chỉ được cam kết trong cùng user_id.
     x-owner: auth-service
     x-message-key: user_id
     x-ordering-scope: user_id
@@ -123,7 +124,7 @@ components:
       title: USER_DELETED
       summary: Account đã được anonymize và vào retention window 90 ngày.
       contentType: application/cloudevents+json
-      x-consumers: [user-service]
+      x-consumers: [user-service, notification-service, review-service, chat-service]
       payload:
         $ref: './schemas/user-deleted.schema.json'
       examples:

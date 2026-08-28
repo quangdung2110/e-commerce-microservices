@@ -8,7 +8,8 @@ và topic/message nằm trong [AsyncAPI](asyncapi.yaml).
 
 | Topic | Consumer được phép | Mục đích |
 |---|---|---|
-| `t.auth.events` | User Service | Khởi tạo profile khi account verified và chạy GDPR cleanup khi account deleted. |
+| `t.auth.events` | User Service | Khởi tạo profile khi account verified; cleanup dữ liệu User khi account deleted. |
+| `t.auth.events` | Notification, Review, Chat Service | Tự cleanup/anonymize projection khi nhận `USER_DELETED` trực tiếp từ Auth. |
 | `t.auth.notification.events` | Notification Service | Yêu cầu gửi email xác minh và security notification. |
 
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_id`. Consumer
