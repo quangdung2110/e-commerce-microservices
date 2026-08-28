@@ -62,10 +62,12 @@ cần login lại theo contract.
 ## WF-AUTH-004 — Logout and session revocation
 
 **Goal:** vô hiệu session hiện tại hoặc session được chọn. Logout một thiết bị
-revoke refresh token/session và đặt `auth:denylist:{jti}` với TTL bằng thời gian
-còn lại của access token. Logout all hoặc đổi password revoke refresh session và
-đặt `auth:revoked_before:{user_id}`; Gateway từ chối token có
-`iat` không mới hơn mốc này. Operation phải idempotent: một session đã revoked
+revoke refresh token/session và đặt `auth:revocation:denylist:{jti}` với TTL
+không vượt quá thời gian còn lại của access token. Logout all hoặc đổi password
+revoke refresh session và đặt `auth:revocation:user:{sub}:revoked_before`;
+Gateway từ chối token có `iat` không mới hơn mốc này. Tên key theo
+[Gateway runtime contract](../gateway/runtime-contract.md#6-quy-ước-xác-thực);
+chi tiết namespace ở [Data Design](./data.md). Operation phải idempotent: một session đã revoked
 không được tạo lỗi làm lộ thông tin.
 
 ## WF-AUTH-005 — Change or reset password

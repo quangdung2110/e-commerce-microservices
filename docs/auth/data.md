@@ -146,10 +146,24 @@ theo `token_hash`, revoke token cũ, tạo token mới cùng `family_id`, rồi 
 Ràng buộc `replaced_by` yêu cầu token cũ đã `revoked_at` trước khi trỏ đến token
 mới. Hai refresh đồng thời chỉ được phép cho một request thành công.
 
-Redis key dùng prefix `auth:`. `auth:denylist:{jti}` thu hồi một access token;
-`auth:revoked_before:{account_id}` thu hồi access token cũ của toàn account.
-OTP/reset token, attempt counter và resend counter chỉ tồn tại Redis với TTL,
-phải được consume atomically và fail closed khi Redis unavailable.
+Redis dùng hai namespace tách biệt.
+
+Namespace `auth:revocation:*` là contract dùng chung với `gateway-auth` theo
+[Gateway runtime contract](../gateway/runtime-contract.md#6-quy-ước-xác-thực):
+Auth có quyền ghi, Gateway chỉ đọc. `auth:revocation:denylist:{jti}` thu hồi một
+access token; TTL lý tưởng bằng thời gian còn lại tới claim `exp`, nhưng Gateway
+chỉ chuyển tiếp `jti` mà không kèm `exp`, nên Auth dùng cận trên là access-token
+lifetime tối đa — entry có thể sống lâu hơn token vài phút, tốn bộ nhớ nhưng
+không bao giờ cho token đã thu hồi đi qua;
+`auth:revocation:user:{sub}:revoked_before` lưu timestamp UTC dạng Unix seconds,
+Gateway từ chối mọi JWT có `iat` không mới hơn giá trị này, và TTL của key không
+được ngắn hơn access-token lifetime tối đa. Đổi tên namespace này là breaking
+change vì phải đổi đồng thời ở cả hai service.
+
+Namespace `auth:*` còn lại chỉ thuộc Auth: OTP/reset token, attempt counter,
+resend counter, rate limit, worker lock và notification delivery state. Chúng chỉ
+tồn tại ở Redis với TTL, phải được consume atomically và fail closed khi Redis
+unavailable.
 
 Với đổi email, Redis còn lưu state OTP gắn với `account_id`, `new_email` đã chuẩn hóa,
 thời hạn, số lần thử, số lần gửi lại và trạng thái đã dùng. State này không phải nguồn dữ liệu

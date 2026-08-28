@@ -20,8 +20,10 @@ cách vô hiệu token trước khi TTL kết thúc.
 
 Dùng JWT access token sống ngắn với `jti`, kết hợp opaque refresh token server-side.
 Logout một thiết bị denylist `jti`; logout all, đổi mật khẩu hoặc xóa account dùng
-`revoked_before:{user_id}` và
-Gateway so sánh `iat`.
+mốc `revoked_before` của user và Gateway so sánh `iat`. Cả hai tín hiệu nằm trong
+namespace Redis `auth:revocation:*` dùng chung với `gateway-auth`; tên key đầy đủ
+do [Gateway runtime contract](../../gateway/runtime-contract.md#6-quy-ước-xác-thực)
+quy định và được nhắc lại ở [Data Design](../data.md).
 
 ## Alternatives considered
 

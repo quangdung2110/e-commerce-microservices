@@ -58,7 +58,7 @@ Profile chỉ được tham chiếu qua `user_id`; Auth không sở hữu profil
 | AUTH-BR-004 | Đăng nhập sai vượt ngưỡng phải lock theo policy | `ACCOUNT_LOCKED` |
 | AUTH-BR-005 | OTP/reset token hết hạn hoặc đã dùng không được replay | `OTP_INVALID` / `RESET_TOKEN_INVALID` |
 | AUTH-BR-006 | Private key không được trả qua JWKS | Security violation |
-| AUTH-BR-007 | `DELETED` account phải anonymize email/password ngay và hard delete sau 90 ngày | `ACCOUNT_DELETED` |
+| AUTH-BR-007 | `DELETED` account phải anonymize email/password ngay và hard delete sau 90 ngày | `ACCOUNT_ALREADY_DELETED` |
 | AUTH-BR-008 | Đổi email yêu cầu mật khẩu hiện tại và OTP gắn với account cùng email mới; email mới phải unique toàn hệ thống | `EMAIL_ALREADY_REGISTERED` / `OTP_INVALID` |
 | AUTH-BR-009 | Không áp dụng giới hạn số session hoặc thiết bị đăng nhập trên mỗi account | Không từ chối login chỉ vì số lượng session |
 

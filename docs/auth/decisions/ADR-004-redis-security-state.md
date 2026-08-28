@@ -18,8 +18,11 @@ nhanh và TTL tự dọn. Refresh token vẫn cần durable lifecycle/audit.
 
 ## Decision
 
-Redis dùng prefix `auth:` cho denylist, revoke marker, rate limit, failed-login,
-OTP và reset-token hash. PostgreSQL là source of truth cho refresh token.
+Redis dùng prefix `auth:` cho rate limit, OTP, reset-token hash và các trạng thái
+TTL khác do Auth sở hữu. Denylist và revoke marker nằm trong namespace con
+`auth:revocation:*` mà `gateway-auth` được quyền đọc, nên tên key của hai loại này
+là contract giữa hai service chứ không phải chi tiết nội bộ. PostgreSQL là source
+of truth cho refresh token.
 
 ## Alternatives considered
 
