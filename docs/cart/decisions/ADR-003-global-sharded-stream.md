@@ -1,7 +1,7 @@
 ---
 doc_id: cart-adr-003
 service: cart
-status: accepted
+status: superseded
 date: 2026-08-28
 decision_owners:
   - Cart Service team
@@ -15,7 +15,10 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-008](./ADR-008-bucketed-redis-stream-outbox.md).
+
+> Lịch sử quyết định bên dưới được giữ nguyên. Thiết kế hiện hành dùng 64 bucketed
+> stream cùng slot với cart theo ADR-008.
 
 ## Context
 

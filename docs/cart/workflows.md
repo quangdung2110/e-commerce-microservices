@@ -64,24 +64,25 @@ Gateway inject, không nằm trong body.
 
 ### Happy path
 
-1. Handler đọc `X-User-Id`, dựng `cart_key = {cart}:{user_id}`, validate cú pháp request.
+1. Handler đọc `X-User-Id`, dựng `user_token`, `cart_id = c1:<user_token>`,
+   `bucket = xxh3_64(canonical_user_id) mod 64` và
+   `cart_key = cart:v1:{bNN}:u:<user_token>:items`; rồi validate cú pháp request.
 2. Application layer gọi `GetProductSku` qua gRPC với deadline 200ms.
 3. Map dữ liệu Product thành snapshot: giá lấy giá khuyến mãi nếu có, ngược lại lấy
    giá gốc; ảnh và thông tin biến thể lấy từ SKU.
 4. Validate nghiệp vụ: trạng thái sản phẩm phải `ACTIVE`; snapshot tồn kho hiển thị
    phải đủ cho số lượng yêu cầu.
-5. Tính shard đích của outbox stream từ `user_id`.
+5. Dựng outbox key `cart:v1:{bNN}:outbox` từ cùng bucket của cart.
 6. Gọi [`add_or_update_item.lua`](./scripts/add_or_update_item.lua). Trong một lần
    thực thi nguyên tử, Redis kiểm tra `max_skus`, cộng dồn hoặc tạo mới item, chặn
    trần `max_qty`, `HSET` giá trị mới, gia hạn TTL 7 ngày, rồi `XADD` đúng một event
-   vào stream shard.
-7. Backend xóa negative cache `{cart}:{user_id}:notfound`.
-8. Trả `201` nếu SKU mới được thêm, `200` nếu SKU đã có được cập nhật.
+   vào outbox stream của bucket.
+7. Trả `201` nếu SKU mới được thêm, `200` nếu SKU đã có được cập nhật.
 
 ### State/data changes
 
-Thay đổi duy nhất trong transaction là hash `{cart}:{user_id}` trên Redis, kèm entry
-mới trong stream shard. Cold store thay đổi sau đó qua `WF-CART-005` và `WF-CART-006`;
+Thay đổi duy nhất trong transaction là hash `cart:v1:{bNN}:u:<user_token>:items`, kèm
+entry mới trong outbox stream cùng bucket. Cold store thay đổi sau đó qua `WF-CART-005` và `WF-CART-006`;
 thay đổi đó thuộc quyền của Cart Service, không của caller.
 
 ### Events emitted
@@ -103,7 +104,6 @@ Kết quả gồm `sku_id`, quantity sau thao tác và mốc cập nhật.
 | `step` không hợp lệ hoặc giảm item chưa tồn tại | `STEP_INVALID` / `ITEM_NOT_FOUND` | Giỏ không đổi |
 | Redis không khả dụng | Lỗi hạ tầng, trả `5xx` | Giỏ không đổi, không có event mồ côi |
 | Lua script lỗi giữa chừng | Redis hủy toàn bộ script | Không có cửa sổ “đã ghi giỏ nhưng thiếu event” |
-| Xóa negative cache thất bại sau khi Lua thành công | Ghi log; lần đọc kế tiếp có thể trả giỏ rỗng giả trong tối đa 60 giây | Giỏ đã đúng trên Redis |
 
 ### Timeout và retry
 
@@ -172,16 +172,15 @@ User đã đăng nhập.
 
 ### Happy path
 
-1. Kiểm tra negative cache `{cart}:{user_id}:notfound`; nếu tồn tại, trả giỏ rỗng ngay.
-2. `HGETALL` cart key. Nếu rỗng, chuyển sang `WF-CART-003`.
-3. Decode từng field thành item và gom tập `sku_id`.
-4. Gọi `GetBatchProductSkus` một lần cho toàn bộ tập SKU, deadline 200ms, bọc
+1. `HGETALL` cart key. Nếu rỗng, chuyển sang `WF-CART-003`.
+2. Decode từng field thành item và gom tập `sku_id`.
+3. Gọi `GetBatchProductSkus` một lần cho toàn bộ tập SKU, deadline 200ms, bọc
    circuit breaker.
-5. Phủ dữ liệu runtime lên response: giá hiện tại và trạng thái khả dụng mới nhất.
-6. Nếu Product trả `is_available = false` cho một SKU, ghi lại đúng một field
+4. Phủ dữ liệu runtime lên response: giá hiện tại và trạng thái khả dụng mới nhất.
+5. Nếu Product trả `is_available = false` cho một SKU, ghi lại đúng một field
    `is_available = false` vào Redis bằng `HSET`, không đụng TTL và không đụng field
    khác (`CART-BR-009`).
-7. Dựng response kèm chỉ báo độ tươi của giá.
+6. Dựng response kèm chỉ báo độ tươi của giá.
 
 ### State/data changes
 
@@ -259,14 +258,14 @@ Application layer (nhánh nội bộ của `WF-CART-002`); PostgreSQL; Product S
 
 ### Preconditions
 
-Không có negative cache cho user này.
+Cart hash không tồn tại.
 
 ### Happy path
 
 1. Đọc trạng thái giỏ trong bảng `carts`. Nếu là `DELETED` hoặc `CHECKED_OUT`, trả
    giỏ rỗng và dừng.
 2. Đọc các dòng `cart_items` theo `cart_id`.
-3. Nếu không có dòng nào, đặt negative cache TTL 60 giây và trả giỏ rỗng.
+3. Nếu không có dòng nào, trả giỏ rỗng.
 4. Gọi `GetBatchProductSkus` với deadline 200ms và circuit breaker; ghi nhận rõ lời
    gọi thành công hay thất bại.
 5. Merge theo chính sách: giữ nguyên `unit_price_at_add` và `added_at`; làm mới
@@ -296,7 +295,7 @@ Giỏ hàng đầy đủ, có thể kèm cờ suy giảm giá.
 
 | Điểm lỗi | Hành vi |
 |---|---|
-| PostgreSQL lỗi | Trả `5xx`; không đặt negative cache để tránh ghi nhớ trạng thái sai |
+| PostgreSQL lỗi | Trả `5xx`; không ghi Redis state |
 | Product lỗi | Vẫn rehydrate bằng snapshot cold store, response suy giảm |
 | Script rehydrate lỗi | Trả dữ liệu đã merge cho client, Redis vẫn rỗng, lần đọc sau thử lại |
 
@@ -323,8 +322,7 @@ xuất hiện sau khi consumer bắt kịp.
 
 ### Metrics và traces
 
-Tỷ lệ cache miss, latency rehydrate, số item được nạp lại, tỷ lệ negative cache,
-tỷ lệ rehydrate suy giảm.
+Tỷ lệ cache miss, latency rehydrate, số item được nạp lại, tỷ lệ rehydrate suy giảm.
 
 ### Implementation evidence
 
@@ -333,7 +331,7 @@ tỷ lệ rehydrate suy giảm.
 
 ### Test scenarios
 
-Cold store còn dữ liệu; cold store rỗng và kiểm chứng negative cache; giỏ ở trạng
+Cold store còn dữ liệu; cold store rỗng; giỏ ở trạng
 thái `DELETED`; Product lỗi; rehydrate đồng thời với thao tác ghi; kiểm chứng không
 có event nào được sinh ra; kiểm chứng `unit_price_at_add` xuất hiện đúng trong Redis
 sau khi nạp lại.
@@ -361,14 +359,14 @@ User đã đăng nhập; danh sách `sku_ids` không rỗng và tối đa 100 ph
 
 ### Happy path
 
-1. Dựng `cart_key` từ identity và tính shard đích của stream.
+1. Dựng `cart_id`, `cart_key` và outbox key từ identity cùng bucket.
 2. Gọi [`batch_delete_items.lua`](./scripts/batch_delete_items.lua) với danh sách
    `sku_ids` và loại event kết thúc (`CART_CLEARED` cho luồng user, `CART_CHECKED_OUT`
    cho luồng thanh toán).
 3. Script duyệt danh sách, gom các SKU thực sự tồn tại, phát `CART_ITEM_DELETED` cho
    từng SKU đó, rồi `HDEL` một lần cho cả nhóm.
 4. Nếu giỏ rỗng sau khi xóa, script `DEL` cart key và phát đúng loại event kết thúc.
-5. Backend xóa negative cache và trả số lượng đã xóa.
+5. Trả số lượng đã xóa.
 
 ### State/data changes
 
@@ -444,17 +442,24 @@ Chạy liên tục.
 
 ### Preconditions
 
-Consumer group tồn tại trên từng shard stream.
+Trên mỗi trong 64 stream `cart:v1:{bNN}:outbox` đã tồn tại group
+`cart-outbox-relay-v1`, được tạo từ ID `0` với `MKSTREAM`. Mapping deployment đảm
+bảo mỗi stream có đúng một active relay loop tại một thời điểm.
 
 ### Happy path
 
-1. Worker khởi tạo consumer group cho mỗi shard.
-2. Với mỗi shard, `XREADGROUP` theo lô với block time ngắn.
-3. Với mỗi message, trích `event_type` và payload, sinh định danh event theo cách
-   xác định từ `stream_id` và `cart_id`, bổ sung các header thứ tự (`stream_id`, phần
-   timestamp và phần sequence của nó) cùng metadata chuẩn.
-4. Produce sang `t.cart.events` với partition key là `cart_id` và chờ xác nhận đầy đủ.
-5. `XACK` message sau khi Kafka đã xác nhận.
+1. Bootstrap tạo `cart-outbox-relay-v1` trên mỗi stream bằng `XGROUP CREATE ... 0
+   MKSTREAM`; không dùng `$` để tránh bỏ event cũ.
+2. Bốn relay worker chia cố định các bucket: `relay-0` giữ `b00..b15`, `relay-1`
+   giữ `b16..b31`, `relay-2` giữ `b32..b47`, `relay-3` giữ `b48..b63`. Mỗi worker
+   chạy một loop tuần tự cho từng stream mình phụ trách.
+3. Mỗi loop gọi `XREADGROUP GROUP cart-outbox-relay-v1 relay-<worker-id>` theo lô
+   với block time ngắn.
+4. Với mỗi message, trích `event_type` và payload, sinh `event_id` xác định từ
+   `outbox_key + stream_id`, bổ sung `outbox_bucket`, `stream_id`, `cart_id` cùng
+   metadata chuẩn.
+5. Produce sang `t.cart.events` với partition key là `cart_id` và chờ xác nhận đầy đủ.
+6. `XACK` message sau khi Kafka đã xác nhận.
 
 ### State/data changes
 
@@ -474,7 +479,7 @@ Message trên `t.cart.events`.
 |---|---|---|
 | Kafka lỗi hoặc timeout | Không `XACK` | Message ở trạng thái pending, sẽ được xử lý lại |
 | Worker crash sau `XREADGROUP`, trước `XACK` | Redis giữ message ở pending | Worker khác nhặt lại bằng `XAUTOCLAIM` sau ngưỡng thời gian |
-| Payload hỏng không parse được | Ghi log và đưa vào đường xử lý lỗi | Cần quyết định chuyển sang dead-letter thay vì chặn shard |
+| Payload hỏng không parse được | Ghi log và đưa vào đường xử lý lỗi | Cần quyết định chuyển sang dead-letter thay vì chặn bucket |
 | Kafka lỗi kéo dài | Stream phình to | Rủi ro bộ nhớ Redis; xem runbook tại [Operations](./operations.md#10-runbooks) |
 
 ### Timeout và retry
@@ -484,24 +489,25 @@ message đồng nghĩa mất dữ liệu.
 
 ### Idempotency
 
-Định danh event xác định từ `stream_id` và `cart_id` nên mọi lần gửi lại đều mang
+Định danh event xác định từ `outbox_key + stream_id` nên mọi lần gửi lại đều mang
 cùng định danh, cho phép downstream dedupe. Delivery vẫn là at-least-once.
 
 ### Concurrency/race conditions
 
-Mỗi shard được một consumer group phục vụ; nhiều instance chia nhau các shard. Thứ
-tự trong một shard được giữ theo thứ tự stream, và thứ tự theo giỏ được giữ tiếp ở
-Kafka nhờ partition key.
+Mỗi stream có một group riêng nhưng consumer group không phải relay worker. Một
+worker có thể là consumer của 16 group. Chỉ một active loop đọc một stream, vì nhiều
+consumer cùng group có thể produce hai entry liên tiếp theo thứ tự đảo. Cách phân
+công này giữ thứ tự stream, rồi Kafka giữ tiếp thứ tự theo `cart_id` partition key.
 
 ### Compensation hoặc recovery
 
-`XAUTOCLAIM` cho message pending quá ngưỡng. Nếu một shard bị kẹt, tất cả event của
-các user thuộc shard đó bị chậm — đây là đánh đổi đã ghi ở
-[ADR-003](./decisions/ADR-003-global-sharded-stream.md).
+`XAUTOCLAIM` cho message pending quá ngưỡng khi loop thay thế tiếp quản stream. Nếu
+một bucket bị kẹt, chỉ các user trong bucket đó bị chậm — đánh đổi tại
+[ADR-008](./decisions/ADR-008-bucketed-redis-stream-outbox.md).
 
 ### Metrics và traces
 
-Độ dài stream theo shard, số message pending, tuổi message pending lâu nhất, tỷ lệ
+Độ dài stream theo bucket, số message pending, tuổi message pending lâu nhất, tỷ lệ
 produce lỗi, độ trễ từ lúc `XADD` tới lúc `XACK`.
 
 ### Implementation evidence
@@ -639,7 +645,7 @@ Payload có `order_id`, `user_id` và `sku_ids` không rỗng.
 
 1. Lọc message theo loại `ORDER_PAID`.
 2. Validate `user_id` và `sku_ids`; dựng `cart_id` từ `user_id`.
-3. Chốt khóa idempotency `cart:idemp:order_paid:{order_id}` bằng thao tác đặt-nếu-chưa-có
+3. Chốt khóa idempotency `cart:v1:idemp:order-paid:o:<order_token>` bằng thao tác đặt-nếu-chưa-có
    với TTL ngắn. Nếu khóa đã ở trạng thái hoàn tất, bỏ qua message.
 4. Gọi batch delete (`WF-CART-004`) với loại event kết thúc là `CART_CHECKED_OUT`.
 5. Đánh dấu khóa idempotency là hoàn tất với TTL dài.
@@ -675,7 +681,7 @@ bao trọn một lần xử lý và đủ ngắn để không chặn retry hợp
 
 ### Idempotency
 
-Khóa `cart:idemp:order_paid:{order_id}` là điểm chốt chính. Thao tác xóa bản thân nó
+Khóa `cart:v1:idemp:order-paid:o:<order_token>` là điểm chốt chính. Thao tác xóa bản thân nó
 cũng idempotent, nên đây là hai lớp bảo vệ độc lập.
 
 ### Concurrency/race conditions
@@ -730,7 +736,8 @@ Cronjob chạy singleton.
 1. Quét theo lô nhỏ các giỏ `ACTIVE` có `updated_at` cũ hơn ngưỡng, sắp xếp từ cũ nhất.
 2. Với mỗi giỏ, cập nhật trạng thái sang `ABANDONED` với điều kiện trạng thái hiện
    tại vẫn là `ACTIVE`, đồng thời đặt lại mốc đã-publish về rỗng.
-3. Chỉ khi cập nhật thực sự khớp một dòng, `XADD` `CART_ABANDONED` vào đúng shard
+3. Chỉ khi cập nhật thực sự khớp một dòng, tính bucket từ `user_id` và `XADD`
+   `CART_ABANDONED` vào đúng outbox stream bucket
    stream của user.
 4. Sau khi `XADD` thành công, ghi mốc đã-publish.
 5. Event đi tiếp theo đúng đường `WF-CART-005`.

@@ -89,7 +89,7 @@ Không có migration: đây là quyết định nền của service.
 thái và việc phát event phải nguyên tử với nhau, dẫn tới
 [ADR-002](./ADR-002-redis-streams-outbox.md). Vì cold store chỉ là bản chiếu, mọi
 câu lệnh ghi của consumer phải idempotent và chịu được sai thứ tự, dẫn tới
-[ADR-004](./ADR-004-stream-id-ordering.md).
+[ADR-009](./ADR-009-bucket-scoped-event-ordering.md).
 
 ## Verification
 

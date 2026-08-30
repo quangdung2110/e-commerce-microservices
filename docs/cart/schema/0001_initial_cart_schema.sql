@@ -25,7 +25,8 @@ SET search_path TO cart, public;
 -- carts — dòng master theo vòng đời của một giỏ
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS carts (
-    -- Bằng đúng Redis key: '{cart}:' || user_id. Không parse ngược ra user_id.
+    -- Logical ID ổn định 'c1:' || user_token; không bằng Redis key vật lý và
+    -- không parse ngược ra user_id.
     cart_id                      VARCHAR(255) PRIMARY KEY,
 
     -- Lấy trực tiếp từ event payload, không tách chuỗi từ cart_id.
@@ -52,7 +53,7 @@ CREATE TABLE IF NOT EXISTS carts (
 COMMENT ON TABLE  carts IS
     'Bản chiếu vòng đời giỏ hàng. Nguồn chân lý là Redis.';
 COMMENT ON COLUMN carts.cart_id IS
-    'Bằng đúng Redis key {cart}:{user_id}. Đổi format key là breaking change.';
+    'Logical ID c1:<user_token>, độc lập Redis key vật lý. Đổi routing/namespace cần migration riêng.';
 COMMENT ON COLUMN carts.last_event_stream_id IS
     'Guard thứ tự: chỉ cập nhật trạng thái khi stream_id của event lớn hơn giá trị này.';
 COMMENT ON COLUMN carts.abandoned_event_published_at IS

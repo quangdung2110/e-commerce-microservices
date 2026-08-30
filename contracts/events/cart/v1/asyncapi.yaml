@@ -19,6 +19,11 @@ channels:
     x-message-key: cart_id
     x-ordering-scope: cart_id
     x-delivery-semantic: at-least-once
+    x-deduplication-key: id
+    x-redis-outbox-metadata: >-
+      CloudEvents id được Relay dựng xác định từ outbox_key + stream_id. Kafka
+      headers bắt buộc gồm outbox_bucket, stream_id và cart_id; stream_id chỉ có
+      ý nghĩa thứ tự trong stream bucket của cart đó.
     x-max-message-bytes: 262144
     x-retention: 7d
     x-retry-policy:
@@ -50,17 +55,17 @@ components:
           summary: Một SKU được thêm với quantity 2
           payload:
             specversion: '1.0'
-            id: 0198e098-97e4-7d66-8a2c-997d792ae826
+            id: cart-outbox:v1:cart:v1:{b17}:outbox:1780000000000-0
             type: com.ecommerce.cart.item-added.v1
             source: /services/cart
-            subject: carts/cart-0198e098/items/SKU-RED-M
+            subject: carts/c1:MD.../items/SKU-RED-M
             time: '2026-08-25T14:30:00Z'
             datacontenttype: application/json
             dataschema: /contracts/events/cart/v1/schemas/cart-item-added.schema.json
             correlationid: 0198e098-96f2-7ad3-91d8-570608021328
             sequence: 1
             data:
-              cart_id: cart-0198e098
+              cart_id: c1:MD...
               user_id: 0198e098-94f4-7f8f-9e16-ae42dfbd93c1
               sku_id: SKU-RED-M
               product_id: PRODUCT-TSHIRT

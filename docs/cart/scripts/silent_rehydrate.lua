@@ -21,7 +21,7 @@ request cùng hụt cache có thể rehydrate song song mà không cần khóa.
 Tài liệu: docs/cart/data.md §7, docs/cart/workflows.md WF-CART-003
 =============================================================================
 
-KEYS[1]  cart_key       ví dụ: {cart}:550e8400-e29b-41d4-a716-446655440000
+KEYS[1]  cart_key       ví dụ: cart:v1:{b17}:u:NTUwZTg0MC...:items
 
 ARGV[1]  items_json     mảng JSON các item đã merge:
                         [{"sku_id":"...","value":"{...}"}, ...]

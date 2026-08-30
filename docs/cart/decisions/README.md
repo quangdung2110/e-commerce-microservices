@@ -35,8 +35,10 @@ Tạo ADR khi quyết định:
 | [ADR-000](./ADR-000-template.md) | Template — không phải quyết định thực tế | Template | N/A | N/A |
 | [ADR-001](./ADR-001-redis-first-source-of-truth.md) | Redis là nguồn chân lý, PostgreSQL là cold store | Accepted | 2026-08-28 | — |
 | [ADR-002](./ADR-002-redis-streams-outbox.md) | Outbox bằng Redis Streams thay vì publish Kafka trực tiếp | Accepted | 2026-08-28 | — |
-| [ADR-003](./ADR-003-global-sharded-stream.md) | Global sharded stream thay vì stream theo từng giỏ | Accepted | 2026-08-28 | — |
-| [ADR-004](./ADR-004-stream-id-ordering.md) | Thứ tự và idempotency dựa trên Stream ID | Accepted | 2026-08-28 | — |
+| [ADR-003](./ADR-003-global-sharded-stream.md) | Global sharded stream thay vì stream theo từng giỏ | Superseded | 2026-08-28 | ADR-008 |
+| [ADR-004](./ADR-004-stream-id-ordering.md) | Thứ tự và idempotency dựa trên Stream ID | Superseded | 2026-08-28 | ADR-009 |
 | [ADR-005](./ADR-005-pull-model-product-data.md) | Pull Model cho dữ liệu Product thay vì đồng bộ đẩy | Accepted | 2026-08-28 | — |
 | [ADR-006](./ADR-006-golang-runtime.md) | Chọn Go làm runtime của Cart Service | Accepted | 2026-08-28 | — |
 | [ADR-007](./ADR-007-redis-streams-temporary-outbox-records.md) | Redis Streams cho record outbox tạm thời | Accepted | 2026-08-28 | — |
+| [ADR-008](./ADR-008-bucketed-redis-stream-outbox.md) | 64 bucketed Redis Stream outbox cùng slot với cart | Accepted | 2026-08-30 | ADR-003 |
+| [ADR-009](./ADR-009-bucket-scoped-event-ordering.md) | Ordering theo stream bucket và event identity kép | Accepted | 2026-08-30 | ADR-004 |

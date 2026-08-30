@@ -17,13 +17,14 @@ Tuyệt đối không tái sử dụng mảng ARGV giữa hai script.
 Tài liệu: docs/cart/data.md §7, docs/cart/workflows.md WF-CART-004
 =============================================================================
 
-KEYS[1]  cart_key             ví dụ: {cart}:550e8400-e29b-41d4-a716-446655440000
-KEYS[2]  global_stream_shard  ví dụ: {cart}:events:0
+KEYS[1]  cart_key             ví dụ: cart:v1:{b17}:u:NTUwZTg0MC...:items
+KEYS[2]  outbox_stream        ví dụ: cart:v1:{b17}:outbox
 
 ARGV[1]  current_timestamp_ms  epoch milliseconds dạng chuỗi
 ARGV[2]  clear_event_type      "CART_CLEARED" hoặc "CART_CHECKED_OUT"
 ARGV[3]  user_id
 ARGV[4]  sku_ids_json          mảng JSON, ví dụ ["sku-1001","sku-1002"]
+ARGV[5]  cart_id               logical ID, ví dụ c1:NTUwZTg0MC...
 
 Trả về: số SKU thực sự bị xóa.
 --]]
@@ -35,6 +36,7 @@ local current_time = tostring(ARGV[1])
 local clear_event  = ARGV[2]
 local user_id      = ARGV[3]
 local sku_ids      = cjson.decode(ARGV[4])
+local cart_id      = ARGV[5]
 
 local deleted_count   = 0
 local skus_to_delete  = {}
@@ -42,7 +44,7 @@ local skus_to_delete  = {}
 -- Tái sử dụng một object cho cả vòng lặp thay vì tạo mới mỗi lượt.
 local deleted_event = {
     sku_id     = "",
-    cart_id    = cart_key,
+    cart_id    = cart_id,
     user_id    = user_id,
     deleted_at = current_time
 }
@@ -75,7 +77,7 @@ if deleted_count > 0 then
         redis.call('DEL', cart_key)
 
         local clear_payload = {
-            cart_id = cart_key,
+            cart_id = cart_id,
             user_id = user_id
         }
 

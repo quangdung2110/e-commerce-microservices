@@ -48,7 +48,7 @@ kinh nghiệm vận hành Go cho các service tương tự. Không chọn.
 
 ## Consequences
 
-**Tích cực.** Goroutine phù hợp trực tiếp với hình dạng công việc: mỗi shard stream
+**Tích cực.** Goroutine phù hợp trực tiếp với hình dạng công việc: mỗi bucket stream
 một vòng lặp đọc, mỗi consumer một vòng lặp xử lý, chi phí cho mỗi luồng ở mức không
 đáng kể. Binary khởi động nhanh, giúp scale ngang phản ứng kịp với đột biến tải. Mức
 tiêu thụ bộ nhớ mỗi pod thấp, nên chạy nhiều pod nhỏ là khả thi về chi phí.

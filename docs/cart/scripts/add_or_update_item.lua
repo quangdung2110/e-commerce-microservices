@@ -13,14 +13,14 @@ Vì sao phải là Lua script:
     mà không cần transaction phân tán.
 
 Ràng buộc Redis Cluster:
-  KEYS[1] và KEYS[2] phải cùng hash tag `{cart}`, nếu không Redis trả CROSSSLOT
+  KEYS[1] và KEYS[2] phải cùng hash tag bucket `{bNN}`, nếu không Redis trả CROSSSLOT
   và script thất bại hoàn toàn.
 
 Tài liệu: docs/cart/data.md §7, docs/cart/workflows.md WF-CART-001
 =============================================================================
 
-KEYS[1]  cart_key             ví dụ: {cart}:550e8400-e29b-41d4-a716-446655440000
-KEYS[2]  global_stream_shard  ví dụ: {cart}:events:0
+KEYS[1]  cart_key             ví dụ: cart:v1:{b17}:u:NTUwZTg0MC...:items
+KEYS[2]  outbox_stream        ví dụ: cart:v1:{b17}:outbox
 
 ARGV[1]  sku_id
 ARGV[2]  payload_json    snapshot đầy đủ do backend build sẵn
@@ -30,6 +30,7 @@ ARGV[5]  step            số lượng cộng thêm, có thể âm
 ARGV[6]  event_time_ms   epoch milliseconds, business timestamp
 ARGV[7]  user_id         cần cho event payload
 ARGV[8]  ttl_seconds     hạn sống của giỏ
+ARGV[9]  cart_id         logical ID, ví dụ c1:NTUwZTg0MC...
 
 Trả về: chuỗi JSON của item sau thao tác.
 --]]
@@ -45,6 +46,7 @@ local step         = tonumber(ARGV[5])
 local event_time   = tostring(ARGV[6])
 local user_id      = ARGV[7]
 local ttl_seconds  = tonumber(ARGV[8])
+local cart_id      = ARGV[9]
 
 -- 1. Chặn phình hash key: từ chối SKU mới khi giỏ đã đạt trần số loại.
 --    Tăng số lượng một SKU đã có vẫn được phép vì không làm tăng số loại.
@@ -110,7 +112,7 @@ redis.call('EXPIRE', cart_key, ttl_seconds)
 --    chúng đã ngầm định trong key và field, nhưng consumer downstream cần chúng
 --    tường minh để không phải tách chuỗi từ cart_id.
 local event_obj    = cjson.decode(encoded_json)
-event_obj.cart_id  = cart_key
+event_obj.cart_id  = cart_id
 event_obj.sku_id   = sku_id
 event_obj.user_id  = user_id
 

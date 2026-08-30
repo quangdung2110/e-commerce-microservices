@@ -124,12 +124,12 @@ xuất hiện ở entry stream, ở header message Kafka, và ở cột guard tr
 Thao tác chẩn đoán chỉ đọc hữu ích:
 
 - Xem nội dung một giỏ bằng `HGETALL` trên cart key.
-- Xem tình trạng một shard bằng `XINFO STREAM` và `XINFO GROUPS`.
+- Xem tình trạng một stream bucket bằng `XINFO STREAM` và `XINFO GROUPS`.
 - Xem message tồn đọng bằng `XPENDING`.
 - Đối chiếu một item giữa Redis và cold store qua `item_id`.
 
 Thao tác **không** an toàn trên môi trường chung: `XTRIM` hoặc `DEL` thủ công trên
-stream shard, và ghi trực tiếp vào cart hash bằng lệnh Redis rời — cả hai đều phá
+stream bucket, và ghi trực tiếp vào cart hash bằng lệnh Redis rời — cả hai đều phá
 bất biến của service.
 
 Cấu hình debugger và mức log: `TBD`.
@@ -138,13 +138,13 @@ Cấu hình debugger và mức log: `TBD`.
 
 | Triệu chứng | Nguyên nhân thường gặp | Cách kiểm tra |
 |---|---|---|
-| `CROSSSLOT` khi gọi Lua | Cart key và stream key không cùng hash tag `{cart}` | Kiểm tra key thực tế mà backend truyền vào `KEYS[]` |
+| `CROSSSLOT` khi gọi Lua | Cart key và stream key không cùng hash tag bucket `{bNN}` | Kiểm tra `cart:v1:{bNN}:u:<user_token>:items` và `cart:v1:{bNN}:outbox` thực tế mà backend truyền vào `KEYS[]` |
 | Mốc thời gian sai ở client | Timestamp bị cjson đổi sang ký hiệu khoa học | Kiểm tra timestamp có được lưu dạng chuỗi không |
-| Vừa thêm hàng nhưng đọc ra giỏ rỗng | Negative cache chưa được xóa sau khi ghi | Kiểm tra key `{cart}:{user_id}:notfound` |
+| Hụt cache lặp lại với cart rỗng | Cart không dùng negative cache; cold store bị đọc lại là hành vi thiết kế | Kiểm tra latency/pool PostgreSQL và chỉ cân nhắc cache sau khi có số liệu |
 | Giá lịch sử trả về rỗng sau rehydrate | Thiếu bước ghép `unit_price_at_add` từ cột riêng vào JSON | Kiểm tra dữ liệu truyền vào script rehydrate |
 | Event xuất hiện sau khi chỉ đọc giỏ | Script rehydrate bị thêm `XADD` | Kiểm tra script đang nạp trên Redis |
 | Cold store không đổi dù đã thao tác | Guard `stream_id` chặn, hoặc consumer đang lag | So sánh `stream_id` của event với giá trị trong cột guard |
-| Stream phình to khi test | Trimmer chưa chạy, hoặc bị bỏ qua vì thiếu consumer group | `XLEN` và `XINFO GROUPS` trên shard |
+| Stream phình to khi test | Trimmer chưa chạy, hoặc bị bỏ qua vì thiếu consumer group | `XLEN` và `XINFO GROUPS` trên stream bucket |
 
 ## 12. Definition of Done
 

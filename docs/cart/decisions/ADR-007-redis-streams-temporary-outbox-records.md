@@ -34,13 +34,13 @@ là fire-and-forget.
 
 Redis Stream đã là append-only log có consumer group và định danh entry đơn điệu.
 Những khả năng này cũng là đầu vào cho `stream_id`, khóa ordering và idempotency của
-Cart theo [ADR-004](./ADR-004-stream-id-ordering.md).
+Cart theo [ADR-009](./ADR-009-bucket-scoped-event-ordering.md).
 
 ## Decision
 
 Dùng Redis Streams làm nơi lưu record outbox tạm thời. Mỗi business write thực hiện
-`XADD` trong cùng Lua script đã thay đổi cart hash. Các stream dùng chung được shard
-theo quy tắc của [ADR-003](./ADR-003-global-sharded-stream.md).
+`XADD` trong cùng Lua script đã thay đổi cart hash. Các stream dùng chung được route
+theo quy tắc routing bucket của [ADR-008](./ADR-008-bucketed-redis-stream-outbox.md).
 
 Outbox Relay phải dùng consumer group để đọc. Chỉ sau khi Kafka xác nhận produce,
 relay mới `XACK`; pending entry của worker chết được nhận lại qua `XAUTOCLAIM`.
@@ -85,12 +85,12 @@ một consumer như Analytics không trực tiếp ngăn Cart trim outbox.
 
 **Tiêu cực.** Redis Streams dùng RAM và không phải storage dài hạn. Kafka outage
 kéo dài hoặc relay hỏng sẽ làm stream tăng, gây áp lực lên primary store của Cart.
-Cần AOF để giảm rủi ro mất event khi Redis restart, cảnh báo theo shard cho stream
+Cần AOF để giảm rủi ro mất event khi Redis restart, cảnh báo theo bucket cho stream
 length/pending age, và Stream Trimmer hoạt động đúng quy tắc.
 
 **Constraint.** `XACK` không xóa entry. Không được dùng `MAXLEN` lúc `XADD` vì có
 thể xóa event chưa được relay; chỉ trim sau khi xác định mốc an toàn. Mọi key script
-chạm tới phải có hash tag `{cart}` để `HSET` và `XADD` cùng chạy được trên Redis
+chạm tới phải có cùng hash tag bucket `{bNN}` để `HSET` và `XADD` cùng chạy được trên Redis
 Cluster.
 
 **Delivery semantic.** Toàn tuyến vẫn là at-least-once: relay retry có thể produce
@@ -105,7 +105,7 @@ Kafka và `XACK` theo đúng thứ tự.
 
 **Data và operations.** Không có migration bảng. Redis phải bật persistence phù
 hợp, khởi tạo consumer group trước khi trimmer được phép cắt, và theo dõi stream theo
-từng shard. Khi stream đã ACK và không còn pending, trimmer mới được giải phóng RAM.
+từng bucket. Khi stream đã ACK và không còn pending, trimmer mới được giải phóng RAM.
 
 **Contract.** `stream_id` được giữ nguyên từ Redis Stream qua Kafka để mọi consumer
 có cùng khóa ordering/idempotency. Kafka vẫn là public integration boundary; thay
@@ -119,4 +119,4 @@ có cùng khóa ordering/idempotency. Kafka vẫn là public integration boundar
 - Có test produce Kafka thất bại thì entry không được ACK.
 - Có test trimmer không xóa entry pending hay entry của stream chưa có consumer group.
 - Có metric/cảnh báo cho stream length, pending count, pending age và số entry trim
-  theo từng shard; Redis AOF được kiểm tra trong cấu hình triển khai.
+  theo từng bucket; Redis AOF được kiểm tra trong cấu hình triển khai.

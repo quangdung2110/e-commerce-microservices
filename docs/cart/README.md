@@ -102,14 +102,16 @@ Chi tiết tại [Data Design](./data.md).
 
 ## 7. Critical invariants
 
-- `CART-INV-001`: `cart_id` luôn bằng đúng Redis key `{cart}:{user_id}`. Không
-  service nào được parse ngược `user_id` từ `cart_id`.
+- `CART-INV-001`: `cart_id = c1:<user_token>` là identity nghiệp vụ ổn định;
+  nó không phải Redis key vật lý và không service nào được suy ngược `user_id`
+  từ nó.
 - `CART-INV-002`: một user có đúng một cart key; một `sku_id` xuất hiện tối đa một
   lần trong giỏ.
 - `CART-INV-003`: quantity của mỗi item luôn nằm trong khoảng `1..max_qty`; không
   tồn tại item có quantity `<= 0` trong Redis.
-- `CART-INV-004`: mọi business write vào cart state phải sinh đúng một outbox
-  event trong cùng Lua script; luồng rehydrate tuyệt đối không sinh event.
+- `CART-INV-004`: mọi state transition quan sát được của business write phải sinh
+  đúng một outbox event tương ứng trong cùng Lua script; một batch command có thể
+  sinh nhiều transition. Luồng rehydrate tuyệt đối không sinh event.
 - `CART-INV-005`: cold store chỉ được cập nhật khi `stream_id` của event mới hơn
   giá trị đã ghi trên dòng tương ứng.
 - `CART-INV-006`: `unit_price_at_add` và `added_at` là dữ liệu lịch sử, immutable
@@ -140,8 +142,9 @@ Giải thích và nơi enforcement tại [Domain Model](./domain.md).
 - Chưa có DLQ monitor worker; thiết kế trước đây ghi nhận đây là hạng mục hoãn lại.
 - Chưa có luồng xóa dữ liệu giỏ hàng theo `USER_DELETED` của Auth Service, nên
   yêu cầu xóa dữ liệu GDPR chưa được đáp ứng đầu-cuối.
-- Số shard của outbox stream đang cố định là 4; quy trình đổi số shard an toàn
-  chưa được thiết kế.
+- Outbox routing có 64 bucket cố định trong namespace `v1`. Thay đổi số bucket
+  không phải configuration runtime; chỉ được thực hiện bằng namespace/routing
+  version mới và quy trình drain outbox cũ.
 - Chỉ hỗ trợ user đã đăng nhập; không có giỏ hàng cho khách vãng lai.
 - Giá trị SLO, alert threshold, cấu hình runtime và command phát triển local
   đang là `TBD` vì chưa lấy từ hạ tầng và build configuration thật.

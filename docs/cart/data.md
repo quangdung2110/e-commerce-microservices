@@ -23,9 +23,9 @@ verified_against_commit: null
 
 | Kho lưu trữ | Dữ liệu | Nguồn chân lý | Ai được ghi |
 |---|---|---|---|
-| Redis hash `{cart}:{user_id}` | Cart state: SKU, quantity, snapshot hiển thị, mốc thời gian | **Cart state** | Chỉ Cart Service, chỉ qua ba script chuẩn |
-| Redis stream `{cart}:events:{shard}` | Outbox event chưa relay | Transport nội bộ | Script add/update, script batch delete, cronjob đánh dấu bỏ quên |
-| Redis key phụ trợ | Negative cache, khóa idempotency | Trạng thái tạm, có TTL | Cart Service |
+| Redis hash `cart:v1:{bNN}:u:<user_token>:items` | Cart state: SKU, quantity, snapshot hiển thị, mốc thời gian | **Cart state** | Chỉ Cart Service, chỉ qua ba script chuẩn |
+| Redis stream `cart:v1:{bNN}:outbox` | Outbox event chưa relay; có đúng 64 stream (`b00..b63`) | Transport nội bộ | Script add/update, script batch delete, cronjob đánh dấu bỏ quên |
+| Redis key phụ trợ | Khóa idempotency `ORDER_PAID` | Trạng thái tạm, có TTL | Cart Service |
 | PostgreSQL `carts`, `cart_items` | Bản chiếu bền vững của cart state | Không phải nguồn chân lý | Chỉ Postgres Sync consumer và cronjob |
 | Kafka `t.cart.events` | Event đã phát ra ngoài | Transport | Outbox Relay |
 | Product Service | Giá, trạng thái khả dụng, thông tin catalog | Product Service | Không phải Cart |
@@ -91,7 +91,7 @@ production hay không là hạng mục cần xác minh.
 
 | Constraint | Nội dung | Nơi enforcement |
 |---|---|---|
-| Khóa chính `carts.cart_id` | Một dòng cho mỗi giỏ; giá trị bằng đúng Redis key | Database |
+| Khóa chính `carts.cart_id` | Một dòng cho mỗi giỏ; giá trị là logical ID `c1:<user_token>`, không phải Redis key | Database |
 | Khóa chính `cart_items.item_id` | Định dạng `{cart_id}:{sku_id}`, đảm bảo một SKU một dòng | Database |
 | `quantity > 0` | Không tồn tại dòng item với số lượng không dương | Database (check) và script Lua |
 | `carts.status` thuộc tập hợp cố định | `ACTIVE`, `ABANDONED`, `DELETED`, `CHECKED_OUT` | Database (check) |
@@ -138,105 +138,96 @@ Isolation mặc định `READ COMMITTED` là đủ vì mọi ghi đều điều 
 `stream_id`, tức là dùng compare-and-set thay vì khóa. Không có nguy cơ lost update
 theo nghĩa cổ điển: một câu lệnh mang `stream_id` cũ đơn giản là không khớp dòng nào.
 
-Side effect nằm ngoài mọi transaction: gọi gRPC sang Product Service, produce Kafka,
-và xóa negative cache.
+Side effect nằm ngoài mọi transaction: gọi gRPC sang Product Service và produce Kafka.
 
-## 7. Caching
+## 7. Redis keyspace
 
-Redis ở đây không phải cache theo nghĩa thông thường mà là primary store
-([ADR-001](./decisions/ADR-001-redis-first-source-of-truth.md)). Phần dưới mô tả toàn
-bộ không gian key.
+Redis là primary store, không phải cache ([ADR-001](./decisions/ADR-001-redis-first-source-of-truth.md)).
+Không gian key chủ đích chỉ gồm cart state, outbox và idempotency; không có negative
+cache hoặc distributed lease trong Redis.
 
-### 7.1. Cart hash
+### 7.1. Routing và logical identity
+
+`user_token` là bản mã hóa canonical, URL-safe của `user_id`. Application tính
+`bucket = xxh3_64(canonical_user_id) mod 64`, format thành `b00..b63`. Hàm hash,
+số bucket và namespace `v1` là data contract; không thay đổi bằng runtime config.
+
+`cart_id = c1:<user_token>` là logical identity được gửi trong event và lưu ở cold
+store. Nó **không** bằng Redis key vật lý, nên thay đổi prefix hoặc layout key không
+làm đổi identity nghiệp vụ.
+
+### 7.2. Cart hash
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Key | `{cart}:{user_id}` |
+| Key | `cart:v1:{bNN}:u:<user_token>:items` |
 | Kiểu | Hash |
 | Field | `sku_id` |
 | Value | Chuỗi JSON snapshot của item |
-| TTL | 7 ngày, gia hạn ở mỗi lần ghi |
+| TTL | 7 ngày, gia hạn ở mỗi business write và rehydrate |
 | Nguồn chân lý | Chính nó |
 
-Hash tag `{cart}` là bắt buộc: nó buộc cart key và stream shard rơi vào cùng hash
-slot, điều kiện để một Lua script chạm cả hai key mà không gặp lỗi `CROSSSLOT` trên
-Redis Cluster.
+Ví dụ: `cart:v1:{b17}:u:NTUwZTg0MC...:items`. Hash tag `{b17}` buộc cart hash và
+outbox cùng bucket vào một Redis Cluster slot; các bucket khác được cluster phân bố
+độc lập. Đây là khác biệt quan trọng với tag cố định `{cart}`, vốn sẽ dồn mọi cart
+vào một slot.
 
 Value chứa: `product_id`, `quantity`, `unit_price_at_add`, `product_name`,
 `variant_info`, `image_url`, `is_available`, `added_at`, `updated_at`.
+`current_price` không được lưu; nó chỉ có ở response runtime. Mốc thời gian là epoch
+milliseconds lưu dạng chuỗi để tránh mất chính xác JSON/JavaScript.
 
-Hai quy ước bắt buộc về value:
+Đường đọc trúng cache không gia hạn TTL. Ngoại lệ duy nhất là rehydrate, vì đó là
+write-recovery. Khi Product báo `is_available = false`, chỉ ghi lại field item cần
+thiết và không thay đổi TTL.
 
-- `current_price` **không** nằm trong value. Đây là trường runtime chỉ xuất hiện ở
-  response của API đọc giỏ.
-- Mốc thời gian là epoch **milliseconds** lưu dưới dạng **chuỗi**. Dùng
-  milliseconds vì giá trị nằm trong ngưỡng số nguyên an toàn của JavaScript, còn
-  microseconds thì không. Lưu dạng chuỗi vì thư viện JSON của Redis chuyển số lớn
-  sang ký hiệu khoa học và làm mất độ chính xác.
+Không có negative cache: khi hash không tồn tại, API đi thẳng vào nhánh rehydrate.
+Nếu cold store không có cart còn hiệu lực, trả giỏ rỗng. Rehydrate hội tụ an toàn khi
+chạy đồng thời nên không cần khóa chống dồn tải trong Redis.
 
-### 7.2. Quy tắc TTL chỉ-đọc
-
-Đường đọc trúng cache **không** được gia hạn TTL. Nếu mỗi lần xem giỏ đều đẩy hạn
-sống thêm 7 ngày, một người dùng chỉ xem mà không mua sẽ giữ giỏ sống vô hạn và
-Redis không bao giờ giải phóng được bộ nhớ.
-
-Có đúng hai ngoại lệ:
-
-1. Ghi lại một field `is_available = false` khi Product Service báo sản phẩm không
-   còn bán — chỉ ghi field đó, không đụng TTL và không đụng field khác.
-2. Rehydrate được đặt lại TTL đúng một lần, vì đây là write-recovery chứ không phải
-   thao tác đọc.
-
-### 7.3. Outbox stream shard
+### 7.3. Bucketed outbox streams
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Key | `{cart}:events:{shard_id}` với `shard_id` trong `0..3` |
+| Key | `cart:v1:{bNN}:outbox`, với `bNN` trong `b00..b63` |
+| Số lượng | 64 stream cố định |
 | Kiểu | Stream |
-| Cách chọn shard | Băm ổn định `user_id` rồi chia dư cho số shard |
-| Field của mỗi entry | `event_type` và `payload` |
-| Consumer group | Một group riêng cho mỗi shard |
+| Cách route | Cùng `bucket` đã tính cho cart của `user_id` |
+| Entry fields | `event_version`, `event_type`, `cart_id`, `user_id`, `payload`, `occurred_at_ms` |
+| Consumer group | Một instance group `cart-outbox-relay-v1` trên **mỗi** stream |
 | Cắt bộ nhớ | `XTRIM MINID` định kỳ, không dùng `MAXLEN` khi `XADD` |
 
-Payload được bổ sung `cart_id`, `sku_id` và `user_id` ngay trước khi `XADD`, dù hash
-value không lưu ba trường này vì chúng đã ngầm định trong key và field. Consumer
-downstream cần chúng tường minh để không phải tách chuỗi từ `cart_id`.
+Một script ghi truyền cart hash và stream của cùng bucket qua `KEYS[]`, nên `HSET`/
+`HDEL` và `XADD` là nguyên tử trên Redis Cluster. `XADD` trả `stream_id`. Mọi event
+của cùng cart luôn đi một stream, vì route chỉ phụ thuộc `user_id`; do đó `stream_id`
+vẫn là token thứ tự hợp lệ **trong phạm vi cart đó**. Nó không còn được coi là định
+danh duy nhất trên toàn bộ 64 stream. Relay dựng Kafka `event_id` từ
+`outbox_key + stream_id` và đưa cả `outbox_bucket`, `stream_id`, `cart_id` vào header.
 
-Không dùng `MAXLEN` khi `XADD` là quyết định có chủ đích: cắt theo độ dài có thể xóa
-message chưa được `XACK` khi relay bị chậm, tức là mất event.
+Mỗi stream phải được tạo group bằng `XGROUP CREATE <stream> cart-outbox-relay-v1 0
+MKSTREAM`; dùng `$` có thể bỏ sót entry được ghi trước lúc group khởi động.
 
-### 7.4. Negative cache
+Không dùng `MAXLEN` khi `XADD`: cắt theo độ dài có thể xóa message chưa được `XACK`
+khi relay chậm, tức là mất event.
 
-| Thuộc tính | Giá trị |
-|---|---|
-| Key | `{cart}:{user_id}:notfound` |
-| TTL | 60 giây |
-| Mục đích | Chặn quét cold store lặp lại cho user thực sự chưa có giỏ |
-| Bắt buộc xóa khi | Mỗi lần ghi thành công (thêm, cập nhật, xóa) |
-
-Quên xóa key này sau khi ghi sẽ khiến người dùng vừa thêm hàng vẫn thấy giỏ rỗng
-trong tối đa 60 giây.
-
-### 7.5. Khóa idempotency của `ORDER_PAID`
+### 7.4. Khóa idempotency của `ORDER_PAID`
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Key | `cart:idemp:order_paid:{order_id}` |
-| Vòng đời | Đặt-nếu-chưa-có với TTL ngắn khi bắt đầu xử lý; ghi đè trạng thái hoàn tất với TTL dài sau khi thành công |
+| Key | `cart:v1:idemp:order-paid:o:<order_token>` |
+| Kiểu | String, giá trị `PROCESSING` hoặc `DONE` |
+| Vòng đời | `SET NX EX` TTL processing ngắn; khi thành công ghi `DONE` với TTL ít nhất bằng Kafka retention cộng replay window |
 | Tầng thực thi | Tầng Go của consumer, không truyền vào Lua |
 
-Khóa này không dùng hash tag vì nó không bao giờ đi cùng key khác trong một script.
+Khóa không dùng hash tag vì không đi cùng key khác trong script. Đây là keyspace phụ
+trợ duy nhất còn lại; thao tác batch delete tự idempotent là lớp bảo vệ thứ hai.
 
-### 7.6. Hành vi khi Redis không khả dụng
+### 7.5. Hành vi khi Redis không khả dụng
 
 Vì Redis là nguồn chân lý chứ không phải lớp tăng tốc, mất Redis đồng nghĩa với mất
-khả năng đọc và ghi giỏ hàng. Không có fallback đọc thẳng cold store trong đường
-request: cold store có thể chậm hơn Redis vài giây và trả về trạng thái đã cũ, việc
-phục vụ dữ liệu đó như thể nó đúng sẽ nguy hiểm hơn là trả lỗi. Đây là đánh đổi đã
-được ghi nhận tại [ADR-001](./decisions/ADR-001-redis-first-source-of-truth.md).
-
-Chống dồn tải khi cache trống hàng loạt: negative cache chặn phần lớn truy vấn vô
-ích, và script rehydrate an toàn khi chạy đồng thời nên không cần khóa chống dồn.
+khả năng đọc và ghi giỏ hàng. Không có fallback đọc thẳng cold store trong request
+path: cold store có thể chậm và cũ hơn trạng thái Redis. Đây là đánh đổi tại
+[ADR-001](./decisions/ADR-001-redis-first-source-of-truth.md).
 
 ## 8. Outbox/inbox và idempotency storage
 
@@ -245,8 +236,8 @@ Chống dồn tải khi cache trống hàng loạt: negative cache chặn phần
 Outbox của Cart không phải một bảng SQL mà là Redis Stream
 ([ADR-002](./decisions/ADR-002-redis-streams-outbox.md)). Vòng đời một event:
 
-1. Script Lua `XADD` event vào shard, nhận `stream_id` do Redis sinh.
-2. Relay đọc bằng consumer group, produce sang Kafka, rồi `XACK`.
+1. Script Lua `XADD` event vào outbox stream của bucket, nhận `stream_id` do Redis sinh.
+2. Relay đọc qua group `cart-outbox-relay-v1` của stream đó, produce sang Kafka, rồi `XACK`.
 3. `XACK` chỉ đánh dấu đã xử lý trong group; nó **không** giải phóng bộ nhớ.
 4. Stream Trimmer cắt các entry đã an toàn bằng `XTRIM MINID`.
 
@@ -258,9 +249,10 @@ Khôi phục khi worker chết: message đã đọc nhưng chưa ACK nằm ở t
 
 ### 8.2. Khóa thứ tự và dedupe
 
-`stream_id` là khóa thứ tự duy nhất của toàn bộ hệ thống event Cart
-([ADR-004](./decisions/ADR-004-stream-id-ordering.md)). Nó do Redis sinh, đơn điệu
-tăng trong một stream, và không phụ thuộc đồng hồ của pod ứng dụng.
+`stream_id` là khóa thứ tự của một cart trong outbox stream bucket của nó
+([ADR-009](./decisions/ADR-009-bucket-scoped-event-ordering.md)). Nó do Redis sinh, đơn điệu
+tăng trong một stream, và không phụ thuộc đồng hồ của pod ứng dụng. `outbox_key +
+stream_id` mới là định danh duy nhất giữa các bucket.
 
 | Nơi lưu | Cột | Ý nghĩa |
 |---|---|---|
@@ -271,9 +263,9 @@ Quy tắc so sánh: chỉ ghi khi `stream_id` của event **lớn hơn** giá tr
 nhau được coi là duplicate và bỏ qua. Vì `stream_id` có dạng `<milliseconds>-<sequence>`,
 việc so sánh phải cho ra thứ tự đúng cả ở phần sequence, không chỉ phần timestamp.
 
-Định danh event ở Kafka được Relay sinh xác định từ `stream_id` và `cart_id`, không
-phải UUID ngẫu nhiên, để mọi lần retry cho ra cùng một định danh và downstream có thể
-dedupe.
+Định danh event ở Kafka được Relay sinh xác định từ `outbox_key` và `stream_id`,
+không phải UUID ngẫu nhiên, để mọi lần retry cho ra cùng một định danh và downstream
+có thể dedupe. `cart_id` và `outbox_bucket` luôn có trong header để truy vết.
 
 ### 8.3. Inbox
 
@@ -284,7 +276,7 @@ idempotency trên Redis cho `ORDER_PAID`, và bản chất idempotent của thao
 ### 8.4. Retention và cleanup
 
 Entry stream được trim sau khi đã ACK và không còn pending. Khóa idempotency tự hết
-hạn theo TTL. Không có bảng nào cần dọn thủ công ở phía outbox.
+hạn theo TTL. Không có negative-cache key hoặc Redis lease key cần dọn thủ công.
 
 ## 9. Data lifecycle
 
@@ -304,9 +296,10 @@ trước, rồi mới xóa `carts`. Không có `CASCADE` để dựa vào (xem �
 Item bị xóa khỏi giỏ là hard delete, không có soft delete. Vì Redis là nguồn chân lý,
 giữ lại bản ghi đã biến mất khỏi Redis chỉ tạo ra dữ liệu không ai đọc.
 
-Migration và backfill: đổi định dạng Redis key hoặc số shard là thay đổi có ảnh
-hưởng dữ liệu, vì `cart_id` đã nằm trong cold store và trong mọi event đã phát. Quy
-trình an toàn cho việc đổi số shard chưa được thiết kế.
+Migration và backfill: đổi định dạng Redis key không làm đổi `cart_id`, nhưng đổi
+namespace, hàm routing hoặc số bucket vẫn là thay đổi dữ liệu. Không được đổi `64`
+trực tiếp: tạo version routing mới, giữ relay/trimmer cho `v1`, drain toàn bộ stream
+`v1`, rồi mới ngừng đọc namespace cũ.
 
 Sao lưu và phục hồi: cold store là bản sao bền vững của cart state, nên khôi phục
 sau sự cố Redis dựa vào rehydrate theo từng người dùng thay vì một lần khôi phục

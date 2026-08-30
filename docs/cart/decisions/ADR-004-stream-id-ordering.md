@@ -1,7 +1,7 @@
 ---
 doc_id: cart-adr-004
 service: cart
-status: accepted
+status: superseded
 date: 2026-08-28
 decision_owners:
   - Cart Service team
@@ -15,7 +15,11 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-009](./ADR-009-bucket-scoped-event-ordering.md).
+
+> Lịch sử quyết định bên dưới được giữ nguyên. Trong thiết kế 64 stream bucket,
+> `stream_id` chỉ có ý nghĩa thứ tự trong stream của cart; `outbox_key + stream_id`
+> mới là định danh event duy nhất giữa các bucket.
 
 ## Context
 

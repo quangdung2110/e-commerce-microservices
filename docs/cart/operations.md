@@ -67,8 +67,8 @@ Cấu hình probe cụ thể là `TBD` cho tới khi lấy từ deployment confi
 | TTL giỏ hàng | Hạn sống của cart key | Yes | 7 ngày | No | No |
 | Trần số lượng mỗi SKU | `max_qty` | Yes | 100 | No | No |
 | Trần số loại SKU | `max_skus` | Yes | 50 | No | No |
-| Số shard outbox | Số stream shard | Yes | 4 | No | Yes |
-| TTL negative cache | Chặn quét cold store lặp | Yes | 60 giây | No | No |
+| Số bucket outbox | Số stream bucket trong namespace `v1`; là data contract, không chỉnh runtime | Yes | 64 | No | Yes, qua migration versioned |
+| Tên relay consumer group | Group tạo trên mỗi outbox stream | Yes | `cart-outbox-relay-v1` | No | Yes |
 | Deadline gRPC Product | Giới hạn thời gian pull giá | Yes | 200ms | No | No |
 | Ngưỡng circuit breaker | Điều kiện mở và thời gian chờ | Yes | `TBD` | No | No |
 | Kích thước lô consumer | Số message mỗi lần poll | No | `TBD` | No | No |
@@ -79,20 +79,20 @@ Cấu hình probe cụ thể là `TBD` cho tới khi lấy từ deployment confi
 Ngưỡng bỏ quên 30 ngày và các mốc dọn dữ liệu 3 tháng / 6 tháng là chính sách
 nghiệp vụ; xem [Data §9](./data.md#9-data-lifecycle).
 
-Đổi số shard là thay đổi phá vỡ tính liên tục chứ không phải một tham số chỉnh tự
-do: event của một người dùng sẽ chuyển sang shard khác và có thể bị xử lý trước
-các event cũ còn tồn trong shard cũ. Quy trình an toàn cho việc này chưa được
-thiết kế.
+Đổi số bucket, namespace hoặc routing function là thay đổi phá vỡ tính liên tục,
+không phải tham số chỉnh tự do. Quy trình an toàn là tạo namespace/routing version
+mới, giữ relay và trimmer của version cũ chạy tới khi mọi stream cũ được drain, rồi
+mới ngừng version cũ.
 
 ## 4. Observability
 
 **Metrics.** Latency và tỷ lệ lỗi theo endpoint; tỷ lệ cache hit và miss; tỷ lệ
 response suy giảm giá; trạng thái và tỷ lệ chuyển trạng thái của circuit breaker;
-độ dài và số message pending của từng stream shard; tuổi của message pending lâu
+độ dài và số message pending của từng stream bucket; tuổi của message pending lâu
 nhất; tỷ lệ produce lỗi; consumer lag theo group; số dòng bị guard `stream_id` bỏ
 qua; kết quả và thời lượng từng lượt cronjob.
 
-Nhãn metric an toàn: endpoint, kết quả, loại event, chỉ số shard, consumer group.
+Nhãn metric an toàn: endpoint, kết quả, loại event, chỉ số bucket, consumer group.
 Tuyệt đối không dùng `user_id`, `cart_id` hay `sku_id` làm nhãn metric — lực lượng
 của chúng không giới hạn.
 
@@ -115,7 +115,7 @@ người dùng bấm nút tới lúc dòng dữ liệu xuất hiện ở cold st
 | API đọc hoặc ghi lỗi cao | Tỷ lệ `5xx` vượt ngưỡng `TBD` trong cửa sổ `TBD` | Cao | Cart on-call | [§10](#10-runbooks) |
 | Redis không khả dụng | Thao tác Redis thất bại liên tục | Nghiêm trọng | Cart on-call | [§10](#10-runbooks) |
 | Outbox tồn đọng | Tuổi message pending lâu nhất vượt ngưỡng `TBD` | Cao | Cart on-call | [§10](#10-runbooks) |
-| Stream phình to | Độ dài shard vượt ngưỡng `TBD` | Cao | Cart on-call | [§10](#10-runbooks) |
+| Stream phình to | Độ dài stream bucket vượt ngưỡng `TBD` | Cao | Cart on-call | [§10](#10-runbooks) |
 | Consumer lag cao | Lag vượt ngưỡng `TBD` kéo dài `TBD` | Trung bình | Cart on-call | [§10](#10-runbooks) |
 | Có message trong dead-letter | Số message trong `t.cart.events.dlq` lớn hơn 0 | Cao | Cart on-call | [§10](#10-runbooks) |
 | Tỷ lệ giá suy giảm cao | Tỷ lệ response `DEGRADED` vượt ngưỡng `TBD` | Trung bình | Cart on-call | [§10](#10-runbooks) |
@@ -135,7 +135,7 @@ người dùng bấm nút tới lúc dòng dữ liệu xuất hiện ở cold st
 | **Product Service timeout hoặc lỗi** | Đọc giỏ suy giảm mềm: trả snapshot cũ kèm cờ độ tươi. Ghi giỏ bị từ chối vì không xác nhận được sản phẩm còn bán. |
 | **Circuit breaker mở kéo dài** | Toàn bộ giá hiển thị là giá snapshot. Người dùng có thể checkout với kỳ vọng giá sai; Checkout Service phải tự kiểm tra lại giá. |
 | **Deploy lẫn phiên bản** | Hai phiên bản cùng đọc ghi một cart hash. An toàn nếu định dạng snapshot chỉ thêm field optional; nguy hiểm nếu đổi ngữ nghĩa field hoặc đổi format key. |
-| **Consumer group của stream biến mất** | Trimmer bắt buộc bỏ qua shard đó thay vì trim; nếu không sẽ xóa event chưa ai đọc. |
+| **Consumer group của stream biến mất** | Trimmer bắt buộc bỏ qua bucket đó thay vì trim; nếu không sẽ xóa event chưa ai đọc. |
 
 ## 7. Degraded behavior
 
@@ -161,7 +161,7 @@ Dữ liệu có thể cũ và mức độ cũ chấp nhận được:
 | Thành phần | Tín hiệu scale | Giới hạn |
 |---|---|---|
 | API process | RPS, latency, CPU | Giới hạn thực tế là connection pool tới Redis |
-| Outbox Relay | Số message pending | **Không vượt quá số shard**; thêm instance ngoài mức đó không tăng throughput |
+| Outbox Relay | Số message pending | Tối đa 64 active relay loop, một loop mỗi stream; bốn worker mặc định chạy 16 loop/worker |
 | Postgres Sync consumer | Consumer lag | Không vượt số partition của `t.cart.events` |
 | Order Event consumer | Consumer lag | Không vượt số partition của `t.order.events` |
 | Cronjob | Không scale | Phải chạy singleton |
@@ -172,8 +172,9 @@ việc tăng số partition sau này sẽ đổi ánh xạ giỏ sang partition 
 thứ tự trong thời gian chuyển tiếp — cần cân nhắc điều này ngay khi đặt số partition
 ban đầu.
 
-Nút thắt đã biết: số shard cố định 4 giới hạn cả song song của relay lẫn khả năng
-cô lập sự cố — một shard kẹt làm chậm toàn bộ người dùng thuộc shard đó.
+Nút thắt đã biết: một bucket kẹt làm chậm mọi user thuộc bucket đó. 64 bucket giảm
+blast radius so với thiết kế 4 shard, nhưng số bucket vẫn là giới hạn song song và
+không được thay đổi tại runtime.
 
 Kết quả load test và giả định capacity: `TBD`.
 
@@ -184,8 +185,8 @@ Kết quả load test và giả định capacity: `TBD`.
   vẫn ghi được trong lúc rollout.
 - Thay đổi định dạng snapshot phải tương thích ngược trong ít nhất một chu kỳ
   deploy, vì hai phiên bản sẽ cùng đọc một cart hash.
-- Đổi định dạng Redis key, số shard hoặc tên consumer group không phải thao tác
-  rollout thông thường; chúng cần kế hoạch riêng có bước drain.
+- Đổi namespace, routing function, số bucket hoặc tên consumer group không phải thao
+  tác rollout thông thường; chúng cần kế hoạch versioned có bước drain.
 - Rollback: quay lại phiên bản trước an toàn khi thay đổi chỉ thêm field. Nếu đã
   ghi field mới vào Redis, phiên bản cũ phải bỏ qua field lạ thay vì lỗi.
 - Không dừng consumer lâu hơn thời gian retention của Kafka; quá mốc đó, phần dữ
@@ -199,8 +200,8 @@ phục hồi và người chịu trách nhiệm leo thang. Dưới đây là khu
 
 | Runbook | Triệu chứng | Hướng chẩn đoán chỉ đọc |
 |---|---|---|
-| Outbox tồn đọng | Tuổi message pending tăng, độ dài stream tăng | Kiểm tra thông tin stream và consumer group của từng shard, kiểm tra tình trạng Kafka, kiểm tra worker relay còn sống không |
-| Stream phình bộ nhớ | Bộ nhớ Redis tăng đều, độ dài shard lớn | Xác định shard nào phình, kiểm tra trimmer có chạy không và có bị buộc bỏ qua vì thiếu consumer group không |
+| Outbox tồn đọng | Tuổi message pending tăng, độ dài stream tăng | Kiểm tra stream và consumer group của từng bucket, Kafka, và relay worker phụ trách bucket |
+| Stream phình bộ nhớ | Bộ nhớ Redis tăng đều, độ dài stream bucket lớn | Xác định bucket nào phình, kiểm tra trimmer và consumer group của bucket đó |
 | Consumer lag cao | Lag của `cart-db-sync` tăng | Kiểm tra tình trạng PostgreSQL và pool, kiểm tra tỷ lệ rollback, kiểm tra phân bố partition |
 | Có message trong dead-letter | Số message DLQ lớn hơn 0 | Đọc một mẫu message, xác định là lỗi contract hay lỗi tạm thời, quyết định replay hay bỏ |
 | Lệch dữ liệu Redis và cold store | Người dùng báo mất hàng sau khi mất key | So sánh nội dung cart hash với các dòng cold store, kiểm tra guard `stream_id` có chặn nhầm không, cân nhắc replay từ offset cũ |
@@ -216,12 +217,12 @@ phục hồi và người chịu trách nhiệm leo thang. Dưới đây là khu
 
 | Thuộc tính | Nội dung |
 |---|---|
-| Mục đích | Forward event từ stream shard sang Kafka |
+| Mục đích | Forward event từ stream bucket sang Kafka |
 | Trigger | Chạy liên tục |
 | Input/Output | Entry stream → message trên `t.cart.events` |
-| Concurrency | Một consumer group cho mỗi shard; số instance hữu ích tối đa bằng số shard |
+| Concurrency | Mỗi trong 64 stream có một group `cart-outbox-relay-v1`; bốn worker phụ trách 16 stream/worker, một active loop/stream |
 | Retry và timeout | Backoff khi produce lỗi; không bỏ message vì bỏ là mất dữ liệu |
-| Idempotency | Định danh event sinh xác định từ `stream_id` và `cart_id` |
+| Idempotency | Định danh event sinh xác định từ `outbox_key + stream_id` |
 | Chạy lại an toàn | Có; message chưa `XACK` được nhặt lại bằng `XAUTOCLAIM` |
 | Metric/alert | Độ dài stream, số pending, tuổi pending lâu nhất, tỷ lệ produce lỗi |
 | Cleanup liên quan | Không tự trim; việc đó thuộc Stream Trimmer |
@@ -253,7 +254,7 @@ Chi tiết luồng: [WF-CART-006](./workflows.md#wf-cart-006--chiếu-event-xu�
 | Input/Output | Message Kafka → thao tác batch delete trên Redis |
 | Concurrency | Nhiều instance; khóa idempotency chặn xử lý trùng một `order_id` |
 | Retry và timeout | Redelivery của Kafka; TTL của khóa đang-xử-lý phải bao trọn một lần xử lý |
-| Idempotency | Khóa `cart:idemp:order_paid:{order_id}` cộng bản chất idempotent của thao tác xóa |
+| Idempotency | Khóa `cart:v1:idemp:order-paid:o:<order_token>` cộng bản chất idempotent của thao tác xóa |
 | Chạy lại an toàn | Có; lần xóa thứ hai cho kết quả rỗng và không phát event thừa |
 | Metric/alert | Consumer lag, số SKU xóa mỗi đơn, tỷ lệ message bị bỏ do lỗi contract |
 | Cleanup liên quan | Khóa idempotency tự hết hạn |
@@ -298,17 +299,17 @@ Chính sách retention: [Data §9](./data.md#9-data-lifecycle).
 |---|---|
 | Mục đích | Giải phóng bộ nhớ Redis bằng cách cắt các entry đã xử lý xong |
 | Trigger | Chu kỳ định kỳ, chạy cùng process với relay |
-| Input/Output | Mỗi shard → `XTRIM MINID` tới mốc an toàn |
-| Concurrency | Một lượt tại một thời điểm cho mỗi shard |
-| Retry và timeout | Bỏ qua shard và thử lại ở chu kỳ sau khi không chắc chắn |
+| Input/Output | Mỗi stream bucket → `XTRIM MINID` tới mốc an toàn |
+| Concurrency | Một lượt tại một thời điểm cho mỗi stream bucket |
+| Retry và timeout | Bỏ qua bucket và thử lại ở chu kỳ sau khi không chắc chắn |
 | Idempotency | Có; trim tới cùng một mốc nhiều lần là vô hại |
 | Chạy lại an toàn | Có |
-| Metric/alert | Số entry cắt mỗi lượt, độ dài shard sau khi cắt, số lần buộc bỏ qua |
+| Metric/alert | Số entry cắt mỗi lượt, độ dài stream bucket sau khi cắt, số lần buộc bỏ qua |
 | Cleanup liên quan | Đây chính là cơ chế cleanup của outbox |
 
 Quy tắc an toàn bắt buộc, theo thứ tự:
 
-1. Nếu stream còn message nhưng **chưa có consumer group**, bỏ qua shard ở chu kỳ
+1. Nếu stream còn message nhưng **chưa có consumer group**, bỏ qua bucket ở chu kỳ
    này. Trim lúc đó sẽ xóa event chưa ai đọc.
 2. Nếu consumer group tồn tại nhưng mốc đã giao không tiến trong khoảng thời gian
    dài, coi group là chết: bỏ qua và cảnh báo thay vì cắt.

@@ -21,13 +21,13 @@ verified_against_commit: null
 |---|---|---|
 | Cart | Tập hợp ý định mua hàng của một user, định danh bằng `cart_id` | Order hoặc Checkout session |
 | Cart item | Một dòng trong giỏ, định danh bằng `sku_id`, có quantity và snapshot | Order item |
-| `cart_id` | Chuỗi bằng đúng Redis key `{cart}:{user_id}` | `user_id` |
+| `cart_id` | Identity nghiệp vụ ổn định `c1:<user_token>` | Redis key vật lý hoặc `user_id` |
 | Product snapshot | Dữ liệu hiển thị được sao chép lúc thêm vào giỏ | Dữ liệu catalog thời gian thực |
 | `unit_price_at_add` | Giá tại thời điểm user thêm SKU vào giỏ, bất biến | `current_price` |
 | `current_price` | Giá hiện tại lấy từ Product Service khi đọc giỏ | Trường lưu bền trong Redis hoặc DB |
 | `is_available` | Cờ khả dụng dùng để hiển thị và chặn checkout | Số lượng tồn kho khả dụng |
 | `is_price_degraded` | Cờ báo response dựng từ snapshot cũ do Product lỗi | Lỗi nghiệp vụ |
-| `stream_id` | Redis Stream Entry ID, khóa thứ tự của mọi event Cart | `event_id` |
+| `stream_id` | Redis Stream Entry ID, khóa thứ tự của một cart trong stream bucket của nó | `event_id` |
 | Outbox event | Event được `XADD` cùng lúc với thay đổi cart state | Kafka message sau khi relay |
 | Rehydrate | Nạp lại Redis từ cold store khi mất key | Business write |
 | Cleared | Giỏ rỗng do user tự xóa hết | Checked out |
@@ -36,8 +36,8 @@ verified_against_commit: null
 
 ## 2. Domain objects
 
-**Cart** là aggregate root. Identity là `cart_id`, ổn định theo user và bằng đúng
-Redis key (`CART-INV-001`). Vòng đời của Cart là vô hạn theo user: một `cart_id`
+**Cart** là aggregate root. Identity là `cart_id = c1:<user_token>`, ổn định theo
+user và độc lập với Redis key vật lý (`CART-INV-001`). Vòng đời của Cart là vô hạn theo user: một `cart_id`
 có thể đi qua nhiều vòng `ACTIVE → CHECKED_OUT → ACTIVE`.
 
 **CartItem** là entity bên trong aggregate, định danh cục bộ bằng `sku_id`. Trong
@@ -90,10 +90,10 @@ cũng không có API quản trị trên giỏ hàng.
 
 | ID | Điều kiện phải đúng | Nơi enforcement |
 |---|---|---|
-| `CART-INV-001` | `cart_id` bằng đúng Redis key `{cart}:{user_id}` | Key builder ở application layer; `user_id` được truyền tường minh vào mọi event payload |
+| `CART-INV-001` | `cart_id = c1:<user_token>` không đổi theo vòng đời user và không phụ thuộc key format/bucket Redis | Key builder ở application layer; `user_id` và `cart_id` được truyền tường minh vào mọi event payload |
 | `CART-INV-002` | Một `sku_id` xuất hiện tối đa một lần trong một giỏ | Cấu trúc Redis hash; khóa chính `item_id` ở cold store |
 | `CART-INV-003` | Quantity của mọi item nằm trong `1..max_qty` | Script [`add_or_update_item.lua`](./scripts/add_or_update_item.lua) |
-| `CART-INV-004` | Mỗi business write sinh đúng một outbox event; rehydrate không sinh event | Script add/update và batch delete có `XADD`; script rehydrate không có |
+| `CART-INV-004` | Mỗi state transition quan sát được sinh đúng một outbox event trong cùng script; rehydrate không sinh event | Script add/update và batch delete có `XADD`; script rehydrate không có |
 | `CART-INV-005` | Cold store chỉ tiến lên theo `stream_id` | Mệnh đề guard trong upsert/delete của Postgres Sync consumer |
 | `CART-INV-006` | `unit_price_at_add` và `added_at` immutable | Nhánh merge trong script add/update; cột riêng `unit_price_at_add` ở cold store |
 

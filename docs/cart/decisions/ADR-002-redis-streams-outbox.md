@@ -88,7 +88,7 @@ muộn.
 Redis Cluster từ chối thực thi. Điều này ràng buộc cách đặt tên key trên toàn service.
 
 **Delivery semantic.** Đường đi tổng thể là at-least-once. Consumer bắt buộc phải
-dedupe; xem [ADR-004](./ADR-004-stream-id-ordering.md).
+dedupe; xem [ADR-009](./ADR-009-bucket-scoped-event-ordering.md).
 
 ## Migration impact
 

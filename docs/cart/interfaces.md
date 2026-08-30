@@ -33,7 +33,7 @@ verified_against_commit: null
 
 Toàn bộ API yêu cầu identity tin cậy. Gateway verify JWT rồi inject `X-User-Id`;
 đây là security scheme `gatewayIdentity` trong OpenAPI và không được để lộ như một
-header do client kiểm soát ở edge. Cart tự dựng `cart_id = "{cart}:" + user_id`,
+header do client kiểm soát ở edge. Cart tự dựng `cart_id = "c1:" + user_token`,
 nên không có tham số `cart_id` trên bất kỳ endpoint công khai nào (`CART-INV-001`).
 
 `Idempotency-Key` là header bắt buộc cho hai endpoint ghi. Cùng key với cùng payload
@@ -50,8 +50,8 @@ lịch sử bất biến, `current_price` là dữ liệu runtime lấy từ Pro
 điểm đọc và không được lưu bền ở bất kỳ đâu. Khi Product Service timeout hoặc
 circuit breaker mở, endpoint vẫn trả `200` với dữ liệu snapshot cũ và đánh dấu độ
 tươi của giá là `DEGRADED`; đây không phải lỗi (`CART-BR-014`). Trước khi chạm cold
-store, service kiểm tra negative cache để chặn quét database lặp lại cho những user
-thực sự chưa có giỏ.
+store, service đi vào nhánh rehydrate. Nếu cold store không có cart còn hiệu lực,
+service trả giỏ rỗng; Cart không giữ negative cache.
 
 **Thêm/cập nhật item.** Service gọi Product Service để dựng snapshot và validate
 trạng thái sản phẩm trước khi ghi. Toàn bộ phần ghi nằm trong một Lua script nên
@@ -98,10 +98,10 @@ cart state, sau đó Outbox Relay forward sang Kafka và chỉ `XACK` khi Kafka 
 trạng thái “đã đổi giỏ nhưng mất event”.
 
 **Khóa thứ tự và khóa dedupe.** Mọi message mang `stream_id` là Redis Stream Entry
-ID. Đây là khóa ordering và idempotency chính cho downstream
-([ADR-004](./decisions/ADR-004-stream-id-ordering.md)). Định danh event được Relay
-sinh theo cách xác định từ `stream_id` và `cart_id`, không phải UUID ngẫu nhiên, để
-mọi lần retry vẫn ánh xạ về cùng một định danh.
+ID và `outbox_bucket`. `stream_id` giữ thứ tự của một cart vì mọi event của cart đó
+luôn đi cùng bucket ([ADR-009](./decisions/ADR-009-bucket-scoped-event-ordering.md)). Định danh
+event được Relay sinh xác định từ `outbox_key + stream_id`, không phải UUID ngẫu
+nhiên, để mọi lần retry vẫn ánh xạ về cùng một định danh.
 
 | Event | Ý nghĩa nghiệp vụ | Điều kiện phát | Consumer dự kiến |
 |---|---|---|---|
@@ -135,7 +135,7 @@ backoff, và dead-letter topic `t.cart.events.dlq`.
 | Consumer group | `cart-order-consumer` |
 | Filter | `event_type = ORDER_PAID` |
 | Field Cart sử dụng | `order_id`, `user_id`, `sku_ids[]` |
-| Dedupe key | `cart:idemp:order_paid:{order_id}` trong Redis |
+| Dedupe key | `cart:v1:idemp:order-paid:o:<order_token>` trong Redis |
 | Ordering requirement | Không có; thao tác xóa là idempotent theo `sku_id` |
 
 Hành động: Cart dựng `cart_id` từ `user_id`, chốt khóa idempotency, rồi gọi script
@@ -163,8 +163,9 @@ GDPR; đây là gap đã ghi ở [README §9](./README.md#9-known-gaps).
 **Quy tắc thay đổi.** Ưu tiên thêm field optional. Không xóa field, không thu hẹp
 enum và không đổi ngữ nghĩa của field khi consumer còn được hỗ trợ. Thêm loại event
 mới là thay đổi tương thích; đổi ngữ nghĩa của một event đã phát là breaking change.
-Đổi format Redis key hoặc số shard là breaking change ở tầng dữ liệu vì `cart_id`
-được lưu trong cold store và trong mọi payload đã phát.
+Đổi namespace, hàm routing hoặc số bucket là breaking change ở tầng dữ liệu. Đổi
+format key bên trong cùng namespace không làm đổi `cart_id`, vì `cart_id` là logical
+identity độc lập với Redis key.
 
 **Khoảng lệch cần hòa giải giữa contract đích và thiết kế đang chạy.** Những điểm
 sau khác nhau giữa `contracts/` và bộ tài liệu thiết kế trước đây; cần chốt một
