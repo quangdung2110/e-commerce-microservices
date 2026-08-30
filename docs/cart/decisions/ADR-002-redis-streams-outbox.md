@@ -15,7 +15,10 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-010](./ADR-010-redis-only-cart-and-abandoned-outbox.md).
+
+> Lịch sử quyết định bên dưới giữ nguyên. Redis Streams vẫn là cơ chế outbox,
+> nhưng phạm vi hiện tại chỉ là `CART_ABANDONED`, không phải mọi business write.
 
 ## Context
 

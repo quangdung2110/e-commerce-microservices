@@ -2,32 +2,25 @@
 
 **Trạng thái:** `proposed`
 
-Nguồn chuẩn:
-
-- Channel/message: [`asyncapi.yaml`](asyncapi.yaml)
-- Payload: [`schemas/cart-item-added.schema.json`](schemas/cart-item-added.schema.json)
-- Fixture: [`../../../examples/events/cart-item-added.v1.json`](../../../examples/events/cart-item-added.v1.json)
+Cart chỉ công bố [`CART_ABANDONED`](asyncapi.yaml) ở version này. Notification
+Service là consumer duy nhất hiện tại; không có event item, cleared hay checked-out
+cho tới khi có consumer cụ thể.
 
 ## Delivery contract
 
 - Provider: `cart-service`
 - Topic: `t.cart.events`
 - Kafka key: `cart_id`
-- Ordering: chỉ trong cùng `cart_id`
 - Delivery: at-least-once
-- Giới hạn message: 256 KiB
-- Retention target: 7 ngày
-- Retry target: tối đa 3 lần với exponential backoff + jitter
-- DLQ target: `t.cart.events.dlq`
-- Consumer phải deduplicate theo CloudEvent `id`
-- `CART_ITEM_ADDED` legacy sẽ migrate thành
-  `com.ecommerce.cart.item-added.v1`
+- Consumer deduplicate theo CloudEvent `id`
+- `id` được Relay dựng xác định từ `outbox_key + stream_id`
+- Header bắt buộc: `outbox_bucket`, `stream_id`, `cart_id`
+- Retention target: 7 ngày; DLQ: `t.cart.events.dlq`
 
-Pilot mới mô tả một event. Các event updated/deleted/cleared/checked-out/abandoned
-sẽ được thêm từng bước sau khi envelope mới được triển khai và test.
+Payload chuẩn: [`schemas/cart-abandoned.schema.json`](schemas/cart-abandoned.schema.json).
 
 ## Lưu ý PII
 
-`user_id` được phân loại INTERNAL identifier. Event không chứa email, phone,
-address, token hoặc device info. Analytics/Notification không được yêu cầu thêm
-PII chỉ để tránh lookup nếu không có use case rõ ràng.
+`user_id` là INTERNAL identifier. Event không chứa email, phone, address, item list,
+payment, token hoặc device information. Notification không được yêu cầu thêm PII nếu
+không có use case rõ ràng.

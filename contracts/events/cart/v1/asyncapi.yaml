@@ -2,82 +2,63 @@ asyncapi: 3.0.0
 info:
   title: Cart Events
   version: 1.0.0
-  description: Contract đích cho event do Cart Service publish.
+  description: >-
+    Contract cho event duy nhất Cart Service phát hiện tại: CART_ABANDONED.
+    Redis Stream là durable outbox; Relay chuyển entry sang Kafka.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:
   local:
     host: localhost:9092
     protocol: kafka
-    description: Local development broker
 channels:
   cartEvents:
     address: t.cart.events
-    description: >-
-      Partition key là cart_id. Ordering chỉ được cam kết trong cùng cart_id.
-      Delivery semantic là at-least-once.
+    description: CART_ABANDONED từ Cart Service đến Notification Service.
     x-message-key: cart_id
     x-ordering-scope: cart_id
     x-delivery-semantic: at-least-once
     x-deduplication-key: id
     x-redis-outbox-metadata: >-
-      CloudEvents id được Relay dựng xác định từ outbox_key + stream_id. Kafka
-      headers bắt buộc gồm outbox_bucket, stream_id và cart_id; stream_id chỉ có
-      ý nghĩa thứ tự trong stream bucket của cart đó.
-    x-max-message-bytes: 262144
+      CloudEvents id do Relay dựng xác định từ outbox_key + stream_id. Headers gồm
+      outbox_bucket, stream_id và cart_id; stream_id chỉ có thứ tự trong stream bucket.
     x-retention: 7d
     x-retry-policy:
       max-attempts: 3
       strategy: exponential-backoff-with-jitter
       dead-letter-topic: t.cart.events.dlq
     messages:
-      cartItemAdded:
-        $ref: '#/components/messages/cartItemAdded'
+      cartAbandoned:
+        $ref: '#/components/messages/cartAbandoned'
 operations:
-  publishCartEvents:
+  publishCartAbandoned:
     action: send
-    summary: Cart Service publish thay đổi của cart
+    summary: Cart Service phát khi cart inactive vượt ngưỡng
     channel:
       $ref: '#/channels/cartEvents'
     messages:
-      - $ref: '#/channels/cartEvents/messages/cartItemAdded'
+      - $ref: '#/channels/cartEvents/messages/cartAbandoned'
 components:
   messages:
-    cartItemAdded:
-      name: cartItemAddedV1
-      title: Cart item added
-      summary: Một SKU mới được thêm vào cart
+    cartAbandoned:
+      name: cartAbandonedV1
+      title: Cart abandoned
+      summary: Một abandonment cycle mới cần Notification xử lý
       contentType: application/cloudevents+json
       payload:
-        $ref: './schemas/cart-item-added.schema.json'
+        $ref: './schemas/cart-abandoned.schema.json'
       examples:
         - name: default
-          summary: Một SKU được thêm với quantity 2
           payload:
             specversion: '1.0'
-            id: cart-outbox:v1:cart:v1:{b17}:outbox:1780000000000-0
-            type: com.ecommerce.cart.item-added.v1
+            id: cart-outbox:v2:cart:v2:{b17}:outbox:1780000000000-0
+            type: com.ecommerce.cart.abandoned.v1
             source: /services/cart
-            subject: carts/c1:MD.../items/SKU-RED-M
-            time: '2026-08-25T14:30:00Z'
+            subject: carts/c1:MD...
+            time: '2026-08-30T14:30:00Z'
             datacontenttype: application/json
-            dataschema: /contracts/events/cart/v1/schemas/cart-item-added.schema.json
-            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
-            sequence: 1
             data:
               cart_id: c1:MD...
               user_id: 0198e098-94f4-7f8f-9e16-ae42dfbd93c1
-              sku_id: SKU-RED-M
-              product_id: PRODUCT-TSHIRT
-              quantity: 2
-              unit_price_at_add:
-                amount_minor: 125000
-                currency: VND
-              product_name: Áo thun đỏ
-              variant_attributes:
-                color: red
-                size: M
-              image_url: https://example.test/products/tshirt-red.png
-              is_available: true
-              added_at: '2026-08-25T14:30:00Z'
-              updated_at: '2026-08-25T14:30:00Z'
+              abandonment_cycle: 1
+              occurred_at: '2026-08-30T14:30:00Z'

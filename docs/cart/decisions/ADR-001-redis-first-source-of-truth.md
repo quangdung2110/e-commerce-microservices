@@ -15,7 +15,10 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-010](./ADR-010-redis-only-cart-and-abandoned-outbox.md).
+
+> Lịch sử quyết định bên dưới giữ nguyên. Thiết kế hiện tại không còn PostgreSQL
+> cold store và không có rehydrate path.
 
 ## Context
 

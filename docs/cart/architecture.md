@@ -6,172 +6,88 @@ status: proposed
 owners:
   - Cart Service team
 evidence:
-  - go/services/cart-service/cmd/server
-  - go/services/cart-service/internal
+  - docs/cart/scripts
 verified_against_commit: null
 ---
 
 # Cart Service — Architecture
 
-> File này trả lời: “Cart Service được chia thành những thành phần nào và chúng
-> phối hợp ra sao?”
-
 ## 1. Architecture context
 
-Cart nằm sau API Gateway. Gateway xác thực JWT và inject `X-User-Id`; Cart không
-bao giờ nhận identity trực tiếp từ client. Cart đọc dữ liệu catalog từ Product
-Service qua gRPC theo Pull Model, và nhận `ORDER_PAID` từ Order Service qua Kafka
-để dọn giỏ sau thanh toán. Chiều ra, Cart chỉ phát event lên `t.cart.events`;
-downstream tự sở hữu side effect của mình.
-
-Trust boundary quan trọng: mọi request public đi qua Gateway. Redis, PostgreSQL
-và Kafka nằm trong mạng nội bộ và chỉ Cart Service được truy cập kho dữ liệu của
-Cart.
+Cart nằm sau API Gateway; Gateway inject `X-User-Id`. Cart lấy dữ liệu Product theo
+Pull Model, nhận `ORDER_PAID`, và chỉ phát `CART_ABANDONED` cho Notification qua
+Kafka. Redis là source of truth duy nhất, không có PostgreSQL fallback.
 
 ```mermaid
 flowchart LR
-  C[Client] --> G[API Gateway]
-  G --> H[Cart HTTP API]
-  H --> APP[Application layer]
-  APP --> LUA[Redis Lua adapter]
-  APP --> PC[Product gRPC client + circuit breaker]
-  APP --> PGR[Postgres repository]
-  LUA --> R[(Redis: cart hash + outbox stream)]
-  PGR --> PG[(PostgreSQL cold store)]
-  R --> RELAY[Outbox Relay worker]
-  RELAY --> K[Kafka t.cart.events]
-  K --> SYNC[Postgres Sync consumer]
-  SYNC --> PG
-  K --> DOWN[Notification / Analytics]
-  OK[Kafka t.order.events] --> OC[Order Event consumer]
-  OC --> LUA
-  CRON[Cronjobs: abandoned marker, archival cleaner] --> PG
-  CRON --> R
-  TRIM[Stream Trimmer] --> R
-  PC --> P[Product Service]
+  Client --> Gateway --> API[Cart HTTP API]
+  API --> APP[Application / domain]
+  APP --> LUA[Redis Lua scripts]
+  APP --> Product[Product gRPC]
+  LUA --> Redis[(Redis: items, meta, ZSET, 64 streams)]
+  Marker[Abandoned marker loop] --> LUA
+  Redis --> Relay[Relay loop]
+  Relay --> Kafka[Kafka t.cart.events]
+  Kafka --> Notification
+  Order[Kafka t.order.events] --> OrderConsumer[ORDER_PAID consumer]
+  OrderConsumer --> LUA
+  Trimmer[Stream trimmer loop] --> Redis
 ```
 
-## 2. Trách nhiệm từng component
+## 2. Components
 
-| Component | Làm gì | Không được làm | Dependencies | Evidence |
-|---|---|---|---|---|
-| HTTP adapter | Parse request, đọc `X-User-Id`, validate cú pháp, map domain error ra HTTP | Chứa business rule, gọi thẳng Redis/PG | Application layer | `internal/api/handler`, `internal/api/router` |
-| Application/domain service | Build snapshot item, quyết định luồng cache hit / miss, gọi Lua, dựng response | Biết chi tiết Gin hay Kafka | Redis adapter, product client, repository | `internal/domain/service` |
-| Redis Lua adapter | Thực thi ba script nguyên tử: add/update, batch delete, silent rehydrate | Ghi cart state bằng lệnh rời ngoài script | Redis | `internal/infrastructure/redis`, [`scripts/`](./scripts) |
-| Product gRPC client | Multi-get SKU với timeout cứng và circuit breaker | Chặn request đọc giỏ khi Product lỗi | Product Service | `internal/infrastructure/grpc`, `internal/common/circuitbreaker` |
-| Postgres repository | Đọc cold store khi rehydrate, ghi projection từ consumer | Là nguồn chân lý cho cart state | PostgreSQL | `internal/infrastructure/postgres` |
-| Outbox Relay worker | Đọc 64 Redis Stream bucket, bổ sung header, produce Kafka, `XACK` | `XACK` trước khi Kafka xác nhận; sinh `event_id` ngẫu nhiên | Redis, Kafka | `internal/workers/outbox_relay` |
-| Postgres Sync consumer | Chiếu event Kafka xuống `carts`/`cart_items` với guard `stream_id` | Update trạng thái mù theo `cart_id` | Kafka, PostgreSQL | `internal/workers/postgres_sync` |
-| Order Event consumer | Nhận `ORDER_PAID`, chốt idempotency, gọi batch delete | Ghi thẳng PostgreSQL để dọn giỏ | Kafka, Redis | `internal/workers/order_consumer` |
-| Cronjobs | Đánh dấu giỏ bỏ quên, dọn dữ liệu quá hạn | Chạy song song nhiều instance không lock | PostgreSQL, Redis | `internal/workers/cronjobs` |
-| Stream Trimmer | Trim message đã xử lý khỏi stream bucket | Trim khi consumer group chưa tồn tại | Redis | `internal/workers/cronjobs` |
-
-Chiều phụ thuộc bắt buộc: adapter → application → port; infrastructure chỉ hiện
-thực port của domain, domain không import package hạ tầng.
-
-## 3. Processing model
-
-**Luồng ghi đồng bộ.** Request ghi kết thúc ngay khi Lua script trên Redis chạy
-xong. Trong một script, Redis vừa cập nhật hash giỏ hàng vừa `XADD` event vào
-outbox stream, nên hai thao tác này hoặc cùng thành công hoặc cùng không xảy ra.
-Đây là cách Cart giải bài toán dual-write mà không cần transaction phân tán
-([ADR-002](./decisions/ADR-002-redis-streams-outbox.md)). Sau khi Lua trả về,
-backend trả `200` cho client; Cart không dùng negative cache.
-
-**Luồng bất đồng bộ.** Có 64 stream bucket cố định. Mỗi stream có group
-`cart-outbox-relay-v1` riêng; group không tương đương relay worker. Bốn worker relay
-mỗi worker phụ trách 16 stream, với một active relay loop cho mỗi stream. Relay bổ sung
-header Kafka, produce lên `t.cart.events`, và chỉ `XACK` khi Kafka đã xác nhận.
-Postgres Sync consumer đọc lại chính topic đó và chiếu xuống cold store. Downstream
-(Notification, Analytics) tiêu thụ cùng topic một cách độc lập.
-
-**Side effect ngoài transaction.** Gọi gRPC sang Product Service luôn nằm ngoài
-Lua script: dữ liệu catalog được lấy trước để dựng payload khi ghi, hoặc lấy sau
-khi đọc Redis để phủ lên response khi đọc. Không có side effect ngoài nào được
-thực hiện bên trong script.
-
-**Luồng phục hồi.** Cache-miss rehydrate đọc PostgreSQL, merge với dữ liệu Product
-rồi nạp lại Redis bằng script `silent_rehydrate`. Đây là write-recovery, không
-phải business write, nên script này không được `XADD` (`CART-INV-004`).
-
-## 4. Consistency model
-
-| Dữ liệu | Mô hình | Ghi chú |
-|---|---|---|
-| Cart state trong Redis | Strong trong phạm vi một key | Lua chạy đơn luồng nên không có read-modify-write race |
-| Cold store PostgreSQL | Eventual | Trễ bằng thời gian relay cộng thời gian consumer; là bản chiếu, không phải nguồn đọc của API |
-| Giá và trạng thái khả dụng | Stale by design | Chỉ được làm mới khi user đọc giỏ; giữa hai lần đọc dữ liệu có thể cũ |
-| Trạng thái `carts` | Eventual, có guard | Chỉ đổi khi `stream_id` mới hơn `last_event_stream_id` |
-
-Phát hiện và phục hồi khi đồng bộ thất bại:
-
-- Event chưa relay nằm lại trong Redis Stream và được nhận biết qua `XPENDING`,
-  độ dài stream và consumer lag.
-- Event bị mất phía cold store thể hiện ở chênh lệch giữa Redis và PostgreSQL;
-  đường phục hồi là replay từ Kafka offset, vì stream đã được trim sau khi ACK.
-- Cronjob đánh dấu giỏ bỏ quên có bước reconcile publish bù khi crash giữa chừng
-  (`abandoned_event_published_at IS NULL`).
-
-## 5. Concurrency model
-
-- **Nguyên tử hóa bằng Lua.** Redis thực thi script đơn luồng, nên các request
-  cùng thao tác trên một giỏ không thể dẫm lên nhau. Cộng dồn quantity, chặn trần
-  `max_qty`/`max_skus` và sinh event đều nằm trong một script.
-- **Ordering downstream bằng Stream ID.** `stream_id` do `XADD` sinh ra là token
-  thứ tự trong bucket; mọi event của một cart luôn ở cùng bucket nên timestamp
-  nghiệp vụ chỉ để hiển thị
-  ([ADR-009](./decisions/ADR-009-bucket-scoped-event-ordering.md)).
-- **Chống lost update tại cold store.** Mọi upsert và delete đều có mệnh đề so
-  sánh `stream_id`, nên event cũ đến muộn không ghi đè event mới.
-- **Ordering trong Kafka.** Partition key là `cart_id`, nên mọi event của cùng một
-  giỏ đi qua cùng partition và được xử lý tuần tự theo offset.
-- **Chống xử lý trùng `ORDER_PAID`.** Consumer chốt khóa
-  `cart:v1:idemp:order-paid:o:<order_token>` ở tầng Go trước khi gọi Lua, và đánh dấu
-  `DONE` sau khi phát thành công.
-- **Race giữa rehydrate và write.** Script rehydrate chỉ ghi khi field chưa tồn
-  tại hoặc bản đến có `updated_at` mới hơn, nên không đè lên thao tác thêm hàng
-  đang chạy song song.
-- **Race khi trim stream.** Trimmer bắt buộc bỏ qua bucket nếu stream còn message
-  nhưng chưa có consumer group, tránh xóa event chưa ai đọc.
-
-## 6. Deployment topology
-
-- **API process**: HTTP server, không giữ state, scale ngang theo request load.
-- **Relay process**: bốn worker logic (`relay-0..relay-3`), mỗi worker phụ trách
-  một dải 16 bucket và chạy một active loop cho mỗi stream. Worker restart do
-  scheduler xử lý; event chưa ACK vẫn nằm trong stream.
-- **Consumer process**: Postgres Sync và Order Event consumer. Số instance không
-  vượt số partition của topic tương ứng.
-- **Cronjob**: Abandoned Cart Marker và Data Archival Cleaner. Cả hai chạy singleton
-  do scheduler/deployment bảo đảm; Cart không lưu distributed lease trong Redis.
-- Runtime dependency bắt buộc: Redis, PostgreSQL, Kafka, Product Service.
-- Ràng buộc scale: có tối đa 64 active relay loop hữu ích, một loop cho mỗi stream.
-  Scale/đổi mapping worker phải giữ đúng một active reader cho mỗi stream để bảo toàn
-  thứ tự relay đơn giản.
-
-## 7. Architecture constraints
-
-- Không service nào được đọc/ghi trực tiếp Redis key hoặc database của Cart.
-- Mọi key đi vào cùng một Lua script phải dùng cùng hash tag bucket `{bNN}` để không
-  vi phạm ràng buộc slot của Redis Cluster. Tag `{cart}` cố định bị cấm vì dồn toàn
-  bộ cart vào một slot.
-- Không được ghi cart state bằng lệnh Redis rời nằm ngoài ba script chuẩn.
-- Script rehydrate không được phát event.
-- Không xây reverse index từ SKU sang cart; dữ liệu catalog chỉ lấy theo Pull Model
-  ([ADR-005](./decisions/ADR-005-pull-model-product-data.md)).
-- Relay không được `XACK` trước khi Kafka xác nhận, và không được sinh `event_id`
-  ngẫu nhiên.
-- Consumer không được cập nhật trạng thái `carts` mà thiếu guard `stream_id`.
-- Business logic không nằm trong HTTP handler hoặc Kafka adapter.
-
-## 8. Trade-offs và ADR liên quan
-
-| Trade-off | ADR |
+| Component | Trách nhiệm |
 |---|---|
-| Redis là nguồn chân lý, đổi độ bền lấy độ trễ | [ADR-001](./decisions/ADR-001-redis-first-source-of-truth.md) |
-| Outbox bằng Redis Streams thay vì publish Kafka trực tiếp | [ADR-002](./decisions/ADR-002-redis-streams-outbox.md) |
-| 64 bucketed stream cùng slot với cart thay vì global shard/stream theo giỏ | [ADR-008](./decisions/ADR-008-bucketed-redis-stream-outbox.md) |
-| Thứ tự theo stream bucket và identity event kép thay vì timestamp | [ADR-009](./decisions/ADR-009-bucket-scoped-event-ordering.md) |
-| Pull Model cho dữ liệu Product thay vì đồng bộ đẩy | [ADR-005](./decisions/ADR-005-pull-model-product-data.md) |
-| Chọn Go làm runtime | [ADR-006](./decisions/ADR-006-golang-runtime.md) |
-| Redis Streams làm record outbox tạm thời thay vì Pub/Sub, List hoặc Sorted Set | [ADR-007](./decisions/ADR-007-redis-streams-temporary-outbox-records.md) |
+| HTTP adapter | Đọc trusted identity, validate syntax, map error |
+| Application service | Quyết định add/update/read; gọi Product và Lua |
+| Redis Lua adapter | Ghi duy nhất items/meta/ZSET/idempotency/outbox |
+| Product gRPC client | Validate SKU mới và batch enrich response đọc cart |
+| Order Event consumer | Dedupe `ORDER_PAID`, gọi remove-items script |
+| Abandoned marker | Quét ZSET, gọi mark-abandoned script |
+| Relay | Đọc Redis Stream, produce Kafka, rồi `XACK` |
+| Trimmer | `XTRIM MINID` an toàn cho từng stream |
+
+## 3. Processing and consistency model
+
+Cart state mạnh trong phạm vi một bucket: mọi key script dùng cùng `{bNN}`. Một
+script hoặc thành công toàn bộ hoặc không đổi gì. Product gRPC luôn ở ngoài script;
+Kafka cũng ở ngoài script nhưng Stream record được ghi nguyên tử trước relay.
+
+Không có eventual projection. `GET` đọc Redis; nếu `items`/`meta` không tồn tại thì
+trả cart rỗng. Kafka delivery là at-least-once; Notification phải dedupe `event_id`.
+
+## 4. Routing, ordering and concurrency
+
+- `bucket = xxh3_64(canonical_user_id) mod 64`; một cart không đổi bucket trong
+  namespace `v2`.
+- 64 stream không biểu thị 64 event type. Chúng colocate với 64 cart bucket để
+  `ACTIVE -> ABANDONED` và `XADD` không vi phạm Redis Cluster `CROSSSLOT`.
+- Mỗi stream có một active relay reader. Ở tải hiện tại một relay loop round-robin
+  64 stream; không dùng `XREADGROUP` multi-stream khác slot.
+- Relay xử lý pending bằng `XAUTOCLAIM` trước, rồi entry mới theo thứ tự stream.
+- Một trimmer loop cũng round-robin 64 stream. Marker loop round-robin 64 ZSET.
+- Khi scale, deployment chia ownership dải bucket; không có hai relay active cho
+  cùng stream.
+
+## 5. Deployment topology
+
+Một worker deployment có thể chạy API, Order consumer và ba background loop ở tải
+thấp. Redis, Kafka và Product là dependency bắt buộc. Redis production bắt buộc AOF,
+replica, TLS và `noeviction`; Cart không có cơ chế khôi phục sau mất Redis toàn phần.
+
+## 6. Architecture constraints
+
+- Không ghi Redis cart bằng lệnh rời ngoài script chuẩn.
+- Không thêm PostgreSQL/cold store vào request path hoặc worker path.
+- Không đổi số bucket trong namespace đang chạy; đổi routing cần namespace mới.
+- `CART_ABANDONED` là event Kafka duy nhất hiện tại.
+- Relay không `XACK` trước Kafka acknowledgement; trimmer không trim entry pending.
+- Không dùng Redis keyspace notification để phát abandoned: nó không đủ tin cậy.
+
+## 7. Trade-offs và ADR liên quan
+
+Redis-only giảm chi phí vận hành và loại Postgres Sync, đổi lại cart không thể
+rehydrate. Giữ 64 outbox stream tuy event ít để bảo toàn atomicity với state routing.
+Xem [ADR-010](./decisions/ADR-010-redis-only-cart-and-abandoned-outbox.md),
+[ADR-005](./decisions/ADR-005-pull-model-product-data.md) và
+[ADR-007](./decisions/ADR-007-redis-streams-temporary-outbox-records.md).
