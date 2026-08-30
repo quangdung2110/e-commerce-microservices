@@ -20,10 +20,15 @@ Notification Service subscribe các topic sau để nhận events từ các serv
 
 | Topic | Consumer Group | Events | Priority | Mục đích & Kênh |
 |:------|:--------------|:-------|:---------|:-----------------|
-| `t.auth.events` | `notification-auth-sync` | `USER_OTP_REQUESTED`, `PASSWORD_RESET_REQUESTED`, `USER_VERIFIED_SUCCESS`, `USER_PASSWORD_CHANGED`, `USER_ACCOUNT_SUSPENDED` | High | OTP (Email), Reset Link (Email), Welcome (Email), Password Alert (**In-app**), Account Suspended (**In-app**) |
-| `t.user.events` | `notification-user-sync` | `USER_PREFERENCES_UPDATED`, `USER_PROFILE_DELETED` | Low | Sync preferences, GDPR cleanup |
+| `t.auth.notification.events` | `notification-auth-delivery` | `USER_OTP_REQUESTED`, `PASSWORD_RESET_REQUESTED`, `USER_EMAIL_CHANGED`, `USER_PASSWORD_CHANGED`, `USER_ACCOUNT_LOCKED`, `USER_UNLOCKED` | High | Resolve delivery qua mTLS rồi gửi email/security notification |
+| `t.auth.events` | `notification-privacy-sync` | `USER_DELETED` | Low | GDPR cleanup projection |
+| `t.user.events` | `notification-user-preferences-sync` | `USER_PREFERENCES_UPDATED` | Low | Sync ba notification preference |
 
-**Lưu ý về GDPR Cleanup:** Khi nhận event `USER_PROFILE_DELETED`, Notification Service cần gọi Auth Service (qua gRPC) để lấy email của user trước khi thực hiện cleanup PII. Email KHÔNG được include trong event payload vì User Service không lưu email (Auth Service là nguồn chân lý).
+**Lưu ý về GDPR Cleanup:** Khi nhận `USER_DELETED` trực tiếp từ Auth,
+Notification Service anonymize/xóa projection do chính nó sở hữu theo `user_id`
+và giữ `hard_delete_after` cho compliance pipeline. Không gọi Auth để lấy email:
+Auth đã anonymize identity trước khi phát event, còn email không cần cho cleanup
+nội bộ.
 | `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
 | `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
 | `t.promotion.events` | `notification-promotion-sync` | `PROMOTION_FLASH_SALE`, `VOUCHER_EXPIRING` | Low | Marketing campaigns |
@@ -77,7 +82,7 @@ Bảo vệ user khỏi spam và bảo vệ budget của hệ thống bằng thu�
 2. Notification Worker (trong Pod) tiêu thụ event.
 3. Kích hoạt Idempotency Check bằng `event_id` qua Redis.
 4. Lấy dữ liệu `user_preferences` để quyết định gửi qua kênh nào.
-5. Nếu là In-app: 
+5. Nếu là In-app:
    - Lưu DB -> Push `Redis Pub/Sub` -> Node giữ connection qua nhận -> WebSocket -> Client.
 6. Nếu là Email:
    - Render template (bằng engine trong code) với payload JSON.

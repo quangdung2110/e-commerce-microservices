@@ -71,7 +71,7 @@ Với cart nhỏ (< 10 SKU) và mỗi SKU có 1-3 warehouse candidates, số t�
 
 Với mỗi tổ hợp feasible, áp dụng rule ưu tiên:
 
-1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.city_code = customer_location.city_code`.
+1. **Same-province preferred**: Ưu tiên warehouse có `warehouses.province_code = customer_location.province_code`.
 2. **Stock availability**: Tất cả SKU phải đủ stock tại warehouse đó.
 3. **Tie-break**: `warehouse_id ASC` (deterministic, ổn định qua các lần re-preview cùng input).
 

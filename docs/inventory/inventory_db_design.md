@@ -15,7 +15,7 @@ Lưu trữ thông tin kho hàng do Admin quản lý.
 | `id` | BIGSERIAL | PRIMARY KEY | Định danh kho |
 | `name` | VARCHAR(255) | NOT NULL | Tên kho |
 | `address` | VARCHAR(512) | NULL | Địa chỉ đầy đủ |
-| `city_code` | VARCHAR(20) | NULL | Mã tỉnh/thành |
+| `province_code` | VARCHAR(20) | NULL | Mã tỉnh/thành, thống nhất với địa chỉ giao hàng |
 | `district_code` | VARCHAR(20) | NULL | Mã quận/huyện |
 | `ward_code` | VARCHAR(20) | NULL | Mã phường/xã |
 | `is_active` | BOOLEAN | DEFAULT true | Kho có đang hoạt động |

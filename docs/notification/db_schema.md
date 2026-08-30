@@ -24,6 +24,10 @@ CREATE TABLE notification_templates (
 ### 1.2 User Preferences Table
 Cho phép người dùng tùy chỉnh/chuẩn hóa cấu hình nhận thông báo.
 
+> Đây là projection từ `USER_PREFERENCES_UPDATED` của User Service và chỉ replicate
+> ba cờ notification. `language` và `currency` vẫn thuộc User Service (`vi`/`VND`),
+> không được thêm vào bảng này.
+
 ```sql
 CREATE TABLE notification_user_preferences (
     user_id UUID PRIMARY KEY,

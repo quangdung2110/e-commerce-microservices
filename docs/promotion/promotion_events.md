@@ -7,7 +7,7 @@
 
 ---
 
-Tài liệu này định nghĩa cấu trúc tiêu chuẩn của tất cả các luồng sự kiện (Events) được phát đi (Outbound) và lắng nghe (Inbound) bởi Promotion Service thông qua Kafka. Thiết kế này tuân theo cùng chuẩn format với các service khác trong hệ sinh thái (VD: [Cart Events](../cart/cart_events.md)).
+Tài liệu này định nghĩa cấu trúc tiêu chuẩn của tất cả các luồng sự kiện (Events) được phát đi (Outbound) và lắng nghe (Inbound) bởi Promotion Service thông qua Kafka. Thiết kế này tuân theo cùng chuẩn format với các service khác trong hệ sinh thái (VD: [Cart Interfaces](../cart/interfaces.md)).
 
 ---
 

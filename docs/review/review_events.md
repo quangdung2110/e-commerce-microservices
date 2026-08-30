@@ -23,7 +23,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 | Topic Name | Consumer Group | Producer | Events | Mục đích |
 |:---|:---|:---|:---|:---|
 | `t.order.events` | `review-order-sync` | **Order Service** | `ORDER_COMPLETED` | Cấp quyền đánh giá theo từng item đã mua |
-| `t.user.events` | `review-privacy-sync` | **User Service** | `ACCOUNT_DELETED` | Ẩn danh dữ liệu tác giả review khi tài khoản bị xóa |
+| `t.auth.events` | `review-privacy-sync` | **Auth Service** | `USER_DELETED` | Ẩn danh dữ liệu tác giả review khi tài khoản bị xóa |
 
 > **Policy đã chốt:** Review Service không consume `USER_PROFILE_UPDATED`. Trường `user_name` là snapshot tại thời điểm tạo review và chỉ thay đổi trong luồng anonymization.
 
@@ -79,11 +79,12 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 *   Insert `review_eligibilities` theo từng item bằng upsert idempotent.
 *   `review_window_days` mặc định là 30 ngày (configurable).
 
-### 4.2. ACCOUNT_DELETED
+### 4.2. USER_DELETED
 
-**Topic:** `t.user.events` | **Consume từ:** User Service (republish từ Auth `USER_DELETED`) | **Consumer Group:** `review-privacy-sync`
+**Topic:** `t.auth.events` | **Consume từ:** Auth Service | **Consumer Group:** `review-privacy-sync`
 
-> **Nguồn gốc:** Auth Service phát `USER_DELETED` → User Service consume, xử lý cleanup PII, republish lại với tên `ACCOUNT_DELETED`.
+> **Nguồn gốc:** Auth Service là nguồn chân lý và phát `USER_DELETED` trực tiếp.
+> Review anonymize dữ liệu do mình sở hữu, độc lập với tiến độ cleanup của User.
 
 *   **Giá trị `reason` hợp lệ:**
     | Giá trị | Mô tả |
@@ -97,13 +98,13 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "user_id": "550e8400-e29b-41d4-a716-446655440000",
   "deleted_at": "2026-03-28T10:30:00Z",
   "reason": "GDPR_REQUEST" | "ADMIN_DELETION",
-  "retention_window_expires_at": "2026-06-28T10:30:00Z"
+  "hard_delete_after": "2026-06-28T10:30:00Z"
 }
 ```
 
 **Hành động:**
 *   Anonymize fields hiển thị tác giả review.
-*   `retention_window_expires_at` được giữ cho compliance pipeline; luồng ẩn danh hiển thị chạy ngay khi nhận event.
+*   `hard_delete_after` được giữ cho compliance pipeline; luồng ẩn danh hiển thị chạy ngay khi nhận event.
 
 ## 5. Produced Events Contract
 

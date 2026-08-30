@@ -51,7 +51,7 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
     { "sku_id": "sku-002", "quantity": 1 }
   ],
   "customer_location": {
-    "city_code": "HCM",
+    "province_code": "HCM",
     "district_code": "Q1"
   }
 }
@@ -63,7 +63,7 @@ Tạo route plan fulfillment đầy đủ cho một giỏ hàng.
 | `items[].sku_id` | String(64) | ✅ | SKU identifier |
 | `items[].quantity` | Integer | ✅ | Số lượng cần đặt |
 | `customer_location` | Object | ✅ | Vị trí giao hàng |
-| `customer_location.city_code` | String(20) | ✅ | Mã tỉnh/thành phố (vd: `HCM`, `HN`). Tên field là `city_code` vì hệ thống thống nhất dùng tên `city_code` cho cả 2 phía (`warehouses.city_code` và `customer_location.city_code`) — về bản chất đây là mã **cấp tỉnh/thành phố trực thuộc trung ương** (tương đương khái niệm `province_code` trong các hệ thống khác). Dùng để so sánh `warehouses.city_code` cho rule same-province ở [Warehouse Selection §4.3](smart_routing_engine.md#43-warehouse-selection). |
+| `customer_location.province_code` | String(20) | ✅ | Mã tỉnh/thành phố (vd: `HCM`, `HN`), thống nhất với User, Checkout và Order. Dùng để so sánh `warehouses.province_code` cho rule same-province ở [Warehouse Selection §4.3](smart_routing_engine.md#43-warehouse-selection). |
 | `customer_location.district_code` | String(20) | ✅ | Mã quận/huyện. Phase 14 chưa dùng trong algorithm (giữ required để tương thích ngược với frontend đã gửi; bỏ qua khi routing). Có thể relaxed thành optional trong tương lai khi algorithm dùng district để refine. |
 
 ### Response

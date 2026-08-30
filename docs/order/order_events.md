@@ -14,7 +14,7 @@
 *   [Promotion Events (Consumed)](../promotion/promotion_events.md) — Promotion consume `ORDER_REFUNDED`
 *   [Payment Events](../payment/payment_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_PROCESSING`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
 *   [Inventory Events](../inventory/inventory_events.md) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` (refund gate) và `INVENTORY_SHIP_TO_CUSTOMER` (item delivery FSM trigger)
-*   [Cart Events](../cart/cart_events.md) — Cart consume `ORDER_PAID` để batch delete SKU lines trong giỏ
+*   [Cart Interfaces](../cart/interfaces.md) — Cart consume `ORDER_PAID` để batch delete SKU lines trong giỏ
 
 ---
 
@@ -100,7 +100,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 **Ngữ cảnh:** Payment Service xác nhận thanh toán thành công → Temporal Signal → FSM `PENDING_PAYMENT` → `PAID`. Xem [State Machine T2](order_state_machine.md#3-bảng-chi-tiết-transitions).
 **Consumers chính:**
-- **Cart Service:** Trigger [Batch Delete](../cart/cart_workflow.md#4-api-batch-delete-xóa-lô-sản-phẩm-sau-checkout-tĩnh) — cleanup theo `user_id` (Cart tự build `cart_id` từ `user_id`) + `sku_ids` từ payload.
+- **Cart Service:** Trigger [Batch Delete](../cart/workflows.md#wf-cart-004--xóa-item-theo-lô) — cleanup theo `user_id` (Cart tự build `cart_id` từ `user_id`) + `sku_ids` từ payload.
 - **Notification:** Đồng bộ trạng thái hiển thị và thông báo.
 
 > **Phase 20 (Payload Simplification):** Bỏ `cart_id` (Cart derive từ `user_id`), `promotions_applied[]` (Promotion đã có ledger riêng), `items[]` (Cart chỉ cần `sku_ids[]`), `checkout_submitted_at` (Notification có thể fetch từ DB).

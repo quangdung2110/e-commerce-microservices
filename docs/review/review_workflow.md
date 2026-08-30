@@ -124,14 +124,14 @@ Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination
 1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document theo `product_id`.
 2. Ordering đảm bảo bằng partition key `product_id` (Kafka partition ordering); Search Service không cần guard bằng sequence field trên envelope.
 
-## 8. Event Workflow: ACCOUNT_DELETED -> Author Anonymization
+## 8. Event Workflow: USER_DELETED -> Author Anonymization
 
-**Trigger:** `ACCOUNT_DELETED` từ `t.user.events`.
+**Trigger:** `USER_DELETED` trực tiếp từ `t.auth.events`.
 
 **Xử lý:** [Privacy Anonymization Consumer](review_workers.md#6-privacy-anonymization-consumer)
 
 **Trình tự:**
-1. Consumer nhận `user_id`, `deleted_at`, `retention_window_expires_at`
+1. Consumer nhận `user_id`, `deleted_at`, `hard_delete_after`
 2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Update `reviews.user_name='Tài khoản đã bị xóa'` để ẩn danh hiển thị ngay.
 
@@ -141,5 +141,5 @@ Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination
 |---|---|---|---|---|
 | Create review | PostgreSQL (`reviews`, `review_eligibilities`) | Có ở API response | 1-3s để event xuất hiện downstream | CDC outbox + consumer retries |
 | Admin reply | PostgreSQL + outbox | Có sau commit | 1-5s cho downstream reindex | CDC outbox publish `ADMIN_REPLY_CREATED` |
-| Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để downstream (Search) reindex các review bị ẩn danh | Consumer `ACCOUNT_DELETED` cập nhật trực tiếp + event nội bộ |
+| Account deletion anonymize | PostgreSQL (`reviews`) | Không yêu cầu RYOW cho user đã xóa | <= 60s để downstream (Search) reindex các review bị ẩn danh | Consumer `USER_DELETED` cập nhật trực tiếp + event nội bộ |
 

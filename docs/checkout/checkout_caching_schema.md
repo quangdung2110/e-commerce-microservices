@@ -7,7 +7,7 @@
 *   [Security Analysis (Anti-Tampering & Session)](checkout_security_analysis.md)
 
 **Cross-Service References:**
-*   [Cart Caching Schema](../cart/cart_caching_schema.md) — Cart data source
+*   [Cart Data Design](../cart/data.md) — Cart data source
 *   [Promotion Redis Design](../promotion/redis_caching_design.md) — Budget reservation
 *   [Inventory Redis Design](../inventory/inventory_redis_design.md) — Stock check
 
@@ -109,10 +109,10 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 
 Address list được cache bởi **User Service** (không phải Checkout Service) — Checkout chỉ gọi User Service là được hưởng cache này thông qua. Việc thiết kế double caching cho Address tại Checkout là dư thừa và dễ gây loạn trạng thái (Cache Invalidation complexity), do đó Checkout không duy trì layer cache riêng cho address.
 
-**Key (owned by User Service):** `user:{user_id}:addresses` 
-**Type:** `String (JSON Array)` 
-**TTL:** 7 ngày (address ít thay đổi) 
-**Invalidation:** User thêm/sửa/xóa địa chỉ → User Service DEL key via Outbox event → next GET sẽ populate lại từ DB.
+**Key (owned by User Service):** `user:caches:addresses:{user_id}`
+**Type:** `String (JSON Array)`
+**TTL:** 12 giờ; list rỗng dùng TTL ngắn 15–30 phút.
+**Invalidation:** User thêm/sửa/xóa hoặc đổi default address → commit PostgreSQL → User Service `DEL` key; lần GET tiếp theo populate lại từ DB. User không dùng outbox cho invalidation này.
 
 **Latency:** Cache HIT ~2ms, Cache MISS ~5-10ms (DB query + populate).
 
@@ -192,12 +192,12 @@ Giới hạn số lượng thread chạy song song của cùng 1 user, tránh ra
 
 Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code). Backend tự tính lại, so khớp, rồi mới tạo order.
 
-> **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng Stripe, nên field `payment_method` không còn cần thiết trong Checkout session. Checkout không cần validate `payment_method` ở Submit. Redis session chỉ lưu `pricing_summary` + `delivery_address_snapshot` + voucher selection; provider được fix cứng = Stripe ở Order Service và Payment Service.
+> **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng Stripe, nên field `payment_method` không còn cần thiết trong Checkout session. Checkout không cần validate `payment_method` ở Submit. Redis session chỉ lưu `pricing_summary` + `delivery_address_snapshot` + voucher selection; provider được fix cứng = Stripe ở Order Service và Payment Service. `delivery_address_snapshot` dùng chuẩn `recipient_name`, `recipient_phone`, `address_line`, `province_code`, `district_code`, `ward_code` của User Service.
 
 ```
-Client gửi: { token, address_id: 5, promotion_code: "HAPPYBDAY" }
+Client gửi: { token, address_id: "550e8400-e29b-41d4-a716-446655440000", promotion_code: "HAPPYBDAY" }
 Server: Bóc token → Redis session → Lấy pricing_summary đã tính sẵn ở Preview
-Server: Validate address_id thuộc user + promotion_code match session → Pass
+Server: Gọi [User OpenAPI v1](../../contracts/http/user/v1/openapi.yaml) endpoint nội bộ để validate address_id thuộc user và lấy snapshot → Validate promotion_code match session → Pass
 Server: Gửi toàn bộ sang Order Service: { items, amount, discount, ... } -- tất cả từ Redis
 ```
 

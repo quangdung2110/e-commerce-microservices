@@ -19,11 +19,11 @@ Review Service có tải đọc cao, ghi bất đồng bộ nhiều và yêu c�
 |---|---|---|---|
 | **Produce** | `t.review.events` | — | Topic chính phát mọi event nghiệp vụ của Review |
 | **Consume** | `t.order.events` | `review-order-sync` | Cấp quyền review theo item đã mua |
-| **Consume** | `t.user.events` | `review-privacy-sync` | Nhận `ACCOUNT_DELETED` để ẩn danh dữ liệu tác giả |
+| **Consume** | `t.auth.events` | `review-privacy-sync` | Nhận `USER_DELETED` để ẩn danh dữ liệu tác giả |
 | **Consume** | `t.review.events` | `review-rating-aggregator` | Self-consume để cập nhật aggregate rating |
 | **Consume** | `t.report.events` | `review-report-processor` | Xử lý báo cáo vi phạm và phát REVIEW_HIDDEN |
 
-> **Policy đã chốt:** Review Service **không consume** `USER_PROFILE_UPDATED` để đồng bộ đổi tên hiển thị. `user_name` là snapshot tại thời điểm tạo review; chỉ xử lý ẩn danh khi nhận `ACCOUNT_DELETED`.
+> **Policy đã chốt:** Review Service **không consume** `USER_PROFILE_UPDATED` để đồng bộ đổi tên hiển thị. `user_name` là snapshot tại thời điểm tạo review; chỉ xử lý ẩn danh khi nhận `USER_DELETED` trực tiếp từ Auth.
 
 ## Nguyên tắc vận hành bắt buộc
 
@@ -143,26 +143,26 @@ WHERE review_eligibilities.status IN ('PENDING');
 
 ## 5. Privacy Anonymization Consumer
 
-**Topic:** `t.user.events`
+**Topic:** `t.auth.events`
 
 **Consumer Group:** `review-privacy-sync`
 
-**Event:** `ACCOUNT_DELETED`
+**Event:** `USER_DELETED`
 
 **Sứ mệnh:** Đảm bảo tuân thủ quyền riêng tư: ẩn danh thông tin tác giả review khi tài khoản bị xóa.
 
 **Chi tiết luồng hoạt động:**
-1. Validate payload có `user_id`, `deleted_at`, `retention_window_expires_at`.
+1. Validate payload có `user_id`, `deleted_at`, `hard_delete_after`.
 2. Validate `user_id` là UUID hợp lệ theo chuẩn thống nhất.
 3. Query danh sách `product_id` bị ảnh hưởng của user (distinct).
 4. Trong transaction:
    - `UPDATE reviews SET user_name='Tài khoản đã bị xóa'` WHERE `user_id` = :user_id`.
 5. Commit transaction.
-6. Ghi audit log compliance gồm `user_id`, `deleted_at`, `retention_window_expires_at` để phục vụ kiểm toán dữ liệu.
+6. Ghi audit log compliance gồm `user_id`, `deleted_at`, `hard_delete_after` để phục vụ kiểm toán dữ liệu.
 
 **Ràng buộc quan trọng:**
 *   Không có worker cập nhật tên theo `USER_PROFILE_UPDATED`.
-*   Chỉ chạy luồng anonymize khi có `ACCOUNT_DELETED` (hoặc legal takedown tương đương).
+*   Chỉ chạy luồng anonymize khi có `USER_DELETED` (hoặc legal takedown tương đương).
 
 ## 6. Review Report Processor
 

@@ -7,7 +7,7 @@
 
 **Cross-Service References:**
 *   [Order Workflow](../order/order_workflow.md#4-workflow-nhận-checkout-submit-full-saga-flow) — Nhận validated checkout payload
-*   [Cart Idempotency](../cart/cart_idempotency.md) — Pattern tương tự
+*   [Cart Data Design](../cart/data.md#8-outboxinbox-và-idempotency-storage) — Pattern tương tự
 
 ---
 
@@ -99,7 +99,7 @@ Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên
 
 | Client gửi | Server dùng |
 |---|---|
-| `address_id: 5` | ✅ Server tra DB lấy address chi tiết |
+| `address_id: "550e8400-e29b-41d4-a716-446655440000"` | ✅ Checkout gọi User internal API qua mTLS để xác thực ownership và lấy address snapshot |
 | `promotion_code: "HAPPY"` | ✅ Server gọi Promotion API validate + lấy `discount_amount` |
 | ~~`total_amount: 450000`~~ | ❌ **IGNORE** — Server tự tính từ Redis session |
 | ~~`payment_method: "VNPAY"`~~ | ❌ **N/A** — Field đã bỏ tại Phase 18. Provider cố định = Stripe, Order/Payment Service tự xử lý |

@@ -17,7 +17,20 @@ deduplicate CloudEvent `id`, gọi internal Auth API theo `delivery_id`, rồi g
 email. Topic cũ `notification.high-priority.events` không phải nguồn contract
 cho event Auth v1.
 
-### 1.1 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
+### 1.1 User preference và account-deletion inputs
+
+Hai input này không phải delivery request. Notification consume
+`USER_PREFERENCES_UPDATED` từ [User Events v1](../../contracts/events/user/v1/asyncapi.yaml)
+trên `t.user.events` để upsert đúng ba flag `email_enabled`, `in_app_enabled` và
+`marketing_enabled`. `updated_at` là guard chống event đến sai thứ tự.
+
+Cleanup riêng tư dùng `USER_DELETED` từ
+[Auth Events v1](../../contracts/events/auth/v1/asyncapi.yaml) trên
+`t.auth.events`, không dùng `ACCOUNT_DELETED` do User republish. Consumer xóa hoặc
+anonymize projection của mình ngay và giữ `hard_delete_after` nếu compliance
+pipeline cần; không lookup email từ Auth.
+
+### 1.2 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
 ```json
 {
   "specversion": "1.0",

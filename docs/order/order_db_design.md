@@ -43,7 +43,7 @@ Mỗi Order có thể tách thành 1 hoặc nhiều Item dựa trên Tọa độ
 *   `order_id`: BIGINT (Foreign Key -> `orders.id`)
 *   `warehouse_id`: BIGINT (Kho xuất hàng)
 *   `status`: VARCHAR(50) (PROCESSING, DELIVERED, RETURNED)
-*   `delivery_address_snapshot`: JSONB NOT NULL — Snapshot địa chỉ giao hàng tại thời điểm tạo đơn từ Checkout session. Format: `{"name": "...", "phone": "...", "address": "...", "province_code": "...", "district_code": "..."}`. (Bỏ `ward_code` sau sáp nhập hành chính 2025; province + district đủ cho vận hành + hiển thị.)
+*   `delivery_address_snapshot`: JSONB NOT NULL — Snapshot địa chỉ giao hàng tại thời điểm tạo đơn từ Checkout session. Format: `{"recipient_name": "...", "recipient_phone": "...", "address_line": "...", "province_code": "...", "district_code": "...", "ward_code": "..."}`. Ward được giữ để snapshot phản ánh đầy đủ address đã chọn, không phụ thuộc việc User sau này sửa/xóa address hoặc đổi địa giới.
 
 
 ### 1.3. `order_item_lines` (Order Snapshot / Chi tiết Sản phẩm)

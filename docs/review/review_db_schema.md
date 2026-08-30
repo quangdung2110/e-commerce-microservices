@@ -189,13 +189,13 @@ Review Service chỉ sử dụng **idempotency tự nhiên qua DB constraints** 
 
 ### 8.2. Nguyên tắc áp dụng
 
-1. **Event-driven idempotency:** Khi nhận event (ORDER_COMPLETED, ACCOUNT_DELETED), consumer dựa vào unique constraints của DB để đảm bảo không ghi trùng.
+1. **Event-driven idempotency:** Khi nhận event (ORDER_COMPLETED, USER_DELETED), consumer dựa vào unique constraints của DB để đảm bảo không ghi trùng.
 2. **Consumer idempotency:** Consumer xử lý at-least-once delivery bằng cách ghi trước rồi check số row affected.
 
 
 ## 9. Data Retention & Privacy Policy
 
-1. `ACCOUNT_DELETED`: tài khoản bị xóa
+1. `USER_DELETED`: tài khoản bị xóa (Auth là producer)
 2. Hard delete review chỉ cho case `LEGAL_TAKEDOWN` có audit trail và approval.
 3. Legal takedown phải phát event bù (nếu ảnh hưởng aggregate) để downstream không drift.
 
@@ -205,4 +205,4 @@ Review Service chỉ sử dụng **idempotency tự nhiên qua DB constraints** 
 
 1. Không dùng Elasticsearch cho truy vấn review core; PostgreSQL với composite/partial index đáp ứng tốt use case hiện tại.
 2. `user_name` là snapshot tại thời điểm tạo review; không đồng bộ rename theo `USER_PROFILE_UPDATED`.
-3. Khi nhận `ACCOUNT_DELETED`, bắt buộc anonymize dữ liệu hiển thị tác giả review.
+3. Khi nhận `USER_DELETED`, bắt buộc anonymize dữ liệu hiển thị tác giả review.
