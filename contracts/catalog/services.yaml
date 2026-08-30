@@ -36,7 +36,7 @@ services:
     runtime: java
     status: implemented
     contract_adoption: pilot
-    docs: docs/product/product_workflow.md
+    docs: docs/product/README.md
 
   - id: inventory-service
     bounded_context: inventory

@@ -8,8 +8,8 @@
 *   [Architecture Recommendations](search_architecture_recommendations.md)
 
 **Cross-Service References:**
-*   [Product Service - Events](../product/product_events.md)
-*   [Product Service - Workers](../product/product_workers.md)
+*   [Product Service - Events](../product/interfaces.md)
+*   [Product Service - Workers](../product/operations.md)
 *   [Review Service - Events](../review/review_events.md)
 *   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 *   [Idempotency Guidelines (SSOT)](../_contracts/IDEMPOTENCY_GUIDELINES.md)

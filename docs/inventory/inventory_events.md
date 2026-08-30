@@ -8,7 +8,7 @@
 * [Smart Routing Engine](smart_routing_engine.md)
 
 **Cross-Service References:**
-* [Product Events - Consumed](../product/product_events.md) — Product consume `INVENTORY_STOCK_CHANGED` (cập nhật display cache)
+* [Product Events - Consumed](../product/interfaces.md) — Product consume `INVENTORY_STOCK_CHANGED` (cập nhật display cache)
 * [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund; Order consume `INVENTORY_SHIP_TO_CUSTOMER` để trigger item FSM PROCESSING → DELIVERED
 
 > **Phase 20 (Event Payload Simplification):** Payload `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` đã được tinh giản theo nguyên tắc "minimum viable" — bỏ các field Order Service không cần (VD `order_item_ids[]`, `confirmed_at`, `courier_note`). Chi tiết xem §4.3 và §4.4 dưới đây. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart).

@@ -8,8 +8,8 @@
 *   [Events Consumed & Kafka Topics](search_events.md)
 
 **Cross-Service References:**
-*   [Product Service - Architecture Recommendations](../product/product_architecture_recommendations.md)
-*   [Product Service - Workflow (Background Workers)](../product/product_workflow.md)
+*   [Product Service - Architecture Recommendations](../product/architecture.md)
+*   [Product Service - Workflow (Background Workers)](../product/workflows.md)
 *   [Review Service - Architecture & Workers](../review/review_workers.md)
 *   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 *   [Idempotency Guidelines (SSOT)](../_contracts/IDEMPOTENCY_GUIDELINES.md)
@@ -35,7 +35,7 @@ Tài liệu này tổng hợp các quyết định kiến trúc quan trọng cho
 
 **Trade-off chấp nhận:** Eventual Consistency. Dữ liệu trên Elasticsearch có thể trễ 1-3 giây so với PostgreSQL. Đây là trade-off chấp nhận được vì:
 - User browsing sản phẩm không cần realtime accuracy.
-- Các luồng cần realtime (Cart add, Order checkout) gọi trực tiếp [Product Service Point-Read API qua gRPC](../product/product_workflow.md), không qua Search.
+- Các luồng cần realtime (Cart add, Order checkout) gọi trực tiếp [Product Service Point-Read API qua gRPC](../product/interfaces.md), không qua Search.
 
 ## 2. Denormalization & Pre-computation
 

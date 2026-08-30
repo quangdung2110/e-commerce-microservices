@@ -8,8 +8,8 @@
 *   [Architecture Recommendations](search_architecture_recommendations.md)
 
 **Cross-Service References:**
-*   [Product Service - Workflow (Background Workers)](../product/product_workflow.md)
-*   [Product Service - Events](../product/product_events.md)
+*   [Product Service - Workflow (Background Workers)](../product/workflows.md)
+*   [Product Service - Events](../product/interfaces.md)
 *   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 
 ---

@@ -158,6 +158,6 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
 | [gateway/](./gateway/) | API Gateway — ngoài scope. |
-| [product/](./product/) | Product Service — ngoài scope. |
+| [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
 
 > Các service trên sẽ được sync ở giai đoạn tiếp theo. Hiện tại chỉ có 5 service (Checkout, Order, Payment, Inventory, Promotion) đạt 100% consistency sau Phase 14 (loại bỏ Shipping Service).

@@ -8,8 +8,8 @@
 *   [Architecture Recommendations](search_architecture_recommendations.md)
 
 **Cross-Service References:**
-*   [Product Service - Database Schema (Write Store / Source of Truth)](../product/product_db_design.md)
-*   [Product Service - Events Structure](../product/product_events.md)
+*   [Product Service - Database Schema (Write Store / Source of Truth)](../product/data.md)
+*   [Product Service - Events Structure](../product/interfaces.md)
 *   [Review Service - Events Structure](../review/review_events.md)
 *   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 

@@ -8,8 +8,8 @@
 *   [Architecture Recommendations](search_architecture_recommendations.md)
 
 **Cross-Service References:**
-*   [Product Service - Events Structure (Source of Truth)](../product/product_events.md)
-*   [Product Service - Workers (Outbox Producer)](../product/product_workers.md)
+*   [Product Service - Events Structure (Source of Truth)](../product/interfaces.md)
+*   [Product Service - Workers (Outbox Producer)](../product/operations.md)
 *   [Review Service - Events Structure](../review/review_events.md)
 *   [Service Contract Matrix (SSOT)](../_contracts/CONTRACT_MATRIX.md)
 *   [Idempotency Guidelines (SSOT)](../_contracts/IDEMPOTENCY_GUIDELINES.md)
