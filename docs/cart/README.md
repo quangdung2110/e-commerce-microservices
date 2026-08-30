@@ -58,7 +58,7 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 
 - Thêm SKU mới sau khi Product xác thực; đổi quantity SKU đã biết trên Redis.
 - Đọc cart kèm giá hiện tại từ Product, suy giảm mềm khi Product lỗi.
-- Dùng Redis idempotency record cho HTTP write và `ORDER_PAID`.
+- Dùng Redis idempotency record cho HTTP write.
 - Đánh dấu abandoned bằng Redis ZSET, phát event nguyên tử và relay Kafka.
 - Không phục hồi từ cold store: cart key không tồn tại trả cart rỗng.
 
@@ -100,5 +100,5 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 
 - Tài liệu chưa được xác minh với implementation Go.
 - `USER_DELETED` chưa có workflow xóa cart keys và schedule index.
-- Contract `quantity` tuyệt đối cần được hòa giải với script cũ dùng `step` trước
-  khi implementation được đánh dấu conformant.
+- Lua/OpenAPI v1 đã chốt delta semantics; implementation hiện hữu vẫn cần migrate
+  và có contract test trước khi được đánh dấu conformant.

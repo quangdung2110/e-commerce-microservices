@@ -23,14 +23,15 @@ verified_against_commit: null
 
 `GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchProductSkus` để
 phủ `current_price` và availability. Product timeout/breaker mở trả snapshot với
-`price_freshness = DEGRADED`. Redis miss trả cart rỗng; không rehydrate.
+`catalog_freshness = DEGRADED` và `current_price` có thể null. Redis miss trả cart
+rỗng; không rehydrate.
 
-`POST /api/v1/carts/items` cần `Idempotency-Key`. SKU mới gọi `GetProductSku` để
-validate và dựng snapshot. SKU có validation Redis còn tươi đi thẳng Lua; khi stale,
-application refresh Product dùng LRU + singleflight rồi retry script. Response/status
-code và payload chuẩn nằm trong OpenAPI.
+`POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0. Delta
+dương thêm/tăng, delta âm giảm; Cart không nhận quantity tuyệt đối. SKU mới hoặc
+delta dương trên validation stale gọi `GetProductSku`; các lần tăng khi validation
+còn tươi đi thẳng Lua. Response/status code và payload chuẩn nằm trong OpenAPI.
 
-`DELETE /api/v1/carts/items` xóa tối đa 100 SKU, tự nhiên idempotent. Nếu cart rỗng,
+`DELETE /api/v1/carts/mine/items` xóa tối đa 100 SKU, tự nhiên idempotent. Nếu cart rỗng,
 script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
 
 ## 3. gRPC APIs
@@ -64,13 +65,14 @@ Không phát `CART_ITEM_*`, `CART_CLEARED` hay `CART_CHECKED_OUT` khi chưa có 
 
 ## 5. Event tiêu thụ: `ORDER_PAID`
 
-Cart dùng `order_id`, `user_id`, `sku_ids[]`, dựng routing từ `user_id`, chốt Redis
-idempotency key rồi gọi remove-items script. SKU không có trong cart bị bỏ qua. Event
-không tạo Kafka message Cart.
+Cart dùng `order_id`, `user_id`, `sku_ids[]` và dựng routing từ `user_id`, rồi gọi
+remove-items script với `touch_activity = 0`. SKU không có trong cart bị bỏ qua;
+`HDEL` là idempotent nên Kafka redelivery không cần Redis key riêng. Event không tạo
+Kafka message Cart.
 
 ## 6. Compatibility
 
 Ưu tiên thêm optional field. `CART_ABANDONED` là event duy nhất được AsyncAPI v1 mô
-tả; các event Cart cũ bị loại khỏi public contract. Contract HTTP hiện dùng quantity
-tuyệt đối trong khi script legacy dùng delta; trước implementation cần chốt semantics
-và bổ sung contract test để tránh request đến lệch thứ tự.
+tả; các event Cart cũ bị loại khỏi public contract. HTTP v1 dùng delta, khớp Lua
+atomic; contract test phải chứng minh duplicate Idempotency-Key không áp dụng delta
+lần hai và các delta độc lập không lost update.

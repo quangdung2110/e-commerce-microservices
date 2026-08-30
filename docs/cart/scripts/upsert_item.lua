@@ -1,8 +1,8 @@
 -- Cart Service — upsert item, Redis-only v2
 --
 -- Atomic boundary for a user write. All KEYS use the same {bNN} hash tag.
--- The public contract currently supplies an absolute quantity; callers must not use
--- this script as a blind read-modify-write substitute.
+-- The public contract supplies a delta. Redis serializes deltas, so independent
+-- clicks cannot overwrite a newer absolute quantity.
 --
 -- KEYS[1] items hash
 -- KEYS[2] meta hash
@@ -10,7 +10,7 @@
 -- KEYS[4] idempotency key
 --
 -- ARGV[1] sku_id
--- ARGV[2] quantity (absolute)
+-- ARGV[2] delta (non-zero signed integer)
 -- ARGV[3] product_snapshot_json, or empty when reusing an existing fresh item
 -- ARGV[4] max_qty
 -- ARGV[5] max_skus
@@ -28,7 +28,7 @@ local index_key = KEYS[3]
 local idemp_key = KEYS[4]
 
 local sku_id = ARGV[1]
-local quantity = tonumber(ARGV[2])
+local delta = tonumber(ARGV[2])
 local snapshot_json = ARGV[3]
 local max_qty = tonumber(ARGV[4])
 local max_skus = tonumber(ARGV[5])
@@ -49,8 +49,8 @@ if existing_idemp then
     return record.response
 end
 
-if not quantity or quantity < 1 or quantity > max_qty then
-    return {err = 'QUANTITY_INVALID'}
+if not delta or delta == 0 then
+    return {err = 'DELTA_INVALID'}
 end
 
 local current_json = redis.call('HGET', items_key, sku_id)
@@ -59,11 +59,11 @@ local result
 if current_json then
     local current = cjson.decode(current_json)
 
-    -- An explicitly unavailable cached SKU is never increased without a refresh.
-    if current.is_available == false then
+    -- Reducing an item never needs new catalog validation. Increasing it does.
+    if delta > 0 and current.is_available == false then
         return {err = 'PRODUCT_NOT_AVAILABLE'}
     end
-    if tonumber(current.catalog_validation_expires_at_ms or '0') < now_ms
+    if delta > 0 and tonumber(current.catalog_validation_expires_at_ms or '0') < now_ms
        and snapshot_json == '' then
         return {err = 'PRODUCT_SNAPSHOT_REQUIRED'}
     end
@@ -75,11 +75,18 @@ if current_json then
         next_item.unit_price_at_add = current.unit_price_at_add
         next_item.added_at = current.added_at
     end
-    if next_item.is_available == false then
+    if delta > 0 and next_item.is_available == false then
         return {err = 'PRODUCT_NOT_AVAILABLE'}
     end
     local available = tonumber(next_item.available_quantity_snapshot)
-    if available and quantity > available then
+    local quantity = tonumber(current.quantity) + delta
+    if quantity <= 0 then
+        return {err = 'QUANTITY_INVALID'}
+    end
+    if quantity > max_qty then
+        quantity = max_qty
+    end
+    if delta > 0 and available and quantity > available then
         return {err = 'INSUFFICIENT_DISPLAY_STOCK'}
     end
     next_item.quantity = quantity
@@ -87,6 +94,12 @@ if current_json then
     redis.call('HSET', items_key, sku_id, cjson.encode(next_item))
     result = cjson.encode({ sku_id = sku_id, quantity = quantity, updated_at = tostring(now_ms), created = false })
 else
+    if delta < 0 then
+        return {err = 'ITEM_NOT_FOUND'}
+    end
+    if delta > max_qty then
+        delta = max_qty
+    end
     if snapshot_json == '' then
         return {err = 'PRODUCT_SNAPSHOT_REQUIRED'}
     end
@@ -99,14 +112,14 @@ else
         return {err = 'PRODUCT_NOT_AVAILABLE'}
     end
     local available = tonumber(next_item.available_quantity_snapshot)
-    if available and quantity > available then
+    if available and delta > available then
         return {err = 'INSUFFICIENT_DISPLAY_STOCK'}
     end
-    next_item.quantity = quantity
+    next_item.quantity = delta
     next_item.added_at = tostring(now_ms)
     next_item.updated_at = tostring(now_ms)
     redis.call('HSET', items_key, sku_id, cjson.encode(next_item))
-    result = cjson.encode({ sku_id = sku_id, quantity = quantity, updated_at = tostring(now_ms), created = true })
+    result = cjson.encode({ sku_id = sku_id, quantity = delta, updated_at = tostring(now_ms), created = true })
 end
 
 redis.call('HSET', meta_key,

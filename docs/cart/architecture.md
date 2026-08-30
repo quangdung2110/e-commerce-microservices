@@ -42,7 +42,7 @@ flowchart LR
 | Application service | Quyết định add/update/read; gọi Product và Lua |
 | Redis Lua adapter | Ghi duy nhất items/meta/ZSET/idempotency/outbox |
 | Product gRPC client | Validate SKU mới và batch enrich response đọc cart |
-| Order Event consumer | Dedupe `ORDER_PAID`, gọi remove-items script |
+| Order Event consumer | Gọi remove-items script idempotent cho `ORDER_PAID` |
 | Abandoned marker | Quét ZSET, gọi mark-abandoned script |
 | Relay | Đọc Redis Stream, produce Kafka, rồi `XACK` |
 | Trimmer | `XTRIM MINID` an toàn cho từng stream |

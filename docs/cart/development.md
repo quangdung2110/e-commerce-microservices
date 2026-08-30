@@ -34,7 +34,7 @@ Source chuẩn là [`scripts/`](./scripts):
 - `remove_items.lua`
 - `mark_abandoned.lua`
 
-Mọi `KEYS[]` của từng script phải có cùng `{bNN}`. Test bắt buộc gồm Redis Cluster cross-slot, duplicate idempotency, stale Product validation, marker deadline stale, write/marker race và retry `ORDER_PAID`.
+Mọi `KEYS[]` của từng script phải có cùng `{bNN}`. Test bắt buộc gồm Redis Cluster cross-slot, duplicate HTTP idempotency, stale Product validation, marker deadline stale, write/marker race và redelivery `ORDER_PAID` idempotent.
 
 ## 5. Build, test và contracts
 

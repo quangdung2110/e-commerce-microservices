@@ -41,7 +41,7 @@ trong database.
 
 | ID | Rule |
 |---|---|
-| `CART-BR-001` | Quantity luôn `1..100`; vượt trần được clamp hoặc từ chối theo contract đã chốt |
+| `CART-BR-001` | Quantity luôn `1..100`; delta dương chạm trần được clamp về 100, delta làm quantity không dương bị từ chối |
 | `CART-BR-002` | Cart có tối đa 50 SKU |
 | `CART-BR-003` | SKU mới phải được Product xác nhận active và đủ display stock |
 | `CART-BR-004` | SKU đã có dùng validation còn tươi, không gọi Product cho mọi click tăng quantity |
@@ -89,7 +89,8 @@ relay chạy system identity.
 | Code | Điều kiện |
 |---|---|
 | `CART_FULL` | SKU mới vượt `max_skus` |
-| `PRODUCT_SNAPSHOT_REQUIRED` | SKU mới hoặc validation hết hạn cần Product refresh nội bộ |
+| `PRODUCT_SNAPSHOT_REQUIRED` | SKU mới hoặc delta dương trên validation hết hạn cần Product refresh nội bộ |
+| `DELTA_INVALID` | Delta bằng 0 hoặc sai kiểu |
 | `PRODUCT_NOT_AVAILABLE` | Product/SKU không active hoặc snapshot unavailable |
 | `INSUFFICIENT_DISPLAY_STOCK` | Snapshot display stock không đủ |
 | `IDEMPOTENCY_CONFLICT` | Cùng key nhưng payload khác hoặc đang xử lý |

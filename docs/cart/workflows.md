@@ -29,7 +29,7 @@ Không có workflow rehydrate hoặc Postgres Sync.
 1. Gateway inject `user_id`; Cart dựng `user_token`, `cart_id`, bucket và các key cùng `{bNN}`.
 2. SKU mới luôn gọi `GetProductSku`; SKU có validation hết hạn cũng refresh Product. LRU + `singleflight` gộp refresh đồng thời.
 3. Cart gọi `upsert_item.lua` với `items`, `meta`, ZSET deadline và idempotency key.
-4. Script kiểm tra fingerprint, `max_skus`, quantity, giữ immutable historical fields, đặt status `ACTIVE`, dời deadline 30 ngày và TTL active 37 ngày.
+4. Script kiểm tra fingerprint, `max_skus`, delta khác 0, giữ immutable historical fields, đặt status `ACTIVE`, dời deadline 30 ngày và TTL active 37 ngày.
 5. Cùng `Idempotency-Key` và payload trả logical result đã lưu.
 
 Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart không đổi.
@@ -39,7 +39,7 @@ Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart khô
 1. `HGETALL items`; hash không tồn tại trả cart rỗng, không fallback store khác.
 2. Nếu có item, gọi `GetBatchProductSkus` với deadline 200ms.
 3. Response giữ `unit_price_at_add`, phủ `current_price` và availability hiện tại.
-4. Product lỗi/breaker mở trả `200` với `price_freshness = DEGRADED`.
+4. Product lỗi/breaker mở trả `200` với `catalog_freshness = DEGRADED` và `current_price` có thể null.
 
 GET không gia hạn TTL, không chạm ZSET và không phát event.
 
@@ -55,9 +55,8 @@ Không phát `CART_ITEM_DELETED` hoặc `CART_CLEARED` vì chưa có consumer.
 ## WF-CART-004 — Dọn SKU sau `ORDER_PAID`
 
 1. Consumer validate `order_id`, `user_id`, `sku_ids[]` và dựng bucket từ user.
-2. Chốt idempotency key Redis cùng bucket.
-3. Gọi `remove_items.lua` với `touch_activity = 0`.
-4. Commit Kafka offset sau khi script thành công. Redelivery an toàn vì idempotency key và `HDEL` đều idempotent.
+2. Gọi `remove_items.lua` với `touch_activity = 0`, không truyền HTTP idempotency key.
+3. Commit Kafka offset sau khi script thành công. Redelivery an toàn vì `HDEL` theo SKU không có Cart event và không gia hạn activity.
 
 Không phát `CART_CHECKED_OUT`. Nếu toàn bộ SKU biến mất, cart Redis bị xóa.
 

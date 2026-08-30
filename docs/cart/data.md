@@ -51,7 +51,6 @@ không cần tách `cart_id` để dựng Redis key.
 | `cart:v2:{bNN}:abandonment-index` | ZSET | Score `last_activity + abandoned_after`; không có TTL |
 | `cart:v2:{bNN}:outbox` | Stream | Record `CART_ABANDONED`; trim an toàn sau relay |
 | `cart:v2:{bNN}:idemp:http:<key>` | String | Payload hash + logical response, TTL 24h |
-| `cart:v2:{bNN}:idemp:order:<order>` | String | Trạng thái xử lý `ORDER_PAID`, TTL theo replay window |
 
 `bucket = xxh3_64(canonical_user_id) mod 64`, có đúng 64 giá trị `b00..b63`.
 Số bucket là data contract của namespace `v2`; không đổi bằng runtime config.
@@ -125,7 +124,8 @@ qua entry an toàn sau khi consumer group tồn tại và không còn pending en
 
 HTTP idempotency record chứa hash canonical của request và response. Cùng key khác
 payload trả `409`; key đang xử lý trả conflict/retryable response theo OpenAPI.
-`ORDER_PAID` cũng dùng key Redis cùng bucket để retry không xóa/gửi side effect lặp.
+`ORDER_PAID` không cần record riêng: `HDEL` theo SKU, không phát Cart event và không
+gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka redeliver.
 
 ## 8. Lifecycle
 
