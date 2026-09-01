@@ -72,8 +72,11 @@ trả cart rỗng. Kafka delivery là at-least-once; Notification phải dedupe 
 ## 5. Deployment topology
 
 Một worker deployment có thể chạy API, Order consumer và ba background loop ở tải
-thấp. Redis, Kafka và Product là dependency bắt buộc. Redis production bắt buộc AOF,
-replica, TLS và `noeviction`; Cart không có cơ chế khôi phục sau mất Redis toàn phần.
+thấp. Redis là dependency bắt buộc của mọi HTTP read/write; Product là bắt buộc cho
+write cần xác thực, còn Kafka chỉ ảnh hưởng relay. Vì `GET` suy giảm mềm khi Product
+lỗi, `/health/ready` chỉ gate theo Redis; Product/Kafka được alert độc lập. Redis
+production bắt buộc AOF, replica, TLS và `noeviction`; Cart không có cơ chế khôi phục
+sau mất Redis toàn phần.
 
 ## 6. Architecture constraints
 
@@ -88,6 +91,5 @@ replica, TLS và `noeviction`; Cart không có cơ chế khôi phục sau mất 
 
 Redis-only giảm chi phí vận hành và loại Postgres Sync, đổi lại cart không thể
 rehydrate. Giữ 64 outbox stream tuy event ít để bảo toàn atomicity với state routing.
-Xem [ADR-010](./decisions/ADR-010-redis-only-cart-and-abandoned-outbox.md),
-[ADR-005](./decisions/ADR-005-pull-model-product-data.md) và
-[ADR-007](./decisions/ADR-007-redis-streams-temporary-outbox-records.md).
+Xem [ADR-010](./decisions/ADR-010-redis-only-cart-and-abandoned-outbox.md) và
+[ADR-011](./decisions/ADR-011-current-pull-read-and-redis-outbox-scope.md).

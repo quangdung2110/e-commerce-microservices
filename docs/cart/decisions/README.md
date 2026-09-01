@@ -37,9 +37,11 @@ Tạo ADR khi quyết định:
 | [ADR-002](./ADR-002-redis-streams-outbox.md) | Outbox bằng Redis Streams thay vì publish Kafka trực tiếp | Superseded | 2026-08-28 | ADR-010 |
 | [ADR-003](./ADR-003-global-sharded-stream.md) | Global sharded stream thay vì stream theo từng giỏ | Superseded | 2026-08-28 | ADR-008 |
 | [ADR-004](./ADR-004-stream-id-ordering.md) | Thứ tự và idempotency dựa trên Stream ID | Superseded | 2026-08-28 | ADR-009 |
-| [ADR-005](./ADR-005-pull-model-product-data.md) | Pull Model cho dữ liệu Product thay vì đồng bộ đẩy | Accepted | 2026-08-28 | — |
+| [ADR-005](./ADR-005-pull-model-product-data.md) | Pull Model cho dữ liệu Product thay vì đồng bộ đẩy | Superseded | 2026-08-28 | ADR-011 |
 | [ADR-006](./ADR-006-golang-runtime.md) | Chọn Go làm runtime của Cart Service | Accepted | 2026-08-28 | — |
-| [ADR-007](./ADR-007-redis-streams-temporary-outbox-records.md) | Redis Streams cho record outbox tạm thời | Accepted | 2026-08-28 | — |
-| [ADR-008](./ADR-008-bucketed-redis-stream-outbox.md) | 64 bucketed Redis Stream outbox cùng slot với cart | Accepted | 2026-08-30 | ADR-003 |
-| [ADR-009](./ADR-009-bucket-scoped-event-ordering.md) | Ordering theo stream bucket và event identity kép | Accepted | 2026-08-30 | ADR-004 |
+| [ADR-007](./ADR-007-redis-streams-temporary-outbox-records.md) | Redis Streams cho record outbox tạm thời | Superseded | 2026-08-28 | ADR-011 |
+| [ADR-008](./ADR-008-bucketed-redis-stream-outbox.md) | 64 bucketed Redis Stream outbox cùng slot với cart | Superseded | 2026-08-30 | ADR-011 |
+| [ADR-009](./ADR-009-bucket-scoped-event-ordering.md) | Ordering theo stream bucket và event identity kép | Superseded | 2026-08-30 | ADR-011 |
 | [ADR-010](./ADR-010-redis-only-cart-and-abandoned-outbox.md) | Redis-only Cart và outbox chỉ cho CART_ABANDONED | Accepted | 2026-08-30 | ADR-001, ADR-002 |
+| [ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md) | Pull read thuần và phạm vi Redis outbox hiện hành | Accepted | 2026-08-31 | ADR-005, ADR-007, ADR-008, ADR-009 |
+| [ADR-012](./ADR-012-catalog-only-cart-validation.md) | Cart chỉ xác thực catalog, không xác thực tồn kho | Accepted | 2026-09-01 | — |

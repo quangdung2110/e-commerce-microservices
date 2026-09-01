@@ -21,15 +21,17 @@ verified_against_commit: null
 
 ## 2. HTTP APIs
 
-`GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchProductSkus` để
-phủ `current_price` và availability. Product timeout/breaker mở trả snapshot với
+`GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchSkus` để
+phủ `current_price` và catalog saleability. Product timeout/breaker mở trả snapshot với
 `catalog_freshness = DEGRADED` và `current_price` có thể null. Redis miss trả cart
-rỗng; không rehydrate.
+rỗng; không rehydrate. GET là query thuần: không cập nhật snapshot Redis, TTL hay
+abandonment schedule.
 
 `POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0. Delta
 dương thêm/tăng, delta âm giảm; Cart không nhận quantity tuyệt đối. SKU mới hoặc
-delta dương trên validation stale gọi `GetProductSku`; các lần tăng khi validation
-còn tươi đi thẳng Lua. Response/status code và payload chuẩn nằm trong OpenAPI.
+delta dương trên validation stale gọi `GetSku`; các lần tăng khi validation
+còn tươi đi thẳng Lua. Cart không gọi Inventory và không chặn thao tác vì hết hàng;
+Checkout reserve tại Inventory mới là quyết định cuối. Response/status code và payload chuẩn nằm trong OpenAPI.
 
 `DELETE /api/v1/carts/mine/items` xóa tối đa 100 SKU, tự nhiên idempotent. Nếu cart rỗng,
 script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
@@ -38,8 +40,8 @@ script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
 
 | RPC | Khi gọi | Failure |
 |---|---|---|
-| `GetProductSku` | SKU mới hoặc validation write stale | Từ chối write |
-| `GetBatchProductSkus` | Mở cart | Trả response degraded |
+| `GetSku` | SKU mới hoặc validation write stale | Từ chối write |
+| `GetBatchSkus` | Mở cart | Trả response degraded |
 
 Deadline 200ms và circuit breaker là bắt buộc. Cart không gọi Product khi xóa item,
 xử lý `ORDER_PAID`, relay hay marker.

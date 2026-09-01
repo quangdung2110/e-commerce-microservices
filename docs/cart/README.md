@@ -49,14 +49,14 @@ metadata/lifecycle và (riêng lúc abandoned) Redis Stream outbox một cách n
 | Redis ZSET | Lịch quét cart inactive theo bucket | Scheduler state |
 | Redis Streams | Record `CART_ABANDONED` chờ relay | Durable outbox |
 | Kafka `t.cart.events` | Event đã relay | Transport cho Notification |
-| Product Service | Giá hiện tại, catalog, availability | Source of truth external |
+| Product Service | Giá hiện tại và catalog saleability | Source of truth external |
 
 Không service nào được đọc hoặc ghi trực tiếp Redis key của Cart. Notification chỉ
 đọc Kafka.
 
 ## 5. Capabilities
 
-- Thêm SKU mới sau khi Product xác thực; đổi quantity SKU đã biết trên Redis.
+- Thêm SKU mới sau khi Product xác thực catalog; Cart không kiểm tra tồn kho.
 - Đọc cart kèm giá hiện tại từ Product, suy giảm mềm khi Product lỗi.
 - Dùng Redis idempotency record cho HTTP write.
 - Đánh dấu abandoned bằng Redis ZSET, phát event nguyên tử và relay Kafka.
@@ -68,7 +68,7 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 |---|---|---|---|
 | Inbound | API Gateway | HTTP | Identity đã xác thực và Cart API |
 | Inbound | Order Service | Kafka | `ORDER_PAID` để xóa SKU đã mua |
-| Outbound | Product Service | gRPC | Validate SKU và phủ giá/availability khi đọc |
+| Outbound | Product Service | gRPC | Validate catalog và phủ giá hiện hành khi đọc |
 | Outbound | Redis | Redis protocol | Cart state, scheduler, idempotency, outbox |
 | Outbound | Kafka `t.cart.events` | Kafka | Chỉ `CART_ABANDONED` |
 | Outbound | Notification Service | Kafka consumer | Nhận `CART_ABANDONED` |
@@ -79,6 +79,7 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 - Một user có một cart; một `sku_id` chỉ xuất hiện một lần trong cart.
 - `quantity` luôn trong `1..max_qty`; cart không quá `max_skus`.
 - `unit_price_at_add` và `added_at` bất biến sau khi tạo item.
+- Cart có thể giữ SKU hết tồn; chỉ Checkout/Inventory được từ chối do stock.
 - Chỉ script Cart được ghi state; `GET` không gia hạn TTL.
 - `CART_ABANDONED` chỉ phát trong `mark_abandoned.lua`, cùng lúc với transition
   `ACTIVE -> ABANDONED`, và Notification dedupe theo `event_id`.
@@ -95,6 +96,8 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 | [Operations](./operations.md) | SLO, persistence, relay/trimmer/marker |
 | [Development](./development.md) | Local development và test |
 | [Decisions](./decisions/README.md) | ADR |
+
+Quyết định ranh giới catalog/tồn kho hiện hành: [ADR-012](./decisions/ADR-012-catalog-only-cart-validation.md).
 
 ## 9. Known gaps
 

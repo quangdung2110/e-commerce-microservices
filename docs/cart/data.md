@@ -27,7 +27,8 @@ verified_against_commit: null
 | Kafka `t.cart.events` | Event đã relay | Relay |
 
 Redis phải cấu hình AOF, replica, TLS và `noeviction`. Không có fallback PostgreSQL:
-nếu cart state bị mất hoặc hết TTL, API trả cart rỗng.
+nếu cart state bị mất hoặc hết TTL, API trả cart rỗng. Chi tiết RPO/RTO, capacity
+và phản ứng khi Kafka outage nằm ở [Operations](./operations.md).
 
 ## 2. Logical data model
 
@@ -50,7 +51,7 @@ không cần tách `cart_id` để dựng Redis key.
 | `cart:v2:{bNN}:u:<token>:meta` | Hash | `cart_id`, `user_id`, `status`, `last_activity_at_ms`, `abandonment_cycle`; TTL khớp items |
 | `cart:v2:{bNN}:abandonment-index` | ZSET | Score `last_activity + abandoned_after`; không có TTL |
 | `cart:v2:{bNN}:outbox` | Stream | Record `CART_ABANDONED`; trim an toàn sau relay |
-| `cart:v2:{bNN}:idemp:http:<key>` | String | Payload hash + logical response, TTL 24h |
+| `cart:v2:{bNN}:u:<token>:idemp:http:<operation>:<key_sha256>` | String | Payload hash + logical response, TTL 24h |
 
 `bucket = xxh3_64(canonical_user_id) mod 64`, có đúng 64 giá trị `b00..b63`.
 Số bucket là data contract của namespace `v2`; không đổi bằng runtime config.
@@ -65,8 +66,6 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
   "product_name": "Áo thun đỏ",
   "variant_attributes": { "color": "red", "size": "M" },
   "image_url": "https://example.test/products/tshirt-red.png",
-  "is_available": true,
-  "available_quantity_snapshot": 20,
   "catalog_validated_at_ms": "1780000000000",
   "catalog_validation_expires_at_ms": "1780000060000",
   "added_at": "1780000000000",
@@ -75,8 +74,8 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
 ```
 
 `unit_price_at_add` và `added_at` immutable. `current_price` không được lưu; nó chỉ
-có trong response `GET`. Hai field validation là dữ liệu tạm Redis, không phải
-inventory reservation.
+có trong response `GET`. `catalog_validated_at_ms` chỉ nói Product đã xác nhận
+catalog saleability, không phải inventory reservation hay stock snapshot.
 
 ## 4. Constraints
 
@@ -92,11 +91,15 @@ inventory reservation.
 
 ## 5. Product validation cache
 
-SKU mới luôn cần `GetProductSku`. SKU đã có không gọi Product khi
+SKU mới luôn cần `GetSku`. SKU đã có không gọi Product khi
 `catalog_validation_expires_at_ms` còn hiệu lực; script áp dụng quantity từ state
 Redis. Khi metadata hết hạn, application refresh Product rồi gọi lại script.
 Mỗi pod dùng bounded LRU + `singleflight` theo `sku_id` (TTL ngắn 30–60 giây) để
 gộp request refresh đồng thời. Đây là cache tối ưu hóa, không phải source of truth.
+
+`GET` không ghi lại snapshot vào Redis. Validation cho positive delta có thể cũ tối
+đa bằng validation TTL; Checkout xác thực lại catalog/giá và Inventory reserve xác
+nhận stock trước khi tạo giao dịch.
 
 ## 6. Transaction boundaries
 
@@ -122,7 +125,9 @@ Relay chỉ `XACK` sau Kafka acknowledgement. Trimmer chạy riêng, chỉ `XTRI
 qua entry an toàn sau khi consumer group tồn tại và không còn pending entry cũ hơn.
 `XACK` không giải phóng RAM.
 
-HTTP idempotency record chứa hash canonical của request và response. Cùng key khác
+HTTP idempotency record chứa hash canonical của request và response. Record được
+scope theo `user_token + HTTP operation + Idempotency-Key`, nên hai user cùng bucket
+hoặc hai operation khác nhau không thể xung đột. Cùng key trong đúng scope nhưng khác
 payload trả `409`; key đang xử lý trả conflict/retryable response theo OpenAPI.
 `ORDER_PAID` không cần record riêng: `HDEL` theo SKU, không phát Cart event và không
 gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka redeliver.

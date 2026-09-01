@@ -60,10 +60,9 @@ if current_json then
     local current = cjson.decode(current_json)
 
     -- Reducing an item never needs new catalog validation. Increasing it does.
-    if delta > 0 and current.is_available == false then
-        return {err = 'PRODUCT_NOT_AVAILABLE'}
-    end
-    if delta > 0 and tonumber(current.catalog_validation_expires_at_ms or '0') < now_ms
+    -- Check freshness before the stored availability: an item that was once
+    -- unavailable must be able to refresh and become buyable again.
+    if delta > 0 and tonumber(current.catalog_validation_expires_at_ms or '0') <= now_ms
        and snapshot_json == '' then
         return {err = 'PRODUCT_SNAPSHOT_REQUIRED'}
     end

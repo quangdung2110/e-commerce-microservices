@@ -27,7 +27,7 @@ Không có workflow rehydrate hoặc Postgres Sync.
 ## WF-CART-001 — Thêm hoặc đặt quantity item
 
 1. Gateway inject `user_id`; Cart dựng `user_token`, `cart_id`, bucket và các key cùng `{bNN}`.
-2. SKU mới luôn gọi `GetProductSku`; SKU có validation hết hạn cũng refresh Product. LRU + `singleflight` gộp refresh đồng thời.
+2. SKU mới luôn gọi `GetSku`; SKU có validation hết hạn cũng refresh Product. LRU + `singleflight` gộp refresh đồng thời. Chỉ validate catalog status và giá, không gọi Inventory.
 3. Cart gọi `upsert_item.lua` với `items`, `meta`, ZSET deadline và idempotency key.
 4. Script kiểm tra fingerprint, `max_skus`, delta khác 0, giữ immutable historical fields, đặt status `ACTIVE`, dời deadline 30 ngày và TTL active 37 ngày.
 5. Cùng `Idempotency-Key` và payload trả logical result đã lưu.
@@ -37,11 +37,13 @@ Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart khô
 ## WF-CART-002 — Đọc cart
 
 1. `HGETALL items`; hash không tồn tại trả cart rỗng, không fallback store khác.
-2. Nếu có item, gọi `GetBatchProductSkus` với deadline 200ms.
-3. Response giữ `unit_price_at_add`, phủ `current_price` và availability hiện tại.
+2. Nếu có item, gọi `GetBatchSkus` với deadline 200ms.
+3. Response giữ `unit_price_at_add`, phủ `current_price` và catalog saleability hiện tại; không có quantity/stock availability.
 4. Product lỗi/breaker mở trả `200` với `catalog_freshness = DEGRADED` và `current_price` có thể null.
 
-GET không gia hạn TTL, không chạm ZSET và không phát event.
+GET không gia hạn TTL, không chạm ZSET, không cập nhật snapshot Redis và không phát
+event. Catalog validation của write có độ cũ bị chặn trên bởi validation TTL;
+Checkout xác thực catalog/giá và Inventory reserve xác nhận stock.
 
 ## WF-CART-003 — Xóa item theo lô
 

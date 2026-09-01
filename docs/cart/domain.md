@@ -43,7 +43,7 @@ trong database.
 |---|---|
 | `CART-BR-001` | Quantity luôn `1..100`; delta dương chạm trần được clamp về 100, delta làm quantity không dương bị từ chối |
 | `CART-BR-002` | Cart có tối đa 50 SKU |
-| `CART-BR-003` | SKU mới phải được Product xác nhận active và đủ display stock |
+| `CART-BR-003` | SKU mới phải được Product xác nhận Product/SKU đang active; Cart không kiểm tra stock |
 | `CART-BR-004` | SKU đã có dùng validation còn tươi, không gọi Product cho mọi click tăng quantity |
 | `CART-BR-005` | Giá lúc thêm và thời điểm thêm không đổi khi update quantity |
 | `CART-BR-006` | Xóa SKU không tồn tại là idempotent |
@@ -92,7 +92,6 @@ relay chạy system identity.
 | `PRODUCT_SNAPSHOT_REQUIRED` | SKU mới hoặc delta dương trên validation hết hạn cần Product refresh nội bộ |
 | `DELTA_INVALID` | Delta bằng 0 hoặc sai kiểu |
 | `PRODUCT_NOT_AVAILABLE` | Product/SKU không active hoặc snapshot unavailable |
-| `INSUFFICIENT_DISPLAY_STOCK` | Snapshot display stock không đủ |
 | `IDEMPOTENCY_CONFLICT` | Cùng key nhưng payload khác hoặc đang xử lý |
 | `UNAUTHENTICATED` | Thiếu trusted identity |
 
