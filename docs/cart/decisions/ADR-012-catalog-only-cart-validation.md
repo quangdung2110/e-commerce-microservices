@@ -7,7 +7,7 @@ decision_owners:
   - Cart Service team
 supersedes: null
 evidence:
-  - docs/product/schema.md
+  - docs/product/data.md
   - docs/cart/decisions/ADR-011-current-pull-read-and-redis-outbox-scope.md
 ---
 

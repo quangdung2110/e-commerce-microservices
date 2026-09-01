@@ -17,7 +17,7 @@ không cần Redis/RedisJSON cho thiết kế này.
 
 ## Schema và contract
 
-[schema.sql](./schema.sql) là DDL review; migration Flyway thực tế phải nằm trong
+[schema/schema.sql](./schema/schema.sql) là DDL review; migration Flyway thực tế phải nằm trong
 `java/services/product-service/src/main/resources/db/migration` và luôn additive.
 Không chạy trực tiếp DDL review vào môi trường dùng chung.
 

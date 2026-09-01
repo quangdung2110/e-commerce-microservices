@@ -10,7 +10,7 @@ supersedes:
   - ADR-005
   - ADR-008
 evidence:
-  - docs/product/schema.md
+  - docs/product/data.md
 ---
 
 # ADR-009 — Product là catalog SoT; Inventory không được phản chiếu vào Product

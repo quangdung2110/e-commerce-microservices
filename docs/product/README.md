@@ -55,7 +55,7 @@ topic Inventory và không là đường trung chuyển availability cho UI.
 
 | Tài liệu | Vai trò |
 |---|---|
-| [Schema](./schema.md) và [DDL](./schema.sql) | Nguồn chuẩn cho ownership, schema và semantic contract |
+| [Data](./data.md) và [DDL](./schema/schema.sql) | Nguồn chuẩn cho ownership, schema và semantic contract |
 | [Architecture](./architecture.md) | Thành phần và luồng xử lý hiện hành |
 | [Domain](./domain.md) | Quy tắc nghiệp vụ và concurrency |
 | [Interfaces](./interfaces.md) | HTTP, gRPC và event semantic |
