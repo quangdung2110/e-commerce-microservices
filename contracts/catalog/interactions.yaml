@@ -10,6 +10,14 @@ interactions:
     status: proposed
     notes: Canonical replacement for duplicated Product/Cart proto files.
 
+  - id: search-reindexes-product-catalog
+    protocol: http
+    provider: product-service
+    consumers: [search-service]
+    contract: http/product/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS export/snapshot API for full or targeted Search reindex; catalog event consumer must also run during export.
+
   - id: cart-publishes-cart-events
     protocol: kafka
     provider: cart-service

@@ -58,7 +58,7 @@ topic Inventory và không là đường trung chuyển availability cho UI.
 | [Data](./data.md) và [DDL](./schema/schema.sql) | Nguồn chuẩn cho ownership, schema và semantic contract |
 | [Architecture](./architecture.md) | Thành phần và luồng xử lý hiện hành |
 | [Domain](./domain.md) | Quy tắc nghiệp vụ và concurrency |
-| [Interfaces](./interfaces.md) | HTTP, gRPC và event semantic |
+| [Interfaces](./interfaces.md) và [OpenAPI](../../contracts/http/product/v1/openapi.yaml) | HTTP, gRPC và event semantic; OpenAPI HTTP v1 đang ở trạng thái proposed |
 | [Workflows](./workflows.md) | Luồng triển khai hiện hành |
 | [Data](./data.md) | Data lifecycle, outbox và integrity |
 | [Operations](./operations.md) | Vận hành, SLO và runbook |
@@ -72,5 +72,5 @@ rollout song song trước khi gỡ implementation cũ.
 ## Trạng thái implementation
 
 Thiết kế này chưa phải migration hay implementation. Cần tạo migration Flyway additive,
-OpenAPI/AsyncAPI và contract gRPC tương ứng; cập nhật Cart, Checkout, Promotion, Search
+AsyncAPI và contract gRPC tương ứng; cập nhật Cart, Checkout, Promotion, Search
 và Inventory; chạy reindex; sau đó mới gỡ hạ tầng cũ.

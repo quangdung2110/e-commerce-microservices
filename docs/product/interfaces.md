@@ -9,23 +9,38 @@ owners:
 
 # Product Service — Interfaces
 
-HTTP và event chưa có OpenAPI/AsyncAPI. Semantics dưới đây là contract hiện hành và
-phải được chuyển thành machine-readable contract trước khi implementation rollout.
+HTTP đã có contract đề xuất tại
+[`contracts/http/product/v1/openapi.yaml`](../../contracts/http/product/v1/openapi.yaml).
+AsyncAPI cho outbox event vẫn chưa có; semantics event dưới đây phải được chuyển thành
+machine-readable contract trước khi implementation rollout.
 
 ## HTTP
 
-Admin API dùng `/api/v1/products`, `/api/v1/categories` và yêu cầu role `ADMIN` từ
-Gateway. Internal API phục vụ Search dùng service authentication.
+Admin API dùng `/api/v1/products`, `/api/v1/categories`, `/api/v1/attributes` và yêu
+cầu role `ADMIN` từ Gateway. Internal API phục vụ Search dùng mTLS/service identity;
+canonical path là `/internal/v1/...`, không expose qua Gateway.
 
 | Endpoint | Hành vi |
 |---|---|
-| `POST /products` | Tạo Product `DRAFT` cùng SKU/media, ghi outbox |
-| `PUT /products/{id}` | Cập nhật Product, tăng `catalog_revision`, ghi outbox |
+| `GET`/`POST /products` và `GET`/`PUT`/`DELETE /products/{id}` | Liệt kê, tạo Product `DRAFT`, thay phần Product-level, hard delete/tombstone |
 | `PATCH /products/{id}/status` | Admin activate/hide/show, không đọc Inventory |
-| `DELETE /products/{id}` | Hard delete sau khi ghi `PRODUCT_DELETED` tombstone |
-| `POST`/`PUT`/`DELETE /products/{id}/skus` | Quản lý SKU; không xóa SKU cuối cùng; ghi tombstone khi delete |
-| `GET /internal/products/export` | Export ổn định cho Search full reindex |
-| `GET /internal/products/{product_id}/snapshot` | Rebuild một Product document |
+| `POST /products/{id}/skus`, `PUT`/`DELETE /products/{id}/skus/{sku_id}` | Quản lý SKU; không xóa SKU cuối cùng; ghi tombstone khi delete |
+| `POST /products/{id}/media`, `PUT`/`DELETE /products/{id}/media/{media_id}` | Quản lý media Product hoặc media gắn SKU thuộc Product |
+| `GET`/`POST /categories`, `GET`/`PUT`/`DELETE /categories/{id}` | Quản lý category tree |
+| `GET`/`PUT`/`DELETE /categories/{id}/attributes/{attribute_id}` | Quản lý mapping category–attribute |
+| `GET`/`POST`/`PUT`/`DELETE /attributes` và `/attributes/{id}/options` | Quản lý attribute `TEXT`/`NUMBER`/`BOOLEAN`/`SELECT` và option |
+| `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex; consumer event chạy song song để nhận thay đổi đồng thời |
+| `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
+
+Tất cả mutation Product/SKU/media sau khi tạo yêu cầu `If-Match` theo ETag
+`catalog_revision`, trả `412 PRODUCT_REVISION_MISMATCH` khi admin đang ghi trên
+snapshot cũ. Điều này là concurrency contract HTTP bổ sung cho pessimistic lock trong
+database; lock tránh lỗi transaction còn ETag tránh lost update giữa hai admin/worker.
+
+Schema hiện hành không có idempotency store, vì vậy OpenAPI **không** hứa
+`Idempotency-Key` cho command admin. `POST /products` đặc biệt không idempotent; caller
+gặp timeout phải tra cứu Product theo slug/ID trước khi retry. Nếu cần retry-safe command
+trong tương lai phải thêm persistence idempotency và version contract/rollout tương ứng.
 
 ## gRPC catalog read
 
