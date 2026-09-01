@@ -41,7 +41,7 @@ từ Search, còn Checkout có thể trả lỗi reserve rõ ràng để user qu
 
 ## Verification
 
-- Product gRPC v2 không có `available_quantity` hay `OUT_OF_STOCK`.
+- Product gRPC v1 đã được sửa không còn `available_quantity` hay `OUT_OF_STOCK`.
 - Add/update cart chỉ gọi Product, không gọi Inventory.
 - Cart Redis item không chứa stock quantity hay stock validation TTL.
 - Contract test chứng minh Inventory reject ở Checkout không tạo cart mutation.

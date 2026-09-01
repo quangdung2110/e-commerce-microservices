@@ -91,7 +91,7 @@ relay chạy system identity.
 | `CART_FULL` | SKU mới vượt `max_skus` |
 | `PRODUCT_SNAPSHOT_REQUIRED` | SKU mới hoặc delta dương trên validation hết hạn cần Product refresh nội bộ |
 | `DELTA_INVALID` | Delta bằng 0 hoặc sai kiểu |
-| `PRODUCT_NOT_AVAILABLE` | Product/SKU không active hoặc snapshot unavailable |
+| `PRODUCT_NOT_AVAILABLE` | Product/SKU không active theo catalog |
 | `IDEMPOTENCY_CONFLICT` | Cùng key nhưng payload khác hoặc đang xử lý |
 | `UNAUTHENTICATED` | Thiếu trusted identity |
 

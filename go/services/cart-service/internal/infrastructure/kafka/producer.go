@@ -1,175 +1,146 @@
+// Package kafka carries CART_ABANDONED out to Notification and brings
+// ORDER_PAID in from Order.
 package kafka
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
 
+	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
 )
 
-// Publisher implements port.KafkaPublisher using Sarama sync producer.
-type Publisher struct {
+// ProducerConfig configures the CART_ABANDONED producer.
+type ProducerConfig struct {
+	Brokers []string
+	// Topic is the cart event topic. Only CART_ABANDONED is published to it.
+	Topic string
+	// DeadLetterTopic receives entries that can never succeed, such as an
+	// outbox record whose payload does not parse.
+	DeadLetterTopic string
+	// RequiredAcks is "all", "local" or "none". Anything but "all" trades away
+	// the durability the outbox exists to provide.
+	RequiredAcks string
+	Timeout      time.Duration
+	TLSEnabled   bool
+}
+
+// Producer publishes sealed CloudEvents.
+type Producer struct {
 	producer sarama.SyncProducer
-	topic    string
+	cfg      ProducerConfig
 }
 
-// NewPublisher creates a new Kafka publisher.
-func NewPublisher(cfg Config) (*Publisher, error) {
-	config, err := NewSaramaConfig(cfg, true)
-	if err != nil {
-		return nil, err
+// NewProducer builds a synchronous producer.
+//
+// The relay must know whether Kafka accepted an entry before it acks the
+// Redis stream, so an asynchronous producer is not an option here.
+func NewProducer(cfg ProducerConfig) (*Producer, error) {
+	saramaCfg := sarama.NewConfig()
+	saramaCfg.Producer.Return.Successes = true
+	saramaCfg.Producer.Return.Errors = true
+	saramaCfg.Producer.RequiredAcks = requiredAcks(cfg.RequiredAcks)
+	saramaCfg.Producer.Idempotent = saramaCfg.Producer.RequiredAcks == sarama.WaitForAll
+	if saramaCfg.Producer.Idempotent {
+		saramaCfg.Net.MaxOpenRequests = 1
 	}
+	saramaCfg.Producer.Partitioner = sarama.NewHashPartitioner
+	saramaCfg.Producer.Timeout = cfg.Timeout
+	saramaCfg.Net.TLS.Enable = cfg.TLSEnabled
 
-	producer, err := sarama.NewSyncProducer(cfg.Brokers, config)
+	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)
 	if err != nil {
-		return nil, fmt.Errorf("create Kafka producer: %w", err)
+		return nil, fmt.Errorf("create kafka producer: %w", err)
 	}
-
-	return &Publisher{
-		producer: producer,
-		topic:    cfg.TopicCartEvents,
-	}, nil
+	return &Producer{producer: producer, cfg: cfg}, nil
 }
 
-var _ port.KafkaPublisher = (*Publisher)(nil)
+var _ port.EventPublisher = (*Producer)(nil)
 
-// Publish publishes a cart event to the Kafka topic.
-func (p *Publisher) Publish(ctx context.Context, msg *port.CartEventMessage) error {
-	jsonBytes, err := json.Marshal(msg)
+// Publish sends one CloudEvent, keyed by cart id so that every event for one
+// cart lands on the same partition and stays ordered.
+func (p *Producer) Publish(ctx context.Context, event domain.CloudEvent, headers map[string]string) error {
+	payload, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
+		return fmt.Errorf("encode cloud event %s: %w", event.ID, err)
 	}
 
-	producerMsg := &sarama.ProducerMessage{
-		Topic: p.topic,
-		Key:   sarama.StringEncoder(msg.AggregateID),
-		Value: sarama.ByteEncoder(jsonBytes),
-		Headers: []sarama.RecordHeader{
-			{Key: []byte("event_type"), Value: []byte(msg.EventType)},
-			{Key: []byte("stream_id"), Value: []byte(msg.StreamID)},
-		},
-		Timestamp: time.Now(),
+	message := &sarama.ProducerMessage{
+		Topic:   p.cfg.Topic,
+		Key:     sarama.StringEncoder(event.Data.CartID),
+		Value:   sarama.ByteEncoder(payload),
+		Headers: recordHeaders(headers),
 	}
 
-	partition, offset, err := p.producer.SendMessage(producerMsg)
-	if err != nil {
-		return fmt.Errorf("send message: %w", err)
+	if _, _, err := p.producer.SendMessage(message); err != nil {
+		return fmt.Errorf("publish cloud event %s to %s: %w", event.ID, p.cfg.Topic, err)
 	}
-
-	_ = partition
-	_ = offset
-
 	return nil
 }
 
-// Close closes the Kafka producer.
-func (p *Publisher) Close() error {
+// PublishDeadLetter routes an entry that can never succeed to the DLQ.
+func (p *Producer) PublishDeadLetter(ctx context.Context, key string, payload []byte, headers map[string]string) error {
+	if p.cfg.DeadLetterTopic == "" {
+		return fmt.Errorf("no dead letter topic is configured")
+	}
+
+	message := &sarama.ProducerMessage{
+		Topic:   p.cfg.DeadLetterTopic,
+		Key:     sarama.StringEncoder(key),
+		Value:   sarama.ByteEncoder(payload),
+		Headers: recordHeaders(headers),
+	}
+
+	if _, _, err := p.producer.SendMessage(message); err != nil {
+		return fmt.Errorf("publish to dead letter topic %s: %w", p.cfg.DeadLetterTopic, err)
+	}
+	return nil
+}
+
+// Ready reports whether the producer has a usable broker connection.
+func (p *Producer) Ready(ctx context.Context) error {
+	client, err := sarama.NewClient(p.cfg.Brokers, sarama.NewConfig())
+	if err != nil {
+		return fmt.Errorf("kafka is unreachable: %w", err)
+	}
+	defer client.Close()
+
+	if len(client.Brokers()) == 0 {
+		return fmt.Errorf("kafka reports no available brokers")
+	}
+	return nil
+}
+
+// Close flushes and shuts the producer down.
+func (p *Producer) Close() error {
 	return p.producer.Close()
 }
 
-// AsyncPublisher is an async version for high-throughput scenarios.
-type AsyncPublisher struct {
-	producer     sarama.AsyncProducer
-	topic       string
-	errChan     chan error
-	successChan chan struct{}
-	wg          sync.WaitGroup
-}
-
-// NewAsyncPublisher creates an async Kafka publisher.
-func NewAsyncPublisher(cfg Config) (*AsyncPublisher, error) {
-	config, err := NewSaramaConfig(cfg, true)
-	if err != nil {
-		return nil, err
-	}
-
-	config.Producer.Return.Successes = true
-	config.Producer.Return.Errors = true
-
-	producer, err := sarama.NewAsyncProducer(cfg.Brokers, config)
-	if err != nil {
-		return nil, fmt.Errorf("create async producer: %w", err)
-	}
-
-	ap := &AsyncPublisher{
-		producer:     producer,
-		topic:       cfg.TopicCartEvents,
-		errChan:     make(chan error, 100),
-		successChan: make(chan struct{}, 100),
-	}
-
-	ap.wg.Add(1)
-	go func() {
-		defer ap.wg.Done()
-		for err := range producer.Errors() {
-			select {
-			case ap.errChan <- err:
-			default:
-			}
-		}
-	}()
-
-	ap.wg.Add(1)
-	go func() {
-		defer ap.wg.Done()
-		for range producer.Successes() {
-			select {
-			case ap.successChan <- struct{}{}:
-			default:
-			}
-		}
-	}()
-
-	return ap, nil
-}
-
-// PublishAsync sends a message asynchronously.
-func (p *AsyncPublisher) PublishAsync(ctx context.Context, msg *port.CartEventMessage) error {
-	jsonBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
-	}
-
-	producerMsg := &sarama.ProducerMessage{
-		Topic: p.topic,
-		Key:   sarama.StringEncoder(msg.AggregateID),
-		Value: sarama.ByteEncoder(jsonBytes),
-		Headers: []sarama.RecordHeader{
-			{Key: []byte("event_type"), Value: []byte(msg.EventType)},
-			{Key: []byte("stream_id"), Value: []byte(msg.StreamID)},
-		},
-	}
-
-	select {
-	case p.producer.Input() <- producerMsg:
+func recordHeaders(headers map[string]string) []sarama.RecordHeader {
+	if len(headers) == 0 {
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	}
-}
-
-// Errors returns the error channel for async errors.
-func (p *AsyncPublisher) Errors() <-chan error {
-	return p.errChan
-}
-
-// Successes returns the success channel for async acknowledgements.
-func (p *AsyncPublisher) Successes() <-chan struct{} {
-	return p.successChan
-}
-
-// Close gracefully shuts down the async producer.
-func (p *AsyncPublisher) Close() error {
-	if err := p.producer.Close(); err != nil {
-		return err
+	out := make([]sarama.RecordHeader, 0, len(headers))
+	for key, value := range headers {
+		out = append(out, sarama.RecordHeader{
+			Key:   []byte(key),
+			Value: []byte(value),
+		})
 	}
-	p.wg.Wait()
-	close(p.errChan)
-	close(p.successChan)
-	return nil
+	return out
+}
+
+func requiredAcks(setting string) sarama.RequiredAcks {
+	switch setting {
+	case "none":
+		return sarama.NoResponse
+	case "local":
+		return sarama.WaitForLocal
+	default:
+		return sarama.WaitForAll
+	}
 }

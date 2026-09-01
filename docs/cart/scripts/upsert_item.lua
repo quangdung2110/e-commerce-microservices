@@ -60,8 +60,8 @@ if current_json then
     local current = cjson.decode(current_json)
 
     -- Reducing an item never needs new catalog validation. Increasing it does.
-    -- Check freshness before the stored availability: an item that was once
-    -- unavailable must be able to refresh and become buyable again.
+    -- Check freshness before stored catalog saleability: an item that was once
+    -- inactive must be able to refresh and become sellable again.
     if delta > 0 and tonumber(current.catalog_validation_expires_at_ms or '0') <= now_ms
        and snapshot_json == '' then
         return {err = 'PRODUCT_SNAPSHOT_REQUIRED'}
@@ -77,7 +77,6 @@ if current_json then
     if delta > 0 and next_item.is_available == false then
         return {err = 'PRODUCT_NOT_AVAILABLE'}
     end
-    local available = tonumber(next_item.available_quantity_snapshot)
     local quantity = tonumber(current.quantity) + delta
     if quantity <= 0 then
         return {err = 'QUANTITY_INVALID'}
@@ -85,9 +84,9 @@ if current_json then
     if quantity > max_qty then
         quantity = max_qty
     end
-    if delta > 0 and available and quantity > available then
-        return {err = 'INSUFFICIENT_DISPLAY_STOCK'}
-    end
+    -- Remove the legacy Inventory projection when an old item is rewritten.
+    -- Cart keeps catalog saleability only; Inventory is checked at checkout.
+    next_item.available_quantity_snapshot = nil
     next_item.quantity = quantity
     next_item.updated_at = tostring(now_ms)
     redis.call('HSET', items_key, sku_id, cjson.encode(next_item))
@@ -109,10 +108,6 @@ else
     local next_item = cjson.decode(snapshot_json)
     if next_item.is_available == false then
         return {err = 'PRODUCT_NOT_AVAILABLE'}
-    end
-    local available = tonumber(next_item.available_quantity_snapshot)
-    if available and delta > available then
-        return {err = 'INSUFFICIENT_DISPLAY_STOCK'}
     end
     next_item.quantity = delta
     next_item.added_at = tostring(now_ms)

@@ -16,6 +16,8 @@ click mới hơn. Xóa item vẫn là `DELETE` batch rõ ràng.
 
 - Bắt buộc với POST và DELETE.
 - Scope: `user_id + HTTP method + path + Idempotency-Key`.
+- Redis physical key thêm `user_token` và operation, và chỉ lưu SHA-256 của header
+  key; nó vẫn mang hash tag bucket để chạy cùng Lua transaction với cart state.
 - Fingerprint dùng canonical request body; `sku_ids` được sort trước khi hash.
 - Retention tối thiểu 24 giờ.
 - Cùng key, cùng fingerprint trả cùng logical response; cùng key khác fingerprint
@@ -26,4 +28,5 @@ click mới hơn. Xóa item vẫn là `DELETE` batch rõ ràng.
 
 GET không gia hạn Redis TTL và có `Cache-Control: no-store`. `catalog_freshness`
 `CURRENT` nghĩa Cart vừa enrich từ Product; `DEGRADED` nghĩa Product không khả dụng,
-`current_price` có thể `null` và `is_available` là snapshot gần nhất.
+`current_price` có thể `null` và `is_available` là snapshot catalog gần nhất.
+`is_available` biểu thị Product/SKU còn active theo catalog, không biểu thị tồn kho.

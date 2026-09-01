@@ -1,10 +1,18 @@
+# Cart Service — Redis-only configuration (docs/cart/operations.md §2).
+#
+# Every key can be overridden with a CART_-prefixed environment variable where
+# dots become underscores, e.g. CART_REDIS_ADDRS, CART_PRODUCT_ADDRESS.
+
 app:
   name: "cart-service"
   env: "development"
   host: "0.0.0.0"
   port: 8080
   shutdown_timeout: 30s
+  readiness_timeout: 2s
 
+# Redis is the single source of truth. Production must run AOF, a replica, TLS
+# and maxmemory-policy noeviction: there is no cold store to recover from.
 redis:
   addrs:
     - "localhost:6379"
@@ -12,79 +20,74 @@ redis:
   db: 0
   pool_size: 100
   min_idle_conns: 20
+  dial_timeout: 5s
   read_timeout: 3s
   write_timeout: 3s
-  num_shards: 4
-
-database:
-  host: "localhost"
-  port: 15435
-  user: "postgres"
-  password: "postgres"
-  name: "cart_db"
-  max_open_conns: 50
-  max_idle_conns: 20
-  conn_max_lifetime: 30m
+  tls_enabled: false
 
 kafka:
   brokers:
     - "localhost:9092"
   topic_cart_events: "t.cart.events"
+  topic_cart_events_dlq: "t.cart.events.dlq"
   topic_order_events: "t.order.events"
-  consumer_group_cart_sync: "cart-db-sync"
   consumer_group_order: "cart-order-consumer"
-  min_insync_replicas: 1
+  initial_offset: "oldest"
   required_acks: "all"
-  max_poll_records: 50
+  produce_timeout: 10s
+  session_timeout: 30s
+  tls_enabled: false
+  event_data_schema: "https://contracts.ecommerce.local/events/cart/v1/schemas/cart-abandoned.schema.json"
 
-grpc:
-  product_service_addr: "localhost:9091"
+# Pull model: Product is called when a user writes and when a user reads, never
+# on a schedule and never through a change feed (ADR-005).
+product:
+  address: "localhost:9091"
   dial_timeout: 5s
-  max_call_timeout: 5s
+  get_sku_timeout: 200ms
+  get_batch_skus_timeout: 200ms
+  cache_size: 4096
+  cache_ttl: 45s
   circuit_breaker:
-    name: "product-service"
-    max_requests: 3
-    interval: 10s
-    timeout: 30s
+    failure_threshold: 5
+    half_open_max_calls: 1
+    open_timeout: 30s
 
 cart:
-  ttl: 604800
-  max_skus_per_cart: 50
-  max_qty_per_item: 100
-  negative_cache_ttl: 60
-  rehydrate_ttl: 604800
+  # A data contract, not a tunable. The service refuses to start on a mismatch.
+  bucket_count: 64
+  abandoned_after: 720h   # 30 days
+  active_ttl: 888h        # 37 days: a 7-day buffer for the marker
+  abandoned_ttl: 168h     # 7 days of retention after the transition
+  product_validation_ttl: 45s
+  idempotency_ttl: 24h
+  rate_limit:
+    requests_per_second: 20
+    burst: 40
+    idle_timeout: 10m
 
 worker:
-  outbox_relay:
-    count: 4
-    block_timeout: 5s
-    batch_size: 100
-  postgres_sync:
-    enabled: true
-    batch_size: 50
-    max_retries: 3
   abandoned_marker:
     enabled: true
-    cron: "0 2 * * *"
-    batch_size: 1000
-    inactive_threshold_days: 30
-  archival_cleaner:
+    interval: 1m
+    batch_size: 200
+    operation_timeout: 5s
+  outbox_relay:
     enabled: true
-    cron: "0 3 * * 0"
-    deleted_ttl_days: 90
-    checked_out_ttl_days: 90
-    abandoned_ttl_days: 180
+    idle_interval: 2s
+    batch_size: 64
+    claim_min_idle: 30s
+    max_publish_attempts: 3
+    publish_backoff: 200ms
+    operation_timeout: 10s
   stream_trimmer:
     enabled: true
     interval: 5m
-    pending_threshold: 30m
+    operation_timeout: 5s
+  order_consumer:
+    enabled: true
 
 logging:
   level: "debug"
   format: "json"
   output: "stdout"
-
-tracing:
-  enabled: false
-  endpoint: "localhost:4317"
-  service_name: "cart-service"

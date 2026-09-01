@@ -8,81 +8,57 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// HealthChecker defines the interface for health checks.
-type HealthChecker interface {
-	Ping(ctx context.Context) error
+// Probe reports whether one dependency is usable.
+type Probe func(ctx context.Context) error
+
+// Health serves the liveness and readiness probes.
+//
+// Readiness receives only dependencies that must be available to serve HTTP
+// traffic. Product and Kafka have separate operational health signals: GET
+// degrades when Product is unavailable and Kafka only affects the relay.
+type Health struct {
+	probes  map[string]Probe
+	timeout time.Duration
 }
 
-// HealthHandler handles health check endpoints.
-type HealthHandler struct {
-	redisHealth HealthChecker
-	pgHealth    HealthChecker
-}
-
-// NewHealthHandler creates a new health handler.
-func NewHealthHandler(redisHealth, pgHealth HealthChecker) *HealthHandler {
-	return &HealthHandler{
-		redisHealth: redisHealth,
-		pgHealth:    pgHealth,
+// NewHealth builds the health handler. Probe names appear verbatim in the
+// readiness body, so keep them stable.
+func NewHealth(probes map[string]Probe, timeout time.Duration) *Health {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
 	}
+	return &Health{probes: probes, timeout: timeout}
 }
 
-// HealthResponse represents the health check response.
-type HealthResponse struct {
-	Status    string            `json:"status"`
-	Timestamp string            `json:"timestamp"`
-	Checks    map[string]string `json:"checks"`
+// Live handles GET /health/live. It confirms the process is running and
+// nothing else, so a dependency outage never restarts a healthy pod.
+func (h *Health) Live(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Liveness handles GET /healthz
-func (h *HealthHandler) Liveness(c *gin.Context) {
-	c.JSON(http.StatusOK, HealthResponse{
-		Status:    "ok",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Checks:    map[string]string{},
-	})
-}
+// Ready handles GET /health/ready. It reports 503 when a dependency required
+// to serve HTTP traffic is down, so traffic is withheld only when Cart cannot
+// safely answer its request path.
+func (h *Health) Ready(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
+	defer cancel()
 
-// Readiness handles GET /readyz
-func (h *HealthHandler) Readiness(c *gin.Context) {
-	checks := make(map[string]string)
-	allHealthy := true
-
-	if h.redisHealth != nil {
-		if err := h.redisHealth.Ping(c.Request.Context()); err != nil {
-			checks["redis"] = "unhealthy: " + err.Error()
-			allHealthy = false
-		} else {
-			checks["redis"] = "ok"
+	checks := make(map[string]string, len(h.probes))
+	ready := true
+	for name, probe := range h.probes {
+		if err := probe(ctx); err != nil {
+			checks[name] = "down"
+			ready = false
+			continue
 		}
+		checks[name] = "up"
 	}
 
-	if h.pgHealth != nil {
-		if err := h.pgHealth.Ping(c.Request.Context()); err != nil {
-			checks["postgres"] = "unhealthy: " + err.Error()
-			allHealthy = false
-		} else {
-			checks["postgres"] = "ok"
-		}
+	status := http.StatusOK
+	state := "ready"
+	if !ready {
+		status = http.StatusServiceUnavailable
+		state = "not_ready"
 	}
-
-	resp := HealthResponse{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Checks:    checks,
-	}
-
-	if allHealthy {
-		resp.Status = "ok"
-		c.JSON(http.StatusOK, resp)
-	} else {
-		resp.Status = "unhealthy"
-		c.JSON(http.StatusServiceUnavailable, resp)
-	}
-}
-
-// Metrics handles GET /metrics
-func (h *HealthHandler) Metrics(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Metrics endpoint — integrate with prometheus/client_golang",
-	})
+	c.JSON(status, gin.H{"status": state, "checks": checks})
 }

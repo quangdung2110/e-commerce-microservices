@@ -2,257 +2,135 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
-
-	"cart-service/internal/domain/event"
+	"go.uber.org/zap"
 )
 
-// MessageHandler is the function signature for processing Kafka messages.
-type MessageHandler func(ctx context.Context, msg *sarama.ConsumerMessage) error
+// ConsumerConfig configures the ORDER_PAID consumer group.
+type ConsumerConfig struct {
+	Brokers []string
+	Topic   string
+	GroupID string
+	// InitialOffset is "oldest" or "newest".
+	InitialOffset  string
+	TLSEnabled     bool
+	SessionTimeout time.Duration
+}
 
-// Consumer represents a Kafka consumer group.
+// MessageHandler processes one Kafka message.
+//
+// Returning an error leaves the offset uncommitted, so the message is
+// redelivered. Handlers must therefore be idempotent.
+type MessageHandler func(ctx context.Context, message *sarama.ConsumerMessage) error
+
+// Consumer runs a sarama consumer group against a single topic.
 type Consumer struct {
-	groupID      string
-	topics       []string
-	config       *sarama.Config
-	brokers      []string
-	ready        chan bool
-	handler      MessageHandler
-	inner        sarama.ConsumerGroup
-	wg           sync.WaitGroup
-	claimsMu      sync.RWMutex
-	activeClaims  map[string]sarama.ConsumerGroupClaim
+	group   sarama.ConsumerGroup
+	cfg     ConsumerConfig
+	handler MessageHandler
+	logger  *zap.Logger
 }
 
-// NewConsumer creates a new Kafka consumer group.
-func NewConsumer(cfg Config, topics []string, handler MessageHandler) (*Consumer, error) {
-	config, err := NewSaramaConfig(cfg, false)
+// NewConsumer builds a consumer group.
+func NewConsumer(cfg ConsumerConfig, handler MessageHandler, logger *zap.Logger) (*Consumer, error) {
+	saramaCfg := sarama.NewConfig()
+	saramaCfg.Consumer.Return.Errors = true
+	saramaCfg.Consumer.Offsets.Initial = initialOffset(cfg.InitialOffset)
+	saramaCfg.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{
+		sarama.NewBalanceStrategyRoundRobin(),
+	}
+	if cfg.SessionTimeout > 0 {
+		saramaCfg.Consumer.Group.Session.Timeout = cfg.SessionTimeout
+	}
+	saramaCfg.Net.TLS.Enable = cfg.TLSEnabled
+
+	group, err := sarama.NewConsumerGroup(cfg.Brokers, cfg.GroupID, saramaCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create consumer group %s: %w", cfg.GroupID, err)
 	}
 
-	inner, err := sarama.NewConsumerGroup(cfg.Brokers, cfg.Consumer.GroupID, config)
-	if err != nil {
-		return nil, fmt.Errorf("create consumer group: %w", err)
-	}
-
-	return &Consumer{
-		groupID:      cfg.Consumer.GroupID,
-		topics:       topics,
-		config:       config,
-		brokers:      cfg.Brokers,
-		ready:        make(chan bool),
-		handler:      handler,
-		inner:        inner,
-		activeClaims: make(map[string]sarama.ConsumerGroupClaim),
-	}, nil
+	return &Consumer{group: group, cfg: cfg, handler: handler, logger: logger}, nil
 }
 
-// Start begins consuming messages.
-func (c *Consumer) Start(ctx context.Context) error {
-	c.wg.Add(1)
+// Run consumes until the context is cancelled. Rebalances return from
+// group.Consume, so the loop re-enters until the caller stops it.
+func (c *Consumer) Run(ctx context.Context) error {
+	handler := &groupHandler{handle: c.handler, logger: c.logger}
+
 	go func() {
-		defer c.wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if err := c.inner.Consume(ctx, c.topics, c); err != nil {
-					_ = err
-				}
-			}
+		for err := range c.group.Errors() {
+			c.logger.Warn("kafka consumer group error", zap.Error(err))
 		}
 	}()
 
-	<-c.ready
-	return nil
-}
-
-// Stop gracefully stops the consumer.
-func (c *Consumer) Stop() error {
-	return c.inner.Close()
-}
-
-// Setup is run at the beginning of a new session, before ConsumeClaim.
-func (c *Consumer) Setup(session sarama.ConsumerGroupSession) error {
-	// Clear stale claims
-	c.claimsMu.Lock()
-	c.activeClaims = make(map[string]sarama.ConsumerGroupClaim)
-	for _, topic := range c.topics {
-		c.activeClaims[topic] = nil
-	}
-	c.claimsMu.Unlock()
-	close(c.ready)
-	return nil
-}
-
-// Cleanup is run at the end of a session.
-func (c *Consumer) Cleanup(sarama.ConsumerGroupSession) error {
-	c.claimsMu.Lock()
-	c.activeClaims = make(map[string]sarama.ConsumerGroupClaim)
-	c.ready = make(chan bool)
-	c.claimsMu.Unlock()
-	return nil
-}
-
-// ConsumeClaim processes messages from a partition.
-func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	topic := claim.Topic()
-
-	c.claimsMu.Lock()
-	c.activeClaims[topic] = claim
-	c.claimsMu.Unlock()
-
 	for {
-		select {
-		case message, ok := <-claim.Messages():
-			if !ok {
+		if err := c.group.Consume(ctx, []string{c.cfg.Topic}, handler); err != nil {
+			if errors.Is(err, sarama.ErrClosedConsumerGroup) || ctx.Err() != nil {
 				return nil
 			}
-
-			if err := c.handler(session.Context(), message); err != nil {
-				_ = err
+			c.logger.Warn("kafka consume returned an error, retrying",
+				zap.String("topic", c.cfg.Topic),
+				zap.Error(err),
+			)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Second):
 			}
-
-			session.MarkMessage(message, "")
-
-		case <-session.Context().Done():
+			continue
+		}
+		if ctx.Err() != nil {
 			return nil
 		}
 	}
 }
 
-// ParseCartEvent deserializes a Kafka message to CartEventEnvelope.
-func ParseCartEvent(msg *sarama.ConsumerMessage) (*event.CartEventEnvelope, error) {
-	var e event.CartEventEnvelope
-	if err := json.Unmarshal(msg.Value, &e); err != nil {
-		return nil, fmt.Errorf("unmarshal event: %w", err)
-	}
-	return &e, nil
+// Close shuts the consumer group down.
+func (c *Consumer) Close() error {
+	return c.group.Close()
 }
 
-// ParseOrderPaidEvent deserializes an ORDER_PAID event.
-func ParseOrderPaidEvent(msg *sarama.ConsumerMessage) (*event.OrderPaidPayload, error) {
-	var wrapper struct {
-		Payload event.OrderPaidPayload `json:"payload"`
-	}
-	if err := json.Unmarshal(msg.Value, &wrapper); err != nil {
-		return nil, fmt.Errorf("unmarshal ORDER_PAID: %w", err)
-	}
-	return &wrapper.Payload, nil
+type groupHandler struct {
+	handle MessageHandler
+	logger *zap.Logger
 }
 
-// MessageBatch holds a batch of consumed messages ready for processing.
-type MessageBatch struct {
-	messages []*sarama.ConsumerMessage
-	claims   map[string]sarama.ConsumerGroupClaim
-	mu       sync.Mutex
-}
+func (h *groupHandler) Setup(sarama.ConsumerGroupSession) error   { return nil }
+func (h *groupHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
-// NewMessageBatch creates a new empty message batch.
-func NewMessageBatch() *MessageBatch {
-	return &MessageBatch{
-		messages: make([]*sarama.ConsumerMessage, 0),
-		claims:   make(map[string]sarama.ConsumerGroupClaim),
-	}
-}
-
-// Messages returns all messages in the batch.
-func (b *MessageBatch) Messages() []*sarama.ConsumerMessage {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.messages
-}
-
-// Add adds a message to the batch.
-func (b *MessageBatch) Add(msg *sarama.ConsumerMessage) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.messages = append(b.messages, msg)
-}
-
-// Count returns the number of messages in the batch.
-func (b *MessageBatch) Count() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.messages)
-}
-
-// Commit marks all messages in the batch as committed.
-func (b *MessageBatch) Commit() {
-	// Messages are marked committed via session.MarkMessage in ConsumeClaim.
-	// This method is a no-op for the simple consumer; batch.commit()
-	// is a placeholder for future explicit offset management.
-}
-
-// PollBatch collects messages from all active claims until batchSize is reached or timeout expires.
-func (c *Consumer) PollBatch(ctx context.Context, batchSize int, timeout time.Duration) (*MessageBatch, error) {
-	batch := NewMessageBatch()
-	deadline := time.Now().Add(timeout)
-
-	claims := make(map[string]sarama.ConsumerGroupClaim)
-	claimMsgs := make(map[string]<-chan *sarama.ConsumerMessage)
-	var claimsMu sync.Mutex
-
-claimLoop:
-	for batch.Count() < batchSize && time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break claimLoop
-		}
-
+// ConsumeClaim marks an offset only after the handler succeeded. A handler
+// failure stops the claim so the partition is reprocessed from the last good
+// offset rather than skipping past a message Cart never applied.
+func (h *groupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	for {
 		select {
-		case <-ctx.Done():
-			return batch, ctx.Err()
-		default:
-		}
-
-		c.claimsMu.Lock()
-		for topic, claim := range c.activeClaims {
-			claimsMu.Lock()
-			if _, ok := claims[topic]; !ok {
-				claims[topic] = claim
-				claimMsgs[topic] = claim.Messages()
+		case <-session.Context().Done():
+			return nil
+		case message, ok := <-claim.Messages():
+			if !ok {
+				return nil
 			}
-			claimsMu.Unlock()
-		}
-		c.claimsMu.Unlock()
-
-		claimsMu.Lock()
-		for topic, msgCh := range claimMsgs {
-			select {
-			case msg, ok := <-msgCh:
-				if !ok {
-					delete(claimMsgs, topic)
-					claimsMu.Unlock()
-					continue claimLoop
-				}
-				batch.Add(msg)
-				claimsMu.Unlock()
-				if batch.Count() >= batchSize {
-					break claimLoop
-				}
-			case <-time.After(remaining):
-				claimsMu.Unlock()
-				break claimLoop
-			case <-ctx.Done():
-				claimsMu.Unlock()
-				return batch, ctx.Err()
+			if err := h.handle(session.Context(), message); err != nil {
+				h.logger.Error("failed to handle kafka message, offset not committed",
+					zap.String("topic", message.Topic),
+					zap.Int32("partition", message.Partition),
+					zap.Int64("offset", message.Offset),
+					zap.Error(err),
+				)
+				return err
 			}
+			session.MarkMessage(message, "")
 		}
-		if len(claimMsgs) == 0 {
-			claimsMu.Unlock()
-			break claimLoop
-		}
-		claimsMu.Unlock()
 	}
+}
 
-	_ = claims
-	return batch, nil
+func initialOffset(setting string) int64 {
+	if setting == "newest" {
+		return sarama.OffsetNewest
+	}
+	return sarama.OffsetOldest
 }

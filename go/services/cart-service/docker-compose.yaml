@@ -1,3 +1,8 @@
+# Standalone stack for developing Cart Service.
+#
+# Cart has no PostgreSQL dependency: Redis is the source of truth, the
+# scheduler store, the idempotency store and the outbox (ADR-010).
+
 services:
   # ── Product Service ──────────────────────────────────────────────────────────
   product-service:
@@ -10,7 +15,7 @@ services:
       - SPRING_PROFILES_ACTIVE=local
       - SERVER_PORT=8081
       - GRPC_PORT=9091
-      - DB_URL=jdbc:postgresql://postgres:5432/product_service
+      - DB_URL=jdbc:postgresql://product-postgres:5432/product_service
       - DB_USERNAME=postgres
       - DB_PASSWORD=postgres
       - REDIS_HOST=redis
@@ -18,11 +23,10 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - GRPC_SECURITY_ENABLED=false
       - LOGGING_LEVEL_ROOT=DEBUG
-      - LOGGING_LEVEL_APP=DEBUG
       - SPRING_FLYWAY_ENABLED=false
       - SPRING_JPA_HIBERNATE_DDL_AUTO=create-drop
     depends_on:
-      postgres:
+      product-postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -37,9 +41,12 @@ services:
       retries: 5
       start_period: 60s
 
-  # ── Cart Service ──────────────────────────────────────────────────────────
+  # ── Cart Service ─────────────────────────────────────────────────────────────
   cart-service:
     image: cart-service:local
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: cart-service
     profiles:
       - app
@@ -47,15 +54,10 @@ services:
       - "8080:8080"
     environment:
       - APP_ENV=development
-      - LOG_LEVEL=debug
-      - REDIS_ADDR=redis:6379
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=cart_db
-      - KAFKA_BROKERS=kafka:29092
-      - PRODUCT_GRPC_ADDR=product-service:9091
+      - CART_REDIS_ADDRS=redis:6379
+      - CART_KAFKA_BROKERS=kafka:29092
+      - CART_PRODUCT_ADDRESS=product-service:9091
+      - CART_LOGGING_LEVEL=debug
     depends_on:
       product-service:
         condition: service_healthy
@@ -69,13 +71,21 @@ services:
       - shared-network
     restart: unless-stopped
 
-  # ── Shared Infrastructure ──────────────────────────────────────────────────
+  # ── Redis: the cart source of truth ──────────────────────────────────────────
+  # noeviction is mandatory, not a preference. Under allkeys-lru Redis would
+  # silently discard live carts under memory pressure, and Cart has no cold
+  # store to recover them from. AOF is on for the same reason.
   redis:
     image: redis:7.2-alpine
     container_name: cart-redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
     healthcheck:
@@ -86,18 +96,19 @@ services:
     networks:
       - shared-network
 
-  postgres:
+  # PostgreSQL is here only because Product Service needs it. Cart never
+  # connects to it.
+  product-postgres:
     image: postgres:16-alpine
-    container_name: cart-postgres
+    container_name: cart-product-postgres
     ports:
       - "15435:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: cart_db
+      POSTGRES_DB: product_service
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./internal/infrastructure/postgres/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

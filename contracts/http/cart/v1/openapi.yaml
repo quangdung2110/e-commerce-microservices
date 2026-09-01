@@ -226,7 +226,7 @@ components:
           description: Null khi Product Service không trả được giá hiện tại.
         is_available:
           type: boolean
-          description: Giá trị CURRENT khi catalog_freshness=CURRENT, snapshot gần nhất khi DEGRADED.
+          description: Catalog saleability (Product và SKU ACTIVE), không phải stock Inventory. Giá trị CURRENT khi catalog_freshness=CURRENT, snapshot gần nhất khi DEGRADED.
         added_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

@@ -6,187 +6,95 @@ on:
   pull_request:
 
 jobs:
+  # The Lua scripts are copied from docs/cart/scripts, which stays the
+  # canonical source. Drift between the two is a correctness bug, not a style
+  # issue, so it fails the build.
+  contract-drift:
+    name: Lua scripts match the canonical source
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go/services/cart-service
+    steps:
+      - uses: actions/checkout@v4
+      - run: make check-lua
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+          cache-dependency-path: go/services/cart-service/go.sum
+      - uses: golangci/golangci-lint-action@v4
         with:
           version: latest
-          args: --timeout=5m ./...
+          working-directory: go/services/cart-service
+          args: --timeout=5m
 
-  unit-test:
-    name: Unit Tests
+  test:
+    name: Tests
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go/services/cart-service
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: go/services/cart-service/go.sum
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+      - name: Verify formatting
+        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './internal/infrastructure/product/pb/*'))"
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Vet
+        run: go vet ./...
 
-      - name: Run unit tests
-        run: go test -v -race -short ./...
+      # The Lua scripts run against an in-process Redis, so no service
+      # container is needed and no PostgreSQL exists to provision.
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
 
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
+      - name: Coverage summary
+        if: always()
+        run: go tool cover -func=coverage.out | tail -1
+
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage
-          path: coverage.out
+          path: go/services/cart-service/coverage.out
           retention-days: 7
-
-  integration-test:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - "6379:6379"
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: cart_test
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run integration tests
-        run: go test -v -race -tags=integration ./test/integration/...
-        env:
-          REDIS_ADDR: localhost:6379
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_USER: postgres
-          DB_PASSWORD: postgres
-          DB_NAME: cart_test
 
   build:
     name: Build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go/services/cart-service
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Build (no test files)
-        run: go build -v -o bin/cart-service ./cmd/server
-
-  load-test:
-    name: Load Tests
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - "6379:6379"
-
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: cart_test
-        ports:
-          - "5432:5432"
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Build binary
-        run: go build -o bin/cart-service ./cmd/server
-
-      - name: Start service
-        run: |
-          ./bin/cart-service &
-          sleep 5
-
-      - name: Run k6
-        run: |
-          docker run --rm \
-            -e BASE_URL=http://localhost:8080 \
-            -v ${{ github.workspace }}/test/load:/scripts \
-            grafana/k6:0.52.0 \
-            run /scripts/cart_load_test.js
-
-      - name: Cleanup
-        run: pkill -f cart-service || true
+          cache-dependency-path: go/services/cart-service/go.sum
+      - run: go build -o bin/cart-service ./cmd/server
 
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+      - uses: securego/gosec@master
         with:
-          args: -no-fail -fmt sarif -out gosec-results.sarif ./...
-
-      - name: Upload security results
-        uses: github/codeql-action/upload-sarif@v3
+          args: -no-fail -fmt sarif -out gosec-results.sarif ./go/services/cart-service/...
+      - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: gosec-results.sarif

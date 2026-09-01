@@ -50,15 +50,18 @@ message Sku {
   string image_url = 5;
   ecommerce.common.v1.Money price = 6;
   SkuStatus status = 7;
-  int64 available_quantity = 8;
+  // Field 8 used to expose an eventual-consistent Inventory projection. Cart
+  // must not use Product as an inventory authority, so the field is removed
+  // and its number is permanently reserved.
+  reserved 8;
   google.protobuf.Timestamp updated_at = 9;
 }
 
 enum SkuStatus {
   SKU_STATUS_UNSPECIFIED = 0;
   SKU_STATUS_ACTIVE = 1;
-  SKU_STATUS_OUT_OF_STOCK = 2;
   SKU_STATUS_INACTIVE = 3;
+  reserved 2;
 }
 
 message SkuNotFound {
@@ -74,5 +77,5 @@ enum SkuUnavailableReason {
   SKU_UNAVAILABLE_REASON_UNSPECIFIED = 0;
   SKU_UNAVAILABLE_REASON_INACTIVE = 1;
   SKU_UNAVAILABLE_REASON_DELETED = 2;
-  SKU_UNAVAILABLE_REASON_OUT_OF_STOCK = 3;
+  reserved 3;
 }
