@@ -1,5 +1,9 @@
 -- inventory_fast_sync.lua
 --
+-- DEPRECATED. This file is retained only as evidence for archived ADR-003.
+-- It is not part of the current Product Service design and must not be called
+-- by a Product Service deployment.
+--
 -- Phase 1 của Inventory Sync (xem docs/product/workflows.md#wf-product-009 và
 -- docs/product/decisions/ADR-003-two-phase-lock-free-inventory-sync.md).
 --
