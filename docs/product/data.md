@@ -36,6 +36,9 @@ Inventory theo hai nguồn độc lập.
   inventory worker, inbox hay idempotency table trong Product.
 - `products.catalog_revision` tăng đúng một lần cho mỗi thay đổi observable của Product
   aggregate. Mọi catalog event Product/SKU mang revision này và có Kafka key `product_id`.
+- `categories.category_revision` tăng đúng một lần cho mỗi thay đổi observable của
+  Category hoặc mapping category–attribute; Category event dùng revision này làm ordering
+  guard, không dùng `updated_at` để ghi đè event cũ/trùng.
 - `product_markdown_projection.source_revision` do Promotion cấp, tăng đơn điệu theo
   Product; event cũ/trùng không được ghi đè projection mới hơn.
 
@@ -45,7 +48,7 @@ Inventory theo hai nguồn độc lập.
 
 | Bảng | Cột/chức năng chính | Constraint |
 |---|---|---|
-| `categories` | `category_id`, `parent_id`, `name`, `slug`, timestamps | `slug` unique; self-FK `ON DELETE RESTRICT` |
+| `categories` | `category_id`, `parent_id`, `name`, `slug`, `category_revision`, timestamps | `slug` unique; self-FK `ON DELETE RESTRICT` |
 | `attributes` | `attribute_id`, `code`, `name`, `value_type`, timestamps | `code` unique; `TEXT`, `NUMBER`, `BOOLEAN`, `SELECT` |
 | `attribute_options` | Option của attribute `SELECT` | Unique `(attribute_id, code)` |
 | `category_attributes` | Mapping category–attribute | PK `(category_id, attribute_id)`, `is_required`, `is_variant` |
@@ -74,24 +77,26 @@ kích hoạt giá cũ.
 
 Khi nhận activate/update, Product lock Product, chỉ upsert nếu `source_revision` mới hơn,
 reprice tất cả SKU và ghi outbox trong cùng transaction. Khi deactivate, projection thành
-`INACTIVE` và `selling_price_vnd` trở về `base_price_vnd`. Safety check chỉ xử lý row
-`ACTIVE` quá `ends_at`; Promotion vẫn là owner schedule và outbox.
+`INACTIVE` và `selling_price_vnd` trở về `base_price_vnd`. Promotion là owner duy nhất của
+schedule: Product không có safety check. Event `ACTIVE` đến muộn sau `ends_at` vẫn advance
+`source_revision` nhưng được lưu `INACTIVE`, nên không làm giá cũ có hiệu lực lại. Consumer
+lag/DLQ cần được Promotion/operations khắc phục bằng replay snapshot mới nhất.
 
 ### 3.4 Transactional outbox
 
 `product_outbox_events` lưu `event_id`, `event_type`, `aggregate_type`, `aggregate_id`,
 `partition_key`, `payload`, `created_at`. Event Product/SKU đều dùng
 `aggregate_type = Product`, `aggregate_id = product_id`, `partition_key = product_id`.
-Event Category dùng Category/category ID. Không đặt FK từ outbox tới aggregate để
-tombstone còn tồn tại sau hard delete.
+Event Category dùng Category/category ID và `category_revision`. Không đặt FK từ outbox
+tới aggregate để tombstone còn tồn tại sau hard delete.
 
 ## 4. Indexes và toàn vẹn
 
 - Unique: `categories.slug`, `attributes.code`, `(attribute_options.attribute_id, code)`,
   `products.slug`, `product_skus.sku_code`, `product_markdown_projection.promotion_rule_id`.
 - Index: `categories(parent_id)`, `products(category_id, status)`,
-  `product_skus(product_id)`, media sort indexes, markdown `(state, ends_at)`, outbox
-  `(created_at)` và `(partition_key, created_at)`.
+  `product_skus(product_id)`, media sort indexes, outbox `(created_at)` và
+  `(partition_key, created_at)`.
 - Không thêm JSONB index khi chưa có query thực tế chứng minh nhu cầu.
 
 ## 5. Transaction, outbox và lifecycle
@@ -104,13 +109,20 @@ Không có inbox/idempotency table. Inbound markdown event là state snapshot n�
 qua `source_revision`; outbound event có `event_id` ổn định để consumer dedupe. Không áp
 dụng mô hình này cho command tích lũy trong tương lai nếu chưa có idempotency storage riêng.
 
-Application insert outbox → PostgreSQL WAL → Debezium → Kafka. Retention worker xóa theo
-`created_at` sau thời gian retention đã được vận hành xác nhận.
+Application insert outbox → PostgreSQL WAL → Debezium → Kafka. Product không có retention
+worker; cho tới khi Platform/DB lifecycle có policy được phê duyệt, row outbox được giữ lại.
+Một policy tương lai không được xóa row trong thời gian recovery đã cam kết cho Debezium/
+downstream và phải được vận hành ngoài Product application.
 
-Hard delete Product cascade SKU/media/markdown projection. Command chụp `sku_ids` và ghi
-tombstone trước khi delete. Search xóa document từ tombstone và không tạo document mới chỉ
-từ stock event. Inventory phải consume tombstone hoặc có guard reserve tương đương để từ
-chối SKU đã xóa.
+Hard delete Product cascade SKU/media/markdown projection. Command chụp `sku_ids`, tính
+revision tombstone kế tiếp và ghi tombstone trước khi delete. Search xóa document từ
+tombstone và không tạo document mới chỉ từ stock event. Inventory phải consume tombstone
+hoặc có guard reserve tương đương để từ chối SKU đã xóa.
+
+Category rename, đổi slug hoặc đổi `parent_id` làm path dẫn xuất của cả subtree thay đổi.
+Product ghi category snapshot cùng `CATALOG_REINDEX_REQUESTED` trong một transaction
+outbox. Search coalesce request và full reindex từ export category/Product; Product không
+fan-out event theo mọi descendant hay Product trong transaction admin.
 
 ## 6. Security và privacy
 

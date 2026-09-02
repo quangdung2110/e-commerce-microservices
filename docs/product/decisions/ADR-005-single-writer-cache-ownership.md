@@ -1,11 +1,12 @@
 ---
 doc_id: product-adr-005
 service: product
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Product Service team
 supersedes: null
+superseded_by: ADR-009
 evidence: []
 ---
 
@@ -13,7 +14,7 @@ evidence: []
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-009](./ADR-009-catalog-boundary-and-published-price.md).
 
 ## Context
 

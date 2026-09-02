@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/product/v1/schemas/category-deleted.schema.json",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    { "type": "object", "required": ["type", "source", "subject", "sequence", "data"], "properties": {
+      "type": { "const": "com.ecommerce.catalog.category-deleted.v1" }, "source": { "const": "/services/product" },
+      "subject": { "type": "string", "pattern": "^categories/[0-9a-fA-F-]{36}$" }, "sequence": { "type": "integer", "minimum": 1 },
+      "data": { "type": "object", "additionalProperties": false, "required": ["category_id", "category_revision", "deleted_at"], "properties": {
+        "category_id": { "$ref": "catalog-common.schema.json#/$defs/uuid" }, "category_revision": { "type": "integer", "minimum": 1 }, "deleted_at": { "$ref": "catalog-common.schema.json#/$defs/timestamp" }
+      }}
+    }}
+  ]
+}

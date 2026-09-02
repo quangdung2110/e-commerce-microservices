@@ -1,0 +1,36 @@
+{
+  "specversion": "1.0",
+  "id": "0198e0b0-97e4-7d66-8a2c-997d792ae826",
+  "type": "com.ecommerce.catalog.sku-upserted.v1",
+  "source": "/services/product",
+  "subject": "skus/0198e0b1-97e4-7d66-8a2c-997d792ae826",
+  "time": "2026-09-02T09:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/product/v1/schemas/sku-upserted.schema.json",
+  "correlationid": "0198e0b2-97e4-7d66-8a2c-997d792ae826",
+  "sequence": 7,
+  "data": {
+    "product": {
+      "product_id": "0198e0b3-97e4-7d66-8a2c-997d792ae826",
+      "category_id": "0198e0b4-97e4-7d66-8a2c-997d792ae826",
+      "name": "Áo thun cotton",
+      "slug": "ao-thun-cotton",
+      "description": "Áo thun cotton unisex.",
+      "attributes": { "brand": "Acme" },
+      "status": "ACTIVE",
+      "catalog_revision": 7,
+      "updated_at": "2026-09-02T09:00:00Z"
+    },
+    "sku": {
+      "sku_id": "0198e0b1-97e4-7d66-8a2c-997d792ae826",
+      "sku_code": "TSHIRT-BLACK-M",
+      "base_price_vnd": 199000,
+      "selling_price_vnd": 179000,
+      "status": "ACTIVE",
+      "variant_attributes": { "color": "black", "size": "M" },
+      "media": [],
+      "updated_at": "2026-09-02T09:00:00Z"
+    },
+    "change_kind": "MARKDOWN_REPRICED"
+  }
+}

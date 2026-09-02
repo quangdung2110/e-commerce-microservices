@@ -1,20 +1,20 @@
 ---
 doc_id: product-adr-003
 service: product
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Product Service team
 supersedes: null
-evidence:
-  - docs/product/scripts/inventory_fast_sync.lua
+superseded_by: ADR-009
+evidence: []
 ---
 
 # ADR-003 — Inventory sync hai pha, lock-free ở pha một
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-009](./ADR-009-catalog-boundary-and-published-price.md).
 
 Quyết định này thay thế cách xử lý cũ (mỗi event inventory là một transaction có
 pessimistic lock trên Product và SKU). Cách cũ chưa từng được ghi thành ADR nên không
@@ -39,9 +39,9 @@ serialize.
 
 Tách xử lý thành hai pha:
 
-- **Phase 1 (fast path)**: Kafka consumer chỉ chạm Redis. Một Lua script atomic
-  ([`inventory_fast_sync.lua`](../scripts/inventory_fast_sync.lua)) so mốc
-  `last_inventory_sync_at`, ghi các field tồn kho vào `product:sku:{sku_id}` và đăng ký
+- **Phase 1 (fast path)**: Kafka consumer chỉ chạm Redis. Lua script atomic (artefact đã
+  được xóa cùng hạ tầng cũ) so mốc `last_inventory_sync_at`, ghi các field tồn kho vào
+  `product:sku:{sku_id}` và đăng ký
   SKU vào ZSET `product:inventory:pending`. Offset chỉ được commit sau khi Redis trả về
   thành công. Phase 1 không chạm PostgreSQL và không ghi field giá.
 - **Phase 2 (slow path)**: scheduled worker drain ZSET theo lô, group theo `product_id`,

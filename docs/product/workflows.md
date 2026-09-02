@@ -17,8 +17,8 @@ owners:
 | `WF-PRODUCT-002` | Lifecycle và hard delete | Admin HTTP command |
 | `WF-PRODUCT-003` | Category và attribute | Admin HTTP command |
 | `WF-PRODUCT-004` | gRPC catalog point-read | Cart/Checkout gRPC query |
-| `WF-PRODUCT-005` | Markdown snapshot | Promotion Kafka event/safety schedule |
-| `WF-PRODUCT-006` | Outbox và retention | Transactional outbox/schedule |
+| `WF-PRODUCT-005` | Markdown snapshot | Promotion Kafka event |
+| `WF-PRODUCT-006` | Outbox và Debezium | Transactional outbox/CDC |
 
 ## WF-PRODUCT-001 — Tạo hoặc cập nhật Product
 
@@ -26,7 +26,8 @@ owners:
 2. Mở transaction; lock Product nếu đã tồn tại, sau đó lock SKU bị chạm.
 3. Insert/update Product, SKU và media; nếu base price đổi khi markdown active thì tính
    lại `selling_price_vnd`.
-4. Tăng `catalog_revision` đúng một lần, build full catalog snapshot và insert outbox.
+4. Tăng `catalog_revision` đúng một lần, build SKU snapshot cho từng SKU bị ảnh hưởng
+   và insert CloudEvents outbox cùng revision.
 5. Commit, rồi trả response.
 
 Không ghi Redis/cache và không gọi Inventory trong luồng này.
@@ -40,8 +41,10 @@ dọn media/projection liên quan.
 
 ## WF-PRODUCT-003 — Category và attribute
 
-Category chỉ xóa khi không có con và không có Product. Không có worker self-consume để
-cascade hide Product. Application validate cycle và category lá trong transaction.
+Category chỉ xóa khi không có con và không có Product. Application validate cycle và
+category lá trong transaction, tăng `category_revision` đúng một lần và phát snapshot/
+tombstone Category. Rename, đổi slug hoặc đổi parent phát thêm `CATALOG_REINDEX_REQUESTED`;
+Search coalesce rồi full reindex, không có worker Product fan-out subtree.
 
 ## WF-PRODUCT-004 — gRPC catalog point-read
 
@@ -55,12 +58,21 @@ Consumer nhận snapshot Promotion, lock Product, so `source_revision`, rồi up
 projection và reprice tất cả SKU trong cùng transaction. Nếu revision cũ/trùng, ack
 no-op. Sau commit, outbox phát snapshot catalog với `catalog_revision` mới.
 
-Scheduled safety check quét projection `ACTIVE` quá `ends_at`; nó dùng cùng logic
-revision/transaction và chỉ là safety net khi event deactivate bị trễ.
+Promotion phải phát `ACTIVE` đúng lúc `starts_at` và `INACTIVE` đúng lúc `ends_at`.
+Product không có safety schedule: consumer lag, retry exhaustion hoặc DLQ có thể làm giá
+công bố stale cho tới khi Promotion/operations replay snapshot mới nhất. Snapshot `ACTIVE`
+đến muộn sau `ends_at` vẫn ghi nhận `source_revision`, nhưng được lưu `INACTIVE` và không
+được làm giá cũ có hiệu lực lại.
 
-## WF-PRODUCT-006 — Outbox và retention
+## WF-PRODUCT-006 — Outbox và Debezium
 
-Debezium đọc WAL của `product_outbox_events` và phát event với `partition_key` đã lưu.
-Consumer downstream dedupe theo `event_id` và guard catalog bằng `catalog_revision`.
-Retention job xóa outbox quá hạn theo lô sau khi xác nhận connector/consumer monitoring
-an toàn.
+Debezium đọc WAL của `product_outbox_events` và phát CloudEvents structured JSON với
+`partition_key` đã lưu. Consumer downstream dedupe theo CloudEvents `id`, guard SKU bằng
+`catalog_revision` và Category bằng `category_revision`.
+
+Product không có polling publisher hay retention job. Data retention của outbox là
+responsibility Platform/DB lifecycle; trước khi có policy và công cụ vận hành được phê
+duyệt, row outbox được giữ lại. Quy tắc background processing nằm tại
+[ADR-011](./decisions/ADR-011-markdown-consumer-only-background-processing.md); mapping
+Kafka key hiện hành nằm tại
+[ADR-012](./decisions/ADR-012-outbox-partition-key-by-product-aggregate.md).

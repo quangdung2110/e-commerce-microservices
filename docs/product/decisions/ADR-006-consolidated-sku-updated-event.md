@@ -1,11 +1,12 @@
 ---
 doc_id: product-adr-006
 service: product
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Product Service team
 supersedes: null
+superseded_by: ADR-010
 evidence: []
 ---
 
@@ -13,7 +14,7 @@ evidence: []
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-010](./ADR-010-catalog-event-revision-and-category-reindex.md).
 
 ## Context
 
@@ -74,7 +75,8 @@ consumer không được throw khi gặp giá trị chưa biết trong `changed_
 
 Đây là breaking change đối với consumer còn nghe hai event cũ; việc chuyển đổi đã được
 thực hiện ở mức thiết kế và hai tên cũ không còn tồn tại. Cần contract test cho
-`changed_fields` và `change_source`, và cần AsyncAPI để ràng buộc payload — hiện chưa có.
+`changed_fields` và `change_source`, và cần AsyncAPI để ràng buộc payload. Ghi chú này
+thuộc trạng thái lịch sử của ADR-006; contract hiện hành nằm tại ADR-010.
 
 ## Verification
 

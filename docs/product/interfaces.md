@@ -11,8 +11,8 @@ owners:
 
 HTTP đã có contract đề xuất tại
 [`contracts/http/product/v1/openapi.yaml`](../../contracts/http/product/v1/openapi.yaml).
-AsyncAPI cho outbox event vẫn chưa có; semantics event dưới đây phải được chuyển thành
-machine-readable contract trước khi implementation rollout.
+AsyncAPI/JSON Schema đề xuất nằm tại
+[`contracts/events/product/v1/asyncapi.yaml`](../../contracts/events/product/v1/asyncapi.yaml).
 
 ## HTTP
 
@@ -30,6 +30,7 @@ canonical path là `/internal/v1/...`, không expose qua Gateway.
 | `GET`/`PUT`/`DELETE /categories/{id}/attributes/{attribute_id}` | Quản lý mapping category–attribute |
 | `GET`/`POST`/`PUT`/`DELETE /attributes` và `/attributes/{id}/options` | Quản lý attribute `TEXT`/`NUMBER`/`BOOLEAN`/`SELECT` và option |
 | `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex; consumer event chạy song song để nhận thay đổi đồng thời |
+| `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất; Search đọc trước Product export khi nhận reindex request |
 | `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
 
 Tất cả mutation Product/SKU/media sau khi tạo yêu cầu `If-Match` theo ETag
@@ -58,34 +59,37 @@ catalog saleability. Phải tạo version contract mới hoặc mở rộng tư�
 
 ## Events Product phát ra
 
-Outbox + Debezium phát at-least-once. Mọi event catalog của Product và SKU dùng Kafka
-key `product_id`, mang full snapshot và `catalog_revision`; consumer guard bằng revision
-và dedupe `event_id`.
+Outbox + Debezium phát CloudEvents 1.0 structured JSON, at-least-once. `id` là outbox
+`event_id`; Product/SKU dùng Kafka key `product_id` và `sequence = catalog_revision`.
+Product không phát full aggregate vô hạn: mỗi SKU bị ảnh hưởng nhận một snapshot đầy đủ
+SKU + Product context, cùng revision. Consumer dedupe `id` và chỉ apply revision lớn hơn
+state/tombstone hiện có.
 
-| Event | Nội dung/consumer |
-|---|---|
-| `PRODUCT_CREATED`, `PRODUCT_UPDATED`, `PRODUCT_STATUS_CHANGED` | Snapshot Product, SKU/media, giá công bố; Search |
-| `SKU_CREATED`, `SKU_UPDATED` | Snapshot Product aggregate sau thay đổi SKU; Search |
-| `PRODUCT_DELETED`, `SKU_DELETED` | Tombstone; Search và Promotion; Inventory phải nhận hoặc có guard reserve tương đương |
-| `CATEGORY_CREATED`, `CATEGORY_UPDATED`, `CATEGORY_DELETED` | Snapshot/tombstone category; Search |
+| Topic / event | Consumer | Hành vi |
+|---|---|---|
+| `t.product.events` / `sku-upserted` | Search | Snapshot SKU khi Product/SKU/media/lifecycle/markdown làm SKU bị ảnh hưởng. |
+| `t.product.events` / `sku-deleted` | Search; Inventory nếu không có reserve guard | Tombstone một SKU với revision kế tiếp. |
+| `t.product.events` / `product-deleted` | Search, Promotion; Inventory nếu cần | Tombstone Product và toàn bộ `sku_ids`. |
+| `t.category.events` / `category-upserted`, `category-deleted` | Search | Category snapshot/tombstone; `sequence = category_revision`; snapshot có path dẫn xuất. |
+| `t.catalog.control.events` / `catalog-reindex-requested` | Search | Rename, đổi slug hoặc đổi parent Category yêu cầu Search coalesce rồi full reindex. |
 
-`aggregate_type = Product`, `aggregate_id = product_id`, `partition_key = product_id`
-cho mọi Product/SKU event. Category event dùng Category/category ID. Event schema phải
-có `event_id`, `event_type`, `timestamp`, `catalog_revision` khi thuộc Product aggregate
-và payload snapshot đầy đủ.
+Category event dùng Kafka key `category_id`; Category revision tăng với mutation category
+hoặc mapping category–attribute. Attribute/option không có event độc lập ở v1 vì chưa có
+consumer đã được xác nhận; nếu Search cần cấu hình facet, đó là contract mới.
 
 ## Events Product tiêu thụ
 
-Product chỉ consume markdown snapshot từ Promotion:
+Product chỉ consume `com.ecommerce.promotion.product-markdown-snapshot.v1` từ
+`t.promotion.markdown.events`, key `product_id`, `sequence = source_revision`. Snapshot
+luôn mang rule đầy đủ, `state` (`ACTIVE`/`INACTIVE`), công thức VND và thời hạn. Product
+chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snapshot revision mới.
+`ACTIVE` phải được Promotion phát ở thời điểm hiệu lực; snapshot đến muộn sau `ends_at`
+được ghi nhận revision nhưng không được làm giá cũ có hiệu lực lại. Promotion phải phát
+`INACTIVE` khi hết hạn; Product không có scheduled safety check. Khi consumer retry/DLQ
+làm giá stale, Promotion/operations phải replay snapshot mới nhất theo cùng contract.
 
-| Event | Field bắt buộc | Hành vi |
-|---|---|---|
-| `PRODUCT_MARKDOWN_ACTIVATED` | `product_id`, rule, `source_revision`, thời hạn | Upsert projection, reprice SKU |
-| `PRODUCT_MARKDOWN_UPDATED` | Như activate | Apply khi source revision mới hơn |
-| `PRODUCT_MARKDOWN_DEACTIVATED` | `product_id`, rule, `source_revision` | Mark inactive, trả giá về base price |
-
-Product không consume `INVENTORY_STOCK_CHANGED`. Search consume event này trực tiếp và
-guard bằng sequence/version do Inventory cung cấp, tách biệt với `catalog_revision`.
+Product không consume `INVENTORY_STOCK_CHANGED`, Product status event của chính nó hay
+markdown theo Category. Search consume stock trực tiếp từ Inventory với guard source riêng.
 
 ## Compatibility
 

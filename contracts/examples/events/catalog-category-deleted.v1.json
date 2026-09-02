@@ -1,0 +1,16 @@
+{
+  "specversion": "1.0",
+  "id": "0198e0f0-97e4-7d66-8a2c-997d792ae826",
+  "type": "com.ecommerce.catalog.category-deleted.v1",
+  "source": "/services/product",
+  "subject": "categories/0198e0b4-97e4-7d66-8a2c-997d792ae826",
+  "time": "2026-09-02T09:20:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/product/v1/schemas/category-deleted.schema.json",
+  "sequence": 4,
+  "data": {
+    "category_id": "0198e0b4-97e4-7d66-8a2c-997d792ae826",
+    "category_revision": 4,
+    "deleted_at": "2026-09-02T09:20:00Z"
+  }
+}

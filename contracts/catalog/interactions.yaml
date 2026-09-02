@@ -16,7 +16,23 @@ interactions:
     consumers: [search-service]
     contract: http/product/v1/openapi.yaml
     status: proposed
-    notes: Internal mTLS export/snapshot API for full or targeted Search reindex; catalog event consumer must also run during export.
+    notes: Internal mTLS Product/Category export and Product snapshot API for Search reindex; catalog event consumer must also run during export.
+
+  - id: product-publishes-catalog-events
+    protocol: kafka
+    provider: product-service
+    consumers: [search-service, promotion-service]
+    contract: events/product/v1/asyncapi.yaml
+    status: proposed
+    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Inventory must consume tombstones or enforce an equivalent reserve guard.
+
+  - id: promotion-publishes-product-markdown-snapshots
+    protocol: kafka
+    provider: promotion-service
+    consumers: [product-service]
+    contract: events/product/v1/asyncapi.yaml
+    status: proposed
+    notes: Product-scope markdown state snapshots use product_id key and source_revision; legacy category-scoped MARKDOWN_* events are not the target contract.
 
   - id: cart-publishes-cart-events
     protocol: kafka
@@ -29,10 +45,18 @@ interactions:
   - id: auth-publishes-identity-events
     protocol: kafka
     provider: auth-service
-    consumers: [user-service]
+    consumers: [user-service, notification-service, review-service, chat-service]
     contract: events/auth/v1/asyncapi.yaml
     status: proposed
-    notes: USER_VERIFIED_SUCCESS và USER_DELETED trên t.auth.events; CloudEvents v1 là target contract.
+    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract.
+
+  - id: user-publishes-profile-preference-events
+    protocol: kafka
+    provider: user-service
+    consumers: [chat-service, notification-service]
+    contract: events/user/v1/asyncapi.yaml
+    status: proposed
+    notes: USER_PROFILE_UPDATED cho Chat và USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
 
   - id: auth-requests-security-notifications
     protocol: kafka
@@ -50,13 +74,37 @@ interactions:
     status: proposed
     notes: Internal mTLS API để resolve PII/secret theo delivery_id, không qua public Gateway.
 
+  - id: gateway-verifies-auth-tokens
+    protocol: http
+    provider: auth-service
+    consumers: [api-gateway]
+    contract: http/auth/v1/openapi.yaml
+    status: implemented
+    notes: >-
+      Gateway đọc JWKS tại /.well-known/jwks.json rồi verify access token ở edge.
+      Claim set, ánh xạ claim sang identity header, key Redis auth:revocation:*
+      và payload invalidation được chốt tại docs/gateway/runtime-contract.md mục
+      6 và 6.1. Đây là contract duy nhất cho identity header; không service nào
+      được tự định nghĩa lại tên claim hay tên key.
+
+  - id: auth-signals-jwks-rotation
+    protocol: redis-pubsub
+    provider: auth-service
+    consumers: [api-gateway]
+    contract: null
+    status: implemented
+    notes: >-
+      Channel auth:jwks:update mang JSON {"type","kid","timestamp"}. Chỉ là tối
+      ưu hóa: gateway vẫn phải refresh khi gặp kid lạ hoặc khi cache hết TTL, nên
+      mất tín hiệu chỉ làm chậm rotation chứ không phá verification.
+
   - id: order-paid-clears-cart
     protocol: kafka
     provider: order-service
     consumers: [cart-service]
     contract: null
     status: legacy_documented
-    notes: Currently described in docs/cart/cart_events.md.
+    notes: Currently described in docs/cart/interfaces.md.
 
   - id: checkout-creates-order
     protocol: http
@@ -96,6 +144,6 @@ interactions:
   - id: inventory-publishes-stock-events
     protocol: kafka
     provider: inventory-service
-    consumers: [product-service, order-service, analytics-service]
+    consumers: [search-service, order-service, analytics-service]
     contract: null
     status: legacy_documented

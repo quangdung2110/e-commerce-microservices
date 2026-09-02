@@ -28,10 +28,14 @@ chấp nhận.
 |---|---|---|---|---|
 | [ADR-000](./ADR-000-template.md) | Template — không phải quyết định thực tế | Template | N/A | N/A |
 | [ADR-001](./ADR-001-java-spring-boot-runtime.md) | Java và Spring Boot cho Product Service | Accepted | 2026-08-30 | — |
-| [ADR-002](./ADR-002-outbox-debezium-cdc.md) | Transactional outbox phát qua Debezium CDC | Accepted | 2026-08-30 | — |
-| [ADR-003](./ADR-003-two-phase-lock-free-inventory-sync.md) | Inventory sync hai pha, lock-free ở pha một | Accepted | 2026-08-30 | — |
-| [ADR-004](./ADR-004-pessimistic-locking-order.md) | Pessimistic locking và lock order Product → SKU | Accepted | 2026-08-30 | — |
-| [ADR-005](./ADR-005-single-writer-cache-ownership.md) | Một writer bất đồng bộ duy nhất cho point-read cache | Accepted | 2026-08-30 | — |
-| [ADR-006](./ADR-006-consolidated-sku-updated-event.md) | Hợp nhất event cấp SKU thành `SKU_UPDATED` | Accepted | 2026-08-30 | — |
+| [ADR-002](./ADR-002-outbox-debezium-cdc.md) | Transactional outbox phát qua Debezium CDC | Superseded | 2026-08-30 | ADR-012 |
+| [ADR-003](./ADR-003-two-phase-lock-free-inventory-sync.md) | Inventory sync hai pha, lock-free ở pha một | Superseded | 2026-08-30 | ADR-009 |
+| [ADR-004](./ADR-004-pessimistic-locking-order.md) | Pessimistic locking và lock order Product → SKU | Superseded | 2026-08-30 | ADR-011 |
+| [ADR-005](./ADR-005-single-writer-cache-ownership.md) | Một writer bất đồng bộ duy nhất cho point-read cache | Superseded | 2026-08-30 | ADR-009 |
+| [ADR-006](./ADR-006-consolidated-sku-updated-event.md) | Hợp nhất event cấp SKU thành `SKU_UPDATED` | Superseded | 2026-08-30 | ADR-010 |
 | [ADR-007](./ADR-007-admin-only-product-lifecycle.md) | Vòng đời admin-only ba trạng thái | Accepted | 2026-08-30 | — |
-| [ADR-008](./ADR-008-price-and-inventory-snapshot-ownership.md) | Product tính sẵn `best_price`; `display_quantity` là replica | Accepted | 2026-08-30 | — |
+| [ADR-008](./ADR-008-price-and-inventory-snapshot-ownership.md) | Product tính sẵn `best_price`; `display_quantity` là replica | Superseded | 2026-08-30 | ADR-009 |
+| [ADR-009](./ADR-009-catalog-boundary-and-published-price.md) | Product là catalog SoT; Inventory không được phản chiếu vào Product | Accepted | 2026-09-01 | ADR-003, ADR-005, ADR-008 |
+| [ADR-010](./ADR-010-catalog-event-revision-and-category-reindex.md) | Catalog event revision và full reindex khi đổi cây Category | Accepted | 2026-09-02 | ADR-006 |
+| [ADR-011](./ADR-011-markdown-consumer-only-background-processing.md) | Markdown Consumer là background workload duy nhất | Accepted | 2026-09-02 | ADR-004 |
+| [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md) | Outbox partition key theo Product aggregate | Accepted | 2026-09-02 | ADR-002 |

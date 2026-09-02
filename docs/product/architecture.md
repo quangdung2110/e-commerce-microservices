@@ -22,8 +22,10 @@ flowchart LR
   APP --> PG[(PostgreSQL + outbox)]
   PG --> DBZ[Debezium]
   DBZ --> PE[t.product.events]
+  DBZ --> CE[t.category/control events]
   PE --> SEARCH[Search]
   PE --> PROMOTION
+  CE --> SEARCH
   INVENTORY[Inventory] --> IE[Stock events]
   IE --> SEARCH
   CHECKOUT[Checkout] --> RESERVE[Inventory reserve]
@@ -36,11 +38,11 @@ flowchart LR
 | Application/domain | Command, validation, transaction, pricing, revision và outbox |
 | PostgreSQL repository | Write store, lock order Product → SKU |
 | Markdown consumer | Consume snapshot Promotion, guard `source_revision`, reprice SKU |
-| Outbox + Debezium | Phát catalog/tombstone event at-least-once sau commit |
-| Scheduled safety check | Deactivate markdown projection đã quá hạn nếu consumer/schedule chậm |
+| Outbox + Debezium | Phát CloudEvents catalog/tombstone/control event at-least-once sau commit |
 
 Product không có Redis, cache, Lua script, Inventory consumer, Inventory worker hay
-self-consumer. Search tự kết hợp catalog event của Product với stock event của Inventory.
+self-consumer hoặc scheduled job. Search tự kết hợp catalog event của Product với stock
+event của Inventory.
 
 ## Processing và consistency
 
@@ -58,11 +60,15 @@ read model; khoảng trễ của Search không được ảnh hưởng Checkout.
   `FOR UPDATE`.
 - Worker đặt `lock_timeout` ngắn và retry/requeue khi timeout.
 - `catalog_revision` là ordering guard cho catalog event cùng Product aggregate.
+- `category_revision` là ordering guard cho Category event; đổi cây category phát control
+  event để Search rebuild read model thay vì Product fan-out subtree.
 - `source_revision` là ordering guard cho markdown event theo Product.
 - Không dùng `updated_at` hay Redis timestamp để quyết định thứ tự giữa các nguồn khác nhau.
 
 ## Deployment
 
-Runtime cần PostgreSQL, Kafka và Kafka Connect/Debezium. API, markdown consumer và
-scheduled safety check có thể chạy thành process riêng. Search và Inventory là dependency
-liên service, không dùng database/cache của Product.
+Runtime cần PostgreSQL, Kafka và Kafka Connect/Debezium. API/gRPC và Markdown Consumer
+có thể chạy thành process riêng để scale độc lập; không có scheduler process của Product.
+Debezium chạy trong Kafka Connect do Platform vận hành. Search và Inventory là dependency
+liên service, không dùng database/cache của Product. Rationale và recovery trade-off của
+topology này nằm tại [ADR-011](./decisions/ADR-011-markdown-consumer-only-background-processing.md).

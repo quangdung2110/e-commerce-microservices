@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/product/v1/schemas/catalog-common.schema.json",
+  "title": "Product catalog event common types",
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_id", "media_type", "storage_key", "sort_order"],
+      "properties": {
+        "media_id": { "$ref": "#/$defs/uuid" },
+        "media_type": { "type": "string", "enum": ["IMAGE", "VIDEO"] },
+        "storage_key": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "alt_text": { "type": ["string", "null"], "maxLength": 255 },
+        "sort_order": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_id", "category_id", "name", "slug", "attributes", "status", "catalog_revision", "updated_at"],
+      "properties": {
+        "product_id": { "$ref": "#/$defs/uuid" },
+        "category_id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "description": { "type": ["string", "null"], "maxLength": 20000 },
+        "attributes": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "status": { "type": "string", "enum": ["DRAFT", "ACTIVE", "HIDDEN"] },
+        "catalog_revision": { "type": "integer", "minimum": 1 },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "sku": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sku_id", "sku_code", "base_price_vnd", "selling_price_vnd", "status", "variant_attributes", "media", "updated_at"],
+      "properties": {
+        "sku_id": { "$ref": "#/$defs/uuid" },
+        "sku_code": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "base_price_vnd": { "type": "integer", "minimum": 1 },
+        "selling_price_vnd": { "type": "integer", "minimum": 0 },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
+        "variant_attributes": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "media": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/media" } },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "category_path_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category_id", "name", "slug"],
+      "properties": {
+        "category_id": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string", "maxLength": 160 },
+        "slug": { "type": "string", "maxLength": 160 }
+      }
+    },
+    "category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category_id", "name", "slug", "category_revision", "path", "is_leaf", "updated_at"],
+      "properties": {
+        "category_id": { "$ref": "#/$defs/uuid" },
+        "parent_id": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category_revision": { "type": "integer", "minimum": 1 },
+        "path": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/category_path_segment" } },
+        "is_leaf": { "type": "boolean" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "markdown_discount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["PERCENTAGE", "FIXED_VND"] },
+        "discount_bps": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "fixed_discount_vnd": { "type": "integer", "minimum": 1 },
+        "max_discount_vnd": { "type": ["integer", "null"], "minimum": 1 }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "PERCENTAGE" } } }, "then": { "required": ["discount_bps"], "not": { "required": ["fixed_discount_vnd"] } } },
+        { "if": { "properties": { "type": { "const": "FIXED_VND" } } }, "then": { "required": ["fixed_discount_vnd"], "not": { "required": ["discount_bps", "max_discount_vnd"] } } }
+      ]
+    }
+  }
+}

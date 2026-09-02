@@ -23,7 +23,8 @@ media, giá niêm yết và giá bán công bố. Chỉ admin quản trị catal
 | Cart, quotation, order, payment | Cart/Checkout/Order | Đọc catalog/price ở Product; Checkout reserve ở Inventory |
 
 Không có Redis point-read cache, inventory projection, inventory worker, auto-hide theo
-tồn kho, soft delete hay self-consumer trong Product.
+tồn kho, soft delete hay self-consumer trong Product. Markdown Consumer là background
+workload nghiệp vụ duy nhất của Product; Product không chạy scheduled job.
 
 ## Invariants
 
@@ -43,13 +44,17 @@ tồn kho, soft delete hay self-consumer trong Product.
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị catalog |
 | Inbound | Cart, Checkout | gRPC | Catalog saleability và giá hiện hành |
-| Inbound | Promotion | Kafka | Markdown snapshot activate/update/deactivate |
-| Outbound | Search | Kafka | Catalog, media, trạng thái và giá công bố |
-| Outbound | Promotion | Kafka | Tombstone khi Product/SKU bị xóa |
+| Inbound | Promotion | Kafka | Product-scope markdown state snapshot, guard `source_revision` |
+| Outbound | Search | Kafka | SKU/category snapshot, tombstone và category-tree reindex control |
+| Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
 | Outbound | Search | HTTP nội bộ | Export/full reindex catalog |
 
 Search consume `INVENTORY_STOCK_CHANGED` trực tiếp từ Inventory. Product không consume
 topic Inventory và không là đường trung chuyển availability cho UI.
+
+Promotion sở hữu schedule markdown và phải phát snapshot `ACTIVE`/`INACTIVE` tại thời
+điểm hiệu lực/kết thúc. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations
+phải replay snapshot mới nhất; Product không có cronjob tự sửa giá quá hạn.
 
 ## Tài liệu chuẩn
 
@@ -58,19 +63,16 @@ topic Inventory và không là đường trung chuyển availability cho UI.
 | [Data](./data.md) và [DDL](./schema/schema.sql) | Nguồn chuẩn cho ownership, schema và semantic contract |
 | [Architecture](./architecture.md) | Thành phần và luồng xử lý hiện hành |
 | [Domain](./domain.md) | Quy tắc nghiệp vụ và concurrency |
-| [Interfaces](./interfaces.md) và [OpenAPI](../../contracts/http/product/v1/openapi.yaml) | HTTP, gRPC và event semantic; OpenAPI HTTP v1 đang ở trạng thái proposed |
+| [Interfaces](./interfaces.md), [OpenAPI](../../contracts/http/product/v1/openapi.yaml) và [AsyncAPI](../../contracts/events/product/v1/asyncapi.yaml) | HTTP, gRPC và event semantic; contract HTTP/Kafka v1 đang ở trạng thái proposed |
 | [Workflows](./workflows.md) | Luồng triển khai hiện hành |
 | [Data](./data.md) | Data lifecycle, outbox và integrity |
 | [Operations](./operations.md) | Vận hành, SLO và runbook |
 | [Development](./development.md) | Hướng dẫn implementation/test |
-| [Decisions](./decisions/README.md) | ADR lưu lịch sử quyết định; ADR-009 là boundary hiện hành |
+| [Decisions](./decisions/README.md) | ADR lưu lịch sử quyết định; ADR-009 là boundary, ADR-011/012 là worker và outbox key hiện hành |
 
-Khi có xung đột, ưu tiên ADR-009 về service boundary, rồi Schema/DDL, rồi contract
-machine-readable khi đã được tạo. Mọi thay đổi breaking phải version hóa contract và
-rollout song song trước khi gỡ implementation cũ.
 
 ## Trạng thái implementation
 
 Thiết kế này chưa phải migration hay implementation. Cần tạo migration Flyway additive,
-AsyncAPI và contract gRPC tương ứng; cập nhật Cart, Checkout, Promotion, Search
+contract gRPC tương ứng; cập nhật Cart, Checkout, Promotion, Search
 và Inventory; chạy reindex; sau đó mới gỡ hạ tầng cũ.

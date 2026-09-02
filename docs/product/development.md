@@ -25,7 +25,9 @@ gRPC hiện nằm tại
 [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../contracts/grpc/ecommerce/product/v1/product_service.proto).
 Trước implementation phải tạo contract tương thích cho base/selling price, catalog
 saleability và `catalog_revision`; không thêm lại field stock đã reserved. HTTP và event
-cần OpenAPI/AsyncAPI/JSON Schema cùng breaking-change check trong CI.
+cần OpenAPI/AsyncAPI/JSON Schema cùng breaking-change check trong CI. AsyncAPI Product
+dùng CloudEvents structured JSON; payload outbox phải là CloudEvent hoàn chỉnh vì Debezium
+EventRouter chỉ route/key/header, không tự dựng business envelope.
 
 ## Test bắt buộc
 
@@ -33,7 +35,7 @@ cần OpenAPI/AsyncAPI/JSON Schema cùng breaking-change check trong CI.
 |---|---|
 | Unit | Công thức markdown, clamp giá, state machine admin-only |
 | Integration DB | Constraint, Product → SKU lock order, hard delete/tombstone, catalog revision |
-| Kafka | Outbox/CDC, event replay, `source_revision` cũ/trùng, consumer idempotency |
+| Kafka | Outbox/CDC CloudEvents, catalog/category revision guard, event replay, `source_revision` cũ/trùng, consumer idempotency, retry/DLQ và replay snapshot từ Promotion |
 | Contract | gRPC, Product event snapshot/revision, Promotion markdown snapshot |
 | End-to-end | Cart đọc catalog; Checkout reserve Inventory; Search ghép catalog với stock |
 
@@ -41,8 +43,9 @@ cần OpenAPI/AsyncAPI/JSON Schema cùng breaking-change check trong CI.
 ## Debugging
 
 Kiểm tra `product_outbox_events` để xác nhận business change và event cùng transaction;
-kiểm tra PostgreSQL lock/transaction khi có contention; kiểm tra Kafka consumer lag/DLQ;
-và kiểm tra Debezium connector cùng replication slot khi event không tới Search/Promotion.
+kiểm tra PostgreSQL lock/transaction khi có contention; kiểm tra Kafka consumer lag/DLQ
+và phối hợp Promotion replay snapshot mới nhất khi giá stale; kiểm tra Debezium connector
+cùng replication slot khi event không tới Search/Promotion.
 
 Không xóa outbox thủ công, không drop replication slot và không thay đổi offset Kafka
 trên môi trường dùng chung nếu chưa có runbook/approval vận hành.
@@ -52,5 +55,6 @@ trên môi trường dùng chung nếu chưa có runbook/approval vận hành.
 - Build, lint và test pass theo CI.
 - Schema migration, OpenAPI/AsyncAPI/proto được cập nhật khi interface thay đổi.
 - `catalog_revision` và `source_revision` được test khi logic chạm event/projection.
+- `category_revision`, tombstone revision và `CATALOG_REINDEX_REQUESTED` được test khi logic chạm category tree.
 - Compatibility và rollout/rollback được review.
 - Tài liệu hiện hành và ADR (khi có quyết định khó đảo ngược) được cập nhật.

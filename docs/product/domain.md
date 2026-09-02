@@ -75,7 +75,7 @@ stateDiagram-v2
 
 | Transition | Actor | Guard | Kết quả |
 |---|---|---|---|
-| `— -> DRAFT` | Admin | Category/attribute hợp lệ, có ít nhất một SKU hợp lệ | Tạo Product, revision `1`, outbox `PRODUCT_CREATED`. |
+| `— -> DRAFT` | Admin | Category/attribute hợp lệ, có ít nhất một SKU hợp lệ | Tạo Product, revision `1`, outbox `sku-upserted` cho từng SKU. |
 | `DRAFT -> ACTIVE` | Admin | Có ít nhất một SKU `ACTIVE`. | Tăng `catalog_revision`, phát status snapshot. |
 | `ACTIVE -> HIDDEN` | Admin | Product tồn tại. | Tăng `catalog_revision`, phát status snapshot. |
 | `HIDDEN -> ACTIVE` | Admin | Product tồn tại. | Tăng `catalog_revision`, phát status snapshot. |

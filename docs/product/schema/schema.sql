@@ -6,6 +6,7 @@ CREATE TABLE categories (
     parent_id UUID NULL REFERENCES categories(category_id) ON DELETE RESTRICT,
     name VARCHAR(160) NOT NULL,
     slug VARCHAR(160) NOT NULL UNIQUE,
+    category_revision BIGINT NOT NULL DEFAULT 1 CHECK (category_revision > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -110,8 +111,6 @@ CREATE TABLE product_markdown_projection (
          AND discount_bps IS NULL AND max_discount_vnd IS NULL)
     )
 );
-CREATE INDEX idx_product_markdown_projection_state_end ON product_markdown_projection(state, ends_at);
-
 CREATE TABLE product_outbox_events (
     event_id UUID PRIMARY KEY,
     event_type VARCHAR(100) NOT NULL,

@@ -58,7 +58,7 @@ paths:
             schema: { $ref: '#/components/schemas/CreateProductRequest' }
       responses:
         '201':
-          description: Product DRAFT đã được tạo và PRODUCT_CREATED đã nằm trong outbox transaction.
+          description: Product DRAFT đã được tạo và SKU snapshot `sku-upserted` đã nằm trong outbox transaction.
           headers:
             Location: { $ref: '#/components/headers/ProductLocation' }
             ETag: { $ref: '#/components/headers/ProductETag' }
@@ -414,7 +414,9 @@ paths:
       tags: [Categories]
       operationId: replaceCategory
       summary: Thay toàn bộ category
-      description: Parent mới không được tạo cycle; moving category không tự thay đổi Product.
+      description: >-
+        Parent mới không được tạo cycle; moving category không tự thay đổi Product,
+        nhưng ghi CATALOG_REINDEX_REQUESTED để Search rebuild path dẫn xuất.
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/CategoryId'
@@ -477,7 +479,8 @@ paths:
       summary: Tạo hoặc thay mapping category–attribute
       description: >-
         PUT idempotent ở cấp resource mapping. Implementation phải từ chối thay
-        đổi mapping làm Product hiện hữu trong category không còn hợp lệ.
+        đổi mapping làm Product hiện hữu trong category không còn hợp lệ. Mutation
+        thành công tăng category_revision và phát category snapshot.
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/CategoryId'
@@ -735,6 +738,30 @@ paths:
         '404': { $ref: '#/components/responses/ProductNotFound' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
+  /internal/v1/categories/export:
+    get:
+      tags: [Internal reindex]
+      operationId: exportCategoriesForReindex
+      summary: Export keyset category tree cho Search full reindex
+      description: >-
+        Chỉ Search Service gọi qua mTLS. Mỗi item có path và is_leaf dẫn xuất tại
+        thời điểm đọc; Search phải dùng export này trước Product export khi xử lý
+        CATALOG_REINDEX_REQUESTED.
+      security: [{ searchServiceMtls: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ExportCursor'
+        - $ref: '#/components/parameters/ExportLimit'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Một trang category snapshot, không chứa Product hay stock.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryExportPage' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
 components:
   securitySchemes:
     gatewayIdentity:
@@ -829,7 +856,7 @@ components:
       name: cursor
       in: query
       required: false
-      description: Opaque, signed keyset cursor chứa last product ID và upper bound; TTL do service cấu hình.
+      description: Opaque, signed keyset cursor chứa last ID và upper bound; TTL do service cấu hình.
       schema: { type: string, minLength: 1, maxLength: 1024 }
     ExportLimit:
       name: limit
@@ -1146,7 +1173,7 @@ components:
     Category:
       type: object
       additionalProperties: false
-      required: [category_id, name, slug, attributes, created_at, updated_at]
+      required: [category_id, name, slug, category_revision, attributes, created_at, updated_at]
       properties:
         category_id: { $ref: '#/components/schemas/Uuid' }
         parent_id:
@@ -1155,6 +1182,7 @@ components:
             - type: 'null'
         name: { type: string, minLength: 1, maxLength: 160 }
         slug: { type: string, minLength: 1, maxLength: 160 }
+        category_revision: { type: integer, format: int64, minimum: 1, readOnly: true }
         attributes:
           type: array
           maxItems: 100
@@ -1294,6 +1322,47 @@ components:
           type: array
           maxItems: 500
           items: { $ref: '#/components/schemas/Product' }
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Missing khi đã export tới upper bound.
+    CategoryExport:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, category_revision, path, is_leaf, updated_at]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        parent_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name: { type: string, maxLength: 160 }
+        slug: { type: string, maxLength: 160 }
+        category_revision: { type: integer, format: int64, minimum: 1 }
+        path:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [category_id, name, slug]
+            properties:
+              category_id: { $ref: '#/components/schemas/Uuid' }
+              name: { type: string, maxLength: 160 }
+              slug: { type: string, maxLength: 160 }
+        is_leaf: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    CategoryExportPage:
+      type: object
+      additionalProperties: false
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CategoryExport' }
         next_cursor:
           type: string
           minLength: 1

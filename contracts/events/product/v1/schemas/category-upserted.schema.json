@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/product/v1/schemas/category-upserted.schema.json",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    { "type": "object", "required": ["type", "source", "subject", "sequence", "data"], "properties": {
+      "type": { "const": "com.ecommerce.catalog.category-upserted.v1" }, "source": { "const": "/services/product" },
+      "subject": { "type": "string", "pattern": "^categories/[0-9a-fA-F-]{36}$" }, "sequence": { "type": "integer", "minimum": 1 },
+      "data": { "type": "object", "additionalProperties": false, "required": ["category", "change_kind"], "properties": {
+        "category": { "$ref": "catalog-common.schema.json#/$defs/category" }, "change_kind": { "type": "string", "enum": ["CATEGORY_CREATED", "CATEGORY_UPDATED", "CATEGORY_ATTRIBUTE_CHANGED"] }
+      }}
+    }}
+  ]
+}

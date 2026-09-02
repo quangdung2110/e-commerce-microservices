@@ -5,9 +5,18 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-02
 
+- Thêm Product Catalog Events v1: CloudEvents/AsyncAPI cho SKU/category snapshots,
+  tombstone, markdown state snapshot và category-tree reindex control.
 - Thêm Product HTTP API v1 ở trạng thái proposed: admin quản lý Product/SKU/media,
   category/attribute và internal mTLS export/snapshot cho Search. Contract không chứa
   stock field và dùng ETag catalog revision cho Product aggregate mutation.
+
+## 2026-08-28
+
+- Thêm User Event v1: CloudEvents/JSON Schema cho `USER_PROFILE_UPDATED` và
+  `USER_PREFERENCES_UPDATED` trên `t.user.events`.
+- Mở rộng Auth Event v1: `USER_DELETED` được Auth phát trực tiếp cho User,
+  Notification, Review và Chat; User không còn republish `ACCOUNT_DELETED`.
 
 ## 2026-08-27
 
