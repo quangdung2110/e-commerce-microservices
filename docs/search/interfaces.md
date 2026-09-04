@@ -137,12 +137,12 @@ consumer đã subscribe. Chi tiết ở [Operations §2](./operations.md#2-healt
 
 ## 4. Events tiêu thụ
 
-Bốn topic, một consumer group chính `search-indexer`. Group tạm
+Năm topic, một consumer group chính `search-indexer`. Group tạm
 `search-reindex-{run_id}` chỉ tồn tại trong pha catch-up của một lần reindex.
 
 Quy tắc chung cho mọi topic:
 
-- Event có `event_type` ngoài allowlist thì ignore, ACK và ghi metric
+- Event có `type` ngoài allowlist thì ignore, ACK và ghi metric
   `search_event_ignored_total{topic,event_type}`. Search chia sẻ topic với consumer
   khác nên đây là hành vi bình thường, không phải lỗi.
 - Field lạ trong payload được bỏ qua ở tầng deserialize; field bắt buộc thiếu là
@@ -155,36 +155,41 @@ Quy tắc chung cho mọi topic:
 
 ### 4.1 `t.product.events` — catalog
 
-Producer: Product, qua outbox và Debezium, at-least-once. Kafka key `product_id`,
-mọi event mang snapshot đầy đủ và `catalog_revision`.
+Producer: Product, qua outbox và Debezium, at-least-once. Contract đích là
+CloudEvents 1.0 trong `contracts/events/product/v1`; Kafka key `product_id`,
+`id` là event id, `sequence = catalog_revision`, snapshot nằm trong
+`data.product` và `data.sku`.
 
 | Event | Hành động của Search | Ghi chú |
 |---|---|---|
-| `PRODUCT_CREATED` | Upsert toàn bộ SKU document của product | Enrichment category; `scripted_upsert` |
-| `PRODUCT_UPDATED` | Ghi lại field product-level cho mọi SKU của product | Không chạm field tồn kho/rating |
-| `PRODUCT_STATUS_CHANGED` | Ghi `product_status` cho mọi SKU của product | Chỉ admin đổi trạng thái |
-| `SKU_CREATED` | Upsert document của SKU mới | — |
-| `SKU_UPDATED` | Ghi field SKU-level, gồm `base_price_vnd` và `selling_price_vnd` | — |
-| `PRODUCT_DELETED` | Tombstone mọi SKU của product | Không tạo document mới |
-| `SKU_DELETED` | Tombstone đúng một SKU | Không tạo document mới |
+| `com.ecommerce.catalog.sku-upserted.v1` | Upsert đúng một SKU snapshot | `data.product` + `data.sku`; không chạm stock/rating |
+| `com.ecommerce.catalog.sku-deleted.v1` | Tombstone đúng một SKU | Không tạo document mới |
+| `com.ecommerce.catalog.product-deleted.v1` | Tombstone toàn bộ `data.sku_ids` | Không tạo document mới |
 
 Idempotency và ordering: guard `catalog_revision` (xem [Data §5](./data.md#5-ordering-guard)).
 Duplicate và event cũ bị bỏ qua trong script, không cần dedupe store.
 
 ### 4.2 `t.category.events` — danh mục
 
-Producer: Product. Key `category_id`. `CATEGORY_CREATED` và `CATEGORY_UPDATED` cập
-nhật document danh mục rồi kích hoạt recompute cây; `CATEGORY_DELETED` tombstone
-node. Product không lưu `path`, `level` và `is_leaf`, nên Search tự dẫn xuất chúng
-([ADR-010](./decisions/ADR-010-derived-category-tree.md)). Khi `path` hoặc tên đổi,
-Search đồng bộ `category_name`/`category_path` sang các SKU document liên quan
-bằng `_update_by_query` có throttle.
+Producer: Product. Key `category_id`; contract đích là CloudEvents Category v1 với
+`sequence = category_revision`. `category-upserted` mang `path` và `is_leaf` đã
+được Product dẫn xuất; Search materialize `ancestor_ids`, `ancestor_slugs`, level
+và node category. `category-deleted` tombstone node. Search không `_update_by_query`
+theo path và không tự dựng lại tree ([ADR-013](./decisions/ADR-013-product-category-snapshots.md)).
 
-### 4.3 `t.inventory.events` — tồn kho
+### 4.3 `t.catalog.control.events` — category reindex control
 
-Producer: Inventory. Key `sku_id`. Search chỉ xử lý `INVENTORY_STOCK_CHANGED` và
-chỉ đọc `product_id`, `sku_id`, `available_quantity` cùng `timestamp` của wrapper;
-`change_type` chỉ dùng cho log. `INVENTORY_STOCK_MUTATION`,
+Product phát `com.ecommerce.catalog.reindex-requested.v1` khi rename, đổi slug hoặc
+đổi parent category. Search coalesce các request, export category trước Product rồi
+chạy full reindex/catch-up; event control không cập nhật trực tiếp SKU document.
+
+### 4.4 `t.inventory.events` — tồn kho
+
+Target contract của Inventory phải có `product_id`, `sku_id`, `available_quantity`,
+`stock_revision` đơn điệu per-SKU và `observed_at`; key là `sku_id`. Cho tới khi
+Inventory được refactor, adapter legacy chỉ xử lý `INVENTORY_STOCK_CHANGED`, đọc
+`product_id`, `sku_id`, `available_quantity` và timestamp wrapper để telemetry,
+nhưng không đạt ordering guarantee của vNext. `INVENTORY_STOCK_MUTATION`,
 `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` bị ignore và ACK.
 
 Event này **không được tạo document**. Document chưa tồn tại hoặc đang tombstone
@@ -192,7 +197,7 @@ thì bỏ qua và ghi metric — đó là trạng thái bình thường khi SKU 
 chưa kịp được index ([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
 Consumer phải kiểm tra cặp `product_id` + `sku_id` để chặn drift.
 
-### 4.4 `t.review.events` — rating
+### 4.5 `t.review.events` — rating
 
 Producer: Review. Key `product_id`. Search chỉ xử lý `REVIEW_METRICS_UPDATED` và
 chỉ đọc `product_id`, điểm trung bình, tổng số review cùng timestamp. Áp dụng bằng
@@ -201,10 +206,11 @@ chỉ đọc `product_id`, điểm trung bình, tổng số review cùng timesta
 
 ## 5. Contract nội bộ Search gọi ra
 
-Full reindex đọc `GET /internal/products/export` của Product để backfill các field
-Product sở hữu. Search phải chịu được phân trang, giới hạn tốc độ và lỗi tạm thời
-của endpoint này; reindex thất bại không được ảnh hưởng tới traffic đọc đang chạy.
-Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
+Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
+`GET /internal/v1/products/export` của Product để backfill catalog. Full rebuild
+chỉ hoàn tất khi Inventory đã có stock snapshot/export tương thích; trước đó Search
+phải báo rõ stock là stale/partial. Không có lời gọi đồng bộ nào khác ra ngoài trong
+hot path.
 
 ## 6. Compatibility
 

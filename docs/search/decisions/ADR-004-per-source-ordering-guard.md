@@ -1,16 +1,17 @@
 ---
 doc_id: search-adr-004
 service: search
-status: accepted
+status: superseded
 date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+superseded_by: ADR-015-upstream-revision-guards
 evidence:
   - docs/search/schema/scripts
 ---
 
-# ADR-004 — Guard ordering theo từng nguồn dữ liệu
+# ADR-004 — Guard ordering theo từng nguồn dữ liệu (Superseded)
 
 ## Context
 

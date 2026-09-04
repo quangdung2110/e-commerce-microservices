@@ -27,6 +27,8 @@ verified_against_commit: null
 - Contract adoption `not_started`: chưa có OpenAPI cho HTTP API và chưa có AsyncAPI
   cho các topic mà Search tiêu thụ. Đây là gap lớn nhất của service.
 - Elasticsearch là store duy nhất. Không có PostgreSQL, không có Redis.
+- Ba file mapping trong `schema/` là **target vNext** cho service viết lại; chúng
+  không mô tả index mà implementation legacy đang phục vụ.
 
 ## 2. Mục tiêu
 
@@ -63,9 +65,10 @@ là projection.
 | `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 
-Search sở hữu duy nhất các giá trị dẫn xuất phục vụ query: `is_in_stock`,
-`has_promotion`, `category_path`/`level`/`is_leaf`, `weight` của suggestion và
-`product_count` của category. Không service nào được ghi trực tiếp vào
+Search sở hữu các giá trị dẫn xuất phục vụ query: `is_in_stock`, `has_promotion`,
+token filter, `weight` của suggestion và `product_count` của category. Product
+công bố snapshot cấu trúc category; Search chỉ materialize ancestor/path/level
+từ snapshot đó, không là owner của thuật toán dựng cây. Không service nào được ghi trực tiếp vào
 Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội bộ của Search.
 
 ## 5. Capabilities
@@ -86,6 +89,7 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
 | Inbound | `inventory-service` | Kafka | `available_quantity` theo SKU | Required | Cần tạo: AsyncAPI inventory |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | Cần tạo: AsyncAPI review |
+| Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
 | Outbound | `product-service` | HTTP nội bộ | Export catalog cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
 | Outbound | Elasticsearch | HTTP | Store duy nhất | Required | [`schema/`](./schema) |
 
@@ -142,6 +146,12 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 - **Chưa có SLO số.** Ngưỡng latency, freshness và alert threshold còn là `TBD`
   cho tới khi có số liệu production.
 - **Chưa có contract test** giữa Search và ba producer.
+- **Inventory chưa có target contract.** Schema vNext yêu cầu `stock_revision`
+  đơn điệu theo SKU và snapshot/export stock để bootstrap hoặc phục hồi; event
+  legacy chỉ có timestamp nên chưa đáp ứng yêu cầu này.
+- **Media snapshot chưa chốt.** Product v1 hiện chỉ mô tả media storage key, chưa
+  chốt rule chọn thumbnail giữa Product media và SKU media. `thumbnail_storage_key`
+  trong schema vNext là field optional, chưa được coi là contract implemented.
 - **Implementation chưa theo ADR-012.** Code hiện dùng `collapse(product_id)` và
   cursor offset, trong khi thiết kế đã chốt SKU hit trực tiếp với `search_after`.
   Khi viết lại service, implementation phải bỏ `collapse`/`inner_hits` và áp dụng

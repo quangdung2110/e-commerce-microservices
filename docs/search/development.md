@@ -94,10 +94,10 @@ cùng lệnh này thay vì tạo quy trình riêng cho máy cá nhân.
 
 | Loại | Phạm vi | Dependency |
 |---|---|---|
-| Unit | Mã hóa/giải mã cursor, transform payload, tính field dẫn xuất, dispatch theo `event_type` | Không |
-| Integration | Consumer đến index đến API, guard ordering, tombstone, `_update_by_query` | Testcontainers Elasticsearch và Kafka |
+| Unit | Mã hóa/giải mã cursor, transform Product CloudEvent v1, chuẩn hóa attribute token, dispatch theo `type` | Không |
+| Integration | Consumer đến index đến API, guard revision, tombstone, category control reindex | Testcontainers Elasticsearch và Kafka |
 | Job | Reindex ba pha, rebuild suggestion, recompute count, purge | Testcontainers |
-| Contract | Payload event của Product, Inventory, Review khớp kỳ vọng của Search | Fixture chung với producer |
+| Contract | Product CloudEvents v1 và Inventory stock target contract khớp kỳ vọng Search | Fixture chung với producer |
 
 Test tích hợp không được mock Elasticsearch client: phần lớn rủi ro của service nằm
 ở mapping, script và ngữ nghĩa truy vấn, mà mock không phát hiện được.
@@ -135,9 +135,9 @@ production. Index không chứa PII nên fixture cũng không được đưa PII
 - Khi kết quả sai, so sánh trực tiếp bằng cách chạy chính truy vấn đó lên
   Elasticsearch local rồi thu hẹp dần filter.
 - Khi document sai, đọc `_source` của SKU đó và kiểm tra `catalog_revision`,
-  `stock_version`, `review_version` và `last_*_event_id` để biết nguồn nào ghi sau
-  cùng.
-- Khi consumer im lặng, kiểm tra `event_type` có nằm trong allowlist không trước
+  `stock_revision`, `review_version`, `*_indexed_at` và `last_*_event_id` để biết
+  nguồn nào ghi sau cùng.
+- Khi consumer im lặng, kiểm tra CloudEvents `type` có nằm trong allowlist không trước
   khi nghi ngờ lỗi kết nối; ignore và ACK là hành vi thiết kế.
 - Đọc dữ liệu qua read alias, ghi thử qua write alias; đừng thao tác trực tiếp lên
   tên index versioned ngay cả ở local, để thói quen không rò rỉ lên môi trường
@@ -150,7 +150,7 @@ production. Index không chứa PII nên fixture cũng không được đưa PII
 | Service không readiness | Elasticsearch chưa khỏe hoặc consumer chưa subscribe | `curl` cluster health, xem log khởi động |
 | Mọi lệnh ghi lỗi mapping | Index chưa được tạo từ template, `dynamic: strict` | `GET <index>/_mapping` |
 | Search luôn rỗng | Thiếu filter mặc định trong dữ liệu mẫu: sản phẩm chưa `ACTIVE` | Đọc `_source` một document |
-| Event bị bỏ qua im lặng | `event_type` ngoài allowlist hoặc guard chặn | Metric ignored, đọc guard field |
+| Event bị bỏ qua im lặng | CloudEvents `type` ngoài allowlist hoặc guard chặn | Metric ignored, đọc guard field |
 | Kết quả phân trang lặp | Sort thiếu tie-break `sku_id asc` | Xem DSL đã build |
 | Kết quả cũ | Chưa qua `refresh_interval` | Chờ, hoặc gọi refresh thủ công trong test |
 

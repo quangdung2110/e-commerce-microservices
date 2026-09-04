@@ -5,30 +5,18 @@
     "number_of_shards": 1,
     "number_of_replicas": 1,
     "refresh_interval": "5s",
-    "analysis": {
-      "analyzer": {
-        "vietnamese_analyzer": {
-          "type": "custom",
-          "tokenizer": "icu_tokenizer",
-          "filter": ["icu_folding", "lowercase"]
-        }
-      }
-    }
+    "analysis": { "analyzer": { "vietnamese_analyzer": { "type": "custom", "tokenizer": "icu_tokenizer", "filter": ["icu_folding", "lowercase"] } } }
   },
   "mappings": {
     "dynamic": "strict",
     "properties": {
       "category_id": { "type": "keyword" },
-      "name": {
-        "type": "text",
-        "analyzer": "vietnamese_analyzer",
-        "fields": { "keyword": { "type": "keyword" } }
-      },
+      "name": { "type": "text", "analyzer": "vietnamese_analyzer", "fields": { "keyword": { "type": "keyword" } } },
       "slug": { "type": "keyword" },
       "parent_id": { "type": "keyword" },
-
-      "level": { "type": "integer" },
-      "path": { "type": "keyword" },
+      "ancestor_ids": { "type": "keyword" },
+      "ancestor_slugs": { "type": "keyword", "index": false },
+      "level": { "type": "short" },
       "is_leaf": { "type": "boolean" },
 
       "product_count": { "type": "long" },
@@ -36,13 +24,10 @@
 
       "is_deleted": { "type": "boolean" },
       "deleted_at": { "type": "date" },
-
-      "created_at": { "type": "date" },
       "updated_at": { "type": "date" },
-      "indexed_at": { "type": "date" },
+      "category_indexed_at": { "type": "date" },
 
-      "category_version": { "type": "date" },
-      "tree_version": { "type": "long" },
+      "category_revision": { "type": "long" },
       "last_event_id": { "type": "keyword" }
     }
   }

@@ -1,18 +1,19 @@
 ---
 doc_id: search-adr-009
 service: search
-status: accepted
+status: superseded
 date: 2026-09-02
 decision_owners:
   - Search Service team
   - Product Service team
 supersedes: null
+superseded_by: ADR-014-inventory-stock-snapshot-contract
 evidence:
   - docs/product/README.md
   - docs/inventory/inventory_events.md
 ---
 
-# ADR-009 — `is_in_stock` đến từ Inventory, không suy ra từ trạng thái catalog
+# ADR-009 — `is_in_stock` đến từ Inventory, không suy ra từ trạng thái catalog (Superseded)
 
 ## Context
 

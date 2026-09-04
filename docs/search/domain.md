@@ -26,7 +26,7 @@ verified_against_commit: null
 | Catalog availability | `product_status = ACTIVE` và `sku_status = ACTIVE` | Stock availability |
 | Stock availability | `available_quantity > 0` do Inventory công bố | Tồn kho khả dụng để chốt đơn |
 | Sellable projection | Catalog availability và stock availability cùng đúng | Kết quả reserve của Inventory |
-| Guard field | Version của một nguồn dữ liệu trên document | `_version` của Elasticsearch |
+| Guard field | Revision đơn điệu của một nguồn dữ liệu trên document | `_version` Elasticsearch hoặc timestamp publish |
 | Tombstone | Document đã bị xóa ở upstream nhưng còn giữ lại để chặn zombie update | Soft delete nghiệp vụ |
 | Purge | Xóa vật lý document tombstone sau cửa sổ bảo vệ | Tombstone |
 | Read alias / write alias | Alias phục vụ đọc / phục vụ ghi trên cùng index versioned | Tên index vật lý |
@@ -43,12 +43,12 @@ Search có ba document model, không có aggregate theo nghĩa transaction:
   (giá, trạng thái, thuộc tính biến thể, tồn kho). Identity là `sku_id` do Product
   cấp. Lifecycle bắt đầu bằng event catalog, kết thúc bằng purge sau tombstone.
 - **Category document** (index `categories`): node của cây danh mục kèm số lượng
-  sản phẩm hiển thị. Identity là `category_id` do Product cấp. `path`, `level` và
-  `is_leaf` là giá trị Search tự dẫn xuất vì Product không lưu chúng
-  ([ADR-010](./decisions/ADR-010-derived-category-tree.md)).
+  sản phẩm hiển thị. Identity là `category_id` do Product cấp. `ancestor_ids`,
+  `level` và `is_leaf` được Search materialize từ snapshot Category của Product,
+  không tự suy ra từ quan hệ cục bộ ([ADR-013](./decisions/ADR-013-product-category-snapshots.md)).
 - **Suggestion document** (index `search_suggestions`): một cụm từ gợi ý kèm
-  `weight`. Identity là `suggestion_id` do Search sinh. Lifecycle bằng đúng một
-  chu kỳ rebuild.
+  `weight`. Identity là hash deterministic của `type`, `scope`, `language` và
+  `text_normalized`, do Search sinh. Lifecycle bằng đúng một chu kỳ rebuild.
 
 Product, SKU, category, tồn kho và rating đều là object của service khác; Search
 chỉ tham chiếu chúng qua identifier và snapshot.
@@ -107,9 +107,9 @@ Test bắt buộc cho từng invariant được liệt kê ở [Workflows](./wor
 
 | State | Transition | Trigger | Guard / side effect |
 |---|---|---|---|
-| `ABSENT` | → `INDEXED` | `PRODUCT_CREATED`, `SKU_CREATED`, hoặc backfill reindex | Chỉ event catalog mới được tạo document |
+| `ABSENT` | → `INDEXED` | `sku-upserted` hoặc backfill reindex | Chỉ snapshot catalog Product mới được tạo document |
 | `INDEXED` | → `INDEXED` | Mọi event catalog/stock/review mới hơn | Guard theo nguồn; field ngoài nguồn giữ nguyên |
-| `INDEXED` | → `TOMBSTONED` | `PRODUCT_DELETED`, `SKU_DELETED` | Đặt `is_deleted = true`, `deleted_at`, loại khỏi mọi query |
+| `INDEXED` | → `TOMBSTONED` | `product-deleted`, `sku-deleted` | Đặt `is_deleted = true`, `deleted_at`, loại khỏi mọi query |
 | `TOMBSTONED` | → `TOMBSTONED` | Event catalog/stock/review đến trễ | Bỏ qua, ghi metric zombie |
 | `TOMBSTONED` | → `PURGED` | Tombstone purger sau cửa sổ bảo vệ | Xóa vật lý document |
 | `PURGED` | → `INDEXED` | Chỉ khi Product tạo lại `sku_id` đó | Không phải khôi phục; là document mới |
@@ -162,12 +162,12 @@ phải lỗi.
 - **Hết hàng.** Inventory phát `available_quantity = 0`; document còn được index
   và vẫn tìm thấy khi buyer đặt `in_stock=false`, nhưng biến mất khỏi kết quả mặc
   định. Product không đổi trạng thái vì hết hàng.
-- **Event trễ.** Một `SKU_UPDATED` với `catalog_revision = 41` tới sau khi document
+- **Event trễ.** Một `sku-upserted` với `catalog_revision = 41` tới sau khi document
   đã ở revision `42` thì bị bỏ qua hoàn toàn, kể cả các field mà revision 42 không
   chạm tới.
-- **Xóa rồi có event trễ.** Sau `SKU_DELETED`, một `INVENTORY_STOCK_CHANGED` của
+- **Xóa rồi có event trễ.** Sau `sku-deleted`, một `INVENTORY_STOCK_CHANGED` của
   chính SKU đó tới muộn: document đang tombstone nên event bị bỏ qua và ghi metric,
   không làm `is_deleted` trở lại `false`.
-- **Đổi tên danh mục.** `CATEGORY_UPDATED` đổi tên một node cha khiến `category_path`
-  của toàn bộ SKU thuộc nhánh đó phải đồng bộ; đây là lý do event category là
-  event diện rộng chứ không phải cập nhật một document.
+- **Đổi cây danh mục.** Product phát `catalog-reindex-requested` sau rename, đổi
+  slug hoặc move category. Search coalesce request rồi reindex category trước,
+  Product sau; Product không fan-out toàn subtree trong write transaction.

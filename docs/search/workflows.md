@@ -50,8 +50,8 @@ và Elasticsearch tham gia.
 2. Nếu có `cursor`: decode base64, kiểm tra khớp với bộ tham số hiện tại.
 3. Build query: `multi_match` với `fuzziness: AUTO` khi có `q`; filter bắt buộc
    (`is_deleted=false`, `product_status=ACTIVE`, `sku_status=ACTIVE`) cộng filter
-   của buyer; mỗi giá trị filter thuộc tính kiểm tra cả `searchable_attributes` và
-   `variant_attributes` với `minimum_should_match: 1`.
+   của buyer; filter attribute dùng `filter_tokens`, OR các value cùng attribute
+   code và AND giữa các code khác nhau.
 4. Thêm sort đã chọn kèm tie-break `sku_id asc`, `search_after` khi có cursor,
    và các aggregation facet với `cardinality` trên `product_id`. Không dùng
    `collapse` hoặc `inner_hits`.
@@ -163,16 +163,18 @@ tại; kiểm chứng số đếm khớp giữa hai API.
 
 **Trigger.** Event trên `t.product.events`; consumer group `search-indexer`.
 
-**Preconditions.** Event có `event_id`, `event_type`, `catalog_revision` và
-snapshot payload theo [Product interfaces](../product/interfaces.md).
+**Preconditions.** Event khớp Product CloudEvents v1: `id`, `type`, `time`,
+`sequence = catalog_revision`, `data.product` và `data.sku` theo
+[Product interfaces](../product/interfaces.md).
 
 **Happy path.**
-1. Poll batch; lọc `event_type` theo allowlist, ignore và ACK phần còn lại.
+1. Poll batch; lọc CloudEvents `type` theo allowlist, ignore và ACK phần còn lại.
 2. Validate field bắt buộc; thiếu thì ghi metric contract violation và bỏ qua.
-3. Enrichment: đọc danh mục theo `category_id` để lấy `category_name` và
-   `category_path`; miss thì bỏ trống hai field đó và vẫn index (`SEARCH-BR-008`).
-4. Transform: thuộc tính thành token `code:value`, phân giải `thumbnail_url` theo
-   media của product rồi tới media của SKU, tính `has_promotion`.
+3. Enrichment: đọc category projection theo `category_id` để materialize ancestor
+   IDs/slugs; miss thì bỏ trống field category dẫn xuất và vẫn index (`SEARCH-BR-008`).
+4. Transform: chuẩn hóa attribute thành token có type, tạo `filter_tokens`, tính
+   `has_promotion`. `thumbnail_storage_key` chỉ populate sau khi Product chốt
+   contract chọn thumbnail; trước đó field là optional.
 5. Sinh lệnh ghi cho từng SKU liên quan bằng
    [`catalog_patch.painless`](./schema/scripts/catalog_patch.painless) với
    `scripted_upsert`, hoặc
@@ -181,7 +183,7 @@ snapshot payload theo [Product interfaces](../product/interfaces.md).
 6. Gửi `_bulk` tới `products_write`, đọc kết quả từng item, rồi commit offset.
 
 **State/data changes.** Chỉ các field thuộc Product cộng `catalog_revision`,
-`indexed_at`, `last_catalog_event_id`. Field tồn kho và rating không bị chạm
+`catalog_indexed_at`, `last_catalog_event_id`. Field tồn kho và rating không bị chạm
 (`SEARCH-BR-009`).
 
 **Events emitted.** Không có.
@@ -215,83 +217,75 @@ còn lại vẫn phải được xử lý.
 
 ---
 
-## WF-SEARCH-006 — Chiếu danh mục và cây dẫn xuất
+## WF-SEARCH-006 — Chiếu snapshot danh mục Product
 
-**Mục tiêu.** Giữ index danh mục khớp Product và giữ giá trị dẫn xuất của cây nhất
-quán trên cả hai index.
+**Mục tiêu.** Giữ index category khớp snapshot cấu trúc Product mà không biến
+Search thành owner của cây danh mục.
 
-**Trigger.** Event trên `t.category.events`.
+**Trigger.** Category CloudEvents v1 trên `t.category.events`; control event trên
+`t.catalog.control.events` khi tree đổi.
 
 **Happy path.**
-1. Apply snapshot danh mục bằng
-   [`category_patch.painless`](./schema/scripts/category_patch.painless), guard
-   `category_version`; `CATEGORY_DELETED` thì tombstone node.
-2. Recompute `path`, `level`, `is_leaf` cho toàn bộ cây từ chính index `categories`
-   (quy mô hàng trăm node), ghi lại bằng
-   [`category_tree_patch.painless`](./schema/scripts/category_tree_patch.painless)
-   với `tree_version` tăng dần.
-3. Với mỗi danh mục có `name` hoặc `path` thay đổi, đồng bộ `category_name` và
-   `category_path` sang SKU document bằng `_update_by_query` trên `products_write`
-   với `conflicts=proceed` và throttle.
+1. Apply `category-upserted` bằng `sequence = category_revision`; transform path
+   Product gửi thành `ancestor_ids`, `ancestor_slugs`, `level` và `is_leaf`.
+2. `category-deleted` tombstone node.
+3. `catalog-reindex-requested` được coalesce theo root category/revision, sau đó
+   chạy reindex từ category export trước Product export. Không `_update_by_query`
+   theo path trong request worker.
 
-**State/data changes.** Document danh mục; các field dẫn xuất của cây; hai field
-denormalize trên SKU document.
+**State/data changes.** Category document; SKU documents chỉ nhận category data mới
+qua full reindex.
 
-**Failure paths.** Cây có chu trình hoặc node mồ côi → dừng bước recompute, giữ giá
-trị cũ, ghi alert. `_update_by_query` lỗi giữa chừng → chạy lại toàn bộ là an toàn
-vì thao tác ghi giá trị tuyệt đối.
+**Failure paths.** Snapshot path sai/có cycle → reject event, ghi contract-drift
+metric và giữ projection cũ. Reindex lỗi trước alias swap → read/write alias cũ giữ nguyên.
 
-**Idempotency.** Guard `category_version` cho snapshot; `tree_version` cho kết quả
-recompute; đồng bộ denormalize là ghi đè giá trị hiện hành nên lặp lại vô hại.
+**Idempotency.** Guard `category_revision`; control event coalesce theo root category
+và revision nên lặp lại vô hại.
 
-**Concurrency.** Recompute cây phải chạy tuần tự trong một consumer; nhiều event
-danh mục trong cùng batch chỉ cần một lần recompute.
+**Concurrency.** Category event cùng key có ordering; reindex vẫn singleton.
 
-**Recovery.** Recompute cây có thể chạy thủ công mà không cần event; đây là công cụ
-sửa lệch đầu tiên trước khi nghĩ tới reindex.
+**Recovery.** Export/reindex là công cụ sửa lệch category duy nhất.
 
-**Metrics.** Số node cập nhật, thời gian recompute, số document SKU đồng bộ, số
-node mồ côi.
+**Metrics.** Số node cập nhật, category revision, số control event coalesce, thời
+gian và kết quả reindex.
 
-**Test scenarios.** Tạo danh mục lá; đổi tên node cha rồi kiểm tra `category_path`
-của SKU cháu; di chuyển node; xóa node; event danh mục cũ; cây có chu trình.
+**Test scenarios.** Category snapshot path hợp lệ; event revision cũ; path có cycle;
+rename/move phát control event; reindex category trước Product và alias không đổi khi lỗi.
 
 ---
 
 ## WF-SEARCH-007 — Chiếu tồn kho từ Inventory
 
-**Mục tiêu.** Giữ `available_quantity` và `is_in_stock` phản ánh tồn kho gần nhất
-mà Inventory công bố.
+**Mục tiêu.** Giữ `available_quantity` và `is_in_stock` phản ánh stock snapshot mới
+nhất mà Inventory công bố.
 
 **Trigger.** `INVENTORY_STOCK_CHANGED` trên `t.inventory.events`, key `sku_id`.
 
-**Happy path.** Lọc event type → kiểm tra cặp `product_id` + `sku_id` → apply
-[`stock_patch.painless`](./schema/scripts/stock_patch.painless) lên
-`products_write/_update/{sku_id}` không upsert → `is_in_stock` được tính lại trong
-script → commit offset.
+**Happy path.** Lọc event type → validate cặp `product_id` + `sku_id` và
+`stock_revision` → apply lên `products_write/_update/{sku_id}` không upsert →
+`is_in_stock` được tính lại → commit offset.
 
 **Failure paths.** `document_missing_exception` → metric
 `search_document_missing_total`, bỏ qua, ACK: SKU chưa được index hoặc vừa bị xóa
 là tình huống bình thường. Document tombstone → script bỏ qua. Lỗi tạm thời của
 Elasticsearch → không commit offset.
 
-**Idempotency và ordering.** Guard `stock_version` theo timestamp của event; key
-`sku_id` đảm bảo ordering trong cùng SKU. Event trễ không thể hạ số tồn kho về giá
-trị cũ.
+**Idempotency và ordering.** Guard `stock_revision` theo revision đơn điệu; key
+`sku_id` đảm bảo ordering trong cùng SKU. Timestamp không được dùng làm guard.
 
 **Concurrency.** Event tồn kho và event catalog của cùng SKU đến từ hai partition
 khác nhau và có thể ghi đồng thời; chúng không chạm cùng field và guard độc lập
 nên không có lost update.
 
-**Recovery.** Không thể replay ngoài retention của Kafka; nguồn phục hồi là chính
-Inventory. Nếu lệch kéo dài, vận hành phải xin Inventory phát lại snapshot hoặc
-chấp nhận `is_in_stock` sai cho tới event kế tiếp của SKU đó — đây là hạn chế đã
-biết và được ghi ở [ADR-009](./decisions/ADR-009-stock-projection-ownership.md).
+**Recovery.** Bootstrap và recovery dùng Inventory stock snapshot/export. Cho đến
+khi Inventory refactor cung cấp contract này, workflow không được đánh dấu
+implemented và chỉ chạy ở compatibility mode.
 
 **Metrics.** Độ trễ tồn kho, tỉ lệ `document_missing`, tỉ lệ event bị guard chặn.
 
-**Test scenarios.** Về 0 rồi có hàng lại; event trễ; event trùng; SKU chưa index;
-SKU đã tombstone; cặp `product_id`/`sku_id` không khớp.
+**Test scenarios.** Về 0 rồi có hàng lại; event revision cũ/trùng; SKU chưa index;
+SKU đã tombstone; cặp `product_id`/`sku_id` không khớp; bootstrap snapshot rồi
+replay event; hai event cùng timestamp nhưng revision khác nhau.
 
 ---
 

@@ -1,17 +1,18 @@
 ---
 doc_id: search-adr-010
 service: search
-status: accepted
+status: superseded
 date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+superseded_by: ADR-013-product-category-snapshots
 evidence:
   - docs/product/data.md
   - docs/search/schema/scripts/category_tree_patch.painless
 ---
 
-# ADR-010 — Search tự dẫn xuất `path`, `level` và `is_leaf` của cây danh mục
+# ADR-010 — Search tự dẫn xuất `path`, `level` và `is_leaf` của cây danh mục (Superseded)
 
 ## Context
 

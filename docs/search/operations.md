@@ -20,8 +20,8 @@ verified_against_commit: null
 | Availability của API đọc | Tỉ lệ response không phải 5xx | TBD |
 | Latency search | Phân vị của `http_server_requests_seconds` theo endpoint | TBD |
 | Latency suggest | Như trên, tách riêng vì ngân sách chặt hơn nhiều | TBD |
-| Freshness catalog | `indexed_at` trừ `timestamp` của event | TBD |
-| Freshness tồn kho | Như trên, đo riêng cho `t.inventory.events` | TBD |
+| Freshness catalog | `catalog_indexed_at` trừ CloudEvent `time` | TBD |
+| Freshness tồn kho | `stock_indexed_at` trừ `stock_observed_at` | TBD |
 | Consumer lag | Lag theo topic và partition | TBD |
 | Tỉ lệ lỗi indexing | `search_indexing_total{status="fail"}` chia tổng | TBD |
 
@@ -170,7 +170,7 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 |---|---|
 | Consumer lag | Phân biệt Kafka chậm, Elasticsearch chậm hay thao tác diện rộng chiếm băng thông |
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
-| Lệch projection | `document_missing` hoặc enrichment miss tăng; thứ tự thử: recompute cây, recompute count, rồi mới reindex |
+| Lệch projection | `document_missing` hoặc enrichment miss tăng; thử stock snapshot/export, recompute count, rồi mới reindex catalog |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
 | Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
 | Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |
