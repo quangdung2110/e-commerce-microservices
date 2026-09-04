@@ -162,7 +162,8 @@ Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json'
     $file = $_
     $display = Get-RelativeDisplayPath $file.FullName
     try {
-        $event = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 100
+        $rawEvent = Get-Content -LiteralPath $file.FullName -Raw
+        $event = $rawEvent | ConvertFrom-Json -Depth 100
         foreach ($field in $requiredCloudEventFields) {
             if ($null -eq $event.PSObject.Properties[$field]) {
                 Add-ContractError "CloudEvent example is missing '$field': $display"
@@ -180,6 +181,19 @@ Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json'
             $schemaPath = Join-Path $repoRoot ($event.dataschema -replace '^/', '')
             if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
                 Add-ContractError "CloudEvent example points at a missing dataschema '$($event.dataschema)': $display"
+            } else {
+                # Test-Json resolve $ref tương đối theo vị trí file schema. Một `$id
+                # tuyệt đối ở schema gốc đổi base sang URL không truy cập được, nên
+                # cmdlet trả "Cannot parse the JSON schema" với mọi input và mọi
+                # kết quả đều là false negative. Bỏ qua có cảnh báo thay vì báo sai;
+                # các schema đó được contract test phía service validate đầy đủ.
+                $schemaId = (Get-Content -LiteralPath $schemaPath -Raw |
+                    ConvertFrom-Json -Depth 100).PSObject.Properties['$id']
+                if ($schemaId -and $schemaId.Value -match '^https?://') {
+                    Add-ContractWarning ("Skipped JSON Schema validation of {0}: Test-Json cannot resolve a schema with an absolute `$id ({1})." -f $display, $schemaId.Value)
+                } elseif (-not (Test-Json -Json $rawEvent -SchemaFile $schemaPath -ErrorAction SilentlyContinue)) {
+                    Add-ContractError "CloudEvent example does not match $($event.dataschema): $display"
+                }
             }
         }
     } catch {
