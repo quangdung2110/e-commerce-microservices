@@ -71,7 +71,9 @@ Product tính `selling_price_vnd` khi base price hoặc markdown thay đổi.
 `thumbnail_storage_key` không là cột persist riêng. Khi dựng SKU snapshot, Product
 resolve từ `product_media`: chọn `IMAGE` của SKU có `sort_order` nhỏ nhất, fallback
 sang `IMAGE` Product-level có `sort_order` nhỏ nhất, còn lại là `null`. Vì rule này
-dựa trên ownership catalog, downstream không được tự derive từ `media[]`.
+dựa trên ownership catalog, downstream không được tự derive từ `media[]`. Cùng giá
+trị đó cũng đi kèm mọi response SKU của HTTP API và của export nội bộ, nên full
+reindex không lệch so với luồng event.
 
 ### 3.3 Markdown projection
 

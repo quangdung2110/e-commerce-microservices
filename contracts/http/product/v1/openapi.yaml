@@ -966,6 +966,7 @@ components:
         - status
         - variant_attributes
         - media
+        - thumbnail_storage_key
         - created_at
         - updated_at
       properties:
@@ -985,6 +986,20 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/Media' }
+        thumbnail_storage_key:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 1024
+            - type: 'null'
+          readOnly: true
+          x-data-classification: INTERNAL
+          description: >-
+            Thumbnail hiệu lực do Product resolve: IMAGE của chính SKU có sort_order
+            nhỏ nhất, fallback IMAGE cấp Product có sort_order nhỏ nhất, còn lại null.
+            Giá trị khớp sku.thumbnail_storage_key trong sku-upserted nên full reindex
+            từ export và luồng event cho ra cùng kết quả; consumer không tự derive từ
+            media[].
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     Product:

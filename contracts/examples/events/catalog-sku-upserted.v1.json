@@ -28,7 +28,23 @@
       "selling_price_vnd": 179000,
       "status": "ACTIVE",
       "variant_attributes": { "color": "black", "size": "M" },
-      "media": [],
+      "media": [
+        {
+          "media_id": "0198e0b5-97e4-7d66-8a2c-997d792ae826",
+          "media_type": "IMAGE",
+          "storage_key": "catalog/ao-thun-cotton/black-m-1.jpg",
+          "alt_text": "Áo thun cotton đen size M",
+          "sort_order": 0
+        },
+        {
+          "media_id": "0198e0b6-97e4-7d66-8a2c-997d792ae826",
+          "media_type": "IMAGE",
+          "storage_key": "catalog/ao-thun-cotton/gallery-1.jpg",
+          "alt_text": null,
+          "sort_order": 0
+        }
+      ],
+      "thumbnail_storage_key": "catalog/ao-thun-cotton/black-m-1.jpg",
       "updated_at": "2026-09-02T09:00:00Z"
     },
     "change_kind": "MARKDOWN_REPRICED"

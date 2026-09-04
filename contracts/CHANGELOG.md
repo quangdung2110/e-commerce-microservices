@@ -3,6 +3,22 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-04
+
+- Product Catalog Events v1: `sku.thumbnail_storage_key` trở thành field bắt buộc của
+  SKU snapshot. Product resolve IMAGE của SKU trước, fallback IMAGE cấp Product, còn
+  lại `null`; consumer không tự derive từ `media[]` (ADR-013).
+- Product HTTP API v1: schema `Sku` có thêm `thumbnail_storage_key` với cùng ngữ nghĩa,
+  nên full reindex từ `/internal/v1/products/export` và luồng event cho ra cùng giá trị.
+- Rollout: producer phải phát field trước khi consumer bật validate `required`. Consumer
+  đang validate strict theo schema mới sẽ từ chối event Product phát trước khi rollout.
+
+## 2026-09-03
+
+- Mở rộng tương thích Product gRPC v1: `Sku` có thêm `base_price` (Money) và
+  `catalog_revision`. `price` giữ nguyên nghĩa là giá bán công bố sau markdown,
+  nên consumer hiện tại không phải đổi.
+
 ## 2026-09-02
 
 - Thêm Product Catalog Events v1: CloudEvents/AsyncAPI cho SKU/category snapshots,

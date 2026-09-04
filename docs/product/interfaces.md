@@ -33,6 +33,10 @@ canonical path là `/internal/v1/...`, không expose qua Gateway.
 | `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất; Search đọc trước Product export khi nhận reindex request |
 | `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
 
+Mọi response chứa SKU — admin API, export và snapshot — mang `thumbnail_storage_key`
+đã resolve, cùng giá trị với `sku-upserted`. Nhờ vậy full reindex từ export và luồng
+event cho ra cùng kết quả, và consumer không phải derive lại từ `media[]` (ADR-013).
+
 Tất cả mutation Product/SKU/media sau khi tạo yêu cầu `If-Match` theo ETag
 `catalog_revision`, trả `412 PRODUCT_REVISION_MISMATCH` khi admin đang ghi trên
 snapshot cũ. Điều này là concurrency contract HTTP bổ sung cho pessimistic lock trong

@@ -28,6 +28,11 @@ có effective thumbnail thay đổi: media SKU chỉ ảnh hưởng SKU đó; me
 hưởng các SKU đang fallback Product-level. Search chỉ materialize field này; response
 adapter của Search dựng URL CDN hoặc placeholder.
 
+Cùng field xuất hiện trong schema `Sku` của HTTP API v1, nên export nội bộ dùng cho
+full reindex mang đúng giá trị mà event mang. Nếu chỉ event có field này, phase build
+catalog của reindex sẽ buộc Search tự derive từ `media[]` — đúng thứ mà quyết định
+này cấm.
+
 ## Consequences
 
 Snapshot có thể fan-out nhiều SKU khi media Product-level đổi, nhưng downstream không
@@ -37,3 +42,4 @@ phải join hay gọi ngược Product. `null` là trạng thái hợp lệ, kh�
 
 Contract fixture bao phủ: SKU image thắng Product image, fallback đúng thứ tự, VIDEO
 không được chọn, không có image trả `null`, và media Product fan-out đúng tập SKU.
+Thêm một case đối chiếu export với event để hai đường không lệch nhau.
