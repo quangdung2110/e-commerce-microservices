@@ -127,17 +127,22 @@ WHERE review_eligibilities.status IN ('PENDING');
 3. Upsert aggregate theo `product_id` bằng SQL atomic:
    ```sql
    UPDATE product_rating_aggregates
-   SET average_rating = :new_avg,
-       total_reviews = :new_total,
-       total_X_star = total_X_star +/- 1,
-       total_with_media = total_with_media +/- :has_media,
-       updated_at = NOW()
+    SET average_rating = :new_avg,
+    total_reviews = :new_total,
+    total_X_star = total_X_star +/- 1,
+    total_with_media = total_with_media +/- :has_media,
+    review_revision = review_revision + 1,
+    updated_at = NOW()
    WHERE product_id = :product_id;
    ```
-4. Insert outbox `REVIEW_METRICS_UPDATED` cùng transaction.
+4. Insert outbox `com.ecommerce.review.metrics-updated.v1` cùng transaction, mang
+   aggregate đầy đủ và `review_revision` vừa tăng.
 5. Commit transaction.
 
-> **Lưu ý:** Producer không lưu `state_version` trên aggregate, không chạy idempotency check bằng version. Consumer chấp nhận over-count hiếm gặp do at-least-once; Reconciliation Cronjob và dashboard monitoring `product_rating_aggregates` drift là lưới an toàn cuối cùng.
+> **Lưu ý:** `review_revision` là guard cho projection downstream, không tự làm
+> aggregate calculator idempotent. Producer vẫn phải xử lý delivery at-least-once
+> an toàn; Reconciliation Cronjob khi sửa aggregate cũng phải tăng revision và phát
+> snapshot mới để Search hội tụ.
 
 **Tối ưu:** xử lý theo micro-batch 100-500 events/lần để giảm lock contention.
 

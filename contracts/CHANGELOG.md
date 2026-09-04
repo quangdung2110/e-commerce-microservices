@@ -3,8 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-05
+
+- Thêm Review Events v1: `com.ecommerce.review.metrics-updated.v1` phát rating
+  aggregate snapshot theo `product_id`, với `review_revision` đơn điệu để Search
+  idempotently áp dụng event và snapshot export.
+- Thêm Review Internal Rating Aggregate Snapshot Export API v1 cho Search full
+  reindex. Export keyset trả `replay_from_offsets` được chụp trước scan; Search
+  import snapshot rồi replay inclusive để không bỏ mất mutation trong lúc build.
+
 ## 2026-09-04
 
+- Thêm Search Storefront API v2 ở trạng thái proposed: SKU-first search_after,
+  suggestion, category tree, facet DISTINCT Product và admin reindex resource qua
+  Gateway. V2 dùng RFC 9457 Problem Details; v1 legacy phải chạy song song cho đến
+  khi frontend chuyển xong.
 - Product Catalog Events v1: `sku.thumbnail_storage_key` trở thành field bắt buộc của
   SKU snapshot. Product resolve IMAGE của SKU trước, fallback IMAGE cấp Product, còn
   lại `null`; consumer không tự derive từ `media[]` (ADR-013).

@@ -67,7 +67,7 @@
 
       "catalog_revision": { "type": "long" },
       "stock_revision": { "type": "long" },
-      "review_version": { "type": "date" },
+      "review_revision": { "type": "long" },
 
       "last_catalog_event_id": { "type": "keyword" },
       "last_stock_event_id": { "type": "keyword" },

@@ -39,3 +39,4 @@ nghĩa implementation đã được xác minh khớp với quyết định. Kho�
 | [ADR-013](./ADR-013-product-category-snapshots.md) | Category snapshot Product và control-driven reindex | Accepted | 2026-09-04 | ADR-010 |
 | [ADR-014](./ADR-014-inventory-stock-snapshot-contract.md) | Stock projection theo revision và snapshot Inventory | Accepted | 2026-09-04 | ADR-009 |
 | [ADR-015](./ADR-015-upstream-revision-guards.md) | Guard theo revision upstream đơn điệu | Accepted | 2026-09-04 | ADR-004 |
+| [ADR-016](./ADR-016-review-rating-snapshot-reindex.md) | Snapshot rating Review khi reindex | Accepted | 2026-09-05 | — |

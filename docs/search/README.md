@@ -24,8 +24,10 @@ verified_against_commit: null
   Spring Boot 3.3, Elasticsearch Java client 8.11, Spring Kafka.
 - Tài liệu ở mức `proposed`: thiết kế đã chốt ở mức document nhưng chưa đối chiếu
   từng dòng code, nên `verified_against_commit` là `null`.
-- Contract adoption `not_started`: chưa có OpenAPI cho HTTP API và chưa có AsyncAPI
-  cho các topic mà Search tiêu thụ. Đây là gap lớn nhất của service.
+- Contract adoption `pilot`: OpenAPI storefront/admin v2 đã có ở
+  [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml).
+   Contract Review cho event rating và snapshot export đã được định nghĩa ở mức
+   `proposed`; implementation/contract test giữa Review và Search vẫn là gap.
 - Elasticsearch là store duy nhất. Không có PostgreSQL, không có Redis.
 - Ba file mapping trong `schema/` là **target vNext** cho service viết lại; chúng
   không mô tả index mà implementation legacy đang phục vụ.
@@ -62,7 +64,7 @@ là projection.
 | Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
 | `available_quantity` | [Inventory](../inventory/inventory_events.md) | `t.inventory.stock.events.v1` + internal snapshot export |
-| `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` |
+| `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` + internal aggregate snapshot export |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 
 Search sở hữu các giá trị dẫn xuất phục vụ query: `is_in_stock`, `has_promotion`,
@@ -84,13 +86,15 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 
 | Direction | Service/System | Protocol | Purpose | Required/Optional | Contract |
 |---|---|---|---|---|---|
-| Inbound | Client qua API Gateway | HTTP | Search, suggest, browse, facet | Required | Cần tạo: `contracts/http/search/v1` |
-| Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | Cần tạo: `contracts/http/search/internal/v1` |
+| Inbound | Storefront qua API Gateway | HTTP | Search, suggest, browse, facet | Required | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
+| Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
 | Inbound | `inventory-service` | Kafka | `available_quantity` theo SKU | Required | Cần tạo: AsyncAPI inventory |
-| Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | Cần tạo: AsyncAPI review |
+| Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
 | Outbound | `product-service` | HTTP nội bộ | Export catalog cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
+| Outbound | `inventory-service` | HTTP nội bộ | Export stock snapshot cho full reindex | Required | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) |
+| Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Optional | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Outbound | Elasticsearch | HTTP | Store duy nhất | Required | [`schema/`](./schema) |
 
 Search **không phát** event nghiệp vụ nào. Không service nào được phép chờ tín
@@ -126,9 +130,14 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 
 ## 9. Known gaps
 
-- **Contract chưa machine-readable.** Chưa có OpenAPI cho 4 API public và 2 API
-  internal, chưa có AsyncAPI/JSON Schema cho 4 topic tiêu thụ. Mọi semantics hiện
-  chỉ tồn tại ở [Interfaces](./interfaces.md).
+- **HTTP contract mới chỉ ở mức proposed.** OpenAPI v2 đã mô tả bốn API storefront
+  và hai operation admin reindex, nhưng provider/frontend chưa migrate và chưa có
+   contract test. V1 legacy phải chạy song song trong migration. Contract Review
+   v1 cũng mới là target contract và chưa có provider/consumer contract test.
+- **Facet metadata là dependency Product mới.** V2 hứa `code`/`label`/`type` ổn
+  định cho facet, trong khi Category snapshot v1 hiện chưa mang descriptor này.
+  Product phải mở rộng tương thích category event/export, rồi Search materialize
+  `facet_definitions` trước khi bật v2 facet cho storefront.
 - **Tài liệu chưa `verified`.** Thiết kế trong bộ tài liệu này đã align với
   Product/Inventory hiện hành, nhưng implementation hiện tại còn theo thế hệ thiết
   kế cũ ở các điểm sau và phải được migrate:
@@ -139,6 +148,9 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   - Tồn kho: code suy ra `is_in_stock` từ status; thiết kế lấy `available_quantity`
     từ Inventory ([ADR-009](./decisions/ADR-009-stock-projection-ownership.md)).
   - Xóa: Product đã chuyển sang hard delete kèm tombstone event.
+  - HTTP: code hiện phục vụ `/api/v1/search/**`, response/error legacy và admin
+    `/internal/v1/search/reindex`; contract đích là v2 SKU-first, Problem Details
+    và resource `/api/v2/search/reindex-runs` qua Gateway.
   - `categories.product_count`: code cộng trừ theo event; thiết kế dùng job
     recompute ([ADR-008](./decisions/ADR-008-category-product-count-recompute.md)).
   - Draft Cleanup Job cũ gọi `GET /internal/products/orphan-drafts`; endpoint này

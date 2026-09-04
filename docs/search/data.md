@@ -50,7 +50,7 @@ erDiagram
         long available_quantity
         long catalog_revision
         long stock_revision
-        date review_version
+        long review_revision
         boolean is_deleted
     }
     CATEGORIES {
@@ -109,11 +109,12 @@ xem trong file mapping.
 | `sku_status` | Product | `ACTIVE`, `INACTIVE` |
 | `category_ancestor_ids` | Product snapshot | ID của category hiện tại và tổ tiên; lọc theo nhánh bằng ID, không bằng slug |
 | `category_slug_path` | Product snapshot | Path để hiển thị; không dùng làm filter vì slug có thể đổi |
+| `facet_definitions` | Product category snapshot | Descriptor `{code,label,type}` của attribute có thể lọc trong category. Giữ `enabled: false`: Search đọc metadata này để render API facet, còn count/value luôn query từ `products.filter_tokens`. Product phải đưa cùng snapshot này vào category event và category export. |
 | `thumbnail_storage_key` | Product `sku-upserted` | Thumbnail hiệu lực: SKU IMAGE ưu tiên Product IMAGE; `null` khi không có ảnh. Response adapter dựng URL CDN hoặc placeholder. |
 | `is_deleted`, `deleted_at` | Search | Tombstone chặn zombie update trước khi purge |
 | `catalog_revision` | Product | Guard cho mọi event catalog của Product aggregate |
 | `stock_revision` | Inventory target contract | Revision đơn điệu per-SKU; timestamp chỉ dùng đo freshness |
-| `review_version` | Review | Guard cho event rating; ISO 8601 UTC millisecond |
+| `review_revision` | Review | Revision đơn điệu per product rating aggregate; guard chung cho snapshot export và event |
 | `category_revision` | Product | Guard `long` cho category snapshot |
 | `*_indexed_at` | Search | Mốc projection riêng từng source, không bị nguồn khác ghi đè |
 | `last_*_event_id` | Search | Truy vết event cuối đã apply theo từng nguồn |
@@ -132,12 +133,13 @@ chỉ được ghi các field thuộc nguồn đó
 | Product catalog | `catalog_revision` (long) | `event.catalog_revision > doc.catalog_revision` | `product_id` |
 | Product category | `category_revision` (long) | `event.sequence > doc.category_revision` | `category_id` |
 | Inventory | `stock_revision` (long) | `event.stock_revision > doc.stock_revision` | `sku_id` |
-| Review | `review_version` (date) | `event.timestamp > doc.review_version` | `product_id` |
+| Review | `review_revision` (long) | `event.review_revision > doc.review_revision` | `product_id` |
 
 Guard dùng so sánh `>` chặt. Product đã cấp `catalog_revision` và
 `category_revision`; Inventory v1 định nghĩa `stock_revision` cùng stock snapshot
-export. Hai contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
-và contract test. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
+export. Các contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
+và contract test. Review v1 định nghĩa `review_revision` cho cả event và aggregate
+snapshot export. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
 timestamp mà mang state khác nhau.
 
 Event catalog của Product mang snapshot đầy đủ nên apply lại cùng revision là

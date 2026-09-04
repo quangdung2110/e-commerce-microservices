@@ -1,0 +1,46 @@
+asyncapi: 3.0.0
+info:
+  title: Review Service Rating Aggregate Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho snapshot rating aggregate theo Product do Review phát cho
+    Search. Đây là contract vNext; producer legacy phải dual-publish hoặc được
+    migrate cùng consumer trước khi nó thay thế envelope cũ.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  reviewEvents:
+    address: t.review.events
+    description: Rating aggregate snapshot per Product do Review phát.
+    x-message-key: product_id
+    x-ordering-scope: product_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: data.review_revision
+    x-max-payload-bytes: 16384
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.review.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      ratingAggregateSnapshot: { $ref: '#/components/messages/ratingAggregateSnapshot' }
+operations:
+  publishRatingAggregateSnapshot:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: >-
+      Review phát full aggregate sau mọi mutation hoặc reconciliation làm thay
+      đổi rating của Product; sequence bằng review_revision.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/ratingAggregateSnapshot' }]
+components:
+  messages:
+    ratingAggregateSnapshot:
+      name: reviewMetricsUpdatedV1
+      title: Product rating aggregate snapshot
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/review-metrics-updated.schema.json' }

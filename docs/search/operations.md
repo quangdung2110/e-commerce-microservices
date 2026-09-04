@@ -82,6 +82,8 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_reindex_state` | gauge | `phase` |
 | `search_stock_snapshot_export_total` | counter | `status` |
 | `search_stock_snapshot_age_seconds` | gauge | Không có |
+| `search_review_snapshot_export_total` | counter | `status` |
+| `search_review_snapshot_age_seconds` | gauge | Không có |
 
 Không dùng `sku_id`, `product_id`, `category_id`, từ khóa tìm kiếm hay `user_id`
 làm label: cardinality không kiểm soát được. Các identifier đó thuộc về log.
@@ -123,6 +125,7 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 | Producer đổi schema | `search_payload_invalid_total` tăng; event bị bỏ qua; cần phối hợp với producer rồi reindex |
 | Product export API lỗi | Chỉ ảnh hưởng reindex; traffic đọc bình thường |
 | Inventory snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Inventory |
+| Review rating snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Review |
 | Job singleton kẹt lock | Job bỏ chu kỳ; số đếm và suggestion cũ dần |
 | Deploy nhiều version song song | An toàn nếu mapping không đổi; đổi mapping bắt buộc đi qua reindex |
 
@@ -173,7 +176,7 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 |---|---|
 | Consumer lag | Phân biệt Kafka chậm, Elasticsearch chậm hay thao tác diện rộng chiếm băng thông |
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
-| Lệch projection | `document_missing` hoặc enrichment miss tăng; import stock snapshot rồi replay offsets, recompute count, rồi mới reindex catalog |
+| Lệch projection | `document_missing` hoặc enrichment miss tăng; import stock và rating snapshot rồi replay offsets, recompute count, rồi mới reindex catalog |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
 | Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
 | Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |

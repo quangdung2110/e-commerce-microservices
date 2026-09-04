@@ -9,6 +9,7 @@ supersedes: ADR-004-per-source-ordering-guard
 evidence:
   - docs/product/data.md
   - contracts/events/inventory/v1/asyncapi.yaml
+  - contracts/events/review/v1/asyncapi.yaml
   - docs/search/data.md
 ---
 
@@ -22,8 +23,9 @@ bỏ một state hợp lệ khi timestamp trùng hoặc clock khác nhau.
 ## Decision
 
 Catalog dùng `catalog_revision` per Product aggregate; Category dùng `category_revision`
-per Category; Stock dùng `stock_revision` per SKU; Review giữ contract revision riêng khi
-được xác minh. Mọi guard dùng so sánh `>` chặt và source chỉ ghi field mình sở hữu.
+per Category; Stock dùng `stock_revision` per SKU; Review dùng `review_revision` per
+product rating aggregate. Mọi guard dùng so sánh `>` chặt và source chỉ ghi field mình
+sở hữu.
 
 ## Consequences
 

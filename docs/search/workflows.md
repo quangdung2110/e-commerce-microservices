@@ -39,7 +39,7 @@ verified_against_commit: null
 **Mục tiêu.** Trả trang SKU kết quả ổn định, kèm ngữ cảnh Product và facet dùng
 được cho bộ lọc.
 
-**Trigger và participants.** `GET /api/v1/search/products` qua Gateway; chỉ Search
+**Trigger và participants.** `GET /api/v2/search/products` qua Gateway; chỉ Search
 và Elasticsearch tham gia.
 
 **Preconditions.** Không có. Index rỗng vẫn là trạng thái hợp lệ.
@@ -60,7 +60,8 @@ và Elasticsearch tham gia.
 
 **State/data changes.** Không có. Đây là luồng thuần đọc.
 
-**Output.** Danh sách SKU item, tổng số SKU khớp, facet kèm `count_semantics`,
+**Output.** Danh sách SKU item, `total_skus` chính xác, facet kèm
+`count_semantics = DISTINCT_PRODUCT` và `count_accuracy = APPROXIMATE`,
 và `next_cursor` (`null` khi hết dữ liệu). Cùng Product có thể có nhiều item.
 
 **Failure paths.** Tham số sai → `INVALID_QUERY_PARAMETER`. Cursor hỏng hoặc
@@ -93,7 +94,7 @@ kiểm tra hàng `DRAFT`/`HIDDEN`/đã xóa không bao giờ lộ ra.
 **Mục tiêu.** Trả gợi ý trong ngân sách vài chục millisecond để dropdown theo kịp
 tốc độ gõ.
 
-**Happy path.** Validate `q` tối thiểu 2 ký tự → query index `search_suggestions`
+**Happy path.** `GET /api/v2/search/suggestions`: validate `q` tối thiểu 2 ký tự → query index `search_suggestions`
 → sort `weight` giảm dần, tie-break `text.keyword` → trả `text` và `type`.
 
 **State/data changes.** Không có.
@@ -118,9 +119,9 @@ quả; `limit` biên; index rỗng; alias đang swap.
 
 **Mục tiêu.** Trả cây danh mục kèm số lượng sản phẩm để dựng sidebar.
 
-**Happy path.** Đọc toàn bộ document danh mục chưa xóa, sort theo `level` rồi
-`category_id`, dựng cây trong bộ nhớ theo `parent_id`, trả cây kèm `product_count`
-và mốc thời gian tính số đếm.
+**Happy path.** `GET /api/v2/search/categories`: đọc toàn bộ document danh mục chưa
+xóa, sort theo `level` rồi `category_id`, dựng cây trong bộ nhớ theo `parent_id`,
+trả node lồng `children` kèm `product_count` và mốc thời gian tính số đếm.
 
 **Failure paths.** Elasticsearch lỗi → `ELASTICSEARCH_UNAVAILABLE`. Node mồ côi
 (có `parent_id` trỏ tới danh mục không tồn tại) bị bỏ khỏi cây và ghi metric, thay
@@ -142,7 +143,7 @@ search; đây là hành vi đã biết, được nêu trong
 **Mục tiêu.** Trả đúng bộ lọc khả dụng cho trang danh mục, với số đếm khớp danh
 sách sản phẩm hiển thị.
 
-**Happy path.** Kiểm tra danh mục tồn tại → aggregation trên `products` giới hạn
+**Happy path.** `GET /api/v2/search/categories/{category_id}/facets`: kiểm tra danh mục tồn tại → aggregation trên `products` giới hạn
 theo nhánh danh mục và bộ filter hiển thị mặc định → mỗi `terms` kèm `cardinality`
 trên `product_id` → trả nhóm filter kèm `count_semantics`.
 
@@ -299,13 +300,13 @@ replay event; hai event cùng timestamp nhưng revision khác nhau.
 
 **Happy path.** `_update_by_query` trên `products_write` theo `term product_id` với
 [`review_metrics_patch.painless`](./schema/scripts/review_metrics_patch.painless),
-`conflicts=proceed` và throttle; guard `review_version`.
+`conflicts=proceed` và throttle; guard `review_revision`.
 
 **Failure paths.** Không có document khớp → không phải lỗi, ghi metric. Lỗi tạm
 thời → không commit offset. Query chạy quá lâu → có thể để lại trạng thái áp dụng
 một phần; lần chạy lại sẽ hội tụ vì thao tác là ghi giá trị tuyệt đối.
 
-**Idempotency và ordering.** Guard `review_version`; key `product_id` giữ thứ tự
+**Idempotency và ordering.** Guard `review_revision`; key `product_id` giữ thứ tự
 trong cùng product.
 
 **Concurrency.** Chạy song song với event catalog của cùng product; hai bên chạm
@@ -322,7 +323,7 @@ chưa có document; rating giảm sau khi review bị xóa.
 
 **Mục tiêu.** Đổi mapping hoặc rebuild dữ liệu mà không dừng đọc và ghi.
 
-**Trigger.** `POST /internal/v1/search/reindex` bởi admin, hoặc lịch bảo trì.
+**Trigger.** `POST /api/v2/search/reindex-runs` bởi admin, hoặc lịch bảo trì.
 
 **Preconditions.** Cluster `green`; còn dung lượng cho một index đầy đủ kèm
 replica; không có run nào chưa kết thúc; mapping mới đã được review trong
@@ -331,14 +332,20 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
 **Happy path.**
 1. **Build catalog.** Tạo `products_v{N+1}` từ mapping mới. Export Category trước,
    rồi keyset export Product theo chunk, ghi checkpoint sau mỗi chunk để resume.
+   SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review được apply.
 2. **Build stock.** Lấy Inventory stock snapshot export; import mọi SKU theo
    `stock_revision`. Export trả `replay_from_offsets` đã chụp trước lúc scan nên
    event cũ/trùng không ghi đè snapshot.
-3. **Catch-up.** Chạy consumer group tạm `search-reindex-{run_id}` từ watermark
-   catalog và `replay_from_offsets` stock, ghi **trực tiếp** vào `products_v{N+1}`
-   chứ không qua write alias. Guard giữ nguyên như luồng thường. Kết thúc khi lag
-   bằng 0 qua nhiều chu kỳ poll liên tiếp và không phát sinh lỗi mới trong cửa sổ quan sát.
-4. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
+3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
+   Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision`.
+   Export trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert
+   SKU và không thay đổi catalog/stock field.
+4. **Catch-up.** Chạy consumer group tạm `search-reindex-{run_id}` từ watermark
+   catalog, `replay_from_offsets` stock và `replay_from_offsets` review, ghi
+   **trực tiếp** vào `products_v{N+1}` chứ không qua write alias. Guard giữ nguyên
+   như luồng thường. Kết thúc khi lag bằng 0 qua nhiều chu kỳ poll liên tiếp và
+   không phát sinh lỗi mới trong cửa sổ quan sát.
+5. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
    trên tập SKU nóng, smoke test các truy vấn phổ biến, rồi chuyển cả read alias
    và write alias sang index mới bằng **một** lệnh `_aliases` atomic.
 
@@ -346,7 +353,8 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
 lại tối thiểu 24 giờ.
 
 **Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
-alias không đổi nên traffic không bị ảnh hưởng. Catch-up không hội tụ → hủy run.
+alias không đổi nên traffic không bị ảnh hưởng. Review snapshot export lỗi hoặc
+thiếu `replay_from_offsets` → không được cutover. Catch-up không hội tụ → hủy run.
 Kiểm tra trước cutover không đạt → hủy run. Lỗi sau cutover → swap alias ngược về
 index cũ.
 
@@ -364,11 +372,13 @@ group chính vẫn chạy bình thường trên index cũ trong suốt quá trì
 catch-up, chấp nhận mất vài phút dữ liệu mới trên index cũ và phải chạy lại reindex
 ([ADR-006](./decisions/ADR-006-three-phase-reindex.md)).
 
-**Metrics.** Tiến độ build, lag catch-up, chênh lệch số document, thời lượng từng
-pha, kết quả run.
+**Metrics.** Tiến độ từng source của build, tuổi snapshot stock/rating, lag catch-up
+theo topic, chênh lệch số document, thời lượng từng pha, kết quả run.
 
-**Test scenarios.** Reindex trên catalog rỗng; reindex khi đang có tải ghi; hủy
-giữa build; catch-up không hội tụ; cutover rồi rollback; trigger trùng.
+**Test scenarios.** Reindex trên catalog rỗng; rating tồn tại từ trước reindex;
+product chưa có review nhận `0/0`; mutation rating trong lúc Review export; event
+rating cũ/trùng sau snapshot; reindex khi đang có tải ghi; hủy giữa build; catch-up
+không hội tụ; cutover rồi rollback; trigger trùng.
 
 ---
 

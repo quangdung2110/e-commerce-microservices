@@ -147,9 +147,12 @@ RETURNING attempt_count, product_id, sku_id;
 | `total_4_star` | `INT` | DEFAULT 0 | |
 | `total_5_star` | `INT` | DEFAULT 0 | |
 | `total_with_media` | `INT` | DEFAULT 0 | |
+| `review_revision` | `BIGINT` | NOT NULL, tăng đơn điệu per `product_id` | Revision của aggregate; dùng để Search guard snapshot/event |
 | `updated_at` | `TIMESTAMP` | NOT NULL | |
-
 **Ràng buộc:**
+
+- Mọi mutation hoặc reconciliation làm đổi aggregate phải tăng `review_revision`
+  trong cùng transaction với giá trị aggregate mới và outbox event.
 *   Aggregate không lưu `state_version`; idempotency phía producer được đơn giản hóa (chấp nhận khả năng over-count hiếm gặp do at-least-once, dựa vào micro-batch và monitoring aggregate drift).
 
 ## 6. Bảng review_admin_replies

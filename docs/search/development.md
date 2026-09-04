@@ -68,7 +68,8 @@ lần chạy.
 
 Không có PostgreSQL và không có Redis. Product, Inventory và Review không cần chạy
 local: dữ liệu vào Search bằng cách publish event thủ công lên Kafka, trừ khi bạn
-đang phát triển luồng full reindex vốn cần export API của Product.
+đang phát triển luồng full reindex vốn cần stub export API của Product, Inventory
+và Review.
 
 ## 4. Local configuration
 
@@ -104,11 +105,21 @@ Test tích hợp không được mock Elasticsearch client: phần lớn rủi r
 
 Danh sách kịch bản bắt buộc theo từng workflow nằm ở [Workflows](./workflows.md).
 
-## 7. Contract code generation
+## 7. Contract validation và code generation
 
-Chưa có OpenAPI hay AsyncAPI cho Search nên hiện không có bước generate. Khi tạo
-contract trong `contracts/`, phải bổ sung: lệnh generate, thư mục output, phiên bản
-tool và một bước CI kiểm tra generated code không lệch so với contract.
+HTTP canonical nằm tại
+[`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml).
+Mọi thay đổi phải chạy:
+
+```powershell
+pwsh ./contracts/tools/validate-contracts.ps1
+```
+
+Search chưa generate server/client code từ OpenAPI. Trước khi provider migrate,
+phải chốt generator, thư mục output, phiên bản tool và CI check generated output
+không lệch contract; generated output không phải source of truth. Contract test
+bắt buộc cover cursor fingerprint, SKU-first response, Problem Details, public
+anonymous route và ADMIN reindex route.
 
 ## 8. Thay đổi index và mapping
 
@@ -126,8 +137,9 @@ replay event; không dùng cách này ở bất kỳ môi trường dùng chung 
 ## 9. Test data và fixtures
 
 Fixture là event mẫu của Product, Inventory và Review, đặt cùng test và version
-hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null và Inventory snapshot
-seed + event revision cũ/trùng + replay offset. Dữ liệu catalog mẫu phải là dữ liệu
+hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null, Inventory snapshot
+seed + event revision cũ/trùng + replay offset, và Review rating aggregate snapshot
+seed + `review_revision` cũ/trùng + replay offset. Dữ liệu catalog mẫu phải là dữ liệu
 bịa; không dùng export production. Index không chứa PII nên fixture cũng không được
 đưa PII vào.
 
@@ -137,7 +149,7 @@ bịa; không dùng export production. Index không chứa PII nên fixture cũn
 - Khi kết quả sai, so sánh trực tiếp bằng cách chạy chính truy vấn đó lên
   Elasticsearch local rồi thu hẹp dần filter.
 - Khi document sai, đọc `_source` của SKU đó và kiểm tra `catalog_revision`,
-  `stock_revision`, `review_version`, `*_indexed_at` và `last_*_event_id` để biết
+  `stock_revision`, `review_revision`, `*_indexed_at` và `last_*_event_id` để biết
   nguồn nào ghi sau cùng.
 - Khi consumer im lặng, kiểm tra CloudEvents `type` có nằm trong allowlist không trước
   khi nghi ngờ lỗi kết nối; ignore và ACK là hành vi thiết kế.

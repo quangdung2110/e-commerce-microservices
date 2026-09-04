@@ -64,6 +64,7 @@ chỉ tham chiếu chúng qua identifier và snapshot.
 | Command | Trigger full reindex | Admin qua Gateway | Reindex job |
 | Query | Đọc trạng thái một lần reindex | Admin qua Gateway | Reindex job |
 | Command nội bộ | Apply event catalog/stock/review | Kafka consumer | Indexing worker |
+| Command nội bộ | Import stock/rating snapshot khi full reindex | Reindex job | Reindex writer |
 | Command nội bộ | Rebuild suggestion, recompute count, purge tombstone | Scheduler | Job tương ứng |
 
 Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến từ upstream.
@@ -84,6 +85,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-010` | Event tồn kho/rating cho document chưa tồn tại thì bỏ qua, không upsert | Apply event stock/review | Sinh document rỗng không có catalog |
 | `SEARCH-BR-011` | Tombstone chỉ được purge sau khi qua cửa sổ bảo vệ | Tombstone purger | Document sống lại do event trễ |
 | `SEARCH-BR-012` | Mapping thay đổi phải qua reindex và alias swap | Vận hành index | Downtime hoặc mapping conflict |
+| `SEARCH-BR-013` | Rating snapshot chỉ apply sau catalog build và dùng cùng `review_revision` với event replay | Full reindex | Rating thiếu hoặc event cũ ghi đè snapshot |
 
 ## 5. Invariants
 
@@ -131,13 +133,14 @@ ngược. Chỉ một run được phép ở trạng thái chưa kết thúc t�
 
 ## 7. Authorization rules
 
-- Bốn API public là read-only và không yêu cầu quyền nghiệp vụ. Gateway đã xác
-  thực JWT trước khi forward; Search không tự verify chữ ký.
-- Search chỉ dùng claim để logging và correlation, không lọc dữ liệu theo user.
-  Không có dữ liệu riêng tư trong index.
-- Internal API reindex yêu cầu claim `role = ADMIN` do Gateway chuyển tiếp. Search
-  không chấp nhận identity header đến trực tiếp từ client.
-- Không có shared-secret fallback cho internal API.
+- Bốn API storefront v2 là anonymous read-only qua Gateway. Search không nhận
+  identity claim ở đường này, không lọc theo user và không có dữ liệu riêng tư
+  trong index.
+- Reindex là admin API `/api/v2/search/reindex-runs`, yêu cầu identity và role
+  `ADMIN` do Gateway inject sau JWT verification. Service phải từ chối identity
+  header nếu endpoint có thể bị bypass Gateway.
+- `/internal/v1` chỉ dành cho service-to-service qua mTLS; không dùng nó cho
+  admin reindex và không có shared-secret fallback.
 
 ## 8. Domain errors
 
@@ -145,11 +148,13 @@ ngược. Chỉ một run được phép ở trạng thái chưa kết thúc t�
 |---|---|---|---|
 | `INVALID_QUERY_PARAMETER` | Tham số sai kiểu hoặc ngoài range | No | HTTP 400 |
 | `INVALID_CURSOR` | Cursor không decode được hoặc không khớp bộ tham số | No | HTTP 400 |
-| `FORBIDDEN` | Gọi internal API mà claim không phải `ADMIN` | No | HTTP 403 |
+| `FORBIDDEN` | Gọi admin reindex mà role không phải `ADMIN` | No | HTTP 403 |
 | `CATEGORY_NOT_FOUND` | Facet cho category không tồn tại trong index | No | HTTP 404 |
 | `REINDEX_ALREADY_RUNNING` | Đã có một run chưa kết thúc | Yes, sau khi run cũ xong | HTTP 409 |
 | `REINDEX_RUN_NOT_FOUND` | `run_id` không tồn tại | No | HTTP 404 |
 
+Tất cả error response dùng `application/problem+json` theo RFC 9457, với extension
+`code`, `trace_id`, `retryable` và `errors[]`; không dùng legacy response shape.
 Các lỗi sau là lỗi hạ tầng, không phải domain error, và không được dùng để suy ra
 kết luận nghiệp vụ: `ELASTICSEARCH_UNAVAILABLE` (HTTP 503), `SEARCH_TIMEOUT`
 (HTTP 504), `INTERNAL_ERROR` (HTTP 500). Kết quả rỗng là kết quả hợp lệ, không

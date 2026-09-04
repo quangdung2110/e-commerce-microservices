@@ -18,7 +18,7 @@ verified_against_commit: null
 Search là read side của kiến trúc CQRS ở phạm vi catalog. Write side nằm ở
 Product (catalog và giá), Inventory (tồn kho) và Review (rating). Search chỉ nhận
 dữ liệu qua Kafka, không gọi ngược sang các service đó trong hot path; full reindex
-mới gọi internal export API của Product và Inventory.
+mới gọi internal export API của Product, Inventory và Review.
 
 Trust boundary: client không bao giờ chạm trực tiếp Search. API Gateway xác thực
 JWT rồi forward request kèm claim đã verify. Elasticsearch nằm trong mạng nội bộ
@@ -28,9 +28,9 @@ và chỉ Search được ghi.
 flowchart LR
   C[Client] --> G[API Gateway]
   G --> API[HTTP query API]
-  G --> IAPI[Internal admin API]
+  G --> AAPI[Admin reindex API]
   API --> Q[Query layer]
-  IAPI --> RJ[Reindex job]
+  AAPI --> RJ[Reindex job]
   PE[t.product.events] --> W[Indexing worker]
   CE[t.category.events] --> W
   CCE[t.catalog.control.events] --> RJ
@@ -46,6 +46,7 @@ flowchart LR
   TP[Tombstone purger] --> ES
   RJ -.export.-> P[Product internal API]
   RJ -.stock export.-> INV[Inventory internal API]
+  RJ -.rating export.-> REV[Review internal API]
 ```
 
 ## 2. Components and responsibilities
@@ -53,10 +54,10 @@ flowchart LR
 | Component | Trách nhiệm | Không được làm | Dependencies | Evidence |
 |---|---|---|---|---|
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
-| Internal admin adapter | Nhận trigger reindex, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/internal` |
+| Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
 | Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
 | Indexing worker | Consume snapshot catalog/category/stock/review, transform event thành lệnh ghi, apply guard | Bỏ qua guard hoặc tự gọi ngược Product trong hot path | Kafka, write alias | `worker` |
-| Reindex job | Build index mới, import stock snapshot, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product/Inventory export API | `worker` |
+| Reindex job | Build index mới, import stock/rating snapshot, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
 | Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree | Elasticsearch | `worker` |
 | Tombstone purger | Xóa document đã tombstone quá cửa sổ bảo vệ | Xóa document còn trong cửa sổ bảo vệ | Elasticsearch | `worker` |
@@ -104,14 +105,15 @@ Search không có lock nghiệp vụ. Tính đúng đắn dựa trên bốn cơ 
 
 - **Guard theo từng nguồn.** Mỗi nguồn dữ liệu có một field revision riêng trên
   document: `catalog_revision`, `category_revision`, `stock_revision` và
-  `review_version`. Product và Inventory phải cấp revision đơn điệu trong đúng
-  scope aggregate; timestamp chỉ là observability, không là ordering guard
+  `review_revision`. Product, Inventory và Review phải cấp revision đơn điệu trong
+  đúng scope aggregate; timestamp chỉ là observability, không là ordering guard
   ([ADR-015](./decisions/ADR-015-upstream-revision-guards.md)).
 - **Kafka partition ordering.** Product event dùng key `product_id`, Inventory
   dùng `sku_id`, Review dùng `product_id`. Ordering chỉ được cam kết trong cùng
   key, và guard là thứ bảo vệ khi ordering không đủ.
-- **Snapshot semantics.** Event catalog của Product mang snapshot đầy đủ, nên apply
-  lặp lại cùng một event là idempotent.
+- **Snapshot semantics.** Event catalog, stock và rating đều mang snapshot đầy đủ
+  của field thuộc nguồn đó. Rating export chụp replay offset trước scan; vì vậy
+  import snapshot rồi replay event từ offset đó không bỏ lỡ mutation giữa lúc build.
 - **`conflicts=proceed` cho `_update_by_query`.** Version conflict do ghi đồng thời
   được bỏ qua có kiểm soát; guard đảm bảo không có lost update về mặt nghiệp vụ.
 

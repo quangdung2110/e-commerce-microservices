@@ -1,10 +1,12 @@
 // review_metrics_patch.painless
-// Ap dung REVIEW_METRICS_UPDATED qua _update_by_query theo product_id.
+// Ap dung Review aggregate snapshot/event qua _update_by_query theo product_id.
 // KHONG upsert: rating khong duoc tao document (SEARCH-INV-005).
 if (ctx._source.is_deleted == true) { ctx.op = "none"; return; }
-if (ctx._source.review_version != null && params.review_version.compareTo(ctx._source.review_version) <= 0) { ctx.op = "none"; return; }
+if (ctx._source.review_revision != null && params.review_revision <= ctx._source.review_revision) { ctx.op = "none"; return; }
 ctx._source.product_rating_avg = params.product_rating_avg;
 ctx._source.product_rating_count = params.product_rating_count;
-ctx._source.review_version = params.review_version;
+ctx._source.review_revision = params.review_revision;
+ctx._source.review_indexed_at = params.indexed_at;
 ctx._source.indexed_at = params.indexed_at;
-ctx._source.last_review_event_id = params.event_id;
+// Snapshot export không có CloudEvent id; giữ id của event gần nhất để truy vết.
+if (params.event_id != null) { ctx._source.last_review_event_id = params.event_id; }

@@ -4,6 +4,7 @@
 *   [Database Schema](review_db_schema.md)
 *   [Workers](review_workers.md)
 *   [Workflows](review_workflow.md)
+*   [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml)
 
 ---
 
@@ -16,7 +17,7 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 | Topic Name | Partition Key | Event Types | Consumers | Ghi chú |
 |:---|:---|:---|:---|:---|
-| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `ADMIN_REPLY_CREATED` | **Notification Service** (`REVIEW_CREATED`, `REVIEW_HIDDEN`, `ADMIN_REPLY_CREATED`), **Search Service** (`REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`), **Analytics Service** (`REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`), **Product Service** (đồng bộ read-model metrics sản phẩm qua `REVIEW_METRICS_UPDATED`) | Mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
+| `t.review.events` | `product_id` (bắt buộc) | `REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`, `REVIEW_METRICS_UPDATED`, `ADMIN_REPLY_CREATED` | **Notification Service** (`REVIEW_CREATED`, `REVIEW_HIDDEN`, `ADMIN_REPLY_CREATED`), **Search Service** (`REVIEW_METRICS_UPDATED`), **Analytics Service** (`REVIEW_CREATED`, `REVIEW_UPDATED`, `REVIEW_APPROVED`, `REVIEW_HIDDEN`), **Product Service** (đồng bộ read-model metrics sản phẩm qua `REVIEW_METRICS_UPDATED`) | Search vNext chỉ consume rating aggregate snapshot; mọi event phải chứa `product_id` để giữ ordering theo sản phẩm. |
 
 ### 1.3. Topics Consume
 
@@ -167,7 +168,12 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
 
 **Topic:** `t.review.events` | **Produce cho:** Search Service (re-index)
 
-**Fields bắt buộc:** `product_id`, `average_rating`, `total_reviews`, `updated_at`.
+Contract canonical vNext là
+[`com.ecommerce.review.metrics-updated.v1`](../../contracts/events/review/v1/asyncapi.yaml).
+Envelope legacy dưới đây chỉ được giữ trong giai đoạn migration.
+
+**Fields bắt buộc:** `product_id`, `average_rating`, `total_reviews`,
+`review_revision`, `observed_at`.
 
 ```json
 {
@@ -175,13 +181,17 @@ Tài liệu này định nghĩa contract sự kiện chính thức của Review 
   "average_rating": 4.75,
   "total_reviews": 1251,
   "total_with_media": 300,
-  "updated_at": "2026-03-28T10:05:00Z"
+  "review_revision": 42,
+  "observed_at": "2026-03-28T10:05:00Z"
 }
 ```
 
 **Rule bắt buộc cho downstream:**
-- Ordering đảm bảo bằng partition key `product_id`; Search Service tự consume theo thứ tự trong partition mà không cần guard bằng sequence field.
-- `updated_at` chỉ dùng cho observability/debug, không phải khóa ordering chính.
+- `review_revision` tăng đơn điệu trong scope `product_id`; Search chỉ apply khi
+  revision lớn hơn document hiện tại. Event và snapshot export dùng cùng revision.
+- Partition key `product_id` giữ thứ tự trong một partition nhưng không thay thế
+  guard khi snapshot import và replay xảy ra song song.
+- `observed_at` chỉ dùng cho observability/debug, không phải khóa ordering chính.
 
 ### 5.5. REVIEW_APPROVED
 

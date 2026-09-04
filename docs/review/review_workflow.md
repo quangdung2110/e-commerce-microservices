@@ -103,6 +103,26 @@ Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination
 2. Filter thêm `has_media = TRUE` nếu client yêu cầu review có media (dùng partial index tương ứng).
 3. Trả về danh sách phân trang, sắp xếp theo `created_at DESC` mặc định.
 
+### 5.3. Internal export rating aggregates cho Search reindex
+
+**Endpoint:** `GET /internal/v1/reviews/rating-aggregates`
+
+Endpoint chỉ dành cho service identity của Search, không đi qua API Gateway và
+không thay thế public aggregate API theo một product.
+
+**Workflow:**
+1. Chụp offset bắt đầu replay của mọi partition `t.review.events` trước khi scan.
+2. Keyset scan `product_rating_aggregates` theo `product_id`; mỗi item trả aggregate
+   hiện tại, `review_revision` và `observed_at`.
+3. Trả cùng `replay_from_offsets` ở mọi page của export session. Offset là event đầu
+   tiên Search phải replay, inclusive.
+4. Search import snapshot sau catalog build, rồi replay `REVIEW_METRICS_UPDATED`
+   từ các offset này. Guard `review_revision` làm event cũ/trùng thành no-op.
+
+Nếu Review không thể tạo export session nhất quán hoặc không chụp được offset,
+trả retryable `503`; Search phải hủy hoặc resume run nhưng không được cutover index
+mới.
+
 ## 6. Event Workflow: ORDER_COMPLETED -> Eligibility
 
 **Trigger:** `ORDER_COMPLETED` từ `t.order.events`.
@@ -118,11 +138,16 @@ Read API đọc thẳng từ PostgreSQL, không qua cache trung gian. Pagination
 
 ## 7. Event Workflow: REVIEW_METRICS_UPDATED -> Search
 
-**Trigger:** Event nội bộ `REVIEW_METRICS_UPDATED` được phát từ aggregator. [Rating Aggregator Consumer](review_workers.md#4-rating-aggregatorConsumer)
+**Trigger:** `com.ecommerce.review.metrics-updated.v1` được phát từ aggregator.
+Xem [Rating Aggregator Consumer](review_workers.md#4-rating-aggregator-consumer).
 
 **Trình tự liên service:**
 1. Search consumer `search-review-metrics-sync` nhận event và `_update_by_query` các document theo `product_id`.
-2. Ordering đảm bảo bằng partition key `product_id` (Kafka partition ordering); Search Service không cần guard bằng sequence field trên envelope.
+2. Search chỉ apply khi `review_revision` lớn hơn revision đã materialize; event
+   cũ/trùng là no-op. Partition key `product_id` hỗ trợ ordering nhưng không thay
+   thế guard này.
+3. Trong full reindex, Search import aggregate snapshot rồi replay event từ
+   `replay_from_offsets` của Review; hai đường dùng cùng guard `review_revision`.
 
 ## 8. Event Workflow: USER_DELETED -> Author Anonymization
 

@@ -145,5 +145,29 @@ interactions:
     protocol: kafka
     provider: inventory-service
     consumers: [search-service, order-service, analytics-service]
-    contract: null
-    status: legacy_documented
+    contract: events/inventory/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Search VNext chỉ consume stock snapshot per-SKU trên t.inventory.stock.events.v1;
+      t.inventory.events giữ là compatibility legacy cho consumer chưa migrate.
+
+  - id: review-publishes-rating-aggregate-events
+    protocol: kafka
+    provider: review-service
+    consumers: [search-service, product-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Review phát rating aggregate snapshot theo product_id, guarded bằng
+      review_revision. Search VNext chỉ consume event metrics này, không consume
+      review business event để tính lại aggregate.
+
+  - id: search-reindexes-review-rating-aggregates
+    protocol: http
+    provider: review-service
+    consumers: [search-service]
+    contract: http/review/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal service-identity export cho full reindex. Response chụp Review Kafka
+      replay offsets trước scan; Search import snapshot rồi replay inclusive từ offset.

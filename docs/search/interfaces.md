@@ -11,50 +11,58 @@ verified_against_commit: null
 
 # Search Service — Giao diện tích hợp
 
-> File này giải thích semantics. Search **chưa có contract machine-readable**:
-> chưa có OpenAPI trong `contracts/http/search/` và chưa có AsyncAPI cho các topic
-> tiêu thụ. Cho tới khi có, file này là contract duy nhất và mọi thay đổi interface
-> phải cập nhật ở đây.
+> OpenAPI canonical cho HTTP v2 nằm tại
+> [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml).
+> File này giải thích semantics, projection boundary và lộ trình tương thích; khi
+> mâu thuẫn, OpenAPI là nguồn chuẩn trên wire.
 
 ## 1. Contract index
 
 | Interaction | Direction | Protocol | Provider | Consumer | Contract | Status |
 |---|---|---|---|---|---|---|
-| Search, suggest, browse, facet | Inbound | HTTP | Search | Client qua Gateway | Cần tạo: `contracts/http/search/v1/openapi.yaml` | proposed |
-| Full reindex admin | Inbound | HTTP | Search | Admin qua Gateway | Cần tạo: `contracts/http/search/internal/v1/openapi.yaml` | proposed |
+| Search, suggest, browse, facet | Inbound | HTTP | Search | Storefront qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
+| Full reindex admin | Inbound | HTTP | Search | Admin qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
 | Catalog và tombstone | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
 | Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
 | Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
-| Rating aggregate | Inbound | Kafka | Review | Search | Cần tạo: AsyncAPI review v1 | proposed |
+| Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
 | Catalog export | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
 | Stock snapshot export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | proposed |
+| Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
 
 Search **không phát event**. Không có mục “event phát ra” trong tài liệu này là
 một khẳng định contract, không phải thiếu sót.
 
-## 2. Quy ước chung cho HTTP
+## 2. Quy ước chung cho HTTP v2
 
-- Public API: `/api/v1/search/...`. Internal API: `/internal/v1/search/...`.
-  Breaking change đi kèm version path mới chạy song song.
-- Gateway xác thực JWT và forward claim đã verify. Search không tự verify chữ ký
-  và không nhận identity header đến thẳng từ client.
-- Search dùng claim cho logging/correlation; chỉ internal API kiểm tra
-  `role = ADMIN`.
-- Mọi response lỗi dùng một hình dạng chung: `error_code`, `message`, `details`,
-  `request_id`. Danh sách `error_code` và mapping HTTP nằm ở
-  [Domain §8](./domain.md#8-domain-errors).
-- Mọi response mang `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: no-referrer` và HSTS. CORS hiện mở cho mọi origin ở môi trường
-  phát triển và **phải** được siết theo domain frontend trước production.
+- Storefront API là `/api/v2/search/...` và anonymous qua Gateway. Nó không nhận
+  hay sử dụng identity claim: Gateway hiện định tuyến `GET /api/v1/search/**` là
+  `public-read`, và v2 phải giữ cùng trust model. Service không được tin bất kỳ
+  `X-User-*` header nào khi có public ingress bypass Gateway.
+- Reindex là admin command qua Gateway, dùng `/api/v2/search/reindex-runs`; nó
+  **không** dùng prefix `/internal`, vì `/internal/v1` được dành cho mTLS
+  service-to-service như Product export và Inventory stock export. Gateway route
+  của hai operation admin phải có priority cao hơn public route, bắt buộc JWT và
+  `ADMIN`.
+- Breaking change chạy song song ở version path mới. V1 legacy được giữ tới khi
+  frontend và consumer đã chuyển, rồi mới deprecate/remove.
+- Mọi lỗi dùng `application/problem+json` theo RFC 9457 và
+  [`Problem`](../../contracts/shared/json-schema/v1/problem.schema.json): `code`,
+  `trace_id`, `retryable` và `errors[]`. Không dùng legacy
+  `error_code/message/details/request_id` body.
+- Mọi response là projection eventual-consistent. `is_in_stock` là snapshot
+  Inventory, không phải kết quả reserve; `selling_price_vnd` không phải quotation.
+- Security headers/CORS là concern của Gateway và deployment configuration; OpenAPI
+  không hứa các header này là response business field.
 
-## 3. HTTP API
+## 3. HTTP API v2
 
-### 3.1 `GET /api/v1/search/products`
+### 3.1 `GET /api/v2/search/products`
 
 Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách sản phẩm.
 
 - **Caller:** buyer qua Gateway; không yêu cầu quyền nghiệp vụ.
-- **Tham số:** `q`, `category`, `filters[<code>]`, `price_min`, `price_max`,
+- **Tham số:** `q`, `category`, `filter` (repeatable opaque token từ facet), `price_min`, `price_max`,
   `in_stock` (mặc định `true`), `has_promotion`, `sort`, `cursor`, `size`
   (mặc định 20, tối đa 100).
 - **Sort:** `relevance` (mặc định), `price_asc`, `price_desc`, `newest`, `rating`.
@@ -67,13 +75,13 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
   lại nó sau khi đổi bộ tham số trả `INVALID_CURSOR`. `next_cursor = null` nghĩa
   là hết dữ liệu. Không hỗ trợ nhảy tới trang bất kỳ
   ([ADR-007](./decisions/ADR-007-cursor-pagination.md)).
-- **Đơn vị kết quả:** mỗi item là đúng một SKU khớp query, mang cả field
+- **Đơn vị kết quả:** mỗi item là đúng một SKU khớp query, mang field
   product-level đã denormalize để UI dựng product card. Cùng một `product_id` có
   thể xuất hiện nhiều lần nếu nhiều SKU của Product cùng khớp. API không trả
   `inner_hits` và không hứa “một Product duy nhất” trên toàn bộ pagination;
   điều này cho phép `search_after` hoạt động đúng với relevance, giá và rating
   ([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)).
-- **Total:** `total` là số SKU khớp chính xác. Count trong facet vẫn là DISTINCT
+- **Total:** `total_skus` là số SKU khớp chính xác. Count trong facet vẫn là DISTINCT
   `product_id`; client không được suy diễn đó là số trang hay tổng số item Product.
 - **Facet:** đi kèm response, mọi count là DISTINCT `product_id`; response khai báo
   `count_semantics = DISTINCT_PRODUCT` để client không tự diễn giải.
@@ -83,40 +91,45 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
 - **Giới hạn:** `size` tối đa 100; timeout truy vấn Elasticsearch 5s, vượt thì trả
   `SEARCH_TIMEOUT`.
 
-### 3.2 `GET /api/v1/search/suggest`
+### 3.2 `GET /api/v2/search/suggestions`
 
 Dropdown search-as-you-type.
 
 - **Tham số:** `q` (bắt buộc, tối thiểu 2 ký tự), `limit` (mặc định 8, tối đa 20).
 - Đọc index `search_suggestions` đã pre-compute; ranking theo `weight` giảm dần,
-  tie-break `text.keyword` tăng dần. Không tính ranking động trong đường request.
+  tie-break `text.keyword` tăng dần. Public response chỉ trả `text` và `type`,
+  không trả `weight` nội bộ.
 - `q` ngắn hơn 2 ký tự trả `INVALID_QUERY_PARAMETER`.
 - Timeout 2s; suggest lỗi không được làm hỏng trang tìm kiếm chính.
 
-### 3.3 `GET /api/v1/search/categories`
+### 3.3 `GET /api/v2/search/categories`
 
 Trả cây danh mục cho sidebar điều hướng.
 
-- Đọc toàn bộ index `categories`, dựng cây trong bộ nhớ theo `parent_id`/`level`.
+- Đọc toàn bộ index `categories`, dựng cây trong bộ nhớ theo `parent_id`/`level`
+  và trả node lồng `children`, không trả danh sách phẳng/internal path.
 - `product_count` đọc trực tiếp từ document, không aggregate theo request; số này
   được job recompute làm mới nên có thể trễ so với kết quả search.
 - Danh mục `is_deleted = true` không xuất hiện trong cây.
 
-### 3.4 `GET /api/v1/search/facets/{category_id}`
+### 3.4 `GET /api/v2/search/categories/{category_id}/facets`
 
 Bộ lọc khả dụng cho một trang danh mục.
 
 - Aggregation trên `products` giới hạn trong nhánh danh mục, cùng bộ filter hiển
   thị mặc định như API search để số đếm không lệch với danh sách.
-- Mỗi `terms` aggregation kèm `cardinality` trên `product_id`.
+- Mỗi `terms` aggregation kèm `cardinality` trên `product_id`. Response công khai
+  `count_accuracy = APPROXIMATE`; value của option là opaque token được đưa lại
+  qua `filter`, không phải chuỗi do client tự ghép.
 - `category_id` không tồn tại trả `CATEGORY_NOT_FOUND`.
 
-### 3.5 `POST /internal/v1/search/reindex`
+### 3.5 `POST /api/v2/search/reindex-runs`
 
 Trigger full reindex bất đồng bộ.
 
-- **Auth:** claim `role = ADMIN` do Gateway chuyển tiếp; thiếu quyền trả `FORBIDDEN`.
-- **Body:** lý do và người trigger, phục vụ audit.
+- **Auth:** identity và role `ADMIN` do Gateway chuyển tiếp; thiếu quyền trả
+  `FORBIDDEN`. Actor audit được lấy từ trusted identity, không nhận từ body.
+- **Body:** chỉ có lý do trigger.
 - **Precondition:** cluster khỏe và còn đủ dung lượng cho một index đầy đủ kèm
   replica; đang có run chưa kết thúc thì trả `REINDEX_ALREADY_RUNNING`.
 - **Hành vi:** trả `202 Accepted` kèm `run_id` và `status_url` ngay lập tức; công
@@ -124,7 +137,7 @@ Trigger full reindex bất đồng bộ.
 - **Idempotency:** không tự dedupe theo body; ràng buộc “chỉ một run đang chạy”
   là cơ chế chống trigger trùng.
 
-### 3.6 `GET /internal/v1/search/reindex/{run_id}`
+### 3.6 `GET /api/v2/search/reindex-runs/{run_id}`
 
 Đọc trạng thái một lần reindex: pha hiện tại, tiến độ build, lag catch-up, thời
 điểm bắt đầu/kết thúc và thông điệp lỗi nếu có. Trả `REINDEX_RUN_NOT_FOUND` khi
@@ -135,6 +148,7 @@ Trigger full reindex bất đồng bộ.
 `GET /actuator/health/liveness` phản ánh tiến trình còn sống.
 `GET /actuator/health/readiness` chỉ `UP` khi kết nối Elasticsearch dùng được và
 consumer đã subscribe. Chi tiết ở [Operations §2](./operations.md#2-health-endpoints).
+Đây là operational endpoint, không thuộc Storefront OpenAPI.
 
 ## 4. Events tiêu thụ
 
@@ -201,29 +215,38 @@ Consumer phải kiểm tra cặp `product_id` + `sku_id` để chặn drift.
 
 ### 4.5 `t.review.events` — rating
 
-Producer: Review. Key `product_id`. Search chỉ xử lý `REVIEW_METRICS_UPDATED` và
-chỉ đọc `product_id`, điểm trung bình, tổng số review cùng timestamp. Áp dụng bằng
+Producer: Review. Key `product_id`. Search chỉ xử lý
+`com.ecommerce.review.metrics-updated.v1`; event mang `product_id`, điểm trung
+bình, tổng số review, `review_revision` và `observed_at`. Áp dụng bằng
 `_update_by_query` theo `product_id` với `conflicts=proceed` và throttle, guard
-`review_version`. Không upsert.
+`review_revision`. Không upsert.
 
 ## 5. Contract nội bộ Search gọi ra
 
 Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
-`GET /internal/v1/products/export` của Product và
+`GET /internal/v1/products/export` của Product,
 [`GET /internal/v1/inventory/stock-snapshots`](../../contracts/http/inventory/internal/v1/openapi.yaml)
-để backfill catalog/stock. Search replay stock topic từ `replay_from_offsets` sau import.
-Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
+và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/internal/v1/openapi.yaml)
+để backfill catalog, stock và rating. Hai snapshot export trả `replay_from_offsets`
+được chụp trước scan; Search replay stock và review topic từ offset tương ứng sau
+import. Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 
+- V1 đang là API legacy đã có frontend sử dụng. Nó trả field giá legacy,
+  `matching_skus`/collapse, category phẳng và error body riêng; không được sửa âm
+  thầm để giống v2. Gateway chạy hai version song song cho tới khi frontend chuyển.
+- V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
+  `NOT product_id`. PDP cần Product buyer-read API hoặc BFF riêng; không được biến
+  Search projection thành nguồn catalog có thẩm quyền để che khoảng trống này.
 - Thêm field optional vào event là thay đổi tương thích: Search bỏ qua field lạ.
 - Xóa field, đổi ngữ nghĩa field, đổi Kafka key hoặc đổi ý nghĩa của
   `catalog_revision` là breaking change và phải phối hợp với Search trước khi
   rollout.
 - Thêm `event_type` mới vào topic đang dùng là tương thích: Search ignore và ACK.
 - Với HTTP, thêm tham số optional và field response mới là tương thích; đổi hình
-  dạng response, đổi mã lỗi hoặc đổi ngữ nghĩa cursor là breaking và cần
-  `/api/v2`.
+  dạng response, đổi mã lỗi hoặc đổi ngữ nghĩa cursor là breaking và cần major
+  path mới. V1 legacy và v2 canonical phải chạy song song trong migration.
 - Cursor không phải contract ổn định giữa các version: client phải coi nó là chuỗi
   đục và không được tự sinh.
 - Trước khi bất kỳ interaction nào đạt `implemented`: phải có OpenAPI/AsyncAPI
