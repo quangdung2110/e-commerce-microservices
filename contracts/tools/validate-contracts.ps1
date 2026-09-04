@@ -52,10 +52,12 @@ function Invoke-OptionalTool {
 
 Write-Host 'Validating JSON files...'
 Get-ChildItem $contractRoot -Recurse -File -Filter '*.json' | ForEach-Object {
+    # Bên trong catch, $_ là ErrorRecord chứ không còn là file của pipeline.
+    $file = $_
     try {
-        $null = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 100
+        $null = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 100
     } catch {
-        Add-ContractError "Invalid JSON in $(Get-RelativeDisplayPath $_.FullName): $($_.Exception.Message)"
+        Add-ContractError "Invalid JSON in $(Get-RelativeDisplayPath $file.FullName): $($_.Exception.Message)"
     }
 }
 
@@ -156,43 +158,47 @@ $requiredCloudEventFields = @(
     'datacontenttype', 'dataschema', 'data'
 )
 Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json' | ForEach-Object {
+    # Bên trong catch, $_ là ErrorRecord chứ không còn là file của pipeline.
+    $file = $_
+    $display = Get-RelativeDisplayPath $file.FullName
     try {
-        $event = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 100
+        $event = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 100
         foreach ($field in $requiredCloudEventFields) {
             if ($null -eq $event.PSObject.Properties[$field]) {
-                Add-ContractError "CloudEvent example is missing '$field': $(Get-RelativeDisplayPath $_.FullName)"
+                Add-ContractError "CloudEvent example is missing '$field': $display"
             }
         }
         if ($event.specversion -ne '1.0') {
-            Add-ContractError "CloudEvent specversion must be 1.0: $(Get-RelativeDisplayPath $_.FullName)"
+            Add-ContractError "CloudEvent specversion must be 1.0: $display"
         }
         if ($event.type -notmatch '^com\.ecommerce\..+\.v[1-9][0-9]*$') {
-            Add-ContractError "CloudEvent type must be versioned: $(Get-RelativeDisplayPath $_.FullName)"
+            Add-ContractError "CloudEvent type must be versioned: $display"
         }
-        if ($event.type -eq 'com.ecommerce.cart.item-added.v1') {
-            $requiredDataFields = @(
-                'cart_id', 'user_id', 'sku_id', 'product_id', 'quantity',
-                'unit_price_at_add', 'product_name', 'is_available',
-                'added_at', 'updated_at'
-            )
-            foreach ($field in $requiredDataFields) {
-                if ($null -eq $event.data.PSObject.Properties[$field]) {
-                    Add-ContractError "Cart item event data is missing '$field': $(Get-RelativeDisplayPath $_.FullName)"
-                }
-            }
-            $moneyJson = $event.data.unit_price_at_add | ConvertTo-Json -Depth 10 -Compress
-            $moneySchema = Join-Path $contractRoot 'shared/json-schema/v1/money.schema.json'
-            if (-not (Test-Json -Json $moneyJson -SchemaFile $moneySchema -ErrorAction SilentlyContinue)) {
-                Add-ContractError "Cart item event contains invalid Money: $(Get-RelativeDisplayPath $_.FullName)"
-            }
-            $eventSchema = Join-Path $contractRoot 'events/cart/v1/schemas/cart-item-added.schema.json'
-            $eventJson = Get-Content -LiteralPath $_.FullName -Raw
-            if (-not (Test-Json -Json $eventJson -SchemaFile $eventSchema -ErrorAction SilentlyContinue)) {
-                Add-ContractError "Cart item event does not match its JSON Schema: $(Get-RelativeDisplayPath $_.FullName)"
+        # Example trỏ tới schema đã bị xóa là cách contract rot lọt qua CI:
+        # example sống sót sau khi event bị bỏ khỏi thiết kế.
+        if ($event.dataschema) {
+            $schemaPath = Join-Path $repoRoot ($event.dataschema -replace '^/', '')
+            if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
+                Add-ContractError "CloudEvent example points at a missing dataschema '$($event.dataschema)': $display"
             }
         }
     } catch {
-        Add-ContractError "Cannot inspect CloudEvent example $(Get-RelativeDisplayPath $_.FullName): $($_.Exception.Message)"
+        Add-ContractError "Cannot inspect CloudEvent example ${display}: $($_.Exception.Message)"
+    }
+}
+
+Write-Host 'Checking JSON Schema references...'
+Get-ChildItem $contractRoot -Recurse -File -Filter '*.schema.json' | ForEach-Object {
+    $file = $_
+    $display = Get-RelativeDisplayPath $file.FullName
+    $content = Get-Content -LiteralPath $file.FullName -Raw
+    [regex]::Matches($content, '"\$ref"\s*:\s*"([^"]+)"') | ForEach-Object {
+        $ref = $_.Groups[1].Value
+        if ($ref -match '^(#|https?://)') { return }
+        $target = Join-Path $file.DirectoryName (($ref -split '#', 2)[0])
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            Add-ContractError "Broken JSON Schema `$ref '$ref' in $display"
+        }
     }
 }
 
