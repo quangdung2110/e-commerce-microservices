@@ -1,18 +1,11 @@
 package com.platform.productservice.domain.enums;
 
 /**
- * Product lifecycle status.
+ * Lifecycle của Product. Chỉ admin đổi trạng thái; không có transition tự động
+ * theo tồn kho (docs/product/domain.md, PRODUCT-BR-009).
  */
 public enum ProductStatus {
     DRAFT,
     ACTIVE,
-    HIDDEN;
-
-    /**
-     * Returns true if the status allows direct mutations outside of FSM transitions.
-     * ACTIVE products should only be modified through formal FSM transitions.
-     */
-    public boolean isMutable() {
-        return this == DRAFT || this == HIDDEN;
-    }
+    HIDDEN
 }

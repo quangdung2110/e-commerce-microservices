@@ -1,125 +1,94 @@
 package com.platform.productservice.config;
 
-import com.platform.productservice.common.constants.ServiceConstants;
+import com.platform.productservice.infrastructure.kafka.MarkdownSnapshotConsumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.*;
-import org.springframework.kafka.listener.*;
-import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
-import org.springframework.util.backoff.ExponentialBackOff;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Kafka consumer configuration for the Event Handler Worker.
- * Consumes events from t.product.events and t.category.events topics
- * with manual offset commit, error handling, and DLQ support.
+ * Consumer cho markdown snapshot của Promotion.
+ *
+ * <p>Ack theo record sau khi listener trả về, nghĩa là sau khi transaction DB đã
+ * commit. Retry có backoff; hết retry thì message sang DLQ theo
+ * {@code x-retry-policy} của AsyncAPI.
+ *
+ * <p>Producer duy nhất ở đây phục vụ DLQ. Event nghiệp vụ không bao giờ được
+ * publish trực tiếp: chúng đi qua outbox và Debezium (ADR-012).
  */
 @Configuration
-@EnableKafka
 public class KafkaConsumerConfig {
 
-    private static final Logger log = LoggerFactory.getLogger(KafkaConsumerConfig.class);
-
-    private static final int RETRY_COUNT = 3;
-    private static final long RETRY_INTERVAL_MS = 500;
-    private static final long RETRY_MAX_INTERVAL_MS = 2000;
-    private static final double RETRY_MULTIPLIER = 2.0;
-
-    private static final int CONTAINER_CONCURRENCY = 3;
-    private static final int MAX_POLL_RECORDS = 100;
-    private static final String DLQ_SUFFIX = ".DLQ";
-
-    private final String bootstrapServers;
-    private final KafkaTemplate<String, String> kafkaTemplate;
-
-    public KafkaConsumerConfig(
-            @Value("${spring.kafka.bootstrap-servers:localhost:9092}") String bootstrapServers,
-            KafkaTemplate<String, String> kafkaTemplate) {
-        this.bootstrapServers = bootstrapServers;
-        this.kafkaTemplate = kafkaTemplate;
+    @Bean
+    public ConsumerFactory<String, String> markdownConsumerFactory(KafkaProperties kafkaProperties,
+                                                                   ProductProperties productProperties) {
+        Map<String, Object> config = new HashMap<>(kafkaProperties.buildConsumerProperties(null));
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, productProperties.getMarkdown().getGroupId());
+        config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        return new DefaultKafkaConsumerFactory<>(config);
     }
 
     @Bean
-    public ConsumerFactory<String, String> productEventHandlerConsumerFactory() {
-        Map<String, Object> configProps = new HashMap<>();
-        configProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        configProps.put(ConsumerConfig.GROUP_ID_CONFIG, ServiceConstants.CG_EVENT_HANDLER);
-        configProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
-        configProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
-        configProps.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, StringDeserializer.class);
-        configProps.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, StringDeserializer.class);
-        configProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        configProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        configProps.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, MAX_POLL_RECORDS);
-        configProps.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300000);
-        configProps.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 30000);
-        configProps.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 10000);
-        return new DefaultKafkaConsumerFactory<>(configProps);
+    public ProducerFactory<String, String> deadLetterProducerFactory(KafkaProperties kafkaProperties) {
+        Map<String, Object> config = new HashMap<>(kafkaProperties.buildProducerProperties(null));
+        config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        config.put(ProducerConfig.ACKS_CONFIG, "all");
+        return new DefaultKafkaProducerFactory<>(config);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> productEventHandlerListenerContainerFactory(
-            ConsumerFactory<String, String> productEventHandlerConsumerFactory) {
+    public KafkaTemplate<String, String> deadLetterKafkaTemplate(
+            ProducerFactory<String, String> deadLetterProducerFactory) {
+        return new KafkaTemplate<>(deadLetterProducerFactory);
+    }
 
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, String> markdownListenerContainerFactory(
+            ConsumerFactory<String, String> markdownConsumerFactory,
+            KafkaTemplate<String, String> deadLetterKafkaTemplate,
+            ProductProperties productProperties) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
-        factory.setConsumerFactory(productEventHandlerConsumerFactory);
-        factory.setConcurrency(CONTAINER_CONCURRENCY);
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-
-        DefaultErrorHandler errorHandler = buildDefaultErrorHandler();
-        factory.setCommonErrorHandler(errorHandler);
-
-        log.info("KafkaConsumerConfig: configured product event handler factory with concurrency={}, " +
-                        "maxPollRecords={}, ackMode=MANUAL_IMMEDIATE, retries={}",
-                CONTAINER_CONCURRENCY, MAX_POLL_RECORDS, RETRY_COUNT);
-
+        factory.setConsumerFactory(markdownConsumerFactory);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+        factory.setCommonErrorHandler(markdownErrorHandler(deadLetterKafkaTemplate, productProperties));
         return factory;
     }
 
-    private DefaultErrorHandler buildDefaultErrorHandler() {
-        ExponentialBackOff backOff = new ExponentialBackOff(RETRY_INTERVAL_MS, RETRY_MULTIPLIER);
-        backOff.setMaxInterval(RETRY_MAX_INTERVAL_MS);
-        backOff.setMaxElapsedTime(RETRY_MAX_INTERVAL_MS * RETRY_COUNT);
+    private DefaultErrorHandler markdownErrorHandler(KafkaTemplate<String, String> kafkaTemplate,
+                                                     ProductProperties productProperties) {
+        String dlqTopic = productProperties.getMarkdown().getDlqTopic();
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
+                (record, exception) -> new TopicPartition(dlqTopic, record.partition()));
 
-        return new DefaultErrorHandler((record, exception) -> {
-            log.error("Kafka consumer error after retries exhausted: topic={}, partition={}, offset={}, error={}",
-                    record.topic(), record.partition(), record.offset(), exception.getMessage(), exception);
-            sendToDlq(record, "retries_exhausted:" + exception.getMessage());
-        }, backOff);
-    }
+        ExponentialBackOffWithMaxRetries backOff =
+                new ExponentialBackOffWithMaxRetries(productProperties.getMarkdown().getRetryAttempts());
+        backOff.setInitialInterval(productProperties.getMarkdown().getRetryBackoff().toMillis());
+        backOff.setMultiplier(2.0);
 
-    private void sendToDlq(ConsumerRecord<?, ?> record, String reason) {
-        String dlqTopic = record.topic() + DLQ_SUFFIX;
-        @SuppressWarnings("unchecked")
-        ProducerRecord<String, String> dlqRecord = new ProducerRecord<>(
-                dlqTopic,
-                record.partition(),
-                (String) record.key(),
-                (String) record.value(),
-                record.headers()
-        );
-        kafkaTemplate.send(dlqRecord)
-                .whenComplete((result, ex) -> {
-                    if (ex != null) {
-                        log.error("Failed to send message to DLQ topic {}: {}", dlqTopic, ex.getMessage());
-                    } else {
-                        log.warn("Message sent to DLQ [dlqTopic={}, partition={}, offset={}, reason={}]",
-                                dlqTopic, result.getRecordMetadata().partition(),
-                                result.getRecordMetadata().offset(), reason);
-                    }
-                });
+        DefaultErrorHandler handler = new DefaultErrorHandler(recoverer, backOff);
+        // Event sai hợp đồng không thể tự khỏi khi retry.
+        handler.addNotRetryableExceptions(MarkdownSnapshotConsumer.NonRetryableEventException.class);
+        return handler;
     }
 }

@@ -1,42 +1,32 @@
+# Integration test dùng Testcontainers PostgreSQL; URL do test inject.
 spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/product_service_test
-    username: postgres
-    password: postgres
-
   jpa:
     hibernate:
-      ddl-auto: create-drop
-    show-sql: true
-
+      ddl-auto: validate
+    open-in-view: false
   flyway:
-    enabled: false
-
-  data:
-    redis:
-      host: localhost
-      port: 6379
-
+    enabled: true
+  # Không có broker trong test: consumer được gọi trực tiếp.
   kafka:
     bootstrap-servers: localhost:9092
+    listener:
+      auto-startup: false
 
-app:
+# gRPC service được gọi trực tiếp qua bean, không mở port.
+grpc:
+  server:
+    port: -1
+
+product:
+  export:
+    cursor-secret: test-export-cursor-secret
+    default-limit: 2
+    max-limit: 10
   markdown:
-    expiry-cron: "0 0 3 * * ?"
-  outbox:
-    retention-days: 1
-    batch-size: 10
-  inventory:
-    sync-batch-size: 10
-    sync-interval-ms: 100
-  cache:
-    sku-ttl-seconds: 60
-    markdown-ttl-buffer-seconds: 30
-  lock:
-    timeout-seconds: 1
-    distributed-lock-ttl-seconds: 5
+    lock-timeout: 2s
 
 logging:
   level:
     root: WARN
-    com.platform.productservice: DEBUG
+    com.platform.productservice: INFO
+    org.testcontainers: INFO
