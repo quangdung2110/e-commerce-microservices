@@ -5,9 +5,7 @@ scope: current
 status: proposed
 owners:
   - Search Service team
-evidence:
-  - java/services/search-service/src/main/java/com/ecommerce/search
-  - java/services/search-service/docker-compose.yml
+evidence: []
 verified_against_commit: null
 ---
 
@@ -54,7 +52,7 @@ flowchart LR
 |---|---|---|---|---|
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
 | Internal admin adapter | Nhận trigger reindex, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/internal` |
-| Query layer | Build Elasticsearch DSL, transform hit thành response | Ghi vào index | Elasticsearch read alias | `service`, `repository` |
+| Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
 | Indexing worker | Consume 4 topic, transform event thành lệnh ghi, apply guard | Bỏ qua guard hoặc tự gọi ngược Product trong hot path | Kafka, write alias | `worker` |
 | Reindex job | Build index mới, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |

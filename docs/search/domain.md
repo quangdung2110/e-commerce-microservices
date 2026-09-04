@@ -6,7 +6,6 @@ status: proposed
 owners:
   - Search Service team
 evidence:
-  - java/services/search-service/src/main/java/com/ecommerce/search/domain
   - docs/search/schema
 verified_against_commit: null
 ---

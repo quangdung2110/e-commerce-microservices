@@ -6,7 +6,6 @@ status: proposed
 owners:
   - Search Service team
 evidence:
-  - java/services/search-service
   - docs/search/schema
 verified_against_commit: null
 ---
@@ -98,7 +97,7 @@ hiệu từ Search.
 | ID | Invariant |
 |---|---|
 | `SEARCH-INV-001` | Search không bao giờ là nguồn để chốt giá hoặc tồn kho cho giao dịch; mọi số liệu hiển thị là snapshot có độ trễ. |
-| `SEARCH-INV-002` | Một document trong index `products` là đúng một SKU; `_id = sku_id`. |
+| `SEARCH-INV-002` | Một document trong index `products` và một item của API search là đúng một SKU; `_id = sku_id`. Product chỉ là ngữ cảnh hiển thị và khóa đếm DISTINCT. |
 | `SEARCH-INV-003` | Mọi count hiển thị cho browse/facet phải đếm DISTINCT `product_id`, không dùng `doc_count` theo SKU. |
 | `SEARCH-INV-004` | Event cũ hơn state hiện tại của document không được ghi đè state đó; guard theo từng nguồn dữ liệu. |
 | `SEARCH-INV-005` | Event tồn kho hoặc rating không được tạo document mới; chỉ event catalog của Product mới tạo document. |
@@ -143,3 +142,7 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 - **Chưa có SLO số.** Ngưỡng latency, freshness và alert threshold còn là `TBD`
   cho tới khi có số liệu production.
 - **Chưa có contract test** giữa Search và ba producer.
+- **Implementation chưa theo ADR-012.** Code hiện dùng `collapse(product_id)` và
+  cursor offset, trong khi thiết kế đã chốt SKU hit trực tiếp với `search_after`.
+  Khi viết lại service, implementation phải bỏ `collapse`/`inner_hits` và áp dụng
+  cursor theo sort values; xem [ADR-012](./decisions/ADR-012-sku-results-with-search-after.md).

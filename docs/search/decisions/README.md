@@ -25,7 +25,7 @@ nghĩa implementation đã được xác minh khớp với quyết định. Kho�
 |---|---|---|---|---|
 | [ADR-000](./ADR-000-template.md) | Template — không phải quyết định thực tế | Template | N/A | N/A |
 | [ADR-001](./ADR-001-elasticsearch-only-store.md) | Elasticsearch là store duy nhất | Accepted | 2026-09-02 | — |
-| [ADR-002](./ADR-002-sku-first-document.md) | Document là SKU, gom nhóm bằng field collapsing | Accepted | 2026-09-02 | — |
+| [ADR-002](./ADR-002-sku-first-document.md) | Document là SKU, gom nhóm bằng field collapsing | Superseded | 2026-09-02 | ADR-012 |
 | [ADR-003](./ADR-003-vietnamese-analysis-and-autocomplete.md) | Phân tích tiếng Việt bằng ICU và autocomplete edge n-gram | Accepted | 2026-09-02 | — |
 | [ADR-004](./ADR-004-per-source-ordering-guard.md) | Guard ordering theo từng nguồn dữ liệu | Accepted | 2026-09-02 | Guard `version` đơn của thiết kế cũ |
 | [ADR-005](./ADR-005-no-dead-letter-queue.md) | Không dùng dead-letter queue | Accepted | 2026-09-02 | — |
@@ -35,3 +35,4 @@ nghĩa implementation đã được xác minh khớp với quyết định. Kho�
 | [ADR-009](./ADR-009-stock-projection-ownership.md) | `is_in_stock` đến từ Inventory | Accepted | 2026-09-02 | Suy ra từ trạng thái catalog |
 | [ADR-010](./ADR-010-derived-category-tree.md) | Search tự dẫn xuất cây danh mục | Accepted | 2026-09-02 | Cấu trúc cây bất biến của thiết kế cũ |
 | [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted | 2026-09-02 | Draft Cleanup Job của thiết kế cũ |
+| [ADR-012](./ADR-012-sku-results-with-search-after.md) | SKU hit trực tiếp, phân trang bằng `search_after` | Accepted | 2026-09-04 | ADR-002 |

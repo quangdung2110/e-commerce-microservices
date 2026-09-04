@@ -5,9 +5,7 @@ scope: current
 status: proposed
 owners:
   - Search Service team
-evidence:
-  - java/services/search-service/src/main/java/com/ecommerce/search/service
-  - java/services/search-service/src/main/java/com/ecommerce/search/worker
+evidence: []
 verified_against_commit: null
 ---
 
@@ -38,7 +36,7 @@ verified_against_commit: null
 
 ## WF-SEARCH-001 — Tìm kiếm sản phẩm
 
-**Mục tiêu.** Trả trang kết quả ổn định, đã gom nhóm theo product, kèm facet dùng
+**Mục tiêu.** Trả trang SKU kết quả ổn định, kèm ngữ cảnh Product và facet dùng
 được cho bộ lọc.
 
 **Trigger và participants.** `GET /api/v1/search/products` qua Gateway; chỉ Search
@@ -54,16 +52,16 @@ và Elasticsearch tham gia.
    (`is_deleted=false`, `product_status=ACTIVE`, `sku_status=ACTIVE`) cộng filter
    của buyer; mỗi giá trị filter thuộc tính kiểm tra cả `searchable_attributes` và
    `variant_attributes` với `minimum_should_match: 1`.
-4. Thêm `collapse` theo `product_id`, sort đã chọn kèm tie-break `sku_id asc`,
-   `search_after` khi có cursor, và các aggregation facet với `cardinality` trên
-   `product_id`.
-5. Transform hit: tính `discount_percentage` theo `SEARCH-BR-005`, sinh
-   `next_cursor` từ sort values của hit cuối.
+4. Thêm sort đã chọn kèm tie-break `sku_id asc`, `search_after` khi có cursor,
+   và các aggregation facet với `cardinality` trên `product_id`. Không dùng
+   `collapse` hoặc `inner_hits`.
+5. Transform mỗi hit thành đúng một SKU item, tính `discount_percentage` theo
+   `SEARCH-BR-005`, sinh `next_cursor` từ sort values của hit cuối.
 
 **State/data changes.** Không có. Đây là luồng thuần đọc.
 
-**Output.** Danh sách item, tổng số, facet kèm `count_semantics`, và
-`next_cursor` (`null` khi hết dữ liệu).
+**Output.** Danh sách SKU item, tổng số SKU khớp, facet kèm `count_semantics`,
+và `next_cursor` (`null` khi hết dữ liệu). Cùng Product có thể có nhiều item.
 
 **Failure paths.** Tham số sai → `INVALID_QUERY_PARAMETER`. Cursor hỏng hoặc
 không khớp tham số → `INVALID_CURSOR`. Elasticsearch không sẵn sàng →
@@ -84,8 +82,9 @@ cursor, thời gian truy vấn Elasticsearch.
 
 **Test scenarios.** Không có `q`; có `q` kèm lỗi chính tả; filter nhiều giá trị;
 range giá biên; `in_stock=false`; từng kiểu sort; phân trang đến hết; cursor lỗi;
-cursor dùng lại sau khi đổi filter; Elasticsearch timeout; kiểm tra facet đếm
-DISTINCT product; kiểm tra hàng `DRAFT`/`HIDDEN`/đã xóa không bao giờ lộ ra.
+cursor dùng lại sau khi đổi query/filter/sort; một Product nhiều SKU trả nhiều
+SKU item theo sort; Elasticsearch timeout; kiểm tra facet đếm DISTINCT product;
+kiểm tra hàng `DRAFT`/`HIDDEN`/đã xóa không bao giờ lộ ra.
 
 ---
 

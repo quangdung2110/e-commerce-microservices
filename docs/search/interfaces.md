@@ -5,9 +5,7 @@ scope: current
 status: proposed
 owners:
   - Search Service team
-evidence:
-  - java/services/search-service/src/main/java/com/ecommerce/search/controller
-  - java/services/search-service/src/main/java/com/ecommerce/search/worker
+evidence: []
 verified_against_commit: null
 ---
 
@@ -63,12 +61,19 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
   Range và sort theo giá dùng `selling_price_vnd`.
 - **Precondition:** không có. Kết quả rỗng là kết quả hợp lệ.
 - **Pagination:** cursor-based trên `search_after`. Cursor là base64 của sort
-  values thuộc hit cuối cùng cộng với `sku_id`. Cursor gắn với đúng bộ tham số đã
-  sinh ra nó; đổi `q`, filter hoặc `sort` rồi gửi lại cursor cũ là
-  `INVALID_CURSOR`. `next_cursor = null` nghĩa là hết dữ liệu. Không hỗ trợ nhảy
-  tới trang bất kỳ ([ADR-007](./decisions/ADR-007-cursor-pagination.md)).
-- **Gom nhóm:** kết quả collapse theo `product_id`; mỗi item là SKU đại diện kèm
-  tối đa vài biến thể khớp trong `inner_hits`.
+  values thuộc hit cuối cùng, trong đó `sku_id` luôn là tie-break cuối. Cursor
+  mang fingerprint của toàn bộ query/filter/sort đã chuẩn hóa (trừ `size`); dùng
+  lại nó sau khi đổi bộ tham số trả `INVALID_CURSOR`. `next_cursor = null` nghĩa
+  là hết dữ liệu. Không hỗ trợ nhảy tới trang bất kỳ
+  ([ADR-007](./decisions/ADR-007-cursor-pagination.md)).
+- **Đơn vị kết quả:** mỗi item là đúng một SKU khớp query, mang cả field
+  product-level đã denormalize để UI dựng product card. Cùng một `product_id` có
+  thể xuất hiện nhiều lần nếu nhiều SKU của Product cùng khớp. API không trả
+  `inner_hits` và không hứa “một Product duy nhất” trên toàn bộ pagination;
+  điều này cho phép `search_after` hoạt động đúng với relevance, giá và rating
+  ([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)).
+- **Total:** `total` là số SKU khớp chính xác. Count trong facet vẫn là DISTINCT
+  `product_id`; client không được suy diễn đó là số trang hay tổng số item Product.
 - **Facet:** đi kèm response, mọi count là DISTINCT `product_id`; response khai báo
   `count_semantics = DISTINCT_PRODUCT` để client không tự diễn giải.
 - **Lọc bắt buộc phía server:** `is_deleted = false`, `product_status = ACTIVE`,

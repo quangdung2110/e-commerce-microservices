@@ -5,10 +5,7 @@ scope: current
 status: proposed
 owners:
   - Search Service team
-evidence:
-  - java/services/search-service/pom.xml
-  - java/services/search-service/docker-compose.yml
-  - java/services/search-service/Dockerfile
+evidence: []
 verified_against_commit: null
 ---
 

@@ -1,16 +1,17 @@
 ---
 doc_id: search-adr-002
 service: search
-status: accepted
+status: superseded
 date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+superseded_by: ADR-012-sku-results-with-search-after
 evidence:
   - docs/search/schema/products.index.json
 ---
 
-# ADR-002 — Document là SKU, gom nhóm bằng field collapsing
+# ADR-002 — Document là SKU, gom nhóm bằng field collapsing (Superseded)
 
 ## Context
 

@@ -5,9 +5,7 @@ scope: current
 status: proposed
 owners:
   - Search Service team
-evidence:
-  - java/services/search-service/src/main/resources
-  - java/services/search-service/Dockerfile
+evidence: []
 verified_against_commit: null
 ---
 

@@ -69,8 +69,9 @@ erDiagram
 
 Quan hệ chỉ là quan hệ logic bằng identifier: Elasticsearch không có join và
 thiết kế cố tình tránh `nested`/`join` field
-([ADR-002](./decisions/ADR-002-sku-first-document.md)). Nhiều SKU document cùng
-`product_id` được gom lại lúc query bằng field collapsing.
+([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)). Mỗi hit của API search
+là một SKU; `product_id` chỉ giữ liên kết logic, dùng cho count DISTINCT và ngữ
+cảnh hiển thị, không dùng để field collapse ([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)).
 
 ## 3. Schema sources
 
@@ -93,7 +94,7 @@ xem trong file mapping.
 | Field | Nguồn | Ý nghĩa |
 |---|---|---|
 | `sku_id` | Product | `_id` của document |
-| `product_id` | Product | Pivot key cho collapse và cho mọi phép đếm DISTINCT |
+| `product_id` | Product | Liên kết Product cho response và pivot cho mọi phép đếm DISTINCT |
 | `searchable_attributes` | Product | Token `code:value` của thuộc tính product-level, thay cho `nested` |
 | `variant_attributes` | Product | Token `code:value` của thuộc tính biến thể SKU |
 | `base_price_vnd` | Product | Giá niêm yết admin đặt |
@@ -163,7 +164,7 @@ alias. Các quyết định mapping bám theo query pattern thực tế:
 | `name` + `name.autocomplete` + `name.keyword` | Full-text, prefix fallback, sort/exact | Tăng disk và thời gian index |
 | `searchable_attributes`, `variant_attributes` | Filter tổ hợp thuộc tính bằng term filter | Mất khả năng query theo cặp attribute-value có cấu trúc |
 | `selling_price_vnd` | Range filter và sort giá | Phải reprice document khi markdown đổi |
-| `product_id` | Collapse và `cardinality` count | `cardinality` là xấp xỉ; cần `precision_threshold` đủ lớn |
+| `product_id` | Ngữ cảnh Product trên SKU hit và `cardinality` count | `cardinality` là xấp xỉ; cần `precision_threshold` đủ lớn |
 | `is_in_stock`, `has_promotion`, `is_deleted` | Term filter được cache bitset | Phải recompute khi nguồn đổi |
 | `refresh_interval` 1s cho `products` | Buyer thấy thay đổi gần realtime | Giảm throughput indexing; có thể nới tạm khi ingest spike |
 | `refresh_interval` 5s cho hai index còn lại | Dữ liệu đổi chậm | — |
