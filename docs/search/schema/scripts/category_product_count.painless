@@ -1,0 +1,5 @@
+// category_product_count.painless
+// Ghi ket qua job recompute product_count. Gia tri tuyet doi, khong cong tru.
+ctx._source.product_count = params.product_count;
+ctx._source.product_count_updated_at = params.computed_at;
+ctx._source.indexed_at = params.indexed_at;

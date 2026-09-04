@@ -1,0 +1,11 @@
+// category_patch.painless
+// Ap dung CATEGORY_CREATED / CATEGORY_UPDATED len index categories.
+// Guard: category_version la ISO 8601 UTC millisecond cua event.
+// path, level va is_leaf KHONG duoc set o day: chung do Search dan xuat
+// trong buoc recompute cay (xem ADR-010).
+if (ctx._source.is_deleted == true) { ctx.op = "none"; return; }
+if (ctx._source.category_version != null && params.category_version.compareTo(ctx._source.category_version) <= 0) { ctx.op = "none"; return; }
+for (entry in params.fields.entrySet()) { ctx._source[entry.getKey()] = entry.getValue(); }
+ctx._source.category_version = params.category_version;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_event_id = params.event_id;

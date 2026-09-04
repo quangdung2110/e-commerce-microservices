@@ -1,0 +1,8 @@
+// category_denorm_sync.painless
+// _update_by_query tren products theo term category_id.
+// Dong bo category_name va category_path sau khi cay danh muc doi.
+// Khong cham catalog_revision: day khong phai su kien catalog cua Product.
+if (ctx._source.is_deleted == true) { ctx.op = "none"; return; }
+ctx._source.category_name = params.category_name;
+ctx._source.category_path = params.category_path;
+ctx._source.indexed_at = params.indexed_at;

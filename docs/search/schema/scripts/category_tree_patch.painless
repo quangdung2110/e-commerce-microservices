@@ -1,0 +1,9 @@
+// category_tree_patch.painless
+// Ghi lai gia tri dan xuat cua cay danh muc sau moi lan recompute.
+// Guard bang tree_version tang don dieu do job recompute cap.
+if (ctx._source.tree_version != null && params.tree_version <= ctx._source.tree_version) { ctx.op = "none"; return; }
+ctx._source.path = params.path;
+ctx._source.level = params.level;
+ctx._source.is_leaf = params.is_leaf;
+ctx._source.tree_version = params.tree_version;
+ctx._source.indexed_at = params.indexed_at;

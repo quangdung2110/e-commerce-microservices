@@ -1,0 +1,10 @@
+// catalog_patch.painless
+// Ap dung snapshot catalog cua Product (PRODUCT_*, SKU_* tru tombstone).
+// Guard: catalog_revision tang don dieu theo Product aggregate.
+// Dung voi scripted_upsert: true va "upsert": {} de tao document lan dau.
+if (ctx._source.is_deleted == true) { ctx.op = "none"; return; }
+if (ctx._source.catalog_revision != null && params.catalog_revision <= ctx._source.catalog_revision) { ctx.op = "none"; return; }
+for (entry in params.fields.entrySet()) { ctx._source[entry.getKey()] = entry.getValue(); }
+ctx._source.catalog_revision = params.catalog_revision;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_catalog_event_id = params.event_id;

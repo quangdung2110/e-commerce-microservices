@@ -1,0 +1,58 @@
+{
+  "index_patterns": ["search_suggestions_v*"],
+  "aliases_note": "Alias doc: search_suggestions (read). Khong co write alias: index duoc build nguyen tu roi swap alias.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "5s",
+    "analysis": {
+      "analyzer": {
+        "suggest_index_analyzer": {
+          "type": "custom",
+          "tokenizer": "suggest_edge_ngram_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        },
+        "suggest_search_analyzer": {
+          "type": "custom",
+          "tokenizer": "icu_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        }
+      },
+      "tokenizer": {
+        "suggest_edge_ngram_tokenizer": {
+          "type": "edge_ngram",
+          "min_gram": 2,
+          "max_gram": 20,
+          "token_chars": ["letter", "digit"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "suggestion_id": { "type": "keyword" },
+      "text": {
+        "type": "text",
+        "analyzer": "suggest_index_analyzer",
+        "search_analyzer": "suggest_search_analyzer",
+        "fields": { "keyword": { "type": "keyword" } }
+      },
+      "text_normalized": { "type": "keyword" },
+      "type": { "type": "keyword" },
+      "source": { "type": "keyword" },
+      "scope": { "type": "keyword" },
+
+      "category_id": { "type": "keyword" },
+      "product_id": { "type": "keyword" },
+
+      "weight": { "type": "long" },
+      "product_rating_avg": { "type": "half_float" },
+      "product_rating_count": { "type": "integer" },
+      "product_count": { "type": "long" },
+
+      "build_version": { "type": "long" },
+      "updated_at": { "type": "date" }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+// stock_patch.painless
+// Ap dung INVENTORY_STOCK_CHANGED. KHONG dung scripted_upsert (SEARCH-INV-005).
+// Guard: stock_version la ISO 8601 UTC millisecond, so sanh chuoi = so sanh thoi gian.
+if (ctx._source.is_deleted == true) { ctx.op = "none"; return; }
+if (ctx._source.stock_version != null && params.stock_version.compareTo(ctx._source.stock_version) <= 0) { ctx.op = "none"; return; }
+ctx._source.available_quantity = params.available_quantity;
+ctx._source.is_in_stock = params.available_quantity > 0;
+ctx._source.stock_version = params.stock_version;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_stock_event_id = params.event_id;

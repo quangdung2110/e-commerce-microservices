@@ -1,0 +1,104 @@
+{
+  "index_patterns": ["products_v*"],
+  "aliases_note": "Alias doc: products (read), products_write (write). Alias duoc gan khi tao index hoac khi cutover, khong khai bao trong template de tranh hai index cung nhan alias.",
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "refresh_interval": "1s",
+    "analysis": {
+      "analyzer": {
+        "vietnamese_analyzer": {
+          "type": "custom",
+          "tokenizer": "icu_tokenizer",
+          "filter": ["icu_folding", "lowercase", "vi_stop"]
+        },
+        "autocomplete_analyzer": {
+          "type": "custom",
+          "tokenizer": "autocomplete_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        },
+        "autocomplete_search_analyzer": {
+          "type": "custom",
+          "tokenizer": "icu_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        }
+      },
+      "tokenizer": {
+        "autocomplete_tokenizer": {
+          "type": "edge_ngram",
+          "min_gram": 2,
+          "max_gram": 20,
+          "token_chars": ["letter", "digit"]
+        }
+      },
+      "filter": {
+        "vi_stop": {
+          "type": "stop",
+          "stopwords": ["và", "của", "là", "cho", "với", "trong", "này", "có", "được", "các"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "sku_id": { "type": "keyword" },
+      "sku_code": { "type": "keyword" },
+      "product_id": { "type": "keyword" },
+
+      "category_id": { "type": "keyword" },
+      "category_name": { "type": "keyword" },
+      "category_path": { "type": "keyword" },
+
+      "name": {
+        "type": "text",
+        "analyzer": "vietnamese_analyzer",
+        "fields": {
+          "autocomplete": {
+            "type": "text",
+            "analyzer": "autocomplete_analyzer",
+            "search_analyzer": "autocomplete_search_analyzer"
+          },
+          "keyword": { "type": "keyword" }
+        }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "vietnamese_analyzer",
+        "index_options": "offsets"
+      },
+      "thumbnail_url": { "type": "keyword", "index": false },
+
+      "product_status": { "type": "keyword" },
+      "sku_status": { "type": "keyword" },
+
+      "searchable_attributes": { "type": "keyword" },
+      "variant_attributes": { "type": "keyword" },
+
+      "base_price_vnd": { "type": "long" },
+      "selling_price_vnd": { "type": "long" },
+      "has_promotion": { "type": "boolean" },
+
+      "available_quantity": { "type": "integer" },
+      "is_in_stock": { "type": "boolean" },
+
+      "product_rating_avg": { "type": "half_float" },
+      "product_rating_count": { "type": "integer" },
+
+      "is_deleted": { "type": "boolean" },
+      "deleted_at": { "type": "date" },
+
+      "created_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "indexed_at": { "type": "date" },
+
+      "catalog_revision": { "type": "long" },
+      "stock_version": { "type": "date" },
+      "review_version": { "type": "date" },
+
+      "last_catalog_event_id": { "type": "keyword" },
+      "last_stock_event_id": { "type": "keyword" },
+      "last_review_event_id": { "type": "keyword" }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+// catalog_tombstone.painless
+// Ap dung PRODUCT_DELETED / SKU_DELETED. KHONG dung scripted_upsert:
+// tombstone cho mot document khong ton tai la no-op.
+if (ctx._source.catalog_revision != null && params.catalog_revision <= ctx._source.catalog_revision) { ctx.op = "none"; return; }
+ctx._source.is_deleted = true;
+ctx._source.deleted_at = params.deleted_at;
+ctx._source.is_in_stock = false;
+ctx._source.catalog_revision = params.catalog_revision;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_catalog_event_id = params.event_id;
