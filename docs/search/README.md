@@ -61,7 +61,7 @@ là projection.
 |---|---|---|
 | Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
-| `available_quantity` | [Inventory](../inventory/inventory_events.md) | `t.inventory.events` |
+| `available_quantity` | [Inventory](../inventory/inventory_events.md) | `t.inventory.stock.events.v1` + internal snapshot export |
 | `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 
@@ -146,12 +146,10 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 - **Chưa có SLO số.** Ngưỡng latency, freshness và alert threshold còn là `TBD`
   cho tới khi có số liệu production.
 - **Chưa có contract test** giữa Search và ba producer.
-- **Inventory chưa có target contract.** Schema vNext yêu cầu `stock_revision`
-  đơn điệu theo SKU và snapshot/export stock để bootstrap hoặc phục hồi; event
-  legacy chỉ có timestamp nên chưa đáp ứng yêu cầu này.
-- **Media snapshot chưa chốt.** Product v1 hiện chỉ mô tả media storage key, chưa
-  chốt rule chọn thumbnail giữa Product media và SKU media. `thumbnail_storage_key`
-  trong schema vNext là field optional, chưa được coi là contract implemented.
+- **Cross-service contract chưa được implement.** Product đã chốt
+  `thumbnail_storage_key` trong `sku-upserted`; Inventory đã có contract đích cho
+  stock revision/snapshot export. Cả hai vẫn mang trạng thái `proposed` và cần
+  producer implementation, contract test, rồi mới chuyển Search khỏi adapter legacy.
 - **Implementation chưa theo ADR-012.** Code hiện dùng `collapse(product_id)` và
   cursor offset, trong khi thiết kế đã chốt SKU hit trực tiếp với `search_after`.
   Khi viết lại service, implementation phải bỏ `collapse`/`inner_hits` và áp dụng

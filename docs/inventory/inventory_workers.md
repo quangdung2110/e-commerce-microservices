@@ -53,7 +53,9 @@ Inventory Service chạy 4 worker/cron chính, tập trung vào event relay, ghi
 
 ### Sứ mệnh
 
-Ghi `inventory_ledger`, cập nhật `inventory_reservations` và `physical_inventory`, đồng thời tạo `inventory_outbox` cho `INVENTORY_STOCK_CHANGED` (event public aggregate per-SKU).
+Ghi `inventory_ledger`, cập nhật `inventory_reservations` và `physical_inventory`, rồi
+materialize `sku_stock_state` và outbox stock snapshot v1 cho Search. `INVENTORY_STOCK_CHANGED`
+chỉ còn là compatibility event trong thời gian migration.
 
 ### Luồng xử lý chi tiết
 
@@ -77,11 +79,11 @@ Ghi `inventory_ledger`, cập nhật `inventory_reservations` và `physical_inve
 8. Bulk UPDATE physical_inventory.reserved_quantity, actual_quantity
 9. Tính total_available_quantity per SKU:
    SELECT SUM(available_quantity) FROM physical_inventory WHERE sku_id = :sku
-10. Bulk INSERT inventory_outbox
-    event_type='INVENTORY_STOCK_CHANGED'
-    partition_key=sku_id
-    payload chứa: sku_id, product_id, available_quantity, change_type
-11. PostgreSQL Transaction COMMIT (tất cả bước 6-10 trong cùng 1 transaction)
+10. UPSERT sku_stock_state: ghi tổng quantity, observed_at, tăng stock_revision đúng một lần.
+11. Bulk INSERT inventory_outbox cho stock v1, key=sku_id, payload snapshot gồm
+    product_id, sku_id, available_quantity, stock_revision, observed_at.
+12. Trong migration có thể ghi thêm INVENTORY_STOCK_CHANGED legacy.
+13. PostgreSQL Transaction COMMIT (tất cả bước 6-12 trong cùng 1 transaction)
 ```
 
 ### Cơ chế idempotency

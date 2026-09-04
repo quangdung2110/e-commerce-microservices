@@ -83,7 +83,7 @@ operations:
   publishSkuUpserted:
     action: send
     channel: { $ref: '#/channels/productEvents' }
-    summary: Product phát một SKU snapshot cho mỗi SKU bị ảnh hưởng bởi Product aggregate mutation.
+    summary: Product phát một SKU snapshot cho mỗi SKU bị ảnh hưởng bởi Product aggregate mutation; snapshot luôn chứa thumbnail_storage_key đã resolve.
     messages: [{ $ref: '#/channels/productEvents/messages/skuUpserted' }]
   publishSkuDeleted:
     action: send

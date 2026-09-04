@@ -8,14 +8,17 @@
 * [Smart Routing Engine](smart_routing_engine.md)
 
 **Cross-Service References:**
-* [Product Events - Consumed](../product/interfaces.md) — Product consume `INVENTORY_STOCK_CHANGED` (cập nhật display cache)
+* [Search Interfaces](../search/interfaces.md) — Search consume stock snapshot v1 trực tiếp từ Inventory
 * [Order Workflow](../order/order_workflow.md#8-workflow-refund-return-flow) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` để mở bước gọi Payment refund; Order consume `INVENTORY_SHIP_TO_CUSTOMER` để trigger item FSM PROCESSING → DELIVERED
 
 > **Phase 20 (Event Payload Simplification):** Payload `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` đã được tinh giản theo nguyên tắc "minimum viable" — bỏ các field Order Service không cần (VD `order_item_ids[]`, `confirmed_at`, `courier_note`). Chi tiết xem §4.3 và §4.4 dưới đây. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart).
 
 ---
 
-Inventory Service chỉ produce events (không consume từ service ngoài sau Phase 14). Xem chi tiết cơ chế tại [§2.2](inventory_events.md#22-topics-consume).
+Inventory Service chỉ produce events (không consume từ service ngoài sau Phase 14). Tài liệu
+này giữ contract legacy; contract đích cho Search là
+[`contracts/events/inventory/v1/asyncapi.yaml`](../../contracts/events/inventory/v1/asyncapi.yaml)
+và không làm Product trở thành stock replica.
 
 
 ## 1. Bản Đối Chiếu Event
@@ -49,7 +52,11 @@ Inventory Service chỉ produce events (không consume từ service ngoài sau P
 
 | Topic Name | Partition Key | Consumers | Mô tả |
 |:---|:---|:---|:---|
-| `t.inventory.events` | `sku_id` cho stock events, `order_id` cho return | Inventory Ledger Worker (internal), Product Service, Order Service, Analytics | Tất cả event inventory (mutation + public) |
+| `t.inventory.events` | `sku_id` cho stock events, `order_id` cho return | Inventory Ledger Worker (internal), Order Service, Analytics, legacy consumers | Tất cả event inventory legacy (mutation + public) |
+
+`t.inventory.events` là topic legacy. Contract đích thêm `t.inventory.stock.events.v1`,
+key `sku_id`, chỉ mang `com.ecommerce.inventory.stock-snapshot.v1` cho Search. Hai
+contract chạy song song trong migration; legacy consumer không phải hiểu event v1.
 
 ### 2.2 Topics Consume
 
@@ -127,9 +134,9 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 > | Event | Field | Scope | Mục đích |
 > |:---|:---|:---|:---|
 > | `INVENTORY_STOCK_MUTATION` (event này) | `available_after` | **per-warehouse** (chỉ kho vừa mutate) | Nội bộ Inventory — Ledger Worker dùng để ghi nhận balance tại kho |
-> | `INVENTORY_STOCK_CHANGED` (xem §4.2) | `available_quantity` | **per-SKU aggregate** (tổng mọi kho) | Public — Product Service dùng để hiển thị tổng tồn kho |
+> | `INVENTORY_STOCK_CHANGED` (xem §4.2) | `available_quantity` | **per-SKU aggregate** (tổng mọi kho) | Legacy compatibility; không phải Search VNext contract |
 > 
-> Hai field **khác scope** dù cùng đo lường "khả dụng". Consumer Product/Analytics chỉ consume `INVENTORY_STOCK_CHANGED.available_quantity` cho UI; không dùng `INVENTORY_STOCK_MUTATION.available_after` cho display.
+> Hai field **khác scope** dù cùng đo lường "khả dụng". Search VNext chỉ consume stock snapshot v1; không dùng `INVENTORY_STOCK_MUTATION.available_after` cho display.
 
 #### 4.1.1. Kiến trúc Event Streaming (Lua → Kafka commands)
 
@@ -140,7 +147,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 | 1 | Lua script (Reserve / Deduct / Release) | Mutate Redis stock hash `inventory:physic:{sku:wh}:stock` (HINCRBY `available` / `reserved` / `total`) |
 | 2 | Lua script | `XADD` event vào Redis Stream Outbox `inventory:stream:{sku:wh}:events` cùng hash slot với stock hash |
 | 3 | Redis Stream Relay Worker | Đọc stream, gắn CloudEvents header, forward sang Kafka topic `t.inventory.events` với `key = sku_id` |
-| 4 | Kafka Ledger Worker | Consume event, ghi `inventory_ledger` (UNIQUE `event_id` làm idempotency) + UPSERT `inventory_reservations` + cập nhật `physical_inventory` + insert `inventory_outbox` (cho `INVENTORY_STOCK_CHANGED`) trong cùng 1 PostgreSQL transaction |
+| 4 | Kafka Ledger Worker | Consume event, ghi `inventory_ledger` (UNIQUE `event_id` làm idempotency) + UPSERT `inventory_reservations` + cập nhật `physical_inventory` + `sku_stock_state` + insert outbox stock v1 trong cùng PostgreSQL transaction |
 
 **Lưu ý vận hành:**
 
@@ -153,7 +160,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 ### 4.2. INVENTORY_STOCK_CHANGED
 
 **Ngữ cảnh:** Sau khi Ledger Worker ghi `inventory_ledger` + cập nhật `physical_inventory` -> insert `inventory_outbox` -> Debezium CDC publish Kafka.
-**Consumer chính:** Product Service (update display cache).
+**Consumer chính:** Legacy compatibility adapter; Product không consume event này trong
+thiết kế hiện hành. Search VNext dùng stock snapshot v1 thay vì payload này.
 
 ```json
 {
@@ -187,7 +195,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 | `ADMIN_RESTOCK` | Restock API |
 | `ORDER_RETURNED_RESTOCK` | Admin Restock với `reference_type='ORDER_RETURNED_RESTOCK'` (Phase 14: không còn SHIPMENT_RETURNED consumer) |
 
-**Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Consumer Product vẫn validate cặp khóa để chặn drift.
+**Contract note:** Producer bắt buộc gửi `product_id` + `sku_id`. Event này không có
+`stock_revision` hay snapshot export, nên không là contract đủ cho Search VNext.
 
 #### 4.2.1. Kiến trúc Event Streaming (DB outbox → Kafka public)
 
@@ -200,7 +209,7 @@ Event này đại diện cho tổng tồn kho khả dụng per-SKU (aggregate) s
 | 3 | PostgreSQL | COMMIT transaction — tất cả bước 1-3 atomic |
 | 4 | Debezium CDC Connector | Đọc WAL qua Logical Replication Slot, extract `partition_key` làm Kafka message key (KHÔNG bóc JSON payload) |
 | 5 | Debezium CDC | Produce message lên Kafka topic `t.inventory.events`, partition theo `sku_id`, độ trễ < 5ms |
-| 6 | Product Service (downstream) | Consume `INVENTORY_STOCK_CHANGED`, cập nhật display cache |
+| 6 | Legacy consumer (nếu còn) | Consume compatibility event; không có ordering/recovery guarantee của stock v1 |
 
 **Lưu ý vận hành:**
 
@@ -269,7 +278,7 @@ Event này là signal nghiệp vụ để Order mở bước gọi Payment refun
 
 **Quan hệ với `INVENTORY_STOCK_CHANGED`:** Cùng 1 lần admin restock `ORDER_RETURNED_RESTOCK` có thể emit 2 outbox row:
 
-1. `INVENTORY_STOCK_CHANGED` với `change_type = ORDER_RETURNED_RESTOCK` — cho Product Service cập nhật display cache.
+1. `INVENTORY_STOCK_CHANGED` với `change_type = ORDER_RETURNED_RESTOCK` — compatibility event trong migration; Search VNext dùng stock snapshot v1 cùng transaction.
 2. `INVENTORY_RETURN_RECEIVED_ALL` (nếu là lần cuối cùng) — cho Order Service mở bước refund tiền.
 
 Hai event này hoàn toàn độc lập về mặt nghiệp vụ, không thay thế nhau.

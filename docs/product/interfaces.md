@@ -25,7 +25,7 @@ canonical path là `/internal/v1/...`, không expose qua Gateway.
 | `GET`/`POST /products` và `GET`/`PUT`/`DELETE /products/{id}` | Liệt kê, tạo Product `DRAFT`, thay phần Product-level, hard delete/tombstone |
 | `PATCH /products/{id}/status` | Admin activate/hide/show, không đọc Inventory |
 | `POST /products/{id}/skus`, `PUT`/`DELETE /products/{id}/skus/{sku_id}` | Quản lý SKU; không xóa SKU cuối cùng; ghi tombstone khi delete |
-| `POST /products/{id}/media`, `PUT`/`DELETE /products/{id}/media/{media_id}` | Quản lý media Product hoặc media gắn SKU thuộc Product |
+| `POST /products/{id}/media`, `PUT`/`DELETE /products/{id}/media/{media_id}` | Quản lý media Product hoặc media gắn SKU thuộc Product; phát lại snapshot cho các SKU có thumbnail hiệu lực đổi |
 | `GET`/`POST /categories`, `GET`/`PUT`/`DELETE /categories/{id}` | Quản lý category tree |
 | `GET`/`PUT`/`DELETE /categories/{id}/attributes/{attribute_id}` | Quản lý mapping category–attribute |
 | `GET`/`POST`/`PUT`/`DELETE /attributes` và `/attributes/{id}/options` | Quản lý attribute `TEXT`/`NUMBER`/`BOOLEAN`/`SELECT` và option |
@@ -67,7 +67,7 @@ state/tombstone hiện có.
 
 | Topic / event | Consumer | Hành vi |
 |---|---|---|
-| `t.product.events` / `sku-upserted` | Search | Snapshot SKU khi Product/SKU/media/lifecycle/markdown làm SKU bị ảnh hưởng. |
+| `t.product.events` / `sku-upserted` | Search | Snapshot SKU khi Product/SKU/media/lifecycle/markdown làm SKU bị ảnh hưởng, gồm `thumbnail_storage_key` đã resolve. |
 | `t.product.events` / `sku-deleted` | Search; Inventory nếu không có reserve guard | Tombstone một SKU với revision kế tiếp. |
 | `t.product.events` / `product-deleted` | Search, Promotion; Inventory nếu cần | Tombstone Product và toàn bộ `sku_ids`. |
 | `t.category.events` / `category-upserted`, `category-deleted` | Search | Category snapshot/tombstone; `sequence = category_revision`; snapshot có path dẫn xuất. |
@@ -88,8 +88,8 @@ chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snaps
 `INACTIVE` khi hết hạn; Product không có scheduled safety check. Khi consumer retry/DLQ
 làm giá stale, Promotion/operations phải replay snapshot mới nhất theo cùng contract.
 
-Product không consume `INVENTORY_STOCK_CHANGED`, Product status event của chính nó hay
-markdown theo Category. Search consume stock trực tiếp từ Inventory với guard source riêng.
+Product không consume stock event, Product status event của chính nó hay markdown theo
+Category. Search consume stock snapshot v1 trực tiếp từ Inventory với guard source riêng.
 
 ## Compatibility
 

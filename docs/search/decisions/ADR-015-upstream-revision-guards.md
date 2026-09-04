@@ -8,6 +8,7 @@ decision_owners:
 supersedes: ADR-004-per-source-ordering-guard
 evidence:
   - docs/product/data.md
+  - contracts/events/inventory/v1/asyncapi.yaml
   - docs/search/data.md
 ---
 

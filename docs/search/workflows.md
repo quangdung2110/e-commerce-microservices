@@ -173,8 +173,8 @@ tại; kiểm chứng số đếm khớp giữa hai API.
 3. Enrichment: đọc category projection theo `category_id` để materialize ancestor
    IDs/slugs; miss thì bỏ trống field category dẫn xuất và vẫn index (`SEARCH-BR-008`).
 4. Transform: chuẩn hóa attribute thành token có type, tạo `filter_tokens`, tính
-   `has_promotion`. `thumbnail_storage_key` chỉ populate sau khi Product chốt
-   contract chọn thumbnail; trước đó field là optional.
+   `has_promotion` và copy `thumbnail_storage_key` đã được Product resolve. Giá trị
+   `null` là hợp lệ; API response adapter dựng placeholder, không tự chọn từ `media[]`.
 5. Sinh lệnh ghi cho từng SKU liên quan bằng
    [`catalog_patch.painless`](./schema/scripts/catalog_patch.painless) với
    `scripted_upsert`, hoặc
@@ -259,7 +259,8 @@ rename/move phát control event; reindex category trước Product và alias kh�
 **Mục tiêu.** Giữ `available_quantity` và `is_in_stock` phản ánh stock snapshot mới
 nhất mà Inventory công bố.
 
-**Trigger.** `INVENTORY_STOCK_CHANGED` trên `t.inventory.events`, key `sku_id`.
+**Trigger.** `com.ecommerce.inventory.stock-snapshot.v1` trên
+`t.inventory.stock.events.v1`, key `sku_id`.
 
 **Happy path.** Lọc event type → validate cặp `product_id` + `sku_id` và
 `stock_revision` → apply lên `products_write/_update/{sku_id}` không upsert →
@@ -277,9 +278,10 @@ Elasticsearch → không commit offset.
 khác nhau và có thể ghi đồng thời; chúng không chạm cùng field và guard độc lập
 nên không có lost update.
 
-**Recovery.** Bootstrap và recovery dùng Inventory stock snapshot/export. Cho đến
-khi Inventory refactor cung cấp contract này, workflow không được đánh dấu
-implemented và chỉ chạy ở compatibility mode.
+**Recovery.** Gọi Inventory stock snapshot export, import theo `sku_id`, rồi replay
+topic từ `replay_from_offsets`. Guard revision làm event trước snapshot hoặc duplicate
+thành no-op. Contract còn `proposed`; trước producer rollout, workflow chỉ chạy ở
+compatibility mode và không tuyên bố recovery hoàn toàn.
 
 **Metrics.** Độ trễ tồn kho, tỉ lệ `document_missing`, tỉ lệ event bị guard chặn.
 
@@ -327,15 +329,16 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
 [`schema/`](./schema).
 
 **Happy path.**
-1. **Build.** Tạo `products_v{N+1}` từ mapping mới. Backfill bằng reindex nội bộ
-   theo chunk, ghi checkpoint sau mỗi chunk để resume. Với các field Product sở
-   hữu, đối chiếu bổ sung từ `GET /internal/products/export`.
-2. **Catch-up.** Ghi lại watermark offset của bốn topic tại thời điểm bắt đầu
-   build; chạy consumer group tạm `search-reindex-{run_id}` từ watermark, ghi
-   **trực tiếp** vào `products_v{N+1}` chứ không qua write alias. Guard giữ nguyên
-   như luồng thường. Kết thúc khi lag bằng 0 qua nhiều chu kỳ poll liên tiếp và
-   không phát sinh lỗi mới trong một cửa sổ quan sát.
-3. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
+1. **Build catalog.** Tạo `products_v{N+1}` từ mapping mới. Export Category trước,
+   rồi keyset export Product theo chunk, ghi checkpoint sau mỗi chunk để resume.
+2. **Build stock.** Lấy Inventory stock snapshot export; import mọi SKU theo
+   `stock_revision`. Export trả `replay_from_offsets` đã chụp trước lúc scan nên
+   event cũ/trùng không ghi đè snapshot.
+3. **Catch-up.** Chạy consumer group tạm `search-reindex-{run_id}` từ watermark
+   catalog và `replay_from_offsets` stock, ghi **trực tiếp** vào `products_v{N+1}`
+   chứ không qua write alias. Guard giữ nguyên như luồng thường. Kết thúc khi lag
+   bằng 0 qua nhiều chu kỳ poll liên tiếp và không phát sinh lỗi mới trong cửa sổ quan sát.
+4. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
    trên tập SKU nóng, smoke test các truy vấn phổ biến, rồi chuyển cả read alias
    và write alias sang index mới bằng **một** lệnh `_aliases` atomic.
 

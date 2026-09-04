@@ -97,7 +97,7 @@ cùng lệnh này thay vì tạo quy trình riêng cho máy cá nhân.
 | Unit | Mã hóa/giải mã cursor, transform Product CloudEvent v1, chuẩn hóa attribute token, dispatch theo `type` | Không |
 | Integration | Consumer đến index đến API, guard revision, tombstone, category control reindex | Testcontainers Elasticsearch và Kafka |
 | Job | Reindex ba pha, rebuild suggestion, recompute count, purge | Testcontainers |
-| Contract | Product CloudEvents v1 và Inventory stock target contract khớp kỳ vọng Search | Fixture chung với producer |
+| Contract | Product CloudEvents v1 (effective thumbnail) và Inventory stock snapshot/export v1 khớp kỳ vọng Search | Fixture chung với producer |
 
 Test tích hợp không được mock Elasticsearch client: phần lớn rủi ro của service nằm
 ở mapping, script và ngữ nghĩa truy vấn, mà mock không phát hiện được.
@@ -126,8 +126,10 @@ replay event; không dùng cách này ở bất kỳ môi trường dùng chung 
 ## 9. Test data và fixtures
 
 Fixture là event mẫu của Product, Inventory và Review, đặt cùng test và version
-hóa trong repo. Dữ liệu catalog mẫu phải là dữ liệu bịa; không dùng export
-production. Index không chứa PII nên fixture cũng không được đưa PII vào.
+hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null và Inventory snapshot
+seed + event revision cũ/trùng + replay offset. Dữ liệu catalog mẫu phải là dữ liệu
+bịa; không dùng export production. Index không chứa PII nên fixture cũng không được
+đưa PII vào.
 
 ## 10. Debugging
 

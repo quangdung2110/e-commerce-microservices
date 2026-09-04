@@ -25,8 +25,18 @@ Logic mới: chỉ chọn kho có stock đủ. Thay thế `returns/refund-scopes
 | `POST` | `/v1/inventory/ship-to-customer` | JWT (Admin) | Admin xác nhận kho đã xuất hàng cho khách (trigger Order Item FSM PROCESSING → DELIVERED) |
 | `POST` | `/v1/inventory/returns/refund-expectations` | Internal (Service-to-Service) | Order đăng ký tập item cần hoàn |
 | `POST` | `/v1/inventory/admin/unlock-sku` | JWT (Admin) | Manual unlock SKU bị suspend (recovery) |
+| `GET` | `/internal/v1/inventory/stock-snapshots` | Internal (Search) | Keyset export stock snapshot v1 để bootstrap/recovery |
 
 > **Note:** Reserve, Deduct, Release là Temporal Activities, KHÔNG phải HTTP endpoints. Chúng được Order Temporal Saga gọi trực tiếp qua Temporal SDK.
+
+## Internal: `GET /internal/v1/inventory/stock-snapshots`
+
+Endpoint chỉ cho Search qua service identity/mTLS; không expose qua Gateway. Contract
+machine-readable là [`contracts/http/inventory/internal/v1/openapi.yaml`](../../contracts/http/inventory/internal/v1/openapi.yaml).
+Response keyset theo `sku_id`, gồm state `product_id`, `sku_id`, `available_quantity`,
+`stock_revision`, `observed_at` và `replay_from_offsets` của topic stock v1. Offset được
+chụp trước khi export bắt đầu; Search import snapshot rồi replay từ offsets đó, bỏ
+event cũ/trùng bằng `stock_revision`.
 
 ---
 
@@ -282,14 +292,14 @@ Nhập hàng vào kho. Hỗ trợ **2 loại nghiệp vụ** thông qua field `r
      reference_type, quantity_change, balance_after,
      correlation_id, created_at
    ) VALUES (:event_id, :sku, :product, :wh, :reference_type, :qty, :new_balance, :correlation_id, NOW());
-   -- Outbox INVENTORY_STOCK_CHANGED (cho Product Service cập nhật display cache)
+   -- Publication state + outbox stock snapshot v1 (cho Search)
    INSERT INTO inventory_outbox (
      event_id, schema_version, aggregate_type, aggregate_id,
      event_type, partition_key, payload, created_at
    ) VALUES (
      :event_id, 1, 'Inventory', :sku,
-     'INVENTORY_STOCK_CHANGED', :sku,
-     '{"change_type":":reference_type","sku_id":"...","quantity_added":...}'::jsonb,
+     'com.ecommerce.inventory.stock-snapshot.v1', :sku,
+     '{"sku_id":"...","available_quantity":0,"stock_revision":1,"observed_at":"..."}'::jsonb,
      NOW()
    );
     -- Nếu ORDER_RETURNED_RESTOCK: check refund completion
@@ -332,7 +342,7 @@ Nhập hàng vào kho. Hỗ trợ **2 loại nghiệp vụ** thông qua field `r
      total {new_actual}, reserved 0, available {new_actual}
 5. [Debezium CDC]
    Read WAL of inventory_outbox
-   Produce Kafka: topic=t.inventory.events, key=sku_id (cho INVENTORY_STOCK_CHANGED)
+   Produce Kafka: topic=t.inventory.stock.events.v1, key=sku_id (cho stock snapshot v1)
                   hoặc key=order_id (cho INVENTORY_RETURN_RECEIVED_ALL)
 ```
 

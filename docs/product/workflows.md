@@ -25,9 +25,10 @@ owners:
 1. Validate category lá, attribute và input SKU.
 2. Mở transaction; lock Product nếu đã tồn tại, sau đó lock SKU bị chạm.
 3. Insert/update Product, SKU và media; nếu base price đổi khi markdown active thì tính
-   lại `selling_price_vnd`.
+   lại `selling_price_vnd`. Media mutation resolve lại effective thumbnail: ảnh SKU chỉ
+   ảnh hưởng SKU đó; ảnh Product ảnh hưởng các SKU đang fallback Product-level.
 4. Tăng `catalog_revision` đúng một lần, build SKU snapshot cho từng SKU bị ảnh hưởng
-   và insert CloudEvents outbox cùng revision.
+   (gồm `thumbnail_storage_key` đã resolve) và insert CloudEvents outbox cùng revision.
 5. Commit, rồi trả response.
 
 Không ghi Redis/cache và không gọi Inventory trong luồng này.

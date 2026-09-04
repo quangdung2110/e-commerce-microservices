@@ -21,7 +21,15 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
 1. `warehouse_id` là bắt buộc cho mọi item mutation (reserve/deduct/release).
 2. Multi-item request áp dụng chính sách **all-or-nothing**.
 3. Event `INVENTORY_STOCK_MUTATION` được append vào Redis Stream trong chính Lua script, sau đó Relay Worker forward sang Kafka `t.inventory.events`.
-4. Event `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` được insert vào PostgreSQL Outbox rồi Debezium CDC tự động publish lên cùng topic `t.inventory.events`.
+4. Mỗi mutation làm đổi aggregate availability phải, trong cùng PostgreSQL transaction,
+   upsert `sku_stock_state` và ghi stock snapshot v1 ra `t.inventory.stock.events.v1`.
+   `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL` và
+   `INVENTORY_SHIP_TO_CUSTOMER` trên `t.inventory.events` là legacy/Order contract;
+   stock legacy chỉ chạy song song trong migration.
+
+> Các sơ đồ chi tiết còn dùng `INVENTORY_STOCK_CHANGED` mô tả implementation legacy.
+> Khi refactor, mọi điểm “INSERT inventory_outbox” cho stock phải thay bằng state +
+> snapshot v1 như quy ước trên; không được giữ Product làm stock consumer.
 
 ---
 
@@ -76,8 +84,8 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  Bulk INSERT inventory_ledger (reference_type=ORDER_RESERVED)
         |  UPSERT inventory_reservations (status=RESERVED)
         |  UPDATE physical_inventory.reserved_quantity
-        |  INSERT inventory_outbox (event_type=INVENTORY_STOCK_CHANGED, partition_key=sku_id)
-        |    với payload SUM(available_quantity) từ physical_inventory
+        |  UPSERT sku_stock_state (SUM(available_quantity), stock_revision + 1)
+        |  INSERT inventory_outbox stock snapshot v1 (partition_key=sku_id)
         |  PostgreSQL Transaction COMMIT
         v
 [PostgreSQL: inventory_ledger + inventory_reservations + inventory_outbox]
@@ -86,9 +94,9 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  Read WAL of inventory_outbox
         |  Produce Kafka topic=t.inventory.events (cùng topic)
         v
-[Product Service]
-        |  Consume INVENTORY_STOCK_CHANGED
-        |  Update product stock cache
+[Search Service]
+        |  Consume stock snapshot v1
+        |  Update SKU search projection theo stock_revision
 ```
 
 ### Mã trả về Lua xử lý
@@ -151,14 +159,15 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  UPDATE inventory_reservations.status = 'DEDUCTED'
         |  INSERT inventory_ledger (reference_type=ORDER_DEDUCTED)
         |  UPDATE physical_inventory.reserved_quantity, actual_quantity
-        |  INSERT inventory_outbox (INVENTORY_STOCK_CHANGED, change_type=ORDER_DEDUCTED)
+        |  UPSERT sku_stock_state + INSERT outbox stock snapshot v1
         |  PostgreSQL Transaction COMMIT
         v
 [Debezium CDC Connector]
         v
 [Kafka: t.inventory.events]
         v
-[Product Service]
+[Search Service]
+        |  Consume stock snapshot v1 theo stock_revision
 ```
 
 ### Mã trả về Lua xử lý
@@ -215,13 +224,14 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  UPDATE inventory_reservations.status = 'CANCELLED'
         |  INSERT inventory_ledger (reference_type theo change_type)
         |  UPDATE physical_inventory.reserved_quantity
-        |  INSERT inventory_outbox (INVENTORY_STOCK_CHANGED, change_type=change_type)
+        |  UPSERT sku_stock_state + INSERT outbox stock snapshot v1
         v
 [Debezium CDC Connector]
         v
 [Kafka: t.inventory.events]
         v
-[Product Service]
+[Search Service]
+        |  Consume stock snapshot v1 theo stock_revision
 ```
 
 
@@ -289,8 +299,9 @@ Tài liệu này mô tả chi tiết luồng dữ liệu nội bộ của Invent
         |  -- Ledger audit trail
         |  INSERT INTO inventory_ledger (event_id, sku_id, product_id, warehouse_id, reference_type, quantity_change, balance_after, correlation_id, created_at)
         |    VALUES (:event_id, :sku, :product, :wh, 'ADMIN_RESTOCK', :qty, :new_balance, :correlation_id, NOW());
-        |  -- Outbox for CDC
-        |  INSERT INTO inventory_outbox (event_type='INVENTORY_STOCK_CHANGED', partition_key=:sku_id, payload=...);
+        |  -- Publication state + outbox stock snapshot v1 cho Search
+        |  UPSERT sku_stock_state (..., stock_revision = stock_revision + 1, observed_at = NOW());
+        |  INSERT INTO inventory_outbox (event_type='com.ecommerce.inventory.stock-snapshot.v1', partition_key=:sku_id, payload=...);
         |  COMMIT;
         v
 [Redis Cache Update]
@@ -301,10 +312,10 @@ v
         |  Read WAL of inventory_outbox
         |  Produce Kafka topic=t.inventory.events, key=sku_id
         v
-[Kafka: t.inventory.events]
+[Kafka: t.inventory.stock.events.v1]
         v
-[Product Service]
-        |  Consume INVENTORY_STOCK_CHANGED
+[Search Service]
+        |  Consume stock snapshot v1 theo stock_revision
 ```
 
 ---
@@ -349,9 +360,10 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         |  -- Ledger audit (product_id lấy từ request, validate khớp với physical_inventory.product_id)
         |  INSERT INTO inventory_ledger (event_id, sku_id, product_id, warehouse_id, reference_type, quantity_change, balance_after, correlation_id, created_at)
         |    VALUES (:event_id, :sku, :product, :wh, 'ORDER_RETURNED_RESTOCK', :qty, :new_balance, :correlation_id, NOW());
-        |  -- Outbox for INVENTORY_STOCK_CHANGED (cho Product Service cập nhật display cache)
+        |  -- Publication state + outbox stock snapshot v1 cho Search
+        |  UPSERT sku_stock_state (..., stock_revision = stock_revision + 1, observed_at = NOW());
         |  INSERT INTO inventory_outbox
-        |    (event_type='INVENTORY_STOCK_CHANGED', partition_key=:sku_id, payload=...);
+        |    (event_type='com.ecommerce.inventory.stock-snapshot.v1', partition_key=:sku_id, payload=...);
         |
         |  -- Refund completion check + build payload (2 query trong cùng transaction)
         |  -- (a) Pending count
@@ -394,9 +406,10 @@ Order đăng ký refund expectation trước bằng API nội bộ `POST /v1/inv
         v
 [Debezium CDC Connector]
         v
-[Kafka: t.inventory.events]
-        |-- INVENTORY_STOCK_CHANGED (change_type=ORDER_RETURNED_RESTOCK)
-        v  [Product Service]
+[Kafka: t.inventory.stock.events.v1]
+        |-- stock snapshot (change_type không phải public contract)
+        v  [Search Service]
+        |-- INVENTORY_RETURN_RECEIVED_ALL vẫn phát trên t.inventory.events
         |-- INVENTORY_RETURN_RECEIVED_ALL
            [Order Service]
            |  Trigger Payment refund step

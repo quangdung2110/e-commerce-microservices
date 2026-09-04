@@ -68,6 +68,11 @@ Mỗi Product có ít nhất một SKU. Command tạo Product insert Product/SKU
 transaction; application từ chối xóa SKU cuối cùng. Admin chỉ sửa `base_price_vnd`;
 Product tính `selling_price_vnd` khi base price hoặc markdown thay đổi.
 
+`thumbnail_storage_key` không là cột persist riêng. Khi dựng SKU snapshot, Product
+resolve từ `product_media`: chọn `IMAGE` của SKU có `sort_order` nhỏ nhất, fallback
+sang `IMAGE` Product-level có `sort_order` nhỏ nhất, còn lại là `null`. Vì rule này
+dựa trên ownership catalog, downstream không được tự derive từ `media[]`.
+
 ### 3.3 Markdown projection
 
 `product_markdown_projection` có một row cho mỗi Product: logical reference tới

@@ -22,11 +22,12 @@ verified_against_commit: null
 |---|---|---|---|---|---|---|
 | Search, suggest, browse, facet | Inbound | HTTP | Search | Client qua Gateway | Cần tạo: `contracts/http/search/v1/openapi.yaml` | proposed |
 | Full reindex admin | Inbound | HTTP | Search | Admin qua Gateway | Cần tạo: `contracts/http/search/internal/v1/openapi.yaml` | proposed |
-| Catalog và tombstone | Inbound | Kafka | Product | Search | Cần tạo: AsyncAPI product v1 | proposed |
-| Category | Inbound | Kafka | Product | Search | Cần tạo: AsyncAPI product v1 | proposed |
-| Tồn kho | Inbound | Kafka | Inventory | Search | Cần tạo: AsyncAPI inventory v1 | proposed |
+| Catalog và tombstone | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
+| Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
+| Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
 | Rating aggregate | Inbound | Kafka | Review | Search | Cần tạo: AsyncAPI review v1 | proposed |
 | Catalog export | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
+| Stock snapshot export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | proposed |
 
 Search **không phát event**. Không có mục “event phát ra” trong tài liệu này là
 một khẳng định contract, không phải thiếu sót.
@@ -158,7 +159,8 @@ Quy tắc chung cho mọi topic:
 Producer: Product, qua outbox và Debezium, at-least-once. Contract đích là
 CloudEvents 1.0 trong `contracts/events/product/v1`; Kafka key `product_id`,
 `id` là event id, `sequence = catalog_revision`, snapshot nằm trong
-`data.product` và `data.sku`.
+`data.product` và `data.sku`. `data.sku.thumbnail_storage_key` luôn hiện diện: Product
+đã resolve ảnh SKU trước, rồi ảnh Product; `null` nghĩa là Search phải trả placeholder.
 
 | Event | Hành động của Search | Ghi chú |
 |---|---|---|
@@ -183,14 +185,14 @@ Product phát `com.ecommerce.catalog.reindex-requested.v1` khi rename, đổi sl
 đổi parent category. Search coalesce các request, export category trước Product rồi
 chạy full reindex/catch-up; event control không cập nhật trực tiếp SKU document.
 
-### 4.4 `t.inventory.events` — tồn kho
+### 4.4 `t.inventory.stock.events.v1` — tồn kho
 
-Target contract của Inventory phải có `product_id`, `sku_id`, `available_quantity`,
-`stock_revision` đơn điệu per-SKU và `observed_at`; key là `sku_id`. Cho tới khi
-Inventory được refactor, adapter legacy chỉ xử lý `INVENTORY_STOCK_CHANGED`, đọc
-`product_id`, `sku_id`, `available_quantity` và timestamp wrapper để telemetry,
-nhưng không đạt ordering guarantee của vNext. `INVENTORY_STOCK_MUTATION`,
-`INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER` bị ignore và ACK.
+Contract đích là [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml):
+CloudEvents `com.ecommerce.inventory.stock-snapshot.v1`, key `sku_id`, `sequence =
+stock_revision`, và payload `product_id`, `sku_id`, `available_quantity`,
+`stock_revision`, `observed_at`. Search chỉ apply revision lớn hơn. `t.inventory.events`
+và `INVENTORY_STOCK_CHANGED` là adapter legacy compatibility, không có ordering/recovery
+guarantee của vNext và không là input mặc định sau rollout.
 
 Event này **không được tạo document**. Document chưa tồn tại hoặc đang tombstone
 thì bỏ qua và ghi metric — đó là trạng thái bình thường khi SKU vừa bị xóa hoặc
@@ -207,10 +209,10 @@ chỉ đọc `product_id`, điểm trung bình, tổng số review cùng timesta
 ## 5. Contract nội bộ Search gọi ra
 
 Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
-`GET /internal/v1/products/export` của Product để backfill catalog. Full rebuild
-chỉ hoàn tất khi Inventory đã có stock snapshot/export tương thích; trước đó Search
-phải báo rõ stock là stale/partial. Không có lời gọi đồng bộ nào khác ra ngoài trong
-hot path.
+`GET /internal/v1/products/export` của Product và
+[`GET /internal/v1/inventory/stock-snapshots`](../../contracts/http/inventory/internal/v1/openapi.yaml)
+để backfill catalog/stock. Search replay stock topic từ `replay_from_offsets` sau import.
+Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 

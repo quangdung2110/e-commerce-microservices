@@ -39,3 +39,4 @@ chấp nhận.
 | [ADR-010](./ADR-010-catalog-event-revision-and-category-reindex.md) | Catalog event revision và full reindex khi đổi cây Category | Accepted | 2026-09-02 | ADR-006 |
 | [ADR-011](./ADR-011-markdown-consumer-only-background-processing.md) | Markdown Consumer là background workload duy nhất | Accepted | 2026-09-02 | ADR-004 |
 | [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md) | Outbox partition key theo Product aggregate | Accepted | 2026-09-02 | ADR-002 |
+| [ADR-013](./ADR-013-effective-sku-thumbnail.md) | Product resolve effective thumbnail theo SKU | Accepted | 2026-09-04 | — |

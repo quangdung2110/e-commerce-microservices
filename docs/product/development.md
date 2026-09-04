@@ -36,7 +36,7 @@ EventRouter chỉ route/key/header, không tự dựng business envelope.
 | Unit | Công thức markdown, clamp giá, state machine admin-only |
 | Integration DB | Constraint, Product → SKU lock order, hard delete/tombstone, catalog revision |
 | Kafka | Outbox/CDC CloudEvents, catalog/category revision guard, event replay, `source_revision` cũ/trùng, consumer idempotency, retry/DLQ và replay snapshot từ Promotion |
-| Contract | gRPC, Product event snapshot/revision, Promotion markdown snapshot |
+| Contract | gRPC, Product event snapshot/revision/effective thumbnail, Promotion markdown snapshot |
 | End-to-end | Cart đọc catalog; Checkout reserve Inventory; Search ghép catalog với stock |
 
 
@@ -56,5 +56,6 @@ trên môi trường dùng chung nếu chưa có runbook/approval vận hành.
 - Schema migration, OpenAPI/AsyncAPI/proto được cập nhật khi interface thay đổi.
 - `catalog_revision` và `source_revision` được test khi logic chạm event/projection.
 - `category_revision`, tombstone revision và `CATALOG_REINDEX_REQUESTED` được test khi logic chạm category tree.
+- Media test phải bao phủ ưu tiên ảnh SKU, fallback ảnh Product, loại `VIDEO`, giá trị `null` và fan-out đúng SKU khi ảnh Product đổi.
 - Compatibility và rollout/rollback được review.
 - Tài liệu hiện hành và ADR (khi có quyết định khó đảo ngược) được cập nhật.

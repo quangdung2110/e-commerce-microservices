@@ -17,8 +17,8 @@ verified_against_commit: null
 
 Search là read side của kiến trúc CQRS ở phạm vi catalog. Write side nằm ở
 Product (catalog và giá), Inventory (tồn kho) và Review (rating). Search chỉ nhận
-dữ liệu qua Kafka, không gọi ngược sang các service đó trong hot path; ngoại lệ
-duy nhất là internal export API của Product dùng cho full reindex.
+dữ liệu qua Kafka, không gọi ngược sang các service đó trong hot path; full reindex
+mới gọi internal export API của Product và Inventory.
 
 Trust boundary: client không bao giờ chạm trực tiếp Search. API Gateway xác thực
 JWT rồi forward request kèm claim đã verify. Elasticsearch nằm trong mạng nội bộ
@@ -34,7 +34,7 @@ flowchart LR
   PE[t.product.events] --> W[Indexing worker]
   CE[t.category.events] --> W
   CCE[t.catalog.control.events] --> RJ
-  IE[t.inventory.events] --> W
+  IE[t.inventory.stock.events.v1] --> W
   RE[t.review.events] --> W
   W --> WA[(Write alias)]
   Q --> RA[(Read alias)]
@@ -45,6 +45,7 @@ flowchart LR
   CC[Category count recompute] --> ES
   TP[Tombstone purger] --> ES
   RJ -.export.-> P[Product internal API]
+  RJ -.stock export.-> INV[Inventory internal API]
 ```
 
 ## 2. Components and responsibilities
@@ -55,7 +56,7 @@ flowchart LR
 | Internal admin adapter | Nhận trigger reindex, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/internal` |
 | Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
 | Indexing worker | Consume snapshot catalog/category/stock/review, transform event thành lệnh ghi, apply guard | Bỏ qua guard hoặc tự gọi ngược Product trong hot path | Kafka, write alias | `worker` |
-| Reindex job | Build index mới, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product export API | `worker` |
+| Reindex job | Build index mới, import stock snapshot, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product/Inventory export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
 | Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree | Elasticsearch | `worker` |
 | Tombstone purger | Xóa document đã tombstone quá cửa sổ bảo vệ | Xóa document còn trong cửa sổ bảo vệ | Elasticsearch | `worker` |
@@ -125,7 +126,7 @@ Một artifact chạy được ở hai vai trò cấu hình được: API instan
 instance. Mặc định deploy chung process, tách khi cần scale độc lập.
 
 - API stateless, scale ngang theo RPS và latency.
-- Consumer scale tối đa tới tổng số partition của bốn topic.
+- Consumer scale tối đa tới tổng số partition của năm topic.
 - Reindex job, suggestions rebuilder, category count recompute và tombstone purger
   phải chạy singleton; cần distributed lock hoặc leader election khi có nhiều
   replica.

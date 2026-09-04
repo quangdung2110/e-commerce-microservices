@@ -109,7 +109,7 @@ xem trong file mapping.
 | `sku_status` | Product | `ACTIVE`, `INACTIVE` |
 | `category_ancestor_ids` | Product snapshot | ID của category hiện tại và tổ tiên; lọc theo nhánh bằng ID, không bằng slug |
 | `category_slug_path` | Product snapshot | Path để hiển thị; không dùng làm filter vì slug có thể đổi |
-| `thumbnail_storage_key` | Pending Product media contract | Field optional; chỉ populate sau khi Product chốt rule chọn thumbnail, response adapter mới dựng URL CDN |
+| `thumbnail_storage_key` | Product `sku-upserted` | Thumbnail hiệu lực: SKU IMAGE ưu tiên Product IMAGE; `null` khi không có ảnh. Response adapter dựng URL CDN hoặc placeholder. |
 | `is_deleted`, `deleted_at` | Search | Tombstone chặn zombie update trước khi purge |
 | `catalog_revision` | Product | Guard cho mọi event catalog của Product aggregate |
 | `stock_revision` | Inventory target contract | Revision đơn điệu per-SKU; timestamp chỉ dùng đo freshness |
@@ -135,9 +135,10 @@ chỉ được ghi các field thuộc nguồn đó
 | Review | `review_version` (date) | `event.timestamp > doc.review_version` | `product_id` |
 
 Guard dùng so sánh `>` chặt. Product đã cấp `catalog_revision` và
-`category_revision`; Inventory phải cấp `stock_revision` trước khi Search VNext
-được triển khai. Không dùng publish timestamp làm guard vì hai mutation có thể
-cùng timestamp mà mang state khác nhau.
+`category_revision`; Inventory v1 định nghĩa `stock_revision` cùng stock snapshot
+export. Hai contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
+và contract test. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
+timestamp mà mang state khác nhau.
 
 Event catalog của Product mang snapshot đầy đủ nên apply lại cùng revision là
 no-op. Khi cây category đổi, Product phát control event; Search coalesce rồi
@@ -234,8 +235,8 @@ phải lưu.
   rồi mới xóa.
 - **Suggestion.** Mỗi build tạo index mới; giữ lại một version trước để rollback.
 - **Backup.** Catalog/category tái tạo từ Product export cộng catch-up Kafka. Stock
-  chỉ tái tạo được khi Inventory cấp stock snapshot/export; trước đó full reindex
-  không được tuyên bố là khôi phục hoàn toàn tồn kho.
+  tái tạo từ Inventory snapshot export rồi replay `t.inventory.stock.events.v1` từ
+  offsets export trả về; chỉ được tuyên bố khôi phục hoàn toàn sau producer rollout.
 - **Reconciliation.** Job recompute `product_count` là reconciliation liên tục cho
   số đếm; full reindex là reconciliation toàn phần cho phần còn lại.
 

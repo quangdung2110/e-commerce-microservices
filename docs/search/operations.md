@@ -50,7 +50,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Nhóm | Nội dung | Bắt buộc | Secret | Cần restart |
 |---|---|---|---|---|
 | Elasticsearch | URI cluster, credential, connection/socket timeout | Có | Credential: có | Có |
-| Kafka | Bootstrap server, credential, `group.id`, `auto.offset.reset`, `max.poll.records`, concurrency | Có | Credential: có | Có |
+| Kafka | Bootstrap server, credential, `group.id`, `auto.offset.reset`, `max.poll.records`, concurrency, stock-v1 topic | Có | Credential: có | Có |
 | Alias | Tên read/write alias cho ba index | Có | Không | Có |
 | Ngân sách truy vấn | Timeout cho search, suggest và `_update_by_query` | Có | Không | Không, nếu cấu hình động |
 | Throttle | `requests_per_second` cho thao tác diện rộng | Có | Không | Không |
@@ -80,6 +80,8 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_zombie_update_blocked_total` | counter | `topic`, `event_type` |
 | `search_job_duration_seconds` | histogram | `job` |
 | `search_reindex_state` | gauge | `phase` |
+| `search_stock_snapshot_export_total` | counter | `status` |
+| `search_stock_snapshot_age_seconds` | gauge | Không có |
 
 Không dùng `sku_id`, `product_id`, `category_id`, từ khóa tìm kiếm hay `user_id`
 làm label: cardinality không kiểm soát được. Các identifier đó thuộc về log.
@@ -120,6 +122,7 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 | Consumer lag cao | Dữ liệu cũ; tăng số instance tới trần partition; kiểm tra thao tác diện rộng đang chiếm băng thông ghi |
 | Producer đổi schema | `search_payload_invalid_total` tăng; event bị bỏ qua; cần phối hợp với producer rồi reindex |
 | Product export API lỗi | Chỉ ảnh hưởng reindex; traffic đọc bình thường |
+| Inventory snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Inventory |
 | Job singleton kẹt lock | Job bỏ chu kỳ; số đếm và suggestion cũ dần |
 | Deploy nhiều version song song | An toàn nếu mapping không đổi; đổi mapping bắt buộc đi qua reindex |
 
@@ -138,7 +141,7 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 ## 8. Scaling và capacity
 
 - API scale theo RPS và latency; stateless nên scale ngang tự do.
-- Consumer scale tới trần là tổng số partition của bốn topic; vượt trần thì instance
+- Consumer scale tới trần là tổng số partition của năm topic; vượt trần thì instance
   thừa sẽ nhàn rỗi.
 - Nút thắt đã biết: băng thông ghi của Elasticsearch khi có thao tác diện rộng,
   `cardinality` aggregation trên catalog lớn, và `track_total_hits` cho truy vấn
@@ -170,7 +173,7 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 |---|---|
 | Consumer lag | Phân biệt Kafka chậm, Elasticsearch chậm hay thao tác diện rộng chiếm băng thông |
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
-| Lệch projection | `document_missing` hoặc enrichment miss tăng; thử stock snapshot/export, recompute count, rồi mới reindex catalog |
+| Lệch projection | `document_missing` hoặc enrichment miss tăng; import stock snapshot rồi replay offsets, recompute count, rồi mới reindex catalog |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
 | Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
 | Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |

@@ -165,7 +165,7 @@ phải lỗi.
 - **Event trễ.** Một `sku-upserted` với `catalog_revision = 41` tới sau khi document
   đã ở revision `42` thì bị bỏ qua hoàn toàn, kể cả các field mà revision 42 không
   chạm tới.
-- **Xóa rồi có event trễ.** Sau `sku-deleted`, một `INVENTORY_STOCK_CHANGED` của
+- **Xóa rồi có event trễ.** Sau `sku-deleted`, một stock snapshot v1 của
   chính SKU đó tới muộn: document đang tombstone nên event bị bỏ qua và ghi metric,
   không làm `is_deleted` trở lại `false`.
 - **Đổi cây danh mục.** Product phát `catalog-reindex-requested` sau rename, đổi

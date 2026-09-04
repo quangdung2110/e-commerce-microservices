@@ -26,7 +26,7 @@ Lưu trữ thông tin kho hàng do Admin quản lý.
 
 ### 1.2. `physical_inventory`
 
-Nguồn commit nóng theo kho. Mỗi bản ghi đại diện cho tồn kho vật lý của một SKU tại một kho cụ thể. Cũng là nguồn aggregate duy nhất.
+Nguồn commit nóng theo kho. Mỗi bản ghi đại diện cho tồn kho vật lý của một SKU tại một kho cụ thể. Đây là nguồn cho các aggregate per-SKU, không phải contract Search trực tiếp.
 
 | Column | Type | Constraints | Mô tả |
 |:---|:---|:---|:---|
@@ -59,6 +59,26 @@ WHERE sku_id = ANY(:sku_ids) AND available_quantity > 0;
 ```
 
 Với index `UNIQUE (sku_id, warehouse_id)` đã có, query này chạy < 5ms cho vài chục SKU. Tổng khả dụng per-SKU = `SUM(available_quantity) GROUP BY sku_id` tại application layer.
+
+### 1.2.1. `sku_stock_state` (target projection/publication state)
+
+Mỗi SKU có đúng một row aggregate cho consumer read-side. Bảng này là snapshot
+publication của Inventory, không thay thế `physical_inventory` cho routing, reserve
+hay audit.
+
+| Column | Type | Constraints | Mô tả |
+|:---|:---|:---|:---|
+| `sku_id` | VARCHAR(64) | PRIMARY KEY | Scope duy nhất của ordering revision |
+| `product_id` | VARCHAR(64) | NOT NULL | Product denormalize thuộc snapshot SKU |
+| `available_quantity` | BIGINT | NOT NULL, CHECK (`>= 0`) | Tổng khả dụng trên mọi kho |
+| `stock_revision` | BIGINT | NOT NULL, CHECK (`> 0`) | Tăng đơn điệu đúng một lần mỗi state transition per-SKU |
+| `observed_at` | TIMESTAMPTZ | NOT NULL | Thời điểm aggregate được tính trong transaction |
+
+Khi một mutation đã cập nhật `physical_inventory`, cùng PostgreSQL transaction phải:
+aggregate `available_quantity`, upsert `sku_stock_state` với revision kế tiếp, và ghi
+outbox stock v1 chứa đúng state vừa persist. Không dùng `updated_at`/publish timestamp
+làm revision. Keyset export cho Search đọc bảng này theo `sku_id`; SKU chưa từng có
+Inventory row được Search khởi tạo quantity `0` từ catalog, không cần row giả ở đây.
 
 ---
 
@@ -159,7 +179,9 @@ Append-only audit trail ghi nhận mọi biến động tồn kho.
 
 ### 1.5. `inventory_outbox`
 
-Transactional Outbox pattern dùng chung với Debezium CDC Connector để phát event `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL` và `INVENTORY_SHIP_TO_CUSTOMER`.
+Transactional Outbox pattern dùng chung với Debezium CDC Connector để phát stock snapshot
+v1, cùng các event legacy `INVENTORY_STOCK_CHANGED`, `INVENTORY_RETURN_RECEIVED_ALL` và
+`INVENTORY_SHIP_TO_CUSTOMER` trong migration.
 
 | Column | Type | Constraints | Mô tả |
 |:---|:---|:---|:---|

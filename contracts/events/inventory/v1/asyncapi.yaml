@@ -1,0 +1,45 @@
+asyncapi: 3.0.0
+info:
+  title: Inventory Service Stock Projection Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho stock snapshot per-SKU do Inventory phát cho Search. Đây là
+    contract v1 độc lập với wrapper INVENTORY_STOCK_CHANGED legacy trên t.inventory.events.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  stockEvents:
+    address: t.inventory.stock.events.v1
+    description: Snapshot availability per-SKU; không mang reservation hay stock per-warehouse.
+    x-message-key: sku_id
+    x-ordering-scope: sku_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: data.stock_revision
+    x-max-payload-bytes: 16384
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.inventory.stock.events.v1.dlq
+    x-data-classification: INTERNAL
+    messages:
+      stockSnapshot: { $ref: '#/components/messages/stockSnapshot' }
+operations:
+  publishStockSnapshot:
+    action: send
+    channel: { $ref: '#/channels/stockEvents' }
+    summary: >-
+      Inventory phát full snapshot sau mỗi mutation làm thay đổi aggregate
+      available_quantity của SKU; sequence bằng stock_revision.
+    messages: [{ $ref: '#/channels/stockEvents/messages/stockSnapshot' }]
+components:
+  messages:
+    stockSnapshot:
+      name: stockSnapshotV1
+      title: SKU availability snapshot
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/stock-snapshot.schema.json' }

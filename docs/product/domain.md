@@ -19,6 +19,7 @@ owners:
 | Base price | Giá VND do admin đặt: `base_price_vnd` |
 | Selling price | Giá VND Product công bố sau markdown: `selling_price_vnd` |
 | Catalog revision | Version đơn điệu của toàn Product aggregate cho catalog event |
+| Effective thumbnail | `storage_key` ảnh đại diện đã resolve cho một SKU; `null` khi không có ảnh hợp lệ |
 | Source revision | Version do Promotion cấp để guard markdown snapshot |
 
 Inventory chỉ được tham chiếu qua `sku_id` ở contract liên service. Product không có
@@ -50,6 +51,7 @@ Inventory chỉ được tham chiếu qua `sku_id` ở contract liên service. P
 | PRODUCT-BR-009 | Hide/show là quyết định admin thuần túy, không đọc Inventory. | Không có stock guard hay auto transition. |
 | PRODUCT-BR-010 | Hard delete Product/SKU phải ghi tombstone event trong cùng transaction. | Insert outbox trước delete; không FK outbox tới aggregate. |
 | PRODUCT-BR-011 | Xóa category chỉ khi không còn category con và Product. | Trả lỗi khi category chưa rỗng; không cascade hide. |
+| PRODUCT-BR-012 | Thumbnail SKU ưu tiên IMAGE của SKU, rồi IMAGE Product; VIDEO không được chọn. | Product resolve `thumbnail_storage_key` trong snapshot; `null` là hợp lệ. |
 
 ## Giá markdown
 

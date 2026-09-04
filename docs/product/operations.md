@@ -14,7 +14,8 @@ owners:
 Theo dõi p95/p99 của admin API và gRPC, error rate, PostgreSQL pool/lock timeout,
 outbox depth/age, Debezium connector health và replication-slot lag, Kafka consumer lag
 của markdown consumer, retry/DLQ age và số snapshot replay, catalog reindex request age/
-coalesce/failure. Metric không dùng `product_id`, `sku_id` hay rule ID làm label.
+coalesce/failure, và số SKU fan-out bởi media mutation. Metric không dùng `product_id`,
+`sku_id` hay rule ID làm label.
 
 Search cần tự theo dõi stock-event lag của Inventory; đây không phải consumer của Product.
 

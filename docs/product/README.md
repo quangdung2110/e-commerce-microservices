@@ -16,7 +16,7 @@ media, giá niêm yết và giá bán công bố. Chỉ admin quản trị catal
 
 | Năng lực | Owner | Vai trò của Product |
 |---|---|---|
-| Catalog, SKU, category, attribute, media | Product | Sở hữu và công bố snapshot catalog |
+| Catalog, SKU, category, attribute, media | Product | Sở hữu và công bố snapshot catalog, gồm thumbnail hiệu lực theo SKU |
 | Giá markdown rule, schedule, voucher | Promotion | Product giữ projection markdown active để tính giá công bố |
 | Stock, availability, reservation, deduct | Inventory | Product không lưu và không trả dữ liệu này |
 | Browse, filter, facet, ranking | Search | Nhận catalog/price từ Product, stock UI từ Inventory |
@@ -49,8 +49,8 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 | Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
 | Outbound | Search | HTTP nội bộ | Export/full reindex catalog |
 
-Search consume `INVENTORY_STOCK_CHANGED` trực tiếp từ Inventory. Product không consume
-topic Inventory và không là đường trung chuyển availability cho UI.
+Search sẽ consume stock snapshot v1 trực tiếp từ Inventory sau rollout contract. Product
+không consume topic Inventory và không là đường trung chuyển availability cho UI.
 
 Promotion sở hữu schedule markdown và phải phát snapshot `ACTIVE`/`INACTIVE` tại thời
 điểm hiệu lực/kết thúc. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations

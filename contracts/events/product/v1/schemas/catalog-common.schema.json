@@ -36,7 +36,7 @@
     "sku": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sku_id", "sku_code", "base_price_vnd", "selling_price_vnd", "status", "variant_attributes", "media", "updated_at"],
+      "required": ["sku_id", "sku_code", "base_price_vnd", "selling_price_vnd", "status", "variant_attributes", "media", "thumbnail_storage_key", "updated_at"],
       "properties": {
         "sku_id": { "$ref": "#/$defs/uuid" },
         "sku_code": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -45,6 +45,7 @@
         "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
         "variant_attributes": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": ["string", "number", "boolean"] } },
         "media": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/media" } },
+        "thumbnail_storage_key": { "type": ["string", "null"], "maxLength": 1024, "description": "Effective thumbnail: SKU IMAGE có sort_order nhỏ nhất, fallback Product IMAGE có sort_order nhỏ nhất, hoặc null." },
         "updated_at": { "$ref": "#/$defs/timestamp" }
       }
     },

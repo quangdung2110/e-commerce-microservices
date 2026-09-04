@@ -7,7 +7,8 @@ decision_owners:
   - Search Service team
 supersedes: ADR-009-stock-projection-ownership
 evidence:
-  - docs/inventory/inventory_events.md
+  - contracts/events/inventory/v1/asyncapi.yaml
+  - contracts/http/inventory/internal/v1/openapi.yaml
 ---
 
 # ADR-014 — Stock projection theo revision và snapshot Inventory
@@ -27,8 +28,9 @@ và `observed_at`, cùng internal stock snapshot/export dùng cho bootstrap/reco
 
 ## Consequences
 
-Search không quyết định reserve hay saleability giao dịch. Trước khi Inventory có contract
-mới, adapter legacy chỉ là compatibility mode và không được hứa recovery/ordering tuyệt đối.
+Search không quyết định reserve hay saleability giao dịch. Contract v1 dùng topic riêng
+`t.inventory.stock.events.v1`; export trả offsets để replay sau import. Trước producer
+rollout, adapter legacy chỉ là compatibility mode và không được hứa recovery/ordering tuyệt đối.
 
 ## Verification
 
