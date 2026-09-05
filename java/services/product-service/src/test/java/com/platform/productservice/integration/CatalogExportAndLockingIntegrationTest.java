@@ -1,5 +1,8 @@
 package com.platform.productservice.integration;
 
+import com.platform.productservice.common.DomainException;
+import com.platform.productservice.common.ErrorCode;
+import com.platform.productservice.common.ReplayOffset;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.service.CatalogExportService;
 import com.platform.productservice.web.dto.CategoryDtos;
@@ -85,6 +88,111 @@ class CatalogExportAndLockingIntegrationTest extends AbstractCatalogIntegrationT
                 .findFirst()
                 .orElseThrow();
         assertThat(root.isLeaf()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Export session chụp offsets đủ mọi partition trước khi scan")
+    void exportOpensSessionWithReplayOffsets() {
+        UUID categoryId = givenLeafCategory("phones");
+        givenProduct(categoryId, "one", 1000L);
+
+        ProductDtos.ProductExportPageResponse page = exportService.exportProducts(null, 10);
+
+        assertThat(page.replayFromOffsets()).containsExactly(
+                new ReplayOffset(PRODUCT_TOPIC, 0, 100L),
+                new ReplayOffset(PRODUCT_TOPIC, 1, 200L),
+                new ReplayOffset(PRODUCT_TOPIC, 2, 300L));
+        assertThat(offsetProvider.captureCount(PRODUCT_TOPIC)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Category export chụp offsets của t.category.events, không phải t.product.events")
+    void categoryExportUsesItsOwnTopic() {
+        givenLeafCategory("phones");
+
+        CategoryDtos.CategoryExportPageResponse page = exportService.exportCategories(null, 10);
+
+        assertThat(page.replayFromOffsets())
+                .containsExactly(new ReplayOffset(CATEGORY_TOPIC, 0, 42L));
+        assertThat(offsetProvider.captureCount(PRODUCT_TOPIC)).isZero();
+    }
+
+    @Test
+    @DisplayName("Mọi trang của cùng session trả cùng offsets dù catalog đổi giữa chừng")
+    void everyPageOfASessionCarriesTheSameOffsets() {
+        UUID categoryId = givenLeafCategory("phones");
+        givenProduct(categoryId, "one", 1000L);
+        givenProduct(categoryId, "two", 2000L);
+        givenProduct(categoryId, "three", 3000L);
+
+        ProductDtos.ProductExportPageResponse first = exportService.exportProducts(null, 2);
+
+        // Broker tiến lên trong lúc export: trang sau vẫn phải giữ boundary cũ,
+        // nếu không những event nằm giữa hai lần chụp sẽ không bao giờ được replay.
+        offsetProvider.withOffsets(PRODUCT_TOPIC, 999L, 999L, 999L);
+        givenProduct(categoryId, "four", 4000L);
+
+        ProductDtos.ProductExportPageResponse second = exportService.exportProducts(first.nextCursor(), 2);
+
+        assertThat(second.replayFromOffsets()).isEqualTo(first.replayFromOffsets());
+        assertThat(offsetProvider.captureCount(PRODUCT_TOPIC)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Retry đúng một trang trả lại cùng offsets, không mở session mới")
+    void retryingOnePageIsIdempotent() {
+        UUID categoryId = givenLeafCategory("phones");
+        givenProduct(categoryId, "one", 1000L);
+        givenProduct(categoryId, "two", 2000L);
+        givenProduct(categoryId, "three", 3000L);
+
+        ProductDtos.ProductExportPageResponse first = exportService.exportProducts(null, 2);
+        ProductDtos.ProductExportPageResponse retried = exportService.exportProducts(first.nextCursor(), 2);
+        ProductDtos.ProductExportPageResponse retriedAgain =
+                exportService.exportProducts(first.nextCursor(), 2);
+
+        assertThat(retriedAgain.replayFromOffsets()).isEqualTo(first.replayFromOffsets());
+        assertThat(retriedAgain.products()).usingRecursiveComparison().isEqualTo(retried.products());
+        assertThat(offsetProvider.captureCount(PRODUCT_TOPIC)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Trang rỗng vẫn mang offsets vì contract bắt buộc minItems 1")
+    void emptyPageStillCarriesOffsets() {
+        ProductDtos.ProductExportPageResponse page = exportService.exportProducts(null, 10);
+
+        assertThat(page.products()).isEmpty();
+        assertThat(page.nextCursor()).isNull();
+        assertThat(page.replayFromOffsets()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("Kafka lỗi làm export thất bại 503 thay vì trả snapshot không có boundary")
+    void exportFailsWhenOffsetsCannotBeCaptured() {
+        UUID categoryId = givenLeafCategory("phones");
+        givenProduct(categoryId, "one", 1000L);
+        offsetProvider.failNextCaptures();
+
+        assertThatThrownBy(() -> exportService.exportProducts(null, 10))
+                .isInstanceOf(DomainException.class)
+                .extracting(exception -> ((DomainException) exception).errorCode())
+                .isEqualTo(ErrorCode.CATALOG_UNAVAILABLE);
+    }
+
+    @Test
+    @DisplayName("Cursor của Category export không dùng được cho Product export")
+    void exportCursorIsBoundToItsOwnStream() {
+        UUID parentId = givenLeafCategory("root");
+        givenChildCategory(parentId, "phones");
+        givenChildCategory(parentId, "laptops");
+
+        String categoryCursor = exportService.exportCategories(null, 1).nextCursor();
+        assertThat(categoryCursor).isNotBlank();
+
+        assertThatThrownBy(() -> exportService.exportProducts(categoryCursor, 1))
+                .isInstanceOf(DomainException.class)
+                .extracting(exception -> ((DomainException) exception).errorCode())
+                .isEqualTo(ErrorCode.INVALID_CURSOR);
     }
 
     @Test

@@ -20,9 +20,11 @@ import java.util.UUID;
  * API nội bộ cho Search full reindex. Không expose qua Gateway; caller được xác
  * thực bằng service identity (mTLS) trên mạng nội bộ.
  *
- * <p>Export không phải database snapshot bất biến: Search phải chạy song song
- * catalog event consumer để nhận update/delete phát sinh trong lúc export
- * (contracts/http/product/v1/openapi.yaml).
+ * <p>Hai endpoint export mở một export session và trả kèm
+ * {@code replay_from_offsets}: Search import trọn vẹn snapshot rồi seek inclusive
+ * từ các offset đó để bắt update/delete phát sinh trong lúc export. Không chụp
+ * được đủ mọi partition thì trả {@code 503} và Search giữ alias cũ
+ * (contracts/http/product/v1/openapi.yaml, ADR-014).
  */
 @RestController
 @RequestMapping("/internal/v1")

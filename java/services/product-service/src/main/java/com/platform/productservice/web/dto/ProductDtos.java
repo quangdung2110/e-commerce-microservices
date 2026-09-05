@@ -1,5 +1,6 @@
 package com.platform.productservice.web.dto;
 
+import com.platform.productservice.common.ReplayOffset;
 import com.platform.productservice.domain.enums.MediaType;
 import com.platform.productservice.domain.enums.ProductStatus;
 import com.platform.productservice.domain.enums.SkuStatus;
@@ -79,7 +80,16 @@ public final class ProductDtos {
     public record ProductPageResponse(List<ProductSummaryResponse> items, String nextCursor) {
     }
 
-    public record ProductExportPageResponse(List<ProductResponse> products, String nextCursor) {
+    /**
+     * Một trang export cho Search full reindex.
+     *
+     * @param replayFromOffsets ranh giới replay của {@code t.product.events} chụp
+     *                          trước khi scan trang đầu; giống nhau ở mọi trang
+     *                          của cùng export session (ADR-014)
+     */
+    public record ProductExportPageResponse(List<ProductResponse> products,
+                                            String nextCursor,
+                                            List<ReplayOffset> replayFromOffsets) {
     }
 
     public record CreateMediaInput(@NotNull MediaType mediaType,

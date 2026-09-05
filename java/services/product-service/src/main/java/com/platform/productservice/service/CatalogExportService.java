@@ -1,101 +1,83 @@
 package com.platform.productservice.service;
 
+import com.platform.productservice.common.DomainException;
+import com.platform.productservice.common.ErrorCode;
 import com.platform.productservice.common.Uuids;
-import com.platform.productservice.domain.entity.CategoryEntity;
-import com.platform.productservice.domain.entity.ProductEntity;
-import com.platform.productservice.domain.entity.ProductMediaEntity;
-import com.platform.productservice.domain.entity.SkuEntity;
-import com.platform.productservice.infrastructure.persistence.CategoryRepository;
-import com.platform.productservice.infrastructure.persistence.ProductMediaRepository;
-import com.platform.productservice.infrastructure.persistence.ProductRepository;
-import com.platform.productservice.infrastructure.persistence.SkuRepository;
-import com.platform.productservice.service.support.CatalogAssembler;
-import com.platform.productservice.service.support.CategoryTreeService;
+import com.platform.productservice.config.ProductProperties;
+import com.platform.productservice.infrastructure.kafka.CatalogOffsetProvider;
+import com.platform.productservice.service.support.CatalogExportReader;
 import com.platform.productservice.service.support.CursorCodec;
 import com.platform.productservice.web.dto.CategoryDtos;
 import com.platform.productservice.web.dto.ProductDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
- * Export nội bộ cho Search full reindex (WF-PRODUCT-003, ADR-010).
+ * Export nội bộ cho Search full reindex (WF-PRODUCT-003, ADR-010, ADR-014).
  *
- * <p>Trang đầu chụp một upper bound UUIDv7; các trang sau đi theo ID tăng dần
- * tới bound đó nên export luôn kết thúc. Đây không phải snapshot bất biến:
- * Search phải chạy song song catalog event consumer để nhận thay đổi phát sinh
- * trong lúc export.
+ * <p>Trang đầu mở một export session: Product chụp replay offsets của topic dữ
+ * liệu tương ứng <b>trước khi</b> scan, rồi chụp một upper bound UUIDv7. Các trang
+ * sau đi theo ID tăng dần tới bound đó nên export luôn kết thúc, và cursor mang
+ * lại đúng tập offsets ban đầu nên mọi trang — kể cả khi retry một trang — trả về
+ * cùng một boundary.
+ *
+ * <p>Đây không phải snapshot bất biến của database. Search import trọn vẹn snapshot
+ * rồi seek inclusive từ {@code replay_from_offsets} trong pha Catch-up;
+ * {@code catalog_revision} và {@code category_revision} làm phần chồng lấn giữa
+ * snapshot và event trở thành no-op. Product không consume ngược lại gì ở đây và
+ * không tạo transaction phân tán PostgreSQL–Kafka.
  */
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
 public class CatalogExportService {
 
     private static final UUID FIRST_ID = new UUID(0L, 0L);
 
-    private final ProductRepository productRepository;
-    private final SkuRepository skuRepository;
-    private final ProductMediaRepository mediaRepository;
-    private final CategoryRepository categoryRepository;
-    private final CategoryTreeService categoryTree;
-    private final CatalogAssembler assembler;
+    private final CatalogExportReader reader;
+    private final CatalogOffsetProvider offsetProvider;
     private final CursorCodec cursorCodec;
+    private final ProductProperties properties;
 
     public ProductDtos.ProductExportPageResponse exportProducts(String cursor, int limit) {
-        CursorCodec.ExportCursor position = position(cursor);
-        List<ProductEntity> products = productRepository.findExportPage(
-                position.lastId().toString(), position.bound().toString(), limit);
-        if (products.isEmpty()) {
-            return new ProductDtos.ProductExportPageResponse(List.of(), null);
-        }
-
-        List<UUID> productIds = products.stream().map(ProductEntity::getProductId).toList();
-        Map<UUID, List<SkuEntity>> skusByProduct =
-                skuRepository.findByProductIdInOrderBySkuCodeAsc(productIds).stream()
-                        .collect(Collectors.groupingBy(SkuEntity::getProductId));
-        Map<UUID, List<ProductMediaEntity>> mediaByProduct = assembler.groupMediaByProduct(
-                mediaRepository.findByProductIdInOrderBySortOrderAscMediaIdAsc(productIds));
-
-        List<ProductDtos.ProductResponse> page = products.stream()
-                .map(product -> assembler.toProduct(product,
-                        skusByProduct.getOrDefault(product.getProductId(), List.of()),
-                        mediaByProduct.getOrDefault(product.getProductId(), List.of())))
-                .toList();
-
-        String nextCursor = products.size() < limit ? null : cursorCodec.encodeExport(
-                products.get(products.size() - 1).getProductId(), position.bound());
-        return new ProductDtos.ProductExportPageResponse(page, nextCursor);
+        CursorCodec.ExportCursor session = session(cursor, properties.getExport().getProductTopic());
+        List<ProductDtos.ProductResponse> page =
+                reader.products(session.lastId(), session.bound(), limit);
+        String nextCursor = page.size() < limit ? null : cursorCodec.encodeExport(
+                page.get(page.size() - 1).productId(), session.bound(), session.offsets());
+        return new ProductDtos.ProductExportPageResponse(page, nextCursor, session.offsets());
     }
 
     /** Search đọc export category trước export Product khi xử lý reindex request. */
     public CategoryDtos.CategoryExportPageResponse exportCategories(String cursor, int limit) {
-        CursorCodec.ExportCursor position = position(cursor);
-        List<CategoryEntity> categories = categoryRepository.findExportPage(
-                position.lastId().toString(), position.bound().toString(), limit);
-        if (categories.isEmpty()) {
-            return new CategoryDtos.CategoryExportPageResponse(List.of(), null);
-        }
-
-        List<CategoryDtos.CategoryExportResponse> page = categories.stream()
-                .map(category -> assembler.toCategoryExport(category,
-                        categoryTree.path(category),
-                        categoryTree.isLeaf(category.getCategoryId())))
-                .toList();
-
-        String nextCursor = categories.size() < limit ? null : cursorCodec.encodeExport(
-                categories.get(categories.size() - 1).getCategoryId(), position.bound());
-        return new CategoryDtos.CategoryExportPageResponse(page, nextCursor);
+        CursorCodec.ExportCursor session = session(cursor, properties.getExport().getCategoryTopic());
+        List<CategoryDtos.CategoryExportResponse> page =
+                reader.categories(session.lastId(), session.bound(), limit);
+        String nextCursor = page.size() < limit ? null : cursorCodec.encodeExport(
+                page.get(page.size() - 1).categoryId(), session.bound(), session.offsets());
+        return new CategoryDtos.CategoryExportPageResponse(page, nextCursor, session.offsets());
     }
 
-    private CursorCodec.ExportCursor position(String cursor) {
+    /**
+     * Mở session mới ở trang đầu, hoặc khôi phục session đã có từ cursor.
+     *
+     * <p>Trang đầu chụp offsets trước khi scan; trang sau <b>không</b> chụp lại,
+     * vì boundary mới sẽ bỏ sót event nằm giữa hai lần chụp.
+     */
+    private CursorCodec.ExportCursor session(String cursor, String topic) {
         if (cursor == null || cursor.isBlank()) {
-            return new CursorCodec.ExportCursor(FIRST_ID, Uuids.next());
+            return new CursorCodec.ExportCursor(FIRST_ID, Uuids.next(),
+                    offsetProvider.replayOffsets(topic));
         }
-        return cursorCodec.decodeExport(cursor);
+        CursorCodec.ExportCursor resumed = cursorCodec.decodeExport(cursor);
+        if (!resumed.topic().equals(topic)) {
+            // Cursor của export kia sẽ trả boundary sai topic; từ chối thay vì
+            // để Search replay nhầm stream.
+            throw DomainException.of(ErrorCode.INVALID_CURSOR,
+                    "Export cursor belongs to a different export");
+        }
+        return resumed;
     }
 }

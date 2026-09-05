@@ -19,6 +19,10 @@ import com.platform.productservice.web.dto.ProductDtos;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -35,11 +39,27 @@ import java.util.UUID;
  * khớp entity ({@code ddl-auto: validate}).
  *
  * <p>Kafka listener bị tắt trong profile test; luồng consumer được gọi trực tiếp
- * để không cần broker.
+ * để không cần broker. Việc chụp replay offsets của export cũng đi qua
+ * {@link StubCatalogOffsetProvider} vì lý do đó — hành vi với broker thật được
+ * kiểm bằng smoke test riêng.
  */
 @SpringBootTest
 @ActiveProfiles("test")
+@Import(AbstractCatalogIntegrationTest.OffsetProviderConfiguration.class)
 abstract class AbstractCatalogIntegrationTest {
+
+    protected static final String PRODUCT_TOPIC = "t.product.events";
+    protected static final String CATEGORY_TOPIC = "t.category.events";
+
+    @TestConfiguration
+    static class OffsetProviderConfiguration {
+
+        @Bean
+        @Primary
+        StubCatalogOffsetProvider stubCatalogOffsetProvider() {
+            return new StubCatalogOffsetProvider();
+        }
+    }
 
     /**
      * Mặc định test tự dựng PostgreSQL bằng Testcontainers. Khi CI hoặc máy dev
@@ -101,7 +121,13 @@ abstract class AbstractCatalogIntegrationTest {
     protected JdbcTemplate jdbcTemplate;
     @Autowired
     protected ObjectMapper objectMapper;
+    @Autowired
+    protected StubCatalogOffsetProvider offsetProvider;
 
+    /**
+     * Partition mặc định khớp layout hiện hành: {@code t.product.events} có 3
+     * partition theo Product aggregate (ADR-012), {@code t.category.events} có 1.
+     */
     @BeforeEach
     void resetCatalog() {
         jdbcTemplate.execute("""
@@ -109,7 +135,11 @@ abstract class AbstractCatalogIntegrationTest {
                          product_skus, products, category_attributes, attribute_options,
                          attributes, categories RESTART IDENTITY CASCADE
                 """);
+        offsetProvider.reset();
+        offsetProvider.withOffsets(PRODUCT_TOPIC, 100L, 200L, 300L);
+        offsetProvider.withOffsets(CATEGORY_TOPIC, 42L);
     }
+
 
     // ---------------------------------------------------------------- fixtures
 

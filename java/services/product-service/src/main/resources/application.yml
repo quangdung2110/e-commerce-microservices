@@ -74,6 +74,11 @@ product:
     cursor-ttl: 30m
     default-limit: 200
     max-limit: 500
+    # Topic Debezium route outbox tới; export chụp offset của chúng làm replay
+    # boundary cho Search (ADR-014).
+    product-topic: ${PRODUCT_EVENTS_TOPIC:t.product.events}
+    category-topic: ${CATEGORY_EVENTS_TOPIC:t.category.events}
+    offset-timeout: 5s
   markdown:
     topic: ${MARKDOWN_TOPIC:t.promotion.markdown.events}
     dlq-topic: ${MARKDOWN_DLQ_TOPIC:t.promotion.markdown.events.dlq}

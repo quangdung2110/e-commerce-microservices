@@ -1,5 +1,6 @@
 package com.platform.productservice.web.dto;
 
+import com.platform.productservice.common.ReplayOffset;
 import com.platform.productservice.domain.enums.AttributeValueType;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -70,6 +71,15 @@ public final class CategoryDtos {
                                          Instant updatedAt) {
     }
 
-    public record CategoryExportPageResponse(List<CategoryExportResponse> categories, String nextCursor) {
+    /**
+     * Một trang export category cho Search full reindex.
+     *
+     * @param replayFromOffsets ranh giới replay của {@code t.category.events} chụp
+     *                          trước khi scan trang đầu; giống nhau ở mọi trang
+     *                          của cùng export session (ADR-014)
+     */
+    public record CategoryExportPageResponse(List<CategoryExportResponse> categories,
+                                             String nextCursor,
+                                             List<ReplayOffset> replayFromOffsets) {
     }
 }

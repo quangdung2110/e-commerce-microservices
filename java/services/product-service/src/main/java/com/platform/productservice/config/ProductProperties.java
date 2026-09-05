@@ -61,6 +61,22 @@ public class ProductProperties {
         private int defaultLimit = 200;
 
         private int maxLimit = 500;
+
+        /**
+         * Topic dữ liệu Product/SKU. Debezium route outbox tới đây; Product cần
+         * biết tên để chụp {@code replay_from_offsets} cho export session
+         * (ADR-014).
+         */
+        private String productTopic = "t.product.events";
+
+        /** Topic dữ liệu Category, nguồn replay của Category export. */
+        private String categoryTopic = "t.category.events";
+
+        /**
+         * Timeout cho một lần đọc offset. Ngắn có chủ đích: export nằm trên
+         * đường request đồng bộ và thất bại là 503 retryable.
+         */
+        private Duration offsetTimeout = Duration.ofSeconds(5);
     }
 
     @Getter
