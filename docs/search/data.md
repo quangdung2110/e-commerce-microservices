@@ -36,6 +36,57 @@ Search sở hữu mapping, alias, analyzer, token filter, `is_in_stock`,
 sở hữu snapshot cấu trúc category; Search chỉ materialize `ancestor_ids`, slug path,
 `level` và `is_leaf` từ snapshot đó. Không service nào khác được ghi vào Elasticsearch này.
 
+### 1.1 Nguồn ứng viên suggestion
+
+Suggestion là query-completion term do Search dựng trong mỗi lần rebuild, không
+phải bản sao một entity. Search lấy hai loại ứng viên từ projection hiện hành:
+
+| Loại candidate | Điều kiện nguồn | Text | Đơn vị tạo candidate | Source identifier |
+|---|---|---|---|---|
+| `CATEGORY` | Category `is_deleted = false` và `product_count > 0` | `categories.name` | Một Category | `category_id` |
+| `PRODUCT` | Product có ít nhất một SKU `is_deleted = false`, `product_status = ACTIVE`, `sku_status = ACTIVE`, `is_in_stock = true` | Tên Product đã denormalize vào SKU | Một `product_id`, không phải một SKU | `product_id` |
+
+Candidate Product không bao gồm tên biến thể hoặc thuộc tính SKU. Sau bước lấy
+candidate, rebuilder mới chuẩn hóa và khử trùng lặp các cụm từ; vì vậy nhiều Product
+có cùng tên chuẩn hóa có thể được hợp nhất theo quy tắc dedupe của suggestion build.
+
+### 1.2 Chuẩn hóa, khử trùng lặp và ranking suggestion
+
+`text_normalized` là khóa so sánh nội bộ, còn `text` là tên hiển thị cho buyer.
+Rebuilder chuẩn hóa text theo đúng thứ tự: Unicode NFC → lowercase không phụ thuộc
+locale → ICU folding (bao gồm bỏ dấu tiếng Việt) → trim → gộp mọi chuỗi whitespace
+liên tiếp thành một khoảng trắng. Dấu câu được giữ nguyên. Candidate có text rỗng
+sau chuẩn hóa bị loại.
+
+Khóa dedupe là `(type, scope, language, text_normalized)`. Ở v1, mọi candidate có
+`scope = GLOBAL`, `language = vi`; `suggestion_id` là SHA-256 của bốn giá trị này,
+nối bằng ký tự phân tách NUL theo đúng thứ tự trên và mã hóa UTF-8. Vì `type` là một
+phần của khóa, `PRODUCT` và `CATEGORY` có cùng text vẫn là hai suggestion riêng để
+dropdown có thể trình bày hai loại khác nhau; cả hai đều dùng `text` làm query khi
+buyer chọn.
+
+Khi một nhóm dedupe có nhiều candidate, rebuilder tính preliminary weight cho từng
+candidate, giữ candidate có điểm cao nhất làm nguồn của `text` và metadata. Nếu hòa,
+chọn `text` theo `text.keyword` tăng dần, rồi chọn source identifier tăng dần để kết
+quả quyết định được. Không cộng điểm của các Product cùng tên: có nhiều Product/SKU
+không tự tạo lợi thế ranking cho cùng một cụm từ.
+
+Weight là điểm ranking toàn cục sau khi prefix đã match, không phải điểm match của
+Elasticsearch. Với `ln` là logarithm tự nhiên, điểm preliminary được tính như sau;
+các hệ số là cấu hình runtime được chụp ở đầu build và giữ bất biến trong build đó:
+
+```text
+CATEGORY: floor(category_weight_scale × ln(1 + product_count))
+PRODUCT base: floor(product_weight_scale × rating_avg × ln(1 + product_rating_count))
+PRODUCT: min(max_weight, floor(PRODUCT base × (has_promotion ? promotion_multiplier : 1)))
+```
+
+Giá trị mặc định là `category_weight_scale = 5000`, `product_weight_scale = 1000`,
+`promotion_multiplier = 1.10`, `max_weight = 9_000_000_000_000_000_000`.
+`rating_avg` và `product_rating_count` null được coi là `0`; do đó Product chưa có
+review vẫn có suggestion nhưng đứng sau term có điểm dương, theo tie-break `text`.
+Hàm log làm giảm lợi thế của count rất lớn; promotion chỉ tăng tối đa 10% điểm cơ sở.
+
 ## 2. Logical data model
 
 ```mermaid
@@ -212,11 +263,14 @@ Không có bảng inbox hay bộ nhớ dedupe theo `event_id`. Idempotency đế
 theo nguồn cộng với snapshot semantics. `last_*_event_id` chỉ để truy vết vận
 hành, không dùng để quyết định apply hay bỏ qua.
 
-Trạng thái của một lần reindex (`run_id`, pha, tiến độ, export-session metadata và
-replay offset theo source/topic/partition) được lưu trong một index nội bộ nhỏ của
-Search hoặc trong bộ nhớ của instance giữ lock; lựa chọn cụ thể phải được ghi lại khi
-implementation được xác minh. Catalog offsets đến từ Product export, không do Search
-tự chụp.
+Trạng thái của reindex và suggestion build được lưu trong một index nội bộ nhỏ của
+Search. Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
+version, kết quả validation và owner lock. Distributed lock `suggestion-rebuild` là
+một document lease trong cùng index: acquire bằng thao tác atomic, mang `owner_run_id`
+và `lease_expires_at` cùng fencing token đơn điệu, được owner renew trong lúc chạy
+và chỉ owner được release. Owner mất lease phải abort; alias swap xác nhận fencing
+token để ngăn owner cũ cutover sau khi lease đã được run khác lấy. Catalog offsets
+đến từ Product export, không do Search tự chụp.
 
 ## 10.1 Attribute token encoding
 
@@ -237,7 +291,9 @@ phải lưu.
   ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
 - **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
   rồi mới xóa.
-- **Suggestion.** Mỗi build tạo index mới; giữ lại một version trước để rollback.
+- **Suggestion.** Mỗi build tạo index mới. Sau swap, giữ current index và đúng một
+  rollback version tối thiểu 24 giờ; chỉ được xóa version cũ hơn rollback version.
+  Build `ABORTED` xóa index mới chưa từng được gắn alias.
 - **Backup.** Catalog/category tái tạo từ Product export rồi replay
   `t.product.events` và `t.category.events` từ offsets export trả về. Stock tái tạo
   từ Inventory snapshot export rồi replay `t.inventory.stock.events.v1` từ offsets

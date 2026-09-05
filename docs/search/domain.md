@@ -48,7 +48,10 @@ Search có ba document model, không có aggregate theo nghĩa transaction:
   không tự suy ra từ quan hệ cục bộ ([ADR-013](./decisions/ADR-013-product-category-snapshots.md)).
 - **Suggestion document** (index `search_suggestions`): một cụm từ gợi ý kèm
   `weight`. Identity là hash deterministic của `type`, `scope`, `language` và
-  `text_normalized`, do Search sinh. Lifecycle bằng đúng một chu kỳ rebuild.
+  `text_normalized`, do Search sinh. Lifecycle bằng đúng một chu kỳ rebuild. Đây
+  là query-completion term, không phải tham chiếu/link đến entity; `text` được
+  dùng làm truy vấn sản phẩm khi buyer chọn gợi ý, còn `type` chỉ là metadata
+  trình bày/phân loại.
 
 Product, SKU, category, tồn kho và rating đều là object của service khác; Search
 chỉ tham chiếu chúng qua identifier và snapshot.
@@ -86,6 +89,8 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-011` | Tombstone chỉ được purge sau khi qua cửa sổ bảo vệ | Tombstone purger | Document sống lại do event trễ |
 | `SEARCH-BR-012` | Mapping thay đổi phải qua reindex và alias swap | Vận hành index | Downtime hoặc mapping conflict |
 | `SEARCH-BR-013` | Rating snapshot chỉ apply sau catalog build và dùng cùng `review_revision` với event replay | Full reindex | Rating thiếu hoặc event cũ ghi đè snapshot |
+| `SEARCH-BR-014` | Suggestion dedupe theo `(type, scope, language, text_normalized)`; `PRODUCT` và `CATEGORY` cùng text không hợp nhất | Rebuild suggestion | Dropdown mất phân loại hoặc lặp term cùng loại |
+| `SEARCH-BR-015` | Weight suggestion tính sau dedupe; nhóm Product trùng tên lấy điểm cao nhất, không cộng dồn theo số Product/SKU | Rebuild suggestion | Nhiều entity trùng tên làm lệch ranking |
 
 ## 5. Invariants
 
@@ -128,8 +133,10 @@ ngược. Chỉ một run được phép ở trạng thái chưa kết thúc t�
 
 ### Suggestion build
 
-`BUILDING` → `VALIDATING` → `SWAPPED`, hoặc → `ABORTED` khi validation gate không
-đạt. `ABORTED` giữ nguyên alias cũ nên API suggest không gián đoạn.
+`BUILDING` → `VALIDATING` → `SWAPPED`. Từ `BUILDING` hoặc `VALIDATING` có thể sang
+`ABORTED` khi scan/bulk/PIT lỗi, source alias đổi hoặc validation gate không đạt;
+`ABORTED` giữ nguyên alias cũ nên API suggest không gián đoạn. Sau `SWAPPED` có thể
+sang `ROLLED_BACK` bằng alias swap ngược về version trước.
 
 ## 7. Authorization rules
 

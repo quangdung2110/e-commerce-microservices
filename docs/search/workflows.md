@@ -95,7 +95,10 @@ kiểm tra hàng `DRAFT`/`HIDDEN`/đã xóa không bao giờ lộ ra.
 tốc độ gõ.
 
 **Happy path.** `GET /api/v2/search/suggestions`: validate `q` tối thiểu 2 ký tự → query index `search_suggestions`
-→ sort `weight` giảm dần, tie-break `text.keyword` → trả `text` và `type`.
+→ sort `weight` giảm dần, tie-break `text.keyword` → trả `text` và `type`. Khi buyer chọn
+một gợi ý, client dùng nguyên `text` làm `q` cho luồng tìm kiếm sản phẩm; đây là
+cụm từ giúp hoàn tất truy vấn, không phải link đến một Product, SKU hoặc Category.
+`type` chỉ phục vụ hiển thị/phân loại trong dropdown, không mang ngữ nghĩa điều hướng.
 
 **State/data changes.** Không có.
 
@@ -111,7 +114,9 @@ không chặn thao tác tìm kiếm.
 **Metrics.** Latency p50/p99, tỉ lệ gợi ý rỗng theo prefix, QPS.
 
 **Test scenarios.** Prefix 1 ký tự; prefix có dấu và không dấu cùng ra một kết
-quả; `limit` biên; index rỗng; alias đang swap.
+quả; `limit` biên; index rỗng; alias đang swap; chọn item `CATEGORY` và `PRODUCT`
+đều dùng đúng `text` làm `q` cho tìm kiếm sản phẩm, không điều hướng hoặc suy ra
+entity từ `type`.
 
 ---
 
@@ -396,25 +401,67 @@ hủy giữa build; catch-up không hội tụ; cutover rồi rollback; trigger 
 
 **Trigger.** Lịch chạy hằng ngày vào giờ thấp điểm.
 
-**Happy path.** Tạo `search_suggestions_v{N+1}` → nạp ứng viên từ cây danh mục và
-từ sản phẩm đang hiển thị → chuẩn hóa, khử trùng lặp, tính `weight` từ chỉ số
-catalog → bulk index theo chunk → **validation gate** (tổng số document đạt ngưỡng,
-các prefix nóng đều có kết quả) → swap alias `search_suggestions`.
+**Happy path.**
+1. Lấy distributed lease lock `suggestion-rebuild`, sinh `run_id`, resolve read
+   alias `products` và `categories` thành hai index vật lý nguồn, rồi mở PIT cho
+   từng index. Lưu các source index và version hiện tại của alias
+   `search_suggestions` làm metadata của run.
+2. Tạo `search_suggestions_v{N+1}`.
+3. Nạp ứng viên theo hai nguồn, scan toàn bộ mỗi PIT bằng `search_after` với sort
+   cố định; không scan qua alias thay đổi được:
+   - **Category candidate:** tên của mỗi Category có `is_deleted = false` và
+     `product_count > 0`. Category rỗng không được gợi ý để buyer không chọn một
+     cụm từ rồi nhận kết quả rỗng.
+   - **Product candidate:** tên Product không rỗng của mỗi `product_id` có ít
+     nhất một SKU thỏa `is_deleted = false`, `product_status = ACTIVE`,
+     `sku_status = ACTIVE` và `is_in_stock = true`. Index catalog là SKU-first,
+     nhưng một Product chỉ đóng góp một candidate theo tên Product; không tạo
+     candidate riêng cho từng SKU hoặc thuộc tính biến thể.
+4. Chuẩn hóa và khử trùng lặp candidate theo `(type, scope, language,
+   text_normalized)`. Tính `weight` sau dedupe từ product count hoặc rating/review
+   count; một nhóm Product trùng tên dùng điểm cao nhất, không cộng dồn theo số
+   Product/SKU. Quy tắc chuẩn hóa, công thức và tie-break ở
+   [Data §1.2](./data.md#12-chuẩn-hóa-khử-trùng-lặp-và-ranking-suggestion).
+   Bulk index theo chunk.
+5. Refresh index mới, rồi chạy **validation gate** trên chính index vật lý mới:
+   không có bulk item failure; số document thực tế đạt `suggestion_min_docs`; nếu
+   có version hiện hành thì số mới không dưới `80%` số document cũ; số unique output
+   ID khớp số document thực tế; và mọi hot prefix cấu hình đều có ít nhất một kết
+   quả khi dùng đúng query của API suggest.
+6. Resolve lại alias `products` và `categories`. Nếu một trong hai không còn trỏ
+   tới source index đã chụp ở bước 1, abort run: build không được publish một tập
+   term lấy từ thế hệ catalog cũ sau khi full reindex đã cutover.
+7. Atomic swap alias `search_suggestions` sang index mới, giữ version vừa bị thay
+   thế làm rollback version, đóng PIT và release lock.
 
-**Failure paths.** Lỗi trước swap → hủy build, alias cũ giữ nguyên, API không bị
-ảnh hưởng. Validation gate không đạt → không swap. Phát hiện chất lượng kém sau
-swap → rollback alias về version trước.
+**Failure paths.** Không lấy được lock → bỏ qua run, không chờ hoặc chạy song song.
+Lỗi scan/bulk/PIT, source alias đổi, hoặc validation gate không đạt → `ABORTED`,
+xóa index mới, đóng PIT/release lock và giữ alias cũ. Phát hiện chất lượng kém sau
+swap → atomic rollback alias về version trước, đánh dấu `ROLLED_BACK`; không xóa
+rollback version trong cửa sổ retention.
 
 **Idempotency.** Mỗi lần chạy tạo index mới; chạy lại trong cùng ngày chỉ tạo một
 version khác và không làm hỏng dữ liệu đang phục vụ.
 
-**Concurrency.** Singleton; hai lần build song song bị chặn bằng lock.
+**Concurrency.** Singleton bằng distributed lease lock trong Elasticsearch. Lock có
+`owner_run_id`, `lease_expires_at` và fencing token đơn điệu; owner renew lease trong
+run và chỉ owner được release. Không renew được lease hoặc không còn fencing token
+hợp lệ → owner phải abort. Mọi alias swap kiểm tra fencing token, nên khi lease hết
+hạn sau khi owner chết, run sau có thể lấy lock còn owner cũ không thể cutover.
 
-**Metrics.** Số document, thời lượng build, kết quả validation gate, số version giữ
-lại.
+**Metrics.** Số candidate/document, thời lượng scan/bulk/validation, bulk failure,
+kết quả từng check của validation gate, source index version, run abort do source
+đổi, lock contention/lease renewal, version hiện hành và rollback version.
 
 **Test scenarios.** Catalog rỗng; ngưỡng validation không đạt; swap thành công;
-rollback; sản phẩm đã xóa không còn xuất hiện ở lần build kế tiếp.
+rollback; sản phẩm đã xóa không còn xuất hiện ở lần build kế tiếp; một Product có
+nhiều SKU chỉ sinh một Product candidate; Product không còn SKU hiển thị/còn hàng
+không sinh candidate; Category rỗng hoặc đã xóa không sinh candidate; khác biệt dấu,
+hoa-thường hoặc whitespace trong cùng một loại chỉ sinh một suggestion; cùng text
+nhưng khác `type` giữ hai suggestion; Product trùng tên không cộng dồn weight; rating,
+review count và promotion cho đúng thứ tự weight đã công bố; bulk item failure;
+document count tụt quá ngưỡng 80%; hot prefix rỗng; full reindex swap source alias
+giữa build; hai replica cùng trigger; owner chết và lease hết hạn; swap rồi rollback.
 
 ---
 

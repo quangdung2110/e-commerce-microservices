@@ -56,6 +56,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Throttle | `requests_per_second` cho thao tác diện rộng | Có | Không | Không |
 | Pagination | `size` mặc định và tối đa | Có | Không | Không |
 | Lịch job | Cron cho rebuild suggestion, recompute count, purge tombstone | Có | Không | Có |
+| Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
 | Cửa sổ tombstone | Số ngày giữ tombstone trước khi purge | Có | Không | Không |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 
@@ -191,7 +192,7 @@ tiết phải viết cùng với vận hành thực tế.
 |---|---|---|---|---|---|
 | Indexing worker | Kafka, liên tục | Theo partition | Guard theo nguồn | Bằng offset Kafka | Lag, tỉ lệ indexing, độ trễ |
 | Full reindex job | API hoặc lịch bảo trì | Singleton, một run tại một thời điểm | Checkpoint theo chunk | Resume hoặc chạy run mới | Tiến độ, pha, kết quả |
-| Suggestions rebuilder | Hằng ngày, giờ thấp điểm | Singleton | Build index mới mỗi lần | Chạy lại an toàn bất cứ lúc nào | Số document, kết quả validation |
+| Suggestions rebuilder | Hằng ngày, giờ thấp điểm | Singleton qua ES lease lock | Build index mới mỗi lần; source alias đổi hoặc validation fail thì không swap | Chạy lại an toàn bất cứ lúc nào | Số document, validation, lock, source generation, version/rollback |
 | Category count recompute | Định kỳ | Singleton | Ghi giá trị tuyệt đối | Chạy lại an toàn | Thời lượng, số danh mục |
 | Tombstone purger | Hằng ngày, giờ thấp điểm | Singleton | Lọc theo trạng thái hiện tại | Chạy lại an toàn | Số purge, tuổi tombstone |
 

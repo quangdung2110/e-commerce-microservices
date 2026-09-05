@@ -99,6 +99,12 @@ Dropdown search-as-you-type.
 - Đọc index `search_suggestions` đã pre-compute; ranking theo `weight` giảm dần,
   tie-break `text.keyword` tăng dần. Public response chỉ trả `text` và `type`,
   không trả `weight` nội bộ.
+- **Ngữ nghĩa chọn gợi ý:** mỗi item là một cụm từ để hoàn tất truy vấn. Khi buyer
+  chọn item, client dùng `text` làm `q` cho `GET /api/v2/search/products` (hoặc
+  điền nó vào ô tìm kiếm trước khi buyer submit). Item không phải link đến entity:
+  API không trả `product_id`, `sku_id`, `category_id` hay slug để điều hướng.
+  `type` chỉ là metadata để trình bày/phân loại dropdown, không được dùng để suy
+  ra hoặc điều hướng tới Product, SKU hay Category.
 - `q` ngắn hơn 2 ký tự trả `INVALID_QUERY_PARAMETER`.
 - Timeout 2s; suggest lỗi không được làm hỏng trang tìm kiếm chính.
 
