@@ -45,7 +45,8 @@ dọn media/projection liên quan.
 Category chỉ xóa khi không có con và không có Product. Application validate cycle và
 category lá trong transaction, tăng `category_revision` đúng một lần và phát snapshot/
 tombstone Category. Rename, đổi slug hoặc đổi parent phát thêm `CATALOG_REINDEX_REQUESTED`;
-Search coalesce rồi full reindex, không có worker Product fan-out subtree.
+Search coalesce rồi full reindex bằng export snapshot kèm replay offsets, không có
+worker Product fan-out subtree ([ADR-014](./decisions/ADR-014-catalog-snapshot-replay-offsets.md)).
 
 ## WF-PRODUCT-004 — gRPC catalog point-read
 

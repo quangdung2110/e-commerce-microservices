@@ -696,11 +696,13 @@ paths:
       operationId: exportProductsForReindex
       summary: Export keyset hữu hạn cho Search full reindex
       description: >-
-        Chỉ Search Service gọi qua mTLS. Cursor đầu tiên chụp upper bound UUIDv7,
+        Chỉ Search Service gọi qua mTLS. Khi mở export session, Product chụp offset
+        hiện tại của mọi partition t.product.events trước khi scan; mọi trang trong
+        session trả cùng replay_from_offsets. Cursor đầu tiên chụp upper bound UUIDv7,
         sau đó các trang đi theo product_id tăng dần đến bound này; không có duplicate
-        hoặc product mới vô hạn làm export không kết thúc. Đây không phải database
-        snapshot bất biến: Search phải chạy song song catalog event consumer để nhận
-        update/delete phát sinh trong lúc export.
+        hoặc product mới vô hạn làm export không kết thúc. Search import xong toàn bộ
+        snapshot rồi seek inclusive từ replay_from_offsets để bắt update/delete phát
+        sinh trong lúc export.
       security: [{ searchServiceMtls: [] }]
       parameters:
         - $ref: '#/components/parameters/ExportCursor'
@@ -744,9 +746,11 @@ paths:
       operationId: exportCategoriesForReindex
       summary: Export keyset category tree cho Search full reindex
       description: >-
-        Chỉ Search Service gọi qua mTLS. Mỗi item có path và is_leaf dẫn xuất tại
-        thời điểm đọc; Search phải dùng export này trước Product export khi xử lý
-        CATALOG_REINDEX_REQUESTED.
+        Chỉ Search Service gọi qua mTLS. Khi mở export session, Product chụp offset
+        hiện tại của mọi partition t.category.events trước khi scan; mọi trang trong
+        session trả cùng replay_from_offsets. Mỗi item có path và is_leaf dẫn xuất tại
+        thời điểm đọc; Search import export này trước Product export rồi seek inclusive
+        từ replay_from_offsets trong pha Catch-up.
       security: [{ searchServiceMtls: [] }]
       parameters:
         - $ref: '#/components/parameters/ExportCursor'
@@ -1331,7 +1335,7 @@ components:
     ProductExportPage:
       type: object
       additionalProperties: false
-      required: [products]
+      required: [products, replay_from_offsets]
       properties:
         products:
           type: array
@@ -1342,6 +1346,14 @@ components:
           minLength: 1
           maxLength: 1024
           description: Missing khi đã export tới upper bound.
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          description: >-
+            Offset của mọi partition t.product.events được chụp trước scan ở trang
+            đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là
+            record đầu tiên Search phải replay, theo semantics inclusive.
+          items: { $ref: '#/components/schemas/ReplayOffset' }
     CategoryExport:
       type: object
       additionalProperties: false
@@ -1372,7 +1384,7 @@ components:
     CategoryExportPage:
       type: object
       additionalProperties: false
-      required: [categories]
+      required: [categories, replay_from_offsets]
       properties:
         categories:
           type: array
@@ -1383,6 +1395,22 @@ components:
           minLength: 1
           maxLength: 1024
           description: Missing khi đã export tới upper bound.
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          description: >-
+            Offset của mọi partition t.category.events được chụp trước scan ở trang
+            đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là
+            record đầu tiên Search phải replay, theo semantics inclusive.
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    ReplayOffset:
+      type: object
+      additionalProperties: false
+      required: [topic, partition, offset]
+      properties:
+        topic: { type: string, minLength: 1, maxLength: 249 }
+        partition: { type: integer, format: int32, minimum: 0 }
+        offset: { type: integer, format: int64, minimum: 0 }
     Problem:
       $ref: '../../../shared/json-schema/v1/problem.schema.json'
   responses:

@@ -26,7 +26,7 @@ verified_against_commit: null
 | Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
 | Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
 | Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
-| Catalog export | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
+| Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
 | Stock snapshot export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | proposed |
 | Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
 
@@ -153,7 +153,9 @@ consumer đã subscribe. Chi tiết ở [Operations §2](./operations.md#2-healt
 ## 4. Events tiêu thụ
 
 Năm topic, một consumer group chính `search-indexer`. Group tạm
-`search-reindex-{run_id}` chỉ tồn tại trong pha catch-up của một lần reindex.
+`search-reindex-{run_id}` chỉ tồn tại trong pha catch-up của một lần reindex và
+replay bốn data topic; `t.catalog.control.events` tiếp tục được theo dõi để supersede
+run khi category tree đổi.
 
 Quy tắc chung cho mọi topic:
 
@@ -197,7 +199,9 @@ theo path và không tự dựng lại tree ([ADR-013](./decisions/ADR-013-produ
 
 Product phát `com.ecommerce.catalog.reindex-requested.v1` khi rename, đổi slug hoặc
 đổi parent category. Search coalesce các request, export category trước Product rồi
-chạy full reindex/catch-up; event control không cập nhật trực tiếp SKU document.
+chạy full reindex/catch-up; event control không cập nhật trực tiếp SKU document. Một
+control event mới trong Build/Catch-up làm run hiện tại `SUPERSEDED`, không được
+cutover, rồi được coalesce thành run mới.
 
 ### 4.4 `t.inventory.stock.events.v1` — tồn kho
 
@@ -227,9 +231,11 @@ Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
 `GET /internal/v1/products/export` của Product,
 [`GET /internal/v1/inventory/stock-snapshots`](../../contracts/http/inventory/internal/v1/openapi.yaml)
 và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/internal/v1/openapi.yaml)
-để backfill catalog, stock và rating. Hai snapshot export trả `replay_from_offsets`
-được chụp trước scan; Search replay stock và review topic từ offset tương ứng sau
-import. Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
+để backfill catalog, stock và rating. Cả bốn export trả `replay_from_offsets` được
+chụp trước scan; Product trả boundary riêng cho `t.category.events` và
+`t.product.events`. Search import mọi snapshot rồi replay các data topic từ offsets
+tương ứng, không tự đọc Kafka Admin để chụp catalog watermark. Không có lời gọi đồng
+bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 

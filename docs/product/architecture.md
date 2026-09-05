@@ -54,6 +54,11 @@ Strong consistency nằm ở catalog, giá, trạng thái và tồn tại SKU tr
 Stock chỉ được quyết định bằng reservation atomic tại Inventory. Search là eventual
 read model; khoảng trễ của Search không được ảnh hưởng Checkout.
 
+Khi Search full reindex, Product tạo export session cho Category và Product/SKU. Mỗi
+session chụp replay offsets của topic tương ứng trước scan và trả lại cùng snapshot
+qua mọi trang; Search import xong mới catch-up. Đây là contract phục hồi, không phải
+đường đọc nóng và không tạo transaction phân tán PostgreSQL–Kafka.
+
 ## Concurrency
 
 - Lock bắt buộc: `products` trước bằng `FOR NO KEY UPDATE`, rồi SKU liên quan bằng
@@ -64,6 +69,8 @@ read model; khoảng trễ của Search không được ảnh hưởng Checkout.
   event để Search rebuild read model thay vì Product fan-out subtree.
 - `source_revision` là ordering guard cho markdown event theo Product.
 - Không dùng `updated_at` hay Redis timestamp để quyết định thứ tự giữa các nguồn khác nhau.
+- `replay_from_offsets` của export là boundary do Product cấp; Search không tự chụp
+  catalog watermark. Chi tiết ở [ADR-014](./decisions/ADR-014-catalog-snapshot-replay-offsets.md).
 
 ## Deployment
 

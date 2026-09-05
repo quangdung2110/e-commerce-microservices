@@ -29,13 +29,20 @@ canonical path là `/internal/v1/...`, không expose qua Gateway.
 | `GET`/`POST /categories`, `GET`/`PUT`/`DELETE /categories/{id}` | Quản lý category tree |
 | `GET`/`PUT`/`DELETE /categories/{id}/attributes/{attribute_id}` | Quản lý mapping category–attribute |
 | `GET`/`POST`/`PUT`/`DELETE /attributes` và `/attributes/{id}/options` | Quản lý attribute `TEXT`/`NUMBER`/`BOOLEAN`/`SELECT` và option |
-| `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex; consumer event chạy song song để nhận thay đổi đồng thời |
-| `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất; Search đọc trước Product export khi nhận reindex request |
+| `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex, kèm `replay_from_offsets` của `t.product.events` chụp trước scan |
+| `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất và `replay_from_offsets` của `t.category.events`; Search đọc trước Product export |
 | `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
 
 Mọi response chứa SKU — admin API, export và snapshot — mang `thumbnail_storage_key`
 đã resolve, cùng giá trị với `sku-upserted`. Nhờ vậy full reindex từ export và luồng
 event cho ra cùng kết quả, và consumer không phải derive lại từ `media[]` (ADR-013).
+
+Hai export nội bộ tạo session qua cursor: offsets được chụp trước khi scan trang đầu
+và lặp lại không đổi ở mọi trang. Search import hết snapshot trước, sau đó seek
+inclusive tới offsets tương ứng trong pha Catch-up; `catalog_revision` và
+`category_revision` làm phần chồng lấn trở thành no-op. Không chụp được đủ partition
+hoặc không lập được session nhất quán thì Product trả `503`; xem
+[ADR-014](./decisions/ADR-014-catalog-snapshot-replay-offsets.md).
 
 Tất cả mutation Product/SKU/media sau khi tạo yêu cầu `If-Match` theo ETag
 `catalog_revision`, trả `412 PRODUCT_REVISION_MISMATCH` khi admin đang ghi trên

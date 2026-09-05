@@ -57,7 +57,7 @@ flowchart LR
 | Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
 | Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
 | Indexing worker | Consume snapshot catalog/category/stock/review, transform event thành lệnh ghi, apply guard | Bỏ qua guard hoặc tự gọi ngược Product trong hot path | Kafka, write alias | `worker` |
-| Reindex job | Build index mới, import stock/rating snapshot, catch-up, cutover alias | Ghi qua write alias trong pha catch-up | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
+| Reindex job | Build index mới, import catalog/stock/rating snapshot kèm replay offsets, catch-up, cutover alias | Ghi qua write alias trong pha catch-up hoặc tự chụp catalog watermark | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
 | Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree | Elasticsearch | `worker` |
 | Tombstone purger | Xóa document đã tombstone quá cửa sổ bảo vệ | Xóa document còn trong cửa sổ bảo vệ | Elasticsearch | `worker` |
@@ -112,8 +112,9 @@ Search không có lock nghiệp vụ. Tính đúng đắn dựa trên bốn cơ 
   dùng `sku_id`, Review dùng `product_id`. Ordering chỉ được cam kết trong cùng
   key, và guard là thứ bảo vệ khi ordering không đủ.
 - **Snapshot semantics.** Event catalog, stock và rating đều mang snapshot đầy đủ
-  của field thuộc nguồn đó. Rating export chụp replay offset trước scan; vì vậy
-  import snapshot rồi replay event từ offset đó không bỏ lỡ mutation giữa lúc build.
+  của field thuộc nguồn đó. Mọi export Product/Inventory/Review chụp replay offsets
+  trước scan; vì vậy import snapshot rồi replay event từ offsets đó không bỏ lỡ
+  mutation giữa lúc build. Search không tự tạo catalog boundary.
 - **`conflicts=proceed` cho `_update_by_query`.** Version conflict do ghi đồng thời
   được bỏ qua có kiểm soát; guard đảm bảo không có lost update về mặt nghiệp vụ.
 

@@ -35,7 +35,7 @@ hay local stock fallback.
 |---|---|---|---|
 | Markdown Consumer | Product | Kafka Promotion snapshots | Lock Product, guard `source_revision`, retry transient; ack sau DB commit |
 | Debezium connector | Platform | Liên tục đọc WAL | At-least-once; theo dõi slot lag |
-| Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; export category/Product, catch up event và alias swap |
+| Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; Product export category/Product kèm replay offsets, Search import rồi catch-up và alias swap |
 
 Product không có scheduled job. Promotion chịu trách nhiệm phát `ACTIVE`/`INACTIVE` đúng
 lịch; Product Consumer và runbook replay xử lý sự cố delivery. Outbox retention thuộc
@@ -50,6 +50,10 @@ catalog reindex request quá SLA. Runbook markdown phải nêu owner Promotion, 
 snapshot mới nhất và replay sau retry/DLQ; runbook outbox phải nêu owner Platform khi tuổi
 hoặc dung lượng outbox vượt ngưỡng. Mọi runbook có chẩn đoán chỉ đọc, khắc phục, xác nhận
 phục hồi và owner escalate.
+
+Runbook export cho Search phải kiểm tra Kafka chụp đủ mọi partition và offsets giữ nguyên
+trong cả export session. Kafka lỗi, export session mất nhất quán hoặc Debezium/outbox lag
+không hội tụ là điều kiện thất bại reindex; Search giữ alias cũ và không cutover.
 
 ## Deploy và rollback
 

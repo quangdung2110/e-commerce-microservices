@@ -47,7 +47,7 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 | Inbound | Promotion | Kafka | Product-scope markdown state snapshot, guard `source_revision` |
 | Outbound | Search | Kafka | SKU/category snapshot, tombstone và category-tree reindex control |
 | Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
-| Outbound | Search | HTTP nội bộ | Export/full reindex catalog |
+| Outbound | Search | HTTP nội bộ | Export Category/Product cho full reindex, kèm replay offsets theo topic |
 
 Search sẽ consume stock snapshot v1 trực tiếp từ Inventory sau rollout contract. Product
 không consume topic Inventory và không là đường trung chuyển availability cho UI.

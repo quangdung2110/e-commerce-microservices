@@ -212,9 +212,11 @@ Không có bảng inbox hay bộ nhớ dedupe theo `event_id`. Idempotency đế
 theo nguồn cộng với snapshot semantics. `last_*_event_id` chỉ để truy vết vận
 hành, không dùng để quyết định apply hay bỏ qua.
 
-Trạng thái của một lần reindex (`run_id`, pha, tiến độ, watermark offset) được lưu
-trong một index nội bộ nhỏ của Search hoặc trong bộ nhớ của instance giữ lock;
-lựa chọn cụ thể phải được ghi lại khi implementation được xác minh.
+Trạng thái của một lần reindex (`run_id`, pha, tiến độ, export-session metadata và
+replay offset theo source/topic/partition) được lưu trong một index nội bộ nhỏ của
+Search hoặc trong bộ nhớ của instance giữ lock; lựa chọn cụ thể phải được ghi lại khi
+implementation được xác minh. Catalog offsets đến từ Product export, không do Search
+tự chụp.
 
 ## 10.1 Attribute token encoding
 
@@ -236,9 +238,10 @@ phải lưu.
 - **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
   rồi mới xóa.
 - **Suggestion.** Mỗi build tạo index mới; giữ lại một version trước để rollback.
-- **Backup.** Catalog/category tái tạo từ Product export cộng catch-up Kafka. Stock
-  tái tạo từ Inventory snapshot export rồi replay `t.inventory.stock.events.v1` từ
-  offsets export trả về; chỉ được tuyên bố khôi phục hoàn toàn sau producer rollout.
+- **Backup.** Catalog/category tái tạo từ Product export rồi replay
+  `t.product.events` và `t.category.events` từ offsets export trả về. Stock tái tạo
+  từ Inventory snapshot export rồi replay `t.inventory.stock.events.v1` từ offsets
+  export trả về; chỉ được tuyên bố khôi phục hoàn toàn sau producer rollout.
 - **Reconciliation.** Job recompute `product_count` là reconciliation liên tục cho
   số đếm; full reindex là reconciliation toàn phần cho phần còn lại.
 

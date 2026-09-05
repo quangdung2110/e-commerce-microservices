@@ -61,7 +61,7 @@ là projection.
 
 | Nhóm dữ liệu | Source of truth | Đường vào Search |
 |---|---|---|
-| Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` |
+| Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` + internal snapshot export/replay offsets |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
 | `available_quantity` | [Inventory](../inventory/inventory_events.md) | `t.inventory.stock.events.v1` + internal snapshot export |
 | `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` + internal aggregate snapshot export |
@@ -92,7 +92,7 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 | Inbound | `inventory-service` | Kafka | `available_quantity` theo SKU | Required | Cần tạo: AsyncAPI inventory |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
-| Outbound | `product-service` | HTTP nội bộ | Export catalog cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
+| Outbound | `product-service` | HTTP nội bộ | Export Category/Product kèm replay offsets cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
 | Outbound | `inventory-service` | HTTP nội bộ | Export stock snapshot cho full reindex | Required | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) |
 | Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Optional | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Outbound | Elasticsearch | HTTP | Store duy nhất | Required | [`schema/`](./schema) |
@@ -159,9 +159,10 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   cho tới khi có số liệu production.
 - **Chưa có contract test** giữa Search và ba producer.
 - **Cross-service contract chưa được implement.** Product đã chốt
-  `thumbnail_storage_key` trong `sku-upserted`; Inventory đã có contract đích cho
-  stock revision/snapshot export. Cả hai vẫn mang trạng thái `proposed` và cần
-  producer implementation, contract test, rồi mới chuyển Search khỏi adapter legacy.
+  `thumbnail_storage_key` trong `sku-upserted` và export Category/Product kèm replay
+  offsets; Inventory đã có contract đích cho stock revision/snapshot export. Các
+  contract vẫn mang trạng thái `proposed` và cần producer implementation, contract
+  test, rồi mới chuyển Search khỏi adapter legacy.
 - **Implementation chưa theo ADR-012.** Code hiện dùng `collapse(product_id)` và
   cursor offset, trong khi thiết kế đã chốt SKU hit trực tiếp với `search_after`.
   Khi viết lại service, implementation phải bỏ `collapse`/`inner_hits` và áp dụng

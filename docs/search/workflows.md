@@ -331,8 +331,12 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
 
 **Happy path.**
 1. **Build catalog.** Tạo `products_v{N+1}` từ mapping mới. Export Category trước,
-   rồi keyset export Product theo chunk, ghi checkpoint sau mỗi chunk để resume.
-   SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review được apply.
+   import toàn bộ Category snapshot và lưu `replay_from_offsets` của
+   `t.category.events`; rồi keyset export Product theo chunk, lưu
+   `replay_from_offsets` của `t.product.events` và ghi checkpoint sau mỗi chunk để
+   resume. Offsets của mỗi source do Product chụp trước scan, cố định trong export
+   session. SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review
+   được apply.
 2. **Build stock.** Lấy Inventory stock snapshot export; import mọi SKU theo
    `stock_revision`. Export trả `replay_from_offsets` đã chụp trước lúc scan nên
    event cũ/trùng không ghi đè snapshot.
@@ -340,11 +344,13 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision`.
    Export trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert
    SKU và không thay đổi catalog/stock field.
-4. **Catch-up.** Chạy consumer group tạm `search-reindex-{run_id}` từ watermark
-   catalog, `replay_from_offsets` stock và `replay_from_offsets` review, ghi
-   **trực tiếp** vào `products_v{N+1}` chứ không qua write alias. Guard giữ nguyên
-   như luồng thường. Kết thúc khi lag bằng 0 qua nhiều chu kỳ poll liên tiếp và
-   không phát sinh lỗi mới trong cửa sổ quan sát.
+4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
+   `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
+   (`t.category.events`, `t.product.events`), stock và review; ghi **trực tiếp** vào
+   `products_v{N+1}` chứ không qua write alias. Search không tự chụp catalog
+   watermark. Guard giữ nguyên như luồng thường. Kết thúc khi lag bằng 0 qua nhiều
+   chu kỳ poll liên tiếp, publisher lag đã hội tụ và không phát sinh lỗi mới trong
+   cửa sổ quan sát.
 5. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
    trên tập SKU nóng, smoke test các truy vấn phổ biến, rồi chuyển cả read alias
    và write alias sang index mới bằng **một** lệnh `_aliases` atomic.
@@ -353,10 +359,11 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
 lại tối thiểu 24 giờ.
 
 **Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
-alias không đổi nên traffic không bị ảnh hưởng. Review snapshot export lỗi hoặc
-thiếu `replay_from_offsets` → không được cutover. Catch-up không hội tụ → hủy run.
-Kiểm tra trước cutover không đạt → hủy run. Lỗi sau cutover → swap alias ngược về
-index cũ.
+alias không đổi nên traffic không bị ảnh hưởng. Bất kỳ snapshot export nào lỗi hoặc
+thiếu `replay_from_offsets` → không được cutover. Catch-up/publisher lag không hội tụ
+→ hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
+`SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
+run. Lỗi sau cutover → swap alias ngược về index cũ.
 
 **Timeout và retry.** Mỗi chunk có timeout và retry có backoff cho 429/503. Toàn
 bộ run có giới hạn thời gian; vượt giới hạn thì chuyển `FAILED` thay vì chạy vô
@@ -372,13 +379,14 @@ group chính vẫn chạy bình thường trên index cũ trong suốt quá trì
 catch-up, chấp nhận mất vài phút dữ liệu mới trên index cũ và phải chạy lại reindex
 ([ADR-006](./decisions/ADR-006-three-phase-reindex.md)).
 
-**Metrics.** Tiến độ từng source của build, tuổi snapshot stock/rating, lag catch-up
-theo topic, chênh lệch số document, thời lượng từng pha, kết quả run.
+**Metrics.** Tiến độ từng source của build, export-session ID và offsets theo
+source/topic, tuổi snapshot stock/rating, lag publisher/catch-up theo topic, số run
+supersede, chênh lệch số document, thời lượng từng pha, kết quả run.
 
 **Test scenarios.** Reindex trên catalog rỗng; rating tồn tại từ trước reindex;
-product chưa có review nhận `0/0`; mutation rating trong lúc Review export; event
-rating cũ/trùng sau snapshot; reindex khi đang có tải ghi; hủy giữa build; catch-up
-không hội tụ; cutover rồi rollback; trigger trùng.
+product chưa có review nhận `0/0`; mutation Category/Product/Rating trong lúc export;
+event cũ/trùng sau snapshot; control event supersede run; reindex khi đang có tải ghi;
+hủy giữa build; catch-up không hội tụ; cutover rồi rollback; trigger trùng.
 
 ---
 

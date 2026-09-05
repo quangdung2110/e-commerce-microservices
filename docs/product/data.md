@@ -121,6 +121,12 @@ worker; cho tới khi Platform/DB lifecycle có policy được phê duyệt, ro
 Một policy tương lai không được xóa row trong thời gian recovery đã cam kết cho Debezium/
 downstream và phải được vận hành ngoài Product application.
 
+Export nội bộ dùng cho Search tạo replay boundary trước scan: Category trả offsets của
+`t.category.events`, Product trả offsets của `t.product.events`. Search import toàn bộ
+snapshot rồi replay inclusive; snapshot và event dùng cùng `category_revision` hoặc
+`catalog_revision` nên overlap/duplicate là no-op. Boundary này không làm PostgreSQL và
+Kafka thành một transaction; publisher lag vẫn phải được quan sát trước cutover.
+
 Hard delete Product cascade SKU/media/markdown projection. Command chụp `sku_ids`, tính
 revision tombstone kế tiếp và ghi tombstone trước khi delete. Search xóa document từ
 tombstone và không tạo document mới chỉ từ stock event. Inventory phải consume tombstone
