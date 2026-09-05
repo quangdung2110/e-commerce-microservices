@@ -339,16 +339,19 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    import toàn bộ Category snapshot và lưu `replay_from_offsets` của
    `t.category.events`; rồi keyset export Product theo chunk, lưu
    `replay_from_offsets` của `t.product.events` và ghi checkpoint sau mỗi chunk để
-   resume. Offsets của mỗi source do Product chụp trước scan, cố định trong export
+   resume. Mỗi chunk import phải được ghi bằng `_bulk`, bị chặn đồng thời bởi
+   `bulk_max_actions` và `bulk_max_bytes`; không tạo bulk request vượt hai ngưỡng
+   này. Offsets của mỗi source do Product chụp trước scan, cố định trong export
    session. SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review
    được apply.
 2. **Build stock.** Lấy Inventory stock snapshot export; import mọi SKU theo
-   `stock_revision`. Export trả `replay_from_offsets` đã chụp trước lúc scan nên
-   event cũ/trùng không ghi đè snapshot.
+   `stock_revision` bằng các `_bulk` chunked với cùng giới hạn. Export trả
+   `replay_from_offsets` đã chụp trước lúc scan nên event cũ/trùng không ghi đè
+   snapshot.
 3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
-   Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision`.
-   Export trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert
-   SKU và không thay đổi catalog/stock field.
+   Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision` bằng
+   các `_bulk` chunked với cùng giới hạn. Export trả `replay_from_offsets` đã chụp
+   trước lúc scan; snapshot không upsert SKU và không thay đổi catalog/stock field.
 4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
    `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
    (`t.category.events`, `t.product.events`), stock và review; ghi **trực tiếp** vào
@@ -360,6 +363,15 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    trên tập SKU nóng, smoke test các truy vấn phổ biến, rồi chuyển cả read alias
    và write alias sang index mới bằng **một** lệnh `_aliases` atomic.
 
+**Bulk và throttle.** Job phải áp dụng backpressure từ Elasticsearch: rate limiter
+phía client chỉ dispatch `_bulk` ở tốc độ `bulk_requests_per_second`, và không vượt
+`bulk_max_in_flight` request chưa nhận kết quả. Chỉ đọc/export chunk kế tiếp khi còn
+capacity để tránh tích lũy payload trong bộ nhớ. Không refresh sau từng bulk; refresh
+chỉ diễn ra ở checkpoint/cutover khi cần. `429`, `503` hoặc timeout phải dừng dispatch
+chunk mới, retry **đúng chunk** bằng exponential backoff có jitter trong deadline,
+đồng thời hạ tốc độ hiệu lực; tốc độ chỉ tăng dần lại sau một cửa sổ bulk thành công.
+Vượt retry/deadline thì fail hoặc resume từ checkpoint, không được bỏ qua chunk.
+
 **State/data changes.** Index mới được tạo; alias trỏ sang index mới; index cũ giữ
 lại tối thiểu 24 giờ.
 
@@ -370,9 +382,9 @@ thiếu `replay_from_offsets` → không được cutover. Catch-up/publisher la
 `SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
 run. Lỗi sau cutover → swap alias ngược về index cũ.
 
-**Timeout và retry.** Mỗi chunk có timeout và retry có backoff cho 429/503. Toàn
-bộ run có giới hạn thời gian; vượt giới hạn thì chuyển `FAILED` thay vì chạy vô
-hạn.
+**Timeout và retry.** Mỗi chunk có timeout, retry/backoff và hạ throttle cho
+429/503 như quy tắc bulk ở trên. Toàn bộ run có giới hạn thời gian; vượt giới hạn thì
+chuyển `FAILED` thay vì chạy vô hạn.
 
 **Idempotency.** Trigger trùng bị chặn bởi `REINDEX_ALREADY_RUNNING`. Backfill có
 checkpoint nên chạy lại không nhân bản dữ liệu; ghi vào index mới đều có guard.
@@ -386,12 +398,16 @@ catch-up, chấp nhận mất vài phút dữ liệu mới trên index cũ và p
 
 **Metrics.** Tiến độ từng source của build, export-session ID và offsets theo
 source/topic, tuổi snapshot stock/rating, lag publisher/catch-up theo topic, số run
-supersede, chênh lệch số document, thời lượng từng pha, kết quả run.
+supersede, chênh lệch số document, thời lượng từng pha, kết quả run; cùng số
+action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, thời gian bị throttle,
+429/503/timeout và số retry.
 
 **Test scenarios.** Reindex trên catalog rỗng; rating tồn tại từ trước reindex;
 product chưa có review nhận `0/0`; mutation Category/Product/Rating trong lúc export;
 event cũ/trùng sau snapshot; control event supersede run; reindex khi đang có tải ghi;
-hủy giữa build; catch-up không hội tụ; cutover rồi rollback; trigger trùng.
+chunk chạm giới hạn action hoặc byte; throttle giới hạn số bulk in-flight; 429/503 làm
+backoff và hạ tốc độ; hủy giữa build; catch-up không hội tụ; cutover rồi rollback;
+trigger trùng.
 
 ---
 
@@ -422,7 +438,10 @@ hủy giữa build; catch-up không hội tụ; cutover rồi rollback; trigger 
    count; một nhóm Product trùng tên dùng điểm cao nhất, không cộng dồn theo số
    Product/SKU. Quy tắc chuẩn hóa, công thức và tie-break ở
    [Data §1.2](./data.md#12-chuẩn-hóa-khử-trùng-lặp-và-ranking-suggestion).
-   Bulk index theo chunk.
+   Bulk index theo chunk: mỗi `_bulk` bị chặn đồng thời bởi `bulk_max_actions` và
+   `bulk_max_bytes`; chỉ scan/biến đổi thêm candidate khi còn chỗ trong giới hạn
+   `bulk_max_in_flight`, để PIT scan bị backpressure thay vì giữ toàn bộ candidate
+   trong bộ nhớ. Không refresh sau từng bulk.
 5. Refresh index mới, rồi chạy **validation gate** trên chính index vật lý mới:
    không có bulk item failure; số document thực tế đạt `suggestion_min_docs`; nếu
    có version hiện hành thì số mới không dưới `80%` số document cũ; số unique output
@@ -434,11 +453,18 @@ hủy giữa build; catch-up không hội tụ; cutover rồi rollback; trigger 
 7. Atomic swap alias `search_suggestions` sang index mới, giữ version vừa bị thay
    thế làm rollback version, đóng PIT và release lock.
 
+**Bulk và throttle.** Rebuilder dùng rate limiter phía client với
+`bulk_requests_per_second` và giới hạn `bulk_max_in_flight`; đây là throttle cho
+`_bulk`, không phải tham số `requests_per_second` của các ES task API. Khi `429`,
+`503` hoặc timeout, job dừng dispatch bulk mới, retry đúng chunk với exponential
+backoff có jitter trong deadline, hạ tốc độ hiệu lực rồi chỉ tăng dần lại sau một cửa
+sổ bulk thành công. Hết retry/deadline thì abort run, giữ alias hiện hành.
+
 **Failure paths.** Không lấy được lock → bỏ qua run, không chờ hoặc chạy song song.
-Lỗi scan/bulk/PIT, source alias đổi, hoặc validation gate không đạt → `ABORTED`,
-xóa index mới, đóng PIT/release lock và giữ alias cũ. Phát hiện chất lượng kém sau
-swap → atomic rollback alias về version trước, đánh dấu `ROLLED_BACK`; không xóa
-rollback version trong cửa sổ retention.
+Lỗi scan/bulk/PIT, kể cả bulk cạn retry/deadline, source alias đổi, hoặc validation
+gate không đạt → `ABORTED`, xóa index mới, đóng PIT/release lock và giữ alias cũ.
+Phát hiện chất lượng kém sau swap → atomic rollback alias về version trước, đánh dấu
+`ROLLED_BACK`; không xóa rollback version trong cửa sổ retention.
 
 **Idempotency.** Mỗi lần chạy tạo index mới; chạy lại trong cùng ngày chỉ tạo một
 version khác và không làm hỏng dữ liệu đang phục vụ.
@@ -450,8 +476,10 @@ hợp lệ → owner phải abort. Mọi alias swap kiểm tra fencing token, n�
 hạn sau khi owner chết, run sau có thể lấy lock còn owner cũ không thể cutover.
 
 **Metrics.** Số candidate/document, thời lượng scan/bulk/validation, bulk failure,
-kết quả từng check của validation gate, source index version, run abort do source
-đổi, lock contention/lease renewal, version hiện hành và rollback version.
+số action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, thời gian bị
+throttle, 429/503/timeout và retry; kết quả từng check của validation gate, source
+index version, run abort do source đổi, lock contention/lease renewal, version hiện
+hành và rollback version.
 
 **Test scenarios.** Catalog rỗng; ngưỡng validation không đạt; swap thành công;
 rollback; sản phẩm đã xóa không còn xuất hiện ở lần build kế tiếp; một Product có
@@ -460,8 +488,10 @@ không sinh candidate; Category rỗng hoặc đã xóa không sinh candidate; k
 hoa-thường hoặc whitespace trong cùng một loại chỉ sinh một suggestion; cùng text
 nhưng khác `type` giữ hai suggestion; Product trùng tên không cộng dồn weight; rating,
 review count và promotion cho đúng thứ tự weight đã công bố; bulk item failure;
-document count tụt quá ngưỡng 80%; hot prefix rỗng; full reindex swap source alias
-giữa build; hai replica cùng trigger; owner chết và lease hết hạn; swap rồi rollback.
+chunk chạm giới hạn action hoặc byte; throttle giới hạn bulk in-flight; 429/503 làm
+backoff và hạ tốc độ; document count tụt quá ngưỡng 80%; hot prefix rỗng; full
+reindex swap source alias giữa build; hai replica cùng trigger; owner chết và lease
+hết hạn; swap rồi rollback.
 
 ---
 

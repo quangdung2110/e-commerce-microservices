@@ -53,7 +53,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Kafka | Bootstrap server, credential, `group.id`, `auto.offset.reset`, `max.poll.records`, concurrency, stock-v1 topic | Có | Credential: có | Có |
 | Alias | Tên read/write alias cho ba index | Có | Không | Có |
 | Ngân sách truy vấn | Timeout cho search, suggest và `_update_by_query` | Có | Không | Không, nếu cấu hình động |
-| Throttle | `requests_per_second` cho thao tác diện rộng | Có | Không | Không |
+| Bulk và throttle | `bulk_max_actions`, `bulk_max_bytes`, `bulk_max_in_flight`, `bulk_requests_per_second`, policy backoff/jitter và ngưỡng hạ/tăng tốc cho job `_bulk`; `requests_per_second` cho ES task API diện rộng như `_update_by_query`/`_delete_by_query` | Có | Không | Không, nếu cấu hình động |
 | Pagination | `size` mặc định và tối đa | Có | Không | Không |
 | Lịch job | Cron cho rebuild suggestion, recompute count, purge tombstone | Có | Không | Có |
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
@@ -85,6 +85,11 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_stock_snapshot_age_seconds` | gauge | Không có |
 | `search_review_snapshot_export_total` | counter | `status` |
 | `search_review_snapshot_age_seconds` | gauge | Không có |
+| `search_es_bulk_actions` | histogram | `job` |
+| `search_es_bulk_bytes` | histogram | `job` |
+| `search_es_bulk_in_flight` | gauge | `job` |
+| `search_es_bulk_throttled_seconds` | counter | `job` |
+| `search_es_bulk_retries_total` | counter | `job`, `reason` |
 
 Không dùng `sku_id`, `product_id`, `category_id`, từ khóa tìm kiếm hay `user_id`
 làm label: cardinality không kiểm soát được. Các identifier đó thuộc về log.
@@ -197,5 +202,9 @@ tiết phải viết cùng với vận hành thực tế.
 | Tombstone purger | Hằng ngày, giờ thấp điểm | Singleton | Lọc theo trạng thái hiện tại | Chạy lại an toàn | Số purge, tuổi tombstone |
 
 Mọi job phải có throttle khi chạm Elasticsearch diện rộng và phải hủy được mà
-không để lại trạng thái dở dang cần dọn tay. Lịch chạy cụ thể là `TBD` cho tới khi
-đọc từ cấu hình runtime.
+không để lại trạng thái dở dang cần dọn tay. Với `_bulk`, throttle bắt buộc do client
+enforce bằng giới hạn action/byte, rate và in-flight request; không được nhầm với
+`requests_per_second`, vốn chỉ là tham số của một số ES task API. Khi cluster trả
+429/503 hoặc timeout, job phải dừng dispatch mới, retry chunk hiện tại với backoff có
+jitter và hạ tốc độ hiệu lực trước khi tăng dần lại sau các bulk thành công. Lịch chạy
+cụ thể là `TBD` cho tới khi đọc từ cấu hình runtime.

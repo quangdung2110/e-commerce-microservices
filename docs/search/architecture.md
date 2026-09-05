@@ -77,7 +77,10 @@ và không có outbox vì Search không phát event. Một lệnh ghi có thể 
 - `_update_by_query` chỉ cho projection rating theo product, bắt buộc
   `conflicts=proceed` và throttle. Category-tree change đi qua control-driven
   reindex, không update diện rộng theo path.
-  `requests_per_second`.
+- Các job build/rebuild ghi `_bulk` phải chunk theo giới hạn action và byte, đồng
+  thời áp dụng rate limiter phía client cùng giới hạn số request in-flight. Khi ES
+  trả 429/503 hoặc timeout, job back off và hạ tốc độ trước khi dispatch chunk mới;
+  không dùng `requests_per_second` như thể đó là tham số của Bulk API.
 
 Offset chỉ được commit sau khi toàn bộ record trong batch đã apply xong hoặc đã
 được phân loại là lỗi không tự hồi phục.
