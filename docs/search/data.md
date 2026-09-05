@@ -15,10 +15,10 @@ verified_against_commit: null
 
 # Search Service — Thiết kế dữ liệu
 
-> Nguồn chuẩn cho mapping đích là ba file trong [`schema/`](./schema). Các
-> Painless script hiện có là artifact legacy, không phải đặc tả cho service viết
-> lại. File này giải thích ownership, ý nghĩa field và các quy tắc không thể hiện
-> được trong JSON.
+> Nguồn chuẩn cho mapping đích là ba file trong [`schema/`](./schema), còn
+> [`schema/scripts/`](./schema/scripts/README.md) là đặc tả chuẩn của write path.
+> File này giải thích ownership, ý nghĩa field và các quy tắc không thể hiện được
+> trong JSON.
 
 ## 1. Data ownership
 
@@ -133,7 +133,7 @@ cảnh hiển thị, không dùng để field collapse ([ADR-012](./decisions/AD
 | [`schema/products.index.json`](./schema/products.index.json) | Settings và mapping của `products_v{N}` |
 | [`schema/categories.index.json`](./schema/categories.index.json) | Settings và mapping của `categories_v{N}` |
 | [`schema/search_suggestions.index.json`](./schema/search_suggestions.index.json) | Settings và mapping của `search_suggestions_v{N}` |
-| [`schema/scripts/*.painless`](./schema/scripts) | Artifact legacy; thay cùng write path khi implementation mới bắt đầu |
+| [`schema/scripts/`](./schema/scripts/README.md) | Painless script chuẩn cho write path; thay đổi cùng mapping, workflow và contract liên quan |
 
 Index vật lý luôn có hậu tố version (`products_v1`); ứng dụng chỉ được cấu hình
 tên alias. Mapping để `dynamic: strict` để một field lạ trong payload gây lỗi rõ

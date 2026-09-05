@@ -101,7 +101,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 |---|---|
 | `SEARCH-INV-002` | `_id = sku_id` khi ghi; không dùng auto-id |
 | `SEARCH-INV-003` | `cardinality` aggregation trên `product_id` trong mọi facet |
-| `SEARCH-INV-004` | Painless guard script trong [`schema/scripts`](./schema/scripts) |
+| `SEARCH-INV-004` | Painless guard script trong [`schema/scripts`](./schema/scripts/README.md) |
 | `SEARCH-INV-005` | Lệnh ghi của stock/review không dùng `scripted_upsert` |
 | `SEARCH-INV-006` | Cửa sổ tombstone của purger dài hơn retention của topic |
 | `SEARCH-INV-007` | Client chỉ được cấu hình tên alias, không cấu hình tên index |

@@ -182,7 +182,7 @@ tại; kiểm chứng số đếm khớp giữa hai API.
    `has_promotion` và copy `thumbnail_storage_key` đã được Product resolve. Giá trị
    `null` là hợp lệ; API response adapter dựng placeholder, không tự chọn từ `media[]`.
 5. Sinh lệnh ghi cho từng SKU liên quan bằng
-   [`catalog_patch.painless`](./schema/scripts/catalog_patch.painless) với
+   [`catalog_upsert.painless`](./schema/scripts/catalog_upsert.painless) với
    `scripted_upsert`, hoặc
    [`catalog_tombstone.painless`](./schema/scripts/catalog_tombstone.painless) cho
    event xóa (không upsert).
@@ -232,9 +232,13 @@ Search thành owner của cây danh mục.
 `t.catalog.control.events` khi tree đổi.
 
 **Happy path.**
-1. Apply `category-upserted` bằng `sequence = category_revision`; transform path
-   Product gửi thành `ancestor_ids`, `ancestor_slugs`, `level` và `is_leaf`.
-2. `category-deleted` tombstone node.
+1. Apply `category-upserted` bằng
+   [`category_upsert.painless`](./schema/scripts/category_upsert.painless), với
+   `sequence = category_revision`; transform path Product gửi thành `ancestor_ids`,
+   `ancestor_slugs`, `level` và `is_leaf`.
+2. Apply `category-deleted` bằng
+   [`category_tombstone.painless`](./schema/scripts/category_tombstone.painless)
+   để tombstone node, không upsert.
 3. `catalog-reindex-requested` được coalesce theo root category/revision, sau đó
    chạy reindex từ category export trước Product export. Không `_update_by_query`
    theo path trong request worker.
@@ -269,8 +273,10 @@ nhất mà Inventory công bố.
 `t.inventory.stock.events.v1`, key `sku_id`.
 
 **Happy path.** Lọc event type → validate cặp `product_id` + `sku_id` và
-`stock_revision` → apply lên `products_write/_update/{sku_id}` không upsert →
-`is_in_stock` được tính lại → commit offset.
+`stock_revision` → apply
+[`stock_patch.painless`](./schema/scripts/stock_patch.painless) lên
+`products_write/_update/{sku_id}` không upsert → `is_in_stock` được tính lại →
+commit offset.
 
 **Failure paths.** `document_missing_exception` → metric
 `search_document_missing_total`, bỏ qua, ACK: SKU chưa được index hoặc vừa bị xóa
