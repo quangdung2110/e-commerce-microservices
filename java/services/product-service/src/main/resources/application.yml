@@ -67,8 +67,12 @@ product:
     roles-header: X-User-Roles
   internal:
     identity-header: X-Service-Identity
-    allowed-clients:
+    # Allowlist tách theo nhóm route, khớp hai security scheme trong
+    # contracts/http/product/v1/openapi.yaml (ADR-015).
+    reindex-clients:
       - search-service
+    buyer-read-clients:
+      - product-detail-bff
   export:
     cursor-secret: ${EXPORT_CURSOR_SECRET:dev-export-cursor-secret-change-in-prod}
     cursor-ttl: 30m

@@ -16,15 +16,22 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * Xác thực caller ở biên của service.
  *
  * <p>{@code /api/v1/**} chỉ nhận trusted identity do API Gateway inject sau khi
- * verify JWT, và yêu cầu role ADMIN. {@code /internal/v1/**} chỉ dành cho
- * Search Service qua mTLS trên mạng nội bộ; service tin identity đã được
- * ingress/mesh xác minh và đặt vào header cấu hình.
+ * verify JWT, và yêu cầu role ADMIN. {@code /internal/v1/**} dùng mTLS service
+ * identity trên mạng nội bộ; service tin identity đã được ingress/mesh xác minh
+ * và đặt vào header cấu hình.
+ *
+ * <p>Quyền internal tách theo nhóm route chứ không dùng một allowlist phẳng, vì
+ * contracts/http/product/v1/openapi.yaml khai báo hai security scheme riêng:
+ * {@code searchServiceMtls} cho reindex và {@code productDetailBffMtls} cho
+ * buyer-read (ADR-015). Nhờ vậy Product Detail BFF không đọc được export chứa cả
+ * Product {@code DRAFT}/{@code HIDDEN}, và Search không đi vòng qua buyer-read.
  *
  * <p>Header trusted chỉ hợp lệ vì các endpoint này không được expose trực tiếp
  * ra ngoài (contracts/conventions/http.md).
@@ -36,6 +43,14 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
 
     private static final String ADMIN_PATH = "/api/v1/";
     private static final String INTERNAL_PATH = "/internal/v1/";
+
+    /** Buyer-read cho Product Detail BFF (WF-PRODUCT-007). */
+    private static final String BUYER_READ_PATH = "/internal/v1/product-details/";
+
+    /** Export và snapshot phục vụ Search full reindex (ADR-014). */
+    private static final List<String> REINDEX_PATHS =
+            List.of("/internal/v1/products/", "/internal/v1/categories/");
+
     private static final String TRACEPARENT_HEADER = "traceparent";
     private static final String REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -52,7 +67,7 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
             if (path.startsWith(ADMIN_PATH) && !authorizeAdmin(request, response)) {
                 return;
             }
-            if (path.startsWith(INTERNAL_PATH) && !authorizeInternal(request, response)) {
+            if (path.startsWith(INTERNAL_PATH) && !authorizeInternal(path, request, response)) {
                 return;
             }
             chain.doFilter(request, response);
@@ -82,8 +97,9 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
         return true;
     }
 
-    private boolean authorizeInternal(HttpServletRequest request, HttpServletResponse response)
-            throws IOException {
+    private boolean authorizeInternal(String path,
+                                      HttpServletRequest request,
+                                      HttpServletResponse response) throws IOException {
         ProductProperties.Internal internal = properties.getInternal();
         String identity = request.getHeader(internal.getIdentityHeader());
         if (identity == null || identity.isBlank()) {
@@ -91,12 +107,28 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
                     "Missing verified service identity");
             return false;
         }
-        if (internal.getAllowedClients().stream().noneMatch(identity::equalsIgnoreCase)) {
+        if (allowedClientsFor(path).stream().noneMatch(identity::equalsIgnoreCase)) {
             reject(response, request, ErrorCode.FORBIDDEN,
-                    "Service identity is not allowed to read the catalog export");
+                    "Service identity is not allowed on this internal route");
             return false;
         }
         return true;
+    }
+
+    /**
+     * Allowlist của nhóm route chứa {@code path}. Route nội bộ không thuộc nhóm
+     * nào trả về list rỗng, tức là bị từ chối: thêm endpoint internal mới phải
+     * kèm quyết định về caller thay vì thừa hưởng quyền của nhóm khác.
+     */
+    private List<String> allowedClientsFor(String path) {
+        ProductProperties.Internal internal = properties.getInternal();
+        if (path.startsWith(BUYER_READ_PATH)) {
+            return internal.getBuyerReadClients();
+        }
+        if (REINDEX_PATHS.stream().anyMatch(path::startsWith)) {
+            return internal.getReindexClients();
+        }
+        return List.of();
     }
 
     private void reject(HttpServletResponse response,

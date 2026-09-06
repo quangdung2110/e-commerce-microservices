@@ -17,14 +17,18 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * API nội bộ cho Search full reindex. Không expose qua Gateway; caller được xác
- * thực bằng service identity (mTLS) trên mạng nội bộ.
+ * API nội bộ của Product. Không expose qua Gateway; caller được xác thực bằng
+ * service identity (mTLS) trên mạng nội bộ, và quyền tách theo nhóm route trong
+ * {@link com.platform.productservice.config.TrustedIdentityFilter}.
  *
- * <p>Hai endpoint export mở một export session và trả kèm
- * {@code replay_from_offsets}: Search import trọn vẹn snapshot rồi seek inclusive
- * từ các offset đó để bắt update/delete phát sinh trong lúc export. Không chụp
- * được đủ mọi partition thì trả {@code 503} và Search giữ alias cũ
- * (contracts/http/product/v1/openapi.yaml, ADR-014).
+ * <p>Nhóm reindex phục vụ Search full reindex. Hai endpoint export mở một export
+ * session và trả kèm {@code replay_from_offsets}: Search import trọn vẹn snapshot
+ * rồi seek inclusive từ các offset đó để bắt update/delete phát sinh trong lúc
+ * export. Không chụp được đủ mọi partition thì trả {@code 503} và Search giữ
+ * alias cũ (contracts/http/product/v1/openapi.yaml, ADR-014).
+ *
+ * <p>Nhóm buyer-read phục vụ Product Detail BFF và chỉ trả catalog đã công bố,
+ * không có field tồn kho nào (ADR-015).
  */
 @RestController
 @RequestMapping("/internal/v1")
@@ -53,6 +57,20 @@ public class InternalCatalogController {
     public ResponseEntity<ProductDtos.ProductResponse> snapshot(
             @PathVariable("product_id") UUID productId) {
         ProductDtos.ProductResponse product = productQueryService.get(productId);
+        return ResponseEntity.ok()
+                .eTag(ProductEntity.etagOf(product.catalogRevision()))
+                .body(product);
+    }
+
+    /**
+     * Buyer-read theo slug cho Product Detail BFF (WF-PRODUCT-007). ETag dùng
+     * chung {@code catalog_revision} của aggregate như snapshot, nên BFF có thể
+     * conditional-GET mà không cần khái niệm version riêng.
+     */
+    @GetMapping("/product-details/{slug}")
+    public ResponseEntity<ProductDtos.ProductResponse> buyerProductDetail(
+            @PathVariable("slug") String slug) {
+        ProductDtos.ProductResponse product = productQueryService.getBuyerDetail(slug);
         return ResponseEntity.ok()
                 .eTag(ProductEntity.etagOf(product.catalogRevision()))
                 .body(product);

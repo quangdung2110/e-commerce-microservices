@@ -19,6 +19,12 @@ public interface ProductRepository extends JpaRepository<ProductEntity, UUID> {
             nativeQuery = true)
     Optional<ProductEntity> lockById(@Param("productId") UUID productId);
 
+    /**
+     * Point-read theo slug cho buyer-read của Product Detail BFF (ADR-015).
+     * Cột {@code slug} có unique index nên đây là lookup một row.
+     */
+    Optional<ProductEntity> findBySlug(String slug);
+
     boolean existsBySlug(String slug);
 
     boolean existsBySlugAndProductIdNot(String slug, UUID productId);

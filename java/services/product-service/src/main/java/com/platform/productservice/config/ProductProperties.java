@@ -5,6 +5,7 @@ import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -46,7 +47,21 @@ public class ProductProperties {
          */
         private String identityHeader = "X-Service-Identity";
 
-        private List<String> allowedClients = List.of("search-service");
+        /**
+         * Caller của nhóm route reindex: Product/Category export và Product
+         * snapshot. Nhóm này đọc được cả Product chưa công bố nên chỉ cấp cho
+         * Search Service, khớp security scheme {@code searchServiceMtls} trong
+         * contracts/http/product/v1/openapi.yaml.
+         */
+        private List<String> reindexClients = new ArrayList<>(List.of("search-service"));
+
+        /**
+         * Caller của nhóm route buyer-read ({@code /internal/v1/product-details/}),
+         * khớp security scheme {@code productDetailBffMtls} (ADR-015). Tách khỏi
+         * nhóm reindex để BFF storefront không đọc được export toàn catalog và
+         * Search không đi qua đường buyer-read.
+         */
+        private List<String> buyerReadClients = new ArrayList<>(List.of("product-detail-bff"));
     }
 
     @Getter
