@@ -4,7 +4,8 @@ info:
   version: 1.0.0
   description: >-
     Contract PDP cho buyer. BFF ghép catalog/giá do Product sở hữu với availability
-    projection từ Inventory. Availability chỉ là UI snapshot, không phải reserve.
+    projection từ Inventory và Review summary/preview do Review sở hữu. Availability
+    chỉ là UI snapshot; Review là enrichment có thể degrade độc lập.
 x-adoption-status: proposed
 servers:
   - url: http://product-detail-bff:8080
@@ -24,7 +25,7 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
       responses:
         '200':
-          description: Catalog snapshot kèm availability eventual-consistent theo SKU.
+          description: Catalog snapshot kèm availability và Review enrichment.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProductDetailResponse' }
@@ -35,7 +36,7 @@ components:
     ProductDetailResponse:
       type: object
       additionalProperties: false
-      required: [product_id, name, slug, catalog_revision, skus]
+      required: [product_id, name, slug, catalog_revision, skus, review_section]
       properties:
         product_id: { type: string, minLength: 1, maxLength: 64 }
         name: { type: string, minLength: 1, maxLength: 255 }
@@ -47,6 +48,7 @@ components:
           minItems: 1
           maxItems: 500
           items: { $ref: '#/components/schemas/ProductDetailSku' }
+        review_section: { $ref: '#/components/schemas/ProductDetailReviewSection' }
     ProductDetailSku:
       type: object
       additionalProperties: false
@@ -72,3 +74,42 @@ components:
     AvailabilityStatus:
       type: string
       enum: [IN_STOCK, OUT_OF_STOCK, UNKNOWN]
+    ProductDetailReviewSection:
+      type: object
+      additionalProperties: false
+      required: [status, summary, preview]
+      properties:
+        status:
+          type: string
+          enum: [AVAILABLE, UNAVAILABLE]
+          description: UNAVAILABLE là lỗi/timeout dependency, không có nghĩa chưa có review.
+        summary:
+          oneOf:
+            - { $ref: '#/components/schemas/ProductReviewSummary' }
+            - { type: 'null' }
+          description: Bắt buộc có khi status AVAILABLE; null khi UNAVAILABLE.
+        preview:
+          type: array
+          maxItems: 5
+          description: Rỗng khi chưa có review hoặc khi section UNAVAILABLE.
+          items: { $ref: '#/components/schemas/ProductReviewPreviewItem' }
+    ProductReviewSummary:
+      type: object
+      additionalProperties: false
+      required: [average_rating, total_reviews, total_with_media]
+      properties:
+        average_rating: { type: number, minimum: 0, maximum: 5 }
+        total_reviews: { type: integer, minimum: 0 }
+        total_with_media: { type: integer, minimum: 0 }
+    ProductReviewPreviewItem:
+      type: object
+      additionalProperties: false
+      required: [review_id, rating, author_name, variant_name, has_media, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        content: { type: [string, 'null'] }
+        author_name: { type: string, minLength: 1, maxLength: 255 }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        has_media: { type: boolean }
+        created_at: { type: string, format: date-time }

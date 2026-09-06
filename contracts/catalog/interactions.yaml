@@ -35,7 +35,7 @@ interactions:
     consumers: [api-gateway]
     contract: http/product-detail-bff/v1/openapi.yaml
     status: proposed
-    notes: Buyer PDP API composes Product catalog with local Inventory availability projection.
+    notes: Buyer PDP API composes Product catalog, local Inventory availability projection, and optional Review summary/preview.
 
   - id: product-detail-bff-queries-product-catalog
     protocol: http
@@ -44,6 +44,17 @@ interactions:
     contract: http/product/v1/openapi.yaml
     status: proposed
     notes: Internal mTLS buyer-read by slug; Product returns catalog/price only and never stock.
+
+  - id: product-detail-bff-queries-review-summary
+    protocol: http
+    provider: review-service
+    consumers: [product-detail-bff]
+    contract: http/review/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal service-identity PDP read after Product resolves product_id. Review
+      remains source of truth; timeout degrades only the Review section and never
+      becomes aggregate zero.
 
   - id: product-publishes-catalog-events
     protocol: kafka
@@ -187,10 +198,21 @@ interactions:
     status: proposed
     notes: Internal mTLS bootstrap/recovery only; never called in the PDP request path.
 
+  - id: gateway-routes-review-api
+    protocol: http
+    provider: review-service
+    consumers: [api-gateway]
+    contract: null
+    status: proposed
+    notes: >-
+      Public list/pagination and all Review commands (create, edit, media, report,
+      reply, moderation, takedown) route directly to Review Service, never through
+      Product Detail BFF. Machine-readable public OpenAPI is still a known gap.
+
   - id: review-publishes-rating-aggregate-events
     protocol: kafka
     provider: review-service
-    consumers: [search-service, product-service]
+    consumers: [search-service]
     contract: events/review/v1/asyncapi.yaml
     status: proposed
     notes: >-

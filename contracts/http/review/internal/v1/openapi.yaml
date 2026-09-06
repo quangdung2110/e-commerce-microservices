@@ -1,15 +1,42 @@
 openapi: 3.1.0
 info:
-  title: Review Internal Rating Aggregate Snapshot Export API
+  title: Review Internal Read API
   version: 1.0.0
   description: >-
-    Contract đích để Search bootstrap hoặc phục hồi rating projection. Chỉ service
-    identity được gọi; endpoint không expose qua API Gateway.
+    Contract nội bộ để Product Detail BFF đọc rating/preview và để Search bootstrap
+    hoặc phục hồi rating projection. Chỉ service identity được gọi; các endpoint
+    không expose qua API Gateway.
 x-adoption-status: proposed
 servers:
   - url: http://review-service:8080
     description: Internal cluster endpoint
 paths:
+  /internal/v1/reviews/products/{product_id}/pdp-summary:
+    get:
+      operationId: getProductReviewPdpSummary
+      summary: Lấy rating aggregate và review preview cho Product Detail BFF
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - name: preview_limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 5, default: 3 }
+      responses:
+        '200':
+          description: >-
+            Aggregate hiện tại và review APPROVED mới nhất. Product chưa có review
+            trả aggregate 0 và preview rỗng; trạng thái này khác lỗi dependency.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductReviewPdpSummary' }
+        '400': { description: product_id hoặc preview_limit không hợp lệ. }
+        '401': { description: Missing or invalid service identity. }
+        '403': { description: Caller is not Product Detail BFF. }
+        '503': { description: Review read store không sẵn sàng; BFF phải degrade review section. }
   /internal/v1/reviews/rating-aggregates:
     get:
       operationId: exportRatingAggregateSnapshots
@@ -59,6 +86,37 @@ components:
       scheme: bearer
       bearerFormat: internal-service-identity
   schemas:
+    ProductReviewPdpSummary:
+      type: object
+      additionalProperties: false
+      required: [product_id, aggregate, preview]
+      properties:
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        aggregate: { $ref: '#/components/schemas/ProductReviewAggregate' }
+        preview:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/ProductReviewPreviewItem' }
+    ProductReviewAggregate:
+      type: object
+      additionalProperties: false
+      required: [average_rating, total_reviews, total_with_media]
+      properties:
+        average_rating: { type: number, minimum: 0, maximum: 5 }
+        total_reviews: { type: integer, minimum: 0 }
+        total_with_media: { type: integer, minimum: 0 }
+    ProductReviewPreviewItem:
+      type: object
+      additionalProperties: false
+      required: [review_id, rating, author_name, variant_name, has_media, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        content: { type: [string, 'null'] }
+        author_name: { type: string, minLength: 1, maxLength: 255 }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        has_media: { type: boolean }
+        created_at: { type: string, format: date-time }
     RatingAggregateSnapshot:
       type: object
       additionalProperties: false

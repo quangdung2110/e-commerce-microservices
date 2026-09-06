@@ -13,10 +13,17 @@ owners:
 
 1. Gateway xác thực/định tuyến request public tới BFF.
 2. BFF gọi Product internal buyer-read theo slug.
-3. BFF load projection theo tất cả `sku_id` trong catalog snapshot.
+3. Khi có `product_id`, BFF đồng thời load projection theo tất cả `sku_id` và gọi
+   Review internal PDP read để lấy aggregate + preview.
 4. Với mỗi SKU active, map snapshot mới đủ freshness thành `IN_STOCK`/`OUT_OF_STOCK`;
    thiếu hoặc stale thành `UNKNOWN`.
-5. Trả response. Không gọi Search, không gọi Inventory và không mutate state.
+5. Review trả thành công thì map `AVAILABLE`; aggregate 0/preview rỗng là hợp lệ.
+   Review timeout/lỗi thì map `UNAVAILABLE` và không tạo rating/count giả.
+6. Trả response. Không gọi Search, không gọi Inventory live và không mutate state.
+
+Product không sẵn sàng làm request thất bại `503`; Review không sẵn sàng chỉ degrade
+review section. Mọi command và pagination Review sau preview đi trực tiếp tới Review
+Service qua Gateway, không quay lại BFF.
 
 ## WF-PDP-002 — Apply stock snapshot
 

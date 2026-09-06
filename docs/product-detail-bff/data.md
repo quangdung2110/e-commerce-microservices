@@ -14,6 +14,11 @@ owners:
 `pdp_sku_availability` là read model có thể rebuild hoàn toàn từ Inventory export và
 topic snapshot. Product không ghi vào bảng này; Inventory không truy cập bảng này.
 
+BFF không persist rating aggregate, review content, author, media, report hoặc
+`review_revision`. Review summary/preview chỉ sống trong phạm vi một request và source
+of truth luôn là Review Service. Không được thêm foreign key hay join database sang
+schema Review.
+
 ## Projection schema
 
 | Column | Ý nghĩa |

@@ -12,9 +12,9 @@ owners:
 # Product Detail BFF
 
 Product Detail BFF là read composition layer cho trang chi tiết sản phẩm (PDP). Nó
-trả catalog và giá từ Product cùng trạng thái khả dụng theo SKU từ projection cục bộ
-của Inventory. BFF không sở hữu catalog, không quyết định reserve và không là nguồn
-chân lý của tồn kho.
+trả catalog và giá từ Product, trạng thái khả dụng theo SKU từ projection cục bộ của
+Inventory, cùng rating aggregate và preview hữu hạn đọc từ Review. BFF không sở hữu
+catalog, tồn kho hay Review domain và không quyết định reserve.
 
 ## Boundary
 
@@ -22,8 +22,9 @@ chân lý của tồn kho.
 |---|---|---|
 | Nội dung Product, media, variant, giá công bố, catalog lifecycle | Product | Đọc qua internal buyer-read API |
 | `available_quantity`, reserve và quyết định bán cuối cùng | Inventory | Consume snapshot để hiển thị; không gửi command reserve |
+| Review content, eligibility, moderation và rating aggregate | Review | Đọc summary/preview qua internal API; không lưu hay nhận command Review |
 | Browse, search, facet, suggestion | Search | Không gọi trong PDP hot path |
-| PDP HTTP response | Product Detail BFF | Ghép hai snapshot theo `sku_id` |
+| PDP HTTP response | Product Detail BFF | Ghép catalog, availability và Review enrichment theo policy storefront |
 
 PDP không đưa `available_quantity` trở lại Product. Khi buyer checkout, Checkout vẫn
 phải gọi Inventory Reserve; trạng thái trên PDP là eventual-consistent UI state.
@@ -36,16 +37,20 @@ phải gọi Inventory Reserve; trạng thái trên PDP là eventual-consistent 
 | Outbound | Product | HTTP nội bộ mTLS | Catalog/price/variant buyer-read |
 | Inbound | Inventory | Kafka | `stock-snapshot.v1` để materialize availability |
 | Outbound | Inventory | HTTP nội bộ mTLS | Export snapshot chỉ cho bootstrap/recovery |
+| Outbound | Review | HTTP nội bộ mTLS/service identity | Rating aggregate và review preview cho PDP |
 | Outbound | PostgreSQL | Database | `pdp_sku_availability` read model |
 
 ## Invariants
 
-- Product và Inventory là hai nguồn độc lập; không so sánh `catalog_revision` với
-  `stock_revision` như một global version.
+- Product, Inventory và Review là các nguồn độc lập; không suy diễn một global version
+  hoặc global transaction từ snapshot của các nguồn này.
 - Chỉ event có `stock_revision` lớn hơn được ghi vào projection availability.
 - Một SKU chưa có snapshot hợp lệ là `UNKNOWN`, không được suy diễn là `IN_STOCK`.
 - BFF không gọi Search để lấy catalog hay stock cho PDP và không gọi Inventory cho mỗi
   page view.
+- BFF không lưu Review data, không consume Review event và không nhận command Review.
+- Review unavailable phải được biểu diễn bằng `review_section.status = UNAVAILABLE`,
+  không được giả thành aggregate 0 hoặc làm mất phần catalog của PDP.
 - `IN_STOCK` chỉ là gợi ý UI; Inventory Reserve là quyết định cuối cùng chống oversell.
 
 ## Tài liệu chuẩn
@@ -59,10 +64,14 @@ phải gọi Inventory Reserve; trạng thái trên PDP là eventual-consistent 
 | [Workflows](./workflows.md) | Read, consume và recovery flow |
 | [Operations](./operations.md) | Freshness, lag và runbook |
 | [Development](./development.md) | Contract/integration test và Definition of Done |
-| [Decisions](./decisions/README.md) | Quyết định projection thay vì live Inventory query |
+| [Decisions](./decisions/README.md) | Quyết định availability projection và Review read composition |
 
 ## Trạng thái rollout
 
 BFF không được public availability trước khi Inventory triển khai stock snapshot v1,
 `stock_revision` và export API. Trong giai đoạn hiện tại, legacy
 `INVENTORY_STOCK_CHANGED` không đủ ordering/recovery guarantee để làm source cho PDP.
+
+Review enrichment có thể rollout độc lập. Trước khi Review internal PDP contract sẵn
+sàng, BFF trả review section ở trạng thái `UNAVAILABLE`; trạng thái này không đồng nghĩa
+Product chưa có review.

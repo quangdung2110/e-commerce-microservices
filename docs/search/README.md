@@ -95,11 +95,11 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
 | Inbound | `inventory-service` | Kafka | `available_quantity` theo SKU | Required | Cần tạo: AsyncAPI inventory |
 | Sibling consumer | `product-detail-bff` | Kafka | Consume cùng stock snapshot cho PDP projection, không qua Search | Target | [PDP BFF docs](../product-detail-bff/README.md) |
-| Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
+| Inbound | `review-service` | Kafka | Rating aggregate theo product | Required cho rating freshness; không nằm trên query hot path | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
 | Outbound | `product-service` | HTTP nội bộ | Export Category/Product kèm replay offsets cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
 | Outbound | `inventory-service` | HTTP nội bộ | Export stock snapshot cho full reindex | Required | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) |
-| Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Optional | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
+| Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Required để cutover index giữ đầy đủ rating | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Outbound | Elasticsearch | HTTP | Store duy nhất | Required | [`schema/`](./schema) |
 
 Search **không phát** event nghiệp vụ nào. Không service nào được phép chờ tín
