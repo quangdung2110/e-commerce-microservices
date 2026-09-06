@@ -1,218 +1,133 @@
----
-doc_id: inventory-interfaces
-service: inventory
-scope: current
-status: proposed
-owners:
-  - Inventory Service team
-evidence:
-  - contracts/http/inventory/v1/openapi.yaml
-  - contracts/http/inventory/internal/v1/openapi.yaml
-  - contracts/events/inventory/v1/asyncapi.yaml
-verified_against_commit: null
----
+# Inventory Service — Interfaces and Event Contracts
 
-# Inventory Service — Interfaces
+> **Status:** Target contract for Release 1. Endpoint shapes are implementation-independent; semantic fields and outcomes are binding.
 
-> File này trả lời: “Service nhận và gửi thông tin gì?” Machine-readable contract là
-> nguồn chuẩn cho payload; file này giải thích semantics và hành vi. Không copy schema
-> từ OpenAPI/AsyncAPI vào đây.
+## 1. Surfaces and common envelope
 
-## 1. Contract index
-
-| Interaction | Direction | Protocol | Provider | Consumers | Contract | Status |
-|---|---|---|---|---|---|---|
-| `INV-IF-HTTP-V1` — API tồn kho | Inbound | HTTP | Inventory | Checkout, Admin, Order | [OpenAPI v1](../../contracts/http/inventory/v1/openapi.yaml) | proposed |
-| `INV-IF-EVT` — event trên `t.inventory.events` | Outbound | Kafka | Inventory | Order, Search, Analytics | Chưa có contract machine-readable | đang chạy |
-| `INV-IF-ACT` — Reserve/Deduct/Release | Inbound | Temporal SDK | Inventory | Order Saga | Chưa có contract machine-readable | đang chạy |
-| `INV-IF-HTTP-INT` — export snapshot | Inbound | HTTP nội bộ | Inventory | Search, Product Detail BFF | [Internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | **target, chưa implement** |
-| `INV-IF-EVT-STOCK-V1` — stock snapshot | Outbound | Kafka | Inventory | Search, Product Detail BFF | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) | **target, chưa implement** |
-| `INV-IF-EVT-MUT` — `INVENTORY_STOCK_MUTATION` | Nội bộ | Redis Stream → Kafka | Inventory | Chính Inventory | Không phải public contract | internal |
-
-`INV-IF-EVT-MUT` xuất hiện trên một topic Kafka dùng chung nên trông giống event
-public, nhưng nó là **transport nội bộ** giữa hai worker của cùng service. Consumer
-ngoài không được xây dựng logic dựa trên nó.
-
-## 2. HTTP APIs
-
-Path, status code và schema nằm trong OpenAPI. Bảng dưới giải thích những gì OpenAPI
-không nói được.
-
-| Nhóm | Mục đích nghiệp vụ | Caller | Auth | Idempotency |
-|---|---|---|---|---|
-| `POST /v1/inventory/routing-options` | Chọn kho cho giỏ hàng và cấp `route_plan_id` có hạn | Checkout | Gateway identity, user đã đăng nhập | Không mutate; gọi lại sinh plan mới |
-| `POST /v1/inventory/restock` | Nhập hàng mới hoặc nhận hàng hoàn về kho | Admin | Gateway identity, role `ADMIN` | **Không idempotent** — mỗi lần gọi cộng thêm |
-| `POST /v1/inventory/ship-to-customer` | Báo Order rằng kho đã xuất hàng | Admin | Gateway identity, role `ADMIN` | An toàn khi gọi lại: consumer dedupe theo `event_id` |
-| `POST /v1/inventory/returns/refund-expectations` | Order khóa tập item sẽ hoàn về | Order Service | Service identity m2m | Idempotent theo `(order_id, refund_request_id, order_item_ids)` |
-| `POST /v1/inventory/admin/unlock-sku` | Gỡ đóng băng sau khi đã đối soát | Admin | Gateway identity, role `ADMIN` | Gọi lại trên SKU đã mở trả `SKU_NOT_SUSPENDED` |
-| `GET /internal/v1/inventory/stock-snapshots` *(target, chưa implement)* | Bootstrap/recovery projection tồn kho | Search, Product Detail BFF | Service identity, không qua Gateway | Read-only, keyset ổn định theo `sku_id` |
-
-**Precondition đáng chú ý:**
-
-- Restock yêu cầu kho tồn tại và `is_active = true`. Restock hàng hoàn còn yêu cầu tồn
-  tại reservation `DEDUCTED` khớp `(order_id, order_item_id)` và reservation đó đã
-  được đánh dấu `refund_expected`.
-- Ship-to-customer yêu cầu có ít nhất một reservation `DEDUCTED` tại đúng
-  `(order_id, warehouse_id)`. Bỏ điều kiện `warehouse_id` sẽ khiến item ở kho khác bị
-  đánh dấu đã giao — xem [ADR-009](./decisions/ADR-009-ship-signal-without-ledger.md).
-- Lập route plan không giữ chỗ. Plan hợp lệ không bảo đảm reserve sẽ thành công.
-
-**Postcondition:** mọi HTTP command làm thay đổi tồn kho đều để lại một dòng ledger và
-một outbox row trong cùng transaction trước khi trả 200.
-
-**Idempotency của restock là rủi ro đã biết.** Không có `Idempotency-Key` vì schema
-không có nơi lưu kết quả command. Admin gặp timeout phải tra `inventory_ledger` theo
-`correlation_id` trước khi gửi lại, nếu không sẽ nhập kho hai lần.
-
-**Error semantics:** lỗi trả về dạng `{error, message, details, timestamp}` với `error`
-là domain error tại [Domain §8](./domain.md#8-domain-errors). Đây **không** phải RFC 9457
-Problem Details mà Product và Auth dùng.
-
-**Ba điểm lệch quy ước chung của dự án** — đều là drift đã biết, ghi ở
-[Known gaps](./README.md#9-known-gaps):
-
-| Điểm | Inventory | Phần còn lại của dự án |
+| Surface | Audience | Purpose |
 |---|---|---|
-| Tiền tố path | `/v1/inventory/...` | `/api/v1/...` |
-| Đặt tên field JSON | camelCase | snake_case |
-| Định dạng lỗi | `{error, message, details, timestamp}` | RFC 9457 Problem Details |
+| `/internal/inventory/v1` | Checkout and Order Temporal Saga | Allocation preview, reservation/refund workflow commands, and workflow queries. |
+| `/admin/inventory/v1` | Authenticated `ADMIN` | Warehouse configuration and physical stock operations. |
+| `/exports/inventory/v1` | Search Projection only | Consistent snapshot and ordered change feed for `in_stock`. |
 
-## 3. Temporal Activities
+There is no public customer Inventory write API. Every mutation requires authenticated workload/user identity plus:
 
-Reserve, Deduct và Release **không phải HTTP endpoint**. Order Saga gọi chúng qua
-Temporal SDK, nên chúng không xuất hiện trong OpenAPI và không đi qua Gateway.
-
-| Activity | Mục đích | Input chính | Kết quả |
-|---|---|---|---|
-| `ReserveInventoryActivity` | Giữ chỗ trước thanh toán | `order_id`, `route_plan_id`, danh sách item kèm `warehouse_id` | Thành công, hoặc lỗi phân loại được |
-| `DeductInventoryActivity` | Trừ hàng sau thanh toán thành công | `order_id`, danh sách item kèm `warehouse_id` | như trên |
-| `RollbackInventoryActivity` | Trả lại phần đã giữ chỗ | `order_id`, danh sách item, `change_type` | như trên |
-
-`change_type` của Rollback là `ORDER_CANCELLED` (compensation) hoặc
-`RESERVATION_EXPIRED` (hết hạn thanh toán). Hai giá trị này chỉ khác nhau ở ledger;
-tác động tồn kho giống hệt nhau — xem `INV-BR-012`.
-
-**Ánh xạ kết quả Lua sang Activity result:**
-
-| Kết quả script | Activity result | Order Saga làm gì |
-|---|---|---|
-| Áp dụng mới | Success | Đi tiếp |
-| Idempotent hit | Success | Đi tiếp; **không** phát thêm event |
-| `OUT_OF_STOCK` | Business failure | Compensation |
-| `INSUFFICIENT_RESERVED` | Business failure | Điều tra; không compensation tự động |
-| `RELEASE_UNDERFLOW` | Business failure | Điều tra |
-| `SKU_SUSPENDED` | Business failure | Chờ admin mở khóa |
-| `INVARIANT_DRIFT` | Activity failure không retry | Alert vận hành, dừng luồng |
-
-**Deadline và retry:** deadline của Activity và retry policy do Order Saga cấu hình,
-không phải Inventory. Inventory chỉ bảo đảm rằng retry cùng `(op, sku, kho, order)` là
-an toàn nhờ idempotency key. **Retry với `INVARIANT_DRIFT` là sai** — Order phải cấu
-hình lỗi này là non-retryable.
-
-**Timer hết hạn giữ chỗ thuộc Order.** Inventory ghi `expires_at` lên reservation
-nhưng không có worker nào quét nó; giá trị đó phục vụ dashboard và điều tra. Xem
-[ADR-006](./decisions/ADR-006-reservation-expiry-owned-by-order.md).
-
-## 4. Events phát ra
-
-### 4.1 Stock snapshot v1 — contract đích, chưa implement
-
-Contract dưới đây đã có AsyncAPI nhưng **chưa có gì ở phía provider**: schema không có
-bảng `sku_stock_state`, và ràng buộc `event_type` của bảng outbox hiện cấm insert loại
-event này. Xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
-
-| Thuộc tính | Giá trị |
+| Header / context | Rule |
 |---|---|
-| Event | `com.ecommerce.inventory.stock-snapshot.v1` |
-| Topic | `t.inventory.stock.events.v1` |
-| Partition/ordering key | `sku_id` |
-| Ordering guard | `stock_revision` — consumer chỉ áp dụng revision lớn hơn |
-| Dedup key | CloudEvents `id` |
-| Delivery | At-least-once |
-| Consumer | Search, Product Detail BFF |
-| Cơ chế | `inventory_outbox` + Debezium CDC |
-| Contract | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
+| `Idempotency-Key` | Required command ID; same caller namespace + key must carry the exact same fingerprint. |
+| `X-Correlation-ID` | Required for end-to-end trace. |
+| `X-Causation-ID` | Required where a prior workflow/event caused this command; otherwise a newly created root cause ID. |
+| Actor context | Service identity for Saga, interactive ADMIN identity/role for physical commands. It is written to audit. |
 
-**Khi nào phát:** mỗi khi tổng `available_quantity` của một SKU thay đổi, trong cùng
-transaction đã ghi mutation. Snapshot mang **toàn bộ** state per-SKU chứ không phải
-delta, nên consumer mất event vẫn hội tụ được khi nhận event sau.
+An accepted command persists its terminal result. Same command ID/payload returns that result. Same ID with a different payload returns `409 IDEMPOTENCY_KEY_REUSED`. A business rejection records the command result but does **not** permanently claim the operation identity, so a corrected new command may later succeed.
 
-Snapshot không mang tồn kho per-warehouse và không mang reservation. Đó là chủ đích:
-Search và Product Detail BFF chỉ hiển thị khả dụng UI, không hiển thị hàng nằm ở kho nào
-và không dùng snapshot để reserve.
+## 2. Checkout and Order workflow API
 
-### 4.2 Event đang chạy trên `t.inventory.events`
+### Allocation preview
 
-Ba event dưới đây chưa có contract machine-readable. Chúng dùng CloudEvents wrapper
-theo [quy ước event chung](../../contracts/conventions/events.md), nhưng vì không có
-AsyncAPI nên không có gì kiểm chứng được rằng producer thực sự tuân thủ.
+`POST /internal/inventory/v1/allocation-previews`
 
-| Event | Khi nào phát | Key | Consumer | Cơ chế |
-|---|---|---|---|---|
-| `INVENTORY_STOCK_CHANGED` | Sau mỗi thay đổi tổng khả dụng per-SKU | `sku_id` | Search, Analytics | Outbox + CDC |
-| `INVENTORY_RETURN_RECEIVED_ALL` | Khi mọi item của một refund scope đã về kho | `order_id` | Order | Outbox + CDC |
-| `INVENTORY_SHIP_TO_CUSTOMER` | Khi admin xác nhận xuất kho | `order_id` | Order | Outbox + CDC |
+Input is `line_reference`, opaque `sku_id`, and positive quantity. A `line_reference` is mapped to the Order line by Checkout/Order, not by Inventory. The response is one of:
 
-`INVENTORY_STOCK_CHANGED` **không có revision**, nên consumer không có cách nào bỏ
-event cũ đến muộn ngoài việc dựa vào thứ tự Kafka. Đây chính là lý do nó không đủ dùng
-cho Search về lâu dài và là động lực của
-[ADR-007](./decisions/ADR-007-stock-snapshot-v1-for-search.md).
-Product **không** consume event này; Product không phải stock replica.
+| Transport | Domain outcome | Meaning |
+|---:|---|---|
+| `200` | `ALLOCATABLE` | Advisory plan with `plan_id`, per-line warehouse, SKU, quantity, and policy explanation. |
+| `200` | `REJECT_ALL` | At least one line has no eligible whole-quantity warehouse. No partial plan is a commitment. |
+| `503` | `INVENTORY_UNAVAILABLE` | Primary authoritative store is unavailable; caller may retry. |
 
-Hai signal còn lại là sự kiện nghiệp vụ thuần túy, không mang số liệu tồn kho.
-`INVENTORY_RETURN_RECEIVED_ALL` chỉ mang `order_id` và `refund_request_id`;
-`INVENTORY_SHIP_TO_CUSTOMER` chỉ mang `order_id`, `warehouse_id` và `shipped_at`.
-Order tự truy vấn phần còn lại. `courier_note` không bao giờ vào Kafka.
+Preview excludes inactive/outage warehouses and selects priority deterministically. It creates no reservation; Reserve must revalidate the exact plan.
 
-### 4.3 Quan hệ giữa các event trong một hành động
+### Order Temporal Saga commands
 
-Một lần restock hàng hoàn có thể sinh **hai** outbox row: một `INVENTORY_STOCK_CHANGED`
-(tồn kho đã đổi) và một `INVENTORY_RETURN_RECEIVED_ALL` (nếu đây là item cuối). Hai
-event độc lập về nghiệp vụ và không thay thế nhau.
+| Command | Endpoint | Essential guard / terminal result |
+|---|---|---|
+| Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, order lines, exact preview plan. Returns `RESERVED` or `REJECT_ALL`; all lines or none. |
+| Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED` and a new command must be before `expires_at`; moves all lines to `COMMITTED`. |
+| Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or `STOCK_DISCREPANCY` plus `order_exception_id`. |
+| Release committed line | `POST /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release` | Target is committed and undispatched; reason guard defined in [workflows.md](workflows.md). |
+| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Whole immutable order lines; rejects a second active scope. |
+| Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/cancel` | Only `REGISTERED` and no receipt. |
+| Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
+| Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
 
-Ngược lại, ship-to-customer sinh **đúng một** event và không kèm bất kỳ event tồn kho
-nào, vì hàng đã bị trừ từ lúc deduct.
+Order can query its own command result and state:
 
-## 5. Events tiêu thụ
+- `GET /internal/inventory/v1/commands/{command_id}`
+- `GET /internal/inventory/v1/reservations/{order_id}`
+- `GET /internal/inventory/v1/refund-scopes/{refund_request_id}`
 
-Inventory **không consume event nghiệp vụ nào từ service khác.** Nó không nghe
-`t.order.events`, không nghe `t.product.events`, không nghe event vận chuyển.
+These queries are the recovery path when an Order event is delayed or missed; no generic cross-service event replay API is promised to Order.
 
-Hệ quả cần biết:
+## 3. ADMIN API
 
-- SKU bị xóa ở Product không tự động biến mất khỏi Inventory. Dòng
-  `physical_inventory` vẫn tồn tại và vẫn có thể được reserve.
-- Đơn hàng bị hủy ở Order không tự trả lại tồn kho; Order **phải** gọi Rollback
-  Activity.
-- Không có bảng inbox và không cần deduplication theo `event_id` cho event ngoại lai.
+ADMIN commands are the only physical-operation path. Every stock-affecting input includes `warehouse_id`, `sku_id` when relevant, positive quantity, command ID, operation identity, reason/evidence reference, and actor identity.
 
-`INVENTORY_STOCK_MUTATION` là ngoại lệ duy nhất được Ledger Worker consume, nhưng nó
-do chính Inventory phát. Worker phải lọc theo `event_type` trước khi xử lý, nếu không
-sẽ tiêu thụ chính event nó gián tiếp sinh ra qua outbox và tạo vòng lặp.
+| Capability | Endpoint family | Rules |
+|---|---|---|
+| Warehouse master | `/admin/inventory/v1/warehouses` | Create/update address, `is_active`, `operational_state`, `fulfillment_priority`; no implicit movement or release/reroute. |
+| Sellable receipt | `/admin/inventory/v1/stock-receipts` | `INITIAL_STOCK_LOAD` needs approved baseline batch; `SUPPLIER_RECEIPT` needs delivery/GRN reference. |
+| Adjustment | `/admin/inventory/v1/stock-adjustments` | `+/-`, ADMIN-only, approved reason code and evidence; negative only from sellable. |
+| Sellable reversal | `/admin/inventory/v1/stock-movements/{movement_id}/reversals` | Only successful sellable receipt/adjustment; append-only compensating movement. |
+| Physical dispatch | `/admin/inventory/v1/dispatches` | Only exact committed allocation at assigned warehouse and only when goods left physically. |
+| Return receipt | `/admin/inventory/v1/return-receipts` | Exact active scope line; goes into quarantine. |
+| Final inspection | `/admin/inventory/v1/inspections` | `PASS`/`FAIL` final per receipt quantity at receiving warehouse; evidence required. |
+| Quarantine disposition | `/admin/inventory/v1/quarantine-dispositions` | `HOLD`, `DISPOSE`, `RETURN_TO_SUPPLIER`; physical departure proof for last two. |
+| Disposition reversal | `/admin/inventory/v1/quarantine-dispositions/{id}/reversals` | Only verified physical return to same warehouse; restores quarantine, not sellable. |
 
-## 6. Compatibility
+Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustment reasons are `COUNT_GAIN`, `COUNT_LOSS`, `DAMAGE_REMOVAL`, `EXPIRY_REMOVAL`, and `DATA_CORRECTION`. Reversal reasons are `DUPLICATE_ENTRY`, `WRONG_QUANTITY`, `WRONG_SKU`, `WRONG_WAREHOUSE`, and `SOURCE_DOCUMENT_VOIDED`. There is no catch-all `OTHER`. Inspection fail reasons and disposition reasons are enumerated in [domain.md](domain.md).
 
-**Quy tắc chung:** chỉ thêm field optional; không xóa field, không thu hẹp enum, không
-đổi ngữ nghĩa của field đang tồn tại khi còn consumer được hỗ trợ.
+## 4. Errors and retries
 
-**Chiến lược version:** contract mới đi kèm topic mới (`t.inventory.stock.events.v1`)
-thay vì thêm version vào topic cũ. Hai contract chạy song song; consumer cũ không phải
-hiểu event v1 và ngược lại.
+| HTTP | Code / meaning | Caller behavior |
+|---:|---|---|
+| `200` | Accepted result or expected terminal domain result such as `REJECT_ALL`, `RESERVED`, `COMMITTED`, `RELEASED`. | Do not retry for a different business decision; replay only to obtain same result. |
+| `400` | Invalid syntax/shape before a durable command exists. | Correct input, then submit a new command ID. |
+| `403` | Caller lacks required service/ADMIN authority. | Do not retry without changed authorization. |
+| `404` | Query aggregate/command is not visible to caller. | Reconcile caller identifiers. |
+| `409` | Invalid state guard, immutable scope mismatch, operation identity conflict, or reused ID with different payload. | Treat as durable business conflict; investigate or issue a correct new command. |
+| `503` | `INVENTORY_UNAVAILABLE` or `BUSY`; no accepted transition was returned. | Retry with the same command ID and backoff. |
 
-**Kế hoạch ngừng contract legacy:**
+Every error response includes stable `code`, `retryable`, `correlation_id`, and, when supplied, `command_id`. A technical failure is never represented as `REJECT_ALL`.
 
-0. Implement phía provider trước: migration tạo `sku_stock_state`, nới ràng buộc
-   `event_type` của bảng outbox, backfill state, và endpoint export. Bước này chưa bắt
-   đầu — xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
-1. Search chuyển sang snapshot v1 và hoàn tất một lần full reindex từ export API;
-   Product Detail BFF bootstrap availability projection rồi replay cùng offsets.
-2. Xác nhận không còn consumer nào của `INVENTORY_STOCK_CHANGED` — hiện chưa có danh
-   sách consumer được xác minh, đây là điều kiện chặn.
-3. Dừng ghi `INVENTORY_STOCK_CHANGED` vào outbox.
-4. Giữ topic thêm một chu kỳ retention rồi mới gỡ.
+## 5. Public events
 
-Mốc thời gian cho từng bước chưa được ấn định.
+Every public event uses this envelope:
 
-**Điều kiện để một contract đạt `verified`:** có lint CI, có contract test hai chiều
-provider/consumer, có breaking-change check trong CI, và có ít nhất một lần chạy
-đối chiếu với implementation. Hiện chưa contract nào của Inventory đạt điều kiện này.
+```json
+{
+  "event_id": "stable UUID",
+  "event_type": "inventory.example.v1",
+  "schema_version": 1,
+  "export_sequence": 12345,
+  "occurred_at": "RFC-3339 timestamp",
+  "correlation_id": "...",
+  "causation_id": "...",
+  "aggregate": { "type": "...", "id": "...", "revision": 7 },
+  "data": {}
+}
+```
+
+`event_id` supports deduplication. Aggregate revision supports per-aggregate ordering. `export_sequence` is strictly increasing at durable creation and can contain gaps; no global aggregate ordering is promised.
+
+| Event | Consumer | Minimum data / semantic |
+|---|---|---|
+| `inventory.stock-position.changed.v1` | Search | Warehouse, SKU, `available_to_sell`, position revision. No raw on-hand or other buckets. |
+| `inventory.warehouse-availability.changed.v1` | Search | Warehouse activity/outage and revision. |
+| `inventory.reservation.reserved.v1` | Order | Durable Inventory fact for reconciliation. |
+| `inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
+| `inventory.reservation.released.v1` | Order | Release fact/reason. |
+| `inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
+| `inventory.refund.all-items-inspection-completed.v1` | Order | Whole scope ID and aggregated per-line pass/fail results; not payout. |
+
+Events are written through the transactional outbox and delivered at least once. Consumers atomically record an inbox/dedupe entry with their effect.
+
+## 6. Search export, bootstrap, and evolution
+
+Search exposes only `in_stock = exists(active, non-outage warehouse with available_to_sell > 0)`. It must not derive checkout availability from cache or expose raw stock buckets.
+
+1. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export watermark, and 24-hour session expiry.
+2. Paginate warehouse and stock-position snapshots at that fixed watermark.
+3. `GET /exports/inventory/v1/changes?after_sequence=N` returns only stock/warehouse events after a sequence.
+4. Search applies the snapshot, then changes after its watermark using event/inbox dedupe. If more than 30 days behind, Inventory returns `410 REPLAY_WINDOW_EXPIRED`; Search takes a new snapshot rather than guessing.
+
+Within v1, changes are additive and backward compatible. A breaking change requires v2 and parallel support for at least 90 days after every registered consumer confirms migration. Contract registry records owner, contact, schema version, compatibility decision, and test checkpoint.

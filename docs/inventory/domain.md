@@ -1,211 +1,134 @@
----
-doc_id: inventory-domain
-service: inventory
-scope: current
-status: proposed
-owners:
-  - Inventory Service team
-evidence:
-  - java/services/inventory-service
-verified_against_commit: null
----
+# Inventory Service — Domain Design
 
-# Inventory Service — Domain Model
+> **Status:** Target design accepted for Release 1.
 
-> File này trả lời: “Service đang bảo vệ những quy tắc nghiệp vụ nào?”
+## Ubiquitous language
 
-## 1. Ubiquitous language
+| Term | Definition |
+|---|---|
+| Warehouse | Inventory-owned master record with address, `is_active`, `operational_state` (`NORMAL`/`OUTAGE`) and fulfillment priority. |
+| StockPosition | Authoritative stock for one `(warehouse_id, sku_id)`; the unit of stock contention. |
+| On hand | Physical units currently at a warehouse, including sellable, reserved, committed, and quarantined units. |
+| Available to sell | Units eligible for a new reservation; it is not total physical stock. |
+| Reservation | Whole-order pre-payment hold rooted at `order_id`. |
+| Committed allocation | Paid order stock physically still at the warehouse while awaiting dispatch. |
+| Quarantine | Physically received returned units forbidden from sale until final inspection passes. |
+| Physical dispatch | ADMIN-recorded fact that stock left the allocated warehouse; it is not shipment/delivery state. |
+| Refund Scope | Immutable whole-order line/quantity registry for exactly one Order refund request. |
+| Stock movement | Append-only evidence for a bucket transition; it does not replace authoritative current state. |
 
-| Term | Định nghĩa | Không được nhầm với |
+## Stock bucket model
+
+For every `StockPosition`, all buckets are non-negative integers and this invariant is mandatory:
+
+```text
+available_to_sell + reserved + committed + quarantine = on_hand
+```
+
+`on_hand` is physical stock only. Payment does not decrease it; physical dispatch or verified final disposition does. A unit exists in at most one of the four buckets.
+
+| Command/fact | `on_hand` | `available_to_sell` | `reserved` | `committed` | `quarantine` |
+|---|---:|---:|---:|---:|---:|
+| Sellable receipt / positive adjustment | +q | +q | 0 | 0 | 0 |
+| Reserve | 0 | -q | +q | 0 | 0 |
+| Release reservation | 0 | +q | -q | 0 | 0 |
+| Commit payment | 0 | 0 | -q | +q | 0 |
+| Release committed allocation before dispatch | 0 | +q | 0 | -q | 0 |
+| Physical dispatch | -q | 0 | 0 | -q | 0 |
+| Return receipt | +q | 0 | 0 | 0 | +q |
+| Inspection pass | 0 | +q | 0 | 0 | -q |
+| Inspection fail / hold | 0 | 0 | 0 | 0 | 0 |
+| Dispose / return-to-supplier after fail | -q | 0 | 0 | 0 | -q |
+| Negative adjustment | -q | -q | 0 | 0 | 0 |
+
+Negative adjustment is permitted only when `q <= available_to_sell`; it never takes from a promise already reserved/committed or from quarantine.
+
+## Aggregates and boundaries
+
+| Object | Identity | Responsibility |
 |---|---|---|
-| Warehouse | Kho vật lý do admin quản lý, có mã tỉnh/quận/phường và cờ hoạt động | Địa chỉ giao hàng của khách |
-| Stock item | Tồn kho của một SKU tại một kho — đơn vị nhất quán nhỏ nhất của service | SKU trong catalog |
-| Actual (`total`) | Số hàng đang thực sự nằm trong kho | Available |
-| Reserved | Phần đã hứa cho đơn hàng nhưng chưa xuất | Deducted |
-| Available | `actual - reserved`, phần còn bán được | Actual |
-| Reservation | Lời hứa giữ chỗ cho một `order_item` tại một kho, có hạn | Đơn hàng |
-| Deduct | Trừ hàng thật sau khi thanh toán thành công | Ship |
-| Route plan | Kế hoạch chọn kho cho một giỏ hàng, có `route_plan_id` và hạn dùng | Reservation |
-| Ledger entry | Một dòng bất biến ghi lại biến động `actual` | Reservation history |
-| Stock revision | Số nguyên tăng dần theo SKU, dùng làm ordering guard cho consumer | Timestamp phát event |
-| Refund expectation | Đăng ký trước của Order về tập item sẽ được hoàn về kho | Yêu cầu hoàn tiền |
-| Suspension | Trạng thái đóng băng một `(SKU, kho)` sau khi phát hiện sai số liệu | SKU bị ẩn trong catalog |
-| Invariant drift | Tình trạng `available != actual - reserved` trong Redis | Hết hàng |
+| Warehouse | `warehouse_id` | Master data, activity/outage state, and deterministic fulfillment priority. |
+| StockPosition | `(warehouse_id, sku_id)` | Bucket invariant and local availability. |
+| OrderReservation | `order_id` | Atomic whole-order reservation root, expiry observation, and line lifecycle. |
+| ReservationLine | `(order_id, order_line_id)` | Immutable SKU, quantity, one warehouse, and allocation lifecycle. |
+| RefundScope | `(order_id, refund_request_id)` | Immutable expected return lines and receipt/inspection progress. |
+| ReturnReceiptLine / InspectionResult / QuarantineDisposition | Source operation identities | Physical provenance and exactly-once final inspection/disposition. |
+| StockMovement / AuditEntry | Immutable IDs | Durable explanation of an accepted mutation; never overwritten. |
 
-## 2. Domain objects
+`ReserveOrder` is one business operation across its reservation root, every line, and every selected `StockPosition`. Either all lines reserve or none does. One line's quantity never spans warehouses; distinct lines can allocate to distinct warehouses.
 
-**Aggregate root: Stock item, định danh bằng `(sku_id, warehouse_id)`.** Đây là ranh
-giới nhất quán thật sự của service: mọi mutation atomic đều nằm gọn trong một stock
-item, và không có thao tác nào cần khóa hai stock item cùng lúc. Aggregate này tồn tại
-đồng thời ở hai nơi — Redis (bản đang chạy) và `physical_inventory` (bản durable).
+## Reservation lifecycle
 
-**Entity:**
+```mermaid
+stateDiagram-v2
+  [*] --> RESERVED: ReserveOrder (all lines)
+  RESERVED --> COMMITTED: CommitPayment
+  RESERVED --> RELEASED: ReleaseReservation
+  COMMITTED --> DISPATCHED: RecordPhysicalDispatch
+  COMMITTED --> RELEASED: ReleaseCommittedAllocation
+```
 
-- `Warehouse` — lifecycle độc lập, do admin tạo, chỉ vô hiệu hóa bằng `is_active`.
-- `Reservation` — thuộc về một `order_item` và một kho; có state machine riêng và tuổi
-  thọ dài hơn transaction sinh ra nó.
-
-**Value object:**
-
-- `RoutePlan` — bất biến sau khi tạo, chỉ có hiệu lực tới `expires_at`, không được
-  sửa; hết hạn thì phải sinh cái mới.
-- `LedgerEntry` — bất biến tuyệt đối, không bao giờ update hay xóa.
-
-**Projection (không phải aggregate):** thiết kế đích có một bản tổng hợp per-SKU
-(`sku_stock_state`) dùng để công bố ra ngoài; nó **chưa tồn tại trong schema hiện tại**
-(xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại)). Hiện tổng
-khả dụng per-SKU được tính tại thời điểm phát event. Dù ở dạng nào, bản tổng hợp này
-không được dùng làm cơ sở cho quyết định reserve hay routing.
-
-**Đối tượng thuộc service khác, chỉ tham chiếu bằng identifier:** `sku_id` và
-`product_id` (Product), `order_id`/`order_item_id` (Order), `refund_request_id`
-(Order). Inventory không validate sự tồn tại của chúng ở service gốc.
-
-## 3. Commands và queries
-
-| Loại | Capability | Actor | Xử lý bởi |
-|---|---|---|---|
-| Query | Lập route plan | Checkout thay mặt user | Warehouse Selection Engine |
-| Command | Reserve | Order Temporal worker | Stock item |
-| Command | Deduct | Order Temporal worker | Stock item |
-| Command | Release | Order Temporal worker | Stock item |
-| Command | Restock (`ADMIN_RESTOCK`) | Admin | Stock item |
-| Command | Restock hàng hoàn (`ORDER_RETURNED_RESTOCK`) | Admin | Stock item + Reservation |
-| Command | Đăng ký refund expectation | Order Service (m2m) | Reservation |
-| Command | Xác nhận xuất kho | Admin | Không aggregate nào — chỉ phát signal |
-| Command | Mở khóa SKU | Admin | Suspension flag |
-| Query | Export stock snapshot *(target, chưa có)* | Search, Product Detail BFF (service identity) | Bản tổng hợp per-SKU |
-
-## 4. Business rules
-
-| ID | Rule | Điều kiện | Vi phạm trả về |
-|---|---|---|---|
-| `INV-BR-001` | Reserve chỉ thành công khi `available >= quantity` tại đúng kho được chỉ định | Mọi lần reserve | `OUT_OF_STOCK` |
-| `INV-BR-002` | Deduct chỉ thành công khi `reserved >= quantity` | Mọi lần deduct | `INSUFFICIENT_RESERVED` |
-| `INV-BR-003` | Release không được trả về nhiều hơn phần đang giữ chỗ | Mọi lần release | `RELEASE_UNDERFLOW` |
-| `INV-BR-004` | Request nhiều item là all-or-nothing: một item hỏng thì các item đã áp dụng phải được release lại | Reserve nhiều item | Lỗi tổng của request |
-| `INV-BR-005` | Mọi mutation phải chỉ định `warehouse_id`; không có mutation ở mức SKU | Mọi mutation | `INVALID_REQUEST` |
-| `INV-BR-006` | Restock là entry point khởi tạo duy nhất; SKU chưa restock lần nào không tồn tại với Inventory | Routing, reserve | `SKU_NOT_FOUND` |
-| `INV-BR-007` | Chọn kho: kho phải đủ hàng cho item; ưu tiên kho cùng `city_code` với khách; tie-break `warehouse_id` tăng dần | Lập route plan | `INSUFFICIENT_STOCK` |
-| `INV-BR-008` | Route plan hết hạn hoặc không có trong cache là không hợp lệ; không có gia hạn | Checkout submit | `CONTRACT_INVALID_ROUTE_PLAN` |
-| `INV-BR-009` | Hàng hoàn chỉ được nhận cho reservation `DEDUCTED` đã có `refund_expected = true` | Restock hàng hoàn | `REFUND_NOT_EXPECTED` |
-| `INV-BR-010` | Một `(order_id, refund_request_id)` chỉ gắn với một tập `order_item_ids` duy nhất | Đăng ký refund expectation | `REFUND_SCOPE_MISMATCH` |
-| `INV-BR-011` | Ledger chỉ ghi biến động `actual_quantity`; reserve, release và ship ghi `quantity_change = 0` | Mọi ledger write | Vi phạm audit |
-| `INV-BR-012` | `RESERVATION_EXPIRED` được giữ tách khỏi `ORDER_CANCELLED` trong ledger, dù cả hai cùng đưa reservation về `CANCELLED` | Release | Mất khả năng phân biệt khi audit |
-| `INV-BR-013` | Xuất kho không mutate tồn kho, không ghi ledger, không đổi trạng thái reservation | Ship-to-customer | Vi phạm `INV-INV-007` |
-| `INV-BR-014` | Khi một `(SKU, kho)` đang bị đóng băng, mọi mutation bị từ chối trước khi kiểm tra bất kỳ điều kiện nghiệp vụ nào khác | Mọi mutation | `SKU_SUSPENDED` |
-| `INV-BR-015` | Mở khóa SKU chỉ do người thực hiện; hệ thống không tự mở khi hết TTL mà không có đối soát | Recovery | Rủi ro vận hành |
-
-## 5. Invariants
-
-| ID | Điều kiện | Nơi enforcement |
+| State | Meaning | Valid transition |
 |---|---|---|
-| `INV-INV-001` | `available + reserved == total`, cả ba `>= 0` | Kiểm tra trước và sau mutate trong Lua script Deduct; vi phạm trả `-1` |
-| `INV-INV-002` | `actual_quantity >= reserved_quantity >= 0` | `ck_physical_inventory_actual_gte_reserved` trong [migration V1](../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql) |
-| `INV-INV-003` | Một `(op, sku, kho, order)` áp dụng đúng một lần | `SETNX` idempotency key trong Lua; partial unique index `uq_reservations_active` |
-| `INV-INV-004` | Một `event_id` tạo tối đa một ledger row | `inventory_ledger.event_id UNIQUE` |
-| `INV-INV-005` | `INVENTORY_RETURN_RECEIVED_ALL` phát đúng một lần mỗi `(order_id, refund_request_id)` | `uq_inventory_outbox_return_received` |
-| `INV-INV-006` | Ledger chỉ phản ánh biến động `actual_quantity` | Enum `reference_type` + quy ước `quantity_change` |
-| `INV-INV-007` | Stock item bị drift không nhận thêm mutation | Kiểm tra cờ suspension ở dòng đầu mọi Lua script |
-| `INV-INV-008` *(target)* | `stock_revision` tăng đúng một lần mỗi state transition per-SKU | **Chưa có nơi enforcement** — cần bảng `sku_stock_state` |
+| `RESERVED` | Entire order waits for payment. | Whole-root `CommitPayment` or whole-root `ReleaseReservation`. |
+| `COMMITTED` | Payment succeeded for all lines; units remain physically at their warehouses. | Per-line physical dispatch or eligible pre-dispatch release. |
+| `PARTIALLY_DISPATCHED` | Derived root state: some, not all, lines dispatched. | Remaining lines dispatch; Order exception is required for pre-dispatch release. |
+| `DISPATCHED` | Every line physically dispatched. | Terminal for allocation; return uses Refund Scope. |
+| `RELEASED` | Every line released before dispatch. | Terminal. |
 
-Các invariant trên đều có nơi kiểm chứng cụ thể. Mong muốn "Redis và PostgreSQL luôn
-khớp nhau" **không** phải invariant: kiến trúc chấp nhận nó sai trong một cửa sổ thời
-gian, và điều đó được ghi ở [ADR-001](./decisions/ADR-001-redis-hot-path-commit-source.md).
+`CommitPayment` moves every line `RESERVED → COMMITTED` together. `expires_at` is a 15-minute deadline, not an Inventory auto-transition: a new Commit after it is rejected while a retry of a previously successful command returns its original result. Only Order Temporal Saga issues release with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or whole-root `STOCK_DISCREPANCY` plus `order_exception_id`. A reservation over 60 minutes alerts; it never cleans up automatically.
 
-## 6. State machines
+`ReleaseCommittedAllocation` targets only an undispatched committed line. It uses `ORDER_CANCELLED` or `REFUND_BEFORE_DISPATCH`; after any line dispatches it requires `POST_DISPATCH_EXCEPTION` and an Order exception ID. When release and dispatch race, the first atomic transition wins and the other receives its guarded/idempotent outcome.
 
-### Reservation
+## Refund Scope and return lifecycle
 
-| State | Transition tới | Trigger | Guard | Side effect |
-|---|---|---|---|---|
-| *(none)* | `RESERVED` | Reserve thành công | `available >= quantity`; chưa có row `RESERVED` cho `(order, sku, kho)` | `reserved` tăng; ledger `ORDER_RESERVED`; `expires_at` được đặt |
-| `RESERVED` | `DEDUCTED` | Deduct sau khi thanh toán thành công | `reserved >= quantity` | `actual` và `reserved` cùng giảm; ledger `ORDER_DEDUCTED` |
-| `RESERVED` | `CANCELLED` | Release do hủy đơn | `reserved >= quantity` | `reserved` giảm, `available` tăng; ledger `ORDER_CANCELLED` |
-| `RESERVED` | `CANCELLED` | Release do Temporal timer hết hạn | như trên | ledger `RESERVATION_EXPIRED` |
-| `DEDUCTED` | *(terminal)* | — | — | Chỉ còn có thể nhận `refund_returned_at` |
-| `CANCELLED` | *(terminal)* | — | — | Được archive sau 90 ngày |
+Order Temporal Saga registers an immutable Refund Scope before the warehouse accepts any package. Release 1 scopes contain every order line and its whole quantity. At most one scope per order may hold the refund lock in `REGISTERED`, `IN_PROGRESS`, or `INSPECTION_COMPLETED`.
 
-`DEDUCTED` không quay lại `RESERVED`. Hàng hoàn về kho **không** đổi state của
-reservation; nó chỉ điền `refund_returned_at` và cộng tồn kho mới.
+```mermaid
+stateDiagram-v2
+  [*] --> REGISTERED: RegisterRefundScope
+  REGISTERED --> CANCELLED: Cancel before any receipt
+  REGISTERED --> IN_PROGRESS: First return receipt
+  IN_PROGRESS --> INSPECTION_COMPLETED: All expected units final inspected
+  INSPECTION_COMPLETED --> CLOSED: Order closes terminal refund
+  IN_PROGRESS --> CLOSED_INCOMPLETE: Order closes missing returns after all received units final inspected
+```
 
-### Refund expectation của một reservation `DEDUCTED`
+For every immutable scope line:
 
-`refund_expected = false` → `true` (Order đăng ký scope) → `refund_returned_at` được
-điền (admin nhận hàng). Khi mọi reservation cùng `(order_id, refund_request_id)` đều
-đã có `refund_returned_at`, signal `INVENTORY_RETURN_RECEIVED_ALL` được phát đúng một
-lần. Không có transition ngược: đã đăng ký scope thì không hủy được qua API.
+```text
+0 <= passed_quantity + failed_quantity <= received_quantity <= expected_quantity
+```
 
-### Suspension của một `(SKU, kho)`
+- `RecordReturnReceipt` accepts only an exact registered SKU/order line and remaining quantity. It places units in `quarantine` at the physical receiving warehouse. Multiple packages are permitted; partial scope is not.
+- `RecordInspectionPass` and `RecordInspectionFail` are final, exactly-once results for quantity on a receipt line at that warehouse. `PASS` moves stock to sellable. `FAIL` remains quarantined and cannot become `PASS` through re-inspection in Release 1.
+- When every expected unit has a final result, Inventory sets `INSPECTION_COMPLETED` and emits exactly one `AllItemsInspectionCompleted` fact. This is neither refund payout nor final Order decision.
+- Only Order changes `INSPECTION_COMPLETED → CLOSED`, releasing the lock. It may close incomplete returns only when every received unit is final inspected; this becomes `CLOSED_INCOMPLETE` and emits no completion fact.
 
-`NORMAL` → `SUSPENDED` khi Lua script phát hiện drift (mã `-1`), kèm TTL 24 giờ và
-cảnh báo vận hành. `SUSPENDED` → `NORMAL` chỉ qua API unlock của admin. TTL hết hạn
-cũng làm cờ biến mất, nhưng đó là cơ chế dọn rác chứ không phải quy trình phục hồi
-hợp lệ — xem [ADR-005](./decisions/ADR-005-fail-safe-suspension.md).
+Failed inspection may be `HOLD`, `DISPOSE`, or `RETURN_TO_SUPPLIER`. Physical departure is required before the latter two reduce `on_hand`/`quarantine`. Their specialized reversal requires evidence that the unit is physically back at the same warehouse and returns it to quarantine, never directly to sellable stock.
 
-## 7. Authorization rules
+Final inspection failure reason is exactly one of `DAMAGED`, `USED_OR_ALTERED`, `MISSING_COMPONENTS`, `SAFETY_OR_HYGIENE`, `COUNTERFEIT_OR_UNVERIFIABLE`, or `NOT_RESELLABLE_BY_POLICY`; there is no `OTHER`. `HOLD` requires `AWAITING_DISPOSITION`, `SUPPLIER_CLAIM`, `SAFETY_REVIEW`, or `EVIDENCE_PRESERVATION`. `DISPOSE` requires `UNSAFE`, `UNREPAIRABLE`, `EXPIRED`, or `POLICY_REQUIRED`; `RETURN_TO_SUPPLIER` requires `SUPPLIER_RETURN_AUTHORIZED`. Every final inspection/disposition carries the required checklist or physical-evidence reference.
 
-| Actor | Được phép | Cơ chế |
-|---|---|---|
-| User đã đăng nhập (qua Checkout) | Lập route plan | Identity do Gateway inject |
-| Admin | Restock, xác nhận xuất kho, mở khóa SKU | Role `ADMIN` từ Gateway |
-| Order Service | Đăng ký refund expectation | Service identity m2m + header `X-Internal-Service: order-service` |
-| Order Temporal worker | Reserve, Deduct, Release | Temporal task queue nội bộ |
-| Search Service | Export stock snapshot | Service identity, không qua Gateway |
+## Allocation policy
 
-Không có khái niệm tenant hay shop: hệ thống chỉ có một shop, nên không có kiểm tra
-ownership theo shop. Inventory không tự kiểm tra người gọi có sở hữu `order_id` hay
-không — quyền đó thuộc Order và Gateway.
+For each line, Inventory considers only warehouses that are active, not in outage, and have `available_to_sell >= requested_quantity`. It chooses the smallest tuple:
 
-## 8. Domain errors
+```text
+(fulfillment_priority ASC, warehouse_id ASC)
+```
 
-| Error code | Điều kiện phát sinh | Retryable | Interface mapping |
-|---|---|---|---|
-| `OUT_OF_STOCK` | `available < quantity` khi reserve | No | Temporal Activity failure → saga compensation |
-| `INSUFFICIENT_RESERVED` | `reserved < quantity` khi deduct | No | Temporal Activity failure, không compensation tự động |
-| `RELEASE_UNDERFLOW` | `reserved < quantity` khi release | No | Temporal Activity failure, cần điều tra |
-| `SKU_SUSPENDED` | Cờ suspension tồn tại | No, cho tới khi admin mở khóa | Temporal failure / HTTP 409 |
-| `INVARIANT_DRIFT` | `available != total - reserved` | **Không bao giờ retry** | Đóng băng SKU + alert; HTTP 503 cho caller |
-| `INSUFFICIENT_STOCK` | Không kho nào đủ hàng cho một item | No | HTTP 409 |
-| `SKU_NOT_FOUND` | SKU chưa từng được restock | No | HTTP 404 |
-| `WAREHOUSE_NOT_FOUND` | Kho không tồn tại hoặc `is_active = false` | No | HTTP 404 |
-| `RESERVATION_NOT_FOUND` | Không có reservation khớp điều kiện | No | HTTP 404 |
-| `REFUND_NOT_EXPECTED` | Reservation tồn tại nhưng chưa được đăng ký refund scope | No | HTTP 409 |
-| `REFUND_SCOPE_MISMATCH` | Cùng khóa refund nhưng khác tập item | No | HTTP 409 |
-| `CONTRACT_INVALID_ROUTE_PLAN` | Plan hết hạn hoặc không có trong cache | No — client phải preview lại | HTTP 409 tại Checkout |
-| `SKU_NOT_SUSPENDED` | Unlock một SKU không bị khóa | No | HTTP 404 |
-| `INVENTORY_UNAVAILABLE` | Redis hoặc PostgreSQL không khả dụng | Yes | HTTP 503, `retryable = true` |
+No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exists in Release 1. Preview is advisory: Reserve locks and revalidates exactly the previewed warehouse plan. If it is stale or unavailable, the whole request is `REJECT_ALL`; Reserve never tries the next ranked warehouse. Warehouse status changes affect new allocation only, not existing commitments or physical facts.
 
-`INVENTORY_UNAVAILABLE` là lỗi hạ tầng; mọi mã còn lại là domain error và không được
-retry mù. `INVARIANT_DRIFT` đặc biệt: nó là dấu hiệu dữ liệu đã sai, nên retry hoặc
-rollback tự động chỉ làm sai thêm.
+## Domain invariants
 
-## 9. Business examples
+1. Bucket equation and non-negative buckets always hold.
+2. Inventory is the only writer; every accepted mutation has command ID, actor/system actor, reason, timestamp, immutable movement/audit, and transactional outbox evidence.
+3. Reserve is all-or-nothing for the complete order; no backorder, partial reservation, or split line quantity exists.
+4. Every ReservationLine has one immutable warehouse and its configured SKU/quantity cannot change.
+5. Payment never changes physical stock; dispatch is the only sale flow that reduces `on_hand`.
+6. A release, dispatch, inspection, or disposition transition is guarded, idempotent, and cannot occur twice for the same business identity.
+7. Refund receipt is permitted only for an active immutable scope; wrong item, over-receipt, receipt after close, and duplicated final inspection cannot mutate stock.
+8. Quarantine is never saleable without final `PASS`; failed stock remains traceable through disposition/reversal.
+9. Administrative correction is append-only and cannot conceal a systemic ledger/state mismatch.
 
-**Giữ chỗ thành công.** Kho 5 có `total = 800`, `reserved = 0`, `available = 800`.
-Đơn 10001 reserve 2 đơn vị SKU-001 tại kho 5 → `reserved = 2`, `available = 798`,
-`actual` không đổi, ledger ghi `ORDER_RESERVED` với `quantity_change = 0`.
-
-**Replay đúng cách.** Temporal retry lại chính Activity đó với cùng `order_id`. Script
-thấy idempotency key đã tồn tại, trả mã idempotent, **không** mutate lần hai và
-**không** phát event mới. Caller nhận kết quả thành công.
-
-**Vi phạm rule đa item.** Giỏ có SKU-001 (đủ hàng) và SKU-002 (thiếu 1 đơn vị).
-Reserve SKU-001 thành công, SKU-002 trả `OUT_OF_STOCK`. Theo `INV-BR-004`, service
-phải release lại SKU-001 rồi trả lỗi tổng — không được để đơn giữ chỗ một nửa.
-
-**Sai lệch số liệu.** Redis có `total = 100`, `reserved = 5`, nhưng `available = 97`
-thay vì 95. Script Deduct phát hiện ngay ở bước kiểm tra đầu, trả `-1`, không mutate
-gì. `(SKU-001, kho 5)` bị đóng băng; mọi reserve/deduct/release tiếp theo trả
-`SKU_SUSPENDED` cho tới khi có người đối soát và gọi unlock.
-
-**Hoàn hàng đủ.** Order đăng ký refund scope gồm item 2001 và 2002. Admin nhận 2001 →
-`refund_returned_at` được điền, còn 1 item pending, chưa phát signal. Admin nhận 2002 →
-pending về 0 → `INVENTORY_RETURN_RECEIVED_ALL` được ghi outbox. Nếu admin lỡ tay gửi
-lại request cho 2002, unique index chặn event thứ hai.
-
-**Xuất kho nhiều kho.** Đơn 10001 có item ở kho 5 và kho 7. Admin gọi ship-to-customer
-cho kho 5 → chỉ item thuộc kho 5 chuyển sang đã giao. Nếu bỏ lọc `warehouse_id`, item
-ở kho 7 sẽ bị đánh dấu đã giao trong khi hàng còn nằm trong kho — đây là lỗi nghiệp vụ
-nghiêm trọng mà `INV-BR-013` và [ADR-009](./decisions/ADR-009-ship-signal-without-ledger.md)
-tồn tại để ngăn.
+See [workflows.md](workflows.md) for transition ownership and [data.md](data.md) for enforcement and evidence.

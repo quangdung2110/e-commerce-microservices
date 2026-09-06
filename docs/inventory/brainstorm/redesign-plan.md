@@ -2,7 +2,7 @@
 doc_id: inventory-redesign-plan
 service: inventory
 scope: target
-status: proposed
+status: complete
 owners:
   - Inventory Service team
 evidence:
@@ -279,6 +279,14 @@ domain semantics đã chốt.
 **Definition of ready for implementation:** business owner và các service liên quan review state
 machine/contract; tất cả invariant có nơi enforcement được thiết kế; mọi mutation có idempotency và
 audit policy; failure/recovery path đã được mô tả; load-test plan đủ để kiểm chứng các NFR ở Phase 0.
+
+**Kết quả đã chốt:** bộ tài liệu target được viết tại thư mục cha gồm `README.md`, `domain.md`,
+`workflows.md`, `interfaces.md`, `data.md`, `architecture.md`, `operations.md`, `development.md` và
+`decisions/ADR-011` đến `ADR-015`. Các ADR 001–010 được giữ nguyên lịch sử và được supersede qua
+decision index, không còn là implementation authority.
+
+**Phase 9 complete — 2026-09-07.** Bộ tài liệu target là nguồn sự thật duy nhất trước implementation;
+thư mục `brainstorm/` là evidence của quá trình ra quyết định.
 
 ## 4. Decision register ban đầu
 
