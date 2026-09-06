@@ -7,7 +7,7 @@
 
 Gateway chịu trách nhiệm kết thúc TLS, định tuyến, health/timeout của upstream, xác thực, bảo vệ ở edge, access log, metrics và truyền trace context. Gateway **không** chịu trách nhiệm phân quyền nghiệp vụ, tổng hợp dữ liệu nghiệp vụ hoặc truy cập database.
 
-Các downstream service chỉ được tin cậy header `X-User-*` đến từ mạng private của gateway/auth. Mọi public boundary phải loại bỏ hoặc ghi đè identity header do client tự gửi.
+Các downstream service chỉ được tin cậy header `X-User-*` đến từ mạng private của gateway/auth. Traefik phải loại bỏ mọi identity header do client gửi **trước** khi gọi ForwardAuth và trước khi forward upstream; chỉ header trong allowlist do `gateway-auth` trả về sau validation mới được thêm vào request. Downstream service không được có public ingress bypass gateway/auth và phải áp dụng network policy tương ứng.
 
 ## 2. Runtime được hỗ trợ
 
@@ -44,7 +44,7 @@ client → TLS/trusted proxy → size & IP policy → route → rate/concurrency
        → logs, metrics, trace export
 ```
 
-Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Các header `X-User-Id`, `X-User-Roles`, `X-User-Email`, `X-User-Device-Id`, `X-User-Session-Id` đi vào đều bị loại bỏ trước khi request tới service.
+Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header cùng tên do `gateway-auth` trả về trong allowlist mới được forward tới service. Ánh xạ claim sang header được chốt tại mục 6.1.
 
 Gateway tiếp tục `traceparent`/`tracestate` W3C hợp lệ; nếu không có thì sinh trace context W3C chuẩn. Gateway không tự tạo trace ID riêng.
 
@@ -59,13 +59,19 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/.well-known/**` | GET | auth-service | Không | `public-read` | Chỉ JWKS/OIDC metadata |
 | `/api/users/**` | do service định nghĩa | user-service | Bắt buộc | `api-authenticated` | Authorization thuộc service |
 | `/api/orders/**` | do service định nghĩa | order-service | Bắt buộc | `api-authenticated` | Không retry method không idempotent |
-| `/api/products/**` GET | GET | product-service | Không | `public-read` | Priority tường minh |
-| `/api/products/**` non-GET | non-GET | product-service | Bắt buộc | `api-authenticated` | Priority cao hơn router public |
+| `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
+| `/api/v1/search/**` | GET | search-service | Không | `public-read` | **Không còn backend**: Search đã gỡ v1 khi viết lại theo `docs/search`. Route phải được xoá sau khi frontend chuyển sang v2 |
+| `/api/v2/search/**` (trừ reindex) | GET | search-service | Không | `public-read` | Search v2 canonical và là bề mặt storefront duy nhất còn backend |
+| `/api/v2/search/reindex-runs/**` | GET, POST | search-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Router priority cao hơn public v2 route; không expose qua `/internal` |
 | `/api/payments/webhook/stripe` | POST | payment-service | Stripe signature | `stripe-webhook` | Giữ raw body; bypass JWT; không retry ở gateway |
 | `/api/payments/**` còn lại | do service định nghĩa | payment-service | Bắt buộc | `payment-authenticated` | Payment Service sở hữu idempotency |
 | `/ws/**` | HTTP Upgrade | chat-service | Chỉ handshake | `websocket-handshake` | Service đóng session bị revoke |
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
+
+Các endpoint `/internal/v1/**` của Product Service (catalog export và snapshot cho
+Search Service) chỉ đi qua mạng nội bộ với service identity đã xác minh; gateway
+không tạo router public cho prefix này.
 
 Mỗi service có health check và upstream transport timeout giới hạn. Retry chỉ áp dụng cho `GET`, `HEAD`, `OPTIONS` khi lỗi connection/5xx đã được cấu hình. Payment write và Stripe webhook không bao giờ bị gateway retry. Circuit breaker chỉ được thêm theo upstream sau khi threshold và recovery behavior đã được test.
 
@@ -97,20 +103,46 @@ Khi shutdown hoặc rollout, gateway ngừng nhận request mới trong 10 giây
 
 ## 6. Quy ước xác thực
 
+`auth-service` là issuer: nó phát JWT, giữ private signing key, công bố JWKS và ghi trạng thái revoke. `gateway-auth` là verifier tại edge: nó không phát token, không giữ private signing key và chỉ đọc trạng thái revoke từ Redis. Hai service phải dùng cùng contract sau; giá trị cụ thể được inject bằng cấu hình/secrets version hóa, không hard-code vào image.
+
+| Hạng mục contract | Quy ước bắt buộc |
+|---|---|
+| Issuer và audience | `AUTH_JWT_ISSUER` và `AUTH_JWT_AUDIENCE` phải khớp tuyệt đối giá trị claim `iss` và `aud` trong JWT. |
+| Thuật toán ký | Chỉ chấp nhận danh sách `AUTH_JWT_ALLOWED_ALGORITHMS` được cấu hình tường minh; cấm `none` và không chọn thuật toán từ header JWT một cách không kiểm soát. |
+| Claim set của access token | Đúng tập sau, không hơn: `iss`, `aud`, `sub`, `jti`, `sid`, `roles`, `iat`, `nbf`, `exp`. `sid` là `family_id` ổn định của session, không đổi qua refresh-token rotation. `roles` chỉ là danh tính/entitlement được chuyển tiếp nếu được allowlist, không thay thế authorization nghiệp vụ. Access token **không** chứa `email` và **không** chứa `device_id`; service cần email phải hỏi Auth Service chứ không đọc từ token. |
+| JWKS URL | `AUTH_JWKS_URL` là URL HTTPS canonical do `auth-service` công bố dưới `/.well-known/**`; chỉ lấy key từ URL này. |
+| JWKS cache và rotation | Cache có TTL và kích thước giới hạn, refresh single-flight. Khi gặp `kid` mới thì refresh có kiểm soát; key cũ còn cache phải được giữ đến khi không còn JWT hợp lệ nào có thể tham chiếu nó. Nếu Auth Service/JWKS không truy cập được nhưng key cache hợp lệ, vẫn verify từ cache; chỉ fail closed khi không có key cache dùng được. |
+| Redis logical store | `AUTH_REVOCATION_REDIS_URL` trỏ tới cùng Redis logical store/database cho cả hai service, với namespace `auth:revocation:*`. `auth-service` có quyền ghi; `gateway-auth` chỉ có quyền đọc các key này. |
+| Token denylist | `auth:revocation:denylist:{jti}` do `auth-service` ghi khi thu hồi token. TTL phải bằng hoặc ngắn hơn thời gian còn lại đến claim `exp`; không tạo denylist entry sống sau `exp`. |
+| User-wide revocation | `auth:revocation:user:{sub}:revoked_before` chứa timestamp UTC. `gateway-auth` từ chối JWT có `iat` không lớn hơn giá trị này. TTL của key không được ngắn hơn access-token lifetime tối đa đang hỗ trợ. |
+| JWKS invalidation payload | Message trên channel `auth:jwks:update` là JSON `{"type": "...", "kid": "...", "timestamp": "..."}`. `type` nhận `key_rotation`, `key_retirement` hoặc `all`; `kid` rỗng nghĩa là xóa toàn bộ cache. `type` là field bắt buộc — message thiếu `type` phải bị bỏ qua và ghi log, không được coi là tín hiệu xóa cache. |
+
+### 6.1 Ánh xạ identity header
+
+Sau khi validate thành công, `gateway-auth` inject đúng bốn header dưới đây, mỗi header lấy từ một claim. Không header identity nào khác được sinh ra từ access token.
+
+| Header | Claim nguồn | Bắt buộc | Ghi chú |
+|---|---|---|---|
+| `X-User-Id` | `sub` | Có | UUID của account |
+| `X-User-Roles` | `roles` | Có | Danh sách role phân tách bằng dấu phẩy |
+| `X-User-Session-Id` | `sid` | Có | `family_id` của session hiện tại |
+| `X-Token-Jti` | `jti` | Có | Auth dùng để denylist access token khi thu hồi session hiện tại |
+
+`X-User-Email` và `X-User-Device-Id` không tồn tại trong contract này: token không mang claim tương ứng, nên không service nào được thiết kế phụ thuộc vào chúng.
+
 `gateway-auth` phải:
 
-1. Validate Bearer JWT: issuer, audience, allowed algorithm, expiry và not-before.
-2. Dùng JWKS cache có giới hạn cùng single-flight refresh.
-3. Kiểm tra Redis denylist và timestamp `revoked_before` của user.
-4. Trả `401` chỉ cho credentials không hợp lệ; trả `503` khi dependency validation không sẵn sàng.
+1. Validate Bearer JWT theo contract: issuer, audience, allowed algorithm, signature, expiry và not-before.
+2. Dùng JWKS cache và key-rotation policy trong bảng trên.
+3. Kiểm tra Redis denylist theo `jti` và `revoked_before` theo `sub`.
+4. Trả `401` chỉ cho credentials không hợp lệ; trả `503` khi dependency validation bắt buộc không sẵn sàng.
 5. Chỉ trả về allowlisted identity headers sau khi validation thành công.
 
 | Lỗi | Business route được bảo vệ | Payment route |
 |---|---|---|
 | Redis denylist/revocation không sẵn sàng | Fail closed: `503` | Fail closed: `503` |
-| JWKS refresh lỗi, cache key còn hợp lệ | Validate từ cache đến khi hết hạn | Validate từ cache đến khi hết hạn |
-| JWKS không sẵn sàng, cache không dùng được | Fail closed: `503` | Fail closed: `503` |
-| Auth Service không sẵn sàng | Fail closed: `503` | Fail closed: `503` |
+| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, nhưng key cache cho JWT còn hợp lệ | Validate từ cache đến khi key hết hạn | Validate từ cache đến khi key hết hạn |
+| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, không có key cache dùng được cho JWT | Fail closed: `503` | Fail closed: `503` |
 
 Không route authentication nào được fail open, kể cả read-only route.
 
@@ -152,14 +184,16 @@ Retention Loki mặc định 30 ngày cho access log. Kéo dài thời gian gi�
 
 Prometheus metrics là private. Các signal bắt buộc: request rate/status/latency, upstream health, retry/circuit state, 429 rate, auth outcome, JWKS failures, Redis failures và telemetry-export errors. Alert phải có owner/runbook cho 5xx, p95 latency, auth dependency outage, 401 spike, 429 kéo dài, upstream unhealthy và thiếu telemetry.
 
+**Exemplars.** Latency histogram (request duration) mang exemplar `trace_id` của active span khi ghi nhận sample. Prometheus bật `--enable-feature=exemplar-storage`; Grafana Prometheus datasource cấu hình exemplar link trỏ Jaeger theo `trace_id`, cho phép click từ điểm trên biểu đồ metric sang đúng trace. `gateway-auth` (service tự viết) phải emit exemplar; hỗ trợ exemplar của Traefik `v3.7.1` trên metric request duration **chưa được xác minh** — xem mục 10. Nếu Traefik không hỗ trợ, phần traffic đó fallback về time-range matching thủ công trong Grafana Explore giữa Prometheus và Loki, exemplar của `gateway-auth` không bị ảnh hưởng.
+
 ## 9. Bảo mật và tiêu chí xác minh
 
 - Dashboard bị tắt ở production, trừ khi đã có private access và strong authentication.
 - Không dùng default credentials, unpinned image hoặc public Redis/observability services.
 - Security headers, CORS, body limit và timeout được xác nhận với API clients thực tế.
 
-Release chỉ hoàn thành khi: mọi route trong matrix đến đúng service; HTTP redirect sang HTTPS; token lỗi bị reject; Stripe raw body được giữ nguyên; hai replicas chia sẻ limit; Redis/JWKS outage theo đúng policy; gateway/auth/service dùng chung trace; telemetry không có dữ liệu nhạy cảm; và load test ghi nhận throughput, p95/p99, memory, error rate.
+Release chỉ hoàn thành khi: mọi route trong matrix đến đúng service; HTTP redirect sang HTTPS; token lỗi bị reject; Stripe raw body được giữ nguyên; hai replicas chia sẻ limit; Redis/JWKS outage theo đúng policy; gateway/auth/service dùng chung trace; log Loki correlate được với trace qua `trace_id`; exemplar `gateway-auth` mở đúng trace trên Jaeger từ Grafana (Traefik exemplar là best-effort, không chặn release nếu chưa được framework hỗ trợ — ghi nhận là known gap); telemetry không có dữ liệu nhạy cảm; và load test ghi nhận throughput, p95/p99, memory, error rate.
 
 ## 10. Khoảng cách với trạng thái hiện tại
 
-Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, phụ thuộc vào plugin `.so` không được hỗ trợ, và chưa có OpenTelemetry Collector hay log pipeline tập trung (Loki) — hiện tại chỉ có Jaeger nhận trace trực tiếp, access log chưa được thu thập/export ở đâu. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.
+Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, phụ thuộc vào plugin `.so` không được hỗ trợ, và chưa có OpenTelemetry Collector hay log pipeline tập trung (Loki) — hiện tại chỉ có Jaeger nhận trace trực tiếp, access log chưa được thu thập/export ở đâu. Prometheus exemplar cũng chưa triển khai: Prometheus chưa bật `exemplar-storage`, và khả năng Traefik `v3.7.1` emit exemplar trên latency histogram chưa được xác minh với phiên bản đang pin — cần spike riêng trước khi cam kết click-through metric → trace cho traffic qua Traefik (`gateway-auth` không phụ thuộc gap này vì team tự kiểm soát code). Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.
