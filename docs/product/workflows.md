@@ -19,6 +19,7 @@ owners:
 | `WF-PRODUCT-004` | gRPC catalog point-read | Cart/Checkout gRPC query |
 | `WF-PRODUCT-005` | Markdown snapshot | Promotion Kafka event |
 | `WF-PRODUCT-006` | Outbox và Debezium | Transactional outbox/CDC |
+| `WF-PRODUCT-007` | Internal buyer Product Detail read | Product Detail BFF mTLS query |
 
 ## WF-PRODUCT-001 — Tạo hoặc cập nhật Product
 
@@ -78,3 +79,12 @@ duyệt, row outbox được giữ lại. Quy tắc background processing nằm 
 [ADR-011](./decisions/ADR-011-markdown-consumer-only-background-processing.md); mapping
 Kafka key hiện hành nằm tại
 [ADR-012](./decisions/ADR-012-outbox-partition-key-by-product-aggregate.md).
+
+## WF-PRODUCT-007 — Internal buyer Product Detail read
+
+Product Detail BFF xác thực mTLS/service identity rồi query Product theo slug. Product
+kiểm tra Product `ACTIVE`, lọc SKU catalog-inactive, resolve media/thumbnail và trả
+catalog snapshot cùng giá công bố. Không đọc Inventory, không ghi cache, không thay đổi
+state và không trả bất kỳ field stock nào. Availability theo SKU là trách nhiệm read
+composition của BFF, được ghi ở
+[`docs/product-detail-bff`](../product-detail-bff/README.md).

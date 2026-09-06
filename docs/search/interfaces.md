@@ -256,8 +256,9 @@ bộ nào khác ra ngoài trong hot path.
   `matching_skus`/collapse, category phẳng và error body riêng; không được sửa âm
   thầm để giống v2. Gateway chạy hai version song song cho tới khi frontend chuyển.
 - V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
-  `NOT product_id`. PDP cần Product buyer-read API hoặc BFF riêng; không được biến
-  Search projection thành nguồn catalog có thẩm quyền để che khoảng trống này.
+  `NOT product_id`. PDP dùng [Product Detail BFF](../product-detail-bff/README.md):
+  BFF gọi Product buyer-read và materialize Inventory snapshot riêng; không được biến
+  Search projection thành nguồn catalog hoặc availability point-read có thẩm quyền.
 - Thêm field optional vào event là thay đổi tương thích: Search bỏ qua field lạ.
 - Xóa field, đổi ngữ nghĩa field, đổi Kafka key hoặc đổi ý nghĩa của
   `catalog_revision` là breaking change và phải phối hợp với Search trước khi

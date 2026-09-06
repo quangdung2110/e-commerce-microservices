@@ -145,9 +145,9 @@ migration lệch nhau, migration thắng.
 
 ## 5. Khoảng cách giữa thiết kế đích và schema hiện tại
 
-Bộ tài liệu thiết kế cũ mô tả một bảng `sku_stock_state` (aggregate per-SKU với
+Bộ tài liệu thiết kế đích mô tả một bảng `sku_stock_state` (aggregate per-SKU với
 `stock_revision`) và một event `com.ecommerce.inventory.stock-snapshot.v1` phát trên
-`t.inventory.stock.events.v1` cho Search. **Không thứ nào trong số đó tồn tại trong
+`t.inventory.stock.events.v1` cho Search và Product Detail BFF. **Không thứ nào trong số đó tồn tại trong
 schema hoặc code hiện tại:**
 
 - Không có migration nào tạo `sku_stock_state`.
@@ -161,9 +161,11 @@ Vì vậy [AsyncAPI stock v1](../../contracts/events/inventory/v1/asyncapi.yaml)
 **contract đích chưa có implementation**. Cơ chế đang thực sự chạy để báo tồn kho ra
 ngoài là `INVENTORY_STOCK_CHANGED` trên `t.inventory.events`.
 
-Việc triển khai contract đích cần tối thiểu: một migration tạo `sku_stock_state`, một
-migration nới `ck_inventory_outbox_event_type_enum`, backfill state cho mọi SKU đã có
-`physical_inventory`, và endpoint export. Xem
+Việc triển khai contract đích cần tối thiểu: một migration tạo `sku_stock_state` với
+`sku_id`, `product_id`, `available_quantity`, `stock_revision`, `observed_at`; một
+migration nới `ck_inventory_outbox_event_type_enum`; backfill state cho mọi SKU đã có
+`physical_inventory`; và endpoint export cho cả hai consumer. Mọi transaction
+materialize mutation phải tăng revision và ghi full snapshot cùng transaction. Xem
 [ADR-007](./decisions/ADR-007-stock-snapshot-v1-for-search.md).
 
 ## 6. Indexes và query patterns

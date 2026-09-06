@@ -17,7 +17,8 @@ của markdown consumer, retry/DLQ age và số snapshot replay, catalog reindex
 coalesce/failure, và số SKU fan-out bởi media mutation. Metric không dùng `product_id`,
 `sku_id` hay rule ID làm label.
 
-Search cần tự theo dõi stock-event lag của Inventory; đây không phải consumer của Product.
+Search và Product Detail BFF tự theo dõi stock-event lag của Inventory; đây không phải
+consumer của Product.
 
 ## Health và degraded behavior
 
@@ -36,6 +37,7 @@ hay local stock fallback.
 | Markdown Consumer | Product | Kafka Promotion snapshots | Lock Product, guard `source_revision`, retry transient; ack sau DB commit |
 | Debezium connector | Platform | Liên tục đọc WAL | At-least-once; theo dõi slot lag |
 | Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; Product export category/Product kèm replay offsets, Search import rồi catch-up và alias swap |
+| PDP buyer-read | Product Detail BFF | Synchronous internal query | Alert latency/error của endpoint; stock freshness thuộc BFF/Inventory, không phải Product |
 
 Product không có scheduled job. Promotion chịu trách nhiệm phát `ACTIVE`/`INACTIVE` đúng
 lịch; Product Consumer và runbook replay xử lý sự cố delivery. Outbox retention thuộc

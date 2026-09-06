@@ -110,6 +110,21 @@
 
 ---
 
+## 6. Product Detail BFF (target)
+
+> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp stock
+> snapshot; BFF chỉ giữ availability projection UI và Checkout vẫn reserve tại Inventory.
+
+| File | Mô tả |
+|---|---|
+| [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
+| [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
+| [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read và Inventory snapshot/export. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Availability projection, revision guard và bootstrap. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR chọn projection thay vì live Inventory query. |
+
+---
+
 ## 7. Service ↔ Service Contract Map (rút gọn từ CONTRACT_MATRIX)
 
 Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md#1-kafka-topic-map-ssot).

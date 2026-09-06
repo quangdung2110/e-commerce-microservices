@@ -6,14 +6,16 @@ date: 2026-09-05
 decision_owners:
   - Inventory Service team
   - Search Service team
+  - Storefront team
 supersedes: null
 evidence:
   - contracts/events/inventory/v1/asyncapi.yaml
   - contracts/http/inventory/internal/v1/openapi.yaml
   - docs/search/decisions/ADR-009-stock-projection-ownership.md
+  - docs/product-detail-bff/decisions/ADR-001-availability-projection-over-live-query.md
 ---
 
-# ADR-007 — Stock snapshot v1 có revision cho Search
+# ADR-007 — Stock snapshot v1 có revision cho Search và Product Detail BFF
 
 ## Status
 
@@ -24,17 +26,19 @@ nhưng phía provider chưa có gì — chi tiết ở phần Verification.
 
 ## Context
 
-Search cần biết một SKU còn hàng hay không để hiển thị và lọc. Cơ chế đang chạy là
-event `INVENTORY_STOCK_CHANGED` trên `t.inventory.events`, mang `product_id`, `sku_id`,
+Search cần biết một SKU còn hàng hay không để browse/lọc, còn Product Detail BFF cần
+state đó để hiển thị availability theo variant. Cơ chế đang chạy là event
+`INVENTORY_STOCK_CHANGED` trên `t.inventory.events`, mang `product_id`, `sku_id`,
 `available_quantity` và `change_type`.
 
 Payload đó có ba vấn đề:
 
 1. **Không có ordering guard.** Không trường nào cho biết state này mới hay cũ. Nếu một
-   event đến muộn hoặc bị phát lại sau một event mới hơn, Search không có cách nào biết
+   event đến muộn hoặc bị phát lại sau một event mới hơn, consumer không có cách nào biết
    để bỏ qua. Kafka giữ thứ tự trong một partition, nhưng thứ tự Kafka không sống sót
    qua replay, qua đổi số partition, hay qua việc consumer xử lý lại từ offset cũ.
-2. **Không có đường bootstrap.** Search dựng index mới hoặc phục hồi sau sự cố thì
+2. **Không có đường bootstrap.** Search dựng index mới, hoặc Product Detail BFF phục
+   hồi availability projection, thì
    không có cách nào lấy trạng thái đầy đủ ngoài việc đọc lại toàn bộ topic — mà topic
    có retention hữu hạn.
 3. **Không có contract machine-readable.** Không có gì để lint, để test, hay để phát
@@ -59,12 +63,13 @@ Cụ thể:
   `t.inventory.stock.events.v1`, key `sku_id`, mang **toàn bộ** state chứ không phải delta.
 - Consumer dedupe theo CloudEvents `id` và chỉ áp dụng revision **lớn hơn** state đang có.
 - `GET /internal/v1/inventory/stock-snapshots` export theo keyset `sku_id`, trả kèm
-  Kafka offset chụp trước khi export bắt đầu; Search import rồi replay từ offset đó.
+  Kafka offset chụp trước khi export bắt đầu; Search hoặc Product Detail BFF import rồi
+  replay từ offset đó.
 - Snapshot **không** mang tồn kho per-warehouse và không mang reservation.
 - `INVENTORY_STOCK_CHANGED` chạy song song trong giai đoạn chuyển tiếp rồi bị gỡ.
 
-Không thuộc phạm vi: thay đổi cách Inventory tính tồn kho, hay cho Search biết hàng nằm
-ở kho nào.
+Không thuộc phạm vi: thay đổi cách Inventory tính tồn kho, hay cho Search/Product Detail
+BFF biết hàng nằm ở kho nào.
 
 ## Alternatives considered
 
@@ -84,6 +89,11 @@ service. Không chọn.
 
 **Giữ Product làm trung gian.** Đã bị loại bỏ vì làm Product thành stock replica, vi
 phạm boundary của cả hai service.
+
+**Để Product Detail BFF truy vấn Inventory batch API trên mỗi PDP request.** Dữ liệu có
+thể tươi hơn nhưng Inventory trở thành synchronous dependency của traffic đọc và cách
+này vẫn không thay thế Reserve. Không chọn; rationale chi tiết nằm ở
+[`Product Detail BFF ADR-001`](../../product-detail-bff/decisions/ADR-001-availability-projection-over-live-query.md).
 
 ## Consequences
 
@@ -116,7 +126,8 @@ phạm boundary của cả hai service.
 - **Code:** Ledger Worker và cả ba đường ghi ở tầng quản trị phải cập nhật state trong
   cùng transaction; cần thêm controller cho endpoint export.
 - **Contract:** hai contract đã tồn tại và không cần đổi.
-- **Consumer:** Search phải chuyển sang topic mới, làm một lần full reindex từ export,
+- **Consumer:** Search phải chuyển sang topic mới, làm một lần full reindex từ export;
+  Product Detail BFF phải bootstrap availability projection và replay cùng contract,
   rồi mới ngừng đọc topic cũ.
 - **Rollout:** ghi cả hai loại event trước; chỉ ngừng `INVENTORY_STOCK_CHANGED` sau khi
   xác nhận không còn consumer — hiện **chưa có** danh sách consumer được xác minh, và

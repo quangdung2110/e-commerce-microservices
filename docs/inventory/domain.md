@@ -74,7 +74,7 @@ không được dùng làm cơ sở cho quyết định reserve hay routing.
 | Command | Đăng ký refund expectation | Order Service (m2m) | Reservation |
 | Command | Xác nhận xuất kho | Admin | Không aggregate nào — chỉ phát signal |
 | Command | Mở khóa SKU | Admin | Suspension flag |
-| Query | Export stock snapshot *(target, chưa có)* | Search (service identity) | Bản tổng hợp per-SKU |
+| Query | Export stock snapshot *(target, chưa có)* | Search, Product Detail BFF (service identity) | Bản tổng hợp per-SKU |
 
 ## 4. Business rules
 

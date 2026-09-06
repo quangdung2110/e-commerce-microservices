@@ -52,6 +52,13 @@ services:
     contract_adoption: not_started
     docs: docs/search/README.md
 
+  - id: product-detail-bff
+    bounded_context: storefront-product-read
+    runtime: undecided
+    status: documented
+    contract_adoption: not_started
+    docs: docs/product-detail-bff/README.md
+
   - id: checkout-service
     bounded_context: checkout
     runtime: undecided

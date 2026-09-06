@@ -32,6 +32,7 @@ canonical path là `/internal/v1/...`, không expose qua Gateway.
 | `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex, kèm `replay_from_offsets` của `t.product.events` chụp trước scan |
 | `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất và `replay_from_offsets` của `t.category.events`; Search đọc trước Product export |
 | `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
+| `GET /internal/v1/product-details/{slug}` | Buyer-read Product detail cho Product Detail BFF; chỉ trả catalog-active Product, media, variant và giá công bố, không có stock |
 
 Mọi response chứa SKU — admin API, export và snapshot — mang `thumbnail_storage_key`
 đã resolve, cùng giá trị với `sku-upserted`. Nhờ vậy full reindex từ export và luồng
@@ -53,6 +54,18 @@ Schema hiện hành không có idempotency store, vì vậy OpenAPI **không** h
 `Idempotency-Key` cho command admin. `POST /products` đặc biệt không idempotent; caller
 gặp timeout phải tra cứu Product theo slug/ID trước khi retry. Nếu cần retry-safe command
 trong tương lai phải thêm persistence idempotency và version contract/rollout tương ứng.
+
+## Internal buyer Product Detail read
+
+Product Detail BFF gọi `GET /internal/v1/product-details/{slug}` qua mTLS/service
+identity. Response là snapshot Product và toàn bộ SKU catalog-active: nội dung, category,
+media đã resolve, variant attribute, `base_price_vnd`, `selling_price_vnd`,
+`catalog_revision` và `updated_at`. Product `DRAFT`/`HIDDEN`, slug không tồn tại, hoặc
+Product không còn SKU saleable trả `404` để không rò rỉ catalog không công bố.
+
+Endpoint không trả `available_quantity`, `is_in_stock`, `OUT_OF_STOCK`, reservation,
+stock revision hay stock timestamp. Product Detail BFF ghép availability snapshot của
+Inventory trong local projection của nó; endpoint này không gọi Inventory hoặc Search.
 
 ## gRPC catalog read
 

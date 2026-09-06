@@ -31,9 +31,9 @@ verified_against_commit: null
 | `WF-INV-009` | Xác nhận xuất kho | API | Admin | proposed |
 | `WF-INV-010` | Đóng băng và mở khóa SKU | Tự động + API | Lua script, Admin | proposed |
 
-Bootstrap projection của Search không phải workflow của Inventory: Inventory chỉ phát
-event; điều phối reindex thuộc Search. Thiết kế đích bổ sung một export API cho
-bootstrap/recovery nhưng chưa được implement — xem
+Bootstrap projection của Search hoặc Product Detail BFF không phải workflow của Inventory:
+Inventory chỉ phát event; mỗi consumer tự điều phối reindex/rebuild. Thiết kế đích bổ
+sung một export API cho bootstrap/recovery nhưng chưa được implement — xem
 [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
 
 ---

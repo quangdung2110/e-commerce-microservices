@@ -25,9 +25,10 @@ Inventory nằm giữa ba nhóm caller khác nhau về mức độ nhạy cảm 
   SDK. Đây là đường phải atomic và nhanh; nó không được chờ PostgreSQL.
 - **Đường quản trị** — Admin và Checkout gọi HTTP. Đường này chấp nhận độ trễ
   transaction PostgreSQL bình thường.
-- **Đường công bố** — Search consume Kafka để dựng projection tồn kho. Thiết kế đích
-  bổ sung một internal export API cho bootstrap/recovery, nhưng endpoint đó chưa được
-  implement — xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
+- **Đường công bố** — Search và Product Detail BFF consume Kafka để dựng projection
+  tồn kho. Thiết kế đích bổ sung một internal export API cho bootstrap/recovery, nhưng
+  endpoint đó chưa được implement — xem
+  [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
 
 Trust boundary: HTTP public đi qua API Gateway (identity đã được verify và inject
 thành header tin cậy); endpoint internal chỉ nhận service identity và không expose ra
@@ -53,6 +54,7 @@ flowchart LR
   PG -->|WAL| CDC[Debezium CDC]
   CDC --> KAF
   KAF --> SE[Search]
+  KAF --> PDP[Product Detail BFF]
   KAF --> OR
   CRON[Outbox Cleanup Cron] --> PG
 ```
@@ -104,7 +106,7 @@ thay đổi dữ liệu sinh ra nó.** Không có nơi nào phát Kafka trực t
 | Một `(sku_id, warehouse_id)` trong Redis | Strong, tuần tự hóa bởi Lua | Không có race trong phạm vi một key |
 | Một request nhiều item | All-or-nothing ở tầng application | Không phải transaction thật; xem [Workflows WF-INV-002](./workflows.md#wf-inv-002--reserve-inventory) |
 | `physical_inventory` so với Redis | Eventual, trễ theo relay + ledger lag | Stale trong khoảng vài trăm ms ở trạng thái ổn định |
-| Search projection | Eventual, **không có ordering guard** | Event `INVENTORY_STOCK_CHANGED` không mang revision; thiết kế đích thêm `stock_revision` nhưng chưa implement |
+| Search/PDP projection | Eventual, **không có ordering guard ở legacy** | Event `INVENTORY_STOCK_CHANGED` không mang revision; thiết kế đích thêm `stock_revision` nhưng chưa implement |
 | Route plan so với tồn kho thực | Không nhất quán theo thiết kế | Plan chỉ là gợi ý; reserve vẫn có thể `OUT_OF_STOCK` |
 
 **Phát hiện sai lệch:** Lua script kiểm tra `available == total - reserved` trước và

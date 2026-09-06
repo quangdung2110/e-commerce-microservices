@@ -58,7 +58,8 @@ toán chọn kho, và snapshot tồn kho khả dụng per-SKU công bố cho Sea
 | Điều phối Saga, timer hết hạn giữ chỗ | Order (Temporal) | Cung cấp Activity Reserve/Deduct/Release; **không** tự quét reservation quá hạn |
 | Quyết định hoàn tiền | Order + Payment | Chỉ phát signal "đã nhận đủ hàng hoàn" |
 | Vận chuyển | Không còn service riêng | Admin xác nhận xuất kho qua HTTP API |
-| Hiển thị tồn kho trên UI | Search | Nhận stock snapshot v1 trực tiếp từ Inventory, không qua Product |
+| Hiển thị tồn kho khi browse | Search | Nhận stock snapshot v1 trực tiếp từ Inventory, không qua Product |
+| Hiển thị tồn kho trên Product Detail | Product Detail BFF | Materialize stock snapshot v1 theo SKU, không qua Product |
 
 **Transaction boundary:** một transaction PostgreSQL của Inventory chỉ chứa dữ liệu
 Inventory sở hữu cộng outbox row của chính nó. Không service nào được ghi trực tiếp
@@ -75,9 +76,10 @@ vào database Inventory, và Inventory không đọc database của service khá
 `sku_id` và `product_id` là dữ liệu ngoại lai được denormalize từ request restock đầu
 tiên; Inventory không phải nguồn chân lý cho chúng và không tự lookup Product lúc chạy.
 
-Consumer được cấp contract đọc tồn kho là Search. Cơ chế đang chạy là event
-`INVENTORY_STOCK_CHANGED`; contract đích là stock snapshot v1 kèm export API và
-**chưa được implement** — xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
+Consumer được cấp contract đọc tồn kho là Search và Product Detail BFF. Cơ chế đang
+chạy là event `INVENTORY_STOCK_CHANGED`; contract đích là stock snapshot v1 kèm export
+API và **chưa được implement** — xem
+[Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
 Product **không** consume stock event và không phải đường trung chuyển availability —
 xem [Product boundary](../product/README.md#boundary).
 
@@ -104,7 +106,9 @@ xem [Product boundary](../product/README.md#boundary).
 | Inbound | Order | HTTP nội bộ | Đăng ký refund expectation | Required | [OpenAPI v1](../../contracts/http/inventory/v1/openapi.yaml) |
 | Inbound | Admin qua Gateway | HTTP | Restock, ship-to-customer, unlock SKU | Required | [OpenAPI v1](../../contracts/http/inventory/v1/openapi.yaml) |
 | Inbound | Search | HTTP nội bộ (service identity) | Bootstrap/recovery snapshot tồn kho | **Target, chưa implement** | [Internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) |
+| Inbound | Product Detail BFF | HTTP nội bộ (service identity) | Bootstrap/recovery availability projection | **Target, chưa implement** | [Internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) |
 | Outbound | Search | Kafka | Tổng khả dụng per-SKU | Required | Đang dùng `INVENTORY_STOCK_CHANGED` (chưa có contract); đích là [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
+| Outbound | Product Detail BFF | Kafka | Tổng khả dụng per-SKU cho PDP projection | **Target, chưa implement** | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Outbound | Order | Kafka | `INVENTORY_RETURN_RECEIVED_ALL`, `INVENTORY_SHIP_TO_CUSTOMER` | Required | Chưa có contract — xem [Known gaps](#9-known-gaps) |
 | Outbound | PostgreSQL | Database | Ledger, reservation, projection, outbox | Required | [Data](./data.md) |
 | Outbound | Redis | Cache/Stream | Hot path commit, idempotency, route plan | Required | [Data](./data.md) |
@@ -146,7 +150,7 @@ xem [Product boundary](../product/README.md#boundary).
   `event_type` của bảng outbox hiện **cấm** insert event snapshot v1. Hai contract
   [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) và
   [internal export OpenAPI](../../contracts/http/inventory/internal/v1/openapi.yaml) vì
-  vậy chưa có gì ở phía provider — chi tiết tại
+  vậy chưa có gì ở phía provider cho Search hoặc Product Detail BFF — chi tiết tại
   [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
 - **Event tồn kho đang chạy không có ordering guard.** `INVENTORY_STOCK_CHANGED` không
   mang revision, nên consumer không có cách nào bỏ event cũ đến muộn. Đây là lý do

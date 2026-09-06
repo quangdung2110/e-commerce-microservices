@@ -250,6 +250,8 @@ Một thay đổi hoàn thành khi, tương ứng với phạm vi thay đổi:
 - Thay đổi schema có migration additive và [Data](./data.md) được cập nhật.
 - Thay đổi interface được phản ánh trong contract machine-readable tương ứng, và
   [Interfaces](./interfaces.md) được cập nhật.
+- Stock snapshot v1 phải có migration `sku_stock_state`, backfill, export/replay test
+  và contract test cho cả Search lẫn Product Detail BFF trước khi bỏ legacy event.
 - Thay đổi hành vi được phản ánh trong [Workflows](./workflows.md) hoặc
   [Domain](./domain.md).
 - Quyết định kiến trúc mới có ADR; ADR bị thay thế được đánh dấu `Superseded`.

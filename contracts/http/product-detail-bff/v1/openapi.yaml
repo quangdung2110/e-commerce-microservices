@@ -1,0 +1,74 @@
+openapi: 3.1.0
+info:
+  title: Product Detail BFF Storefront API
+  version: 1.0.0
+  description: >-
+    Contract PDP cho buyer. BFF ghép catalog/giá do Product sở hữu với availability
+    projection từ Inventory. Availability chỉ là UI snapshot, không phải reserve.
+x-adoption-status: proposed
+servers:
+  - url: http://product-detail-bff:8080
+    description: Internal cluster endpoint via API Gateway
+tags:
+  - name: Storefront product detail
+paths:
+  /api/v1/storefront/products/{slug}:
+    get:
+      tags: [Storefront product detail]
+      operationId: getProductDetail
+      summary: Lấy Product Detail cho buyer
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+      responses:
+        '200':
+          description: Catalog snapshot kèm availability eventual-consistent theo SKU.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductDetailResponse' }
+        '404': { description: Product không tồn tại hoặc không catalog-active. }
+        '503': { description: Product buyer-read dependency không sẵn sàng. }
+components:
+  schemas:
+    ProductDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [product_id, name, slug, catalog_revision, skus]
+      properties:
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: [string, 'null'] }
+        catalog_revision: { type: integer, minimum: 1 }
+        skus:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/ProductDetailSku' }
+    ProductDetailSku:
+      type: object
+      additionalProperties: false
+      required: [sku_id, selling_price_vnd, availability_status]
+      properties:
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        variant_attributes:
+          type: object
+          additionalProperties: true
+          description: Product-owned variant attributes; exact object format follows Product contract.
+        thumbnail_url:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Public CDN URL hoặc null/placeholder; không trả internal storage key.
+        base_price_vnd: { type: integer, minimum: 0 }
+        selling_price_vnd: { type: integer, minimum: 0 }
+        availability_status: { $ref: '#/components/schemas/AvailabilityStatus' }
+        availability_observed_at:
+          type: [string, 'null']
+          format: date-time
+          description: Null khi trạng thái UNKNOWN; không phải thời điểm reserve.
+    AvailabilityStatus:
+      type: string
+      enum: [IN_STOCK, OUT_OF_STOCK, UNKNOWN]

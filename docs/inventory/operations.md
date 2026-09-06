@@ -25,7 +25,8 @@ verified_against_commit: null
 | Độ trễ Reserve/Deduct/Release | Thời gian từ khi nhận Activity tới khi script trả về | Nằm trên đường nóng checkout | `TBD` |
 | **Độ trễ materialize** | Từ lúc mutation vào Redis Stream tới lúc transaction PostgreSQL commit | Đây là độ rộng cửa sổ phân kỳ Redis ↔ PostgreSQL | `TBD` |
 | Consumer lag `inventory-ledger-writer` | Số message chưa xử lý | Lag tăng nghĩa là sổ cái đang tụt lại | `TBD` |
-| Độ trễ CDC | Từ commit tới khi event lên Kafka | Ảnh hưởng độ tươi của Search | `TBD` |
+| Độ trễ CDC | Từ commit tới khi event lên Kafka | Ảnh hưởng độ tươi của Search và PDP availability projection | `TBD` |
+| Tuổi stock snapshot v1 | `now - observed_at` của snapshot công bố | BFF phải trả `UNKNOWN` khi vượt freshness budget | `TBD` |
 | **Số lần phát hiện drift** | Đếm mã drift từ Lua script | Mục tiêu duy nhất không phải `TBD`: **bằng 0** | 0 |
 | Số stock item đang bị đóng băng | Đếm key suspension | Mỗi item bị đóng băng là một SKU không bán được | 0 |
 | Tỉ lệ `INSUFFICIENT_RESERVED` khi deduct | Khách đã trả tiền nhưng hàng không còn giữ chỗ | Sự cố nghiệp vụ nghiêm trọng | ~0 |
@@ -57,6 +58,7 @@ bịa ra.
 | Redis endpoint / cluster nodes | Hot path và cache | Yes | — | Tùy hạ tầng | Yes |
 | Kafka bootstrap servers | Produce và consume | Yes | — | No | Yes |
 | Topic `t.inventory.events` | Topic phát event | Yes | `t.inventory.events` | No | Yes |
+| Topic `t.inventory.stock.events.v1` | Stock snapshot cho Search/PDP BFF sau rollout | Target | `t.inventory.stock.events.v1` | No | Yes |
 | Consumer group relay | Redis Stream relay | Yes | `inventory-stream-relay` | No | Yes |
 | Consumer group ledger | Ghi sổ | Yes | `inventory-ledger-writer` | No | Yes |
 | Poll interval của Ledger Worker | Nhịp poll Kafka | No | 100 ms | No | Yes |
@@ -88,6 +90,7 @@ Giá trị thật của endpoint và secret không được ghi trong tài liệ
 - Số dòng `inventory_outbox` chưa được cleanup, độ trễ replication slot.
 - Số stock item đang bị đóng băng.
 - Tỉ lệ đồng bộ Redis thất bại sau khi restock commit.
+- Số snapshot v1 đã phát, revision guard lỗi/regression và tuổi snapshot mới nhất.
 
 **Structured log events:** mọi mutation ghi `correlation_id`, `sku_id`,
 `warehouse_id`, `order_id`, `change_type` và mã kết quả. Bốn thời điểm bắt buộc phải
@@ -114,6 +117,7 @@ cửa sổ phân kỳ, và nó là chỉ số sức khỏe quan trọng nhất c
 | Replication slot phình | Độ trễ slot vượt `TBD` | High | Platform + Inventory | [§10.4](#104-debezium-dừng-hoặc-replication-slot-phình) |
 | Outbox không được dọn | Số dòng vượt `TBD` | Medium | Inventory on-call | [§10.4](#104-debezium-dừng-hoặc-replication-slot-phình) |
 | Redis stale sau restock | Bất kỳ lần đồng bộ thất bại nào | High | Inventory on-call | [§10.5](#105-redis-lệch-postgresql-sau-restock) |
+| Stock snapshot v1 stale hoặc không phát | Freshness/CDC lag vượt budget | High | Inventory + Storefront | Bootstrap/replay projection trước khi PDP tin trạng thái stock |
 | `INSUFFICIENT_RESERVED` khi deduct | Bất kỳ lần nào | Critical | Inventory on-call | [§10.6](#106-deduct-thất-bại-sau-khi-đã-thu-tiền) |
 | Redis không khả dụng | Health check Redis fail | Critical | Inventory on-call | [§10.7](#107-dependency-outage) |
 

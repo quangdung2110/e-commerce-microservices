@@ -145,6 +145,8 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
 - Không truy cập database của service khác; catalog chỉ vào qua Kafka hoặc export
   API của Product.
 - Không gọi đồng bộ sang Product/Inventory/Review trong đường xử lý event.
+- Không làm shared availability store cho Product Detail BFF; PDP có projection
+  Inventory riêng và Product là catalog authority.
 - Không đặt business logic trong controller hoặc Kafka listener; transform và rule
   nằm ở application layer.
 - Mọi ghi qua write alias; pha catch-up của reindex là ngoại lệ duy nhất và ghi

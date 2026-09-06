@@ -15,9 +15,11 @@ owners:
 flowchart LR
   ADMIN[Admin qua Gateway] --> HTTP[HTTP admin API]
   CART[Cart / Checkout] --> GRPC[gRPC catalog read]
+  PDP[Product Detail BFF] --> PDR[Internal buyer-read API]
   PROMOTION[Promotion] --> MK[Markdown consumer]
   HTTP --> APP[Application + domain]
   GRPC --> APP
+  PDR --> APP
   MK --> APP
   APP --> PG[(PostgreSQL + outbox)]
   PG --> DBZ[Debezium]
@@ -35,14 +37,15 @@ flowchart LR
 |---|---|
 | HTTP admin API | Validate transport, ủy quyền admin và gọi application layer |
 | gRPC catalog read | Trả catalog saleability và giá; không trả stock |
+| Internal buyer-read API | Trả Product detail/variant/giá cho Product Detail BFF; không trả stock |
 | Application/domain | Command, validation, transaction, pricing, revision và outbox |
 | PostgreSQL repository | Write store, lock order Product → SKU |
 | Markdown consumer | Consume snapshot Promotion, guard `source_revision`, reprice SKU |
 | Outbox + Debezium | Phát CloudEvents catalog/tombstone/control event at-least-once sau commit |
 
 Product không có Redis, cache, Lua script, Inventory consumer, Inventory worker hay
-self-consumer hoặc scheduled job. Search tự kết hợp catalog event của Product với stock
-event của Inventory.
+self-consumer hoặc scheduled job. Search và Product Detail BFF tự kết hợp catalog/price
+của Product với stock UI từ Inventory, mỗi bên trong read model riêng.
 
 ## Processing và consistency
 

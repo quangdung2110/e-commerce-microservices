@@ -3,8 +3,9 @@ info:
   title: Inventory Service Stock Projection Events
   version: 1.0.0
   description: >-
-    Contract đích cho stock snapshot per-SKU do Inventory phát cho Search. Đây là
-    contract v1 độc lập với wrapper INVENTORY_STOCK_CHANGED legacy trên t.inventory.events.
+    Contract đích cho stock snapshot per-SKU do Inventory phát cho Search và Product
+    Detail BFF. Đây là contract v1 độc lập với wrapper INVENTORY_STOCK_CHANGED legacy
+    trên t.inventory.events.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:
@@ -26,6 +27,7 @@ channels:
       strategy: consumer-managed-retry-with-dlq
       dead-letter-topic: t.inventory.stock.events.v1.dlq
     x-data-classification: INTERNAL
+    x-consumers: [search-service, product-detail-bff]
     messages:
       stockSnapshot: { $ref: '#/components/messages/stockSnapshot' }
 operations:

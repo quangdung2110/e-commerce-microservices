@@ -51,6 +51,10 @@ kho, quản trị sản phẩm và point-read cho luồng giao dịch. Cart và 
 gọi gRPC của Product cho catalog/giá và reserve tại Inventory cho tồn kho — tuyệt
 đối không đọc Search, vì Search là eventual consistent.
 
+Search cũng không là Product Detail provider. Product Detail BFF đọc catalog qua Product
+và materialize availability từ Inventory trong projection riêng; không dùng Search index
+để che khoảng trống buyer point-read.
+
 Search không có transaction nghiệp vụ: mọi thay đổi state đều là hệ quả của một
 event upstream đã commit ở service sở hữu dữ liệu.
 
@@ -90,6 +94,7 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 | Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
 | Inbound | `inventory-service` | Kafka | `available_quantity` theo SKU | Required | Cần tạo: AsyncAPI inventory |
+| Sibling consumer | `product-detail-bff` | Kafka | Consume cùng stock snapshot cho PDP projection, không qua Search | Target | [PDP BFF docs](../product-detail-bff/README.md) |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Optional | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
 | Outbound | `product-service` | HTTP nội bộ | Export Category/Product kèm replay offsets cho full reindex | Required | [Product interfaces](../product/interfaces.md) |

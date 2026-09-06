@@ -41,3 +41,4 @@ chấp nhận.
 | [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md) | Outbox partition key theo Product aggregate | Accepted | 2026-09-02 | ADR-002 |
 | [ADR-013](./ADR-013-effective-sku-thumbnail.md) | Product resolve effective thumbnail theo SKU | Accepted | 2026-09-04 | — |
 | [ADR-014](./ADR-014-catalog-snapshot-replay-offsets.md) | Catalog export trả replay offsets cho Search | Accepted | 2026-09-05 | — |
+| [ADR-015](./ADR-015-buyer-product-detail-read.md) | Buyer Product Detail read nội bộ cho BFF | Proposed | 2026-09-06 | — |

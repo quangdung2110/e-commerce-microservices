@@ -20,6 +20,7 @@ media, giá niêm yết và giá bán công bố. Chỉ admin quản trị catal
 | Giá markdown rule, schedule, voucher | Promotion | Product giữ projection markdown active để tính giá công bố |
 | Stock, availability, reservation, deduct | Inventory | Product không lưu và không trả dữ liệu này |
 | Browse, filter, facet, ranking | Search | Nhận catalog/price từ Product, stock UI từ Inventory |
+| Product Detail UI | Product Detail BFF | Đọc catalog/price từ Product và ghép stock UI ngoài Product |
 | Cart, quotation, order, payment | Cart/Checkout/Order | Đọc catalog/price ở Product; Checkout reserve ở Inventory |
 
 Không có Redis point-read cache, inventory projection, inventory worker, auto-hide theo
@@ -44,13 +45,15 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị catalog |
 | Inbound | Cart, Checkout | gRPC | Catalog saleability và giá hiện hành |
+| Inbound | Product Detail BFF | HTTP nội bộ mTLS | Buyer-read Product detail, không có stock |
 | Inbound | Promotion | Kafka | Product-scope markdown state snapshot, guard `source_revision` |
 | Outbound | Search | Kafka | SKU/category snapshot, tombstone và category-tree reindex control |
 | Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
 | Outbound | Search | HTTP nội bộ | Export Category/Product cho full reindex, kèm replay offsets theo topic |
 
-Search sẽ consume stock snapshot v1 trực tiếp từ Inventory sau rollout contract. Product
-không consume topic Inventory và không là đường trung chuyển availability cho UI.
+Search và Product Detail BFF sẽ consume stock snapshot v1 trực tiếp từ Inventory sau
+rollout contract. Product không consume topic Inventory và không là đường trung chuyển
+availability cho UI.
 
 Promotion sở hữu schedule markdown và phải phát snapshot `ACTIVE`/`INACTIVE` tại thời
 điểm hiệu lực/kết thúc. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations

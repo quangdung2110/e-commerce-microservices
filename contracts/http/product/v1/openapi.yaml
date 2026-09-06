@@ -20,6 +20,7 @@ tags:
   - name: Categories
   - name: Attributes
   - name: Internal reindex
+  - name: Internal buyer read
 paths:
   /api/v1/products:
     get:
@@ -740,6 +741,35 @@ paths:
         '404': { $ref: '#/components/responses/ProductNotFound' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
+  /internal/v1/product-details/{slug}:
+    get:
+      tags: [Internal buyer read]
+      operationId: getBuyerProductDetail
+      summary: Lấy catalog Product Detail cho Product Detail BFF
+      description: >-
+        Chỉ Product Detail BFF gọi qua mTLS. Response chỉ chứa catalog, published
+        price, media và SKU variant của Product ACTIVE; không chứa quantity, stock
+        availability, reservation, stock revision hay stock timestamp.
+      security: [{ productDetailBffMtls: [] }]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Slug' }
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Buyer-readable catalog snapshot; BFF tự ghép availability từ Inventory projection.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
   /internal/v1/categories/export:
     get:
       tags: [Internal reindex]
@@ -781,6 +811,9 @@ components:
     searchServiceMtls:
       type: mutualTLS
       description: Service identity mTLS chỉ cấp cho Search Service trên internal network.
+    productDetailBffMtls:
+      type: mutualTLS
+      description: Service identity mTLS chỉ cấp cho Product Detail BFF trên internal network.
   parameters:
     RequestId:
       name: X-Request-Id

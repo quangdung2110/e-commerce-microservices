@@ -3,8 +3,8 @@ info:
   title: Inventory Internal Stock Snapshot Export API
   version: 1.0.0
   description: >-
-    Contract đích cho Search bootstrap/recovery. Chỉ service identity được gọi;
-    endpoint không expose qua API Gateway.
+    Contract đích cho Search và Product Detail BFF bootstrap/recovery. Chỉ service
+    identity được gọi; endpoint không expose qua API Gateway.
 x-adoption-status: proposed
 servers:
   - url: http://inventory-service:8080
@@ -28,7 +28,7 @@ paths:
         '200':
           description: >-
             Trang ổn định theo sku_id. replay_from_offsets được chụp trước khi export
-            bắt đầu; Search replay từ các offset này sau import và dùng stock_revision
+            bắt đầu; consumer replay từ các offset này sau import và dùng stock_revision
             để bỏ state cũ/trùng.
           content:
             application/json:

@@ -29,6 +29,22 @@ interactions:
     status: proposed
     notes: Internal mTLS Product/Category export and Product snapshot API for Search reindex; catalog event consumer must also run during export.
 
+  - id: storefront-queries-product-detail
+    protocol: http
+    provider: product-detail-bff
+    consumers: [api-gateway]
+    contract: http/product-detail-bff/v1/openapi.yaml
+    status: proposed
+    notes: Buyer PDP API composes Product catalog with local Inventory availability projection.
+
+  - id: product-detail-bff-queries-product-catalog
+    protocol: http
+    provider: product-service
+    consumers: [product-detail-bff]
+    contract: http/product/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS buyer-read by slug; Product returns catalog/price only and never stock.
+
   - id: product-publishes-catalog-events
     protocol: kafka
     provider: product-service
@@ -155,12 +171,21 @@ interactions:
   - id: inventory-publishes-stock-events
     protocol: kafka
     provider: inventory-service
-    consumers: [search-service, order-service, analytics-service]
+    consumers: [search-service, product-detail-bff, order-service, analytics-service]
     contract: events/inventory/v1/asyncapi.yaml
     status: proposed
     notes: >-
-      Search VNext chỉ consume stock snapshot per-SKU trên t.inventory.stock.events.v1;
-      t.inventory.events giữ là compatibility legacy cho consumer chưa migrate.
+      Search VNext và Product Detail BFF consume stock snapshot per-SKU trên
+      t.inventory.stock.events.v1; t.inventory.events giữ là compatibility legacy cho
+      consumer chưa migrate.
+
+  - id: product-detail-bff-exports-inventory-stock
+    protocol: http
+    provider: inventory-service
+    consumers: [product-detail-bff]
+    contract: http/inventory/internal/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS bootstrap/recovery only; never called in the PDP request path.
 
   - id: review-publishes-rating-aggregate-events
     protocol: kafka

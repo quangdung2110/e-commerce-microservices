@@ -25,8 +25,8 @@ verified_against_commit: null
 | `INV-IF-HTTP-V1` — API tồn kho | Inbound | HTTP | Inventory | Checkout, Admin, Order | [OpenAPI v1](../../contracts/http/inventory/v1/openapi.yaml) | proposed |
 | `INV-IF-EVT` — event trên `t.inventory.events` | Outbound | Kafka | Inventory | Order, Search, Analytics | Chưa có contract machine-readable | đang chạy |
 | `INV-IF-ACT` — Reserve/Deduct/Release | Inbound | Temporal SDK | Inventory | Order Saga | Chưa có contract machine-readable | đang chạy |
-| `INV-IF-HTTP-INT` — export snapshot | Inbound | HTTP nội bộ | Inventory | Search | [Internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | **target, chưa implement** |
-| `INV-IF-EVT-STOCK-V1` — stock snapshot | Outbound | Kafka | Inventory | Search | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) | **target, chưa implement** |
+| `INV-IF-HTTP-INT` — export snapshot | Inbound | HTTP nội bộ | Inventory | Search, Product Detail BFF | [Internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | **target, chưa implement** |
+| `INV-IF-EVT-STOCK-V1` — stock snapshot | Outbound | Kafka | Inventory | Search, Product Detail BFF | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) | **target, chưa implement** |
 | `INV-IF-EVT-MUT` — `INVENTORY_STOCK_MUTATION` | Nội bộ | Redis Stream → Kafka | Inventory | Chính Inventory | Không phải public contract | internal |
 
 `INV-IF-EVT-MUT` xuất hiện trên một topic Kafka dùng chung nên trông giống event
@@ -45,7 +45,7 @@ không nói được.
 | `POST /v1/inventory/ship-to-customer` | Báo Order rằng kho đã xuất hàng | Admin | Gateway identity, role `ADMIN` | An toàn khi gọi lại: consumer dedupe theo `event_id` |
 | `POST /v1/inventory/returns/refund-expectations` | Order khóa tập item sẽ hoàn về | Order Service | Service identity m2m | Idempotent theo `(order_id, refund_request_id, order_item_ids)` |
 | `POST /v1/inventory/admin/unlock-sku` | Gỡ đóng băng sau khi đã đối soát | Admin | Gateway identity, role `ADMIN` | Gọi lại trên SKU đã mở trả `SKU_NOT_SUSPENDED` |
-| `GET /internal/v1/inventory/stock-snapshots` *(target, chưa implement)* | Search bootstrap/recovery projection tồn kho | Search | Service identity, không qua Gateway | Read-only, keyset ổn định theo `sku_id` |
+| `GET /internal/v1/inventory/stock-snapshots` *(target, chưa implement)* | Bootstrap/recovery projection tồn kho | Search, Product Detail BFF | Service identity, không qua Gateway | Read-only, keyset ổn định theo `sku_id` |
 
 **Precondition đáng chú ý:**
 
@@ -129,7 +129,7 @@ event này. Xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích
 | Ordering guard | `stock_revision` — consumer chỉ áp dụng revision lớn hơn |
 | Dedup key | CloudEvents `id` |
 | Delivery | At-least-once |
-| Consumer | Search |
+| Consumer | Search, Product Detail BFF |
 | Cơ chế | `inventory_outbox` + Debezium CDC |
 | Contract | [AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 
@@ -138,7 +138,8 @@ transaction đã ghi mutation. Snapshot mang **toàn bộ** state per-SKU chứ 
 delta, nên consumer mất event vẫn hội tụ được khi nhận event sau.
 
 Snapshot không mang tồn kho per-warehouse và không mang reservation. Đó là chủ đích:
-Search hiển thị "còn hàng hay không", không hiển thị hàng nằm ở kho nào.
+Search và Product Detail BFF chỉ hiển thị khả dụng UI, không hiển thị hàng nằm ở kho nào
+và không dùng snapshot để reserve.
 
 ### 4.2 Event đang chạy trên `t.inventory.events`
 
@@ -203,7 +204,8 @@ hiểu event v1 và ngược lại.
 0. Implement phía provider trước: migration tạo `sku_stock_state`, nới ràng buộc
    `event_type` của bảng outbox, backfill state, và endpoint export. Bước này chưa bắt
    đầu — xem [Data §5](./data.md#5-khoảng-cách-giữa-thiết-kế-đích-và-schema-hiện-tại).
-1. Search chuyển sang snapshot v1 và hoàn tất một lần full reindex từ export API.
+1. Search chuyển sang snapshot v1 và hoàn tất một lần full reindex từ export API;
+   Product Detail BFF bootstrap availability projection rồi replay cùng offsets.
 2. Xác nhận không còn consumer nào của `INVENTORY_STOCK_CHANGED` — hiện chưa có danh
    sách consumer được xác minh, đây là điều kiện chặn.
 3. Dừng ghi `INVENTORY_STOCK_CHANGED` vào outbox.

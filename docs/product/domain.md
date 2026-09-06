@@ -34,6 +34,7 @@ Inventory chỉ được tham chiếu qua `sku_id` ở contract liên service. P
 | Command | Activate, hide hoặc show Product | Admin |
 | Command | Apply markdown snapshot và reprice | Promotion qua Kafka |
 | Query | Catalog point-read một/batch SKU | Cart, Checkout |
+| Query | Buyer Product Detail theo slug, chỉ catalog/price/variant | Product Detail BFF |
 | Query | Snapshot/export catalog | Search |
 
 ## Quy tắc nghiệp vụ
