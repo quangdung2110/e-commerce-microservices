@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-06
+
+- Search Storefront API v2: `ReindexRun.status` thêm `SUPERSEDED`, trạng thái kết thúc
+  khi một `catalog-reindex-requested` mới tới trong Build/Catch-up (ADR-017). Client
+  đang match exhaustive trên enum cũ phải xử lý giá trị này.
+- Search Storefront API v2: `ReindexProgress` thêm field bắt buộc
+  `rating_aggregates_imported`, tương ứng pha Build rating mà ADR-016 đã thêm.
+- Search Storefront API v2: `CategoryNode.product_count_updated_at` trở thành nullable.
+  Category vừa được index mà job recompute chưa chạy thì chưa có mốc thời gian nào;
+  `category_upsert` không khởi tạo số đếm.
+- Search Storefront API v2: ví dụ của query parameter `filter` được sửa cho khớp
+  encoding thật `code:type:value`. Token vẫn là chuỗi đục, không phải thay đổi hành vi.
+- Search: `/api/v1/search/**` đã bị gỡ khỏi implementation. Consumer duy nhất là
+  frontend storefront và phải chuyển sang `/api/v2/search/**`.
+
 ## 2026-09-05
 
 - Thêm Review Events v1: `com.ecommerce.review.metrics-updated.v1` phát rating

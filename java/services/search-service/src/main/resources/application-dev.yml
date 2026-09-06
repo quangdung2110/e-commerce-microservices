@@ -5,8 +5,16 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
 
 search:
+  # Local only: create the v1 indices and aliases from docs/search/schema at startup so a
+  # fresh Elasticsearch is usable without a manual bootstrap step.
+  bootstrap-indices: true
   cors:
     allowed-origins: "*"
+  suggestions:
+    rebuild-enabled: false
+  tombstone:
+    purge-enabled: false
+    product-count-enabled: false
 
 logging:
   level:

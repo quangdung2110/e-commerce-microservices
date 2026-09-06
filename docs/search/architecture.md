@@ -137,7 +137,8 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
   phải chạy singleton; cần distributed lock hoặc leader election khi có nhiều
   replica.
 - Runtime dependency: Elasticsearch cluster và Kafka. Không có database hay cache
-  nào khác.
+  nào khác; state của job singleton nằm trong index nội bộ `search_jobs` của chính
+  Search, không phải một store thứ hai.
 
 ## 7. Architecture constraints
 

@@ -115,7 +115,9 @@ Trả cây danh mục cho sidebar điều hướng.
 - Đọc toàn bộ index `categories`, dựng cây trong bộ nhớ theo `parent_id`/`level`
   và trả node lồng `children`, không trả danh sách phẳng/internal path.
 - `product_count` đọc trực tiếp từ document, không aggregate theo request; số này
-  được job recompute làm mới nên có thể trễ so với kết quả search.
+  được job recompute làm mới nên có thể trễ so với kết quả search. Nó là số DISTINCT
+  Product của **cả nhánh**, nên danh mục cha luôn lớn hơn hoặc bằng tổng con.
+  `product_count_updated_at` là `null` cho tới khi job chạy lần đầu cho node đó.
 - Danh mục `is_deleted = true` không xuất hiện trong cây.
 
 ### 3.4 `GET /api/v2/search/categories/{category_id}/facets`
@@ -127,6 +129,11 @@ Bộ lọc khả dụng cho một trang danh mục.
 - Mỗi `terms` aggregation kèm `cardinality` trên `product_id`. Response công khai
   `count_accuracy = APPROXIMATE`; value của option là opaque token được đưa lại
   qua `filter`, không phải chuỗi do client tự ghép.
+- **`code` và `label` hiện là giá trị dẫn xuất.** Nguồn đúng là `facet_definitions`
+  trong Category snapshot, nhưng Product chưa công bố descriptor này. Cho tới lúc đó
+  Search parse token `code:type:value` trong `filter_tokens` để dựng `code` và
+  `label`, nên label là chuỗi đã case-fold và bỏ dấu chứ không phải tên hiển thị do
+  Product đặt. Khi descriptor có, chỉ bước sinh label đổi; `value` không đổi.
 - `category_id` không tồn tại trả `CATEGORY_NOT_FOUND`.
 
 ### 3.5 `POST /api/v2/search/reindex-runs`

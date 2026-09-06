@@ -133,6 +133,7 @@ cảnh hiển thị, không dùng để field collapse ([ADR-012](./decisions/AD
 | [`schema/products.index.json`](./schema/products.index.json) | Settings và mapping của `products_v{N}` |
 | [`schema/categories.index.json`](./schema/categories.index.json) | Settings và mapping của `categories_v{N}` |
 | [`schema/search_suggestions.index.json`](./schema/search_suggestions.index.json) | Settings và mapping của `search_suggestions_v{N}` |
+| [`schema/search_jobs.index.json`](./schema/search_jobs.index.json) | Settings và mapping của `search_jobs_v{N}`, index nội bộ cho reindex run, suggestion build và lease lock |
 | [`schema/scripts/`](./schema/scripts/README.md) | Painless script chuẩn cho write path; thay đổi cùng mapping, workflow và contract liên quan |
 
 Index vật lý luôn có hậu tố version (`products_v1`); ứng dụng chỉ được cấu hình
@@ -214,8 +215,9 @@ Elasticsearch không có khóa ngoại hay unique constraint, nên các ràng bu
 
 ## 7. Indexes và query patterns
 
-Search chỉ có ba index; “index” theo nghĩa quan hệ được thay bằng mapping type và
-alias. Các quyết định mapping bám theo query pattern thực tế:
+Search có ba index phục vụ buyer, cộng một index nội bộ `search_jobs` không nằm
+trong phạm vi cutover và không bao giờ được đọc bởi API công khai; “index” theo
+nghĩa quan hệ được thay bằng mapping type và alias. Các quyết định mapping bám theo query pattern thực tế:
 
 | Field / cấu hình | Query pattern phục vụ | Trade-off |
 |---|---|---|
@@ -263,8 +265,9 @@ Không có bảng inbox hay bộ nhớ dedupe theo `event_id`. Idempotency đế
 theo nguồn cộng với snapshot semantics. `last_*_event_id` chỉ để truy vết vận
 hành, không dùng để quyết định apply hay bỏ qua.
 
-Trạng thái của reindex và suggestion build được lưu trong một index nội bộ nhỏ của
-Search. Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
+Trạng thái của reindex và suggestion build được lưu trong index nội bộ
+`search_jobs`, mapping tại
+[`schema/search_jobs.index.json`](./schema/search_jobs.index.json). Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
 version, kết quả validation và owner lock. Distributed lock `suggestion-rebuild` là
 một document lease trong cùng index: acquire bằng thao tác atomic, mang `owner_run_id`
 và `lease_expires_at` cùng fencing token đơn điệu, được owner renew trong lúc chạy

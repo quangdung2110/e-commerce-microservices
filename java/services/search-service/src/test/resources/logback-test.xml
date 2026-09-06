@@ -1,0 +1,24 @@
+<configuration>
+  <!--
+    Keeps the test run readable. Testcontainers at INFO still reports which image it
+    built and started, which is what you need when a container fails to come up; raise
+    org.testcontainers to DEBUG to see the Docker environment detection.
+  -->
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="com.ecommerce.search" level="INFO"/>
+  <logger name="org.testcontainers" level="INFO"/>
+  <logger name="com.github.dockerjava" level="WARN"/>
+  <logger name="org.springframework.kafka" level="WARN"/>
+  <logger name="org.apache.kafka" level="WARN"/>
+  <logger name="co.elastic.clients" level="WARN"/>
+  <logger name="tc" level="WARN"/>
+
+  <root level="WARN">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>

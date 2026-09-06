@@ -37,9 +37,13 @@ docker compose -f java/services/search-service/docker-compose.yml up -d elastics
 curl -f http://localhost:9200/_cluster/health
 ```
 
-Tạo ba index từ template trong [`schema/`](./schema) trước khi khởi động service
-lần đầu; service không tự tạo mapping production và index rỗng với
+Ở local, profile `dev` bật `search.bootstrap-indices=true`: service tự tạo
+`products_v1`, `categories_v1`, `search_suggestions_v1`, `search_jobs_v1` từ
+[`schema/`](./schema) rồi gắn alias khi khởi động. Ở mọi môi trường dùng chung, cờ này
+phải để `false` và index được tạo có chủ đích từ chính các file đó — index rỗng với
 `dynamic: strict` sẽ khiến mọi lệnh ghi thất bại rõ ràng thay vì sinh mapping sai.
+Index nội bộ `search_jobs` luôn được tạo vì các job cần nó trước khi làm bất cứ việc gì
+với vòng đời index.
 
 ```bash
 mvn -f java/services/search-service/pom.xml spring-boot:run
@@ -97,11 +101,19 @@ cùng lệnh này thay vì tạo quy trình riêng cho máy cá nhân.
 |---|---|---|
 | Unit | Mã hóa/giải mã cursor, transform Product CloudEvent v1, chuẩn hóa attribute token, dispatch theo `type` | Không |
 | Integration | Consumer đến index đến API, guard revision, tombstone, category control reindex | Testcontainers Elasticsearch và Kafka |
+| | Image Elasticsearch phải được build kèm plugin `analysis-icu`; cả ba mapping dùng `icu_tokenizer`/`icu_folding` nên thiếu plugin là lỗi ngay ở bước tạo index | `ImageFromDockerfile` trong `AbstractSearchIntegrationTest` |
 | Job | Reindex ba pha, rebuild suggestion, recompute count, purge | Testcontainers |
 | Contract | Product CloudEvents v1 (effective thumbnail) và Inventory stock snapshot/export v1 khớp kỳ vọng Search | Fixture chung với producer |
 
 Test tích hợp không được mock Elasticsearch client: phần lớn rủi ro của service nằm
 ở mapping, script và ngữ nghĩa truy vấn, mà mock không phát hiện được.
+
+**Chạy test tích hợp từ trong container.** Nếu bạn chạy Maven trong container thay vì
+trên host, Testcontainers cần ba thứ: mount `/var/run/docker.sock`, đặt
+`TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal` (nếu không, port map trỏ về
+`localhost` của chính container Maven), và ghim `-Dapi.version=1.44` — docker-java mặc
+định thương lượng API v1.32, thấp hơn `MinAPIVersion` 1.40 của Docker Engine 29 nên bị
+trả `400` và Testcontainers báo "Could not find a valid Docker environment".
 
 Danh sách kịch bản bắt buộc theo từng workflow nằm ở [Workflows](./workflows.md).
 

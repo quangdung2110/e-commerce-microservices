@@ -508,14 +508,21 @@ event.
 
 **Trigger.** Lịch chạy định kỳ; cũng có thể chạy thủ công sau sự cố.
 
-**Happy path.** Aggregation `terms` theo `category_id` trên `products` với đúng bộ
-filter hiển thị, kèm `cardinality` trên `product_id` → ghi giá trị tuyệt đối vào
-document danh mục bằng
+**Happy path.** Aggregation `terms` theo `category_ancestor_ids` trên `products` với
+đúng bộ filter hiển thị, kèm `cardinality` trên `product_id` → ghi giá trị tuyệt đối
+vào document danh mục bằng
 [`category_product_count.painless`](./schema/scripts/category_product_count.painless)
 cùng mốc thời gian tính toán.
 
+Đếm theo `category_ancestor_ids` chứ không theo `category_id`: field này chứa cả
+chính node lẫn tổ tiên, nên một lần aggregation cho ra số đếm cả nhánh cho mọi cấp.
+Nếu đếm theo `category_id`, danh mục cha luôn hiển thị 0 khi sản phẩm chỉ được gán ở
+lá, và sidebar sẽ sai.
+
 **Failure paths.** Aggregation lỗi hoặc timeout → giữ nguyên số cũ, ghi metric; số
-đếm cũ tốt hơn số đếm sai. Danh mục không còn sản phẩm → ghi 0, không xóa document.
+đếm cũ tốt hơn số đếm sai. Danh mục không còn sản phẩm → ghi 0, không xóa document;
+job ghi cho **mọi** danh mục chưa xóa, kể cả những danh mục đã rơi khỏi bucket, để số
+cũ không bị giữ lại.
 
 **Idempotency.** Thao tác ghi giá trị tuyệt đối, hoàn toàn tự phục hồi; chạy lại
 bao nhiêu lần cũng hội tụ về cùng kết quả.
@@ -527,7 +534,8 @@ là ảnh chụp tại một thời điểm.
 trước, tuổi của `product_count_updated_at`.
 
 **Test scenarios.** Danh mục rỗng; danh mục lớn; sản phẩm nhiều SKU chỉ được đếm
-một lần; chạy hai lần liên tiếp cho cùng kết quả.
+một lần; danh mục cha đếm được sản phẩm nằm ở danh mục con; danh mục vừa mất hết sản
+phẩm về 0; chạy hai lần liên tiếp cho cùng kết quả.
 
 ---
 

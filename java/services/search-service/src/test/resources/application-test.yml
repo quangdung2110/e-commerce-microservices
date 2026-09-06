@@ -1,36 +1,39 @@
 spring:
   elasticsearch:
-    uris: http://localhost:9200
     connection-timeout: 10s
     socket-timeout: 60s
   kafka:
-    bootstrap-servers: localhost:9092
     consumer:
       auto-offset-reset: earliest
-      group-id: search-product-indexer-test
+      group-id: search-indexer-test
       properties:
         max.poll.interval.ms: 300000
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-      properties:
-        spring.json.trusted.packages: "*"
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 search:
-  jwt:
-    trust-gateway: true
-    claims-header: X-User-Claims
+  consumer-group: search-indexer-test
+  bootstrap-indices: true
   cors:
     allowed-origins: "*"
+  # Scheduled jobs are driven explicitly from the tests so that timing never decides
+  # whether an assertion holds.
   suggestions:
-    rebuild-cron: "-"
-  draft-cleanup:
-    cron: "-"
-    tombstone-purger-cron: "-"
+    rebuild-enabled: false
+    rebuild-cron: "0 0 5 31 2 ?"
+  tombstone:
+    purge-enabled: false
+    product-count-enabled: false
+    purge-cron: "0 0 5 31 2 ?"
+    product-count-cron: "0 0 5 31 2 ?"
+  media:
+    cdn-base-url: "https://cdn.test/"
+    placeholder-url: "/static/placeholder-product.png"
 
 logging:
   level:
     com.ecommerce.search: DEBUG
     org.testcontainers: INFO
-    org.springframework.kafka: INFO
+    org.springframework.kafka: WARN
     co.elastic.clients: WARN

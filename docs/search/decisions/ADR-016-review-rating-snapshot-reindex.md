@@ -8,7 +8,7 @@ decision_owners:
 evidence:
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
-  - docs/review/review_db_schema.md
+  - docs/review/interfaces.md
 ---
 
 # ADR-016 — Snapshot rating Review khi reindex

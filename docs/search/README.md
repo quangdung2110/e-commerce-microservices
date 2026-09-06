@@ -14,7 +14,7 @@ verified_against_commit: null
 
 > Điểm bắt đầu để hiểu Search Service. Tài liệu mô tả thiết kế hiện hành đã được
 > align với [Product Service](../product/README.md) và
-> [Inventory](../inventory/inventory_events.md); trạng thái vẫn là `proposed` cho
+> [Inventory](../inventory/interfaces.md#4-events-phát-ra); trạng thái vẫn là `proposed` cho
 > tới khi được đối chiếu với implementation.
 
 ## 1. Service status
@@ -29,8 +29,8 @@ verified_against_commit: null
    Contract Review cho event rating và snapshot export đã được định nghĩa ở mức
    `proposed`; implementation/contract test giữa Review và Search vẫn là gap.
 - Elasticsearch là store duy nhất. Không có PostgreSQL, không có Redis.
-- Ba file mapping trong `schema/` là **target vNext** cho service viết lại; chúng
-  không mô tả index mà implementation legacy đang phục vụ.
+- Bốn file mapping trong `schema/` là nguồn chuẩn của implementation hiện hành:
+  ba index phục vụ buyer cộng index nội bộ `search_jobs` cho state của job singleton.
 
 ## 2. Mục tiêu
 
@@ -63,8 +63,8 @@ là projection.
 |---|---|---|
 | Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` + internal snapshot export/replay offsets |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
-| `available_quantity` | [Inventory](../inventory/inventory_events.md) | `t.inventory.stock.events.v1` + internal snapshot export |
-| `product_rating_avg`, `product_rating_count` | [Review](../review/review_events.md) | `t.review.events` + internal aggregate snapshot export |
+| `available_quantity` | [Inventory](../inventory/interfaces.md#4-events-phát-ra) | `t.inventory.stock.events.v1` + internal snapshot export |
+| `product_rating_avg`, `product_rating_count` | [Review](../review/interfaces.md) | `t.review.events` + internal aggregate snapshot export |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 
 Search sở hữu các giá trị dẫn xuất phục vụ query: `is_in_stock`, `has_promotion`,
@@ -132,29 +132,18 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 
 - **HTTP contract mới chỉ ở mức proposed.** OpenAPI v2 đã mô tả bốn API storefront
   và hai operation admin reindex, nhưng provider/frontend chưa migrate và chưa có
-   contract test. V1 legacy phải chạy song song trong migration. Contract Review
-   v1 cũng mới là target contract và chưa có provider/consumer contract test.
+   contract test. Contract Review v1 cũng mới là target contract và chưa có
+   provider/consumer contract test.
 - **Facet metadata là dependency Product mới.** V2 hứa `code`/`label`/`type` ổn
   định cho facet, trong khi Category snapshot v1 hiện chưa mang descriptor này.
   Product phải mở rộng tương thích category event/export, rồi Search materialize
   `facet_definitions` trước khi bật v2 facet cho storefront.
-- **Tài liệu chưa `verified`.** Thiết kế trong bộ tài liệu này đã align với
-  Product/Inventory hiện hành, nhưng implementation hiện tại còn theo thế hệ thiết
-  kế cũ ở các điểm sau và phải được migrate:
-  - Guard ordering: code dùng một field `version` theo `updated_at`; thiết kế yêu
-    cầu guard riêng theo từng nguồn ([ADR-004](./decisions/ADR-004-per-source-ordering-guard.md)).
-  - Giá: code dùng `original_price`/`promotional_price`/`best_price`; Product công
-    bố `base_price_vnd`/`selling_price_vnd`.
-  - Tồn kho: code suy ra `is_in_stock` từ status; thiết kế lấy `available_quantity`
-    từ Inventory ([ADR-009](./decisions/ADR-009-stock-projection-ownership.md)).
-  - Xóa: Product đã chuyển sang hard delete kèm tombstone event.
-  - HTTP: code hiện phục vụ `/api/v1/search/**`, response/error legacy và admin
-    `/internal/v1/search/reindex`; contract đích là v2 SKU-first, Problem Details
-    và resource `/api/v2/search/reindex-runs` qua Gateway.
-  - `categories.product_count`: code cộng trừ theo event; thiết kế dùng job
-    recompute ([ADR-008](./decisions/ADR-008-category-product-count-recompute.md)).
-  - Draft Cleanup Job cũ gọi `GET /internal/products/orphan-drafts`; endpoint này
-    không tồn tại trong Product hiện hành và job đã được thay bằng tombstone purge.
+- **Implementation đã được viết lại theo bộ tài liệu này.** Thế hệ code cũ (một field
+  `version` chung, giá `original_price`/`promotional_price`, `is_in_stock` suy ra từ
+  status, `product_count` cộng trừ theo event, Draft Cleanup Job gọi endpoint
+  `orphan-drafts` không tồn tại, HTTP v1 legacy) đã bị gỡ hoàn toàn. Tài liệu vẫn ở
+  mức `proposed` vì `verified_against_commit` chưa được cập nhật và contract test giữa
+  Search với ba producer vẫn chưa tồn tại.
 - **Chưa có SLO số.** Ngưỡng latency, freshness và alert threshold còn là `TBD`
   cho tới khi có số liệu production.
 - **Chưa có contract test** giữa Search và ba producer.
@@ -163,7 +152,16 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   offsets; Inventory đã có contract đích cho stock revision/snapshot export. Các
   contract vẫn mang trạng thái `proposed` và cần producer implementation, contract
   test, rồi mới chuyển Search khỏi adapter legacy.
-- **Implementation chưa theo ADR-012.** Code hiện dùng `collapse(product_id)` và
-  cursor offset, trong khi thiết kế đã chốt SKU hit trực tiếp với `search_after`.
-  Khi viết lại service, implementation phải bỏ `collapse`/`inner_hits` và áp dụng
-  cursor theo sort values; xem [ADR-012](./decisions/ADR-012-sku-results-with-search-after.md).
+- **API v1 legacy đã bị gỡ.** Storefront chỉ còn `/api/v2/search/**`. Frontend đang
+  gọi `/api/v1/search/products`, `/api/v1/search/categories` và
+  `/api/v1/search/suggest` nên phải được migrate; Gateway route `/api/v1/search/**`
+  không còn backend.
+- **Không có field `created_at` cho sort `newest`.** Mapping đích chỉ có `updated_at`
+  và allowlist của `catalog_upsert.painless` không cho ghi `created_at`, nên `newest`
+  sắp theo `updated_at` — nghĩa là một lần đổi giá cũng đẩy SKU lên đầu. Sửa đúng cần
+  thêm field vào mapping, mở rộng allowlist của script và Product phải công bố
+  `created_at` trong `sku-upserted` cùng export.
+- **Facet label vẫn là giá trị dẫn xuất.** `facet_definitions` chưa có nguồn (xem gap
+  bên trên), nên implementation tạm dựng `code`/`label` từ chính token
+  `code:type:value` trong `filter_tokens`. Label vì vậy là chuỗi đã case-fold và bỏ
+  dấu, không phải tên hiển thị do Product đặt.

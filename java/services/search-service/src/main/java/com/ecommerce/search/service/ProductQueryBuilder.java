@@ -4,214 +4,163 @@ import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
-import co.elastic.clients.elasticsearch._types.aggregations.AggregationRange;
+import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
-import co.elastic.clients.elasticsearch.core.SearchRequest;
-import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
-import co.elastic.clients.elasticsearch.core.search.InnerHits;
-import co.elastic.clients.json.JsonData;
-import com.ecommerce.search.common.ErrorCode;
 import com.ecommerce.search.config.SearchProperties;
-import com.ecommerce.search.domain.exception.SearchException;
-import lombok.RequiredArgsConstructor;
+import com.ecommerce.search.domain.model.AttributeToken;
+import com.ecommerce.search.domain.model.SearchQuery;
+import com.ecommerce.search.domain.model.SortOption;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
- * Builds the Elasticsearch {@link SearchRequest} for the product search API
- * ({@code GET /api/v1/search/products}).
+ * Builds the Elasticsearch DSL for the storefront search.
  *
- * <p>Constructs a complex bool query that supports:
- * <ul>
- *   <li>Full-text multi-match with field boosting (name, name.keyword, searchable_attributes)</li>
- *   <li>Standard filters (deleted status, product/sku status, stock, category, price range)</li>
- *   <li>Dynamic attribute filters that probe both {@code searchable_attributes} and
- *       {@code variant_attributes} via {@code bool/should} (no hardcoded attribute keys)</li>
- *   <li>Field collapsing on {@code product_id} with inner hits for matching SKUs</li>
- *   <li>Aggregations for category counts and price range facets</li>
- *   <li>Cursor-based pagination via {@code search_after}</li>
- * </ul>
+ * <p>Deliberately absent: {@code collapse} and {@code inner_hits}. Elasticsearch only
+ * combines collapse with {@code search_after} when the sort field equals the collapse
+ * field and there is no secondary sort, which is incompatible with a {@code sku_id}
+ * tie-break on every sort — so a hit is a SKU and the same product may appear more than
+ * once (ADR-012).
  */
 @Component
-@RequiredArgsConstructor
 public class ProductQueryBuilder {
 
-    private final SortMapper sortMapper;
+    /** Aggregation name of the attribute facet terms bucket. */
+    public static final String FACET_AGG = "attribute_tokens";
+
+    /** Sub-aggregation name carrying the DISTINCT product count of a bucket. */
+    public static final String DISTINCT_PRODUCTS_AGG = "distinct_products";
+
     private final SearchProperties properties;
 
+    public ProductQueryBuilder(SearchProperties properties) {
+        this.properties = properties;
+    }
+
     /**
-     * Build a complete {@link SearchRequest} for the product search API.
-     *
-     * @param params      the validated and normalized search parameters
-     * @param fromOffset  the decoded from offset from the cursor,
-     *                    or {@code null}/{@code empty} for the first page
-     * @return a fully-built Elasticsearch SearchRequest
-     * @throws SearchException if query construction fails
+     * Full buyer query: mandatory visibility filters, buyer filters and, when {@code q} is
+     * present, a fuzzy {@code multi_match} over the Vietnamese-analysed fields.
      */
-    public SearchRequest build(SearchParams params, Integer fromOffset) {
-        try {
-            Query boolQuery = buildBoolQuery(params);
-            List<SortOptions> sortOptions = sortMapper.map(params.sort());
+    public Query build(SearchQuery query, Optional<String> resolvedCategoryId) {
+        BoolQuery.Builder bool = new BoolQuery.Builder();
+        visibilityFilters(query.inStock()).forEach(bool::filter);
 
-            SearchRequest.Builder builder = new SearchRequest.Builder()
-                .index(properties.getEs().getIndexAliases().getProducts())
-                .query(boolQuery)
-                .collapse(buildCollapse())
-                .sort(sortOptions)
-                .size(params.size())
-                .trackTotalHits(t -> t.enabled(true));
+        resolvedCategoryId.ifPresent(categoryId ->
+                bool.filter(term("category_ancestor_ids", categoryId)));
 
-            if (fromOffset != null) {
-                builder.from(fromOffset);
+        attributeFilters(query.filterTokens()).forEach(bool::filter);
+
+        if (query.priceMin().isPresent() || query.priceMax().isPresent()) {
+            bool.filter(priceRange(query.priceMin(), query.priceMax()));
+        }
+        query.hasPromotion().ifPresent(flag ->
+                bool.filter(Query.of(q -> q.term(t -> t.field("has_promotion").value(flag)))));
+
+        query.q().ifPresent(text -> bool.must(fullText(text)));
+
+        return Query.of(q -> q.bool(bool.build()));
+    }
+
+    /**
+     * The three filters the client can never turn off ({@code SEARCH-BR-001}), plus the
+     * stock filter which defaults to on and the buyer may disable ({@code SEARCH-BR-002}).
+     */
+    public List<Query> visibilityFilters(boolean inStockOnly) {
+        List<Query> filters = new ArrayList<>(List.of(
+                Query.of(q -> q.term(t -> t.field("is_deleted").value(false))),
+                term("product_status", "ACTIVE"),
+                term("sku_status", "ACTIVE")));
+        if (inStockOnly) {
+            filters.add(Query.of(q -> q.term(t -> t.field("is_in_stock").value(true))));
+        }
+        return filters;
+    }
+
+    /**
+     * Attribute filters: OR between values of the same attribute code, AND between
+     * different codes ({@code WF-SEARCH-001} step 3).
+     */
+    private List<Query> attributeFilters(List<String> filterTokens) {
+        Map<String, List<String>> byCode = new LinkedHashMap<>();
+        for (String token : filterTokens) {
+            String code = AttributeToken.decode(token).map(AttributeToken.Decoded::code).orElse(null);
+            if (code != null) {
+                byCode.computeIfAbsent(code, unused -> new ArrayList<>()).add(token);
             }
-
-            builder.aggregations(buildAggregations());
-
-            return builder.build();
-        } catch (Exception e) {
-            throw new SearchException(ErrorCode.INTERNAL_ERROR, "Failed to build product search query", e);
         }
+        List<Query> filters = new ArrayList<>();
+        byCode.values().forEach(tokens -> filters.add(Query.of(q -> q.terms(t -> t
+                .field("filter_tokens")
+                .terms(values -> values.value(tokens.stream().map(FieldValue::of).toList()))))));
+        return filters;
+    }
+
+    private Query priceRange(Optional<Long> min, Optional<Long> max) {
+        return Query.of(q -> q.range(range -> {
+            range.field("selling_price_vnd");
+            min.ifPresent(value -> range.gte(co.elastic.clients.json.JsonData.of(value)));
+            max.ifPresent(value -> range.lte(co.elastic.clients.json.JsonData.of(value)));
+            return range;
+        }));
     }
 
     /**
-     * Build the bool query with must (full-text) and filter (structured) clauses.
+     * Vietnamese full text with {@code fuzziness: AUTO} so a one-character typo still
+     * matches (ADR-003). {@code name.autocomplete} is the prefix fallback, weighted below
+     * the analysed name so it never outranks a real term match.
      */
-    private Query buildBoolQuery(SearchParams params) {
-        List<Query> must = new ArrayList<>();
-        List<Query> filter = new ArrayList<>();
-
-        // ── Full-text (multi-match) ──────────────────────────────────────
-        if (params.q() != null && !params.q().isBlank()) {
-            must.add(Query.of(q -> q.multiMatch(mm -> mm
-                .query(params.q())
-                .fields("name^3", "name.keyword^2", "searchable_attributes")
+    private Query fullText(String text) {
+        return Query.of(q -> q.multiMatch(match -> match
+                .query(text)
                 .type(TextQueryType.BestFields)
+                .fields("name^4", "name.autocomplete^2", "description")
                 .fuzziness("AUTO")
-            )));
-        } else {
-            must.add(Query.of(q -> q.matchAll(m -> m)));
-        }
-
-        // ── Standard filters ─────────────────────────────────────────────
-        // Only return documents that are sellable
-        filter.add(Query.of(q -> q.term(t -> t.field("is_deleted").value(false))));
-        filter.add(Query.of(q -> q.term(t -> t.field("product_status").value("ACTIVE"))));
-        filter.add(Query.of(q -> q.term(t -> t.field("sku_status").value("ACTIVE"))));
-
-        // In-stock filter (default: true — only show sellable items)
-        if (Boolean.TRUE.equals(params.inStock())) {
-            filter.add(Query.of(q -> q.term(t -> t.field("is_in_stock").value(true))));
-        }
-
-        // Category filter
-        if (params.category() != null) {
-            filter.add(Query.of(q -> q.term(t -> t.field("category_id").value(params.category()))));
-        }
-
-        // Price range filter
-        if (params.priceMin() != null || params.priceMax() != null) {
-            filter.add(Query.of(q -> q.range(r -> {
-                r.field("best_price");
-                if (params.priceMin() != null) {
-                    r.gte(JsonData.of(params.priceMin()));
-                }
-                if (params.priceMax() != null) {
-                    r.lte(JsonData.of(params.priceMax()));
-                }
-                return r;
-            })));
-        }
-
-        // Promotion filter
-        if (Boolean.TRUE.equals(params.hasPromotion())) {
-            filter.add(Query.of(q -> q.term(t -> t.field("has_promotion").value(true))));
-        }
-
-        // ── Dynamic attribute filters ────────────────────────────────────
-        // Each filter value matches against BOTH searchable_attributes (product-level)
-        // AND variant_attributes (SKU-level) via bool/should.
-        // This avoids hardcoding attribute keys and works with any category.
-        if (params.filters() != null) {
-            params.filters().forEach((key, values) -> {
-                values.forEach(v -> {
-                    String termValue = key + ":" + v;
-                    filter.add(Query.of(q -> q.bool(b -> b
-                        .minimumShouldMatch("1")
-                        .should(s -> s.term(t -> t.field("searchable_attributes").value(termValue)))
-                        .should(s -> s.term(t -> t.field("variant_attributes").value(termValue)))
-                    )));
-                });
-            });
-        }
-
-        return Query.of(q -> q.bool(b -> b.must(must).filter(filter)));
+                .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.And)));
     }
 
     /**
-     * Build field collapsing on {@code product_id} with inner hits.
-     *
-     * <p>Each collapsed group returns the best-matching SKU for a product.
-     * The inner hits provide up to 3 additional SKUs (sorted by price ascending)
-     * so the client can show variant options without a second query.
+     * Sort options for the requested ordering, always closed by the {@code sku_id asc}
+     * tie-break ({@code SEARCH-BR-006}) that makes {@code search_after} deterministic.
      */
-    private FieldCollapse buildCollapse() {
-        return FieldCollapse.of(fc -> fc
-            .field("product_id")
-            .innerHits(InnerHits.of(ih -> ih
-                .name("matching_skus")
-                .size(3)
-                .sort(List.of(
-                    SortOptions.of(s -> s.field(f -> f.field("best_price").order(SortOrder.Asc))),
-                    SortOptions.of(s -> s.field(f -> f.field("sku_id").order(SortOrder.Asc)))
-                ))
-            ))
-        );
+    public List<SortOptions> sortOptions(SortOption sort) {
+        List<SortOptions> options = new ArrayList<>();
+        switch (sort) {
+            case RELEVANCE -> options.add(SortOptions.of(s -> s.score(score -> score.order(SortOrder.Desc))));
+            case PRICE_ASC -> options.add(fieldSort("selling_price_vnd", SortOrder.Asc));
+            case PRICE_DESC -> options.add(fieldSort("selling_price_vnd", SortOrder.Desc));
+            case NEWEST -> options.add(fieldSort("updated_at", SortOrder.Desc));
+            case RATING -> options.add(fieldSort("product_rating_avg", SortOrder.Desc));
+        }
+        options.add(fieldSort("sku_id", SortOrder.Asc));
+        return options;
     }
 
     /**
-     * Build aggregations for the search response.
-     *
-     * <p><b>Categories:</b> terms aggregation on {@code category_id} with
-     * a cardinality sub-aggregation on {@code product_id} to count distinct
-     * products (necessary because the index is SKU-first).
-     *
-     * <p><b>Price ranges:</b> pre-defined range buckets covering common
-     * price brackets.
+     * Attribute facet: one {@code terms} bucket per token with a {@code cardinality}
+     * sub-aggregation on {@code product_id}, because every displayed count is a DISTINCT
+     * product count and never a SKU {@code doc_count} ({@code SEARCH-INV-003}).
      */
-    private Map<String, Aggregation> buildAggregations() {
-        Map<String, Aggregation> aggs = new HashMap<>();
+    public Map<String, Aggregation> facetAggregations() {
+        int size = Math.min(10_000, properties.query().facetMaxAttributes() * properties.query().facetMaxOptions());
+        Aggregation distinctProducts = Aggregation.of(agg -> agg.cardinality(card -> card
+                .field("product_id")
+                .precisionThreshold(properties.query().cardinalityPrecisionThreshold())));
+        return Map.of(FACET_AGG, Aggregation.of(agg -> agg
+                .terms(terms -> terms.field("filter_tokens").size(size))
+                .aggregations(DISTINCT_PRODUCTS_AGG, distinctProducts)));
+    }
 
-        aggs.put("categories", Aggregation.of(a -> a
-            .terms(t -> t.field("category_id").size(20))
-            .aggregations("product_count", Aggregation.of(sub -> sub
-                .cardinality(c -> c.field("product_id").precisionThreshold(40000))
-            ))
-        ));
+    private static SortOptions fieldSort(String field, SortOrder order) {
+        return SortOptions.of(s -> s.field(f -> f.field(field).order(order)));
+    }
 
-        aggs.put("price_ranges", Aggregation.of(a -> a
-            .range(r -> r.field("best_price").ranges(List.of(
-                AggregationRange.of(b -> b.to("5000000").key("Dưới 5 triệu")),
-                AggregationRange.of(b -> b.from("5000000").to("15000000").key("5 - 15 triệu")),
-                AggregationRange.of(b -> b.from("15000000").to("30000000").key("15 - 30 triệu")),
-                AggregationRange.of(b -> b.from("30000000").key("Trên 30 triệu"))
-            )))
-            .aggregations("product_count", Aggregation.of(sub -> sub
-                .cardinality(c -> c.field("product_id").precisionThreshold(40000))
-            ))
-        ));
-
-        aggs.put("attributes", Aggregation.of(a -> a
-            .terms(t -> t.field("searchable_attributes").size(100))
-            .aggregations("product_count", Aggregation.of(sub -> sub
-                .cardinality(c -> c.field("product_id").precisionThreshold(40000))
-            ))
-        ));
-
-        return aggs;
+    private static Query term(String field, String value) {
+        return Query.of(q -> q.term(t -> t.field(field).value(value)));
     }
 }

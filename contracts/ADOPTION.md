@@ -13,6 +13,7 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Cart HTTP v1 | `proposed` | Code cũ dùng nhiều error shape và giá `float64`; target dùng Problem Details và Money |
 | Product gRPC v1 | `proposed` | Proto đang bị copy, package/service name cũ khác target, giá dùng `double` |
 | Cart events v1 | `proposed` | Code cũ dùng custom envelope; target dùng CloudEvents và JSON Schema |
+| Search HTTP v2 | `proposed` | Search Service đã implement v2 và gỡ hẳn v1. Chưa `implemented` vì còn thiếu contract test provider/consumer; frontend vẫn gọi `/api/v1/search/**`, route đó nay không còn backend. |
 
 ## Quy tắc chuyển trạng thái
 

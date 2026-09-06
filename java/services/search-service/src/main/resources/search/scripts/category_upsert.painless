@@ -1,0 +1,27 @@
+// Canonical Category snapshot write path for `category-upserted`.
+// Invoke with scripted_upsert: true and upsert: {}.
+// Required params: category_revision (long), indexed_at, event_id, and fields.
+// `fields` may contain only fields owned by the Category snapshot.
+if (ctx._source.is_deleted == true) { ctx.op = 'none'; return; }
+if (ctx._source.category_revision != null
+    && params.category_revision <= ctx._source.category_revision) {
+  ctx.op = 'none';
+  return;
+}
+
+for (entry in params.fields.entrySet()) {
+  String field = entry.getKey();
+  if (field == 'category_id' || field == 'name' || field == 'slug'
+      || field == 'parent_id' || field == 'ancestor_ids' || field == 'ancestor_slugs'
+      || field == 'level' || field == 'is_leaf' || field == 'facet_definitions'
+      || field == 'updated_at') {
+    ctx._source[field] = entry.getValue();
+  } else {
+    throw new IllegalArgumentException('category write attempted non-category field: ' + field);
+  }
+}
+
+ctx._source.is_deleted = false;
+ctx._source.category_revision = params.category_revision;
+ctx._source.category_indexed_at = params.indexed_at;
+ctx._source.last_event_id = params.event_id;

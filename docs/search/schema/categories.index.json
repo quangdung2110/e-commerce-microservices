@@ -18,6 +18,10 @@
       "ancestor_slugs": { "type": "keyword", "index": false },
       "level": { "type": "short" },
       "is_leaf": { "type": "boolean" },
+      "facet_definitions": {
+        "type": "object",
+        "enabled": false
+      },
 
       "product_count": { "type": "long" },
       "product_count_updated_at": { "type": "date" },

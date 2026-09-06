@@ -1,142 +1,132 @@
 package com.ecommerce.search.service;
 
-import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
-import co.elastic.clients.elasticsearch.core.SearchRequest;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import com.ecommerce.search.config.SearchProperties;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
+import com.ecommerce.search.domain.model.SearchQuery;
+import com.ecommerce.search.domain.model.SortOption;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@DisplayName("ProductQueryBuilder")
+/** DSL construction rules from {@code WF-SEARCH-001} and ADR-012. */
 class ProductQueryBuilderTest {
 
-    private ProductQueryBuilder builder;
-    private SearchProperties properties;
+    private final ProductQueryBuilder builder = new ProductQueryBuilder(properties());
 
-    @BeforeEach
-    void setUp() {
-        // Use real SearchProperties object (Lombok @Data is final, incompatible with Mockito on Java 24)
-        properties = new SearchProperties();
-        properties.getPagination().setDefaultSize(20);
-        properties.getPagination().setMaxSize(100);
+    @ParameterizedTest
+    @EnumSource(SortOption.class)
+    void everySortEndsWithTheSkuIdTieBreak(SortOption sort) {
+        // SEARCH-BR-006: without it search_after repeats or skips documents.
+        List<SortOptions> options = builder.sortOptions(sort);
+        SortOptions last = options.get(options.size() - 1);
 
-        SortMapper sortMapper = new SortMapper();
-
-        builder = new ProductQueryBuilder(sortMapper, properties);
+        assertThat(last.isField()).isTrue();
+        assertThat(last.field().field()).isEqualTo("sku_id");
+        assertThat(last.field().order()).isEqualTo(SortOrder.Asc);
     }
 
     @Test
-    @DisplayName("should build a query with multi-match when q is provided")
-    void buildWithQueryText() {
-        // Given
-        SearchParams params = SearchParams.of(
-            "iphone 15", null, null, null, null, null, null, null, null, null, properties
-        );
-
-        // When
-        SearchRequest request = builder.build(params, null);
-
-        // Then
-        assertThat(request).isNotNull();
-        assertThat(request.index()).containsExactly("products");
-        assertThat(request.size()).isEqualTo(20);
-        assertThat(request.query()).isNotNull();
-        assertThat(request.collapse()).isNotNull();
-        assertThat(request.collapse().field()).isEqualTo("product_id");
-        assertThat(request.aggregations()).isNotEmpty();
-        assertThat(request.aggregations()).containsKeys("categories", "price_ranges");
-        assertThat(request.sort()).hasSize(2);  // _score desc + sku_id asc
-        assertThat(request.trackTotalHits()).isNotNull();
+    void priceSortsUseThePublishedSellingPrice() {
+        assertThat(builder.sortOptions(SortOption.PRICE_ASC).get(0).field().field())
+                .isEqualTo("selling_price_vnd");
+        assertThat(builder.sortOptions(SortOption.PRICE_DESC).get(0).field().order())
+                .isEqualTo(SortOrder.Desc);
     }
 
     @Test
-    @DisplayName("should build a match_all query when q is null")
-    void buildWithoutQueryText() {
-        // Given
-        SearchParams params = SearchParams.of(
-            null, null, null, null, null, null, null, null, null, null, properties
-        );
+    void alwaysAppliesTheThreeVisibilityFiltersTheClientCannotDisable() {
+        String dsl = builder.build(query(true, List.of()), Optional.empty()).toString();
 
-        // When
-        SearchRequest request = builder.build(params, null);
-
-        // Then
-        assertThat(request).isNotNull();
-        assertThat(request.size()).isEqualTo(20);
+        assertThat(dsl).contains("is_deleted").contains("product_status").contains("sku_status");
     }
 
     @Test
-    @DisplayName("should include from offset when cursor is provided")
-    void buildWithSearchAfter() {
-        // Given
-        SearchParams params = SearchParams.of(
-            "test", null, null, null, null, null, null, "relevance", null, 10, properties
-        );
-
-        Integer fromOffset = 10;
-
-        // When
-        SearchRequest request = builder.build(params, fromOffset);
-
-        // Then
-        assertThat(request).isNotNull();
-        assertThat(request.from()).isEqualTo(10);
+    void filtersOnStockByDefaultAndDropsThatFilterWhenTheBuyerOptsOut() {
+        assertThat(builder.visibilityFilters(true)).hasSize(4);
+        assertThat(builder.visibilityFilters(false)).hasSize(3);
+        assertThat(builder.build(query(false, List.of()), Optional.empty()).toString())
+                .doesNotContain("is_in_stock");
     }
 
     @Test
-    @DisplayName("should include dynamic attribute filters with bool/should on both fields")
-    void buildWithDynamicFilters() {
-        // Given
-        Map<String, List<String>> filters = Map.of(
-            "thuonghieu", List.of("apple"),
-            "mausac", List.of("den")
-        );
-        SearchParams params = SearchParams.of(
-            "iphone", null, filters, null, null, null, null, null, null, null, properties
-        );
+    void neverUsesCollapseOrInnerHits() {
+        // ADR-012: collapse is incompatible with search_after plus a secondary sort.
+        String dsl = builder.build(query(true, List.of("color:s:black")), Optional.of("cat-1")).toString();
 
-        // When
-        SearchRequest request = builder.build(params, null);
-
-        // Then
-        assertThat(request).isNotNull();
-        assertThat(request.query()).isNotNull();
+        assertThat(dsl).doesNotContain("collapse").doesNotContain("inner_hits");
     }
 
     @Test
-    @DisplayName("should include standard filters (is_deleted, product_status, sku_status)")
-    void buildWithStandardFilters() {
-        // Given
-        SearchParams params = SearchParams.of(
-            "test", "cat-phones", null, 1_000_000L, 10_000_000L, true, true, null, null, null, properties
-        );
+    void groupsAttributeFiltersSoValuesOfOneCodeAreOredAndCodesAreAnded() {
+        Query query = builder.build(
+                query(true, List.of("color:s:black", "color:s:white", "brand:s:apple")), Optional.empty());
 
-        // When
-        SearchRequest request = builder.build(params, null);
-
-        // Then
-        assertThat(request).isNotNull();
+        // Two terms filters: one holding both colours, one holding the brand.
+        long termsFilters = query.bool().filter().stream().filter(Query::isTerms).count();
+        assertThat(termsFilters).isEqualTo(2);
     }
 
     @Test
-    @DisplayName("should respect max size limit")
-    void buildWithSizeExceedingMax() {
-        // Given
-        SearchParams params = SearchParams.of(
-            null, null, null, null, null, null, null, null, null, 999, properties
-        );
+    void filtersACategoryByAncestorIdRatherThanSlug() {
+        // Slugs change; branch filtering must use ids (docs/search/data.md §4).
+        assertThat(builder.build(query(true, List.of()), Optional.of("cat-1")).toString())
+                .contains("category_ancestor_ids");
+    }
 
-        // When
-        SearchRequest request = builder.build(params, null);
+    @Test
+    void facetAggregationCountsDistinctProductsRatherThanDocuments() {
+        var aggregations = builder.facetAggregations();
 
-        // Then
-        assertThat(request.size()).isEqualTo(100);
+        assertThat(aggregations).containsKey(ProductQueryBuilder.FACET_AGG);
+        assertThat(aggregations.get(ProductQueryBuilder.FACET_AGG).aggregations())
+                .containsKey(ProductQueryBuilder.DISTINCT_PRODUCTS_AGG);
+        assertThat(aggregations.get(ProductQueryBuilder.FACET_AGG)
+                .aggregations().get(ProductQueryBuilder.DISTINCT_PRODUCTS_AGG)
+                .cardinality().field()).isEqualTo("product_id");
+    }
+
+    @Test
+    void appliesFuzzinessSoATypoStillMatches() {
+        assertThat(builder.build(query(true, List.of()), Optional.empty()).toString())
+                .contains("AUTO");
+    }
+
+    private static SearchQuery query(boolean inStock, List<String> filters) {
+        return new SearchQuery(Optional.of("iphone"), Optional.empty(), filters,
+                Optional.empty(), Optional.empty(), inStock, Optional.empty(),
+                SortOption.RELEVANCE, 20, Optional.empty());
+    }
+
+    private static SearchProperties properties() {
+        return new SearchProperties(
+                new SearchProperties.Topics("t.product.events", "t.category.events",
+                        "t.catalog.control.events", "t.inventory.stock.events.v1", "t.review.events"),
+                new SearchProperties.Aliases("products", "products_write", "categories",
+                        "categories_write", "search_suggestions", "search_jobs"),
+                new SearchProperties.QueryBudget(Duration.ofSeconds(5), Duration.ofSeconds(2),
+                        Duration.ofSeconds(5), Duration.ofMinutes(2), 1000, 50, 100),
+                new SearchProperties.Pagination(20, 100),
+                new SearchProperties.Bulk(1000, 5_242_880L, 4, 20, 0.5, 1.1, 20, 8,
+                        Duration.ofMillis(500), Duration.ofSeconds(30), 300f),
+                new SearchProperties.Reindex(Duration.ofHours(6), 500, 5,
+                        Duration.ofSeconds(10), Duration.ofMinutes(30), 0.02),
+                new SearchProperties.Suggestions("0 0 3 * * *", true, 1L, 0.8,
+                        Duration.ofMinutes(5), Duration.ofMinutes(5), Duration.ofMinutes(1),
+                        5000, 1000, 1.1, Long.MAX_VALUE, "vi", "GLOBAL", List.of()),
+                new SearchProperties.Tombstone("0 30 2 * * *", true, Duration.ofDays(30),
+                        "0 0 */4 * * *", true),
+                new SearchProperties.Media("https://cdn.test/", "/static/placeholder.png"),
+                new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),
+                new SearchProperties.Cors(List.of("*")),
+                new SearchProperties.Export("http://product", "http://inventory", "http://review",
+                        true, Duration.ofSeconds(30)));
     }
 }

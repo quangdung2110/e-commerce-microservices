@@ -1,35 +1,31 @@
 package com.ecommerce.search.service;
 
 /**
- * Utility for computing the {@code discount_percentage} that appears in
- * product search results.
+ * {@code SEARCH-BR-004} and {@code SEARCH-BR-005}.
  *
- * <p>The formula follows the canonical calculation defined in the Search Workflow:
- * {@code floor(((original_price - best_price) / original_price) * 100)}.
- *
- * <p>Returns {@code 0} when the inputs are absent or when
- * {@code best_price >= original_price} (no discount).
+ * <p>{@code has_promotion} is materialised on the document when a catalog event is
+ * applied; {@code discount_percentage} is computed when the response is built, so that a
+ * rounding change never requires a reindex.
  */
 public final class DiscountCalculator {
 
     private DiscountCalculator() {
-        // utility class
+    }
+
+    /** True when the published selling price is below the list price. */
+    public static boolean hasPromotion(Long basePriceVnd, Long sellingPriceVnd) {
+        return basePriceVnd != null && sellingPriceVnd != null && sellingPriceVnd < basePriceVnd;
     }
 
     /**
-     * Calculate the discount percentage.
-     *
-     * @param originalPrice the original (list) price, may be {@code null}
-     * @param bestPrice     the best (effective) price, may be {@code null}
-     * @return discount percentage (0-100), or 0 if inputs are invalid
+     * {@code floor((base - selling) / base * 100)} when {@code base > 0} and
+     * {@code selling < base}; {@code 0} otherwise.
      */
-    public static int calculate(Long originalPrice, Long bestPrice) {
-        if (originalPrice == null || bestPrice == null || originalPrice <= 0) {
+    public static int discountPercentage(Long basePriceVnd, Long sellingPriceVnd) {
+        if (basePriceVnd == null || sellingPriceVnd == null || basePriceVnd <= 0 || sellingPriceVnd >= basePriceVnd) {
             return 0;
         }
-        if (bestPrice >= originalPrice) {
-            return 0;
-        }
-        return (int) Math.floor(((double) (originalPrice - bestPrice) / originalPrice) * 100);
+        long discount = basePriceVnd - sellingPriceVnd;
+        return (int) Math.floorDiv(discount * 100L, basePriceVnd);
     }
 }

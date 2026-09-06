@@ -58,6 +58,8 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Lịch job | Cron cho rebuild suggestion, recompute count, purge tombstone | Có | Không | Có |
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
 | Cửa sổ tombstone | Số ngày giữ tombstone trước khi purge | Có | Không | Không |
+| Thumbnail | CDN base URL và URL placeholder dùng để dựng `thumbnail_url` từ `thumbnail_storage_key` | Có | Không | Không, nếu cấu hình động |
+| Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review | Có | Không | Có |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 
 Giá trị mặc định thực tế phải được đọc từ cấu hình runtime khi tài liệu được xác
@@ -79,6 +81,7 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_payload_invalid_total` | counter | `topic`, `event_type` |
 | `search_category_enrichment_miss_total` | counter | `topic`, `event_type` |
 | `search_zombie_update_blocked_total` | counter | `topic`, `event_type` |
+| `search_indexing_total{status="guard_blocked"}` | counter | `topic`, `event_type` |
 | `search_job_duration_seconds` | histogram | `job` |
 | `search_reindex_state` | gauge | `phase` |
 | `search_stock_snapshot_export_total` | counter | `status` |
@@ -93,6 +96,13 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 
 Không dùng `sku_id`, `product_id`, `category_id`, từ khóa tìm kiếm hay `user_id`
 làm label: cardinality không kiểm soát được. Các identifier đó thuộc về log.
+
+**Giới hạn đã biết của `search_zombie_update_blocked_total`.** Script canonical báo
+hiệu cả hai trường hợp "revision cũ" và "document đang tombstone" bằng cùng một
+`ctx.op = 'none'`, nên bulk response không phân biệt được. Implementation vì vậy
+đếm cả hai vào `search_indexing_total{status="guard_blocked"}`. Muốn tách riêng
+zombie, script phải phát tín hiệu khác nhau cho hai nhánh — đó là thay đổi
+[`schema/scripts`](./schema/scripts/README.md) và phải đi kèm reindex.
 
 **Log có cấu trúc.** Mỗi dòng log mang `request_id` cho đường đọc, hoặc `topic`,
 `partition`, `offset`, `event_type`, `event_id` cho đường ghi. Log ở mức INFO

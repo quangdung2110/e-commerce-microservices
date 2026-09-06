@@ -203,8 +203,9 @@ components:
       explode: true
       description: >-
         Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ
-        filter=brand:apple&filter=color:black. OR trong cùng attribute code,
-        AND giữa code khác nhau; client không tự ghép token.
+        filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search
+        sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép.
+        OR trong cùng attribute code, AND giữa code khác nhau.
       schema:
         type: array
         maxItems: 50
@@ -371,7 +372,12 @@ components:
         name: { type: string, minLength: 1, maxLength: 160 }
         slug: { type: string, minLength: 1, maxLength: 180 }
         product_count: { type: integer, format: int64, minimum: 0 }
-        product_count_updated_at: { type: string, format: date-time }
+        product_count_updated_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Null cho tới khi job recompute chạy lần đầu cho node này; category_upsert
+            không khởi tạo số đếm.
         children:
           type: array
           maxItems: 1000
@@ -425,7 +431,10 @@ components:
         run_id: { $ref: '#/components/schemas/Uuid' }
         status:
           type: string
-          enum: [STARTED, BUILDING, CATCHING_UP, CUTOVER, COMPLETED, FAILED, ROLLED_BACK]
+          description: >-
+            SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc
+            Build/Catch-up; run bị bỏ, alias giữ nguyên và một run mới được coalesce.
+          enum: [STARTED, BUILDING, CATCHING_UP, CUTOVER, COMPLETED, FAILED, ROLLED_BACK, SUPERSEDED]
         phase:
           type: [string, 'null']
           enum: [BUILDING, CATCHING_UP, CUTOVER, null]
@@ -440,11 +449,17 @@ components:
     ReindexProgress:
       type: object
       additionalProperties: false
-      required: [categories_exported, products_exported, stock_snapshots_imported, catch_up_lag]
+      required:
+        - categories_exported
+        - products_exported
+        - stock_snapshots_imported
+        - rating_aggregates_imported
+        - catch_up_lag
       properties:
         categories_exported: { type: integer, format: int64, minimum: 0 }
         products_exported: { type: integer, format: int64, minimum: 0 }
         stock_snapshots_imported: { type: integer, format: int64, minimum: 0 }
+        rating_aggregates_imported: { type: integer, format: int64, minimum: 0 }
         catch_up_lag: { type: [integer, 'null'], format: int64, minimum: 0 }
     ReindexFailure:
       type: object

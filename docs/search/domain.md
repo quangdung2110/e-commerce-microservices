@@ -128,8 +128,10 @@ Trạng thái hiển thị của một document `INDEXED` phụ thuộc `product
 ### Reindex run
 
 `STARTED` → `BUILDING` → `CATCHING_UP` → `CUTOVER` → `COMPLETED`. Từ bất kỳ pha
-nào có thể sang `FAILED`; sau `CUTOVER` có thể sang `ROLLED_BACK` bằng alias swap
-ngược. Chỉ một run được phép ở trạng thái chưa kết thúc tại một thời điểm.
+nào có thể sang `FAILED`, hoặc sang `SUPERSEDED` khi một `catalog-reindex-requested`
+mới tới trong Build/Catch-up; sau `CUTOVER` có thể sang `ROLLED_BACK` bằng alias swap
+ngược. `COMPLETED`, `FAILED`, `ROLLED_BACK` và `SUPERSEDED` là bốn trạng thái kết
+thúc. Chỉ một run được phép ở trạng thái chưa kết thúc tại một thời điểm.
 
 ### Suggestion build
 

@@ -10,6 +10,17 @@ interactions:
     status: proposed
     notes: Canonical replacement for duplicated Product/Cart proto files.
 
+  - id: storefront-queries-search
+    protocol: http
+    provider: search-service
+    consumers: [api-gateway]
+    contract: http/search/v2/openapi.yaml
+    status: proposed
+    notes: >-
+      Bốn API storefront anonymous cộng hai operation admin reindex. Một hit là một SKU;
+      facet và category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên
+      route /api/v1/search/** không còn backend.
+
   - id: search-reindexes-product-catalog
     protocol: http
     provider: product-service

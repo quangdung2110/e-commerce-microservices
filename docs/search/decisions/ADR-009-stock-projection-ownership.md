@@ -10,7 +10,7 @@ supersedes: null
 superseded_by: ADR-014-inventory-stock-snapshot-contract
 evidence:
   - docs/product/README.md
-  - docs/inventory/inventory_events.md
+  - docs/inventory/interfaces.md
 ---
 
 # ADR-009 — `is_in_stock` đến từ Inventory, không suy ra từ trạng thái catalog (Superseded)
