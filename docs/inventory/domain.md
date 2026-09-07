@@ -10,6 +10,7 @@
 | StockPosition | Authoritative stock for one `(warehouse_id, sku_id)`; the unit of stock contention. |
 | On hand | Physical units currently at a warehouse, including sellable, reserved, committed, and quarantined units. |
 | Available to sell | Units eligible for a new reservation; it is not total physical stock. |
+| SKU availability | Inventory-owned Search projection boolean: at least one active, non-OUTAGE warehouse has `available_to_sell > 0` for the SKU. It is not a reservation promise. |
 | Reservation | Whole-order pre-payment hold rooted at `order_id`. |
 | Committed allocation | Paid order stock physically still at the warehouse while awaiting dispatch. |
 | Quarantine | Physically received returned units forbidden from sale until final inspection passes. |
@@ -49,6 +50,7 @@ Negative adjustment is permitted only when `q <= available_to_sell`; it never ta
 |---|---|---|
 | Warehouse | `warehouse_id` | Master data, activity/outage state, and deterministic fulfillment priority. |
 | StockPosition | `(warehouse_id, sku_id)` | Bucket invariant and local availability. |
+| SkuAvailabilityState | `sku_id` | Monotonic per-SKU boolean/revision for Search, derived asynchronously from all Warehouse and StockPosition truth. |
 | OrderReservation | `order_id` | Atomic whole-order reservation root, expiry observation, and line lifecycle. |
 | ReservationLine | `(order_id, order_line_id)` | Immutable SKU, quantity, one warehouse, and allocation lifecycle. |
 | RefundScope | `(order_id, refund_request_id)` | Immutable expected return lines and receipt/inspection progress. |
@@ -130,5 +132,8 @@ No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exi
 7. Refund receipt is permitted only for an active immutable scope; wrong item, over-receipt, receipt after close, and duplicated final inspection cannot mutate stock.
 8. Quarantine is never saleable without final `PASS`; failed stock remains traceable through disposition/reversal.
 9. Administrative correction is append-only and cannot conceal a systemic ledger/state mismatch.
+10. Inventory alone derives per-SKU Search availability. It never publishes/exports a SKU
+    before Search registers that its Product document exists; readiness never blocks
+    authoritative inventory commands.
 
 See [workflows.md](workflows.md) for transition ownership and [data.md](data.md) for enforcement and evidence.

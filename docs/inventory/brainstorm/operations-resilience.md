@@ -53,7 +53,7 @@ Order, and Search cannot override this control.
 | Warehouse changes to `inactive` or `outage` | New allocation excludes it. Existing reservations/commitments remain unchanged; physical facts remain recordable by ADMIN. | New orders use another eligible warehouse if one exists; no automatic reallocation of commitments. | Inventory ADMIN / Operations | Restore warehouse status only after operational verification; handle existing commitments through Order-led exception/cancellation flow. |
 | Stock count discrepancy | Never silently modify reserved, committed, or quarantine stock. | Affected orders may need an Order exception/cancellation decision. | Inventory ADMIN + Order | Follow the approved discrepancy flow: whole-root release only while `RESERVED`, then audited correction command. |
 | Return / inspection command conflicts or a scope is closed | Reject the whole invalid command with no stock movement. | No accidental receipt, double inspection, or post-close mutation. | Warehouse ADMIN | Correct the source request/physical evidence; submit a new valid command if allowed. |
-| Event consumer cannot process a message | The producer retains its durable event; the consumer uses its own inbox/DLQ and dedupe. | Consumer state can lag; Inventory truth does not change. | Owning consumer | Fix consumer and replay the original event through its inbox. |
+| Event consumer cannot process a message | The producer retains its durable event. Order uses its inbox/DLQ; Search retries without ACK and guards per-SKU availability by revision. | Consumer state can lag; Inventory truth does not change. | Owning consumer | Fix consumer and replay/rebuild through its documented recovery path. |
 | Replay window has elapsed | Export returns `410 REPLAY_WINDOW_EXPIRED`. | Search must rebuild rather than guessing missed changes. | Search | Bootstrap a consistent snapshot and continue from its watermark. |
 | Audit/authorization control unavailable | Deny ADMIN mutation. A syntactically valid evidence reference alone is insufficient without the local audit transaction. | Physical operation waits; no unaudited correction occurs. | Inventory + Security | Restore auth/audit path, then resubmit idempotently. |
 
@@ -159,8 +159,11 @@ This package is metadata and exported evidence only; it never grants an operator
 
 ### 5.2 Consumer rules
 
-- Every consumer stores an inbox/deduplication entry atomically with its own projection or workflow effect, keyed by `event_id`.
-- A consumer that cannot process an event places the original event ID, payload/reference, attempt history, and error in its **own** DLQ. The DLQ is diagnostic storage, not a deletion queue.
+- Order stores an inbox/deduplication entry atomically with its workflow effect and owns
+  a DLQ. Search is the explicit exception: it has no inbox/DLQ, uses monotonic
+  `availability_revision`, and does not ACK retryable or readiness-contract failures.
+- Order's DLQ stores the original event ID, payload/reference, attempt history, and error.
+  It is diagnostic storage, not a deletion queue.
 - After a fix, replay uses the original event through the normal inbox path. Operators never manufacture a substitute event or mark an event processed without the corresponding consumer effect.
 - Order may reconcile its own reservations and refund scopes by Inventory query when events are delayed or missed. Search uses replay after its last applied sequence, or the snapshot-watermark bootstrap protocol after `410 REPLAY_WINDOW_EXPIRED`.
 - Inventory promises no global ordering across aggregates. Consumers use each aggregate revision/sequence according to the documented contract.
@@ -177,7 +180,7 @@ The relay and export endpoints may be throttled independently, but broker slowne
 |---|---|---|
 | Checkout | Allocation Preview only. | Reserve, stock mutation, warehouse management, raw stock exposure. |
 | Order Temporal Saga | Documented reservation/refund-scope commands and state/outcome queries for its own order IDs. | Warehouse/admin operations, shipment-state ownership, direct stock adjustment. |
-| Search Projection | Snapshot/change export and public `in_stock` projection input only. | Allocation decisions, mutation, raw bucket/on-hand exposure. |
+| Search Projection | Document-readiness register/revoke plus per-SKU availability snapshot/change export. | Allocation decisions, mutation, raw bucket/on-hand/warehouse exposure. |
 | ADMIN | Warehouse configuration and documented physical stock/return/inspection/disposition commands, with required reason/evidence. | Direct data updates, bypassing audit/idempotency, automatic rerouting/release. |
 | Platform/SRE | Infrastructure operation plus time-bounded, audited, read-only production diagnostics. | Direct Inventory business-data writes. |
 | Security/Audit | Read-only audit/evidence review under least privilege. | Command execution or business-state modification. |
@@ -239,7 +242,7 @@ A failed drill creates a remediation item and blocks any assertion that the corr
 | Inventory state, invariants, command idempotency, audit, outbox producer | Inventory team | Platform, Security |
 | Database durability, backup, failover, capacity, relay/broker runtime | Platform/SRE | Inventory |
 | Payment timeout, orphan-reservation decision, Order reconciliation, refund closure | Order team | Inventory |
-| Search projection freshness, inbox/DLQ, replay/bootstrap | Search team | Inventory, Platform |
+| Search projection freshness, readiness, revision guard, replay/bootstrap | Search team | Inventory, Platform |
 | Warehouse availability, physical count, receipt, inspection, disposition evidence | Operations ADMIN | Inventory |
 | Privileged access, audit review, incident security response | Security/Compliance | Inventory, Platform |
 
@@ -251,7 +254,8 @@ No ownership transfer changes domain authority: Platform does not correct stock,
 - [x] Primary-store loss, cache/Search degradation, outbox/broker failure, Saga delay, warehouse outage, consumer failure, and audit failure preserve prior domain invariants.
 - [x] SLOs, monitoring signals, alert thresholds, and escalation ownership are defined without classifying domain `REJECT_ALL` as a technical outage.
 - [x] Reconciliation detects invariant/ledger/order/projection divergence and never auto-corrects business state.
-- [x] Transactional-outbox retention, at-least-once delivery, consumer inbox/DLQ, replay, snapshot bootstrap, and capacity backpressure are defined.
+- [x] Transactional-outbox retention, at-least-once delivery, Order inbox/DLQ,
+  Search revision/readiness recovery, snapshot bootstrap, and capacity backpressure are defined.
 - [x] ADMIN, service, platform, and audit access are least-privilege; direct production database writes are prohibited.
 - [x] Audit/evidence retention, encryption, incident evidence preservation, and Compliance/Legal validation gate are explicit.
 - [x] A fail-closed DR runbook, recovery gates, RPO=0/RTO<=60-minute proof requirements, and recurring readiness drills are defined.

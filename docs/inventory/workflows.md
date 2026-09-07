@@ -110,7 +110,37 @@ sequenceDiagram
 4. ADMIN submits the appropriate append-only adjustment or permitted reversal. Inventory writes its normal audit/movement/outbox transaction.
 5. Reconciliation is rerun. A ledger/state mismatch is an incident, not an adjustment case.
 
-## 4. Transition ownership
+## 4. Per-SKU availability publication for Search
+
+Stock commands remain warehouse-specific: each receipt, adjustment, Reserve/Release,
+inspection pass, and other transition that changes `available_to_sell` identifies the
+affected `(warehouse_id, sku_id)`. The command transaction durably coalesces affected SKU
+IDs but does not calculate or publish Search state synchronously.
+
+The availability projector performs this workflow:
+
+1. Claim dirty work serialized by `sku_id`.
+2. Query all current positions for the SKU and their Inventory-owned warehouse state.
+3. Calculate `is_in_stock = true` iff at least one active, non-`OUTAGE` warehouse has
+   `available_to_sell > 0`.
+4. If the state is new or the boolean changed, increment the per-SKU
+   `availability_revision` and prepare a full snapshot fact.
+5. Publish/export the fact only if Search has registered that its Product-owned SKU
+   document exists. Without readiness, retain the latest state as pending; never fail or
+   delay the authoritative command.
+
+A warehouse active/outage change durably scans distinct SKU IDs at that warehouse with
+checkpoint, backpressure, and idempotent retry. Each SKU is recomputed against all
+warehouses; Inventory never assumes that one warehouse outage makes the SKU globally
+unavailable. Only boolean transitions produce normal public events.
+
+After Search successfully creates a catalog SKU document, it registers readiness with
+`catalog_revision`. Registration is idempotent and atomically persists a publication task
+for the current availability snapshot before returning success, including when earlier
+stock changes happened before readiness.
+Search revokes readiness after tombstone and before physical purge.
+
+## 5. Transition ownership
 
 | Transition / fact | Sole actor | Inventory responsibility |
 |---|---|---|
@@ -118,6 +148,8 @@ sequenceDiagram
 | Payment decision and timeout | Order | Never infer payment or auto-expire. |
 | Physical dispatch, receipt, inspection, disposition, adjustment | `ADMIN` | Validate authority, physical guards, stock movement, audit. |
 | Warehouse active/outage/priority | `ADMIN` | Own master state; use it only for new allocation. |
+| Derive per-SKU `is_in_stock` | Inventory availability projector | Recompute asynchronously and publish only after Search document readiness. |
+| Register/revoke SKU document readiness | Search | Register only after catalog write succeeds; revoke after tombstone and before purge. |
 | Refund registration/close/incomplete close | Order Temporal Saga | Enforce immutable scope and state guards. |
 | Shipment/delivery | Order | Consume Inventory dispatch fact; not stored as Inventory lifecycle. |
 

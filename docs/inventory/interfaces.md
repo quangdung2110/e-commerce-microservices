@@ -8,7 +8,7 @@
 |---|---|---|
 | `/internal/inventory/v1` | Checkout and Order Temporal Saga | Allocation preview, reservation/refund workflow commands, and workflow queries. |
 | `/admin/inventory/v1` | Authenticated `ADMIN` | Warehouse configuration and physical stock operations. |
-| `/exports/inventory/v1` | Search Projection only | Consistent snapshot and ordered change feed for `in_stock`. |
+| `/exports/inventory/v1` | Search Projection only | SKU-document readiness plus consistent per-SKU snapshot/change feed. |
 
 Machine-readable contracts are split by trust boundary: [Workflow OpenAPI](../../contracts/http/inventory/workflow/v1/openapi.yaml),
 [ADMIN OpenAPI](../../contracts/http/inventory/admin/v1/openapi.yaml),
@@ -139,23 +139,38 @@ global Kafka ordering is promised.
 
 | Event | Consumer | Minimum data / semantic |
 |---|---|---|
-| `com.ecommerce.inventory.stock-position.changed.v1` | Search | Warehouse, SKU, `available_to_sell`, position revision. No raw on-hand or other buckets. |
-| `com.ecommerce.inventory.warehouse-availability.changed.v1` | Search | Warehouse activity/outage and revision. |
+| `com.ecommerce.inventory.sku-availability.changed.v1` | Search | Opaque SKU, derived `is_in_stock`, monotonic per-SKU `availability_revision`, and `observed_at`; no warehouse or quantity data. |
 | `com.ecommerce.inventory.reservation.reserved.v1` | Order | Durable Inventory fact for reconciliation. |
 | `com.ecommerce.inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
 | `com.ecommerce.inventory.reservation.released.v1` | Order | Release fact/reason. |
 | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
 | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order | Whole scope ID and aggregated per-line pass/fail results; not payout. |
 
-Events are written through the transactional outbox and delivered at least once. Consumers atomically record an inbox/dedupe entry with their effect.
+Events are written through the transactional outbox and delivered at least once. Order
+atomically records inbox/dedupe with its effect. Search uses strict per-SKU revision
+guards and no-upsert writes; a missing target document is retried as a readiness contract
+violation, not ACKed as normal data.
 
 ## 6. Search export, bootstrap, and evolution
 
-Search exposes only `in_stock = exists(active, non-outage warehouse with available_to_sell > 0)`. It must not derive checkout availability from cache or expose raw stock buckets.
+Inventory owns and exports only the Search-facing boolean
+`is_in_stock = exists(active, non-outage warehouse with available_to_sell > 0)`. Search
+copies this value; it does not receive warehouse or quantity state and must not use the
+boolean as checkout authority.
 
-1. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export watermark, and 24-hour session expiry.
-2. Paginate warehouse and stock-position snapshots at that fixed watermark.
-3. `GET /exports/inventory/v1/changes?after_sequence=N` returns only the same CloudEvents stock/warehouse facts after a sequence.
-4. Search applies the snapshot, then changes after its watermark using event/inbox dedupe. If more than 30 days behind, Inventory returns `410 REPLAY_WINDOW_EXPIRED`; Search takes a new snapshot rather than guessing.
+1. After creating a Product-owned SKU document, Search calls
+   `PUT /exports/inventory/v1/search-projection-readiness/{sku_id}` with its
+   `catalog_revision`. Inventory cannot publish/export that SKU before registration and
+   emits the current snapshot when registration succeeds.
+2. After tombstone and before purge, Search calls `DELETE` on the same resource with the
+   tombstone `catalog_revision`; stale revocation returns a conflict.
+3. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export
+   watermark, and 24-hour session expiry.
+4. Paginate registered per-SKU availability snapshots at that fixed watermark.
+5. `GET /exports/inventory/v1/changes?after_sequence=N` returns only the same per-SKU
+   availability CloudEvents after a sequence.
+6. Search applies snapshots/changes directly to existing Product documents using
+   `availability_revision`. If more than 30 days behind, Inventory returns
+   `410 REPLAY_WINDOW_EXPIRED`; Search rebuilds availability fields from a new snapshot.
 
 Within v1, changes are additive and backward compatible. A breaking change requires v2 and parallel support for at least 90 days after every registered consumer confirms migration. Contract registry records owner, contact, schema version, compatibility decision, and test checkpoint.

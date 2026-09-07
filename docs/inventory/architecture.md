@@ -17,11 +17,13 @@ flowchart LR
   Admin[Warehouse ADMIN] -->|Physical operations| API
   API --> Domain[Domain + transaction boundary]
   Domain --> DB[(Relational primary: state + ledger + audit + command + outbox)]
+  DB --> AP[Per-SKU availability projector]
+  AP --> DB
   Relay[Outbox relay] -->|at-least-once events| Bus[Event backbone]
   DB --> Relay
   Bus --> Order
-  Bus --> Search[Search projection]
-  Search -->|snapshot/change feed| Export[Inventory export API]
+  Bus -->|per-SKU availability| Search[Search projection]
+  Search -->|document readiness + snapshot/change feed| Export[Inventory Search Projection API]
   DB --> Export
 ```
 
@@ -30,14 +32,18 @@ flowchart LR
 | Inventory API/domain | Authenticate/authorize callers, enforce domain guards, execute one atomic command. | Call Product, Payment, Order, broker, cache, or evidence repository synchronously inside a write transaction. |
 | Relational primary | Durable source of current state and append-only evidence. | Be bypassed by direct table writes. |
 | Outbox relay | Publish durable facts at least once. | Reapply business movement or treat broker publish as transaction success condition. |
+| Availability projector | Serialize affected work per SKU and derive the global boolean from warehouse/position truth; update `SkuAvailabilityState` and create a public outbox fact only when readiness exists. | Delay or participate in Reserve/ADMIN command commits; publish before readiness; expose raw warehouse quantities to Search. |
 | Cache | Optional read acceleration. | Decide availability, Reserve, Commit, Release, or correction. |
-| Export API | Snapshot/change feed for Search. | Serve checkout correctness or raw stock exposure. |
+| Search Projection API | Record Search document readiness and serve per-SKU snapshot/change feed. | Serve checkout correctness or raw stock exposure. |
 
 ## 3. Trust and service boundaries
 
 - Only Order's authenticated Temporal Saga invokes reservation and Refund Scope workflow mutations. Payment sends its result to Order, not Inventory.
 - Only ADMIN invokes warehouse and physical commands. Interactive ADMIN requires MFA; all commands are attributed.
 - Inventory accepts opaque `sku_id` and has no synchronous Product dependency. Product/Checkout prevent inactive SKU from entering checkout.
+- Search registers readiness only after its Product-owned SKU document exists. Inventory
+  may compute and retain availability before registration, but the projector cannot
+  publish or export it until the readiness guard exists.
 - Inventory publishes physical dispatch facts; Order converts them to its shipment/delivery state.
 - Warehouse `inactive`/`OUTAGE` filters only new allocation. It does not rewrite existing reservation/commitment or prevent ADMIN from recording a real physical fact.
 
@@ -54,6 +60,7 @@ No distributed lock is required or accepted as correctness authority. Multi-item
 | Primary database / atomic transaction unavailable | Fail closed: mutations reject technically; Preview returns `503 INVENTORY_UNAVAILABLE`. |
 | Broker/relay unavailable after durable commit | Continue commands while primary capacity is safe; relay later replays outbox. |
 | Search/cache unavailable | Checkout and authoritative commands continue against primary state; Search can be stale/rebuilt. |
+| Search readiness absent | Inventory commands continue; the current per-SKU availability state remains pending and is published when readiness is registered. |
 | Order timeout worker unavailable | Reservation remains; only Order decides later commit/release. |
 
 The production topology must demonstrate zero loss for a committed command and recover writes safely within 60 minutes. Exact vendor, replication, runtime, and deployment mechanics remain implementation choices provided they satisfy [operations.md](operations.md) recovery gates.
@@ -64,6 +71,8 @@ The production topology must demonstrate zero loss for a committed command and r
 - Event sourcing as the authoritative command model.
 - Direct event publication after a business commit without transactional outbox.
 - Broker retention as Search bootstrap/recovery source.
+- Publishing warehouse or stock-position facts and requiring Search to reconstruct
+  Inventory's per-SKU availability rule.
 - Shared database/table integration or manual database edits as correction/recovery.
 - Automatic reroute, automatic reserve expiry, partial reservation, or partial line allocation.
 

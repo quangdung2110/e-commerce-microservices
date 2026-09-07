@@ -11,7 +11,7 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
 - [ ] Compliance/Legal validates the seven-year audit/evidence retention policy.
 - [ ] Load-test plan exercises the agreed envelope: 600 Reserve attempts/minute, p95 eight items/order, up to eight warehouses/SKU, 10% hot-SKU traffic, and 9,000 concurrent reservations as an estimated baseline.
 - [ ] Failure test plan covers primary loss, broker outage, duplicate commands/events, deadlock, stale preview, release/dispatch race, late payment, and return/inspection retries.
-- [ ] Operational dashboards, alert routes, backup/restore rehearsal, and Search snapshot/replay integration are planned before production launch.
+- [ ] Operational dashboards, alert routes, backup/restore rehearsal, and Search per-SKU availability readiness/snapshot/change-feed integration are planned before production launch.
 
 ## Implementation guardrails
 
@@ -25,6 +25,6 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
 
 - Domain/property tests for all bucket movements, Refund Scope counters, state guards, and correction restrictions.
 - Concurrency/load tests proving exact-plan all-or-nothing Reserve and no oversell under hot-SKU contention.
-- Contract tests for every caller/consumer, schema compatibility, retry/idempotency, snapshot/change-feed recovery, and event dedupe.
+- Contract tests for every caller/consumer, including: no per-SKU availability publish/export before Search readiness; registration emits the current snapshot; warehouse state changes durably fan out all affected SKUs; revision-safe snapshot/change-feed recovery; and no Search-side upsert/index.
 - Restore/failover drills proving RPO=0/RTO <= 60 minutes and post-recovery reconciliation.
 - Security tests for ADMIN MFA, workload authorization, audit immutability, and prohibited direct writes.

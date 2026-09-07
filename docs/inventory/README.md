@@ -4,7 +4,11 @@
 >
 > **Implementation status:** Not started; existing service code is not a design constraint.
 
-Inventory is the sole owner of warehouse master data, stock at each warehouse, reservations, physical dispatch facts, return receipt, inspection/quarantine, stock adjustment, and their immutable audit evidence. It does not own customer orders, payment, shipment/delivery, product catalog, or Search state.
+Inventory is the sole owner of warehouse master data, stock at each warehouse, the
+derived per-SKU stock-availability integration state, reservations, physical dispatch
+facts, return receipt, inspection/quarantine, stock adjustment, and their immutable
+audit evidence. It does not own customer orders, payment, shipment/delivery, product
+catalog, or Search's indexed copy.
 
 ## Release 1 in one page
 
@@ -17,18 +21,18 @@ Inventory is the sole owner of warehouse master data, stock at each warehouse, r
 | Timeout | Order Temporal Saga owns the 15-minute timeout and explicit release. Inventory alerts at 60 minutes but never auto-releases. |
 | Return | Order registers an immutable, whole-order Refund Scope before receipt. A returned item is saleable only after final inspection `PASS`. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |
-| Integration | Transactional outbox is mandatory. Events are at-least-once; consumers deduplicate. Search is never a checkout dependency. |
+| Integration | Transactional outbox is mandatory. Events are at-least-once. Inventory derives the per-SKU boolean consumed by Search; Search is never a checkout dependency. |
 | Degradation | If authoritative state or the atomic audit/outbox transaction is unavailable, mutations fail closed and Preview returns `503 INVENTORY_UNAVAILABLE`. |
 
 ## Ownership boundary
 
 | Owner | Owns | Inventory deliberately does not own |
 |---|---|---|
-| Inventory | Warehouse, `StockPosition`, reservation/allocation, physical dispatch fact, return/inspection, movements, and audit. | Order/customer lifecycle, payment result, refund payout, shipment or delivery state. |
+| Inventory | Warehouse, `StockPosition`, `SkuAvailabilityState`, reservation/allocation, physical dispatch fact, return/inspection, movements, and audit. | Order/customer lifecycle, payment result, refund payout, shipment or delivery state. |
 | Order + Temporal Saga | Order state, payment timeout/retry, release/commit decision, Refund Scope registration/closure, customer exception. | Direct stock mutation or warehouse operation. |
 | Checkout | Advisory allocation preview and initiating its Order workflow. | Authoritative reserve decision. |
 | Product | SKU/product lifecycle. | Warehouse stock; Inventory accepts opaque `sku_id` and never synchronously calls Product. |
-| Search | `in_stock` read projection. | Allocation, reservation, raw stock buckets, mutation. |
+| Search | Indexed copy of Inventory's per-SKU `is_in_stock` snapshot and buyer filtering. | Deriving warehouse eligibility, allocation, reservation, raw stock buckets, mutation. |
 | Warehouse Operations | Physical truth submitted through the ADMIN contract. | Direct database editing or Order refund closure. |
 
 ## Target documentation
@@ -48,7 +52,11 @@ The working record that led to this target design is retained in [brainstorm/red
 
 ## Release 1 scope
 
-Included: warehouse management; initial/supplier sellable receipt; adjustment `+/-`; order reservation/commit/release; physical dispatch; immutable Refund Scope; multi-package return receipt; inspection; quarantine disposition/reversal; Search stock export; audit, reconciliation, and recovery.
+Included: warehouse management; initial/supplier sellable receipt; adjustment `+/-`;
+order reservation/commit/release; physical dispatch; immutable Refund Scope;
+multi-package return receipt; inspection; quarantine disposition/reversal; asynchronous
+per-SKU availability projection, Search readiness registration and export; audit,
+reconciliation, and recovery.
 
 Excluded: warehouse transfer; bins/lots/serials/expiry tracking; WMS and supplier/PO integration; backorder; partial order reservation; split quantity of one order line; automatic reroute after reserve failure; automatic reservation cleanup; automatic correction; customer-facing Inventory write API; and direct database repair as an operational process.
 
@@ -63,3 +71,6 @@ Priority order is **no oversell**, auditability, operational simplicity, checkou
 3. Each accepted mutation atomically commits business state, immutable movement/audit evidence, command result, and outbox record—or commits none.
 4. A business rejection is a valid terminal result; a lock/database/outbox failure is a retryable technical failure, never disguised as out of stock.
 5. Correction uses an explicit audited command. It cannot silently remove reserved, committed, or quarantined units.
+6. Inventory does not publish or export a SKU availability fact until Search has
+   registered that the Product-owned SKU document exists; missing readiness never blocks
+   an authoritative Inventory command.

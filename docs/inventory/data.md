@@ -12,6 +12,9 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 |---|---|---|
 | `Warehouse` | `warehouse_id` | Address, active/outage state, fulfillment priority. |
 | `StockPosition` | `(warehouse_id, sku_id)` | Current buckets and position revision. |
+| `SkuAvailabilityState` | `sku_id` | Inventory-owned derived boolean and monotonic `availability_revision` for Search integration. |
+| `SkuAvailabilityDirty` | `sku_id` | Durable coalescing signal/checkpoint for asynchronous recomputation. |
+| `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
 | `OrderReservation` | `order_id` | Root state, `expires_at`, correlation. |
 | `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, lifecycle. |
 | `RefundScope` | `(order_id, refund_request_id)` | Scope state, active-lock uniqueness per order. |
@@ -37,7 +40,11 @@ The database enforces, or the transaction guards before commit enforce:
 - scope counters satisfy `0 <= passed + failed <= received <= expected`;
 - a return receipt cannot exceed the immutable line residual or be accepted after scope closure;
 - final inspection quantity is consumed exactly once from the exact receiving warehouse receipt line;
-- every accepted mutation has a movement/audit record when it changes stock and an outbox record when it produces a public/export fact;
+- every accepted stock mutation has a movement/audit record and durably marks each
+  affected SKU for availability recomputation; the projector, not the command hot path,
+  creates the Search-facing public fact;
+- a SKU availability fact/export row exists only when a matching active
+  `SearchProjectionReadiness` exists;
 - a command ID reused with a different canonical request fingerprint fails deterministically.
 
 ## 3. Command and operation idempotency
@@ -55,7 +62,8 @@ One accepted command transaction performs, in order:
 3. apply every permitted state and bucket transition;
 4. append `StockMovement` and `AuditEntry` evidence;
 5. claim successful `OperationIdentity` when applicable;
-6. persist the terminal command result and every `OutboxEvent` required by the state change;
+6. persist the terminal command result, workflow facts, and durable per-SKU availability
+   dirty markers required by the state change;
 7. commit once.
 
 No broker, HTTP call, cache call, or external evidence-store call is inside this transaction. If any required step fails, it rolls back completely. Expected domain `REJECT_ALL` is durable but has no stock movement; technical failures leave no accepted result and can retry.
@@ -76,25 +84,55 @@ The target isolation baseline is `READ COMMITTED` with explicit row locking and 
 
 When warehouse configuration and Reserve race, the first committed transaction determines the result: a status change first makes Reserve reject the whole order; a Reserve first creates a commitment that later status changes do not revoke.
 
-## 5. Outbox, consumers, and retention
+## 5. Per-SKU availability projection
+
+Every transaction that can change `available_to_sell` records the distinct affected SKU
+IDs. Commit and physical dispatch do not mark a SKU when they leave
+`available_to_sell` unchanged. A warehouse `is_active`/`operational_state` change creates
+a checkpointed fan-out job over distinct SKU IDs with positions at that warehouse.
+
+Workers claim dirty SKU IDs and serialize calculation per `sku_id`. They read the current
+relational state and calculate:
+
+```text
+is_in_stock = exists active, non-OUTAGE warehouse
+              with available_to_sell > 0 for the SKU
+```
+
+When the state is new or the boolean changes, one projector transaction updates
+`SkuAvailabilityState`, increments `availability_revision`, and writes its public/export
+outbox fact. Quantity changes that keep the boolean unchanged emit no public fact.
+
+The state may be calculated before Search readiness, but publication/export remains
+pending. An idempotent readiness registration atomically stores the greatest Product
+`catalog_revision` plus a durable publication task for the current snapshot; it returns
+success only after both are durable. Search revokes it after
+tombstone and before purge; an older revision cannot revoke a newer lifecycle.
+
+## 6. Outbox, consumers, and retention
 
 The outbox is written in the command transaction and relayed at least once. Each event has immutable `event_id`, schema version, aggregate revision, correlation/causation IDs, and increasing export sequence. The relay leases bounded durable batches, retries with exponential backoff and jitter (maximum interval five minutes), and never reruns business movement to recreate an event.
 
-Consumers keep their own inbox/dedupe record atomically with their effect. They can receive duplicates and events from unrelated aggregates in arbitrary order. A consumer-specific DLQ retains original event identity, payload/reference, attempts, and failure; replay goes through normal inbox processing.
+Consumers can receive duplicates and events from unrelated aggregates in arbitrary
+order. Order keeps its inbox/dedupe record atomically with its effect and owns a DLQ.
+Search applies a strict per-SKU availability revision guard without upsert, retries
+document-readiness violations without ACK, and uses snapshot/change-feed rebuild for
+recovery.
 
 Public/export events are retained for at least 30 days from durable creation. An undelivered event remains durable past ordinary cleanup. If retained outbox growth threatens capacity or the replay guarantee, Inventory fails new mutations closed rather than dropping evidence.
 
-## 6. Cache, projection, and recovery classification
+## 7. Cache, projection, and recovery classification
 
 | Data | Classification | Recovery |
 |---|---|---|
 | Primary state, command/operation identity, movement/audit, outbox | Authoritative | Restore/fail over as a single consistent point. |
 | Allocation/read cache | Optimization only | Discard and rebuild from primary; never use on correctness path. |
-| Search projection | External derived state | Snapshot at watermark then replay change feed. |
+| `SkuAvailabilityState` | Inventory-owned integration projection | Recompute from Warehouse/StockPosition; reconcile continuously. |
+| Search projection | External indexed copy | Apply registered per-SKU snapshot at watermark, then replay change feed. |
 | Relay leases/cursors | Ephemeral | Clear/rebuild; relay reprocesses durable outbox safely. |
 
 Backups must include every authoritative record class. Losing command or operation identity would turn a late retry into a new mutation. Restore validation requires bucket scan, ledger checkpoint replay, uniqueness checks, outbox/export sequence validation, and access/audit health before writes reopen.
 
-## 7. Retention and privacy
+## 8. Retention and privacy
 
 Immutable movements, audit, command/operation identities, and evidence references remain for at least seven years. External evidence content is retained/access-controlled for the same period but is not copied into events or routine logs. Current active state remains while operationally needed; archive/disposal must preserve ledger traceability. Retention is a Compliance/Legal production gate, not an excuse to weaken audit.

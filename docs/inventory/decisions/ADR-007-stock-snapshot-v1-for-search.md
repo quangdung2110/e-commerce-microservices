@@ -1,16 +1,17 @@
 ---
 doc_id: inventory-adr-007
 service: inventory
-status: proposed
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
   - Search Service team
   - Storefront team
 supersedes: null
+superseded_by: ADR-016-per-sku-search-availability
 evidence:
   - contracts/events/inventory/v1/asyncapi.yaml
-  - contracts/http/inventory/internal/v1/openapi.yaml
+  - contracts/http/inventory/exports/v1/openapi.yaml
   - docs/search/decisions/ADR-009-stock-projection-ownership.md
   - docs/product-detail-bff/decisions/ADR-001-availability-projection-over-live-query.md
 ---
@@ -19,7 +20,8 @@ evidence:
 
 ## Status
 
-`Proposed`
+`Superseded` by [ADR-016](./ADR-016-per-sku-search-availability.md). This file is
+historical evidence and is not implementation authority.
 
 Đây là ADR duy nhất trong thư mục này **chưa được implement**. Contract đã tồn tại
 nhưng phía provider chưa có gì — chi tiết ở phần Verification.
@@ -140,7 +142,7 @@ Trạng thái hiện tại của phía provider:
 | Hạng mục | Trạng thái |
 |---|---|
 | [AsyncAPI stock v1](../../../contracts/events/inventory/v1/asyncapi.yaml) | Đã có |
-| [Internal export OpenAPI](../../../contracts/http/inventory/internal/v1/openapi.yaml) | Đã có |
+| [Current replacement Export OpenAPI](../../../contracts/http/inventory/exports/v1/openapi.yaml) | ADR-016 contract; historical endpoint removed |
 | Bảng `sku_stock_state` | **Chưa có migration nào tạo** |
 | Nới `ck_inventory_outbox_event_type_enum` | **Chưa** — ràng buộc hiện tại cấm insert event snapshot v1 |
 | Endpoint export | **Chưa có controller** |

@@ -175,8 +175,8 @@ data                     event-specific immutable fact/snapshot
 ```
 
 `export_sequence` hỗ trợ snapshot/replay transfer; không đồng nghĩa global business ordering.
-Consumer phải dedupe theo `event_id` và dùng `aggregate.revision`/state revision để không áp
-dụng snapshot cũ đè snapshot mới.
+Order dedupe theo `event_id`; Search dùng `aggregate.revision`/state revision per-SKU
+để duplicate và snapshot cũ thành no-op mà không cần inbox.
 
 Chỉ event có consumer đã biết mới là **public event**. Outbox/audit fact nội bộ không mặc nhiên
 trở thành broker contract.
@@ -185,15 +185,14 @@ trở thành broker contract.
 
 | Event type | Consumer đã biết | `data` tối thiểu | Contract semantic |
 |---|---|---|---|
-| `inventory.stock-position.changed.v1` | Search/Product read projection | `warehouse_id`, `sku_id`, `available_to_sell`, `position_revision`. | Snapshot của một position sau mutation ảnh hưởng `available_to_sell`; không chứa `on_hand`, reserved, committed, quarantine hay customer data. |
-| `inventory.warehouse-availability.changed.v1` | Search/Product read projection | `warehouse_id`, `is_active`, `operational_state`, `warehouse_revision`. | Snapshot availability eligibility của warehouse; status change có thể đổi catalog availability dù stock không đổi. |
+| `com.ecommerce.inventory.sku-availability.changed.v1` | Search projection | `sku_id`, `is_in_stock`, `availability_revision`, `observed_at`. | Inventory-owned full snapshot per-SKU; chỉ publish/export sau Search document readiness. Không lộ warehouse/position/quantity. |
 | `inventory.reservation.reserved.v1` | Order Service | `order_id`, `expires_at`, allocation lines `{order_line_id, sku_id, quantity, warehouse_id}`. | Recovery/reconciliation fact cho Reservation đã toàn order reserve; không thay command response. |
 | `inventory.reservation.committed.v1` | Order Service | `order_id`, committed allocation lines. | Fact payment-result Inventory đã chuyển full root sang committed; không là payment instruction. |
 | `inventory.reservation.released.v1` | Order Service | `order_id`, release reason, released allocation lines, `order_exception_id` when applicable. | Fact inventory release; không quyết định refund/customer outcome. |
 | `inventory.reservation.line-dispatched.v1` | Order Service | `order_id`, `order_line_id`, `sku_id`, `quantity`, `warehouse_id`, physical handover reference/time. | Fact physical departure; Order mới sở hữu shipment/delivery transition. |
 | `inventory.refund.all-items-inspection-completed.v1` | Order Service | `refund_scope_id`, `order_id`, per-line `{order_line_id, sku_id, expected, received, passed, failed}`. | Tạo đúng một lần khi toàn scope final inspected; không đồng nghĩa refund approved/paid/closed. |
 
-Search chỉ công bố ra customer/BFF derived boolean `in_stock`, không raw quantity hay warehouse
+Inventory công bố cho Search derived boolean `is_in_stock`, không raw quantity hay warehouse
 detail. Boolean là `true` khi tồn tại ít nhất một `StockPosition` có `available_to_sell > 0` tại
 warehouse `is_active = true` và `operational_state != OUTAGE`; không có locality/capacity/SLA
 ngầm trong projection Release 1.
@@ -207,26 +206,27 @@ Inventory không phát lại hay tự chạy command lifecycle vì consumer đã
 
 ### `INV-API-010` — Snapshot + change feed, không phụ thuộc broker retention
 
-Projection caller dùng ba export operation:
+Search dùng readiness handshake và ba nhóm export operation:
 
 | Operation | Contract |
 |---|---|
+| `PUT/DELETE /exports/inventory/v1/search-projection-readiness/{sku_id}` | Search register sau khi Product document tồn tại và revoke sau tombstone, trước purge. Inventory không publish/export availability trước registration; registration phát current snapshot. |
 | `POST /exports/inventory/v1/snapshot-sessions` | Tạo snapshot session point-in-time, trả `{snapshot_id, export_watermark, expires_at}`. Snapshot content phải phản ánh chính xác committed state tại watermark; session giữ tối đa 24 giờ. |
-| `GET /exports/inventory/v1/snapshot-sessions/{snapshot_id}/warehouses?cursor=…` và `…/stock-positions?cursor=…` | Trang hóa warehouse availability và stock-position snapshot. Mỗi row có warehouse/position revision. |
-| `GET /exports/inventory/v1/changes?after_sequence=…` | Trả ordered `inventory.stock-position.changed.v1` và `inventory.warehouse-availability.changed.v1` sau watermark/sequence. Event envelope giữ nguyên `event_id`, revision và export sequence. Không trả Order fact stream. |
+| `GET /exports/inventory/v1/snapshot-sessions/{snapshot_id}/sku-availabilities?cursor=…` | Trang hóa registered per-SKU availability tại fixed watermark. Mỗi row có `availability_revision`. |
+| `GET /exports/inventory/v1/changes?after_sequence=…` | Trả ordered `inventory.sku-availability.changed.v1` sau watermark/sequence. Không trả Order fact stream. |
 
 Export change feed retained **30 ngày** kể từ durable creation; không cleanup event chưa broker-delivered.
 Nếu `after_sequence` cũ hơn `minimum_retained_sequence`, Inventory trả
-`410 REPLAY_WINDOW_EXPIRED`; consumer phải bỏ projection cũ và tạo snapshot session mới, không
+`410 REPLAY_WINDOW_EXPIRED`; consumer phải rebuild availability fields từ snapshot session mới, không
 đoán missing event từ broker retention.
 
 Bootstrap/recovery protocol của Search/Product projection:
 
 1. Tạo snapshot session, ghi `export_watermark = W`.
-2. Load toàn bộ warehouse và stock-position pages của session; xây local projection bằng revision
-   guard.
-3. Read/replay mọi export event có `export_sequence > W`; dedupe `event_id` cùng transaction với
-   cập nhật local projection.
+2. Load toàn bộ per-SKU availability pages vào Product documents đã tồn tại; reindex
+   defer SKU tạo sau Product snapshot tới Product catch-up, không upsert hay tạo index phụ.
+3. Read/replay mọi export event có `export_sequence > W`; apply bằng strict
+   `availability_revision` guard.
 4. Duy trì broker subscription/change-feed polling. Nếu phát hiện gap vượt retention hoặc không
    thể chứng minh checkpoint, quay lại bước 1.
 
@@ -238,11 +238,11 @@ sequenceDiagram
 
     Search->>Export: CreateSnapshotSession()
     Export-->>Search: snapshot_id, watermark W
-    Search->>Export: Page warehouses + stock positions at W
+    Search->>Export: Page registered SKU availability at W
     Search->>Export: Replay changes after W
-    Export-->>Search: Ordered stock/warehouse snapshots
-    Search->>Search: Inbox dedupe + revision guard
-    Broker-->>Search: Live stock/warehouse event (at least once)
+    Export-->>Search: Ordered per-SKU availability snapshots
+    Search->>Search: availability_revision guard
+    Broker-->>Search: Live per-SKU availability event (at least once)
     Search->>Search: Apply only if revision is newer
     Note over Search: If replay window/checkpoint invalid,<br/>discard projection and bootstrap again
 ```
