@@ -84,7 +84,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-006` | Mọi sort kết thúc bằng tie-break `sku_id asc` | Khi build query | Pagination lặp hoặc bỏ sót |
 | `SEARCH-BR-007` | Mọi count hiển thị đếm DISTINCT `product_id` | Facet, category count | Số đếm phồng theo số SKU |
 | `SEARCH-BR-008` | Enrichment category miss thì bỏ trống field category, vẫn index document | Apply event catalog | Mất sản phẩm khỏi index |
-| `SEARCH-BR-009` | Event từ một nguồn chỉ ghi các field thuộc nguồn đó | Apply mọi event | Nguồn này xóa dữ liệu của nguồn kia |
+| `SEARCH-BR-009` | Event từ một nguồn chỉ ghi các field thuộc nguồn đó. Ngoại lệ duy nhất: catalog tombstone đặt `is_in_stock = false` mà không đổi `availability_revision` ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)) | Apply mọi event | Nguồn này xóa dữ liệu của nguồn kia |
 | `SEARCH-BR-010` | Availability chỉ được publish sau readiness; nếu document vẫn thiếu thì không ACK và không upsert. Rating thiếu document được bỏ qua có metric | Apply availability/review | Mất availability hoặc sinh document rỗng không có catalog |
 | `SEARCH-BR-011` | Tombstone chỉ được purge sau khi qua cửa sổ bảo vệ | Tombstone purger | Document sống lại do event trễ |
 | `SEARCH-BR-012` | Mapping thay đổi phải qua reindex và alias swap | Vận hành index | Downtime hoặc mapping conflict |

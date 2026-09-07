@@ -167,8 +167,10 @@ consumer đã subscribe. Chi tiết ở [Operations §2](./operations.md#2-healt
 
 Năm topic, một consumer group chính `search-indexer`. Group tạm
 `search-reindex-{run_id}` chỉ tồn tại trong pha catch-up của một lần reindex và
-replay bốn data topic; `t.catalog.control.events` tiếp tục được theo dõi để supersede
-run khi category tree đổi.
+replay `t.product.events`, `t.category.events` và `t.review.events` từ replay offset do
+chính owner cấp. Inventory không có offset tương ứng nên đi từ change-feed checkpoint rồi
+mới subscribe live `t.inventory.stock.events.v1`. `t.catalog.control.events` tiếp tục
+được theo dõi để supersede run khi category tree đổi.
 
 Quy tắc chung cho mọi topic:
 
@@ -180,6 +182,10 @@ Quy tắc chung cho mọi topic:
 - Không có DLQ ([ADR-005](./decisions/ADR-005-no-dead-letter-queue.md)): lỗi tạm
   thời thì không commit offset để Kafka gửi lại; lỗi không tự hồi phục thì ghi log,
   ghi metric, bỏ qua và ACK.
+- Có một lớp lỗi thứ ba: vi phạm contract readiness của Inventory, tức
+  `document_missing_exception` khi apply availability. Nó **không** phải lỗi không tự
+  hồi phục — Search không ACK, không commit offset và page cả hai owner (§4.4,
+  [ADR-019](./decisions/ADR-019-inventory-owned-sku-availability.md)).
 - Offset chỉ commit khi mọi record trong batch đã apply hoặc đã được phân loại là
   lỗi không tự hồi phục.
 

@@ -24,7 +24,7 @@ verified_against_commit: null
 | `WF-SEARCH-003` | Duyệt cây danh mục | API | Buyer | proposed |
 | `WF-SEARCH-004` | Facet của một danh mục | API | Buyer | proposed |
 | `WF-SEARCH-005` | Chiếu catalog từ Product | Event | Indexing worker | proposed |
-| `WF-SEARCH-006` | Chiếu danh mục và cây dẫn xuất | Event | Indexing worker | proposed |
+| `WF-SEARCH-006` | Chiếu snapshot danh mục Product | Event | Indexing worker | proposed |
 | `WF-SEARCH-007` | Chiếu tồn kho từ Inventory | Event | Indexing worker | proposed |
 | `WF-SEARCH-008` | Chiếu rating từ Review | Event | Indexing worker | proposed |
 | `WF-SEARCH-009` | Full reindex ba pha | API/Schedule | Admin, reindex job | proposed |
@@ -198,8 +198,11 @@ Inventory đầu tiên, field absent được query/response diễn giải an to
 SKU không lọt vào kết quả mặc định `in_stock=true`.
 
 **State/data changes.** Chỉ các field thuộc Product cộng `catalog_revision`,
-`catalog_indexed_at`, `last_catalog_event_id`. Field tồn kho và rating không bị chạm
-(`SEARCH-BR-009`).
+`catalog_indexed_at`, `last_catalog_event_id`. Upsert không chạm availability, và rating
+không bị chạm ở cả hai nhánh (`SEARCH-BR-009`). Ngoại lệ duy nhất là tombstone: nó đặt
+thêm `is_in_stock = false` như lớp phòng thủ thứ hai bên cạnh `is_deleted`
+([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)). `availability_revision`
+không bị đổi, nên guard của Inventory vẫn nguyên vẹn.
 
 **Events emitted.** Không có.
 
@@ -336,7 +339,8 @@ hết hạn.
 
 **Mục tiêu.** Giữ rating hiển thị khớp số liệu tổng hợp của Review.
 
-**Trigger.** `REVIEW_METRICS_UPDATED` trên `t.review.events`, key `product_id`.
+**Trigger.** `com.ecommerce.review.metrics-updated.v1` trên `t.review.events`, key
+`product_id`.
 
 **Happy path.** `_update_by_query` trên `products_write` theo `term product_id` với
 [`review_metrics_patch.painless`](./schema/scripts/review_metrics_patch.painless),

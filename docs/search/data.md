@@ -209,7 +209,7 @@ Elasticsearch không có khóa ngoại hay unique constraint, nên các ràng bu
 | `_id = category_id` cho index `categories` | Như trên |
 | Document tồn tại trước khi apply availability | Search đăng ký readiness chỉ sau catalog write; Inventory không publish/export trước readiness; script không `upsert`, missing document là contract violation và không ACK |
 | Document tồn tại trước khi apply review | Không dùng `scripted_upsert`; missing document là no-op có metric |
-| Document tombstone không nhận update | Guard `is_deleted` đứng đầu mọi script |
+| Document tombstone không nhận update | Guard `is_deleted` đứng đầu mọi script ghi lên document đang sống. Hai script tombstone không mang guard này vì chính chúng đặt `is_deleted = true`; guard revision đã làm chúng idempotent |
 | Field lạ không được index | `dynamic: strict` |
 | Không có hai index cùng nhận một write alias | Cutover bằng đúng một lệnh `_aliases` atomic |
 
@@ -287,8 +287,9 @@ phải lưu.
 
 ## 11. Data lifecycle
 
-- **Tombstone.** `PRODUCT_DELETED`/`SKU_DELETED` đặt `is_deleted = true` và
-  `deleted_at`. Document biến mất khỏi mọi kết quả ngay lập tức.
+- **Tombstone.** `com.ecommerce.catalog.product-deleted.v1` và
+  `com.ecommerce.catalog.sku-deleted.v1` đặt `is_deleted = true`, `deleted_at` và
+  `is_in_stock = false`. Document biến mất khỏi mọi kết quả ngay lập tức.
 - **Purge.** Tombstone purger revoke Inventory readiness rồi mới xóa vật lý document
   sau cửa sổ bảo vệ; cửa sổ này phải dài hơn retention của các topic Search tiêu thụ
   ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
