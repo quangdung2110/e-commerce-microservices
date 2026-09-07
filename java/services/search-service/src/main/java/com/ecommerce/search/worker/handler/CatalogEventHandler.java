@@ -21,6 +21,11 @@ import java.util.Optional;
  * <p>Only the three catalog types are handled; anything else on the topic is ignored and
  * acknowledged. A payload that violates the contract is logged, counted and skipped: there
  * is no DLQ, and a systematic producer problem is recovered by a full reindex (ADR-005).
+ *
+ * <p>Every write also carries the readiness call it owes Inventory — a registration for an
+ * upsert, a revocation for a tombstone. {@link BatchExecutor} makes it after the write
+ * lands and before the offset is committed, which is what guarantees Inventory never
+ * publishes availability for a SKU Search has not indexed yet (ADR-019).
  */
 @Component
 public class CatalogEventHandler {
@@ -76,8 +81,10 @@ public class CatalogEventHandler {
         }
 
         Map<String, Object> fields = CatalogProjection.toFields(product, sku, category);
-        batch.add(writer.catalogUpsert(batch.targetIndex(), sku.skuId(), fields,
-                revision, Timestamps.nowIso(), event.id()));
+        batch.addCatalogWrite(
+                writer.catalogUpsert(batch.targetIndex(), sku.skuId(), fields,
+                        revision, Timestamps.nowIso(), event.id()),
+                EventBatch.ReadinessIntent.register(sku.skuId(), revision));
         recordApplied(topic, event);
     }
 
@@ -91,8 +98,10 @@ public class CatalogEventHandler {
             invalid(topic, event, "sku-deleted is missing sku_id or catalog_revision");
             return;
         }
-        batch.add(writer.catalogTombstone(batch.targetIndex(), payload.skuId(), revision,
-                Timestamps.iso(deletedAt(payload.deletedAt(), event)), Timestamps.nowIso(), event.id()));
+        batch.addCatalogWrite(
+                writer.catalogTombstone(batch.targetIndex(), payload.skuId(), revision,
+                        Timestamps.iso(deletedAt(payload.deletedAt(), event)), Timestamps.nowIso(), event.id()),
+                EventBatch.ReadinessIntent.revoke(payload.skuId(), revision));
         recordApplied(topic, event);
     }
 
@@ -109,8 +118,9 @@ public class CatalogEventHandler {
         }
         String deletedAt = Timestamps.iso(deletedAt(payload.deletedAt(), event));
         String indexedAt = Timestamps.nowIso();
-        payload.skuIds().forEach(skuId -> batch.add(
-                writer.catalogTombstone(batch.targetIndex(), skuId, revision, deletedAt, indexedAt, event.id())));
+        payload.skuIds().forEach(skuId -> batch.addCatalogWrite(
+                writer.catalogTombstone(batch.targetIndex(), skuId, revision, deletedAt, indexedAt, event.id()),
+                EventBatch.ReadinessIntent.revoke(skuId, revision)));
         recordApplied(topic, event);
     }
 

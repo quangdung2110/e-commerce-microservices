@@ -18,7 +18,9 @@ import java.time.Instant;
  * <p>Inventory reads every warehouse position it owns and publishes one aggregate per
  * {@code sku_id}; Search stores no warehouse or position fact and never recomputes the
  * boolean itself (ADR-019). The write never upserts: only Product may create a document
- * ({@code SEARCH-INV-005}).
+ * ({@code SEARCH-INV-005}). Because readiness was registered before Inventory was allowed
+ * to publish, a missing target is a contract violation rather than a race — hence
+ * {@link EventBatch#addAvailabilityWrite}, which stops the offset from being committed.
  *
  * <p>{@code availability_revision} is the only ordering guard. The global export
  * {@code sequence} orders the recovery feed and must not stand in for it, so an event
@@ -57,8 +59,9 @@ public class AvailabilityEventHandler {
         }
         Instant observedAt = payload.observedAt() != null ? payload.observedAt() : event.time();
 
-        batch.add(writer.availabilityPatch(batch.targetIndex(), payload.skuId(), payload.isInStock(),
-                payload.availabilityRevision(), Timestamps.iso(observedAt), Timestamps.nowIso(), event.id()));
+        batch.addAvailabilityWrite(writer.availabilityPatch(batch.targetIndex(), payload.skuId(),
+                payload.isInStock(), payload.availabilityRevision(),
+                Timestamps.iso(observedAt), Timestamps.nowIso(), event.id()));
 
         metrics.indexing(topic, event.type(), "applied");
         if (event.time() != null) {

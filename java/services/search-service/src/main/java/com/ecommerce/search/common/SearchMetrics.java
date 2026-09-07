@@ -44,6 +44,12 @@ public class SearchMetrics {
         registry.counter("search_document_missing_total", "topic", topic, "event_type", eventType).increment();
     }
 
+    /** {@code operation} is register or revoke; {@code status} is ok, conflict or fail. */
+    public void readiness(String operation, String status) {
+        registry.counter("search_inventory_readiness_total", "operation", operation, "status", status)
+                .increment();
+    }
+
     public void payloadInvalid(String topic, String eventType) {
         registry.counter("search_payload_invalid_total", "topic", topic, "event_type", eventType).increment();
     }

@@ -82,15 +82,32 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
     }
 
     @Test
-    void availabilityEventDoesNotCreateADocument() throws IOException {
-        // SEARCH-INV-005: only a catalog event may create a SKU document.
+    void availabilityEventDoesNotCreateADocumentAndIsNotAcknowledged() throws IOException {
+        // SEARCH-INV-005 and ADR-019: the write must not upsert, and because readiness
+        // already guaranteed the document, the miss is a contract violation — the offset
+        // must stay uncommitted so the event is redelivered rather than lost.
         EventBatch batch = new EventBatch(properties.aliases().productsWrite());
-        batch.add(writer.availabilityPatch(batch.targetIndex(), "sku-unknown", true, 1L,
+        batch.addAvailabilityWrite(writer.availabilityPatch(batch.targetIndex(), "sku-unknown", true, 1L,
                 Timestamps.iso(NOW), Timestamps.nowIso(), "availability-1"));
-        executor.execute("t.inventory.stock.events.v1", batch);
+
+        boolean mayCommit = executor.execute("t.inventory.stock.events.v1", batch);
         refreshAll();
 
+        assertThat(mayCommit).isFalse();
         assertThat(read("sku-unknown")).isEmpty();
+    }
+
+    @Test
+    void aCatalogTombstoneThatFindsNoDocumentIsAcknowledged() throws IOException {
+        // The same Elasticsearch error, the opposite verdict: a delete for a SKU that was
+        // never indexed or has already been purged is normal and must not block the topic.
+        EventBatch batch = new EventBatch(properties.aliases().productsWrite());
+        batch.addCatalogWrite(
+                writer.catalogTombstone(batch.targetIndex(), "sku-unknown", 1L,
+                        Timestamps.iso(NOW), Timestamps.nowIso(), "delete-1"),
+                EventBatch.ReadinessIntent.revoke("sku-unknown", 1L));
+
+        assertThat(executor.execute("t.product.events", batch)).isTrue();
     }
 
     @Test
@@ -104,7 +121,7 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
         refreshAll();
 
         EventBatch late = new EventBatch(properties.aliases().productsWrite());
-        late.add(writer.availabilityPatch(late.targetIndex(), "sku-1", true, 5L,
+        late.addAvailabilityWrite(writer.availabilityPatch(late.targetIndex(), "sku-1", true, 5L,
                 Timestamps.iso(NOW), Timestamps.nowIso(), "availability-late"));
         executor.execute("t.inventory.stock.events.v1", late);
         refreshAll();
@@ -188,7 +205,7 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
 
     private void applyAvailability(String skuId, boolean isInStock, long revision) throws IOException {
         EventBatch batch = new EventBatch(properties.aliases().productsWrite());
-        batch.add(writer.availabilityPatch(batch.targetIndex(), skuId, isInStock, revision,
+        batch.addAvailabilityWrite(writer.availabilityPatch(batch.targetIndex(), skuId, isInStock, revision,
                 Timestamps.iso(NOW), Timestamps.nowIso(), "availability-" + revision));
         executor.execute("t.inventory.stock.events.v1", batch);
         refreshAll();
