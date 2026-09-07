@@ -259,8 +259,9 @@ có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng I
 Snapshot session của Inventory sống 24 giờ. Page snapshot có thể trả `410
 SNAPSHOT_SESSION_EXPIRED`, còn change feed trả `410 REPLAY_WINDOW_EXPIRED`; hai mã này
 đòi hai cách phục hồi khác nhau, mô tả ở [WF-SEARCH-007](./workflows.md). Readiness
-`DELETE` trả `409` khi SKU đã được đăng ký lại với `catalog_revision` mới hơn: đó là tín
-hiệu không được purge, không phải lỗi để retry.
+`DELETE` trả `409` khi Inventory giữ readiness ở `catalog_revision` mới hơn tombstone —
+trạng thái mà guard `is_deleted` của Search lẽ ra đã loại trừ. Xử lý như lệch trạng thái
+giữa hai service: không purge, không retry, báo động.
 
 Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 

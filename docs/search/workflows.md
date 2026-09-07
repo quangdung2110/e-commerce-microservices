@@ -592,8 +592,11 @@ làm chúng sống lại.
 **Happy path.** Với từng SKU đủ tuổi, bảo đảm `DELETE
 .../search-projection-readiness/{sku_id}` đã thành công cho catalog revision tombstone;
 sau đó `_delete`/`_delete_by_query` theo lô với throttle và ghi số lượng đã xóa.
-`409` không phải lỗi tạm thời: nó nghĩa là SKU đã được đăng ký lại với `catalog_revision`
-mới hơn, tức document đã sống lại hợp lệ — loại SKU đó khỏi lô purge thay vì retry.
+`409` nghĩa là Inventory đang giữ readiness ở `catalog_revision` mới hơn tombstone.
+Thiết kế hiện tại loại trừ trạng thái đó: `catalog_upsert` bị chặn bởi guard `is_deleted`
+nên document tombstone không sống lại và Search không đăng ký lại readiness cho nó. Vì
+vậy `409` là lệch trạng thái giữa Search và Inventory, không phải lỗi tạm thời — không
+retry, không purge SKU đó, ghi metric và điều tra.
 
 **Preconditions.** Cửa sổ bảo vệ phải dài hơn retention của mọi topic Search tiêu
 thụ và Inventory readiness của SKU đã bị revoke
@@ -610,8 +613,8 @@ dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi b�
 
 **Test scenarios.** Tombstone chưa tới hạn không bị xóa; tombstone quá hạn bị xóa;
 event trễ tới sau khi đã purge không tạo lại document từ availability/review; revoke
-readiness lỗi thì chưa được purge; revoke trả `409` thì SKU bị loại khỏi lô purge và
-không retry.
+readiness lỗi thì chưa được purge; revoke trả `409` thì SKU không được purge, không
+retry và được báo động.
 
 ---
 
