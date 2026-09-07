@@ -1,0 +1,22 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda002",
+  "type": "com.ecommerce.inventory.warehouse-availability.changed.v1",
+  "source": "/services/inventory",
+  "subject": "warehouses/wh-bkk-01",
+  "time": "2026-09-07T04:11:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/inventory/v1/schemas/warehouse-availability-changed.schema.json",
+  "correlationid": "corr-warehouse-maintenance-77",
+  "causationid": "cmd-warehouse-outage-77",
+  "sequence": 42002,
+  "aggregatetype": "warehouse",
+  "aggregateid": "wh-bkk-01",
+  "aggregaterevision": 8,
+  "data": {
+    "warehouse_id": "wh-bkk-01",
+    "is_active": true,
+    "operational_state": "OUTAGE",
+    "warehouse_revision": 8
+  }
+}

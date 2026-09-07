@@ -1,11 +1,11 @@
 asyncapi: 3.0.0
 info:
-  title: Inventory Service Stock Projection Events
+  title: Inventory Service Public Facts
   version: 1.0.0
   description: >-
-    Contract đích cho stock snapshot per-SKU do Inventory phát cho Search và Product
-    Detail BFF. Đây là contract v1 độc lập với wrapper INVENTORY_STOCK_CHANGED legacy
-    trên t.inventory.events.
+    Target Inventory facts emitted from the transactional outbox. Delivery is
+    at-least-once. Consumers deduplicate by CloudEvents id and use aggregate revision
+    to reject stale facts. Export sequence may contain gaps and is not global Kafka order.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:
@@ -13,35 +13,113 @@ servers:
     host: localhost:9092
     protocol: kafka
 channels:
-  stockEvents:
+  availabilityFacts:
     address: t.inventory.stock.events.v1
-    description: Snapshot availability per-SKU; không mang reservation hay stock per-warehouse.
-    x-message-key: sku_id
-    x-ordering-scope: sku_id
+    description: Minimal warehouse and stock-position snapshots for Search.
+    x-owner: inventory-service
     x-delivery-semantic: at-least-once
     x-deduplication-key: CloudEvents.id
-    x-ordering-guard: data.stock_revision
+    x-ordering-scope: message-specific aggregate key
+    x-ordering-guard: aggregaterevision
     x-max-payload-bytes: 16384
-    x-retention: 14d
+    x-retention: 30d-minimum
     x-retry-policy:
       strategy: consumer-managed-retry-with-dlq
       dead-letter-topic: t.inventory.stock.events.v1.dlq
     x-data-classification: INTERNAL
-    x-consumers: [search-service, product-detail-bff]
+    x-consumers: [search-service]
     messages:
-      stockSnapshot: { $ref: '#/components/messages/stockSnapshot' }
+      stockPositionChanged: { $ref: '#/components/messages/stockPositionChanged' }
+      warehouseAvailabilityChanged: { $ref: '#/components/messages/warehouseAvailabilityChanged' }
+  orderFacts:
+    address: t.inventory.order.events.v1
+    description: Reservation, physical dispatch, and refund-inspection facts for Order reconciliation.
+    x-owner: inventory-service
+    x-message-key: order_id
+    x-ordering-scope: order_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: aggregaterevision
+    x-max-payload-bytes: 262144
+    x-retention: 30d-minimum
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.inventory.order.events.v1.dlq
+    x-data-classification: INTERNAL
+    x-consumers: [order-service]
+    messages:
+      reservationReserved: { $ref: '#/components/messages/reservationReserved' }
+      reservationCommitted: { $ref: '#/components/messages/reservationCommitted' }
+      reservationReleased: { $ref: '#/components/messages/reservationReleased' }
+      reservationLineDispatched: { $ref: '#/components/messages/reservationLineDispatched' }
+      allItemsInspectionCompleted: { $ref: '#/components/messages/allItemsInspectionCompleted' }
 operations:
-  publishStockSnapshot:
+  publishStockPositionChanged:
     action: send
-    channel: { $ref: '#/channels/stockEvents' }
-    summary: >-
-      Inventory phát full snapshot sau mỗi mutation làm thay đổi aggregate
-      available_quantity của SKU; sequence bằng stock_revision.
-    messages: [{ $ref: '#/channels/stockEvents/messages/stockSnapshot' }]
+    channel: { $ref: '#/channels/availabilityFacts' }
+    summary: Publish a position snapshot after available_to_sell changes.
+    x-message-key: warehouse_id:sku_id
+    messages: [{ $ref: '#/channels/availabilityFacts/messages/stockPositionChanged' }]
+  publishWarehouseAvailabilityChanged:
+    action: send
+    channel: { $ref: '#/channels/availabilityFacts' }
+    summary: Publish a warehouse eligibility snapshot after activity or outage changes.
+    x-message-key: warehouse_id
+    messages: [{ $ref: '#/channels/availabilityFacts/messages/warehouseAvailabilityChanged' }]
+  publishReservationReserved:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/reservationReserved' }]
+  publishReservationCommitted:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/reservationCommitted' }]
+  publishReservationReleased:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/reservationReleased' }]
+  publishReservationLineDispatched:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/reservationLineDispatched' }]
+  publishAllItemsInspectionCompleted:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/allItemsInspectionCompleted' }]
 components:
   messages:
-    stockSnapshot:
-      name: stockSnapshotV1
-      title: SKU availability snapshot
+    stockPositionChanged:
+      name: stockPositionChangedV1
+      title: Stock position availability changed
       contentType: application/cloudevents+json
-      payload: { $ref: './schemas/stock-snapshot.schema.json' }
+      payload: { $ref: './schemas/stock-position-changed.schema.json' }
+    warehouseAvailabilityChanged:
+      name: warehouseAvailabilityChangedV1
+      title: Warehouse availability changed
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/warehouse-availability-changed.schema.json' }
+    reservationReserved:
+      name: reservationReservedV1
+      title: Whole order reserved
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/reservation-reserved.schema.json' }
+    reservationCommitted:
+      name: reservationCommittedV1
+      title: Whole order committed
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/reservation-committed.schema.json' }
+    reservationReleased:
+      name: reservationReleasedV1
+      title: Whole order reservation released
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/reservation-released.schema.json' }
+    reservationLineDispatched:
+      name: reservationLineDispatchedV1
+      title: Reservation line physically dispatched
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/reservation-line-dispatched.schema.json' }
+    allItemsInspectionCompleted:
+      name: allItemsInspectionCompletedV1
+      title: All expected refund items received and final-inspected
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/all-items-inspection-completed.schema.json' }

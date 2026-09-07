@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/inventory/v1/schemas/inventory-event-common.schema.json",
+  "title": "Inventory CloudEvent extensions",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["correlationid", "causationid", "sequence", "aggregatetype", "aggregateid", "aggregaterevision"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "source": { "const": "/services/inventory" },
+        "correlationid": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "causationid": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "aggregatetype": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "aggregateid": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "aggregaterevision": { "type": "integer", "minimum": 1 }
+      }
+    }
+  ]
+}

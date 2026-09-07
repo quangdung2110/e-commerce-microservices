@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/inventory/v1/schemas/reservation-released.schema.json",
+  "allOf": [
+    { "$ref": "./inventory-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "subject", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.inventory.reservation.released.v1" },
+        "dataschema": { "const": "/contracts/events/inventory/v1/schemas/reservation-released.schema.json" },
+        "subject": { "type": "string", "pattern": "^orders/[^/]{1,128}$" },
+        "aggregatetype": { "const": "order-reservation" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["order_id", "reason", "reservation_revision", "lines"],
+          "properties": {
+            "order_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "reason": { "enum": ["PAYMENT_FAILED", "RESERVATION_EXPIRED", "STOCK_DISCREPANCY"] },
+            "order_exception_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "reservation_revision": { "type": "integer", "minimum": 1 },
+            "lines": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "./reservation-allocation-line.schema.json" } }
+          },
+          "if": { "properties": { "reason": { "const": "STOCK_DISCREPANCY" } }, "required": ["reason"] },
+          "then": { "required": ["order_exception_id"] }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/inventory/v1/schemas/reservation-allocation-line.schema.json",
+  "title": "Reservation allocation line",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["order_line_id", "sku_id", "quantity", "warehouse_id"],
+  "properties": {
+    "order_line_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "sku_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "quantity": { "type": "integer", "minimum": 1 },
+    "warehouse_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+  }
+}
