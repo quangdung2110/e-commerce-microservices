@@ -2,7 +2,7 @@
 // Invoke with scripted_upsert: true and upsert: {}.
 // Required params: catalog_revision (long), indexed_at (ISO-8601), event_id,
 // and fields. `fields` may contain only catalog-owned product mapping fields;
-// it must never contain stock- or review-owned fields.
+// it must never contain availability- or review-owned fields.
 if (ctx._source.is_deleted == true) { ctx.op = 'none'; return; }
 if (ctx._source.catalog_revision != null
     && params.catalog_revision <= ctx._source.catalog_revision) {

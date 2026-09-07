@@ -21,7 +21,7 @@ verified_against_commit: null
 | Latency search | Phân vị của `http_server_requests_seconds` theo endpoint | TBD |
 | Latency suggest | Như trên, tách riêng vì ngân sách chặt hơn nhiều | TBD |
 | Freshness catalog | `catalog_indexed_at` trừ CloudEvent `time` | TBD |
-| Freshness tồn kho | `stock_indexed_at` trừ `stock_observed_at` | TBD |
+| Freshness availability | `availability_indexed_at` trừ `availability_observed_at` | TBD |
 | Consumer lag | Lag theo topic và partition | TBD |
 | Tỉ lệ lỗi indexing | `search_indexing_total{status="fail"}` chia tổng | TBD |
 
@@ -84,8 +84,9 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_indexing_total{status="guard_blocked"}` | counter | `topic`, `event_type` |
 | `search_job_duration_seconds` | histogram | `job` |
 | `search_reindex_state` | gauge | `phase` |
-| `search_stock_snapshot_export_total` | counter | `status` |
-| `search_stock_snapshot_age_seconds` | gauge | Không có |
+| `search_inventory_availability_export_total` | counter | `status` |
+| `search_inventory_availability_snapshot_age_seconds` | gauge | Không có |
+| `search_inventory_readiness_total` | counter | `operation`, `status` |
 | `search_review_snapshot_export_total` | counter | `status` |
 | `search_review_snapshot_age_seconds` | gauge | Không có |
 | `search_es_bulk_actions` | histogram | `job` |
@@ -121,7 +122,7 @@ gian trong ứng dụng.
 | Consumer lag tăng | Lag vượt ngưỡng và tăng liên tục | High | Search on-call | Consumer lag |
 | Freshness kém | Độ trễ indexing vượt ngưỡng | Medium | Search on-call | Consumer lag |
 | Payload invalid tăng | `search_payload_invalid_total` tăng đột biến | Medium | Search + producer | Contract drift |
-| `document_missing` tăng | Vượt nền bình thường | Medium | Search on-call | Lệch projection |
+| Inventory `document_missing` | Bất kỳ availability event nào thiếu document | High | Search + Inventory | Readiness contract violation |
 | Enrichment miss tăng | Vượt nền bình thường | Low | Search on-call | Lệch danh mục |
 | Job không chạy | Job hằng ngày không hoàn thành đúng cửa sổ | Medium | Search on-call | Job thất bại |
 | Reindex quá hạn | Run vượt giới hạn thời gian hoặc `FAILED` | Medium | Search on-call | Reindex |
@@ -140,7 +141,8 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 | Consumer lag cao | Dữ liệu cũ; tăng số instance tới trần partition; kiểm tra thao tác diện rộng đang chiếm băng thông ghi |
 | Producer đổi schema | `search_payload_invalid_total` tăng; event bị bỏ qua; cần phối hợp với producer rồi reindex |
 | Product export API lỗi | Chỉ ảnh hưởng reindex; traffic đọc bình thường |
-| Inventory snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Inventory |
+| Inventory readiness API lỗi | Catalog consumer không commit offset; Inventory chưa được publish SKU mới; dữ liệu hiện hữu tiếp tục phục vụ |
+| Inventory availability export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Inventory |
 | Review rating snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Review |
 | Job singleton kẹt lock | Job bỏ chu kỳ; số đếm và suggestion cũ dần |
 | Deploy nhiều version song song | An toàn nếu mapping không đổi; đổi mapping bắt buộc đi qua reindex |
@@ -194,7 +196,7 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 |---|---|
 | Consumer lag | Phân biệt Kafka chậm, Elasticsearch chậm hay thao tác diện rộng chiếm băng thông |
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
-| Lệch projection | `document_missing` hoặc enrichment miss tăng; import stock và rating snapshot rồi replay offsets, recompute count, rồi mới reindex catalog |
+| Lệch projection | Availability `document_missing` là readiness violation: dừng ACK, xác minh registration/document, rồi bootstrap per-SKU availability + change feed; rating/enrichment xử lý theo nguồn |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
 | Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
 | Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |

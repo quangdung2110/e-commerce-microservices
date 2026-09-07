@@ -1,17 +1,23 @@
 ---
 doc_id: search-adr-018
 service: search
-status: accepted
+status: superseded
 date: 2026-09-07
 decision_owners:
   - Search Service team
 supersedes: ADR-014-inventory-stock-snapshot-contract
+superseded_by: ADR-019-inventory-owned-sku-availability
 evidence:
   - contracts/events/inventory/v1/asyncapi.yaml
   - contracts/http/inventory/exports/v1/openapi.yaml
 ---
 
 # ADR-018 — Inventory position projection and export watermark
+
+## Status
+
+`Superseded` by [ADR-019](./ADR-019-inventory-owned-sku-availability.md). The text
+below is retained only as the historical decision that exposed the missing reverse lookup.
 
 ## Context
 

@@ -6,6 +6,7 @@ date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+extended_by: ADR-019-inventory-owned-sku-availability
 evidence:
   - docs/product/data.md
   - docs/search/schema/scripts/catalog_tombstone.painless
@@ -26,13 +27,17 @@ một endpoint của Product vốn không tồn tại.
 
 ## Decision
 
+ADR-019 extends the Inventory-specific purge gate: Search revokes Inventory readiness
+after tombstone and physical purge cannot run before that revocation succeeds.
+
 Xóa ở Search gồm hai bước tách bạch:
 
 1. **Tombstone.** Event xóa đặt `is_deleted = true`, `deleted_at` và
    `is_in_stock = false`. Document biến mất khỏi mọi kết quả ngay lập tức. Mọi
    script kiểm tra `is_deleted` trước tiên và bỏ qua mọi cập nhật lên document
    tombstone.
-2. **Purge.** Một job xóa vật lý document đã tombstone lâu hơn cửa sổ bảo vệ. Cửa
+2. **Purge.** Một job revoke Inventory readiness rồi xóa vật lý document đã
+   tombstone lâu hơn cửa sổ bảo vệ. Cửa
    sổ này phải dài hơn retention của mọi topic Search tiêu thụ, để không còn event
    nào có thể được phát lại sau khi document biến mất.
 

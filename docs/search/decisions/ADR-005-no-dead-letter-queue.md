@@ -6,6 +6,7 @@ date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+partially_superseded_by: ADR-019-inventory-owned-sku-availability
 evidence: []
 ---
 
@@ -20,14 +21,18 @@ riêng.
 
 ## Decision
 
+> The Inventory missing-document clause below is historical and superseded by
+> ADR-019. Search still has no DLQ, but an availability missing document is retried
+> without ACK as a readiness contract violation. The Review behavior remains active.
+
 Bỏ hoàn toàn DLQ. Chính sách xử lý lỗi:
 
 - **Lỗi tạm thời** (timeout, 429, 503, mất kết nối): không commit offset, để Kafka
   gửi lại.
 - **Lỗi không tự hồi phục**: ghi log ở mức error, tăng metric tương ứng, bỏ qua
   record và ACK.
-- **Document không tồn tại cho stock/review**: ghi metric và bỏ qua; đây là trạng
-  thái bình thường chứ không phải lỗi.
+- **Document không tồn tại cho Review**: ghi metric và bỏ qua; đây có thể là trạng
+  thái bình thường. Inventory availability tuân theo ngoại lệ ADR-019.
 - **Phục hồi**: full reindex là công cụ phục hồi chính thức cho mọi mất mát
   projection.
 

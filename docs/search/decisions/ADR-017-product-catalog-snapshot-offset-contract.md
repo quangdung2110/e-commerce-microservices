@@ -7,6 +7,7 @@ decision_owners:
   - Search Service team
   - Product Service team
 supersedes: null
+partially_superseded_by: ADR-019-inventory-owned-sku-availability
 evidence:
   - contracts/http/product/v1/openapi.yaml
   - docs/product/decisions/ADR-014-catalog-snapshot-replay-offsets.md
@@ -22,8 +23,8 @@ evidence:
 ## Context
 
 ADR-006 định nghĩa pha Catch-up đọc từ watermark trước Build, nhưng chưa quy định
-service nào cấp boundary cho catalog snapshot. Inventory và Review đã trả
-`replay_from_offsets` cùng snapshot export; Product là ngoại lệ khiến Search phải
+service nào cấp boundary cho catalog snapshot. Review trả `replay_from_offsets`, còn
+Inventory dùng fixed export watermark/change feed; Product là ngoại lệ khiến Search phải
 tự đọc Kafka và làm contract reindex không đồng nhất.
 
 ## Decision
@@ -31,14 +32,13 @@ tự đọc Kafka và làm contract reindex không đồng nhất.
 Search coi `replay_from_offsets` từ Product là boundary có thẩm quyền cho catalog:
 
 1. Import toàn bộ Category export và Product export vào index versioned mới.
-2. Chỉ sau khi Build của catalog, stock và rating hoàn tất, consumer tạm seek
-   inclusive tới offsets Product/Inventory/Review trả về và ghi trực tiếp vào index
-   mới.
+2. Chỉ sau khi Build của catalog, availability và rating hoàn tất, consumer tạm seek
+   inclusive tới offsets Product/Review; Inventory tiếp tục từ change-feed watermark.
 3. Search không tự chụp Kafka end offset cho `t.category.events` hoặc
    `t.product.events`.
 
 Offsets được lưu theo source/topic/partition cùng `run_id` và export session để
-resume. `category_revision`, `catalog_revision`, `stock_revision` và
+resume. `category_revision`, `catalog_revision`, `availability_revision` và
 `review_revision` vẫn là guard duy nhất quyết định event có được apply hay không.
 
 `t.catalog.control.events` chỉ điều phối reindex. Control event mới trong Build hoặc

@@ -16,9 +16,10 @@ verified_against_commit: null
 ## 1. Architecture context
 
 Search là read side của kiến trúc CQRS ở phạm vi catalog. Write side nằm ở
-Product (catalog và giá), Inventory (tồn kho) và Review (rating). Search chỉ nhận
-dữ liệu qua Kafka, không gọi ngược sang các service đó trong hot path; full reindex
-mới gọi internal export API của Product, Inventory và Review.
+Product (catalog và giá), Inventory (tồn kho) và Review (rating). Search nhận projection
+data qua Kafka; sau catalog write nó gọi idempotent Inventory readiness để mở publication
+gate. Query hot path không gọi upstream; full reindex gọi export API của Product,
+Inventory và Review.
 
 Trust boundary: client không bao giờ chạm trực tiếp Search. API Gateway xác thực
 JWT rồi forward request kèm claim đã verify. Elasticsearch nằm trong mạng nội bộ
@@ -45,7 +46,7 @@ flowchart LR
   CC[Category count recompute] --> ES
   TP[Tombstone purger] --> ES
   RJ -.export.-> P[Product internal API]
-  RJ -.stock export.-> INV[Inventory internal API]
+  RJ -.availability export.-> INV[Inventory internal API]
   RJ -.rating export.-> REV[Review internal API]
 ```
 
@@ -56,8 +57,8 @@ flowchart LR
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
 | Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
 | Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
-| Indexing worker | Consume snapshot catalog/category/stock/review, transform event thành lệnh ghi, apply guard | Bỏ qua guard hoặc tự gọi ngược Product trong hot path | Kafka, write alias | `worker` |
-| Reindex job | Build index mới, import catalog/stock/rating snapshot kèm replay offsets, catch-up, cutover alias | Ghi qua write alias trong pha catch-up hoặc tự chụp catalog watermark | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
+| Indexing worker | Consume snapshot catalog/category/availability/review, transform event thành lệnh ghi, apply guard; đăng ký readiness sau catalog create | Bỏ qua guard hoặc upsert document từ Availability | Kafka, write alias, Inventory readiness API | `worker` |
+| Reindex job | Build index mới, import catalog/per-SKU availability/rating snapshot, catch-up, cutover alias | Tạo index availability riêng hoặc tự chụp catalog watermark | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
 | Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree | Elasticsearch | `worker` |
 | Tombstone purger | Xóa document đã tombstone quá cửa sổ bảo vệ | Xóa document còn trong cửa sổ bảo vệ | Elasticsearch | `worker` |
@@ -90,7 +91,7 @@ Offset chỉ được commit sau khi toàn bộ record trong batch đã apply xo
 | Dữ liệu | Mức nhất quán | Độ trễ chấp nhận |
 |---|---|---|
 | Catalog, giá công bố, trạng thái | Eventual | Vài giây kể từ commit ở Product |
-| `available_quantity`, `is_in_stock` | Eventual | Vài giây; chỉ dùng để hiển thị/lọc |
+| `is_in_stock` | Eventual | Vài giây; Inventory sở hữu phép tính, Search chỉ dùng để hiển thị/lọc |
 | Rating | Eventual | Vài giây tới vài phút |
 | `categories.product_count` | Eventual, self-healing | Bằng chu kỳ job recompute |
 | Suggestion | Eventual | Tới một ngày (rebuild hàng ngày) |
@@ -107,24 +108,26 @@ lag và job recompute. Phục hồi bằng full reindex.
 Search không có lock nghiệp vụ. Tính đúng đắn dựa trên bốn cơ chế:
 
 - **Guard theo từng nguồn.** Mỗi nguồn dữ liệu có một field revision riêng trên
-  document: `catalog_revision`, `category_revision`, `stock_revision` và
+  document: `catalog_revision`, `category_revision`, `availability_revision` và
   `review_revision`. Product, Inventory và Review phải cấp revision đơn điệu trong
   đúng scope aggregate; timestamp chỉ là observability, không là ordering guard
   ([ADR-015](./decisions/ADR-015-upstream-revision-guards.md)).
 - **Kafka partition ordering.** Product event dùng key `product_id`, Inventory
   dùng `sku_id`, Review dùng `product_id`. Ordering chỉ được cam kết trong cùng
   key, và guard là thứ bảo vệ khi ordering không đủ.
-- **Snapshot semantics.** Event catalog, stock và rating đều mang snapshot đầy đủ
-  của field thuộc nguồn đó. Mọi export Product/Inventory/Review chụp replay offsets
-  trước scan; vì vậy import snapshot rồi replay event từ offsets đó không bỏ lỡ
-  mutation giữa lúc build. Search không tự tạo catalog boundary.
+- **Snapshot semantics.** Event catalog, availability và rating đều mang snapshot đầy đủ
+  của field thuộc nguồn đó. Product/Review export dùng replay offsets; Inventory dùng
+  fixed export watermark và ordered change feed. Search không tự tạo boundary.
 - **`conflicts=proceed` cho `_update_by_query`.** Version conflict do ghi đồng thời
   được bỏ qua có kiểm soát; guard đảm bảo không có lost update về mặt nghiệp vụ.
 
-Race condition quan trọng: event tồn kho hoặc rating tới trước khi document SKU
-tồn tại. Xử lý bắt buộc là bỏ qua, ghi metric và để event catalog sau đó tạo
-document — không tự upsert, vì upsert từ nguồn không sở hữu catalog sẽ tạo
-document rỗng ([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
+Inventory availability không được phép tới trước document SKU: sau khi Product catalog
+upsert thành công, Search đăng ký readiness với Inventory; chỉ sau đó Inventory mới được
+publish/export snapshot hiện hành của SKU. `document_missing` khi apply availability là
+vi phạm contract, Search ghi metric và không commit offset để retry, tuyệt đối không
+upsert. Rating không có handshake nên missing rating vẫn là no-op. Quy tắc này cho phép
+giữ availability ngay trong `products`, không cần thêm index reverse lookup
+([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
 
 ## 6. Deployment topology
 
@@ -144,9 +147,11 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
 
 - Không truy cập database của service khác; catalog chỉ vào qua Kafka hoặc export
   API của Product.
-- Không gọi đồng bộ sang Product/Inventory/Review trong đường xử lý event.
-- Không làm shared availability store cho Product Detail BFF; PDP có projection
-  Inventory riêng và Product là catalog authority.
+- Không gọi đồng bộ sang Product/Review trong đường xử lý event. Ngoại lệ duy nhất là
+  readiness PUT/DELETE idempotent sang Inventory sau catalog write/tombstone; không có
+  sync call trong đường apply availability.
+- Không làm shared availability store cho Product Detail BFF; direct Inventory
+  integration của PDP cần contract/consumer review riêng và Product là catalog authority.
 - Không đặt business logic trong controller hoặc Kafka listener; transform và rule
   nằm ở application layer.
 - Mọi ghi qua write alias; pha catch-up của reindex là ngoại lệ duy nhất và ghi

@@ -6,6 +6,7 @@ date: 2026-09-04
 decision_owners:
   - Search Service team
 supersedes: ADR-004-per-source-ordering-guard
+partially_superseded_by: ADR-019-inventory-owned-sku-availability
 evidence:
   - docs/product/data.md
   - contracts/events/inventory/v1/asyncapi.yaml
@@ -22,15 +23,18 @@ bỏ một state hợp lệ khi timestamp trùng hoặc clock khác nhau.
 
 ## Decision
 
+> The Inventory-specific name below is historical and is superseded by ADR-019;
+> Product, Category, and Review clauses remain accepted.
+
 Catalog dùng `catalog_revision` per Product aggregate; Category dùng `category_revision`
-per Category; Stock dùng `stock_revision` per SKU; Review dùng `review_revision` per
+per Category; Inventory dùng `availability_revision` per SKU; Review dùng `review_revision` per
 product rating aggregate. Mọi guard dùng so sánh `>` chặt và source chỉ ghi field mình
 sở hữu.
 
 ## Consequences
 
 Không cần inbox/dedupe store cho duplicate event. Inventory refactor là dependency bắt
-buộc trước khi stock path đạt trạng thái implemented.
+buộc trước khi availability path đạt trạng thái implemented.
 
 ## Verification
 

@@ -27,7 +27,7 @@ verified_against_commit: null
 | Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
 | Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
 | Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
-| Availability snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | proposed |
+| Availability readiness + snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | proposed |
 | Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
 
 Search **không phát event**. Không có mục “event phát ra” trong tài liệu này là
@@ -41,11 +41,11 @@ một khẳng định contract, không phải thiếu sót.
   `X-User-*` header nào khi có public ingress bypass Gateway.
 - Reindex là admin command qua Gateway, dùng `/api/v2/search/reindex-runs`; nó
   **không** dùng prefix `/internal`, vì `/internal/v1` được dành cho mTLS
-  service-to-service như Product export và Inventory stock export. Gateway route
+  service-to-service như Product export và Inventory availability export. Gateway route
   của hai operation admin phải có priority cao hơn public route, bắt buộc JWT và
   `ADMIN`.
-- Breaking change chạy song song ở version path mới. V1 legacy được giữ tới khi
-  frontend và consumer đã chuyển, rồi mới deprecate/remove.
+- Breaking change chạy ở version path mới. V1 đã bị gỡ; frontend và Gateway còn gọi
+  `/api/v1/search/**` phải migrate sang v2, không có giai đoạn chạy song song nữa.
 - Mọi lỗi dùng `application/problem+json` theo RFC 9457 và
   [`Problem`](../../contracts/shared/json-schema/v1/problem.schema.json): `code`,
   `trace_id`, `retryable` và `errors[]`. Không dùng legacy
@@ -193,7 +193,7 @@ CloudEvents 1.0 trong `contracts/events/product/v1`; Kafka key `product_id`,
 
 | Event | Hành động của Search | Ghi chú |
 |---|---|---|
-| `com.ecommerce.catalog.sku-upserted.v1` | Upsert đúng một SKU snapshot | `data.product` + `data.sku`; không chạm stock/rating |
+| `com.ecommerce.catalog.sku-upserted.v1` | Upsert đúng một SKU snapshot rồi đăng ký Inventory readiness | `data.product` + `data.sku`; không chạm availability/rating |
 | `com.ecommerce.catalog.sku-deleted.v1` | Tombstone đúng một SKU | Không tạo document mới |
 | `com.ecommerce.catalog.product-deleted.v1` | Tombstone toàn bộ `data.sku_ids` | Không tạo document mới |
 
@@ -219,17 +219,20 @@ cutover, rồi được coalesce thành run mới.
 ### 4.4 `t.inventory.stock.events.v1` — tồn kho
 
 Contract đích là [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml).
-Search nhận `com.ecommerce.inventory.stock-position.changed.v1`, key
-`(warehouse_id, sku_id)`, và `com.ecommerce.inventory.warehouse-availability.changed.v1`,
-key `warehouse_id`. Search lưu revision độc lập cho từng stock position/warehouse rồi
-derive `is_in_stock = true` khi tồn tại position có `available_to_sell > 0` tại warehouse
-active và không `OUTAGE`. `sequence` là export cursor, không phải ordering guard; guard là
-`aggregaterevision`. `t.inventory.events` và `INVENTORY_STOCK_CHANGED` chỉ là adapter legacy.
+Search chỉ nhận `com.ecommerce.inventory.sku-availability.changed.v1`, key `sku_id`.
+Payload là snapshot đầy đủ gồm `sku_id`, `is_in_stock`, `availability_revision` và
+`observed_at`;
+`aggregaterevision` bằng revision đó. Inventory sở hữu việc fan-out warehouse change,
+đọc mọi stock position và tính boolean. Search không lưu warehouse/position, không có
+reverse lookup và chỉ copy boolean vào document bằng guard `availability_revision`.
 
-Event này **không được tạo document**. Document chưa tồn tại hoặc đang tombstone
-thì bỏ qua và ghi metric — đó là trạng thái bình thường khi SKU vừa bị xóa hoặc
-chưa kịp được index ([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
-Inventory không gửi `product_id`; Search join bằng opaque `sku_id` do Product sở hữu.
+Event này **không được tạo document**. Search gọi readiness API sau khi catalog upsert
+đã tạo document; Inventory bắt buộc không publish hoặc đưa SKU vào export trước lần
+đăng ký đó và phải phát snapshot hiện hành khi nhận đăng ký. Vì vậy document chưa tồn
+tại lúc apply là contract violation: Search ghi metric, không ACK/commit offset và không
+upsert. Document tombstone vẫn chặn event trễ. Inventory không gửi `product_id`; identity
+chung là opaque `sku_id` do Product sở hữu
+([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
 
 ### 4.5 `t.review.events` — rating
 
@@ -241,20 +244,23 @@ bình, tổng số review, `review_revision` và `observed_at`. Áp dụng bằn
 
 ## 5. Contract nội bộ Search gọi ra
 
+Luồng thường gọi `PUT /exports/inventory/v1/search-projection-readiness/{sku_id}`
+sau khi catalog upsert thành công. Khi SKU tombstone, Search gọi `DELETE` readiness
+sau khi tombstone đã được ghi và bắt buộc hoàn tất trước physical purge.
+
 Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
 `GET /internal/v1/products/export` của Product,
 Inventory [snapshot session và change feed](../../contracts/http/inventory/exports/v1/openapi.yaml)
 và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/internal/v1/openapi.yaml)
-để backfill catalog, stock và rating. Product/Review trả Kafka replay boundary của
+để backfill catalog, availability và rating. Product/Review trả Kafka replay boundary của
 contract tương ứng; Inventory trả fixed `export_watermark`, sau đó Search đọc mọi change
 có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng Inventory watermark.
 Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 
-- V1 đang là API legacy đã có frontend sử dụng. Nó trả field giá legacy,
-  `matching_skus`/collapse, category phẳng và error body riêng; không được sửa âm
-  thầm để giống v2. Gateway chạy hai version song song cho tới khi frontend chuyển.
+- V1 legacy đã bị gỡ khỏi Search. Frontend/Gateway còn dùng route v1 là migration
+  gap và sẽ nhận lỗi cho tới khi chuyển sang v2; không được mô tả v1 là đang chạy.
 - V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
   `NOT product_id`. PDP dùng [Product Detail BFF](../product-detail-bff/README.md):
   BFF gọi Product buyer-read. Inventory Release 1 chỉ đăng ký Search làm availability
@@ -267,7 +273,7 @@ Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 - Thêm `event_type` mới vào topic đang dùng là tương thích: Search ignore và ACK.
 - Với HTTP, thêm tham số optional và field response mới là tương thích; đổi hình
   dạng response, đổi mã lỗi hoặc đổi ngữ nghĩa cursor là breaking và cần major
-  path mới. V1 legacy và v2 canonical phải chạy song song trong migration.
+  path mới. Consumer phải migrate trước khi version cũ bị gỡ ở lần thay đổi tiếp theo.
 - Cursor không phải contract ổn định giữa các version: client phải coi nó là chuỗi
   đục và không được tự sinh.
 - Trước khi bất kỳ interaction nào đạt `implemented`: phải có OpenAPI/AsyncAPI

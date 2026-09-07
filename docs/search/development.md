@@ -103,7 +103,7 @@ cùng lệnh này thay vì tạo quy trình riêng cho máy cá nhân.
 | Integration | Consumer đến index đến API, guard revision, tombstone, category control reindex | Testcontainers Elasticsearch và Kafka |
 | | Image Elasticsearch phải được build kèm plugin `analysis-icu`; cả ba mapping dùng `icu_tokenizer`/`icu_folding` nên thiếu plugin là lỗi ngay ở bước tạo index | `ImageFromDockerfile` trong `AbstractSearchIntegrationTest` |
 | Job | Reindex ba pha, rebuild suggestion, recompute count, purge | Testcontainers |
-| Contract | Product CloudEvents v1 (effective thumbnail) và Inventory stock snapshot/export v1 khớp kỳ vọng Search | Fixture chung với producer |
+| Contract | Product CloudEvents v1 (effective thumbnail) và Inventory per-SKU availability/readiness/export v1 khớp kỳ vọng Search | Fixture chung với producer |
 
 Test tích hợp không được mock Elasticsearch client: phần lớn rủi ro của service nằm
 ở mapping, script và ngữ nghĩa truy vấn, mà mock không phát hiện được.
@@ -149,8 +149,9 @@ replay event; không dùng cách này ở bất kỳ môi trường dùng chung 
 ## 9. Test data và fixtures
 
 Fixture là event mẫu của Product, Inventory và Review, đặt cùng test và version
-hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null, Inventory snapshot
-seed + event revision cũ/trùng + replay offset, và Review rating aggregate snapshot
+hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null, Inventory per-SKU
+availability snapshot + readiness register/revoke + event revision cũ/trùng + change feed,
+và Review rating aggregate snapshot
 seed + `review_revision` cũ/trùng + replay offset. Dữ liệu catalog mẫu phải là dữ liệu
 bịa; không dùng export production. Index không chứa PII nên fixture cũng không được
 đưa PII vào.
@@ -161,7 +162,7 @@ bịa; không dùng export production. Index không chứa PII nên fixture cũn
 - Khi kết quả sai, so sánh trực tiếp bằng cách chạy chính truy vấn đó lên
   Elasticsearch local rồi thu hẹp dần filter.
 - Khi document sai, đọc `_source` của SKU đó và kiểm tra `catalog_revision`,
-  `stock_revision`, `review_revision`, `*_indexed_at` và `last_*_event_id` để biết
+  `availability_revision`, `review_revision`, `*_indexed_at` và `last_*_event_id` để biết
   nguồn nào ghi sau cùng.
 - Khi consumer im lặng, kiểm tra CloudEvents `type` có nằm trong allowlist không trước
   khi nghi ngờ lỗi kết nối; ignore và ACK là hành vi thiết kế.

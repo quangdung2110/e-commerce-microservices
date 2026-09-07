@@ -51,9 +51,9 @@ kho, quản trị sản phẩm và point-read cho luồng giao dịch. Cart và 
 gọi gRPC của Product cho catalog/giá và reserve tại Inventory cho tồn kho — tuyệt
 đối không đọc Search, vì Search là eventual consistent.
 
-Search cũng không là Product Detail provider. Product Detail BFF đọc catalog qua Product
-và materialize availability từ Inventory trong projection riêng; không dùng Search index
-để che khoảng trống buyer point-read.
+Search cũng không là Product Detail provider. Product Detail BFF đọc catalog qua Product;
+nếu cần availability trực tiếp từ Inventory thì interaction đó phải có contract và consumer
+review riêng, không được dùng Search index làm point-read hay suy rộng quyền của Search.
 
 Search không có transaction nghiệp vụ: mọi thay đổi state đều là hệ quả của một
 event upstream đã commit ở service sở hữu dữ liệu.
@@ -67,11 +67,11 @@ là projection.
 |---|---|---|
 | Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` + internal snapshot export/replay offsets |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
-| `available_quantity` | [Inventory](../inventory/interfaces.md#4-events-phát-ra) | `t.inventory.stock.events.v1` + internal snapshot export |
+| `is_in_stock` | [Inventory](../inventory/interfaces.md#4-events-phát-ra) | Per-SKU availability event + readiness/snapshot/change export |
 | `product_rating_avg`, `product_rating_count` | [Review](../review/interfaces.md) | `t.review.events` + internal aggregate snapshot export |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 
-Search sở hữu các giá trị dẫn xuất phục vụ query: `is_in_stock`, `has_promotion`,
+Search sở hữu các giá trị dẫn xuất phục vụ query: `has_promotion`,
 token filter, `weight` của suggestion và `product_count` của category. Product
 công bố snapshot cấu trúc category; Search chỉ materialize ancestor/path/level
 từ snapshot đó, không là owner của thuật toán dựng cây. Không service nào được ghi trực tiếp vào
@@ -93,16 +93,17 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 | Inbound | Storefront qua API Gateway | HTTP | Search, suggest, browse, facet | Required | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
-| Inbound | `inventory-service` | Kafka | Stock-position và warehouse-availability snapshot để derive `is_in_stock` | Required | [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
+| Inbound | `inventory-service` | Kafka | Snapshot `is_in_stock` theo SKU do Inventory tính | Required | [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Required cho rating freshness; không nằm trên query hot path | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
 | Outbound | `product-service` | HTTP nội bộ | Export Category/Product kèm replay offsets cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
-| Outbound | `inventory-service` | HTTP nội bộ | Fixed-watermark availability snapshot và change feed cho full reindex | Required | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) |
+| Outbound | `inventory-service` | HTTP nội bộ | Đăng ký/revoke readiness và đọc fixed-watermark per-SKU availability export | Required | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) |
 | Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Required để cutover index giữ đầy đủ rating | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Outbound | Elasticsearch | HTTP | Store duy nhất | Required | [`schema/`](./schema) |
 
-Search **không phát** event nghiệp vụ nào. Không service nào được phép chờ tín
-hiệu từ Search.
+Search **không phát** event nghiệp vụ nào. Không command hay request nghiệp vụ nào
+được chờ Search; Inventory chỉ dùng readiness HTTP bất đồng bộ như publication gate
+cho projection, không đưa nó vào đường reserve/stock authoritative.
 
 ## 7. Critical invariants
 
@@ -112,7 +113,7 @@ hiệu từ Search.
 | `SEARCH-INV-002` | Một document trong index `products` và một item của API search là đúng một SKU; `_id = sku_id`. Product chỉ là ngữ cảnh hiển thị và khóa đếm DISTINCT. |
 | `SEARCH-INV-003` | Mọi count hiển thị cho browse/facet phải đếm DISTINCT `product_id`, không dùng `doc_count` theo SKU. |
 | `SEARCH-INV-004` | Event cũ hơn state hiện tại của document không được ghi đè state đó; guard theo từng nguồn dữ liệu. |
-| `SEARCH-INV-005` | Event tồn kho hoặc rating không được tạo document mới; chỉ event catalog của Product mới tạo document. |
+| `SEARCH-INV-005` | Event availability hoặc rating không được tạo document mới; chỉ Product được tạo document. Search phải đăng ký readiness sau khi document đã tồn tại; Inventory không được publish/export availability trước mốc đó. Missing document khi apply availability là contract violation, không ACK và tuyệt đối không upsert. |
 | `SEARCH-INV-006` | Document đã tombstone không được sống lại bởi event đến trễ trước khi bị purge. |
 | `SEARCH-INV-007` | Mọi lệnh ghi index đi qua write alias; không ghi trực tiếp vào index versioned trừ pha catch-up của reindex. |
 
@@ -153,7 +154,7 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 - **Chưa có contract test** giữa Search và ba producer.
 - **Cross-service contract chưa được implement.** Product đã chốt
   `thumbnail_storage_key` trong `sku-upserted` và export Category/Product kèm replay
-  offsets; Inventory đã có contract đích cho stock revision/snapshot export. Các
+  offsets; Inventory đã có contract đích cho per-SKU availability, readiness và snapshot/change export. Các
   contract vẫn mang trạng thái `proposed` và cần producer implementation, contract
   test, rồi mới chuyển Search khỏi adapter legacy.
 - **API v1 legacy đã bị gỡ.** Storefront chỉ còn `/api/v2/search/**`. Frontend đang

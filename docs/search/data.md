@@ -31,7 +31,7 @@ xây dựng lại từ đầu bằng full reindex mà không mất thông tin c�
 | ES index `categories` | Node danh mục và số đếm hiển thị | Product (danh mục); số đếm do Search tính |
 | ES index `search_suggestions` | Gợi ý autocomplete | Search tự sinh từ hai index trên |
 
-Search sở hữu mapping, alias, analyzer, token filter, `is_in_stock`,
+Search sở hữu mapping, alias, analyzer, token filter,
 `has_promotion`, `product_count`, `weight` và metadata projection/indexing. Product
 sở hữu snapshot cấu trúc category; Search chỉ materialize `ancestor_ids`, slug path,
 `level` và `is_leaf` từ snapshot đó. Không service nào khác được ghi vào Elasticsearch này.
@@ -98,9 +98,9 @@ erDiagram
         keyword category_id FK
         long base_price_vnd
         long selling_price_vnd
-        long available_quantity
+        boolean is_in_stock
         long catalog_revision
-        long stock_revision
+        long availability_revision
         long review_revision
         boolean is_deleted
     }
@@ -155,8 +155,7 @@ xem trong file mapping.
 | `base_price_vnd` | Product | Giá niêm yết admin đặt |
 | `selling_price_vnd` | Product | Giá công bố sau markdown; dùng cho sort và range filter |
 | `has_promotion` | Search dẫn xuất | `selling_price_vnd < base_price_vnd` |
-| `available_quantity` | Inventory | Tổng khả dụng per-SKU tại thời điểm snapshot, dùng `long` vì tổng nhiều kho có thể vượt `integer` |
-| `is_in_stock` | Search dẫn xuất | `available_quantity > 0`; không phải cam kết tồn kho |
+| `is_in_stock` | Inventory | Snapshot boolean theo SKU; không phải cam kết reserve và Search không tự derive từ position/warehouse. Field có thể tạm absent giữa catalog create và availability đầu tiên; query/response coi absent là `false`, không ghi một giá trị giả vào `_source`. |
 | `product_status` | Product | `DRAFT`, `ACTIVE`, `HIDDEN` |
 | `sku_status` | Product | `ACTIVE`, `INACTIVE` |
 | `category_ancestor_ids` | Product snapshot | ID của category hiện tại và tổ tiên; lọc theo nhánh bằng ID, không bằng slug |
@@ -165,7 +164,7 @@ xem trong file mapping.
 | `thumbnail_storage_key` | Product `sku-upserted` | Thumbnail hiệu lực: SKU IMAGE ưu tiên Product IMAGE; `null` khi không có ảnh. Response adapter dựng URL CDN hoặc placeholder. |
 | `is_deleted`, `deleted_at` | Search | Tombstone chặn zombie update trước khi purge |
 | `catalog_revision` | Product | Guard cho mọi event catalog của Product aggregate |
-| `stock_revision` | Inventory target contract | Revision đơn điệu per-SKU; timestamp chỉ dùng đo freshness |
+| `availability_revision` | Inventory target contract | Revision đơn điệu của aggregate availability per-SKU; timestamp chỉ dùng đo freshness |
 | `review_revision` | Review | Revision đơn điệu per product rating aggregate; guard chung cho snapshot export và event |
 | `category_revision` | Product | Guard `long` cho category snapshot |
 | `*_indexed_at` | Search | Mốc projection riêng từng source, không bị nguồn khác ghi đè |
@@ -184,11 +183,11 @@ chỉ được ghi các field thuộc nguồn đó
 |---|---|---|---|
 | Product catalog | `catalog_revision` (long) | `event.catalog_revision > doc.catalog_revision` | `product_id` |
 | Product category | `category_revision` (long) | `event.sequence > doc.category_revision` | `category_id` |
-| Inventory | `stock_revision` (long) | `event.stock_revision > doc.stock_revision` | `sku_id` |
+| Inventory | `availability_revision` (long) | `event.availability_revision > doc.availability_revision` | `sku_id` |
 | Review | `review_revision` (long) | `event.review_revision > doc.review_revision` | `product_id` |
 
 Guard dùng so sánh `>` chặt. Product đã cấp `catalog_revision` và
-`category_revision`; Inventory v1 định nghĩa `stock_revision` cùng stock snapshot
+`category_revision`; Inventory v1 định nghĩa `availability_revision` cùng per-SKU snapshot
 export. Các contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
 và contract test. Review v1 định nghĩa `review_revision` cho cả event và aggregate
 snapshot export. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
@@ -208,7 +207,8 @@ Elasticsearch không có khóa ngoại hay unique constraint, nên các ràng bu
 |---|---|
 | `_id = sku_id` cho index `products` | Worker luôn chỉ định `_id`, không dùng auto-id |
 | `_id = category_id` cho index `categories` | Như trên |
-| Document tồn tại trước khi apply stock/review | Không dùng `scripted_upsert` cho hai nguồn này |
+| Document tồn tại trước khi apply availability | Search đăng ký readiness chỉ sau catalog write; Inventory không publish/export trước readiness; script không `upsert`, missing document là contract violation và không ACK |
+| Document tồn tại trước khi apply review | Không dùng `scripted_upsert`; missing document là no-op có metric |
 | Document tombstone không nhận update | Guard `is_deleted` đứng đầu mọi script |
 | Field lạ không được index | `dynamic: strict` |
 | Không có hai index cùng nhận một write alias | Cutover bằng đúng một lệnh `_aliases` atomic |
@@ -225,7 +225,7 @@ nghĩa quan hệ được thay bằng mapping type và alias. Các quyết đị
 | `filter_tokens` | Filter/facet attribute bằng term filter | Encoding bắt buộc phân biệt string/number/boolean; UI OR các value cùng code, AND giữa các code |
 | `selling_price_vnd` | Range filter và sort giá | Phải reprice document khi markdown đổi |
 | `product_id` | Ngữ cảnh Product trên SKU hit và `cardinality` count | `cardinality` là xấp xỉ; cần `precision_threshold` đủ lớn |
-| `is_in_stock`, `has_promotion`, `is_deleted` | Term filter được cache bitset | Phải recompute khi nguồn đổi |
+| `is_in_stock`, `has_promotion`, `is_deleted` | Term filter được cache bitset | Inventory recompute availability; Search chỉ copy boolean |
 | `refresh_interval` 1s cho `products` | Buyer thấy thay đổi gần realtime | Giảm throughput indexing; có thể nới tạm khi ingest spike |
 | `refresh_interval` 5s cho hai index còn lại | Dữ liệu đổi chậm | — |
 | 3 shard cho `products` | Catalog cỡ triệu SKU | Mỗi shard nên giữ 10–50GB |
@@ -289,8 +289,8 @@ phải lưu.
 
 - **Tombstone.** `PRODUCT_DELETED`/`SKU_DELETED` đặt `is_deleted = true` và
   `deleted_at`. Document biến mất khỏi mọi kết quả ngay lập tức.
-- **Purge.** Tombstone purger xóa vật lý document sau cửa sổ bảo vệ; cửa sổ này
-  phải dài hơn retention của các topic mà Search tiêu thụ
+- **Purge.** Tombstone purger revoke Inventory readiness rồi mới xóa vật lý document
+  sau cửa sổ bảo vệ; cửa sổ này phải dài hơn retention của các topic Search tiêu thụ
   ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
 - **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
   rồi mới xóa.
@@ -298,16 +298,16 @@ phải lưu.
   rollback version tối thiểu 24 giờ; chỉ được xóa version cũ hơn rollback version.
   Build `ABORTED` xóa index mới chưa từng được gắn alias.
 - **Backup.** Catalog/category tái tạo từ Product export rồi replay
-  `t.product.events` và `t.category.events` từ offsets export trả về. Stock tái tạo
-  từ Inventory snapshot export rồi replay `t.inventory.stock.events.v1` từ offsets
-  export trả về; chỉ được tuyên bố khôi phục hoàn toàn sau producer rollout.
+  `t.product.events` và `t.category.events` từ offsets export trả về. Availability tái
+  tạo trực tiếp trong Product documents từ Inventory fixed-watermark snapshot rồi
+  ordered change feed; không có index phụ hay Kafka-offset boundary cho Inventory.
 - **Reconciliation.** Job recompute `product_count` là reconciliation liên tục cho
   số đếm; full reindex là reconciliation toàn phần cho phần còn lại.
 
 ## 12. Security và privacy
 
-Index của Search không chứa PII: chỉ có dữ liệu catalog công khai, số tồn kho tổng
-hợp và rating tổng hợp. Không lưu `user_id`, lịch sử tìm kiếm hay hành vi người
+Index của Search không chứa PII: chỉ có dữ liệu catalog công khai, boolean availability
+và rating tổng hợp. Không lưu quantity/warehouse, `user_id`, lịch sử tìm kiếm hay hành vi người
 dùng trong ba index này.
 
 Kết nối tới Elasticsearch và Kafka dùng TLS và credential lấy từ secret manager.

@@ -186,7 +186,16 @@ tại; kiểm chứng số đếm khớp giữa hai API.
    `scripted_upsert`, hoặc
    [`catalog_tombstone.painless`](./schema/scripts/catalog_tombstone.painless) cho
    event xóa (không upsert).
-6. Gửi `_bulk` tới `products_write`, đọc kết quả từng item, rồi commit offset.
+6. Gửi `_bulk` tới `products_write` và đọc kết quả từng item. Với mỗi catalog upsert
+   đã tạo/giữ document, gọi idempotent `PUT .../search-projection-readiness/{sku_id}`
+   kèm `catalog_revision`; chỉ commit offset sau khi đăng ký thành công. Inventory
+   đã durably schedule snapshot availability hiện hành trước khi trả success, kể cả
+   khi không có mutation tồn kho mới. Với tombstone, gọi readiness `DELETE` sau khi
+   ghi tombstone; chỉ commit offset sau khi revoke thành công.
+
+Document mới không được Search tự gán availability. Trong cửa sổ ngắn trước snapshot
+Inventory đầu tiên, field absent được query/response diễn giải an toàn là `false`, nên
+SKU không lọt vào kết quả mặc định `in_stock=true`.
 
 **State/data changes.** Chỉ các field thuộc Product cộng `catalog_revision`,
 `catalog_indexed_at`, `last_catalog_event_id`. Field tồn kho và rating không bị chạm
@@ -266,41 +275,42 @@ rename/move phát control event; reindex category trước Product và alias kh�
 
 ## WF-SEARCH-007 — Chiếu tồn kho từ Inventory
 
-**Mục tiêu.** Giữ `is_in_stock` phản ánh các stock-position và warehouse-availability
-snapshot mới nhất mà Inventory công bố.
+**Mục tiêu.** Copy `is_in_stock` từ snapshot per-SKU mới nhất do Inventory sở hữu,
+không materialize warehouse/position trong Search.
 
-**Trigger.** `com.ecommerce.inventory.stock-position.changed.v1` hoặc
-`com.ecommerce.inventory.warehouse-availability.changed.v1` trên
-`t.inventory.stock.events.v1`.
+**Trigger.** `com.ecommerce.inventory.sku-availability.changed.v1`, key `sku_id`,
+trên `t.inventory.stock.events.v1`.
 
-**Happy path.** Validate aggregate revision → upsert local warehouse/position projection
-theo key → derive những SKU bị ảnh hưởng → đặt `is_in_stock = true` nếu còn ít nhất một
-position sellable tại warehouse active, không outage → cập nhật document SKU đang tồn tại
-→ commit inbox/dedupe và offset theo recovery contract.
+**Happy path.** Validate CloudEvent và `aggregaterevision = availability_revision`
+→ chạy [`availability_patch.painless`](./schema/scripts/availability_patch.painless)
+trên document `_id = sku_id` đang tồn tại → copy `is_in_stock` nếu revision mới hơn
+→ commit offset. Search không có inbox/dedupe hay index Inventory riêng.
 
-**Failure paths.** `document_missing_exception` → metric
-`search_document_missing_total`, bỏ qua, ACK: SKU chưa được index hoặc vừa bị xóa
-là tình huống bình thường. Document tombstone → script bỏ qua. Lỗi tạm thời của
-Elasticsearch → không commit offset.
+**Failure paths.** `document_missing_exception` là vi phạm readiness contract → tăng
+`search_document_missing_total`, page Search + Inventory, không commit offset và không
+upsert. Document tombstone → script bỏ qua và ACK. Lỗi tạm thời của Elasticsearch →
+không commit offset.
 
-**Idempotency và ordering.** Dedupe theo CloudEvents `id`; guard bằng
-`aggregaterevision` riêng cho position hoặc warehouse. Kafka key chỉ giữ thứ tự trong
-aggregate; timestamp và global `sequence` không được dùng thay revision guard.
+**Idempotency và ordering.** Guard `availability_revision` per-SKU biến duplicate/event
+cũ thành no-op; không cần dedupe store. Kafka key `sku_id` giữ thứ tự trong aggregate;
+timestamp và global export `sequence` không thay revision guard.
 
 **Concurrency.** Event tồn kho và event catalog của cùng SKU đến từ hai partition
 khác nhau và có thể ghi đồng thời; chúng không chạm cùng field và guard độc lập
 nên không có lost update.
 
-**Recovery.** Tạo Inventory snapshot session, import warehouse và stock-position pages
-tại watermark `W`, rồi đọc change feed với `sequence > W`. Nếu nhận
-`410 REPLAY_WINDOW_EXPIRED`, bỏ projection cũ và bootstrap lại; revision guard biến event
-cũ/trùng thành no-op.
+**Recovery.** Tạo Inventory snapshot session, import thẳng các row per-SKU availability
+tại watermark `W` vào document đã được Product tạo, rồi đọc change feed với
+`sequence > W`. Missing document làm recovery fail. Nếu nhận `410
+REPLAY_WINDOW_EXPIRED`, bootstrap lại toàn bộ availability; không xóa hay tạo index phụ.
 
-**Metrics.** Độ trễ tồn kho, tỉ lệ `document_missing`, tỉ lệ event bị guard chặn.
+**Metrics.** Độ trễ availability, `document_missing` contract violation, tỉ lệ event
+bị guard chặn.
 
-**Test scenarios.** Một position về 0 nhưng warehouse khác còn hàng; warehouse chuyển
-OUTAGE/NORMAL; event revision cũ/trùng; SKU chưa index/tombstone; bootstrap tại watermark
-rồi replay change; replay window hết hạn.
+**Test scenarios.** Inventory fan-out khi một warehouse OUTAGE/NORMAL; nhiều warehouse
+cùng SKU nhưng event chỉ mang boolean; event revision cũ/trùng; Inventory không publish
+trước readiness; registration phát snapshot hiện hành; missing document không ACK/upsert;
+tombstone; bootstrap tại watermark và replay-window hết hạn.
 
 ---
 
@@ -351,20 +361,24 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    này. Offsets của mỗi source do Product chụp trước scan, cố định trong export
    session. SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review
    được apply.
-2. **Build stock.** Tạo Inventory snapshot session tại fixed `export_watermark = W`;
-   import toàn bộ warehouse và stock-position pages với revision guard, derive
-   `is_in_stock`, rồi đọc Inventory change feed với `sequence > W`. Không dùng Kafka
-   offset làm snapshot boundary của Inventory.
+2. **Build availability.** Tạo Inventory snapshot session tại fixed
+   `export_watermark = W`; import trực tiếp mọi row per-SKU `is_in_stock` với
+   `availability_revision` vào Product document đã build, rồi đọc change feed với
+   `sequence > W`. Nếu một SKU được tạo sau Product snapshot nên chưa có trong index
+   mới, defer fact đó tới sau Product catch-up; không upsert và không tạo
+   warehouse/position projection hay index phụ. Kafka offset không phải Inventory boundary.
 3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
    Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision` bằng
    các `_bulk` chunked với cùng giới hạn. Export trả `replay_from_offsets` đã chụp
-   trước lúc scan; snapshot không upsert SKU và không thay đổi catalog/stock field.
+   trước lúc scan; snapshot không upsert SKU và không thay đổi catalog/availability field.
 4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
    `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
    (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable
    change-feed checkpoint rồi chuyển sang live topic. Các consumer ghi **trực tiếp** vào
    `products_v{N+1}` chứ không qua write alias. Search không tự chụp catalog
-   watermark. Guard giữ nguyên như luồng thường. Kết thúc khi lag bằng 0 qua nhiều
+   watermark. Product create/tombstone được ưu tiên trước availability của cùng SKU;
+   mọi availability đã defer được đọc/apply lại sau Product catch-up. Guard giữ nguyên
+   như luồng thường. Kết thúc khi không còn deferred SKU và lag bằng 0 qua nhiều
    chu kỳ poll liên tiếp, publisher lag đã hội tụ và không phát sinh lỗi mới trong
    cửa sổ quan sát.
 5. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
@@ -385,8 +399,9 @@ lại tối thiểu 24 giờ.
 
 **Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
 alias không đổi nên traffic không bị ảnh hưởng. Product/Review export thiếu
-`replay_from_offsets`, hoặc Inventory snapshot/change checkpoint không chứng minh được
-handoff tại watermark → không được cutover. Catch-up/publisher lag không hội tụ
+`replay_from_offsets`, Inventory snapshot/change checkpoint không chứng minh được
+handoff tại watermark, hoặc availability vẫn thiếu target document sau Product catch-up
+→ không được cutover. Catch-up/publisher lag không hội tụ
 → hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
 `SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
 run. Lỗi sau cutover → swap alias ngược về index cũ.
@@ -406,7 +421,7 @@ catch-up, chấp nhận mất vài phút dữ liệu mới trên index cũ và p
 ([ADR-006](./decisions/ADR-006-three-phase-reindex.md)).
 
 **Metrics.** Tiến độ từng source của build, export-session ID và offsets theo
-source/topic, tuổi snapshot stock/rating, lag publisher/catch-up theo topic, số run
+source/topic, tuổi snapshot availability/rating, lag publisher/catch-up theo topic, số run
 supersede, chênh lệch số document, thời lượng từng pha, kết quả run; cùng số
 action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, thời gian bị throttle,
 429/503/timeout và số retry.
@@ -549,11 +564,13 @@ làm chúng sống lại.
 
 **Trigger.** Lịch chạy hằng ngày vào giờ thấp điểm.
 
-**Happy path.** Tìm document có `is_deleted = true` và `deleted_at` cũ hơn cửa sổ
-bảo vệ → `_delete_by_query` theo lô với throttle → ghi số lượng đã xóa.
+**Happy path.** Với từng SKU đủ tuổi, bảo đảm `DELETE
+.../search-projection-readiness/{sku_id}` đã thành công cho catalog revision tombstone;
+sau đó `_delete`/`_delete_by_query` theo lô với throttle và ghi số lượng đã xóa.
 
 **Preconditions.** Cửa sổ bảo vệ phải dài hơn retention của mọi topic Search tiêu
-thụ ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
+thụ và Inventory readiness của SKU đã bị revoke
+([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
 
 **Failure paths.** Lỗi giữa chừng → lần chạy sau tiếp tục; không có trạng thái cần
 dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi bằng reindex.
@@ -565,7 +582,8 @@ dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi b�
 **Metrics.** Số document purge, thời lượng, tuổi tombstone lớn nhất còn lại.
 
 **Test scenarios.** Tombstone chưa tới hạn không bị xóa; tombstone quá hạn bị xóa;
-event trễ tới sau khi đã purge phải không tạo lại document từ nguồn stock/review.
+event trễ tới sau khi đã purge không tạo lại document từ availability/review; revoke
+readiness lỗi thì chưa được purge.
 
 ---
 
