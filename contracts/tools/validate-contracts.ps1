@@ -239,10 +239,26 @@ Invoke-OptionalTool -Name 'buf' -Action {
     try { & buf lint } finally { Pop-Location }
 }
 Invoke-OptionalTool -Name 'redocly' -Action {
-    & redocly lint (Join-Path $contractRoot 'http/cart/v1/openapi.yaml')
+    @(
+        'http/cart/v1/openapi.yaml',
+        'http/inventory/workflow/v1/openapi.yaml',
+        'http/inventory/admin/v1/openapi.yaml',
+        'http/inventory/exports/v1/openapi.yaml'
+    ) | ForEach-Object {
+        $spec = Join-Path $contractRoot $_
+        & redocly lint $spec
+        if ($LASTEXITCODE -ne 0) { throw "redocly failed for $_" }
+    }
 }
 Invoke-OptionalTool -Name 'asyncapi' -Action {
-    & asyncapi validate (Join-Path $contractRoot 'events/cart/v1/asyncapi.yaml')
+    @(
+        'events/cart/v1/asyncapi.yaml',
+        'events/inventory/v1/asyncapi.yaml'
+    ) | ForEach-Object {
+        $spec = Join-Path $contractRoot $_
+        & asyncapi validate $spec
+        if ($LASTEXITCODE -ne 0) { throw "asyncapi failed for $_" }
+    }
 }
 
 foreach ($warning in $warnings) {
