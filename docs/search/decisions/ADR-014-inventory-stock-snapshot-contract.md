@@ -1,11 +1,12 @@
 ---
 doc_id: search-adr-014
 service: search
-status: accepted
+status: superseded
 date: 2026-09-04
 decision_owners:
   - Search Service team
 supersedes: ADR-009-stock-projection-ownership
+superseded_by: ADR-018-inventory-position-projection-contract
 evidence:
   - contracts/events/inventory/v1/asyncapi.yaml
   - contracts/http/inventory/internal/v1/openapi.yaml

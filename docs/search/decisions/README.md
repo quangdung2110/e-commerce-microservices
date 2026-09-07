@@ -37,7 +37,8 @@ nghĩa implementation đã được xác minh khớp với quyết định. Kho�
 | [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted | 2026-09-02 | Draft Cleanup Job của thiết kế cũ |
 | [ADR-012](./ADR-012-sku-results-with-search-after.md) | SKU hit trực tiếp, phân trang bằng `search_after` | Accepted | 2026-09-04 | ADR-002 |
 | [ADR-013](./ADR-013-product-category-snapshots.md) | Category snapshot Product và control-driven reindex | Accepted | 2026-09-04 | ADR-010 |
-| [ADR-014](./ADR-014-inventory-stock-snapshot-contract.md) | Stock projection theo revision và snapshot Inventory | Accepted | 2026-09-04 | ADR-009 |
+| [ADR-014](./ADR-014-inventory-stock-snapshot-contract.md) | Stock projection theo revision và snapshot Inventory | Superseded | 2026-09-04 | ADR-009 |
 | [ADR-015](./ADR-015-upstream-revision-guards.md) | Guard theo revision upstream đơn điệu | Accepted | 2026-09-04 | ADR-004 |
 | [ADR-016](./ADR-016-review-rating-snapshot-reindex.md) | Snapshot rating Review khi reindex | Accepted | 2026-09-05 | — |
 | [ADR-017](./ADR-017-product-catalog-snapshot-offset-contract.md) | Replay boundary catalog do Product export cấp | Accepted | 2026-09-05 | — |
+| [ADR-018](./ADR-018-inventory-position-projection-contract.md) | Inventory position projection and export watermark | Accepted | 2026-09-07 | ADR-014 |

@@ -9,6 +9,11 @@ owners:
 
 # Product Detail BFF — Architecture
 
+> **Inventory integration review required (2026-09-07):** the direct Inventory projector
+> shown below depends on the superseded per-SKU snapshot contract. Inventory Release 1 does
+> not register this BFF as an availability event/export consumer. The diagram is retained as
+> design history, not as an authorized integration contract.
+
 ```mermaid
 flowchart LR
   B[Buyer] --> G[API Gateway]

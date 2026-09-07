@@ -27,7 +27,7 @@ verified_against_commit: null
 | Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
 | Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
 | Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
-| Stock snapshot export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory internal OpenAPI v1](../../contracts/http/inventory/internal/v1/openapi.yaml) | proposed |
+| Availability snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | proposed |
 | Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
 
 Search **không phát event**. Không có mục “event phát ra” trong tài liệu này là
@@ -218,17 +218,18 @@ cutover, rồi được coalesce thành run mới.
 
 ### 4.4 `t.inventory.stock.events.v1` — tồn kho
 
-Contract đích là [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml):
-CloudEvents `com.ecommerce.inventory.stock-snapshot.v1`, key `sku_id`, `sequence =
-stock_revision`, và payload `product_id`, `sku_id`, `available_quantity`,
-`stock_revision`, `observed_at`. Search chỉ apply revision lớn hơn. `t.inventory.events`
-và `INVENTORY_STOCK_CHANGED` là adapter legacy compatibility, không có ordering/recovery
-guarantee của vNext và không là input mặc định sau rollout.
+Contract đích là [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml).
+Search nhận `com.ecommerce.inventory.stock-position.changed.v1`, key
+`(warehouse_id, sku_id)`, và `com.ecommerce.inventory.warehouse-availability.changed.v1`,
+key `warehouse_id`. Search lưu revision độc lập cho từng stock position/warehouse rồi
+derive `is_in_stock = true` khi tồn tại position có `available_to_sell > 0` tại warehouse
+active và không `OUTAGE`. `sequence` là export cursor, không phải ordering guard; guard là
+`aggregaterevision`. `t.inventory.events` và `INVENTORY_STOCK_CHANGED` chỉ là adapter legacy.
 
 Event này **không được tạo document**. Document chưa tồn tại hoặc đang tombstone
 thì bỏ qua và ghi metric — đó là trạng thái bình thường khi SKU vừa bị xóa hoặc
 chưa kịp được index ([`SEARCH-INV-005`](./README.md#7-critical-invariants)).
-Consumer phải kiểm tra cặp `product_id` + `sku_id` để chặn drift.
+Inventory không gửi `product_id`; Search join bằng opaque `sku_id` do Product sở hữu.
 
 ### 4.5 `t.review.events` — rating
 
@@ -242,13 +243,12 @@ bình, tổng số review, `review_revision` và `observed_at`. Áp dụng bằn
 
 Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
 `GET /internal/v1/products/export` của Product,
-[`GET /internal/v1/inventory/stock-snapshots`](../../contracts/http/inventory/internal/v1/openapi.yaml)
+Inventory [snapshot session và change feed](../../contracts/http/inventory/exports/v1/openapi.yaml)
 và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/internal/v1/openapi.yaml)
-để backfill catalog, stock và rating. Cả bốn export trả `replay_from_offsets` được
-chụp trước scan; Product trả boundary riêng cho `t.category.events` và
-`t.product.events`. Search import mọi snapshot rồi replay các data topic từ offsets
-tương ứng, không tự đọc Kafka Admin để chụp catalog watermark. Không có lời gọi đồng
-bộ nào khác ra ngoài trong hot path.
+để backfill catalog, stock và rating. Product/Review trả Kafka replay boundary của
+contract tương ứng; Inventory trả fixed `export_watermark`, sau đó Search đọc mọi change
+có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng Inventory watermark.
+Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 
@@ -257,8 +257,9 @@ bộ nào khác ra ngoài trong hot path.
   thầm để giống v2. Gateway chạy hai version song song cho tới khi frontend chuyển.
 - V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
   `NOT product_id`. PDP dùng [Product Detail BFF](../product-detail-bff/README.md):
-  BFF gọi Product buyer-read và materialize Inventory snapshot riêng; không được biến
-  Search projection thành nguồn catalog hoặc availability point-read có thẩm quyền.
+  BFF gọi Product buyer-read. Inventory Release 1 chỉ đăng ký Search làm availability
+  projection consumer; direct Inventory projection của BFF cần một contract/consumer
+  review riêng trước rollout và không được suy ra từ quyền của Search.
 - Thêm field optional vào event là thay đổi tương thích: Search bỏ qua field lạ.
 - Xóa field, đổi ngữ nghĩa field, đổi Kafka key hoặc đổi ý nghĩa của
   `catalog_revision` là breaking change và phải phối hợp với Search trước khi

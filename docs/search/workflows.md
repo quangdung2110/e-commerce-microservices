@@ -266,40 +266,41 @@ rename/move phát control event; reindex category trước Product và alias kh�
 
 ## WF-SEARCH-007 — Chiếu tồn kho từ Inventory
 
-**Mục tiêu.** Giữ `available_quantity` và `is_in_stock` phản ánh stock snapshot mới
-nhất mà Inventory công bố.
+**Mục tiêu.** Giữ `is_in_stock` phản ánh các stock-position và warehouse-availability
+snapshot mới nhất mà Inventory công bố.
 
-**Trigger.** `com.ecommerce.inventory.stock-snapshot.v1` trên
-`t.inventory.stock.events.v1`, key `sku_id`.
+**Trigger.** `com.ecommerce.inventory.stock-position.changed.v1` hoặc
+`com.ecommerce.inventory.warehouse-availability.changed.v1` trên
+`t.inventory.stock.events.v1`.
 
-**Happy path.** Lọc event type → validate cặp `product_id` + `sku_id` và
-`stock_revision` → apply
-[`stock_patch.painless`](./schema/scripts/stock_patch.painless) lên
-`products_write/_update/{sku_id}` không upsert → `is_in_stock` được tính lại →
-commit offset.
+**Happy path.** Validate aggregate revision → upsert local warehouse/position projection
+theo key → derive những SKU bị ảnh hưởng → đặt `is_in_stock = true` nếu còn ít nhất một
+position sellable tại warehouse active, không outage → cập nhật document SKU đang tồn tại
+→ commit inbox/dedupe và offset theo recovery contract.
 
 **Failure paths.** `document_missing_exception` → metric
 `search_document_missing_total`, bỏ qua, ACK: SKU chưa được index hoặc vừa bị xóa
 là tình huống bình thường. Document tombstone → script bỏ qua. Lỗi tạm thời của
 Elasticsearch → không commit offset.
 
-**Idempotency và ordering.** Guard `stock_revision` theo revision đơn điệu; key
-`sku_id` đảm bảo ordering trong cùng SKU. Timestamp không được dùng làm guard.
+**Idempotency và ordering.** Dedupe theo CloudEvents `id`; guard bằng
+`aggregaterevision` riêng cho position hoặc warehouse. Kafka key chỉ giữ thứ tự trong
+aggregate; timestamp và global `sequence` không được dùng thay revision guard.
 
 **Concurrency.** Event tồn kho và event catalog của cùng SKU đến từ hai partition
 khác nhau và có thể ghi đồng thời; chúng không chạm cùng field và guard độc lập
 nên không có lost update.
 
-**Recovery.** Gọi Inventory stock snapshot export, import theo `sku_id`, rồi replay
-topic từ `replay_from_offsets`. Guard revision làm event trước snapshot hoặc duplicate
-thành no-op. Contract còn `proposed`; trước producer rollout, workflow chỉ chạy ở
-compatibility mode và không tuyên bố recovery hoàn toàn.
+**Recovery.** Tạo Inventory snapshot session, import warehouse và stock-position pages
+tại watermark `W`, rồi đọc change feed với `sequence > W`. Nếu nhận
+`410 REPLAY_WINDOW_EXPIRED`, bỏ projection cũ và bootstrap lại; revision guard biến event
+cũ/trùng thành no-op.
 
 **Metrics.** Độ trễ tồn kho, tỉ lệ `document_missing`, tỉ lệ event bị guard chặn.
 
-**Test scenarios.** Về 0 rồi có hàng lại; event revision cũ/trùng; SKU chưa index;
-SKU đã tombstone; cặp `product_id`/`sku_id` không khớp; bootstrap snapshot rồi
-replay event; hai event cùng timestamp nhưng revision khác nhau.
+**Test scenarios.** Một position về 0 nhưng warehouse khác còn hàng; warehouse chuyển
+OUTAGE/NORMAL; event revision cũ/trùng; SKU chưa index/tombstone; bootstrap tại watermark
+rồi replay change; replay window hết hạn.
 
 ---
 
@@ -350,17 +351,18 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    này. Offsets của mỗi source do Product chụp trước scan, cố định trong export
    session. SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review
    được apply.
-2. **Build stock.** Lấy Inventory stock snapshot export; import mọi SKU theo
-   `stock_revision` bằng các `_bulk` chunked với cùng giới hạn. Export trả
-   `replay_from_offsets` đã chụp trước lúc scan nên event cũ/trùng không ghi đè
-   snapshot.
+2. **Build stock.** Tạo Inventory snapshot session tại fixed `export_watermark = W`;
+   import toàn bộ warehouse và stock-position pages với revision guard, derive
+   `is_in_stock`, rồi đọc Inventory change feed với `sequence > W`. Không dùng Kafka
+   offset làm snapshot boundary của Inventory.
 3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
    Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision` bằng
    các `_bulk` chunked với cùng giới hạn. Export trả `replay_from_offsets` đã chụp
    trước lúc scan; snapshot không upsert SKU và không thay đổi catalog/stock field.
 4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
    `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
-   (`t.category.events`, `t.product.events`), stock và review; ghi **trực tiếp** vào
+   (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable
+   change-feed checkpoint rồi chuyển sang live topic. Các consumer ghi **trực tiếp** vào
    `products_v{N+1}` chứ không qua write alias. Search không tự chụp catalog
    watermark. Guard giữ nguyên như luồng thường. Kết thúc khi lag bằng 0 qua nhiều
    chu kỳ poll liên tiếp, publisher lag đã hội tụ và không phát sinh lỗi mới trong
@@ -382,8 +384,9 @@ Vượt retry/deadline thì fail hoặc resume từ checkpoint, không được 
 lại tối thiểu 24 giờ.
 
 **Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
-alias không đổi nên traffic không bị ảnh hưởng. Bất kỳ snapshot export nào lỗi hoặc
-thiếu `replay_from_offsets` → không được cutover. Catch-up/publisher lag không hội tụ
+alias không đổi nên traffic không bị ảnh hưởng. Product/Review export thiếu
+`replay_from_offsets`, hoặc Inventory snapshot/change checkpoint không chứng minh được
+handoff tại watermark → không được cutover. Catch-up/publisher lag không hội tụ
 → hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
 `SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
 run. Lỗi sau cutover → swap alias ngược về index cũ.

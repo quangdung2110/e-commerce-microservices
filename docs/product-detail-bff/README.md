@@ -11,6 +11,12 @@ owners:
 
 # Product Detail BFF
 
+> **Inventory integration review required (2026-09-07):** the direct per-SKU
+> `stock-snapshot.v1` and export described below were superseded by Inventory's accepted
+> position/warehouse contract, which currently registers Search as its only availability
+> projection consumer. Treat the BFF availability path as unresolved until a separate
+> consumer/ownership decision is accepted; these notes do not grant broker or Export API access.
+
 Product Detail BFF là read composition layer cho trang chi tiết sản phẩm (PDP). Nó
 trả catalog và giá từ Product, trạng thái khả dụng theo SKU từ projection cục bộ của
 Inventory, cùng rating aggregate và preview hữu hạn đọc từ Review. BFF không sở hữu
