@@ -50,7 +50,6 @@
       "selling_price_vnd": { "type": "long" },
       "has_promotion": { "type": "boolean" },
 
-      "available_quantity": { "type": "long" },
       "is_in_stock": { "type": "boolean" },
 
       "product_rating_avg": { "type": "scaled_float", "scaling_factor": 100 },
@@ -60,17 +59,17 @@
       "deleted_at": { "type": "date" },
       "updated_at": { "type": "date" },
       "catalog_indexed_at": { "type": "date" },
-      "stock_observed_at": { "type": "date" },
-      "stock_indexed_at": { "type": "date" },
+      "availability_observed_at": { "type": "date" },
+      "availability_indexed_at": { "type": "date" },
       "review_indexed_at": { "type": "date" },
       "indexed_at": { "type": "date" },
 
       "catalog_revision": { "type": "long" },
-      "stock_revision": { "type": "long" },
+      "availability_revision": { "type": "long" },
       "review_revision": { "type": "long" },
 
       "last_catalog_event_id": { "type": "keyword" },
-      "last_stock_event_id": { "type": "keyword" },
+      "last_availability_event_id": { "type": "keyword" },
       "last_review_event_id": { "type": "keyword" }
     }
   }

@@ -5,13 +5,13 @@ import com.ecommerce.search.config.KafkaConsumerConfig;
 import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.domain.event.CatalogEventType;
 import com.ecommerce.search.domain.event.CloudEventEnvelope;
+import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
 import com.ecommerce.search.worker.handler.BatchExecutor;
 import com.ecommerce.search.worker.handler.CatalogEventHandler;
 import com.ecommerce.search.worker.handler.CategoryEnrichment;
 import com.ecommerce.search.worker.handler.CategoryEventHandler;
 import com.ecommerce.search.worker.handler.EventBatch;
 import com.ecommerce.search.worker.handler.ReviewEventHandler;
-import com.ecommerce.search.worker.handler.StockEventHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
@@ -42,7 +42,7 @@ public class IndexingConsumer {
     private final BatchExecutor executor;
     private final CatalogEventHandler catalogHandler;
     private final CategoryEventHandler categoryHandler;
-    private final StockEventHandler stockHandler;
+    private final AvailabilityEventHandler availabilityHandler;
     private final ReviewEventHandler reviewHandler;
     private final CategoryEnrichment enrichment;
     private final ReindexControlCoordinator reindexControl;
@@ -53,7 +53,7 @@ public class IndexingConsumer {
                             BatchExecutor executor,
                             CatalogEventHandler catalogHandler,
                             CategoryEventHandler categoryHandler,
-                            StockEventHandler stockHandler,
+                            AvailabilityEventHandler availabilityHandler,
                             ReviewEventHandler reviewHandler,
                             CategoryEnrichment enrichment,
                             ReindexControlCoordinator reindexControl) {
@@ -63,7 +63,7 @@ public class IndexingConsumer {
         this.executor = executor;
         this.catalogHandler = catalogHandler;
         this.categoryHandler = categoryHandler;
-        this.stockHandler = stockHandler;
+        this.availabilityHandler = availabilityHandler;
         this.reviewHandler = reviewHandler;
         this.enrichment = enrichment;
         this.reindexControl = reindexControl;
@@ -104,14 +104,14 @@ public class IndexingConsumer {
             topics = "${search.topics.stock}",
             groupId = "${search.consumer-group:search-indexer}",
             containerFactory = KafkaConsumerConfig.BATCH_FACTORY)
-    public void onStockEvents(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
+    public void onAvailabilityEvents(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         String topic = properties.topics().stock();
         EventBatch batch = new EventBatch(properties.aliases().productsWrite());
 
         for (ConsumerRecord<String, String> record : records) {
             dispatch(topic, record)
-                    .filter(typed -> typed.type() == CatalogEventType.STOCK_SNAPSHOT)
-                    .ifPresent(typed -> stockHandler.handle(topic, typed.event(), batch));
+                    .filter(typed -> typed.type() == CatalogEventType.SKU_AVAILABILITY_CHANGED)
+                    .ifPresent(typed -> availabilityHandler.handle(topic, typed.event(), batch));
         }
         commitIfComplete(topic, batch, ack);
     }

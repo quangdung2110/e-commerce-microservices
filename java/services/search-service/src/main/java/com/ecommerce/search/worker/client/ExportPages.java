@@ -7,12 +7,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Response shapes of the four internal export endpoints a full reindex reads.
+ * Response shapes of the internal export endpoints a full reindex reads.
  *
- * <p>All four carry {@code replay_from_offsets}, captured by the owning service
- * <em>before</em> its scan and repeated unchanged on every page of the session. Search
- * imports the snapshot and then replays each topic from those offsets inclusively; it
- * never reads Kafka itself to capture a catalog watermark (ADR-017).
+ * <p>Category, Product and Review carry {@code replay_from_offsets}, captured by the
+ * owning service <em>before</em> its scan and repeated unchanged on every page of the
+ * session. Search imports the snapshot and then replays each topic from those offsets
+ * inclusively; it never reads Kafka itself to capture a catalog watermark (ADR-017).
+ * Inventory is the exception: it pins an {@code export_watermark} and Search continues
+ * from its change feed instead of a topic offset (ADR-019).
  */
 public final class ExportPages {
 
@@ -81,12 +83,35 @@ public final class ExportPages {
             List<ReplayOffset> replayFromOffsets) {
     }
 
-    /** {@code GET /internal/v1/inventory/stock-snapshots}; keyset by {@code sku_id}. */
+    /**
+     * {@code POST /exports/inventory/v1/snapshot-sessions}.
+     *
+     * <p>Inventory has no Kafka replay offset to hand out. It pins one durable
+     * {@code export_watermark} instead, and Search resumes from the change feed at that
+     * sequence rather than by seeking a topic (ADR-019). The session expires 24 hours
+     * after creation.
+     */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record StockExportPage(
-            List<CatalogPayloads.StockSnapshot> items,
-            String nextAfterSkuId,
-            List<ReplayOffset> replayFromOffsets) {
+    public record SnapshotSession(
+            String snapshotId,
+            Long exportWatermark,
+            java.time.Instant createdAt,
+            java.time.Instant expiresAt) {
+    }
+
+    /**
+     * {@code GET /exports/inventory/v1/snapshot-sessions/{snapshot_id}/sku-availabilities};
+     * paged by an opaque session-bound cursor.
+     *
+     * <p>Only SKUs with an active readiness registration appear here, which is what makes
+     * a missing target document a contract violation rather than an expected gap.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SkuAvailabilitySnapshotPage(
+            String snapshotId,
+            Long exportWatermark,
+            List<CatalogPayloads.SkuAvailability> items,
+            String nextCursor) {
     }
 
     /** {@code GET /internal/v1/reviews/rating-aggregates}; keyset by {@code product_id}. */

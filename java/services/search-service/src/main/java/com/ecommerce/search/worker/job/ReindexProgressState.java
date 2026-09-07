@@ -16,12 +16,20 @@ public final class ReindexProgressState {
 
     private final AtomicLong categoriesExported = new AtomicLong();
     private final AtomicLong productsExported = new AtomicLong();
-    private final AtomicLong stockSnapshotsImported = new AtomicLong();
+    private final AtomicLong availabilitySnapshotsImported = new AtomicLong();
     private final AtomicLong ratingAggregatesImported = new AtomicLong();
     private volatile Long catchUpLag;
 
     /** Replay boundaries per source, all captured by the owning service before its scan. */
     private final Map<String, List<ExportPages.ReplayOffset>> replayOffsets = new LinkedHashMap<>();
+
+    /**
+     * The Inventory snapshot session the availability build is paging. It is checkpointed
+     * rather than derived, because a session expires 24 hours after creation and a resume
+     * has to know which watermark the pages it already imported belong to (ADR-019).
+     */
+    private volatile ExportPages.SnapshotSession availabilitySession;
+    private volatile String availabilityCursor;
 
     public void addCategories(long count) {
         categoriesExported.addAndGet(count);
@@ -31,8 +39,18 @@ public final class ReindexProgressState {
         productsExported.addAndGet(count);
     }
 
-    public void addStockSnapshots(long count) {
-        stockSnapshotsImported.addAndGet(count);
+    public void addAvailabilitySnapshots(long count) {
+        availabilitySnapshotsImported.addAndGet(count);
+    }
+
+    /** Records the session a fresh availability build is pinned to, clearing any old cursor. */
+    public void recordAvailabilitySession(ExportPages.SnapshotSession session) {
+        this.availabilitySession = session;
+        this.availabilityCursor = null;
+    }
+
+    public void recordAvailabilityCursor(String cursor) {
+        this.availabilityCursor = cursor;
     }
 
     public void addRatingAggregates(long count) {
@@ -65,10 +83,25 @@ public final class ReindexProgressState {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("categories_exported", categoriesExported.get());
         map.put("products_exported", productsExported.get());
-        map.put("stock_snapshots_imported", stockSnapshotsImported.get());
+        // The wire name stays `stock_snapshots_imported`: it is what the v2 OpenAPI
+        // declares for ReindexProgress, and renaming it would break the admin client.
+        map.put("stock_snapshots_imported", availabilitySnapshotsImported.get());
         map.put("rating_aggregates_imported", ratingAggregatesImported.get());
         map.put("catch_up_lag", catchUpLag);
         return map;
+    }
+
+    /** The Inventory handoff point a resume or a cutover check has to reason about. */
+    public Map<String, Object> checkpointAsMap() {
+        if (availabilitySession == null) {
+            return Map.of();
+        }
+        Map<String, Object> session = new LinkedHashMap<>();
+        session.put("snapshot_id", availabilitySession.snapshotId());
+        session.put("export_watermark", availabilitySession.exportWatermark());
+        session.put("expires_at", availabilitySession.expiresAt());
+        session.put("cursor", availabilityCursor);
+        return Map.of("inventory_availability", session);
     }
 
     public Map<String, Object> offsetsAsMap() {

@@ -47,7 +47,7 @@ public class FullReindexJob {
 
     private static final String SOURCE_CATEGORY = "category";
     private static final String SOURCE_PRODUCT = "product";
-    private static final String SOURCE_STOCK = "stock";
+    private static final String SOURCE_AVAILABILITY = "inventory_availability";
     private static final String SOURCE_REVIEW = "review";
 
     private final SearchProperties properties;
@@ -101,7 +101,7 @@ public class FullReindexJob {
 
             buildCategories(categoriesIndex, progress, deadline);
             buildCatalog(productsIndex, categoriesIndex, progress, deadline);
-            buildStock(productsIndex, progress, deadline);
+            buildAvailability(productsIndex, progress, deadline);
             buildRating(productsIndex, progress, deadline);
 
             requireOffsets(progress);
@@ -193,31 +193,40 @@ public class FullReindexJob {
     }
 
     /**
-     * Stock build. The snapshot never upserts, so a SKU absent from the catalog build is
-     * simply not given a stock projection.
+     * Availability build, after the catalog so the target documents exist. Inventory pins
+     * one {@code export_watermark} for the whole session; the import never upserts, so a
+     * SKU created after the Product snapshot has no document here yet (ADR-019).
      */
-    private void buildStock(String productsIndex, ReindexProgressState progress, Instant deadline)
+    private void buildAvailability(String productsIndex, ReindexProgressState progress, Instant deadline)
             throws IOException {
-        String after = null;
-        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-stock", deadline)) {
+        ExportPages.SnapshotSession snapshot = exports.createInventorySnapshotSession();
+        if (snapshot == null || snapshot.snapshotId() == null || snapshot.exportWatermark() == null) {
+            throw new IllegalStateException("inventory snapshot session returned no watermark");
+        }
+        progress.recordAvailabilitySession(snapshot);
+
+        String cursor = null;
+        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-availability", deadline)) {
             do {
-                ExportPages.StockExportPage page = exports.stockSnapshots(after);
-                progress.recordOffsets(SOURCE_STOCK, page.replayFromOffsets());
-                for (CatalogPayloads.StockSnapshot snapshot : nullSafe(page.items())) {
-                    session.add(writer.stockPatch(productsIndex, snapshot.skuId(),
-                                    snapshot.availableQuantity(), snapshot.stockRevision(),
-                                    Timestamps.iso(snapshot.observedAt()), Timestamps.nowIso(), "reindex"),
+                ExportPages.SkuAvailabilitySnapshotPage page =
+                        exports.skuAvailabilities(snapshot.snapshotId(), cursor);
+                for (CatalogPayloads.SkuAvailability availability : nullSafe(page.items())) {
+                    session.add(writer.availabilityPatch(productsIndex, availability.skuId(),
+                                    Boolean.TRUE.equals(availability.isInStock()),
+                                    availability.availabilityRevision(),
+                                    Timestamps.iso(availability.observedAt()), Timestamps.nowIso(), "reindex"),
                             256);
-                    if (snapshot.observedAt() != null) {
-                        metrics.snapshotAge(SOURCE_STOCK,
-                                java.time.Duration.between(snapshot.observedAt(), Instant.now()).toSeconds());
+                    if (availability.observedAt() != null) {
+                        metrics.snapshotAge(SOURCE_AVAILABILITY,
+                                java.time.Duration.between(availability.observedAt(), Instant.now()).toSeconds());
                     }
                 }
-                progress.addStockSnapshots(nullSafe(page.items()).size());
-                after = page.nextAfterSkuId();
-            } while (after != null && !after.isBlank());
+                progress.addAvailabilitySnapshots(nullSafe(page.items()).size());
+                cursor = page.nextCursor();
+                progress.recordAvailabilityCursor(cursor);
+            } while (cursor != null && !cursor.isBlank());
         }
-        metrics.snapshotExport(SOURCE_STOCK, "success");
+        metrics.snapshotExport(SOURCE_AVAILABILITY, "success");
     }
 
     /**
@@ -285,9 +294,11 @@ public class FullReindexJob {
 
     /** No snapshot may be imported without its replay boundary, or catch-up has no start. */
     private void requireOffsets(ReindexProgressState progress) {
+        // Inventory is absent on purpose: it publishes no Kafka replay offset, and catch-up
+        // resumes from its change feed at the session watermark instead (ADR-019).
         List<String> required = properties.export().reviewEnabled()
-                ? List.of(SOURCE_CATEGORY, SOURCE_PRODUCT, SOURCE_STOCK, SOURCE_REVIEW)
-                : List.of(SOURCE_CATEGORY, SOURCE_PRODUCT, SOURCE_STOCK);
+                ? List.of(SOURCE_CATEGORY, SOURCE_PRODUCT, SOURCE_REVIEW)
+                : List.of(SOURCE_CATEGORY, SOURCE_PRODUCT);
         for (String source : required) {
             if (!progress.hasOffsetsFor(source)) {
                 throw new IllegalStateException(source + " export returned no replay_from_offsets");
@@ -360,7 +371,7 @@ public class FullReindexJob {
                 targetIndex,
                 progress.toMap(),
                 List.of(progress.offsetsAsMap()),
-                Map.of()));
+                progress.checkpointAsMap()));
     }
 
     private void saveQuietly(String runId, String status, String phase, String reason, String actor,

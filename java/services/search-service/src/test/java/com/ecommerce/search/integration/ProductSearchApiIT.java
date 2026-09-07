@@ -39,8 +39,8 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
     @Test
     void returnsOneItemPerMatchingSkuIncludingSeveralFromTheSameProduct() throws IOException {
         // ADR-012: the API does not deduplicate by product; a card per SKU is intended.
-        index("sku-1", "prod-1", "iPhone 15", "ACTIVE", "ACTIVE", 10L, 1_000_000L);
-        index("sku-2", "prod-1", "iPhone 15", "ACTIVE", "ACTIVE", 10L, 2_000_000L);
+        index("sku-1", "prod-1", "iPhone 15", "ACTIVE", "ACTIVE", true, 1_000_000L);
+        index("sku-2", "prod-1", "iPhone 15", "ACTIVE", "ACTIVE", true, 2_000_000L);
 
         SearchDtos.SearchPage page = search("?q=iphone");
 
@@ -51,10 +51,10 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
 
     @Test
     void neverExposesDraftHiddenInactiveOrDeletedRows() throws IOException {
-        index("sku-active", "prod-1", "iPhone", "ACTIVE", "ACTIVE", 5L, 1_000_000L);
-        index("sku-draft", "prod-2", "iPhone", "DRAFT", "ACTIVE", 5L, 1_000_000L);
-        index("sku-hidden", "prod-3", "iPhone", "HIDDEN", "ACTIVE", 5L, 1_000_000L);
-        index("sku-inactive", "prod-4", "iPhone", "ACTIVE", "INACTIVE", 5L, 1_000_000L);
+        index("sku-active", "prod-1", "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L);
+        index("sku-draft", "prod-2", "iPhone", "DRAFT", "ACTIVE", true, 1_000_000L);
+        index("sku-hidden", "prod-3", "iPhone", "HIDDEN", "ACTIVE", true, 1_000_000L);
+        index("sku-inactive", "prod-4", "iPhone", "ACTIVE", "INACTIVE", true, 1_000_000L);
 
         SearchDtos.SearchPage page = search("?q=iphone&in_stock=false");
 
@@ -64,8 +64,8 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
 
     @Test
     void hidesOutOfStockByDefaultAndShowsItWhenTheBuyerAsks() throws IOException {
-        index("sku-in", "prod-1", "iPhone", "ACTIVE", "ACTIVE", 3L, 1_000_000L);
-        index("sku-out", "prod-2", "iPhone", "ACTIVE", "ACTIVE", 0L, 1_000_000L);
+        index("sku-in", "prod-1", "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L);
+        index("sku-out", "prod-2", "iPhone", "ACTIVE", "ACTIVE", false, 1_000_000L);
 
         assertThat(search("?q=iphone").items())
                 .extracting(SearchDtos.SearchProductItem::skuId).containsExactly("sku-in");
@@ -75,7 +75,7 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
 
     @Test
     void findsVietnameseTextWithAndWithoutDiacritics() throws IOException {
-        index("sku-1", "prod-1", "Điện thoại thông minh", "ACTIVE", "ACTIVE", 5L, 1_000_000L);
+        index("sku-1", "prod-1", "Điện thoại thông minh", "ACTIVE", "ACTIVE", true, 1_000_000L);
 
         assertThat(searchFor("dien thoai").items()).hasSize(1);
         assertThat(searchFor("Điện thoại").items()).hasSize(1);
@@ -85,7 +85,7 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
     void paginatesThroughEverySkuWithoutRepeatingOrSkipping() throws IOException {
         for (int i = 0; i < 25; i++) {
             index("sku-" + String.format("%02d", i), "prod-" + i, "iPhone", "ACTIVE", "ACTIVE",
-                    5L, 1_000_000L + i);
+                    true, 1_000_000L + i);
         }
 
         Set<String> seen = new HashSet<>();
@@ -106,7 +106,7 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
     @Test
     void rejectsACursorReplayedAgainstADifferentSort() throws IOException {
         for (int i = 0; i < 25; i++) {
-            index("sku-" + i, "prod-" + i, "iPhone", "ACTIVE", "ACTIVE", 5L, 1_000_000L + i);
+            index("sku-" + i, "prod-" + i, "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L + i);
         }
         String cursor = search("?q=iphone&sort=price_asc&size=10").nextCursor();
 
@@ -120,9 +120,9 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
     @Test
     void facetCountsDistinctProductsRatherThanSkus() throws IOException {
         // SEARCH-INV-003: three SKUs of one product are one product in the facet count.
-        index("sku-1", "prod-1", "iPhone", "ACTIVE", "ACTIVE", 5L, 1_000_000L);
-        index("sku-2", "prod-1", "iPhone", "ACTIVE", "ACTIVE", 5L, 1_000_000L);
-        index("sku-3", "prod-1", "iPhone", "ACTIVE", "ACTIVE", 5L, 1_000_000L);
+        index("sku-1", "prod-1", "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L);
+        index("sku-2", "prod-1", "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L);
+        index("sku-3", "prod-1", "iPhone", "ACTIVE", "ACTIVE", true, 1_000_000L);
 
         SearchDtos.SearchPage page = search("?q=iphone");
 
@@ -197,7 +197,7 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
     }
 
     private void index(String skuId, String productId, String name, String productStatus, String skuStatus,
-                       long quantity, long sellingPrice) throws IOException {
+                       boolean isInStock, long sellingPrice) throws IOException {
         CatalogPayloads.ProductSnapshot product = new CatalogPayloads.ProductSnapshot(
                 productId, "cat-1", name, productId + "-slug", "description",
                 Map.of("brand", "Apple"), productStatus, 1L, NOW);
@@ -209,8 +209,8 @@ class ProductSearchApiIT extends AbstractSearchIntegrationTest {
         batch.add(writer.catalogUpsert(batch.targetIndex(), skuId,
                 CatalogProjection.toFields(product, sku, Optional.empty()),
                 1L, Timestamps.nowIso(), "catalog-" + skuId));
-        batch.add(writer.stockPatch(batch.targetIndex(), skuId, quantity, 1L,
-                Timestamps.iso(NOW), Timestamps.nowIso(), "stock-" + skuId));
+        batch.add(writer.availabilityPatch(batch.targetIndex(), skuId, isInStock, 1L,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "availability-" + skuId));
         executor.execute("t.product.events", batch);
         refreshAll();
     }

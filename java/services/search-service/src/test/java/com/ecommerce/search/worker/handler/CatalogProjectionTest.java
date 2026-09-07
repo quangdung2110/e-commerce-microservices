@@ -32,12 +32,13 @@ class CatalogProjectionTest {
     }
 
     @Test
-    void neverWritesStockOrRatingFields() {
-        // SEARCH-BR-009: one source may not clear another's data.
+    void neverWritesAvailabilityOrRatingFields() {
+        // SEARCH-BR-009: one source may not clear another's data. The catalog upsert has
+        // no exception; only the tombstone may set is_in_stock (ADR-011).
         Map<String, Object> fields = CatalogProjection.toFields(product(), sku(), Optional.empty());
 
         assertThat(fields).doesNotContainKeys(
-                "available_quantity", "is_in_stock", "product_rating_avg", "product_rating_count");
+                "is_in_stock", "availability_revision", "product_rating_avg", "product_rating_count");
     }
 
     @Test

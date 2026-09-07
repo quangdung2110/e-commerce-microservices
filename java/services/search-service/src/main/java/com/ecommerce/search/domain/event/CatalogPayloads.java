@@ -94,13 +94,19 @@ public final class CatalogPayloads {
             String reason, String rootCategoryId, Long categoryRevision, Instant requestedAt) {
     }
 
-    /** {@code stock-snapshot.schema.json} and the Inventory export item — same shape. */
+    /**
+     * {@code sku-availability-changed.schema.json} and the Inventory
+     * {@code SkuAvailabilitySnapshot} export item — the two carry the same four fields.
+     *
+     * <p>There is no {@code product_id} and no quantity: Inventory owns the warehouse
+     * fan-out and publishes only the aggregate boolean, and the join key is the opaque
+     * {@code sku_id} Product owns (ADR-019).
+     */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record StockSnapshot(
-            String productId,
+    public record SkuAvailability(
             String skuId,
-            Long availableQuantity,
-            Long stockRevision,
+            Boolean isInStock,
+            Long availabilityRevision,
             Instant observedAt) {
     }
 

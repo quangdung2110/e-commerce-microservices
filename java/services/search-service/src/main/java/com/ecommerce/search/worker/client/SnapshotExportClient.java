@@ -44,13 +44,22 @@ public class SnapshotExportClient {
         return http.get().uri(uri).retrieve().body(ExportPages.ProductExportPage.class);
     }
 
-    public ExportPages.StockExportPage stockSnapshots(String afterSkuId) {
+    /** Pins one Inventory availability watermark; the session expires 24 hours later. */
+    public ExportPages.SnapshotSession createInventorySnapshotSession() {
         URI uri = UriComponentsBuilder.fromUriString(properties.export().inventoryBaseUrl())
-                .path("/internal/v1/inventory/stock-snapshots")
-                .queryParam("limit", properties.reindex().exportPageSize())
-                .queryParamIfPresent("after_sku_id", java.util.Optional.ofNullable(afterSkuId))
+                .path("/exports/inventory/v1/snapshot-sessions")
                 .build(true).toUri();
-        return http.get().uri(uri).retrieve().body(ExportPages.StockExportPage.class);
+        return http.post().uri(uri).retrieve().body(ExportPages.SnapshotSession.class);
+    }
+
+    /** Pages the per-SKU availability fixed at the session's watermark. */
+    public ExportPages.SkuAvailabilitySnapshotPage skuAvailabilities(String snapshotId, String cursor) {
+        URI uri = UriComponentsBuilder.fromUriString(properties.export().inventoryBaseUrl())
+                .path("/exports/inventory/v1/snapshot-sessions/{snapshot_id}/sku-availabilities")
+                .queryParam("limit", properties.reindex().exportPageSize())
+                .queryParamIfPresent("cursor", java.util.Optional.ofNullable(cursor))
+                .buildAndExpand(snapshotId).encode().toUri();
+        return http.get().uri(uri).retrieve().body(ExportPages.SkuAvailabilitySnapshotPage.class);
     }
 
     public ExportPages.RatingExportPage ratingAggregates(String afterProductId) {

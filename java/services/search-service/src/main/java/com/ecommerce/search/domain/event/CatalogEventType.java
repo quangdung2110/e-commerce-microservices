@@ -17,7 +17,7 @@ public enum CatalogEventType {
     CATEGORY_UPSERTED("com.ecommerce.catalog.category-upserted.v1"),
     CATEGORY_DELETED("com.ecommerce.catalog.category-deleted.v1"),
     CATALOG_REINDEX_REQUESTED("com.ecommerce.catalog.reindex-requested.v1"),
-    STOCK_SNAPSHOT("com.ecommerce.inventory.stock-snapshot.v1"),
+    SKU_AVAILABILITY_CHANGED("com.ecommerce.inventory.sku-availability.changed.v1"),
     REVIEW_METRICS_UPDATED("com.ecommerce.review.metrics-updated.v1");
 
     private final String typeUri;

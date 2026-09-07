@@ -13,9 +13,11 @@ import java.util.List;
  * painless scripts instead, so that each source can only touch the fields it owns
  * ({@code SEARCH-BR-009}).
  *
- * <p>{@code availableQuantity} and {@code isInStock} are nullable by design. A SKU created
- * by a catalog event has no stock projection until Inventory publishes its first snapshot,
- * and {@code catalog_upsert.painless} deliberately does not initialise them.
+ * <p>{@code isInStock} is nullable by design. A SKU created by a catalog event has no
+ * availability until Inventory publishes its first snapshot, and
+ * {@code catalog_upsert.painless} deliberately does not initialise it; an absent value is
+ * read as {@code false} rather than written into {@code _source} as a guess
+ * ({@code docs/search/data.md §is_in_stock}).
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ProductDocument(
@@ -44,7 +46,6 @@ public record ProductDocument(
         Long sellingPriceVnd,
         Boolean hasPromotion,
 
-        Long availableQuantity,
         Boolean isInStock,
 
         Double productRatingAvg,
@@ -54,17 +55,17 @@ public record ProductDocument(
         Instant deletedAt,
         Instant updatedAt,
         Instant catalogIndexedAt,
-        Instant stockObservedAt,
-        Instant stockIndexedAt,
+        Instant availabilityObservedAt,
+        Instant availabilityIndexedAt,
         Instant reviewIndexedAt,
         Instant indexedAt,
 
         Long catalogRevision,
-        Long stockRevision,
+        Long availabilityRevision,
         Long reviewRevision,
 
         String lastCatalogEventId,
-        String lastStockEventId,
+        String lastAvailabilityEventId,
         String lastReviewEventId) {
 
     public boolean inStock() {

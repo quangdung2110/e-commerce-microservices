@@ -22,7 +22,7 @@ public class PainlessScripts {
 
     public static final String CATALOG_UPSERT = "catalog_upsert";
     public static final String CATALOG_TOMBSTONE = "catalog_tombstone";
-    public static final String STOCK_PATCH = "stock_patch";
+    public static final String AVAILABILITY_PATCH = "availability_patch";
     public static final String REVIEW_METRICS_PATCH = "review_metrics_patch";
     public static final String CATEGORY_UPSERT = "category_upsert";
     public static final String CATEGORY_TOMBSTONE = "category_tombstone";

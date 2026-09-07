@@ -5,13 +5,13 @@ import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.domain.event.CatalogEventType;
 import com.ecommerce.search.domain.event.CloudEventEnvelope;
 import com.ecommerce.search.worker.client.ExportPages;
+import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
 import com.ecommerce.search.worker.handler.BatchExecutor;
 import com.ecommerce.search.worker.handler.CatalogEventHandler;
 import com.ecommerce.search.worker.handler.CategoryEnrichment;
 import com.ecommerce.search.worker.handler.CategoryEventHandler;
 import com.ecommerce.search.worker.handler.EventBatch;
 import com.ecommerce.search.worker.handler.ReviewEventHandler;
-import com.ecommerce.search.worker.handler.StockEventHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -54,7 +54,7 @@ public class ReindexCatchUp {
     private final BatchExecutor executor;
     private final CatalogEventHandler catalogHandler;
     private final CategoryEventHandler categoryHandler;
-    private final StockEventHandler stockHandler;
+    private final AvailabilityEventHandler availabilityHandler;
     private final ReviewEventHandler reviewHandler;
     private final CategoryEnrichment enrichment;
     private final SearchMetrics metrics;
@@ -65,7 +65,7 @@ public class ReindexCatchUp {
                           BatchExecutor executor,
                           CatalogEventHandler catalogHandler,
                           CategoryEventHandler categoryHandler,
-                          StockEventHandler stockHandler,
+                          AvailabilityEventHandler availabilityHandler,
                           ReviewEventHandler reviewHandler,
                           CategoryEnrichment enrichment,
                           SearchMetrics metrics) {
@@ -75,7 +75,7 @@ public class ReindexCatchUp {
         this.executor = executor;
         this.catalogHandler = catalogHandler;
         this.categoryHandler = categoryHandler;
-        this.stockHandler = stockHandler;
+        this.availabilityHandler = availabilityHandler;
         this.reviewHandler = reviewHandler;
         this.enrichment = enrichment;
         this.metrics = metrics;
@@ -145,7 +145,7 @@ public class ReindexCatchUp {
                         catalogHandler.handle(topic, event, type.get(), productBatch, cache);
                 case CATEGORY_UPSERTED, CATEGORY_DELETED ->
                         categoryHandler.handle(topic, event, type.get(), categoryBatch);
-                case STOCK_SNAPSHOT -> stockHandler.handle(topic, event, productBatch);
+                case SKU_AVAILABILITY_CHANGED -> availabilityHandler.handle(topic, event, productBatch);
                 case REVIEW_METRICS_UPDATED -> ratingEvents.add(event);
                 case CATALOG_REINDEX_REQUESTED -> {
                     // Handled by the control coordinator; the run is superseded elsewhere.

@@ -82,11 +82,11 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
     }
 
     @Test
-    void stockEventDoesNotCreateADocument() throws IOException {
+    void availabilityEventDoesNotCreateADocument() throws IOException {
         // SEARCH-INV-005: only a catalog event may create a SKU document.
         EventBatch batch = new EventBatch(properties.aliases().productsWrite());
-        batch.add(writer.stockPatch(batch.targetIndex(), "sku-unknown", 5L, 1L,
-                Timestamps.iso(NOW), Timestamps.nowIso(), "stock-1"));
+        batch.add(writer.availabilityPatch(batch.targetIndex(), "sku-unknown", true, 1L,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "availability-1"));
         executor.execute("t.inventory.stock.events.v1", batch);
         refreshAll();
 
@@ -94,7 +94,7 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
     }
 
     @Test
-    void stockEventArrivingAfterATombstoneDoesNotReviveTheDocument() throws IOException {
+    void availabilityEventArrivingAfterATombstoneDoesNotReviveTheDocument() throws IOException {
         applyCatalog("sku-1", 1L, 28_000_000L);
 
         EventBatch tombstone = new EventBatch(properties.aliases().productsWrite());
@@ -104,45 +104,70 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
         refreshAll();
 
         EventBatch late = new EventBatch(properties.aliases().productsWrite());
-        late.add(writer.stockPatch(late.targetIndex(), "sku-1", 99L, 5L,
-                Timestamps.iso(NOW), Timestamps.nowIso(), "stock-late"));
+        late.add(writer.availabilityPatch(late.targetIndex(), "sku-1", true, 5L,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "availability-late"));
         executor.execute("t.inventory.stock.events.v1", late);
         refreshAll();
 
         ProductDocument document = read("sku-1").orElseThrow();
         assertThat(document.isDeleted()).isTrue();
-        assertThat(document.availableQuantity()).isNull();
+        assertThat(document.availabilityRevision()).isNull();
         assertThat(document.inStock()).isFalse();
     }
 
     @Test
-    void stockAndCatalogWritesDoNotClobberEachOther() throws IOException {
+    void availabilityAndCatalogWritesDoNotClobberEachOther() throws IOException {
         applyCatalog("sku-1", 1L, 28_000_000L);
-
-        EventBatch stock = new EventBatch(properties.aliases().productsWrite());
-        stock.add(writer.stockPatch(stock.targetIndex(), "sku-1", 3L, 10L,
-                Timestamps.iso(NOW), Timestamps.nowIso(), "stock-1"));
-        executor.execute("t.inventory.stock.events.v1", stock);
-        refreshAll();
+        applyAvailability("sku-1", true, 10L);
 
         applyCatalog("sku-1", 2L, 27_000_000L);
 
         ProductDocument document = read("sku-1").orElseThrow();
-        assertThat(document.availableQuantity()).isEqualTo(3L);
         assertThat(document.inStock()).isTrue();
+        assertThat(document.availabilityRevision()).isEqualTo(10L);
         assertThat(document.sellingPriceVnd()).isEqualTo(27_000_000L);
     }
 
     @Test
-    void aStaleStockRevisionDoesNotLowerTheQuantityBack() throws IOException {
+    void aCatalogTombstoneClearsAvailabilityWithoutTouchingItsRevision() throws IOException {
+        // SEARCH-BR-009's single exception: the tombstone sets is_in_stock = false as a
+        // second line of defence, but leaves availability_revision so Inventory's guard
+        // still holds (ADR-011).
         applyCatalog("sku-1", 1L, 28_000_000L);
-        applyStock("sku-1", 0L, 10L);
-        applyStock("sku-1", 50L, 11L);
-        applyStock("sku-1", 0L, 9L);
+        applyAvailability("sku-1", true, 10L);
+
+        EventBatch tombstone = new EventBatch(properties.aliases().productsWrite());
+        tombstone.add(writer.catalogTombstone(tombstone.targetIndex(), "sku-1", 2L,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "delete-1"));
+        executor.execute("t.product.events", tombstone);
+        refreshAll();
 
         ProductDocument document = read("sku-1").orElseThrow();
-        assertThat(document.availableQuantity()).isEqualTo(50L);
-        assertThat(document.stockRevision()).isEqualTo(11L);
+        assertThat(document.inStock()).isFalse();
+        assertThat(document.availabilityRevision()).isEqualTo(10L);
+    }
+
+    @Test
+    void aStaleAvailabilityRevisionDoesNotPutTheSkuBackInStock() throws IOException {
+        applyCatalog("sku-1", 1L, 28_000_000L);
+        applyAvailability("sku-1", true, 10L);
+        applyAvailability("sku-1", false, 11L);
+        applyAvailability("sku-1", true, 9L);
+
+        ProductDocument document = read("sku-1").orElseThrow();
+        assertThat(document.inStock()).isFalse();
+        assertThat(document.availabilityRevision()).isEqualTo(11L);
+    }
+
+    @Test
+    void aDuplicateAvailabilityRevisionIsANoOp() throws IOException {
+        applyCatalog("sku-1", 1L, 28_000_000L);
+        applyAvailability("sku-1", true, 10L);
+        applyAvailability("sku-1", false, 10L);
+
+        ProductDocument document = read("sku-1").orElseThrow();
+        assertThat(document.inStock()).isTrue();
+        assertThat(document.availabilityRevision()).isEqualTo(10L);
     }
 
     private void applyCatalog(String skuId, long revision, long sellingPrice) throws IOException {
@@ -161,10 +186,10 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
         refreshAll();
     }
 
-    private void applyStock(String skuId, long quantity, long revision) throws IOException {
+    private void applyAvailability(String skuId, boolean isInStock, long revision) throws IOException {
         EventBatch batch = new EventBatch(properties.aliases().productsWrite());
-        batch.add(writer.stockPatch(batch.targetIndex(), skuId, quantity, revision,
-                Timestamps.iso(NOW), Timestamps.nowIso(), "stock-" + revision));
+        batch.add(writer.availabilityPatch(batch.targetIndex(), skuId, isInStock, revision,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "availability-" + revision));
         executor.execute("t.inventory.stock.events.v1", batch);
         refreshAll();
     }

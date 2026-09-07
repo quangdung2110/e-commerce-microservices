@@ -21,8 +21,8 @@ import java.util.Map;
  * write goes through a write alias ({@code SEARCH-INV-007}) — except the catch-up phase of
  * a reindex, which is why the target index is a parameter rather than a constant.
  *
- * <p>Stock and review writes never use {@code scripted_upsert}: a source that does not own
- * the catalog must not be able to create a document ({@code SEARCH-INV-005}).
+ * <p>Availability and review writes never use {@code scripted_upsert}: a source that does
+ * not own the catalog must not be able to create a document ({@code SEARCH-INV-005}).
  */
 @Component
 public class ProjectionWriter {
@@ -68,12 +68,18 @@ public class ProjectionWriter {
                 .action(action -> action.script(script))));
     }
 
-    /** Applies one Inventory stock snapshot. Never upserts ({@code SEARCH-BR-010}). */
-    public BulkOperation stockPatch(String index, String skuId, long availableQuantity, long stockRevision,
-                                    String observedAt, String indexedAt, String eventId) {
-        Script script = script(PainlessScripts.STOCK_PATCH, Map.of(
-                "stock_revision", JsonData.of(stockRevision),
-                "available_quantity", JsonData.of(availableQuantity),
+    /**
+     * Copies one Inventory-owned availability boolean. Never upserts ({@code SEARCH-BR-010}).
+     *
+     * <p>Inventory computes the boolean over every warehouse position it owns, so Search
+     * takes {@code is_in_stock} as given rather than deriving it from a quantity (ADR-019).
+     */
+    public BulkOperation availabilityPatch(String index, String skuId, boolean isInStock,
+                                           long availabilityRevision, String observedAt, String indexedAt,
+                                           String eventId) {
+        Script script = script(PainlessScripts.AVAILABILITY_PATCH, Map.of(
+                "availability_revision", JsonData.of(availabilityRevision),
+                "is_in_stock", JsonData.of(isInStock),
                 "observed_at", JsonData.of(observedAt),
                 "indexed_at", JsonData.of(indexedAt),
                 "event_id", JsonData.of(eventId)));
