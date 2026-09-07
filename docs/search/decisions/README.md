@@ -34,7 +34,7 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-005](./ADR-005-no-dead-letter-queue.md) | Không dùng dead-letter queue | Accepted; điều khoản Inventory missing-doc đã bị thay | 2026-09-02 | Điều khoản Inventory bị ADR-019 thay |
 | [ADR-006](./ADR-006-three-phase-reindex.md) | Reindex ba pha với alias swap | Accepted | 2026-09-02 | Được ADR-016 và ADR-017 mở rộng |
 | [ADR-007](./ADR-007-cursor-pagination.md) | Cursor pagination bằng `search_after` | Accepted | 2026-09-02 | — |
-| [ADR-008](./ADR-008-category-product-count-recompute.md) | `product_count` tính lại theo lịch, không cộng trừ | Accepted | 2026-09-02 | Thay cách cộng trừ theo event của thiết kế cũ |
+| [ADR-008](./ADR-008-category-product-count-recompute.md) | `product_count` tính lại theo lịch, không cộng trừ | Accepted; đã đính chính field gom bucket | 2026-09-02 | Thay cách cộng trừ theo event của thiết kế cũ |
 | [ADR-009](./ADR-009-stock-projection-ownership.md) | `is_in_stock` đến từ Inventory | Superseded | 2026-09-02 | Bị thay bởi ADR-014 |
 | [ADR-010](./ADR-010-derived-category-tree.md) | Search tự dẫn xuất cây danh mục | Superseded | 2026-09-02 | Bị thay bởi ADR-013 |
 | [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted; đã được mở rộng | 2026-09-02 | Thay Draft Cleanup Job cũ; ADR-019 mở rộng gate purge |

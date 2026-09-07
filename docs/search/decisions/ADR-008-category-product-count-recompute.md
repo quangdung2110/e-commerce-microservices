@@ -25,6 +25,14 @@ idempotent: một event được xử lý lại sẽ đếm hai lần.
 
 ## Decision
 
+> **Đính chính (2026-09-08).** Đoạn dưới ghi sai tên field gom bucket. Field đúng là
+> `category_ancestor_ids`, không phải `category_id`. `category_id` chỉ mang một giá trị
+> là danh mục được gán, nên gom theo nó thì mọi danh mục không phải lá ra `0`;
+> `category_ancestor_ids` mang cả node lẫn tổ tiên nên một lần aggregation cho ra số
+> đếm cả nhánh cho mọi cấp. Xem [WF-SEARCH-011](../workflows.md) và
+> [Interfaces §3.3](../interfaces.md). Quyết định thực sự của ADR này — ghi giá trị
+> tuyệt đối theo lịch thay vì cộng trừ theo event — không đổi.
+
 `product_count` được tính lại định kỳ bằng một job: chạy `terms` aggregation theo
 `category_id` trên index `products` với đúng bộ filter hiển thị, kèm `cardinality`
 trên `product_id`, rồi ghi **giá trị tuyệt đối** vào document danh mục cùng mốc
@@ -59,4 +67,6 @@ hình chu kỳ chạy. Lần chạy đầu tiên tự sửa mọi sai lệch tí
 ## Verification
 
 Test bắt buộc: chạy job hai lần liên tiếp cho cùng kết quả; product nhiều SKU chỉ
-đếm một lần; danh mục rỗng về 0; job lỗi giữ nguyên số cũ thay vì ghi số sai.
+đếm một lần; danh mục rỗng về 0; job lỗi giữ nguyên số cũ thay vì ghi số sai; danh mục
+cha đếm được sản phẩm chỉ gán ở danh mục con — test bắt buộc này là thứ phân biệt
+`category_ancestor_ids` với `category_id` trong đính chính ở trên.
