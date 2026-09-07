@@ -22,6 +22,8 @@ public final class EventBatch {
 
     private final String targetIndex;
     private final List<Entry> entries = new ArrayList<>();
+    private final List<String> missingDocumentIds = new ArrayList<>();
+    private final List<String> settledDocumentIds = new ArrayList<>();
     private boolean retryableFailure;
 
     public EventBatch(String targetIndex) {
@@ -78,6 +80,34 @@ public final class EventBatch {
 
     public boolean hasRetryableFailure() {
         return retryableFailure;
+    }
+
+    /**
+     * Records how one availability write ended, keyed by the document it targeted.
+     *
+     * <p>Only a reindex reads these. Live indexing already has its answer in the commit
+     * decision, but a build has to know <em>which</em> SKUs are still waiting for Product to
+     * create their document, because that set is what blocks cutover ({@code WF-SEARCH-009}).
+     */
+    void recordAvailabilityOutcome(String documentId, boolean documentMissing) {
+        if (documentId == null) {
+            return;
+        }
+        if (documentMissing) {
+            missingDocumentIds.add(documentId);
+        } else {
+            settledDocumentIds.add(documentId);
+        }
+    }
+
+    /** Availability targets that did not exist. */
+    public List<String> missingDocumentIds() {
+        return List.copyOf(missingDocumentIds);
+    }
+
+    /** Availability targets that did exist, whatever the guard then decided. */
+    public List<String> settledDocumentIds() {
+        return List.copyOf(settledDocumentIds);
     }
 
     public record Entry(BulkOperation operation, MissingDocument missingDocument, ReadinessIntent readiness) {

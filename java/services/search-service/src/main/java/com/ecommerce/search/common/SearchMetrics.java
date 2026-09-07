@@ -82,6 +82,22 @@ public class SearchMetrics {
         registry.gauge("search_" + source + "_snapshot_age_seconds", seconds);
     }
 
+    /**
+     * Outcome of one Inventory availability bootstrap.
+     *
+     * <p>Named separately from {@link #snapshotExport} because the two {@code 410} codes are
+     * statuses of their own: {@code ok}, {@code snapshot_session_expired},
+     * {@code replay_window_expired}, {@code fail} ({@code operations.md §4}).
+     */
+    public void availabilityExport(String status) {
+        registry.counter("search_inventory_availability_export_total", "status", status).increment();
+    }
+
+    /** Time left on the snapshot session being paged, so expiry can be alerted on early. */
+    public void snapshotSessionTtl(double seconds) {
+        registry.gauge("search_inventory_snapshot_session_ttl_seconds", seconds);
+    }
+
     public void bulkDispatched(String job, int actions, long bytes) {
         registry.summary("search_es_bulk_actions", "job", job).record(actions);
         registry.summary("search_es_bulk_bytes", "job", job).record(bytes);

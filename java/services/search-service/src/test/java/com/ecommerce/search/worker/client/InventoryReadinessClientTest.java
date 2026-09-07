@@ -41,7 +41,7 @@ class InventoryReadinessClientTest {
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", BASE, "http://review-service:8080",
-                true, Duration.ofSeconds(30)));
+                true, Duration.ofSeconds(30), 2));
 
         WebConfig config = new WebConfig(properties);
         RestClient.Builder builder = config.restClientBuilder(config.objectMapper());

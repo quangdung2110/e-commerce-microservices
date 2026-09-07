@@ -48,6 +48,25 @@ public class ThrottledBulkWriter {
         this.metrics = metrics;
     }
 
+    /**
+     * One item Elasticsearch rejected for a reason retrying cannot fix.
+     *
+     * <p>Kept structured rather than formatted: a build has to tell
+     * {@code document_missing_exception} — which the availability import defers by
+     * {@code sku_id} — apart from a mapping conflict, which fails the run.
+     */
+    public record ItemFailure(String id, String type, String reason) {
+
+        public boolean isDocumentMissing() {
+            return type != null && type.contains("document_missing");
+        }
+
+        @Override
+        public String toString() {
+            return id + ": " + type + " " + reason;
+        }
+    }
+
     /** Raised when a chunk still fails after the retry budget or the deadline is spent. */
     public static class BulkExhaustedException extends RuntimeException {
         public BulkExhaustedException(String message, Throwable cause) {
@@ -73,7 +92,7 @@ public class ThrottledBulkWriter {
         private int consecutiveSuccesses;
         private long nextDispatchNanos;
         private long acceptedItems;
-        private final List<String> failures = new ArrayList<>();
+        private final List<ItemFailure> failures = new ArrayList<>();
 
         private Session(String job, Instant deadline) {
             this.job = job;
@@ -164,7 +183,7 @@ public class ThrottledBulkWriter {
                 if (item.status() == 429 || item.status() == 503) {
                     retryable = true;
                 } else {
-                    failures.add(item.id() + ": " + item.error().type() + " " + item.error().reason());
+                    failures.add(new ItemFailure(item.id(), item.error().type(), item.error().reason()));
                 }
             }
             return !retryable;
@@ -209,7 +228,7 @@ public class ThrottledBulkWriter {
         }
 
         /** Non-retryable item failures seen so far; a build must not cut over with any. */
-        public List<String> failures() {
+        public List<ItemFailure> failures() {
             return List.copyOf(failures);
         }
 

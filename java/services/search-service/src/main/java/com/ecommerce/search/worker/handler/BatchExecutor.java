@@ -57,7 +57,7 @@ public class BatchExecutor {
             for (int i = 0; i < items.size(); i++) {
                 BulkResponseItem item = items.get(i);
                 EventBatch.Entry entry = batch.entryAt(i);
-                if (!classify(topic, item, entry)) {
+                if (!classify(topic, batch, item, entry)) {
                     commit = false;
                 } else if (entry.readiness() != null && landed(item)) {
                     owed.add(entry.readiness());
@@ -86,6 +86,10 @@ public class BatchExecutor {
         return item.error() == null && !"noop".equals(item.result());
     }
 
+    private static boolean isDocumentMissing(BulkResponseItem item) {
+        return item.error() != null && String.valueOf(item.error().type()).contains("document_missing");
+    }
+
     /**
      * Registers and revokes in order, stopping at the first failure so a redelivery replays
      * the same sequence. A conflict is not a failure to retry — nothing about it changes on
@@ -107,7 +111,10 @@ public class BatchExecutor {
     }
 
     /** @return false when the item must cause a redelivery */
-    private boolean classify(String topic, BulkResponseItem item, EventBatch.Entry entry) {
+    private boolean classify(String topic, EventBatch batch, BulkResponseItem item, EventBatch.Entry entry) {
+        if (entry.missingDocument() == EventBatch.MissingDocument.CONTRACT_VIOLATION) {
+            batch.recordAvailabilityOutcome(item.id(), isDocumentMissing(item));
+        }
         if (item.error() == null) {
             if ("noop".equals(item.result())) {
                 // The canonical scripts signal both a stale revision and a tombstoned

@@ -114,6 +114,21 @@ public final class ExportPages {
             String nextCursor) {
     }
 
+    /**
+     * {@code GET /exports/inventory/v1/changes}; ordered by export sequence, gaps allowed.
+     *
+     * <p>{@code items} are the same CloudEvents Inventory publishes to Kafka, so the change
+     * feed and the live topic apply through identical code and the same revision guard.
+     * A null {@code nextAfterSequence} means the feed is drained.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ProjectionChangePage(
+            List<com.ecommerce.search.domain.event.CloudEventEnvelope> items,
+            Long minimumRetainedSequence,
+            Long latestSequence,
+            Long nextAfterSequence) {
+    }
+
     /** {@code GET /internal/v1/reviews/rating-aggregates}; keyset by {@code product_id}. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record RatingExportPage(

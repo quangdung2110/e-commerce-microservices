@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -30,6 +32,19 @@ public final class ReindexProgressState {
      */
     private volatile ExportPages.SnapshotSession availabilitySession;
     private volatile String availabilityCursor;
+    private volatile Long availabilitySequence;
+    private volatile boolean availabilityHandoffProven;
+
+    /**
+     * SKUs whose availability arrived before Product had created their document.
+     *
+     * <p>Only the identifier is kept, never the fact. The fact comes back on its own: the
+     * catch-up phase creates the document and registers readiness, and registration obliges
+     * Inventory to publish the current availability again even with no stock mutation
+     * (ADR-019). Storing the fact here would duplicate that guarantee and could serve a
+     * value already superseded.
+     */
+    private final Set<String> deferredAvailabilitySkus = ConcurrentHashMap.newKeySet();
 
     public void addCategories(long count) {
         categoriesExported.addAndGet(count);
@@ -43,14 +58,62 @@ public final class ReindexProgressState {
         availabilitySnapshotsImported.addAndGet(count);
     }
 
-    /** Records the session a fresh availability build is pinned to, clearing any old cursor. */
+    /**
+     * Pins a fresh availability build to a session, discarding everything the previous one
+     * established.
+     *
+     * <p>Dropping the cursor and the sequence is the point: a half-paged set at the old
+     * watermark spliced onto a change feed at the new one is not a valid handoff, so the
+     * new session has to be paged from its first page ({@code WF-SEARCH-007}).
+     */
     public void recordAvailabilitySession(ExportPages.SnapshotSession session) {
         this.availabilitySession = session;
         this.availabilityCursor = null;
+        this.availabilitySequence = null;
+        this.availabilityHandoffProven = false;
     }
 
     public void recordAvailabilityCursor(String cursor) {
         this.availabilityCursor = cursor;
+    }
+
+    /** How far the change feed has been read; the resume point for later drains. */
+    public void recordAvailabilitySequence(long sequence) {
+        this.availabilitySequence = sequence;
+    }
+
+    /** The sequence to continue the change feed from, or the session watermark. */
+    public long availabilityResumeSequence() {
+        if (availabilitySequence != null) {
+            return availabilitySequence;
+        }
+        return availabilitySession == null || availabilitySession.exportWatermark() == null
+                ? 0L : availabilitySession.exportWatermark();
+    }
+
+    /**
+     * Marks that one session was paged end to end and its change feed picked up from that
+     * same watermark. Cutover is gated on it, because nothing else distinguishes a complete
+     * import from one abandoned halfway.
+     */
+    public void markAvailabilityHandoffProven() {
+        this.availabilityHandoffProven = true;
+    }
+
+    public boolean isAvailabilityHandoffProven() {
+        return availabilityHandoffProven;
+    }
+
+    public void deferAvailability(String skuId) {
+        deferredAvailabilitySkus.add(skuId);
+    }
+
+    public void resolveDeferredAvailability(String skuId) {
+        deferredAvailabilitySkus.remove(skuId);
+    }
+
+    public Set<String> deferredAvailabilitySkus() {
+        return Set.copyOf(deferredAvailabilitySkus);
     }
 
     public void addRatingAggregates(long count) {
@@ -101,6 +164,9 @@ public final class ReindexProgressState {
         session.put("export_watermark", availabilitySession.exportWatermark());
         session.put("expires_at", availabilitySession.expiresAt());
         session.put("cursor", availabilityCursor);
+        session.put("sequence", availabilitySequence);
+        session.put("handoff_proven", availabilityHandoffProven);
+        session.put("deferred_skus", deferredAvailabilitySkus.size());
         return Map.of("inventory_availability", session);
     }
 

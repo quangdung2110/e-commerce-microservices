@@ -160,6 +160,9 @@ search:
     review-base-url: ${REVIEW_INTERNAL_URL:http://review-service:8080}
     review-enabled: ${REVIEW_EXPORT_ENABLED:true}
     timeout: 30s
+    # A snapshot session lives 24h and a re-created one must be paged from the start,
+    # so repeatedly outliving one is a capacity problem, not a blip (WF-SEARCH-007).
+    availability-snapshot-max-sessions: 2
 
 logging:
   level:

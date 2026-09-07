@@ -149,6 +149,14 @@ public record SearchProperties(
             @DefaultValue("http://inventory-service:8080") String inventoryBaseUrl,
             @DefaultValue("http://review-service:8080") String reviewBaseUrl,
             @DefaultValue("true") boolean reviewEnabled,
-            @DefaultValue("30s") Duration timeout) {
+            @DefaultValue("30s") Duration timeout,
+            /*
+             * How many Inventory snapshot sessions one bootstrap may burn through. A
+             * session expires 24 hours after creation, and a re-created one has to be paged
+             * from the first page, so repeatedly hitting the expiry means the import cannot
+             * keep up rather than that something transient happened — stop and alert
+             * instead of looping (WF-SEARCH-007).
+             */
+            @DefaultValue("2") int availabilitySnapshotMaxSessions) {
     }
 }

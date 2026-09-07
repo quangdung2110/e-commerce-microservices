@@ -7,6 +7,7 @@ import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.domain.document.CategoryDocument;
 import com.ecommerce.search.domain.document.ReindexRunDocument;
 import com.ecommerce.search.domain.event.CatalogPayloads;
+import com.ecommerce.search.domain.event.CloudEventEnvelope;
 import com.ecommerce.search.repository.JobStateRepository;
 import com.ecommerce.search.repository.es.IndexAdmin;
 import com.ecommerce.search.repository.es.IndexTemplates;
@@ -14,8 +15,12 @@ import com.ecommerce.search.repository.es.ProjectionWriter;
 import com.ecommerce.search.repository.es.ThrottledBulkWriter;
 import com.ecommerce.search.worker.ReindexControlCoordinator;
 import com.ecommerce.search.worker.client.ExportPages;
+import com.ecommerce.search.worker.client.InventoryExportException;
 import com.ecommerce.search.worker.client.SnapshotExportClient;
+import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
+import com.ecommerce.search.worker.handler.BatchExecutor;
 import com.ecommerce.search.worker.handler.CatalogProjection;
+import com.ecommerce.search.worker.handler.EventBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -23,10 +28,12 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * {@code WF-SEARCH-009} — the three-phase full reindex.
@@ -37,8 +44,9 @@ import java.util.Optional;
  * {@code _aliases} call. Rollback is the reverse swap (ADR-006).
  *
  * <p>The run fails rather than cuts over whenever a snapshot export fails, an export omits
- * its {@code replay_from_offsets}, catch-up does not converge, or a control event
- * supersedes the run.
+ * its {@code replay_from_offsets}, the Inventory handoff cannot be proved at a single
+ * watermark, a SKU is still left with availability and no document, catch-up does not
+ * converge, or a control event supersedes the run.
  */
 @Component
 public class FullReindexJob {
@@ -49,6 +57,7 @@ public class FullReindexJob {
     private static final String SOURCE_PRODUCT = "product";
     private static final String SOURCE_AVAILABILITY = "inventory_availability";
     private static final String SOURCE_REVIEW = "review";
+    private static final String AVAILABILITY_CHANGES_JOB = "reindex-availability-changes";
 
     private final SearchProperties properties;
     private final SnapshotExportClient exports;
@@ -58,6 +67,8 @@ public class FullReindexJob {
     private final JobStateRepository runs;
     private final ReindexCatchUp catchUp;
     private final ReindexControlCoordinator control;
+    private final AvailabilityEventHandler availabilityHandler;
+    private final BatchExecutor executor;
     private final SearchMetrics metrics;
 
     public FullReindexJob(SearchProperties properties,
@@ -68,6 +79,8 @@ public class FullReindexJob {
                           JobStateRepository runs,
                           ReindexCatchUp catchUp,
                           ReindexControlCoordinator control,
+                          AvailabilityEventHandler availabilityHandler,
+                          BatchExecutor executor,
                           SearchMetrics metrics) {
         this.properties = properties;
         this.exports = exports;
@@ -77,6 +90,8 @@ public class FullReindexJob {
         this.runs = runs;
         this.catchUp = catchUp;
         this.control = control;
+        this.availabilityHandler = availabilityHandler;
+        this.executor = executor;
         this.metrics = metrics;
     }
 
@@ -111,8 +126,10 @@ public class FullReindexJob {
                     progress, productsIndex, null);
             metrics.reindexState("CATCHING_UP", 1);
             catchUp.replay(runId, productsIndex, categoriesIndex, progress, deadline);
+            settleDeferredAvailability(productsIndex, progress, deadline);
 
             failIfSuperseded(runId, productsIndex, categoriesIndex, reason, actor, startedAt, progress);
+            requireAvailabilityHandoff(progress);
 
             save(runId, "CUTOVER", "CUTOVER", reason, actor, startedAt, null, progress, productsIndex, null);
             metrics.reindexState("CUTOVER", 1);
@@ -193,25 +210,67 @@ public class FullReindexJob {
     }
 
     /**
-     * Availability build, after the catalog so the target documents exist. Inventory pins
-     * one {@code export_watermark} for the whole session; the import never upserts, so a
-     * SKU created after the Product snapshot has no document here yet (ADR-019).
+     * Availability build, after the catalog so the target documents exist.
+     *
+     * <p>Inventory pins one {@code export_watermark} per session, and a session returns the
+     * whole registered SKU set rather than a delta — so running exactly one session end to
+     * end, then its change feed from that same watermark, is what proves coverage. A session
+     * that expires mid-paging invalidates that proof: the pages already read belong to a
+     * watermark that no longer exists, and splicing them onto a feed at the new one is not a
+     * handoff. The only recovery is a new session paged from its first page, which is why
+     * this is a loop rather than a resume ({@code WF-SEARCH-007}).
+     *
+     * <p>Re-importing rows costs nothing: the {@code availability_revision} guard turns them
+     * into no-ops or lifts them to a newer state, so nothing is rolled back between attempts.
      */
     private void buildAvailability(String productsIndex, ReindexProgressState progress, Instant deadline)
             throws IOException {
-        ExportPages.SnapshotSession snapshot = exports.createInventorySnapshotSession();
-        if (snapshot == null || snapshot.snapshotId() == null || snapshot.exportWatermark() == null) {
+        int maxSessions = properties.export().availabilitySnapshotMaxSessions();
+        for (int attempt = 1; attempt <= maxSessions; attempt++) {
+            ExportPages.SnapshotSession session = openAvailabilitySession(progress);
+            try {
+                importAvailabilitySnapshot(session, productsIndex, progress, deadline);
+                drainAvailabilityChanges(productsIndex, progress, deadline);
+                progress.markAvailabilityHandoffProven();
+                metrics.availabilityExport("ok");
+                return;
+            } catch (InventoryExportException e) {
+                metrics.availabilityExport(e.reason().metricStatus());
+                log.warn("availability bootstrap attempt {} of {} restarts from a new session: {}",
+                        attempt, maxSessions, e.getMessage());
+            }
+        }
+        // Repeatedly outliving a 24-hour session is a capacity problem, not a blip, so the
+        // run stops and alerts instead of looping.
+        metrics.availabilityExport("fail");
+        throw new IllegalStateException("availability bootstrap used all " + maxSessions
+                + " permitted snapshot sessions without completing one end to end");
+    }
+
+    private ExportPages.SnapshotSession openAvailabilitySession(ReindexProgressState progress) {
+        ExportPages.SnapshotSession session = exports.createInventorySnapshotSession();
+        if (session == null || session.snapshotId() == null || session.exportWatermark() == null) {
             throw new IllegalStateException("inventory snapshot session returned no watermark");
         }
-        progress.recordAvailabilitySession(snapshot);
+        progress.recordAvailabilitySession(session);
+        recordSessionTtl(session);
+        log.info("availability bootstrap pinned to session {} at watermark {} (expires {})",
+                session.snapshotId(), session.exportWatermark(), session.expiresAt());
+        return session;
+    }
 
+    /** Pages one session from its first page into the documents the catalog build created. */
+    private void importAvailabilitySnapshot(ExportPages.SnapshotSession session, String productsIndex,
+                                            ReindexProgressState progress, Instant deadline) throws IOException {
         String cursor = null;
-        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-availability", deadline)) {
+        try (ThrottledBulkWriter.Session bulk = bulkWriter.open("reindex-availability", deadline)) {
             do {
+                requireBefore(deadline, "availability build");
+                recordSessionTtl(session);
                 ExportPages.SkuAvailabilitySnapshotPage page =
-                        exports.skuAvailabilities(snapshot.snapshotId(), cursor);
+                        exports.skuAvailabilities(session.snapshotId(), cursor);
                 for (CatalogPayloads.SkuAvailability availability : nullSafe(page.items())) {
-                    session.add(writer.availabilityPatch(productsIndex, availability.skuId(),
+                    bulk.add(writer.availabilityPatch(productsIndex, availability.skuId(),
                                     Boolean.TRUE.equals(availability.isInStock()),
                                     availability.availabilityRevision(),
                                     Timestamps.iso(availability.observedAt()), Timestamps.nowIso(), "reindex"),
@@ -225,8 +284,121 @@ public class FullReindexJob {
                 cursor = page.nextCursor();
                 progress.recordAvailabilityCursor(cursor);
             } while (cursor != null && !cursor.isBlank());
+
+            bulk.flush();
+            absorbSnapshotFailures(bulk.failures(), progress);
         }
-        metrics.snapshotExport(SOURCE_AVAILABILITY, "success");
+    }
+
+    /**
+     * A missing target is not an error here: Product's snapshot was taken first, so a SKU
+     * created after it has no document yet. The fact is deferred rather than stored, because
+     * catch-up will create the document and register readiness, and registration obliges
+     * Inventory to publish the current availability again (ADR-019).
+     */
+    private void absorbSnapshotFailures(List<ThrottledBulkWriter.ItemFailure> failures,
+                                        ReindexProgressState progress) {
+        List<ThrottledBulkWriter.ItemFailure> fatal = new ArrayList<>();
+        for (ThrottledBulkWriter.ItemFailure failure : failures) {
+            if (failure.isDocumentMissing()) {
+                progress.deferAvailability(failure.id());
+            } else {
+                fatal.add(failure);
+            }
+        }
+        if (!fatal.isEmpty()) {
+            throw new IllegalStateException("availability import hit item failures a retry cannot fix: " + fatal);
+        }
+    }
+
+    /**
+     * Reads the change feed from the session watermark until it is drained.
+     *
+     * <p>The feed carries the same CloudEvents as the live topic, so it goes through the
+     * same handler and the same guard; only the transport differs. Inventory publishes no
+     * Kafka replay offset, so this feed — not a topic seek — is how the new index stays
+     * current until cutover hands it back to the live indexer.
+     */
+    private void drainAvailabilityChanges(String productsIndex, ReindexProgressState progress, Instant deadline) {
+        long after = progress.availabilityResumeSequence();
+        while (true) {
+            requireBefore(deadline, "availability change feed");
+            ExportPages.ProjectionChangePage page = exports.changes(after);
+
+            EventBatch batch = new EventBatch(productsIndex);
+            for (CloudEventEnvelope event : nullSafe(page.items())) {
+                availabilityHandler.handle(properties.topics().stock(), event, batch);
+            }
+            // The commit verdict is meaningless here — there is no offset to hold. What
+            // matters is which targets existed, and that is what the two lists carry.
+            executor.execute(AVAILABILITY_CHANGES_JOB, batch);
+            batch.settledDocumentIds().forEach(progress::resolveDeferredAvailability);
+            batch.missingDocumentIds().forEach(progress::deferAvailability);
+
+            Long next = page.nextAfterSequence();
+            if (next == null) {
+                return;
+            }
+            after = next;
+            progress.recordAvailabilitySequence(after);
+        }
+    }
+
+    /**
+     * Waits for the deferred SKUs to resolve themselves after Product catch-up.
+     *
+     * <p>Nothing is re-sent from here. Catch-up created each missing document and registered
+     * its readiness; Inventory answers that by republishing the SKU's current availability,
+     * which arrives on the same change feed. What this does is drain that feed until the
+     * deferred set empties — and refuse the cutover if it never does.
+     */
+    private void settleDeferredAvailability(String productsIndex, ReindexProgressState progress,
+                                            Instant runDeadline) {
+        Instant deadline = earliest(runDeadline, Instant.now().plus(properties.reindex().catchUpDeadline()));
+        while (true) {
+            drainAvailabilityChanges(productsIndex, progress, deadline);
+            Set<String> deferred = progress.deferredAvailabilitySkus();
+            if (deferred.isEmpty()) {
+                return;
+            }
+            if (Instant.now().isAfter(deadline)) {
+                throw new IllegalStateException(deferred.size() + " sku(s) still have availability with no target "
+                        + "document after product catch-up, refusing to cut over: " + sample(deferred));
+            }
+            log.info("waiting on {} deferred availability sku(s) to be republished after readiness registration",
+                    deferred.size());
+            sleep(properties.reindex().catchUpPollTimeout());
+        }
+    }
+
+    private void recordSessionTtl(ExportPages.SnapshotSession session) {
+        if (session.expiresAt() != null) {
+            metrics.snapshotSessionTtl(
+                    java.time.Duration.between(Instant.now(), session.expiresAt()).toSeconds());
+        }
+    }
+
+    private static void requireBefore(Instant deadline, String what) {
+        if (Instant.now().isAfter(deadline)) {
+            throw new IllegalStateException(what + " exceeded its deadline");
+        }
+    }
+
+    private static Instant earliest(Instant left, Instant right) {
+        return left.isBefore(right) ? left : right;
+    }
+
+    private static String sample(Set<String> ids) {
+        return ids.stream().limit(10).toList() + (ids.size() > 10 ? " ..." : "");
+    }
+
+    private static void sleep(java.time.Duration duration) {
+        try {
+            Thread.sleep(Math.max(0, duration.toMillis()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("waiting on deferred availability was interrupted", e);
+        }
     }
 
     /**
@@ -303,6 +475,23 @@ public class FullReindexJob {
             if (!progress.hasOffsetsFor(source)) {
                 throw new IllegalStateException(source + " export returned no replay_from_offsets");
             }
+        }
+    }
+
+    /**
+     * Cutover needs the Inventory handoff to be provable, not merely attempted: one session
+     * paged end to end, its change feed picked up at that same watermark, and no SKU left
+     * whose availability has no target document ({@code WF-SEARCH-009}).
+     */
+    private void requireAvailabilityHandoff(ReindexProgressState progress) {
+        if (!progress.isAvailabilityHandoffProven()) {
+            throw new IllegalStateException(
+                    "no inventory snapshot session was completed at a single watermark, refusing to cut over");
+        }
+        Set<String> deferred = progress.deferredAvailabilitySkus();
+        if (!deferred.isEmpty()) {
+            throw new IllegalStateException(deferred.size()
+                    + " sku(s) still have unresolved availability, refusing to cut over: " + sample(deferred));
         }
     }
 

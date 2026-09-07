@@ -4,6 +4,7 @@ import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.config.WebConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
@@ -11,9 +12,11 @@ import org.springframework.web.client.RestClient;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
@@ -37,7 +40,7 @@ class SnapshotExportClientTest {
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", INVENTORY, "http://review-service:8080",
-                true, Duration.ofSeconds(30)));
+                true, Duration.ofSeconds(30), 2));
         when(properties.reindex()).thenReturn(mock(SearchProperties.Reindex.class));
 
         // The production builder, not a bare one: the naming strategy this pins lives
@@ -45,7 +48,7 @@ class SnapshotExportClientTest {
         WebConfig config = new WebConfig(properties);
         RestClient.Builder builder = config.restClientBuilder(config.objectMapper());
         server = MockRestServiceServer.bindTo(builder).build();
-        client = new SnapshotExportClient(builder, properties);
+        client = new SnapshotExportClient(builder, properties, config.objectMapper());
     }
 
     @Test
@@ -65,6 +68,52 @@ class SnapshotExportClientTest {
         assertThat(session.snapshotId()).isEqualTo("snap-1");
         assertThat(session.exportWatermark()).isEqualTo(4210L);
         assertThat(session.expiresAt()).isNotNull();
+    }
+
+    @Test
+    void readsTheDeclaredProblemCodeToTellTheTwoGoneCodesApart() {
+        // Both endpoints answer 410; only the code says which recovery applies.
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        INVENTORY + "/exports/inventory/v1/snapshot-sessions/snap-1/sku-availabilities")))
+                .andRespond(withStatus(HttpStatus.GONE)
+                        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                        .body(problem("SNAPSHOT_SESSION_EXPIRED")));
+
+        assertThatThrownBy(() -> client.skuAvailabilities("snap-1", null))
+                .isInstanceOfSatisfying(InventoryExportException.class, e -> assertThat(e.reason())
+                        .isEqualTo(InventoryExportException.Reason.SNAPSHOT_SESSION_EXPIRED));
+    }
+
+    @Test
+    void treatsAMissingSnapshotSessionLikeAnExpiredOne() {
+        // A 404 means the session is gone too, and the watermark with it.
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        INVENTORY + "/exports/inventory/v1/snapshot-sessions/snap-1/sku-availabilities")))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        assertThatThrownBy(() -> client.skuAvailabilities("snap-1", null))
+                .isInstanceOfSatisfying(InventoryExportException.class, e -> assertThat(e.reason())
+                        .isEqualTo(InventoryExportException.Reason.SNAPSHOT_SESSION_EXPIRED));
+    }
+
+    @Test
+    void fallsBackToTheEndpointWhenTheProblemBodySaysNothingUsable() {
+        // Same status, opposite meaning: on the change feed a bare 410 is a lost cursor.
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(INVENTORY + "/exports/inventory/v1/changes")))
+                .andRespond(withStatus(HttpStatus.GONE));
+
+        assertThatThrownBy(() -> client.changes(100L))
+                .isInstanceOfSatisfying(InventoryExportException.class, e -> assertThat(e.reason())
+                        .isEqualTo(InventoryExportException.Reason.REPLAY_WINDOW_EXPIRED));
+    }
+
+    @Test
+    void letsAnyOtherErrorThrough() {
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(INVENTORY + "/exports/inventory/v1/changes")))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> client.changes(100L))
+                .isNotInstanceOf(InventoryExportException.class);
     }
 
     @Test
@@ -96,5 +145,19 @@ class SnapshotExportClientTest {
             assertThat(item.availabilityRevision()).isEqualTo(12L);
             assertThat(item.observedAt()).isNotNull();
         });
+    }
+
+    private static String problem(String code) {
+        return """
+                {
+                  "type": "about:blank",
+                  "title": "Gone",
+                  "status": 410,
+                  "detail": "the snapshot session has expired",
+                  "instance": "/exports/inventory/v1/snapshot-sessions/snap-1",
+                  "code": "%s",
+                  "correlation_id": "corr-0000000000"
+                }
+                """.formatted(code);
     }
 }
