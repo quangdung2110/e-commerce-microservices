@@ -3,6 +3,18 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-07
+
+- Thay contract Inventory legacy bằng ba OpenAPI target: Workflow cho Checkout/Order
+  Saga, ADMIN cho nghiệp vụ kho và Export fixed-watermark cho Search.
+- Inventory mutation bắt buộc idempotency/correlation/causation; lỗi dùng RFC 9457
+  Problem Details và tách terminal domain outcome khỏi lỗi hạ tầng retryable.
+- Inventory Events v1 nay có bảy CloudEvents schema trên hai topic: availability fact
+  cho Search và reservation/dispatch/refund-inspection fact cho Order. Retention tối
+  thiểu tăng từ 14 lên 30 ngày; ordering guard chuyển sang aggregate revision.
+- Export per-SKU/Kafka-offset cũ được thay bằng snapshot session 24 giờ và change feed
+  theo durable export sequence; `410 REPLAY_WINDOW_EXPIRED` yêu cầu bootstrap lại.
+
 ## 2026-09-06
 
 - Search Storefront API v2: `ReindexRun.status` thêm `SUPERSEDED`, trạng thái kết thúc

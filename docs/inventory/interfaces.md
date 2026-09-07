@@ -10,6 +10,11 @@
 | `/admin/inventory/v1` | Authenticated `ADMIN` | Warehouse configuration and physical stock operations. |
 | `/exports/inventory/v1` | Search Projection only | Consistent snapshot and ordered change feed for `in_stock`. |
 
+Machine-readable contracts are split by trust boundary: [Workflow OpenAPI](../../contracts/http/inventory/workflow/v1/openapi.yaml),
+[ADMIN OpenAPI](../../contracts/http/inventory/admin/v1/openapi.yaml),
+[Export OpenAPI](../../contracts/http/inventory/exports/v1/openapi.yaml), and
+[Inventory AsyncAPI](../../contracts/events/inventory/v1/asyncapi.yaml).
+
 There is no public customer Inventory write API. Every mutation requires authenticated workload/user identity plus:
 
 | Header / context | Rule |
@@ -17,9 +22,18 @@ There is no public customer Inventory write API. Every mutation requires authent
 | `Idempotency-Key` | Required command ID; same caller namespace + key must carry the exact same fingerprint. |
 | `X-Correlation-ID` | Required for end-to-end trace. |
 | `X-Causation-ID` | Required where a prior workflow/event caused this command; otherwise a newly created root cause ID. |
+| `traceparent` | Propagated when present according to W3C Trace Context; it does not replace the business correlation/causation IDs. |
 | Actor context | Service identity for Saga, interactive ADMIN identity/role for physical commands. It is written to audit. |
 
 An accepted command persists its terminal result. Same command ID/payload returns that result. Same ID with a different payload returns `409 IDEMPOTENCY_KEY_REUSED`. A business rejection records the command result but does **not** permanently claim the operation identity, so a corrected new command may later succeed.
+
+The command result and canonical fingerprint are retained for at least seven years. A concurrent
+retry waits only for a bounded interval; if the first execution has not completed, Inventory
+returns retryable `503 INVENTORY_BUSY` and the caller retries the same command ID.
+
+Release 1 bounds preview, reservation, Refund Scope, and event line collections at 100 items;
+export pages are bounded at 1,000 rows. These are wire-safety limits, not permission to accept a
+partial order or partial Refund Scope.
 
 ## 2. Checkout and Order workflow API
 
@@ -46,15 +60,19 @@ Preview excludes inactive/outage warehouses and selects priority deterministical
 | Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or `STOCK_DISCREPANCY` plus `order_exception_id`. |
 | Release committed line | `POST /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release` | Target is committed and undispatched; reason guard defined in [workflows.md](workflows.md). |
 | Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Whole immutable order lines; rejects a second active scope. |
-| Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/cancel` | Only `REGISTERED` and no receipt. |
-| Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
-| Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_request_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
+| Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel` | Only `REGISTERED` and no receipt. |
+| Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
+| Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
 
 Order can query its own command result and state:
 
 - `GET /internal/inventory/v1/commands/{command_id}`
 - `GET /internal/inventory/v1/reservations/{order_id}`
-- `GET /internal/inventory/v1/refund-scopes/{refund_request_id}`
+- `GET /internal/inventory/v1/refund-scopes/{refund_scope_id}`
+
+Registration accepts Order's immutable `(order_id, refund_request_id)` business identity and
+returns Inventory's opaque `refund_scope_id`. Subsequent resource operations use
+`refund_scope_id`; facts and queries retain all three identifiers for reconciliation.
 
 These queries are the recovery path when an Order event is delayed or missed; no generic cross-service event replay API is promised to Order.
 
@@ -68,7 +86,7 @@ ADMIN commands are the only physical-operation path. Every stock-affecting input
 | Sellable receipt | `/admin/inventory/v1/stock-receipts` | `INITIAL_STOCK_LOAD` needs approved baseline batch; `SUPPLIER_RECEIPT` needs delivery/GRN reference. |
 | Adjustment | `/admin/inventory/v1/stock-adjustments` | `+/-`, ADMIN-only, approved reason code and evidence; negative only from sellable. |
 | Sellable reversal | `/admin/inventory/v1/stock-movements/{movement_id}/reversals` | Only successful sellable receipt/adjustment; append-only compensating movement. |
-| Physical dispatch | `/admin/inventory/v1/dispatches` | Only exact committed allocation at assigned warehouse and only when goods left physically. |
+| Physical dispatch | `/admin/inventory/v1/physical-dispatches` | Only exact committed allocation at assigned warehouse and only when goods left physically. |
 | Return receipt | `/admin/inventory/v1/return-receipts` | Exact active scope line; goes into quarantine. |
 | Final inspection | `/admin/inventory/v1/inspections` | `PASS`/`FAIL` final per receipt quantity at receiving warehouse; evidence required. |
 | Quarantine disposition | `/admin/inventory/v1/quarantine-dispositions` | `HOLD`, `DISPOSE`, `RETURN_TO_SUPPLIER`; physical departure proof for last two. |
@@ -82,42 +100,52 @@ Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustm
 |---:|---|---|
 | `200` | Accepted result or expected terminal domain result such as `REJECT_ALL`, `RESERVED`, `COMMITTED`, `RELEASED`. | Do not retry for a different business decision; replay only to obtain same result. |
 | `400` | Invalid syntax/shape before a durable command exists. | Correct input, then submit a new command ID. |
+| `401` | Caller identity is missing or invalid. | Refresh/fix authentication; do not retry blindly. |
 | `403` | Caller lacks required service/ADMIN authority. | Do not retry without changed authorization. |
 | `404` | Query aggregate/command is not visible to caller. | Reconcile caller identifiers. |
 | `409` | Invalid state guard, immutable scope mismatch, operation identity conflict, or reused ID with different payload. | Treat as durable business conflict; investigate or issue a correct new command. |
-| `503` | `INVENTORY_UNAVAILABLE` or `BUSY`; no accepted transition was returned. | Retry with the same command ID and backoff. |
+| `503` | `INVENTORY_UNAVAILABLE` or `INVENTORY_BUSY`; no accepted transition was returned. | Retry with the same command ID and backoff. |
 
 Every error response includes stable `code`, `retryable`, `correlation_id`, and, when supplied, `command_id`. A technical failure is never represented as `REJECT_ALL`.
 
 ## 5. Public events
 
-Every public event uses this envelope:
+Every public event uses CloudEvents 1.0 structured JSON. The semantic envelope below is mapped
+onto the shared contract convention rather than introducing a second custom envelope:
 
 ```json
 {
-  "event_id": "stable UUID",
-  "event_type": "inventory.example.v1",
-  "schema_version": 1,
-  "export_sequence": 12345,
-  "occurred_at": "RFC-3339 timestamp",
-  "correlation_id": "...",
-  "causation_id": "...",
-  "aggregate": { "type": "...", "id": "...", "revision": 7 },
+  "specversion": "1.0",
+  "id": "stable UUID",
+  "type": "com.ecommerce.inventory.example.v1",
+  "source": "/services/inventory",
+  "subject": "resource identity",
+  "time": "RFC-3339 timestamp",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/inventory/v1/schemas/example.schema.json",
+  "correlationid": "...",
+  "causationid": "...",
+  "sequence": 12345,
+  "aggregatetype": "...",
+  "aggregateid": "...",
+  "aggregaterevision": 7,
   "data": {}
 }
 ```
 
-`event_id` supports deduplication. Aggregate revision supports per-aggregate ordering. `export_sequence` is strictly increasing at durable creation and can contain gaps; no global aggregate ordering is promised.
+`id` supports deduplication. `aggregaterevision` supports per-aggregate ordering. `sequence` is
+the strictly increasing export sequence assigned at durable creation and can contain gaps; no
+global Kafka ordering is promised.
 
 | Event | Consumer | Minimum data / semantic |
 |---|---|---|
-| `inventory.stock-position.changed.v1` | Search | Warehouse, SKU, `available_to_sell`, position revision. No raw on-hand or other buckets. |
-| `inventory.warehouse-availability.changed.v1` | Search | Warehouse activity/outage and revision. |
-| `inventory.reservation.reserved.v1` | Order | Durable Inventory fact for reconciliation. |
-| `inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
-| `inventory.reservation.released.v1` | Order | Release fact/reason. |
-| `inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
-| `inventory.refund.all-items-inspection-completed.v1` | Order | Whole scope ID and aggregated per-line pass/fail results; not payout. |
+| `com.ecommerce.inventory.stock-position.changed.v1` | Search | Warehouse, SKU, `available_to_sell`, position revision. No raw on-hand or other buckets. |
+| `com.ecommerce.inventory.warehouse-availability.changed.v1` | Search | Warehouse activity/outage and revision. |
+| `com.ecommerce.inventory.reservation.reserved.v1` | Order | Durable Inventory fact for reconciliation. |
+| `com.ecommerce.inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
+| `com.ecommerce.inventory.reservation.released.v1` | Order | Release fact/reason. |
+| `com.ecommerce.inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
+| `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order | Whole scope ID and aggregated per-line pass/fail results; not payout. |
 
 Events are written through the transactional outbox and delivered at least once. Consumers atomically record an inbox/dedupe entry with their effect.
 
@@ -127,7 +155,7 @@ Search exposes only `in_stock = exists(active, non-outage warehouse with availab
 
 1. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export watermark, and 24-hour session expiry.
 2. Paginate warehouse and stock-position snapshots at that fixed watermark.
-3. `GET /exports/inventory/v1/changes?after_sequence=N` returns only stock/warehouse events after a sequence.
+3. `GET /exports/inventory/v1/changes?after_sequence=N` returns only the same CloudEvents stock/warehouse facts after a sequence.
 4. Search applies the snapshot, then changes after its watermark using event/inbox dedupe. If more than 30 days behind, Inventory returns `410 REPLAY_WINDOW_EXPIRED`; Search takes a new snapshot rather than guessing.
 
 Within v1, changes are additive and backward compatible. A breaking change requires v2 and parallel support for at least 90 days after every registered consumer confirms migration. Contract registry records owner, contact, schema version, compatibility decision, and test checkpoint.

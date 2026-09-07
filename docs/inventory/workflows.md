@@ -25,7 +25,7 @@ sequenceDiagram
     O->>I: CommitPayment(command ID)
     I-->>O: COMMITTED
     A->>I: RecordPhysicalDispatch(line, warehouse)
-    I-->>O: inventory.reservation.line-dispatched.v1
+    I-->>O: com.ecommerce.inventory.reservation.line-dispatched.v1
   else payment fails or Order timeout decides
     O->>I: ReleaseReservation(reason, command ID)
     I-->>O: RELEASED
@@ -87,7 +87,7 @@ sequenceDiagram
     A->>I: RecordInspectionPass or RecordInspectionFail
   end
   alt all expected units final inspected
-    I-->>O: inventory.refund.all-items-inspection-completed.v1
+    I-->>O: com.ecommerce.inventory.refund.all-items-inspection-completed.v1
     O->>I: CloseRefundScope(terminal Order reason)
     I-->>O: CLOSED
   else returns incomplete after Order decision
