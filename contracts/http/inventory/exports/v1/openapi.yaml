@@ -1,0 +1,175 @@
+openapi: 3.1.0
+info:
+  title: Inventory Projection Export API
+  version: 1.0.0
+  description: >-
+    Search-only bootstrap and recovery API. A snapshot session is fixed at one
+    durable export watermark; Search then applies changes with a greater sequence.
+    This surface is never used to make checkout or reservation decisions.
+x-adoption-status: proposed
+servers:
+  - url: http://inventory-service:8080
+    description: Internal projection export endpoint
+security: [{ searchProjectionIdentity: [] }]
+paths:
+  /exports/inventory/v1/snapshot-sessions:
+    post:
+      operationId: createInventorySnapshotSession
+      summary: Create a point-in-time projection snapshot
+      description: The session expires 24 hours after creation.
+      responses:
+        '201':
+          description: Snapshot session created.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SnapshotSession' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /exports/inventory/v1/snapshot-sessions/{snapshot_id}/warehouses:
+    get:
+      operationId: listSnapshotWarehouses
+      summary: Page warehouse availability at the fixed watermark
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One stable page.
+          content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseSnapshotPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/SnapshotExpired' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /exports/inventory/v1/snapshot-sessions/{snapshot_id}/stock-positions:
+    get:
+      operationId: listSnapshotStockPositions
+      summary: Page stock-position availability at the fixed watermark
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One stable page. Raw on-hand, reserved, committed, and quarantine buckets are not exposed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionSnapshotPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/SnapshotExpired' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /exports/inventory/v1/changes:
+    get:
+      operationId: listInventoryProjectionChanges
+      summary: Read ordered availability changes after an export sequence
+      description: >-
+        The feed contains only stock-position.changed and warehouse-availability.changed
+        events. Export sequence is increasing and may contain gaps. Retention is at least
+        30 days; an older cursor returns REPLAY_WINDOW_EXPIRED.
+      parameters:
+        - name: after_sequence
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 0 }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Events with sequence greater than after_sequence, in ascending sequence order.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProjectionChangePage' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410': { $ref: '#/components/responses/ReplayWindowExpired' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    searchProjectionIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: internal-workload-identity
+      description: Only the registered search-service projection principal is authorized.
+  parameters:
+    SnapshotId: { name: snapshot_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+    Cursor: { name: cursor, in: query, required: false, description: Opaque session-bound cursor., schema: { type: string, minLength: 1, maxLength: 512 } }
+    Limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000, default: 500 } }
+  schemas:
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    SnapshotSession:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, export_watermark, created_at, expires_at]
+      properties:
+        snapshot_id: { $ref: '#/components/schemas/OpaqueId' }
+        export_watermark: { type: integer, format: int64, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    WarehouseSnapshot:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, is_active, operational_state, warehouse_revision]
+      properties:
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        is_active: { type: boolean }
+        operational_state: { enum: [UNKNOWN, NORMAL, OUTAGE] }
+        warehouse_revision: { type: integer, minimum: 1 }
+    StockPositionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, sku_id, available_to_sell, position_revision]
+      properties:
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        available_to_sell: { type: integer, format: int64, minimum: 0 }
+        position_revision: { type: integer, minimum: 1 }
+    WarehouseSnapshotPage:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, export_watermark, items]
+      properties:
+        snapshot_id: { $ref: '#/components/schemas/OpaqueId' }
+        export_watermark: { type: integer, format: int64, minimum: 0 }
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/WarehouseSnapshot' } }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    StockPositionSnapshotPage:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, export_watermark, items]
+      properties:
+        snapshot_id: { $ref: '#/components/schemas/OpaqueId' }
+        export_watermark: { type: integer, format: int64, minimum: 0 }
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/StockPositionSnapshot' } }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    ProjectionChange:
+      oneOf:
+        - $ref: '../../../../events/inventory/v1/schemas/stock-position-changed.schema.json'
+        - $ref: '../../../../events/inventory/v1/schemas/warehouse-availability-changed.schema.json'
+    ProjectionChangePage:
+      type: object
+      additionalProperties: false
+      required: [items, minimum_retained_sequence, latest_sequence]
+      properties:
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/ProjectionChange' } }
+        minimum_retained_sequence: { type: integer, format: int64, minimum: 0 }
+        latest_sequence: { type: integer, format: int64, minimum: 0 }
+        next_after_sequence: { type: [integer, 'null'], format: int64, minimum: 0 }
+    InventoryProblem:
+      allOf:
+        - $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+        - type: object
+          required: [correlation_id]
+          properties: { correlation_id: { type: string, minLength: 8, maxLength: 128 } }
+  responses:
+    BadRequest: { description: INVALID_REQUEST., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Forbidden: { description: Caller is not the registered Search projection., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    NotFound: { description: Snapshot session not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    SnapshotExpired: { description: SNAPSHOT_SESSION_EXPIRED; create a new snapshot session., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    ReplayWindowExpired: { description: REPLAY_WINDOW_EXPIRED; discard the projection and create a new snapshot., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unavailable:
+      description: Inventory cannot provide a consistent snapshot or change page.
+      headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }
