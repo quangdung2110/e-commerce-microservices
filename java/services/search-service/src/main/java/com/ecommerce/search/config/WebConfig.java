@@ -6,15 +6,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.boot.web.client.ClientHttpRequestFactories;
+import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.time.Duration;
 
 @Configuration
 @EnableAsync
@@ -71,8 +76,32 @@ public class WebConfig implements WebMvcConfigurer {
         return executor;
     }
 
+    /**
+     * The builder behind every outbound call: the internal exports and the Inventory
+     * readiness handshake.
+     *
+     * <p>Declaring this bean makes Spring Boot back off, and with it the customizer that
+     * would have installed the application's converters — so the mapper has to be wired in
+     * by hand. Without it the client falls back to a stock {@link ObjectMapper} with no
+     * naming strategy, and every snake_case contract field binds to {@code null} on
+     * camelCase records that ignore unknown properties: a reindex would import empty rows
+     * instead of failing. {@code SnapshotExportClientTest} pins this.
+     *
+     * <p>The timeout is not optional either. Readiness runs inside the catalog consumer, so
+     * an Inventory that accepts connections but never answers would hold the poll thread
+     * forever; a bounded failure is what turns that into an uncommitted offset and a
+     * redelivery ({@code operations.md §5}).
+     */
     @Bean
-    public RestClient.Builder restClientBuilder() {
-        return RestClient.builder();
+    public RestClient.Builder restClientBuilder(ObjectMapper objectMapper) {
+        Duration timeout = properties.export().timeout();
+        return RestClient.builder()
+                .requestFactory(ClientHttpRequestFactories.get(ClientHttpRequestFactorySettings.DEFAULTS
+                        .withConnectTimeout(timeout)
+                        .withReadTimeout(timeout)))
+                .messageConverters(converters -> {
+                    converters.removeIf(MappingJackson2HttpMessageConverter.class::isInstance);
+                    converters.add(new MappingJackson2HttpMessageConverter(objectMapper));
+                });
     }
 }
