@@ -301,8 +301,24 @@ nên không có lost update.
 
 **Recovery.** Tạo Inventory snapshot session, import thẳng các row per-SKU availability
 tại watermark `W` vào document đã được Product tạo, rồi đọc change feed với
-`sequence > W`. Missing document làm recovery fail. Nếu nhận `410
-REPLAY_WINDOW_EXPIRED`, bootstrap lại toàn bộ availability; không xóa hay tạo index phụ.
+`sequence > W`. Missing document làm recovery fail; không xóa hay tạo index phụ.
+
+Export API có hai mã `410` với ngữ nghĩa khác nhau; gộp chung một nhánh xử lý là sai:
+
+| Mã | Gặp ở đâu | Nghĩa | Xử lý |
+|---|---|---|---|
+| `SNAPSHOT_SESSION_EXPIRED` | Page snapshot; session sống 24 giờ kể từ lúc tạo | Mốc `W` không còn dùng được; tập page đã đọc không chứng minh được phủ sóng | Tạo session mới tại `W'`, page lại **từ trang đầu**, rồi đọc change feed với `sequence > W'` |
+| `REPLAY_WINDOW_EXPIRED` | Đọc change feed | `after_sequence` cũ hơn `minimum_retained_sequence` | Bootstrap lại toàn bộ availability từ một session mới |
+
+`404` (session không tồn tại) xử lý như `SNAPSHOT_SESSION_EXPIRED`.
+
+Khi tạo lại session, **không** rollback các row đã import ở `W`: guard
+`availability_revision` khiến chúng thành no-op hoặc được nâng lên state mới hơn. Mỗi
+session trả toàn bộ tập SKU đã đăng ký readiness chứ không phải delta, nên chạy trọn
+đúng một session là đủ phủ sóng; ngược lại, ghép tập page dở ở `W` với change feed ở
+`W'` không phải là handoff hợp lệ. Số lần tạo lại session trong một lần bootstrap bị
+chặn bởi `availability_snapshot_max_sessions`; vượt ngưỡng thì dừng và báo động thay vì
+lặp vô hạn, vì khi đó nguyên nhân là năng lực import chứ không phải sự cố nhất thời.
 
 **Metrics.** Độ trễ availability, `document_missing` contract violation, tỉ lệ event
 bị guard chặn.
@@ -310,7 +326,9 @@ bị guard chặn.
 **Test scenarios.** Inventory fan-out khi một warehouse OUTAGE/NORMAL; nhiều warehouse
 cùng SKU nhưng event chỉ mang boolean; event revision cũ/trùng; Inventory không publish
 trước readiness; registration phát snapshot hiện hành; missing document không ACK/upsert;
-tombstone; bootstrap tại watermark và replay-window hết hạn.
+tombstone; bootstrap tại watermark; snapshot session hết hạn giữa chừng khi page → tạo
+`W'` và page lại tới hội tụ; vượt `availability_snapshot_max_sessions`; replay-window
+hết hạn.
 
 ---
 
@@ -367,6 +385,10 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    `sequence > W`. Nếu một SKU được tạo sau Product snapshot nên chưa có trong index
    mới, defer fact đó tới sau Product catch-up; không upsert và không tạo
    warehouse/position projection hay index phụ. Kafka offset không phải Inventory boundary.
+   Checkpoint của pha này lưu `snapshot_id`, `expires_at`, watermark hiệu lực và
+   `next_cursor`. Session hết hạn — kể cả khi run bị dừng rồi resume muộn hơn 24 giờ —
+   xử lý theo quy tắc `SNAPSHOT_SESSION_EXPIRED` ở WF-SEARCH-007: ghi watermark mới
+   `W'`, bỏ mọi cursor cũ và page lại từ đầu.
 3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
    Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision` bằng
    các `_bulk` chunked với cùng giới hạn. Export trả `replay_from_offsets` đã chụp
@@ -400,8 +422,10 @@ lại tối thiểu 24 giờ.
 **Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
 alias không đổi nên traffic không bị ảnh hưởng. Product/Review export thiếu
 `replay_from_offsets`, Inventory snapshot/change checkpoint không chứng minh được
-handoff tại watermark, hoặc availability vẫn thiếu target document sau Product catch-up
-→ không được cutover. Catch-up/publisher lag không hội tụ
+handoff tại **watermark hiệu lực cuối cùng**, hoặc availability vẫn thiếu target document
+sau Product catch-up → không được cutover; tập page dở ở `W` ghép với change feed ở `W'`
+không phải là handoff hợp lệ. Tạo lại snapshot session vượt
+`availability_snapshot_max_sessions` → run `FAILED`. Catch-up/publisher lag không hội tụ
 → hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
 `SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
 run. Lỗi sau cutover → swap alias ngược về index cũ.
@@ -428,7 +452,8 @@ action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, th
 
 **Test scenarios.** Reindex trên catalog rỗng; rating tồn tại từ trước reindex;
 product chưa có review nhận `0/0`; mutation Category/Product/Rating trong lúc export;
-event cũ/trùng sau snapshot; control event supersede run; reindex khi đang có tải ghi;
+event cũ/trùng sau snapshot; snapshot session hết hạn giữa pha Build availability và khi
+resume checkpoint; control event supersede run; reindex khi đang có tải ghi;
 chunk chạm giới hạn action hoặc byte; throttle giới hạn số bulk in-flight; 429/503 làm
 backoff và hạ tốc độ; hủy giữa build; catch-up không hội tụ; cutover rồi rollback;
 trigger trùng.
@@ -567,6 +592,8 @@ làm chúng sống lại.
 **Happy path.** Với từng SKU đủ tuổi, bảo đảm `DELETE
 .../search-projection-readiness/{sku_id}` đã thành công cho catalog revision tombstone;
 sau đó `_delete`/`_delete_by_query` theo lô với throttle và ghi số lượng đã xóa.
+`409` không phải lỗi tạm thời: nó nghĩa là SKU đã được đăng ký lại với `catalog_revision`
+mới hơn, tức document đã sống lại hợp lệ — loại SKU đó khỏi lô purge thay vì retry.
 
 **Preconditions.** Cửa sổ bảo vệ phải dài hơn retention của mọi topic Search tiêu
 thụ và Inventory readiness của SKU đã bị revoke
@@ -583,7 +610,8 @@ dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi b�
 
 **Test scenarios.** Tombstone chưa tới hạn không bị xóa; tombstone quá hạn bị xóa;
 event trễ tới sau khi đã purge không tạo lại document từ availability/review; revoke
-readiness lỗi thì chưa được purge.
+readiness lỗi thì chưa được purge; revoke trả `409` thì SKU bị loại khỏi lô purge và
+không retry.
 
 ---
 

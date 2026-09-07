@@ -150,7 +150,8 @@ replay event; không dùng cách này ở bất kỳ môi trường dùng chung 
 
 Fixture là event mẫu của Product, Inventory và Review, đặt cùng test và version
 hóa trong repo. Bắt buộc có fixture thumbnail SKU/Product/null, Inventory per-SKU
-availability snapshot + readiness register/revoke + event revision cũ/trùng + change feed,
+availability snapshot + readiness register/revoke + revoke trả `409` + event revision
+cũ/trùng + change feed + `410 SNAPSHOT_SESSION_EXPIRED` giữa chừng khi page snapshot,
 và Review rating aggregate snapshot
 seed + `review_revision` cũ/trùng + replay offset. Dữ liệu catalog mẫu phải là dữ liệu
 bịa; không dùng export production. Index không chứa PII nên fixture cũng không được

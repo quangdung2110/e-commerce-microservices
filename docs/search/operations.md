@@ -59,7 +59,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
 | Cửa sổ tombstone | Số ngày giữ tombstone trước khi purge | Có | Không | Không |
 | Thumbnail | CDN base URL và URL placeholder dùng để dựng `thumbnail_url` từ `thumbnail_storage_key` | Có | Không | Không, nếu cấu hình động |
-| Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review | Có | Không | Có |
+| Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review, `availability_snapshot_max_sessions` (mặc định `2`) | Có | Không | Có |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 
 Giá trị mặc định thực tế phải được đọc từ cấu hình runtime khi tài liệu được xác
@@ -84,8 +84,9 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_indexing_total{status="guard_blocked"}` | counter | `topic`, `event_type` |
 | `search_job_duration_seconds` | histogram | `job` |
 | `search_reindex_state` | gauge | `phase` |
-| `search_inventory_availability_export_total` | counter | `status` |
+| `search_inventory_availability_export_total` | counter | `status`: `ok`, `snapshot_session_expired`, `replay_window_expired`, `fail` |
 | `search_inventory_availability_snapshot_age_seconds` | gauge | Không có |
+| `search_inventory_snapshot_session_ttl_seconds` | gauge | Không có; thời gian còn lại của session đang page, để cảnh báo trước khi hết hạn |
 | `search_inventory_readiness_total` | counter | `operation`, `status` |
 | `search_review_snapshot_export_total` | counter | `status` |
 | `search_review_snapshot_age_seconds` | gauge | Không có |
@@ -123,6 +124,7 @@ gian trong ứng dụng.
 | Freshness kém | Độ trễ indexing vượt ngưỡng | Medium | Search on-call | Consumer lag |
 | Payload invalid tăng | `search_payload_invalid_total` tăng đột biến | Medium | Search + producer | Contract drift |
 | Inventory `document_missing` | Bất kỳ availability event nào thiếu document | High | Search + Inventory | Readiness contract violation |
+| Snapshot session hết hạn lặp lại | Tạo lại session vượt `availability_snapshot_max_sessions` trong một bootstrap hoặc reindex run | Medium | Search + Inventory | Lệch projection |
 | Enrichment miss tăng | Vượt nền bình thường | Low | Search on-call | Lệch danh mục |
 | Job không chạy | Job hằng ngày không hoàn thành đúng cửa sổ | Medium | Search on-call | Job thất bại |
 | Reindex quá hạn | Run vượt giới hạn thời gian hoặc `FAILED` | Medium | Search on-call | Reindex |
@@ -196,7 +198,7 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 |---|---|
 | Consumer lag | Phân biệt Kafka chậm, Elasticsearch chậm hay thao tác diện rộng chiếm băng thông |
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
-| Lệch projection | Availability `document_missing` là readiness violation: dừng ACK, xác minh registration/document, rồi bootstrap per-SKU availability + change feed; rating/enrichment xử lý theo nguồn |
+| Lệch projection | Availability `document_missing` là readiness violation: dừng ACK, xác minh registration/document, rồi bootstrap per-SKU availability + change feed. `SNAPSHOT_SESSION_EXPIRED` là nhánh khác hẳn: tạo session mới tại `W'` và page lại từ đầu, không đọc change feed từ `W` cũ; rating/enrichment xử lý theo nguồn |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
 | Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
 | Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |

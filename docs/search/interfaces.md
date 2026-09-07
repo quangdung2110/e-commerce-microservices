@@ -255,6 +255,13 @@ và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/i
 để backfill catalog, availability và rating. Product/Review trả Kafka replay boundary của
 contract tương ứng; Inventory trả fixed `export_watermark`, sau đó Search đọc mọi change
 có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng Inventory watermark.
+
+Snapshot session của Inventory sống 24 giờ. Page snapshot có thể trả `410
+SNAPSHOT_SESSION_EXPIRED`, còn change feed trả `410 REPLAY_WINDOW_EXPIRED`; hai mã này
+đòi hai cách phục hồi khác nhau, mô tả ở [WF-SEARCH-007](./workflows.md). Readiness
+`DELETE` trả `409` khi SKU đã được đăng ký lại với `catalog_revision` mới hơn: đó là tín
+hiệu không được purge, không phải lỗi để retry.
+
 Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
