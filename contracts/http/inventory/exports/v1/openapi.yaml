@@ -1,21 +1,70 @@
 openapi: 3.1.0
 info:
-  title: Inventory Projection Export API
+  title: Inventory Search Projection API
   version: 1.0.0
   description: >-
-    Search-only bootstrap and recovery API. A snapshot session is fixed at one
-    durable export watermark; Search then applies changes with a greater sequence.
-    This surface is never used to make checkout or reservation decisions.
+    Search-only readiness, bootstrap, and recovery API. Search registers a SKU only
+    after its Product-owned document exists. Inventory then publishes and exports the
+    Inventory-owned per-SKU availability boolean. A snapshot session is fixed at one
+    durable export watermark; Search applies later changes by sequence. This surface
+    is never used to make checkout or reservation decisions.
 x-adoption-status: proposed
 servers:
   - url: http://inventory-service:8080
-    description: Internal projection export endpoint
+    description: Internal Search projection endpoint
 security: [{ searchProjectionIdentity: [] }]
 paths:
+  /exports/inventory/v1/search-projection-readiness/{sku_id}:
+    put:
+      operationId: registerSearchSkuReadiness
+      summary: Confirm that the Product-owned Search document exists
+      description: >-
+        Search calls this only after the catalog write for sku_id succeeded. Inventory
+        atomically stores the greatest catalog revision and a durable publication task,
+        and must not make a SKU availability fact externally visible before this
+        registration exists. The operation returns success only after that task is
+        durable. Registration causes the current availability snapshot to be published
+        even when the boolean did not change, so Search never depends on a future stock
+        mutation.
+      parameters:
+        - $ref: '#/components/parameters/SkuId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchProjectionReadiness' }
+      responses:
+        '200':
+          description: Current idempotent readiness registration.
+          content: { application/json: { schema: { $ref: '#/components/schemas/SearchProjectionReadinessState' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      operationId: revokeSearchSkuReadiness
+      summary: Stop future availability publication before a SKU document is purged
+      description: >-
+        Search calls this after tombstoning and before physical purge. The catalog
+        revision prevents an old delete from revoking a newer lifecycle registration.
+      parameters:
+        - $ref: '#/components/parameters/SkuId'
+        - name: catalog_revision
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '204': { description: Registration absent or safely revoked. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /exports/inventory/v1/snapshot-sessions:
     post:
       operationId: createInventorySnapshotSession
-      summary: Create a point-in-time projection snapshot
+      summary: Create a point-in-time per-SKU availability snapshot
       description: The session expires 24 hours after creation.
       responses:
         '201':
@@ -25,10 +74,13 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
-  /exports/inventory/v1/snapshot-sessions/{snapshot_id}/warehouses:
+  /exports/inventory/v1/snapshot-sessions/{snapshot_id}/sku-availabilities:
     get:
-      operationId: listSnapshotWarehouses
-      summary: Page warehouse availability at the fixed watermark
+      operationId: listSnapshotSkuAvailabilities
+      summary: Page registered per-SKU availability at the fixed watermark
+      description: >-
+        Only SKU states with an active Search readiness registration are returned.
+        Raw warehouse, on-hand, reserved, committed, and quarantine data are not exposed.
       parameters:
         - $ref: '#/components/parameters/SnapshotId'
         - $ref: '#/components/parameters/Cursor'
@@ -36,25 +88,7 @@ paths:
       responses:
         '200':
           description: One stable page.
-          content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseSnapshotPage' } } }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '410': { $ref: '#/components/responses/SnapshotExpired' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-
-  /exports/inventory/v1/snapshot-sessions/{snapshot_id}/stock-positions:
-    get:
-      operationId: listSnapshotStockPositions
-      summary: Page stock-position availability at the fixed watermark
-      parameters:
-        - $ref: '#/components/parameters/SnapshotId'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/Limit'
-      responses:
-        '200':
-          description: One stable page. Raw on-hand, reserved, committed, and quarantine buckets are not exposed.
-          content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionSnapshotPage' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/SkuAvailabilitySnapshotPage' } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -64,11 +98,11 @@ paths:
   /exports/inventory/v1/changes:
     get:
       operationId: listInventoryProjectionChanges
-      summary: Read ordered availability changes after an export sequence
+      summary: Read ordered per-SKU availability changes after an export sequence
       description: >-
-        The feed contains only stock-position.changed and warehouse-availability.changed
-        events. Export sequence is increasing and may contain gaps. Retention is at least
-        30 days; an older cursor returns REPLAY_WINDOW_EXPIRED.
+        The feed contains only sku-availability.changed facts. Export sequence is
+        increasing and may contain gaps. Retention is at least 30 days; an older cursor
+        returns REPLAY_WINDOW_EXPIRED.
       parameters:
         - name: after_sequence
           in: query
@@ -93,11 +127,26 @@ components:
       bearerFormat: internal-workload-identity
       description: Only the registered search-service projection principal is authorized.
   parameters:
+    SkuId: { name: sku_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     SnapshotId: { name: snapshot_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
     Cursor: { name: cursor, in: query, required: false, description: Opaque session-bound cursor., schema: { type: string, minLength: 1, maxLength: 512 } }
     Limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000, default: 500 } }
   schemas:
     OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    SearchProjectionReadiness:
+      type: object
+      additionalProperties: false
+      required: [catalog_revision]
+      properties:
+        catalog_revision: { type: integer, format: int64, minimum: 1 }
+    SearchProjectionReadinessState:
+      type: object
+      additionalProperties: false
+      required: [sku_id, catalog_revision, registered_at]
+      properties:
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        catalog_revision: { type: integer, format: int64, minimum: 1 }
+        registered_at: { type: string, format: date-time }
     SnapshotSession:
       type: object
       additionalProperties: false
@@ -107,46 +156,26 @@ components:
         export_watermark: { type: integer, format: int64, minimum: 0 }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
-    WarehouseSnapshot:
+    SkuAvailabilitySnapshot:
       type: object
       additionalProperties: false
-      required: [warehouse_id, is_active, operational_state, warehouse_revision]
+      required: [sku_id, is_in_stock, availability_revision, observed_at]
       properties:
-        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
-        is_active: { type: boolean }
-        operational_state: { enum: [UNKNOWN, NORMAL, OUTAGE] }
-        warehouse_revision: { type: integer, minimum: 1 }
-    StockPositionSnapshot:
-      type: object
-      additionalProperties: false
-      required: [warehouse_id, sku_id, available_to_sell, position_revision]
-      properties:
-        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
         sku_id: { $ref: '#/components/schemas/OpaqueId' }
-        available_to_sell: { type: integer, format: int64, minimum: 0 }
-        position_revision: { type: integer, minimum: 1 }
-    WarehouseSnapshotPage:
+        is_in_stock: { type: boolean }
+        availability_revision: { type: integer, minimum: 1 }
+        observed_at: { type: string, format: date-time }
+    SkuAvailabilitySnapshotPage:
       type: object
       additionalProperties: false
       required: [snapshot_id, export_watermark, items]
       properties:
         snapshot_id: { $ref: '#/components/schemas/OpaqueId' }
         export_watermark: { type: integer, format: int64, minimum: 0 }
-        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/WarehouseSnapshot' } }
-        next_cursor: { type: [string, 'null'], maxLength: 512 }
-    StockPositionSnapshotPage:
-      type: object
-      additionalProperties: false
-      required: [snapshot_id, export_watermark, items]
-      properties:
-        snapshot_id: { $ref: '#/components/schemas/OpaqueId' }
-        export_watermark: { type: integer, format: int64, minimum: 0 }
-        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/StockPositionSnapshot' } }
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/SkuAvailabilitySnapshot' } }
         next_cursor: { type: [string, 'null'], maxLength: 512 }
     ProjectionChange:
-      oneOf:
-        - $ref: '../../../../events/inventory/v1/schemas/stock-position-changed.schema.json'
-        - $ref: '../../../../events/inventory/v1/schemas/warehouse-availability-changed.schema.json'
+      $ref: '../../../../events/inventory/v1/schemas/sku-availability-changed.schema.json'
     ProjectionChangePage:
       type: object
       additionalProperties: false
@@ -167,9 +196,10 @@ components:
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller is not the registered Search projection., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Snapshot session not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: A stale catalog revision cannot revoke newer readiness., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     SnapshotExpired: { description: SNAPSHOT_SESSION_EXPIRED; create a new snapshot session., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    ReplayWindowExpired: { description: REPLAY_WINDOW_EXPIRED; discard the projection and create a new snapshot., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    ReplayWindowExpired: { description: REPLAY_WINDOW_EXPIRED; rebuild availability in the existing Product index from a new snapshot., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
-      description: Inventory cannot provide a consistent snapshot or change page.
+      description: Inventory cannot update readiness or provide a consistent snapshot/change page.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

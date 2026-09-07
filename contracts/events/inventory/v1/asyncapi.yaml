@@ -4,8 +4,9 @@ info:
   version: 1.0.0
   description: >-
     Target Inventory facts emitted from the transactional outbox. Delivery is
-    at-least-once. Consumers deduplicate by CloudEvents id and use aggregate revision
-    to reject stale facts. Export sequence may contain gaps and is not global Kafka order.
+    at-least-once. Search consumes an Inventory-owned per-SKU availability snapshot;
+    Order consumes workflow facts. Consumers use aggregate revision to reject stale
+    facts. Export sequence may contain gaps and is not global Kafka order.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:
@@ -15,22 +16,21 @@ servers:
 channels:
   availabilityFacts:
     address: t.inventory.stock.events.v1
-    description: Minimal warehouse and stock-position snapshots for Search.
+    description: Per-SKU stock availability snapshots for Search.
     x-owner: inventory-service
+    x-message-key: sku_id
     x-delivery-semantic: at-least-once
     x-deduplication-key: CloudEvents.id
-    x-ordering-scope: message-specific aggregate key
+    x-ordering-scope: sku_id
     x-ordering-guard: aggregaterevision
     x-max-payload-bytes: 16384
     x-retention: 30d-minimum
     x-retry-policy:
-      strategy: consumer-managed-retry-with-dlq
-      dead-letter-topic: t.inventory.stock.events.v1.dlq
+      strategy: retry-without-ack-then-projection-rebuild
     x-data-classification: INTERNAL
     x-consumers: [search-service]
     messages:
-      stockPositionChanged: { $ref: '#/components/messages/stockPositionChanged' }
-      warehouseAvailabilityChanged: { $ref: '#/components/messages/warehouseAvailabilityChanged' }
+      skuAvailabilityChanged: { $ref: '#/components/messages/skuAvailabilityChanged' }
   orderFacts:
     address: t.inventory.order.events.v1
     description: Reservation, physical dispatch, and refund-inspection facts for Order reconciliation.
@@ -54,18 +54,13 @@ channels:
       reservationLineDispatched: { $ref: '#/components/messages/reservationLineDispatched' }
       allItemsInspectionCompleted: { $ref: '#/components/messages/allItemsInspectionCompleted' }
 operations:
-  publishStockPositionChanged:
+  publishSkuAvailabilityChanged:
     action: send
     channel: { $ref: '#/channels/availabilityFacts' }
-    summary: Publish a position snapshot after available_to_sell changes.
-    x-message-key: warehouse_id:sku_id
-    messages: [{ $ref: '#/channels/availabilityFacts/messages/stockPositionChanged' }]
-  publishWarehouseAvailabilityChanged:
-    action: send
-    channel: { $ref: '#/channels/availabilityFacts' }
-    summary: Publish a warehouse eligibility snapshot after activity or outage changes.
-    x-message-key: warehouse_id
-    messages: [{ $ref: '#/channels/availabilityFacts/messages/warehouseAvailabilityChanged' }]
+    summary: Publish the complete Search-facing availability state after the derived boolean changes or is initialized.
+    x-message-key: sku_id
+    x-publication-precondition: Search has registered that the Product-owned SKU document exists.
+    messages: [{ $ref: '#/channels/availabilityFacts/messages/skuAvailabilityChanged' }]
   publishReservationReserved:
     action: send
     channel: { $ref: '#/channels/orderFacts' }
@@ -88,16 +83,11 @@ operations:
     messages: [{ $ref: '#/channels/orderFacts/messages/allItemsInspectionCompleted' }]
 components:
   messages:
-    stockPositionChanged:
-      name: stockPositionChangedV1
-      title: Stock position availability changed
+    skuAvailabilityChanged:
+      name: skuAvailabilityChangedV1
+      title: Per-SKU stock availability changed
       contentType: application/cloudevents+json
-      payload: { $ref: './schemas/stock-position-changed.schema.json' }
-    warehouseAvailabilityChanged:
-      name: warehouseAvailabilityChangedV1
-      title: Warehouse availability changed
-      contentType: application/cloudevents+json
-      payload: { $ref: './schemas/warehouse-availability-changed.schema.json' }
+      payload: { $ref: './schemas/sku-availability-changed.schema.json' }
     reservationReserved:
       name: reservationReservedV1
       title: Whole order reserved

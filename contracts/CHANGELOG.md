@@ -5,15 +5,19 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-07
 
+- Supersede Search-facing stock-position/warehouse facts with one Inventory-owned
+  per-SKU `sku-availability.changed.v1` boolean. Add mandatory Search document-readiness
+  register/revoke: Inventory cannot publish/export a SKU before its Product document exists.
+  Search keeps availability in `products` and adds no Inventory/reverse-lookup index.
 - Thay contract Inventory legacy bằng ba OpenAPI target: Workflow cho Checkout/Order
   Saga, ADMIN cho nghiệp vụ kho và Export fixed-watermark cho Search.
 - Inventory mutation bắt buộc idempotency/correlation/causation; lỗi dùng RFC 9457
   Problem Details và tách terminal domain outcome khỏi lỗi hạ tầng retryable.
-- Inventory Events v1 nay có bảy CloudEvents schema trên hai topic: availability fact
+- Inventory Events v1 nay có sáu CloudEvents schema trên hai topic: per-SKU availability fact
   cho Search và reservation/dispatch/refund-inspection fact cho Order. Retention tối
   thiểu tăng từ 14 lên 30 ngày; ordering guard chuyển sang aggregate revision.
-- Export per-SKU/Kafka-offset cũ được thay bằng snapshot session 24 giờ và change feed
-  theo durable export sequence; `410 REPLAY_WINDOW_EXPIRED` yêu cầu bootstrap lại.
+- Export cũ được thay bằng readiness + per-SKU snapshot session 24 giờ và change feed
+  theo durable export sequence; `410 REPLAY_WINDOW_EXPIRED` yêu cầu bootstrap availability lại.
 
 ## 2026-09-06
 

@@ -7,7 +7,7 @@ customer stock-write API.
 |---|---|---|
 | [Workflow v1](workflow/v1/openapi.yaml) | Checkout, Order Temporal Saga | Advisory allocation, reservation lifecycle, Refund Scope, recovery queries |
 | [ADMIN v1](admin/v1/openapi.yaml) | Authenticated `ADMIN` with MFA | Warehouse master data and physical stock operations |
-| [Export v1](exports/v1/openapi.yaml) | Search Projection | Fixed-watermark snapshot and ordered availability change feed |
+| [Export v1](exports/v1/openapi.yaml) | Search Projection | Product-document readiness register/revoke plus fixed-watermark per-SKU availability snapshot/change feed |
 
 All mutation results are durable. The `Idempotency-Key` is scoped by authenticated
 caller namespace and retained with the canonical request fingerprint for at least

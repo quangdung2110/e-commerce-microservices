@@ -35,7 +35,10 @@ interactions:
     consumers: [api-gateway]
     contract: http/product-detail-bff/v1/openapi.yaml
     status: proposed
-    notes: Buyer PDP API composes Product catalog, local Inventory availability projection, and optional Review summary/preview.
+    notes: >-
+      Buyer PDP API composes Product catalog and optional Review summary/preview.
+      Its direct Inventory availability projection is not covered by Inventory v1;
+      adding it requires a separate registered-consumer contract review.
 
   - id: product-detail-bff-queries-product-catalog
     protocol: http
@@ -205,7 +208,8 @@ interactions:
     contract: events/inventory/v1/asyncapi.yaml
     status: proposed
     notes: >-
-      Search consumes minimal stock-position and warehouse snapshots; Order consumes
+      Search consumes one Inventory-owned per-SKU availability snapshot only after
+      Search has registered Product-document readiness; Order consumes
       reservation, physical-dispatch, and refund-inspection facts. Delivery is
       at-least-once with a 30-day minimum replay window.
 
@@ -215,7 +219,10 @@ interactions:
     consumers: [search-service]
     contract: http/inventory/exports/v1/openapi.yaml
     status: proposed
-    notes: Fixed-watermark snapshot session and ordered change feed for bootstrap/recovery only.
+    notes: >-
+      Idempotent Product-document readiness register/revoke plus fixed-watermark
+      per-SKU availability snapshot and ordered change feed. Inventory does not expose
+      warehouse/position projection facts to Search.
 
   - id: gateway-routes-review-api
     protocol: http
