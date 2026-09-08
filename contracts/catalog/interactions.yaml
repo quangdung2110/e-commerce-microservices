@@ -253,5 +253,6 @@ interactions:
     contract: http/review/internal/v1/openapi.yaml
     status: proposed
     notes: >-
-      Internal service-identity export cho full reindex. Response chụp Review Kafka
-      replay offsets trước scan; Search import snapshot rồi replay inclusive từ offset.
+      Internal service-identity export cho full reindex. POST tạo durable session và
+      chụp Review Kafka offsets trước scan; Search import page snapshot rồi replay
+      inclusive từ offsets cố định của session.

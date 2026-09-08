@@ -29,9 +29,9 @@ xác offset nào cần replay sau import.
 
 Review cấp hai contract v1 cho Search:
 
-1. `GET /internal/v1/reviews/rating-aggregates` keyset-export state hiện tại theo
-   `product_id`. Export chụp `replay_from_offsets` của `t.review.events` **trước**
-   khi scan và trả lại cùng một tập offset cho toàn bộ export session.
+1. `POST /internal/v1/reviews/rating-aggregate-exports` tạo durable export session
+   và chụp `replay_from_offsets` của `t.review.events` **trước** khi scan. Search lấy
+   page keyset theo `product_id` bằng session ID; mọi page trả cùng tập offset.
 2. `com.ecommerce.review.metrics-updated.v1` mang snapshot aggregate cùng
    `review_revision` đơn điệu per `product_id`.
 

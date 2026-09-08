@@ -257,7 +257,9 @@ sau khi tombstone đã được ghi và bắt buộc hoàn tất trước physic
 Full reindex đọc `GET /internal/v1/categories/export` trước, rồi
 `GET /internal/v1/products/export` của Product,
 Inventory [snapshot session và change feed](../../contracts/http/inventory/exports/v1/openapi.yaml)
-và [`GET /internal/v1/reviews/rating-aggregates`](../../contracts/http/review/internal/v1/openapi.yaml)
+và Review export session — tạo bằng `POST /internal/v1/reviews/rating-aggregate-exports`,
+sau đó lấy page qua `GET /internal/v1/reviews/rating-aggregate-exports/{session_id}`
+([contract](../../contracts/http/review/internal/v1/openapi.yaml))
 để backfill catalog, availability và rating. Product/Review trả Kafka replay boundary của
 contract tương ứng; Inventory trả fixed `export_watermark`, sau đó Search đọc mọi change
 có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng Inventory watermark.

@@ -39,9 +39,9 @@ không cần xuất hiện ở đây.
 - Thêm Review Events v1: `com.ecommerce.review.metrics-updated.v1` phát rating
   aggregate snapshot theo `product_id`, với `review_revision` đơn điệu để Search
   idempotently áp dụng event và snapshot export.
-- Thêm Review Internal Rating Aggregate Snapshot Export API v1 cho Search full
-  reindex. Export keyset trả `replay_from_offsets` được chụp trước scan; Search
-  import snapshot rồi replay inclusive để không bỏ mất mutation trong lúc build.
+- Thay Review Internal Rating Aggregate Export API v1 stateless bằng durable export
+  session: Search tạo session bằng POST, lấy page keyset qua session ID; offsets được
+  chụp trước scan và replay inclusive để không bỏ mất mutation trong lúc build.
 
 ## 2026-09-04
 

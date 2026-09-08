@@ -34,8 +34,8 @@ operations:
     action: send
     channel: { $ref: '#/channels/reviewEvents' }
     summary: >-
-      Review phát full aggregate sau mọi mutation hoặc reconciliation làm thay
-      đổi rating của Product; sequence bằng review_revision.
+      Review phát full aggregate sau mutation hoặc reconciliation làm thay đổi
+      rating/media-presence/visibility của Product; sequence bằng review_revision.
     messages: [{ $ref: '#/channels/reviewEvents/messages/ratingAggregateSnapshot' }]
 components:
   messages:

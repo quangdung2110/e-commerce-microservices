@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
-  title: Review Internal Read API
+  title: Review Internal API
   version: 1.0.0
   description: >-
-    Contract nội bộ để Product Detail BFF đọc rating/preview và để Search bootstrap
-    hoặc phục hồi rating projection. Chỉ service identity được gọi; các endpoint
-    không expose qua API Gateway.
+    Contract nội bộ để Product Detail BFF đọc rating/preview và để Search tạo export
+    session, bootstrap hoặc phục hồi rating projection. Chỉ service identity được gọi;
+    các endpoint không expose qua API Gateway.
 x-adoption-status: proposed
 servers:
   - url: http://review-service:8080
@@ -37,12 +37,40 @@ paths:
         '401': { description: Missing or invalid service identity. }
         '403': { description: Caller is not Product Detail BFF. }
         '503': { description: Review read store không sẵn sàng; BFF phải degrade review section. }
-  /internal/v1/reviews/rating-aggregates:
+
+  /internal/v1/reviews/rating-aggregate-exports:
+    post:
+      operationId: createRatingAggregateExportSession
+      summary: Tạo một session export rating aggregate nhất quán cho Search
+      description: >-
+        Chụp end-offset hiện tại của mọi partition t.review.events trước khi Search
+        scan aggregate. replay_from_offsets là offset đầu tiên phải replay, tính
+        inclusive. Việc tạo session có state nên dùng POST, không dùng GET.
+      security: [{ serviceIdentity: [] }]
+      responses:
+        '201':
+          description: Export session mới, còn hiệu lực trong thời gian expires_at.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RatingAggregateExportSession' }
+        '401': { description: Missing or invalid service identity. }
+        '403': { description: Caller is not authorized to export review rating aggregates. }
+        '503': { description: Review cannot capture Kafka offsets or persist the export session. }
+
+  /internal/v1/reviews/rating-aggregate-exports/{session_id}:
     get:
-      operationId: exportRatingAggregateSnapshots
-      summary: Keyset export rating aggregate snapshot per Product
+      operationId: getRatingAggregateExportPage
+      summary: Lấy một trang rating aggregate thuộc export session đã tạo
+      description: >-
+        Các trang cùng session_id luôn trả đúng replay_from_offsets đã chụp lúc tạo
+        session. Snapshot có thể thấy mutation mới hơn watermark; Search phải dùng
+        review_revision để bỏ state cũ hoặc trùng khi replay.
       security: [{ serviceIdentity: [] }]
       parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
         - name: after_product_id
           in: query
           required: false
@@ -53,32 +81,16 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
       responses:
         '200':
-          description: >-
-            Trang ổn định theo product_id. replay_from_offsets được chụp trước khi
-            scan bắt đầu và biểu thị offset đầu tiên phải replay (inclusive). Giá trị
-            này lặp lại không đổi ở mọi trang của cùng export session; Search import
-            xong phải replay REVIEW_METRICS_UPDATED từ các offset đó và dùng
-            review_revision để bỏ state cũ/trùng.
+          description: Trang keyset ổn định theo product_id trong export session.
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [items, next_after_product_id, replay_from_offsets]
-                properties:
-                  items:
-                    type: array
-                    maxItems: 1000
-                    items: { $ref: '#/components/schemas/RatingAggregateSnapshot' }
-                  next_after_product_id:
-                    type: [string, 'null']
-                    maxLength: 64
-                  replay_from_offsets:
-                    type: array
-                    items: { $ref: '#/components/schemas/ReplayOffset' }
+              schema: { $ref: '#/components/schemas/RatingAggregateExportPage' }
         '401': { description: Missing or invalid service identity. }
         '403': { description: Caller is not authorized to export review rating aggregates. }
-        '503': { description: Review cannot create a consistent export session. }
+        '404': { description: Export session does not exist. }
+        '410': { description: Export session expired; Search must start a new export. }
+        '503': { description: Review read store không sẵn sàng; Search must restart the run. }
+
 components:
   securitySchemes:
     serviceIdentity:
@@ -103,8 +115,8 @@ components:
       required: [average_rating, total_reviews, total_with_media]
       properties:
         average_rating: { type: number, minimum: 0, maximum: 5 }
-        total_reviews: { type: integer, minimum: 0 }
-        total_with_media: { type: integer, minimum: 0 }
+        total_reviews: { type: integer, format: int64, minimum: 0 }
+        total_with_media: { type: integer, format: int64, minimum: 0 }
     ProductReviewPreviewItem:
       type: object
       additionalProperties: false
@@ -117,6 +129,34 @@ components:
         variant_name: { type: [string, 'null'], maxLength: 255 }
         has_media: { type: boolean }
         created_at: { type: string, format: date-time }
+    RatingAggregateExportSession:
+      type: object
+      additionalProperties: false
+      required: [session_id, expires_at, replay_from_offsets]
+      properties:
+        session_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    RatingAggregateExportPage:
+      type: object
+      additionalProperties: false
+      required: [session_id, items, next_after_product_id, replay_from_offsets]
+      properties:
+        session_id: { type: string, format: uuid }
+        items:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/RatingAggregateSnapshot' }
+        next_after_product_id:
+          type: [string, 'null']
+          maxLength: 64
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ReplayOffset' }
     RatingAggregateSnapshot:
       type: object
       additionalProperties: false
@@ -124,9 +164,9 @@ components:
       properties:
         product_id: { type: string, minLength: 1, maxLength: 64 }
         average_rating: { type: number, minimum: 0, maximum: 5 }
-        total_reviews: { type: integer, minimum: 0 }
-        total_with_media: { type: integer, minimum: 0 }
-        review_revision: { type: integer, minimum: 1 }
+        total_reviews: { type: integer, format: int64, minimum: 0 }
+        total_with_media: { type: integer, format: int64, minimum: 0 }
+        review_revision: { type: integer, format: int64, minimum: 1 }
         observed_at: { type: string, format: date-time }
     ReplayOffset:
       type: object
@@ -134,5 +174,5 @@ components:
       required: [topic, partition, offset]
       properties:
         topic: { const: t.review.events }
-        partition: { type: integer, minimum: 0 }
-        offset: { type: integer, minimum: 0 }
+        partition: { type: integer, format: int32, minimum: 0 }
+        offset: { type: integer, format: int64, minimum: 0 }

@@ -300,7 +300,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 **Ngữ cảnh:** Tất cả items `DELIVERED`. FSM `PROCESSING` → `COMPLETED`. Tự động bởi [Auto-Complete Logic](order_state_machine.md#5-auto-complete-logic-processing--completed).
 **Consumers chính:** Analytics, admin Settlement, Review Service.
 
-> **Phase 20 (Payload Simplification):** Bỏ `variant_name` trong `items[]` (Review Service không cần — đã lưu ở `order_item_lines.snapshot_name` và có thể fetch qua `GET /v1/orders/{id}`).
+> **Review snapshot contract:** `items[].variant_name` được giữ trong `ORDER_COMPLETED` cho Review Service. Review không được gọi đồng bộ sang Order ở write path và cần tên biến thể tại thời điểm mua để hiển thị lịch sử. Field có thể là `null` nếu order item cũ không có snapshot; producer mới phải gửi giá trị khi có.
 
 ```json
 {
@@ -323,6 +323,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
       {
         "product_id": "prod-001",
         "sku_id": "sku-001",
+        "variant_name": "Màu Đen, Size L",
         "quantity": 2
       }
     ],
@@ -338,7 +339,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 > **Field-level contract cho Review consumer:**
 > - `user_id` là UUID theo chuẩn thống nhất.
 > - Trong `items[]`, `product_id` và `sku_id` là bắt buộc.
-> - `variant_name` không còn ở đây (Phase 20). Review Service cần thì gọi `GET /v1/orders/{id}` để lấy detail.
+> - `variant_name` là snapshot nullable cho Review; Review không gọi `GET /v1/orders/{id}` trong write path.
 
 ### 3.8. ORDER_REFUND_FAILED
 

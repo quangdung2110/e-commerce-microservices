@@ -393,10 +393,12 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    `next_cursor`. Session hết hạn — kể cả khi run bị dừng rồi resume muộn hơn 24 giờ —
    xử lý theo quy tắc `SNAPSHOT_SESSION_EXPIRED` ở WF-SEARCH-007: ghi watermark mới
    `W'`, bỏ mọi cursor cũ và page lại từ đầu.
-3. **Build rating.** Lấy Review rating aggregate snapshot export sau catalog.
-   Import aggregate vào toàn bộ SKU khớp `product_id` theo `review_revision` bằng
-   các `_bulk` chunked với cùng giới hạn. Export trả `replay_from_offsets` đã chụp
-   trước lúc scan; snapshot không upsert SKU và không thay đổi catalog/availability field.
+3. **Build rating.** Tạo Review export session sau catalog, rồi lấy mọi page rating
+   aggregate qua `session_id`. Import aggregate vào toàn bộ SKU khớp `product_id`
+   theo `review_revision` bằng các `_bulk` chunked với cùng giới hạn. Session trả
+   `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert SKU và không
+   thay đổi catalog/availability field. Session 410/503 làm hỏng toàn bộ run rating:
+   tạo session mới và import lại từ đầu.
 4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
    `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
    (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable
