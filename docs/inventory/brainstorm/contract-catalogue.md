@@ -49,7 +49,8 @@ Release 1 công bố contract HTTP/JSON versioned, dùng OpenAPI làm schema art
 |---|---|---|---|
 | Workflow internal | `/internal/inventory/v1` | `CHECKOUT`, `ORDER_SAGA` service principal theo capability. | Preview và các command do Saga điều phối. |
 | Warehouse Admin | `/admin/inventory/v1` | Người dùng/service principal có role `ADMIN`. | Warehouse master và physical stock operation. |
-| Projection export | `/exports/inventory/v1` | `SEARCH_PROJECTION` service principal đã đăng ký. | Snapshot + replay cho Search/Product read projection. |
+| Storefront availability read | `/internal/inventory/v1/sku-availabilities:batch-get` | `PRODUCT_DETAIL_BFF` service principal. | Batch advisory `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN`; không quantity, reservation hay side effect. |
+| Projection export | `/exports/inventory/v1` | `SEARCH_PROJECTION` service principal đã đăng ký. | Snapshot + replay chỉ cho Search. |
 
 Không có Payment, Product, Search hay client/customer nào được gọi mutation API của Inventory.
 Product không được Inventory synchronous lookup; `sku_id` là opaque identifier trong contract.
@@ -220,7 +221,7 @@ Nếu `after_sequence` cũ hơn `minimum_retained_sequence`, Inventory trả
 `410 REPLAY_WINDOW_EXPIRED`; consumer phải rebuild availability fields từ snapshot session mới, không
 đoán missing event từ broker retention.
 
-Bootstrap/recovery protocol của Search/Product projection:
+Bootstrap/recovery protocol của Search projection:
 
 1. Tạo snapshot session, ghi `export_watermark = W`.
 2. Load toàn bộ per-SKU availability pages vào Product documents đã tồn tại; reindex

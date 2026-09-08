@@ -14,7 +14,7 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Product gRPC v1 | `proposed` | Proto đang bị copy, package/service name cũ khác target, giá dùng `double` |
 | Cart events v1 | `proposed` | Code cũ dùng custom envelope; target dùng CloudEvents và JSON Schema |
 | Search HTTP v2 | `proposed` | Search Service đã implement v2 và gỡ hẳn v1. Chưa `implemented` vì còn thiếu contract test provider/consumer; frontend vẫn gọi `/api/v1/search/**`, route đó nay không còn backend. |
-| Inventory HTTP v1 | `proposed` | Target có Workflow, ADMIN và Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
+| Inventory HTTP v1 | `proposed` | Target có Workflow, Storefront Availability Read, ADMIN và Search Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
 | Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
 | Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |
 

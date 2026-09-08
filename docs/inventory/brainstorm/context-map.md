@@ -91,6 +91,7 @@ còn kho khả dụng khác thỏa toàn bộ quantity của line item, allocati
 | Order | Inventory | Register immutable refund scope **trước bất kỳ return receipt nào** | Mỗi order chỉ có một refund request `PROCESSING` tại một thời điểm; scope là toàn bộ order line và immutable. Inventory lưu projection tối thiểu để biết tập item cần inspection | Inventory tự suy diễn scope từ order database, nhận receipt trước registration, hoặc tự đổi refund decision. |
 | Inventory | Order | `AllItemsInspectionCompleted` fact theo refund request | Chỉ phát khi mọi item trong scope đã inspection completed; Order/Payment quyết định refund | Inventory tự refund hoặc phát event sau receipt đầu tiên. |
 | Inventory | Search | Versioned public stock state | Event/state phải ordering, dedupe, bootstrap/recovery; freshness target ≤ 60 giây | Search quyết định sellable stock hoặc Inventory phụ thuộc đồng bộ vào Search. |
+| Product Detail BFF | Inventory | Bounded advisory availability read | Sau Product buyer-read, BFF query batch SKU và nhận `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN`; trạng thái không phải reservation | BFF consume Search event/export, đọc quantity/warehouse, hoặc gửi stock command. |
 
 ## 5. Boundary rules
 

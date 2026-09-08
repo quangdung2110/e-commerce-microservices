@@ -10,6 +10,7 @@
 | [ADR-014](ADR-014-integration-and-search-contracts.md) | Accepted, Search details superseded | Contract surfaces, at-least-once facts, and general recovery policy; ADR-016 owns the Search-specific aggregate. |
 | [ADR-015](ADR-015-fail-closed-operations.md) | Accepted | Fail-closed safety, reconciliation without auto-correction, audit/security, and DR proof requirements. |
 | [ADR-016](ADR-016-per-sku-search-availability.md) | Accepted | Inventory derives per-SKU availability, publishes only after Search document readiness, and exports per-SKU snapshots/change feed. |
+| [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 

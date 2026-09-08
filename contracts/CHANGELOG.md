@@ -5,6 +5,10 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- Thêm Inventory Storefront Availability Read API v1 cho Product Detail BFF. Endpoint
+  batch mTLS chỉ trả `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN`, revision và thời điểm đánh giá;
+  không lộ quantity/warehouse/reservation, không dùng Search event/export và không thay
+  thế Reserve tại Checkout/Order.
 - Thêm Review Public/Admin HTTP API v1: public approved-review read, buyer
   entitlement/create/edit/report/media commands và admin moderation/reply/takedown.
   Contract dùng RFC 9457 Problem Details và tách anonymous read, buyer identity và

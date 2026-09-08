@@ -21,7 +21,7 @@ catalog, or Search's indexed copy.
 | Timeout | Order Temporal Saga owns the 15-minute timeout and explicit release. Inventory alerts at 60 minutes but never auto-releases. |
 | Return | Order registers an immutable, whole-order Refund Scope before receipt. A returned item is saleable only after final inspection `PASS`. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |
-| Integration | Transactional outbox is mandatory. Events are at-least-once. Inventory derives the per-SKU boolean consumed by Search; Search is never a checkout dependency. |
+| Integration | Transactional outbox is mandatory. Inventory publishes its per-SKU boolean to Search and exposes the same advisory state through a BFF-only batch-read API; neither path is a checkout dependency. |
 | Degradation | If authoritative state or the atomic audit/outbox transaction is unavailable, mutations fail closed and Preview returns `503 INVENTORY_UNAVAILABLE`. |
 
 ## Ownership boundary
@@ -33,6 +33,7 @@ catalog, or Search's indexed copy.
 | Checkout | Advisory allocation preview and initiating its Order workflow. | Authoritative reserve decision. |
 | Product | SKU/product lifecycle. | Warehouse stock; Inventory accepts opaque `sku_id` and never synchronously calls Product. |
 | Search | Indexed copy of Inventory's per-SKU `is_in_stock` snapshot and buyer filtering. | Deriving warehouse eligibility, allocation, reservation, raw stock buckets, mutation. |
+| Product Detail BFF | Read-only batch caller for advisory per-SKU status. | Event/export consumption, quantity/warehouse visibility, reservation, or availability-rule derivation. |
 | Warehouse Operations | Physical truth submitted through the ADMIN contract. | Direct database editing or Order refund closure. |
 
 ## Target documentation
@@ -41,7 +42,7 @@ catalog, or Search's indexed copy.
 |---|---|
 | [domain.md](domain.md) | Vocabulary, stock buckets, aggregates, lifecycle state machines, invariants, and warehouse-operation rules. |
 | [workflows.md](workflows.md) | Happy path, timeout/retry/race/failure flows, refund closure, and transition ownership. |
-| [interfaces.md](interfaces.md) | HTTP/workflow commands, queries, error semantics, events, Search snapshot/replay, and compatibility. |
+| [interfaces.md](interfaces.md) | HTTP/workflow commands, BFF availability read, error semantics, events, Search snapshot/replay, and compatibility. |
 | [data.md](data.md) | Logical records, movement evidence, transaction/locking/idempotency/outbox/recovery data rules. |
 | [architecture.md](architecture.md) | Components, trust boundaries, authoritative write path, concurrency, and deployment constraints. |
 | [operations.md](operations.md) | Failure modes, SLOs, reconciliation, security, DLQ/replay, backup, and DR runbook. |
@@ -55,14 +56,15 @@ The working record that led to this target design is retained in [brainstorm/red
 Included: warehouse management; initial/supplier sellable receipt; adjustment `+/-`;
 order reservation/commit/release; physical dispatch; immutable Refund Scope;
 multi-package return receipt; inspection; quarantine disposition/reversal; asynchronous
-per-SKU availability projection, Search readiness registration and export; audit,
+per-SKU availability projection, BFF batch availability read, Search readiness registration
+and export; audit,
 reconciliation, and recovery.
 
 Excluded: warehouse transfer; bins/lots/serials/expiry tracking; WMS and supplier/PO integration; backorder; partial order reservation; split quantity of one order line; automatic reroute after reserve failure; automatic reservation cleanup; automatic correction; customer-facing Inventory write API; and direct database repair as an operational process.
 
 ## Acceptance priorities and targets
 
-Priority order is **no oversell**, auditability, operational simplicity, checkout availability, checkout latency, throughput, then Search freshness. Baseline targets to prove before production are Reserve p95/p99 <= 200/500 ms, Preview <= 300/750 ms, Search freshness <= 60 seconds, RPO = 0 for committed mutations, and RTO <= 60 minutes. They are release gates requiring load and DR evidence, not claims about the current implementation.
+Priority order is **no oversell**, auditability, operational simplicity, checkout availability, checkout latency, throughput, then read freshness. Baseline targets to prove before production are Reserve p95/p99 <= 200/500 ms, Preview <= 300/750 ms, Search freshness <= 60 seconds, RPO = 0 for committed mutations, and RTO <= 60 minutes. Inventory and Storefront must set and load-test a separate availability-read latency/freshness budget before PDP availability rollout. They are release gates requiring evidence, not claims about the current implementation.
 
 ## Non-negotiable rules
 
@@ -72,5 +74,8 @@ Priority order is **no oversell**, auditability, operational simplicity, checkou
 4. A business rejection is a valid terminal result; a lock/database/outbox failure is a retryable technical failure, never disguised as out of stock.
 5. Correction uses an explicit audited command. It cannot silently remove reserved, committed, or quarantined units.
 6. Inventory does not publish or export a SKU availability fact until Search has
-   registered that the Product-owned SKU document exists; missing readiness never blocks
-   an authoritative Inventory command.
+    registered that the Product-owned SKU document exists; missing readiness never blocks
+    an authoritative Inventory command.
+7. Product Detail BFF reads only advisory `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN` through
+   its authenticated batch-read contract. It never receives quantity, warehouse, event,
+   export, or reservation data.

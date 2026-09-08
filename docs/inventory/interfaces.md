@@ -7,10 +7,12 @@
 | Surface | Audience | Purpose |
 |---|---|---|
 | `/internal/inventory/v1` | Checkout and Order Temporal Saga | Allocation preview, reservation/refund workflow commands, and workflow queries. |
+| `/internal/inventory/v1/sku-availabilities:batch-get` | Product Detail BFF | Read-only advisory per-SKU availability; no hold, quantity, warehouse, or reservation data. |
 | `/admin/inventory/v1` | Authenticated `ADMIN` | Warehouse configuration and physical stock operations. |
 | `/exports/inventory/v1` | Search Projection only | SKU-document readiness plus consistent per-SKU snapshot/change feed. |
 
 Machine-readable contracts are split by trust boundary: [Workflow OpenAPI](../../contracts/http/inventory/workflow/v1/openapi.yaml),
+[Storefront Availability Read OpenAPI](../../contracts/http/inventory/read/v1/openapi.yaml),
 [ADMIN OpenAPI](../../contracts/http/inventory/admin/v1/openapi.yaml),
 [Export OpenAPI](../../contracts/http/inventory/exports/v1/openapi.yaml), and
 [Inventory AsyncAPI](../../contracts/events/inventory/v1/asyncapi.yaml).
@@ -76,7 +78,25 @@ returns Inventory's opaque `refund_scope_id`. Subsequent resource operations use
 
 These queries are the recovery path when an Order event is delayed or missed; no generic cross-service event replay API is promised to Order.
 
-## 3. ADMIN API
+## 3. Storefront availability read API
+
+`POST /internal/inventory/v1/sku-availabilities:batch-get` is an authenticated,
+read-only endpoint for Product Detail BFF. It receives 1–500 unique opaque `sku_id` in
+one request and returns exactly one result per requested SKU, in no guaranteed order.
+It does not accept quantity, create a hold, call Product, or change Inventory state.
+
+Each result is `IN_STOCK`, `OUT_OF_STOCK`, or `UNKNOWN`, with
+`availability_revision` and `evaluated_at` only for a known state. `UNKNOWN` means the
+Inventory-owned derived state is missing or has pending dirty/recompute work; it never
+means `OUT_OF_STOCK`. A dependency-wide `503 INVENTORY_AVAILABILITY_UNAVAILABLE` has no
+partial result. PDP BFF maps that failure to `UNKNOWN` and does not retry repeatedly in
+the buyer hot path.
+
+The response is advisory UI data only. It never includes quantity, warehouse,
+availability algorithm internals, allocation plan, reservation, or an authority to
+Reserve. Checkout/Order continue using the Workflow API for Preview and Reserve.
+
+## 4. ADMIN API
 
 ADMIN commands are the only physical-operation path. Every stock-affecting input includes `warehouse_id`, `sku_id` when relevant, positive quantity, command ID, operation identity, reason/evidence reference, and actor identity.
 
@@ -94,7 +114,7 @@ ADMIN commands are the only physical-operation path. Every stock-affecting input
 
 Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustment reasons are `COUNT_GAIN`, `COUNT_LOSS`, `DAMAGE_REMOVAL`, `EXPIRY_REMOVAL`, and `DATA_CORRECTION`. Reversal reasons are `DUPLICATE_ENTRY`, `WRONG_QUANTITY`, `WRONG_SKU`, `WRONG_WAREHOUSE`, and `SOURCE_DOCUMENT_VOIDED`. There is no catch-all `OTHER`. Inspection fail reasons and disposition reasons are enumerated in [domain.md](domain.md).
 
-## 4. Errors and retries
+## 5. Errors and retries
 
 | HTTP | Code / meaning | Caller behavior |
 |---:|---|---|
@@ -108,7 +128,11 @@ Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustm
 
 Every error response includes stable `code`, `retryable`, `correlation_id`, and, when supplied, `command_id`. A technical failure is never represented as `REJECT_ALL`.
 
-## 5. Public events
+The table above governs workflow/admin commands and their recovery queries. The BFF
+availability read is defined by its own OpenAPI: it has no idempotency key or business
+transition, and its `503` is intentionally degraded to `UNKNOWN` by PDP BFF.
+
+## 6. Public events
 
 Every public event uses CloudEvents 1.0 structured JSON. The semantic envelope below is mapped
 onto the shared contract convention rather than introducing a second custom envelope:
@@ -151,7 +175,11 @@ atomically records inbox/dedupe with its effect. Search uses strict per-SKU revi
 guards and no-upsert writes; a missing target document is retried as a readiness contract
 violation, not ACKed as normal data.
 
-## 6. Search export, bootstrap, and evolution
+Product Detail BFF does not consume any Inventory event, topic, snapshot session, change
+feed, or readiness operation. Its only availability interaction is the separate
+authenticated batch-read API above.
+
+## 7. Search export, bootstrap, and evolution
 
 Inventory owns and exports only the Search-facing boolean
 `is_in_stock = exists(active, non-outage warehouse with available_to_sell > 0)`. Search

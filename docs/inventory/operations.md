@@ -13,6 +13,8 @@
 | Lock timeout/deadlock/serialization conflict | Retry internally at most twice, then `503 BUSY`. | Inventory + Platform investigate contention; never classify as out of stock. |
 | Broker/relay unavailable after commit | Durable outbox accumulates; commands continue while capacity is safe. | Platform + Inventory restore relay and publish original records. |
 | Search readiness absent/stale/unavailable | Authoritative commands continue; affected per-SKU availability remains pending and is not published/exported until readiness exists. | Search registers after its Product document exists; Inventory emits the current snapshot, then Search resumes change feed/replay. |
+| Availability read model has no clean state for a SKU | Batch-read returns `UNKNOWN` for that SKU; authoritative commands continue. | Inventory repairs/recomputes the affected state; PDP BFF does not replay or use a stale fallback. |
+| Availability Read API unavailable | BFF receives `503` and degrades affected PDP SKU to `UNKNOWN`; authoritative commands continue. | Inventory + Platform restore read endpoint/capacity; Storefront observes dependency outcome. |
 | Order/Payment workflow delayed | Leave `RESERVED` unchanged; issue orphan alert only when older than 60 minutes. | Order explicitly commits/releases; Inventory never auto-releases. |
 | Warehouse outage/inactive | Exclude from new allocation only. | ADMIN verifies/reconfigures; existing commitments use Order exception flow if needed. |
 | Count discrepancy | Do not modify protected buckets silently. | ADMIN + Order use explicit exception, release/correction workflow. |
@@ -28,6 +30,7 @@ Automatic fail-closed protection requires no approval. A manual global stop is r
 | Preview latency | p95 <= 300 ms, p99 <= 750 ms | Requests while primary is available. |
 | Infrastructure failure rate | <= 0.1% per 30 days | Excludes valid domain `REJECT_ALL`. |
 | Search freshness | <= 60 seconds | Inventory availability projection/export time to Search's applied revision for ready SKUs. |
+| PDP availability read latency/freshness | TBD before PDP rollout | Agreed Inventory/Storefront budget for a clean `SkuAvailabilityState` batch result; `UNKNOWN` is not counted as a successful known state. |
 | Committed-data loss | RPO = 0 | Proven by failover/restore drill. |
 | Authoritative recovery | RTO <= 60 minutes | Incident declaration to verified write reopening. |
 | Integrity | 0 violations | Bucket/ledger mismatch is SEV-1, not an error-budget item. |
@@ -40,6 +43,7 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 | Primary unavailable, atomicity uncertain, backup/restore failure, RPO proof lost | SEV-1: Platform + Inventory + Security | Fail closed and recover authoritative source. |
 | Oldest unpublished outbox > 30 s / > 60 s | Warning / page: Platform + Inventory | Restore relay; notify Order/Search at page threshold. |
 | Search freshness > 30 s / > 60 s, or readiness-suppressed facts grow | Warning / page: Inventory + Search | Repair readiness/projector, replay or snapshot bootstrap. |
+| Availability Read API latency/error or BFF `UNKNOWN` rate breaches its agreed budget | Warning / page: Inventory + Storefront | Repair read endpoint/projector/cache; BFF continues to degrade rather than replaying data. |
 | Any `RESERVED` root > 60 min | Operational page: Order | Order decides explicit outcome; no Inventory cleanup. |
 | `503 BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
 | Audit failure, privileged anomaly, direct-write attempt | Security page | Deny/contain, preserve evidence, investigate. |
@@ -55,7 +59,7 @@ Refund-scope/quarantine age is dashboarded but has no automatic closure threshol
 | Daily | Replay movement ledger from last verified checkpoint and compare current state. | SEV-1; preserve state/ledger snapshot. |
 | Every 5 minutes | Identify `RESERVED` roots older than 60 minutes. | Alert Order; do not mutate. |
 | Daily | Order compares its active orders/refunds to Inventory query results. | Idempotent command or Order exception; no DB write. |
-| Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/readiness, then replay or snapshot bootstrap. |
+| Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF clean-state rate, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
 | Pre/post recovery | Bucket scan, ledger replay, identity, outbox/export, and consumer checks. | Writes stay closed until all pass. |
 
 Reconciliation detects only. Correction requires ADMIN reason/evidence and normal command audit. For `RESERVED` discrepancy, Order first releases the whole root with `STOCK_DISCREPANCY`; for committed/dispatched stock it decides a cancellation/post-dispatch exception. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.

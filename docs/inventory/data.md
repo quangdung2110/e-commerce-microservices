@@ -99,9 +99,16 @@ is_in_stock = exists active, non-OUTAGE warehouse
               with available_to_sell > 0 for the SKU
 ```
 
-When the state is new or the boolean changes, one projector transaction updates
-`SkuAvailabilityState`, increments `availability_revision`, and writes its public/export
-outbox fact. Quantity changes that keep the boolean unchanged emit no public fact.
+Every successful calculation records the latest `evaluated_at` on
+`SkuAvailabilityState`. When the state is new or the boolean changes, the same projector
+transaction increments `availability_revision` and writes its Search public/export outbox
+fact. Quantity changes that keep the boolean unchanged emit no public fact.
+
+The Availability Read API serves Product Detail BFF from this Inventory-owned state. A
+SKU with no completed state or pending dirty/recompute work returns `UNKNOWN`; otherwise
+the response contains the boolean, its `availability_revision`, and `evaluated_at`. The
+API never exposes `available_to_sell`, raw quantity, warehouse, reservation, or outbox
+cursor. It neither writes state nor depends on Search readiness.
 
 The state may be calculated before Search readiness, but publication/export remains
 pending. An idempotent readiness registration atomically stores the greatest Product
@@ -127,7 +134,7 @@ Public/export events are retained for at least 30 days from durable creation. An
 |---|---|---|
 | Primary state, command/operation identity, movement/audit, outbox | Authoritative | Restore/fail over as a single consistent point. |
 | Allocation/read cache | Optimization only | Discard and rebuild from primary; never use on correctness path. |
-| `SkuAvailabilityState` | Inventory-owned integration projection | Recompute from Warehouse/StockPosition; reconcile continuously. |
+| `SkuAvailabilityState` | Inventory-owned availability read/integration projection | Recompute from Warehouse/StockPosition; reconcile continuously. It serves BFF advisory reads and feeds Search publication. |
 | Search projection | External indexed copy | Apply registered per-SKU snapshot at watermark, then replay change feed. |
 | Relay leases/cursors | Ephemeral | Clear/rebuild; relay reprocesses durable outbox safely. |
 

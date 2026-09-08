@@ -110,7 +110,7 @@ sequenceDiagram
 4. ADMIN submits the appropriate append-only adjustment or permitted reversal. Inventory writes its normal audit/movement/outbox transaction.
 5. Reconciliation is rerun. A ledger/state mismatch is an incident, not an adjustment case.
 
-## 4. Per-SKU availability publication for Search
+## 4. Per-SKU availability derivation for Search and PDP BFF
 
 Stock commands remain warehouse-specific: each receipt, adjustment, Reserve/Release,
 inspection pass, and other transition that changes `available_to_sell` identifies the
@@ -124,7 +124,7 @@ The availability projector performs this workflow:
 3. Calculate `is_in_stock = true` iff at least one active, non-`OUTAGE` warehouse has
    `available_to_sell > 0`.
 4. If the state is new or the boolean changed, increment the per-SKU
-   `availability_revision` and prepare a full snapshot fact.
+    `availability_revision` and prepare a full snapshot fact.
 5. Publish/export the fact only if Search has registered that its Product-owned SKU
    document exists. Without readiness, retain the latest state as pending; never fail or
    delay the authoritative command.
@@ -133,6 +133,12 @@ A warehouse active/outage change durably scans distinct SKU IDs at that warehous
 checkpoint, backpressure, and idempotent retry. Each SKU is recomputed against all
 warehouses; Inventory never assumes that one warehouse outage makes the SKU globally
 unavailable. Only boolean transitions produce normal public events.
+
+Product Detail BFF does not participate in this event workflow. It calls the
+Availability Read API with a bounded SKU batch after Product resolves catalog-active
+SKUs. The API reads `SkuAvailabilityState` without a write: a clean, completed state
+maps to `IN_STOCK` or `OUT_OF_STOCK`; a missing or dirty state maps to `UNKNOWN`. Search
+readiness does not gate this API, and a BFF read never creates a publication task.
 
 After Search successfully creates a catalog SKU document, it registers readiness with
 `catalog_revision`. Registration is idempotent and atomically persists a publication task
@@ -149,6 +155,7 @@ Search revokes readiness after tombstone and before physical purge.
 | Physical dispatch, receipt, inspection, disposition, adjustment | `ADMIN` | Validate authority, physical guards, stock movement, audit. |
 | Warehouse active/outage/priority | `ADMIN` | Own master state; use it only for new allocation. |
 | Derive per-SKU `is_in_stock` | Inventory availability projector | Recompute asynchronously and publish only after Search document readiness. |
+| Serve PDP advisory availability | Inventory Availability Read API | Return a bounded per-SKU state to Product Detail BFF; return `UNKNOWN` when state is missing/dirty; never reserve or expose quantity. |
 | Register/revoke SKU document readiness | Search | Register only after catalog write succeeds; revoke after tombstone and before purge. |
 | Refund registration/close/incomplete close | Order Temporal Saga | Enforce immutable scope and state guards. |
 | Shipment/delivery | Order | Consume Inventory dispatch fact; not stored as Inventory lifecycle. |

@@ -78,8 +78,9 @@ block cutover. Search rebuilds again after
   durable jobs, backpressure, and reconciliation.
 - Readiness registration adds an asynchronous integration handshake, but never enters
   checkout, Reserve, or an Inventory command transaction.
-- Product Detail BFF is not automatically authorized to consume this contract; adding a
-  consumer requires a separate review.
+- Product Detail BFF is not a consumer of this event/export contract. Its separate
+  synchronous availability read is defined by ADR-017 and does not require Search
+  readiness registration.
 
 ## Verification
 

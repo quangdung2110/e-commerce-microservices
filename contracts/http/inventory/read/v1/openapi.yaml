@@ -1,0 +1,133 @@
+openapi: 3.1.0
+info:
+  title: Inventory Storefront Availability Read API
+  version: 1.0.0
+  description: >-
+    Internal, read-only availability API for Product Detail BFF. Inventory remains the
+    sole owner of the warehouse-aware availability rule and of all stock data. This API
+    returns UI advisory state only; it never creates a hold and is not a substitute for
+    Checkout/Order Reserve. It does not expose quantity, warehouse, allocation, or
+    reservation data, and is distinct from the Search-only projection export surface.
+x-adoption-status: proposed
+servers:
+  - url: http://inventory-service:8080
+    description: Internal service endpoint
+tags:
+  - name: Storefront availability
+paths:
+  /internal/inventory/v1/sku-availabilities:batch-get:
+    post:
+      tags: [Storefront availability]
+      operationId: batchGetSkuAvailabilities
+      summary: Read advisory availability for a bounded set of SKUs
+      description: >-
+        PRODUCT_DETAIL_BFF only. The response contains exactly one item for every
+        distinct requested SKU. UNKNOWN means Inventory cannot currently provide a
+        trustworthy display state for that SKU; callers must not infer OUT_OF_STOCK.
+        A 503 means the availability read dependency itself is unavailable; PDP BFF
+        degrades every requested SKU to UNKNOWN rather than retrying on the buyer hot
+        path.
+      x-authorized-callers: [product-detail-bff]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchSkuAvailabilityRequest' }
+      responses:
+        '200':
+          description: One advisory availability result per requested SKU.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchSkuAvailabilityResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    serviceIdentity:
+      type: mutualTLS
+      description: Service identity issued only to Product Detail BFF on the internal network.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+      description: End-to-end business correlation identifier propagated from the buyer request.
+  schemas:
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    BatchSkuAvailabilityRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_ids]
+      properties:
+        sku_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/OpaqueId' }
+    AvailabilityStatus:
+      type: string
+      enum: [IN_STOCK, OUT_OF_STOCK, UNKNOWN]
+    SkuAvailabilityResult:
+      type: object
+      additionalProperties: false
+      required: [sku_id, status, availability_revision, evaluated_at]
+      properties:
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        status:
+          $ref: '#/components/schemas/AvailabilityStatus'
+          description: >-
+            IN_STOCK and OUT_OF_STOCK are advisory UI states. UNKNOWN is returned when
+            the Inventory availability read model has no trustworthy state for the SKU.
+        availability_revision:
+          type: [integer, 'null']
+          minimum: 1
+          description: >-
+            Monotonic per-SKU revision for an available state; null when status is UNKNOWN.
+        evaluated_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Time Inventory last confirmed the returned availability state; null when
+            status is UNKNOWN. It is not a reservation or quantity timestamp.
+    BatchSkuAvailabilityResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Contains each requested SKU exactly once, in no guaranteed order.
+          items: { $ref: '#/components/schemas/SkuAvailabilityResult' }
+    InventoryProblem:
+      allOf:
+        - $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+        - type: object
+          required: [correlation_id]
+          properties:
+            correlation_id: { type: string, minLength: 8, maxLength: 128 }
+  responses:
+    BadRequest:
+      description: INVALID_REQUEST.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }
+    Unauthorized:
+      description: Missing or invalid workload identity.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }
+    Forbidden:
+      description: Caller is not Product Detail BFF.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }
+    Unavailable:
+      description: INVENTORY_AVAILABILITY_UNAVAILABLE; no advisory availability result was produced.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+          description: Suggested delay in seconds when known.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

@@ -104,8 +104,10 @@ Product, Payment hoặc Search.
 - Order sở hữu trạng thái đơn hàng; Inventory sở hữu allocation/reservation tới mức nào?
 - Payment xác nhận điều gì để Inventory commit sale; việc refund phụ thuộc receipt ở kho ra sao?
 - Ai sở hữu fulfillment và shipment sau khi Shipping Service không còn tồn tại?
-- Search và Product Detail BFF cần state gì: chỉ `in stock`, tổng sellable, hay tồn kho
-  theo vùng? Cần freshness nào, và PDP xử lý `UNKNOWN` ra sao?
+- **Đã chốt:** Search nhận event/export boolean `is_in_stock`; Product Detail BFF gọi
+  Inventory batch-read và chỉ nhận `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN`, không nhận tổng
+  sellable hay tồn kho theo vùng. PDP giữ `UNKNOWN` khi Inventory không có state tin cậy.
+  Xem ADR-016 và ADR-017.
 - Kho, warehouse staff và stock adjustment thuộc Inventory hay một bounded context vận hành kho riêng?
 
 **Artifact phải chốt:** context map, ownership matrix, inbound/outbound interaction inventory và
@@ -223,8 +225,9 @@ idempotency model, event delivery guarantee và recovery-from-backup design.
 
 - Command/query nào là synchronous API, command nào thuộc workflow/Saga, event nào là public fact.
 - Error taxonomy, retryability, idempotency key/command ID và correlation/causation ID.
-- Search và Product Detail BFF nhận snapshot hay delta; ordering/version field nào;
-  bootstrap và recovery không phụ thuộc Kafka retention bằng cách nào.
+- **Đã chốt:** Search nhận snapshot/event có revision và dùng export/replay không phụ
+  thuộc Kafka retention. Product Detail BFF không nhận snapshot/delta, không bootstrap
+  và không recovery từ broker; nó gọi Availability Read API. Xem ADR-016 và ADR-017.
 - Schema versioning, compatibility window, consumer registry, contract test và quy trình deprecation.
 - Có cần internal read API hay Search chỉ dùng event/materialized export?
 
