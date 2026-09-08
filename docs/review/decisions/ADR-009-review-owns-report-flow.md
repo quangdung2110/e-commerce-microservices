@@ -80,7 +80,7 @@ Không có dữ liệu để migrate. Ảnh hưởng tới tài liệu: consumer
 và topic `t.report.events` không còn tồn tại trong bất kỳ tài liệu nào của Review.
 
 Nếu Report Service ra đời sau này, đường chuyển đổi là: Report Service tiếp nhận việc lưu
-report và quyết định ngưỡng; Review giữ lại `report_count` như một trường dẫn xuất và
+report và quyết định ngưỡng; Review giữ lại `active_report_count` như một trường dẫn xuất và
 consume một event kiểu `CONTENT_HIDDEN` để đổi `status`. Bảng `review_reports` khi đó
 được migrate sang Report Service. Đây là một thay đổi có thể lên kế hoạch, không phải một
 lần viết lại.

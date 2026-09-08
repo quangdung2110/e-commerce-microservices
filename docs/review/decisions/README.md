@@ -8,7 +8,9 @@ implementation đã được verified — Review Service hiện chưa có implem
 
 - Sao chép [ADR-000-template.md](./ADR-000-template.md) thành
   `ADR-<sequence>-<short-name>.md` khi tạo quyết định mới.
-- Không sửa lịch sử của ADR `Accepted`; tạo ADR mới để thay thế và liên kết hai chiều.
+- Khi service chưa có implementation, ADR `Accepted` vẫn có thể được chỉnh trực tiếp
+  cùng target schema/contract để loại bỏ thiết kế chưa triển khai. Khi đã có evidence
+  production hoặc consumer adoption, tạo ADR mới để thay thế và liên kết hai chiều.
 - Decision phải nêu alternative, hệ quả tiêu cực và cách verification.
 - Workflow, architecture và data chỉ liên kết đến ADR; không giấu trade-off trong
   phần mô tả luồng.
@@ -18,13 +20,13 @@ implementation đã được verified — Review Service hiện chưa có implem
 | ADR | Decision | Status | Date | Supersedes |
 |---|---|---|---|---|
 | [ADR-000](./ADR-000-template.md) | Template — không phải quyết định thực tế | Template | N/A | N/A |
-| [ADR-001](./ADR-001-eligibility-and-single-edit.md) | Eligibility 1-1-1-1 và đúng một lần chỉnh sửa | Accepted | 2026-09-05 | — |
+| [ADR-001](./ADR-001-eligibility-and-single-edit.md) | Entitlement theo SKU/order và một lần sửa review | Accepted | 2026-09-05 | — |
 | [ADR-002](./ADR-002-postgresql-only-read-path.md) | PostgreSQL là kho duy nhất, không cache | Accepted | 2026-09-05 | — |
 | [ADR-003](./ADR-003-outbox-cdc-publication.md) | Outbox và Debezium CDC cho việc phát event | Accepted | 2026-09-05 | — |
 | [ADR-004](./ADR-004-review-revision-ordering-guard.md) | `review_revision` làm ordering guard cho downstream | Accepted | 2026-09-05 | — |
-| [ADR-005](./ADR-005-async-rating-aggregation.md) | Tổng hợp rating bất đồng bộ qua self-consume | Accepted | 2026-09-05 | — |
-| [ADR-006](./ADR-006-rating-snapshot-export.md) | Snapshot export rating cho full reindex của Search | Accepted | 2026-09-05 | — |
-| [ADR-007](./ADR-007-author-name-snapshot.md) | Tên tác giả là snapshot, không đồng bộ theo profile | Accepted | 2026-09-05 | — |
+| [ADR-005](./ADR-005-async-rating-aggregation.md) | Aggregate bất đồng bộ, idempotent bằng event receipt | Accepted | 2026-09-05 | — |
+| [ADR-006](./ADR-006-rating-snapshot-export.md) | Durable export session cho Search rating reindex | Accepted | 2026-09-05 | — |
+| [ADR-007](./ADR-007-author-name-snapshot.md) | Snapshot author/variant và privacy hard purge | Accepted | 2026-09-05 | — |
 | [ADR-008](./ADR-008-auto-approve-with-report-threshold.md) | Tự động duyệt kèm ngưỡng báo cáo thay cho tiền kiểm duyệt | Accepted | 2026-09-05 | — |
 | [ADR-009](./ADR-009-review-owns-report-flow.md) | Review sở hữu toàn bộ luồng báo cáo vi phạm | Accepted | 2026-09-05 | — |
 

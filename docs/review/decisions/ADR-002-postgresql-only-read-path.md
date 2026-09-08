@@ -38,7 +38,7 @@ không có Elasticsearch cho đường đọc của Review.
 
 Đường đọc được phục vụ bằng partial index có điều kiện `status = 'APPROVED'`, mỗi
 index ứng với một bộ lọc cụ thể; xem
-[Data, mục 5](../data.md#5-indexes-và-query-patterns). Phân trang dùng keyset trên
+[Data, mục 10](../data.md#10-queryindex-policy). Phân trang dùng keyset trên
 `(created_at, id)`, không dùng `OFFSET`.
 
 Khi tải tăng, thứ tự xử lý được quy định trước:

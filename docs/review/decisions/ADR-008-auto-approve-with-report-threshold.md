@@ -35,18 +35,18 @@ nào để hiện lại một đánh giá đã bị ẩn nhầm.
 
 Đánh giá được tạo với `status = 'APPROVED'` và hiển thị ngay. Không có bước duyệt trước.
 
-Kiểm soát chất lượng đến từ báo cáo của cộng đồng: khi `report_count` đạt
+Kiểm soát chất lượng đến từ báo cáo của cộng đồng: khi `active_report_count` đạt
 `report_threshold` (mặc định 10, cấu hình qua `REVIEW_REPORT_THRESHOLD`), đánh giá tự
 động chuyển `HIDDEN_BY_REPORT` và bị loại khỏi cả danh sách lẫn aggregate.
 
 Việc ẩn là **có thể hoàn tác**. Admin có endpoint bác bỏ báo cáo: đánh giá quay lại
-`APPROVED`, các report liên quan chuyển `DISMISSED`, `report_count` được tính lại từ
+`APPROVED`, các report liên quan chuyển `DISMISSED`, `active_report_count` được tính lại từ
 số report còn `PENDING`, và `REVIEW_APPROVED` được phát để aggregator cộng lại.
 
 `REVIEW_APPROVED` vì vậy có đúng một nguồn phát: thao tác hiện lại đánh giá. Đây là
 điều làm event đó có nghĩa.
 
-Response của endpoint báo cáo **không** tiết lộ `report_count` hay việc đánh giá đã bị
+Response của endpoint báo cáo **không** tiết lộ `active_report_count` hay việc đánh giá đã bị
 ẩn hay chưa.
 
 ## Alternatives considered
@@ -96,4 +96,4 @@ này — không phải một cờ cấu hình.
 Test phải chứng minh: báo cáo thứ N chạm ngưỡng sinh **đúng một** `REVIEW_HIDDEN` kể cả
 khi mười người báo cáo đồng thời; sau khi admin bác bỏ, đánh giá không bị ẩn lại bởi
 những report đó; report mới sau đó tích lũy lại từ đầu; và response của endpoint báo cáo
-không chứa `report_count` hay trạng thái ẩn.
+không chứa `active_report_count` hay trạng thái ẩn.
