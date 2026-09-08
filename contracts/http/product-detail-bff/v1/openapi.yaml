@@ -4,8 +4,8 @@ info:
   version: 1.0.0
   description: >-
     Contract PDP cho buyer. BFF ghép catalog/giá do Product sở hữu với availability
-    projection từ Inventory và Review summary/preview do Review sở hữu. Availability
-    chỉ là UI snapshot; Review là enrichment có thể degrade độc lập.
+    advisory được batch-read từ Inventory và Review summary/preview do Review sở hữu.
+    Availability chỉ là UI snapshot; Review là enrichment có thể degrade độc lập.
 x-adoption-status: proposed
 servers:
   - url: http://product-detail-bff:8080
@@ -70,7 +70,7 @@ components:
         availability_observed_at:
           type: [string, 'null']
           format: date-time
-          description: Null khi trạng thái UNKNOWN; không phải thời điểm reserve.
+          description: Thời điểm Inventory xác nhận UI state; null khi UNKNOWN và không phải thời điểm reserve.
     AvailabilityStatus:
       type: string
       enum: [IN_STOCK, OUT_OF_STOCK, UNKNOWN]

@@ -37,8 +37,8 @@ interactions:
     status: proposed
     notes: >-
       Buyer PDP API composes Product catalog and optional Review summary/preview.
-      Its direct Inventory availability projection is not covered by Inventory v1;
-      adding it requires a separate registered-consumer contract review.
+      It reads advisory per-SKU availability from Inventory's dedicated internal
+      batch-read API; BFF does not consume Inventory events or exports.
 
   - id: product-detail-bff-queries-product-catalog
     protocol: http
@@ -58,6 +58,17 @@ interactions:
       Internal service-identity PDP read after Product resolves product_id. Review
       remains source of truth; timeout degrades only the Review section and never
       becomes aggregate zero.
+
+  - id: product-detail-bff-queries-inventory-availability
+    protocol: http
+    provider: inventory-service
+    consumers: [product-detail-bff]
+    contract: http/inventory/read/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal mTLS batch read after Product resolves active SKU IDs. Inventory returns
+      advisory IN_STOCK, OUT_OF_STOCK, or UNKNOWN only; timeout/503 degrades PDP SKU
+      availability to UNKNOWN and Checkout remains the only Reserve caller.
 
   - id: product-publishes-catalog-events
     protocol: kafka

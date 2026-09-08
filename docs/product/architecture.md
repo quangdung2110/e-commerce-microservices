@@ -44,8 +44,9 @@ flowchart LR
 | Outbox + Debezium | Phát CloudEvents catalog/tombstone/control event at-least-once sau commit |
 
 Product không có Redis, cache, Lua script, Inventory consumer, Inventory worker hay
-self-consumer hoặc scheduled job. Search và Product Detail BFF tự kết hợp catalog/price
-của Product với stock UI từ Inventory, mỗi bên trong read model riêng.
+self-consumer hoặc scheduled job. Search kết hợp catalog/price với Inventory event
+projection; Product Detail BFF kết hợp catalog/price với Inventory Availability Read API.
+Product không là stock intermediary cho bên nào.
 
 ## Processing và consistency
 

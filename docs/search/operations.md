@@ -160,8 +160,8 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
   được việc khu vực tìm kiếm không khả dụng.
 - Không được phép fallback sang gọi Product hoặc Inventory để dựng kết quả tìm
   kiếm: sẽ đẩy tải đọc của buyer vào write store.
-- Product Detail BFF có freshness/lag và runbook riêng; Search không là fallback
-  availability store cho PDP.
+- Product Detail BFF quan sát outcome của Inventory Availability Read API và có runbook
+  riêng; Search không là fallback availability store cho PDP.
 
 ## 8. Scaling và capacity
 

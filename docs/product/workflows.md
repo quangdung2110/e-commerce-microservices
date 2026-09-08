@@ -86,5 +86,5 @@ Product Detail BFF xác thực mTLS/service identity rồi query Product theo sl
 kiểm tra Product `ACTIVE`, lọc SKU catalog-inactive, resolve media/thumbnail và trả
 catalog snapshot cùng giá công bố. Không đọc Inventory, không ghi cache, không thay đổi
 state và không trả bất kỳ field stock nào. Availability theo SKU là trách nhiệm read
-composition của BFF, được ghi ở
+composition của BFF qua Inventory Availability Read API, được ghi ở
 [`docs/product-detail-bff`](../product-detail-bff/README.md).

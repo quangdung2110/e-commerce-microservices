@@ -13,34 +13,29 @@ owners:
 
 1. Gateway xác thực/định tuyến request public tới BFF.
 2. BFF gọi Product internal buyer-read theo slug.
-3. Khi có `product_id`, BFF đồng thời load projection theo tất cả `sku_id` và gọi
-   Review internal PDP read để lấy aggregate + preview.
-4. Với mỗi SKU active, map snapshot mới đủ freshness thành `IN_STOCK`/`OUT_OF_STOCK`;
-   thiếu hoặc stale thành `UNKNOWN`.
-5. Review trả thành công thì map `AVAILABLE`; aggregate 0/preview rỗng là hợp lệ.
+3. Product trả `404` thì BFF trả `404` ngay, không gọi Inventory hoặc Review. Product
+   lỗi hạ tầng thì BFF trả `503`.
+4. Với Product catalog-active, BFF lấy các `sku_id` active rồi đồng thời gọi một
+   Inventory batch availability read và Review internal PDP read.
+5. Với mỗi SKU active, BFF map kết quả Inventory `IN_STOCK`/`OUT_OF_STOCK`; item thiếu,
+   `UNKNOWN`, timeout hay `503` được map thành `UNKNOWN`.
+6. Review trả thành công thì map `AVAILABLE`; aggregate 0/preview rỗng là hợp lệ.
    Review timeout/lỗi thì map `UNAVAILABLE` và không tạo rating/count giả.
-6. Trả response. Không gọi Search, không gọi Inventory live và không mutate state.
+7. Trả response. Không gọi Search, không gửi Inventory command và không mutate state.
 
-Product không sẵn sàng làm request thất bại `503`; Review không sẵn sàng chỉ degrade
-review section. Mọi command và pagination Review sau preview đi trực tiếp tới Review
-Service qua Gateway, không quay lại BFF.
+Inventory batch read là advisory UI query: BFF không retry lặp lại trong buyer hot path
+khi dependency đã lỗi. Circuit breaker mở thì bước 4 bỏ qua Inventory và mọi SKU là
+`UNKNOWN` trong request đó. Checkout Reserve vẫn là quyết định cuối cùng chống oversell.
 
-## WF-PDP-002 — Apply stock snapshot
+## WF-PDP-002 — Degrade và recovery boundary
 
-1. Consume event type allowlist trên `t.inventory.stock.events.v1`.
-2. Validate `product_id`, `sku_id`, `available_quantity`, `stock_revision`, `observed_at`.
-3. Upsert `pdp_sku_availability` nếu revision lớn hơn.
-4. Commit Kafka offset sau database commit.
+1. Nếu Inventory trả một item `UNKNOWN`, BFF giữ nguyên item đó; không dùng cache cũ để
+   nâng thành `IN_STOCK` hoặc `OUT_OF_STOCK`.
+2. Nếu Inventory return `503` hoặc timeout, BFF ghi metric theo dependency outcome và
+   trả catalog cùng `UNKNOWN`; không có Kafka offset, replay hoặc rebuild trong BFF.
+3. Inventory on-call xử lý read-model lag/recompute/cache trong Inventory boundary.
+   Khi Inventory API phục hồi, request PDP tiếp theo tự nhận state mới.
+4. Nếu Review lỗi, BFF trả `UNAVAILABLE` theo cùng nguyên tắc isolated degradation.
 
-Event trùng/cũ là no-op; event tới trước Product là hợp lệ. Lỗi database tạm thời không
-commit offset. Payload lỗi là contract violation, ghi metric rồi xử lý theo retry/DLQ policy.
-
-## WF-PDP-003 — Bootstrap hoặc rebuild availability
-
-1. Gọi Inventory export, giữ `replay_from_offsets` của export session.
-2. Import toàn bộ snapshot theo `sku_id` với guard revision.
-3. Seek inclusive topic stock từ offsets đó và catch-up đến lag bằng 0.
-4. Chỉ sau validation projection mới coi freshness là healthy.
-
-Không bootstrap từ legacy `INVENTORY_STOCK_CHANGED`; event này không có revision hay
-recovery contract.
+Không bootstrap từ `INVENTORY_STOCK_CHANGED`, `stock-snapshot.v1`, Search export hay
+bất kỳ topic Inventory nào. Những contract đó không phải input của BFF.

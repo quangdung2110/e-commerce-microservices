@@ -51,9 +51,9 @@ kho, quản trị sản phẩm và point-read cho luồng giao dịch. Cart và 
 gọi gRPC của Product cho catalog/giá và reserve tại Inventory cho tồn kho — tuyệt
 đối không đọc Search, vì Search là eventual consistent.
 
-Search cũng không là Product Detail provider. Product Detail BFF đọc catalog qua Product;
-nếu cần availability trực tiếp từ Inventory thì interaction đó phải có contract và consumer
-review riêng, không được dùng Search index làm point-read hay suy rộng quyền của Search.
+Search cũng không là Product Detail provider. Product Detail BFF đọc catalog qua Product
+và advisory availability qua Inventory Availability Read API; BFF không được dùng Search
+index làm point-read hay suy rộng quyền event/export của Search.
 
 Search không có transaction nghiệp vụ: mọi thay đổi state đều là hệ quả của một
 event upstream đã commit ở service sở hữu dữ liệu.

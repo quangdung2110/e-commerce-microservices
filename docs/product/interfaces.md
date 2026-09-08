@@ -64,8 +64,9 @@ media đã resolve, variant attribute, `base_price_vnd`, `selling_price_vnd`,
 Product không còn SKU saleable trả `404` để không rò rỉ catalog không công bố.
 
 Endpoint không trả `available_quantity`, `is_in_stock`, `OUT_OF_STOCK`, reservation,
-stock revision hay stock timestamp. Product Detail BFF ghép availability snapshot của
-Inventory trong local projection của nó; endpoint này không gọi Inventory hoặc Search.
+stock revision hay stock timestamp. Product Detail BFF ghép availability advisory từ
+Inventory Availability Read API trong cùng PDP request; endpoint này không gọi Inventory
+hoặc Search.
 
 ## gRPC catalog read
 

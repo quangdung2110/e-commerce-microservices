@@ -51,9 +51,9 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 | Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
 | Outbound | Search | HTTP nội bộ | Export Category/Product cho full reindex, kèm replay offsets theo topic |
 
-Search và Product Detail BFF sẽ consume stock snapshot v1 trực tiếp từ Inventory sau
-rollout contract. Product không consume topic Inventory và không là đường trung chuyển
-availability cho UI.
+Search consume stock availability snapshot/export trực tiếp từ Inventory. Product Detail
+BFF gọi Inventory Availability Read API theo request sau khi có catalog. Product không
+consume topic Inventory và không là đường trung chuyển availability cho UI.
 
 Promotion sở hữu schedule markdown và phải phát snapshot `ACTIVE`/`INACTIVE` tại thời
 điểm hiệu lực/kết thúc. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations

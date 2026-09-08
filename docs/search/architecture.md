@@ -150,8 +150,8 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
 - Không gọi đồng bộ sang Product/Review trong đường xử lý event. Ngoại lệ duy nhất là
   readiness PUT/DELETE idempotent sang Inventory sau catalog write/tombstone; không có
   sync call trong đường apply availability.
-- Không làm shared availability store cho Product Detail BFF; direct Inventory
-  integration của PDP cần contract/consumer review riêng và Product là catalog authority.
+- Không làm shared availability store cho Product Detail BFF; PDP dùng Inventory
+  Availability Read API riêng, còn Product vẫn là catalog authority.
 - Không đặt business logic trong controller hoặc Kafka listener; transform và rule
   nằm ở application layer.
 - Mọi ghi qua write alias; pha catch-up của reindex là ngoại lệ duy nhất và ghi

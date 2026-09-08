@@ -17,8 +17,8 @@ của markdown consumer, retry/DLQ age và số snapshot replay, catalog reindex
 coalesce/failure, và số SKU fan-out bởi media mutation. Metric không dùng `product_id`,
 `sku_id` hay rule ID làm label.
 
-Search và Product Detail BFF tự theo dõi stock-event lag của Inventory; đây không phải
-consumer của Product.
+Search tự theo dõi stock-event/export lag của Inventory; Product Detail BFF theo dõi
+latency/error của Inventory Availability Read API. Cả hai không phải consumer của Product.
 
 ## Health và degraded behavior
 

@@ -23,8 +23,8 @@ Product không được giữ hoặc join Inventory stock theo ADR-009.
 
 Product thêm `GET /internal/v1/product-details/{slug}` dành cho Product Detail BFF qua
 mTLS. Endpoint trả snapshot catalog/price/variant của Product `ACTIVE`, không có bất kỳ
-field quantity, availability, reservation hay stock revision nào. BFF ghép availability
-từ Inventory projection cục bộ.
+field quantity, availability, reservation hay stock revision nào. Sau đó BFF ghép
+availability advisory qua Inventory Availability Read API.
 
 ## Alternatives considered
 
@@ -37,4 +37,5 @@ từ Inventory projection cục bộ.
 
 Thêm một internal HTTP contract và dependency vận hành Product → BFF. Test phải chứng
 minh Product `HIDDEN` không lộ, media/variant/price đúng snapshot và response không
-chứa stock. Checkout vẫn reserve trực tiếp tại Inventory.
+chứa stock. BFF chỉ gọi Inventory sau khi nhận SKU catalog-active; Checkout vẫn reserve
+trực tiếp tại Inventory.

@@ -759,7 +759,7 @@ paths:
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
-          description: Buyer-readable catalog snapshot; BFF tự ghép availability từ Inventory projection.
+          description: Buyer-readable catalog snapshot; BFF tự ghép advisory availability từ Inventory Availability Read API.
           headers:
             ETag: { $ref: '#/components/headers/ProductETag' }
           content:

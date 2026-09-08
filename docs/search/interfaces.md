@@ -282,9 +282,9 @@ Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
   gap và sẽ nhận lỗi cho tới khi chuyển sang v2; không được mô tả v1 là đang chạy.
 - V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
   `NOT product_id`. PDP dùng [Product Detail BFF](../product-detail-bff/README.md):
-  BFF gọi Product buyer-read. Inventory Release 1 chỉ đăng ký Search làm availability
-  projection consumer; direct Inventory projection của BFF cần một contract/consumer
-  review riêng trước rollout và không được suy ra từ quyền của Search.
+  BFF gọi Product buyer-read và Inventory Availability Read API. Inventory event/export
+  vẫn chỉ đăng ký Search; BFF không có consumer quyền đó và không được suy ra từ quyền
+  của Search.
 - Thêm field optional vào event là thay đổi tương thích: Search bỏ qua field lạ.
 - Xóa field, đổi ngữ nghĩa field, đổi Kafka key hoặc đổi ý nghĩa của
   `catalog_revision` là breaking change và phải phối hợp với Search trước khi

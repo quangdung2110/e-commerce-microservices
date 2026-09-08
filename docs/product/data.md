@@ -24,8 +24,8 @@ schema này.
 
 Product không consume event Inventory và không có Redis cache/projection tồn kho. Cart
 kiểm tra catalog và giá ở Product; Checkout reserve trực tiếp tại Inventory là quyết
-định cuối cùng về tồn kho. Search và Product Detail BFF consume catalog/price từ Product
-và stock UI từ Inventory theo hai read model độc lập.
+định cuối cùng về tồn kho. Search nhận stock UI qua Inventory event/export; Product
+Detail BFF nhận advisory stock UI qua Inventory batch-read sau khi đọc catalog.
 
 ## 2. Quy ước chung
 

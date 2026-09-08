@@ -9,15 +9,19 @@ owners:
 
 # Product Detail BFF — Development Guide
 
-Implementation cần PostgreSQL, Kafka, Product internal client và Review internal client.
-Không cần Elasticsearch và không đọc database của Product/Inventory/Review.
+Implementation cần Product internal client, Inventory Availability Read client và
+Review internal client. Không cần PostgreSQL, Kafka, Elasticsearch hoặc access tới
+database của Product/Inventory/Review.
 
-Test bắt buộc: Product nhiều SKU với trạng thái mixed; snapshot về 0 rồi có hàng lại;
-event trùng/cũ; event tới trước Product; projection stale; bootstrap/export rồi replay;
-Product `HIDDEN`; Checkout reserve thất bại sau khi PDP đã hiện `IN_STOCK`; Review có
-aggregate 0; Review có preview; Review timeout/5xx; và response Review sai contract.
+Test bắt buộc: Product nhiều SKU với trạng thái Inventory mixed; batch tối đa 500 SKU;
+Inventory thiếu một item; Inventory trả `UNKNOWN`; Inventory timeout/5xx/circuit open;
+Product `HIDDEN`; Product timeout; Checkout reserve thất bại sau khi PDP đã hiện
+`IN_STOCK`; Review có aggregate 0; Review có preview; Review timeout/5xx; và response
+Inventory/Review sai contract.
 
-Definition of Done: OpenAPI/internal contract có contract test; projection rebuild được
-từ export; revision guard có integration test; observability/freshness runbook hoàn chỉnh;
-Review provider/consumer contract test pass; lỗi Review degrade đúng; và không có Product
-stock field, Review table/consumer/command handler hoặc BFF dependency sang Search.
+Definition of Done: public OpenAPI và cả ba internal dependency contract có contract
+test; BFF gửi đúng một Inventory batch call sau khi Product trả SKU; mTLS/service
+identity và correlation ID được truyền; Inventory failure map đúng `UNKNOWN`; Review
+failure map đúng `UNAVAILABLE`; observability/circuit breaker test pass; và không có
+database migration, Kafka consumer, export/bootstrap client, Review table/consumer/
+command handler hoặc Search dependency trong BFF.

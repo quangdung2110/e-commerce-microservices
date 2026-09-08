@@ -112,17 +112,17 @@
 
 ## 6. Product Detail BFF (target)
 
-> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp stock
-> snapshot; Review giữ review/rating. BFF chỉ persist availability projection, đọc
-> Review summary/preview theo request và Checkout vẫn reserve tại Inventory.
+> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
+> availability qua batch read; Review giữ review/rating. BFF không persist stock,
+> đọc Review summary/preview theo request và Checkout vẫn reserve tại Inventory.
 
 | File | Mô tả |
 |---|---|
 | [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
 | [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
-| [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory snapshot/export và Review internal read. |
-| [product-detail-bff/data.md](./product-detail-bff/data.md) | Availability projection, revision guard và bootstrap. |
-| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR availability projection và Review read composition không đổi ownership. |
+| [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read và Review read composition không đổi ownership. |
 
 ---
 
