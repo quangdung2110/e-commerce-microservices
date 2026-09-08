@@ -16,6 +16,7 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Search HTTP v2 | `proposed` | Search Service đã implement v2 và gỡ hẳn v1. Chưa `implemented` vì còn thiếu contract test provider/consumer; frontend vẫn gọi `/api/v1/search/**`, route đó nay không còn backend. |
 | Inventory HTTP v1 | `proposed` | Target có Workflow, ADMIN và Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
 | Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
+| Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |
 
 ## Quy tắc chuyển trạng thái
 

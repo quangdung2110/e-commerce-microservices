@@ -3,6 +3,19 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-09
+
+- Thêm Review Public/Admin HTTP API v1: public approved-review read, buyer
+  entitlement/create/edit/report/media commands và admin moderation/reply/takedown.
+  Contract dùng RFC 9457 Problem Details và tách anonymous read, buyer identity và
+  admin role qua trusted Gateway headers.
+- Review Media HTTP v1 cấp signed direct-upload instruction nhưng không trả object key
+  hay có verify/poll API cho client. Create/edit tự verify object metadata trước attach;
+  request PATCH chốt missing/`null`/empty-media-array semantics.
+- Review legal takedown chuyển sang một admin actor được lấy từ trusted Gateway
+  identity. Request không nhận requester/approver ID; actor, legal case và reason vẫn
+  không xuất hiện trong public event payload.
+
 ## 2026-09-08
 
 - Mở rộng Review Events v1 từ metrics-only thành contract đầy đủ cho năm lifecycle

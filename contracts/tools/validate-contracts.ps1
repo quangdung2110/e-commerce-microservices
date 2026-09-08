@@ -243,7 +243,8 @@ Invoke-OptionalTool -Name 'redocly' -Action {
         'http/cart/v1/openapi.yaml',
         'http/inventory/workflow/v1/openapi.yaml',
         'http/inventory/admin/v1/openapi.yaml',
-        'http/inventory/exports/v1/openapi.yaml'
+        'http/inventory/exports/v1/openapi.yaml',
+        'http/review/v1/openapi.yaml'
     ) | ForEach-Object {
         $spec = Join-Path $contractRoot $_
         & redocly lint $spec

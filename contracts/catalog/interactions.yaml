@@ -238,12 +238,14 @@ interactions:
     protocol: http
     provider: review-service
     consumers: [api-gateway]
-    contract: null
+    contract: http/review/v1/openapi.yaml
     status: proposed
     notes: >-
       Public list/pagination and all Review commands (create, edit, media, report,
       reply, moderation, takedown) route directly to Review Service, never through
-      Product Detail BFF. Machine-readable public OpenAPI is still a known gap.
+      Product Detail BFF. The contract separates anonymous product reads, authenticated
+      buyer commands and Gateway-admin moderation; no Review `/internal/v1/**` route is
+      exposed by Gateway.
 
   - id: review-publishes-rating-aggregate-events
     protocol: kafka
