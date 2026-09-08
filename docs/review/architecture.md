@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
@@ -52,7 +53,7 @@ flowchart TB
 
 | Component | Responsibility |
 |---|---|
-| API/application service | Validate request, authorize caller, keep domain mutation/counter/outbox in one PostgreSQL transaction |
+| API/application service | Validate request, authorize caller, verify submitted media object metadata before its database transaction, then keep domain mutation/counter/outbox in one PostgreSQL transaction |
 | Order consumer | Store receipt then upsert entitlement from self-contained `ORDER_COMPLETED` snapshot |
 | Privacy consumer | Store receipt/request, anonymize author immediately; hard-purge worker removes direct IDs at deadline |
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
@@ -67,9 +68,11 @@ Every domain command includes its domain change, dependent counter/state, receip
 it is event-driven, and outbox rows in one transaction. No storage/Kafka/HTTP side
 effect occurs before commit.
 
-Media is deliberately two-phase: storage upload and verification happen before attach;
-storage deletion happens after database detach. This avoids referring to expiring URLs
-or rolling back an external object operation.
+Media is deliberately two-phase: client upload happens directly to storage, then the
+create/edit command reads and verifies immutable object metadata before atomically
+attaching it in PostgreSQL. Storage deletion happens after database detach. Review
+does not expose a client verification/poll endpoint, refer to an expiring upload URL
+in a review, or roll back an external object operation.
 
 ## 4. Consistency model
 
@@ -92,8 +95,8 @@ and legal-removal requests defined by Review AsyncAPI.
 - Create claims eligibility with one conditional `UPDATE`; unique review is the final
   safety net.
 - Edit/report/reply/takedown lock the review row with `FOR UPDATE`.
-- Attach asset locks its asset row and requires state `VERIFIED`; unique `asset_id`
-  prevents double attachment.
+- Attach asset verifies the caller-owned uploaded object, then locks its asset row and
+  transitions it to `VERIFIED`/`ATTACHED`; unique `asset_id` prevents double attachment.
 - Rating aggregator inserts event receipt first in its transaction. Duplicate receipt
   means no aggregate update. Deltas remain atomic SQL operations.
 - Search does not hold a PostgreSQL transaction through all pages. It uses persisted

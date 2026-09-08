@@ -39,9 +39,13 @@ Kiểm soát chất lượng đến từ báo cáo của cộng đồng: khi `ac
 `report_threshold` (mặc định 10, cấu hình qua `REVIEW_REPORT_THRESHOLD`), đánh giá tự
 động chuyển `HIDDEN_BY_REPORT` và bị loại khỏi cả danh sách lẫn aggregate.
 
-Việc ẩn là **có thể hoàn tác**. Admin có endpoint bác bỏ báo cáo: đánh giá quay lại
-`APPROVED`, các report liên quan chuyển `DISMISSED`, `active_report_count` được tính lại từ
-số report còn `PENDING`, và `REVIEW_APPROVED` được phát để aggregator cộng lại.
+Việc ẩn là **có thể hoàn tác**. Admin gọi
+`POST /api/v1/admin/reviews/{review_id}/report-dismissals` để bác bỏ toàn bộ active
+report: đánh giá quay lại `APPROVED`, các report liên quan chuyển `DISMISSED`,
+`active_report_count` được tính lại từ số report còn `PENDING`, và
+`REVIEW_APPROVED` được phát để aggregator cộng lại. Không có operation admin-hide thủ
+công trong state machine này. Chỉ review đang `HIDDEN_BY_REPORT` được restore; legal
+takedown `REMOVED` vẫn terminal.
 
 `REVIEW_APPROVED` vì vậy có đúng một nguồn phát: thao tác hiện lại đánh giá. Đây là
 điều làm event đó có nghĩa.

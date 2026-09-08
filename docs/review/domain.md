@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
@@ -24,7 +25,7 @@ verified_against_commit: null
 | Review | Nội dung public hiện tại, có rating, content và media attachment |
 | Media asset | Object upload có lifecycle riêng; chưa chắc đã được gắn review |
 | Active report | Report chưa bị `DISMISSED`; được dùng để đếm ngưỡng ẩn |
-| Takedown | Gỡ vĩnh viễn theo yêu cầu pháp lý, có audit record; không phải notification |
+| Takedown | Gỡ vĩnh viễn theo yêu cầu pháp lý bởi một admin có thẩm quyền, có audit record; không phải notification |
 | Review revision | Version đơn điệu của rating aggregate theo product, không phải version content |
 | Export session | Watermark Kafka cố định cho một lần Search scan aggregate |
 | Privacy erasure request | Vòng đời anonymize rồi purge external identity của một subject |
@@ -55,11 +56,11 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-004` | Tạo review atomically chuyển `PENDING → CLAIMED`; một eligibility sinh tối đa một review. |
 | `REVIEW-BR-005` | Rating nằm trong 1–5; content là null hoặc non-blank, không quá maximum cố định. |
 | `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1. |
-| `REVIEW-BR-007` | Media phải là asset `VERIFIED`, thuộc caller, chưa attach và không vượt số lượng tối đa. |
-| `REVIEW-BR-008` | Một account report một review tối đa một lần khi identity còn tồn tại; tác giả không tự report. |
-| `REVIEW-BR-009` | Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT`; dismiss toàn bộ report đưa review về `APPROVED`. |
+| `REVIEW-BR-007` | Caller chỉ gửi `asset_id` của asset do mình sở hữu. Khi create/edit, Review xác minh object đã upload, rồi atomically chuyển asset hợp lệ sang `VERIFIED`/`ATTACHED`; asset phải chưa attach và không vượt số lượng tối đa. |
+| `REVIEW-BR-008` | Một account có tối đa một active report cho một review khi identity còn tồn tại; tác giả không tự report. Sau khi admin dismiss, caller có thể report lại. |
+| `REVIEW-BR-009` | Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. |
 | `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; lần tạo đầu tiên phát `REVIEW_REPLY_NOTIFICATION_REQUESTED` khi author identity còn tồn tại, sửa reply không phát event mới. |
-| `REVIEW-BR-011` | Takedown cần `legal_case_id` và hai admin khác nhau; `REMOVED` là terminal. |
+| `REVIEW-BR-011` | Takedown cần `legal_case_id`, lý do nội bộ non-blank và một admin có thẩm quyền; `REMOVED` là terminal. Actor được lấy từ trusted Gateway identity, không nhận từ request body. |
 | `REVIEW-BR-012` | Chỉ review `APPROVED` thuộc aggregate. |
 | `REVIEW-BR-013` | Aggregate chỉ tăng `review_revision` khi metric đổi, không phải khi content/name đổi. |
 | `REVIEW-BR-014` | Một event consumer xử lý tối đa một lần theo `(consumer_name, event_id)`. |
@@ -117,7 +118,7 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> ISSUED
-    ISSUED --> VERIFIED: object verified
+    ISSUED --> VERIFIED: create/edit verifies immutable object metadata
     ISSUED --> EXPIRED: upload TTL elapsed
     VERIFIED --> ATTACHED: attached to review
     VERIFIED --> EXPIRED: attachment TTL elapsed
@@ -131,9 +132,9 @@ stateDiagram-v2
 |---|---|
 | Create/pending list | Token `user_id` phải khớp `eligibility.owner_user_id` |
 | Edit | Token `user_id` phải khớp owner qua review eligibility |
-| Upload/attach asset | Asset owner phải là caller, state là `VERIFIED` |
+| Upload/attach asset | Asset owner phải là caller; client chỉ upload rồi gửi `asset_id`, Review tự xác minh object khi create/edit trước khi attach |
 | Report | Caller đăng nhập, có identity và không là author |
-| Reply/dismiss/takedown | Role admin; takedown cần approver khác requester |
+| Reply/dismiss/takedown | Role admin; takedown được audit bằng trusted identity của admin thực hiện |
 | Export session/page | Service identity của Search |
 
 ## 7. Error model
@@ -144,12 +145,18 @@ stateDiagram-v2
 | `NOT_ELIGIBILITY_OWNER` | 403 | Entitlement thuộc caller khác hoặc đã purge identity |
 | `ELIGIBILITY_EXPIRED` | 410 | PENDING entitlement đã hết hạn |
 | `ALREADY_REVIEWED` | 409 | Eligibility đã `CLAIMED` |
+| `REVIEW_NOT_FOUND` | 404 | Review không tồn tại hoặc không visible ở endpoint đang gọi |
+| `NOT_REVIEW_OWNER` | 403 | Review không thuộc buyer đang gọi |
 | `EDIT_QUOTA_EXHAUSTED` | 409 | `edit_count=1` |
 | `REVIEW_NOT_EDITABLE` | 409 | Review hidden/removed |
-| `MEDIA_NOT_VERIFIED` | 409 | Asset chưa xác minh, expired hoặc đã attach |
+| `MEDIA_NOT_VERIFIED` | 409 | Object chưa upload/xác minh được, asset expired hoặc đã attach |
 | `INVALID_MEDIA_REFERENCE` | 400 | Asset không thuộc caller |
-| `ALREADY_REPORTED` | 409 | Partial unique report guard từ chối |
-| `TAKEDOWN_NOT_APPROVED` | 422 | Thiếu legal case/approval hợp lệ |
+| `MEDIA_QUOTA_EXCEEDED` | 429 | Đã chạm quota asset chưa attach hoặc byte upload của caller |
+| `ALREADY_REPORTED` | 409 | Partial unique guard từ chối report active trùng |
+| `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author hoặc không còn report identity |
+| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress |
+| `REVIEW_NOT_REPLYABLE` | 409 | Review không ở state `APPROVED` |
+| `TAKEDOWN_ALREADY_EXISTS` | 409 | Review đã có legal takedown; takedown không thể lặp hay đảo ngược |
 | `EXPORT_SESSION_NOT_FOUND` | 404 | Không có export session |
 | `EXPORT_SESSION_EXPIRED` | 410 | Search phải tạo session mới |
 | `EXPORT_SESSION_UNAVAILABLE` | 503 | Không chụp Kafka offset hoặc không persist session được |

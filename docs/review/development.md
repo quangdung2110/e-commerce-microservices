@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
@@ -34,11 +35,11 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 
 - Use a real PostgreSQL integration environment; in-memory databases do not exercise
   composite FK, partial indexes, enum, partition or trigger behavior.
-- Generate internal HTTP model code from
+- Generate public/admin and internal HTTP model code from
+  `contracts/http/review/v1/openapi.yaml` and
   `contracts/http/review/internal/v1/openapi.yaml`.
 - Generate/validate lifecycle, inbound and notification event models from the Review,
-  Order and Auth AsyncAPI contracts. Only the public/admin HTTP OpenAPI remains a
-  machine-readable contract gap.
+  Order and Auth AsyncAPI contracts.
 - All mutable tables rely on database `updated_at` trigger; application must not
   replace it with ad-hoc timestamps.
 - Object key is opaque; API receives `media_asset_id`, not arbitrary object key/URL.
@@ -49,9 +50,9 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 |---|---|
 | Entitlement | Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner |
 | Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content |
-| Media | Foreign/unverified/reused asset is rejected; detached asset becomes `DELETE_PENDING` |
-| Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter; ACTIONED cannot have admin resolver |
-| Takedown | One record per review; requester differs from approver; legal reason never appears public or in either Review event |
+| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; foreign, missing, invalid or reused asset is rejected; detached asset becomes `DELETE_PENDING` |
+| Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver |
+| Takedown | One record per review; authenticated acting admin is persisted as `taken_down_by_admin_id`; legal reason and actor never appear public or in either Review event |
 | Aggregate | Duplicate event changes no bucket twice; create/edit/hide/restore/remove yields exact bucket values and revision |
 | Notification | First reply creates exactly one reply request; takedown creates removal request only for a non-purged owner; payload has no content, legal data or admin identity |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |

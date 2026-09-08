@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
 verified_against_commit: null
 ---
@@ -88,8 +89,11 @@ delete, owner ID chỉ phải xóa ở một nơi, còn tên public được tha
 
 ## 4. Media asset lifecycle
 
-Client xin upload URL bằng `asset_id`, upload thẳng tới object storage, sau đó gửi
-`asset_id` khi tạo/sửa review. Client không gửi object key tùy ý.
+Client xin signed upload instruction bằng `asset_id`, upload thẳng tới object storage,
+rồi gửi `asset_id` khi tạo/sửa review. Client không gọi một bước verify/poll riêng và
+không gửi object key hay URL tùy ý. Review đọc metadata của object immutable trong
+command create/edit, xác minh MIME, kích thước và checksum khi được khai báo, rồi mới
+chuyển asset sang `VERIFIED` và attach trong transaction PostgreSQL.
 
 ```text
 ISSUED -> VERIFIED -> ATTACHED -> DELETE_PENDING -> DELETED
@@ -97,9 +101,14 @@ ISSUED -> VERIFIED -> ATTACHED -> DELETE_PENDING -> DELETED
    +--------> EXPIRED
 ```
 
-- `object_key` là opaque, không chứa `user_id`.
-- Review xác minh object tồn tại, loại và metadata trước khi state thành `VERIFIED`.
+- `object_key` là opaque, không chứa `user_id` và không xuất hiện trong public API.
+- Signed upload phải single-write/no-overwrite. Review xác minh object tồn tại, loại
+  và metadata trước khi state thành `VERIFIED`; object đã kiểm tra không được thay
+  byte trước khi attach.
 - `review_media.asset_id UNIQUE` ngăn tái dùng một upload cho nhiều review.
+- Thứ tự asset trong create hoặc media replacement là `review_media.sort_order`.
+  PATCH v1 giữ attachment khi field media vắng mặt và không hỗ trợ chỉ reorder asset
+  đang attach.
 - URL download/presigned URL được tạo lúc đọc; không lưu `media_url` hay
   `thumbnail_url` vì chúng hết hạn.
 - Takedown hoặc thay media chỉ detach database trong transaction và chuyển asset sang
@@ -108,17 +117,26 @@ ISSUED -> VERIFIED -> ATTACHED -> DELETE_PENDING -> DELETED
 `has_media` được giữ lại vì phục vụ filter/index public. `is_admin_replied` bị loại
 bỏ vì public read đã phải batch-load nội dung reply; boolean đó chỉ thêm drift.
 
+Asset được cấp URL nhưng không attach vẫn có `ISSUED` hoặc `VERIFIED` và hết hạn theo
+TTL. Ngoài giới hạn 9 asset/review, API/Gateway phải áp quota số asset chưa attach và
+tổng byte upload theo user để object storage không trở thành nơi upload vô hạn. Giới
+hạn byte theo `IMAGE`/`VIDEO` được enforce cả trong signed upload policy lẫn lúc Review
+đọc metadata; client-side validation không phải security control.
+
 ## 5. Moderation và takedown
 
 `active_report_count` là denormalization của các report chưa `DISMISSED`. Nó được
-cập nhật cùng transaction với report mới hoặc dismiss. Một reviewer chỉ report một
-review một lần khi còn identity; unique partial index giữ quy tắc này.
+cập nhật cùng transaction với report mới hoặc dismiss. Một reviewer có tối đa một
+active report cho một review khi còn identity; unique partial index loại trừ report
+`DISMISSED`, nên report mới sau một lần dismiss có thể tích lũy lại từ đầu.
 
 `ACTIONED` là quyết định tự động khi chạm ngưỡng: có `resolved_at` nhưng không có
 admin. `DISMISSED` luôn cần `resolved_by_admin_id` và `resolved_at`.
 
-`review_takedowns` là audit/legal record: `legal_case_id`, người yêu cầu, người phê
-duyệt và lý do nội bộ. Nó không phải nội dung notification. Notification đi qua
+`review_takedowns` là audit/legal record: `legal_case_id`, admin thực hiện
+(`taken_down_by_admin_id`) và lý do nội bộ. Nó không phải nội dung notification.
+Admin identity được lấy từ trusted Gateway identity, không có trường actor trong body.
+Notification đi qua
 `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` trong cùng transaction với takedown;
 notification request không chứa legal case, lý do hay định danh admin. Khi author
 identity đã bị purge, Review không tạo request này.

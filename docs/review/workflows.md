@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
@@ -50,11 +51,17 @@ as null for old orders, but new producers must send it. No event leaves Review.
 ## WF-REVIEW-002 — Media asset lifecycle
 
 **Issue.** `POST /media/upload-urls` creates an `ISSUED` asset owned by caller, with
-opaque key and TTL, and returns `asset_id` plus presigned upload URL.
+opaque key and TTL, and returns `asset_id` plus a provider-neutral signed upload
+instruction. The object key never appears in the HTTP response. Issuing is bounded by
+per-review, per-user-unattached and byte quotas.
 
-**Verify.** After client uploads, Review verifies object existence, MIME/type/size and
-optional checksum before changing asset to `VERIFIED`. A request cannot attach an
-`ISSUED`, expired, deleted or foreign asset.
+**Verify and attach.** Client has no verify/poll API. When it sends asset IDs in
+create/edit, Review reads each immutable object metadata before its database
+transaction and verifies existence, MIME/type, size and optional checksum. The
+transaction locks the asset, transitions it through `VERIFIED` to `ATTACHED` and adds
+the media link. A missing, expired, invalid, foreign or already attached asset is
+rejected; a signed upload must be single-write/no-overwrite to prevent post-check byte
+replacement.
 
 **Attach.** Create/edit locks each asset and inserts `review_media`; `asset_id UNIQUE`
 prevents double use. In the same transaction the asset becomes `ATTACHED` and review
@@ -67,34 +74,42 @@ the review transaction.
 
 ## WF-REVIEW-003 — Create review
 
-**Trigger:** `POST /api/v1/reviews` with eligibility ID, rating, content and verified
+**Trigger:** `POST /api/v1/reviews` with eligibility ID, rating, content and uploaded
 asset IDs.
 
 ```text
+VERIFY submitted immutable object metadata before BEGIN
 BEGIN
+  lock and transition each valid caller-owned asset ISSUED -> VERIFIED -> ATTACHED;
   UPDATE eligibility
     SET status=CLAIMED, claimed_at=now()
     WHERE id=:id AND owner_user_id=:caller
       AND status=PENDING AND expires_at>now()
     RETURNING product_id, sku_id;
   INSERT review(..., edit_count=0, status=APPROVED);
-  attach verified owned assets;
+  attach the locked assets;
   INSERT outbox REVIEW_CREATED;
 COMMIT
 ```
 
-The conditional update is ownership check and lock. A zero-row result is classified
-as 404/403/410/409. Unique review remains final race protection. Debezium failure
-after commit delays downstream only; the review is already visible.
+The object check causes no storage write; the signed upload is already complete before
+the database transaction starts. The conditional update is ownership check and lock. A
+zero-row result is classified as 404/403/410/409. Unique review remains final race
+protection. Debezium failure after commit delays downstream only; the review is already
+visible.
 
 ## WF-REVIEW-004 — Edit review once
 
 **Trigger:** `PATCH /api/v1/reviews/{review_id}`.
 
 Lock review and join eligibility to authorize owner. Require `status=APPROVED` and
-`edit_count=0`. Save old rating/media presence, replace content/assets, set
-`edit_count=1`, then write `REVIEW_UPDATED` carrying old/new metric values and
-`affects_aggregate`. Content-only edit sets `affects_aggregate=false`.
+`edit_count=0`. Review preserves fields absent from PATCH; `content: null` clears text,
+an absent `media_asset_ids` preserves attachments and an empty array removes all of
+them. It verifies any newly supplied object metadata before its transaction, then
+saves old rating/media presence, replaces requested assets, sets `edit_count=1`, and
+writes `REVIEW_UPDATED` carrying old/new metric values and `affects_aggregate`.
+Content-only edits and media replacement retaining `has_media=true` set
+`affects_aggregate=false`.
 
 Second edit returns `409 EDIT_QUOTA_EXHAUSTED`. A lost successful response is resolved
 by reading review; retry must not apply an additional edit.
@@ -110,6 +125,8 @@ not synthetic zero. Author read-after-write routes to primary if replicas are us
 
 ## WF-REVIEW-006 — Admin reply
 
+**Trigger:** `PUT /api/v1/admin/reviews/{review_id}/reply`.
+
 Lock review and require `APPROVED`. Insert/update one reply; preserve both
 `created_by_admin_id` and `updated_by_admin_id`. First insert writes
 `REVIEW_REPLY_NOTIFICATION_REQUESTED` in the same transaction when the eligibility
@@ -118,14 +135,17 @@ content update does not notify again. Reply state has no denormalized boolean on
 
 ## WF-REVIEW-007 — Report, hide and dismiss
 
-**Report:** lock review, reject author/hidden/removed review, insert report and
+**Report (`POST /api/v1/reviews/{review_id}/reports`):** lock review, reject
+author/hidden/removed review, insert report and
 increase `active_report_count`. If threshold is reached, set review hidden, transition
 all pending reports to `ACTIONED`, and write one `REVIEW_HIDDEN` event.
 
-**Dismiss:** admin locks review, changes its `ACTIONED`/`PENDING` reports to
-`DISMISSED`, recomputes active count, restores review to `APPROVED` and writes
-`REVIEW_APPROVED`. New reports after dismissal start fresh. The partial unique index
-prevents duplicate report while reporter identity exists.
+**Dismiss (`POST /api/v1/admin/reviews/{review_id}/report-dismissals`):** admin locks
+review, changes its `ACTIONED`/`PENDING` reports to
+`DISMISSED` and recomputes active count. It restores only a `HIDDEN_BY_REPORT` review
+to `APPROVED` and writes `REVIEW_APPROVED`; a terminal `REMOVED` review stays removed.
+New reports after dismissal start fresh. The partial unique index prevents duplicate
+active report while reporter identity exists.
 
 ## WF-REVIEW-008 — Idempotent aggregate update
 
@@ -197,8 +217,10 @@ telemetry prove all changes passed its range. It never counts old outbox rows as
 
 ## WF-REVIEW-012 — Takedown and PDP summary
 
-**Takedown:** lock review, validate legal case and two-person approval, insert the one
-audit record, set review `REMOVED`, detach assets to `DELETE_PENDING`, write
+**Takedown (`POST /api/v1/admin/reviews/{review_id}/takedown`):** lock review, validate
+legal case/reason and the caller's admin role, then
+insert the one audit record with `taken_down_by_admin_id` from trusted Gateway
+identity. Set review `REMOVED`, detach assets to `DELETE_PENDING`, write
 `REVIEW_REMOVED(was_counted)` and commit. If eligibility owner identity remains,
 write `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` in the same transaction. Notification
 receives only review/product/recipient IDs; it never receives legal `reason`, case or

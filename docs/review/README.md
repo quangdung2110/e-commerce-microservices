@@ -10,6 +10,7 @@ evidence:
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
+  - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
@@ -48,7 +49,7 @@ hard-delete deadline.
 
 - Grant and expire verified-purchase review entitlements.
 - Create one review and edit it once.
-- Upload, verify, attach and asynchronously delete media assets.
+- Issue bounded direct-upload URLs; verify, attach and asynchronously delete media assets.
 - List only approved reviews with keyset pagination and expose rating aggregate.
 - Report, auto-hide, dismiss reports, reply and legally take down reviews.
 - Process all internal/inbound events idempotently with database receipts.
@@ -84,8 +85,9 @@ hard-delete deadline.
 
 ## Known gaps
 
-- Runtime, migration tool, concrete object-storage provider and public OpenAPI are
-  still unchosen.
+- Runtime, migration tool and concrete object-storage provider are still unchosen.
+  The public contract uses provider-neutral signed upload instructions; it does not
+  expose object keys or a storage-vendor API.
 - The privacy retention rule for admin/legal identities needs a compliance policy;
   customer erasure only covers direct customer identifiers.
 - Event receipt retention must be configured to exceed Kafka retention plus replay

@@ -211,7 +211,8 @@ CREATE TABLE review_reports (
 );
 
 CREATE UNIQUE INDEX uq_report_review_reporter_active_identity
-    ON review_reports (review_id, reporter_user_id) WHERE reporter_user_id IS NOT NULL;
+    ON review_reports (review_id, reporter_user_id)
+    WHERE reporter_user_id IS NOT NULL AND status <> 'DISMISSED';
 CREATE INDEX ix_report_review_status ON review_reports (review_id, status);
 CREATE INDEX ix_report_moderation_queue
     ON review_reports (created_at, id) WHERE status = 'PENDING';
@@ -232,12 +233,10 @@ CREATE TABLE review_takedowns (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     review_id             UUID NOT NULL UNIQUE REFERENCES reviews (id) ON DELETE RESTRICT,
     legal_case_id         VARCHAR(128) NOT NULL,
-    requested_by_admin_id UUID NOT NULL,
-    approved_by_admin_id  UUID NOT NULL,
+    taken_down_by_admin_id UUID NOT NULL,
     reason                TEXT NOT NULL,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    CONSTRAINT ck_takedown_requires_two_people CHECK (requested_by_admin_id <> approved_by_admin_id),
     CONSTRAINT ck_takedown_reason_not_blank CHECK (length(btrim(reason)) > 0)
 );
 

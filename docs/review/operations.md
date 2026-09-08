@@ -32,7 +32,9 @@ percentage: `review_event_receipts` makes the normal aggregator path idempotent.
 API readiness requires PostgreSQL only. Kafka/Connect outage must not make public
 review commands unavailable: committed outbox rows wait for CDC. Consumer readiness
 requires Kafka and PostgreSQL. Export-session creation additionally requires Kafka;
-PDP/public reads do not.
+PDP/public reads do not. Media upload-instruction issuance and create/edit containing
+media additionally require the storage signer/metadata read; outage there returns a
+retryable 503 for that media operation and never attaches an unchecked object.
 
 ## 3. Configuration
 
@@ -42,6 +44,9 @@ PDP/public reads do not.
 | `REVIEW_MAX_CONTENT_LENGTH` | 5000 | Cannot exceed schema hard cap without migration |
 | `REVIEW_MAX_MEDIA_PER_REVIEW` | 9 | Attach-command validation |
 | `REVIEW_MEDIA_UPLOAD_TTL` | 15m | `ISSUED` asset expiry |
+| `REVIEW_MAX_UNATTACHED_ASSETS_PER_USER` | 18 | Quota cho asset `ISSUED`/`VERIFIED`; bắt buộc để direct upload không thành unlimited storage |
+| `REVIEW_MAX_IMAGE_BYTES` | 10 MiB | Enforce trong signed upload policy và metadata verification |
+| `REVIEW_MAX_VIDEO_BYTES` | 100 MiB | Enforce trong signed upload policy và metadata verification |
 | `REVIEW_EXPORT_SESSION_TTL` | 30m | Search must complete/restart before expiry |
 | `REVIEW_EVENT_RECEIPT_RETENTION_DAYS` | >= Kafka retention + margin | Never purge earlier than replay window |
 | `REVIEW_OUTBOX_RETENTION_DAYS` | 30 | Partition cleanup after connector proof |
@@ -57,6 +62,8 @@ PDP/public reads do not.
 | `review_export_session_total{result}` | Create/page/expiry outcomes |
 | `review_export_session_active` | Active session count |
 | `review_media_asset_pending_delete_total` | Storage cleanup backlog |
+| `review_media_verification_total{result,media_type}` | Object missing/type-size-checksum mismatch hoặc attach verification thành công; không gắn user/asset ID làm label |
+| `review_media_unattached_quota_rejected_total` | Gateway/API đã chặn cấp thêm upload asset vì quota |
 | `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because recipient was purged |
 | Kafka Connect `FAILED`/`PAUSED` | Critical after two minutes |
 | replication slot retained WAL bytes | Critical before disk-risk threshold |
@@ -97,6 +104,11 @@ direct customer IDs are null and request is `PURGED`.
 **Media delete backlog.** Check storage worker failures and asset rows in
 `DELETE_PENDING`; retry deletion. Public review access is already revoked by detaching
 the asset before this worker runs.
+
+**Media verification failure.** Do not attach or manually mark an asset `VERIFIED`.
+Check signed-upload expiry, one-write/no-overwrite policy, object existence and actual
+MIME/byte-size/checksum versus the issue request. Let caller upload a new asset if the
+existing object is invalid; retry only a transient signer/metadata-read failure.
 
 ## 7. Scheduled work
 

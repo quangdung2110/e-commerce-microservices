@@ -6,6 +6,7 @@ status: proposed
 owners:
   - Review Service team
 evidence:
+  - contracts/http/review/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
@@ -19,8 +20,8 @@ verified_against_commit: null
 
 | Interaction | Direction | Contract status |
 |---|---|---|
-| Public read/write review API | Inbound HTTP | Human-readable design; OpenAPI pending |
-| Admin moderation API | Inbound HTTP | Human-readable design; OpenAPI pending |
+| Public read/write review API | Inbound HTTP | [OpenAPI v1](../../contracts/http/review/v1/openapi.yaml) |
+| Admin moderation API | Inbound HTTP | [OpenAPI v1](../../contracts/http/review/v1/openapi.yaml) |
 | PDP summary | Internal HTTP | [OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Rating export session/page | Internal HTTP | [OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Review lifecycle, metrics and notification requests | Kafka outbound | [Review AsyncAPI v1](../../contracts/events/review/v1/asyncapi.yaml) |
@@ -42,39 +43,61 @@ aggregate or all-zero values if no aggregate row exists.
 `GET /api/v1/reviews/me/pending` reads the caller's `PENDING` eligibility rows,
 including `variant_name_snapshot` and `expires_at`.
 
+`GET /api/v1/reviews/me/eligibilities/{eligibility_id}` is the recovery read for a
+create response lost after commit: it returns the caller-owned entitlement state and,
+when `CLAIMED`, its review ID. `GET /api/v1/reviews/me/{review_id}` is the recovery
+read for a lost edit response. Neither endpoint exposes reports, reporter identity,
+legal record or takedown reason.
+
 ### Create and edit
 
 `POST /api/v1/reviews` receives `eligibility_id`, rating, optional content and
-verified `media_asset_ids` (not object keys). In one transaction it claims the
-eligibility, inserts the review/media links and writes `REVIEW_CREATED` to outbox.
-Replay returns `409 ALREADY_REVIEWED`.
+uploaded `media_asset_ids` (not object keys). Before its PostgreSQL transaction,
+Review verifies the immutable storage metadata for each caller-owned asset. The
+transaction then claims the eligibility, transitions valid assets to
+`VERIFIED`/`ATTACHED`, inserts the review/media links and writes `REVIEW_CREATED` to
+outbox. Replay returns `409 ALREADY_REVIEWED`.
 
 `PATCH /api/v1/reviews/{review_id}` can change rating, content and media once.
 It requires `status=APPROVED` and `edit_count=0`; successful commit sets
-`edit_count=1`, swaps media links and writes `REVIEW_UPDATED`. Replacement assets
-become `DELETE_PENDING` after they are detached.
+`edit_count=1`, verifies newly supplied assets, swaps media links and writes
+`REVIEW_UPDATED`. Replacement assets become `DELETE_PENDING` after they are detached.
+The OpenAPI fixes partial-update semantics: an absent field is preserved,
+`content: null` clears content, an absent `media_asset_ids` preserves attachments and
+an explicit empty array removes them. A supplied media list is a complete replacement
+of current attachments: it contains newly uploaded unattached asset IDs only; this v1
+does not support reordering retained attachments.
 
 ### Upload asset
 
 `POST /api/v1/reviews/media/upload-urls` creates an `ISSUED` media asset and returns
-`asset_id`, opaque object key and upload URL. Client uploads directly to storage.
-Before a create/edit can attach it, Review verifies existence/type/metadata and moves
-it to `VERIFIED`. An asset belongs to one user and attaches to at most one review.
+`asset_id`, a provider-neutral signed upload instruction and expiry. It never returns
+the opaque object key. Client uploads directly to storage, then simply sends `asset_id`
+in create/edit; there is no client-facing verify/poll endpoint. Review verifies
+existence/type/size/checksum when declared before attachment. An asset belongs to one
+user, attaches to at most one review and is bounded by attachment and unattached-upload
+quotas.
 
 ### Report and moderation
 
 `POST /api/v1/reviews/{review_id}/reports` creates one active report per reporter.
 The neutral `202` response never exposes active report count or hidden state. At
 threshold, Review writes `REVIEW_HIDDEN`; admin dismiss moves review back to
-`APPROVED`, dismisses the reports and writes `REVIEW_APPROVED`.
+`APPROVED` only when it was `HIDDEN_BY_REPORT`, dismisses the reports and writes
+`REVIEW_APPROVED`. Dismiss never resurrects a terminal `REMOVED` review.
 
-`POST /api/v1/admin/reviews/{review_id}/replies` creates or edits the one official
+`PUT /api/v1/admin/reviews/{review_id}/reply` creates or replaces the one official
 reply. Only first creation writes `REVIEW_REPLY_NOTIFICATION_REQUESTED` when the
-author identity is still available; reply edits never create a notification event.
+author identity is still available; replacement never creates a notification event.
+`GET /api/v1/admin/review-reports` exposes the pending moderation queue without a
+reporter identity; `POST /api/v1/admin/reviews/{review_id}/report-dismissals` dismisses
+all active reports and restores a report-hidden review when applicable.
 
-`POST /api/v1/admin/reviews/{review_id}/takedown` needs `legal_case_id`, reason,
-requester and a different approver. It records `review_takedowns`, removes the review
-from public visibility and writes `REVIEW_REMOVED`. In the same transaction it writes
+`POST /api/v1/admin/reviews/{review_id}/takedown` needs `legal_case_id` and reason.
+The single acting admin is read from trusted Gateway identity and persisted as
+`taken_down_by_admin_id`; neither requester nor approver ID is accepted from the body.
+It records `review_takedowns`, removes the review from public visibility and writes
+`REVIEW_REMOVED`. In the same transaction it writes
 `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` only when the author identity remains
 available. The legal reason is never copied to a public response or either event.
 
@@ -132,7 +155,8 @@ outside its responsibility without durable effect.
 `REVIEW_UPDATED` must carry `old_rating`, `new_rating`, `old_has_media`,
 `new_has_media` and `affects_aggregate`. A content-only edit sets
 `affects_aggregate=false`, creates no aggregate mutation or revision bump, and is
-acknowledged by the rating consumer without applying a delta.
+acknowledged by the rating consumer without applying a delta. A media replacement that
+keeps both `old_has_media` and `new_has_media` true is likewise non-aggregate-affecting.
 
 The rating aggregator inserts `(review-rating-aggregator, CloudEvents.id)` into
 `review_event_receipts` in the same transaction as its effect. A duplicate event ID
