@@ -7,6 +7,9 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -33,7 +36,9 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
   composite FK, partial indexes, enum, partition or trigger behavior.
 - Generate internal HTTP model code from
   `contracts/http/review/internal/v1/openapi.yaml`.
-- Public/lifecycle/inbound contracts need machine-readable specs before code generation.
+- Generate/validate lifecycle, inbound and notification event models from the Review,
+  Order and Auth AsyncAPI contracts. Only the public/admin HTTP OpenAPI remains a
+  machine-readable contract gap.
 - All mutable tables rely on database `updated_at` trigger; application must not
   replace it with ad-hoc timestamps.
 - Object key is opaque; API receives `media_asset_id`, not arbitrary object key/URL.
@@ -46,8 +51,9 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 | Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content |
 | Media | Foreign/unverified/reused asset is rejected; detached asset becomes `DELETE_PENDING` |
 | Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter; ACTIONED cannot have admin resolver |
-| Takedown | One record per review; requester differs from approver; legal reason never appears public |
+| Takedown | One record per review; requester differs from approver; legal reason never appears public or in either Review event |
 | Aggregate | Duplicate event changes no bucket twice; create/edit/hide/restore/remove yields exact bucket values and revision |
+| Notification | First reply creates exactly one reply request; takedown creates removal request only for a non-purged owner; payload has no content, legal data or admin identity |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |
 | Privacy | Event replay no-op; anonymize does not change aggregate; hard-purge nulls direct customer IDs and request subject ID |
 | Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog |

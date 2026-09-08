@@ -13,14 +13,14 @@
 **Cross-Service References:**
 *   [Checkout Workflow](../checkout/checkout_workflow.md) — Nguồn gọi tạo Order
 *   [Promotion Workflow](../promotion/promotion_workflow.md) — Luồng 4 (Saga TCC)
-*   [Inventory Workflow](../inventory/inventory_workflow.md) — Reserve/Deduct/Release
+*   [Inventory Workflows](../inventory/workflows.md) — Reserve/Deduct/Release
 *   [Payment Workflow](../payment/payment_workflow.md) — Initiate/Verify/Refund
 
 ---
 
 Tài liệu này mô tả toàn bộ Workflows (luồng xử lý) của Order Service, bao gồm API requests, data flows bên trong, và sự tương tác với các service khác. Mỗi flow ghi rõ tương tác: `[PostgreSQL]`, `[Redis]`, `[Temporal]`, `[Kafka]`, `[FSM]`.
 
-> **Phase 20 (Event Payload Simplification):** Event Order produce (ở §4.5) và consume từ Payment/Inventory (ở §5-7) đã được tinh giản theo nguyên tắc "minimum viable" — workflow activity chỉ chốt các field cốt lõi vào outbox payload, không nhúng snapshot/subsidiary data. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart) và [Order Events](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events) cho schema chi tiết.
+> **Phase 20 (Event Payload Simplification):** Event Order produce (ở §4.5) và consume từ Payment/Inventory (ở §5-7) đã được tinh giản theo nguyên tắc "minimum viable" — workflow activity chỉ chốt các field cốt lõi vào outbox payload, không nhúng snapshot/subsidiary data. Ngoại lệ duy nhất là `ORDER_COMPLETED`: contract này phải mang immutable `items[]` snapshot để Review cấp entitlement mà không gọi đồng bộ Order/Product. Xem [CHANGELOG Phase 20](../_contracts/CHANGELOG.md#phase-20--event-payload-simplification-order--payment--inventory--promotion--cart) và [Order Events](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events) cho schema chi tiết.
 
 ---
 
@@ -300,7 +300,7 @@ sequenceDiagram
 - `ORDER_PAID` (sau bước 4.3.1 commit thành công transition `PENDING_PAYMENT` -> `PAID` — **mốc tài chính:** trigger Cart cleanup, Notification, Analytics; payload tối giản — xem [Order Events §3.2](order_events.md#32-order_paid))
 - `ORDER_STATUS_CHANGED` với `old_status = PAID`, `new_status = PROCESSING`, `reason = POST_PAYMENT_SAGA_COMPLETE` (sau bước 4.4 step 3 — `UpdateOrderStatusActivity` commit xong; payload tối giản — xem [Order Events §3.4](order_events.md#34-order_status_changed))
 
-> **Phase 20:** Mọi event produce ở workflow này tuân theo payload tối thiểu ([Order Events §3](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events)). Workflow activity KHÔNG đính kèm `delivery_address_snapshot`/`items[]`/`promotions_applied[]` vào outbox payload — chỉ chốt các field cốt lõi (`order_id`, `user_id`, `status`, `last_event_sequence_id`, amount, timestamp). Consumer cần thêm info fetch qua API riêng.
+> **Phase 20:** Event produce tuân theo payload tối thiểu ([Order Events §3](order_events.md#3-chi-tiết-các-loại-event-phát-đi-produced-events)). Workflow activity KHÔNG đính kèm `delivery_address_snapshot` hay `promotions_applied[]`. `ORDER_COMPLETED` là ngoại lệ được chốt: nó phải mang `data.items[]` gồm product/SKU/variant snapshot/quantity theo [Order AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml), vì Review không được fetch dữ liệu đó qua API riêng.
 
 ---
 

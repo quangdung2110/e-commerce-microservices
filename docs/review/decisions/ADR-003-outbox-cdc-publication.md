@@ -16,7 +16,10 @@ evidence:
 
 Mọi business event được insert vào `review_outbox` trong cùng transaction với domain
 change. Debezium đọc chỉ bảng này qua publication và publish `t.review.events` với
-Kafka key luôn là `product_id`.
+Kafka key luôn là `product_id`. Topic chứa lifecycle facts, Search-facing rating
+snapshots và đúng hai Notification request: first official reply và legal removal.
+Hai request chỉ có review/product/recipient IDs; không chứa reply content, legal case,
+reason hoặc admin identity.
 
 Outbox là append-only CDC source, không phải queue có state theo row. Không có
 `published_at` và không đếm row cũ để suy ra backlog. Publication health được đo qua

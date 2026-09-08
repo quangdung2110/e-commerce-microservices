@@ -23,15 +23,24 @@ Notification Service subscribe các topic sau để nhận events từ các serv
 | `t.auth.notification.events` | `notification-auth-delivery` | `USER_OTP_REQUESTED`, `PASSWORD_RESET_REQUESTED`, `USER_EMAIL_CHANGED`, `USER_PASSWORD_CHANGED`, `USER_ACCOUNT_LOCKED`, `USER_UNLOCKED` | High | Resolve delivery qua mTLS rồi gửi email/security notification |
 | `t.auth.events` | `notification-privacy-sync` | `USER_DELETED` | Low | GDPR cleanup projection |
 | `t.user.events` | `notification-user-preferences-sync` | `USER_PREFERENCES_UPDATED` | Low | Sync ba notification preference |
+| `t.review.events` | `notification-review-sync` | `REVIEW_REPLY_NOTIFICATION_REQUESTED`, `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | Low | In-app notification về phản hồi chính thức hoặc review bị gỡ |
+| `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
+| `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
+| `t.promotion.events` | `notification-promotion-sync` | `PROMOTION_FLASH_SALE`, `VOUCHER_EXPIRING` | Low | Marketing campaigns |
 
 **Lưu ý về GDPR Cleanup:** Khi nhận `USER_DELETED` trực tiếp từ Auth,
 Notification Service anonymize/xóa projection do chính nó sở hữu theo `user_id`
 và giữ `hard_delete_after` cho compliance pipeline. Không gọi Auth để lấy email:
 Auth đã anonymize identity trước khi phát event, còn email không cần cho cleanup
 nội bộ.
-| `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
-| `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
-| `t.promotion.events` | `notification-promotion-sync` | `PROMOTION_FLASH_SALE`, `VOUCHER_EXPIRING` | Low | Marketing campaigns |
+
+**Review notification contract.** `notification-review-sync` chỉ xử lý hai CloudEvents
+type được đăng ký trong [Review AsyncAPI v1](../../contracts/events/review/v1/asyncapi.yaml)
+và deduplicate bằng CloudEvents `id`. Payload chỉ có `review_id`, `product_id` và
+`recipient_user_id`; worker render nội dung cố định, không nhận reply content, legal
+case, legal reason hay thông tin admin. Các Review event type khác trên cùng topic được
+ACK mà không persist hoặc log payload. Nếu `USER_DELETED` đã xóa/anonymize recipient,
+worker không gửi notification trễ.
 
 **Phân biệt các event liên quan đến Password:**
 

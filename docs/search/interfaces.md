@@ -246,7 +246,10 @@ Producer: Review. Key `product_id`. Search chỉ xử lý
 `com.ecommerce.review.metrics-updated.v1`; event mang `product_id`, điểm trung
 bình, tổng số review, `review_revision` và `observed_at`. Áp dụng bằng
 `_update_by_query` theo `product_id` với `conflicts=proceed` và throttle, guard
-`review_revision`. Không upsert.
+`review_revision`. Không upsert. `t.review.events` cũng có lifecycle fact và hai
+Notification request; chúng là message hợp lệ của topic nhưng không thuộc Search.
+Search phải dispatch theo exact CloudEvents type, ACK chúng mà không persist hoặc log
+payload, đặc biệt không đọc `recipient_user_id` của Notification request.
 
 ## 5. Contract nội bộ Search gọi ra
 

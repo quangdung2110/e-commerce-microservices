@@ -342,6 +342,9 @@ hết hạn.
 **Trigger.** `com.ecommerce.review.metrics-updated.v1` trên `t.review.events`, key
 `product_id`.
 
+Các lifecycle fact và Notification request khác trên cùng topic là hợp lệ nhưng không
+thuộc Search; worker ACK chúng không side effect và không ghi payload vào log/index.
+
 **Happy path.** `_update_by_query` trên `products_write` theo `term product_id` với
 [`review_metrics_patch.painless`](./schema/scripts/review_metrics_patch.painless),
 `conflicts=proceed` và throttle; guard `review_revision`.

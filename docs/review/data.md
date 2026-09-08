@@ -7,6 +7,7 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/events/review/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -24,7 +25,7 @@ hoặc ghi trực tiếp vào schema này.
 | Kho lưu trữ | Dữ liệu | Nguồn chân lý |
 |---|---|---|
 | PostgreSQL `review` | entitlement, review, media asset metadata, moderation, privacy, aggregate, export session, outbox | Review Service |
-| Kafka `t.review.events` | event nghiệp vụ và rating snapshot | Kênh truyền, không phải database |
+| Kafka `t.review.events` | lifecycle facts, rating snapshot và notification request của Review | Kênh truyền, không phải database |
 | Object storage | bytes ảnh/video | Storage sở hữu file; Review sở hữu metadata và lifecycle |
 
 `order_id`, `product_id`, `sku_id` và các `*_user_id` là external identifier nên
@@ -118,7 +119,9 @@ admin. `DISMISSED` luôn cần `resolved_by_admin_id` và `resolved_at`.
 
 `review_takedowns` là audit/legal record: `legal_case_id`, người yêu cầu, người phê
 duyệt và lý do nội bộ. Nó không phải nội dung notification. Notification đi qua
-`REVIEW_REMOVED` trong outbox; lý do pháp lý không được lộ qua API public.
+`REVIEW_REMOVAL_NOTIFICATION_REQUESTED` trong cùng transaction với takedown;
+notification request không chứa legal case, lý do hay định danh admin. Khi author
+identity đã bị purge, Review không tạo request này.
 
 ## 6. Aggregate, revision và idempotency
 
@@ -159,7 +162,8 @@ toàn bộ subject; cột trên review chỉ nói review đó đã đổi displa
 
 1. Consumer nhận event idempotently, ghi request `RECEIVED`.
 2. Đổi `author_display_name`, đặt `author_anonymized_at`, đánh dấu request
-   `ANONYMIZED`; aggregate không đổi.
+   `ANONYMIZED`; aggregate không đổi và không phát Review event. Mọi service giữ
+   PII phải xử lý trực tiếp `USER_DELETED` từ Auth.
 3. Tại `hard_delete_after`, worker null hóa `owner_user_id`, `reporter_user_id` và
    owner của media asset liên quan trong cùng transaction; sau đó null hóa
    `privacy_erasure_requests.subject_user_id` và đánh dấu `PURGED`.
@@ -183,6 +187,12 @@ Cleanup chỉ drop partition khi connector/slot đã vượt toàn bộ vùng d�
 UUID event ID là CloudEvents id; PostgreSQL 14 partitioning không enforce global
 unique UUID tại parent, nên producer phải luôn sinh UUID ngẫu nhiên và không tái sử
 dụng event ID.
+
+Mọi row outbox được Debezium publish lên cùng `t.review.events` với Kafka key
+`partition_key = product_id`, gồm cả hai notification request. Hai payload đó chỉ có
+`recipient_user_id`, `review_id` và `product_id`; chúng không có content, display
+name, object key, report detail hay legal reason. Consumer không chịu trách nhiệm cho
+một type phải ACK nó mà không persist/log payload.
 
 ## 10. Query/index policy
 

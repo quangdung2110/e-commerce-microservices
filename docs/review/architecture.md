@@ -7,6 +7,9 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -40,6 +43,8 @@ flowchart TB
   REPO --> PG[(PostgreSQL: domain + receipts + sessions + outbox)]
   PG --> DBZ[Debezium] --> EVENTS[t.review.events]
   EVENTS --> AGG[Idempotent rating aggregator] --> REPO
+  EVENTS --> SEARCH[Search metrics consumer]
+  EVENTS --> NOTIFY[Notification consumer]
   SCHED[Scheduler/workers] --> REPO
   API -. presigned URL .-> OBJ[Object storage]
   SCHED -. delete confirmed assets .-> OBJ
@@ -50,7 +55,8 @@ flowchart TB
 | API/application service | Validate request, authorize caller, keep domain mutation/counter/outbox in one PostgreSQL transaction |
 | Order consumer | Store receipt then upsert entitlement from self-contained `ORDER_COMPLETED` snapshot |
 | Privacy consumer | Store receipt/request, anonymize author immediately; hard-purge worker removes direct IDs at deadline |
-| Rating aggregator | Store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
+| Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
+| Notification consumer | Consume only reply/removal notification requests and deduplicate by CloudEvents ID; no legal reason, admin identity or reply content is published |
 | Export-session API | Capture Kafka end offsets, persist session/offsets, serve short keyset pages |
 | Asset verifier/deleter | Verify object before attach; delete storage object after `DELETE_PENDING` commit |
 | Scheduler | Expire entitlement/assets/sessions, purge privacy IDs, reconcile aggregate, maintain outbox partitions |
@@ -76,8 +82,10 @@ or rolling back an external object operation.
 | Object bytes | External; verified before attachment and deletion-confirmed asynchronously |
 
 Content-only edits and author anonymization do not alter aggregate or
-`review_revision`. They may emit lifecycle events for Analytics/Notification, but the
-rating aggregator ignores them.
+`review_revision`. A content-only `REVIEW_UPDATED` is acknowledged without a delta;
+author anonymization emits no Review event because every PII-owning service receives
+`USER_DELETED` directly from Auth. The only notification events are the first-reply
+and legal-removal requests defined by Review AsyncAPI.
 
 ## 5. Concurrency
 
@@ -94,6 +102,8 @@ rating aggregator ignores them.
 ## 6. Architecture constraints
 
 - No direct Kafka producer in business code; all outbound events use outbox/CDC.
+- `t.review.events` is keyed by `product_id`; Notification must not assume ordering
+  by recipient user ID and must deduplicate CloudEvents IDs itself.
 - No direct database access by another service.
 - No cache in Review read path.
 - No synchronous cross-service call in a write path.

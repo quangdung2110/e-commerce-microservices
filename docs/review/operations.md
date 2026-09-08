@@ -57,13 +57,14 @@ PDP/public reads do not.
 | `review_export_session_total{result}` | Create/page/expiry outcomes |
 | `review_export_session_active` | Active session count |
 | `review_media_asset_pending_delete_total` | Storage cleanup backlog |
+| `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because recipient was purged |
 | Kafka Connect `FAILED`/`PAUSED` | Critical after two minutes |
 | replication slot retained WAL bytes | Critical before disk-risk threshold |
 | next outbox partition missing | Critical |
 
 Do not publish `product_id`, `user_id`, `review_id` or `session_id` as metric labels.
 Do not log review content, display names, reporter identity, legal takedown reason,
-presigned URLs or direct object keys.
+presigned URLs, direct object keys or notification `recipient_user_id`.
 
 ## 5. Outbox operational rule
 
@@ -103,4 +104,4 @@ the asset before this worker runs.
 |---|---|
 | 5 minutes | Expire eligibility/assets/sessions; alert privacy deadline; ensure next outbox partition |
 | Daily | Process asset deletion and privacy purge; reconcile aggregate; evaluate partition cleanup |
-| Continuous | Debezium, order consumer, privacy consumer, idempotent rating aggregator |
+| Continuous | Debezium, order consumer, privacy consumer, idempotent rating aggregator; Notification consumes Review request types independently |

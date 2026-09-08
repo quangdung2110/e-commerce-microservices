@@ -8,6 +8,8 @@ owners:
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
@@ -21,7 +23,8 @@ the target design and must be implemented together with their contracts.
 
 Review grants a buyer one review entitlement per purchased SKU, maintains the public
 review lifecycle, media metadata, moderation, legal takedowns and product rating
-aggregates. It publishes lifecycle/metric events through outbox CDC.
+aggregates. It publishes lifecycle facts, rating snapshots and safe user-notification
+requests through outbox CDC.
 
 Review does not own orders, catalog, user accounts, object bytes, Search documents or
 notifications. It receives immutable purchase snapshot fields in `ORDER_COMPLETED`
@@ -34,7 +37,7 @@ the write path.
 |---|---|
 | PostgreSQL `review` | entitlement, review, media asset metadata, moderation, privacy request, aggregate, consumer receipt, export session, outbox |
 | Object storage | image/video bytes |
-| Kafka | transport only; not source of truth |
+| Kafka `t.review.events` | Review lifecycle facts, Search rating snapshots and Notification requests; transport only, not source of truth |
 
 `variant_name_snapshot` comes from Order at completion. `author_display_name` is a
 write-time Auth/User snapshot. Both are not profile-synchronized. Account deletion
@@ -50,7 +53,7 @@ hard-delete deadline.
 - Report, auto-hide, dismiss reports, reply and legally take down reviews.
 - Process all internal/inbound events idempotently with database receipts.
 - Export rating aggregate through durable Search export sessions.
-- Publish business events only through PostgreSQL outbox and Debezium.
+- Publish lifecycle facts, rating snapshots and two safe user-notification requests only through PostgreSQL outbox and Debezium.
 
 ## Critical invariants
 
@@ -83,7 +86,6 @@ hard-delete deadline.
 
 - Runtime, migration tool, concrete object-storage provider and public OpenAPI are
   still unchosen.
-- Lifecycle event and inbound event machine-readable contracts still need to be added.
 - The privacy retention rule for admin/legal identities needs a compliance policy;
   customer erasure only covers direct customer identifiers.
 - Event receipt retention must be configured to exceed Kafka retention plus replay

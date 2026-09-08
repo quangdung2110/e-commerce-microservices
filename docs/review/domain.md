@@ -7,6 +7,8 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -56,7 +58,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-007` | Media phải là asset `VERIFIED`, thuộc caller, chưa attach và không vượt số lượng tối đa. |
 | `REVIEW-BR-008` | Một account report một review tối đa một lần khi identity còn tồn tại; tác giả không tự report. |
 | `REVIEW-BR-009` | Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT`; dismiss toàn bộ report đưa review về `APPROVED`. |
-| `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; sửa reply không phát notification event mới. |
+| `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; lần tạo đầu tiên phát `REVIEW_REPLY_NOTIFICATION_REQUESTED` khi author identity còn tồn tại, sửa reply không phát event mới. |
 | `REVIEW-BR-011` | Takedown cần `legal_case_id` và hai admin khác nhau; `REMOVED` là terminal. |
 | `REVIEW-BR-012` | Chỉ review `APPROVED` thuộc aggregate. |
 | `REVIEW-BR-013` | Aggregate chỉ tăng `review_revision` khi metric đổi, không phải khi content/name đổi. |
@@ -158,9 +160,9 @@ stateDiagram-v2
 Review mới có `edit_count=0`; một lần sửa thành `1`. Request sửa lặp trả 409 dù
 response trước đó bị mất.
 
-**Ẩn danh.** Auth event đổi author display name, không đổi rating và không phát
-metric snapshot. Tới hard-delete deadline, worker null hóa direct user IDs nhưng giữ
-review, rating và opaque media object key.
+**Ẩn danh.** `USER_DELETED` từ Auth đổi author display name, không đổi rating và
+không phát Review event hay metric snapshot. Tới hard-delete deadline, worker null hóa
+direct user IDs nhưng giữ review, rating và opaque media object key.
 
 **Aggregate replay.** `REVIEW_CREATED(event_id=A)` được aggregator xử lý, receipt A
 và aggregate update commit cùng lúc. Kafka giao lại A thì insert receipt conflict và

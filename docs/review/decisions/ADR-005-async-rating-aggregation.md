@@ -21,7 +21,8 @@ effect và transaction commit no-op. Với receipt mới, consumer apply bucket 
 derive total/average, increment revision và insert metrics outbox snapshot.
 
 Consumer chỉ xử lý event ảnh hưởng aggregate. `REVIEW_METRICS_UPDATED` bị bỏ qua để
-tránh vòng lặp; author anonymization, reply và content-only edit cũng bị bỏ qua.
+tránh vòng lặp; hai Notification request và content-only edit được ACK mà không áp
+dụng delta.
 
 ## Rationale
 

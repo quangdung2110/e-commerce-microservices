@@ -7,6 +7,8 @@ owners:
   - Review Service team
 evidence:
   - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
@@ -21,9 +23,9 @@ verified_against_commit: null
 | Admin moderation API | Inbound HTTP | Human-readable design; OpenAPI pending |
 | PDP summary | Internal HTTP | [OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
 | Rating export session/page | Internal HTTP | [OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
-| `REVIEW_METRICS_UPDATED` | Kafka outbound | [AsyncAPI v1](../../contracts/events/review/v1/asyncapi.yaml) |
-| Review lifecycle events | Kafka outbound | Machine-readable spec pending |
-| `ORDER_COMPLETED` / `USER_DELETED` | Kafka inbound | Provider contract pending for Review subset |
+| Review lifecycle, metrics and notification requests | Kafka outbound | [Review AsyncAPI v1](../../contracts/events/review/v1/asyncapi.yaml) |
+| `ORDER_COMPLETED` | Kafka inbound | [Order AsyncAPI v1 — Review subset](../../contracts/events/order/v1/asyncapi.yaml) |
+| `USER_DELETED` | Kafka inbound | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) |
 
 ## 2. Public API semantics
 
@@ -67,12 +69,14 @@ threshold, Review writes `REVIEW_HIDDEN`; admin dismiss moves review back to
 `APPROVED`, dismisses the reports and writes `REVIEW_APPROVED`.
 
 `POST /api/v1/admin/reviews/{review_id}/replies` creates or edits the one official
-reply. Only first creation writes `ADMIN_REPLY_CREATED`.
+reply. Only first creation writes `REVIEW_REPLY_NOTIFICATION_REQUESTED` when the
+author identity is still available; reply edits never create a notification event.
 
 `POST /api/v1/admin/reviews/{review_id}/takedown` needs `legal_case_id`, reason,
 requester and a different approver. It records `review_takedowns`, removes the review
-from public visibility and writes `REVIEW_REMOVED`. The legal reason is never copied
-to a public response or notification payload.
+from public visibility and writes `REVIEW_REMOVED`. In the same transaction it writes
+`REVIEW_REMOVAL_NOTIFICATION_REQUESTED` only when the author identity remains
+available. The legal reason is never copied to a public response or either event.
 
 ## 3. Internal API
 
@@ -108,49 +112,60 @@ in snapshot has an event at or after the captured end offset and is replayed.
 
 ## 4. Outbound events
 
-All events use `partition_key = product_id`, at-least-once delivery and outbox + CDC.
+Every event is a CloudEvents 1.0 structured JSON message on `t.review.events`, with
+at-least-once delivery, outbox + CDC and Kafka `partition_key = product_id`. `id` is
+the outbox UUID; `source` is `/services/review`; review facts use subject
+`reviews/{review_id}`. A consumer must dispatch by exact `type` and ACK a known event
+outside its responsibility without durable effect.
 
-| Event | Meaning | Rating aggregator |
-|---|---|---|
-| `REVIEW_CREATED` | New approved review | Apply positive delta |
-| `REVIEW_UPDATED` | Rating or media presence changed | Apply old/new delta; content-only update is ignored |
-| `REVIEW_HIDDEN` | Threshold hides review | Apply negative delta |
-| `REVIEW_APPROVED` | Admin restores hidden review | Apply positive delta |
-| `REVIEW_REMOVED` | Legal takedown | Apply negative delta only when `was_counted=true` |
-| `REVIEW_AUTHOR_ANONYMIZED` | Display name changed | Ignore |
-| `ADMIN_REPLY_CREATED` | First official reply | Ignore |
-| `REVIEW_METRICS_UPDATED` | Full product aggregate snapshot | Ignore; prevents loop |
+| Event | CloudEvents type | Consumer | Meaning / payload boundary |
+|---|---|---|---|
+| `REVIEW_CREATED` | `com.ecommerce.review.created.v1` | Review rating aggregator | New approved review; `review_id`, product/SKU, rating and media presence. |
+| `REVIEW_UPDATED` | `com.ecommerce.review.updated.v1` | Review rating aggregator | One permitted edit; carries old/new rating and media presence plus `affects_aggregate`. |
+| `REVIEW_HIDDEN` | `com.ecommerce.review.hidden.v1` | Review rating aggregator | Report threshold hid an approved review; carries the negative-delta values. |
+| `REVIEW_APPROVED` | `com.ecommerce.review.approved.v1` | Review rating aggregator | Admin restored a report-hidden review; this is never emitted on create. |
+| `REVIEW_REMOVED` | `com.ecommerce.review.removed.v1` | Review rating aggregator | Legal takedown fact; `was_counted` decides whether to subtract. No legal case, reason or admin identity. |
+| `REVIEW_METRICS_UPDATED` | `com.ecommerce.review.metrics-updated.v1` | Search | Complete Search-facing aggregate snapshot; `sequence = review_revision`. |
+| `REVIEW_REPLY_NOTIFICATION_REQUESTED` | `com.ecommerce.review.reply-notification-requested.v1` | Notification | First official reply only; review/product/recipient IDs, never reply content or admin identity. |
+| `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | `com.ecommerce.review.removal-notification-requested.v1` | Notification | Safe takedown notice; review/product/recipient IDs, never legal case, reason or admin identity. |
 
 `REVIEW_UPDATED` must carry `old_rating`, `new_rating`, `old_has_media`,
-`new_has_media` and `affects_aggregate`. Content-only updates set
-`affects_aggregate=false` and do not cause aggregate mutation/revision bump.
+`new_has_media` and `affects_aggregate`. A content-only edit sets
+`affects_aggregate=false`, creates no aggregate mutation or revision bump, and is
+acknowledged by the rating consumer without applying a delta.
 
-Each internal consumer inserts `(consumer_name, event_id)` into
-`review_event_receipts` in the same transaction as its effect. Duplicate event ID is
-a no-op. The rating aggregator no longer intentionally accepts double counting.
+The rating aggregator inserts `(review-rating-aggregator, CloudEvents.id)` into
+`review_event_receipts` in the same transaction as its effect. A duplicate event ID
+is a no-op. It only consumes the first five event types in the table;
+`REVIEW_METRICS_UPDATED` is ignored to prevent a loop. Search consumes only
+`REVIEW_METRICS_UPDATED` and applies it iff incoming `review_revision` is strictly
+greater than its document revision.
 
-`REVIEW_METRICS_UPDATED` is the only metrics event Search consumes. It carries full
-aggregate fields and `review_revision`; Search applies it iff incoming revision is
-strictly greater than its document revision.
+There is deliberately no `ADMIN_REPLY_CREATED` or `REVIEW_AUTHOR_ANONYMIZED` event.
+The first has no consumer other than the targeted notification request; the latter is
+unnecessary because every PII-owning service receives `USER_DELETED` directly from
+Auth.
 
 ## 5. Inbound events
 
 ### `ORDER_COMPLETED`
 
-Review consumes `event_id`, `order_id`, `user_id`, `completed_at` and every item’s
-`product_id`, `sku_id`, `variant_name` snapshot and quantity. `variant_name` is
-nullable for historic orders but must be supplied by current producer when known.
+Review consumes [Order's CloudEvents contract](../../contracts/events/order/v1/asyncapi.yaml):
+`id`, `order_id`, `user_id`, `completed_at` and every item’s `product_id`, `sku_id`,
+`variant_name` snapshot and quantity. `variant_name` is nullable for historic orders
+but must be supplied by current producer when known.
 
-Review first inserts an `order-sync` receipt. In the same transaction it upserts
-eligibilities by `(order_id, product_id, sku_id)` without changing a `CLAIMED` row.
-The event must not trigger a synchronous Order lookup.
+Review first inserts an `order-sync` receipt using `CloudEvents.id`. In the same
+transaction it upserts eligibilities by `(order_id, product_id, sku_id)` without
+changing a `CLAIMED` row. The event must not trigger a synchronous Order lookup.
 
 ### `USER_DELETED`
 
-Review consumes `event_id`, `user_id`, `deleted_at`, `reason` and `hard_delete_after`.
-The privacy consumer receipt and `privacy_erasure_requests` record are written before
-anonymizing author display names. A later worker performs hard purge at the requested
-time; it nulls direct customer IDs but preserves reviews and aggregate.
+Review consumes [Auth's `USER_DELETED` CloudEvents contract](../../contracts/events/auth/v1/asyncapi.yaml):
+`id`, `user_id`, `deleted_at`, `reason` and `hard_delete_after`. The privacy consumer
+receipt and `privacy_erasure_requests` record are written before anonymizing author
+display names. A later worker performs hard purge at the requested time; it nulls
+direct customer IDs but preserves reviews and aggregate.
 
 ## 6. Compatibility
 
@@ -158,7 +173,9 @@ The service is not implemented and all contracts remain `proposed`; the replacem
 export endpoints are deliberately still v1. Consumers must move from the removed
 stateless endpoint before adoption is marked verified.
 
-Adding nullable `variant_name` to `ORDER_COMPLETED.items[]` is backward compatible.
-For outbound events, adding optional fields is compatible; changing `partition_key`,
-event ID or `review_revision` meaning is breaking. Contract tests must cover duplicate
-event no-op, export-session expiry, snapshot/replay overlap and revision guard.
+New producers must populate nullable `ORDER_COMPLETED.items[].variant_name` whenever
+the source snapshot exists. For outbound events, adding an optional field is
+compatible; changing a message type, `partition_key`, CloudEvents `id`, or the meaning
+of `review_revision` is breaking. Contract tests must cover duplicate event no-op,
+content-only update, notification payload redaction, export-session expiry,
+snapshot/replay overlap and revision guard.

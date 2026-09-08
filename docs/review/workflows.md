@@ -7,6 +7,9 @@ owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - contracts/events/review/v1/asyncapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -33,9 +36,9 @@ verified_against_commit: null
 
 **Trigger:** `ORDER_COMPLETED` on `t.order.events`.
 
-1. Validate CloudEvents `event_id`, order ID, buyer UUID, completion time and every
+1. Validate CloudEvents `id`, order ID, buyer UUID, completion time and every
    item’s product/SKU; consume `variant_name` snapshot when supplied.
-2. Begin transaction; insert receipt `(order-sync, event_id)`. Existing receipt means
+2. Begin transaction; insert receipt `(order-sync, id)`. Existing receipt means
    no-op and ACK.
 3. Upsert one eligibility per `(order_id, product_id, sku_id)`. It is `PENDING` when
    `completed_at + review_window_days > now()`, otherwise `EXPIRED`.
@@ -109,8 +112,9 @@ not synthetic zero. Author read-after-write routes to primary if replicas are us
 
 Lock review and require `APPROVED`. Insert/update one reply; preserve both
 `created_by_admin_id` and `updated_by_admin_id`. First insert writes
-`ADMIN_REPLY_CREATED`; later content update does not notify again. Reply state has no
-denormalized boolean on review.
+`REVIEW_REPLY_NOTIFICATION_REQUESTED` in the same transaction when the eligibility
+owner ID has not been purged; it carries only review/product/recipient IDs. Later
+content update does not notify again. Reply state has no denormalized boolean on review.
 
 ## WF-REVIEW-007 — Report, hide and dismiss
 
@@ -135,9 +139,11 @@ prevents duplicate report while reporter identity exists.
    `REVIEW_METRICS_UPDATED` outbox snapshot per affected product.
 5. Commit then ACK.
 
-`REVIEW_AUTHOR_ANONYMIZED`, `ADMIN_REPLY_CREATED`, content-only update and
-`REVIEW_METRICS_UPDATED` are ignored. Constraint failure or malformed delta rolls back
-receipt and aggregate; message retries/DLQ rather than silently producing bad metrics.
+Content-only update, `REVIEW_METRICS_UPDATED`,
+`REVIEW_REPLY_NOTIFICATION_REQUESTED` and `REVIEW_REMOVAL_NOTIFICATION_REQUESTED`
+are acknowledged without an aggregate effect. Constraint failure or malformed delta
+rolls back receipt and aggregate; message retries/DLQ rather than silently producing
+bad metrics.
 
 ## WF-REVIEW-009 — Search export session
 
@@ -162,9 +168,9 @@ changes, Search aborts and starts a new export after topology stabilizes.
 **Trigger:** `USER_DELETED`.
 
 1. Store `(privacy-sync, event_id)` receipt and `privacy_erasure_requests` row.
-2. Update the subject’s review display names and `author_anonymized_at`; write
-   `REVIEW_AUTHOR_ANONYMIZED` lifecycle events if downstream needs content projection.
-   Do not touch aggregate/revision.
+2. Update the subject’s review display names and `author_anonymized_at`. Do not emit a
+   Review event or touch aggregate/revision: each PII-owning downstream service gets
+   `USER_DELETED` directly from Auth.
 3. Mark request `ANONYMIZED`; ACK only after commit.
 4. At `hard_delete_after`, a worker locks the request and nulls customer owner IDs in
    eligibility/media assets and reporter IDs in reports, then clears request
@@ -193,8 +199,10 @@ telemetry prove all changes passed its range. It never counts old outbox rows as
 
 **Takedown:** lock review, validate legal case and two-person approval, insert the one
 audit record, set review `REMOVED`, detach assets to `DELETE_PENDING`, write
-`REVIEW_REMOVED(was_counted)` and commit. Notification receives a safe policy message
-from event consumer; it does not receive legal `reason`.
+`REVIEW_REMOVED(was_counted)` and commit. If eligibility owner identity remains,
+write `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` in the same transaction. Notification
+receives only review/product/recipient IDs; it never receives legal `reason`, case or
+admin identity.
 
 **PDP:** Product Detail BFF calls its existing internal read endpoint. Review returns
 aggregate plus bounded approved preview, without eligibility, reports, legal state or

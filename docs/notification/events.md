@@ -30,7 +30,22 @@ Cleanup riêng tư dùng `USER_DELETED` từ
 anonymize projection của mình ngay và giữ `hard_delete_after` nếu compliance
 pipeline cần; không lookup email từ Auth.
 
-### 1.2 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
+### 1.2 Review notification inputs
+
+Notification consume hai type từ [Review Events v1](../../contracts/events/review/v1/asyncapi.yaml)
+trên `t.review.events`:
+
+| CloudEvents type | Trigger | Dữ liệu được phép dùng |
+|---|---|---|
+| `com.ecommerce.review.reply-notification-requested.v1` | Admin tạo official reply đầu tiên | `review_id`, `product_id`, `recipient_user_id` |
+| `com.ecommerce.review.removal-notification-requested.v1` | Review bị legal takedown | `review_id`, `product_id`, `recipient_user_id` |
+
+Hai event không chứa reply content, `legal_case_id`, legal reason hay định danh admin.
+Notification render thông báo in-app từ type, deduplicate theo CloudEvents `id` và bỏ
+qua/ACK mọi Review type khác trên cùng topic. Một recipient đã nhận `USER_DELETED`
+không được nhận Review notification trễ.
+
+### 1.3 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
 ```json
 {
   "specversion": "1.0",

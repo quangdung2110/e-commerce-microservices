@@ -1,6 +1,6 @@
 # Order Service - Định Nghĩa Các Sự Kiện & Kafka Topics (Events Structure)
 
-> **Phase 22 (Simplify Idempotency Schema):** Bỏ `order_event_idempotency`. Consumer guard giờ dựa vào **Redis SETNX** (TTL 30 ngày) + **FSM row-level lock** (`UPDATE ... WHERE status='OLD_STATUS'`) + **CloudEvents `event_id`** envelope. Outbox duplicate event (nếu Redis mất key) được xử lý bởi Notification consumer thông qua guard key `(order_item_id, last_event_sequence_id)` cho `ORDER_ITEM_STATUS_CHANGED` (xem §3.5) và `(order_id, last_event_sequence_id)` cho `ORDER_COMPLETED` (xem §3.7). Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order).
+> **Phase 22 (Simplify Idempotency Schema):** Bỏ `order_event_idempotency`. Consumer guard giờ dựa vào **Redis SETNX** (TTL 30 ngày) + **FSM row-level lock** (`UPDATE ... WHERE status='OLD_STATUS'`) + CloudEvents `id`. Outbox duplicate event (nếu Redis mất key) được xử lý bởi Notification consumer thông qua guard key `(order_item_id, last_event_sequence_id)` cho `ORDER_ITEM_STATUS_CHANGED` (xem §3.5); `ORDER_COMPLETED` v1 dùng `(order_id, sequence)` theo [contract provider](../../contracts/events/order/v1/asyncapi.yaml). Xem [CHANGELOG Phase 22](../_contracts/CHANGELOG.md#phase-22--simplify-idempotency-schema-order).
 
 **Liên kết nhanh (Related Documents):**
 *   [Database Schema](order_db_design.md)
@@ -13,7 +13,7 @@
 **Cross-Service References:**
 *   [Promotion Events (Consumed)](../promotion/promotion_events.md) — Promotion consume `ORDER_REFUNDED`
 *   [Payment Events](../payment/payment_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_PROCESSING`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
-*   [Inventory Events](../inventory/inventory_events.md) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` (refund gate) và `INVENTORY_SHIP_TO_CUSTOMER` (item delivery FSM trigger)
+*   [Inventory Interfaces](../inventory/interfaces.md#4-events-phát-ra) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` (refund gate) và `INVENTORY_SHIP_TO_CUSTOMER` (item delivery FSM trigger)
 *   [Cart Interfaces](../cart/interfaces.md) — Cart consume `ORDER_PAID` để batch delete SKU lines trong giỏ
 
 ---
@@ -60,7 +60,8 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 | Event nhóm | Guard key bắt buộc | Stream ownership |
 |---|---|---|
-| `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_COMPLETED`, `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `last_event_sequence_id` | Order lifecycle (per `order_id`) |
+| `ORDER_CREATED`, `ORDER_PAID`, `ORDER_CANCELLED`, `ORDER_STATUS_CHANGED`, `ORDER_REFUNDED`, `ORDER_REFUND_FAILED` | `last_event_sequence_id` | Order lifecycle (per `order_id`) |
+| `ORDER_COMPLETED` | CloudEvents `sequence` | Order lifecycle (per `order_id`); provider contract for Review |
 | `ORDER_ITEM_STATUS_CHANGED` | `last_event_sequence_id` + `order_item_id` | Item/delivery (per `order_item_id`) |
 
 > **Lưu ý:** `payment_event_sequence_id`/`refund_event_sequence_id` trong payload event Order **consume** từ Payment Service (`PAYMENT_*`/`REFUND_*`) là do Payment Service tự phát, không thuộc guard key của Order — Order guard cho consumed events dựa vào **Redis SETNX** TTL 30 ngày + **FSM row-level lock** (xem §4 routing note).
@@ -298,27 +299,27 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 ### 3.7. ORDER_COMPLETED
 
 **Ngữ cảnh:** Tất cả items `DELIVERED`. FSM `PROCESSING` → `COMPLETED`. Tự động bởi [Auto-Complete Logic](order_state_machine.md#5-auto-complete-logic-processing--completed).
-**Consumers chính:** Analytics, admin Settlement, Review Service.
+**Consumer đã đăng ký:** Review Service qua
+[Order Events v1 — Review subset](../../contracts/events/order/v1/asyncapi.yaml).
+Analytics/Settlement chưa có contract consumer được đăng ký cho event này.
 
 > **Review snapshot contract:** `items[].variant_name` được giữ trong `ORDER_COMPLETED` cho Review Service. Review không được gọi đồng bộ sang Order ở write path và cần tên biến thể tại thời điểm mua để hiển thị lịch sử. Field có thể là `null` nếu order item cũ không có snapshot; producer mới phải gửi giá trị khi có.
 
 ```json
 {
-  "event_id": "123e4567-e89b-12d3-a456-426614174006",
-  "event_type": "ORDER_COMPLETED",
-  "aggregate_type": "Order",
-  "aggregate_id": "10001",
-  "correlation_id": "wf-10001",
-  "timestamp": "2026-03-02T16:00:00Z",
-  "source": "order-service",
-  "schema_version": 1,
-  "payload": {
+  "specversion": "1.0",
+  "id": "123e4567-e89b-12d3-a456-426614174006",
+  "type": "com.ecommerce.order.completed.v1",
+  "source": "/services/order",
+  "subject": "orders/10001",
+  "time": "2026-03-02T16:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/order/v1/schemas/order-completed.schema.json",
+  "correlationid": "wf-10001",
+  "sequence": 9,
+  "data": {
     "order_id": 10001,
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "status": "COMPLETED",
-    "last_event_sequence_id": 9,
-    "final_amount": 995000,
-    "item_count": 2,
     "items": [
       {
         "product_id": "prod-001",
@@ -332,13 +333,13 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 }
 ```
 
-> **Canonical user_id:** Order Service phát `user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
+> **Canonical user_id:** Order Service phát `data.user_id` dạng UUID theo chuẩn thống nhất toàn hệ thống.
 
-> **Contract note cho Review Service:** `items[]` là bắt buộc trong `ORDER_COMPLETED` để Review cấp quyền đánh giá theo từng item đã mua.
+> **Contract note cho Review Service:** `data.items[]` là bắt buộc trong `ORDER_COMPLETED` để Review cấp quyền đánh giá theo từng item đã mua. Đây là ngoại lệ có chủ đích với các Order event tối giản: Review không được gọi Order/Product đồng bộ trong write path.
 
 > **Field-level contract cho Review consumer:**
 > - `user_id` là UUID theo chuẩn thống nhất.
-> - Trong `items[]`, `product_id` và `sku_id` là bắt buộc.
+> - Trong `data.items[]`, `product_id` và `sku_id` là bắt buộc.
 > - `variant_name` là snapshot nullable cho Review; Review không gọi `GET /v1/orders/{id}` trong write path.
 
 ### 3.8. ORDER_REFUND_FAILED
