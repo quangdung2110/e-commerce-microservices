@@ -1,0 +1,47 @@
+asyncapi: 3.0.0
+info:
+  title: Order Completion Event for Review
+  version: 1.0.0
+  description: >-
+    Provider-owned target contract for the ORDER_COMPLETED fact that grants Review
+    eligibility. This v1 contract intentionally covers only the Review integration
+    subset; other Order event contracts remain outside this document.
+x-adoption-status: proposed
+x-contract-scope: order-completed-for-review
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  orderEvents:
+    address: t.order.events
+    description: Order lifecycle topic. This contract specifies ORDER_COMPLETED only.
+    x-owner: order-service
+    x-message-key: order_id
+    x-ordering-scope: order_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-max-payload-bytes: 262144
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.order.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      orderCompleted: { $ref: '#/components/messages/orderCompleted' }
+operations:
+  publishOrderCompleted:
+    action: send
+    channel: { $ref: '#/channels/orderEvents' }
+    summary: Publish the immutable purchase snapshot after every item in an order is delivered.
+    messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
+components:
+  messages:
+    orderCompleted:
+      name: orderCompletedV1
+      title: ORDER_COMPLETED
+      summary: Immutable completed-order item snapshot used by Review to grant one entitlement per SKU.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/order-completed.schema.json' }

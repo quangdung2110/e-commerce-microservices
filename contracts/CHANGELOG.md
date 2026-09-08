@@ -3,6 +3,18 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-08
+
+- Mở rộng Review Events v1 từ metrics-only thành contract đầy đủ cho năm lifecycle
+  fact, Search-facing rating snapshot và hai Notification request: official reply đầu
+  tiên và legal takedown. Không có `ADMIN_REPLY_CREATED` hay
+  `REVIEW_AUTHOR_ANONYMIZED` public event.
+- `com.ecommerce.review.metrics-updated.v1` nay bắt buộc có `total_with_media`; quy
+  ước `sequence = data.review_revision` được chốt cho Search ordering guard.
+- Thêm Order Events v1 — Review subset. `ORDER_COMPLETED` là CloudEvents v1 provider
+  contract có mandatory immutable `data.items[]` để Review tạo entitlement mà không
+  gọi đồng bộ Order/Product.
+
 ## 2026-09-07
 
 - Supersede Search-facing stock-position/warehouse facts with one Inventory-owned

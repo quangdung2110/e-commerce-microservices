@@ -1,11 +1,11 @@
 asyncapi: 3.0.0
 info:
-  title: Review Service Rating Aggregate Events
+  title: Review Service Events
   version: 1.0.0
   description: >-
-    Contract đích cho snapshot rating aggregate theo Product do Review phát cho
-    Search. Đây là contract vNext; producer legacy phải dual-publish hoặc được
-    migrate cùng consumer trước khi nó thay thế envelope cũ.
+    Target contract for Review domain facts, rating snapshots and user notification
+    requests. Review publishes every outbound message through PostgreSQL outbox and
+    Debezium CDC. The service also self-consumes aggregate-affecting lifecycle facts.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:
@@ -15,12 +15,17 @@ servers:
 channels:
   reviewEvents:
     address: t.review.events
-    description: Rating aggregate snapshot per Product do Review phát.
+    description: >-
+      Review facts and notification requests. Every message uses product_id as Kafka
+      key, so lifecycle order is preserved per product. Consumers must dispatch by
+      the exact CloudEvents.type and ACK known messages outside their responsibility
+      without creating an effect.
+    x-owner: review-service
     x-message-key: product_id
     x-ordering-scope: product_id
     x-delivery-semantic: at-least-once
     x-deduplication-key: CloudEvents.id
-    x-ordering-guard: data.review_revision
+    x-ordering-guard: data.review_revision for metrics snapshots only
     x-max-payload-bytes: 16384
     x-retention: 14d
     x-retry-policy:
@@ -28,19 +33,144 @@ channels:
       dead-letter-topic: t.review.events.dlq
     x-data-classification: INTERNAL
     messages:
-      ratingAggregateSnapshot: { $ref: '#/components/messages/ratingAggregateSnapshot' }
+      reviewCreated: { $ref: '#/components/messages/reviewCreated' }
+      reviewUpdated: { $ref: '#/components/messages/reviewUpdated' }
+      reviewHidden: { $ref: '#/components/messages/reviewHidden' }
+      reviewApproved: { $ref: '#/components/messages/reviewApproved' }
+      reviewRemoved: { $ref: '#/components/messages/reviewRemoved' }
+      reviewMetricsUpdated: { $ref: '#/components/messages/reviewMetricsUpdated' }
+      reviewReplyNotificationRequested: { $ref: '#/components/messages/reviewReplyNotificationRequested' }
+      reviewRemovalNotificationRequested: { $ref: '#/components/messages/reviewRemovalNotificationRequested' }
+  orderEvents:
+    address: t.order.events
+    description: ORDER_COMPLETED fact owned and published by Order Service.
+    x-owner: order-service
+    messages:
+      orderCompleted:
+        $ref: '../../order/v1/asyncapi.yaml#/components/messages/orderCompleted'
+  authIdentityEvents:
+    address: t.auth.events
+    description: USER_DELETED fact owned and published directly by Auth Service.
+    x-owner: auth-service
+    messages:
+      userDeleted:
+        $ref: '../../auth/v1/asyncapi.yaml#/components/messages/userDeleted'
 operations:
-  publishRatingAggregateSnapshot:
+  publishReviewCreated:
     action: send
     channel: { $ref: '#/channels/reviewEvents' }
-    summary: >-
-      Review phát full aggregate sau mutation hoặc reconciliation làm thay đổi
-      rating/media-presence/visibility của Product; sequence bằng review_revision.
-    messages: [{ $ref: '#/channels/reviewEvents/messages/ratingAggregateSnapshot' }]
+    summary: Publish the approved review after its create transaction commits.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewCreated' }]
+  publishReviewUpdated:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Publish the single permitted review edit, including the aggregate delta inputs.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewUpdated' }]
+  publishReviewHidden:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Publish once when the report threshold hides an approved review.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewHidden' }]
+  publishReviewApproved:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Publish only when an admin restores a report-hidden review.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewApproved' }]
+  publishReviewRemoved:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Publish a legal takedown fact without legal case, reason or administrator identities.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewRemoved' }]
+  publishReviewMetricsUpdated:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Publish the complete Search-facing aggregate snapshot after an aggregate mutation or reconciliation repair.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewMetricsUpdated' }]
+  publishReviewReplyNotificationRequested:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Request Notification to notify the author after the first official reply, when a recipient identity remains available.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewReplyNotificationRequested' }]
+  publishReviewRemovalNotificationRequested:
+    action: send
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Request Notification to notify the author of a takedown without exposing its legal reason, when a recipient identity remains available.
+    messages: [{ $ref: '#/channels/reviewEvents/messages/reviewRemovalNotificationRequested' }]
+  consumeOrderCompleted:
+    action: receive
+    channel: { $ref: '#/channels/orderEvents' }
+    summary: Create or preserve review entitlements from the immutable purchase snapshot.
+    messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
+  consumeUserDeleted:
+    action: receive
+    channel: { $ref: '#/channels/authIdentityEvents' }
+    summary: Anonymize immediately and schedule hard purge of direct customer identifiers.
+    messages: [{ $ref: '#/channels/authIdentityEvents/messages/userDeleted' }]
+  consumeRatingLifecycle:
+    action: receive
+    channel: { $ref: '#/channels/reviewEvents' }
+    summary: Self-consume exactly the lifecycle facts that can change product rating aggregate.
+    messages:
+      - { $ref: '#/channels/reviewEvents/messages/reviewCreated' }
+      - { $ref: '#/channels/reviewEvents/messages/reviewUpdated' }
+      - { $ref: '#/channels/reviewEvents/messages/reviewHidden' }
+      - { $ref: '#/channels/reviewEvents/messages/reviewApproved' }
+      - { $ref: '#/channels/reviewEvents/messages/reviewRemoved' }
 components:
   messages:
-    ratingAggregateSnapshot:
-      name: reviewMetricsUpdatedV1
-      title: Product rating aggregate snapshot
+    reviewCreated:
+      name: reviewCreatedV1
+      title: REVIEW_CREATED
+      summary: A newly created approved review contributes one positive rating delta.
       contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/review-created.schema.json' }
+    reviewUpdated:
+      name: reviewUpdatedV1
+      title: REVIEW_UPDATED
+      summary: The one permitted edit, carrying old and new aggregate values.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/review-updated.schema.json' }
+    reviewHidden:
+      name: reviewHiddenV1
+      title: REVIEW_HIDDEN
+      summary: An approved review was hidden because reports reached the configured threshold.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/review-hidden.schema.json' }
+    reviewApproved:
+      name: reviewApprovedV1
+      title: REVIEW_APPROVED
+      summary: An administrator restored a review that had been hidden by reports.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/review-approved.schema.json' }
+    reviewRemoved:
+      name: reviewRemovedV1
+      title: REVIEW_REMOVED
+      summary: A legal takedown; was_counted tells the rating aggregator whether to subtract it.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/review-removed.schema.json' }
+    reviewMetricsUpdated:
+      name: reviewMetricsUpdatedV1
+      title: REVIEW_METRICS_UPDATED
+      summary: Full Search-facing product rating snapshot guarded by review_revision.
+      contentType: application/cloudevents+json
+      x-consumers: [search-service]
       payload: { $ref: './schemas/review-metrics-updated.schema.json' }
+    reviewReplyNotificationRequested:
+      name: reviewReplyNotificationRequestedV1
+      title: REVIEW_REPLY_NOTIFICATION_REQUESTED
+      summary: Notification request after the first official reply; it carries no reply content or admin identity.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload: { $ref: './schemas/review-reply-notification-requested.schema.json' }
+    reviewRemovalNotificationRequested:
+      name: reviewRemovalNotificationRequestedV1
+      title: REVIEW_REMOVAL_NOTIFICATION_REQUESTED
+      summary: Notification request after legal takedown; it carries no legal case, reason or admin identity.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload: { $ref: './schemas/review-removal-notification-requested.schema.json' }

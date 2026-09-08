@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/review/v1/schemas/review-reply-notification-requested.schema.json",
+  "allOf": [
+    { "$ref": "./review-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "subject", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.review.reply-notification-requested.v1" },
+        "dataschema": { "const": "/contracts/events/review/v1/schemas/review-reply-notification-requested.schema.json" },
+        "subject": { "$ref": "review-event-common.schema.json#/$defs/review_subject" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["review_id", "product_id", "recipient_user_id"],
+          "properties": {
+            "review_id": { "$ref": "review-event-common.schema.json#/$defs/review_id" },
+            "product_id": { "$ref": "review-event-common.schema.json#/$defs/product_id" },
+            "recipient_user_id": { "$ref": "review-event-common.schema.json#/$defs/uuid", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

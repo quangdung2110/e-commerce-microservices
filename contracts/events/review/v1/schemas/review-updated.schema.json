@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/review/v1/schemas/review-updated.schema.json",
+  "allOf": [
+    { "$ref": "./review-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "subject", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.review.updated.v1" },
+        "dataschema": { "const": "/contracts/events/review/v1/schemas/review-updated.schema.json" },
+        "subject": { "$ref": "review-event-common.schema.json#/$defs/review_subject" },
+        "data": {
+          "allOf": [
+            { "$ref": "review-event-common.schema.json#/$defs/review_identity" },
+            {
+              "type": "object",
+              "required": ["old_rating", "new_rating", "old_has_media", "new_has_media", "affects_aggregate"],
+              "properties": {
+                "old_rating": { "$ref": "review-event-common.schema.json#/$defs/rating" },
+                "new_rating": { "$ref": "review-event-common.schema.json#/$defs/rating" },
+                "old_has_media": { "type": "boolean" },
+                "new_has_media": { "type": "boolean" },
+                "affects_aggregate": { "type": "boolean" }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    }
+  ]
+}

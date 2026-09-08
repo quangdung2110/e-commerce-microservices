@@ -147,6 +147,16 @@ interactions:
     status: legacy_documented
     notes: Currently described in docs/cart/interfaces.md.
 
+  - id: order-completed-grants-review-entitlements
+    protocol: kafka
+    provider: order-service
+    consumers: [review-service]
+    contract: events/order/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      ORDER_COMPLETED carries the immutable product/SKU/variant snapshot Review needs
+      to grant one entitlement per purchased SKU without a synchronous Order lookup.
+
   - id: checkout-creates-order
     protocol: http
     provider: order-service
@@ -245,6 +255,27 @@ interactions:
       Review phát rating aggregate snapshot theo product_id, guarded bằng
       review_revision. Search VNext chỉ consume event metrics này, không consume
       review business event để tính lại aggregate.
+
+  - id: review-self-consumes-rating-lifecycle-events
+    protocol: kafka
+    provider: review-service
+    consumers: [review-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Review's idempotent rating aggregator self-consumes created, updated, hidden,
+      restored and removed facts. Metrics snapshots and notification requests are ACKed
+      without an aggregate effect.
+
+  - id: review-requests-user-notifications
+    protocol: kafka
+    provider: review-service
+    consumers: [notification-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Notification receives only first-official-reply and legal-removal requests.
+      Payloads exclude reply content, legal case/reason and administrator identity.
 
   - id: search-reindexes-review-rating-aggregates
     protocol: http

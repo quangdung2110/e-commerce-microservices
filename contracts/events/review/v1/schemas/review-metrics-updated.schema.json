@@ -2,26 +2,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.ecommerce.local/events/review/v1/schemas/review-metrics-updated.schema.json",
   "allOf": [
-    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    { "$ref": "./review-event-common.schema.json" },
     {
       "type": "object",
-      "required": ["type", "source", "subject", "sequence", "data"],
+      "required": ["type", "dataschema", "subject", "sequence", "data"],
       "properties": {
         "type": { "const": "com.ecommerce.review.metrics-updated.v1" },
-        "source": { "const": "/services/review" },
+        "dataschema": { "const": "/contracts/events/review/v1/schemas/review-metrics-updated.schema.json" },
         "subject": { "type": "string", "pattern": "^product-rating-aggregates/[0-9A-Za-z-]{1,64}$" },
-        "sequence": { "type": "integer", "minimum": 1 },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Must equal data.review_revision." },
         "data": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["product_id", "average_rating", "total_reviews", "review_revision", "observed_at"],
+          "required": ["product_id", "average_rating", "total_reviews", "total_with_media", "review_revision", "observed_at"],
           "properties": {
-            "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "product_id": { "$ref": "review-event-common.schema.json#/$defs/product_id" },
             "average_rating": { "type": "number", "minimum": 0, "maximum": 5 },
             "total_reviews": { "type": "integer", "format": "int64", "minimum": 0 },
             "total_with_media": { "type": "integer", "format": "int64", "minimum": 0 },
             "review_revision": { "type": "integer", "format": "int64", "minimum": 1 },
-            "observed_at": { "type": "string", "format": "date-time" }
+            "observed_at": { "$ref": "review-event-common.schema.json#/$defs/timestamp" }
           }
         }
       }
