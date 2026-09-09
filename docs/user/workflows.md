@@ -51,7 +51,8 @@ PostgreSQL trực tiếp; cache không nằm trên critical path.
 Update validate first/last name, date of birth và gender theo contract; ngày sinh
 không được ở tương lai. Trong một transaction update profile. Sau commit,
 producer phát `USER_PROFILE_UPDATED` chỉ với `user_id` và `sender_name` suy ra từ
-tên. Duplicate PATCH với cùng trạng thái mong muốn an toàn; API contract không có
+tên. Chat và API Gateway dùng event này làm projection eventual; Gateway chỉ dùng
+nó để cấp snapshot cho create Review. Duplicate PATCH với cùng trạng thái mong muốn an toàn; API contract không có
 idempotency key riêng. Profile missing trả 404. Nếu Kafka publish thất bại, DB
 không rollback: retry/reconciliation theo ADR-004, metric phải cho phép phát hiện
 projection lag. Race với deletion phải được serialize/để update thất bại thay vì
@@ -116,7 +117,7 @@ quyết định.
 Trong transaction, consumer create retention record idempotently; scrub name,
 phone, date of birth, gender và các PII profile theo policy; hard-delete toàn bộ
 address và preferences; commit. Email không được xử lý tại User vì Auth sở hữu
-nó. User không phát lại event deletion: Notification, Review và Chat nhận cùng
+nó. User không phát lại event deletion: Notification, Review, Chat và API Gateway nhận cùng
 `USER_DELETED` trực tiếp từ Auth theo [ADR-006](./decisions/ADR-006-auth-owns-account-deletion-event.md).
 
 Duplicate `USER_DELETED` không được thay đổi deadline. DB failure thì không
@@ -139,7 +140,7 @@ từ event verification cũ sau purge.
 
 ## WF-USER-008 — Reconcile profile/preference projection
 
-**Mục tiêu:** khôi phục eventual consistency của Chat và Notification khi direct
+**Mục tiêu:** khôi phục eventual consistency của Chat, Notification và API Gateway khi direct
 publish sau commit đã retry cạn. `user-projection-reconciliation` chạy một lần
 mỗi ngày ngoài giờ cao điểm, quét toàn bộ profile và preferences hiện còn active
 theo batch/cursor chỉ tồn tại trong lần chạy; không tạo checkpoint, outbox hay bảng

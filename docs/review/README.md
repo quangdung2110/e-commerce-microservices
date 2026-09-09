@@ -41,9 +41,11 @@ the write path.
 | Kafka `t.review.events` | Review lifecycle facts, Search rating snapshots and Notification requests; transport only, not source of truth |
 
 `variant_name_snapshot` comes from Order at completion. `author_display_name` is a
-write-time Auth/User snapshot. Both are not profile-synchronized. Account deletion
-anonymizes display name immediately and removes direct customer IDs at the supplied
-hard-delete deadline.
+write-time snapshot supplied in the trusted Gateway context: Gateway derives it from
+the User profile-name projection and uses a deterministic fallback when that
+projection is unavailable. Neither field is profile-synchronized after create.
+Account deletion anonymizes display name immediately and removes direct customer IDs
+at the supplied hard-delete deadline.
 
 ## Core capabilities
 

@@ -77,6 +77,12 @@ the review transaction.
 **Trigger:** `POST /api/v1/reviews` with eligibility ID, rating, content and uploaded
 asset IDs.
 
+Gateway has already authenticated the caller and supplied
+`X-User-Display-Name-B64`. Before any storage/DB work, Review strict-decodes the
+unpadded Base64url UTF-8 value and checks 1–201 characters. Missing or malformed
+value is `503 GATEWAY_IDENTITY_CONTEXT_UNAVAILABLE`; Review does not fall back or
+call User itself.
+
 ```text
 VERIFY submitted immutable object metadata before BEGIN
 BEGIN
@@ -86,7 +92,8 @@ BEGIN
     WHERE id=:id AND owner_user_id=:caller
       AND status=PENDING AND expires_at>now()
     RETURNING product_id, sku_id;
-  INSERT review(..., edit_count=0, status=APPROVED);
+  INSERT review(..., author_display_name=:decoded_gateway_name,
+                edit_count=0, status=APPROVED);
   attach the locked assets;
   INSERT outbox REVIEW_CREATED;
 COMMIT

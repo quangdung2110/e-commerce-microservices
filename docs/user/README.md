@@ -69,8 +69,8 @@ Không service nào được đọc hoặc ghi trực tiếp database User.
 | Đầu ra | PostgreSQL | Database | Dữ liệu User sở hữu | Có | [Data](./data.md) |
 | Đầu ra | Redis | Cache | Cache danh sách address | Tùy chọn khi đọc; cần cho tối ưu cache | [Data](./data.md) |
 | Đầu ra | Kafka | Events | Thông báo thay đổi của User | Cần cho tích hợp bất đồng bộ | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) |
-| Đầu ra | Chat, Notification | Kafka consumer | Duy trì projection | Tùy theo consumer | [Interfaces](./interfaces.md) |
-| Đầu vào | Auth Service | Kafka | Tín hiệu xóa account cho User; đồng thời Auth phát trực tiếp cho Chat, Notification và Review | Có | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) |
+| Đầu ra | Chat, Notification, API Gateway | Kafka consumer | Duy trì projection | Tùy theo consumer | [Interfaces](./interfaces.md) |
+| Đầu vào | Auth Service | Kafka | Tín hiệu xóa account cho User; đồng thời Auth phát trực tiếp cho Chat, Notification, Review và API Gateway | Có | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) |
 
 ## 7. Bất biến quan trọng
 

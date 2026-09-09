@@ -56,7 +56,11 @@ uploaded `media_asset_ids` (not object keys). Before its PostgreSQL transaction,
 Review verifies the immutable storage metadata for each caller-owned asset. The
 transaction then claims the eligibility, transitions valid assets to
 `VERIFIED`/`ATTACHED`, inserts the review/media links and writes `REVIEW_CREATED` to
-outbox. Replay returns `409 ALREADY_REVIEWED`.
+outbox. Gateway also injects `X-User-Display-Name-B64`, unpadded Base64url of the
+UTF-8 profile-name snapshot. Review strict-decodes it and requires 1–201 characters;
+missing or malformed context is `503`, not a client `400`. Gateway falls back to
+`Người dùng` when its bounded profile projection is absent, so Review never calls
+User and never waits for a profile event. Replay returns `409 ALREADY_REVIEWED`.
 
 `PATCH /api/v1/reviews/{review_id}` can change rating, content and media once.
 It requires `status=APPROVED` and `edit_count=0`; successful commit sets

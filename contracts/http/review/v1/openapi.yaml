@@ -138,9 +138,11 @@ paths:
       description: >-
         Review xác minh metadata của mỗi uploaded media asset trước transaction rồi
         atomically claim entitlement, attach asset và ghi REVIEW_CREATED vào outbox.
+        API Gateway bắt buộc inject X-User-Display-Name-B64 (base64url UTF-8 không
+        padding) từ profile-name projection; Review strict-decode trước transaction.
         X-Request-Id chỉ dùng tracing, không phải idempotency key. Client nhận timeout
         phải dùng recovery read theo eligibility_id.
-      security: [{ gatewayIdentity: [] }]
+      security: [{ gatewayIdentity: [], gatewayAuthorDisplayName: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
       requestBody:
         required: true
@@ -371,6 +373,15 @@ components:
       in: header
       name: X-User-Roles
       description: Trusted roles injected by API Gateway. Admin operations require the configured Review admin role.
+    gatewayAuthorDisplayName:
+      type: apiKey
+      in: header
+      name: X-User-Display-Name-B64
+      description: >-
+        Trusted, unpadded base64url encoding of a UTF-8 display name injected only by
+        API Gateway for POST /api/v1/reviews. Review rejects a missing, malformed or
+        decoded value outside 1..201 characters as unavailable Gateway context (503);
+        clients cannot set it.
 
   parameters:
     RequestId:
@@ -778,7 +789,7 @@ components:
         Retry-After: { schema: { type: integer, minimum: 1 } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     RetryableUnavailable:
-      description: PostgreSQL, storage metadata read, lock or signer dependency is temporarily unavailable; problem.retryable=true.
+      description: PostgreSQL, storage metadata read, lock, signer dependency or required trusted Gateway context is temporarily unavailable; problem.retryable=true.
       headers:
         Retry-After: { schema: { type: integer, minimum: 1 } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

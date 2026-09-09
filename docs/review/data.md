@@ -32,7 +32,9 @@ hoặc ghi trực tiếp vào schema này.
 `order_id`, `product_id`, `sku_id` và các `*_user_id` là external identifier nên
 không có foreign key sang service khác. `variant_name_snapshot` đến từ
 `ORDER_COMPLETED`; Review không gọi đồng bộ sang Order hay Product để lấy nó.
-`author_display_name` là snapshot từ token khi tạo review.
+`author_display_name` là snapshot khi tạo review từ `X-User-Display-Name-B64` do
+Gateway inject. Gateway tạo giá trị này từ User profile-name projection hoặc fallback
+`Người dùng`; Review strict-decode và không gọi/consume User để lấy hay đồng bộ tên.
 
 ## 2. Logical data model
 

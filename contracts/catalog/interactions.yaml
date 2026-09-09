@@ -97,18 +97,18 @@ interactions:
   - id: auth-publishes-identity-events
     protocol: kafka
     provider: auth-service
-    consumers: [user-service, notification-service, review-service, chat-service]
+    consumers: [user-service, notification-service, review-service, chat-service, api-gateway]
     contract: events/auth/v1/asyncapi.yaml
     status: proposed
-    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract.
+    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review, Chat và API Gateway trên t.auth.events. Gateway xóa profile-name projection; CloudEvents v1 là target contract.
 
   - id: user-publishes-profile-preference-events
     protocol: kafka
     provider: user-service
-    consumers: [chat-service, notification-service]
+    consumers: [chat-service, notification-service, api-gateway]
     contract: events/user/v1/asyncapi.yaml
     status: proposed
-    notes: USER_PROFILE_UPDATED cho Chat và USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
+    notes: USER_PROFILE_UPDATED cho Chat và API Gateway profile-name projection; USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
 
   - id: auth-requests-security-notifications
     protocol: kafka
