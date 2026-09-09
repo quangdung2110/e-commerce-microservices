@@ -6,7 +6,7 @@
 *   [Caching Schema (Redis Session)](checkout_caching_schema.md)
 
 **Cross-Service References:**
-*   [Order Workflow](../order/order_workflow.md#4-workflow-nhận-checkout-submit-full-saga-flow) — Nhận validated checkout payload
+*   [Order Workflow](../order/workflows.md#wf-order-004--checkout-submit-saga) — Nhận validated checkout payload
 *   [Cart Data Design](../cart/data.md#8-outboxinbox-và-idempotency-storage) — Pattern tương tự
 
 ---
@@ -227,4 +227,4 @@ Client retry POST /checkout/submit {token}
 
 ### Chống Duplicate Order
 
-Order Service nhận request với `idempotency_key = checkout_token`. Dù Checkout retry bao nhiêu lần, Order Service chỉ tạo đúng 1 Order cho mỗi token — đảm bảo bởi bảng `idempotency_keys` phía Order. Xem [Order DB Design - idempotency_keys](../order/order_db_design.md).
+Order Service nhận request với `idempotency_key = checkout_token`. Dù Checkout retry bao nhiêu lần, Order Service chỉ tạo đúng 1 Order logic cho mỗi token — đảm bảo bởi Temporal WorkflowID, Redis fast path và FSM guard phía Order. Xem [Order Data — Redis và idempotency](../order/data.md#7-redis-outbox-và-idempotency-storage).

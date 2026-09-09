@@ -8,8 +8,8 @@
 *   [Refund Boundary Decision (ADR)](refund_boundary_decision.md)
 
 **Cross-Service References:**
-*   [Order Workflow](../order/order_workflow.md) — Order gọi Initiate Payment
-*   [Order Temporal Saga](../order/temporal_saga_design.md) — Signal Payment Result
+*   [Order Workflow](../order/workflows.md) — Order gọi Initiate Payment
+*   [Order Temporal Saga](../order/architecture.md) — Signal Payment Result
 
 ---
 

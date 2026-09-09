@@ -18,7 +18,7 @@
 
 | File | Service | Decision |
 |---|---|---|
-| [order/refund_voucher_policy.md](./order/refund_voucher_policy.md) | Order + Promotion | Voucher types: PLATFORM (no SHOP). FULL/PARTIAL refund allocation rule. Non-blocking budget refund. Phase 23: không restore voucher. |
+| [order/decisions/ADR-007-refund-voucher-policy.md](./order/decisions/ADR-007-refund-voucher-policy.md) | Order + Promotion | Chỉ PLATFORM; allocation FULL/PARTIAL deterministic; non-blocking budget refund; không restore voucher. |
 
 ---
 
@@ -43,20 +43,20 @@
 
 ## 2. Order Service (Orchestrator + Temporal Saga)
 
-> Tài liệu 9 file thiết kế Order Service.
+> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
+> `target/proposed`, chưa xác minh implementation và chưa đối soát contract liên service.
 
 | File | Mô tả |
 |---|---|
-| [order/order_workflow.md](./order/order_workflow.md) | Luồng API (Get Order, Search, Cancel, Return) + Saga Checkout (Pre-Payment + Post-Payment) + Saga Refund. |
-| [order/order_db_design.md](./order/order_db_design.md) | Schema PostgreSQL: orders, order_items, order_item_lines, order_promotions, outbox, idempotency tables, refund cases. |
-| [order/order_state_machine.md](./order/order_state_machine.md) | Master Order FSM + Order Item Delivery FSM + Buyer Tab Precedence + Auto-Complete. |
-| [order/order_events.md](./order/order_events.md) | Event catalog cho `t.order.events` (10 events) + `t.search.metrics.events`. |
-| [order/order_workers.md](./order/order_workers.md) | Background workers: CDC pipeline, Metrics projector, Payment/Inventory consumers, Archive batcher. |
-| [order/temporal_saga_design.md](./order/temporal_saga_design.md) | Temporal workflow design: `OrderCheckoutWorkflow`, `OrderRefundWorkflow`, `OrderLatePaymentRecoveryWorkflow`. |
-
-### Order cross-refs
-- `docs/order/order_search_design.md` (Phase 15 — Search/Filter trực tiếp PostgreSQL) — file mở rộng
-- ~~`docs/cold_data_archiving_design.md`~~ — **đã xoá tại Phase 16** (bỏ cold data archiving, giữ toàn bộ data trong OLTP)
+| [order/README.md](./order/README.md) | Tổng quan, boundary, ownership, capability, dependency và bất biến. |
+| [order/architecture.md](./order/architecture.md) | Temporal/Kafka/CDC, component, consistency, concurrency và topology. |
+| [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
+| [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
+| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics; contract chưa được chuẩn hóa ở phase này. |
+| [order/workflows.md](./order/workflows.md) | Chín workflow gồm checkout, timeout, delivery, return, refund và late recovery. |
+| [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
+| [order/development.md](./order/development.md) | Checklist local/build/test/migration khi implementation được thêm. |
+| [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR bảo toàn các quyết định của thiết kế cũ. |
 
 ---
 
@@ -133,8 +133,7 @@ Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md
 
 | Producer | Topic | Consumer |
 |---|---|---|
-| Order | `t.order.events` (10 events) | Promotion, Inventory, Cart, Notification, Analytics, Review |
-| Order | `t.search.metrics.events` | Search |
+| Order | `t.order.events` (8 event types theo thiết kế hiện tại) | Promotion, Inventory, Cart, Notification, Analytics, Review |
 | Payment | `t.payment.events` (9 events) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |

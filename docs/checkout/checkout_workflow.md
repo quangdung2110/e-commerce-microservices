@@ -7,7 +7,7 @@
 *   [Security Analysis (Anti-Tampering & Session)](checkout_security_analysis.md)
 
 **Cross-Service References:**
-*   [Order Workflow](../order/order_workflow.md#4-workflow-nhận-checkout-submit-full-saga-flow) — Nhận Submit payload
+*   [Order Workflow](../order/workflows.md#wf-order-004--checkout-submit-saga) — Nhận Submit payload
 *   [Promotion Workflows](../promotion/workflows.md) — Budget Reservation
 *   [Inventory Warehouse Selection](../inventory/smart_routing_engine.md) — Stock check + Routing
 

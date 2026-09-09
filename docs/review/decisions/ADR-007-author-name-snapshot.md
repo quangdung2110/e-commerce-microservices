@@ -8,7 +8,7 @@ decision_owners:
 supersedes: null
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
-  - docs/order/order_events.md
+  - docs/order/interfaces.md
 ---
 
 # ADR-007 — Pseudonym author/variant, deletion guard và privacy hard purge

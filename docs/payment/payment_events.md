@@ -8,8 +8,8 @@
 *   [Refund Boundary Decision (ADR)](refund_boundary_decision.md)
 
 **Cross-Service References:**
-*   [Order Events (Consumer chính)](../order/order_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
-*   [Order Temporal Saga](../order/temporal_saga_design.md) — Payment Signal flow
+*   [Order Events (Consumer chính)](../order/interfaces.md#61-payment-events--order-payment-consumer) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
+*   [Order Temporal Saga](../order/workflows.md#wf-order-005--payment-signal-và-late-payment-recovery) — Payment Signal flow
 
 > **Phase 18 (Single Payment Provider):** Hệ thống chỉ dùng **Stripe**. Tất cả provider trong event payload = `"STRIPE"`, `provider_transaction_id` = `pi_xxx` (PaymentIntent), `provider_refund_id` = `re_xxx` (Refund), `stripe_event_id` = `evt_xxx`. Cột `payment_method` không còn trong payload (xem [CHANGELOG Phase 18](../_contracts/CHANGELOG.md#phase-18--single-payment-provider-stripe)).
 
@@ -90,7 +90,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents (xem 
 ### 3.2. PAYMENT_SUCCESS
 
 **Ngữ cảnh:** Cổng thanh toán webhook confirm → FSM: `PROCESSING/PENDING` → `SUCCESS`. Xem [State Machine T2](payment_state_machine.md#12-bảng-chi-tiết-transitions).
-**Consumer chính:** **Order Service** — Signal Temporal Workflow resume → Post-Payment Saga. Xem [Order Workers - Payment Consumer](../order/order_workers.md#3-payment-status-consumer).
+**Consumer chính:** **Order Service** — Signal Temporal Workflow resume → Post-Payment Saga. Xem [Order Operations - Payment Consumer](../order/operations.md#8-workers-và-tác-vụ-định-kỳ).
 
 > **Phase 20 (Payload Simplification):** Bỏ `user_id`, `currency`, `provider`, `provider_transaction_id`, `provider_charge_id`, `payment_method_type`, `payment_event_sequence_id`. Order chỉ cần `payment_transaction_id` (idempotency), `order_id` (route), `amount` (verify amount match), `paid_at` (audit).
 

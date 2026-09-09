@@ -71,7 +71,7 @@ services:
     runtime: undecided
     status: documented
     contract_adoption: not_started
-    docs: docs/order/order_workflow.md
+    docs: docs/order/README.md
 
   - id: payment-service
     bounded_context: payment

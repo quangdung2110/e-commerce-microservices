@@ -12,7 +12,7 @@ carries exactly one outbound event, `CART_ABANDONED`, to Notification Service.
 | Interaction | Direction | Contract |
 |---|---|---|
 | Cart HTTP API | Inbound | [`contracts/http/cart/v1/openapi.yaml`](../../../contracts/http/cart/v1/openapi.yaml) |
-| `ORDER_PAID` | Inbound Kafka | [`docs/order/order_events.md` §3.2](../../../docs/order/order_events.md) |
+| `ORDER_PAID` | Inbound Kafka | [Order interfaces — event phát ra](../../../docs/order/interfaces.md#5-event-phát-ra) |
 | Product lookup | Outbound gRPC | [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../../contracts/grpc/ecommerce/product/v1/product_service.proto) |
 | `CART_ABANDONED` | Outbound Kafka | [`contracts/events/cart/v1/asyncapi.yaml`](../../../contracts/events/cart/v1/asyncapi.yaml) |
 
