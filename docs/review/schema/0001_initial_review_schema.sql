@@ -104,11 +104,15 @@ CREATE TABLE reviews (
     status                review_status NOT NULL DEFAULT 'APPROVED',
     active_report_count   INTEGER NOT NULL DEFAULT 0,
     has_media             BOOLEAN NOT NULL DEFAULT FALSE,
-    -- When the report threshold last hid this review. It orders the admin
-    -- moderation queue oldest-first and is deliberately retained after a
-    -- dismissal restores the review, so a repeatedly brigaded review stays
-    -- visible in audit. Every index over it is partial on status, so a stale
-    -- value on an APPROVED or REMOVED row is inert.
+    -- Start of the current moderation cycle: set when active_report_count rises
+    -- from zero, and overwritten when a later report opens a new cycle. It is
+    -- the sort key of the admin moderation queue for both of its states, so a
+    -- case keeps one stable "opened at" meaning whether or not it got hidden.
+    first_reported_at     TIMESTAMPTZ,
+    -- When the report threshold last hid this review. Output only, never a sort
+    -- key. Deliberately retained after a dismissal restores the review, so a
+    -- repeatedly brigaded review stays visible in audit. Every index over these
+    -- two columns is partial on status, so a stale value is inert.
     hidden_at             TIMESTAMPTZ,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -123,10 +127,14 @@ CREATE TABLE reviews (
         content IS NULL OR char_length(btrim(content)) BETWEEN 1 AND 5000
     ),
     CONSTRAINT ck_review_active_report_count_non_negative CHECK (active_report_count >= 0),
-    -- One-way implication: a hidden review must know when it was hidden, but
-    -- leaving HIDDEN_BY_REPORT does not erase that history.
+    -- One-way implications: a hidden review must know when it was hidden and an
+    -- open case must know when it opened, but leaving either state does not
+    -- erase that history.
     CONSTRAINT ck_review_hidden_at_present CHECK (
         status <> 'HIDDEN_BY_REPORT' OR hidden_at IS NOT NULL
+    ),
+    CONSTRAINT ck_review_first_reported_at_present CHECK (
+        active_report_count = 0 OR first_reported_at IS NOT NULL
     )
 );
 
@@ -141,12 +149,15 @@ CREATE INDEX ix_review_product_with_media
     WHERE status = 'APPROVED' AND has_media = TRUE;
 CREATE INDEX ix_review_aggregate_recount
     ON reviews (product_id, rating) WHERE status = 'APPROVED';
--- Every index above is partial on APPROVED, so without this one the admin
--- moderation queue would sequentially scan the whole review table. A review
--- becomes invisible to the public exactly when it becomes admin work, so this
--- is the only index that serves it.
-CREATE INDEX ix_review_hidden_queue
-    ON reviews (hidden_at, id) WHERE status = 'HIDDEN_BY_REPORT';
+-- Every index above is partial on APPROVED with no report predicate, so without
+-- these two the admin moderation queue would sequentially scan the whole review
+-- table. They back the two states of that one queue and share the same keyset,
+-- so paging means the same thing before and after a review gets hidden.
+CREATE INDEX ix_review_moderation_reported
+    ON reviews (first_reported_at, id)
+    WHERE status = 'APPROVED' AND active_report_count > 0;
+CREATE INDEX ix_review_moderation_hidden
+    ON reviews (first_reported_at, id) WHERE status = 'HIDDEN_BY_REPORT';
 
 -- ---------------------------------------------------------------------------
 -- 4. review_media_assets and review_media
@@ -252,9 +263,10 @@ CREATE TABLE review_reports (
 CREATE UNIQUE INDEX uq_report_review_reporter_active_identity
     ON review_reports (review_id, reporter_user_id)
     WHERE reporter_user_id IS NOT NULL AND status <> 'DISMISSED';
+-- Batch loads the reports of each review on a moderation queue page. There is no
+-- index on report created_at alone: the queue is keyed on the review, so reports
+-- are never scanned globally.
 CREATE INDEX ix_report_review_status ON review_reports (review_id, status);
-CREATE INDEX ix_report_moderation_queue
-    ON review_reports (created_at, id) WHERE status = 'PENDING';
 
 CREATE TABLE review_admin_replies (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

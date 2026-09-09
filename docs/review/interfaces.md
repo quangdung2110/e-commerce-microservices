@@ -96,27 +96,28 @@ threshold, Review writes `REVIEW_HIDDEN`; admin dismiss moves review back to
 `PUT /api/v1/admin/reviews/{review_id}/reply` creates or replaces the one official
 reply. Only first creation writes `REVIEW_REPLY_NOTIFICATION_REQUESTED` when the
 author identity is still available; replacement never creates a notification event.
-Admin moderation has two read surfaces, deliberately at different granularities.
-`GET /api/v1/admin/review-reports` is the triage queue of individual `PENDING` reports
-on reviews that are still public. `GET /api/v1/admin/reviews?status=HIDDEN_BY_REPORT`
-is the case list of reviews the threshold has already hidden, one entry per review
-because `POST /api/v1/admin/reviews/{review_id}/report-dismissals` acts on a review
-rather than on a single report. Neither surface returns a reporter identity.
+`GET /api/v1/admin/reviews?status=...` is the single admin moderation surface. Its
+unit is the review, not the report, because
+`POST /api/v1/admin/reviews/{review_id}/report-dismissals` acts on a review: three
+reports on one review are one case, not three rows. `status=REPORTED` covers reviews
+still public with undismissed reports, so a case can be settled before the threshold
+fires. `status=HIDDEN_BY_REPORT` covers reviews already hidden. Reporter identity is
+never returned on either.
 
-The second surface is what makes `REVIEW-BR-009` reachable at all. Hiding a review
-moves every `PENDING` report on it to `ACTIONED`, so the case leaves the `PENDING`
-queue at the exact moment it starts needing adjudication; with no list keyed on review
-state there is no supported way to obtain the `review_id` that dismissal requires. It
-is ordered by `hidden_at` ascending so the longest-hidden review is handled first, and
-each entry carries the review, its media and its undismissed reports, so one read is
-enough to decide.
+The hidden state is what makes `REVIEW-BR-009` reachable at all. Hiding a review moves
+every `PENDING` report on it to `ACTIONED`, so a queue keyed on report state loses the
+case at the exact moment it starts needing adjudication, and the `review_id` that
+dismissal requires becomes unobtainable. Both states share the keyset
+`(first_reported_at, id)` ascending, so paging keeps one meaning across the hide
+boundary and the longest-open case comes first. Each entry carries the review, its
+media and its undismissed reports, so one read is enough to decide.
 
-Both admin surfaces carry short-lived signed media URLs, including for a review that
-is `HIDDEN_BY_REPORT`. This is a deliberate exception to the rule that hidden media
-gets no signed URL: a report about an image or video cannot be adjudicated without
-seeing it. The exception is scoped to `/api/v1/admin/**`; public and owner reads still
-issue no URL for non-`APPROVED` media, and the admin URL TTL must be shorter than the
-public one.
+The surface carries short-lived signed media URLs, including for a review that is
+`HIDDEN_BY_REPORT`. This is a deliberate exception to the rule that hidden media gets
+no signed URL: a report about an image or video cannot be adjudicated without seeing
+it. The exception is scoped to `/api/v1/admin/**`; public and owner reads still issue
+no URL for non-`APPROVED` media, and the admin URL TTL must be shorter than the public
+one.
 
 `POST /api/v1/admin/reviews/{review_id}/takedown` needs `legal_case_id` and reason.
 The single acting admin is read from trusted Gateway identity and persisted as

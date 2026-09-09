@@ -164,27 +164,38 @@ content update does not notify again. Reply state has no denormalized boolean on
 
 **Report (`POST /api/v1/reviews/{review_id}/reports`):** take the caller's privacy
 subject lock and reject a deletion guard, then lock review, reject author/hidden/removed
-review, insert report and increase `active_report_count`. If threshold is reached, set
-review hidden, set `hidden_at=now()`, transition all pending reports to `ACTIONED`, and
-write one `REVIEW_HIDDEN` event.
+review, insert report and increase `active_report_count`. When that count rises from
+zero, set `first_reported_at=now()` to open a moderation cycle. If threshold is reached,
+set review hidden, set `hidden_at=now()`, transition all pending reports to `ACTIONED`,
+and write one `REVIEW_HIDDEN` event.
 
-**Find the case (`GET /api/v1/admin/reviews?status=HIDDEN_BY_REPORT`):** hiding a
-review moves all of its `PENDING` reports to `ACTIONED`, so the case disappears from
-the `PENDING` triage queue at the moment it starts needing a decision. This list is the
-only supported way to obtain the `review_id` that dismissal requires, and therefore the
-only way `HIDDEN_BY_REPORT → APPROVED` can ever be taken. It reads
-`ix_review_hidden_queue` with a keyset on `(hidden_at, id)`, oldest-hidden first, then
-batch loads each review's media and its undismissed reports. Reporter identity is never
-returned. Signed media URLs are issued here even though the review is hidden; that
-exception exists only on the admin surface, because a report about an image cannot be
-judged without seeing it.
+**Work the queue (`GET /api/v1/admin/reviews?status=...`):** admin has exactly one
+moderation surface and its unit is the review, because `report-dismissals` acts on a
+review: three reports on one review are one case, not three rows.
+
+`status=REPORTED` lists reviews still `APPROVED` with `active_report_count > 0`, read
+through `ix_review_moderation_reported`. `status=HIDDEN_BY_REPORT` lists reviews the
+threshold already hid, read through `ix_review_moderation_hidden`. The second is not
+optional: hiding moves every `PENDING` report to `ACTIONED`, so a case keyed on report
+state would vanish at the moment it starts needing a decision, and the `review_id` that
+dismissal requires would be unobtainable — making `HIDDEN_BY_REPORT → APPROVED`
+unreachable.
+
+Both states share the keyset `(first_reported_at, id)` ascending, so paging means the
+same thing before and after a review gets hidden and the longest-open case is handled
+first. Each page then batch loads the review's media and its undismissed reports.
+Reporter identity is never returned. Signed media URLs are issued even for a hidden
+review; that exception exists only on the admin surface, because a report about an
+image cannot be judged without seeing it.
 
 **Dismiss (`POST /api/v1/admin/reviews/{review_id}/report-dismissals`):** admin locks
 review, changes its `ACTIONED`/`PENDING` reports to
 `DISMISSED` and recomputes active count. It restores only a `HIDDEN_BY_REPORT` review
 to `APPROVED` and writes `REVIEW_APPROVED`; a terminal `REMOVED` review stays removed.
-`hidden_at` is deliberately left in place so a repeatedly brigaded review keeps its
-history; every index over it is partial on status, so the stale value is inert.
+`hidden_at` and `first_reported_at` are deliberately left in place so a repeatedly
+brigaded review keeps its history; every index over them is partial on status and
+report count, so the stale values are inert. A later report reopens a cycle by
+overwriting `first_reported_at`.
 New reports after dismissal start fresh. The partial unique index prevents duplicate
 active report while reporter identity exists.
 

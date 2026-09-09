@@ -62,7 +62,7 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
 | `/api/v1/reviews/products/**` | GET | review-service | Không | `public-read` | Chỉ list/aggregate review APPROVED; Gateway bỏ forged identity headers cả trên route anonymous |
 | `/api/v1/reviews/**` (trừ `products/**`) | GET, POST, PATCH | review-service | Bắt buộc | `api-authenticated` | Buyer review, report và signed media upload; Review tự kiểm tra owner, Gateway không retry write |
-| `/api/v1/admin/reviews/**`, `/api/v1/admin/review-reports` | GET, POST, PUT | review-service | Bắt buộc, role Review admin | `api-authenticated` | Moderation, official reply và legal takedown; Review tự authorize và lấy audit actor từ Gateway identity |
+| `/api/v1/admin/reviews`, `/api/v1/admin/reviews/**` | GET, POST, PUT | review-service | Bắt buộc, role Review admin | `api-authenticated` | Moderation queue theo review, dismiss report, official reply và legal takedown; Review tự authorize và lấy audit actor từ Gateway identity |
 | `/api/v1/search/**` | GET | search-service | Không | `public-read` | **Không còn backend**: Search đã gỡ v1 khi viết lại theo `docs/search`. Route phải được xoá sau khi frontend chuyển sang v2 |
 | `/api/v2/search/**` (trừ reindex) | GET | search-service | Không | `public-read` | Search v2 canonical và là bề mặt storefront duy nhất còn backend |
 | `/api/v2/search/reindex-runs/**` | GET, POST | search-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Router priority cao hơn public v2 route; không expose qua `/internal` |

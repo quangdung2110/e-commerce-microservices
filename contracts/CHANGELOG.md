@@ -5,15 +5,20 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
-- Thêm `GET /api/v1/admin/reviews?status=HIDDEN_BY_REPORT` cho Review. Khi report chạm
-  threshold, review bị ẩn và mọi report `PENDING` của nó thành `ACTIONED`, nên case rời
-  queue `PENDING` đúng lúc cần admin phân xử và không còn cách lấy `review_id` cho
-  `report-dismissals`. Endpoint mới là đường duy nhất tìm lại các case đó, đơn vị là
-  review chứ không phải report, sắp xếp theo `hidden_at` tăng dần.
-- `AdminReviewSnapshot` thêm `media`, `visibility_status`, `active_report_count` và
-  `hidden_at`. Surface admin nay cấp signed media URL kể cả khi review đang
-  `HIDDEN_BY_REPORT` — ngoại lệ có chủ đích, TTL ngắn hơn public, vì report về ảnh/video
-  không thể phân xử nếu không xem được. Public read và owner read không đổi.
+- Thay `GET /api/v1/admin/review-reports` bằng `GET /api/v1/admin/reviews?status=...`.
+  Moderation queue của Review nay là một surface duy nhất và đơn vị là review chứ không
+  phải report, vì `report-dismissals` thao tác theo review: một review bị ba report là
+  một case một dòng. `status` nhận `REPORTED` (còn public, có report chưa dismiss) và
+  `HIDDEN_BY_REPORT` (đã bị ẩn), cùng keyset `(first_reported_at, id)` tăng dần nên
+  phân trang giữ nguyên ý nghĩa khi review bị ẩn. Breaking; contract vẫn `proposed` và
+  chưa consumer nào adopt.
+- Queue phải khóa theo review state: hide chuyển mọi report `PENDING` thành `ACTIONED`,
+  nên queue cũ lọc theo report status mất case đúng lúc cần phân xử và không còn cách
+  lấy `review_id` cho `report-dismissals`.
+- `AdminReviewSnapshot` thêm `media`, `visibility_status`, `active_report_count`,
+  `hidden_at` và `first_reported_at`. Surface admin nay cấp signed media URL kể cả khi
+  review đang `HIDDEN_BY_REPORT` — ngoại lệ có chủ đích, TTL ngắn hơn public, vì report
+  về ảnh/video không thể phân xử nếu không xem được. Public read và owner read không đổi.
 - Chốt cách outbox của Review trở thành CloudEvent: `review_outbox.payload` là envelope
   hoàn chỉnh và lên wire nguyên văn; Debezium chỉ chọn topic/key/header. `subject`,
   `dataschema`, `time`, `sequence` nằm trong payload, không có cột riêng. Các cột

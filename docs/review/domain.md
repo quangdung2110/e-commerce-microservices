@@ -58,7 +58,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1. |
 | `REVIEW-BR-007` | Caller chỉ gửi `asset_id` của asset do mình sở hữu. Khi create/edit, Review xác minh object đã upload, rồi atomically chuyển asset hợp lệ sang `VERIFIED`/`ATTACHED`; asset phải chưa attach và không vượt số lượng tối đa. |
 | `REVIEW-BR-008` | Một account có tối đa một active report cho một review khi identity còn tồn tại; tác giả không tự report. Sau khi admin dismiss, caller có thể report lại. |
-| `REVIEW-BR-009` | Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT` và ghi `hidden_at`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. Vì hide chuyển mọi report `PENDING` thành `ACTIONED`, case rời queue `PENDING` đúng lúc cần phân xử; admin moderation list theo review state là đường duy nhất lấy được `review_id` cho dismiss, nên không có nó thì luật này không thực thi được. |
+| `REVIEW-BR-009` | Report đầu tiên của một chu kỳ ghi `first_reported_at`. Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT` và ghi `hidden_at`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. Vì hide chuyển mọi report `PENDING` thành `ACTIONED`, một queue lọc theo report status sẽ mất case đúng lúc cần phân xử; moderation queue vì thế khóa theo review state, và đó là đường duy nhất lấy được `review_id` cho dismiss. |
 | `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; lần tạo đầu tiên phát `REVIEW_REPLY_NOTIFICATION_REQUESTED` khi author identity còn tồn tại, sửa reply không phát event mới. |
 | `REVIEW-BR-011` | Takedown cần `legal_case_id`, lý do nội bộ non-blank và một admin có thẩm quyền; `REMOVED` là terminal. Actor được lấy từ trusted Gateway identity, không nhận từ request body. |
 | `REVIEW-BR-012` | Chỉ review `APPROVED` thuộc aggregate. |
@@ -117,11 +117,12 @@ stateDiagram-v2
 | `HIDDEN_BY_REPORT` | Không | Không | Không |
 | `REMOVED` | Không | Không | Không |
 
-`hidden_at` ghi lần gần nhất threshold ẩn review. Nó không bị xóa khi dismiss khôi
-phục review, nên một review bị brigade nhiều lần vẫn giữ lịch sử; mọi index trên cột
-này đều partial theo status nên giá trị cũ vô hại. Cạnh `HIDDEN_BY_REPORT → APPROVED`
-chỉ đi được qua admin moderation list, vì review bị ẩn không còn xuất hiện ở bất kỳ
-surface nào khác.
+`first_reported_at` mở chu kỳ kiểm duyệt khi active report rời khỏi 0 và là khóa sắp
+xếp của moderation queue; `hidden_at` ghi lần gần nhất threshold ẩn review. Cả hai
+không bị xóa khi dismiss khôi phục review, nên một review bị brigade nhiều lần vẫn giữ
+lịch sử; mọi index trên chúng đều partial nên giá trị cũ vô hại. Cạnh
+`HIDDEN_BY_REPORT → APPROVED` chỉ đi được qua moderation queue, vì review bị ẩn không
+còn xuất hiện ở bất kỳ surface nào khác.
 
 ### 5.3 Media asset
 
@@ -161,7 +162,7 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 | Upload/attach asset | Asset owner phải là caller và caller không có deletion guard; client chỉ upload rồi gửi `asset_id`, Review tự xác minh object khi create/edit trước khi attach |
 | Report | Caller đăng nhập, có identity, không là author và không có deletion guard |
 | Reply/dismiss/takedown | Role admin; takedown được audit bằng trusted identity của admin thực hiện |
-| Moderation queue/list | Role admin; không surface nào trả reporter identity. Chỉ surface admin được cấp signed URL cho media của review không `APPROVED`, với TTL ngắn hơn public |
+| Moderation queue | Role admin; không trả reporter identity. Chỉ surface admin được cấp signed URL cho media của review không `APPROVED`, với TTL ngắn hơn public |
 | Export session/page | Service identity của Search |
 
 ## 7. Error model

@@ -251,41 +251,18 @@ paths:
         '429': { $ref: '#/components/responses/MediaQuotaExceeded' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
-  /api/v1/admin/review-reports:
-    get:
-      tags: [Admin moderation]
-      operationId: listPendingReviewReports
-      summary: Liệt kê moderation queue PENDING
-      description: >-
-        Queue không trả reporter_user_id. Admin chỉ nhận review snapshot, reason và
-        optional detail cần để xử lý report.
-      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
-      parameters:
-        - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/AdminLimit'
-      responses:
-        '200':
-          description: Pending reports theo created_at tăng dần.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AdminReviewReportPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/AdminForbidden' }
-        '503': { $ref: '#/components/responses/RetryableUnavailable' }
-
   /api/v1/admin/reviews:
     get:
       tags: [Admin moderation]
       operationId: listReviewsUnderModeration
-      summary: Liệt kê review đang bị ẩn bởi report
+      summary: Liệt kê review cần kiểm duyệt
       description: >-
-        Khi report chạm threshold, review bị ẩn và mọi report PENDING của nó thành
-        ACTIONED, nên nó rời khỏi queue PENDING đúng lúc nó cần admin phân xử. Đây là
-        surface duy nhất tìm lại được các case đó và lấy review_id cho
-        report-dismissals. Đơn vị là review, không phải report: một review bị ba report
-        là một case, và command dismiss cũng thao tác theo review.
-        Queue không trả reporter_user_id.
+        Surface moderation duy nhất của admin. Đơn vị là review, không phải report:
+        một review bị ba report là một case một dòng, và report-dismissals cũng thao
+        tác theo review. status=REPORTED là review còn public nhưng đã có report chưa
+        dismiss, xử lý được trước khi threshold tự ẩn nó. status=HIDDEN_BY_REPORT là
+        review đã bị ẩn; hide chuyển mọi report PENDING thành ACTIONED nên đây là
+        đường duy nhất lấy lại review_id cho dismiss. Cả hai không trả reporter_user_id.
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/ModerationStatusQuery'
@@ -295,8 +272,9 @@ paths:
       responses:
         '200':
           description: >-
-            Case theo hidden_at tăng dần, bị ẩn lâu nhất trước. Signed media URL chỉ
-            tồn tại trong response này.
+            Case theo first_reported_at tăng dần, case mở lâu nhất trước, cùng một
+            nghĩa sắp xếp cho cả hai status. Signed media URL chỉ tồn tại trong
+            response này.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminModerationCasePage' }
@@ -457,8 +435,8 @@ components:
       in: query
       required: true
       description: >-
-        v1 chỉ liệt kê state cần admin hành động. Nó là required để một client quên
-        filter không vô tình phân trang toàn bộ review của hệ thống.
+        Chỉ liệt kê state cần admin hành động. Required để một client quên filter
+        không vô tình phân trang toàn bộ review của hệ thống.
       schema: { $ref: '#/components/schemas/ModerationQueueStatus' }
     HasMediaQuery:
       name: has_media
@@ -711,11 +689,12 @@ components:
         upload: { $ref: '#/components/schemas/UploadInstruction' }
     ModerationQueueStatus:
       type: string
-      enum: [HIDDEN_BY_REPORT]
+      enum: [REPORTED, HIDDEN_BY_REPORT]
       description: >-
-        Chỉ HIDDEN_BY_REPORT trong v1. Enum tồn tại để mở rộng về sau mà không cần
-        path mới; thêm giá trị đòi index riêng vì mọi index review hiện có đều partial
-        theo APPROVED.
+        REPORTED là review APPROVED còn active_report_count > 0, tức case chưa chạm
+        threshold và admin còn kịp dismiss trước khi nó bị tự ẩn. HIDDEN_BY_REPORT là
+        review đã bị ẩn. Mỗi giá trị có partial index riêng; thêm giá trị mới đòi thêm
+        index vì mọi index review khác đều partial theo APPROVED.
     AdminReviewMedia:
       type: object
       additionalProperties: false
@@ -740,7 +719,7 @@ components:
       additionalProperties: false
       required:
         [review_id, product_id, sku_id, rating, content, has_media, media,
-         visibility_status, active_report_count, hidden_at, created_at]
+         visibility_status, active_report_count, hidden_at, first_reported_at, created_at]
       properties:
         review_id: { $ref: '#/components/schemas/Uuid' }
         product_id: { $ref: '#/components/schemas/ProductId' }
@@ -761,11 +740,15 @@ components:
           type: [string, 'null']
           format: date-time
           description: Lần gần nhất report threshold ẩn review; null nếu chưa từng bị ẩn.
+        first_reported_at:
+          type: [string, 'null']
+          format: date-time
+          description: Report chưa dismiss đầu tiên của chu kỳ hiện tại; null khi không còn active report.
         created_at: { type: string, format: date-time }
     AdminModerationCase:
       type: object
       additionalProperties: false
-      required: [review, reports, hidden_at]
+      required: [review, reports, first_reported_at, hidden_at]
       description: >-
         Một review cần phân xử kèm toàn bộ ngữ cảnh để quyết trong một lần đọc. Dùng
         review.review_id làm path parameter cho report-dismissals.
@@ -778,7 +761,14 @@ components:
             Report chưa DISMISSED của review, cũ trước. Không có reporter_user_id.
             Bị cắt ở 50; active_report_count mới là con số đầy đủ.
           items: { $ref: '#/components/schemas/AdminModerationCaseReport' }
-        hidden_at: { type: string, format: date-time }
+        first_reported_at:
+          type: string
+          format: date-time
+          description: Report chưa dismiss đầu tiên của chu kỳ hiện tại; khóa sắp xếp của cả hai status.
+        hidden_at:
+          type: [string, 'null']
+          format: date-time
+          description: Null khi status là REPORTED.
     AdminModerationCaseReport:
       type: object
       additionalProperties: false
@@ -798,26 +788,6 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/AdminModerationCase' }
-        next_cursor: { type: [string, 'null'], maxLength: 512 }
-    AdminReviewReport:
-      type: object
-      additionalProperties: false
-      required: [report_id, review, reason, detail, created_at]
-      properties:
-        report_id: { $ref: '#/components/schemas/Uuid' }
-        review: { $ref: '#/components/schemas/AdminReviewSnapshot' }
-        reason: { $ref: '#/components/schemas/ReviewReportReason' }
-        detail: { type: [string, 'null'], maxLength: 2000 }
-        created_at: { type: string, format: date-time }
-    AdminReviewReportPage:
-      type: object
-      additionalProperties: false
-      required: [items, next_cursor]
-      properties:
-        items:
-          type: array
-          maxItems: 100
-          items: { $ref: '#/components/schemas/AdminReviewReport' }
         next_cursor: { type: [string, 'null'], maxLength: 512 }
     AdminModerationResult:
       type: object

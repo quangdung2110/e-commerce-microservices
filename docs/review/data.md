@@ -161,12 +161,16 @@ active report cho một review khi còn identity; unique partial index loại tr
 `ACTIONED` là quyết định tự động khi chạm ngưỡng: có `resolved_at` nhưng không có
 admin. `DISMISSED` luôn cần `resolved_by_admin_id` và `resolved_at`.
 
-`hidden_at` trên `reviews` ghi lần gần nhất threshold ẩn review. Nó cần cho admin
-moderation list vì hide chuyển mọi report `PENDING` của review thành `ACTIONED`: case
-biến mất khỏi `ix_report_moderation_queue` đúng lúc nó cần admin phân xử, nên phải tìm
-lại theo review state chứ không theo report state. `ck_review_hidden_at_present` là
-implication một chiều (`HIDDEN_BY_REPORT` ⟹ có `hidden_at`), nên dismiss khôi phục
-review mà vẫn giữ lịch sử bị ẩn.
+Moderation queue của admin là một danh sách duy nhất, đơn vị là review chứ không phải
+report, vì `report-dismissals` thao tác theo review. Nó cần hai cột trên `reviews`:
+`first_reported_at` mở chu kỳ khi `active_report_count` rời khỏi 0 và là khóa sắp xếp,
+`hidden_at` ghi lần gần nhất threshold ẩn review và chỉ để hiển thị.
+
+Phải khóa theo review state chứ không theo report state: hide chuyển mọi report
+`PENDING` thành `ACTIONED`, nên một queue lọc theo report status sẽ mất case đúng lúc
+nó cần admin phân xử. Cả hai `ck_review_hidden_at_present` và
+`ck_review_first_reported_at_present` là implication một chiều, nên dismiss khôi phục
+review mà vẫn giữ lịch sử; report mới ghi đè `first_reported_at` để mở chu kỳ mới.
 
 `review_takedowns` là audit/legal record: `legal_case_id`, admin thực hiện
 (`taken_down_by_admin_id`) và lý do nội bộ. Nó không phải nội dung notification.
@@ -287,10 +291,15 @@ Public review list dùng keyset `(created_at, id)` và các partial index
 `status='APPROVED'`. Mọi index phục vụ sort đều kết thúc bằng
 `created_at DESC, id DESC`; không dùng `OFFSET`.
 
-Admin moderation list dùng keyset `(hidden_at, id)` tăng dần trên
-`ix_review_hidden_queue`. Đây là index duy nhất trên `reviews` không partial theo
-`status='APPROVED'`: review bị ẩn rời khỏi mọi index public đúng lúc nó thành việc của
-admin, nên nếu thiếu nó thì list sẽ seq-scan toàn bảng.
+Admin moderation list dùng keyset `(first_reported_at, id)` tăng dần cho cả hai
+status, trên `ix_review_moderation_reported` và `ix_review_moderation_hidden`. Dùng
+chung một khóa sắp xếp để phân trang giữ nguyên ý nghĩa khi review chuyển từ
+`REPORTED` sang `HIDDEN_BY_REPORT`. Mọi index review khác đều partial theo
+`status='APPROVED'` và không có predicate report, nên thiếu hai index này thì list
+seq-scan toàn bảng.
+
+`review_reports` không có index theo `created_at` toàn cục: queue khóa theo review nên
+report chỉ được batch-load theo `review_id` qua `ix_report_review_status`.
 
 Các query secondary tải media/reply theo batch cho page review, không N+1; admin
 moderation list cũng batch-load media và report chưa `DISMISSED` theo cùng cách.
