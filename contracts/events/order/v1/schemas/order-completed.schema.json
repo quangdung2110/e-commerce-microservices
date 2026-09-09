@@ -11,14 +11,15 @@
         "type": { "const": "com.ecommerce.order.completed.v1" },
         "source": { "const": "/services/order" },
         "dataschema": { "const": "/contracts/events/order/v1/schemas/order-completed.schema.json" },
-        "subject": { "type": "string", "pattern": "^orders/[1-9][0-9]*$" },
+        "subject": { "type": "string", "pattern": "^orders/[A-Za-z0-9_:.-]{1,64}$" },
         "sequence": { "type": "integer", "minimum": 1, "description": "The completed order lifecycle sequence." },
         "data": {
           "type": "object",
           "additionalProperties": false,
           "required": ["order_id", "user_id", "completed_at", "items"],
           "properties": {
-            "order_id": { "type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807 },
+            "order_id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_:.-]{1,64}$",
+              "description": "Opaque identifier owned by Order. Consumers MUST NOT parse, order by or derive anything from it. It is a string rather than an int64 because JSON numbers are IEEE-754 doubles in JavaScript, which silently rounds any value above 2^53-1." },
             "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
             "completed_at": { "type": "string", "format": "date-time" },
             "items": {

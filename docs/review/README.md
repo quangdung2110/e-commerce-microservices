@@ -101,6 +101,12 @@ late/replayed input from writing that direct identity back.
   customer erasure only covers direct customer identifiers.
 - Event receipt retention must be configured to exceed Kafka retention plus replay
   safety margin before implementation is deployed.
+- Order and Inventory still disagree on the value of an order identifier: Order emits
+  `"10001"` while Inventory emits `"order-10001"` for the same order. Both are opaque
+  strings now, so neither contract is wrong on its own, but nothing can correlate the
+  two event streams until one owner adopts the other's form. Review is unaffected — it
+  only consumes Order — and changing Inventory's published contract is not Review's
+  call, so this is recorded rather than fixed here.
 - Auth deliberately keeps best-effort `USER_DELETED` delivery with at most three
   retries and no outbox. A missed event requires Auth operational reconciliation/redrive
   before Review can start its privacy lifecycle.

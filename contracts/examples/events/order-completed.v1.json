@@ -1,0 +1,31 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda010",
+  "type": "com.ecommerce.order.completed.v1",
+  "source": "/services/order",
+  "subject": "orders/10001",
+  "time": "2026-09-07T04:20:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/order/v1/schemas/order-completed.schema.json",
+  "correlationid": "corr-order-10001",
+  "sequence": 42010,
+  "data": {
+    "order_id": "10001",
+    "user_id": "9f1b7e42-1c53-4a8e-8f47-6c2b0a5d3e11",
+    "completed_at": "2026-09-07T04:19:58Z",
+    "items": [
+      {
+        "product_id": "b3f1c9a2-5d47-4e88-9a1f-7c05e2d84b63",
+        "sku_id": "c7a2e5b1-9f34-4d60-8b12-5e93a7f10d28",
+        "variant_name": "Xanh / M",
+        "quantity": 2
+      },
+      {
+        "product_id": "b3f1c9a2-5d47-4e88-9a1f-7c05e2d84b63",
+        "sku_id": "d84f60c3-2a71-4b95-9e07-1f5c8b26a049",
+        "variant_name": null,
+        "quantity": 1
+      }
+    ]
+  }
+}

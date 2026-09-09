@@ -5,6 +5,16 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- `ORDER_COMPLETED.data.order_id` đổi từ `integer/int64` sang opaque string
+  (1–64 ký tự). JSON number là IEEE-754 double ở JavaScript nên mọi giá trị trên
+  2^53-1 bị làm tròn im lặng — contract cũ cho phép tới 2^63-1, tức là consumer JS có
+  thể nhận nhầm ID mà không có lỗi nào. Kiểu string cũng là điều
+  `contracts/conventions/data-types.md` yêu cầu cho ID qua boundary. Breaking;
+  contract vẫn `proposed` và Review là consumer duy nhất.
+- `ORDER_COMPLETED.subject` nới từ `^orders/[1-9][0-9]*$` sang
+  `^orders/[A-Za-z0-9_:.-]{1,64}$` để không còn mô tả cùng một ID theo hai kiểu trong
+  cùng một file, và để Order đổi định dạng nội bộ không thành breaking change.
+- Thêm `contracts/examples/events/order-completed.v1.json`.
 - Sửa quy trình customer erasure của Review: mỗi bảng erasable ghép identifier với một
   mốc `*_erased_at` dưới CHECK đòi cả hai hoặc không cột nào, nhưng workflow chỉ mô tả
   việc null hóa identifier. Triển khai đúng câu chữ sẽ bị `check_violation` và rollback

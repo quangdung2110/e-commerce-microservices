@@ -15,7 +15,9 @@ evidence:
 ## Decision
 
 Review tạo tối đa một entitlement cho `(order_id, product_id, sku_id)`. `order_id`
-là globally unique và đã xác định buyer, nên `user_id` không thuộc business key.
+là globally unique và đã xác định buyer, nên `user_id` không thuộc business key. Cả ba
+đều là opaque string do service khác sở hữu; Review chỉ so sánh bằng và không diễn giải
+nội dung của chúng.
 
 Eligibility chỉ có `PENDING`, `CLAIMED`, `EXPIRED`. Nó quản lý quyền tạo review; nó
 không mang attempt counter hay quota sửa. `reviews.edit_count` có range `0..1` và là

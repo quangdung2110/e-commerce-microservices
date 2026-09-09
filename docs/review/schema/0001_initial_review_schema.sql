@@ -48,7 +48,9 @@ CREATE TYPE rating_export_session_status AS ENUM ('ACTIVE', 'EXPIRED');
 
 CREATE TABLE review_eligibilities (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id              BIGINT NOT NULL,
+    -- Opaque identifier owned by Order. Stored as text, never parsed, ordered by
+    -- or reasoned about: its internal form is Order's decision to change.
+    order_id              VARCHAR(64) NOT NULL,
     product_id            VARCHAR(64) NOT NULL,
     sku_id                VARCHAR(64) NOT NULL,
     variant_name_snapshot VARCHAR(255),
