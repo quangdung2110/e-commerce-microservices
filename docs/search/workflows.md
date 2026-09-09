@@ -397,11 +397,18 @@ replica; không có run nào chưa kết thúc; mapping mới đã được revi
    xử lý theo quy tắc `SNAPSHOT_SESSION_EXPIRED` ở WF-SEARCH-007: ghi watermark mới
    `W'`, bỏ mọi cursor cũ và page lại từ đầu.
 3. **Build rating.** Tạo Review export session sau catalog, rồi lấy mọi page rating
-   aggregate qua `session_id`. Import aggregate vào toàn bộ SKU khớp `product_id`
-   theo `review_revision` bằng các `_bulk` chunked với cùng giới hạn. Session trả
-   `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert SKU và không
-   thay đổi catalog/availability field. Session 410/503 làm hỏng toàn bộ run rating:
-   tạo session mới và import lại từ đầu.
+   aggregate qua `session_id`. Mỗi aggregate được apply vào toàn bộ SKU khớp
+   `product_id` bằng một `_update_by_query` với `conflicts=proceed`, guard
+   `review_revision` và throttle bằng `requests_per_second` của ES task API — **không**
+   phải `_bulk`: aggregate khóa theo `product_id` còn document khóa theo `_id = sku_id`,
+   và Search không giữ reverse lookup giữa hai khóa đó
+   ([`SEARCH-INV-005`](./README.md#7-critical-invariants)). Đây là ngoại lệ duy nhất
+   trong ba bước Build; bước 1 và 2 địa chỉ hóa theo `_id` nên vẫn dùng `_bulk` chunked.
+   Session trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert SKU
+   và không thay đổi catalog/availability field. Session 404/410 làm hỏng toàn bộ run
+   rating: offsets đã ghi thuộc về session đã chết nên phải bị thay, tạo session mới và
+   import lại từ trang đầu. Số session cho một lần build bị chặn bởi
+   `rating_export_max_sessions`; vượt ngưỡng thì `FAILED` thay vì lặp.
 4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
    `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
    (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable
@@ -434,7 +441,8 @@ alias không đổi nên traffic không bị ảnh hưởng. Product/Review expo
 handoff tại **watermark hiệu lực cuối cùng**, hoặc availability vẫn thiếu target document
 sau Product catch-up → không được cutover; tập page dở ở `W` ghép với change feed ở `W'`
 không phải là handoff hợp lệ. Tạo lại snapshot session vượt
-`availability_snapshot_max_sessions` → run `FAILED`. Catch-up/publisher lag không hội tụ
+`availability_snapshot_max_sessions`, hoặc Review export session vượt
+`rating_export_max_sessions` → run `FAILED`. Catch-up/publisher lag không hội tụ
 → hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
 `SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
 run. Lỗi sau cutover → swap alias ngược về index cũ.
@@ -462,7 +470,10 @@ action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, th
 **Test scenarios.** Reindex trên catalog rỗng; rating tồn tại từ trước reindex;
 product chưa có review nhận `0/0`; mutation Category/Product/Rating trong lúc export;
 event cũ/trùng sau snapshot; snapshot session hết hạn giữa pha Build availability và khi
-resume checkpoint; control event supersede run; reindex khi đang có tải ghi;
+resume checkpoint; Review export session hết hạn giữa lúc page rating → session mới,
+page lại từ đầu và catch-up seek theo offsets của session mới; vượt
+`rating_export_max_sessions` → run `FAILED`; control event supersede run; reindex khi
+đang có tải ghi;
 chunk chạm giới hạn action hoặc byte; throttle giới hạn số bulk in-flight; 429/503 làm
 backoff và hạ tốc độ; hủy giữa build; catch-up không hội tụ; cutover rồi rollback;
 trigger trùng.

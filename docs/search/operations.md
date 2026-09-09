@@ -59,7 +59,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
 | Cửa sổ tombstone | Số ngày giữ tombstone trước khi purge | Có | Không | Không |
 | Thumbnail | CDN base URL và URL placeholder dùng để dựng `thumbnail_url` từ `thumbnail_storage_key` | Có | Không | Không, nếu cấu hình động |
-| Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review, `availability_snapshot_max_sessions` (mặc định `2`) | Có | Không | Có |
+| Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review, `availability_snapshot_max_sessions` và `rating_export_max_sessions` (đều mặc định `2`) | Có | Không | Có |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 
 Giá trị mặc định thực tế phải được đọc từ cấu hình runtime khi tài liệu được xác
