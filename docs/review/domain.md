@@ -65,7 +65,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-013` | Aggregate chỉ tăng `review_revision` khi metric đổi, không phải khi content/name đổi. |
 | `REVIEW-BR-014` | Một event consumer xử lý tối đa một lần theo `(consumer_name, event_id)`. |
 | `REVIEW-BR-015` | `USER_DELETED` anonymize ngay; tới `hard_delete_after` thì purge direct customer identifiers. |
-| `REVIEW-BR-016` | Create review chỉ nhận snapshot tác giả từ `X-User-Display-Name-B64` do Gateway inject. Giá trị phải strict-decode Base64url UTF-8 thành tên 1–201 ký tự; thiếu/lỗi là `503`, không gọi User. |
+| `REVIEW-BR-016` | Create review tạo pseudonym `Khách hàng #…` bằng HMAC-SHA-256 của trusted `X-User-Id`, không nhận tên/email và không gọi/consume User. Alias chỉ để hiển thị, không dùng authorization; `USER_DELETED` thay nó bằng `Khách hàng ẩn danh`. |
 
 ## 4. Invariants
 

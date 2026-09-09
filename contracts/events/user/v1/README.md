@@ -10,13 +10,12 @@ và topic/message nằm trong [AsyncAPI](asyncapi.yaml).
 |---|---|---|
 | `t.user.events` | Chat Service | Đồng bộ `sender_name` tối thiểu cho projection chat. |
 | `t.user.events` | Notification Service | Đồng bộ ba notification preference. |
-| `t.user.events` | API Gateway | Duy trì bounded profile-name projection để cấp snapshot tên cho create Review. |
 
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_id`. Consumer
 phải xử lý delivery trùng và chỉ áp dụng update mới hơn theo `updated_at`.
 
 `USER_DELETED` không thuộc contract này. Auth Service là nguồn chân lý cho việc
-xóa account và phát event đó trực tiếp cho User, Notification, Review, Chat và API Gateway
+xóa account và phát event đó trực tiếp cho User, Notification, Review và Chat
 trên [`Auth Events v1`](../../auth/v1/asyncapi.yaml).
 
 ## Dữ liệu và độ tin cậy

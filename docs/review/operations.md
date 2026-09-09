@@ -29,8 +29,8 @@ percentage: `review_event_receipts` makes the normal aggregator path idempotent.
 
 ## 2. Health and dependencies
 
-API readiness requires PostgreSQL only. Kafka/Connect outage must not make public
-review commands unavailable: committed outbox rows wait for CDC. Consumer readiness
+API readiness requires PostgreSQL and configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`.
+Kafka/Connect outage must not make public review commands unavailable: committed outbox rows wait for CDC. Consumer readiness
 requires Kafka and PostgreSQL. Export-session creation additionally requires Kafka;
 PDP/public reads do not. Media upload-instruction issuance and create/edit containing
 media additionally require the storage signer/metadata read; outage there returns a
@@ -51,6 +51,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_EVENT_RECEIPT_RETENTION_DAYS` | >= Kafka retention + margin | Never purge earlier than replay window |
 | `REVIEW_OUTBOX_RETENTION_DAYS` | 30 | Partition cleanup after connector proof |
 | `REVIEW_REPORT_THRESHOLD` | 10 | Sensitive; never expose publicly |
+| `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` | none | Required, stable v1 secret for author pseudonym without direct PII; secret rotation changes aliases for future reviews |
 
 ## 4. Metrics and alerts
 

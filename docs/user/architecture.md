@@ -17,8 +17,8 @@ verified_against_commit: null
 
 User nằm sau API Gateway đối với request đồng bộ. Auth là upstream bất đồng bộ
 cho bootstrap và xóa account. PostgreSQL là system of record; Redis chỉ tăng tốc
-đọc danh sách address. Chat, Notification và API Gateway nhận event User để tự duy trì
-projection; User, Chat, Notification, Review và API Gateway nhận tín hiệu xóa trực tiếp từ
+đọc danh sách address. Chat và Notification nhận event User để tự duy trì
+projection; User, Chat, Notification và Review nhận tín hiệu xóa trực tiếp từ
 Auth. Checkout gọi internal HTTP/mTLS để
 resolve address snapshot sau khi user chọn address, thay vì đọc database User.
 
@@ -33,13 +33,11 @@ flowchart LR
   A --> K[Kafka producer]
   K --> CH[Chat Service]
   K --> N[Notification Service]
-  K --> GP[Gateway profile-name projection]
   AU[Auth Service] --> KA[Kafka: auth events]
   KA --> EC[Auth-event consumer]
   KA --> CH
   KA --> N
   KA --> RV[Review Service]
-  KA --> GP
   EC --> A
   W[Retention purge worker] --> A
   RC[Projection reconciliation worker] --> A

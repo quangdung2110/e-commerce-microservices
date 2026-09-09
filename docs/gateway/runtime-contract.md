@@ -44,7 +44,7 @@ client → TLS/trusted proxy → size & IP policy → route → rate/concurrency
        → logs, metrics, trace export
 ```
 
-Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` và `X-User-Display-Name-B64` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header cùng tên do `gateway-auth` trả về trong allowlist mới được forward tới service. Ánh xạ claim sang header được chốt tại mục 6.1 và enrichment tên tại mục 6.2.
+Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header cùng tên do `gateway-auth` trả về trong allowlist mới được forward tới service. Ánh xạ claim sang header được chốt tại mục 6.1.
 
 Gateway tiếp tục `traceparent`/`tracestate` W3C hợp lệ; nếu không có thì sinh trace context W3C chuẩn. Gateway không tự tạo trace ID riêng.
 
@@ -61,7 +61,7 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/api/orders/**` | do service định nghĩa | order-service | Bắt buộc | `api-authenticated` | Không retry method không idempotent |
 | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
 | `/api/v1/reviews/products/**` | GET | review-service | Không | `public-read` | Chỉ list/aggregate review APPROVED; Gateway bỏ forged identity headers cả trên route anonymous |
-| `/api/v1/reviews/**` (trừ `products/**`) | GET, POST, PATCH | review-service | Bắt buộc | `api-authenticated` | Buyer review, report và signed media upload; riêng `POST /api/v1/reviews` nhận `X-User-Display-Name-B64` từ Gateway; Review tự kiểm tra owner, Gateway không retry write |
+| `/api/v1/reviews/**` (trừ `products/**`) | GET, POST, PATCH | review-service | Bắt buộc | `api-authenticated` | Buyer review, report và signed media upload; Review tự kiểm tra owner, Gateway không retry write |
 | `/api/v1/admin/reviews/**`, `/api/v1/admin/review-reports` | GET, POST, PUT | review-service | Bắt buộc, role Review admin | `api-authenticated` | Moderation, official reply và legal takedown; Review tự authorize và lấy audit actor từ Gateway identity |
 | `/api/v1/search/**` | GET | search-service | Không | `public-read` | **Không còn backend**: Search đã gỡ v1 khi viết lại theo `docs/search`. Route phải được xoá sau khi frontend chuyển sang v2 |
 | `/api/v2/search/**` (trừ reindex) | GET | search-service | Không | `public-read` | Search v2 canonical và là bề mặt storefront duy nhất còn backend |
@@ -144,42 +144,6 @@ Sau khi validate thành công, `gateway-auth` inject đúng bốn header dưới
 3. Kiểm tra Redis denylist theo `jti` và `revoked_before` theo `sub`.
 4. Trả `401` chỉ cho credentials không hợp lệ; trả `503` khi dependency validation bắt buộc không sẵn sàng.
 5. Chỉ trả về allowlisted identity headers sau khi validation thành công.
-
-### 6.2 Enrich display name chỉ cho create Review
-
-Access token vẫn **không** mang profile. Để Review có snapshot tên tác giả mà không
-gọi đồng bộ User Service, `gateway-auth` duy trì một projection chỉ-đọc từ
-`USER_PROFILE_UPDATED` của [User Events v1](../../contracts/events/user/v1/asyncapi.yaml).
-Nó không được gọi HTTP/User database khi xử lý request.
-
-- Consumer group `gateway-profile-name-v1` chỉ ACK Kafka sau khi ghi atomically
-  projection. Record có `sender_name` và `updated_at`; chỉ record có `updated_at`
-  mới hơn được thay thế. Timestamp bằng nhau mà `sender_name` khác nhau là contract
-  violation, phải DLQ/alert thay vì chọn tùy ý.
-- Projection dùng Redis namespace riêng `gateway:profile-name:*`, ACL chỉ cho
-  `gateway-auth`. Suffix key là `HMAC-SHA-256(user_id)` với secret của Gateway, không
-  phải UUID thô. Value hết hạn không quá 48 giờ; vì vậy event mất hoặc cache bị mất
-  chỉ có thể làm dùng fallback, không giữ tên vô hạn. Redis failure khi đọc projection
-  trả `503`; không được giả vờ fallback cho dependency failure. HMAC secret phải được
-  version hóa; khi rotate, Gateway dual-read/dual-delete cả key version cũ trong tối
-  thiểu thời gian tombstone trước khi bỏ version cũ.
-- `gateway-auth` cũng consume `USER_DELETED` trực tiếp từ Auth Events v1. Nó xóa
-  tên ngay và ghi tombstone theo cùng keyed suffix trong ít nhất 8 ngày (Kafka
-  retention 7 ngày cộng recovery margin). Profile event có `updated_at <= deleted_at`
-  bị bỏ qua. User chỉ phát/reconcile profile còn active, nên tombstone ngăn event
-  profile đến muộn khôi phục PII sau deletion.
-
-Sau khi JWT hợp lệ, **chỉ** `POST /api/v1/reviews` nhận thêm
-`X-User-Display-Name-B64`. Giá trị là Base64url RFC 4648 **không padding** của UTF-8
-`sender_name`; cách mã hóa này tránh đưa Unicode/control character thô vào HTTP
-header. Nếu projection không có hoặc đã hết hạn, Gateway encode fallback cố định
-`Người dùng`. Các route khác, kể cả endpoint Review đã xác thực, không nhận header
-này. Header luôn bị strip ở edge trước ForwardAuth như mục 4 và không được log.
-
-Review phải strict-decode Base64url/UTF-8, sau đó áp cùng giới hạn contract User
-`1..201` ký tự. Thiếu hoặc không hợp lệ là lỗi Gateway context (`503`), không phải
-lỗi request của client. Tên là snapshot eventual tại thời điểm create; Review không
-consume profile update và không cập nhật review cũ khi profile đổi.
 
 | Lỗi | Business route được bảo vệ | Payment route |
 |---|---|---|

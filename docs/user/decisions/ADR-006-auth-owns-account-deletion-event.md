@@ -23,7 +23,7 @@ event do direct publish, và làm hai event diễn đạt cùng một fact nghi�
 ## Quyết định
 
 Auth là nguồn chân lý duy nhất cho fact account đã bị xóa và phát `USER_DELETED`
-trực tiếp trên `t.auth.events` cho User, Notification, Review, Chat và API Gateway. Mỗi
+trực tiếp trên `t.auth.events` cho User, Notification, Review và Chat. Mỗi
 consumer tự xử lý dữ liệu mà mình sở hữu, idempotent theo `user_id`/CloudEvent
 `id`, và không đợi service khác hoàn tất cleanup.
 
@@ -42,7 +42,7 @@ consume event Auth, nhưng không phát `ACCOUNT_DELETED`. `t.user.events` chỉ
 ## Hệ quả
 
 Auth AsyncAPI phải công khai các consumer deletion trực tiếp. Notification,
-Review, Chat và API Gateway phải chuyển consumer sang `t.auth.events`. Tín hiệu deletion có
+Review và Chat phải chuyển consumer sang `t.auth.events`. Tín hiệu deletion có
 thể đến trước/sau các update projection khác; consumer xem deletion là terminal
 và không khôi phục PII từ update đến muộn.
 

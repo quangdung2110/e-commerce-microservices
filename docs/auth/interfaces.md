@@ -21,7 +21,7 @@ verified_against_commit: null
 |---|---|---|---|---|---|---|
 | API xác thực và session | Inbound | HTTP | Auth | Client/Gateway | [OpenAPI v1](../../contracts/http/auth/v1/openapi.yaml) | proposed |
 | JWKS | Outbound | HTTP | Auth | API Gateway | [OpenAPI v1](../../contracts/http/auth/v1/openapi.yaml) | proposed |
-| Identity event | Outbound | Kafka | Auth | User, Notification, Review, Chat, API Gateway | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
+| Identity event | Outbound | Kafka | Auth | User, Notification, Review, Chat | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Security notification request | Outbound | Kafka | Auth | Notification | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Resolve notification delivery | Inbound | Internal HTTP/mTLS | Auth | Notification | [Internal OpenAPI v1](../../contracts/http/auth/internal/v1/openapi.yaml) | proposed |
 | JWKS invalidation | Outbound | Redis Pub/Sub | Auth | API Gateway | Cần tạo: schema | proposed |
@@ -61,7 +61,7 @@ deduplicate bằng CloudEvent `id` ổn định và có reconciliation vận hà
 | `USER_OTP_REQUESTED` | Cần OTP để đăng ký hoặc xác minh email mới | Notification |
 | `PASSWORD_RESET_REQUESTED` | Yêu cầu email có opaque reset-token link | Notification |
 | `USER_VERIFIED_SUCCESS` | Hoàn tất xác minh account | User |
-| `USER_DELETED` | Bắt đầu luồng xóa account/GDPR; payload có deadline retention | User, Notification, Review, Chat, API Gateway |
+| `USER_DELETED` | Bắt đầu luồng xóa account/GDPR; payload có deadline retention | User, Notification, Review, Chat |
 | `USER_EMAIL_CHANGED` | Đổi email thành công | Notification |
 | `USER_PASSWORD_CHANGED` | Đổi password thành công | Notification |
 | `USER_ACCOUNT_LOCKED` | Đạt ngưỡng failed login | Notification |

@@ -53,7 +53,7 @@ flowchart TB
 
 | Component | Responsibility |
 |---|---|
-| API/application service | Validate request and trusted Gateway context, authorize caller, verify submitted media object metadata before its database transaction, then keep domain mutation/counter/outbox in one PostgreSQL transaction |
+| API/application service | Validate request, authorize caller, generate author pseudonym from trusted identity, verify submitted media object metadata before its database transaction, then keep domain mutation/counter/outbox in one PostgreSQL transaction |
 | Order consumer | Store receipt then upsert entitlement from self-contained `ORDER_COMPLETED` snapshot |
 | Privacy consumer | Store receipt/request, anonymize author immediately; hard-purge worker removes direct IDs at deadline |
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |

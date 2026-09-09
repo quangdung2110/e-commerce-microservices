@@ -51,9 +51,9 @@ components:
     userProfileUpdated:
       name: userProfileUpdatedV1
       title: USER_PROFILE_UPDATED
-      summary: Tên hiển thị suy ra từ profile đã thay đổi, cho Chat và Gateway profile-name projection.
+      summary: Tên hiển thị suy ra từ profile đã thay đổi.
       contentType: application/cloudevents+json
-      x-consumers: [chat-service, api-gateway]
+      x-consumers: [chat-service]
       payload:
         $ref: './schemas/user-profile-updated.schema.json'
       examples:

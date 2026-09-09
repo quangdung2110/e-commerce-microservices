@@ -32,9 +32,13 @@ hoặc ghi trực tiếp vào schema này.
 `order_id`, `product_id`, `sku_id` và các `*_user_id` là external identifier nên
 không có foreign key sang service khác. `variant_name_snapshot` đến từ
 `ORDER_COMPLETED`; Review không gọi đồng bộ sang Order hay Product để lấy nó.
-`author_display_name` là snapshot khi tạo review từ `X-User-Display-Name-B64` do
-Gateway inject. Gateway tạo giá trị này từ User profile-name projection hoặc fallback
-`Người dùng`; Review strict-decode và không gọi/consume User để lấy hay đồng bộ tên.
+`author_display_name` là pseudonym không chứa profile/email. Khi create, Review tạo
+`Khách hàng #` cộng 12 ký tự Base32 viết hoa đầu của
+`HMAC-SHA-256("review-author-alias:v1:" || canonical_lowercase_uuid(owner_user_id))`
+bằng `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`; cùng account giữ cùng pseudonym khi secret ổn
+định. Alias chỉ để hiển thị, không cần unique và không được dùng cho authorization.
+Review không gọi/consume User để lấy hay đồng bộ tên. Khi nhận `USER_DELETED`, Review
+ghi đè giá trị bằng `Khách hàng ẩn danh`.
 
 ## 2. Logical data model
 
@@ -181,7 +185,7 @@ mới và chạy lại toàn bộ export. Offset rows xóa theo `ON DELETE CASCA
 toàn bộ subject; cột trên review chỉ nói review đó đã đổi display name chưa.
 
 1. Consumer nhận event idempotently, ghi request `RECEIVED`.
-2. Đổi `author_display_name`, đặt `author_anonymized_at`, đánh dấu request
+2. Đổi `author_display_name` thành `Khách hàng ẩn danh`, đặt `author_anonymized_at`, đánh dấu request
    `ANONYMIZED`; aggregate không đổi và không phát Review event. Mọi service giữ
    PII phải xử lý trực tiếp `USER_DELETED` từ Auth.
 3. Tại `hard_delete_after`, worker null hóa `owner_user_id`, `reporter_user_id` và

@@ -25,7 +25,7 @@ verified_against_commit: null
 | Checkout address snapshot | Đầu ra | Internal HTTP/mTLS | User | Checkout | [OpenAPI User v1](../../contracts/http/user/v1/openapi.yaml) | proposed |
 | Identity đã xác minh | Đầu vào | Kafka | Auth | User | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Xóa account | Đầu vào | Kafka | Auth | User | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
-| Profile/preference event | Đầu ra | Kafka | User | Chat, Notification, API Gateway | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) | proposed |
+| Profile/preference event | Đầu ra | Kafka | User | Chat, Notification | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) | proposed |
 
 ## 2. HTTP API
 
@@ -63,16 +63,15 @@ tuyệt đối; xem [ADR-004](./decisions/ADR-004-direct-event-publication.md).
 
 | Event | Trigger và ngữ nghĩa | Consumer dự kiến |
 |---|---|---|
-| `USER_PROFILE_UPDATED` | Profile update đã commit; payload chỉ có `user_id`, `sender_name` và `updated_at` | Chat, API Gateway profile-name projection |
+| `USER_PROFILE_UPDATED` | Profile update đã commit; payload chỉ có `user_id`, `sender_name` và `updated_at` | Chat |
 | `USER_PREFERENCES_UPDATED` | Preferences update đã commit; payload chỉ có ba flag Notification replicate và `updated_at` | Notification |
 
 `USER_DELETED` không được User republish. Auth là nguồn chân lý của việc xóa
-account và phát event đó trực tiếp cho User, Notification, Review, Chat và API Gateway; xem
+account và phát event đó trực tiếp cho User, Notification, Review và Chat; xem
 [ADR-006](./decisions/ADR-006-auth-owns-account-deletion-event.md). Event User
 không chứa credential, email do Auth sở hữu, raw address, ngày sinh, giới tính
-hoặc PII không cần cho consumer. Chat, Notification và API Gateway chỉ áp dụng update
-mới hơn theo `updated_at` và chịu được delivery trùng. Gateway không dùng event này
-để phục vụ route nào ngoài create Review.
+hoặc PII không cần cho consumer. Chat và Notification chỉ áp dụng update mới hơn
+theo `updated_at` và chịu được delivery trùng.
 
 ## 4. Event tiêu thụ
 

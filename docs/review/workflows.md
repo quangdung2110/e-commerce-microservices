@@ -77,11 +77,11 @@ the review transaction.
 **Trigger:** `POST /api/v1/reviews` with eligibility ID, rating, content and uploaded
 asset IDs.
 
-Gateway has already authenticated the caller and supplied
-`X-User-Display-Name-B64`. Before any storage/DB work, Review strict-decodes the
-unpadded Base64url UTF-8 value and checks 1–201 characters. Missing or malformed
-value is `503 GATEWAY_IDENTITY_CONTEXT_UNAVAILABLE`; Review does not fall back or
-call User itself.
+Review derives `author_display_name` from the authenticated `X-User-Id` before any
+storage/DB work: `Khách hàng #` plus the first 12 uppercase Base32 characters of
+`HMAC-SHA-256("review-author-alias:v1:" || canonical_lowercase_uuid(caller_id))`.
+It never accepts a profile name/email or calls User. Missing trusted caller identity
+remains `401` at Gateway/API boundary; the alias is display-only, never authorization.
 
 ```text
 VERIFY submitted immutable object metadata before BEGIN
@@ -92,7 +92,7 @@ BEGIN
     WHERE id=:id AND owner_user_id=:caller
       AND status=PENDING AND expires_at>now()
     RETURNING product_id, sku_id;
-  INSERT review(..., author_display_name=:decoded_gateway_name,
+  INSERT review(..., author_display_name=:derived_author_pseudonym,
                 edit_count=0, status=APPROVED);
   attach the locked assets;
   INSERT outbox REVIEW_CREATED;
