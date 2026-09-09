@@ -253,8 +253,23 @@ UUID event ID là CloudEvents id; PostgreSQL 14 partitioning không enforce glob
 unique UUID tại parent, nên producer phải luôn sinh UUID ngẫu nhiên và không tái sử
 dụng event ID.
 
+`payload` là CloudEvents envelope hoàn chỉnh, không phải `data` trần: Debezium
+`EventRouter` chỉ chọn topic/key/header chứ không dựng envelope, nên row outbox chính
+là message sẽ lên wire. Các cột `event_id`, `event_type`, `partition_key` và
+`correlation_id` là projection của envelope, được `ck_outbox_columns_mirror_payload`
+giữ không lệch; `ck_outbox_payload_is_cloudevent` từ chối row không phải envelope hợp
+lệ và `ck_outbox_payload_within_channel_limit` ép giới hạn 16 KiB của channel ngay tại
+write path. Chi tiết ánh xạ nằm ở
+[ADR-003](./decisions/ADR-003-outbox-cdc-publication.md).
+
+`aggregate_type` không dùng để route và chỉ có hai giá trị: `REVIEW` với
+`aggregate_id = review_id` cho năm lifecycle fact và cả hai notification request, và
+`REVIEW_METRIC` với `aggregate_id = product_id` cho rating snapshot.
+
 Mọi row outbox được Debezium publish lên cùng `t.review.events` với Kafka key
-`partition_key = product_id`, gồm cả hai notification request. Hai payload đó chỉ có
+`partition_key = product_id`, gồm cả hai notification request. Connector phải đặt
+`route.topic.replacement` tĩnh: để `EventRouter` route mặc định theo `aggregate_type`
+sẽ tách Review thành nhiều topic và phá ordering theo `product_id`. Hai payload đó chỉ có
 `recipient_user_id`, `review_id` và `product_id`; chúng không có content, display
 name, object key, report detail hay legal reason. Consumer không chịu trách nhiệm cho
 một type phải ACK nó mà không persist/log payload.

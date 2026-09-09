@@ -385,11 +385,20 @@ CREATE TABLE rating_export_session_offsets (
 
 -- ---------------------------------------------------------------------------
 -- 9. Outbox. It is append-only CDC source, not a publish-status queue.
+--
+--    `payload` MUST be a complete CloudEvents 1.0 envelope, not a bare `data`
+--    object: the Debezium EventRouter only routes topic/key/header, it never
+--    builds the business envelope (see ADR-003). Every other column is a
+--    projection of that envelope kept for CDC routing and operator queries;
+--    the envelope is the source of truth and is what reaches the wire verbatim.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE review_outbox (
     event_id       UUID NOT NULL DEFAULT gen_random_uuid(),
     event_type     VARCHAR(100) NOT NULL,
+    -- REVIEW carries aggregate_id = review_id and covers the five lifecycle
+    -- facts plus both notification requests, whose CloudEvents subject is also
+    -- reviews/{review_id}. REVIEW_METRIC carries aggregate_id = product_id.
     aggregate_type VARCHAR(50) NOT NULL,
     aggregate_id   VARCHAR(64) NOT NULL,
     partition_key  VARCHAR(64) NOT NULL,
@@ -399,7 +408,41 @@ CREATE TABLE review_outbox (
 
     PRIMARY KEY (event_id, created_at),
     CONSTRAINT ck_outbox_aggregate_type CHECK (
-        aggregate_type IN ('REVIEW', 'REVIEW_METRIC', 'ADMIN_REPLY')
+        aggregate_type IN ('REVIEW', 'REVIEW_METRIC')
+    ),
+    -- The envelope attributes that are constant for every Review event. `time`
+    -- is only checked for presence: casting text to timestamptz is STABLE, not
+    -- IMMUTABLE, so it cannot appear in a CHECK. Contract tests assert that
+    -- payload.time equals the transaction now() that created_at defaults to.
+    -- Presence uses jsonb_exists() rather than the `?` operator so a JDBC-based
+    -- migration runner cannot mistake it for a bind-parameter placeholder.
+    CONSTRAINT ck_outbox_payload_is_cloudevent CHECK (
+        jsonb_typeof(payload) = 'object'
+        AND payload->>'specversion' IS NOT DISTINCT FROM '1.0'
+        AND payload->>'source' IS NOT DISTINCT FROM '/services/review'
+        AND payload->>'datacontenttype' IS NOT DISTINCT FROM 'application/json'
+        AND jsonb_exists(payload, 'subject')
+        AND jsonb_exists(payload, 'dataschema')
+        AND jsonb_exists(payload, 'time')
+        AND jsonb_exists(payload, 'data')
+    ),
+    -- Keep the routing projection and the envelope from ever drifting apart.
+    -- event_id is compared as text so a malformed payload raises this
+    -- constraint instead of an opaque uuid cast error. Every comparison here and
+    -- above uses IS NOT DISTINCT FROM because a plain `=` against a missing JSON
+    -- key yields NULL, and a CHECK treats NULL as success: `payload->>'id' = ...`
+    -- would silently admit an envelope with no id at all.
+    CONSTRAINT ck_outbox_columns_mirror_payload CHECK (
+        event_id::text IS NOT DISTINCT FROM lower(payload->>'id')
+        AND event_type IS NOT DISTINCT FROM payload->>'type'
+        AND partition_key IS NOT DISTINCT FROM payload->'data'->>'product_id'
+        AND correlation_id IS NOT DISTINCT FROM payload->>'correlationid'
+    ),
+    -- Enforces the 16 KiB x-max-payload-bytes declared by the AsyncAPI channel
+    -- at write time. An oversized payload fails its domain transaction rather
+    -- than committing a row that CDC can never publish.
+    CONSTRAINT ck_outbox_payload_within_channel_limit CHECK (
+        octet_length(payload::text) <= 16384
     )
 ) PARTITION BY RANGE (created_at);
 

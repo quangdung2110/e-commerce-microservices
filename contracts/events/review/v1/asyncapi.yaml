@@ -23,6 +23,14 @@ channels:
     x-owner: review-service
     x-message-key: product_id
     x-ordering-scope: product_id
+    x-transport: >-
+      PostgreSQL outbox + Debezium CDC. review_outbox.payload holds the complete
+      CloudEvents envelope and reaches the wire verbatim; the router only selects
+      topic, key and headers. Every message type shares this single topic, so the
+      connector must pin a static route.topic.replacement.
+    x-outbox-table: review.review_outbox
+    x-outbox-payload: full-cloudevents-envelope
+    x-message-key-source: review_outbox.partition_key, mirrored from data.product_id
     x-delivery-semantic: at-least-once
     x-deduplication-key: CloudEvents.id
     x-ordering-guard: data.review_revision for metrics snapshots only

@@ -120,6 +120,9 @@ and legal-removal requests defined by Review AsyncAPI.
 ## 6. Architecture constraints
 
 - No direct Kafka producer in business code; all outbound events use outbox/CDC.
+- An outbox row is the wire message: `payload` holds the complete CloudEvents
+  envelope, and CDC only selects topic, key and headers. Every outbound event is
+  therefore fully formed and schema-valid before its domain transaction commits.
 - `t.review.events` is keyed by `product_id`; Notification must not assume ordering
   by recipient user ID and must deduplicate CloudEvents IDs itself.
 - No direct database access by another service.

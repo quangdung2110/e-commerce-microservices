@@ -63,7 +63,8 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 | Notification | First reply creates exactly one reply request; takedown creates removal request only for a non-purged owner; payload has no content, legal data or admin identity |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |
 | Privacy | Event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries |
-| Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog |
+| Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog; stored `payload` validates against the JSON Schema of its own `type` for all eight message types; an envelope missing `subject`/`dataschema`/`time` or disagreeing with its projection columns fails the domain transaction; a payload above 16 KiB is rejected at write time |
+| Outbox CDC | Every row lands on `t.review.events` and no other topic, including a `REVIEW_METRIC` row; Kafka key equals `data.product_id`; the consumed message value is byte-equal to the stored `payload`; `table.expand.json.payload` round-trips all eight `data` shapes without dropping nullable fields |
 
 `EXPLAIN` tests must cover main keyset query and SKU/rating/media filters. Test data
 must be synthetic; review text and user identity are PII.

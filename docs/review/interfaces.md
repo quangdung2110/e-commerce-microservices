@@ -144,10 +144,32 @@ in snapshot has an event at or after the captured end offset and is replayed.
 ## 4. Outbound events
 
 Every event is a CloudEvents 1.0 structured JSON message on `t.review.events`, with
-at-least-once delivery, outbox + CDC and Kafka `partition_key = product_id`. `id` is
-the outbox UUID; `source` is `/services/review`; review facts use subject
-`reviews/{review_id}`. A consumer must dispatch by exact `type` and ACK a known event
-outside its responsibility without durable effect.
+at-least-once delivery, outbox + CDC and Kafka `partition_key = product_id`. A consumer
+must dispatch by exact `type` and ACK a known event outside its responsibility without
+durable effect.
+
+The complete envelope is written into `review_outbox.payload` inside the domain
+transaction and reaches the wire verbatim; Debezium only selects topic, key and
+headers, and never builds the envelope ([ADR-003](./decisions/ADR-003-outbox-cdc-publication.md)).
+Every attribute required by `contracts/shared/json-schema/v1/cloud-event.schema.json`
+therefore comes from the payload, not from an outbox column:
+
+| Attribute | Value |
+|---|---|
+| `specversion` | Constant `1.0` |
+| `id` | Outbox `event_id`; a fresh UUID per event, never reused |
+| `type` | The `com.ecommerce.review.*.v1` value in the table below |
+| `source` | Constant `/services/review` |
+| `subject` | `reviews/{review_id}`, except `REVIEW_METRICS_UPDATED` which uses `product-rating-aggregates/{product_id}` |
+| `time` | The transaction `now()`, equal to outbox `created_at` |
+| `datacontenttype` | Constant `application/json` |
+| `dataschema` | The JSON Schema path of that exact `type` |
+| `sequence` | Present only on `REVIEW_METRICS_UPDATED`, equal to `data.review_revision` |
+| `correlationid` | Present only when the originating request carried one |
+
+Structured mode is normative: consumers read the envelope from the message body. The
+`ce_type`, `ce_aggregate_type` and `ce_aggregate_id` Kafka headers are a convenience
+mirror for cheap filtering and must never be read in place of the envelope.
 
 | Event | CloudEvents type | Consumer | Meaning / payload boundary |
 |---|---|---|---|

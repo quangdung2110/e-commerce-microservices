@@ -5,6 +5,17 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- Chốt cách outbox của Review trở thành CloudEvent: `review_outbox.payload` là envelope
+  hoàn chỉnh và lên wire nguyên văn; Debezium chỉ chọn topic/key/header. `subject`,
+  `dataschema`, `time`, `sequence` nằm trong payload, không có cột riêng. Các cột
+  `event_id`/`event_type`/`partition_key`/`correlation_id` là projection và bị CHECK
+  constraint giữ không lệch khỏi envelope.
+- Toàn bộ tám message type của Review dùng đúng một topic `t.review.events` keyed theo
+  `product_id`. Connector phải pin `route.topic.replacement` tĩnh; để `EventRouter`
+  route mặc định theo `aggregate_type` sẽ tách thành nhiều topic và phá ordering.
+- `review_outbox.aggregate_type` bỏ `ADMIN_REPLY`, chỉ còn `REVIEW`
+  (`aggregate_id = review_id`, gồm cả hai notification request) và `REVIEW_METRIC`
+  (`aggregate_id = product_id`). Đây là metadata, không dùng để route.
 - Thêm Inventory Storefront Availability Read API v1 cho Product Detail BFF. Endpoint
   batch mTLS chỉ trả `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN`, revision và thời điểm đánh giá;
   không lộ quantity/warehouse/reservation, không dùng Search event/export và không thay
