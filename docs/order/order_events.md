@@ -11,7 +11,7 @@
 *   [Background Workers & Jobs](order_workers.md)
 
 **Cross-Service References:**
-*   [Promotion Events (Consumed)](../promotion/promotion_events.md) — Promotion consume `ORDER_REFUNDED`
+*   [Promotion Interfaces](../promotion/interfaces.md) — Promotion consume `ORDER_REFUNDED`
 *   [Payment Events](../payment/payment_events.md) — Order consume `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `REFUND_PROCESSING`, `REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED`
 *   [Inventory Interfaces](../inventory/interfaces.md#4-events-phát-ra) — Order consume `INVENTORY_RETURN_RECEIVED_ALL` (refund gate) và `INVENTORY_SHIP_TO_CUSTOMER` (item delivery FSM trigger)
 *   [Cart Interfaces](../cart/interfaces.md) — Cart consume `ORDER_PAID` để batch delete SKU lines trong giỏ
@@ -240,7 +240,7 @@ Tất cả messages phát lên Kafka đều tuân theo chuẩn CloudEvents và �
 
 **Ngữ cảnh:** Lane refund hoàn tất thành công (return sau giao hàng hoặc admin force refund). FSM `RETURN_REQUESTED` -> `REFUNDED`. Xem [State Machine](order_state_machine.md#3-bảng-chi-tiết-transitions).
 **Consumers chính:**
-- **Promotion Service:** Trigger [Refund Budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow) theo `promotion_refund_allocations[]`.
+- **Promotion Service:** Trigger [Refund Budget](../promotion/workflows.md) theo `promotion_refund_allocations[]`.
 - **Notification:** Đồng bộ trạng thái hoàn tiền thành công.
 
 > **Phase 20 (Payload Simplification):** Bỏ `single_refund_transaction` (đã invariant — 1 refund per order), `customer_return_guard_applied`/`customer_return_policy` (consumer không dùng), `refund_scope_locked_at`/`inventory_return_confirmed_at` (audit only, có trong workflow history), `returned_items[]` chi tiết (audit only, **KHÔNG dùng để tính toán** theo contract), `promotions_applied[]` (Promotion chỉ cần `promotion_refund_allocations[]`). Trong `promotion_refund_allocations[]` thu gọn: bỏ `scope_admin_id` (luôn PLATFORM, Phase 14), `partial_restore_rule` (Promotion tự xử lý qua `idempotency_key`), `voucher_restore_mode` (Promotion tự quyết — Phase 23: luôn giữ `USED`, không restore), `platform_funding_refund` (luôn = `admin_funding_refund`).

@@ -92,21 +92,22 @@
 
 ---
 
-## 4. Promotion Service (Caffeine L1 + Redis Lua + PG)
+## 4. Promotion Service (Redis Lua + PostgreSQL)
 
-> Tài liệu 10 file thiết kế Promotion Service.
+> Tài liệu đã refactor theo cấu trúc chuẩn trong `docs/_templates`; thiết kế đang ở
+> trạng thái `proposed` và chưa có implementation để verification.
 
 | File | Mô tả |
 |---|---|
-| [promotion/promotion_workflow.md](./promotion/promotion_workflow.md) | Workflows: Admin CRUD, Flash Sale Claim, Cart Calculate, Saga Checkout (Reserve/Confirm/Cancel), Refund, Voucher Discovery. |
-| [promotion/promotion_db_design.md](./promotion/promotion_db_design.md) | Schema: campaigns, promotions, promotion_budgets, coupon_claims, user_coupon_wallets, coupon_usages, promotion_event_idempotency. |
-| [promotion/promotion_state_machine.md](./promotion/promotion_state_machine.md) | State machine cho voucher lifecycle + discount sequencing waterfall. |
-| [promotion/promotion_events.md](./promotion/promotion_events.md) | Event catalog: `t.promotion.markdown.events` (3 events), `t.promotion.coupon.events` (5 events), `t.promotion.budget.events` (1 event). |
-| [promotion/redis_caching_design.md](./promotion/redis_caching_design.md) | L1/L2 cache + 5 Lua scripts (Claim, Reserve, Batch Reserve 2B, Confirm Redeem, Rollback, Refund Budget). |
-| [promotion/promotion_workers.md](./promotion/promotion_workers.md) | Background workers: Order Events Consumer (Refund Flow), Auth Events Consumer, Product State Consumer, Flash Sale Claim, Rule Cache Warmer, Claim Sweeper, Reservation TTL Sweep, Wallet Expiry (Lazy Inline), Cleanup, Reconciliation, Markdown Expiry Scheduler. |
-| [promotion/rule_engine_design.md](./promotion/rule_engine_design.md) | Rule Engine: AST JSONB + Visitor pattern + Discount logic. |
-| [promotion/voucher_discovery_api.md](./promotion/voucher_discovery_api.md) | Voucher Discovery API: voucher-suggestions, platform-voucher-discovery, save-and-apply. |
-| [promotion/coupon_claims_deletion_strategy.md](./promotion/coupon_claims_deletion_strategy.md) | Hard deletion strategy cho coupon_claims. |
+| [promotion/README.md](./promotion/README.md) | Tổng quan, boundary, ownership, capability, dependency và known gaps. |
+| [promotion/architecture.md](./promotion/architecture.md) | Thành phần, processing, consistency, concurrency và deployment. |
+| [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
+| [promotion/interfaces.md](./promotion/interfaces.md) | Semantics HTTP/Kafka legacy; contract chuẩn hóa để dành cho giai đoạn sau. |
+| [promotion/workflows.md](./promotion/workflows.md) | Admin, claim, calculate, Saga, refund, discovery và recovery. |
+| [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
+| [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
+| [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 9 ADR bảo toàn các quyết định kiến trúc của thiết kế cũ. |
 
 ---
 

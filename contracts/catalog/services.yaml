@@ -85,7 +85,7 @@ services:
     runtime: java-planned
     status: documented
     contract_adoption: not_started
-    docs: docs/promotion/promotion_workflow.md
+    docs: docs/promotion/README.md
 
   - id: review-service
     bounded_context: review

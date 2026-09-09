@@ -12,7 +12,7 @@
 
 **Cross-Service References:**
 *   [Checkout Workflow](../checkout/checkout_workflow.md) — Nguồn gọi tạo Order
-*   [Promotion Workflow](../promotion/promotion_workflow.md) — Luồng 4 (Saga TCC)
+*   [Promotion Workflows](../promotion/workflows.md) — Saga TRY/CONFIRM/CANCEL
 *   [Inventory Workflows](../inventory/workflows.md) — Reserve/Deduct/Release
 *   [Payment Workflow](../payment/payment_workflow.md) — Initiate/Verify/Refund
 
@@ -263,7 +263,7 @@ sequenceDiagram
 > **Canonical order & compensation table xem [Temporal Saga Design §2.4](../order/temporal_saga_design.md#24-activities) và [§3 step 1-5](../order/temporal_saga_design.md#3-luồng-thực-thi-workflow-execution)** (gồm 4 activity `CreateOrder` → `ReserveInventory` → `ReservePromotion` → `InitiatePayment` với compensation LIFO tương ứng).
 
 > [!NOTE]
-> **Tại sao Promotion `/reserve` nằm trong Saga chứ không khóa ở Checkout Preview?** Khóa tại Preview tạo lỗ hổng lạm dụng nghiêm trọng: kẻ xấu có thể dùng bot mở hàng loạt checkout session, áp voucher Flash Sale và bỏ trống, làm cạn kiệt budget mà không phát sinh đơn hàng thực sự. `ReservePromotionActivity` chạy ngay tại đây — sau khi user đã commit Submit và `order_id` đã tồn tại — đảm bảo mỗi lần lock budget đều gắn với một giao dịch thực sự. Xem [Promotion Workflow Section 4](../promotion/promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow).
+> **Tại sao Promotion `/reserve` nằm trong Saga chứ không khóa ở Checkout Preview?** Khóa tại Preview tạo lỗ hổng lạm dụng nghiêm trọng: kẻ xấu có thể dùng bot mở hàng loạt checkout session, áp voucher Flash Sale và bỏ trống, làm cạn kiệt budget mà không phát sinh đơn hàng thực sự. `ReservePromotionActivity` chạy ngay tại đây — sau khi user đã commit Submit và `order_id` đã tồn tại — đảm bảo mỗi lần lock budget đều gắn với một giao dịch thực sự. Xem [Promotion Workflows](../promotion/workflows.md).
 
 > [!IMPORTANT]
 > Nếu `ReservePromotionActivity` fail (ví dụ `BUDGET_EXHAUSTED` ở một mã trong batch), Order phải propagate lỗi có cấu trúc (`failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`) về Checkout. Không collapse thành lỗi hạ tầng 500. Order **không** tự tính lại discount; Checkout mới là nơi gọi lại Promotion evaluate để dựng `dropped_promotions[]`, trả `409 PROMOTION_RECALCULATION_NEEDED`, rồi dẫn user đi lại Preview với token mới.
@@ -406,7 +406,7 @@ sequenceDiagram
 7. **[Voucher không còn khả dụng khi hoàn budget]** — chi tiết xem [ADR §1.2 Wallet Validity](refund_voucher_policy.md#12-wallet-validity-voucher-restore-policy) và [ADR §1.3 Non-Blocking Invariant](refund_voucher_policy.md#13-non-blocking-invariant). Tóm tắt (Phase 23): Promotion **không** restore voucher `USED -> SAVED` — giữ nguyên `USED`. Unavailable → `VOUCHER_UNAVAILABLE` (non-blocking, không rollback tiền refund đã success).
 
 8. **[Downstream consume `ORDER_REFUNDED`]**
-   - **Promotion:** [Hoàn budget](../promotion/promotion_workflow.md#5-luồng-đổi-trả-hàng--hoàn-tiền-refund-flow) theo `promotion_refund_allocations[]` và rule scope (xem canonical [ADR Refund Voucher Policy](refund_voucher_policy.md)).
+   - **Promotion:** [Hoàn budget](../promotion/workflows.md) theo `promotion_refund_allocations[]` và rule scope (xem canonical [ADR Refund Voucher Policy](refund_voucher_policy.md)).
    - **Inventory:** Không restock trực tiếp từ `ORDER_REFUNDED`. Restock vật lý đi theo admin API `/v1/inventory/restock` hoặc `/v1/inventory/returns/refund-expectations` sau khi hàng thực tế về kho.
 
 9. **[Policy Matrix]**

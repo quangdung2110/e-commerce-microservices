@@ -92,7 +92,7 @@ Order Service là Orchestrator, kết nối với Payment, Inventory, và Promot
 - Order **không** dùng 2 field này làm guard. Order guard cho consumed event dựa vào **Redis SETNX** (`payment:signal:{order_id}:{txn_id}:{event_type}`, TTL 30 ngày) kết hợp với FSM row-level lock (`UPDATE ... WHERE status='OLD_STATUS'`) + CloudEvents `event_id` envelope.
 
 ### 2.1. `outbox_events` (Transactional Outbox)
-Đảm bảo Event được gửi đi một cách tin cậy sau khi CSDL thay đổi theo mô hình **CDC append-only**, đồng bộ chuẩn với [Product](../product/data.md) và [Promotion](../promotion/promotion_db_design.md).
+Đảm bảo Event được gửi đi một cách tin cậy sau khi CSDL thay đổi theo mô hình **CDC append-only**, đồng bộ chuẩn với [Product](../product/data.md) và [Promotion](../promotion/data.md).
 *   `event_id`: UUID PRIMARY KEY
 *   `schema_version`: INT NOT NULL DEFAULT 1
 *   `aggregate_type`: VARCHAR(50) NOT NULL (VD: `Order`, `OrderItem`)

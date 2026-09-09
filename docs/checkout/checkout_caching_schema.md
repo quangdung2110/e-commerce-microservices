@@ -8,7 +8,7 @@
 
 **Cross-Service References:**
 *   [Cart Data Design](../cart/data.md) — Cart data source
-*   [Promotion Redis Design](../promotion/redis_caching_design.md) — Budget reservation
+*   [Promotion Data Design](../promotion/data.md) — Redis keys và budget reservation
 *   [Inventory Redis Design](../inventory/inventory_redis_design.md) — Stock check
 
 ---
@@ -90,7 +90,7 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checkout Service gọi Promotion Service `GET /v1/promotions/voucher-suggestions`. Promotion Service **không còn dùng wallet cache** nữa; mỗi request sẽ query trực tiếp DB `user_coupon_wallets` (Index Scan `user_id, status`, ~3-5ms) và áp dụng lazy expiry inline cho các row `SAVED` đã quá `expired_at`.
 
-**Chi tiết thiết kế:** Xem [Promotion Redis Design](../promotion/redis_caching_design.md) và [Voucher Discovery API §5.1](../promotion/voucher_discovery_api.md#51-lazy-expiry-update-inline-trong-discovery).
+**Chi tiết thiết kế:** Xem [Promotion Data Design](../promotion/data.md) và [Promotion Workflows](../promotion/workflows.md).
 
 > **Voucher Tray đọc trực tiếp DB:** Khi user mở tray "Chọn Voucher" hoặc "Voucher Sàn", Promotion Service query `user_coupon_wallets JOIN promotions` trực tiếp rồi eval rule + Budget Guard. Không qua Redis cache ở giữa, nên không có bước DEL invalidation.
 

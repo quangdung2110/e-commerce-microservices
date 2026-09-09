@@ -8,7 +8,7 @@
 
 **Cross-Service References:**
 *   [Order Workflow](../order/order_workflow.md#4-workflow-nhận-checkout-submit-full-saga-flow) — Nhận Submit payload
-*   [Promotion Workflow](../promotion/promotion_workflow.md#4-luồng-thanh-toán-saga-checkout-flow) — Budget Reservation
+*   [Promotion Workflows](../promotion/workflows.md) — Budget Reservation
 *   [Inventory Warehouse Selection](../inventory/smart_routing_engine.md) — Stock check + Routing
 
 > **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng 1 payment provider duy nhất (Stripe). Checkout **KHÔNG** nhận `payment_method` từ client nữa; `payment_method` đã bỏ khỏi Submit payload và response. Xem [CHANGELOG Phase 18](../_contracts/CHANGELOG.md#phase-18--single-payment-provider-stripe).
