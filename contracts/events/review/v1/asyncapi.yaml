@@ -97,12 +97,12 @@ operations:
   publishReviewReplyNotificationRequested:
     action: send
     channel: { $ref: '#/channels/reviewEvents' }
-    summary: Request Notification to notify the author after the first official reply, when a recipient identity remains available.
+    summary: Request Notification after the first official reply only when Review finds no deletion guard for the eligibility owner.
     messages: [{ $ref: '#/channels/reviewEvents/messages/reviewReplyNotificationRequested' }]
   publishReviewRemovalNotificationRequested:
     action: send
     channel: { $ref: '#/channels/reviewEvents' }
-    summary: Request Notification to notify the author of a takedown without exposing its legal reason, when a recipient identity remains available.
+    summary: Request Notification of a takedown only when Review finds no deletion guard for the eligibility owner, without exposing its legal reason.
     messages: [{ $ref: '#/channels/reviewEvents/messages/reviewRemovalNotificationRequested' }]
   consumeOrderCompleted:
     action: receive
@@ -171,14 +171,14 @@ components:
     reviewReplyNotificationRequested:
       name: reviewReplyNotificationRequestedV1
       title: REVIEW_REPLY_NOTIFICATION_REQUESTED
-      summary: Notification request after the first official reply; it carries no reply content or admin identity.
+      summary: Notification request after the first official reply only when the eligibility owner has no deletion guard; it carries no reply content or admin identity.
       contentType: application/cloudevents+json
       x-consumers: [notification-service]
       payload: { $ref: './schemas/review-reply-notification-requested.schema.json' }
     reviewRemovalNotificationRequested:
       name: reviewRemovalNotificationRequestedV1
       title: REVIEW_REMOVAL_NOTIFICATION_REQUESTED
-      summary: Notification request after legal takedown; it carries no legal case, reason or admin identity.
+      summary: Notification request after legal takedown only when the eligibility owner has no deletion guard; it carries no legal case, reason or admin identity.
       contentType: application/cloudevents+json
       x-consumers: [notification-service]
       payload: { $ref: './schemas/review-removal-notification-requested.schema.json' }

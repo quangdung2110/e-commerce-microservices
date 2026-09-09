@@ -75,7 +75,8 @@ late/replayed input from writing that direct identity back.
 - `REVIEW-INV-010`: direct customer identity is purged at `hard_delete_after`.
 - `REVIEW-INV-011`: eligibility expiry derives from order completion, not ingestion.
 - `REVIEW-INV-012`: a committed HMAC deletion guard blocks new direct identity writes
-  for its subject, including late Order input.
+  for its subject, including late Order input and a notification outbox row addressed
+  to that subject.
 - `REVIEW-INV-013`: every detached or expired-unattached media asset enters
   `DELETE_PENDING` with a reason and becomes `DELETED` only after storage confirms
   deletion (or confirms the object is absent).

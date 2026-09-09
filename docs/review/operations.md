@@ -62,14 +62,14 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `review_consumer_duplicate_total{consumer}` | Receipt conflict; expected under at-least-once delivery |
 | `review_aggregate_drift_total` | Reconciliation found real drift; warning |
 | `review_privacy_hard_delete_overdue_total` | Privacy request past deadline; critical |
-| `review_privacy_guard_blocked_total{operation}` | Guard suppressed a late Order event or rejected a customer write; `operation` is a bounded operation name, never a user ID |
+| `review_privacy_guard_blocked_total{operation}` | Guard suppressed a late Order event, rejected a customer write, or suppressed the notification branch of an admin reply/takedown; `operation` is a bounded operation name, never a user ID |
 | `review_export_session_total{result}` | Create/page/expiry outcomes |
 | `review_export_session_active` | Active session count |
 | `review_media_asset_pending_delete_total` | Storage cleanup backlog |
 | `review_media_cleanup_total{reason,result}` | Asset cleanup transitions/results; `reason` is only `UNATTACHED_EXPIRED`, `REPLACED` or `TAKEDOWN`, and `result` is bounded (including `object_not_found_success`) |
 | `review_media_verification_total{result,media_type}` | Object missing/type-size-checksum mismatch hoặc attach verification thành công; không gắn user/asset ID làm label |
 | `review_media_unattached_quota_rejected_total` | Gateway/API đã chặn cấp thêm upload asset vì quota |
-| `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because recipient was purged |
+| `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because the recipient has a deletion guard |
 | Kafka Connect `FAILED`/`PAUSED` | Critical after two minutes |
 | replication slot retained WAL bytes | Critical before disk-risk threshold |
 | next outbox partition missing | Critical |

@@ -53,7 +53,7 @@ flowchart TB
 
 | Component | Responsibility |
 |---|---|
-| API/application service | Validate request, authorize caller, take the caller's privacy subject lock and reject an active deletion guard; then generate author pseudonym, verify submitted media object metadata and keep domain mutation/counter/outbox in one PostgreSQL transaction |
+| API/application service | Validate request, authorize caller, take the caller's privacy subject lock and reject an active deletion guard; then generate author pseudonym, verify submitted media object metadata and keep domain mutation/counter/outbox in one PostgreSQL transaction. For admin reply/takedown, it takes the eligibility owner's subject lock, re-checks the deletion guard and suppresses only the notification outbox row when a guard exists; the reply/takedown itself still commits. |
 | Order consumer | Take the event buyer's privacy subject lock; store receipt then suppress a guarded subject or insert entitlement from self-contained `ORDER_COMPLETED` snapshot |
 | Privacy consumer | Take the subject lock; store receipt/request and durable HMAC deletion guard, anonymize author immediately; hard-purge worker removes direct IDs at deadline but retains the guard |
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
@@ -70,9 +70,11 @@ effect occurs before commit.
 
 Every path that can introduce a direct customer ID takes the same transaction-scoped
 privacy subject lock before it checks the deletion guard and writes. This covers the
-Order consumer and customer upload/create/edit/report commands. The lock serializes
-these writes with privacy anonymize/purge; it is not a global lock and releases on
-commit or rollback.
+Order consumer, customer upload/create/edit/report commands, and the notification
+outbox branch of admin reply/takedown. A guarded admin command still records its reply
+or takedown; it only omits `recipient_user_id` from a new outbox row. The lock
+serializes these writes with privacy anonymize/purge; it is not a global lock and
+releases on commit or rollback.
 
 Media is deliberately two-phase: client upload happens directly to storage, then the
 create/edit command reads and verifies immutable object metadata before atomically
@@ -109,9 +111,10 @@ and legal-removal requests defined by Review AsyncAPI.
 - Attach and the expired-unattached sweep lock the same asset row. The first committed
   transition wins: `ATTACHED` excludes cleanup; `DELETE_PENDING` rejects attach as
   unusable. The storage worker never performs its external delete before that commit.
-- Privacy, Order and customer write paths take the same per-subject transaction lock.
-  If privacy wins, later input sees its guard; if a write wins, privacy processes that
-  committed row before it releases the lock.
+- Privacy, Order, customer write paths and the notification-producing branch of admin
+  reply/takedown take the same per-subject transaction lock. If privacy wins, later
+  input sees its guard and reply/takedown omit their notification request; if another
+  path wins, privacy processes that committed row before it releases the lock.
 - Rating aggregator inserts event receipt first in its transaction. Duplicate receipt
   means no aggregate update. Deltas remain atomic SQL operations.
 - Search does not hold a PostgreSQL transaction through all pages. It uses persisted

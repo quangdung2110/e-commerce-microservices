@@ -435,6 +435,9 @@ CREATE TABLE rating_export_session_offsets (
 --    builds the business envelope (see ADR-003). Every other column is a
 --    projection of that envelope kept for CDC routing and operator queries;
 --    the envelope is the source of truth and is what reaches the wire verbatim.
+--    Application logic only inserts either notification request when the eligibility
+--    owner has no HMAC privacy deletion guard; a guarded admin reply/takedown still
+--    commits its domain mutation without an outbox row containing recipient_user_id.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE review_outbox (

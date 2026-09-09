@@ -45,6 +45,11 @@ Notification render thông báo in-app từ type, deduplicate theo CloudEvents `
 qua/ACK mọi Review type khác trên cùng topic. Một recipient đã nhận `USER_DELETED`
 không được nhận Review notification trễ.
 
+Review chỉ publish hai request này sau khi lấy subject lock của eligibility owner và
+xác nhận owner không có HMAC deletion guard. Vì vậy một admin reply/takedown cho
+subject mà Review đã xử lý `USER_DELETED` vẫn commit domain change nhưng không tạo
+message Review mới; điều này không yêu cầu thêm notification table hay thay đổi payload.
+
 ### 1.3 User OTP Requested (Từ Auth Service — ví dụ canonical v1)
 ```json
 {

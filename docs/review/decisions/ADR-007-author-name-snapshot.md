@@ -27,11 +27,12 @@ bộ Order/Product.
 `USER_DELETED` tạo durable `privacy_erasure_requests` với `subject_match_key`:
 `HMAC-SHA-256(key=REVIEW_PRIVACY_GUARD_HMAC_SECRET,
 "review-privacy-guard:v1:" || canonical_lowercase_uuid(user_id))`, 32 byte ở v1.
-Privacy, Order và mọi customer write có thể ghi user ID lấy cùng transaction-scoped
-subject lock. Khi guard đã tồn
-tại, Order chỉ commit receipt rồi suppress entitlement; upload/create/edit/report bị
-từ chối. Với caller không có guard, `owner_user_id = caller` và mọi ownership check
-giữ nguyên.
+Privacy, Order, mọi customer write và notification-producing branch của admin
+reply/takedown có thể ghi direct customer ID lấy cùng transaction-scoped subject lock.
+Khi guard đã tồn tại, Order chỉ commit receipt rồi suppress entitlement;
+upload/create/edit/report bị từ chối. Admin reply/takedown không bị từ chối, nhưng
+không được ghi outbox notification chứa `recipient_user_id` của subject. Với caller
+không có guard, `owner_user_id = caller` và mọi ownership check giữ nguyên.
 
 Consumer anonymize display name ngay. Tới `hard_delete_after`, privacy worker dùng
 cùng lock, null hóa direct customer IDs ở eligibility, report và media asset, rồi
@@ -51,8 +52,10 @@ architecture cấm synchronous Order lookup.
 Không có thứ tự liên-topic cho cùng user: Auth key theo `user_id`, còn Order key theo
 `order_id`. Giữ raw UUID sau purge để nhận ra input cũ sẽ phá hard-purge promise;
 chỉ kiểm tra một guard không có lock vẫn để race cho write commit sau lần privacy quét.
-HMAC guard cùng subject lock bảo vệ cả hai tình huống mà không đưa profile/name vào
-Review.
+Điều đó cũng áp dụng cho `recipient_user_id` được admin reply/takedown ghi vào
+notification outbox: raw owner ID còn trong retention window không có nghĩa là còn
+được phép nhận notification. HMAC guard cùng subject lock bảo vệ các tình huống này mà
+không đưa profile/name vào Review.
 
 ## Consequences
 
@@ -75,6 +78,7 @@ Review.
 Test forged profile/email header is ignored, HMAC pseudonym is deterministic and has
 fixed format, no synchronous Order/User lookup or profile consumer exists, account
 deletion replaces alias without metric revision, guarded late Order only writes a
-receipt, guarded customer write is rejected, concurrent privacy/input serializes,
-hard-purge direct IDs but retains HMAC guard, receipt replay no-op và variant snapshot
-display. Test Auth redrive of a missed deletion event because direct publish can fail.
+receipt, guarded customer write is rejected, a guarded admin reply/takedown persists
+without a notification outbox row, concurrent privacy/input serializes, hard-purge
+direct IDs but retains HMAC guard, receipt replay no-op và variant snapshot display.
+Test Auth redrive of a missed deletion event because direct publish can fail.

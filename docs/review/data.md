@@ -182,8 +182,10 @@ review mà vẫn giữ lịch sử; report mới ghi đè `first_reported_at` đ
 Admin identity được lấy từ trusted Gateway identity, không có trường actor trong body.
 Notification đi qua
 `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` trong cùng transaction với takedown;
-notification request không chứa legal case, lý do hay định danh admin. Khi author
-identity đã bị purge, Review không tạo request này.
+notification request không chứa legal case, lý do hay định danh admin. Review lấy
+subject lock của eligibility owner rồi kiểm tra HMAC deletion guard trước khi ghi
+request. Có guard thì takedown vẫn commit nhưng không tạo request, kể cả raw owner ID
+chưa bị hard-purge.
 
 ## 6. Aggregate, revision và idempotency
 
@@ -238,7 +240,10 @@ review đó đã đổi display name chưa.
 3. Ngay khi guard được commit — bình thường cùng state `ANONYMIZED`, hoặc request
    `FAILED` đang được retry — Order consumer cùng lấy subject lock, ghi receipt rồi
    suppress `ORDER_COMPLETED`; upload/create/edit/report của subject bị từ chối trước
-   khi ghi direct user ID. Caller chưa có guard vẫn ghi và kiểm tra ownership như cũ.
+   khi ghi direct user ID. Admin reply/takedown lấy chính lock đó trước khi kiểm tra
+   guard: chúng không bị từ chối nhưng không được ghi notification outbox chứa
+   `recipient_user_id` của subject. Caller chưa có guard vẫn ghi và kiểm tra ownership
+   như cũ.
 4. Tại `hard_delete_after`, worker cùng lấy subject lock và trong cùng transaction ghi
    đủ **cả cặp cột** của từng bảng: `owner_user_id`/`owner_erased_at` trên eligibility
    và media asset, `reporter_user_id`/`reporter_erased_at` trên report, rồi
@@ -305,8 +310,10 @@ Mọi row outbox được Debezium publish lên cùng `t.review.events` với Ka
 `route.topic.replacement` tĩnh: để `EventRouter` route mặc định theo `aggregate_type`
 sẽ tách Review thành nhiều topic và phá ordering theo `product_id`. Hai payload đó chỉ có
 `recipient_user_id`, `review_id` và `product_id`; chúng không có content, display
-name, object key, report detail hay legal reason. Consumer không chịu trách nhiệm cho
-một type phải ACK nó mà không persist/log payload.
+name, object key, report detail hay legal reason. Reply/takedown chỉ được tạo một row
+như vậy khi HMAC deletion guard của eligibility owner không tồn tại; raw owner ID còn
+được giữ trong retention window không phải điều kiện đủ. Consumer không chịu trách
+nhiệm cho một type phải ACK nó mà không persist/log payload.
 
 ## 10. Query/index policy
 

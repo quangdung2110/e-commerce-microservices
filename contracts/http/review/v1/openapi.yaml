@@ -314,8 +314,9 @@ paths:
       summary: Tạo hoặc thay thế official reply duy nhất
       description: >-
         PUT là upsert idempotent cấp resource. Chỉ lần tạo đầu tiên phát
-        REVIEW_REPLY_NOTIFICATION_REQUESTED khi author identity còn tồn tại; thay thế
-        nội dung không phát notification mới.
+        REVIEW_REPLY_NOTIFICATION_REQUESTED khi eligibility owner không có HMAC
+        deletion guard; guard không từ chối reply nhưng suppress notification request.
+        Thay thế nội dung không phát notification mới.
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/ReviewId'
@@ -347,7 +348,9 @@ paths:
         Một admin có role phù hợp thực hiện command. Review lấy actor từ trusted Gateway
         identity và persist taken_down_by_admin_id; request body không có requester hay
         approver ID. Legal case, reason và identity admin không đi vào public response
-        hoặc event payload.
+        hoặc event payload. Review chỉ tạo removal notification request khi eligibility
+        owner không có HMAC deletion guard; guard không từ chối takedown nhưng suppress
+        notification request.
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/ReviewId'

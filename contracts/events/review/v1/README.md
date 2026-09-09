@@ -47,4 +47,6 @@ The full connector configuration and the rejected alternatives are in
   than its document revision.
 - Both notification requests carry only `review_id`, `product_id` and
   `recipient_user_id` — never reply content, legal case, takedown reason or admin
-  identity.
+  identity. Review creates either request only when the eligibility owner has no HMAC
+  deletion guard; a guarded admin reply/takedown still commits but writes no notification
+  outbox row.

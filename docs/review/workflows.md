@@ -161,11 +161,16 @@ not synthetic zero. Author read-after-write routes to primary if replicas are us
 
 **Trigger:** `PUT /api/v1/admin/reviews/{review_id}/reply`.
 
-Lock review and require `APPROVED`. Insert/update one reply; preserve both
-`created_by_admin_id` and `updated_by_admin_id`. First insert writes
-`REVIEW_REPLY_NOTIFICATION_REQUESTED` in the same transaction when the eligibility
-owner ID has not been purged; it carries only review/product/recipient IDs. Later
-content update does not notify again. Reply state has no denormalized boolean on review.
+Read the eligibility owner to derive its HMAC subject key. When it is non-null, take
+the same transaction-scoped subject lock as the privacy consumer before locking the
+review/eligibility and re-check the deletion guard. Lock review and require `APPROVED`.
+Insert/update one reply; preserve both `created_by_admin_id` and
+`updated_by_admin_id`. First insert writes `REVIEW_REPLY_NOTIFICATION_REQUESTED` in
+the same transaction **only when no deletion guard exists**; it carries only
+review/product/recipient IDs. A guard (including `RECEIVED`, `ANONYMIZED`, `FAILED` or
+`PURGED`) never rejects the admin reply, but it suppresses that outbox row even while
+the raw owner ID remains for the hard-delete retention window. Later content update does
+not notify again. Reply state has no denormalized boolean on review.
 
 ## WF-REVIEW-007 — Report, hide and dismiss
 
@@ -259,7 +264,9 @@ changes, Search aborts and starts a new export after topology stabilizes.
    from Auth.
 3. Set `status='ANONYMIZED'` **and** `anonymized_at=now()`; ACK only after commit. From
    that commit onward, Order input is suppressed and customer upload/create/edit/report
-   writes for the subject are rejected by the same guard.
+   writes for the subject are rejected by the same guard. Admin reply/takedown takes
+   the same subject lock and still completes, but its notification-producing branch is
+   suppressed when the guard exists.
 4. At `hard_delete_after`, a worker takes the same subject lock and, in one transaction,
    writes every column in the table below. It retains the HMAC subject key to suppress
    late/replayed input without retaining a direct identifier.
@@ -320,15 +327,17 @@ telemetry prove all changes passed its range. It never counts old outbox rows as
 
 ## WF-REVIEW-012 — Takedown and PDP summary
 
-**Takedown (`POST /api/v1/admin/reviews/{review_id}/takedown`):** lock review, validate
-legal case/reason and the caller's admin role, then
-insert the one audit record with `taken_down_by_admin_id` from trusted Gateway
-identity. Set review `REMOVED`, detach assets to `DELETE_PENDING` with
-`deletion_reason=TAKEDOWN`, write
-`REVIEW_REMOVED(was_counted)` and commit. If eligibility owner identity remains,
-write `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` in the same transaction. Notification
-receives only review/product/recipient IDs; it never receives legal `reason`, case or
-admin identity.
+**Takedown (`POST /api/v1/admin/reviews/{review_id}/takedown`):** read the eligibility
+owner to derive its HMAC subject key. When it is non-null, take the same
+transaction-scoped subject lock as privacy before locking review/eligibility and
+re-check the deletion guard. Lock review, validate legal case/reason and the caller's
+admin role, then insert the one audit record with `taken_down_by_admin_id` from trusted
+Gateway identity. Set review `REMOVED`, detach assets to `DELETE_PENDING` with
+`deletion_reason=TAKEDOWN`, and write `REVIEW_REMOVED(was_counted)`. If no guard
+exists, write `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` in the same transaction;
+otherwise omit only that outbox row and still commit the takedown. Notification receives
+only review/product/recipient IDs; it never receives legal `reason`, case or admin
+identity.
 
 **PDP:** Product Detail BFF calls its existing internal read endpoint. Review returns
 aggregate plus bounded approved preview, without eligibility, reports, legal state or

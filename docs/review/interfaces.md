@@ -95,7 +95,8 @@ threshold, Review writes `REVIEW_HIDDEN`; admin dismiss moves review back to
 
 `PUT /api/v1/admin/reviews/{review_id}/reply` creates or replaces the one official
 reply. Only first creation writes `REVIEW_REPLY_NOTIFICATION_REQUESTED` when the
-author identity is still available; replacement never creates a notification event.
+eligibility owner has no HMAC deletion guard; replacement never creates a notification
+event. A guard suppresses the request but does not reject the admin reply.
 `GET /api/v1/admin/reviews?status=...` is the single admin moderation surface. Its
 unit is the review, not the report, because
 `POST /api/v1/admin/reviews/{review_id}/report-dismissals` acts on a review: three
@@ -125,8 +126,9 @@ The single acting admin is read from trusted Gateway identity and persisted as
 It records `review_takedowns`, removes the review from public visibility and writes
 `REVIEW_REMOVED` and queues each detached asset with `deletion_reason=TAKEDOWN`. In the
 same transaction it writes
-`REVIEW_REMOVAL_NOTIFICATION_REQUESTED` only when the author identity remains
-available. The legal reason is never copied to a public response or either event.
+`REVIEW_REMOVAL_NOTIFICATION_REQUESTED` only when the eligibility owner has no HMAC
+deletion guard. A guard does not block the legal takedown itself. The legal reason is
+never copied to a public response or either event.
 
 ## 3. Internal API
 
@@ -198,8 +200,8 @@ mirror for cheap filtering and must never be read in place of the envelope.
 | `REVIEW_APPROVED` | `com.ecommerce.review.approved.v1` | Review rating aggregator | Admin restored a report-hidden review; this is never emitted on create. |
 | `REVIEW_REMOVED` | `com.ecommerce.review.removed.v1` | Review rating aggregator | Legal takedown fact; `was_counted` decides whether to subtract. No legal case, reason or admin identity. |
 | `REVIEW_METRICS_UPDATED` | `com.ecommerce.review.metrics-updated.v1` | Search | Complete Search-facing aggregate snapshot; `sequence = review_revision`. |
-| `REVIEW_REPLY_NOTIFICATION_REQUESTED` | `com.ecommerce.review.reply-notification-requested.v1` | Notification | First official reply only; review/product/recipient IDs, never reply content or admin identity. |
-| `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | `com.ecommerce.review.removal-notification-requested.v1` | Notification | Safe takedown notice; review/product/recipient IDs, never legal case, reason or admin identity. |
+| `REVIEW_REPLY_NOTIFICATION_REQUESTED` | `com.ecommerce.review.reply-notification-requested.v1` | Notification | First official reply only when the eligibility owner has no deletion guard; review/product/recipient IDs, never reply content or admin identity. |
+| `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | `com.ecommerce.review.removal-notification-requested.v1` | Notification | Safe takedown notice only when the eligibility owner has no deletion guard; review/product/recipient IDs, never legal case, reason or admin identity. |
 
 `REVIEW_UPDATED` must carry `old_rating`, `new_rating`, `old_has_media`,
 `new_has_media` and `affects_aggregate`. A content-only edit sets
@@ -248,9 +250,11 @@ Review consumes [Auth's `USER_DELETED` CloudEvents contract](../../contracts/eve
 consumer persists that UUID unchanged in both the `(privacy-sync, event_id)` receipt
 and `privacy_erasure_requests.source_event_id`, then derives and stores a stable HMAC
 subject key with the receipt and
-`privacy_erasure_requests` row before anonymizing author display names. A later worker
-performs hard purge at the requested time; it nulls direct customer IDs but retains the
-HMAC guard, reviews and aggregate. Auth keeps its current best-effort direct publish:
+`privacy_erasure_requests` row before anonymizing author display names. Admin
+reply/takedown uses that guard, under the same subject lock, to suppress a new
+notification request while preserving the command itself. A later worker performs hard
+purge at the requested time; it nulls direct customer IDs but retains the HMAC guard,
+reviews and aggregate. Auth keeps its current best-effort direct publish:
 after at most three retry attempts `USER_DELETED` can be missing. Review has no synchronous
 Auth lookup or Auth outbox; Auth operational reconciliation/redrive must supply a
 missed event before Review can start this lifecycle.

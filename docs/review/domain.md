@@ -59,12 +59,12 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-007` | Caller chỉ gửi `asset_id` của asset do mình sở hữu. Khi create/edit, Review xác minh object đã upload, rồi atomically chuyển asset hợp lệ sang `VERIFIED`/`ATTACHED`; asset phải chưa attach và không vượt số lượng tối đa. |
 | `REVIEW-BR-008` | Một account có tối đa một active report cho một review khi identity còn tồn tại; tác giả không tự report. Sau khi admin dismiss, caller có thể report lại. |
 | `REVIEW-BR-009` | Report đầu tiên của một chu kỳ ghi `first_reported_at`. Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT` và ghi `hidden_at`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. Vì hide chuyển mọi report `PENDING` thành `ACTIONED`, một queue lọc theo report status sẽ mất case đúng lúc cần phân xử; moderation queue vì thế khóa theo review state, và đó là đường duy nhất lấy được `review_id` cho dismiss. |
-| `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; lần tạo đầu tiên phát `REVIEW_REPLY_NOTIFICATION_REQUESTED` khi author identity còn tồn tại, sửa reply không phát event mới. |
+| `REVIEW-BR-010` | Reply chỉ cho review `APPROVED`, tối đa một reply; lần tạo đầu tiên chỉ phát `REVIEW_REPLY_NOTIFICATION_REQUESTED` khi eligibility owner không có deletion guard. Guard không chặn reply, chỉ chặn notification request; sửa reply không phát event mới. |
 | `REVIEW-BR-011` | Takedown cần `legal_case_id`, lý do nội bộ non-blank và một admin có thẩm quyền; `REMOVED` là terminal. Actor được lấy từ trusted Gateway identity, không nhận từ request body. |
 | `REVIEW-BR-012` | Chỉ review `APPROVED` thuộc aggregate. |
 | `REVIEW-BR-013` | Aggregate chỉ tăng `review_revision` khi metric đổi, không phải khi content/name đổi. |
 | `REVIEW-BR-014` | Một event consumer xử lý tối đa một lần theo `(consumer_name, event_id)`. |
-| `REVIEW-BR-015` | `USER_DELETED` tạo deletion guard bằng HMAC subject key và anonymize ngay. Tới `hard_delete_after` thì purge direct customer identifiers nhưng giữ guard; Order input bị suppress và customer-originated write của subject đã có guard bị chặn. |
+| `REVIEW-BR-015` | `USER_DELETED` tạo deletion guard bằng HMAC subject key và anonymize ngay. Tới `hard_delete_after` thì purge direct customer identifiers nhưng giữ guard; Order input bị suppress, customer-originated write của subject đã có guard bị chặn, và admin reply/takedown vẫn thực hiện nhưng không được ghi notification request chứa recipient ID của subject. |
 | `REVIEW-BR-016` | Create review tạo pseudonym `Khách hàng #…` bằng HMAC-SHA-256 của trusted `X-User-Id`, không nhận tên/email và không gọi/consume User. Alias chỉ để hiển thị, không dùng authorization; `USER_DELETED` thay nó bằng `Khách hàng ẩn danh`. |
 
 ## 4. Invariants
@@ -82,7 +82,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-INV-009` | Một export session giữ cùng offset cho mọi page | session-offset primary key + API session ID |
 | `REVIEW-INV-010` | Direct user identifiers biến mất khi privacy request được purge | privacy worker ghi identifier và `*_erased_at`/`purged_at` cùng một UPDATE; các CHECK cặp-cột từ chối việc chỉ null hóa identifier |
 | `REVIEW-INV-011` | Hạn eligibility luôn sau thời điểm hoàn tất đơn hàng, kể cả event tới muộn | `completed_at`, `CHECK (expires_at > completed_at)` + integration test |
-| `REVIEW-INV-012` | Sau khi deletion guard commit, không write mới nào được lưu direct ID của subject | HMAC guard lookup + cùng transaction-scoped subject lock + integration test |
+| `REVIEW-INV-012` | Sau khi deletion guard commit, không write mới nào được lưu direct ID của subject, gồm cả `recipient_user_id` trong notification outbox | HMAC guard lookup + cùng transaction-scoped subject lock + integration test |
 
 ## 5. State machines
 

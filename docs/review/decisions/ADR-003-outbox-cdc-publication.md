@@ -18,8 +18,10 @@ Mọi business event được insert vào `review_outbox` trong cùng transactio
 change. Debezium đọc chỉ bảng này qua publication và publish `t.review.events` với
 Kafka key luôn là `product_id`. Topic chứa lifecycle facts, Search-facing rating
 snapshots và đúng hai Notification request: first official reply và legal removal.
-Hai request chỉ có review/product/recipient IDs; không chứa reply content, legal case,
-reason hoặc admin identity.
+Reply/takedown chỉ ghi các request này khi eligibility owner không có HMAC deletion
+guard; một command có guard vẫn commit domain change nhưng không ghi notification
+outbox row. Hai request chỉ có review/product/recipient IDs; không chứa reply content,
+legal case, reason hoặc admin identity.
 
 Outbox là append-only CDC source, không phải queue có state theo row. Không có
 `published_at` và không đếm row cũ để suy ra backlog. Publication health được đo qua
@@ -149,8 +151,9 @@ nếu cần database-enforced global key, phải đổi partition strategy sau n
 ## Verification
 
 Test domain transaction có đúng outbox, Kafka key đúng product, connector restart
-không mất event và scheduler tạo partition đúng. Runbook không được dùng “old outbox
-row count” làm publish backlog.
+không mất event và scheduler tạo partition đúng. Test một admin reply/takedown có
+deletion guard vẫn commit domain change nhưng không ghi notification outbox row. Runbook
+không được dùng “old outbox row count” làm publish backlog.
 
 Riêng envelope: validate `payload` đã lưu bằng đúng JSON Schema của `type` đó cho cả
 tám message type, khẳng định mọi row chỉ đi về `t.review.events`, và khẳng định

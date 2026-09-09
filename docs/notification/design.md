@@ -42,6 +42,11 @@ case, legal reason hay thông tin admin. Các Review event type khác trên cùn
 ACK mà không persist hoặc log payload. Nếu `USER_DELETED` đã xóa/anonymize recipient,
 worker không gửi notification trễ.
 
+Ở phía producer, Review chỉ ghi một trong hai request vào outbox khi eligibility owner
+không có HMAC deletion guard, sau khi đã lấy subject lock dùng chung với privacy flow.
+Reply/takedown của subject đã có guard vẫn thành công nhưng không tạo message mới; không
+cần thêm projection hoặc guard table vào Notification cho quy tắc này.
+
 **Phân biệt các event liên quan đến Password:**
 
 | Event | Nguồn (Producer) | Trigger | Kênh gửi | Mục đích |
