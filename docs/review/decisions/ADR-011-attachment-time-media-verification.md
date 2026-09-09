@@ -11,7 +11,7 @@ evidence:
   - contracts/http/review/v1/openapi.yaml
 ---
 
-# ADR-011 — Xác minh media lúc attach, không có verify/poll API cho client
+# ADR-011 — Xác minh media lúc attach và cleanup asset chưa gắn
 
 ## Status
 
@@ -37,8 +37,11 @@ Review đọc metadata của object immutable trước transaction database củ
 xác minh existence, MIME/type, byte size và checksum khi client đã khai báo. Trong
 transaction, Review khóa asset, chuyển `ISSUED → VERIFIED → ATTACHED`, gắn media và
 ghi domain/outbox change. Signed upload phải single-write/no-overwrite; object key là
-opaque và không trả cho client. Asset chưa attach hết hạn theo TTL; quota giới hạn số
-asset chưa attach và byte upload theo user.
+opaque và không trả cho client. `expires_at` vừa là expiry của signed upload instruction
+vừa là deadline attach ở v1. Asset `ISSUED`/`VERIFIED` chưa attach khi quá deadline
+được scheduler chuyển sang `DELETE_PENDING` với
+`deletion_reason=UNATTACHED_EXPIRED`; quota giới hạn số asset chưa attach và byte upload
+theo user.
 
 ## Alternatives considered
 
@@ -60,12 +63,22 @@ vào metadata read từ storage; object missing hoặc chưa visible trả lỗi
 phù hợp, nhưng không có storage write trong database transaction.
 
 `HIDDEN_BY_REPORT` giữ attachment để admin có thể restore review; legal takedown hoặc
-media replacement mới chuyển asset sang `DELETE_PENDING` để worker xóa byte sau commit.
-Không có manual admin-hide state trong decision này.
+media replacement chuyển asset sang `DELETE_PENDING` với reason `TAKEDOWN` hoặc
+`REPLACED`; expiry của asset chưa attach dùng `UNATTACHED_EXPIRED`. Worker xóa byte sau
+commit và chỉ đánh dấu `DELETED` khi Storage xác nhận, trong đó “object not found” là
+thành công idempotent cho asset có thể chưa từng được upload. Không có manual
+admin-hide state trong decision này.
+
+Attach và expiry sweep cùng khóa asset row. Attach commit `ATTACHED` trước thì expiry
+không còn chọn asset đó; sweep commit `DELETE_PENDING` trước thì attach từ chối asset
+như không còn usable. Không có storage call trong transaction của hai path này.
 
 ## Verification
 
 Test signed upload không cho overwrite, quota ngăn unlimited unattached asset, create/
 edit tự verify asset không cần verify/poll request, foreign/missing/type-size-checksum
 mismatch/reuse bị từ chối, URL đọc chỉ được sinh cho attachment verified của review
-`APPROVED`, và takedown/replacement đưa asset vào `DELETE_PENDING`.
+`APPROVED`, và takedown/replacement đưa asset vào `DELETE_PENDING` với đúng reason.
+Test cũng chứng minh `ISSUED`/`VERIFIED` quá deadline đi vào cùng cleanup pipeline,
+object-not-found hoàn tất cleanup, asset `ATTACHED` không bị sweep, và attach/expiry
+race chỉ có một winner.

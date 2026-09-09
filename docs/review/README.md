@@ -51,7 +51,8 @@ late/replayed input from writing that direct identity back.
 
 - Grant and expire verified-purchase review entitlements.
 - Create one review and edit it once.
-- Issue bounded direct-upload URLs; verify, attach and asynchronously delete media assets.
+- Issue bounded direct-upload URLs; verify and attach media; route detached or expired
+  unattached assets through confirmed asynchronous storage cleanup.
 - List only approved reviews with keyset pagination and expose rating aggregate.
 - Report, auto-hide, dismiss reports, reply and legally take down reviews.
 - Process all internal/inbound events idempotently with database receipts.
@@ -74,6 +75,9 @@ late/replayed input from writing that direct identity back.
 - `REVIEW-INV-011`: eligibility expiry derives from order completion, not ingestion.
 - `REVIEW-INV-012`: a committed HMAC deletion guard blocks new direct identity writes
   for its subject, including late Order input.
+- `REVIEW-INV-013`: every detached or expired-unattached media asset enters
+  `DELETE_PENDING` with a reason and becomes `DELETED` only after storage confirms
+  deletion (or confirms the object is absent).
 
 ## Documents
 

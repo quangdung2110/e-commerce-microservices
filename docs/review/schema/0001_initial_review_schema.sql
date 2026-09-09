@@ -28,9 +28,14 @@ CREATE TYPE review_media_asset_state AS ENUM (
     'ISSUED',         -- upload URL issued, object not verified yet
     'VERIFIED',       -- object existence and metadata were verified
     'ATTACHED',       -- attached to one active review_media row
-    'EXPIRED',        -- never attached before upload expiry
-    'DELETE_PENDING', -- detached or taken down; storage worker must delete it
+    'DELETE_PENDING', -- storage worker must delete an unattached/detached object
     'DELETED'
+);
+
+CREATE TYPE review_media_deletion_reason AS ENUM (
+    'UNATTACHED_EXPIRED', -- attachment deadline elapsed before attachment
+    'REPLACED',           -- detached by a review media replacement
+    'TAKEDOWN'            -- detached by a legal takedown
 );
 
 CREATE TYPE privacy_erasure_status AS ENUM ('RECEIVED', 'ANONYMIZED', 'PURGED', 'FAILED');
@@ -142,9 +147,12 @@ CREATE TABLE review_media_assets (
     content_type        VARCHAR(100),
     byte_size           BIGINT,
     checksum            VARCHAR(128),
+    -- In v1 this is both the signed-upload instruction expiry and the deadline
+    -- for attaching this otherwise-unattached asset to a review.
     expires_at          TIMESTAMPTZ NOT NULL,
     verified_at         TIMESTAMPTZ,
     attached_at         TIMESTAMPTZ,
+    deletion_reason     review_media_deletion_reason,
     delete_requested_at TIMESTAMPTZ,
     deleted_at          TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -157,13 +165,25 @@ CREATE TABLE review_media_assets (
     ),
     CONSTRAINT ck_media_asset_byte_size_non_negative CHECK (byte_size IS NULL OR byte_size >= 0),
     CONSTRAINT ck_media_asset_verified_state CHECK (
-        (upload_state IN ('ISSUED', 'EXPIRED') AND verified_at IS NULL) OR
-        (upload_state IN ('VERIFIED', 'ATTACHED', 'DELETE_PENDING', 'DELETED')
-            AND verified_at IS NOT NULL)
+        (upload_state = 'ISSUED' AND verified_at IS NULL) OR
+        (upload_state IN ('VERIFIED', 'ATTACHED') AND verified_at IS NOT NULL) OR
+        -- An expired ISSUED asset may never have had an object, while an expired
+        -- VERIFIED asset retains verification metadata until storage deletion.
+        upload_state IN ('DELETE_PENDING', 'DELETED')
     ),
-    CONSTRAINT ck_media_asset_deleted_state CHECK (
-        (upload_state = 'DELETED' AND deleted_at IS NOT NULL) OR
-        (upload_state <> 'DELETED' AND deleted_at IS NULL)
+    CONSTRAINT ck_media_asset_deletion_lifecycle CHECK (
+        (upload_state IN ('ISSUED', 'VERIFIED', 'ATTACHED')
+            AND deletion_reason IS NULL
+            AND delete_requested_at IS NULL
+            AND deleted_at IS NULL) OR
+        (upload_state = 'DELETE_PENDING'
+            AND deletion_reason IS NOT NULL
+            AND delete_requested_at IS NOT NULL
+            AND deleted_at IS NULL) OR
+        (upload_state = 'DELETED'
+            AND deletion_reason IS NOT NULL
+            AND delete_requested_at IS NOT NULL
+            AND deleted_at IS NOT NULL)
     )
 );
 

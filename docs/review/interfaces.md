@@ -63,7 +63,8 @@ or consume profile events. Replay returns `409 ALREADY_REVIEWED`.
 `PATCH /api/v1/reviews/{review_id}` can change rating, content and media once.
 It requires `status=APPROVED` and `edit_count=0`; successful commit sets
 `edit_count=1`, verifies newly supplied assets, swaps media links and writes
-`REVIEW_UPDATED`. Replacement assets become `DELETE_PENDING` after they are detached.
+`REVIEW_UPDATED`. Replacement assets become `DELETE_PENDING` with
+`deletion_reason=REPLACED` after they are detached.
 The OpenAPI fixes partial-update semantics: an absent field is preserved,
 `content: null` clears content, an absent `media_asset_ids` preserves attachments and
 an explicit empty array removes them. A supplied media list is a complete replacement
@@ -78,7 +79,11 @@ the opaque object key. Client uploads directly to storage, then simply sends `as
 in create/edit; there is no client-facing verify/poll endpoint. Review verifies
 existence/type/size/checksum when declared before attachment. An asset belongs to one
 user, attaches to at most one review and is bounded by attachment and unattached-upload
-quotas.
+quotas. In v1 the returned expiry is also the deadline to attach that asset: if an
+`ISSUED` or `VERIFIED` asset reaches it un-attached, Review queues storage cleanup with
+`deletion_reason=UNATTACHED_EXPIRED`; there is no client-visible media `EXPIRED` state.
+The attach transaction and expiry sweep lock the same asset row, so exactly one wins:
+an asset already queued for cleanup is rejected as unusable.
 
 ### Report and moderation
 
@@ -99,7 +104,8 @@ all active reports and restores a report-hidden review when applicable.
 The single acting admin is read from trusted Gateway identity and persisted as
 `taken_down_by_admin_id`; neither requester nor approver ID is accepted from the body.
 It records `review_takedowns`, removes the review from public visibility and writes
-`REVIEW_REMOVED`. In the same transaction it writes
+`REVIEW_REMOVED` and queues each detached asset with `deletion_reason=TAKEDOWN`. In the
+same transaction it writes
 `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` only when the author identity remains
 available. The legal reason is never copied to a public response or either event.
 

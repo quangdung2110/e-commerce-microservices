@@ -59,8 +59,8 @@ flowchart TB
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
 | Notification consumer | Consume only reply/removal notification requests and deduplicate by CloudEvents ID; no legal reason, admin identity or reply content is published |
 | Export-session API | Capture Kafka end offsets, persist session/offsets, serve short keyset pages |
-| Asset verifier/deleter | Verify object before attach; delete storage object after `DELETE_PENDING` commit |
-| Scheduler | Expire entitlement/assets/sessions, purge privacy IDs, reconcile aggregate, maintain outbox partitions |
+| Asset verifier/deleter | Verify object before attach; after a `DELETE_PENDING` commit, delete the storage object and mark `DELETED` only on confirmation (including object-not-found) |
+| Scheduler | Expire entitlement/assets/sessions; send expired unattached assets to cleanup, purge privacy IDs, reconcile aggregate, maintain outbox partitions |
 
 ## 3. Transaction boundaries
 
@@ -76,9 +76,12 @@ commit or rollback.
 
 Media is deliberately two-phase: client upload happens directly to storage, then the
 create/edit command reads and verifies immutable object metadata before atomically
-attaching it in PostgreSQL. Storage deletion happens after database detach. Review
-does not expose a client verification/poll endpoint, refer to an expiring upload URL
-in a review, or roll back an external object operation.
+attaching it in PostgreSQL. An unattached `ISSUED`/`VERIFIED` asset reaching
+`expires_at` is atomically put in `DELETE_PENDING` with
+`UNATTACHED_EXPIRED`; detach uses `REPLACED` or `TAKEDOWN`. Storage deletion happens
+after that database commit, and only a storage confirmation (including object-not-found)
+permits `DELETED`. Review does not expose a client verification/poll endpoint, refer to
+an expiring upload URL in a review, or roll back an external object operation.
 
 ## 4. Consistency model
 
@@ -103,6 +106,9 @@ and legal-removal requests defined by Review AsyncAPI.
 - Edit/report/reply/takedown lock the review row with `FOR UPDATE`.
 - Attach asset verifies the caller-owned uploaded object, then locks its asset row and
   transitions it to `VERIFIED`/`ATTACHED`; unique `asset_id` prevents double attachment.
+- Attach and the expired-unattached sweep lock the same asset row. The first committed
+  transition wins: `ATTACHED` excludes cleanup; `DELETE_PENDING` rejects attach as
+  unusable. The storage worker never performs its external delete before that commit.
 - Privacy, Order and customer write paths take the same per-subject transaction lock.
   If privacy wins, later input sees its guard; if a write wins, privacy processes that
   committed row before it releases the lock.

@@ -79,10 +79,12 @@ signed upload must be single-write/no-overwrite to prevent post-check byte repla
 prevents double use. In the same transaction the asset becomes `ATTACHED` and review
 `has_media` is updated.
 
-**Detach/delete.** Replaced/taken-down media links are removed in the review
-transaction and assets become `DELETE_PENDING`. A storage worker deletes bytes after
-commit and marks `DELETED`; it retries safely. Direct storage calls never occur inside
-the review transaction.
+**Detach/delete.** Replaced media links are removed in the review transaction and
+assets become `DELETE_PENDING` with `deletion_reason=REPLACED`; legal takedown uses
+`TAKEDOWN`. A storage worker deletes bytes after commit and marks `DELETED` only after
+Storage confirms deletion. It treats “object not found” as a successful deletion, so
+an expired asset that was never uploaded does not retry forever. Direct storage calls
+never occur inside the review transaction.
 
 ## WF-REVIEW-003 — Create review
 
@@ -237,13 +239,22 @@ does not add a public `ACCOUNT_DELETED` error or expose deletion state to a call
 ## WF-REVIEW-011 — Scheduler/reconciliation
 
 Every five minutes: atomically transition every `PENDING` eligibility with
-`expires_at <= now()` to `EXPIRED`; expire unattached assets and export sessions;
+`expires_at <= now()` to `EXPIRED`; transition every `ISSUED` or `VERIFIED` asset with
+`expires_at <= now()` to `DELETE_PENDING`, setting
+`deletion_reason=UNATTACHED_EXPIRED` and `delete_requested_at`; expire export sessions;
 alert on privacy deadline; and create the outbox partition for the next UTC month.
+The asset sweep locks each candidate asset row and performs a conditional state
+transition. It races safely with attach: attach that commits `ATTACHED` first removes
+the row from the sweep; a sweep that commits `DELETE_PENDING` first makes later attach
+fail as unusable. No storage operation happens in this scheduler transaction.
 
-Daily: process asset `DELETE_PENDING`, privacy hard purge, compare aggregate with
-approved reviews, and repair drift with a revision increment plus metric outbox event.
-Aggregate replay duplicates should no longer cause drift; reconciliation remains a
-corruption/bug safety net.
+Daily: process every asset `DELETE_PENDING` regardless of reason; delete its
+`object_key` and only then mark it `DELETED`. “Object not found” is idempotent success;
+transient or definitive storage failures leave it `DELETE_PENDING` for safe retry and
+alerting. Also run privacy hard purge, compare aggregate with approved reviews, and
+repair drift with a revision increment plus metric outbox event. Aggregate replay
+duplicates should no longer cause drift; reconciliation remains a corruption/bug
+safety net.
 
 Outbox cleanup drops a partition only after Kafka Connect and replication-slot
 telemetry prove all changes passed its range. It never counts old outbox rows as
@@ -254,7 +265,8 @@ telemetry prove all changes passed its range. It never counts old outbox rows as
 **Takedown (`POST /api/v1/admin/reviews/{review_id}/takedown`):** lock review, validate
 legal case/reason and the caller's admin role, then
 insert the one audit record with `taken_down_by_admin_id` from trusted Gateway
-identity. Set review `REMOVED`, detach assets to `DELETE_PENDING`, write
+identity. Set review `REMOVED`, detach assets to `DELETE_PENDING` with
+`deletion_reason=TAKEDOWN`, write
 `REVIEW_REMOVED(was_counted)` and commit. If eligibility owner identity remains,
 write `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` in the same transaction. Notification
 receives only review/product/recipient IDs; it never receives legal `reason`, case or

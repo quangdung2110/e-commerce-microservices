@@ -44,7 +44,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_WINDOW_DAYS` | 30 | Review-create window after completion |
 | `REVIEW_MAX_CONTENT_LENGTH` | 5000 | Cannot exceed schema hard cap without migration |
 | `REVIEW_MAX_MEDIA_PER_REVIEW` | 9 | Attach-command validation |
-| `REVIEW_MEDIA_UPLOAD_TTL` | 15m | `ISSUED` asset expiry |
+| `REVIEW_MEDIA_UPLOAD_TTL` | 15m | Expiry of the signed upload instruction and, in v1, attachment deadline for an `ISSUED`/`VERIFIED` asset; expiry queues storage cleanup rather than leaving a media `EXPIRED` state |
 | `REVIEW_MAX_UNATTACHED_ASSETS_PER_USER` | 18 | Quota cho asset `ISSUED`/`VERIFIED`; bắt buộc để direct upload không thành unlimited storage |
 | `REVIEW_MAX_IMAGE_BYTES` | 10 MiB | Enforce trong signed upload policy và metadata verification |
 | `REVIEW_MAX_VIDEO_BYTES` | 100 MiB | Enforce trong signed upload policy và metadata verification |
@@ -66,6 +66,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `review_export_session_total{result}` | Create/page/expiry outcomes |
 | `review_export_session_active` | Active session count |
 | `review_media_asset_pending_delete_total` | Storage cleanup backlog |
+| `review_media_cleanup_total{reason,result}` | Asset cleanup transitions/results; `reason` is only `UNATTACHED_EXPIRED`, `REPLACED` or `TAKEDOWN`, and `result` is bounded (including `object_not_found_success`) |
 | `review_media_verification_total{result,media_type}` | Object missing/type-size-checksum mismatch hoặc attach verification thành công; không gắn user/asset ID làm label |
 | `review_media_unattached_quota_rejected_total` | Gateway/API đã chặn cấp thêm upload asset vì quota |
 | `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because recipient was purged |
@@ -110,8 +111,12 @@ and lose `USER_DELETED`. Follow Auth's alert/reconciliation/redrive process; do 
 claim hard-delete completion before the event reaches Review. No Auth outbox is added.
 
 **Media delete backlog.** Check storage worker failures and asset rows in
-`DELETE_PENDING`; retry deletion. Public review access is already revoked by detaching
-the asset before this worker runs.
+`DELETE_PENDING`, including `deletion_reason` and `delete_requested_at`; retry deletion
+without changing state manually. Treat a storage “object not found” result as success
+and let the worker mark `DELETED`: an `UNATTACHED_EXPIRED` asset may never have been
+uploaded. Public review access is already revoked by detaching a replacement/takedown
+asset before this worker runs. If expiry cleanup has no progress, inspect the five-minute
+sweep for `ISSUED`/`VERIFIED` rows with `expires_at <= now()` and its row-lock errors.
 
 **Media verification failure.** Do not attach or manually mark an asset `VERIFIED`.
 Check signed-upload expiry, one-write/no-overwrite policy, object existence and actual
@@ -122,6 +127,6 @@ existing object is invalid; retry only a transient signer/metadata-read failure.
 
 | Frequency | Work |
 |---|---|
-| 5 minutes | Expire eligibility/assets/sessions; alert privacy deadline; ensure next outbox partition |
-| Daily | Process asset deletion and privacy purge; reconcile aggregate; evaluate partition cleanup |
+| 5 minutes | Expire eligibility/export sessions; enqueue expired unattached `ISSUED`/`VERIFIED` assets as `DELETE_PENDING(UNATTACHED_EXPIRED)`; alert privacy deadline; ensure next outbox partition |
+| Daily | Process every `DELETE_PENDING` asset (object-not-found is success), privacy purge, aggregate reconciliation and partition-cleanup evaluation |
 | Continuous | Debezium, order consumer, privacy consumer, idempotent rating aggregator; Notification consumes Review request types independently |

@@ -123,12 +123,27 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> ISSUED
     ISSUED --> VERIFIED: create/edit verifies immutable object metadata
-    ISSUED --> EXPIRED: upload TTL elapsed
     VERIFIED --> ATTACHED: attached to review
-    VERIFIED --> EXPIRED: attachment TTL elapsed
-    ATTACHED --> DELETE_PENDING: replace or takedown
+    ISSUED --> DELETE_PENDING: attachment deadline elapsed / UNATTACHED_EXPIRED
+    VERIFIED --> DELETE_PENDING: attachment deadline elapsed / UNATTACHED_EXPIRED
+    ATTACHED --> DELETE_PENDING: replace / REPLACED
+    ATTACHED --> DELETE_PENDING: legal takedown / TAKEDOWN
     DELETE_PENDING --> DELETED: storage worker confirms
 ```
+
+`EXPIRED` không phải state của media asset (chỉ là state của eligibility/export
+session). `expires_at` là deadline để asset chưa attach được dùng; ở v1 nó bằng thời
+điểm hết hạn của signed upload instruction. Scheduler chỉ sweep `ISSUED`/`VERIFIED`
+đã quá deadline và chuyển chúng sang `DELETE_PENDING` với
+`deletion_reason=UNATTACHED_EXPIRED`. Vì asset `ISSUED` có thể chưa từng upload object,
+`verified_at` được phép null ở `DELETE_PENDING`/`DELETED`.
+
+Attach và expiry scheduler cùng khóa row asset. Nếu attach ghi `ATTACHED` trước,
+scheduler không còn thấy asset sweep được; nếu scheduler ghi `DELETE_PENDING` trước,
+attach bị từ chối như asset không còn usable. Worker xóa `object_key` sau commit, coi
+storage trả “object not found” là xóa thành công, rồi mới ghi `DELETED`. Mọi route vào
+`DELETE_PENDING` phải lưu `deletion_reason` (`UNATTACHED_EXPIRED`, `REPLACED` hoặc
+`TAKEDOWN`) và `delete_requested_at`; không có storage call trong transaction Review.
 
 ## 6. Authorization
 

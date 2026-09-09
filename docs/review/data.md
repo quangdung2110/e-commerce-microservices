@@ -108,9 +108,11 @@ command create/edit, xác minh MIME, kích thước và checksum khi được kh
 chuyển asset sang `VERIFIED` và attach trong transaction PostgreSQL.
 
 ```text
-ISSUED -> VERIFIED -> ATTACHED -> DELETE_PENDING -> DELETED
-   |          |
-   +--------> EXPIRED
+ISSUED -- attachment deadline --> DELETE_PENDING -- storage confirmation --> DELETED
+   |
+   +--> VERIFIED -- attachment deadline --> DELETE_PENDING
+                    |
+                    +--> ATTACHED -- replacement/takedown --> DELETE_PENDING
 ```
 
 - `object_key` là opaque, không chứa `user_id` và không xuất hiện trong public API.
@@ -123,17 +125,31 @@ ISSUED -> VERIFIED -> ATTACHED -> DELETE_PENDING -> DELETED
   đang attach.
 - URL download/presigned URL được tạo lúc đọc; không lưu `media_url` hay
   `thumbnail_url` vì chúng hết hạn.
+- `expires_at` là deadline để asset chưa attach được dùng; ở v1 nó trùng expiry của
+  signed upload instruction. Scheduler chuyển asset `ISSUED`/`VERIFIED` quá deadline
+  sang `DELETE_PENDING` với `deletion_reason=UNATTACHED_EXPIRED`, kể cả khi client
+  chưa upload object.
 - Takedown hoặc thay media chỉ detach database trong transaction và chuyển asset sang
-  `DELETE_PENDING`; storage worker xóa byte sau commit.
+  `DELETE_PENDING` với reason lần lượt `TAKEDOWN` hoặc `REPLACED`; storage worker xóa
+  byte sau commit.
+- Mọi `DELETE_PENDING` có `deletion_reason` và `delete_requested_at`. Worker chỉ ghi
+  `DELETED` sau khi Storage xác nhận xóa; `object not found` cũng là xác nhận thành
+  công để asset hết hạn nhưng chưa từng upload không bị retry vô hạn. `ISSUED` asset
+  có thể đi thẳng tới `DELETE_PENDING` nên `verified_at` được phép null ở hai state
+  cleanup (`DELETE_PENDING`, `DELETED`).
+- Attach và expiry sweep cùng khóa asset row: attach thắng thì asset đã `ATTACHED` và
+  không còn thuộc sweep; sweep thắng thì asset đã `DELETE_PENDING` và attach bị từ
+  chối. Storage worker luôn chạy sau commit, không có storage call trong transaction.
 
 `has_media` được giữ lại vì phục vụ filter/index public. `is_admin_replied` bị loại
 bỏ vì public read đã phải batch-load nội dung reply; boolean đó chỉ thêm drift.
 
-Asset được cấp URL nhưng không attach vẫn có `ISSUED` hoặc `VERIFIED` và hết hạn theo
-TTL. Ngoài giới hạn 9 asset/review, API/Gateway phải áp quota số asset chưa attach và
-tổng byte upload theo user để object storage không trở thành nơi upload vô hạn. Giới
-hạn byte theo `IMAGE`/`VIDEO` được enforce cả trong signed upload policy lẫn lúc Review
-đọc metadata; client-side validation không phải security control.
+Asset được cấp URL nhưng không attach chỉ còn `ISSUED` hoặc `VERIFIED` đến deadline;
+sau đó nó đi qua cleanup pipeline nêu trên, không ở lại một state `EXPIRED`. Ngoài giới
+hạn 9 asset/review, API/Gateway phải áp quota số asset chưa attach và tổng byte upload
+theo user để object storage không trở thành nơi upload vô hạn. Giới hạn byte theo
+`IMAGE`/`VIDEO` được enforce cả trong signed upload policy lẫn lúc Review đọc metadata;
+client-side validation không phải security control.
 
 ## 5. Moderation và takedown
 
