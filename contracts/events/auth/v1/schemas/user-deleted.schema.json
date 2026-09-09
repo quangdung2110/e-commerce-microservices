@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/auth/v1/schemas/user-deleted.schema.json",
   "title": "User Deleted v1",
   "allOf": [
     { "$ref": "./auth-event-common.schema.json" },

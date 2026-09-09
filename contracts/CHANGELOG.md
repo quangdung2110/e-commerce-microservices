@@ -5,6 +5,14 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- Auth common CloudEvents envelope v1 nay ràng buộc `id` là UUID, thay vì chỉ là
+  string không rỗng của schema CloudEvents dùng chung. `USER_DELETED` có thể được
+  Review lưu nguyên giá trị vào `review_event_receipts.event_id` và
+  `privacy_erasure_requests.source_event_id`, đều là UUID; trước đó một event hợp lệ
+  theo Auth contract nhưng `id` không phải UUID sẽ fail ở persistence boundary này.
+  Đây là restriction breaking với producer Auth không conformant, nhưng runtime Auth
+  hiện đã sinh UUID. Thêm fixture và test PostgreSQL disposable chứng minh cùng event
+  ID insert được cả receipt lẫn privacy request theo Review DDL.
 - `INVALID_MEDIA_REFERENCE` nay là `409` ở mọi nơi. Trước đó bảng lỗi domain map `400`
   trong khi OpenAPI mô tả nó trong response `409` của create/patch, nên client không
   viết được retry/UX ổn định. Ranh giới hai lỗi media cũng được chốt theo việc client

@@ -42,6 +42,28 @@ docker compose exec postgres psql -U postgres -c "CREATE DATABASE review_service
 Schema CI must apply `0001` to an empty PostgreSQL 14 database. It must also verify
 the dynamic outbox bootstrap created the current and next UTC partitions.
 
+### Auth → Review `USER_DELETED` persistence contract test
+
+[`test-auth-user-deleted-to-review.ps1`](../../contracts/tools/test-auth-user-deleted-to-review.ps1)
+uses the canonical Auth fixture and the real Review DDL. It first checks that Auth's
+common envelope asserts UUID `id` even under a format-annotation-only validator, then
+creates only the disposable database
+`review_contract_auth_user_deleted`, applies `0001`, and proves the same Auth event ID
+inserts one `(privacy-sync, event_id)` receipt and one
+`privacy_erasure_requests.source_event_id`. The database is dropped in `finally`; it
+never uses or clears `review_service`.
+
+```powershell
+pwsh ./contracts/tools/test-auth-user-deleted-to-review.ps1 -ValidateOnly
+docker compose up -d postgres
+pwsh ./contracts/tools/test-auth-user-deleted-to-review.ps1
+```
+
+Review has no runtime yet, so this is a persistence-boundary contract test of the
+consumer transaction specified in WF-REVIEW-010, not a claim that an application
+consumer has been exercised. The implementation must retain this fixture and run the
+same assertion through its actual Kafka consumer before adoption can become `verified`.
+
 Compose deliberately has no object storage and no Review Debezium connector yet.
 Object bytes are not needed to apply the schema, and the storage provider is still
 unchosen, so adding a vendor container now would pre-empt that decision. The connector
@@ -81,7 +103,7 @@ be added to compose before the media and CDC integration tests below can run.
 | Aggregate | Duplicate event changes no bucket twice; create/edit/hide/restore/remove yields exact bucket values and revision |
 | Notification | First reply creates exactly one reply request; takedown creates removal request only for a non-purged owner; payload has no content, legal data or admin identity |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |
-| Privacy | Event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; a purge that clears an identifier without writing its paired `*_erased_at` is rejected by the CHECK, proving the pairing is enforced rather than assumed; one end-to-end run reaches `PURGED` with `anonymized_at` and `purged_at` both set and every identifier column NULL across all four tables; `EXPLAIN` shows anonymize and purge using `ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure` and `ix_report_reporter_erasure`, never a sequential scan; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries |
+| Privacy | Auth common schema rejects non-UUID CloudEvents `id`; the canonical Auth `USER_DELETED` UUID inserts exactly one `(privacy-sync, event_id)` receipt and one `privacy_erasure_requests.source_event_id`; event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; a purge that clears an identifier without writing its paired `*_erased_at` is rejected by the CHECK, proving the pairing is enforced rather than assumed; one end-to-end run reaches `PURGED` with `anonymized_at` and `purged_at` both set and every identifier column NULL across all four tables; `EXPLAIN` shows anonymize and purge using `ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure` and `ix_report_reporter_erasure`, never a sequential scan; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries |
 | Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog; stored `payload` validates against the JSON Schema of its own `type` for all eight message types; an envelope missing `subject`/`dataschema`/`time` or disagreeing with its projection columns fails the domain transaction; a payload above 16 KiB is rejected at write time |
 | Outbox CDC | Every row lands on `t.review.events` and no other topic, including a `REVIEW_METRIC` row; Kafka key equals `data.product_id`; the consumed message value is byte-equal to the stored `payload`; `table.expand.json.payload` round-trips all eight `data` shapes without dropping nullable fields |
 

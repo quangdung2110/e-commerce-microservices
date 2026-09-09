@@ -246,8 +246,10 @@ changes, Search aborts and starts a new export after topology stabilizes.
 
 **Trigger:** `USER_DELETED`.
 
-1. Derive the HMAC privacy subject key, begin a transaction and take its subject lock.
-   Store `(privacy-sync, event_id)` receipt and insert `privacy_erasure_requests` with
+1. Validate the Auth CloudEvents `id` as UUID before the transaction; it is persisted
+   unchanged in the UUID receipt and `source_event_id` columns. Derive the HMAC privacy
+   subject key, begin a transaction and take its subject lock. Store
+   `(privacy-sync, event_id)` receipt and insert `privacy_erasure_requests` with
    `ON CONFLICT (subject_match_key) DO NOTHING`. A logical duplicate deletion with a
    new event ID only commits its receipt and changes nothing else.
 2. Find the subject's reviews by joining `reviews` to `review_eligibilities` through

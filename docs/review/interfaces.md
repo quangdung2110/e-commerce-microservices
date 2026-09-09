@@ -244,8 +244,10 @@ Order lookup.
 ### `USER_DELETED`
 
 Review consumes [Auth's `USER_DELETED` CloudEvents contract](../../contracts/events/auth/v1/asyncapi.yaml):
-`id`, `user_id`, `deleted_at`, `reason` and `hard_delete_after`. The privacy consumer
-derives and stores a stable HMAC subject key with the receipt and
+`id` (UUID), `user_id`, `deleted_at`, `reason` and `hard_delete_after`. The privacy
+consumer persists that UUID unchanged in both the `(privacy-sync, event_id)` receipt
+and `privacy_erasure_requests.source_event_id`, then derives and stores a stable HMAC
+subject key with the receipt and
 `privacy_erasure_requests` row before anonymizing author display names. A later worker
 performs hard purge at the requested time; it nulls direct customer IDs but retains the
 HMAC guard, reviews and aggregate. Auth keeps its current best-effort direct publish:

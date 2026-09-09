@@ -4,9 +4,9 @@ info:
   version: 1.0.0
   description: >-
     Contract đích cho event do Auth Service publish. Mọi message dùng CloudEvents
-    1.0 JSON structured; không mang password, OTP, reset token, refresh token
-    hoặc email. Notification resolve nội dung gửi qua internal Auth API theo
-    delivery_id.
+    1.0 JSON structured với `id` UUID; không mang password, OTP, reset token,
+    refresh token hoặc email. Notification resolve nội dung gửi qua internal Auth
+    API theo delivery_id.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:

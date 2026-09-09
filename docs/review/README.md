@@ -10,6 +10,7 @@ evidence:
   - contracts/events/review/v1/asyncapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
+  - contracts/tools/test-auth-user-deleted-to-review.ps1
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null

@@ -15,6 +15,15 @@ và topic/message nằm trong [AsyncAPI](asyncapi.yaml).
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_id`. Consumer
 phải deduplicate bằng CloudEvent `id` và chịu được delivery trùng.
 
+Mọi event Auth v1 bắt buộc có CloudEvents `id` ở định dạng UUID. Schema dùng cả
+`format: uuid` lẫn regex assertion vì một số JSON Schema validator chỉ xem `format`
+là annotation. ID là khóa deduplication transport: publisher giữ nguyên nó cho retry
+của cùng message và consumer có thể lưu trực tiếp vào cột UUID của receipt. Đây là
+ràng buộc bổ sung trên envelope CloudEvents dùng chung, vốn chỉ yêu cầu một string
+không rỗng.
+Fixture chuẩn cho `USER_DELETED` là
+[`auth-user-deleted.v1.json`](../../../examples/events/auth-user-deleted.v1.json).
+
 ## Giới hạn delivery hiện tại
 
 `USER_DELETED` được Auth publish trực tiếp sau khi transaction account đã commit và

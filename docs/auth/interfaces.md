@@ -54,7 +54,10 @@ không được phép nhận trực tiếp từ public client.
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng account. Auth publish
 trực tiếp sau commit, retry có giới hạn và không có outbox: Kafka delivery sau
 khi publish là at-least-once, nhưng retry cạn có thể làm mất event. Consumer phải
-deduplicate bằng CloudEvent `id` ổn định và có reconciliation vận hành.
+deduplicate bằng CloudEvent `id` UUID ổn định và có reconciliation vận hành. Auth
+common schema ràng buộc UUID bằng `format` và regex assertion cho mọi `id`, để
+consumer lưu receipt UUID mà không cần ép kiểu hoặc có nhánh xử lý event hợp lệ khác
+kiểu.
 
 | Event | Ý nghĩa / trigger | Consumer dự kiến |
 |---|---|---|

@@ -100,7 +100,7 @@ interactions:
     consumers: [user-service, notification-service, review-service, chat-service]
     contract: events/auth/v1/asyncapi.yaml
     status: proposed
-    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract.
+    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract; mọi Auth CloudEvents id là UUID để consumer persist receipt cùng kiểu.
 
   - id: user-publishes-profile-preference-events
     protocol: kafka

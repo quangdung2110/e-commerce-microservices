@@ -218,8 +218,10 @@ mới và chạy lại toàn bộ export. Offset rows xóa theo `ON DELETE CASCA
 
 ## 8. Privacy lifecycle
 
-`USER_DELETED` tạo `privacy_erasure_requests` với source event, thời điểm xóa,
-`hard_delete_after`, state và `subject_match_key`. Key này là 32-byte HMAC-SHA-256 của
+`USER_DELETED` có CloudEvents `id` UUID; Review lưu nguyên giá trị đó vào receipt
+`(privacy-sync, event_id)` và `privacy_erasure_requests.source_event_id`, rồi tạo
+request với thời điểm xóa, `hard_delete_after`, state và `subject_match_key`. Key này
+là 32-byte HMAC-SHA-256 của
 `"review-privacy-guard:v1:" || canonical_lowercase_uuid(user_id)`, dùng key
 `REVIEW_PRIVACY_GUARD_HMAC_SECRET` và `subject_key_version = 1`. Nó chỉ dùng để so
 khớp deletion guard, không được dùng authorization, public output, log hay metric

@@ -18,6 +18,23 @@ Smoke validator kiểm tra:
 - CloudEvents example có đủ field lõi;
 - Markdown trong `contracts/` không có relative link bị gãy.
 
+## Auth → Review persistence contract test
+
+`USER_DELETED` của Auth có fixture riêng và một test persistence cho Review. Test
+kiểm tra `id` UUID (kể cả regex assertion) trong Auth common schema, rồi áp dụng
+Review DDL vào database Docker tạm `review_contract_auth_user_deleted` và insert thật
+receipt cùng privacy request từ cùng event ID. Database tạm luôn được drop;
+`review_service` không bị động tới.
+
+```powershell
+pwsh ./contracts/tools/test-auth-user-deleted-to-review.ps1 -ValidateOnly
+docker compose up -d postgres
+pwsh ./contracts/tools/test-auth-user-deleted-to-review.ps1
+```
+
+Do Review chưa có runtime, test này chứng minh contract/persistence mapping chứ chưa
+thay thế contract test Kafka consumer của implementation.
+
 ## Tool chuyên dụng khuyến nghị
 
 Smoke test không thay thế semantic linter. Khi cài các CLI sau, script sẽ tự chạy
