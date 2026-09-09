@@ -74,13 +74,19 @@ erDiagram
 là globally unique và xác định buyer, nên không cần giữ `user_id` trong unique key.
 Điều này cho phép null hóa owner ID khi privacy purge mà không phá idempotency.
 
+`completed_at` là fact bất biến từ `ORDER_COMPLETED`; `expires_at` được tính từ nó.
+`created_at` chỉ là lúc Review ghi nhận event và có thể muộn hơn `expires_at`, nên
+không tham gia validation hoặc tính hạn. `expired_at` luôn bằng `expires_at` khi
+eligibility là `EXPIRED`, để biểu diễn lúc cửa sổ review thực sự đóng thay vì lúc
+consumer/scheduler ghi state.
+
 Eligibility chỉ có ba state:
 
 | State | Ý nghĩa |
 |---|---|
 | `PENDING` | Owner còn tạo được review |
 | `CLAIMED` | Review đã được tạo trong cùng transaction |
-| `EXPIRED` | Cửa sổ review kết thúc trước khi tạo |
+| `EXPIRED` | Cửa sổ review kết thúc trước khi tạo; `expired_at = expires_at` |
 
 Quota sửa thuộc `reviews.edit_count` (`0..1`), không nằm trong eligibility. Một
 review chỉ tồn tại khi `eligibility.status = CLAIMED`; thao tác tạo review là

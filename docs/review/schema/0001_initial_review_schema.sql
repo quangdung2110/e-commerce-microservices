@@ -50,6 +50,9 @@ CREATE TABLE review_eligibilities (
     owner_user_id         UUID,
     owner_erased_at       TIMESTAMPTZ,
     status                eligibility_status NOT NULL DEFAULT 'PENDING',
+    -- Business timestamp copied from ORDER_COMPLETED. It is deliberately distinct
+    -- from created_at because the event may be delivered after the review window.
+    completed_at          TIMESTAMPTZ NOT NULL,
     expires_at            TIMESTAMPTZ NOT NULL,
     claimed_at            TIMESTAMPTZ,
     expired_at            TIMESTAMPTZ,
@@ -60,7 +63,7 @@ CREATE TABLE review_eligibilities (
     -- Parent key for the composite FK in reviews. It prevents a review from
     -- carrying a product/SKU different from its entitlement.
     CONSTRAINT uq_eligibility_id_product_sku UNIQUE (id, product_id, sku_id),
-    CONSTRAINT ck_eligibility_expiry_after_creation CHECK (expires_at > created_at),
+    CONSTRAINT ck_eligibility_expiry_after_completion CHECK (expires_at > completed_at),
     CONSTRAINT ck_eligibility_owner_erasure_consistent CHECK (
         (owner_user_id IS NOT NULL AND owner_erased_at IS NULL) OR
         (owner_user_id IS NULL AND owner_erased_at IS NOT NULL)
@@ -68,7 +71,9 @@ CREATE TABLE review_eligibilities (
     CONSTRAINT ck_eligibility_state_consistent CHECK (
         (status = 'PENDING' AND claimed_at IS NULL AND expired_at IS NULL) OR
         (status = 'CLAIMED' AND claimed_at IS NOT NULL AND expired_at IS NULL) OR
-        (status = 'EXPIRED' AND claimed_at IS NULL AND expired_at IS NOT NULL)
+        -- expired_at is the business instant at which the window closed, not the
+        -- later instant when a consumer or scheduler persisted this state.
+        (status = 'EXPIRED' AND claimed_at IS NULL AND expired_at = expires_at)
     )
 );
 

@@ -21,6 +21,11 @@ Eligibility chỉ có `PENDING`, `CLAIMED`, `EXPIRED`. Nó quản lý quyền t�
 không mang attempt counter hay quota sửa. `reviews.edit_count` có range `0..1` và là
 nguồn sự thật duy nhất cho quyền sửa.
 
+Eligibility lưu `completed_at` từ `ORDER_COMPLETED` và tính
+`expires_at = completed_at + review_window_days`. `created_at` chỉ ghi thời điểm
+Review nhận event, không xác định hạn. Một event tới sau hạn vẫn tạo `EXPIRED`, với
+`expired_at = expires_at` để giữ mốc nghiệp vụ cửa sổ đóng.
+
 Create review atomically claim eligibility `PENDING -> CLAIMED` rồi insert review.
 Edit requires `edit_count=0` and atomically sets it to 1. Không có transition quay về
 `PENDING` và không có reconciliation mở lại quota.
@@ -35,6 +40,8 @@ privacy purge vì owner identity không nằm trong unique key.
 ## Consequences
 
 - Một buyer vẫn chỉ review một SKU đã mua đúng một lần và sửa tối đa một lần.
+- Late delivery không làm kéo dài cửa sổ review hoặc làm consumer retry/DLQ vì
+  `expires_at` đã qua `created_at`.
 - `CLAIMED` không thể tồn tại không có review qua đường xử lý bình thường; anomaly chỉ
   alert, không tự sửa quota.
 - Nếu nghiệp vụ cần review theo từng order line thay vì SKU, phải thêm
@@ -42,5 +49,6 @@ privacy purge vì owner identity không nằm trong unique key.
 
 ## Verification
 
-Test concurrent create, replay order event, second edit, expired create, state
-constraint và privacy purge owner identity mà không tạo entitlement trùng.
+Test concurrent create, replay order event, second edit, expired create, late
+`ORDER_COMPLETED` whose expiry predates ingestion, state constraint và privacy purge
+owner identity mà không tạo entitlement trùng.

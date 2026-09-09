@@ -41,12 +41,17 @@ verified_against_commit: null
    item’s product/SKU; consume `variant_name` snapshot when supplied.
 2. Begin transaction; insert receipt `(order-sync, id)`. Existing receipt means
    no-op and ACK.
-3. Upsert one eligibility per `(order_id, product_id, sku_id)`. It is `PENDING` when
-   `completed_at + review_window_days > now()`, otherwise `EXPIRED`.
-4. Never overwrite a `CLAIMED` eligibility. Commit then ACK.
+3. For every item, calculate `expires_at = completed_at + review_window_days` from
+   the event's business timestamp. Insert one eligibility per
+   `(order_id, product_id, sku_id)` with `ON CONFLICT DO NOTHING`: an existing
+   business-key row is never overwritten. Set it `PENDING` when `expires_at > now()`;
+   otherwise set it `EXPIRED` with `expired_at = expires_at`.
+4. Commit then ACK.
 
 Missing product/SKU is contract failure and goes DLQ. Missing variant name is accepted
-as null for old orders, but new producers must send it. No event leaves Review.
+as null for old orders, but new producers must send it. `created_at` records ingestion
+only; it never extends the review window. `now()` is the transaction timestamp. No
+event leaves Review.
 
 ## WF-REVIEW-002 — Media asset lifecycle
 
@@ -209,9 +214,10 @@ severity and retries; it must not silently DLQ.
 
 ## WF-REVIEW-011 — Scheduler/reconciliation
 
-Every five minutes: expire `PENDING` eligibility, expire unattached assets, expire
-export sessions, alert on privacy deadline and create outbox partition for the next
-UTC month.
+Every five minutes: atomically transition every `PENDING` eligibility with
+`expires_at <= now()` to `EXPIRED`, setting `expired_at = expires_at`; expire
+unattached assets and export sessions; alert on privacy deadline; and create the
+outbox partition for the next UTC month.
 
 Daily: process asset `DELETE_PENDING`, privacy hard purge, compare aggregate with
 approved reviews, and repair drift with a revision increment plus metric outbox event.

@@ -32,9 +32,9 @@ verified_against_commit: null
 
 ## 2. Aggregate roots
 
-**ReviewEligibility** quản lý quyền tạo review: external purchase snapshot,
-`owner_user_id`, trạng thái và expiry. Một order globally unique nên business key là
-`(order_id, product_id, sku_id)`.
+**ReviewEligibility** quản lý quyền tạo review: external purchase snapshot, gồm cả
+`completed_at`, `owner_user_id`, trạng thái và expiry. Một order globally unique nên
+business key là `(order_id, product_id, sku_id)`.
 
 **Review** quản lý public review hiện tại, edit quota, visibility, report counter,
 media attachment, report, reply và takedown. `product_id`/`sku_id` trên Review là
@@ -51,7 +51,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | ID | Quy tắc |
 |---|---|
 | `REVIEW-BR-001` | Mỗi `(order_id, product_id, sku_id)` sinh tối đa một eligibility; replay `ORDER_COMPLETED` là idempotent. |
-| `REVIEW-BR-002` | `expires_at = completed_at + review_window_days`; event tới muộn tạo `EXPIRED`. |
+| `REVIEW-BR-002` | `completed_at` là thời điểm nghiệp vụ từ `ORDER_COMPLETED`; `expires_at = completed_at + review_window_days`, không tính từ lúc Review nhận event. Event tới muộn tạo `EXPIRED` với `expired_at = expires_at`. |
 | `REVIEW-BR-003` | Chỉ `owner_user_id` của eligibility còn `PENDING` được tạo review. |
 | `REVIEW-BR-004` | Tạo review atomically chuyển `PENDING → CLAIMED`; một eligibility sinh tối đa một review. |
 | `REVIEW-BR-005` | Rating nằm trong 1–5; content là null hoặc non-blank, không quá maximum cố định. |
@@ -81,6 +81,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-INV-008` | Consumer effect idempotent | `review_event_receipts` trong cùng transaction |
 | `REVIEW-INV-009` | Một export session giữ cùng offset cho mọi page | session-offset primary key + API session ID |
 | `REVIEW-INV-010` | Direct user identifiers biến mất khi privacy request được purge | privacy worker transaction + schema checks |
+| `REVIEW-INV-011` | Hạn eligibility luôn sau thời điểm hoàn tất đơn hàng, kể cả event tới muộn | `completed_at`, `CHECK (expires_at > completed_at)` + integration test |
 
 ## 5. State machines
 
@@ -95,7 +96,8 @@ stateDiagram-v2
 ```
 
 `CLAIMED` chỉ ghi nhận review đã tồn tại. Nó không biểu diễn edit quota và không được
-đưa về `PENDING`.
+đưa về `PENDING`. Khi vào `EXPIRED`, `expired_at` bằng đúng `expires_at`: đây là mốc
+nghiệp vụ cửa sổ đóng, không phải thời điểm consumer hoặc scheduler phát hiện expiry.
 
 ### 5.2 Review
 

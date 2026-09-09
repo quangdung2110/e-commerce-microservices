@@ -51,7 +51,7 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 
 | Area | Required proof |
 |---|---|
-| Entitlement | Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner |
+| Entitlement | Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at`/`expired_at` derived from `completed_at`, even when both predate `created_at` |
 | Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content; same caller gets deterministic HMAC pseudonym and no profile/email is accepted |
 | Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; foreign, missing, invalid or reused asset is rejected; detached asset becomes `DELETE_PENDING` |
 | Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver |

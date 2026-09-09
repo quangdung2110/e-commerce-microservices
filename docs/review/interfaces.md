@@ -179,11 +179,15 @@ Auth.
 Review consumes [Order's CloudEvents contract](../../contracts/events/order/v1/asyncapi.yaml):
 `id`, `order_id`, `user_id`, `completed_at` and every item’s `product_id`, `sku_id`,
 `variant_name` snapshot and quantity. `variant_name` is nullable for historic orders
-but must be supplied by current producer when known.
+but must be supplied by current producer when known. `completed_at` is the business
+timestamp stored on the eligibility and is the sole basis for its review window; it is
+not replaced by Review's event-ingestion time.
 
 Review first inserts an `order-sync` receipt using `CloudEvents.id`. In the same
-transaction it upserts eligibilities by `(order_id, product_id, sku_id)` without
-changing a `CLAIMED` row. The event must not trigger a synchronous Order lookup.
+transaction it inserts eligibilities by `(order_id, product_id, sku_id)` with
+`ON CONFLICT DO NOTHING`; no existing business-key row is changed. A late but valid
+event therefore records `EXPIRED` with its original business expiry. The event must
+not trigger a synchronous Order lookup.
 
 ### `USER_DELETED`
 
