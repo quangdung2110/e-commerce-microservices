@@ -104,6 +104,12 @@ CREATE TABLE reviews (
     status                review_status NOT NULL DEFAULT 'APPROVED',
     active_report_count   INTEGER NOT NULL DEFAULT 0,
     has_media             BOOLEAN NOT NULL DEFAULT FALSE,
+    -- When the report threshold last hid this review. It orders the admin
+    -- moderation queue oldest-first and is deliberately retained after a
+    -- dismissal restores the review, so a repeatedly brigaded review stays
+    -- visible in audit. Every index over it is partial on status, so a stale
+    -- value on an APPROVED or REMOVED row is inert.
+    hidden_at             TIMESTAMPTZ,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -116,7 +122,12 @@ CREATE TABLE reviews (
     CONSTRAINT ck_review_content_valid CHECK (
         content IS NULL OR char_length(btrim(content)) BETWEEN 1 AND 5000
     ),
-    CONSTRAINT ck_review_active_report_count_non_negative CHECK (active_report_count >= 0)
+    CONSTRAINT ck_review_active_report_count_non_negative CHECK (active_report_count >= 0),
+    -- One-way implication: a hidden review must know when it was hidden, but
+    -- leaving HIDDEN_BY_REPORT does not erase that history.
+    CONSTRAINT ck_review_hidden_at_present CHECK (
+        status <> 'HIDDEN_BY_REPORT' OR hidden_at IS NOT NULL
+    )
 );
 
 CREATE INDEX ix_review_product_recent
@@ -130,6 +141,12 @@ CREATE INDEX ix_review_product_with_media
     WHERE status = 'APPROVED' AND has_media = TRUE;
 CREATE INDEX ix_review_aggregate_recount
     ON reviews (product_id, rating) WHERE status = 'APPROVED';
+-- Every index above is partial on APPROVED, so without this one the admin
+-- moderation queue would sequentially scan the whole review table. A review
+-- becomes invisible to the public exactly when it becomes admin work, so this
+-- is the only index that serves it.
+CREATE INDEX ix_review_hidden_queue
+    ON reviews (hidden_at, id) WHERE status = 'HIDDEN_BY_REPORT';
 
 -- ---------------------------------------------------------------------------
 -- 4. review_media_assets and review_media

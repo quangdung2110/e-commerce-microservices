@@ -11,7 +11,7 @@ qua API Gateway.
 |---|---|---|
 | `GET /api/v1/reviews/products/**` | Anonymous | Chỉ đọc review `APPROVED` và zero/current aggregate |
 | `/api/v1/reviews/**` còn lại | Gateway identity | Buyer chỉ đọc/sửa dữ liệu của mình, report và cấp upload instruction |
-| `/api/v1/admin/**` | Gateway identity + Review admin role | Moderation queue, dismiss report, official reply và legal takedown |
+| `/api/v1/admin/**` | Gateway identity + Review admin role | Report triage queue, danh sách review đang bị ẩn, dismiss report, official reply và legal takedown |
 
 `X-User-Id` và `X-User-Roles` là headers do Gateway inject sau JWT verification.
 Client không được tự gửi chúng; Review vẫn phải authorize ownership/role.
@@ -29,6 +29,15 @@ Client không được tự gửi chúng; Review vẫn phải authorize ownershi
   không được hỗ trợ trong v1.
 - `202` của report không có body để không lộ report count hay trạng thái moderation.
   Chỉ report threshold tự ẩn review; không có manual admin-hide operation.
+- Admin có hai surface đọc khác granularity. `GET /api/v1/admin/review-reports` là
+  queue từng report `PENDING` trên review còn public.
+  `GET /api/v1/admin/reviews?status=HIDDEN_BY_REPORT` là danh sách review đã bị ẩn,
+  một entry cho một review vì `report-dismissals` thao tác theo review. Cần surface
+  thứ hai vì hide chuyển mọi report `PENDING` thành `ACTIONED`, làm case rời queue
+  đúng lúc cần phân xử; không có nó thì không lấy được `review_id` để gỡ ẩn.
+- Chỉ surface admin được cấp signed URL cho media của review không `APPROVED`, TTL
+  ngắn hơn public. Không có nó thì report về ảnh/video không thể phân xử. Public read
+  và owner read vẫn không cấp URL cho media đó.
 - `201`/`200` của domain command xác nhận database và outbox đã commit, không xác nhận
   Kafka publication/consumer processing hoàn thành.
 

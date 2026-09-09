@@ -161,6 +161,13 @@ active report cho một review khi còn identity; unique partial index loại tr
 `ACTIONED` là quyết định tự động khi chạm ngưỡng: có `resolved_at` nhưng không có
 admin. `DISMISSED` luôn cần `resolved_by_admin_id` và `resolved_at`.
 
+`hidden_at` trên `reviews` ghi lần gần nhất threshold ẩn review. Nó cần cho admin
+moderation list vì hide chuyển mọi report `PENDING` của review thành `ACTIONED`: case
+biến mất khỏi `ix_report_moderation_queue` đúng lúc nó cần admin phân xử, nên phải tìm
+lại theo review state chứ không theo report state. `ck_review_hidden_at_present` là
+implication một chiều (`HIDDEN_BY_REPORT` ⟹ có `hidden_at`), nên dismiss khôi phục
+review mà vẫn giữ lịch sử bị ẩn.
+
 `review_takedowns` là audit/legal record: `legal_case_id`, admin thực hiện
 (`taken_down_by_admin_id`) và lý do nội bộ. Nó không phải nội dung notification.
 Admin identity được lấy từ trusted Gateway identity, không có trường actor trong body.
@@ -280,7 +287,13 @@ Public review list dùng keyset `(created_at, id)` và các partial index
 `status='APPROVED'`. Mọi index phục vụ sort đều kết thúc bằng
 `created_at DESC, id DESC`; không dùng `OFFSET`.
 
-Các query secondary tải media/reply theo batch cho page review, không N+1. Aggregate
-đọc theo primary key. Search export keyset theo `product_id`. Mọi `updated_at` trên
+Admin moderation list dùng keyset `(hidden_at, id)` tăng dần trên
+`ix_review_hidden_queue`. Đây là index duy nhất trên `reviews` không partial theo
+`status='APPROVED'`: review bị ẩn rời khỏi mọi index public đúng lúc nó thành việc của
+admin, nên nếu thiếu nó thì list sẽ seq-scan toàn bảng.
+
+Các query secondary tải media/reply theo batch cho page review, không N+1; admin
+moderation list cũng batch-load media và report chưa `DISMISSED` theo cùng cách.
+Aggregate đọc theo primary key. Search export keyset theo `product_id`. Mọi `updated_at` trên
 bảng mutable được trigger database cập nhật, không phụ thuộc việc application code
 nhớ set cột.

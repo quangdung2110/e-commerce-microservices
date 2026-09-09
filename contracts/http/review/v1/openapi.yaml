@@ -274,6 +274,37 @@ paths:
         '403': { $ref: '#/components/responses/AdminForbidden' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
+  /api/v1/admin/reviews:
+    get:
+      tags: [Admin moderation]
+      operationId: listReviewsUnderModeration
+      summary: Liệt kê review đang bị ẩn bởi report
+      description: >-
+        Khi report chạm threshold, review bị ẩn và mọi report PENDING của nó thành
+        ACTIONED, nên nó rời khỏi queue PENDING đúng lúc nó cần admin phân xử. Đây là
+        surface duy nhất tìm lại được các case đó và lấy review_id cho
+        report-dismissals. Đơn vị là review, không phải report: một review bị ba report
+        là một case, và command dismiss cũng thao tác theo review.
+        Queue không trả reporter_user_id.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ModerationStatusQuery'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: >-
+            Case theo hidden_at tăng dần, bị ẩn lâu nhất trước. Signed media URL chỉ
+            tồn tại trong response này.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModerationCasePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminForbidden' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
   /api/v1/admin/reviews/{review_id}/report-dismissals:
     post:
       tags: [Admin moderation]
@@ -421,6 +452,14 @@ components:
       in: query
       required: false
       schema: { $ref: '#/components/schemas/Rating' }
+    ModerationStatusQuery:
+      name: status
+      in: query
+      required: true
+      description: >-
+        v1 chỉ liệt kê state cần admin hành động. Nó là required để một client quên
+        filter không vô tình phân trang toàn bộ review của hệ thống.
+      schema: { $ref: '#/components/schemas/ModerationQueueStatus' }
     HasMediaQuery:
       name: has_media
       in: query
@@ -460,6 +499,12 @@ components:
     ReviewReportReason:
       type: string
       enum: [SPAM, OFFENSIVE, FAKE, OTHER]
+    ReviewReportStatus:
+      type: string
+      enum: [PENDING, ACTIONED, DISMISSED]
+      description: >-
+        ACTIONED nghĩa là report đã góp phần ẩn review, không phải đã được admin phân
+        xử. Chỉ DISMISSED mới do admin quyết.
     EligibilityStatus:
       type: string
       enum: [PENDING, CLAIMED, EXPIRED]
@@ -664,10 +709,38 @@ components:
         asset_id: { $ref: '#/components/schemas/Uuid' }
         expires_at: { type: string, format: date-time }
         upload: { $ref: '#/components/schemas/UploadInstruction' }
+    ModerationQueueStatus:
+      type: string
+      enum: [HIDDEN_BY_REPORT]
+      description: >-
+        Chỉ HIDDEN_BY_REPORT trong v1. Enum tồn tại để mở rộng về sau mà không cần
+        path mới; thêm giá trị đòi index riêng vì mọi index review hiện có đều partial
+        theo APPROVED.
+    AdminReviewMedia:
+      type: object
+      additionalProperties: false
+      required: [asset_id, media_type, url, url_expires_at, sort_order]
+      description: >-
+        Media của review đang bị ẩn, chỉ cấp trên admin moderation surface. Không có
+        signed URL nào cho media này ở public hay owner surface. Một report về ảnh/video
+        không thể phân xử nếu thiếu nó.
+      properties:
+        asset_id: { $ref: '#/components/schemas/Uuid' }
+        media_type: { $ref: '#/components/schemas/ReviewMediaType' }
+        url:
+          type: string
+          format: uri
+          description: >-
+            Short-lived signed download URL sinh riêng cho response này. TTL phải ngắn
+            hơn TTL của public read URL.
+        url_expires_at: { type: string, format: date-time }
+        sort_order: { type: integer, minimum: 0, maximum: 32767 }
     AdminReviewSnapshot:
       type: object
       additionalProperties: false
-      required: [review_id, product_id, sku_id, rating, content, has_media, created_at]
+      required:
+        [review_id, product_id, sku_id, rating, content, has_media, media,
+         visibility_status, active_report_count, hidden_at, created_at]
       properties:
         review_id: { $ref: '#/components/schemas/Uuid' }
         product_id: { $ref: '#/components/schemas/ProductId' }
@@ -675,7 +748,57 @@ components:
         rating: { $ref: '#/components/schemas/Rating' }
         content: { type: [string, 'null'], maxLength: 5000 }
         has_media: { type: boolean }
+        media:
+          type: array
+          maxItems: 9
+          description: >-
+            Rỗng khi review chưa có media. Signed URL được cấp kể cả khi review đang
+            HIDDEN_BY_REPORT, chỉ trên surface admin này.
+          items: { $ref: '#/components/schemas/AdminReviewMedia' }
+        visibility_status: { $ref: '#/components/schemas/ReviewVisibilityStatus' }
+        active_report_count: { type: integer, minimum: 0 }
+        hidden_at:
+          type: [string, 'null']
+          format: date-time
+          description: Lần gần nhất report threshold ẩn review; null nếu chưa từng bị ẩn.
         created_at: { type: string, format: date-time }
+    AdminModerationCase:
+      type: object
+      additionalProperties: false
+      required: [review, reports, hidden_at]
+      description: >-
+        Một review cần phân xử kèm toàn bộ ngữ cảnh để quyết trong một lần đọc. Dùng
+        review.review_id làm path parameter cho report-dismissals.
+      properties:
+        review: { $ref: '#/components/schemas/AdminReviewSnapshot' }
+        reports:
+          type: array
+          maxItems: 50
+          description: >-
+            Report chưa DISMISSED của review, cũ trước. Không có reporter_user_id.
+            Bị cắt ở 50; active_report_count mới là con số đầy đủ.
+          items: { $ref: '#/components/schemas/AdminModerationCaseReport' }
+        hidden_at: { type: string, format: date-time }
+    AdminModerationCaseReport:
+      type: object
+      additionalProperties: false
+      required: [report_id, reason, detail, status, created_at]
+      properties:
+        report_id: { $ref: '#/components/schemas/Uuid' }
+        reason: { $ref: '#/components/schemas/ReviewReportReason' }
+        detail: { type: [string, 'null'], maxLength: 2000 }
+        status: { $ref: '#/components/schemas/ReviewReportStatus' }
+        created_at: { type: string, format: date-time }
+    AdminModerationCasePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AdminModerationCase' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
     AdminReviewReport:
       type: object
       additionalProperties: false
