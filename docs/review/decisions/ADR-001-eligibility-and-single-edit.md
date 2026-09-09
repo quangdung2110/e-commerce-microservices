@@ -23,8 +23,8 @@ nguồn sự thật duy nhất cho quyền sửa.
 
 Eligibility lưu `completed_at` từ `ORDER_COMPLETED` và tính
 `expires_at = completed_at + review_window_days`. `created_at` chỉ ghi thời điểm
-Review nhận event, không xác định hạn. Một event tới sau hạn vẫn tạo `EXPIRED`, với
-`expired_at = expires_at` để giữ mốc nghiệp vụ cửa sổ đóng.
+Review nhận event, không xác định hạn. Một event tới sau hạn vẫn tạo `EXPIRED`;
+`expires_at` là mốc nghiệp vụ cửa sổ đóng.
 
 Create review atomically claim eligibility `PENDING -> CLAIMED` rồi insert review.
 Edit requires `edit_count=0` and atomically sets it to 1. Không có transition quay về

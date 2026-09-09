@@ -45,7 +45,7 @@ verified_against_commit: null
    the event's business timestamp. Insert one eligibility per
    `(order_id, product_id, sku_id)` with `ON CONFLICT DO NOTHING`: an existing
    business-key row is never overwritten. Set it `PENDING` when `expires_at > now()`;
-   otherwise set it `EXPIRED` with `expired_at = expires_at`.
+   otherwise set it `EXPIRED`.
 4. Commit then ACK.
 
 Missing product/SKU is contract failure and goes DLQ. Missing variant name is accepted
@@ -215,9 +215,8 @@ severity and retries; it must not silently DLQ.
 ## WF-REVIEW-011 — Scheduler/reconciliation
 
 Every five minutes: atomically transition every `PENDING` eligibility with
-`expires_at <= now()` to `EXPIRED`, setting `expired_at = expires_at`; expire
-unattached assets and export sessions; alert on privacy deadline; and create the
-outbox partition for the next UTC month.
+`expires_at <= now()` to `EXPIRED`; expire unattached assets and export sessions;
+alert on privacy deadline; and create the outbox partition for the next UTC month.
 
 Daily: process asset `DELETE_PENDING`, privacy hard purge, compare aggregate with
 approved reviews, and repair drift with a revision increment plus metric outbox event.

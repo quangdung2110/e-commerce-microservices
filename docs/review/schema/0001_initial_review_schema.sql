@@ -55,7 +55,6 @@ CREATE TABLE review_eligibilities (
     completed_at          TIMESTAMPTZ NOT NULL,
     expires_at            TIMESTAMPTZ NOT NULL,
     claimed_at            TIMESTAMPTZ,
-    expired_at            TIMESTAMPTZ,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -69,11 +68,9 @@ CREATE TABLE review_eligibilities (
         (owner_user_id IS NULL AND owner_erased_at IS NOT NULL)
     ),
     CONSTRAINT ck_eligibility_state_consistent CHECK (
-        (status = 'PENDING' AND claimed_at IS NULL AND expired_at IS NULL) OR
-        (status = 'CLAIMED' AND claimed_at IS NOT NULL AND expired_at IS NULL) OR
-        -- expired_at is the business instant at which the window closed, not the
-        -- later instant when a consumer or scheduler persisted this state.
-        (status = 'EXPIRED' AND claimed_at IS NULL AND expired_at = expires_at)
+        (status = 'PENDING' AND claimed_at IS NULL) OR
+        (status = 'CLAIMED' AND claimed_at IS NOT NULL) OR
+        (status = 'EXPIRED' AND claimed_at IS NULL)
     )
 );
 
