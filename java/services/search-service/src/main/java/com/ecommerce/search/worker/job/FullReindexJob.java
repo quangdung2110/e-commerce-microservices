@@ -16,6 +16,7 @@ import com.ecommerce.search.repository.es.ThrottledBulkWriter;
 import com.ecommerce.search.worker.ReindexControlCoordinator;
 import com.ecommerce.search.worker.client.ExportPages;
 import com.ecommerce.search.worker.client.InventoryExportException;
+import com.ecommerce.search.worker.client.RatingExportSessionException;
 import com.ecommerce.search.worker.client.SnapshotExportClient;
 import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
 import com.ecommerce.search.worker.handler.BatchExecutor;
@@ -402,9 +403,16 @@ public class FullReindexJob {
     }
 
     /**
-     * Rating build, after the catalog so the SKUs exist. Each aggregate is applied with an
-     * {@code _update_by_query} over the product's SKUs, guarded by {@code review_revision}
-     * exactly like the event path (ADR-016).
+     * Rating build, after the catalog so the SKUs exist.
+     *
+     * <p>Review pins the {@code t.review.events} offsets when the session is created, before
+     * anything is scanned, so a session that dies mid-scan takes its replay boundary with it:
+     * the aggregates already imported were read against offsets that will never be seeked to.
+     * The recovery is a new session paged from its first page, which is why this loops the
+     * way the availability build does ({@code WF-SEARCH-009} step 3).
+     *
+     * <p>Re-importing aggregates is free — the {@code review_revision} guard turns a repeat
+     * into a no-op — so nothing is undone between attempts.
      */
     private void buildRating(String productsIndex, ReindexProgressState progress, Instant deadline)
             throws IOException {
@@ -412,13 +420,62 @@ public class FullReindexJob {
             log.info("review rating export is disabled; new SKUs keep their 0/0 default");
             return;
         }
+        int maxSessions = properties.export().ratingExportMaxSessions();
+        for (int attempt = 1; attempt <= maxSessions; attempt++) {
+            ExportPages.RatingExportSession session = openRatingSession(progress);
+            try {
+                importRatingSnapshot(session, productsIndex, progress, deadline);
+                metrics.snapshotExport(SOURCE_REVIEW, "success");
+                return;
+            } catch (RatingExportSessionException e) {
+                metrics.snapshotExport(SOURCE_REVIEW, "session_expired");
+                log.warn("rating build attempt {} of {} restarts from a new session: {}",
+                        attempt, maxSessions, e.getMessage());
+            }
+        }
+        // Outliving the session twice is a capacity problem, not a blip: stop and alert
+        // rather than loop, exactly as the availability bootstrap does.
+        metrics.snapshotExport(SOURCE_REVIEW, "fail");
+        throw new IllegalStateException("rating build used all " + maxSessions
+                + " permitted export sessions without completing one end to end");
+    }
+
+    /**
+     * Opens a session and takes its offsets as the review replay boundary, replacing any a
+     * superseded session left behind.
+     *
+     * <p>The replacement is the point: seeking to the older session's offsets would start the
+     * replay after this session's snapshot was taken and drop every mutation in between.
+     */
+    private ExportPages.RatingExportSession openRatingSession(ReindexProgressState progress) {
+        ExportPages.RatingExportSession session = exports.createRatingExportSession();
+        if (session == null || session.sessionId() == null
+                || session.replayFromOffsets() == null || session.replayFromOffsets().isEmpty()) {
+            throw new IllegalStateException("review rating export session returned no replay_from_offsets");
+        }
+        progress.recordRatingSession(session);
+        progress.replaceOffsets(SOURCE_REVIEW, session.replayFromOffsets());
+        log.info("rating build pinned to review export session {} (expires {})",
+                session.sessionId(), session.expiresAt());
+        return session;
+    }
+
+    /**
+     * Pages one session from its first page, applying each aggregate with an
+     * {@code _update_by_query} over the product's SKUs, guarded by {@code review_revision}
+     * exactly like the event path (ADR-016).
+     *
+     * <p>This is the one build step that cannot use {@code _bulk}: the aggregate is keyed by
+     * {@code product_id} while a document is addressed by {@code _id = sku_id}, and Search
+     * keeps no reverse lookup from one to the other ({@code SEARCH-INV-005}).
+     */
+    private void importRatingSnapshot(ExportPages.RatingExportSession session, String productsIndex,
+                                      ReindexProgressState progress, Instant deadline) throws IOException {
         String after = null;
         do {
-            if (Instant.now().isAfter(deadline)) {
-                throw new IllegalStateException("rating build exceeded the run deadline");
-            }
-            ExportPages.RatingExportPage page = exports.ratingAggregates(after);
-            progress.recordOffsets(SOURCE_REVIEW, page.replayFromOffsets());
+            requireBefore(deadline, "rating build");
+            ExportPages.RatingExportPage page = exports.ratingAggregates(session.sessionId(), after);
+            requireSameSession(session, page);
             for (CatalogPayloads.RatingAggregate aggregate : nullSafe(page.items())) {
                 writer.reviewMetricsPatch(productsIndex, aggregate.productId(),
                         aggregate.averageRating() == null ? 0.0 : aggregate.averageRating(),
@@ -432,7 +489,19 @@ public class FullReindexJob {
             progress.addRatingAggregates(nullSafe(page.items()).size());
             after = page.nextAfterProductId();
         } while (after != null && !after.isBlank());
-        metrics.snapshotExport(SOURCE_REVIEW, "success");
+    }
+
+    /**
+     * A page belonging to another session would have been scanned against offsets this run
+     * never recorded, so the import it contributes to could not be replayed from. Treated as
+     * the session being gone rather than as a page to skip.
+     */
+    private static void requireSameSession(ExportPages.RatingExportSession session,
+                                           ExportPages.RatingExportPage page) {
+        if (page.sessionId() != null && !page.sessionId().equals(session.sessionId())) {
+            throw new RatingExportSessionException("review returned a page of session "
+                    + page.sessionId() + " while " + session.sessionId() + " was being read");
+        }
     }
 
     // ------------------------------------------------------------------ cutover

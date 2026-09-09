@@ -46,6 +46,13 @@ public final class ReindexProgressState {
      */
     private final Set<String> deferredAvailabilitySkus = ConcurrentHashMap.newKeySet();
 
+    /**
+     * The Review export session the rating build is paging. Checkpointed for the same reason
+     * as the Inventory one: the offsets already recorded belong to <em>this</em> session, and
+     * a restart has to be able to say which (ADR-016).
+     */
+    private volatile ExportPages.RatingExportSession ratingSession;
+
     public void addCategories(long count) {
         categoriesExported.addAndGet(count);
     }
@@ -120,6 +127,19 @@ public final class ReindexProgressState {
         ratingAggregatesImported.addAndGet(count);
     }
 
+    /**
+     * Pins a fresh rating build to a session, discarding what the previous one counted.
+     *
+     * <p>The count is reset rather than carried over because a new session is paged from its
+     * first page: keeping the old total would double-count every aggregate re-imported. The
+     * offsets are replaced separately by the caller, since they arrive with the session
+     * itself rather than with the pages.
+     */
+    public void recordRatingSession(ExportPages.RatingExportSession session) {
+        this.ratingSession = session;
+        this.ratingAggregatesImported.set(0);
+    }
+
     public void setCatchUpLag(Long lag) {
         this.catchUpLag = lag;
     }
@@ -128,6 +148,19 @@ public final class ReindexProgressState {
     public void recordOffsets(String source, List<ExportPages.ReplayOffset> offsets) {
         if (offsets != null && !offsets.isEmpty()) {
             replayOffsets.putIfAbsent(source, List.copyOf(offsets));
+        }
+    }
+
+    /**
+     * Replaces the offsets of one source, which a repeated {@link #recordOffsets} will not do.
+     *
+     * <p>Only a source that can restart its export session needs this. Seeking to a superseded
+     * session's offsets would start the replay later than the surviving snapshot was taken and
+     * silently drop every mutation in between, so the stale entry must go rather than win.
+     */
+    public void replaceOffsets(String source, List<ExportPages.ReplayOffset> offsets) {
+        if (offsets != null && !offsets.isEmpty()) {
+            replayOffsets.put(source, List.copyOf(offsets));
         }
     }
 
@@ -154,20 +187,33 @@ public final class ReindexProgressState {
         return map;
     }
 
-    /** The Inventory handoff point a resume or a cutover check has to reason about. */
+    /**
+     * The export sessions a resume or a cutover check has to reason about.
+     *
+     * <p>Both session IDs are checkpointed because {@code WF-SEARCH-009} requires them as
+     * run metrics, and because a support question about a bad rating in a finished index
+     * starts with which session exported it.
+     */
     public Map<String, Object> checkpointAsMap() {
-        if (availabilitySession == null) {
-            return Map.of();
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        if (availabilitySession != null) {
+            Map<String, Object> session = new LinkedHashMap<>();
+            session.put("snapshot_id", availabilitySession.snapshotId());
+            session.put("export_watermark", availabilitySession.exportWatermark());
+            session.put("expires_at", availabilitySession.expiresAt());
+            session.put("cursor", availabilityCursor);
+            session.put("sequence", availabilitySequence);
+            session.put("handoff_proven", availabilityHandoffProven);
+            session.put("deferred_skus", deferredAvailabilitySkus.size());
+            checkpoint.put("inventory_availability", session);
         }
-        Map<String, Object> session = new LinkedHashMap<>();
-        session.put("snapshot_id", availabilitySession.snapshotId());
-        session.put("export_watermark", availabilitySession.exportWatermark());
-        session.put("expires_at", availabilitySession.expiresAt());
-        session.put("cursor", availabilityCursor);
-        session.put("sequence", availabilitySequence);
-        session.put("handoff_proven", availabilityHandoffProven);
-        session.put("deferred_skus", deferredAvailabilitySkus.size());
-        return Map.of("inventory_availability", session);
+        if (ratingSession != null) {
+            Map<String, Object> session = new LinkedHashMap<>();
+            session.put("session_id", ratingSession.sessionId());
+            session.put("expires_at", ratingSession.expiresAt());
+            checkpoint.put("review_rating", session);
+        }
+        return checkpoint;
     }
 
     public Map<String, Object> offsetsAsMap() {

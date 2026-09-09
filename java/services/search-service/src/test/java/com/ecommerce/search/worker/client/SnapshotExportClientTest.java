@@ -4,6 +4,7 @@ import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.config.WebConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -31,6 +33,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class SnapshotExportClientTest {
 
     private static final String INVENTORY = "http://inventory-service:8080";
+    private static final String REVIEW = "http://review-service:8080";
 
     private MockRestServiceServer server;
     private SnapshotExportClient client;
@@ -40,7 +43,7 @@ class SnapshotExportClientTest {
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", INVENTORY, "http://review-service:8080",
-                true, Duration.ofSeconds(30), 2));
+                true, Duration.ofSeconds(30), 2, 2));
         when(properties.reindex()).thenReturn(mock(SearchProperties.Reindex.class));
 
         // The production builder, not a bare one: the naming strategy this pins lives
@@ -145,6 +148,102 @@ class SnapshotExportClientTest {
             assertThat(item.availabilityRevision()).isEqualTo(12L);
             assertThat(item.observedAt()).isNotNull();
         });
+    }
+
+    @Test
+    void createsTheRatingExportSessionWithAPost() {
+        // The v1 rating export is session-based: the stateless
+        // GET /internal/v1/reviews/rating-aggregates it replaced answers 404 now.
+        server.expect(requestTo(REVIEW + "/internal/v1/reviews/rating-aggregate-exports"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "session_id": "b7b1c0de-0000-4000-8000-000000000001",
+                          "expires_at": "2026-09-09T01:00:00.000Z",
+                          "replay_from_offsets": [
+                            { "topic": "t.review.events", "partition": 0, "offset": 8814 }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        ExportPages.RatingExportSession session = client.createRatingExportSession();
+
+        assertThat(session.sessionId()).isEqualTo("b7b1c0de-0000-4000-8000-000000000001");
+        assertThat(session.expiresAt()).isNotNull();
+        assertThat(session.replayFromOffsets()).singleElement().satisfies(offset -> {
+            assertThat(offset.topic()).isEqualTo("t.review.events");
+            assertThat(offset.offset()).isEqualTo(8814L);
+        });
+    }
+
+    @Test
+    void bindsAPageOfRatingAggregatesInsideTheSession() {
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        REVIEW + "/internal/v1/reviews/rating-aggregate-exports/session-1")))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {
+                          "session_id": "session-1",
+                          "items": [
+                            {
+                              "product_id": "prd-1",
+                              "average_rating": 4.5,
+                              "total_reviews": 12,
+                              "total_with_media": 3,
+                              "review_revision": 7,
+                              "observed_at": "2026-09-08T00:59:00.000Z"
+                            }
+                          ],
+                          "next_after_product_id": "prd-1",
+                          "replay_from_offsets": [
+                            { "topic": "t.review.events", "partition": 0, "offset": 8814 }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        ExportPages.RatingExportPage page = client.ratingAggregates("session-1", null);
+
+        assertThat(page.sessionId()).isEqualTo("session-1");
+        assertThat(page.nextAfterProductId()).isEqualTo("prd-1");
+        assertThat(page.items()).singleElement().satisfies(item -> {
+            assertThat(item.productId()).isEqualTo("prd-1");
+            assertThat(item.averageRating()).isEqualTo(4.5);
+            assertThat(item.totalReviews()).isEqualTo(12L);
+            assertThat(item.reviewRevision()).isEqualTo(7L);
+            assertThat(item.observedAt()).isNotNull();
+        });
+    }
+
+    @Test
+    void treatsAnExpiredRatingSessionAsGone() {
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        REVIEW + "/internal/v1/reviews/rating-aggregate-exports/session-1")))
+                .andRespond(withStatus(HttpStatus.GONE));
+
+        assertThatThrownBy(() -> client.ratingAggregates("session-1", null))
+                .isInstanceOf(RatingExportSessionException.class);
+    }
+
+    @Test
+    void treatsAnUnknownRatingSessionAsGoneToo() {
+        // Unlike Inventory there is no second 410 to tell apart, so a 404 needs no problem
+        // body to be actionable: the offsets are unreachable either way.
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        REVIEW + "/internal/v1/reviews/rating-aggregate-exports/session-1")))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        assertThatThrownBy(() -> client.ratingAggregates("session-1", null))
+                .isInstanceOf(RatingExportSessionException.class);
+    }
+
+    @Test
+    void letsAnyOtherRatingErrorThrough() {
+        server.expect(requestTo(org.hamcrest.Matchers.startsWith(
+                        REVIEW + "/internal/v1/reviews/rating-aggregate-exports/session-1")))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> client.ratingAggregates("session-1", null))
+                .isNotInstanceOf(RatingExportSessionException.class);
     }
 
     private static String problem(String code) {

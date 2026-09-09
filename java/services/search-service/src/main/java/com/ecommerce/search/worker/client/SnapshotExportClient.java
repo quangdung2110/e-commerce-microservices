@@ -136,12 +136,41 @@ public class SnapshotExportClient {
         return Optional.empty();
     }
 
-    public ExportPages.RatingExportPage ratingAggregates(String afterProductId) {
+    /**
+     * Opens a Review rating export session, pinning the {@code t.review.events} offsets to
+     * replay from before any aggregate is scanned.
+     *
+     * <p>Creating the session writes durable state on Review's side, which is why it is a
+     * {@code POST} and not a parameterless {@code GET} (ADR-016).
+     */
+    public ExportPages.RatingExportSession createRatingExportSession() {
         URI uri = UriComponentsBuilder.fromUriString(properties.export().reviewBaseUrl())
-                .path("/internal/v1/reviews/rating-aggregates")
+                .path("/internal/v1/reviews/rating-aggregate-exports")
+                .build(true).toUri();
+        return http.post().uri(uri).retrieve().body(ExportPages.RatingExportSession.class);
+    }
+
+    /**
+     * Pages the aggregates keyset-ordered by {@code product_id} within one session.
+     *
+     * @throws RatingExportSessionException when the session has expired or is unknown, which
+     *         invalidates the offsets every page so far was imported against
+     */
+    public ExportPages.RatingExportPage ratingAggregates(String sessionId, String afterProductId) {
+        URI uri = UriComponentsBuilder.fromUriString(properties.export().reviewBaseUrl())
+                .path("/internal/v1/reviews/rating-aggregate-exports/{session_id}")
                 .queryParam("limit", properties.reindex().exportPageSize())
                 .queryParamIfPresent("after_product_id", java.util.Optional.ofNullable(afterProductId))
-                .build(true).toUri();
-        return http.get().uri(uri).retrieve().body(ExportPages.RatingExportPage.class);
+                .buildAndExpand(sessionId).encode().toUri();
+        try {
+            return http.get().uri(uri).retrieve().body(ExportPages.RatingExportPage.class);
+        } catch (RestClientResponseException e) {
+            int status = e.getStatusCode().value();
+            if (status != 410 && status != 404) {
+                throw e;
+            }
+            throw new RatingExportSessionException(
+                    "rating export session " + sessionId + " is gone: HTTP " + status);
+        }
     }
 }

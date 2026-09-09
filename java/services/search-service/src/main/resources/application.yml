@@ -163,6 +163,9 @@ search:
     # A snapshot session lives 24h and a re-created one must be paged from the start,
     # so repeatedly outliving one is a capacity problem, not a blip (WF-SEARCH-007).
     availability-snapshot-max-sessions: 2
+    # Same budget for the Review rating export: an expired session forces the rating
+    # import to restart from the first page (WF-SEARCH-009 step 3).
+    rating-export-max-sessions: 2
 
 logging:
   level:

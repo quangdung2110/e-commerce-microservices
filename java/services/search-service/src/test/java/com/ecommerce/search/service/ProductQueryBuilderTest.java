@@ -127,6 +127,6 @@ class ProductQueryBuilderTest {
                 new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),
                 new SearchProperties.Cors(List.of("*")),
                 new SearchProperties.Export("http://product", "http://inventory", "http://review",
-                        true, Duration.ofSeconds(30), 2));
+                        true, Duration.ofSeconds(30), 2, 2));
     }
 }

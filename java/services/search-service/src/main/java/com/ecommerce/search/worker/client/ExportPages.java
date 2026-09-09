@@ -3,6 +3,7 @@ package com.ecommerce.search.worker.client;
 import com.ecommerce.search.domain.event.CatalogPayloads;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -129,9 +130,27 @@ public final class ExportPages {
             Long nextAfterSequence) {
     }
 
-    /** {@code GET /internal/v1/reviews/rating-aggregates}; keyset by {@code product_id}. */
+    /**
+     * {@code POST /internal/v1/reviews/rating-aggregate-exports}.
+     *
+     * <p>Unlike the Product and Category exports, whose offsets ride along on the first page,
+     * Review captures them when the session is created and every page then echoes that same
+     * set unchanged.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RatingExportSession(
+            String sessionId,
+            Instant expiresAt,
+            List<ReplayOffset> replayFromOffsets) {
+    }
+
+    /**
+     * {@code GET /internal/v1/reviews/rating-aggregate-exports/{session_id}}; keyset by
+     * {@code product_id} within the session that pinned the offsets.
+     */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record RatingExportPage(
+            String sessionId,
             List<CatalogPayloads.RatingAggregate> items,
             String nextAfterProductId,
             List<ReplayOffset> replayFromOffsets) {

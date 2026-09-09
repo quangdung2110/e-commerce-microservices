@@ -157,6 +157,12 @@ public record SearchProperties(
              * keep up rather than that something transient happened — stop and alert
              * instead of looping (WF-SEARCH-007).
              */
-            @DefaultValue("2") int availabilitySnapshotMaxSessions) {
+            @DefaultValue("2") int availabilitySnapshotMaxSessions,
+            /*
+             * The same budget for Review rating export sessions. A session that expires
+             * mid-scan forces the rating import to start over from the first page, so
+             * burning through the budget means the export cannot keep up (WF-SEARCH-009).
+             */
+            @DefaultValue("2") int ratingExportMaxSessions) {
     }
 }
