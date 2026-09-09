@@ -300,9 +300,13 @@ CREATE TABLE privacy_erasure_requests (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_event_id   UUID NOT NULL UNIQUE,
     subject_user_id   UUID,
+    -- HMAC of the canonical UUID. It stays after raw subject_user_id is purged
+    -- so late/replayed input cannot reintroduce a direct identifier.
+    subject_match_key BYTEA NOT NULL,
+    subject_key_version SMALLINT NOT NULL DEFAULT 1,
     deletion_reason   VARCHAR(50) NOT NULL,
     deleted_at        TIMESTAMPTZ NOT NULL,
-    hard_delete_after TIMESTAMPTZ,
+    hard_delete_after TIMESTAMPTZ NOT NULL,
     status            privacy_erasure_status NOT NULL DEFAULT 'RECEIVED',
     anonymized_at     TIMESTAMPTZ,
     purged_at         TIMESTAMPTZ,
@@ -310,8 +314,11 @@ CREATE TABLE privacy_erasure_requests (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    CONSTRAINT uq_privacy_subject_match_key UNIQUE (subject_match_key),
     CONSTRAINT ck_privacy_hard_delete_after_deletion
-        CHECK (hard_delete_after IS NULL OR hard_delete_after >= deleted_at),
+        CHECK (hard_delete_after >= deleted_at),
+    CONSTRAINT ck_privacy_subject_match_key_sha256
+        CHECK (octet_length(subject_match_key) = 32 AND subject_key_version > 0),
     CONSTRAINT ck_privacy_purge_identity_consistent CHECK (
         (status <> 'PURGED' AND subject_user_id IS NOT NULL) OR
         (status = 'PURGED' AND subject_user_id IS NULL AND purged_at IS NOT NULL)
@@ -326,7 +333,7 @@ CREATE TABLE privacy_erasure_requests (
 
 CREATE INDEX ix_privacy_hard_delete_sweep
     ON privacy_erasure_requests (hard_delete_after)
-    WHERE status = 'ANONYMIZED' AND hard_delete_after IS NOT NULL;
+    WHERE status = 'ANONYMIZED';
 
 -- ---------------------------------------------------------------------------
 -- 8. Search rating-export sessions

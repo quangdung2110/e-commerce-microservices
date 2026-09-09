@@ -26,7 +26,7 @@ implementation đã được verified — Review Service hiện chưa có implem
 | [ADR-004](./ADR-004-review-revision-ordering-guard.md) | `review_revision` làm ordering guard cho downstream | Accepted | 2026-09-05 | — |
 | [ADR-005](./ADR-005-async-rating-aggregation.md) | Aggregate bất đồng bộ, idempotent bằng event receipt | Accepted | 2026-09-05 | — |
 | [ADR-006](./ADR-006-rating-snapshot-export.md) | Durable export session cho Search rating reindex | Accepted | 2026-09-05 | — |
-| [ADR-007](./ADR-007-author-name-snapshot.md) | Pseudonym author/variant và privacy hard purge | Accepted | 2026-09-05 | — |
+| [ADR-007](./ADR-007-author-name-snapshot.md) | Pseudonym author/variant, deletion guard và privacy hard purge | Accepted | 2026-09-05 | — |
 | [ADR-008](./ADR-008-auto-approve-with-report-threshold.md) | Tự động duyệt kèm ngưỡng báo cáo thay cho tiền kiểm duyệt | Accepted | 2026-09-05 | — |
 | [ADR-009](./ADR-009-review-owns-report-flow.md) | Review sở hữu toàn bộ luồng báo cáo vi phạm | Accepted | 2026-09-05 | — |
 | [ADR-010](./ADR-010-single-admin-legal-takedown.md) | Một admin có thẩm quyền thực hiện legal takedown | Accepted | 2026-09-09 | — |

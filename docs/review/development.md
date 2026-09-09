@@ -46,20 +46,23 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 - `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` is required, loaded from the secret manager and
   stable in v1. Rotating it deliberately starts a new pseudonym namespace for future
   reviews; do not rotate it incidentally during ordinary deploys.
+- `REVIEW_PRIVACY_GUARD_HMAC_SECRET` is required and stable while its privacy guards
+  exist. It derives only the internal deletion match key, never a display alias. A key
+  rotation needs key-version compatibility until every guard under the old key is gone.
 
 ## 3. Mandatory integration tests
 
 | Area | Required proof |
 |---|---|
-| Entitlement | Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at` derived from `completed_at`, even when it predates `created_at` |
-| Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content; same caller gets deterministic HMAC pseudonym and no profile/email is accepted |
-| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; foreign, missing, invalid or reused asset is rejected; detached asset becomes `DELETE_PENDING` |
-| Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver |
+| Entitlement | Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at` derived from `completed_at`, even when it predates `created_at`; a guarded subject's late order commits receipt but creates no eligibility |
+| Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content; same caller gets deterministic HMAC pseudonym and no profile/email is accepted; a guarded caller cannot create or edit |
+| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; foreign, missing, invalid or reused asset is rejected; detached asset becomes `DELETE_PENDING`; a guarded caller cannot issue or attach an asset, while a normal caller still attaches only an asset they own |
+| Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver; a guarded caller cannot create a report |
 | Takedown | One record per review; authenticated acting admin is persisted as `taken_down_by_admin_id`; legal reason and actor never appear public or in either Review event |
 | Aggregate | Duplicate event changes no bucket twice; create/edit/hide/restore/remove yields exact bucket values and revision |
 | Notification | First reply creates exactly one reply request; takedown creates removal request only for a non-purged owner; payload has no content, legal data or admin identity |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |
-| Privacy | Event replay no-op; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; hard-purge nulls direct customer IDs and request subject ID |
+| Privacy | Event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries |
 | Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog |
 
 `EXPLAIN` tests must cover main keyset query and SKU/rating/media filters. Test data

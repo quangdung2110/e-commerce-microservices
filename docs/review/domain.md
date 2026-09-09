@@ -50,7 +50,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 
 | ID | Quy tắc |
 |---|---|
-| `REVIEW-BR-001` | Mỗi `(order_id, product_id, sku_id)` sinh tối đa một eligibility; replay `ORDER_COMPLETED` là idempotent. |
+| `REVIEW-BR-001` | Mỗi `(order_id, product_id, sku_id)` của subject chưa có deletion guard sinh tối đa một eligibility; replay `ORDER_COMPLETED` là idempotent. Event của subject đã có guard chỉ ghi receipt rồi bị suppress. |
 | `REVIEW-BR-002` | `completed_at` là thời điểm nghiệp vụ từ `ORDER_COMPLETED`; `expires_at = completed_at + review_window_days`, không tính từ lúc Review nhận event. Event tới muộn tạo `EXPIRED`; `expires_at` vẫn là mốc cửa sổ review đóng. |
 | `REVIEW-BR-003` | Chỉ `owner_user_id` của eligibility còn `PENDING` được tạo review. |
 | `REVIEW-BR-004` | Tạo review atomically chuyển `PENDING → CLAIMED`; một eligibility sinh tối đa một review. |
@@ -64,7 +64,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-012` | Chỉ review `APPROVED` thuộc aggregate. |
 | `REVIEW-BR-013` | Aggregate chỉ tăng `review_revision` khi metric đổi, không phải khi content/name đổi. |
 | `REVIEW-BR-014` | Một event consumer xử lý tối đa một lần theo `(consumer_name, event_id)`. |
-| `REVIEW-BR-015` | `USER_DELETED` anonymize ngay; tới `hard_delete_after` thì purge direct customer identifiers. |
+| `REVIEW-BR-015` | `USER_DELETED` tạo deletion guard bằng HMAC subject key và anonymize ngay. Tới `hard_delete_after` thì purge direct customer identifiers nhưng giữ guard; Order input bị suppress và customer-originated write của subject đã có guard bị chặn. |
 | `REVIEW-BR-016` | Create review tạo pseudonym `Khách hàng #…` bằng HMAC-SHA-256 của trusted `X-User-Id`, không nhận tên/email và không gọi/consume User. Alias chỉ để hiển thị, không dùng authorization; `USER_DELETED` thay nó bằng `Khách hàng ẩn danh`. |
 
 ## 4. Invariants
@@ -82,6 +82,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-INV-009` | Một export session giữ cùng offset cho mọi page | session-offset primary key + API session ID |
 | `REVIEW-INV-010` | Direct user identifiers biến mất khi privacy request được purge | privacy worker transaction + schema checks |
 | `REVIEW-INV-011` | Hạn eligibility luôn sau thời điểm hoàn tất đơn hàng, kể cả event tới muộn | `completed_at`, `CHECK (expires_at > completed_at)` + integration test |
+| `REVIEW-INV-012` | Sau khi deletion guard commit, không write mới nào được lưu direct ID của subject | HMAC guard lookup + cùng transaction-scoped subject lock + integration test |
 
 ## 5. State machines
 
@@ -133,10 +134,11 @@ stateDiagram-v2
 
 | Action | Rule |
 |---|---|
-| Create/pending list | Token `user_id` phải khớp `eligibility.owner_user_id` |
-| Edit | Token `user_id` phải khớp owner qua review eligibility |
-| Upload/attach asset | Asset owner phải là caller; client chỉ upload rồi gửi `asset_id`, Review tự xác minh object khi create/edit trước khi attach |
-| Report | Caller đăng nhập, có identity và không là author |
+| Create review | Token `user_id` phải khớp `eligibility.owner_user_id`; create bị chặn nếu caller đã có deletion guard |
+| Pending list | Token `user_id` phải khớp `eligibility.owner_user_id`; Gateway normally rejects a deleted account before this read |
+| Edit | Token `user_id` phải khớp owner qua review eligibility và caller không có deletion guard |
+| Upload/attach asset | Asset owner phải là caller và caller không có deletion guard; client chỉ upload rồi gửi `asset_id`, Review tự xác minh object khi create/edit trước khi attach |
+| Report | Caller đăng nhập, có identity, không là author và không có deletion guard |
 | Reply/dismiss/takedown | Role admin; takedown được audit bằng trusted identity của admin thực hiện |
 | Export session/page | Service identity của Search |
 

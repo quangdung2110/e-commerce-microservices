@@ -39,9 +39,13 @@ verified_against_commit: null
 
 1. Validate CloudEvents `id`, order ID, buyer UUID, completion time and every
    item’s product/SKU; consume `variant_name` snapshot when supplied.
-2. Begin transaction; insert receipt `(order-sync, id)`. Existing receipt means
-   no-op and ACK.
-3. For every item, calculate `expires_at = completed_at + review_window_days` from
+2. Derive the buyer's HMAC privacy subject key. Begin transaction, take that
+   transaction-scoped subject lock, then insert receipt `(order-sync, id)`. Existing
+   receipt means no-op and ACK.
+3. If a privacy request for the subject key exists in any state, commit the receipt,
+   increment the bounded suppressed-event metric and ACK without creating an
+   eligibility. Otherwise, for every item calculate
+   `expires_at = completed_at + review_window_days` from
    the event's business timestamp. Insert one eligibility per
    `(order_id, product_id, sku_id)` with `ON CONFLICT DO NOTHING`: an existing
    business-key row is never overwritten. Set it `PENDING` when `expires_at > now()`;
@@ -58,15 +62,18 @@ event leaves Review.
 **Issue.** `POST /media/upload-urls` creates an `ISSUED` asset owned by caller, with
 opaque key and TTL, and returns `asset_id` plus a provider-neutral signed upload
 instruction. The object key never appears in the HTTP response. Issuing is bounded by
-per-review, per-user-unattached and byte quotas.
+per-review, per-user-unattached and byte quotas. In its mutation transaction Review
+takes the caller's privacy subject lock and rejects an existing deletion guard before
+it writes `owner_user_id`. For a caller without a guard, ownership is unchanged:
+`owner_user_id = caller`.
 
 **Verify and attach.** Client has no verify/poll API. When it sends asset IDs in
 create/edit, Review reads each immutable object metadata before its database
 transaction and verifies existence, MIME/type, size and optional checksum. The
-transaction locks the asset, transitions it through `VERIFIED` to `ATTACHED` and adds
-the media link. A missing, expired, invalid, foreign or already attached asset is
-rejected; a signed upload must be single-write/no-overwrite to prevent post-check byte
-replacement.
+transaction first takes the caller's subject lock and rejects a deletion guard, then
+locks the asset, transitions it through `VERIFIED` to `ATTACHED` and adds the media
+link. A missing, expired, invalid, foreign or already attached asset is rejected; a
+signed upload must be single-write/no-overwrite to prevent post-check byte replacement.
 
 **Attach.** Create/edit locks each asset and inserts `review_media`; `asset_id UNIQUE`
 prevents double use. In the same transaction the asset becomes `ATTACHED` and review
@@ -91,6 +98,7 @@ remains `401` at Gateway/API boundary; the alias is display-only, never authoriz
 ```text
 VERIFY submitted immutable object metadata before BEGIN
 BEGIN
+  take caller privacy subject lock; reject if a deletion guard exists;
   lock and transition each valid caller-owned asset ISSUED -> VERIFIED -> ATTACHED;
   UPDATE eligibility
     SET status=CLAIMED, claimed_at=now()
@@ -114,7 +122,8 @@ visible.
 
 **Trigger:** `PATCH /api/v1/reviews/{review_id}`.
 
-Lock review and join eligibility to authorize owner. Require `status=APPROVED` and
+Review takes the caller's privacy subject lock and rejects a deletion guard before it
+locks review and joins eligibility to authorize owner. Require `status=APPROVED` and
 `edit_count=0`. Review preserves fields absent from PATCH; `content: null` clears text,
 an absent `media_asset_ids` preserves attachments and an empty array removes all of
 them. It verifies any newly supplied object metadata before its transaction, then
@@ -147,10 +156,11 @@ content update does not notify again. Reply state has no denormalized boolean on
 
 ## WF-REVIEW-007 — Report, hide and dismiss
 
-**Report (`POST /api/v1/reviews/{review_id}/reports`):** lock review, reject
-author/hidden/removed review, insert report and
-increase `active_report_count`. If threshold is reached, set review hidden, transition
-all pending reports to `ACTIONED`, and write one `REVIEW_HIDDEN` event.
+**Report (`POST /api/v1/reviews/{review_id}/reports`):** take the caller's privacy
+subject lock and reject a deletion guard, then lock review, reject author/hidden/removed
+review, insert report and increase `active_report_count`. If threshold is reached, set
+review hidden, transition all pending reports to `ACTIONED`, and write one
+`REVIEW_HIDDEN` event.
 
 **Dismiss (`POST /api/v1/admin/reviews/{review_id}/report-dismissals`):** admin locks
 review, changes its `ACTIONED`/`PENDING` reports to
@@ -199,18 +209,30 @@ changes, Search aborts and starts a new export after topology stabilizes.
 
 **Trigger:** `USER_DELETED`.
 
-1. Store `(privacy-sync, event_id)` receipt and `privacy_erasure_requests` row.
+1. Derive the HMAC privacy subject key, begin a transaction and take its subject lock.
+   Store `(privacy-sync, event_id)` receipt and insert `privacy_erasure_requests` with
+   `ON CONFLICT (subject_match_key) DO NOTHING`. A logical duplicate deletion with a
+   new event ID only commits its receipt and changes nothing else.
 2. Update the subject’s review display names and `author_anonymized_at`. Do not emit a
    Review event or touch aggregate/revision: each PII-owning downstream service gets
    `USER_DELETED` directly from Auth.
-3. Mark request `ANONYMIZED`; ACK only after commit.
-4. At `hard_delete_after`, a worker locks the request and nulls customer owner IDs in
-   eligibility/media assets and reporter IDs in reports, then clears request
-   `subject_user_id` and marks it `PURGED` in one transaction.
+3. Mark request `ANONYMIZED`; ACK only after commit. From that commit onward, Order
+   input is suppressed and customer upload/create/edit/report writes for the subject
+   are rejected by the same guard.
+4. At `hard_delete_after`, a worker takes the same subject lock, nulls customer owner
+   IDs in eligibility/media assets and reporter IDs in reports, then clears request
+   `subject_user_id` and marks it `PURGED` in one transaction. It retains the HMAC
+   subject key to suppress late/replayed input without retaining a direct identifier.
 
 Reviews, rating, content and opaque asset keys remain. Admin/legal identity retention
 is not altered by customer-erasure worker. A failed privacy request alerts at critical
-severity and retries; it must not silently DLQ.
+severity and retries; it must not silently DLQ. Auth deliberately retains its current
+direct post-commit publish with at most three retries: a `USER_DELETED` lost before Review
+receives it creates no guard. Review cannot detect that absence; Auth operations must
+reconcile/redrive the event, without adding an Auth outbox.
+
+Guard rejection uses the existing generic authentication/authorization response; it
+does not add a public `ACCOUNT_DELETED` error or expose deletion state to a caller.
 
 ## WF-REVIEW-011 — Scheduler/reconciliation
 

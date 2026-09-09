@@ -53,9 +53,9 @@ flowchart TB
 
 | Component | Responsibility |
 |---|---|
-| API/application service | Validate request, authorize caller, generate author pseudonym from trusted identity, verify submitted media object metadata before its database transaction, then keep domain mutation/counter/outbox in one PostgreSQL transaction |
-| Order consumer | Store receipt then upsert entitlement from self-contained `ORDER_COMPLETED` snapshot |
-| Privacy consumer | Store receipt/request, anonymize author immediately; hard-purge worker removes direct IDs at deadline |
+| API/application service | Validate request, authorize caller, take the caller's privacy subject lock and reject an active deletion guard; then generate author pseudonym, verify submitted media object metadata and keep domain mutation/counter/outbox in one PostgreSQL transaction |
+| Order consumer | Take the event buyer's privacy subject lock; store receipt then suppress a guarded subject or insert entitlement from self-contained `ORDER_COMPLETED` snapshot |
+| Privacy consumer | Take the subject lock; store receipt/request and durable HMAC deletion guard, anonymize author immediately; hard-purge worker removes direct IDs at deadline but retains the guard |
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
 | Notification consumer | Consume only reply/removal notification requests and deduplicate by CloudEvents ID; no legal reason, admin identity or reply content is published |
 | Export-session API | Capture Kafka end offsets, persist session/offsets, serve short keyset pages |
@@ -67,6 +67,12 @@ flowchart TB
 Every domain command includes its domain change, dependent counter/state, receipt when
 it is event-driven, and outbox rows in one transaction. No storage/Kafka/HTTP side
 effect occurs before commit.
+
+Every path that can introduce a direct customer ID takes the same transaction-scoped
+privacy subject lock before it checks the deletion guard and writes. This covers the
+Order consumer and customer upload/create/edit/report commands. The lock serializes
+these writes with privacy anonymize/purge; it is not a global lock and releases on
+commit or rollback.
 
 Media is deliberately two-phase: client upload happens directly to storage, then the
 create/edit command reads and verifies immutable object metadata before atomically
@@ -97,6 +103,9 @@ and legal-removal requests defined by Review AsyncAPI.
 - Edit/report/reply/takedown lock the review row with `FOR UPDATE`.
 - Attach asset verifies the caller-owned uploaded object, then locks its asset row and
   transitions it to `VERIFIED`/`ATTACHED`; unique `asset_id` prevents double attachment.
+- Privacy, Order and customer write paths take the same per-subject transaction lock.
+  If privacy wins, later input sees its guard; if a write wins, privacy processes that
+  committed row before it releases the lock.
 - Rating aggregator inserts event receipt first in its transaction. Duplicate receipt
   means no aggregate update. Deltas remain atomic SQL operations.
 - Search does not hold a PostgreSQL transaction through all pages. It uses persisted
@@ -116,3 +125,7 @@ and legal-removal requests defined by Review AsyncAPI.
   that predicate.
 - A privacy hard purge removes direct customer identifiers, not review rating/content
   or aggregate history.
+- `USER_DELETED` delivery is intentionally only the current Auth best-effort publish
+  after commit with at most three retries. Review cannot create a guard for an event it never
+  receives and has no synchronous Auth lookup; Auth operational reconciliation/redrive
+  is required when that publish fails. This does not introduce an Auth outbox.

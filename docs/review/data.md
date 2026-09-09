@@ -187,20 +187,39 @@ mới và chạy lại toàn bộ export. Offset rows xóa theo `ON DELETE CASCA
 ## 8. Privacy lifecycle
 
 `USER_DELETED` tạo `privacy_erasure_requests` với source event, thời điểm xóa,
-`hard_delete_after` và state. Nó khác `author_anonymized_at`: bảng request theo dõi
-toàn bộ subject; cột trên review chỉ nói review đó đã đổi display name chưa.
+`hard_delete_after`, state và `subject_match_key`. Key này là 32-byte HMAC-SHA-256 của
+`"review-privacy-guard:v1:" || canonical_lowercase_uuid(user_id)`, dùng key
+`REVIEW_PRIVACY_GUARD_HMAC_SECRET` và `subject_key_version = 1`. Nó chỉ dùng để so
+khớp deletion guard, không được dùng authorization, public output, log hay metric
+label. Nó khác
+`author_anonymized_at`: bảng request theo dõi toàn bộ subject; cột trên review chỉ nói
+review đó đã đổi display name chưa.
 
-1. Consumer nhận event idempotently, ghi request `RECEIVED`.
+1. Consumer lấy transaction-scoped subject lock từ HMAC key, nhận event idempotently
+   và ghi request `RECEIVED`. `subject_match_key UNIQUE` làm cho deletion lặp với ID
+   event mới cũng không tạo lifecycle thứ hai.
 2. Đổi `author_display_name` thành `Khách hàng ẩn danh`, đặt `author_anonymized_at`, đánh dấu request
    `ANONYMIZED`; aggregate không đổi và không phát Review event. Mọi service giữ
    PII phải xử lý trực tiếp `USER_DELETED` từ Auth.
-3. Tại `hard_delete_after`, worker null hóa `owner_user_id`, `reporter_user_id` và
-   owner của media asset liên quan trong cùng transaction; sau đó null hóa
-   `privacy_erasure_requests.subject_user_id` và đánh dấu `PURGED`.
+3. Ngay khi guard được commit — bình thường cùng state `ANONYMIZED`, hoặc request
+   `FAILED` đang được retry — Order consumer cùng lấy subject lock, ghi receipt rồi
+   suppress `ORDER_COMPLETED`; upload/create/edit/report của subject bị từ chối trước
+   khi ghi direct user ID. Caller chưa có guard vẫn ghi và kiểm tra ownership như cũ.
+4. Tại `hard_delete_after`, worker cùng lấy subject lock, null hóa `owner_user_id`,
+   `reporter_user_id` và owner của media asset liên quan trong cùng transaction; sau
+   đó null hóa `privacy_erasure_requests.subject_user_id` và đánh dấu `PURGED`.
 
 `subject_user_id` chỉ được giữ tới khi purge để Review có thể tìm toàn bộ dữ liệu cần
-xử lý. Admin/legal identifiers có retention riêng theo chính sách audit và không bị
-quy trình customer erasure này xóa ngầm.
+xử lý. `subject_match_key` được giữ cùng privacy request sau purge để tránh late
+delivery, retry, DLQ redrive hoặc backfill ghi UUID trở lại; đây là dữ liệu
+pseudonymous nên thời hạn dọn request/guard phải được Privacy chốt sau khi mọi horizon
+replay được phép đã đóng. Admin/legal identifiers có retention riêng theo chính sách
+audit và không bị quy trình customer erasure này xóa ngầm.
+
+Auth hiện publish `USER_DELETED` trực tiếp sau commit và retry tối đa ba lần. Nếu event
+đó mất trước khi Review nhận được, Review không có guard và không có synchronous Auth
+lookup để phát hiện chủ động. Đây là giới hạn contract hiện tại: Auth phải alert rồi
+reconcile/redrive event bị mất; Review không thêm Auth outbox.
 
 ## 9. Outbox và retention
 

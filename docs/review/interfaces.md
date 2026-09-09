@@ -183,19 +183,26 @@ but must be supplied by current producer when known. `completed_at` is the busin
 timestamp stored on the eligibility and is the sole basis for its review window; it is
 not replaced by Review's event-ingestion time.
 
-Review first inserts an `order-sync` receipt using `CloudEvents.id`. In the same
-transaction it inserts eligibilities by `(order_id, product_id, sku_id)` with
-`ON CONFLICT DO NOTHING`; no existing business-key row is changed. A late but valid
-event therefore records `EXPIRED` with its original business expiry. The event must
-not trigger a synchronous Order lookup.
+Review derives the buyer's HMAC privacy subject key and takes its transaction-scoped
+subject lock before it inserts an `order-sync` receipt using `CloudEvents.id`. If a
+privacy request with that key exists in any state, Review commits the receipt, emits no
+outbound event and suppresses the entitlement. Otherwise it inserts eligibilities by
+`(order_id, product_id, sku_id)` with `ON CONFLICT DO NOTHING`; no existing
+business-key row is changed. A late but valid unguarded event therefore records
+`EXPIRED` with its original business expiry. The event must not trigger a synchronous
+Order lookup.
 
 ### `USER_DELETED`
 
 Review consumes [Auth's `USER_DELETED` CloudEvents contract](../../contracts/events/auth/v1/asyncapi.yaml):
 `id`, `user_id`, `deleted_at`, `reason` and `hard_delete_after`. The privacy consumer
-receipt and `privacy_erasure_requests` record are written before anonymizing author
-display names. A later worker performs hard purge at the requested time; it nulls
-direct customer IDs but preserves reviews and aggregate.
+derives and stores a stable HMAC subject key with the receipt and
+`privacy_erasure_requests` row before anonymizing author display names. A later worker
+performs hard purge at the requested time; it nulls direct customer IDs but retains the
+HMAC guard, reviews and aggregate. Auth keeps its current best-effort direct publish:
+after at most three retry attempts `USER_DELETED` can be missing. Review has no synchronous
+Auth lookup or Auth outbox; Auth operational reconciliation/redrive must supply a
+missed event before Review can start this lifecycle.
 
 ## 6. Compatibility
 

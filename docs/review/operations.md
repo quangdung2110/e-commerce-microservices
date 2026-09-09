@@ -29,7 +29,8 @@ percentage: `review_event_receipts` makes the normal aggregator path idempotent.
 
 ## 2. Health and dependencies
 
-API readiness requires PostgreSQL and configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`.
+API readiness requires PostgreSQL and configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`
+and `REVIEW_PRIVACY_GUARD_HMAC_SECRET`.
 Kafka/Connect outage must not make public review commands unavailable: committed outbox rows wait for CDC. Consumer readiness
 requires Kafka and PostgreSQL. Export-session creation additionally requires Kafka;
 PDP/public reads do not. Media upload-instruction issuance and create/edit containing
@@ -52,6 +53,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_OUTBOX_RETENTION_DAYS` | 30 | Partition cleanup after connector proof |
 | `REVIEW_REPORT_THRESHOLD` | 10 | Sensitive; never expose publicly |
 | `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` | none | Required, stable v1 secret for author pseudonym without direct PII; secret rotation changes aliases for future reviews |
+| `REVIEW_PRIVACY_GUARD_HMAC_SECRET` | none | Required, stable secret for HMAC deletion guards. Do not rotate while a guard with its key version is retained. |
 
 ## 4. Metrics and alerts
 
@@ -60,6 +62,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `review_consumer_duplicate_total{consumer}` | Receipt conflict; expected under at-least-once delivery |
 | `review_aggregate_drift_total` | Reconciliation found real drift; warning |
 | `review_privacy_hard_delete_overdue_total` | Privacy request past deadline; critical |
+| `review_privacy_guard_blocked_total{operation}` | Guard suppressed a late Order event or rejected a customer write; `operation` is a bounded operation name, never a user ID |
 | `review_export_session_total{result}` | Create/page/expiry outcomes |
 | `review_export_session_active` | Active session count |
 | `review_media_asset_pending_delete_total` | Storage cleanup backlog |
@@ -100,7 +103,11 @@ restore Kafka/DB capacity if needed, create a new session and reimport all pages
 
 **Privacy overdue.** Stop treating it as a normal consumer DLQ. Find the request,
 repair the failed batch/lock issue, rerun anonymize or purge transaction, then verify
-direct customer IDs are null and request is `PURGED`.
+direct customer IDs are null, `subject_user_id` is null, the HMAC guard remains and
+request is `PURGED`. If no request exists for a deletion known to Auth, Review cannot
+discover that absence itself: Auth's existing direct publish may exhaust its three retries
+and lose `USER_DELETED`. Follow Auth's alert/reconciliation/redrive process; do not
+claim hard-delete completion before the event reaches Review. No Auth outbox is added.
 
 **Media delete backlog.** Check storage worker failures and asset rows in
 `DELETE_PENDING`; retry deletion. Public review access is already revoked by detaching

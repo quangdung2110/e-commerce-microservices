@@ -15,6 +15,14 @@ và topic/message nằm trong [AsyncAPI](asyncapi.yaml).
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_id`. Consumer
 phải deduplicate bằng CloudEvent `id` và chịu được delivery trùng.
 
+## Giới hạn delivery hiện tại
+
+`USER_DELETED` được Auth publish trực tiếp sau khi transaction account đã commit và
+retry tối đa ba lần với cùng CloudEvent `id`. Đây là best-effort, không dùng outbox:
+sau khi retry cạn event có thể bị mất. Auth phải phát metric/alert và reconciliation
+vận hành phải redrive event bị mất cho mọi PII-owning consumer. Không có payload hay
+delivery guarantee mới được thêm bởi Review.
+
 ## Delivery content an toàn
 
 Event notification chỉ chứa `delivery_id`, `user_id`, loại sự kiện và các mốc
