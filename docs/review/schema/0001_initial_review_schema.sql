@@ -84,6 +84,12 @@ CREATE INDEX ix_eligibility_owner_pending
     WHERE status = 'PENDING' AND owner_user_id IS NOT NULL;
 CREATE INDEX ix_eligibility_expiry_sweep
     ON review_eligibilities (expires_at) WHERE status = 'PENDING';
+-- Privacy lookup by subject. The index above cannot serve it: it is partial on
+-- PENDING, while a review only exists once its eligibility is CLAIMED, so both
+-- the immediate anonymize and the hard purge would scan the table. Partial on
+-- NOT NULL so an already-purged row leaves the index instead of bloating it.
+CREATE INDEX ix_eligibility_owner_erasure
+    ON review_eligibilities (owner_user_id) WHERE owner_user_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- 3. reviews
@@ -215,6 +221,9 @@ CREATE TABLE review_media_assets (
     )
 );
 
+-- Privacy lookup by subject; there is no other index on owner_user_id.
+CREATE INDEX ix_media_asset_owner_erasure
+    ON review_media_assets (owner_user_id) WHERE owner_user_id IS NOT NULL;
 CREATE INDEX ix_media_asset_expiry_sweep
     ON review_media_assets (expires_at) WHERE upload_state IN ('ISSUED', 'VERIFIED');
 CREATE INDEX ix_media_asset_delete_sweep
@@ -267,6 +276,10 @@ CREATE UNIQUE INDEX uq_report_review_reporter_active_identity
 -- index on report created_at alone: the queue is keyed on the review, so reports
 -- are never scanned globally.
 CREATE INDEX ix_report_review_status ON review_reports (review_id, status);
+-- Privacy lookup by subject. The unique index above leads with review_id, so it
+-- cannot seek on reporter_user_id alone.
+CREATE INDEX ix_report_reporter_erasure
+    ON review_reports (reporter_user_id) WHERE reporter_user_id IS NOT NULL;
 
 CREATE TABLE review_admin_replies (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

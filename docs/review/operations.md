@@ -102,10 +102,14 @@ increment `review_revision` and write metrics outbox snapshot.
 **Export failure.** Search must not cut over. For 410/503, discard the current run,
 restore Kafka/DB capacity if needed, create a new session and reimport all pages.
 
-**Privacy overdue.** Stop treating it as a normal consumer DLQ. Find the request,
-repair the failed batch/lock issue, rerun anonymize or purge transaction, then verify
-direct customer IDs are null, `subject_user_id` is null, the HMAC guard remains and
-request is `PURGED`. If no request exists for a deletion known to Auth, Review cannot
+**Privacy overdue.** Stop treating it as a normal consumer DLQ. First read the failure:
+a `check_violation` on one of the erasure pairings means the purge cleared an
+identifier without its `*_erased_at`, or set `PURGED` without `purged_at`. That is a
+code defect, not a transient fault, so retrying reproduces it exactly and the alert
+never clears — fix the UPDATE to write both columns of each row before rerunning.
+Otherwise find the request, repair the failed batch/lock issue, rerun anonymize or
+purge transaction, then verify direct customer IDs are null, `subject_user_id` is null,
+the HMAC guard remains and request is `PURGED`. If no request exists for a deletion known to Auth, Review cannot
 discover that absence itself: Auth's existing direct publish may exhaust its three retries
 and lose `USER_DELETED`. Follow Auth's alert/reconciliation/redrive process; do not
 claim hard-delete completion before the event reaches Review. No Auth outbox is added.

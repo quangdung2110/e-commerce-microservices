@@ -243,16 +243,37 @@ changes, Search aborts and starts a new export after topology stabilizes.
    Store `(privacy-sync, event_id)` receipt and insert `privacy_erasure_requests` with
    `ON CONFLICT (subject_match_key) DO NOTHING`. A logical duplicate deletion with a
    new event ID only commits its receipt and changes nothing else.
-2. Update the subject’s review display names and `author_anonymized_at`. Do not emit a
-   Review event or touch aggregate/revision: each PII-owning downstream service gets
-   `USER_DELETED` directly from Auth.
-3. Mark request `ANONYMIZED`; ACK only after commit. From that commit onward, Order
-   input is suppressed and customer upload/create/edit/report writes for the subject
-   are rejected by the same guard.
-4. At `hard_delete_after`, a worker takes the same subject lock, nulls customer owner
-   IDs in eligibility/media assets and reporter IDs in reports, then clears request
-   `subject_user_id` and marks it `PURGED` in one transaction. It retains the HMAC
-   subject key to suppress late/replayed input without retaining a direct identifier.
+2. Find the subject's reviews by joining `reviews` to `review_eligibilities` through
+   `ix_eligibility_owner_erasure`, then set `author_display_name='Khách hàng ẩn danh'`
+   and `author_anonymized_at=now()`. Do not emit a Review event or touch
+   aggregate/revision: each PII-owning downstream service gets `USER_DELETED` directly
+   from Auth.
+3. Set `status='ANONYMIZED'` **and** `anonymized_at=now()`; ACK only after commit. From
+   that commit onward, Order input is suppressed and customer upload/create/edit/report
+   writes for the subject are rejected by the same guard.
+4. At `hard_delete_after`, a worker takes the same subject lock and, in one transaction,
+   writes every column in the table below. It retains the HMAC subject key to suppress
+   late/replayed input without retaining a direct identifier.
+
+Each erasable table pairs its identifier with an erasure timestamp under a CHECK that
+requires both or neither, so clearing the identifier alone is rejected and the whole
+purge rolls back. That failure is deterministic, not transient: the critical-severity
+retry below would repeat it forever and the legal deadline would pass with the data
+still present. Every purge UPDATE must therefore write both columns of its row at once.
+
+| Table | Rows | Must set together |
+|---|---|---|
+| `review_eligibilities` | `owner_user_id = :subject` | `owner_user_id=NULL`, `owner_erased_at=now()` |
+| `review_media_assets` | `owner_user_id = :subject` | `owner_user_id=NULL`, `owner_erased_at=now()` |
+| `review_reports` | `reporter_user_id = :subject` | `reporter_user_id=NULL`, `reporter_erased_at=now()` |
+| `privacy_erasure_requests` | the subject's request | `subject_user_id=NULL`, `purged_at=now()`, `status='PURGED'` |
+
+`ck_privacy_status_timestamps_consistent` also requires `anonymized_at` to already be
+set before `PURGED` is accepted, which step 3 guarantees. Each of the first three
+lookups uses a partial index on `<identifier> IS NOT NULL`
+(`ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure`,
+`ix_report_reporter_erasure`), so a purged row leaves the index and neither the
+anonymize nor the purge scans a whole table on a deadline-bound path.
 
 Reviews, rating, content and opaque asset keys remain. Admin/legal identity retention
 is not altered by customer-erasure worker. A failed privacy request alerts at critical

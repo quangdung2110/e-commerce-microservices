@@ -5,6 +5,17 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- Sửa quy trình customer erasure của Review: mỗi bảng erasable ghép identifier với một
+  mốc `*_erased_at` dưới CHECK đòi cả hai hoặc không cột nào, nhưng workflow chỉ mô tả
+  việc null hóa identifier. Triển khai đúng câu chữ sẽ bị `check_violation` và rollback
+  mỗi lần chạy — lỗi deterministic nên retry mức critical lặp lại y hệt và deadline
+  pháp lý trôi qua. Nay liệt kê đủ từng cột phải ghi cho cả bốn bảng.
+- Thêm ba partial index tra theo subject cho privacy worker
+  (`ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure`,
+  `ix_report_reporter_erasure`). Trước đó media asset không có index nào trên
+  `owner_user_id`, report chỉ có index dẫn đầu bằng `review_id`, và
+  `ix_eligibility_owner_pending` partial theo `PENDING` nên không phục vụ được review
+  đã tồn tại. Cả anonymize lẫn purge đều seq-scan trên đường có deadline pháp lý.
 - Thay `GET /api/v1/admin/review-reports` bằng `GET /api/v1/admin/reviews?status=...`.
   Moderation queue của Review nay là một surface duy nhất và đơn vị là review chứ không
   phải report, vì `report-dismissals` thao tác theo review: một review bị ba report là

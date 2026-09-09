@@ -225,16 +225,32 @@ review đó đã đổi display name chưa.
 1. Consumer lấy transaction-scoped subject lock từ HMAC key, nhận event idempotently
    và ghi request `RECEIVED`. `subject_match_key UNIQUE` làm cho deletion lặp với ID
    event mới cũng không tạo lifecycle thứ hai.
-2. Đổi `author_display_name` thành `Khách hàng ẩn danh`, đặt `author_anonymized_at`, đánh dấu request
-   `ANONYMIZED`; aggregate không đổi và không phát Review event. Mọi service giữ
-   PII phải xử lý trực tiếp `USER_DELETED` từ Auth.
+2. Đổi `author_display_name` thành `Khách hàng ẩn danh`, đặt `author_anonymized_at`,
+   đánh dấu request `ANONYMIZED` **kèm** `anonymized_at`; aggregate không đổi và không
+   phát Review event. Mọi service giữ PII phải xử lý trực tiếp `USER_DELETED` từ Auth.
 3. Ngay khi guard được commit — bình thường cùng state `ANONYMIZED`, hoặc request
    `FAILED` đang được retry — Order consumer cùng lấy subject lock, ghi receipt rồi
    suppress `ORDER_COMPLETED`; upload/create/edit/report của subject bị từ chối trước
    khi ghi direct user ID. Caller chưa có guard vẫn ghi và kiểm tra ownership như cũ.
-4. Tại `hard_delete_after`, worker cùng lấy subject lock, null hóa `owner_user_id`,
-   `reporter_user_id` và owner của media asset liên quan trong cùng transaction; sau
-   đó null hóa `privacy_erasure_requests.subject_user_id` và đánh dấu `PURGED`.
+4. Tại `hard_delete_after`, worker cùng lấy subject lock và trong cùng transaction ghi
+   đủ **cả cặp cột** của từng bảng: `owner_user_id`/`owner_erased_at` trên eligibility
+   và media asset, `reporter_user_id`/`reporter_erased_at` trên report, rồi
+   `subject_user_id`/`purged_at` cùng `status='PURGED'` trên chính request.
+
+Mỗi bảng erasable ghép identifier với một mốc erasure dưới một CHECK đòi có cả hai
+hoặc không cột nào (`ck_eligibility_owner_erasure_consistent`,
+`ck_media_asset_owner_erasure_consistent`, `ck_reporter_erasure_consistent`,
+`ck_privacy_purge_identity_consistent`, `ck_privacy_status_timestamps_consistent`).
+Null hóa mỗi identifier sẽ bị từ chối và rollback toàn bộ purge. Lỗi đó deterministic
+chứ không phải transient, nên retry mức critical sẽ lặp lại y hệt và deadline pháp lý
+trôi qua trong khi dữ liệu vẫn còn.
+
+Tra cứu theo subject đi qua ba partial index trên `<identifier> IS NOT NULL`:
+`ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure` và
+`ix_report_reporter_erasure`. `ix_eligibility_owner_pending` không thay thế được vì nó
+partial theo `status='PENDING'`, trong khi review chỉ tồn tại khi eligibility đã
+`CLAIMED` — tức đúng phần nằm ngoài index đó. Row đã purge rơi khỏi index thay vì làm
+nó phình ra.
 
 `subject_user_id` chỉ được giữ tới khi purge để Review có thể tìm toàn bộ dữ liệu cần
 xử lý. `subject_match_key` được giữ cùng privacy request sau purge để tránh late

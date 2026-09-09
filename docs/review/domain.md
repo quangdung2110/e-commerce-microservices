@@ -80,7 +80,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-INV-007` | Event business ra ngoài chỉ qua outbox | Architecture test |
 | `REVIEW-INV-008` | Consumer effect idempotent | `review_event_receipts` trong cùng transaction |
 | `REVIEW-INV-009` | Một export session giữ cùng offset cho mọi page | session-offset primary key + API session ID |
-| `REVIEW-INV-010` | Direct user identifiers biến mất khi privacy request được purge | privacy worker transaction + schema checks |
+| `REVIEW-INV-010` | Direct user identifiers biến mất khi privacy request được purge | privacy worker ghi identifier và `*_erased_at`/`purged_at` cùng một UPDATE; các CHECK cặp-cột từ chối việc chỉ null hóa identifier |
 | `REVIEW-INV-011` | Hạn eligibility luôn sau thời điểm hoàn tất đơn hàng, kể cả event tới muộn | `completed_at`, `CHECK (expires_at > completed_at)` + integration test |
 | `REVIEW-INV-012` | Sau khi deletion guard commit, không write mới nào được lưu direct ID của subject | HMAC guard lookup + cùng transaction-scoped subject lock + integration test |
 
