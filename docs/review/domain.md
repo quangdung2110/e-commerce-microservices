@@ -177,8 +177,8 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 | `NOT_REVIEW_OWNER` | 403 | Review không thuộc buyer đang gọi |
 | `EDIT_QUOTA_EXHAUSTED` | 409 | `edit_count=1` |
 | `REVIEW_NOT_EDITABLE` | 409 | Review hidden/removed |
-| `MEDIA_NOT_VERIFIED` | 409 | Object chưa upload/xác minh được, asset expired hoặc đã attach |
-| `INVALID_MEDIA_REFERENCE` | 400 | Asset không thuộc caller |
+| `MEDIA_NOT_VERIFIED` | 409 | Asset là của caller nhưng chưa dùng được: object chưa upload, metadata không khớp, expired hoặc đã attach |
+| `INVALID_MEDIA_REFERENCE` | 409 | `asset_id` không giải được thành asset khả dụng của caller. Không tồn tại và thuộc người khác trả cùng một code, cố ý không phân biệt để không thành existence oracle |
 | `MEDIA_QUOTA_EXCEEDED` | 429 | Đã chạm quota asset chưa attach hoặc byte upload của caller |
 | `ALREADY_REPORTED` | 409 | Partial unique guard từ chối report active trùng |
 | `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author hoặc không còn report identity |

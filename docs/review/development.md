@@ -22,14 +22,32 @@ tooling remains undecided.
 
 ## 1. Local schema
 
+Applying the schema needs PostgreSQL only. `init-db.sh` creates the `review_service`
+database, and the compose PostgreSQL already runs with `wal_level=logical`, which the
+outbox publication requires.
+
 ```bash
-docker compose up -d postgres kafka kafka-connect minio
-docker compose exec -T postgres psql -U postgres -d ecommerce < docs/review/schema/0001_initial_review_schema.sql
-docker compose exec postgres psql -U postgres -d ecommerce -c "\dt review.*"
+docker compose up -d postgres
+docker compose exec -T postgres psql -U postgres -d review_service < docs/review/schema/0001_initial_review_schema.sql
+docker compose exec postgres psql -U postgres -d review_service -c "\dt review.*"
+```
+
+`init-db.sh` only runs when the PostgreSQL volume is first created. On an existing
+volume the database will be missing; create it once rather than wiping the volume:
+
+```bash
+docker compose exec postgres psql -U postgres -c "CREATE DATABASE review_service"
 ```
 
 Schema CI must apply `0001` to an empty PostgreSQL 14 database. It must also verify
 the dynamic outbox bootstrap created the current and next UTC partitions.
+
+Compose deliberately has no object storage and no Review Debezium connector yet.
+Object bytes are not needed to apply the schema, and the storage provider is still
+unchosen, so adding a vendor container now would pre-empt that decision. The connector
+configuration lives in [ADR-003](./decisions/ADR-003-outbox-cdc-publication.md) and is
+registered against `kafka-connect` when there is a runtime to publish from. Both must
+be added to compose before the media and CDC integration tests below can run.
 
 ## 2. Implementation requirements
 
@@ -54,9 +72,9 @@ the dynamic outbox bootstrap created the current and next UTC partitions.
 
 | Area | Required proof |
 |---|---|
-| Entitlement | `order_id` round-trips as an opaque string: a numeric-looking id, a UUID-shaped id and a prefixed id all create an entitlement, and none is parsed, cast or reordered; an `ORDER_COMPLETED` carrying a JSON number for `order_id` fails contract validation; Duplicate order event is receipt no-op; one SKU/order creates one entitlement; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at` derived from `completed_at`, even when it predates `created_at`; a guarded subject's late order commits receipt but creates no eligibility |
+| Entitlement | `order_id` round-trips as an opaque string: a numeric-looking id, a UUID-shaped id and a prefixed id all create an entitlement, and none is parsed, cast or reordered; an `ORDER_COMPLETED` carrying a JSON number for `order_id` fails contract validation; Duplicate order event is receipt no-op; one SKU/order creates one entitlement; an event repeating the same (product_id, sku_id) creates one eligibility carrying the first occurrence's variant_name, and an event above 200 items fails contract validation; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at` derived from `completed_at`, even when it predates `created_at`; a guarded subject's late order commits receipt but creates no eligibility |
 | Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content; same caller gets deterministic HMAC pseudonym and no profile/email is accepted; a guarded caller cannot create or edit |
-| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; foreign, missing, invalid or reused asset is rejected; replacement and takedown queue `DELETE_PENDING` with their distinct reasons; `ISSUED` and `VERIFIED` assets past `expires_at` queue `UNATTACHED_EXPIRED`; a never-uploaded object reaches `DELETED` when Storage returns not-found; attach/expiry race has exactly one winner and an `ATTACHED` asset is never swept; a guarded caller cannot issue or attach an asset, while a normal caller still attaches only an asset they own |
+| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; an unknown or foreign asset_id returns 409 INVALID_MEDIA_REFERENCE and a caller-owned asset that is absent, mismatched, expired or already attached returns 409 MEDIA_NOT_VERIFIED, with unknown and foreign indistinguishable to the caller; replacement and takedown queue `DELETE_PENDING` with their distinct reasons; `ISSUED` and `VERIFIED` assets past `expires_at` queue `UNATTACHED_EXPIRED`; a never-uploaded object reaches `DELETED` when Storage returns not-found; attach/expiry race has exactly one winner and an `ATTACHED` asset is never swept; a guarded caller cannot issue or attach an asset, while a normal caller still attaches only an asset they own |
 | Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver; a guarded caller cannot create a report; a review with reports appears once under status=REPORTED no matter how many reports it has, and moves to status=HIDDEN_BY_REPORT on the same page position when the threshold fires; dismissing by the review_id taken from that list restores it to APPROVED, closing the HIDDEN_BY_REPORT -> APPROVED edge end to end; `first_reported_at` and `hidden_at` survive the restore and a new report reopens the cycle; the list returns no reporter_user_id; `EXPLAIN` shows both statuses using `ix_review_moderation_reported`/`ix_review_moderation_hidden` and never a sequential scan |
 | Admin media | The moderation list returns signed media URLs for a HIDDEN_BY_REPORT review, with a TTL shorter than the public one; public list and owner read still return no URL for that same media; a report about an image is therefore adjudicable only through the admin surface |
 | Takedown | One record per review; authenticated acting admin is persisted as `taken_down_by_admin_id`; legal reason and actor never appear public or in either Review event |

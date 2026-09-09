@@ -25,6 +25,8 @@
             "items": {
               "type": "array",
               "minItems": 1,
+              "maxItems": 200,
+              "description": "Producers MUST NOT emit two entries with the same (product_id, sku_id): quantity carries the count. JSON Schema cannot express uniqueness on a key subset, so a consumer that receives a duplicate deduplicates on that key and keeps the first occurrence in array order.",
               "items": {
                 "type": "object",
                 "additionalProperties": false,

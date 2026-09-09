@@ -44,8 +44,10 @@ verified_against_commit: null
    receipt means no-op and ACK.
 3. If a privacy request for the subject key exists in any state, commit the receipt,
    increment the bounded suppressed-event metric and ACK without creating an
-   eligibility. Otherwise, for every item calculate
-   `expires_at = completed_at + review_window_days` from
+   eligibility. Otherwise deduplicate `items` by `(product_id, sku_id)` keeping the
+   first occurrence in array order, so a producer that repeats a pair cannot make the
+   snapshotted `variant_name` depend on statement ordering. For every remaining item
+   calculate `expires_at = completed_at + review_window_days` from
    the event's business timestamp. Insert one eligibility per
    `(order_id, product_id, sku_id)` with `ON CONFLICT DO NOTHING`: an existing
    business-key row is never overwritten. Set it `PENDING` when `expires_at > now()`;
@@ -72,8 +74,13 @@ create/edit, Review reads each immutable object metadata before its database
 transaction and verifies existence, MIME/type, size and optional checksum. The
 transaction first takes the caller's subject lock and rejects a deletion guard, then
 locks the asset, transitions it through `VERIFIED` to `ATTACHED` and adds the media
-link. A missing, expired, invalid, foreign or already attached asset is rejected; a
-signed upload must be single-write/no-overwrite to prevent post-check byte replacement.
+link. An unknown or foreign `asset_id` is rejected as `INVALID_MEDIA_REFERENCE`, and a
+caller-owned asset that is not usable — object absent, metadata mismatched, expired or
+already attached — as `MEDIA_NOT_VERIFIED`. Both are `409`. The split is by what the
+client can do about it: the second is recoverable by re-uploading, the first never is.
+Unknown and foreign share one code on purpose, so the pair cannot be used to probe
+whether an `asset_id` exists. A signed upload must be single-write/no-overwrite to
+prevent post-check byte replacement.
 
 **Attach.** Create/edit locks each asset and inserts `review_media`; `asset_id UNIQUE`
 prevents double use. In the same transaction the asset becomes `ATTACHED` and review

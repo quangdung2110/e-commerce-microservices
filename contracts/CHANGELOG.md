@@ -5,6 +5,19 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-09
 
+- `INVALID_MEDIA_REFERENCE` nay là `409` ở mọi nơi. Trước đó bảng lỗi domain map `400`
+  trong khi OpenAPI mô tả nó trong response `409` của create/patch, nên client không
+  viết được retry/UX ổn định. Ranh giới hai lỗi media cũng được chốt theo việc client
+  làm được gì: `MEDIA_NOT_VERIFIED` là asset của caller nhưng chưa dùng được và
+  re-upload cứu được, `INVALID_MEDIA_REFERENCE` là `asset_id` không giải được thành
+  asset khả dụng của caller và retry không bao giờ cứu được. Không tồn tại và thuộc
+  người khác dùng chung một code, cố ý không phân biệt để không thành existence oracle.
+- `ORDER_COMPLETED.items` thêm `maxItems: 200` theo yêu cầu bounded collection của
+  `contracts/conventions/data-types.md`, và chốt luật trùng key: producer phải gom theo
+  `(product_id, sku_id)`, consumer nhận trùng thì dedupe giữ phần tử đầu tiên. JSON
+  Schema không diễn đạt được uniqueness trên một phần key nên đây là nghĩa vụ contract
+  nêu chứ không enforce; nếu không chốt thì `variant_name` được snapshot phụ thuộc thứ
+  tự statement.
 - `ORDER_COMPLETED.data.order_id` đổi từ `integer/int64` sang opaque string
   (1–64 ký tự). JSON number là IEEE-754 double ở JavaScript nên mọi giá trị trên
   2^53-1 bị làm tròn im lặng — contract cũ cho phép tới 2^63-1, tức là consumer JS có

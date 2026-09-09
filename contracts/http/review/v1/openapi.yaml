@@ -849,10 +849,17 @@ components:
       description: REVIEW_NOT_FOUND or a review not visible to this endpoint.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     CreateReviewConflict:
-      description: ALREADY_REVIEWED, INVALID_MEDIA_REFERENCE or MEDIA_NOT_VERIFIED.
+      description: >-
+        ALREADY_REVIEWED, INVALID_MEDIA_REFERENCE or MEDIA_NOT_VERIFIED. All media
+        rejections are 409: INVALID_MEDIA_REFERENCE when the asset_id does not resolve
+        to a usable asset of the caller (unknown and foreign are deliberately
+        indistinguishable), MEDIA_NOT_VERIFIED when the caller owns it but its object
+        or state is not usable and a re-upload can recover.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     PatchReviewConflict:
-      description: EDIT_QUOTA_EXHAUSTED, REVIEW_NOT_EDITABLE, INVALID_MEDIA_REFERENCE or MEDIA_NOT_VERIFIED.
+      description: >-
+        EDIT_QUOTA_EXHAUSTED, REVIEW_NOT_EDITABLE, INVALID_MEDIA_REFERENCE or
+        MEDIA_NOT_VERIFIED, with the same media semantics as create.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ReviewReportForbidden:
       description: REVIEW_REPORT_FORBIDDEN, for example caller is the author.
