@@ -6,110 +6,140 @@ status: proposed
 owners:
   - Promotion Service team
 evidence:
+  - contracts/events/product/v1/asyncapi.yaml
+  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
   - contracts/examples/events/promotion-product-markdown-snapshot.v1.json
 verified_against_commit: null
 ---
 
 # Promotion Service — Interfaces
 
-> File này bảo toàn semantics trong thiết kế cũ. Theo yêu cầu hiện tại, các contract
-> liên-service chưa được chuẩn hóa; payload minh họa không phải nguồn machine-readable.
+> HTTP Promotion chưa có OpenAPI. Bảng dưới mô tả semantics đích; wire payload phải
+> được chuẩn hóa bằng machine-readable contract trước implementation.
 
 ## 1. Contract index
 
-| Interaction | Direction | Protocol | Provider | Consumers | Contract | Status |
-|---|---|---|---|---|---|---|
-| Admin promotion management | Inbound | HTTP | Promotion | Admin/Gateway | Chưa có | legacy documented |
-| Calculate discount | Inbound | HTTP | Promotion | Checkout | Chưa có | legacy documented |
-| Wallet voucher suggestions | Inbound | HTTP | Promotion | Checkout | Chưa có | legacy documented |
-| Public platform discovery/save | Inbound | HTTP | Promotion | Checkout | Chưa có | legacy documented |
-| Checkout allocation lifecycle | Inbound | HTTP | Promotion | Order/Temporal | Chưa có | legacy documented |
-| Promotion events | Outbound | Kafka | Promotion | Product/Notification/Analytics | Chưa có AsyncAPI Promotion | legacy documented |
-| Order refund | Inbound | Kafka | Order | Promotion | Chưa đồng bộ ở vòng này | legacy documented |
-| User registered | Inbound | Kafka | Auth | Promotion | Chưa đồng bộ ở vòng này | optional |
-| Product state changed | Inbound | Kafka | Product | Promotion | Chưa đồng bộ ở vòng này | legacy documented |
+| Interaction | Direction | Protocol | Provider | Consumer | Status |
+|---|---|---|---|---|---|
+| Admin campaign/voucher/markdown | Inbound | HTTP | Promotion | Admin/Gateway | proposed |
+| Calculate/discovery/save | Inbound | HTTP | Promotion | Checkout | proposed |
+| Allocation lifecycle | Inbound | HTTP | Promotion | Order/Temporal | proposed |
+| Markdown full snapshot | Outbound | Kafka/CDC | Promotion | Product | contract target exists |
+| Coupon integration facts | Outbound | Kafka/CDC | Promotion | Notification/Analytics | proposed |
+| Claim persistence work item | Internal | Kafka | Promotion API/sweeper | Promotion worker | proposed |
+| Welcome voucher | Inbound | Kafka | Auth | Promotion | optional |
+
+Không có inbound `ORDER_REFUNDED`, Promotion refund API hoặc promotion refund event.
 
 ## 2. HTTP APIs
 
-Tất cả user API yêu cầu Bearer identity; admin API yêu cầu role admin; allocation API
-yêu cầu Order service identity. Deadline/retry/header cụ thể chưa chốt.
+User API lấy identity từ token; admin API yêu cầu admin role; allocation API yêu cầu
+Order service identity.
 
-| Endpoint | Semantics | Idempotency và lỗi chính |
+| Endpoint | Semantics | Idempotency/lỗi chính |
 |---|---|---|
-| Admin create/update promotion/markdown | Validate domain/AST, persist, invalidate snapshot, schedule expiry, publish markdown event | Command create/update policy chưa có store idempotency |
-| `POST /v1/promotions/calculate-discount` | Evaluate tập promotion trên cart/user context; không mutate quantity | Pure/replay-safe; trả eligibility/reason/discount/rule version |
-| `GET /v1/promotions/voucher-suggestions` | Chỉ voucher `WALLET` còn use-window; lazy expiry, rule eval, budget guard | Read-only ngoài lazy state normalization; rate 20/user/min |
-| `GET /v1/promotions/platform-voucher-discovery` | Wallet + `PLATFORM_PUBLIC` còn claim-window; group eligible/ineligible | Read-only ngoài lazy expiry; tối đa 20 eligible + 10 ineligible |
-| `POST /v1/promotions/save-and-apply` | Có chủ đích lưu public voucher rồi Checkout preview lại | Existing SAVED success; USED → `409 ALREADY_USED_VOUCHER` |
-| `POST /v1/promotions/reserve` | TRY sau Submit cho 0/1 promotion; all-or-nothing 15 phút | Replay phải cùng payload; structured budget/mismatch errors |
-| `POST /v1/promotions/confirm` | Move reserved→used và commit ledger sau payment | `REDEEM_FINAL:{order}:{promotion}`; missing reservation kích hoạt late-payment path |
-| `POST /v1/promotions/cancel` | Release pre-payment reservation, không đổi wallet/usage | `CANCEL_FINAL:{order}:{promotion}` |
-| `POST /v1/promotions/cancel-confirmed` | Reverse allocation đã redeemed; validity-aware wallet policy | Cùng scope cancel final nhưng semantics tách khỏi pre-payment cancel |
-| `POST /v1/promotions/refund` | Lane sync refund tùy chọn | Full/partial key theo refund request |
+| Admin create/update campaign | Validate `[start,end)`, lifecycle, tăng revision khi update | Optimistic check theo campaign revision |
+| Admin publish/pause/cancel campaign | Ghi status/revision; tạo snapshot event khi effective state đổi | Replay cùng expected revision là no-op hoặc conflict rõ |
+| Admin create/update voucher/markdown | Chỉ trước publish; validate AST/product; child dùng lịch campaign | Transaction tăng campaign revision |
+| `POST /v1/promotions/calculate-discount` | Evaluate 0/1 voucher trên order context; không mutate | Pure/replay-safe |
+| `GET /v1/promotions/voucher-suggestions` | Wallet `SAVED`, chưa hết hạn; rule/budget guard | Read-only ngoài lazy expiry |
+| `GET /v1/promotions/platform-voucher-discovery` | Wallet + public voucher của campaign ACTIVE | Read-only ngoài lazy expiry |
+| `POST /v1/promotions/save-and-apply` | Lưu public voucher, snapshot `expired_at` | Existing SAVED success; USED → 409 |
+| `POST /v1/promotions/claim` | Claim limited voucher qua Redis SPOP | `ALREADY_CLAIMED`, `OUT_OF_STOCK` |
+| `POST /v1/promotions/reserve` | TRY sau Submit cho 0/1 voucher, hold 15 phút | Replay phải cùng payload |
+| `POST /v1/promotions/confirm` | Move reserved→used; wallet `SAVED→USED` | Stable order/promotion key |
+| `POST /v1/promotions/cancel` | Release pre-payment reservation; wallet vẫn SAVED | Missing payload cần distinguish no-op/repair |
+| `POST /v1/promotions/cancel-confirmed` | Technical compensation sau confirm; wallet về SAVED nếu còn hạn | Durable outbox dedup key theo order/promotion |
 
-Discovery context gồm subtotal/sub-cart subtotal, category IDs, payment method và các
-field Rule Engine cần. Thiết kế cũ minh họa `STRIPE` là provider duy nhất. Response trả
-`source` (`WALLET`/`PLATFORM_PUBLIC`), `eligible`, reason, `amount_needed`, estimated
-discount và cache metadata (`promotion_rule_version`, `promotion_budget_version`, guard
-status/time/count). Field contract chính xác sẽ được chốt ở lần refactor contract.
+Không có `POST /v1/promotions/refund`. Customer refund không gọi Promotion.
 
-Khi Reserve fail, public reason map về `BUDGET_EXHAUSTED`; Checkout re-evaluate survivors
-và trả `409 PROMOTION_RECALCULATION_NEEDED`, `action=RECALL_PREVIEW`, chỉ liệt kê mã bị
-drop cùng proposal. Client phải lấy checkout token mới, không reuse token `SUBMITTED`.
+Discovery/calculate nhận subtotal toàn đơn, item/category context, payment method và các
+field Rule Engine cần. Response trả `eligible`, reason, estimated/actual discount,
+`rule_schema_version`, `campaign_revision` và budget-guard metadata. Discount không được
+chia thành allocation theo SKU.
 
-## 3. gRPC APIs
+## 3. Allocation semantics
 
-Thiết kế hiện tại không định nghĩa gRPC cho Promotion.
+- Reserve chỉ hợp lệ với wallet `SAVED`, `expired_at > now` và rule đạt tại Submit.
+- Voucher đã lưu có thể reserve sau natural campaign end nếu `expired_at` còn hạn;
+  mode `CAMPAIGN_END` đương nhiên hết hạn đúng boundary. Campaign status không phải
+  revocation check; emergency revocation chưa thuộc contract này.
+- Confirm ghi `used_order_id`, `discount_amount_vnd`, `used_at`.
+- Cancel pre-payment chỉ nhả Redis reservation.
+- `cancel-confirmed` chỉ dùng khi order không hoàn tất vì lỗi kỹ thuật sau Promotion
+  confirm; nó không được dùng cho customer refund.
+- Partial/full customer refund không có call/event tới Promotion.
 
-## 4. Kafka envelope và events phát ra
+## 4. Kafka envelope và publication
 
-Legacy envelope gồm `event_id` UUIDv7, `event_type`, `aggregate_type`, `aggregate_id`,
-`correlation_id`, `business_id`, `schema_version=1`, ISO-8601 UTC `timestamp`, `source`
-và `payload`. Saga correlation dùng Temporal workflow ID; non-saga dùng request/job ID.
-Adapter có thể cần map `timestamp ↔ occurred_at`, `schema_version ↔ event_schema_version`.
+Business integration event được insert vào `promotion_outbox_events` cùng transaction
+với business state. Debezium/Kafka Connect relay at-least-once. Consumer phải idempotent.
+Outbox payload là CloudEvents 1.0 structured JSON hoàn chỉnh; `id` là outbox event ID,
+`source=/services/promotion`, time UTC và partition key ổn định.
 
-Event được direct-produce sau DB commit, best-effort. Consumer phải idempotent.
+### 4.1 Product markdown snapshot
 
-| Event | Topic / key | Ý nghĩa và consumer |
+Canonical event:
+
+```text
+type:  com.ecommerce.promotion.product-markdown-snapshot.v1
+topic: t.promotion.markdown.events
+key:   product_id
+```
+
+Payload là full snapshot product-scope, gồm tối thiểu:
+
+- `product_id UUID`
+- `promotion_rule_id BIGINT`
+- `state: ACTIVE | INACTIVE`
+- discount data cần để Product reprice
+- `source_revision BIGINT`
+- effective/reason metadata theo JSON Schema hiện hành
+
+Promotion tính snapshot chiến thắng hiện hành cho product. Event START/END, pause,
+cancel hoặc admin edit đều dùng cùng event type; không dùng các event delta
+`MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED`. Product chỉ apply khi
+`source_revision` lớn hơn projection hiện tại.
+
+### 4.2 Coupon facts
+
+Sau khi PostgreSQL đã commit, Promotion có thể outbox các integration fact:
+
+| Event logic | Key | Ý nghĩa |
 |---|---|---|
-| `MARKDOWN_CREATED` | `t.promotion.markdown.events` / `rule_id` | Rule mới; Product tính promotional price |
-| `MARKDOWN_UPDATED` | cùng topic / `rule_id` | Discount/thời gian đổi; Product reprice |
-| `MARKDOWN_ENDED` | cùng topic / `rule_id` | Hết hạn/admin disable; reason `EXPIRED`/`ADMIN_DISABLED` |
-| `COUPON_CLAIMED` | `t.promotion.coupon.events` / `claim_id` | Claim thành công; claim worker/Notification |
-| `COUPON_REDEEMED` | cùng topic / `order_id` | Allocation confirm; Analytics |
-| `COUPON_CANCELLED` | cùng topic / `order_id` | Order cancel hoặc reservation TTL; Analytics |
-| `COUPON_REFUNDED` | cùng topic / `order_id` | Partial/full refund; Analytics |
-| `BUDGET_EXHAUSTED` | `t.promotion.budget.events` / `promotion_id` | Monitoring/UI signal, không thay synchronous reserve result |
+| Coupon claimed/saved | user hoặc claim ID | Notification/Analytics; không phải DB persistence trigger |
+| Coupon redeemed | order ID | Wallet chuyển USED |
+| Coupon technical-cancelled | order ID | Allocation bị đảo do saga failure |
+| Budget exhausted | promotion ID | Monitoring/UX signal, không thay synchronous result |
 
-`COUPON_CLAIMED.business_id == claim_id`; mỗi publish/republish có `event_id` mới,
-`claim_id` bất biến. `production_source` là `API_DIRECT` hoặc `SWEEPER_RESCUE`; consumer
-dedup delivery theo event ID và business theo claim ID.
+Không có coupon-refunded fact trong Promotion.
 
-`COUPON_REFUNDED` mang refund transaction, type, discount/refunded amount và
-`restore_outcome` (`RETAINED_USED` hoặc `VOUCHER_UNAVAILABLE`). `BUDGET_EXHAUSTED` nêu
-quantity/amount exhausted; chi tiết `BUDGET_QTY_EXHAUSTED`/
-`BUDGET_AMOUNT_EXHAUSTED` chỉ thuộc synchronous reserve telemetry.
+## 5. Internal claim work item
 
-## 5. Events tiêu thụ
+Claim Lua commit trên Redis trước PostgreSQL nên pending Hash/ZSET là durable-enough
+recovery source của hot path. API publish work item có `claim_id` bất biến; sweeper có
+thể republish với delivery ID mới. Worker dùng guarded claim update + unique wallet,
+commit DB rồi mới xóa pending. Sau commit, integration fact nếu cần được ghi qua outbox.
 
-| Event | Producer/topic/group | Hành động | Idempotency/ordering/failure |
-|---|---|---|---|
-| `ORDER_REFUNDED` | Order / `t.order.events` / `promo-order-consumer` | Áp `promotion_refund_allocations[]`, update budget/usage, giữ wallet USED | Envelope event ID + refund transaction scope; key order; payload mismatch → parking-lot + alert |
-| `USER_REGISTERED` | Auth / `t.auth.events` / `promo-auth-consumer` | Feature-flag welcome voucher; upsert wallet, expiry +30d | Unique wallet; adapter `data→payload`, `timestamp_ms→registered_at` |
-| `PRODUCT_STATE_CHANGED` | Product / `t.product.events` / `promo-product-state-consumer` | Nếu `new_status=ACTIVE`, re-evaluate active markdown và phát lại thay đổi cần thiết | event ID + product ID; trạng thái khác ACK no-op |
-| `COUPON_CLAIMED` | Promotion / coupon topic / `promo-claim-consumer` | Guarded claim update + wallet upsert; xóa pending sau commit | event ID + immutable claim ID |
+Internal work item không được trình bày như business event exactly-once.
 
-`ORDER_REFUNDED` phải dùng allocation do Order gửi, không suy luận từ returned item.
-Partial chỉ restore khi internal PLATFORM rule đạt. Voucher row unavailable là non-
-blocking đối với refund tiền.
+## 6. Events tiêu thụ
 
-## 6. Compatibility
+| Event | Hành động | Guard |
+|---|---|---|
+| Auth user-registered | Tùy feature flag cấp welcome voucher và snapshot expiry | Unique wallet |
+| Internal claim work item | Persist claim + wallet + claimed counter | Immutable claim ID + DB constraints |
 
-- Unknown JSON field phải được consumer chấp nhận khi không phá semantics; unsupported
-  version không được xử lý như v1.
-- Ordering key giữ ổn định theo bảng event; duplicate/replay là hành vi bình thường.
-- Promotion chưa có AsyncAPI/OpenAPI và thiết kế cũ khác contract markdown đích hiện có
-  ở Product (legacy category events so với product-scope snapshot/revision). Không chỉnh
-  contract ở vòng refactor tài liệu này.
-- Trước implementation cần chọn canonical envelope, schema versioning, deprecation
-  window, CI breaking-change check và contract tests; lúc đó mới nâng status `verified`.
+`ORDER_REFUNDED` có thể vẫn tồn tại trong Order ecosystem cho Notification/Analytics,
+nhưng Promotion không subscribe và payload không cần `promotion_refund_allocations[]`.
+
+## 7. Compatibility
+
+- Unknown optional JSON field phải được chấp nhận; unsupported major version không xử
+  lý như v1.
+- Markdown contract v1 hiện giữ `promotion_rule_id BIGINT`, product UUID và
+  `source_revision BIGINT`; không cần breaking schema change.
+- Ordering key của markdown luôn là `product_id`; duplicate/replay là bình thường.
+- Claim work item và public integration event phải dùng tên/type khác nhau để tránh một
+  consumer vô tình coi Redis acquisition là durable business completion.
+- Trước implementation phải bổ sung Promotion OpenAPI/AsyncAPI và contract tests.

@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
 
@@ -14,268 +15,196 @@ verified_against_commit: null
 
 ## Workflow index
 
-| ID | Workflow | Trigger | Actor | Status |
-|---|---|---|---|---|
-| `WF-PROMO-001` | Tạo/cập nhật promotion hoặc markdown | HTTP command | Admin | proposed |
-| `WF-PROMO-002` | Claim voucher flash-sale | HTTP + Kafka | Customer | proposed |
-| `WF-PROMO-003` | Tính discount | HTTP query | Checkout | proposed |
-| `WF-PROMO-004` | Checkout TRY/CONFIRM/CANCEL | Temporal activities | Order | proposed |
-| `WF-PROMO-005` | Refund/cancel-confirmed | HTTP/Kafka | Order | proposed |
-| `WF-PROMO-006` | Voucher trong ví | HTTP query | Customer/Checkout | proposed |
-| `WF-PROMO-007` | Khám phá và lưu public voucher | HTTP query/command | Customer/Checkout | proposed |
-| `WF-PROMO-008` | Expiry, rescue và reconciliation | Schedule | Promotion workers | proposed |
+| ID | Workflow | Trigger |
+|---|---|---|
+| `WF-PROMO-001` | Quản trị và publish campaign | Admin HTTP |
+| `WF-PROMO-002` | Kích hoạt/kết thúc campaign | Redis schedule + DB fallback |
+| `WF-PROMO-003` | Claim/save voucher | Customer HTTP + internal worker |
+| `WF-PROMO-004` | Discovery và calculate | Checkout HTTP |
+| `WF-PROMO-005` | TRY/CONFIRM/CANCEL | Order Temporal activities |
+| `WF-PROMO-006` | `cancel-confirmed` kỹ thuật | Order Temporal compensation |
+| `WF-PROMO-007` | Markdown snapshot → Product | Outbox + CDC |
+| `WF-PROMO-008` | Rescue/reconciliation/cleanup | Scheduled workers |
 
-## WF-PROMO-001 — Tạo/cập nhật promotion hoặc markdown
+Không có Promotion workflow cho customer refund.
 
-### Mục tiêu và trigger
+## WF-PROMO-001 — Quản trị và publish campaign
 
-Admin tạo/sửa `promotions` hoặc `markdown_rules`; promotion mới phải sẵn sàng cho Rule
-Engine mà không gây thundering herd, markdown phải tới Product theo lịch.
+1. Admin tạo campaign `DRAFT` với `[start_time,end_time)`, voucher/markdown children.
+2. Application validate AST, validity mode, product IDs, money/basis points và budget.
+3. Child không có lịch/status/revision riêng. Mọi mutation tăng `campaigns.revision`.
+4. Khi publish, transaction set `publication_status=PUBLISHED`, tăng revision và tạo
+   outbox snapshot cần thiết nếu campaign đã ở trong effective window.
+5. Sau commit, application `ZADD` START/END vào `promo:campaign:schedule`, invalidate
+   promotion snapshots và tăng cache version fence.
+6. Nếu ZADD/invalidation thất bại, DB fallback/startup rebuild tự khôi phục; không rollback
+   PostgreSQL command đã commit.
 
-### Happy path và state changes
+Definition đã publish được coi bất biến. Thay đổi cấu hình đáng kể phải tạo revision
+mới và không được sửa hồi tố `expired_at` của wallet đã lưu.
 
-1. HTTP adapter xác thực admin, validate discount, time window, AST; với markdown validate
-   logical `ref_id` qua Product.
-2. Application ghi PostgreSQL trong một transaction.
-3. Sau commit, xóa `promo:{promotion_id}:snapshot`, tăng `promo:rules:version` và đồng bộ
-   markdown `ZSET promo:markdown:expiry:index` (`ZREM` nếu INACTIVE/ENDED).
-4. Với markdown, direct-produce `MARKDOWN_CREATED` hoặc `MARKDOWN_UPDATED`.
-5. Product chỉ apply khi đạt `start_time` theo thiết kế cũ; Product cập nhật giá và phát
-   catalog price event cho Search. Search không tự tính markdown.
-6. Request sau pipeline version + snapshot; miss đọc DB, cache JSON rồi parse/evaluate.
+Pause/cancel tăng revision và phát markdown `INACTIVE` snapshot nếu cần. Chúng dừng claim
+mới/markdown nhưng không tự thu hồi voucher đã lưu.
 
-### Failure, retry và concurrency
-
-DB rollback thì không publish. Crash sau DB commit trước invalidation/event có thể để
-snapshot stale đến TTL một giờ hoặc mất event; scheduler/rebuild chỉ chữa một phần, do
-direct-produce best-effort. Admin update đồng thời phải dùng DB concurrency guard chưa
-được chốt. Markdown expiry DB guard ngăn event kết thúc lặp.
-
-### Verification bắt buộc
-
-Test AST invalid, cache version mismatch, crash window, early start/end schedule, duplicate
-expiry, Redis unavailable và event publish failure. Metrics: admin latency/error,
-snapshot invalidation failure, direct-produce failure, schedule drift.
-
-## WF-PROMO-002 — Claim voucher flash-sale
-
-### Mục tiêu và preconditions
-
-Cấp tối đa N suất cho lượng truy cập lớn mà không tranh lock PostgreSQL. Admin đã tạo N
-row `coupon_claims AVAILABLE`, preload IDs vào `promo:{promotion}:claim_pool`; promotion
-đang trong claim window và user chưa claim.
+## WF-PROMO-002 — Campaign START/END chính xác
 
 ### Happy path
 
-1. Customer bấm “Lưu mã”. API chạy Lua Script 1.
-2. Script atomically kiểm tra flag user, `SPOP` một `claim_id`, đặt flag TTL 30 ngày,
-   ghi pending payload vào Hash và timestamp vào ZSET.
-3. API direct-produce `COUPON_CLAIMED` với event ID mới,
-   `business_id=payload.claim_id=claim_id`, `production_source=API_DIRECT`, rồi trả success.
-4. `promo-claim-consumer` dedup event/claim, trong một DB transaction update claim bằng
-   guard AVAILABLE và upsert wallet `(user,promotion)` với `saved_at=acquired_at`,
-   `expired_at=acquired_at+30 days`.
-5. Chỉ sau DB commit consumer `HDEL` pending data và `ZREM` pending index.
+1. Loop lấy due members bằng `ZRANGEBYSCORE`, không destructive pop.
+2. Worker acquire lock ngắn theo campaign.
+3. Đọc lại PostgreSQL và so campaign ID, revision, publication status, start/end.
+4. Stale member hoặc status không còn phù hợp → không phát business state; cleanup member.
+5. Tính phase bằng DB clock và interval `[start,end)`.
+6. Với mỗi affected product, acquire PostgreSQL advisory transaction lock theo product,
+   tính full winning markdown snapshot, cấp `source_revision` và insert outbox bằng
+   deterministic dedup key.
+7. Commit DB rồi mới `ZREM` member.
 
-### Failure, retry, idempotency và concurrency
+Nếu START được xử lý khi `now >= end_time`, worker không phát `ACTIVE`; nó phát hoặc
+xác nhận snapshot `INACTIVE` để hội tụ. Vì API eligibility tự tính phase, scheduler lag
+không cho claim sớm hoặc tiếp tục claim sau end.
 
-- Flag đã có → `ALREADY_CLAIMED`; pool rỗng → `OUT_OF_STOCK`.
-- Nếu API chết sau SPOP trước Kafka, pending sweeper mỗi phút lấy item cũ hơn 5 phút,
-  republish với event ID mới và `production_source=SWEEPER_RESCUE`. Không trả vé vào pool
-  và không xóa pending trước DB ack.
-- Consumer dedup delivery theo event ID, business theo immutable claim ID; DB partial
-  unique và guarded update là chốt cuối.
-- Nếu wallet đã tồn tại, upsert phải tuân state policy, không tạo duplicate.
+### Recovery
 
-### Verification bắt buộc
+- DB fallback mỗi 10–30 giây tìm boundary còn thiếu/quá hạn và enqueue/process lại.
+- Startup/failover rebuild ZSET từ campaign PUBLISHED chưa qua mọi boundary.
+- Crash sau outbox commit trước ZREM → retry trùng dedup key, no-op rồi cleanup.
+- Redis mất toàn bộ schedule không làm mất source state trong PostgreSQL.
 
-Load test 10.000 contender/1.000 suất, duplicate user/event, crash ở mọi ranh giới,
-republish nhiều lần, worker DB failure và cleanup retry. Metrics: claim success/out-of-
-stock/already-claimed, pending age/count, rescue publish và claim DB conflict.
+## WF-PROMO-003 — Claim/save voucher
 
-## WF-PROMO-003 — Tính discount
+### Limited flash-sale claim
 
-### Mục tiêu, trigger và input
+1. Preconditions: campaign phase ACTIVE, promotion enabled, validity config hợp lệ.
+2. Lua trên cùng hash tag `{promotion_id}` kiểm tra `claimed_users`, `SPOP` claim ID,
+   ghi claimed user, pending Hash và pending ZSET.
+3. API publish internal claim work item rồi trả success.
+4. Worker guarded update claim `AVAILABLE→CLAIMED`, insert wallet `SAVED`, tính/snapshot
+   `expired_at`, tăng claimed counter trong một PostgreSQL transaction.
+5. Nếu cần public claim fact, transaction cũng insert outbox.
+6. Chỉ sau DB commit mới HDEL/ZREM pending.
 
-Checkout gọi `/calculate-discount` với cart/user context và 0/1 promotion đã chọn. Input
-quantity lấy từ Cart snapshot; query không mutate budget.
+API crash sau SPOP được pending sweeper cứu. Sweeper republish cùng immutable `claim_id`,
+không trả suất vào pool và không xóa pending trước DB ack.
 
-### Happy path
+### Public save/direct grant
 
-1. Pipeline `MGET` version fence và N snapshot Redis trong một round-trip; miss/version
-   mismatch đọc metadata + JSONB AST từ PostgreSQL rồi `SETEX 3600`.
-2. Parse AST thành `RuleNode` trong request scope; depth-first evaluate bằng decimal-safe
-   comparison. Missing field=false; collection `IN`=ANY, `NOT_IN`=ALL-not-match.
-3. Kiểm tra `min_purchase_amount`, claim/use expiry theo source và các condition.
-4. Tính PERCENTAGE có cap hoặc FIXED có clamp; áp một PLATFORM voucher lên subtotal.
-5. Trả result từng mã, tổng discount, final amount, reason và rule version.
+`save-and-apply` hoặc admin grant tạo unique wallet. Public save chỉ hợp lệ khi campaign
+ACTIVE. Existing SAVED còn hạn trả idempotent success mà không kéo dài expiry; USED bị
+từ chối. Không có default 30 ngày: expiry lấy từ validity policy.
 
-### Failure, retry và determinism
+## WF-PROMO-004 — Discovery và calculate
 
-Unknown node/operator hoặc malformed AST là lỗi cấu hình, không retry request mù. Redis
-snapshot lỗi có thể fallback PostgreSQL; DB cũng lỗi thì fail request. Cùng AST/context
-phải cho cùng kết quả, không side effect. Checkout không được tự có engine thứ hai.
+### Wallet tray
 
-### Verification bắt buộc
+1. Query wallet `(user_id,status)` và lazy-normalize SAVED đã hết hạn thành EXPIRED.
+2. Voucher SAVED, `expired_at > now` vẫn được xét dù campaign tự nhiên đã ENDED; với
+   validity mode `CAMPAIGN_END`, `expired_at` trùng end nên voucher bị loại theo expiry.
+3. Batch load snapshot JSON, parse AST request-scoped, evaluate context.
+4. Budget read guard có thể downgrade thành `BUDGET_EXHAUSTED`; timeout fail-open với
+   degraded marker vì Reserve mới là quyết định cuối.
 
-Unit/property test mọi operator, nested AND/OR, missing/empty collection, decimal/cap,
-expired/min-purchase/category/payment reason, cache hit/miss/version drift và duplicate
-query. Theo dõi evaluate latency, AST parse error, snapshot hit/miss.
+### Public discovery
 
-## WF-PROMO-004 — Checkout TRY/CONFIRM/CANCEL
+Ngoài wallet, query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
+user đã sở hữu, evaluate/sort/limit. Campaign đã end không xuất hiện cho save mới.
 
-### Mục tiêu và preconditions
+### Calculate
 
-Budget chỉ bị khóa sau khi user Submit và Order đã có `order_id`. Preview token/context
-phải hiện hành; mã đã chọn có trong ví và use-window hợp lệ. Reservation business timeout
-là 15 phút, key giữ thêm cleanup grace.
+Checkout gửi 0/1 platform voucher và subtotal/context toàn đơn. Promotion trả một discount
+toàn đơn, không trả allocation theo SKU. Rule evaluation không side effect và cùng
+AST/context phải cho cùng kết quả.
 
-### TRY — reserve all-or-nothing
+## WF-PROMO-005 — Checkout TRY/CONFIRM/CANCEL
 
-1. Temporal `ReservePromotionActivity` gọi `/reserve` với 0/1 selected platform voucher,
-   discount amount theo promotion và identity/idempotency context.
-2. Script 2B kiểm layout/input, kiểm reservation hiện hữu có cùng payload, rồi pass 1
-   validate available quantity/amount.
-3. Pass 2 tăng `reserved_qty/amount`, ghi reservation payload và ZSET expiry. Nếu một
-   trong HINCRBY/HINCRBYFLOAT/SETEX/ZADD lỗi, script đảo các bước đã áp dụng.
-4. Success trả TTL 15 phút. Failure trả structured result với promotion/slot/reason và
-   `reserve_mode=ALL_OR_NOTHING`.
+### TRY
 
-Nếu fail budget/eligibility, Checkout loại mã fail, gọi lại `/calculate-discount` với
-đúng current cart và mọi survivor. Nó tạo `dropped_promotions[]`, map budget detail về
-`BUDGET_EXHAUSTED`, trả 409 + proposal. Nếu không còn mã, survivors là `[]` và total không
-discount. User chấp nhận phải gọi Preview lấy token mới trước Submit lại.
+1. Chỉ sau Submit và khi đã có `order_id`, Order gọi `/reserve`.
+2. Promotion revalidate wallet SAVED/expiry/rule và requested amount.
+3. Lua kiểm replay payload, available quantity/amount, tăng integer reserved counter,
+   ghi reservation payload + per-promotion expiry ZSET.
+4. Thất bại giữa apply phải rollback các Redis mutation; trả structured error.
 
-### CONFIRM — payment success
+### CONFIRM
 
-1. Temporal gọi `/confirm` đồng bộ cho promotion với
-   `REDEEM_FINAL:{order_id}:{promotion_id}`.
-2. Backend gia hạn reservation thêm 60 giây chống race sweeper, rồi Script 3 acquire
-   lock, đọc payload, atomically move reserved→used và xóa payload/index.
-3. PostgreSQL transaction insert idempotency FINAL, tăng used budget, set wallet USED +
-   `used_at`, insert `coupon_usages REDEEMED` với amount thực tế và optional reserved_at.
-4. Idempotency conflict đọc state đã chốt và trả success; không đảo Redis commit.
+1. Order gọi stable confirm key theo order/promotion.
+2. Lua move reserved→used, xóa payload/index.
+3. PostgreSQL transaction guarded wallet `SAVED→USED`, set `used_order_id`,
+   `discount_amount_vnd`, `used_at`, tăng used counters và insert outbox redeemed fact.
+4. Duplicate dựa state/unique/dedup key trả idempotent success.
 
-Nếu reservation không còn, trả `RESERVATION_NOT_FOUND`; Order phải xử lý late payment
-success bằng refund tức thì thay vì cố redeem lại. Redis success nhưng DB failure phải
-vào repair/replay/compensation, không báo nghiệp vụ hoàn tất.
+Redis success nhưng DB fail chưa phải hoàn tất; retry/reconciliation phải hội tụ. Missing
+reservation trả `RESERVATION_NOT_FOUND` để Order chạy late-payment policy.
 
-### CANCEL — pre-payment rollback
+### CANCEL trước confirm
 
-1. Temporal timeout/user cancel gọi `/cancel` với
-   `CANCEL_FINAL:{order_id}:{promotion_id}`.
-2. Script 4 lock, đọc payload, giảm reserved rồi DEL/ZREM atomically.
-3. DB ghi `CANCEL_COUPON/FINAL`. Wallet vẫn SAVED; không có coupon usage vì Reserve chưa
-   ghi ledger.
-4. Missing payload chỉ được coi no-op nếu DB đã final. Nếu chưa final, trả repair-required.
+Lua release reserved rồi xóa payload/index. Wallet vẫn `SAVED`; PostgreSQL không tạo usage
+row hoặc customer-refund record. Missing payload chưa đủ để giả định đã release; worker
+đối chiếu state và enqueue repair nếu cần.
 
-### Race, retry và recovery
+## WF-PROMO-006 — `cancel-confirmed` do lỗi kỹ thuật
 
-Confirm/cancel/sweeper không global lock. Lock Redis chỉ ngăn request concurrent ngắn;
-DB action scope và Lua idempotency phân xử. Retry dùng cùng key/payload. Sweeper quá hạn
-check DB REDEEM FINAL trước release; thiếu payload enqueue reconciliation.
+Chỉ dùng khi Promotion đã confirm nhưng checkout/order saga không thể hoàn tất vì lỗi kỹ
+thuật. Đây không phải customer refund.
 
-### Verification bắt buộc
+1. Order gọi `/cancel-confirmed` với stable order/promotion key và confirmed amount.
+2. Redis Lua giảm used counter idempotently theo allocation đã confirm.
+3. PostgreSQL transaction insert outbox row với unique technical-cancel dedup key.
+4. Transaction giảm durable used counter.
+5. Nếu `now < wallet.expired_at`, wallet `USED→SAVED` và clear usage fields.
+6. Nếu voucher đã hết hạn, wallet `USED→EXPIRED`.
+7. Commit rồi phát technical-cancel fact qua CDC nếu có consumer.
 
-Test anti-abuse Preview không reserve, payload mismatch, bốn apply failure point, duplicate
-confirm/cancel, confirm-vs-sweep, cancel-vs-confirm, late payment, DB crash after Redis,
-409 proposal không/survivor và checkout token replay.
+Duplicate không mutate lần hai. Lỗi hệ thống vì vậy không làm khách mất voucher còn hạn.
 
-## WF-PROMO-005 — Refund và post-payment compensation
+## Customer refund — explicit non-workflow
 
-### Mục tiêu và trigger
+Khi Order/Payment hoàn tiền partial, nhiều lần partial hoặc full-order:
 
-Hoàn budget allocation đã redeem mà không rollback refund tiền của khách. Trigger chính
-là Kafka `ORDER_REFUNDED`; `/refund` là lane sync tùy chọn. `cancel-confirmed` dùng khi
-post-payment saga fail sau confirm, tách semantics với cancel pre-payment.
+- Không gọi endpoint Promotion.
+- Promotion không consume `ORDER_REFUNDED`.
+- Wallet giữ `USED`.
+- `used_quantity` và `used_budget_vnd` không giảm.
+- Không tái cấp voucher và không quy đổi voucher thành tiền.
+- Không truyền `promotion_refund_allocations[]`.
 
-### Refund happy path
+Số lần partial refund và cách tính amount vẫn thuộc thiết kế Order/Payment chưa được
+refactor; Promotion behavior không phụ thuộc quyết định đó.
 
-1. Consumer nhận event có order/user, refund transaction/type và
-   `promotion_refund_allocations[]`; không suy luận từ returned items.
-2. Gate duplicate/payload hash trước mutation. Mỗi PLATFORM allocation partial chỉ restore
-   khi `RESTORE_ONLY_IF_FULL_PLATFORM_COVERED`; các case khác amount bằng 0.
-3. Pipelining Script 5 theo promotion (happy path một voucher). Script lock, clamp không
-   vượt used và trả applied qty/amount.
-4. DB transaction insert idempotency `REFUND_COUPON` theo refund scope, giảm used budget,
-   tăng usage refunded amount/count, set PARTIALLY_REFUNDED hoặc REFUNDED.
-5. Wallet giữ `USED`. Có thể phát `COUPON_REFUNDED` cho Analytics.
+## WF-PROMO-007 — Markdown snapshot → Product
 
-Nếu wallet không tồn tại, audit `VOUCHER_UNAVAILABLE`, không rollback Payment refund.
-Duplicate là audit-only/no mutation; cùng key khác payload vào parking-lot + alert.
+Mọi thay đổi effective markdown phát cùng một canonical full snapshot event:
+`com.ecommerce.promotion.product-markdown-snapshot.v1`, key `product_id`.
 
-### Cancel-confirmed
+1. Transaction theo product lấy advisory lock.
+2. Tính winning markdown từ các rule enabled có campaign ACTIVE.
+3. Cấp monotonic `source_revision`.
+4. Insert full snapshot `ACTIVE` với winning rule hoặc `INACTIVE` nếu không còn rule.
+5. Debezium relay at-least-once.
+6. Product apply chỉ khi revision mới hơn, reprice SKU và phát catalog event cho Search.
 
-Order gọi `/cancel-confirmed` với CANCEL FINAL. Promotion reverse budget allocation đã
-redeem, ghi cancel idempotency/ledger và dùng policy validity-aware: voucher hết hạn
-không bị ép SAVED. Replay trả success, không mutate lần hai.
+Không phát delta `MARKDOWN_CREATED/UPDATED/ENDED`; Product không cần safety scheduler.
 
-### Verification bắt buộc
+## WF-PROMO-008 — Rescue, reconciliation và cleanup
 
-Test full/partial/multi-event refund, clamp, duplicate, payload mismatch, unavailable
-wallet, expired wallet, cancel-confirmed khác cancel và DB failure sau Redis mutation.
+- Pending claim: mỗi phút republish item cũ hơn ngưỡng 5 phút; giữ pending tới DB ack.
+- Reservation: mỗi phút lấy due item theo per-promotion ZSET; release hoặc repair.
+- Campaign schedule: loop 250 ms–1 s; DB fallback 10–30 s; startup rebuild.
+- Budget reconciliation: định kỳ dựng expected used từ wallet `USED`, claimed từ claim
+  rows và reserved từ payload hợp lệ; lock/re-read rồi repair Redis một chiều.
+- Wallet expiry: lazy transition; có thể thêm batch normalization nhưng không ảnh hưởng
+  eligibility dựa trực tiếp `expired_at`.
+- Outbox retention: chỉ trim theo CDC watermark/replay horizon; không xóa row chưa relay.
+- Claim cleanup: chỉ sau campaign end và retention/audit window được duyệt.
 
-## WF-PROMO-006 — Voucher trong ví
+Mọi worker bounded batch, retry-safe và có metric oldest-age/backlog/drift.
 
-### Mục tiêu và happy path
+## Verification bắt buộc
 
-`GET /voucher-suggestions` chỉ phục vụ mã đã lưu. Query wallet + promotions bằng index
-`(user_id,status)`, lọc PLATFORM, SAVED, active và `expired_at > NOW()`. Row SAVED đã
-hết hạn được guarded update sang EXPIRED rồi loại khỏi response.
-
-Service batch load snapshots, evaluate AST, tính discount; với eligible IDs pipeline
-budget hash. Exhausted bị downgrade `BUDGET_EXHAUSTED`; Redis guard lỗi thì fail-open và
-`budget_guard_status=DEGRADED`. Sort eligible trước, discount giảm dần; trả best/others,
-rule/budget versions và guard metadata.
-
-Discovery không ghi wallet mới, không reserve và không fanout invalidate mọi user khi
-budget cạn. Race Preview→Submit được chốt bằng Reserve. Target p99 cache-hit dưới 15 ms;
-response tối đa 20 eligible + 10 ineligible.
-
-### Failure và tests
-
-DB unavailable fail request; snapshot Redis có DB fallback; budget Redis fail-open. Test
-lazy expiry concurrent, large wallet/pagination, budget stale/degraded, source WALLET,
-sorting/limit và use-window sau claim-window.
-
-## WF-PROMO-007 — Khám phá và lưu public voucher
-
-### Happy path
-
-1. `/platform-voucher-discovery` lấy wallet PLATFORM hợp lệ và public promotion
-   `PLATFORM_VOUCHER ACTIVE` trong claim window, loại IDs đã saved.
-2. Evaluate min purchase + AST, budget guard và estimated discount như WF-006.
-3. Trả `eligible[]` theo discount giảm dần, `ineligible[]` theo amount-needed tăng dần;
-   source là WALLET hoặc PLATFORM_PUBLIC.
-4. User chọn public gọi `/save-and-apply`. Service validate type/status/claim window rồi
-   upsert wallet SAVED với use-window 30 ngày.
-5. Existing SAVED còn hạn trả idempotent success, không kéo dài expiry; EXPIRED có thể
-   được reacquire và reset thời gian; USED mặc định trả 409.
-6. Sau success, Checkout gọi Preview với promotion ID. Budget chỉ reserve khi Submit.
-
-### Failure và tests
-
-Claim window vừa đóng → EXPIRED/ineligible hoặc save bị từ chối. Concurrent save dựa
-unique wallet. Test saved/public de-dup, source, EXPIRED reacquire, USED reject, budget
-race và sub-cart/category/payment contexts.
-
-## WF-PROMO-008 — Expiry, rescue và reconciliation
-
-### Scheduled paths
-
-- Pending claim: mỗi phút republish item cũ hơn 5 phút, không xóa trước DB ack.
-- Reservation: mỗi phút batch 1.000 item đến hạn, gate REDEEM FINAL, release hoặc repair.
-- Markdown: loop 250 ms–1 s batch 200; lock, guarded DB transition, publish sau commit,
-  ZREM sau; cron fallback 10–30 s quét DB `FOR UPDATE SKIP LOCKED`; startup rebuild ZSET.
-- Budget reconciliation: mỗi 15 phút theo recently changed promotions, full-scan off-peak
-  hằng ngày; dựng expected từ DB ledger + valid reservations, lock/re-read/repair Redis.
-- Claim cleanup: ban đêm xóa claim thuộc campaign ended và quá 30 ngày.
-- Idempotency cleanup: hằng ngày, retention tối thiểu refund window + 15 ngày, mặc định 45.
-- Snapshot cold-miss monitor: mỗi 5 phút chỉ metric/alert, không auto-warm.
-- Wallet expiry: không job; lazy inline.
-
-### Recovery và verification
-
-Mỗi job batch hữu hạn, retry transient và idempotent. Reconciliation audit before/after,
-run ID/reason và không bao giờ ghi DB từ Redis. Test restart/failover, lock contention,
-crash DB-commit-before-ZREM/publish, missing index/payload, repeated drift và safe rerun.
+- Boundary tests cho exact start/end, stale revision, delayed START, pause/cancel và clock UTC.
+- Crash DB-commit-before-ZREM, missing ZSET, Redis restart và duplicate outbox.
+- Load 10.000 contender; duplicate user/work item; pending rescue.
+- Reserve payload mismatch, integer counter invariant, confirm/cancel/sweep races.
+- `cancel-confirmed` SAVED-vs-EXPIRED và duplicate retry.
+- Customer partial/full refund chứng minh không có Promotion mutation/event subscription.
+- Product bỏ stale `source_revision` và hội tụ ACTIVE/INACTIVE.

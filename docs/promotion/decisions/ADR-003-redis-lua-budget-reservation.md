@@ -25,9 +25,11 @@ nhiều script không rollback atomically và không kiểm tra replay khác pay
 ## Decision
 
 Không reserve ở Preview. Sau Submit, Script 2B duy nhất validate/apply all-or-nothing cho
-một voucher: qty, amount, reservation payload và ZSET index. Confirm/cancel/refund dùng
-Lua atomic counter + lock ngắn; DB idempotency/ledger quyết định cuối. Reservation 15 phút
-cộng cleanup grace; amount hiện có thể dùng HINCRBYFLOAT nhưng nên chuyển minor-unit.
+một voucher: qty, amount, reservation payload và ZSET index. Confirm/cancel cùng technical
+`cancel-confirmed` dùng Lua atomic counter + lock ngắn; PostgreSQL wallet/budget/outbox
+quyết định durable state. Reservation 15 phút cộng cleanup grace; amount dùng integer
+VND với `HINCRBY`, không dùng `HINCRBYFLOAT`. Customer refund không mutate Promotion theo
+[ADR-012](./ADR-012-wallet-redemption-and-no-refund.md).
 
 ## Alternatives considered
 
@@ -48,4 +50,5 @@ thích. Checkout/Order phải phân biệt Preview với Submit và xử lý 409
 ## Verification
 
 Concurrency/load test, failure injection tại từng Redis command, payload mismatch,
-confirm/cancel/sweep race, CROSSSLOT test và DB-fail-after-Redis recovery.
+confirm/cancel/technical-compensation/sweep race, CROSSSLOT test và
+DB-fail-after-Redis recovery.

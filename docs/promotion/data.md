@@ -7,245 +7,270 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
 
 # Promotion Service — Thiết kế dữ liệu
 
-> Chưa có migration/schema thực thi. Các bảng và key dưới đây là logical/physical
-> design được bảo toàn từ tài liệu cũ, chưa phải nguồn DDL chuẩn.
+> Chưa có migration/schema thực thi. Đây là schema đích đã chốt; DDL thực tế phải
+> giữ đúng constraint và semantics dưới đây.
 
 ## 1. Data ownership
 
-PostgreSQL Promotion là source of truth cho campaign, rule, budget cấu hình, claim,
-wallet, usage và idempotency. Redis là source runtime cho snapshot, claim pool,
-reservation, counter nóng và schedule index; mọi dữ liệu Redis phải có đường rebuild
-hoặc recovery. Cart/user/product/order data chỉ được giữ dưới dạng ID hoặc input snapshot.
+PostgreSQL Promotion là source of truth cho campaign, voucher, budget đã chốt, claim,
+wallet, markdown và integration event. Redis là runtime store cho snapshot, claim pool,
+pending claim, budget/reservation và schedule index. Mọi dữ liệu Redis phải rebuild,
+replay hoặc reconcile được.
 
-## 2. Logical data model
+Promotion không lưu refund allocation theo SKU và không tiêu thụ customer-refund event.
+Order/Payment sở hữu refund amount/scope; chính sách partial refund của hai service đó
+chưa chốt vì tài liệu chưa được refactor.
+
+## 2. Logical model
 
 ```mermaid
 erDiagram
   CAMPAIGN ||--o{ PROMOTION : groups
-  CAMPAIGN ||--o{ MARKDOWN_RULE : groups
+  CAMPAIGN ||--o{ MARKDOWN_RULE : schedules
   PROMOTION ||--|| PROMOTION_BUDGET : has
-  PROMOTION ||--o{ COUPON_CLAIM : allocates
-  PROMOTION ||--o{ USER_COUPON_WALLET : owned_by_user
-  PROMOTION ||--o{ COUPON_USAGE : applied_to_order
-  PROMOTION ||--o{ PROMOTION_EVENT_IDEMPOTENCY : guards
+  PROMOTION ||--o{ COUPON_CLAIM : pre_generates
+  PROMOTION ||--o{ USER_COUPON_WALLET : grants
+  CAMPAIGN ||--o{ PROMOTION_OUTBOX_EVENT : emits
 ```
 
-`Promotion` và `MarkdownRule` độc lập, không có FK trực tiếp. User, Order, Product và
-Category thuộc bounded context khác nên chỉ là logical reference.
+Schema chỉ có bảy bảng: `campaigns`, `promotions`, `promotion_budgets`,
+`coupon_claims`, `user_coupon_wallets`, `markdown_rules` và
+`promotion_outbox_events`. Không có `coupon_usages` hoặc
+`promotion_event_idempotency`.
 
-## 3. Schema sources
+## 3. PostgreSQL schema
 
-- Chưa có migration/entity/schema generation cho Promotion.
-- `RuleEngineDemo.java` minh họa deserialize/evaluate `conditions_rule`, không phải
-  schema chuẩn.
-- Khi implement phải tạo migration additive tại service source và cập nhật `evidence`.
+### 3.1 `campaigns`
 
-## 4. PostgreSQL schema và constraints
-
-### 4.1 `campaigns`
-
-| Cột | Kiểu/ý nghĩa |
+| Cột | Kiểu/constraint |
 |---|---|
 | `id` | `BIGSERIAL PRIMARY KEY` |
-| `name` | `VARCHAR(255)` |
-| `start_time`, `end_time` | `TIMESTAMPTZ`, lưu UTC |
-| `status` | `UPCOMING`, `ACTIVE`, `ENDED` |
-| `created_at`, `updated_at` | timestamp audit |
+| `code` | `VARCHAR(80) NOT NULL UNIQUE` |
+| `name` | `VARCHAR(255) NOT NULL` |
+| `description` | `TEXT NULL` |
+| `publication_status` | `DRAFT`, `PUBLISHED`, `PAUSED`, `CANCELLED` |
+| `start_time`, `end_time` | `TIMESTAMPTZ NOT NULL`; CHECK `start_time < end_time` |
+| `revision` | `BIGINT NOT NULL DEFAULT 1`; tăng khi campaign/child thay đổi |
+| `created_by`, `updated_by` | admin identifier/audit |
+| `created_at`, `updated_at` | `TIMESTAMPTZ NOT NULL` |
 
-### 4.2 `promotions`
+Không persist `UPCOMING`, `ACTIVE`, `ENDED`. Phase được suy ra theo
+`publication_status` và khoảng `[start_time,end_time)`. `campaigns.revision` là business
+revision duy nhất để chống stale schedule/config.
 
-| Cột | Kiểu/ý nghĩa |
+### 3.2 `promotions`
+
+| Cột | Kiểu/constraint |
 |---|---|
 | `id` | `BIGSERIAL PRIMARY KEY` |
-| `campaign_id` | nullable FK → `campaigns.id` |
-| `code` | `VARCHAR(50)`; cần unique policy khi tạo DDL |
-| `type` | `UNLIMITED_ALL` hoặc `PLATFORM_VOUCHER` |
+| `campaign_id` | `BIGINT NOT NULL REFERENCES campaigns(id)` |
+| `code` | `VARCHAR(80) NOT NULL UNIQUE` |
+| `name`, `description` | metadata quản trị |
+| `distribution_mode` | `PUBLIC_SAVE`, `LIMITED_CLAIM` hoặc `DIRECT_GRANT` |
 | `discount_type` | `PERCENTAGE` hoặc `FIXED_AMOUNT` |
-| `discount_value` | `DECIMAL(10,2)` |
-| `max_discount_amount` | `DECIMAL(10,2)`, cap cho percentage |
-| `min_purchase_amount` | `DECIMAL(10,2)`, tách khỏi JSONB để query nhanh |
-| `conditions_rule` | `JSONB` AST |
-| `start_time`, `end_time` | claim/save window, không phải use window |
-| `status` | `ACTIVE`, `INACTIVE` |
+| `discount_value` | `BIGINT NOT NULL`; basis points hoặc VND theo type |
+| `max_discount_vnd` | `BIGINT NULL`, cap cho percentage |
+| `min_order_amount_vnd` | `BIGINT NOT NULL DEFAULT 0` |
+| `conditions_rule` | `JSONB NOT NULL` AST |
+| `rule_schema_version` | `SMALLINT NOT NULL`; version format AST, không phải revision |
+| `validity_mode` | `CAMPAIGN_END`, `DURATION_AFTER_SAVE`, `FIXED_DATE` |
+| `valid_for_seconds` | chỉ dùng với `DURATION_AFTER_SAVE` |
+| `redeem_until` | chỉ dùng với `FIXED_DATE` |
+| `is_enabled` | admin guard; không thay cho campaign phase |
+| `created_at`, `updated_at` | audit timestamps |
 
-Mọi promotion do admin tạo; không có `owner_id` của seller/merchant.
+CHECK bảo đảm validity mode chỉ đi với tham số tương ứng. Không có mặc định ngầm 30
+ngày. Khi save/claim, application tính một lần và ghi `wallet.expired_at`:
 
-### 4.3 `promotion_budgets`
+- `CAMPAIGN_END` → `campaign.end_time`.
+- `DURATION_AFTER_SAVE` → `saved_at + valid_for_seconds`.
+- `FIXED_DATE` → `redeem_until`.
 
-| Cột | Kiểu/ý nghĩa |
+Promotion không có `start_time`, `end_time`, status thời gian hoặc `rule_revision`.
+Definition đã publish là bất biến; thay đổi cấu hình phải tăng campaign revision và
+không được làm thay đổi quyền lợi đã lưu một cách hồi tố.
+
+### 3.3 `promotion_budgets`
+
+| Cột | Kiểu/constraint |
 |---|---|
-| `promotion_id` | PK/FK → `promotions.id` |
-| `total_quantity`, `used_quantity` | `INT`; quota tổng và đã redeem |
-| `total_budget`, `used_budget` | `DECIMAL(15,2)`; amount tổng và đã dùng |
+| `promotion_id` | `BIGINT PRIMARY KEY REFERENCES promotions(id)` |
+| `total_claim_quantity` | `BIGINT NULL`; null là không giới hạn |
+| `claimed_quantity` | `BIGINT NOT NULL DEFAULT 0` |
+| `total_redemption_quantity` | `BIGINT NULL`; null là không giới hạn |
+| `used_quantity` | `BIGINT NOT NULL DEFAULT 0` |
+| `total_budget_vnd` | `BIGINT NULL`; null là không giới hạn |
+| `used_budget_vnd` | `BIGINT NOT NULL DEFAULT 0` |
+| `updated_at` | `TIMESTAMPTZ NOT NULL` |
 
-Bảng tách khỏi `promotions` để giảm row-lock contention. Runtime còn có reserved
-counter ở Redis; DB không lưu reservation.
+CHECK mọi counter không âm và không vượt total hữu hạn. Không lưu reserved counter trong
+PostgreSQL; Redis giữ runtime reservation. Bảng không có revision.
 
-### 4.4 `coupon_claims`
+### 3.4 `coupon_claims`
 
-| Cột | Kiểu/ý nghĩa |
+| Cột | Kiểu/constraint |
 |---|---|
-| `id` | `BIGSERIAL PRIMARY KEY`; pre-generate theo quota |
-| `promotion_id` | FK → `promotions.id` |
-| `owner_id` | nullable user identifier; canonical hiện được ghi là UUID ở wallet/usage |
-| `status` | `AVAILABLE`, `CLAIMED` |
-| `claimed_at` | nullable `TIMESTAMPTZ` |
+| `id` | `BIGSERIAL PRIMARY KEY`; pre-generate cho limited claim |
+| `promotion_id` | `BIGINT NOT NULL REFERENCES promotions(id)` |
+| `status` | `AVAILABLE` hoặc `CLAIMED` |
+| `owner_id` | `UUID NULL` |
+| `claimed_at` | `TIMESTAMPTZ NULL` |
+| `created_at` | `TIMESTAMPTZ NOT NULL` |
 
-Invariant CHECK dự kiến: `AVAILABLE` thì owner/claimed_at đều null; `CLAIMED` thì cả
-hai non-null. Partial unique index `(promotion_id, owner_id) WHERE owner_id IS NOT NULL`
-đảm bảo một user chỉ claim một suất. Worker update bằng guard
-`id=:claim_id AND status='AVAILABLE' AND owner_id IS NULL`.
+CHECK: `AVAILABLE` có `owner_id/claimed_at` null; `CLAIMED` có cả hai non-null. Partial
+unique `(promotion_id,owner_id) WHERE owner_id IS NOT NULL` chặn một user claim hai suất.
 
-### 4.5 `user_coupon_wallets`
+### 3.5 `user_coupon_wallets`
 
-| Cột | Kiểu/ý nghĩa |
+| Cột | Kiểu/constraint |
 |---|---|
 | `id` | `BIGSERIAL PRIMARY KEY` |
-| `user_id` | UUID, indexed |
-| `promotion_id` | FK → `promotions.id` |
+| `user_id` | `UUID NOT NULL` |
+| `promotion_id` | `BIGINT NOT NULL REFERENCES promotions(id)` |
+| `coupon_claim_id` | nullable unique FK → `coupon_claims.id` |
 | `status` | `SAVED`, `USED`, `EXPIRED` |
-| `saved_at`, `used_at` | acquisition/use timestamps |
-| `expired_at` | use-window; mặc định `saved_at + 30 days` |
+| `saved_at`, `expired_at` | `TIMESTAMPTZ NOT NULL` |
+| `used_order_id` | `BIGINT NULL` logical Order reference |
+| `discount_amount_vnd` | `BIGINT NULL` |
+| `used_at` | `TIMESTAMPTZ NULL` |
+| `updated_at` | `TIMESTAMPTZ NOT NULL` |
 
-Unique `(user_id,promotion_id)`; index `(user_id,status)` phục vụ wallet discovery.
-Không có quy tắc “toàn ví chỉ một mã”.
+Unique `(user_id,promotion_id)` bảo đảm một quyền sở hữu. Partial unique
+`used_order_id WHERE used_order_id IS NOT NULL` bảo đảm một platform voucher cho một
+order. CHECK buộc `USED` có order/amount/time và `SAVED/EXPIRED` không có usage fields.
 
-### 4.6 `coupon_usages`
+Confirm chuyển `SAVED → USED`. Customer refund partial/full không mutate row. Technical
+`cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
+nếu đã hết hạn thì chuyển `USED → EXPIRED`.
 
-| Cột | Kiểu/ý nghĩa |
+### 3.6 `markdown_rules`
+
+| Cột | Kiểu/constraint |
 |---|---|
 | `id` | `BIGSERIAL PRIMARY KEY` |
-| `user_id` | UUID, index cho lịch sử voucher |
-| `promotion_id` | logical/FK reference |
-| `order_id` | `BIGINT`, indexed |
-| `discount_amount` | `DECIMAL(10,2)`, allocation thực tế |
-| `status` | `REDEEMED`, `PARTIALLY_REFUNDED`, `REFUNDED` |
-| `reserved_at` | timestamp lấy từ Redis khi confirm; có thể null |
-| `redeemed_at`, `refunded_at` | timestamps nghiệp vụ |
-| `refunded_amount` | `DECIMAL(10,2) DEFAULT 0` |
-| `refund_count` | `INT DEFAULT 0` |
+| `campaign_id` | `BIGINT NOT NULL REFERENCES campaigns(id)` |
+| `product_id` | `UUID NOT NULL`, logical Product reference |
+| `discount_type` | `PERCENTAGE` hoặc `FIXED_AMOUNT` |
+| `discount_value` | `BIGINT NOT NULL`; basis points hoặc VND |
+| `max_discount_vnd` | `BIGINT NULL` |
+| `priority` | `INT NOT NULL DEFAULT 0` cho winner selection |
+| `is_enabled` | admin guard |
+| `created_at`, `updated_at` | audit timestamps |
 
-Unique `(order_id,promotion_id)`. Không có `RESERVED`/`CANCELLED`. CHECK/application
-guard: `0 <= refunded_amount <= discount_amount`, `refund_count >= 0`; status phải
-khớp refunded amount. Refund update row hiện có, không insert ledger mới.
+Unique `(campaign_id,product_id)`. Không có category/polymorphic scope, `start_time`,
+`end_time`, time-derived status hoặc rule revision. Product ID được validate qua Product
+contract trước save; không có cross-database FK.
 
-### 4.7 `promotion_event_idempotency`
+### 3.7 `promotion_outbox_events`
 
-| Cột | Kiểu/ý nghĩa |
+| Cột | Kiểu/constraint |
 |---|---|
-| `event_id` | `VARCHAR(255) PRIMARY KEY`; lấy từ caller/envelope theo lane |
-| `order_id` | `BIGINT`, indexed |
-| `promotion_id` | `BIGINT`, indexed |
-| `action_type` | `REDEEM_COUPON`, `CANCEL_COUPON`, `REFUND_COUPON` |
-| `action_scope_key` | `FINAL`, refund transaction/batch ID |
-| `payload_hash` | nullable checksum để phát hiện replay khác nội dung |
-| `processed_at` | `TIMESTAMPTZ` |
+| `event_id` | `UUID PRIMARY KEY` |
+| `event_type` | CloudEvent type |
+| `aggregate_type`, `aggregate_id` | aggregate identity |
+| `partition_key` | `VARCHAR NOT NULL`; product event dùng `product_id` |
+| `source_revision` | `BIGINT NULL`; bắt buộc với markdown snapshot |
+| `dedup_key` | `VARCHAR NOT NULL UNIQUE` |
+| `payload` | `JSONB NOT NULL`; complete structured CloudEvent |
+| `created_at` | `TIMESTAMPTZ NOT NULL` |
 
-Unique `(order_id,promotion_id,action_type,action_scope_key)`. Sync API ghi nguyên
-`idempotency_key/request_id` từ Order; Kafka refund ghi `event_id` envelope. Thiết kế cũ
-còn cách diễn đạt khác về khóa refund dẫn xuất; contract cuối cùng được hoãn, nhưng
-business scope vẫn là từng refund transaction và promotion.
+Outbox append-only, không có mutable publish/retry status. Debezium/Kafka Connect sở hữu
+retry/backoff/DLQ. `dedup_key` ví dụ:
+`markdown:{product_id}:campaign-rev:{revision}:{ACTIVE|INACTIVE}` hoặc
+`coupon:{promotion_id}:order:{order_id}:TECHNICAL_CANCEL`.
 
-### 4.8 `markdown_rules`
+Markdown `source_revision` lấy từ PostgreSQL sequence. Transaction acquire advisory lock
+theo `product_id`, tính full snapshot hiện hành, cấp revision rồi insert outbox; Product
+chỉ apply revision mới hơn.
 
-| Cột | Kiểu/ý nghĩa |
+## 4. Index và query pattern
+
+| Index | Mục đích |
 |---|---|
-| `id` | `BIGSERIAL PRIMARY KEY` |
-| `campaign_id` | nullable FK → `campaigns.id` |
-| `name` | `VARCHAR(255)` |
-| `scope_type` | Scope legacy được event/worker dùng (`PRODUCT`/`CATEGORY`) |
-| `ref_id` | `VARCHAR(255)`, polymorphic logical reference; mặc định category trong mô tả cũ |
-| `discount_type`, `discount_value` | PERCENTAGE/FIXED và `DECIMAL(10,2)` |
-| `max_discount_amount` | nullable cap |
-| `start_time`, `end_time` | effective schedule |
-| `status` | `ACTIVE`, `INACTIVE`, `ENDED` |
+| campaign `(publication_status,start_time,end_time)` | fallback scan/rebuild schedule |
+| promotion `(campaign_id,is_enabled)` | discovery/admin load |
+| wallet `(user_id,status,expired_at)` | voucher tray/lazy expiry |
+| wallet unique `(user_id,promotion_id)` | save/claim idempotency |
+| wallet partial unique `used_order_id` | một voucher/order |
+| claim `(promotion_id,status,id)` | preload/rebuild claim pool |
+| markdown `(product_id,is_enabled)` | tính full snapshot theo product |
+| outbox `(created_at)` | retention/diagnostic |
+| outbox unique `dedup_key` | business transition idempotency |
 
-Không cross-database FK; application validate reference qua Product contract trước save.
+## 5. Transaction boundaries
 
-## 5. Indexes và query patterns
+- Admin command: mutate campaign/child, tăng `campaigns.revision`, tạo outbox nếu cần,
+  commit; sau commit invalidate cache/ZADD schedule. Fallback scanner sửa side effect mất.
+- Claim consumer: guarded claim + wallet insert + claimed counter trong một transaction;
+  chỉ sau commit mới xóa pending Redis.
+- Confirm: Redis move reserved→used; DB transaction guarded wallet `SAVED→USED`, tăng
+  durable used counter và insert outbox. Crash window được replay/reconcile.
+- Pre-payment cancel: Redis release; wallet không đổi.
+- `cancel-confirmed`: Redis reverse used; DB transaction dùng outbox dedup key làm durable
+  gate, giảm used counter và chuyển wallet về `SAVED`/`EXPIRED`.
+- Customer refund: không có Promotion transaction.
 
-| Index | Query phục vụ | Trade-off |
-|---|---|---|
-| wallet `(user_id,status)` | Lấy `SAVED` voucher của user | Tăng write cost nhỏ |
-| wallet unique `(user_id,promotion_id)` | Upsert/idempotent save | Cấm duplicate ownership |
-| claim partial unique | Chống claim lặp/user/promotion | Nhiều AVAILABLE null vẫn hợp lệ |
-| usage unique `(order_id,promotion_id)` | Confirm/refund ledger | Một allocation/promotion/order |
-| idempotency PK + action unique | Replay theo delivery và scope | Tăng storage/audit write |
-| idempotency `order_id`, `promotion_id` | Đối soát action/order/promotion | Tăng write amplification |
-| promotion `(type,status,end_time)` | Public voucher discovery | Cần tạo khi có migration |
-| usage `user_id`, `order_id` | Lịch sử user và đối soát order | Tăng write cost |
+## 6. Redis keyspace
 
-## 6. Transaction boundaries
-
-- Admin command mutate rule/budget trong PostgreSQL transaction; Redis invalidation và
-  Kafka publish chỉ sau commit (tài liệu cũ có câu “DEL trong cùng TX”, nhưng Redis không
-  nằm trong PostgreSQL transaction; implementation phải xem đó là side effect phối hợp).
-- Claim worker update claim + upsert wallet trong một DB transaction, rồi mới xóa pending.
-- Confirm/refund insert idempotency, mutate budget/wallet/usage trong một DB transaction
-  sau Redis script. Duplicate conflict đọc state hiện có và trả idempotent success.
-- Isolation level chưa chốt. Unique/CHECK/guarded update là lớp correctness chính.
-- Không có transaction phân tán; reconciliation xử lý crash window Redis-before-DB.
-
-## 7. Caching và Redis data structures
-
-| Key | Type/value | TTL | Pattern và policy |
+| Key | Type | TTL/lifecycle | Vai trò |
 |---|---|---|---|
-| `promo:{promotion_id}:snapshot` | STRING `{metadata,rule_ast_json,snapshot_version}` | 3600s | Cache-aside; parse request-scoped |
-| `promo:rules:version` | STRING counter | none | INCR sau admin write; version fence cross-instance |
-| `promo:{promotion_id}:budget` | HASH total/reserved/used qty+amount | none | Hot counter; `total_amount=-1` biểu diễn không giới hạn; DB-first reconciliation |
-| `promo:{id}:claim_pool` | SET claim IDs | campaign lifecycle | `SPOP` O(1) |
-| `promo:{id}:claimed:user:{user_id}` | STRING flag | 30 days | Chống spam/claim lặp |
-| `promo:{id}:pending_claims:data` | HASH claim_id → user/timestamp payload | đến DB ack | Rescue source |
-| `promo:{id}:pending_claims:index` | ZSET timestamp → claim_id | đến DB ack | Quét stale O(logN) |
-| `promo:{id}:reservation:{order_id}` | STRING req qty/amount/promotion/slot/member | 15m + cleanup grace | Payload release/replay |
-| `promo:reservation:index` | ZSET expiry → `promotion_id:order_id` | explicit cleanup | Sweep không key scan |
-| `promo:lock:{action}:{promotion_id}:{order_id}` | STRING lock | khoảng 10s | Chống concurrent action |
-| `promo:markdown:expiry:index` | ZSET end ms → rule_id | explicit cleanup | Scheduler near-real-time |
-| `promo:markdown:expiry:lock:{rule_id}` | STRING lock | ngắn | Chống nhiều worker cùng expiry |
-| `promo:budget:reconcile:lock:{promotion_id}` | STRING lock | ngắn | Serialize repair |
-| `promotion:ratelimit:voucher_discovery:{user_id}` | token bucket hash/TTL | window 1 phút | 20 req/phút |
-| `promo:codes` | RedisBloom | lifecycle | `BF.RESERVE 0.001 1000000`, pre-check code |
+| `promo:{promotion_id}:snapshot` | STRING JSON | 3600s | metadata + AST + campaign revision |
+| `promo:rules:version` | STRING counter | none | cache version fence |
+| `promo:{promotion_id}:budget` | HASH integer | none | total/reserved/used qty + VND |
+| `promo:{promotion_id}:claim_pool` | SET | campaign lifecycle | `SPOP` claim IDs |
+| `promo:{promotion_id}:claimed_users` | HASH | promotion lifecycle | user → claim ID |
+| `promo:{promotion_id}:pending_claims:data` | HASH | đến DB ack | claim payload |
+| `promo:{promotion_id}:pending_claims:index` | ZSET | đến DB ack | stale deadline → claim ID |
+| `promo:{promotion_id}:reservation:{order_id}` | STRING | 15m + grace | reservation payload |
+| `promo:{promotion_id}:reservation:index` | ZSET | explicit cleanup | expiry → order ID |
+| `promo:{promotion_id}:lock:{action}:{order_id}` | STRING | khoảng 10s | short mutation lock |
+| `promo:campaign:schedule` | ZSET | explicit cleanup | START/END campaign boundary |
+| `promo:campaign:{campaign_id}:schedule_lock` | STRING | ngắn | một worker/campaign |
+| `promo:{promotion_id}:reconcile_lock` | STRING | ngắn | serialize repair |
+| `promotion:ratelimit:voucher_discovery:{user_id}` | HASH | 1m | rate limit |
+| `promo:codes` | RedisBloom | lifecycle | code pre-check |
 
-Snapshot read pipeline lấy rules version và N snapshot trong một round-trip. Version lệch
-hoặc miss thì đọc DB, `SETEX`, rồi evaluate. Không có JVM L1 cache, Pub/Sub eviction,
-`refreshAfterWrite` hay wallet cache. Budget guard fail-open; snapshot DB fallback.
+Mọi key trong một multi-key Lua theo promotion dùng cùng hash tag `{promotion_id}`.
+Redis amount chỉ dùng integer `HINCRBY`, không dùng `HINCRBYFLOAT`.
 
-## 8. Lua semantics, outbox/inbox và idempotency storage
+Campaign schedule member là
+`{campaign_id}:{campaign_revision}:{START|END}`, score là epoch milliseconds. Schedule
+chỉ là trigger/index; PostgreSQL luôn quyết định transition.
 
-| Script | Atomic behavior | Kết quả quan trọng |
-|---|---|---|
-| 1 — Claim | check user flag → SPOP → SETEX flag → HSET pending → ZADD index | `claim_id`, `ALREADY_CLAIMED`, `OUT_OF_STOCK` |
-| 2B — Reserve | validate layout/payload/existing key; check qty+amount; increment reserved; SETEX payload; ZADD index; rollback từng bước nếu lỗi | JSON `OK`, `BUDGET_EXHAUSTED`, `INVALID_INPUT`, `PARTIAL_RESERVATION_STATE`, `IDEMPOTENCY_PAYLOAD_MISMATCH`, `APPLY_FAILED_ROLLED_BACK` |
-| 3 — Confirm | SETNX lock; read reservation; move reserved→used; DEL payload; ZREM index | `SUCCESS`, `IN_PROGRESS`, `RESERVATION_NOT_FOUND`; giữ lock tới sau DB commit |
-| 4 — Cancel | SETNX lock; read payload; giảm reserved; DEL+ZREM | Missing payload chỉ clean index và trả repair-required |
-| 5 — Refund | SETNX lock; clamp request không vượt used; giảm used | Trả applied qty/amount thực tế để DB dùng |
+## 7. Lua semantics
 
-Script 2B là reserve duy nhất dù slot chỉ có một voucher, vì cần rollback bốn thao tác,
-payload equality và structured error. Amount hiện dùng `HINCRBYFLOAT`; integer minor-unit
-là hướng khuyến nghị.
+| Script | Atomic behavior |
+|---|---|
+| Claim | check claimed user → `SPOP` → HSET claimed/pending → ZADD pending index |
+| Reserve | validate replay/payload + available qty/amount → tăng reserved → SET payload + ZADD index |
+| Confirm | lock → đọc payload → reserved giảm/used tăng → DEL payload + ZREM |
+| Cancel | lock → reserved giảm → DEL payload + ZREM |
+| Cancel-confirmed | lock → used giảm theo confirmed amount; DB/outbox chốt durable transition |
 
-Không có outbox/inbox trong thiết kế. Kafka publish trực tiếp best-effort. Idempotency
-Redis chỉ là fast guard; bảng PostgreSQL quyết định cuối. Retention idempotency phải
-`>= refund_window + 15 ngày`, khuyến nghị 45 ngày.
+Không có Redis script customer-refund. Script bounded, trả structured result và reserve
+phải rollback các mutation đã áp dụng nếu command giữa chừng lỗi.
 
-## 9. Data lifecycle
+## 8. Reconciliation và lifecycle
 
-- Pre-generate `coupon_claims` theo `total_quantity`, preload claim pool.
-- Hard delete claim chỉ khi campaign ended và hết hiệu lực hơn 30 ngày; không cold-store.
-- Wallet `EXPIRED` được giữ cho audit; lazy transition khi Discovery chạm row.
-- Idempotency cleanup hằng ngày, mặc định giữ 45 ngày.
-- Markdown schedule index rebuild lúc startup/sau Redis failover từ DB ACTIVE tương lai.
-- Redis budget rebuild/repair từ DB ledger và reservation payload hợp lệ.
-- Backup/restore PostgreSQL, migration/backfill và archive usage chưa được đặc tả.
+- Expected used quantity/amount lấy từ wallet `USED`, không lấy từ Redis.
+- Expected claimed quantity lấy từ durable limited claims.
+- Expected reserved lấy từ reservation payload còn hiệu lực.
+- Repair luôn PostgreSQL + valid runtime evidence → Redis; không ghi DB từ counter Redis.
+- Campaign ZSET rebuild lúc startup/failover và được DB fallback scan bổ sung.
+- Pending claim không trả lại pool sau khi API đã báo success; chỉ cleanup sau DB commit.
+- Wallet `EXPIRED` giữ cho audit; lazy transition khi truy vấn.
+- Outbox chỉ trim khi CDC watermark/replay horizon an toàn; technical compensation dedup
+  phải được giữ ít nhất bằng maximum saga retry horizon.
 
-## 10. Security và privacy
+## 9. Security và privacy
 
-`user_id`, lịch sử voucher và order linkage là dữ liệu liên quan người dùng. API phải
-enforce ownership/service identity; log không ghi access token hoặc toàn bộ payload
-nhạy cảm. Encryption in transit/at rest, masking, GDPR delete/anonymization và audit
-access chưa được chốt trước implementation.
+`user_id`, wallet và order linkage là dữ liệu liên quan người dùng. API phải enforce
+ownership/service identity; log không ghi token hay full sensitive payload. Backup,
+encryption, masking, retention/anonymization và audit access phải được chốt trước khi
+implementation được xem là production-ready.

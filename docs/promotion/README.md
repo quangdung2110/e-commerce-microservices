@@ -7,16 +7,16 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
-  - contracts/examples/events/promotion-product-markdown-snapshot.v1.json
+  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
 
 # Promotion Service — Tổng quan
 
-Promotion Service sở hữu chiến dịch khuyến mãi, voucher toàn sàn, ngân sách,
-quyền sở hữu voucher của người dùng, ledger sử dụng voucher và lịch markdown.
-Service là nơi duy nhất đánh giá điều kiện voucher và tính discount line; Checkout
-chỉ điều phối và hiển thị kết quả.
+Promotion Service sở hữu hai loại lợi ích khác nhau dưới cùng một campaign: voucher
+toàn đơn và markdown theo sản phẩm. Campaign là lớp quản trị/lịch chung; voucher đã
+được lưu là quyền lợi của người dùng, còn markdown chỉ có hiệu lực khi campaign đang
+hoạt động.
 
 ## 1. Trạng thái service
 
@@ -26,132 +26,121 @@ chỉ điều phối và hiển thị kết quả.
 | Runtime dự kiến | Java 21, Spring Boot 4 |
 | Implementation path dự kiến | `java/services/promotion-service` — hiện chưa tồn tại |
 | Độ tin cậy tài liệu | `proposed`; chưa verified với source code/migration |
-| Contract adoption | `not_started`; các tên API/event hiện chỉ là legacy documented design |
+| Contract adoption | Markdown snapshot v1 đã có contract đích; HTTP Promotion chưa có OpenAPI |
 
-Các ADR trong thư mục `decisions/` ghi quyết định đã chấp nhận ở mức thiết kế;
-chúng không chứng minh rằng code production đã tồn tại.
+Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
 ## 2. Mục tiêu
 
-- Cho admin tạo và vận hành campaign, voucher và markdown rule.
-- Tính giảm giá nhất quán từ AST điều kiện đa hình mà không query database trong
-  từng node rule.
-- Bảo vệ quota và ngân sách tiền tệ khi nhiều người dùng submit đồng thời.
-- Cấp voucher flash-sale với độ phức tạp O(1) trên Redis và ghi bền vững bất đồng bộ.
-- Giữ audit trail cho redeem/refund và tự sửa drift giữa PostgreSQL với Redis.
-- Công bố thay đổi markdown để Product tính giá bán, sau đó Search phục vụ read model.
+- Cho admin tạo và vận hành campaign, voucher và markdown product-scope.
+- Tách đúng vòng đời campaign, claim voucher và hạn sử dụng voucher đã lưu.
+- Đánh giá rule AST xác định, không query database/network trong từng node.
+- Bảo vệ quota/ngân sách khi nhiều người dùng claim hoặc submit đồng thời.
+- Kích hoạt/kết thúc markdown không sớm, tự phục hồi khi Redis/worker lỗi và phát event
+  bền vững qua transactional outbox + CDC.
+- Giữ PostgreSQL là source of truth và tự sửa drift của Redis hot state.
 
 ## 3. Boundary
 
 Promotion chịu trách nhiệm:
 
 - `campaigns`, `promotions`, `promotion_budgets`, `coupon_claims`,
-  `user_coupon_wallets`, `coupon_usages`, `promotion_event_idempotency` và
-  `markdown_rules`.
-- Rule Engine, stacking một slot `PLATFORM_VOUCHER`, discount waterfall và reason
-  code eligibility.
-- Claim/save voucher, reserve/confirm/cancel/cancel-confirmed/refund budget.
-- Lịch kết thúc markdown, reservation expiry, pending-claim rescue và reconciliation.
+  `user_coupon_wallets`, `markdown_rules` và `promotion_outbox_events`.
+- Một slot `PLATFORM_VOUCHER` cho toàn đơn, Rule Engine, eligibility và discount.
+- Claim/save, reserve, confirm, cancel và `cancel-confirmed` do lỗi kỹ thuật.
+- Campaign schedule, pending-claim rescue, reservation expiry và reconciliation.
+- Full product markdown snapshot cho Product.
 
 Promotion không chịu trách nhiệm:
 
-- Catalog, category membership, giá gốc hay giá bán công bố; Product sở hữu các dữ
-  liệu đó và áp dụng markdown.
-- Search/filter/ranking; Search sở hữu read model Elasticsearch.
-- Cart snapshot, checkout token, Order/Payment state machine và hoàn tiền cho khách.
-- Inventory hoặc shipping discount. Hệ thống không có seller/merchant; mọi promotion
-  do admin tạo và quản trị.
+- Giá gốc/giá bán công bố, category membership hoặc catalog; Product sở hữu các dữ liệu đó.
+- Search/filter/ranking; Search đọc giá do Product công bố.
+- Tính tiền refund, refund scope, số lần partial refund hoặc Payment state machine.
+- Phân bổ voucher toàn đơn xuống SKU/order line.
+- Hoàn budget hay tái cấp voucher khi khách hàng refund partial/full.
+- Inventory, shipping discount, seller/merchant promotion.
 
-Mỗi transaction chỉ bao phủ PostgreSQL của Promotion hoặc một lần thực thi Lua trên
-Redis. Không có distributed transaction PostgreSQL–Redis–Kafka.
+`ORDER_REFUNDED` không phải input của Promotion. Order/Payment có thể thay đổi chính sách
+partial refund sau khi được refactor mà không làm thay đổi Promotion boundary này.
 
 ## 4. Data ownership
 
-| Nhóm dữ liệu | Vai trò của Promotion | Source of truth |
-|---|---|---|
-| Campaign, voucher, rule AST, markdown schedule | Sở hữu và ghi | PostgreSQL Promotion |
-| Tổng ngân sách và cấu hình quota | Sở hữu và ghi | `promotion_budgets` |
-| Quyền claim và ví voucher | Sở hữu và ghi | `coupon_claims`, `user_coupon_wallets` |
-| Redeem/refund ledger | Sở hữu và ghi | `coupon_usages` + idempotency gate |
-| Reservation đang hiệu lực | Trạng thái runtime tạm thời | Redis reservation payload/index |
-| Counter budget phục vụ hot path | Projection có thể rebuild | Redis; đối soát một chiều từ DB |
-| Cart/user/category context | Chỉ nhận snapshot/identifier | Service nguồn tương ứng |
+| Nhóm dữ liệu | Source of truth |
+|---|---|
+| Campaign, voucher, AST, markdown rule | PostgreSQL Promotion |
+| Budget cấu hình và số đã claim/redeem | `promotion_budgets` |
+| Claim inventory | `coupon_claims` |
+| Quyền sở hữu, expiry và redemption voucher | `user_coupon_wallets` |
+| Integration event | `promotion_outbox_events` trong cùng transaction với business state |
+| Reservation đang hiệu lực | Redis runtime; không persist `RESERVED` |
+| Claim pool/pending claim | Redis runtime có đường cứu về PostgreSQL |
+| Counter budget hot path | Redis projection có thể rebuild/repair từ PostgreSQL + reservation hợp lệ |
 
-Service khác không được ghi trực tiếp database hay Redis keyspace của Promotion.
+Không có `coupon_usages` hoặc `promotion_event_idempotency`. Correctness dùng wallet,
+guarded transition, unique constraint, deterministic key và outbox dedup key.
 
 ## 5. Capabilities
 
 | ID | Capability | Kết quả nghiệp vụ |
 |---|---|---|
-| `PROMO-CAP-01` | Quản trị campaign/voucher/markdown | Admin công bố hoặc kết thúc chính sách giảm giá |
-| `PROMO-CAP-02` | Đánh giá và tính discount | Trả eligibility, reason, discount line và rule version |
-| `PROMO-CAP-03` | Voucher discovery | Liệt kê mã trong ví hoặc mã public theo đúng ngữ cảnh |
-| `PROMO-CAP-04` | Claim/save voucher | Gán duy nhất một suất promotion cho người dùng |
-| `PROMO-CAP-05` | Budget reservation | TRY/CONFIRM/CANCEL nguyên tử cho một voucher toàn sàn |
-| `PROMO-CAP-06` | Refund/cancel-confirmed | Hoàn allocation đã redeem nhưng không tái sử dụng voucher |
-| `PROMO-CAP-07` | Markdown propagation | Phát thay đổi rule để Product tính lại giá |
-| `PROMO-CAP-08` | Recovery và reconciliation | Cứu claim, nhả reservation, kết thúc rule và sửa counter drift |
+| `PROMO-CAP-01` | Quản trị campaign | Publish/pause/cancel và lịch dùng chung |
+| `PROMO-CAP-02` | Quản trị voucher/markdown | Cấu hình bất biến sau publish hoặc tạo revision mới |
+| `PROMO-CAP-03` | Tính discount/discovery | Eligibility, reason và một voucher toàn đơn |
+| `PROMO-CAP-04` | Claim/save voucher | Gán duy nhất một claim cho user, snapshot `expired_at` |
+| `PROMO-CAP-05` | Budget reservation | TRY/CONFIRM/CANCEL nguyên tử bằng Redis Lua |
+| `PROMO-CAP-06` | Technical compensation | `cancel-confirmed` trả wallet về `SAVED` nếu còn hạn |
+| `PROMO-CAP-07` | Markdown propagation | Full snapshot `ACTIVE/INACTIVE` có `source_revision` |
+| `PROMO-CAP-08` | Recovery/reconciliation | Cứu claim, nhả reservation, rebuild schedule và sửa drift |
 
 ## 6. Dependencies
 
-| Direction | Service/System | Protocol | Purpose | Required/Optional | Contract |
-|---|---|---|---|---|---|
-| Inbound | Admin qua Gateway | HTTP | Quản trị campaign, voucher, markdown | Required | Chưa có OpenAPI |
-| Inbound | Checkout | HTTP | Discovery và calculate discount | Required | Legacy documented |
-| Inbound | Order/Temporal | HTTP | Reserve, confirm, cancel, compensation, refund | Required | Legacy documented |
-| Inbound | Order | Kafka | `ORDER_REFUNDED` | Required cho lane async refund | Legacy documented |
-| Inbound | Auth | Kafka | `USER_REGISTERED` để cấp welcome voucher | Optional | Compatibility adapter dự kiến |
-| Inbound | Product | Kafka | Product chuyển `ACTIVE` để re-apply markdown | Optional trong thiết kế cũ | Legacy documented |
-| Outbound | Product | Kafka | Markdown created/updated/ended | Required | Contract đích chưa được đồng bộ ở vòng này |
-| Outbound | Notification/Analytics/UI | Kafka | Claim/redeem/cancel/refund/exhausted | Optional theo consumer | Chưa có AsyncAPI Promotion |
-| Runtime | PostgreSQL | SQL | Dữ liệu bền vững và audit | Required | Chưa có migration |
-| Runtime | Redis Cluster + RedisBloom | Redis/Lua | Snapshot, claim, budget, reservation, schedule, rate limit | Required | Key schema trong `data.md` |
-| Runtime | Kafka | Kafka | Event và worker queue | Required | Direct-produce best-effort |
+| Direction | Service/System | Protocol | Purpose |
+|---|---|---|---|
+| Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
+| Inbound | Checkout | HTTP | Discovery, save và calculate discount |
+| Inbound | Order/Temporal | HTTP | Reserve, confirm, cancel, `cancel-confirmed` |
+| Inbound | Auth | Kafka | Welcome voucher tùy chọn |
+| Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
+| Outbound | Notification/Analytics | Kafka/CDC | Claim/redeem/cancel facts nếu có consumer |
+| Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
+| Runtime | Redis Cluster + RedisBloom | Redis/Lua | Cache, claim, budget, reservation, schedule |
+| Runtime | Debezium/Kafka Connect + Kafka | CDC/Kafka | At-least-once event delivery |
 
 ## 7. Critical invariants
 
-- [`PROMO-INV-001`](./domain.md#5-invariants): một đơn tối đa một
-  `PLATFORM_VOUCHER`.
-- [`PROMO-INV-002`](./domain.md#5-invariants): budget không âm và
-  `used + reserved` không vượt tổng.
-- [`PROMO-INV-003`](./domain.md#5-invariants): reserve chỉ xảy ra sau Submit, không
-  xảy ra ở Preview/Discovery.
-- [`PROMO-INV-004`](./domain.md#5-invariants): một user tối đa một claim và một wallet
-  row cho cùng promotion.
-- [`PROMO-INV-005`](./domain.md#5-invariants): claim window khác use window.
-- [`PROMO-INV-006`](./domain.md#5-invariants): refund không đổi wallet `USED` về
-  `SAVED`.
-- [`PROMO-INV-007`](./domain.md#5-invariants): DB ledger là nguồn chuẩn để sửa Redis;
-  không ghi ngược PostgreSQL từ counter Redis.
-- [`PROMO-INV-008`](./domain.md#5-invariants): Rule Engine thuần, xác định và không có
-  side effect.
+- Một order tối đa một `PLATFORM_VOUCHER`.
+- Voucher chỉ áp dụng cho toàn đơn; Promotion không tạo line allocation.
+- Budget Redis không âm và `used + reserved` không vượt total hữu hạn.
+- Không reserve ở Preview/Discovery.
+- Một user tối đa một claim và một wallet row cho cùng promotion.
+- Campaign claim window và wallet use window là hai khái niệm khác nhau.
+- Campaign kết thúc không tự xóa/thu hồi voucher đã lưu; eligibility chỉ dùng
+  `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
+- Refund partial/full không đổi wallet `USED` và không giảm used budget.
+- `cancel-confirmed` kỹ thuật trả wallet về `SAVED` nếu còn hạn, ngược lại `EXPIRED`.
+- Redis schedule/counter không phải source of truth.
+- Rule Engine thuần và xác định.
 
 ## 8. Document map
 
-| Document | Nội dung | Khi nào cần đọc |
-|---|---|---|
-| [Architecture](./architecture.md) | Thành phần, consistency, concurrency và deployment | Khi đổi kiến trúc |
-| [Domain](./domain.md) | Thuật ngữ, rule, invariant và state machine | Khi đổi business logic |
-| [Interfaces](./interfaces.md) | Semantics HTTP/Kafka hiện được ghi nhận | Khi tích hợp; chưa phải contract chuẩn |
-| [Workflows](./workflows.md) | Happy path, failure, retry và recovery | Khi sửa use case |
-| [Data](./data.md) | PostgreSQL, Redis, TTL, constraint và retention | Khi sửa dữ liệu/cache |
-| [Operations](./operations.md) | Worker, alert, failure mode và runbook | Khi deploy/vận hành |
-| [Development](./development.md) | Kỳ vọng implementation và test | Khi bắt đầu code |
-| [Decisions](./decisions/README.md) | Lý do của các lựa chọn khó đảo ngược | Khi review trade-off |
+| Document | Nội dung |
+|---|---|
+| [Architecture](./architecture.md) | Thành phần, consistency, concurrency và outbox |
+| [Domain](./domain.md) | Thuật ngữ, rule, invariant và state machine |
+| [Interfaces](./interfaces.md) | Semantics HTTP/Kafka |
+| [Workflows](./workflows.md) | Happy path, failure, retry và recovery |
+| [Data](./data.md) | PostgreSQL, Redis, constraint và lifecycle |
+| [Operations](./operations.md) | Worker, alert, failure mode và runbook |
+| [Development](./development.md) | Kỳ vọng implementation và test |
+| [Decisions](./decisions/README.md) | ADR và lịch sử quyết định |
 
 ## 9. Known gaps
 
-- Chưa có service code, migration, OpenAPI, AsyncAPI hay test của Promotion.
-- Tài liệu cũ có một số tên/payload event khác contract đích hiện có của Product;
-  việc thống nhất contract liên-service cố ý để dành cho lần refactor sau.
-- Tài liệu cũ ghi `coupon_claims.owner_id` là `BIGINT` nhưng wallet/usage dùng UUID;
-  canonical user identifier cho claim phải được chốt trong lần chuẩn hóa contract/schema.
-- Discovery trả `promotion_budget_version` nhưng logical schema cũ chưa định nghĩa nơi
-  lưu `budget_version_updated_at`; cần chốt trước implementation.
-- `RuleEngineDemo.java` chỉ minh họa AST, chưa phải implementation production.
-- Thiết kế gọi Redis là Cluster nhưng một số Lua script dùng key không cùng hash slot;
-  topology/key-tag thực thi phải được chốt trước implementation.
-- Direct produce sau DB commit có crash window làm mất event; đây là trade-off được
-  chấp nhận ở thiết kế hiện tại.
-- Health endpoint, biến cấu hình, SLO ngoài discovery latency, backup/restore và chính
-  sách parking-lot/DLQ chưa có đặc tả triển khai.
+- Chưa có service code, migration, Promotion OpenAPI/AsyncAPI hoặc test.
+- Chính sách partial refund và số refund transaction/order của Order/Payment chưa chốt;
+  Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
+- Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không
+  được ngầm dùng làm revocation.
+- Health/config/SLO, outbox retention watermark và parking-lot chi tiết cần được chốt khi
+  triển khai.
+- `RuleEngineDemo.java` chỉ minh họa AST, không phải implementation production.

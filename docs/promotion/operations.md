@@ -11,171 +11,159 @@ verified_against_commit: null
 
 # Promotion Service — Vận hành
 
-> Chưa có runtime config/deployment/observability source. Mục tiêu dưới đây là yêu cầu
-> thiết kế cần được hiện thực hóa và đo kiểm, không phải số liệu production.
+> Chưa có runtime config/deployment/observability source. Đây là yêu cầu vận hành đích,
+> không phải số liệu production đã đo.
 
-## 1. SLO và SLI
+## 1. SLI/SLO cần đo
 
-| SLI | Mục tiêu/điều cần đo |
+| SLI | Mục tiêu thiết kế |
 |---|---|
-| Voucher discovery latency | p99 `< 15 ms` khi snapshot hit; miss dự kiến có thể ~16 ms |
-| Rule evaluation | Thiết kế cũ kỳ vọng `< 1 ms`; profile đầy đủ parse N rule ~1–2,5 ms |
-| Discovery DB query | Ước tính 3–5 ms với wallet index |
-| Snapshot Redis | Ước tính 0,5–1 ms; budget guard 0,5–1,5 ms |
-| API availability/error | Chưa chốt target; tách business 409 khỏi 5xx |
-| Consumer lag | Theo topic/group và tuổi message lâu nhất |
-| Pending claim age | Alert trước/sau ngưỡng rescue 5 phút |
-| Reservation expiry delay | Thời gian từ expire_at đến release/repair, target dưới một sweep window |
-| Markdown expiry delay | Near-real-time loop 250 ms–1 s; fallback 10–30 s |
-| Budget drift | Count/amount trước và sau repair, lặp lại theo promotion |
+| Voucher discovery latency | p99 `< 15 ms` khi snapshot hit; tách cache miss |
+| API error | Tách business 409 khỏi dependency/5xx |
+| Claim pending age | Alert trước/sau rescue threshold 5 phút |
+| Reservation release delay | Dưới một sweep window trong điều kiện bình thường |
+| Campaign boundary delay | loop 250 ms–1 s; fallback 10–30 s |
+| Outbox relay age | Oldest unrelayed row và connector lag |
+| Product markdown convergence | Outbox create → Product apply theo source revision |
+| Budget drift | Qty/VND trước-sau repair và drift tái diễn |
 
-Metric label không dùng `user_id`, `order_id`, `promotion_id`, `claim_id` làm label
-cardinality cao; các ID này chỉ nằm trong structured log/trace có kiểm soát.
+ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 
-## 2. Health endpoints
+## 2. Health
 
-Endpoint/path chưa được thiết kế. Tối thiểu cần:
-
-- Liveness không phụ thuộc network dependency.
-- Readiness API fail khi PostgreSQL không dùng được; quyết định Redis/Kafka nào làm fail
-  readiness phải theo capability (Discovery có degraded budget guard, Reserve thì không).
-- Consumer readiness phản ánh broker/subscription; scheduler readiness phản ánh lock/store.
-- Startup probe chờ migration và rebuild markdown expiry index khi cần.
+- Liveness không phụ thuộc network.
+- API readiness fail khi PostgreSQL không dùng được. Redis write-path failure làm
+  reserve/claim unavailable; snapshot read có thể fallback DB.
+- Consumer readiness phản ánh broker/subscription.
+- Scheduler readiness phản ánh PostgreSQL, Redis và độ trễ fallback.
+- Startup probe chờ migration và campaign ZSET rebuild bắt buộc.
+- Debezium/Kafka Connect health được giám sát như dependency của event propagation.
 
 ## 3. Configuration
 
-Tên property/env chính xác phải lấy từ implementation tương lai.
+| Property logic | Default/constraint |
+|---|---|
+| Snapshot TTL | 3600s |
+| Reservation business TTL | 15m |
+| Reservation cleanup grace | Phải dài hơn race/retry window; chưa chốt số |
+| Pending rescue age | 5m |
+| Campaign schedule loop | 250ms–1s |
+| Campaign DB fallback | 10–30s |
+| Discovery rate limit | 20/user/min |
+| Outbox retention | Theo CDC watermark + replay/technical-compensation horizon |
+| Topic/group/connector | Bắt buộc cấu hình rõ, không hard-code secret |
 
-| Property logic | Purpose | Required | Default thiết kế | Secret | Restart |
-|---|---|---|---|---|---|
-| PostgreSQL URL/credential | Persistence | Yes | none | credential: Yes | Yes |
-| Redis endpoint/credential | Hot path/cache | Yes | none | credential: Yes | Yes |
-| Kafka brokers/security | Producer/consumer | Yes | none | credential: Yes | Yes |
-| Snapshot TTL | Rule snapshot | No | 3600s | No | tùy implementation |
-| Reservation business TTL | Budget hold | No | 15m | No | No nếu dynamic |
-| Reservation cleanup grace | Giữ payload cho sweep biên | Yes | Chưa chốt | No | No nếu dynamic |
-| Claim flag TTL | Chống claim lặp | No | 30d | No | No |
-| Pending rescue age | Republish stale claim | No | 5m | No | No |
-| Discovery rate limit | Chống bot | No | 20/user/min | No | No |
-| Idempotency retention | Cleanup | No | 45d, không dưới refund window +15d | No | No |
-| Consumer groups/topics | Routing | Yes | Theo bảng worker | No | Yes |
-
-Không commit secret thật. RedisBloom phải được cài nếu bật Bloom pre-check.
+Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
 
 ## 4. Observability
 
-- Metrics: API RPS/latency/error; snapshot hit/miss/version drift; AST parse/eval error;
-  budget guard OK/DEGRADED/exhausted; reserve outcomes; Redis Lua result code; producer
-  send failure; consumer lag/retry/parking-lot; claim pending age; reservation expiry;
-  markdown schedule lag; budget drift/repair/failure; cleanup count.
-- Structured logs: request/correlation/workflow ID, event ID, order/promotion/claim ID,
-  action scope, rule/budget version, Lua code, before/after repair. Redact token/PII.
-- Trace spans: DB transaction, Redis pipeline/EVAL, Kafka send/consume, rule parse/evaluate,
-  Temporal activity, reconciliation rebuild.
-- Các metric bắt buộc từ thiết kế cũ:
-  `promotion_budget_drift_count`, `promotion_budget_repair_count`,
-  `promotion_budget_repair_failed_count`, `snapshot_cache.hit/miss`.
+- Metrics: API latency/error; AST parse/eval; snapshot hit/miss/version drift; claim
+  outcome/pending age; Redis Lua codes; reservation expiry; campaign schedule lag/stale
+  revision; fallback repair; outbox oldest age/rows; Debezium/consumer lag; Product stale
+  revision drop; budget drift/repair.
+- Logs: correlation/workflow/event/order/promotion/claim/campaign IDs, campaign/source
+  revision, Lua result, outbox dedup key và reconciliation before/after. Redact PII/token.
+- Traces: DB transaction, Redis EVAL/pipeline, outbox insert, CDC propagation, rule
+  parse/evaluate và Temporal activity.
+
+Customer refund không có Promotion metric/consumer. Có thể đo số `ORDER_REFUNDED` bị
+gửi nhầm Promotion ở contract gateway như integration error, không xử lý payload.
 
 ## 5. Alerts
 
-| Alert | Condition gợi ý | Severity | Owner | Runbook |
-|---|---|---|---|---|
-| PostgreSQL unavailable/pool exhausted | readiness fail hoặc saturation kéo dài | Critical | Promotion/DB | RB-01 |
-| Redis reserve/claim failure | EVAL errors/timeout trên write path | Critical | Promotion/Cache | RB-02 |
-| Snapshot miss spike | >20%/5m bình thường hoặc >50% sau deploy | Warning | Promotion | RB-03 |
-| Consumer lag/parking-lot | age vượt SLA hoặc có payload mismatch | High | Promotion/Event owner | RB-04 |
-| Pending claim stale | oldest >5m hoặc backlog tăng | High | Promotion | RB-05 |
-| Reservation cleanup failure | expired backlog/repair queue tăng | High | Promotion | RB-06 |
-| Markdown expiry delayed | delay > fallback window | High | Promotion/Product | RB-07 |
-| Budget drift repeated | cùng promotion drift sau nhiều repair | Critical | Promotion/DB | RB-08 |
-| Direct-produce failure | send fail sau DB commit | High | Promotion/downstream | RB-09 |
-
-Ngưỡng production ngoài các giá trị nêu trên và on-call owner cụ thể chưa chốt.
+| Alert | Condition gợi ý | Severity |
+|---|---|---|
+| PostgreSQL unavailable/pool exhausted | readiness/saturation kéo dài | Critical |
+| Redis claim/reserve failure | EVAL/CROSSSLOT/timeout write path | Critical |
+| Pending claim stale | oldest >5m hoặc backlog tăng | High |
+| Reservation cleanup failure | due backlog/repair queue tăng | High |
+| Campaign boundary delayed | vượt fallback window | High |
+| Stale schedule revision spike | nhiều stale member bất thường | Warning |
+| Outbox/CDC lag | oldest row vượt propagation SLO | High |
+| Product markdown divergence | expected revision/state không hội tụ | Critical |
+| Budget drift repeated | cùng promotion drift sau repair | Critical |
 
 ## 6. Failure modes
 
 | Failure | Hành vi |
 |---|---|
-| PostgreSQL unavailable | Fail command/query cần DB; không tự lấy Redis làm source of truth |
-| Redis snapshot unavailable | Discovery/calculate có thể đọc DB; latency tăng |
-| Redis budget unavailable | Discovery guard fail-open; Reserve/confirm/cancel phải fail/retry, không đoán |
-| Redis mất data | Rebuild snapshot/budget/schedule; claim/reservation thiếu payload vào recovery/audit |
-| Kafka unavailable | DB write có thể đã commit nhưng event direct-produce bị mất; alert/recovery thủ công |
-| Claim API crash sau SPOP | Pending sweeper republish, không trả claim về pool |
-| DB fail sau Redis confirm/refund | Không coi complete; replay/repair/reconciliation theo order/promotion |
-| Reservation payload mất | Clean index, enqueue reconciliation; không giả vờ release đủ |
-| Rule AST hỏng | Từ chối create/update; nếu dữ liệu đã hỏng thì fail rule có telemetry |
-| Mixed version | Consumer phải version-check; unsupported schema không xử lý như v1 |
+| PostgreSQL unavailable | Fail operation cần truth; không dùng Redis thay DB |
+| Redis snapshot unavailable | Calculate/discovery fallback DB, latency tăng |
+| Redis budget unavailable | Discovery fail-open có marker; mutation fail/retry |
+| Redis mất schedule | Rebuild từ campaign DB; fallback scan bắt boundary |
+| Worker crash sau outbox commit trước ZREM | Retry trùng dedup key rồi cleanup |
+| START xử lý sau END | Không phát ACTIVE; hội tụ INACTIVE |
+| Kafka unavailable | DB/outbox vẫn commit; backlog tăng, CDC retry |
+| Debezium lỗi | Giữ outbox, không direct-produce để bypass ordering |
+| Claim API crash sau SPOP | Pending sweeper republish, không trả claim vào pool |
+| DB fail sau Redis confirm/cancel-confirmed | Không coi complete; replay/reconcile |
+| Reservation payload mất | Enqueue repair; không đoán amount |
+| Customer refund event đến Promotion | ACK/no-route theo deployment; alert contract mismatch, không mutate |
 
 ## 7. Degraded behavior
 
-- Discovery có thể tiếp tục khi Budget Guard Redis timeout: trả `DEGRADED`; Reserve vẫn
-  là authoritative nên correctness không đổi, UX có thể stale.
-- Snapshot cache lỗi có thể fallback PostgreSQL; không có local JVM AST cache.
-- Kafka lỗi không nên rollback DB command đã commit, nhưng downstream markdown/analytics
-  có thể stale/mất event vì chưa có outbox.
-- Product/Search không được tự tính voucher để bù Promotion outage.
-- Không fail-open Reserve, confirm, cancel hoặc refund mutation.
+- Budget guard discovery fail-open; Reserve không fail-open.
+- Snapshot miss fallback PostgreSQL; không có JVM AST cache.
+- Outbox/CDC lag làm markdown downstream stale trong thời gian hữu hạn nhưng không mất
+  event đã commit; replay full snapshot để hội tụ.
+- API eligibility dùng DB time nên scheduler lag không kéo dài claim window.
+- Product/Search không tự chạy voucher Rule Engine.
+- Không fail-open confirm/cancel/`cancel-confirmed` mutation.
 
-## 8. Scaling và capacity
+## 8. Scaling/capacity
 
-- API stateless scale theo RPS/CPU/Redis latency/DB pool.
-- Claim consumer scale theo Kafka partitions; partition key claim ID. Order refund theo
-  order ID; markdown theo rule ID.
-- Batch mặc định: pending/reservation tối đa 1.000; markdown expiry tối đa 200.
-- Claim SPOP O(1), pending/schedule ZSET O(logN). Không quét toàn Hash/keyspace.
-- Snapshot response giới hạn 20 eligible + 10 ineligible.
-- Redis Lua chặn event loop trong thời gian chạy; script phải bounded. Redis Cluster
-  hash-slot của multi-key script là constraint chưa giải quyết.
-- PostgreSQL pool/index và Kafka partition count phải được capacity test; tuyên bố “hàng
-  trăm nghìn TPS” của thiết kế cũ chưa có benchmark nên không phải SLO.
+- API stateless scale ngang.
+- Claim partition theo claim ID; markdown partition bắt buộc theo product ID.
+- SPOP O(1); pending/reservation/campaign schedule ZSET O(logN); không key scan.
+- Multi-key Lua phải dùng `{promotion_id}` và bounded input/runtime.
+- Campaign scheduler xử lý batch hữu hạn; product advisory lock tránh reorder cùng product.
+- PostgreSQL pool/index, Redis memory, outbox growth và Kafka partition cần load test.
 
-## 9. Deployment và rollback
+## 9. Deployment/rollback
 
-1. Tạo migration additive/constraint/index trước code phụ thuộc.
-2. Deploy consumer chấp nhận version mới trước producer.
-3. Deploy API/worker, rebuild Redis snapshot/budget/markdown index, kiểm tra drift.
-4. Bật scheduler/consumer theo feature flag; canary discovery rồi mutation path.
-5. Rollback code chỉ khi schema backward-compatible; không rollback migration destructive.
+1. Tạo additive migration cho bảy bảng, constraints, sequence/index.
+2. Deploy Product consumer tương thích full snapshot trước producer nếu contract đổi.
+3. Cấu hình outbox connector/ACL/topic và kiểm thử commit→CDC.
+4. Deploy API/worker; preload claim/budget và rebuild campaign schedule.
+5. Canary discovery rồi mutation; bật schedule/fallback/outbox theo feature flag.
+6. Chỉ trim legacy keys/tables sau dual-read/drift verification; migration destructive cần
+   kế hoạch riêng.
 
-Direct-produce và Redis key-format changes cần dual-read/write hoặc drain/migration plan.
-Không xóa Redis key/index hoặc Kafka offset thủ công khi chưa snapshot và có runbook.
+Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công thiếu runbook.
 
 ## 10. Runbooks
 
-- **RB-01 DB:** kiểm tra health/pool/locks read-only → giảm traffic/khôi phục DB → xác
-  nhận API và transaction idempotency → escalate DB owner.
-- **RB-02 Redis mutation:** kiểm tra cluster/slot/latency/EVAL errors → dừng mutation
-  nếu invariants không bảo đảm → restore/rebuild → chạy reconciliation → xác nhận counter.
-- **RB-03 Cache:** so hit/miss/version, Redis failover và TTL → không warm hàng loạt;
-  cho cache-aside tự hồi hoặc invalidate có kiểm soát → xác nhận hit rate.
-- **RB-04 Consumer:** kiểm tra lag/event version/payload hash → retry transient; mismatch
-  vào parking-lot, không overwrite → replay đúng scope → xác nhận DB gate.
-- **RB-05 Claim:** đọc oldest pending và claim DB → republish giữ claim ID/event ID mới;
-  không SADD vé trở lại → chỉ cleanup sau DB ack.
-- **RB-06 Reservation:** kiểm tra DB FINAL gate rồi payload/index → release khi đủ payload;
-  thiếu payload enqueue repair → xác nhận reserved giảm và idempotency tồn tại.
-- **RB-07 Markdown:** kiểm tra DB status/end, ZSET, lock, Kafka/Product lag → chạy fallback
-  guarded → replay state phù hợp → xác nhận Product price.
-- **RB-08 Reconciliation:** dựng expected DB + valid reservations → lock/re-read → repair
-  Redis một chiều → audit before/after; drift tái diễn escalate.
-- **RB-09 Lost event:** xác định DB commit và consumer state → phối hợp replay snapshot/event
-  có business ID/version phù → xác nhận downstream; không bịa event từ Redis.
+- **RB-01 DB:** kiểm tra health/pool/lock → giảm traffic/khôi phục → xác nhận transaction
+  và outbox atomicity.
+- **RB-02 Redis mutation:** kiểm tra cluster slot/EVAL/latency → dừng unsafe mutation →
+  restore/rebuild → reconciliation.
+- **RB-03 Claim:** đọc pending + DB claim/wallet → republish immutable claim ID → chỉ
+  cleanup sau DB ack.
+- **RB-04 Reservation:** đọc payload/index + DB wallet/outbox → release/retry/repair; không
+  sửa counter mù.
+- **RB-05 Campaign schedule:** đọc DB revision/status/time trước ZSET → rebuild missing
+  members → chạy fallback → xác nhận outbox state.
+- **RB-06 Outbox/CDC:** dừng trimmer → kiểm tra WAL/connector/offset/topic → resume/replay
+  full snapshot → xác nhận Product source revision.
+- **RB-07 Reconciliation:** dựng expected từ DB + valid reservations → lock/re-read →
+  repair Redis một chiều, audit before/after.
+- **RB-08 Technical compensation:** xác minh order chưa hoàn tất, confirm evidence và
+  dedup key → retry `cancel-confirmed` → kiểm tra wallet SAVED/EXPIRED + budget.
 
-## 11. Workers và scheduled jobs
+## 11. Workers/jobs
 
-| Worker/job | Trigger | Concurrency/idempotency | Retry/cleanup |
-|---|---|---|---|
-| Direct producer | Sau DB commit | Event/business ID | Best-effort; alert send fail |
-| Order refund consumer | `t.order.events`, group `promo-order-consumer` | DB event/action gate; order key | retry transient; mismatch parking-lot |
-| Auth consumer | `t.auth.events`, group `promo-auth-consumer` | unique wallet | optional/feature flag |
-| Product state consumer | `t.product.events`, group `promo-product-state-consumer` | event+product guard | ACTIVE mới xử lý |
-| Claim consumer | coupon topic, `promo-claim-consumer` | event+claim guard | cleanup pending sau commit |
-| Snapshot monitor | mỗi 5m | metric-only | không auto-warm |
-| Pending claim sweeper | mỗi 1m, stale 5m | batch/replay-safe | giữ pending tới ack |
-| Reservation sweeper | mỗi 1m, batch 1000 | DB FINAL + Lua | missing payload → repair |
-| Markdown scheduler | 250ms–1s, batch 200 | Redis lock + DB guard | ZREM sau commit |
-| Markdown fallback | 10–30s | `SKIP LOCKED` + DB guard | self-heal index miss |
-| Budget reconciliation | 15m + daily full scan | per-promotion lock/re-read | DB→Redis, audit |
-| Claim cleanup | nightly | campaign/end retention guard | hard delete >30d |
-| Idempotency cleanup | daily | retention boundary | keep ≥ refund+15d, default 45d |
+| Worker/job | Trigger | Idempotency/recovery |
+|---|---|---|
+| Claim consumer | internal claim topic | guarded claim/wallet; pending cleanup sau commit |
+| Pending claim sweeper | mỗi 1m, stale 5m | republish cùng claim ID |
+| Reservation sweeper | mỗi 1m | per-promotion index + Lua; missing payload → repair |
+| Campaign scheduler | 250ms–1s | DB revision/time + outbox dedup; ZREM sau commit |
+| Campaign fallback | 10–30s | DB source; repair missing/stale schedule |
+| Schedule bootstrap | startup/failover | rebuild ZSET từ PostgreSQL |
+| Outbox CDC relay | WAL | at-least-once; connector retry/DLQ |
+| Budget reconciliation | recent 15m + off-peak full scan | DB→Redis, per-promotion lock |
+| Snapshot monitor | mỗi 5m | metric only, không auto-warm hàng loạt |
+| Wallet expiry normalization | lazy/optional batch | eligibility luôn đọc `expired_at` |
+| Outbox trimmer | policy schedule | CDC watermark + replay horizon guard |
+
+Không có Order refund consumer hoặc idempotency cleanup job riêng.

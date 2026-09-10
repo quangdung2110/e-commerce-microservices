@@ -24,10 +24,11 @@ Crash sau khi cấp trên Redis nhưng trước Kafka/DB có thể tạo “vé 
 
 ## Decision
 
-Pre-generate claim rows, preload Redis Set và dùng SPOP O(1). Cùng Lua ghi user flag,
-pending Hash + timestamp ZSET. API trả success sau direct publish. Sweeper republish item
-cũ hơn 5 phút với event ID mới nhưng claim ID bất biến; không trả claim về pool và chỉ
-xóa pending sau DB commit.
+Pre-generate claim rows, preload Redis Set và dùng SPOP O(1). Cùng Lua ghi claimed-user
+Hash, pending Hash + timestamp ZSET trên cùng hash tag `{promotion_id}`. API/sweeper phát
+internal claim work item với claim ID bất biến; sweeper republish item cũ hơn 5 phút,
+không trả claim về pool và chỉ xóa pending sau DB commit. Public claim fact chỉ được ghi
+vào transactional outbox sau khi PostgreSQL persistence thành công theo ADR-011.
 
 ## Alternatives considered
 

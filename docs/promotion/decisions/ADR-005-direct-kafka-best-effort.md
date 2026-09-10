@@ -1,11 +1,12 @@
 ---
 doc_id: promotion-adr-005
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-09
 decision_owners:
   - Promotion Service team
 supersedes: null
+superseded_by: ADR-011
 evidence:
   - docs/promotion/interfaces.md
   - docs/promotion/operations.md
@@ -15,7 +16,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Superseded` bởi [ADR-011](./ADR-011-transactional-outbox-cdc.md).
 
 ## Context
 

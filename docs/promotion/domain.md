@@ -16,68 +16,144 @@ verified_against_commit: null
 
 | Term | Định nghĩa | Không được nhầm với |
 |---|---|---|
-| Campaign | Nhóm voucher/markdown cùng chương trình và lịch tổng | Promotion đơn lẻ |
-| Promotion | Voucher nhập/chọn ở cart/checkout | Markdown gạch giá |
-| `PLATFORM_VOUCHER` | Voucher toàn đơn có quota/budget, có thể cần claim/save | Shipping/shop voucher |
-| `UNLIMITED_ALL` | Voucher admin cấp rộng, không quản lý tồn kho ngặt | Public voucher vô điều kiện |
-| Markdown rule | Luật giảm trực tiếp giá hiển thị theo category/product scope | Voucher checkout |
-| Claim window | Khoảng `promotions.start_time/end_time` cho phép nhận mã mới | Hạn sử dụng mã đã sở hữu |
-| Use window | Hạn `user_coupon_wallets.expired_at`, mặc định 30 ngày sau save | Claim window |
+| Campaign | Lớp quản trị và lịch chung cho voucher/markdown | Quyền lợi đã lưu trong wallet |
+| Publication status | Ý định admin: `DRAFT/PUBLISHED/PAUSED/CANCELLED` | Phase theo thời gian |
+| Campaign phase | `DRAFT/UPCOMING/ACTIVE/ENDED/PAUSED/CANCELLED` được suy ra | DB status mutable |
+| Promotion | Voucher do admin tạo, áp dụng cho toàn đơn | Markdown giá sản phẩm |
+| Markdown rule | Giảm trực tiếp cho một `product_id` khi campaign active | Voucher checkout |
+| Claim window | Campaign phải ACTIVE để nhận voucher mới | Hạn dùng voucher đã sở hữu |
+| Use window | Đến `wallet.expired_at`, được snapshot lúc save | Campaign có còn active hay không |
 | Claim | Một suất hữu hạn được gán cho user | Redeem vào order |
-| Wallet entry | Quyền sở hữu một voucher của user | Reservation runtime |
-| Reservation | Giữ quota/amount 15 phút trong Redis sau Submit | `SAVED`/`USED` trong DB |
-| Redeem | Chuyển budget reserved sang used sau payment success | Claim/save |
-| Refund | Hoàn allocation budget đã redeem | Cancel pre-payment |
-| Rule AST | Cây `LOGICAL`/`CONDITION` mô tả eligibility | HTTP payload |
-| Budget guard | Read-time pre-check best-effort | Reserve authoritative |
+| Wallet entry | Quyền sở hữu và trạng thái redemption hiện hành | Reservation runtime |
+| Reservation | Giữ quota/amount 15 phút trong Redis sau Submit | Wallet DB state |
+| Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
+| Technical compensation | `cancel-confirmed` vì order không hoàn tất sau confirm | Customer refund |
+| Customer refund | Order/Payment hoàn tiền partial/full | Promotion budget rollback |
 
 ## 2. Domain objects
 
-- `Campaign` là aggregate nhóm nhiều `Promotion` và `MarkdownRule`; hai loại rule độc
-  lập, chỉ cùng tham chiếu `campaign_id`.
-- `Promotion` là aggregate root cho metadata, AST và `PromotionBudget` một-một.
-- `CouponClaim` là entity suất claim; `claim_id` bất biến sau khi phát khỏi pool.
-- `UserCouponWallet` là entity duy nhất theo `(user_id, promotion_id)`.
-- `CouponUsage` là ledger entity duy nhất theo `(order_id, promotion_id)`.
-- `MarkdownRule` là aggregate root độc lập. `ref_id` là polymorphic logical reference,
-  không phải FK sang Product database.
-- Cart, user, category, product và order chỉ là identifier/snapshot từ service khác.
-- `RuleNode`, money, time window, discount result và ineligible reason là value object.
+- `Campaign` là aggregate schedule/lifecycle chung; `revision` là business revision duy nhất.
+- `Promotion` là voucher definition và có một `PromotionBudget`.
+- `CouponClaim` là một suất pre-generated cho distribution `LIMITED_CLAIM`.
+- `UserCouponWallet` là current ownership/redemption state, duy nhất theo
+  `(user_id,promotion_id)`; không cần `CouponUsage` aggregate.
+- `MarkdownRule` là product-scope child của campaign; không có lịch/status riêng.
+- `PromotionOutboxEvent` là append-only integration fact/durable dedup record.
+- User, Order và Product chỉ là identifier/snapshot từ bounded context khác.
 
 ## 3. Commands và queries
 
 | Type | Capability | Actor |
 |---|---|---|
-| Command | Tạo/cập nhật/kết thúc campaign, promotion, markdown | Admin |
-| Command | Claim/save public voucher | Customer |
-| Command | Reserve/confirm/cancel/cancel-confirmed/refund | Order/Temporal service identity |
-| Command | Persist claim event, refund event, welcome voucher | Kafka consumer |
+| Command | Tạo/cập nhật/publish/pause/cancel campaign | Admin |
+| Command | Tạo/cập nhật voucher hoặc markdown trước publish | Admin |
+| Command | Claim/save voucher | Customer |
+| Command | Reserve/confirm/cancel/`cancel-confirmed` | Order/Temporal |
 | Query | Calculate discount | Checkout |
-| Query | Voucher trong ví | Customer qua Checkout |
-| Query | Public platform voucher discovery | Customer qua Checkout |
-| Query | Wallet/history | Customer sở hữu tài nguyên hoặc admin |
+| Query | Voucher trong ví/public discovery | Customer qua Checkout |
+| Worker | Schedule START/END, rescue, reconciliation | Promotion |
+
+Không có command customer-refund trong Promotion.
 
 ## 4. Business rules
 
-| ID | Quy tắc | Kết quả/enforcement |
-|---|---|---|
-| `PROMO-BR-001` | Một order chỉ áp dụng tối đa một `PLATFORM_VOUCHER`. | Reject tập chọn lớn hơn một. |
-| `PROMO-BR-002` | Discount waterfall: `final = subtotal - platform_discount`. | Promotion tính discount line; clamp không âm. |
-| `PROMO-BR-003` | PERCENTAGE bị cap bởi `max_discount_amount`; FIXED bị cap bởi subtotal. | Tính in-memory bằng decimal-safe math. |
-| `PROMO-BR-004` | Preview/Discovery chỉ đọc; reserve bắt đầu sau Submit và có `order_id`. | Không mutate counter trước Submit. |
-| `PROMO-BR-005` | Reserve là all-or-nothing và replay phải cùng payload. | Script 2B trả structured error/mismatch. |
-| `PROMO-BR-006` | Voucher trong ví dùng `expired_at`, không dùng promotion `end_time` để redeem. | Claim window và use window tách biệt. |
-| `PROMO-BR-007` | `voucher-suggestions` chỉ trả mã `WALLET`; public discovery có thể trả `PLATFORM_PUBLIC`. | Không trộn public vào tray ví. |
-| `PROMO-BR-008` | `save-and-apply` là write có chủ đích; Submit không auto-save. | Upsert wallet theo state guard. |
-| `PROMO-BR-009` | Refund giữ wallet `USED`; voucher không tái sử dụng. | Chỉ cập nhật budget/usage ledger. |
-| `PROMO-BR-010` | Partial refund chỉ restore allocation PLATFORM nếu internal rule `RESTORE_ONLY_IF_FULL_PLATFORM_COVERED` đạt. | Allocation không đạt có amount 0/no-op. |
-| `PROMO-BR-011` | Missing AST field trả false, không ném lỗi. | Rule Engine deterministic. |
-| `PROMO-BR-012` | `IN` trên collection là ANY; `NOT_IN` là ALL-not-match. | Empty: `IN=false`, `NOT_IN=true`; missing vẫn false. |
-| `PROMO-BR-013` | Unknown operator/node hoặc logical children rỗng bị từ chối khi create/update. | Validation trước persist/publish. |
-| `PROMO-BR-014` | Markdown `ref_id` phải tồn tại theo Product trước khi lưu. | Application validation; không cross-DB FK. |
-| `PROMO-BR-015` | Event refund unavailable không rollback tiền khách đã nhận. | Audit `VOUCHER_UNAVAILABLE`, xử lý non-blocking. |
+| ID | Quy tắc |
+|---|---|
+| `PROMO-BR-001` | Một order áp dụng tối đa một `PLATFORM_VOUCHER`. |
+| `PROMO-BR-002` | Voucher mang nghĩa toàn đơn; Promotion không phân bổ discount xuống SKU/order line. |
+| `PROMO-BR-003` | `final = max(0, subtotal - platform_discount)`; percentage có cap, fixed có clamp. |
+| `PROMO-BR-004` | Preview/Discovery chỉ đọc; reserve chỉ sau Submit và có `order_id`. |
+| `PROMO-BR-005` | Reserve all-or-nothing; replay cùng key phải khớp payload. |
+| `PROMO-BR-006` | Claim/save mới chỉ được phép khi campaign phase `ACTIVE` và promotion enabled. |
+| `PROMO-BR-007` | Voucher đã lưu chỉ dùng `wallet.expired_at`; campaign end không tự thu hồi row/quyền lợi ngoài expiry đã snapshot. Với mode `CAMPAIGN_END`, hai mốc trùng nhau. |
+| `PROMO-BR-008` | Validity phải chọn `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default ngầm. |
+| `PROMO-BR-009` | Definition đã publish không được sửa hồi tố quyền lợi; thay đổi phải qua campaign revision mới. |
+| `PROMO-BR-010` | Customer refund partial/full không restore voucher và không hoàn Promotion budget. |
+| `PROMO-BR-011` | `cancel-confirmed` do lỗi kỹ thuật trả wallet về `SAVED` nếu còn hạn, `EXPIRED` nếu hết hạn. |
+| `PROMO-BR-012` | Markdown chỉ product-scope và chỉ có hiệu lực khi campaign `ACTIVE`. |
+| `PROMO-BR-013` | Worker không xử lý schedule dựa riêng vào Redis; phải re-read DB/revision/time. |
+| `PROMO-BR-014` | Missing AST field trả false; Rule Engine thuần và xác định. |
+| `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
+| `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
 
-### 4.1. Schema và semantics của Rule AST
+Natural campaign end khác emergency revocation. Pause/cancel dừng effective markdown và
+claim mới nhưng không tự thu hồi voucher đã lưu. Revocation nếu cần phải là nghiệp vụ
+riêng, có audit và contract riêng.
+
+## 5. Campaign lifecycle
+
+`publication_status` persist:
+
+- `DRAFT`: chưa public.
+- `PUBLISHED`: phase suy ra bằng clock.
+- `PAUSED`: admin tạm dừng claim/markdown; schedule cũ bị revision fence vô hiệu.
+- `CANCELLED`: không claim/markdown; terminal về quản trị.
+
+Với `PUBLISHED`:
+
+```text
+now < start_time              => UPCOMING
+start_time <= now < end_time  => ACTIVE
+now >= end_time               => ENDED
+```
+
+Không có transition ghi DB tại START/END. Schedule worker phát full markdown snapshot
+để downstream hội tụ; eligibility đồng bộ tự tính phase nên worker lag không mở campaign
+sớm hoặc kéo dài claim window.
+
+## 6. State machines
+
+### Wallet voucher
+
+```mermaid
+stateDiagram-v2
+  [*] --> SAVED: Claim / save / grant
+  SAVED --> EXPIRED: expired_at reached
+  SAVED --> USED: Confirm
+  USED --> USED: Customer partial/full refund
+  USED --> SAVED: cancel-confirmed and not expired
+  USED --> EXPIRED: cancel-confirmed and expired
+```
+
+Reservation không phải wallet state:
+
+```text
+SAVED --reserve(runtime)--> SAVED --cancel--> SAVED
+SAVED --reserve(runtime)--> SAVED --confirm--> USED
+```
+
+Customer refund không tạo transition. Sau `cancel-confirmed`, usage fields được clear để
+voucher có thể dùng lại nếu còn hạn.
+
+### Claim
+
+| From | Trigger | Guard | To |
+|---|---|---|---|
+| `AVAILABLE` | Redis SPOP + claim persistence | owner null, user chưa claim | `CLAIMED` |
+| `CLAIMED` | duplicate/replay | cùng claim/user | `CLAIMED` no-op |
+
+### Markdown effective state
+
+Markdown snapshot là `ACTIVE` chỉ khi campaign phase ACTIVE và rule enabled; mọi trường
+hợp khác là `INACTIVE`. Không persist state này trong `markdown_rules`.
+
+## 7. Invariants
+
+| ID | Điều kiện phải luôn đúng | Enforcement |
+|---|---|---|
+| `PROMO-INV-001` | Tối đa một platform voucher/order. | API + partial unique `used_order_id` |
+| `PROMO-INV-002` | Budget integer không âm và không vượt total hữu hạn. | Lua + CHECK + reconciliation |
+| `PROMO-INV-003` | Không reservation trước Submit. | Workflow boundary/test |
+| `PROMO-INV-004` | Một user có tối đa một claim/wallet row mỗi promotion. | Unique constraints |
+| `PROMO-INV-005` | Campaign phase và wallet use window không bị đánh đồng. | Eligibility tests |
+| `PROMO-INV-006` | Customer refund không mutate Promotion. | Không API/consumer/refund script |
+| `PROMO-INV-007` | Technical compensation không làm mất voucher còn hạn. | Guarded wallet transition |
+| `PROMO-INV-008` | Redis schedule/counter không sửa ngược DB. | Worker policy/test |
+| `PROMO-INV-009` | Stale campaign revision không phát state cũ. | Schedule member + DB revision check |
+| `PROMO-INV-010` | Markdown event ordering tăng theo product source revision. | Advisory lock + sequence |
+| `PROMO-INV-011` | Rule evaluation chỉ phụ thuộc AST + input context. | Unit/property tests |
+
+## 8. Rule AST
 
 ```json
 {
@@ -89,12 +165,6 @@ verified_against_commit: null
       "operator": "GREATER_THAN_OR_EQUAL",
       "field": "cart.total_amount",
       "value": 200000
-    },
-    {
-      "node_type": "CONDITION",
-      "operator": "NOT_IN",
-      "field": "cart.items.category_id",
-      "value": [101, 104]
     }
   ]
 }
@@ -102,107 +172,39 @@ verified_against_commit: null
 
 Logical operator: `AND`, `OR`. Condition operator: `EQUAL`, `NOT_EQUAL`, `IN`,
 `NOT_IN`, `GREATER_THAN`, `GREATER_THAN_OR_EQUAL`, `LESS_THAN`,
-`LESS_THAN_OR_EQUAL`. Supported input hiện tại:
+`LESS_THAN_OR_EQUAL`. `rule_schema_version` version hóa format AST; campaign revision
+version hóa business configuration.
 
-- `cart.total_amount`, `cart.payment_method`, `cart.checkout_channel`;
-- `cart.items.category_id` (collection);
-- `user.id`, `user.tier` (scalar).
+## 9. Authorization
 
-`node_type` bắt buộc ở mọi node; `children` bắt buộc và không rỗng cho LOGICAL;
-`field/value` bắt buộc cho CONDITION. `rule_version` phải đi cùng metadata được publish/
-serve để trace và kiểm tra staleness lúc Submit.
+- Chỉ admin quản trị campaign/voucher/markdown/budget.
+- Customer chỉ đọc/claim/save wallet của `user_id` trong access token.
+- Chỉ Checkout service identity gọi API nội bộ calculate/discovery nếu không expose.
+- Chỉ Order/Temporal gọi reserve/confirm/cancel/`cancel-confirmed`.
+- Consumer validate broker ACL, schema, event identity và business guard.
 
-## 5. Invariants
+## 10. Domain errors
 
-| ID | Điều kiện phải luôn đúng | Enforcement dự kiến |
+| Error | Điều kiện | Retryable |
 |---|---|---|
-| `PROMO-INV-001` | Tối đa một voucher PLATFORM/order. | API validation + slot model. |
-| `PROMO-INV-002` | `0 <= used_*`, `0 <= reserved_*`, `used_* + reserved_* <= total_*` khi total hữu hạn. | Lua guard + reconciliation. |
-| `PROMO-INV-003` | Không có reservation trước Submit. | Workflow boundary/test. |
-| `PROMO-INV-004` | Một user chỉ có một claim và một wallet row/promotion. | Partial unique + unique wallet constraint. |
-| `PROMO-INV-005` | Claim window và use window không bị đánh đồng. | Application eligibility tests. |
-| `PROMO-INV-006` | Refund/cancel-confirmed không tái sử dụng voucher hết hạn; refund thường giữ `USED`. | Wallet transition guard. |
-| `PROMO-INV-007` | Reconciliation chỉ DB → Redis. | Worker policy/test. |
-| `PROMO-INV-008` | Rule evaluation thuần, chỉ phụ thuộc AST + context. | Unit/property tests. |
-| `PROMO-INV-009` | Claim `AVAILABLE` có owner/claimed_at null; `CLAIMED` có cả hai non-null. | CHECK + guarded update. |
-| `PROMO-INV-010` | `0 <= refunded_amount <= discount_amount`; usage status khớp amount. | CHECK/application transaction. |
-| `PROMO-INV-011` | Một action scope chỉ mutate một lần. | DB unique `(order,promotion,action,scope)`. |
+| `CAMPAIGN_NOT_ACTIVE` | Claim/save khi phase khác ACTIVE | No đến khi state đổi |
+| `ALREADY_CLAIMED` | User đã claim promotion | No |
+| `OUT_OF_STOCK` | Claim pool rỗng | No |
+| `ALREADY_USED_VOUCHER` | Wallet đã USED | No |
+| `VOUCHER_EXPIRED` | `wallet.expired_at <= now` | No |
+| `BUDGET_EXHAUSTED` | Không đủ qty/amount | Sau khi state đổi |
+| `IDEMPOTENCY_PAYLOAD_MISMATCH` | Reserve replay khác payload | No; điều tra |
+| `PARTIAL_RESERVATION_STATE` | Redis apply/rollback không hoàn chỉnh | Repair async |
+| `RESERVATION_NOT_FOUND` | Confirm không còn payload | Late-payment compensation |
+| `CONDITIONS_NOT_MET` | AST false | No |
+| `INVALID_RULE` | AST/operator/config không hợp lệ | No |
 
-## 6. State machines
+## 11. Ví dụ
 
-### Wallet voucher
-
-```mermaid
-stateDiagram-v2
-  [*] --> SAVED: Claim / save / campaign grant
-  SAVED --> EXPIRED: Lazy expiry
-  SAVED --> USED: Confirm payment
-  USED --> USED: Partial/full refund
-```
-
-Reservation không phải wallet state: `SAVED → RESERVED(runtime) → SAVED` khi cancel,
-hoặc `SAVED → RESERVED(runtime) → USED` khi confirm. `USED` mặc định không reacquire;
-`save-and-apply` trả `409 ALREADY_USED_VOUCHER` nếu không có policy riêng.
-
-### Claim
-
-| From | Trigger | Guard | To |
-|---|---|---|---|
-| `AVAILABLE` | SPOP + claim worker | owner null, user chưa claim | `CLAIMED` |
-| `CLAIMED` | Duplicate/replay | cùng `claim_id` | `CLAIMED` no-op |
-
-### Coupon usage
-
-| From | Trigger | To |
-|---|---|---|
-| — | Confirm | `REDEEMED` |
-| `REDEEMED` | Refund một phần | `PARTIALLY_REFUNDED` |
-| `REDEEMED`/`PARTIALLY_REFUNDED` | Hoàn đủ discount | `REFUNDED` |
-
-### Markdown
-
-`ACTIVE` có thể chuyển `INACTIVE` do admin hoặc `ENDED` do admin/expiry. Expiry worker
-chỉ transition khi `status='ACTIVE' AND end_time<=NOW()`; terminal `ENDED` không được
-activate lại trong thiết kế hiện tại.
-
-## 7. Authorization rules
-
-- Chỉ admin quản trị campaign/promotion/markdown và budget.
-- Customer chỉ đọc/claim/save voucher cho chính `user_id` lấy từ access token; không
-  tin `user_id` do client tự khai.
-- Chỉ Checkout service identity gọi calculate/discovery nội bộ nếu API không expose
-  trực tiếp qua Gateway.
-- Chỉ Order/Temporal service identity gọi reserve/confirm/cancel/cancel-confirmed/refund.
-- Consumer tin producer sau xác thực broker ACL và vẫn validate schema/idempotency.
-
-## 8. Domain errors
-
-| Error code | Điều kiện | Retryable | Mapping |
-|---|---|---|---|
-| `ALREADY_CLAIMED` | User đã claim promotion | No | 409 |
-| `OUT_OF_STOCK` | Claim pool rỗng | No | 409 |
-| `ALREADY_USED_VOUCHER` | Save lại wallet `USED` không có reacquire policy | No | 409 |
-| `BUDGET_EXHAUSTED` | Không đủ quantity/amount | Sau thay đổi state | 409/business result |
-| `IDEMPOTENCY_PAYLOAD_MISMATCH` | Replay cùng order khác payload | No, cần điều tra | 409 |
-| `PARTIAL_RESERVATION_STATE` | Reservation key/payload hỏng | Không tự retry mù | 500 + repair |
-| `RESERVATION_NOT_FOUND` | Confirm không còn payload | No theo cùng flow | late-payment compensation |
-| `RESERVATION_MISSING_PAYLOAD` | Sweep còn index nhưng mất payload | Repair async | no-op + reconciliation |
-| `CONDITIONS_NOT_MET` | AST tổng quát false | No | eligibility result |
-| `MIN_PURCHASE_NOT_MET` | Chưa đạt tối thiểu | Sau đổi cart | eligibility result |
-| `PAYMENT_METHOD_NOT_MATCHED` | Sai payment method | Sau đổi payment | eligibility result |
-| `CATEGORY_NOT_MATCHED` | Không có category phù hợp | Sau đổi cart | eligibility result |
-| `EXPIRED` | Hết use/claim window tương ứng | No | eligibility result |
-
-Timeout PostgreSQL/Redis/Kafka là lỗi hạ tầng, không phải domain error.
-
-## 9. Business examples
-
-- Cart 530.000đ dùng FIXED 100.000đ đủ điều kiện: discount 100.000đ, final 430.000đ.
-- Cart 350.000đ dùng PERCENTAGE 20%, cap 50.000đ: discount 50.000đ.
-- Rule `NOT_IN [999,1000]`, cart category `[5,12]`: true; collection rỗng cũng true;
-  thiếu field category: false.
-- Voucher claim window đã hết nhưng wallet `SAVED`, `expired_at` còn hạn: vẫn được
-  evaluate/redeem.
-- Discovery thấy budget còn nhưng reserve sau đó cạn: trả `BUDGET_EXHAUSTED`, Checkout
-  re-evaluate phần còn lại và yêu cầu Preview/token mới.
-- Refund đủ 50.000đ: usage thành `REFUNDED`, wallet vẫn `USED`, budget used giảm 50.000đ.
+- Campaign kết thúc lúc 20:00. Markdown chuyển `INACTIVE`; từ 20:00 không claim mới.
+  Wallet đã lưu có `expired_at=23:59` vẫn dùng được đến thời điểm đó.
+- Voucher giảm 100.000đ được confirm cho order: wallet `USED`, budget used tăng 100.000đ.
+  Customer refund partial hay full: wallet và Promotion budget giữ nguyên.
+- Confirm thành công nhưng order không thể hoàn tất vì lỗi saga: `cancel-confirmed` giảm
+  allocation; wallet trở lại `SAVED` nếu chưa hết hạn.
+- START job revision 4 chạy sau khi campaign đã được sửa lên revision 5: worker no-op.

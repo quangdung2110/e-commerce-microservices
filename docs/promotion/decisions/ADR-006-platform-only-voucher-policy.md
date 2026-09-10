@@ -1,11 +1,12 @@
 ---
 doc_id: promotion-adr-006
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-09
 decision_owners:
   - Promotion Service team
 supersedes: null
+superseded_by: ADR-012
 evidence:
   - docs/promotion/domain.md
   - docs/promotion/workflows.md
@@ -15,7 +16,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Superseded` bởi [ADR-012](./ADR-012-wallet-redemption-and-no-refund.md).
 
 ## Context
 

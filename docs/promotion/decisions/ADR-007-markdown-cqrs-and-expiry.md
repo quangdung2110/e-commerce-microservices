@@ -1,11 +1,14 @@
 ---
 doc_id: promotion-adr-007
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-09
 decision_owners:
   - Promotion Service team
 supersedes: null
+superseded_by:
+  - ADR-010
+  - ADR-011
 evidence:
   - docs/promotion/architecture.md
   - contracts/examples/events/promotion-product-markdown-snapshot.v1.json
@@ -15,7 +18,9 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Superseded` bởi
+[ADR-010](./ADR-010-campaign-lifecycle-and-scheduling.md) và
+[ADR-011](./ADR-011-transactional-outbox-cdc.md).
 
 ## Context
 
