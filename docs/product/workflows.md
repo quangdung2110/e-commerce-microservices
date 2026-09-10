@@ -61,7 +61,8 @@ Consumer nhận snapshot Promotion, lock Product, so `source_revision`, rồi up
 projection và reprice tất cả SKU trong cùng transaction. Nếu revision cũ/trùng, ack
 no-op. Sau commit, outbox phát snapshot catalog với `catalog_revision` mới.
 
-Promotion phải phát `ACTIVE` đúng lúc `starts_at` và `INACTIVE` đúng lúc `ends_at`.
+Promotion ghi `ACTIVE`/`INACTIVE` full snapshot qua outbox tại logical campaign boundary;
+Redis schedule + DB fallback có thể tạo bounded delivery delay nhưng không kích hoạt sớm.
 Product không có safety schedule: consumer lag, retry exhaustion hoặc DLQ có thể làm giá
 công bố stale cho tới khi Promotion/operations replay snapshot mới nhất. Snapshot `ACTIVE`
 đến muộn sau `ends_at` vẫn ghi nhận `source_revision`, nhưng được lưu `INACTIVE` và không

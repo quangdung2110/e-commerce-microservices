@@ -95,7 +95,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Debezium/Kafka Connect lỗi | Outbox backlog tăng; không publish tay bằng cách phá ordering; phục hồi connector từ WAL/offset |
 | Temporal unavailable | Read API còn có thể phục vụ; command start/signal trả lỗi/202 chỉ khi đã có durable acceptance; không commit terminal state inline |
 | Inventory timeout | Activity retry/compensate; refund tiếp tục chờ, không gọi Payment refund |
-| Promotion timeout/failure | Pre-payment rollback và structured recalculation; post-payment compensation; refund budget không rollback tiền |
+| Promotion timeout/failure | Pre-payment rollback và structured recalculation; post-payment technical compensation; customer refund không gọi Promotion |
 | Payment timeout | Initiate/cancel/refund retry theo stable key; không tạo transaction/refund thứ hai |
 | Mixed-version deploy | Workflow code phải replay-compatible; event consumer ignore unknown fields; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |

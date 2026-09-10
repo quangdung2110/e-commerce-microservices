@@ -35,8 +35,9 @@ verified_against_commit: null
 `Order` là aggregate root cho trạng thái giao dịch, số tiền, payment read status,
 checkout identity, cancel/return reason, sequence và one-shot guard. `OrderItem`
 là entity con đại diện delivery unit theo kho và có FSM riêng. `OrderItemLine` là
-snapshot con của item. `OrderPromotion` là allocation snapshot để đối soát và tính
-refund deterministic. `OrderRefundCase` là control-plane record 1:1 với order.
+snapshot con của item. `OrderPromotion` là snapshot voucher toàn đơn để lưu lịch sử và
+đối soát, không phải allocation theo SKU. `OrderRefundCase` là control-plane record theo
+thiết kế Order hiện tại.
 
 Inventory reservation, Promotion wallet/budget và Payment transaction thuộc
 bounded context khác; Order chỉ tham chiếu identifier, snapshot và evidence cần
@@ -69,11 +70,11 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-005` | Chỉ refund sau khi nhận đủ return scope hoặc admin override | Refund case state + Temporal wait | Tiếp tục chờ/manual verification |
 | `INV-ORD-006` | Order chỉ complete khi tất cả item `DELIVERED` | Lock/count + CAS master | Không transition/phát event |
 | `INV-ORD-007` | State, sequence và outbox cùng commit | PostgreSQL transaction | Rollback toàn transaction |
-| `INV-ORD-008` | Promotion budget/voucher outcome không rollback tiền refund | Workflow policy | Alert/reconcile phụ trợ |
+| `INV-ORD-008` | Customer refund không gọi/mutate Promotion; wallet và budget đã confirm giữ nguyên | Workflow boundary | Không phát promotion allocation |
 | `INV-ORD-009` | Snapshot line/address không phụ thuộc dữ liệu upstream về sau | Persist khi create | Reject create nếu snapshot thiếu |
 | `INV-ORD-010` | `final_amount = total_amount - total_discount`; chỉ PLATFORM allocation | Domain validation | Reject pricing snapshot sai |
 | `INV-ORD-011` | Reserve promotion chỉ sau submit/order tồn tại, không ở Preview | Checkout saga ordering | Không tạo reservation ở preview |
-| `INV-ORD-012` | PARTIAL chỉ hoàn full PLATFORM allocation nếu scope bao phủ toàn bộ item của platform; ngược lại 0 | Deterministic compute tại Order | Không để Promotion tự suy luận |
+| `INV-ORD-012` | Voucher PLATFORM có nghĩa toàn đơn, không phân bổ xuống item/SKU để refund | Domain boundary | Không tạo `promotion_refund_allocations[]` |
 | `INV-ORD-013` | Admin action với `PAID/PROCESSING` đi refund lane, không cancel pre-payment | Cancel command branching | `409` nếu transition sai |
 | `INV-ORD-014` | Buyer return chỉ hợp lệ khi toàn bộ item đã `DELIVERED` | Locked read trước CAS/start workflow | `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` |
 
@@ -193,5 +194,5 @@ không được tự động biến một transition không hợp lệ thành h�
 4. Payment success đến sau khi timeout đã ghi `CANCELLED(PAYMENT_TIMEOUT)`: không
    sửa checkout workflow cũ; start recovery, tái lập reservation rồi post-payment,
    hoặc auto-refund nếu recovery không an toàn.
-5. PARTIAL refund chỉ bao phủ một phần item platform: promotion allocation bằng 0;
-   Payment refund vẫn theo refund amount đã khóa, Promotion không tự chia tỷ lệ.
+5. Customer FULL/PARTIAL refund: Order không gọi Promotion; wallet/budget Promotion giữ
+   nguyên. Cách tính amount và số lần partial refund chờ refactor Order/Payment.

@@ -184,8 +184,8 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
 - Không gọi Payment refund trước Inventory confirmation/admin override hợp lệ.
 - Không reserve promotion tại Preview; reserve chỉ xảy ra sau submit và sau khi
   `order_id` tồn tại.
-- Không restore voucher `USED -> SAVED` khi refund; budget handling không được
-  rollback tiền đã hoàn.
+- Customer refund không gọi Promotion: không restore voucher, không hoàn budget và không
+  phát allocation theo SKU. Technical `cancel-confirmed` chỉ thuộc checkout saga failure.
 - Không khôi phục Elasticsearch/CQRS hoặc cold archive nếu chưa có ADR thay thế.
 
 ## 8. Đánh đổi và ADR liên quan

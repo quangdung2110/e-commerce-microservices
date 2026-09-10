@@ -24,5 +24,6 @@ có nghĩa implementation đã được xác minh.
 | [ADR-004](./ADR-004-postgresql-direct-order-search.md) | PostgreSQL là source of truth và search read path | Accepted | Không rõ | Kiến trúc Elasticsearch cũ |
 | [ADR-005](./ADR-005-redis-and-fsm-idempotency.md) | Redis SETNX + WorkflowID + FSM CAS, bỏ durable idempotency tables | Accepted | Không rõ | Hai bảng idempotency cũ |
 | [ADR-006](./ADR-006-single-refund-with-inventory-gate.md) | Một refund transaction/order, chờ Inventory confirmation | Accepted | Không rõ | N/A |
-| [ADR-007](./ADR-007-refund-voucher-policy.md) | PLATFORM allocation deterministic; không restore voucher; non-blocking | Accepted | 2026-06-17, cập nhật Phase 23 | Chính sách FREE_SHIPPING/restore cũ |
+| [ADR-007](./ADR-007-refund-voucher-policy.md) | PLATFORM allocation deterministic khi refund | Superseded | 2026-06-17, cập nhật Phase 23 | Chính sách FREE_SHIPPING/restore cũ |
 | [ADR-008](./ADR-008-late-payment-recovery.md) | Payment success muộn đi recovery/auto-refund lane | Accepted | Không rõ | Drop stale payment signal |
+| [ADR-009](./ADR-009-customer-refund-does-not-mutate-promotion.md) | Customer refund không mutate Promotion | Accepted | 2026-09-10 | ADR-007 |

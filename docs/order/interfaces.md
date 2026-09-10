@@ -26,7 +26,7 @@ verified_against_commit: null
 | Inventory activities | Outbound | HTTP/gRPC | Inventory | Order Temporal worker | proposed |
 | Promotion activities | Outbound | HTTP/gRPC | Promotion | Order Temporal worker | proposed |
 | Payment activities | Outbound | HTTP/gRPC | Payment | Order Temporal worker | proposed |
-| `t.order.events` | Outbound | Kafka | Order | Cart, Promotion, Notification, Review, Analytics và consumer khác | partial contract |
+| `t.order.events` | Outbound | Kafka | Order | Cart, Notification, Review, Analytics và consumer khác; Promotion không consume refund | partial contract |
 | `t.payment.events` | Inbound | Kafka | Payment | Order | proposed semantics |
 | `t.inventory.events` | Inbound | Kafka | Inventory | Order | proposed semantics |
 | Temporal workflows/signals | Internal | Temporal | Order workers | Order adapters/consumers | proposed |
@@ -78,8 +78,6 @@ Promotion keys do Order sinh và giữ xuyên retry:
 
 - `REDEEM_FINAL:{order_id}:{promotion_id}`
 - `CANCEL_FINAL:{order_id}:{promotion_id}`
-- `REFUND_FULL:{order_id}:{promotion_id}:{refund_request_id}`
-- `REFUND_PARTIAL:{order_id}:{promotion_id}:{refund_request_id}`
 
 Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 `failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`; Checkout mới
@@ -121,7 +119,7 @@ nhất contract sau.
 | `ORDER_CANCELLED` | Compensation pre-payment xong và master bị cancel | order/user/status, previous state, reason, sequence, cancel time | Payment reconciliation, Notification |
 | `ORDER_STATUS_CHANGED` | Master transition không có event chuyên biệt | order/user, old/new, reason, sequence, changed time | Notification |
 | `ORDER_ITEM_STATUS_CHANGED` | Delivery item transition | order/item, old/new, sequence, changed time | Notification; guard theo item |
-| `ORDER_REFUNDED` | Payment refund success, master `RETURN_REQUESTED -> REFUNDED` | order/user/status/sequence, refund txn/type/amount/source/request, returned item IDs, promotion allocations, time | Promotion budget + Notification |
+| `ORDER_REFUNDED` | Payment refund success, master `RETURN_REQUESTED -> REFUNDED` | order/user/status/sequence, refund txn/type/amount/source/request, returned item IDs, time | Notification/Analytics; Promotion không consume |
 | `ORDER_COMPLETED` | Tất cả item delivered và master CAS thành công | canonical string order ID, UUID user, immutable product/SKU/variant/quantity items, completed time | Review entitlement; Analytics/Settlement chưa đăng ký |
 | `ORDER_REFUND_FAILED` | Payment refund failed/reversed; master giữ `RETURN_REQUESTED` | order/user/payment state/sequence, refund IDs/source, error, time | Notification/Ops critical lane |
 
@@ -136,12 +134,14 @@ Chi tiết quan trọng:
   `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`,
   `INVENTORY_RETURN_CONFIRMED`, `LATE_PAYMENT_RECOVERED` và
   `PAYMENT_SUCCESS_LATE_RECOVERY` theo ngữ cảnh cũ.
-- `ORDER_REFUNDED.promotion_refund_allocations[]` ở trạng thái mới nhất của thiết
-  kế cũ chỉ còn `promotion_id` và `refunded_discount_amount`; FULL hoàn full
-  PLATFORM allocation, PARTIAL chỉ hoàn khi scope bao phủ toàn platform.
+- `ORDER_REFUNDED` không chứa `promotion_refund_allocations[]`. Voucher là lợi ích toàn
+  đơn, không được phân bổ xuống SKU; customer refund không hoàn budget/voucher tại
+  Promotion.
 - Các field refund còn lại theo semantics cũ gồm `refund_trigger_source`,
   `customer_return_request_id`, `returned_item_ids`, `refund_transaction_id`,
   `refund_type` và `refund_amount`.
+- Cách tính amount và việc hỗ trợ một hay nhiều partial refund thuộc lần refactor
+  Order/Payment sau; tài liệu hiện tại chưa chốt chính sách mới cho hai service này.
 - `ORDER_COMPLETED.data.order_id` là opaque canonical decimal string không padding;
   DB `10001` phát `"10001"`, subject `orders/10001`. Không phát JSON number hoặc
   prefix. `variant_name` nullable cho order cũ; producer mới gửi khi có.

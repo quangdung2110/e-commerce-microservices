@@ -104,7 +104,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Inbound | Inventory | Kafka | Ship-to-customer và return-received-all | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Outbound | Inventory | HTTP/gRPC activity | Reserve, release, deduct, đăng ký return expectation | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
-| Outbound | Promotion | HTTP/gRPC activity | Reserve, release, confirm, cancel-confirmed và refund budget | Bắt buộc khi có promotion | Chưa chuẩn hóa trong phạm vi này |
+| Outbound | Promotion | HTTP/gRPC activity | Reserve, release, confirm và technical `cancel-confirmed`; không gọi khi customer refund | Bắt buộc khi có promotion | Promotion boundary đã chốt; wire contract chưa chuẩn hóa |
 | Outbound | Payment | HTTP/gRPC activity | Tạo PaymentIntent, cancel và refund | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
 | Outbound | Kafka consumers | Kafka | Event vòng đời order/item | Bắt buộc | Có một phần Order completed v1; không đối soát lần này |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |
@@ -128,8 +128,8 @@ qua API, event hoặc Temporal signal được Order xử lý.
   `ORDER_COMPLETED` khi tất cả order item đã `DELIVERED` và CAS master thành công.
 - [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): state change và
   outbox event tương ứng commit trong cùng transaction.
-- [`INV-ORD-008`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): lỗi hoàn
-  promotion budget/voucher không rollback tiền refund đã thành công.
+- [`INV-ORD-008`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): customer refund
+  không mutate Promotion; voucher và budget đã confirm được giữ nguyên.
 
 ## 8. Bản đồ tài liệu
 

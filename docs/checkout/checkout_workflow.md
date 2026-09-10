@@ -308,8 +308,8 @@ Sau khi Frontend xin cấp Lock thành công (bước 1), **trước khi** chạ
   - Gọi Product Service gRPC `GetBatchProductSkus` để lấy `original_price` + `promotional_price` + `best_price` hiện tại.
   - Product Service tự xử lý Redis/cache miss nội bộ và trả dữ liệu chuẩn hợp đồng.
 2. **Batch fetch phiên bản tính giá hiện tại**:
-  - Promotion: lấy `promotion_rule_version` hiện hành (hard check); `promotion_budget_version` chỉ dùng telemetry/diagnostic.
-3. **Tính lại hash** = SHA-256(sorted sku prices + discount + promotion_rule_version).
+  - Promotion: lấy `promotion_campaign_revision` hiện hành (hard check); `promotion_budget_version` chỉ dùng telemetry/diagnostic.
+3. **Tính lại hash** = SHA-256(sorted sku prices + discount + promotion_campaign_revision).
 4. **So sánh** với `pricing_hash` trong session (xem [Caching Schema](checkout_caching_schema.md#11-cấu-trúc-key--data)):
    - **Khớp** → Đi tiếp sang Bước 4 (Lua Script khóa token).
    - **Không khớp** → Gỡ Distributed Lock, trả lỗi **409 Conflict** với body:

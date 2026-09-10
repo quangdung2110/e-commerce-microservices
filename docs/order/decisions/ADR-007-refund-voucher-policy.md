@@ -1,11 +1,12 @@
 ---
 doc_id: order-adr-007
 service: order
-status: accepted
+status: superseded
 date: 2026-06-17
 decision_owners:
   - Architecture Team
 supersedes: shipping-voucher-and-voucher-restore-policy
+superseded_by: ADR-009
 evidence:
   - docs/order/domain.md
   - docs/order/interfaces.md
@@ -15,8 +16,9 @@ evidence:
 
 ## Trạng thái
 
-`Accepted`. Quyết định gốc ngày 2026-06-17; Phase 14 loại SHIPPING/FREE_SHIPPING,
-Phase 20/21 tối giản allocation và Phase 23 loại voucher restore.
+`Superseded` bởi
+[ADR-009](./ADR-009-customer-refund-does-not-mutate-promotion.md). Nội dung dưới đây
+được giữ làm lịch sử của thiết kế allocation cũ.
 
 ## Bối cảnh
 

@@ -159,8 +159,9 @@ viết lại lịch sử đơn.
 | `promotion_id` | `BIGINT` | Promotion đã áp |
 | `discount_amount` | `DECIMAL` | PLATFORM allocation duy nhất |
 
-Bảng này dùng đối soát, release reservation ở pre-payment cancel và compute
-refund allocation. Nó không cho phép suy diễn/ghi lại wallet state; cột
+Bảng này là snapshot voucher toàn đơn đã áp dụng, dùng cho lịch sử/đối soát và
+checkout compensation. Nó không phải allocation theo SKU, không dùng để hoàn Promotion
+budget khi customer refund và không cho phép suy diễn/ghi lại wallet state. Cột
 `admin_funding` cũ đã bị loại ở Phase 21.
 
 ### 3.5. `order_refund_cases`

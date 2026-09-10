@@ -108,7 +108,9 @@ Product chỉ consume `com.ecommerce.promotion.product-markdown-snapshot.v1` t�
 `t.promotion.markdown.events`, key `product_id`, `sequence = source_revision`. Snapshot
 luôn mang rule đầy đủ, `state` (`ACTIVE`/`INACTIVE`), công thức VND và thời hạn. Product
 chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snapshot revision mới.
-`ACTIVE` phải được Promotion phát ở thời điểm hiệu lực; snapshot đến muộn sau `ends_at`
+`ACTIVE` được Promotion ghi qua outbox tại logical campaign boundary; snapshot có thể
+đến trễ trong bounded recovery window nhưng không được làm rule có hiệu lực trước
+`starts_at`. Snapshot đến muộn sau `ends_at`
 được ghi nhận revision nhưng không được làm giá cũ có hiệu lực lại. Promotion phải phát
 `INACTIVE` khi hết hạn; Product không có scheduled safety check. Khi consumer retry/DLQ
 làm giá stale, Promotion/operations phải replay snapshot mới nhất theo cùng contract.

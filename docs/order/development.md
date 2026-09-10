@@ -53,7 +53,7 @@ ghi tại đây.
 ### Unit test
 
 - Master/item/refund FSM, invalid transition và buyer-tab precedence.
-- Pricing/refund allocation FULL/PARTIAL, PLATFORM-only, non-blocking voucher rule.
+- Pricing snapshot PLATFORM-only; customer refund không tạo promotion allocation/call.
 - Workflow compensation stack order và deterministic replay logic.
 - Cursor encode/decode, visibility/filter mapping và accent normalization.
 
@@ -71,7 +71,8 @@ ghi tại đây.
 Không chuẩn hóa payload trong lần refactor này, nhưng implementation phải test mọi
 HTTP/event/activity semantics liệt kê ở `interfaces.md`: unknown field, duplicate,
 unsupported version, route theo order/workflow ID, canonical string order ID của
-`ORDER_COMPLETED`, nullable variant snapshot và promotion allocation.
+`ORDER_COMPLETED`, nullable variant snapshot và voucher toàn đơn snapshot. Refund amount/
+partial-refund multiplicity sẽ được chuẩn hóa ở lần refactor Order/Payment sau.
 
 ### End-to-end/failure injection
 

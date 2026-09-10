@@ -39,8 +39,9 @@ hay local stock fallback.
 | Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; Product export category/Product kèm replay offsets, Search import rồi catch-up và alias swap |
 | PDP buyer-read | Product Detail BFF | Synchronous internal query | Alert latency/error của endpoint; stock freshness thuộc BFF/Inventory, không phải Product |
 
-Product không có scheduled job. Promotion chịu trách nhiệm phát `ACTIVE`/`INACTIVE` đúng
-lịch; Product Consumer và runbook replay xử lý sự cố delivery. Outbox retention thuộc
+Product không có scheduled job. Promotion chịu trách nhiệm ghi `ACTIVE`/`INACTIVE` qua
+outbox tại logical campaign boundary và tự phục hồi schedule; Product theo dõi propagation
+delay. Product Consumer và runbook replay xử lý sự cố delivery. Outbox retention thuộc
 Platform/DB lifecycle và chưa được chạy trong Product application.
 
 

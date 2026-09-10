@@ -33,7 +33,7 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
   "status": "PREVIEW_READY",
   "delivery_address_id": "addr-uuid-123",
   "cart_snapshot": "{\"items\":[...]}",
-  "promotion_rule_version": "2026-03-14T09:00:00Z",
+  "promotion_campaign_revision": 42,
   "promotion_budget_version": "2026-03-14T09:00:02Z",
   "selected_voucher_id": null,
   "pricing_summary": "{\"total_product_amount\":44000000, \"total_voucher_discount\":50000, \"final_amount\":43950000}",
@@ -51,7 +51,7 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 > Session Checkout không lưu cờ voucher độc quyền. Quy tắc cộng dồn voucher được xác định bởi Promotion Service theo mô hình 1 slot PLATFORM và kết quả `pricing_summary` trả về.
 
 
-> **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_voucher_discount + promotion_rule_version`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path). Canonical: dùng `total_voucher_discount` (không dùng `total_discount_amount` hay `total_platform_discount` — đã deprecated).
+> **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_voucher_discount + promotion_campaign_revision`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path). Canonical: dùng `total_voucher_discount` (không dùng `total_discount_amount` hay `total_platform_discount` — đã deprecated).
 
 
 ### 1.2. Lifecycle
@@ -94,7 +94,11 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 
 > **Voucher Tray đọc trực tiếp DB:** Khi user mở tray "Chọn Voucher" hoặc "Voucher Sàn", Promotion Service query `user_coupon_wallets JOIN promotions` trực tiếp rồi eval rule + Budget Guard. Không qua Redis cache ở giữa, nên không có bước DEL invalidation.
 
-> **Claim Window vs Use Window:** Promotion chỉ dùng `promotions.start_time/end_time` để quyết định còn được claim/save mã mới; quyền sử dụng mã đã sở hữu khi checkout dựa trên `user_coupon_wallets.expired_at` (policy hiện tại: 30 ngày từ lúc acquire/save).
+> **Claim Window vs Use Window:** Promotion suy ra campaign phase từ
+> `campaigns.publication_status` và `[start_time,end_time)` để quyết định còn được
+> claim/save mã mới. Quyền sử dụng voucher đã sở hữu dựa trên
+> `user_coupon_wallets.expired_at`, được snapshot theo validity mode
+> `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default 30 ngày.
 
 > **Option A - Budget Guard read-time:** Sau bước evaluate rule, Promotion chạy guard đọc batch budget Redis để downgrade mã đã cạn ngân sách thành `ineligible_reason = BUDGET_EXHAUSTED`. Cơ chế này giảm stale hiển thị nhưng không thay thế commit-time reserve ở Submit.
 

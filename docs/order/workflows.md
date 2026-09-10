@@ -300,10 +300,11 @@ Chỉ lúc đó tạo unique `refund_transaction_id`, set `REFUNDING` và gọi 
 Success commit `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` và
 `ORDER_REFUNDED`.
 
-**Allocation promotion:** FULL hoàn full allocation. PARTIAL chỉ trả allocation
-nếu scope bao phủ toàn bộ item platform, ngược lại 0. Order compute deterministic;
-Promotion không suy luận. Voucher luôn `USED`; budget processing failure/unavailable
-không rollback tiền Payment đã refund.
+**Promotion boundary:** customer refund FULL/PARTIAL không gọi Promotion và
+`ORDER_REFUNDED` không mang promotion allocation. Voucher là lợi ích toàn đơn nên không
+chia xuống SKU; wallet giữ `USED`, Promotion budget giữ consumed. Cách tính refund amount
+và việc cho phép một hay nhiều partial refund thuộc lần refactor Order/Payment sau và
+chưa được chốt trong tài liệu hiện tại.
 
 **Timeout/manual recovery:** chờ Inventory tối đa 30 ngày. Quá hạn alert Ops và
 vào lane `MANUAL_VERIFICATION_REQUIRED`; chỉ tiếp tục sau admin override hợp lệ.
@@ -316,8 +317,8 @@ guard không reset. `REFUND_PROCESSING` giữ/set `REFUNDING`. Không mở refun
 transaction thứ hai.
 
 **Test:** FULL/PARTIAL boundaries, two workflow starts, duplicate Inventory signal,
-scope mismatch, 30-day timeout/override, refund exactly once, processing-success,
-fail/reverse, promotion unavailable/non-blocking, crash giữa remote refund và local
+scope mismatch, 30-day timeout/override, refund exactly once theo thiết kế hiện tại,
+processing-success, fail/reverse, chứng minh không gọi Promotion, crash giữa remote refund và local
 commit, và one-shot permanent.
 
 ## WF-ORDER-009 — Payment timeout và auto-cancel

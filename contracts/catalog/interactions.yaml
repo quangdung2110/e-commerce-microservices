@@ -84,7 +84,7 @@ interactions:
     consumers: [product-service]
     contract: events/product/v1/asyncapi.yaml
     status: proposed
-    notes: Product-scope markdown state snapshots use product_id key and source_revision; legacy category-scoped MARKDOWN_* events are not the target contract.
+    notes: Promotion transactional outbox/CDC emits product-scope full state snapshots keyed by product_id with monotonic source_revision and ACTIVE/INACTIVE state; legacy category-scoped MARKDOWN_* delta events are superseded.
 
   - id: cart-publishes-cart-events
     protocol: kafka

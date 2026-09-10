@@ -36,7 +36,8 @@ cùng một rule. Outbox retention là data lifecycle vận hành, không phải
 
 - Markdown Consumer là background workload nghiệp vụ duy nhất của Product. API/gRPC và
   consumer có thể scale thành process riêng; Product không chạy scheduled job.
-- Promotion phát snapshot đầy đủ `ACTIVE` tại `starts_at` và `INACTIVE` tại `ends_at`.
+- Promotion ghi snapshot đầy đủ `ACTIVE`/`INACTIVE` qua outbox tại logical campaign
+  boundary; Redis schedule + DB fallback cho bounded eventual delivery, không early-active.
   Nếu retry/DLQ làm Product stale, owner Promotion/operations phải replay snapshot mới
   nhất. Đây là trade-off được chấp nhận thay cho Product safety cron.
 - Consumer chỉ ack Kafka sau transaction commit. Trong transaction, lock `products` bằng

@@ -1245,9 +1245,8 @@ public class ProductEventProducer implements EventPublisher {
 @Slf4j
 public class MarkdownEventConsumer {
 
-    private static final Set<String> ALLOWED_EVENTS = Set.of(
-            "MARKDOWN_CREATED", "MARKDOWN_UPDATED", "MARKDOWN_ENDED"
-    );
+    private static final String MARKDOWN_SNAPSHOT_EVENT =
+            "com.ecommerce.promotion.product-markdown-snapshot.v1";
 
     @KafkaListener(
             topics = "${spring.kafka.topics.promotion-markdown-events}",
@@ -1261,7 +1260,7 @@ public class MarkdownEventConsumer {
         try {
             CloudEvent cloudEvent = objectMapper.readValue(message, CloudEvent.class);
 
-            if (!ALLOWED_EVENTS.contains(cloudEvent.getEventType())) {
+            if (!MARKDOWN_SNAPSHOT_EVENT.equals(cloudEvent.getEventType())) {
                 log.warn("Unknown event type: {}, skipping", cloudEvent.getEventType());
                 return;
             }
@@ -1275,11 +1274,9 @@ public class MarkdownEventConsumer {
     }
 
     private void processEvent(CloudEvent event) {
-        switch (event.getEventType()) {
-            case "MARKDOWN_CREATED" -> handleMarkdownCreated(event);
-            case "MARKDOWN_UPDATED" -> handleMarkdownUpdated(event);
-            case "MARKDOWN_ENDED"   -> handleMarkdownEnded(event);
-        }
+        // Payload là full product-scope snapshot. Handler chỉ apply khi
+        // source_revision lớn hơn revision đã persist; state là ACTIVE/INACTIVE.
+        handleProductMarkdownSnapshot(event);
     }
 }
 ```

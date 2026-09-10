@@ -55,8 +55,9 @@ Search consume stock availability snapshot/export trực tiếp từ Inventory. 
 BFF gọi Inventory Availability Read API theo request sau khi có catalog. Product không
 consume topic Inventory và không là đường trung chuyển availability cho UI.
 
-Promotion sở hữu schedule markdown và phải phát snapshot `ACTIVE`/`INACTIVE` tại thời
-điểm hiệu lực/kết thúc. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations
+Promotion sở hữu campaign schedule và ghi snapshot `ACTIVE`/`INACTIVE` vào transactional
+outbox tại logical boundary; Redis schedule + DB fallback bảo đảm bounded eventual
+delivery và không kích hoạt sớm. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations
 phải replay snapshot mới nhất; Product không có cronjob tự sửa giá quá hạn.
 
 ## Tài liệu chuẩn

@@ -79,7 +79,7 @@ return 1  -- OK
 |:---|:---|
 | **User đổi voucher PLATFORM** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
 | **User bấm "Lưu & Chọn" voucher chưa lưu** | Promotion xử lý `save-and-apply` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
-| **User chọn voucher Sàn** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at` (mặc định 30 ngày từ lúc sở hữu); Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time; không có nhánh Save & Apply tại tray này |
+| **User chọn voucher Sàn** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at`; expiry đã được Promotion snapshot theo validity policy khi save/claim, không có default 30 ngày; Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time |
 | **User đổi địa chỉ nhận hàng** | Backend gọi Preview API lại, recompute Inventory (routing) + Promotion → **Tạo token MỚI** → Ghi đè session Redis |
 | **User đổi quantity/add/remove SKU** | Frontend gọi Cart API trước (ngoài phạm vi Checkout), sau đó gọi Preview lại với snapshot Cart mới → **Tạo token MỚI** |
 | **User không thao tác 20 phút** | Redis TTL hết → Session biến mất → Client gọi Submit → 404 Not Found |
@@ -87,7 +87,9 @@ return 1  -- OK
 | **User mở 2 tab cùng checkout** | Cả 2 tab cùng token (1 session/user) → Tab submit trước thắng, tab sau nhận `409` |
 | **Submit fail do reserve all-or-nothing** | Trả `409 PROMOTION_RECALCULATION_NEEDED`, token cũ vẫn `SUBMITTED`, bắt buộc gọi lại Preview để lấy token mới |
 
-> `promotions.start_time/end_time` chỉ là claim/save window cho việc lấy mã mới; use window khi submit checkout luôn theo `user_coupon_wallets.expired_at`.
+> Campaign `[start_time,end_time)` là claim/save window cho việc lấy mã mới; promotion
+> không có lịch riêng. Use window khi submit luôn theo `user_coupon_wallets.expired_at`,
+> vì vậy voucher đã lưu có thể còn dùng sau natural campaign end.
 
 ---
 
@@ -108,7 +110,7 @@ Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên
 
 1. **Bóc Token** → Lấy session báo giá từ Redis (đã được tính ở Preview).
 2. **Lightweight Price Staleness Check (Phát hiện hàng thiu):**
-    - Checkout tự tính hash cấu hình mới nhất từ (Giá gốc Product + `promotion_rule_version`) từ cache nội bộ. So sánh với `pricing_hash` trên Session.
+    - Checkout tự tính hash cấu hình mới nhất từ (Giá gốc Product + `promotion_campaign_revision`) từ cache nội bộ. So sánh với `pricing_hash` trên Session.
     - `promotion_budget_version` chỉ dùng để quan sát drift/read-time diagnostics, không tham gia hard hash gate.
    - Nếu hash lệch (giá thay đổi), văng lỗi từ chối ngay lập tức.
     - Các thao tác Re-validate nặng (chạm DB) như kiểm tra Address, Stock hoặc **Khóa ngân sách Khuyến mãi (Reserve)** được uỷ quyền hoàn toàn cho luồng **Temporal Saga của Order Service** chạy ngầm để phục vụ tốc độ siêu tốc và chống giam tiền.
