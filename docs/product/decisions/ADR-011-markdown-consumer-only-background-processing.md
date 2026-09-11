@@ -1,12 +1,13 @@
 ---
 doc_id: product-adr-011
 service: product
-status: accepted
+status: superseded
 date: 2026-09-02
 decision_owners:
   - Product Service team
 supersedes:
   - ADR-004
+superseded_by: ADR-016
 evidence:
   - docs/product/architecture.md
   - docs/product/operations.md
@@ -17,9 +18,9 @@ evidence:
 
 ## Status
 
-`Accepted`. Quyết định này thay thế ADR-004: vẫn giữ pessimistic locking và thứ tự
-`Product → SKU`, nhưng loại bỏ các giả định inventory cronjob và Redis distributed lock
-không còn phù hợp với boundary catalog-only của ADR-009.
+`Superseded` bởi
+[ADR-016](./ADR-016-state-discriminated-markdown-snapshot.md). Topology consumer-only,
+lock order và no-Redis được giữ; ADR-016 thay full-rule INACTIVE bằng tombstone tối thiểu.
 
 ## Context
 

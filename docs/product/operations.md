@@ -34,12 +34,12 @@ hay local stock fallback.
 
 | Workload | Owner | Trigger | An toàn |
 |---|---|---|---|
-| Markdown Consumer | Product | Kafka Promotion snapshots | Lock Product, guard `source_revision`, retry transient; ack sau DB commit |
+| Markdown Consumer | Product | Kafka Promotion snapshots | Validate ACTIVE/INACTIVE shape, lock Product, guard `source_revision`, retry transient; missing Product ack no-op; ack sau DB commit |
 | Debezium connector | Platform | Liên tục đọc WAL | At-least-once; theo dõi slot lag |
 | Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; Product export category/Product kèm replay offsets, Search import rồi catch-up và alias swap |
 | PDP buyer-read | Product Detail BFF | Synchronous internal query | Alert latency/error của endpoint; stock freshness thuộc BFF/Inventory, không phải Product |
 
-Product không có scheduled job. Promotion chịu trách nhiệm ghi `ACTIVE`/`INACTIVE` qua
+Product không có scheduled job. Promotion chịu trách nhiệm ghi ACTIVE full payload hoặc INACTIVE tombstone qua
 outbox tại logical campaign boundary và tự phục hồi schedule; Product theo dõi propagation
 delay. Product Consumer và runbook replay xử lý sự cố delivery. Outbox retention thuộc
 Platform/DB lifecycle và chưa được chạy trong Product application.
@@ -53,6 +53,11 @@ catalog reindex request quá SLA. Runbook markdown phải nêu owner Promotion, 
 snapshot mới nhất và replay sau retry/DLQ; runbook outbox phải nêu owner Platform khi tuổi
 hoặc dung lượng outbox vượt ngưỡng. Mọi runbook có chẩn đoán chỉ đọc, khắc phục, xác nhận
 phục hồi và owner escalate.
+
+Runbook markdown phải kiểm tra inactive tombstone đã advance revision và clear projection
+configuration. Event tới Product đã hard delete được ack no-op; đối chiếu terminal
+catalog-revision watermark phía Promotion, không yêu cầu Promotion phát reverse INACTIVE
+sau khi consume Product tombstone.
 
 Runbook export cho Search phải kiểm tra Kafka chụp đủ mọi partition và offsets giữ nguyên
 trong cả export session. Kafka lỗi, export session mất nhất quán hoặc Debezium/outbox lag

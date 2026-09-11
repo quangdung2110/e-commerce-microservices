@@ -46,16 +46,16 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 | Inbound | Admin qua Gateway | HTTP | Quản trị catalog |
 | Inbound | Cart, Checkout | gRPC | Catalog saleability và giá hiện hành |
 | Inbound | Product Detail BFF | HTTP nội bộ mTLS | Buyer-read Product detail, không có stock |
-| Inbound | Promotion | Kafka | Product-scope markdown state snapshot, guard `source_revision` |
+| Inbound | Promotion | Kafka | ACTIVE full markdown hoặc INACTIVE tombstone, guard `source_revision` |
 | Outbound | Search | Kafka | SKU/category snapshot, tombstone và category-tree reindex control |
-| Outbound | Promotion | Kafka | Product tombstone để dừng/cleanup markdown rule |
+| Outbound | Promotion | Kafka | Product tombstone để persist terminal watermark và cleanup markdown rule |
 | Outbound | Search | HTTP nội bộ | Export Category/Product cho full reindex, kèm replay offsets theo topic |
 
 Search consume stock availability snapshot/export trực tiếp từ Inventory. Product Detail
 BFF gọi Inventory Availability Read API theo request sau khi có catalog. Product không
 consume topic Inventory và không là đường trung chuyển availability cho UI.
 
-Promotion sở hữu campaign schedule và ghi snapshot `ACTIVE`/`INACTIVE` vào transactional
+Promotion sở hữu campaign schedule và ghi ACTIVE full payload/INACTIVE tombstone vào transactional
 outbox tại logical boundary; Redis schedule + DB fallback bảo đảm bounded eventual
 delivery và không kích hoạt sớm. Nếu consumer lỗi hoặc event vào DLQ, owner Promotion/operations
 phải replay snapshot mới nhất; Product không có cronjob tự sửa giá quá hạn.
@@ -72,7 +72,7 @@ phải replay snapshot mới nhất; Product không có cronjob tự sửa giá 
 | [Data](./data.md) | Data lifecycle, outbox và integrity |
 | [Operations](./operations.md) | Vận hành, SLO và runbook |
 | [Development](./development.md) | Hướng dẫn implementation/test |
-| [Decisions](./decisions/README.md) | ADR lưu lịch sử quyết định; ADR-009 là boundary, ADR-011/012 là worker và outbox key hiện hành |
+| [Decisions](./decisions/README.md) | ADR lưu lịch sử quyết định; ADR-009 là boundary, ADR-012 là outbox key và ADR-016 là markdown consumer hiện hành |
 
 
 ## Trạng thái implementation

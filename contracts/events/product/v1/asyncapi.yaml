@@ -65,7 +65,7 @@ channels:
       catalogReindexRequested: { $ref: '#/components/messages/catalogReindexRequested' }
   promotionMarkdownEvents:
     address: t.promotion.markdown.events
-    description: Snapshot markdown Product scope do Promotion phát; Product là consumer duy nhất trong contract này.
+    description: ACTIVE full markdown hoặc INACTIVE tombstone Product scope do Promotion phát; Product là consumer duy nhất trong contract này.
     x-message-key: product_id
     x-ordering-scope: product_id
     x-delivery-semantic: at-least-once
@@ -95,6 +95,11 @@ operations:
     channel: { $ref: '#/channels/productEvents' }
     summary: Product phát tombstone chứa toàn bộ SKU khi hard delete Product.
     messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
+  consumeProductDeletedByPromotion:
+    action: receive
+    channel: { $ref: '#/channels/productEvents' }
+    summary: Promotion persist terminal Product watermark, guard catalog_revision và invalidate dangling markdown rules; không phát reverse markdown event.
+    messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
   publishCategoryUpserted:
     action: send
     channel: { $ref: '#/channels/categoryEvents' }
@@ -113,7 +118,7 @@ operations:
   consumeProductMarkdownSnapshot:
     action: receive
     channel: { $ref: '#/channels/promotionMarkdownEvents' }
-    summary: Product apply snapshot mới hơn theo source_revision, reprice SKU và ghi outbox cùng transaction.
+    summary: Product apply ACTIVE full payload hoặc INACTIVE tombstone mới hơn theo source_revision, reprice SKU và ghi outbox cùng transaction.
     messages: [{ $ref: '#/channels/promotionMarkdownEvents/messages/productMarkdownSnapshot' }]
 components:
   messages:

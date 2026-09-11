@@ -40,7 +40,7 @@ flowchart LR
 | Internal buyer-read API | Trả Product detail/variant/giá cho Product Detail BFF; không trả stock |
 | Application/domain | Command, validation, transaction, pricing, revision và outbox |
 | PostgreSQL repository | Write store, lock order Product → SKU |
-| Markdown consumer | Consume snapshot Promotion, guard `source_revision`, reprice SKU |
+| Markdown consumer | Consume ACTIVE full payload/INACTIVE tombstone, guard `source_revision`, reprice SKU |
 | Outbox + Debezium | Phát CloudEvents catalog/tombstone/control event at-least-once sau commit |
 
 Product không có Redis, cache, Lua script, Inventory consumer, Inventory worker hay
@@ -82,4 +82,4 @@ Runtime cần PostgreSQL, Kafka và Kafka Connect/Debezium. API/gRPC và Markdow
 có thể chạy thành process riêng để scale độc lập; không có scheduler process của Product.
 Debezium chạy trong Kafka Connect do Platform vận hành. Search và Inventory là dependency
 liên service, không dùng database/cache của Product. Rationale và recovery trade-off của
-topology này nằm tại [ADR-011](./decisions/ADR-011-markdown-consumer-only-background-processing.md).
+topology này nằm tại [ADR-016](./decisions/ADR-016-state-discriminated-markdown-snapshot.md).

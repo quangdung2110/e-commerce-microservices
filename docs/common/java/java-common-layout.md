@@ -1274,8 +1274,8 @@ public class MarkdownEventConsumer {
     }
 
     private void processEvent(CloudEvent event) {
-        // Payload là full product-scope snapshot. Handler chỉ apply khi
-        // source_revision lớn hơn revision đã persist; state là ACTIVE/INACTIVE.
+        // Payload là current-state product snapshot: ACTIVE có full rule data,
+        // INACTIVE chỉ có reason. Handler chỉ apply khi source_revision mới hơn.
         handleProductMarkdownSnapshot(event);
     }
 }

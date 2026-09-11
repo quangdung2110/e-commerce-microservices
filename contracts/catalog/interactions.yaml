@@ -76,7 +76,7 @@ interactions:
     consumers: [search-service, promotion-service]
     contract: events/product/v1/asyncapi.yaml
     status: proposed
-    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Inventory must consume tombstones or enforce an equivalent reserve guard.
+    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Promotion consumes only product-deleted, persists a terminal catalog-revision watermark, invalidates markdown rules and emits no reverse event; Inventory must consume tombstones or enforce an equivalent reserve guard.
 
   - id: promotion-publishes-product-markdown-snapshots
     protocol: kafka
@@ -84,7 +84,7 @@ interactions:
     consumers: [product-service]
     contract: events/product/v1/asyncapi.yaml
     status: proposed
-    notes: Promotion transactional outbox/CDC emits product-scope full state snapshots keyed by product_id with monotonic source_revision and ACTIVE/INACTIVE state; legacy category-scoped MARKDOWN_* delta events are superseded.
+    notes: Promotion transactional outbox/CDC emits product-scope current-state snapshots keyed by product_id with monotonic source_revision; ACTIVE carries full rule data and INACTIVE is a reason-only tombstone. Legacy category-scoped MARKDOWN_* delta events are superseded.
 
   - id: cart-publishes-cart-events
     protocol: kafka

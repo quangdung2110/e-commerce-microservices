@@ -63,8 +63,9 @@ FIXED_VND:  discount = fixed_discount_vnd
 selling_price_vnd = max(0, base_price_vnd - discount)
 ```
 
-Promotion event activate/update/deactivate là snapshot đầy đủ. Product chỉ apply khi
-`source_revision` lớn hơn row projection hiện có; event cũ/trùng là no-op.
+Promotion event ACTIVE mang full rule/discount/interval; INACTIVE là reason-only
+tombstone. Product chỉ apply khi `source_revision` lớn hơn row projection hiện có;
+event cũ/trùng là no-op và tombstone được giữ để không hồi sinh giá cũ.
 
 ## State machine
 

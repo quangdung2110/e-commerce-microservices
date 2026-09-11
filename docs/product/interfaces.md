@@ -106,14 +106,21 @@ consumer đã được xác nhận; nếu Search cần cấu hình facet, đó l
 
 Product chỉ consume `com.ecommerce.promotion.product-markdown-snapshot.v1` từ
 `t.promotion.markdown.events`, key `product_id`, `sequence = source_revision`. Snapshot
-luôn mang rule đầy đủ, `state` (`ACTIVE`/`INACTIVE`), công thức VND và thời hạn. Product
-chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snapshot revision mới.
+luôn mang `product_id`, `source_revision`, `state`. `ACTIVE` mang rule/công thức VND/thời
+hạn đầy đủ; `INACTIVE` chỉ mang `inactive_reason` và không mang rule/discount/interval.
+Product chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snapshot
+revision mới.
 `ACTIVE` được Promotion ghi qua outbox tại logical campaign boundary; snapshot có thể
 đến trễ trong bounded recovery window nhưng không được làm rule có hiệu lực trước
 `starts_at`. Snapshot đến muộn sau `ends_at`
 được ghi nhận revision nhưng không được làm giá cũ có hiệu lực lại. Promotion phải phát
 `INACTIVE` khi hết hạn; Product không có scheduled safety check. Khi consumer retry/DLQ
 làm giá stale, Promotion/operations phải replay snapshot mới nhất theo cùng contract.
+
+Nếu Product đã hard delete, markdown event đến muộn được ack no-op. Product tombstone
+`com.ecommerce.catalog.product-deleted.v1` được Promotion persist thành terminal
+catalog-revision watermark rồi invalidate dangling markdown rule; Promotion không phát
+INACTIVE ngược lại Product đã xóa.
 
 Product không consume stock event, Product status event của chính nó hay markdown theo
 Category. Search consume stock snapshot v1 trực tiếp từ Inventory với guard source riêng.

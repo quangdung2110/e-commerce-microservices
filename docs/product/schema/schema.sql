@@ -92,25 +92,41 @@ CREATE INDEX idx_product_media_sku_sort ON product_media(sku_id, sort_order) WHE
 
 CREATE TABLE product_markdown_projection (
     product_id UUID PRIMARY KEY REFERENCES products(product_id) ON DELETE CASCADE,
-    promotion_rule_id BIGINT NOT NULL UNIQUE,
+    promotion_rule_id BIGINT NULL,
     source_revision BIGINT NOT NULL CHECK (source_revision > 0),
     state VARCHAR(16) NOT NULL CHECK (state IN ('ACTIVE', 'INACTIVE')),
-    discount_type VARCHAR(16) NOT NULL CHECK (discount_type IN ('PERCENTAGE', 'FIXED_VND')),
+    inactive_reason VARCHAR(32) NULL CHECK (inactive_reason IN ('NO_ACTIVE_RULE', 'EXPIRED', 'ADMIN_DISABLED')),
+    discount_type VARCHAR(16) NULL CHECK (discount_type IN ('PERCENTAGE', 'FIXED_VND')),
     discount_bps INTEGER NULL,
     fixed_discount_vnd BIGINT NULL,
     max_discount_vnd BIGINT NULL,
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
+    starts_at TIMESTAMPTZ NULL,
+    ends_at TIMESTAMPTZ NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_markdown_period CHECK (starts_at < ends_at),
+    CONSTRAINT chk_markdown_state_payload CHECK (
+        (state = 'ACTIVE' AND promotion_rule_id IS NOT NULL AND inactive_reason IS NULL
+         AND discount_type IS NOT NULL AND starts_at IS NOT NULL AND ends_at IS NOT NULL)
+        OR
+        (state = 'INACTIVE' AND promotion_rule_id IS NULL AND inactive_reason IS NOT NULL
+         AND discount_type IS NULL AND discount_bps IS NULL AND fixed_discount_vnd IS NULL
+         AND max_discount_vnd IS NULL AND starts_at IS NULL AND ends_at IS NULL)
+    ),
+    CONSTRAINT chk_markdown_period CHECK (state = 'INACTIVE' OR starts_at < ends_at),
     CONSTRAINT chk_markdown_configuration CHECK (
-        (discount_type = 'PERCENTAGE' AND discount_bps BETWEEN 1 AND 10000
+        state = 'INACTIVE'
+        OR
+        (discount_type = 'PERCENTAGE' AND discount_bps IS NOT NULL
+         AND discount_bps BETWEEN 1 AND 10000
          AND fixed_discount_vnd IS NULL AND (max_discount_vnd IS NULL OR max_discount_vnd > 0))
         OR
-        (discount_type = 'FIXED_VND' AND fixed_discount_vnd > 0
+        (discount_type = 'FIXED_VND' AND fixed_discount_vnd IS NOT NULL
+         AND fixed_discount_vnd > 0
          AND discount_bps IS NULL AND max_discount_vnd IS NULL)
     )
 );
+CREATE UNIQUE INDEX uq_product_markdown_projection_rule
+    ON product_markdown_projection(promotion_rule_id)
+    WHERE promotion_rule_id IS NOT NULL;
 CREATE TABLE product_outbox_events (
     event_id UUID PRIMARY KEY,
     event_type VARCHAR(100) NOT NULL,

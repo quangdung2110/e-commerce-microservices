@@ -86,7 +86,18 @@
       },
       "allOf": [
         { "if": { "properties": { "type": { "const": "PERCENTAGE" } } }, "then": { "required": ["discount_bps"], "not": { "required": ["fixed_discount_vnd"] } } },
-        { "if": { "properties": { "type": { "const": "FIXED_VND" } } }, "then": { "required": ["fixed_discount_vnd"], "not": { "required": ["discount_bps", "max_discount_vnd"] } } }
+        {
+          "if": { "properties": { "type": { "const": "FIXED_VND" } } },
+          "then": {
+            "required": ["fixed_discount_vnd"],
+            "not": {
+              "anyOf": [
+                { "required": ["discount_bps"] },
+                { "required": ["max_discount_vnd"] }
+              ]
+            }
+          }
+        }
       ]
     }
   }

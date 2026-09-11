@@ -77,16 +77,18 @@ reindex không lệch so với luồng event.
 
 ### 3.3 Markdown projection
 
-`product_markdown_projection` có một row cho mỗi Product: logical reference tới
-`promotion_rule_id`, `source_revision`, trạng thái `ACTIVE`/`INACTIVE`, cấu hình giảm
-giá, khoảng hiệu lực và `received_at`. Row giữ lại ở `INACTIVE` để replay event cũ không
-kích hoạt giá cũ.
+`product_markdown_projection` có một row cho mỗi Product và luôn giữ
+`source_revision`, trạng thái `ACTIVE`/`INACTIVE`, `inactive_reason` và `received_at`.
+`ACTIVE` bắt buộc logical `promotion_rule_id`, cấu hình giảm giá và khoảng hiệu lực;
+`INACTIVE` là tombstone nên các field rule/discount/interval đều null. Row tombstone được
+giữ để replay event cũ không kích hoạt giá cũ.
 
-Khi nhận activate/update, Product lock Product, chỉ upsert nếu `source_revision` mới hơn,
-reprice tất cả SKU và ghi outbox trong cùng transaction. Khi deactivate, projection thành
-`INACTIVE` và `selling_price_vnd` trở về `base_price_vnd`. Promotion là owner duy nhất của
-schedule: Product không có safety check. Event `ACTIVE` đến muộn sau `ends_at` vẫn advance
-`source_revision` nhưng được lưu `INACTIVE`, nên không làm giá cũ có hiệu lực lại. Consumer
+Khi nhận ACTIVE, Product lock Product, chỉ upsert nếu `source_revision` mới hơn,
+reprice tất cả SKU và ghi outbox trong cùng transaction. Khi nhận INACTIVE, projection
+advance revision, clear rule configuration và `selling_price_vnd` trở về `base_price_vnd`.
+Promotion là owner duy nhất của schedule: Product không có safety scheduler. Consumer có
+apply-time expiry guard; event `ACTIVE` đến sau `ends_at` vẫn advance `source_revision`
+nhưng materialize thành `INACTIVE/EXPIRED`, nên không làm giá cũ có hiệu lực lại. Consumer
 lag/DLQ cần được Promotion/operations khắc phục bằng replay snapshot mới nhất.
 
 ### 3.4 Transactional outbox
@@ -100,7 +102,8 @@ tới aggregate để tombstone còn tồn tại sau hard delete.
 ## 4. Indexes và toàn vẹn
 
 - Unique: `categories.slug`, `attributes.code`, `(attribute_options.attribute_id, code)`,
-  `products.slug`, `product_skus.sku_code`, `product_markdown_projection.promotion_rule_id`.
+  `products.slug`, `product_skus.sku_code`; partial unique markdown
+  `promotion_rule_id WHERE promotion_rule_id IS NOT NULL`.
 - Index: `categories(parent_id)`, `products(category_id, status)`,
   `product_skus(product_id)`, media sort indexes, outbox `(created_at)` và
   `(partition_key, created_at)`.
