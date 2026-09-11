@@ -90,6 +90,8 @@ return 1  -- OK
 > Campaign `[start_time,end_time)` là claim/save window cho việc lấy mã mới; promotion
 > không có lịch riêng. Use window khi submit luôn theo `user_coupon_wallets.expired_at`,
 > vì vậy voucher đã lưu có thể còn dùng sau natural campaign end.
+> Limited claim đóng hard boundary bằng Redis TIME + campaign revision trong cùng Lua với
+> SPOP; public `save-and-apply` kiểm phase bằng PostgreSQL clock trong transaction.
 
 ---
 

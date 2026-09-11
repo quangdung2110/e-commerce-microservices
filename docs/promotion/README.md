@@ -38,6 +38,8 @@ Các ADR trong `decisions/` là quyết định thiết kế, không phải bằ
 - Bảo vệ quota/ngân sách khi nhiều người dùng claim hoặc submit đồng thời.
 - Kích hoạt/kết thúc markdown không sớm, tự phục hồi khi Redis/worker lỗi và phát event
   bền vững qua transactional outbox + CDC.
+- Đóng claim đúng hard boundary bằng Redis time/revision gate và dọn markdown reference
+  khi Product bị hard delete.
 - Giữ PostgreSQL là source of truth và tự sửa drift của Redis hot state.
 
 ## 3. Boundary
@@ -45,11 +47,12 @@ Các ADR trong `decisions/` là quyết định thiết kế, không phải bằ
 Promotion chịu trách nhiệm:
 
 - `campaigns`, `promotions`, `promotion_budgets`, `coupon_claims`,
-  `user_coupon_wallets`, `markdown_rules` và `promotion_outbox_events`.
+  `user_coupon_wallets`, `markdown_rules`, `catalog_product_tombstones`,
+  `promotion_command_receipts` và `promotion_outbox_events`.
 - Một slot `PLATFORM_VOUCHER` cho toàn đơn, Rule Engine, eligibility và discount.
 - Claim/save, reserve, confirm, cancel và `cancel-confirmed` do lỗi kỹ thuật.
 - Campaign schedule, pending-claim rescue, reservation expiry và reconciliation.
-- Full product markdown snapshot cho Product.
+- State-discriminated product markdown snapshot cho Product và consume Product tombstone.
 
 Promotion không chịu trách nhiệm:
 
@@ -71,25 +74,29 @@ partial refund sau khi được refactor mà không làm thay đổi Promotion b
 | Budget cấu hình và số đã claim/redeem | `promotion_budgets` |
 | Claim inventory | `coupon_claims` |
 | Quyền sở hữu, expiry và redemption voucher | `user_coupon_wallets` |
+| Durable confirm/technical-cancel command | `promotion_command_receipts` |
 | Integration event | `promotion_outbox_events` trong cùng transaction với business state |
 | Reservation đang hiệu lực | Redis runtime; không persist `RESERVED` |
 | Claim pool/pending claim | Redis runtime có đường cứu về PostgreSQL |
+| Claim time/revision gate | Redis runtime, rebuild từ campaign/promotion PostgreSQL |
+| Product deletion watermark | `catalog_product_tombstones`; chặn rule xuất hiện sau tombstone |
 | Counter budget hot path | Redis projection có thể rebuild/repair từ PostgreSQL + reservation hợp lệ |
 
-Không có `coupon_usages` hoặc `promotion_event_idempotency`. Correctness dùng wallet,
-guarded transition, unique constraint, deterministic key và outbox dedup key.
+Không có `coupon_usages` hoặc bảng idempotency event tổng quát. Final command dùng typed
+`promotion_command_receipts`; outbox chỉ lưu publication record và logical-event identity.
+Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEvents `id`.
 
 ## 5. Capabilities
 
 | ID | Capability | Kết quả nghiệp vụ |
 |---|---|---|
 | `PROMO-CAP-01` | Quản trị campaign | Publish/pause/cancel và lịch dùng chung |
-| `PROMO-CAP-02` | Quản trị voucher/markdown | Cấu hình bất biến sau publish hoặc tạo revision mới |
+| `PROMO-CAP-02` | Quản trị voucher/markdown | Definition bất biến sau publish; thay đổi bằng campaign/child identity mới |
 | `PROMO-CAP-03` | Tính discount/discovery | Eligibility, reason và một voucher toàn đơn |
-| `PROMO-CAP-04` | Claim/save voucher | Gán duy nhất một claim cho user, snapshot `expired_at` |
-| `PROMO-CAP-05` | Budget reservation | TRY/CONFIRM/CANCEL nguyên tử bằng Redis Lua |
-| `PROMO-CAP-06` | Technical compensation | `cancel-confirmed` trả wallet về `SAVED` nếu còn hạn |
-| `PROMO-CAP-07` | Markdown propagation | Full snapshot `ACTIVE/INACTIVE` có `source_revision` |
+| `PROMO-CAP-04` | Claim/save voucher | Atomic time/revision gate, gán duy nhất và snapshot `expired_at` |
+| `PROMO-CAP-05` | Budget reservation | TRY/CANCEL runtime bằng Redis; confirm fence rồi PostgreSQL-first |
+| `PROMO-CAP-06` | Technical compensation | PostgreSQL-first `cancel-confirmed`, sau đó repair Redis |
+| `PROMO-CAP-07` | Markdown propagation | `ACTIVE` full rule hoặc `INACTIVE` tombstone, causal dedup + `source_revision` |
 | `PROMO-CAP-08` | Recovery/reconciliation | Cứu claim, nhả reservation, rebuild schedule và sửa drift |
 
 ## 6. Dependencies
@@ -100,6 +107,7 @@ guarded transition, unique constraint, deterministic key và outbox dedup key.
 | Inbound | Checkout | HTTP | Discovery, save và calculate discount |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, cancel, `cancel-confirmed` |
 | Inbound | Auth | Kafka | Welcome voucher tùy chọn |
+| Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
 | Outbound | Notification/Analytics | Kafka/CDC | Claim/redeem/cancel facts nếu có consumer |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
@@ -114,10 +122,22 @@ guarded transition, unique constraint, deterministic key và outbox dedup key.
 - Không reserve ở Preview/Discovery.
 - Một user tối đa một claim và một wallet row cho cùng promotion.
 - Campaign claim window và wallet use window là hai khái niệm khác nhau.
+- Limited claim Lua kiểm Redis time, enabled và campaign revision trước `SPOP`; API chỉ trả
+  success sau guarded claim/wallet transaction đã commit PostgreSQL. Pending evidence cứu
+  crash window và giữ acquisition time/revision.
+- Published definition không mutate; `campaigns.revision` không phải definition version.
 - Campaign kết thúc không tự xóa/thu hồi voucher đã lưu; eligibility chỉ dùng
   `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
 - Refund partial/full không đổi wallet `USED` và không giảm used budget.
 - `cancel-confirmed` kỹ thuật trả wallet về `SAVED` nếu còn hạn, ngược lại `EXPIRED`.
+- Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget + outbox
+  trong một PostgreSQL transaction; Redis chỉ fence/finalize/repair theo từng flow.
+- Command receipt và outbox có trách nhiệm, retention độc lập.
+- Markdown outbox dedup chứa causal campaign identity; `INACTIVE` không giả lập rule cũ.
+- Product tombstone persist watermark rồi invalidate idempotently; markdown mutation dùng cùng
+  product advisory lock nên không thể xuất hiện rule sau tombstone, và không phát event
+  vòng ngược về Product đã xóa.
+- `BUDGET_EXHAUSTED` là synchronous result/telemetry, không phải integration event.
 - Redis schedule/counter không phải source of truth.
 - Rule Engine thuần và xác định.
 
@@ -141,6 +161,6 @@ guarded transition, unique constraint, deterministic key và outbox dedup key.
   Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
 - Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không
   được ngầm dùng làm revocation.
-- Health/config/SLO, outbox retention watermark và parking-lot chi tiết cần được chốt khi
-  triển khai.
+- Health/config/SLO, command-receipt retention, outbox watermark và parking-lot chi tiết
+  cần được chốt khi triển khai.
 - `RuleEngineDemo.java` chỉ minh họa AST, không phải implementation production.

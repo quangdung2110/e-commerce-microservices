@@ -1,11 +1,12 @@
 ---
 doc_id: promotion-adr-003
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-09
 decision_owners:
   - Promotion Service team
 supersedes: null
+superseded_by: ADR-013
 evidence:
   - docs/promotion/data.md
   - docs/promotion/workflows.md
@@ -15,7 +16,10 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Superseded` bởi
+[ADR-013](./ADR-013-command-receipts-and-durable-finalization.md). Quyết định reserve
+runtime bằng Redis Lua được giữ; phần confirm và `cancel-confirmed` Redis-first được
+thay bằng durable finalization PostgreSQL-first.
 
 ## Context
 

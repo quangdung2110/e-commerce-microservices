@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-adr-012
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-10
 decision_owners:
   - Promotion Service team
@@ -9,6 +9,7 @@ supersedes:
   - ADR-001
   - ADR-006
   - ADR-008
+superseded_by: ADR-013
 evidence:
   - docs/promotion/data.md
   - docs/promotion/domain.md
@@ -19,8 +20,9 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Supersede usage/idempotency ledger,
-voucher-refund policy và reconciliation query cũ.
+`Superseded` bởi
+[ADR-013](./ADR-013-command-receipts-and-durable-finalization.md). Wallet/no-refund
+policy được giữ; quyết định không có durable command-idempotency table được thay thế.
 
 ## Context
 

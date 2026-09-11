@@ -19,9 +19,9 @@
 | File | Service | Decision |
 |---|---|---|
 | [order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md](./order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md) | Order + Promotion | Customer refund không mutate Promotion; không allocation theo SKU, không hoàn voucher/budget. |
-| [promotion/decisions/ADR-010-campaign-lifecycle-and-scheduling.md](./promotion/decisions/ADR-010-campaign-lifecycle-and-scheduling.md) | Promotion | Campaign lifecycle dẫn xuất; Redis ZSET có revision và DB fallback. |
-| [promotion/decisions/ADR-011-transactional-outbox-cdc.md](./promotion/decisions/ADR-011-transactional-outbox-cdc.md) | Promotion + Product | Transactional outbox/CDC và full markdown snapshot. |
-| [promotion/decisions/ADR-012-wallet-redemption-and-no-refund.md](./promotion/decisions/ADR-012-wallet-redemption-and-no-refund.md) | Promotion | Wallet là redemption state; schema bảy bảng; customer refund không hoàn voucher. |
+| [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
+| [promotion/decisions/ADR-014-claim-and-markdown-consistency.md](./promotion/decisions/ADR-014-claim-and-markdown-consistency.md) | Promotion + Product | Atomic claim boundary, immutable definition, causal markdown dedup và Product tombstone invalidation. |
+| [product/decisions/ADR-016-state-discriminated-markdown-snapshot.md](./product/decisions/ADR-016-state-discriminated-markdown-snapshot.md) | Product + Promotion | ACTIVE full markdown; INACTIVE reason-only tombstone; nullable guarded projection. |
 
 ---
 
@@ -110,7 +110,7 @@
 | [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
 | [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
 | [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
-| [promotion/decisions/](./promotion/decisions/README.md) | 12 ADR; ADR-010..012 là quyết định hiện hành của lần refactor. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 14 ADR; ADR-013 và ADR-014 là các quyết định mới nhất của lần refactor. |
 
 ---
 
@@ -140,9 +140,9 @@ Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md
 | Payment | `t.payment.events` (9 events) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |
-| Promotion | `t.promotion.markdown.events` (một full-snapshot type, state ACTIVE/INACTIVE) | Product |
+| Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
+| Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone) | Product |
 | Promotion | `t.promotion.coupon.events` | Notification, Analytics; không có coupon-refunded event |
-| Promotion | `t.promotion.budget.events` (1 event) | Notification, Frontend |
 
 ---
 

@@ -21,7 +21,7 @@ verified_against_commit: null
 | Campaign phase | `DRAFT/UPCOMING/ACTIVE/ENDED/PAUSED/CANCELLED` được suy ra | DB status mutable |
 | Promotion | Voucher do admin tạo, áp dụng cho toàn đơn | Markdown giá sản phẩm |
 | Markdown rule | Giảm trực tiếp cho một `product_id` khi campaign active | Voucher checkout |
-| Claim window | Campaign phải ACTIVE để nhận voucher mới | Hạn dùng voucher đã sở hữu |
+| Claim window | Atomic Redis-time interval để nhận limited voucher mới | Hạn dùng voucher đã sở hữu |
 | Use window | Đến `wallet.expired_at`, được snapshot lúc save | Campaign có còn active hay không |
 | Claim | Một suất hữu hạn được gán cho user | Redeem vào order |
 | Wallet entry | Quyền sở hữu và trạng thái redemption hiện hành | Reservation runtime |
@@ -29,16 +29,23 @@ verified_against_commit: null
 | Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
 | Technical compensation | `cancel-confirmed` vì order không hoàn tất sau confirm | Customer refund |
 | Customer refund | Order/Payment hoàn tiền partial/full | Promotion budget rollback |
+| Command receipt | Biên nhận durable cho final command và response replay | Outbox event/publication state |
 
 ## 2. Domain objects
 
-- `Campaign` là aggregate schedule/lifecycle chung; `revision` là business revision duy nhất.
+- `Campaign` là aggregate schedule/lifecycle chung; `revision` là concurrency/cache/schedule
+  fence, không phải immutable definition version.
 - `Promotion` là voucher definition và có một `PromotionBudget`.
 - `CouponClaim` là một suất pre-generated cho distribution `LIMITED_CLAIM`.
 - `UserCouponWallet` là current ownership/redemption state, duy nhất theo
   `(user_id,promotion_id)`; không cần `CouponUsage` aggregate.
-- `MarkdownRule` là product-scope child của campaign; không có lịch/status riêng.
+- `MarkdownRule` là product-scope immutable child; Product tombstone có thể gắn operational
+  invalidation riêng mà không sửa definition.
+- `CatalogProductTombstone` là durable terminal watermark theo Product/catalog revision;
+  nó chặn markdown rule được tạo sau khi delete đã được quan sát.
 - `PromotionOutboxEvent` là append-only integration fact/durable dedup record.
+- `PromotionCommandReceipt` là inbound `CONFIRM`/`CANCEL_CONFIRMED` receipt, chứa stable
+  key, request hash và stored response; không phải usage ledger.
 - User, Order và Product chỉ là identifier/snapshot từ bounded context khác.
 
 ## 3. Commands và queries
@@ -47,11 +54,13 @@ verified_against_commit: null
 |---|---|---|
 | Command | Tạo/cập nhật/publish/pause/cancel campaign | Admin |
 | Command | Tạo/cập nhật voucher hoặc markdown trước publish | Admin |
+| Command | Clone published campaign thành DRAFT identity mới | Admin |
 | Command | Claim/save voucher | Customer |
 | Command | Reserve/confirm/cancel/`cancel-confirmed` | Order/Temporal |
 | Query | Calculate discount | Checkout |
 | Query | Voucher trong ví/public discovery | Customer qua Checkout |
 | Worker | Schedule START/END, rescue, reconciliation | Promotion |
+| Event | Invalidate markdown khi Product hard delete | Product Kafka tombstone |
 
 Không có command customer-refund trong Promotion.
 
@@ -64,17 +73,24 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-003` | `final = max(0, subtotal - platform_discount)`; percentage có cap, fixed có clamp. |
 | `PROMO-BR-004` | Preview/Discovery chỉ đọc; reserve chỉ sau Submit và có `order_id`. |
 | `PROMO-BR-005` | Reserve all-or-nothing; replay cùng key phải khớp payload. |
-| `PROMO-BR-006` | Claim/save mới chỉ được phép khi campaign phase `ACTIVE` và promotion enabled. |
+| `PROMO-BR-006` | Limited claim Lua phải kiểm gate enabled, matching campaign revision và Redis time trong `[start_time,end_time)` trước SPOP; public save kiểm phase trong DB transaction. |
 | `PROMO-BR-007` | Voucher đã lưu chỉ dùng `wallet.expired_at`; campaign end không tự thu hồi row/quyền lợi ngoài expiry đã snapshot. Với mode `CAMPAIGN_END`, hai mốc trùng nhau. |
 | `PROMO-BR-008` | Validity phải chọn `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default ngầm. |
-| `PROMO-BR-009` | Definition đã publish không được sửa hồi tố quyền lợi; thay đổi phải qua campaign revision mới. |
+| `PROMO-BR-009` | Definition đã publish là bất biến; thay đổi business config phải clone campaign/promotion/markdown identity mới, không chỉ tăng cùng-row revision. |
 | `PROMO-BR-010` | Customer refund partial/full không restore voucher và không hoàn Promotion budget. |
 | `PROMO-BR-011` | `cancel-confirmed` do lỗi kỹ thuật trả wallet về `SAVED` nếu còn hạn, `EXPIRED` nếu hết hạn. |
-| `PROMO-BR-012` | Markdown chỉ product-scope và chỉ có hiệu lực khi campaign `ACTIVE`. |
+| `PROMO-BR-012` | Markdown chỉ product-scope, chỉ effective khi campaign `ACTIVE`, rule enabled và chưa bị Product tombstone invalidate. |
 | `PROMO-BR-013` | Worker không xử lý schedule dựa riêng vào Redis; phải re-read DB/revision/time. |
 | `PROMO-BR-014` | Missing AST field trả false; Rule Engine thuần và xác định. |
 | `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
 | `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
+| `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet, durable budget và outbox cùng commit PostgreSQL. |
+| `PROMO-BR-018` | `cancel-confirmed` commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. |
+| `PROMO-BR-019` | Command receipt dedup inbound command; outbox dedup outbound event. Hai bảng có retention độc lập. |
+| `PROMO-BR-020` | Markdown dedup identity gồm product, campaign, campaign revision và trigger; resulting state không thuộc key; ordering dùng source revision riêng. |
+| `PROMO-BR-021` | Snapshot ACTIVE mang full rule; INACTIVE chỉ là tombstone có reason, không mang rule/discount/interval. |
+| `PROMO-BR-022` | Product tombstone persist terminal watermark và invalidate markdown idempotently theo catalog revision; mọi markdown mutation serialize cùng product lock và không phát INACTIVE ngược về Product đã xóa. |
+| `PROMO-BR-023` | `BUDGET_EXHAUSTED` chỉ là synchronous outcome/telemetry, không phải integration event. |
 
 Natural campaign end khác emergency revocation. Pause/cancel dừng effective markdown và
 claim mới nhưng không tự thu hồi voucher đã lưu. Revocation nếu cần phải là nghiệp vụ
@@ -97,9 +113,12 @@ start_time <= now < end_time  => ACTIVE
 now >= end_time               => ENDED
 ```
 
-Không có transition ghi DB tại START/END. Schedule worker phát full markdown snapshot
+Không có transition ghi DB tại START/END. Schedule worker phát current-state markdown snapshot
 để downstream hội tụ; eligibility đồng bộ tự tính phase nên worker lag không mở campaign
-sớm hoặc kéo dài claim window.
+sớm. Limited claim không dựa vào scheduler: Redis-time gate đóng hard boundary trước
+SPOP. `campaigns.revision` tăng cho DRAFT mutation và publish/pause/cancel để fence stale
+work, nhưng không tạo definition history. Product tombstone là per-rule operational
+overlay nên không bump campaign revision hoặc claim gate.
 
 ## 6. State machines
 
@@ -129,13 +148,15 @@ voucher có thể dùng lại nếu còn hạn.
 
 | From | Trigger | Guard | To |
 |---|---|---|---|
-| `AVAILABLE` | Redis SPOP + claim persistence | owner null, user chưa claim | `CLAIMED` |
+| `AVAILABLE` | Redis gate + SPOP, rồi PostgreSQL claim persistence | gate enabled/revision match, Redis time trong `[open,close)`, owner null, user chưa claim | `CLAIMED`; API success chỉ sau DB commit |
 | `CLAIMED` | duplicate/replay | cùng claim/user | `CLAIMED` no-op |
 
 ### Markdown effective state
 
-Markdown snapshot là `ACTIVE` chỉ khi campaign phase ACTIVE và rule enabled; mọi trường
-hợp khác là `INACTIVE`. Không persist state này trong `markdown_rules`.
+Markdown snapshot là `ACTIVE` chỉ khi campaign phase ACTIVE, rule enabled và chưa bị
+invalidate; payload mang rule/discount/interval. Khi không còn winner, `INACTIVE` chỉ mang
+product, source revision và reason. Effective state không persist trong `markdown_rules`;
+Product tombstone invalidation là operational evidence riêng.
 
 ## 7. Invariants
 
@@ -152,6 +173,13 @@ hợp khác là `INACTIVE`. Không persist state này trong `markdown_rules`.
 | `PROMO-INV-009` | Stale campaign revision không phát state cũ. | Schedule member + DB revision check |
 | `PROMO-INV-010` | Markdown event ordering tăng theo product source revision. | Advisory lock + sequence |
 | `PROMO-INV-011` | Rule evaluation chỉ phụ thuộc AST + input context. | Unit/property tests |
+| `PROMO-INV-012` | Mỗi final command/order/promotion có tối đa một completed receipt và một stored response. | Unique command receipt + request hash |
+| `PROMO-INV-013` | Receipt, wallet, durable budget và outbox của final command cùng commit hoặc cùng rollback. | PostgreSQL transaction |
+| `PROMO-INV-014` | Không decrement/increment Redis mù khi finalizer/repair thiếu runtime evidence. | Fence/finalizer guard + reconciliation |
+| `PROMO-INV-015` | Limited claim success không linearize ngoài hard claim interval/revision. | Claim-gate Lua + Redis TIME |
+| `PROMO-INV-016` | Published business definition không mutate in-place. | Admin guards + clone workflow |
+| `PROMO-INV-017` | Hai causal markdown transition khác nhau không dùng cùng outbox dedup key. | Full causal unique key |
+| `PROMO-INV-018` | Product hard delete không để lại hoặc cho tạo mới dangling markdown rule. | Tombstone watermark + shared product advisory lock + guarded invalidation |
 
 ## 8. Rule AST
 
@@ -172,8 +200,8 @@ hợp khác là `INACTIVE`. Không persist state này trong `markdown_rules`.
 
 Logical operator: `AND`, `OR`. Condition operator: `EQUAL`, `NOT_EQUAL`, `IN`,
 `NOT_IN`, `GREATER_THAN`, `GREATER_THAN_OR_EQUAL`, `LESS_THAN`,
-`LESS_THAN_OR_EQUAL`. `rule_schema_version` version hóa format AST; campaign revision
-version hóa business configuration.
+`LESS_THAN_OR_EQUAL`. `rule_schema_version` version hóa format AST; campaign revision chỉ
+fence optimistic concurrency/cache/schedule. Một business definition mới dùng identity mới.
 
 ## 9. Authorization
 
@@ -188,12 +216,15 @@ version hóa business configuration.
 | Error | Điều kiện | Retryable |
 |---|---|---|
 | `CAMPAIGN_NOT_ACTIVE` | Claim/save khi phase khác ACTIVE | No đến khi state đổi |
+| `CLAIM_GATE_STALE` | Gate revision khác expected/current campaign revision | Retry sau rebuild/refresh |
 | `ALREADY_CLAIMED` | User đã claim promotion | No |
 | `OUT_OF_STOCK` | Claim pool rỗng | No |
+| `CLAIM_PENDING` | Redis acquisition có evidence nhưng DB chưa xác nhận trước HTTP deadline | Retry cùng user/promotion; preflight DB/pending rồi resume |
 | `ALREADY_USED_VOUCHER` | Wallet đã USED | No |
 | `VOUCHER_EXPIRED` | `wallet.expired_at <= now` | No |
-| `BUDGET_EXHAUSTED` | Không đủ qty/amount | Sau khi state đổi |
-| `IDEMPOTENCY_PAYLOAD_MISMATCH` | Reserve replay khác payload | No; điều tra |
+| `BUDGET_EXHAUSTED` | Redis guard/reserve không đủ qty/amount; chỉ trả sync + metric | Sau khi reservation/budget đổi |
+| `IDEMPOTENCY_PAYLOAD_MISMATCH` | Cùng stable key nhưng canonical request hash khác | No; điều tra |
+| `FINAL_COMMAND_STATE_INCONSISTENT` | Receipt và wallet/budget không khớp invariant | No; parking-lot/repair |
 | `PARTIAL_RESERVATION_STATE` | Redis apply/rollback không hoàn chỉnh | Repair async |
 | `RESERVATION_NOT_FOUND` | Confirm không còn payload | Late-payment compensation |
 | `CONDITIONS_NOT_MET` | AST false | No |
@@ -203,8 +234,11 @@ version hóa business configuration.
 
 - Campaign kết thúc lúc 20:00. Markdown chuyển `INACTIVE`; từ 20:00 không claim mới.
   Wallet đã lưu có `expired_at=23:59` vẫn dùng được đến thời điểm đó.
+- Limited claim bắt đầu Lua đúng 20:00 bị gate từ chối; claim linearize 19:59:59.999 vẫn
+  được worker persist sau 20:00 bằng acquisition evidence.
 - Voucher giảm 100.000đ được confirm cho order: wallet `USED`, budget used tăng 100.000đ.
   Customer refund partial hay full: wallet và Promotion budget giữ nguyên.
 - Confirm thành công nhưng order không thể hoàn tất vì lỗi saga: `cancel-confirmed` giảm
-  allocation; wallet trở lại `SAVED` nếu chưa hết hạn.
-- START job revision 4 chạy sau khi campaign đã được sửa lên revision 5: worker no-op.
+  durable allocation trong PostgreSQL; wallet trở lại `SAVED` nếu chưa hết hạn, rồi Redis
+  được repair bất đồng bộ.
+- START job revision 4 chạy sau pause/cancel đã tăng revision 5: worker no-op.

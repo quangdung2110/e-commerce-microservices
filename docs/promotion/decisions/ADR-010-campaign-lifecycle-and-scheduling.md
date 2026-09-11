@@ -1,11 +1,12 @@
 ---
 doc_id: promotion-adr-010
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-10
 decision_owners:
   - Promotion Service team
 supersedes: ADR-007
+superseded_by: ADR-014
 evidence:
   - docs/promotion/domain.md
   - docs/promotion/workflows.md
@@ -15,8 +16,9 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Supersede phần per-markdown lifecycle và
-expiry schedule của ADR-007.
+`Superseded` bởi
+[ADR-014](./ADR-014-claim-and-markdown-consistency.md). Campaign phase dẫn xuất và
+self-healing schedule được giữ; ADR-014 chốt thêm immutable-definition và claim gate.
 
 ## Context
 

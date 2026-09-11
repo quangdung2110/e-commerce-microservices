@@ -9,6 +9,7 @@ evidence:
   - contracts/events/product/v1/asyncapi.yaml
   - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
   - contracts/examples/events/promotion-product-markdown-snapshot.v1.json
+  - contracts/examples/events/promotion-product-markdown-inactive-snapshot.v1.json
 verified_against_commit: null
 ---
 
@@ -24,10 +25,10 @@ verified_against_commit: null
 | Admin campaign/voucher/markdown | Inbound | HTTP | Promotion | Admin/Gateway | proposed |
 | Calculate/discovery/save | Inbound | HTTP | Promotion | Checkout | proposed |
 | Allocation lifecycle | Inbound | HTTP | Promotion | Order/Temporal | proposed |
-| Markdown full snapshot | Outbound | Kafka/CDC | Promotion | Product | contract target exists |
+| Markdown current-state snapshot | Outbound | Kafka/CDC | Promotion | Product | contract target exists |
 | Coupon integration facts | Outbound | Kafka/CDC | Promotion | Notification/Analytics | proposed |
-| Claim persistence work item | Internal | Kafka | Promotion API/sweeper | Promotion worker | proposed |
 | Welcome voucher | Inbound | Kafka | Auth | Promotion | optional |
+| Product tombstone | Inbound | Kafka | Product | Promotion | contract target exists |
 
 Không có inbound `ORDER_REFUNDED`, Promotion refund API hoặc promotion refund event.
 
@@ -38,18 +39,19 @@ Order service identity.
 
 | Endpoint | Semantics | Idempotency/lỗi chính |
 |---|---|---|
-| Admin create/update campaign | Validate `[start,end)`, lifecycle, tăng revision khi update | Optimistic check theo campaign revision |
+| Admin create/update DRAFT campaign | Validate `[start,end)`, lifecycle, tăng revision khi update | Optimistic check theo campaign revision |
+| Admin clone published campaign | Tạo campaign/promotion/markdown identity mới ở DRAFT | Source ID chỉ để audit; không mutate source |
 | Admin publish/pause/cancel campaign | Ghi status/revision; tạo snapshot event khi effective state đổi | Replay cùng expected revision là no-op hoặc conflict rõ |
-| Admin create/update voucher/markdown | Chỉ trước publish; validate AST/product; child dùng lịch campaign | Transaction tăng campaign revision |
+| Admin create/update voucher/markdown | Chỉ khi campaign DRAFT; validate AST/product; child dùng lịch campaign | Transaction tăng campaign revision |
 | `POST /v1/promotions/calculate-discount` | Evaluate 0/1 voucher trên order context; không mutate | Pure/replay-safe |
 | `GET /v1/promotions/voucher-suggestions` | Wallet `SAVED`, chưa hết hạn; rule/budget guard | Read-only ngoài lazy expiry |
 | `GET /v1/promotions/platform-voucher-discovery` | Wallet + public voucher của campaign ACTIVE | Read-only ngoài lazy expiry |
 | `POST /v1/promotions/save-and-apply` | Lưu public voucher, snapshot `expired_at` | Existing SAVED success; USED → 409 |
-| `POST /v1/promotions/claim` | Claim limited voucher qua Redis SPOP | `ALREADY_CLAIMED`, `OUT_OF_STOCK` |
+| `POST /v1/promotions/claim` | Redis TIME + revision gate rồi SPOP atomically | `CAMPAIGN_NOT_ACTIVE`, `CLAIM_GATE_STALE`, `ALREADY_CLAIMED`, `OUT_OF_STOCK` |
 | `POST /v1/promotions/reserve` | TRY sau Submit cho 0/1 voucher, hold 15 phút | Replay phải cùng payload |
-| `POST /v1/promotions/confirm` | Move reserved→used; wallet `SAVED→USED` | Stable order/promotion key |
+| `POST /v1/promotions/confirm` | Fence reservation, rồi PostgreSQL-first wallet/budget commit; Redis finalize sau | Durable `CONFIRM` receipt theo stable order/promotion key |
 | `POST /v1/promotions/cancel` | Release pre-payment reservation; wallet vẫn SAVED | Missing payload cần distinguish no-op/repair |
-| `POST /v1/promotions/cancel-confirmed` | Technical compensation sau confirm; wallet về SAVED nếu còn hạn | Durable outbox dedup key theo order/promotion |
+| `POST /v1/promotions/cancel-confirmed` | PostgreSQL-first technical compensation sau confirm; Redis repair sau commit | Durable `CANCEL_CONFIRMED` receipt theo stable order/promotion key |
 
 Không có `POST /v1/promotions/refund`. Customer refund không gọi Promotion.
 
@@ -58,16 +60,49 @@ field Rule Engine cần. Response trả `eligible`, reason, estimated/actual dis
 `rule_schema_version`, `campaign_revision` và budget-guard metadata. Discount không được
 chia thành allocation theo SKU.
 
+`campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
+của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi
+phải clone campaign DRAFT và child IDs mới. Claim request mang expected revision; Lua chỉ
+cho phép acquisition khi gate hiện hành cùng revision và Redis time nằm trong
+`[opens_at,closes_at)`. Claim endpoint preflight durable wallet/claim trước Lua và chỉ trả
+success sau PostgreSQL persistence commit; quá HTTP deadline trả `202 CLAIM_PENDING`.
+
+### 2.1 Durable final-command idempotency
+
+Confirm dùng `REDEEM_FINAL:{order_id}:{promotion_id}`; technical compensation dùng
+`CANCEL_FINAL:{order_id}:{promotion_id}`. Promotion canonicalize operation, order,
+promotion và expected amount thành SHA-256 `request_hash`:
+
+- cùng key + cùng hash → trả stored response từ `promotion_command_receipts`;
+- cùng key + khác hash → `IDEMPOTENCY_PAYLOAD_MISMATCH`;
+- key khác nhưng cùng `(operation_type,promotion_id,order_id)` → replay cùng business
+  outcome hoặc conflict nếu payload khác; không tạo transition thứ hai.
+
+Amount trong request chỉ là expected value. Confirm dùng amount từ matching reservation
+`CONFIRMING`; `cancel-confirmed` dùng amount đã persist trên wallet `USED`. Receipt, wallet,
+durable budget và outbox commit cùng PostgreSQL transaction. Outbox không phải inbound
+command receipt và có retention độc lập.
+
+Confirm luôn lookup receipt theo key và `(operation_type,promotion_id,order_id)` trước
+Redis. Nếu đã có durable outcome thì replay không phụ thuộc reservation còn tồn tại. Khi
+preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup receipt lần nữa để
+đóng race với request khác vừa commit/finalize; chỉ khi vẫn không có receipt mới trả
+`RESERVATION_NOT_FOUND`. State `CONFIRMING` cùng payload là replay hợp lệ của Prepare.
+
 ## 3. Allocation semantics
 
 - Reserve chỉ hợp lệ với wallet `SAVED`, `expired_at > now` và rule đạt tại Submit.
 - Voucher đã lưu có thể reserve sau natural campaign end nếu `expired_at` còn hạn;
   mode `CAMPAIGN_END` đương nhiên hết hạn đúng boundary. Campaign status không phải
   revocation check; emergency revocation chưa thuộc contract này.
-- Confirm ghi `used_order_id`, `discount_amount_vnd`, `used_at`.
-- Cancel pre-payment chỉ nhả Redis reservation.
+- Confirm-Prepare chỉ fence `RESERVED→CONFIRMING` và gia hạn grace, chưa move counter.
+  PostgreSQL commit ghi receipt, `used_order_id`, `discount_amount_vnd`, `used_at`, budget
+  và outbox; Redis finalizer chạy sau commit.
+- Cancel pre-payment chỉ nhả Redis reservation đang `RESERVED`; không release mù state
+  `CONFIRMING` khi chưa đọc durable confirm outcome.
 - `cancel-confirmed` chỉ dùng khi order không hoàn tất vì lỗi kỹ thuật sau Promotion
-  confirm; nó không được dùng cho customer refund.
+  confirm; PostgreSQL commit trước và Redis chỉ repair sau. Nó không được dùng cho
+  customer refund.
 - Partial/full customer refund không có call/event tới Promotion.
 
 ## 4. Kafka envelope và publication
@@ -87,48 +122,59 @@ topic: t.promotion.markdown.events
 key:   product_id
 ```
 
-Payload là full snapshot product-scope, gồm tối thiểu:
+Payload chung luôn có `product_id UUID`, `source_revision BIGINT` và
+`state: ACTIVE | INACTIVE`. Hai state có shape tách biệt:
 
-- `product_id UUID`
-- `promotion_rule_id BIGINT`
-- `state: ACTIVE | INACTIVE`
-- discount data cần để Product reprice
-- `source_revision BIGINT`
-- effective/reason metadata theo JSON Schema hiện hành
+- `ACTIVE`: bắt buộc `promotion_rule_id`, discount data, `starts_at`, `ends_at`; không có
+  `inactive_reason`.
+- `INACTIVE`: bắt buộc `inactive_reason=NO_ACTIVE_RULE|EXPIRED|ADMIN_DISABLED`; không mang
+  rule ID, discount hoặc interval.
 
-Promotion tính snapshot chiến thắng hiện hành cho product. Event START/END, pause,
-cancel hoặc admin edit đều dùng cùng event type; không dùng các event delta
+Promotion tính snapshot chiến thắng hiện hành cho product. Event publish-in-window,
+START/END, pause hoặc cancel đều dùng cùng event type; DRAFT edit không phát effective
+snapshot. Không dùng các event delta
 `MARKDOWN_CREATED`, `MARKDOWN_UPDATED`, `MARKDOWN_ENDED`. Product chỉ apply khi
-`source_revision` lớn hơn projection hiện tại.
+`source_revision` lớn hơn projection hiện tại. Outbox dedup key gồm product, causal
+campaign ID/revision và trigger; resulting state không thuộc key để một cause chỉ phát tối
+đa một snapshot. `source_revision` chỉ dùng ordering.
 
 ### 4.2 Coupon facts
 
-Sau khi PostgreSQL đã commit, Promotion có thể outbox các integration fact:
+Trong cùng PostgreSQL transaction với business state, Promotion có thể insert các
+integration fact vào outbox; CDC chỉ publish sau khi transaction commit:
 
 | Event logic | Key | Ý nghĩa |
 |---|---|---|
 | Coupon claimed/saved | user hoặc claim ID | Notification/Analytics; không phải DB persistence trigger |
 | Coupon redeemed | order ID | Wallet chuyển USED |
 | Coupon technical-cancelled | order ID | Allocation bị đảo do saga failure |
-| Budget exhausted | promotion ID | Monitoring/UX signal, không thay synchronous result |
 
-Không có coupon-refunded fact trong Promotion.
+Không có coupon-refunded hoặc budget-exhausted fact trong Promotion. `BUDGET_EXHAUSTED`
+chỉ xuất hiện trong discovery/reserve response, metric và log; Redis observation không
+được giả làm transactional outbox event.
 
-## 5. Internal claim work item
+## 5. Internal claim persistence
 
-Claim Lua commit trên Redis trước PostgreSQL nên pending Hash/ZSET là durable-enough
-recovery source của hot path. API publish work item có `claim_id` bất biến; sweeper có
-thể republish với delivery ID mới. Worker dùng guarded claim update + unique wallet,
-commit DB rồi mới xóa pending. Sau commit, integration fact nếu cần được ghi qua outbox.
+Claim Lua commit acquisition trên Redis trước PostgreSQL nên pending Hash/ZSET là recovery
+source của crash window, không phải durable success record. API gọi guarded claim update +
+unique wallet, insert integration fact vào outbox trong cùng DB transaction và chỉ trả
+success sau commit. Sweeper chạy lại cùng persistence function bằng `claim_id` bất biến;
+không cần một Kafka business event/topic riêng. Chỉ sau DB commit mới xóa pending Redis.
 
-Internal work item không được trình bày như business event exactly-once.
+Pending payload bắt buộc có `acquired_at_ms` lấy từ Redis TIME và campaign revision đã
+được claim gate kiểm atomically. Worker validate evidence này nhưng không dùng processing
+time để từ chối claim đã linearize trước close boundary.
+
+Nếu DB chưa xác nhận trước HTTP deadline, response là retryable `202 CLAIM_PENDING`; retry
+preflight DB rồi pending để resume. Không được trình bày Redis acquisition hoặc internal
+task như business event exactly-once.
 
 ## 6. Events tiêu thụ
 
 | Event | Hành động | Guard |
 |---|---|---|
 | Auth user-registered | Tùy feature flag cấp welcome voucher và snapshot expiry | Unique wallet |
-| Internal claim work item | Persist claim + wallet + claimed counter | Immutable claim ID + DB constraints |
+| `com.ecommerce.catalog.product-deleted.v1` | Persist terminal Product watermark và invalidate mọi markdown rule; không bump campaign revision/claim gate hoặc emit ngược | Shared product advisory lock, monotonic `catalog_revision`, conditional invalidation |
 
 `ORDER_REFUNDED` có thể vẫn tồn tại trong Order ecosystem cho Notification/Analytics,
 nhưng Promotion không subscribe và payload không cần `promotion_refund_allocations[]`.
@@ -137,9 +183,12 @@ nhưng Promotion không subscribe và payload không cần `promotion_refund_all
 
 - Unknown optional JSON field phải được chấp nhận; unsupported major version không xử
   lý như v1.
-- Markdown contract v1 hiện giữ `promotion_rule_id BIGINT`, product UUID và
-  `source_revision BIGINT`; không cần breaking schema change.
+- Markdown contract v1 đang proposed và dùng state-discriminated shape. Nếu v1 đã được
+  deploy trước thay đổi này, phải tạo v2/dual-read thay vì đổi breaking in-place.
 - Ordering key của markdown luôn là `product_id`; duplicate/replay là bình thường.
-- Claim work item và public integration event phải dùng tên/type khác nhau để tránh một
-  consumer vô tình coi Redis acquisition là durable business completion.
+- Product tombstone consumer chỉ nhận `product-deleted`, persist watermark dù chưa có rule,
+  ack sau DB commit và không dùng `promotion_command_receipts` vốn dành riêng final
+  synchronous command.
+- Không công bố internal claim-persistence task thành integration event; chỉ public claim
+  fact sau PostgreSQL commit mới là durable business completion.
 - Trước implementation phải bổ sung Promotion OpenAPI/AsyncAPI và contract tests.

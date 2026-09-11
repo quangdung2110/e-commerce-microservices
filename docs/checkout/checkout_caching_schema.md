@@ -53,6 +53,10 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 > **Field `pricing_hash`:** SHA-256 hash của `concat(sorted sku_id + unit_price) + total_voucher_discount + promotion_campaign_revision`. Tạo ra tại thời điểm Preview, dùng để kiểm tra staleness khi Submit — xem [Checkout Workflow Section 4](checkout_workflow.md#4-lightweight-price-staleness-check-submit-path). Canonical: dùng `total_voucher_discount` (không dùng `total_discount_amount` hay `total_platform_discount` — đã deprecated).
 
+> `promotion_campaign_revision` chỉ là optimistic concurrency/cache fence. Promotion
+> definition đã publish không update in-place; cấu hình mới có campaign/promotion identity
+> mới và Checkout phải chạy lại Preview thay vì diễn giải selection cũ bằng rule mới.
+
 
 ### 1.2. Lifecycle
 

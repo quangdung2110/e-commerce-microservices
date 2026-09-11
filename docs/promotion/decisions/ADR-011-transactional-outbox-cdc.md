@@ -1,13 +1,14 @@
 ---
 doc_id: promotion-adr-011
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-10
 decision_owners:
   - Promotion Service team
 supersedes:
   - ADR-005
   - ADR-007
+superseded_by: ADR-014
 evidence:
   - docs/promotion/data.md
   - contracts/events/product/v1/asyncapi.yaml
@@ -17,8 +18,10 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Supersede direct Kafka best-effort và phần
-publication của ADR-007.
+`Superseded` bởi
+[ADR-014](./ADR-014-claim-and-markdown-consistency.md). Transactional outbox/CDC và
+current-state product snapshot được giữ; ADR-014 sửa causal dedup, inactive tombstone và
+budget event.
 
 ## Context
 

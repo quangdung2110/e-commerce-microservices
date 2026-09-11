@@ -1,11 +1,12 @@
 ---
 doc_id: promotion-adr-004
 service: promotion
-status: accepted
+status: superseded
 date: 2026-09-09
 decision_owners:
   - Promotion Service team
 supersedes: null
+superseded_by: ADR-014
 evidence:
   - docs/promotion/workflows.md
   - docs/promotion/data.md
@@ -15,7 +16,9 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Superseded` bởi
+[ADR-014](./ADR-014-claim-and-markdown-consistency.md). SPOP và pending rescue được giữ;
+ADR-014 bổ sung atomic time/revision claim gate và acquisition evidence.
 
 ## Context
 
