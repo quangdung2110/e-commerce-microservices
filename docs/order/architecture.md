@@ -104,7 +104,7 @@ checkout timeout.
 | Checkout remote | `ReservePromotionActivity` | Reserve budget all-or-nothing sau submit |
 | Checkout remote | `InitiatePaymentActivity` | Tạo Stripe PaymentIntent qua Payment |
 | Post-payment | `DeductInventoryActivity` | Deduct stock đã reserve |
-| Post-payment | `ConfirmPromotionActivity` | Commit promotion `REDEEMED` |
+| Post-payment | `ConfirmPromotionActivity` | Fence reservation rồi commit durable Promotion receipt/wallet/budget/outbox |
 | FSM local | `UpdateOrderStatusActivity` | Row lock/CAS, update master và outbox |
 | Refund local | `MarkRefundRequestedActivity` | Verify source/guard, chuyển `RETURN_REQUESTED` |
 | Refund local | `LockRefundScopeActivity` | Khóa FULL/PARTIAL scope và amount |
@@ -118,7 +118,7 @@ checkout timeout.
 | Pre-payment compensation | `RollbackInventoryActivity` | Nhả stock reservation |
 | Pre-payment compensation | `CancelOrderActivity` | Commit cancel sau cleanup |
 | Post-payment compensation | `RollbackDeductedInventoryActivity` | Bù stock đã deduct |
-| Post-payment compensation | `CancelConfirmedPromotionActivity` | Undo promotion đã confirm |
+| Post-payment compensation | `CancelConfirmedPromotionActivity` | PostgreSQL-first undo promotion đã confirm; Redis repair sau |
 | Post-payment compensation | `RevertOrderStatusToPaidActivity` | `PROCESSING -> PAID` khi rollback |
 
 Workflow dùng Temporal `Selector`/signal-versus-timer semantics ở payment wait;

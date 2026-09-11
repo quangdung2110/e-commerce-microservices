@@ -176,12 +176,19 @@ Post-payment failure rollback LIFO
 `RevertOrderStatusToPaid -> CancelConfirmedPromotion -> RollbackDeductedInventory`.
 Pre/post promotion compensation có semantics khác nhau và không dùng lẫn.
 
+Promotion trước hết replay durable `CONFIRM` receipt nếu đã có; command mới dùng
+Confirm-Prepare chỉ để fence reservation Redis. Activity thành công khi receipt +
+wallet/budget/outbox commit PostgreSQL, còn Redis finalizer có thể hội tụ sau. Vì vậy retry
+sau khi reservation đã được dọn vẫn trả stored response. `CancelConfirmedPromotionActivity`
+dùng `CANCEL_FINAL` receipt và PostgreSQL-first compensation; Redis unavailable không biến
+durable success thành failure. Cùng key khác canonical payload là lỗi không retry mù.
+
 **Timeout/retry/output:** activity timeout 30 giây, retry tối đa 3; workflow timeout
 30 phút gồm payment window 15 phút và rollback buffer. Start/attach replay kết quả
 workflow hiện có. Mark checkout token used chỉ sau start/attach thành công và cần
 persist workflow reference. Test phải inject failure tại từng activity, crash/resume,
-duplicate submit, stale token, all-or-nothing promotion failure, signal/timer race
-và từng compensation failure.
+duplicate submit, stale token, all-or-nothing promotion failure, signal/timer race,
+stored-response replay/payload mismatch và từng compensation failure.
 
 ## WF-ORDER-005 — Payment signal và late-payment recovery
 

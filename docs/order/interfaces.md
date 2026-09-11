@@ -70,7 +70,7 @@ Tên field response chuẩn hóa gồm `primary_item_name`, `primary_item_image_
 | Deduct/rollback deducted inventory | Inventory | Trừ stock sau payment hoặc bù khi post-payment fail | Bắt buộc idempotent |
 | Register refund return expectation | Inventory | Đăng ký FULL/PARTIAL item scope cần nhận lại | Key theo order + refund request |
 | Reserve/rollback promotion | Promotion | Giữ/nhả budget runtime sau submit | Key riêng từng promotion |
-| Confirm/cancel confirmed promotion | Promotion | Commit `REDEEMED` hoặc undo post-payment commit | `REDEEM_FINAL`/`CANCEL_FINAL` key |
+| Confirm/cancel confirmed promotion | Promotion | Commit `REDEEMED` hoặc PostgreSQL-first undo post-payment commit | Durable command receipt theo `REDEEM_FINAL`/`CANCEL_FINAL` key; replay stored response |
 | Initiate/cancel payment | Payment | Tạo/hủy Stripe PaymentIntent | Payment sở hữu provider details |
 | Initiate refund | Payment | Tạo Stripe Refund đúng một lần sau gate | Stable refund key/transaction ID |
 
@@ -78,6 +78,11 @@ Promotion keys do Order sinh và giữ xuyên retry:
 
 - `REDEEM_FINAL:{order_id}:{promotion_id}`
 - `CANCEL_FINAL:{order_id}:{promotion_id}`
+
+Hai final key được giữ qua mọi Temporal retry. Promotion canonicalize request để phát
+hiện cùng key khác payload; Order chỉ coi activity hoàn tất khi durable command receipt,
+wallet, budget và outbox đã commit. Redis confirm finalizer hoặc technical-cancel repair
+có thể hội tụ sau và không thay business response đã lưu.
 
 Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 `failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`; Checkout mới

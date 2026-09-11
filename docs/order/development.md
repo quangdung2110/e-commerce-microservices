@@ -65,6 +65,8 @@ ghi tại đây.
 - Redis duplicate hit/miss/outage/TTL expiry; DB/Workflow fallback safety.
 - Debezium outbox at-least-once, partition key và connector restart.
 - Temporal crash/resume, timer/signal race, activity retry, workflow identity.
+- Promotion final activity: same-key stored response, different-payload conflict, crash
+  sau durable receipt trước Redis convergence.
 
 ### Contract/consumer/provider test
 

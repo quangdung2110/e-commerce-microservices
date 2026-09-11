@@ -9,7 +9,7 @@ decision_owners:
 supersedes: ADR-007
 evidence:
   - docs/order/interfaces.md
-  - docs/promotion/decisions/ADR-012-wallet-redemption-and-no-refund.md
+  - docs/promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md
 ---
 
 # ADR-009 — Customer refund không mutate Promotion
