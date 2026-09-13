@@ -68,7 +68,8 @@ Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1
 
             Join (A, B, D×N, E)
               → Build cart_context
-              → [C] Promotion: /calculate-discount (Wave 2 — validate only, không lock budget)
+              → [C] Promotion: POST /internal/v1/promotion-discount-calculations
+                  (Wave 2 — validate only, không lock budget)
               → Validate Product Status → Calculation Engine → Sign Token → Response
 ```
 
@@ -77,7 +78,9 @@ Request ─ Fork ─┬─ [A] User Service: GET address list            (Wave 1
   - [E] sử dụng danh sách `sku_ids` đã chọn từ request payload, nhưng `quantity` của từng SKU luôn lấy từ cart snapshot [B] (không tin `quantity` client override).
   - Nếu bất kỳ SKU nào có `status != ACTIVE` (BANNED, deleted, unavailable) → trả lỗi **422 Unprocessable Entity** kèm danh sách SKU không khả dụng, yêu cầu user xóa khỏi giỏ trước khi checkout.
   - `current_price` từ [E] được dùng trong Calculation Engine (Waterfall), không dùng `unit_price_at_add` từ Cart cho giá thực tế checkout.
-- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion `/calculate-discount` với `subtotals` mới nhất.
+- **Wave 2:** Join kết quả Wave 1 → gọi [C] Promotion
+  `POST /internal/v1/promotion-discount-calculations` với subtotal/items mới nhất và
+  `payment_method=STRIPE`. Money trên wire dùng `{amount_minor,currency}`.
 - **Wave 3:** Waterfall price calculation → sinh session token.
 
 > **[DEEP DIVE] Tại sao luồng Sourcing phức tạp này lại cực nhanh (< 150ms)?**
@@ -109,7 +112,7 @@ Tuỳ theo loại thay đổi, Checkout Service chỉ gọi lại đúng service
 Preview Request (đợt sau)
       │
     ├── [Đổi Voucher PLATFORM]
-    │     → Chỉ gọi [C] Promotion /calculate-discount
+    │     → Chỉ gọi [C] Promotion POST /internal/v1/promotion-discount-calculations
     │     → Cache A (address), B (cart), D×N (routing) vẫn dùng
     │     → Latency target: < 20ms
     │
@@ -129,8 +132,12 @@ Preview Request (đợt sau)
 Để đồng bộ UX và tránh side-effect khó kiểm soát, Checkout dùng policy cố định:
 
 1. **Tray Voucher Sàn (PLATFORM_VOUCHER)**
-   * Hiển thị **mã đã lưu trong ví** + **mã public của sàn** chưa lưu.
-   * Cho phép thao tác **"Lưu & Chọn"** (`POST /v1/promotions/save-and-apply`) ngay tại tray.
+   * Tab "Voucher của tôi" gọi `POST /api/v1/me/promotion-voucher-suggestions` và chỉ
+     hiển thị mã `SAVED` trong ví.
+   * Tab "Khám phá" gọi `POST /api/v1/promotion-discovery` để hiển thị cả mã trong ví và
+     mã public `ACTIVE` chưa lưu.
+   * Cho phép thao tác **"Lưu & Chọn"**
+     (`PUT /api/v1/me/promotion-vouchers/{promotion_id}`) ngay tại tray.
    * Sau khi Save & Apply thành công, Frontend gọi lại `POST /v1/checkout/preview` để nhận token mới và tổng tiền mới.
    * Promotion Discovery có thể downgrade mã sang `BUDGET_EXHAUSTED` bằng budget guard read-time (Option A) trước khi trả gợi ý mặc định.
 
@@ -187,7 +194,7 @@ Preview Request (đợt sau)
 | User Service (address) | **500ms** | Địa chỉ cũ từ session (nếu có) |
 | Cart Service (Redis) | **50ms** | Lỗi Preview (Bắt buộc phải nhanh do gọi In-memory) |
 | Inventory /routing-options | **3s** | Flat-rate config fallback |
-| Promotion /calculate-discount | **2s** | Không áp voucher, báo user |
+| Promotion `POST /internal/v1/promotion-discount-calculations` | **2s** | Không áp voucher, báo user |
 | **Tổng Preview API** | **5s** | Fallback từng phần, không block toàn bộ |
 
 ---
@@ -232,7 +239,8 @@ Khách hàng thấy giá tiền hợp lý, nhấn nút "Xác Nhận Đặt Hàng
       * Dọn dẹp Lock, dọn dẹp Payload. Cache lại Response (Idempotent response cache). Checkout trả `client_secret` + `publishable_key` về cho Frontend (Frontend dùng Stripe Elements / Stripe Checkout SDK).
     * **Nếu Order Service trả lỗi nghiệp vụ từ ReservePromotion (all-or-nothing fail):** Checkout xử lý theo 4 bước bắt buộc:
       * (a) Nhận `failed_promotion_id` + `failed_reason` + `reserve_mode` từ lỗi có cấu trúc.
-      * (b) Loại `failed_promotion_id` khỏi tập mã đã chọn và gọi lại Promotion `/calculate-discount` với cart context hiện tại + tập mã còn lại.
+      * (b) Loại `failed_promotion_id` khỏi tập mã đã chọn và gọi lại Promotion
+        `POST /internal/v1/promotion-discount-calculations` với cart context hiện tại + tập mã còn lại.
       * (c) Dựng `dropped_promotions[]` (chỉ gồm mã bị loại) và `proposal_checkout_data` từ kết quả re-evaluation.
       * (d) Trả `409 PROMOTION_RECALCULATION_NEEDED` + `action=RECALL_PREVIEW`.
       * Checkout cache lại phản hồi 409 này theo token để retry cùng token trả kết quả nhất quán.
@@ -261,12 +269,12 @@ Ví dụ payload 409:
   "action": "RECALL_PREVIEW",
   "dropped_promotions": [
     {
-      "promotion_id": 30,
+      "promotion_id": "promo-30",
       "reason": "BUDGET_EXHAUSTED",
       "user_message": "Mã giảm giá đã hết ngân sách."
     },
     {
-      "promotion_id": 10,
+      "promotion_id": "promo-10",
       "reason": "CONDITIONS_NOT_MET",
       "user_message": "Đơn hàng không còn đủ điều kiện áp dụng mã này do thay đổi tổng tiền."
     }
@@ -274,7 +282,7 @@ Ví dụ payload 409:
   "proposal_checkout_data": {
     "new_total_amount": 550000,
     "surviving_promotions": [
-      55
+      "promo-55"
     ]
   }
 }

@@ -106,6 +106,7 @@
 | [promotion/architecture.md](./promotion/architecture.md) | Thành phần, processing, consistency, concurrency và deployment. |
 | [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
 | [promotion/interfaces.md](./promotion/interfaces.md) | HTTP semantics đích, outbox event và Product markdown snapshot v1. |
+| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 24 operations; trạng thái `proposed`. |
 | [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, Saga technical compensation và recovery. |
 | [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
 | [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
@@ -160,8 +161,12 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | `POST /v1/inventory/routing-options` | Checkout → Inventory |
 | `POST /v1/inventory/ship-to-customer` | Admin → Inventory |
 | `POST /v1/inventory/returns/refund-expectations` | Order → Inventory |
-| `POST /v1/promotions/calculate-discount` | Checkout → Promotion |
-| `POST /v1/promotions/{reserve,confirm,cancel,cancel-confirmed}` | Order (Temporal) → Promotion |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Checkout/Gateway → Promotion; chỉ wallet `SAVED` |
+| `POST /api/v1/promotion-discovery` | Checkout/Gateway → Promotion; wallet + public `ACTIVE` |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save + evaluate explicit |
+| `POST /api/v1/me/promotion-voucher-claims` | Customer → Promotion; limited claim |
+| `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion; pure query |
+| `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations,technical-cancellations}` | Order (Temporal) → Promotion |
 
 ---
 

@@ -128,7 +128,7 @@ sequenceDiagram
   O->>T: start/attach order-checkout-{token}
   T->>O: CreateOrder + ORDER_CREATED
   T->>I: ReserveInventory
-  T->>P: ReservePromotion(all-or-nothing)
+  T->>P: POST /internal/v1/promotion-allocation/reservations
   T->>Y: InitiatePayment(Stripe)
   Y-->>T: txn_id, client_secret, publishable_key
   T-->>O: payment client data
@@ -137,7 +137,7 @@ sequenceDiagram
   Y-->>T: PAYMENT_SUCCESS signal qua consumer
   T->>O: PENDING_PAYMENT -> PAID + ORDER_PAID
   T->>I: DeductInventory
-  T->>P: ConfirmPromotion
+  T->>P: POST /internal/v1/promotion-allocation/confirmations
   T->>O: PAID -> PROCESSING + ORDER_STATUS_CHANGED
 ```
 
@@ -147,8 +147,10 @@ sequenceDiagram
    `checkout_token`, trạng thái `PENDING_PAYMENT` và outbox `ORDER_CREATED`. Chỉ
    sau bước này mới có `order_id`; lỗi DB dừng trước mọi remote call.
 2. `ReserveInventoryActivity`; thành công đăng ký `RollbackInventoryActivity`.
-3. `ReservePromotionActivity` all-or-nothing; thành công đăng ký
-   `RollbackPromotionActivity`. Reserve chỉ ở submit, không ở Preview.
+3. `ReservePromotionActivity` gọi
+   `POST /internal/v1/promotion-allocation/reservations` all-or-nothing; thành công đăng ký
+   `RollbackPromotionActivity` gọi `/internal/v1/promotion-allocation/cancellations`.
+   Reserve chỉ ở submit, không ở Preview.
 4. `InitiatePaymentActivity` tạo PaymentIntent, trả `client_secret`,
    `publishable_key`, transaction ID; thành công đăng ký `CancelPaymentActivity`.
 5. Workflow suspend chờ payment signal 15 phút, không giữ thread/CPU.
@@ -167,8 +169,10 @@ Payment success trước timer làm `UpdateOrderStatusActivity` lock row, commit
 Sau đó reset stack sang post-payment:
 
 1. `DeductInventoryActivity`, compensation `RollbackDeductedInventoryActivity`.
-2. `ConfirmPromotionActivity`, key riêng mỗi promotion, compensation
-   `CancelConfirmedPromotionActivity`.
+2. `ConfirmPromotionActivity` gọi
+   `POST /internal/v1/promotion-allocation/confirmations` với `REDEEM_FINAL` key riêng mỗi
+   promotion; compensation `CancelConfirmedPromotionActivity` gọi
+   `POST /internal/v1/promotion-allocation/technical-cancellations` với `CANCEL_FINAL` key.
 3. `UpdateOrderStatusActivity` chuyển `PAID -> PROCESSING`, phát
    `ORDER_STATUS_CHANGED`, compensation `RevertOrderStatusToPaidActivity`.
 

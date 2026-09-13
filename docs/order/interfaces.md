@@ -8,14 +8,15 @@ owners:
 evidence:
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/order/v1/schemas/order-completed.schema.json
+  - contracts/http/promotion/v1/openapi.yaml
 verified_against_commit: null
 ---
 
 # Order Service — Giao diện tích hợp
 
-> File này bảo toàn semantics từ thiết kế cũ. Lần refactor này không đối soát hay
-> chuẩn hóa contract giữa các service; machine-readable contract hiện có chỉ bao
-> phủ một phần `ORDER_COMPLETED` và không tự động thay thế các mô tả còn lại.
+> HTTP allocation contract do Promotion sở hữu đã được chuẩn hóa tại
+> [`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
+> Các interface Order khác vẫn giữ trạng thái đề xuất/partial như ghi riêng bên dưới.
 
 ## 1. Danh mục tương tác
 
@@ -24,7 +25,7 @@ verified_against_commit: null
 | Order detail/search/cancel/return | Inbound | HTTP | Order | Buyer/Admin qua Gateway | proposed |
 | Create from checkout | Inbound | HTTP | Order | Checkout | proposed |
 | Inventory activities | Outbound | HTTP/gRPC | Inventory | Order Temporal worker | proposed |
-| Promotion activities | Outbound | HTTP/gRPC | Promotion | Order Temporal worker | proposed |
+| Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
 | Payment activities | Outbound | HTTP/gRPC | Payment | Order Temporal worker | proposed |
 | `t.order.events` | Outbound | Kafka | Order | Cart, Notification, Review, Analytics và consumer khác; Promotion không consume refund | partial contract |
 | `t.payment.events` | Inbound | Kafka | Payment | Order | proposed semantics |
@@ -69,8 +70,10 @@ Tên field response chuẩn hóa gồm `primary_item_name`, `primary_item_image_
 | Reserve/rollback inventory | Inventory | Giữ/nhả stock theo routing plan | Activity timeout/retry; stable request identity |
 | Deduct/rollback deducted inventory | Inventory | Trừ stock sau payment hoặc bù khi post-payment fail | Bắt buộc idempotent |
 | Register refund return expectation | Inventory | Đăng ký FULL/PARTIAL item scope cần nhận lại | Key theo order + refund request |
-| Reserve/rollback promotion | Promotion | Giữ/nhả budget runtime sau submit | Key riêng từng promotion |
-| Confirm/cancel confirmed promotion | Promotion | Commit `REDEEMED` hoặc PostgreSQL-first undo post-payment commit | Durable command receipt theo `REDEEM_FINAL`/`CANCEL_FINAL` key; replay stored response |
+| `POST /internal/v1/promotion-allocation/reservations` | Promotion | TRY giữ budget runtime sau submit | Natural key order/promotion; cùng payload replay, khác payload conflict |
+| `POST /internal/v1/promotion-allocation/cancellations` | Promotion | CANCEL nhả reservation trước payment confirm | Chỉ nhả `RESERVED`; trả `RELEASED`, `NO_RESERVATION` hoặc `REPAIR_REQUIRED` |
+| `POST /internal/v1/promotion-allocation/confirmations` | Promotion | CONFIRM wallet `USED` + durable budget/receipt/outbox | Bắt buộc `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | Promotion | Bù kỹ thuật sau confirm; không phải customer refund | Bắt buộc `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}`; wallet về `SAVED/EXPIRED` |
 | Initiate/cancel payment | Payment | Tạo/hủy Stripe PaymentIntent | Payment sở hữu provider details |
 | Initiate refund | Payment | Tạo Stripe Refund đúng một lần sau gate | Stable refund key/transaction ID |
 
@@ -83,6 +86,10 @@ Hai final key được giữ qua mọi Temporal retry. Promotion canonicalize re
 hiện cùng key khác payload; Order chỉ coi activity hoàn tất khi durable command receipt,
 wallet, budget và outbox đã commit. Redis confirm finalizer hoặc technical-cancel repair
 có thể hội tụ sau và không thay business response đã lưu.
+
+Mọi ID trong payload Promotion là opaque string. Money dùng
+`{amount_minor,currency}` và hiện chỉ chấp nhận `currency=VND`; Order adapter không truyền
+BIGINT/`*_vnd` storage shape qua wire.
 
 Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 `failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`; Checkout mới

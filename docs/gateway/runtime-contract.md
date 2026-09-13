@@ -59,7 +59,11 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/.well-known/**` | GET | auth-service | Không | `public-read` | Chỉ JWKS/OIDC metadata |
 | `/api/users/**` | do service định nghĩa | user-service | Bắt buộc | `api-authenticated` | Authorization thuộc service |
 | `/api/orders/**` | do service định nghĩa | order-service | Bắt buộc | `api-authenticated` | Không retry method không idempotent |
-| `/api/v1/promotions/platform-voucher-discovery` | GET | promotion-service | Bắt buộc | `promotion-discovery` | Target route: quota 20 request/user/phút tại edge; Promotion không có local Redis limiter |
+| `/api/v1/me/promotion-voucher-suggestions` | POST | promotion-service | Bắt buộc | `api-authenticated` | Safe query với body checkout context; không gateway retry, response `no-store` |
+| `/api/v1/promotion-discovery` | POST | promotion-service | Bắt buộc | `promotion-discovery` | Quota 20 request/user/phút tại edge; safe query nhưng không gateway retry POST |
+| `/api/v1/me/promotion-vouchers/**` | PUT | promotion-service | Bắt buộc | `api-authenticated` | Save/evaluate explicit; Promotion tự xử lý natural idempotency |
+| `/api/v1/me/promotion-voucher-claims` | POST | promotion-service | Bắt buộc | `api-authenticated` | Limited claim; không gateway retry, hỗ trợ `202 CLAIM_PENDING` |
+| `/api/v1/admin/promotion-campaigns`, `/api/v1/admin/promotion-campaigns/**`, `/api/v1/admin/promotions/**`, `/api/v1/admin/markdown-rules/**` | GET, POST, PATCH | promotion-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Promotion tự authorize; mutation dùng `If-Match`/natural key, gateway không retry write |
 | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
 | `/api/v1/reviews/products/**` | GET | review-service | Không | `public-read` | Chỉ list/aggregate review APPROVED; Gateway bỏ forged identity headers cả trên route anonymous |
 | `/api/v1/reviews/**` (trừ `products/**`) | GET, POST, PATCH | review-service | Bắt buộc | `api-authenticated` | Buyer review, report và signed media upload; Review tự kiểm tra owner, Gateway không retry write |
@@ -73,9 +77,11 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
 
-Promotion Service hiện vẫn là target design chưa có runtime module; chỉ tạo router này khi
-contract HTTP và profile `promotion-discovery` đã được deploy cùng nhau. Không thay quota
-này bằng một Redis key do Promotion sở hữu.
+Promotion Service hiện vẫn là target design chưa có runtime module; chỉ tạo các router
+trên khi [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml), workload
+và profile `promotion-discovery` đã được deploy cùng nhau. Không thay quota này bằng một
+Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi qua service
+network với workload identity, không có public router ở Gateway.
 
 Các endpoint `/internal/v1/**` của Product Service (catalog export và snapshot cho
 Search Service) chỉ đi qua mạng nội bộ với service identity đã xác minh; gateway

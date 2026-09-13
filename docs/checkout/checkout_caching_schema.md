@@ -92,7 +92,12 @@ Tài liệu này mô tả chiến lược Caching cho Checkout Service — một
 
 ### 2.2. Voucher Discovery (Không có cache ví)
 
-Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checkout Service gọi Promotion Service `GET /v1/promotions/voucher-suggestions`. Promotion Service **không còn dùng wallet cache** nữa; mỗi request sẽ query trực tiếp DB `user_coupon_wallets` (Index Scan `user_id, status`, ~3-5ms) và áp dụng lazy expiry inline cho các row `SAVED` đã quá `expired_at`.
+Khi khách mở tab "Voucher của tôi", Checkout gọi
+`POST /api/v1/me/promotion-voucher-suggestions`; endpoint này chỉ trả voucher `SAVED`
+trong wallet. Khi mở tab "Khám phá", Checkout gọi `POST /api/v1/promotion-discovery` để
+lấy hợp nhất wallet voucher và public voucher `ACTIVE`. Hai endpoint là safe query dù dùng
+POST vì checkout context lớn; Promotion **không còn dùng wallet cache** nữa, mà query DB
+`user_coupon_wallets` và lazy-expire row `SAVED` đã quá `expired_at`.
 
 **Chi tiết thiết kế:** Xem [Promotion Data Design](../promotion/data.md) và [Promotion Workflows](../promotion/workflows.md).
 
@@ -110,8 +115,10 @@ Khi khách mở khung "Chọn Mã Giảm Giá" tại màn hình Checkout, Checko
 
 > **Boundary ghi ví rõ ràng:**
 > - Checkout Submit không được ghi `user_coupon_wallets`.
-> - Chỉ explicit action như `save-and-apply` (voucher) hoặc campaign/claim worker của Promotion mới tạo thêm bản ghi ví.
-> - Sau khi `save-and-apply` thành công, lần Discovery kế tiếp sẽ tự thấy mã mới (vì query trực tiếp DB, không qua cache).
+> - Chỉ explicit action như `PUT /api/v1/me/promotion-vouchers/{promotion_id}`,
+>   `POST /api/v1/me/promotion-voucher-claims` hoặc campaign worker của Promotion mới tạo bản ghi ví.
+> - Sau khi PUT lưu voucher thành công, lần Discovery/Suggestion kế tiếp tự thấy mã mới
+>   vì query trực tiếp DB, không qua cache.
 
 ### 2.3. User Address Cache
 
@@ -199,14 +206,16 @@ Giới hạn số lượng thread chạy song song của cùng 1 user, tránh ra
 
 ### 5.2. Anti-Tampering
 
-Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session. Client chỉ gửi lên identifiers (address_id, promotion_code). Backend tự tính lại, so khớp, rồi mới tạo order.
+Tất cả tính toán (giá, discount) được thực hiện **server-side** và lưu trong Redis session.
+Client chỉ gửi identifiers (`address_id`, opaque `promotion_id`). Backend tự tính lại, so
+khớp, rồi mới tạo order.
 
 > **Phase 18 (Single Payment Provider - Stripe):** Hệ thống chỉ dùng Stripe, nên field `payment_method` không còn cần thiết trong Checkout session. Checkout không cần validate `payment_method` ở Submit. Redis session chỉ lưu `pricing_summary` + `delivery_address_snapshot` + voucher selection; provider được fix cứng = Stripe ở Order Service và Payment Service. `delivery_address_snapshot` dùng chuẩn `recipient_name`, `recipient_phone`, `address_line`, `province_code`, `district_code`, `ward_code` của User Service.
 
 ```
-Client gửi: { token, address_id: "550e8400-e29b-41d4-a716-446655440000", promotion_code: "HAPPYBDAY" }
+Client gửi: { token, address_id: "550e8400-e29b-41d4-a716-446655440000", promotion_id: "promo-123" }
 Server: Bóc token → Redis session → Lấy pricing_summary đã tính sẵn ở Preview
-Server: Gọi [User OpenAPI v1](../../contracts/http/user/v1/openapi.yaml) endpoint nội bộ để validate address_id thuộc user và lấy snapshot → Validate promotion_code match session → Pass
+Server: Gọi [User OpenAPI v1](../../contracts/http/user/v1/openapi.yaml) endpoint nội bộ để validate address_id thuộc user và lấy snapshot → Validate promotion_id match session → Pass
 Server: Gửi toàn bộ sang Order Service: { items, amount, discount, ... } -- tất cả từ Redis
 ```
 

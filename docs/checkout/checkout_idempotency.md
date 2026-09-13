@@ -78,7 +78,7 @@ return 1  -- OK
 | Hành động | Hệ quả |
 |:---|:---|
 | **User đổi voucher PLATFORM** | Backend gọi Preview API lại theo nhánh tối ưu (Promotion evaluate) → **Tạo token MỚI** → Ghi đè session Redis |
-| **User bấm "Lưu & Chọn" voucher chưa lưu** | Promotion xử lý `save-and-apply` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
+| **User bấm "Lưu & Chọn" voucher chưa lưu** | Promotion xử lý `PUT /api/v1/me/promotion-vouchers/{promotion_id}` để ghi ví, sau đó Checkout gọi lại Preview → **Tạo token MỚI** |
 | **User chọn voucher Sàn** | Chỉ được chọn các mã đã có trong ví và chưa quá `expired_at`; expiry đã được Promotion snapshot theo validity policy khi save/claim, không có default 30 ngày; Discovery có thể hạ mã thành `BUDGET_EXHAUSTED` bằng budget guard read-time |
 | **User đổi địa chỉ nhận hàng** | Backend gọi Preview API lại, recompute Inventory (routing) + Promotion → **Tạo token MỚI** → Ghi đè session Redis |
 | **User đổi quantity/add/remove SKU** | Frontend gọi Cart API trước (ngoài phạm vi Checkout), sau đó gọi Preview lại với snapshot Cart mới → **Tạo token MỚI** |
@@ -91,7 +91,7 @@ return 1  -- OK
 > không có lịch riêng. Use window khi submit luôn theo `user_coupon_wallets.expired_at`,
 > vì vậy voucher đã lưu có thể còn dùng sau natural campaign end.
 > Limited claim đóng hard boundary bằng Redis TIME + campaign revision trong cùng Lua với
-> SPOP; public `save-and-apply` kiểm phase bằng PostgreSQL clock trong transaction.
+> SPOP; public `PUT /api/v1/me/promotion-vouchers/{promotion_id}` kiểm phase bằng PostgreSQL clock trong transaction.
 
 ---
 
@@ -104,7 +104,7 @@ Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên
 | Client gửi | Server dùng |
 |---|---|
 | `address_id: "550e8400-e29b-41d4-a716-446655440000"` | ✅ Checkout gọi User internal API qua mTLS để xác thực ownership và lấy address snapshot |
-| `promotion_code: "HAPPY"` | ✅ Server gọi Promotion API validate + lấy `discount_amount` |
+| `promotion_id: "promo-123"` | ✅ Server gọi `POST /internal/v1/promotion-discount-calculations`; ID là opaque string và amount do Promotion trả |
 | ~~`total_amount: 450000`~~ | ❌ **IGNORE** — Server tự tính từ Redis session |
 | ~~`payment_method: "VNPAY"`~~ | ❌ **N/A** — Field đã bỏ tại Phase 18. Provider cố định = Stripe, Order/Payment Service tự xử lý |
 
@@ -118,7 +118,8 @@ Checkout Service **KHÔNG TIN bất kỳ số tiền nào** do client gửi lên
     - Các thao tác Re-validate nặng (chạm DB) như kiểm tra Address, Stock hoặc **Khóa ngân sách Khuyến mãi (Reserve)** được uỷ quyền hoàn toàn cho luồng **Temporal Saga của Order Service** chạy ngầm để phục vụ tốc độ siêu tốc và chống giam tiền.
     - Discovery budget guard chỉ là lớp giảm stale UX; quyết định exhausted budget cuối cùng vẫn do Reserve ở submit-time.
     - Nếu reserve fail ở Promotion (all-or-nothing), Checkout phải gọi lại Promotion evaluate để dựng `dropped_promotions[]`; tuyệt đối không làm phép trừ cục bộ ở Checkout.
-    - Submit path không được phát sinh ghi ví voucher ngầm; dữ liệu ví chỉ thay đổi bởi luồng explicit (save-and-apply/claim/campaign worker).
+    - Submit path không được phát sinh ghi ví voucher ngầm; dữ liệu ví chỉ thay đổi bởi
+      PUT save, POST claim hoặc campaign worker explicit.
 3. **Sử dụng `pricing_summary` từ Redis session** — KHÔNG tính lại chi tiết. Đây là khung giá an toàn đã vượt qua Staleness Check.
 4. **Gửi sang Order Service:** Toàn bộ payload từ Redis và `user_ack_degraded_pricing` (nếu có) — client không có cơ hội chèn số liệu giả mạo.
 

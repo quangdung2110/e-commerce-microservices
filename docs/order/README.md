@@ -104,7 +104,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Inbound | Inventory | Kafka | Ship-to-customer và return-received-all | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Outbound | Inventory | HTTP/gRPC activity | Reserve, release, deduct, đăng ký return expectation | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
-| Outbound | Promotion | HTTP/gRPC activity | Reserve/release runtime; confirm và technical `cancel-confirmed` có durable command receipt; không gọi khi customer refund | Bắt buộc khi có promotion | Promotion boundary đã chốt; wire contract chưa chuẩn hóa |
+| Outbound | Promotion | HTTP activity | Reserve/cancel runtime; confirm và technical cancellation có durable command receipt; không gọi khi customer refund | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — proposed |
 | Outbound | Payment | HTTP/gRPC activity | Tạo PaymentIntent, cancel và refund | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
 | Outbound | Kafka consumers | Kafka | Event vòng đời order/item | Bắt buộc | Có một phần Order completed v1; không đối soát lần này |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |

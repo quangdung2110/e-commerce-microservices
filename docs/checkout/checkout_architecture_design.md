@@ -5,6 +5,7 @@
 *   [Caching Schema (Redis Session)](checkout_caching_schema.md)
 *   [Idempotency & Anti-Tampering](checkout_idempotency.md)
 *   [Security Analysis (Anti-Tampering & Session)](checkout_security_analysis.md)
+*   [Promotion HTTP OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml)
 
 ---
 
@@ -23,7 +24,7 @@ Checkout Service hoạt động như một **Aggregator** (Người gom dữ li�
 *   Frontend (Mobile App) nếu không có Checkout BFF sẽ phải gọi nhiều API riêng lẻ (Cart, Promo, Inventory, User) và tự xử lý dependency warehouse selection theo từng item -> Gây lỗi bảo mật (client bị hack đổi giá), logic App nặng nề, tốn pin và băng thông.
 
 ### 1.2. Trách nhiệm Cốt lõi
-*   **Data Aggregation (Gom dữ liệu):** Nhận 1 request duy nhất từ Frontend, song song (`Goroutines` hoặc `CompletableFuture`) gọi sang Cart, Promotion, Inventory để lấy thông số và ráp lại thành bảng báo giá (Quotation).
+*   **Data Aggregation (Gom dữ liệu):** Nhận 1 request duy nhất từ Frontend, song song (`Goroutines` hoặc `CompletableFuture`) gọi sang Cart, Promotion, Inventory để lấy thông số và ráp lại thành bảng báo giá (Quotation). Với Promotion, Preview dùng `POST /internal/v1/promotion-discount-calculations`; tray dùng hai safe-query POST `.../promotion-voucher-suggestions` và `/api/v1/promotion-discovery`.
 *   **Idempotency & Rate Limiting (Chống spam/Trùng lặp):** Validation ban đầu (Check token, check JWT, chống spam click).
 *   **Tính toán tập trung (Centralized Calculation):** Đảm bảo mọi phép trừ phần trăm giảm giá, tính tổng tiền đều được tính bởi Backend, ngăn chặn client truyền số sai lệch (Tampering).
 *   **Boundary ghi dữ liệu rõ ràng (Explicit Write Boundary):** Checkout chỉ orchestration tính toán và commit đơn. Việc ghi mới vào ví voucher không được làm ngầm ở Submit; chỉ các luồng explicit như Save & Apply voucher hoặc worker campaign của Promotion mới được tạo thêm bản ghi ví.
