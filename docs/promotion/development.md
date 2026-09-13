@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/http/promotion/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -26,7 +27,8 @@ cho allocation lifecycle.
 
 Cần profile local cho DB/Redis/Kafka/connector, topic/group, reservation TTL, pending
 rescue, claim-gate rebuild/clock-drift threshold, campaign loop/fallback và batch size.
-Mọi time UTC, money integer VND. Secret đến từ environment/secret store, không commit
+Mọi time UTC. Wire money dùng `{amount_minor,currency}`; persistence/Redis dùng integer
+VND và adapter phải kiểm `currency=VND`. Secret đến từ environment/secret store, không commit
 credential. Không cấu hình `t.promotion.budget.events`.
 
 ## 3. Tests bắt buộc
@@ -40,7 +42,7 @@ credential. Không cấu hình `t.promotion.budget.events`.
 | Concurrency | 10.000 contender, exact claim boundary, duplicate claim, confirm/cancel/sweep races |
 | Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM |
 | CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract, Product tombstone, stale revision |
-| HTTP | AuthZ, discovery/save, no refund endpoint, final-command stored response/mismatch |
+| HTTP | Contract test đủ 24 operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→cancel-confirmed/repair |
 
@@ -114,8 +116,10 @@ Consumer `com.ecommerce.catalog.product-deleted.v1` phải guard catalog revisio
 terminal watermark + invalidation trước ack, serialize với mọi markdown mutation bằng cùng
 product advisory lock và không phát INACTIVE ngược lại Product đã xóa.
 
-Promotion HTTP cần OpenAPI trước implementation. Contract không được chứa refund endpoint
-hoặc SKU-level voucher allocation.
+Promotion HTTP phải generate/validate theo
+[`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
+Contract không được chứa refund endpoint hoặc SKU-level voucher allocation; CI lint
+OpenAPI và chạy provider/consumer contract tests trước khi nâng adoption status.
 
 ## 8. Test data
 

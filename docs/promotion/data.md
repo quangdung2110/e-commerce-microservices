@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/http/promotion/v1/openapi.yaml
   - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
@@ -26,6 +27,11 @@ index. Mọi dữ liệu Redis phải rebuild, replay hoặc reconcile được.
 Promotion không lưu refund allocation theo SKU và không tiêu thụ customer-refund event.
 Order/Payment sở hữu refund amount/scope; chính sách partial refund của hai service đó
 chưa chốt vì tài liệu chưa được refactor.
+
+Các kiểu bên dưới là storage model, không phải wire contract. Adapter HTTP serialize mọi
+ID BIGINT thành opaque string; các cột tiền `*_vnd`/Redis integer map sang
+`{amount_minor,currency:"VND"}` theo
+[`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
 
 ## 2. Logical model
 

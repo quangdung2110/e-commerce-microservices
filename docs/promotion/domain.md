@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/http/promotion/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -207,7 +208,9 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 
 - Chỉ admin quản trị campaign/voucher/markdown/budget.
 - Customer chỉ đọc/claim/save wallet của `user_id` trong access token.
-- Chỉ Checkout service identity gọi API nội bộ calculate/discovery nếu không expose.
+- Chỉ Checkout workload identity gọi
+  `POST /internal/v1/promotion-discount-calculations`; discovery/suggestion customer lấy
+  user identity đã được Gateway verify, còn allocation chỉ allowlist Order/Temporal.
 - Chỉ Order/Temporal gọi reserve/confirm/cancel/`cancel-confirmed`.
 - Consumer validate broker ACL, schema, event identity và business guard.
 

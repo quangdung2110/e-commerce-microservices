@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/http/promotion/v1/openapi.yaml
   - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
@@ -26,7 +27,7 @@ hoạt động.
 | Runtime dự kiến | Java 21, Spring Boot 4 |
 | Implementation path dự kiến | `java/services/promotion-service` — hiện chưa tồn tại |
 | Độ tin cậy tài liệu | `proposed`; chưa verified với source code/migration |
-| Contract adoption | Markdown snapshot v1 đã có contract đích; HTTP Promotion chưa có OpenAPI |
+| Contract adoption | HTTP Promotion v1 và Markdown snapshot v1 đã có contract đích; chưa có implementation/contract test |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -148,6 +149,7 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
 | [Architecture](./architecture.md) | Thành phần, consistency, concurrency và outbox |
 | [Domain](./domain.md) | Thuật ngữ, rule, invariant và state machine |
 | [Interfaces](./interfaces.md) | Semantics HTTP/Kafka |
+| [HTTP OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) | 24 operations Admin, Customer/Checkout và Order/Temporal |
 | [Workflows](./workflows.md) | Happy path, failure, retry và recovery |
 | [Data](./data.md) | PostgreSQL, Redis, constraint và lifecycle |
 | [Operations](./operations.md) | Worker, alert, failure mode và runbook |
@@ -156,7 +158,8 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
 
 ## 9. Known gaps
 
-- Chưa có service code, migration, Promotion OpenAPI/AsyncAPI hoặc test.
+- Chưa có service code, migration, Promotion-owned AsyncAPI hoặc test; HTTP OpenAPI v1
+  đang `proposed`, chưa verified với implementation.
 - Chính sách partial refund và số refund transaction/order của Order/Payment chưa chốt;
   Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
 - Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không

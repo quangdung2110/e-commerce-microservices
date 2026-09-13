@@ -27,7 +27,7 @@ vòng đời sở hữu và refund semantics đơn giản, không cho mã đư�
 
 Một order tối đa một `PLATFORM_VOUCHER` PERCENTAGE/FIXED. Claim window dùng promotion
 start/end; use window dùng wallet expiry, mặc định save +30 ngày. Wallet tray chỉ mã đã
-save; public discovery + `save-and-apply` là write có chủ đích, Submit không auto-save.
+save; public discovery + explicit save là write có chủ đích, Submit không auto-save.
 Refund giữ wallet USED; voucher không tái sử dụng. Partial allocation chỉ restore theo
 internal rule `RESTORE_ONLY_IF_FULL_PLATFORM_COVERED`.
 

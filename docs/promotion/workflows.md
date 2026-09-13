@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - docs/promotion/RuleEngineDemo.java
+  - contracts/http/promotion/v1/openapi.yaml
   - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
@@ -31,7 +32,8 @@ Không có Promotion workflow cho customer refund.
 
 ## WF-PROMO-001 — Quản trị và publish campaign
 
-1. Admin tạo campaign `DRAFT` với `[start_time,end_time)`, voucher/markdown children.
+1. Admin gọi `POST /api/v1/admin/promotion-campaigns` để tạo campaign `DRAFT`, sau đó
+   tạo voucher/markdown children qua các collection dưới campaign.
 2. Application validate AST, validity mode, product IDs, money/basis points và budget.
    Với create/update markdown, sau synchronous Product validation, PostgreSQL transaction acquire
    product advisory lock và reject nếu terminal tombstone watermark đã tồn tại.
@@ -109,7 +111,8 @@ làm hai caller cùng nhận success cho một claim ID; DB conditional update c
 
 ### Public save/direct grant
 
-`save-and-apply` hoặc admin grant tạo unique wallet. Public save kiểm campaign ACTIVE và
+`PUT /api/v1/me/promotion-vouchers/{promotion_id}` hoặc
+`POST /api/v1/admin/promotions/{promotion_id}/grants` tạo unique wallet. Public save kiểm campaign ACTIVE và
 promotion enabled bằng PostgreSQL clock trong cùng transaction với wallet insert. Existing
 SAVED còn hạn trả idempotent success mà không kéo dài expiry; USED bị từ chối. Không có
 default 30 ngày: expiry lấy từ validity policy.
@@ -118,7 +121,8 @@ default 30 ngày: expiry lấy từ validity policy.
 
 ### Wallet tray
 
-1. Query wallet `(user_id,status)` và lazy-normalize SAVED đã hết hạn thành EXPIRED.
+1. `POST /api/v1/me/promotion-voucher-suggestions` query wallet `(user_id,status)` và
+   lazy-normalize SAVED đã hết hạn thành EXPIRED.
 2. Voucher SAVED, `expired_at > now` vẫn được xét dù campaign tự nhiên đã ENDED; với
    validity mode `CAMPAIGN_END`, `expired_at` trùng end nên voucher bị loại theo expiry.
 3. Batch load snapshot JSON, parse AST request-scoped, evaluate context.
@@ -127,12 +131,13 @@ default 30 ngày: expiry lấy từ validity policy.
 
 ### Public discovery
 
-Ngoài wallet, query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
+`POST /api/v1/promotion-discovery` ngoài wallet còn query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
 user đã sở hữu, evaluate/sort/limit. Campaign đã end không xuất hiện cho save mới.
 
 ### Calculate
 
-Checkout gửi 0/1 platform voucher và subtotal/context toàn đơn. Promotion trả một discount
+Checkout gọi `POST /internal/v1/promotion-discount-calculations`, gửi 0/1 platform voucher
+và subtotal/context toàn đơn. Promotion trả một discount
 toàn đơn, không trả allocation theo SKU. Rule evaluation không side effect và cùng
 AST/context phải cho cùng kết quả.
 
@@ -140,7 +145,8 @@ AST/context phải cho cùng kết quả.
 
 ### TRY
 
-1. Chỉ sau Submit và khi đã có `order_id`, Order gọi `/reserve`.
+1. Chỉ sau Submit và khi đã có `order_id`, Order gọi
+   `POST /internal/v1/promotion-allocation/reservations`.
 2. Promotion revalidate wallet SAVED/expiry/rule và requested amount.
 3. Lua kiểm replay payload, available quantity/amount, tăng integer reserved counter,
    ghi reservation payload + per-promotion expiry ZSET.
@@ -148,7 +154,8 @@ AST/context phải cho cùng kết quả.
 
 ### CONFIRM
 
-1. Order gọi stable `REDEEM_FINAL:{order_id}:{promotion_id}` và expected amount. Canonical
+1. Order gọi `POST /internal/v1/promotion-allocation/confirmations` với
+   `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` và expected amount. Canonical
    request hash bao gồm operation/order/promotion/expected amount.
 2. Promotion preflight PostgreSQL receipt theo key và business identity. Existing cùng
    hash trả stored response rồi kick finalizer/repair; khác hash trả
@@ -178,7 +185,8 @@ late-payment policy.
 
 ### CANCEL trước confirm
 
-Lua chỉ release reservation đang `RESERVED`, rồi xóa payload/index. Reservation
+Order gọi `POST /internal/v1/promotion-allocation/cancellations`. Lua chỉ release
+reservation đang `RESERVED`, rồi xóa payload/index. Reservation
 `CONFIRMING` không được cancel mù; caller phải đọc durable confirm receipt/outcome. Wallet
 vẫn `SAVED` nếu confirm chưa commit; PostgreSQL không tạo usage row hoặc customer-refund
 record. Missing payload chưa đủ để giả định đã release; worker đối chiếu receipt/wallet và
@@ -189,8 +197,8 @@ enqueue repair nếu cần.
 Chỉ dùng khi Promotion đã confirm nhưng checkout/order saga không thể hoàn tất vì lỗi kỹ
 thuật. Đây không phải customer refund.
 
-1. Order gọi `/cancel-confirmed` với stable
-   `CANCEL_FINAL:{order_id}:{promotion_id}` và expected confirmed amount.
+1. Order gọi `POST /internal/v1/promotion-allocation/technical-cancellations` với
+   `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}` và expected confirmed amount.
 2. PostgreSQL transaction acquire `CANCEL_CONFIRMED` command receipt theo canonical request
    hash. Cùng key/hash đã complete trả stored response; khác hash bị từ chối.
 3. Với command mới, transaction lock wallet/budget, bắt buộc wallet `USED` bởi đúng order và

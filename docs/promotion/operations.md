@@ -5,7 +5,8 @@ scope: target
 status: proposed
 owners:
   - Promotion Service team
-evidence: []
+evidence:
+  - contracts/http/promotion/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -59,8 +60,8 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 | Topic/group/connector | Bắt buộc cấu hình rõ, không hard-code secret |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
-Voucher discovery không có property rate-limit ở Promotion: Gateway profile
-`promotion-discovery` sở hữu quota 20 request/user/phút và observability của việc throttle.
+`POST /api/v1/promotion-discovery` không có property rate-limit ở Promotion: Gateway
+profile `promotion-discovery` sở hữu quota 20 request/user/phút và observability của việc throttle.
 
 ## 4. Observability
 
