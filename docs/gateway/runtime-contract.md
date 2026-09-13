@@ -59,6 +59,7 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/.well-known/**` | GET | auth-service | Không | `public-read` | Chỉ JWKS/OIDC metadata |
 | `/api/users/**` | do service định nghĩa | user-service | Bắt buộc | `api-authenticated` | Authorization thuộc service |
 | `/api/orders/**` | do service định nghĩa | order-service | Bắt buộc | `api-authenticated` | Không retry method không idempotent |
+| `/api/v1/promotions/platform-voucher-discovery` | GET | promotion-service | Bắt buộc | `promotion-discovery` | Target route: quota 20 request/user/phút tại edge; Promotion không có local Redis limiter |
 | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
 | `/api/v1/reviews/products/**` | GET | review-service | Không | `public-read` | Chỉ list/aggregate review APPROVED; Gateway bỏ forged identity headers cả trên route anonymous |
 | `/api/v1/reviews/**` (trừ `products/**`) | GET, POST, PATCH | review-service | Bắt buộc | `api-authenticated` | Buyer review, report và signed media upload; Review tự kiểm tra owner, Gateway không retry write |
@@ -71,6 +72,10 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/ws/**` | HTTP Upgrade | chat-service | Chỉ handshake | `websocket-handshake` | Service đóng session bị revoke |
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
+
+Promotion Service hiện vẫn là target design chưa có runtime module; chỉ tạo router này khi
+contract HTTP và profile `promotion-discovery` đã được deploy cùng nhau. Không thay quota
+này bằng một Redis key do Promotion sở hữu.
 
 Các endpoint `/internal/v1/**` của Product Service (catalog export và snapshot cho
 Search Service) chỉ đi qua mạng nội bộ với service identity đã xác minh; gateway
@@ -160,6 +165,7 @@ Không route authentication nào được fail open, kể cả read-only route.
 | `public-read` | Trusted client IP | 100 req/s, burst 200 | Bảo vệ catalog/JWKS |
 | `auth-public` | Trusted client IP và route | 10 req/s, burst 20 | Chống brute force |
 | `api-authenticated` | User ID hoặc API key/tenant | 50 req/s, burst 100 | Fair-use baseline |
+| `promotion-discovery` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 20 request/user/phút | Bảo vệ query discovery; distributed state ở Gateway, không service-local limiter |
 | `payment-authenticated` | User ID hoặc API key/tenant | 20 req/s, burst 40 | Bảo vệ payment |
 | `stripe-webhook` | Stripe allow-list + endpoint quota | 50 req/s, burst 100 | Bảo vệ delivery burst |
 | `websocket-handshake` | User ID và trusted IP | 5/phút | Hạn chế connection churn |

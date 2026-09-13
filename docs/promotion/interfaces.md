@@ -55,6 +55,10 @@ Order service identity.
 
 Không có `POST /v1/promotions/refund`. Customer refund không gọi Promotion.
 
+`GET /v1/promotions/platform-voucher-discovery` được Gateway bảo vệ bằng profile
+`promotion-discovery`: 20 request/phút cho authenticated user. Quota là edge concern;
+Promotion không kiểm hoặc lưu local rate-limit state.
+
 Discovery/calculate nhận subtotal toàn đơn, item/category context, payment method và các
 field Rule Engine cần. Response trả `eligible`, reason, estimated/actual discount,
 `rule_schema_version`, `campaign_revision` và budget-guard metadata. Discount không được
@@ -63,7 +67,8 @@ chia thành allocation theo SKU.
 `campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
 của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi
 phải clone campaign DRAFT và child IDs mới. Claim request mang expected revision; Lua chỉ
-cho phép acquisition khi gate hiện hành cùng revision và Redis time nằm trong
+cho phép acquisition khi claim-gate fields hiện hành trong runtime hash cùng revision và
+Redis time nằm trong
 `[opens_at,closes_at)`. Claim endpoint preflight durable wallet/claim trước Lua và chỉ trả
 success sau PostgreSQL persistence commit; quá HTTP deadline trả `202 CLAIM_PENDING`.
 
@@ -162,7 +167,7 @@ success sau commit. Sweeper chạy lại cùng persistence function bằng `clai
 không cần một Kafka business event/topic riêng. Chỉ sau DB commit mới xóa pending Redis.
 
 Pending payload bắt buộc có `acquired_at_ms` lấy từ Redis TIME và campaign revision đã
-được claim gate kiểm atomically. Worker validate evidence này nhưng không dùng processing
+được claim-gate fields kiểm atomically. Worker validate evidence này nhưng không dùng processing
 time để từ chối claim đã linearize trước close boundary.
 
 Nếu DB chưa xác nhận trước HTTP deadline, response là retryable `202 CLAIM_PENDING`; retry
@@ -174,7 +179,7 @@ task như business event exactly-once.
 | Event | Hành động | Guard |
 |---|---|---|
 | Auth user-registered | Tùy feature flag cấp welcome voucher và snapshot expiry | Unique wallet |
-| `com.ecommerce.catalog.product-deleted.v1` | Persist terminal Product watermark và invalidate mọi markdown rule; không bump campaign revision/claim gate hoặc emit ngược | Shared product advisory lock, monotonic `catalog_revision`, conditional invalidation |
+| `com.ecommerce.catalog.product-deleted.v1` | Persist terminal Product watermark và invalidate mọi markdown rule; không bump campaign revision/claim-gate fields hoặc emit ngược | Shared product advisory lock, monotonic `catalog_revision`, conditional invalidation |
 
 `ORDER_REFUNDED` có thể vẫn tồn tại trong Order ecosystem cho Notification/Analytics,
 nhưng Promotion không subscribe và payload không cần `promotion_refund_allocations[]`.

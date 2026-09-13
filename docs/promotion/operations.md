@@ -21,7 +21,7 @@ verified_against_commit: null
 | Voucher discovery latency | p99 `< 15 ms` khi snapshot hit; tách cache miss |
 | API error | Tách business 409 khỏi dependency/5xx |
 | Claim pending age | Alert trước/sau rescue threshold 5 phút |
-| Claim boundary/gate | Gate revision drift, Redis–PostgreSQL clock drift và reject theo boundary |
+| Claim boundary/runtime | Claim-gate field revision drift, Redis–PostgreSQL clock drift và reject theo boundary |
 | Reservation release delay | Dưới một sweep window trong điều kiện bình thường |
 | Final command replay | Receipt hit/mismatch, confirm-fence age và Redis-finalize delay |
 | Campaign boundary delay | loop 250 ms–1 s; fallback 10–30 s |
@@ -40,7 +40,7 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
   rồi chờ projection repair. Snapshot read có thể fallback DB.
 - Consumer readiness phản ánh broker/subscription.
 - Scheduler readiness phản ánh PostgreSQL, Redis và độ trễ fallback.
-- Startup probe chờ migration, campaign ZSET và claim gate/pool rebuild bắt buộc.
+- Startup probe chờ migration, campaign ZSET và runtime claim fields/pool rebuild bắt buộc.
 - Debezium/Kafka Connect health được giám sát như dependency của event propagation.
 
 ## 3. Configuration
@@ -54,17 +54,18 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 | Claim clock-drift threshold | Phải nhỏ hơn boundary correctness SLO; chưa chốt số |
 | Campaign schedule loop | 250ms–1s |
 | Campaign DB fallback | 10–30s |
-| Discovery rate limit | 20/user/min |
 | Outbox retention | Theo CDC watermark + outbound event replay horizon |
 | Command receipt retention | Lớn hơn Temporal retry + late-recovery horizon; chưa chốt số |
 | Topic/group/connector | Bắt buộc cấu hình rõ, không hard-code secret |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
+Voucher discovery không có property rate-limit ở Promotion: Gateway profile
+`promotion-discovery` sở hữu quota 20 request/user/phút và observability của việc throttle.
 
 ## 4. Observability
 
 - Metrics: API latency/error; AST parse/eval; snapshot hit/miss/version drift; claim
-  outcome/pending age/gate revision/boundary reject/clock drift; Redis Lua codes;
+  outcome/pending age/runtime gate revision/boundary reject/clock drift; Redis Lua codes;
   reservation expiry; campaign schedule lag/stale
   revision; command receipt hit/mismatch; confirm fence/finalizer age; projection repair;
   outbox oldest age/rows; Debezium/consumer lag; Product stale revision drop/tombstone
@@ -84,7 +85,7 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 | PostgreSQL unavailable/pool exhausted | readiness/saturation kéo dài | Critical |
 | Redis claim/reserve failure | EVAL/CROSSSLOT/timeout write path | Critical |
 | Pending claim stale | oldest >5m hoặc backlog tăng | High |
-| Claim gate/clock drift | gate stale hoặc Redis–DB clock drift vượt threshold | Critical |
+| Claim runtime/clock drift | claim-gate fields stale hoặc Redis–DB clock drift vượt threshold | Critical |
 | Reservation cleanup failure | due backlog/repair queue tăng | High |
 | Confirm fence/finalizer stuck | `CONFIRMING` vượt grace hoặc receipt commit chưa hội tụ Redis | High |
 | Command receipt inconsistency | receipt khác wallet/budget/outbox hoặc payload mismatch spike | Critical |
@@ -110,8 +111,8 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 | Claim API crash sau SPOP | Chưa trả success; pending worker persist guarded, không trả claim vào pool |
 | Claim đến đúng/sau end boundary | Redis TIME gate từ chối tại `now >= closes_at`; không SPOP |
 | Claim worker chạy sau end/pause/cancel | Persist nếu pending identity và revision-at-acquisition nhất quán; không so với current revision |
-| Redis mất claim gate/pool | Mutation không fail-open; rebuild từ PostgreSQL rồi mới ready |
-| Pause/cancel fail sau khi gate đã đóng | DB vẫn là PUBLISHED; rebuild/reopen gate từ DB, chấp nhận false reject tạm thời |
+| Redis mất runtime claim fields/pool | Mutation không fail-open; rebuild từ PostgreSQL rồi mới ready |
+| Pause/cancel fail sau khi claim fields đã đóng | DB vẫn là PUBLISHED; rebuild/reopen từ DB, chấp nhận false reject tạm thời |
 | Product tombstone duplicate/stale | Watermark không lùi, repair dangling rule nếu có; ack sau DB commit |
 | Crash sau tombstone DB commit trước cache invalidation | Replay guarded no-op rồi invalidate/rebuild; không emit về Product |
 | DB fail sau Confirm-Prepare | Durable state chưa đổi; giữ fence trong grace để retry, hết grace đi late-payment policy |
@@ -152,8 +153,9 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
    trước Promotion producer; contract đã production thì dùng v2 dual-read.
 3. Cấu hình outbox connector/ACL/topic và kiểm thử commit→CDC.
 4. Deploy receipt reader/schema trước writer; deploy Confirm-Prepare/finalizer và DB-first
-   `cancel-confirmed`. Deploy Product-tombstone consumer, causal dedup writer và claim-gate
-   Lua; preload claim/budget, rebuild claim gate/pool và campaign schedule.
+   `cancel-confirmed`. Deploy Product-tombstone consumer, causal dedup writer và Lua đọc
+   claim-gate fields từ runtime hash; preload claim/budget, rebuild runtime claim fields/pool
+   và campaign schedule.
 5. Canary discovery rồi mutation; bật schedule/fallback/outbox theo feature flag.
 6. Chỉ trim legacy keys/tables sau dual-read/drift verification; migration destructive cần
    kế hoạch riêng.
@@ -169,8 +171,9 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 - **RB-03 Claim:** đọc pending + DB claim/wallet → chạy lại guarded persistence bằng
   immutable claim ID → chỉ cleanup sau DB commit; kiểm acquisition identity/revision-at-
   acquisition, không so current revision hoặc dùng processing time.
-- **RB-03A Claim gate:** so PostgreSQL campaign với gate/revision/Redis TIME → dừng claim
-  nếu stale/drift → rebuild gate/pool → test exact boundary rồi mới ready.
+- **RB-03A Claim runtime:** so PostgreSQL campaign với runtime claim fields/revision/Redis
+  TIME → dừng claim nếu stale/drift → rebuild fields/pool → test exact boundary rồi mới
+  ready.
 - **RB-04 Reservation:** đọc payload/index + DB wallet/outbox → release/retry/repair; không
   sửa counter mù.
 - **RB-04A Confirm fence:** đọc reservation `CONFIRMING` + command receipt/wallet → finalize
@@ -199,7 +202,7 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 | Campaign scheduler | 250ms–1s | DB revision/time + outbox dedup; ZREM sau commit |
 | Campaign fallback | 10–30s | DB source; repair missing/stale schedule |
 | Schedule bootstrap | startup/failover | rebuild ZSET từ PostgreSQL |
-| Claim gate/pool bootstrap | startup/failover | rebuild gate + AVAILABLE pool từ PostgreSQL; mutation blocked đến ready |
+| Claim runtime/pool bootstrap | startup/failover | rebuild claim-gate fields + AVAILABLE pool từ PostgreSQL; mutation blocked đến ready |
 | Product tombstone consumer | `product-deleted.v1` | persist monotonic watermark + guarded invalidation; ack sau commit; no reverse event |
 | Outbox CDC relay | WAL | at-least-once; connector retry/DLQ |
 | Budget reconciliation | recent 15m + off-peak full scan | DB→Redis, per-promotion lock |

@@ -31,3 +31,7 @@ implemented/verified vì Promotion Service hiện chưa có source module.
 | [ADR-012](./ADR-012-wallet-redemption-and-no-refund.md) | Wallet redemption state; customer refund không hoàn voucher | Superseded | 2026-09-10 | ADR-001, ADR-006, ADR-008 |
 | [ADR-013](./ADR-013-command-receipts-and-durable-finalization.md) | Command receipt; confirm/cancel-confirmed PostgreSQL-first | Accepted | 2026-09-11 | ADR-003, ADR-012 |
 | [ADR-014](./ADR-014-claim-and-markdown-consistency.md) | Atomic claim boundary; immutable definition; causal markdown lifecycle | Accepted | 2026-09-11 | ADR-004, ADR-010, ADR-011 |
+| [ADR-015](./ADR-015-lean-redis-runtime-keyspace.md) | Redis runtime keyspace gọn; discovery rate limit tại Gateway | Accepted | 2026-09-13 | — |
+
+ADR-015 chỉ refine physical Redis mapping/edge ownership của ADR-013 và ADR-014; hai ADR
+trước vẫn là nguồn quyết định cho durable finalization và claim boundary semantics.

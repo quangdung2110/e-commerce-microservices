@@ -18,7 +18,7 @@ verified_against_commit: null
 ## 1. Prerequisites và local dependencies
 
 Định hướng: JDK 21, Spring Boot 4/Maven, PostgreSQL logical replication, Redis Cluster
-có Lua/RedisBloom, Kafka và Debezium/Kafka Connect. Product/Checkout/Order/Auth nên dùng
+có Lua, Kafka và Debezium/Kafka Connect. Product/Checkout/Order/Auth nên dùng
 contract fixtures hoặc test containers khi test Promotion độc lập; Temporal cần fixture
 cho allocation lifecycle.
 
@@ -36,13 +36,13 @@ credential. Không cấu hình `t.promotion.budget.events`.
 | Unit | AST operators, missing/empty, integer discount/cap, campaign phase `[start,end)` |
 | Domain | validity modes, immutable-definition clone, natural end giữ voucher, customer refund no-op |
 | PostgreSQL | chín bảng, Product tombstone watermark/markdown invalidation, command receipt replay/hash, wallet transitions, causal outbox/source revision |
-| Redis | time/revision claim gate, claim/reserve/cancel, Confirm-Prepare/finalize Lua, integer counters, hash slot |
+| Redis | runtime claim-gate fields time/revision, claim/reserve/cancel, Confirm-Prepare/finalize Lua, integer counters, hash slot |
 | Concurrency | 10.000 contender, exact claim boundary, duplicate claim, confirm/cancel/sweep races |
 | Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM |
 | CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract, Product tombstone, stale revision |
 | HTTP | AuthZ, discovery/save, no refund endpoint, final-command stored response/mismatch |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
-| End-to-end | Publish→claim gate/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→cancel-confirmed/repair |
+| End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→cancel-confirmed/repair |
 
 Phải có negative integration test chứng minh `ORDER_REFUNDED` không mutate wallet/budget
 và Promotion không yêu cầu `promotion_refund_allocations[]`.
@@ -83,9 +83,11 @@ state trước khi drop table; không suy diễn customer refund thành technica
 ## 6. Redis implementation
 
 - Mọi multi-key promotion Lua dùng `{promotion_id}`.
-- Claim Lua dùng Redis TIME, kiểm gate enabled/revision/`open <= now < close`, rồi mới ghi
-  claimed-user + pending acquisition time/revision atomically với SPOP.
-- Gate/pool rebuild từ PostgreSQL khi startup/Redis loss; stale gate không fail-open.
+- Claim Lua dùng Redis TIME, kiểm claim-gate fields trong runtime hash
+  (`enabled`/revision/`open <= now < close`), rồi mới ghi claimed-user + pending acquisition
+  time/revision atomically với SPOP.
+- Runtime claim fields/pool rebuild từ PostgreSQL khi startup/Redis loss; stale gate không
+  fail-open.
 - Reserve index là per-promotion để cùng cluster slot.
 - Confirm-Prepare chỉ fence `RESERVED→CONFIRMING` + extend grace, không move counter.
 - Confirm preflight receipt trước Redis; Prepare missing phải recheck receipt trước khi trả
@@ -121,7 +123,7 @@ Fixture tối thiểu:
 
 - campaign DRAFT/UPCOMING/ACTIVE/ENDED/PAUSED/CANCELLED, clone identity và stale revision;
 - voucher percentage/fixed, ba validity mode, limited/public/direct grant;
-- claim gate disabled/stale, end−1 ms/end/end+1 ms, processing sau end, `CLAIM_PENDING`,
+- runtime claim-gate fields disabled/stale, end−1 ms/end/end+1 ms, processing sau end, `CLAIM_PENDING`,
   DB-commit-before-success, Redis-loss rebuild và clock drift;
 - wallet SAVED/USED/EXPIRED, technical compensation còn hạn/hết hạn;
 - command receipt confirm/cancel-confirmed, same-key same/different hash và key khác cùng
@@ -140,7 +142,7 @@ thiết kế hai service đó chưa chốt.
 
 - Trace correlation/workflow/event/order/promotion/claim/campaign ID.
 - Inspect command receipt + wallet/budget/outbox trước Redis counter.
-- Inspect claim gate/pending/reservation/schedule bằng read-only command.
+- Inspect runtime claim fields/pending/reservation/schedule bằng read-only command.
 - Kiểm tra DB campaign revision/time trước khi sửa ZSET.
 - Kiểm tra connector offset/outbox age/Product source revision khi markdown stale.
 - Kiểm tra Product tombstone watermark/catalog revision + invalidation overlay trước khi retry.

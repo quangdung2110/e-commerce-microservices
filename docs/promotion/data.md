@@ -300,36 +300,41 @@ chỉ apply revision mới hơn.
   projection repair; không decrement Redis trước DB hoặc replay delta mù.
 - Customer refund: không có Promotion transaction.
 
-## 6. Redis keyspace
+## 6. Redis runtime state
 
-| Key | Type | TTL/lifecycle | Vai trò |
-|---|---|---|---|
-| `promo:{promotion_id}:snapshot` | STRING JSON | 3600s | metadata + AST + campaign revision |
-| `promo:rules:version` | STRING counter | none | cache version fence |
-| `promo:{promotion_id}:budget` | HASH integer | none | total/reserved/used qty + VND |
-| `promo:{promotion_id}:claim_pool` | SET | campaign lifecycle | `SPOP` claim IDs |
-| `promo:{promotion_id}:claimed_users` | HASH | promotion lifecycle | user → claim ID |
-| `promo:{promotion_id}:claim_gate` | HASH | rebuild từ PostgreSQL | campaign revision, enabled, opens/closes epoch ms |
-| `promo:{promotion_id}:pending_claims:data` | HASH | đến DB ack | claim payload |
-| `promo:{promotion_id}:pending_claims:index` | ZSET | đến DB ack | stale deadline → claim ID |
-| `promo:{promotion_id}:reservation:{order_id}` | STRING | 15m + grace | reservation payload |
-| `promo:{promotion_id}:reservation:index` | ZSET | explicit cleanup | expiry → order ID |
-| `promo:{promotion_id}:confirm_applied:{order_id}` | STRING | retry/rebuild policy | best-effort finalizer marker, không phải durable receipt |
-| `promo:{promotion_id}:lock:{action}:{order_id}` | STRING | khoảng 10s | short mutation lock |
-| `promo:campaign:schedule` | ZSET | explicit cleanup | START/END campaign boundary |
-| `promo:campaign:{campaign_id}:schedule_lock` | STRING | ngắn | một worker/campaign |
-| `promo:{promotion_id}:reconcile_lock` | STRING | ngắn | serialize repair |
-| `promotion:ratelimit:voucher_discovery:{user_id}` | HASH | 1m | rate limit |
-| `promo:codes` | RedisBloom | lifecycle | code pre-check |
+Redis chỉ có mười một key pattern, chia theo sáu runtime responsibility. Key không phải
+source of truth, có thể rebuild/reconcile như mô tả ở phần 8.
+
+| Nhóm | Key | Type | TTL/lifecycle | Vai trò |
+|---|---|---|---|---|
+| Snapshot | `promo:{promotion_id}:snapshot` | STRING JSON | 3600s | metadata + AST + campaign revision |
+| Snapshot | `promo:rules:version` | STRING counter | none | cache version fence |
+| Claim/budget runtime | `promo:{promotion_id}:runtime` | HASH scalar | rebuild từ PostgreSQL; không TTL | total/reserved/used quantity + VND, cùng `claim_enabled`, `claim_revision`, `opens_at_ms`, `closes_at_ms` |
+| Claim | `promo:{promotion_id}:claim_pool` | SET | campaign lifecycle | `SPOP` claim IDs |
+| Claim | `promo:{promotion_id}:claimed_users` | HASH | promotion lifecycle | user → claim ID |
+| Claim | `promo:{promotion_id}:pending_claims:data` | HASH | đến DB ack | claim payload |
+| Claim | `promo:{promotion_id}:pending_claims:index` | ZSET | đến DB ack | stale deadline → claim ID |
+| Reservation | `promo:{promotion_id}:reservation:{order_id}` | STRING | 15m + grace | reservation payload |
+| Reservation | `promo:{promotion_id}:reservation:index` | ZSET | explicit cleanup | expiry → order ID |
+| Schedule | `promo:campaign:schedule` | ZSET | explicit cleanup | START/END campaign boundary |
+| Repair | `promo:{promotion_id}:reconcile_lock` | STRING | ngắn | serialize repair |
+
+`promo:{promotion_id}:runtime` gộp quota/counter hot path và claim-gate fields vì cả hai
+đều cùng promotion, cùng cluster slot, không có TTL và được rebuild từ PostgreSQL. Đây chỉ
+là gộp physical key; hard claim boundary bằng Redis `TIME` và campaign revision vẫn giữ
+nguyên. Không dùng RedisBloom pre-check cho code: `promotions.code` unique trong PostgreSQL
+là authority. Voucher-discovery rate limit thuộc Gateway profile `promotion-discovery`,
+không thuộc Promotion Redis namespace.
 
 Mọi key trong một multi-key Lua theo promotion dùng cùng hash tag `{promotion_id}`.
 Redis amount chỉ dùng integer `HINCRBY`, không dùng `HINCRBYFLOAT`.
 
-Claim API truyền expected campaign revision nhưng Lua quyết định bằng gate hiện hành và
-Redis server time, không dùng application timestamp. Gate mismatch trả `CLAIM_GATE_STALE`;
-ngoài interval trả `CAMPAIGN_NOT_ACTIVE`. Public save không dùng gate này mà kiểm phase
-bằng PostgreSQL clock trong transaction. Redis–PostgreSQL clock drift có metric/alert;
-startup/recovery rebuild gate và claim pool từ current PostgreSQL definition/claim rows.
+Claim API truyền expected campaign revision nhưng Lua quyết định bằng claim-gate fields
+hiện hành trong `runtime` và Redis server time, không dùng application timestamp. Gate
+mismatch trả `CLAIM_GATE_STALE`; ngoài interval trả `CAMPAIGN_NOT_ACTIVE`. Public save
+không dùng gate này mà kiểm phase bằng PostgreSQL clock trong transaction.
+Redis–PostgreSQL clock drift có metric/alert; startup/recovery rebuild runtime claim fields
+và claim pool từ current PostgreSQL definition/claim rows.
 
 Campaign schedule member là
 `{campaign_id}:{campaign_revision}:{START|END}`, score là epoch milliseconds. Schedule
@@ -339,16 +344,18 @@ chỉ là trigger/index; PostgreSQL luôn quyết định transition.
 
 | Script | Atomic behavior |
 |---|---|
-| Claim | Redis TIME → check gate enabled/revision/`open <= now < close` → check claimed user → `SPOP` → HSET claimed/pending có acquisition time/revision → ZADD pending index |
-| Reserve | validate replay/payload + available qty/amount → tăng reserved → SET payload + ZADD index |
-| Confirm prepare | lock → matching `CONFIRMING` là replay; nếu không thì verify payload → `RESERVED→CONFIRMING` + extend grace; counter không đổi |
-| Confirm finalize | receipt đã commit + matching `CONFIRMING` → reserved giảm/used tăng → marker + DEL/ZREM |
-| Cancel | lock → reserved giảm → DEL payload + ZREM |
+| Claim | Redis TIME → check `runtime` claim enabled/revision/`open <= now < close` → check claimed user → `SPOP` → HSET claimed/pending có acquisition time/revision → ZADD pending index |
+| Reserve | validate replay/payload + available qty/amount trong `runtime` → tăng reserved → SET payload + ZADD index |
+| Confirm prepare | matching `CONFIRMING` là replay; nếu không thì verify payload → `RESERVED→CONFIRMING` + extend grace; counter không đổi |
+| Confirm finalize | receipt đã commit + matching `CONFIRMING` → atomic reserved giảm/used tăng → DEL payload + ZREM index |
+| Cancel | chỉ `RESERVED` mới giảm reserved → DEL payload + ZREM index |
 
-Không có Redis script customer-refund hoặc Redis-first `cancel-confirmed`. Confirm finalizer
-thấy marker thì no-op; thiếu/mismatch payload không được tự increment/decrement mà enqueue
-reconciliation. Script bounded, trả structured result và reserve phải rollback các mutation
-đã áp dụng nếu command giữa chừng lỗi.
+Không có Redis script customer-refund hoặc Redis-first `cancel-confirmed`. Finalizer retry
+sau khi payload đã bị xóa là no-op; thiếu/mismatch payload không được tự
+increment/decrement mà enqueue reconciliation. `promotion_command_receipts` là evidence
+durable duy nhất cho replay final command; Redis không cần applied marker hoặc mutation
+lock riêng. Script bounded, trả structured result và reserve phải rollback các mutation đã
+áp dụng nếu command giữa chừng lỗi.
 
 ## 8. Reconciliation và lifecycle
 
@@ -362,7 +369,7 @@ reconciliation. Script bounded, trả structured result và reserve phải rollb
 - Pending claim không trả lại pool; API success chỉ sau DB commit và cleanup chỉ sau commit.
 - Claim worker persist theo `acquired_at_ms`/revision-at-acquisition đã ghi atomically với
   SPOP; xử lý sau campaign end hoặc pause/cancel không biến acquisition hợp lệ thành failure.
-- Claim gate/pool rebuild khi Redis loss; stale gate revision không được fail-open.
+- Runtime claim fields/pool rebuild khi Redis loss; stale gate revision không được fail-open.
 - Product tombstone giữ terminal source catalog watermark; duplicate/stale không lùi
   revision, có thể repair dangling rule và không tạo event loop trở lại Product.
 - Wallet `EXPIRED` giữ cho audit; lazy transition khi truy vấn.

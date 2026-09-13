@@ -39,9 +39,10 @@ Không có Promotion workflow cho customer refund.
    `campaigns.revision`.
 4. Khi publish, transaction set `publication_status=PUBLISHED`, tăng revision và tạo
    outbox snapshot cần thiết nếu campaign đã ở trong effective window.
-5. Sau publish commit, application `ZADD` START/END, dựng claim gate disabled/upcoming hoặc
-   enabled theo DB time/revision, invalidate promotion snapshots và tăng cache version fence.
-6. Nếu ZADD/gate/invalidation thất bại, mutation không fail-open; DB fallback/startup
+5. Sau publish commit, application `ZADD` START/END, dựng các claim-gate fields trong
+   `promo:{promotion_id}:runtime` thành disabled/upcoming hoặc enabled theo DB time/revision,
+   invalidate promotion snapshots và tăng cache version fence.
+6. Nếu ZADD/runtime/invalidation thất bại, mutation không fail-open; DB fallback/startup
    rebuild tự khôi phục rồi mới ready, không rollback PostgreSQL command đã commit.
 
 Definition đã publish là bất biến. Muốn thay discount, eligibility, validity, product
@@ -49,24 +50,25 @@ scope hoặc budget definition phải clone thành campaign DRAFT với campaign
 markdown ID mới. `campaigns.revision` chỉ là concurrency/cache/schedule fence, không phải
 definition version; wallet cũ tiếp tục bind promotion cũ và `expired_at` đã snapshot.
 
-Pause/cancel đóng claim gate bảo thủ trước DB transaction, rồi tăng revision và phát
-markdown `INACTIVE` snapshot nếu cần. Nếu DB rollback, worker rebuild/reopen gate từ DB;
-crash chỉ gây false reject tạm thời, không cấp claim sau khi close đã bắt đầu. Chúng dừng
-claim mới/markdown nhưng không tự thu hồi voucher đã lưu.
+Pause/cancel đóng claim-gate fields trong runtime hash một cách bảo thủ trước DB
+transaction, rồi tăng revision và phát markdown `INACTIVE` snapshot nếu cần. Nếu DB
+rollback, worker rebuild/reopen fields từ DB; crash chỉ gây false reject tạm thời, không
+cấp claim sau khi close đã bắt đầu. Chúng dừng claim mới/markdown nhưng không tự thu hồi
+voucher đã lưu.
 
 ## WF-PROMO-002 — Campaign START/END chính xác
 
 ### Happy path
 
 1. Loop lấy due members bằng `ZRANGEBYSCORE`, không destructive pop.
-2. Worker acquire lock ngắn theo campaign.
-3. Đọc lại PostgreSQL và so campaign ID, revision, publication status, start/end.
-4. Stale member hoặc status không còn phù hợp → không phát business state; cleanup member.
-5. Tính phase bằng DB clock và interval `[start,end)`.
-6. Với mỗi affected product, acquire PostgreSQL advisory transaction lock theo product,
+2. Đọc lại PostgreSQL và so campaign ID, revision, publication status, start/end.
+3. Stale member hoặc status không còn phù hợp → không phát business state; cleanup member.
+4. Tính phase bằng DB clock và interval `[start,end)`.
+5. Với mỗi affected product, acquire PostgreSQL advisory transaction lock theo product,
    tính current-state snapshot (`ACTIVE` winner hoặc `INACTIVE` tombstone), cấp
    `source_revision` và insert outbox bằng deterministic causal key.
-7. Commit DB rồi mới `ZREM` member.
+6. Commit DB rồi mới `ZREM` member. Không dùng Redis schedule lock: nếu worker khác đã
+   cùng xử lý member, outbox causal dedup làm insert no-op và `ZREM` vẫn idempotent.
 
 Nếu START được xử lý khi `now >= end_time`, worker không phát `ACTIVE`; nó phát hoặc
 xác nhận snapshot `INACTIVE` để hội tụ. Public save/API eligibility tự tính phase bằng DB
@@ -84,8 +86,8 @@ kéo dài claim sau end.
 
 ### Limited flash-sale claim
 
-1. Publish/rebuild tạo `claim_gate` cùng hash tag với pool, chứa enabled, campaign revision,
-   `opens_at_ms` và `closes_at_ms` lấy từ PostgreSQL.
+1. Publish/rebuild ghi claim-gate fields vào `promo:{promotion_id}:runtime`, cùng hash tag
+   với pool: enabled, campaign revision, `opens_at_ms` và `closes_at_ms` lấy từ PostgreSQL.
 2. Request mang expected revision. Lua gọi Redis `TIME`, từ chối gate disabled/stale hoặc
    `now_ms < opens_at_ms || now_ms >= closes_at_ms` trước khi chạm pool.
 3. Trong cùng Lua, kiểm `claimed_users`, `SPOP` claim ID, rồi ghi claimed user và pending
@@ -163,8 +165,8 @@ AST/context phải cho cùng kết quả.
    reservation `CONFIRMING`, guarded `SAVED→USED`, persist amount vào wallet, set
    `used_order_id`/`used_at`, tăng durable used counters, hoàn thiện receipt và insert
    redeemed outbox fact.
-7. PostgreSQL commit là durable completion point. Sau commit Redis finalizer mới move
-   reserved→used, ghi best-effort applied marker và xóa payload/index.
+7. PostgreSQL commit là durable completion point. Sau commit Redis finalizer mới atomically
+   move reserved→used và xóa payload/index; không ghi applied marker.
 8. Duplicate/retry sau commit trả stored response và kick finalizer/repair lại, không mutate
    wallet/budget lần hai.
 
@@ -244,14 +246,15 @@ Không phát delta `MARKDOWN_CREATED/UPDATED/ENDED`; Product không cần safety
 
 - Pending claim: mỗi phút persist lại item cũ hơn ngưỡng 5 phút bằng cùng guarded DB path;
   giữ pending tới DB commit.
-- Claim gate/pool: rebuild từ PostgreSQL khi startup/Redis loss; stale revision không
-  fail-open. Alert Redis–PostgreSQL clock drift vượt ngưỡng.
+- Runtime claim fields/pool: rebuild từ PostgreSQL khi startup/Redis loss; stale revision
+  không fail-open. Alert Redis–PostgreSQL clock drift vượt ngưỡng.
 - Reservation: mỗi phút lấy due item theo per-promotion ZSET; release hoặc repair.
 - Confirm finalizer: consume durable receipt/outbox trigger; chỉ finalize matching
   `CONFIRMING`, thiếu runtime evidence thì reconcile, không increment mù.
 - Campaign schedule: loop 250 ms–1 s; DB fallback 10–30 s; startup rebuild.
 - Budget reconciliation: định kỳ dựng expected used từ wallet `USED`, claimed từ claim
-  rows và reserved từ payload hợp lệ; lock/re-read rồi repair Redis một chiều.
+  rows và reserved từ payload hợp lệ; dùng `reconcile_lock`, re-read rồi repair Redis một
+  chiều.
 - Wallet expiry: lazy transition; có thể thêm batch normalization nhưng không ảnh hưởng
   eligibility dựa trực tiếp `expired_at`.
 - Outbox retention: chỉ trim theo CDC watermark/replay horizon; không xóa row chưa relay.
@@ -272,7 +275,7 @@ Promotion consume `com.ecommerce.catalog.product-deleted.v1`, key `product_id`:
 3. Với rule có `source_product_revision IS NULL OR source_product_revision < watermark`, set
    `invalidated_at`, `invalidation_reason=PRODUCT_DELETED` và watermark revision. Duplicate/
    stale event không lùi watermark nhưng vẫn có thể repair rule bất thường; không bump
-   campaign revision/claim gate vì voucher definition không đổi.
+   campaign revision hoặc claim-gate fields vì voucher definition không đổi.
 4. Commit rồi invalidate product-scoped Promotion snapshot; Kafka ack sau commit.
 5. Không phát markdown `INACTIVE` ngược lại Product đã hard delete. Search nhận Product
    tombstone trực tiếp; scheduler/winner query bỏ mọi invalidated rule.

@@ -78,7 +78,7 @@ partial refund sau khi được refactor mà không làm thay đổi Promotion b
 | Integration event | `promotion_outbox_events` trong cùng transaction với business state |
 | Reservation đang hiệu lực | Redis runtime; không persist `RESERVED` |
 | Claim pool/pending claim | Redis runtime có đường cứu về PostgreSQL |
-| Claim time/revision gate | Redis runtime, rebuild từ campaign/promotion PostgreSQL |
+| Claim time/revision gate | Fields trong Redis runtime hash, rebuild từ campaign/promotion PostgreSQL |
 | Product deletion watermark | `catalog_product_tombstones`; chặn rule xuất hiện sau tombstone |
 | Counter budget hot path | Redis projection có thể rebuild/repair từ PostgreSQL + reservation hợp lệ |
 
@@ -111,7 +111,7 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
 | Outbound | Notification/Analytics | Kafka/CDC | Claim/redeem/cancel facts nếu có consumer |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
-| Runtime | Redis Cluster + RedisBloom | Redis/Lua | Cache, claim, budget, reservation, schedule |
+| Runtime | Redis Cluster | Redis/Lua | Cache, claim, budget, reservation, schedule |
 | Runtime | Debezium/Kafka Connect + Kafka | CDC/Kafka | At-least-once event delivery |
 
 ## 7. Critical invariants
@@ -163,4 +163,6 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
   được ngầm dùng làm revocation.
 - Health/config/SLO, command-receipt retention, outbox watermark và parking-lot chi tiết
   cần được chốt khi triển khai.
+- Gateway phải có profile `promotion-discovery` theo user trước khi expose route discovery;
+  Promotion không sở hữu Redis rate-limit key cho read API này.
 - `RuleEngineDemo.java` chỉ minh họa AST, không phải implementation production.

@@ -157,12 +157,13 @@ return 1 -- ALLOW
 **Key:** `checkout:ratelimit:submit:{user_id}`
 **Limit:** 3 requests/phút (siết hơn vì Submit tạo đơn thật).
 
-### 3.3. Voucher Discovery Rate Limit (Owned by Promotion)
+### 3.3. Voucher Discovery Rate Limit (Owned by Gateway)
 
-**Key:** `promotion:ratelimit:voucher_discovery:{user_id}`
-**Limit:** 20 requests/phút.
-
-> Discovery là API của Promotion Service; Checkout không sở hữu key rate-limit này. Checkout chỉ consume kết quả discovery.
+Discovery là API của Promotion nhưng không tạo Redis key trong Promotion hoặc Checkout.
+Gateway áp dụng profile `promotion-discovery`: tối đa 20 request/phút cho authenticated
+user, cùng coarse trusted-IP guard trước ForwardAuth. Checkout chỉ consume kết quả
+discovery; quota và failure behavior của edge nằm trong
+[Gateway Runtime Contract](../gateway/runtime-contract.md#7-chính-sách-rate-và-concurrency).
 
 ---
 

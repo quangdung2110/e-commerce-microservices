@@ -21,7 +21,7 @@ verified_against_commit: null
 | Campaign phase | `DRAFT/UPCOMING/ACTIVE/ENDED/PAUSED/CANCELLED` được suy ra | DB status mutable |
 | Promotion | Voucher do admin tạo, áp dụng cho toàn đơn | Markdown giá sản phẩm |
 | Markdown rule | Giảm trực tiếp cho một `product_id` khi campaign active | Voucher checkout |
-| Claim window | Atomic Redis-time interval để nhận limited voucher mới | Hạn dùng voucher đã sở hữu |
+| Claim window | Atomic Redis-time interval từ claim-gate fields trong runtime hash để nhận limited voucher mới | Hạn dùng voucher đã sở hữu |
 | Use window | Đến `wallet.expired_at`, được snapshot lúc save | Campaign có còn active hay không |
 | Claim | Một suất hữu hạn được gán cho user | Redeem vào order |
 | Wallet entry | Quyền sở hữu và trạng thái redemption hiện hành | Reservation runtime |
@@ -73,7 +73,7 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-003` | `final = max(0, subtotal - platform_discount)`; percentage có cap, fixed có clamp. |
 | `PROMO-BR-004` | Preview/Discovery chỉ đọc; reserve chỉ sau Submit và có `order_id`. |
 | `PROMO-BR-005` | Reserve all-or-nothing; replay cùng key phải khớp payload. |
-| `PROMO-BR-006` | Limited claim Lua phải kiểm gate enabled, matching campaign revision và Redis time trong `[start_time,end_time)` trước SPOP; public save kiểm phase trong DB transaction. |
+| `PROMO-BR-006` | Limited claim Lua phải kiểm claim-gate fields enabled, matching campaign revision và Redis time trong `[start_time,end_time)` trước SPOP; public save kiểm phase trong DB transaction. |
 | `PROMO-BR-007` | Voucher đã lưu chỉ dùng `wallet.expired_at`; campaign end không tự thu hồi row/quyền lợi ngoài expiry đã snapshot. Với mode `CAMPAIGN_END`, hai mốc trùng nhau. |
 | `PROMO-BR-008` | Validity phải chọn `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default ngầm. |
 | `PROMO-BR-009` | Definition đã publish là bất biến; thay đổi business config phải clone campaign/promotion/markdown identity mới, không chỉ tăng cùng-row revision. |
@@ -118,7 +118,7 @@ Không có transition ghi DB tại START/END. Schedule worker phát current-stat
 sớm. Limited claim không dựa vào scheduler: Redis-time gate đóng hard boundary trước
 SPOP. `campaigns.revision` tăng cho DRAFT mutation và publish/pause/cancel để fence stale
 work, nhưng không tạo definition history. Product tombstone là per-rule operational
-overlay nên không bump campaign revision hoặc claim gate.
+overlay nên không bump campaign revision hoặc claim-gate fields trong runtime hash.
 
 ## 6. State machines
 

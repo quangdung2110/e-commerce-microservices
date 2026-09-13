@@ -35,7 +35,7 @@ flowchart LR
   APP --> RULE[Rule Engine]
   APP --> PG[(PostgreSQL)]
   APP --> LUA[Redis Lua adapters]
-  LUA --> REDIS[(Redis Cluster / RedisBloom)]
+  LUA --> REDIS[(Redis Cluster)]
   APP --> OUTBOX[(promotion_outbox_events)]
   PG --> OUTBOX
   OUTBOX --> CDC[Debezium / Kafka Connect]
@@ -55,7 +55,7 @@ flowchart LR
 | Application service | Orchestrate command/query và transaction | Query database service khác |
 | Rule Engine | Evaluate AST thuần, xác định | Ghi DB/Redis hoặc gọi network |
 | PostgreSQL repository | Persist campaign, rule, Product tombstone watermark, wallet, budget, command receipt, outbox | Quản lý reservation runtime |
-| Redis/Lua adapter | Atomic claim, reserve, counter, lock, schedule | Trở thành durable truth |
+| Redis/Lua adapter | Atomic claim, reserve, counter và schedule | Trở thành durable truth |
 | Outbox writer | Ghi CloudEvent cùng business transaction | Direct-produce sau commit |
 | Debezium/Kafka Connect | Relay outbox at-least-once | Suy diễn business state |
 | Kafka consumer | Welcome grant và Product tombstone invalidation | Xử lý duplicate thiếu business guard |
@@ -65,10 +65,10 @@ flowchart LR
 
 - Discovery/calculate là synchronous read path. Snapshot JSON từ Redis; cache miss đọc
   PostgreSQL. Rule AST được parse request-scoped.
-- Claim hữu hạn chạy một Lua: dùng Redis TIME kiểm gate enabled/revision/[open,close), rồi
-  kiểm tra user, `SPOP`, ghi claimed-user và pending acquisition evidence. API chạy guarded
-  PostgreSQL claim + wallet transaction và chỉ trả success sau commit; pending persistence
-  worker dùng cùng logic để cứu crash window.
+- Claim hữu hạn chạy một Lua: dùng Redis TIME kiểm claim-gate fields trong runtime hash
+  (`enabled`/revision/[open,close)), rồi kiểm tra user, `SPOP`, ghi claimed-user và pending
+  acquisition evidence. API chạy guarded PostgreSQL claim + wallet transaction và chỉ trả
+  success sau commit; pending persistence worker dùng cùng logic để cứu crash window.
 - Reserve/cancel pre-payment là Redis runtime activities. Confirm preflight durable receipt,
   rồi dùng Redis fence không đổi counter cho command mới, PostgreSQL-first commit
   receipt/wallet/budget/outbox và finalize Redis sau commit. `cancel-confirmed` commit
@@ -92,7 +92,7 @@ flowchart LR
 | PostgreSQL constraint/transaction | Strong consistency nội bộ |
 | Redis Lua | Atomic khi tất cả key cùng cluster hash slot |
 | Claim Redis → PostgreSQL | Synchronous trước API success; eventual chỉ cho `CLAIM_PENDING`/crash recovery; pending không xóa trước DB commit |
-| Claim boundary | Redis TIME + revision gate trong cùng Lua với SPOP |
+| Claim boundary | Redis TIME + revision gate fields trong runtime hash, trong cùng Lua với SPOP |
 | Campaign DB → Redis schedule | Eventual; DB scanner và startup rebuild tự phục hồi |
 | PostgreSQL → Kafka | Transactional outbox + CDC, at-least-once |
 | Product markdown projection | Apply ACTIVE full rule hoặc INACTIVE tombstone khi `source_revision` mới hơn |
@@ -117,10 +117,12 @@ score  = boundary epoch milliseconds
 member = {campaign_id}:{campaign_revision}:{START|END}
 ```
 
-Worker dùng `ZRANGEBYSCORE`, acquire `promo:campaign:schedule:lock:{campaign_id}`, đọc
-lại PostgreSQL và chỉ xử lý member có revision hiện hành. Business/outbox commit trước
-`ZREM`. Nếu crash sau commit, retry bị outbox dedup key chặn. Nếu START được xử lý sau
-`end_time`, worker chỉ phát trạng thái hội tụ `INACTIVE`, không phát `ACTIVE` muộn.
+Worker dùng `ZRANGEBYSCORE`, đọc lại PostgreSQL và chỉ xử lý member có revision hiện hành.
+Không có Redis schedule lock: nhiều worker có thể cùng đọc một member, nhưng transaction
+outbox dùng deterministic dedup key/`INSERT ... ON CONFLICT DO NOTHING`, còn `ZREM` là
+idempotent. Business/outbox commit trước `ZREM`; nếu crash sau commit, retry bị outbox dedup
+key chặn. Nếu START được xử lý sau `end_time`, worker chỉ phát trạng thái hội tụ `INACTIVE`,
+không phát `ACTIVE` muộn.
 
 DB fallback 10–30 giây và startup/failover rebuild ngăn ZSET bị thiếu vĩnh viễn. Đây là
 bounded eventual propagation, không phải hard real-time 0 ms; API eligibility luôn tự
@@ -129,10 +131,11 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
 
 ## 7. Concurrency và idempotency
 
-- Claim gate/pool/claimed/pending dùng cùng hash tag `{promotion_id}`. Lua kiểm gate
-  revision và Redis time trước SPOP; DB guard `AVAILABLE AND owner_id IS NULL` cùng unique
-  wallet chốt persistence. Worker dùng acquisition time/revision, không dùng processing time
-  và không bắt revision-at-acquisition bằng current revision sau pause/cancel.
+- Runtime hash/pool/claimed/pending dùng cùng hash tag `{promotion_id}`. Lua kiểm claim-gate
+  fields (revision và Redis time) trước SPOP; DB guard `AVAILABLE AND owner_id IS NULL` cùng
+  unique wallet chốt persistence. Worker dùng acquisition time/revision, không dùng
+  processing time và không bắt revision-at-acquisition bằng current revision sau
+  pause/cancel.
 - Reserve replay phải cùng payload; khác payload trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
 - Confirm tra receipt trước Redis; durable replay không phụ thuộc reservation còn tồn tại.
   Command mới fence `RESERVED→CONFIRMING` nhưng không move counter trước DB; receipt +
@@ -158,6 +161,8 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   với campaign/promotion/markdown identity mới; revision chỉ là concurrency/schedule fence.
 - Không persist `RESERVED`; reservation chỉ là runtime hold.
 - Không coi Redis confirm fence/finalizer hay projection repair là durable command receipt.
+- Không tạo Redis applied marker hoặc per-order mutation lock: Lua state transition atomic,
+  command receipt và PostgreSQL transaction đã bảo vệ replay/final outcome.
 - Không phát business event trực tiếp từ application sau commit.
 - Không phát budget-exhausted event từ Redis observation; chỉ trả synchronous result và metric.
 - Không để Product/Search chạy voucher Rule Engine.
@@ -175,5 +180,7 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
 - [ADR-012](./decisions/ADR-012-wallet-redemption-and-no-refund.md): lịch sử schema/wallet/no-refund; đã superseded.
 - [ADR-013](./decisions/ADR-013-command-receipts-and-durable-finalization.md): command receipt và PostgreSQL-first finalization.
 - [ADR-014](./decisions/ADR-014-claim-and-markdown-consistency.md): claim gate, immutable definition và causal markdown lifecycle.
+- [ADR-015](./decisions/ADR-015-lean-redis-runtime-keyspace.md): keyspace runtime gọn, claim
+  fields gộp vào runtime hash và edge-owned discovery rate limit.
 
 ADR-001, ADR-003..008 và ADR-010..012 đã được supersede.
