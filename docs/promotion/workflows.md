@@ -8,7 +8,7 @@ owners:
 evidence:
   - docs/promotion/RuleEngineDemo.java
   - contracts/http/promotion/v1/openapi.yaml
-  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
+  - contracts/events/promotion/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -25,10 +25,11 @@ verified_against_commit: null
 | `WF-PROMO-005` | TRY/CONFIRM/CANCEL | Order Temporal activities |
 | `WF-PROMO-006` | `cancel-confirmed` kỹ thuật | Order Temporal compensation |
 | `WF-PROMO-007` | Markdown snapshot → Product | Outbox + CDC |
-| `WF-PROMO-008` | Rescue/reconciliation/cleanup | Scheduled workers |
+| `WF-PROMO-008` | Rescue/finalizer/reconciliation/cleanup | Scheduled workers |
 | `WF-PROMO-009` | Product tombstone invalidation | Product Kafka event |
 
-Không có Promotion workflow cho customer refund.
+Không có Promotion workflow cho customer refund, welcome voucher qua Auth event hay phát
+coupon fact; WF-PROMO-007 là workflow duy nhất ghi outbox.
 
 ## WF-PROMO-001 — Quản trị và publish campaign
 
@@ -98,8 +99,8 @@ kéo dài claim sau end.
    PostgreSQL persistence; không trả success chỉ dựa trên Redis.
 5. API hoặc pending worker kiểm identity và revision-at-acquisition nhất quán, nhưng không
    yêu cầu revision đó bằng current campaign revision. Sau đó guarded update claim
-   `AVAILABLE→CLAIMED`, insert wallet `SAVED`, tính/snapshot `expired_at`, tăng claimed
-   counter và nếu cần insert public claim fact vào outbox trong một PostgreSQL transaction.
+   `AVAILABLE→CLAIMED`, insert wallet `SAVED`, tính/snapshot `expired_at` và tăng claimed
+   counter trong một PostgreSQL transaction; không ghi outbox.
 6. Persistence dùng acquisition time, không dùng processing time để bác claim đã lấy đúng
    hạn. API chỉ trả success và chỉ HDEL/ZREM pending sau DB commit. Nếu chưa xác nhận DB
    trước HTTP deadline, trả retryable `CLAIM_PENDING`/202 thay vì success.
@@ -170,17 +171,20 @@ AST/context phải cho cùng kết quả.
    trả stored response; khác hash bị từ chối.
 6. Với command mới, transaction lock wallet/budget, dùng authoritative amount từ matching
    reservation `CONFIRMING`, guarded `SAVED→USED`, persist amount vào wallet, set
-   `used_order_id`/`used_at`, tăng durable used counters, hoàn thiện receipt và insert
-   redeemed outbox fact.
+   `used_order_id`/`used_at`, tăng durable used counters và hoàn thiện receipt với
+   `redis_finalized_at = NULL`. Không insert outbox: không có consumer cho redeemed fact.
 7. PostgreSQL commit là durable completion point. Sau commit Redis finalizer mới atomically
-   move reserved→used và xóa payload/index; không ghi applied marker.
+   move reserved→used và xóa payload/index; không ghi applied marker trong Redis. Khi Lua
+   trả matching-finalized hoặc already-finalized, application `UPDATE ... SET
+   redis_finalized_at = NOW() WHERE redis_finalized_at IS NULL`.
 8. Duplicate/retry sau commit trả stored response và kick finalizer/repair lại, không mutate
    wallet/budget lần hai.
 
 Crash trước DB commit không đổi durable state; reservation `CONFIRMING` còn grace để retry.
-Crash sau commit trước Redis finalize luôn có receipt/outbox để chạy lại. Finalizer thiếu
-runtime payload không được increment mù; enqueue reconciliation từ wallet/budget DB.
-Reservation mất và không có receipt mới trả `RESERVATION_NOT_FOUND` để Order chạy
+Crash sau commit trước Redis finalize luôn có receipt `redis_finalized_at IS NULL` để
+finalizer worker chạy lại. Finalizer thiếu runtime payload không được increment mù; enqueue
+reconciliation từ wallet/budget DB rồi mới set `redis_finalized_at` khi projection đã hội
+tụ. Reservation mất và không có receipt mới trả `RESERVATION_NOT_FOUND` để Order chạy
 late-payment policy.
 
 ### CANCEL trước confirm
@@ -207,15 +211,17 @@ thuật. Đây không phải customer refund.
    rollback toàn transaction, không clamp.
 5. Nếu DB time `< wallet.expired_at`, wallet `USED→SAVED`; nếu đã hết hạn thì
    `USED→EXPIRED`. Clear `used_order_id`, `discount_amount_vnd`, `used_at`.
-6. Hoàn thiện stored response trong receipt và insert technical-cancel outbox fact trong
-   cùng transaction; commit là durable completion point.
-7. Sau commit trigger Redis projection repair từ DB. Không chạy Redis decrement trước DB
-   và không replay delta theo event; duplicate repair được phép.
+6. Hoàn thiện stored response trong receipt với `redis_finalized_at = NULL` trong cùng
+   transaction; commit là durable completion point. Không insert outbox: không có consumer
+   cho technical-cancel fact.
+7. Sau commit trigger Redis projection repair từ DB rồi set `redis_finalized_at`. Không
+   chạy Redis decrement trước DB và không replay delta theo event; duplicate repair được
+   phép.
 
-Crash trước commit rollback receipt/wallet/budget/outbox cùng nhau. Crash sau commit luôn
-có receipt để replay response và outbox để kick repair. Redis unavailable không làm durable
-compensation thất bại; Redis có thể tạm over-count used (bảo thủ) cho tới khi hội tụ. Lỗi hệ
-thống vì vậy không làm khách mất voucher còn hạn.
+Crash trước commit rollback receipt/wallet/budget cùng nhau. Crash sau commit luôn có
+receipt để replay response và `redis_finalized_at IS NULL` để finalizer worker kick repair.
+Redis unavailable không làm durable compensation thất bại; Redis có thể tạm over-count used
+(bảo thủ) cho tới khi hội tụ. Lỗi hệ thống vì vậy không làm khách mất voucher còn hạn.
 
 ## Customer refund — explicit non-workflow
 
@@ -257,8 +263,10 @@ Không phát delta `MARKDOWN_CREATED/UPDATED/ENDED`; Product không cần safety
 - Runtime claim fields/pool: rebuild từ PostgreSQL khi startup/Redis loss; stale revision
   không fail-open. Alert Redis–PostgreSQL clock drift vượt ngưỡng.
 - Reservation: mỗi phút lấy due item theo per-promotion ZSET; release hoặc repair.
-- Confirm finalizer: consume durable receipt/outbox trigger; chỉ finalize matching
-  `CONFIRMING`, thiếu runtime evidence thì reconcile, không increment mù.
+- Final-command finalizer: inline sau commit và worker quét receipt
+  `redis_finalized_at IS NULL` quá ngưỡng. `CONFIRM` chỉ finalize matching `CONFIRMING`;
+  `CANCEL_CONFIRMED` chạy DB→Redis projection repair. Thiếu runtime evidence thì reconcile,
+  không increment/decrement mù; chỉ set `redis_finalized_at` sau khi Redis hội tụ.
 - Campaign schedule: loop 250 ms–1 s; DB fallback 10–30 s; startup rebuild.
 - Budget reconciliation: định kỳ dựng expected used từ wallet `USED`, claimed từ claim
   rows và reserved từ payload hợp lệ; dùng `reconcile_lock`, re-read rồi repair Redis một
@@ -303,7 +311,8 @@ bị reject. Product UUID đã tombstone không được reuse.
 - Reserve payload mismatch, confirm fence/finalize, integer counter invariant và
   confirm/cancel/sweep races.
 - Confirm/`cancel-confirmed` cùng key same/different hash, concurrent duplicate, duplicate
-  confirm sau Redis cleanup, race preflight-miss/finalizer, crash trước/sau DB commit và
+  confirm sau Redis cleanup, race preflight-miss/finalizer, crash trước/sau DB commit,
+  crash giữa Redis finalize và set `redis_finalized_at` (worker chạy lại phải no-op) và
   stored-response replay.
 - `cancel-confirmed` SAVED-vs-EXPIRED, Redis unavailable và DB→Redis convergence.
 - Customer partial/full refund chứng minh không có Promotion mutation/event subscription.
@@ -313,4 +322,5 @@ bị reject. Product UUID đã tombstone không được reuse.
 - Product tombstone duplicate/out-of-order, tombstone-before-mutation/mutation-before-tombstone,
   no event loop và dangling-rule cleanup.
 - Published definition clone giữ nguyên promotion/wallet cũ; không update in-place.
-- Không có `t.promotion.budget.events`; exhausted chỉ xuất hiện trong sync response/metric.
+- Không có `t.promotion.budget.events` hay coupon topic; outbox chỉ chứa markdown
+  snapshot; exhausted chỉ xuất hiện trong sync response/metric.

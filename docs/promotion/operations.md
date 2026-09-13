@@ -7,6 +7,7 @@ owners:
   - Promotion Service team
 evidence:
   - contracts/http/promotion/v1/openapi.yaml
+  - contracts/events/promotion/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -24,9 +25,9 @@ verified_against_commit: null
 | Claim pending age | Alert trước/sau rescue threshold 5 phút |
 | Claim boundary/runtime | Claim-gate field revision drift, Redis–PostgreSQL clock drift và reject theo boundary |
 | Reservation release delay | Dưới một sweep window trong điều kiện bình thường |
-| Final command replay | Receipt hit/mismatch, confirm-fence age và Redis-finalize delay |
+| Final command replay | Receipt hit/mismatch, confirm-fence age và tuổi receipt `redis_finalized_at IS NULL` |
 | Campaign boundary delay | loop 250 ms–1 s; fallback 10–30 s |
-| Outbox relay age | Oldest unrelayed row và connector lag |
+| Outbox relay age | Oldest unrelayed markdown row và connector lag |
 | Product markdown convergence | Outbox create → Product apply theo source revision |
 | Product tombstone convergence | Product delete → terminal watermark persisted + mọi Promotion markdown rule invalidated |
 | Budget drift | Qty/VND trước-sau repair và drift tái diễn |
@@ -88,8 +89,8 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 | Pending claim stale | oldest >5m hoặc backlog tăng | High |
 | Claim runtime/clock drift | claim-gate fields stale hoặc Redis–DB clock drift vượt threshold | Critical |
 | Reservation cleanup failure | due backlog/repair queue tăng | High |
-| Confirm fence/finalizer stuck | `CONFIRMING` vượt grace hoặc receipt commit chưa hội tụ Redis | High |
-| Command receipt inconsistency | receipt khác wallet/budget/outbox hoặc payload mismatch spike | Critical |
+| Confirm fence/finalizer stuck | `CONFIRMING` vượt grace hoặc receipt `redis_finalized_at IS NULL` quá ngưỡng | High |
+| Command receipt inconsistency | receipt khác wallet/budget hoặc payload mismatch spike | Critical |
 | Campaign boundary delayed | vượt fallback window | High |
 | Stale schedule revision spike | nhiều stale member bất thường | Warning |
 | Outbox/CDC lag | oldest row vượt propagation SLO | High |
@@ -117,8 +118,9 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 | Product tombstone duplicate/stale | Watermark không lùi, repair dangling rule nếu có; ack sau DB commit |
 | Crash sau tombstone DB commit trước cache invalidation | Replay guarded no-op rồi invalidate/rebuild; không emit về Product |
 | DB fail sau Confirm-Prepare | Durable state chưa đổi; giữ fence trong grace để retry, hết grace đi late-payment policy |
-| Crash sau confirm DB commit trước Redis finalize | Receipt/outbox đã durable; replay stored response và kick finalizer/repair |
-| Crash sau `cancel-confirmed` DB commit trước Redis repair | Compensation vẫn complete; replay receipt và repair DB→Redis |
+| Crash sau confirm DB commit trước Redis finalize | Receipt đã durable với `redis_finalized_at IS NULL`; replay stored response và finalizer worker chạy lại |
+| Crash sau Redis finalize trước set `redis_finalized_at` | Worker chạy lại: Lua trả already-finalized, application chỉ set marker; không double move |
+| Crash sau `cancel-confirmed` DB commit trước Redis repair | Compensation vẫn complete; replay receipt, worker repair DB→Redis rồi set marker |
 | Redis unavailable khi `cancel-confirmed` | DB transaction vẫn có thể commit; Redis tạm over-count used và repair sau |
 | Reservation payload mất khi Confirm | Recheck durable receipt; replay nếu có, nếu không enqueue repair/late-payment policy; không đoán amount |
 | Customer refund event đến Promotion | ACK/no-route theo deployment; alert contract mismatch, không mutate |
@@ -128,7 +130,8 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 - Budget guard discovery fail-open; Reserve không fail-open.
 - Snapshot miss fallback PostgreSQL; không có JVM AST cache.
 - Outbox/CDC lag làm markdown downstream stale trong thời gian hữu hạn nhưng không mất
-  event đã commit; replay latest current-state snapshot để hội tụ.
+  event đã commit; replay latest current-state snapshot để hội tụ. Confirm/`cancel-confirmed`
+  không phụ thuộc CDC vì finalizer chạy từ receipt.
 - Public save/API eligibility dùng DB time; limited claim dùng Redis TIME gate trong cùng
   Lua với SPOP. Scheduler lag không kéo dài claim window.
 - Product/Search không tự chạy voucher Rule Engine.
@@ -153,8 +156,8 @@ gửi nhầm Promotion ở contract gateway như integration error, không xử 
 2. Deploy Product migration/consumer chấp nhận ACTIVE full payload và INACTIVE tombstone
    trước Promotion producer; contract đã production thì dùng v2 dual-read.
 3. Cấu hình outbox connector/ACL/topic và kiểm thử commit→CDC.
-4. Deploy receipt reader/schema trước writer; deploy Confirm-Prepare/finalizer và DB-first
-   `cancel-confirmed`. Deploy Product-tombstone consumer, causal dedup writer và Lua đọc
+4. Deploy receipt reader/schema (gồm `redis_finalized_at` và partial index) trước writer;
+   deploy Confirm-Prepare/receipt-driven finalizer và DB-first `cancel-confirmed`. Deploy Product-tombstone consumer, causal dedup writer và Lua đọc
    claim-gate fields từ runtime hash; preload claim/budget, rebuild runtime claim fields/pool
    và campaign schedule.
 5. Canary discovery rồi mutation; bật schedule/fallback/outbox theo feature flag.
@@ -175,10 +178,11 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 - **RB-03A Claim runtime:** so PostgreSQL campaign với runtime claim fields/revision/Redis
   TIME → dừng claim nếu stale/drift → rebuild fields/pool → test exact boundary rồi mới
   ready.
-- **RB-04 Reservation:** đọc payload/index + DB wallet/outbox → release/retry/repair; không
+- **RB-04 Reservation:** đọc payload/index + DB wallet/receipt → release/retry/repair; không
   sửa counter mù.
 - **RB-04A Confirm fence:** đọc reservation `CONFIRMING` + command receipt/wallet → finalize
-  matching receipt hoặc reconcile; thiếu evidence không increment/release mù.
+  matching receipt hoặc reconcile; thiếu evidence không increment/release mù; chỉ set
+  `redis_finalized_at` sau khi Redis đã hội tụ, không set tay để "tắt" alert.
 - **RB-05 Campaign schedule:** đọc DB revision/status/time trước ZSET → rebuild missing
   members → chạy fallback → xác nhận outbox state.
 - **RB-06 Outbox/CDC:** dừng trimmer → kiểm tra WAL/connector/offset/topic → resume/replay
@@ -199,19 +203,20 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 | Pending claim persistence worker | API inline + Redis pending scan | validate identity/revision-at-acquisition, không so current revision; guarded claim/wallet; cleanup sau commit |
 | Pending claim sweeper | mỗi 1m, stale 5m | gọi persistence bằng cùng claim ID; không cần Kafka topic riêng |
 | Reservation sweeper | mỗi 1m | per-promotion index + Lua; missing payload → repair |
-| Confirm finalizer | outbox/receipt trigger | matching `CONFIRMING` only; duplicate no-op, missing → reconcile |
+| Final-command finalizer | inline sau commit + quét receipt `redis_finalized_at IS NULL` quá ngưỡng | `CONFIRM`: matching `CONFIRMING` only; `CANCEL_CONFIRMED`: DB→Redis repair; duplicate no-op, missing → reconcile; set marker sau hội tụ |
 | Campaign scheduler | 250ms–1s | DB revision/time + outbox dedup; ZREM sau commit |
 | Campaign fallback | 10–30s | DB source; repair missing/stale schedule |
 | Schedule bootstrap | startup/failover | rebuild ZSET từ PostgreSQL |
 | Claim runtime/pool bootstrap | startup/failover | rebuild claim-gate fields + AVAILABLE pool từ PostgreSQL; mutation blocked đến ready |
 | Product tombstone consumer | `product-deleted.v1` | persist monotonic watermark + guarded invalidation; ack sau commit; no reverse event |
-| Outbox CDC relay | WAL | at-least-once; connector retry/DLQ |
+| Outbox CDC relay | WAL | at-least-once; connector retry/DLQ; chỉ markdown snapshot |
 | Budget reconciliation | recent 15m + off-peak full scan | DB→Redis, per-promotion lock |
 | Snapshot monitor | mỗi 5m | metric only, không auto-warm hàng loạt |
 | Wallet expiry normalization | lazy/optional batch | eligibility luôn đọc `expired_at` |
 | Outbox trimmer | policy schedule | CDC watermark + replay horizon guard |
 | Command receipt trimmer | policy schedule | `retain_until` + Temporal retry/late-recovery guard |
 
-Không có Order refund consumer. Command receipt cleanup tách khỏi outbox trimmer và không
-xóa receipt còn nằm trong retry/recovery horizon. Không có budget-exhausted producer/topic;
+Không có Order refund consumer, Auth consumer hay coupon producer. Command receipt cleanup
+tách khỏi outbox trimmer, không xóa receipt còn nằm trong retry/recovery horizon và không
+xóa receipt còn `redis_finalized_at IS NULL`. Không có budget-exhausted producer/topic;
 exhaustion chỉ được đo từ synchronous response và metrics.

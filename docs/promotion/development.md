@@ -19,9 +19,9 @@ verified_against_commit: null
 ## 1. Prerequisites và local dependencies
 
 Định hướng: JDK 21, Spring Boot 4/Maven, PostgreSQL logical replication, Redis Cluster
-có Lua, Kafka và Debezium/Kafka Connect. Product/Checkout/Order/Auth nên dùng
-contract fixtures hoặc test containers khi test Promotion độc lập; Temporal cần fixture
-cho allocation lifecycle.
+có Lua, Kafka và Debezium/Kafka Connect. Product/Checkout/Order nên dùng contract fixtures
+hoặc test containers khi test Promotion độc lập; Temporal cần fixture cho allocation
+lifecycle. Không cần Auth fixture vì Promotion không consume Auth event.
 
 ## 2. Configuration
 
@@ -37,11 +37,11 @@ credential. Không cấu hình `t.promotion.budget.events`.
 |---|---|
 | Unit | AST operators, missing/empty, integer discount/cap, campaign phase `[start,end)` |
 | Domain | validity modes, immutable-definition clone, natural end giữ voucher, customer refund no-op |
-| PostgreSQL | chín bảng, Product tombstone watermark/markdown invalidation, command receipt replay/hash, wallet transitions, causal outbox/source revision |
+| PostgreSQL | chín bảng, Product tombstone watermark/markdown invalidation, command receipt replay/hash/`redis_finalized_at`, wallet transitions, causal outbox/source revision |
 | Redis | runtime claim-gate fields time/revision, claim/reserve/cancel, Confirm-Prepare/finalize Lua, integer counters, hash slot |
 | Concurrency | 10.000 contender, exact claim boundary, duplicate claim, confirm/cancel/sweep races |
 | Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM |
-| CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract, Product tombstone, stale revision |
+| CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract theo `contracts/events/promotion/v1`, Product tombstone consumer, stale revision; chứng minh confirm/`cancel-confirmed`/claim không ghi outbox |
 | HTTP | Contract test đủ 24 operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→cancel-confirmed/repair |
@@ -68,7 +68,8 @@ Baseline migration tạo:
 - `user_coupon_wallets`
 - `markdown_rules`
 - `catalog_product_tombstones`
-- `promotion_command_receipts`
+- `promotion_command_receipts` (gồm `redis_finalized_at` và partial index
+  `WHERE redis_finalized_at IS NULL`)
 - `promotion_outbox_events`
 - sequence cho markdown `source_revision`
 - CHECK, FK, unique/partial unique và query indexes trong `data.md`
@@ -95,8 +96,10 @@ state trước khi drop table; không suy diễn customer refund thành technica
 - Confirm preflight receipt trước Redis; Prepare missing phải recheck receipt trước khi trả
   not-found. Matching `CONFIRMING` cùng payload là Prepare replay.
 - Confirm finalizer chỉ move reserved→used khi có matching durable receipt; missing payload
-  enqueue reconciliation, không increment mù.
-- Không có Redis-first `cancel-confirmed`; sau DB commit chỉ trigger projection repair.
+  enqueue reconciliation, không increment mù. Sau khi Lua báo hội tụ mới set
+  `redis_finalized_at`; worker quét receipt còn `NULL` và mọi bước phải idempotent.
+- Không có Redis-first `cancel-confirmed`; sau DB commit chỉ trigger projection repair rồi
+  set `redis_finalized_at`.
 - Campaign schedule dùng member chứa revision; worker không destructive pop.
 - Amount dùng `HINCRBY`, không `HINCRBYFLOAT`.
 - Lua phải versioned, bounded và có structured result codes.
@@ -104,13 +107,14 @@ state trước khi drop table; không suy diễn customer refund thành technica
 ## 7. Outbox/contract generation
 
 Outbox payload là CloudEvent hoàn chỉnh; connector route theo `event_type`/topic và giữ
-partition key. Outbox không replay inbound command; command receipt không relay Kafka.
-Pin connector/generator version; CI kiểm schema compatibility và fixture.
-Markdown dùng contract hiện hành
-`com.ecommerce.promotion.product-markdown-snapshot.v1`: ACTIVE mang full rule,
-INACTIVE chỉ mang tombstone reason. Causal dedup key phải chứa product/campaign/revision/
-trigger và không chứa resulting state; `source_revision` chỉ ordering. Không tạo ba delta event legacy hoặc
-budget-exhausted event/topic.
+partition key. Outbox không replay inbound command; command receipt không relay Kafka và là
+trigger nội bộ duy nhất cho finalizer/repair. Pin connector/generator version; CI kiểm
+schema compatibility và fixture. Kafka contract chuẩn là
+[`contracts/events/promotion/v1/asyncapi.yaml`](../../contracts/events/promotion/v1/asyncapi.yaml)
+với một message phát `com.ecommerce.promotion.product-markdown-snapshot.v1`: ACTIVE mang
+full rule, INACTIVE chỉ mang tombstone reason. Causal dedup key phải chứa
+product/campaign/revision/trigger và không chứa resulting state; `source_revision` chỉ
+ordering. Không tạo ba delta event legacy, coupon topic hoặc budget-exhausted event/topic.
 
 Consumer `com.ecommerce.catalog.product-deleted.v1` phải guard catalog revision, commit
 terminal watermark + invalidation trước ack, serialize với mọi markdown mutation bằng cùng
@@ -145,7 +149,7 @@ thiết kế hai service đó chưa chốt.
 ## 9. Debugging
 
 - Trace correlation/workflow/event/order/promotion/claim/campaign ID.
-- Inspect command receipt + wallet/budget/outbox trước Redis counter.
+- Inspect command receipt (`redis_finalized_at`) + wallet/budget trước Redis counter.
 - Inspect runtime claim fields/pending/reservation/schedule bằng read-only command.
 - Kiểm tra DB campaign revision/time trước khi sửa ZSET.
 - Kiểm tra connector offset/outbox age/Product source revision khi markdown stale.
@@ -156,17 +160,19 @@ thiết kế hai service đó chưa chốt.
 
 - Build/lint/unit/integration/concurrency/contract/load tests pass.
 - Migration và Redis key/Lua version có rollout/rollback plan.
-- OpenAPI/AsyncAPI/JSON Schema và examples nhất quán.
-- Mọi crash boundary fence–DB receipt/wallet/budget/outbox–Redis finalizer/repair có
-  replay/reconciliation test.
+- OpenAPI v1, AsyncAPI v1 (`contracts/events/promotion/v1`), JSON Schema và examples nhất
+  quán; `pwsh ./contracts/tools/validate-contracts.ps1` pass.
+- Mọi crash boundary fence–DB receipt/wallet/budget–Redis finalizer/repair–set
+  `redis_finalized_at` có replay/reconciliation test.
 - Campaign không activate sớm, stale job no-op và fallback hội tụ.
 - Claim không SPOP ngoài hard interval/revision; API success chỉ sau DB commit và pending
   worker persist đúng acquisition evidence.
 - Published definition chỉ thay bằng clone identity; wallet cũ không đổi rule/expiry.
 - Markdown causal dedup không collision, ACTIVE/INACTIVE đúng schema, Product tombstone
   không để dangling effective rule hoặc tạo reverse event loop.
-- Không tồn tại budget-exhausted producer/topic; sync error và telemetry vẫn được test.
+- Không tồn tại budget-exhausted hay coupon producer/topic; sync error và telemetry vẫn
+  được test.
 - Confirm và technical compensation commit PostgreSQL-first, replay stored response và
-  hội tụ Redis; customer refund không thay đổi Promotion.
+  hội tụ Redis qua receipt `redis_finalized_at`; customer refund không thay đổi Promotion.
 - Dashboard, alerts, runbooks, CDC retention/watermark và security review hoàn tất.
 - Chỉ nâng `implemented/verified` khi có source/test evidence.

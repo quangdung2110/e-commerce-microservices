@@ -18,6 +18,7 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
 | Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |
 | Promotion HTTP v1 | `proposed` | Service chưa có runtime; contract chốt 24 operation Admin, Customer/Checkout và Order/Temporal, opaque ID, Money VND và không có refund endpoint. |
+| Promotion Events v1 | `proposed` | Service chưa có runtime; contract chốt một message phát (`product-markdown-snapshot.v1`, chuyển ownership từ Product AsyncAPI) và một message nhận (`product-deleted.v1`); không có coupon/budget event vì chưa có consumer. |
 
 ## Quy tắc chuyển trạng thái
 

@@ -22,6 +22,11 @@ evidence:
 quyết định còn phù hợp: reserve/cancel pre-payment là Redis runtime hold, wallet là
 redemption state, customer refund không mutate Promotion và reconciliation DB → Redis.
 
+Amended bởi [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md): final
+command không ghi outbox và durable trigger cho Redis finalizer/repair là receipt
+`redis_finalized_at IS NULL`, không phải outbox event. Các đoạn "redeemed outbox" và
+"insert outbox" dưới đây là lịch sử tại thời điểm quyết định.
+
 ## Context
 
 Confirm và `cancel-confirmed` thay đổi wallet cùng durable used budget, nhưng thiết kế

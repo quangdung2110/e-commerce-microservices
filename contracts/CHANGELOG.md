@@ -5,6 +5,17 @@ không cần xuất hiện ở đây.
 
 ## 2026-09-13
 
+- Thêm Promotion Events AsyncAPI v1 tại `events/promotion/v1/`. Promotion sở hữu
+  `com.ecommerce.promotion.product-markdown-snapshot.v1`; schema chuyển từ
+  `events/product/v1/schemas/` sang `events/promotion/v1/schemas/`, file cũ trở thành shim
+  `$ref` để `dataschema` URI cũ vẫn resolve; example đổi `dataschema` sang đường dẫn mới.
+  Product AsyncAPI tham chiếu message qua `$ref` và không còn định nghĩa operation
+  consume thay cho Promotion. `markdown_discount` chuyển từ `catalog-common` sang
+  `promotion-event-common`; wire shape không đổi.
+- Chốt phạm vi event Promotion v1: chỉ phát markdown snapshot và chỉ consume
+  `product-deleted.v1`. Không có coupon saved/redeemed/technical-cancelled, budget,
+  reservation hay Auth welcome-voucher consumer vì không có consumer/producer đã đăng ký;
+  thêm sau là additive.
 - Thêm Promotion HTTP OpenAPI v1 với 24 operation: quản trị campaign/promotion/markdown,
   customer suggestion/discovery/save/claim, Checkout discount calculation và bốn command
   allocation cho Order/Temporal.

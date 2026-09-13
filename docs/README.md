@@ -1,17 +1,23 @@
 # E-Commerce Platform — Documentation Index
 
-> **Canonical source of truth:** [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md).
-> Mọi thay đổi về contract giữa các service phải cập nhật file đó trước, sau đó mới lan ra các doc khác.
+> **Contract foundation mới:** [`../contracts/`](../contracts/README.md) là nguồn
+> chuẩn cho machine-readable contract mới (OpenAPI, Protobuf, AsyncAPI và JSON
+> Schema). `docs/_contracts/CONTRACT_MATRIX.md` hiện là tài liệu legacy trong
+> thời gian migration; không dùng nó làm template cho service mới.
+
+Tài liệu trong `docs/` giải thích business, workflow và implementation. Khi dữ
+liệu trên wire mâu thuẫn với một contract đã được đánh dấu `implemented` hoặc
+`verified`, machine-readable spec trong `contracts/` được ưu tiên.
 
 ---
 
-## 0. Master Contracts (SSOT) — `docs/_contracts/`
+## 0. Legacy Contract Documents — `docs/_contracts/`
 
 | File | Mô tả |
 |---|---|
-| [CONTRACT_MATRIX.md](./_contracts/CONTRACT_MATRIX.md) | Bảng SSOT cho mọi event/payload/ID/state machine/TTL/idempotency. **Bắt buộc đọc trước khi sửa bất kỳ service doc nào.** |
-| [IDEMPOTENCY_GUIDELINES.md](./_contracts/IDEMPOTENCY_GUIDELINES.md) | Chuẩn chung về idempotency 2 lớp (Redis SETNX + DB Unique), key format, anti-pattern. |
-| [OUTBOX_PATTERNS.md](./_contracts/OUTBOX_PATTERNS.md) | CDC Pattern (Debezium) là chuẩn, Polling đã deprecated, Direct-Produce chỉ cho runtime event ngắn. |
+| [CONTRACT_MATRIX.md](./_contracts/CONTRACT_MATRIX.md) | Matrix legacy đang được migrate dần sang `contracts/catalog` và machine-readable specs. |
+| [IDEMPOTENCY_GUIDELINES.md](./_contracts/IDEMPOTENCY_GUIDELINES.md) | Hướng dẫn triển khai legacy về Redis/DB/Temporal. |
+| [OUTBOX_PATTERNS.md](./_contracts/OUTBOX_PATTERNS.md) | Hướng dẫn kiến trúc legacy về CDC, direct produce và polling. |
 | [CHANGELOG.md](./_contracts/CHANGELOG.md) | Lịch sử mọi sync change theo phase. |
 
 ### ADRs (Architecture Decision Records)
@@ -81,17 +87,21 @@
 
 ## 4. Inventory Service (Redis Lua + PG)
 
-> Tài liệu 6 file thiết kế Inventory Service.
+> Đã refactor theo cấu trúc chuẩn tại
+> [`_templates/service-documentation`](./_templates/service-documentation/README.md).
+> Bắt đầu từ [inventory/README.md](./inventory/README.md).
 
 | File | Mô tả |
 |---|---|
-| [inventory/inventory_workflow.md](./inventory/inventory_workflow.md) | Luồng Reserve/Deduct/Release + Routing Options + Admin Restock + Return Restock. |
-| [inventory/inventory_db_design.md](./inventory/inventory_db_design.md) | Schema: warehouses, physical_inventory, inventory_reservations, inventory_ledger, inventory_outbox (CDC). |
-| [inventory/inventory_redis_design.md](./inventory/inventory_redis_design.md) | Redis keys + Lua scripts 1/2/3 + cross-slot constraints. |
-| [inventory/inventory_events.md](./inventory/inventory_events.md) | Event catalog cho `t.inventory.events` (3 events: MUTATION, CHANGED, RETURN_RECEIVED_ALL). |
-| [inventory/inventory_endpoints.md](./inventory/inventory_endpoints.md) | API endpoints: routing-options, restock, refund-expectations, admin/unlock-sku. |
-| [inventory/inventory_workers.md](./inventory/inventory_workers.md) | Background workers: Ledger Worker, CDC outbox, Return Consumer, etc. |
-| [inventory/smart_routing_engine.md](./inventory/smart_routing_engine.md) | Smart Routing algorithm + cache + plan expiry handling. |
+| [inventory/README.md](./inventory/README.md) | Điểm bắt đầu: trạng thái, boundary, data ownership, invariant, known gaps. |
+| [inventory/architecture.md](./inventory/architecture.md) | Component, processing model, consistency và concurrency; vì sao Redis đứng trước PostgreSQL. |
+| [inventory/domain.md](./inventory/domain.md) | Thuật ngữ, business rule, state machine và domain error. |
+| [inventory/data.md](./inventory/data.md) | Ownership, schema, constraint, Redis key, outbox và lifecycle. |
+| [inventory/interfaces.md](./inventory/interfaces.md) | HTTP, Temporal Activity và event semantics. |
+| [inventory/workflows.md](./inventory/workflows.md) | 10 workflow end-to-end kèm failure path và idempotency. |
+| [inventory/operations.md](./inventory/operations.md) | SLI, alert, failure mode, runbook và worker. |
+| [inventory/development.md](./inventory/development.md) | Chạy, build, test và migration local. |
+| [inventory/decisions/](./inventory/decisions/README.md) | 10 ADR: Redis commit source, stream outbox, CDC, suspension, snapshot v1... |
 
 ---
 
@@ -107,11 +117,12 @@
 | [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
 | [promotion/interfaces.md](./promotion/interfaces.md) | HTTP semantics đích, outbox event và Product markdown snapshot v1. |
 | [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 24 operations; trạng thái `proposed`. |
+| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `proposed`. |
 | [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, Saga technical compensation và recovery. |
 | [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
 | [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
 | [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
-| [promotion/decisions/](./promotion/decisions/README.md) | 14 ADR; ADR-013 và ADR-014 là các quyết định mới nhất của lần refactor. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 16 ADR; ADR-016 chốt phạm vi event v1 và receipt-driven finalizer. |
 
 ---
 
@@ -142,8 +153,7 @@ Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
-| Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone) | Product |
-| Promotion | `t.promotion.coupon.events` | Notification, Analytics; không có coupon-refunded event |
+| Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
 ---
 
@@ -175,9 +185,9 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | File | Note |
 |---|---|
 | [auth/](./auth/) | Auth Service — ngoài scope 14 phase hiện tại. |
-| [cart/](./cart/) | Cart Service — ngoài scope. |
-| [review/](./review/) | Review Service — ngoài scope. |
-| [search/](./search/) | Search Service — ngoài scope. |
+| [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [notification/](./notification/) | Notification Service — ngoài scope. |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |

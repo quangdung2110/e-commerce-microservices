@@ -8,7 +8,7 @@ owners:
 evidence:
   - docs/promotion/RuleEngineDemo.java
   - contracts/http/promotion/v1/openapi.yaml
-  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
+  - contracts/events/promotion/v1/asyncapi.yaml
 verified_against_commit: null
 ---
 
@@ -29,8 +29,7 @@ flowchart LR
   ADMIN[Admin qua Gateway] --> API[Promotion HTTP API]
   CHECKOUT[Checkout] --> API
   ORDER[Order / Temporal] --> API
-  AUTH[Auth events - optional] --> CONSUMER[Kafka consumers]
-  PRODUCT_TOMBSTONE[Product tombstone] --> CONSUMER
+  PRODUCT_TOMBSTONE[Product tombstone] --> CONSUMER[Kafka consumer]
   API --> APP[Application services]
   CONSUMER --> APP
   APP --> RULE[Rule Engine]
@@ -42,8 +41,7 @@ flowchart LR
   OUTBOX --> CDC[Debezium / Kafka Connect]
   CDC --> KAFKA[(Kafka)]
   KAFKA --> PRODUCT[Product]
-  KAFKA --> OTHER[Notification / Analytics]
-  JOBS[Schedule / rescue / reconciliation] --> APP
+  JOBS[Schedule / rescue / finalizer / reconciliation] --> APP
   JOBS --> PG
   JOBS --> REDIS
 ```
@@ -57,10 +55,10 @@ flowchart LR
 | Rule Engine | Evaluate AST thuần, xác định | Ghi DB/Redis hoặc gọi network |
 | PostgreSQL repository | Persist campaign, rule, Product tombstone watermark, wallet, budget, command receipt, outbox | Quản lý reservation runtime |
 | Redis/Lua adapter | Atomic claim, reserve, counter và schedule | Trở thành durable truth |
-| Outbox writer | Ghi CloudEvent cùng business transaction | Direct-produce sau commit |
+| Outbox writer | Ghi markdown snapshot CloudEvent cùng business transaction | Direct-produce sau commit; ghi event không có consumer |
 | Debezium/Kafka Connect | Relay outbox at-least-once | Suy diễn business state |
-| Kafka consumer | Welcome grant và Product tombstone invalidation | Xử lý duplicate thiếu business guard |
-| Worker | Rescue, expiry, rebuild và reconciliation | Ghi PostgreSQL dựa trên Redis counter |
+| Kafka consumer | Product tombstone invalidation | Xử lý duplicate thiếu business guard |
+| Worker | Rescue, expiry, receipt-driven finalizer/repair, rebuild và reconciliation | Ghi PostgreSQL dựa trên Redis counter |
 
 ## 4. Processing model
 
@@ -72,8 +70,10 @@ flowchart LR
   success sau commit; pending persistence worker dùng cùng logic để cứu crash window.
 - Reserve/cancel pre-payment là Redis runtime activities. Confirm preflight durable receipt,
   rồi dùng Redis fence không đổi counter cho command mới, PostgreSQL-first commit
-  receipt/wallet/budget/outbox và finalize Redis sau commit. `cancel-confirmed` commit
-  PostgreSQL trước rồi repair Redis projection.
+  receipt/wallet/budget và finalize Redis sau commit. `cancel-confirmed` commit PostgreSQL
+  trước rồi repair Redis projection. Cả hai flow không ghi outbox: receipt với
+  `redis_finalized_at IS NULL` là durable trigger để finalizer/repair chạy lại sau crash,
+  và được set sau khi Redis hội tụ.
 - Admin mutation ghi PostgreSQL và outbox trong cùng transaction. Cache invalidation và
   ZSET update chỉ chạy sau commit, có DB fallback/rebuild.
 - Campaign START/END worker không lưu phase thời gian vào DB. Worker kiểm tra lại
@@ -99,7 +99,7 @@ flowchart LR
 | Product markdown projection | Apply ACTIVE full rule hoặc INACTIVE tombstone khi `source_revision` mới hơn |
 | Discovery budget guard | Best-effort/fail-open; Reserve chốt authoritative |
 | Redis budget counter | Runtime projection; DB-first reconciliation |
-| Confirm/`cancel-confirmed` durable outcome | Receipt + wallet + budget + outbox trong một PostgreSQL transaction |
+| Confirm/`cancel-confirmed` durable outcome | Receipt + wallet + budget trong một PostgreSQL transaction; `redis_finalized_at` đánh dấu Redis đã hội tụ |
 
 Không có distributed transaction PostgreSQL–Redis. Mỗi crash window phải có replay,
 guarded transition hoặc reconciliation cụ thể.
@@ -140,17 +140,18 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
 - Reserve replay phải cùng payload; khác payload trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
 - Confirm tra receipt trước Redis; durable replay không phụ thuộc reservation còn tồn tại.
   Command mới fence `RESERVED→CONFIRMING` nhưng không move counter trước DB; receipt +
-  conditional `SAVED→USED` + budget + outbox chốt durable outcome. Redis miss phải recheck
-  receipt để đóng race với concurrent commit/finalize trước khi kết luận reservation mất.
+  conditional `SAVED→USED` + budget chốt durable outcome. Redis miss phải recheck receipt
+  để đóng race với concurrent commit/finalize trước khi kết luận reservation mất.
 - Cancel pre-payment là idempotent trên reservation key; không đổi wallet.
 - `cancel-confirmed` dùng receipt + guarded `USED → SAVED` nếu còn hạn, hoặc
   `USED → EXPIRED`; Redis không bị decrement trước DB.
 - Markdown outbox `dedup_key` chứa product, campaign, campaign revision và trigger; state
   không thuộc key để cùng một cause không thể phát hai snapshot khác nhau. Product dùng
   monotonic `source_revision` để bỏ stale event.
-- `promotion_command_receipts` dedup inbound final command và replay stored response;
-  outbox chặn tạo trùng logical event và giữ stable event ID, còn Kafka delivery vẫn
-  at-least-once. Không có usage ledger riêng.
+- `promotion_command_receipts` dedup inbound final command, replay stored response và
+  giữ `redis_finalized_at` để finalizer/repair idempotent; outbox chặn tạo trùng logical
+  markdown event và giữ stable event ID, còn Kafka delivery vẫn at-least-once. Không có
+  usage ledger riêng.
 
 ## 8. Deployment constraints
 
@@ -166,6 +167,9 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   command receipt và PostgreSQL transaction đã bảo vệ replay/final outcome.
 - Không phát business event trực tiếp từ application sau commit.
 - Không phát budget-exhausted event từ Redis observation; chỉ trả synchronous result và metric.
+- Không phát coupon/wallet, reservation hay campaign lifecycle event và không consume Auth/
+  Order/Payment event khi chưa có consumer/producer đã đăng ký; không dùng outbox làm cơ
+  chế điều phối nội bộ.
 - Không để Product/Search chạy voucher Rule Engine.
 - Không coi campaign end, pause hoặc cancel là emergency revocation của voucher đã lưu;
   wallet vẫn theo `expired_at` đã snapshot, kể cả khi mode chọn `CAMPAIGN_END`.
@@ -183,5 +187,7 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
 - [ADR-014](./decisions/ADR-014-claim-and-markdown-consistency.md): claim gate, immutable definition và causal markdown lifecycle.
 - [ADR-015](./decisions/ADR-015-lean-redis-runtime-keyspace.md): keyspace runtime gọn, claim
   fields gộp vào runtime hash và edge-owned discovery rate limit.
+- [ADR-016](./decisions/ADR-016-event-scope-and-receipt-driven-finalization.md): phạm vi
+  integration event v1 và finalizer/repair trigger bằng command receipt.
 
 ADR-001, ADR-003..008 và ADR-010..012 đã được supersede.

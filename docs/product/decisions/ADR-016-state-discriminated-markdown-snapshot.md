@@ -11,7 +11,7 @@ supersedes:
 evidence:
   - docs/product/data.md
   - docs/product/workflows.md
-  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
+  - contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
 ---
 
 # ADR-016 — Markdown snapshot phân biệt ACTIVE và INACTIVE

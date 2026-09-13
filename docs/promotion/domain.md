@@ -30,7 +30,7 @@ verified_against_commit: null
 | Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
 | Technical compensation | `cancel-confirmed` vì order không hoàn tất sau confirm | Customer refund |
 | Customer refund | Order/Payment hoàn tiền partial/full | Promotion budget rollback |
-| Command receipt | Biên nhận durable cho final command và response replay | Outbox event/publication state |
+| Command receipt | Biên nhận durable cho final command, response replay và Redis finalize marker | Outbox event/publication state |
 
 ## 2. Domain objects
 
@@ -44,9 +44,10 @@ verified_against_commit: null
   invalidation riêng mà không sửa definition.
 - `CatalogProductTombstone` là durable terminal watermark theo Product/catalog revision;
   nó chặn markdown rule được tạo sau khi delete đã được quan sát.
-- `PromotionOutboxEvent` là append-only integration fact/durable dedup record.
+- `PromotionOutboxEvent` là append-only integration fact/durable dedup record; ở v1 chỉ
+  chứa markdown snapshot.
 - `PromotionCommandReceipt` là inbound `CONFIRM`/`CANCEL_CONFIRMED` receipt, chứa stable
-  key, request hash và stored response; không phải usage ledger.
+  key, request hash, stored response và `redis_finalized_at`; không phải usage ledger.
 - User, Order và Product chỉ là identifier/snapshot từ bounded context khác.
 
 ## 3. Commands và queries
@@ -85,13 +86,14 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-014` | Missing AST field trả false; Rule Engine thuần và xác định. |
 | `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
 | `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
-| `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet, durable budget và outbox cùng commit PostgreSQL. |
+| `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet và durable budget cùng commit PostgreSQL. |
 | `PROMO-BR-018` | `cancel-confirmed` commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. |
-| `PROMO-BR-019` | Command receipt dedup inbound command; outbox dedup outbound event. Hai bảng có retention độc lập. |
+| `PROMO-BR-019` | Command receipt dedup inbound command và là durable trigger cho Redis finalize/repair qua `redis_finalized_at`; outbox dedup outbound markdown event. Hai bảng có retention độc lập. |
 | `PROMO-BR-020` | Markdown dedup identity gồm product, campaign, campaign revision và trigger; resulting state không thuộc key; ordering dùng source revision riêng. |
 | `PROMO-BR-021` | Snapshot ACTIVE mang full rule; INACTIVE chỉ là tombstone có reason, không mang rule/discount/interval. |
 | `PROMO-BR-022` | Product tombstone persist terminal watermark và invalidate markdown idempotently theo catalog revision; mọi markdown mutation serialize cùng product lock và không phát INACTIVE ngược về Product đã xóa. |
 | `PROMO-BR-023` | `BUDGET_EXHAUSTED` chỉ là synchronous outcome/telemetry, không phải integration event. |
+| `PROMO-BR-024` | Chỉ phát integration event có consumer đã đăng ký trong contract; ở v1 chỉ có markdown snapshot. Wallet transition, reservation và campaign lifecycle không tạo Kafka event. |
 
 Natural campaign end khác emergency revocation. Pause/cancel dừng effective markdown và
 claim mới nhưng không tự thu hồi voucher đã lưu. Revocation nếu cần phải là nghiệp vụ
@@ -175,8 +177,9 @@ Product tombstone invalidation là operational evidence riêng.
 | `PROMO-INV-010` | Markdown event ordering tăng theo product source revision. | Advisory lock + sequence |
 | `PROMO-INV-011` | Rule evaluation chỉ phụ thuộc AST + input context. | Unit/property tests |
 | `PROMO-INV-012` | Mỗi final command/order/promotion có tối đa một completed receipt và một stored response. | Unique command receipt + request hash |
-| `PROMO-INV-013` | Receipt, wallet, durable budget và outbox của final command cùng commit hoặc cùng rollback. | PostgreSQL transaction |
+| `PROMO-INV-013` | Receipt, wallet và durable budget của final command cùng commit hoặc cùng rollback. | PostgreSQL transaction |
 | `PROMO-INV-014` | Không decrement/increment Redis mù khi finalizer/repair thiếu runtime evidence. | Fence/finalizer guard + reconciliation |
+| `PROMO-INV-019` | Mọi receipt đã commit cuối cùng đều được finalize/repair Redis đúng một lần về mặt hiệu ứng; `redis_finalized_at` chỉ set sau khi Redis hội tụ. | Partial index `redis_finalized_at IS NULL` + idempotent Lua |
 | `PROMO-INV-015` | Limited claim success không linearize ngoài hard claim interval/revision. | Claim-gate Lua + Redis TIME |
 | `PROMO-INV-016` | Published business definition không mutate in-place. | Admin guards + clone workflow |
 | `PROMO-INV-017` | Hai causal markdown transition khác nhau không dùng cùng outbox dedup key. | Full causal unique key |

@@ -122,26 +122,11 @@ Cảnh báo user nạp tiền/thanh toán gặp sự cố, kèm link thử lại
 ```
 
 ### 2.3 Promotion / Marketing (Từ Promotion Service)
-Event Bulk-push. Có thể chứa metadata của promotion.
 
-```json
-{
-  "specversion": "1.0",
-  "id": "promo-event-110022",
-  "source": "/promotion-service/campaigns",
-  "type": "PROMOTION_FLASH_SALE",
-  "time": "2026-04-27T08:00:00Z",
-  "datacontenttype": "application/json",
-  "data": {
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "campaign_name": "Siêu sale cuối tháng 4",
-    "discount_percent": 30,
-    "highlight_product": "Laptop Gaming",
-    "valid_until": "2026-04-30T23:59:59Z",
-    "action_url": "https://ecommerce.com/flash-sale"
-  }
-}
-```
+Chưa có. Promotion Events v1 (`contracts/events/promotion/v1/asyncapi.yaml`) chỉ phát
+`product-markdown-snapshot.v1` cho Product; không có `PROMOTION_FLASH_SALE`,
+`VOUCHER_EXPIRING` hay coupon saved/redeemed event. Mục này được giữ làm placeholder;
+marketing push cần contract mới do Promotion sở hữu trước khi Notification đăng ký consumer.
 
 ## 3. Chat Events
 

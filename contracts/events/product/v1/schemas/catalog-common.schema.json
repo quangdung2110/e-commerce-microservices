@@ -73,32 +73,6 @@
         "is_leaf": { "type": "boolean" },
         "updated_at": { "$ref": "#/$defs/timestamp" }
       }
-    },
-    "markdown_discount": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type"],
-      "properties": {
-        "type": { "type": "string", "enum": ["PERCENTAGE", "FIXED_VND"] },
-        "discount_bps": { "type": "integer", "minimum": 1, "maximum": 10000 },
-        "fixed_discount_vnd": { "type": "integer", "minimum": 1 },
-        "max_discount_vnd": { "type": ["integer", "null"], "minimum": 1 }
-      },
-      "allOf": [
-        { "if": { "properties": { "type": { "const": "PERCENTAGE" } } }, "then": { "required": ["discount_bps"], "not": { "required": ["fixed_discount_vnd"] } } },
-        {
-          "if": { "properties": { "type": { "const": "FIXED_VND" } } },
-          "then": {
-            "required": ["fixed_discount_vnd"],
-            "not": {
-              "anyOf": [
-                { "required": ["discount_bps"] },
-                { "required": ["max_discount_vnd"] }
-              ]
-            }
-          }
-        }
-      ]
     }
   }
 }

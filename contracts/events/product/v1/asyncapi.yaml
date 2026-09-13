@@ -65,20 +65,14 @@ channels:
       catalogReindexRequested: { $ref: '#/components/messages/catalogReindexRequested' }
   promotionMarkdownEvents:
     address: t.promotion.markdown.events
-    description: ACTIVE full markdown hoặc INACTIVE tombstone Product scope do Promotion phát; Product là consumer duy nhất trong contract này.
-    x-message-key: product_id
-    x-ordering-scope: product_id
-    x-delivery-semantic: at-least-once
-    x-deduplication-key: CloudEvents.id
-    x-ordering-guard: data.source_revision
-    x-max-payload-bytes: 16384
-    x-retention: 14d
-    x-retry-policy:
-      strategy: consumer-managed-retry-with-dlq
-      dead-letter-topic: t.promotion.markdown.events.dlq
-    x-data-classification: INTERNAL
+    description: >-
+      ACTIVE full markdown hoặc INACTIVE tombstone Product scope do Promotion sở hữu và
+      phát; contract chuẩn nằm tại events/promotion/v1/asyncapi.yaml. Product là consumer
+      duy nhất.
+    x-owner: promotion-service
     messages:
-      productMarkdownSnapshot: { $ref: '#/components/messages/productMarkdownSnapshot' }
+      productMarkdownSnapshot:
+        $ref: '../../promotion/v1/asyncapi.yaml#/components/messages/productMarkdownSnapshot'
 operations:
   publishSkuUpserted:
     action: send
@@ -93,12 +87,7 @@ operations:
   publishProductDeleted:
     action: send
     channel: { $ref: '#/channels/productEvents' }
-    summary: Product phát tombstone chứa toàn bộ SKU khi hard delete Product.
-    messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
-  consumeProductDeletedByPromotion:
-    action: receive
-    channel: { $ref: '#/channels/productEvents' }
-    summary: Promotion persist terminal Product watermark, guard catalog_revision và invalidate dangling markdown rules; không phát reverse markdown event.
+    summary: Product phát tombstone chứa toàn bộ SKU khi hard delete Product; Promotion consume theo operation consumeProductDeleted trong events/promotion/v1/asyncapi.yaml.
     messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
   publishCategoryUpserted:
     action: send
@@ -152,8 +141,3 @@ components:
       title: Catalog reindex requested
       contentType: application/cloudevents+json
       payload: { $ref: './schemas/catalog-reindex-requested.schema.json' }
-    productMarkdownSnapshot:
-      name: productMarkdownSnapshotV1
-      title: Product markdown snapshot
-      contentType: application/cloudevents+json
-      payload: { $ref: './schemas/product-markdown-snapshot.schema.json' }

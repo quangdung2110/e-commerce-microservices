@@ -100,12 +100,17 @@ state/tombstone hiện có.
 
 Category event dùng Kafka key `category_id`; Category revision tăng với mutation category
 hoặc mapping category–attribute. Attribute/option không có event độc lập ở v1 vì chưa có
-consumer đã được xác nhận; nếu Search cần cấu hình facet, đó là contract mới.
+consumer đã được xác nhận. Search HTTP v2 cần `facet_definitions` (`code`, `label`,
+`type`) trong category snapshot/export để render facet ổn định; đây là extension
+tương thích cần được thêm vào Product event/export trước khi Search bật v2 facet.
 
 ## Events Product tiêu thụ
 
 Product chỉ consume `com.ecommerce.promotion.product-markdown-snapshot.v1` từ
-`t.promotion.markdown.events`, key `product_id`, `sequence = source_revision`. Snapshot
+`t.promotion.markdown.events`, key `product_id`, `sequence = source_revision`. Contract do
+Promotion sở hữu tại
+[`contracts/events/promotion/v1/asyncapi.yaml`](../../contracts/events/promotion/v1/asyncapi.yaml);
+Product AsyncAPI chỉ tham chiếu message qua `$ref`. Snapshot
 luôn mang `product_id`, `source_revision`, `state`. `ACTIVE` mang rule/công thức VND/thời
 hạn đầy đủ; `INACTIVE` chỉ mang `inactive_reason` và không mang rule/discount/interval.
 Product chỉ apply revision lớn hơn, reprice cùng transaction rồi phát SKU snapshot

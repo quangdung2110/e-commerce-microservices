@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/promotion/v1/schemas/promotion-event-common.schema.json",
+  "title": "Promotion event common envelope and scalar types",
+  "description": "Envelope dùng chung cho mọi CloudEvent do Promotion phát qua promotion_outbox_events + Debezium CDC. `id` là outbox event_id (UUID) và ổn định qua mọi lần CDC retry.",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "source"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "source": { "const": "/services/promotion" },
+        "correlationid": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "markdown_discount": {
+      "description": "Công thức giảm giá product-scope. Giá trị tiền là integer VND theo convention của Product catalog consumer; đây là wire shape đã được Product ADR-016 chốt, không phải Money của HTTP v1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["PERCENTAGE", "FIXED_VND"] },
+        "discount_bps": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "fixed_discount_vnd": { "type": "integer", "minimum": 1 },
+        "max_discount_vnd": { "type": ["integer", "null"], "minimum": 1 }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "PERCENTAGE" } } }, "then": { "required": ["discount_bps"], "not": { "required": ["fixed_discount_vnd"] } } },
+        {
+          "if": { "properties": { "type": { "const": "FIXED_VND" } } },
+          "then": {
+            "required": ["fixed_discount_vnd"],
+            "not": {
+              "anyOf": [
+                { "required": ["discount_bps"] },
+                { "required": ["max_discount_vnd"] }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

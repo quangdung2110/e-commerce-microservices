@@ -32,6 +32,9 @@ implemented/verified vì Promotion Service hiện chưa có source module.
 | [ADR-013](./ADR-013-command-receipts-and-durable-finalization.md) | Command receipt; confirm/cancel-confirmed PostgreSQL-first | Accepted | 2026-09-11 | ADR-003, ADR-012 |
 | [ADR-014](./ADR-014-claim-and-markdown-consistency.md) | Atomic claim boundary; immutable definition; causal markdown lifecycle | Accepted | 2026-09-11 | ADR-004, ADR-010, ADR-011 |
 | [ADR-015](./ADR-015-lean-redis-runtime-keyspace.md) | Redis runtime keyspace gọn; discovery rate limit tại Gateway | Accepted | 2026-09-13 | — |
+| [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md) | Phạm vi event v1 chỉ markdown snapshot + product tombstone; finalizer trigger bằng receipt `redis_finalized_at` | Accepted | 2026-09-13 | — (amends ADR-013, ADR-014) |
 
 ADR-015 chỉ refine physical Redis mapping/edge ownership của ADR-013 và ADR-014; hai ADR
 trước vẫn là nguồn quyết định cho durable finalization và claim boundary semantics.
+ADR-016 amend hai ADR đó: bỏ outbox khỏi final command và coupon/Auth event khỏi scope v1,
+chuyển ownership markdown snapshot contract về Promotion.

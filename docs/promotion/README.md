@@ -8,7 +8,8 @@ owners:
 evidence:
   - docs/promotion/RuleEngineDemo.java
   - contracts/http/promotion/v1/openapi.yaml
-  - contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
+  - contracts/events/promotion/v1/asyncapi.yaml
+  - contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
 ---
 
@@ -27,7 +28,7 @@ hoạt động.
 | Runtime dự kiến | Java 21, Spring Boot 4 |
 | Implementation path dự kiến | `java/services/promotion-service` — hiện chưa tồn tại |
 | Độ tin cậy tài liệu | `proposed`; chưa verified với source code/migration |
-| Contract adoption | HTTP Promotion v1 và Markdown snapshot v1 đã có contract đích; chưa có implementation/contract test |
+| Contract adoption | HTTP Promotion v1 và Promotion Events v1 (markdown snapshot) đã có contract đích `proposed`; chưa có implementation/contract test |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -37,8 +38,8 @@ Các ADR trong `decisions/` là quyết định thiết kế, không phải bằ
 - Tách đúng vòng đời campaign, claim voucher và hạn sử dụng voucher đã lưu.
 - Đánh giá rule AST xác định, không query database/network trong từng node.
 - Bảo vệ quota/ngân sách khi nhiều người dùng claim hoặc submit đồng thời.
-- Kích hoạt/kết thúc markdown không sớm, tự phục hồi khi Redis/worker lỗi và phát event
-  bền vững qua transactional outbox + CDC.
+- Kích hoạt/kết thúc markdown không sớm, tự phục hồi khi Redis/worker lỗi và phát markdown
+  snapshot bền vững qua transactional outbox + CDC.
 - Đóng claim đúng hard boundary bằng Redis time/revision gate và dọn markdown reference
   khi Product bị hard delete.
 - Giữ PostgreSQL là source of truth và tự sửa drift của Redis hot state.
@@ -76,7 +77,7 @@ partial refund sau khi được refactor mà không làm thay đổi Promotion b
 | Claim inventory | `coupon_claims` |
 | Quyền sở hữu, expiry và redemption voucher | `user_coupon_wallets` |
 | Durable confirm/technical-cancel command | `promotion_command_receipts` |
-| Integration event | `promotion_outbox_events` trong cùng transaction với business state |
+| Integration event (chỉ markdown snapshot ở v1) | `promotion_outbox_events` trong cùng transaction với business state |
 | Reservation đang hiệu lực | Redis runtime; không persist `RESERVED` |
 | Claim pool/pending claim | Redis runtime có đường cứu về PostgreSQL |
 | Claim time/revision gate | Fields trong Redis runtime hash, rebuild từ campaign/promotion PostgreSQL |
@@ -84,8 +85,10 @@ partial refund sau khi được refactor mà không làm thay đổi Promotion b
 | Counter budget hot path | Redis projection có thể rebuild/repair từ PostgreSQL + reservation hợp lệ |
 
 Không có `coupon_usages` hoặc bảng idempotency event tổng quát. Final command dùng typed
-`promotion_command_receipts`; outbox chỉ lưu publication record và logical-event identity.
-Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEvents `id`.
+`promotion_command_receipts`; receipt cũng là durable trigger cho Redis finalize/repair qua
+`redis_finalized_at`. Outbox chỉ lưu publication record và logical-event identity của
+markdown snapshot. Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable
+CloudEvents `id`.
 
 ## 5. Capabilities
 
@@ -107,13 +110,16 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
 | Inbound | Checkout | HTTP | Discovery, save và calculate discount |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, cancel, `cancel-confirmed` |
-| Inbound | Auth | Kafka | Welcome voucher tùy chọn |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
-| Outbound | Notification/Analytics | Kafka/CDC | Claim/redeem/cancel facts nếu có consumer |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
 | Runtime | Redis Cluster | Redis/Lua | Cache, claim, budget, reservation, schedule |
 | Runtime | Debezium/Kafka Connect + Kafka | CDC/Kafka | At-least-once event delivery |
+
+Promotion không consume Auth, Order hay Payment event và không phát coupon/wallet, budget,
+reservation hay campaign lifecycle event ở v1. Không có consumer nào trong repository đăng
+ký các fact đó; thêm sau là thay đổi additive theo
+[`contracts/events/promotion/v1/README.md`](../../contracts/events/promotion/v1/README.md).
 
 ## 7. Critical invariants
 
@@ -131,9 +137,11 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
   `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
 - Refund partial/full không đổi wallet `USED` và không giảm used budget.
 - `cancel-confirmed` kỹ thuật trả wallet về `SAVED` nếu còn hạn, ngược lại `EXPIRED`.
-- Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget + outbox
-  trong một PostgreSQL transaction; Redis chỉ fence/finalize/repair theo từng flow.
-- Command receipt và outbox có trách nhiệm, retention độc lập.
+- Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget trong một
+  PostgreSQL transaction; Redis chỉ fence/finalize/repair theo từng flow và receipt
+  `redis_finalized_at IS NULL` là durable trigger để chạy lại sau crash.
+- Command receipt và outbox có trách nhiệm, retention độc lập; outbox chỉ chứa markdown
+  snapshot.
 - Markdown outbox dedup chứa causal campaign identity; `INACTIVE` không giả lập rule cũ.
 - Product tombstone persist watermark rồi invalidate idempotently; markdown mutation dùng cùng
   product advisory lock nên không thể xuất hiện rule sau tombstone, và không phát event
@@ -158,8 +166,16 @@ Kafka vẫn at-least-once; consumer dedupe delivery retry bằng stable CloudEve
 
 ## 9. Known gaps
 
-- Chưa có service code, migration, Promotion-owned AsyncAPI hoặc test; HTTP OpenAPI v1
-  đang `proposed`, chưa verified với implementation.
+- Chưa có service code, migration hoặc test; HTTP OpenAPI v1 và Events AsyncAPI v1 đang
+  `proposed`, chưa verified với implementation.
+- Welcome voucher không thuộc scope v1. Nếu cần, dùng lazy grant khi user gọi API wallet
+  lần đầu hoặc admin `DIRECT_GRANT`; không consume Auth Kafka vì Auth delivery là
+  best-effort và chưa có reconciliation.
+- Promotion giữ `user_id` trong wallet/claim nhưng chưa consume
+  `com.ecommerce.auth.user-deleted.v1`; retention/anonymization theo user cần ADR riêng
+  trước khi production-ready.
+- `promotion_rule_id` trong markdown snapshot là integer theo Product ADR-016, khác
+  convention opaque ID của HTTP v1; đổi là breaking và phải đi v2.
 - Chính sách partial refund và số refund transaction/order của Order/Payment chưa chốt;
   Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
 - Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không

@@ -82,9 +82,9 @@ interactions:
     protocol: kafka
     provider: promotion-service
     consumers: [product-service]
-    contract: events/product/v1/asyncapi.yaml
+    contract: events/promotion/v1/asyncapi.yaml
     status: proposed
-    notes: Promotion transactional outbox/CDC emits product-scope current-state snapshots keyed by product_id with monotonic source_revision; ACTIVE carries full rule data and INACTIVE is a reason-only tombstone. Legacy category-scoped MARKDOWN_* delta events are superseded.
+    notes: Promotion transactional outbox/CDC emits product-scope current-state snapshots keyed by product_id with monotonic source_revision; ACTIVE carries full rule data and INACTIVE is a reason-only tombstone. Promotion owns the contract; Product AsyncAPI references the message by $ref. This is the only Promotion-published event in v1; coupon, budget and reservation facts are intentionally absent because no consumer is registered.
 
   - id: cart-publishes-cart-events
     protocol: kafka

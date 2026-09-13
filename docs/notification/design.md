@@ -26,7 +26,12 @@ Notification Service subscribe các topic sau để nhận events từ các serv
 | `t.review.events` | `notification-review-sync` | `REVIEW_REPLY_NOTIFICATION_REQUESTED`, `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | Low | In-app notification về phản hồi chính thức hoặc review bị gỡ |
 | `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
 | `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
-| `t.promotion.events` | `notification-promotion-sync` | `PROMOTION_FLASH_SALE`, `VOUCHER_EXPIRING` | Low | Marketing campaigns |
+
+Không có consumer group cho Promotion: Promotion Events v1
+(`contracts/events/promotion/v1/asyncapi.yaml`) chỉ phát markdown snapshot cho Product và
+không phát coupon/wallet hay marketing event. Topic legacy `t.promotion.events` với
+`PROMOTION_FLASH_SALE`/`VOUCHER_EXPIRING` không có producer; nếu cần marketing push sau
+này phải thiết kế contract mới với Promotion.
 
 **Lưu ý về GDPR Cleanup:** Khi nhận `USER_DELETED` trực tiếp từ Auth,
 Notification Service anonymize/xóa projection do chính nó sở hữu theo `user_id`

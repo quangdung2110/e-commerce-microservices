@@ -25,6 +25,10 @@ evidence:
 đồng thời giữ các quyết định còn hiệu lực về SPOP + pending rescue, campaign phase dẫn
 xuất, Redis schedule tự phục hồi và transactional outbox/CDC.
 
+Amended bởi [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md): markdown
+snapshot contract chuyển sang `contracts/events/promotion/v1/` do Promotion sở hữu; không
+có coupon fact hay Auth welcome-voucher consumer ở v1.
+
 ## Context
 
 Claim kiểm tra ACTIVE trước Lua vẫn có thể `SPOP` sau `campaign.end_time`. Campaign
