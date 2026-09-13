@@ -17,6 +17,7 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Inventory HTTP v1 | `proposed` | Target có Workflow, Storefront Availability Read, ADMIN và Search Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
 | Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
 | Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |
+| Promotion HTTP v1 | `proposed` | Service chưa có runtime; contract chốt 24 operation Admin, Customer/Checkout và Order/Temporal, opaque ID, Money VND và không có refund endpoint. |
 
 ## Quy tắc chuyển trạng thái
 

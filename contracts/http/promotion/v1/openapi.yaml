@@ -1,0 +1,1515 @@
+openapi: 3.1.0
+info:
+  title: Promotion Service HTTP API
+  version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: >-
+    Contract đề xuất cho Promotion Service. Campaign là aggregate quản trị và lịch dùng
+    chung; promotion là PLATFORM_VOUCHER toàn đơn; markdown rule chỉ áp dụng cho một
+    Product. Published definition là immutable. Voucher đã lưu dùng wallet.expired_at
+    và không được hoàn lại khi customer refund. Confirm/cancel-confirmed là final command
+    bền vững; reservation trước payment chỉ là Redis runtime state.
+    Request reader phải bỏ qua unknown optional field để cho phép compatible additions;
+    unknown rule node/operator/field vẫn bị từ chối theo rule_schema_version.
+    Chỉ CONFIRM và CANCEL_CONFIRMED dùng durable Idempotency-Key/command receipt. Các
+    command khác replay bằng natural business key, unique constraint, expected campaign
+    revision hoặc Redis reservation payload như mô tả ở từng operation.
+x-adoption-status: proposed
+servers:
+  - url: http://promotion-service:8080
+    description: Internal cluster endpoint
+tags:
+  - name: Admin campaigns
+    description: Quản trị aggregate, revision và publication lifecycle của campaign.
+  - name: Admin promotions
+    description: Quản trị PLATFORM_VOUCHER definition, budget và direct grant.
+  - name: Admin markdown rules
+    description: Quản trị markdown product-scope trong campaign DRAFT.
+  - name: Customer promotions
+    description: Discovery, wallet save và limited claim theo authenticated user.
+  - name: Checkout queries
+    description: Query nội bộ, pure/replay-safe cho Checkout Service.
+  - name: Order allocation
+    description: TRY/CONFIRM/CANCEL và technical compensation do Order/Temporal gọi.
+
+paths:
+  /api/v1/admin/promotion-campaigns:
+    get:
+      tags: [Admin campaigns]
+      operationId: listPromotionCampaigns
+      summary: Liệt kê campaign cho quản trị
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: publication_status
+          in: query
+          schema: { $ref: '#/components/schemas/CampaignPublicationStatus' }
+        - name: phase
+          in: query
+          description: Phase được suy ra tại thời điểm query, không phải cột persisted.
+          schema: { $ref: '#/components/schemas/CampaignPhase' }
+      responses:
+        '200':
+          description: Trang campaign theo cursor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      tags: [Admin campaigns]
+      operationId: createPromotionCampaign
+      summary: Tạo campaign DRAFT
+      description: Tạo campaign mới với interval nửa mở [start_time,end_time).
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCampaignRequest' }
+      responses:
+        '201':
+          description: Campaign DRAFT đã tạo.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotion-campaigns/{campaign_id}:
+    get:
+      tags: [Admin campaigns]
+      operationId: getPromotionCampaign
+      summary: Lấy campaign quản trị
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Campaign hiện tại; phase được tính theo clock của PostgreSQL.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      tags: [Admin campaigns]
+      operationId: updateDraftPromotionCampaign
+      summary: Cập nhật metadata hoặc lịch của campaign DRAFT
+      description: >-
+        Chỉ DRAFT được sửa. If-Match chứa revision hiện hành; mutation thành công tăng
+        campaign revision đúng một lần. Published definition phải được clone, không sửa.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateCampaignRequest' }
+      responses:
+        '200':
+          description: Campaign DRAFT đã cập nhật.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotion-campaigns/{campaign_id}/copies:
+    post:
+      tags: [Admin campaigns]
+      operationId: clonePromotionCampaign
+      summary: Clone một campaign thành aggregate DRAFT mới
+      description: >-
+        Source không bị mutate. Server tạo campaign, promotion và markdown ID mới; request
+        phải cung cấp code mới cho campaign và mọi promotion được clone.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloneCampaignRequest' }
+      responses:
+        '201':
+          description: Aggregate DRAFT mới đã tạo.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotion-campaigns/{campaign_id}/transitions:
+    post:
+      tags: [Admin campaigns]
+      operationId: transitionPromotionCampaign
+      summary: Publish, pause hoặc cancel campaign
+      description: >-
+        Transition hợp lệ: DRAFT->PUBLISHED, PUBLISHED->PAUSED|CANCELLED và
+        PAUSED->CANCELLED. PUBLISHED business definition là immutable. Transition tăng
+        revision; markdown effective-state event được ghi transactional outbox khi cần.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignTransitionRequest' }
+      responses:
+        '200':
+          description: Transition đã commit trong PostgreSQL; Redis schedule/cache hội tụ sau commit.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotion-campaigns/{campaign_id}/promotions:
+    get:
+      tags: [Admin promotions]
+      operationId: listCampaignPromotions
+      summary: Liệt kê voucher definition trong campaign
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Trang promotion definition.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromotionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      tags: [Admin promotions]
+      operationId: createCampaignPromotion
+      summary: Tạo voucher definition và budget trong campaign DRAFT
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePromotionRequest' }
+      responses:
+        '201':
+          description: Promotion đã tạo và campaign revision tăng.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotions/{promotion_id}:
+    get:
+      tags: [Admin promotions]
+      operationId: getAdminPromotion
+      summary: Lấy một voucher definition và budget
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Promotion hiện tại.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      tags: [Admin promotions]
+      operationId: updateDraftPromotion
+      summary: Cập nhật voucher definition trong campaign DRAFT
+      description: If-Match là revision của parent campaign, không phải promotion revision.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdatePromotionRequest' }
+      responses:
+        '200':
+          description: Promotion đã cập nhật và parent campaign revision tăng.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotions/{promotion_id}/grants:
+    post:
+      tags: [Admin promotions]
+      operationId: grantPromotionVoucher
+      summary: Cấp voucher DIRECT_GRANT cho một user
+      description: >-
+        Unique (user_id,promotion_id). Replay cùng key/payload trả cùng wallet; promotion
+        khác DIRECT_GRANT hoặc wallet đã USED trả conflict.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrantVoucherRequest' }
+      responses:
+        '200':
+          description: Existing SAVED wallet được replay, không kéo dài expiry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletVoucher' }
+        '201':
+          description: Wallet voucher đã được cấp.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletVoucher' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/promotion-campaigns/{campaign_id}/markdown-rules:
+    get:
+      tags: [Admin markdown rules]
+      operationId: listCampaignMarkdownRules
+      summary: Liệt kê markdown rule trong campaign
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Trang markdown rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MarkdownRulePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      tags: [Admin markdown rules]
+      operationId: createCampaignMarkdownRule
+      summary: Tạo markdown rule product-scope trong campaign DRAFT
+      description: Product được validate đồng bộ và tombstone watermark được kiểm trong transaction.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CampaignId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMarkdownRuleRequest' }
+      responses:
+        '201':
+          description: Markdown rule đã tạo và campaign revision tăng.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MarkdownRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/markdown-rules/{markdown_rule_id}:
+    get:
+      tags: [Admin markdown rules]
+      operationId: getAdminMarkdownRule
+      summary: Lấy một markdown rule
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/MarkdownRuleId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Markdown rule hiện tại, gồm operational invalidation nếu có.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MarkdownRule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      tags: [Admin markdown rules]
+      operationId: updateDraftMarkdownRule
+      summary: Cập nhật markdown rule trong campaign DRAFT
+      description: If-Match là revision của parent campaign.
+      security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/MarkdownRuleId'
+        - $ref: '#/components/parameters/IfMatchCampaign'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateMarkdownRuleRequest' }
+      responses:
+        '200':
+          description: Markdown rule đã cập nhật và parent campaign revision tăng.
+          headers:
+            ETag: { $ref: '#/components/headers/CampaignETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MarkdownRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/RevisionMismatch' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/me/promotion-voucher-suggestions:
+    post:
+      tags: [Customer promotions]
+      operationId: suggestMyPromotionVouchers
+      summary: Đánh giá voucher SAVED trong wallet theo checkout context
+      description: >-
+        Dùng POST vì context có danh sách item/category và không phù hợp query string.
+        Đây là safe read operation; ngoài lazy-normalize SAVED đã hết hạn thành EXPIRED,
+        không reserve budget. Response cá nhân không được cache dùng chung.
+      security: [{ gatewayUserIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuggestionRequest' }
+      responses:
+        '200':
+          description: Voucher wallet được xếp hạng cùng eligibility hiện tại.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherSuggestionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/promotion-discovery:
+    post:
+      tags: [Customer promotions]
+      operationId: discoverPlatformPromotions
+      summary: Tìm voucher wallet và public voucher phù hợp checkout context
+      description: >-
+        Read-only ngoài lazy expiry; không auto-save và không reserve. Gateway áp profile
+        promotion-discovery: 20 request/phút/authenticated user. Budget timeout được phép
+        fail-open nhưng từng item phải đánh dấu budget_guard=DEGRADED.
+      security: [{ gatewayUserIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DiscoveryRequest' }
+      responses:
+        '200':
+          description: Danh sách wallet + public promotion đã evaluate và xếp hạng.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromotionDiscoveryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/me/promotion-vouchers/{promotion_id}:
+    put:
+      tags: [Customer promotions]
+      operationId: saveAndEvaluatePromotionVoucher
+      summary: Lưu public voucher rồi evaluate cho checkout hiện tại
+      description: >-
+        Chỉ PUBLIC_SAVE thuộc campaign ACTIVE. Existing SAVED còn hạn trả 200 và không kéo
+        dài expired_at; tạo mới trả 201; USED hoặc expired ownership trả 409. Identity user
+        lấy từ token, không nhận user_id trong payload.
+      security: [{ gatewayUserIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveAndEvaluateRequest' }
+      responses:
+        '200':
+          description: Existing SAVED wallet được replay và evaluate.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaveAndEvaluateResponse' }
+        '201':
+          description: Voucher đã được lưu và evaluate.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaveAndEvaluateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/me/promotion-voucher-claims:
+    post:
+      tags: [Customer promotions]
+      operationId: claimLimitedPromotionVoucher
+      summary: Claim một limited voucher
+      description: >-
+        Lua dùng Redis TIME, enabled gate và expected campaign revision trước SPOP. API chỉ
+        trả 201 sau khi claim + wallet commit PostgreSQL. Nếu đã acquire nhưng chưa xác nhận
+        DB trước deadline, trả 202 CLAIM_PENDING để client retry cùng user/promotion/key.
+      security: [{ gatewayUserIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaimVoucherRequest' }
+      responses:
+        '200':
+          description: Durable claim đã tồn tại và được replay.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaimVoucherResponse' }
+        '201':
+          description: Claim và wallet đã commit PostgreSQL.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaimVoucherResponse' }
+        '202':
+          description: Redis acquisition có evidence nhưng durable persistence chưa xác nhận.
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaimPendingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-discount-calculations:
+    post:
+      tags: [Checkout queries]
+      operationId: calculatePromotionDiscount
+      summary: Tính discount cho 0 hoặc 1 platform voucher
+      description: >-
+        Pure/replay-safe, không save và không reserve. Discount là một amount toàn đơn,
+        không trả allocation theo SKU. Nếu promotion_id null, kết quả discount là 0.
+      security: [{ workloadIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DiscountCalculationRequest' }
+      responses:
+        '200':
+          description: Kết quả deterministic cho snapshot/rule/context đã dùng.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscountCalculationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-allocation/reservations:
+    post:
+      tags: [Order allocation]
+      operationId: reservePromotionAllocation
+      summary: TRY giữ budget cho voucher sau Submit
+      description: >-
+        Chỉ Order/Temporal gọi sau khi đã có order_id. Revalidate wallet SAVED, expiry,
+        rules và expected amount; Redis Lua giữ quota/amount trong 15 phút. Cùng stable
+        order/promotion và payload là replay; payload khác trả IDEMPOTENCY_PAYLOAD_MISMATCH.
+      security: [{ workloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReserveRequest' }
+      responses:
+        '200':
+          description: Existing matching reservation được replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationResponse' }
+        '201':
+          description: Reservation runtime đã tạo.
+          headers:
+            Location: { $ref: '#/components/headers/ResourceLocation' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-allocation/confirmations:
+    post:
+      tags: [Order allocation]
+      operationId: confirmPromotionAllocation
+      summary: CONFIRM voucher reservation
+      description: >-
+        Idempotency-Key chuẩn là REDEEM_FINAL:{order_id}:{promotion_id}. Server lookup
+        durable receipt trước Redis, fence RESERVED->CONFIRMING, rồi commit receipt,
+        wallet, durable budget và outbox trong một PostgreSQL transaction. Redis finalize
+        chỉ chạy sau commit. expected_discount không phải amount authority.
+      security: [{ workloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ConfirmIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinalAllocationRequest' }
+      responses:
+        '200':
+          description: Durable confirmation mới hoặc stored response replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfirmationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-allocation/cancellations:
+    post:
+      tags: [Order allocation]
+      operationId: cancelPromotionReservation
+      summary: CANCEL reservation trước payment confirmation
+      description: >-
+        Chỉ release reservation ở state RESERVED; wallet vẫn SAVED. CONFIRMING không được
+        release mù. Missing payload trả outcome NO_RESERVATION hoặc REPAIR_REQUIRED rõ ràng.
+      security: [{ workloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelReservationRequest' }
+      responses:
+        '200':
+          description: Kết quả cancel/no-op/repair rõ ràng.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancelReservationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-allocation/technical-cancellations:
+    post:
+      tags: [Order allocation]
+      operationId: cancelConfirmedPromotionAllocation
+      summary: Đảo confirmation do lỗi kỹ thuật của order saga
+      description: >-
+        Không phải customer refund. Idempotency-Key chuẩn là
+        CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet, durable
+        budget và outbox trước; Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
+        chưa hết hạn, ngược lại EXPIRED.
+      security: [{ workloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/TechnicalCancellationIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinalAllocationRequest' }
+      responses:
+        '200':
+          description: Durable technical cancellation mới hoặc stored response replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TechnicalCancellationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    gatewayUserIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted header chỉ do Gateway inject sau khi verify user JWT.
+    gatewayAdminRoles:
+      type: apiKey
+      in: header
+      name: X-User-Roles
+      description: Trusted Gateway role header; operation admin bắt buộc chứa ADMIN.
+    workloadIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: workload-jwt
+      description: Service identity; chỉ allowlist Checkout hoặc Order/Temporal theo operation.
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    ConfirmIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: REDEEM_FINAL:{order_id}:{promotion_id}.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: '^REDEEM_FINAL:[A-Za-z0-9_.-]{1,64}:[A-Za-z0-9_.-]{1,64}$'
+    TechnicalCancellationIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: CANCEL_FINAL:{order_id}:{promotion_id}.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: '^CANCEL_FINAL:[A-Za-z0-9_.-]{1,64}:[A-Za-z0-9_.-]{1,64}$'
+    IfMatchCampaign:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong ETag mang parent campaign revision, ví dụ "7".
+      schema: { type: string, pattern: '^"[1-9][0-9]*"$' }
+    CampaignId:
+      name: campaign_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OpaqueId' }
+    PromotionId:
+      name: promotion_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OpaqueId' }
+    MarkdownRuleId:
+      name: markdown_rule_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OpaqueId' }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  headers:
+    ResourceLocation:
+      description: Canonical URI của resource đã tạo.
+      schema: { type: string, format: uri-reference }
+    CampaignETag:
+      description: Strong ETag được tạo từ parent campaign revision.
+      schema: { type: string, pattern: '^"[1-9][0-9]*"$' }
+    NoStore:
+      schema: { type: string, const: no-store }
+
+  schemas:
+    Money:
+      $ref: '../../../shared/json-schema/v1/money.schema.json'
+    VndMoney:
+      allOf:
+        - $ref: '#/components/schemas/Money'
+        - type: object
+          properties:
+            amount_minor: { type: integer, format: int64, minimum: 0 }
+            currency: { type: string, const: VND }
+    PositiveVndMoney:
+      allOf:
+        - $ref: '#/components/schemas/Money'
+        - type: object
+          properties:
+            amount_minor: { type: integer, format: int64, minimum: 1 }
+            currency: { type: string, const: VND }
+    NullableVndMoney:
+      oneOf:
+        - $ref: '#/components/schemas/VndMoney'
+        - type: 'null'
+    NullablePositiveVndMoney:
+      oneOf:
+        - $ref: '#/components/schemas/PositiveVndMoney'
+        - type: 'null'
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    OpaqueId:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_.-]+$'
+      description: Opaque identifier trên wire; consumer không được suy luận kiểu storage.
+    NullableOpaqueId:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_.-]+$'
+    Uuid:
+      type: string
+      format: uuid
+    CampaignPublicationStatus:
+      type: string
+      enum: [UNKNOWN, DRAFT, PUBLISHED, PAUSED, CANCELLED]
+    CampaignPhase:
+      type: string
+      enum: [UNKNOWN, DRAFT, UPCOMING, ACTIVE, ENDED, PAUSED, CANCELLED]
+    DistributionMode:
+      type: string
+      enum: [UNKNOWN, PUBLIC_SAVE, LIMITED_CLAIM, DIRECT_GRANT]
+      description: UNKNOWN dành cho forward-compatible reader; mutation gửi UNKNOWN bị 422.
+    WalletStatus:
+      type: string
+      enum: [UNKNOWN, SAVED, USED, EXPIRED]
+    EligibilityReason:
+      type: string
+      enum:
+        - UNKNOWN
+        - ELIGIBLE
+        - NO_VOUCHER_SELECTED
+        - CONDITIONS_NOT_MET
+        - MIN_ORDER_NOT_MET
+        - VOUCHER_NOT_OWNED
+        - VOUCHER_EXPIRED
+        - ALREADY_USED_VOUCHER
+        - CAMPAIGN_NOT_ACTIVE
+        - PROMOTION_DISABLED
+        - BUDGET_EXHAUSTED
+    BudgetGuard:
+      type: string
+      enum: [UNKNOWN, AVAILABLE, EXHAUSTED, DEGRADED, NOT_CHECKED]
+    Discount:
+      oneOf:
+        - $ref: '#/components/schemas/PercentageDiscount'
+        - $ref: '#/components/schemas/FixedDiscount'
+      discriminator:
+        propertyName: type
+        mapping:
+          PERCENTAGE: '#/components/schemas/PercentageDiscount'
+          FIXED_VND: '#/components/schemas/FixedDiscount'
+    PercentageDiscount:
+      type: object
+      additionalProperties: false
+      required: [type, value_basis_points]
+      properties:
+        type: { type: string, const: PERCENTAGE }
+        value_basis_points: { type: integer, minimum: 1, maximum: 10000 }
+        max_discount: { $ref: '#/components/schemas/NullableVndMoney' }
+    FixedDiscount:
+      type: object
+      additionalProperties: false
+      required: [type, value]
+      properties:
+        type: { type: string, const: FIXED_VND }
+        value: { $ref: '#/components/schemas/PositiveVndMoney' }
+    ValidityPolicy:
+      oneOf:
+        - $ref: '#/components/schemas/CampaignEndValidity'
+        - $ref: '#/components/schemas/DurationValidity'
+        - $ref: '#/components/schemas/FixedDateValidity'
+      discriminator:
+        propertyName: mode
+        mapping:
+          CAMPAIGN_END: '#/components/schemas/CampaignEndValidity'
+          DURATION_AFTER_SAVE: '#/components/schemas/DurationValidity'
+          FIXED_DATE: '#/components/schemas/FixedDateValidity'
+    CampaignEndValidity:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: { type: string, const: CAMPAIGN_END }
+    DurationValidity:
+      type: object
+      additionalProperties: false
+      required: [mode, valid_for_seconds]
+      properties:
+        mode: { type: string, const: DURATION_AFTER_SAVE }
+        valid_for_seconds: { type: integer, format: int64, minimum: 1 }
+    FixedDateValidity:
+      type: object
+      additionalProperties: false
+      required: [mode, redeem_until]
+      properties:
+        mode: { type: string, const: FIXED_DATE }
+        redeem_until: { type: string, format: date-time }
+    RuleValue:
+      oneOf:
+        - { type: string, maxLength: 255 }
+        - { type: number }
+        - { type: boolean }
+        - type: array
+          maxItems: 100
+          uniqueItems: true
+          items:
+            oneOf:
+              - { type: string, maxLength: 255 }
+              - { type: number }
+              - { type: boolean }
+    RuleNode:
+      oneOf:
+        - $ref: '#/components/schemas/LogicalRuleNode'
+        - $ref: '#/components/schemas/ConditionRuleNode'
+      discriminator:
+        propertyName: node_type
+        mapping:
+          LOGICAL: '#/components/schemas/LogicalRuleNode'
+          CONDITION: '#/components/schemas/ConditionRuleNode'
+    LogicalRuleNode:
+      type: object
+      additionalProperties: false
+      required: [node_type, operator, children]
+      properties:
+        node_type: { type: string, const: LOGICAL }
+        operator: { type: string, enum: [AND, OR] }
+        children:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/RuleNode' }
+    ConditionRuleNode:
+      type: object
+      additionalProperties: false
+      required: [node_type, operator, field, value]
+      properties:
+        node_type: { type: string, const: CONDITION }
+        operator:
+          type: string
+          enum: [EQUAL, NOT_EQUAL, IN, NOT_IN, GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL]
+        field:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
+          description: Phải thuộc allowlist field của rule_schema_version.
+        value: { $ref: '#/components/schemas/RuleValue' }
+    BudgetDefinition:
+      type: object
+      additionalProperties: false
+      required: [total_claim_quantity, total_redemption_quantity, total_budget]
+      properties:
+        total_claim_quantity: { type: [integer, 'null'], format: int64, minimum: 1 }
+        total_redemption_quantity: { type: [integer, 'null'], format: int64, minimum: 1 }
+        total_budget: { $ref: '#/components/schemas/NullablePositiveVndMoney' }
+    Budget:
+      type: object
+      additionalProperties: false
+      required: [total_claim_quantity, claimed_quantity, total_redemption_quantity, used_quantity, total_budget, used_budget, updated_at]
+      properties:
+        total_claim_quantity: { type: [integer, 'null'], format: int64, minimum: 1 }
+        claimed_quantity: { type: integer, format: int64, minimum: 0 }
+        total_redemption_quantity: { type: [integer, 'null'], format: int64, minimum: 1 }
+        used_quantity: { type: integer, format: int64, minimum: 0 }
+        total_budget: { $ref: '#/components/schemas/NullablePositiveVndMoney' }
+        used_budget: { $ref: '#/components/schemas/VndMoney' }
+        updated_at: { type: string, format: date-time }
+    CreateCampaignRequest:
+      type: object
+      additionalProperties: true
+      required: [code, name, start_time, end_time]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Z0-9][A-Z0-9_-]*$' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+    UpdateCampaignRequest:
+      type: object
+      additionalProperties: true
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+    Campaign:
+      type: object
+      additionalProperties: false
+      required: [id, code, name, publication_status, phase, start_time, end_time, revision, created_by, updated_by, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/OpaqueId' }
+        code: { type: string, maxLength: 80 }
+        name: { type: string, maxLength: 255 }
+        description: { type: [string, 'null'] }
+        publication_status: { $ref: '#/components/schemas/CampaignPublicationStatus' }
+        phase: { $ref: '#/components/schemas/CampaignPhase' }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        revision: { type: integer, format: int64, minimum: 1 }
+        created_by: { type: string, minLength: 1, maxLength: 128 }
+        updated_by: { type: string, minLength: 1, maxLength: 128 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CampaignPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Campaign' } }
+        next_cursor: { type: [string, 'null'] }
+    PromotionCodeOverride:
+      type: object
+      additionalProperties: false
+      required: [source_promotion_id, new_code]
+      properties:
+        source_promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        new_code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Z0-9][A-Z0-9_-]*$' }
+    CloneCampaignRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateCampaignRequest'
+        - type: object
+          additionalProperties: true
+          required: [promotion_code_overrides]
+          properties:
+            promotion_code_overrides:
+              type: array
+              maxItems: 100
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/PromotionCodeOverride' }
+              description: Phải cover đúng mọi promotion thuộc source campaign.
+    CampaignTransitionRequest:
+      type: object
+      additionalProperties: true
+      required: [target_status, reason]
+      properties:
+        target_status: { type: string, enum: [PUBLISHED, PAUSED, CANCELLED] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    CreatePromotionRequest:
+      type: object
+      additionalProperties: true
+      required: [code, name, distribution_mode, discount, min_order_amount, conditions_rule, rule_schema_version, validity, is_enabled, budget]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Z0-9][A-Z0-9_-]*$' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        distribution_mode: { $ref: '#/components/schemas/DistributionMode' }
+        discount: { $ref: '#/components/schemas/Discount' }
+        min_order_amount: { $ref: '#/components/schemas/VndMoney' }
+        conditions_rule: { $ref: '#/components/schemas/RuleNode' }
+        rule_schema_version: { type: integer, const: 1 }
+        validity: { $ref: '#/components/schemas/ValidityPolicy' }
+        is_enabled: { type: boolean }
+        budget: { $ref: '#/components/schemas/BudgetDefinition' }
+      allOf:
+        - if:
+            required: [distribution_mode]
+            properties:
+              distribution_mode: { const: LIMITED_CLAIM }
+          then:
+            properties:
+              budget:
+                required: [total_claim_quantity]
+                properties:
+                  total_claim_quantity: { type: integer, format: int64, minimum: 1 }
+    UpdatePromotionRequest:
+      type: object
+      additionalProperties: true
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        distribution_mode: { $ref: '#/components/schemas/DistributionMode' }
+        discount: { $ref: '#/components/schemas/Discount' }
+        min_order_amount: { $ref: '#/components/schemas/VndMoney' }
+        conditions_rule: { $ref: '#/components/schemas/RuleNode' }
+        rule_schema_version: { type: integer, const: 1 }
+        validity: { $ref: '#/components/schemas/ValidityPolicy' }
+        is_enabled: { type: boolean }
+        budget: { $ref: '#/components/schemas/BudgetDefinition' }
+    Promotion:
+      type: object
+      additionalProperties: false
+      required: [id, campaign_id, campaign_revision, code, name, distribution_mode, discount, min_order_amount, conditions_rule, rule_schema_version, validity, is_enabled, budget, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/OpaqueId' }
+        campaign_id: { $ref: '#/components/schemas/OpaqueId' }
+        campaign_revision: { type: integer, format: int64, minimum: 1 }
+        code: { type: string, maxLength: 80 }
+        name: { type: string, maxLength: 255 }
+        description: { type: [string, 'null'] }
+        distribution_mode: { $ref: '#/components/schemas/DistributionMode' }
+        discount: { $ref: '#/components/schemas/Discount' }
+        min_order_amount: { $ref: '#/components/schemas/VndMoney' }
+        conditions_rule: { $ref: '#/components/schemas/RuleNode' }
+        rule_schema_version: { type: integer, minimum: 1 }
+        validity: { $ref: '#/components/schemas/ValidityPolicy' }
+        is_enabled: { type: boolean }
+        budget: { $ref: '#/components/schemas/Budget' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PromotionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Promotion' } }
+        next_cursor: { type: [string, 'null'] }
+    CreateMarkdownRuleRequest:
+      type: object
+      additionalProperties: true
+      required: [product_id, discount, priority, is_enabled]
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        discount: { $ref: '#/components/schemas/Discount' }
+        priority: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        is_enabled: { type: boolean }
+    UpdateMarkdownRuleRequest:
+      type: object
+      additionalProperties: true
+      minProperties: 1
+      properties:
+        discount: { $ref: '#/components/schemas/Discount' }
+        priority: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        is_enabled: { type: boolean }
+    MarkdownRule:
+      type: object
+      additionalProperties: false
+      required: [id, campaign_id, campaign_revision, product_id, discount, priority, is_enabled, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/OpaqueId' }
+        campaign_id: { $ref: '#/components/schemas/OpaqueId' }
+        campaign_revision: { type: integer, format: int64, minimum: 1 }
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        discount: { $ref: '#/components/schemas/Discount' }
+        priority: { type: integer }
+        is_enabled: { type: boolean }
+        invalidated_at: { type: [string, 'null'], format: date-time }
+        invalidation_reason: { type: [string, 'null'], enum: [UNKNOWN, PRODUCT_DELETED, null] }
+        source_product_revision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MarkdownRulePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/MarkdownRule' } }
+        next_cursor: { type: [string, 'null'] }
+    GrantVoucherRequest:
+      type: object
+      additionalProperties: true
+      required: [user_id, reason]
+      properties:
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    CheckoutItem:
+      type: object
+      additionalProperties: true
+      required: [product_id, sku_id, quantity, unit_price, category_ids]
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        unit_price: { $ref: '#/components/schemas/VndMoney' }
+        category_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 64 }
+    CheckoutContext:
+      type: object
+      additionalProperties: true
+      required: [subtotal, checkout_channel, items]
+      description: >-
+        Map sang các rule fact cart.total_amount, cart.payment_method,
+        cart.checkout_channel và cart.items.category_id. user.id lấy từ trusted identity;
+        user.tier lấy từ verified claims hoặc trusted service snapshot, không lấy từ facts.
+      properties:
+        subtotal: { $ref: '#/components/schemas/VndMoney' }
+        payment_method:
+          type: string
+          const: STRIPE
+          default: STRIPE
+          description: Phase 18 chỉ hỗ trợ Stripe; server mặc định STRIPE và không tin payment method tùy ý từ client.
+        checkout_channel: { type: string, minLength: 1, maxLength: 64 }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/CheckoutItem' }
+        facts:
+          type: object
+          maxProperties: 100
+          additionalProperties: { $ref: '#/components/schemas/RuleValue' }
+          description: Optional versioned facts; server chỉ expose allowlisted field cho Rule Engine.
+    SuggestionRequest:
+      type: object
+      additionalProperties: true
+      required: [context]
+      properties:
+        context: { $ref: '#/components/schemas/CheckoutContext' }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 20 }
+    DiscoveryRequest:
+      allOf:
+        - $ref: '#/components/schemas/SuggestionRequest'
+        - type: object
+          additionalProperties: true
+          properties:
+            include_ineligible: { type: boolean, default: false }
+    SaveAndEvaluateRequest:
+      type: object
+      additionalProperties: true
+      required: [context]
+      properties:
+        context: { $ref: '#/components/schemas/CheckoutContext' }
+    WalletVoucher:
+      type: object
+      additionalProperties: false
+      required: [wallet_id, user_id, promotion_id, status, saved_at, expired_at, updated_at]
+      properties:
+        wallet_id: { $ref: '#/components/schemas/OpaqueId' }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        claim_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        status: { $ref: '#/components/schemas/WalletStatus' }
+        saved_at: { type: string, format: date-time }
+        expired_at: { type: string, format: date-time }
+        used_order_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        discount_amount: { $ref: '#/components/schemas/NullableVndMoney' }
+        used_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    VoucherEvaluation:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, source, eligible, reason, discount, final_amount, rule_schema_version, campaign_revision, budget_guard]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        wallet_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        source: { type: string, enum: [UNKNOWN, WALLET, PUBLIC] }
+        eligible: { type: boolean }
+        reason: { $ref: '#/components/schemas/EligibilityReason' }
+        discount: { $ref: '#/components/schemas/VndMoney' }
+        final_amount: { $ref: '#/components/schemas/VndMoney' }
+        rule_schema_version: { type: integer, minimum: 1 }
+        campaign_revision: { type: integer, format: int64, minimum: 1 }
+        budget_guard: { $ref: '#/components/schemas/BudgetGuard' }
+    VoucherSuggestionResponse:
+      type: object
+      additionalProperties: false
+      required: [items, evaluated_at]
+      properties:
+        items: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/VoucherEvaluation' } }
+        evaluated_at: { type: string, format: date-time }
+    PromotionDiscoveryResponse:
+      $ref: '#/components/schemas/VoucherSuggestionResponse'
+    SaveAndEvaluateResponse:
+      type: object
+      additionalProperties: false
+      required: [wallet, evaluation]
+      properties:
+        wallet: { $ref: '#/components/schemas/WalletVoucher' }
+        evaluation: { $ref: '#/components/schemas/VoucherEvaluation' }
+    ClaimVoucherRequest:
+      type: object
+      additionalProperties: true
+      required: [promotion_id, expected_campaign_revision]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_campaign_revision: { type: integer, format: int64, minimum: 1 }
+    ClaimVoucherResponse:
+      type: object
+      additionalProperties: false
+      required: [claim_id, acquired_at, campaign_revision_at_acquisition, wallet]
+      properties:
+        claim_id: { $ref: '#/components/schemas/OpaqueId' }
+        acquired_at: { type: string, format: date-time }
+        campaign_revision_at_acquisition: { type: integer, format: int64, minimum: 1 }
+        wallet: { $ref: '#/components/schemas/WalletVoucher' }
+    ClaimPendingResponse:
+      type: object
+      additionalProperties: false
+      required: [code, status, promotion_id, retryable]
+      properties:
+        code: { type: string, const: CLAIM_PENDING }
+        status: { type: string, const: PENDING }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        claim_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        retryable: { type: boolean, const: true }
+    DiscountCalculationRequest:
+      type: object
+      additionalProperties: true
+      required: [user_id, user_tier, promotion_id, context]
+      properties:
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        user_tier: { type: string, minLength: 1, maxLength: 64 }
+        promotion_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        context: { $ref: '#/components/schemas/CheckoutContext' }
+    DiscountCalculationResult:
+      type: object
+      additionalProperties: false
+      required: [eligible, reason, subtotal, discount, final_amount, budget_guard, evaluated_at]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/NullableOpaqueId' }
+        eligible: { type: boolean }
+        reason: { $ref: '#/components/schemas/EligibilityReason' }
+        subtotal: { $ref: '#/components/schemas/VndMoney' }
+        discount: { $ref: '#/components/schemas/VndMoney' }
+        final_amount: { $ref: '#/components/schemas/VndMoney' }
+        rule_schema_version: { type: [integer, 'null'], minimum: 1 }
+        campaign_revision: { type: [integer, 'null'], format: int64, minimum: 1 }
+        budget_guard: { $ref: '#/components/schemas/BudgetGuard' }
+        evaluated_at: { type: string, format: date-time }
+    ReserveRequest:
+      type: object
+      additionalProperties: true
+      required: [order_id, user_id, user_tier, promotion_id, expected_discount, context]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        user_tier: { type: string, minLength: 1, maxLength: 64 }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_discount: { $ref: '#/components/schemas/VndMoney' }
+        context: { $ref: '#/components/schemas/CheckoutContext' }
+    ReservationResponse:
+      type: object
+      additionalProperties: false
+      required: [order_id, promotion_id, state, discount, reserved_at, expires_at]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { type: string, const: RESERVED }
+        discount: { $ref: '#/components/schemas/VndMoney' }
+        reserved_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    FinalAllocationRequest:
+      type: object
+      additionalProperties: true
+      required: [order_id, promotion_id, expected_discount]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_discount: { $ref: '#/components/schemas/VndMoney' }
+    ConfirmationResponse:
+      type: object
+      additionalProperties: false
+      required: [operation, order_id, promotion_id, discount, wallet_status, completed_at]
+      properties:
+        operation: { type: string, const: CONFIRM }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        discount: { $ref: '#/components/schemas/VndMoney' }
+        wallet_status: { type: string, const: USED }
+        completed_at: { type: string, format: date-time }
+    TechnicalCancellationResponse:
+      type: object
+      additionalProperties: false
+      required: [operation, order_id, promotion_id, discount, wallet_status, completed_at]
+      properties:
+        operation: { type: string, const: CANCEL_CONFIRMED }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        discount: { $ref: '#/components/schemas/VndMoney' }
+        wallet_status: { type: string, enum: [UNKNOWN, SAVED, EXPIRED] }
+        completed_at: { type: string, format: date-time }
+    CancelReservationRequest:
+      type: object
+      additionalProperties: true
+      required: [order_id, promotion_id]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+    CancelReservationResponse:
+      type: object
+      additionalProperties: false
+      required: [order_id, promotion_id, outcome]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        outcome: { type: string, enum: [UNKNOWN, RELEASED, NO_RESERVATION, REPAIR_REQUIRED] }
+
+  responses:
+    BadRequest:
+      description: Request syntax/header/schema không hợp lệ.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Thiếu hoặc sai identity.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Caller không có role/capability cho operation.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource không tồn tại hoặc không visible với caller.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: >-
+        Domain/idempotency conflict. code có thể là CAMPAIGN_NOT_ACTIVE,
+        CLAIM_GATE_STALE, ALREADY_CLAIMED, OUT_OF_STOCK, ALREADY_USED_VOUCHER,
+        VOUCHER_EXPIRED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH,
+        RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT hoặc INVALID_STATE_TRANSITION.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RevisionMismatch:
+      description: If-Match không bằng campaign revision hiện hành; code CAMPAIGN_REVISION_MISMATCH.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: Semantics không hợp lệ; code CONDITIONS_NOT_MET, INVALID_RULE hoặc PRODUCT_TOMBSTONED.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Gateway promotion-discovery quota exceeded.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: Dependency/write path unavailable; retryable=true.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

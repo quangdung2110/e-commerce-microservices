@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-13
+
+- Thêm Promotion HTTP OpenAPI v1 với 24 operation: quản trị campaign/promotion/markdown,
+  customer suggestion/discovery/save/claim, Checkout discount calculation và bốn command
+  allocation cho Order/Temporal.
+- Chuẩn hóa customer route thành `/api/v1/**`, service-to-service route thành
+  `/internal/v1/**`; thay các URI legacy `/v1/promotions/*`. Hai query suggestion/discovery
+  dùng POST vì checkout context lớn nhưng vẫn là safe read, không save/reserve.
+- Chỉ confirm và technical cancellation dùng durable `Idempotency-Key`; reserve/cancel
+  dùng natural business key/payload. Customer refund không có endpoint và không gọi Promotion.
+- Promotion wire ID là opaque string; money dùng `{amount_minor,currency}` và contract v1
+  khóa `currency=VND`, thay vì lộ BIGINT hoặc field `*_vnd` của storage model.
+- Đăng ký các interaction Promotion với Gateway, Checkout và Order trong contract catalog;
+  toàn bộ contract vẫn `proposed` vì Promotion Service chưa có runtime/provider tests.
+
 ## 2026-09-09
 
 - Auth common CloudEvents envelope v1 nay ràng buộc `id` là UUID, thay vì chỉ là

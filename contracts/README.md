@@ -4,8 +4,9 @@ Thư mục này là nguồn chuẩn cho dữ liệu đi qua ranh giới giữa c
 Contract được viết độc lập với Go và Java để hai hệ sinh thái có thể dùng cùng
 một định nghĩa.
 
-> Trạng thái hiện tại: **foundation + pilot**. Các contract Cart/Product bên
-> dưới là đích migration (`proposed`), chưa khẳng định code cũ đã tương thích.
+> Trạng thái hiện tại: **foundation + pilot**. Các contract, bao gồm Promotion HTTP v1,
+> là đích migration (`proposed`) trừ khi `ADOPTION.md` ghi trạng thái cao hơn; chưa mặc
+> định khẳng định code cũ đã tương thích.
 > Xem [ADOPTION.md](ADOPTION.md) trước khi thay đổi implementation.
 
 ## 1. Contract là gì?

@@ -219,8 +219,33 @@ interactions:
     protocol: http
     provider: promotion-service
     consumers: [checkout-service]
-    contract: null
-    status: legacy_documented
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: Checkout uses the pure internal discount-calculation query; it never reserves budget during Preview.
+
+  - id: gateway-routes-customer-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [api-gateway, checkout-service]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: Authenticated suggestion/discovery/save/claim surface; discovery is rate-limited at the Gateway.
+
+  - id: gateway-administers-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [api-gateway]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: ADMIN-only campaign, promotion, grant, and markdown management surface.
+
+  - id: order-commands-promotion-allocation
+    protocol: http
+    provider: promotion-service
+    consumers: [order-service]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: Order Temporal owns reserve, pre-payment cancel, confirm, and technical cancellation; customer refund never calls Promotion.
 
   - id: inventory-publishes-public-facts
     protocol: kafka
