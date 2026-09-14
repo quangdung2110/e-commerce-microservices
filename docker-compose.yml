@@ -220,6 +220,80 @@ services:
     networks:
       - ecommerce-network
 
+  # ── Promotion Service ──────────────────────────────────────
+  promotion-service:
+    build:
+      context: ./java/services/promotion-service
+      dockerfile: Dockerfile
+    container_name: promotion-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8085
+
+      # Database (docs/promotion/data.md): PostgreSQL la source of truth.
+      DB_URL: jdbc:postgresql://postgres:5432/promotion_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      # Redis runtime: snapshot cache, claim gate/pool, budget reservation, campaign schedule.
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Kafka: chi consume product-deleted.v1; outbound qua outbox + Debezium.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PRODUCT_EVENTS_TOPIC: t.product.events
+      PRODUCT_EVENTS_DLQ_TOPIC: t.product.events.promotion.dlq
+
+      # Validate Product dong bo khi tao/sua markdown rule.
+      PRODUCT_BASE_URL: http://product-service:8081
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Admin: campaign, promotion, markdown (role ADMIN). Priority cao hon router customer.
+      - "traefik.http.routers.promotion-admin.rule=PathPrefix(`/api/v1/admin/promotion-campaigns`) || PathPrefix(`/api/v1/admin/promotions`) || PathPrefix(`/api/v1/admin/markdown-rules`)"
+      - "traefik.http.routers.promotion-admin.entrypoints=web"
+      - "traefik.http.routers.promotion-admin.service=promotion-service"
+      - "traefik.http.routers.promotion-admin.priority=40"
+      - "traefik.http.routers.promotion-admin.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
+      # Public discovery: authenticated user, profile promotion-discovery 20 req/user/phut (ADR-015).
+      - "traefik.http.routers.promotion-discovery.rule=Path(`/api/v1/promotion-discovery`)"
+      - "traefik.http.routers.promotion-discovery.entrypoints=web"
+      - "traefik.http.routers.promotion-discovery.service=promotion-service"
+      - "traefik.http.routers.promotion-discovery.priority=35"
+      - "traefik.http.routers.promotion-discovery.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-promotion-discovery@file,compress@file"
+      # Wallet: suggestions, save, claim theo identity user da verify.
+      - "traefik.http.routers.promotion-me.rule=PathPrefix(`/api/v1/me/promotion-vouchers`) || Path(`/api/v1/me/promotion-voucher-suggestions`) || Path(`/api/v1/me/promotion-voucher-claims`)"
+      - "traefik.http.routers.promotion-me.entrypoints=web"
+      - "traefik.http.routers.promotion-me.service=promotion-service"
+      - "traefik.http.routers.promotion-me.priority=30"
+      - "traefik.http.routers.promotion-me.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.promotion-service.loadbalancer.server.port=8085"
+      - "traefik.http.services.promotion-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.promotion-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** cua Promotion khong co router: Checkout/Order goi trong service
+      # network voi workload identity (X-Service-Identity), khong qua gateway.
+
   # ── Cart Service ───────────────────────────────────────────
   cart-service:
     build:

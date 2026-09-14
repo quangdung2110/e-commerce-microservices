@@ -126,6 +126,19 @@ http:
           ipStrategy:
             depth: 2
 
+    # Promotion discovery profile: 20 request/phut/authenticated user cho
+    # POST /api/v1/promotion-discovery (docs/promotion ADR-015, runtime-contract.md).
+    # Gateway so huu quota nay; Promotion Service khong giu local rate-limit key.
+    # Luu y: rateLimit cua Traefik CE la in-memory per replica; production nhieu
+    # replica can shared state theo runtime-contract.md truoc khi expose route.
+    rate-limit-promotion-discovery:
+      rateLimit:
+        average: 20
+        burst: 20
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
     # -------------------------------------------------------------------------
     # Security Headers Middleware
     # -------------------------------------------------------------------------
