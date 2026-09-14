@@ -1,0 +1,12 @@
+spring:
+  kafka:
+    listener:
+      auto-startup: false
+
+promotion:
+  kafka:
+    consumer-enabled: false
+  workers:
+    enabled: false
+  product:
+    validation-enabled: false

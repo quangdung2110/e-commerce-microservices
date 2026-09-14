@@ -1,0 +1,20 @@
+# Chạy local với PostgreSQL/Redis/Kafka của docker-compose ở repo root.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:15432/promotion_service
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  kafka:
+    bootstrap-servers: localhost:9092
+
+promotion:
+  product:
+    base-url: http://localhost:8082
+
+logging:
+  level:
+    com.platform.promotionservice: DEBUG

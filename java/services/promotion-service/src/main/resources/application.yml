@@ -1,0 +1,150 @@
+spring:
+  application:
+    name: promotion-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:15432/promotion_service}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 4
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # JSON snake_case theo contracts/http/promotion/v1/openapi.yaml. Request reader phải
+  # bỏ qua unknown optional field (compatible additions) nên không fail-on-unknown.
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+
+server:
+  port: ${SERVER_PORT:8085}
+  shutdown: graceful
+  tomcat:
+    connection-timeout: 5000
+    threads:
+      max: 200
+      min-spare: 10
+
+# Cấu hình riêng của service (docs/promotion/operations.md §3).
+promotion:
+  admin:
+    required-role: ADMIN
+    user-id-header: X-User-Id
+    roles-header: X-User-Roles
+  internal:
+    # /internal/v1/** chỉ đi qua service network; identity do mesh/ingress xác minh và đặt
+    # vào header này (cùng cơ chế với Product). Allowlist tách theo nhóm route, khớp hai
+    # security scheme trong contracts/http/promotion/v1/openapi.yaml.
+    identity-header: X-Service-Identity
+    calculation-clients:
+      - checkout-service
+    allocation-clients:
+      - order-service
+  product:
+    # Validate Product đồng bộ khi tạo/sửa markdown rule (WF-PROMO-001 bước 2).
+    validation-enabled: ${PRODUCT_VALIDATION_ENABLED:true}
+    base-url: ${PRODUCT_BASE_URL:http://localhost:8082}
+    identity: promotion-service
+    timeout: 2s
+  snapshot:
+    ttl: 3600s
+  claim:
+    pending-stale-after: 5m
+    # Duration dùng trong @Scheduled phải là ISO-8601 (PT..); Boot vẫn bind vào java.time.Duration.
+    sweeper-interval: PT60S
+    max-pool-size: 1000000
+    pool-batch-size: 5000
+    pending-retry-after-seconds: 2
+  reservation:
+    business-ttl: 15m
+    cleanup-grace: 5m
+    sweeper-interval: PT60S
+  finalizer:
+    scan-interval: PT60S
+    stale-after: 30s
+    batch-size: 200
+  schedule:
+    loop-interval: PT0.5S
+    fallback-interval: PT15S
+    batch-size: 100
+    fallback-lookback: 1d
+  reconciliation:
+    interval: PT5M
+    recent-window: 15m
+    lock-ttl: 30s
+  outbox:
+    retention: 14d
+    trim-interval: PT1H
+  receipt:
+    retention: 90d
+    trim-interval: PT1H
+  markdown:
+    dataschema: /contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
+  kafka:
+    product-topic: ${PRODUCT_EVENTS_TOPIC:t.product.events}
+    product-dlq-topic: ${PRODUCT_EVENTS_DLQ_TOPIC:t.product.events.promotion.dlq}
+    group-id: ${PRODUCT_TOMBSTONE_GROUP_ID:promotion-product-tombstone-consumer}
+    retry-attempts: 4
+    retry-backoff: 500ms
+    consumer-enabled: ${KAFKA_CONSUMER_ENABLED:true}
+  workers:
+    enabled: ${WORKERS_ENABLED:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.platform.promotionservice: INFO
+    org.springframework.kafka: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

@@ -1,0 +1,52 @@
+{
+  "name": "promotion-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "${DB_HOSTNAME:postgres}",
+    "database.port": "${DB_PORT:5432}",
+    "database.user": "${DB_USERNAME:postgres}",
+    "database.password": "${DB_PASSWORD:postgres}",
+    "database.dbname": "${DB_NAME:promotion_service}",
+    "topic.prefix": "promotion-db",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "dbz_promotion_outbox_publication",
+    "publication.autocreate.mode": "filtered",
+    "slot.name": "promotion_outbox_slot",
+    "snapshot.mode": "no_data",
+    "table.include.list": "public.promotion_outbox_events",
+    "tombstones.on.delete": "false",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "transforms": "outbox,markdownTopic",
+
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "partition_key",
+    "transforms.outbox.table.field.event.type": "event_type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.table.fields.additional.placement": "event_type:header:ce_type,aggregate_type:header:ce_aggregate_type,aggregate_id:header:ce_aggregate_id,source_revision:header:ce_source_revision",
+    "transforms.outbox.route.by.field": "event_type",
+    "transforms.outbox.route.topic.regex": "(?<routedByValue>.*)",
+    "transforms.outbox.route.topic.replacement": "outbox.${routedByValue}",
+
+    "transforms.markdownTopic.type": "org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.markdownTopic.regex": "outbox\\.com\\.ecommerce\\.promotion\\.product-markdown-snapshot\\.v1",
+    "transforms.markdownTopic.replacement": "t.promotion.markdown.events",
+
+    "errors.tolerance": "none",
+    "event.processing.failure.handling.mode": "fail",
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "500",
+
+    "heartbeat.interval.ms": "60000",
+    "provide.transaction.metadata": "false"
+  }
+}
