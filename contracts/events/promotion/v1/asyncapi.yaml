@@ -9,7 +9,7 @@ info:
     `product-deleted.v1`. Không có coupon/wallet, budget, reservation, campaign lifecycle
     hay refund event ở v1 vì chưa có consumer đã được xác nhận; thêm message type mới là
     thay đổi additive khi consumer thật xuất hiện.
-x-adoption-status: proposed
+x-adoption-status: implemented
 defaultContentType: application/cloudevents+json
 servers:
   local:

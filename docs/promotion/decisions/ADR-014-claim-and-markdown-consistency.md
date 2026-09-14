@@ -21,7 +21,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Supersede ADR-004, ADR-010 và ADR-011,
+`Accepted`; implemented trong `java/services/promotion-service`. Supersede ADR-004, ADR-010 và ADR-011,
 đồng thời giữ các quyết định còn hiệu lực về SPOP + pending rescue, campaign phase dẫn
 xuất, Redis schedule tự phục hồi và transactional outbox/CDC.
 

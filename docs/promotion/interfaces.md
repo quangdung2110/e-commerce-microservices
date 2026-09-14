@@ -2,7 +2,7 @@
 doc_id: promotion-interfaces
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -21,8 +21,9 @@ verified_against_commit: null
 > [`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml);
 > Kafka contract chuẩn nằm tại
 > [`contracts/events/promotion/v1/asyncapi.yaml`](../../contracts/events/promotion/v1/asyncapi.yaml).
-> Cả hai đang ở trạng thái `proposed`; implementation và consumer phải qua contract test
-> trước khi chuyển sang `implemented`/`verified`.
+> Cả hai đã `implemented` trong `java/services/promotion-service`: HTTP có MockMvc contract
+> test (`HttpContractIntegrationTest`), CloudEvent markdown snapshot có JSON Schema contract
+> test (`MarkdownSnapshotContractTest`) và Product consumer đã chấp nhận INACTIVE tombstone.
 
 ## 1. Contract index
 
@@ -40,8 +41,13 @@ Các fact đó không có consumer nào đăng ký trong repository; thêm sau l
 
 ## 2. HTTP APIs
 
-User API lấy identity từ token đã được Gateway verify; admin API yêu cầu role `ADMIN`;
-`/internal/v1/**` chỉ nhận workload identity allowlist. API dùng JSON snake_case,
+User API lấy identity từ header `X-User-Id`/`X-User-Roles` do Gateway inject sau khi verify
+token; admin API yêu cầu role `ADMIN`. `/internal/v1/**` chỉ đi trong service network và nhận
+workload identity qua header `X-Service-Identity` đã được mesh/ingress xác minh (cùng cơ chế
+với Product/Review), allowlist theo nhóm route: `checkout-service` cho
+`/internal/v1/promotion-discount-calculations`, `order-service` cho
+`/internal/v1/promotion-allocation/**` (`promotion.internal.*` trong `application.yml`).
+Trong docker-compose chưa có mesh nên header này chỉ an toàn ở mức dev. API dùng JSON snake_case,
 `application/problem+json` theo RFC 9457, ID opaque string và tiền theo
 `{ amount_minor, currency }` (`currency=VND`). BIGINT/`*_vnd` trong data model chỉ là
 storage representation, không phải wire shape.
@@ -91,8 +97,19 @@ cancellation chỉ là compensation của order saga trước khi order hoàn t�
 
 Discovery/calculate nhận subtotal toàn đơn, item/category context, payment method và các
 field Rule Engine cần. Response trả `eligible`, reason, estimated/actual discount,
-`rule_schema_version`, `campaign_revision` và budget-guard metadata. Discount không được
-chia thành allocation theo SKU.
+`rule_schema_version`, `campaign_revision`, `distribution_mode` và budget-guard metadata.
+Discount không được chia thành allocation theo SKU. `distribution_mode` cho client biết
+item `PUBLIC` cần `PUT /me/promotion-vouchers/{id}` (`PUBLIC_SAVE`) hay
+`POST /me/promotion-voucher-claims` với `campaign_revision` làm `expected_campaign_revision`
+(`LIMITED_CLAIM`); public discovery liệt kê cả hai mode, loại promotion user đã sở hữu.
+Ranking deterministic: eligible trước, discount giảm dần, `promotion_id` tăng dần;
+`/me/promotion-voucher-suggestions` trả cả item không đủ điều kiện kèm `reason`, còn
+`/promotion-discovery` chỉ trả item ineligible khi `include_ineligible=true`.
+
+Customer endpoint không có `user.tier` (Gateway chỉ inject `X-User-Id`/`X-User-Roles`), nên rule
+chứa `user.tier` evaluate `false` ở discovery/suggestion/save; `user_tier` chỉ có trong
+`/internal` request của Checkout/Order. `context.facts` chỉ được bổ sung field allowlisted mà
+trusted mapping chưa có (`cart.checkout_channel`), không được ghi đè `user.*`.
 
 `campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
 của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi
@@ -124,10 +141,19 @@ Redis. Nếu đã có durable outcome thì replay không phụ thuộc reservati
 preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup receipt lần nữa để
 đóng race với request khác vừa commit/finalize; chỉ khi vẫn không có receipt mới trả
 `RESERVATION_NOT_FOUND`. State `CONFIRMING` cùng payload là replay hợp lệ của Prepare.
+`Idempotency-Key` phải khớp đúng `order_id`/`promotion_id` trong body, nếu không trả `400`.
 
 ## 3. Allocation semantics
 
-- Reserve chỉ hợp lệ với wallet `SAVED`, `expired_at > now` và rule đạt tại Submit.
+- Reserve chỉ hợp lệ với wallet `SAVED`, `expired_at > now` và rule đạt tại Submit. Rule
+  không đạt trả `422 CONDITIONS_NOT_MET`; `expected_discount` khác discount Promotion tính
+  trả `409 EXPECTED_DISCOUNT_MISMATCH` (Order phải lấy amount từ calculate mới nhất).
+  Reservation payload hash gồm order, promotion, user và amount; cùng order khác hash trả
+  `409 IDEMPOTENCY_PAYLOAD_MISMATCH`.
+- `POST .../cancellations` trả `RELEASED` (đã nhả `RESERVED`), `NO_RESERVATION` (không còn
+  payload hoặc đã có durable `CONFIRM` receipt) hoặc `REPAIR_REQUIRED` (payload đang
+  `CONFIRMING` chưa có receipt, hoặc index còn member nhưng payload mất — Promotion đã
+  enqueue reconciliation); caller không được coi `REPAIR_REQUIRED` là đã release.
 - Voucher đã lưu có thể reserve sau natural campaign end nếu `expired_at` còn hạn;
   mode `CAMPAIGN_END` đương nhiên hết hạn đúng boundary. Campaign status không phải
   revocation check; emergency revocation chưa thuộc contract này.

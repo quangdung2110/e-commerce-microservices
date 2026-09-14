@@ -2,7 +2,7 @@
 doc_id: promotion-overview
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -24,11 +24,11 @@ hoạt động.
 
 | Thuộc tính | Trạng thái |
 |---|---|
-| Vòng đời service | `planned` — chưa có implementation trong repository |
-| Runtime dự kiến | Java 21, Spring Boot 4 |
-| Implementation path dự kiến | `java/services/promotion-service` — hiện chưa tồn tại |
-| Độ tin cậy tài liệu | `proposed`; chưa verified với source code/migration |
-| Contract adoption | HTTP Promotion v1 và Promotion Events v1 (markdown snapshot) đã có contract đích `proposed`; chưa có implementation/contract test |
+| Vòng đời service | `implemented` — service code, Flyway migration, Lua scripts và test suite nằm trong repository; chưa deploy production |
+| Runtime | Java 21, Spring Boot 3.3 (đồng bộ với các service Java khác), PostgreSQL 16, Redis 7, Kafka + Debezium |
+| Implementation path | `java/services/promotion-service` (package `com.platform.promotionservice`) |
+| Độ tin cậy tài liệu | `implemented`; tài liệu đã được đồng bộ với source/migration trong lần implement đầu; `verified_against_commit` sẽ được ghi khi merge |
+| Contract adoption | HTTP Promotion v1 và Promotion Events v1 (markdown snapshot) `implemented`: provider test MockMvc cho HTTP, JSON Schema contract test cho CloudEvent ACTIVE/INACTIVE; consumer Product đã chấp nhận INACTIVE tombstone |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -166,8 +166,18 @@ ký các fact đó; thêm sau là thay đổi additive theo
 
 ## 9. Known gaps
 
-- Chưa có service code, migration hoặc test; HTTP OpenAPI v1 và Events AsyncAPI v1 đang
-  `proposed`, chưa verified với implementation.
+- Test suite hiện có: unit (Rule Engine, discount, phase, validity, identity filter), Lua trên
+  Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→cancel-confirmed,
+  limited claim + Redis loss + sweeper, tombstone, clone), HTTP contract MockMvc và JSON Schema
+  contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
+  confirm/cancel/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.
+- Order/Checkout chưa có client gọi Promotion; `/internal/v1/**` xác thực bằng header
+  `X-Service-Identity` do mesh/ingress đặt (như Product), không phải Bearer workload JWT. Trong
+  docker-compose chưa có mesh nên header này spoof được từ service network; production phải có
+  mTLS/mesh trước khi coi là an toàn.
+- Product validation đồng bộ dùng `GET /internal/v1/products/{id}/snapshot` với identity
+  `promotion-service` (Product allowlist `reindex-clients`); tắt bằng
+  `promotion.product.validation-enabled=false` khi không có Product.
 - Welcome voucher không thuộc scope v1. Nếu cần, dùng lazy grant khi user gọi API wallet
   lần đầu hoặc admin `DIRECT_GRANT`; không consume Auth Kafka vì Auth delivery là
   best-effort và chưa có reconciliation.
@@ -180,8 +190,13 @@ ký các fact đó; thêm sau là thay đổi additive theo
   Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
 - Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không
   được ngầm dùng làm revocation.
-- Health/config/SLO, command-receipt retention, outbox watermark và parking-lot chi tiết
-  cần được chốt khi triển khai.
-- Gateway phải có profile `promotion-discovery` theo user trước khi expose route discovery;
-  Promotion không sở hữu Redis rate-limit key cho read API này.
-- `RuleEngineDemo.java` chỉ minh họa AST, không phải implementation production.
+- Retention mặc định: outbox 14 ngày (`promotion.outbox.retention`), command receipt 90 ngày
+  (`promotion.receipt.retention`, không xóa receipt còn `redis_finalized_at IS NULL`); outbox
+  trimmer chưa đọc CDC watermark từ connector nên chỉ trim theo thời gian. SLO/dashboard/alert
+  chưa có.
+- Gateway đã có middleware `rate-limit-promotion-discovery` (20 request/user/phút theo
+  `X-User-Id`) và router cho admin/discovery/wallet trong docker-compose, nhưng rateLimit của
+  Traefik CE là in-memory per replica; production nhiều replica cần shared state theo
+  `docs/gateway/runtime-contract.md`. Promotion không sở hữu Redis rate-limit key.
+- `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
+  `domain/rule/RuleEvaluator` + `RuleValidator` trong service.

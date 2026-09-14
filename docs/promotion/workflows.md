@@ -2,7 +2,7 @@
 doc_id: promotion-workflows
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -40,8 +40,10 @@ coupon fact; WF-PROMO-007 là workflow duy nhất ghi outbox.
    product advisory lock và reject nếu terminal tombstone watermark đã tồn tại.
 3. Khi campaign còn DRAFT, child không có lịch/status/revision riêng và mọi mutation tăng
    `campaigns.revision`.
-4. Khi publish, transaction set `publication_status=PUBLISHED`, tăng revision và tạo
-   outbox snapshot cần thiết nếu campaign đã ở trong effective window.
+4. Khi publish, transaction từ chối nếu `end_time <= now`, pre-generate đúng
+   `total_claim_quantity` row `coupon_claims` cho mỗi promotion `LIMITED_CLAIM`, set
+   `publication_status=PUBLISHED`, tăng revision và tạo outbox snapshot (trigger `PUBLISH`)
+   nếu campaign đã ở trong effective window.
 5. Sau publish commit, application `ZADD` START/END, dựng các claim-gate fields trong
    `promo:{promotion_id}:runtime` thành disabled/upcoming hoặc enabled theo DB time/revision,
    invalidate promotion snapshots và tăng cache version fence.
@@ -114,7 +116,9 @@ làm hai caller cùng nhận success cho một claim ID; DB conditional update c
 
 `PUT /api/v1/me/promotion-vouchers/{promotion_id}` hoặc
 `POST /api/v1/admin/promotions/{promotion_id}/grants` tạo unique wallet. Public save kiểm campaign ACTIVE và
-promotion enabled bằng PostgreSQL clock trong cùng transaction với wallet insert. Existing
+promotion enabled bằng PostgreSQL clock trong cùng transaction với wallet insert; direct grant
+kiểm campaign `PUBLISHED` và `now < end_time`. Nếu `total_claim_quantity` hữu hạn, cả hai
+tăng `claimed_quantity` bằng guarded update và trả `OUT_OF_STOCK` khi đã chạm total. Existing
 SAVED còn hạn trả idempotent success mà không kéo dài expiry; USED bị từ chối. Không có
 default 30 ngày: expiry lấy từ validity policy.
 
@@ -258,11 +262,16 @@ Không phát delta `MARKDOWN_CREATED/UPDATED/ENDED`; Product không cần safety
 
 ## WF-PROMO-008 — Rescue, reconciliation và cleanup
 
-- Pending claim: mỗi phút persist lại item cũ hơn ngưỡng 5 phút bằng cùng guarded DB path;
-  giữ pending tới DB commit.
+- Pending claim: mỗi phút duyệt promotion non-DRAFT, persist lại item cũ hơn ngưỡng 5 phút
+  bằng cùng guarded DB path (`ClaimPersistenceService`); giữ pending tới DB commit. Pending
+  mà claim đã thuộc user khác (`FINAL_COMMAND_STATE_INCONSISTENT`) được log error và dọn để
+  không retry vô hạn.
 - Runtime claim fields/pool: rebuild từ PostgreSQL khi startup/Redis loss; stale revision
   không fail-open. Alert Redis–PostgreSQL clock drift vượt ngưỡng.
-- Reservation: mỗi phút lấy due item theo per-promotion ZSET; release hoặc repair.
+- Reservation: mỗi phút duyệt promotion ID từ PostgreSQL (campaign non-DRAFT, không key scan
+  Redis), lấy due item theo per-promotion ZSET; `RESERVED` → release; `CONFIRMING` có receipt
+  → finalize, hết grace không receipt → force release (Order đi late-payment policy); payload
+  mất → xóa index và reconcile.
 - Final-command finalizer: inline sau commit và worker quét receipt
   `redis_finalized_at IS NULL` quá ngưỡng. `CONFIRM` chỉ finalize matching `CONFIRMING`;
   `CANCEL_CONFIRMED` chạy DB→Redis projection repair. Thiếu runtime evidence thì reconcile,

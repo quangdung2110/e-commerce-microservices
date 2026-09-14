@@ -2,7 +2,7 @@
 doc_id: promotion-architecture
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:

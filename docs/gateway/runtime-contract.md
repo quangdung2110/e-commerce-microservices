@@ -77,11 +77,17 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
 
-Promotion Service hiện vẫn là target design chưa có runtime module; chỉ tạo các router
-trên khi [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml), workload
-và profile `promotion-discovery` đã được deploy cùng nhau. Không thay quota này bằng một
-Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi qua service
-network với workload identity, không có public router ở Gateway.
+Promotion Service đã có runtime module (`java/services/promotion-service`) theo
+[Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml). docker-compose khai báo
+ba router: `promotion-admin` (`/api/v1/admin/promotion-campaigns`, `/api/v1/admin/promotions`,
+`/api/v1/admin/markdown-rules`, role ADMIN, priority 40), `promotion-discovery`
+(`POST /api/v1/promotion-discovery`, middleware `rate-limit-promotion-discovery` 20 request/
+user/phút theo `X-User-Id`, priority 35) và `promotion-me` (`/api/v1/me/promotion-vouchers/**`,
+`/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30).
+Rate limit của Traefik CE là in-memory per replica; trước khi chạy nhiều replica production,
+profile này phải có shared distributed state như mục 5 yêu cầu. Không thay quota này bằng một
+Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi qua service network
+với workload identity (`X-Service-Identity` do mesh/ingress đặt), không có public router ở Gateway.
 
 Các endpoint `/internal/v1/**` của Product Service (catalog export và snapshot cho
 Search Service) chỉ đi qua mạng nội bộ với service identity đã xác minh; gateway

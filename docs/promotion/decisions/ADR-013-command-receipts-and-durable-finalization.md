@@ -18,7 +18,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Supersede ADR-003 và ADR-012. Giữ các
+`Accepted`; implemented trong `java/services/promotion-service`. Supersede ADR-003 và ADR-012. Giữ các
 quyết định còn phù hợp: reserve/cancel pre-payment là Redis runtime hold, wallet là
 redemption state, customer refund không mutate Promotion và reconciliation DB → Redis.
 

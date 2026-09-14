@@ -82,9 +82,9 @@ services:
 
   - id: promotion-service
     bounded_context: promotion
-    runtime: java-planned
-    status: documented
-    contract_adoption: proposed
+    runtime: java
+    status: implemented
+    contract_adoption: partial
     docs: docs/promotion/README.md
 
   - id: review-service

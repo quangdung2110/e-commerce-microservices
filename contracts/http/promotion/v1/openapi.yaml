@@ -16,7 +16,7 @@ info:
     Chỉ CONFIRM và CANCEL_CONFIRMED dùng durable Idempotency-Key/command receipt. Các
     command khác replay bằng natural business key, unique constraint, expected campaign
     revision hoặc Redis reservation payload như mô tả ở từng operation.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://promotion-service:8080
     description: Internal cluster endpoint
@@ -679,8 +679,10 @@ paths:
       description: >-
         Idempotency-Key chuẩn là REDEEM_FINAL:{order_id}:{promotion_id}. Server lookup
         durable receipt trước Redis, fence RESERVED->CONFIRMING, rồi commit receipt,
-        wallet, durable budget và outbox trong một PostgreSQL transaction. Redis finalize
-        chỉ chạy sau commit. expected_discount không phải amount authority.
+        wallet và durable budget trong một PostgreSQL transaction; final command không ghi
+        outbox (ADR-016). Redis finalize chỉ chạy sau commit và receipt
+        redis_finalized_at IS NULL là durable trigger để chạy lại sau crash.
+        expected_discount không phải amount authority.
       security: [{ workloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -737,8 +739,8 @@ paths:
       summary: Đảo confirmation do lỗi kỹ thuật của order saga
       description: >-
         Không phải customer refund. Idempotency-Key chuẩn là
-        CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet, durable
-        budget và outbox trước; Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
+        CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable
+        budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
         chưa hết hạn, ngược lại EXPIRED.
       security: [{ workloadIdentity: [] }]
       parameters:
@@ -774,10 +776,15 @@ components:
       name: X-User-Roles
       description: Trusted Gateway role header; operation admin bắt buộc chứa ADMIN.
     workloadIdentity:
-      type: http
-      scheme: bearer
-      bearerFormat: workload-jwt
-      description: Service identity; chỉ allowlist Checkout hoặc Order/Temporal theo operation.
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: >-
+        Service identity đã được service mesh/ingress xác minh (mTLS) và đặt vào header trên
+        internal network, cùng cơ chế với Product/Review. Promotion chỉ allowlist theo nhóm
+        route: checkout-service cho /internal/v1/promotion-discount-calculations,
+        order-service cho /internal/v1/promotion-allocation/**. Header này không bao giờ
+        được expose qua Gateway (strip-identity-headers) và không thay thế mTLS ở production.
 
   parameters:
     RequestId:
@@ -1311,11 +1318,17 @@ components:
     VoucherEvaluation:
       type: object
       additionalProperties: false
-      required: [promotion_id, source, eligible, reason, discount, final_amount, rule_schema_version, campaign_revision, budget_guard]
+      required: [promotion_id, source, distribution_mode, eligible, reason, discount, final_amount, rule_schema_version, campaign_revision, budget_guard]
       properties:
         promotion_id: { $ref: '#/components/schemas/OpaqueId' }
         wallet_id: { $ref: '#/components/schemas/NullableOpaqueId' }
         source: { type: string, enum: [UNKNOWN, WALLET, PUBLIC] }
+        distribution_mode:
+          allOf: [{ $ref: '#/components/schemas/DistributionMode' }]
+          description: >-
+            Cho client biết PUBLIC item cần PUT /me/promotion-vouchers (PUBLIC_SAVE) hay
+            POST /me/promotion-voucher-claims với campaign_revision làm expected revision
+            (LIMITED_CLAIM).
         eligible: { type: boolean }
         reason: { $ref: '#/components/schemas/EligibilityReason' }
         discount: { $ref: '#/components/schemas/VndMoney' }
@@ -1482,8 +1495,11 @@ components:
       description: >-
         Domain/idempotency conflict. code có thể là CAMPAIGN_NOT_ACTIVE,
         CLAIM_GATE_STALE, ALREADY_CLAIMED, OUT_OF_STOCK, ALREADY_USED_VOUCHER,
-        VOUCHER_EXPIRED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH,
-        RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT hoặc INVALID_STATE_TRANSITION.
+        VOUCHER_EXPIRED, VOUCHER_NOT_OWNED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH,
+        EXPECTED_DISCOUNT_MISMATCH, RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT,
+        INVALID_STATE_TRANSITION, CAMPAIGN_NOT_DRAFT, DISTRIBUTION_MODE_MISMATCH,
+        CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS hoặc
+        MARKDOWN_RULE_ALREADY_EXISTS.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

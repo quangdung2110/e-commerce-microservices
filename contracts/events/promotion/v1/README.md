@@ -2,8 +2,10 @@
 
 Đây là nguồn chuẩn cho Kafka event do Promotion Service sở hữu. Event dùng CloudEvents
 1.0 JSON structured; schema wire nằm trong [`schemas/`](schemas/) và topic/message nằm
-trong [AsyncAPI](asyncapi.yaml). Contract đang `proposed`: Promotion Service chưa có
-runtime, provider/consumer contract test chưa chạy.
+trong [AsyncAPI](asyncapi.yaml). Contract đã `implemented`: Promotion ghi snapshot vào
+`promotion_outbox_events` (JSON Schema contract test `MarkdownSnapshotContractTest`, connector
+`java/services/promotion-service/src/main/resources/kafka/debezium-connector-promotion-outbox.json`)
+và Product consumer chấp nhận cả ACTIVE lẫn INACTIVE tombstone; chưa `verified` qua E2E Debezium.
 
 ## Phạm vi v1
 

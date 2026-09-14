@@ -2,7 +2,7 @@
 doc_id: promotion-operations
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -13,8 +13,10 @@ verified_against_commit: null
 
 # Promotion Service — Vận hành
 
-> Chưa có runtime config/deployment/observability source. Đây là yêu cầu vận hành đích,
-> không phải số liệu production đã đo.
+> Runtime: `java/services/promotion-service` (workers trong `PromotionWorkers`, cấu hình §3,
+> Debezium connector trong `src/main/resources/kafka`). SLO/alert/dashboard bên dưới là yêu
+> cầu đích: service mới expose Actuator `health/metrics/prometheus` mặc định, chưa có metric
+> nghiệp vụ tùy chỉnh hay dashboard đã đo.
 
 ## 1. SLI/SLO cần đo
 
@@ -47,18 +49,23 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 
 ## 3. Configuration
 
-| Property logic | Default/constraint |
+| Property (`application.yml`) | Default hiện tại |
 |---|---|
-| Snapshot TTL | 3600s |
-| Reservation business TTL | 15m |
-| Reservation cleanup grace | Phải dài hơn race/retry window; chưa chốt số |
-| Pending rescue age | 5m |
-| Claim clock-drift threshold | Phải nhỏ hơn boundary correctness SLO; chưa chốt số |
-| Campaign schedule loop | 250ms–1s |
-| Campaign DB fallback | 10–30s |
-| Outbox retention | Theo CDC watermark + outbound event replay horizon |
-| Command receipt retention | Lớn hơn Temporal retry + late-recovery horizon; chưa chốt số |
-| Topic/group/connector | Bắt buộc cấu hình rõ, không hard-code secret |
+| `promotion.snapshot.ttl` | 3600s |
+| `promotion.reservation.business-ttl` | 15m |
+| `promotion.reservation.cleanup-grace` | 5m (payload TTL = business + grace; sweeper force-release `CONFIRMING` không receipt sau khi hết hạn) |
+| `promotion.claim.pending-stale-after` / `sweeper-interval` | 5m / 60s |
+| `promotion.claim.max-pool-size` / `pool-batch-size` | 1.000.000 / 5.000 (pre-generate tại publish) |
+| Claim clock-drift threshold | Chưa có metric/alert tự động; runbook RB-03A so `TIME` Redis với `now()` PostgreSQL thủ công |
+| `promotion.schedule.loop-interval` / `fallback-interval` / `fallback-lookback` | 500ms / 15s / 1d |
+| `promotion.finalizer.scan-interval` / `stale-after` / `batch-size` | 60s / 30s / 200 |
+| `promotion.reconciliation.interval` / `recent-window` / `lock-ttl` | 5m / 15m / 30s (chỉ promotion có wallet/receipt thay đổi trong recent window; chưa có off-peak full scan) |
+| `promotion.outbox.retention` / `trim-interval` | 14d / 1h (trim theo thời gian; chưa đọc CDC watermark) |
+| `promotion.receipt.retention` / `trim-interval` | 90d / 1h; không xóa receipt còn `redis_finalized_at IS NULL` |
+| `promotion.kafka.product-topic` / `product-dlq-topic` / `group-id` | `t.product.events` / `t.product.events.promotion.dlq` / `promotion-product-tombstone-consumer` |
+| `promotion.internal.calculation-clients` / `allocation-clients` | `checkout-service` / `order-service` |
+| `promotion.product.base-url` / `validation-enabled` | `http://product-service:8081` / true |
+| Debezium connector | `src/main/resources/kafka/debezium-connector-promotion-outbox.json` (route `t.promotion.markdown.events`) |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
 `POST /api/v1/promotion-discovery` không có property rate-limit ở Promotion: Gateway
@@ -210,8 +217,8 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 | Claim runtime/pool bootstrap | startup/failover | rebuild claim-gate fields + AVAILABLE pool từ PostgreSQL; mutation blocked đến ready |
 | Product tombstone consumer | `product-deleted.v1` | persist monotonic watermark + guarded invalidation; ack sau commit; no reverse event |
 | Outbox CDC relay | WAL | at-least-once; connector retry/DLQ; chỉ markdown snapshot |
-| Budget reconciliation | recent 15m + off-peak full scan | DB→Redis, per-promotion lock |
-| Snapshot monitor | mỗi 5m | metric only, không auto-warm hàng loạt |
+| Budget reconciliation | mỗi 5m cho promotion có wallet/receipt đổi trong 15m (chưa có off-peak full scan) | DB→Redis, per-promotion `reconcile_lock` |
+| Snapshot monitor | chưa implement | metric only, không auto-warm hàng loạt |
 | Wallet expiry normalization | lazy/optional batch | eligibility luôn đọc `expired_at` |
 | Outbox trimmer | policy schedule | CDC watermark + replay horizon guard |
 | Command receipt trimmer | policy schedule | `retain_until` + Temporal retry/late-recovery guard |

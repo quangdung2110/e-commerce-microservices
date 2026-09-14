@@ -2,7 +2,7 @@
 doc_id: promotion-development
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -13,23 +13,49 @@ verified_against_commit: null
 
 # Promotion Service — Hướng dẫn phát triển
 
-> Promotion Service chưa có source module. Phần này đặt Definition of Done cho
-> implementation tương lai, không tuyên bố command/runtime hiện đã tồn tại.
+> Source module: `java/services/promotion-service` (Maven, package
+> `com.platform.promotionservice`). Layout: `common/`, `config/`, `domain/{entity,enums,rule,pricing}`,
+> `infrastructure/{persistence,redis,event,kafka,product}`, `service/`, `worker/`, `web/{dto}`.
 
 ## 1. Prerequisites và local dependencies
 
-Định hướng: JDK 21, Spring Boot 4/Maven, PostgreSQL logical replication, Redis Cluster
-có Lua, Kafka và Debezium/Kafka Connect. Product/Checkout/Order nên dùng contract fixtures
-hoặc test containers khi test Promotion độc lập; Temporal cần fixture cho allocation
-lifecycle. Không cần Auth fixture vì Promotion không consume Auth event.
+JDK 21, Spring Boot 3.3 (đồng bộ với các service Java khác), Maven, PostgreSQL 16 với
+`wal_level=logical`, Redis 7 (standalone trong compose; Lua dùng hash tag nên chuyển Cluster
+không đổi script), Kafka và Debezium/Kafka Connect. Product được validate đồng bộ qua
+`GET /internal/v1/products/{id}/snapshot` (tắt bằng `promotion.product.validation-enabled=false`
+khi chạy độc lập). Checkout/Order chưa có client; test allocation dùng HTTP trực tiếp. Không
+cần Auth fixture vì Promotion không consume Auth event.
+
+Build và test khi máy không có JDK/Maven (dùng container Maven, Testcontainers qua Docker socket):
+
+```bash
+docker run --rm -v "$PWD:/repo" -v promotion-mvn-repo:/root/.m2 -w /repo/java/services/promotion-service \
+  maven:3.9-eclipse-temurin-21 mvn -q -B -DskipTests package
+```
+
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/repo" -v promotion-mvn-repo:/root/.m2 \
+  --add-host=host.docker.internal:host-gateway -e DOCKER_HOST=unix:///var/run/docker.sock \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true \
+  -w /repo/java/services/promotion-service maven:3.9-eclipse-temurin-21 mvn -B test '-DargLine=-Dapi.version=1.44'
+```
+
+Mount repo root (không chỉ thư mục service) để `MarkdownSnapshotContractTest` thấy `contracts/`.
+Integration test có thể trỏ vào dependency sẵn có bằng `TEST_DB_URL`, `TEST_REDIS_HOST`/`TEST_REDIS_PORT`.
 
 ## 2. Configuration
 
-Cần profile local cho DB/Redis/Kafka/connector, topic/group, reservation TTL, pending
-rescue, claim-gate rebuild/clock-drift threshold, campaign loop/fallback và batch size.
+Profile `dev` trỏ vào PostgreSQL/Redis/Kafka của docker-compose; `prod` nhận env `DB_URL`,
+`REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`. Property nghiệp vụ nằm dưới prefix
+`promotion.*` (`PromotionProperties`): `internal.calculation-clients`/`allocation-clients`,
+`product.*`, `snapshot.ttl`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size}`,
+`reservation.{business-ttl,cleanup-grace,sweeper-interval}`, `finalizer.{scan-interval,stale-after,batch-size}`,
+`schedule.{loop-interval,fallback-interval,batch-size,fallback-lookback}`,
+`reconciliation.{interval,recent-window,lock-ttl}`, `outbox.retention`, `receipt.retention`,
+`kafka.{product-topic,product-dlq-topic,group-id}`, `workers.enabled`, `kafka.consumer-enabled`.
 Mọi time UTC. Wire money dùng `{amount_minor,currency}`; persistence/Redis dùng integer
-VND và adapter phải kiểm `currency=VND`. Secret đến từ environment/secret store, không commit
-credential. Không cấu hình `t.promotion.budget.events`.
+VND và adapter kiểm `currency=VND` (`MoneyDto.requireVnd`). Secret đến từ environment/secret
+store, không commit credential. Không cấu hình `t.promotion.budget.events`.
 
 ## 3. Tests bắt buộc
 
@@ -45,6 +71,21 @@ credential. Không cấu hình `t.promotion.budget.events`.
 | HTTP | Contract test đủ 24 operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→cancel-confirmed/repair |
+
+Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
+
+| Test class | Bao phủ |
+|---|---|
+| `RuleEvaluatorTest`, `DomainRulesTest` | AST operators/missing/empty/numeric, validator reject, discount math, phase `[start,end)`, ba validity mode |
+| `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route |
+| `MarkdownSnapshotContractTest` | CloudEvent ACTIVE (percentage/fixed) và INACTIVE hợp lệ với JSON Schema trong `contracts/`; causal dedup key |
+| `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
+| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; cancel-confirmed SAVED + repair; final command không ghi outbox; refund no-op |
+| `ClaimAndTombstoneIntegrationTest` | Pool pre-generate tại publish, gate revision fence, DB commit trước success, replay, OUT_OF_STOCK, pause đóng gate; Redis loss rebuild + sweeper; tombstone watermark/invalidation/stale duplicate/mutation reject/no reverse event; clone identity |
+| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store, claim mode mismatch, calculate/reserve/confirm/technical-cancel/cancel wire shape, Idempotency-Key mismatch 400 |
+
+Chưa có: load 10.000 contender, race test đa luồng, schedule worker với Redis thật theo thời
+gian, Debezium/Kafka E2E, Temporal fixture.
 
 Phải có negative integration test chứng minh `ORDER_REFUNDED` không mutate wallet/budget
 và Promotion không yêu cầu `promotion_refund_allocations[]`.

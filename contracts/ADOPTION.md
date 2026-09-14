@@ -17,8 +17,8 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Inventory HTTP v1 | `proposed` | Target có Workflow, Storefront Availability Read, ADMIN và Search Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
 | Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
 | Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |
-| Promotion HTTP v1 | `proposed` | Service chưa có runtime; contract chốt 24 operation Admin, Customer/Checkout và Order/Temporal, opaque ID, Money VND và không có refund endpoint. |
-| Promotion Events v1 | `proposed` | Service chưa có runtime; contract chốt một message phát (`product-markdown-snapshot.v1`, chuyển ownership từ Product AsyncAPI) và một message nhận (`product-deleted.v1`); không có coupon/budget event vì chưa có consumer. |
+| Promotion HTTP v1 | `implemented` | `java/services/promotion-service` phục vụ đủ 24 operation; provider test MockMvc (`HttpContractIntegrationTest`) kiểm identity, ETag/If-Match, problem+json và wire shape. `workloadIdentity` là header `X-Service-Identity`; `VoucherEvaluation` thêm `distribution_mode`. Chưa có consumer test từ Checkout/Order. |
+| Promotion Events v1 | `implemented` | Promotion ghi `product-markdown-snapshot.v1` vào outbox (JSON Schema contract test `MarkdownSnapshotContractTest`, connector `debezium-connector-promotion-outbox.json`) và consume `product-deleted.v1`; Product consumer đã chấp nhận INACTIVE tombstone (migration V2). Chưa có E2E qua Debezium thật. |
 
 ## Quy tắc chuyển trạng thái
 

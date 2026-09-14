@@ -1,7 +1,8 @@
 # Promotion Service HTTP v1 — đề xuất
 
-Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Đây là contract đích
-`proposed`; Promotion Service chưa có source module để chứng minh adoption.
+Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Contract đã `implemented`
+bởi `java/services/promotion-service` (provider test `HttpContractIntegrationTest`); chưa
+`verified` vì Checkout/Order chưa có consumer test.
 
 ## Các thay đổi chính so với `docs/promotion/interfaces.md`
 
@@ -10,6 +11,9 @@ Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Đây là 
 - Đổi hai query có checkout context phức tạp từ `GET` sang `POST`; chúng vẫn là read-only,
   không reserve và trả `Cache-Control: no-store`.
 - Tách Admin, authenticated customer, Checkout và Order/Temporal bằng security scheme rõ.
+  Workload identity của `/internal/v1/**` là header `X-Service-Identity` do mesh/ingress xác
+  minh (cùng cơ chế Product/Review), allowlist theo nhóm route; không dùng Bearer workload JWT.
+- `VoucherEvaluation` mang `distribution_mode` để client biết item PUBLIC cần save hay claim.
 - Admin mutation dùng `If-Match` theo parent campaign revision. Published definition không
   update in-place; thay đổi business definition phải clone aggregate DRAFT với child ID mới.
 - Chỉ `CONFIRM` và `CANCEL_CONFIRMED` dùng durable `Idempotency-Key`/command receipt.

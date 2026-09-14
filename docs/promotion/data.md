@@ -1,23 +1,22 @@
 ---
-
-## doc_id: promotion-data
-
+doc_id: promotion-data
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
-
-- Promotion Service team
+  - Promotion Service team
 evidence:
-- docs/promotion/RuleEngineDemo.java
-- contracts/http/promotion/v1/openapi.yaml
-- contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
+  - java/services/promotion-service/src/main/resources/db/migration/V1__promotion_baseline.sql
+  - java/services/promotion-service/src/main/resources/lua
+  - contracts/http/promotion/v1/openapi.yaml
+  - contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
 verified_against_commit: null
+---
 
 # Promotion Service — Thiết kế dữ liệu
 
-> Chưa có migration/schema thực thi. Đây là schema đích đã chốt; DDL thực tế phải
-> giữ đúng constraint và semantics dưới đây.
+> DDL thực thi: `java/services/promotion-service/src/main/resources/db/migration/V1__promotion_baseline.sql`
+> (Flyway). Entity JPA chạy `ddl-auto: validate` nên migration và code không được lệch nhau.
 
 ## 1. Data ownership
 
@@ -144,11 +143,15 @@ PostgreSQL; Redis giữ runtime reservation. Bảng không có revision.
 | `status`       | `AVAILABLE` hoặc `CLAIMED`                              |
 | `owner_id`     | `UUID NULL`                                             |
 | `claimed_at`   | `TIMESTAMPTZ NULL`                                      |
+| `claimed_campaign_revision` | `BIGINT NULL`; campaign revision đã được claim-gate Lua kiểm atomically với `SPOP` (acquisition evidence), replay cho `ClaimVoucherResponse.campaign_revision_at_acquisition` |
 | `created_at`   | `TIMESTAMPTZ NOT NULL`                                  |
 
 
-CHECK: `AVAILABLE` có `owner_id/claimed_at` null; `CLAIMED` có cả hai non-null. Partial
-unique `(promotion_id,owner_id) WHERE owner_id IS NOT NULL` chặn một user claim hai suất.
+CHECK: `AVAILABLE` có `owner_id/claimed_at/claimed_campaign_revision` null; `CLAIMED` có cả
+ba non-null. Partial unique `(promotion_id,owner_id) WHERE owner_id IS NOT NULL` chặn một
+user claim hai suất. Với `LIMITED_CLAIM`, đúng `total_claim_quantity` row `AVAILABLE` được
+pre-generate tại publish (batch `promotion.claim.pool-batch-size`, cap
+`promotion.claim.max-pool-size`), không phải lúc tạo promotion DRAFT.
 
 ### 3.5 `user_coupon_wallets`
 
@@ -376,8 +379,18 @@ nguyên. Không dùng RedisBloom pre-check cho code: `promotions.code` unique tr
 là authority. Voucher-discovery rate limit thuộc Gateway profile `promotion-discovery`,
 không thuộc Promotion Redis namespace.
 
+Field của `runtime` hash trong implementation: `total_redemption_quantity`,
+`total_budget_vnd` (`-1` = không giới hạn), `used_quantity`, `used_vnd`, `reserved_quantity`,
+`reserved_vnd`, `claim_enabled` (`0/1`), `claim_revision`, `opens_at_ms`, `closes_at_ms`.
+Reservation payload JSON: `order_id`, `promotion_id`, `user_id`, `wallet_id`, `amount`,
+`state` (`RESERVED|CONFIRMING`), `reserved_at_ms`, `expires_at_ms`, `payload_hash`
+(SHA-256 của `RESERVE|order|promotion|user|amount`). Pending claim payload: `claim_id`,
+`user_id`, `acquired_at_ms` (Redis `TIME`), `campaign_revision`. Key cụ thể do
+`PromotionRedisKeys` sinh, ví dụ `promo:{101}:runtime`.
+
 Mọi key trong một multi-key Lua theo promotion dùng cùng hash tag `{promotion_id}`.
-Redis amount chỉ dùng integer `HINCRBY`, không dùng `HINCRBYFLOAT`.
+Redis amount chỉ dùng integer `HINCRBY`, không dùng `HINCRBYFLOAT`. Trong docker-compose Redis
+chạy standalone; hash tag vẫn được dùng để chuyển sang Redis Cluster không đổi Lua.
 
 Claim API truyền expected campaign revision nhưng Lua quyết định bằng claim-gate fields
 hiện hành trong `runtime` và Redis server time, không dùng application timestamp. Gate
@@ -408,6 +421,19 @@ increment/decrement mà enqueue reconciliation. `promotion_command_receipts` là
 durable duy nhất cho replay final command; Redis không cần applied marker hoặc mutation
 lock riêng. Script bounded, trả structured result và reserve phải rollback các mutation đã
 áp dụng nếu command giữa chừng lỗi.
+
+Script versioned trong `src/main/resources/lua/` với result code cụ thể:
+
+| Script | File | Result codes |
+|---|---|---|
+| Claim | `claim_acquire.lua` | `ACQUIRED`, `ALREADY_CLAIMED` (kèm pending payload nếu còn), `OUT_OF_STOCK`, `GATE_MISSING`, `GATE_DISABLED`, `GATE_STALE`, `OUT_OF_WINDOW` |
+| Reserve | `reserve.lua` | `RESERVED`, `REPLAY`, `PAYLOAD_MISMATCH`, `BUDGET_EXHAUSTED`, `RUNTIME_MISSING` |
+| Confirm prepare | `confirm_prepare.lua` | `PREPARED`, `CONFIRMING` (replay), `MISSING` |
+| Confirm finalize | `confirm_finalize.lua` | `FINALIZED`, `MISSING` (reconcile từ DB), `DRIFT` (counter không đủ → reconcile) |
+| Cancel | `cancel_release.lua` | `RELEASED`, `NO_RESERVATION`, `CONFIRMING` (không release mù; sweeper truyền `force=1` sau grace khi không có receipt), `DRIFT` |
+
+`GATE_MISSING`/`RUNTIME_MISSING` (Redis loss) làm application rebuild runtime của promotion từ
+PostgreSQL rồi thử lại đúng một lần; vẫn thiếu thì trả `503 RUNTIME_NOT_READY`.
 
 ## 8. Reconciliation và lifecycle
 

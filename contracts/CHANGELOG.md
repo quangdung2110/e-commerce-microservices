@@ -3,6 +3,26 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-14
+
+- Promotion HTTP v1 và Promotion Events v1 chuyển `proposed` → `implemented`:
+  `java/services/promotion-service` phục vụ đủ 24 operation, ghi markdown snapshot vào
+  `promotion_outbox_events` và consume `product-deleted.v1`.
+- Promotion HTTP v1: security scheme `workloadIdentity` đổi từ Bearer `workload-jwt` sang
+  `apiKey` header `X-Service-Identity` (mesh/ingress xác minh, cùng cơ chế Product/Review);
+  allowlist theo nhóm route `checkout-service` (calculations) và `order-service` (allocation).
+- Promotion HTTP v1: `VoucherEvaluation` thêm field bắt buộc `distribution_mode` để client
+  phân biệt item `PUBLIC` cần save (`PUBLIC_SAVE`) hay claim (`LIMITED_CLAIM`). Conflict code
+  bổ sung `EXPECTED_DISCOUNT_MISMATCH`, `VOUCHER_NOT_OWNED`, `CAMPAIGN_NOT_DRAFT`,
+  `DISTRIBUTION_MODE_MISMATCH`, `*_ALREADY_EXISTS`. Mô tả confirm/technical-cancellation bỏ
+  câu "commit outbox" cho khớp ADR-016 (final command không ghi outbox).
+- Product HTTP v1: `searchServiceMtls` mô tả thêm Promotion Service được gọi
+  `GET /internal/v1/products/{product_id}/snapshot` để validate Product trước khi tạo/sửa
+  markdown rule (Product allowlist `reindex-clients`).
+- Product consumer markdown snapshot chấp nhận INACTIVE tombstone (không `discount`/`starts_at`/
+  `ends_at`, chỉ `inactive_reason`) theo schema `oneOf`; projection Product có migration V2
+  nullable + `inactive_reason`.
+
 ## 2026-09-13
 
 - Thêm Promotion Events AsyncAPI v1 tại `events/promotion/v1/`. Promotion sở hữu

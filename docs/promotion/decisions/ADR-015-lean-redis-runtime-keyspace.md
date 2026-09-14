@@ -19,7 +19,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. ADR này tinh gọn physical Redis key mapping
+`Accepted`; implemented trong `java/services/promotion-service`. ADR này tinh gọn physical Redis key mapping
 và ownership rate limit. Nó không supersede toàn bộ ADR-013 hoặc ADR-014: command receipt,
 claim hard boundary, Redis schedule, SPOP/pending rescue và DB-first reconciliation vẫn giữ
 nguyên.

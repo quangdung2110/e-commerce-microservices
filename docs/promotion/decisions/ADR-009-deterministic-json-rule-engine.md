@@ -15,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Accepted`; implemented trong `java/services/promotion-service`.
 
 ## Context
 

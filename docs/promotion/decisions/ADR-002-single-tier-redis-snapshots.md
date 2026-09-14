@@ -15,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented.
+`Accepted`; implemented trong `java/services/promotion-service` (`SnapshotCache`, `PromotionSnapshotService`).
 
 ## Context
 
@@ -34,6 +34,8 @@ wallet cache. Budget exhausted được guard read-time thay vì fanout invalida
 - JVM/Caffeine L1: nhanh hơn nhưng consistency/invalidation cross-instance phức tạp.
 - No cache: đơn giản nhưng dồn read vào PostgreSQL.
 - Wallet cache + reverse index: giảm DB read nhưng memory/invalidation rất lớn.
+
+
 
 ## Consequences
 

@@ -2,7 +2,7 @@
 doc_id: promotion-domain
 service: promotion
 scope: target
-status: proposed
+status: implemented
 owners:
   - Promotion Service team
 evidence:
@@ -108,6 +108,12 @@ riêng, có audit và contract riêng.
 - `PAUSED`: admin tạm dừng claim/markdown; schedule cũ bị revision fence vô hiệu.
 - `CANCELLED`: không claim/markdown; terminal về quản trị.
 
+Transition hợp lệ: `DRAFT→PUBLISHED`, `PUBLISHED→PAUSED|CANCELLED`, `PAUSED→CANCELLED`.
+Không có resume `PAUSED→PUBLISHED`: muốn chạy lại phải clone campaign mới. Publish bị từ chối
+(`409 INVALID_STATE_TRANSITION`) khi `end_time <= now`. `DIRECT_GRANT` chỉ khi campaign
+`PUBLISHED`, `now < end_time` (UPCOMING hoặc ACTIVE) và promotion enabled; public save chỉ
+khi phase ACTIVE.
+
 Với `PUBLISHED`:
 
 ```text
@@ -161,6 +167,11 @@ invalidate; payload mang rule/discount/interval. Khi không còn winner, `INACTI
 product, source revision và reason. Effective state không persist trong `markdown_rules`;
 Product tombstone invalidation là operational evidence riêng.
 
+Winner khi nhiều campaign ACTIVE cùng product: `priority` giảm dần rồi `id` tăng dần.
+`inactive_reason` theo trigger causal: `END` → `EXPIRED`; `PAUSE`/`CANCEL` → `ADMIN_DISABLED`;
+`PUBLISH`/`START` mà không có winner → `NO_ACTIVE_RULE` (rule disabled/invalidated), hoặc
+`EXPIRED` nếu cause campaign đã qua `end_time` (START xử lý muộn).
+
 ## 7. Invariants
 
 | ID | Điều kiện phải luôn đúng | Enforcement |
@@ -211,9 +222,11 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 
 - Chỉ admin quản trị campaign/voucher/markdown/budget.
 - Customer chỉ đọc/claim/save wallet của `user_id` trong access token.
-- Chỉ Checkout workload identity gọi
+- Chỉ Checkout workload identity (`X-Service-Identity: checkout-service`) gọi
   `POST /internal/v1/promotion-discount-calculations`; discovery/suggestion customer lấy
-  user identity đã được Gateway verify, còn allocation chỉ allowlist Order/Temporal.
+  user identity đã được Gateway verify, còn allocation chỉ allowlist Order/Temporal
+  (`X-Service-Identity: order-service`). Header identity do mesh/ingress xác minh; Promotion
+  chỉ allowlist theo nhóm route (`TrustedIdentityFilter`).
 - Chỉ Order/Temporal gọi reserve/confirm/cancel/`cancel-confirmed`.
 - Consumer validate broker ACL, schema, event identity và business guard.
 
@@ -235,6 +248,13 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 | `RESERVATION_NOT_FOUND` | Confirm không còn payload | Late-payment compensation |
 | `CONDITIONS_NOT_MET` | AST false | No |
 | `INVALID_RULE` | AST/operator/config không hợp lệ | No |
+| `EXPECTED_DISCOUNT_MISMATCH` | Reserve: `expected_discount` khác discount Promotion tính | No; Order tính lại |
+| `VOUCHER_NOT_OWNED` | Reserve/calculate cho promotion không có trong wallet | No |
+| `DISTRIBUTION_MODE_MISMATCH` | Save/claim/grant sai distribution mode | No |
+| `CAMPAIGN_NOT_DRAFT` | Mutation definition sau publish | No; clone |
+| `CAMPAIGN_REVISION_MISMATCH` | `If-Match` khác revision hiện hành (412) | Retry với ETag mới |
+| `PRODUCT_TOMBSTONED` | Markdown mutation cho Product đã có tombstone watermark (422) | No |
+| `RUNTIME_NOT_READY` | Redis runtime của promotion đang rebuild sau Redis loss (503) | Yes |
 
 ## 11. Ví dụ
 

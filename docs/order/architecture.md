@@ -104,7 +104,7 @@ checkout timeout.
 | Checkout remote | `ReservePromotionActivity` | `POST /internal/v1/promotion-allocation/reservations`; reserve budget all-or-nothing sau submit |
 | Checkout remote | `InitiatePaymentActivity` | Tạo Stripe PaymentIntent qua Payment |
 | Post-payment | `DeductInventoryActivity` | Deduct stock đã reserve |
-| Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget/outbox |
+| Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget (không outbox, Promotion ADR-016) |
 | FSM local | `UpdateOrderStatusActivity` | Row lock/CAS, update master và outbox |
 | Refund local | `MarkRefundRequestedActivity` | Verify source/guard, chuyển `RETURN_REQUESTED` |
 | Refund local | `LockRefundScopeActivity` | Khóa FULL/PARTIAL scope và amount |

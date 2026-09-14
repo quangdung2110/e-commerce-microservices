@@ -21,7 +21,7 @@ evidence:
 
 ## Status
 
-`Accepted` ở mức thiết kế; chưa implemented. Không supersede ADR nào. Amend
+`Accepted`; implemented trong `java/services/promotion-service`. Không supersede ADR nào. Amend
 [ADR-013](./ADR-013-command-receipts-and-durable-finalization.md) ở điểm "outbox event là
 durable trigger cho finalizer/repair" và amend
 [ADR-014](./ADR-014-claim-and-markdown-consistency.md) ở điểm coupon fact/Auth consumer
