@@ -33,8 +33,9 @@ public class MarkdownProjectionEntity {
     @Column(name = "product_id", nullable = false, updatable = false)
     private UUID productId;
 
-    @Column(name = "promotion_rule_id", nullable = false)
-    private long promotionRuleId;
+    /** Null khi INACTIVE (tombstone). */
+    @Column(name = "promotion_rule_id")
+    private Long promotionRuleId;
 
     @Column(name = "source_revision", nullable = false)
     private long sourceRevision;
@@ -44,7 +45,7 @@ public class MarkdownProjectionEntity {
     private MarkdownState state;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "discount_type", nullable = false, length = 16)
+    @Column(name = "discount_type", length = 16)
     private DiscountType discountType;
 
     @Column(name = "discount_bps")
@@ -56,11 +57,15 @@ public class MarkdownProjectionEntity {
     @Column(name = "max_discount_vnd")
     private Long maxDiscountVnd;
 
-    @Column(name = "starts_at", nullable = false)
+    @Column(name = "starts_at")
     private Instant startsAt;
 
-    @Column(name = "ends_at", nullable = false)
+    @Column(name = "ends_at")
     private Instant endsAt;
+
+    /** Chỉ có khi INACTIVE: NO_ACTIVE_RULE | EXPIRED | ADMIN_DISABLED. */
+    @Column(name = "inactive_reason", length = 32)
+    private String inactiveReason;
 
     @Column(name = "received_at", nullable = false)
     private Instant receivedAt;

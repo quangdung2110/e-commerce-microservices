@@ -82,6 +82,12 @@ class MarkdownConsumerIntegrationTest extends AbstractCatalogIntegrationTest {
 
         assertThat(skuRepository.findByProductIdOrderBySkuCodeAsc(product.productId()).get(0)
                 .getSellingPriceVnd()).isEqualTo(25_000_000L);
+        MarkdownProjectionEntity tombstone = markdownRepository.findById(product.productId()).orElseThrow();
+        assertThat(tombstone.getState()).isEqualTo(MarkdownState.INACTIVE);
+        assertThat(tombstone.getInactiveReason()).isEqualTo("EXPIRED");
+        assertThat(tombstone.getPromotionRuleId()).isNull();
+        assertThat(tombstone.getDiscountType()).isNull();
+        assertThat(tombstone.getEndsAt()).isNull();
         assertThat(outboxRowsOfType(CatalogEventTypes.SKU_UPSERTED).stream()
                 .filter(row -> row.changeKind().equals("MARKDOWN_EXPIRED"))
                 .toList()).hasSize(1);
@@ -184,8 +190,35 @@ class MarkdownConsumerIntegrationTest extends AbstractCatalogIntegrationTest {
         String discount = cap == null
                 ? "{\"type\":\"PERCENTAGE\",\"discount_bps\":" + bps + "}"
                 : "{\"type\":\"PERCENTAGE\",\"discount_bps\":" + bps + ",\"max_discount_vnd\":" + cap + "}";
-        return snapshot(productId, sourceRevision, active ? "ACTIVE" : "INACTIVE", discount,
+        if (!active) {
+            return tombstone(productId, sourceRevision, "EXPIRED");
+        }
+        return snapshot(productId, sourceRevision, "ACTIVE", discount,
                 Instant.now().minus(1, ChronoUnit.HOURS), Instant.now().plus(1, ChronoUnit.DAYS));
+    }
+
+    /** INACTIVE là tombstone chỉ mang inactive_reason (contracts/events/promotion/v1). */
+    private String tombstone(UUID productId, long sourceRevision, String reason) {
+        return """
+                {
+                  "specversion": "1.0",
+                  "id": "%s",
+                  "type": "com.ecommerce.promotion.product-markdown-snapshot.v1",
+                  "source": "/services/promotion",
+                  "subject": "products/%s",
+                  "time": "%s",
+                  "datacontenttype": "application/json",
+                  "dataschema": "/contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json",
+                  "sequence": %d,
+                  "data": {
+                    "product_id": "%s",
+                    "source_revision": %d,
+                    "state": "INACTIVE",
+                    "inactive_reason": "%s"
+                  }
+                }
+                """.formatted(UUID.randomUUID(), productId, Instant.now(), sourceRevision,
+                productId, sourceRevision, reason);
     }
 
     private String snapshot(UUID productId,

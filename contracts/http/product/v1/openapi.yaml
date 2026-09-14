@@ -810,7 +810,10 @@ components:
       description: Trusted roles do API Gateway inject. Mọi endpoint /api/v1 trong spec yêu cầu role ADMIN.
     searchServiceMtls:
       type: mutualTLS
-      description: Service identity mTLS chỉ cấp cho Search Service trên internal network.
+      description: >-
+        Service identity mTLS trên internal network cho Search Service (export + snapshot) và
+        Promotion Service (chỉ GET /internal/v1/products/{product_id}/snapshot để validate
+        Product trước khi tạo/sửa markdown rule).
     productDetailBffMtls:
       type: mutualTLS
       description: Service identity mTLS chỉ cấp cho Product Detail BFF trên internal network.

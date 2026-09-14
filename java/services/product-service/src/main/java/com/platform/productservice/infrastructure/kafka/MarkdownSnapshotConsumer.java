@@ -70,19 +70,31 @@ public class MarkdownSnapshotConsumer {
             throw new NonRetryableEventException("Markdown snapshot has no data object", null);
         }
         try {
+            UUID productId = UUID.fromString(data.path("product_id").asText());
+            long sourceRevision = data.path("source_revision").asLong();
+            MarkdownState state = MarkdownState.valueOf(data.path("state").asText());
+            if (state == MarkdownState.INACTIVE) {
+                // Tombstone: chỉ có inactive_reason, không rule/discount/interval (schema oneOf).
+                String reason = data.path("inactive_reason").asText(null);
+                if (reason == null || reason.isBlank()) {
+                    throw new IllegalArgumentException("INACTIVE snapshot requires inactive_reason");
+                }
+                return MarkdownApplyService.Snapshot.inactive(productId, sourceRevision, reason);
+            }
             JsonNode discount = data.path("discount");
             DiscountType discountType = DiscountType.valueOf(discount.path("type").asText());
             return new MarkdownApplyService.Snapshot(
-                    UUID.fromString(data.path("product_id").asText()),
+                    productId,
                     data.path("promotion_rule_id").asLong(),
-                    data.path("source_revision").asLong(),
-                    MarkdownState.valueOf(data.path("state").asText()),
+                    sourceRevision,
+                    state,
                     discountType,
                     discount.hasNonNull("discount_bps") ? discount.get("discount_bps").asInt() : null,
                     discount.hasNonNull("fixed_discount_vnd") ? discount.get("fixed_discount_vnd").asLong() : null,
                     discount.hasNonNull("max_discount_vnd") ? discount.get("max_discount_vnd").asLong() : null,
                     Instant.parse(data.path("starts_at").asText()),
-                    Instant.parse(data.path("ends_at").asText()));
+                    Instant.parse(data.path("ends_at").asText()),
+                    null);
         } catch (RuntimeException e) {
             throw new NonRetryableEventException("Markdown snapshot does not match the v1 contract", e);
         }

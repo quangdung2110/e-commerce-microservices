@@ -43,7 +43,7 @@ public class MarkdownApplyService {
 
     /** Snapshot đã parse từ CloudEvent {@code product-markdown-snapshot.v1}. */
     public record Snapshot(UUID productId,
-                           long promotionRuleId,
+                           Long promotionRuleId,
                            long sourceRevision,
                            MarkdownState state,
                            DiscountType discountType,
@@ -51,7 +51,14 @@ public class MarkdownApplyService {
                            Long fixedDiscountVnd,
                            Long maxDiscountVnd,
                            Instant startsAt,
-                           Instant endsAt) {
+                           Instant endsAt,
+                           String inactiveReason) {
+
+        /** Tombstone INACTIVE: chỉ có reason (contracts/events/promotion/v1). */
+        public static Snapshot inactive(UUID productId, long sourceRevision, String inactiveReason) {
+            return new Snapshot(productId, null, sourceRevision, MarkdownState.INACTIVE,
+                    null, null, null, null, null, null, inactiveReason);
+        }
     }
 
     public enum Outcome {
@@ -88,15 +95,30 @@ public class MarkdownApplyService {
             projection = new MarkdownProjectionEntity();
             projection.setProductId(snapshot.productId());
         }
-        projection.setPromotionRuleId(snapshot.promotionRuleId());
+        MarkdownState effective = MarkdownPricing.effectiveState(snapshot.state(), snapshot.endsAt(), now);
         projection.setSourceRevision(snapshot.sourceRevision());
-        projection.setState(MarkdownPricing.effectiveState(snapshot.state(), snapshot.endsAt(), now));
-        projection.setDiscountType(snapshot.discountType());
-        projection.setDiscountBps(snapshot.discountBps());
-        projection.setFixedDiscountVnd(snapshot.fixedDiscountVnd());
-        projection.setMaxDiscountVnd(snapshot.maxDiscountVnd());
-        projection.setStartsAt(snapshot.startsAt());
-        projection.setEndsAt(snapshot.endsAt());
+        projection.setState(effective);
+        if (effective == MarkdownState.ACTIVE) {
+            projection.setPromotionRuleId(snapshot.promotionRuleId());
+            projection.setDiscountType(snapshot.discountType());
+            projection.setDiscountBps(snapshot.discountBps());
+            projection.setFixedDiscountVnd(snapshot.fixedDiscountVnd());
+            projection.setMaxDiscountVnd(snapshot.maxDiscountVnd());
+            projection.setStartsAt(snapshot.startsAt());
+            projection.setEndsAt(snapshot.endsAt());
+            projection.setInactiveReason(null);
+        } else {
+            // Tombstone (docs/product/data.md §3.3): clear rule configuration; ACTIVE đến muộn
+            // sau ends_at materialize thành INACTIVE/EXPIRED.
+            projection.setPromotionRuleId(null);
+            projection.setDiscountType(null);
+            projection.setDiscountBps(null);
+            projection.setFixedDiscountVnd(null);
+            projection.setMaxDiscountVnd(null);
+            projection.setStartsAt(null);
+            projection.setEndsAt(null);
+            projection.setInactiveReason(snapshot.inactiveReason() == null ? "EXPIRED" : snapshot.inactiveReason());
+        }
         projection.setReceivedAt(now);
         if (isNewProjection) {
             writeSupport.persist(projection);

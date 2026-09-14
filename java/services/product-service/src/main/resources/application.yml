@@ -71,6 +71,9 @@ product:
     # contracts/http/product/v1/openapi.yaml (ADR-015).
     reindex-clients:
       - search-service
+      # Promotion validate Product đồng bộ qua GET /internal/v1/products/{id}/snapshot
+      # trước khi tạo/sửa markdown rule (docs/promotion/workflows.md WF-PROMO-001).
+      - promotion-service
     buyer-read-clients:
       - product-detail-bff
   export:
