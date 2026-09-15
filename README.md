@@ -61,7 +61,8 @@ e-commerce-microservices/
     ├── notification/            # Notifications
     ├── chat/                    # Real-time chat
     ├── analytics/               # Analytics & reporting
-    └── gateway/                 # API Gateway design
+    ├── gateway/                 # API Gateway design (Traefik, north-south)
+    └── mesh/                    # Service mesh design (Istio ambient, east-west; target)
 ```
 
 ## Microservices
@@ -108,6 +109,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | **Go** | High-concurrency services (cart, user, gateway) |
 | **Java 21 / Spring Boot 4** | Business logic services (promotion) |
 | **Traefik v3.x** | API Gateway, reverse proxy, load balancing |
+| **Istio (ambient)** | Service mesh east-west trên Kubernetes: mTLS, workload identity, `AuthorizationPolicy` — target, chưa có manifest ([docs/mesh](docs/mesh/technology_choice.md)) |
 | **gRPC + Protobuf** | Inter-service communication |
 
 ### Data & Messaging

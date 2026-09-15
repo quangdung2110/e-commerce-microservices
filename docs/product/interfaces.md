@@ -17,8 +17,12 @@ AsyncAPI/JSON Schema đề xuất nằm tại
 ## HTTP
 
 Admin API dùng `/api/v1/products`, `/api/v1/categories`, `/api/v1/attributes` và yêu
-cầu role `ADMIN` từ Gateway. Internal API phục vụ Search dùng mTLS/service identity;
-canonical path là `/internal/v1/...`, không expose qua Gateway.
+cầu role `ADMIN` từ Gateway. Internal API phục vụ Search, Promotion và Product Detail BFF
+dùng mTLS/service identity do service mesh thực thi theo principal
+([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+header `X-Service-Identity` do caller tự đặt và allowlist `product.internal.reindex-clients`
+trong Product chỉ là defense-in-depth. Canonical path là `/internal/v1/...`, không expose qua
+Gateway.
 
 | Endpoint | Hành vi |
 |---|---|

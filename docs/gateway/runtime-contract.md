@@ -7,7 +7,7 @@
 
 Gateway chịu trách nhiệm kết thúc TLS, định tuyến, health/timeout của upstream, xác thực, bảo vệ ở edge, access log, metrics và truyền trace context. Gateway **không** chịu trách nhiệm phân quyền nghiệp vụ, tổng hợp dữ liệu nghiệp vụ hoặc truy cập database.
 
-Các downstream service chỉ được tin cậy header `X-User-*` đến từ mạng private của gateway/auth. Traefik phải loại bỏ mọi identity header do client gửi **trước** khi gọi ForwardAuth và trước khi forward upstream; chỉ header trong allowlist do `gateway-auth` trả về sau validation mới được thêm vào request. Downstream service không được có public ingress bypass gateway/auth và phải áp dụng network policy tương ứng.
+Các downstream service chỉ được tin cậy header `X-User-*` khi caller là Traefik. Trên Kubernetes, điều đó được service mesh thực thi: `AuthorizationPolicy` chỉ cho principal `cluster.local/ns/edge/sa/traefik` chạm tới route public của service ([mesh/runtime-contract.md §5](../mesh/runtime-contract.md#5-ma-trận-phân-quyền)); NetworkPolicy L3/L4 là lớp phòng thủ thứ hai. Trong Docker Compose không có mesh nên "mạng private" chỉ là giả định ở mức dev. Traefik phải loại bỏ mọi identity header do client gửi **trước** khi gọi ForwardAuth và trước khi forward upstream; chỉ header trong allowlist do `gateway-auth` trả về sau validation mới được thêm vào request. Downstream service không được có public ingress bypass gateway/auth.
 
 ## 2. Runtime được hỗ trợ
 
@@ -16,6 +16,7 @@ Các downstream service chỉ được tin cậy header `X-User-*` đến từ m
 | Edge proxy | Traefik Proxy `v3.7.1`, pin bằng exact tag và image digest |
 | Discovery local | Docker provider với `exposedByDefault=false` |
 | Discovery production | Kubernetes Gateway API/CRD; Docker labels chỉ là template cho môi trường development |
+| Service mesh | Traefik và `gateway-auth` là workload trong namespace `edge` của Istio ambient (ztunnel, không waypoint); hop Traefik → service được mTLS và mang principal Traefik. Không deploy Istio Ingress Gateway. Xem [mesh/runtime-contract.md](../mesh/runtime-contract.md) |
 | Authentication | Service `gateway-auth` triển khai độc lập, gọi qua Traefik `ForwardAuth` |
 | Trạng thái rate limit | Redis-backed, dùng chung giữa mọi gateway replica |
 | Telemetry | OTLP traces tới OpenTelemetry Collector; access log (stdout) được Collector thu qua `filelog` receiver; Jaeger (traces), Prometheus (metrics), Loki (logs) là backend phía sau, hiển thị qua Grafana |
@@ -44,7 +45,7 @@ client → TLS/trusted proxy → size & IP policy → route → rate/concurrency
        → logs, metrics, trace export
 ```
 
-Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header cùng tên do `gateway-auth` trả về trong allowlist mới được forward tới service. Ánh xạ claim sang header được chốt tại mục 6.1.
+Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` và `X-Service-Identity` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header `X-User-*` do `gateway-auth` trả về trong allowlist mới được forward tới service. `X-Service-Identity` không bao giờ được Traefik đặt: nó là header attribution giữa các service bên trong mesh ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)). Ánh xạ claim sang header được chốt tại mục 6.1.
 
 Gateway tiếp tục `traceparent`/`tracestate` W3C hợp lệ; nếu không có thì sinh trace context W3C chuẩn. Gateway không tự tạo trace ID riêng.
 
@@ -84,18 +85,17 @@ ba router: `promotion-admin` (`/api/v1/admin/promotion-campaigns`, `/api/v1/admi
 (`POST /api/v1/promotion-discovery`, middleware `rate-limit-promotion-discovery` 20 request/
 user/phút theo `X-User-Id`, priority 35) và `promotion-me` (`/api/v1/me/promotion-vouchers/**`,
 `/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30).
-Rate limit của Traefik CE là in-memory per replica; trước khi chạy nhiều replica production,
-profile này phải có shared distributed state như mục 5 yêu cầu. Không thay quota này bằng một
-Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi qua service network
-với workload identity (`X-Service-Identity` do mesh/ingress đặt), không có public router ở Gateway.
+Cấu hình docker-compose hiện tại dùng rate limit in-memory per replica; trước khi chạy nhiều
+replica production, profile này phải chuyển sang Redis-backed shared state như mục 2 và mục 7
+yêu cầu (Traefik CE hỗ trợ Redis backend cho `RateLimit` từ v3.2). Không thay quota này bằng một
+Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi trong mesh: caller được
+phép do `AuthorizationPolicy` quyết định theo principal, `X-Service-Identity` do service caller tự
+đặt và chỉ dùng cho attribution ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); không có public router ở Gateway.
 
 Các endpoint `/internal/v1/**` của Product Service (catalog export và snapshot cho
-Search Service) chỉ đi qua mạng nội bộ với service identity đã xác minh; gateway
-không tạo router public cho prefix này.
-
-Các endpoint `/internal/v1/**` của Review Service (PDP summary và rating export)
-cũng chỉ đi qua mạng nội bộ với service identity đã xác minh; Gateway không tạo router
-public cho prefix này.
+Search Service) và `/internal/v1/**` của Review Service (PDP summary và rating export) cũng
+chỉ đi trong mesh với principal được allowlist theo cùng ma trận; gateway không tạo router
+public cho prefix `/internal/**`, `/exports/**` của bất kỳ service nào.
 
 Mỗi service có health check và upstream transport timeout giới hạn. Retry chỉ áp dụng cho `GET`, `HEAD`, `OPTIONS` khi lỗi connection/5xx đã được cấu hình. Payment write và Stripe webhook không bao giờ bị gateway retry. Circuit breaker chỉ được thêm theo upstream sau khi threshold và recovery behavior đã được test.
 
@@ -221,4 +221,4 @@ Release chỉ hoàn thành khi: mọi route trong matrix đến đúng service; 
 
 ## 10. Khoảng cách với trạng thái hiện tại
 
-Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, phụ thuộc vào plugin `.so` không được hỗ trợ, và chưa có OpenTelemetry Collector hay log pipeline tập trung (Loki) — hiện tại chỉ có Jaeger nhận trace trực tiếp, access log chưa được thu thập/export ở đâu. Prometheus exemplar cũng chưa triển khai: Prometheus chưa bật `exemplar-storage`, và khả năng Traefik `v3.7.1` emit exemplar trên latency histogram chưa được xác minh với phiên bản đang pin — cần spike riêng trước khi cam kết click-through metric → trace cho traffic qua Traefik (`gateway-auth` không phụ thuộc gap này vì team tự kiểm soát code). Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.
+Repository hiện chưa tuân thủ quy ước: thiếu `websecure` và active tracing, cross-provider middleware references không nhất quán, rate limits per-instance, phụ thuộc vào plugin `.so` không được hỗ trợ, và chưa có OpenTelemetry Collector hay log pipeline tập trung (Loki) — hiện tại chỉ có Jaeger nhận trace trực tiếp, access log chưa được thu thập/export ở đâu. Prometheus exemplar cũng chưa triển khai: Prometheus chưa bật `exemplar-storage`, và khả năng Traefik `v3.7.1` emit exemplar trên latency histogram chưa được xác minh với phiên bản đang pin — cần spike riêng trước khi cam kết click-through metric → trace cho traffic qua Traefik (`gateway-auth` không phụ thuộc gap này vì team tự kiểm soát code). Chưa có manifest Kubernetes hay service mesh: route matrix còn dùng prefix `/api/users/**`, `/api/orders/**`, `/api/payments/**` trong khi contract User dùng `/api/v1/users/**`, và Cart, Checkout, Inventory admin, Product Detail BFF chưa có dòng trong matrix — phải đối soát với [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint) trước khi viết `HTTPRoute`. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một năng lực không được gọi là “hoàn thành” trước khi tiêu chí xác minh của nó đạt.

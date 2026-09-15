@@ -47,7 +47,10 @@ components:
       type: mutualTLS
       description: >-
         mTLS/service identity chỉ cấp cho Notification Service trên internal
-        network. Public client và API Gateway không được gọi endpoint này.
+        network. Public client và API Gateway không được gọi endpoint này. Transport
+        mTLS và allowlist principal notification-service do service mesh thực thi
+        (docs/mesh/runtime-contract.md mục 5.2); Auth không nhìn thấy chứng chỉ caller.
+        Caller gửi X-Service-Identity: notification-service cho attribution.
   parameters:
     DeliveryId:
       name: delivery_id

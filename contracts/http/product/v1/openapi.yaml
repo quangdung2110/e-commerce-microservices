@@ -813,10 +813,16 @@ components:
       description: >-
         Service identity mTLS trên internal network cho Search Service (export + snapshot) và
         Promotion Service (chỉ GET /internal/v1/products/{product_id}/snapshot để validate
-        Product trước khi tạo/sửa markdown rule).
+        Product trước khi tạo/sửa markdown rule). mTLS và allowlist caller theo principal do
+        service mesh thực thi (docs/mesh/runtime-contract.md mục 5.2); Product không nhìn thấy
+        chứng chỉ caller. Header X-Service-Identity do caller tự đặt; allowlist
+        product.internal.reindex-clients trong Product chỉ là defense-in-depth.
     productDetailBffMtls:
       type: mutualTLS
-      description: Service identity mTLS chỉ cấp cho Product Detail BFF trên internal network.
+      description: >-
+        Service identity mTLS chỉ cấp cho Product Detail BFF trên internal network; do service
+        mesh thực thi theo principal product-detail-bff (docs/mesh/runtime-contract.md mục 5.2),
+        header X-Service-Identity chỉ là attribution/defense-in-depth.
   parameters:
     RequestId:
       name: X-Request-Id
@@ -1460,10 +1466,15 @@ components:
       description: Caller không có role ADMIN.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     UnauthorizedService:
-      description: Không có hoặc không xác minh được mTLS service identity.
+      description: >-
+        Thiếu header X-Service-Identity (defense-in-depth trong Product). Principal không được
+        mesh cho phép bị từ chối sớm hơn bằng 403 text/plain từ waypoint, không có body
+        problem+json.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ForbiddenService:
-      description: mTLS identity không phải Search Service.
+      description: >-
+        X-Service-Identity không nằm trong allowlist của nhóm route (defense-in-depth trong
+        Product). Principal sai đã bị mesh chặn trước đó bằng 403 text/plain.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ProductNotFound:
       description: PRODUCT_NOT_FOUND.

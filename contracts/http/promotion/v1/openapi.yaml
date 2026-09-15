@@ -780,11 +780,15 @@ components:
       in: header
       name: X-Service-Identity
       description: >-
-        Service identity đã được service mesh/ingress xác minh (mTLS) và đặt vào header trên
-        internal network, cùng cơ chế với Product/Review. Promotion chỉ allowlist theo nhóm
-        route: checkout-service cho /internal/v1/promotion-discount-calculations,
-        order-service cho /internal/v1/promotion-allocation/**. Header này không bao giờ
-        được expose qua Gateway (strip-identity-headers) và không thay thế mTLS ở production.
+        Header attribution do service caller tự đặt bằng ServiceAccount name của nó (cùng quy
+        ước với Product). Transport mTLS và allowlist caller theo principal do service mesh
+        thực thi (docs/mesh/runtime-contract.md mục 5.2): checkout-service cho
+        /internal/v1/promotion-discount-calculations, order-service cho
+        /internal/v1/promotion-allocation/**; principal sai bị mesh trả 403 text/plain trước
+        khi tới Promotion. Mesh không xác minh giá trị header; Promotion allowlist header theo
+        nhóm route chỉ là defense-in-depth và trả 401/403 problem+json khi thiếu/không khớp.
+        Header này bị Gateway xoá khỏi mọi request từ client và không thay thế mesh policy
+        ở production.
 
   parameters:
     RequestId:

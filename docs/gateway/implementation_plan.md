@@ -70,9 +70,10 @@
 | ID | Công việc | Acceptance criteria | Trạng thái |
 |---|---|---|---|
 | 6.1 | Local Compose integration stack | Full route/auth/telemetry suite chạy local | Đã lập kế hoạch |
-| 6.2 | Kubernetes manifests/Helm values | Dùng Gateway API/CRDs và least privilege | Đã lập kế hoạch |
+| 6.2 | Kubernetes manifests/Helm values | Dùng Gateway API/CRDs và least privilege; ServiceAccount riêng cho Traefik và `gateway-auth` trong namespace `edge`; đối soát prefix route matrix với contract (mục 1.5 của [mesh/implementation_plan.md](../mesh/implementation_plan.md)) | Đã lập kế hoạch |
 | 6.3 | CI validation/security/load checks | Regression bị chặn khi merge | Đã lập kế hoạch |
 | 6.4 | Canary, rollback, SLO documentation | Operator xử lý không cần khôi phục auth fail-open | Đã lập kế hoạch |
+| 6.5 | Đưa `edge` vào Istio ambient | Public port 80/443 vẫn nhận traffic (PERMISSIVE port-level); `gateway-auth` chỉ nhận từ principal Traefik; theo giai đoạn 2–3 của [mesh/implementation_plan.md](../mesh/implementation_plan.md) | Đã lập kế hoạch |
 
 ## Kiểm thử end-to-end bắt buộc
 

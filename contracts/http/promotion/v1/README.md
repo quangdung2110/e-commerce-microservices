@@ -11,8 +11,10 @@ bởi `java/services/promotion-service` (provider test `HttpContractIntegrationT
 - Đổi hai query có checkout context phức tạp từ `GET` sang `POST`; chúng vẫn là read-only,
   không reserve và trả `Cache-Control: no-store`.
 - Tách Admin, authenticated customer, Checkout và Order/Temporal bằng security scheme rõ.
-  Workload identity của `/internal/v1/**` là header `X-Service-Identity` do mesh/ingress xác
-  minh (cùng cơ chế Product/Review), allowlist theo nhóm route; không dùng Bearer workload JWT.
+  Workload identity của `/internal/v1/**` do service mesh thực thi theo principal
+  (`docs/mesh/runtime-contract.md` mục 5.2); header `X-Service-Identity` do caller tự đặt
+  (cùng quy ước Product) và Promotion allowlist theo nhóm route chỉ là defense-in-depth;
+  không dùng Bearer workload JWT.
 - `VoucherEvaluation` mang `distribution_mode` để client biết item PUBLIC cần save hay claim.
 - Admin mutation dùng `If-Match` theo parent campaign revision. Published definition không
   update in-place; thay đổi business definition phải clone aggregate DRAFT với child ID mới.

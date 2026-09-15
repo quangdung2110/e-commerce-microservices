@@ -31,9 +31,11 @@ OpenTelemetry Collector → traces (Jaeger), access logs qua filelog receiver (L
 
 Gateway được giữ mỏng: không tổng hợp business data, không query database của service và không quyết định resource ownership.
 
+Trên Kubernetes, Traefik và `gateway-auth` là workload trong service mesh (Istio ambient, namespace `edge`): hop Traefik → service đi qua mTLS và mang principal `edge/traefik`, còn mesh chỉ cho principal đó chạm tới route public của service. Gateway giữ north-south; mesh giữ east-west; không có Istio Ingress Gateway. Kiến trúc và ma trận phân quyền nằm trong [mesh/design.md](../mesh/design.md).
+
 ## Định tuyến và khả năng phục hồi
 
-Route dùng host/path/method rules và chỉ map đến service đã khai báo. Docker label discovery hỗ trợ local development; Kubernetes Gateway API/CRDs là nguồn production. Mọi service có health checks, timeouts giới hạn và retry behavior theo idempotency. Quy ước định nghĩa route priority, hành vi với path không xác định, WebSocket và Stripe webhook exceptions.
+Route dùng host/path/method rules và chỉ map đến service đã khai báo. Docker label discovery hỗ trợ local development; Kubernetes Gateway API/CRDs là nguồn production (trên Kubernetes, Traefik dựa vào readiness của Endpoints thay vì active health check để không phải mở path health qua mesh). Mọi service có health checks, timeouts giới hạn và retry behavior theo idempotency. Quy ước định nghĩa route priority, hành vi với path không xác định, WebSocket và Stripe webhook exceptions.
 
 ### Ngân sách timeout và hủy request
 
@@ -49,7 +51,7 @@ Traefik gọi `gateway-auth` thông qua ForwardAuth trên protected routes. Serv
 
 Thiết kế này thay legacy Traefik plugin bằng service lifecycle bình thường, có thể test độc lập. Authentication dependency failure fail closed.
 
-Mỗi downstream service sở hữu authorization. Ví dụ, Order Service quyết định identity đã authenticate có được sửa một order cụ thể hay không. Service chỉ tin cậy identity headers từ gateway/auth private network và chặn việc client inject trực tiếp chúng.
+Mỗi downstream service sở hữu authorization. Ví dụ, Order Service quyết định identity đã authenticate có được sửa một order cụ thể hay không. Service chỉ tin cậy identity headers khi caller là Traefik — điều mesh bảo đảm bằng `AuthorizationPolicy` theo principal ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)) — và Traefik chặn việc client inject trực tiếp chúng, kể cả `X-Service-Identity` vốn chỉ có nghĩa giữa các service trong mesh.
 
 ## Giới hạn tốc độ
 
@@ -73,4 +75,4 @@ WebSocket handshake có timeout 10 giây. Sau khi kết nối được nâng c�
 
 Traffic công khai chỉ dùng HTTPS; forwarded headers chỉ tin cậy từ proxy đã cấu hình. Metrics và dashboard là private operational endpoints. Secrets được externalize, images/configuration được validate trong CI và containers áp dụng least privilege.
 
-Gateway không phải backend-for-frontend aggregation layer, centralized business-authorization engine, per-WebSocket-frame security proxy, hoặc thay thế service telemetry.
+Gateway không phải backend-for-frontend aggregation layer, centralized business-authorization engine, per-WebSocket-frame security proxy, thay thế service telemetry, hoặc nơi thực thi phân quyền service-to-service (thuộc mesh).

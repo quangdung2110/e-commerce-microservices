@@ -42,12 +42,15 @@ Các fact đó không có consumer nào đăng ký trong repository; thêm sau l
 ## 2. HTTP APIs
 
 User API lấy identity từ header `X-User-Id`/`X-User-Roles` do Gateway inject sau khi verify
-token; admin API yêu cầu role `ADMIN`. `/internal/v1/**` chỉ đi trong service network và nhận
-workload identity qua header `X-Service-Identity` đã được mesh/ingress xác minh (cùng cơ chế
-với Product/Review), allowlist theo nhóm route: `checkout-service` cho
+token; admin API yêu cầu role `ADMIN`. `/internal/v1/**` chỉ đi trong service mesh: caller được
+phép do `AuthorizationPolicy` thực thi theo principal — `checkout-service` cho
 `/internal/v1/promotion-discount-calculations`, `order-service` cho
-`/internal/v1/promotion-allocation/**` (`promotion.internal.*` trong `application.yml`).
-Trong docker-compose chưa có mesh nên header này chỉ an toàn ở mức dev. API dùng JSON snake_case,
+`/internal/v1/promotion-allocation/**` ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+principal sai bị waypoint trả `403` `text/plain` trước khi tới Promotion. Header
+`X-Service-Identity` do caller tự đặt (cùng quy ước với Product); Promotion allowlist header theo
+nhóm route (`promotion.internal.*` trong `application.yml`) làm defense-in-depth và attribution,
+không phải bằng chứng authorization — mesh không xác minh giá trị header. Trong docker-compose
+chưa có mesh nên header này chỉ an toàn ở mức dev. API dùng JSON snake_case,
 `application/problem+json` theo RFC 9457, ID opaque string và tiền theo
 `{ amount_minor, currency }` (`currency=VND`). BIGINT/`*_vnd` trong data model chỉ là
 storage representation, không phải wire shape.

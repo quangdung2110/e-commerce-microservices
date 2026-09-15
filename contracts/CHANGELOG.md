@@ -3,6 +3,22 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-15
+
+- Mô hình workload identity cho mọi internal API chốt theo `docs/mesh/`: service mesh (Istio
+  ambient) thực thi mTLS và allowlist caller theo principal + path; ứng dụng không nhìn thấy
+  chứng chỉ caller. Header `X-Service-Identity` do caller tự đặt (giá trị = ServiceAccount name),
+  chỉ dùng attribution/defense-in-depth. Consumer quan sát được: principal không được phép nhận
+  `403 text/plain` (`RBAC: access denied`) từ waypoint thay vì `401`/`403` problem+json của
+  provider; caller phải gửi `X-Service-Identity` trên mọi internal call.
+- Promotion HTTP v1: mô tả `workloadIdentity` sửa từ "mesh/ingress xác minh và đặt header"
+  thành "caller tự đặt, mesh thực thi theo principal". Không đổi tên header, không đổi allowlist.
+- Product HTTP v1: `searchServiceMtls`, `productDetailBffMtls`, `UnauthorizedService`,
+  `ForbiddenService` mô tả lại theo cùng mô hình. Auth internal v1 `notificationServiceMtls`,
+  User v1 `checkoutService`, Review internal v1 `serviceIdentity` và Inventory README bổ sung
+  cùng ghi chú. Không có thay đổi wire.
+- Gateway: Traefik xoá thêm `X-Service-Identity` do client gửi, cùng nhóm với `X-User-*`.
+
 ## 2026-09-14
 
 - Promotion HTTP v1 và Promotion Events v1 chuyển `proposed` → `implemented`:

@@ -225,8 +225,10 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 - Chỉ Checkout workload identity (`X-Service-Identity: checkout-service`) gọi
   `POST /internal/v1/promotion-discount-calculations`; discovery/suggestion customer lấy
   user identity đã được Gateway verify, còn allocation chỉ allowlist Order/Temporal
-  (`X-Service-Identity: order-service`). Header identity do mesh/ingress xác minh; Promotion
-  chỉ allowlist theo nhóm route (`TrustedIdentityFilter`).
+  (`X-Service-Identity: order-service`). Việc chỉ Checkout/Order chạm được các route này do
+  service mesh thực thi theo principal ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+  header do caller tự đặt và không được mesh xác minh, nên `TrustedIdentityFilter` allowlist theo
+  nhóm route chỉ là defense-in-depth.
 - Chỉ Order/Temporal gọi reserve/confirm/cancel/`cancel-confirmed`.
 - Consumer validate broker ACL, schema, event identity và business guard.
 

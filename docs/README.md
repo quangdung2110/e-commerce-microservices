@@ -199,7 +199,22 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | [notification/](./notification/) | Notification Service — ngoài scope. |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
-| [gateway/](./gateway/) | API Gateway — ngoài scope. |
+| [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |
 | [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
 
 > Các service trên sẽ được sync ở giai đoạn tiếp theo. Hiện tại chỉ có 5 service (Checkout, Order, Payment, Inventory, Promotion) đạt 100% consistency sau Phase 14 (loại bỏ Shipping Service).
+
+---
+
+## 10. Platform — Service Mesh (`docs/mesh/`, target/proposed)
+
+Istio ambient cho traffic east-west trên Kubernetes; Traefik giữ edge. Mesh là nơi thực thi
+duy nhất cho mTLS và phân quyền service-to-service; `X-Service-Identity` do caller đặt, chỉ dùng
+attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đảm chỉ tồn tại trên cluster.
+
+| File | Mô tả |
+|---|---|
+| [mesh/technology_choice.md](./mesh/technology_choice.md) | Vì sao Istio, Traefik giữ edge thay vì Istio Ingress Gateway, ambient thay vì sidecar, mesh là authority cho caller identity, phạm vi đợt 1. |
+| [mesh/design.md](./mesh/design.md) | Namespace/ztunnel/waypoint, identity SPIFFE, ranh giới tin cậy `X-User-*`/`X-Service-Identity`, traffic policy, gRPC, Traefik trong mesh, chế độ lỗi. |
+| [mesh/runtime-contract.md](./mesh/runtime-contract.md) | Quy ước bắt buộc: runtime, nhãn namespace, mTLS, ma trận `AuthorizationPolicy` dẫn xuất từ `contracts/catalog/interactions.yaml`, identity header, retry/timeout, egress, telemetry, tiêu chí xác minh, gaps. |
+| [mesh/implementation_plan.md](./mesh/implementation_plan.md) | Giai đoạn 0–7 từ baseline Kubernetes tới vận hành, kiểm thử bắt buộc, migration/rollback. |

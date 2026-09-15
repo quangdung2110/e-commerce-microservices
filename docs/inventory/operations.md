@@ -76,7 +76,7 @@ Reconciliation detects only. Correction requires ADMIN reason/evidence and norma
 
 ## 5. Security and audit
 
-Service calls use authenticated workload identity and encrypted transport. Interactive ADMIN requires MFA. Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
+Service calls use authenticated workload identity and encrypted transport, both enforced by the service mesh (mTLS plus per-principal, per-path `AuthorizationPolicy` — [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); the caller-set `X-Service-Identity` header is attribution only. Interactive ADMIN requires MFA. Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
 
 Audit retains actor/effective role, command and operation identity, reason/evidence reference, before/after values, timestamp, correlation/causation IDs, and result for at least seven years. Events/logs omit credentials, raw evidence contents, and unnecessary customer PII. Compliance/Legal validation of retention/evidence remains a production-release gate.
 

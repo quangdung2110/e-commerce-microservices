@@ -172,10 +172,13 @@ ký các fact đó; thêm sau là thay đổi additive theo
   limited claim + Redis loss + sweeper, tombstone, clone), HTTP contract MockMvc và JSON Schema
   contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
   confirm/cancel/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.
-- Order/Checkout chưa có client gọi Promotion; `/internal/v1/**` xác thực bằng header
-  `X-Service-Identity` do mesh/ingress đặt (như Product), không phải Bearer workload JWT. Trong
-  docker-compose chưa có mesh nên header này spoof được từ service network; production phải có
-  mTLS/mesh trước khi coi là an toàn.
+- Order/Checkout chưa có client gọi Promotion; `/internal/v1/**` được service mesh bảo vệ:
+  `AuthorizationPolicy` chỉ cho principal `checkout-service`/`order-service` chạm từng nhóm route
+  ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)).
+  Header `X-Service-Identity` do service caller tự đặt, không phải Bearer workload JWT; mesh không
+  xác minh giá trị header, nên allowlist `TrustedIdentityFilter` trong Promotion chỉ là
+  defense-in-depth và attribution cho log (như Product). Trong docker-compose chưa có mesh nên
+  header này spoof được từ service network; production chỉ an toàn khi mesh policy đã enforce.
 - Product validation đồng bộ dùng `GET /internal/v1/products/{id}/snapshot` với identity
   `promotion-service` (Product allowlist `reindex-clients`); tắt bằng
   `promotion.product.validation-enabled=false` khi không có Product.

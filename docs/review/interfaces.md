@@ -132,6 +132,14 @@ never copied to a public response or either event.
 
 ## 3. Internal API
 
+Both internal surfaces are reachable only through the service mesh: an
+`AuthorizationPolicy` allows the `product-detail-bff` principal on the PDP summary route
+and the `search-service` principal on the export routes
+([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+a wrong principal receives `403 text/plain` from the waypoint before reaching Review.
+The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
+`REVIEW_INTERNAL_EXPORT_TOKENS`) are defense-in-depth, not the authorization boundary.
+
 ### PDP summary
 
 `GET /internal/v1/reviews/products/{product_id}/pdp-summary` remains a read-only BFF

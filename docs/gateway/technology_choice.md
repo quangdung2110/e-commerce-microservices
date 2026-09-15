@@ -49,6 +49,15 @@ Collector đọc container stdout qua `filelog` receiver, parse access log JSON,
 
 Docker Compose vẫn là local integration tooling. Kubernetes Gateway API/CRDs là production route source. Production images dùng exact tags kèm digests; cấm `latest`.
 
+## Quan hệ với service mesh
+
+| Lựa chọn | Quyết định | Lý do |
+|---|---|---|
+| Thay Traefik bằng Istio Ingress Gateway khi có mesh | Loại bỏ | Rate limit phân tán cần `envoyproxy/ratelimit` + `EnvoyFilter`; thứ tự sanitize → ForwardAuth → enrich không tường minh trong Envoy filter chain; không chạy được trên Compose |
+| Traefik là workload trong mesh, mesh chỉ lo east-west | Chọn | Giữ mọi quyết định ở trên; hop Traefik → service được mTLS và có principal để service tin `X-User-*` |
+
+Traefik và `gateway-auth` nằm trong namespace `edge` của Istio ambient (chỉ ztunnel, không waypoint); port `80`/`443` của Traefik là PERMISSIVE vì LoadBalancer bên ngoài mesh. Lý do đầy đủ, mode ambient và mô hình caller identity nằm trong [mesh/technology_choice.md](../mesh/technology_choice.md). Nếu về sau cần Envoy ở edge (exemplar, global rate limit ngoài Traefik), ứng viên là Envoy Gateway, không phải Istio Ingress Gateway.
+
 ## Hệ quả
 
 Lợi ích: edge cloud-native nhẹ, authentication độc lập và dễ test, quota đúng khi nhiều replica, một correlation model cho logs/metrics/traces, không phụ thuộc Docker socket ở production.

@@ -244,7 +244,9 @@ components:
       type: mutualTLS
       description: >-
         mTLS/service credential dành riêng cho Checkout Service trên network nội
-        bộ. Cơ chế identity cụ thể do hạ tầng triển khai xác minh.
+        bộ. Transport mTLS và allowlist principal checkout-service do service mesh thực
+        thi (docs/mesh/runtime-contract.md mục 5.2); User không nhìn thấy chứng chỉ
+        caller. Caller gửi X-Service-Identity: checkout-service cho attribution.
 
   parameters:
     RequestId:

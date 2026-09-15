@@ -19,5 +19,12 @@ The Storefront availability read is not a mutation: it requires only workload id
 and correlation ID. Its `UNKNOWN`/`503` outcome is advisory UI degradation; Reserve is
 still the only availability correctness decision.
 
+Workload identity for the Workflow, Read and Export surfaces is enforced by the service
+mesh: mTLS plus an `AuthorizationPolicy` allowlist per caller principal and path
+(`docs/mesh/runtime-contract.md` §5.2). Inventory never sees the caller certificate; the
+caller-set `X-Service-Identity` header is attribution and defense-in-depth only, and a
+caller the mesh rejects receives `403 text/plain` before any `401`/`403` problem response
+defined here.
+
 The specifications describe the target Release 1 contract and remain `proposed`
 until provider and consumer contract tests satisfy [contract adoption](../../ADOPTION.md).

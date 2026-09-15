@@ -38,6 +38,11 @@ Reserve; `IN_STOCK` trên PDP là UI state, không phải xác nhận có thể 
 | Outbound | Inventory | HTTP nội bộ mTLS | Batch-read advisory availability cho các SKU active |
 | Outbound | Review | HTTP nội bộ mTLS/service identity | Rating aggregate và review preview cho PDP |
 
+mTLS và quyền gọi ba internal API trên do service mesh thực thi theo principal
+`product-detail-bff` ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+BFF gửi `X-Service-Identity: product-detail-bff` cho attribution (Review hiện còn nhận static
+bearer token làm defense-in-depth).
+
 Không có Kafka consumer, PostgreSQL read model, Inventory export client hoặc Search
 dependency trong BFF. Cache process-local hoặc CDN, nếu được bật, chỉ là tối ưu ngắn
 hạn và không phải source of truth.

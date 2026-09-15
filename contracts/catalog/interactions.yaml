@@ -1,6 +1,8 @@
 version: 1
 
 # status: legacy_documented | proposed | implemented | verified
+# Mọi interaction http/grpc ở đây là nguồn dẫn xuất cho ma trận AuthorizationPolicy
+# tại docs/mesh/runtime-contract.md mục 5.2; thêm/sửa interaction phải kèm dòng tương ứng.
 interactions:
   - id: cart-queries-product-skus
     protocol: grpc

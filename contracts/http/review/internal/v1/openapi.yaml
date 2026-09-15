@@ -97,6 +97,12 @@ components:
       type: http
       scheme: bearer
       bearerFormat: internal-service-identity
+      description: >-
+        Static token allowlist trong Review (REVIEW_INTERNAL_PDP_TOKENS,
+        REVIEW_INTERNAL_EXPORT_TOKENS) là defense-in-depth. Caller được phép chạm từng
+        route do service mesh thực thi theo principal product-detail-bff / search-service
+        (docs/mesh/runtime-contract.md mục 5.2); principal sai bị mesh trả 403 text/plain
+        trước khi tới Review. Hợp nhất sang header X-Service-Identity chung là việc riêng.
   schemas:
     ProductReviewPdpSummary:
       type: object

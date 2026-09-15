@@ -166,8 +166,12 @@ fallback rank `99`.
   full quantity đúng snapshot. Không có `FULL/PARTIAL` enum.
 - Admin manual exception cho mixed/any-dispatched order là outside automatic Release 1
   và không được bypass Inventory evidence.
-- Checkout, Payment, Inventory, Promotion và Temporal worker dùng service identity;
-  public client không được giả mạo trusted headers hoặc signal.
+- Checkout, Payment, Inventory, Promotion và Temporal worker dùng service identity do
+  service mesh thực thi theo principal (Order gọi Inventory/Promotion/Payment với principal
+  `order-service`; chỉ `checkout-service` được gọi `create-from-checkout` —
+  [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
+  public client không được giả mạo trusted headers hoặc signal, và `X-Service-Identity` chỉ là
+  attribution.
 
 ## 7. Lỗi miền nghiệp vụ
 
