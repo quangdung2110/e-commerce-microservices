@@ -62,11 +62,12 @@ Promotion không chịu trách nhiệm:
 - Search/filter/ranking; Search đọc giá do Product công bố.
 - Tính tiền refund, refund scope, số lần partial refund hoặc Payment state machine.
 - Phân bổ voucher toàn đơn xuống SKU/order line.
-- Hoàn budget hay tái cấp voucher khi khách hàng refund partial/full.
+- Hoàn budget hay tái cấp voucher khi Buyer refund selected-line hoặc Admin refund trước dispatch.
 - Inventory, shipping discount, seller/merchant promotion.
 
-`ORDER_REFUNDED` không phải input của Promotion. Order/Payment có thể thay đổi chính sách
-partial refund sau khi được refactor mà không làm thay đổi Promotion boundary này.
+`ORDER_REFUNDED` không phải input của Promotion. Current Order policy is one lifetime
+selected-full-quantity-line refund with a gross amount capped at `final_amount`; it does
+not change the Promotion no-mutation boundary.
 
 ## 4. Data ownership
 
@@ -135,7 +136,7 @@ ký các fact đó; thêm sau là thay đổi additive theo
 - Published definition không mutate; `campaigns.revision` không phải definition version.
 - Campaign kết thúc không tự xóa/thu hồi voucher đã lưu; eligibility chỉ dùng
   `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
-- Refund partial/full không đổi wallet `USED` và không giảm used budget.
+- Buyer selected-line hay Admin pre-dispatch refund không đổi wallet `USED` và không giảm used budget.
 - `cancel-confirmed` kỹ thuật trả wallet về `SAVED` nếu còn hạn, ngược lại `EXPIRED`.
 - Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget trong một
   PostgreSQL transaction; Redis chỉ fence/finalize/repair theo từng flow và receipt
@@ -186,8 +187,9 @@ ký các fact đó; thêm sau là thay đổi additive theo
   trước khi production-ready.
 - `promotion_rule_id` trong markdown snapshot là integer theo Product ADR-016, khác
   convention opaque ID của HTTP v1; đổi là breaking và phải đi v2.
-- Chính sách partial refund và số refund transaction/order của Order/Payment chưa chốt;
-  Promotion luôn giữ voucher `USED` và budget đã consume nên không phụ thuộc quyết định đó.
+- Order/Payment policy is fixed: one lifetime refund case/transaction per order,
+  selected full-quantity lines and no discount re-proration. Promotion still keeps
+  voucher `USED` and budget consumed, so it has no refund surface.
 - Emergency revocation voucher đã lưu chưa được thiết kế; campaign end/pause/cancel không
   được ngầm dùng làm revocation.
 - Retention mặc định: outbox 14 ngày (`promotion.outbox.retention`), command receipt 90 ngày

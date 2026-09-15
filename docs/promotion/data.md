@@ -26,8 +26,9 @@ runtime store cho snapshot, claim pool, pending claim, budget/reservation và sc
 index. Mọi dữ liệu Redis phải rebuild, replay hoặc reconcile được.
 
 Promotion không lưu refund allocation theo SKU và không tiêu thụ customer-refund event.
-Order/Payment sở hữu refund amount/scope; chính sách partial refund của hai service đó
-chưa chốt vì tài liệu chưa được refactor.
+Order/Payment sở hữu refund amount/scope: Order has one lifetime refund case, selects
+full-quantity order lines, and locks gross line price capped at the paid final amount.
+Promotion behavior remains no-op.
 
 Các kiểu bên dưới là storage model, không phải wire contract. Adapter HTTP serialize mọi
 ID BIGINT thành opaque string; các cột tiền `*_vnd`/Redis integer map sang
@@ -174,7 +175,7 @@ Unique `(user_id,promotion_id)` bảo đảm một quyền sở hữu. Partial u
 `used_order_id WHERE used_order_id IS NOT NULL` bảo đảm một platform voucher cho một
 order. CHECK buộc `USED` có order/amount/time và `SAVED/EXPIRED` không có usage fields.
 
-Confirm chuyển `SAVED → USED`. Customer refund partial/full không mutate row. Technical
+Confirm chuyển `SAVED → USED`. Buyer selected-line hay Admin pre-dispatch refund không mutate row. Technical
 `cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
 nếu đã hết hạn thì chuyển `USED → EXPIRED`.
 

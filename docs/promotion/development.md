@@ -182,10 +182,10 @@ Fixture tối thiểu:
   ACTIVE full payload và INACTIVE tombstone;
 - Product tombstone duplicate/out-of-order, tombstone-before-mutation/mutation-before-tombstone
   và rule đã invalidated;
-- customer partial/full refund event làm Promotion no-op.
+- Buyer selected-line hoặc Admin pre-dispatch refund event làm Promotion no-op.
 
-Order/Payment partial refund count/amount không được hard-code trong Promotion fixture vì
-thiết kế hai service đó chưa chốt.
+Promotion fixture must treat Order's one lifetime selected-line refund and its amount
+as external input: no Promotion call, allocation or mutation is permitted.
 
 ## 9. Debugging
 

@@ -40,6 +40,7 @@ erDiagram
     ORDER_ITEMS ||--|{ ORDER_ITEM_LINES : snapshots
     ORDERS ||--o{ ORDER_PROMOTIONS : applies
     ORDERS ||--o| ORDER_REFUND_CASES : controls
+    ORDER_REFUND_CASES ||--|{ ORDER_REFUND_CASE_LINES : locks
     ORDERS ||--o{ OUTBOX_EVENTS : emits
 
     ORDERS {
@@ -80,20 +81,28 @@ erDiagram
     }
     ORDER_REFUND_CASES {
       bigint order_id PK
+      varchar refund_request_id UK
       varchar workflow_id
       varchar trigger_source
       varchar case_status
-      varchar refund_type_locked
-      jsonb requested_order_item_ids_locked
       decimal refund_amount_locked
+      varchar inventory_refund_scope_id
       varchar refund_transaction_id UK
+    }
+    ORDER_REFUND_CASE_LINES {
+      bigint refund_case_order_id FK
+      bigint order_line_id FK
+      int expected_quantity
+      decimal unit_price_snapshot
     }
 ```
 
 Một order có ít nhất một delivery unit; một delivery unit có ít nhất một line.
-Refund case tối đa một record trên mỗi order. Snapshot address ở item cho phép các
-kiện trong cùng master order gắn với đơn vị thực hiện theo kho mà không phụ thuộc
-address book bị sửa/xóa về sau.
+Refund case tối đa một record **trọn đời** trên mỗi order. Với Buyer return, các
+line scope thuộc case và dùng identity `order_item_lines.id`, không phải `sku_id`;
+mỗi line được chọn có quantity đúng bằng quantity đã mua. Snapshot address ở item
+cho phép các kiện trong cùng master order gắn với đơn vị thực hiện theo kho mà
+không phụ thuộc address book bị sửa/xóa về sau.
 
 ## 3. Schema logic và field
 
@@ -131,7 +140,7 @@ Các nguồn field được tham chiếu trực tiếp trong read model gồm `o
 | `id` | `BIGSERIAL` PK | Delivery unit ID |
 | `order_id` | `BIGINT` FK | Master owner |
 | `warehouse_id` | `BIGINT` | Kho xuất hàng |
-| `status` | `VARCHAR(50)` | `PROCESSING/DELIVERED/RETURNED` |
+| `status` | `VARCHAR(50)` | `PROCESSING/DELIVERED`; return/refund không đổi delivery state của whole delivery unit |
 | `delivery_address_snapshot` | `JSONB NOT NULL` | `recipient_name`, `recipient_phone`, `address_line`, `province_code`, `district_code`, `ward_code` |
 
 Ward bắt buộc được giữ trong snapshot để thay đổi address/địa giới sau này không
@@ -164,33 +173,56 @@ checkout compensation. Nó không phải allocation theo SKU, không dùng để
 budget khi customer refund và không cho phép suy diễn/ghi lại wallet state. Cột
 `admin_funding` cũ đã bị loại ở Phase 21.
 
-### 3.5. `order_refund_cases`
+### 3.5. `order_refund_cases` và `order_refund_case_lines`
 
 ```sql
 CREATE TABLE order_refund_cases (
     order_id BIGINT PRIMARY KEY,
+    refund_request_id VARCHAR(128) NOT NULL UNIQUE,
     workflow_id VARCHAR(255) NOT NULL,
     trigger_source VARCHAR(40) NOT NULL,
     case_status VARCHAR(30) NOT NULL
         CHECK (case_status IN ('INITIATED',
-          'WAITING_INVENTORY_RETURN_CONFIRMATION',
-          'WAITING_PAYMENT_REFUND_RESULT', 'SUCCEEDED', 'FAILED')),
-    refund_type_locked VARCHAR(20) NULL
-        CHECK (refund_type_locked IN ('FULL', 'PARTIAL')),
-    requested_order_item_ids_locked JSONB NOT NULL DEFAULT '[]'::jsonb,
-    refund_amount_locked DECIMAL(18,2) NULL,
+          'WAITING_INVENTORY_SCOPE_INSPECTION',
+          'WAITING_INVENTORY_RELEASE',
+          'WAITING_PAYMENT_REFUND_RESULT',
+          'MANUAL_VERIFICATION_REQUIRED', 'SUCCEEDED', 'FAILED')),
+    refund_mode VARCHAR(40) NOT NULL
+        CHECK (refund_mode IN ('BUYER_RETURN_SELECTED_LINES',
+          'ADMIN_PRE_DISPATCH_FULL_ORDER')),
+    refund_amount_locked DECIMAL(18,2) NOT NULL,
+    inventory_refund_scope_id VARCHAR(128) NULL UNIQUE,
+    inventory_scope_inspection_completed_at TIMESTAMPTZ NULL,
+    inventory_committed_release_at TIMESTAMPTZ NULL,
     refund_transaction_id VARCHAR(120) NULL UNIQUE,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     scope_locked_at TIMESTAMPTZ NULL,
-    inventory_return_confirmed_at TIMESTAMPTZ NULL,
     resolved_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE order_refund_case_lines (
+    refund_case_order_id BIGINT NOT NULL REFERENCES order_refund_cases(order_id),
+    order_line_id BIGINT NOT NULL REFERENCES order_item_lines(id),
+    expected_quantity INT NOT NULL CHECK (expected_quantity > 0),
+    unit_price_snapshot DECIMAL(18,2) NOT NULL CHECK (unit_price_snapshot >= 0),
+    PRIMARY KEY (refund_case_order_id, order_line_id)
+);
 ```
 
-Trigger hợp lệ: `API_RETURN` hoặc `REQUEST_ADMIN_REFUND`. Scope/amount được khóa
-một lần. Chỉ tạo `refund_transaction_id` sau `inventory_return_confirmed_at`.
-Terminal state là `SUCCEEDED|FAILED`; `REVERSED` cũ đã gộp vào `FAILED`.
+`order_id` PK là lifetime guard chung cho Buyer/Admin; không xóa/reuse case terminal
+để mở request khác. `API_RETURN` chỉ có mode `BUYER_RETURN_SELECTED_LINES`; child
+lines không rỗng, cùng order và `expected_quantity = order_item_lines.quantity`.
+`ADMIN_FORCE_REFUND` chỉ có mode `ADMIN_PRE_DISPATCH_FULL_ORDER`; không có child
+return lines/scope và phải lưu receipt của Inventory atomic committed-release.
+
+Amount được khóa cùng lúc với case: với Buyer là
+`min(sum(order_refund_case_lines.expected_quantity * unit_price_snapshot),
+orders.final_amount)`; với Admin pre-dispatch là `orders.final_amount`. Không có
+discount re-proration hay Promotion mutation. `refund_transaction_id` chỉ được
+tạo sau Inventory scope-inspection evidence (Buyer) hoặc committed-release evidence
+(Admin). Terminal state là `SUCCEEDED|FAILED`; provider `REVERSED` gộp vào `FAILED`
+nhưng vẫn không mở case/refund transaction mới.
 
 ### 3.6. `outbox_events`
 
@@ -214,7 +246,9 @@ ghi `payload.last_event_sequence_id`.
 ## 4. Ràng buộc và chỉ mục
 
 - PK/FK theo mô hình §2; `orders.checkout_token` unique; refund case PK theo
-  `order_id`; `refund_transaction_id` unique nullable.
+  `order_id` là lifetime uniqueness, `refund_request_id`, `inventory_refund_scope_id`
+  và `refund_transaction_id` unique nullable. `order_refund_case_lines` PK theo
+  `(refund_case_order_id, order_line_id)`.
 - `quantity > 0`, số tiền không âm và công thức final amount cần DB/domain
   constraint nhưng thiết kế cũ chưa cung cấp DDL cụ thể.
 - Index `idx_outbox_created_at(created_at DESC)` phục vụ retention.
@@ -329,7 +363,7 @@ thể cần materialized view chỉ sau benchmark/ADR mới.
 | FSM lock | `order:lock:fsm:{orderId}` | 10 giây; correctness vẫn dựa DB |
 | Payment signal | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày |
 | Inventory ship | `inventory:ship:applied:{order_id}:{warehouse_id}:{shipped_at}` | 30 ngày |
-| Inventory return | `inventory:return:confirm:{order_id}:{refund_request_id}` | 30 ngày |
+| Inventory return inspection | `inventory:return:inspection-completed:{order_id}:{refund_request_id}` | 30 ngày |
 
 Hai bảng cũ `order_request_idempotency` và `order_event_idempotency` đã bị loại ở
 Phase 22. Không có durable inbox. Duplicate ngoài TTL/mất Redis phải vô hại nhờ

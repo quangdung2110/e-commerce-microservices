@@ -43,7 +43,7 @@ giả vờ nghiệp vụ đã hoàn tất.
 | `GET /v1/orders/{orderId}` | Eager-load master/items/lines/promotions; Buyer owner hoặc Admin; hot PostgreSQL only | `404 NOT_FOUND`; không mô tả cache |
 | `GET /v1/orders/search` | Order-level cards; filter `tab,q,from,to,cursor,limit`, trạng thái/payment/amount theo thiết kế query | Read-only; default 90 ngày; keyset cursor |
 | `POST /v1/orders/{orderId}/cancel` | Buyer cancel `PENDING_PAYMENT`; Admin cancel pre-payment hoặc mở refund lane khi `PAID/PROCESSING` | Optional `Idempotency-Key`, Redis 7 ngày; `202`; invalid state `409` |
-| `POST /v1/orders/{orderId}/return` | Buyer FULL/PARTIAL return; tất cả item phải delivered; one-shot per order | Header `Idempotency-Key` bắt buộc; `202` + request/workflow ID; lỗi one-shot/scope `409` |
+| `POST /v1/orders/{orderId}/return` | Buyer chọn một/nhiều `order_line_id`; mọi item delivered và mỗi selected line phải full quantity; one-shot per order | Header `Idempotency-Key` bắt buộc; `202` + request/workflow ID; lỗi one-shot/scope `409` |
 | `POST /v1/orders/create-from-checkout` | Start/attach checkout workflow bằng token; persist server-side snapshot | WorkflowID + Redis 7 ngày; Promotion reserve failure trả structured `409` về Checkout |
 
 Create-from-checkout yêu cầu tối thiểu `checkout_token`, UUID `user_id`,
@@ -69,7 +69,8 @@ Tên field response chuẩn hóa gồm `primary_item_name`, `primary_item_image_
 |---|---|---|---|
 | Reserve/rollback inventory | Inventory | Giữ/nhả stock theo routing plan | Activity timeout/retry; stable request identity |
 | Deduct/rollback deducted inventory | Inventory | Trừ stock sau payment hoặc bù khi post-payment fail | Bắt buộc idempotent |
-| Register refund return expectation | Inventory | Đăng ký FULL/PARTIAL item scope cần nhận lại | Key theo order + refund request |
+| Register refund scope | Inventory | Đăng ký selected `order_line_id` với full ordered quantity | Key lifetime theo order + refund request |
+| Release committed order before dispatch | Inventory | Admin automatic path: atomic release tất cả committed lines hoặc no-op conflict | Không có Refund Scope; Inventory là authority dispatch |
 | `POST /internal/v1/promotion-allocation/reservations` | Promotion | TRY giữ budget runtime sau submit | Natural key order/promotion; cùng payload replay, khác payload conflict |
 | `POST /internal/v1/promotion-allocation/cancellations` | Promotion | CANCEL nhả reservation trước payment confirm | Chỉ nhả `RESERVED`; trả `RELEASED`, `NO_RESERVATION` hoặc `REPAIR_REQUIRED` |
 | `POST /internal/v1/promotion-allocation/confirmations` | Promotion | CONFIRM wallet `USED` + durable budget/receipt/outbox | Bắt buộc `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` |
@@ -131,7 +132,7 @@ nhất contract sau.
 | `ORDER_CANCELLED` | Compensation pre-payment xong và master bị cancel | order/user/status, previous state, reason, sequence, cancel time | Payment reconciliation, Notification |
 | `ORDER_STATUS_CHANGED` | Master transition không có event chuyên biệt | order/user, old/new, reason, sequence, changed time | Notification |
 | `ORDER_ITEM_STATUS_CHANGED` | Delivery item transition | order/item, old/new, sequence, changed time | Notification; guard theo item |
-| `ORDER_REFUNDED` | Payment refund success, master `RETURN_REQUESTED -> REFUNDED` | order/user/status/sequence, refund txn/type/amount/source/request, returned item IDs, time | Notification/Analytics; Promotion không consume |
+| `ORDER_REFUNDED` | Payment refund success, master `RETURN_REQUESTED -> REFUNDED` | order/user/status/sequence, refund txn/mode/amount/source/request, selected line IDs or admin-pre-dispatch evidence, time | Notification/Analytics; Promotion không consume |
 | `ORDER_COMPLETED` | Tất cả item delivered và master CAS thành công | canonical string order ID, UUID user, immutable product/SKU/variant/quantity items, completed time | Review entitlement; Analytics/Settlement chưa đăng ký |
 | `ORDER_REFUND_FAILED` | Payment refund failed/reversed; master giữ `RETURN_REQUESTED` | order/user/payment state/sequence, refund IDs/source, error, time | Notification/Ops critical lane |
 
@@ -143,17 +144,17 @@ Chi tiết quan trọng:
   `ADMIN_FORCE_CANCEL`, `PAYMENT_FAILED`; thiết kế FSM còn nhắc
   `PRE_PAYMENT_SAGA_FAILED` ở tập reason nội bộ.
 - Status-change reason gồm `POST_PAYMENT_SAGA_COMPLETE`,
-  `ADMIN_FORCE_REFUND_REQUESTED`, `RETURN_API_ACCEPTED`,
-  `INVENTORY_RETURN_CONFIRMED`, `LATE_PAYMENT_RECOVERED` và
+  `ADMIN_FORCE_REFUND_PRE_DISPATCH`, `RETURN_API_ACCEPTED`,
+  `INVENTORY_SCOPE_INSPECTION_COMPLETED`, `LATE_PAYMENT_RECOVERED` và
   `PAYMENT_SUCCESS_LATE_RECOVERY` theo ngữ cảnh cũ.
 - `ORDER_REFUNDED` không chứa `promotion_refund_allocations[]`. Voucher là lợi ích toàn
   đơn, không được phân bổ xuống SKU; customer refund không hoàn budget/voucher tại
   Promotion.
-- Các field refund còn lại theo semantics cũ gồm `refund_trigger_source`,
-  `customer_return_request_id`, `returned_item_ids`, `refund_transaction_id`,
-  `refund_type` và `refund_amount`.
-- Cách tính amount và việc hỗ trợ một hay nhiều partial refund thuộc lần refactor
-  Order/Payment sau; tài liệu hiện tại chưa chốt chính sách mới cho hai service này.
+- Refund fields are `refund_trigger_source`, `refund_request_id`,
+  `selected_order_line_ids`, `refund_mode`, `refund_transaction_id` and
+  `refund_amount`; `refund_type` and generic `returned_item_ids` are retired.
+- Buyer amount is gross selected-line snapshot price capped at `final_amount`, with
+  no discount re-proration. There is one lifetime refund case/transaction per order.
 - `ORDER_COMPLETED.data.order_id` là opaque canonical decimal string không padding;
   DB `10001` phát `"10001"`, subject `orders/10001`. Không phát JSON number hoặc
   prefix. `variant_name` nullable cho order cũ; producer mới gửi khi có.
@@ -225,19 +226,20 @@ Ops, không thành state master mới.
 | Event/group | Payload semantics tối thiểu | Xử lý |
 |---|---|---|
 | `INVENTORY_SHIP_TO_CUSTOMER` / `order-inventory-ship-consumer` | order, warehouse, shipped time | Resolve đúng delivery unit theo order+warehouse, CAS `PROCESSING -> DELIVERED`, event item, auto-complete |
-| `INVENTORY_RETURN_RECEIVED_ALL` / `order-inventory-return-consumer` | order + refund request | Signal `InventoryReturnReceivedAll`; workflow tự derive locked scope |
+| `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` / `order-inventory-return-consumer` | scope ID, order, request, revision, selected lines with expected/received/passed/failed | Validate immutable case scope, then signal `InventoryReturnScopeInspectionCompleted` |
 
-Ship dedup key chứa `order_id`, `warehouse_id`, `shipped_at`; return key chứa
-`order_id`, `refund_request_id`, TTL đều 30 ngày. `courier_note`, returned item IDs
-và confirmed time đã bị loại khỏi payload tối thiểu ở Phase 20.
+Ship dedup key chứa `order_id`, `warehouse_id`, `shipped_at`; inspection-completion
+key chứa `order_id`, `refund_request_id`, `refund_scope_id`, `scope_revision`, TTL
+đều 30 ngày. Consumer must compare all per-line counters to the immutable Order case;
+`courier_note` và package detail không nằm trong event.
 
 ## 7. Temporal interface
 
 | Workflow | WorkflowID | Task queue | Signals/chức năng |
 |---|---|---|---|
 | `OrderCheckoutWorkflow` | `order-checkout-{checkout_token}` | `order-checkout-queue` | PaymentResult, CancelOrder; pre/post-payment saga |
-| `OrderRefundWorkflow` | `order-refund-{order_id}` | `order-refund-queue` | InventoryReturnReceivedAll, RefundResult, admin override |
-| `OrderLatePaymentRecoveryWorkflow` | `order-late-payment-recovery-{order_id}` | `order-late-payment-recovery-queue` | Khôi phục payment muộn hoặc auto-refund |
+| `OrderRefundWorkflow` | `order-refund-{order_id}` | `order-refund-queue` | InventoryReturnScopeInspectionCompleted, InventoryPreDispatchReleaseResult, RefundResult, manual verification |
+| `OrderLatePaymentRecoveryWorkflow` | `order-late-payment-recovery-{order_id}` | `order-late-payment-recovery-queue` | Khôi phục payment muộn hoặc đưa manual verification; không system auto-refund ở Release 1 |
 
 Activity timeout mục tiêu 30 giây, retry tối đa 3 lần. Checkout workflow timeout
 30 phút gồm payment window 15 phút và buffer retry/rollback. Refund wait Inventory

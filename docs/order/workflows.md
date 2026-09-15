@@ -88,10 +88,15 @@ response đã lưu hoặc trả `409 IDEMPOTENCY_KEY_REUSED`. API lấy distribu
 `CancelPayment -> RollbackPromotion -> RollbackInventory -> CancelOrder`, rồi mới
 commit `CANCELLED` và outbox `ORDER_CANCELLED`.
 
-**Nhánh B — đã thu tiền:** Admin với `PAID/PROCESSING` start/attach
-`order-refund-{order_id}`, reason `ADMIN_FORCE_REFUND_REQUESTED`. Refund workflow
-commit `RETURN_REQUESTED`, khóa scope, đăng ký expectation với Inventory và chờ
-return confirmation. Không signal CancelOrder vào checkout workflow cũ.
+**Nhánh B — đã thu tiền:** Admin với `PAID/PROCESSING` creates/attaches the one
+lifetime refund case and calls Inventory
+`ReleaseCommittedOrderBeforeDispatch(order_id)`. Inventory locks every line and
+either releases all committed undispatched lines in one transaction or rejects with
+no stock movement. Only the all-line success transitions to `RETURN_REQUESTED`, locks
+`orders.final_amount`, and calls Payment; no Refund Scope/receipt is registered.
+If any line has dispatched or the root is mixed, return
+`ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` for manual exception rather than attempting
+a partial release. Không signal CancelOrder vào checkout workflow cũ.
 
 **Output/state:** trả `202 Accepted` và workflow/result reference; lưu trạng thái
 command `IN_PROGRESS` trong Redis nếu cần replay. Invalid role/state trả 403/409.
@@ -212,8 +217,9 @@ failed; workflow compensation rồi commit cancel. Consumer không ghi master FS
 `order-late-payment-recovery-{order_id}`. Recovery verify payment evidence, đưa
 order về lane đã thu tiền và phát `ORDER_PAID(payment_recovery=true)`. Trước deduct,
 phải reserve Inventory lại theo route hợp lệ hoặc có evidence reservation tương
-đương. Sau đó chạy post-payment. Nếu bước bắt buộc không phục hồi được, chuyển
-auto-refund để an toàn tài chính.
+đương. Sau đó chạy post-payment. Nếu bước bắt buộc không phục hồi được, dừng ở
+`MANUAL_VERIFICATION_REQUIRED`; Release 1 không có system auto-refund bypassing the
+Buyer-scope/Admin-pre-dispatch Inventory gates.
 
 **Refund events:** processing/success/fail/reverse route
 `order-refund-{order_id}` và signal `RefundResult`; refund workflow mới commit
@@ -223,7 +229,8 @@ payment/master state và outbox.
 signal bị Redis chặn; nếu key mất, workflow state và FSM CAS phải làm no-op an toàn.
 Test cần event duplicate/out-of-order, workflow not found, timeout-before/signal-
 before, cancellation reason khác timeout, reservation đã hết hạn, recovery success,
-recovery failure -> auto-refund và refund event đến sai workflow phase.
+recovery failure -> manual verification without a Payment refund command và refund
+event đến sai workflow phase.
 
 ## WF-ORDER-006 — Giao delivery unit và auto-complete
 
@@ -249,16 +256,18 @@ duplicate, out-of-order, zero item anomaly, coalescing và concurrent final even
 
 ## WF-ORDER-007 — Buyer yêu cầu return one-shot
 
-**Mục tiêu:** Buyer gửi đúng một FULL/PARTIAL return request sau khi toàn bộ delivery
-unit đã giao; request được khóa trước khi start refund saga.
+**Mục tiêu:** Buyer gửi đúng một return request sau khi toàn bộ delivery unit đã
+giao; request khóa một selected-line scope trước khi start refund saga.
 
 **Trigger/input:** `POST /v1/orders/{orderId}/return`, JWT Buyer, header
-`Idempotency-Key`, `refund_type`, optional/required `items_to_return[]`, `reason`,
-`reason_details`. Redis request key TTL 7 ngày không thay thế business guard.
+`Idempotency-Key`, `lines[] {order_line_id, quantity}`, `reason`, `reason_details`.
+Không có `refund_type`. Redis request key TTL 7 ngày không thay thế business guard.
 
 **Preconditions:** Buyer sở hữu order; state thuộc lane cho phép return; mọi
-`order_items.status=DELIVERED`; PARTIAL scope là tập con hợp lệ và chỉ chứa item
-delivered. Trong locked transaction, CAS `buyer_return_locked_at IS NULL`.
+`order_items.status=DELIVERED`; `lines[]` không rỗng, không duplicate, thuộc order,
+và từng `quantity` bằng đúng `order_item_lines.quantity`. Scope có thể là tập con
+các line nhưng không có partial quantity. Trong locked transaction, CAS
+`buyer_return_locked_at IS NULL` và create refund case lifetime-unique.
 
 **Happy path:** CAS thắng; start `order-refund-{order_id}` với
 `trigger_source=API_RETURN`, reason `RETURN_API_ACCEPTED` và scope; trả `202` cùng
@@ -273,12 +282,14 @@ giao, non-owner, Temporal unavailable sau CAS và permanent guard sau failure.
 
 ## WF-ORDER-008 — Refund/return saga
 
-**Mục tiêu:** khóa một refund scope/amount, chờ hàng thực tế được xác nhận rồi gọi
-Payment refund đúng một lần; dùng chung cho Buyer return và Admin force-refund.
+**Mục tiêu:** khóa một refund case/amount, chờ evidence Inventory phù hợp rồi gọi
+Payment đúng một lần. Buyer return và Admin pre-dispatch force refund có gate
+Inventory khác nhau.
 
-**Preconditions:** trigger chỉ `API_RETURN` hoặc `REQUEST_ADMIN_REFUND`; Buyer đã
-pass guard; Admin có quyền. WorkflowID `order-refund-{order_id}` và refund case PK
-chặn case song song.
+**Preconditions:** trigger là `API_RETURN` hoặc `ADMIN_FORCE_REFUND`. Buyer đã pass
+guard; Admin automatic path chỉ được thử tại `PAID/PROCESSING`. WorkflowID
+`order-refund-{order_id}` và refund case PK chặn cả case song song lẫn case lịch sử
+thứ hai.
 
 ```mermaid
 sequenceDiagram
@@ -287,12 +298,18 @@ sequenceDiagram
   participant O as Order DB
   participant I as Inventory
   participant P as Payment
-  A->>T: start/attach(scope, trigger)
-  T->>O: Mark RETURN_REQUESTED + lock refund case
-  T->>I: RegisterRefundReturnExpectation
-  Note over T,I: chờ tối đa 30 ngày
-  I-->>T: InventoryReturnReceivedAll signal
-  T->>O: mark inventory confirmed + lock amount
+  A->>T: start/attach(case input, trigger)
+  T->>O: Create/lock lifetime refund case
+  alt Buyer selected lines
+    T->>O: Lock amount + transition RETURN_REQUESTED
+    T->>I: RegisterRefundScope(selected full-quantity lines)
+    Note over T,I: chờ tối đa 30 ngày
+    I-->>T: AllItemsInspectionCompleted signal
+    T->>O: Persist scope-inspection evidence
+  else Admin pre-dispatch
+    T->>I: ReleaseCommittedOrderBeforeDispatch(all lines, atomic)
+    T->>O: Persist evidence + transition RETURN_REQUESTED + lock amount
+  end
   T->>P: InitiateRefund (một lần)
   P-->>T: RefundResult qua Kafka consumer
   alt success
@@ -302,35 +319,44 @@ sequenceDiagram
   end
 ```
 
-**Happy path:** `MarkRefundRequestedActivity` verify source/policy, transition
-`PAID/PROCESSING/COMPLETED -> RETURN_REQUESTED`, tạo case chờ Inventory và phát
-status change. `LockRefundScopeActivity` khóa FULL/PARTIAL items và amount.
-`RegisterRefundReturnExpectationActivity` đăng ký scope. Consumer nhận
-`INVENTORY_RETURN_RECEIVED_ALL`, dedup và signal; workflow derive scope từ case.
-Chỉ lúc đó tạo unique `refund_transaction_id`, set `REFUNDING` và gọi Payment.
+**Happy path:** `CreateRefundCaseActivity` first verifies source/policy and creates
+the lifetime case without exposing an automatic admin refund as accepted. Buyer then
+transitions `COMPLETED -> RETURN_REQUESTED`, locks selected `order_line_id` and each
+line's full quantity, snapshots price and locks
+`min(sum(quantity * unit_price), final_amount)`, then calls `RegisterRefundScope`.
+Consumer receives
+`com.ecommerce.inventory.refund.all-items-inspection-completed.v1`, dedups and
+signals only when `refund_scope_id`, request and every line/counter match the case.
+Mixed/all inspection `FAIL` is still a valid completion fact and therefore calls
+Payment. Admin does not register a scope and retains `PAID/PROCESSING` while calling
+`ReleaseCommittedOrderBeforeDispatch`; only its all-line atomic success transitions
+to `RETURN_REQUESTED`, locks `orders.final_amount`, and continues. Any
+dispatched/mixed result rejects with no stock movement. Only after the applicable
+evidence creates the unique `refund_transaction_id`, set `REFUNDING` and call Payment.
 Success commit `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` và
 `ORDER_REFUNDED`.
 
-**Promotion boundary:** customer refund FULL/PARTIAL không gọi Promotion và
-`ORDER_REFUNDED` không mang promotion allocation. Voucher là lợi ích toàn đơn nên không
-chia xuống SKU; wallet giữ `USED`, Promotion budget giữ consumed. Cách tính refund amount
-và việc cho phép một hay nhiều partial refund thuộc lần refactor Order/Payment sau và
-chưa được chốt trong tài liệu hiện tại.
+**Promotion and amount boundary:** Buyer selected-line refund does not call Promotion
+and `ORDER_REFUNDED` has no promotion allocation. Voucher remains a whole-order
+benefit; wallet stays `USED` and budget stays consumed. The only amount calculation is
+the gross selected-line snapshot value capped at `orders.final_amount`; discounts are
+not re-prorated. Admin pre-dispatch amount is `orders.final_amount`.
 
 **Timeout/manual recovery:** chờ Inventory tối đa 30 ngày. Quá hạn alert Ops và
-vào lane `MANUAL_VERIFICATION_REQUIRED`; chỉ tiếp tục sau admin override hợp lệ.
-Schema case cũ chưa cho state này. Delivery failure tự nhiên có thể dùng admin lane
-và bypass wait chỉ sau manual verification theo policy riêng.
+vào lane `MANUAL_VERIFICATION_REQUIRED`. This is not a Payment bypass: the case can
+resume only with the matching Inventory evidence, or be resolved as a documented
+manual exception outside Release 1. It cannot create another scope/refund transaction.
 
 **Payment failure/reverse:** giữ master `RETURN_REQUESTED`, set
 `payment_status=REFUND_FAILED`, case `FAILED`, phát `ORDER_REFUND_FAILED`; Buyer
 guard không reset. `REFUND_PROCESSING` giữ/set `REFUNDING`. Không mở refund
 transaction thứ hai.
 
-**Test:** FULL/PARTIAL boundaries, two workflow starts, duplicate Inventory signal,
-scope mismatch, 30-day timeout/override, refund exactly once theo thiết kế hiện tại,
-processing-success, fail/reverse, chứng minh không gọi Promotion, crash giữa remote refund và local
-commit, và one-shot permanent.
+**Test:** selected full-quantity boundaries (A×1 rejects when line is A×2), two
+workflow starts, duplicate/mismatched Inventory completion, multi-package mixed
+PASS/FAIL, 30-day timeout, refund exactly once, provider fail/reverse, no Promotion,
+crash between remote refund/local commit, permanent one-shot, and atomic admin
+all-undispatched versus any-dispatched conflict.
 
 ## WF-ORDER-009 — Payment timeout và auto-cancel
 

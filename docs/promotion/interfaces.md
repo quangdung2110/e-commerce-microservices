@@ -165,7 +165,7 @@ preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup rece
 - `cancel-confirmed` chỉ dùng khi order không hoàn tất vì lỗi kỹ thuật sau Promotion
   confirm; PostgreSQL commit trước và Redis chỉ repair sau. Nó không được dùng cho
   customer refund.
-- Partial/full customer refund không có call/event tới Promotion.
+- Buyer selected-line hay Admin pre-dispatch refund không có call/event tới Promotion.
 
 ## 4. Kafka envelope và publication
 

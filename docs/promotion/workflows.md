@@ -229,7 +229,9 @@ Redis unavailable không làm durable compensation thất bại; Redis có thể
 
 ## Customer refund — explicit non-workflow
 
-Khi Order/Payment hoàn tiền partial, nhiều lần partial hoặc full-order:
+Khi Order/Payment hoàn tiền một selected-line scope của Buyer (mỗi line là full
+quantity) hoặc toàn order theo nhánh Admin trước dispatch, luôn chỉ có một lifetime
+refund case:
 
 - Không gọi endpoint Promotion.
 - Promotion không consume `ORDER_REFUNDED`.
@@ -238,8 +240,8 @@ Khi Order/Payment hoàn tiền partial, nhiều lần partial hoặc full-order:
 - Không tái cấp voucher và không quy đổi voucher thành tiền.
 - Không truyền `promotion_refund_allocations[]`.
 
-Số lần partial refund và cách tính amount vẫn thuộc thiết kế Order/Payment chưa được
-refactor; Promotion behavior không phụ thuộc quyết định đó.
+Order locks gross selected-line amount capped at `final_amount`; Promotion behavior
+does not depend on that calculation and remains no-op.
 
 ## WF-PROMO-007 — Markdown snapshot → Product
 
@@ -324,7 +326,7 @@ bị reject. Product UUID đã tombstone không được reuse.
   crash giữa Redis finalize và set `redis_finalized_at` (worker chạy lại phải no-op) và
   stored-response replay.
 - `cancel-confirmed` SAVED-vs-EXPIRED, Redis unavailable và DB→Redis convergence.
-- Customer partial/full refund chứng minh không có Promotion mutation/event subscription.
+- Buyer selected-line hoặc Admin pre-dispatch refund chứng minh không có Promotion mutation/event subscription.
 - Product bỏ stale `source_revision` và hội tụ ACTIVE/INACTIVE.
 - Causal dedup với hai campaign cùng revision/product/state và retry cùng cause sau khi
   state đã đổi; ACTIVE/INACTIVE contract shape.

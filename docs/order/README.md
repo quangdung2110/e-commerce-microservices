@@ -72,7 +72,7 @@ Kafka, Temporal và database service khác không cùng transaction với dữ l
 | `order_items` | Order Service | Delivery FSM theo từng đơn vị kho |
 | `order_item_lines` | Order Service | Snapshot SKU/sản phẩm bất biến sau khi tạo |
 | `order_promotions` | Order Service | Dấu vết allocation đã dùng; không phải ví/budget Promotion |
-| `order_refund_cases` | Order Service | Control plane một refund transaction trên mỗi order |
+| `order_refund_cases` + `order_refund_case_lines` | Order Service | One lifetime refund control plane and selected-line scope |
 | `outbox_events` | Order Service | Log append-only để CDC phát event |
 | Redis idempotency/lock keys | Cache/guard tạm thời | PostgreSQL FSM và Temporal giữ bất biến bền vững |
 | Payment, inventory, promotion state | Service tương ứng | Order chỉ giữ ID/snapshot/evidence cần điều phối |
@@ -88,11 +88,11 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Xem chi tiết order | Trả lịch sử denormalized có kiểm tra ownership |
 | Tìm kiếm/lọc order | Trả order-level card theo buyer/admin, tab, trạng thái, thời gian, tiền và tên sản phẩm |
 | Hủy order | Hủy pre-payment có compensation hoặc chuyển admin action sang refund lane |
-| Yêu cầu trả hàng | Chấp nhận đúng một Buyer request hợp lệ và khóa refund scope |
+| Yêu cầu trả hàng | Chấp nhận đúng một Buyer request hợp lệ và khóa selected full-quantity line scope |
 | Xử lý thanh toán | Commit mốc tài chính rồi thực hiện post-payment saga |
 | Giao hàng và hoàn tất | Cập nhật delivery unit, tự hoàn tất master order khi giao đủ |
-| Hoàn tiền | Chờ Inventory xác nhận đủ hàng hoàn rồi gọi Payment đúng một lần |
-| Khôi phục payment muộn | Phục hồi order timeout hoặc auto-refund nếu không thể thực hiện an toàn |
+| Hoàn tiền | Buyer chờ Inventory final-inspect selected scope; admin chỉ automatic sau Inventory release toàn bộ committed lines trước dispatch; Payment gọi đúng một lần kể cả inspection FAIL |
+| Khôi phục payment muộn | Phục hồi order timeout; nếu không an toàn thì manual verification, không system auto-refund ở Release 1 |
 | Phát event vòng đời | Công bố event Order/OrderItem theo outbox CDC at-least-once |
 
 ## 6. Phụ thuộc
@@ -102,8 +102,8 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Inbound | Checkout | HTTP | Tạo order từ checkout snapshot | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
 | Inbound | Buyer/Admin qua Gateway | HTTP | Đọc, tìm kiếm, hủy và return | Bắt buộc | Chưa có OpenAPI Order đầy đủ |
 | Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | Tài liệu thiết kế hiện hành |
-| Inbound | Inventory | Kafka | Ship-to-customer và return-received-all | Bắt buộc | Tài liệu thiết kế hiện hành |
-| Outbound | Inventory | HTTP/gRPC activity | Reserve, release, deduct, đăng ký return expectation | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
+| Inbound | Inventory | Kafka | Ship-to-customer và selected-scope inspection completion | Bắt buộc | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
+| Outbound | Inventory | HTTP/gRPC activity | Reserve, release, deduct, đăng ký selected scope, atomic pre-dispatch release | Bắt buộc | [Inventory workflow v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
 | Outbound | Promotion | HTTP activity | Reserve/cancel runtime; confirm và technical cancellation có durable command receipt; không gọi khi customer refund | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — proposed |
 | Outbound | Payment | HTTP/gRPC activity | Tạo PaymentIntent, cancel và refund | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
 | Outbound | Kafka consumers | Kafka | Event vòng đời order/item | Bắt buộc | Có một phần Order completed v1; không đối soát lần này |
@@ -120,10 +120,11 @@ qua API, event hoặc Temporal signal được Order xử lý.
   được commit các mốc tài chính/refund; Kafka consumer không ghi FSM trực tiếp.
 - [`INV-ORD-003`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Buyer chỉ được
   submit return một lần trên mỗi order; guard không reset sau refund fail/reverse.
-- [`INV-ORD-004`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Order chỉ khởi
-  tạo tối đa một refund transaction cho mỗi order.
-- [`INV-ORD-005`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): không gọi
-  Payment refund trước khi Inventory xác nhận đủ refund scope hoặc admin override.
+- [`INV-ORD-004`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Order chỉ có một
+  refund case/refund transaction trọn đời trên mỗi order.
+- [`INV-ORD-005`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Buyer chỉ gọi
+  Payment sau scope completion; Admin chỉ sau Inventory atomic all-line
+  pre-dispatch release evidence.
 - [`INV-ORD-006`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ phát
   `ORDER_COMPLETED` khi tất cả order item đã `DELIVERED` và CAS master thành công.
 - [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): state change và
@@ -150,9 +151,6 @@ qua API, event hoặc Temporal signal được Order xử lý.
   Kafka Connect, Redis hoặc deployment để xác minh.
 - Tài liệu cũ query các cột `paid_at`, `completed_at`, `cancelled_at`, `refunded_at`
   nhưng phần định nghĩa bảng `orders` chưa khai báo các cột này.
-- Refund workflow dùng `MANUAL_VERIFICATION_REQUIRED` khi chờ Inventory quá 30
-  ngày, nhưng CHECK constraint cũ của `order_refund_cases.case_status` chưa chứa
-  giá trị đó.
 - Mô tả cũ vừa nói metadata `refund_waiting_inventory_confirmation` được phát
   trong `ORDER_STATUS_CHANGED`, vừa nói Phase 20 đã loại metadata refund khỏi event.
 - Mô tả `ORDER_REFUND_FAILED` có chỗ yêu cầu chỉ `error_code`, có ví dụ vẫn chứa

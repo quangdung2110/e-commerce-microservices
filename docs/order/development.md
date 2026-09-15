@@ -70,17 +70,18 @@ ghi tại đây.
 
 ### Contract/consumer/provider test
 
-Không chuẩn hóa payload trong lần refactor này, nhưng implementation phải test mọi
-HTTP/event/activity semantics liệt kê ở `interfaces.md`: unknown field, duplicate,
-unsupported version, route theo order/workflow ID, canonical string order ID của
-`ORDER_COMPLETED`, nullable variant snapshot và voucher toàn đơn snapshot. Refund amount/
-partial-refund multiplicity sẽ được chuẩn hóa ở lần refactor Order/Payment sau.
+Implementation phải test mọi HTTP/event/activity semantics liệt kê ở
+`interfaces.md`: unknown field, duplicate, unsupported version, route theo
+order/workflow ID, canonical string order ID của `ORDER_COMPLETED`, nullable variant
+snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
+PASS/FAIL và atomic admin pre-dispatch release. Refund amount/multiplicity is fixed by
+ADR-010, not deferred.
 
 ### End-to-end/failure injection
 
 Chạy checkout success, từng pre/post-payment failure, timeout cancel, late payment
-recovery/auto-refund, multi-warehouse delivery/auto-complete, Buyer one-shot return,
-Inventory 30-day timeout/override, refund success/fail/reverse và Redis/Kafka/DB/
+recovery/manual verification, multi-warehouse delivery/auto-complete, Buyer one-shot return,
+Inventory 30-day timeout/manual verification, refund success/fail/reverse và Redis/Kafka/DB/
 Temporal outage. Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
@@ -102,8 +103,8 @@ bảo query design không tham chiếu cột thiếu.
 
 ## 8. Test data và fixture
 
-Fixture tối thiểu gồm order một/nhiều kho; trạng thái master/item/payment; FULL/
-PARTIAL promotion; buyer/admin; cùng timestamp; tên tiếng Việt có/không dấu;
+Fixture tối thiểu gồm order một/nhiều kho; trạng thái master/item/payment; promotion
+snapshot; buyer/admin; selected scope A×2/C×3 from A×2/B×1/C×3; cùng timestamp; tên tiếng Việt có/không dấu;
 payment success/fail/expired; refund processing/success/fail/reverse; inventory
 ship/return duplicate. Dùng UUID/số điện thoại/address giả, không dùng PII production.
 

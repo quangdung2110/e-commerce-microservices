@@ -77,7 +77,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Inventory consumer lag | Ship/return signal trễ vượt SLO | Cao | Order + Inventory |
 | Temporal task queue backlog | Schedule-to-start hoặc workflow age vượt ngưỡng | Cao | Order on-call |
 | Compensation failed | Activity cạn retry | Critical | Saga recovery |
-| Late payment recovery failed | Chuyển auto-refund hoặc mắc kẹt | Critical | Finance/Ops |
+| Late payment recovery failed | Chuyển manual verification, không auto-refund | Critical | Finance/Ops |
 | Refund waiting overdue | Gần/quá 30 ngày không confirmation | Cao | Returns Ops |
 | Refund failed/reversed | Event critical lane xuất hiện | Critical | Payment/Ops |
 | CDC/outbox lag | Oldest outbox chưa publish vượt ngưỡng | Cao | Data platform/Order |
@@ -134,7 +134,7 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Outbox CDC pipeline | WAL row `outbox_events` | Partition theo order; connector offset | Kafka Connect retry/DLQ/backoff; `t.order.events` |
 | Payment consumer | `t.payment.events` | Redis 30 ngày; workflow/FSM fallback | Signal checkout/refund/recovery; không ghi master trực tiếp |
 | Inventory ship consumer | `INVENTORY_SHIP_TO_CUSTOMER` | Key order+warehouse+time; item/master CAS | Item event và optional completion |
-| Inventory return consumer | `INVENTORY_RETURN_RECEIVED_ALL` | Key order+refund request | Signal refund workflow |
+| Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Key order+refund request + scope revision | Validate scope/counters, signal refund workflow |
 | Temporal worker | Ba task queue | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
 | Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; watermark guard | Xóa row >15 ngày khi an toàn |
 
@@ -150,15 +150,18 @@ escalation owner. Tối thiểu phải có:
    tăng worker an toàn, replay với dedup, xác minh workflow/FSM không double-apply.
 2. Temporal workflow mắc kẹt/compensation fail: xem history/activity attempt, sửa
    dependency, retry activity có stable key, không update DB thủ công thiếu outbox.
-3. Refund quá 30 ngày/manual override: đối chiếu locked scope với Inventory, ghi
-   audit quyền admin, signal đúng workflow, xác minh chỉ một refund transaction.
+3. Refund quá 30 ngày/manual verification: đối chiếu selected locked scope với
+   Inventory, ghi audit quyền admin, signal đúng workflow và xác minh lifetime case
+   chưa tạo transaction thứ hai. Không coi inspection `FAIL` là lý do bỏ Payment.
 4. CDC/outbox backlog: dừng trimmer, kiểm tra connector/WAL/offset/topic, resume,
    xác minh sequence/duplicate downstream.
 5. Redis corruption/outage: đánh giá duplicate window, ưu tiên DB/Temporal guard,
    không flush broad keyspace, khôi phục và theo dõi duplicate rate.
 6. DB pool/deadlock: xác định query/lock holder, giảm concurrency, không kill
    transaction mù, xác minh state/outbox atomicity.
-7. Late-payment recovery/auto-refund: xác nhận payment evidence, cancel reason,
-   inventory reservation và refund transaction trước mọi manual action.
+7. Late-payment recovery/manual verification: xác nhận payment evidence, cancel reason,
+   Inventory reservation/physical-dispatch evidence và refund case trước mọi manual
+   action. Automatic admin refund chỉ được tiếp tục sau all-line atomic pre-dispatch
+   release; mixed dispatch là manual exception.
 8. Outbox retention cleanup failure: kiểm tra watermark và oldest row; chỉ chạy lại
    delete khi connector đã vượt dữ liệu mục tiêu.

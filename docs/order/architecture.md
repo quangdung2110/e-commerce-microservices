@@ -107,9 +107,10 @@ checkout timeout.
 | Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget (không outbox, Promotion ADR-016) |
 | FSM local | `UpdateOrderStatusActivity` | Row lock/CAS, update master và outbox |
 | Refund local | `MarkRefundRequestedActivity` | Verify source/guard, chuyển `RETURN_REQUESTED` |
-| Refund local | `LockRefundScopeActivity` | Khóa FULL/PARTIAL scope và amount |
-| Refund remote | `RegisterRefundReturnExpectationActivity` | Đăng ký scope với Inventory |
-| Refund wait | `WaitInventoryReturnReceivedAllSignal` | Chờ đủ hàng hoàn hoặc manual override |
+| Refund local | `LockRefundScopeActivity` | Khóa selected `order_line_id` full quantity và gross amount cap `final_amount` |
+| Refund remote | `RegisterRefundScopeActivity` | Đăng ký selected scope với Inventory |
+| Refund remote | `ReleaseCommittedOrderBeforeDispatchActivity` | Admin path: Inventory release tất cả committed lines atomically hoặc conflict no-op |
+| Refund wait | `WaitInventoryReturnScopeInspectionCompletedSignal` | Chờ toàn bộ selected quantity final-inspect, PASS/FAIL đều completion |
 | Refund remote | `InitiateRefundActivity` | Gọi Payment refund với key ổn định |
 | Refund local | `FinalizeRefundResultActivity` | Commit success/fail/reverse và outbox |
 | Recovery | `RecoverPaidOrderFromTimeoutActivity` | Verify payment muộn, tái lập paid lane/evidence |
@@ -181,7 +182,8 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
 - Không đặt business rule/FSM trong controller, Kafka adapter hoặc Debezium.
 - Payment/Refund Kafka consumer chỉ signal workflow; workflow là owner của master
   financial/refund transition.
-- Không gọi Payment refund trước Inventory confirmation/admin override hợp lệ.
+- Không gọi Payment refund trước Buyer Inventory scope-inspection completion hoặc
+  Admin Inventory all-line pre-dispatch release evidence.
 - Không reserve promotion tại Preview; reserve chỉ xảy ra sau submit và sau khi
   `order_id` tồn tại.
 - Customer refund không gọi Promotion: không restore voucher, không hoàn budget và không
@@ -200,7 +202,9 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
   đơn giản vận hành nhưng bỏ fuzzy/scoring/highlight/autocomplete.
 - [ADR-005](./decisions/ADR-005-redis-and-fsm-idempotency.md): Redis TTL giảm schema
   durable dedup, đổi lại replay ngoài TTL dựa vào FSM/WorkflowID.
-- [ADR-006](./decisions/ADR-006-single-refund-with-inventory-gate.md): refund an toàn
-  tài chính/vật lý nhưng có thể chờ đến 30 ngày và cần manual override.
-- [ADR-008](./decisions/ADR-008-late-payment-recovery.md): không drop payment muộn,
-  đổi lại thêm recovery/auto-refund lane.
+- [ADR-010](./decisions/ADR-010-selected-line-refund-policy.md): one lifetime case,
+  selected full-quantity lines and atomic pre-dispatch admin path; Buyer may wait up
+  to 30 days for physical inspection evidence.
+- [ADR-008](./decisions/ADR-008-late-payment-recovery.md): không drop payment muộn;
+  ADR-010 supersedes its automatic-refund branch, so unsafe recovery now enters
+  manual verification in Release 1.

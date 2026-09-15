@@ -29,7 +29,7 @@ verified_against_commit: null
 | Reservation | Giữ quota/amount 15 phút trong Redis sau Submit | Wallet DB state |
 | Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
 | Technical compensation | `cancel-confirmed` vì order không hoàn tất sau confirm | Customer refund |
-| Customer refund | Order/Payment hoàn tiền partial/full | Promotion budget rollback |
+| Customer refund | Buyer selected-line hoặc Admin pre-dispatch refund | Promotion budget rollback |
 | Command receipt | Biên nhận durable cho final command, response replay và Redis finalize marker | Outbox event/publication state |
 
 ## 2. Domain objects
@@ -79,7 +79,7 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-007` | Voucher đã lưu chỉ dùng `wallet.expired_at`; campaign end không tự thu hồi row/quyền lợi ngoài expiry đã snapshot. Với mode `CAMPAIGN_END`, hai mốc trùng nhau. |
 | `PROMO-BR-008` | Validity phải chọn `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default ngầm. |
 | `PROMO-BR-009` | Definition đã publish là bất biến; thay đổi business config phải clone campaign/promotion/markdown identity mới, không chỉ tăng cùng-row revision. |
-| `PROMO-BR-010` | Customer refund partial/full không restore voucher và không hoàn Promotion budget. |
+| `PROMO-BR-010` | Buyer selected-line hoặc Admin pre-dispatch refund không restore voucher và không hoàn Promotion budget. |
 | `PROMO-BR-011` | `cancel-confirmed` do lỗi kỹ thuật trả wallet về `SAVED` nếu còn hạn, `EXPIRED` nếu hết hạn. |
 | `PROMO-BR-012` | Markdown chỉ product-scope, chỉ effective khi campaign `ACTIVE`, rule enabled và chưa bị Product tombstone invalidate. |
 | `PROMO-BR-013` | Worker không xử lý schedule dựa riêng vào Redis; phải re-read DB/revision/time. |
@@ -138,7 +138,7 @@ stateDiagram-v2
   [*] --> SAVED: Claim / save / grant
   SAVED --> EXPIRED: expired_at reached
   SAVED --> USED: Confirm
-  USED --> USED: Customer partial/full refund
+  USED --> USED: Buyer selected-line or Admin pre-dispatch refund
   USED --> SAVED: cancel-confirmed and not expired
   USED --> EXPIRED: cancel-confirmed and expired
 ```
@@ -263,7 +263,8 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 - Limited claim bắt đầu Lua đúng 20:00 bị gate từ chối; claim linearize 19:59:59.999 vẫn
   được worker persist sau 20:00 bằng acquisition evidence.
 - Voucher giảm 100.000đ được confirm cho order: wallet `USED`, budget used tăng 100.000đ.
-  Customer refund partial hay full: wallet và Promotion budget giữ nguyên.
+  Buyer refund một selected-line scope (mỗi line full quantity) hay Admin refund toàn
+  order trước dispatch: wallet và Promotion budget đều giữ nguyên.
 - Confirm thành công nhưng order không thể hoàn tất vì lỗi saga: `cancel-confirmed` giảm
   durable allocation trong PostgreSQL; wallet trở lại `SAVED` nếu chưa hết hạn, rồi Redis
   được repair bất đồng bộ.
