@@ -25,6 +25,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | File | Service | Decision |
 |---|---|---|
 | [order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md](./order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md) | Order + Promotion | Customer refund không mutate Promotion; không allocation theo SKU, không hoàn voucher/budget. |
+| [order/decisions/ADR-010-selected-line-refund-policy.md](./order/decisions/ADR-010-selected-line-refund-policy.md) | Order + Inventory + Payment | Một refund case trọn đời/order; selected full-quantity lines; admin automatic chỉ trước dispatch. |
+| [inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md](./inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Inventory + Order | Lifetime selected scope và atomic all-line committed release trước dispatch. |
+| [payment/decisions/ADR-011-one-lifetime-order-refund.md](./payment/decisions/ADR-011-one-lifetime-order-refund.md) | Payment + Order + Inventory | Một Payment refund transaction/order, Inventory evidence dạng Buyer/Admin. |
 | [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
 | [promotion/decisions/ADR-014-claim-and-markdown-consistency.md](./promotion/decisions/ADR-014-claim-and-markdown-consistency.md) | Promotion + Product | Atomic claim boundary, immutable definition, causal markdown dedup và Product tombstone invalidation. |
 | [product/decisions/ADR-016-state-discriminated-markdown-snapshot.md](./product/decisions/ADR-016-state-discriminated-markdown-snapshot.md) | Product + Promotion | ACTIVE full markdown; INACTIVE reason-only tombstone; nullable guarded projection. |
@@ -71,17 +74,21 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 3. Payment Service (PG State + Outbox)
 
-> Tài liệu 4 file thiết kế Payment Service + 1 ADR.
+> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
+> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ, chưa xác minh
+> implementation và chưa đối soát contract liên service.
 
 | File | Mô tả |
 |---|---|
-| [payment/payment_workflow.md](./payment/payment_workflow.md) | Luồng API Initiate/Webhook/Query/Refund + Async Webhook processing. |
-| [payment/payment_db_design.md](./payment/payment_db_design.md) | Schema: payment_transactions, refund_transactions, webhook_logs, payment_status_history, outbox (CDC). |
-| [payment/payment_state_machine.md](./payment/payment_state_machine.md) | Payment FSM + Refund FSM + Guard rules + Audit trail. |
-| [payment/payment_events.md](./payment/payment_events.md) | Event catalog cho `t.payment.events` (9 events: 3 PAYMENT_* + 1 INITIATED + 4 REFUND_* + 1 REVERSED). |
-| [payment/payment_workers.md](./payment/payment_workers.md) | Background workers: Outbox CDC, Webhook Processor, Expiration Scanner, Reconciliation, Refund Poller. |
-| [payment/technology_choice.md](./payment/technology_choice.md) | Lý do chọn Java Spring Boot. |
-| [payment/refund_boundary_decision.md](./payment/refund_boundary_decision.md) | ADR: giữ Refund trong Payment Service (Phase 1) vs tách (Phase 2). |
+| [payment/README.md](./payment/README.md) | Tổng quan, boundary, ownership, capability, dependency, bất biến và known gaps. |
+| [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
+| [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T1–T9) + Refund FSM (R1–R4), guard rules, invariant, lỗi miền. |
+| [payment/data.md](./payment/data.md) | Schema logic 6 bảng, constraint, transaction, Redis key, outbox, partition/archive. |
+| [payment/interfaces.md](./payment/interfaces.md) | API initiate/webhook/query/refund, envelope, 9 event `t.payment.events`, `ORDER_CANCELLED`. |
+| [payment/workflows.md](./payment/workflows.md) | Mười workflow: initiate, webhook, refund, expiration, reconciliation, poller, cancel, retry/replay, archive. |
+| [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
+| [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 11 ADR: Java/Spring Boot, Refund trong Payment, Stripe single-provider, webhook async, Outbox CDC, lock strategy, partition key, payload Phase 20, partition/archive, explicit one-lifetime-order refund. |
 
 ---
 
@@ -151,7 +158,7 @@ Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md
 | Order | `t.order.events` (8 event types theo thiết kế hiện tại) | Inventory, Cart, Notification, Analytics, Review; Promotion không consume refund |
 | Payment | `t.payment.events` (9 events) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
-| Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |
+| Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes reservation/physical-dispatch/selected-scope inspection completion; Search consumes per-SKU availability |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
 | Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
@@ -170,7 +177,8 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | `POST /v1/payments/{txn_id}/refund` | Order (Temporal) → Payment |
 | `POST /v1/inventory/routing-options` | Checkout → Inventory |
 | `POST /v1/inventory/ship-to-customer` | Admin → Inventory |
-| `POST /v1/inventory/returns/refund-expectations` | Order → Inventory |
+| `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |
+| `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Order → Inventory; automatic admin refund all-or-nothing release |
 | `POST /api/v1/me/promotion-voucher-suggestions` | Checkout/Gateway → Promotion; chỉ wallet `SAVED` |
 | `POST /api/v1/promotion-discovery` | Checkout/Gateway → Promotion; wallet + public `ACTIVE` |
 | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save + evaluate explicit |
