@@ -48,7 +48,10 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 | `503 BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
 | Audit failure, privileged anomaly, direct-write attempt | Security page | Deny/contain, preserve evidence, investigate. |
 
-Refund-scope/quarantine age is dashboarded but has no automatic closure threshold: Order owns return-window policy and Operations owns inspection cadence.
+Refund-scope/quarantine age is dashboarded but has no automatic closure threshold:
+Order owns return-window policy and Operations owns inspection cadence. A terminal
+scope remains retained as the order's lifetime scope identity; it is not cleanup
+eligible merely because the case closed.
 
 ## 3. Reconciliation and correction
 

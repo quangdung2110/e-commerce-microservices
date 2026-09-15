@@ -20,7 +20,7 @@
     "scope_revision": 6,
     "lines": [
       {
-        "order_line_id": "line-1",
+        "order_line_id": "line-a",
         "sku_id": "sku-blue-m",
         "expected_quantity": 2,
         "received_quantity": 2,

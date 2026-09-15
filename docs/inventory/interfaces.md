@@ -35,7 +35,7 @@ returns retryable `503 INVENTORY_BUSY` and the caller retries the same command I
 
 Release 1 bounds preview, reservation, Refund Scope, and event line collections at 100 items;
 export pages are bounded at 1,000 rows. These are wire-safety limits, not permission to accept a
-partial order or partial Refund Scope.
+partial order reservation or a partial quantity of a selected Refund Scope line.
 
 ## 2. Checkout and Order workflow API
 
@@ -61,7 +61,8 @@ Preview excludes inactive/outage warehouses and selects priority deterministical
 | Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED` and a new command must be before `expires_at`; moves all lines to `COMMITTED`. |
 | Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or `STOCK_DISCREPANCY` plus `order_exception_id`. |
 | Release committed line | `POST /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release` | Target is committed and undispatched; reason guard defined in [workflows.md](workflows.md). |
-| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Whole immutable order lines; rejects a second active scope. |
+| Release committed order before dispatch | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Admin automatic refund only; atomically releases every committed undispatched line or releases none. |
+| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines; rejects a second scope for the order even after closure. |
 | Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel` | Only `REGISTERED` and no receipt. |
 | Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
 | Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
@@ -168,7 +169,7 @@ global Kafka ordering is promised.
 | `com.ecommerce.inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
 | `com.ecommerce.inventory.reservation.released.v1` | Order | Release fact/reason. |
 | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
-| `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order | Whole scope ID and aggregated per-line pass/fail results; not payout. |
+| `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order | Selected scope ID and aggregated expected/received/pass/fail per-line results; not payout. |
 
 Events are written through the transactional outbox and delivered at least once. Order
 atomically records inbox/dedupe with its effect. Search uses strict per-SKU revision

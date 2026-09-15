@@ -9,3 +9,8 @@ Every mutation requires `Idempotency-Key`, `X-Correlation-ID`, and
 `RESERVATION_EXPIRED` are durable `200` results. `503 INVENTORY_UNAVAILABLE` and
 `503 INVENTORY_BUSY` mean no authoritative transition was returned and must be
 retried with the same command ID.
+
+Refund Scope is a selected set of full-quantity `order_line_id` values, not a
+whole-order or partial-quantity mechanism. Inventory retains one scope identity per
+order lifetime. The admin automatic-refund path uses the separate all-or-nothing
+`release-committed-before-dispatch` command and never registers a return scope.

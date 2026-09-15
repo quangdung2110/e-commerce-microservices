@@ -10,6 +10,11 @@ per-SKU revision. All consumers continue a business trace with
 | `t.inventory.stock.events.v1` | `sku_id` | Search | Inventory-owned per-SKU availability snapshots |
 | `t.inventory.order.events.v1` | `order_id` | Order | Reserved, committed, released, physical dispatch, refund inspection completion |
 
+The refund inspection-completion fact contains every line in the immutable selected
+scope with expected/received/passed/failed quantities. It is emitted after final
+inspection of all expected selected quantity; failed inspection remains quarantine and
+does not express a payout decision.
+
 `sequence` is the durable Inventory export sequence. It is increasing at creation,
 may contain gaps, and is not a promise of global Kafka ordering. Search guards by
 per-SKU `aggregaterevision` and recovers with the

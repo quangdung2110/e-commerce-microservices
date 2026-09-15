@@ -110,6 +110,6 @@ components:
       payload: { $ref: './schemas/reservation-line-dispatched.schema.json' }
     allItemsInspectionCompleted:
       name: allItemsInspectionCompletedV1
-      title: All expected refund items received and final-inspected
+      title: All selected refund-scope items received and final-inspected
       contentType: application/cloudevents+json
       payload: { $ref: './schemas/all-items-inspection-completed.schema.json' }

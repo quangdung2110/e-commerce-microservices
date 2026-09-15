@@ -164,11 +164,49 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
+  /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch:
+    post:
+      tags: [Reservations]
+      operationId: releaseCommittedOrderBeforeDispatch
+      summary: Atomically release every committed allocation before any dispatch
+      description: >-
+        ORDER_SAGA only for ADMIN_FORCE_REFUND_BEFORE_DISPATCH. Locks the reservation
+        root, every line, and affected stock positions. It returns RELEASED only when
+        every line is COMMITTED and none has physical dispatch; otherwise returns 409
+        and moves no stock. It never releases a subset.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseCommittedOrderBeforeDispatchRequest' }
+      responses:
+        '200':
+          description: Durable all-line RELEASED outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleasedCommittedOrderResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /internal/inventory/v1/refund-scopes:
     post:
       tags: [Refund scopes]
       operationId: registerRefundScope
-      summary: Register an immutable whole-order refund scope
+      summary: Register an immutable selected full-quantity refund scope
+      description: >-
+        A scope selects one or more order_line_id values. Inventory verifies each
+        expected_quantity equals that immutable ReservationLine quantity. A second
+        refund_request_id for the same order is rejected even after the first scope is terminal.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -442,6 +480,12 @@ components:
           properties:
             reason: { const: POST_DISPATCH_EXCEPTION }
             order_exception_id: { $ref: '#/components/schemas/OpaqueId' }
+    ReleaseCommittedOrderBeforeDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { const: ADMIN_FORCE_REFUND_BEFORE_DISPATCH }
     ReservationCommandResponse:
       allOf:
         - $ref: '#/components/schemas/CorrelatedResult'
@@ -461,6 +505,18 @@ components:
         - $ref: '#/components/schemas/ReservationCommandResponse'
         - type: object
           properties: { outcome: { const: RELEASED } }
+    ReleasedCommittedOrderResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          required: [released_order_line_ids]
+          properties:
+            outcome: { const: RELEASED }
+            released_order_line_ids:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items: { $ref: '#/components/schemas/OpaqueId' }
     ReservationLineCommandResponse:
       allOf:
         - $ref: '#/components/schemas/CorrelatedResult'
@@ -479,7 +535,9 @@ components:
       properties:
         order_line_id: { $ref: '#/components/schemas/OpaqueId' }
         sku_id: { $ref: '#/components/schemas/OpaqueId' }
-        expected_quantity: { $ref: '#/components/schemas/Quantity' }
+        expected_quantity:
+          allOf: [{ $ref: '#/components/schemas/Quantity' }]
+          description: Must equal the immutable original ReservationLine quantity; partial line quantity is invalid.
     RegisterRefundScopeRequest:
       type: object
       additionalProperties: false
@@ -487,7 +545,12 @@ components:
       properties:
         order_id: { $ref: '#/components/schemas/OpaqueId' }
         refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
-        lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/RefundScopeLineInput' } }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: Selected lines only. order_line_id values must be unique and every expected quantity must be full original quantity.
+          items: { $ref: '#/components/schemas/RefundScopeLineInput' }
     CloseRefundScopeRequest:
       type: object
       additionalProperties: false

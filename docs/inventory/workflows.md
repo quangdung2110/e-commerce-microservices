@@ -65,7 +65,12 @@ Order owns all timeout/retry decisions. At 15 minutes it issues `ReleaseReservat
 
 The two contenders lock the same reservation line and its stock position. Whichever commits first changes the line; the second command revalidates and returns its already-applied/invalid-state outcome. There is no compensating hidden stock movement.
 
-For a committed but undispatched allocation, Order may call `ReleaseCommittedAllocation(ORDER_CANCELLED | REFUND_BEFORE_DISPATCH)`. If any line is already dispatched, a target committed line requires `POST_DISPATCH_EXCEPTION` and `order_exception_id`. Dispatched stock is never restored through this command.
+For a targeted committed-but-undispatched recovery, Order may call
+`ReleaseCommittedAllocation`. Automatic admin refund must instead call
+`ReleaseCommittedOrderBeforeDispatch`: one transaction locks all reservation lines
+and affected positions, releases all only if every line is committed/undispatched,
+or rejects with no movement. If any line is dispatched, automatic refund has no
+partial-release fallback. Dispatched stock is never restored through either command.
 
 ### Failure F4 — outbox unavailable after business decision
 
@@ -79,7 +84,7 @@ sequenceDiagram
   participant I as Inventory
   participant A as Warehouse ADMIN
 
-  O->>I: RegisterRefundScope(whole order lines)
+  O->>I: RegisterRefundScope(selected full-quantity lines)
   I-->>O: REGISTERED
   loop one or more packages
     A->>I: RecordReturnReceipt(exact scope line)
@@ -96,7 +101,9 @@ sequenceDiagram
   end
 ```
 
-- Before a warehouse receives any item, Order registers an immutable whole-order scope. At most one active scope holds the per-order refund lock.
+- Before a warehouse receives any item, Order registers an immutable selected-line
+  scope. Each selected line equals its original order quantity, and `order_id` has
+  one scope for its full retained lifetime, not merely while active.
 - ADMIN may accept many package receipts, but only exact scoped SKU/order-line residual quantity. Wrong/extra/over-receipt rejects the whole command with no stock mutation.
 - Receipt is physical inbound to quarantine. Final `PASS` moves only that receipt-line quantity to `available_to_sell`; final `FAIL` stays quarantined.
 - All expected units final inspected (pass **or** fail) creates one completion fact. Inventory cannot decide payout and cannot close the scope.

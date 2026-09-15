@@ -19,7 +19,7 @@ catalog, or Search's indexed copy.
 | Allocation | Each order line has exactly one warehouse for its entire quantity. Different lines may use different warehouses. |
 | Payment and dispatch | Payment moves `reserved → committed`; only physical dispatch reduces `on_hand`. Order owns payment and delivery state. |
 | Timeout | Order Temporal Saga owns the 15-minute timeout and explicit release. Inventory alerts at 60 minutes but never auto-releases. |
-| Return | Order registers an immutable, whole-order Refund Scope before receipt. A returned item is saleable only after final inspection `PASS`. |
+| Return | Order registers one immutable selected-line Refund Scope per order lifetime before receipt; every selected line is full quantity. A returned item is saleable only after final inspection `PASS`. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |
 | Integration | Transactional outbox is mandatory. Inventory publishes its per-SKU boolean to Search and exposes the same advisory state through a BFF-only batch-read API; neither path is a checkout dependency. |
 | Degradation | If authoritative state or the atomic audit/outbox transaction is unavailable, mutations fail closed and Preview returns `503 INVENTORY_UNAVAILABLE`. |
@@ -29,7 +29,7 @@ catalog, or Search's indexed copy.
 | Owner | Owns | Inventory deliberately does not own |
 |---|---|---|
 | Inventory | Warehouse, `StockPosition`, `SkuAvailabilityState`, reservation/allocation, physical dispatch fact, return/inspection, movements, and audit. | Order/customer lifecycle, payment result, refund payout, shipment or delivery state. |
-| Order + Temporal Saga | Order state, payment timeout/retry, release/commit decision, Refund Scope registration/closure, customer exception. | Direct stock mutation or warehouse operation. |
+| Order + Temporal Saga | Order state, payment timeout/retry, release/commit decision, selected Refund Scope registration/closure, admin all-undispatched decision. | Direct stock mutation or warehouse operation. |
 | Checkout | Advisory allocation preview and initiating its Order workflow. | Authoritative reserve decision. |
 | Product | SKU/product lifecycle. | Warehouse stock; Inventory accepts opaque `sku_id` and never synchronously calls Product. |
 | Search | Indexed copy of Inventory's per-SKU `is_in_stock` snapshot and buyer filtering. | Deriving warehouse eligibility, allocation, reservation, raw stock buckets, mutation. |

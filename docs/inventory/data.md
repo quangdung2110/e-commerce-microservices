@@ -17,7 +17,7 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
 | `OrderReservation` | `order_id` | Root state, `expires_at`, correlation. |
 | `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, lifecycle. |
-| `RefundScope` | `(order_id, refund_request_id)` | Scope state, active-lock uniqueness per order. |
+| `RefundScope` | `order_id` lifetime unique; `refund_request_id` unique | Immutable selected-line scope state for the one Order refund case. |
 | `RefundScopeLine` | `(refund_scope_id, order_line_id)` | Immutable expected quantity and received/pass/fail counters. |
 | `ReturnReceiptLine` | `(refund_scope_id, return_receipt_id, return_receipt_line_id)` | Physical inbound provenance and residual final-inspection quantity. |
 | `InspectionResult` | Inspection/receipt-line operation identity | Final pass/fail evidence at receiving warehouse. |
@@ -36,7 +36,11 @@ The database enforces, or the transaction guards before commit enforce:
 
 - every StockPosition has non-negative buckets and `available_to_sell + reserved + committed + quarantine = on_hand`;
 - a reservation line belongs to exactly one root and one warehouse; a successful Reserve root contains every requested line;
-- one Order has at most one active Refund Scope (`REGISTERED`, `IN_PROGRESS`, `INSPECTION_COMPLETED`);
+- one Order has at most one Refund Scope in its entire retained history; a terminal
+  scope is never deleted/replaced to permit another `refund_request_id`;
+- every registered `RefundScopeLine.order_line_id` must be a distinct immutable
+  ReservationLine of the order, with `expected_quantity = ReservationLine.quantity`;
+  a selected scope is allowed to omit other lines but cannot split a selected line;
 - scope counters satisfy `0 <= passed + failed <= received <= expected`;
 - a return receipt cannot exceed the immutable line residual or be accepted after scope closure;
 - final inspection quantity is consumed exactly once from the exact receiving warehouse receipt line;
@@ -83,6 +87,16 @@ Inventory groups planned quantities by `(warehouse_id, sku_id)`, locks the exact
 The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 BUSY`.
 
 When warehouse configuration and Reserve race, the first committed transaction determines the result: a status change first makes Reserve reject the whole order; a Reserve first creates a commitment that later status changes do not revoke.
+
+### Atomic pre-dispatch order release
+
+`ReleaseCommittedOrderBeforeDispatch` locks the OrderReservation root, all of its
+ReservationLine rows, then their StockPositions in the required stable order. It
+revalidates that every line is `COMMITTED` and no physical-dispatch fact exists
+before changing any bucket. Success moves every line `COMMITTED -> RELEASED` and
+`committed -> available_to_sell` in this one transaction. A mixed, released or
+dispatched line is a durable `409` with no stock movement; callers must not emulate
+this command by issuing per-line release calls.
 
 ## 5. Per-SKU availability projection
 

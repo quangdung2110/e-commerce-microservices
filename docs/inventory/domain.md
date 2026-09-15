@@ -15,7 +15,7 @@
 | Committed allocation | Paid order stock physically still at the warehouse while awaiting dispatch. |
 | Quarantine | Physically received returned units forbidden from sale until final inspection passes. |
 | Physical dispatch | ADMIN-recorded fact that stock left the allocated warehouse; it is not shipment/delivery state. |
-| Refund Scope | Immutable whole-order line/quantity registry for exactly one Order refund request. |
+| Refund Scope | Immutable selected `order_line_id`/full-quantity registry for the one Order refund case. |
 | Stock movement | Append-only evidence for a bucket transition; it does not replace authoritative current state. |
 
 ## Stock bucket model
@@ -53,7 +53,7 @@ Negative adjustment is permitted only when `q <= available_to_sell`; it never ta
 | SkuAvailabilityState | `sku_id` | Monotonic per-SKU boolean/revision and latest evaluation state, derived asynchronously from all Warehouse and StockPosition truth; source for Search publication and BFF advisory reads. |
 | OrderReservation | `order_id` | Atomic whole-order reservation root, expiry observation, and line lifecycle. |
 | ReservationLine | `(order_id, order_line_id)` | Immutable SKU, quantity, one warehouse, and allocation lifecycle. |
-| RefundScope | `(order_id, refund_request_id)` | Immutable expected return lines and receipt/inspection progress. |
+| RefundScope | `order_id` lifetime unique, `refund_request_id` unique | Immutable selected expected return lines and receipt/inspection progress. |
 | ReturnReceiptLine / InspectionResult / QuarantineDisposition | Source operation identities | Physical provenance and exactly-once final inspection/disposition. |
 | StockMovement / AuditEntry | Immutable IDs | Durable explanation of an accepted mutation; never overwritten. |
 
@@ -80,11 +80,21 @@ stateDiagram-v2
 
 `CommitPayment` moves every line `RESERVED → COMMITTED` together. `expires_at` is a 15-minute deadline, not an Inventory auto-transition: a new Commit after it is rejected while a retry of a previously successful command returns its original result. Only Order Temporal Saga issues release with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or whole-root `STOCK_DISCREPANCY` plus `order_exception_id`. A reservation over 60 minutes alerts; it never cleans up automatically.
 
-`ReleaseCommittedAllocation` targets only an undispatched committed line. It uses `ORDER_CANCELLED` or `REFUND_BEFORE_DISPATCH`; after any line dispatches it requires `POST_DISPATCH_EXCEPTION` and an Order exception ID. When release and dispatch race, the first atomic transition wins and the other receives its guarded/idempotent outcome.
+`ReleaseCommittedAllocation` remains a targeted recovery/exception command for an
+undispatched committed line. Automatic admin refund instead calls
+`ReleaseCommittedOrderBeforeDispatch`: it locks the root, every line and affected
+stock positions and releases all lines only when every line is `COMMITTED` and no
+line has dispatched. Any other state produces no movement. When release and dispatch
+race, the first atomic transition wins and the other receives its guarded/idempotent
+outcome.
 
 ## Refund Scope and return lifecycle
 
-Order Temporal Saga registers an immutable Refund Scope before the warehouse accepts any package. Release 1 scopes contain every order line and its whole quantity. At most one scope per order may hold the refund lock in `REGISTERED`, `IN_PROGRESS`, or `INSPECTION_COMPLETED`.
+Order Temporal Saga registers an immutable Refund Scope before the warehouse accepts
+any package. A scope may select a proper subset of order lines, but each selected
+line must use its entire immutable `ReservationLine.quantity`; SKU identity and
+partial quantity are prohibited. `order_id` is lifetime unique, so an old terminal
+scope never frees the order for another `refund_request_id`.
 
 ```mermaid
 stateDiagram-v2

@@ -6,11 +6,12 @@
 |---|---|---|
 | [ADR-011](ADR-011-authoritative-consistency.md) | Accepted | One relational authoritative write source; state + immutable evidence + transactional outbox commit atomically. |
 | [ADR-012](ADR-012-order-allocation-lifecycle.md) | Accepted | Whole-order reserve, one warehouse per line, Order-owned timeout and physical-dispatch semantics. |
-| [ADR-013](ADR-013-refund-quarantine-lifecycle.md) | Accepted | Immutable whole-order Refund Scope and mandatory return quarantine/inspection lifecycle. |
+| [ADR-013](ADR-013-refund-quarantine-lifecycle.md) | Superseded | Historical whole-order Refund Scope and quarantine/inspection lifecycle; ADR-018 owns current scope policy. |
 | [ADR-014](ADR-014-integration-and-search-contracts.md) | Accepted, Search details superseded | Contract surfaces, at-least-once facts, and general recovery policy; ADR-016 owns the Search-specific aggregate. |
 | [ADR-015](ADR-015-fail-closed-operations.md) | Accepted | Fail-closed safety, reconciliation without auto-correction, audit/security, and DR proof requirements. |
 | [ADR-016](ADR-016-per-sku-search-availability.md) | Accepted | Inventory derives per-SKU availability, publishes only after Search document readiness, and exports per-SKU snapshots/change feed. |
 | [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
+| [ADR-018](ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Accepted | Selected full-quantity order-line scope, one scope per order lifetime, and atomic pre-dispatch release for admin refund. |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 
@@ -27,7 +28,7 @@ ADRs 001–010 are preserved as historical evidence and are **superseded** by th
 | ADR-007 | ADR-016 | Search consumes Inventory-owned per-SKU boolean snapshots; position/warehouse facts are not its public input. |
 | ADR-008 | ADR-012 | Allocation is single-warehouse per line with active/outage eligibility and deterministic priority. |
 | ADR-009 | ADR-012 | Physical dispatch is an Inventory stock movement/fact, while shipment/delivery stays with Order. |
-| ADR-010 | ADR-013 | Refund Scope is immutable whole-order, lock-controlled, and closes only through Order. |
+| ADR-010 | ADR-013, ADR-018 | Scope remains immutable and Order-controlled; ADR-018 replaces its whole-order and active-only-lock semantics. |
 
 ## ADR rules
 

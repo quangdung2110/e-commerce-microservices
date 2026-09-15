@@ -32,7 +32,7 @@ verified_against_commit: null
 | `INV-CH-006`, `INV-CH-009`, `INV-TGT-006` | Release 1 bắt buộc hỗ trợ stock adjustment tăng/giảm. Chỉ `ADMIN` thực hiện, với reason code, actor audit và không cần maker-checker. |
 | `INV-TGT-003`, `INV-WF-001` | Mọi mutation phải có command ID, actor/system actor, thời điểm và trace; business state, movement/audit và outbox fact cùng durable commit. Không dùng direct database edit làm quy trình nghiệp vụ. |
 | `INV-CTX-001`, `INV-CTX-009` | Inventory sở hữu warehouse master và trạng thái active/inactive/outage; Warehouse Admin là nguồn ghi nhận dispatch và return/inspection fact. |
-| `INV-DOM-005` đến `INV-DOM-007`, `INV-DOM-012` đến `INV-DOM-014` | Return receipt chỉ nhận trong Refund Scope đã đăng ký. Hàng phải qua quarantine/inspection; một scope có thể nhận nhiều kiện, nhưng không có partial refund scope. |
+| `INV-DOM-005` đến `INV-DOM-007`, `INV-DOM-012` đến `INV-DOM-014` | Return receipt chỉ nhận trong Refund Scope đã đăng ký. Hàng phải qua quarantine/inspection; scope có thể chọn line nhưng mỗi selected line luôn full quantity và có thể nhận nhiều kiện. |
 | `INV-WF-001`, `INV-WF-004` | Dispatch chỉ áp dụng cho committed allocation; outbox phát fact sau durable business mutation, relay không chạy lại movement khi broker lỗi. |
 | `INV-ALLOC-004`, `INV-ALLOC-005` | Active/inactive/outage và fulfillment priority là cấu hình warehouse cho allocation tương lai, không phải stock movement và không tự tác động reservation/commitment có sẵn. |
 
@@ -105,8 +105,8 @@ cách ledger hóa và atomic transaction sẽ được thiết kế ở Phase 6.
 
 ## 4. Guardrail đã chốt
 
-- Partial **physical return receipt** được phép qua nhiều kiện/lần; partial **refund scope**
-  không được phép trong Release 1.
+- Partial **physical return receipt** được phép qua nhiều kiện/lần; Refund Scope có
+  thể là subset order lines, nhưng partial **quantity** của selected line không được phép.
 - `INSPECTION_COMPLETED` chỉ cho biết toàn bộ item của scope đã có kết quả inspection;
   Order Saga vẫn là bên duy nhất đóng scope sau quyết định refund terminal tại Order.
 - Hàng inspection fail không bao giờ tự quay lại sellable stock. `HOLD`, `DISPOSE` và
@@ -243,7 +243,7 @@ và line với immutable Refund Scope.
 | Scope `REGISTERED` hoặc `IN_PROGRESS`; line và actual SKU khớp; `q ≤ expected_quantity - received_quantity` | Accept. Receipt đầu tiên chuyển scope thành `IN_PROGRESS`. | Tại warehouse nhận: `on_hand +q`, `quarantine +q`, `received_quantity +q`. |
 | Cùng return receipt operation key và payload khớp | Trả outcome cũ. | Không mutation lần hai. |
 | Cùng operation key nhưng payload khác | `OPERATION_IDENTITY_CONFLICT`. | Không mutation. |
-| Scope không tồn tại/đã `CANCELLED`, `CLOSED` hoặc `CLOSED_INCOMPLETE` | `RETURN_SCOPE_NOT_RECEIVABLE`. | Không mutation. Order phải đăng ký scope mới trước một receipt hợp lệ khác. |
+| Scope không tồn tại/đã `CANCELLED`, `CLOSED` hoặc `CLOSED_INCOMPLETE` | `RETURN_SCOPE_NOT_RECEIVABLE`. | Không mutation. Order cannot register a new scope for this order; it must reconcile the retained lifetime case. |
 | `order_line_id` không thuộc scope hoặc actual `sku_id` không khớp scope line | `RETURN_ITEM_MISMATCH`. | Không nhập vào bất kỳ stock bucket nào, không tăng scope counter và không tự gắn sang order khác. Lưu rejected-admin-command audit kèm package reference để kho xử lý vật lý ngoài stock model. |
 | `q` lớn hơn quantity còn lại trong scope | `RETURN_QUANTITY_EXCEEDS_SCOPE`. | Từ chối **toàn bộ receipt line**, không accept một phần ngầm. Admin phải kiểm đếm/tách receipt đúng quantity; phần dư là intake exception ngoài stock model. |
 

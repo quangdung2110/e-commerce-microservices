@@ -51,7 +51,7 @@ verified_against_commit: null
 | Quarantine | Hàng vật lý đã receipt nhưng không sellable cho tới inspection pass. | Hàng sellable hoặc disposal. |
 | Physical dispatch | Movement giảm `on_hand` khi một line allocation thực sự rời kho. | Order `SHIPPED`/`DELIVERED` state. |
 | Stock movement | Fact audit bất biến giải thích một thay đổi của stock bucket. | State hiện tại. |
-| Refund scope | Tập order line bất biến của đúng một refund request `PROCESSING`; owner là Order. | Toàn bộ order. |
+| Refund scope | Tập selected order line bất biến của đúng một refund case lifetime; mỗi line full quantity, owner là Order. | SKU set hoặc partial quantity. |
 | Inspection completion | Fact rằng tất cả item trong refund scope đã có kết quả inspection. | Refund payout hoặc restock sellable. |
 
 ## 3. Stock bucket model — Accepted
@@ -158,7 +158,7 @@ phải đi qua exception workflow có chủ đích: xác định allocation/retu
 | Stock position | `(sku_id, warehouse_id)` | Giữ các bucket và enforce invariant local. | Đơn vị tranh chấp/concurrency chính. |
 | Order reservation | `order_id` | Root lifecycle cho một lần giữ stock toàn order; mang `expires_at` và command history. | Chỉ tồn tại sau ReserveOrder thành công. |
 | Reservation line | `(order_id, order_line_id)` | Allocation bất biến `sku_id`, quantity, `warehouse_id` và lifecycle vật lý của đúng một line. | Đúng một warehouse cho toàn quantity của line. |
-| Refund scope | `(order_id, refund_request_id)` | Lưu immutable scope được Order đăng ký và tiến trình receipt/inspection. | Không sở hữu refund payout/lifecycle. |
+| Refund scope | `order_id` lifetime unique, `refund_request_id` unique | Lưu immutable selected full-quantity scope được Order đăng ký và tiến trình receipt/inspection. | Không sở hữu refund payout/lifecycle. |
 | Stock movement | `movement_id` | Audit append-only cho mọi stock mutation. | Không là aggregate mutable. |
 
 `ReserveOrder` là một inventory transaction/business operation, bao gồm OrderReservation,
@@ -253,9 +253,9 @@ ba progress counter `received_quantity`, `passed_quantity`, `failed_quantity`. M
 | `CloseRefundScope` | Từ Order Saga, idempotent; scope đang `INSPECTION_COMPLETED`; mang terminal reason của Order. | Không có. | Scope thành `CLOSED`; chỉ lúc này refund lock được giải phóng. |
 | `CloseIncompleteRefundScope` | Từ Order Saga, idempotent; scope `IN_PROGRESS`, còn `received < expected`, và mọi received quantity đã final inspected. | Không có stock mutation mới. | Scope thành `CLOSED_INCOMPLETE`; không tạo `AllItemsInspectionCompleted`. |
 
-Receipt vật lý có thể đến qua nhiều kiện dù refund scope luôn là toàn bộ order. Đây không
-phải partial refund scope: Inventory chỉ nhận cumulative receipt không vượt quantity
-đã đăng ký. Nếu một phần hàng không bao giờ về kho, scope giữ `IN_PROGRESS`; Inventory
+Receipt vật lý có thể đến qua nhiều kiện dù refund scope là tập selected full-quantity
+lines. Đây không phải partial quantity: Inventory chỉ nhận cumulative receipt không
+vượt quantity đã đăng ký. Nếu một phần hàng không bao giờ về kho, scope giữ `IN_PROGRESS`; Inventory
 không tự đóng scope, không tự refund và không phát completion event. Sau khi Order đã
 quyết định terminal reason, Order Saga có thể gửi `CloseIncompleteRefundScope` nhưng chỉ
 khi mọi hàng đã receipt đã final inspected. Transition này thành `CLOSED_INCOMPLETE`,
@@ -287,10 +287,10 @@ Payment không có quyền gọi transition này.
 | `INV-DOM-008` | Reserve chấp nhận toàn bộ order trong một operation; sau payment, line allocation có thể physical dispatch độc lập theo warehouse. | OrderReservation root và ReservationLine lifecycle. | Không có partial acceptance/backorder, nhưng không ép các kho dispatch đồng thời. |
 | `INV-DOM-009` | `CommitPayment` chuyển mọi line của cùng OrderReservation từ `RESERVED` sang `COMMITTED` trong cùng operation. | OrderReservation state transition. | Không tồn tại payment-success với line committed một phần. |
 | `INV-DOM-010` | Commit mới sau `expires_at` bị từ chối; expiry không tự release stock. | Expiry guard của `CommitPayment`; Order Saga gửi release. | Reservation timeout 15 phút không thành auto-cleanup ngầm. |
-| `INV-DOM-011` | Mỗi order có nhiều nhất một RefundScope đang giữ refund lock: `REGISTERED`, `IN_PROGRESS` hoặc `INSPECTION_COMPLETED`; scope đã đăng ký là immutable. | Register/cancel/close transition của RefundScope. | Không có hai refund request `PROCESSING` cạnh tranh trên cùng full-order scope. |
+| `INV-DOM-011` | Mỗi order có nhiều nhất một RefundScope trong toàn bộ retained history; scope selected lines đã đăng ký là immutable và mỗi line full quantity. | Lifetime uniqueness theo `order_id`, Register/cancel/close transition. | Không có request thứ hai, kể cả sau terminal closure. |
 | `INV-DOM-012` | Với mọi RefundScopeLine: `0 ≤ passed + failed ≤ received ≤ expected`; receipt và inspection không vượt quantity scope. | Return receipt và inspection command validation. | Không nhận trùng/quá số lượng hàng hoàn. |
 | `INV-DOM-013` | `AllItemsInspectionCompleted` chỉ tồn tại khi mọi RefundScopeLine final inspected và chỉ được tạo một lần. | Terminal transition cùng transactional outbox record. | Order/Payment chỉ nhận fact completion đầy đủ, có thể retry an toàn. |
-| `INV-DOM-014` | Chỉ Order Saga có thể chuyển scope `INSPECTION_COMPLETED → CLOSED`; scope mới chỉ được đăng ký sau `CLOSED`, `CANCELLED` hoặc `CLOSED_INCOMPLETE`. | `CloseRefundScope` authorization và state guard. | Inspection completion không vô tình mở một refund request thứ hai khi Order còn `PROCESSING`. |
+| `INV-DOM-014` | Chỉ Order Saga có thể chuyển scope `INSPECTION_COMPLETED → CLOSED`; terminal closure vẫn giữ lifetime uniqueness. | `CloseRefundScope` authorization, state guard và retained identity. | Inspection completion/closure không mở refund request thứ hai. |
 | `INV-DOM-015` | Chỉ Warehouse Admin được ghi physical dispatch của ReservationLine `COMMITTED` tại đúng warehouse allocation; command tạo physical movement/audit fact idempotent. | `RecordPhysicalDispatch` authorization, state và warehouse guard. | Không giảm `on_hand` theo nhãn vận đơn hoặc trạng thái Order không phản ánh hàng đã rời kho. |
 | `INV-DOM-016` | `ReleaseReservation(PAYMENT_FAILED/RESERVATION_EXPIRED)` chỉ áp dụng root `RESERVED`; `ReleaseReservation(STOCK_DISCREPANCY, order_exception_id)` cũng chỉ áp dụng root `RESERVED` và luôn release toàn root. `ReleaseCommittedAllocation(ORDER_CANCELLED/REFUND_BEFORE_DISPATCH)` chỉ áp dụng line `COMMITTED` chưa dispatch. Khi order đã partial dispatch, chỉ `POST_DISPATCH_EXCEPTION` kèm `order_exception_id` được phép release target line chưa dispatch. | Command reason và state guard. | Timer/retry hoặc correction không thể vô tình giải phóng committed stock hoặc đảo ngược physical dispatch; stock discrepancy không tạo partial release/fulfillment ngầm. |
 | `INV-DOM-017` | Với cùng ReservationLine `COMMITTED`, chỉ transition atomic đầu tiên giữa release hợp lệ và physical dispatch được áp dụng. | State transition serialization/idempotency guard. | Không compensation ngầm làm mất dấu hàng đã rời kho hoặc giải phóng stock đã dispatch. |
@@ -325,19 +325,19 @@ Payment không có quyền gọi transition này.
    Inventory không tự chuyển state khi hết hạn. Order Saga chủ động release; retry
    idempotent của commit thành công trước deadline vẫn nhận lại kết quả gốc.
 9. **Đã chốt:** RefundScope là aggregate riêng, được Order Saga đăng ký immutable trước
-   receipt, bao gồm toàn bộ order line/full quantity. Mỗi order có tối đa một scope
-   đang giữ refund lock: `REGISTERED`, `IN_PROGRESS` hoặc `INSPECTION_COMPLETED`.
+   receipt, bao gồm selected order line/full quantity. Mỗi order có tối đa một scope
+   trong toàn bộ retained history; terminal closure không mở quyền đăng ký scope khác.
 10. **Đã chốt:** Receipt có thể qua nhiều kiện nhưng cumulative quantity không vượt scope.
     Hàng luôn vào quarantine; `PASS` mới tăng sellable, `FAIL` vẫn quarantine.
 11. **Đã chốt:** Scope chỉ phát `AllItemsInspectionCompleted` một lần khi mọi item đã
     có kết quả final inspection. Cancel chỉ hợp lệ khi chưa receipt; scope dở dang không
     tự timeout/close/refund và phải chờ một exception command rõ ràng do Order quyết định.
 12. **Đã chốt:** `INSPECTION_COMPLETED` không kết thúc refund request. Chỉ Order Saga
-    gửi `CloseRefundScope` idempotent khi request đạt trạng thái cuối ở Order; chỉ
-    `CLOSED` hoặc `CANCELLED` giải phóng refund lock.
+    gửi `CloseRefundScope` idempotent khi request đạt trạng thái cuối ở Order; closure
+    không mở scope khác cho order.
 13. **Đã chốt:** Scope `IN_PROGRESS` có một phần hàng không về chỉ được kết thúc bởi
     `CloseIncompleteRefundScope` từ Order Saga, sau khi mọi hàng đã nhận final inspected.
-    Scope thành `CLOSED_INCOMPLETE`, không phát completion fact và giải phóng refund lock.
+    Scope thành `CLOSED_INCOMPLETE`, không phát completion fact và giữ lifetime identity.
 
 Không còn policy mở ở lifecycle chuẩn của stock, reservation và return inspection.
 Decision kế tiếp là hình thức và guard của exception command khi scope bị dở dang hoặc

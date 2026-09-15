@@ -204,8 +204,11 @@ interactions:
     contract: http/inventory/workflow/v1/openapi.yaml
     status: proposed
     notes: >-
-      Order Temporal Saga exclusively owns Reserve/Commit/Release and Refund Scope
-      decisions; commands are durable and idempotent by caller namespace plus key.
+      Order Temporal Saga exclusively owns Reserve/Commit/Release, selected Refund
+      Scope, and automatic admin pre-dispatch refund decisions. Inventory atomically
+      releases every committed line or none; scope is one per order lifetime and each
+      selected line has full quantity. Commands are durable and idempotent by caller
+      namespace plus key.
 
   - id: warehouse-admin-operates-inventory
     protocol: http
@@ -256,7 +259,8 @@ interactions:
     notes: >-
       Search consumes one Inventory-owned per-SKU availability snapshot only after
       Search has registered Product-document readiness; Order consumes
-      reservation, physical-dispatch, and refund-inspection facts. Delivery is
+      reservation, physical-dispatch, and selected-scope refund-inspection facts.
+      Inspection completion is payout-independent and contains pass/fail counters. Delivery is
       at-least-once with a 30-day minimum replay window.
 
   - id: search-exports-inventory-availability
