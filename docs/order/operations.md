@@ -134,8 +134,9 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Worker/job | Trigger/input | Concurrency/idempotency | Timeout/retry/output |
 |---|---|---|---|
 | Outbox CDC pipeline | WAL row `outbox_events` | Partition theo order; connector offset | Kafka Connect retry/DLQ/backoff; `t.order.events` |
-| Payment consumer | `t.payment.events` | Durable inbox + original transaction/amount/currency/financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
-| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + aggregate revision + line/warehouse guard | `DISPATCHED` item fact only; no completion |
+| Payment consumer | `t.payment.events.v2` | Durable inbox + mapped attempt/amount/currency/per-transaction financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
+| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + aggregate revision + line/warehouse guard | `DISPATCHED` line fact only; no completion |
+| Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | CAS line `DISPATCHED -> DELIVERED`; complete master only after all line proofs |
 | Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence then signal refund workflow |
 | Workflow dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API/consumer crash |
 | Temporal worker | Four task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
@@ -155,15 +156,16 @@ escalation owner. Tối thiểu phải có:
    and remote checkpoint; repair dependency, query/replay same activity key, không update
    DB thủ công thiếu inbox/outbox.
 3. Refund quá 30 ngày/manual verification: đối chiếu selected locked scope với
-   Inventory, ghi audit quyền admin, signal đúng workflow và xác minh lifetime case
-   chưa tạo transaction thứ hai. Không coi inspection `FAIL` là lý do bỏ Payment.
+   Inventory, tạo một Finance/Ops reconciliation decision cùng evidence digest qua internal
+   API, rồi chỉ resume checkpoint có sẵn hoặc escalate accounting. Xác minh lifetime case
+   chưa tạo transaction thứ hai; không coi inspection `FAIL` là lý do bỏ Payment.
 4. CDC/outbox backlog: dừng trimmer, kiểm tra connector/WAL/offset/topic, resume,
    xác minh sequence/duplicate downstream.
 5. Redis corruption/outage: đánh giá duplicate window, ưu tiên DB/Temporal guard,
    không flush broad keyspace, khôi phục và theo dõi duplicate rate.
 6. DB pool/deadlock: xác định query/lock holder, giảm concurrency, không kill
    transaction mù, xác minh state/outbox atomicity.
-7. Late-payment recovery/manual verification: xác nhận original payment identity/version,
+7. Late-payment recovery/manual verification: xác nhận mapped payment attempt identity/version,
    timeout non-capture fact, Inventory fenced-recovery outcome and physical-dispatch evidence
    trước mọi manual action. Automatic admin refund chỉ được tiếp tục after an accepted
    all-line atomic pre-dispatch attempt; mixed/rejected attempt must not have created a

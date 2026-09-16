@@ -34,7 +34,7 @@ operations:
   publishOrderCompleted:
     action: send
     channel: { $ref: '#/channels/orderEvents' }
-    summary: Publish the immutable purchase snapshot after every item in an order is delivered.
+    summary: Publish the immutable purchase snapshot after every line in an order is delivered by verified Delivery proof.
     messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
 components:
   messages:

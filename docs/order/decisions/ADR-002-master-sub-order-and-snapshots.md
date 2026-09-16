@@ -39,9 +39,11 @@ unit. `order_promotions` lưu PLATFORM discount allocation đã áp.
 
 ## Hệ quả
 
-Hỗ trợ smart routing, delivery FSM và một payment. Snapshot tăng storage, có PII,
-không tự đồng bộ upstream và cần policy retention/GDPR riêng. Search card cần
-aggregate/subquery qua nhiều table.
+Hỗ trợ smart routing, delivery FSM và một logical payment transaction đã capture
+(có thể có nhiều numbered Payment attempt trước đó). Snapshot tăng storage, có PII,
+không tự đồng bộ upstream và cần policy retention/GDPR riêng. Inventory Preview dùng
+`line_reference`; khi tạo order phải persist bridge bất biến từ reference này sang
+`order_line_id` trước Reserve. Search card cần aggregate/subquery qua nhiều table.
 
 ## Ảnh hưởng migration
 

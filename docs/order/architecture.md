@@ -39,7 +39,7 @@ flowchart LR
   TW --> I[Inventory Service]
   TW --> M[Promotion Service]
   TW --> Y[Payment Service]
-  Y --> KP[Kafka: payment events]
+  Y --> KP[Kafka: t.payment.events.v2]
   I --> KI[Kafka: inventory events]
   KP --> PC[Payment consumer]
   KI --> IC[Inventory consumers]
@@ -108,7 +108,7 @@ has a separate reconciliation lane.
 | Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget (không outbox, Promotion ADR-016) |
 | FSM local | `UpdateOrderStatusActivity` | Row lock/CAS, update master và outbox |
 | Refund local | `MarkRefundRequestedActivity` | Verify source/guard, chuyển `RETURN_REQUESTED` |
-| Refund local | `LockRefundScopeActivity` | Khóa selected `order_line_id` full quantity và gross amount cap `final_amount` |
+| Refund local | `LockRefundScopeActivity` | Khóa selected `order_line_id` full quantity và gross amount cap `final_amount_minor` |
 | Refund remote | `RegisterRefundScopeActivity` | Đăng ký selected scope với Inventory |
 | Refund remote | `ReleaseCommittedOrderBeforeDispatchActivity` | Admin path: Inventory release tất cả committed lines atomically hoặc conflict no-op |
 | Refund local/recovery | `RecordAdminRefundAttemptActivity` | Persist attempt/command ID; create lifetime case only after accepted all-line release proof |
@@ -153,10 +153,11 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
 - Payment signal/timer are serialized only after Payment identity/version validation;
   cancellation waits provider non-capture/capture fact, and timeout success uses fenced
   late-payment recovery.
-- Auto-complete is disabled until a separate verified delivery-proof contract exists;
-  Inventory physical dispatch only updates item `DISPATCHED` and cannot complete master.
+- Delivery proof contract v1 is target-owned by Delivery; Inventory physical dispatch only
+  updates a line `DISPATCHED` and cannot complete master. Order's Delivery consumer may
+  complete only after every line has a matching verified proof.
 - Event Order partition theo `order_id`; counter `last_event_sequence_id` tăng đơn
-  điệu theo order. Item consumer guard thêm `order_item_id`.
+  điệu theo order. Line consumer guard thêm `order_line_id`.
 - Không dùng UUID event theo thứ tự từ điển và không còn optimistic `version`.
 
 ## 6. Mô hình triển khai

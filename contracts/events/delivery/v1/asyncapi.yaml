@@ -1,0 +1,62 @@
+asyncapi: 3.0.0
+info:
+  title: Delivery Service Verified Delivery Facts
+  version: 1.0.0
+  description: >-
+    The only fact that may move an Order line from DISPATCHED to DELIVERED.
+    It is not emitted by Inventory physical dispatch. Order consumes it with a
+    durable inbox and validates the immutable order-line/warehouse allocation.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local: { host: localhost:9092, protocol: kafka }
+channels:
+  deliveryFacts:
+    address: t.delivery.order.events.v1
+    x-owner: delivery-service
+    x-message-key: order_id
+    x-delivery-semantic: at-least-once
+    x-ordering-scope: order_id
+    x-deduplication-key: CloudEvents.id
+    x-consumers: [order-service]
+    messages:
+      orderLineDelivered: { $ref: '#/components/messages/orderLineDelivered' }
+operations:
+  publishOrderLineDelivered:
+    action: send
+    channel: { $ref: '#/channels/deliveryFacts' }
+    messages: [{ $ref: '#/channels/deliveryFacts/messages/orderLineDelivered' }]
+components:
+  messages:
+    orderLineDelivered:
+      name: orderLineDeliveredV1
+      title: Verified customer delivery of one Order line
+      contentType: application/cloudevents+json
+      payload: { $ref: '#/components/schemas/OrderLineDelivered' }
+  schemas:
+    OrderLineDelivered:
+      type: object
+      additionalProperties: false
+      required: [specversion, id, source, type, subject, time, data]
+      properties:
+        specversion: { const: '1.0' }
+        id: { type: string, format: uuid }
+        source: { const: delivery-service }
+        type: { const: com.ecommerce.delivery.order-line.delivered.v1 }
+        subject: { type: string, pattern: '^orders/[A-Za-z0-9_.-]+/lines/[A-Za-z0-9_.-]+$' }
+        time: { type: string, format: date-time }
+        data:
+          type: object
+          additionalProperties: false
+          required: [order_id, order_line_id, warehouse_id, delivery_proof_id, delivery_proof_sha256, delivered_at, aggregate_revision]
+          properties:
+            order_id: { type: string, minLength: 1, maxLength: 128 }
+            order_line_id: { type: string, minLength: 1, maxLength: 128 }
+            warehouse_id: { type: string, minLength: 1, maxLength: 128 }
+            delivery_proof_id: { type: string, minLength: 1, maxLength: 128 }
+            delivery_proof_sha256:
+              type: string
+              pattern: '^[A-Fa-f0-9]{64}$'
+              description: SHA-256 of the immutable, provider-verifiable proof record; raw proof/PII is never put on Kafka.
+            delivered_at: { type: string, format: date-time }
+            aggregate_revision: { type: integer, minimum: 1 }

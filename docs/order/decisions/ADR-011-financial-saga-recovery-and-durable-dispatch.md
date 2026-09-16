@@ -17,8 +17,9 @@ and refund reversal has no valid transition from `REFUNDED`.
 
 ## Decision
 
-Order persists original Payment identity and validates every financial event by order,
-transaction, amount, currency and monotonic financial version in a durable inbox. API and
+Order persists numbered Payment-attempt↔transaction mappings and validates every financial
+event by order, mapped attempt, transaction, VND amount/currency and monotonic version per
+transaction in a durable inbox. API and
 consumer commands persist a workflow dispatch record before returning accepted; a
 dispatcher start/attaches the fixed workflow ID after failure. Every remote Activity has a
 durable command checkpoint and resolves an uncertain result by the provider's replay/query
@@ -41,7 +42,7 @@ verification and never creates a second refund. Inventory physical dispatch maps
 ## Consequences
 
 Order gains inbox, dispatch, checkpoint and admin-attempt persistence plus a financial
-reconciliation workflow and operator workload. The system deliberately leaves a captured
+ reconciliation workflow and an evidence-backed Finance/Ops decision workload. The system deliberately leaves a captured
 but unrecoverable fulfilment in an explicit financial state rather than making an unsafe
 automatic refund or changing wallet/stock by assumption.
 
@@ -50,6 +51,7 @@ automatic refund or changing wallet/stock by assumption.
 Prove provider create/cancel/capture races; remote timeout before/after accepted mutation;
 workflow start crash; duplicate/stale/mismatched Payment/Inventory facts; every late-payment
 fence; rejected versus accepted admin release; full inspection evidence; reversal after
-`REFUNDED`; and that physical dispatch cannot complete/deliver an order. Each test must
+`REFUNDED`; physical dispatch cannot deliver/complete an order; and only a verified Delivery
+proof may change one line to `DELIVERED`. Each test must
 show atomic local state/inbox/dispatch/checkpoint/outbox behavior and no second payment,
 refund, reservation or voucher transition.

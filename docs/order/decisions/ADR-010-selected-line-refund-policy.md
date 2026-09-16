@@ -37,13 +37,13 @@ an toàn, atomic cho admin refund khi hàng chưa rời kho.
   nguồn là Buyer hay Admin và bất kể case kết thúc `SUCCEEDED`, `FAILED`,
   `CLOSED_INCOMPLETE` hay cần xử lý thủ công. Request idempotent chỉ attach vào
   case đó, không tạo case thứ hai.
-- Buyer chỉ tạo case sau khi **mọi** delivery unit của order đã `DELIVERED`.
+- Buyer chỉ tạo case sau khi **mọi** order line đã `DELIVERED` bằng verified Delivery proof.
   Buyer chọn một hay nhiều `order_line_id`; mỗi line được chọn phải có
   `expected_quantity = order_item_lines.quantity`. Không có partial quantity và
   không dùng `sku_id` làm identity scope.
 - Refund amount được Order khóa đúng một lần, không gọi Promotion và không
-  tính lại discount: `min(sum(selected_line.quantity * selected_line.unit_price),
-  orders.final_amount)`. Voucher/discount còn lại do Buyer chịu và Promotion
+  tính lại discount: `min(sum(selected_line.quantity * selected_line.unit_price_minor),
+  orders.final_amount_minor)`. Voucher/discount còn lại do Buyer chịu và Promotion
   wallet/budget không đổi.
 - Inventory chỉ phát
   `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` khi mọi
@@ -57,12 +57,12 @@ an toàn, atomic cho admin refund khi hàng chưa rời kho.
 - Admin automatic force refund chỉ hợp lệ khi Inventory atomically xác nhận và
   release **toàn bộ** committed allocation của order trước physical dispatch.
   Lệnh đó hoặc release tất cả line, hoặc không release line nào. Có bất kỳ line
-  đã dispatch thì Order từ chối automatic force refund; Release 1 dùng manual
-  exception, không có partial-release workaround. Đường này không có Refund
+  đã dispatch thì Order từ chối automatic force refund; Finance/Ops dùng reconciliation
+  decision có evidence/audit, không có partial-release workaround. Đường này không có Refund
   Scope vì không có hàng trả về.
 - Pre-payment cancellation vẫn là cancel/compensation, không phải refund.
 - Late-payment recovery may restore a safe paid/fulfilment lane, but if it cannot,
-  Release 1 sends the case to manual verification rather than an un-gated system
+  Release 1 sends the case to evidence-backed reconciliation rather than an un-gated system
   auto-refund. A future automatic recovery refund requires a separate ADR and
   Inventory evidence compatible with this policy.
 

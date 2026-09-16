@@ -24,6 +24,8 @@ verified_against_commit: null
 | PostgreSQL `order_promotions` | Promotion allocation đã áp trên order | Order Service cho snapshot; Promotion sở hữu budget/wallet |
 | PostgreSQL `order_refund_cases` | Refund process control plane | Order Service |
 | PostgreSQL `order_admin_refund_attempts` | Durable pre-dispatch release attempt; separate from lifetime refund entitlement | Order Service |
+| PostgreSQL `order_payment_attempts` | Immutable mapping payment attempt ↔ Payment transaction and financial version | Order Service |
+| PostgreSQL `order_financial_reconciliation_cases` | Audited post-capture exception/evidence and its permitted resolution | Order Service |
 | PostgreSQL `order_workflow_dispatches` | Transactional intent to start/attach a fixed Temporal workflow after local commit | Order Service |
 | PostgreSQL `order_consumed_events` | Durable inbox and validation receipt for Payment/Inventory at-least-once events | Order Service |
 | PostgreSQL `order_saga_checkpoints` | Remote command IDs/outcomes for checkout, cancellation and post-capture repair | Order Service |
@@ -43,25 +45,29 @@ erDiagram
     ORDERS ||--|{ ORDER_ITEMS : contains
     ORDER_ITEMS ||--|{ ORDER_ITEM_LINES : snapshots
     ORDERS ||--o{ ORDER_PROMOTIONS : applies
+    ORDERS ||--o{ ORDER_PAYMENT_ATTEMPTS : pays_by
     ORDERS ||--o| ORDER_REFUND_CASES : controls
     ORDER_REFUND_CASES ||--|{ ORDER_REFUND_CASE_LINES : locks
     ORDERS ||--o{ ORDER_ADMIN_REFUND_ATTEMPTS : records
     ORDERS ||--o{ ORDER_WORKFLOW_DISPATCHES : dispatches
     ORDERS ||--o{ ORDER_CONSUMED_EVENTS : receives
     ORDERS ||--o{ ORDER_SAGA_CHECKPOINTS : checkpoints
+    ORDERS ||--o| ORDER_FINANCIAL_RECONCILIATION_CASES : escalates
     ORDERS ||--o{ OUTBOX_EVENTS : emits
 
     ORDERS {
       bigint id PK
       uuid user_id
       varchar checkout_token UK
-      decimal total_amount
-      decimal total_discount
-      decimal final_amount
+      bigint total_amount_minor
+      bigint total_discount_minor
+      bigint final_amount_minor
+      varchar inventory_allocation_plan_id
       varchar status
       varchar payment_status
-      varchar original_payment_transaction_id
-      bigint last_payment_financial_version
+      int active_payment_attempt_number
+      varchar active_payment_transaction_id
+      varchar captured_payment_transaction_id
       timestamptz buyer_return_locked_at
       bigint last_event_sequence_id
     }
@@ -75,10 +81,12 @@ erDiagram
     ORDER_ITEM_LINES {
       bigint id PK
       bigint order_item_id FK
+      varchar allocation_plan_line_reference UK
       varchar sku_id
       varchar product_id
       int quantity
-      decimal unit_price
+      bigint unit_price_minor
+      varchar fulfillment_status
       varchar snapshot_name
       varchar snapshot_image_url
       jsonb snapshot_attributes
@@ -87,7 +95,16 @@ erDiagram
       bigint id PK
       bigint order_id FK
       bigint promotion_id
-      decimal discount_amount
+      bigint discount_amount_minor
+    }
+    ORDER_PAYMENT_ATTEMPTS {
+      bigint order_id FK
+      int payment_attempt_number
+      varchar payment_transaction_id UK
+      bigint amount_minor
+      varchar currency
+      varchar terminal_status
+      bigint last_financial_state_version
     }
     ORDER_REFUND_CASES {
       bigint order_id PK
@@ -95,7 +112,7 @@ erDiagram
       varchar workflow_id
       varchar trigger_source
       varchar case_status
-      decimal refund_amount_locked
+      bigint refund_amount_locked_minor
       varchar inventory_refund_scope_id
       varchar refund_transaction_id UK
       uuid inspection_event_id UK
@@ -130,15 +147,29 @@ erDiagram
       varchar command_id
       varchar outcome
     }
+    ORDER_FINANCIAL_RECONCILIATION_CASES {
+      bigint order_id PK
+      varchar case_status
+      varchar resolution_type
+      varchar decision_id UK
+      varchar evidence_digest
+      uuid decided_by
+    }
     ORDER_REFUND_CASE_LINES {
       bigint refund_case_order_id FK
       bigint order_line_id FK
       int expected_quantity
-      decimal unit_price_snapshot
+      bigint unit_price_snapshot_minor
     }
 ```
 
-Một order có ít nhất một delivery unit; một delivery unit có ít nhất một line.
+Checkout sends an Inventory-owned allocation plan whose line identity is
+`line_reference`, not an Order ID. When it accepts the snapshot, Order assigns each
+`order_line_id`, persists the immutable unique bridge
+`allocation_plan_line_reference -> order_item_lines.id`, then creates a delivery unit
+for each planned warehouse and stores every line's immutable planned warehouse. One
+delivery unit can contain many lines only when they share that warehouse. Dispatch and
+delivery state are nevertheless owned per line, never inferred for sibling lines.
 Refund case tối đa một record **trọn đời** trên mỗi order. Với Buyer return, các
 line scope thuộc case và dùng identity `order_item_lines.id`, không phải `sku_id`;
 mỗi line được chọn có quantity đúng bằng quantity đã mua. Snapshot address ở item
@@ -153,12 +184,14 @@ không phụ thuộc address book bị sửa/xóa về sau.
 |---|---|---|
 | `id` | `BIGSERIAL` PK | Master order ID |
 | `user_id` | `UUID` | Buyer canonical ID |
-| `total_amount` | `DECIMAL` | Tổng tiền hàng |
-| `total_discount` | `DECIMAL` | Tổng PLATFORM discount |
-| `final_amount` | `DECIMAL` | `total_amount - total_discount` |
+| `total_amount_minor` | `BIGINT` | Integer VND, tổng tiền hàng |
+| `total_discount_minor` | `BIGINT` | Integer VND, tổng PLATFORM discount |
+| `final_amount_minor` | `BIGINT` | `total_amount_minor - total_discount_minor` |
+| `inventory_allocation_plan_id` | `VARCHAR(128)` | Plan ID từ Inventory Preview, immutable snapshot dùng cho Reserve/reconciliation |
 | `payment_status` | `VARCHAR(50)` | `PENDING/PAID/FAILED/REFUNDING/REFUNDED/REFUND_FAILED`; read/UI denormalized |
-| `original_payment_transaction_id` | `VARCHAR(120)` nullable, unique when set | Identity returned by Payment initiate; every cancel/success/refund event must match it before changing financial lane. |
-| `last_payment_financial_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic accepted Payment financial fact; stale/out-of-order valid event cannot override a later fact. |
+| `active_payment_attempt_number` | `INT` nullable | Attempt Payment hiện tại. Chỉ tăng sau financial fact terminal non-capture của attempt trước; không bao giờ tái dùng. |
+| `active_payment_transaction_id` | `VARCHAR(120)` nullable | Transaction của active attempt. Pre-capture cancel/fail/expired và event active phải match field này. |
+| `captured_payment_transaction_id` | `VARCHAR(120)` nullable, unique when set | First/only successful transaction của order; immutable sau khi set. Refund phải dùng identity này, không dùng một attempt thất bại hoặc active ID đã stale. |
 | `status` | `VARCHAR(50)` | Master FSM state |
 | `checkout_token` | `VARCHAR(255)` unique, not null | Route workflow `order-checkout-{checkout_token}` |
 | `cancel_reason` | `TEXT` nullable | `PAYMENT_TIMEOUT`, `USER_CANCEL`, `ADMIN_FORCE_CANCEL`, `PRE_PAYMENT_SAGA_FAILED`, `PAYMENT_FAILED`; workflow sở hữu enum, không DB CHECK |
@@ -174,7 +207,7 @@ khi coi query ở §6 là executable.
 
 Các nguồn field được tham chiếu trực tiếp trong read model gồm `orders.id`,
 `orders.status`, `orders.payment_status`, `orders.created_at`,
-`orders.total_amount`, `order_items.id`, `order_item_lines.snapshot_name` và
+`orders.total_amount_minor`, `order_items.id`, `order_item_lines.snapshot_name` và
 `order_item_lines.snapshot_image_url`.
 
 ### 3.2. `order_items`
@@ -184,7 +217,7 @@ Các nguồn field được tham chiếu trực tiếp trong read model gồm `o
 | `id` | `BIGSERIAL` PK | Delivery unit ID |
 | `order_id` | `BIGINT` FK | Master owner |
 | `warehouse_id` | `BIGINT` | Kho xuất hàng |
-| `status` | `VARCHAR(50)` | `PROCESSING/DELIVERED`; return/refund không đổi delivery state của whole delivery unit |
+| `status` | `VARCHAR(50)` | Derived only from child line state: `PROCESSING/PARTIALLY_DISPATCHED/DISPATCHED/PARTIALLY_DELIVERED/DELIVERED`; không phải source cho mutation line |
 | `delivery_address_snapshot` | `JSONB NOT NULL` | `recipient_name`, `recipient_phone`, `address_line`, `province_code`, `district_code`, `ward_code` |
 
 Ward bắt buộc được giữ trong snapshot để thay đổi address/địa giới sau này không
@@ -196,9 +229,13 @@ viết lại lịch sử đơn.
 |---|---|---|
 | `id` | `BIGSERIAL` PK | Line identity |
 | `order_item_id` | `BIGINT` FK | Delivery unit owner |
+| `allocation_plan_line_reference` | `VARCHAR(128) UNIQUE NOT NULL` | Immutable `line_reference` from the accepted Inventory Preview; is the only bridge from Checkout plan to generated Order line identity. |
+| `allocated_warehouse_id` | `BIGINT NOT NULL` | Warehouse immutable từ Inventory allocation plan; phải khớp parent `order_items.warehouse_id` |
 | `sku_id`, `product_id` | `VARCHAR(255)` | External identifiers dạng snapshot/reference |
 | `quantity` | `INT` | Phải lớn hơn 0 |
-| `unit_price` | `DECIMAL` | Giá tại thời điểm mua |
+| `unit_price_minor` | `BIGINT` | Integer VND snapshot; không dùng floating point |
+| `fulfillment_status` | `VARCHAR(50)` | Authoritative line FSM `PROCESSING/DISPATCHED/DELIVERED` |
+| `dispatch_event_id`, `delivery_proof_id`, `delivery_proof_sha256`, `delivered_at` | `UUID/VARCHAR/VARCHAR(64)/TIMESTAMPTZ` nullable | Immutable fact identity/proof receipt sau mỗi transition; raw proof/PII không lưu ở Order; duplicate phải replay/no-op |
 | `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất |
 | `snapshot_image_url` | `VARCHAR(255)` | Ảnh lúc mua |
 | `snapshot_attributes` | `JSONB` | Ví dụ color/size; nguồn cho variant snapshot khi có |
@@ -210,14 +247,31 @@ viết lại lịch sử đơn.
 | `id` | `BIGSERIAL` PK | Row ID |
 | `order_id` | `BIGINT` FK | Master owner |
 | `promotion_id` | `BIGINT` | Promotion đã áp |
-| `discount_amount` | `DECIMAL` | PLATFORM allocation duy nhất |
+| `discount_amount_minor` | `BIGINT` | PLATFORM allocation integer VND duy nhất |
+
+### 3.5. `order_payment_attempts`
+
+| Field | Kiểu | Quy tắc/ý nghĩa |
+|---|---|---|
+| `order_id`, `payment_attempt_number` | `BIGINT`, `INT` | Primary key; attempt bắt đầu ở 1 và tăng đơn điệu trong cùng order. |
+| `payment_transaction_id` | `VARCHAR(120) UNIQUE` | Identity bất biến do Payment trả. |
+| `amount_minor`, `currency` | `BIGINT`, `VARCHAR(3)` | Snapshot canonical `VND`; phải khớp order pricing snapshot và Payment event. |
+| `terminal_status` | `VARCHAR(32)` nullable | `FAILED/EXPIRED/CANCELED/SUCCESS`; một non-capture terminal fact mới cho phép tạo attempt sau. |
+| `last_financial_state_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic per **payment transaction**, không so sánh version giữa hai attempt khác nhau. |
+
+`UNIQUE(order_id, payment_attempt_number)` và `UNIQUE(payment_transaction_id)` là bắt
+buộc. Khi initiate thành công, Order insert attempt row cùng checkpoint rồi set hai field
+active trên `orders`. Matching `PAYMENT_SUCCESS` atomically sets
+`captured_payment_transaction_id` if still null. A success for a different attempt, or a
+second capture, is parked into financial reconciliation; it never silently replaces the
+captured identity.
 
 Bảng này là snapshot voucher toàn đơn đã áp dụng, dùng cho lịch sử/đối soát và
 checkout compensation. Nó không phải allocation theo SKU, không dùng để hoàn Promotion
 budget khi customer refund và không cho phép suy diễn/ghi lại wallet state. Cột
 `admin_funding` cũ đã bị loại ở Phase 21.
 
-### 3.5. `order_refund_cases` và `order_refund_case_lines`
+### 3.6. `order_refund_cases` và `order_refund_case_lines`
 
 ```sql
 CREATE TABLE order_refund_cases (
@@ -234,7 +288,7 @@ CREATE TABLE order_refund_cases (
     refund_mode VARCHAR(40) NOT NULL
         CHECK (refund_mode IN ('BUYER_RETURN_SELECTED_LINES',
           'ADMIN_PRE_DISPATCH_FULL_ORDER')),
-    refund_amount_locked DECIMAL(18,2) NOT NULL,
+    refund_amount_locked_minor BIGINT NOT NULL CHECK (refund_amount_locked_minor >= 0),
     inventory_refund_scope_id VARCHAR(128) NULL UNIQUE,
     inventory_scope_inspection_completed_at TIMESTAMPTZ NULL,
     inventory_inspection_event_id UUID NULL UNIQUE,
@@ -258,7 +312,7 @@ CREATE TABLE order_refund_case_lines (
     refund_case_order_id BIGINT NOT NULL REFERENCES order_refund_cases(order_id),
     order_line_id BIGINT NOT NULL REFERENCES order_item_lines(id),
     expected_quantity INT NOT NULL CHECK (expected_quantity > 0),
-    unit_price_snapshot DECIMAL(18,2) NOT NULL CHECK (unit_price_snapshot >= 0),
+    unit_price_snapshot_minor BIGINT NOT NULL CHECK (unit_price_snapshot_minor >= 0),
     PRIMARY KEY (refund_case_order_id, order_line_id)
 );
 ```
@@ -270,8 +324,8 @@ lines không rỗng, cùng order và `expected_quantity = order_item_lines.quant
 return lines/scope và phải lưu receipt của Inventory atomic committed-release.
 
 Amount được khóa cùng lúc với case: với Buyer là
-`min(sum(order_refund_case_lines.expected_quantity * unit_price_snapshot),
-orders.final_amount)`; với Admin pre-dispatch là `orders.final_amount`. Không có
+`min(sum(order_refund_case_lines.expected_quantity * unit_price_snapshot_minor),
+orders.final_amount_minor)`; với Admin pre-dispatch là `orders.final_amount_minor`. Không có
 discount re-proration hay Promotion mutation. `refund_transaction_id` chỉ được
 tạo sau Inventory scope-inspection evidence (Buyer) hoặc committed-release evidence
 (Admin). Terminal state là `SUCCEEDED|FAILED`; provider `REVERSED` gộp vào `FAILED`
@@ -288,7 +342,7 @@ A provider `REVERSED` after case `SUCCEEDED` changes that same case to
 `MANUAL_VERIFICATION_REQUIRED` and reopens the master refund lane; it never opens a
 new case/refund transaction.
 
-### 3.6. `order_admin_refund_attempts`
+### 3.7. `order_admin_refund_attempts`
 
 An Admin pre-dispatch action is an attempt, not a refund case. It has `attempt_id`,
 `order_id`, fixed `workflow_id`, stable `inventory_command_id`, canonical request hash,
@@ -298,7 +352,18 @@ an attempt is running. A rejected attempt is retained for audit but never insert
 `order_refund_cases` or changes `buyer_return_locked_at`; an accepted/recovered command
 atomically creates the case and evidence described above.
 
-### 3.7. Workflow dispatch, inbox and Saga checkpoints
+### 3.8. Financial reconciliation cases
+
+`order_financial_reconciliation_cases` is a one-to-one durable case per order. It stores
+the triggering checkpoint/event IDs, `evidence_digest`, owner queue, timestamps and a
+mandatory named decision. `case_status` is `OPEN`, `EVIDENCE_PENDING`, `DECIDED` or
+`CLOSED`; `resolution_type` is only `RESUME_FORWARD_REPAIR`,
+`CLOSE_AS_MANUAL_FULFILLMENT`, or `ESCALATE_TO_ACCOUNTING`. Every decision has a UUID
+`decision_id`, authenticated Finance/Ops actor, reason and immutable evidence references.
+It never writes a Payment/Inventory/Promotion state directly and cannot authorize an
+unproven refund.
+
+### 3.9. Workflow dispatch, inbox and Saga checkpoints
 
 `order_workflow_dispatches` is a transactional outbox for Temporal start/attach. It stores
 `dispatch_id`, `order_id`, fixed workflow ID/type, input digest, `PENDING|STARTED|FAILED`
@@ -312,18 +377,21 @@ insert and the durable routing/checkpoint update commit together. Redis TTL keys
 load but cannot decide a duplicate, late or malformed financial/inventory event.
 
 `order_saga_checkpoints` stores one stable remote command identity per `(order_id, phase,
-operation)`: command ID/key, request digest, remote resource/result digest, outcome and
-timestamps. An ambiguous Inventory/Payment/Promotion response is resolved by its command
-query/replay and then updates this checkpoint; compensation/recovery may never infer that
-an unknown remote mutation failed.
+operation)`: command ID/key, request digest, canonical remote resource reference and
+sanitized response payload/digest, outcome and timestamps. Reserve checkpoint must persist
+`inventory_allocation_plan_id` and the complete `(checkout_line_reference, order_line_id,
+allocated_warehouse_id, quantity)` mapping; it is the local proof used by
+dispatch/delivery consumers. An ambiguous
+Inventory/Payment/Promotion response is resolved by its command query/replay and then updates
+this checkpoint; compensation/recovery may never infer that an unknown remote mutation failed.
 
-### 3.8. `outbox_events`
+### 3.10. `outbox_events`
 
 | Field | Kiểu | Quy tắc |
 |---|---|---|
 | `event_id` | `UUID` PK | Event identity |
 | `schema_version` | `INT NOT NULL DEFAULT 1` | Version envelope |
-| `aggregate_type` | `VARCHAR(50)` | `Order` hoặc `OrderItem` |
+| `aggregate_type` | `VARCHAR(50)` | `Order` hoặc `OrderLine` |
 | `aggregate_id` | `VARCHAR(255)` | ID theo aggregate |
 | `event_type` | `VARCHAR(100)` | Event business type |
 | `partition_key` | `VARCHAR(255) NOT NULL` | `order_id` cho `t.order.events` |
@@ -342,8 +410,9 @@ ghi `payload.last_event_sequence_id`.
   `order_id` là lifetime uniqueness, `refund_request_id`, `inventory_refund_scope_id`
   và `refund_transaction_id` unique nullable. `order_refund_case_lines` PK theo
   `(refund_case_order_id, order_line_id)`.
-- `quantity > 0`, số tiền không âm và công thức final amount cần DB/domain
-  constraint nhưng thiết kế cũ chưa cung cấp DDL cụ thể.
+- `quantity > 0`; mọi field `*_amount_minor`/`*_price_minor` không âm; và
+  `final_amount_minor = total_amount_minor - total_discount_minor` cần CHECK/domain
+  guard trong cùng transaction. Không tồn tại `DECIMAL`, float hay `*_vnd` thứ hai.
 - Index `idx_outbox_created_at(created_at DESC)` phục vụ retention.
 - Index `idx_order_refund_cases_status_updated(case_status, updated_at DESC)` phục
   vụ worker/Ops tìm case treo.
@@ -362,9 +431,9 @@ CREATE INDEX idx_orders_created_id
   ON orders (created_at DESC, id DESC);
 CREATE INDEX idx_orders_status_payment_created
   ON orders (status, payment_status, created_at DESC, id DESC);
-CREATE INDEX idx_orders_final_amount_created
-  ON orders (final_amount, created_at DESC, id DESC)
-  WHERE final_amount IS NOT NULL;
+CREATE INDEX idx_orders_final_amount_minor_created
+  ON orders (final_amount_minor, created_at DESC, id DESC)
+  WHERE final_amount_minor IS NOT NULL;
 CREATE INDEX idx_oil_snapshot_name_search
   ON order_item_lines USING gin
   (lower(unaccent(snapshot_name)) gin_trgm_ops);
@@ -385,9 +454,10 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
   signals Temporal. A signal-start failure leaves a recoverable dispatch row.
 - Admin pre-dispatch release writes/recovers an attempt first. Only a proven accepted
   Inventory response atomically creates the lifetime refund case and all evidence.
-- Auto-complete is permitted only from a future verified delivery-proof event; Inventory
-  physical dispatch cannot satisfy its guard. The eventual completion CAS still inserts
-  its event only when affected row is 1.
+- Delivery consumer persists its proof/inbox and CASes a single line
+  `DISPATCHED -> DELIVERED`; it recomputes `order_items.status`. Only when no line of the
+  order remains non-`DELIVERED` may it CAS `PROCESSING -> COMPLETED` and insert
+  `ORDER_COMPLETED`. Inventory physical dispatch cannot satisfy either guard.
 - Buyer return guard dùng:
 
 ```sql
@@ -417,16 +487,18 @@ liệu cho `status_history[]` chưa được thiết kế.
 ```sql
 CREATE OR REPLACE VIEW v_orders_buyer_tab AS
 SELECT o.id AS order_id, o.user_id, o.status AS order_status,
-       o.payment_status, o.created_at, o.final_amount,
+       o.payment_status, o.created_at, o.final_amount_minor,
        CASE
          WHEN o.status IN ('PENDING_PAYMENT','CANCELLING') THEN 'TO_PAY'
          WHEN o.status IN ('PAID','PROCESSING')
           AND NOT EXISTS (SELECT 1 FROM order_items oi
-                          WHERE oi.order_id=o.id AND oi.status='DELIVERED')
+                          JOIN order_item_lines oil ON oil.order_item_id=oi.id
+                          WHERE oi.order_id=o.id AND oil.fulfillment_status='DELIVERED')
           THEN 'TO_SHIP'
          WHEN o.status IN ('PAID','PROCESSING')
           AND EXISTS (SELECT 1 FROM order_items oi
-                      WHERE oi.order_id=o.id AND oi.status='DELIVERED')
+                      JOIN order_item_lines oil ON oil.order_item_id=oi.id
+                      WHERE oi.order_id=o.id AND oil.fulfillment_status='DELIVERED')
           THEN 'TO_RECEIVE'
          WHEN o.status = 'COMPLETED' THEN 'COMPLETED'
          WHEN o.status = 'CANCELLED' THEN 'CANCELLED'
@@ -469,6 +541,7 @@ thể cần materialized view chỉ sau benchmark/ADR mới.
 | FSM lock | `order:lock:fsm:{orderId}` | 10 giây; correctness vẫn dựa DB |
 | Payment signal fast-path | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày; durable `order_consumed_events` is authority |
 | Inventory ship fast-path | `inventory:ship:applied:{event_id}` | 30 ngày; durable inbox/revision is authority |
+| Delivery proof fast-path | `delivery:proof:applied:{event_id}` | 30 ngày; durable inbox + unique proof is authority |
 | Inventory return inspection fast-path | `inventory:return:inspection-completed:{event_id}` | 30 ngày; durable inbox/evidence is authority |
 
 Redis mirrors improve hot-path duplicate suppression only. `order_consumed_events`,
@@ -502,8 +575,13 @@ WHERE ori.resource_id = o.id::varchar
   workflow dispatch and command-checkpoint schema; then migrate active workflow/event
   identities without reapplying a remote command. The old tables may be dropped only
   after the new recovery paths are verified.
-- Backup/restore, schema version rollout, online index strategy, order retention,
-  reconciliation outbox-với-Kafka và repair refund case chưa được thiết kế.
+- Finance/Ops only resolve a post-capture case through the authenticated reconciliation
+  decision contract. They first attach immutable provider/Inventory/Promotion evidence,
+  then select exactly one permitted resolution; the command creates audit/outbox and may
+  resume only existing forward-repair checkpoint IDs. Direct SQL state repair and a manual
+  “refund succeeded” assertion are forbidden.
+- Backup/restore, schema version rollout, online index strategy, order retention and
+  reconciliation outbox-với-Kafka vẫn cần deployment runbook.
 
 ## 9. Bảo mật và quyền riêng tư
 

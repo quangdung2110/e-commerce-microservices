@@ -13,7 +13,7 @@ verified_against_commit: null
 
 > Đây là điểm bắt đầu để hiểu thiết kế mục tiêu của Order Service. Bộ tài liệu
 > được tái cấu trúc từ các tài liệu thiết kế Order cũ; chưa được xác minh với một
-> implementation hiện hữu và chưa nhằm thống nhất contract giữa các service.
+> implementation hiện hữu. Các contract có liên kết bên dưới là target đồng bộ liên service.
 
 ## 1. Trạng thái dịch vụ
 
@@ -30,8 +30,9 @@ kế cũ.
 ## 2. Mục tiêu
 
 Order Service quản lý vòng đời đơn hàng từ lúc Checkout submit đến khi thanh
-toán, thực hiện, giao đủ, hủy hoặc hoàn tiền. Service tạo một giao dịch thanh toán
-duy nhất ở cấp master order, tách việc thực hiện đơn theo từng kho, giữ snapshot
+toán, thực hiện, giao đủ, hủy hoặc hoàn tiền. Service tạo attempt thanh toán có
+identity bất biến (và tối đa một transaction capture) ở cấp master order, tách việc
+thực hiện đơn theo từng kho, giữ snapshot
 sản phẩm và địa chỉ để lịch sử đơn không phụ thuộc dữ liệu upstream về sau.
 
 Service cũng là orchestrator của các giao dịch phân tán với Inventory, Promotion
@@ -42,9 +43,9 @@ resume; PostgreSQL FSM là chốt bảo vệ cuối cùng cho tính hợp lệ c
 
 Order Service chịu trách nhiệm:
 
-- Sở hữu master order, delivery unit theo kho, dòng SKU snapshot, promotion đã áp
-  dụng, refund case/attempt, durable event inbox và workflow-command checkpoints.
-- Bảo vệ FSM của order và order item; physical dispatch không bị hiểu nhầm là delivery.
+- Sở hữu master order, delivery unit theo kho, dòng SKU snapshot, promotion đã áp dụng,
+  payment-attempt mapping, refund/reconciliation case, durable inbox và checkpoints.
+- Bảo vệ FSM của order và per-line fulfillment; physical dispatch không bị hiểu nhầm là delivery.
 - Điều phối checkout saga, refund saga, late-payment recovery và financial reconciliation.
 - Phục vụ chi tiết đơn và tìm kiếm/lọc lịch sử đơn trực tiếp từ PostgreSQL.
 - Phát integration event đáng tin cậy qua transactional outbox và CDC.
@@ -74,6 +75,7 @@ Kafka, Temporal và database service khác không cùng transaction với dữ l
 | `order_promotions` | Order Service | Dấu vết allocation đã dùng; không phải ví/budget Promotion |
 | `order_refund_cases` + `order_refund_case_lines` | Order Service | One lifetime refund control plane and selected-line scope |
 | `order_admin_refund_attempts` | Order Service | Pre-dispatch release attempt that cannot burn the lifetime refund entitlement on rejection |
+| `order_payment_attempts` / `order_financial_reconciliation_cases` | Order Service | Payment attempt↔transaction proof and authenticated manual reconciliation decisions |
 | `order_workflow_dispatches` / `order_consumed_events` / `order_saga_checkpoints` | Order Service | Durable Temporal start, event inbox, and remote-command recovery proof |
 | `outbox_events` | Order Service | Log append-only để CDC phát event |
 | Redis idempotency/lock keys | Fast-path tạm thời | PostgreSQL inbox/dispatch/checkpoint + FSM giữ bất biến bền vững |
@@ -91,11 +93,11 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Tìm kiếm/lọc order | Trả order-level card theo buyer/admin, tab, trạng thái, thời gian, tiền và tên sản phẩm |
 | Hủy order | Resolve Payment cancel/capture fact before pre-payment compensation; admin paid action goes refund lane |
 | Yêu cầu trả hàng | Chấp nhận đúng một Buyer request hợp lệ và khóa selected full-quantity line scope |
-| Xử lý thanh toán | Validate original Payment fact, commit financial watermark, then forward-repair post-payment checkpoints |
-| Physical dispatch/delivery | Map Inventory fact only to `DISPATCHED`; customer delivery/complete requires a separate proof contract |
+| Xử lý thanh toán | Validate mapped Payment attempt fact, freeze captured transaction, then forward-repair post-payment checkpoints |
+| Physical dispatch/delivery | Map Inventory fact only to `DISPATCHED`; Delivery proof v1 moves a line to `DELIVERED`/may complete master |
 | Hoàn tiền | Buyer chờ Inventory final-inspect selected scope; admin chỉ automatic sau Inventory release toàn bộ committed lines trước dispatch; Payment gọi đúng một lần kể cả inspection FAIL |
 | Khôi phục payment muộn | Fenced recovery of the same timeout-released Inventory root; nếu không an toàn thì financial reconciliation, không system auto-refund |
-| Phát event vòng đời | Công bố event Order/OrderItem theo outbox CDC at-least-once |
+| Phát event vòng đời | Công bố event Order/per-line fulfillment theo outbox CDC at-least-once |
 
 ## 6. Phụ thuộc
 
@@ -103,11 +105,12 @@ qua API, event hoặc Temporal signal được Order xử lý.
 |---|---|---|---|---|---|
 | Inbound | Checkout | HTTP | Tạo order từ checkout snapshot | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
 | Inbound | Buyer/Admin qua Gateway | HTTP | Đọc, tìm kiếm, hủy và return | Bắt buộc | Chưa có OpenAPI Order đầy đủ |
-| Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | Tài liệu thiết kế hiện hành |
+| Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Inbound | Inventory | Kafka | Physical line-dispatch và selected-scope inspection completion | Bắt buộc | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
-| Outbound | Inventory | HTTP/gRPC activity | Reserve/release/commit, fenced timeout recovery, selected scope, atomic pre-dispatch release | Bắt buộc | [Inventory workflow v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
-| Outbound | Promotion | HTTP activity | Reserve/cancel runtime and durable confirm; technical cancellation is legacy-only; no call when customer refund | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — proposed |
-| Outbound | Payment | HTTP/gRPC activity | Tạo PaymentIntent, cancel và refund | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
+| Inbound | Delivery | Kafka | Verified per-line delivery proof | Bắt buộc để auto-complete/return guard | [Delivery events v1](../../contracts/events/delivery/v1/asyncapi.yaml) |
+| Outbound | Inventory | HTTP activity | Reserve exact plan/release/commit, fenced timeout recovery, selected scope, atomic pre-dispatch release | Bắt buộc | [Inventory workflow v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
+| Outbound | Promotion | HTTP activity | Reserve/cancel runtime and durable confirm; Order has no technical-cancellation capability | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — proposed |
+| Outbound | Payment | HTTP activity | Tạo PaymentIntent attempt, cancel và refund captured transaction | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Outbound | Kafka consumers | Kafka | Event vòng đời order/item | Bắt buộc | Có một phần Order completed v1; không đối soát lần này |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |
 | Internal | PostgreSQL | SQL | Source of truth và read path | Bắt buộc | Logical design, chưa có migration evidence |
@@ -128,7 +131,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
   Payment sau scope completion; Admin chỉ sau Inventory atomic all-line
   pre-dispatch release evidence.
 - [`INV-ORD-006`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ phát
-  `ORDER_COMPLETED` khi tất cả order item đã `DELIVERED` và CAS master thành công.
+  `ORDER_COMPLETED` khi tất cả line đã `DELIVERED` bằng verified Delivery proof và CAS master thành công.
 - [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): state change và
   outbox event tương ứng commit trong cùng transaction.
 - [`INV-ORD-008`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): customer refund
@@ -137,6 +140,11 @@ qua API, event hoặc Temporal signal được Order xử lý.
   facts enter a durable inbox only after semantic identity/version validation.
 - [`INV-ORD-019`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): post-capture work
   forward-repairs or reconciles; it never rolls business state backward.
+- [`INV-ORD-021`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): allocation plan,
+  `Checkout line_reference→order_line_id` bridge và line→warehouse mapping được persist
+  trước Reserve/dispatch.
+- [`INV-ORD-022`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): only the immutable
+  captured payment transaction is eligible for refund.
 
 ## 8. Bản đồ tài liệu
 
@@ -161,8 +169,8 @@ qua API, event hoặc Temporal signal được Order xử lý.
   trong `ORDER_STATUS_CHANGED`, vừa nói Phase 20 đã loại metadata refund khỏi event.
 - Mô tả `ORDER_REFUND_FAILED` có chỗ yêu cầu chỉ `error_code`, có ví dụ vẫn chứa
   `error_message`; cần chốt ở lần refactor contract sau.
-- Cách Inventory Ship consumer lấy `inventory_reservations` chưa nêu rõ qua API,
-  event projection hay local data; không được hiểu là cho phép query database
-  Inventory trực tiếp.
+- Public Order HTTP surface và các lifecycle events ngoài `ORDER_COMPLETED` chưa có
+  machine-readable schema hoàn chỉnh; reconciliation internal v1, Payment v2, Inventory
+  workflow v1 and Delivery proof v1 are the currently pinned cross-service contracts.
 - Chưa có SLO, capacity benchmark, retention đầy đủ cho order data, backup/restore,
   schema rollout hoặc runbook tự động hóa.

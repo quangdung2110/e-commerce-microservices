@@ -1,0 +1,94 @@
+openapi: 3.1.0
+info:
+  title: Order financial reconciliation internal API
+  version: 1.0.0
+  description: >-
+    Capability-bound, audited decisions for Order exceptions after a payment financial
+    watermark. This API never mutates a Payment, Inventory, or Promotion fact directly.
+x-adoption-status: proposed
+servers:
+  - url: http://order-service:8080
+paths:
+  /internal/v1/orders/{order_id}/financial-reconciliation-decisions:
+    post:
+      operationId: decideOrderFinancialReconciliation
+      summary: Record one evidence-backed Finance/Ops decision for an existing case
+      security: [{ financeOpsWorkloadIdentity: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[1-9][0-9]*$' }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Must equal the body decision_id; same key with a different canonical body is rejected.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconciliationDecisionRequest' }
+      responses:
+        '202':
+          description: Durable decision recorded; any repair is dispatched asynchronously.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconciliationDecisionAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+components:
+  securitySchemes:
+    financeOpsWorkloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: >-
+        mTLS/service-mesh principal must be allowlisted as finance-ops or accounting-ops;
+        Order also validates the workload claim. Gateway strips this header from client traffic.
+  schemas:
+    ReconciliationDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [case_id, expected_case_revision, decision_id, resolution_type, reason_code, evidence]
+      properties:
+        case_id: { type: string, format: uuid }
+        expected_case_revision: { type: integer, minimum: 1 }
+        decision_id: { type: string, format: uuid }
+        resolution_type:
+          type: string
+          enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING]
+        reason_code: { type: string, minLength: 1, maxLength: 100 }
+        accounting_case_reference: { type: string, maxLength: 128 }
+        evidence:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [source, reference, sha256]
+            properties:
+              source: { type: string, enum: [ORDER_CHECKPOINT, PAYMENT_RECONCILIATION, INVENTORY_COMMAND, PROMOTION_RECEIPT] }
+              reference: { type: string, minLength: 1, maxLength: 255 }
+              sha256: { type: string, pattern: '^[A-Fa-f0-9]{64}$' }
+    ReconciliationDecisionAccepted:
+      type: object
+      additionalProperties: false
+      required: [case_id, decision_id, case_status, resolution_type]
+      properties:
+        case_id: { type: string, format: uuid }
+        decision_id: { type: string, format: uuid }
+        case_status: { type: string, enum: [DECIDED, CLOSED, EVIDENCE_PENDING] }
+        resolution_type: { type: string }
+  responses:
+    BadRequest: { description: Invalid syntax, decision ID, or Idempotency-Key. }
+    Unauthorized: { description: Missing or invalid workload identity. }
+    Forbidden: { description: Caller lacks Finance/Ops reconciliation capability. }
+    NotFound: { description: Order or reconciliation case does not exist. }
+    Conflict: { description: Stale case revision or idempotency payload mismatch. }
+    Unprocessable: { description: Evidence is missing, foreign to the order, or resolution violates case state. }

@@ -28,8 +28,8 @@ Khi implementation được thêm, tài liệu phải cung cấp command chính 
 dependency, start PostgreSQL/Redis/Kafka/Connect/Temporal, chạy migration, start
 HTTP server, ba consumer và Temporal worker, kiểm tra health, rồi cleanup an toàn.
 
-Local stack cần topic `t.order.events`, `t.payment.events`, `t.inventory.events`,
-ba consumer group, workflow dispatcher và bốn Temporal task queue. Inventory/Promotion/Payment có thể
+Local stack cần topic `t.order.events`, `t.payment.events.v2`, `t.inventory.order.events.v1`,
+`t.delivery.order.events.v1`, bốn consumer group, workflow dispatcher và bốn Temporal task queue. Inventory/Promotion/Payment có thể
 mock bằng contract fixture có idempotency/retry behavior; không mock Temporal bằng
 thread sleep cho test workflow.
 
@@ -75,14 +75,15 @@ Implementation phải test mọi HTTP/event/activity semantics liệt kê ở
 order/workflow ID, canonical string order ID của `ORDER_COMPLETED`, nullable variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
-Payment original transaction/amount/currency/financial-version validation and refund reverse
+Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
 from `REFUNDED`. Refund amount/multiplicity is fixed by ADR-010, not deferred.
 
 ### End-to-end/failure injection
 
 Chạy checkout success, từng pre-payment failure, post-capture forward-repair failure,
 cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, fenced late
-payment recovery/manual verification, multi-warehouse physical dispatch (never auto-delivery),
+payment recovery/manual verification, multi-warehouse physical dispatch and separate Delivery
+proof (never auto-delivery),
 Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
 verification, refund success/fail/reverse after `REFUNDED` và Redis/Kafka/DB/Temporal outage.
 Timer dài cần test clock/time skipping, không chờ thật.
@@ -97,8 +98,8 @@ CI drift check. Markdown example không phải source để generate model.
 
 Migration đầu tiên phải tạo schema/tables/FK/check/index/view/extensions trong
 `data.md`, đồng thời giải quyết các gap timestamp và manual verification state.
-Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, payment
-identity/version, refund evidence and admin attempt tables before retiring historical
+Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, numbered payment
+attempt identity/version, refund evidence, reconciliation case/decision and admin attempt tables before retiring historical
 idempotency storage. Index trigram lớn nên tạo theo kế hoạch không khóa production.
 
 Cần command tạo/up/down/verify migration, seed order đa kho và rollback policy.
