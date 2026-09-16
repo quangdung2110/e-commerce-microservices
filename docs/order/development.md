@@ -29,7 +29,7 @@ dependency, start PostgreSQL/Redis/Kafka/Connect/Temporal, chạy migration, sta
 HTTP server, ba consumer và Temporal worker, kiểm tra health, rồi cleanup an toàn.
 
 Local stack cần topic `t.order.events`, `t.payment.events`, `t.inventory.events`,
-ba consumer group và ba Temporal task queue. Inventory/Promotion/Payment có thể
+ba consumer group, workflow dispatcher và bốn Temporal task queue. Inventory/Promotion/Payment có thể
 mock bằng contract fixture có idempotency/retry behavior; không mock Temporal bằng
 thread sleep cho test workflow.
 
@@ -54,19 +54,19 @@ ghi tại đây.
 
 - Master/item/refund FSM, invalid transition và buyer-tab precedence.
 - Pricing snapshot PLATFORM-only; customer refund không tạo promotion allocation/call.
-- Workflow compensation stack order và deterministic replay logic.
+- Pre-payment compensation versus post-capture forward-repair/reconciliation, and deterministic replay logic.
 - Cursor encode/decode, visibility/filter mapping và accent normalization.
 
 ### Integration test
 
-- PostgreSQL transaction: state + sequence + outbox atomic; row-lock/CAS races.
+- PostgreSQL transaction: state + sequence + outbox + durable inbox/workflow-dispatch/checkpoint atomicity; row-lock/CAS races.
 - Buyer return first-write-wins; unique checkout/refund transaction constraints.
 - Search class A/B với extensions/index/view và equal timestamp cursor.
-- Redis duplicate hit/miss/outage/TTL expiry; DB/Workflow fallback safety.
+- Redis duplicate hit/miss/outage/TTL expiry; durable inbox/dispatch/checkpoint remains the authority.
 - Debezium outbox at-least-once, partition key và connector restart.
-- Temporal crash/resume, timer/signal race, activity retry, workflow identity.
+- Temporal crash/resume, timer/signal race, activity retry, workflow identity and dispatcher recovery after local commit/start failure.
 - Promotion final activity: same-key stored response, different-payload conflict, crash
-  sau durable receipt trước Redis convergence.
+  sau durable receipt trước Redis convergence; assert no active post-capture `CANCEL_FINAL`.
 
 ### Contract/consumer/provider test
 
@@ -74,15 +74,18 @@ Implementation phải test mọi HTTP/event/activity semantics liệt kê ở
 `interfaces.md`: unknown field, duplicate, unsupported version, route theo
 order/workflow ID, canonical string order ID của `ORDER_COMPLETED`, nullable variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
-PASS/FAIL và atomic admin pre-dispatch release. Refund amount/multiplicity is fixed by
-ADR-010, not deferred.
+PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
+Payment original transaction/amount/currency/financial-version validation and refund reverse
+from `REFUNDED`. Refund amount/multiplicity is fixed by ADR-010, not deferred.
 
 ### End-to-end/failure injection
 
-Chạy checkout success, từng pre/post-payment failure, timeout cancel, late payment
-recovery/manual verification, multi-warehouse delivery/auto-complete, Buyer one-shot return,
-Inventory 30-day timeout/manual verification, refund success/fail/reverse và Redis/Kafka/DB/
-Temporal outage. Timer dài cần test clock/time skipping, không chờ thật.
+Chạy checkout success, từng pre-payment failure, post-capture forward-repair failure,
+cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, fenced late
+payment recovery/manual verification, multi-warehouse physical dispatch (never auto-delivery),
+Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
+verification, refund success/fail/reverse after `REFUNDED` và Redis/Kafka/DB/Temporal outage.
+Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
 
@@ -94,8 +97,9 @@ CI drift check. Markdown example không phải source để generate model.
 
 Migration đầu tiên phải tạo schema/tables/FK/check/index/view/extensions trong
 `data.md`, đồng thời giải quyết các gap timestamp và manual verification state.
-Migration Phase 22 phải backfill `buyer_return_locked_at` trước khi drop bảng
-idempotency cũ. Index trigram lớn nên tạo theo kế hoạch không khóa production.
+Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, payment
+identity/version, refund evidence and admin attempt tables before retiring historical
+idempotency storage. Index trigram lớn nên tạo theo kế hoạch không khóa production.
 
 Cần command tạo/up/down/verify migration, seed order đa kho và rollback policy.
 Destructive down migration không được xóa order production. Schema test phải đảm
@@ -105,14 +109,16 @@ bảo query design không tham chiếu cột thiếu.
 
 Fixture tối thiểu gồm order một/nhiều kho; trạng thái master/item/payment; promotion
 snapshot; buyer/admin; selected scope A×2/C×3 from A×2/B×1/C×3; cùng timestamp; tên tiếng Việt có/không dấu;
-payment success/fail/expired; refund processing/success/fail/reverse; inventory
-ship/return duplicate. Dùng UUID/số điện thoại/address giả, không dùng PII production.
+payment success/fail/canceled/expired with version and wrong-identity variants; refund
+processing/success/fail/reverse-after-success; Inventory command uncertain/accepted/rejected,
+physical-dispatch/return duplicate. Dùng UUID/số điện thoại/address giả, không dùng PII production.
 
 ## 9. Gỡ lỗi
 
 Ưu tiên trace bằng `correlation_id`, WorkflowID, event ID và order ID. Inspect
-Temporal history trước khi retry/manual signal; kiểm tra row lock/state/outbox trong
-read-only transaction; kiểm tra Kafka offset/lag và Redis TTL mà không dump PII.
+Temporal history trước khi retry/manual signal; inspect dispatch, durable inbox, remote
+command checkpoint, row lock/state/outbox in read-only transaction; kiểm tra Kafka offset/lag
+và Redis TTL mà không dump PII.
 Không update FSM trực tiếp để “gỡ kẹt” vì sẽ bỏ sequence/outbox/compensation.
 
 ## 10. Lỗi local thường gặp cần ghi khi có code

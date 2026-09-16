@@ -57,7 +57,7 @@ không thay thế invariants trong PostgreSQL.
 | Lệnh | Áp payment result | Payment consumer | Checkout/refund/recovery workflow |
 | Lệnh | Đánh dấu delivery unit đã giao | Inventory event | OrderItem FSM |
 | Lệnh | Xác nhận scope đã final-inspect | Inventory event | OrderRefundWorkflow |
-| Lệnh | Auto-complete order | Inventory ship consumer | Order aggregate |
+| Lệnh | Complete order | Future verified delivery-proof consumer | Order aggregate; Inventory dispatch is insufficient |
 
 ## 4. Quy tắc và bất biến nghiệp vụ
 
@@ -80,30 +80,37 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-015` | Mỗi selected `order_line_id` dùng đúng full original quantity; refund amount là gross selected lines, cap `final_amount` | Case-line snapshot + calculation lúc lock | `INVALID_REFUND_SCOPE` |
 | `INV-ORD-016` | Không tính lại discount/Promotion khi refund; inspection FAIL không chặn Payment command | Workflow boundary + locked amount | Không gọi Promotion; gọi Payment sau completion fact |
 | `INV-ORD-017` | Automatic admin force refund bị cấm nếu Inventory không thể release tất cả committed lines trước dispatch trong một transaction | Inventory response evidence | `ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` |
+| `INV-ORD-018` | Payment fact phải khớp original transaction, order, amount, currency và financial version; consumer inbox durable | Persisted payment identity + inbox/version guard in same transaction | Stale/mismatched event rejected to reconciliation |
+| `INV-ORD-019` | Sau Payment financial watermark, active Saga chỉ forward-repair; không Inventory rollback hay Promotion `CANCEL_FINAL` | Master recovery state + remote-command checkpoint | `FINANCIAL_RECONCILIATION_REQUIRED`, never business rollback |
+| `INV-ORD-020` | Admin rejected pre-dispatch release không được tạo/refuse lifetime refund case | Durable admin attempt separate from refund case | Attempt terminal no-op; Buyer guard/case remains available |
 
 ## 5. State machine
 
 ### 5.1. Master Order FSM
 
-Các state: `CREATED` (transient), `PENDING_PAYMENT`, `PAID`, `PROCESSING`,
-`COMPLETED`, `CANCELLED`, `RETURN_REQUESTED`, `REFUNDED`.
+Các state: `CREATED` (transient), `PENDING_PAYMENT`, `CANCELLING`, `PAID`,
+`PROCESSING`, `COMPLETED`, `CANCELLED`, `RETURN_REQUESTED`, `REFUNDED`,
+`FINANCIAL_RECONCILIATION_REQUIRED`.
 
 | ID | Từ | Đến | Trigger/guard | Side effect chính |
 |---|---|---|---|---|
 | `T1` | `CREATED` | `PENDING_PAYMENT` | `CREATE_ORDER_ACTIVITY_COMMITTED` | Persist snapshot + `ORDER_CREATED` |
 | `T2` | `PENDING_PAYMENT` | `PAID` | `PAYMENT_SUCCESS` trong workflow | `ORDER_PAID` cùng transaction |
-| `T3` | `PENDING_PAYMENT` | `CANCELLED` | `PAYMENT_TIMEOUT` | Compensation rồi `ORDER_CANCELLED` |
-| `T3.1` | `CANCELLED` | `PAID` | Payment success muộn và `cancel_reason=PAYMENT_TIMEOUT` | Recovery evidence + `ORDER_PAID` recovery |
-| `T4` | `PENDING_PAYMENT` | `CANCELLED` | `USER_CANCEL` | Compensation pre-payment |
-| `T4.1` | `PENDING_PAYMENT` | `CANCELLED` | `ADMIN_FORCE_CANCEL` | Compensation pre-payment |
+| `T3` | `PENDING_PAYMENT` | `CANCELLING` | `PAYMENT_TIMEOUT` | Persist cancel command/dispatch; wait Payment non-capture fact |
+| `T3.1` | `CANCELLING` | `CANCELLED` | Matching `CANCELED`/`ALREADY_NON_CAPTURED` + cleanup proven | `ORDER_CANCELLED` |
+| `T3.2` | `CANCELLING` | `PAID` | Matching `ALREADY_SUCCEEDED`/`PAYMENT_SUCCESS` | `ORDER_PAID`, forward repair |
+| `T3.3` | `CANCELLED` | `PAID` | Matching late success after `PAYMENT_TIMEOUT` | Fenced recovery evidence + `ORDER_PAID` recovery |
+| `T4` | `PENDING_PAYMENT` | `CANCELLING` | `USER_CANCEL` | Persist cancel command/dispatch |
+| `T4.1` | `PENDING_PAYMENT` | `CANCELLING` | `ADMIN_FORCE_CANCEL` | Persist cancel command/dispatch |
 | `T7` | `PAID` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Tạo/khóa admin refund case |
 | `T8` | `PAID` | `PROCESSING` | `POST_PAYMENT_SAGA_COMPLETED` | `ORDER_STATUS_CHANGED` |
-| `T8.1` | `PROCESSING` | `PAID` | `POST_PAYMENT_COMPENSATION_ROLLBACK` | Revert operational state |
+| `T8.1` | `PAID/PROCESSING` | `FINANCIAL_RECONCILIATION_REQUIRED` | Post-capture repair cannot prove a required checkpoint | Preserve financial fact; no business compensation |
 | `T8.2` | `PROCESSING` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Vào admin refund lane |
 | `T8.3` | `PROCESSING` | `COMPLETED` | Tất cả item `DELIVERED` + CAS | `ORDER_COMPLETED` |
 | `T9` | `COMPLETED` | `RETURN_REQUESTED` | Buyer one-shot pass + mọi item delivered | Khóa selected full-quantity line scope, chờ final inspection |
 | `T10` | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` | `ORDER_REFUNDED` |
 | `T10.1` | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` hoặc reversed | Chỉ cập nhật `payment_status`, có thể phát failure event |
+| `T10.2` | `REFUNDED` | `RETURN_REQUESTED` | `REFUND_REVERSED` for the existing refund transaction | `REFUND_FAILED`, same case manual verification, `ORDER_REFUND_FAILED` |
 
 Invalid transition không được “sửa” bằng update không điều kiện; trả conflict/no-op
 theo ngữ cảnh và giữ state cũ. `REFUND_REVERSED` từ Payment được map thành
@@ -113,12 +120,14 @@ legacy cho hủy là `CANCEL_ORDER`.
 
 ### 5.2. Order Item Delivery FSM
 
-State: `PROCESSING` (initial), `DELIVERED`.
+State: `PROCESSING` (initial), `DISPATCHED`, `DELIVERED`.
 
 | ID | Từ | Đến | Trigger/guard |
 |---|---|---|---|
-| `I1` | `PROCESSING` | `DELIVERED` | `INVENTORY_SHIP_TO_CUSTOMER`, đúng order + warehouse |
-Update I1 dùng `WHERE status='PROCESSING'`; duplicate cho affected row bằng 0.
+| `I1` | `PROCESSING` | `DISPATCHED` | Canonical Inventory physical-dispatch fact, đúng order + line + warehouse |
+| `I2` | `DISPATCHED` | `DELIVERED` | Separate verified delivery-proof contract (not defined in Release 1) |
+Update I1 dùng `WHERE status='PROCESSING'`; duplicate cho affected row bằng 0. Inventory
+physical dispatch must never be mapped to customer delivery or `ORDER_COMPLETED`.
 Return/refund is recorded on `OrderRefundCase` and its selected line records, not
 by changing a whole delivery unit state: one delivery unit can contain both selected
 and unselected lines.
@@ -127,7 +136,8 @@ and unselected lines.
 
 `payment_status` là read/UI state denormalized: `PENDING`, `PAID`, `FAILED`,
 `REFUNDING`, `REFUNDED`, `REFUND_FAILED`. Cả Payment `REFUND_FAILED` và
-`REFUND_REVERSED` map về `REFUND_FAILED` ở Order.
+`REFUND_REVERSED` map về `REFUND_FAILED` ở Order; when reversal arrives after master
+`REFUNDED`, T10.2 reopens the same refund case for manual verification.
 
 ### 5.4. Refund case lifecycle
 
@@ -135,8 +145,10 @@ Buyer: `INITIATED -> WAITING_INVENTORY_SCOPE_INSPECTION ->
 WAITING_PAYMENT_REFUND_RESULT -> SUCCEEDED|FAILED`; timeout goes to
 `MANUAL_VERIFICATION_REQUIRED`. Admin pre-dispatch: `INITIATED ->
 WAITING_INVENTORY_RELEASE -> WAITING_PAYMENT_REFUND_RESULT -> SUCCEEDED|FAILED`.
-The two Inventory evidences are mutually exclusive. A terminal failure/reverse stays
-on the same lifetime case; no second scope or refund transaction is allowed.
+The two Inventory evidences are mutually exclusive. A normal terminal failure stays
+on the same lifetime case; a provider reversal after success changes `SUCCEEDED ->
+MANUAL_VERIFICATION_REQUIRED` and reopens the master financial lane. No second scope
+or refund transaction is allowed.
 
 ### 5.5. Buyer tab precedence
 
@@ -144,12 +156,12 @@ Mỗi order chỉ thuộc một tab, chọn theo thứ tự:
 
 | Ưu tiên | Điều kiện | Tab |
 |---|---|---|
-| 1 | `PENDING_PAYMENT` | `TO_PAY` |
+| 1 | `PENDING_PAYMENT/CANCELLING` | `TO_PAY` (cancelling shows pending resolution) |
 | 2 | `PAID/PROCESSING` và chưa item nào `DELIVERED` | `TO_SHIP` |
 | 3 | `PAID/PROCESSING` và có ít nhất một item `DELIVERED` | `TO_RECEIVE` |
 | 4 | `COMPLETED` và không trong return/refund | `COMPLETED` |
 | 5 | `CANCELLED` | `CANCELLED` |
-| 6 | `RETURN_REQUESTED/REFUNDED` hoặc payment refund state | `RETURN_REFUND` |
+| 6 | `RETURN_REQUESTED/REFUNDED/FINANCIAL_RECONCILIATION_REQUIRED` hoặc payment refund state | `RETURN_REFUND`/manual-review UI |
 
 UI mapping: `TO_PAY=10/PENDING_PAYMENT`, `TO_SHIP=20/PROCESSING`,
 `TO_RECEIVE=30/DELIVERED`, `RETURN_REFUND=40`, `COMPLETED=50`, `CANCELLED=60`,
@@ -196,17 +208,17 @@ không được tự động biến một transition không hợp lệ thành h�
 ## 8. Ví dụ nghiệp vụ
 
 1. Checkout token mới tạo order `PENDING_PAYMENT`; Inventory và Promotion reserve,
-   Payment trả client secret. Success trong 15 phút commit `PAID`, sau đó deduct,
-   confirm promotion và chuyển `PROCESSING`.
-2. Hai `INVENTORY_SHIP_TO_CUSTOMER` trùng nhau cho cùng order/warehouse: Redis có
-   thể chặn lần hai; nếu mất key, item CAS khiến lần hai không đổi state và không
-   được phát completion trùng.
+   Payment trả client secret. Matching success trong 15 phút commit `PAID`, sau đó
+   Inventory CommitPayment và Promotion confirm theo forward repair rồi `PROCESSING`.
+2. Hai Inventory line-dispatch event trùng nhau: durable inbox/revision chặn lần hai;
+   item CAS vẫn khiến retry vô hại. Fact chỉ chuyển item sang `DISPATCHED`, không phát
+   delivery/completion.
 3. Buyer gửi return lần đầu khi tất cả item delivered: CAS guard thành công và
    workflow chờ hàng hoàn. Refund fail vẫn không mở quyền submit lần hai.
-4. Payment success đến sau khi timeout đã ghi `CANCELLED(PAYMENT_TIMEOUT)`: không
-   sửa checkout workflow cũ; start recovery, tái lập reservation rồi post-payment,
-   hoặc vào manual verification nếu recovery không an toàn. Release 1 không có
-   system auto-refund bypassing Inventory evidence.
+4. Payment success đến sau timeout cancellation đã được Payment xác nhận non-capture:
+   start recovery, call Inventory fenced recovery for the exact timeout-released root,
+   then forward repair; a rejected fence enters financial reconciliation, never a fresh
+   reservation/reroute or automatic refund.
 5. Buyer refund selected full-quantity lines: Order không gọi Promotion; wallet/budget
    giữ nguyên; gross refund amount is capped at `final_amount`. Một line inspection
    `FAIL` vẫn không chặn Payment after Inventory completion.

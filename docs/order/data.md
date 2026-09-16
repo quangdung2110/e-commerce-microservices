@@ -23,6 +23,10 @@ verified_against_commit: null
 | PostgreSQL `order_item_lines` | Snapshot SKU/sản phẩm lúc mua | Order Service |
 | PostgreSQL `order_promotions` | Promotion allocation đã áp trên order | Order Service cho snapshot; Promotion sở hữu budget/wallet |
 | PostgreSQL `order_refund_cases` | Refund process control plane | Order Service |
+| PostgreSQL `order_admin_refund_attempts` | Durable pre-dispatch release attempt; separate from lifetime refund entitlement | Order Service |
+| PostgreSQL `order_workflow_dispatches` | Transactional intent to start/attach a fixed Temporal workflow after local commit | Order Service |
+| PostgreSQL `order_consumed_events` | Durable inbox and validation receipt for Payment/Inventory at-least-once events | Order Service |
+| PostgreSQL `order_saga_checkpoints` | Remote command IDs/outcomes for checkout, cancellation and post-capture repair | Order Service |
 | PostgreSQL `outbox_events` | Integration event chưa/đã được CDC quan sát | Order Service |
 | View `v_orders_buyer_tab` | Tab dẫn xuất từ Order data | Dẫn xuất, không là source of truth |
 | Redis | Request/event dedup và FSM lock có TTL | Dữ liệu tạm; không là source of truth |
@@ -41,6 +45,10 @@ erDiagram
     ORDERS ||--o{ ORDER_PROMOTIONS : applies
     ORDERS ||--o| ORDER_REFUND_CASES : controls
     ORDER_REFUND_CASES ||--|{ ORDER_REFUND_CASE_LINES : locks
+    ORDERS ||--o{ ORDER_ADMIN_REFUND_ATTEMPTS : records
+    ORDERS ||--o{ ORDER_WORKFLOW_DISPATCHES : dispatches
+    ORDERS ||--o{ ORDER_CONSUMED_EVENTS : receives
+    ORDERS ||--o{ ORDER_SAGA_CHECKPOINTS : checkpoints
     ORDERS ||--o{ OUTBOX_EVENTS : emits
 
     ORDERS {
@@ -52,6 +60,8 @@ erDiagram
       decimal final_amount
       varchar status
       varchar payment_status
+      varchar original_payment_transaction_id
+      bigint last_payment_financial_version
       timestamptz buyer_return_locked_at
       bigint last_event_sequence_id
     }
@@ -88,6 +98,37 @@ erDiagram
       decimal refund_amount_locked
       varchar inventory_refund_scope_id
       varchar refund_transaction_id UK
+      uuid inspection_event_id UK
+      bigint inventory_scope_revision
+    }
+    ORDER_ADMIN_REFUND_ATTEMPTS {
+      uuid id PK
+      bigint order_id FK
+      varchar workflow_id UK
+      varchar inventory_command_id UK
+      varchar status
+    }
+    ORDER_WORKFLOW_DISPATCHES {
+      uuid id PK
+      bigint order_id FK
+      varchar workflow_id UK
+      varchar workflow_type
+      varchar status
+    }
+    ORDER_CONSUMED_EVENTS {
+      uuid event_id PK
+      bigint order_id FK
+      varchar source
+      bigint source_revision
+      varchar payload_hash
+    }
+    ORDER_SAGA_CHECKPOINTS {
+      uuid id PK
+      bigint order_id FK
+      varchar phase
+      varchar operation
+      varchar command_id
+      varchar outcome
     }
     ORDER_REFUND_CASE_LINES {
       bigint refund_case_order_id FK
@@ -116,11 +157,14 @@ không phụ thuộc address book bị sửa/xóa về sau.
 | `total_discount` | `DECIMAL` | Tổng PLATFORM discount |
 | `final_amount` | `DECIMAL` | `total_amount - total_discount` |
 | `payment_status` | `VARCHAR(50)` | `PENDING/PAID/FAILED/REFUNDING/REFUNDED/REFUND_FAILED`; read/UI denormalized |
+| `original_payment_transaction_id` | `VARCHAR(120)` nullable, unique when set | Identity returned by Payment initiate; every cancel/success/refund event must match it before changing financial lane. |
+| `last_payment_financial_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic accepted Payment financial fact; stale/out-of-order valid event cannot override a later fact. |
 | `status` | `VARCHAR(50)` | Master FSM state |
 | `checkout_token` | `VARCHAR(255)` unique, not null | Route workflow `order-checkout-{checkout_token}` |
 | `cancel_reason` | `TEXT` nullable | `PAYMENT_TIMEOUT`, `USER_CANCEL`, `ADMIN_FORCE_CANCEL`, `PRE_PAYMENT_SAGA_FAILED`, `PAYMENT_FAILED`; workflow sở hữu enum, không DB CHECK |
 | `return_reason` | `VARCHAR(100)` nullable | Summary reason ở master; chi tiết per-item ở metadata/scope |
 | `buyer_return_locked_at` | `TIMESTAMPTZ` nullable | Permanent first-write-wins guard cho Buyer return |
+| `saga_phase` | `VARCHAR(50)` | Durable checkpoint summary: pre-payment, cancelling, post-capture repair or financial reconciliation; not reconstructed from Redis/Temporal alone. |
 | `last_event_sequence_id` | `BIGINT NOT NULL DEFAULT 0` | Counter đơn điệu per order cho event Order tự phát |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Audit timestamps |
 
@@ -193,7 +237,16 @@ CREATE TABLE order_refund_cases (
     refund_amount_locked DECIMAL(18,2) NOT NULL,
     inventory_refund_scope_id VARCHAR(128) NULL UNIQUE,
     inventory_scope_inspection_completed_at TIMESTAMPTZ NULL,
+    inventory_inspection_event_id UUID NULL UNIQUE,
+    inventory_inspection_payload_hash VARCHAR(128) NULL,
+    inventory_scope_revision BIGINT NULL,
+    inventory_inspection_lines JSONB NULL,
     inventory_committed_release_at TIMESTAMPTZ NULL,
+    inventory_release_command_id VARCHAR(128) NULL UNIQUE,
+    inventory_release_correlation_id VARCHAR(128) NULL,
+    inventory_release_reservation_revision BIGINT NULL,
+    inventory_released_order_line_ids JSONB NULL,
+    inventory_release_response_hash VARCHAR(128) NULL,
     refund_transaction_id VARCHAR(120) NULL UNIQUE,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     scope_locked_at TIMESTAMPTZ NULL,
@@ -224,7 +277,47 @@ tạo sau Inventory scope-inspection evidence (Buyer) hoặc committed-release e
 (Admin). Terminal state là `SUCCEEDED|FAILED`; provider `REVERSED` gộp vào `FAILED`
 nhưng vẫn không mở case/refund transaction mới.
 
-### 3.6. `outbox_events`
+Inspection evidence is authoritative only when Order persists the Inventory event ID,
+payload digest, scope revision and every selected line's expected/received/passed/failed
+counter after matching them to immutable case lines. Admin evidence is authoritative only
+when it persists the durable Inventory command ID, correlation ID, reservation revision,
+released full-line set and response digest. These fields are written before the Payment
+refund command and are never reconstructed from Redis/Kafka retention.
+
+A provider `REVERSED` after case `SUCCEEDED` changes that same case to
+`MANUAL_VERIFICATION_REQUIRED` and reopens the master refund lane; it never opens a
+new case/refund transaction.
+
+### 3.6. `order_admin_refund_attempts`
+
+An Admin pre-dispatch action is an attempt, not a refund case. It has `attempt_id`,
+`order_id`, fixed `workflow_id`, stable `inventory_command_id`, canonical request hash,
+`status` (`PENDING`, `ACCEPTED`, `REJECTED`, `RECOVERY_REQUIRED`), provider outcome
+digest, timestamps and audit actor/reason. `(order_id, active_attempt)` is unique while
+an attempt is running. A rejected attempt is retained for audit but never inserts
+`order_refund_cases` or changes `buyer_return_locked_at`; an accepted/recovered command
+atomically creates the case and evidence described above.
+
+### 3.7. Workflow dispatch, inbox and Saga checkpoints
+
+`order_workflow_dispatches` is a transactional outbox for Temporal start/attach. It stores
+`dispatch_id`, `order_id`, fixed workflow ID/type, input digest, `PENDING|STARTED|FAILED`
+status, retry metadata and timestamps. Every API/CAS action that needs checkout, cancel,
+refund, late-payment recovery or financial reconciliation inserts this row in the same
+local transaction before returning `202`; a dispatcher starts/attaches idempotently.
+
+`order_consumed_events` has `event_id` primary key plus source, order ID, source aggregate
+revision/financial version, payload SHA-256, validation outcome and timestamps. The inbox
+insert and the durable routing/checkpoint update commit together. Redis TTL keys may reduce
+load but cannot decide a duplicate, late or malformed financial/inventory event.
+
+`order_saga_checkpoints` stores one stable remote command identity per `(order_id, phase,
+operation)`: command ID/key, request digest, remote resource/result digest, outcome and
+timestamps. An ambiguous Inventory/Payment/Promotion response is resolved by its command
+query/replay and then updates this checkpoint; compensation/recovery may never infer that
+an unknown remote mutation failed.
+
+### 3.8. `outbox_events`
 
 | Field | Kiểu | Quy tắc |
 |---|---|---|
@@ -254,6 +347,9 @@ ghi `payload.last_event_sequence_id`.
 - Index `idx_outbox_created_at(created_at DESC)` phục vụ retention.
 - Index `idx_order_refund_cases_status_updated(case_status, updated_at DESC)` phục
   vụ worker/Ops tìm case treo.
+- Unique `order_consumed_events(event_id)` plus `(source, order_id, source_revision)`;
+  index `order_workflow_dispatches(status, created_at)` and
+  `order_saga_checkpoints(order_id, phase, operation)` are recovery-critical.
 - Search indexes:
 
 ```sql
@@ -281,8 +377,17 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
 - `CreateOrderActivity`: master + items + lines + promotions + `ORDER_CREATED`.
 - Mỗi master/item transition: lock/check old state, update, tăng sequence nếu cần,
   insert outbox và commit cùng nhau.
-- Auto-complete: khóa/check tất cả item, CAS master `PROCESSING -> COMPLETED`, chỉ
-  insert event khi affected row bằng 1.
+- Any command that requires Temporal start/attach also inserts
+  `order_workflow_dispatches` in that same transaction. The dispatcher can retry after
+  process crash; API acceptance never relies on a successful in-process start.
+- Payment/Inventory consumer transaction validates identity/version, inserts durable
+  inbox evidence, updates the relevant saga checkpoint/financial state and only then
+  signals Temporal. A signal-start failure leaves a recoverable dispatch row.
+- Admin pre-dispatch release writes/recovers an attempt first. Only a proven accepted
+  Inventory response atomically creates the lifetime refund case and all evidence.
+- Auto-complete is permitted only from a future verified delivery-proof event; Inventory
+  physical dispatch cannot satisfy its guard. The eventual completion CAS still inserts
+  its event only when affected row is 1.
 - Buyer return guard dùng:
 
 ```sql
@@ -294,8 +399,9 @@ RETURNING id;
 
 - Isolation level chưa được chốt. Row-level lock/CAS là yêu cầu thiết kế để chống
   lost update; không còn `version`/optimistic locking.
-- Remote activity nằm ngoài transaction. Temporal retry/compensation và stable
-  idempotency key duy trì eventual consistency.
+- Remote activity nằm ngoài transaction. Its stable command ID and request/result
+  checkpoint are durable before/after the call; unknown transport outcome must be
+  queried/replayed before compensation or status transition.
 
 ## 6. Query patterns và read model PostgreSQL
 
@@ -313,7 +419,7 @@ CREATE OR REPLACE VIEW v_orders_buyer_tab AS
 SELECT o.id AS order_id, o.user_id, o.status AS order_status,
        o.payment_status, o.created_at, o.final_amount,
        CASE
-         WHEN o.status = 'PENDING_PAYMENT' THEN 'TO_PAY'
+         WHEN o.status IN ('PENDING_PAYMENT','CANCELLING') THEN 'TO_PAY'
          WHEN o.status IN ('PAID','PROCESSING')
           AND NOT EXISTS (SELECT 1 FROM order_items oi
                           WHERE oi.order_id=o.id AND oi.status='DELIVERED')
@@ -361,13 +467,14 @@ thể cần materialized view chỉ sau benchmark/ADR mới.
 | Cancel request | `order:req:cancel:{idempotency_key}` | 7 ngày; conflict hoặc replay payload nếu lưu |
 | Return request | `order:req:return:{idempotency_key}` | 7 ngày; không thay one-shot guard |
 | FSM lock | `order:lock:fsm:{orderId}` | 10 giây; correctness vẫn dựa DB |
-| Payment signal | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày |
-| Inventory ship | `inventory:ship:applied:{order_id}:{warehouse_id}:{shipped_at}` | 30 ngày |
-| Inventory return inspection | `inventory:return:inspection-completed:{order_id}:{refund_request_id}` | 30 ngày |
+| Payment signal fast-path | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày; durable `order_consumed_events` is authority |
+| Inventory ship fast-path | `inventory:ship:applied:{event_id}` | 30 ngày; durable inbox/revision is authority |
+| Inventory return inspection fast-path | `inventory:return:inspection-completed:{event_id}` | 30 ngày; durable inbox/evidence is authority |
 
-Hai bảng cũ `order_request_idempotency` và `order_event_idempotency` đã bị loại ở
-Phase 22. Không có durable inbox. Duplicate ngoài TTL/mất Redis phải vô hại nhờ
-WorkflowID, refund case uniqueness và FSM CAS.
+Redis mirrors improve hot-path duplicate suppression only. `order_consumed_events`,
+workflow dispatches and saga checkpoints are retained durably; duplicate outside TTL or
+after Redis loss is decided by those records plus FSM guards. Historical idempotency-table
+retirement must not remove this new durable inbox.
 
 Thiết kế trước Phase 21 từng có `order_product_metrics`, counter per-product và
 event `ORDER_PRODUCT_METRICS_UPDATED`; toàn bộ đã bị loại cùng worker
@@ -391,8 +498,10 @@ WHERE ori.resource_id = o.id::varchar
   AND o.buyer_return_locked_at IS NULL;
 ```
 
-- Sau backfill mới drop `order_request_idempotency` và
-  `order_event_idempotency`.
+- Before dropping historical idempotency tables, create/backfill the durable inbox,
+  workflow dispatch and command-checkpoint schema; then migrate active workflow/event
+  identities without reapplying a remote command. The old tables may be dropped only
+  after the new recovery paths are verified.
 - Backup/restore, schema version rollout, online index strategy, order retention,
   reconciliation outbox-với-Kafka và repair refund case chưa được thiết kế.
 

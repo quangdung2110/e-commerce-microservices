@@ -20,7 +20,7 @@ verified_against_commit: null
 Cần định nghĩa SLI/SLO cho HTTP availability/error/latency; search p95/p99 theo
 class A/B; PostgreSQL pool; Redis dedup/lock errors; Kafka consumer lag/oldest event;
 outbox-to-Kafka age; Temporal schedule-to-start/activity/workflow completion;
-checkout success/timeout/compensation; refund wait age; late-payment recovery và
+checkout success/timeout/cancel fact/forward repair; refund wait age; late-payment recovery và
 auto-complete delay. Error budget và ngưỡng số chưa được chốt.
 
 Liveness chỉ kiểm tra process. Readiness API ghi cần PostgreSQL và khả năng start/
@@ -95,9 +95,11 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Debezium/Kafka Connect lỗi | Outbox backlog tăng; không publish tay bằng cách phá ordering; phục hồi connector từ WAL/offset |
 | Temporal unavailable | Read API còn có thể phục vụ; command start/signal trả lỗi/202 chỉ khi đã có durable acceptance; không commit terminal state inline |
 | Inventory timeout | Activity retry/compensate; refund tiếp tục chờ, không gọi Payment refund |
-| Promotion timeout/failure | Pre-payment rollback và structured recalculation; final activity retry cùng stable key, replay durable receipt; post-payment technical compensation PostgreSQL-first; customer refund không gọi Promotion |
-| Payment timeout | Initiate/cancel/refund retry theo stable key; không tạo transaction/refund thứ hai |
-| Mixed-version deploy | Workflow code phải replay-compatible; event consumer ignore unknown fields; additive rollout |
+| Promotion timeout/failure | Pre-payment rollback và structured recalculation; final activity retry cùng stable key/receipt; post-payment forward repair or financial reconciliation, never technical cancellation; customer refund không gọi Promotion |
+| Payment timeout | Initiate/cancel/refund retry/query theo stable key; Order remains cancelling/reconciling until provider fact, không tạo transaction/refund thứ hai |
+| Unknown Inventory/Promotion result | Query/replay same durable command; never compensate by assuming remote mutation failed |
+| Workflow start failure after accepted API | Dispatcher retries/attaches durable workflow dispatch; no accepted command is lost |
+| Mixed-version deploy | Workflow code phải replay-compatible; consumer validates additive financial fields/version; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |
 
 ## 6. Scaling và capacity
@@ -132,10 +134,11 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Worker/job | Trigger/input | Concurrency/idempotency | Timeout/retry/output |
 |---|---|---|---|
 | Outbox CDC pipeline | WAL row `outbox_events` | Partition theo order; connector offset | Kafka Connect retry/DLQ/backoff; `t.order.events` |
-| Payment consumer | `t.payment.events` | Redis 30 ngày; workflow/FSM fallback | Signal checkout/refund/recovery; không ghi master trực tiếp |
-| Inventory ship consumer | `INVENTORY_SHIP_TO_CUSTOMER` | Key order+warehouse+time; item/master CAS | Item event và optional completion |
-| Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Key order+refund request + scope revision | Validate scope/counters, signal refund workflow |
-| Temporal worker | Ba task queue | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
+| Payment consumer | `t.payment.events` | Durable inbox + original transaction/amount/currency/financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
+| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + aggregate revision + line/warehouse guard | `DISPATCHED` item fact only; no completion |
+| Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence then signal refund workflow |
+| Workflow dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API/consumer crash |
+| Temporal worker | Four task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
 | Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; watermark guard | Xóa row >15 ngày khi an toàn |
 
 Không còn order metrics projector, search projection/reindex worker, Kafka CQRS
@@ -148,8 +151,9 @@ escalation owner. Tối thiểu phải có:
 
 1. Payment/Inventory consumer lag: xác định partition/offset/event age, dependency,
    tăng worker an toàn, replay với dedup, xác minh workflow/FSM không double-apply.
-2. Temporal workflow mắc kẹt/compensation fail: xem history/activity attempt, sửa
-   dependency, retry activity có stable key, không update DB thủ công thiếu outbox.
+2. Temporal workflow mắc kẹt/cancel or forward-repair fail: inspect history, dispatch
+   and remote checkpoint; repair dependency, query/replay same activity key, không update
+   DB thủ công thiếu inbox/outbox.
 3. Refund quá 30 ngày/manual verification: đối chiếu selected locked scope với
    Inventory, ghi audit quyền admin, signal đúng workflow và xác minh lifetime case
    chưa tạo transaction thứ hai. Không coi inspection `FAIL` là lý do bỏ Payment.
@@ -159,9 +163,10 @@ escalation owner. Tối thiểu phải có:
    không flush broad keyspace, khôi phục và theo dõi duplicate rate.
 6. DB pool/deadlock: xác định query/lock holder, giảm concurrency, không kill
    transaction mù, xác minh state/outbox atomicity.
-7. Late-payment recovery/manual verification: xác nhận payment evidence, cancel reason,
-   Inventory reservation/physical-dispatch evidence và refund case trước mọi manual
-   action. Automatic admin refund chỉ được tiếp tục sau all-line atomic pre-dispatch
-   release; mixed dispatch là manual exception.
+7. Late-payment recovery/manual verification: xác nhận original payment identity/version,
+   timeout non-capture fact, Inventory fenced-recovery outcome and physical-dispatch evidence
+   trước mọi manual action. Automatic admin refund chỉ được tiếp tục after an accepted
+   all-line atomic pre-dispatch attempt; mixed/rejected attempt must not have created a
+   refund case.
 8. Outbox retention cleanup failure: kiểm tra watermark và oldest row; chỉ chạy lại
    delete khi connector đã vượt dữ liệu mục tiêu.
