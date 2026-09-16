@@ -1,7 +1,7 @@
 ---
 doc_id: payment-adr-008
 service: payment
-status: accepted
+status: superseded
 date: null
 decision_owners:
   - Architecture Team
@@ -10,13 +10,14 @@ evidence:
   - docs/payment/interfaces.md
 ---
 
-# ADR-008 — Payload event tối thiểu cho Order consumer (Phase 20)
+# ADR-008 — Payload event tối thiểu cho Order consumer (Phase 20, superseded)
 
 ## Trạng thái
 
-`Accepted` trong thiết kế (ghi nhận là "Phase 20 — Event Payload Simplification:
-Order + Payment + Inventory + Promotion + Cart"); thay thế payload đầy đủ trước
-Phase 20. Ngày không được ghi lại. Chưa xác minh implementation.
+Quyết định lịch sử này bị thay thế bởi [Payment events v2](../../../contracts/events/payment/v2/asyncapi.yaml)
+và [`interfaces.md`](../interfaces.md). V2 bắt buộc financial identity/version và VND
+money object, đồng thời **cấm** `client_secret` khỏi Kafka/outbox/audit. File chỉ lưu lại
+bối cảnh migration; không được dùng làm source contract hoặc implementation.
 
 ## Bối cảnh
 
@@ -27,14 +28,14 @@ route workflow hay commit FSM (`user_id`, `currency`, `provider`,
 `error_message`, `reason_message`). Field thừa làm contract nặng, lộ chi tiết
 provider ra ngoài và tạo coupling không cần thiết.
 
-## Quyết định
+## Quyết định lịch sử (không còn áp dụng)
 
 Kafka payload chỉ giữ field Order cần để route workflow/commit FSM; Payment
 Service vẫn giữ đầy đủ field ở internal log/audit.
 
 | Event | Payload giữ lại | Lý do |
 |---|---|---|
-| `PAYMENT_INITIATED` | `payment_transaction_id`, `order_id`, `amount`, `client_secret`, `expires_at` | `client_secret` cần cho Stripe SDK ở Order; Analytics tự join `user_id` từ `order_id` |
+| `PAYMENT_INITIATED` | `payment_transaction_id`, `order_id`, `amount`, `client_secret`, `expires_at` | **Đã thay thế:** V2 không gửi secret trong event; API response đã authenticated mang secret. |
 | `PAYMENT_SUCCESS` | `payment_transaction_id`, `order_id`, `amount`, `paid_at` | idempotency, route, verify amount, audit |
 | `PAYMENT_FAILED` | `payment_transaction_id`, `order_id`, `error_code`, `failed_at` | Notification map `error_code` qua i18n |
 | `PAYMENT_EXPIRED` | `payment_transaction_id`, `order_id`, `expired_at` | audit timeline |
@@ -64,12 +65,14 @@ thuộc sequence của Payment. Tiêu cực: Analytics phải join thêm qua `or
 Notification phải có i18n mapping cho `error_code`/`reason_code`; consumer cần
 `event_id` để dedup thay vì sequence.
 
-## Ảnh hưởng migration
+## Migration đã được thay thế
 
-Thay đổi payload là breaking với consumer cũ; `schema_version` vẫn `1` theo thiết
-kế cũ. Khi có AsyncAPI, phải ghi rõ danh sách field này.
+V1 không được publish chung topic với V2. Producer/consumer mới chỉ dùng
+`t.payment.events.v2`, `data.schema_version=2` và schema AsyncAPI. Migration thực tế cần
+dual-publish/consumer cutover được phê duyệt riêng; không được re-enable V1 vì schema cũ
+thiếu `currency`/financial version và lộ `client_secret`.
 
 ## Xác minh
 
-Cần JSON Schema/AsyncAPI cho 9 event, producer test payload đúng danh sách field,
-Order consumer test không phụ thuộc field đã bỏ.
+Cần provider/consumer test Payment events v2, đặc biệt absence of `client_secret`,
+attempt/transaction identity, VND money and monotonic financial version.

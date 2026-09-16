@@ -45,7 +45,7 @@ không produce được); Redis không nên chặn readiness vì có fallback DB
 | Poller `updated_at` threshold | 1 phút | Không |
 | Webhook retry `max_retries`/backoff | Auto-Retry Worker | Không |
 | Archive age / S3 bucket | > 6 tháng; `s3://payment-archive/...` | Bucket credential là secret |
-| Kafka topics/consumer groups | `t.payment.events`, `t.payment.webhooks.raw`, `t.order.events` / `payment-order-consumer` | Không |
+| Kafka topics/consumer groups | `t.payment.events.v2`, `t.payment.webhooks.raw`, `t.order.events` / `payment-order-consumer` | Không |
 | PostgreSQL/Redis/Kafka connection | Runtime dependency | Credential là secret |
 
 Tên biến môi trường cụ thể chưa có; không ghi giá trị secret vào tài liệu.
@@ -119,15 +119,16 @@ trước commit, refund vượt hạn mức.
   polling worker.
 - Đổi webhook secret: cập nhật Vault trước, sau đó Auto-Retry replay các
   `FAILED_SIGNATURE` phát sinh trong cửa sổ đổi key.
-- Rollback: giữ `schema_version=1`, chỉ thêm field; không rollback partition
-  đã archive/drop nếu chưa restore từ S3.
+- Rollback must preserve the published v2 schema; no event is downgraded or republished
+  as v1. Schema changes are additive on v2 or require a new version/topic. Do not rollback
+  a partition already archived/dropped before restoring it from S3.
 - Chưa có canary/feature flag.
 
 ## 8. Workers và tác vụ định kỳ
 
 | Worker | Trigger | Input/Output | Lock/idempotency | Chi tiết |
 |---|---|---|---|---|
-| Outbox CDC Connector (Debezium) | WAL | `outbox_events` → `t.payment.events` | Kafka Connect quản lý retry/DLQ/backoff | Polling Worker cũ deprecated |
+| Outbox CDC Connector (Debezium) | WAL | `outbox_events` → `t.payment.events.v2` | Kafka Connect quản lý retry/DLQ/backoff | Polling Worker cũ deprecated |
 | Webhook Processor | `t.payment.webhooks.raw` | Raw webhook → transition + outbox | `ON CONFLICT DO NOTHING` + `stripe_event_id` + `version` | `WF-PAYMENT-002` |
 | Payment Expiration Scanner | Mỗi 1–2 phút | `PENDING/PROCESSING` quá hạn → `EXPIRED` + `PAYMENT_EXPIRED` | Distributed lock; batch theo partition hiện tại | `WF-PAYMENT-005` |
 | Reconciliation Worker | Hourly | Stripe list ↔ DB → mismatch report + correction transition | Distributed lock; correction idempotent | `WF-PAYMENT-006` |

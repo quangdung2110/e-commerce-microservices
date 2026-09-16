@@ -28,8 +28,8 @@ captured payment by assumption. Unknown outcomes remain `CANCEL_PENDING` and are
 recovered using the same operation identity. `ORDER_CANCELLED` remains a consumer
 reconciliation notification and never authorizes automatic refund.
 
-Payment event schema version 2 includes `currency`, original payment transaction
-identity on refund facts, and monotonic `financial_state_version`, so Order can
+Payment event schema version 2 includes `currency`, the immutable captured payment
+transaction identity on refund facts, and monotonic `financial_state_version`, so Order can
 durably validate a financial fact rather than relying only on order partition order.
 
 ## Consequences

@@ -35,9 +35,9 @@ Order command remains mandatory.
 - Payment does not reject a valid Order refund merely because one or more inspected
   returned units failed quality inspection. Inventory `FAIL` is a quarantine/payout-
   independent fact.
-- Amount is supplied by Order's locked policy: gross selected line snapshots capped
-  at `final_amount`, or full `final_amount` for Admin pre-dispatch. Payment still
-  checks `amount <= paid_amount` as financial defense in depth.
+- Amount is supplied as canonical VND money by Order's locked policy: gross selected line
+  snapshots capped at `final_amount_minor`, or full `final_amount_minor` for Admin
+  pre-dispatch. Payment still checks `amount_minor <= paid_amount_minor` as defense in depth.
 - A provider failure/reversal creates manual review on the existing transaction;
   it never permits another refund transaction for the order.
 

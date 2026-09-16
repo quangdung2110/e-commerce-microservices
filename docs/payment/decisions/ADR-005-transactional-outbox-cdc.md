@@ -37,7 +37,7 @@ worker riêng để relay, retry, DLQ.
   REFUND_*), `event_type`, `partition_key` (`order_id`), `payload` JSONB,
   `created_at`. **Cấm cột polling-style** — retry/DLQ/backoff chuyển sang Kafka
   Connect runtime.
-- Debezium đọc WAL, route `aggregate_type=Payment` → topic `t.payment.events` với
+- Debezium đọc WAL, route `aggregate_type=Payment` → topic `t.payment.events.v2` với
   `partition_key = order_id`.
 - Delivery at-least-once; consumer dedup theo `event_id`.
 

@@ -15,7 +15,8 @@ verified_against_commit: null
 > được tái cấu trúc từ các tài liệu thiết kế Payment cũ (workflow, DB design,
 > state machine, events, workers, technology choice và refund boundary ADR); mọi
 > quyết định của thiết kế cũ được giữ nguyên, chưa được xác minh với một
-> implementation hiện hữu và chưa nhằm chuẩn hóa lại contract liên service.
+> implementation hiện hữu. Payment HTTP v1 và events v2 bên dưới là contract target
+> liên service; chúng vẫn cần provider/consumer test trước khi được xem là deployed.
 
 ## 1. Trạng thái dịch vụ
 
@@ -27,10 +28,9 @@ Connect và Stripe Java SDK ([ADR-001](./decisions/ADR-001-java-spring-boot-runt
 [ADR-003](./decisions/ADR-003-stripe-single-provider-direct-sdk.md)); các lựa chọn
 này chỉ được xem là đã triển khai khi có evidence tương ứng.
 
-Contract adoption đang ở mức `not_started`: chưa có OpenAPI cho API Payment, chưa
-có AsyncAPI/JSON Schema cho `t.payment.events`. `contracts/catalog/interactions.yaml`
-ghi hai tương tác `order-initiates-payment` và `payment-publishes-payment-events`
-ở trạng thái `legacy_documented`.
+Contract chuẩn đã được chốt tại [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml)
+và [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml). Việc implementation,
+consumer contract test và catalog adoption vẫn là production gate.
 
 ## 2. Mục tiêu
 
@@ -58,7 +58,7 @@ Payment Service chịu trách nhiệm:
 - Chạy các worker nền: Expiration Scanner, Reconciliation, Refund Status Poller,
   Webhook Auto-Retry, DLQ Replay.
 - Phát `PAYMENT_*` và `REFUND_*` qua transactional outbox + CDC lên
-  `t.payment.events`.
+  `t.payment.events.v2`.
 
 Payment Service không chịu trách nhiệm:
 
@@ -113,14 +113,11 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 
 | Hướng | Service/Hệ thống | Giao thức | Mục đích | Bắt buộc/Tùy chọn | Contract |
 |---|---|---|---|---|---|
-| Inbound | Order (Temporal Activity `InitiatePaymentActivity`) | HTTP/gRPC | `POST /v1/payments/initiate` | Bắt buộc | Chưa có OpenAPI; `legacy_documented` |
-| Inbound | Order (`CancelPaymentActivity`) | HTTP/gRPC | `POST /v1/payments/{transactionId}/cancel` trước final cancellation | Bắt buộc | Proposed semantics trong `interfaces.md` |
-| Inbound | Order (`OrderRefundWorkflow`) | HTTP/gRPC | `POST /v1/payments/{transactionId}/refund` | Bắt buộc | Chưa có OpenAPI; `legacy_documented` |
-| Inbound | Client/Order | HTTP | `GET /v1/payments/{transactionId}`, `GET /v1/refunds/{refundTransactionId}` (khuyến nghị) | Bắt buộc | Chưa có OpenAPI |
+| Inbound | Order (Temporal Activities) | HTTP | Initiate/cancel/refund/query | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml); buyer/CSKH reads go through Order, never direct Payment |
 | Inbound | Stripe | HTTPS webhook | `POST /v1/payments/webhook/stripe` | Bắt buộc | Stripe event schema |
 | Inbound | Order | Kafka `t.order.events` | `ORDER_CANCELLED` factual reconciliation notification | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Outbound | Stripe | HTTPS (`stripe-java`) | PaymentIntent, Refund, BalanceTransaction, Webhook verify | Bắt buộc | Stripe API |
-| Outbound | Order, Analytics | Kafka `t.payment.events` | `PAYMENT_*`, `REFUND_*` | Bắt buộc | Chưa có AsyncAPI; `legacy_documented` |
+| Outbound | Order, Analytics | Kafka `t.payment.events.v2` | `PAYMENT_*`, `REFUND_*` | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Internal | Kafka `t.payment.webhooks.raw` | Kafka | Raw webhook buffer cho Webhook Processor | Bắt buộc | Nội bộ Payment |
 | Internal | PostgreSQL | SQL | Source of truth, outbox, audit, idempotency | Bắt buộc | Logical design trong `data.md` |
 | Internal | Redis | Redis commands | Idempotency pointer và distributed lock | Bắt buộc, có fallback DB | Key/TTL trong `data.md` |
@@ -164,18 +161,12 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 
 ## 9. Khoảng trống đã biết
 
-- Chưa có implementation, migration, OpenAPI/AsyncAPI, cấu hình Kafka Connect,
+- Chưa có implementation, migration, cấu hình Kafka Connect,
   Redis, Stripe webhook endpoint hay deployment để xác minh.
 - Tài liệu cũ liên kết tới `docs/_contracts/CONTRACT_MATRIX.md`,
   `OUTBOX_PATTERNS.md` và `CHANGELOG.md` (ID convention, CloudEvents envelope,
   CDC pattern, Phase 16/18/20). Các file này đã bị xóa khỏi repository; nội dung
   được bảo toàn trong bộ tài liệu này nhưng không còn link nguồn.
-- Payment FSM `T8` chuyển `REFUNDING -> FAILED` khi refund thất bại, nhưng Refund
-  Status Poller mô tả `REFUNDING -> SUCCESS` cho cùng tình huống. Chưa chốt.
-- Tên bảng outbox không thống nhất: DB design dùng `outbox_events`, workers dùng
-  `payment_outbox`.
-- Webhook Auto-Retry Worker dựa vào `retry_count`/`max_retries` trên
-  `webhook_logs` nhưng schema chưa khai báo hai cột này.
 - Workers cũ có hai mục cùng đánh số "7"; migration từ Outbox Polling sang CDC được
   ghi là đang diễn ra nhưng không có evidence.
 - Chưa có SLO đo được ngoài các mục "gợi ý", chưa có capacity benchmark, backup/

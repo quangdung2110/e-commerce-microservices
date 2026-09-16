@@ -1,0 +1,220 @@
+openapi: 3.1.0
+info:
+  title: Payment Service API
+  version: 1.0.0
+  description: >-
+    Canonical REST contract between Order and Payment. Amounts are integer VND
+    minor units. A payment idempotency key is stable for one attempt only; a
+    later attempt uses the next attempt number and a new key.
+x-adoption-status: proposed
+servers:
+  - url: https://payment-service.internal
+security: [{ workloadIdentity: [] }]
+paths:
+  /v1/payments/initiate:
+    post:
+      operationId: initiatePayment
+      summary: Create or replay one numbered payment attempt
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentRequest' } }
+      responses:
+        '200':
+          description: Stored or newly recovered payment-attempt result.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentResponse' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /v1/payments/{transactionId}:
+    get:
+      operationId: getPayment
+      summary: Read one payment transaction for the owning Order or buyer
+      parameters: [{ $ref: '#/components/parameters/TransactionId' }]
+      responses:
+        '200':
+          description: Current Payment state.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/PaymentStatus' } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /v1/payments/{transactionId}/cancel:
+    post:
+      operationId: cancelPayment
+      summary: Resolve pre-capture cancel versus capture for one transaction
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/CancelPaymentRequest' } }
+      responses:
+        '200':
+          description: Durable provider fact, never an inferred cancellation.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CancelPaymentResponse' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /v1/payments/{transactionId}/refund:
+    post:
+      operationId: initiateRefund
+      summary: Initiate the single lifetime refund for an order
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RefundRequest' } }
+      responses:
+        '200':
+          description: Stored or newly accepted asynchronous refund result.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RefundResponse' } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /v1/refunds/{refundTransactionId}:
+    get:
+      operationId: getRefund
+      summary: Read one refund transaction
+      parameters: [{ $ref: '#/components/parameters/RefundTransactionId' }]
+      responses:
+        '200':
+          description: Current Refund state.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RefundStatus' } }
+        '404': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    workloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: Service mesh must authenticate the order-service principal; the header is attribution only.
+  parameters:
+    TransactionId:
+      name: transactionId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 120 }
+    RefundTransactionId:
+      name: refundTransactionId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 120 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 255 }
+  schemas:
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    VndMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, const: VND }
+    InitiatePaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, payment_attempt_number, amount, user_id]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        payment_attempt_number: { type: integer, minimum: 1 }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        user_id: { type: string, format: uuid }
+        return_url: { type: [string, 'null'], format: uri }
+    InitiatePaymentResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [transaction_id, payment_attempt_number, status]
+          properties:
+            transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+            payment_attempt_number: { type: integer, minimum: 1 }
+            status: { const: INITIATING }
+        - type: object
+          additionalProperties: false
+          required: [transaction_id, payment_attempt_number, status, client_secret, publishable_key, expires_at]
+          properties:
+            transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+            payment_attempt_number: { type: integer, minimum: 1 }
+            status: { const: PENDING }
+            client_secret: { type: string, minLength: 1 }
+            publishable_key: { type: string, minLength: 1 }
+            expires_at: { type: string, format: date-time }
+    CancelPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, reason]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { enum: [PAYMENT_TIMEOUT, BUYER_CANCELLED, ORDER_CANCELLED_PRE_CAPTURE] }
+    CancelPaymentResponse:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, order_id, outcome, financial_state_version]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        outcome: { enum: [CANCELED, ALREADY_NON_CAPTURED, ALREADY_SUCCEEDED, CANCEL_PENDING] }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        financial_state_version: { type: integer, minimum: 1 }
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, refund_request_id, amount, reason, inventory_evidence]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        reason: { enum: [CUSTOMER_RETURN_SELECTED_LINES, ADMIN_FORCE_REFUND_BEFORE_DISPATCH] }
+        inventory_evidence: { type: object, minProperties: 1 }
+    RefundResponse:
+      type: object
+      additionalProperties: false
+      required: [refund_transaction_id, payment_transaction_id, status]
+      properties:
+        refund_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED] }
+    PaymentStatus:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        payment_attempt_number: { type: integer, minimum: 1 }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        status: { enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
+        financial_state_version: { type: integer, minimum: 1 }
+    RefundStatus:
+      type: object
+      additionalProperties: false
+      required: [refund_transaction_id, payment_transaction_id, order_id, amount, status]
+      properties:
+        refund_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED] }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [code, retryable]
+      properties:
+        code: { type: string }
+        retryable: { type: boolean }
+        correlation_id: { type: string }
+  responses:
+    Problem:
+      description: Domain or infrastructure failure; retryable is authoritative.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }

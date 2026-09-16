@@ -39,7 +39,7 @@ Chiến lược kết hợp:
   `lock:payment:refund:txn_123`, `lock:payment:initiate:order_10001`,
   `lock:payment:refund_call:{txn_id}`, `lock:payment:refund_poll:{refund_transaction_id}`).
   TTL 15–30s để tránh lock treo vĩnh viễn khi worker crash.
-- **Idempotency:** Redis `SETNX payment:initiate:{order_id}` (TTL 15 phút + 60s)
+- **Idempotency:** Redis `SETNX payment:initiate:{order_id}:{attempt_number}` (TTL 15 phút + 60s)
   cho initiate; `Idempotency-Key` header cho refund check trên Redis và DB
   `refund_transactions.idempotency_key` UNIQUE; bảng `payment_idempotency`
   `PRIMARY KEY (key, action)` lưu response.

@@ -11,7 +11,7 @@ evidence:
   - docs/payment/data.md
 ---
 
-# ADR-007 — Partition key `order_id` cho `t.payment.events`, Order route theo `payload.order_id`
+# ADR-007 — Partition key `order_id` cho `t.payment.events.v2`, Order route theo `data.order_id`
 
 ## Trạng thái
 
@@ -29,7 +29,7 @@ khác nhau.
 
 ## Quyết định
 
-- Topic `t.payment.events` partition theo **`order_id`** thay vì `transaction_id`;
+- Topic `t.payment.events.v2` partition theo **`order_id`** thay vì `transaction_id`;
   `outbox_events.partition_key = order_id` để mọi event payment + refund của cùng
   đơn vào cùng partition → strict ordering cho Order consumer.
 - Envelope giữ `aggregate_type = Payment` (kể cả REFUND_*), `aggregate_id` là

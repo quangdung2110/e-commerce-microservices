@@ -19,15 +19,15 @@ verified_against_commit: null
 
 | ID | Workflow | Trigger | Tác nhân | Trạng thái |
 |---|---|---|---|---|
-| `WF-PAYMENT-001` | Khởi tạo thanh toán | HTTP/gRPC | Order (`InitiatePaymentActivity`) | proposed |
+| `WF-PAYMENT-001` | Khởi tạo thanh toán | HTTP | Order (`InitiatePaymentActivity`) | proposed |
 | `WF-PAYMENT-002` | Nhận và xử lý webhook Stripe | HTTPS + Kafka | Stripe, Webhook Processor | proposed |
-| `WF-PAYMENT-003` | Tra cứu trạng thái thanh toán | HTTP | Client/Order | proposed |
-| `WF-PAYMENT-004` | Khởi tạo hoàn tiền và chốt kết quả | HTTP/gRPC + webhook | Order (`OrderRefundWorkflow`) | proposed |
+| `WF-PAYMENT-003` | Tra cứu trạng thái thanh toán | HTTP | Order | proposed |
+| `WF-PAYMENT-004` | Khởi tạo hoàn tiền và chốt kết quả | HTTP + webhook | Order (`OrderRefundWorkflow`) | proposed |
 | `WF-PAYMENT-005` | Hết hạn phiên thanh toán | Schedule 1–2 phút | Expiration Scanner | proposed |
 | `WF-PAYMENT-006` | Đối soát với Stripe | Schedule hourly | Reconciliation Worker | proposed |
 | `WF-PAYMENT-007` | Poll trạng thái refund | Schedule 5–15 phút | Refund Status Poller | proposed |
 | `WF-PAYMENT-008` | Đối soát notification `ORDER_CANCELLED` | Kafka | `payment-order-consumer` | proposed |
-| `WF-PAYMENT-011` | Hủy payment trước capture | HTTP/gRPC + provider recovery | Order (`CancelPaymentActivity`), Stripe | proposed |
+| `WF-PAYMENT-011` | Hủy payment trước capture | HTTP + provider recovery | Order (`CancelPaymentActivity`), Stripe | proposed |
 | `WF-PAYMENT-009` | Webhook auto-retry và DLQ replay | Schedule/manual | Auto-Retry Worker, Ops | proposed |
 | `WF-PAYMENT-010` | Archive dữ liệu cũ và tiered read | Schedule weekly + HTTP | Archival CronJob, CSKH | proposed |
 
@@ -36,7 +36,8 @@ verified_against_commit: null
 **Mục tiêu:** tạo payment transaction và Stripe PaymentIntent để frontend thanh
 toán qua Stripe Elements/Checkout SDK. **Trigger:** `POST /v1/payments/initiate`
 từ Order Service Temporal Activity `InitiatePaymentActivity`. **Input:**
-`order_id`, `amount`, `currency`, `return_url?`, `metadata{user_id, description}`.
+`order_id`, `payment_attempt_number`, `amount { amount_minor, currency: VND }`,
+`user_id`, `return_url?`.
 
 ```mermaid
 sequenceDiagram
@@ -45,7 +46,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant ST as Stripe API
 
-    OS->>PS: POST /v1/payments/initiate (stable Idempotency-Key)
+    OS->>PS: POST /v1/payments/initiate (attempt number + stable attempt key)
     PS->>DB: INSERT payment_transactions (INITIATING, provider key/fingerprint)
     PS->>ST: PaymentIntent.create(same provider idempotency key, immutable metadata)
     ST-->>PS: PaymentIntent { id: pi_xxx, client_secret, status: requires_payment_method }
@@ -55,7 +56,8 @@ sequenceDiagram
 
 **Happy path:**
 
-1. Order supplies one stable `Idempotency-Key`. `[PostgreSQL]` atomically creates
+1. Order supplies one stable `Idempotency-Key` for one `payment_attempt_number`.
+   `[PostgreSQL]` atomically creates
    `payment_transactions` in `INITIATING` plus `ProviderOperation(CREATE)` with the
    canonical request fingerprint, provider idempotency key, immutable internal
    transaction ID and Order metadata. Redis/lock is an optimisation only.
@@ -64,7 +66,8 @@ sequenceDiagram
    currency). It never generates a second provider key on retry.
 3. A response, idempotent replay, or reconciliation lookup must prove one provider
    PaymentIntent. `[PostgreSQL]` then atomically records `pi_xxx`, encrypted
-   `client_secret`, `PENDING`, audit and `PAYMENT_INITIATED` outbox event.
+   `client_secret`, `PENDING` and audit; its separate `PAYMENT_INITIATED` outbox event
+   is emitted **without** the secret.
 4. Only this recovered durable result returns `transaction_id`, `client_secret`,
    `publishable_key`, `expires_at`. `INITIATING` returns a retryable/pending command
    result, never an invented client secret.
@@ -74,11 +77,11 @@ one provider intent is proven, one `PENDING` transaction plus outbox row.
 **Events:** `PAYMENT_INITIATED` (Analytics). **Output:** dữ liệu để frontend khởi
 tạo Stripe Elements; không redirect ra URL ngoài.
 
-**Idempotency:** DB `payment_idempotency`/`ProviderOperation` is authoritative;
-the same Order key and fingerprint returns the same local/provider result. Redis
-`SETNX` and distributed lock only reduce concurrent calls. A changed fingerprint is
-rejected. An expiry may never overwrite a still-unresolved create operation or
-silently mint a different payment identity.
+**Idempotency:** DB `payment_idempotency`/`ProviderOperation` is authoritative.
+The same key/fingerprint replays only its numbered attempt. A later attempt requires
+the next number and a new key after the preceding provider fact is terminal
+non-capture; it cannot overwrite an unresolved `INITIATING` operation. Redis/lock only
+reduces contention.
 
 **Failure/timeout/retry:** a Stripe timeout after request dispatch leaves
 `INITIATING`, not an empty `PENDING`. Retry replays the same provider idempotency
@@ -88,9 +91,9 @@ in a manual/reconciliation queue. The Expiration Scanner does not expire
 `INITIATING`; it may expire only a proven non-successful provider intent after a
 fresh provider read. Lock loss cannot create another provider operation.
 
-**Test scenarios:** happy path; replay trong phiên còn hiệu lực; replay sau
-`EXPIRED`; Redis unavailable fallback DB; Stripe timeout; hai request đồng thời
-cùng `order_id`.
+**Test scenarios:** same-attempt replay; new attempt after a proven `EXPIRED`/`FAILED`/
+`CANCELED` fact; reject skipped/reused attempt number; Redis unavailable fallback DB;
+Stripe timeout; two concurrent requests for the same attempt.
 
 ## WF-PAYMENT-002 — Nhận và xử lý webhook Stripe
 
@@ -140,7 +143,8 @@ conflict rồi requeue; endpoint trả 200 khi Kafka chậm.
 
 ## WF-PAYMENT-003 — Tra cứu trạng thái thanh toán
 
-**Mục tiêu:** client polling hoặc Order verify trạng thái. **Trigger:**
+**Mục tiêu:** Order verify trạng thái trước recovery/retry. Buyer và CSKH đọc payment
+projection qua Order, không gọi Payment trực tiếp. **Trigger:**
 `GET /v1/payments/{transactionId}`.
 
 **Happy path:** `[PostgreSQL]` `SELECT pt.*, array_agg(rt.*) FROM
@@ -278,9 +282,8 @@ issuing bank), retry với jitter chống thundering herd.
 
 - `succeeded` → `PROCESSING -> SUCCESS`, payment `REFUNDING -> REFUNDED`, emit
   `REFUND_SUCCESS`.
-- `failed` → `PROCESSING -> FAILED`, payment `REFUNDING -> SUCCESS` (theo mô tả
-  poller; bảng FSM `T8` ghi `-> FAILED` — mâu thuẫn chưa chốt, xem `README.md` §9),
-  emit `REFUND_FAILED`.
+- `failed` → `PROCESSING -> FAILED`, payment `REFUNDING -> SUCCESS`, set
+  `requires_manual_review`, emit `REFUND_FAILED`.
 - reversed (account invalid) → audit + emit `REFUND_REVERSED` + manual queue.
 
 **Race:** poller và webhook `charge.refunded` cùng lúc → optimistic lock + dedup;

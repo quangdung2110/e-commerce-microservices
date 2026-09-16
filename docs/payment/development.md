@@ -32,7 +32,7 @@ Khi implementation được thêm, tài liệu phải cung cấp command chính 
 tháng hiện tại), start API server + Webhook Processor + `payment-order-consumer`
 + scheduler, kiểm tra health, rồi cleanup.
 
-Local stack cần topic `t.payment.events`, `t.payment.webhooks.raw`,
+Local stack cần topic `t.payment.events.v2`, `t.payment.webhooks.raw`,
 `t.order.events`; connector Debezium route `aggregate_type=Payment`. Stripe dùng
 test mode (`sk_test_...`, `pk_test_...`) và Stripe CLI `listen --forward-to` tới
 `POST /v1/payments/webhook/stripe` để lấy `whsec_...` local. Order có thể mock
@@ -97,13 +97,16 @@ webhook secret + auto-retry. Timer dài (15 phút, poll 5–15 phút) cần test
 
 ## 6. Contract code generation
 
-Chưa có OpenAPI/AsyncAPI/Proto cho Payment nên chưa có quy trình generate. Khi
-có, cần pin tool version, output path, generated-code policy và CI drift check.
-Markdown example không phải source để generate model.
+Payment HTTP v1 và events v2 are the source contracts at
+`contracts/http/payment/v1/openapi.yaml` and
+`contracts/events/payment/v2/asyncapi.yaml`. CI must lint both, pin generator/tool
+versions, generate into a declared output path, and fail on drift. Markdown examples are
+not generated models. Provider and Order consumer fixtures must assert schema v2,
+attempt/transaction mapping, VND money and absence of `client_secret` from events.
 
 ## 7. Database migration
 
-Migration đầu tiên phải tạo the documented Payment tables, including
+Migration đầu tiên phải tạo the documented Payment tables, including `consumed_events`,
 `provider_operations`, with constraint (`CHECK
 provider`, unique `idempotency_key`, unique webhook dedup, PK `(key, action)`),
 bổ sung `version` và `requires_manual_review` còn thiếu trong DB design cũ, tạo

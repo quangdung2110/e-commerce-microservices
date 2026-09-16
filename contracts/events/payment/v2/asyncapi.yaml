@@ -1,0 +1,90 @@
+asyncapi: 3.0.0
+info:
+  title: Payment Service Financial Facts
+  version: 2.0.0
+  description: >-
+    Canonical version-2 Payment facts for Order recovery. Payment never publishes a
+    Stripe client_secret. Delivery is at-least-once and consumers deduplicate by
+    CloudEvents id, then validate the payment transaction, VND amount and monotonic
+    financial_state_version.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local: { host: localhost:9092, protocol: kafka }
+channels:
+  financialFacts:
+    address: t.payment.events.v2
+    x-owner: payment-service
+    x-message-key: order_id
+    x-delivery-semantic: at-least-once
+    x-ordering-scope: order_id
+    x-deduplication-key: CloudEvents.id
+    x-consumers: [order-service, analytics]
+    messages:
+      paymentFact: { $ref: '#/components/messages/paymentFact' }
+operations:
+  publishPaymentFact:
+    action: send
+    channel: { $ref: '#/channels/financialFacts' }
+    messages: [{ $ref: '#/channels/financialFacts/messages/paymentFact' }]
+components:
+  messages:
+    paymentFact:
+      name: paymentFinancialFactV2
+      title: Payment or refund financial fact
+      contentType: application/cloudevents+json
+      payload: { $ref: '#/components/schemas/PaymentEvent' }
+  schemas:
+    VndMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { const: VND }
+    PaymentEvent:
+      type: object
+      additionalProperties: false
+      required: [specversion, id, source, type, time, subject, data]
+      properties:
+        specversion: { const: '1.0' }
+        id: { type: string, format: uuid }
+        source: { const: payment-service }
+        type:
+          enum: [PAYMENT_INITIATED, PAYMENT_SUCCESS, PAYMENT_CANCELED, PAYMENT_FAILED, PAYMENT_EXPIRED, REFUND_INITIATED, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED, REFUND_REVERSED]
+        subject: { type: string, pattern: '^payments/[A-Za-z0-9_.-]+$' }
+        time: { type: string, format: date-time }
+        datacontenttype: { const: application/json }
+        data:
+          type: object
+          additionalProperties: false
+          required: [schema_version, order_id, payment_transaction_id, payment_attempt_number, financial_state_version]
+          properties:
+            schema_version: { const: 2 }
+            order_id: { type: string, minLength: 1, maxLength: 128 }
+            payment_transaction_id: { type: string, minLength: 1, maxLength: 120 }
+            refund_transaction_id: { type: [string, 'null'], maxLength: 120 }
+            payment_attempt_number: { type: integer, minimum: 1 }
+            amount: { $ref: '#/components/schemas/VndMoney' }
+            refund_amount: { $ref: '#/components/schemas/VndMoney' }
+            financial_state_version: { type: integer, minimum: 1 }
+            occurred_at: { type: string, format: date-time }
+            error_code: { type: string }
+            reason_code: { type: string }
+      allOf:
+        - if:
+            properties:
+              type: { enum: [PAYMENT_INITIATED, PAYMENT_SUCCESS, PAYMENT_CANCELED, PAYMENT_FAILED, PAYMENT_EXPIRED] }
+            required: [type]
+          then:
+            properties:
+              data:
+                required: [amount, occurred_at]
+        - if:
+            properties:
+              type: { enum: [REFUND_INITIATED, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED, REFUND_REVERSED] }
+            required: [type]
+          then:
+            properties:
+              data:
+                required: [refund_transaction_id, refund_amount, occurred_at]

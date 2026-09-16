@@ -19,11 +19,12 @@ verified_against_commit: null
 
 | Thuật ngữ | Định nghĩa | Không được nhầm với |
 |---|---|---|
-| Payment Transaction | Một lần người dùng cố gắng thanh toán cho một order; `id` là `txn_ref` gửi lên Stripe (ví dụ `TXN-ABC123`) | Order; một order có thể có nhiều transaction nếu thanh toán lỗi và thử lại |
+| Payment attempt | Một lần numbered attempt cho một order; retry giữ nguyên `payment_attempt_number` và idempotency key, attempt mới dùng số/key mới | Retry transport của cùng attempt |
+| Payment Transaction | Aggregate của đúng một Payment attempt; `id` là `txn_ref` gửi lên Stripe (ví dụ `TXN-ABC123`) | Order; một order có thể có nhiều transaction qua nhiều attempt terminal non-capture |
 | Refund Transaction | Một transaction hoàn tiền duy nhất trọn đời cho một order, gắn với một payment transaction `SUCCESS` | Order refund case do Order sở hữu |
 | PaymentIntent | Đối tượng Stripe `pi_xxx` đại diện ý định thanh toán; `client_secret` dùng ở frontend | Charge/`provider_charge_id` |
 | Stripe Refund | Đối tượng Stripe `re_xxx` tạo bởi `Refund.create` | Refund transaction nội bộ |
-| Stripe Event | Webhook payload có `stripe_event_id` (`evt_xxx`) và `event_type` | Event nội bộ trên `t.payment.events` |
+| Stripe Event | Webhook payload có `stripe_event_id` (`evt_xxx`) và `event_type` | Business event v2 trên `t.payment.events.v2` |
 | Webhook | Callback HTTPS từ Stripe, có thể duplicate, delay, out-of-order | Polling/reconciliation |
 | Stripe-Signature | Header `t=<timestamp>,v1=<signature>` được verify bằng HMAC-SHA256 với `whsec_...` | API key `sk_...` |
 | Phiên thanh toán | Khoảng thời gian từ tạo transaction đến `expires_at` (15 phút) | TTL Redis idempotency (15 phút + 60s) |
@@ -35,18 +36,18 @@ verified_against_commit: null
 
 ## 2. Đối tượng miền nghiệp vụ
 
-`PaymentTransaction` là aggregate root cho thanh toán: `order_id`, `user_id`
-(UUID canonical toàn hệ thống), `amount`, `currency` (cố định `VND`), `provider`
+`PaymentTransaction` là aggregate root cho thanh toán: `order_id`, `payment_attempt_number`, `user_id`
+(UUID canonical toàn hệ thống), `amount_minor`, `currency` (cố định `VND`), `provider`
 (cố định `STRIPE`), `provider_transaction_id` (`pi_xxx`), `status`, `error_code`/
 `error_message`, `expires_at`, `version` (optimistic lock) và cờ
 `requires_manual_review`. Identity là `id` do Payment sinh, đồng thời là tham
 chiếu gửi lên Stripe.
 
 `RefundTransaction` là aggregate riêng (logical module Refund) tham chiếu
-`payment_transaction_id`, lifetime-unique `order_id`, `refund_request_id`, `refund_amount`, `reason`,
+`payment_transaction_id`, lifetime-unique `order_id`, `refund_request_id`, `refund_amount_minor`, `reason`,
 `provider_refund_id` (`re_xxx`), `status`, `idempotency_key` (unique). Refund và
 Payment nằm cùng service để giữ transaction boundary cho unique-order refund và
-`refund_amount <= paid_amount` ([ADR-002](./decisions/ADR-002-refund-inside-payment-service.md)).
+`refund_amount_minor <= paid_amount_minor` ([ADR-002](./decisions/ADR-002-refund-inside-payment-service.md)).
 
 `WebhookLog` là bản ghi raw webhook kèm kết quả xác thực và trạng thái xử lý;
 `PaymentStatusHistory` là audit record cho mỗi transition của cả hai FSM.
@@ -67,15 +68,15 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | Lệnh | Chốt refund | Webhook/Refund Status Poller/Reconciliation | RefundTransaction (`R2`/`R3`), PaymentTransaction (`T7`/`T8`/`T9`) |
 | Lệnh | Correction transition | Reconciliation Worker | Cả hai FSM |
 | Lệnh | Replay webhook/DLQ | Vận hành (manual) | Webhook Processor qua Kafka |
-| Truy vấn | Chi tiết payment transaction kèm refunds | Client polling/Order | PostgreSQL read |
-| Truy vấn | Chi tiết refund transaction | Order/CSKH | PostgreSQL read (khuyến nghị) |
+| Truy vấn | Chi tiết payment transaction kèm refunds | Order recovery/verify | PostgreSQL read |
+| Truy vấn | Chi tiết refund transaction | Order recovery/verify | PostgreSQL read |
 | Truy vấn | Tra cứu giao dịch cũ > 6 tháng | CSKH | Tiered read DB → S3/Athena |
 
 ## 4. Quy tắc nghiệp vụ
 
 | ID | Quy tắc | Điều kiện | Kết quả khi vi phạm |
 |---|---|---|---|
-| `RULE-PAY-001` | Idempotency initiate theo `order_id` | Key `payment:initiate:{order_id}` tồn tại | Kiểm tra `expires_at`; nếu transaction cũ còn hiệu lực trả lại `transaction_id` + `client_secret` cũ; nếu `EXPIRED` hoặc `expires_at <= NOW()` tạo transaction mới và ghi đè pointer |
+| `RULE-PAY-001` | Idempotency initiate theo `(order_id, payment_attempt_number)` | Cùng key/fingerprint | Replay đúng transaction/result của attempt; key đổi payload bị reject. Attempt mới chỉ được Order tạo sau fact terminal non-capture và phải tăng số attempt/key mới. |
 | `RULE-PAY-002` | Phiên thanh toán 15 phút | `expires_at = created_at + 15 phút` | Scanner chuyển `EXPIRED`, phát `PAYMENT_EXPIRED` |
 | `RULE-PAY-003` | Refund chỉ trên payment `SUCCESS` | `payment.status != SUCCESS` | `400 Bad Request` |
 | `RULE-PAY-004` | Một refund transaction/order và amount không vượt paid amount | Refund `order_id` đã tồn tại với key khác, hoặc `new_amount > paid_amount` | `409 ORDER_REFUND_ALREADY_EXISTS` hoặc `400 Bad Request` |
@@ -100,7 +101,7 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | `INV-PAY-005` | Mọi terminal transition có audit record | Insert `payment_status_history` cùng transaction (Spring Event Listener pattern) |
 | `INV-PAY-006` | Mọi transition idempotent theo `stripe_event_id` hoặc `provider_ref + event_type`; không override ngược terminal | Unique constraint `webhook_logs` + optimistic lock `version` + state precedence |
 | `INV-PAY-007` | Refund chỉ từ explicit command của Order kèm `Idempotency-Key` | API contract; consumer `ORDER_CANCELLED` không gọi refund |
-| `INV-PAY-008` | `provider = 'STRIPE'` và `currency = 'VND'` cho mọi transaction | `CHECK (provider = 'STRIPE')`; currency cố định |
+| `INV-PAY-008` | `provider = 'STRIPE'`, VND money integer và `currency = 'VND'` cho mọi transaction | `CHECK (provider = 'STRIPE')`; `amount_minor BIGINT`, currency cố định |
 | `INV-PAY-009` | Không tạo refund transaction thứ hai khi provider fail/reverse | `order_id UNIQUE`, `requires_manual_review=TRUE`, manual queue |
 
 ## 6. State machine
@@ -130,10 +131,12 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | `T5` | `PENDING`/`PROCESSING` | `PAYMENT_CANCELED` (cancel command/provider webhook) | Provider confirms non-capture; same cancel key replayable | `CANCELED` |
 | `T6` | `SUCCESS` | `REFUND_REQUEST_ACCEPTED` | Tổng refund hợp lệ | `REFUNDING` |
 | `T7` | `REFUNDING` | `REFUND_SUCCESS_CONFIRMED` | Provider/poller/reconcile xác nhận | `REFUNDED` |
-| `T8` | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận refund thất bại | `FAILED` |
+| `T8` | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận refund thất bại | `SUCCESS` |
 | `T9` | `REFUNDED` | `REFUND_REVERSED_CONFIRMED` | Provider xác nhận refund bị đảo chiều | `SUCCESS` |
 
-`T8` và `T9` bật cờ `requires_manual_review = TRUE` trên `payment_transactions`
+`T8` và `T9` bật cờ `requires_manual_review = TRUE` trên `payment_transactions`.
+`T8` quay về `SUCCESS` vì tiền gốc vẫn đã capture khi refund không thành công;
+`RefundTransaction` riêng mới chuyển `FAILED`.
 để CSKH/Kế toán xử lý thủ công, vì hệ thống không thể tự động rút tiền lần hai khi
 gateway lỗi hoàn hoặc lỗi tài khoản đích.
 
@@ -141,10 +144,6 @@ gateway lỗi hoàn hoặc lỗi tài khoản đích.
 first identify the provider intent or open manual review. `PAYMENT_SUCCESS` được mô tả là kết quả của `PROCESSING/PENDING -> SUCCESS`
 khi webhook đến, nghĩa là `T1` và `T2` có thể được áp trong cùng lần xử lý một
 webhook `payment_intent.succeeded`.
-
-Thiết kế cũ mô tả Refund Status Poller chuyển payment `REFUNDING -> SUCCESS` khi
-refund thất bại, khác với `T8` (`REFUNDING -> FAILED`); mâu thuẫn này được ghi ở
-`README.md` §9 và chưa được chốt.
 
 ### 6.2. Xử lý `REFUND_REVERSED` (provider-dependent)
 
@@ -207,8 +206,8 @@ out-of-order xử lý bằng state precedence, không override ngược terminal
   Buyer không gọi trực tiếp command tài chính.
 - Webhook endpoint không dùng user identity; authenticity dựa hoàn toàn vào
   `Stripe-Signature`.
-- `GET /v1/payments/{transactionId}` phục vụ client polling hoặc Order verify;
-  ownership check theo `user_id`/`order_id` chưa được thiết kế cũ mô tả chi tiết.
+- `GET /v1/payments/{transactionId}` chỉ phục vụ Order verify qua workload identity;
+  buyer/CSKH đọc projection qua Order nên Payment không xử lý user identity trên route này.
 - Replay DLQ, freeze auto-correction, manual review là thao tác vận hành cần
   quyền quản trị và phải có audit.
 
@@ -217,7 +216,7 @@ out-of-order xử lý bằng state precedence, không override ngược terminal
 | Error code | Điều kiện phát sinh | Retryable | Mapping ra interface |
 |---|---|---|---|
 | `PAYMENT_NOT_SUCCESS` | Refund trên payment không `SUCCESS` | No | HTTP `400` |
-| `REFUND_AMOUNT_EXCEEDED` | `new_amount > paid_amount` | No | HTTP `400` |
+| `REFUND_AMOUNT_EXCEEDED` | `new_amount_minor > paid_amount_minor` | No | HTTP `400` |
 | `ORDER_REFUND_ALREADY_EXISTS` | `order_id` đã có refund transaction khác stable key | No | HTTP `409` |
 | `IDEMPOTENCY_KEY_MISSING` | Refund thiếu header `Idempotency-Key` | No | HTTP `400` |
 | `REFUND_IN_PROGRESS` | Cùng key đang `PROCESSING` | Caller poll | Trả `PROCESSING`, không gọi Stripe |
