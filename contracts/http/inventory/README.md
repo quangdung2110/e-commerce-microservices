@@ -15,6 +15,11 @@ caller namespace and retained with the canonical request fingerprint for at leas
 seven years. A retry must reuse the same key. Business rejection is distinct from a
 retryable infrastructure failure.
 
+The Workflow surface also defines the sole late-payment allocation recovery: it is a
+fenced whole-root `RELEASED -> COMMITTED` operation, never a second reservation or an
+implicit reroute. Its guards and durable command outcome are part of the Order/Inventory
+financial reconciliation contract.
+
 The Storefront availability read is not a mutation: it requires only workload identity
 and correlation ID. Its `UNKNOWN`/`503` outcome is advisory UI degradation; Reserve is
 still the only availability correctness decision.

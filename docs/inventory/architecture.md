@@ -13,7 +13,7 @@ This choice follows the priority order: no oversell, auditability, and operation
 ```mermaid
 flowchart LR
   Checkout -->|Preview| API[Inventory API]
-  Order[Order Temporal Saga] -->|Reserve/Commit/Release/selected Refund Scope| API
+  Order[Order Temporal Saga] -->|Reserve/Commit/Release/fenced late-payment recovery/selected Refund Scope| API
   Admin[Warehouse ADMIN] -->|Physical operations| API
   PDP[Product Detail BFF] -->|batch advisory read| AR[Availability Read API]
   API --> Domain[Domain + transaction boundary]
@@ -44,6 +44,10 @@ flowchart LR
 - Only Order's authenticated Temporal Saga invokes reservation, atomic pre-dispatch
   release, and Refund Scope workflow mutations. Payment sends its result to Order,
   not Inventory.
+- A late captured payment can use only Inventory's fenced recovery command. Inventory
+  reuses neither allocation preview nor normal Reserve: it commits the original released
+  root only when all original physical guards still hold; otherwise Order owns the
+  financial-reconciliation/manual path.
 - Only ADMIN invokes warehouse and physical commands. Interactive ADMIN requires MFA; all commands are attributed.
 - Inventory accepts opaque `sku_id` and has no synchronous Product dependency. Product/Checkout prevent inactive SKU from entering checkout.
 - Search registers readiness only after its Product-owned SKU document exists. Inventory

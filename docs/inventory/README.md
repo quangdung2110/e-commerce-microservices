@@ -79,3 +79,6 @@ Priority order is **no oversell**, auditability, operational simplicity, checkou
 7. Product Detail BFF reads only advisory `IN_STOCK`/`OUT_OF_STOCK`/`UNKNOWN` through
    its authenticated batch-read contract. It never receives quantity, warehouse, event,
    export, or reservation data.
+8. A verified late payment may recover only the original `RESERVATION_EXPIRED` root by
+   the fenced whole-root command in [interfaces.md](interfaces.md). It never starts a
+   second reservation, reroutes a line, or commits a subset.

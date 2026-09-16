@@ -134,6 +134,42 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
+  /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment:
+    post:
+      tags: [Recovery]
+      operationId: recoverTimedOutPayment
+      summary: Commit the original released allocation after a verified late payment
+      description: >-
+        ORDER_SAGA only. This is not Reserve and never selects a new plan. It is accepted
+        only when this same root was released with RESERVATION_EXPIRED, no line has physical
+        dispatch, and the exact original line quantities are still fully available at their
+        original warehouses. It atomically moves the whole root RELEASED to COMMITTED. Any
+        failed guard returns a durable 409 and moves no stock; callers must enter financial
+        reconciliation rather than reroute, partially reserve, or issue a second root.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoverTimedOutPaymentRequest' }
+      responses:
+        '200':
+          description: Durable COMMITTED recovery outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoverTimedOutPaymentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release:
     post:
       tags: [Reservations]
@@ -468,6 +504,12 @@ components:
           properties:
             reason: { const: STOCK_DISCREPANCY }
             order_exception_id: { $ref: '#/components/schemas/OpaqueId' }
+    RecoverTimedOutPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [payment_reference]
+      properties:
+        payment_reference: { $ref: '#/components/schemas/OpaqueId' }
     ReleaseCommittedRequest:
       oneOf:
         - type: object
@@ -500,6 +542,11 @@ components:
         - $ref: '#/components/schemas/ReservationCommandResponse'
         - type: object
           properties: { outcome: { enum: [COMMITTED, RESERVATION_EXPIRED] } }
+    RecoverTimedOutPaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          properties: { outcome: { const: COMMITTED } }
     ReleasedReservationResponse:
       allOf:
         - $ref: '#/components/schemas/ReservationCommandResponse'

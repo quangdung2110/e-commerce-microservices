@@ -60,6 +60,7 @@ Preview excludes inactive/outage warehouses and selects priority deterministical
 | Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, order lines, exact preview plan. Returns `RESERVED` or `REJECT_ALL`; all lines or none. |
 | Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED` and a new command must be before `expires_at`; moves all lines to `COMMITTED`. |
 | Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or `STOCK_DISCREPANCY` plus `order_exception_id`. |
+| Recover timed-out payment | `POST /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment` | Only this root was released for `RESERVATION_EXPIRED`; no dispatch and the full original plan is still available. Atomically restores the whole root `RELEASED -> COMMITTED`; any guard failure is durable `409`, no movement. |
 | Release committed line | `POST /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release` | Target is committed and undispatched; reason guard defined in [workflows.md](workflows.md). |
 | Release committed order before dispatch | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Admin automatic refund only; atomically releases every committed undispatched line or releases none. |
 | Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines; rejects a second scope for the order even after closure. |
@@ -78,6 +79,12 @@ returns Inventory's opaque `refund_scope_id`. Subsequent resource operations use
 `refund_scope_id`; facts and queries retain all three identifiers for reconciliation.
 
 These queries are the recovery path when an Order event is delayed or missed; no generic cross-service event replay API is promised to Order.
+
+The late-payment command includes the verified Payment transaction reference. It is
+idempotent by the ordinary Order command ID, records both success and rejected guard
+outcomes, and is the only allowed path from a released timeout allocation to a committed
+allocation. It may not reserve a new root, select another warehouse, or recover a
+`PAYMENT_FAILED`/customer-cancelled release.
 
 ## 3. Storefront availability read API
 

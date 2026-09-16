@@ -98,6 +98,18 @@ before changing any bucket. Success moves every line `COMMITTED -> RELEASED` and
 dispatched line is a durable `409` with no stock movement; callers must not emulate
 this command by issuing per-line release calls.
 
+### Atomic late-payment recovery
+
+`RecoverTimedOutPayment` locks the `OrderReservation`, every `ReservationLine`, and
+the original `StockPosition` rows in the same stable order. The command must find the
+root `RELEASED` with immutable release reason `RESERVATION_EXPIRED`, no dispatch fact,
+and enough `available_to_sell` for every original line at its original warehouse. In
+the same transaction it changes all lines/root to `COMMITTED`, moves the exact buckets
+`available_to_sell -> committed`, appends movement/audit evidence tied to the verified
+Payment reference, and records the terminal `CommandExecution` result. A failed guard
+is a durable rejection with no movement. This is not a re-Reserve and cannot create a
+new allocation plan or root.
+
 ## 5. Per-SKU availability projection
 
 Every transaction that can change `available_to_sell` records the distinct affected SKU

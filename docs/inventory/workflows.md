@@ -45,6 +45,12 @@ sequenceDiagram
 - Payment never calls Inventory. Order Saga decides and sends `CommitPayment` exactly once in business effect; same command ID safely replays the outcome.
 - Commit is accepted only for the entire `RESERVED` root before the deadline. It moves every line to `COMMITTED` atomically. A late *new* commit is rejected; a late retry of an already accepted commit returns success.
 - On payment failure or timeout, Order calls `ReleaseReservation(PAYMENT_FAILED | RESERVATION_EXPIRED)`. Inventory does not run an expiry worker.
+- If Payment later proves success after the timeout release, Order may call only
+  `RecoverTimedOutPayment` with that payment reference. Inventory locks the original
+  root/plan and atomically commits all lines only when the release reason was
+  `RESERVATION_EXPIRED`, none dispatched, and all exact original stock is still
+  available. It otherwise returns durable `409` without movement; Order must reconcile
+  the financial fact rather than issue a new Reserve or a partial recovery.
 - Warehouse ADMIN records physical dispatch only for the committed allocation at its assigned warehouse. Individual lines can dispatch independently after payment, so a root can become `PARTIALLY_DISPATCHED`; Order remains sole owner of shipment/delivery state.
 
 ### Failure F1 — store unavailable or stock unavailable
@@ -60,6 +66,15 @@ sequenceDiagram
 Order owns all timeout/retry decisions. At 15 minutes it issues `ReleaseReservation(RESERVATION_EXPIRED)` if no payment commit has succeeded. Inventory stores the deadline only to reject a new late commit and to observe aging. A root still `RESERVED` beyond 60 minutes produces an orphan alert to Order/operations; Inventory must neither delete nor release it.
 
 `ReleaseReservation` is valid only while the whole root is `RESERVED`. `STOCK_DISCREPANCY` is allowed only with an `order_exception_id` and releases the entire root. No single-line reserved release exists.
+
+### Failure F2.1 — verified late payment after timeout release
+
+Order first verifies that the Payment success belongs to the original transaction, then
+uses a stable recovery command ID. Inventory returns the stored command result after an
+unknown transport outcome. A new recovery is accepted only under the narrow whole-root
+guards above. `409` is final for this allocation and does not authorize re-reserve,
+rerouting, automatic refund, or an inventory-side stock correction; Order persists a
+financial-reconciliation/manual-review case.
 
 ### Failure F3 — release/cancel versus dispatch
 

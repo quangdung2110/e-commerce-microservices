@@ -66,6 +66,7 @@ stateDiagram-v2
   [*] --> RESERVED: ReserveOrder (all lines)
   RESERVED --> COMMITTED: CommitPayment
   RESERVED --> RELEASED: ReleaseReservation
+  RELEASED --> COMMITTED: RecoverTimedOutPayment [timeout fence]
   COMMITTED --> DISPATCHED: RecordPhysicalDispatch
   COMMITTED --> RELEASED: ReleaseCommittedAllocation
 ```
@@ -76,9 +77,17 @@ stateDiagram-v2
 | `COMMITTED` | Payment succeeded for all lines; units remain physically at their warehouses. | Per-line physical dispatch or eligible pre-dispatch release. |
 | `PARTIALLY_DISPATCHED` | Derived root state: some, not all, lines dispatched. | Remaining lines dispatch; Order exception is required for pre-dispatch release. |
 | `DISPATCHED` | Every line physically dispatched. | Terminal for allocation; return uses Refund Scope. |
-| `RELEASED` | Every line released before dispatch. | Terminal. |
+| `RELEASED` | Every line released before dispatch. | Terminal except the fenced whole-root `RecoverTimedOutPayment` after `RESERVATION_EXPIRED`. |
 
 `CommitPayment` moves every line `RESERVED → COMMITTED` together. `expires_at` is a 15-minute deadline, not an Inventory auto-transition: a new Commit after it is rejected while a retry of a previously successful command returns its original result. Only Order Temporal Saga issues release with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or whole-root `STOCK_DISCREPANCY` plus `order_exception_id`. A reservation over 60 minutes alerts; it never cleans up automatically.
+
+`RecoverTimedOutPayment` is deliberately narrower than Reserve: it is callable only by
+Order with a verified payment reference after the same root was released for
+`RESERVATION_EXPIRED`. It locks the complete root and original stock positions, then
+requires no physical dispatch and full original quantity at every original warehouse.
+It either moves every line `RELEASED → COMMITTED` in one transaction or records a
+durable rejection with no stock movement. It never reroutes, creates a new root, or
+recovers any other release reason.
 
 `ReleaseCommittedAllocation` remains a targeted recovery/exception command for an
 undispatched committed line. Automatic admin refund instead calls

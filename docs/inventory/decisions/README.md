@@ -12,6 +12,7 @@
 | [ADR-016](ADR-016-per-sku-search-availability.md) | Accepted | Inventory derives per-SKU availability, publishes only after Search document readiness, and exports per-SKU snapshots/change feed. |
 | [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
 | [ADR-018](ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Accepted | Selected full-quantity order-line scope, one scope per order lifetime, and atomic pre-dispatch release for admin refund. |
+| [ADR-019](ADR-019-fenced-late-payment-recovery.md) | Accepted | Fenced whole-root recovery for a verified payment captured after the timeout release. |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 
