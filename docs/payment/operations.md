@@ -87,9 +87,9 @@ Ngưỡng cụ thể, owner và runbook link chưa có.
 | Sự cố | Hành vi |
 |---|---|
 | PostgreSQL unavailable | Mọi command/transition dừng; webhook endpoint vẫn trả 200 và dump Kafka (không mất event); worker retry với backoff |
-| Redis unavailable | Read API/Reconciliation không ảnh hưởng; initiate/refund fallback unique constraint DB; worker không lấy được lock → reject → retry/DLQ, không ignore lock |
+| Redis unavailable | Read API/Reconciliation không ảnh hưởng; create/cancel/refund durable ProviderOperation + DB idempotency remain authority; worker không lấy được lock → reject → retry/DLQ, không ignore lock |
 | Kafka unavailable | Webhook endpoint không thể dump raw → Stripe sẽ retry (3–5 lần); outbox tích lũy, CDC relay khi khôi phục |
-| Stripe API lỗi/timeout | Initiate/refund call thất bại, DB state đã commit trước; Spring Retry cho reconciliation; poller/scanner retry kỳ sau |
+| Stripe API lỗi/timeout | Create/cancel/refund ProviderOperation remains recoverable; replay same provider key or reconcile immutable metadata before FSM decision, never infer a non-capture result |
 | Webhook miss (network blip, Stripe outage) | Refund Poller và Reconciliation chốt trạng thái cuối |
 | Sai webhook secret | Hàng loạt `FAILED_SIGNATURE`; Auto-Retry Worker replay sau khi sửa key |
 | Kafka Connect down | Event không publish; state DB vẫn đúng; replay theo batch sau khi khôi phục |
@@ -135,7 +135,7 @@ trước commit, refund vượt hạn mức.
 | Webhook Auto-Retry | CronJob | `FAILED_SIGNATURE`/`UNPROCESSED` → re-push Kafka | `retry_count < max_retries`, backoff, giữ ID | `WF-PAYMENT-009` |
 | Dead-letter Replay | Manual/on-demand | DLQ message theo filter → replay batch | Re-validate idempotency, rate limit, audit | `WF-PAYMENT-009` |
 | Archival CronJob | Chủ nhật 3:00 AM | Partition > 6 tháng → S3 → detach → drop | Singleton; drop chỉ sau verify checksum | `WF-PAYMENT-010` |
-| `payment-order-consumer` | `t.order.events` | `ORDER_CANCELLED` → cancel pending/marker | `event_id` dedup | `WF-PAYMENT-008` |
+| `payment-order-consumer` | `t.order.events` | `ORDER_CANCELLED` → post-command reconciliation marker | Durable inbox `event_id`; never creates primary cancel | `WF-PAYMENT-008` |
 
 ## 9. Runbook (rút gọn theo thiết kế cũ)
 

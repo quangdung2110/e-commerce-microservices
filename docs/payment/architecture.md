@@ -30,7 +30,7 @@ với đúng một implementation `StripeAdapter`.
 
 ```mermaid
 flowchart LR
-  O[Order Service<br/>Temporal Activities] -->|initiate / refund| API[Payment HTTP/gRPC adapter]
+  O[Order Service<br/>Temporal Activities] -->|initiate / cancel / refund| API[Payment HTTP/gRPC adapter]
   FE[Frontend<br/>Stripe Elements] -->|client_secret| ST[Stripe]
   ST -->|webhook| WH[Webhook endpoint<br/>POST /v1/payments/webhook/stripe]
   WH -->|raw dump| KR[(Kafka t.payment.webhooks.raw)]
@@ -65,7 +65,7 @@ không tin cậy cho đến khi validate lane và trạng thái transaction.
 | Application/FSM layer | `@Transactional` gom transaction + outbox + status history; Spring State Machine cho Payment FSM và Refund FSM; guard signature/amount/reference/idempotency | Publish Kafka trực tiếp; bỏ qua guard |
 | `com.payment.stripe` (`PaymentIntentClient`, `RefundClient`, `WebhookVerifier`) | Wrap `PaymentIntent.create/retrieve`, `Refund.create/retrieve`, `Webhook.constructEvent`; dùng một `StripeClient` singleton với API key từ Vault/Secret Manager | Chứa logic nghiệp vụ Payment; lộ Stripe type ra ngoài package |
 | Webhook Processor Worker | Consume raw webhook, verify signature, map event → transition, dedup, update DB + outbox trong một ACID transaction | Bỏ qua verify khi retry; ack trước khi commit |
-| Order consumer (`payment-order-consumer`) | Consume `ORDER_CANCELLED`, đóng payment pending pre-payment lane | Auto-refund từ event |
+| Order consumer (`payment-order-consumer`) | Consume `ORDER_CANCELLED` as a post-command reconciliation notification | Treat event as the authoritative cancel command or auto-refund |
 | Payment Expiration Scanner | Chuyển transaction quá `expires_at` sang `EXPIRED`, phát `PAYMENT_EXPIRED` | Expire khi Stripe đã xác nhận success |
 | Reconciliation Worker | Đối soát hourly với Stripe, ghi mismatch report, phát correction transition | Sửa dữ liệu ngoài transition hợp lệ |
 | Refund Status Poller | Poll `Refund.retrieve` cho refund `PROCESSING`, chốt trạng thái cuối khi webhook miss | Gọi Stripe khi không lấy được lock |
@@ -80,9 +80,14 @@ không tin cậy cho đến khi validate lane và trạng thái transaction.
 
 ### 3.1. Đồng bộ
 
-- `POST /v1/payments/initiate`: Redis SETNX → local transaction → gọi Stripe
-  `PaymentIntent.create` → trả `transaction_id`, `client_secret`, `publishable_key`,
-  `expires_at`. Caller nhận kết quả ngay nhưng kết quả thanh toán đến sau qua event.
+- `POST /v1/payments/initiate`: local transaction persists `INITIATING` plus stable
+  provider operation → Stripe `PaymentIntent.create` with that same key → only a
+  proven provider result becomes `PENDING` + client secret/outbox. An uncertain
+  create is replayed/reconciled, never represented as a blank PENDING transaction.
+- `POST /v1/payments/{transactionId}/cancel`: local transaction persists/replays a
+  stable cancel operation → `PaymentIntent.cancel` with the same provider key →
+  returns non-capture or `ALREADY_SUCCEEDED`. Order must wait for this fact before it
+  finalizes cancellation.
 - `POST /v1/payments/{transactionId}/refund`: validate + local transaction →
   distributed lock → Stripe `Refund.create` với `Idempotency-Key` → trả
   `PROCESSING`. Response "accepted" không phải "final".
@@ -100,9 +105,10 @@ không tin cậy cho đến khi validate lane và trạng thái transaction.
   transaction (optimistic lock `version`) + insert `payment_status_history` +
   insert `outbox_events`. Debezium relay sau commit
   ([ADR-005](./decisions/ADR-005-transactional-outbox-cdc.md)).
-- Side effect ngoài (gọi Stripe) không nằm trong DB transaction. Với initiate,
-  transaction `PENDING` được ghi trước, gọi Stripe, rồi cập nhật
-  `provider_transaction_id`. Với refund, refund row `PENDING` + payment
+- Side effect ngoài (gọi Stripe) không nằm trong DB transaction. Every create,
+  cancel and refund first persists a durable provider-operation key/fingerprint;
+  timeout recovery replays or reconciles that operation before changing FSM. Với
+  refund, refund row `PENDING` + payment
   `REFUNDING` được commit trước khi gọi `Refund.create`; kết quả cuối
   (`succeeded`/`pending`/`failed`/`reversed`) đến qua webhook `charge.refunded`
   hoặc poller.
@@ -191,6 +197,9 @@ nên chạy singleton.
   `com.payment.stripe`.
 - Không auto-refund từ `ORDER_CANCELLED` hay bất kỳ shipping event nào; refund chỉ
   từ explicit command của Order.
+- Payment is authoritative for the pre-capture cancel/capture race. An Order event
+  cannot turn a `SUCCESS` fact into `CANCELED`; the result is durable financial
+  reconciliation, not compensation by assumption.
 - Không hỗ trợ COD hoặc provider ngoài Stripe nếu chưa có ADR thay thế.
 - Giữ code boundary Refund rõ (`src/refund/`, interface riêng, contract độc lập)
   để tách service khi đạt ngưỡng Phase 2.
@@ -205,6 +214,9 @@ nên chạy singleton.
 - [ADR-011](./decisions/ADR-011-one-lifetime-order-refund.md): Order supplies one
   stable case and Inventory evidence; provider fail/reverse remains manual review,
   not a second refund.
+- [ADR-012](./decisions/ADR-012-recoverable-initiation-and-cancel.md): provider
+  create/cancel side effects have durable identities and Order waits for the
+  cancel/capture fact; đổi lại adds recovery state and reconciliation work.
 - [ADR-003](./decisions/ADR-003-stripe-single-provider-direct-sdk.md): bỏ adapter
   pattern giảm phức tạp; đổi lại vendor lock-in với Stripe.
 - [ADR-004](./decisions/ADR-004-async-webhook-processing-via-kafka.md): webhook

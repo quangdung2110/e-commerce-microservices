@@ -24,6 +24,7 @@ verified_against_commit: null
 | PostgreSQL `payment_status_history` | Audit trail mọi transition của hai FSM | Payment Service |
 | PostgreSQL `outbox_events` | Integration event chờ/đã được CDC quan sát | Payment Service |
 | PostgreSQL `payment_idempotency` | Response đã lưu cho API command idempotent | Payment Service |
+| PostgreSQL `provider_operations` | Durable create/cancel/refund provider-side operation, key và recovery outcome | Payment Service |
 | Redis | Idempotency pointer và distributed lock có TTL | Dữ liệu tạm; không là source of truth |
 | S3 archive | Partition `payment_transactions` > 6 tháng | Payment Service (cold tier) |
 | Trạng thái PaymentIntent/Refund trên Stripe | Nguồn thật của provider | Stripe; Payment replicate và đối soát |
@@ -43,6 +44,7 @@ erDiagram
     REFUND_TRANSACTIONS ||--o{ PAYMENT_STATUS_HISTORY : audits
     PAYMENT_TRANSACTIONS ||--o{ OUTBOX_EVENTS : emits
     REFUND_TRANSACTIONS ||--o{ OUTBOX_EVENTS : emits
+    PAYMENT_TRANSACTIONS ||--o{ PROVIDER_OPERATIONS : executes
 
     PAYMENT_TRANSACTIONS {
       varchar id PK
@@ -96,6 +98,15 @@ erDiagram
       varchar partition_key
       jsonb payload
     }
+    PROVIDER_OPERATIONS {
+      uuid id PK
+      varchar payment_transaction_id
+      varchar operation_type
+      varchar idempotency_key UK
+      varchar status
+      jsonb request_fingerprint
+      jsonb provider_result
+    }
 ```
 
 Một order có thể có nhiều `payment_transactions` (thanh toán lỗi và thử lại).
@@ -116,12 +127,29 @@ thứ hai. `amount <= payment.amount` remains defense in depth.
 | `currency` | `VARCHAR(10)` | Cố định `VND`; Stripe hỗ trợ VND ở VN region |
 | `provider` | `VARCHAR(50)` NOT NULL DEFAULT `'STRIPE'` | `CHECK (provider = 'STRIPE')` — single provider |
 | `provider_transaction_id` | `VARCHAR(100)` | Stripe PaymentIntent ID `pi_xxx`; đối soát với Stripe Dashboard |
-| `status` | `VARCHAR(50)` | DB design cũ liệt kê `PENDING`, `SUCCESS`, `FAILED`, `CANCELED`, `REFUNDING`, `REFUNDED`; FSM còn có `PROCESSING`, `EXPIRED` (xem `README.md` §9) |
+| `status` | `VARCHAR(50)` | `INITIATING`, `PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`, `EXPIRED`, `CANCELED`, `REFUNDING`, `REFUNDED`; schema `CHECK` phải khớp FSM. |
 | `error_code`, `error_message` | `VARCHAR(255)` | Lưu lỗi khi thanh toán rớt để phân tích |
 | `expires_at` | `TIMESTAMPTZ` | Hết hạn phiên (15 phút); Expiration Scanner quét |
 | `version` | `INT` | Optimistic lock cho mọi transition (được FSM/workflow tham chiếu, DB design cũ chưa khai báo) |
 | `requires_manual_review` | `BOOLEAN` | Bật ở `T8`/`T9` (được FSM tham chiếu, DB design cũ chưa khai báo) |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Partition key theo `created_at` |
+
+### 3.1a. `provider_operations`
+
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| `id` | `UUID` PK | Identity của một side effect provider. |
+| `payment_transaction_id` | `VARCHAR(50)` | FK logic về payment gốc. |
+| `operation_type` | `VARCHAR(20)` | `CREATE`, `CANCEL` hoặc `REFUND`. |
+| `idempotency_key` | `VARCHAR(255)` UNIQUE | Key ổn định truyền sang Stripe; không thay khi retry/recovery. |
+| `request_fingerprint` | `JSONB` | Canonical amount/currency/metadata/reason; key đổi payload bị reject. |
+| `status` | `VARCHAR(30)` | `REQUESTED`, `PROVIDER_CONFIRMED`, `UNKNOWN`, `MANUAL_REVIEW_REQUIRED`. |
+| `provider_result` | `JSONB` | Provider ID/status/reference tối thiểu phục vụ replay/reconciliation. |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | Audit/recovery scheduling. |
+
+Create persists before `PaymentIntent.create`; cancel persists before
+`PaymentIntent.cancel`. A provider timeout cannot leave an untracked side effect:
+the same operation/key is replayed or reconciled until a durable result is bound.
 
 ### 3.2. `refund_transactions`
 
@@ -179,7 +207,7 @@ cột polling-style** — retry/DLQ/backoff thuộc Kafka Connect runtime
 | Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `event_id` | `UUID` PK | |
-| `schema_version` | `INT NOT NULL DEFAULT 1` | |
+| `schema_version` | `INT NOT NULL DEFAULT 2` | Version 2 carries financial identity/version fields required by Order recovery. |
 | `aggregate_type` | `VARCHAR(100)` | Cố định `Payment` cho cả PAYMENT_* và REFUND_* |
 | `aggregate_id` | `VARCHAR(50)` | `payment_transactions.id` cho PAYMENT_*, `refund_transactions.id` cho REFUND_* |
 | `event_type` | `VARCHAR(100)` | `PAYMENT_SUCCESS`, `REFUND_INITIATED`, ... |
@@ -202,7 +230,8 @@ Chặn duplicate request từ Frontend (double-click) hoặc Kafka replay.
 | `created_at`, `expires_at` | `TIMESTAMPTZ` | |
 
 `PRIMARY KEY (key, action)` để client không dùng lại một idempotency key cho nhiều
-hành động khác nhau.
+hành động khác nhau. Payment persists request fingerprint and response state; Redis
+may cache the pointer but may not replace this recovery record.
 
 ## 4. Ràng buộc và chỉ mục
 
@@ -214,6 +243,7 @@ hành động khác nhau.
 | `refund_transactions.refund_request_id UNIQUE` | Khóa identity case mà Order gửi sang Payment |
 | `webhook_logs UNIQUE(provider, provider_transaction_id, event_type)` | DB-level từ chối duplicate webhook; `INSERT ... ON CONFLICT DO NOTHING` |
 | `payment_idempotency PRIMARY KEY (key, action)` | Một key không dùng cho nhiều action |
+| `provider_operations.idempotency_key UNIQUE` | One provider create/cancel/refund operation per stable Payment key; a retry cannot mint another side effect |
 | `refund_amount <= payment.amount` | Check cùng transaction với unique-order insert; Order has one refund transaction, so no aggregate refund sum is needed |
 | Transition hợp lệ theo bảng FSM | Enforce ở Spring State Machine + optimistic lock, không ở DB |
 
@@ -221,7 +251,8 @@ Index/query pattern (thiết kế cũ không liệt kê index cụ thể; suy ra
 
 | Query pattern | Cột cần index |
 |---|---|
-| Expiration Scanner: `status IN (PENDING, PROCESSING) AND expires_at <= NOW()` trên partition hiện tại | `(status, expires_at)` theo partition |
+| Expiration Scanner: `status IN (PENDING, PROCESSING) AND expires_at <= NOW()` trên partition hiện tại | `(status, expires_at)` theo partition; `INITIATING` has a separate recovery queue |
+| Recover create/cancel operation | `provider_operations(status, updated_at)`, `payment_transactions(provider_transaction_id)` |
 | Refund Poller: `status = PROCESSING AND updated_at < NOW() - 1 phút` | `refund_transactions(status, updated_at)` |
 | Query detail + refunds | PK `payment_transactions.id`; `refund_transactions(payment_transaction_id)` |
 | Map webhook `pi_xxx` → transaction | `payment_transactions(provider_transaction_id)` |
@@ -240,9 +271,10 @@ Index/query pattern (thiết kế cũ không liệt kê index cụ thể; suy ra
   `REFUNDING`. The order unique constraint is the final concurrency guard.
 - Webhook: `INSERT webhook_logs ON CONFLICT DO NOTHING` + update transaction +
   outbox trong một ACID transaction; 0 rows từ insert → ack không làm gì.
-- Side effect Stripe nằm ngoài DB transaction; distributed lock Redis bảo vệ lệnh
-  gọi (`lock:payment:initiate:...`, `lock:payment:refund_call:{txn_id}`,
-  `lock:payment:refund_poll:{refund_transaction_id}`), TTL 15–30s.
+- Side effect Stripe nằm ngoài DB transaction. Before every create/cancel/refund
+  call, Payment commits `provider_operations` with a stable key and canonical
+  fingerprint; retry/reconciliation uses that same key. Redis locks only reduce
+  concurrency and cannot authorize a second provider side effect.
 - Isolation level cụ thể chưa được thiết kế cũ chốt.
 
 ## 6. Redis, outbox và idempotency storage

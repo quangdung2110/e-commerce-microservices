@@ -56,13 +56,14 @@ Markdown links/frontmatter. Chưa có command cụ thể để ghi tại đây.
 
 ### Unit test
 
-- Payment FSM `T1`–`T9`, Refund FSM `R1`–`R4`, invalid transition, state
+- Payment FSM `T0`–`T9`, Refund FSM `R1`–`R4`, invalid transition, state
   precedence với webhook out-of-order.
 - Guard: signature (đúng/sai/ngoài 300s), amount/reference mismatch, idempotency.
 - Refund one-lifetime uniqueness per `order_id`, stable replay key, and amount
   `<= paid_amount`; selected-scope mixed PASS/FAIL must not block a valid Order command.
 - Mapping Stripe event → transition; `charge.refunded` `status=failed` → reversal.
-- Idempotency pointer initiate: còn hiệu lực vs `EXPIRED`.
+- Initiate/create and pre-capture cancel operation: stable local/provider key,
+  timeout replay, provider reconciliation, and cancel-versus-capture race.
 
 ### Integration test
 
@@ -71,23 +72,26 @@ Markdown links/frontmatter. Chưa có command cụ thể để ghi tại đây.
 - Redis: SETNX/lock hit/miss/outage; fallback `payment_idempotency` và
   `refund_transactions.idempotency_key`; worker reject khi không lấy được lock.
 - Debezium outbox at-least-once, partition key `order_id`, connector restart.
-- Stripe test mode/mock: `PaymentIntent.create`, `Refund.create` với idempotency
-  key lặp, `Refund.retrieve` các trạng thái, `Webhook.constructEvent`.
+- Stripe test mode/mock: `PaymentIntent.create` and `PaymentIntent.cancel` with
+  repeated idempotency key and ambiguous transport result, `Refund.create` with
+  repeated key, `Refund.retrieve` các trạng thái, `Webhook.constructEvent`.
 - Scheduler: scanner expire đúng hạn và không expire khi Stripe đã `succeeded`;
   poller chốt khi webhook miss; reconciliation correction idempotent.
 - Partition: insert vào đúng partition; archival job verify checksum trước drop.
 
 ### Contract/consumer/provider test
 
-Chưa chuẩn hóa payload trong lần refactor này, nhưng implementation phải test
-semantics ở `interfaces.md`: 9 event với payload Phase 20, envelope
-`schema_version=1`, routing theo `payload.order_id`, unknown field ignore,
-duplicate `event_id`, và xử lý `ORDER_CANCELLED` theo từng trạng thái payment.
+Implementation must contract-test the documented Payment event version 2 fields:
+`payment_transaction_id`, `currency` and monotonic `financial_state_version`, plus
+durable inbox/duplicate `event_id` handling. It must test that `ORDER_CANCELLED` is
+a reconciliation notification, while the synchronous cancel command resolves the
+cancel/capture race.
 
 ### End-to-end/failure injection
 
-Initiate → Stripe test payment → webhook → `PAYMENT_SUCCESS`; payment failed/
-canceled/expired; one Order selected-line or admin-pre-dispatch refund, `succeeded` ngay vs `pending`, webhook
+Initiate with lost provider response → recover → Stripe test payment → webhook →
+`PAYMENT_SUCCESS`; cancel-versus-capture race; payment failed/canceled/expired;
+one Order selected-line or admin-pre-dispatch refund, `succeeded` ngay vs `pending`, webhook
 miss, reversal; Redis/Kafka/DB/Stripe outage; Stripe retry webhook 3–5 lần; đổi
 webhook secret + auto-retry. Timer dài (15 phút, poll 5–15 phút) cần test clock.
 
@@ -99,7 +103,8 @@ Markdown example không phải source để generate model.
 
 ## 7. Database migration
 
-Migration đầu tiên phải tạo 6 bảng trong `data.md` với constraint (`CHECK
+Migration đầu tiên phải tạo the documented Payment tables, including
+`provider_operations`, with constraint (`CHECK
 provider`, unique `idempotency_key`, unique webhook dedup, PK `(key, action)`),
 bổ sung `version` và `requires_manual_review` còn thiếu trong DB design cũ, tạo
 `payment_transactions` `PARTITION BY RANGE (created_at)` và partition tháng hiện

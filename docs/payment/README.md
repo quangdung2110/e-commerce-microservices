@@ -98,7 +98,8 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 
 | Capability | Kết quả nghiệp vụ |
 |---|---|
-| Khởi tạo thanh toán | Tạo `payment_transaction` `PENDING` + Stripe PaymentIntent, trả `client_secret` cho Order/Frontend |
+| Khởi tạo thanh toán | Persist create operation `INITIATING`, recover/replay Stripe PaymentIntent, rồi mới tạo `PENDING` + trả `client_secret` |
+| Hủy trước capture | Trả durable `CANCELED`/non-capture hoặc `ALREADY_SUCCEEDED` cho Order trước khi Order final-cancel |
 | Tiếp nhận webhook Stripe | Nhận raw webhook, trả 2xx < 500ms, xử lý async an toàn với retry/duplicate/out-of-order |
 | Chốt kết quả thanh toán | Chuyển `SUCCESS`/`FAILED`/`CANCELED`/`EXPIRED` và phát event tương ứng cho Order |
 | Tra cứu giao dịch | Trả chi tiết payment transaction kèm danh sách refund |
@@ -113,10 +114,11 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 | Hướng | Service/Hệ thống | Giao thức | Mục đích | Bắt buộc/Tùy chọn | Contract |
 |---|---|---|---|---|---|
 | Inbound | Order (Temporal Activity `InitiatePaymentActivity`) | HTTP/gRPC | `POST /v1/payments/initiate` | Bắt buộc | Chưa có OpenAPI; `legacy_documented` |
+| Inbound | Order (`CancelPaymentActivity`) | HTTP/gRPC | `POST /v1/payments/{transactionId}/cancel` trước final cancellation | Bắt buộc | Proposed semantics trong `interfaces.md` |
 | Inbound | Order (`OrderRefundWorkflow`) | HTTP/gRPC | `POST /v1/payments/{transactionId}/refund` | Bắt buộc | Chưa có OpenAPI; `legacy_documented` |
 | Inbound | Client/Order | HTTP | `GET /v1/payments/{transactionId}`, `GET /v1/refunds/{refundTransactionId}` (khuyến nghị) | Bắt buộc | Chưa có OpenAPI |
 | Inbound | Stripe | HTTPS webhook | `POST /v1/payments/webhook/stripe` | Bắt buộc | Stripe event schema |
-| Inbound | Order | Kafka `t.order.events` | `ORDER_CANCELLED` để đóng payment pending | Bắt buộc | Tài liệu thiết kế hiện hành |
+| Inbound | Order | Kafka `t.order.events` | `ORDER_CANCELLED` factual reconciliation notification | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Outbound | Stripe | HTTPS (`stripe-java`) | PaymentIntent, Refund, BalanceTransaction, Webhook verify | Bắt buộc | Stripe API |
 | Outbound | Order, Analytics | Kafka `t.payment.events` | `PAYMENT_*`, `REFUND_*` | Bắt buộc | Chưa có AsyncAPI; `legacy_documented` |
 | Internal | Kafka `t.payment.webhooks.raw` | Kafka | Raw webhook buffer cho Webhook Processor | Bắt buộc | Nội bộ Payment |
@@ -144,6 +146,8 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
   override ngược trạng thái terminal hợp lệ.
 - [`INV-PAY-007`](./domain.md#5-bất-biến): refund chỉ được khởi tạo từ explicit
   command của Order kèm `Idempotency-Key`, không suy luận từ event.
+- Create/cancel provider operation has one durable idempotency identity; uncertain
+  transport never authorizes Order to infer payment cancellation.
 
 ## 8. Bản đồ tài liệu
 
@@ -166,22 +170,12 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
   `OUTBOX_PATTERNS.md` và `CHANGELOG.md` (ID convention, CloudEvents envelope,
   CDC pattern, Phase 16/18/20). Các file này đã bị xóa khỏi repository; nội dung
   được bảo toàn trong bộ tài liệu này nhưng không còn link nguồn.
-- Danh sách trạng thái `payment_transactions.status` trong DB design cũ thiếu
-  `PROCESSING` và `EXPIRED`, trong khi Payment FSM có cả hai. Cột `version`
-  (optimistic lock) và `requires_manual_review` được workflow/FSM tham chiếu nhưng
-  chưa khai báo trong bảng.
 - Payment FSM `T8` chuyển `REFUNDING -> FAILED` khi refund thất bại, nhưng Refund
   Status Poller mô tả `REFUNDING -> SUCCESS` cho cùng tình huống. Chưa chốt.
-- Tài liệu Events mô tả `ORDER_CANCELLED` với payment `PENDING/PROCESSING` sẽ
-  "Cancel payment (FSM T6)", trong khi bảng FSM đặt cancel là `T5` và `T6` là
-  refund accepted.
 - Tên bảng outbox không thống nhất: DB design dùng `outbox_events`, workers dùng
   `payment_outbox`.
 - Webhook Auto-Retry Worker dựa vào `retry_count`/`max_retries` trên
   `webhook_logs` nhưng schema chưa khai báo hai cột này.
-- Thứ tự insert outbox `PAYMENT_INITIATED` (trước hay sau khi gọi Stripe) khác
-  nhau giữa sequence diagram và bước chi tiết; payload event chứa `client_secret`
-  nên cần Stripe trả về trước.
 - Workers cũ có hai mục cùng đánh số "7"; migration từ Outbox Polling sang CDC được
   ghi là đang diễn ra nhưng không có evidence.
 - Chưa có SLO đo được ngoài các mục "gợi ý", chưa có capacity benchmark, backup/

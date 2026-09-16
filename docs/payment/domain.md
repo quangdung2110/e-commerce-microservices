@@ -59,10 +59,10 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 
 | Loại | Năng lực | Tác nhân | Aggregate/năng lực xử lý |
 |---|---|---|---|
-| Lệnh | Khởi tạo payment | Order (`InitiatePaymentActivity`) | PaymentTransaction (`[*] -> PENDING`) |
+| Lệnh | Khởi tạo payment | Order (`InitiatePaymentActivity`) | PaymentTransaction (`[*] -> INITIATING -> PENDING`) |
 | Lệnh | Áp webhook Stripe | Stripe qua Webhook Processor | PaymentTransaction/RefundTransaction FSM |
 | Lệnh | Hết hạn phiên | Expiration Scanner | PaymentTransaction (`T4`) |
-| Lệnh | Hủy payment pending | Order (`ORDER_CANCELLED` pre-payment lane) | PaymentTransaction (`T5`) |
+| Lệnh | Hủy payment pending | Order (`CancelPaymentActivity`) | PaymentTransaction (`T5`) sau provider fact; `ORDER_CANCELLED` chỉ đối soát |
 | Lệnh | Khởi tạo refund | Order (`OrderRefundWorkflow`) | RefundTransaction (`[*] -> PENDING`), PaymentTransaction (`T6`) |
 | Lệnh | Chốt refund | Webhook/Refund Status Poller/Reconciliation | RefundTransaction (`R2`/`R3`), PaymentTransaction (`T7`/`T8`/`T9`) |
 | Lệnh | Correction transition | Reconciliation Worker | Cả hai FSM |
@@ -84,8 +84,8 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | `RULE-PAY-007` | Webhook signature hợp lệ và `\|now - t\| <= 300s` | Sai chữ ký hoặc ngoài cửa sổ | `webhook_logs.status = FAILED_SIGNATURE`, không parse business payload |
 | `RULE-PAY-008` | Amount/currency/`provider_transaction_id` khớp | Không map được hoặc lệch | Reject transition, ghi log |
 | `RULE-PAY-009` | Webhook dedup theo `(provider, provider_transaction_id, event_type)` và `stripe_event_id` | Duplicate | `ON CONFLICT DO NOTHING`, ack thành công |
-| `RULE-PAY-010` | `ORDER_CANCELLED` chỉ áp cho pre-payment lane | `previous_status != PENDING_PAYMENT` | Ignore + cảnh báo reconciliation |
-| `RULE-PAY-011` | `ORDER_CANCELLED` với payment `SUCCESS` không auto-refund | Payment đã `SUCCESS` | Ghi reconciliation marker để Order kiểm tra lane refund riêng |
+| `RULE-PAY-010` | Cancel trước capture là Payment command idempotent | Order chưa có `CANCELED`/`ALREADY_NON_CAPTURED` của đúng transaction | Order không được final-cancel hoặc nhả resource; `CANCEL_PENDING` phải recovery cùng key |
+| `RULE-PAY-011` | Capture thắng race cancel không tự hoàn tiền | Payment đã `SUCCESS` | Trả/phát `ALREADY_SUCCEEDED`/`PAYMENT_SUCCESS`; ghi reconciliation marker, không auto-refund |
 | `RULE-PAY-012` | Refund failed/reversed sau accept phải được chấp nhận | `charge.refunded` `status=failed`, poller/reconcile báo failed | `T8`/`T9` + `requires_manual_review=TRUE` |
 | `RULE-PAY-013` | Accepted != Final | Response refund `PROCESSING` | Consumer không được coi là đã hoàn tiền |
 
@@ -109,6 +109,7 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 
 | Status | Ý nghĩa |
 |---|---|
+| `INITIATING` | Đã persist provider-create operation; PaymentIntent chưa được chứng minh/bound về local transaction. |
 | `PENDING` | Đã tạo giao dịch, chờ người dùng thanh toán hoặc webhook xác nhận |
 | `PROCESSING` | Đang xử lý callback/trạng thái trung gian từ provider |
 | `SUCCESS` | Thanh toán thành công, có thể trigger luồng fulfilment |
@@ -120,11 +121,13 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 
 | ID | Từ | Event/Trigger | Guard | Đến |
 |---|---|---|---|---|
+| `T0` | `[*]` | `INITIATE_REQUEST_ACCEPTED` | Stable Order idempotency key/fingerprint persisted | `INITIATING` |
+| `T0.1` | `INITIATING` | `PROVIDER_INTENT_IDENTIFIED` | Response/replay/reconciliation proves exactly one immutable provider intent | `PENDING` |
 | `T1` | `PENDING` | `PAYMENT_WEBHOOK_RECEIVED` | Signature hợp lệ + amount/ref match | `PROCESSING` |
 | `T2` | `PROCESSING` | `PAYMENT_SUCCESS_CONFIRMED` (`payment_intent.succeeded`) | Provider xác nhận thành công | `SUCCESS` |
 | `T3` | `PROCESSING` | `PAYMENT_FAILED_CONFIRMED` (`payment_intent.payment_failed`) | Provider xác nhận thất bại | `FAILED` |
-| `T4` | `PENDING`/`PROCESSING` | `PAYMENT_SESSION_EXPIRED` | `NOW() >= expires_at` | `EXPIRED` |
-| `T5` | `PENDING`/`PROCESSING` | `PAYMENT_CANCELED` (`payment_intent.canceled` hoặc `ORDER_CANCELLED`) | Hủy hợp lệ | `CANCELED` |
+| `T4` | `PENDING`/`PROCESSING` | `PAYMENT_SESSION_EXPIRED` | `NOW() >= expires_at` và provider read không success | `EXPIRED` |
+| `T5` | `PENDING`/`PROCESSING` | `PAYMENT_CANCELED` (cancel command/provider webhook) | Provider confirms non-capture; same cancel key replayable | `CANCELED` |
 | `T6` | `SUCCESS` | `REFUND_REQUEST_ACCEPTED` | Tổng refund hợp lệ | `REFUNDING` |
 | `T7` | `REFUNDING` | `REFUND_SUCCESS_CONFIRMED` | Provider/poller/reconcile xác nhận | `REFUNDED` |
 | `T8` | `REFUNDING` | `REFUND_FAILED_CONFIRMED` | Provider/poller/reconcile xác nhận refund thất bại | `FAILED` |
@@ -134,7 +137,8 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 để CSKH/Kế toán xử lý thủ công, vì hệ thống không thể tự động rút tiền lần hai khi
 gateway lỗi hoàn hoặc lỗi tài khoản đích.
 
-Event `PAYMENT_SUCCESS` được mô tả là kết quả của `PROCESSING/PENDING -> SUCCESS`
+`INITIATING` is never expired or canceled by assumption: retry/reconciliation must
+first identify the provider intent or open manual review. `PAYMENT_SUCCESS` được mô tả là kết quả của `PROCESSING/PENDING -> SUCCESS`
 khi webhook đến, nghĩa là `T1` và `T2` có thể được áp trong cùng lần xử lý một
 webhook `payment_intent.succeeded`.
 

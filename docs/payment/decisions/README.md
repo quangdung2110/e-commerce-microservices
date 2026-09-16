@@ -31,3 +31,4 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-009](./ADR-009-monthly-partitioning-and-tiered-archive.md) | Partition theo tháng + archive S3 + tiered read | Accepted | Không rõ (ghi nhận sau Phase 16) | N/A |
 | [ADR-010](./ADR-010-refund-only-by-explicit-order-command.md) | Refund chỉ từ explicit command của Order, không suy luận từ event | Accepted | Không rõ | Auto-refund từ `ORDER_CANCELLED` |
 | [ADR-011](./ADR-011-one-lifetime-order-refund.md) | Một Payment refund transaction trọn đời/order và hai dạng Inventory evidence | Accepted | 2026-09-15 | ADR-010 (refund gate details) |
+| [ADR-012](./ADR-012-recoverable-initiation-and-cancel.md) | Durable provider operation for create/cancel and fact-based Order cancellation | Accepted | 2026-09-16 | Refines ADR-006, ADR-007 and ADR-008 |
