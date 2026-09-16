@@ -40,8 +40,8 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 
 - Liveness không phụ thuộc network.
 - API readiness fail khi PostgreSQL không dùng được. Redis write-path failure làm
-  reserve/claim/Confirm-Prepare unavailable; `cancel-confirmed` vẫn có thể durable commit
-  rồi chờ projection repair. Snapshot read có thể fallback DB.
+  reserve/claim/Confirm-Prepare unavailable; capability/proof-gated legacy cleanup vẫn có
+  thể durable commit rồi chờ projection repair. Snapshot read có thể fallback DB.
 - Consumer readiness phản ánh broker/subscription.
 - Scheduler readiness phản ánh PostgreSQL, Redis và độ trễ fallback.
 - Startup probe chờ migration, campaign ZSET và runtime claim fields/pool rebuild bắt buộc.
@@ -196,11 +196,13 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
   latest current-state snapshot → xác nhận Product source revision.
 - **RB-07 Reconciliation:** dựng expected từ DB + valid reservations → lock/re-read →
   repair Redis một chiều, audit before/after.
-- **RB-08 Legacy technical cleanup:** verify audited proof that the historical flow never
-  crossed the Payment financial watermark, then confirm receipt and stable legacy cancel
-  key/hash → retry DB-first `cancel-confirmed` → replay stored response and verify wallet
-  SAVED/EXPIRED, durable budget and Redis convergence. Active post-capture Order cases are
-  routed back to Order forward repair/financial reconciliation, never this runbook.
+- **RB-08 Legacy technical cleanup:** authenticate only as `promotion-legacy-migrator`, verify
+  the approved immutable migration record and its SHA-256 proof that the historical flow never
+  crossed the Payment financial watermark, then issue matching header/body proof plus stable
+  legacy cancel key/hash → retry DB-first `cancel-confirmed` → replay stored response and verify
+  wallet SAVED/EXPIRED, durable budget and Redis convergence. Refuse `order-service` or any
+  missing/mismatched proof. Active post-capture Order cases route to Order forward repair/
+  financial reconciliation, never this runbook.
 - **RB-09 Product tombstone:** đọc event/catalog revision + durable watermark + affected
   rules/campaigns → kiểm tra shared product lock/monotonic guard → retry invalidation →
   invalidate cache/schedule → xác nhận không emit event loop.

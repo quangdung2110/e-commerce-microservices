@@ -68,9 +68,9 @@ store, không commit credential. Không cấu hình `t.promotion.budget.events`.
 | Concurrency | 10.000 contender, exact claim boundary, duplicate claim, confirm/cancel/sweep races |
 | Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM |
 | CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract theo `contracts/events/promotion/v1`, Product tombstone consumer, stale revision; chứng minh confirm/legacy `cancel-confirmed`/claim không ghi outbox |
-| HTTP | Contract test đủ 24 operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch |
+| HTTP | Contract test mọi operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch, and legacy-migrator capability/proof denial/acceptance |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
-| End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→forward repair; assert active post-payment Order never calls deprecated `cancel-confirmed` |
+| End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→forward repair; assert Order identity is denied technical cleanup and only legacy-migrator with valid proof is accepted |
 
 Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
 
@@ -80,9 +80,9 @@ Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
 | `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route |
 | `MarkdownSnapshotContractTest` | CloudEvent ACTIVE (percentage/fixed) và INACTIVE hợp lệ với JSON Schema trong `contracts/`; causal dedup key |
 | `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
-| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cancel-confirmed SAVED + repair; active post-payment prohibition; final command không ghi outbox; refund no-op |
+| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair; migration proof/capability enforcement; final command không ghi outbox; refund no-op |
 | `ClaimAndTombstoneIntegrationTest` | Pool pre-generate tại publish, gate revision fence, DB commit trước success, replay, OUT_OF_STOCK, pause đóng gate; Redis loss rebuild + sweeper; tombstone watermark/invalidation/stale duplicate/mutation reject/no reverse event; clone identity |
-| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store, claim mode mismatch, calculate/reserve/confirm/technical-cancel/cancel wire shape, Idempotency-Key mismatch 400 |
+| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, `order-service` denied technical cleanup, legacy-migrator proof mismatch denied, Idempotency-Key mismatch 400 |
 
 Chưa có: load 10.000 contender, race test đa luồng, schedule worker với Redis thật theo thời
 gian, Debezium/Kafka E2E, Temporal fixture.
@@ -174,8 +174,8 @@ Fixture tối thiểu:
 - voucher percentage/fixed, ba validity mode, limited/public/direct grant;
 - runtime claim-gate fields disabled/stale, end−1 ms/end/end+1 ms, processing sau end, `CLAIM_PENDING`,
   DB-commit-before-success, Redis-loss rebuild và clock drift;
-- wallet SAVED/USED/EXPIRED, legacy technical cleanup còn hạn/hết hạn, and active
-  post-payment prohibition;
+- wallet SAVED/USED/EXPIRED, legacy technical cleanup còn hạn/hết hạn with dedicated
+  principal/proof, and active post-payment/Order identity denial;
 - command receipt confirm/cancel-confirmed, same-key same/different hash và key khác cùng
   business operation; confirm retry sau Redis cleanup và race preflight-miss/finalizer;
 - finite/unlimited qty/VND budget, stale/missing reservation;
@@ -215,7 +215,7 @@ as external input: no Promotion call, allocation or mutation is permitted.
 - Không tồn tại budget-exhausted hay coupon producer/topic; sync error và telemetry vẫn
   được test.
 - Confirm and legacy technical cleanup commit PostgreSQL-first, replay stored response and
-  converge Redis through receipt `redis_finalized_at`; active post-payment failure never
-  calls cleanup and customer refund does not change Promotion.
+  converge Redis through receipt `redis_finalized_at`; technical cleanup requires capability
+  and proof, active post-payment failure never calls it and customer refund does not change Promotion.
 - Dashboard, alerts, runbooks, CDC retention/watermark và security review hoàn tất.
 - Chỉ nâng `implemented/verified` khi có source/test evidence.

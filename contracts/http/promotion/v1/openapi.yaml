@@ -11,14 +11,20 @@ info:
     Product. Published definition là immutable. Voucher đã lưu dùng wallet.expired_at
     và không được hoàn lại khi customer refund. Confirm/cancel-confirmed là final command
     bền vững; reservation trước payment chỉ là Redis runtime state.
-    `cancel-confirmed` chỉ giữ cho legacy migration cleanup và bị cấm trong active
-    Order checkout sau financial watermark; nó không phải post-capture Saga compensation.
+    `cancel-confirmed` chỉ giữ cho legacy migration cleanup. It requires a dedicated
+    migration workload principal and an immutable pre-financial-watermark proof; the
+    Order workload is denied at transport and application policy. It is not post-capture
+    Saga compensation.
     Request reader phải bỏ qua unknown optional field để cho phép compatible additions;
     unknown rule node/operator/field vẫn bị từ chối theo rule_schema_version.
     Chỉ CONFIRM và CANCEL_CONFIRMED dùng durable Idempotency-Key/command receipt. Các
     command khác replay bằng natural business key, unique constraint, expected campaign
     revision hoặc Redis reservation payload như mô tả ở từng operation.
-x-adoption-status: implemented
+x-adoption-status: proposed
+x-known-runtime-gap: >-
+  The current Promotion implementation exposes the legacy handler without the dedicated
+  capability/proof guard. It must not claim conformance to this route until that guard and
+  its provider tests are deployed.
 servers:
   - url: http://promotion-service:8080
     description: Internal cluster endpoint
@@ -34,7 +40,7 @@ tags:
   - name: Checkout queries
     description: Query nội bộ, pure/replay-safe cho Checkout Service.
   - name: Order allocation
-    description: TRY/CONFIRM/CANCEL do Order/Temporal gọi; technical cancellation is legacy-only.
+    description: TRY/CONFIRM/CANCEL do Order/Temporal gọi. Technical cancellation is a separately-capability-bound legacy migration operation.
 
 paths:
   /api/v1/admin/promotion-campaigns:
@@ -741,24 +747,28 @@ paths:
       summary: Legacy-only technical cancellation of a confirmed allocation
       deprecated: true
       description: >-
-        Không phải customer refund và không phải post-payment Saga compensation. Endpoint
-        chỉ phục vụ cleanup/migration của workflow legacy có bằng chứng không hề vượt
-        financial watermark; active Order checkout, late-payment recovery và mọi order có
-        PAYMENT_SUCCESS/ALREADY_SUCCEEDED bị cấm gọi. New failures after payment must use
-        forward repair/financial reconciliation, never make wallet/budget look unredeemed.
+        Không phải customer refund và không phải post-payment Saga compensation. Only the
+        `promotion-legacy-migrator` mTLS principal may invoke it, and every request must
+        carry an immutable migration-record proof that the historical flow never crossed
+        the Payment financial watermark. `order-service`, active checkout, late-payment
+        recovery and every order with PAYMENT_SUCCESS/ALREADY_SUCCEEDED are denied.
+        New failures after payment use forward repair/financial reconciliation, never make
+        wallet/budget look unredeemed.
         Idempotency-Key chuẩn là
         CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable
         budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
         chưa hết hạn, ngược lại EXPIRED.
-      security: [{ workloadIdentity: [] }]
+      x-adoption-status: proposed
+      security: [{ legacyMigrationWorkloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/TechnicalCancellationIdempotencyKey'
+        - $ref: '#/components/parameters/LegacyMigrationProof'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/FinalAllocationRequest' }
+            schema: { $ref: '#/components/schemas/LegacyTechnicalCancellationRequest' }
       responses:
         '200':
           description: Durable technical cancellation mới hoặc stored response replay.
@@ -792,11 +802,20 @@ components:
         ước với Product). Transport mTLS và allowlist caller theo principal do service mesh
         thực thi (docs/mesh/runtime-contract.md mục 5.2): checkout-service cho
         /internal/v1/promotion-discount-calculations, order-service cho
-        /internal/v1/promotion-allocation/**; principal sai bị mesh trả 403 text/plain trước
+        reservations/cancellations/confirmations under /internal/v1/promotion-allocation;
+        `promotion-legacy-migrator` exclusively for technical-cancellations. Principal sai bị mesh trả 403 text/plain trước
         khi tới Promotion. Mesh không xác minh giá trị header; Promotion allowlist header theo
         nhóm route chỉ là defense-in-depth và trả 401/403 problem+json khi thiếu/không khớp.
         Header này bị Gateway xoá khỏi mọi request từ client và không thay thế mesh policy
         ở production.
+    legacyMigrationWorkloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: >-
+        Dedicated mTLS/service-mesh capability for the `promotion-legacy-migrator` only.
+        It is mutually exclusive with `order-service`; Promotion verifies the workload
+        claim in depth and Gateway strips it from client traffic.
 
   parameters:
     RequestId:
@@ -823,6 +842,14 @@ components:
         type: string
         minLength: 16
         maxLength: 255
+    LegacyMigrationProof:
+      name: X-Legacy-Migration-Proof
+      in: header
+      required: true
+      description: Immutable approved migration record ID; its evidence digest must match the body.
+      schema:
+        type: string
+        format: uuid
         pattern: '^CANCEL_FINAL:[A-Za-z0-9_.-]{1,64}:[A-Za-z0-9_.-]{1,64}$'
     IfMatchCampaign:
       name: If-Match
@@ -1444,6 +1471,18 @@ components:
         order_id: { $ref: '#/components/schemas/OpaqueId' }
         promotion_id: { $ref: '#/components/schemas/OpaqueId' }
         expected_discount: { $ref: '#/components/schemas/VndMoney' }
+    LegacyTechnicalCancellationRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, promotion_id, expected_discount, migration_record_id, pre_financial_watermark_evidence_sha256]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_discount: { $ref: '#/components/schemas/VndMoney' }
+        migration_record_id: { type: string, format: uuid }
+        pre_financial_watermark_evidence_sha256:
+          type: string
+          pattern: '^[A-Fa-f0-9]{64}$'
     ConfirmationResponse:
       type: object
       additionalProperties: false

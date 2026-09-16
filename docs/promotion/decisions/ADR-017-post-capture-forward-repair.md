@@ -23,9 +23,10 @@ reconciliation. It never uses `CANCEL_CONFIRMED`, whether the failure is Invento
 workflow, transport, or timeout.
 
 The technical-cancellation endpoint and receipt remain deprecated legacy/migration
-cleanup only. It requires auditable proof that its historical flow never crossed the
-financial watermark. It is prohibited for active checkout, late-payment recovery and
-customer/admin refund (which already leave wallet/budget `USED`).
+cleanup only. It requires the dedicated `promotion-legacy-migrator` mesh/application
+capability plus an immutable audited proof that its historical flow never crossed the
+financial watermark. `order-service` is denied. It is prohibited for active checkout,
+late-payment recovery and customer/admin refund (which already leave wallet/budget `USED`).
 
 ## Consequences
 
@@ -37,7 +38,8 @@ for a financially captured order.
 
 ## Verification
 
-Provider/consumer contract tests must reject an active post-capture request to the
-deprecated endpoint. Failure-injection tests must prove the same CONFIRM receipt is
+Provider contract tests must reject `order-service`, missing/mismatched proof, and an active
+post-capture request to the deprecated endpoint; only the dedicated legacy principal with
+matching proof may reach it. Failure-injection tests must prove the same CONFIRM receipt is
 replayed/forward-repaired without a second wallet/budget transition, and refund flows
 make no Promotion mutation.

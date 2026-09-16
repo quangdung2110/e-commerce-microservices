@@ -70,8 +70,8 @@ flowchart LR
   success sau commit; pending persistence worker dùng cùng logic để cứu crash window.
 - Reserve/cancel pre-payment là Redis runtime activities. Confirm preflight durable receipt,
   rồi dùng Redis fence không đổi counter cho command mới, PostgreSQL-first commit
-  receipt/wallet/budget và finalize Redis sau commit. `cancel-confirmed` commit PostgreSQL
-  trước rồi repair Redis projection. Cả hai flow không ghi outbox: receipt với
+  receipt/wallet/budget và finalize Redis sau commit. Capability/proof-gated legacy
+  `cancel-confirmed` commit PostgreSQL trước rồi repair Redis projection. Cả hai flow không ghi outbox: receipt với
   `redis_finalized_at IS NULL` là durable trigger để finalizer/repair chạy lại sau crash,
   và được set sau khi Redis hội tụ.
 - Admin mutation ghi PostgreSQL và outbox trong cùng transaction. Cache invalidation và
@@ -99,7 +99,7 @@ flowchart LR
 | Product markdown projection | Apply ACTIVE full rule hoặc INACTIVE tombstone khi `source_revision` mới hơn |
 | Discovery budget guard | Best-effort/fail-open; Reserve chốt authoritative |
 | Redis budget counter | Runtime projection; DB-first reconciliation |
-| Confirm/`cancel-confirmed` durable outcome | Receipt + wallet + budget trong một PostgreSQL transaction; `redis_finalized_at` đánh dấu Redis đã hội tụ |
+| Confirm/legacy `cancel-confirmed` durable outcome | Receipt + wallet + budget trong một PostgreSQL transaction; legacy path requires migration capability/proof; `redis_finalized_at` đánh dấu Redis đã hội tụ |
 
 Không có distributed transaction PostgreSQL–Redis. Mỗi crash window phải có replay,
 guarded transition hoặc reconciliation cụ thể.
@@ -143,7 +143,7 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   conditional `SAVED→USED` + budget chốt durable outcome. Redis miss phải recheck receipt
   để đóng race với concurrent commit/finalize trước khi kết luận reservation mất.
 - Cancel pre-payment là idempotent trên reservation key; không đổi wallet.
-- `cancel-confirmed` dùng receipt + guarded `USED → SAVED` nếu còn hạn, hoặc
+- Legacy `cancel-confirmed` (migration capability/proof only) dùng receipt + guarded `USED → SAVED` nếu còn hạn, hoặc
   `USED → EXPIRED`; Redis không bị decrement trước DB.
 - Markdown outbox `dedup_key` chứa product, campaign, campaign revision và trigger; state
   không thuộc key để cùng một cause không thể phát hai snapshot khác nhau. Product dùng

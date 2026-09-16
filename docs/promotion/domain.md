@@ -28,7 +28,7 @@ verified_against_commit: null
 | Wallet entry | Quyền sở hữu và trạng thái redemption hiện hành | Reservation runtime |
 | Reservation | Giữ quota/amount 15 phút trong Redis sau Submit | Wallet DB state |
 | Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
-| Legacy technical cleanup | Deprecated `cancel-confirmed` only with proof flow never crossed Payment financial watermark | Customer refund or active post-capture Order failure |
+| Legacy technical cleanup | Deprecated `cancel-confirmed` only for `promotion-legacy-migrator` with immutable proof the flow never crossed Payment financial watermark | Customer refund or active post-capture Order failure |
 | Customer refund | Buyer selected-line hoặc Admin pre-dispatch refund | Promotion budget rollback |
 | Command receipt | Biên nhận durable cho final command, response replay và Redis finalize marker | Outbox event/publication state |
 
@@ -46,7 +46,7 @@ verified_against_commit: null
   nó chặn markdown rule được tạo sau khi delete đã được quan sát.
 - `PromotionOutboxEvent` là append-only integration fact/durable dedup record; ở v1 chỉ
   chứa markdown snapshot.
-- `PromotionCommandReceipt` là inbound `CONFIRM`/`CANCEL_CONFIRMED` receipt, chứa stable
+- `PromotionCommandReceipt` là inbound `CONFIRM`/legacy `CANCEL_CONFIRMED` receipt, chứa stable
   key, request hash, stored response và `redis_finalized_at`; không phải usage ledger.
 - User, Order và Product chỉ là identifier/snapshot từ bounded context khác.
 
@@ -58,7 +58,8 @@ verified_against_commit: null
 | Command | Tạo/cập nhật voucher hoặc markdown trước publish | Admin |
 | Command | Clone published campaign thành DRAFT identity mới | Admin |
 | Command | Claim/save voucher | Customer |
-| Command | Reserve/confirm/cancel/`cancel-confirmed` | Order/Temporal |
+| Command | Reserve/confirm/cancel | Order/Temporal |
+| Command | Legacy `cancel-confirmed` | `promotion-legacy-migrator` capability only |
 | Query | Calculate discount | Checkout |
 | Query | Voucher trong ví/public discovery | Customer qua Checkout |
 | Worker | Schedule START/END, rescue, reconciliation | Promotion |
@@ -80,14 +81,14 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-008` | Validity phải chọn `CAMPAIGN_END`, `DURATION_AFTER_SAVE` hoặc `FIXED_DATE`; không có default ngầm. |
 | `PROMO-BR-009` | Definition đã publish là bất biến; thay đổi business config phải clone campaign/promotion/markdown identity mới, không chỉ tăng cùng-row revision. |
 | `PROMO-BR-010` | Buyer selected-line hoặc Admin pre-dispatch refund không restore voucher và không hoàn Promotion budget. |
-| `PROMO-BR-011` | `cancel-confirmed` do lỗi kỹ thuật trả wallet về `SAVED` nếu còn hạn, `EXPIRED` nếu hết hạn. |
+| `PROMO-BR-011` | Legacy `cancel-confirmed` with migration proof trả wallet về `SAVED` nếu còn hạn, `EXPIRED` nếu hết hạn. |
 | `PROMO-BR-012` | Markdown chỉ product-scope, chỉ effective khi campaign `ACTIVE`, rule enabled và chưa bị Product tombstone invalidate. |
 | `PROMO-BR-013` | Worker không xử lý schedule dựa riêng vào Redis; phải re-read DB/revision/time. |
 | `PROMO-BR-014` | Missing AST field trả false; Rule Engine thuần và xác định. |
 | `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
 | `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
 | `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet và durable budget cùng commit PostgreSQL. |
-| `PROMO-BR-018` | Deprecated `cancel-confirmed` legacy cleanup commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. Active Order flow after Payment financial watermark is forbidden from calling it. |
+| `PROMO-BR-018` | Deprecated `cancel-confirmed` legacy cleanup commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. Contract/mesh/application deny `order-service`; only `promotion-legacy-migrator` plus immutable pre-watermark proof may call it. |
 | `PROMO-BR-019` | Command receipt dedup inbound command và là durable trigger cho Redis finalize/repair qua `redis_finalized_at`; outbox dedup outbound markdown event. Hai bảng có retention độc lập. |
 | `PROMO-BR-020` | Markdown dedup identity gồm product, campaign, campaign revision và trigger; resulting state không thuộc key; ordering dùng source revision riêng. |
 | `PROMO-BR-021` | Snapshot ACTIVE mang full rule; INACTIVE chỉ là tombstone có reason, không mang rule/discount/interval. |
@@ -229,7 +230,7 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
   service mesh thực thi theo principal ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
   header do caller tự đặt và không được mesh xác minh, nên `TrustedIdentityFilter` allowlist theo
   nhóm route chỉ là defense-in-depth.
-- Chỉ Order/Temporal gọi reserve/confirm/cancel/`cancel-confirmed`.
+- Order/Temporal gọi reserve/confirm/cancel only. `cancel-confirmed` requires the separate legacy-migrator capability and proof.
 - Consumer validate broker ACL, schema, event identity và business guard.
 
 ## 10. Domain errors

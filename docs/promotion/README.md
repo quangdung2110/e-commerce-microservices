@@ -52,7 +52,8 @@ Promotion chịu trách nhiệm:
   `user_coupon_wallets`, `markdown_rules`, `catalog_product_tombstones`,
   `promotion_command_receipts` và `promotion_outbox_events`.
 - Một slot `PLATFORM_VOUCHER` cho toàn đơn, Rule Engine, eligibility và discount.
-- Claim/save, reserve, confirm, pre-payment cancel và `cancel-confirmed` legacy cleanup.
+- Claim/save, reserve, confirm, pre-payment cancel và legacy cleanup only through the
+  dedicated `promotion-legacy-migrator` capability.
 - Campaign schedule, pending-claim rescue, reservation expiry và reconciliation.
 - State-discriminated product markdown snapshot cho Product và consume Product tombstone.
 
@@ -66,7 +67,7 @@ Promotion không chịu trách nhiệm:
 - Inventory, shipping discount, seller/merchant promotion.
 
 `ORDER_REFUNDED` không phải input của Promotion. Current Order policy is one lifetime
-selected-full-quantity-line refund with a gross amount capped at `final_amount`; it does
+selected-full-quantity-line refund with a gross amount capped at `final_amount_minor`; it does
 not change the Promotion no-mutation boundary.
 
 ## 4. Data ownership
@@ -100,7 +101,7 @@ CloudEvents `id`.
 | `PROMO-CAP-03` | Tính discount/discovery | Eligibility, reason và một voucher toàn đơn |
 | `PROMO-CAP-04` | Claim/save voucher | Atomic time/revision gate, gán duy nhất và snapshot `expired_at` |
 | `PROMO-CAP-05` | Budget reservation | TRY/CANCEL runtime bằng Redis; confirm fence rồi PostgreSQL-first |
-| `PROMO-CAP-06` | Legacy technical cleanup | Deprecated PostgreSQL-first `cancel-confirmed`; active post-payment Saga uses forward repair, then Order financial reconciliation |
+| `PROMO-CAP-06` | Legacy technical cleanup | Deprecated PostgreSQL-first `cancel-confirmed`; requires legacy-migrator principal + immutable proof; active post-payment Saga uses forward repair, then Order financial reconciliation |
 | `PROMO-CAP-07` | Markdown propagation | `ACTIVE` full rule hoặc `INACTIVE` tombstone, causal dedup + `source_revision` |
 | `PROMO-CAP-08` | Recovery/reconciliation | Cứu claim, nhả reservation, rebuild schedule và sửa drift |
 
@@ -110,7 +111,8 @@ CloudEvents `id`.
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
 | Inbound | Checkout | HTTP | Discovery, save và calculate discount |
-| Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel; technical cancellation is legacy-only |
+| Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel only; technical cancellation is denied to Order |
+| Inbound | `promotion-legacy-migrator` | HTTP | Deprecated technical cleanup with proof header/body digest |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
@@ -137,7 +139,8 @@ ký các fact đó; thêm sau là thay đổi additive theo
 - Campaign kết thúc không tự xóa/thu hồi voucher đã lưu; eligibility chỉ dùng
   `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
 - Buyer selected-line hay Admin pre-dispatch refund không đổi wallet `USED` và không giảm used budget.
-- Deprecated `cancel-confirmed` có thể trả wallet legacy về `SAVED`/`EXPIRED`, nhưng active
+- Deprecated `cancel-confirmed` có thể trả wallet legacy về `SAVED`/`EXPIRED` only when the
+  dedicated migration principal and immutable pre-watermark proof are valid; active
   Order flow sau Payment financial watermark bị cấm gọi; voucher giữ `USED` trong forward
   repair/financial reconciliation.
 - Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget trong một
@@ -160,7 +163,7 @@ ký các fact đó; thêm sau là thay đổi additive theo
 | [Architecture](./architecture.md) | Thành phần, consistency, concurrency và outbox |
 | [Domain](./domain.md) | Thuật ngữ, rule, invariant và state machine |
 | [Interfaces](./interfaces.md) | Semantics HTTP/Kafka |
-| [HTTP OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) | 24 operations Admin, Customer/Checkout và Order/Temporal |
+| [HTTP OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) | Admin, Customer/Checkout, Order/Temporal và one capability-bound legacy migration operation |
 | [Workflows](./workflows.md) | Happy path, failure, retry và recovery |
 | [Data](./data.md) | PostgreSQL, Redis, constraint và lifecycle |
 | [Operations](./operations.md) | Worker, alert, failure mode và runbook |
@@ -170,7 +173,7 @@ ký các fact đó; thêm sau là thay đổi additive theo
 ## 9. Known gaps
 
 - Test suite hiện có: unit (Rule Engine, discount, phase, validity, identity filter), Lua trên
-  Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→cancel-confirmed,
+  Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→legacy cleanup,
   limited claim + Redis loss + sweeper, tombstone, clone), HTTP contract MockMvc và JSON Schema
   contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
   confirm/cancel/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.

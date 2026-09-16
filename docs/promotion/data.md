@@ -175,8 +175,8 @@ Unique `(user_id,promotion_id)` bảo đảm một quyền sở hữu. Partial u
 `used_order_id WHERE used_order_id IS NOT NULL` bảo đảm một platform voucher cho một
 order. CHECK buộc `USED` có order/amount/time và `SAVED/EXPIRED` không có usage fields.
 
-Confirm chuyển `SAVED → USED`. Buyer selected-line hay Admin pre-dispatch refund không mutate row. Technical
-`cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
+Confirm chuyển `SAVED → USED`. Buyer selected-line hay Admin pre-dispatch refund không mutate row. Legacy,
+capability/proof-gated `cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
 nếu đã hết hạn thì chuyển `USED → EXPIRED`.
 
 ### 3.6 `markdown_rules`
@@ -234,7 +234,9 @@ tombstone đến trước rule commit hoặc sau rule commit đều không để
 | `order_id`                | `BIGINT NOT NULL`, logical Order reference                                                                        |
 | `wallet_id`               | `BIGINT NOT NULL REFERENCES user_coupon_wallets(id)`                                                              |
 | `request_hash`            | `CHAR(64) NOT NULL`, SHA-256 canonical request                                                                    |
-| `amount_vnd`              | `BIGINT NOT NULL CHECK (amount_vnd >= 0)`; confirm lấy từ fenced reservation, cancel-confirmed lấy từ wallet USED |
+| `migration_record_id`     | `UUID NULL`; required only for `CANCEL_CONFIRMED`, must equal `X-Legacy-Migration-Proof`                           |
+| `pre_watermark_evidence_sha256` | `CHAR(64) NULL`; required only for `CANCEL_CONFIRMED`, immutable audited evidence digest                      |
+| `amount_vnd`              | `BIGINT NOT NULL CHECK (amount_vnd >= 0)`; confirm lấy từ fenced reservation, legacy cleanup lấy từ wallet USED after proof validation |
 | `result_code`             | stable business result để replay                                                                                  |
 | `resulting_wallet_status` | `USED`, `SAVED` hoặc `EXPIRED` theo operation                                                                     |
 | `response_payload`        | `JSONB NOT NULL`, stored response đã sanitize                                                                     |
@@ -247,9 +249,12 @@ Unique `(operation_type,promotion_id,order_id)` ngăn hai idempotency key khác 
 cùng final business transition. Receipt không có durable `PENDING`: row, wallet và budget
 chỉ hiện ra cùng lúc khi transaction commit. Cùng key + cùng request hash trả
 `response_payload`; cùng key khác hash trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
+`CHECK` requires both migration-proof fields for `CANCEL_CONFIRMED` and both NULL for
+`CONFIRM`; the request hash includes them. A legacy command may not be replayed with a
+different proof record/digest.
 
-Receipt là command history tối thiểu, không phải usage/refund ledger. Nó giữ response và
-original order/amount sau khi `cancel-confirmed` clear usage fields trên wallet.
+Receipt là command history tối thiểu, không phải usage/refund ledger. Nó giữ response,
+migration proof reference và original order/amount sau khi legacy cleanup clear usage fields trên wallet.
 
 `redis_finalized_at` là durable trigger cho Redis finalize/repair. Nó luôn `NULL` khi
 transaction commit, được application set sau khi Lua finalize/repair trả kết quả hội tụ,
@@ -344,7 +349,7 @@ counter; không ghi outbox. Sau commit Redis finalizer mới move reserved→use
 `redis_finalized_at`. Redis miss recheck receipt trước khi trả not-found; missing runtime
 evidence chỉ enqueue reconciliation, không increment mù.
 - Pre-payment cancel: Redis release; wallet không đổi.
-- `cancel-confirmed`: một DB transaction commit command receipt (`redis_finalized_at NULL`),
+- Legacy `cancel-confirmed` (dedicated migrator + proof): một DB transaction commit command receipt (`redis_finalized_at NULL`),
 giảm durable used counter và chuyển wallet về `SAVED`/`EXPIRED`; không ghi outbox. Sau
 commit trigger DB-first Redis projection repair rồi set `redis_finalized_at`; không
 decrement Redis trước DB hoặc replay delta mù.

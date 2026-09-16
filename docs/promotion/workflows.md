@@ -204,12 +204,16 @@ enqueue repair nếu cần.
 
 ## WF-PROMO-006 — `cancel-confirmed` legacy cleanup (deprecated)
 
-Flow này chỉ giữ để cleanup/migration record legacy với bằng chứng audit rằng nó chưa
-vượt Payment financial watermark. Nó không phải customer refund và không được active
-Order checkout, post-payment hay late-payment workflow gọi.
+Flow này chỉ giữ để cleanup/migration record legacy với bằng chứng audit bất biến rằng nó
+chưa vượt Payment financial watermark. Nó không phải customer refund và không được active
+Order checkout, post-payment hay late-payment workflow gọi. Only the dedicated
+`promotion-legacy-migrator` mTLS principal can invoke the endpoint; `order-service` is
+denied by mesh and application policy.
 
-1. Order gọi `POST /internal/v1/promotion-allocation/technical-cancellations` với
-   `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}` và expected confirmed amount.
+1. `promotion-legacy-migrator` gọi `POST /internal/v1/promotion-allocation/technical-cancellations`
+   với `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}`, header
+   `X-Legacy-Migration-Proof=<migration-record-uuid>` và body evidence SHA-256 matching
+   the approved record. Missing/mismatched proof or an `order-service` principal is denied.
 2. PostgreSQL transaction acquire `CANCEL_CONFIRMED` command receipt theo canonical request
    hash. Cùng key/hash đã complete trả stored response; khác hash bị từ chối.
 3. Với command mới, transaction lock wallet/budget, bắt buộc wallet `USED` bởi đúng order và
@@ -245,7 +249,7 @@ refund case:
 - Không tái cấp voucher và không quy đổi voucher thành tiền.
 - Không truyền `promotion_refund_allocations[]`.
 
-Order locks gross selected-line amount capped at `final_amount`; Promotion behavior
+Order locks gross selected-line amount capped at `final_amount_minor`; Promotion behavior
 does not depend on that calculation and remains no-op.
 
 ## WF-PROMO-007 — Markdown snapshot → Product
@@ -281,7 +285,7 @@ Không phát delta `MARKDOWN_CREATED/UPDATED/ENDED`; Product không cần safety
   mất → xóa index và reconcile.
 - Final-command finalizer: inline sau commit và worker quét receipt
   `redis_finalized_at IS NULL` quá ngưỡng. `CONFIRM` chỉ finalize matching `CONFIRMING`;
-  `CANCEL_CONFIRMED` chạy DB→Redis projection repair. Thiếu runtime evidence thì reconcile,
+  legacy `CANCEL_CONFIRMED` chạy DB→Redis projection repair. Thiếu runtime evidence thì reconcile,
   không increment/decrement mù; chỉ set `redis_finalized_at` sau khi Redis hội tụ.
 - Campaign schedule: loop 250 ms–1 s; DB fallback 10–30 s; startup rebuild.
 - Budget reconciliation: định kỳ dựng expected used từ wallet `USED`, claimed từ claim

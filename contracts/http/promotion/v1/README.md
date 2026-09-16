@@ -1,6 +1,6 @@
 # Promotion Service HTTP v1 — đề xuất
 
-Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Contract đã `implemented`
+Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Contract hiện ở trạng thái `proposed`
 bởi `java/services/promotion-service` (provider test `HttpContractIntegrationTest`); chưa
 `verified` vì Checkout/Order chưa có consumer test.
 
@@ -63,7 +63,7 @@ bởi `java/services/promotion-service` (provider test `HttpContractIntegrationT
 | POST | `/internal/v1/promotion-allocation/reservations` | TRY giữ quota/amount sau Submit |
 | POST | `/internal/v1/promotion-allocation/confirmations` | Durable CONFIRM, PostgreSQL-first |
 | POST | `/internal/v1/promotion-allocation/cancellations` | Release reservation trước confirm |
-| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Deprecated legacy cleanup only; prohibited for active post-payment Order Saga |
+| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Deprecated legacy migration only; dedicated `promotion-legacy-migrator` principal + immutable proof, denied to Order |
 
 Không có endpoint refund. Customer partial/full refund không thay đổi wallet hoặc budget
 của Promotion.

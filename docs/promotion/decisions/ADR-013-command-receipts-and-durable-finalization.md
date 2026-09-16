@@ -59,10 +59,12 @@ với outbound publication và buộc hai loại dữ liệu có cùng retention
   move `reserved→used`. Missing/already-finalized payload không được increment mù; enqueue
   reconciliation từ DB. Redis miss phải recheck receipt để đóng race với concurrent
   commit/finalize trước khi trả `RESERVATION_NOT_FOUND`.
-- `cancel-confirmed` chỉ chạy sau durable confirm và do post-payment technical failure.
-  PostgreSQL transaction chốt receipt, giảm durable used budget, chuyển wallet
-  `USED→SAVED` nếu còn hạn hoặc `USED→EXPIRED`, rồi insert outbox. Sau commit chỉ trigger
-  Redis projection repair; không decrement Redis trước transaction hoặc replay delta mù.
+- Legacy `cancel-confirmed` only runs under the separate `promotion-legacy-migrator`
+  capability with immutable proof that the historical flow never crossed the financial
+  watermark; it is not an active post-payment repair. PostgreSQL transaction chốt receipt,
+  giảm durable used budget, chuyển wallet `USED→SAVED` nếu còn hạn hoặc `USED→EXPIRED`.
+  It does not insert an outbox row; after commit it only triggers Redis projection repair,
+  never decrementing Redis before transaction or replaying a blind delta.
 - Amount authoritative của `CONFIRM` lấy từ matching reservation `CONFIRMING` do Promotion
   đã tạo; của `CANCEL_CONFIRMED` lấy từ wallet `USED`. Amount trong request chỉ là expected
   value và thuộc request hash. Cùng key khác hash trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
@@ -85,8 +87,8 @@ với outbound publication và buộc hai loại dữ liệu có cùng retention
 
 ## Consequences
 
-Crash trước DB commit rollback toàn durable state; crash sau commit luôn có receipt và
-outbox để replay response/repair Redis. Redis stale sau compensation chỉ bảo thủ ngân
+Crash trước DB commit rollback toàn durable state; crash sau commit luôn có receipt để
+replay response/repair Redis. Redis stale sau legacy cleanup chỉ bảo thủ ngân
 sách cho tới khi hội tụ. Đổi lại schema cần thêm command receipt, retention/cleanup,
 canonical request hash, confirm fence/finalizer và metric projection lag. Các bảng do
 quyết định độc lập bổ sung được liệt kê tại `data.md`.
@@ -95,8 +97,9 @@ quyết định độc lập bổ sung được liệt kê tại `data.md`.
 
 Tạo `promotion_command_receipts`, unique/index/retention job và backfill receipt nếu có
 in-flight prototype data. Đổi confirm thành prepare-fence → DB commit → Redis finalize;
-đổi `cancel-confirmed` thành DB commit → Redis repair. Deploy schema/reader trước writer,
-giữ compatibility của stable Order keys `REDEEM_FINAL`/`CANCEL_FINAL`, rồi loại Lua
+đổi legacy `cancel-confirmed` thành DB commit → Redis repair. Deploy schema/reader trước
+writer, remove `CANCEL_FINAL` capability from Order and grant it only to the legacy migrator,
+rồi loại Lua
 technical-cancel Redis-first. Promotion OpenAPI phải mô tả replay/mismatch semantics.
 
 ## Verification
