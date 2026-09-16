@@ -99,7 +99,8 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-queries-product-skus`; Checkout interfaces |
 | `promotion-service` | `/api/v1/me/**`, `/api/v1/promotion-discovery`, `/api/v1/admin/**` | X | `edge/traefik` | gateway matrix |
 | `promotion-service` | `/internal/v1/promotion-discount-calculations` | POST | `ecommerce/checkout-service` | `checkout-calculates-promotions` |
-| `promotion-service` | `/internal/v1/promotion-allocation/**` | POST | `ecommerce/order-service` | `order-commands-promotion-allocation` |
+| `promotion-service` | `/internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | POST | `ecommerce/order-service` | `order-commands-promotion-allocation` |
+| `promotion-service` | `/internal/v1/promotion-allocation/technical-cancellations` | POST | `ecommerce/promotion-legacy-migrator` | `legacy-migrator-technical-cancels-promotion-allocation` |
 | `inventory-service` | `/admin/inventory/v1/**` | X | `edge/traefik` | `warehouse-admin-operates-inventory` |
 | `inventory-service` | `/internal/inventory/v1/allocation-previews` | POST | `ecommerce/checkout-service` | `checkout-previews-inventory-allocation` |
 | `inventory-service` | `/internal/inventory/v1/reservations/**`, `/internal/inventory/v1/refund-scopes/**`, `/internal/inventory/v1/commands/*` | X | `ecommerce/order-service` | `order-commands-inventory-workflow` |
@@ -113,6 +114,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `checkout-service` | `/v1/checkout/**` | POST | `edge/traefik` | docs/README §8 |
 | `order-service` | `/api/orders/**` (prefix cần đối soát) | X | `edge/traefik` | gateway matrix |
 | `order-service` | `/v1/orders/create-from-checkout` | POST | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-decisions` | POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/api/payments/webhook/stripe`, `/api/payments/**` | X | `edge/traefik` | gateway matrix |
 | `payment-service` | `/v1/payments/**` | POST | `ecommerce/order-service` | `order-initiates-payment` |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
@@ -160,7 +162,8 @@ của Istio.
 | `GET .../checkout-snapshot` (User) | 2 lần, `connect-failure,refused-stream` | 2 giây | Checkout budget 500 ms |
 | `POST /internal/inventory/v1/allocation-previews` | 0 | 4 giây | Advisory nhưng POST; Checkout budget 3 giây |
 | `POST /internal/v1/promotion-discount-calculations` | 0 | 3 giây | Pure query nhưng POST; Checkout budget 2 giây |
-| `POST /internal/v1/promotion-allocation/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | 0 | 10 giây | Legacy migrator only; proof verification before mutation |
 | `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
 | `POST /v1/orders/create-from-checkout`, `POST /v1/payments/**` | 0 | 15 giây | Không idempotent ở mesh |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |

@@ -181,15 +181,17 @@ interactions:
     protocol: http
     provider: payment-service
     consumers: [order-service]
-    contract: null
-    status: legacy_documented
+    contract: http/payment/v1/openapi.yaml
+    status: proposed
+    notes: HTTP v1 only; Order persists a numbered payment attempt and refunds only its immutable captured transaction.
 
   - id: payment-publishes-payment-events
     protocol: kafka
     provider: payment-service
     consumers: [order-service]
-    contract: null
-    status: legacy_documented
+    contract: events/payment/v2/asyncapi.yaml
+    status: proposed
+    notes: CloudEvents v2, VND money and per-transaction financial version; no client_secret in events.
 
   - id: checkout-previews-inventory-allocation
     protocol: http
@@ -249,8 +251,24 @@ interactions:
     provider: promotion-service
     consumers: [order-service]
     contract: http/promotion/v1/openapi.yaml
-    status: implemented
-    notes: Order Temporal owns reserve, pre-payment cancel, confirm, and technical cancellation; customer refund never calls Promotion.
+    status: proposed
+    notes: Order Temporal owns reserve, pre-payment cancel and confirm only; technical cancellation is denied to Order and reserved for the separately capability-bound legacy migrator.
+
+  - id: legacy-migrator-technical-cancels-promotion-allocation
+    protocol: http
+    provider: promotion-service
+    consumers: [promotion-legacy-migrator]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: The legacy migrator alone must present the dedicated workload identity and an immutable pre-watermark proof; this route is not a Saga compensation or Order recovery path.
+
+  - id: finance-ops-decides-order-financial-reconciliation
+    protocol: http
+    provider: order-service
+    consumers: [finance-ops, accounting-ops]
+    contract: http/order/internal/v1/openapi.yaml
+    status: proposed
+    notes: A Finance or Accounting operator records an evidence-backed, optimistic-concurrency decision for an existing Order financial reconciliation case; it cannot mutate Payment or Promotion directly.
 
   - id: inventory-publishes-public-facts
     protocol: kafka
@@ -264,6 +282,14 @@ interactions:
       reservation, physical-dispatch, and selected-scope refund-inspection facts.
       Inspection completion is payout-independent and contains pass/fail counters. Delivery is
       at-least-once with a 30-day minimum replay window.
+
+  - id: delivery-publishes-order-line-delivered
+    protocol: kafka
+    provider: delivery-service
+    consumers: [order-service]
+    contract: events/delivery/v1/asyncapi.yaml
+    status: proposed
+    notes: Verified per-line proof is the only fact that permits Order DISPATCHED→DELIVERED and an all-line completion CAS.
 
   - id: search-exports-inventory-availability
     protocol: http

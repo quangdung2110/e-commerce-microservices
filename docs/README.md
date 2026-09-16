@@ -15,10 +15,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 | File | Mô tả |
 |---|---|
-| [CONTRACT_MATRIX.md](./_contracts/CONTRACT_MATRIX.md) | Matrix legacy đang được migrate dần sang `contracts/catalog` và machine-readable specs. |
-| [IDEMPOTENCY_GUIDELINES.md](./_contracts/IDEMPOTENCY_GUIDELINES.md) | Hướng dẫn triển khai legacy về Redis/DB/Temporal. |
-| [OUTBOX_PATTERNS.md](./_contracts/OUTBOX_PATTERNS.md) | Hướng dẫn kiến trúc legacy về CDC, direct produce và polling. |
-| [CHANGELOG.md](./_contracts/CHANGELOG.md) | Lịch sử mọi sync change theo phase. |
+| `CONTRACT_MATRIX.md` (đã xóa) | Matrix legacy; thay bằng [`contracts/catalog`](../contracts/catalog/) và machine-readable specs. |
+| `IDEMPOTENCY_GUIDELINES.md` (đã xóa) | Hướng dẫn legacy; quy tắc hiện hành nằm trong docs service và contract tương ứng. |
+| `OUTBOX_PATTERNS.md` (đã xóa) | Hướng dẫn legacy; contract/event docs hiện hành nêu boundary CDC/outbox. |
+| `CHANGELOG.md` (đã xóa) | Lịch sử legacy không còn trong repository. |
 
 ### ADRs (Architecture Decision Records)
 
@@ -56,7 +56,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 ## 2. Order Service (Orchestrator + Temporal Saga)
 
 > Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, chưa xác minh implementation và chưa đối soát contract liên service.
+> `target/proposed`, đã có contract Saga liên service được liên kết nhưng chưa xác minh
+> implementation/provider-consumer contract test.
 
 | File | Mô tả |
 |---|---|
@@ -64,7 +65,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/architecture.md](./order/architecture.md) | Temporal/Kafka/CDC, component, consistency, concurrency và topology. |
 | [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
 | [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
-| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics; contract chưa được chuẩn hóa ở phase này. |
+| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
 | [order/workflows.md](./order/workflows.md) | Chín workflow gồm checkout, timeout, delivery, return, refund và late recovery. |
 | [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
 | [order/development.md](./order/development.md) | Checklist local/build/test/migration khi implementation được thêm. |
@@ -75,8 +76,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 ## 3. Payment Service (PG State + Outbox)
 
 > Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ, chưa xác minh
-> implementation và chưa đối soát contract liên service.
+> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ. HTTP v1 và payment
+> facts v2 đã có target contract nhưng chưa xác minh implementation/provider-consumer test.
 
 | File | Mô tả |
 |---|---|
@@ -84,11 +85,13 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
 | [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T1–T9) + Refund FSM (R1–R4), guard rules, invariant, lỗi miền. |
 | [payment/data.md](./payment/data.md) | Schema logic 6 bảng, constraint, transaction, Redis key, outbox, partition/archive. |
-| [payment/interfaces.md](./payment/interfaces.md) | API initiate/webhook/query/refund, envelope, 9 event `t.payment.events`, `ORDER_CANCELLED`. |
+| [payment/interfaces.md](./payment/interfaces.md) | API initiate/webhook/query/refund, envelope, financial facts v2 `t.payment.events.v2`, `ORDER_CANCELLED`. |
 | [payment/workflows.md](./payment/workflows.md) | Mười workflow: initiate, webhook, refund, expiration, reconciliation, poller, cancel, retry/replay, archive. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
 | [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
 | [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 11 ADR: Java/Spring Boot, Refund trong Payment, Stripe single-provider, webhook async, Outbox CDC, lock strategy, partition key, payload Phase 20, partition/archive, explicit one-lifetime-order refund. |
+| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/refund numbered payment attempt; target/proposed. |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Financial facts CloudEvents v2 không mang client secret; target/proposed. |
 
 ---
 
@@ -112,7 +115,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 4. Promotion Service (Redis Lua + PostgreSQL)
+## 5. Promotion Service (Redis Lua + PostgreSQL)
 
 > Tài liệu đã refactor theo cấu trúc chuẩn trong `docs/_templates`; thiết kế đang ở
 > trạng thái `proposed` và chưa có implementation để verification.
@@ -133,7 +136,19 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 6. Product Detail BFF (target)
+## 6. Delivery Service (target)
+
+> Delivery là boundary target/proposed cho verified customer-delivery proof. Repository
+> chưa có provider implementation; Inventory physical-dispatch không thay thế proof này.
+
+| File | Mô tả |
+|---|---|
+| [delivery/README.md](./delivery/README.md) | Boundary, ownership và điều kiện phát verified proof cho từng order line. |
+| [Delivery Events AsyncAPI v1](../contracts/events/delivery/v1/asyncapi.yaml) | `com.ecommerce.delivery.order-line.delivered.v1` cho Order; target/proposed. |
+
+---
+
+## 7. Product Detail BFF (target)
 
 > Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
 > availability qua batch read; Review giữ review/rating. BFF không persist stock,
@@ -149,24 +164,27 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 7. Service ↔ Service Contract Map (rút gọn từ CONTRACT_MATRIX)
+## 8. Service ↔ Service Contract Map (rút gọn từ CONTRACT_MATRIX)
 
-Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md#1-kafka-topic-map-ssot).
+Nguồn đầy đủ hiện hành là [`contracts/catalog/interactions.yaml`](../contracts/catalog/interactions.yaml);
+Service Contract Matrix legacy đã bị xóa.
 
 | Producer | Topic | Consumer |
 |---|---|---|
 | Order | `t.order.events` (8 event types theo thiết kế hiện tại) | Inventory, Cart, Notification, Analytics, Review; Promotion không consume refund |
-| Payment | `t.payment.events` (9 events) | Order |
+| Payment | `t.payment.events.v2` (financial facts v2, không mang client secret) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes reservation/physical-dispatch/selected-scope inspection completion; Search consumes per-SKU availability |
+| Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
 | Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
 ---
 
-## 8. Sync API Catalog (rút gọn)
+## 9. Sync API Catalog (rút gọn)
 
-Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRIX.md#3-sync-api-catalog-ssot).
+Nguồn đầy đủ hiện hành là [`contracts/catalog/interactions.yaml`](../contracts/catalog/interactions.yaml);
+Service Contract Matrix legacy đã bị xóa.
 
 | Endpoint | Direction |
 |---|---|
@@ -184,11 +202,13 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save + evaluate explicit |
 | `POST /api/v1/me/promotion-voucher-claims` | Customer → Promotion; limited claim |
 | `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion; pure query |
-| `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations,technical-cancellations}` | Order (Temporal) → Promotion |
+| `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations}` | Order (Temporal) → Promotion |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | `promotion-legacy-migrator` → Promotion; dedicated proof/capability only |
+| `POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` | `finance-ops`/`accounting-ops` → Order; evidence-backed decision only |
 
 ---
 
-## 9. Service ngoài scope (chưa đồng bộ trong đợt này)
+## 10. Service ngoài scope (chưa đồng bộ trong đợt này)
 
 | File | Note |
 |---|---|
@@ -202,11 +222,13 @@ Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRI
 | [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |
 | [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
 
-> Các service trên sẽ được sync ở giai đoạn tiếp theo. Hiện tại chỉ có 5 service (Checkout, Order, Payment, Inventory, Promotion) đạt 100% consistency sau Phase 14 (loại bỏ Shipping Service).
+> Các service trên sẽ được sync ở giai đoạn tiếp theo. Năm service Checkout, Order,
+> Payment, Inventory và Promotion được đồng bộ ở mức thiết kế; Delivery chỉ là boundary
+> target/proposed, chưa có implementation (không phải Shipping Service legacy).
 
 ---
 
-## 10. Platform — Service Mesh (`docs/mesh/`, target/proposed)
+## 11. Platform — Service Mesh (`docs/mesh/`, target/proposed)
 
 Istio ambient cho traffic east-west trên Kubernetes; Traefik giữ edge. Mesh là nơi thực thi
 duy nhất cho mTLS và phân quyền service-to-service; `X-Service-Identity` do caller đặt, chỉ dùng
