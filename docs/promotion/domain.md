@@ -28,7 +28,7 @@ verified_against_commit: null
 | Wallet entry | Quyền sở hữu và trạng thái redemption hiện hành | Reservation runtime |
 | Reservation | Giữ quota/amount 15 phút trong Redis sau Submit | Wallet DB state |
 | Redeem | Chuyển reserved→used và wallet `SAVED→USED` | Claim/save |
-| Technical compensation | `cancel-confirmed` vì order không hoàn tất sau confirm | Customer refund |
+| Legacy technical cleanup | Deprecated `cancel-confirmed` only with proof flow never crossed Payment financial watermark | Customer refund or active post-capture Order failure |
 | Customer refund | Buyer selected-line hoặc Admin pre-dispatch refund | Promotion budget rollback |
 | Command receipt | Biên nhận durable cho final command, response replay và Redis finalize marker | Outbox event/publication state |
 
@@ -87,7 +87,7 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
 | `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
 | `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet và durable budget cùng commit PostgreSQL. |
-| `PROMO-BR-018` | `cancel-confirmed` commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. |
+| `PROMO-BR-018` | Deprecated `cancel-confirmed` legacy cleanup commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. Active Order flow after Payment financial watermark is forbidden from calling it. |
 | `PROMO-BR-019` | Command receipt dedup inbound command và là durable trigger cho Redis finalize/repair qua `redis_finalized_at`; outbox dedup outbound markdown event. Hai bảng có retention độc lập. |
 | `PROMO-BR-020` | Markdown dedup identity gồm product, campaign, campaign revision và trigger; resulting state không thuộc key; ordering dùng source revision riêng. |
 | `PROMO-BR-021` | Snapshot ACTIVE mang full rule; INACTIVE chỉ là tombstone có reason, không mang rule/discount/interval. |
@@ -182,7 +182,7 @@ Winner khi nhiều campaign ACTIVE cùng product: `priority` giảm dần rồi 
 | `PROMO-INV-004` | Một user có tối đa một claim/wallet row mỗi promotion. | Unique constraints |
 | `PROMO-INV-005` | Campaign phase và wallet use window không bị đánh đồng. | Eligibility tests |
 | `PROMO-INV-006` | Customer refund không mutate Promotion. | Không API/consumer/refund script |
-| `PROMO-INV-007` | Technical compensation không làm mất voucher còn hạn. | Guarded wallet transition |
+| `PROMO-INV-007` | Deprecated legacy cleanup không làm mất voucher còn hạn; active post-capture flow cannot invoke it. | Guarded wallet transition + caller policy/contract test |
 | `PROMO-INV-008` | Redis schedule/counter không sửa ngược DB. | Worker policy/test |
 | `PROMO-INV-009` | Stale campaign revision không phát state cũ. | Schedule member + DB revision check |
 | `PROMO-INV-010` | Markdown event ordering tăng theo product source revision. | Advisory lock + sequence |
@@ -247,7 +247,7 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 | `IDEMPOTENCY_PAYLOAD_MISMATCH` | Cùng stable key nhưng canonical request hash khác | No; điều tra |
 | `FINAL_COMMAND_STATE_INCONSISTENT` | Receipt và wallet/budget không khớp invariant | No; parking-lot/repair |
 | `PARTIAL_RESERVATION_STATE` | Redis apply/rollback không hoàn chỉnh | Repair async |
-| `RESERVATION_NOT_FOUND` | Confirm không còn payload | Late-payment compensation |
+| `RESERVATION_NOT_FOUND` | Confirm không còn payload/receipt | Retry/recover same final command where possible; after payment success Order enters forward repair/financial reconciliation, never cancel-confirmed compensation |
 | `CONDITIONS_NOT_MET` | AST false | No |
 | `INVALID_RULE` | AST/operator/config không hợp lệ | No |
 | `EXPECTED_DISCOUNT_MISMATCH` | Reserve: `expected_discount` khác discount Promotion tính | No; Order tính lại |
@@ -267,7 +267,8 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 - Voucher giảm 100.000đ được confirm cho order: wallet `USED`, budget used tăng 100.000đ.
   Buyer refund một selected-line scope (mỗi line full quantity) hay Admin refund toàn
   order trước dispatch: wallet và Promotion budget đều giữ nguyên.
-- Confirm thành công nhưng order không thể hoàn tất vì lỗi saga: `cancel-confirmed` giảm
-  durable allocation trong PostgreSQL; wallet trở lại `SAVED` nếu chưa hết hạn, rồi Redis
-  được repair bất đồng bộ.
+- Confirm thành công sau Payment success mà order còn lỗi Saga giữ durable allocation/wallet
+  `USED`; Order retries forward repair or opens financial reconciliation. `cancel-confirmed`
+  is deprecated legacy cleanup only and cannot be used to make an active post-capture order
+  appear unredeemed.
 - START job revision 4 chạy sau pause/cancel đã tăng revision 5: worker no-op.

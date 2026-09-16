@@ -196,9 +196,11 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
   latest current-state snapshot → xác nhận Product source revision.
 - **RB-07 Reconciliation:** dựng expected từ DB + valid reservations → lock/re-read →
   repair Redis một chiều, audit before/after.
-- **RB-08 Technical compensation:** xác minh order chưa hoàn tất, `CONFIRM` receipt và
-  stable cancel key/hash → retry DB-first `cancel-confirmed` → replay stored response rồi
-  kiểm tra wallet SAVED/EXPIRED, durable budget và Redis convergence.
+- **RB-08 Legacy technical cleanup:** verify audited proof that the historical flow never
+  crossed the Payment financial watermark, then confirm receipt and stable legacy cancel
+  key/hash → retry DB-first `cancel-confirmed` → replay stored response and verify wallet
+  SAVED/EXPIRED, durable budget and Redis convergence. Active post-capture Order cases are
+  routed back to Order forward repair/financial reconciliation, never this runbook.
 - **RB-09 Product tombstone:** đọc event/catalog revision + durable watermark + affected
   rules/campaigns → kiểm tra shared product lock/monotonic guard → retry invalidation →
   invalidate cache/schedule → xác nhận không emit event loop.
@@ -210,7 +212,7 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
 | Pending claim persistence worker | API inline + Redis pending scan | validate identity/revision-at-acquisition, không so current revision; guarded claim/wallet; cleanup sau commit |
 | Pending claim sweeper | mỗi 1m, stale 5m | gọi persistence bằng cùng claim ID; không cần Kafka topic riêng |
 | Reservation sweeper | mỗi 1m | per-promotion index + Lua; missing payload → repair |
-| Final-command finalizer | inline sau commit + quét receipt `redis_finalized_at IS NULL` quá ngưỡng | `CONFIRM`: matching `CONFIRMING` only; `CANCEL_CONFIRMED`: DB→Redis repair; duplicate no-op, missing → reconcile; set marker sau hội tụ |
+| Final-command finalizer | inline sau commit + quét receipt `redis_finalized_at IS NULL` quá ngưỡng | `CONFIRM`: matching `CONFIRMING` only; legacy `CANCEL_CONFIRMED`: DB→Redis repair; duplicate no-op, missing → reconcile; set marker sau hội tụ |
 | Campaign scheduler | 250ms–1s | DB revision/time + outbox dedup; ZREM sau commit |
 | Campaign fallback | 10–30s | DB source; repair missing/stale schedule |
 | Schedule bootstrap | startup/failover | rebuild ZSET từ PostgreSQL |

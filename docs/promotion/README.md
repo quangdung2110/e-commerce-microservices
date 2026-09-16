@@ -52,7 +52,7 @@ Promotion chịu trách nhiệm:
   `user_coupon_wallets`, `markdown_rules`, `catalog_product_tombstones`,
   `promotion_command_receipts` và `promotion_outbox_events`.
 - Một slot `PLATFORM_VOUCHER` cho toàn đơn, Rule Engine, eligibility và discount.
-- Claim/save, reserve, confirm, cancel và `cancel-confirmed` do lỗi kỹ thuật.
+- Claim/save, reserve, confirm, pre-payment cancel và `cancel-confirmed` legacy cleanup.
 - Campaign schedule, pending-claim rescue, reservation expiry và reconciliation.
 - State-discriminated product markdown snapshot cho Product và consume Product tombstone.
 
@@ -100,7 +100,7 @@ CloudEvents `id`.
 | `PROMO-CAP-03` | Tính discount/discovery | Eligibility, reason và một voucher toàn đơn |
 | `PROMO-CAP-04` | Claim/save voucher | Atomic time/revision gate, gán duy nhất và snapshot `expired_at` |
 | `PROMO-CAP-05` | Budget reservation | TRY/CANCEL runtime bằng Redis; confirm fence rồi PostgreSQL-first |
-| `PROMO-CAP-06` | Technical compensation | PostgreSQL-first `cancel-confirmed`, sau đó repair Redis |
+| `PROMO-CAP-06` | Legacy technical cleanup | Deprecated PostgreSQL-first `cancel-confirmed`; active post-payment Saga uses forward repair, then Order financial reconciliation |
 | `PROMO-CAP-07` | Markdown propagation | `ACTIVE` full rule hoặc `INACTIVE` tombstone, causal dedup + `source_revision` |
 | `PROMO-CAP-08` | Recovery/reconciliation | Cứu claim, nhả reservation, rebuild schedule và sửa drift |
 
@@ -110,7 +110,7 @@ CloudEvents `id`.
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
 | Inbound | Checkout | HTTP | Discovery, save và calculate discount |
-| Inbound | Order/Temporal | HTTP | Reserve, confirm, cancel, `cancel-confirmed` |
+| Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel; technical cancellation is legacy-only |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
@@ -137,7 +137,9 @@ ký các fact đó; thêm sau là thay đổi additive theo
 - Campaign kết thúc không tự xóa/thu hồi voucher đã lưu; eligibility chỉ dùng
   `wallet.expired_at` đã snapshot (với `CAMPAIGN_END`, expiry có thể đúng bằng end time).
 - Buyer selected-line hay Admin pre-dispatch refund không đổi wallet `USED` và không giảm used budget.
-- `cancel-confirmed` kỹ thuật trả wallet về `SAVED` nếu còn hạn, ngược lại `EXPIRED`.
+- Deprecated `cancel-confirmed` có thể trả wallet legacy về `SAVED`/`EXPIRED`, nhưng active
+  Order flow sau Payment financial watermark bị cấm gọi; voucher giữ `USED` trong forward
+  repair/financial reconciliation.
 - Confirm và `cancel-confirmed` commit command receipt + wallet + durable budget trong một
   PostgreSQL transaction; Redis chỉ fence/finalize/repair theo từng flow và receipt
   `redis_finalized_at IS NULL` là durable trigger để chạy lại sau crash.

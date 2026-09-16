@@ -63,7 +63,7 @@ bởi `java/services/promotion-service` (provider test `HttpContractIntegrationT
 | POST | `/internal/v1/promotion-allocation/reservations` | TRY giữ quota/amount sau Submit |
 | POST | `/internal/v1/promotion-allocation/confirmations` | Durable CONFIRM, PostgreSQL-first |
 | POST | `/internal/v1/promotion-allocation/cancellations` | Release reservation trước confirm |
-| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Durable `cancel-confirmed` do lỗi saga |
+| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Deprecated legacy cleanup only; prohibited for active post-payment Order Saga |
 
 Không có endpoint refund. Customer partial/full refund không thay đổi wallet hoặc budget
 của Promotion.

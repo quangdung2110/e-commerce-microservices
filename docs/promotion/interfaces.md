@@ -93,10 +93,13 @@ theo Checkout Phase 18. Gateway áp profile `promotion-discovery` 20 request/ph�
 | `POST /internal/v1/promotion-allocation/reservations` | TRY sau Submit, trước payment | Giữ quota/amount 15 phút; `200` replay hoặc `201` tạo mới |
 | `POST /internal/v1/promotion-allocation/confirmations` | CONFIRM sau payment success | Commit wallet `USED`, durable budget và receipt; Redis finalize sau commit |
 | `POST /internal/v1/promotion-allocation/cancellations` | CANCEL khi payment chưa confirm/thất bại | Chỉ nhả reservation `RESERVED`; wallet vẫn `SAVED` |
-| `POST /internal/v1/promotion-allocation/technical-cancellations` | Bù kỹ thuật nếu order fail sau Promotion confirm | Đảo durable allocation; wallet về `SAVED` hoặc `EXPIRED` |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | **Deprecated, legacy cleanup only** | Cấm với active checkout sau Payment financial watermark; không được dùng làm post-capture Saga compensation |
 
-Không có promotion refund endpoint. Customer refund không gọi Promotion; technical
-cancellation chỉ là compensation của order saga trước khi order hoàn tất.
+Không có promotion refund endpoint. Customer refund không gọi Promotion. Với active
+checkout, `CONFIRM` sau `PAYMENT_SUCCESS` là financial watermark: mọi lỗi phía sau
+phải retry/forward-repair hoặc vào financial reconciliation; không được dùng technical
+cancellation để trả wallet/budget về chưa redeem. Endpoint technical-cancellation chỉ
+giữ cho cleanup/migration legacy đã được chứng minh chưa vượt watermark.
 
 Discovery/calculate nhận subtotal toàn đơn, item/category context, payment method và các
 field Rule Engine cần. Response trả `eligible`, reason, estimated/actual discount,
@@ -124,8 +127,9 @@ success sau PostgreSQL persistence commit; quá HTTP deadline trả `202 CLAIM_P
 
 ### 2.4 Durable final-command idempotency
 
-Confirm dùng `REDEEM_FINAL:{order_id}:{promotion_id}`; technical compensation dùng
-`CANCEL_FINAL:{order_id}:{promotion_id}`. Promotion canonicalize operation, order,
+Confirm dùng `REDEEM_FINAL:{order_id}:{promotion_id}`; deprecated legacy cleanup dùng
+`CANCEL_FINAL:{order_id}:{promotion_id}` and is prohibited for active post-capture Order
+flows. Promotion canonicalize operation, order,
 promotion và expected amount thành SHA-256 `request_hash`:
 
 - cùng key + cùng hash → trả stored response từ `promotion_command_receipts`;
@@ -165,9 +169,10 @@ preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup rece
   budget; Redis finalizer chạy sau commit rồi set `redis_finalized_at`.
 - Cancel pre-payment chỉ nhả Redis reservation đang `RESERVED`; không release mù state
   `CONFIRMING` khi chưa đọc durable confirm outcome.
-- `cancel-confirmed` chỉ dùng khi order không hoàn tất vì lỗi kỹ thuật sau Promotion
-  confirm; PostgreSQL commit trước và Redis chỉ repair sau. Nó không được dùng cho
-  customer refund.
+- `cancel-confirmed` là deprecated legacy cleanup, không dùng cho active Order flow,
+  late-payment recovery, customer refund, hay bất cứ failure nào sau `PAYMENT_SUCCESS`.
+  Order giữ voucher `USED` và retry/repair confirmation; nếu proof reservation/receipt
+  không thể khôi phục, Order mở financial reconciliation thay vì đảo allocation.
 - Buyer selected-line hay Admin pre-dispatch refund không có call/event tới Promotion.
 
 ## 4. Kafka envelope và publication

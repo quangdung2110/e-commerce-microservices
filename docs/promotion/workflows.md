@@ -23,7 +23,7 @@ verified_against_commit: null
 | `WF-PROMO-003` | Claim/save voucher | Customer HTTP + internal worker |
 | `WF-PROMO-004` | Discovery và calculate | Checkout HTTP |
 | `WF-PROMO-005` | TRY/CONFIRM/CANCEL | Order Temporal activities |
-| `WF-PROMO-006` | `cancel-confirmed` kỹ thuật | Order Temporal compensation |
+| `WF-PROMO-006` | `cancel-confirmed` legacy cleanup (deprecated) | Migration/ops only; not active Order compensation |
 | `WF-PROMO-007` | Markdown snapshot → Product | Outbox + CDC |
 | `WF-PROMO-008` | Rescue/finalizer/reconciliation/cleanup | Scheduled workers |
 | `WF-PROMO-009` | Product tombstone invalidation | Product Kafka event |
@@ -188,8 +188,10 @@ Crash trước DB commit không đổi durable state; reservation `CONFIRMING` c
 Crash sau commit trước Redis finalize luôn có receipt `redis_finalized_at IS NULL` để
 finalizer worker chạy lại. Finalizer thiếu runtime payload không được increment mù; enqueue
 reconciliation từ wallet/budget DB rồi mới set `redis_finalized_at` khi projection đã hội
-tụ. Reservation mất và không có receipt mới trả `RESERVATION_NOT_FOUND` để Order chạy
-late-payment policy.
+ tụ. Reservation mất và không có receipt mới trả `RESERVATION_NOT_FOUND`. Nếu Payment đã
+ success, Order không được compensate bằng cancel confirmed allocation: retry cùng final
+ command khi có thể, nếu không thì mở financial reconciliation/forward repair. Chỉ verified
+ late-payment recovery mới có thể tạo reservation mới trước một CONFIRM mới.
 
 ### CANCEL trước confirm
 
@@ -200,10 +202,11 @@ vẫn `SAVED` nếu confirm chưa commit; PostgreSQL không tạo usage row ho�
 record. Missing payload chưa đủ để giả định đã release; worker đối chiếu receipt/wallet và
 enqueue repair nếu cần.
 
-## WF-PROMO-006 — `cancel-confirmed` do lỗi kỹ thuật
+## WF-PROMO-006 — `cancel-confirmed` legacy cleanup (deprecated)
 
-Chỉ dùng khi Promotion đã confirm nhưng checkout/order saga không thể hoàn tất vì lỗi kỹ
-thuật. Đây không phải customer refund.
+Flow này chỉ giữ để cleanup/migration record legacy với bằng chứng audit rằng nó chưa
+vượt Payment financial watermark. Nó không phải customer refund và không được active
+Order checkout, post-payment hay late-payment workflow gọi.
 
 1. Order gọi `POST /internal/v1/promotion-allocation/technical-cancellations` với
    `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}` và expected confirmed amount.
@@ -225,7 +228,9 @@ thuật. Đây không phải customer refund.
 Crash trước commit rollback receipt/wallet/budget cùng nhau. Crash sau commit luôn có
 receipt để replay response và `redis_finalized_at IS NULL` để finalizer worker kick repair.
 Redis unavailable không làm durable compensation thất bại; Redis có thể tạm over-count used
-(bảo thủ) cho tới khi hội tụ. Lỗi hệ thống vì vậy không làm khách mất voucher còn hạn.
+ (bảo thủ) cho tới khi hội tụ. Lỗi hệ thống vì vậy không làm khách mất voucher còn hạn.
+ Active flow sau `PAYMENT_SUCCESS` giữ wallet `USED` và forward-repair hoặc chuyển case về
+ Order financial reconciliation; nó không tạo `CANCEL_FINAL`.
 
 ## Customer refund — explicit non-workflow
 

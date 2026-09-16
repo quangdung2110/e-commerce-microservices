@@ -11,6 +11,8 @@ info:
     Product. Published definition là immutable. Voucher đã lưu dùng wallet.expired_at
     và không được hoàn lại khi customer refund. Confirm/cancel-confirmed là final command
     bền vững; reservation trước payment chỉ là Redis runtime state.
+    `cancel-confirmed` chỉ giữ cho legacy migration cleanup và bị cấm trong active
+    Order checkout sau financial watermark; nó không phải post-capture Saga compensation.
     Request reader phải bỏ qua unknown optional field để cho phép compatible additions;
     unknown rule node/operator/field vẫn bị từ chối theo rule_schema_version.
     Chỉ CONFIRM và CANCEL_CONFIRMED dùng durable Idempotency-Key/command receipt. Các
@@ -32,7 +34,7 @@ tags:
   - name: Checkout queries
     description: Query nội bộ, pure/replay-safe cho Checkout Service.
   - name: Order allocation
-    description: TRY/CONFIRM/CANCEL và technical compensation do Order/Temporal gọi.
+    description: TRY/CONFIRM/CANCEL do Order/Temporal gọi; technical cancellation is legacy-only.
 
 paths:
   /api/v1/admin/promotion-campaigns:
@@ -736,9 +738,15 @@ paths:
     post:
       tags: [Order allocation]
       operationId: cancelConfirmedPromotionAllocation
-      summary: Đảo confirmation do lỗi kỹ thuật của order saga
+      summary: Legacy-only technical cancellation of a confirmed allocation
+      deprecated: true
       description: >-
-        Không phải customer refund. Idempotency-Key chuẩn là
+        Không phải customer refund và không phải post-payment Saga compensation. Endpoint
+        chỉ phục vụ cleanup/migration của workflow legacy có bằng chứng không hề vượt
+        financial watermark; active Order checkout, late-payment recovery và mọi order có
+        PAYMENT_SUCCESS/ALREADY_SUCCEEDED bị cấm gọi. New failures after payment must use
+        forward repair/financial reconciliation, never make wallet/budget look unredeemed.
+        Idempotency-Key chuẩn là
         CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable
         budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
         chưa hết hạn, ngược lại EXPIRED.
