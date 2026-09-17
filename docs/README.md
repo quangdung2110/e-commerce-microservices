@@ -36,20 +36,26 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 1. Checkout Service (BFF/Stateless)
 
-> Tài liệu 5 file thiết kế Checkout Service.
+> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
+> `target/proposed`, bảo toàn toàn bộ quyết định của 5 tài liệu cũ, chưa xác minh
+> implementation và chưa đối soát contract liên service.
 
 | File | Mô tả |
 |---|---|
-| [checkout/checkout_architecture_design.md](./checkout/checkout_architecture_design.md) | Kiến trúc tổng quan: BFF/Aggregator, chống giả mạo client, anti-tampering. |
-| [checkout/checkout_workflow.md](./checkout/checkout_workflow.md) | Luồng API Preview + Submit, parallel orchestration pattern, waterfall price, optimization decision tree. |
-| [checkout/checkout_caching_schema.md](./checkout/checkout_caching_schema.md) | Redis session schema, rate limit, distributed lock, response/payload cache. |
-| [checkout/checkout_idempotency.md](./checkout/checkout_idempotency.md) | One-time-use token, Lua script, anti-tampering validation. |
-| [checkout/checkout_security_analysis.md](./checkout/checkout_security_analysis.md) | Security analysis & session token lifecycle. |
+| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary với Cart/Order/Promotion, ownership Redis, capability, dependency, bất biến và known gaps. |
+| [checkout/architecture.md](./checkout/architecture.md) | BFF/Aggregator stateless, parallel orchestration (Wave 1/2/3), Submit bốn giai đoạn, lock + Lua, consistency. |
+| [checkout/domain.md](./checkout/domain.md) | Session/token/pricing hash, business rule, invariant, state machine `PREVIEW_READY → SUBMITTED` và lỗi miền. |
+| [checkout/interfaces.md](./checkout/interfaces.md) | Preview/Submit semantics, voucher tray policy, downstream contract (Promotion, User, Product, Inventory, Order). |
+| [checkout/workflows.md](./checkout/workflows.md) | Preview, voucher tray, Submit, client retry/recovery, reserve fail recalculation, degraded pricing. |
+| [checkout/data.md](./checkout/data.md) | Redis session Hash, lock, rate limit, Lua script, payload/response/routing cache, lifecycle. |
+| [checkout/operations.md](./checkout/operations.md) | Timeout/fallback, failure mode, degraded behavior, scaling, runbook. |
+| [checkout/development.md](./checkout/development.md) | Checklist build/test khi implementation được thêm. |
+| [checkout/decisions/README.md](./checkout/decisions/README.md) | Danh mục ADR bảo toàn các quyết định của thiết kế cũ. |
 
 ### Checkout contracts chuẩn
 - `POST /v1/checkout/preview` (Preview API) — owner: Checkout
 - `POST /v1/checkout/submit` (Submit API) — owner: Checkout
-- Cross-ref: nhận `POST /v1/orders/create-from-checkout` từ Order Service
+- Cross-ref: Checkout gọi `POST /internal/v1/checkout-order-submissions` của Order
 
 ---
 
@@ -190,7 +196,10 @@ Service Contract Matrix legacy đã bị xóa.
 |---|---|
 | `POST /v1/checkout/preview` | Client → Checkout |
 | `POST /v1/checkout/submit` | Client → Checkout |
-| `POST /v1/orders/create-from-checkout` | Checkout → Order |
+| `POST /internal/v1/checkout-order-submissions` | Checkout → Order |
+| `GET /api/v1/orders` / `GET /api/v1/orders/{order_id}` | Buyer → Order |
+| `POST /api/v1/orders/{order_id}/{cancellation-requests,return-requests,payment-attempts}` | Buyer → Order |
+| `POST /api/v1/admin/orders/{order_id}/{cancellation-requests,pre-dispatch-refund-requests}` | Admin → Order |
 | `POST /v1/payments/initiate` | Order (Temporal) → Payment |
 | `POST /v1/payments/{txn_id}/refund` | Order (Temporal) → Payment |
 | `POST /v1/inventory/routing-options` | Checkout → Inventory |
