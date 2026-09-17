@@ -1,0 +1,974 @@
+openapi: 3.1.0
+info:
+  title: Order Service Public API
+  version: 1.0.0
+  description: >-
+    Buyer and Admin contract for reading orders and accepting lifecycle commands.
+    PostgreSQL is the read source of truth. Cancellation, return, and Admin
+    pre-dispatch refund commands are asynchronous and expose an operation resource.
+    Order and line identifiers are canonical unpadded base-10 strings on the wire.
+x-adoption-status: proposed
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Buyer Orders
+  - name: Buyer Payments
+  - name: Buyer Returns
+  - name: Admin Orders
+  - name: Operations
+security:
+  - gatewayIdentity: []
+
+paths:
+  /api/v1/orders:
+    get:
+      tags: [Buyer Orders]
+      operationId: listMyOrders
+      summary: Search orders owned by the current Buyer
+      description: >-
+        Results are ordered by created_at DESC, order_id DESC. The cursor is opaque.
+        When created_from and created_to are both absent, the service searches the
+        most recent 90 days. Text search is an accent-insensitive substring match on
+        the immutable product-name snapshot only.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/BuyerTab'
+        - $ref: '#/components/parameters/SearchText'
+        - $ref: '#/components/parameters/CreatedFrom'
+        - $ref: '#/components/parameters/CreatedTo'
+        - $ref: '#/components/parameters/OrderStatuses'
+        - $ref: '#/components/parameters/PaymentStatuses'
+        - $ref: '#/components/parameters/MinAmountMinor'
+        - $ref: '#/components/parameters/MaxAmountMinor'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One order-level card per matching order.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSearchPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}:
+    get:
+      tags: [Buyer Orders]
+      operationId: getMyOrder
+      summary: Get one order owned by the current Buyer
+      description: A missing order and an order owned by another Buyer both return 404.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Denormalized immutable order snapshot and current lifecycle state.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}/cancellation-requests:
+    post:
+      tags: [Buyer Orders]
+      operationId: requestMyOrderCancellation
+      summary: Request cancellation of a pre-payment order
+      description: >-
+        Accepts only an owned PENDING_PAYMENT order. Acceptance first persists the
+        CANCELLING transition and durable workflow dispatch. Final cancellation waits
+        for a matching Payment non-capture fact and proven resource cleanup.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BuyerCancellationRequest' }
+      responses:
+        '202':
+          description: Command durably accepted for asynchronous processing.
+          headers:
+            Location: { $ref: '#/components/headers/OperationLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}/return-requests:
+    post:
+      tags: [Buyer Returns]
+      operationId: requestMyOrderReturn
+      summary: Submit the one lifetime Buyer return request
+      description: >-
+        Every order line must already be DELIVERED by verified Delivery proof. The
+        selected set may be a proper subset of the order, but each selected line must
+        use its complete ordered quantity. A new idempotency key never bypasses the
+        permanent Buyer-return guard or lifetime refund-case uniqueness.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BuyerReturnRequest' }
+      responses:
+        '202':
+          description: Return scope and lifetime refund case were durably accepted.
+          headers:
+            Location: { $ref: '#/components/headers/OperationLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReturnOperationAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}/refund-case:
+    get:
+      tags: [Buyer Returns]
+      operationId: getMyOrderRefundCase
+      summary: Read the single lifetime refund case for an owned order
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Current refund case and immutable selected-line scope.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundCase' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}/payment-attempts:
+    post:
+      tags: [Buyer Payments]
+      operationId: createMyOrderPaymentAttempt
+      summary: Create or replay the next numbered payment attempt
+      description: >-
+        The previous attempt must have a durable FAILED, EXPIRED, or CANCELED
+        non-capture fact and the order must remain payment-eligible. The HTTP call
+        waits only until Payment client data is durably checkpointed; it never waits
+        for capture. Retry a timeout with the same Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePaymentAttemptRequest' }
+      responses:
+        '201':
+          description: A new numbered Payment attempt is ready for Stripe confirmation.
+          headers:
+            Location: { $ref: '#/components/headers/PaymentAttemptLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '200':
+          description: Idempotent replay of the previously created attempt.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/orders/{order_id}/payment-attempts/{attempt_number}:
+    get:
+      tags: [Buyer Payments]
+      operationId: getMyOrderPaymentAttempt
+      summary: Read one numbered payment attempt
+      description: Client secrets are returned only for the current PENDING attempt.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/AttemptNumber'
+      responses:
+        '200':
+          description: Payment attempt state and client data when still usable.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/order-operations/{operation_id}:
+    get:
+      tags: [Operations]
+      operationId: getMyOrderOperation
+      summary: Read one asynchronous operation owned by the current Buyer
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OperationId'
+      responses:
+        '200':
+          description: Current durable command-processing state.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderOperation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/orders:
+    get:
+      tags: [Admin Orders]
+      operationId: listOrdersAsAdmin
+      summary: Search all orders as an Admin
+      description: Uses the same PostgreSQL query model and stable sort as Buyer search.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/BuyerIdFilter'
+        - $ref: '#/components/parameters/BuyerTab'
+        - $ref: '#/components/parameters/SearchText'
+        - $ref: '#/components/parameters/CreatedFrom'
+        - $ref: '#/components/parameters/CreatedTo'
+        - $ref: '#/components/parameters/OrderStatuses'
+        - $ref: '#/components/parameters/PaymentStatuses'
+        - $ref: '#/components/parameters/MinAmountMinor'
+        - $ref: '#/components/parameters/MaxAmountMinor'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Admin-visible order cards.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSearchPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/orders/{order_id}:
+    get:
+      tags: [Admin Orders]
+      operationId: getOrderAsAdmin
+      summary: Read one order as an Admin
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Full Order-owned snapshot and current lifecycle state.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/orders/{order_id}/cancellation-requests:
+    post:
+      tags: [Admin Orders]
+      operationId: requestOrderCancellationAsAdmin
+      summary: Request Admin cancellation of a pre-payment order
+      description: Paid orders are rejected; Admin must use the pre-dispatch refund endpoint.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminCancellationRequest' }
+      responses:
+        '202':
+          description: Pre-payment cancellation durably accepted.
+          headers:
+            Location: { $ref: '#/components/headers/AdminOperationLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests:
+    post:
+      tags: [Admin Orders]
+      operationId: requestPreDispatchRefundAsAdmin
+      summary: Attempt automatic full refund before any physical dispatch
+      description: >-
+        The accepted operation creates a durable Admin attempt, not a lifetime refund
+        case. Only Inventory's atomic all-line release success may create that case and
+        initiate Payment refund. An Inventory rejection changes the operation to
+        REJECTED without consuming the Buyer return guard.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminPreDispatchRefundRequest' }
+      responses:
+        '202':
+          description: Admin pre-dispatch release attempt durably accepted.
+          headers:
+            Location: { $ref: '#/components/headers/AdminOperationLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/order-operations/{operation_id}:
+    get:
+      tags: [Admin Orders, Operations]
+      operationId: getOrderOperationAsAdmin
+      summary: Read one Order operation as an Admin
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OperationId'
+      responses:
+        '200':
+          description: Current durable command-processing state.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderOperation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: >-
+        Trusted identity injected by the API Gateway after JWT verification. The
+        Gateway strips client-supplied identity and role headers; Order authorizes the
+        signed/trusted role context independently.
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Same key and canonical payload replay; different payload returns 409.
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OrderId' }
+    OperationId:
+      name: operation_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AttemptNumber:
+      name: attempt_number
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    BuyerIdFilter:
+      name: buyer_id
+      in: query
+      required: false
+      schema: { type: string, format: uuid }
+    BuyerTab:
+      name: tab
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/BuyerTab' }
+    SearchText:
+      name: q
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    CreatedFrom:
+      name: created_from
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+    CreatedTo:
+      name: created_to
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+    OrderStatuses:
+      name: order_status
+      in: query
+      required: false
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 10
+        uniqueItems: true
+        items: { $ref: '#/components/schemas/OrderStatus' }
+    PaymentStatuses:
+      name: payment_status
+      in: query
+      required: false
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 6
+        uniqueItems: true
+        items: { $ref: '#/components/schemas/PaymentStatus' }
+    MinAmountMinor:
+      name: min_amount_minor
+      in: query
+      required: false
+      schema: { type: integer, format: int64, minimum: 0 }
+    MaxAmountMinor:
+      name: max_amount_minor
+      in: query
+      required: false
+      schema: { type: integer, format: int64, minimum: 0 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque base64url keyset cursor returned by the previous page.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  headers:
+    PrivateNoStore:
+      description: Order responses contain private transaction data and must not be stored.
+      schema: { type: string, const: 'private, no-store' }
+    RetryAfter:
+      description: Suggested seconds before polling the operation resource.
+      schema: { type: integer, minimum: 1, maximum: 60 }
+    OperationLocation:
+      description: Buyer-scoped operation resource.
+      schema: { type: string, pattern: '^/api/v1/order-operations/[0-9a-fA-F-]{36}$' }
+    AdminOperationLocation:
+      description: Admin-scoped operation resource.
+      schema: { type: string, pattern: '^/api/v1/admin/order-operations/[0-9a-fA-F-]{36}$' }
+    PaymentAttemptLocation:
+      description: Newly created payment-attempt resource.
+      schema: { type: string, pattern: '^/api/v1/orders/[1-9][0-9]*/payment-attempts/[1-9][0-9]*$' }
+
+  schemas:
+    OrderId:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
+      description: Canonical unpadded base-10 representation of the Order-owned BIGINT ID.
+    EntityId:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
+    OpaqueId:
+      type: string
+      minLength: 1
+      maxLength: 128
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, const: VND }
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    OrderStatus:
+      type: string
+      enum:
+        - PENDING_PAYMENT
+        - CANCELLING
+        - PAID
+        - PROCESSING
+        - COMPLETED
+        - CANCELLED
+        - RETURN_REQUESTED
+        - REFUNDED
+        - FINANCIAL_RECONCILIATION_REQUIRED
+    PaymentStatus:
+      type: string
+      enum: [PENDING, PAID, FAILED, REFUNDING, REFUNDED, REFUND_FAILED]
+    BuyerTab:
+      type: string
+      enum: [TO_PAY, TO_SHIP, TO_RECEIVE, RETURN_REFUND, COMPLETED, CANCELLED]
+    FulfillmentStatus:
+      type: string
+      enum: [PROCESSING, DISPATCHED, DELIVERED]
+    OrderItemStatus:
+      type: string
+      enum: [PROCESSING, PARTIALLY_DISPATCHED, DISPATCHED, PARTIALLY_DELIVERED, DELIVERED]
+    OperationStatus:
+      type: string
+      enum: [ACCEPTED, RUNNING, SUCCEEDED, REJECTED, FAILED, MANUAL_REVIEW_REQUIRED]
+    OperationType:
+      type: string
+      enum: [BUYER_CANCELLATION, ADMIN_CANCELLATION, BUYER_RETURN, ADMIN_PRE_DISPATCH_REFUND]
+    PaymentAttemptStatus:
+      type: string
+      enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED]
+    RefundCaseStatus:
+      type: string
+      enum:
+        - INITIATED
+        - WAITING_INVENTORY_SCOPE_INSPECTION
+        - WAITING_INVENTORY_RELEASE
+        - WAITING_PAYMENT_REFUND_RESULT
+        - MANUAL_VERIFICATION_REQUIRED
+        - SUCCEEDED
+        - FAILED
+    RefundMode:
+      type: string
+      enum: [BUYER_RETURN_SELECTED_LINES, ADMIN_PRE_DISPATCH_FULL_ORDER]
+    AddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { type: string, minLength: 5, maxLength: 32 }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { type: string, minLength: 1, maxLength: 32 }
+        district_code: { type: string, minLength: 1, maxLength: 32 }
+        ward_code: { type: string, minLength: 1, maxLength: 32 }
+    OrderLine:
+      type: object
+      additionalProperties: false
+      required:
+        - order_line_id
+        - product_id
+        - sku_id
+        - quantity
+        - unit_price
+        - fulfillment_status
+        - snapshot_name
+        - snapshot_image_url
+        - snapshot_attributes
+      properties:
+        order_line_id: { $ref: '#/components/schemas/EntityId' }
+        product_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { type: integer, minimum: 1 }
+        unit_price: { $ref: '#/components/schemas/Money' }
+        fulfillment_status: { $ref: '#/components/schemas/FulfillmentStatus' }
+        snapshot_name: { type: string, minLength: 1, maxLength: 255 }
+        snapshot_image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        snapshot_attributes:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 255 }
+        delivered_at: { type: [string, 'null'], format: date-time }
+    OrderItem:
+      type: object
+      additionalProperties: false
+      required: [order_item_id, warehouse_id, status, delivery_address, lines]
+      properties:
+        order_item_id: { $ref: '#/components/schemas/EntityId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        status: { $ref: '#/components/schemas/OrderItemStatus' }
+        delivery_address: { $ref: '#/components/schemas/AddressSnapshot' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/OrderLine' }
+    PromotionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, discount_amount]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        discount_amount: { $ref: '#/components/schemas/Money' }
+    PaymentSummary:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        active_attempt_number: { type: [integer, 'null'], minimum: 1 }
+        active_payment_transaction_id:
+          oneOf:
+            - $ref: '#/components/schemas/OpaqueId'
+            - type: 'null'
+        captured_payment_transaction_id:
+          oneOf:
+            - $ref: '#/components/schemas/OpaqueId'
+            - type: 'null'
+    RefundCaseSummary:
+      type: object
+      additionalProperties: false
+      required: [refund_request_id, mode, status, amount]
+      properties:
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        mode: { $ref: '#/components/schemas/RefundMode' }
+        status: { $ref: '#/components/schemas/RefundCaseStatus' }
+        amount: { $ref: '#/components/schemas/Money' }
+        refund_transaction_id:
+          oneOf:
+            - $ref: '#/components/schemas/OpaqueId'
+            - type: 'null'
+    AvailableActions:
+      type: object
+      additionalProperties: false
+      required: [can_cancel, can_return, can_retry_payment]
+      properties:
+        can_cancel: { type: boolean }
+        can_return: { type: boolean }
+        can_retry_payment: { type: boolean }
+    OrderDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - order_id
+        - buyer_id
+        - order_status
+        - payment_status
+        - buyer_tab
+        - total_amount
+        - total_discount
+        - final_amount
+        - items
+        - promotions
+        - payment
+        - refund_case
+        - available_actions
+        - created_at
+        - updated_at
+      properties:
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        buyer_id: { type: string, format: uuid }
+        order_status: { $ref: '#/components/schemas/OrderStatus' }
+        payment_status: { $ref: '#/components/schemas/PaymentStatus' }
+        buyer_tab: { $ref: '#/components/schemas/BuyerTab' }
+        total_amount: { $ref: '#/components/schemas/Money' }
+        total_discount: { $ref: '#/components/schemas/Money' }
+        final_amount: { $ref: '#/components/schemas/Money' }
+        cancel_reason: { type: [string, 'null'], maxLength: 100 }
+        return_reason: { type: [string, 'null'], maxLength: 100 }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/OrderItem' }
+        promotions:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PromotionSnapshot' }
+        payment: { $ref: '#/components/schemas/PaymentSummary' }
+        refund_case:
+          oneOf:
+            - $ref: '#/components/schemas/RefundCaseSummary'
+            - type: 'null'
+        available_actions: { $ref: '#/components/schemas/AvailableActions' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        paid_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+        cancelled_at: { type: [string, 'null'], format: date-time }
+        refunded_at: { type: [string, 'null'], format: date-time }
+    OrderCard:
+      type: object
+      additionalProperties: false
+      required:
+        - order_id
+        - buyer_id
+        - buyer_tab
+        - ui_primary_status
+        - ui_status_rank
+        - created_at
+        - primary_item_name
+        - primary_item_image_url
+        - primary_store_name
+        - item_count
+        - remaining_item_count
+        - final_amount
+      properties:
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        buyer_id: { type: string, format: uuid }
+        buyer_tab: { $ref: '#/components/schemas/BuyerTab' }
+        ui_primary_status: { type: string, minLength: 1, maxLength: 64 }
+        ui_status_rank: { type: integer, minimum: 1, maximum: 99 }
+        created_at: { type: string, format: date-time }
+        primary_item_name: { type: string, minLength: 1, maxLength: 255 }
+        primary_item_image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        primary_store_name: { type: string, const: PLATFORM }
+        item_count: { type: integer, minimum: 1 }
+        remaining_item_count: { type: integer, minimum: 0 }
+        final_amount: { $ref: '#/components/schemas/Money' }
+    OrderSearchPage:
+      type: object
+      additionalProperties: false
+      required: [items, total_orders, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/OrderCard' }
+        total_orders: { type: integer, format: int64, minimum: 0 }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    BuyerCancellationRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, const: USER_CANCEL }
+    AdminCancellationRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, const: ADMIN_FORCE_CANCEL }
+    ReturnLineRequest:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, quantity]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/EntityId' }
+        quantity:
+          type: integer
+          minimum: 1
+          description: Must equal the immutable complete ordered quantity of this line.
+    BuyerReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [lines, reason_code]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/ReturnLineRequest' }
+          description: order_line_id values must be unique; enforced by the provider.
+        reason_code: { type: string, minLength: 1, maxLength: 100 }
+        reason_details: { type: [string, 'null'], maxLength: 1000 }
+    AdminPreDispatchRefundRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, minLength: 1, maxLength: 100 }
+        reason_details: { type: [string, 'null'], maxLength: 1000 }
+    CreatePaymentAttemptRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        return_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+    PaymentAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        - order_id
+        - attempt_number
+        - payment_transaction_id
+        - amount
+        - status
+        - client_secret
+        - publishable_key
+        - expires_at
+        - created_at
+      properties:
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        attempt_number: { type: integer, minimum: 1 }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        amount: { $ref: '#/components/schemas/Money' }
+        status: { $ref: '#/components/schemas/PaymentAttemptStatus' }
+        client_secret:
+          type: [string, 'null']
+          description: Present only while this is the current usable PENDING attempt.
+        publishable_key:
+          type: [string, 'null']
+          description: Present only while client_secret is present.
+        expires_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: [string, 'null'], format: date-time }
+    OperationAccepted:
+      type: object
+      additionalProperties: false
+      required: [operation_id, operation_type, order_id, status, status_url, created_at]
+      properties:
+        operation_id: { type: string, format: uuid }
+        operation_type: { $ref: '#/components/schemas/OperationType' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        status: { type: string, const: ACCEPTED }
+        status_url: { type: string, minLength: 1, maxLength: 512 }
+        created_at: { type: string, format: date-time }
+    ReturnOperationAccepted:
+      type: object
+      additionalProperties: false
+      required: [operation_id, operation_type, order_id, status, status_url, created_at, refund_request_id]
+      properties:
+        operation_id: { type: string, format: uuid }
+        operation_type: { type: string, const: BUYER_RETURN }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        status: { type: string, const: ACCEPTED }
+        status_url: { type: string, minLength: 1, maxLength: 512 }
+        created_at: { type: string, format: date-time }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+    OrderOperation:
+      type: object
+      additionalProperties: false
+      required:
+        - operation_id
+        - operation_type
+        - order_id
+        - status
+        - result_reference
+        - failure
+        - created_at
+        - updated_at
+      properties:
+        operation_id: { type: string, format: uuid }
+        operation_type: { $ref: '#/components/schemas/OperationType' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        status: { $ref: '#/components/schemas/OperationStatus' }
+        result_reference: { type: [string, 'null'], maxLength: 512 }
+        failure:
+          oneOf:
+            - $ref: '#/components/schemas/Problem'
+            - type: 'null'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+    RefundCaseLine:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, expected_quantity, unit_price_snapshot]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/EntityId' }
+        expected_quantity: { type: integer, minimum: 1 }
+        unit_price_snapshot: { $ref: '#/components/schemas/Money' }
+    RefundCase:
+      type: object
+      additionalProperties: false
+      required:
+        - order_id
+        - refund_request_id
+        - trigger_source
+        - mode
+        - status
+        - amount
+        - lines
+        - refund_transaction_id
+        - started_at
+        - updated_at
+      properties:
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        trigger_source: { type: string, enum: [API_RETURN, ADMIN_FORCE_REFUND] }
+        mode: { $ref: '#/components/schemas/RefundMode' }
+        status: { $ref: '#/components/schemas/RefundCaseStatus' }
+        amount: { $ref: '#/components/schemas/Money' }
+        lines:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/RefundCaseLine' }
+        refund_transaction_id:
+          oneOf:
+            - $ref: '#/components/schemas/OpaqueId'
+            - type: 'null'
+        started_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        resolved_at: { type: [string, 'null'], format: date-time }
+
+  responses:
+    BadRequest:
+      description: Malformed input, invalid cursor, range, or header.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Trusted Gateway identity is missing or invalid.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated caller lacks the required Admin capability.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource does not exist or is not visible to the caller.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: >-
+        FSM state, permanent one-shot guard, lifetime refund uniqueness, or
+        Idempotency-Key payload does not permit this command.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: >-
+        Request syntax is valid but selected lines, complete quantities, or another
+        domain value do not match the immutable order snapshot.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: A required durable dependency is unavailable or an outcome is still unknown.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

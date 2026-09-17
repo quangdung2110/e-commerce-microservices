@@ -1,29 +1,122 @@
 openapi: 3.1.0
 info:
-  title: Order financial reconciliation internal API
+  title: Order Service Internal API
   version: 1.0.0
   description: >-
-    Capability-bound, audited decisions for Order exceptions after a payment financial
-    watermark. This API never mutates a Payment, Inventory, or Promotion fact directly.
+    Workload-identity protected contract for Checkout submission and evidence-backed
+    financial reconciliation. Checkout submission waits only until a durable Payment
+    attempt is ready; the order lifecycle remains asynchronous after that checkpoint.
 x-adoption-status: proposed
 servers:
   - url: http://order-service:8080
+tags:
+  - name: Checkout Submission
+  - name: Financial Reconciliation
 paths:
-  /internal/v1/orders/{order_id}/financial-reconciliation-decisions:
+  /internal/v1/checkout-order-submissions:
     post:
-      operationId: decideOrderFinancialReconciliation
-      summary: Record one evidence-backed Finance/Ops decision for an existing case
+      tags: [Checkout Submission]
+      operationId: submitCheckoutOrder
+      summary: Create or replay one Order from a server-owned Checkout snapshot
+      description: >-
+        Idempotency-Key MUST equal checkout_token. Order starts or attaches workflow
+        order-checkout-{checkout_token}, persists the snapshot and allocation bridge,
+        then waits until Payment client data or a terminal pre-payment conflict is
+        durably checkpointed. Retry a timeout with the identical key and body.
+      security: [{ checkoutWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CheckoutIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutOrderSubmissionRequest' }
+      responses:
+        '201':
+          description: First successful creation; initial Payment attempt is ready.
+          headers:
+            Location: { $ref: '#/components/headers/CheckoutSubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderReady' }
+        '200':
+          description: Idempotent replay of a previously successful submission.
+          headers:
+            Location: { $ref: '#/components/headers/CheckoutSubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderReady' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Token/key conflict, snapshot mismatch, or Promotion recalculation requirement.
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/PromotionRecalculationProblem'
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/checkout-order-submissions/{checkout_token}:
+    get:
+      tags: [Checkout Submission]
+      operationId: getCheckoutOrderSubmission
+      summary: Recover the durable result of one Checkout submission
+      security: [{ checkoutWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CheckoutToken'
+      responses:
+        '200':
+          description: Current preparation state, including Payment data when ready.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderSubmissionStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/orders/{order_id}/financial-reconciliation-case:
+    get:
+      tags: [Financial Reconciliation]
+      operationId: getOrderFinancialReconciliationCase
+      summary: Read one reconciliation case and its immutable evidence references
       security: [{ financeOpsWorkloadIdentity: [] }]
       parameters:
-        - name: order_id
-          in: path
-          required: true
-          schema: { type: string, pattern: '^[1-9][0-9]*$' }
-        - name: Idempotency-Key
-          in: header
-          required: true
-          description: Must equal the body decision_id; same key with a different canonical body is rejected.
-          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Current case revision, permitted decisions, and evidence references.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconciliationCase' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/orders/{order_id}/financial-reconciliation-decisions:
+    post:
+      tags: [Financial Reconciliation]
+      operationId: decideOrderFinancialReconciliation
+      summary: Record one evidence-backed Finance/Ops decision
+      description: >-
+        The command never invents a remote business fact. RESUME_FORWARD_REPAIR may
+        only replay stable command IDs already stored by Order.
+      security: [{ financeOpsWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/DecisionIdempotencyKey'
       requestBody:
         required: true
         content:
@@ -41,16 +134,263 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
+    checkoutWorkloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: mTLS/service-mesh principal must be checkout-service; the header is attribution only.
     financeOpsWorkloadIdentity:
       type: apiKey
       in: header
       name: X-Service-Identity
-      description: >-
-        mTLS/service-mesh principal must be allowlisted as finance-ops or accounting-ops;
-        Order also validates the workload claim. Gateway strips this header from client traffic.
+      description: mTLS/service-mesh principal must be allowlisted as finance-ops or accounting-ops.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    CheckoutIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID that must exactly equal request checkout_token.
+      schema: { type: string, format: uuid }
+    DecisionIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Must equal body decision_id; a different canonical body is rejected.
+      schema: { type: string, format: uuid }
+    CheckoutToken:
+      name: checkout_token
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OrderId' }
+  headers:
+    CheckoutSubmissionLocation:
+      description: Durable Checkout submission recovery resource.
+      schema: { type: string, pattern: '^/internal/v1/checkout-order-submissions/[0-9a-fA-F-]{36}$' }
+    PrivateNoStore:
+      description: Response contains private transaction or Payment client data.
+      schema: { type: string, const: 'private, no-store' }
+    RetryAfter:
+      description: Suggested seconds before retrying the identical request.
+      schema: { type: integer, minimum: 1, maximum: 60 }
   schemas:
+    Problem:
+      $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+    OrderId:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
+      description: Canonical unpadded base-10 representation of the Order-owned BIGINT ID.
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    VndMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, const: VND }
+    Sha256:
+      type: string
+      pattern: '^sha256:[a-f0-9]{64}$'
+    AddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { type: string, minLength: 5, maxLength: 32 }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { type: string, minLength: 1, maxLength: 32 }
+        district_code: { type: string, minLength: 1, maxLength: 32 }
+        ward_code: { type: string, minLength: 1, maxLength: 32 }
+    CheckoutItem:
+      type: object
+      additionalProperties: false
+      required: [line_reference, product_id, sku_id, quantity, unit_price, snapshot_name, snapshot_image_url, snapshot_attributes]
+      properties:
+        line_reference: { type: string, minLength: 1, maxLength: 128 }
+        product_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        unit_price: { $ref: '#/components/schemas/VndMoney' }
+        snapshot_name: { type: string, minLength: 1, maxLength: 255 }
+        snapshot_image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        snapshot_attributes:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 255 }
+    PricingSnapshot:
+      type: object
+      additionalProperties: false
+      required: [total_amount, total_discount, final_amount]
+      properties:
+        total_amount: { $ref: '#/components/schemas/VndMoney' }
+        total_discount: { $ref: '#/components/schemas/VndMoney' }
+        final_amount: { $ref: '#/components/schemas/VndMoney' }
+      description: final_amount.amount_minor must equal total_amount minus total_discount.
+    PromotionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, discount_amount]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        discount_amount: { $ref: '#/components/schemas/VndMoney' }
+    AllocationPlanLine:
+      type: object
+      additionalProperties: false
+      required: [line_reference, sku_id, warehouse_id, quantity]
+      properties:
+        line_reference: { type: string, minLength: 1, maxLength: 128 }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+    AllocationPlan:
+      type: object
+      additionalProperties: false
+      required: [allocation_plan_id, lines]
+      properties:
+        allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: line_reference is unique and maps one-to-one to items; Order enforces SKU and quantity equality.
+          items: { $ref: '#/components/schemas/AllocationPlanLine' }
+    CheckoutOrderSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, user_id, pricing_hash, items_hash, promotion_campaign_revision, user_ack_degraded_pricing, delivery_address_snapshot, items, pricing, promotions, allocation_plan]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        pricing_hash:
+          allOf: [{ $ref: '#/components/schemas/Sha256' }]
+          description: >-
+            sha256: plus lowercase SHA-256 hex of UTF-8 RFC 8785 canonical JSON
+            {"items":[{"sku_id":string,"unit_price_minor":integer},...],
+            "promotion_campaign_revision":integer,"total_discount_minor":integer}.
+            Items are sorted by UTF-8 sku_id bytes and sku_id is unique.
+        items_hash:
+          allOf: [{ $ref: '#/components/schemas/Sha256' }]
+          description: >-
+            sha256: plus lowercase SHA-256 hex of UTF-8 RFC 8785 canonical JSON
+            {"items":[{"quantity":integer,"sku_id":string},...]}; items are sorted
+            by UTF-8 sku_id bytes and sku_id is unique.
+        promotion_campaign_revision: { type: integer, minimum: 0 }
+        user_ack_degraded_pricing: { type: boolean }
+        delivery_address_snapshot: { $ref: '#/components/schemas/AddressSnapshot' }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: line_reference and sku_id are each unique; enforced by Order.
+          items: { $ref: '#/components/schemas/CheckoutItem' }
+        pricing: { $ref: '#/components/schemas/PricingSnapshot' }
+        promotions:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PromotionSnapshot' }
+        allocation_plan: { $ref: '#/components/schemas/AllocationPlan' }
+    PaymentClientData:
+      type: object
+      additionalProperties: false
+      required: [payment_attempt_number, payment_transaction_id, client_secret, publishable_key, expires_at]
+      properties:
+        payment_attempt_number: { type: integer, minimum: 1 }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        client_secret: { type: string, minLength: 1, maxLength: 4096 }
+        publishable_key: { type: string, minLength: 1, maxLength: 512 }
+        expires_at: { type: string, format: date-time }
+    CheckoutOrderReady:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, order_id, order_status, payment]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        order_status: { type: string, const: PENDING_PAYMENT }
+        payment: { $ref: '#/components/schemas/PaymentClientData' }
+    CheckoutOrderSubmissionStatus:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, state, order_id, payment, failure, updated_at]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        state: { type: string, enum: [PREPARING, PAYMENT_READY, RECALCULATION_REQUIRED, FAILED] }
+        order_id:
+          oneOf: [{ $ref: '#/components/schemas/OrderId' }, { type: 'null' }]
+        payment:
+          oneOf: [{ $ref: '#/components/schemas/PaymentClientData' }, { type: 'null' }]
+        failure:
+          oneOf: [{ $ref: '#/components/schemas/Problem' }, { type: 'null' }]
+        updated_at: { type: string, format: date-time }
+    DroppedPromotion:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, reason]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { type: string, minLength: 1, maxLength: 100 }
+    PromotionRecalculationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [code, action, failed_promotion_id, failed_reason, reserve_mode, dropped_promotions]
+          properties:
+            code: { type: string, const: PROMOTION_RECALCULATION_NEEDED }
+            action: { type: string, const: RECALL_PREVIEW }
+            failed_promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+            failed_reason: { type: string, minLength: 1, maxLength: 100 }
+            reserve_mode: { type: string, const: ALL_OR_NOTHING }
+            dropped_promotions:
+              type: array
+              minItems: 1
+              maxItems: 20
+              items: { $ref: '#/components/schemas/DroppedPromotion' }
+    EvidenceReference:
+      type: object
+      additionalProperties: false
+      required: [source, reference, sha256]
+      properties:
+        source: { type: string, enum: [ORDER_CHECKPOINT, PAYMENT_RECONCILIATION, INVENTORY_COMMAND, PROMOTION_RECEIPT] }
+        reference: { type: string, minLength: 1, maxLength: 255 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ReconciliationResolution:
+      type: string
+      enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING]
+    ReconciliationCase:
+      type: object
+      additionalProperties: false
+      required: [case_id, order_id, revision, case_status, evidence_digest, evidence, permitted_resolutions, opened_at, updated_at]
+      properties:
+        case_id: { type: string, format: uuid }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        revision: { type: integer, minimum: 1 }
+        case_status: { type: string, enum: [OPEN, EVIDENCE_PENDING, DECIDED, CLOSED] }
+        evidence_digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidence:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/EvidenceReference' }
+        permitted_resolutions:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ReconciliationResolution' }
+        opened_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     ReconciliationDecisionRequest:
       type: object
       additionalProperties: false
@@ -59,23 +399,14 @@ components:
         case_id: { type: string, format: uuid }
         expected_case_revision: { type: integer, minimum: 1 }
         decision_id: { type: string, format: uuid }
-        resolution_type:
-          type: string
-          enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING]
+        resolution_type: { $ref: '#/components/schemas/ReconciliationResolution' }
         reason_code: { type: string, minLength: 1, maxLength: 100 }
-        accounting_case_reference: { type: string, maxLength: 128 }
+        accounting_case_reference: { type: [string, 'null'], maxLength: 128 }
         evidence:
           type: array
           minItems: 1
           maxItems: 20
-          items:
-            type: object
-            additionalProperties: false
-            required: [source, reference, sha256]
-            properties:
-              source: { type: string, enum: [ORDER_CHECKPOINT, PAYMENT_RECONCILIATION, INVENTORY_COMMAND, PROMOTION_RECEIPT] }
-              reference: { type: string, minLength: 1, maxLength: 255 }
-              sha256: { type: string, pattern: '^[A-Fa-f0-9]{64}$' }
+          items: { $ref: '#/components/schemas/EvidenceReference' }
     ReconciliationDecisionAccepted:
       type: object
       additionalProperties: false
@@ -84,11 +415,35 @@ components:
         case_id: { type: string, format: uuid }
         decision_id: { type: string, format: uuid }
         case_status: { type: string, enum: [DECIDED, CLOSED, EVIDENCE_PENDING] }
-        resolution_type: { type: string }
+        resolution_type: { $ref: '#/components/schemas/ReconciliationResolution' }
   responses:
-    BadRequest: { description: Invalid syntax, decision ID, or Idempotency-Key. }
-    Unauthorized: { description: Missing or invalid workload identity. }
-    Forbidden: { description: Caller lacks Finance/Ops reconciliation capability. }
-    NotFound: { description: Order or reconciliation case does not exist. }
-    Conflict: { description: Stale case revision or idempotency payload mismatch. }
-    Unprocessable: { description: Evidence is missing, foreign to the order, or resolution violates case state. }
+    BadRequest:
+      description: Invalid syntax, path/header mismatch, hash format, or malformed request.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unauthorized:
+      description: Missing or invalid workload identity.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Forbidden:
+      description: Workload lacks the capability required by this operation.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    NotFound:
+      description: Submission, Order, or reconciliation case does not exist.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Conflict:
+      description: Stale revision, idempotency payload mismatch, or invalid domain state.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unprocessable:
+      description: Snapshot, canonical hashes, allocation mapping, evidence, or resolution is inconsistent with durable state.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unavailable:
+      description: Durable dependency unavailable or exact remote outcome remains unknown; retry identically.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }

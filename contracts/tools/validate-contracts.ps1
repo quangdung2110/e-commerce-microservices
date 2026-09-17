@@ -244,6 +244,8 @@ Invoke-OptionalTool -Name 'redocly' -Action {
         'http/inventory/workflow/v1/openapi.yaml',
         'http/inventory/admin/v1/openapi.yaml',
         'http/inventory/exports/v1/openapi.yaml',
+        'http/order/v1/openapi.yaml',
+        'http/order/internal/v1/openapi.yaml',
         'http/review/v1/openapi.yaml'
     ) | ForEach-Object {
         $spec = Join-Path $contractRoot $_

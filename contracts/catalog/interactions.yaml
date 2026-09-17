@@ -174,8 +174,17 @@ interactions:
     protocol: http
     provider: order-service
     consumers: [checkout-service]
-    contract: null
-    status: legacy_documented
+    contract: http/order/internal/v1/openapi.yaml
+    status: proposed
+    notes: Checkout submits one immutable snapshot with Idempotency-Key equal to checkout_token and receives durable Payment client data.
+
+  - id: gateway-manages-orders
+    protocol: http
+    provider: order-service
+    consumers: [api-gateway]
+    contract: http/order/v1/openapi.yaml
+    status: proposed
+    notes: Buyer and Admin reads, lifecycle commands, payment-attempt retry, and operation polling use trusted Gateway identity.
 
   - id: order-initiates-payment
     protocol: http
