@@ -5,7 +5,9 @@ scope: target
 status: proposed
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -74,9 +76,12 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
 
 ### 3.1. Đồng bộ
 
-- `GET /v1/orders/{orderId}` và `GET /v1/orders/search` đọc PostgreSQL.
-- Cancel/return validate đồng bộ nhưng chỉ accept command; saga hoàn tất bất đồng
-  bộ và API trả `202 Accepted`.
+- `GET /api/v1/orders`, `GET /api/v1/orders/{order_id}` và các Admin counterpart
+  đọc PostgreSQL theo [public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml).
+- Cancellation/return/Admin pre-dispatch refund validate đồng bộ nhưng chỉ accept
+  command; saga hoàn tất bất đồng bộ và API trả `202 Accepted` kèm operation resource.
+- Payment-attempt POST và Checkout submission là synchronous-to-checkpoint: HTTP chỉ
+  đợi đến khi Payment client data được durable checkpoint, không đợi capture.
 - Temporal activity gọi Inventory/Promotion/Payment đồng bộ theo timeout/retry.
 
 ### 3.2. Bất đồng bộ và transaction boundary
@@ -101,7 +106,7 @@ has a separate reconciliation lane.
 | Nhóm | Activity | Trách nhiệm |
 |---|---|---|
 | Checkout local | `CreateOrderActivity` | Tạo master/items/lines/promotions và `ORDER_CREATED` |
-| Checkout remote | `ReserveInventoryActivity` | Reserve stock theo routing plan |
+| Checkout remote | `ReserveInventoryActivity` | Reserve stock theo immutable allocation plan |
 | Checkout remote | `ReservePromotionActivity` | `POST /internal/v1/promotion-allocation/reservations`; reserve budget all-or-nothing sau submit |
 | Checkout remote | `InitiatePaymentActivity` | Tạo Stripe PaymentIntent qua Payment |
 | Post-payment | `CommitInventoryActivity` | Inventory `CommitPayment` whole root; recover uncertain result by command query |
@@ -143,7 +148,7 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
 
 ## 5. Mô hình đồng thời và ordering
 
-- Public cancel dùng Redis lock `order:lock:fsm:{orderId}` TTL 10 giây rồi khóa
+- Public cancel dùng Redis lock `order:lock:fsm:{order_id}` TTL 10 giây rồi khóa
   row PostgreSQL; correctness cuối dựa trên `SELECT ... FOR UPDATE`/conditional
   `UPDATE`, không dựa riêng vào Redis.
 - Buyer return dùng first-write-wins CAS trên `orders.buyer_return_locked_at`.
@@ -168,6 +173,7 @@ Thiết kế yêu cầu các process/runtime logic sau, nhưng chưa chốt ch�
 - Payment Kafka consumer group `order-payment-consumer`.
 - Inventory Kafka consumer groups `order-inventory-ship-consumer` và
   `order-inventory-return-consumer`.
+- Delivery Kafka consumer group `order-delivery-consumer`.
 - Temporal worker đăng ký bốn task queue: `order-checkout-queue`,
   `order-refund-queue`, `order-late-payment-recovery-queue`,
   `order-financial-reconciliation-queue`.

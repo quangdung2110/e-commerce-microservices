@@ -5,7 +5,9 @@ scope: target
 status: proposed
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -91,6 +93,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Tạo order từ checkout | Tạo master/sub-order và snapshot, reserve tài nguyên, khởi tạo thanh toán |
 | Xem chi tiết order | Trả lịch sử denormalized có kiểm tra ownership |
 | Tìm kiếm/lọc order | Trả order-level card theo buyer/admin, tab, trạng thái, thời gian, tiền và tên sản phẩm |
+| Retry thanh toán | Tạo numbered Payment attempt mới chỉ sau terminal non-capture fact của attempt trước |
 | Hủy order | Resolve Payment cancel/capture fact before pre-payment compensation; admin paid action goes refund lane |
 | Yêu cầu trả hàng | Chấp nhận đúng một Buyer request hợp lệ và khóa selected full-quantity line scope |
 | Xử lý thanh toán | Validate mapped Payment attempt fact, freeze captured transaction, then forward-repair post-payment checkpoints |
@@ -103,8 +106,8 @@ qua API, event hoặc Temporal signal được Order xử lý.
 
 | Hướng | Service/Hệ thống | Giao thức | Mục đích | Bắt buộc/Tùy chọn | Contract |
 |---|---|---|---|---|---|
-| Inbound | Checkout | HTTP | Tạo order từ checkout snapshot | Bắt buộc | Chưa chuẩn hóa trong phạm vi này |
-| Inbound | Buyer/Admin qua Gateway | HTTP | Đọc, tìm kiếm, hủy và return | Bắt buộc | Chưa có OpenAPI Order đầy đủ |
+| Inbound | Checkout | HTTP | Tạo order từ checkout snapshot | Bắt buộc | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
+| Inbound | Buyer/Admin qua Gateway | HTTP | Đọc, tìm kiếm, hủy, retry payment và return/refund | Bắt buộc | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
 | Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Inbound | Inventory | Kafka | Physical line-dispatch và selected-scope inspection completion | Bắt buộc | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Inbound | Delivery | Kafka | Verified per-line delivery proof | Bắt buộc để auto-complete/return guard | [Delivery events v1](../../contracts/events/delivery/v1/asyncapi.yaml) |
@@ -161,16 +164,16 @@ qua API, event hoặc Temporal signal được Order xử lý.
 
 ## 9. Khoảng trống đã biết
 
-- Chưa có implementation, migration Order, OpenAPI đầy đủ, cấu hình Temporal,
+- Chưa có implementation, migration Order, cấu hình Temporal,
   Kafka Connect, Redis hoặc deployment để xác minh.
-- Tài liệu cũ query các cột `paid_at`, `completed_at`, `cancelled_at`, `refunded_at`
-  nhưng phần định nghĩa bảng `orders` chưa khai báo các cột này.
+- OpenAPI public/internal v1 đã được chốt ở mức `proposed`; chưa có provider/consumer
+  contract test hoặc implementation evidence để nâng trạng thái.
 - Mô tả cũ vừa nói metadata `refund_waiting_inventory_confirmation` được phát
   trong `ORDER_STATUS_CHANGED`, vừa nói Phase 20 đã loại metadata refund khỏi event.
 - Mô tả `ORDER_REFUND_FAILED` có chỗ yêu cầu chỉ `error_code`, có ví dụ vẫn chứa
   `error_message`; cần chốt ở lần refactor contract sau.
-- Public Order HTTP surface và các lifecycle events ngoài `ORDER_COMPLETED` chưa có
-  machine-readable schema hoàn chỉnh; reconciliation internal v1, Payment v2, Inventory
-  workflow v1 and Delivery proof v1 are the currently pinned cross-service contracts.
+- Các lifecycle event ngoài `ORDER_COMPLETED` chưa có machine-readable schema hoàn
+  chỉnh; AsyncAPI sẽ được chuẩn hóa riêng. HTTP public/internal v1, Payment v2,
+  Inventory workflow v1 và Delivery proof v1 là các target contract hiện đã pin.
 - Chưa có SLO, capacity benchmark, retention đầy đủ cho order data, backup/restore,
   schema rollout hoặc runbook tự động hóa.

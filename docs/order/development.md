@@ -90,14 +90,15 @@ Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
 
-Hiện chỉ có một phần Order event v1; chưa có quy trình generate. Khi có OpenAPI/
-AsyncAPI/Proto chuẩn, cần pin tool version, output path, generated-code policy và
-CI drift check. Markdown example không phải source để generate model.
+Order đã có public/internal OpenAPI v1 ở `contracts/http/order`; AsyncAPI hiện mới
+có `ORDER_COMPLETED`. Cần pin generator/linter version, output path, generated-code
+policy và CI drift check. Markdown example không phải source để generate model.
 
 ## 7. Database migration
 
 Migration đầu tiên phải tạo schema/tables/FK/check/index/view/extensions trong
-`data.md`, đồng thời giải quyết các gap timestamp và manual verification state.
+`data.md`, gồm `paid_at`, `completed_at`, `cancelled_at`, `refunded_at` và manual
+verification state.
 Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, numbered payment
 attempt identity/version, refund evidence, reconciliation case/decision and admin attempt tables before retiring historical
 idempotency storage. Index trigram lớn nên tạo theo kế hoạch không khóa production.

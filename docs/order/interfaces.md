@@ -6,13 +6,14 @@ status: proposed
 owners:
   - Order Service team
 evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/order/v1/schemas/order-completed.schema.json
   - contracts/http/promotion/v1/openapi.yaml
   - contracts/http/payment/v1/openapi.yaml
   - contracts/events/payment/v2/asyncapi.yaml
   - contracts/events/delivery/v1/asyncapi.yaml
-  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -26,8 +27,8 @@ verified_against_commit: null
 
 | Tương tác | Hướng | Giao thức | Provider | Consumer | Trạng thái |
 |---|---|---|---|---|---|
-| Order detail/search/cancel/return | Inbound | HTTP | Order | Buyer/Admin qua Gateway | proposed |
-| Create from checkout | Inbound | HTTP | Order | Checkout | proposed |
+| Order detail/search/cancel/return/payment retry | Inbound | HTTP | Order | Buyer/Admin qua Gateway | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
+| Create from checkout | Inbound | HTTP | Order | Checkout | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
 | Inventory activities | Outbound | HTTP | Inventory | Order Temporal worker | [workflow OpenAPI v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
 | Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
 | Payment activities | Outbound | HTTP | Payment | Order Temporal worker | [Payment OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
@@ -40,45 +41,78 @@ verified_against_commit: null
 
 ## 2. HTTP API đầu vào
 
-Gateway xác thực JWT và chuyển `user_id`/role đáng tin cậy. Buyer chỉ nhìn/tác
-động order của mình; Admin có scope quản trị. Command bất đồng bộ trả `202`, không
-giả vờ nghiệp vụ đã hoàn tất.
+Wire-level source of truth là [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml)
+và [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml).
+Gateway xác thực JWT và chuyển identity/role đáng tin cậy. Buyer chỉ nhìn/tác động
+order của mình; Admin dùng namespace riêng. Mọi JSON `order_id`, `order_item_id` và
+`order_line_id` là canonical decimal string không padding để không mất chính xác int64.
 
-| API | Mục đích và semantics | Idempotency/lỗi chính |
+### 2.1 Buyer và Admin
+
+| API | Mục đích và semantics | Kết quả chính |
 |---|---|---|
-| `GET /v1/orders/{orderId}` | Eager-load master/items/lines/promotions; Buyer owner hoặc Admin; hot PostgreSQL only | `404 NOT_FOUND`; không mô tả cache |
-| `GET /v1/orders/search` | Order-level cards; filter `tab,q,from,to,cursor,limit`, trạng thái/payment/amount theo thiết kế query | Read-only; default 90 ngày; keyset cursor |
-| `POST /v1/orders/{orderId}/cancel` | Buyer cancel `PENDING_PAYMENT`; Admin cancel pre-payment hoặc mở refund lane khi `PAID/PROCESSING` | Optional `Idempotency-Key`, Redis 7 ngày; `202`; invalid state `409` |
-| `POST /v1/orders/{orderId}/return` | Buyer chọn một/nhiều `order_line_id`; mọi line delivered và mỗi selected line phải full quantity; one-shot per order | Header `Idempotency-Key` bắt buộc; `202` + request/workflow ID; lỗi one-shot/scope `409` |
-| `POST /v1/orders/create-from-checkout` | Start/attach checkout workflow bằng token; persist server-side snapshot | WorkflowID + Redis 7 ngày; Promotion reserve failure trả structured `409` về Checkout |
+| `GET /api/v1/orders` | Search order của Buyer hiện tại; filter `tab,q,created_from,created_to,order_status,payment_status,min_amount_minor,max_amount_minor,cursor,limit` | `200`; default 90 ngày; keyset cursor opaque |
+| `GET /api/v1/orders/{order_id}` | Detail master/items/lines/promotions/payment/refund; owner-only | `200`; non-owner cũng `404`; `Cache-Control: private, no-store` |
+| `POST /api/v1/orders/{order_id}/cancellation-requests` | Buyer hủy pre-payment | `202` + operation; bắt buộc `Idempotency-Key` |
+| `POST /api/v1/orders/{order_id}/return-requests` | Buyer one-shot, selected full-quantity lines sau khi mọi line delivered | `202` + operation/refund request; scope sai `422`, guard/state conflict `409` |
+| `GET /api/v1/orders/{order_id}/refund-case` | Theo dõi lifetime refund case | `200` hoặc `404` |
+| `POST /api/v1/orders/{order_id}/payment-attempts` | Tạo numbered attempt kế tiếp sau terminal non-capture fact | `201`; replay `200`; timeout retry cùng key |
+| `GET /api/v1/orders/{order_id}/payment-attempts/{attempt_number}` | Đọc attempt; client secret chỉ hiện cho active `PENDING` attempt | `200`, private/no-store |
+| `GET /api/v1/order-operations/{operation_id}` | Theo dõi command async của Buyer | `ACCEPTED/RUNNING/SUCCEEDED/REJECTED/FAILED/MANUAL_REVIEW_REQUIRED` |
+| `GET /api/v1/admin/orders` | Admin search toàn cục, thêm filter `buyer_id` | `200`; cùng sort/query model |
+| `GET /api/v1/admin/orders/{order_id}` | Admin detail | `200` |
+| `POST /api/v1/admin/orders/{order_id}/cancellation-requests` | Admin cancel pre-payment; không dùng cho order đã capture | `202` + operation |
+| `POST /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests` | Tạo durable attempt để Inventory atomic-release toàn order trước dispatch | `202`; rejection không tạo lifetime case/khóa Buyer guard |
+| `GET /api/v1/admin/order-operations/{operation_id}` | Admin theo dõi attempt/command | `200` |
 
-Create-from-checkout yêu cầu tối thiểu `checkout_token`, UUID `user_id`,
-`delivery_address_snapshot`, `items[]` và an Inventory preview `allocation_plan`; plan
-contains `allocation_plan_id` plus each Checkout `line_reference`/SKU, chosen
-`warehouse_id` and quantity. Order creates `order_line_id` only after accepting this
-snapshot, then atomically persists `line_reference -> order_line_id` before sending the
-corresponding Reserve line. Checkout cannot choose a warehouse outside that plan. Every line uses
-`sku_id`, `product_id`, `quantity>0`, `unit_price_minor`; `amount` is canonical
-`{amount_minor,currency:"VND"}`. `promotions` có thể rỗng khi
-`user_ack_degraded_pricing=true`. Order không tin amount do public client gửi và
-không tự tính lại discount. `payment_method` đã bị loại vì Payment chỉ dùng Stripe.
-`pricing_hash` phải được cross-check theo canonical SHA-256 input do Checkout định
-nghĩa; thuật toán wire-level sẽ được chốt ở lần refactor contract.
+Cancellation và refund là hai endpoint riêng; endpoint cancel không âm thầm đổi
+thành refund theo trạng thái. Mọi POST public bắt buộc `Idempotency-Key`: cùng key +
+canonical payload replay kết quả, payload khác trả `409 IDEMPOTENCY_KEY_REUSED`.
+Command dài hạn trả `202`; operation resource chỉ biểu diễn tiến độ xử lý, còn FSM
+Order/refund case vẫn là nguồn chân lý nghiệp vụ.
 
-Search response tối thiểu: `order_id`, `buyer_tab`, `ui_primary_status`,
-`ui_status_rank`, `created_at`, primary item name/image, constant
-`primary_store_name="PLATFORM"`, item/remaining counts và `final_amount_minor`. Các field
-matched-line của Phase 14 đã bị loại.
+Search trả một card trên mỗi order với `order_id`, `buyer_id`, `buyer_tab`,
+`ui_primary_status`, `ui_status_rank`, `created_at`, `primary_item_name`,
+`primary_item_image_url`, `primary_store_name="PLATFORM"`, `item_count`,
+`remaining_item_count` và `final_amount`. Không trả `matched_lines_count`,
+`matched_context[]`, `match_reason` hay `matched_lines`.
 
-Tên field response chuẩn hóa gồm `primary_item_name`, `primary_item_image_url`,
-`item_count`, `remaining_item_count`. Các field cũ `matched_lines_count`,
-`matched_context[]`, `match_reason`, `matched_lines` không còn được trả.
+### 2.2 Checkout service-to-service
+
+`POST /internal/v1/checkout-order-submissions` chỉ cho principal
+`checkout-service`; `Idempotency-Key` bắt buộc bằng UUID `checkout_token`. Request
+chứa `user_id`, address snapshot, `items[]`, pricing, promotion snapshot,
+`allocation_plan`, `pricing_hash`, `items_hash`, campaign revision và degraded ack.
+`allocation_plan` dùng tên canonical `allocation_plan_id`; mỗi `line_reference`/SKU/
+quantity/warehouse phải ánh xạ một-một với Checkout item. Order tạo `order_line_id`
+sau khi accept và persist bridge trước Reserve. Money luôn là
+`{amount_minor,currency:"VND"}`; không có `payment_method`.
+
+Khác command dài hạn, endpoint này chờ đến checkpoint `PAYMENT_READY` để Checkout
+có thể trả Stripe data cho frontend: lần đầu `201`, replay `200`, gồm `order_id`,
+attempt number, transaction ID, `client_secret`, `publishable_key`, `expires_at`.
+Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; timeout
+hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body. Recovery read dùng
+`GET /internal/v1/checkout-order-submissions/{checkout_token}`.
+
+`pricing_hash` là chuỗi `sha256:<64 lowercase hex>` của SHA-256 trên UTF-8 RFC 8785
+canonical JSON với object `{items:[{sku_id,unit_price_minor}],
+promotion_campaign_revision,total_discount_minor}`; items sort theo byte UTF-8 của
+`sku_id` duy nhất. `items_hash` dùng object `{items:[{quantity,sku_id}]}` cùng quy
+tắc sort/canonicalization. Order cross-check cả hash lẫn amount invariant trước tạo.
+
+### 2.3 Finance/Ops
+
+`GET /internal/v1/orders/{order_id}/financial-reconciliation-case` trả revision,
+evidence references và permitted resolutions. Existing
+`POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` ghi quyết
+định evidence-backed; `Idempotency-Key` phải bằng `decision_id`.
 
 ## 3. Remote activities do Order gọi
 
 | Activity | Service | Ý nghĩa | Retry/idempotency |
 |---|---|---|---|
-| Reserve/rollback inventory | Inventory | Giữ/nhả stock theo routing plan | Activity timeout/retry; stable request identity |
+| Reserve/rollback inventory | Inventory | Giữ/nhả stock theo immutable allocation plan | Activity timeout/retry; stable request identity |
 | Commit payment / recover timed-out payment | Inventory | Commit whole reserved root after payment; fenced recovery only for same timeout-released root | Stable command ID; query `GET /commands/{id}` after unknown outcome; never re-reserve/reroute |
 | Register refund scope | Inventory | Đăng ký selected `order_line_id` với full ordered quantity | Key lifetime theo order + refund request |
 | Release committed order before dispatch | Inventory | Admin automatic path: atomic release tất cả committed lines hoặc no-op conflict | Không có Refund Scope; Inventory là authority dispatch |
@@ -269,9 +303,9 @@ là 30 ngày trước manual-verification lane.
 - Quy tắc cũ: chỉ thêm field, consumer ignore unknown field; breaking change cần
   version mới. Chưa có CI compatibility check hay deprecation window.
 - Mỗi event có unique ID; consumer xử lý at-least-once và duplicate.
-- The financial reconciliation command has a machine-readable internal contract, but the
-  public Order HTTP surface and all lifecycle event types other than `ORDER_COMPLETED`
-  still lack complete machine-readable contracts. Không đánh dấu `verified` dựa trên ví dụ Markdown.
+- Public và internal Order HTTP surface đã có machine-readable OpenAPI v1 ở trạng
+  thái `proposed`; mọi lifecycle event ngoài `ORDER_COMPLETED` vẫn thiếu schema đầy
+  đủ. Không đánh dấu `verified` nếu chưa có provider/consumer contract test.
 - Các lệch `ORDER_STATUS_CHANGED` refund metadata và `ORDER_REFUND_FAILED`
   `error_message` được giữ trong [Known gaps](./README.md#9-khoảng-trống-đã-biết),
   không giải quyết trong lần refactor cấu trúc này.

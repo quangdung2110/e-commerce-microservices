@@ -5,7 +5,9 @@ scope: target
 status: proposed
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -70,6 +72,10 @@ erDiagram
       varchar captured_payment_transaction_id
       timestamptz buyer_return_locked_at
       bigint last_event_sequence_id
+      timestamptz paid_at
+      timestamptz completed_at
+      timestamptz cancelled_at
+      timestamptz refunded_at
     }
     ORDER_ITEMS {
       bigint id PK
@@ -105,6 +111,9 @@ erDiagram
       varchar currency
       varchar terminal_status
       bigint last_financial_state_version
+      bytea client_secret_ciphertext
+      varchar publishable_key
+      timestamptz client_expires_at
     }
     ORDER_REFUND_CASES {
       bigint order_id PK
@@ -149,6 +158,8 @@ erDiagram
     }
     ORDER_FINANCIAL_RECONCILIATION_CASES {
       bigint order_id PK
+      uuid case_id UK
+      bigint case_revision
       varchar case_status
       varchar resolution_type
       varchar decision_id UK
@@ -199,11 +210,11 @@ không phụ thuộc address book bị sửa/xóa về sau.
 | `buyer_return_locked_at` | `TIMESTAMPTZ` nullable | Permanent first-write-wins guard cho Buyer return |
 | `saga_phase` | `VARCHAR(50)` | Durable checkpoint summary: pre-payment, cancelling, post-capture repair or financial reconciliation; not reconstructed from Redis/Temporal alone. |
 | `last_event_sequence_id` | `BIGINT NOT NULL DEFAULT 0` | Counter đơn điệu per order cho event Order tự phát |
+| `paid_at` | `TIMESTAMPTZ` nullable | Thời điểm first/only captured payment được Order commit |
+| `completed_at` | `TIMESTAMPTZ` nullable | Thời điểm verified final-line delivery hoàn tất master |
+| `cancelled_at` | `TIMESTAMPTZ` nullable | Thời điểm pre-payment cancellation và cleanup hoàn tất |
+| `refunded_at` | `TIMESTAMPTZ` nullable | Thời điểm existing lifetime refund transaction success được commit |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Audit timestamps |
-
-Thiết kế search cũ còn đọc `paid_at`, `completed_at`, `cancelled_at`, `refunded_at`
-nhưng định nghĩa bảng cũ chưa khai báo. Chúng phải được chốt trong migration trước
-khi coi query ở §6 là executable.
 
 Các nguồn field được tham chiếu trực tiếp trong read model gồm `orders.id`,
 `orders.status`, `orders.payment_status`, `orders.created_at`,
@@ -249,6 +260,11 @@ viết lại lịch sử đơn.
 | `promotion_id` | `BIGINT` | Promotion đã áp |
 | `discount_amount_minor` | `BIGINT` | PLATFORM allocation integer VND duy nhất |
 
+Bảng này là snapshot voucher toàn đơn đã áp dụng, dùng cho lịch sử/đối soát và
+checkout compensation. Nó không phải allocation theo SKU, không dùng để hoàn Promotion
+budget khi customer refund và không cho phép suy diễn/ghi lại wallet state. Cột
+`admin_funding` cũ đã bị loại ở Phase 21.
+
 ### 3.5. `order_payment_attempts`
 
 | Field | Kiểu | Quy tắc/ý nghĩa |
@@ -258,6 +274,9 @@ viết lại lịch sử đơn.
 | `amount_minor`, `currency` | `BIGINT`, `VARCHAR(3)` | Snapshot canonical `VND`; phải khớp order pricing snapshot và Payment event. |
 | `terminal_status` | `VARCHAR(32)` nullable | `FAILED/EXPIRED/CANCELED/SUCCESS`; một non-capture terminal fact mới cho phép tạo attempt sau. |
 | `last_financial_state_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic per **payment transaction**, không so sánh version giữa hai attempt khác nhau. |
+| `client_secret_ciphertext` | `BYTEA` nullable | Stripe client secret mã hóa ở application/KMS; chỉ giải mã cho owner của active `PENDING` attempt và xóa/retire sau terminal/expiry theo policy |
+| `publishable_key` | `VARCHAR(512)` nullable | Public Stripe key snapshot đi cùng usable client secret |
+| `client_expires_at` | `TIMESTAMPTZ` nullable | Hạn dùng client data; sau thời điểm này HTTP không trả secret |
 
 `UNIQUE(order_id, payment_attempt_number)` và `UNIQUE(payment_transaction_id)` là bắt
 buộc. Khi initiate thành công, Order insert attempt row cùng checkpoint rồi set hai field
@@ -265,11 +284,6 @@ active trên `orders`. Matching `PAYMENT_SUCCESS` atomically sets
 `captured_payment_transaction_id` if still null. A success for a different attempt, or a
 second capture, is parked into financial reconciliation; it never silently replaces the
 captured identity.
-
-Bảng này là snapshot voucher toàn đơn đã áp dụng, dùng cho lịch sử/đối soát và
-checkout compensation. Nó không phải allocation theo SKU, không dùng để hoàn Promotion
-budget khi customer refund và không cho phép suy diễn/ghi lại wallet state. Cột
-`admin_funding` cũ đã bị loại ở Phase 21.
 
 ### 3.6. `order_refund_cases` và `order_refund_case_lines`
 
@@ -355,8 +369,8 @@ atomically creates the case and evidence described above.
 ### 3.8. Financial reconciliation cases
 
 `order_financial_reconciliation_cases` is a one-to-one durable case per order. It stores
-the triggering checkpoint/event IDs, `evidence_digest`, owner queue, timestamps and a
-mandatory named decision. `case_status` is `OPEN`, `EVIDENCE_PENDING`, `DECIDED` or
+UUID `case_id`, monotonic `case_revision`, the triggering checkpoint/event IDs,
+`evidence_digest`, owner queue, timestamps and a mandatory named decision. `case_status` is `OPEN`, `EVIDENCE_PENDING`, `DECIDED` or
 `CLOSED`; `resolution_type` is only `RESUME_FORWARD_REPAIR`,
 `CLOSE_AS_MANUAL_FULFILLMENT`, or `ESCALATE_TO_ACCOUNTING`. Every decision has a UUID
 `decision_id`, authenticated Finance/Ops actor, reason and immutable evidence references.
@@ -478,9 +492,9 @@ RETURNING id;
 ### 6.1. Detail
 
 Detail eager-load `orders -> order_items -> order_item_lines` và left join
-`order_promotions`, sau đó authorization theo `user_id` hoặc Admin. Response dự
-kiến denormalize `items[].lines[]`, `promotions[]`, `status_history[]`; nguồn dữ
-liệu cho `status_history[]` chưa được thiết kế.
+`order_promotions`, sau đó authorization theo `user_id` hoặc Admin. Response v1
+denormalize `items[].lines[]`, `promotions[]`, payment/refund summary và available
+actions.
 
 ### 6.2. Buyer tab view
 
@@ -537,8 +551,10 @@ thể cần materialized view chỉ sau benchmark/ADR mới.
 |---|---|---|
 | Create request mirror | `order:req:create:{checkout_token}` | 7 ngày; WorkflowID là dedup chính |
 | Cancel request | `order:req:cancel:{idempotency_key}` | 7 ngày; conflict hoặc replay payload nếu lưu |
+| Admin pre-dispatch refund request | `order:req:admin-refund:{idempotency_key}` | 7 ngày; durable admin attempt là authority |
 | Return request | `order:req:return:{idempotency_key}` | 7 ngày; không thay one-shot guard |
-| FSM lock | `order:lock:fsm:{orderId}` | 10 giây; correctness vẫn dựa DB |
+| Payment-attempt request | `order:req:payment-attempt:{idempotency_key}` | 7 ngày; numbered attempt row + terminal non-capture fact là authority |
+| FSM lock | `order:lock:fsm:{order_id}` | 10 giây; correctness vẫn dựa DB |
 | Payment signal fast-path | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày; durable `order_consumed_events` is authority |
 | Inventory ship fast-path | `inventory:ship:applied:{event_id}` | 30 ngày; durable inbox/revision is authority |
 | Delivery proof fast-path | `delivery:proof:applied:{event_id}` | 30 ngày; durable inbox + unique proof is authority |
@@ -548,6 +564,12 @@ Redis mirrors improve hot-path duplicate suppression only. `order_consumed_event
 workflow dispatches and saga checkpoints are retained durably; duplicate outside TTL or
 after Redis loss is decided by those records plus FSM guards. Historical idempotency-table
 retirement must not remove this new durable inbox.
+
+Public `order-operations/{operation_id}` là projection có authorization từ
+`order_workflow_dispatches`, admin refund attempt và refund/payment checkpoint liên quan;
+nó không tạo một FSM nghiệp vụ thứ hai. Operation status map về
+`ACCEPTED/RUNNING/SUCCEEDED/REJECTED/FAILED/MANUAL_REVIEW_REQUIRED` và chỉ chứa
+sanitized result reference/problem, không chứa raw provider response hay PII.
 
 Thiết kế trước Phase 21 từng có `order_product_metrics`, counter per-product và
 event `ORDER_PRODUCT_METRICS_UPDATED`; toàn bộ đã bị loại cùng worker
@@ -587,6 +609,9 @@ WHERE ori.resource_id = o.id::varchar
 
 `user_id`, recipient name/phone và full delivery address là PII. Không log raw
 `delivery_address_snapshot`, payment client secret, phone hoặc refund reason detail.
+Payment client secret phải được mã hóa ở application/KMS khi cần giữ cho HTTP replay,
+chỉ trả cho Buyer owner/Checkout principal, gắn `private, no-store`, và retire khi
+attempt terminal hoặc hết hạn.
 DB/Redis/Kafka/Temporal cần encryption in transit và access control theo service
 identity; encryption at rest, masking, audit retention và GDPR handling chưa được
 chốt. Order snapshot là lịch sử giao dịch nên không được tự động sửa theo User

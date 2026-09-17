@@ -36,9 +36,9 @@ config, nhưng chi tiết chưa có evidence.
 | PostgreSQL DSN/pool/timeouts | Source of truth/read path | Chưa chốt | Có |
 | Redis endpoint/auth | Dedup/locks | TTL request 7 ngày, event 30 ngày, FSM lock 10 giây | Có |
 | Kafka brokers/security | Consume/produce via CDC | Topics trong `interfaces.md` | Có |
-| Consumer group IDs | Payment/Inventory workers | Ba group đã nêu | Không |
+| Consumer group IDs | Payment/Inventory/Delivery workers | Bốn group đã nêu | Không |
 | Temporal endpoint/namespace/TLS | Saga runtime | Chưa chốt | Có |
-| Temporal task queues | Route workflow/activity | Ba queue cố định | Không |
+| Temporal task queues | Route workflow/activity | Bốn queue cố định | Không |
 | Activity timeout/retry | Remote/local activity | 30 giây, tối đa 3 lần | Không |
 | Checkout payment window | Timer | 15 phút | Không |
 | Checkout workflow timeout | Full workflow | 30 phút | Không |
@@ -54,6 +54,8 @@ Tên environment variable, default, restart requirement và secret manager chưa
 Metrics tối thiểu:
 
 - HTTP request/error/latency theo route/status/role scope, không label bằng order ID.
+- Operation age/outcome theo command type và payment-attempt create/replay/conflict,
+  không label bằng operation/order ID.
 - DB pool usage/timeout, transaction/lock wait/deadlock, search latency/rows và GIN
   index/disk growth.
 - Redis command error/dedup-hit/lock-contention theo operation, không theo key.

@@ -5,7 +5,9 @@ scope: target
 status: proposed
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -30,20 +32,21 @@ verified_against_commit: null
 | `WF-ORDER-008` | Refund/return saga | Temporal + Kafka | Buyer/Admin/Inventory/Payment | proposed |
 | `WF-ORDER-009` | Payment timeout và auto-cancel | Temporal timer | Checkout workflow | proposed |
 | `WF-ORDER-010` | Financial reconciliation decision | Internal HTTP + Temporal | Finance/Ops | proposed |
+| `WF-ORDER-011` | Buyer tạo payment attempt kế tiếp | HTTP + Temporal activity | Buyer | proposed |
 
 ## WF-ORDER-001 — Xem chi tiết order
 
 **Mục tiêu:** trả lịch sử order denormalized từ PostgreSQL nóng mà không phụ thuộc
-service khác. **Trigger:** `GET /v1/orders/{orderId}` sau Gateway authentication.
+service khác. **Trigger:** `GET /api/v1/orders/{order_id}` hoặc Admin counterpart
+sau Gateway authentication.
 
 **Điều kiện trước và phân quyền:** order tồn tại; Buyer phải có
 `orders.user_id=current_user_id`, Admin có full access. Backend eager-load master,
-items, lines và promotions. Response dự kiến có `items[].lines[]`, `promotions[]`
-và `status_history[]`; nguồn status history chưa được thiết kế.
+items, lines, promotions và payment/refund summary.
 
 **Happy path:** query dữ liệu bằng một read flow, kiểm tra ownership sau khi tìm
-row, map snapshot sang response và trả 200. Không tìm thấy hoặc không visible trả
-404/403 theo policy API được chốt sau. Read-only nên không phát event.
+row, map snapshot sang response và trả 200. Buyer không thấy order hoặc không sở hữu
+đều nhận 404; Admin thiếu capability nhận 403. Read-only nên không phát event.
 
 **Lỗi/timeout/retry:** DB timeout là lỗi hạ tầng; caller có thể retry GET. Không có
 cache/fallback được thiết kế. Test phải bao phủ buyer owner/non-owner, admin,
@@ -52,7 +55,8 @@ multi-warehouse, promotion rỗng, snapshot nullable và order không tồn tạ
 ## WF-ORDER-002 — Search/filter order
 
 **Mục tiêu:** trả một order-level card trên mỗi order cho buyer history/admin
-dashboard, trực tiếp từ PostgreSQL. **Trigger:** `GET /v1/orders/search`.
+dashboard, trực tiếp từ PostgreSQL. **Trigger:** `GET /api/v1/orders` hoặc
+`GET /api/v1/admin/orders`.
 
 **Input:** `tab` mặc định `ALL`; optional `q,from,to,cursor,limit`, order/payment
 statuses và min/max amount theo query layer. Nếu thiếu range, dùng 90 ngày gần nhất.
@@ -80,10 +84,14 @@ line collapse, equal timestamp ordering, last page và total count không bị c
 **Mục tiêu:** Buyer/Admin hủy order chưa thanh toán; với order đã thu tiền, Admin
 được chuyển sang refund lane thay vì hủy tài chính sai cách.
 
-**Trigger/input:** `POST /v1/orders/{orderId}/cancel`, JWT/role, reason và optional
-`Idempotency-Key`. Redis `SETNX order:req:cancel:{key}` TTL 7 ngày có thể replay
-response đã lưu hoặc trả `409 IDEMPOTENCY_KEY_REUSED`. API lấy distributed lock
-`order:lock:fsm:{orderId}` TTL 10 giây, sau đó `SELECT ... FOR UPDATE`.
+**Trigger/input:** Buyer gọi
+`POST /api/v1/orders/{order_id}/cancellation-requests`; Admin pre-payment gọi
+`POST /api/v1/admin/orders/{order_id}/cancellation-requests`; Admin paid lane gọi
+`POST /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests`. Mọi command có
+`Idempotency-Key` bắt buộc. Redis mirror dùng `order:req:cancel:{key}` hoặc
+`order:req:admin-refund:{key}` TTL 7 ngày; cùng key/payload có thể replay, khác payload
+trả `409 IDEMPOTENCY_KEY_REUSED`. API lấy distributed lock
+`order:lock:fsm:{order_id}` TTL 10 giây, sau đó `SELECT ... FOR UPDATE`.
 
 **Nhánh A — pre-payment:** Buyer hoặc Admin với `PENDING_PAYMENT` first commits
 `PENDING_PAYMENT -> CANCELLING` plus a durable cancellation command/dispatch record.
@@ -102,12 +110,13 @@ movement. Only the all-line success creates/attaches the lifetime case, transiti
 `RETURN_REQUESTED`, locks `orders.final_amount_minor`, and calls Payment; no Refund
 Scope/receipt is registered. A rejection records the attempt only and does not burn a
 future Buyer case.
-If any line has dispatched or the root is mixed, return
-`ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` for manual exception rather than attempting
-a partial release. Không signal CancelOrder vào checkout workflow cũ.
+If any line has dispatched or the root is mixed, operation becomes `REJECTED` with
+`ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` rather than attempting a partial release.
+Không signal CancelOrder vào checkout workflow cũ.
 
-**Output/state:** trả `202 Accepted` và workflow/result reference; lưu trạng thái
-command `IN_PROGRESS` trong Redis nếu cần replay. Invalid role/state trả 403/409.
+**Output/state:** trả `202 Accepted`, `operation_id` và `Location` tới operation
+resource; durable dispatch/attempt là authority, Redis chỉ mirror replay. Invalid
+role/state trả 403/409. Cancel endpoint không đổi nghĩa thành refund theo state.
 WorkflowID serialize retry nhánh B; DB FSM giữ invariant nếu Redis mất key.
 
 **Race/recovery:** concurrent Buyer/Admin cancel chỉ một CAS transition thắng.
@@ -124,7 +133,8 @@ Stripe PaymentIntent và sau success đưa order tới `PROCESSING`.
 
 **Actor/participants:** Checkout, Order API, Temporal, PostgreSQL, Redis,
 Inventory, Promotion, Payment và outbox CDC. **Trigger:**
-`POST /v1/orders/create-from-checkout`.
+`POST /internal/v1/checkout-order-submissions` theo
+[Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml).
 
 **Preconditions:** checkout token hợp lệ/chưa dùng/chưa hết TTL/chống tamper; input
 server-side có address, SKU lines, canonical VND money và promotion snapshot hợp lệ.
@@ -143,7 +153,7 @@ sequenceDiagram
   participant I as Inventory
   participant P as Promotion
   participant Y as Payment
-  C->>O: create-from-checkout(snapshot, token)
+  C->>O: POST checkout-order-submissions(snapshot, token)
   O->>T: start/attach order-checkout-{token}
   T->>O: CreateOrder + ORDER_CREATED
   T->>I: ReserveInventory(allocation_plan_id, line mapping)
@@ -218,7 +228,14 @@ wallet/budget commit PostgreSQL, còn Redis finalizer có thể hội tụ sau. 
 sau khi reservation đã được dọn vẫn trả stored response. `CANCEL_FINAL` is deprecated
 legacy cleanup and prohibited here. Cùng key khác canonical payload là lỗi không retry mù.
 
-**Timeout/retry/output:** activity timeout 30 giây, retry tối đa 3; remote technical
+**HTTP result:** lần tạo đầu trả `201`, replay trả `200` chỉ khi Payment client data
+đã được durable checkpoint; response gồm order ID, numbered attempt/transaction,
+`client_secret`, `publishable_key`, `expires_at`. Promotion conflict trả structured
+RFC 9457 `409`; HTTP deadline trước checkpoint trả `503 retryable=true`, và Checkout
+retry cùng token/key/body hoặc đọc recovery resource. Đây là synchronous-to-checkpoint,
+không chờ Payment capture hay order terminal state.
+
+**Timeout/retry:** activity timeout 30 giây, retry tối đa 3; remote technical
 timeout is never treated as a negative business outcome: query/replay the exact command
 ID first. Workflow timeout 30 phút gồm payment window 15 phút và pre-payment rollback
 buffer; post-capture repair has its own durable recovery lane. A committed workflow
@@ -319,19 +336,19 @@ start until every line is delivered.
 **Mục tiêu:** Buyer gửi đúng một return request sau khi toàn bộ delivery unit đã
 giao; request khóa một selected-line scope trước khi start refund saga.
 
-**Trigger/input:** `POST /v1/orders/{orderId}/return`, JWT Buyer, header
-`Idempotency-Key`, `lines[] {order_line_id, quantity}`, `reason`, `reason_details`.
+**Trigger/input:** `POST /api/v1/orders/{order_id}/return-requests`, JWT Buyer, header
+`Idempotency-Key`, `lines[] {order_line_id, quantity}`, `reason_code`, `reason_details`.
 Không có `refund_type`. Redis request key TTL 7 ngày không thay thế business guard.
 
 **Preconditions:** Buyer sở hữu order; state thuộc lane cho phép return; mọi
-mọi `order_item_lines.fulfillment_status=DELIVERED`; `lines[]` không rỗng, không duplicate, thuộc order,
+`order_item_lines.fulfillment_status=DELIVERED`; `lines[]` không rỗng, không duplicate, thuộc order,
 và từng `quantity` bằng đúng `order_item_lines.quantity`. Scope có thể là tập con
 các line nhưng không có partial quantity. Trong locked transaction, CAS
 `buyer_return_locked_at IS NULL` và create refund case lifetime-unique.
 
 **Happy path:** CAS thắng; start `order-refund-{order_id}` với
 `trigger_source=API_RETURN`, reason `RETURN_API_ACCEPTED` và scope; trả `202` cùng
-`refund_request_id`, `workflow_id`.
+`refund_request_id`, `operation_id` và operation `Location`.
 
 **Duplicate/failure:** cùng key trả conflict/replay theo Redis policy; key mới vẫn
 không bypass one-shot. CAS thua trả `REFUND_CUSTOMER_REQUEST_ALREADY_USED`. Guard
@@ -485,6 +502,28 @@ case revision is `409`; missing evidence is `422`; outage leaves no decision and
 Tests cover unauthorized caller, evidence from another order, duplicate/conflicting
 decision, manual fulfillment without financial mutation, and resume of an unknown remote
 outcome via its original checkpoint only.
+
+## WF-ORDER-011 — Buyer tạo payment attempt kế tiếp
+
+**Mục tiêu:** cho Buyer tiếp tục thanh toán mà không tái sử dụng transaction identity
+cũ. **Trigger:** `POST /api/v1/orders/{order_id}/payment-attempts` với mandatory
+`Idempotency-Key`; `GET .../payment-attempts/{attempt_number}` đọc lại attempt.
+
+**Guards:** Buyer sở hữu order; order vẫn ở payment-eligible lane; không có captured
+transaction; attempt trước phải có durable terminal non-capture fact `FAILED`, `EXPIRED`
+hoặc `CANCELED`. API không nhận amount/provider; Order dùng immutable
+`orders.final_amount_minor`, currency `VND` và next monotonic attempt number.
+
+**Happy path:** trong local transaction Order persist stable Payment command/checkpoint
+cho attempt number kế tiếp. Activity gọi Payment với idempotency key ổn định; ambiguous
+outcome được query/replay, không tạo attempt khác. Khi transaction ID và client data đã
+được checkpoint, API trả `201`; cùng request replay `200`. `client_secret` chỉ được đọc
+cho active `PENDING` attempt và mọi response dùng `Cache-Control: private, no-store`.
+
+**Failure/race:** state/one-shot/idempotency conflict trả 409; unknown dependency outcome
+trả 503 retryable và caller dùng cùng key. Concurrent retry requests chỉ một numbered
+attempt thắng. PAYMENT_SUCCESS đồng thời freeze captured identity như WF-ORDER-005;
+request retry sau capture bị reject và không thể mint transaction thứ hai.
 
 ## Tình huống kiểm thử xuyên suốt
 

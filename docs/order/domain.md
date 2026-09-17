@@ -5,7 +5,9 @@ scope: target
 status: proposed
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - contracts/http/order/v1/openapi.yaml
+  - contracts/http/order/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -50,6 +52,7 @@ không thay thế invariants trong PostgreSQL.
 | Loại | Năng lực | Tác nhân | Aggregate/năng lực xử lý |
 |---|---|---|---|
 | Lệnh | Tạo order từ checkout | Checkout Service | OrderCheckoutWorkflow/Order |
+| Lệnh | Tạo payment attempt kế tiếp | Buyer owner | OrderCheckoutWorkflow/Payment attempt |
 | Truy vấn | Xem order detail | Buyer owner/Admin | Order query |
 | Truy vấn | Search/filter order | Buyer/Admin | PostgreSQL query model |
 | Lệnh | Hủy pre-payment order | Buyer/Admin | Checkout workflow |
@@ -202,7 +205,8 @@ fallback rank `99`.
   và không được bypass Inventory evidence.
 - Checkout, Payment, Inventory, Promotion và Temporal worker dùng service identity do
   service mesh thực thi theo principal (Order gọi Inventory/Promotion/Payment với principal
-  `order-service`; chỉ `checkout-service` được gọi `create-from-checkout` —
+  `order-service`; chỉ `checkout-service` được gọi
+  `POST /internal/v1/checkout-order-submissions` —
   [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
   public client không được giả mạo trusted headers hoặc signal, và `X-Service-Identity` chỉ là
   attribution.
@@ -217,7 +221,7 @@ fallback rank `99`.
 | `IDEMPOTENCY_KEY_REUSED` | Redis key đã tồn tại nhưng không replay response | Không | HTTP 409 |
 | `REFUND_CUSTOMER_REQUEST_ALREADY_USED` | Buyer one-shot guard đã set | Không | HTTP 409 |
 | `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` | Có order line chưa delivered (legacy error-code name) | Có sau khi giao đủ | HTTP 409 |
-| `INVALID_REFUND_SCOPE` | Line không thuộc order, trùng, quantity không đúng full line, hoặc scope rỗng | Không | HTTP 400/409 |
+| `INVALID_REFUND_SCOPE` | Line không thuộc order, trùng, quantity không đúng full line, hoặc scope rỗng | Không | HTTP 422 |
 | `ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` | Inventory không thể atomic-release toàn bộ committed lines trước dispatch | Không | HTTP 409 |
 | `PROMOTION_RECALCULATION_NEEDED` | Batch reserve promotion all-or-nothing thất bại | Có sau preview mới | HTTP 409 về Checkout |
 | `PAYMENT_TIMEOUT` | Không có success trong 15 phút | Không trên workflow cũ | Cancel + có thể recovery lane |
