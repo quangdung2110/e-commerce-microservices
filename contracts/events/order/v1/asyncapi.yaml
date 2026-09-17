@@ -1,13 +1,14 @@
 asyncapi: 3.0.0
 info:
-  title: Order Completion Event for Review
+  title: Order Service Integration Events
   version: 1.0.0
   description: >-
-    Provider-owned target contract for the ORDER_COMPLETED fact that grants Review
-    eligibility. This v1 contract intentionally covers only the Review integration
-    subset; other Order event contracts remain outside this document.
+    Provider-owned Order facts with registered consumers, plus the provider-owned
+    Payment, Inventory and Delivery facts consumed by Order workflows. Order publishes
+    only PAID for Cart cleanup and COMPLETED for Review eligibility. Delivery is
+    at-least-once; consumers deduplicate by CloudEvents id.
 x-adoption-status: proposed
-x-contract-scope: order-completed-for-review
+x-contract-scope: order-integration-events
 defaultContentType: application/cloudevents+json
 servers:
   local:
@@ -16,28 +17,96 @@ servers:
 channels:
   orderEvents:
     address: t.order.events
-    description: Order lifecycle topic. This contract specifies ORDER_COMPLETED only.
+    description: Order facts that have registered, implemented consumers.
     x-owner: order-service
     x-message-key: order_id
     x-ordering-scope: order_id
     x-delivery-semantic: at-least-once
     x-deduplication-key: CloudEvents.id
+    x-ordering-guard: sequence
     x-max-payload-bytes: 262144
     x-retention: 14d
-    x-retry-policy:
-      strategy: consumer-managed-retry-with-dlq
-      dead-letter-topic: t.order.events.dlq
     x-data-classification: INTERNAL
     messages:
+      orderPaid: { $ref: '#/components/messages/orderPaid' }
       orderCompleted: { $ref: '#/components/messages/orderCompleted' }
+  paymentFacts:
+    address: t.payment.events.v2
+    description: Payment-owned financial facts accepted by Order workflows.
+    x-owner: payment-service
+    x-message-key: order_id
+    messages:
+      paymentFact:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentFact'
+  inventoryOrderFacts:
+    address: t.inventory.order.events.v1
+    description: Inventory-owned physical-dispatch and refund-inspection facts accepted by Order.
+    x-owner: inventory-service
+    x-message-key: order_id
+    messages:
+      reservationLineDispatched:
+        $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/reservationLineDispatched'
+      allItemsInspectionCompleted:
+        $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/allItemsInspectionCompleted'
+  deliveryFacts:
+    address: t.delivery.order.events.v1
+    description: Delivery-owned verified customer-delivery facts accepted by Order.
+    x-owner: delivery-service
+    x-message-key: order_id
+    messages:
+      orderLineDelivered:
+        $ref: '../../delivery/v1/asyncapi.yaml#/components/messages/orderLineDelivered'
 operations:
+  publishOrderPaid:
+    action: send
+    channel: { $ref: '#/channels/orderEvents' }
+    summary: Publish once when the immutable captured payment moves the Order into PAID, including fenced late-payment recovery.
+    x-consumers: [cart-service]
+    messages: [{ $ref: '#/channels/orderEvents/messages/orderPaid' }]
   publishOrderCompleted:
     action: send
     channel: { $ref: '#/channels/orderEvents' }
-    summary: Publish the immutable purchase snapshot after every line in an order is delivered by verified Delivery proof.
+    summary: Publish once after every line is delivered by verified Delivery proof and the master completion CAS succeeds.
+    x-consumers: [review-service]
     messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
+  consumePaymentFacts:
+    action: receive
+    channel: { $ref: '#/channels/paymentFacts' }
+    summary: Consume only terminal payment facts and refund lifecycle facts that can advance or reconcile an Order workflow.
+    x-consumer-group: order-payment-consumer
+    x-accepted-event-types:
+      - PAYMENT_SUCCESS
+      - PAYMENT_CANCELED
+      - PAYMENT_FAILED
+      - PAYMENT_EXPIRED
+      - REFUND_PROCESSING
+      - REFUND_SUCCESS
+      - REFUND_FAILED
+      - REFUND_REVERSED
+    messages: [{ $ref: '#/channels/paymentFacts/messages/paymentFact' }]
+  consumeInventoryOrderFacts:
+    action: receive
+    channel: { $ref: '#/channels/inventoryOrderFacts' }
+    summary: Consume physical dispatch and completed selected-return inspection; HTTP activity results remain authoritative for reserve, commit and release commands.
+    x-consumer-groups: [order-inventory-ship-consumer, order-inventory-return-consumer]
+    messages:
+      - { $ref: '#/channels/inventoryOrderFacts/messages/reservationLineDispatched' }
+      - { $ref: '#/channels/inventoryOrderFacts/messages/allItemsInspectionCompleted' }
+  consumeDeliveryFacts:
+    action: receive
+    channel: { $ref: '#/channels/deliveryFacts' }
+    summary: Consume the only fact allowed to move one Order line from DISPATCHED to DELIVERED.
+    x-consumer-group: order-delivery-consumer
+    messages: [{ $ref: '#/channels/deliveryFacts/messages/orderLineDelivered' }]
 components:
   messages:
+    orderPaid:
+      name: orderPaidV1
+      title: ORDER_PAID
+      summary: Minimal purchased-SKU fact used by Cart to remove only the items paid for.
+      contentType: application/cloudevents+json
+      x-consumers: [cart-service]
+      payload: { $ref: './schemas/order-paid.schema.json' }
     orderCompleted:
       name: orderCompletedV1
       title: ORDER_COMPLETED

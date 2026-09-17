@@ -51,7 +51,10 @@ channels:
       reviewRemovalNotificationRequested: { $ref: '#/components/messages/reviewRemovalNotificationRequested' }
   orderEvents:
     address: t.order.events
-    description: ORDER_COMPLETED fact owned and published by Order Service.
+    description: >-
+      Order Service publishes only the PAID and COMPLETED integration facts on this
+      topic. Review dispatches only com.ecommerce.order.completed.v1 and ACKs the
+      PAID fact without an effect.
     x-owner: order-service
     messages:
       orderCompleted:

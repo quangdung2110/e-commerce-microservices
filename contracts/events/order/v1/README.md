@@ -1,28 +1,45 @@
-# Order Events v1 — Review subset
+# Order Events v1
 
-This provider-owned contract specifies only `ORDER_COMPLETED` on `t.order.events`.
-It exists because Review must receive an immutable item snapshot to grant purchase
-entitlements without synchronously calling Order, Product or Catalog.
+This contract describes the complete asynchronous integration surface of Order Service.
+Order publishes only facts with registered, implemented consumers:
 
-`items[]` is mandatory. `variant_name` is nullable for historical orders, but new
-Order producers must populate it whenever the original item snapshot is available.
-Each `(order_id, product_id, sku_id)` grants at most one Review eligibility; quantity
-does not create multiple entitlements. `items[]` is bounded at 200 entries so the
-transaction a consumer opens per event is finite. Producers must group by
-`(product_id, sku_id)` and send one entry per pair; JSON Schema cannot express
-uniqueness over a subset of an object's keys, so this is a producer obligation the
-schema states rather than enforces. A consumer that receives a duplicate anyway
-deduplicates on that key and keeps the first occurrence in array order, so the
-`variant_name` it snapshots is defined rather than arbitrary.
+- `com.ecommerce.order.paid.v1` is consumed by Cart Service to remove the purchased
+  SKUs without changing cart activity.
+- `com.ecommerce.order.completed.v1` is consumed by Review Service to grant one
+  entitlement per purchased `(product_id, sku_id)`.
 
-`order_id` is an opaque string owned by Order. Consumers compare it for equality and
-must not parse it, sort by it, or derive anything from it; its internal form stays
-Order's decision. It is deliberately not a JSON number: JSON numbers are IEEE-754
-doubles in JavaScript, so an int64 above 2^53-1 is silently rounded and the identifier
-is corrupted with no error. `subject` carries the same value as `orders/{order_id}`.
+Notification, Analytics and Payment do not currently have an implemented consumer for
+any other Order fact. Consequently Order does not publish created, cancelled, generic
+status-changed, line-fulfillment, refunded or refund-failed events. HTTP read models and
+operation resources expose those states. A new event is added only after its consumer,
+business action and catalog interaction are registered.
 
-Inventory currently emits a different value for the same order (`"order-10001"` where
-Order emits `"10001"`). Both are opaque strings, so neither contract is invalid, but
-the two streams cannot be correlated until one owner adopts the other's form.
+Both messages use CloudEvents 1.0 structured JSON on `t.order.events`. Kafka key,
+`data.order_id` and `subject` use the same canonical, unpadded base-10 Order ID. Delivery
+is at-least-once. `id` is the stable outbox event UUID and must not change during relay
+retry. `sequence` is monotonic over the integration events emitted for one order; gaps
+are valid and consumers must not interpret it as the Order FSM version.
 
-Other existing Order events are not defined by this focused contract.
+`ORDER_PAID` contains only `order_id`, `user_id` and the unique purchased `sku_ids[]`
+that Cart needs. It deliberately excludes amount, payment transaction/provider data and
+late-recovery metadata because no registered consumer needs them. CloudEvents `time` is
+the durable PAID transition time.
+
+`ORDER_COMPLETED.items[]` is mandatory because Review must not synchronously call Order
+or Product on its write path. `variant_name` is nullable for historical orders, but new
+Order producers populate it whenever the accepted checkout snapshot contains it. The
+producer groups items by `(product_id, sku_id)` and sends one entry per pair; quantity
+does not grant multiple review entitlements.
+
+The same AsyncAPI also documents Order's receive operations without copying schemas
+owned by other providers:
+
+- Payment terminal/refund facts from `t.payment.events.v2`;
+- Inventory physical-dispatch and completed-inspection facts from
+  `t.inventory.order.events.v1`;
+- verified Delivery facts from `t.delivery.order.events.v1`.
+
+Order does not consume Payment initiation facts or Inventory reserve/commit/release
+facts. Those commands already return durable HTTP activity results and provide recovery
+queries. Every accepted inbound event first passes semantic identity/revision validation
+and a durable inbox before it can signal a Temporal workflow.

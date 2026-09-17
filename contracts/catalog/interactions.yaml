@@ -156,9 +156,11 @@ interactions:
     protocol: kafka
     provider: order-service
     consumers: [cart-service]
-    contract: null
-    status: legacy_documented
-    notes: Currently described in docs/cart/interfaces.md.
+    contract: events/order/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      ORDER_PAID is a minimal CloudEvent containing canonical string order_id,
+      user_id and unique purchased sku_ids; Cart removes those SKUs idempotently.
 
   - id: order-completed-grants-review-entitlements
     protocol: kafka

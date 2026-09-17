@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-18
+
+- Order Events v1 mở rộng từ Review-only subset thành toàn bộ async integration
+  surface của Order. Outbound chỉ còn `com.ecommerce.order.paid.v1` cho Cart và
+  `com.ecommerce.order.completed.v1` cho Review; các event created/cancelled/status/
+  line/refund không có implemented consumer bị loại khỏi target contract.
+- `ORDER_PAID` đổi từ custom `event_type/payload` legacy sang CloudEvents 1.0,
+  `order_id` decimal string canonical và payload tối thiểu `order_id`, `user_id`,
+  unique `sku_ids[]`. Thêm schema và example provider-owned.
+- `ORDER_COMPLETED.order_id` và `subject` được siết từ opaque identifier sang decimal
+  string canonical để khớp HTTP contract và storage BIGINT của Order.
+- Order AsyncAPI khai báo receive operations cho đúng tập Payment terminal/refund,
+  Inventory dispatch/inspection và Delivery proof facts mà workflow thực sự xử lý;
+  schema inbound tiếp tục thuộc provider tương ứng.
+
 ## 2026-09-15
 
 - Mô hình workload identity cho mọi internal API chốt theo `docs/mesh/`: service mesh (Istio

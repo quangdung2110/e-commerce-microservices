@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/order/v1/schemas/order-paid.schema.json",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "type", "source", "dataschema", "subject", "sequence", "data"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "type": { "const": "com.ecommerce.order.paid.v1" },
+        "source": { "const": "/services/order" },
+        "dataschema": { "const": "/contracts/events/order/v1/schemas/order-paid.schema.json" },
+        "subject": { "type": "string", "pattern": "^orders/[1-9][0-9]*$" },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Monotonic integration-event sequence for this order; gaps are allowed." },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["order_id", "user_id", "sku_ids"],
+          "properties": {
+            "order_id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$",
+              "maxLength": 19,
+              "description": "Canonical unpadded base-10 representation of the Order-owned positive int64 identifier."
+            },
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "sku_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 200,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "description": "Unique purchased SKU identifiers Cart removes idempotently."
+            }
+          }
+        }
+      }
+    }
+  ]
+}

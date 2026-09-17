@@ -256,7 +256,8 @@ Invoke-OptionalTool -Name 'redocly' -Action {
 Invoke-OptionalTool -Name 'asyncapi' -Action {
     @(
         'events/cart/v1/asyncapi.yaml',
-        'events/inventory/v1/asyncapi.yaml'
+        'events/inventory/v1/asyncapi.yaml',
+        'events/order/v1/asyncapi.yaml'
     ) | ForEach-Object {
         $spec = Join-Path $contractRoot $_
         & asyncapi validate $spec
