@@ -12,7 +12,7 @@ carries exactly one outbound event, `CART_ABANDONED`, to Notification Service.
 | Interaction | Direction | Contract |
 |---|---|---|
 | Cart HTTP API | Inbound | [`contracts/http/cart/v1/openapi.yaml`](../../../contracts/http/cart/v1/openapi.yaml) |
-| `ORDER_PAID` | Inbound Kafka | [Order interfaces — event phát ra](../../../docs/order/interfaces.md#5-event-phát-ra) |
+| `com.ecommerce.order.paid.v1` | Inbound Kafka | [Order Events AsyncAPI v1](../../../contracts/events/order/v1/asyncapi.yaml) |
 | Product lookup | Outbound gRPC | [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../../contracts/grpc/ecommerce/product/v1/product_service.proto) |
 | `CART_ABANDONED` | Outbound Kafka | [`contracts/events/cart/v1/asyncapi.yaml`](../../../contracts/events/cart/v1/asyncapi.yaml) |
 
@@ -34,7 +34,7 @@ internal/service                        application service (the use cases)
 internal/api                            HTTP adapter: dto, handler, middleware, router
 internal/infrastructure/cartredis       keys, Lua scripts, cart store, outbox streams
 internal/infrastructure/product         Product gRPC client, breaker, validation cache
-internal/infrastructure/kafka           CloudEvent producer, ORDER_PAID consumer
+internal/infrastructure/kafka           CloudEvent producer, com.ecommerce.order.paid.v1 consumer
 internal/infrastructure/observability   logger and metrics
 internal/workers/{marker,relay,trimmer,orderpaid}
 ```
@@ -71,7 +71,7 @@ from `outbox_key + stream_id` and Notification deduplicates on it. `XACK` does
 not free memory, so the trimmer runs separately and never trims past the oldest
 pending entry.
 
-**`ORDER_PAID` does not touch activity.** Paying for part of a cart is not
+**`com.ecommerce.order.paid.v1` does not touch activity.** Paying for part of a cart is not
 browsing, so the abandonment deadline must not move. It also needs no
 idempotency record: `HDEL` per SKU is already idempotent, and the path emits no
 event.

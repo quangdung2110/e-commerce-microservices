@@ -1,5 +1,5 @@
 // Package kafka carries CART_ABANDONED out to Notification and brings
-// ORDER_PAID in from Order.
+// com.ecommerce.order.paid.v1 in from Order.
 package kafka
 
 import (

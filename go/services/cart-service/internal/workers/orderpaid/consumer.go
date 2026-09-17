@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"cart-service/internal/domain"
@@ -15,13 +17,20 @@ import (
 )
 
 // EventTypeOrderPaid is the only event type this consumer acts on.
-const EventTypeOrderPaid = "ORDER_PAID"
+const EventTypeOrderPaid = "com.ecommerce.order.paid.v1"
 
 // envelope is the outer message Order Service publishes to t.order.events.
 type envelope struct {
-	EventID   string  `json:"event_id"`
-	EventType string  `json:"event_type"`
-	Payload   payload `json:"payload"`
+	SpecVersion string  `json:"specversion"`
+	ID          string  `json:"id"`
+	Type        string  `json:"type"`
+	Source      string  `json:"source"`
+	Subject     string  `json:"subject"`
+	Time        string  `json:"time"`
+	ContentType string  `json:"datacontenttype"`
+	DataSchema  string  `json:"dataschema"`
+	Sequence    int64   `json:"sequence"`
+	Data        payload `json:"data"`
 }
 
 // payload is the subset of ORDER_PAID that Cart needs.
@@ -29,7 +38,7 @@ type envelope struct {
 // Cart deliberately does not read a cart_id from the event: it derives the
 // cart from user_id itself, so the routing rule lives in one place.
 type payload struct {
-	OrderID int64    `json:"order_id"`
+	OrderID string   `json:"order_id"`
 	UserID  string   `json:"user_id"`
 	SkuIDs  []string `json:"sku_ids"`
 }
@@ -66,49 +75,68 @@ func (h *Handler) Handle(ctx context.Context, message *sarama.ConsumerMessage) e
 		return nil
 	}
 
-	if event.EventType != EventTypeOrderPaid {
-		// t.order.events carries the whole order lifecycle; Cart only acts on
-		// the paid milestone.
+	if event.Type != EventTypeOrderPaid {
+		// t.order.events carries the PAID and COMPLETED integration facts. Cart
+		// only acts on the paid milestone.
 		h.metrics.OrderPaidSkipped("other_event_type")
 		return nil
 	}
 
-	if event.Payload.UserID == "" || len(event.Payload.SkuIDs) == 0 {
+	_, timeErr := time.Parse(time.RFC3339, event.Time)
+	if event.SpecVersion != "1.0" || uuid.Validate(event.ID) != nil ||
+		event.Source != "/services/order" || timeErr != nil ||
+		event.ContentType != "application/json" ||
+		event.DataSchema != "/contracts/events/order/v1/schemas/order-paid.schema.json" ||
+		event.Sequence < 1 ||
+		!isCanonicalOrderID(event.Data.OrderID) || event.Subject != "orders/"+event.Data.OrderID ||
+		uuid.Validate(event.Data.UserID) != nil || len(event.Data.SkuIDs) == 0 || len(event.Data.SkuIDs) > 200 {
 		h.metrics.OrderPaidSkipped("incomplete_payload")
 		h.logger.Warn("skipping ORDER_PAID with an incomplete payload",
-			zap.String("event_id", event.EventID),
-			zap.Int64("order_id", event.Payload.OrderID),
+			zap.String("event_id", event.ID),
+			zap.String("order_id", event.Data.OrderID),
 			zap.Int64("offset", message.Offset),
 		)
 		return nil
 	}
 
-	identity, err := domain.NewIdentity(event.Payload.UserID)
+	identity, err := domain.NewIdentity(event.Data.UserID)
 	if err != nil {
 		h.metrics.OrderPaidSkipped("invalid_user_id")
 		h.logger.Warn("skipping ORDER_PAID with an unusable user_id",
-			zap.String("event_id", event.EventID),
-			zap.Int64("order_id", event.Payload.OrderID),
+			zap.String("event_id", event.ID),
+			zap.String("order_id", event.Data.OrderID),
 		)
 		return nil
 	}
 
-	skuIDs := dedupe(event.Payload.SkuIDs)
+	skuIDs := dedupe(event.Data.SkuIDs)
 	result, err := h.service.RemovePurchased(ctx, identity, skuIDs)
 	if err != nil {
 		h.metrics.OrderPaidError()
-		return fmt.Errorf("clear purchased skus for order %d: %w", event.Payload.OrderID, err)
+		return fmt.Errorf("clear purchased skus for order %s: %w", event.Data.OrderID, err)
 	}
 
 	h.metrics.OrderPaidApplied(result.DeletedCount)
 	h.logger.Info("cleared purchased skus from cart",
-		zap.String("event_id", event.EventID),
-		zap.Int64("order_id", event.Payload.OrderID),
+		zap.String("event_id", event.ID),
+		zap.String("order_id", event.Data.OrderID),
 		zap.String("cart_id", identity.CartID),
 		zap.Int("requested", len(skuIDs)),
 		zap.Int("deleted", result.DeletedCount),
 	)
 	return nil
+}
+
+func isCanonicalOrderID(value string) bool {
+	if value == "" || len(value) > 19 || value[0] == '0' {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // dedupe removes repeated SKU ids so one HDEL is issued per SKU.

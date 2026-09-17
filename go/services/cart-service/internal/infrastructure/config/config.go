@@ -55,7 +55,7 @@ type Kafka struct {
 	TopicCartEvents string `mapstructure:"topic_cart_events"`
 	// TopicCartEventsDLQ receives outbox entries that can never be published.
 	TopicCartEventsDLQ string `mapstructure:"topic_cart_events_dlq"`
-	// TopicOrderEvents carries the order lifecycle Cart consumes ORDER_PAID from.
+	// TopicOrderEvents carries the PAID and COMPLETED facts; Cart consumes PAID.
 	TopicOrderEvents   string        `mapstructure:"topic_order_events"`
 	ConsumerGroupOrder string        `mapstructure:"consumer_group_order"`
 	InitialOffset      string        `mapstructure:"initial_offset"`

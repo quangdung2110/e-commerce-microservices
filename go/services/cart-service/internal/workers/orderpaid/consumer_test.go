@@ -70,19 +70,19 @@ func message(body string) *sarama.ConsumerMessage {
 
 // The envelope is the one Order Service documents for t.order.events.
 const orderPaidEvent = `{
-  "event_id": "123e4567-e89b-12d3-a456-426614174001",
-  "event_type": "ORDER_PAID",
-  "aggregate_type": "Order",
-  "aggregate_id": "10001",
-  "timestamp": "2026-02-28T10:05:00Z",
-  "source": "order-service",
-  "payload": {
-    "order_id": 10001,
+  "specversion": "1.0",
+  "id": "123e4567-e89b-12d3-a456-426614174001",
+  "type": "com.ecommerce.order.paid.v1",
+  "source": "/services/order",
+  "subject": "orders/10001",
+  "time": "2026-02-28T10:05:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/order/v1/schemas/order-paid.schema.json",
+  "sequence": 1,
+  "data": {
+    "order_id": "10001",
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "status": "PAID",
-    "sku_ids": ["sku-001", "sku-002"],
-    "final_amount": 995000,
-    "paid_at": "2026-02-28T10:05:00Z"
+    "sku_ids": ["sku-001", "sku-002"]
   }
 }`
 
@@ -118,11 +118,11 @@ func TestHandlerClearsPurchasedSkus(t *testing.T) {
 	}
 }
 
-// t.order.events carries the whole order lifecycle. Cart only acts on the
-// paid milestone and must leave the rest alone.
+// t.order.events carries both registered Order facts. Cart only acts on the
+// paid milestone and must leave ORDER_COMPLETED alone.
 func TestHandlerIgnoresOtherOrderEvents(t *testing.T) {
 	store := &recordingStore{}
-	body := `{"event_type":"ORDER_CANCELLED","payload":{"order_id":1,"user_id":"u","sku_ids":["s"]}}`
+	body := `{"specversion":"1.0","type":"com.ecommerce.order.completed.v1","data":{}}`
 
 	if err := newTestHandler(store).Handle(context.Background(), message(body)); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -148,8 +148,9 @@ func TestHandlerSkipsUnparseableMessages(t *testing.T) {
 func TestHandlerSkipsIncompletePayloads(t *testing.T) {
 	store := &recordingStore{}
 	cases := []string{
-		`{"event_type":"ORDER_PAID","payload":{"order_id":1,"user_id":"","sku_ids":["s"]}}`,
-		`{"event_type":"ORDER_PAID","payload":{"order_id":1,"user_id":"u","sku_ids":[]}}`,
+		`{"specversion":"1.0","id":"1","type":"com.ecommerce.order.paid.v1","source":"/services/order","subject":"orders/1","data":{"order_id":"1","user_id":"","sku_ids":["s"]}}`,
+		`{"specversion":"1.0","id":"1","type":"com.ecommerce.order.paid.v1","source":"/services/order","subject":"orders/1","data":{"order_id":"1","user_id":"u","sku_ids":[]}}`,
+		`{"specversion":"1.0","id":"1","type":"com.ecommerce.order.paid.v1","source":"/services/order","subject":"orders/01","data":{"order_id":"01","user_id":"u","sku_ids":["s"]}}`,
 	}
 
 	for _, body := range cases {
@@ -175,7 +176,7 @@ func TestHandlerReturnsAnErrorWhenTheStoreFails(t *testing.T) {
 
 func TestHandlerDeduplicatesSkuIDs(t *testing.T) {
 	store := &recordingStore{}
-	body := `{"event_type":"ORDER_PAID","payload":{"order_id":1,"user_id":"u1","sku_ids":["a","a","","b"]}}`
+	body := `{"specversion":"1.0","id":"123e4567-e89b-12d3-a456-426614174001","type":"com.ecommerce.order.paid.v1","source":"/services/order","subject":"orders/1","time":"2026-02-28T10:05:00Z","datacontenttype":"application/json","dataschema":"/contracts/events/order/v1/schemas/order-paid.schema.json","sequence":1,"data":{"order_id":"1","user_id":"550e8400-e29b-41d4-a716-446655440000","sku_ids":["a","a","","b"]}}`
 
 	if err := newTestHandler(store).Handle(context.Background(), message(body)); err != nil {
 		t.Fatalf("Handle: %v", err)

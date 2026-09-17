@@ -34,7 +34,7 @@ trong database.
 | Query | Đọc cart của mình | Authenticated user |
 | Command | Thêm SKU hoặc đặt quantity | Authenticated user |
 | Command | Xóa nhiều SKU | Authenticated user |
-| Command | Xóa SKU đã mua | `ORDER_PAID` consumer |
+| Command | Xóa SKU đã mua | `com.ecommerce.order.paid.v1` consumer |
 | Command | Đánh dấu abandoned | Marker worker |
 
 ## 4. Business rules
@@ -47,7 +47,7 @@ trong database.
 | `CART-BR-004` | SKU đã có dùng validation còn tươi, không gọi Product cho mọi click tăng quantity |
 | `CART-BR-005` | Giá lúc thêm và thời điểm thêm không đổi khi update quantity |
 | `CART-BR-006` | Xóa SKU không tồn tại là idempotent |
-| `CART-BR-007` | `ORDER_PAID` chỉ xóa SKU đã mua; cart còn item vẫn active |
+| `CART-BR-007` | `com.ecommerce.order.paid.v1` chỉ xóa SKU đã mua; cart còn item vẫn active |
 | `CART-BR-008` | GET không gia hạn TTL; write và reactivation có gia hạn |
 | `CART-BR-009` | `CART_ABANDONED` chỉ phát sau 30 ngày inactive |
 
@@ -81,7 +81,7 @@ Redis; không cần tombstone vì không có asynchronous projection để hội
 ## 7. Authorization rules
 
 Mọi API yêu cầu user đã đăng nhập. Gateway inject identity; Cart tự dựng token,
-bucket và cart ID. `ORDER_PAID` consumer dựng cart từ trusted `user_id`. Marker và
+bucket và cart ID. Order-paid consumer dựng cart từ trusted `user_id`. Marker và
 relay chạy system identity.
 
 ## 8. Domain errors

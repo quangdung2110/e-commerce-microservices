@@ -17,7 +17,7 @@ verified_against_commit: null
 | `WF-CART-001` | Thêm hoặc đặt quantity item | HTTP | User |
 | `WF-CART-002` | Đọc cart | HTTP | User |
 | `WF-CART-003` | Xóa item theo lô | HTTP | User |
-| `WF-CART-004` | Dọn SKU sau thanh toán | Kafka `ORDER_PAID` | Order consumer |
+| `WF-CART-004` | Dọn SKU sau thanh toán | Kafka `com.ecommerce.order.paid.v1` | Order consumer |
 | `WF-CART-005` | Đánh dấu cart abandoned | Schedule | Marker loop |
 | `WF-CART-006` | Relay abandoned event | Continuous | Relay loop |
 | `WF-CART-007` | Trim stream an toàn | Schedule | Trimmer loop |
@@ -54,9 +54,10 @@ Checkout xác thực catalog/giá và Inventory reserve xác nhận stock.
 
 Không phát `CART_ITEM_DELETED` hoặc `CART_CLEARED` vì chưa có consumer.
 
-## WF-CART-004 — Dọn SKU sau `ORDER_PAID`
+## WF-CART-004 — Dọn SKU sau `com.ecommerce.order.paid.v1`
 
-1. Consumer validate `order_id`, `user_id`, `sku_ids[]` và dựng bucket từ user.
+1. Consumer validate CloudEvents envelope, canonical string `order_id`, `user_id`,
+   unique `sku_ids[]` và dựng bucket từ user.
 2. Gọi `remove_items.lua` với `touch_activity = 0`, không truyền HTTP idempotency key.
 3. Commit Kafka offset sau khi script thành công. Redelivery an toàn vì `HDEL` theo SKU không có Cart event và không gia hạn activity.
 

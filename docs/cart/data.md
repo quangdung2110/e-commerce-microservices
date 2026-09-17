@@ -129,7 +129,7 @@ HTTP idempotency record chứa hash canonical của request và response. Record
 scope theo `user_token + HTTP operation + Idempotency-Key`, nên hai user cùng bucket
 hoặc hai operation khác nhau không thể xung đột. Cùng key trong đúng scope nhưng khác
 payload trả `409`; key đang xử lý trả conflict/retryable response theo OpenAPI.
-`ORDER_PAID` không cần record riêng: `HDEL` theo SKU, không phát Cart event và không
+Order-paid event không cần record riêng: `HDEL` theo SKU, không phát Cart event và không
 gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka redeliver.
 
 ## 8. Lifecycle
@@ -140,7 +140,7 @@ gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka r
 | `ACTIVE` | User write | Gia hạn `items`/`meta` 37 ngày và dời ZSET deadline |
 | `ABANDONED` | User write trong retention | Reactivate, dời deadline và TTL active |
 | `ABANDONED` | 7 ngày sau marker | Redis tự expire |
-| Cart rỗng | User remove hoặc `ORDER_PAID` | Xóa `items`, `meta`, `ZSET` member ngay |
+| Cart rỗng | User remove hoặc `com.ecommerce.order.paid.v1` | Xóa `items`, `meta`, `ZSET` member ngay |
 
 TTL 37 ngày tạo buffer 7 ngày cho scheduler sau ngưỡng abandoned 30 ngày. Nếu Redis
 key hết hạn trước khi marker chạy, marker chỉ `ZREM` member stale và không phát event.

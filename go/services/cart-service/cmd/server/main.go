@@ -1,4 +1,4 @@
-// Command server runs the Cart Service: the HTTP API, the ORDER_PAID consumer
+// Command server runs the Cart Service: the HTTP API, the com.ecommerce.order.paid.v1 consumer
 // and the three background loops (marker, relay, trimmer).
 //
 // At the load this service is sized for, one deployment runs all of them. When
@@ -114,7 +114,7 @@ func run(configPath string) error {
 	catalog.Observer = metrics
 	defer func() { _ = catalog.Close() }()
 
-	// ── Kafka: CART_ABANDONED out, ORDER_PAID in ─────────────────────────
+	// ── Kafka: CART_ABANDONED out, com.ecommerce.order.paid.v1 in ───────
 	publisher, err := kafka.NewProducer(kafka.ProducerConfig{
 		Brokers:         cfg.Kafka.Brokers,
 		Topic:           cfg.Kafka.TopicCartEvents,

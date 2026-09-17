@@ -15,7 +15,7 @@ verified_against_commit: null
 | Interaction | Direction | Contract |
 |---|---|---|
 | Cart HTTP API | Inbound | [OpenAPI v1](../../contracts/http/cart/v1/openapi.yaml) |
-| `ORDER_PAID` | Inbound Kafka | Order event contract |
+| `com.ecommerce.order.paid.v1` | Inbound Kafka | [Order Events AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
 | Product lookup | Outbound gRPC | `product_service.proto` |
 | `CART_ABANDONED` | Outbound Kafka | [AsyncAPI v1](../../contracts/events/cart/v1/asyncapi.yaml) |
 
@@ -65,16 +65,18 @@ item list, current price, payment hay PII trực tiếp.
 Không phát `CART_ITEM_*`, `CART_CLEARED` hay `CART_CHECKED_OUT` khi chưa có consumer
 được xác định.
 
-## 5. Event tiêu thụ: `ORDER_PAID`
+## 5. Event tiêu thụ: `com.ecommerce.order.paid.v1`
 
-Cart dùng `order_id`, `user_id`, `sku_ids[]` và dựng routing từ `user_id`, rồi gọi
+Cart dispatch theo exact CloudEvents `type`, kiểm `specversion=1.0`,
+`source=/services/order`, `subject=orders/{order_id}` và canonical decimal-string
+`order_id`. Cart dùng `user_id`, unique `sku_ids[]` và dựng routing từ `user_id`, rồi gọi
 remove-items script với `touch_activity = 0`. SKU không có trong cart bị bỏ qua;
 `HDEL` là idempotent nên Kafka redelivery không cần Redis key riêng. Event không tạo
-Kafka message Cart.
+Kafka message Cart. `ORDER_COMPLETED` cùng topic được ACK mà không tạo effect.
 
 ## 6. Compatibility
 
-Ưu tiên thêm optional field. `CART_ABANDONED` là event duy nhất được AsyncAPI v1 mô
-tả; các event Cart cũ bị loại khỏi public contract. HTTP v1 dùng delta, khớp Lua
+Ưu tiên thêm optional field. `CART_ABANDONED` là event duy nhất Cart phát; inbound
+`ORDER_PAID` thuộc AsyncAPI do Order sở hữu. Các event Cart cũ bị loại khỏi public contract. HTTP v1 dùng delta, khớp Lua
 atomic; contract test phải chứng minh duplicate Idempotency-Key không áp dụng delta
 lần hai và các delta độc lập không lost update.

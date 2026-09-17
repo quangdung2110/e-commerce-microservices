@@ -15,7 +15,7 @@ verified_against_commit: null
 ## 1. Architecture context
 
 Cart nằm sau API Gateway; Gateway inject `X-User-Id`. Cart lấy dữ liệu Product theo
-Pull Model, nhận `ORDER_PAID`, và chỉ phát `CART_ABANDONED` cho Notification qua
+Pull Model, nhận `com.ecommerce.order.paid.v1`, và chỉ phát `CART_ABANDONED` cho Notification qua
 Kafka. Redis là source of truth duy nhất, không có PostgreSQL fallback.
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
   Redis --> Relay[Relay loop]
   Relay --> Kafka[Kafka t.cart.events]
   Kafka --> Notification
-  Order[Kafka t.order.events] --> OrderConsumer[ORDER_PAID consumer]
+  Order[Kafka t.order.events] --> OrderConsumer[com.ecommerce.order.paid.v1]
   OrderConsumer --> LUA
   Trimmer[Stream trimmer loop] --> Redis
 ```
@@ -42,7 +42,7 @@ flowchart LR
 | Application service | Quyết định add/update/read; gọi Product và Lua |
 | Redis Lua adapter | Ghi duy nhất items/meta/ZSET/idempotency/outbox |
 | Product gRPC client | Validate SKU mới và batch enrich response đọc cart |
-| Order Event consumer | Gọi remove-items script idempotent cho `ORDER_PAID` |
+| Order Event consumer | Gọi remove-items script idempotent cho `com.ecommerce.order.paid.v1` |
 | Abandoned marker | Quét ZSET, gọi mark-abandoned script |
 | Relay | Đọc Redis Stream, produce Kafka, rồi `XACK` |
 | Trimmer | `XTRIM MINID` an toàn cho từng stream |

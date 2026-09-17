@@ -34,7 +34,7 @@ hiển thị và giá tại thời điểm thêm. Service phát đúng một tí
 ## 3. Boundary
 
 Cart chịu trách nhiệm thêm, đặt quantity, xóa SKU theo lô, dọn SKU sau
-`ORDER_PAID`, đọc cart và đánh dấu abandoned. Cart không giữ chỗ tồn kho, không
+`com.ecommerce.order.paid.v1`, đọc cart và đánh dấu abandoned. Cart không giữ chỗ tồn kho, không
 tính khuyến mãi/tổng tiền, không là source of truth của giá hiện tại và không có
 trách nhiệm phân tích.
 
@@ -67,7 +67,7 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 | Direction | System | Protocol | Purpose |
 |---|---|---|---|
 | Inbound | API Gateway | HTTP | Identity đã xác thực và Cart API |
-| Inbound | Order Service | Kafka | `ORDER_PAID` để xóa SKU đã mua |
+| Inbound | Order Service | Kafka | `com.ecommerce.order.paid.v1` để xóa SKU đã mua |
 | Outbound | Product Service | gRPC | Validate catalog và phủ giá hiện hành khi đọc |
 | Outbound | Redis | Redis protocol | Cart state, scheduler, idempotency, outbox |
 | Outbound | Kafka `t.cart.events` | Kafka | Chỉ `CART_ABANDONED` |
