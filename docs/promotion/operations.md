@@ -84,8 +84,8 @@ profile `promotion-discovery` sở hữu quota 20 request/user/phút và observa
 - Traces: DB transaction, Redis EVAL/pipeline, outbox insert, CDC propagation, rule
   parse/evaluate và Temporal activity.
 
-Customer refund không có Promotion metric/consumer. Có thể đo số `ORDER_REFUNDED` bị
-gửi nhầm Promotion ở contract gateway như integration error, không xử lý payload.
+Customer refund không có Promotion metric/consumer. Mọi Order event bị route nhầm tới
+Promotion là integration error và không được xử lý payload.
 
 ## 5. Alerts
 

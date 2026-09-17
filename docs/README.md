@@ -91,7 +91,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
 | [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T1–T9) + Refund FSM (R1–R4), guard rules, invariant, lỗi miền. |
 | [payment/data.md](./payment/data.md) | Schema logic 6 bảng, constraint, transaction, Redis key, outbox, partition/archive. |
-| [payment/interfaces.md](./payment/interfaces.md) | API initiate/webhook/query/refund, envelope, financial facts v2 `t.payment.events.v2`, `ORDER_CANCELLED`. |
+| [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
 | [payment/workflows.md](./payment/workflows.md) | Mười workflow: initiate, webhook, refund, expiration, reconciliation, poller, cancel, retry/replay, archive. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
 | [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
@@ -177,7 +177,7 @@ Service Contract Matrix legacy đã bị xóa.
 
 | Producer | Topic | Consumer |
 |---|---|---|
-| Order | `t.order.events` (8 event types theo thiết kế hiện tại) | Inventory, Cart, Notification, Analytics, Review; Promotion không consume refund |
+| Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
 | Payment | `t.payment.events.v2` (financial facts v2, không mang client secret) | Order |
 | Payment | `t.payment.webhooks.raw` (internal) | Payment |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes reservation/physical-dispatch/selected-scope inspection completion; Search consumes per-SKU availability |

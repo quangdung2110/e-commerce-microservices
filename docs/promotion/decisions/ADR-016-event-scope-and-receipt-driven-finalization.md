@@ -34,7 +34,7 @@ Tài liệu Promotion liệt kê ba coupon fact (claimed/saved, redeemed, techni
 cho Notification/Analytics và một Auth "user-registered" consumer cho welcome voucher.
 Rà soát consumer-side cho thấy không có service nào đăng ký các fact này: Notification chỉ
 tham chiếu topic marketing legacy `t.promotion.events`, Analytics lấy dữ liệu voucher từ
-order snapshot trên `t.order.events`, Order/Checkout dùng HTTP đồng bộ. Auth không có event
+Order/Checkout dùng HTTP đồng bộ. Analytics chưa có voucher consumer contract. Auth không có event
 "user-registered"; `user-verified-success.v1` chỉ dành cho User Service và Auth delivery là
 best-effort không outbox. Promotion cũng chưa có AsyncAPI riêng: markdown snapshot do
 Promotion phát nhưng contract sống trong Product AsyncAPI.

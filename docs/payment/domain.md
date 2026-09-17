@@ -63,7 +63,7 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | Lệnh | Khởi tạo payment | Order (`InitiatePaymentActivity`) | PaymentTransaction (`[*] -> INITIATING -> PENDING`) |
 | Lệnh | Áp webhook Stripe | Stripe qua Webhook Processor | PaymentTransaction/RefundTransaction FSM |
 | Lệnh | Hết hạn phiên | Expiration Scanner | PaymentTransaction (`T4`) |
-| Lệnh | Hủy payment pending | Order (`CancelPaymentActivity`) | PaymentTransaction (`T5`) sau provider fact; `ORDER_CANCELLED` chỉ đối soát |
+| Lệnh | Hủy payment pending | Order (`CancelPaymentActivity`) | PaymentTransaction (`T5`) sau provider fact |
 | Lệnh | Khởi tạo refund | Order (`OrderRefundWorkflow`) | RefundTransaction (`[*] -> PENDING`), PaymentTransaction (`T6`) |
 | Lệnh | Chốt refund | Webhook/Refund Status Poller/Reconciliation | RefundTransaction (`R2`/`R3`), PaymentTransaction (`T7`/`T8`/`T9`) |
 | Lệnh | Correction transition | Reconciliation Worker | Cả hai FSM |
@@ -100,7 +100,7 @@ Trạng thái thật trên Stripe thuộc Stripe; Payment chỉ replicate và đ
 | `INV-PAY-004` | Với cùng `order_id`, event payment/refund giữ ordering theo partition key | `outbox_events.partition_key = order_id` |
 | `INV-PAY-005` | Mọi terminal transition có audit record | Insert `payment_status_history` cùng transaction (Spring Event Listener pattern) |
 | `INV-PAY-006` | Mọi transition idempotent theo `stripe_event_id` hoặc `provider_ref + event_type`; không override ngược terminal | Unique constraint `webhook_logs` + optimistic lock `version` + state precedence |
-| `INV-PAY-007` | Refund chỉ từ explicit command của Order kèm `Idempotency-Key` | API contract; consumer `ORDER_CANCELLED` không gọi refund |
+| `INV-PAY-007` | Refund chỉ từ explicit command của Order kèm `Idempotency-Key` | API contract; Payment không suy luận refund từ event |
 | `INV-PAY-008` | `provider = 'STRIPE'`, VND money integer và `currency = 'VND'` cho mọi transaction | `CHECK (provider = 'STRIPE')`; `amount_minor BIGINT`, currency cố định |
 | `INV-PAY-009` | Không tạo refund transaction thứ hai khi provider fail/reverse | `order_id UNIQUE`, `requires_manual_review=TRUE`, manual queue |
 
@@ -152,7 +152,8 @@ Stripe có thể gửi tín hiệu đảo chiều refund sau khi đã báo succe
 
 1. Áp `T9` để kéo payment về `SUCCESS` (tiền lại nằm ở merchant).
 2. Ghi audit transition vào `payment_status_history`.
-3. Phát `REFUND_REVERSED` để Order cập nhật theo (ví dụ `ORDER_REFUND_FAILED`).
+3. Phát `REFUND_REVERSED` để Order cập nhật manual-review state; Order không phát
+   event ngược lại nếu chưa có consumer đăng ký.
 4. Đưa case vào hàng chờ xử lý thủ công (incident/manual review queue).
 
 Nếu provider không hỗ trợ reversal callback, trạng thái tương tự được phát hiện
@@ -257,5 +258,5 @@ tầng, không phải domain error.
 - **Refund reversed:** sau `REFUNDED`, Stripe gửi `charge.refunded` `status=failed`
   → `T9` về `SUCCESS`, `requires_manual_review=TRUE`, phát `REFUND_REVERSED`
   `reason_code=REFUND_REVERSED_BY_PROVIDER`.
-- **`ORDER_CANCELLED` với payment đã `SUCCESS`:** không refund; ghi reconciliation
-  marker; Order phải đi refund lane riêng.
+- **Order muốn hủy sau khi payment đã `SUCCESS`:** cancel API trả
+  `ALREADY_SUCCEEDED`; không auto-refund, Order phải đi refund lane riêng.

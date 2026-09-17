@@ -50,7 +50,7 @@ flowchart LR
   IC --> A
   P --> D[Debezium/Kafka Connect]
   D --> KO[Kafka: t.order.events]
-  KO --> DS[Cart/Promotion/Notification/Review/Analytics]
+  KO --> DS[Cart / Review]
 ```
 
 Trust boundary chính: Gateway cung cấp identity/role cho public HTTP; internal
@@ -86,10 +86,10 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
 
 ### 3.2. Bất đồng bộ và transaction boundary
 
-- `CreateOrderActivity` tạo master, item, line, promotion snapshot và event
-  `ORDER_CREATED` trong local transaction.
-- Mỗi FSM transition cần công bố được update cùng outbox insert và tăng
-  `orders.last_event_sequence_id` trong một transaction.
+- `CreateOrderActivity` tạo master, item, line và promotion snapshot trong local
+  transaction; không phát created event vì chưa có consumer.
+- Chỉ transition `PAID` và `COMPLETED` có registered integration event. State update,
+  outbox insert và tăng `orders.last_event_sequence_id` phải cùng transaction.
 - Debezium relay outbox sau commit với delivery at-least-once.
 - Kafka consumer ack sau khi dedup/routing hoặc state change đã hoàn tất theo
   chính sách consumer; duplicate phải vô hại.
@@ -105,13 +105,13 @@ has a separate reconciliation lane.
 
 | Nhóm | Activity | Trách nhiệm |
 |---|---|---|
-| Checkout local | `CreateOrderActivity` | Tạo master/items/lines/promotions và `ORDER_CREATED` |
+| Checkout local | `CreateOrderActivity` | Tạo master/items/lines/promotions; không phát event |
 | Checkout remote | `ReserveInventoryActivity` | Reserve stock theo immutable allocation plan |
 | Checkout remote | `ReservePromotionActivity` | `POST /internal/v1/promotion-allocation/reservations`; reserve budget all-or-nothing sau submit |
 | Checkout remote | `InitiatePaymentActivity` | Tạo Stripe PaymentIntent qua Payment |
 | Post-payment | `CommitInventoryActivity` | Inventory `CommitPayment` whole root; recover uncertain result by command query |
 | Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget (không outbox, Promotion ADR-016) |
-| FSM local | `UpdateOrderStatusActivity` | Row lock/CAS, update master và outbox |
+| FSM local | `UpdateOrderStatusActivity` | Row lock/CAS; chỉ ghi outbox cho `com.ecommerce.order.paid.v1`/`com.ecommerce.order.completed.v1` |
 | Refund local | `MarkRefundRequestedActivity` | Verify source/guard, chuyển `RETURN_REQUESTED` |
 | Refund local | `LockRefundScopeActivity` | Khóa selected `order_line_id` full quantity và gross amount cap `final_amount_minor` |
 | Refund remote | `RegisterRefundScopeActivity` | Đăng ký selected scope với Inventory |
@@ -119,7 +119,7 @@ has a separate reconciliation lane.
 | Refund local/recovery | `RecordAdminRefundAttemptActivity` | Persist attempt/command ID; create lifetime case only after accepted all-line release proof |
 | Refund wait | `WaitInventoryReturnScopeInspectionCompletedSignal` | Chờ toàn bộ selected quantity final-inspect, PASS/FAIL đều completion |
 | Refund remote | `InitiateRefundActivity` | Gọi Payment refund với key ổn định |
-| Refund local | `FinalizeRefundResultActivity` | Commit success/fail/reverse và outbox |
+| Refund local | `FinalizeRefundResultActivity` | Commit success/fail/reverse; không phát event khi chưa có consumer |
 | Recovery | `RecoverPaidOrderFromTimeoutActivity` | Verify payment muộn, call fenced Inventory recovery, then forward repair/reconciliation |
 | Pre-payment compensation | `CancelPaymentActivity` | Resolve Payment cancel/capture fact before any resource release |
 | Pre-payment compensation | `RollbackPromotionActivity` | `POST /internal/v1/promotion-allocation/cancellations`; nhả reservation runtime |

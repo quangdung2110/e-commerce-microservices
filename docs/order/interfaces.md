@@ -9,6 +9,7 @@ evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
   - contracts/events/order/v1/asyncapi.yaml
+  - contracts/events/order/v1/schemas/order-paid.schema.json
   - contracts/events/order/v1/schemas/order-completed.schema.json
   - contracts/http/promotion/v1/openapi.yaml
   - contracts/http/payment/v1/openapi.yaml
@@ -32,7 +33,7 @@ verified_against_commit: null
 | Inventory activities | Outbound | HTTP | Inventory | Order Temporal worker | [workflow OpenAPI v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
 | Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
 | Payment activities | Outbound | HTTP | Payment | Order Temporal worker | [Payment OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
-| `t.order.events` | Outbound | Kafka | Order | Cart, Notification, Review, Analytics và consumer khác; Promotion không consume refund | partial contract |
+| `t.order.events` | Outbound | Kafka | Order | Cart (`com.ecommerce.order.paid.v1`), Review (`com.ecommerce.order.completed.v1`) | [Order AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
 | `t.payment.events.v2` | Inbound | Kafka | Payment | Order | [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | `t.inventory.order.events.v1` | Inbound | Kafka | Inventory | Order | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | `t.delivery.order.events.v1` | Inbound | Kafka | Delivery | Order | [Delivery AsyncAPI v1](../../contracts/events/delivery/v1/asyncapi.yaml); proof ID + immutable record digest, no raw PII |
@@ -143,96 +144,37 @@ gia hạn reservation thêm 60 giây grace window.
 
 ## 4. Event envelope, delivery và ordering
 
-Event Order tự phát đi qua append-only outbox và Debezium, delivery at-least-once,
-topic `t.order.events`, partition key `order_id`. Envelope thiết kế cũ dùng các
-field `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `timestamp`,
-`source=order-service`, `correlation_id` (Temporal WorkflowID), `business_id`
-(`order_id` khi dùng) và payload/version.
+Order dùng CloudEvents 1.0 structured JSON cho mọi message trên `t.order.events`.
+Kafka key, `data.order_id` và `subject=orders/{order_id}` dùng cùng canonical decimal
+string không padding. `id` là UUID ổn định của outbox row và không đổi khi relay retry;
+`sequence` tăng đơn điệu trên **integration event đã phát** của một order, không phải
+FSM version và được phép có gap.
 
-Event thông thường đặt business identifier tại `payload.order_id`; contract
-`ORDER_COMPLETED` đặt tại `data.order_id` và `data.user_id`. Trường chuyển trạng
-thái dùng tên `old_status`, `new_status`; `ORDER_PAID` mang `sku_ids` để Cart dọn
-line. Không suy diễn `orders.status/payment_status` hoặc generic
-`status/payment_status` thành một FSM duy nhất: đây là hai trục riêng.
-
-Phần `ORDER_COMPLETED` v1 hiện dùng CloudEvents chuẩn với `id`, `type`, `source`,
-`subject`, `time`, `datacontenttype`, `dataschema`, extension `correlationid`,
-`sequence` và `data`. Đây là khác biệt envelope có chủ đích cần xử lý ở lần thống
-nhất contract sau.
-
-| Nhóm event | Ordering/guard |
-|---|---|
-| Order lifecycle thường | `last_event_sequence_id` đơn điệu per `order_id` |
-| `ORDER_COMPLETED` v1 | CloudEvents `sequence` per order |
-| Order line fulfillment lifecycle | `order_line_id + last_event_sequence_id`; topic vẫn partition theo order |
-| Event Payment/Inventory/Delivery tiêu thụ | Durable inbox `event_id` + source revision/financial version + semantic identity validation; Redis SETNX only fast-path |
+Delivery là at-least-once. Cart xóa SKU bằng `HDEL` idempotent; Review dedupe bằng
+receipt `CloudEvents.id` và unique business key. Consumer group có retry/DLQ riêng.
+Event Payment/Inventory/Delivery mà Order nhận phải qua durable inbox `event_id`,
+semantic identity và provider revision/version guard trước khi signal Temporal.
 
 ## 5. Event phát ra
 
-| Event | Khi phát và ý nghĩa | Dữ liệu nghiệp vụ cốt lõi | Consumer/hành vi |
+Order chỉ phát event có consumer runtime và interaction đã đăng ký:
+
+| CloudEvents type | Trigger | Payload | Consumer/hành vi |
 |---|---|---|---|
-| `ORDER_CREATED` | Create transaction chuyển transient `CREATED -> PENDING_PAYMENT` | order/user/status/sequence/final amount VND object | Notification; không nhúng item/address/promotion snapshot |
-| `ORDER_PAID` | Mốc tài chính commit `PENDING_PAYMENT -> PAID`, hoặc recovery payment muộn | order/user/status/sequence, recovery flag, captured payment txn, SKU IDs, final amount VND object, paid time | Cart cleanup, Notification, Analytics |
-| `ORDER_CANCELLED` | Matching Payment non-capture plus pre-payment cleanup complete and master bị cancel | order/user/status, previous state, reason, **payment_transaction_id**, cancellation command ID, sequence, cancel time | Payment reconciliation, Notification |
-| `ORDER_STATUS_CHANGED` | Master transition không có event chuyên biệt | order/user, old/new, reason, sequence, changed time | Notification |
-| `ORDER_LINE_FULFILLMENT_CHANGED` | Per-line dispatch/delivery transition | order/item/line/warehouse, old/new, fact/proof ID, sequence, changed time | Notification; guard theo line |
-| `ORDER_REFUNDED` | Payment refund success, master `RETURN_REQUESTED -> REFUNDED` | order/user/status/sequence, refund txn/mode/amount/source/request, selected line IDs or admin-pre-dispatch evidence, time | Notification/Analytics; Promotion không consume |
-| `ORDER_COMPLETED` | Tất cả line delivered bằng verified Delivery proof và master CAS thành công | canonical string order ID, UUID user, immutable product/SKU/variant/quantity items, completed time | Review entitlement; Analytics/Settlement chưa đăng ký |
-| `ORDER_REFUND_FAILED` | Payment refund failed/reversed; master giữ `RETURN_REQUESTED` | order/user/payment state/sequence, refund IDs/source, error, time | Notification/Ops critical lane |
+| `com.ecommerce.order.paid.v1` | Commit mốc tài chính `PENDING_PAYMENT -> PAID`, kể cả fenced late recovery | canonical `order_id`, UUID `user_id`, unique purchased `sku_ids[]` | Cart xóa đúng SKU đã mua, không đổi activity |
+| `com.ecommerce.order.completed.v1` | Mọi line có verified Delivery proof và master CAS sang `COMPLETED` | `order_id`, `user_id`, `completed_at`, immutable product/SKU/variant/quantity items | Review cấp tối đa một entitlement cho mỗi `(order_id,product_id,sku_id)` |
 
-Chi tiết quan trọng:
+`com.ecommerce.order.paid.v1` không mang amount, payment transaction/provider hay recovery flag vì
+Cart không dùng. `com.ecommerce.order.completed.v1` giữ item snapshot vì Review không gọi đồng bộ
+Order/Product trên write path. `variant_name` nullable cho historic order; producer
+mới gửi khi checkout snapshot có giá trị.
 
-- `ORDER_CREATED` không nhúng address/items/promotions; snapshot đã nằm trong DB.
-- `ORDER_PAID` là mốc tài chính, không có nghĩa Inventory commit/Promotion confirm đã xong.
-- Cancel reason hợp lệ gồm `PAYMENT_TIMEOUT`, `USER_CANCEL`,
-  `ADMIN_FORCE_CANCEL`, `PAYMENT_FAILED`; thiết kế FSM còn nhắc
-  `PRE_PAYMENT_SAGA_FAILED` ở tập reason nội bộ.
-- Status-change reason gồm `POST_PAYMENT_SAGA_COMPLETE`,
-  `ADMIN_FORCE_REFUND_PRE_DISPATCH`, `RETURN_API_ACCEPTED`,
-  `INVENTORY_SCOPE_INSPECTION_COMPLETED`, `LATE_PAYMENT_RECOVERED` và
-  `PAYMENT_SUCCESS_LATE_RECOVERY` theo ngữ cảnh cũ.
-- `ORDER_REFUNDED` không chứa `promotion_refund_allocations[]`. Voucher là lợi ích toàn
-  đơn, không được phân bổ xuống SKU; customer refund không hoàn budget/voucher tại
-  Promotion.
-- Refund fields are `refund_trigger_source`, `refund_request_id`,
-  `selected_order_line_ids`, `refund_mode`, `refund_transaction_id` and
-  `refund_amount`; `refund_type` and generic `returned_item_ids` are retired.
-- Buyer amount is gross selected-line snapshot price capped at `final_amount_minor`, with
-  no discount re-proration. There is one lifetime refund case/transaction per order.
-- `ORDER_COMPLETED.data.order_id` là opaque canonical decimal string không padding;
-  DB `10001` phát `"10001"`, subject `orders/10001`. Không phát JSON number hoặc
-  prefix. `variant_name` nullable cho order cũ; producer mới gửi khi có.
-- `ORDER_COMPLETED.items[]` là ngoại lệ payload tối giản vì Review không gọi sync
-  Order/Product trong write path.
-- Refund failure/reverse đều map `payment_status=REFUND_FAILED`; error/reason gốc
-  phải còn đủ cho Ops. Buyer one-shot guard không được reset.
-
-### 5.1. Các field/event lịch sử đã chủ đích loại bỏ
-
-Để bảo toàn dấu vết thiết kế mà không đưa chúng trở lại contract hiện tại:
-
-- Payload tối giản đã bỏ `cart_id`, `checkout_submitted_at`, `changed_by`,
-  `changed_by_type`, `customer_return_guard_applied`, `customer_return_policy`,
-  `refund_scope_locked_at`, `single_refund_transaction`, `scope_admin_id`,
-  `partial_restore_rule`, `voucher_restore_mode`, `platform_funding_refund` và
-  `admin_funding_refund`.
-- `changed_by` trước đây luôn có giá trị `system`; reverse payload từng có
-  `reason_message`, nay consumer map từ code/i18n.
-- Payment/provider detail không cần ở Order event gồm `provider_transaction_id`,
-  `provider_charge_id`, `provider_refund_id`, `payment_method_type`; payment result
-  hiện trả Stripe `client_secret + publishable_key`, không còn `payment_url` kiểu
-  provider redirect cũ.
-- Order-produced generic payload version remains separate from upstream facts. Consumed
-  Payment financial version and Inventory aggregate/scope revision are retained as durable
-  ordering guards alongside event ID; Redis/Temporal alone are insufficient.
-- Outbox không duy trì mutable `status/retry_count`; retry state thuộc Kafka Connect.
-- `payment_event_sequence_id` và `refund_event_sequence_id` có thể tồn tại ở stream
-  Payment để telemetry, nhưng không còn là guard của Order và không được nhầm với
-  `orders.last_event_sequence_id`.
-- `ORDER_PRODUCT_METRICS_UPDATED`, `t.search.metrics.events` và search projector đã
-  bị loại. `SHIPMENT_RETURNED` không còn vì Shipping Service đã bị loại Phase 14.
-- `ORDER_RETURN_REQUESTED` mới chỉ từng được nêu như khả năng tách event trong một
-  refactor tương lai; không phải event hiện hành.
+Không phát created, cancelled, generic status-changed, line-fulfillment, refunded hoặc
+refund-failed event khi chưa có implemented consumer. Notification/Analytics mới chỉ có
+tài liệu; Payment cancellation được quyết định qua explicit HTTP command/recovery query,
+không phụ thuộc Kafka. Trạng thái còn lại được đọc qua Order HTTP API/operation resource.
+Một event mới chỉ được thêm sau khi consumer, business effect và catalog interaction
+được đăng ký.
 
 ## 6. Event tiêu thụ
 
@@ -243,9 +185,13 @@ Chi tiết quan trọng:
 | `PAYMENT_SUCCESS` | transaction + `payment_attempt_number`, order, VND amount, **currency**, paid time, financial version | Validate mapped active/cancelled attempt/order/amount/currency/version; freeze captured identity then signal active checkout or fenced late recovery |
 | `PAYMENT_FAILED`/`PAYMENT_EXPIRED`/`PAYMENT_CANCELED` | transaction + attempt identity, order, financial version, terminal fact | Update only that attempt mapping then signal; only non-capture fact can complete cancellation |
 | `REFUND_PROCESSING` | refund txn, captured payment txn, order, financial version | Match existing case and immutable captured transaction then signal `REFUNDING` |
-| `REFUND_SUCCESS` | refund txn, captured payment txn, order, VND amount, currency, financial version | Match existing case then commit `REFUNDED` + outbox |
+| `REFUND_SUCCESS` | refund txn, captured payment txn, order, VND amount, currency, financial version | Match existing case then commit `REFUNDED` + audit/checkpoint; no Order event |
 | `REFUND_FAILED` | refund txn, captured payment txn, order, error code, financial version | Signal; giữ `RETURN_REQUESTED`, set failure, alert |
 | `REFUND_REVERSED` | refund txn, captured payment txn, order, reason code, financial version | Reopen same `REFUNDED` case/master to manual verification; no new refund |
+
+Order không subscribe `PAYMENT_INITIATED` hoặc `REFUND_INITIATED`: chính Order đã gọi
+HTTP command và lưu durable response/checkpoint. Nhận lại initiation fact không tạo
+business action mới.
 
 Routing bắt buộc: payment result lookup `checkout_token` theo payload `order_id`
 và signal `order-checkout-{checkout_token}`; refund result signal
@@ -300,12 +246,9 @@ là 30 ngày trước manual-verification lane.
 
 ## 8. Tương thích và khoảng trống contract
 
-- Quy tắc cũ: chỉ thêm field, consumer ignore unknown field; breaking change cần
-  version mới. Chưa có CI compatibility check hay deprecation window.
+- Chỉ thêm optional field là compatible; đổi CloudEvents type, Kafka key, business
+  meaning hoặc field bắt buộc cần event version mới.
 - Mỗi event có unique ID; consumer xử lý at-least-once và duplicate.
 - Public và internal Order HTTP surface đã có machine-readable OpenAPI v1 ở trạng
-  thái `proposed`; mọi lifecycle event ngoài `ORDER_COMPLETED` vẫn thiếu schema đầy
-  đủ. Không đánh dấu `verified` nếu chưa có provider/consumer contract test.
-- Các lệch `ORDER_STATUS_CHANGED` refund metadata và `ORDER_REFUND_FAILED`
-  `error_message` được giữ trong [Known gaps](./README.md#9-khoảng-trống-đã-biết),
-  không giải quyết trong lần refactor cấu trúc này.
+  thái `proposed`; hai outbound event và receive surface có machine-readable AsyncAPI
+  v1. Không đánh dấu `verified` trước khi Order producer/provider test tồn tại.

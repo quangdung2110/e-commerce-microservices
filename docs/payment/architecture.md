@@ -46,8 +46,6 @@ flowchart LR
   DBZ --> KP[(Kafka t.payment.events.v2)]
   KP --> O
   KP --> AN[Analytics]
-  KO[(Kafka t.order.events)] --> OC[Order consumer<br/>payment-order-consumer]
-  OC --> APP
   PG --> AR[Archival CronJob] --> S3[(S3 / Athena)]
 ```
 
@@ -65,7 +63,6 @@ không tin cậy cho đến khi validate lane và trạng thái transaction.
 | Application/FSM layer | `@Transactional` gom transaction + outbox + status history; Spring State Machine cho Payment FSM và Refund FSM; guard signature/amount/reference/idempotency | Publish Kafka trực tiếp; bỏ qua guard |
 | `com.payment.stripe` (`PaymentIntentClient`, `RefundClient`, `WebhookVerifier`) | Wrap `PaymentIntent.create/retrieve`, `Refund.create/retrieve`, `Webhook.constructEvent`; dùng một `StripeClient` singleton với API key từ Vault/Secret Manager | Chứa logic nghiệp vụ Payment; lộ Stripe type ra ngoài package |
 | Webhook Processor Worker | Consume raw webhook, verify signature, map event → transition, dedup, update DB + outbox trong một ACID transaction | Bỏ qua verify khi retry; ack trước khi commit |
-| Order consumer (`payment-order-consumer`) | Consume `ORDER_CANCELLED` as a post-command reconciliation notification | Treat event as the authoritative cancel command or auto-refund |
 | Payment Expiration Scanner | Chuyển transaction quá `expires_at` sang `EXPIRED`, phát `PAYMENT_EXPIRED` | Expire khi Stripe đã xác nhận success |
 | Reconciliation Worker | Đối soát hourly với Stripe, ghi mismatch report, phát correction transition | Sửa dữ liệu ngoài transition hợp lệ |
 | Refund Status Poller | Poll `Refund.retrieve` cho refund `PROCESSING`, chốt trạng thái cuối khi webhook miss | Gọi Stripe khi không lấy được lock |
@@ -173,7 +170,6 @@ Thiết kế yêu cầu các process/runtime logic sau, chưa chốt chạy chun
 
 - Payment HTTP v1 API server (initiate, refund, query, webhook endpoint).
 - Webhook Processor consumer trên `t.payment.webhooks.raw`.
-- Order consumer group `payment-order-consumer` trên `t.order.events`.
 - Scheduled jobs: Expiration Scanner (1–2 phút), Reconciliation (hourly), Refund
   Status Poller (5–15 phút), Webhook Auto-Retry, Archival CronJob (Chủ nhật 3:00 AM).
 - PostgreSQL (partition monthly cho `payment_transactions`, khuyến nghị
@@ -195,11 +191,11 @@ nên chạy singleton.
   state transition.
 - Không đặt business logic trong controller, Kafka adapter hay package
   `com.payment.stripe`.
-- Không auto-refund từ `ORDER_CANCELLED` hay bất kỳ shipping event nào; refund chỉ
-  từ explicit command của Order.
-- Payment is authoritative for the pre-capture cancel/capture race. An Order event
-  cannot turn a `SUCCESS` fact into `CANCELED`; the result is durable financial
-  reconciliation, not compensation by assumption.
+- Không suy luận refund từ Order/shipping event; refund chỉ từ explicit command
+  của Order. Payment không đăng ký consumer trên `t.order.events`.
+- Payment is authoritative for the pre-capture cancel/capture race. Chỉ cancel
+  command đồng bộ và provider fact có thể thay đổi financial state; một
+  `SUCCESS` fact không thể bị biến thành `CANCELED` bằng suy luận.
 - Không hỗ trợ COD hoặc provider ngoài Stripe nếu chưa có ADR thay thế.
 - Giữ code boundary Refund rõ (`src/refund/`, interface riêng, contract độc lập)
   để tách service khi đạt ngưỡng Phase 2.
@@ -234,5 +230,4 @@ nên chạy singleton.
   partition + S3 archive giữ hiệu năng scanner; đổi lại thêm archival job và
   tiered read.
 - [ADR-010](./decisions/ADR-010-refund-only-by-explicit-order-command.md): refund
-  chỉ từ Order command giữ boundary rõ; đổi lại `ORDER_CANCELLED` với `SUCCESS`
-  chỉ ghi reconciliation marker.
+  chỉ từ Order command giữ boundary rõ và loại bỏ dependency vào Order event.

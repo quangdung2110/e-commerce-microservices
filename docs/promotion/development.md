@@ -87,8 +87,8 @@ Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
 Chưa có: load 10.000 contender, race test đa luồng, schedule worker với Redis thật theo thời
 gian, Debezium/Kafka E2E, Temporal fixture.
 
-Phải có negative integration test chứng minh `ORDER_REFUNDED` không mutate wallet/budget
-và Promotion không yêu cầu `promotion_refund_allocations[]`.
+Phải có negative integration test chứng minh Order/refund input ngoài contract không
+mutate wallet/budget và Promotion không yêu cầu `promotion_refund_allocations[]`.
 
 ## 4. Rule Engine
 

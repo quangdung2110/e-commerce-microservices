@@ -234,10 +234,11 @@ Auth.
 ### `ORDER_COMPLETED`
 
 Review consumes [Order's CloudEvents contract](../../contracts/events/order/v1/asyncapi.yaml):
-`id`, `order_id`, `user_id`, `completed_at` and every item’s `product_id`, `sku_id`,
-`variant_name` snapshot and quantity. `order_id`, `product_id` and `sku_id` are opaque
-strings owned by other services: Review compares them for equality and never parses,
-sorts or derives anything from them. `variant_name` is nullable for historic orders
+`id`, canonical decimal-string `order_id`, `user_id`, `completed_at` and every item’s
+`product_id`, `sku_id`, `variant_name` snapshot and quantity. Review stores
+`order_id` as text and compares it for equality; it does not cast the wire value to a
+JSON number. Product and SKU identifiers remain opaque strings. `variant_name` is
+nullable for historic orders
 but must be supplied by current producer when known. `completed_at` is the business
 timestamp stored on the eligibility and is the sole basis for its review window; it is
 not replaced by Review's event-ingestion time.

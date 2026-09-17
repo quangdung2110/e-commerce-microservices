@@ -26,7 +26,6 @@ verified_against_commit: null
 | `WF-PAYMENT-005` | Hết hạn phiên thanh toán | Schedule 1–2 phút | Expiration Scanner | proposed |
 | `WF-PAYMENT-006` | Đối soát với Stripe | Schedule hourly | Reconciliation Worker | proposed |
 | `WF-PAYMENT-007` | Poll trạng thái refund | Schedule 5–15 phút | Refund Status Poller | proposed |
-| `WF-PAYMENT-008` | Đối soát notification `ORDER_CANCELLED` | Kafka | `payment-order-consumer` | proposed |
 | `WF-PAYMENT-011` | Hủy payment trước capture | HTTP + provider recovery | Order (`CancelPaymentActivity`), Stripe | proposed |
 | `WF-PAYMENT-009` | Webhook auto-retry và DLQ replay | Schedule/manual | Auto-Retry Worker, Ops | proposed |
 | `WF-PAYMENT-010` | Archive dữ liệu cũ và tiered read | Schedule weekly + HTTP | Archival CronJob, CSKH | proposed |
@@ -289,23 +288,6 @@ issuing bank), retry với jitter chống thundering herd.
 **Race:** poller và webhook `charge.refunded` cùng lúc → optimistic lock + dedup;
 kết quả idempotent. **Test scenarios:** webhook đến trước poller; poller chốt khi
 webhook miss; lock không lấy được; Stripe retrieve timeout.
-
-## WF-PAYMENT-008 — Đối soát notification `ORDER_CANCELLED`
-
-**Mục tiêu:** `ORDER_CANCELLED` là notification sau khi Payment đã trả một
-non-capture outcome; nó không còn là lệnh hủy tiền. **Trigger:** `ORDER_CANCELLED`
-trên `t.order.events`, consumer group `payment-order-consumer`.
-
-**Happy path:** durable-inbox dedup theo `event_id`; validate event nói Order đang
-`CANCELLING`, đúng `payment_transaction_id` và đúng cancel command. Payment
-`CANCELED`/`FAILED`/`EXPIRED` ghi confirmation marker; `SUCCESS` ghi financial
-reconciliation marker, tuyệt đối không auto-refund. Nếu Payment vẫn
-`PENDING`/`PROCESSING`, consumer chỉ kiểm tra/recover `ProviderOperation(CANCEL)`
-cùng key; nó không tự tạo một lệnh hủy mới. Event sai lane/identity không chuyển
-FSM và được đưa vào reconciliation.
-
-**Test scenarios:** duplicate event, event trước provider outcome, event sai
-transaction/lane, cancel-versus-success race, và `SUCCESS` sau Order notification.
 
 ## WF-PAYMENT-011 — Hủy payment trước capture
 

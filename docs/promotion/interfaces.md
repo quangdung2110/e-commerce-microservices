@@ -221,8 +221,9 @@ khác convention Money/opaque ID của HTTP v1 và chỉ đổi được ở v2.
 ### 4.2 Không có coupon fact
 
 Promotion không phát coupon claimed/saved, redeemed hay technical-cancelled event.
-Notification và Analytics không đăng ký các fact này: Analytics lấy dữ liệu voucher từ
-order snapshot trên `t.order.events`, còn client nhận kết quả claim/save đồng bộ qua HTTP.
+Notification và Analytics không đăng ký các fact này. Order Events v1 cũng không mang
+voucher snapshot cho Analytics; nếu cần pipeline voucher phải thiết kế consumer contract
+riêng. Client nhận kết quả claim/save đồng bộ qua HTTP.
 Wallet transition được ghi trong PostgreSQL và có thể thêm event sau khi có consumer thật.
 Cũng không có coupon-refunded hoặc budget-exhausted fact. `BUDGET_EXHAUSTED` chỉ xuất hiện
 trong discovery/reserve response, metric và log; Redis observation không được giả làm
@@ -253,9 +254,9 @@ task như business event exactly-once.
 Đây là event inbound duy nhất ở v1. Promotion không consume Auth event: welcome voucher
 không thuộc scope v1, và nếu cần sẽ dùng lazy grant khi user gọi API wallet lần đầu hoặc
 admin `DIRECT_GRANT` thay vì phụ thuộc Auth best-effort delivery. `user-deleted.v1` là
-known gap cần ADR retention/anonymization riêng. `ORDER_REFUNDED` có thể vẫn tồn tại trong
-Order ecosystem cho Notification/Analytics, nhưng Promotion không subscribe và payload không
-cần `promotion_refund_allocations[]`.
+known gap cần ADR retention/anonymization riêng. Promotion không subscribe
+`t.order.events`; Order Events v1 không có refund fact và refund payload không cần
+`promotion_refund_allocations[]`.
 
 ## 7. Compatibility
 

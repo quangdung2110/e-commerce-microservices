@@ -28,7 +28,7 @@ chưa phải quyết định của ADR này.
 ## Quyết định
 
 - Customer refund partial, nhiều partial hoặc full-order không gọi Promotion.
-- `ORDER_REFUNDED` không có `promotion_refund_allocations[]`; Promotion không consume.
+- Order không phát refunded event khi chưa có consumer; Promotion không consume refund.
 - Wallet giữ `USED`; Promotion used quantity/budget không giảm; voucher không được tái cấp.
 - `order_promotions` tiếp tục là voucher toàn đơn snapshot cho lịch sử/đối soát, không là
   line allocation.
@@ -51,10 +51,10 @@ phải tự chịu trách nhiệm correctness tiền refund khi được thiết
 
 ## Ảnh hưởng migration
 
-Xóa Promotion refund activity/key, bỏ allocation khỏi `ORDER_REFUNDED`, gỡ Promotion
+Xóa Promotion refund activity/key, không tạo Order refunded event, gỡ Promotion
 consumer và test/runbook tương ứng. Không thay đổi Payment refund transaction trong ADR này.
 
 ## Xác minh
 
-Contract/workflow test chứng minh FULL/PARTIAL không gọi Promotion, event không chứa
-allocation, retry Payment refund độc lập và checkout technical compensation vẫn hoạt động.
+Contract/workflow test chứng minh FULL/PARTIAL không gọi Promotion hoặc phát refund
+event, retry Payment refund độc lập và checkout technical compensation vẫn hoạt động.

@@ -66,9 +66,9 @@ Promotion không chịu trách nhiệm:
 - Hoàn budget hay tái cấp voucher khi Buyer refund selected-line hoặc Admin refund trước dispatch.
 - Inventory, shipping discount, seller/merchant promotion.
 
-`ORDER_REFUNDED` không phải input của Promotion. Current Order policy is one lifetime
-selected-full-quantity-line refund with a gross amount capped at `final_amount_minor`; it does
-not change the Promotion no-mutation boundary.
+Order refund lifecycle không phải input của Promotion. Order Events v1 không phát refund
+fact; current Order policy is one lifetime selected-full-quantity-line refund with a gross
+amount capped at `final_amount_minor`, và không thay đổi Promotion no-mutation boundary.
 
 ## 4. Data ownership
 

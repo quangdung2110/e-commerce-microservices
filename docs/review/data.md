@@ -74,9 +74,9 @@ erDiagram
 là globally unique và xác định buyer, nên không cần giữ `user_id` trong unique key.
 Điều này cho phép null hóa owner ID khi privacy purge mà không phá idempotency.
 
-`order_id` là opaque string do Order sở hữu, lưu `VARCHAR(64)`. Review chỉ so sánh
-bằng, không parse, không sắp xếp và không suy ra gì từ nó, nên Order đổi định dạng nội
-bộ không phá Review. Nó không phải số: JSON number là IEEE-754 double ở JavaScript nên
+`order_id` là canonical positive decimal string do Order sở hữu, lưu `VARCHAR(64)` để
+không mất precision. Review chỉ so sánh bằng và không cast wire value sang số. Nó
+không phải JSON number: IEEE-754 double ở JavaScript có thể
 mọi giá trị trên 2^53-1 bị làm tròn im lặng.
 
 `completed_at` là fact bất biến từ `ORDER_COMPLETED`; `expires_at` được tính từ nó.

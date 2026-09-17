@@ -405,18 +405,18 @@ this checkpoint; compensation/recovery may never infer that an unknown remote mu
 |---|---|---|
 | `event_id` | `UUID` PK | Event identity |
 | `schema_version` | `INT NOT NULL DEFAULT 1` | Version envelope |
-| `aggregate_type` | `VARCHAR(50)` | `Order` hoặc `OrderLine` |
+| `aggregate_type` | `VARCHAR(50)` | `Order` |
 | `aggregate_id` | `VARCHAR(255)` | ID theo aggregate |
-| `event_type` | `VARCHAR(100)` | Event business type |
+| `event_type` | `VARCHAR(100)` | `com.ecommerce.order.paid.v1` hoặc `com.ecommerce.order.completed.v1` |
 | `partition_key` | `VARCHAR(255) NOT NULL` | `order_id` cho `t.order.events` |
-| `payload` | `JSONB NOT NULL` | Payload tối thiểu có version theo thiết kế |
+| `payload` | `JSONB NOT NULL` | Full CloudEvents structured envelope theo JSON Schema provider-owned |
 | `created_at` | `TIMESTAMPTZ NOT NULL` | CDC/retention ordering |
 
 Không có `status`/`retry_count`; connector chịu retry, DLQ và backoff. Mỗi insert
-outbox cấp order phải tăng `orders.last_event_sequence_id` và ghi sequence vào
-payload trong cùng transaction. `ORDER_COMPLETED` v1 dùng CloudEvents `sequence`.
-Identity chuẩn của row là `outbox_events.event_id`; payload lifecycle thông thường
-ghi `payload.last_event_sequence_id`.
+outbox cấp order phải tăng `orders.last_event_sequence_id` và ghi CloudEvents
+`sequence` trong cùng transaction. Sequence chỉ đếm hai integration event đã đăng ký,
+không đếm mọi FSM transition và được phép có gap sau migration. Identity chuẩn của row
+là `outbox_events.event_id`, đồng thời là CloudEvents `id` ổn định xuyên relay retry.
 
 ## 4. Ràng buộc và chỉ mục
 
@@ -457,9 +457,9 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
 
 ## 5. Ranh giới transaction và xử lý đồng thời
 
-- `CreateOrderActivity`: master + items + lines + promotions + `ORDER_CREATED`.
-- Mỗi master/item transition: lock/check old state, update, tăng sequence nếu cần,
-  insert outbox và commit cùng nhau.
+- `CreateOrderActivity`: master + items + lines + promotions; không insert outbox.
+- Mỗi transition: lock/check old state rồi update. Chỉ `PAID` và `COMPLETED` tăng
+  integration sequence, insert outbox và commit tất cả cùng nhau.
 - Any command that requires Temporal start/attach also inserts
   `order_workflow_dispatches` in that same transaction. The dispatcher can retry after
   process crash; API acceptance never relies on a successful in-process start.
@@ -471,7 +471,7 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
 - Delivery consumer persists its proof/inbox and CASes a single line
   `DISPATCHED -> DELIVERED`; it recomputes `order_items.status`. Only when no line of the
   order remains non-`DELIVERED` may it CAS `PROCESSING -> COMPLETED` and insert
-  `ORDER_COMPLETED`. Inventory physical dispatch cannot satisfy either guard.
+  `com.ecommerce.order.completed.v1`. Inventory physical dispatch cannot satisfy either guard.
 - Buyer return guard dùng:
 
 ```sql

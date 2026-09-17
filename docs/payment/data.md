@@ -25,7 +25,6 @@ verified_against_commit: null
 | PostgreSQL `outbox_events` | Integration event chờ/đã được CDC quan sát | Payment Service |
 | PostgreSQL `payment_idempotency` | Response đã lưu cho API command idempotent | Payment Service |
 | PostgreSQL `provider_operations` | Durable create/cancel/refund provider-side operation, key và recovery outcome | Payment Service |
-| PostgreSQL `consumed_events` | Durable inbox for `ORDER_CANCELLED` reconciliation notification | Payment Service |
 | Redis | Idempotency pointer và distributed lock có TTL | Dữ liệu tạm; không là source of truth |
 | S3 archive | Partition `payment_transactions` > 6 tháng | Payment Service (cold tier) |
 | Trạng thái PaymentIntent/Refund trên Stripe | Nguồn thật của provider | Stripe; Payment replicate và đối soát |
@@ -46,7 +45,6 @@ erDiagram
     PAYMENT_TRANSACTIONS ||--o{ OUTBOX_EVENTS : emits
     REFUND_TRANSACTIONS ||--o{ OUTBOX_EVENTS : emits
     PAYMENT_TRANSACTIONS ||--o{ PROVIDER_OPERATIONS : executes
-    PAYMENT_TRANSACTIONS ||--o{ CONSUMED_EVENTS : reconciles
 
     PAYMENT_TRANSACTIONS {
       varchar id PK
@@ -111,12 +109,6 @@ erDiagram
       varchar status
       jsonb request_fingerprint
       jsonb provider_result
-    }
-    CONSUMED_EVENTS {
-      uuid event_id PK
-      varchar source
-      varchar payload_hash
-      timestamptz received_at
     }
 ```
 
@@ -246,14 +238,6 @@ Chặn duplicate request từ Frontend (double-click) hoặc Kafka replay.
 hành động khác nhau. Payment persists request fingerprint and response state; Redis
 may cache the pointer but may not replace this recovery record.
 
-### 3.7. `consumed_events`
-
-`payment-order-consumer` inserts `consumed_events(event_id, source, payload_hash,
-received_at)` in the same transaction as its non-financial `ORDER_CANCELLED`
-reconciliation marker. `event_id` is the primary key; a duplicate with another payload hash
-is audit/security evidence and must be parked. This consumer never issues an implicit
-provider cancel or refund.
-
 ## 4. Ràng buộc và chỉ mục
 
 | Ràng buộc | Mục đích |
@@ -265,7 +249,6 @@ provider cancel or refund.
 | `refund_transactions.refund_request_id UNIQUE` | Khóa identity case mà Order gửi sang Payment |
 | `webhook_logs UNIQUE(provider, provider_transaction_id, event_type)` | DB-level từ chối duplicate webhook; `INSERT ... ON CONFLICT DO NOTHING` |
 | `payment_idempotency PRIMARY KEY (key, action)` | Một key không dùng cho nhiều action |
-| `consumed_events(event_id) PRIMARY KEY` | `ORDER_CANCELLED` consumer dedup cùng reconciliation marker |
 | `provider_operations.idempotency_key UNIQUE` | One provider create/cancel/refund operation per stable Payment key; a retry cannot mint another side effect |
 | `refund_amount_minor <= payment.amount_minor` | Check cùng transaction với unique-order insert; Order has one refund transaction, so no aggregate refund sum is needed |
 | Transition hợp lệ theo bảng FSM | Enforce ở Spring State Machine + optimistic lock, không ở DB |
@@ -315,9 +298,6 @@ Outbox: append-only, Debezium đọc WAL, route `aggregate_type=Payment` →
 `t.payment.events.v2`, `partition_key=order_id`. Thiết kế cũ ghi Payment đang migrate
 từ Outbox Polling (legacy) sang CDC; Outbox Polling Worker đã deprecated. Cleanup/
 retention của outbox chưa được thiết kế cũ mô tả.
-
-Consumer-side dedup uses the required `consumed_events` table above, inserted with the
-reconciliation marker.
 
 ## 7. Vòng đời dữ liệu, partition và archive
 

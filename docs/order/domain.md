@@ -75,7 +75,7 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-004` | Mỗi order tối đa một refund case và một Payment refund transaction trong toàn bộ vòng đời | Lifetime PK refund case + unique txn + WorkflowID | Reject/attach existing case |
 | `INV-ORD-005` | Buyer refund chỉ sau Inventory final-inspect toàn bộ selected scope; Admin automatic refund chỉ sau Inventory atomic release toàn order trước dispatch | Refund case state + evidence + Temporal wait | Tiếp tục chờ/manual verification hoặc reject no-mutation |
 | `INV-ORD-006` | Order chỉ complete khi tất cả `order_item_lines` `DELIVERED` bằng verified Delivery fact | Lock/count + CAS master | Không transition/phát event |
-| `INV-ORD-007` | State, sequence và outbox cùng commit | PostgreSQL transaction | Rollback toàn transaction |
+| `INV-ORD-007` | Transition có registered integration event phải commit state, event sequence và outbox cùng transaction; transition khác không tạo outbox | PostgreSQL transaction | Rollback toàn transaction |
 | `INV-ORD-008` | Customer refund không gọi/mutate Promotion; wallet và budget đã confirm giữ nguyên | Workflow boundary | Không phát promotion allocation |
 | `INV-ORD-009` | Snapshot line/address không phụ thuộc dữ liệu upstream về sau | Persist khi create | Reject create nếu snapshot thiếu |
 | `INV-ORD-010` | `final_amount_minor = total_amount_minor - total_discount_minor`; tất cả money là integer VND | Domain validation | Reject pricing snapshot sai |
@@ -103,23 +103,23 @@ Các state: `CREATED` (transient), `PENDING_PAYMENT`, `CANCELLING`, `PAID`,
 
 | ID | Từ | Đến | Trigger/guard | Side effect chính |
 |---|---|---|---|---|
-| `T1` | `CREATED` | `PENDING_PAYMENT` | `CREATE_ORDER_ACTIVITY_COMMITTED` | Persist snapshot + `ORDER_CREATED` |
-| `T2` | `PENDING_PAYMENT` | `PAID` | `PAYMENT_SUCCESS` trong workflow | `ORDER_PAID` cùng transaction |
+| `T1` | `CREATED` | `PENDING_PAYMENT` | `CREATE_ORDER_ACTIVITY_COMMITTED` | Persist snapshot; không phát integration event |
+| `T2` | `PENDING_PAYMENT` | `PAID` | `PAYMENT_SUCCESS` trong workflow | `com.ecommerce.order.paid.v1` cùng transaction |
 | `T3` | `PENDING_PAYMENT` | `CANCELLING` | `PAYMENT_TIMEOUT` | Persist cancel command/dispatch; wait Payment non-capture fact |
-| `T3.1` | `CANCELLING` | `CANCELLED` | Matching `CANCELED`/`ALREADY_NON_CAPTURED` + cleanup proven | `ORDER_CANCELLED` |
-| `T3.2` | `CANCELLING` | `PAID` | Matching `ALREADY_SUCCEEDED`/`PAYMENT_SUCCESS` | `ORDER_PAID`, forward repair |
-| `T3.3` | `CANCELLED` | `PAID` | Matching late success after `PAYMENT_TIMEOUT` | Fenced recovery evidence + `ORDER_PAID` recovery |
+| `T3.1` | `CANCELLING` | `CANCELLED` | Matching `CANCELED`/`ALREADY_NON_CAPTURED` + cleanup proven | Persist cancellation; không phát event |
+| `T3.2` | `CANCELLING` | `PAID` | Matching `ALREADY_SUCCEEDED`/`PAYMENT_SUCCESS` | `com.ecommerce.order.paid.v1`, forward repair |
+| `T3.3` | `CANCELLED` | `PAID` | Matching late success after `PAYMENT_TIMEOUT` | Fenced recovery evidence + `com.ecommerce.order.paid.v1` |
 | `T4` | `PENDING_PAYMENT` | `CANCELLING` | `USER_CANCEL` | Persist cancel command/dispatch |
 | `T4.1` | `PENDING_PAYMENT` | `CANCELLING` | `ADMIN_FORCE_CANCEL` | Persist cancel command/dispatch |
 | `T7` | `PAID` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Tạo/khóa admin refund case |
-| `T8` | `PAID` | `PROCESSING` | `POST_PAYMENT_SAGA_COMPLETED` | `ORDER_STATUS_CHANGED` |
+| `T8` | `PAID` | `PROCESSING` | `POST_PAYMENT_SAGA_COMPLETED` | Persist state; không phát event |
 | `T8.1` | `PAID/PROCESSING` | `FINANCIAL_RECONCILIATION_REQUIRED` | Post-capture repair cannot prove a required checkpoint | Preserve financial fact; no business compensation |
 | `T8.2` | `PROCESSING` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Vào admin refund lane |
-| `T8.3` | `PROCESSING` | `COMPLETED` | Tất cả line `DELIVERED` bởi verified Delivery fact + CAS | `ORDER_COMPLETED` |
+| `T8.3` | `PROCESSING` | `COMPLETED` | Tất cả line `DELIVERED` bởi verified Delivery fact + CAS | `com.ecommerce.order.completed.v1` |
 | `T9` | `COMPLETED` | `RETURN_REQUESTED` | Buyer one-shot pass + mọi line delivered | Khóa selected full-quantity line scope, chờ final inspection |
-| `T10` | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` | `ORDER_REFUNDED` |
-| `T10.1` | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` hoặc reversed | Chỉ cập nhật `payment_status`, có thể phát failure event |
-| `T10.2` | `REFUNDED` | `RETURN_REQUESTED` | `REFUND_REVERSED` for the existing refund transaction | `REFUND_FAILED`, same case manual verification, `ORDER_REFUND_FAILED` |
+| `T10` | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` | Persist refund result; không phát event |
+| `T10.1` | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` hoặc reversed | Chỉ cập nhật `payment_status`/evidence |
+| `T10.2` | `REFUNDED` | `RETURN_REQUESTED` | `REFUND_REVERSED` for the existing refund transaction | Same case enters manual verification; không phát event |
 
 Invalid transition không được “sửa” bằng update không điều kiện; trả conflict/no-op
 theo ngữ cảnh và giữ state cũ. `REFUND_REVERSED` từ Payment được map thành

@@ -243,7 +243,7 @@ quantity) hoặc toàn order theo nhánh Admin trước dispatch, luôn chỉ c�
 refund case:
 
 - Không gọi endpoint Promotion.
-- Promotion không consume `ORDER_REFUNDED`.
+- Promotion không consume `t.order.events`; Order Events v1 không phát refund fact.
 - Wallet giữ `USED`.
 - `used_quantity` và `used_budget_vnd` không giảm.
 - Không tái cấp voucher và không quy đổi voucher thành tiền.

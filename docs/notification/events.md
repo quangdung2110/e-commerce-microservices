@@ -75,30 +75,12 @@ message Review mới; điều này không yêu cầu thêm notification table ha
 
 Sử dụng topic: `notification.low-priority.events`
 
-### 2.1 Order Created (Từ Order Service)
-Gửi thông báo xác nhận đơn hàng thành công. Fat Event chứa đủ tên sản phẩm và tổng tiền.
+### 2.1 Order events
 
-```json
-{
-  "specversion": "1.0",
-  "id": "ord-event-999201",
-  "source": "/order-service/orders",
-  "type": "ORDER_CREATED",
-  "time": "2026-04-27T14:30:15Z",
-  "datacontenttype": "application/json",
-  "data": {
-    "order_id": "ORD-20260427-001",
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "customer_email": "user@example.com",
-    "customer_name": "Nguyen Van A",
-    "total_amount": 1500000.00,
-    "currency": "VND",
-    "items_summary": "iPhone 15 Pro Max và 2 sản phẩm khác",
-    "payment_method": "STRIPE",
-    "shipping_address": "123 Le Loi, Quận 1, TP. HCM"
-  }
-}
-```
+Notification không consume `t.order.events`. Order Events v1 chỉ phát
+`com.ecommerce.order.paid.v1` cho Cart và `com.ecommerce.order.completed.v1` cho
+Review; không event nào trong hai event này là notification request. Ví dụ
+`ORDER_CREATED` legacy đã bị loại vì không có producer contract.
 
 ### 2.2 Payment Failed (Từ Payment Service)
 Cảnh báo user nạp tiền/thanh toán gặp sự cố, kèm link thử lại.
@@ -172,7 +154,7 @@ Thông báo khi có tin nhắn mới trong chat, dùng để gửi push/in-app n
 
 ## 4. Worker Processing Strategy
 Dựa vào data từ event, Worker sẽ thực thi:
-1. Lookup Template theo `type` (VD: `ORDER_CREATED`).
+1. Lookup Template theo `type` đã đăng ký (ví dụ `PAYMENT_FAILED`).
 2. Regex replace hoặc sử dụng Handlebars (hoặc Jinja2) để thay thế data từ object `data` vào chuỗi Template.
 Ví dụ Template Email: `"Xin chào {{customer_name}}, cảm ơn bạn đã đặt đơn hàng {{order_id}}!"`
 3. Gửi thông qua các channel theo cấu hình Preference của user_id.

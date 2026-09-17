@@ -48,8 +48,8 @@ Schema hiện thiếu `MANUAL_VERIFICATION_REQUIRED`, là debt phải giải quy
 ## Ảnh hưởng migration
 
 Cần refund case PK/unique transaction, workflow signal/routing, Inventory expectation,
-override authorization/audit và dashboard backlog. Không restock từ
-`ORDER_REFUNDED`; Inventory điều khiển restock vật lý.
+override authorization/audit và dashboard backlog. Order không phát refunded event
+khi chưa có consumer; Inventory điều khiển restock vật lý từ scope/inspection của mình.
 
 ## Xác minh
 

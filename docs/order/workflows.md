@@ -97,7 +97,8 @@ trả `409 IDEMPOTENCY_KEY_REUSED`. API lấy distributed lock
 `PENDING_PAYMENT -> CANCELLING` plus a durable cancellation command/dispatch record.
 The workflow calls Payment cancel using the active-attempt `payment_transaction_id` and stable
 key. Only a matching `CANCELED`/`ALREADY_NON_CAPTURED` fact permits
-`RollbackPromotion -> RollbackInventory -> CANCELLED` and `ORDER_CANCELLED`. If Payment
+`RollbackPromotion -> RollbackInventory -> CANCELLED`; không phát cancellation event vì
+chưa có implemented consumer. If Payment
 returns `ALREADY_SUCCEEDED` or a matching `PAYMENT_SUCCESS` arrives, Order abandons the
 cancel lane and enters paid forward-repair/reconciliation; `CANCEL_PENDING` is retried or
 queried with the same key and does not release resources.
@@ -155,7 +156,7 @@ sequenceDiagram
   participant Y as Payment
   C->>O: POST checkout-order-submissions(snapshot, token)
   O->>T: start/attach order-checkout-{token}
-  T->>O: CreateOrder + ORDER_CREATED
+  T->>O: CreateOrder (không integration event)
   T->>I: ReserveInventory(allocation_plan_id, line mapping)
   T->>P: POST /internal/v1/promotion-allocation/reservations
   T->>Y: InitiatePayment(Stripe)
@@ -164,10 +165,10 @@ sequenceDiagram
   O-->>C: order_id + payment client data
   Note over T: chờ PaymentResult tối đa 15 phút
   Y-->>T: PAYMENT_SUCCESS signal qua consumer
-  T->>O: PENDING_PAYMENT -> PAID + ORDER_PAID
+  T->>O: PENDING_PAYMENT -> PAID + com.ecommerce.order.paid.v1
   T->>I: CommitPayment (Inventory)
   T->>P: POST /internal/v1/promotion-allocation/confirmations
-  T->>O: PAID -> PROCESSING + ORDER_STATUS_CHANGED
+  T->>O: PAID -> PROCESSING (không integration event)
 ```
 
 ### Pre-payment happy path và compensation
@@ -176,7 +177,7 @@ sequenceDiagram
    `(checkout_line_reference, order_line_id, warehouse_id, SKU, quantity)` bridge và
    complete `(order_line_id, warehouse_id, quantity)` reserve mapping cùng
    order/items/lines/promotions, address/product snapshot, `checkout_token`, trạng thái
-   `PENDING_PAYMENT` và outbox `ORDER_CREATED`. Chỉ sau bước này mới có `order_id` và
+   `PENDING_PAYMENT`; không tạo outbox vì chưa có consumer cho created fact. Chỉ sau bước này mới có `order_id` và
    `order_line_id`; lỗi DB dừng trước mọi remote call.
 2. `ReserveInventoryActivity` truyền đúng plan/mapping đã persist; bất kỳ plan expired,
    mapping mismatch hoặc unknown outcome đều được query/replay theo command ID, không reroute.
@@ -205,7 +206,8 @@ thất bại và không collapse thành HTTP 500.
 Payment success before the timer must match the persisted active attempt transaction, VND
 amount, currency and monotonic financial version **for that transaction**. It makes
 `UpdateOrderStatusActivity` lock row, freezes the captured transaction identity,
-commit `PENDING_PAYMENT -> PAID`, tăng sequence và insert `ORDER_PAID` cùng transaction.
+commit `PENDING_PAYMENT -> PAID`, tăng integration sequence và insert
+`com.ecommerce.order.paid.v1` cùng transaction.
 This is the financial watermark. Post-payment is **forward repair**, not a compensation
 stack:
 
@@ -214,8 +216,8 @@ stack:
    decision.
 2. `ConfirmPromotionActivity` calls confirmations with `REDEEM_FINAL` key riêng mỗi
    promotion and replays the durable receipt after timeout/crash.
-3. `UpdateOrderStatusActivity` chuyển `PAID -> PROCESSING`, phát
-   `ORDER_STATUS_CHANGED`.
+3. `UpdateOrderStatusActivity` chuyển `PAID -> PROCESSING`; không phát generic status
+   event khi chưa có consumer.
 
 After the watermark no active checkout may call Inventory rollback or Promotion
 `technical-cancellations`. A failed/unknown step retains the order in `PAID` or
@@ -257,7 +259,7 @@ record in the same local transaction as any financial-routing state. Redis is on
 optional accelerator. It routes by persisted order/payment identity, not aggregate ID.
 
 **Active checkout:** matching active-attempt `PAYMENT_SUCCESS` signals `PaymentResult.SUCCESS`; workflow
-commits `PAID`, phát `ORDER_PAID`, runs forward repair. `PAYMENT_FAILED/EXPIRED` signals
+commits `PAID`, phát `com.ecommerce.order.paid.v1`, runs forward repair. `PAYMENT_FAILED/EXPIRED` signals
 pre-payment failure; cancellation still requires the Payment non-capture fact. Consumer
 does not directly commit master financial FSM.
 
@@ -274,8 +276,8 @@ is allowed.
 
 **Refund events:** processing/success/fail/reverse route the existing
 `order-refund-{order_id}` case. `REFUND_REVERSED` may reopen a previously `REFUNDED`
-master into `RETURN_REQUESTED` with `payment_status=REFUND_FAILED`, case
-`MANUAL_VERIFICATION_REQUIRED`, and `ORDER_REFUND_FAILED`; it never creates another
+master into `RETURN_REQUESTED` with `payment_status=REFUND_FAILED` and case
+`MANUAL_VERIFICATION_REQUIRED`; it never publishes an unconsumed failure event or creates another
 refund transaction.
 
 **Race/idempotency:** Temporal history serializes a signal/timer only after the consumer
@@ -297,8 +299,8 @@ It uses durable inbox event ID/revision, not a synthesized shipment/delivery eve
 
 **Happy path:** resolve the owning line from the immutable order-to-Inventory allocation
 recorded at reserve/commit. For the matching line, CAS
-`PROCESSING -> DISPATCHED`; only a changed row inserts `ORDER_LINE_FULFILLMENT_CHANGED`
-and recomputes the derived item status. There is no automatic `DELIVERED` or `COMPLETED`
+`PROCESSING -> DISPATCHED` and recompute the derived item status without an outbound
+line event. There is no automatic `DELIVERED` or `COMPLETED`
 transition from this fact.
 
 **Failure/race:** a line/warehouse mismatch is rejected to parking lot; it may not mark
@@ -390,9 +392,9 @@ sequenceDiagram
   T->>P: InitiateRefund (một lần)
   P-->>T: RefundResult qua Kafka consumer
   alt success
-    T->>O: REFUNDED + ORDER_REFUNDED
+    T->>O: REFUNDED (không integration event)
   else failed/reversed
-    T->>O: keep RETURN_REQUESTED + ORDER_REFUND_FAILED
+    T->>O: keep RETURN_REQUESTED + evidence/manual-review
   end
 ```
 
@@ -420,11 +422,11 @@ Payment. Admin does not register a scope and retains `PAID/PROCESSING` while cal
 to `RETURN_REQUESTED`, locks `orders.final_amount_minor`, and continues. Any
 dispatched/mixed result rejects with no stock movement. Only after the applicable
 evidence creates the unique `refund_transaction_id`, set `REFUNDING` and call Payment.
-Success commit `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` và
-`ORDER_REFUNDED`.
+Success commit `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED`; không
+phát refunded event khi chưa có implemented consumer.
 
 **Promotion and amount boundary:** Buyer selected-line refund does not call Promotion
-and `ORDER_REFUNDED` has no promotion allocation. Voucher remains a whole-order
+or publish a Promotion-facing event. Voucher remains a whole-order
 benefit; wallet stays `USED` and budget stays consumed. The only amount calculation is
 the gross selected-line snapshot value capped at `orders.final_amount_minor`; discounts are
 not re-prorated. Admin pre-dispatch amount is `orders.final_amount_minor`.
@@ -437,11 +439,11 @@ as manual fulfillment, or escalate it to accounting; it cannot create another sc
 refund transaction, or invent a Payment success/refund fact.
 
 **Payment failure/reverse:** a normal failure keeps master `RETURN_REQUESTED`, sets
-`payment_status=REFUND_FAILED`, case `FAILED`, and emits `ORDER_REFUND_FAILED`; Buyer
+`payment_status=REFUND_FAILED` and case `FAILED`; Buyer
 guard không reset. `REFUND_PROCESSING` giữ/set `REFUNDING`. A `REFUND_REVERSED` after
 previous `REFUNDED` reopens the same case to `MANUAL_VERIFICATION_REQUIRED`, transitions
-master `REFUNDED -> RETURN_REQUESTED`, persists the reversal event proof and emits
-`ORDER_REFUND_FAILED`. Không mở refund transaction thứ hai.
+master `REFUNDED -> RETURN_REQUESTED` and persists the reversal event proof. Không phát
+failure event chưa có consumer và không mở refund transaction thứ hai.
 
 **Test:** selected full-quantity boundaries (A×1 rejects when line is A×2), two
 workflow starts, duplicate/mismatched Inventory completion, multi-package mixed
@@ -458,7 +460,7 @@ phút, đồng thời vẫn xử lý an toàn payment success đến muộn.
 workflow first commits `CANCELLING` and its durable cancellation dispatch, then calls
 Payment cancel with the stable key. Only matching `CANCELED`/`ALREADY_NON_CAPTURED`
 permits `RollbackPromotion -> RollbackInventory -> CancelOrderActivity`, then commit
-`CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` and outbox `ORDER_CANCELLED`.
+`CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` without an outbound event.
 
 **Race:** if payment signal/cancel response says `ALREADY_SUCCEEDED`, the timer must
 not release inventory/promotion or publish cancellation; it enters paid forward repair.
@@ -493,7 +495,7 @@ only its stable existing repair workflow.
 
 **Outcomes:** `RESUME_FORWARD_REPAIR` replays the original command IDs and keeps financial
 facts unchanged. `CLOSE_AS_MANUAL_FULFILLMENT` closes the case with accountability but does
-not emit `ORDER_REFUNDED` or change Payment. `ESCALATE_TO_ACCOUNTING` creates an external
+not emit an Order integration event or change Payment. `ESCALATE_TO_ACCOUNTING` creates an external
 accounting work reference and leaves the Order financial state pending. None of them may
 call Inventory rollback, Promotion technical cancellation or mint a second Payment refund.
 

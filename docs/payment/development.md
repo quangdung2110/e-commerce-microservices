@@ -29,11 +29,11 @@ Kafka Connect/Debezium và Stripe CLI để forward webhook local.
 
 Khi implementation được thêm, tài liệu phải cung cấp command chính thức để build
 (Maven), start PostgreSQL/Redis/Kafka/Connect, chạy migration (tạo partition
-tháng hiện tại), start API server + Webhook Processor + `payment-order-consumer`
-+ scheduler, kiểm tra health, rồi cleanup.
+tháng hiện tại), start API server + Webhook Processor + scheduler, kiểm tra
+health, rồi cleanup.
 
-Local stack cần topic `t.payment.events.v2`, `t.payment.webhooks.raw`,
-`t.order.events`; connector Debezium route `aggregate_type=Payment`. Stripe dùng
+Local stack cần topic `t.payment.events.v2`, `t.payment.webhooks.raw`; connector
+Debezium route `aggregate_type=Payment`. Stripe dùng
 test mode (`sk_test_...`, `pk_test_...`) và Stripe CLI `listen --forward-to` tới
 `POST /v1/payments/webhook/stripe` để lấy `whsec_...` local. Order có thể mock
 bằng fixture gọi initiate/refund với `Idempotency-Key` ổn định.
@@ -82,10 +82,9 @@ Markdown links/frontmatter. Chưa có command cụ thể để ghi tại đây.
 ### Contract/consumer/provider test
 
 Implementation must contract-test the documented Payment event version 2 fields:
-`payment_transaction_id`, `currency` and monotonic `financial_state_version`, plus
-durable inbox/duplicate `event_id` handling. It must test that `ORDER_CANCELLED` is
-a reconciliation notification, while the synchronous cancel command resolves the
-cancel/capture race.
+`payment_transaction_id`, `currency` and monotonic `financial_state_version`.
+Tests for the synchronous cancel command must cover and resolve the cancel/capture
+race without relying on an Order event consumer.
 
 ### End-to-end/failure injection
 
@@ -106,7 +105,7 @@ attempt/transaction mapping, VND money and absence of `client_secret` from event
 
 ## 7. Database migration
 
-Migration đầu tiên phải tạo the documented Payment tables, including `consumed_events`,
+Migration đầu tiên phải tạo the documented Payment tables, including
 `provider_operations`, with constraint (`CHECK
 provider`, unique `idempotency_key`, unique webhook dedup, PK `(key, action)`),
 bổ sung `version` và `requires_manual_review` còn thiếu trong DB design cũ, tạo
@@ -119,8 +118,8 @@ rollback policy; destructive down migration không xóa transaction production.
 Fixture tối thiểu: payment `PENDING`/`SUCCESS`/`FAILED`/`EXPIRED`/`REFUNDING`/
 `REFUNDED`; refund `PENDING`/`PROCESSING`/`SUCCESS`/`FAILED`; webhook payload
 Stripe test cho `payment_intent.succeeded`, `payment_intent.payment_failed`,
-`payment_intent.canceled`, `charge.refunded` (success và failed); `ORDER_CANCELLED`
-với `previous_status` khác nhau. Dùng Stripe test keys/objects, UUID giả; không
+`payment_intent.canceled`, `charge.refunded` (success và failed). Dùng Stripe
+test keys/objects, UUID giả; không
 dùng dữ liệu production.
 
 ## 9. Gỡ lỗi

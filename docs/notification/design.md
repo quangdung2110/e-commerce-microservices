@@ -6,7 +6,7 @@ Notification Service là một microservice trung tâm chịu trách nhiệm qu�
 ## 2. Core Architecture Patterns
 
 ### 2.1 Event-Driven & Outbox Pattern
-- Nhận dữ liệu dưới dạng **Fat Events** thông qua chuẩn **CloudEvents**. Các service khác (Order, Auth, Payment,...) tạo event chưa đầy đủ thông tin (người dùng, tóm tắt đơn hàng, nội dung chi tiết) đẩy qua bảng Outbox của mình. Debezium CDC sẽ capture các thay đổi này và đẩy lên Kafka.
+- Nhận dữ liệu dưới dạng **Fat Events** thông qua chuẩn **CloudEvents**. Các service có notification contract đã đăng ký tạo event qua bảng Outbox của mình. Debezium CDC sẽ capture các thay đổi này và đẩy lên Kafka.
 - **Fat Events** giúp Notification Service không cần gọi ngược (sync REST/gRPC) để lấy thông tin, giảm coupling (phụ thuộc) và tăng hiệu năng xử lý.
 
 ### 2.2 Kafka Topics & Priority Routing
@@ -24,7 +24,6 @@ Notification Service subscribe các topic sau để nhận events từ các serv
 | `t.auth.events` | `notification-privacy-sync` | `USER_DELETED` | Low | GDPR cleanup projection |
 | `t.user.events` | `notification-user-preferences-sync` | `USER_PREFERENCES_UPDATED` | Low | Sync ba notification preference |
 | `t.review.events` | `notification-review-sync` | `REVIEW_REPLY_NOTIFICATION_REQUESTED`, `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | Low | In-app notification về phản hồi chính thức hoặc review bị gỡ |
-| `t.order.events` | `notification-order-sync` | `ORDER_CREATED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` | Low | Thông báo đơn hàng |
 | `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
 
 Không có consumer group cho Promotion: Promotion Events v1
@@ -32,6 +31,12 @@ Không có consumer group cho Promotion: Promotion Events v1
 không phát coupon/wallet hay marketing event. Topic legacy `t.promotion.events` với
 `PROMOTION_FLASH_SALE`/`VOUCHER_EXPIRING` không có producer; nếu cần marketing push sau
 này phải thiết kế contract mới với Promotion.
+
+Không có consumer group cho Order. [Order Events v1](../../contracts/events/order/v1/asyncapi.yaml)
+chỉ đăng ký Cart cho `com.ecommerce.order.paid.v1` và Review cho
+`com.ecommerce.order.completed.v1`; không có event notification request. Khi cần
+thông báo vòng đời đơn hàng, Order và Notification phải bổ sung contract có payload
+đủ để render trước khi cấp Kafka ACL hoặc triển khai consumer.
 
 **Lưu ý về GDPR Cleanup:** Khi nhận `USER_DELETED` trực tiếp từ Auth,
 Notification Service anonymize/xóa projection do chính nó sở hữu theo `user_id`
@@ -97,7 +102,7 @@ Bảo vệ user khỏi spam và bảo vệ budget của hệ thống bằng thu�
 
 ## 4. Workflow
 
-1. Dịch vụ (Order/Auth) tạo record vào `outbox_events` -> Debezium capture đổi -> Kafka.
+1. Dịch vụ có contract notification tạo record vào `outbox_events` -> Debezium capture đổi -> Kafka.
 2. Notification Worker (trong Pod) tiêu thụ event.
 3. Kích hoạt Idempotency Check bằng `event_id` qua Redis.
 4. Lấy dữ liệu `user_preferences` để quyết định gửi qua kênh nào.

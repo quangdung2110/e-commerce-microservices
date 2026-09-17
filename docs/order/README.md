@@ -134,9 +134,10 @@ qua API, event hoặc Temporal signal được Order xử lý.
   Payment sau scope completion; Admin chỉ sau Inventory atomic all-line
   pre-dispatch release evidence.
 - [`INV-ORD-006`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ phát
-  `ORDER_COMPLETED` khi tất cả line đã `DELIVERED` bằng verified Delivery proof và CAS master thành công.
-- [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): state change và
-  outbox event tương ứng commit trong cùng transaction.
+  `com.ecommerce.order.completed.v1` khi tất cả line đã `DELIVERED` bằng verified Delivery proof và CAS master thành công.
+- [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ `PAID` và
+  `COMPLETED` có registered integration event; state, sequence và outbox tương ứng
+  commit trong cùng transaction.
 - [`INV-ORD-008`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): customer refund
   không mutate Promotion; voucher và budget đã confirm được giữ nguyên.
 - [`INV-ORD-018`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Payment/Inventory
@@ -168,12 +169,9 @@ qua API, event hoặc Temporal signal được Order xử lý.
   Kafka Connect, Redis hoặc deployment để xác minh.
 - OpenAPI public/internal v1 đã được chốt ở mức `proposed`; chưa có provider/consumer
   contract test hoặc implementation evidence để nâng trạng thái.
-- Mô tả cũ vừa nói metadata `refund_waiting_inventory_confirmation` được phát
-  trong `ORDER_STATUS_CHANGED`, vừa nói Phase 20 đã loại metadata refund khỏi event.
-- Mô tả `ORDER_REFUND_FAILED` có chỗ yêu cầu chỉ `error_code`, có ví dụ vẫn chứa
-  `error_message`; cần chốt ở lần refactor contract sau.
-- Các lifecycle event ngoài `ORDER_COMPLETED` chưa có machine-readable schema hoàn
-  chỉnh; AsyncAPI sẽ được chuẩn hóa riêng. HTTP public/internal v1, Payment v2,
-  Inventory workflow v1 và Delivery proof v1 là các target contract hiện đã pin.
+- AsyncAPI v1 đã chốt chỉ phát `com.ecommerce.order.paid.v1` cho Cart và `com.ecommerce.order.completed.v1`
+  cho Review; chưa có Order producer/provider test để nâng adoption status.
+- Notification và Analytics chưa có runtime consumer, nên không được coi là consumer
+  của Order event cho đến khi interaction/code/contract được đăng ký.
 - Chưa có SLO, capacity benchmark, retention đầy đủ cho order data, backup/restore,
   schema rollout hoặc runbook tự động hóa.

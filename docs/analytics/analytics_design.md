@@ -1,9 +1,9 @@
 # Bản Thiết Kế Toàn Diện: Analytics Service
 
 > **Trạng thái:** thiết kế tương lai, chưa có Analytics Service/runtime và chưa là
-> consumer được đăng ký của bất kỳ Review event nào. Không cấp Kafka ACL, không tạo
-> pipeline và không suy diễn schema Analytics từ `t.review.events` cho tới khi có
-> contract integration riêng.
+> consumer được đăng ký của Order hay Review event nào. Không cấp Kafka ACL, không
+> tạo pipeline và không suy diễn schema Analytics từ `t.order.events` hoặc
+> `t.review.events` cho tới khi có contract integration riêng.
 
 Tài liệu này là bản đúc kết từ quá trình phân tích và thảo luận chuyên sâu, quy định mọi mặt về kiến trúc, luồng sự kiện (Data Pipeline), cơ chế bảo mật cô lập và Database Schema cho **Analytics Service** (Dịch vụ Phân tích Dữ liệu) của hệ thống E-commerce.
 
@@ -50,7 +50,11 @@ Giải pháp áp dụng **4 Lớp Chốt Chặn (Defense in Depth)**:
 Analytics không chủ động moi móc Database của các Service. Tất cả đi qua **Transactional Outbox Event** đẩy vào Kafka.
 
 ### Bố cục các luồng Flink Pipelines (Job)
-1.  **Pipeline Giao dịch (Order/Payment/Promotion):** Nguồn `t.order.events`. Đòi hỏi tính chính xác, không trùng lặp (Checkpointing 2PC Strict). Ghi xuống các bảng thiết kế dạng Unique Update ở Doris (Khứ hồi tiền tức thì khi Hủy đơn).
+1.  **Pipeline giao dịch (Payment):** nguồn khả dụng là `t.payment.events.v2` theo
+    Payment AsyncAPI. Analytics chưa phải consumer được đăng ký của Order Events v1:
+    hai fact Order hiện tại chỉ dành cho Cart và Review. Mọi pipeline doanh thu/order
+    mới phải có consumer contract riêng trước khi cấp ACL, thay vì suy diễn lifecycle
+    từ `t.order.events`.
 2.  **Pipeline Khách hàng & Phễu (Cart):** Mục tiêu tương lai là dùng `t.cart.events`
     để dựng phễu bỏ giỏ. Review không phải source đã đăng ký: Review Events v1 chỉ có
     consumer là Review, Search và Notification.

@@ -26,7 +26,7 @@ workflow, PostgreSQL transaction/locking và Kafka consumer.
 
 Khi implementation được thêm, tài liệu phải cung cấp command chính thức để cài
 dependency, start PostgreSQL/Redis/Kafka/Connect/Temporal, chạy migration, start
-HTTP server, ba consumer và Temporal worker, kiểm tra health, rồi cleanup an toàn.
+HTTP server, bốn Kafka consumer và Temporal worker, kiểm tra health, rồi cleanup an toàn.
 
 Local stack cần topic `t.order.events`, `t.payment.events.v2`, `t.inventory.order.events.v1`,
 `t.delivery.order.events.v1`, bốn consumer group, workflow dispatcher và bốn Temporal task queue. Inventory/Promotion/Payment có thể
@@ -72,7 +72,8 @@ ghi tại đây.
 
 Implementation phải test mọi HTTP/event/activity semantics liệt kê ở
 `interfaces.md`: unknown field, duplicate, unsupported version, route theo
-order/workflow ID, canonical string order ID của `ORDER_COMPLETED`, nullable variant
+order/workflow ID, canonical string order ID của cả hai outbound event, unique paid
+SKU list, nullable completed-item variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
 Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
@@ -90,8 +91,8 @@ Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
 
-Order đã có public/internal OpenAPI v1 ở `contracts/http/order`; AsyncAPI hiện mới
-có `ORDER_COMPLETED`. Cần pin generator/linter version, output path, generated-code
+Order đã có public/internal OpenAPI v1 ở `contracts/http/order`; AsyncAPI v1 mô tả
+hai outbound event có consumer và ba inbound provider channels. Cần pin generator/linter version, output path, generated-code
 policy và CI drift check. Markdown example không phải source để generate model.
 
 ## 7. Database migration

@@ -45,7 +45,7 @@ không produce được); Redis không nên chặn readiness vì có fallback DB
 | Poller `updated_at` threshold | 1 phút | Không |
 | Webhook retry `max_retries`/backoff | Auto-Retry Worker | Không |
 | Archive age / S3 bucket | > 6 tháng; `s3://payment-archive/...` | Bucket credential là secret |
-| Kafka topics/consumer groups | `t.payment.events.v2`, `t.payment.webhooks.raw`, `t.order.events` / `payment-order-consumer` | Không |
+| Kafka topics/consumer groups | `t.payment.events.v2`, `t.payment.webhooks.raw` | Không |
 | PostgreSQL/Redis/Kafka connection | Runtime dependency | Credential là secret |
 
 Tên biến môi trường cụ thể chưa có; không ghi giá trị secret vào tài liệu.
@@ -61,8 +61,8 @@ Metrics tối thiểu theo thiết kế cũ:
 5. Reconciliation mismatch rate (drift rate).
 
 Bổ sung nên có khi implement: webhook `FAILED_SIGNATURE` rate, optimistic lock
-conflict rate, Stripe API latency/error, số transaction `requires_manual_review`,
-consumer lag `payment-order-consumer`.
+conflict rate, Stripe API latency/error và số transaction
+`requires_manual_review`.
 
 Identifier để truy vết: `correlation_id` (Temporal Workflow ID), `event_id`,
 `order_id`, `payment_transaction_id`, `refund_transaction_id`, `stripe_event_id`,
@@ -136,7 +136,6 @@ trước commit, refund vượt hạn mức.
 | Webhook Auto-Retry | CronJob | `FAILED_SIGNATURE`/`UNPROCESSED` → re-push Kafka | `retry_count < max_retries`, backoff, giữ ID | `WF-PAYMENT-009` |
 | Dead-letter Replay | Manual/on-demand | DLQ message theo filter → replay batch | Re-validate idempotency, rate limit, audit | `WF-PAYMENT-009` |
 | Archival CronJob | Chủ nhật 3:00 AM | Partition > 6 tháng → S3 → detach → drop | Singleton; drop chỉ sau verify checksum | `WF-PAYMENT-010` |
-| `payment-order-consumer` | `t.order.events` | `ORDER_CANCELLED` → post-command reconciliation marker | Durable inbox `event_id`; never creates primary cancel | `WF-PAYMENT-008` |
 
 ## 9. Runbook (rút gọn theo thiết kế cũ)
 

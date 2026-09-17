@@ -29,7 +29,7 @@ có order thực hiện; áp thẳng success lên workflow đóng phá determini
 Khi `PAYMENT_SUCCESS` không signal được vì checkout đã timeout và order là
 `CANCELLED(PAYMENT_TIMEOUT)`, start duy nhất
 `OrderLatePaymentRecoveryWorkflow` theo order. Workflow verify evidence, chuyển
-order về paid lane, phát `ORDER_PAID(payment_recovery=true)`, tái lập Inventory
+order về paid lane, phát cùng minimal `com.ecommerce.order.paid.v1` cho Cart, tái lập Inventory
 reservation rồi chạy post-payment. Nếu không phục hồi được các bước bắt buộc, đi
 auto-refund để trả tiền.
 
@@ -47,7 +47,7 @@ resource đã release, có nguy cơ hết stock/promotion và cần auto-refund/
 
 ## Ảnh hưởng migration
 
-Cần workflow/task queue mới, routing fallback, recovery metadata/event semantics,
+Cần workflow/task queue mới, routing fallback và recovery metadata nội bộ,
 reservation evidence và auto-refund bridge. Dashboard phải phân biệt normal paid và
 recovered paid.
 

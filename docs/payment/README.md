@@ -65,7 +65,7 @@ Payment Service không chịu trách nhiệm:
 - Quyết định khi nào một đơn hàng được hoàn tiền. Refund chỉ được khởi tạo bởi
   explicit command từ `OrderRefundWorkflow` với selected-scope inspection completion
   hoặc atomic pre-dispatch release evidence; Payment không suy luận refund từ
-  `ORDER_CANCELLED` hay shipping event ([ADR-011](./decisions/ADR-011-one-lifetime-order-refund.md)).
+  Order/shipping event ([ADR-011](./decisions/ADR-011-one-lifetime-order-refund.md)).
 - Sở hữu order, inventory, promotion hay workflow Temporal của Order.
 - Thanh toán COD hoặc bất kỳ provider nào khác Stripe (VNPay, MoMo, ZaloPay đã
   bị loại bỏ ở Phase 18).
@@ -115,7 +115,6 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 |---|---|---|---|---|---|
 | Inbound | Order (Temporal Activities) | HTTP | Initiate/cancel/refund/query | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml); buyer/CSKH reads go through Order, never direct Payment |
 | Inbound | Stripe | HTTPS webhook | `POST /v1/payments/webhook/stripe` | Bắt buộc | Stripe event schema |
-| Inbound | Order | Kafka `t.order.events` | `ORDER_CANCELLED` factual reconciliation notification | Bắt buộc | Tài liệu thiết kế hiện hành |
 | Outbound | Stripe | HTTPS (`stripe-java`) | PaymentIntent, Refund, BalanceTransaction, Webhook verify | Bắt buộc | Stripe API |
 | Outbound | Order, Analytics | Kafka `t.payment.events.v2` | `PAYMENT_*`, `REFUND_*` | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Internal | Kafka `t.payment.webhooks.raw` | Kafka | Raw webhook buffer cho Webhook Processor | Bắt buộc | Nội bộ Payment |

@@ -8,7 +8,7 @@ the Order financial event contract; prior ADRs remain historical decisions.
 ## Context
 
 Persisting an empty `PENDING` row before `PaymentIntent.create` leaves an ambiguous
-provider side effect after a timeout. Separately, using asynchronous `ORDER_CANCELLED`
+provider side effect after a timeout. Separately, using an asynchronous Order event
 as the first cancellation command permits a provider capture to race Order's resource
 rollback. Neither Redis locks nor Kafka partition ordering can prove the financial
 outcome of either race.
@@ -21,12 +21,12 @@ The same key is replayed after an uncertain response; reconciliation locates the
 provider object through immutable internal metadata when replay alone cannot bind it.
 `INITIATING` is a recoverable state, not an expirable empty payment session.
 
-Order invokes synchronous `POST /v1/payments/{transactionId}/cancel` before it emits
-the factual `ORDER_CANCELLED` event or releases pre-payment resources. Payment returns
+Order invokes synchronous `POST /v1/payments/{transactionId}/cancel` before it
+final-cancels or releases pre-payment resources. Payment returns
 either a durable non-capture outcome or `ALREADY_SUCCEEDED`; it never cancels a
 captured payment by assumption. Unknown outcomes remain `CANCEL_PENDING` and are
-recovered using the same operation identity. `ORDER_CANCELLED` remains a consumer
-reconciliation notification and never authorizes automatic refund.
+recovered using the same operation identity. Payment does not consume Order events;
+no lifecycle notification authorizes automatic refund.
 
 Payment event schema version 2 includes `currency`, the immutable captured payment
 transaction identity on refund facts, and monotonic `financial_state_version`, so Order can

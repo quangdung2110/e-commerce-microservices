@@ -25,9 +25,10 @@ status/retry làm tăng write contention và logic vận hành.
 
 ## Quyết định
 
-Update domain state, tăng per-order sequence và insert `outbox_events` trong cùng
-PostgreSQL transaction. Outbox append-only, có partition key bắt buộc. Debezium/
-Kafka Connect đọc WAL và route `Order`/`OrderItem` sang `t.order.events` với
+Với hai transition có registered consumer (`PAID`, `COMPLETED`), update domain state,
+tăng per-order integration sequence và insert `outbox_events` trong cùng PostgreSQL
+transaction. Transition khác không tạo outbox. Outbox append-only, có partition key
+bắt buộc. Debezium/Kafka Connect đọc WAL và route `Order` sang `t.order.events` với
 at-least-once delivery. Retry/DLQ/backoff thuộc connector, không lưu mutable outbox
 status. Xóa row trên 15 ngày chỉ sau watermark an toàn.
 
@@ -46,7 +47,8 @@ outbox; cleanup sai watermark có thể mất khả năng replay.
 ## Ảnh hưởng migration
 
 Cần outbox schema/index, Debezium Event Router, connector security/monitoring,
-partition/topic mapping và trimmer. Rollout connector trước khi dọn event cũ.
+partition/topic mapping và trimmer. Chỉ `com.ecommerce.order.paid.v1` và `com.ecommerce.order.completed.v1`
+được allowlist tại router; rollout connector trước khi dọn event cũ.
 
 ## Xác minh
 
