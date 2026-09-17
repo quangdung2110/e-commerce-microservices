@@ -81,7 +81,7 @@ policy L4 gắn `selector` và được ztunnel thực thi.
 ### 5.2 Namespace `ecommerce` (L7, waypoint)
 
 Route public dùng path theo contract trong `contracts/http/*`; nơi gateway route matrix còn dùng
-prefix khác (`/api/users/**`, `/api/orders/**`, `/api/payments/**`) thì contract được ưu tiên và
+prefix khác (`/api/users/**`, `/api/payments/**`) thì contract được ưu tiên và
 gateway matrix phải được đối soát (mục 11). `X` = mọi method của route.
 
 | Đích | Path / operation | Method | Được phép từ | Nguồn |
@@ -112,9 +112,9 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `search-service` | `/api/v2/search/**` | X | `edge/traefik` | gateway matrix |
 | `product-detail-bff` | `/api/v1/storefront/**` | GET | `edge/traefik` | `storefront-queries-product-detail` |
 | `checkout-service` | `/v1/checkout/**` | POST | `edge/traefik` | docs/README §8 |
-| `order-service` | `/api/orders/**` (prefix cần đối soát) | X | `edge/traefik` | gateway matrix |
-| `order-service` | `/v1/orders/create-from-checkout` | POST | `ecommerce/checkout-service` | `checkout-creates-order` |
-| `order-service` | `/internal/v1/orders/*/financial-reconciliation-decisions` | POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
+| `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
+| `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/api/payments/webhook/stripe`, `/api/payments/**` | X | `edge/traefik` | gateway matrix |
 | `payment-service` | `/v1/payments/**` | POST | `ecommerce/order-service` | `order-initiates-payment` |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
@@ -165,7 +165,7 @@ của Istio.
 | `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | 0 | 10 giây | Legacy migrator only; proof verification before mutation |
 | `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
-| `POST /v1/orders/create-from-checkout`, `POST /v1/payments/**` | 0 | 15 giây | Không idempotent ở mesh |
+| `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/**` | 0 | 15 giây | Caller sở hữu retry bằng stable idempotency key; mesh không retry |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF degrade theo contract |
 | `GET /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | Idempotent theo `delivery_id` |
@@ -235,9 +235,9 @@ Repository chưa có manifest Kubernetes cho bất kỳ service nào, chưa có 
 chưa có Helm values Istio; `<pinned-version>` chưa chốt vì chưa có cluster để xác minh ma trận
 tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
-Compose là bằng chứng bảo mật. Gateway route matrix dùng prefix `/api/users/**`,
-`/api/orders/**`, `/api/payments/**` trong khi contract User dùng `/api/v1/users/**` và Order/
-Payment chưa có contract; Cart, Checkout, Inventory admin và Product Detail BFF chưa có dòng
+Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn một số prefix legacy như
+`/api/users/**`, `/api/payments/**`; Order public routes đã được đối soát theo OpenAPI
+v1. Cart, Checkout, Inventory admin và Product Detail BFF chưa có đủ dòng
 trong gateway matrix — mục 5.2 dùng contract, gateway matrix phải được đối soát. Review Service
 dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
 riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một

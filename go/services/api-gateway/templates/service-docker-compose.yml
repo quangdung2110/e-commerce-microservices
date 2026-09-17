@@ -67,7 +67,7 @@ services:
       - ecommerce-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.order-service.rule=PathPrefix(`/api/orders`)"
+      - "traefik.http.routers.order-service.rule=PathPrefix(`/api/v1/orders`) || PathPrefix(`/api/v1/order-operations`) || PathPrefix(`/api/v1/admin/orders`) || PathPrefix(`/api/v1/admin/order-operations`)"
       - "traefik.http.routers.order-service.entrypoints=websecure"
       - "traefik.http.routers.order-service.tls=true"
       - "traefik.http.routers.order-service.middlewares=order-auth,rate-limit-api"

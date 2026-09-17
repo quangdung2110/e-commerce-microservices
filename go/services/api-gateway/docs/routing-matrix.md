@@ -11,7 +11,8 @@
 | Path Pattern | Service | Auth Required | Rate Limit | Priority | Notes |
 |--------------|---------|---------------|------------|----------|-------|
 | `/api/users/**` | user-service | Yes | 50 req/s | 10 | All endpoints require auth |
-| `/api/orders/**` | order-service | Yes | 50 req/s | 10 | All endpoints require auth |
+| `/api/v1/orders/**`, `/api/v1/order-operations/**` | order-service | Yes | 50 req/s | 20 | Buyer-scoped Order API |
+| `/api/v1/admin/orders/**`, `/api/v1/admin/order-operations/**` | order-service | Yes, `ADMIN` | 20 req/s | 30 | Admin Order API |
 | `/api/products/**` (GET) | product-service | No | 100 req/s | 10 | Public read access |
 | `/api/products/**` (POST/PUT/DELETE) | product-service | Yes | 50 req/s | 20 | Write operations require auth |
 | `/api/payments/**` | payment-service | Yes | 20 req/s | 10 | Strictest rate limit |
