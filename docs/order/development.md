@@ -18,7 +18,7 @@ verified_against_commit: null
 ## 1. Điều kiện tiên quyết
 
 Cần chốt và ghi phiên bản ngôn ngữ/framework, build tool, formatter/linter,
-container runtime, PostgreSQL, Redis, Kafka/Kafka Connect/Debezium, Temporal server/
+container runtime, PostgreSQL, Redis request-replay cache, Kafka/Kafka Connect/Debezium, Temporal server/
 CLI/UI và công cụ migration. Runtime phải có client/SDK hỗ trợ durable Temporal
 workflow, PostgreSQL transaction/locking và Kafka consumer.
 
@@ -36,8 +36,8 @@ thread sleep cho test workflow.
 ## 3. Cấu hình local
 
 Cần `.env.example` hoặc profile local không chứa secret thật. Bảng cấu hình phải
-bao phủ DSN/pool, Redis, Kafka security/group, Temporal namespace/task queue/TLS,
-timeouts/retry, timer 15 phút, refund wait 30 ngày, TTL keys, search window và
+bao phủ DSN/pool, Redis request-replay cache, Kafka security/group, Temporal namespace/task queue/TLS,
+timeouts/retry, timer 15 phút, refund wait 30 ngày, request-mirror TTL, search window và
 outbox retention. Stripe secret/client secret thuộc Payment, không được commit/log
 ở Order.
 
@@ -62,7 +62,8 @@ ghi tại đây.
 - PostgreSQL transaction: state + sequence + outbox + durable inbox/workflow-dispatch/checkpoint atomicity; row-lock/CAS races.
 - Buyer return first-write-wins; unique checkout/refund transaction constraints.
 - Search class A/B với extensions/index/view và equal timestamp cursor.
-- Redis duplicate hit/miss/outage/TTL expiry; durable inbox/dispatch/checkpoint remains the authority.
+- Request replay mirror hit/miss/outage/TTL expiry; duplicate events must be safe without
+  Redis; durable inbox/dispatch/checkpoint remains the authority.
 - Debezium outbox at-least-once, partition key và connector restart.
 - Temporal crash/resume, timer/signal race, activity retry, workflow identity and dispatcher recovery after local commit/start failure.
 - Promotion final activity: same-key stored response, different-payload conflict, crash
@@ -121,7 +122,7 @@ physical-dispatch/return duplicate. Dùng UUID/số điện thoại/address gi�
 Ưu tiên trace bằng `correlation_id`, WorkflowID, event ID và order ID. Inspect
 Temporal history trước khi retry/manual signal; inspect dispatch, durable inbox, remote
 command checkpoint, row lock/state/outbox in read-only transaction; kiểm tra Kafka offset/lag
-và Redis TTL mà không dump PII.
+và request-replay TTL mà không dump PII.
 Không update FSM trực tiếp để “gỡ kẹt” vì sẽ bỏ sequence/outbox/compensation.
 
 ## 10. Lỗi local thường gặp cần ghi khi có code

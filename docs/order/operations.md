@@ -18,14 +18,14 @@ verified_against_commit: null
 ## 1. SLO, SLI và health
 
 Cần định nghĩa SLI/SLO cho HTTP availability/error/latency; search p95/p99 theo
-class A/B; PostgreSQL pool; Redis dedup/lock errors; Kafka consumer lag/oldest event;
+class A/B; PostgreSQL pool; Redis request-replay errors; Kafka consumer lag/oldest event;
 outbox-to-Kafka age; Temporal schedule-to-start/activity/workflow completion;
 checkout success/timeout/cancel fact/forward repair; refund wait age; late-payment recovery và
 auto-complete delay. Error budget và ngưỡng số chưa được chốt.
 
 Liveness chỉ kiểm tra process. Readiness API ghi cần PostgreSQL và khả năng start/
-signal Temporal; read API phụ thuộc PostgreSQL. Redis lỗi có thể bỏ fast-path nhưng
-không được bỏ FSM safety; Kafka/CDC/consumer/Temporal worker health nên báo riêng
+signal Temporal; read API phụ thuộc PostgreSQL. Redis lỗi có thể bỏ request replay
+fast-path nhưng không được bỏ FSM safety; Kafka/CDC/consumer/Temporal worker health nên báo riêng
 để tránh loại HTTP read instance không cần thiết. Startup probe phải chờ migration/
 config, nhưng chi tiết chưa có evidence.
 
@@ -34,7 +34,7 @@ config, nhưng chi tiết chưa có evidence.
 | Nhóm property | Mục đích | Giá trị thiết kế hiện biết | Secret |
 |---|---|---|---|
 | PostgreSQL DSN/pool/timeouts | Source of truth/read path | Chưa chốt | Có |
-| Redis endpoint/auth | Dedup/locks | TTL request 7 ngày, event 30 ngày, FSM lock 10 giây | Có |
+| Redis endpoint/auth | Request replay mirrors | TTL request 7 ngày; DB fallback khi Redis lỗi | Có |
 | Kafka brokers/security | Consume/produce via CDC | Topics trong `interfaces.md` | Có |
 | Consumer group IDs | Payment/Inventory/Delivery workers | Bốn group đã nêu | Không |
 | Temporal endpoint/namespace/TLS | Saga runtime | Chưa chốt | Có |
@@ -58,7 +58,7 @@ Metrics tối thiểu:
   không label bằng operation/order ID.
 - DB pool usage/timeout, transaction/lock wait/deadlock, search latency/rows và GIN
   index/disk growth.
-- Redis command error/dedup-hit/lock-contention theo operation, không theo key.
+- Redis request-replay hit/miss/error theo operation, không theo key; không có lock-contention metric.
 - Kafka consume result/retry/lag/oldest age/duplicate và CDC connector lag/error.
 - Temporal workflow started/completed/failed/timed-out, activity retry, signal route
   miss, compensation failure, workflow age theo type.
@@ -84,7 +84,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Refund failed/reversed | Event critical lane xuất hiện | Critical | Payment/Ops |
 | CDC/outbox lag | Oldest outbox chưa publish vượt ngưỡng | Cao | Data platform/Order |
 | DB pool/deadlock | Saturation/lock wait vượt ngưỡng | Cao | Database exhaustion |
-| Redis unavailable | Error rate liên tục; dedup fast path mất | Trung bình/Cao | Degraded idempotency |
+| Redis unavailable | Error rate liên tục; request replay fast path mất | Trung bình | DB fallback và tăng tải đọc/lock |
 | Search latency/disk | p99 hoặc trigram index disk vượt budget | Trung bình | Query capacity |
 
 ## 5. Failure mode và hành vi suy giảm
@@ -92,7 +92,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Failure | Hành vi an toàn |
 |---|---|
 | PostgreSQL unavailable/pool exhausted | Không ready cho API; activity/consumer không ack/không commit; Temporal retry |
-| Redis unavailable | Không dựa vào fast-path; DB FSM/WorkflowID vẫn bảo vệ safety, nhưng khả năng nhận duplicate/tải tăng; có thể từ chối write nếu implementation không chứng minh fallback an toàn |
+| Redis unavailable | Fallback vào durable request record/DB FSM/WorkflowID; safety vẫn giữ, nhưng replay nhanh mất và tải DB tăng. Không được từ chối write nếu fallback đã được chứng minh an toàn |
 | Kafka unavailable/consumer lag | API/local transaction có thể tiếp tục ghi outbox; downstream/event signal trễ; alert, không xóa outbox |
 | Debezium/Kafka Connect lỗi | Outbox backlog tăng; không publish tay bằng cách phá ordering; phục hồi connector từ WAL/offset |
 | Temporal unavailable | Read API còn có thể phục vụ; command start/signal trả lỗi/202 chỉ khi đã có durable acceptance; không commit terminal state inline |
@@ -163,8 +163,8 @@ escalation owner. Tối thiểu phải có:
    chưa tạo transaction thứ hai; không coi inspection `FAIL` là lý do bỏ Payment.
 4. CDC/outbox backlog: dừng trimmer, kiểm tra connector/WAL/offset/topic, resume,
    xác minh sequence/duplicate downstream.
-5. Redis corruption/outage: đánh giá duplicate window, ưu tiên DB/Temporal guard,
-   không flush broad keyspace, khôi phục và theo dõi duplicate rate.
+5. Redis corruption/outage: đánh giá request replay hit/miss và DB fallback,
+   không flush broad keyspace, khôi phục rồi theo dõi replay/error rate.
 6. DB pool/deadlock: xác định query/lock holder, giảm concurrency, không kill
    transaction mù, xác minh state/outbox atomicity.
 7. Late-payment recovery/manual verification: xác nhận mapped payment attempt identity/version,

@@ -33,7 +33,7 @@ verified_against_commit: null
 | PostgreSQL `order_saga_checkpoints` | Remote command IDs/outcomes for checkout, cancellation and post-capture repair | Order Service |
 | PostgreSQL `outbox_events` | Integration event chưa/đã được CDC quan sát | Order Service |
 | View `v_orders_buyer_tab` | Tab dẫn xuất từ Order data | Dẫn xuất, không là source of truth |
-| Redis | Request/event dedup và FSM lock có TTL | Dữ liệu tạm; không là source of truth |
+| Redis | Request replay mirror có TTL cho bốn command | Dữ liệu tạm; không là source of truth |
 | Temporal history | Tiến độ/timer/signal saga | Temporal cho orchestration, không thay Order FSM |
 
 Service khác không ghi database này. Order không sở hữu current Product, User
@@ -384,11 +384,15 @@ unproven refund.
 status, retry metadata and timestamps. Every API/CAS action that needs checkout, cancel,
 refund, late-payment recovery or financial reconciliation inserts this row in the same
 local transaction before returning `202`; a dispatcher starts/attaches idempotently.
+For the four request-mirror commands, the corresponding durable dispatch, attempt or
+refund-case record must also retain the idempotency key, canonical request digest and
+operation/result reference before Redis loss can provide exact replay semantics.
 
 `order_consumed_events` has `event_id` primary key plus source, order ID, source aggregate
 revision/financial version, payload SHA-256, validation outcome and timestamps. The inbox
-insert and the durable routing/checkpoint update commit together. Redis TTL keys may reduce
-load but cannot decide a duplicate, late or malformed financial/inventory event.
+insert and the durable routing/checkpoint update commit together. Request replay mirrors
+may reduce retry latency, but Redis cannot decide a duplicate, late or malformed
+financial/inventory event.
 
 `order_saga_checkpoints` stores one stable remote command identity per `(order_id, phase,
 operation)`: command ID/key, request digest, canonical remote resource reference and
@@ -549,21 +553,26 @@ thể cần materialized view chỉ sau benchmark/ADR mới.
 
 | Mục đích | Key | TTL/hành vi |
 |---|---|---|
-| Create request mirror | `order:req:create:{checkout_token}` | 7 ngày; WorkflowID là dedup chính |
-| Cancel request | `order:req:cancel:{idempotency_key}` | 7 ngày; conflict hoặc replay payload nếu lưu |
-| Admin pre-dispatch refund request | `order:req:admin-refund:{idempotency_key}` | 7 ngày; durable admin attempt là authority |
-| Return request | `order:req:return:{idempotency_key}` | 7 ngày; không thay one-shot guard |
-| Payment-attempt request | `order:req:payment-attempt:{idempotency_key}` | 7 ngày; numbered attempt row + terminal non-capture fact là authority |
-| FSM lock | `order:lock:fsm:{order_id}` | 10 giây; correctness vẫn dựa DB |
-| Payment signal fast-path | `payment:signal:{order_id}:{payment_transaction_id}:{event_type}` | 30 ngày; durable `order_consumed_events` is authority |
-| Inventory ship fast-path | `inventory:ship:applied:{event_id}` | 30 ngày; durable inbox/revision is authority |
-| Delivery proof fast-path | `delivery:proof:applied:{event_id}` | 30 ngày; durable inbox + unique proof is authority |
-| Inventory return inspection fast-path | `inventory:return:inspection-completed:{event_id}` | 30 ngày; durable inbox/evidence is authority |
+| Cancel request | `order:req:cancel:{idempotency_key}` | 7 ngày; canonical digest + durable operation reference; conflict/replay mirror |
+| Admin pre-dispatch refund request | `order:req:admin-refund:{idempotency_key}` | 7 ngày; canonical digest + durable attempt reference; admin attempt là authority |
+| Return request | `order:req:return:{idempotency_key}` | 7 ngày; canonical digest + durable case/operation reference; không thay one-shot guard |
+| Payment-attempt request | `order:req:payment-attempt:{idempotency_key}` | 7 ngày; canonical digest + durable attempt reference; numbered attempt row là authority |
 
-Redis mirrors improve hot-path duplicate suppression only. `order_consumed_events`,
-workflow dispatches and saga checkpoints are retained durably; duplicate outside TTL or
-after Redis loss is decided by those records plus FSM guards. Historical idempotency-table
-retirement must not remove this new durable inbox.
+These are request replay mirrors only. They store a canonical request digest and a
+sanitized durable result reference; they do not own an FSM transition, workflow start,
+remote command or event-consumption decision. The `checkout_token` request mirror is
+not needed because the unique database token, fixed WorkflowID and durable workflow
+dispatch already provide create deduplication. FSM serialization uses PostgreSQL row
+locks/CAS, and all inbound event deduplication uses `order_consumed_events` plus the
+semantic revision/proof guards. No Redis event fast-path or Redis FSM lock is part of
+the current Order design.
+
+Redis request mirrors improve hot-path replay only. `order_consumed_events`, workflow
+dispatches, saga checkpoints and domain FSM guards remain durable; a request after TTL
+or Redis loss falls back to those records. Historical idempotency-table retirement must
+not remove this new durable inbox. If the implementation cannot persist the request
+digest/result reference in the corresponding durable record, it must keep the relevant
+Redis request mirror until that persistence exists.
 
 Public `order-operations/{operation_id}` là projection có authorization từ
 `order_workflow_dispatches`, admin refund attempt và refund/payment checkpoint liên quan;

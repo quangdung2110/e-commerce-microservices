@@ -90,8 +90,8 @@ line collapse, equal timestamp ordering, last page và total count không bị c
 `POST /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests`. Mọi command có
 `Idempotency-Key` bắt buộc. Redis mirror dùng `order:req:cancel:{key}` hoặc
 `order:req:admin-refund:{key}` TTL 7 ngày; cùng key/payload có thể replay, khác payload
-trả `409 IDEMPOTENCY_KEY_REUSED`. API lấy distributed lock
-`order:lock:fsm:{order_id}` TTL 10 giây, sau đó `SELECT ... FOR UPDATE`.
+trả `409 IDEMPOTENCY_KEY_REUSED`. API khóa row bằng `SELECT ... FOR UPDATE` trong
+transaction; request mirror chỉ phục vụ replay nhanh.
 
 **Nhánh A — pre-payment:** Buyer hoặc Admin với `PENDING_PAYMENT` first commits
 `PENDING_PAYMENT -> CANCELLING` plus a durable cancellation command/dispatch record.
@@ -124,7 +124,7 @@ WorkflowID serialize retry nhánh B; DB FSM giữ invariant nếu Redis mất ke
 Payment success cạnh cancel/timer được resolved by Payment's cancel/capture fact, then
 serialized in Temporal. A start failure after the local command commit is recovered by the
 workflow dispatcher; it cannot leave a terminal state inferred from Redis. Test phải bao
-phủ duplicate key, key khác cùng order, lock expiry, cancel/capture race, uncertain
+phủ duplicate key, key khác cùng order, DB row-lock race, cancel/capture race, uncertain
 remote outcome, durable dispatch recovery và admin lane.
 
 ## WF-ORDER-004 — Checkout submit saga
@@ -132,8 +132,8 @@ remote outcome, durable dispatch recovery và admin lane.
 **Mục tiêu:** biến checkout snapshot hợp lệ thành order, reserve tài nguyên, tạo
 Stripe PaymentIntent và sau success đưa order tới `PROCESSING`.
 
-**Actor/participants:** Checkout, Order API, Temporal, PostgreSQL, Redis,
-Inventory, Promotion, Payment và outbox CDC. **Trigger:**
+**Actor/participants:** Checkout, Order API, Temporal, PostgreSQL, Inventory, Promotion,
+Payment và outbox CDC. **Trigger:**
 `POST /internal/v1/checkout-order-submissions` theo
 [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml).
 
@@ -143,8 +143,8 @@ Checkout phải lấy một Inventory allocation plan immutable trước submit;
 không được chọn warehouse cho từng item. Mỗi planned line dùng `line_reference` của
 Checkout, vì `order_line_id` chỉ tồn tại sau `CreateOrder`; Order phải tạo và persist
 bridge bất biến `line_reference -> order_line_id` trước Reserve. WorkflowID là
-`order-checkout-{checkout_token}`; Redis mirror
-`order:req:create:{checkout_token}` TTL 7 ngày.
+`order-checkout-{checkout_token}`; create dedup dựa trên unique `checkout_token`,
+fixed WorkflowID và durable workflow dispatch, không dùng Redis create mirror.
 
 ```mermaid
 sequenceDiagram
@@ -282,7 +282,7 @@ refund transaction.
 
 **Race/idempotency:** Temporal history serializes a signal/timer only after the consumer
 has validated and durably recorded the fact. Duplicate/stale events are no-ops by inbox
-and financial version, not Redis TTL. Test cần event duplicate/out-of-order, wrong
+and financial version, not request replay TTL. Test cần event duplicate/out-of-order, wrong
 transaction/amount/currency, workflow not found, timeout-before/signal-before,
 cancellation reason khác timeout, Inventory fenced recovery success/rejection, Promotion
 repair failure -> financial reconciliation without a Payment refund command, and refund
@@ -340,7 +340,8 @@ giao; request khóa một selected-line scope trước khi start refund saga.
 
 **Trigger/input:** `POST /api/v1/orders/{order_id}/return-requests`, JWT Buyer, header
 `Idempotency-Key`, `lines[] {order_line_id, quantity}`, `reason_code`, `reason_details`.
-Không có `refund_type`. Redis request key TTL 7 ngày không thay thế business guard.
+Không có `refund_type`. Redis mirror `order:req:return:{key}` TTL 7 ngày không thay
+thế business guard.
 
 **Preconditions:** Buyer sở hữu order; state thuộc lane cho phép return; mọi
 `order_item_lines.fulfillment_status=DELIVERED`; `lines[]` không rỗng, không duplicate, thuộc order,
@@ -352,7 +353,8 @@ các line nhưng không có partial quantity. Trong locked transaction, CAS
 `trigger_source=API_RETURN`, reason `RETURN_API_ACCEPTED` và scope; trả `202` cùng
 `refund_request_id`, `operation_id` và operation `Location`.
 
-**Duplicate/failure:** cùng key trả conflict/replay theo Redis policy; key mới vẫn
+**Duplicate/failure:** cùng key trả conflict/replay theo request mirror hoặc durable
+request record; key mới vẫn
 không bypass one-shot. CAS thua trả `REFUND_CUSTOMER_REQUEST_ALREADY_USED`. Guard
 không reset khi workflow/refund fail hoặc reverse. Nếu CAS đã commit nhưng start
 Temporal lỗi, durable workflow dispatch retries/attaches bằng workflow ID ổn định.
@@ -509,7 +511,8 @@ outcome via its original checkpoint only.
 
 **Mục tiêu:** cho Buyer tiếp tục thanh toán mà không tái sử dụng transaction identity
 cũ. **Trigger:** `POST /api/v1/orders/{order_id}/payment-attempts` với mandatory
-`Idempotency-Key`; `GET .../payment-attempts/{attempt_number}` đọc lại attempt.
+`Idempotency-Key`; Redis mirror `order:req:payment-attempt:{key}` TTL 7 ngày;
+`GET .../payment-attempts/{attempt_number}` đọc lại attempt.
 
 **Guards:** Buyer sở hữu order; order vẫn ở payment-eligible lane; không có captured
 transaction; attempt trước phải có durable terminal non-capture fact `FAILED`, `EXPIRED`
@@ -530,7 +533,8 @@ request retry sau capture bị reject và không thể mint transaction thứ ha
 ## Tình huống kiểm thử xuyên suốt
 
 - State/outbox atomicity và sequence đơn điệu trên cùng order.
-- Request/event duplicate khi Redis còn key, mất key và quá TTL.
+- Request duplicate khi Redis còn key, mất key và quá TTL; event duplicate phải an toàn
+  không cần Redis event key.
 - Workflow replay/determinism sau restart hoặc deploy mixed version.
 - Concurrent cancel, return, payment success, Inventory ship và refund result.
 - Multi-warehouse isolation; tất cả buyer-tab precedence và search cursor.

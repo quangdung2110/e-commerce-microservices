@@ -95,6 +95,8 @@ attempt number, transaction ID, `client_secret`, `publishable_key`, `expires_at`
 Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; timeout
 hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
+Create replay và attach chỉ dựa trên unique `checkout_token`, fixed WorkflowID và
+durable workflow dispatch/checkpoint; endpoint này không dùng Redis create mirror.
 
 `pricing_hash` là chuỗi `sha256:<64 lowercase hex>` của SHA-256 trên UTF-8 RFC 8785
 canonical JSON với object `{items:[{sku_id,unit_price_minor}],
@@ -199,11 +201,10 @@ và signal `order-checkout-{checkout_token}`; refund result signal
 transaction. Consumer không update master FSM/outbox trực tiếp.
 
 Dedup authority is `order_consumed_events(event_id)`. Financial version is a monotonic
-semantic guard **within one payment transaction**; a mismatched/stale event is persisted as rejected/reconciliation evidence
-and must not signal a business transition. Redis key is an optional 30-day accelerator.
-
-Key fast-path canonical is `payment:signal:{order_id}:{payment_transaction_id}:{event_type}`;
-the legacy alias `txn_id` is retired and must not appear in a new contract or implementation.
+semantic guard **within one payment transaction**; a mismatched/stale event is persisted as
+rejected/reconciliation evidence and must not signal a business transition. There is no
+Redis event fast-path: a duplicate, stale or out-of-order event always passes through the
+durable inbox and semantic guards.
 
 Signal enum theo mô tả cũ gồm `PaymentSignal.FAILED`/`PaymentResult.FAILED` và
 `RefundResult.SUCCESS`, `RefundResult.FAILED`, `RefundResult.REVERSED`. Lý do reverse

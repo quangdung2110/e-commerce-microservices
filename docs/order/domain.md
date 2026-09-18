@@ -69,7 +69,7 @@ không thay thế invariants trong PostgreSQL.
 
 | ID | Quy tắc/bất biến | Enforcement mục tiêu | Lỗi/kết quả vi phạm |
 |---|---|---|---|
-| `INV-ORD-001` | Một `checkout_token` chỉ có một checkout workflow/order logic | Unique DB + WorkflowID + Redis SETNX | Attach/replay workflow hoặc conflict |
+| `INV-ORD-001` | Một `checkout_token` chỉ có một checkout workflow/order logic | Unique DB + WorkflowID + durable workflow dispatch | Attach/replay workflow hoặc conflict |
 | `INV-ORD-002` | Payment/refund consumer không commit master FSM; workflow là owner | Adapter boundary + row lock trong activity | Event chỉ được signal/dedup |
 | `INV-ORD-003` | Buyer chỉ submit return một lần; guard không reset | CAS `buyer_return_locked_at` | `REFUND_CUSTOMER_REQUEST_ALREADY_USED` |
 | `INV-ORD-004` | Mỗi order tối đa một refund case và một Payment refund transaction trong toàn bộ vòng đời | Lifetime PK refund case + unique txn + WorkflowID | Reject/attach existing case |
@@ -218,7 +218,7 @@ fallback rank `99`.
 | `NOT_FOUND` | Order không tồn tại hoặc không visible | Không | HTTP 404 |
 | `FORBIDDEN` | Buyer không sở hữu order/role sai | Không | HTTP 403 |
 | `INVALID_ORDER_TRANSITION` | State không cho phép command | Không | HTTP 409 |
-| `IDEMPOTENCY_KEY_REUSED` | Redis key đã tồn tại nhưng không replay response | Không | HTTP 409 |
+| `IDEMPOTENCY_KEY_REUSED` | Durable request record đã tồn tại nhưng không replay được response, hoặc canonical payload khác | Không | HTTP 409 |
 | `REFUND_CUSTOMER_REQUEST_ALREADY_USED` | Buyer one-shot guard đã set | Không | HTTP 409 |
 | `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` | Có order line chưa delivered (legacy error-code name) | Có sau khi giao đủ | HTTP 409 |
 | `INVALID_REFUND_SCOPE` | Line không thuộc order, trùng, quantity không đúng full line, hoặc scope rỗng | Không | HTTP 422 |
@@ -229,7 +229,8 @@ fallback rank `99`.
 | `MANUAL_VERIFICATION_REQUIRED` | Không có scope-inspection completion sau 30 ngày | Cần reconciliation/manual exception trên case hiện hữu; không tự bypass Payment gate | Alert/workflow state |
 
 Timeout DB/Redis/Kafka/Temporal là lỗi hạ tầng, không phải domain error. Redis lỗi
-không được tự động biến một transition không hợp lệ thành hợp lệ.
+chỉ làm mất request replay fast-path; fallback durable phải được dùng. Redis không được
+tự động biến một transition không hợp lệ thành hợp lệ.
 
 ## 8. Ví dụ nghiệp vụ
 

@@ -80,7 +80,7 @@ Kafka, Temporal và database service khác không cùng transaction với dữ l
 | `order_payment_attempts` / `order_financial_reconciliation_cases` | Order Service | Payment attempt↔transaction proof and authenticated manual reconciliation decisions |
 | `order_workflow_dispatches` / `order_consumed_events` / `order_saga_checkpoints` | Order Service | Durable Temporal start, event inbox, and remote-command recovery proof |
 | `outbox_events` | Order Service | Log append-only để CDC phát event |
-| Redis idempotency/lock keys | Fast-path tạm thời | PostgreSQL inbox/dispatch/checkpoint + FSM giữ bất biến bền vững |
+| Redis request replay mirrors | Fast-path tạm thời cho bốn command | PostgreSQL inbox/dispatch/checkpoint + FSM giữ bất biến bền vững |
 | Payment, inventory, promotion state | Service tương ứng | Order chỉ giữ ID/snapshot/evidence cần điều phối |
 
 Service khác không được ghi trực tiếp vào PostgreSQL của Order. Tín hiệu ngoài đi
@@ -117,7 +117,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Outbound | Kafka consumers | Kafka | Event vòng đời order/item | Bắt buộc | Có một phần Order completed v1; không đối soát lần này |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |
 | Internal | PostgreSQL | SQL | Source of truth và read path | Bắt buộc | Logical design, chưa có migration evidence |
-| Internal | Redis | Redis commands | Dedup request/event và FSM lock nhanh | Bắt buộc theo thiết kế hiện tại | Key/TTL trong `data.md` |
+| Internal | Redis | Redis commands | Replay request nhanh cho cancel/admin-refund/return/payment-attempt | Tùy chọn; lỗi thì fallback PostgreSQL | Key/TTL trong `data.md` |
 | Internal | Debezium/Kafka Connect | WAL CDC | Relay outbox sang Kafka | Bắt buộc | Cấu hình chưa có evidence |
 
 ## 7. Bất biến quan trọng

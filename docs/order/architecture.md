@@ -24,7 +24,7 @@ payment/refund signal và inventory lifecycle qua Kafka; công bố thay đổi 
 transactional outbox và WAL CDC.
 
 PostgreSQL vừa là source of truth vừa là read path cho detail và search/filter.
-Redis chỉ giữ dedup/lock tạm thời. Thiết kế đã chủ đích loại bỏ Shipping Service,
+Redis chỉ giữ request replay mirror tạm thời. Thiết kế đã chủ đích loại bỏ Shipping Service,
 Elasticsearch order read model, search projector, retry/DLQ topic cho CQRS, cold
 archive và order product metrics.
 
@@ -35,7 +35,7 @@ flowchart LR
   G --> H
   H --> A[Application/FSM layer]
   A --> P[(Order PostgreSQL)]
-  A --> R[(Redis guards/locks)]
+  A --> R[(Redis request replay mirrors)]
   A --> T[Temporal Client]
   TW[Temporal Workers] --> T
   TW --> I[Inventory Service]
@@ -66,9 +66,9 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
 | Query layer | Detail và hai lớp search trực tiếp PostgreSQL | Phụ thuộc Elasticsearch/projector đã bị loại bỏ |
 | Temporal workflows | Serialize saga, timer, signal, retry, compensation, recovery | Thực hiện I/O nondeterministic trực tiếp trong workflow code |
 | Temporal activities | Local transaction hoặc remote call có timeout/idempotency | Giữ workflow state ngoài Temporal history một cách không kiểm soát |
-| Kafka consumers | Validate financial/aggregate identity, persist durable inbox/checkpoint, then route signal; Inventory dispatch updates item FSM | Treat Redis TTL, partition order or aggregate ID as sufficient correctness proof |
+| Kafka consumers | Validate financial/aggregate identity, persist durable inbox/checkpoint, then route signal; Inventory dispatch updates item FSM | Treat Redis request mirror, partition order or aggregate ID as sufficient correctness proof |
 | PostgreSQL | Order source of truth, refund case/attempt, durable inbox, workflow dispatch, Saga checkpoints, outbox, search read path | Trở thành shared database cho service khác |
-| Redis | Request/event dedup và FSM distributed lock fast path | Là source of truth cho order/refund state |
+| Redis | Request replay fast path cho bốn command public | Không là source of truth cho order/refund state, event dedup hoặc FSM lock |
 | Debezium/Kafka Connect | Đọc WAL outbox và publish `t.order.events` | Dùng mutable status/retry counter trong outbox row |
 | Trimmer CronJob | Xóa outbox cũ sau watermark an toàn | Xóa dữ liệu CDC chưa relay |
 
@@ -140,7 +140,7 @@ trong history và tính deterministic.
 | State và event do Order phát | Atomic local, eventual publish | Transactional outbox + CDC |
 | Saga liên service | Eventual consistency | Temporal retry, durable command checkpoints and pre-payment compensation / post-capture forward repair |
 | Search/list order | Strong theo PostgreSQL commit | Query trực tiếp source of truth |
-| Redis dedup/lock | Tạm thời, có thể mất | Fast-path only; durable inbox/checkpoints/FSM remain safe |
+| Redis request mirrors | Tạm thời, có thể mất | Replay fast-path only; durable inbox/checkpoints/FSM remain safe |
 | Consumer downstream | At-least-once, có ordering theo order | Durable inbox + semantic financial/aggregate revision guard; Kafka partition is optimization |
 
 Không có stale window do search projection vì read path dùng PostgreSQL. Event
@@ -148,12 +148,13 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
 
 ## 5. Mô hình đồng thời và ordering
 
-- Public cancel dùng Redis lock `order:lock:fsm:{order_id}` TTL 10 giây rồi khóa
-  row PostgreSQL; correctness cuối dựa trên `SELECT ... FOR UPDATE`/conditional
-  `UPDATE`, không dựa riêng vào Redis.
+- Public cancel khóa row PostgreSQL trong cùng transaction bằng
+  `SELECT ... FOR UPDATE`/conditional `UPDATE`; không dùng Redis lock. Các command
+  khác cũng phải giữ row lock/CAS ở boundary sở hữu FSM.
 - Buyer return dùng first-write-wins CAS trên `orders.buyer_return_locked_at`.
-- Request Redis mirrors do not replace durable workflow dispatch/checkpoint rows.
-- Consumed events use durable inbox; Redis TTL is only fast-path.
+- Bốn request Redis mirrors không thay thế durable workflow dispatch/checkpoint rows.
+- Consumed events dùng durable inbox, semantic revision/proof guard; không có Redis
+  event fast-path.
 - WorkflowID fixed + dispatch rows chặn workflow song song/lost-start trên cùng checkout/order lane.
 - Payment signal/timer are serialized only after Payment identity/version validation;
   cancellation waits provider non-capture/capture fact, and timeout success uses fenced
@@ -177,7 +178,7 @@ Thiết kế yêu cầu các process/runtime logic sau, nhưng chưa chốt ch�
 - Temporal worker đăng ký bốn task queue: `order-checkout-queue`,
   `order-refund-queue`, `order-late-payment-recovery-queue`,
   `order-financial-reconciliation-queue`.
-- PostgreSQL và Redis.
+- PostgreSQL và tùy chọn Redis request-replay cache.
 - Debezium/Kafka Connect outbox connector.
 - CronJob dọn outbox hàng ngày, ví dụ 04:00.
 
@@ -212,8 +213,8 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
   đổi lại phụ thuộc WAL/Kafka Connect và cleanup watermark.
 - [ADR-004](./decisions/ADR-004-postgresql-direct-order-search.md): PostgreSQL search
   đơn giản vận hành nhưng bỏ fuzzy/scoring/highlight/autocomplete.
-- [ADR-005](./decisions/ADR-005-redis-and-fsm-idempotency.md): Redis TTL giảm schema
-  durable dedup, đổi lại replay ngoài TTL dựa vào FSM/WorkflowID.
+- [ADR-005](./decisions/ADR-005-redis-and-fsm-idempotency.md): quyết định lịch sử về
+  Redis request/event dedup và FSM lock; các phần event/FSM/create đã được refine bởi ADR-012.
 - [ADR-010](./decisions/ADR-010-selected-line-refund-policy.md): one lifetime case,
   selected full-quantity lines and atomic pre-dispatch admin path; Buyer may wait up
   to 30 days for physical inspection evidence.
@@ -223,3 +224,5 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
 - [ADR-011](./decisions/ADR-011-financial-saga-recovery-and-durable-dispatch.md):
   durable inbox/dispatch/checkpoints, financial watermark and fenced recovery replace
   Redis/LIFO assumptions for active Saga paths.
+- [ADR-012](./decisions/ADR-012-redis-request-mirror-scope.md): giữ Redis chỉ cho
+  replay request của bốn command; loại bỏ create mirror, event fast-path và FSM lock.
