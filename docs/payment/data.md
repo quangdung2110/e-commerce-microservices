@@ -656,7 +656,7 @@ từ S3.
 
 - Stripe API key (`sk_...`) và webhook secret (`whsec_...`) lưu trong Vault/Secret
   Manager; không commit, không log. Test mode dùng sandbox riêng từng môi trường
-  (`development.md §5`).
+  (`development.md §6`).
 - `client_secret` mã hóa envelope tại application (`client_secret_ciphertext` +
   `client_secret_key_id`), giải mã chỉ trong response initiate/client-data cho
   Order workload khi attempt còn `PENDING` và chưa quá `client_expires_at`; **cấm**

@@ -83,6 +83,7 @@ Webhook endpoint đăng ký trên Stripe Dashboard/CLI phải subscribe đúng t
 | `payment.session.client-secret-margin` | `client_expires_at = expires_at − margin` | 30s | Không | Không |
 | `payment.crypto.kms-key-id` | Envelope key cho `client_secret_ciphertext`; ghi vào `client_secret_key_id` | Theo môi trường | Có | Có |
 | `payment.crypto.previous-kms-key-ids` | Giải mã row cũ trong cửa sổ rotation | Danh sách | Có | Không |
+| `payment.crypto.local-key` | **Chỉ profile `dev`/`test`**: AES-256 key cố định thay KMS; startup fail nếu set ở `prod` | base64 32 byte | Có (local) | Có |
 | `payment.redis.idempotency-ttl.initiate` | Fast-path replay initiate | 15 phút + 60s | Không | Không |
 | `payment.redis.idempotency-ttl.command` | Cancel/refund | 7 ngày | Không | Không |
 | `payment.redis.lock-ttl` | `payment:lock:*` | 30s (≥ Stripe read timeout ×2) | Không | Không |
@@ -241,7 +242,7 @@ webhook 12 tháng là driver dung lượng chính.
 
 ### 7.1. Thứ tự lần đầu
 
-1. PostgreSQL: migration tạo 9 bảng (`development.md §7`), user app chỉ có DML +
+1. PostgreSQL: migration tạo 9 bảng (`development.md §8`), user app chỉ có DML +
    `SELECT` trên `outbox_events` cho Debezium user (REPLICATION).
 2. Vault/KMS: nạp `sk_`, `whsec_` (rỗng cho tới bước 7), KMS key id.
 3. Redis, Kafka topic (`t.payment.webhooks.raw` 6 partition retention 7 ngày;
