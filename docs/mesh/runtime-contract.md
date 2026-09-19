@@ -81,7 +81,7 @@ policy L4 gắn `selector` và được ztunnel thực thi.
 ### 5.2 Namespace `ecommerce` (L7, waypoint)
 
 Route public dùng path theo contract trong `contracts/http/*`; nơi gateway route matrix còn dùng
-prefix khác (`/api/users/**`, `/api/payments/**`) thì contract được ưu tiên và
+prefix khác (`/api/users/**`) thì contract được ưu tiên và
 gateway matrix phải được đối soát (mục 11). `X` = mọi method của route.
 
 | Đích | Path / operation | Method | Được phép từ | Nguồn |
@@ -115,7 +115,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
 | `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
 | `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
-| `payment-service` | `/api/payments/webhook/stripe`, `/api/payments/**` | X | `edge/traefik` | gateway matrix |
+| `payment-service` | `/api/payments/webhook/stripe` | POST | `edge/traefik` | gateway matrix (route public duy nhất của Payment) |
 | `payment-service` | `/v1/payments/**`, `/v1/refunds/**` | POST, GET | `ecommerce/order-service` | `order-initiates-payment` |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
 | Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
@@ -235,8 +235,8 @@ Repository chưa có manifest Kubernetes cho bất kỳ service nào, chưa có 
 chưa có Helm values Istio; `<pinned-version>` chưa chốt vì chưa có cluster để xác minh ma trận
 tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
-Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn một số prefix legacy như
-`/api/users/**`, `/api/payments/**`; Order public routes đã được đối soát theo OpenAPI
+Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
+`/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1. Cart, Checkout, Inventory admin và Product Detail BFF chưa có đủ dòng
 trong gateway matrix — mục 5.2 dùng contract, gateway matrix phải được đối soát. Review Service
 dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc

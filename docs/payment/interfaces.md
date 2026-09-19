@@ -372,8 +372,8 @@ call nào thiếu `ProviderOperation` đã commit (`INV-PAY-011`).
 - Gate `verified`: provider contract test (OpenAPI/AsyncAPI ↔ implementation),
   consumer test phía Order cho 10 event, breaking-change check trong CI; chưa có.
 
-## 7. Phụ thuộc chéo cần đồng bộ
+## 7. Phụ thuộc chéo đã đồng bộ
 
-| Nơi | Việc |
-|---|---|
-| `docs/gateway/runtime-contract.md` | Bỏ route `/api/payments/**` ngoài webhook |
+`docs/mesh/runtime-contract.md` (AuthorizationPolicy có `GET`), `docs/gateway/runtime-contract.md`
+(chỉ route webhook), `contracts/catalog/interactions.yaml` (notes client-data, ADR-014),
+`docs/order/data.md` (không lưu client data) đã được cập nhật cùng bộ tài liệu này.

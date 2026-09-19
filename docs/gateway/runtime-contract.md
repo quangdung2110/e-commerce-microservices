@@ -73,8 +73,7 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/api/v1/search/**` | GET | search-service | Không | `public-read` | **Không còn backend**: Search đã gỡ v1 khi viết lại theo `docs/search`. Route phải được xoá sau khi frontend chuyển sang v2 |
 | `/api/v2/search/**` (trừ reindex) | GET | search-service | Không | `public-read` | Search v2 canonical và là bề mặt storefront duy nhất còn backend |
 | `/api/v2/search/reindex-runs/**` | GET, POST | search-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Router priority cao hơn public v2 route; không expose qua `/internal` |
-| `/api/payments/webhook/stripe` | POST | payment-service | Stripe signature | `stripe-webhook` | Giữ raw body; bypass JWT; không retry ở gateway |
-| `/api/payments/**` còn lại | do service định nghĩa | payment-service | Bắt buộc | `payment-authenticated` | Payment Service sở hữu idempotency |
+| `/api/payments/webhook/stripe` | POST | payment-service | Stripe signature | `stripe-webhook` | Giữ raw body; bypass JWT; không retry ở gateway. **Route public duy nhất** của Payment: buyer/CSKH đọc payment qua Order (`docs/payment/architecture.md §1.2`), không có route `/api/payments/**` khác |
 | `/ws/**` | HTTP Upgrade | chat-service | Chỉ handshake | `websocket-handshake` | Service đóng session bị revoke |
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
@@ -98,7 +97,7 @@ Search Service) và `/internal/v1/**` của Review Service (PDP summary và rati
 chỉ đi trong mesh với principal được allowlist theo cùng ma trận; gateway không tạo router
 public cho prefix `/internal/**`, `/exports/**` của bất kỳ service nào.
 
-Mỗi service có health check và upstream transport timeout giới hạn. Retry chỉ áp dụng cho `GET`, `HEAD`, `OPTIONS` khi lỗi connection/5xx đã được cấu hình. Payment write và Stripe webhook không bao giờ bị gateway retry. Circuit breaker chỉ được thêm theo upstream sau khi threshold và recovery behavior đã được test.
+Mỗi service có health check và upstream transport timeout giới hạn. Retry chỉ áp dụng cho `GET`, `HEAD`, `OPTIONS` khi lỗi connection/5xx đã được cấu hình. Stripe webhook không bao giờ bị gateway retry (Payment không có route write public). Circuit breaker chỉ được thêm theo upstream sau khi threshold và recovery behavior đã được test.
 
 ### 5.1. Ngân sách timeout
 
@@ -112,7 +111,7 @@ Timeout là một phần của API contract, không phải giá trị mặc đ�
 | Kết nối từ gateway đến upstream | 3 giây | Xem là lỗi upstream; chỉ GET/HEAD/OPTIONS còn ngân sách mới được retry |
 | Chờ response header từ public-read/auth API | 10 giây | Trả `504` cho client |
 | Chờ response header từ business API | 25 giây | Trả `504` cho client |
-| Chờ response header từ payment API | 20 giây | Trả `504`; gateway không retry |
+| Chờ response header từ payment webhook route | 20 giây | Trả `504`; gateway không retry (Stripe sẽ retry) |
 | Stripe webhook — toàn bộ thời gian proxy | 5 giây | Trả `504`; gateway không retry, Stripe tự delivery lại |
 | ForwardAuth → `gateway-auth` | 3 giây | Trả `503`; không được cho request đi tiếp |
 | `gateway-auth` → JWKS | 3 giây tổng, connect tối đa 1 giây | Áp dụng policy cache/fail-closed trong phần xác thực |
@@ -163,11 +162,13 @@ Sau khi validate thành công, `gateway-auth` inject đúng bốn header dưới
 4. Trả `401` chỉ cho credentials không hợp lệ; trả `503` khi dependency validation bắt buộc không sẵn sàng.
 5. Chỉ trả về allowlisted identity headers sau khi validation thành công.
 
-| Lỗi | Business route được bảo vệ | Payment route |
-|---|---|---|
-| Redis denylist/revocation không sẵn sàng | Fail closed: `503` | Fail closed: `503` |
-| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, nhưng key cache cho JWT còn hợp lệ | Validate từ cache đến khi key hết hạn | Validate từ cache đến khi key hết hạn |
-| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, không có key cache dùng được cho JWT | Fail closed: `503` | Fail closed: `503` |
+| Lỗi | Business route được bảo vệ |
+|---|---|
+| Redis denylist/revocation không sẵn sàng | Fail closed: `503` |
+| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, nhưng key cache cho JWT còn hợp lệ | Validate từ cache đến khi key hết hạn |
+| Auth Service/JWKS không sẵn sàng hoặc JWKS refresh lỗi, không có key cache dùng được cho JWT | Fail closed: `503` |
+
+Route webhook Stripe không đi qua JWT validation nên không chịu ảnh hưởng của bảng này; nó chỉ phụ thuộc rate-limit state (`stripe-webhook`).
 
 Không route authentication nào được fail open, kể cả read-only route.
 
@@ -179,7 +180,6 @@ Không route authentication nào được fail open, kể cả read-only route.
 | `auth-public` | Trusted client IP và route | 10 req/s, burst 20 | Chống brute force |
 | `api-authenticated` | User ID hoặc API key/tenant | 50 req/s, burst 100 | Fair-use baseline |
 | `promotion-discovery` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 20 request/user/phút | Bảo vệ query discovery; distributed state ở Gateway, không service-local limiter |
-| `payment-authenticated` | User ID hoặc API key/tenant | 20 req/s, burst 40 | Bảo vệ payment |
 | `stripe-webhook` | Stripe allow-list + endpoint quota | 50 req/s, burst 100 | Bảo vệ delivery burst |
 | `websocket-handshake` | User ID và trusted IP | 5/phút | Hạn chế connection churn |
 

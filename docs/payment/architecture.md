@@ -52,7 +52,7 @@ flowchart LR
       SCH[Schedulers]
       APP[Application layer<br/>use case + FSM]
       DOM[Domain<br/>PaymentTransaction · RefundTransaction<br/>ProviderOperation · ReviewCase]
-      SA[com.payment.stripe<br/>StripeAdapter]
+      SA[com.platform.paymentservice.stripe<br/>StripeAdapter]
       OUT[Persistence adapter]
     end
     PG[(PostgreSQL)]
@@ -91,9 +91,8 @@ flowchart LR
 | Kafka out | Chỉ Debezium ghi topic; consumer tự dedup theo CloudEvents `id` | Payment không tin consumer đã nhận; at-least-once |
 | Vận hành | Endpoint admin/DLQ/correction yêu cầu quyền quản trị, `actor` + `cause_ref` | Mọi thay đổi trạng thái thủ công đều là transition có audit |
 
-Route `/api/payments/**` (ngoài webhook) trong gateway matrix hiện không có backend
-use case: Payment không phục vụ buyer trực tiếp; buyer đọc qua Order. Gateway matrix
-cần thu hẹp về đúng route webhook (xem §8).
+Gateway matrix chỉ có route webhook cho Payment (`docs/gateway/runtime-contract.md`);
+không có route `/api/payments/**` nào khác vì buyer đọc payment qua Order.
 
 ### 1.3. Quyết định định hình
 
@@ -110,7 +109,7 @@ decline phi terminal, terminal non-capture chỉ sau khi intent đã hủy
 ### 2.1. Cấu trúc code (hexagonal)
 
 ```
-com.payment
+com.platform.paymentservice
 ├── domain            # PaymentTransaction, RefundTransaction, ProviderOperation, ReviewCase,
 │                     # FSM (Spring State Machine config), guard, policy decline, error
 ├── application       # use case: InitiatePayment, CancelPayment, InitiateRefund,
@@ -130,6 +129,10 @@ com.payment
                       # import com.stripe.*
 ```
 
+Package gốc theo quy ước repo (`com.platform.<service>`, như `promotion-service`); ADR-003
+gọi package Stripe là `com.payment.stripe` — cùng một thứ, tên hiện hành là
+`com.platform.paymentservice.stripe`.
+
 Quy tắc phụ thuộc: `domain` không import gì ngoài JDK; `application` chỉ import
 `domain`; `adapter.*` và `stripe` import `application`/`domain`, không import nhau.
 Kiểm tra bằng ArchUnit trong CI (§7).
@@ -142,7 +145,7 @@ Kiểm tra bằng ArchUnit trong CI (§7).
 | Webhook endpoint | Nhận raw body + headers, produce `t.payment.webhooks.raw`, trả `200` (hoặc `503` khi Kafka lỗi để Stripe retry) | Verify, parse, ghi DB, gọi Stripe |
 | Application/use case | Mở/đóng transaction (TX1/TX2, §3.4), gọi domain, ghi outbox + history trong cùng TX, gọi port provider **ngoài** TX | Publish Kafka trực tiếp; bỏ qua guard; suy luận trạng thái provider |
 | Domain | Hai FSM, guard, policy decline, invariant; thuần, test không cần hạ tầng | Biết Stripe type, JPA, Spring |
-| `com.payment.stripe` | `PaymentProviderPort` duy nhất; wrap `PaymentIntent.create/retrieve/cancel`, `Refund.create/retrieve`, `Webhook.constructEvent`; map lỗi Stripe → `ProviderOutcome` (`CONFIRMED`/`REJECTED`/`UNKNOWN`); một `StripeClient` singleton, API version pin | Chứa nghiệp vụ; lộ `com.stripe.*` ra ngoài; tự sinh idempotency key |
+| `com.platform.paymentservice.stripe` | `PaymentProviderPort` duy nhất; wrap `PaymentIntent.create/retrieve/cancel`, `Refund.create/retrieve`, `Webhook.constructEvent`; map lỗi Stripe → `ProviderOutcome` (`CONFIRMED`/`REJECTED`/`UNKNOWN`); một `StripeClient` singleton, API version pin | Chứa nghiệp vụ; lộ `com.stripe.*` ra ngoài; tự sinh idempotency key |
 | Webhook Processor | Consume raw, verify, dedup, resolve, map event → use case `ApplyStripeEvent`, ack sau commit | Ack trước commit; bỏ verify khi retry |
 | Expiration Scanner | `PENDING` quá hạn → `CANCEL` operation → cancel intent → `T4`/`T2` | Expire bằng suy luận; đụng `INITIATING`/`PROCESSING` |
 | Provider-operation Recovery | Replay `REQUESTED`/`UNKNOWN` cùng key; bind hoặc review case | Sinh key mới; suy luận non-capture |
@@ -331,7 +334,7 @@ và giả định tải ở `operations.md §6`.
 
 | # | Ràng buộc | Kiểm tra |
 |---|---|---|
-| A1 | Chỉ package `com.payment.stripe` import `com.stripe.*` | ArchUnit |
+| A1 | Chỉ package `com.platform.paymentservice.stripe` import `com.stripe.*` | ArchUnit |
 | A2 | `domain` không phụ thuộc Spring/JPA/Stripe; `application` không phụ thuộc `adapter` | ArchUnit |
 | A3 | Không gọi `PaymentProviderPort` bên trong `@Transactional` | ArchUnit + test: adapter ném lỗi nếu có transaction đang mở |
 | A4 | Mọi `PaymentProviderPort` call phải nhận `ProviderOperation` đã persist | Chữ ký port yêu cầu `operationId`; test |
@@ -358,11 +361,9 @@ và giả định tải ở `operations.md §6`.
   đúng đắn.
 - Stripe lock-in: đổi lại bỏ adapter pattern và toàn bộ edge case COD/multi-provider.
 
-**Phụ thuộc chéo cần cập nhật ngoài `docs/payment`:**
-
-| Tài liệu | Việc |
-|---|---|
-| `docs/gateway/runtime-contract.md` route matrix | Thu hẹp `/api/payments/**` về chỉ webhook route; Payment không có route buyer |
+**Phụ thuộc chéo đã đồng bộ ngoài `docs/payment`:** `docs/mesh/runtime-contract.md`
+(AuthorizationPolicy `GET`), `docs/gateway/runtime-contract.md` (chỉ route webhook),
+`contracts/catalog/interactions.yaml`, `docs/order/data.md`.
 
 **ADR liên quan:** [ADR-001](./decisions/ADR-001-java-spring-boot-runtime.md) runtime;
 [ADR-002](./decisions/ADR-002-refund-inside-payment-service.md) refund trong Payment;
