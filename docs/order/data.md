@@ -111,9 +111,6 @@ erDiagram
       varchar currency
       varchar terminal_status
       bigint last_financial_state_version
-      bytea client_secret_ciphertext
-      varchar publishable_key
-      timestamptz client_expires_at
     }
     ORDER_REFUND_CASES {
       bigint order_id PK
@@ -274,9 +271,14 @@ budget khi customer refund và không cho phép suy diễn/ghi lại wallet stat
 | `amount_minor`, `currency` | `BIGINT`, `VARCHAR(3)` | Snapshot canonical `VND`; phải khớp order pricing snapshot và Payment event. |
 | `terminal_status` | `VARCHAR(32)` nullable | `FAILED/EXPIRED/CANCELED/SUCCESS`; một non-capture terminal fact mới cho phép tạo attempt sau. |
 | `last_financial_state_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic per **payment transaction**, không so sánh version giữa hai attempt khác nhau. |
-| `client_secret_ciphertext` | `BYTEA` nullable | Stripe client secret mã hóa ở application/KMS; chỉ giải mã cho owner của active `PENDING` attempt và xóa/retire sau terminal/expiry theo policy |
-| `publishable_key` | `VARCHAR(512)` nullable | Public Stripe key snapshot đi cùng usable client secret |
-| `client_expires_at` | `TIMESTAMPTZ` nullable | Hạn dùng client data; sau thời điểm này HTTP không trả secret |
+
+Order **không lưu** Stripe client data (`client_secret`, `publishable_key`,
+`client_expires_at`). Payment là nơi lưu duy nhất (mã hóa, xem
+[Payment data.md §3.1](../payment/data.md)); khi buyer hoặc Checkout recovery cần
+client data cho active `PENDING` attempt, Order gọi
+`GET /v1/payments/{transactionId}/client-data` của Payment và trả tiếp với
+`Cache-Control: private, no-store`. Payment chỉ trả secret khi attempt còn `PENDING`
+và chưa quá hạn dùng; ngoài cửa sổ đó Order trả `client_secret = null`.
 
 `UNIQUE(order_id, payment_attempt_number)` và `UNIQUE(payment_transaction_id)` là bắt
 buộc. Khi initiate thành công, Order insert attempt row cùng checkpoint rồi set hai field

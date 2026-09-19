@@ -58,7 +58,7 @@ order của mình; Admin dùng namespace riêng. Mọi JSON `order_id`, `order_i
 | `POST /api/v1/orders/{order_id}/return-requests` | Buyer one-shot, selected full-quantity lines sau khi mọi line delivered | `202` + operation/refund request; scope sai `422`, guard/state conflict `409` |
 | `GET /api/v1/orders/{order_id}/refund-case` | Theo dõi lifetime refund case | `200` hoặc `404` |
 | `POST /api/v1/orders/{order_id}/payment-attempts` | Tạo numbered attempt kế tiếp sau terminal non-capture fact | `201`; replay `200`; timeout retry cùng key |
-| `GET /api/v1/orders/{order_id}/payment-attempts/{attempt_number}` | Đọc attempt; client secret chỉ hiện cho active `PENDING` attempt | `200`, private/no-store |
+| `GET /api/v1/orders/{order_id}/payment-attempts/{attempt_number}` | Đọc attempt; client secret chỉ hiện cho active `PENDING` attempt, lấy từ Payment `client-data` mỗi lần đọc (Order không lưu) | `200`, private/no-store |
 | `GET /api/v1/order-operations/{operation_id}` | Theo dõi command async của Buyer | `ACCEPTED/RUNNING/SUCCEEDED/REJECTED/FAILED/MANUAL_REVIEW_REQUIRED` |
 | `GET /api/v1/admin/orders` | Admin search toàn cục, thêm filter `buyer_id` | `200`; cùng sort/query model |
 | `GET /api/v1/admin/orders/{order_id}` | Admin detail | `200` |

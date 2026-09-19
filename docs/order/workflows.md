@@ -522,8 +522,10 @@ hoặc `CANCELED`. API không nhận amount/provider; Order dùng immutable
 **Happy path:** trong local transaction Order persist stable Payment command/checkpoint
 cho attempt number kế tiếp. Activity gọi Payment với idempotency key ổn định; ambiguous
 outcome được query/replay, không tạo attempt khác. Khi transaction ID và client data đã
-được checkpoint, API trả `201`; cùng request replay `200`. `client_secret` chỉ được đọc
-cho active `PENDING` attempt và mọi response dùng `Cache-Control: private, no-store`.
+được checkpoint, API trả `201`; cùng request replay `200`. `client_secret` không được Order
+lưu; mỗi lần đọc (replay, `GET payment-attempts`, Checkout recovery) Order gọi Payment
+`GET /v1/payments/{transactionId}/client-data`, chỉ nhận được secret khi attempt còn
+active `PENDING`, và mọi response dùng `Cache-Control: private, no-store`.
 
 **Failure/race:** state/one-shot/idempotency conflict trả 409; unknown dependency outcome
 trả 503 retryable và caller dùng cùng key. Concurrent retry requests chỉ một numbered
