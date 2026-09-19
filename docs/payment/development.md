@@ -44,7 +44,7 @@ Redis, Kafka bootstrap/group, Stripe keys (test mode), `payment_session_ttl`,
 webhook window 300s, lock TTL, interval các scheduler, `max_declines_per_attempt`,
 danh sách decline code non-retryable, key KMS local (dev key cố định, không dùng ở
 staging trở lên) cho `client_secret_ciphertext`. Tuyệt đối không commit `sk_*`,
-`whsec_*`, KMS key thật.
+`whsec_*`, KMS key thật. Tên property theo quy ước `payment.*` ở `operations.md §2`.
 
 ## 4. Build, lint và format
 
