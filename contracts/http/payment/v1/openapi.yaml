@@ -39,6 +39,23 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/PaymentStatus' } }
         '404': { $ref: '#/components/responses/Problem' }
+  /v1/payments/{transactionId}/client-data:
+    get:
+      operationId: getPaymentClientData
+      summary: Read Stripe client data for the owning Order to relay to the buyer
+      description: >-
+        Payment is the only store of the encrypted PaymentIntent client_secret.
+        Order calls this on every read (initiate replay, buyer payment-attempt read,
+        Checkout recovery) instead of persisting a copy. The secret is returned only
+        while the transaction is PENDING and before client_expires_at; otherwise
+        usable=false and client_secret is null. Responses are private, no-store.
+      parameters: [{ $ref: '#/components/parameters/TransactionId' }]
+      responses:
+        '200':
+          description: Client data, or an explicit not-usable answer.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/PaymentClientData' } }
+        '404': { $ref: '#/components/responses/Problem' }
   /v1/payments/{transactionId}/cancel:
     post:
       operationId: cancelPayment
@@ -183,7 +200,19 @@ components:
       properties:
         refund_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
         payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED] }
+        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, REVERSED] }
+    PaymentClientData:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, payment_attempt_number, status, usable, client_secret, publishable_key, client_expires_at]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        payment_attempt_number: { type: integer, minimum: 1 }
+        status: { enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
+        usable: { type: boolean, description: "true only while status is PENDING and now < client_expires_at" }
+        client_secret: { type: [string, 'null'], minLength: 1 }
+        publishable_key: { type: [string, 'null'], minLength: 1 }
+        client_expires_at: { type: [string, 'null'], format: date-time }
     PaymentStatus:
       type: object
       additionalProperties: false
@@ -204,7 +233,7 @@ components:
         payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
         order_id: { $ref: '#/components/schemas/OpaqueId' }
         amount: { $ref: '#/components/schemas/VndMoney' }
-        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED] }
+        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, REVERSED] }
     Problem:
       type: object
       additionalProperties: false
