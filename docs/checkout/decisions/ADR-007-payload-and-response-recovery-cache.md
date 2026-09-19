@@ -43,6 +43,12 @@ do rớt mạng — user bị stuck: token đã dùng, order chưa tạo.
 - Khi Order timeout, Checkout retry nội bộ tối đa 3 lần rồi trả `503`; App tự
   retry và đi nhánh recovery.
 
+> **Ghi chú 2026-09-19:** nhánh success của response cache không còn lưu
+> `client_secret`/`publishable_key`, chỉ lưu `{order_id, payment_attempt_number,
+> payment_transaction_id}`; client data lấy tươi từ Order ở mỗi lần trả
+> ([ADR-010](./ADR-010-relay-payment-client-data-no-secret-cache.md)). Payload cache
+> và nhánh conflict giữ nguyên.
+
 ## Phương án đã cân nhắc
 
 - **Rollback token về `PREVIEW_READY` khi Order timeout:** đơn giản cho client

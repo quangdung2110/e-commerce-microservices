@@ -231,8 +231,10 @@ sau khi reservation đã được dọn vẫn trả stored response. `CANCEL_FIN
 legacy cleanup and prohibited here. Cùng key khác canonical payload là lỗi không retry mù.
 
 **HTTP result:** lần tạo đầu trả `201`, replay trả `200` chỉ khi Payment client data
-đã được durable checkpoint; response gồm order ID, numbered attempt/transaction,
-`client_secret`, `publishable_key`, `expires_at`. Promotion conflict trả structured
+đã được durable checkpoint; response gồm order ID, numbered attempt/transaction và
+client data relay từ Payment (`usable`, `client_secret`, `publishable_key`, `expires_at`;
+`null` khi không còn dùng được). Recovery read `GET …/{checkout_token}` cũng relay tươi
+ở mỗi lần gọi. Promotion conflict trả structured
 RFC 9457 `409`; HTTP deadline trước checkpoint trả `503 retryable=true`, và Checkout
 retry cùng token/key/body hoặc đọc recovery resource. Đây là synchronous-to-checkpoint,
 không chờ Payment capture hay order terminal state.

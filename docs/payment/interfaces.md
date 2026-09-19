@@ -376,4 +376,5 @@ call nào thiếu `ProviderOperation` đã commit (`INV-PAY-011`).
 
 `docs/mesh/runtime-contract.md` (AuthorizationPolicy có `GET`), `docs/gateway/runtime-contract.md`
 (chỉ route webhook), `contracts/catalog/interactions.yaml` (notes client-data, ADR-014),
-`docs/order/data.md` (không lưu client data) đã được cập nhật cùng bộ tài liệu này.
+`docs/order/data.md` (không lưu client data), `docs/checkout` ADR-010 (không cache secret) đã
+được cập nhật cùng bộ tài liệu này.

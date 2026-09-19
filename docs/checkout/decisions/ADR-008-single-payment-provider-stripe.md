@@ -37,7 +37,8 @@ route theo provider không còn cần thiết.
 - Preview gọi Promotion calculation với `payment_method=STRIPE` cố định.
 - Order trả `[order_id, client_secret, publishable_key]` (thay cho `payment_url`
   trước đây); Checkout chuyển tiếp cho Frontend dùng Stripe Elements / Stripe
-  Checkout SDK. Response cache lưu đúng ba giá trị này.
+  Checkout SDK. (Ghi chú 2026-09-19: response cache **không** còn lưu
+  `client_secret`/`publishable_key` — xem [ADR-010](./ADR-010-relay-payment-client-data-no-secret-cache.md).)
 
 ## Phương án đã cân nhắc
 

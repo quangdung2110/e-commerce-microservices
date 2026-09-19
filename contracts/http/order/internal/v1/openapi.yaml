@@ -306,13 +306,18 @@ components:
     PaymentClientData:
       type: object
       additionalProperties: false
-      required: [payment_attempt_number, payment_transaction_id, client_secret, publishable_key, expires_at]
+      description: >-
+        Relayed from Payment client-data at response time; Order stores no copy.
+        usable=false (attempt no longer PENDING or past expires_at) carries null
+        client_secret/publishable_key. Consumers must not cache the secret.
+      required: [payment_attempt_number, payment_transaction_id, usable, client_secret, publishable_key, expires_at]
       properties:
         payment_attempt_number: { type: integer, minimum: 1 }
         payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        client_secret: { type: string, minLength: 1, maxLength: 4096 }
-        publishable_key: { type: string, minLength: 1, maxLength: 512 }
-        expires_at: { type: string, format: date-time }
+        usable: { type: boolean }
+        client_secret: { type: [string, 'null'], minLength: 1, maxLength: 4096 }
+        publishable_key: { type: [string, 'null'], minLength: 1, maxLength: 512 }
+        expires_at: { type: [string, 'null'], format: date-time }
     CheckoutOrderReady:
       type: object
       additionalProperties: false

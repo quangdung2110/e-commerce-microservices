@@ -36,7 +36,7 @@ verified_against_commit: null
 | Save & Apply | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` rồi Preview lại; explicit write vào ví | Auto-save (bị cấm ở Submit) |
 | Degraded pricing | Báo giá thiếu Promotion (`DEGRADED_PROMOTION`) hoặc Inventory (`DEGRADED_STOCK`) do timeout | Price changed |
 | `dropped_promotions[]` | Danh sách mã bị loại (kèm `reason`, `user_message`) sau reserve fail | `surviving_promotions[]` (mã còn sống, nằm trong `proposal_checkout_data`) |
-| Client Retry | Nhánh Submit khi token đã `SUBMITTED`: tìm response cache, nếu không có thì dùng payload cache gọi lại Order | Duplicate submit |
+| Client Retry | Nhánh Submit khi token đã `SUBMITTED`: tìm response cache (conflict → trả lại; success → lấy client data tươi từ Order), nếu không có thì dùng payload cache gọi lại Order | Duplicate submit |
 
 ## 2. Domain objects
 
@@ -73,7 +73,7 @@ Redis với TTL hoặc chỉ tồn tại trong bộ nhớ request.
   `user_ack_degraded_pricing`)
   — tất cả từ Redis, lưu ở `checkout:payload:{user_id}:{token}`.
 - **SubmitResponse (value object):** success `{order_id, client_secret,
-  publishable_key}` hoặc conflict `{error_code, action, dropped_promotions[],
+  publishable_key}` (secret relay từ Order, không lưu; `null` khi `usable=false`) hoặc conflict `{error_code, action, dropped_promotions[],
   proposal_checkout_data}`; lưu ở `checkout:response:{user_id}:{token}`.
 
 Order, tồn kho, ví voucher, ngân sách và địa chỉ thuộc service khác; Checkout chỉ
@@ -85,7 +85,7 @@ tham chiếu bằng identifier hoặc snapshot.
 |---|---|---|---|---|
 | Command | Preview (tạo session mới, `checkout_token = null`) | Buyer đã đăng nhập | Aggregation orchestrator + Calculation engine | Tạo session, token mới |
 | Command | Preview (cập nhật session, gửi token cũ) | Buyer | Như trên, theo Optimization Decision Tree | Ghi đè session, token mới |
-| Command | Submit | Buyer | Submit orchestrator | `PREVIEW_READY → SUBMITTED`; tạo payload/response cache |
+| Command | Submit | Buyer | Submit orchestrator | `PREVIEW_READY → SUBMITTED`; tạo payload cache và response cache (success: chỉ định danh) |
 | Command | Save & Apply voucher | Buyer | Promotion (Checkout chỉ gọi rồi Preview lại) | Ví voucher (thuộc Promotion) |
 | Query | Voucher suggestions (“Voucher của tôi”) | Buyer | Promotion `POST /api/v1/me/promotion-voucher-suggestions` | Không |
 | Query | Voucher discovery (“Khám phá”) | Buyer | Promotion `POST /api/v1/promotion-discovery` | Không |
@@ -119,6 +119,7 @@ tham chiếu bằng identifier hoặc snapshot.
 | `BR-CHK-022` | Promotion timeout ở Preview | Trả `DEGRADED_PROMOTION`; UI hiển thị xác nhận “Thanh toán không áp mã giảm giá tạm thời” | Cờ degraded trong session |
 | `BR-CHK-023` | Inventory routing timeout ở Preview | Trả `DEGRADED_STOCK`; UI hiển thị xác nhận “Thanh toán với giá tạm thời” | Cờ degraded trong session |
 | `BR-CHK-024` | Phase 18 | Submit không nhận `payment_method`; provider cố định Stripe; Order trả `client_secret` + `publishable_key` | — |
+| `BR-CHK-025` | Mọi lần trả client data | Checkout không cache `client_secret`/`publishable_key`; lấy từ Order ở mỗi lần trả (submit response hoặc recovery read); `usable=false` → `null` ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)) | Secret trong Redis/log Checkout là lỗi bảo mật |
 
 ## 5. Invariants
 
@@ -153,7 +154,7 @@ Session status (`checkout:session:{user_id}.status`):
 | `∅ → PREVIEW_READY` | Preview thành công (`checkout_token = null`) | Không có session hiện hành | Ghi session, token mới, TTL 20 phút |
 | `PREVIEW_READY → PREVIEW_READY` | Preview với token cũ (đổi voucher/địa chỉ/cart snapshot mới) | Token khớp | Token mới ghi đè, hash/pricing cập nhật |
 | `PREVIEW_READY → SUBMITTED` | Submit qua Lua check-and-mark | Lock đã giữ; degraded ack hợp lệ; `pricing_hash` khớp; token khớp | Lưu payload; gọi Order |
-| `SUBMITTED → SUBMITTED` | Submit lại cùng token | Lua trả `-2` | Trả response cache hoặc retry Order bằng payload cache |
+| `SUBMITTED → SUBMITTED` | Submit lại cùng token | Lua trả `-2` | Trả 409 cache, hoặc lấy client data tươi từ Order (success), hoặc retry Order bằng payload cache |
 | `* → EXPIRED` | TTL 20 phút | — | Submit sau đó → `404`; payload hết TTL → `410` |
 
 Transition không hợp lệ:

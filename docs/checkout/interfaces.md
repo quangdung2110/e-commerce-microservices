@@ -141,7 +141,10 @@ degraded thì `user_ack_degraded_pricing = true`; `pricing_hash` tính lại kh�
 `checkout:response:{user_id}:{token}` khi có kết quả success/conflict.
 
 **Response success:** `{order_id, client_secret, publishable_key}` — Frontend dùng
-Stripe Elements / Stripe Checkout SDK.
+Stripe Elements. `client_secret`/`publishable_key` là relay từ Order (Order lấy từ
+Payment `client-data` tại thời điểm trả), **không** được Checkout cache; có thể `null`
+khi attempt không còn dùng được (`usable=false`) — khi đó frontend chuyển sang trang
+trạng thái đơn ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)).
 
 **Response conflict `409 PROMOTION_RECALCULATION_NEEDED`:**
 
@@ -174,9 +177,11 @@ quả dây chuyền; `surviving_promotions[]` là input chuẩn để client g�
 }
 ```
 
-**Idempotency/replay:** cùng token gọi lại → Lua `-2` → trả response cache (success
-hoặc conflict) trong 20 phút; nếu chưa có response mà còn payload → retry Order;
-payload hết TTL → `410 Gone`.
+**Idempotency/replay:** cùng token gọi lại → Lua `-2` → conflict: trả 409 đã cache;
+success: cache chỉ có định danh, Checkout gọi
+`GET /internal/v1/checkout-order-submissions/{checkout_token}` lấy client data tươi
+rồi trả; nếu chưa có response mà còn payload → retry Order; payload hết TTL →
+`410 Gone`. Cửa sổ 20 phút.
 
 **Bảng lỗi:**
 
@@ -279,6 +284,9 @@ guard. Kết quả:
   `failed_reason`, `reserve_mode`.
 - Timeout `503 retryable=true`: Checkout retry nội bộ tối đa 3 lần với cùng key/body;
   có thể query `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
+- `payment.client_secret`/`publishable_key` có thể `null` với `payment.usable=false`
+  (attempt không còn `PENDING` hoặc quá `expires_at`); Checkout relay nguyên trạng,
+  không cache.
 
 `pricing_hash` dùng `sha256:<64 lowercase hex>` trên UTF-8 RFC 8785 canonical JSON
 `{items:[{sku_id,unit_price_minor}],promotion_campaign_revision,

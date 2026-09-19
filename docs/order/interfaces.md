@@ -91,7 +91,10 @@ sau khi accept và persist bridge trước Reserve. Money luôn là
 
 Khác command dài hạn, endpoint này chờ đến checkpoint `PAYMENT_READY` để Checkout
 có thể trả Stripe data cho frontend: lần đầu `201`, replay `200`, gồm `order_id`,
-attempt number, transaction ID, `client_secret`, `publishable_key`, `expires_at`.
+attempt number, transaction ID và `payment` client data (`usable`, `client_secret`,
+`publishable_key`, `expires_at`) mà Order lấy từ Payment `client-data` **tại thời điểm
+trả** — Order không lưu bản sao; `usable=false` → secret `null`. Checkout relay tiếp,
+không cache (Checkout ADR-010).
 Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; timeout
 hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.

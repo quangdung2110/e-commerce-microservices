@@ -45,7 +45,8 @@ Cần `.env.example` hoặc profile local không chứa secret thật. Bảng c�
 bao phủ Redis endpoint, TTL (session/payload/response/routing 20 phút, lock 5s/30s,
 rate limit 10/3 req/phút), timeout từng downstream, số lần retry Order (3), Product
 gRPC endpoint, mTLS/service credential cho User/Promotion/Inventory. Stripe secret
-thuộc Payment; Checkout chỉ chuyển tiếp `client_secret`/`publishable_key` và
+thuộc Payment; Checkout chỉ chuyển tiếp `client_secret`/`publishable_key` (không cache,
+test phải assert Redis/log không chứa `_secret_`) và
 không được commit/log giá trị thật.
 
 ## 4. Build, lint và format

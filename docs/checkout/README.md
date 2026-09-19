@@ -117,7 +117,7 @@ lưu trữ đều nằm trên Redis với TTL.
 | Địa chỉ giao hàng và cache địa chỉ | User Service | Checkout đọc qua internal API; không double cache |
 | Ví voucher, ngân sách, rule khuyến mãi | Promotion Service | Checkout chỉ gọi evaluate/discovery; không ghi ví, không reserve ở Preview |
 | Tồn kho và routing | Inventory Service | Soft allocation ở Preview; hard allocation trong Saga |
-| Order, payment | Order/Payment Service | Checkout chỉ giữ `order_id`, `client_secret`, `publishable_key` trong response cache |
+| Order, payment | Order/Payment Service | Checkout chỉ giữ `order_id` + định danh attempt trong response cache; `client_secret`/`publishable_key` relay từ Order, không lưu ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)) |
 
 Service khác không đọc/ghi trực tiếp Redis keyspace của Checkout. Checkout không
 query database của service khác.

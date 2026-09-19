@@ -253,15 +253,27 @@ duplicate order.
 - **Key:** `checkout:response:{user_id}:{token}`
 - **TTL:** 20 phút
 - **Value:**
-  - Success: `{order_id, client_secret, publishable_key}` (Phase 18: Stripe trả
-    `client_secret` thay vì `payment_url`).
+  - Success: `{order_id, payment_attempt_number, payment_transaction_id}` — **chỉ định
+    danh**, không có `client_secret`/`publishable_key`/`expires_at`
+    ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)). Client
+    data được lấy tươi từ Order ở mỗi lần trả cho frontend (§8.2a).
   - Conflict: `{error_code: "PROMOTION_RECALCULATION_NEEDED", action:
     "RECALL_PREVIEW", dropped_promotions: [...], proposal_checkout_data: {...}}`.
-- **Read pattern:** client retry cùng token → Lua trả `-2` → đọc key này → trả
-  lại response cũ bất kể success hay conflict nghiệp vụ.
+- **Read pattern:** client retry cùng token → Lua trả `-2` → đọc key này. Conflict →
+  trả lại response cũ. Success → gọi
+  `GET /internal/v1/checkout-order-submissions/{checkout_token}` của Order để lấy
+  `payment` (client data tươi từ Payment kèm `usable`) rồi ghép với `order_id` trả
+  client; `usable=false` → `client_secret=null`.
 - Trong nhánh conflict: `dropped_promotions[]` chỉ chứa mã bị loại;
   `proposal_checkout_data.surviving_promotions[]` là input chuẩn để Preview lại;
   token cũ vẫn `SUBMITTED`, không tái sử dụng dù user chấp nhận phương án mới.
+
+### 8.2a Client data (không cache)
+
+`client_secret`, `publishable_key`, `expires_at` **không** bao giờ được ghi vào Redis
+của Checkout. Lần đầu: lấy từ response `POST /internal/v1/checkout-order-submissions`
+của Order và trả thẳng cho client. Replay: lấy từ `GET …/{checkout_token}`. Payment là
+nơi lưu duy nhất (mã hóa); Order relay theo `usable`; Checkout relay tiếp, không giữ.
 
 ### 8.3 Failed submit recovery payload
 
@@ -394,8 +406,10 @@ truth cho dữ liệu bền vững.
 
 - Session chứa PII (địa chỉ, tên, số điện thoại người nhận) trong
   `delivery_address_snapshot`; TTL 20 phút giới hạn thời gian lưu.
-- Payload/response chứa `order_id` và `client_secret`/`publishable_key` Stripe;
-  chính sách masking/redaction trong log chưa được thiết kế.
+- Payload cache chứa PII/tiền tạm thời; response cache chỉ chứa `order_id` và định
+  danh attempt. `client_secret`/`publishable_key` **không** được lưu ở Checkout
+  (Redis, log, trace) — chỉ đi qua trong response ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)).
+  Chính sách masking/redaction log cho payload cache chưa được thiết kế.
 - Mọi số tiền trong session là server-side; client không thể ghi vào session.
 - Token là UUID v4 ngẫu nhiên, không chứa payload (non-JWT), không thể suy diễn.
 - Access control: chỉ Checkout Service truy cập keyspace `checkout:*`; user chỉ

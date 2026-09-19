@@ -29,4 +29,4 @@ xác minh.
 | [ADR-006](./ADR-006-explicit-voucher-write-boundary-and-recalculation.md) | Submit không auto-save voucher; reserve fail → Promotion re-evaluate, không trừ cục bộ | Accepted | Không rõ | N/A |
 | [ADR-007](./ADR-007-payload-and-response-recovery-cache.md) | Payload cache + idempotent response cache cho failed submit recovery | Accepted | Không rõ | N/A |
 | [ADR-008](./ADR-008-single-payment-provider-stripe.md) | Phase 18: chỉ Stripe, bỏ `payment_method` khỏi Checkout | Accepted | Không rõ (Phase 18) | Multi-provider `payment_method` cũ |
-| [ADR-009](./ADR-009-degraded-pricing-user-acknowledgement.md) | Degraded pricing bắt buộc `user_ack_degraded_pricing` | Accepted | Không rõ | N/A |
+$1| [ADR-010](./ADR-010-relay-payment-client-data-no-secret-cache.md) | Không cache `client_secret`; relay client data từ Order mỗi lần đọc | Accepted | 2026-09-19 | Tinh chỉnh ADR-007, ADR-008 |

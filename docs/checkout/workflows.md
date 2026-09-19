@@ -282,9 +282,9 @@ sequenceDiagram
     CS->>Redis: EVAL Lua check-and-mark (PREVIEW_READY -> SUBMITTED)
     CS->>Redis: SET checkout:payload:{user_id}:{token} (TTL 20 phút)
     CS->>OS: POST /internal/v1/checkout-order-submissions + Idempotency-Key: token
-    OS-->>CS: {order_id, client_secret, publishable_key}
-    CS->>Redis: SET checkout:response:{user_id}:{token} (TTL 20 phút); DEL payload; DEL lock
-    CS-->>Client: {order_id, client_secret, publishable_key}
+    OS-->>CS: {order_id, payment:{attempt, transaction_id, client_secret, publishable_key, expires_at}}
+    CS->>Redis: SET checkout:response:{user_id}:{token} = {order_id, attempt, transaction_id} (TTL 20 phút); DEL payload; DEL lock
+    CS-->>Client: {order_id, client_secret, publishable_key} (relay, không cache secret)
 ```
 
 Các bước chi tiết:
@@ -323,9 +323,12 @@ Các bước chi tiết:
    `RollbackPromotionActivity` bên Order chỉ nhả reservation runtime
    (`reserved_*`), không đổi trạng thái ví voucher.
 7. **Xử lý kết quả:**
-   - **Kịch bản A — Success:** Order trả `[order_id, client_secret,
-     publishable_key]`. Cache response, `DEL` payload, `DEL` lock; trả client
-     (Frontend dùng Stripe Elements / Stripe Checkout SDK).
+   - **Kịch bản A — Success:** Order trả `{order_id, payment:{payment_attempt_number,
+     payment_transaction_id, client_secret, publishable_key, expires_at}}`. Cache
+     **chỉ** `{order_id, payment_attempt_number, payment_transaction_id}`, `DEL`
+     payload, `DEL` lock; relay client data cho client trong cùng response, không
+     ghi secret vào Redis ([ADR-010](./decisions/ADR-010-relay-payment-client-data-no-secret-cache.md)).
+     Frontend dùng Stripe Elements.
    - **Kịch bản B — Business conflict (ReservePromotion all-or-nothing fail):**
      xem WF-CHK-005. Cache 409 theo token, `DEL` lock, token vẫn `SUBMITTED`.
    - **Kịch bản C — Rớt mạng/timeout:** retry nội bộ tối đa 3 lần; cả 3 fail →
@@ -335,7 +338,8 @@ Các bước chi tiết:
 ### State/data changes
 
 Redis: session `status = SUBMITTED`; `checkout:payload` (tạo; xóa khi success);
-`checkout:response` (tạo khi success/conflict); submit lock (tạo/xóa). Order
+`checkout:response` (tạo khi success — chỉ định danh — hoặc conflict); submit lock
+(tạo/xóa). Không có secret Stripe trong Redis. Order
 Service tạo order/workflow (thuộc Order).
 
 ### Events emitted
@@ -344,8 +348,9 @@ Không có từ Checkout. Order/Payment phát event của họ.
 
 ### Output
 
-`{order_id, client_secret, publishable_key}`; hoặc `409 PRICE_CHANGED`; hoặc
-`409 PROMOTION_RECALCULATION_NEEDED`; hoặc `503`.
+`{order_id, client_secret, publishable_key}` (secret relay từ Order, `null` nếu
+`usable=false`); hoặc `409 PRICE_CHANGED`; hoặc `409 PROMOTION_RECALCULATION_NEEDED`;
+hoặc `503`.
 
 ### Failure paths
 
@@ -428,12 +433,15 @@ Client retry POST /checkout/submit {token}
   ├─ Lua Script trả -2 (ALREADY_SUBMITTED)  [hoặc bước 2 thấy status == SUBMITTED]
   │
   ├─ Check checkout:response:{user_id}:{token} ?
-  │   ├─ CÓ → Trả lại response cũ (idempotent: success hoặc conflict nghiệp vụ)
+  │   ├─ CÓ, conflict → Trả lại 409 cũ (idempotent)
+  │   ├─ CÓ, success  → GET /internal/v1/checkout-order-submissions/{token} (Order)
+  │   │                 → payment.usable=true  → trả {order_id, client_secret, publishable_key}
+  │   │                 → payment.usable=false → trả {order_id, client_secret: null} (đơn đã thanh toán/hết hạn)
   │   └─ KHÔNG → Lần đầu fail, chưa có response cache
   │
   └─ Check checkout:payload:{user_id}:{token} ?
       ├─ CÓ → Retry gọi Order Service (dùng payload từ Redis)
-      │   ├─ Thành công → Cache response + DEL payload → Trả client
+      │   ├─ Thành công → Cache {order_id, attempt, transaction_id} + DEL payload → Trả client (secret relay)
       │   └─ Thất bại → Trả 503 (client có thể retry tiếp)
       └─ KHÔNG (TTL hết) → Trả 410 Gone
           → Client hiển thị: "Phiên checkout đã hết hạn, vui lòng thử lại"

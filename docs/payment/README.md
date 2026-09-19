@@ -193,5 +193,4 @@ lưu client data), `docs/order/interfaces.md §6.1` (consumer event), `docs/mesh
 | 3 | GDPR/xóa dữ liệu cho `user_id`, `webhook_logs.raw_body` (có thể chứa `billing_details`) | Policy masking/xóa theo yêu cầu; retention 12 tháng webhook log là điểm bắt đầu |
 | 4 | Ngưỡng SLO/alert/capacity là đề xuất, chưa load test | `operations.md §1, §4, §6` phải đo lại trước khi cam kết |
 | 5 | Stripe live không hỗ trợ merchant VN | Toàn bộ vòng đời chạy test mode; go-live cần pháp nhân ở nước Stripe hỗ trợ |
-| 6 | Checkout ADR-007/008 vẫn mô tả cache `{order_id, client_secret, publishable_key}` trong Redis recovery của Checkout | Cần rà lại với nguyên tắc "Payment lưu duy nhất": Checkout nên relay từ Order thay vì cache secret |
-| 7 | Chưa có breaking-change check cho OpenAPI/AsyncAPI và consumer test phía Order | Thêm vào CI trước khi `verified` |
+| 6 | Chưa có breaking-change check cho OpenAPI/AsyncAPI và consumer test phía Order | Thêm vào CI trước khi `verified` |
