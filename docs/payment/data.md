@@ -260,7 +260,7 @@ CREATE UNIQUE INDEX uq_provider_op_cancel
 |---|---|
 | `id` | `POP_<ULID>` |
 | `operation_type` | `CREATE` = `PaymentIntent.create`; `CANCEL` = `PaymentIntent.cancel` (pre-capture, dùng cho cả ba đường terminal non-capture theo [ADR-014](./decisions/ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md)); `REFUND` = `Refund.create` |
-| `provider_idempotency_key` | Key truyền vào `RequestOptions.setIdempotencyKey`; sinh một lần, **không đổi** qua retry/recovery. Với `REFUND` bằng đúng `Idempotency-Key` Order gửi |
+| `provider_idempotency_key` | Key truyền vào `RequestOptions.setIdempotencyKey`; sinh một lần, **không đổi** qua retry/recovery. Định dạng: `create:{payment_transaction_id}`, `cancel:{payment_transaction_id}`; với `REFUND` bằng đúng `Idempotency-Key` Order gửi |
 | `command_idempotency_key` | Key command HTTP đã sinh ra operation này, để trace ngược `payment_idempotency` |
 | `request_fingerprint` | Canonical `{amount_minor, currency, metadata, reason}`; replay với payload khác bị reject. Với `CANCEL`, `reason` ∈ {`ORDER_COMMAND:<reason Order>`, `SESSION_EXPIRED`, `DECLINED_NON_RETRYABLE`, `DECLINE_LIMIT`} quyết định terminal đích (`CANCELED`/`EXPIRED`/`FAILED`) |
 | `status` | `REQUESTED` (đã commit, sắp/đang gọi) → `PROVIDER_CONFIRMED` / `PROVIDER_REJECTED`; `UNKNOWN` khi timeout/ambiguous, recovery replay cùng key; `MANUAL_REVIEW_REQUIRED` khi replay + reconciliation không bind được |

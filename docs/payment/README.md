@@ -165,9 +165,9 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 
 | Tài liệu | Nội dung | Khi cần đọc |
 |---|---|---|
-| [Kiến trúc](./architecture.md) | Component, Stripe/Kafka/CDC, processing, consistency, concurrency và topology | Khi thay đổi cấu trúc hoặc dependency |
+| [Kiến trúc](./architecture.md) | Ranh giới tin cậy, cấu trúc hexagonal, ba pipeline, pattern hai transaction, bốn lớp guard, ràng buộc kiểm tra được | Khi thay đổi cấu trúc hoặc dependency |
 | [Miền nghiệp vụ](./domain.md) | Thuật ngữ, aggregate, Payment/Refund FSM, guard, invariant, lỗi miền | Khi thay đổi business logic |
-| [Giao diện](./interfaces.md) | HTTP API (kể cả `client-data`), webhook Stripe, event envelope, 10 event phát ra, mapping Stripe event | Khi tích hợp service |
+| [Giao diện](./interfaces.md) | Quy ước HTTP, idempotency, bảng lỗi, 7 endpoint có ví dụ, webhook contract, 10 event + nghĩa vụ consumer, contract Stripe outbound | Khi tích hợp service |
 | [Luồng nghiệp vụ](./workflows.md) | Initiate, webhook, query/client-data, refund, expiration, reconciliation, poller, recovery, retry, review case, cancel, decline | Khi sửa use case |
 | [Dữ liệu](./data.md) | DDL 9 bảng, constraint, index, transaction, Redis, outbox, retention | Khi sửa persistence |
 | [Vận hành](./operations.md) | SLO, config, observability, failure mode, worker, runbook | Khi deploy hoặc xử lý sự cố |

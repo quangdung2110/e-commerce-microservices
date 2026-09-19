@@ -113,7 +113,7 @@ trùng, không sai thứ tự. **Trigger:** Stripe gọi `POST /v1/payments/webh
    `provider_charge_id`; `re_xxx` → `provider_refund_id`; fallback metadata
    `payment_transaction_id`. Không map được → `IGNORED`. Guard amount/currency; lệch
    → `AMOUNT_MISMATCH` + review case.
-6. Map event → transition theo `interfaces.md §5.1` (`processing` → `T1`;
+6. Map event → transition theo `interfaces.md §4` (`processing` → `T1`;
    `succeeded` → `T2`; `payment_failed` → `T3a` hoặc `WF-PAYMENT-012`; `canceled` →
    `T3`/`T4`/`T5` theo `CANCEL` operation; `charge.refunded` → `R2`+`T7`;
    `charge.refund.updated status=failed` → `R3`+`T8` hoặc `R5`+`T9`; dispute → review

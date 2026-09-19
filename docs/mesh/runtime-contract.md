@@ -116,7 +116,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
 | `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/api/payments/webhook/stripe`, `/api/payments/**` | X | `edge/traefik` | gateway matrix |
-| `payment-service` | `/v1/payments/**` | POST | `ecommerce/order-service` | `order-initiates-payment` |
+| `payment-service` | `/v1/payments/**`, `/v1/refunds/**` | POST, GET | `ecommerce/order-service` | `order-initiates-payment` |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
 | Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
 

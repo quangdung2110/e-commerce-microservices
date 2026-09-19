@@ -301,6 +301,10 @@ operation id, command key, case id, run id), `actor` khi `MANUAL`.
 | Stripe decline code chuẩn hóa (`INSUFFICIENT_FUNDS`, `FRAUDULENT`, `STOLEN_CARD`, …) | Từ `last_payment_error.decline_code` khi `T3` | No | `error_code` trong `PAYMENT_FAILED` |
 | `DECLINE_LIMIT_EXCEEDED` | `decline_count > max_declines_per_attempt` | No | `error_code` trong `PAYMENT_FAILED` |
 | `REFUND_REVERSED_BY_PROVIDER` | Stripe đảo chiều refund | No | `reason_code` trong `REFUND_REVERSED` |
+| `PROVIDER_CANCELED` | Intent bị hủy phía Stripe/Dashboard, không có `CANCEL` operation nội bộ | No | `reason_code` trong `PAYMENT_CANCELED` (các giá trị khác là `reason` của Order command) |
+| `ORDER_MISMATCH` | `order_id` trong body không khớp transaction | No | HTTP `400` |
+| `ATTEMPT_ALREADY_EXISTS` | `(order_id, payment_attempt_number)` đã có với key khác | No | HTTP `409` |
+| `PAYMENT_NOT_FOUND`, `REFUND_NOT_FOUND` | ID không tồn tại | No | HTTP `404` |
 | Stripe `failure_reason` chuẩn hóa (`EXPIRED_OR_CANCELED_CARD`, `LOST_OR_STOLEN_CARD`, …) | Refund failed | No | `error_code` trong `REFUND_FAILED` |
 
 Timeout Stripe, DB unavailable, Kafka unavailable là lỗi hạ tầng, không phải domain
@@ -311,7 +315,7 @@ error; chúng luôn để lại ProviderOperation/webhook log có thể recover.
 - **Thanh toán thành công:** Order initiate cho order `10001`, amount `995000` VND →
   `TXN_01J...` `INITIATING` → `pi_xxx` bound → `PENDING`, `PAYMENT_INITIATED`
   (`financial_state_version=1`). Buyer thanh toán qua Elements; `payment_intent.succeeded`
-  → `T2` `SUCCESS`, `PAYMENT_SUCCESS` (`version=2`, `paid_at`).
+  → `T2` `SUCCESS`, `PAYMENT_SUCCESS` (`version=2`, `occurred_at` = `succeeded_at`).
 - **Thẻ bị từ chối rồi thử lại:** `payment_failed` `insufficient_funds` → `T3a`,
   `decline_count=1`, vẫn `PENDING`, không có event; buyer nhập thẻ khác trên cùng
   intent → `succeeded` → `T2`. Order không thấy gì ngoài `PAYMENT_SUCCESS`.

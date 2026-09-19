@@ -216,14 +216,22 @@ components:
     PaymentStatus:
       type: object
       additionalProperties: false
-      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version]
+      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version, requires_manual_review, refund]
       properties:
         transaction_id: { $ref: '#/components/schemas/OpaqueId' }
         order_id: { $ref: '#/components/schemas/OpaqueId' }
         payment_attempt_number: { type: integer, minimum: 1 }
         amount: { $ref: '#/components/schemas/VndMoney' }
         status: { enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
-        financial_state_version: { type: integer, minimum: 1 }
+        financial_state_version: { type: integer, minimum: 0 }
+        requires_manual_review: { type: boolean }
+        succeeded_at: { type: [string, 'null'], format: date-time }
+        terminal_at: { type: [string, 'null'], format: date-time }
+        refund:
+          description: The single lifetime refund of the order, or null.
+          oneOf:
+            - { type: 'null' }
+            - { $ref: '#/components/schemas/RefundStatus' }
     RefundStatus:
       type: object
       additionalProperties: false

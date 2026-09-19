@@ -69,6 +69,7 @@ components:
             refund_amount: { $ref: '#/components/schemas/VndMoney' }
             financial_state_version: { type: integer, minimum: 1 }
             occurred_at: { type: string, format: date-time }
+            expires_at: { type: string, format: date-time, description: Payment session expiry; present on PAYMENT_INITIATED only }
             error_code: { type: string }
             reason_code: { type: string }
       allOf:

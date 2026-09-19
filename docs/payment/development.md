@@ -156,7 +156,7 @@ Các mục dưới đây liệt kê case cụ thể cho từng tầng.
 - Guard: signature (đúng/sai/ngoài 300s), amount/reference mismatch, idempotency.
 - Refund one-lifetime uniqueness per `order_id`, stable replay key, and amount
   `<= paid_amount`; selected-scope mixed PASS/FAIL must not block a valid Order command.
-- Mapping Stripe event → transition theo `interfaces.md §5.1`; `charge.refund.updated`
+- Mapping Stripe event → transition theo `interfaces.md §4`; `charge.refund.updated`
   `status=failed` → `R3`/`T8` hay `R5`/`T9` tùy trạng thái refund hiện tại;
   `payment_intent.canceled` → terminal theo `CANCEL` operation đã ghi.
 - Initiate/create and pre-capture cancel operation: stable local/provider key,
