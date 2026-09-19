@@ -28,7 +28,9 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-006](./ADR-006-optimistic-lock-and-redis-lock-strategy.md) | Optimistic lock mặc định + Redis lock cho side effect, có fallback | Accepted | Không rõ | N/A |
 | [ADR-007](./ADR-007-order-id-partition-key.md) | Partition key `order_id`, route theo `payload.order_id` | Accepted | Không rõ | N/A |
 | [ADR-008](./ADR-008-minimal-event-payload-phase-20.md) | Payload event tối thiểu cho Order consumer | Accepted | Phase 20 | Payload đầy đủ trước Phase 20 |
-| [ADR-009](./ADR-009-monthly-partitioning-and-tiered-archive.md) | Partition theo tháng + archive S3 + tiered read | Accepted | Không rõ (ghi nhận sau Phase 16) | N/A |
+| [ADR-009](./ADR-009-monthly-partitioning-and-tiered-archive.md) | Partition theo tháng + archive S3 + tiered read | Superseded (ADR-013) | Không rõ (ghi nhận sau Phase 16) | N/A |
 | [ADR-010](./ADR-010-refund-only-by-explicit-order-command.md) | Refund chỉ từ explicit command của Order; Payment không consume Order event | Accepted | Không rõ | Auto-refund từ Order lifecycle event |
 | [ADR-011](./ADR-011-one-lifetime-order-refund.md) | Một Payment refund transaction trọn đời/order và hai dạng Inventory evidence | Accepted | 2026-09-15 | ADR-010 (refund gate details) |
 | [ADR-012](./ADR-012-recoverable-initiation-and-cancel.md) | Durable provider operation for create/cancel and fact-based Order cancellation | Accepted | 2026-09-16 | Refines ADR-006, ADR-007 and ADR-008 |
+| [ADR-013](./ADR-013-single-oltp-retention-no-partition.md) | Một OLTP schema, không partition/cold archive; retention bằng row-level trimmer | Accepted | 2026-09-19 | ADR-009 |
+| [ADR-014](./ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md) | Decline phi terminal; mọi terminal non-capture đòi hỏi PaymentIntent đã canceled | Accepted | 2026-09-19 | Refines ADR-012 |

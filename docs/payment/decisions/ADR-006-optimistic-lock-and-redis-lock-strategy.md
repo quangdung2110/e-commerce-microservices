@@ -49,6 +49,12 @@ Chiến lược kết hợp:
   thì **reject operation và đẩy vào retry cycle/DLQ** để bảo vệ tính toàn vẹn
   thay vì ignore lock.
 
+> **Ghi chú 2026-09-19:** quyết định (optimistic lock mặc định, Redis lock chỉ giảm
+> side effect trùng, DB là safety cuối) giữ nguyên. Chi tiết naming/cột ở trên là
+> lịch sử; hiện hành theo `data.md §6`: key Redis `payment:idem:{action}:{key}` và
+> `payment:lock:{payment_transaction_id}`, cột `refund_transactions.command_idempotency_key`,
+> và quyền cho side effect thuộc `provider_operations` ([ADR-012](./ADR-012-recoverable-initiation-and-cancel.md)).
+
 ## Phương án đã cân nhắc
 
 - **Chỉ Redis lock cho mọi transition:** overhead mỗi transition và Redis trở

@@ -1,8 +1,9 @@
 ---
 doc_id: payment-adr-009
 service: payment
-status: accepted
+status: superseded
 date: null
+superseded_by: payment-adr-013
 decision_owners:
   - Architecture Team
 supersedes: null
@@ -15,7 +16,9 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; chưa xác minh implementation. Ngày không được ghi lại;
+`Superseded` bởi [ADR-013](./ADR-013-single-oltp-retention-no-partition.md) ngày
+2026-09-19: bỏ partition, archive S3 và tiered read. Nội dung dưới đây giữ nguyên
+làm lịch sử. Trước đó `Accepted` trong thiết kế; chưa xác minh implementation. Ngày không được ghi lại;
 thiết kế cũ ghi nhận quyết định này vẫn giữ sau khi Order Service bỏ Cold Data
 Archiving ở Phase 16.
 
