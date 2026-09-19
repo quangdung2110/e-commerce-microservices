@@ -48,15 +48,23 @@ buộc.
 
 Payment Service chịu trách nhiệm:
 
-- Sở hữu `payment_transactions`, `refund_transactions`, `webhook_logs`,
-  `payment_status_history`, outbox và idempotency storage của mình.
-- Gọi Stripe (`PaymentIntent.create/retrieve`, `Refund.create/retrieve`) và giữ
-  toàn bộ chi tiết provider (`pi_xxx`, `re_xxx`, `evt_xxx`, `client_secret`).
+- Sở hữu `payment_transactions`, `provider_operations`, `refund_transactions`,
+  `webhook_logs`, `payment_status_history`, `payment_review_cases`,
+  `reconciliation_runs`, outbox và idempotency storage của mình — một OLTP schema,
+  không partition/cold archive ([ADR-013](./decisions/ADR-013-single-oltp-retention-no-partition.md)).
+- Gọi Stripe (`PaymentIntent.create/retrieve/cancel`, `Refund.create/retrieve`) sau
+  khi đã commit một `ProviderOperation` với key bất biến, và giữ toàn bộ chi tiết
+  provider (`pi_xxx`, `ch_xxx`, `re_xxx`, `evt_xxx`). Payment là nơi lưu **duy nhất**
+  của `client_secret` (mã hóa); Order đọc qua `client-data` API khi cần relay cho buyer.
+- Quyết định khi nào một attempt chấm dứt: decline là phi terminal; `FAILED`/`EXPIRED`/
+  `CANCELED` chỉ sau khi PaymentIntent đã bị hủy
+  ([ADR-014](./decisions/ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md)).
 - Nhận webhook Stripe tại endpoint cố định, trả 2xx nhanh, xác thực
   `Stripe-Signature` và áp transition FSM một cách idempotent.
 - Bảo vệ Payment FSM và Refund FSM, ghi audit trail cho mọi transition.
-- Chạy các worker nền: Expiration Scanner, Reconciliation, Refund Status Poller,
-  Webhook Auto-Retry, DLQ Replay.
+- Chạy các worker nền: Expiration Scanner, Provider-operation Recovery,
+  Reconciliation, Refund Status Poller, Webhook Auto-Retry, DLQ Replay, Retention
+  Trimmer; duy trì hàng chờ review case cho CSKH/Kế toán.
 - Phát `PAYMENT_*` và `REFUND_*` qua transactional outbox + CDC lên
   `t.payment.events.v2`.
 
@@ -81,12 +89,14 @@ cùng transaction với dữ liệu Payment.
 
 | Nhóm dữ liệu | Nguồn chân lý | Ghi chú quyền ghi |
 |---|---|---|
-| `payment_transactions` | Payment Service | Chỉ FSM Payment (API/webhook worker/cronjob) được chuyển trạng thái |
+| `payment_transactions` | Payment Service | Chỉ FSM Payment (API/webhook worker/scheduler/reconciliation) được chuyển trạng thái; lưu client data mã hóa |
+| `provider_operations` | Payment Service | Side effect Stripe durable; commit trước mọi call; key bất biến |
 | `refund_transactions` | Payment Service | Chỉ FSM Refund được chuyển trạng thái |
-| `webhook_logs` | Payment Service | Raw webhook + kết quả xác thực; append-only theo dedup key |
+| `webhook_logs` | Payment Service | Raw webhook nguyên byte + kết quả xác thực; dedup `stripe_event_id` |
 | `payment_status_history` | Payment Service | Audit trail append-only cho mọi transition |
 | `outbox_events` | Payment Service | Append-only để Debezium CDC phát event |
-| `payment_idempotency` | Payment Service | Lưu response idempotent cho API command |
+| `payment_idempotency` | Payment Service | Fingerprint + response idempotent cho `INITIATE`/`CANCEL`/`REFUND` |
+| `payment_review_cases`, `reconciliation_runs` | Payment Service | Hàng chờ xử lý thủ công có audit; metadata đối soát |
 | Redis idempotency/lock keys | Guard tạm thời | DB unique constraint và optimistic lock giữ bất biến khi Redis mất |
 | Order, inventory, promotion state | Service tương ứng | Payment chỉ giữ `order_id`, `user_id` làm tham chiếu |
 | Trạng thái thật trên Stripe | Stripe | Payment replicate qua webhook/poller và đối soát bằng reconciliation |
@@ -102,12 +112,14 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 | Hủy trước capture | Trả durable `CANCELED`/non-capture hoặc `ALREADY_SUCCEEDED` cho Order trước khi Order final-cancel |
 | Tiếp nhận webhook Stripe | Nhận raw webhook, trả 2xx < 500ms, xử lý async an toàn với retry/duplicate/out-of-order |
 | Chốt kết quả thanh toán | Chuyển `SUCCESS`/`FAILED`/`CANCELED`/`EXPIRED` và phát event tương ứng cho Order |
-| Tra cứu giao dịch | Trả chi tiết payment transaction kèm danh sách refund |
+| Tra cứu giao dịch | Trả chi tiết payment transaction kèm refund; trả client data cho Order relay khi attempt còn `PENDING` |
 | Khởi tạo hoàn tiền | Nhận một explicit command trọn đời/order từ Order, validate unique order + `amount <= paid_amount`, gọi Stripe Refund idempotent |
 | Chốt kết quả hoàn tiền | `REFUND_SUCCESS`/`REFUND_FAILED`/`REFUND_REVERSED` từ webhook, poller hoặc reconciliation |
-| Hết hạn phiên thanh toán | Đưa transaction quá `expires_at` về `EXPIRED` và phát `PAYMENT_EXPIRED` |
-| Đối soát với Stripe | Phát hiện lệch amount/status và phát correction transition |
-| Lưu trữ dài hạn | Partition theo tháng, archive > 6 tháng lên S3, tra cứu tiered cho CSKH |
+| Hết hạn phiên thanh toán | Hủy PaymentIntent rồi đưa transaction quá `expires_at` về `EXPIRED` và phát `PAYMENT_EXPIRED` |
+| Xử lý decline | Giữ attempt `PENDING` qua decline retryable; tự hủy intent và `FAILED` khi decline non-retryable/quá ngưỡng |
+| Đối soát với Stripe | Phát hiện lệch amount/status, phát correction transition khi không freeze, mở review case khi cần |
+| Review case | Một case durable cho mọi tình huống không được tự quyết (refund failed/reversed, capture-after-cancel, drift, dispute) với resolution bắt buộc |
+| Lưu trữ | Một OLTP schema, giữ transaction/audit vô thời hạn; trimmer cho outbox/webhook log/idempotency |
 
 ## 6. Phụ thuộc
 
@@ -115,14 +127,13 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 |---|---|---|---|---|---|
 | Inbound | Order (Temporal Activities) | HTTP | Initiate/cancel/refund/query | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml); buyer/CSKH reads go through Order, never direct Payment |
 | Inbound | Stripe | HTTPS webhook | `POST /v1/payments/webhook/stripe` | Bắt buộc | Stripe event schema |
-| Outbound | Stripe | HTTPS (`stripe-java`) | PaymentIntent, Refund, BalanceTransaction, Webhook verify | Bắt buộc | Stripe API |
+| Outbound | Stripe | HTTPS (`stripe-java`) | PaymentIntent (create/retrieve/cancel), Refund (create/retrieve), Webhook verify | Bắt buộc | Stripe API |
 | Outbound | Order, Analytics | Kafka `t.payment.events.v2` | `PAYMENT_*`, `REFUND_*` | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Internal | Kafka `t.payment.webhooks.raw` | Kafka | Raw webhook buffer cho Webhook Processor | Bắt buộc | Nội bộ Payment |
 | Internal | PostgreSQL | SQL | Source of truth, outbox, audit, idempotency | Bắt buộc | Logical design trong `data.md` |
 | Internal | Redis | Redis commands | Idempotency pointer và distributed lock | Bắt buộc, có fallback DB | Key/TTL trong `data.md` |
 | Internal | Debezium/Kafka Connect | WAL CDC | Relay outbox sang Kafka | Bắt buộc | Cấu hình chưa có evidence |
-| Internal | Vault/Secret Manager | — | Stripe API key, `whsec_...` | Bắt buộc | — |
-| Internal | S3 (+ Athena hoặc tương đương) | — | Archive partition > 6 tháng, tiered read | Theo thiết kế retention | — |
+| Internal | Vault/Secret Manager + KMS | — | Stripe API key, `whsec_...`, key mã hóa `client_secret_ciphertext` | Bắt buộc | — |
 
 ## 7. Bất biến quan trọng
 
@@ -138,12 +149,17 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 - [`INV-PAY-005`](./domain.md#5-bất-biến): mọi terminal transition đều có audit
   record trong `payment_status_history`.
 - [`INV-PAY-006`](./domain.md#5-bất-biến): mọi transition idempotent theo
-  `stripe_event_id` hoặc `provider_ref + event_type`; webhook out-of-order không
-  override ngược trạng thái terminal hợp lệ.
+  `stripe_event_id`; webhook out-of-order không override ngược trạng thái terminal
+  hợp lệ.
 - [`INV-PAY-007`](./domain.md#5-bất-biến): refund chỉ được khởi tạo từ explicit
   command của Order kèm `Idempotency-Key`, không suy luận từ event.
-- Create/cancel provider operation has one durable idempotency identity; uncertain
-  transport never authorizes Order to infer payment cancellation.
+- [`INV-PAY-010`](./domain.md#5-bất-biến): không payment nào vào `FAILED`/`EXPIRED`/
+  `CANCELED` khi PaymentIntent còn capture được.
+- [`INV-PAY-011`](./domain.md#5-bất-biến): không side effect Stripe nào thiếu
+  `ProviderOperation` đã commit với key bất biến; uncertain transport never authorizes
+  Order to infer payment cancellation.
+- [`INV-PAY-013`](./domain.md#5-bất-biến): `client_secret` không rời Payment ngoài
+  response initiate/client-data cho Order workload.
 
 ## 8. Bản đồ tài liệu
 
@@ -151,9 +167,9 @@ Service khác không được ghi trực tiếp vào PostgreSQL của Payment. O
 |---|---|---|
 | [Kiến trúc](./architecture.md) | Component, Stripe/Kafka/CDC, processing, consistency, concurrency và topology | Khi thay đổi cấu trúc hoặc dependency |
 | [Miền nghiệp vụ](./domain.md) | Thuật ngữ, aggregate, Payment/Refund FSM, guard, invariant, lỗi miền | Khi thay đổi business logic |
-| [Giao diện](./interfaces.md) | HTTP API, webhook Stripe, event envelope, 9 event phát ra, event tiêu thụ | Khi tích hợp service |
-| [Luồng nghiệp vụ](./workflows.md) | Initiate, webhook, query, refund, expiration, reconciliation, poller, cancel | Khi sửa use case |
-| [Dữ liệu](./data.md) | Schema logic, constraint, index, transaction, Redis, outbox, partition/archive | Khi sửa persistence |
+| [Giao diện](./interfaces.md) | HTTP API (kể cả `client-data`), webhook Stripe, event envelope, 10 event phát ra, mapping Stripe event | Khi tích hợp service |
+| [Luồng nghiệp vụ](./workflows.md) | Initiate, webhook, query/client-data, refund, expiration, reconciliation, poller, recovery, retry, review case, cancel, decline | Khi sửa use case |
+| [Dữ liệu](./data.md) | DDL 9 bảng, constraint, index, transaction, Redis, outbox, retention | Khi sửa persistence |
 | [Vận hành](./operations.md) | SLO, config, observability, failure mode, worker, runbook | Khi deploy hoặc xử lý sự cố |
 | [Phát triển](./development.md) | Checklist build/test/migration khi có code | Khi bắt đầu implementation |
 | [Quyết định](./decisions/README.md) | ADR bảo toàn lý do của thiết kế cũ | Khi đánh giá trade-off |

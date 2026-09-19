@@ -23,6 +23,7 @@ verified_against_commit: null
 | Cancel pending payment | Inbound | HTTP | Payment | Order (`CancelPaymentActivity`) | [OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Initiate refund | Inbound | HTTP | Payment | Order (`OrderRefundWorkflow`) | [OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Query payment status | Inbound | HTTP | Payment | Order verify | [OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
+| Query client data | Inbound | HTTP | Payment | Order (relay cho buyer / Checkout recovery) | [OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Query refund status | Inbound | HTTP | Payment | Order verify | [OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Stripe webhook | Inbound | HTTPS | Payment | Stripe | proposed |
 | `t.payment.events.v2` | Outbound | Kafka | Payment | Order, Analytics | [AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml) |
@@ -39,10 +40,11 @@ chỉ được gọi bởi Order Service qua workload identity.
 |---|---|---|
 | `POST /v1/payments/initiate` | Order Temporal Activity persists/replays one create operation then binds one Stripe PaymentIntent; returns client data only after provider identity is proven | Order `Idempotency-Key` + durable `ProviderOperation` are authority; Redis SETNX is only concurrency fast-path |
 | `POST /v1/payments/{transactionId}/cancel` | Order yêu cầu dừng một payment chưa capture **trước** khi final-cancel và nhả resource; Payment là authority cho race cancel/capture | Header `Idempotency-Key` bắt buộc. Kết quả durable là `CANCELED`/`ALREADY_NON_CAPTURED` hoặc `ALREADY_SUCCEEDED`; timeout chỉ được retry/query với cùng key, không được coi là cancel thành công. |
-| `POST /v1/payments/webhook/stripe` | Endpoint cố định nhận webhook Stripe (không còn path variable `{provider}`); trả `200` < 500ms; dump raw vào Kafka | Dedup ở worker theo `stripe_event_id` và `(provider, provider_transaction_id, event_type)` |
-| `GET /v1/payments/{transactionId}` | Trả chi tiết transaction kèm danh sách refund (`LEFT JOIN refund_transactions`) cho Order verification | Read-only; chỉ Order workload; `200` |
-| `POST /v1/payments/{transactionId}/refund` | Order khởi tạo one lifetime refund sau Inventory evidence; validate `SUCCESS`, unique order và amount; gọi Stripe `Refund.create`; trả `PROCESSING` | Header `Idempotency-Key` bắt buộc; trùng key → cùng kết quả; key khác sau existing order refund → `409` |
-| `GET /v1/refunds/{refundTransactionId}` | Đọc trạng thái refund độc lập với read model Payment Transaction cho Order; hỗ trợ query timeline khi reconciliation lệch | Read-only; chỉ Order workload |
+| `POST /v1/payments/webhook/stripe` | Endpoint cố định nhận webhook Stripe (không còn path variable `{provider}`); trả `200` < 500ms; dump raw vào Kafka | Dedup ở worker **chỉ** theo `stripe_event_id` (Stripe hợp lệ bắn nhiều `payment_failed` trên cùng intent) |
+| `GET /v1/payments/{transactionId}` | Trả chi tiết transaction kèm danh sách refund (`LEFT JOIN refund_transactions`) cho Order verification; **không** chứa client data | Read-only; chỉ Order workload; `200` |
+| `GET /v1/payments/{transactionId}/client-data` | Trả `client_secret`/`publishable_key`/`client_expires_at` cho Order relay tới buyer; Payment là nơi lưu duy nhất, Order không giữ bản sao | Read-only; chỉ Order workload; `usable=false` + `client_secret=null` khi không còn `PENDING` hoặc quá hạn; `Cache-Control: private, no-store` |
+| `POST /v1/payments/{transactionId}/refund` | Order khởi tạo one lifetime refund sau Inventory evidence; validate `SUCCESS`, unique order và amount; gọi Stripe `Refund.create`; trả `PROCESSING` | Header `Idempotency-Key` bắt buộc; trùng key → cùng kết quả; cùng key khác payload → `422`; key khác sau existing order refund → `409` |
+| `GET /v1/refunds/{refundTransactionId}` | Đọc trạng thái refund (`PENDING/PROCESSING/SUCCESS/FAILED/REVERSED`) độc lập với read model Payment Transaction cho Order; hỗ trợ query timeline khi reconciliation lệch | Read-only; chỉ Order workload |
 
 ### 2.1. `POST /v1/payments/initiate`
 
@@ -51,7 +53,8 @@ Request chuẩn chứa `order_id`, `payment_attempt_number` tăng đơn điệu 
 là integer VND, không dùng `DECIMAL`/floating point và được truyền nguyên sang
 provider theo quy tắc currency của adapter.
 
-Response: `transaction_id`, `client_secret` (`pi_xxx_secret_xxx`),
+Response: `transaction_id`, `payment_attempt_number`, `status` (`INITIATING` khi
+chưa bind intent, `PENDING` khi đã có), `client_secret` (`pi_xxx_secret_xxx`),
 `publishable_key` (`pk_...`), `expires_at`. Frontend dùng `client_secret` +
 `publishable_key` để khởi tạo Stripe Elements hoặc Stripe Checkout SDK, không
 redirect sang URL ngoài.
@@ -63,27 +66,53 @@ chỉ Stripe adapter chịu trách nhiệm mapping canonical VND amount sang pro
 `intent.getId()` (`pi_xxx`) lưu vào `provider_transaction_id`.
 
 Order dùng một `Idempotency-Key` ổn định **chỉ cho một** `payment_attempt_number`.
-Retry cùng attempt phải giữ key/fingerprint; một attempt mới chỉ được mở sau fact
-terminal non-capture của attempt trước và phải dùng số attempt kế tiếp cùng key mới.
-Payment lưu `INITIATING` + provider-create key/fingerprint/immutable metadata trước
-khi gọi Stripe. Chỉ sau khi chứng minh được một PaymentIntent qua response, replay hay
-reconciliation, Payment mới atomically ghi provider identity, encrypted `client_secret`,
-chuyển `PENDING` và phát `PAYMENT_INITIATED`. `INITIATING` trả result retryable, không
-được expire hay thay bằng payment identity khác.
+Retry cùng attempt phải giữ key/fingerprint; cùng key khác fingerprint → `422
+IDEMPOTENCY_KEY_REUSED`; một attempt mới chỉ được mở sau fact terminal non-capture của
+attempt trước và phải dùng số attempt kế tiếp cùng key mới. Payment lưu `INITIATING`
++ provider-create key/fingerprint/immutable metadata trước khi gọi Stripe. Chỉ sau khi
+chứng minh được một PaymentIntent qua response, replay hay reconciliation, Payment mới
+atomically ghi provider identity, encrypted `client_secret`, chuyển `PENDING` và phát
+`PAYMENT_INITIATED`. `INITIATING` trả result retryable, không được expire hay thay
+bằng payment identity khác.
 
-### 2.1a. `POST /v1/payments/{transactionId}/cancel`
+Replay initiate không lưu `client_secret` trong `payment_idempotency.response_body`;
+Payment giải mã lại từ `payment_transactions` và chỉ trả secret khi attempt còn
+`PENDING` và chưa quá `client_expires_at` (ngược lại replay trả `status=PENDING` với
+`client_secret` được thay bằng kết quả `client-data` hiện hành).
+
+### 2.1a. `GET /v1/payments/{transactionId}/client-data`
+
+Payment là nơi lưu duy nhất của `client_secret` (mã hóa). Order **không** giữ bản
+sao trong `order_payment_attempts`; mỗi lần buyer reload trang thanh toán, Checkout
+recovery hay Order replay checkpoint, Order gọi endpoint này và relay kết quả với
+`Cache-Control: private, no-store`.
+
+Response: `transaction_id`, `payment_attempt_number`, `status`, `usable`,
+`client_secret`, `publishable_key`, `client_expires_at`. `usable=true` chỉ khi
+`status=PENDING` và `now < client_expires_at`; ngược lại `usable=false`,
+`client_secret=null`, `publishable_key=null` (HTTP `200`, không phải lỗi) —
+`RULE-PAY-015`. Order tự authorize buyer (owner của order) trước khi relay; Payment
+chỉ xác thực Order workload.
+
+### 2.1b. `POST /v1/payments/{transactionId}/cancel`
 
 Request tối thiểu: `order_id`, `reason` (`PAYMENT_TIMEOUT`, `BUYER_CANCELLED` hoặc
 `ORDER_CANCELLED_PRE_CAPTURE`). Header `Idempotency-Key` do Order sinh và cố định
 cho intent hủy. Payment xác minh transaction thuộc order, lưu `ProviderOperation`
-`CANCEL_REQUESTED` trước khi gọi `PaymentIntent.cancel` với cùng provider idempotency
+`CANCEL` (`REQUESTED`, reason `ORDER_COMMAND:<reason>`) trước khi gọi `PaymentIntent.cancel` với cùng provider idempotency
 key, rồi persist outcome và audit/outbox trong local transaction.
 
 | Payment/provider fact cuối | Response semantic | Nghĩa vụ của Order |
 |---|---|---|
-| Pending/processing đã bị provider cancel, hoặc đã failed/expired/canceled | `CANCELED` hoặc `ALREADY_NON_CAPTURED` | Có thể hoàn tất cancel path và nhả resource. |
-| Provider đã capture/success (kể cả race với cancel) | `ALREADY_SUCCEEDED` cùng `payment_transaction_id`, amount, currency và financial version | Không được final-cancel; nhận/xử lý lane hậu thanh toán hoặc financial reconciliation. |
-| Create/cancel/provider outcome chưa xác định | `CANCEL_PENDING`/`503` | Replay/query cùng command ID; giữ Order ở trạng thái cancelling, không rollback như một thất bại đã xác nhận. |
+| `PENDING` đã bị provider cancel (`T5`), hoặc đã `FAILED`/`EXPIRED`/`CANCELED` trước đó | `CANCELED` hoặc `ALREADY_NON_CAPTURED` | Có thể hoàn tất cancel path và nhả resource. |
+| Provider đã capture/success (kể cả race với cancel: `PaymentIntent.cancel` trả `succeeded` → `T2`) | `ALREADY_SUCCEEDED` cùng `payment_transaction_id`, amount, currency và financial version | Không được final-cancel; nhận/xử lý lane hậu thanh toán hoặc financial reconciliation. |
+| Payment đang `PROCESSING` (Stripe không cho cancel intent đang processing), hoặc create/cancel outcome chưa xác định | `CANCEL_PENDING`/`503` | Replay/query cùng command ID; giữ Order ở trạng thái cancelling, không rollback như một thất bại đã xác nhận. |
+
+Cùng một cơ chế `ProviderOperation CANCEL` được Payment dùng nội bộ cho `T3`
+(decline non-retryable) và `T4` (hết phiên): mọi terminal non-capture đều là fact
+"intent đã canceled" ([ADR-014](./decisions/ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md)),
+nên Order có thể mở attempt kế tiếp ngay khi nhận `PAYMENT_FAILED`/`PAYMENT_EXPIRED`/
+`PAYMENT_CANCELED` mà không sợ intent cũ capture muộn.
 
 Payment phát `PAYMENT_CANCELED` hoặc `PAYMENT_SUCCESS` khi fact provider được chốt.
 Order không phát event cancellation cho Payment; command HTTP và financial fact là
@@ -116,9 +145,12 @@ Stripe call: `Refund.create` với `payment_intent=pi_xxx`, `amount`,
 `reason=REQUESTED_BY_CUSTOMER`, metadata `order_id`, `refund_request_id`.
 `refund.getId()` (`re_xxx`) lưu vào `provider_refund_id`.
 
-Response: `refund_txn_id`, `status=PROCESSING`. Stripe có thể trả `succeeded` ngay
-hoặc `pending` chờ issuing bank; kết quả cuối đến qua webhook `charge.refunded`
-hoặc Refund Status Poller.
+Response: `refund_transaction_id`, `payment_transaction_id`, `status=PROCESSING`.
+Stripe có thể trả `succeeded` ngay hoặc `pending` chờ issuing bank; Payment luôn trả
+`PROCESSING` (Accepted != Final). Kết quả cuối đến qua webhook `charge.refunded`
+(success) / `charge.refund.updated` `status=failed` (failed hoặc reversed), Refund
+Status Poller hoặc Reconciliation. `inventory_evidence` được Payment lưu nguyên vẹn
+làm bằng chứng `RULE-PAY-006`.
 
 ## 3. Event envelope, delivery và ordering
 
@@ -150,12 +182,12 @@ Ví dụ `PAYMENT_SUCCESS` (event quan trọng nhất của hệ thống thanh t
   "specversion": "1.0",
   "id": "123e4567-e89b-12d3-a456-426614174001",
   "type": "PAYMENT_SUCCESS",
-  "subject": "payments/TXN-ABC123",
+  "subject": "payments/TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC",
   "time": "2026-02-28T10:07:00Z",
   "source": "payment-service",
   "data": {
     "schema_version": 2,
-    "payment_transaction_id": "TXN-ABC123",
+    "payment_transaction_id": "TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC",
     "order_id": "10001",
     "amount": { "amount_minor": 995000, "currency": "VND" },
     "financial_state_version": 3,
@@ -173,19 +205,19 @@ chỉ giữ field Order cần để route workflow/commit FSM; Payment vẫn gi�
 | Event | Khi phát (FSM) | Payload | Consumer |
 |---|---|---|---|
 | `PAYMENT_INITIATED` | PaymentIntent đã được xác định, `INITIATING -> PENDING` | identity, `payment_attempt_number`, VND amount, `expires_at`, `financial_state_version`; **không có `client_secret`** | Analytics (funnel conversion) |
-| `PAYMENT_SUCCESS` | Webhook/reconciliation confirm, `PROCESSING/PENDING -> SUCCESS` (`T2`) | identity, VND amount, `occurred_at`, `financial_state_version` | **Order** — signal financial-recovery workflow, không chỉ workflow checkout còn mở |
+| `PAYMENT_SUCCESS` | Webhook/cancel-race/reconciliation confirm, `PENDING/PROCESSING -> SUCCESS` (`T2`) | identity, VND amount, `occurred_at`, `financial_state_version` | **Order** — signal financial-recovery workflow, không chỉ workflow checkout còn mở |
 | `PAYMENT_CANCELED` | Cancel command/webhook confirms non-capture (`T5`) | `payment_transaction_id`, `order_id`, `reason`, `canceled_at`, `financial_state_version` | **Order** — complete pre-capture cancellation only after matching transaction fact |
-| `PAYMENT_FAILED` | Webhook báo thất bại, `PROCESSING -> FAILED` (`T3`) | `payment_transaction_id`, `order_id`, `error_code` (ví dụ `INSUFFICIENT_BALANCE`), `failed_at` | Order — cancel + compensation |
-| `PAYMENT_EXPIRED` | Scanner `expires_at < NOW()`, `PENDING/PROCESSING -> EXPIRED` (`T4`) | `payment_transaction_id`, `order_id`, `expired_at` | Order — cancel |
+| `PAYMENT_FAILED` | Payment tự chấm dứt attempt sau decline non-retryable/quá ngưỡng **và** intent đã canceled, `PENDING -> FAILED` (`T3`). Decline retryable (`T3a`) **không** phát event | `payment_transaction_id`, `order_id`, `error_code` (decline code chuẩn hóa, ví dụ `STOLEN_CARD`, `DECLINE_LIMIT_EXCEEDED`), `failed_at`, `financial_state_version` | Order — terminal non-capture fact: cancel + compensation hoặc mở attempt kế tiếp |
+| `PAYMENT_EXPIRED` | Scanner `expires_at <= now()` **và** intent đã canceled, `PENDING -> EXPIRED` (`T4`) | `payment_transaction_id`, `order_id`, `expired_at`, `financial_state_version` | Order — cancel hoặc mở attempt kế tiếp |
 | `REFUND_INITIATED` | Order request refund, Refund `[*] -> PENDING` | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `refund_amount {amount_minor,currency:"VND"}`, `reason`, `stripe_reason` (`requested_by_customer`), `initiated_at` | Analytics |
 | `REFUND_PROCESSING` | Đã gọi Stripe thành công, Refund `PENDING -> PROCESSING`, Payment `SUCCESS -> REFUNDING` | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `processing_at`, `financial_state_version` | Order (đánh dấu tiến trình), Analytics |
 | `REFUND_SUCCESS` | Stripe xác nhận, Refund `PROCESSING -> SUCCESS`, Payment `REFUNDING -> REFUNDED` | identity, `refund_amount {amount_minor,currency:"VND"}`, `occurred_at`, `financial_state_version` | **Order** — `RETURN_REQUESTED -> REFUNDED`; không phát thêm Order event vì chưa có consumer |
-| `REFUND_FAILED` | Stripe từ chối, Refund `PROCESSING -> FAILED` | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `error_code`, `failed_at`, `financial_state_version` | Order (alert), SysAdmin Dashboard |
-| `REFUND_REVERSED` | Provider đảo chiều refund đã success/processing (optional, provider-dependent) | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `reason_code`, `reversed_at`, `financial_state_version` | Order (manual-review flow), SysAdmin, Accounting/Reconciliation |
+| `REFUND_FAILED` | Stripe reject sớm (`R4`) hoặc fail sau accept (`R3`), Payment `REFUNDING -> SUCCESS` (`T8`), mở review case | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `error_code`, `failed_at`, `financial_state_version` | Order (alert), SysAdmin Dashboard |
+| `REFUND_REVERSED` | Provider đảo chiều refund đã `SUCCESS`: Refund `SUCCESS -> REVERSED` (`R5`), Payment `REFUNDED -> SUCCESS` (`T9`), mở review case | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `reason_code`, `reversed_at`, `financial_state_version` | Order (manual-review flow), SysAdmin, Accounting/Reconciliation |
 
-`client_secret` là API-response-only, được mã hóa tại Payment và chỉ Order trả cho
-frontend qua authenticated checkout response; không được đưa vào outbox, Kafka, audit
-event hoặc log.
+`client_secret` là API-response-only (initiate và `client-data`), được mã hóa và lưu
+duy nhất tại Payment; Order relay cho frontend qua authenticated response mà không lưu;
+không được đưa vào outbox, Kafka, audit event, idempotency response hoặc log.
 
 ### 4.1. Các field đã chủ đích loại bỏ khỏi payload
 
@@ -226,10 +258,18 @@ bởi explicit refund request từ `OrderRefundWorkflow`
 
 | Stripe event | Xử lý |
 |---|---|
-| `payment_intent.succeeded` | `T2` → `SUCCESS`, phát `PAYMENT_SUCCESS` |
-| `payment_intent.payment_failed` | `T3` → `FAILED`, phát `PAYMENT_FAILED` |
-| `payment_intent.canceled` | `T5` → `CANCELED` |
-| `charge.refunded` | `R2` → refund `SUCCESS`, `T7` → `REFUNDED`, phát `REFUND_SUCCESS`; `status=failed` → reversal (`T9`, `REFUND_REVERSED`) |
+| `payment_intent.processing` | `T1` `PENDING -> PROCESSING`; không phát event |
+| `payment_intent.succeeded` | `T2` → `SUCCESS`, ghi `ch_xxx`, phát `PAYMENT_SUCCESS` |
+| `payment_intent.payment_failed` | Decline retryable: `T3a`, giữ `PENDING`, ghi `last_error_*`, `decline_count++`, **không** phát event. Non-retryable/quá ngưỡng: persist `ProviderOperation CANCEL(DECLINED_*)` → `PaymentIntent.cancel` → `T3` `FAILED` + `PAYMENT_FAILED` ([ADR-014](./decisions/ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md)) |
+| `payment_intent.canceled` | Terminal theo `CANCEL` operation đã ghi: `DECLINED_*` → `T3` `FAILED`; `SESSION_EXPIRED` → `T4` `EXPIRED`; `ORDER_COMMAND:*` hoặc không có operation → `T5` `CANCELED`. Thường là no-op idempotent vì response đồng bộ của `PaymentIntent.cancel` đã áp transition |
+| `charge.refunded` | `R2` → refund `SUCCESS`, `T7` → `REFUNDED`, phát `REFUND_SUCCESS` |
+| `charge.refund.updated` / `refund.failed` (`status=failed`) | Refund `PROCESSING` → `R3` + `T8`, phát `REFUND_FAILED`; refund `SUCCESS` → `R5` `REVERSED` + `T9`, phát `REFUND_REVERSED`; cả hai mở review case |
+| `charge.dispute.created` | Chưa có FSM; ghi `webhook_logs`, mở review case `DISPUTE_OPENED` (xem `data.md §7.1`) |
+| Event khác | `IGNORED` |
+
+Payment dùng `event.created` (`event_created_at`) cho state precedence khi webhook
+out-of-order; `succeeded` đến sau khi payment đã terminal non-capture → review case
+`CAPTURE_AFTER_CANCEL`, không ghi đè trạng thái bằng suy luận.
 
 Consumer group cho worker này chưa được đặt tên trong thiết kế cũ. Retry: lỗi tạm
 thời (lock DB, Stripe API timeout) requeue với exponential backoff; lỗi signature →
