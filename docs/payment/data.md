@@ -26,7 +26,7 @@ verified_against_commit: null
 | PostgreSQL `refund_transactions` | Refund duy nhất trọn đời của một order: trạng thái FSM, Inventory evidence, tham chiếu Stripe Refund | Payment Service |
 | PostgreSQL `webhook_logs` | Raw webhook Stripe nguyên byte, chữ ký, kết quả verify/xử lý | Payment Service |
 | PostgreSQL `payment_status_history` | Audit trail mọi transition của hai FSM kèm nguyên nhân | Payment Service |
-| PostgreSQL `outbox_events` | Integration event v2 chờ Debezium quan sát | Payment Service |
+| PostgreSQL `outbox_events` | Full CloudEvents structured JSON v2 chờ Debezium quan sát | Payment Service |
 | PostgreSQL `payment_idempotency` | Fingerprint + response của command idempotent (`INITIATE`/`CANCEL`/`REFUND`) | Payment Service |
 | PostgreSQL `payment_review_cases` | Case cần xử lý thủ công (refund failed/reversed, capture-after-cancel, drift, dispute) | Payment Service |
 | PostgreSQL `reconciliation_runs` | Metadata từng lần chạy Reconciliation Worker, cờ freeze auto-correction | Payment Service |
@@ -410,7 +410,7 @@ CREATE TABLE outbox_events (
     event_id        UUID         PRIMARY KEY,
     aggregate_type  VARCHAR(50)  NOT NULL DEFAULT 'Payment',
     aggregate_id    VARCHAR(64)  NOT NULL,
-    event_type      VARCHAR(50)  NOT NULL,
+    event_type      VARCHAR(100) NOT NULL,
     partition_key   VARCHAR(64)  NOT NULL,
     schema_version  INT          NOT NULL DEFAULT 2,
     headers         JSONB        NOT NULL,
@@ -423,9 +423,10 @@ CREATE TABLE outbox_events (
 |---|---|
 | `aggregate_type` | Cố định `Payment` cho cả `PAYMENT_*` và `REFUND_*`; Debezium route theo cột này |
 | `aggregate_id` | `payment_transactions.id` cho `PAYMENT_*`, `refund_transactions.id` cho `REFUND_*` |
+| `event_type` | Exact namespaced CloudEvents type, ví dụ `com.ecommerce.payment.transaction.succeeded.v2`; business alias viết hoa chỉ dùng trong domain/FSM |
 | `partition_key` | Canonical `order_id` ([ADR-007](./decisions/ADR-007-order-id-partition-key.md)) |
-| `headers` | CloudEvents attributes (`id`, `type`, `source`, `subject`, `time`) + `correlation_id`/`traceparent`; Debezium outbox SMT map vào Kafka headers |
-| `payload` | `data` theo envelope `interfaces.md §3`; **không** chứa `client_secret` |
+| `headers` | Metadata mirror phục vụ observability (`event_id`, `event_type`, `correlationid`, `traceparent`) khi có. Không phải authority; consumer không được cần header để parse event |
+| `payload` | **Toàn bộ CloudEvents structured JSON envelope** theo AsyncAPI, không chỉ `data`; Debezium chuyển value nguyên vẹn. Cấm `client_secret`, Stripe object ID, payment-method data, `user_id`, raw provider payload ([ADR-015](./decisions/ADR-015-canonical-asyncapi-and-structured-cloudevents.md)) |
 
 Transactional outbox theo CDC ([ADR-005](./decisions/ADR-005-transactional-outbox-cdc.md)):
 append-only, **cấm** cột polling-style (`published`, `retry_count`, …). Tên
@@ -613,7 +614,8 @@ không sở hữu transition, không thay unique constraint. Read API và Reconc
 không phụ thuộc Redis.
 
 Outbox: append-only, Debezium đọc WAL, route `aggregate_type=Payment` →
-`t.payment.events.v2`, key `partition_key`. Retention ở §7.
+`t.payment.events.v2`, key `partition_key`, value nguyên `payload` full structured
+CloudEvent. Retention ở §7.
 
 ## 7. Vòng đời dữ liệu và retention
 

@@ -15,7 +15,9 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; thay thế Outbox Polling Worker (legacy, đã deprecated).
+`Accepted` trong thiết kế; thay thế Outbox Polling Worker (legacy, đã deprecated) và
+được [ADR-015](./ADR-015-canonical-asyncapi-and-structured-cloudevents.md) refine về
+wire representation.
 Thiết kế cũ ghi Payment "đang trong quá trình migrate từ Polling Pattern sang CDC"
 nhưng không có evidence. Ngày quyết định gốc không được ghi lại.
 
@@ -34,12 +36,13 @@ worker riêng để relay, retry, DLQ.
 - `outbox_events` là append-only theo canonical CDC Pattern: `event_id` UUID PK,
   `schema_version`, `aggregate_type` (cố định `Payment`), `aggregate_id`
   (`payment_transactions.id` cho PAYMENT_*, `refund_transactions.id` cho
-  REFUND_*), `event_type`, `partition_key` (`order_id`), `payload` JSONB,
+  REFUND_*), exact namespaced `event_type`, `partition_key` (`order_id`), `payload`
+  JSONB chứa full structured CloudEvent,
   `created_at`. **Cấm cột polling-style** — retry/DLQ/backoff chuyển sang Kafka
   Connect runtime.
 - Debezium đọc WAL, route `aggregate_type=Payment` → topic `t.payment.events.v2` với
   `partition_key = order_id`.
-- Delivery at-least-once; consumer dedup theo `event_id`.
+- Delivery at-least-once; consumer dedup theo CloudEvents `(source,id)`.
 
 ## Phương án đã cân nhắc
 
@@ -66,5 +69,6 @@ tắt Outbox Polling Worker; thống nhất tên bảng (`outbox_events` vs
 ## Xác minh
 
 Cần migration `outbox_events` không có cột mutable, connector config route theo
-`aggregate_type`/`partition_key`, test at-least-once và connector restart, metric
+`aggregate_type`/`partition_key` và chuyển nguyên `payload` thành Kafka value, test
+at-least-once và connector restart, metric
 outbox publish success rate và latency (SLO gợi ý 99.9% < 60s).

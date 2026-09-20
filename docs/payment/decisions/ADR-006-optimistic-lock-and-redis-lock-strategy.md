@@ -46,7 +46,8 @@ Chiến lược kết hợp:
 - **Redis degradation/fallback:** API read/reconciliation không bị ảnh hưởng;
   Idempotency API (initiate/refund) fallback xuống insert + check unique constraint
   ở DB (`payment_idempotency`, `refund_transactions`); worker không lấy được lock
-  thì **reject operation và đẩy vào retry cycle/DLQ** để bảo vệ tính toàn vẹn
+  thì **reject operation và đẩy vào Kafka retry cycle**; khi đã có durable
+  `webhook_logs`, exhaustion mở review case để bảo vệ tính toàn vẹn
   thay vì ignore lock.
 
 > **Ghi chú 2026-09-19:** quyết định (optimistic lock mặc định, Redis lock chỉ giảm
@@ -70,7 +71,7 @@ Chiến lược kết hợp:
 Tích cực: correctness không phụ thuộc Redis; chi phí thấp cho transition thường;
 side effect Stripe được bảo vệ. Tiêu cực: hai cơ chế cần hiểu đúng; lock TTL phải
 lớn hơn Stripe latency; conflict optimistic lock cần requeue/retry ở consumer;
-Redis sập làm worker chậm (retry/DLQ) chứ không sai.
+Redis sập làm worker chậm (Kafka redelivery hoặc DB-backed retry/review) chứ không sai.
 
 ## Ảnh hưởng migration
 

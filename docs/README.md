@@ -95,9 +95,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [payment/workflows.md](./payment/workflows.md) | Mười hai workflow: initiate, webhook, query/client-data, refund, expiration, reconciliation, poller, recovery, DLQ replay, review/correction, cancel và decline termination. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
 | [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
-| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 14 ADR về runtime, Stripe, webhook/outbox, concurrency, event ordering, refund, retention, recovery, secret handling và decline policy. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 15 ADR, gồm canonical AsyncAPI/structured CloudEvents, runtime, Stripe, webhook/outbox, concurrency, ordering, refund, retention, recovery và secret handling. |
 | [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
-| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Financial facts CloudEvents v2 không mang client secret; target/proposed. |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
+| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Raw Stripe webhook buffer nội bộ, raw body base64 và DB-backed retry; target/proposed. |
 
 ---
 
@@ -178,8 +179,8 @@ Service Contract Matrix legacy đã bị xóa.
 | Producer | Topic | Consumer |
 |---|---|---|
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
-| Payment | `t.payment.events.v2` (financial facts v2, không mang client secret) | Order |
-| Payment | `t.payment.webhooks.raw` (internal) | Payment |
+| Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
+| Payment | `t.payment.webhooks.raw` (internal, raw body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes reservation/physical-dispatch/selected-scope inspection completion; Search consumes per-SKU availability |
 | Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |

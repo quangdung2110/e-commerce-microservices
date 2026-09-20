@@ -136,7 +136,7 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Worker/job | Trigger/input | Concurrency/idempotency | Timeout/retry/output |
 |---|---|---|---|
 | Outbox CDC pipeline | WAL row `outbox_events` | Partition theo order; connector offset | Kafka Connect retry/DLQ/backoff; `t.order.events` |
-| Payment consumer | `t.payment.events.v2` | Durable inbox + mapped attempt/amount/currency/per-transaction financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
+| Payment consumer | `t.payment.events.v2` | Exact namespaced type + full CloudEvent/dataschema validation; durable inbox `(source,id)` + mapped attempt/amount/currency/per-transaction financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
 | Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + aggregate revision + line/warehouse guard | `DISPATCHED` line fact only; no completion |
 | Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | CAS line `DISPATCHED -> DELIVERED`; complete master only after all line proofs |
 | Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence then signal refund workflow |

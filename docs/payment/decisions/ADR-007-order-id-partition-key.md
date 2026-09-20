@@ -15,8 +15,9 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; chưa xác minh implementation. Ngày quyết định gốc không
-được ghi lại.
+`Accepted` trong thiết kế; field path và structured wire representation được
+[ADR-015](./ADR-015-canonical-asyncapi-and-structured-cloudevents.md) refine; chưa
+xác minh implementation. Ngày quyết định gốc không được ghi lại.
 
 ## Bối cảnh
 
@@ -32,10 +33,11 @@ khác nhau.
 - Topic `t.payment.events.v2` partition theo **`order_id`** thay vì `transaction_id`;
   `outbox_events.partition_key = order_id` để mọi event payment + refund của cùng
   đơn vào cùng partition → strict ordering cho Order consumer.
-- Envelope giữ `aggregate_type = Payment` (kể cả REFUND_*), `aggregate_id` là
+- Metadata của outbox row giữ `aggregate_type = Payment` (kể cả REFUND_*),
+  `aggregate_id` là
   transaction-level (`payment_transaction_id` cho PAYMENT_*,
   `refund_transaction_id` cho REFUND_*), `business_id = order_id`.
-- **Routing contract:** Order Service route workflow theo `payload.order_id`,
+- **Routing contract:** Order Service route workflow theo `data.order_id`,
   **không** route theo `aggregate_id`.
 - `correlation_id` là Temporal Workflow ID (ví dụ `wf-10001`) để truy vết E2E.
 - Bất biến này được giữ kể cả khi tách Refund Service
@@ -52,15 +54,15 @@ khác nhau.
 
 Tích cực: Order consumer nhận đúng thứ tự cho từng đơn; đơn giản hóa guard phía
 consumer. Tiêu cực: `aggregate_id` và routing key khác nhau, consumer phải đọc
-`payload.order_id`; `aggregate_type` không phân biệt Payment/Refund nên
+`data.order_id`; `aggregate_type` không phân biệt Payment/Refund nên
 `event_type` là thứ phân biệt.
 
 ## Ảnh hưởng migration
 
 `outbox_events.partition_key` NOT NULL = `order_id`; Debezium connector dùng
-`partition_key` làm Kafka key; Order consumer route theo payload.
+`partition_key` làm Kafka key; Order consumer route theo `data.order_id`.
 
 ## Xác minh
 
 Cần connector config, test nhiều event cùng order vào cùng partition và đúng thứ
-tự, test Order consumer route theo `payload.order_id`.
+tự, test Order consumer route theo `data.order_id`.

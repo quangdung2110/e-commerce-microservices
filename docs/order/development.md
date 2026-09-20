@@ -78,7 +78,10 @@ SKU list, nullable completed-item variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
 Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
-from `REFUNDED`. Refund amount/multiplicity is fixed by ADR-010, not deferred.
+from `REFUNDED`. Payment fixtures phải dùng full structured CloudEvents, exact
+namespaced `type`, canonical `source`, matching `dataschema` và Kafka key
+`data.order_id`; unknown/legacy type phải được ACK/ignore theo policy, không dispatch
+bằng alias uppercase. Refund amount/multiplicity is fixed by ADR-010, not deferred.
 
 ### End-to-end/failure injection
 

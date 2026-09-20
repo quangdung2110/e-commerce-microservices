@@ -12,7 +12,7 @@ Notification Service là một microservice trung tâm chịu trách nhiệm qu�
 ### 2.2 Kafka Topics & Priority Routing
 Để đảm bảo thông báo quan trọng (OTP) không bị nghẽn bởi các thông báo marketing, hệ thống sử dụng nhiều Topic riêng biệt:
 - `notification.high-priority.events`: Chứa OTP, cảnh báo bảo mật, đăng nhập thiết bị mới (SLA < 5s).
-- `notification.low-priority.events`: Chứa cập nhật đơn hàng, thanh toán, khuyến mãi, tin báo từ system (SLA < 30s hoặc vài phút).
+- `notification.low-priority.events`: Hàng đợi delivery nội bộ cho thông báo in-app/review/system đã có request contract (SLA < 30s hoặc vài phút); không phải alias của topic Order, Payment hay Promotion.
 
 ### 2.2.1 Event Subscription Map (Bản đồ Subscription)
 
@@ -24,7 +24,6 @@ Notification Service subscribe các topic sau để nhận events từ các serv
 | `t.auth.events` | `notification-privacy-sync` | `USER_DELETED` | Low | GDPR cleanup projection |
 | `t.user.events` | `notification-user-preferences-sync` | `USER_PREFERENCES_UPDATED` | Low | Sync ba notification preference |
 | `t.review.events` | `notification-review-sync` | `REVIEW_REPLY_NOTIFICATION_REQUESTED`, `REVIEW_REMOVAL_NOTIFICATION_REQUESTED` | Low | In-app notification về phản hồi chính thức hoặc review bị gỡ |
-| `t.payment.events` | `notification-payment-sync` | `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `REFUND_PROCESSED` | High | Thông báo thanh toán |
 
 Không có consumer group cho Promotion: Promotion Events v1
 (`contracts/events/promotion/v1/asyncapi.yaml`) chỉ phát markdown snapshot cho Product và
@@ -37,6 +36,14 @@ chỉ đăng ký Cart cho `com.ecommerce.order.paid.v1` và Review cho
 `com.ecommerce.order.completed.v1`; không có event notification request. Khi cần
 thông báo vòng đời đơn hàng, Order và Notification phải bổ sung contract có payload
 đủ để render trước khi cấp Kafka ACL hoặc triển khai consumer.
+
+Không có consumer group cho Payment. [Payment Events v2](../../contracts/events/payment/v2/asyncapi.yaml)
+chỉ phát financial facts cho Order và Analytics; payload cố ý không mang `user_id`,
+email, channel, locale hoặc retry URL nên Notification không thể định tuyến hay render
+an toàn. Khi cần thông báo thanh toán, Payment (hoặc service sở hữu trải nghiệm khách
+hàng) phải bổ sung một notification-request contract riêng có recipient và dữ liệu
+render tối thiểu trước khi cấp Kafka ACL. Không subscribe topic legacy
+`t.payment.events` và không suy diễn recipient bằng cách gọi ngược service khác.
 
 **Lưu ý về GDPR Cleanup:** Khi nhận `USER_DELETED` trực tiếp từ Auth,
 Notification Service anonymize/xóa projection do chính nó sở hữu theo `user_id`

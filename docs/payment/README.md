@@ -8,6 +8,7 @@ owners:
 evidence:
   - contracts/http/payment/v1/openapi.yaml
   - contracts/events/payment/v2/asyncapi.yaml
+  - contracts/events/payment/internal/v1/asyncapi.yaml
   - contracts/catalog/interactions.yaml
 verified_against_commit: null
 ---
@@ -15,7 +16,8 @@ verified_against_commit: null
 # Payment Service — Tổng quan dịch vụ
 
 > Điểm bắt đầu để hiểu thiết kế mục tiêu của Payment Service. Bộ tài liệu được
-> viết lại 2026-09-19 theo bốn quyết định mới (ADR-011 → ADR-014) và không còn giữ
+> viết lại 2026-09-19 theo ADR-011 → ADR-014, đồng bộ wire contract bằng ADR-015
+> ngày 2026-09-20, và không còn giữ
 > "thiết kế cũ" như nguồn tham chiếu; mọi hành vi mô tả là **target**, chưa có
 > implementation để xác minh. Đọc theo thứ tự ở §9 nếu bạn mới tiếp cận.
 
@@ -23,9 +25,9 @@ verified_against_commit: null
 
 | Khía cạnh | Trạng thái |
 |---|---|
-| Thiết kế | `proposed`, scope `target`; 8 tài liệu + 14 ADR đồng bộ với nhau và với Order/Checkout/mesh/gateway |
+| Thiết kế | `proposed`, scope `target`; 8 tài liệu + 15 ADR đồng bộ với nhau và với Order/Checkout/mesh/gateway |
 | Implementation | **Chưa có** mã nguồn, migration, connector, deployment trong repository (`java/services/` chưa có `payment-service`) |
-| Contract | [HTTP v1](../../contracts/http/payment/v1/openapi.yaml) và [events v2](../../contracts/events/payment/v2/asyncapi.yaml) là contract target; `x-adoption-status: proposed`; chưa có provider/consumer test |
+| Contract | [HTTP v1](../../contracts/http/payment/v1/openapi.yaml), [financial events v2](../../contracts/events/payment/v2/asyncapi.yaml) và [internal webhook v1](../../contracts/events/payment/internal/v1/asyncapi.yaml) là contract target; `x-adoption-status: proposed`; chưa có provider/consumer test |
 | Runtime đã chốt | Java 21, Spring Boot 3.x, Maven, PostgreSQL, Redis, Kafka, Debezium/Kafka Connect, `stripe-java` ([ADR-001](./decisions/ADR-001-java-spring-boot-runtime.md), [ADR-003](./decisions/ADR-003-stripe-single-provider-direct-sdk.md)) |
 | Provider | Stripe duy nhất, test mode cho toàn bộ dev/demo; Stripe **live** chưa hỗ trợ merchant đăng ký tại Việt Nam (`development.md §6`) |
 | Gate lên `implemented` | Code + migration + Debezium connector + contract test + Stripe sandbox webhook chạy end-to-end trong CI |
@@ -61,9 +63,11 @@ quyết; (4) độ trễ.
 - Nhận webhook tại một route public duy nhất, xử lý async qua Kafka, idempotent
   theo `stripe_event_id`, precedence theo `event.created`.
 - Chạy worker: Expiration Scanner, Provider-operation Recovery, Refund Status Poller,
-  Reconciliation, Webhook Auto-Retry, DLQ Replay, Retention Trimmer; duy trì hàng
+  Reconciliation, Webhook Auto-Retry, Manual Webhook Replay, Retention Trimmer; duy trì hàng
   chờ review case có audit cho CSKH/Kế toán.
-- Phát 10 financial fact `PAYMENT_*`/`REFUND_*` qua outbox CDC lên `t.payment.events.v2`.
+- Phát 10 financial fact `PAYMENT_*`/`REFUND_*` qua outbox CDC lên `t.payment.events.v2`;
+  wire type dùng namespace `com.ecommerce.payment.*.v2`, Kafka value là full
+  CloudEvents structured JSON ([ADR-015](./decisions/ADR-015-canonical-asyncapi-and-structured-cloudevents.md)).
 
 **Payment không chịu trách nhiệm:**
 
@@ -139,7 +143,7 @@ Service khác không ghi DB Payment; Payment không đọc DB service khác.
 | Inbound | Stripe | HTTPS webhook qua Gateway `stripe-webhook` | Public `POST /api/payments/webhook/stripe` rewrite sang service `POST /v1/payments/webhook/stripe` — route public duy nhất | [HTTP v1](../../contracts/http/payment/v1/openapi.yaml) ingress + Stripe event schema, API version pin |
 | Outbound | Stripe | HTTPS `stripe-java`, egress `ServiceEntry` | PaymentIntent, Refund, verify webhook | `interfaces.md §5` |
 | Outbound | Order, Analytics | Kafka `t.payment.events.v2` | 10 financial fact | [events v2](../../contracts/events/payment/v2/asyncapi.yaml); `payment-publishes-payment-events` |
-| Internal | Kafka `t.payment.webhooks.raw` | Kafka | Buffer raw webhook | 6 partition, retention 7 ngày |
+| Internal | Kafka `t.payment.webhooks.raw` | Kafka | Buffer raw webhook exact bytes dạng base64 | [internal webhook v1](../../contracts/events/payment/internal/v1/asyncapi.yaml); 6 partition, retention 7 ngày |
 | Internal | PostgreSQL | SQL | 9 bảng source of truth | `data.md` |
 | Internal | Redis | Lettuce/Redisson | Replay pointer, lock | `data.md §6`; có fallback DB |
 | Internal | Debezium/Kafka Connect | WAL CDC | Outbox → Kafka | [ADR-005](./decisions/ADR-005-transactional-outbox-cdc.md) |
@@ -177,7 +181,7 @@ Thứ tự đọc gợi ý cho người mới: README → `domain.md` → `workf
 | [Kiến trúc](./architecture.md) | Ranh giới tin cậy, hexagonal, ba pipeline, pattern hai transaction, bốn lớp guard, 12 ràng buộc kiểm tra được | Khi thay đổi cấu trúc/dependency |
 | [Vận hành](./operations.md) | SLI/SLO, property `payment.*`, metric `payment_*`, alert, failure mode, deploy/rotation/rollback, 13 runbook | Khi deploy hoặc xử lý sự cố |
 | [Phát triển](./development.md) | Build/run/test local, chiến lược test theo tầng Stripe, migration Flyway, fixture, DoD | Khi bắt đầu implementation |
-| [Quyết định](./decisions/README.md) | 14 ADR; ADR-009 superseded bởi ADR-013 | Khi đánh giá trade-off |
+| [Quyết định](./decisions/README.md) | 15 ADR; ADR-009 superseded bởi ADR-013; ADR-015 chốt AsyncAPI/CloudEvents wire contract | Khi đánh giá trade-off |
 
 Tài liệu liên quan ngoài thư mục: `docs/order/data.md §3.5` (attempt mapping, không
 lưu client data), `docs/order/interfaces.md §6.1` (consumer event), `docs/mesh/runtime-contract.md`

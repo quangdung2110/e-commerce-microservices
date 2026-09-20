@@ -92,7 +92,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | **Product Service** | Catalog management, state machine, caching |
 | **Order Service** | Temporal Saga, CQRS + Elasticsearch, cold data archiving |
 | **Checkout Service** | Idempotency, security analysis, caching |
-| **Payment Service** | State machine, refund boundary, multi-provider |
+| **Payment Service** | Stripe direct, payment/refund state machine, Outbox CDC và financial facts AsyncAPI v2 |
 | **Inventory Service** | Smart routing engine, Redis reservation, SLO observability |
 | **Search Service** | Elasticsearch schema, Vietnamese full-text search |
 | **Review Service** | Rating aggregation, moderation workflow |

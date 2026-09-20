@@ -15,8 +15,9 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; chưa xác minh implementation. Ngày quyết định gốc không
-được ghi lại.
+`Accepted` trong thiết kế, wire representation và retry boundary được
+[ADR-015](./ADR-015-canonical-asyncapi-and-structured-cloudevents.md) refine; chưa
+xác minh implementation. Ngày quyết định gốc không được ghi lại.
 
 ## Bối cảnh
 
@@ -30,21 +31,22 @@ mất vĩnh viễn. Webhook có thể duplicate, delay, out-of-order.
 Endpoint `POST /v1/payments/webhook/stripe` **không xử lý business logic**: nhận raw
 body + headers, trả `200 OK` trong < 500ms sau Kafka ack, dump raw webhook vào topic
 nội bộ `t.payment.webhooks.raw`. Key là `STRIPE:<candidate_event_id>` khi best-effort
-extraction thành công, nếu không là `RAW:<sha256(raw_body)>`; value gồm `provider`,
-`candidate_event_id?`, `raw_body`, `stripe_signature`, `received_at`. Candidate chưa
-được tin cậy và chỉ trở thành `stripe_event_id` sau khi worker verify/parse thành công.
+extraction thành công, nếu không là `RAW:<sha256(raw_body)>`; value là full structured
+CloudEvent `com.ecommerce.payment.stripe-webhook.received.v1`, trong đó exact raw bytes
+được encode ở `data.raw_body_base64` cùng `raw_body_sha256`, `stripe_signature` và
+`candidate_event_id?`. Candidate chưa được tin cậy và chỉ trở thành
+`stripe_event_id` sau khi worker decode, verify rồi parse thành công.
 
-Webhook Processor Worker consume bất đồng bộ: verify `Stripe-Signature`
-(HMAC-SHA256, cửa sổ 300s) → map Stripe event → FSM transition → dedup bằng
-`INSERT INTO webhook_logs ... ON CONFLICT (provider, provider_transaction_id,
-event_type) DO NOTHING` + check `stripe_event_id` → update DB (optimistic lock
+Webhook Processor Worker thuộc group `payment-webhook-processor` consume bất đồng bộ:
+decode base64 về exact bytes → verify `Stripe-Signature` (HMAC-SHA256, cửa sổ 300s)
+→ parse/map Stripe event → FSM transition → dedup bằng verified `stripe_event_id`
+trong `webhook_logs` → update DB (optimistic lock
 `version`) + insert outbox trong một ACID transaction.
 
 Quy tắc bắt buộc: endpoint trả 2xx nhanh; worker an toàn với duplicate/out-of-order
-nhờ idempotency và DB unique constraint; lỗi tạm thời (lock DB, Stripe API
-timeout) retry theo consumer/requeue có exponential backoff. Webhook
-`FAILED_SIGNATURE`/`UNPROCESSED` được Auto-Retry Worker đẩy lại Kafka có backoff;
-DLQ có Replay Worker thủ công.
+nhờ idempotency và DB unique constraint. Trước DB commit, lỗi tạm thời retry bằng
+Kafka redelivery có backoff; sau khi đã có `webhook_logs`, Auto-Retry Worker và review
+case là retry/dead-letter authority. V1 không có Kafka DLQ riêng.
 
 ## Phương án đã cân nhắc
 
@@ -65,8 +67,8 @@ phần nào).
 
 ## Ảnh hưởng migration
 
-Cần topic `t.payment.webhooks.raw`, consumer group cho worker (chưa đặt tên), bảng
-`webhook_logs` với unique constraint, Auto-Retry và Replay worker.
+Cần topic `t.payment.webhooks.raw`, consumer group `payment-webhook-processor`, bảng
+`webhook_logs` với unique `stripe_event_id`, Auto-Retry Worker và review tooling.
 
 ## Xác minh
 

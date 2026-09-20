@@ -253,8 +253,9 @@ stored-response replay/payload mismatch và từng post-capture forward-repair o
 **Mục tiêu:** route payment/refund event đúng workflow; không drop khoản thanh toán
 thành công đến sau checkout timeout.
 
-**Trigger:** `order-payment-consumer` nhận `t.payment.events.v2`. Before signaling it
-validates CloudEvents/data schema v2, event ID, `order_id`, a persisted
+**Trigger:** `order-payment-consumer` nhận `t.payment.events.v2`, dispatch theo exact
+namespaced CloudEvents `type` trong Payment AsyncAPI v2. Before signaling it validates
+full structured CloudEvent, `dataschema`, `(source,id)`, `order_id`, a persisted
 `payment_attempt_number`/transaction mapping, VND amount, currency and monotonic
 `financial_state_version` **per transaction**; then inserts a durable inbox
 record in the same local transaction as any financial-routing state. Redis is only an

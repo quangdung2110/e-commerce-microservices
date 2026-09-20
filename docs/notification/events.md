@@ -82,26 +82,17 @@ Notification không consume `t.order.events`. Order Events v1 chỉ phát
 Review; không event nào trong hai event này là notification request. Ví dụ
 `ORDER_CREATED` legacy đã bị loại vì không có producer contract.
 
-### 2.2 Payment Failed (Từ Payment Service)
-Cảnh báo user nạp tiền/thanh toán gặp sự cố, kèm link thử lại.
+### 2.2 Payment notifications
 
-```json
-{
-  "specversion": "1.0",
-  "id": "pay-event-77382",
-  "source": "/payment-service/transactions",
-  "type": "PAYMENT_FAILED",
-  "time": "2026-04-27T14:32:00Z",
-  "datacontenttype": "application/json",
-  "data": {
-    "order_id": "ORD-20260427-001",
-    "user_id": "550e8400-e29b-41d4-a716-446655440000",
-    "amount_failed": 1500000.00,
-    "reason": "INSUFFICIENT_FUNDS",
-    "retry_url": "https://ecommerce.com/checkout/retry/ORD-20260427-001"
-  }
-}
-```
+Chưa có notification input contract. Notification **không** subscribe
+`t.payment.events.v2`: [Payment Events v2](../../contracts/events/payment/v2/asyncapi.yaml)
+là financial fact contract dành cho Order và Analytics, không có recipient, channel,
+locale hoặc retry URL. Event `PAYMENT_FAILED` legacy và payload từng chứa `user_id`,
+`amount_failed`, `reason`, `retry_url` không có producer contract và không được dùng.
+
+Nếu cần thông báo thanh toán, phải thiết kế notification-request event riêng, đăng ký
+Notification là consumer và định nghĩa rõ recipient cùng dữ liệu render tối thiểu; không
+làm giàu bằng synchronous callback sang Payment hoặc Order trên consumer path.
 
 ### 2.3 Promotion / Marketing (Từ Promotion Service)
 
@@ -154,7 +145,8 @@ Thông báo khi có tin nhắn mới trong chat, dùng để gửi push/in-app n
 
 ## 4. Worker Processing Strategy
 Dựa vào data từ event, Worker sẽ thực thi:
-1. Lookup Template theo `type` đã đăng ký (ví dụ `PAYMENT_FAILED`).
+1. Lookup Template theo `type` đã đăng ký (ví dụ
+   `com.ecommerce.review.reply-notification-requested.v1`).
 2. Regex replace hoặc sử dụng Handlebars (hoặc Jinja2) để thay thế data từ object `data` vào chuỗi Template.
 Ví dụ Template Email: `"Xin chào {{customer_name}}, cảm ơn bạn đã đặt đơn hàng {{order_id}}!"`
 3. Gửi thông qua các channel theo cấu hình Preference của user_id.

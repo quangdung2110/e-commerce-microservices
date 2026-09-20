@@ -15,7 +15,10 @@ verified_against_commit: null
 # Payment Service — Giao diện tích hợp
 
 > Contract chuẩn trên wire là [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml)
-> và [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml). File này
+> và [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml). Topic
+> webhook nội bộ có contract riêng tại
+> [Payment internal webhook v1](../../contracts/events/payment/internal/v1/asyncapi.yaml).
+> File này
 > giải thích **semantics** (idempotency, lỗi, nghĩa vụ consumer, ví dụ); khi lệch,
 > contract file thắng và file này phải sửa theo. Ví dụ JSON minh họa, không phải
 > fixture test.
@@ -27,14 +30,14 @@ verified_against_commit: null
 | `order-initiates-payment` | Inbound | HTTP/JSON | Payment ← Order (Temporal Activities) | Mesh mTLS, principal `ecommerce/order-service`; timeout 15s, mesh **không retry** | OpenAPI v1: initiate, cancel, refund, `GET` payment/client-data/refund |
 | `stripe-delivers-payment-webhook` | Inbound | HTTPS | Payment ← Gateway ← Stripe | Gateway `stripe-webhook` (bypass JWT, raw body, rate limit); `Stripe-Signature` verify ở worker | OpenAPI v1 ingress + Stripe event schema (API version pin) |
 | `payment-publishes-payment-events` | Outbound | Kafka `t.payment.events.v2` | Payment → Order, Analytics | Outbox CDC, at-least-once, key `order_id` | AsyncAPI v2 |
-| `t.payment.webhooks.raw` | Internal | Kafka | Payment → Payment Webhook Processor | Nội bộ, retention 7 ngày | Không public |
+| `t.payment.webhooks.raw` | Internal | Kafka | `payment-api` → `payment-worker` | Nội bộ, confidential, retention 7 ngày | Internal AsyncAPI v1 |
 | Stripe API | Outbound | HTTPS (`stripe-java`) | Stripe ← Payment | Secret key, egress `ServiceEntry`, idempotency key per operation | Stripe API (pin version) |
 
 Payment **không** có route cho buyer/CSKH; mọi read đi qua Order. Payment không
 consume topic nào của service khác ([ADR-010](./decisions/ADR-010-refund-only-by-explicit-order-command.md)).
 
 OpenAPI v1 bao phủ đúng 7 operation: 6 operation nội bộ cho Order và một service
-webhook cho Stripe. Actuator, `/internal/health/deps`, endpoint quản trị, DLQ replay,
+webhook cho Stripe. Actuator, `/internal/health/deps`, endpoint quản trị, webhook-log replay,
 review-case và correction là bề mặt vận hành riêng, **không** thuộc OpenAPI này.
 
 ## 2. HTTP API v1
@@ -245,7 +248,7 @@ nhất path sang service URL ở tiêu đề, không parse/serialize body và kh
 | Xử lý | Endpoint không deserialize/validate business payload; chỉ giữ raw bytes và có thể best-effort đọc candidate event ID để chọn partition. Verify + parse chính thức ở Webhook Processor (`Webhook.constructEvent`, cửa sổ 300s) |
 | Duplicate | Dedup theo `stripe_event_id` sau verify; duplicate → `200`, không transition |
 | Out-of-order | State precedence theo `event.created`; không override terminal |
-| Kafka | Key `STRIPE:<candidate_event_id>` nếu best-effort extraction thành công, nếu không dùng `RAW:<sha256(raw_body)>`; candidate/value chưa được tin cậy. Value `{provider, candidate_event_id?, raw_body, stripe_signature, received_at}`; worker chỉ gán verified `stripe_event_id` sau `constructEvent` |
+| Kafka | Key `STRIPE:<candidate_event_id>` nếu best-effort extraction thành công, nếu không dùng `RAW:<sha256(raw_body)>`; candidate/value chưa được tin cậy. Value là structured CloudEvent theo internal AsyncAPI, exact body bytes ở `data.raw_body_base64`; worker chỉ gán verified `stripe_event_id` sau decode + `constructEvent` |
 
 Mapping từng event → transition ở §4.
 
@@ -253,19 +256,25 @@ Mapping từng event → transition ở §4.
 
 ### 3.1. Envelope và delivery
 
-CloudEvents 1.0 JSON (`application/cloudevents+json`), outbox → Debezium → Kafka,
-at-least-once, key = `order_id` ([ADR-007](./decisions/ADR-007-order-id-partition-key.md)).
+CloudEvents 1.0 structured JSON (`application/cloudevents+json`), outbox → Debezium
+→ Kafka, at-least-once, key bằng chính xác `data.order_id`
+([ADR-007](./decisions/ADR-007-order-id-partition-key.md),
+[ADR-015](./decisions/ADR-015-canonical-asyncapi-and-structured-cloudevents.md)).
+Kafka value canonical là **toàn bộ envelope**; Kafka headers chỉ được mirror cho
+observability và không phải authority của contract.
 
 | Field | Giá trị |
 |---|---|
 | `specversion` | `"1.0"` |
-| `id` | UUID = `outbox_events.event_id`; consumer dedup theo đây |
-| `source` | `payment-service` |
-| `type` | một trong 10 type ở §3.2 |
+| `id` | UUID = `outbox_events.event_id`; consumer dedup theo `(source,id)` |
+| `source` | `/services/payment` |
+| `type` | Exact namespaced type `.v2` ở §3.2; tên viết hoa chỉ là business alias |
 | `subject` | `payments/{payment_transaction_id}` |
 | `time` | thời điểm commit transition |
 | `datacontenttype` | `application/json` |
-| Kafka headers | `ce_id`, `ce_type`, `correlation_id`, `traceparent` (từ `outbox_events.headers`) |
+| `dataschema` | URI schema riêng của đúng event trong `contracts/events/payment/v2/schemas/` |
+| Extension | `correlationid`, `traceparent` ở top-level khi biết; không bắt buộc với fact bắt nguồn từ webhook/scheduler |
+| Kafka headers | Có thể mirror ID/type/correlation/trace, nhưng consumer không được phụ thuộc |
 
 `data` chung: `schema_version=2`, `order_id`, `payment_transaction_id`,
 `payment_attempt_number`, `financial_state_version`; các field theo type ở §3.2.
@@ -273,26 +282,27 @@ at-least-once, key = `order_id` ([ADR-007](./decisions/ADR-007-order-id-partitio
 
 ### 3.2. Danh mục event
 
-| `type` | Transition | `data` thêm | Consumer & nghĩa vụ |
-|---|---|---|---|
-| `PAYMENT_INITIATED` | `T0.1` | `amount`, `occurred_at` (= thời điểm bind), `expires_at` | Analytics: funnel. Order không cần (đã có response HTTP) |
-| `PAYMENT_SUCCESS` | `T2` | `amount`, `occurred_at` (= `succeeded_at`) | **Order**: set `captured_payment_transaction_id` nếu null, `PAID`; nếu attempt khác active/đã có capture → financial reconciliation. Có thể đến khi workflow checkout đã đóng → signal financial-recovery |
-| `PAYMENT_FAILED` | `T3` | `amount`, `occurred_at`, `error_code` (decline code chuẩn hóa hoặc `DECLINE_LIMIT_EXCEEDED`) | **Order**: terminal non-capture fact, intent đã hủy → cancel + compensation hoặc mở attempt kế tiếp. Decline retryable **không** sinh event |
-| `PAYMENT_EXPIRED` | `T4` | `amount`, `occurred_at` | **Order**: như `PAYMENT_FAILED` |
-| `PAYMENT_CANCELED` | `T5` | `amount`, `occurred_at`, `reason_code` (`PAYMENT_TIMEOUT`/`BUYER_CANCELLED`/`ORDER_CANCELLED_PRE_CAPTURE`/`PROVIDER_CANCELED`) | **Order**: hoàn tất pre-capture cancellation chỉ khi khớp `payment_transaction_id` active |
-| `REFUND_INITIATED` | `T6` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `reason_code` (= `reason` request) | Analytics |
-| `REFUND_PROCESSING` | `R1` | `refund_transaction_id`, `refund_amount`, `occurred_at` (= `accepted_at`) | Order: `REFUNDING` (không phải final) |
-| `REFUND_SUCCESS` | `R2`+`T7` | `refund_transaction_id`, `refund_amount`, `occurred_at` | **Order**: `RETURN_REQUESTED → REFUNDED`, `refunded_at` |
-| `REFUND_FAILED` | `R3`+`T8` hoặc `R4`+`T8` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `error_code` (Stripe `failure_reason` chuẩn hóa) | Order: `REFUND_FAILED`/manual verification; SysAdmin alert. Payment không tự refund lại |
-| `REFUND_REVERSED` | `R5`+`T9` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `reason_code=REFUND_REVERSED_BY_PROVIDER` | Order: reopen case về manual verification; Accounting. Tiền đã về merchant, khách chưa nhận |
+| Business alias | CloudEvents `type` canonical | Transition | `data` thêm | Consumer & nghĩa vụ |
+|---|---|---|---|---|
+| `PAYMENT_INITIATED` | `com.ecommerce.payment.transaction.initiated.v2` | `T0.1` | `amount`, `occurred_at` (= thời điểm bind), `expires_at` | Analytics: funnel. Order không cần (đã có response HTTP) |
+| `PAYMENT_SUCCESS` | `com.ecommerce.payment.transaction.succeeded.v2` | `T2` | `amount`, `occurred_at` (= `succeeded_at`) | **Order**: set `captured_payment_transaction_id` nếu null, `PAID`; nếu attempt khác active/đã có capture → financial reconciliation |
+| `PAYMENT_FAILED` | `com.ecommerce.payment.transaction.failed.v2` | `T3` | `amount`, `occurred_at`, `error_code` (machine code chuẩn hóa) | **Order**: terminal non-capture fact, intent đã hủy → cancel + compensation hoặc mở attempt kế tiếp. Decline retryable **không** sinh event |
+| `PAYMENT_EXPIRED` | `com.ecommerce.payment.transaction.expired.v2` | `T4` | `amount`, `occurred_at` | **Order**: như `PAYMENT_FAILED` |
+| `PAYMENT_CANCELED` | `com.ecommerce.payment.transaction.canceled.v2` | `T5` | `amount`, `occurred_at`, `reason_code` (`PAYMENT_TIMEOUT`/`BUYER_CANCELLED`/`ORDER_CANCELLED_PRE_CAPTURE`/`PROVIDER_CANCELED`) | **Order**: hoàn tất pre-capture cancellation chỉ khi khớp transaction active |
+| `REFUND_INITIATED` | `com.ecommerce.payment.refund.initiated.v2` | `T6` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `reason_code` | Analytics; nghĩa là command đã được persist, chưa phải provider accepted |
+| `REFUND_PROCESSING` | `com.ecommerce.payment.refund.processing.v2` | `R1` | `refund_transaction_id`, `refund_amount`, `occurred_at` (= `accepted_at`) | Order: `REFUNDING` (không phải final) |
+| `REFUND_SUCCESS` | `com.ecommerce.payment.refund.succeeded.v2` | `R2`+`T7` | `refund_transaction_id`, `refund_amount`, `occurred_at` | **Order**: `RETURN_REQUESTED → REFUNDED` |
+| `REFUND_FAILED` | `com.ecommerce.payment.refund.failed.v2` | `R3`+`T8` hoặc `R4`+`T8` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `error_code` | Order: `REFUND_FAILED`/manual verification; SysAdmin alert; không tự refund lại |
+| `REFUND_REVERSED` | `com.ecommerce.payment.refund.reversed.v2` | `R5`+`T9` | `refund_transaction_id`, `refund_amount`, `occurred_at`, `reason_code=REFUND_REVERSED_BY_PROVIDER` | Order: reopen manual verification; Accounting |
 
 Ví dụ `PAYMENT_SUCCESS`:
 
 ```json
 { "specversion": "1.0", "id": "123e4567-e89b-12d3-a456-426614174001",
-  "type": "PAYMENT_SUCCESS", "source": "payment-service",
+  "type": "com.ecommerce.payment.transaction.succeeded.v2", "source": "/services/payment",
   "subject": "payments/TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC", "time": "2026-02-28T10:07:00Z",
   "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/payment/v2/schemas/payment-succeeded.schema.json",
   "data": { "schema_version": 2, "order_id": "10001",
     "payment_transaction_id": "TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC", "payment_attempt_number": 1,
     "amount": { "amount_minor": 995000, "currency": "VND" },
@@ -302,9 +312,11 @@ Ví dụ `PAYMENT_SUCCESS`:
 Ví dụ `REFUND_REVERSED`:
 
 ```json
-{ "specversion": "1.0", "id": "…", "type": "REFUND_REVERSED", "source": "payment-service",
+{ "specversion": "1.0", "id": "123e4567-e89b-12d3-a456-426614174002",
+  "type": "com.ecommerce.payment.refund.reversed.v2", "source": "/services/payment",
   "subject": "payments/TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC", "time": "2026-03-03T08:00:00Z",
   "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/payment/v2/schemas/refund-reversed.schema.json",
   "data": { "schema_version": 2, "order_id": "10001",
     "payment_transaction_id": "TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC", "payment_attempt_number": 1,
     "refund_transaction_id": "RFD_01J9ZB…", "refund_amount": { "amount_minor": 400000, "currency": "VND" },
@@ -314,7 +326,7 @@ Ví dụ `REFUND_REVERSED`:
 
 ### 3.3. Nghĩa vụ consumer (Order)
 
-1. Dedup theo CloudEvents `id` bằng durable inbox (`order_consumed_events`) trong
+1. Dedup theo CloudEvents `(source,id)` bằng durable inbox (`order_consumed_events`) trong
    cùng transaction với mutation.
 2. Validate `order_id` thuộc mình, `payment_transaction_id`/`payment_attempt_number`
    khớp `order_payment_attempts`, `amount.currency=VND`, amount khớp snapshot.
@@ -333,11 +345,16 @@ Ví dụ `REFUND_REVERSED`:
 `client_secret`, `user_id`, `provider`, `provider_transaction_id` (`pi_`), `ch_`,
 `re_`, `evt_`, `payment_method*`, `error_message`, `reason_message`, sequence id
 ([ADR-008](./decisions/ADR-008-minimal-event-payload-phase-20.md)). Analytics join
-qua `order_id`; Notification map `error_code`/`reason_code` sang i18n.
+qua `order_id`. Notification không consume topic này vì payload chủ đích không có
+recipient; nếu cần thông báo phải có notification-request contract riêng.
 
 ## 4. Event tiêu thụ — Stripe webhook (nội bộ qua `t.payment.webhooks.raw`)
 
-Consumer group `payment-webhook-processor`. Payment không consume `t.order.events`.
+Wire contract là [Payment internal webhook v1](../../contracts/events/payment/internal/v1/asyncapi.yaml):
+`payment-api` base64-encode exact raw body và produce structured CloudEvent
+`com.ecommerce.payment.stripe-webhook.received.v1`; `payment-worker` consumer group
+`payment-webhook-processor` decode về đúng byte rồi mới verify. `candidate_event_id`
+chỉ là routing hint chưa tin cậy. Payment không consume `t.order.events`.
 
 | Stripe event | Điều kiện | Xử lý | Fact phát |
 |---|---|---|---|
@@ -377,18 +394,20 @@ call nào thiếu `ProviderOperation` đã commit (`INV-PAY-011`).
 
 ## 6. Tương thích và tiến hóa
 
-- HTTP v1 và events v2 chỉ thay đổi **additive**: thêm field optional, thêm enum
-  value chỉ khi consumer đã ignore unknown (Order phải park thay vì crash). Đổi
-  nghĩa/xóa field → version mới (`/v2`, `t.payment.events.v3`).
+- HTTP v1 và events v2 chỉ thay đổi **additive** sau khi consumer readiness đã được
+  xác nhận; consumer phải ignore optional field chưa biết. Đổi nghĩa/xóa field,
+  đổi exact `type` hoặc làm optional thành required → version/topic mới.
 - Thay đổi 2026-09 (additive): `GET …/client-data`; `REVERSED` trong refund status;
   `PaymentStatus` thêm `requires_manual_review`, `succeeded_at`, `terminal_at`,
   `refund`; `PAYMENT_FAILED` chỉ phát sau khi intent hủy (semantics, không đổi schema).
-- Consumer phải reject/park event thiếu `payment_transaction_id`, `amount`/`refund_amount`,
-  `financial_state_version`.
+- Consumer dispatch theo exact namespaced `type`, không theo business alias viết hoa,
+  và phải reject/park event thiếu `payment_transaction_id`, `amount`/`refund_amount`,
+  `financial_state_version`, hoặc có `type` không khớp `dataschema`.
 - Stripe: đổi API version qua ADR; webhook payload có thể đổi shape theo version →
   test fixture theo version pin.
 - Gate `verified`: provider contract test (OpenAPI/AsyncAPI ↔ implementation),
-  consumer test phía Order cho 10 event, breaking-change check trong CI; chưa có.
+  producer schema/fixture test cho cả 10 event, consumer test phía Order cho 8 exact
+  type mà Order đăng ký, breaking-change check trong CI; chưa có.
 
 ## 7. Phụ thuộc chéo đã đồng bộ
 

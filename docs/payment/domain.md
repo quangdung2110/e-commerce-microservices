@@ -27,7 +27,7 @@ verified_against_commit: null
 | Payment Transaction | Aggregate của đúng một Payment attempt; `id` (`TXN_<ULID>`) là metadata gửi lên Stripe | Order; một order có thể có nhiều transaction qua nhiều attempt terminal non-capture |
 | Refund Transaction | Một transaction hoàn tiền duy nhất trọn đời cho một order (`RFD_<ULID>`), gắn với một payment transaction `SUCCESS` | Order refund case do Order sở hữu |
 | Provider Operation | Một side effect Stripe durable (`CREATE`/`CANCEL`/`REFUND`, `POP_<ULID>`) có key idempotency bất biến, được commit trước khi gọi Stripe | Retry transport; command HTTP từ Order |
-| Review Case | Bản ghi `payment_review_cases` (`PRC_<ULID>`) cho tình huống hệ thống không được tự quyết (refund failed/reversed, capture-after-cancel, drift, dispute) | DLQ kỹ thuật; cờ boolean `requires_manual_review` (chỉ là denormalized "có case mở") |
+| Review Case | Bản ghi `payment_review_cases` (`PRC_<ULID>`) cho tình huống hệ thống không được tự quyết (refund failed/reversed, capture-after-cancel, drift, dispute) | Durable manual-resolution queue; cờ boolean `requires_manual_review` (chỉ là denormalized "có case mở") |
 | PaymentIntent | Đối tượng Stripe `pi_xxx` đại diện phiên thanh toán; **sống qua nhiều lần decline** cho tới khi `succeeded` hoặc `canceled`; `client_secret` dùng ở frontend | Charge `ch_xxx` (được tạo khi capture) |
 | Decline | Một lần Stripe từ chối payment method trên intent (`payment_intent.payment_failed`); intent quay về `requires_payment_method` | Terminal `FAILED` của Payment |
 | Stripe Refund | Đối tượng Stripe `re_xxx` tạo bởi `Refund.create` | Refund transaction nội bộ |
@@ -40,7 +40,7 @@ verified_against_commit: null
 | Reversal | Provider đảo chiều một refund đã báo `succeeded`: tiền quay về merchant, khách chưa nhận | Refund `FAILED` sớm (chưa từng success) |
 | Reconciliation | Đối soát định kỳ DB ↔ Stripe, có quyền phát correction transition khi không bị freeze | Webhook Auto-Retry |
 | Correction transition | Transition do Reconciliation phát (`CORR`) để sửa lệch trạng thái, luôn có audit và `cause_ref` | Transition do webhook/API |
-| Financial fact | Một event `PAYMENT_*`/`REFUND_*` ghi vào outbox kèm `financial_state_version` tăng | Audit-only transition (`T3a`) |
+| Financial fact | Một event có business alias `PAYMENT_*`/`REFUND_*`, wire type `com.ecommerce.payment.*.v2`, ghi full structured CloudEvent vào outbox kèm `financial_state_version` tăng | Audit-only transition (`T3a`) |
 
 ## 2. Đối tượng miền nghiệp vụ
 
@@ -94,7 +94,7 @@ khi lệch.
 | Lệnh | Recover provider operation | Recovery Worker | ProviderOperation replay cùng key; bind identity hoặc mở ReviewCase |
 | Lệnh | Correction transition | Reconciliation Worker (khi không freeze) | Cả hai FSM, `CORR` |
 | Lệnh | Mở / xử lý / đóng review case | Hệ thống mở; CSKH/Kế toán xử lý | ReviewCase |
-| Lệnh | Replay webhook / DLQ | Vận hành (manual) | Webhook Processor qua Kafka |
+| Lệnh | Replay durable webhook log | Vận hành (manual) | Webhook Processor qua Kafka; không có raw-webhook Kafka DLQ |
 | Truy vấn | Chi tiết payment transaction kèm refund | Order verify | PostgreSQL read |
 | Truy vấn | Client data cho attempt còn dùng được | Order (relay cho buyer / Checkout recovery) | PostgreSQL read + giải mã có điều kiện |
 | Truy vấn | Chi tiết refund transaction | Order verify | PostgreSQL read |
@@ -273,7 +273,7 @@ operation id, command key, case id, run id), `actor` khi `MANUAL`.
   khi relay client data. Payment không xử lý user identity.
 - Webhook endpoint không dùng user identity; authenticity dựa hoàn toàn vào
   `Stripe-Signature`.
-- Replay DLQ, freeze/unfreeze auto-correction, correction thủ công, xử lý/đóng review
+- Replay webhook log, freeze/unfreeze auto-correction, correction thủ công, xử lý/đóng review
   case là thao tác vận hành cần quyền quản trị, ghi `actor` và `cause_ref`.
 
 ## 8. Lỗi miền nghiệp vụ
@@ -294,7 +294,7 @@ operation id, command key, case id, run id), `actor` khi `MANUAL`.
 | `AMOUNT_MISMATCH` | Amount/currency webhook lệch DB | No | Reject transition; ReviewCase |
 | `INVALID_TRANSITION` | Transition không có trong bảng FSM | No | No-op + audit |
 | `OPTIMISTIC_LOCK_CONFLICT` | `version` không khớp | Yes (requeue) | `FAILED_PROCESSING` → retry |
-| `LOCK_NOT_ACQUIRED` | Không lấy được Redis lock | Yes | Reject → retry cycle/DLQ |
+| `LOCK_NOT_ACQUIRED` | Không lấy được Redis lock | Yes | Reject → Kafka redelivery; khi đã có webhook log thì Auto-Retry/review case |
 | `PROVIDER_OUTCOME_UNKNOWN` | Timeout/ambiguous sau khi đã commit operation | Yes (replay cùng key) | HTTP `503 retryable=true`; operation `UNKNOWN` |
 | `PROVIDER_IDENTITY_UNBOUND` | Replay + reconciliation không bind được | No | ReviewCase |
 | `DECLINED_RETRYABLE` | Stripe decline thuộc tập retryable | Buyer retry | `T3a`, không phát event |

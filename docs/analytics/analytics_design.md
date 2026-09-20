@@ -51,7 +51,11 @@ Analytics không chủ động moi móc Database của các Service. Tất cả 
 
 ### Bố cục các luồng Flink Pipelines (Job)
 1.  **Pipeline giao dịch (Payment):** nguồn khả dụng là `t.payment.events.v2` theo
-    Payment AsyncAPI. Analytics chưa phải consumer được đăng ký của Order Events v1:
+    [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml). Pipeline
+    chỉ dispatch theo exact namespaced CloudEvents `type`, validate `dataschema`,
+    deduplicate bằng `(source, id)` và upsert theo transaction/refund identity cùng
+    `financial_state_version`; không đọc Kafka headers như contract authority.
+    Analytics chưa phải consumer được đăng ký của Order Events v1:
     hai fact Order hiện tại chỉ dành cho Cart và Review. Mọi pipeline doanh thu/order
     mới phải có consumer contract riêng trước khi cấp ACL, thay vì suy diễn lifecycle
     từ `t.order.events`.

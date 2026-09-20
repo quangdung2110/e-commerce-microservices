@@ -89,8 +89,9 @@ curl -sS -X PUT http://localhost:8084/connectors/payment-outbox-connector/config
 
 Connector: `table.include.list=public.outbox_events`, outbox `EventRouter` với
 `route.by.field=aggregate_type` → `t.payment.events.v2`, key từ `partition_key`,
-`expand.json.payload=true`, header từ cột `headers` (`ce_id`, `ce_type`,
-`correlation_id`, `traceparent`).
+`expand.json.payload=true`; `payload` đã là full CloudEvents structured JSON và phải
+đến Kafka value nguyên vẹn. Header từ cột `headers` chỉ mirror ID/type/correlation/
+trace cho observability, không được dùng để dựng lại hoặc hiểu event.
 
 ### 2.6. Kiểm tra và dọn dẹp
 
@@ -106,7 +107,7 @@ Connector: `table.include.list=public.outbox_events`, outbox `EventRouter` với
 |---|---|---|---|
 | PostgreSQL 16 | `postgres` / 15432 | DB `payment_service`; Flyway tự chạy migration khi start | Không (Testcontainers ở test) |
 | Redis 7 | `redis` / 6379 | Không cần seed | Có — tắt bằng `payment.redis.enabled=false`, mọi guard fallback DB |
-| Kafka | `kafka` / 9092 (nội bộ), 29092 (host) | Topic `t.payment.webhooks.raw` (6 partition), `t.payment.events.v2` tự tạo bởi `KafkaAdmin` ở profile `dev` | Không |
+| Kafka | `kafka` / 9092 (nội bộ), 29092 (host) | `t.payment.webhooks.raw` (6 partition, 7d, 256 KiB) và `t.payment.events.v2` (6 partition, ≥15d, 64 KiB) tự tạo bởi `KafkaAdmin` ở profile `dev` | Không |
 | Kafka Connect (Debezium) | `kafka-connect` / 8084 | Đăng ký connector §2.5 | Có — bỏ qua khi chỉ test API; outbox vẫn được ghi |
 | Stripe | Internet, test mode | Sandbox riêng + Stripe CLI | Có — `stripe-mock`/WireMock (§6) |
 | Order | Không cần | Gọi Payment bằng `curl`/fixture với `X-Service-Identity: order-service` | — |
@@ -268,8 +269,9 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
 - Redis: SETNX/lock hit/miss/outage; fallback `payment_idempotency` (fingerprint +
   `IN_PROGRESS`) và `refund_transactions.command_idempotency_key`; worker bỏ lượt
   khi không lấy được lock.
-- Debezium: outbox → `t.payment.events.v2` at-least-once, key `order_id`, header
-  `ce_*`/`correlation_id`; connector restart không mất/không trùng theo `event_id`.
+- Debezium: outbox → `t.payment.events.v2` at-least-once, key đúng
+  `data.order_id`, Kafka value là full structured CloudEvent; header mirror không
+  phải authority; connector restart không mất và duplicate giữ cùng `(source,id)`.
 - Stripe (WireMock stateful): `PaymentIntent.create`/`cancel` với cùng key trả cùng
   object; ambiguous transport (timeout sau khi tạo) → operation `UNKNOWN` → recovery
   bind; `idempotency_error` → `PROVIDER_REJECTED` + review case; `Refund.create` với
@@ -284,14 +286,18 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
 **Contract/provider/consumer:**
 
 - Provider test: implementation ↔ `openapi.yaml` (7 operation, problem+json code ở
-  `interfaces.md §2.3`) và ↔ `asyncapi.yaml` (10 type, `additionalProperties: false`,
-  `expires_at` chỉ ở `PAYMENT_INITIATED`, `refund_*` bắt buộc với `REFUND_*`).
+  `interfaces.md §2.3`) và ↔ financial/internal AsyncAPI. Cả 10 exact namespaced
+  type phải khớp `dataschema`; `expires_at` chỉ ở `PAYMENT_INITIATED`; `error_code`/
+  `reason_code` bắt buộc đúng event; `refund_*` bắt buộc với `REFUND_*`; schema
+  reject `client_secret`, provider IDs, `user_id` và raw payload.
 - Webhook provider test: thiếu body/`Stripe-Signature` → `400`; envelope đủ được
   Kafka ack → `200` kể cả body không deserialize được hoặc signature sai (worker mới
-  verify/parse; malformed body dùng key hash); Kafka produce lỗi → `503`.
-- Fixture cho Order consumer: `payment_transaction_id`, VND money, monotonic
-  `financial_state_version`, không có `client_secret`; `PAYMENT_FAILED/EXPIRED/CANCELED`
-  chỉ sau khi intent canceled.
+  verify/parse; malformed body dùng key hash); base64 decode phải trả đúng byte đã
+  ký; candidate ID không được dùng làm identity trước verify; Kafka produce lỗi → `503`.
+- Fixture cho Order consumer: dispatch bằng exact namespaced CloudEvents `type`,
+  validate `dataschema`, `payment_transaction_id`, VND money, monotonic
+  `financial_state_version`, không có `client_secret`; các alias
+  `PAYMENT_FAILED/EXPIRED/CANCELED` chỉ phát sau khi intent canceled.
 - Cancel/capture race: `ALREADY_SUCCEEDED` + review case, không phụ thuộc consumer
   Order event.
 

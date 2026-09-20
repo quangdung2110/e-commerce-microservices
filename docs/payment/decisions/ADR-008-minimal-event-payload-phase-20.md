@@ -18,6 +18,8 @@ Quyết định lịch sử này bị thay thế bởi [Payment events v2](../..
 và [`interfaces.md`](../interfaces.md). V2 bắt buộc financial identity/version và VND
 money object, đồng thời **cấm** `client_secret` khỏi Kafka/outbox/audit. File chỉ lưu lại
 bối cảnh migration; không được dùng làm source contract hoặc implementation.
+Notification không phải consumer của Payment Events v2; mọi ghi chú Notification bên
+dưới chỉ mô tả bối cảnh lịch sử đã bị thay thế bởi ADR-015.
 
 ## Bối cảnh
 
@@ -37,7 +39,7 @@ Service vẫn giữ đầy đủ field ở internal log/audit.
 |---|---|---|
 | `PAYMENT_INITIATED` | `payment_transaction_id`, `order_id`, `amount`, `client_secret`, `expires_at` | **Đã thay thế:** V2 không gửi secret trong event; API response đã authenticated mang secret. |
 | `PAYMENT_SUCCESS` | `payment_transaction_id`, `order_id`, `amount`, `paid_at` | idempotency, route, verify amount, audit |
-| `PAYMENT_FAILED` | `payment_transaction_id`, `order_id`, `error_code`, `failed_at` | Notification map `error_code` qua i18n |
+| `PAYMENT_FAILED` | `payment_transaction_id`, `order_id`, `error_code`, `failed_at` | Lý do lịch sử: Notification map `error_code`; không áp dụng cho v2 |
 | `PAYMENT_EXPIRED` | `payment_transaction_id`, `order_id`, `expired_at` | audit timeline |
 | `REFUND_INITIATED` | `refund_transaction_id`, `payment_transaction_id`, `order_id`, `refund_amount`, `reason`, `stripe_reason`, `initiated_at` | Analytics cross-ref/categorize |
 | `REFUND_PROCESSING` | `refund_transaction_id`, `order_id`, `processing_at` | Order đã lock amount từ workflow |
@@ -62,7 +64,7 @@ Bỏ: `user_id`, `currency` (luôn VND), `provider` (luôn STRIPE),
 
 Tích cực: contract nhỏ, ít thay đổi khi provider detail đổi; Order không phụ
 thuộc sequence của Payment. Tiêu cực: Analytics phải join thêm qua `order_id`;
-Notification phải có i18n mapping cho `error_code`/`reason_code`; consumer cần
+consumer lịch sử cần i18n mapping cho `error_code`/`reason_code`; consumer cần
 `event_id` để dedup thay vì sequence.
 
 ## Migration đã được thay thế

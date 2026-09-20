@@ -89,7 +89,7 @@ flowchart LR
 | Order → HTTP v1 | Mesh mTLS + `AuthorizationPolicy` (principal `ecommerce/order-service`); header `X-Service-Identity` chỉ để attribution | Tin identity mesh; **không** tin nội dung: fingerprint idempotency, `order_id` khớp transaction, amount ≤ paid |
 | Payment → Stripe | Secret key từ Vault; egress chỉ qua `ServiceEntry` | Tin response Stripe là fact provider, nhưng chỉ sau khi bind vào `provider_operations` |
 | Kafka out | Chỉ Debezium ghi topic; consumer tự dedup theo CloudEvents `id` | Payment không tin consumer đã nhận; at-least-once |
-| Vận hành | Endpoint admin/DLQ/correction yêu cầu quyền quản trị, `actor` + `cause_ref` | Mọi thay đổi trạng thái thủ công đều là transition có audit |
+| Vận hành | Endpoint admin/webhook-log replay/correction yêu cầu quyền quản trị, `actor` + `cause_ref` | Mọi thay đổi trạng thái thủ công đều là transition có audit |
 
 Gateway matrix chỉ có route webhook cho Payment (`docs/gateway/runtime-contract.md`);
 không có route `/api/payments/**` nào khác vì buyer đọc payment qua Order.
@@ -145,7 +145,7 @@ Kiểm tra bằng ArchUnit trong CI (§7).
 | Thành phần | Trách nhiệm | Không được làm |
 |---|---|---|
 | HTTP v1 adapter | Xác thực workload, đọc header (`Idempotency-Key`, `X-Correlation-Id`), validate schema, chạy idempotency filter (`payment_idempotency` fingerprint + `IN_PROGRESS`), gọi use case, map lỗi domain → problem+json | Chứa FSM; gọi Stripe; đọc/ghi DB ngoài repository |
-| Webhook endpoint | Reject `400` nếu thiếu body/`Stripe-Signature`; nếu đủ envelope thì nhận raw body + headers, best-effort lấy candidate event ID (fallback hash raw body), produce `t.payment.webhooks.raw`, trả `200` (hoặc `503` khi Kafka lỗi để Stripe retry) | Deserialize/validate business payload, verify chữ ký, ghi DB, gọi Stripe |
+| Webhook endpoint | Reject `400` nếu thiếu body/`Stripe-Signature`; nếu đủ envelope thì base64 exact body bytes, best-effort lấy candidate event ID (fallback hash raw body), produce structured CloudEvent theo internal AsyncAPI lên `t.payment.webhooks.raw`, trả `200` sau Kafka ack (hoặc `503` khi Kafka lỗi) | Deserialize/validate business payload, verify chữ ký, ghi DB, gọi Stripe |
 | Application/use case | Mở/đóng transaction (TX1/TX2, §3.4), gọi domain, ghi outbox + history trong cùng TX, gọi port provider **ngoài** TX | Publish Kafka trực tiếp; bỏ qua guard; suy luận trạng thái provider |
 | Domain | Hai FSM, guard, policy decline, invariant; thuần, test không cần hạ tầng | Biết Stripe type, JPA, Spring |
 | `com.platform.paymentservice.stripe` | `PaymentProviderPort` duy nhất; wrap `PaymentIntent.create/retrieve/cancel`, `Refund.create/retrieve`, `Webhook.constructEvent`; map lỗi Stripe → `ProviderOutcome` (`CONFIRMED`/`REJECTED`/`UNKNOWN`); một `StripeClient` singleton, API version pin | Chứa nghiệp vụ; lộ `com.stripe.*` ra ngoài; tự sinh idempotency key |
@@ -154,11 +154,11 @@ Kiểm tra bằng ArchUnit trong CI (§7).
 | Provider-operation Recovery | Replay `REQUESTED`/`UNKNOWN` cùng key; bind hoặc review case | Sinh key mới; suy luận non-capture |
 | Refund Status Poller | `Refund.retrieve` cho `PROCESSING` | Gọi khi không có lock; xử lý reversal (thuộc reconciliation) |
 | Reconciliation | So DB ↔ Stripe theo cửa sổ; `CORR` khi không freeze; `reconciliation_runs` | Sửa ngoài transition hợp lệ; chạy nhiều instance |
-| Webhook Auto-Retry / DLQ Replay | Re-verify, re-push; replay thủ công có audit | Bỏ `max_retries`; replay không dedup |
+| Webhook Auto-Retry / Manual Webhook Replay | Re-verify durable `webhook_logs` row, re-push; replay thủ công có audit; verified `stripe_event_id` dedup vẫn áp dụng | Kafka DLQ riêng; bỏ `max_retries`; replay bỏ qua dedup |
 | Retention Trimmer | Xóa theo `data.md §7` | Xóa outbox trên CDC watermark; xóa bảng audit |
 | PostgreSQL | Source of truth 9 bảng; một schema | Shared DB cho service khác |
 | Redis | Replay pointer + lock TTL | Source of truth; cấp quyền side effect |
-| Debezium/Kafka Connect | WAL → `t.payment.events.v2` qua outbox SMT | Được thay bằng polling worker |
+| Debezium/Kafka Connect | WAL → `t.payment.events.v2` qua outbox SMT; chuyển `outbox_events.payload` full structured CloudEvent làm Kafka value và `partition_key` làm key | Được thay bằng polling worker; tự dựng envelope từ headers/data rời |
 | KMS/Vault | Secret Stripe; key mã hóa `client_secret` | Lưu plaintext secret ở app |
 
 ## 3. Mô hình xử lý
@@ -211,8 +211,9 @@ initiate sau khi owner đã nhả lock và recovery đã nhận operation có th
 
 ### 3.3. Fact pipeline
 
-1. Endpoint: raw body + `Stripe-Signature` → Kafka; `200` sau khi producer ack.
-2. Processor: verify → `INSERT webhook_logs ON CONFLICT DO NOTHING` → resolve
+1. Endpoint: exact raw body bytes + `Stripe-Signature` → base64 trong structured
+   CloudEvent `com.ecommerce.payment.stripe-webhook.received.v1` → Kafka; `200` sau ack.
+2. Processor: decode về exact bytes → verify → `INSERT webhook_logs ON CONFLICT DO NOTHING` → resolve
    object → guard amount/reference → `ApplyStripeEvent` → một transaction:
    transition + `financial_state_version` + history + outbox + review case (nếu có)
    + `webhook_logs.PROCESSED` → ack Kafka.
@@ -297,7 +298,8 @@ Bốn lớp guard, từ rẻ đến đắt, áp theo thứ tự:
 
 Ordering:
 
-- **Kafka raw webhook:** key `stripe_event_id` → cùng payment có thể ở partition
+- **Kafka raw webhook:** key `STRIPE:<candidate_event_id>` hoặc
+  `RAW:<sha256(raw_body)>`; candidate chưa đáng tin và cùng payment có thể ở partition
   khác; đúng đắn dựa vào lớp 2–3, không dựa vào partition.
 - **Kafka fact out:** key `order_id` → mọi `PAYMENT_*`/`REFUND_*` của một order cùng
   partition ([ADR-007](./decisions/ADR-007-order-id-partition-key.md)); Order vẫn
@@ -350,7 +352,7 @@ và giả định tải ở `operations.md §6`.
 | A3 | Không gọi `PaymentProviderPort` bên trong `@Transactional` | ArchUnit + test: adapter ném lỗi nếu có transaction đang mở |
 | A4 | Mọi `PaymentProviderPort` call phải nhận `ProviderOperation` đã persist | Chữ ký port yêu cầu `operationId`; test |
 | A5 | Không transition nào không insert `payment_status_history` + (khi là fact) `outbox_events` trong cùng transaction | Test FSM listener; assertion đếm row |
-| A6 | `outbox_events` không có cột polling-style; không producer Kafka nào ghi `t.payment.events.v2` ngoài Debezium | Migration lint; ACL topic |
+| A6 | `outbox_events` không có cột polling-style; `payload` là full structured CloudEvent; không producer Kafka nào ghi `t.payment.events.v2` ngoài Debezium | Migration lint; schema/connector integration test; ACL topic |
 | A7 | Webhook endpoint không import repository/StripeAdapter | ArchUnit |
 | A8 | Không service nào ghi DB Payment; Payment không đọc DB service khác; không consumer trên `t.order.events` | Network policy; code review |
 | A9 | `client_secret` plaintext chỉ tồn tại trong response initiate/client-data | Test log/outbox không chứa `_secret_` |

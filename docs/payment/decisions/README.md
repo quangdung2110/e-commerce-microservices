@@ -23,14 +23,15 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-001](./ADR-001-java-spring-boot-runtime.md) | Java (Spring Boot) thay vì Golang (Gin) | Accepted | Không rõ | N/A |
 | [ADR-002](./ADR-002-refund-inside-payment-service.md) | Giữ Refund trong Payment Service (Phase 1), tách khi đạt ngưỡng Phase 2 | Accepted | 2026-03 | N/A |
 | [ADR-003](./ADR-003-stripe-single-provider-direct-sdk.md) | Stripe là provider duy nhất, gọi SDK trực tiếp, bỏ Provider Adapter Pattern, bỏ COD | Accepted | Phase 18 | Multi-provider (VNPay/MoMo/ZaloPay) + COD |
-| [ADR-004](./ADR-004-async-webhook-processing-via-kafka.md) | Webhook trả 200 ngay, xử lý async qua `t.payment.webhooks.raw` | Accepted | Không rõ | N/A |
-| [ADR-005](./ADR-005-transactional-outbox-cdc.md) | Transactional outbox append-only qua Debezium CDC | Accepted | Không rõ | Outbox Polling Worker |
+| [ADR-004](./ADR-004-async-webhook-processing-via-kafka.md) | Webhook trả 200 ngay, xử lý async qua `t.payment.webhooks.raw` | Accepted, refined by ADR-015 | Không rõ | N/A |
+| [ADR-005](./ADR-005-transactional-outbox-cdc.md) | Transactional outbox append-only qua Debezium CDC | Accepted, refined by ADR-015 | Không rõ | Outbox Polling Worker |
 | [ADR-006](./ADR-006-optimistic-lock-and-redis-lock-strategy.md) | Optimistic lock mặc định + Redis lock cho side effect, có fallback | Accepted | Không rõ | N/A |
-| [ADR-007](./ADR-007-order-id-partition-key.md) | Partition key `order_id`, route theo `payload.order_id` | Accepted | Không rõ | N/A |
-| [ADR-008](./ADR-008-minimal-event-payload-phase-20.md) | Payload event tối thiểu cho Order consumer | Accepted | Phase 20 | Payload đầy đủ trước Phase 20 |
+| [ADR-007](./ADR-007-order-id-partition-key.md) | Partition key `order_id`; wire v2 dùng `data.order_id` theo ADR-015 | Accepted, refined by ADR-015 | Không rõ | N/A |
+| [ADR-008](./ADR-008-minimal-event-payload-phase-20.md) | Payload event tối thiểu lịch sử; v2 dùng per-event schema theo ADR-015 | Superseded (ADR-015) | Phase 20 | Payload đầy đủ trước Phase 20 |
 | [ADR-009](./ADR-009-monthly-partitioning-and-tiered-archive.md) | Partition theo tháng + archive S3 + tiered read | Superseded (ADR-013) | Không rõ (ghi nhận sau Phase 16) | N/A |
 | [ADR-010](./ADR-010-refund-only-by-explicit-order-command.md) | Refund chỉ từ explicit command của Order; Payment không consume Order event | Accepted | Không rõ | Auto-refund từ Order lifecycle event |
 | [ADR-011](./ADR-011-one-lifetime-order-refund.md) | Một Payment refund transaction trọn đời/order và hai dạng Inventory evidence | Accepted | 2026-09-15 | ADR-010 (refund gate details) |
 | [ADR-012](./ADR-012-recoverable-initiation-and-cancel.md) | Durable provider operation for create/cancel and fact-based Order cancellation | Accepted | 2026-09-16 | Refines ADR-006, ADR-007 and ADR-008 |
 | [ADR-013](./ADR-013-single-oltp-retention-no-partition.md) | Một OLTP schema, không partition/cold archive; retention bằng row-level trimmer | Accepted | 2026-09-19 | ADR-009 |
 | [ADR-014](./ADR-014-decline-non-terminal-and-canceled-intent-before-non-capture-terminal.md) | Decline phi terminal; mọi terminal non-capture đòi hỏi PaymentIntent đã canceled | Accepted | 2026-09-19 | Refines ADR-012 |
+| [ADR-015](./ADR-015-canonical-asyncapi-and-structured-cloudevents.md) | Schema riêng từng event, namespaced type, full structured CloudEvent và contract raw webhook nội bộ | Accepted | 2026-09-20 | Refines ADR-004/005/007/008 |

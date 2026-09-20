@@ -28,7 +28,7 @@ verified_against_commit: null
 | `WF-PAYMENT-006` | Đối soát với Stripe | Schedule hourly | Reconciliation Worker | proposed |
 | `WF-PAYMENT-007` | Poll trạng thái refund | Schedule 5–15 phút | Refund Status Poller | proposed |
 | `WF-PAYMENT-008` | Recover provider operation | Schedule 30–60s | Provider-operation Recovery Worker | proposed |
-| `WF-PAYMENT-009` | Webhook auto-retry và DLQ replay | Schedule/manual | Auto-Retry Worker, Ops | proposed |
+| `WF-PAYMENT-009` | Webhook auto-retry và webhook-log replay | Schedule/manual | Auto-Retry Worker, Ops | proposed |
 | `WF-PAYMENT-010` | Review case và correction thủ công | Hệ thống mở, CSKH/Kế toán xử lý | Ops | proposed |
 | `WF-PAYMENT-011` | Hủy payment trước capture | HTTP + provider recovery | Order (`CancelPaymentActivity`), Stripe | proposed |
 | `WF-PAYMENT-012` | Tự chấm dứt attempt sau decline | Webhook | Webhook Processor | proposed |
@@ -104,15 +104,16 @@ trùng, không sai thứ tự. **Trigger:** Stripe gọi `POST /v1/payments/webh
 **Happy path:**
 
 1. `[API]` Envelope thiếu body hoặc thiếu `Stripe-Signature` → `400`, không enqueue.
-   Nếu đủ envelope, nhận raw body + headers; không deserialize/validate business
-   payload. Candidate event ID chỉ được đọc best-effort để chọn partition.
+   Nếu đủ envelope, nhận exact raw body bytes + headers; không deserialize/validate
+   business payload. Candidate event ID chỉ được đọc best-effort để chọn partition.
 2. `[Kafka]` Produce lên `t.payment.webhooks.raw`: key
    `STRIPE:<candidate_event_id>` nếu extraction thành công, nếu không
-   `RAW:<sha256(raw_body)>`; value
-   `{provider, candidate_event_id?, raw_body, stripe_signature, received_at}`. Cả
-   candidate và body đều chưa được tin cậy; producer ack → trả `200 OK` (< 500ms),
-   produce lỗi → `503` để Stripe retry.
-3. `[Worker]` Verify `Stripe-Signature` (`Webhook.constructEvent`, `|now - t| <= 300s`).
+   `RAW:<sha256(raw_body)>`; value là full structured CloudEvent
+   `com.ecommerce.payment.stripe-webhook.received.v1`, trong đó exact body bytes
+   nằm ở `data.raw_body_base64` theo internal AsyncAPI. Candidate và body đều chưa
+   được tin cậy; producer ack → trả `200 OK` (< 500ms), produce lỗi → `503` để Stripe retry.
+3. `[Worker]` Decode base64 về exact bytes rồi verify `Stripe-Signature`
+   (`Webhook.constructEvent`, `|now - t| <= 300s`).
    Thất bại → insert `webhook_logs` `FAILED_SIGNATURE` với `stripe_event_id = NULL`,
    `raw_body` nguyên byte, `next_retry_at`; dừng.
 4. `[PostgreSQL]` `INSERT webhook_logs (stripe_event_id, event_type, event_created_at,
@@ -348,7 +349,7 @@ next_retry_at <= now()`; với mỗi operation:
 refund timeout; key bị Stripe từ chối vì payload khác (fingerprint drift → review);
 nhiều ứng viên metadata.
 
-## WF-PAYMENT-009 — Webhook auto-retry và DLQ replay
+## WF-PAYMENT-009 — Webhook auto-retry và webhook-log replay
 
 **Auto-retry (CronJob):** quét `webhook_logs WHERE status IN ('FAILED_SIGNATURE',
 'UNPROCESSED', 'FAILED_PROCESSING') AND next_retry_at <= now()`; `retry_count <
@@ -356,7 +357,8 @@ max_retries`; `FAILED_SIGNATURE` re-verify `raw_body` bằng `whsec_` hiện hà
 đổi secret); đẩy lại vào `t.payment.webhooks.raw` để `WF-PAYMENT-002` xử lý; hết
 retry với event tài chính → review case `WEBHOOK_RETRY_EXHAUSTED`.
 
-**DLQ replay (manual/on-demand):** chọn theo filter (time range, event type,
+**Webhook-log replay (manual/on-demand, không phải Kafka DLQ):** chọn durable row
+trong `webhook_logs` theo filter (time range, event type,
 `order_id`); re-validate idempotency (dedup `stripe_event_id` vẫn áp dụng); batch nhỏ
 có rate limit; history `triggered_by = MANUAL` với `actor`.
 

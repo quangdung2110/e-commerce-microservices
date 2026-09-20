@@ -185,20 +185,25 @@ Một event mới chỉ được thêm sau khi consumer, business effect và cat
 
 ### 6.1. Payment events — `order-payment-consumer`
 
-| Event | Payload semantics tối thiểu theo thiết kế cũ | Xử lý |
-|---|---|---|
-| `PAYMENT_SUCCESS` | transaction + `payment_attempt_number`, order, VND amount, **currency**, paid time, financial version | Validate mapped active/cancelled attempt/order/amount/currency/version; freeze captured identity then signal active checkout or fenced late recovery |
-| `PAYMENT_FAILED`/`PAYMENT_EXPIRED`/`PAYMENT_CANCELED` | transaction + attempt identity, order, financial version, terminal fact | Update only that attempt mapping then signal; only non-capture fact can complete cancellation |
-| `REFUND_PROCESSING` | refund txn, captured payment txn, order, financial version | Match existing case and immutable captured transaction then signal `REFUNDING` |
-| `REFUND_SUCCESS` | refund txn, captured payment txn, order, VND amount, currency, financial version | Match existing case then commit `REFUNDED` + audit/checkpoint; no Order event |
-| `REFUND_FAILED` | refund txn, captured payment txn, order, error code, financial version | Signal; giữ `RETURN_REQUESTED`, set failure, alert |
-| `REFUND_REVERSED` | refund txn, captured payment txn, order, reason code, financial version | Reopen same `REFUNDED` case/master to manual verification; no new refund |
+| Business alias | Exact CloudEvents `type` | Payload semantics | Xử lý |
+|---|---|---|---|
+| `PAYMENT_SUCCESS` | `com.ecommerce.payment.transaction.succeeded.v2` | transaction + attempt, order, VND amount/currency, time, financial version | Validate mapping/amount/version; freeze captured identity then signal checkout hoặc fenced recovery |
+| `PAYMENT_FAILED` | `com.ecommerce.payment.transaction.failed.v2` | terminal non-capture + `error_code` | Update đúng attempt rồi signal; intent đã canceled |
+| `PAYMENT_EXPIRED` | `com.ecommerce.payment.transaction.expired.v2` | terminal non-capture | Như failed; chỉ fact này mới cho phép hoàn tất timeout cancellation |
+| `PAYMENT_CANCELED` | `com.ecommerce.payment.transaction.canceled.v2` | terminal non-capture + `reason_code` | Match active transaction rồi hoàn tất pre-capture cancellation |
+| `REFUND_PROCESSING` | `com.ecommerce.payment.refund.processing.v2` | refund txn, captured payment txn, amount, financial version | Match existing case, set `REFUNDING`; chưa final |
+| `REFUND_SUCCESS` | `com.ecommerce.payment.refund.succeeded.v2` | refund txn, captured payment txn, VND amount/currency, financial version | Commit `REFUNDED` + audit/checkpoint; không phát Order event |
+| `REFUND_FAILED` | `com.ecommerce.payment.refund.failed.v2` | refund txn, error code, financial version | Giữ `RETURN_REQUESTED`, set failure, alert |
+| `REFUND_REVERSED` | `com.ecommerce.payment.refund.reversed.v2` | refund txn, reason code, financial version | Reopen cùng case về manual verification; không tạo refund mới |
 
-Order không subscribe `PAYMENT_INITIATED` hoặc `REFUND_INITIATED`: chính Order đã gọi
+Order không subscribe `com.ecommerce.payment.transaction.initiated.v2`
+(`PAYMENT_INITIATED`) hoặc `com.ecommerce.payment.refund.initiated.v2`
+(`REFUND_INITIATED`): chính Order đã gọi
 HTTP command và lưu durable response/checkpoint. Nhận lại initiation fact không tạo
 business action mới.
 
-Routing bắt buộc: payment result lookup `checkout_token` theo payload `order_id`
+Dispatch bắt buộc theo exact namespaced `type`; routing payment result lookup
+`checkout_token` theo `data.order_id`
 và signal `order-checkout-{checkout_token}`; refund result signal
 `order-refund-{order_id}`. Không route theo Payment `aggregate_id` vì đó là ID
 transaction. Consumer không update master FSM/outbox trực tiếp.

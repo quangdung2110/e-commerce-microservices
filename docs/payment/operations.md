@@ -104,11 +104,18 @@ Webhook endpoint đăng ký trên Stripe Dashboard/CLI phải subscribe đúng t
 ### 2.4. Hạ tầng
 
 PostgreSQL DSN/pool (đề xuất pool 20/instance, `statement_timeout` 5s cho API, 60s
-cho worker), Redis endpoint/auth, Kafka bootstrap/security, topic
-`t.payment.events.v2` và `t.payment.webhooks.raw` (đề xuất 6 partition, retention 7
-ngày cho raw), Debezium connector config (`table.include.list=public.outbox_events`,
-outbox SMT route theo `aggregate_type`, key `partition_key`, headers từ cột
-`headers`). Credential là secret.
+cho worker), Redis endpoint/auth, Kafka bootstrap/security và hai topic:
+
+- `t.payment.events.v2`: 6 partition, replication 3, retention tối thiểu 15 ngày,
+  max message 64 KiB, classification `INTERNAL`; chỉ Debezium được produce.
+- `t.payment.webhooks.raw`: 6 partition, replication 3, retention 7 ngày, max
+  message 256 KiB, classification `CONFIDENTIAL`; ACL chỉ cho Payment API/worker.
+
+Debezium connector dùng `table.include.list=public.outbox_events`, outbox SMT route
+theo `aggregate_type`, key `partition_key` và chuyển `payload` full structured
+CloudEvent nguyên vẹn thành Kafka value. Cột `headers` chỉ mirror metadata cho
+observability, không phải wire authority ([ADR-015](./decisions/ADR-015-canonical-asyncapi-and-structured-cloudevents.md)).
+Credential là secret.
 
 ## 3. Quan sát hệ thống
 
@@ -370,8 +377,8 @@ thật để đối chiếu; (3) ghi timeline vào incident trước khi thao t�
 
 1. Spike ngay sau deploy/rotation → so `payment.stripe.webhook-secrets` với Stripe
    Dashboard → Webhooks → Signing secret; sửa config (reload).
-2. Auto-Retry re-verify tự động; nếu đã hết `retry.max`, chạy DLQ replay theo
-   time range.
+2. Auto-Retry re-verify tự động; nếu đã hết `retry.max`, chạy manual webhook-log
+   replay theo time range (v1 không có Kafka DLQ cho raw webhook).
 3. Lẻ tẻ, không trùng deploy → có thể spoof; kiểm tra IP nguồn với danh sách IP
    Stripe; không hành động thêm ngoài block ở gateway.
 
@@ -385,7 +392,7 @@ Nhận case theo `reason_code`, chuyển `IN_PROGRESS`, `assigned_to`.
 | `CAPTURE_AFTER_CANCEL` | Order đã nhả hàng; phối hợp Order/CSKH: giao lại (Order lane hậu thanh toán) hoặc refund qua lane refund chính thức của Order (Payment không tự refund) | `ESCALATED_TO_ORDER` |
 | `AMOUNT_MISMATCH` | So amount DB ↔ Stripe; nếu Stripe đúng và DB sai → lỗi hệ thống, P1, không auto-correct; Accounting quyết định | `ESCALATED_TO_ACCOUNTING` hoặc `CORRECTION_APPLIED` sau RCA |
 | `PROVIDER_IDENTITY_UNBOUND` | §9.4 | theo §9.4 |
-| `WEBHOOK_RETRY_EXHAUSTED` | Xem `processing_error`; sửa nguyên nhân; DLQ replay event đó | `CORRECTION_APPLIED` / `NO_ACTION_NEEDED` |
+| `WEBHOOK_RETRY_EXHAUSTED` | Xem `processing_error`; sửa nguyên nhân; replay durable `webhook_logs` row đó | `CORRECTION_APPLIED` / `NO_ACTION_NEEDED` |
 | `RECONCILIATION_DRIFT` | So `evidence.db_status` ↔ `provider_status`; nếu đích hợp lệ theo FSM → correction `MANUAL`; nếu không → Accounting | `CORRECTION_APPLIED` / `ESCALATED_TO_ACCOUNTING` |
 | `DISPUTE_OPENED` | Nộp evidence trên Stripe trước `evidence_due_by`; theo dõi kết quả; Order được thông báo qua CSKH (chưa có event) | `ESCALATED_TO_ACCOUNTING` |
 
@@ -444,7 +451,7 @@ Không đóng case nếu `requires_manual_review` vẫn `TRUE` sau commit (bug �
 | Thao tác | Quyền | Audit |
 |---|---|---|
 | Bật/tắt `auto-correction-frozen` | Payment on-call | Log + `reconciliation_runs.auto_correction_frozen` |
-| DLQ replay | Payment on-call | `payment_status_history.triggered_by = MANUAL`, `actor`, `cause_ref` |
+| Manual webhook-log replay | Payment on-call | `payment_status_history.triggered_by = MANUAL`, `actor`, `cause_ref` |
 | Correction transition thủ công | Payment on-call + Accounting duyệt với `AMOUNT_MISMATCH` | history `MANUAL` + review case `CORRECTION_APPLIED` |
 | Đóng review case | CSKH (refund), Accounting (amount/dispute), Payment (kỹ thuật) | `resolved_by`, `resolution_type`, `resolution_note` |
 | Đọc `webhook_logs.raw_body` | Payment on-call, có lý do incident | Access log; không export ra ticket |
