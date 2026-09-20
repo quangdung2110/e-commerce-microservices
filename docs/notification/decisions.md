@@ -90,24 +90,27 @@ Chi tiết: [06-backpressure.md](./06-backpressure.md).
 
 ## D-07 · Hai loại đầu vào: request và fact, phân loại theo "dữ liệu render đang ở đâu"
 
-**Bối cảnh.** Các producer hiện dùng hai mô hình: Auth/Review gửi *yêu cầu* (chỉ định template), Order/Payment/Delivery/Cart phát *sự thật*. Fact-style thuần cho Order không chạy được với contract hiện tại: `order.paid.v1` chỉ có `order_id, user_id, sku_ids` (không đủ render), Order không phát event huỷ/hoàn tiền khi chưa có consumer đăng ký, và không event nào mang email. Request-style thuần thì bắt Payment/Delivery/Cart đóng gói lại thứ họ đã phát.
+**Bối cảnh.** Các producer hiện dùng hai mô hình: Auth/Review gửi *yêu cầu* (chỉ định template), Order/Payment/Delivery/Cart phát *sự thật*. Fact-style thuần cho Order không chạy được với contract hiện tại: `order.paid.v1` chỉ có `order_id, user_id, sku_ids` (không đủ render), Order không phát event huỷ/hoàn tiền khi chưa có consumer đăng ký, và không event nào mang email. Request-style thuần thì bắt Cart đóng gói lại thứ họ đã phát.
 
-**Quyết định.** Hybrid, với quy tắc: **request khi producer phải đóng gói dữ liệu nó đang sở hữu hoặc phải quyết định điều kiện gửi; fact khi payload sẵn có đã đủ để render.** Producer **không bao giờ gọi service khác** để gom dữ liệu cho request — nếu một template đòi hỏi điều đó, thu gọn template hoặc bổ sung snapshot ở nguồn.
+**Quyết định.** Hybrid, với quy tắc: **request khi producer phải đóng gói dữ liệu nó đang sở hữu hoặc phải quyết định điều kiện gửi; fact khi payload sẵn có `user_id` và đủ để render.** Producer **không bao giờ gọi service khác** để gom dữ liệu cho request — nếu một template đòi hỏi điều đó, thu gọn template hoặc bổ sung snapshot ở nguồn.
 
 | Nguồn | Mô hình | Lý do |
 |---|---|---|
 | Auth | Request (resolve content theo `delivery_id`) | Secret không đi qua Kafka |
 | Review | Request | Điều kiện gửi là nghiệp vụ của Review |
-| **Order** | **Request** (`notification.requested.v1` với `template`, `template_data` lấy từ row đơn hàng) | Order sở hữu item snapshot, tổng tiền, địa chỉ; tránh Notification gọi ngược Order lúc render; khớp chính sách "business effect đăng ký trước" của Order |
-| Cart, Payment, Delivery | Fact | Payload đủ; fact đã tồn tại cho consumer khác |
+| **Order** | **Request** (`notification.requested.v1`, 5 template, `template_data` lấy từ row đơn hàng) | Order sở hữu item snapshot, tổng tiền, địa chỉ; tránh Notification gọi ngược Order lúc render; khớp chính sách "business effect đăng ký trước" của Order |
+| Cart | Fact | Payload có `user_id` và đủ cho lời nhắc |
+| **Payment, Delivery** | **Không consume** | Fact của họ **không có `user_id`** (`payment-event-common.schema.json` đặt `"user_id": false`; Delivery chỉ có `order_id`/`order_line_id`). Notification không biết gửi cho ai nếu không replicate Order. Order đã consume các fact này và phát request `ORDER_PAYMENT_FAILED`, `ORDER_REFUNDED`, `ORDER_COMPLETED` thay. |
+
+*Ghi chú lịch sử:* bản đầu của D-07 xếp Payment/Delivery vào fact vì giả định payload có `user_id`. Soi schema thật cho thấy không; quy tắc không đổi, chỉ áp dụng lại cho đúng.
 
 Cả hai loại chuẩn hoá về một `NotificationRequest` ở Ingest; từ Decide trở đi pipeline không phân biệt. Với fact, "gửi gì / lane nào / `dedup_key` gì" nằm trong **bảng ánh xạ có review** trong Notification. **Email luôn do Notification resolve lúc gửi** qua Auth internal API (không đi qua Kafka: retention, replication, không xoá được, có thể lỗi thời); cache 15 phút trong Redis/memory, không ghi DB.
 
-**Bị loại.** *Fact thuần cho Order + Notification gọi ngược Order lúc render*: thêm dependency trên đường gửi, Notification tấn công Order khi xả backlog, và vẫn cần Order mở internal read API. *Request thuần*: Payment/Delivery/Cart làm việc thừa. *Đưa email vào event*: PII rải khắp Kafka và backup, không xoá được theo `user.deleted`.
+**Bị loại.** *Fact thuần cho Order + Notification gọi ngược Order lúc render*: thêm dependency trên đường gửi, Notification tấn công Order khi xả backlog, và vẫn cần Order mở internal read API. *Fact từ Payment/Delivery + bảng `order_id → user_id` trong Notification*: chính là replicate trạng thái Order dưới tên khác. *Đưa email vào event*: PII rải khắp Kafka và backup, không xoá được theo `user.deleted`.
 
-**Hệ quả.** Ba contract cần mở (README §7): topic `t.notification.*.v1` + schema `notification.requested.v1` với catalog template do Notification sở hữu; `GET /internal/v1/auth/users/{user_id}/notification-contact`; đăng ký Notification là consumer của Payment/Delivery. Hai loại consumer phải maintain. Catalog template là contract công khai — đổi tên/xoá là breaking. Read-your-latest (D-05) thu hẹp: với request, producer chịu trách nhiệm không phát request lỗi thời; Notification không replicate trạng thái đơn hàng.
+**Hệ quả.** Ba việc cần mở với service khác (README §7): topic `t.notification.*.v1` + schema `notification.requested.v1` + catalog template; `GET /internal/v1/auth/users/{user_id}/notification-contact`; snapshot đơn hàng của Order có `name` sản phẩm. Order gánh 5 mốc gửi request. Hai loại consumer phải maintain. Read-your-latest (D-05) thu hẹp: với request, producer chịu trách nhiệm không phát request lỗi thời; Notification không replicate trạng thái đơn hàng.
 
-Chi tiết: [README §4](./README.md), [02-pipeline.md](./02-pipeline.md) §2.1–2.3.
+Chi tiết: [README §4](./README.md), [02-pipeline.md](./02-pipeline.md) §2.1–2.3, [07-templates.md](./07-templates.md) §6.
 
 ## D-08 · Kênh phase 1: email + in-app
 
@@ -133,6 +136,22 @@ Chi tiết: [README §4](./README.md), [02-pipeline.md](./02-pipeline.md) §2.1�
 **Hệ quả.** SES **không có idempotency key** → D-04 lớp C dựa hoàn toàn vào compare-and-set + chính sách theo lane. SES sandbox (1/s, 200/ngày, chỉ gửi tới địa chỉ verify) → phải xin production access trước khi có user thật; dev không dùng SES. Bounce > 5 % / complaint > 0,1 % → account bị review → suppression list là bắt buộc từ ngày đầu. Quota là của AWS account: Notification nên là nơi duy nhất gọi SES. Phụ thuộc thêm SNS + SQS (theo dõi `ApproximateAgeOfOldestMessage`).
 
 Chi tiết: [03-tracking.md](./03-tracking.md) §2–3, [06-backpressure.md](./06-backpressure.md) §4–5.
+
+## D-10 · Catalog template là contract; chính sách preference theo lane
+
+**Bối cảnh.** Producer gọi template bằng tên và đóng gói `template_data` theo schema → tên và schema là giao diện công khai. Preference của User chỉ có ba cờ; cần quy tắc rõ khi cờ xung đột với bản chất của thông báo (user tắt email rồi quên mật khẩu).
+
+**Quyết định.**
+- Catalog sống ở `contracts/events/notification/v1/templates/*.schema.json`, owner Notification, định danh `UPPER_SNAKE_CASE` ổn định, versioning như event (breaking → `<ID>_V2` + deprecated), vòng đời `proposed → active → deprecated → retired`. Mỗi template khai báo `lane`, `channels`, `governed_by`, `max_age`, công thức `dedup_key`; producer chỉ được rút ngắn `max_age`, không được đổi lane.
+- Phase 1: 15 template — 7 critical (Auth, giữ tên enum của Auth), 5 transactional từ Order (`ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`, `ORDER_REFUNDED`), 2 transactional từ Review (`REVIEW_REPLIED`, `REVIEW_REMOVED`), 1 bulk từ Cart (`CART_ABANDONED`).
+- Chính sách theo lane, template không ghi đè: **critical bỏ qua `email_enabled`, suppression và quiet hours** (cả 7 template, kể cả 4 cảnh báo sau sự kiện); transactional tôn trọng `email_enabled`/`in_app_enabled`, không quiet hours; bulk tôn trọng cả ba cờ, quiet hours 22:00–08:00 theo timezone user (mặc định `Asia/Ho_Chi_Minh`), frequency cap 2/ngày/user.
+- Mỗi template có hai bản render (email, in-app) trên cùng `template_data`; `vi` bắt buộc; không PII ngoài thứ cần hiển thị; producer gửi URL tuyệt đối (ngoại lệ: `cart_url` do Notification lắp vì fact không có chỗ).
+
+**Bị loại.** *Cho 4 template cảnh báo bảo mật tuân theo `email_enabled`*: cảnh báo "mật khẩu của bạn vừa bị đổi" không nên tắt được — đó là lớp phòng thủ khi tài khoản bị chiếm. *`ORDER_LINE_DELIVERED`*: quá nhiều email cho một đơn; `ORDER_COMPLETED` đủ. *`ORDER_CREATED`*: user đang nhìn màn hình đặt hàng. *`REFUND_FAILED`*: vấn đề vận hành, user không làm gì được. *Notification tự lắp URL*: phải biết routing frontend.
+
+**Hệ quả.** Order cần snapshot có `name` sản phẩm (README §7 mục 3). Review email không có tên sản phẩm (contract Review không mang) — chấp nhận. `CART_ABANDONED` là lời nhắc + link, không có danh sách sản phẩm cho tới khi Cart bổ sung snapshot. Cần bảng `user_preference` replicate có timezone khi User publish; trước đó dùng mặc định.
+
+Chi tiết: [07-templates.md](./07-templates.md).
 
 ## Quyết định chưa chốt
 

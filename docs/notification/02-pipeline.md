@@ -65,33 +65,35 @@ Sáu stage này là **mô hình logic**. Khi triển khai, chúng thu về **hai
 Notification nhận **request** (producer chỉ định template) và **fact** (sự kiện nghiệp vụ) — quy tắc phân loại ở [decisions.md](./decisions.md) D-07. Ingest có hai loại consumer, nhưng cả hai chuẩn hoá về cùng một cấu trúc nội bộ trước khi INSERT, để **từ Decide trở đi pipeline không phân biệt nguồn**:
 
 ```
-request topic  t.notification.{lane}.v1 ──▶ consumer request ──┐
-                                                               ├──▶ NotificationRequest {
-fact topics    t.payment.events.v2                             │      source, event_id,        -- dedup lớp A
-               t.delivery.order.events.v1 ──▶ consumer fact ───┘      template,                -- request: từ payload; fact: từ bảng ánh xạ
-               t.cart.events                                          lane,                    -- request: theo topic; fact: từ bảng ánh xạ
-                                                                      user_id, subject,
-                                                                      template_data,           -- request: từ payload; fact: trích từ fact
-                                                                      dedup_key?, expires_at?  -- request: producer gửi kèm; fact: bảng ánh xạ sinh
-                                                                    }
+request topics t.notification.{lane}.v1  (Order)     ─┐
+               t.review.events           (Review)    ─┼─▶ consumer request ──┐
+               t.auth.notification.events (Auth, A4) ─┘                      ├──▶ NotificationRequest {
+                                                                             │      source, event_id,        -- dedup lớp A
+fact topic     t.cart.events             (Cart)      ───▶ consumer fact ─────┘      template,                -- request: từ payload; fact: từ bảng ánh xạ
+                                                                                    lane,                    -- request: theo topic/catalog; fact: từ bảng ánh xạ
+                                                                                    user_id, subject,
+                                                                                    template_data,           -- request: từ payload; fact: trích từ fact
+                                                                                    dedup_key?, expires_at?  -- request: producer gửi kèm; fact: bảng ánh xạ sinh
+                                                                                  }
 ```
 
-Riêng Auth là request dạng đặc biệt: payload chỉ có `delivery_id`; `template`, `template_data` (secret) và email được resolve ở Render qua `POST /internal/v1/auth/notification-deliveries/{id}/content`.
+Ba consumer request khác nhau ở cách đọc payload nhưng cùng đích:
+
+- **Order** gửi đúng schema `notification.requested.v1` → ánh xạ trực tiếp.
+- **Review** gửi message riêng của họ (`reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested`) → consumer ánh xạ 1-1 sang `REVIEW_REPLIED` / `REVIEW_REMOVED`, `recipient_user_id` → `user_id`.
+- **Auth** là request dạng đặc biệt: payload chỉ có `delivery_id`; `template`, `template_data` (secret) và email được resolve ở Render qua `POST /internal/v1/auth/notification-deliveries/{id}/content`.
+
+**Không có consumer cho Payment và Delivery**: fact của họ không mang `user_id` (Payment cấm tường minh trong schema), nên Notification không biết gửi cho ai. Order đã consume các fact đó để chạy state machine và phát request `ORDER_PAYMENT_FAILED`, `ORDER_REFUNDED`, `ORDER_COMPLETED` thay ([07-templates.md](./07-templates.md) §6).
 
 ### 2.2 Bảng ánh xạ fact → template
 
-Với fact, "gửi gì" là quyết định của Notification và nằm trong một **bảng cấu hình có review**, không rải trong code:
+Với fact, "gửi gì" là quyết định của Notification và nằm trong một **bảng cấu hình có review**, không rải trong code. Phase 1 chỉ có một nguồn fact:
 
 | Fact (`type`) | Template | Lane | `dedup_key` | `template_data` trích từ |
 |---|---|---|---|---|
-| `com.ecommerce.payment.failed.v2` | `PAYMENT_FAILED` | transactional | `payment_failed:{order_id}:{attempt}` | `order_id`, `amount`, `failure_reason` |
-| `com.ecommerce.payment.expired.v2` | `PAYMENT_EXPIRED` | transactional | `payment_expired:{order_id}` | `order_id`, `amount` |
-| `com.ecommerce.payment.refund-succeeded.v2` | `REFUND_SUCCEEDED` | transactional | `refund_succeeded:{refund_id}` | `order_id`, `amount` |
-| `com.ecommerce.payment.refund-failed.v2` | `REFUND_FAILED` | transactional | `refund_failed:{refund_id}` | `order_id`, `amount` |
-| `com.ecommerce.delivery.order-line-delivered.v1` | `ORDER_LINE_DELIVERED` | transactional | `line_delivered:{order_id}:{line_id}` | `order_id`, line snapshot |
-| `com.ecommerce.cart.abandoned.v1` | `CART_ABANDONED` | bulk | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id` |
+| `com.ecommerce.cart.abandoned.v1` | `CART_ABANDONED` | bulk | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id`; `cart_url` do Notification lắp từ cấu hình base URL của frontend (ngoại lệ duy nhất của quy tắc "producer gửi URL", vì fact không có chỗ cho URL) |
 
-Fact không có trong bảng → ghi `IGNORED`, không phải lỗi. Thêm một fact mới = thêm một dòng cấu hình + template, không sửa consumer.
+Fact không có trong bảng → ghi `IGNORED`, không phải lỗi. Thêm một fact mới = thêm một dòng cấu hình + template, không sửa consumer — với điều kiện fact đó có `user_id` và đủ dữ liệu render; nếu không, đàm phán với producer để họ gửi request thay (đúng bài học từ Payment/Delivery).
 
 ### 2.3 Email người nhận: resolve lúc gửi, không đi qua Kafka
 

@@ -26,7 +26,7 @@ Chấp nhận message đến nhiều lần; thiết kế sao cho lần thứ 2, 
 |---|---|---|---|
 | 1 | **Producer retry** | Auth publish 3 lần cùng CloudEvent `id` khi Kafka timeout | `(source, event_id)` |
 | 2 | **Kafka redelivery** | Consumer INSERT xong, chết trước khi commit offset | `(source, event_id)` — cùng khoá #1 |
-| 3 | **Cùng một sự thật, nhiều event khác id** | Producer dual-publish `.v1` và `.v2` khi migrate; Order phát lại request `ORDER_CONFIRMED` với id mới sau khi sửa bug outbox; Payment phát `refund-succeeded` hai lần với id khác cho cùng refund | Khoá nghiệp vụ, ví dụ `order_confirmed:{order_id}` |
+| 3 | **Cùng một sự thật, nhiều event khác id** | Producer dual-publish `.v1` và `.v2` khi migrate; Order phát lại request `ORDER_CONFIRMED` với id mới sau khi sửa bug outbox; Order phát request `ORDER_REFUNDED` hai lần với id khác cho cùng refund | Khoá nghiệp vụ, ví dụ `order_confirmed:{order_id}` |
 | 4 | **Lease hết hạn ở deliver worker** | Worker gọi provider xong, chết trước `mark_sent`; reaper trả về `RETRY` | `delivery.id` + compare-and-set + chính sách theo lane (SES không có idempotency key) |
 | 5 | **Webhook provider retry** | SNS gửi lại `Delivery` vì endpoint trả 200 chậm | `(provider, provider_event_id)` |
 | 6 | **Replay có chủ đích** | Ops reset offset về 6 giờ trước sau sự cố | Tất cả khoá trên + cửa sổ dedup đủ dài |
@@ -73,8 +73,8 @@ Lớp tinh tế nhất vì **không phải kỹ thuật thuần tuý** — là c
 | Template | Nguồn | `dedup_key` | Lý do |
 |---|---|---|---|
 | `ORDER_CONFIRMED` | Request (Order) | `order_confirmed:{order_id}` | Một đơn xác nhận một lần, kể cả khi Order publish lại request |
-| `PAYMENT_FAILED` | Fact (Payment) | `payment_failed:{order_id}:{attempt}` | Mỗi lần thanh toán thất bại là một thông báo; cùng attempt thì không |
-| `REVIEW_REPLY` | Request (Review) | `review_reply:{review_id}` | Contract Review: "chỉ sau reply chính thức đầu tiên" |
+| `ORDER_PAYMENT_FAILED` | Request (Order) | `order_payment_failed:{order_id}:{attempt}` | Mỗi lần thanh toán thất bại là một thông báo; cùng attempt thì không |
+| `REVIEW_REPLIED` | Request (Review) | `review_replied:{review_id}` | Contract Review: "chỉ sau reply chính thức đầu tiên" |
 | OTP / password reset | Request (Auth) | **không có** | Mỗi lần user bấm "gửi lại" là một OTP **mới**, phải gửi |
 | `CART_ABANDONED` | Fact (Cart) | `cart_abandoned:{cart_id}:{abandonment_cycle}` | Một chu kỳ bỏ giỏ nhắc một lần; chu kỳ mới nhắc lại |
 

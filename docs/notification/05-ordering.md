@@ -50,7 +50,7 @@ Với quyết định D-07, phạm vi áp dụng của cách này **hẹp hơn**
 | Nguồn | Ai chịu trách nhiệm "còn đúng không" | Notification làm gì |
 |---|---|---|
 | **Request** (Order, Review, Auth) | **Producer.** Order biết đơn đã huỷ, nên không phát request `ORDER_CONFIRMED` nữa — hoặc phát `ORDER_CANCELLED` với `expires_at`/`dedup_key` phù hợp. Auth kèm `expires_at` cho OTP. | Chỉ tôn trọng `expires_at` (cách 2). **Không replicate trạng thái đơn hàng** — đó là điều hybrid giúp tránh. |
-| **Fact** (Payment, Delivery, Cart) | Notification, trong phạm vi dữ liệu nó tự có | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
+| **Fact** (Cart) | Notification, trong phạm vi dữ liệu nó tự có | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
 
 Nghĩa là Notification không cần gọi ngược Order hay giữ bản sao state machine của đơn hàng; nó chỉ cần theo dõi những fact nó đã consume sẵn.
 

@@ -9,7 +9,7 @@ Notification không phải một workload mà là nhiều workload có SLO khác
 | Lớp | Ví dụ trong dự án | SLO thực tế | Đặc điểm |
 |---|---|---|---|
 | **Critical** | OTP, reset password, email changed, account locked | p99 < 3–5 s, không được mất | Volume thấp; trễ đồng nghĩa user không đăng nhập được |
-| **Transactional** | order paid, order-line delivered, review reply | p99 < 30–60 s | Volume tỉ lệ với đơn hàng; bursty theo flash sale |
+| **Transactional** | order confirmed, order completed, payment failed, review replied | p99 < 30–60 s | Volume tỉ lệ với đơn hàng; bursty theo flash sale |
 | **Bulk / engagement** | cart abandoned, khuyến mãi, digest | phút → giờ | Volume lớn nhất; có thể throttle hoặc tạm dừng |
 
 Một partition Kafka là log tuần tự: consumer đọc từ offset thấp lên cao, không nhảy cóc được. Nếu ba lớp trên đi chung một topic thì message quan trọng luôn có thể bị kẹt sau hàng trăm nghìn message không quan trọng. Đây là **head-of-line blocking**.
@@ -78,9 +78,9 @@ Giải thích:
 Phụ thuộc loại đầu vào (D-07):
 
 - **Request**: **producer chọn topic, ghi trong contract.** Order publish `ORDER_CONFIRMED` thẳng lên `t.notification.transactional.v1`; Auth lên lane critical. Người hiểu rõ mức độ khẩn nhất là producer; không có tầng trung gian nào phải đọc hết bulk mới tới OTP.
-- **Fact**: producer không biết (và không cần biết) Notification sẽ làm gì với fact, nên **Notification gán lane trong bảng ánh xạ fact → template** ([02-pipeline.md](./02-pipeline.md) §2.2): `payment.failed → transactional`, `cart.abandoned → bulk`. Consumer fact đọc topic của producer rồi INSERT với `lane` tương ứng; từ ranh giới 2 trở đi, row đó đi đúng pool và quota của lane.
+- **Fact**: producer không biết (và không cần biết) Notification sẽ làm gì với fact, nên **Notification gán lane trong bảng ánh xạ fact → template** ([02-pipeline.md](./02-pipeline.md) §2.2): `cart.abandoned → bulk` (phase 1 chỉ có một nguồn fact). Consumer fact đọc topic của producer rồi INSERT với `lane` tương ứng; từ ranh giới 2 trở đi, row đó đi đúng pool và quota của lane.
 
-Lưu ý: với fact, việc tách lane chỉ bắt đầu từ **ranh giới 2** (pool + quota), không có ở tầng topic — vì topic là của producer. Điều này chấp nhận được vì fact topic (`t.payment.events.v2`, `t.cart.events`) không trộn khối lượng bulk với critical: OTP không bao giờ đi qua đó.
+Lưu ý: với fact, việc tách lane chỉ bắt đầu từ **ranh giới 2** (pool + quota), không có ở tầng topic — vì topic là của producer. Điều này chấp nhận được vì fact topic (`t.cart.events`) không trộn khối lượng bulk với critical: OTP không bao giờ đi qua đó.
 
 Phương án thay thế cho request — một topic vào, Notification tự route — tạo ra đúng điểm nghẽn chung mà lane đang cố tránh, nên bị loại.
 
