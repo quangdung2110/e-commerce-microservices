@@ -13,7 +13,7 @@
 - *Partition range thay cho topic*: phá auto-rebalance, producer phải tự tính partition, ordering theo key không còn đảm bảo; tiết kiệm được hai topic.
 - *Tách thêm theo kênh / tenant*: email và push cùng lane không chặn nhau (pool riêng ở ranh giới 2); tách topic chỉ khi hai luồng có SLO khác nhau **và** có thể chặn nhau.
 
-**Hệ quả.** Quyết định lộ ra ngoài contract, khó đảo ngược → phải chốt trước khi producer đầu tiên tích hợp. Cần đàm phán với Auth về `t.auth.notification.events` (quyết định mở A4 trong [README §6](./README.md); khuyến nghị phase 1: giữ topic Auth, consume bằng group riêng).
+**Hệ quả.** Quyết định lộ ra ngoài contract, khó đảo ngược → phải chốt trước khi producer đầu tiên tích hợp. Cần đàm phán với Auth về `t.auth.notification.events` (đã chốt ở D-19: giữ topic Auth, consume bằng group riêng).
 
 Chi tiết: [01-lanes.md](./01-lanes.md).
 
@@ -266,6 +266,16 @@ Chi tiết: [12-render.md](./12-render.md).
 
 Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14-observability.md), [15-verification.md](./15-verification.md), [16-operations.md](./16-operations.md).
 
+## D-19 · Auth giữ topic riêng `t.auth.notification.events`; Notification consume như lane critical thứ hai
+
+**Bối cảnh.** Auth đã có contract `t.auth.notification.events` với payload chỉ có `delivery_id` và nội dung resolve qua `POST .../notification-deliveries/{id}/content` (secret không lên Kafka). Schema chung `notification.requested.v1` mang `template_data` inline, không khớp mô hình đó nếu không thêm biến thể "reference-only".
+
+**Quyết định.** Giữ nguyên topic và contract của Auth. Notification chạy consumer group riêng `notification-auth-critical` đọc topic này; sau Ingest, row được gán `lane = critical` và đi chung pool, quota, chính sách với lane critical (01-lanes §4 vẫn đúng: tách lane ở ranh giới 2). Channel `t.notification.critical.v1` vẫn được khai báo trong contract Notification cho producer critical tương lai (không có producer ở phase 1).
+
+**Bị loại.** *Auth chuyển sang `t.notification.critical.v1`*: cần biến thể schema không có `template_data` inline, sửa contract Auth đang `proposed` và mesh; không có lợi ích vận hành đáng kể vì Auth là producer critical duy nhất. *Gộp cả hai vào một consumer group*: một group không subscribe hai topic với hai schema mà vẫn giữ cô lập rebalance sạch.
+
+**Hệ quả.** Thêm một consumer group phải vận hành và theo dõi lag (`kafka_consumer_lag{lane=critical,topic=t.auth.notification.events}`). Nếu sau này có producer critical thứ hai dùng schema chung, xem xét lại việc gộp — không phá gì vì channel đã tồn tại.
+
 ## Quyết định chưa chốt
 
-Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): chỉ còn A4 (topic của Auth — khuyến nghị giữ ở phase 1; channel critical đã khai báo sẵn nên gộp sau không phá gì).
+Không còn. D-01…D-19 khép kín thiết kế phase 1; việc tiếp theo là implement ([13-development.md](./13-development.md)) và thay giả định bằng số đo ([15-verification.md](./15-verification.md) §3).

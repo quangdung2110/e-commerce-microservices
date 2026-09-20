@@ -85,12 +85,11 @@ Các con số dưới đây được dùng xuyên suốt tài liệu để minh 
 | A2 | Kênh phase 1? | **Email + in-app.** Push/SMS để phase sau; thiết kế để thêm push chỉ là thêm adapter + pool + preference flag. | D-08 |
 | A3 | Provider email? | **Amazon SES** (rẻ nhất, mục tiêu học tập) + **Mailpit** cho dev/CI. Tracking qua SNS → SQS. **Không** có provider dự phòng ở phase 1. SES không có idempotency key → lớp C của idempotency dựa vào compare-and-set + chính sách theo lane. | D-09 |
 | A5 | Runtime? | **Go.** Nhất quán với Auth/User/Cart; goroutine + worker pool khớp workload I/O-bound; footprint nhỏ cho đồ án nhiều container. Vị trí `go/services/notification-service`. | D-15 |
+| A4 | Topic của Auth? | **Giữ `t.auth.notification.events`.** Mô hình resolve-content-theo-`delivery_id` của Auth khác request thường; Notification consume bằng consumer group riêng `notification-auth-critical`, xử lý như lane critical thứ hai (pool và quota critical dùng chung). Channel `t.notification.critical.v1` vẫn khai báo sẵn cho producer critical khác sau này. | D-19 |
 
 ### Đang mở
 
-| # | Câu hỏi | Khuyến nghị hiện tại | Ảnh hưởng |
-|---|---|---|---|
-| A4 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Giữ ở phase 1 (mô hình resolve-content-theo-`delivery_id` của Auth khác với request thường); Notification consume bằng consumer group riêng như lane critical thứ hai. Channel critical đã khai báo sẵn trong contract nên gộp sau không phá gì. | Số consumer group |
+Không còn. Mọi quyết định thiết kế phase 1 đã chốt (D-01…D-19); phần còn lại là implement và đo ([15-verification.md](./15-verification.md) §3).
 
 ## 7. Contract
 

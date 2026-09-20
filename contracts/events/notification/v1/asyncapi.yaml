@@ -20,7 +20,8 @@ channels:
     description: >-
       Request lane critical: user đang chờ chủ động để hoàn thành một hành động,
       hoặc cảnh báo bảo mật. Phase 1 chưa có producer (Auth giữ topic riêng
-      t.auth.notification.events, xem docs/notification/README.md A4). Khai báo
+      t.auth.notification.events — quyết định D-19, Notification consume topic đó bằng
+      consumer group riêng như lane critical thứ hai). Khai báo
       sẵn để lane đủ bộ và producer sau không cần đổi contract.
     x-owner: notification-service
     x-lane: critical

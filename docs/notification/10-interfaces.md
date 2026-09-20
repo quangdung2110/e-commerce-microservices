@@ -7,7 +7,7 @@
 | Bề mặt | Chiều | Contract | Ai gọi / ai nghe | Đi qua |
 |---|---|---|---|---|
 | Request lane (3 topic) | Vào | [AsyncAPI Notification v1](../../contracts/events/notification/v1/asyncapi.yaml) `notificationCritical/Transactional/Bulk` | Order (transactional); critical/bulk chưa có producer | Kafka |
-| Request từ Auth | Vào | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) `authNotificationEvents` | Auth | Kafka (`t.auth.notification.events`, A4) |
+| Request từ Auth | Vào | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) `authNotificationEvents` | Auth | Kafka (`t.auth.notification.events`, consumer group `notification-auth-critical`, D-19) |
 | Request từ Review | Vào | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | Review | Kafka (`t.review.events`) |
 | Fact Cart | Vào | [AsyncAPI Cart v1](../../contracts/events/cart/v1/asyncapi.yaml) | Cart | Kafka (`t.cart.events`) |
 | Preference replication | Vào | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) | User | Kafka (`t.user.events`) |

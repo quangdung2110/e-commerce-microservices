@@ -88,7 +88,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 |---|---|---|---|---|
 | `auth-service` | `/api/v1/auth/**` | X | `edge/traefik` | gateway matrix |
 | `auth-service` | `/.well-known/**` | GET | `edge/traefik`, `edge/gateway-auth` | gateway matrix; `gateway-verifies-auth-tokens` |
-| `auth-service` | `/internal/v1/auth/notification-deliveries/*/content` | GET | `ecommerce/notification-service` | `notification-resolves-auth-delivery-content` |
+| `auth-service` | `/internal/v1/auth/notification-deliveries/*/content` | POST | `ecommerce/notification-service` | `notification-resolves-auth-delivery-content`; Auth OpenAPI khai báo POST (operation idempotent theo `delivery_id`, không consume OTP/token) |
 | `user-service` | `/api/v1/users/**` | X | `edge/traefik` | User OpenAPI v1 |
 | `user-service` | `/internal/v1/users/*/addresses/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | `checkout-reads-user-address-snapshot` |
 | `cart-service` | `/api/v1/carts/**` | X | `edge/traefik` | Cart OpenAPI v1 |
@@ -178,7 +178,7 @@ của Istio.
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout query Order status sau timeout thay vì nhân ba deadline. Webhook không nằm trong policy này |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF degrade theo contract |
-| `GET /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | Idempotent theo `delivery_id` |
+| `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
 
 `DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa

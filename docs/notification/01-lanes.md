@@ -99,7 +99,7 @@ Contract Auth đang sở hữu topic riêng `t.auth.notification.events` với `
 1. Auth chuyển sang publish lên `t.notification.critical.v1` theo schema `notification.requested.v1` — một lane, một topic, một group. Nhưng schema chung có `template_data` inline, còn Auth cố ý không đưa secret vào Kafka, nên Auth sẽ cần một biến thể "reference-only" của schema.
 2. **Giữ topic Auth** và Notification consume nó bằng consumer group riêng, coi như lane critical thứ hai. Tốn thêm một group phải vận hành, nhưng không phải sửa contract Auth và giữ nguyên mô hình bảo mật của họ.
 
-Khuyến nghị phase 1: **lựa chọn 2**. Đây là quyết định mở A4 trong [README §6](./README.md).
+**Đã chốt (A4, D-19): lựa chọn 2.** Consumer group `notification-auth-critical` đọc `t.auth.notification.events`; từ ranh giới 2 trở đi row của Auth đi cùng pool và quota với lane critical. Channel `t.notification.critical.v1` vẫn khai báo sẵn cho producer critical khác sau này.
 
 ## 7. Không tách quá tay
 
