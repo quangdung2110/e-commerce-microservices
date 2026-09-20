@@ -85,7 +85,7 @@ flowchart LR
 
 | Ranh giới | Cơ chế | Điều Payment tin / không tin |
 |---|---|---|
-| Stripe → webhook endpoint | Gateway: rate limit, giữ nguyên raw body, bypass JWT. Payment: `Stripe-Signature` HMAC + cửa sổ 300s, verify ở worker | Không tin gì trước khi verify; `stripe_event_id` trong body chỉ dùng làm Kafka key, không phải identity cho tới khi verify |
+| Stripe → webhook endpoint | Gateway: rate limit, giữ nguyên raw body, bypass JWT. Payment: `Stripe-Signature` HMAC + cửa sổ 300s, verify ở worker | Không tin gì trước khi verify; candidate event ID chỉ dùng best-effort làm Kafka key, fallback SHA-256 raw body, không phải identity cho tới khi verify |
 | Order → HTTP v1 | Mesh mTLS + `AuthorizationPolicy` (principal `ecommerce/order-service`); header `X-Service-Identity` chỉ để attribution | Tin identity mesh; **không** tin nội dung: fingerprint idempotency, `order_id` khớp transaction, amount ≤ paid |
 | Payment → Stripe | Secret key từ Vault; egress chỉ qua `ServiceEntry` | Tin response Stripe là fact provider, nhưng chỉ sau khi bind vào `provider_operations` |
 | Kafka out | Chỉ Debezium ghi topic; consumer tự dedup theo CloudEvents `id` | Payment không tin consumer đã nhận; at-least-once |
@@ -93,6 +93,9 @@ flowchart LR
 
 Gateway matrix chỉ có route webhook cho Payment (`docs/gateway/runtime-contract.md`);
 không có route `/api/payments/**` nào khác vì buyer đọc payment qua Order.
+Gateway rewrite chính xác public `/api/payments/webhook/stripe` sang upstream
+`/v1/payments/webhook/stripe`; rewrite chỉ đổi path, raw body và `Stripe-Signature`
+phải được forward nguyên vẹn.
 
 ### 1.3. Quyết định định hình
 
@@ -142,7 +145,7 @@ Kiểm tra bằng ArchUnit trong CI (§7).
 | Thành phần | Trách nhiệm | Không được làm |
 |---|---|---|
 | HTTP v1 adapter | Xác thực workload, đọc header (`Idempotency-Key`, `X-Correlation-Id`), validate schema, chạy idempotency filter (`payment_idempotency` fingerprint + `IN_PROGRESS`), gọi use case, map lỗi domain → problem+json | Chứa FSM; gọi Stripe; đọc/ghi DB ngoài repository |
-| Webhook endpoint | Nhận raw body + headers, produce `t.payment.webhooks.raw`, trả `200` (hoặc `503` khi Kafka lỗi để Stripe retry) | Verify, parse, ghi DB, gọi Stripe |
+| Webhook endpoint | Reject `400` nếu thiếu body/`Stripe-Signature`; nếu đủ envelope thì nhận raw body + headers, best-effort lấy candidate event ID (fallback hash raw body), produce `t.payment.webhooks.raw`, trả `200` (hoặc `503` khi Kafka lỗi để Stripe retry) | Deserialize/validate business payload, verify chữ ký, ghi DB, gọi Stripe |
 | Application/use case | Mở/đóng transaction (TX1/TX2, §3.4), gọi domain, ghi outbox + history trong cùng TX, gọi port provider **ngoài** TX | Publish Kafka trực tiếp; bỏ qua guard; suy luận trạng thái provider |
 | Domain | Hai FSM, guard, policy decline, invariant; thuần, test không cần hạ tầng | Biết Stripe type, JPA, Spring |
 | `com.platform.paymentservice.stripe` | `PaymentProviderPort` duy nhất; wrap `PaymentIntent.create/retrieve/cancel`, `Refund.create/retrieve`, `Webhook.constructEvent`; map lỗi Stripe → `ProviderOutcome` (`CONFIRMED`/`REJECTED`/`UNKNOWN`); một `StripeClient` singleton, API version pin | Chứa nghiệp vụ; lộ `com.stripe.*` ra ngoài; tự sinh idempotency key |
@@ -184,8 +187,10 @@ sequenceDiagram
     F->>DB: payment_idempotency (key, action): COMPLETED? IN_PROGRESS? fingerprint?
     alt COMPLETED cùng fingerprint
         F-->>O: response đã lưu (regenerate client data nếu cần)
-    else IN_PROGRESS
+    else IN_PROGRESS và request khác còn giữ execution lock
         F-->>O: 409 REQUEST_IN_PROGRESS
+    else INITIATE IN_PROGRESS không có active owner, recovery đã nhận operation
+        F-->>O: 200 INITIATING (không có client data)
     else fingerprint khác
         F-->>O: 422 IDEMPOTENCY_KEY_REUSED
     else mới
@@ -198,8 +203,11 @@ sequenceDiagram
     end
 ```
 
-`UNKNOWN` (timeout/ambiguous) kết thúc ở TX2 với operation `UNKNOWN` và response
-`503 retryable`; idempotency vẫn `IN_PROGRESS` tới khi recovery bind được.
+`UNKNOWN` (timeout/ambiguous) kết thúc ở TX2 với operation `UNKNOWN`; request đã quan
+sát ambiguity nhận `503 retryable`, idempotency vẫn `IN_PROGRESS` tới khi recovery
+bind được. Request đồng thời chỉ nhận `409` khi còn active execution owner; replay
+initiate sau khi owner đã nhả lock và recovery đã nhận operation có thể nhận
+`200 INITIATING` để phân biệt với contention.
 
 ### 3.3. Fact pipeline
 
@@ -314,15 +322,18 @@ deploy độc lập (worker restart không làm rớt webhook endpoint).
 
 ### 6.2. Mạng và policy
 
-- Mesh `AuthorizationPolicy` cho `payment-service`: `POST` + `GET /v1/payments/**`,
-  `GET /v1/refunds/**` từ principal `ecommerce/order-service`; webhook route từ
+- Mesh `AuthorizationPolicy` cho `payment-service` cấp principal
+  `ecommerce/order-service` đúng sáu operation Order-facing: `POST initiate/cancel/refund`
+  và `GET payment/client-data/refund`; không dùng wildcard `POST /v1/payments/**` vì
+  wildcard đó sẽ bao trùm webhook. Riêng `POST /v1/payments/webhook/stripe` chỉ từ
   `edge/traefik`; metrics từ `observability/prometheus` (bảng ở
   `docs/mesh/runtime-contract.md`).
 - Mesh timeout `POST /v1/payments/**` 15s, **không retry** (caller sở hữu retry bằng
   idempotency key); gateway chờ header webhook 20s, không retry.
 - Egress Stripe qua `ServiceEntry`; không egress nào khác.
 - Gateway: chỉ `POST /api/payments/webhook/stripe` (`stripe-webhook`: bypass JWT,
-  giữ raw body, rate limit theo IP); Payment không có route buyer.
+  giữ raw body, rate limit theo IP), rewrite upstream sang
+  `/v1/payments/webhook/stripe`; Payment không có route buyer.
 
 ### 6.3. Hạ tầng
 

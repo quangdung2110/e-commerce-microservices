@@ -2,10 +2,18 @@ openapi: 3.1.0
 info:
   title: Payment Service API
   version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
   description: >-
-    Canonical REST contract between Order and Payment. Amounts are integer VND
-    minor units. A payment idempotency key is stable for one attempt only; a
-    later attempt uses the next attempt number and a new key.
+    Canonical HTTP contract for Order-to-Payment operations and Stripe webhook
+    ingestion. Amounts are positive integer VND minor units. A payment
+    idempotency key is stable for one attempt only; a later attempt uses the next
+    attempt number and a new key. Stripe calls the public Gateway path
+    /api/payments/webhook/stripe, which is rewritten to the service path
+    /v1/payments/webhook/stripe without changing the raw body. Actuator, dependency
+    health, administrative, DLQ, review-case, and correction operations are outside
+    this contract.
 x-adoption-status: proposed
 servers:
   - url: https://payment-service.internal
@@ -15,53 +23,81 @@ paths:
     post:
       operationId: initiatePayment
       summary: Create or replay one numbered payment attempt
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentRequest' } }
       responses:
         '200':
-          description: Stored or newly recovered payment-attempt result.
+          description: >-
+            Stored or newly recovered payment-attempt result. Client data is
+            present only while the attempt is PENDING and still usable.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /v1/payments/{transactionId}:
     get:
       operationId: getPayment
-      summary: Read one payment transaction for the owning Order or buyer
-      parameters: [{ $ref: '#/components/parameters/TransactionId' }]
+      summary: Read one payment transaction for the Order workload
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
           description: Current Payment state.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/PaymentStatus' } }
+        '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /v1/payments/{transactionId}/client-data:
     get:
       operationId: getPaymentClientData
-      summary: Read Stripe client data for the owning Order to relay to the buyer
+      summary: Read Stripe client data for the Order workload to relay to the buyer
       description: >-
         Payment is the only store of the encrypted PaymentIntent client_secret.
         Order calls this on every read (initiate replay, buyer payment-attempt read,
         Checkout recovery) instead of persisting a copy. The secret is returned only
         while the transaction is PENDING and before client_expires_at; otherwise
-        usable=false and client_secret is null. Responses are private, no-store.
-      parameters: [{ $ref: '#/components/parameters/TransactionId' }]
+        usable=false, client_secret is null, and publishable_key is null. Responses
+        are private, no-store.
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
           description: Client data, or an explicit not-usable answer.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/PaymentClientData' } }
+        '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /v1/payments/{transactionId}/cancel:
     post:
       operationId: cancelPayment
       summary: Resolve pre-capture cancel versus capture for one transaction
       parameters:
         - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
@@ -69,11 +105,18 @@ paths:
           application/json: { schema: { $ref: '#/components/schemas/CancelPaymentRequest' } }
       responses:
         '200':
-          description: Durable provider fact, never an inferred cancellation.
+          description: >-
+            Current durable cancel/capture result, or CANCEL_PENDING while Payment
+            continues recovering an unresolved provider outcome.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/CancelPaymentResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /v1/payments/{transactionId}/refund:
     post:
@@ -81,6 +124,8 @@ paths:
       summary: Initiate the single lifetime refund for an order
       parameters:
         - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
@@ -88,99 +133,225 @@ paths:
           application/json: { schema: { $ref: '#/components/schemas/RefundRequest' } }
       responses:
         '200':
-          description: Stored or newly accepted asynchronous refund result.
+          description: >-
+            Stored or newly accepted asynchronous refund result. PROCESSING means
+            that Payment durably accepted the command, not that the provider has
+            not already produced a final success or failure; events and GET expose
+            the authoritative final state.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/RefundResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /v1/refunds/{refundTransactionId}:
     get:
       operationId: getRefund
-      summary: Read one refund transaction
-      parameters: [{ $ref: '#/components/parameters/RefundTransactionId' }]
+      summary: Read one refund transaction for the Order workload
+      parameters:
+        - $ref: '#/components/parameters/RefundTransactionId'
+        - $ref: '#/components/parameters/ServiceIdentity'
+        - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
           description: Current Refund state.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/RefundStatus' } }
+        '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /v1/payments/webhook/stripe:
+    post:
+      operationId: ingestStripeWebhook
+      summary: Durably enqueue one raw Stripe webhook delivery
+      description: >-
+        Public callers use /api/payments/webhook/stripe at the Gateway. The Gateway
+        rewrites only the path and preserves the exact request-body bytes and
+        Stripe-Signature header. This endpoint does not authenticate with the Order
+        workload identity and does not deserialize, verify, or apply the event
+        synchronously.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/StripeSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        '200':
+          description: Kafka acknowledged the raw delivery; Stripe must not retry it.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+        '400':
+          description: The HTTP envelope has no body or no Stripe-Signature header; nothing was enqueued.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+        '503':
+          description: The raw delivery could not be durably enqueued; Stripe should retry it.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
 components:
   securitySchemes:
     workloadIdentity:
-      type: apiKey
-      in: header
-      name: X-Service-Identity
-      description: Service mesh must authenticate the order-service principal; the header is attribution only.
+      type: mutualTLS
+      description: >-
+        The service mesh authenticates the ecommerce/order-service workload and
+        AuthorizationPolicy authorizes it for these Order-facing paths.
   parameters:
     TransactionId:
       name: transactionId
       in: path
       required: true
-      schema: { type: string, minLength: 1, maxLength: 120 }
+      schema: { $ref: '#/components/schemas/PaymentTransactionId' }
     RefundTransactionId:
       name: refundTransactionId
       in: path
       required: true
-      schema: { type: string, minLength: 1, maxLength: 120 }
+      schema: { $ref: '#/components/schemas/RefundTransactionId' }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: true
       schema: { type: string, minLength: 16, maxLength: 255 }
+    ServiceIdentity:
+      name: X-Service-Identity
+      in: header
+      required: true
+      description: >-
+        Required caller attribution. The value is not authentication evidence;
+        authorization uses the authenticated mesh principal.
+      schema: { type: string, const: order-service }
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      description: Temporal Workflow ID propagated to logs, outbox headers, and the response.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    StripeSignature:
+      name: Stripe-Signature
+      in: header
+      required: true
+      description: Raw Stripe signature value, for example t=timestamp,v1=signature.
+      schema: { type: string, minLength: 1 }
+  headers:
+    CorrelationId:
+      description: Echo of the request X-Correlation-Id.
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    PrivateNoStore:
+      description: Order-facing Payment responses must never be cached.
+      required: true
+      schema: { type: string, const: 'private, no-store' }
+    NoStore:
+      description: Webhook responses must never be cached.
+      required: true
+      schema: { type: string, const: 'no-store' }
   schemas:
     OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    OrderId:
+      type: string
+      pattern: '^[1-9][0-9]{0,18}$'
+      description: Positive decimal order ID serialized as a string and stored as PostgreSQL BIGINT.
+    PaymentTransactionId:
+      type: string
+      maxLength: 64
+      pattern: '^TXN_[0-9A-HJKMNP-TV-Z]{26}$'
+    RefundTransactionId:
+      type: string
+      maxLength: 64
+      pattern: '^RFD_[0-9A-HJKMNP-TV-Z]{26}$'
     VndMoney:
       type: object
       additionalProperties: false
       required: [amount_minor, currency]
       properties:
-        amount_minor: { type: integer, format: int64, minimum: 0 }
+        amount_minor: { type: integer, format: int64, minimum: 1 }
         currency: { type: string, const: VND }
     InitiatePaymentRequest:
       type: object
       additionalProperties: false
       required: [order_id, payment_attempt_number, amount, user_id]
       properties:
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
-        payment_attempt_number: { type: integer, minimum: 1 }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
         amount: { $ref: '#/components/schemas/VndMoney' }
         user_id: { type: string, format: uuid }
-        return_url: { type: [string, 'null'], format: uri }
+        return_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
     InitiatePaymentResponse:
       oneOf:
-        - type: object
-          additionalProperties: false
-          required: [transaction_id, payment_attempt_number, status]
-          properties:
-            transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-            payment_attempt_number: { type: integer, minimum: 1 }
-            status: { const: INITIATING }
-        - type: object
-          additionalProperties: false
-          required: [transaction_id, payment_attempt_number, status, client_secret, publishable_key, expires_at]
-          properties:
-            transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-            payment_attempt_number: { type: integer, minimum: 1 }
-            status: { const: PENDING }
-            client_secret: { type: string, minLength: 1 }
-            publishable_key: { type: string, minLength: 1 }
-            expires_at: { type: string, format: date-time }
+        - $ref: '#/components/schemas/InitiatingPaymentResponse'
+        - $ref: '#/components/schemas/PendingPaymentWithClientDataResponse'
+        - $ref: '#/components/schemas/PaymentReplayWithoutClientDataResponse'
+    InitiatingPaymentResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        Durable initiation is still being recovered after an earlier provider
+        outcome became ambiguous. No request currently owns the execution lock;
+        concurrent execution while an owner is active returns 409 instead.
+      required: [transaction_id, payment_attempt_number, status]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
+        status: { const: INITIATING }
+    PendingPaymentWithClientDataResponse:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, payment_attempt_number, status, client_secret, publishable_key, expires_at]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
+        status: { const: PENDING }
+        client_secret: { type: string, minLength: 1 }
+        publishable_key: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+    PaymentReplayWithoutClientDataResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        Replay result when client data is no longer usable. PENDING is possible
+        during the client-secret safety margin before the expiration scanner runs.
+      required: [transaction_id, payment_attempt_number, status]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
+        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
     CancelPaymentRequest:
       type: object
       additionalProperties: false
       required: [order_id, reason]
       properties:
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
         reason: { enum: [PAYMENT_TIMEOUT, BUYER_CANCELLED, ORDER_CANCELLED_PRE_CAPTURE] }
     CancelPaymentResponse:
+      oneOf:
+        - $ref: '#/components/schemas/CancelNonCaptureOrPendingResponse'
+        - $ref: '#/components/schemas/CancelAlreadySucceededResponse'
+    CancelNonCaptureOrPendingResponse:
       type: object
       additionalProperties: false
       required: [transaction_id, order_id, outcome, financial_state_version]
       properties:
-        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
-        outcome: { enum: [CANCELED, ALREADY_NON_CAPTURED, ALREADY_SUCCEEDED, CANCEL_PENDING] }
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        outcome: { enum: [CANCELED, ALREADY_NON_CAPTURED, CANCEL_PENDING] }
+        financial_state_version: { type: integer, minimum: 0 }
+    CancelAlreadySucceededResponse:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, order_id, outcome, amount, financial_state_version]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        outcome: { const: ALREADY_SUCCEEDED }
         amount: { $ref: '#/components/schemas/VndMoney' }
         financial_state_version: { type: integer, minimum: 1 }
     RefundRequest:
@@ -188,39 +359,86 @@ components:
       additionalProperties: false
       required: [order_id, refund_request_id, amount, reason, inventory_evidence]
       properties:
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
         refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
         amount: { $ref: '#/components/schemas/VndMoney' }
         reason: { enum: [CUSTOMER_RETURN_SELECTED_LINES, ADMIN_FORCE_REFUND_BEFORE_DISPATCH] }
-        inventory_evidence: { type: object, minProperties: 1 }
+        inventory_evidence: { $ref: '#/components/schemas/InventoryEvidence' }
+      oneOf:
+        - required: [reason, inventory_evidence]
+          properties:
+            reason: { const: CUSTOMER_RETURN_SELECTED_LINES }
+            inventory_evidence: { $ref: '#/components/schemas/ReturnScopeInspectionCompletedEvidence' }
+        - required: [reason, inventory_evidence]
+          properties:
+            reason: { const: ADMIN_FORCE_REFUND_BEFORE_DISPATCH }
+            inventory_evidence: { $ref: '#/components/schemas/CommittedOrderReleasedBeforeDispatchEvidence' }
+    InventoryEvidence:
+      oneOf:
+        - $ref: '#/components/schemas/ReturnScopeInspectionCompletedEvidence'
+        - $ref: '#/components/schemas/CommittedOrderReleasedBeforeDispatchEvidence'
+    ReturnScopeInspectionCompletedEvidence:
+      type: object
+      additionalProperties: false
+      required: [type, refund_scope_id, expected, received, passed, failed]
+      properties:
+        type: { const: RETURN_SCOPE_INSPECTION_COMPLETED }
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected: { type: integer, minimum: 0 }
+        received: { type: integer, minimum: 0 }
+        passed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+    CommittedOrderReleasedBeforeDispatchEvidence:
+      type: object
+      additionalProperties: false
+      required: [type, release_reference]
+      properties:
+        type: { const: COMMITTED_ORDER_RELEASED_BEFORE_DISPATCH }
+        release_reference: { $ref: '#/components/schemas/OpaqueId' }
     RefundResponse:
       type: object
       additionalProperties: false
       required: [refund_transaction_id, payment_transaction_id, status]
       properties:
-        refund_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, REVERSED] }
+        refund_transaction_id: { $ref: '#/components/schemas/RefundTransactionId' }
+        payment_transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        status: { const: PROCESSING }
     PaymentClientData:
+      oneOf:
+        - $ref: '#/components/schemas/UsablePaymentClientData'
+        - $ref: '#/components/schemas/UnusablePaymentClientData'
+    UsablePaymentClientData:
       type: object
       additionalProperties: false
       required: [transaction_id, payment_attempt_number, status, usable, client_secret, publishable_key, client_expires_at]
       properties:
-        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        payment_attempt_number: { type: integer, minimum: 1 }
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
+        status: { const: PENDING }
+        usable: { const: true }
+        client_secret: { type: string, minLength: 1 }
+        publishable_key: { type: string, minLength: 1 }
+        client_expires_at: { type: string, format: date-time }
+    UnusablePaymentClientData:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, payment_attempt_number, status, usable, client_secret, publishable_key, client_expires_at]
+      properties:
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
         status: { enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
-        usable: { type: boolean, description: "true only while status is PENDING and now < client_expires_at" }
-        client_secret: { type: [string, 'null'], minLength: 1 }
-        publishable_key: { type: [string, 'null'], minLength: 1 }
+        usable: { const: false }
+        client_secret: { type: 'null' }
+        publishable_key: { type: 'null' }
         client_expires_at: { type: [string, 'null'], format: date-time }
     PaymentStatus:
       type: object
       additionalProperties: false
-      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version, requires_manual_review, refund]
+      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version, requires_manual_review, succeeded_at, terminal_at, refund]
       properties:
-        transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
-        payment_attempt_number: { type: integer, minimum: 1 }
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        payment_attempt_number: { type: integer, format: int32, minimum: 1 }
         amount: { $ref: '#/components/schemas/VndMoney' }
         status: { enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED, REFUNDING, REFUNDED] }
         financial_state_version: { type: integer, minimum: 0 }
@@ -237,21 +455,39 @@ components:
       additionalProperties: false
       required: [refund_transaction_id, payment_transaction_id, order_id, amount, status]
       properties:
-        refund_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
-        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_transaction_id: { $ref: '#/components/schemas/RefundTransactionId' }
+        payment_transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
         amount: { $ref: '#/components/schemas/VndMoney' }
         status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, REVERSED] }
     Problem:
       type: object
       additionalProperties: false
-      required: [code, retryable]
+      required: [code, retryable, correlation_id]
       properties:
-        code: { type: string }
+        code:
+          enum:
+            - IDEMPOTENCY_KEY_MISSING
+            - VALIDATION_FAILED
+            - PAYMENT_NOT_SUCCESS
+            - REFUND_AMOUNT_EXCEEDED
+            - ORDER_MISMATCH
+            - PAYMENT_NOT_FOUND
+            - REFUND_NOT_FOUND
+            - REQUEST_IN_PROGRESS
+            - ORDER_REFUND_ALREADY_EXISTS
+            - ATTEMPT_ALREADY_EXISTS
+            - IDEMPOTENCY_KEY_REUSED
+            - PROVIDER_OUTCOME_UNKNOWN
+            - PROVIDER_UNAVAILABLE
+            - DEPENDENCY_UNAVAILABLE
         retryable: { type: boolean }
-        correlation_id: { type: string }
+        correlation_id: { type: string, minLength: 1, maxLength: 255 }
   responses:
     Problem:
       description: Domain or infrastructure failure; retryable is authoritative.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+        Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
       content:
         application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }

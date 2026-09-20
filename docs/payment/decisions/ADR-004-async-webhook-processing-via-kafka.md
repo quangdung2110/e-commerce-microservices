@@ -27,10 +27,12 @@ mất vĩnh viễn. Webhook có thể duplicate, delay, out-of-order.
 
 ## Quyết định
 
-Endpoint `POST /v1/payments/webhook/stripe` **không xử lý logic**: nhận raw body +
-headers, trả `200 OK` trong < 500ms, dump raw webhook vào Kafka topic nội bộ
-`t.payment.webhooks.raw` (key `STRIPE:` + `stripe_event_id`; value gồm
-`provider`, `stripe_event_id`, `raw_body`, `stripe_signature`, `received_at`).
+Endpoint `POST /v1/payments/webhook/stripe` **không xử lý business logic**: nhận raw
+body + headers, trả `200 OK` trong < 500ms sau Kafka ack, dump raw webhook vào topic
+nội bộ `t.payment.webhooks.raw`. Key là `STRIPE:<candidate_event_id>` khi best-effort
+extraction thành công, nếu không là `RAW:<sha256(raw_body)>`; value gồm `provider`,
+`candidate_event_id?`, `raw_body`, `stripe_signature`, `received_at`. Candidate chưa
+được tin cậy và chỉ trở thành `stripe_event_id` sau khi worker verify/parse thành công.
 
 Webhook Processor Worker consume bất đồng bộ: verify `Stripe-Signature`
 (HMAC-SHA256, cửa sổ 300s) → map Stripe event → FSM transition → dedup bằng

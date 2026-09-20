@@ -136,7 +136,7 @@ Service khác không ghi DB Payment; Payment không đọc DB service khác.
 | Hướng | Đối tác | Giao thức | Mục đích | Contract / policy |
 |---|---|---|---|---|
 | Inbound | Order (Temporal Activities) | HTTP/JSON qua mesh mTLS | initiate, cancel, refund, `GET` payment/client-data/refund | [HTTP v1](../../contracts/http/payment/v1/openapi.yaml); `order-initiates-payment`; timeout 15s, mesh không retry |
-| Inbound | Stripe | HTTPS webhook qua Gateway `stripe-webhook` | `POST /api/payments/webhook/stripe` — route public duy nhất | Stripe event schema, API version pin |
+| Inbound | Stripe | HTTPS webhook qua Gateway `stripe-webhook` | Public `POST /api/payments/webhook/stripe` rewrite sang service `POST /v1/payments/webhook/stripe` — route public duy nhất | [HTTP v1](../../contracts/http/payment/v1/openapi.yaml) ingress + Stripe event schema, API version pin |
 | Outbound | Stripe | HTTPS `stripe-java`, egress `ServiceEntry` | PaymentIntent, Refund, verify webhook | `interfaces.md §5` |
 | Outbound | Order, Analytics | Kafka `t.payment.events.v2` | 10 financial fact | [events v2](../../contracts/events/payment/v2/asyncapi.yaml); `payment-publishes-payment-events` |
 | Internal | Kafka `t.payment.webhooks.raw` | Kafka | Buffer raw webhook | 6 partition, retention 7 ngày |

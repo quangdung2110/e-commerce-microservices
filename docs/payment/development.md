@@ -246,7 +246,8 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
   `CANCEL` operation → `FAILED`; cancel trả `succeeded` → `T2`.
 - `financial_state_version` +1 đúng một lần cho mỗi outbox event, không tăng ở `T3a`.
 - Guard: signature (đúng/sai/ngoài 300s/secret thứ hai), amount/reference mismatch,
-  idempotency fingerprint (`IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS`).
+  idempotency fingerprint (`IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS`), đặc biệt
+  cancel/refund dùng cùng key + body trên `transactionId` khác phải bị `422`.
 - Refund: one-lifetime per `order_id`, `amount ≤ amount_minor`, evidence bắt buộc,
   mixed inspection PASS/FAIL không block.
 - Mapping Stripe event → transition theo `interfaces.md §4`; `charge.refund.updated`
@@ -285,6 +286,9 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
 - Provider test: implementation ↔ `openapi.yaml` (7 operation, problem+json code ở
   `interfaces.md §2.3`) và ↔ `asyncapi.yaml` (10 type, `additionalProperties: false`,
   `expires_at` chỉ ở `PAYMENT_INITIATED`, `refund_*` bắt buộc với `REFUND_*`).
+- Webhook provider test: thiếu body/`Stripe-Signature` → `400`; envelope đủ được
+  Kafka ack → `200` kể cả body không deserialize được hoặc signature sai (worker mới
+  verify/parse; malformed body dùng key hash); Kafka produce lỗi → `503`.
 - Fixture cho Order consumer: `payment_transaction_id`, VND money, monotonic
   `financial_state_version`, không có `client_secret`; `PAYMENT_FAILED/EXPIRED/CANCELED`
   chỉ sau khi intent canceled.

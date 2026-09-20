@@ -89,14 +89,14 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 |---|---|
 | [payment/README.md](./payment/README.md) | Tổng quan, boundary, ownership, capability, dependency, bất biến và known gaps. |
 | [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
-| [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T1–T9) + Refund FSM (R1–R4), guard rules, invariant, lỗi miền. |
-| [payment/data.md](./payment/data.md) | Schema logic 6 bảng, constraint, transaction, Redis key, outbox, partition/archive. |
+| [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T0–T9, gồm T3a) + Refund FSM (R1–R5), guard rules, invariant, lỗi miền. |
+| [payment/data.md](./payment/data.md) | Schema logic 9 bảng, constraint, transaction, Redis key, outbox và retention. |
 | [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
-| [payment/workflows.md](./payment/workflows.md) | Mười workflow: initiate, webhook, refund, expiration, reconciliation, poller, cancel, retry/replay, archive. |
+| [payment/workflows.md](./payment/workflows.md) | Mười hai workflow: initiate, webhook, query/client-data, refund, expiration, reconciliation, poller, recovery, DLQ replay, review/correction, cancel và decline termination. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
 | [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
-| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 11 ADR: Java/Spring Boot, Refund trong Payment, Stripe single-provider, webhook async, Outbox CDC, lock strategy, partition key, payload Phase 20, partition/archive, explicit one-lifetime-order refund. |
-| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/refund numbered payment attempt; target/proposed. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 14 ADR về runtime, Stripe, webhook/outbox, concurrency, event ordering, refund, retention, recovery, secret handling và decline policy. |
+| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
 | [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Financial facts CloudEvents v2 không mang client secret; target/proposed. |
 
 ---
@@ -201,7 +201,9 @@ Service Contract Matrix legacy đã bị xóa.
 | `POST /api/v1/orders/{order_id}/{cancellation-requests,return-requests,payment-attempts}` | Buyer → Order |
 | `POST /api/v1/admin/orders/{order_id}/{cancellation-requests,pre-dispatch-refund-requests}` | Admin → Order |
 | `POST /v1/payments/initiate` | Order (Temporal) → Payment |
-| `POST /v1/payments/{txn_id}/refund` | Order (Temporal) → Payment |
+| `POST /v1/payments/{transactionId}/{cancel,refund}` | Order (Temporal) → Payment |
+| `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | Order (Temporal) → Payment |
+| `POST /api/payments/webhook/stripe` | Stripe → Gateway → Payment `/v1/payments/webhook/stripe` |
 | `POST /v1/inventory/routing-options` | Checkout → Inventory |
 | `POST /v1/inventory/ship-to-customer` | Admin → Inventory |
 | `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |

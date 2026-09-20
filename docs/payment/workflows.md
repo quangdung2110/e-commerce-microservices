@@ -72,14 +72,17 @@ sequenceDiagram
    `PROVIDER_CONFIRMED`, idempotency `COMPLETED` (response **không** chứa secret,
    `resource_id = TXN_…`), history `T0.1`, outbox `PAYMENT_INITIATED`
    (`financial_state_version = 1`).
-4. Trả `PENDING` + client data. `INITIATING` (TX2 chưa xảy ra) trả `status=INITIATING`
-   retryable, không bao giờ bịa `client_secret`.
+4. Trả `PENDING` + client data. Nếu request gọi provider nhận outcome chưa rõ, chính
+   request đó trả `503 PROVIDER_OUTCOME_UNKNOWN`. Replay sau đó chỉ được trả
+   `200 status=INITIATING` khi không còn request giữ execution lock và durable recovery
+   đã nhận operation; không bao giờ bịa `client_secret`.
 
 **Idempotency:** cùng key + fingerprint → replay: đọc `payment_idempotency`
 `COMPLETED`, giải mã lại secret từ `resource_id` nếu còn `PENDING`/chưa quá
-`client_expires_at`; cùng key khác fingerprint → `422 IDEMPOTENCY_KEY_REUSED`; cùng
-key đang `IN_PROGRESS` → `409 REQUEST_IN_PROGRESS`. Attempt mới cần số kế tiếp + key
-mới và chỉ sau fact terminal non-capture của attempt trước.
+`client_expires_at`; cùng `(action, key)` khác fingerprint →
+`422 IDEMPOTENCY_KEY_REUSED`; request đồng thời gặp active execution owner →
+`409 REQUEST_IN_PROGRESS`. Attempt mới cần số kế tiếp + key mới và chỉ sau fact
+terminal non-capture của attempt trước.
 
 **Failure/timeout/retry:** Stripe timeout sau khi dispatch → operation `UNKNOWN`,
 payment ở `INITIATING`, idempotency `IN_PROGRESS`; trả `503 PROVIDER_OUTCOME_UNKNOWN`.
@@ -87,7 +90,8 @@ payment ở `INITIATING`, idempotency `IN_PROGRESS`; trả `503 PROVIDER_OUTCOME
 `payment_transaction_id`; zero/nhiều ứng viên → review case
 `PROVIDER_IDENTITY_UNBOUND`. Scanner không expire `INITIATING`.
 
-**Test scenarios:** same-attempt replay; replay sau khi payment đã `SUCCESS` (không
+**Test scenarios:** same-attempt replay; replay `INITIATING` khi recovery đã nhận
+operation và không còn active request; concurrent request còn active → `409`; replay sau khi payment đã `SUCCESS` (không
 trả secret); new attempt sau `EXPIRED`/`FAILED`/`CANCELED`; reject attempt number
 nhảy cóc/tái dùng; fingerprint khác; Redis mất → unique DB; Stripe timeout trước/sau
 khi Stripe đã tạo intent; hai request đồng thời cùng attempt.
@@ -99,10 +103,15 @@ trùng, không sai thứ tự. **Trigger:** Stripe gọi `POST /v1/payments/webh
 
 **Happy path:**
 
-1. `[API]` Nhận raw body + headers; trả `200 OK` ngay (< 500ms), không xử lý logic.
-2. `[Kafka]` Produce lên `t.payment.webhooks.raw`, key `STRIPE:` + `stripe_event_id`
-   (parse từ body, **chưa verify** — chỉ dùng để partition, không tin cậy), value
-   `{provider, stripe_event_id, raw_body, stripe_signature, received_at}`.
+1. `[API]` Envelope thiếu body hoặc thiếu `Stripe-Signature` → `400`, không enqueue.
+   Nếu đủ envelope, nhận raw body + headers; không deserialize/validate business
+   payload. Candidate event ID chỉ được đọc best-effort để chọn partition.
+2. `[Kafka]` Produce lên `t.payment.webhooks.raw`: key
+   `STRIPE:<candidate_event_id>` nếu extraction thành công, nếu không
+   `RAW:<sha256(raw_body)>`; value
+   `{provider, candidate_event_id?, raw_body, stripe_signature, received_at}`. Cả
+   candidate và body đều chưa được tin cậy; producer ack → trả `200 OK` (< 500ms),
+   produce lỗi → `503` để Stripe retry.
 3. `[Worker]` Verify `Stripe-Signature` (`Webhook.constructEvent`, `|now - t| <= 300s`).
    Thất bại → insert `webhook_logs` `FAILED_SIGNATURE` với `stripe_event_id = NULL`,
    `raw_body` nguyên byte, `next_retry_at`; dừng.
@@ -142,7 +151,10 @@ Redis lock → cùng đường. Hết retry với event tài chính → review c
 review case `CAPTURE_AFTER_CANCEL`. `payment_failed` đến sau `succeeded` → `IGNORED`
 theo precedence.
 
-**Test scenarios:** signature sai; timestamp ngoài 300s; duplicate `evt_xxx`; hai
+**Test scenarios:** thiếu body/`Stripe-Signature` → `400`; body không deserialize được
+nhưng envelope đủ → endpoint vẫn enqueue với key hash và trả `200`; signature sai
+nhưng envelope hợp lệ → endpoint `200`, worker ghi `FAILED_SIGNATURE`; timestamp ngoài 300s;
+duplicate `evt_xxx`; hai
 `payment_failed` liên tiếp cùng intent rồi `succeeded`; `succeeded` sau `canceled`;
 `pi_xxx` không map được; amount lệch; optimistic conflict rồi retry; `charge.refund.updated`
 cho refund `PROCESSING` và cho refund `SUCCESS`; endpoint trả 200 khi Kafka chậm.
@@ -174,7 +186,8 @@ vượt paid amount. **Trigger:** `POST /v1/payments/{transactionId}/refund` t�
 ([ADR-011](./decisions/ADR-011-one-lifetime-order-refund.md)).
 
 **Preconditions:** header `Idempotency-Key`; payment `SUCCESS`; chưa có
-`refund_transactions.order_id`; `amount <= amount_minor`; `inventory_evidence` hợp lệ.
+`refund_transactions.order_id`; `0 < amount <= amount_minor`; reason và
+`inventory_evidence` khớp một trong hai schema ở `interfaces.md §2.7`.
 Inspection quality `FAIL` không phải lý do reject.
 
 ```mermaid
@@ -220,7 +233,9 @@ sequenceDiagram
 **Failure/timeout/retry:** Stripe timeout sau TX1 → operation `UNKNOWN`, refund
 `PENDING`, trả `503 retryable`; `WF-PAYMENT-008` replay cùng key (Stripe idempotency
 đảm bảo không tạo refund kép). Stripe reject sớm → operation `PROVIDER_REJECTED`,
-`R4` `FAILED` + `T8`, `REFUND_FAILED`. Không lấy được lock → reject, không gọi Stripe.
+`R4` `FAILED` + `T8`, `REFUND_FAILED`; command đã durably accepted nên HTTP vẫn trả
+response lưu `PROCESSING`, còn event/GET là authority cho trạng thái final. Không lấy
+được lock → reject, không gọi Stripe.
 
 **Race:** hai request khác key cho cùng order → chỉ một insert thắng unique
 `order_id`, request kia `409 ORDER_REFUND_ALREADY_EXISTS`.

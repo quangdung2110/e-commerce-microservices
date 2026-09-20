@@ -228,7 +228,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 |---|---|---|
 | API server | Ngang, stateless; 2+ instance | Pool DB 20/instance; Stripe rate limit (~100 req/s live mặc định) |
 | Webhook endpoint | Cùng process API hoặc tách; rất nhẹ | Kafka producer throughput |
-| Webhook Processor | Theo partition `t.payment.webhooks.raw` (6) → tối đa 6 consumer | Cùng `pi_xxx` không đảm bảo cùng partition (key là `stripe_event_id`); optimistic lock + precedence xử lý |
+| Webhook Processor | Theo partition `t.payment.webhooks.raw` (6) → tối đa 6 consumer | Cùng `pi_xxx` không đảm bảo cùng partition (key là candidate event ID hoặc hash raw body); optimistic lock + precedence xử lý |
 | Expiration Scanner | Nhiều instance, `SKIP LOCKED`, batch 200 | Mỗi row = 1 Stripe cancel → ≤ 200 call/phút/instance |
 | Recovery / Poller | Nhiều instance, lock theo payment | Stripe rate limit |
 | Reconciliation, Trimmer | Singleton (`payment:lock:reconciliation`) | Cửa sổ 1 giờ; ~3.600 retrieve/giờ ở peak |

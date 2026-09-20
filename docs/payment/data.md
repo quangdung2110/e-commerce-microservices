@@ -314,7 +314,7 @@ CREATE TABLE refund_transactions (
 | `command_idempotency_key` | Header `Idempotency-Key` Order gửi; trùng key → trả cùng kết quả; key khác trên order đã có refund → `409 ORDER_REFUND_ALREADY_EXISTS` |
 | `refund_amount_minor` | `<= payment.amount_minor` kiểm tra trong cùng transaction insert (không CHECK cross-table) |
 | `reason` | Enum contract HTTP v1; `stripe_reason` luôn `requested_by_customer` nên không lưu |
-| `inventory_evidence` | Bản sao evidence Order gửi (`RETURN_SCOPE_INSPECTION_COMPLETED{refund_scope_id, counters}` hoặc `COMMITTED_ORDER_RELEASED_BEFORE_DISPATCH{release_reference}`) — bằng chứng `RULE-PAY-006` cho audit |
+| `inventory_evidence` | Bản sao evidence Order gửi: reason `CUSTOMER_RETURN_SELECTED_LINES` đi với `RETURN_SCOPE_INSPECTION_COMPLETED{refund_scope_id, expected, received, passed, failed}`; reason `ADMIN_FORCE_REFUND_BEFORE_DISPATCH` đi với `COMMITTED_ORDER_RELEASED_BEFORE_DISPATCH{release_reference}`. Counter là số nguyên không âm — bằng chứng `RULE-PAY-006` cho audit |
 | `provider_refund_id` | `re_xxx` |
 | `provider_failure_reason` | `failure_reason` Stripe (`lost_or_stolen_card`, `expired_or_canceled_card`, …) khi `FAILED`/`REVERSED` |
 | `status` | Refund FSM; `REVERSED` = đã từng `SUCCESS`, provider sau đó đảo chiều, tiền quay về merchant (`domain.md §6.2`) |
@@ -451,9 +451,9 @@ CREATE TABLE payment_idempotency (
 
 | Cột | Ghi chú |
 |---|---|
-| `PRIMARY KEY (idempotency_key, action)` | Một key không dùng cho hai action khác nhau |
-| `request_fingerprint` | SHA-256 của body canonical; cùng key khác fingerprint → `422 IDEMPOTENCY_KEY_REUSED` |
-| `status` | Insert `IN_PROGRESS` trước khi xử lý; request trùng key khi còn `IN_PROGRESS` → `409 REQUEST_IN_PROGRESS` (Order retry sau); `COMPLETED` → trả lại `response_code/body` |
+| `PRIMARY KEY (idempotency_key, action)` | Namespace idempotency là `(action, key)`; cùng raw key ở action khác là slot độc lập, dù caller nên sinh key riêng cho từng business command để trace rõ ràng |
+| `request_fingerprint` | SHA-256 của command envelope canonical `{action, path_parameters, body}`; `transactionId` thuộc fingerprint của cancel/refund; cùng `(action, key)` khác fingerprint → `422 IDEMPOTENCY_KEY_REUSED` |
+| `status` | Insert `IN_PROGRESS` trước khi xử lý; request trùng `(action, key)` khi một request khác còn giữ execution lock → `409 REQUEST_IN_PROGRESS`; initiate replay không có active owner nhưng recovery đang xử lý có thể đọc `resource_id` và trả `200 INITIATING`; `COMPLETED` → trả lại `response_code/body` |
 | `resource_id` | `TXN_`/`RFD_` được tạo hoặc ảnh hưởng; dùng khi `response_body` cần regenerate (ví dụ initiate replay giải mã lại `client_secret` thay vì lưu secret trong response) |
 | `expires_at` | Initiate: `expires_at` của phiên + 24h; cancel/refund: 7 ngày (khớp TTL Redis request mirror của Order) |
 
@@ -544,7 +544,7 @@ correction transition). Correction transition ghi history `CORR` với
 | `refund_transactions UNIQUE (order_id)` | `INV-PAY-001`: một refund trọn đời/order |
 | `refund_transactions UNIQUE (refund_request_id)`, `UNIQUE (command_idempotency_key)`, `UNIQUE (provider_refund_id)` | Khóa identity case Order, key command và Stripe Refund |
 | `webhook_logs UNIQUE (stripe_event_id)` | Dedup webhook duy nhất; `INSERT … ON CONFLICT DO NOTHING` |
-| `payment_idempotency PRIMARY KEY (idempotency_key, action)` | Một key không dùng cho nhiều action |
+| `payment_idempotency PRIMARY KEY (idempotency_key, action)` | Mỗi `(action, key)` có đúng một slot; cùng raw key ở action khác không xung đột |
 | `payment_review_cases` partial unique open per payment | Một case mở/payment |
 | `refund_amount_minor <= payment.amount_minor` | Check trong cùng transaction insert refund; không CHECK cross-table |
 | Transition hợp lệ theo bảng FSM | Enforce ở Spring State Machine + optimistic lock, không ở DB |

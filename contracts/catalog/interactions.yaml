@@ -194,6 +194,14 @@ interactions:
     consumers: [order-service]
     contract: http/payment/v1/openapi.yaml
     status: proposed
+
+  - id: stripe-delivers-payment-webhook
+    protocol: http
+    provider: payment-service
+    consumers: [api-gateway]
+    contract: http/payment/v1/openapi.yaml
+    status: proposed
+    notes: External Stripe delivery enters at the Gateway public path; the Gateway preserves raw bytes and rewrites only the path before forwarding to Payment.
     notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction.
 
   - id: payment-publishes-payment-events

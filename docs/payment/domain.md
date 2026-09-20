@@ -109,7 +109,7 @@ khi lệch.
 | `RULE-PAY-003` | Refund chỉ trên payment `SUCCESS` | `payment.status != SUCCESS` | `400 PAYMENT_NOT_SUCCESS` |
 | `RULE-PAY-004` | Một refund transaction/order và amount không vượt paid amount | Refund `order_id` đã tồn tại với key khác, hoặc `amount > amount_minor` | `409 ORDER_REFUND_ALREADY_EXISTS` hoặc `400 REFUND_AMOUNT_EXCEEDED` |
 | `RULE-PAY-005` | Refund bắt buộc `Idempotency-Key` | Trùng key | Trả cùng kết quả cũ, không gọi Stripe; đang `PROCESSING` trả processing |
-| `RULE-PAY-006` | Refund là explicit Order command sau đúng Inventory evidence; evidence được lưu lại | Thiếu selected-scope inspection completion hoặc atomic pre-dispatch release evidence | Không khởi tạo refund |
+| `RULE-PAY-006` | Refund là explicit Order command sau đúng Inventory evidence; evidence được lưu lại | `CUSTOMER_RETURN_SELECTED_LINES` thiếu `RETURN_SCOPE_INSPECTION_COMPLETED {refund_scope_id, expected, received, passed, failed}`, hoặc `ADMIN_FORCE_REFUND_BEFORE_DISPATCH` thiếu `COMMITTED_ORDER_RELEASED_BEFORE_DISPATCH {release_reference}` | `400 VALIDATION_FAILED`; không khởi tạo refund |
 | `RULE-PAY-007` | Webhook signature hợp lệ và `\|now - t\| <= 300s` | Sai chữ ký hoặc ngoài cửa sổ | `webhook_logs.status = FAILED_SIGNATURE`, không parse business payload, `stripe_event_id` để trống |
 | `RULE-PAY-008` | Amount/currency/`provider_transaction_id` khớp | Không map được hoặc lệch | Reject transition, `IGNORED`/`AMOUNT_MISMATCH`, mở ReviewCase khi lệch amount |
 | `RULE-PAY-009` | Webhook dedup **chỉ** theo `stripe_event_id` | Duplicate `evt_xxx` | `ON CONFLICT DO NOTHING`, ack thành công. Không dedup theo `(pi, event_type)` vì Stripe hợp lệ bắn nhiều `payment_failed` trên cùng intent |
@@ -284,8 +284,8 @@ operation id, command key, case id, run id), `actor` khi `MANUAL`.
 | `REFUND_AMOUNT_EXCEEDED` | `amount > amount_minor` | No | HTTP `400` |
 | `ORDER_REFUND_ALREADY_EXISTS` | `order_id` đã có refund transaction khác key | No | HTTP `409` |
 | `IDEMPOTENCY_KEY_MISSING` | Command thiếu header `Idempotency-Key` | No | HTTP `400` |
-| `IDEMPOTENCY_KEY_REUSED` | Cùng key, fingerprint khác | No | HTTP `422` |
-| `REQUEST_IN_PROGRESS` | Cùng key đang `IN_PROGRESS` | Yes (poll) | HTTP `409` |
+| `IDEMPOTENCY_KEY_REUSED` | Cùng `(action, key)`, command-envelope fingerprint khác | No | HTTP `422` |
+| `REQUEST_IN_PROGRESS` | Cùng `(action, key)` đang có request khác giữ execution lock | Yes (poll) | HTTP `409` |
 | `REFUND_IN_PROGRESS` | Cùng key refund đang `PROCESSING` | Caller poll | Trả `PROCESSING`, không gọi Stripe |
 | `PAYMENT_NOT_CANCELABLE` | Cancel khi `PROCESSING` (Stripe không cho cancel) | Yes | `CANCEL_PENDING`/`503` |
 | `CLIENT_DATA_NOT_USABLE` | `status != PENDING` hoặc quá `client_expires_at` | No | `usable=false`, `client_secret=null` (HTTP `200`) |
