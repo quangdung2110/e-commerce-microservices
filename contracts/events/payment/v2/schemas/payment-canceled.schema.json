@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/v2/schemas/payment-canceled.schema.json",
+  "title": "Payment canceled v2",
+  "allOf": [
+    { "$ref": "./payment-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.payment.transaction.canceled.v2" },
+        "dataschema": { "const": "/contracts/events/payment/v2/schemas/payment-canceled.schema.json" },
+        "data": {
+          "type": "object",
+          "allOf": [
+            { "$ref": "payment-event-common.schema.json#/$defs/payment_data" },
+            {
+              "type": "object",
+              "required": ["amount", "reason_code"],
+              "properties": {
+                "amount": { "$ref": "payment-event-common.schema.json#/$defs/vnd_money" },
+                "reason_code": {
+                  "enum": ["PAYMENT_TIMEOUT", "BUYER_CANCELLED", "ORDER_CANCELLED_PRE_CAPTURE", "PROVIDER_CANCELED"]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

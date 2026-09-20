@@ -34,7 +34,8 @@ does not grant multiple review entitlements.
 The same AsyncAPI also documents Order's receive operations without copying schemas
 owned by other providers:
 
-- Payment terminal/refund facts from `t.payment.events.v2`;
+- Payment terminal/refund facts from `t.payment.events.v2`, dispatched by exact
+  namespaced CloudEvents `type` and validated against the referenced `dataschema`;
 - Inventory physical-dispatch and completed-inspection facts from
   `t.inventory.order.events.v1`;
 - verified Delivery facts from `t.delivery.order.events.v1`.

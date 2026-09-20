@@ -194,6 +194,7 @@ interactions:
     consumers: [order-service]
     contract: http/payment/v1/openapi.yaml
     status: proposed
+    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction.
 
   - id: stripe-delivers-payment-webhook
     protocol: http
@@ -202,15 +203,14 @@ interactions:
     contract: http/payment/v1/openapi.yaml
     status: proposed
     notes: External Stripe delivery enters at the Gateway public path; the Gateway preserves raw bytes and rewrites only the path before forwarding to Payment.
-    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction.
 
   - id: payment-publishes-payment-events
     protocol: kafka
     provider: payment-service
-    consumers: [order-service]
+    consumers: [order-service, analytics-service]
     contract: events/payment/v2/asyncapi.yaml
     status: proposed
-    notes: CloudEvents v2, VND money and per-transaction financial version; no client_secret in events. PAYMENT_FAILED/EXPIRED/CANCELED are emitted only after the PaymentIntent is canceled (ADR-014); retryable declines emit nothing.
+    notes: Full CloudEvents structured JSON with exact com.ecommerce.payment.*.v2 types, per-event schemas, VND money and per-transaction financial version; no client_secret/provider identifiers in events. PAYMENT_FAILED/EXPIRED/CANCELED aliases are emitted only after the PaymentIntent is canceled (ADR-014/015); retryable declines emit nothing.
 
   - id: checkout-previews-inventory-allocation
     protocol: http

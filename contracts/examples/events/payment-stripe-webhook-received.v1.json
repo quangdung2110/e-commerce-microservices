@@ -1,0 +1,17 @@
+{
+  "specversion": "1.0",
+  "id": "00000000-0000-4000-8000-000000000011",
+  "source": "/services/payment/webhook-ingress",
+  "subject": "stripe-events/evt_test",
+  "type": "com.ecommerce.payment.stripe-webhook.received.v1",
+  "time": "2026-09-20T08:02:05Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json",
+  "data": {
+    "provider": "STRIPE",
+    "candidate_event_id": "evt_test",
+    "raw_body_base64": "eyJpZCI6ImV2dF90ZXN0In0=",
+    "raw_body_sha256": "4bb7406fc70ad66cef957cacf20a81aea8ddff2a5dfe12721f016c0baaa1a225",
+    "stripe_signature": "t=1789891325,v1=example-signature"
+  }
+}

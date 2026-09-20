@@ -34,10 +34,26 @@ channels:
     address: t.payment.events.v2
     description: Payment-owned financial facts accepted by Order workflows.
     x-owner: payment-service
-    x-message-key: order_id
+    x-message-key: data.order_id
+    x-deduplication-key: CloudEvents.source + CloudEvents.id
+    x-ordering-guard: data.financial_state_version per data.payment_transaction_id
     messages:
-      paymentFact:
-        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentFact'
+      paymentSucceeded:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentSucceeded'
+      paymentFailed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentFailed'
+      paymentExpired:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentExpired'
+      paymentCanceled:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentCanceled'
+      refundProcessing:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundProcessing'
+      refundSucceeded:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundSucceeded'
+      refundFailed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundFailed'
+      refundReversed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundReversed'
   inventoryOrderFacts:
     address: t.inventory.order.events.v1
     description: Inventory-owned physical-dispatch and refund-inspection facts accepted by Order.
@@ -72,18 +88,26 @@ operations:
   consumePaymentFacts:
     action: receive
     channel: { $ref: '#/channels/paymentFacts' }
-    summary: Consume only terminal payment facts and refund lifecycle facts that can advance or reconcile an Order workflow.
+    summary: Consume only terminal payment facts and refund lifecycle facts that can advance or reconcile an Order workflow; dispatch by exact namespaced CloudEvents type.
     x-consumer-group: order-payment-consumer
     x-accepted-event-types:
-      - PAYMENT_SUCCESS
-      - PAYMENT_CANCELED
-      - PAYMENT_FAILED
-      - PAYMENT_EXPIRED
-      - REFUND_PROCESSING
-      - REFUND_SUCCESS
-      - REFUND_FAILED
-      - REFUND_REVERSED
-    messages: [{ $ref: '#/channels/paymentFacts/messages/paymentFact' }]
+      - com.ecommerce.payment.transaction.succeeded.v2
+      - com.ecommerce.payment.transaction.canceled.v2
+      - com.ecommerce.payment.transaction.failed.v2
+      - com.ecommerce.payment.transaction.expired.v2
+      - com.ecommerce.payment.refund.processing.v2
+      - com.ecommerce.payment.refund.succeeded.v2
+      - com.ecommerce.payment.refund.failed.v2
+      - com.ecommerce.payment.refund.reversed.v2
+    messages:
+      - { $ref: '#/channels/paymentFacts/messages/paymentSucceeded' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentCanceled' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentFailed' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentExpired' }
+      - { $ref: '#/channels/paymentFacts/messages/refundProcessing' }
+      - { $ref: '#/channels/paymentFacts/messages/refundSucceeded' }
+      - { $ref: '#/channels/paymentFacts/messages/refundFailed' }
+      - { $ref: '#/channels/paymentFacts/messages/refundReversed' }
   consumeInventoryOrderFacts:
     action: receive
     channel: { $ref: '#/channels/inventoryOrderFacts' }

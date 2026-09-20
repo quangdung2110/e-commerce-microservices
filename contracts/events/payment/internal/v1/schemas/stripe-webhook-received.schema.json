@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json",
+  "title": "Raw Stripe webhook received v1",
+  "allOf": [
+    { "$ref": "../../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "type", "source", "subject", "time", "datacontenttype", "dataschema", "data"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "type": { "const": "com.ecommerce.payment.stripe-webhook.received.v1" },
+        "source": { "const": "/services/payment/webhook-ingress" },
+        "subject": {
+          "type": "string",
+          "pattern": "^stripe-events/(evt_[A-Za-z0-9]+|sha256:[a-f0-9]{64})$"
+        },
+        "datacontenttype": { "const": "application/json" },
+        "dataschema": {
+          "const": "/contracts/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "raw_body_base64", "raw_body_sha256", "stripe_signature"],
+          "properties": {
+            "provider": { "const": "STRIPE" },
+            "candidate_event_id": {
+              "type": "string",
+              "pattern": "^evt_[A-Za-z0-9]+$",
+              "description": "Best-effort only; untrusted until signature verification succeeds."
+            },
+            "raw_body_base64": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "description": "Exact HTTP request-body bytes, base64 encoded without parse or normalization."
+            },
+            "raw_body_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "stripe_signature": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        }
+      }
+    }
+  ]
+}

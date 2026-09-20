@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/v2/schemas/refund-reversed.schema.json",
+  "title": "Refund reversed v2",
+  "allOf": [
+    { "$ref": "./payment-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.payment.refund.reversed.v2" },
+        "dataschema": { "const": "/contracts/events/payment/v2/schemas/refund-reversed.schema.json" },
+        "data": {
+          "type": "object",
+          "allOf": [
+            { "$ref": "payment-event-common.schema.json#/$defs/refund_data" },
+            {
+              "type": "object",
+              "required": ["reason_code"],
+              "properties": { "reason_code": { "const": "REFUND_REVERSED_BY_PROVIDER" } }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

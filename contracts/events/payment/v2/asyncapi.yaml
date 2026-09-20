@@ -3,89 +3,196 @@ info:
   title: Payment Service Financial Facts
   version: 2.0.0
   description: >-
-    Canonical version-2 Payment facts for Order recovery. Payment never publishes a
-    Stripe client_secret. Delivery is at-least-once and consumers deduplicate by
-    CloudEvents id, then validate the payment transaction, VND amount and monotonic
-    financial_state_version.
+    Canonical version-2 financial facts owned by Payment Service. Every message is
+    a CloudEvents 1.0 structured JSON document. Delivery is at-least-once;
+    consumers deduplicate by CloudEvents source plus id and guard ordering with
+    data.financial_state_version scoped to one payment transaction.
 x-adoption-status: proposed
+x-contract-scope: payment-financial-facts
 defaultContentType: application/cloudevents+json
 servers:
-  local: { host: localhost:9092, protocol: kafka }
+  local:
+    host: localhost:9092
+    protocol: kafka
+    description: Local development broker
 channels:
   financialFacts:
     address: t.payment.events.v2
+    description: >-
+      Payment and refund facts. The Kafka record key is the exact decimal string
+      in data.order_id, so every fact for one order remains in one partition.
     x-owner: payment-service
-    x-message-key: order_id
-    x-delivery-semantic: at-least-once
+    x-message-key: data.order_id
     x-ordering-scope: order_id
-    x-deduplication-key: CloudEvents.id
-    x-consumers: [order-service, analytics]
+    x-ordering-guard: data.financial_state_version per payment_transaction_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.source + CloudEvents.id
+    x-transport: PostgreSQL transactional outbox plus Debezium CDC
+    x-max-payload-bytes: 65536
+    x-retention: 15d-minimum
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-consumer-owned-dlq
+      replay-preserves-event-id: true
+    x-data-classification: INTERNAL
+    bindings:
+      kafka:
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 1296000000
+          max.message.bytes: 65536
+        bindingVersion: '0.5.0'
     messages:
-      paymentFact: { $ref: '#/components/messages/paymentFact' }
+      paymentInitiated: { $ref: '#/components/messages/paymentInitiated' }
+      paymentSucceeded: { $ref: '#/components/messages/paymentSucceeded' }
+      paymentFailed: { $ref: '#/components/messages/paymentFailed' }
+      paymentExpired: { $ref: '#/components/messages/paymentExpired' }
+      paymentCanceled: { $ref: '#/components/messages/paymentCanceled' }
+      refundInitiated: { $ref: '#/components/messages/refundInitiated' }
+      refundProcessing: { $ref: '#/components/messages/refundProcessing' }
+      refundSucceeded: { $ref: '#/components/messages/refundSucceeded' }
+      refundFailed: { $ref: '#/components/messages/refundFailed' }
+      refundReversed: { $ref: '#/components/messages/refundReversed' }
 operations:
-  publishPaymentFact:
+  publishFinancialFacts:
     action: send
+    title: Publish Payment financial facts
+    summary: Publish committed payment and refund facts through the outbox relay.
     channel: { $ref: '#/channels/financialFacts' }
-    messages: [{ $ref: '#/channels/financialFacts/messages/paymentFact' }]
+    messages:
+      - { $ref: '#/channels/financialFacts/messages/paymentInitiated' }
+      - { $ref: '#/channels/financialFacts/messages/paymentSucceeded' }
+      - { $ref: '#/channels/financialFacts/messages/paymentFailed' }
+      - { $ref: '#/channels/financialFacts/messages/paymentExpired' }
+      - { $ref: '#/channels/financialFacts/messages/paymentCanceled' }
+      - { $ref: '#/channels/financialFacts/messages/refundInitiated' }
+      - { $ref: '#/channels/financialFacts/messages/refundProcessing' }
+      - { $ref: '#/channels/financialFacts/messages/refundSucceeded' }
+      - { $ref: '#/channels/financialFacts/messages/refundFailed' }
+      - { $ref: '#/channels/financialFacts/messages/refundReversed' }
 components:
   messages:
-    paymentFact:
-      name: paymentFinancialFactV2
-      title: Payment or refund financial fact
+    paymentInitiated:
+      name: paymentInitiatedV2
+      title: PAYMENT_INITIATED
+      summary: The numbered attempt is bound to one provider intent and is ready for the buyer.
       contentType: application/cloudevents+json
-      payload: { $ref: '#/components/schemas/PaymentEvent' }
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.transaction.initiated.v2
+      x-consumers: [analytics-service]
+      x-example-file: ../../../examples/events/payment-initiated.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/payment-initiated.schema.json' }
+    paymentSucceeded:
+      name: paymentSucceededV2
+      title: PAYMENT_SUCCESS
+      summary: Provider capture is proven for the immutable payment transaction.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.transaction.succeeded.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-succeeded.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/payment-succeeded.schema.json' }
+    paymentFailed:
+      name: paymentFailedV2
+      title: PAYMENT_FAILED
+      summary: The attempt ended after a terminal decline and its provider intent is canceled.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.transaction.failed.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-failed.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/payment-failed.schema.json' }
+    paymentExpired:
+      name: paymentExpiredV2
+      title: PAYMENT_EXPIRED
+      summary: The session expired and its provider intent is canceled, so it cannot capture later.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.transaction.expired.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-expired.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/payment-expired.schema.json' }
+    paymentCanceled:
+      name: paymentCanceledV2
+      title: PAYMENT_CANCELED
+      summary: A pre-capture cancellation is proven and the provider intent cannot capture.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.transaction.canceled.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-canceled.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/payment-canceled.schema.json' }
+    refundInitiated:
+      name: refundInitiatedV2
+      title: REFUND_INITIATED
+      summary: Payment durably accepted the explicit Order refund command; provider acceptance is not yet proven.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.refund.initiated.v2
+      x-consumers: [analytics-service]
+      x-example-file: ../../../examples/events/payment-refund-initiated.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/refund-initiated.schema.json' }
+    refundProcessing:
+      name: refundProcessingV2
+      title: REFUND_PROCESSING
+      summary: Stripe accepted the refund request; this is progress, not a final outcome.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.refund.processing.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-refund-processing.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/refund-processing.schema.json' }
+    refundSucceeded:
+      name: refundSucceededV2
+      title: REFUND_SUCCESS
+      summary: The one lifetime refund reached a successful final outcome.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.refund.succeeded.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-refund-succeeded.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/refund-succeeded.schema.json' }
+    refundFailed:
+      name: refundFailedV2
+      title: REFUND_FAILED
+      summary: The existing refund failed; no second refund transaction may be created.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.refund.failed.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-refund-failed.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/refund-failed.schema.json' }
+    refundReversed:
+      name: refundReversedV2
+      title: REFUND_REVERSED
+      summary: A previously successful refund was reversed by the provider and requires manual resolution.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.refund.reversed.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-refund-reversed.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/refund-reversed.schema.json' }
   schemas:
-    VndMoney:
-      type: object
-      additionalProperties: false
-      required: [amount_minor, currency]
-      properties:
-        amount_minor: { type: integer, format: int64, minimum: 0 }
-        currency: { const: VND }
-    PaymentEvent:
-      type: object
-      additionalProperties: false
-      required: [specversion, id, source, type, time, subject, data]
-      properties:
-        specversion: { const: '1.0' }
-        id: { type: string, format: uuid }
-        source: { const: payment-service }
-        type:
-          enum: [PAYMENT_INITIATED, PAYMENT_SUCCESS, PAYMENT_CANCELED, PAYMENT_FAILED, PAYMENT_EXPIRED, REFUND_INITIATED, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED, REFUND_REVERSED]
-        subject: { type: string, pattern: '^payments/[A-Za-z0-9_.-]+$' }
-        time: { type: string, format: date-time }
-        datacontenttype: { const: application/json }
-        data:
-          type: object
-          additionalProperties: false
-          required: [schema_version, order_id, payment_transaction_id, payment_attempt_number, financial_state_version]
-          properties:
-            schema_version: { const: 2 }
-            order_id: { type: string, minLength: 1, maxLength: 128 }
-            payment_transaction_id: { type: string, minLength: 1, maxLength: 120 }
-            refund_transaction_id: { type: [string, 'null'], maxLength: 120 }
-            payment_attempt_number: { type: integer, minimum: 1 }
-            amount: { $ref: '#/components/schemas/VndMoney' }
-            refund_amount: { $ref: '#/components/schemas/VndMoney' }
-            financial_state_version: { type: integer, minimum: 1 }
-            occurred_at: { type: string, format: date-time }
-            expires_at: { type: string, format: date-time, description: Payment session expiry; present on PAYMENT_INITIATED only }
-            error_code: { type: string }
-            reason_code: { type: string }
-      allOf:
-        - if:
-            properties:
-              type: { enum: [PAYMENT_INITIATED, PAYMENT_SUCCESS, PAYMENT_CANCELED, PAYMENT_FAILED, PAYMENT_EXPIRED] }
-            required: [type]
-          then:
-            properties:
-              data:
-                required: [amount, occurred_at]
-        - if:
-            properties:
-              type: { enum: [REFUND_INITIATED, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED, REFUND_REVERSED] }
-            required: [type]
-          then:
-            properties:
-              data:
-                required: [refund_transaction_id, refund_amount, occurred_at]
+    OrderId:
+      type: string
+      pattern: '^[1-9][0-9]{0,18}$'
+  correlationIds:
+    cloudEventCorrelationId:
+      description: Original Order/Temporal correlation when it is available.
+      location: $message.payload#/correlationid
+  messageBindings:
+    orderKey:
+      kafka:
+        key: { $ref: '#/components/schemas/OrderId' }
+        bindingVersion: '0.5.0'

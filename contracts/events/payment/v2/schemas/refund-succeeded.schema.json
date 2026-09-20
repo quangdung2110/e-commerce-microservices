@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/v2/schemas/refund-succeeded.schema.json",
+  "title": "Refund succeeded v2",
+  "allOf": [
+    { "$ref": "./payment-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.payment.refund.succeeded.v2" },
+        "dataschema": { "const": "/contracts/events/payment/v2/schemas/refund-succeeded.schema.json" },
+        "data": {
+          "type": "object",
+          "allOf": [
+            { "$ref": "payment-event-common.schema.json#/$defs/refund_data" }
+          ]
+        }
+      }
+    }
+  ]
+}
