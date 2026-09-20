@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: Checkout Service HTTP API
+  version: 1.0.0
+  description: >-
+    Buyer-facing contract for creating an immutable server-owned quotation,
+    submitting it exactly once, and recovering the durable Order submission result.
+    Checkout never accepts client-owned quantities, prices, discounts, allocation
+    plans, or address snapshots.
+x-adoption-status: proposed
+servers:
+  - url: http://checkout-service:8080
+    description: Internal service endpoint behind API Gateway
+tags:
+  - name: Checkout
+paths:
+  /api/v1/checkout/preview:
+    post:
+      tags: [Checkout]
+      operationId: previewCheckout
+      summary: Create or replace the active immutable checkout quotation
+      description: >-
+        Idempotency-Key scopes a logical Preview retry. previous_checkout_token is
+        omitted/null for a new quotation and is the active token for an optimistic
+        update. Active-pointer CAS permits only one current PREVIEWED successor.
+        Items and quantities are resolved from Cart; prices, address snapshots,
+        discounts, and allocation plans are resolved from their owning services.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/PreviewIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutPreviewRequest' }
+      responses:
+        '200':
+          description: Immutable quotation ready for review and Submit.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/checkout/submit:
+    post:
+      tags: [Checkout]
+      operationId: submitCheckout
+      summary: Submit one immutable quotation to Order
+      description: >-
+        checkout_token is the public idempotency identity. Checkout atomically
+        claims SUBMITTING and persists the exact Order payload, then revalidates
+        Cart items, Product price and the selected Promotion calculation. Order
+        revalidates the advisory Inventory plan while reserving it. A replay never
+        creates a second logical order.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutSubmitRequest' }
+      responses:
+        '201':
+          description: First completion at the durable PAYMENT_READY checkpoint.
+          headers:
+            Location: { $ref: '#/components/headers/SubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSubmissionReady' }
+        '200':
+          description: Idempotent replay of a PAYMENT_READY submission.
+          headers:
+            Location: { $ref: '#/components/headers/SubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSubmissionReady' }
+        '202':
+          description: Order has accepted or may have accepted the submission; poll Location.
+          headers:
+            Location: { $ref: '#/components/headers/SubmissionLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSubmissionPending' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/checkout/submissions/{checkout_token}:
+    get:
+      tags: [Checkout]
+      operationId: getCheckoutSubmission
+      summary: Recover the current durable result of a Checkout submission
+      description: >-
+        Reads the token-owned Checkout result and reconciles with Order's durable
+        checkout-order-submission resource. Payment client data is relayed fresh and
+        is never read from a Checkout cache.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CheckoutToken'
+      responses:
+        '200':
+          description: PAYMENT_READY terminal result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSubmissionReady' }
+        '202':
+          description: Submission is PREPARING or its durable Order result is temporarily unknown.
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutSubmissionPending' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted UUID injected by Gateway after JWT verification.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    PreviewIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID identifying one logical Preview attempt; reuse with a different body is a conflict.
+      schema: { type: string, format: uuid }
+    CheckoutToken:
+      name: checkout_token
+      in: path
+      required: true
+      description: Cryptographically random UUIDv4 issued by Checkout.
+      schema: { type: string, format: uuid }
+  headers:
+    PrivateNoStore:
+      required: true
+      schema: { type: string, const: 'private, no-store' }
+    SubmissionLocation:
+      required: true
+      schema:
+        type: string
+        pattern: '^/api/v1/checkout/submissions/[0-9a-fA-F-]{36}$'
+    RetryAfter:
+      required: true
+      schema: { type: integer, minimum: 1, maximum: 60 }
+  schemas:
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, const: VND }
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    CheckoutPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [delivery_address_id]
+      properties:
+        previous_checkout_token: { type: [string, 'null'], format: uuid }
+        delivery_address_id: { type: string, format: uuid }
+        promotion_id:
+          oneOf: [{ $ref: '#/components/schemas/OpaqueId' }, { type: 'null' }]
+    CheckoutSubmitRequest:
+      type: object
+      additionalProperties: false
+      required: [checkout_token]
+      properties:
+        checkout_token: { type: string, format: uuid }
+    AddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [address_id, recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        address_id: { type: string, format: uuid }
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { type: string, minLength: 5, maxLength: 32 }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { type: string, minLength: 1, maxLength: 32 }
+        district_code: { type: string, minLength: 1, maxLength: 32 }
+        ward_code: { type: string, minLength: 1, maxLength: 32 }
+    PreviewItem:
+      type: object
+      additionalProperties: false
+      required: [line_reference, product_id, sku_id, product_name, quantity, unit_price, line_total, warehouse_id]
+      properties:
+        line_reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Equal to sku_id in Checkout v1.
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        product_name: { type: string, minLength: 1, maxLength: 300 }
+        variant_attributes:
+          type: object
+          maxProperties: 30
+          additionalProperties: { type: string, maxLength: 200 }
+        image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        unit_price: { $ref: '#/components/schemas/Money' }
+        line_total: { $ref: '#/components/schemas/Money' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+    PromotionPreview:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, campaign_revision, discount]
+      properties:
+        promotion_id:
+          oneOf: [{ $ref: '#/components/schemas/OpaqueId' }, { type: 'null' }]
+        campaign_revision: { type: integer, format: int64, minimum: 0 }
+        discount: { $ref: '#/components/schemas/Money' }
+    Pricing:
+      type: object
+      additionalProperties: false
+      required: [total_amount, total_discount, final_amount]
+      properties:
+        total_amount: { $ref: '#/components/schemas/Money' }
+        total_discount: { $ref: '#/components/schemas/Money' }
+        final_amount: { $ref: '#/components/schemas/Money' }
+    CheckoutPreview:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, expires_at, address, items, promotion, pricing]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        address: { $ref: '#/components/schemas/AddressSnapshot' }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PreviewItem' }
+        promotion: { $ref: '#/components/schemas/PromotionPreview' }
+        pricing: { $ref: '#/components/schemas/Pricing' }
+    PaymentClientData:
+      type: object
+      additionalProperties: false
+      required: [payment_attempt_number, payment_transaction_id, usable, client_secret, publishable_key, expires_at]
+      properties:
+        payment_attempt_number: { type: integer, minimum: 1 }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        usable: { type: boolean }
+        client_secret: { type: [string, 'null'], minLength: 1, maxLength: 4096 }
+        publishable_key: { type: [string, 'null'], minLength: 1, maxLength: 512 }
+        expires_at: { type: [string, 'null'], format: date-time }
+    CheckoutSubmissionReady:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, order_id, order_status, payment]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        order_id: { type: string, pattern: '^[1-9][0-9]*$', maxLength: 19 }
+        order_status: { type: string, const: PENDING_PAYMENT }
+        payment: { $ref: '#/components/schemas/PaymentClientData' }
+    CheckoutSubmissionPending:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, state, status_url]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        state: { type: string, enum: [PREPARING, RESULT_UNKNOWN] }
+        status_url: { type: string, format: uri-reference }
+  responses:
+    BadRequest:
+      description: Malformed JSON, unsupported field, or invalid identifier.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Missing or untrusted Gateway identity.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotFound:
+      description: Checkout token or durable submission is unknown to this user.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Conflict:
+      description: Active-token CAS failed, price changed, promotion recalculation is required, or submission reached a terminal conflict.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Gone:
+      description: Quotation is logically expired while its owner binding is retained, or recovery payload expired after Order was confirmed absent.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unprocessable:
+      description: Cart is empty, address/promotion is invalid, a SKU is unavailable, or Inventory returns REJECT_ALL.
+      headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RateLimited:
+      description: Per-user Preview or Submit quota exceeded.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unavailable:
+      description: A required authoritative dependency is unavailable; no degraded quotation is committed.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

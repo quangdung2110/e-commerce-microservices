@@ -400,8 +400,12 @@ components:
       additionalProperties: false
       required: [line_reference, sku_id, quantity]
       properties:
-        line_reference: { $ref: '#/components/schemas/OpaqueId' }
-        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        line_reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Equal to sku_id for Checkout v1.
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
         quantity: { $ref: '#/components/schemas/Quantity' }
     AllocationPreviewRequest:
       type: object
@@ -414,8 +418,8 @@ components:
       additionalProperties: false
       required: [line_reference, sku_id, quantity, warehouse_id, fulfillment_priority, selection_reason]
       properties:
-        line_reference: { $ref: '#/components/schemas/OpaqueId' }
-        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        line_reference: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
         quantity: { $ref: '#/components/schemas/Quantity' }
         warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
         fulfillment_priority: { type: integer, minimum: 0 }
@@ -425,8 +429,8 @@ components:
       additionalProperties: false
       required: [line_reference, sku_id, quantity, reason]
       properties:
-        line_reference: { $ref: '#/components/schemas/OpaqueId' }
-        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        line_reference: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
         quantity: { $ref: '#/components/schemas/Quantity' }
         reason: { const: NO_ELIGIBLE_WAREHOUSE }
     AllocationPreviewResponse:

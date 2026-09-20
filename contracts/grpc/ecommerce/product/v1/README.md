@@ -1,5 +1,10 @@
 # Product gRPC v1
 
+`Sku.price` is the published selling price, `Sku.base_price` is the admin-managed
+list price, and `Sku.category_ids` is the Product-owned category ancestry consumed
+by Checkout when building trusted Promotion facts. The API never exposes Inventory
+stock state.
+
 **Trạng thái:** `proposed`
 
 ## Vấn đề

@@ -1298,8 +1298,10 @@ components:
       required: [subtotal, checkout_channel, items]
       description: >-
         Map sang các rule fact cart.total_amount, cart.payment_method,
-        cart.checkout_channel và cart.items.category_id. user.id lấy từ trusted identity;
-        user.tier lấy từ verified claims hoặc trusted service snapshot, không lấy từ facts.
+        cart.checkout_channel và cart.items.category_id. Internal Checkout requests
+        use TrustedCheckoutContext to constrain checkout_channel=CHECKOUT. user.id lấy
+        từ trusted identity; user.tier chỉ được dùng khi caller có trusted service
+        snapshot. Thiếu tier làm rule tier evaluate false, không được lấy từ context.facts.
       properties:
         subtotal: { $ref: '#/components/schemas/VndMoney' }
         payment_method:
@@ -1307,7 +1309,10 @@ components:
           const: STRIPE
           default: STRIPE
           description: Phase 18 chỉ hỗ trợ Stripe; server mặc định STRIPE và không tin payment method tùy ý từ client.
-        checkout_channel: { type: string, minLength: 1, maxLength: 64 }
+        checkout_channel:
+          type: string
+          minLength: 1
+          maxLength: 64
         items:
           type: array
           minItems: 1
@@ -1318,6 +1323,13 @@ components:
           maxProperties: 100
           additionalProperties: { $ref: '#/components/schemas/RuleValue' }
           description: Optional versioned facts; server chỉ expose allowlisted field cho Rule Engine.
+    TrustedCheckoutContext:
+      allOf:
+        - $ref: '#/components/schemas/CheckoutContext'
+        - type: object
+          description: Service-to-service context; the caller cannot choose an arbitrary channel.
+          properties:
+            checkout_channel: { type: string, const: CHECKOUT }
     SuggestionRequest:
       type: object
       additionalProperties: true
@@ -1420,12 +1432,16 @@ components:
     DiscountCalculationRequest:
       type: object
       additionalProperties: true
-      required: [user_id, user_tier, promotion_id, context]
+      required: [user_id, promotion_id, context]
       properties:
         user_id: { $ref: '#/components/schemas/Uuid' }
-        user_tier: { type: string, minLength: 1, maxLength: 64 }
+        user_tier:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 64
+          description: Optional trusted snapshot; omit/null makes user.tier rules evaluate false.
         promotion_id: { $ref: '#/components/schemas/NullableOpaqueId' }
-        context: { $ref: '#/components/schemas/CheckoutContext' }
+        context: { $ref: '#/components/schemas/TrustedCheckoutContext' }
     DiscountCalculationResult:
       type: object
       additionalProperties: false
@@ -1444,14 +1460,18 @@ components:
     ReserveRequest:
       type: object
       additionalProperties: true
-      required: [order_id, user_id, user_tier, promotion_id, expected_discount, context]
+      required: [order_id, user_id, promotion_id, expected_discount, context]
       properties:
         order_id: { $ref: '#/components/schemas/OpaqueId' }
         user_id: { $ref: '#/components/schemas/Uuid' }
-        user_tier: { type: string, minLength: 1, maxLength: 64 }
+        user_tier:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 64
+          description: Must match the optional trusted tier used at Preview; omit/null when no tier authority exists.
         promotion_id: { $ref: '#/components/schemas/OpaqueId' }
         expected_discount: { $ref: '#/components/schemas/VndMoney' }
-        context: { $ref: '#/components/schemas/CheckoutContext' }
+        context: { $ref: '#/components/schemas/TrustedCheckoutContext' }
     ReservationResponse:
       type: object
       additionalProperties: false

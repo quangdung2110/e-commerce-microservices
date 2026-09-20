@@ -4,13 +4,37 @@ version: 1
 # Mọi interaction http/grpc ở đây là nguồn dẫn xuất cho ma trận AuthorizationPolicy
 # tại docs/mesh/runtime-contract.md mục 5.2; thêm/sửa interaction phải kèm dòng tương ứng.
 interactions:
-  - id: cart-queries-product-skus
+  - id: cart-and-checkout-query-product-skus
     protocol: grpc
     provider: product-service
-    consumers: [cart-service]
+    consumers: [cart-service, checkout-service]
     contract: grpc/ecommerce/product/v1/product_service.proto
     status: proposed
-    notes: Canonical replacement for duplicated Product/Cart proto files.
+    notes: Canonical Product price/catalog/category snapshot; never carries Inventory stock.
+
+  - id: checkout-reads-cart-snapshot
+    protocol: http
+    provider: cart-service
+    consumers: [checkout-service]
+    contract: http/cart/v1/openapi.yaml
+    status: proposed
+    notes: Minimal mTLS snapshot of product_id, sku_id and authoritative quantity; no direct Cart Redis access.
+
+  - id: checkout-reads-user-address-snapshot
+    protocol: http
+    provider: user-service
+    consumers: [checkout-service]
+    contract: http/user/v1/openapi.yaml
+    status: proposed
+    notes: User verifies address ownership and returns the immutable delivery snapshot required by Order.
+
+  - id: gateway-routes-checkout
+    protocol: http
+    provider: checkout-service
+    consumers: [api-gateway]
+    contract: http/checkout/v1/openapi.yaml
+    status: proposed
+    notes: Buyer Preview, Submit and token-owned durable submission recovery; all responses private/no-store.
 
   - id: storefront-queries-search
     protocol: http
@@ -70,7 +94,7 @@ interactions:
     notes: >-
       Internal mTLS batch read after Product resolves active SKU IDs. Inventory returns
       advisory IN_STOCK, OUT_OF_STOCK, or UNKNOWN only; timeout/503 degrades PDP SKU
-      availability to UNKNOWN and Checkout remains the only Reserve caller.
+      availability to UNKNOWN; Checkout uses allocation Preview and Order is the only Reserve caller.
 
   - id: product-publishes-catalog-events
     protocol: kafka
@@ -178,7 +202,7 @@ interactions:
     consumers: [checkout-service]
     contract: http/order/internal/v1/openapi.yaml
     status: proposed
-    notes: Checkout submits one immutable snapshot with Idempotency-Key equal to checkout_token and receives durable Payment client data.
+    notes: Checkout submits one immutable snapshot, including Product-owned category_ids, with Idempotency-Key equal to checkout_token and receives freshly relayed Payment client data.
 
   - id: gateway-manages-orders
     protocol: http
@@ -246,13 +270,13 @@ interactions:
     provider: promotion-service
     consumers: [checkout-service]
     contract: http/promotion/v1/openapi.yaml
-    status: implemented
+    status: proposed
     notes: Checkout uses the pure internal discount-calculation query; it never reserves budget during Preview.
 
   - id: gateway-routes-customer-promotions
     protocol: http
     provider: promotion-service
-    consumers: [api-gateway, checkout-service]
+    consumers: [api-gateway]
     contract: http/promotion/v1/openapi.yaml
     status: implemented
     notes: Authenticated suggestion/discovery/save/claim surface; discovery is rate-limited at the Gateway.

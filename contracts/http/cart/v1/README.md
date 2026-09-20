@@ -1,5 +1,11 @@
 # Cart HTTP v1
 
+Checkout reads Cart only through
+`GET /internal/v1/carts/{user_id}/checkout-snapshot` with mesh mTLS. The response
+contains only `product_id`, `sku_id`, and authoritative `quantity`; it does not
+enrich Product data or expose Cart's bucketed Redis keyspace. Checkout and every
+other consumer must not issue direct Redis commands against Cart-owned keys.
+
 **Trạng thái:** `proposed`
 
 Nguồn chuẩn: [`openapi.yaml`](openapi.yaml). Cart ingress nằm sau API Gateway;

@@ -240,6 +240,7 @@ Invoke-OptionalTool -Name 'buf' -Action {
 }
 Invoke-OptionalTool -Name 'redocly' -Action {
     @(
+        'http/checkout/v1/openapi.yaml',
         'http/cart/v1/openapi.yaml',
         'http/inventory/workflow/v1/openapi.yaml',
         'http/inventory/admin/v1/openapi.yaml',

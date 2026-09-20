@@ -20,6 +20,23 @@ không cần xuất hiện ở đây.
 - Notification HTTP v1 (inbox in-app qua Gateway) và Notification internal v1 (status cho
   support, ops không qua Gateway) mới. Catalog interactions, Gateway route và Mesh
   authorization/deadline matrix cập nhật tương ứng.
+- Thêm Checkout HTTP v1 với ba route buyer: Preview, Submit và submission recovery.
+  Request không nhận item/quantity/price; response và Payment relay đều
+  `Cache-Control: private, no-store`.
+- Cart HTTP v1 thêm internal mTLS checkout snapshot chỉ trả
+  `product_id`/`sku_id`/`quantity`; Checkout không đọc Redis keyspace của Cart.
+- Product gRPC `Sku` thêm `category_ids` để Checkout dựng Promotion facts từ nguồn
+  Product-owned; field không mang tồn kho.
+- Promotion checkout context khóa `checkout_channel=CHECKOUT`; `user_tier` trở thành
+  optional trusted snapshot và tier rule evaluate false khi thiếu authority.
+- Order internal v1 khóa compatibility field `user_ack_degraded_pricing=false` và
+  yêu cầu mỗi Checkout item mang Product-owned `category_ids` để Promotion Reserve
+  dựng lại đúng trusted context; Order submission được siết còn 0/1 PLATFORM_VOUCHER.
+  Checkout dùng UUID token làm đúng `Idempotency-Key`; Checkout/Inventory/Order thống
+  nhất `line_reference=sku_id` tối đa 64 ký tự; Inventory Preview fail-closed, còn
+  Order là caller duy nhất của Inventory Reserve.
+- Catalog, Gateway target routes và Mesh authorization/deadline matrix được cập nhật
+  đồng thời cho Cart/User/Product/Inventory/Promotion/Order dependencies của Checkout.
 
 ## 2026-09-18
 

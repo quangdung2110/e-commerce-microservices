@@ -71,7 +71,7 @@ services:
     runtime: undecided
     status: documented
     contract_adoption: not_started
-    docs: docs/checkout/checkout_architecture_design.md
+    docs: docs/checkout/README.md
 
   - id: order-service
     bounded_context: order

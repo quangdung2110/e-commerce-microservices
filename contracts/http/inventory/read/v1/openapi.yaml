@@ -6,7 +6,7 @@ info:
     Internal, read-only availability API for Product Detail BFF. Inventory remains the
     sole owner of the warehouse-aware availability rule and of all stock data. This API
     returns UI advisory state only; it never creates a hold and is not a substitute for
-    Checkout/Order Reserve. It does not expose quantity, warehouse, allocation, or
+    Order Reserve. It does not expose quantity, warehouse, allocation, or
     reservation data, and is distinct from the Search-only projection export surface.
 x-adoption-status: proposed
 servers:
