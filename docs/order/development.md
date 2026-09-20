@@ -77,6 +77,7 @@ order/workflow ID, canonical string order ID của cả hai outbound event, uniq
 SKU list, nullable completed-item variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
+Checkout item `category_ids` persistence và exact Promotion Reserve context reconstruction,
 Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
 from `REFUNDED`. Payment fixtures phải dùng full structured CloudEvents, exact
 namespaced `type`, canonical `source`, matching `dataschema` và Kafka key

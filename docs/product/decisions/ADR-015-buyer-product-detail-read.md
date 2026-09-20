@@ -37,5 +37,5 @@ availability advisory qua Inventory Availability Read API.
 
 Thêm một internal HTTP contract và dependency vận hành Product → BFF. Test phải chứng
 minh Product `HIDDEN` không lộ, media/variant/price đúng snapshot và response không
-chứa stock. BFF chỉ gọi Inventory sau khi nhận SKU catalog-active; Checkout vẫn reserve
-trực tiếp tại Inventory.
+chứa stock. BFF chỉ gọi Inventory sau khi nhận SKU catalog-active; Checkout lấy
+allocation Preview và Order mới Reserve trực tiếp tại Inventory.

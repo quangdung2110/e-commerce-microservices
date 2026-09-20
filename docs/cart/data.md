@@ -30,6 +30,10 @@ Redis phải cấu hình AOF, replica, TLS và `noeviction`. Không có fallback
 nếu cart state bị mất hoặc hết TTL, API trả cart rỗng. Chi tiết RPO/RTO, capacity
 và phản ứng khi Kafka outage nằm ở [Operations](./operations.md).
 
+Keyspace là private implementation contract của Cart. Checkout lấy quantity qua
+`GET /internal/v1/carts/{user_id}/checkout-snapshot`; không service nào được tự
+tính bucket hoặc đọc trực tiếp các key bên dưới.
+
 ## 2. Logical data model
 
 ```mermaid
@@ -98,8 +102,8 @@ Mỗi pod dùng bounded LRU + `singleflight` theo `sku_id` (TTL ngắn 30–60 g
 gộp request refresh đồng thời. Đây là cache tối ưu hóa, không phải source of truth.
 
 `GET` không ghi lại snapshot vào Redis. Validation cho positive delta có thể cũ tối
-đa bằng validation TTL; Checkout xác thực lại catalog/giá và Inventory reserve xác
-nhận stock trước khi tạo giao dịch.
+đa bằng validation TTL; Checkout xác thực lại catalog/giá và lấy allocation preview;
+Order gọi Inventory Reserve để xác nhận stock trước khi tiếp tục giao dịch.
 
 ## 6. Transaction boundaries
 

@@ -61,7 +61,7 @@ verified_against_commit: null
 | Command | Reserve/confirm/cancel | Order/Temporal |
 | Command | Legacy `cancel-confirmed` | `promotion-legacy-migrator` capability only |
 | Query | Calculate discount | Checkout |
-| Query | Voucher trong ví/public discovery | Customer qua Checkout |
+| Query | Voucher trong ví/public discovery | Customer qua Gateway |
 | Worker | Schedule START/END, rescue, reconciliation | Promotion |
 | Event | Invalidate markdown khi Product hard delete | Product Kafka tombstone |
 

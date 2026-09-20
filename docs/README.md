@@ -36,26 +36,28 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 1. Checkout Service (BFF/Stateless)
 
-> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, bảo toàn toàn bộ quyết định của 5 tài liệu cũ, chưa xác minh
-> implementation và chưa đối soát contract liên service.
+> Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Repository chưa
+> có Checkout implementation nên adoption runtime vẫn là `not_started`.
 
 | File | Mô tả |
 |---|---|
-| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary với Cart/Order/Promotion, ownership Redis, capability, dependency, bất biến và known gaps. |
-| [checkout/architecture.md](./checkout/architecture.md) | BFF/Aggregator stateless, parallel orchestration (Wave 1/2/3), Submit bốn giai đoạn, lock + Lua, consistency. |
-| [checkout/domain.md](./checkout/domain.md) | Session/token/pricing hash, business rule, invariant, state machine `PREVIEW_READY → SUBMITTED` và lỗi miền. |
-| [checkout/interfaces.md](./checkout/interfaces.md) | Preview/Submit semantics, voucher tray policy, downstream contract (Promotion, User, Product, Inventory, Order). |
-| [checkout/workflows.md](./checkout/workflows.md) | Preview, voucher tray, Submit, client retry/recovery, reserve fail recalculation, degraded pricing. |
-| [checkout/data.md](./checkout/data.md) | Redis session Hash, lock, rate limit, Lua script, payload/response/routing cache, lifecycle. |
-| [checkout/operations.md](./checkout/operations.md) | Timeout/fallback, failure mode, degraded behavior, scaling, runbook. |
+| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary, authoritative sources, API và bất biến. |
+| [checkout/architecture.md](./checkout/architecture.md) | BFF stateless, fail-closed preview, atomic submit và recovery. |
+| [checkout/domain.md](./checkout/domain.md) | Token-owned snapshot, state machine, rule và lỗi miền. |
+| [checkout/interfaces.md](./checkout/interfaces.md) | Public API và mapping exact tới Cart, User, Product, Inventory, Promotion, Order. |
+| [checkout/workflows.md](./checkout/workflows.md) | Preview, Submit, retry đồng thời, recovery và preview mới. |
+| [checkout/data.md](./checkout/data.md) | Redis token-keyed state, TTL, CAS/Lua và no-secret/no-domain-cache policy. |
+| [checkout/operations.md](./checkout/operations.md) | Deadline/retry, telemetry, failure mode, runbook và rollout. |
 | [checkout/development.md](./checkout/development.md) | Checklist build/test khi implementation được thêm. |
-| [checkout/decisions/README.md](./checkout/decisions/README.md) | Danh mục ADR bảo toàn các quyết định của thiết kế cũ. |
+| [checkout/decisions/README.md](./checkout/decisions/README.md) | Danh mục ADR hiện hành và lịch sử superseded. |
 
 ### Checkout contracts chuẩn
-- `POST /v1/checkout/preview` (Preview API) — owner: Checkout
-- `POST /v1/checkout/submit` (Submit API) — owner: Checkout
-- Cross-ref: Checkout gọi `POST /internal/v1/checkout-order-submissions` của Order
+
+- `POST /api/v1/checkout/preview` — tạo immutable quotation.
+- `POST /api/v1/checkout/submit` — submit theo token.
+- `GET /api/v1/checkout/submissions/{checkout_token}` — recovery/status.
+- Checkout gọi Cart snapshot, User address snapshot, Product batch, Inventory allocation preview, Promotion calculation và Order submission bằng contracts owner tương ứng.
 
 ---
 
@@ -159,7 +161,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 > Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
 > availability qua batch read; Review giữ review/rating. BFF không persist stock,
-> đọc Review summary/preview theo request và Checkout vẫn reserve tại Inventory.
+> đọc Review summary/preview theo request; Checkout preview allocation và Order reserve tại Inventory.
 
 | File | Mô tả |
 |---|---|
@@ -195,9 +197,16 @@ Service Contract Matrix legacy đã bị xóa.
 
 | Endpoint | Direction |
 |---|---|
-| `POST /v1/checkout/preview` | Client → Checkout |
-| `POST /v1/checkout/submit` | Client → Checkout |
+| `POST /api/v1/checkout/preview` | Client → Gateway → Checkout |
+| `POST /api/v1/checkout/submit` | Client → Gateway → Checkout |
+| `GET /api/v1/checkout/submissions/{checkout_token}` | Client → Gateway → Checkout |
+| `GET /internal/v1/carts/{user_id}/checkout-snapshot` | Checkout → Cart |
+| `GET /internal/v1/users/{user_id}/addresses/{address_id}/checkout-snapshot` | Checkout → User |
+| Product gRPC `GetBatchSkus` | Checkout → Product |
+| `POST /internal/inventory/v1/allocation-previews` | Checkout → Inventory |
+| `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion |
 | `POST /internal/v1/checkout-order-submissions` | Checkout → Order |
+| `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Checkout → Order recovery |
 | `GET /api/v1/orders` / `GET /api/v1/orders/{order_id}` | Buyer → Order |
 | `POST /api/v1/orders/{order_id}/{cancellation-requests,return-requests,payment-attempts}` | Buyer → Order |
 | `POST /api/v1/admin/orders/{order_id}/{cancellation-requests,pre-dispatch-refund-requests}` | Admin → Order |
@@ -205,15 +214,12 @@ Service Contract Matrix legacy đã bị xóa.
 | `POST /v1/payments/{transactionId}/{cancel,refund}` | Order (Temporal) → Payment |
 | `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | Order (Temporal) → Payment |
 | `POST /api/payments/webhook/stripe` | Stripe → Gateway → Payment `/v1/payments/webhook/stripe` |
-| `POST /v1/inventory/routing-options` | Checkout → Inventory |
-| `POST /v1/inventory/ship-to-customer` | Admin → Inventory |
 | `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |
 | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Order → Inventory; automatic admin refund all-or-nothing release |
-| `POST /api/v1/me/promotion-voucher-suggestions` | Checkout/Gateway → Promotion; chỉ wallet `SAVED` |
-| `POST /api/v1/promotion-discovery` | Checkout/Gateway → Promotion; wallet + public `ACTIVE` |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Client → Gateway → Promotion; chỉ wallet `SAVED` |
+| `POST /api/v1/promotion-discovery` | Client → Gateway → Promotion; wallet + public `ACTIVE` |
 | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save + evaluate explicit |
 | `POST /api/v1/me/promotion-voucher-claims` | Customer → Promotion; limited claim |
-| `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion; pure query |
 | `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations}` | Order (Temporal) → Promotion |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | `promotion-legacy-migrator` → Promotion; dedicated proof/capability only |
 | `POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` | `finance-ops`/`accounting-ops` → Order; evidence-backed decision only |

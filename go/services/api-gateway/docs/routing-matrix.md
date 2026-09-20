@@ -22,6 +22,22 @@
 | `/health` | - | No | No limit | 1 | Health check endpoint |
 | `/ping` | - | No | No limit | 1 | Liveness probe |
 
+## Target routes not active in runtime config
+
+Checkout has no deployed upstream in this repository, so the following contract routes
+must remain absent from `config/dynamic.yml` and Compose labels until its readiness probe
+passes. Their canonical source is `contracts/http/checkout/v1/openapi.yaml`.
+
+| Path | Method | Auth | Target rate profile |
+|---|---|---|---|
+| `/api/v1/checkout/preview` | POST | Required | `checkout-preview` (10/user/minute) |
+| `/api/v1/checkout/submit` | POST | Required | `checkout-submit` (3/user/minute) |
+| `/api/v1/checkout/submissions/{checkout_token}` | GET | Required | `api-authenticated` |
+
+All three routes strip client-supplied identity headers and return `Cache-Control:
+private, no-store`. Gateway never retries either POST. Access logs must record the
+route template or redact/hash the submission token path segment before activation.
+
 # =============================================================================
 # HEADER ENRICHMENT (after authentication)
 # =============================================================================

@@ -18,7 +18,8 @@ flowchart LR
   BFF -->|internal PDP read| R[Review]
   IQ --> AS[SkuAvailabilityState]
   AS --> IDB[(Inventory primary/read model)]
-  CO[Checkout] -->|atomic reserve| I[Inventory command API]
+  CO[Checkout] -->|allocation preview| I[Inventory workflow API]
+  O[Order] -->|atomic reserve| I
   I --> IDB
 ```
 
@@ -53,7 +54,7 @@ consumer, database, revision guard, bootstrap hay replay procedure.
 ## Consistency và degradation
 
 Catalog, availability và Review không có distributed transaction, vì vậy response mang
-các snapshot độc lập. `IN_STOCK` không phải reservation; khi Checkout reserve thất bại,
+các snapshot độc lập. `IN_STOCK` không phải reservation; khi Order Reserve thất bại,
 checkout báo hết hàng và refresh PDP/cart theo policy UI.
 
 Inventory là dependency degradable: failure chỉ làm availability thành `UNKNOWN`, không

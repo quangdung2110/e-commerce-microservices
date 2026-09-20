@@ -30,7 +30,7 @@ flowchart LR
   CE --> SEARCH
   INVENTORY[Inventory] --> IE[Stock events]
   IE --> SEARCH
-  CHECKOUT[Checkout] --> RESERVE[Inventory reserve]
+  CHECKOUT[Checkout] --> PREVIEW[Inventory allocation preview]
 ```
 
 | Thành phần | Trách nhiệm |

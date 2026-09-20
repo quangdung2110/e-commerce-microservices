@@ -39,6 +39,7 @@ flowchart LR
 | Component | Trách nhiệm |
 |---|---|
 | HTTP adapter | Đọc trusted identity, validate syntax, map error |
+| Checkout snapshot API | Đọc tối thiểu SKU/product/quantity qua mTLS; không enrich Product hoặc refresh TTL |
 | Application service | Quyết định add/update/read; gọi Product và Lua |
 | Redis Lua adapter | Ghi duy nhất items/meta/ZSET/idempotency/outbox |
 | Product gRPC client | Validate SKU mới và batch enrich response đọc cart |

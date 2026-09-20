@@ -27,11 +27,16 @@ phủ `current_price` và catalog saleability. Product timeout/breaker mở tr�
 rỗng; không rehydrate. GET là query thuần: không cập nhật snapshot Redis, TTL hay
 abandonment schedule.
 
+`GET /internal/v1/carts/{user_id}/checkout-snapshot` chỉ dành cho principal
+`checkout-service`. Endpoint đọc cùng Redis source of truth nhưng chỉ trả
+`{product_id, sku_id, quantity}`, không gọi Product, không refresh TTL và không
+mutate lifecycle. Checkout không được đọc trực tiếp keyspace bucketed của Cart.
+
 `POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0. Delta
 dương thêm/tăng, delta âm giảm; Cart không nhận quantity tuyệt đối. SKU mới hoặc
 delta dương trên validation stale gọi `GetSku`; các lần tăng khi validation
 còn tươi đi thẳng Lua. Cart không gọi Inventory và không chặn thao tác vì hết hàng;
-Checkout reserve tại Inventory mới là quyết định cuối. Response/status code và payload chuẩn nằm trong OpenAPI.
+Checkout lấy allocation preview, còn Order Reserve tại Inventory mới là quyết định cuối. Response/status code và payload chuẩn nằm trong OpenAPI.
 
 `DELETE /api/v1/carts/mine/items` xóa tối đa 100 SKU, tự nhiên idempotent. Nếu cart rỗng,
 script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.

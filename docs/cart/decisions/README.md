@@ -44,4 +44,5 @@ Tạo ADR khi quyết định:
 | [ADR-009](./ADR-009-bucket-scoped-event-ordering.md) | Ordering theo stream bucket và event identity kép | Superseded | 2026-08-30 | ADR-011 |
 | [ADR-010](./ADR-010-redis-only-cart-and-abandoned-outbox.md) | Redis-only Cart và outbox chỉ cho CART_ABANDONED | Accepted | 2026-08-30 | ADR-001, ADR-002 |
 | [ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md) | Pull read thuần và phạm vi Redis outbox hiện hành | Accepted | 2026-08-31 | ADR-005, ADR-007, ADR-008, ADR-009 |
-| [ADR-012](./ADR-012-catalog-only-cart-validation.md) | Cart chỉ xác thực catalog, không xác thực tồn kho | Accepted | 2026-09-01 | — |
+| [ADR-012](./ADR-012-catalog-only-cart-validation.md) | Cart chỉ xác thực catalog, mô tả caller Inventory cũ | Superseded | 2026-09-01 | ADR-013 |
+| [ADR-013](./ADR-013-checkout-preview-order-reserve-boundary.md) | Cart catalog-only; Checkout Preview, Order Reserve | Accepted | 2026-09-20 | ADR-012 |

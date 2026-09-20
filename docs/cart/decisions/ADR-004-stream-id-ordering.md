@@ -8,7 +8,7 @@ decision_owners:
 supersedes: null
 evidence:
   - docs/cart/data.md
-  - docs/cart/schema/0001_initial_cart_schema.sql
+  - docs/cart/schema/README.md
 ---
 
 # ADR-004 — Thứ tự và idempotency dựa trên Stream ID
@@ -100,8 +100,9 @@ thiết kế lại và dữ liệu đã lưu phải được xử lý.
 **Code.** Mọi câu lệnh ghi của consumer phải có mệnh đề guard. Không có ngoại lệ, kể
 cả cho các event trạng thái tưởng như vô hại.
 
-**Data.** Hai cột guard là phần bắt buộc của schema; xem
-[`0001_initial_cart_schema.sql`](../schema/0001_initial_cart_schema.sql).
+**Data lịch sử.** Quyết định này từng yêu cầu hai cột guard trong relational cold
+store. Schema đó đã bị loại bỏ khi ADR-010/ADR-011 chuyển Cart sang Redis-only; xem
+[ghi chú schema hiện hành](../schema/README.md).
 
 **Contract.** Header Kafka mang các trường thứ tự; consumer downstream nào cần
 dedupe đều dùng chung cơ chế này.

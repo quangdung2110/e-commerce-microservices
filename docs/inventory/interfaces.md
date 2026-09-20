@@ -43,7 +43,9 @@ partial order reservation or a partial quantity of a selected Refund Scope line.
 
 `POST /internal/inventory/v1/allocation-previews`
 
-Input is `line_reference`, opaque `sku_id`, and positive quantity. A `line_reference` is mapped to the Order line by Checkout/Order, not by Inventory. The response is one of:
+Input is `line_reference`, opaque `sku_id`, and positive quantity. Với Checkout v1,
+cả hai identifier dài tối đa 64 ký tự và `line_reference=sku_id`. A `line_reference`
+is mapped to the Order line by Checkout/Order, not by Inventory. The response is one of:
 
 | Transport | Domain outcome | Meaning |
 |---:|---|---|
@@ -102,7 +104,7 @@ the buyer hot path.
 
 The response is advisory UI data only. It never includes quantity, warehouse,
 availability algorithm internals, allocation plan, reservation, or an authority to
-Reserve. Checkout/Order continue using the Workflow API for Preview and Reserve.
+Reserve. Checkout uses the Workflow API for Preview; Order uses it for Reserve.
 
 ## 4. ADMIN API
 

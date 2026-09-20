@@ -74,17 +74,18 @@ hoặc Search.
 
 ## gRPC catalog read
 
-`GetSku` và `GetBatchSkus` trả: `sku_id`, `product_id`, product name, variant,
-image reference, `base_price_vnd`, `selling_price_vnd`, catalog saleability,
-`catalog_revision`, `updated_at`. Chúng không trả quantity, `OUT_OF_STOCK` hay stock
+`GetSku` và `GetBatchSkus` trả: `sku_id`, `product_id`, `product_name`,
+`variant_attributes`, `image_url`, `base_price`, published selling `price`,
+`category_ids` (tối đa 20 ID duy nhất), catalog saleability,
+`catalog_revision`, `updated_at`. `category_ids` là Product-owned ancestry để Checkout
+dựng trusted Promotion facts; consumer không tự suy diễn category rule. Chúng không trả quantity, `OUT_OF_STOCK` hay stock
 status. Nếu Product/SKU không catalog-active, response là unavailable; Cart có thể giữ
-SKU hết stock và Checkout phải reserve tại Inventory.
+SKU hết stock; Checkout phải lấy allocation preview và Order mới reserve tại Inventory.
 
 Proto hiện có tại
 [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../contracts/grpc/ecommerce/product/v1/product_service.proto)
-đã reserve field tồn kho, nhưng chưa diễn đạt đủ base/selling price, catalog revision và
-catalog saleability. Phải tạo version contract mới hoặc mở rộng tương thích trước khi
-đưa schema này vào implementation.
+đã diễn đạt `price` (selling price), `base_price`, `catalog_revision`, `category_ids`
+và catalog saleability; field tồn kho cũ vẫn được reserve vĩnh viễn.
 
 ## Events Product phát ra
 

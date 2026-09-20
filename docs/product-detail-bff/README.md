@@ -26,8 +26,8 @@ sở hữu catalog, tồn kho, Review domain, database nghiệp vụ hoặc Inve
 | Browse, search, facet, suggestion | Search | Không gọi trong PDP hot path |
 | PDP HTTP response | Product Detail BFF | Ghép catalog, availability và Review enrichment theo policy storefront |
 
-PDP không đưa stock về Product. Khi buyer checkout, Checkout vẫn phải gọi Inventory
-Reserve; `IN_STOCK` trên PDP là UI state, không phải xác nhận có thể mua.
+PDP không đưa stock về Product. Khi buyer checkout, Checkout gọi Inventory allocation
+preview và Order mới Reserve; `IN_STOCK` trên PDP là UI state, không phải xác nhận có thể mua.
 
 ## Dependencies
 

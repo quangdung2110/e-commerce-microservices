@@ -83,12 +83,16 @@ Search trả một card trên mỗi order với `order_id`, `buyer_id`, `buyer_t
 
 `POST /internal/v1/checkout-order-submissions` chỉ cho principal
 `checkout-service`; `Idempotency-Key` bắt buộc bằng UUID `checkout_token`. Request
-chứa `user_id`, address snapshot, `items[]`, pricing, promotion snapshot,
-`allocation_plan`, `pricing_hash`, `items_hash`, campaign revision và degraded ack.
+chứa `user_id`, address snapshot, `items[]` (gồm Product-owned `category_ids`), pricing, promotion snapshot,
+`allocation_plan`, `pricing_hash`, `items_hash` và campaign revision. Trường legacy
+`user_ack_degraded_pricing` vẫn bắt buộc trên wire ở v1 nhưng bị khóa `false`;
+Checkout không submit quotation degraded.
 `allocation_plan` dùng tên canonical `allocation_plan_id`; mỗi `line_reference`/SKU/
 quantity/warehouse phải ánh xạ một-một với Checkout item. Order tạo `order_line_id`
 sau khi accept và persist bridge trước Reserve. Money luôn là
-`{amount_minor,currency:"VND"}`; không có `payment_method`.
+`{amount_minor,currency:"VND"}`; không có `payment_method`. Order persist
+`category_ids` cùng line snapshot để dựng lại đúng Promotion `context.items`;
+không query Product và không nhận category từ browser.
 
 Khác command dài hạn, endpoint này chờ đến checkpoint `PAYMENT_READY` để Checkout
 có thể trả Stripe data cho frontend: lần đầu `201`, replay `200`, gồm `order_id`,
@@ -107,6 +111,8 @@ canonical JSON với object `{items:[{sku_id,unit_price_minor}],
 promotion_campaign_revision,total_discount_minor}`; items sort theo byte UTF-8 của
 `sku_id` duy nhất. `items_hash` dùng object `{items:[{quantity,sku_id}]}` cùng quy
 tắc sort/canonicalization. Order cross-check cả hash lẫn amount invariant trước tạo.
+`promotions` có tối đa một PLATFORM_VOUCHER; mảng rỗng bắt buộc đi cùng
+`promotion_campaign_revision=0`, còn một promotion phải có revision dương tương ứng.
 
 ### 2.3 Finance/Ops
 

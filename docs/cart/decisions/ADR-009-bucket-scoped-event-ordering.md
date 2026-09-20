@@ -1,7 +1,7 @@
 ---
 doc_id: cart-adr-009
 service: cart
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Cart Service team
@@ -9,14 +9,16 @@ supersedes: ADR-004
 evidence:
   - docs/cart/data.md
   - docs/cart/workflows.md
-  - docs/cart/schema/0001_initial_cart_schema.sql
+  - docs/cart/schema/README.md
 ---
 
 # ADR-009 — Ordering theo stream bucket và event identity kép
 
 ## Status
 
-`Accepted`. Thay thế [ADR-004](./ADR-004-stream-id-ordering.md).
+`Superseded` bởi [ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md).
+ADR này từng thay thế [ADR-004](./ADR-004-stream-id-ordering.md); nội dung bên dưới
+được giữ làm lịch sử cho thiết kế cold-store/outbox cũ.
 
 ## Context
 

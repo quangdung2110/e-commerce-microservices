@@ -86,7 +86,7 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
 
 ### 3.2. Bất đồng bộ và transaction boundary
 
-- `CreateOrderActivity` tạo master, item, line và promotion snapshot trong local
+- `CreateOrderActivity` tạo master, item, line (kèm category ancestry) và promotion snapshot trong local
   transaction; không phát created event vì chưa có consumer.
 - Chỉ transition `PAID` và `COMPLETED` có registered integration event. State update,
   outbox insert và tăng `orders.last_event_sequence_id` phải cùng transaction.
@@ -106,8 +106,8 @@ has a separate reconciliation lane.
 | Nhóm | Activity | Trách nhiệm |
 |---|---|---|
 | Checkout local | `CreateOrderActivity` | Tạo master/items/lines/promotions; không phát event |
-| Checkout remote | `ReserveInventoryActivity` | Reserve stock theo immutable allocation plan |
-| Checkout remote | `ReservePromotionActivity` | `POST /internal/v1/promotion-allocation/reservations`; reserve budget all-or-nothing sau submit |
+| Order checkout workflow | `ReserveInventoryActivity` | Reserve stock theo immutable allocation plan |
+| Order checkout workflow | `ReservePromotionActivity` | `POST /internal/v1/promotion-allocation/reservations`; reserve budget all-or-nothing sau submit |
 | Checkout remote | `InitiatePaymentActivity` | Tạo Stripe PaymentIntent qua Payment |
 | Post-payment | `CommitInventoryActivity` | Inventory `CommitPayment` whole root; recover uncertain result by command query |
 | Post-payment | `ConfirmPromotionActivity` | `POST /internal/v1/promotion-allocation/confirmations`; fence rồi commit durable receipt/wallet/budget (không outbox, Promotion ADR-016) |

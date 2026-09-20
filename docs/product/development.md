@@ -37,7 +37,7 @@ EventRouter chỉ route/key/header, không tự dựng business envelope.
 | Integration DB | Constraint, Product → SKU lock order, hard delete/tombstone, catalog revision |
 | Kafka | Outbox/CDC CloudEvents, catalog/category revision guard, event replay, `source_revision` cũ/trùng, ACTIVE→INACTIVE, missing Product, retry/DLQ và replay snapshot từ Promotion |
 | Contract | gRPC, Product event snapshot/revision/effective thumbnail, Promotion ACTIVE full payload và INACTIVE tombstone |
-| End-to-end | Cart đọc catalog; Checkout reserve Inventory; Search ghép catalog với Inventory event projection, còn Product Detail BFF ghép catalog với Inventory batch-read |
+| End-to-end | Cart đọc catalog; Checkout lấy Inventory allocation preview và Order reserve; Search ghép catalog với Inventory event projection, còn Product Detail BFF ghép catalog với Inventory batch-read |
 
 
 ## Debugging

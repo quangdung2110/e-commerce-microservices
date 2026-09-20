@@ -43,7 +43,7 @@ Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart khô
 
 GET không gia hạn TTL, không chạm ZSET, không cập nhật snapshot Redis và không phát
 event. Catalog validation của write có độ cũ bị chặn trên bởi validation TTL;
-Checkout xác thực catalog/giá và Inventory reserve xác nhận stock.
+Checkout xác thực catalog/giá và lấy allocation preview; Order mới gọi Inventory Reserve để xác nhận stock.
 
 ## WF-CART-003 — Xóa item theo lô
 

@@ -165,6 +165,10 @@ Promotion HTTP phải generate/validate theo
 [`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
 Contract không được chứa refund endpoint hoặc SKU-level voucher allocation; CI lint
 OpenAPI và chạy provider/consumer contract tests trước khi nâng adoption status.
+Checkout adoption gate còn yêu cầu internal DTO chấp nhận `user_tier` omit/null và
+Calculate/Reserve chỉ nhận `checkout_channel=CHECKOUT`; customer discovery context
+không bị ép dùng internal channel. Test phải cover cả Discount Calculate và Reserve bằng
+cùng item/category context.
 
 ## 8. Test data
 

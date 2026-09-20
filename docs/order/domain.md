@@ -77,7 +77,7 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-006` | Order chỉ complete khi tất cả `order_item_lines` `DELIVERED` bằng verified Delivery fact | Lock/count + CAS master | Không transition/phát event |
 | `INV-ORD-007` | Transition có registered integration event phải commit state, event sequence và outbox cùng transaction; transition khác không tạo outbox | PostgreSQL transaction | Rollback toàn transaction |
 | `INV-ORD-008` | Customer refund không gọi/mutate Promotion; wallet và budget đã confirm giữ nguyên | Workflow boundary | Không phát promotion allocation |
-| `INV-ORD-009` | Snapshot line/address không phụ thuộc dữ liệu upstream về sau | Persist khi create | Reject create nếu snapshot thiếu |
+| `INV-ORD-009` | Snapshot line/address/category không phụ thuộc dữ liệu upstream về sau; category chỉ dùng dựng lại Promotion context | Persist khi create | Reject create nếu snapshot thiếu |
 | `INV-ORD-010` | `final_amount_minor = total_amount_minor - total_discount_minor`; tất cả money là integer VND | Domain validation | Reject pricing snapshot sai |
 | `INV-ORD-011` | Reserve promotion chỉ sau submit/order tồn tại, không ở Preview | Checkout saga ordering | Không tạo reservation ở preview |
 | `INV-ORD-012` | Voucher PLATFORM có nghĩa toàn đơn, không phân bổ xuống item/SKU để refund | Domain boundary | Không tạo `promotion_refund_allocations[]` |

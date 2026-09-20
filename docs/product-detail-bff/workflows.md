@@ -25,7 +25,7 @@ owners:
 
 Inventory batch read là advisory UI query: BFF không retry lặp lại trong buyer hot path
 khi dependency đã lỗi. Circuit breaker mở thì bước 4 bỏ qua Inventory và mọi SKU là
-`UNKNOWN` trong request đó. Checkout Reserve vẫn là quyết định cuối cùng chống oversell.
+`UNKNOWN` trong request đó. Order Reserve vẫn là quyết định cuối cùng chống oversell.
 
 ## WF-PDP-002 — Degrade và recovery boundary
 

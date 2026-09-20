@@ -79,7 +79,7 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 - Một user có một cart; một `sku_id` chỉ xuất hiện một lần trong cart.
 - `quantity` luôn trong `1..max_qty`; cart không quá `max_skus`.
 - `unit_price_at_add` và `added_at` bất biến sau khi tạo item.
-- Cart có thể giữ SKU hết tồn; chỉ Checkout/Inventory được từ chối do stock.
+- Cart có thể giữ SKU hết tồn; Checkout từ chối preview `REJECT_ALL`, còn Order/Inventory quyết định Reserve cuối cùng.
 - Chỉ script Cart được ghi state; `GET` không gia hạn TTL.
 - `CART_ABANDONED` chỉ phát trong `mark_abandoned.lua`, cùng lúc với transition
   `ACTIVE -> ABANDONED`, và Notification dedupe theo `event_id`.

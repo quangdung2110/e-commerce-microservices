@@ -28,7 +28,7 @@ hoạt động.
 | Runtime | Java 21, Spring Boot 3.3 (đồng bộ với các service Java khác), PostgreSQL 16, Redis 7, Kafka + Debezium |
 | Implementation path | `java/services/promotion-service` (package `com.platform.promotionservice`) |
 | Độ tin cậy tài liệu | `implemented`; tài liệu đã được đồng bộ với source/migration trong lần implement đầu; `verified_against_commit` sẽ được ghi khi merge |
-| Contract adoption | HTTP Promotion v1 và Promotion Events v1 (markdown snapshot) `implemented`: provider test MockMvc cho HTTP, JSON Schema contract test cho CloudEvent ACTIVE/INACTIVE; consumer Product đã chấp nhận INACTIVE tombstone |
+| Contract adoption | Promotion Events v1 đã có provider/consumer tests. HTTP v1 là target `proposed`/partial: implementation hiện có phần lớn route, nhưng Checkout context mới (`checkout_channel=CHECKOUT`, nullable `user_tier`) chưa được provider DTO/test adopt |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -110,7 +110,8 @@ CloudEvents `id`.
 | Direction | Service/System | Protocol | Purpose |
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
-| Inbound | Checkout | HTTP | Discovery, save và calculate discount |
+| Inbound | Customer qua Gateway | HTTP | Discovery, suggestion, save và claim voucher |
+| Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel only; technical cancellation is denied to Order |
 | Inbound | `promotion-legacy-migrator` | HTTP | Deprecated technical cleanup with proof header/body digest |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
@@ -172,6 +173,11 @@ ký các fact đó; thêm sau là thay đổi additive theo
 
 ## 9. Known gaps
 
+- Trước khi bật Checkout route, Promotion provider phải bỏ `@NotBlank` cho
+  `DiscountCalculationRequest.userTier` và `ReserveRequest.userTier`, enforce
+  `checkoutChannel=CHECKOUT` riêng trên hai internal request, rồi thêm provider tests cho
+  tier omit/null ở Calculate và Reserve. Catalog giữ interaction Checkout ở
+  `proposed` cho tới khi gate này đạt.
 - Test suite hiện có: unit (Rule Engine, discount, phase, validity, identity filter), Lua trên
   Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→legacy cleanup,
   limited claim + Redis loss + sweeper, tombstone, clone), HTTP contract MockMvc và JSON Schema

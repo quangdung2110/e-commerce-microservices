@@ -90,13 +90,14 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `auth-service` | `/.well-known/**` | GET | `edge/traefik`, `edge/gateway-auth` | gateway matrix; `gateway-verifies-auth-tokens` |
 | `auth-service` | `/internal/v1/auth/notification-deliveries/*/content` | GET | `ecommerce/notification-service` | `notification-resolves-auth-delivery-content` |
 | `user-service` | `/api/v1/users/**` | X | `edge/traefik` | User OpenAPI v1 |
-| `user-service` | `/internal/v1/users/*/addresses/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | User OpenAPI v1 |
+| `user-service` | `/internal/v1/users/*/addresses/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | `checkout-reads-user-address-snapshot` |
 | `cart-service` | `/api/v1/carts/**` | X | `edge/traefik` | Cart OpenAPI v1 |
+| `cart-service` | `/internal/v1/carts/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | `checkout-reads-cart-snapshot` |
 | `product-service` | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | X | `edge/traefik` | gateway matrix |
 | `product-service` | `/internal/v1/products/export`, `/internal/v1/categories/export` | X | `ecommerce/search-service` | `search-reindexes-product-catalog` |
 | `product-service` | `/internal/v1/products/*/snapshot` | GET | `ecommerce/search-service`, `ecommerce/promotion-service` | Product OpenAPI `searchServiceMtls` |
 | `product-service` | `/internal/v1/product-details/*` | GET | `ecommerce/product-detail-bff` | `product-detail-bff-queries-product-catalog` |
-| `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-queries-product-skus`; Checkout interfaces |
+| `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-and-checkout-query-product-skus` |
 | `promotion-service` | `/api/v1/me/**`, `/api/v1/promotion-discovery`, `/api/v1/admin/**` | X | `edge/traefik` | gateway matrix |
 | `promotion-service` | `/internal/v1/promotion-discount-calculations` | POST | `ecommerce/checkout-service` | `checkout-calculates-promotions` |
 | `promotion-service` | `/internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | POST | `ecommerce/order-service` | `order-commands-promotion-allocation` |
@@ -111,7 +112,8 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `review-service` | `/internal/v1/reviews/rating-aggregate-exports**` | X | `ecommerce/search-service` | `search-reindexes-review-rating-aggregates` |
 | `search-service` | `/api/v2/search/**` | X | `edge/traefik` | gateway matrix |
 | `product-detail-bff` | `/api/v1/storefront/**` | GET | `edge/traefik` | `storefront-queries-product-detail` |
-| `checkout-service` | `/v1/checkout/**` | POST | `edge/traefik` | docs/README §8 |
+| `checkout-service` | `/api/v1/checkout/preview`, `/api/v1/checkout/submit` | POST | `edge/traefik` | `gateway-routes-checkout` |
+| `checkout-service` | `/api/v1/checkout/submissions/*` | GET | `edge/traefik` | `gateway-routes-checkout` |
 | `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
 | `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
 | `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
@@ -167,12 +169,13 @@ của Istio.
 | `GET /internal/v1/products/*/snapshot`, `GET /internal/v1/product-details/*` | 2 lần, `connect-failure,refused-stream` | 3 giây | Idempotent read |
 | gRPC `ProductService/GetSku`, `GetBatchSkus` | 2 lần, `connect-failure,refused-stream,unavailable` | 2 giây | Proto ghi deadline 500 ms / 1 giây; mesh là giới hạn ngoài |
 | `GET .../checkout-snapshot` (User) | 2 lần, `connect-failure,refused-stream` | 2 giây | Checkout budget 500 ms |
+| `GET /internal/v1/carts/*/checkout-snapshot` | 2 lần, `connect-failure,refused-stream` | 1 giây | Pure Cart read; Checkout budget 500 ms |
 | `POST /internal/inventory/v1/allocation-previews` | 0 | 4 giây | Advisory nhưng POST; Checkout budget 3 giây |
 | `POST /internal/v1/promotion-discount-calculations` | 0 | 3 giây | Pure query nhưng POST; Checkout budget 2 giây |
 | `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | 0 | 10 giây | Legacy migrator only; proof verification before mutation |
 | `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
-| `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry bằng stable idempotency key; mesh không retry. Webhook không nằm trong policy này |
+| `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout query Order status sau timeout thay vì nhân ba deadline. Webhook không nằm trong policy này |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF degrade theo contract |
 | `GET /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | Idempotent theo `delivery_id` |
@@ -247,7 +250,7 @@ tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
 Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
-v1. Cart, Checkout, Inventory admin và Product Detail BFF chưa có đủ dòng
+v1. Cart, Inventory admin và Product Detail BFF chưa có đủ dòng
 trong gateway matrix — mục 5.2 dùng contract, gateway matrix phải được đối soát. Review Service
 dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
 riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một

@@ -138,7 +138,9 @@ Payment và outbox CDC. **Trigger:**
 [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml).
 
 **Preconditions:** checkout token hợp lệ/chưa dùng/chưa hết TTL/chống tamper; input
-server-side có address, SKU lines, canonical VND money và promotion snapshot hợp lệ.
+server-side có address, SKU lines cùng Product-owned `category_ids`, canonical VND money và promotion snapshot hợp lệ.
+Compatibility field `user_ack_degraded_pricing` phải bằng `false`; Inventory hoặc
+Promotion dependency outage không tạo quotation được phép Submit.
 Checkout phải lấy một Inventory allocation plan immutable trước submit; chính Checkout
 không được chọn warehouse cho từng item. Mỗi planned line dùng `line_reference` của
 Checkout, vì `order_line_id` chỉ tồn tại sau `CreateOrder`; Order phải tạo và persist
@@ -185,6 +187,7 @@ sequenceDiagram
 3. `ReservePromotionActivity` gọi
    `POST /internal/v1/promotion-allocation/reservations` all-or-nothing; thành công đăng ký
    `RollbackPromotionActivity` gọi `/internal/v1/promotion-allocation/cancellations`.
+   Context được dựng từ line/category snapshot đã persist; `user_tier` omit/null ở v1.
    Reserve chỉ ở submit, không ở Preview.
 4. `InitiatePaymentActivity` persists the returned `payment_attempt_number` and
    transaction ID in `order_payment_attempts`, then marks that identity active. An

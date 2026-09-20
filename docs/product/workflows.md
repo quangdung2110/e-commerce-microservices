@@ -55,7 +55,7 @@ worker Product fan-out subtree ([ADR-014](./decisions/ADR-014-catalog-snapshot-r
 
 `GetSku`/`GetBatchSkus` query PostgreSQL, join Product/SKU/media cần thiết và trả
 catalog saleability cùng giá công bố. Không dùng cache, không trả stock. Caller Checkout
-reserve trực tiếp tại Inventory sau khi đã xác thực catalog/giá.
+lấy allocation preview tại Inventory sau khi đã xác thực catalog/giá; Order thực hiện Reserve.
 
 ## WF-PRODUCT-005 — Markdown snapshot
 

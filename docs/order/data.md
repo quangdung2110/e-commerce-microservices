@@ -96,6 +96,7 @@ erDiagram
       varchar snapshot_name
       varchar snapshot_image_url
       jsonb snapshot_attributes
+      jsonb snapshot_category_ids
     }
     ORDER_PROMOTIONS {
       bigint id PK
@@ -237,7 +238,7 @@ viết lại lịch sử đơn.
 |---|---|---|
 | `id` | `BIGSERIAL` PK | Line identity |
 | `order_item_id` | `BIGINT` FK | Delivery unit owner |
-| `allocation_plan_line_reference` | `VARCHAR(128) UNIQUE NOT NULL` | Immutable `line_reference` from the accepted Inventory Preview; is the only bridge from Checkout plan to generated Order line identity. |
+| `allocation_plan_line_reference` | `VARCHAR(64) UNIQUE NOT NULL` | Immutable `line_reference=sku_id` from the accepted Checkout v1 Inventory Preview; is the only bridge from Checkout plan to generated Order line identity. |
 | `allocated_warehouse_id` | `BIGINT NOT NULL` | Warehouse immutable từ Inventory allocation plan; phải khớp parent `order_items.warehouse_id` |
 | `sku_id`, `product_id` | `VARCHAR(255)` | External identifiers dạng snapshot/reference |
 | `quantity` | `INT` | Phải lớn hơn 0 |
@@ -247,6 +248,7 @@ viết lại lịch sử đơn.
 | `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất |
 | `snapshot_image_url` | `VARCHAR(255)` | Ảnh lúc mua |
 | `snapshot_attributes` | `JSONB` | Ví dụ color/size; nguồn cho variant snapshot khi có |
+| `snapshot_category_ids` | `JSONB` | Tối đa 20 Product-owned category ID; immutable input để Promotion Reserve re-evaluate đúng context Preview |
 
 ### 3.4. `order_promotions`
 

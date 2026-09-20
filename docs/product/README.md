@@ -21,7 +21,7 @@ media, giá niêm yết và giá bán công bố. Chỉ admin quản trị catal
 | Stock, availability, reservation, deduct | Inventory | Product không lưu và không trả dữ liệu này |
 | Browse, filter, facet, ranking | Search | Nhận catalog/price từ Product, stock UI từ Inventory |
 | Product Detail UI | Product Detail BFF | Đọc catalog/price từ Product và ghép stock UI ngoài Product |
-| Cart, quotation, order, payment | Cart/Checkout/Order | Đọc catalog/price ở Product; Checkout reserve ở Inventory |
+| Cart, quotation, order, payment | Cart/Checkout/Order | Đọc catalog/price ở Product; Checkout preview allocation và Order reserve ở Inventory |
 
 Không có Redis point-read cache, inventory projection, inventory worker, auto-hide theo
 tồn kho, soft delete hay self-consumer trong Product. Markdown Consumer là background

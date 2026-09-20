@@ -71,11 +71,11 @@ storage representation, không phải wire shape.
 | `GET/POST /api/v1/admin/promotion-campaigns/{campaign_id}/markdown-rules` | List/tạo markdown product-scope | Mutation chỉ ở `DRAFT`, tăng parent revision |
 | `GET/PATCH /api/v1/admin/markdown-rules/{markdown_rule_id}` | Đọc/sửa markdown rule | PATCH dùng `If-Match` parent campaign |
 
-### 2.2 Customer và Checkout endpoints
+### 2.2 Customer qua Gateway và Checkout internal endpoints
 
 | Method và path | Dùng khi nào | Side effect |
 |---|---|---|
-| `POST /api/v1/me/promotion-voucher-suggestions` | Checkout đã biết user; chỉ xếp hạng voucher `SAVED` trong wallet | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Trang checkout đã xác thực user qua Gateway; chỉ xếp hạng voucher `SAVED` trong wallet | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
 | `POST /api/v1/promotion-discovery` | Trang checkout muốn tìm cả wallet voucher và public `ACTIVE` voucher chưa lưu | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
 | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User chọn public voucher và muốn lưu rồi evaluate ngay | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry |
 | `POST /api/v1/me/promotion-voucher-claims` | User claim voucher `LIMITED_CLAIM` | `201` sau DB commit; có thể `202 CLAIM_PENDING` để retry |
@@ -112,10 +112,12 @@ Ranking deterministic: eligible trước, discount giảm dần, `promotion_id` 
 `/me/promotion-voucher-suggestions` trả cả item không đủ điều kiện kèm `reason`, còn
 `/promotion-discovery` chỉ trả item ineligible khi `include_ineligible=true`.
 
-Customer endpoint không có `user.tier` (Gateway chỉ inject `X-User-Id`/`X-User-Roles`), nên rule
-chứa `user.tier` evaluate `false` ở discovery/suggestion/save; `user_tier` chỉ có trong
-`/internal` request của Checkout/Order. `context.facts` chỉ được bổ sung field allowlisted mà
-trusted mapping chưa có (`cart.checkout_channel`), không được ghi đè `user.*`.
+Gateway và Checkout hiện không có authority cho `user.tier`, nên rule chứa
+`user.tier` evaluate `false` ở discovery/suggestion/save/calculate/reserve khi
+`user_tier` bị omit/null. Ở v1 Checkout/Order luôn omit/null; hỗ trợ tier sau này cần
+contract version đồng bộ với một trusted service snapshot. `context.facts` không được ghi đè `user.*`. Checkout gửi
+`checkout_channel=CHECKOUT` cố định và lấy `category_ids` từ Product gRPC, không
+nhận hai fact này từ browser.
 
 `campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
 của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi
