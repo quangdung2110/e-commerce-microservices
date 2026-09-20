@@ -45,20 +45,24 @@ Vì sao SQS thay vì HTTP endpoint: SQS **hấp thụ burst thay bạn** (1–3 
 Vì sao vẫn tách 1–3 khỏi 4–7 dù đã có SQS: poller chỉ nên làm việc nhanh để giữ nhịp xả SQS ổn định; correlate/suppression/outbox có thể chậm hoặc cần retry riêng. Cùng triết lý với ranh giới 1 ở Kafka consumer. Nếu sau này thêm provider dùng HTTP webhook (SendGrid, Twilio), endpoint đó cũng chỉ làm 1–3 rồi trả 200, vì provider có **timeout ngắn và retry hung hãn** (SNS-HTTP chờ 15 s rồi retry tới 100 lần; SendGrid retry tới 24 giờ).
 
 ```sql
-CREATE TABLE provider_event (
-    id                 bigserial PRIMARY KEY,
+CREATE TABLE provider_event (                -- schema đầy đủ: 09-data-model.md §5
+    id                 bigint GENERATED ALWAYS AS IDENTITY,
     provider           text NOT NULL,
-    provider_event_id  text NOT NULL,       -- id do provider cấp
-    provider_message_id text,               -- để correlate
-    event_type         text NOT NULL,       -- delivery | bounce | complaint | open | ...
+    provider_event_id  text NOT NULL,        -- SES không cấp id → sha256(messageId ‖ eventType ‖ timestamp)
+    provider_message_id text,                -- để correlate
+    event_type         text NOT NULL,        -- send | delivery | bounce | complaint | reject | delivery_delay
     occurred_at        timestamptz,
-    raw                jsonb NOT NULL,      -- giữ nguyên, là hộp đen để điều tra
+    raw                jsonb NOT NULL,       -- hộp đen để điều tra, NHƯNG mọi địa chỉ email đã thay bằng sha256 trước khi ghi
     status             text NOT NULL DEFAULT 'PENDING',   -- PENDING | PROCESSED | UNMATCHED | IGNORED
+    attempt            int  NOT NULL DEFAULT 0,
     next_attempt_at    timestamptz NOT NULL DEFAULT now(),
     received_at        timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (provider, provider_event_id)    -- lớp dedup đầu tiên
-);
+    PRIMARY KEY (id, received_at)            -- partition theo tháng
+) PARTITION BY RANGE (received_at);
+-- Dedup: sổ provider_event_dedup (provider, provider_event_id), ghi cùng transaction, giữ 14 ngày
 ```
+
+`raw` của SES chứa `mail.destination[]` và `bouncedRecipients[].emailAddress`. Poller **hash các field đó trước khi INSERT**; bản gốc không bao giờ chạm DB. Correlate không cần địa chỉ (dùng `provider_message_id`), suppression dùng hash — [08-decide.md](./08-decide.md) §4.
 
 ## 4. Ví dụ: email xác nhận đơn
 
@@ -68,10 +72,9 @@ CREATE TABLE provider_event (
 | 14:47:31.200 | SES → SNS → SQS: `Send`. Poller verify, ghi `provider_event`, xoá khỏi queue | — |
 | 14:47:34.800 | Gmail nhận thư. SES gửi `Delivery`. Poller ghi, xoá khỏi queue | — |
 | 14:47:35 | Track worker nhặt `Send`: đã `SENT`, không đổi. Nhặt `Delivery`: `SENT → DELIVERED`, ghi `delivered_at`; outbox `notification.delivered.v1` | `DELIVERED` |
-| 15:12:08 | User mở email. `Open` → ghi `first_opened_at`, **không đổi status** | `DELIVERED` |
-| 15:12:08 | Mở lần nữa trên máy khác. `Open` với `provider_event_id` khác → `open_count += 1`, không publish gì | `DELIVERED` |
+| 15:12:08 | User mở email. **Không có event**: phase 1 không bật `Open`/`Click` ở configuration set nào (§5.3) | `DELIVERED` |
 
-Toàn bộ chuỗi nằm trên một row delivery và bốn row `provider_event`. Ops tra được bằng một câu SQL.
+Toàn bộ chuỗi nằm trên một row delivery và hai row `provider_event`. Ops tra được bằng một câu SQL.
 
 ## 5. Ba điều làm Track khó hơn vẻ ngoài
 
@@ -93,7 +96,7 @@ Hai sự kiện này thay đổi hành vi **của những lần gửi sau**:
 
 | Sự kiện | Hành động | Phạm vi |
 |---|---|---|
-| **Hard bounce** (địa chỉ không tồn tại) | Thêm vào `suppression (address, reason, source, until)` với `until = NULL` | Mọi lane trừ critical — user chủ động xin OTP thì vẫn thử |
+| **Hard bounce** (địa chỉ không tồn tại) | Thêm vào `suppression (user_id, email_hash, reason, source, until)` với `until = NULL`; `user_id` lấy từ delivery đã correlate, `email_hash = sha256(lower(email))` — không lưu email rõ | Mọi lane trừ critical — user chủ động xin OTP thì vẫn thử |
 | **Soft bounce** (hộp thư đầy, server tạm lỗi) | Suppression tạm 24–72 h; có thể lên lịch retry cho chính delivery đó | Bulk, transactional |
 | **Complaint** (user bấm "báo spam") | Suppression vĩnh viễn; đồng thời **tắt marketing preference** của user (publish event cho User Service, hoặc ghi vào bản replicate cục bộ) | Mọi lane trừ critical |
 
@@ -105,7 +108,7 @@ Stage Decide ([02-pipeline.md](./02-pipeline.md) §2) đọc suppression list tr
 
 Một email sinh 2–3 event (`Send`, `Delivery`, có thể `Open`); chiến dịch marketing sinh 5–10 event/email vì `Open`/`Click` lặp lại (mỗi lần preview trong Gmail là một `Open`). 300k email → 1–3 triệu webhook trong vài giờ. Hai quyết định:
 
-- **Không bật `Open`/`Click`** trong SES configuration set của lane bulk; chỉ bật `Send`, `Delivery`, `Bounce`, `Complaint`, `Reject`, `DeliveryDelay`. Giá trị nghiệp vụ nằm ở `Delivery`/`Bounce`/`Complaint`; open tracking ngày càng vô nghĩa vì Apple Mail Privacy Protection tự "mở" mọi email.
+- **Không bật `Open`/`Click`** ở phase 1 cho mọi lane; configuration set chỉ bật `Send`, `Delivery`, `Bounce`, `Complaint`, `Reject`, `DeliveryDelay`. Muốn đo open cho transactional sau này thì thêm cột `first_opened_at`/`open_count` vào `notification_delivery` và bật riêng configuration set đó. Giá trị nghiệp vụ nằm ở `Delivery`/`Bounce`/`Complaint`; open tracking ngày càng vô nghĩa vì Apple Mail Privacy Protection tự "mở" mọi email.
 - Dùng **hai SES configuration set** (`notification-critical-transactional`, `notification-bulk`) trỏ về cùng SNS topic nhưng bật tập event khác nhau; configuration set name được gắn vào mỗi email lúc gửi nên Track cũng biết event thuộc lane nào mà không cần correlate trước.
 
 ## 6. Bảo mật

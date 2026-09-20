@@ -38,22 +38,22 @@ Chấp nhận message đến nhiều lần; thiết kế sao cho lần thứ 2, 
 ### Lớp A — Ranh giới Kafka → DB: dedup kỹ thuật bằng unique constraint
 
 ```sql
-CREATE TABLE notification_request (
-    id          uuid PRIMARY KEY,
-    source      text NOT NULL,       -- CloudEvents source
-    event_id    text NOT NULL,       -- CloudEvents id
-    event_type  text NOT NULL,
-    subject     text,
-    payload     jsonb NOT NULL,
-    received_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (source, event_id)
+CREATE TABLE ingest_dedup (
+    source       text NOT NULL,      -- CloudEvents source
+    event_id     text NOT NULL,      -- CloudEvents id
+    received_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, event_id)
 );
 ```
 
 ```
 onMessage(event):
-    INSERT INTO notification_request (...) VALUES (...)
-        ON CONFLICT (source, event_id) DO NOTHING;
+    BEGIN
+      INSERT INTO ingest_dedup (source, event_id) ON CONFLICT DO NOTHING
+          → 0 row ⇒ đã xử lý: COMMIT, commit offset, return
+      INSERT INTO notification_request (...)
+      ... decide, INSERT delivery ...
+    COMMIT
     commit offset
 ```
 
@@ -61,7 +61,7 @@ Ba điểm bắt buộc:
 
 - **Unique constraint, không "SELECT xem có chưa rồi INSERT".** Hai consumer instance (sau rebalance) có thể cùng SELECT thấy trống rồi cùng INSERT. Để DB làm trọng tài.
 - **INSERT trước, commit offset sau.** Ngược lại là at-most-once. Thứ tự INSERT → commit cho at-least-once, unique constraint biến nó thành exactly-once effect.
-- **Bản ghi dedup chính là row nghiệp vụ**, không phải bảng `processed_event_ids` riêng hay key Redis. Bảng riêng thì ghi hai nơi (không nguyên tử); Redis mất khi restart hoặc hết TTL sớm hơn Kafka retention → trùng đúng lúc sự cố. Row `notification_request` sống 90 ngày theo partition, tự nó là bằng chứng "đã nhận".
+- **Bản ghi dedup nằm trong cùng DB, cùng transaction với row nghiệp vụ** — không phải Redis (mất khi restart hoặc hết TTL sớm hơn Kafka retention → trùng đúng lúc sự cố), không phải một service khác. Nó là bảng `ingest_dedup` riêng thay vì unique trên chính `notification_request` chỉ vì Postgres không cho unique constraint thiếu partition key trên bảng partition ([09-data-model.md](./09-data-model.md) §1); về mặt nguyên tử thì hai bảng trong một transaction tương đương một bảng. Cửa sổ giữ 30 ngày ≥ 2× Kafka retention dài nhất.
 
 ### Lớp B — Stage Decide: dedup nghiệp vụ, và ranh giới với "không phải trùng"
 
@@ -78,7 +78,7 @@ Lớp tinh tế nhất vì **không phải kỹ thuật thuần tuý** — là c
 | OTP / password reset | Request (Auth) | **không có** | Mỗi lần user bấm "gửi lại" là một OTP **mới**, phải gửi |
 | `CART_ABANDONED` | Fact (Cart) | `cart_abandoned:{cart_id}:{abandonment_cycle}` | Một chu kỳ bỏ giỏ nhắc một lần; chu kỳ mới nhắc lại |
 
-Unique index `uq_delivery_dedup` (partial, `WHERE dedup_key IS NOT NULL`) trên `notification_delivery` chặn ở tầng DB.
+Sổ `delivery_dedup` với khoá **`(dedup_key, channel)`** — ghi cùng transaction với `notification_delivery` lúc Decide — chặn ở tầng DB. Khoá là cặp vì một request sinh email + in-app cùng `dedup_key` ([08-decide.md](./08-decide.md) §3 bước 12).
 
 OTP là điểm dễ nhầm: hai event OTP cách nhau 30 s có **id khác nhau** (lớp A cho qua — đúng) và **không có dedup_key** (lớp B cho qua — đúng). Cả hai được gửi. Nếu đặt `dedup_key = otp:{user_id}`, nút "gửi lại" của user không bao giờ hoạt động. Muốn chặn user spam "gửi lại" 20 lần thì đó là **rate limiting** (`tối đa 3 OTP / 10 phút / user`) — cơ chế khác, hậu quả khác (từ chối có chủ đích), không phải idempotency.
 
@@ -146,7 +146,7 @@ Kết quả: user nhận **đúng 1 email**, trạng thái cuối cùng đúng, 
 
 Khoá dedup phải sống **ít nhất bằng khoảng thời gian dài nhất mà một bản sao có thể quay lại**. Với Kafka đó là retention của topic (24 h với topic Auth, 7–14 ngày với topic khác), vì ops có thể replay bất kỳ lúc nào trong khoảng đó.
 
-Row `notification_request` là bản ghi dedup và sống 90 ngày theo partition → tự thoả mãn. Với replay cũ hơn 90 ngày (backfill, rất hiếm), cần cờ vận hành `replay_mode` bắt consumer bỏ qua mọi event có `time` cũ hơn X ngày, thay vì gửi lại email của 4 tháng trước.
+Sổ `ingest_dedup` giữ 30 ngày (≥ 2× retention 14 ngày) → thoả mãn; `notification_request` giữ 90 ngày cho điều tra. Với replay cũ hơn 90 ngày (backfill, rất hiếm), cần cờ vận hành `replay_mode` bắt consumer bỏ qua mọi event có `time` cũ hơn X ngày, thay vì gửi lại email của 4 tháng trước.
 
 ## 6. Cách làm sai hay gặp
 

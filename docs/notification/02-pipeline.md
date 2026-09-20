@@ -111,18 +111,20 @@ Delivery **in-app không cần resolve gì** (chỉ cần `user_id`), nên khi A
 ## 3. Hai ranh giới vật lý
 
 ```
-Ranh giới 1: Kafka → DB          Ranh giới 2: DB → provider
-┌──────────────────────┐         ┌──────────────────────────────┐
-│ Kafka consumer       │  INSERT │ Deliver worker (pool riêng)  │
-│ validate, dedup,     │────────▶│ claim → decide/render →      │──▶ provider
-│ INSERT, commit       │         │ send → update status         │
-│ ~10 ms / message     │         │ nhịp riêng, retry riêng      │
-└──────────────────────┘         └──────────────────────────────┘
-                                          ▲
-                                          │ poll (FOR UPDATE SKIP LOCKED)
-                                  bảng notification_delivery
-                                  = queue + trạng thái + lịch retry
+Ranh giới 1: Kafka → DB                 Ranh giới 2: DB → provider
+┌────────────────────────────┐          ┌──────────────────────────────┐
+│ Kafka consumer             │  INSERT  │ Deliver worker (pool riêng)  │
+│ validate → dedup → DECIDE  │─────────▶│ claim → resolve email →      │──▶ provider
+│ → INSERT delivery → commit │          │ render → send → update       │
+│ ~15 ms / message, chỉ DB   │          │ nhịp riêng, retry riêng      │
+└────────────────────────────┘          └──────────────────────────────┘
+                                                 ▲
+                                                 │ poll (FOR UPDATE SKIP LOCKED)
+                                         bảng notification_delivery
+                                         = queue + trạng thái + lịch retry
 ```
+
+Decide nằm ở **ranh giới 1**, trong cùng transaction với INSERT request: mọi đầu vào của nó đều cục bộ (preference, suppression, sổ dedup, một lệnh Redis), không có RPC nào, nên không có lý do tách nó ra. Chi tiết thứ tự quy tắc và mã lý do ở [08-decide.md](./08-decide.md). Worker ở ranh giới 2 chỉ còn resolve email, render, gửi.
 
 Bảng trạng thái là **source of truth duy nhất**. Không rải trạng thái qua nhiều topic nội bộ: một notification = một dòng, timeline nằm sẵn trong dòng đó.
 
@@ -142,17 +144,27 @@ Với tải giả định của dự án, DB làm queue thắng ở mọi tiêu 
 
 ```
 onMessage(event):
-    validate CloudEvents envelope           → lỗi envelope → DLQ ngay
-    INSERT INTO notification_request (...)
-        ON CONFLICT (source, event_id) DO NOTHING
+    validate CloudEvents envelope                       → lỗi envelope → DLQ ngay
+    BEGIN
+      INSERT ingest_dedup (source, event_id) ON CONFLICT DO NOTHING
+          → 0 row ⇒ trùng: COMMIT, commit offset, return
+      INSERT notification_request (...)
+      decision = decide(request)                        -- 08-decide.md, chỉ đọc DB/Redis
+      UPDATE notification_request SET decision, decision_reason
+      for each channel kept:
+        INSERT delivery_dedup (dedup_key, channel) ON CONFLICT DO NOTHING
+            → 0 row ⇒ kênh này SKIPPED (duplicate)
+        INSERT notification_delivery (status = PENDING, ...)
+    COMMIT
+    NOTIFY delivery_ready(lane)                         -- lane critical
     commit offset
 ```
 
 Ba quy tắc:
 
-1. **Chỉ làm việc nhanh.** Không gọi provider, không gọi Auth API. Mục tiêu ~10 ms/message để không bao giờ chạm `max.poll.interval.ms`, không bao giờ rebalance vì chậm.
+1. **Chỉ làm việc nhanh, chỉ chạm DB cục bộ và Redis.** Không gọi provider, không gọi Auth API. Mục tiêu ~15 ms/message để không bao giờ chạm `max.poll.interval.ms`, không bao giờ rebalance vì chậm.
 2. **INSERT trước, commit offset sau.** Ngược lại là at-most-once: chết giữa chừng là mất OTP.
-3. **Dedup bằng unique constraint**, không bằng `SELECT` rồi `INSERT`. Chi tiết ở [04-idempotency.md](./04-idempotency.md) §3.
+3. **Dedup bằng unique constraint**, không bằng `SELECT` rồi `INSERT`. Sổ dedup `ingest_dedup` là bảng riêng không partition, ghi cùng transaction — lý do ở [09-data-model.md](./09-data-model.md) §1. Chi tiết lớp dedup ở [04-idempotency.md](./04-idempotency.md) §3.
 
 Consumer Kafka **không biết provider đang sự cố**. Khi provider chậm, lag Kafka vẫn bằng 0; áp lực dồn vào bảng DB (xem [06-backpressure.md](./06-backpressure.md)).
 
@@ -162,40 +174,41 @@ Pattern "database as queue" (job table). Đi từ bảng → câu SQL nhặt vi�
 
 ### 5.1 Bảng làm hàng đợi
 
-Rút gọn, chưa phải schema cuối:
+Các cột liên quan tới cơ chế hàng đợi (schema đầy đủ, partition và retention ở [09-data-model.md](./09-data-model.md) §4):
 
 ```sql
 CREATE TABLE notification_delivery (
-    id                  uuid PRIMARY KEY,
+    id                  uuid NOT NULL,
     request_id          uuid NOT NULL,         -- 1 request → N delivery theo kênh
     lane                text NOT NULL,         -- critical | transactional | bulk
-    channel             text NOT NULL,         -- email | push | sms | in_app
+    channel             text NOT NULL,         -- email | in_app (phase 1)
     template            text NOT NULL,
     status              text NOT NULL,         -- PENDING | SENDING | SENT | RETRY | FAILED
                                                -- | DELIVERED | BOUNCED | EXPIRED | SKIPPED
     attempt             int  NOT NULL DEFAULT 0,
-    next_attempt_at     timestamptz NOT NULL,  -- khi nào được phép nhặt
+    next_attempt_at     timestamptz NOT NULL,  -- khi nào được phép nhặt (Decide đặt; quiet hours đẩy về tương lai)
     lease_until         timestamptz,           -- worker giữ tới lúc nào (chống crash)
     locked_by           text,                  -- worker id, để debug
-    dedup_key           text,                  -- khoá nghiệp vụ, xem 04-idempotency.md
+    dedup_key           text,                  -- khoá nghiệp vụ; unique theo (dedup_key, channel) ở bảng delivery_dedup
     ordering_key        text,                  -- chỉ dùng khi template cần serialize, xem 05-ordering.md
-    expires_at          timestamptz,           -- TTL theo template, xem 05-ordering.md
+    expires_at          timestamptz NOT NULL,  -- effective_expires_at do Decide tính, xem 05-ordering.md
     provider            text,
     provider_message_id text,
+    possibly_duplicate  boolean NOT NULL DEFAULT false,
+    last_error_code     text,
     last_error          text,
     created_at          timestamptz NOT NULL DEFAULT now(),
-    updated_at          timestamptz NOT NULL DEFAULT now()
-);
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at)               -- bảng partition theo tháng trên created_at
+) PARTITION BY RANGE (created_at);
 
 -- Index quan trọng nhất: chỉ index row đang chờ, không index toàn bảng
 CREATE INDEX idx_delivery_ready
     ON notification_delivery (lane, channel, next_attempt_at)
     WHERE status IN ('PENDING', 'RETRY');
-
-CREATE UNIQUE INDEX uq_delivery_dedup
-    ON notification_delivery (dedup_key)
-    WHERE dedup_key IS NOT NULL;
 ```
+
+Dedup nghiệp vụ **không** là unique index trên bảng này (bảng partition không cho unique thiếu partition key) mà là sổ `delivery_dedup (dedup_key, channel)` ghi cùng transaction lúc Decide — [09-data-model.md](./09-data-model.md) §1 và §4.1. Khoá là **cặp** `(dedup_key, channel)`: một request sinh email + in-app cùng `dedup_key`, unique trên `dedup_key` đơn sẽ chặn nhầm kênh thứ hai.
 
 `idx_delivery_ready` là **partial index**: bảng có 50 triệu row lịch sử nhưng chỉ vài nghìn row đang `PENDING`/`RETRY`, nên index bé và luôn nằm trong RAM. Không có nó, mỗi lần poll là một lần quét bảng lớn — đây là lỗi số một khi người ta kết luận "DB làm queue chậm".
 
@@ -252,9 +265,12 @@ loop forever:
     reset backoff to 50 ms
 
     for row in rows (song song trong pool):
+        -- re-check rẻ những gì có thể đã đổi trong lúc chờ (08-decide.md §2)
         if row.expires_at < now():                -- TTL theo template
             mark(row, EXPIRED); continue
-        if superseded(row):                       -- kiểm tra trạng thái aggregate, xem 05-ordering.md
+        if row.lane == 'bulk' and not marketing_enabled(row.user_id):
+            mark(row, SKIPPED, preference_off); continue
+        if superseded(row):                       -- chỉ fact: aggregate đã đổi, xem 05-ordering.md
             mark(row, SKIPPED); continue
 
         rate_limiter.acquire(lane, channel)       -- token bucket theo lane
@@ -262,7 +278,12 @@ loop forever:
             if row.channel == 'email':
                 recipient = resolve_recipient(row)  -- Auth API (§2.3), timeout 2 s, cache 15 phút;
                                                     -- 404 → FAILED(no_recipient), không retry
+                if suppressed_by_hash(sha256(recipient.email)) and row.lane != 'critical':
+                    mark(row, SKIPPED, suppressed); continue   -- 08-decide.md §4
             body      = render(row)               -- template đã cache
+            if row.channel == 'in_app':
+                INSERT inbox_item + mark DELIVERED  -- cùng transaction; INCR unread sau commit
+                continue
             result    = provider.send(body)       -- SES không có idempotency key; xem 04-idempotency.md lớp C
             mark_sent(row, result.message_id)     -- compare-and-set, xem 04-idempotency.md
         catch RetryableError:                     -- 5xx, timeout, 429

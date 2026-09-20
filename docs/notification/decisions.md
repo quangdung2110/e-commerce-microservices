@@ -153,6 +153,44 @@ Chi tiết: [03-tracking.md](./03-tracking.md) §2–3, [06-backpressure.md](./0
 
 Chi tiết: [07-templates.md](./07-templates.md).
 
+## D-11 · Decide chạy trong transaction của consumer; thứ tự quy tắc cố định; suppression theo `user_id` + `email_hash`
+
+**Bối cảnh.** Sơ đồ ban đầu để "decide" ở worker ranh giới 2, nhưng worker chỉ claim được delivery đã tồn tại — phải có ai đó tạo chúng. Decide chỉ cần dữ liệu cục bộ (preference, suppression, sổ dedup, một lệnh Redis), không có RPC. Suppression truyền thống khoá theo địa chỉ email, nhưng Decide chạy trước khi biết email (D-07).
+
+**Quyết định.**
+- Decide chạy **trong cùng transaction** với `INSERT notification_request` ở ranh giới 1 (+3–5 ms). `INSERT delivery` cùng transaction → không có request mồ côi. Worker ranh giới 2 chỉ resolve email, render, gửi; re-check rẻ lúc claim: `expires_at`, `marketing_enabled` (bulk), suppression theo hash sau khi resolve.
+- Thứ tự 13 bước cố định: lỗi của producer trước (`unknown_template`, `lane_mismatch`, `invalid_template_data`, `missing_dedup_key`, `no_recipient` → DLQ + alert), rồi hết hạn, rồi chính sách theo user (preference → suppression → frequency cap → quiet hours → dedup). Mã lý do là contract vận hành.
+- Chưa có preference → mặc định `email_enabled = true`, `in_app_enabled = true`, `marketing_enabled = false`, timezone `Asia/Ho_Chi_Minh`, locale `vi`.
+- Suppression ghi cả `user_id` và `email_hash`; Decide chặn theo `user_id`, worker xác nhận theo hash sau khi resolve — **hash khác nghĩa là user đã đổi email → suppression hết hiệu lực**. Không lưu email rõ ở đâu.
+- Frequency cap (bulk, 2/ngày/user) đếm ở Decide trên Redis; Redis lỗi → fail-open + alert. Quiet hours đặt `next_attempt_at` một lần; không tính lại.
+- Dedup nghiệp vụ khoá theo **`(dedup_key, channel)`**, không phải `dedup_key` đơn — một request sinh nhiều kênh cùng `dedup_key`. Sửa lỗi của bản đầu 02 §5.1.
+- In-app đi qua cùng worker path như email; không render trong consumer.
+
+**Bị loại.** *Worker decide riêng*: thêm trạng thái và worker phải vận hành mà không có lợi ích vì không có RPC. *Suppression chỉ theo email*: Decide không biết email; và suppression sẽ dính vĩnh viễn với user dù họ đã đổi địa chỉ. *Frequency cap fail-closed khi Redis chết*: chặn toàn bộ bulk vì một dependency phụ là phản ứng quá tay. *Render in-app trong consumer*: đưa lỗi template vào đường Kafka, hai đường code cho hai kênh.
+
+**Hệ quả.** Consumer transaction rộng hơn (5–6 câu lệnh) — vẫn xa `max.poll.interval.ms`. Track worker cần đọc được `user_id` từ delivery khi ghi suppression. `suppression.superseded_at` để đánh dấu dòng đã bị vượt qua bởi email mới.
+
+Chi tiết: [08-decide.md](./08-decide.md).
+
+## D-12 · Data model: partition theo tháng + sổ dedup không partition; inbox tách riêng; outbox tương thích Debezium; anonymize khi `user.deleted`
+
+**Bối cảnh.** Bảng lớn cần partition theo tháng để retention là `DROP PARTITION` (ước lượng ở tải giả định: ~75 GB/tháng riêng `notification_delivery`). Postgres không cho unique constraint thiếu partition key trên bảng partition, nhưng dedup cần unique không chứa thời gian. In-app có read path khác hẳn hàng đợi. Review đã dùng outbox CDC và `kafka-connect` đã có trong compose. `user.deleted` phải xoá được PII mà không thủng metric.
+
+**Quyết định.**
+- Bốn bảng lớn partition theo tháng (`notification_request`, `notification_delivery`, `provider_event`, `inbox_item`); PK gồm partition key. Ba **sổ dedup** không partition (`ingest_dedup`, `delivery_dedup`, `provider_event_dedup`) ghi cùng transaction với bảng nghiệp vụ; purge 30/30/14 ngày.
+- `inbox_item` tách khỏi `notification_delivery`: read path (list theo user, mark read) không chạm bảng hot; delivery row vẫn là bản ghi trạng thái. Unread count ở Redis, recompute khi miss.
+- `outbox` theo schema Debezium Outbox Event Router; publish qua CDC như Review; đổi sang poller không cần đổi schema.
+- Không có cột email rõ trong toàn schema: `suppression.email_hash`, `provider_event.raw` đã hash trước khi ghi, `template_data` của Auth không lưu. Không lưu bản email đã render.
+- Retention: request/delivery/inbox 90 ngày, provider_event 30 ngày. Job tạo partition trước 2 tháng + alert khi partition tương lai < 1 tháng.
+- `user.deleted` trong 24 h: `DELETE` preference và inbox; **anonymize** request/delivery (`user_id`, `template_data`, `subject` → NULL) để giữ metric; `suppression.user_id → NULL` giữ hash; skip delivery đang chờ; xoá key Redis.
+- Frequency cap, unread count, cache email chỉ ở Redis — không có bảng.
+
+**Bị loại.** *Không partition, `DELETE` theo retention*: bloat và vacuum không kịp ở tải giả định. *Unique trên bảng partition có thêm partition key*: mất ý nghĩa dedup. *Dedup bằng Redis*: mất khi restart / TTL sớm hơn Kafka retention. *In-app dùng chung bảng delivery*: `UPDATE read_at` chạm bảng hot, index và retention xung đột. *Xoá hẳn request/delivery khi user xoá*: thủng metric và audit; anonymize đủ cho yêu cầu xoá PII. *Lưu email đã render*: bản PII thứ hai, render lại từ `template_data` là đủ.
+
+**Hệ quả.** Ba bảng dedup là ba job purge phải vận hành. Số liệu partition/retention phải hiệu chỉnh khi có số đo thật (giả định 40/s có thể cao 10–40 lần). Cần Debezium connector cho Postgres của Notification (hoặc poller nếu quá nặng cho môi trường học tập).
+
+Chi tiết: [09-data-model.md](./09-data-model.md).
+
 ## Quyết định chưa chốt
 
 Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): A4 (topic của Auth — khuyến nghị giữ ở phase 1) và A5 (runtime Go hay Java). Không mục D nào phụ thuộc vào câu trả lời của hai câu này.

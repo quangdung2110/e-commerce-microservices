@@ -27,6 +27,8 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 | [05-ordering.md](./05-ordering.md) | Thứ tự nào thực sự cần, mất ở đâu, bảo vệ tính đúng đắn bằng gì. |
 | [06-backpressure.md](./06-backpressure.md) | Áp lực dồn về đâu, bulkhead, rate limiter, circuit breaker, retry budget, timeout, load shedding. |
 | [07-templates.md](./07-templates.md) | Catalog 15 template phase 1: quy ước, thuộc tính, chính sách theo lane, `template_data` từng template. |
+| [08-decide.md](./08-decide.md) | Stage Decide chạy ở đâu, thứ tự 13 bước, mã lý do, mặc định khi thiếu preference, suppression theo `user_id` + `email_hash`. |
+| [09-data-model.md](./09-data-model.md) | DDL các bảng, sổ dedup vì ràng buộc partition + unique của Postgres, partition/retention, outbox CDC, xử lý `user.deleted`. |
 | [decisions.md](./decisions.md) | Các quyết định kiến trúc đã chốt trong thảo luận, kèm hệ quả. |
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
