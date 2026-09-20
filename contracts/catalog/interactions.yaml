@@ -376,3 +376,82 @@ interactions:
       Internal service-identity export cho full reindex. POST tạo durable session và
       chụp Review Kafka offsets trước scan; Search import page snapshot rồi replay
       inclusive từ offsets cố định của session.
+
+  - id: order-requests-notifications
+    protocol: kafka
+    provider: order-service
+    consumers: [notification-service]
+    contract: events/notification/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Order publishes NOTIFICATION_REQUESTED on the Notification-owned lane
+      t.notification.transactional.v1 for five templates (ORDER_CONFIRMED,
+      ORDER_PAYMENT_FAILED, ORDER_CANCELLED, ORDER_COMPLETED, ORDER_REFUNDED), via
+      the Order outbox, with template_data from the Order snapshot only. Payment
+      and Delivery facts are not consumed by Notification because they carry no
+      user_id; Order relays those milestones.
+
+  - id: notification-resolves-auth-contact
+    protocol: http
+    provider: auth-service
+    consumers: [notification-service]
+    contract: http/auth/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      GET /internal/v1/auth/users/{user_id}/notification-contact resolves the recipient
+      email at send time for every notification not initiated by Auth. mTLS, no-store,
+      15-minute in-memory/Redis cache only; never persisted by Notification.
+
+  - id: notification-consumes-cart-abandoned
+    protocol: kafka
+    provider: cart-service
+    consumers: [notification-service]
+    contract: events/cart/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Only fact-style input in phase 1: CART_ABANDONED is mapped by Notification to the
+      bulk template CART_ABANDONED; dedup_key cart_abandoned:{cart_id}:{abandonment_cycle}.
+
+  - id: notification-publishes-outcomes
+    protocol: kafka
+    provider: notification-service
+    consumers: [analytics-service, user-service]
+    contract: events/notification/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      t.notification.outcomes.v1 carries delivered, bounced, failed and complaint-received
+      per delivery, keyed by user_id, without template_data or email. User consumes
+      complaint-received to switch off marketing_enabled at the source.
+
+  - id: gateway-routes-notification-inbox
+    protocol: http
+    provider: notification-service
+    consumers: [api-gateway]
+    contract: http/notification/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      In-app inbox for the authenticated user: cursor list, unread count, mark read,
+      archive, mark-all-read. All responses no-store. No preference endpoints (User
+      Service owns them), no realtime in phase 1, no webhook route (SES events arrive
+      via SNS -> SQS).
+
+  - id: support-queries-notification-status
+    protocol: http
+    provider: notification-service
+    consumers: [order-service, finance-ops]
+    contract: http/notification/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Read-only timeline per request_id or per subject for support/admin tooling;
+      returns statuses, attempts and error codes, never template_data or addresses.
+
+  - id: notification-ops-operates-notification
+    protocol: http
+    provider: notification-service
+    consumers: [notification-ops]
+    contract: http/notification/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Operator-only, not routed through the public Gateway: pause/resume lane, redrive
+      delivery or DLQ batch, manual suppression, replay mode. Idempotency-Key required,
+      every call audited. Phase 1 may implement these as a CLI sharing the same handlers.

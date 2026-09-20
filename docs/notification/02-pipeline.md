@@ -102,7 +102,7 @@ Không event nào mang email (PII không đi qua Kafka — xem [README §4](./RE
 | Nguồn | API | Trả về |
 |---|---|---|
 | Auth | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | email + template + `template_data` (secret) + `expires_at` |
-| Mọi nguồn khác | `GET /internal/v1/auth/users/{user_id}/notification-contact` (**cần mở**, README §7) | email, `email_verified`, `locale?` |
+| Mọi nguồn khác | `GET /internal/v1/auth/users/{user_id}/notification-contact` (đã thêm, README §7) | email, `email_verified`, `locale?` |
 
 Ràng buộc: timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3), cache theo `user_id` 15 phút **trong memory/Redis có TTL — không ghi xuống DB của Notification** để không tạo thêm một bản PII lâu dài. `404` → delivery `FAILED (no_recipient)`, không retry.
 

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/ORDER_REFUNDED.schema.json",
+  "title": "ORDER_REFUNDED template_data",
+  "description": "Refund thành công. refund_id theo định dạng RFD_ của Payment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order_id",
+    "order_code",
+    "refund_id",
+    "amount_minor",
+    "currency",
+    "refunded_at",
+    "order_url"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19,
+      "description": "Order-owned positive int64, base-10 không đệm."
+    },
+    "order_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "refund_id": {
+      "type": "string",
+      "pattern": "^RFD_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "amount_minor": {
+      "type": "integer",
+      "format": "int64",
+      "minimum": 0,
+      "description": "Đơn vị nhỏ nhất của currency (VND: đồng)."
+    },
+    "currency": {
+      "const": "VND"
+    },
+    "refunded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "order_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "description": "URL tuyệt đối tới frontend; Notification không tự lắp."
+    }
+  }
+}

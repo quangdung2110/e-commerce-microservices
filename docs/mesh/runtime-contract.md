@@ -119,10 +119,16 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `payment-service` | `/v1/payments/initiate`, `/v1/payments/{transactionId}/cancel`, `/v1/payments/{transactionId}/refund` | POST | `ecommerce/order-service` | `order-initiates-payment`; policy triển khai phải dùng match tương đương nhưng không được bao trùm webhook |
 | `payment-service` | `/v1/payments/{transactionId}`, `/v1/payments/{transactionId}/client-data`, `/v1/refunds/{refundTransactionId}` | GET | `ecommerce/order-service` | `order-initiates-payment` |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
+| `auth-service` | `/internal/v1/auth/users/*/notification-contact` | GET | `ecommerce/notification-service` | `notification-resolves-auth-contact` |
+| `notification-service` | `/api/v1/notifications/**` | X | `edge/traefik` | `gateway-routes-notification-inbox` |
+| `notification-service` | `/internal/v1/notifications/requests/*`, `/internal/v1/notifications/deliveries` | GET | `ecommerce/order-service`, `ecommerce/finance-ops` | `support-queries-notification-status` |
+| `notification-service` | `/internal/v1/notifications/ops/**` | X | `ecommerce/notification-ops` | `notification-ops-operates-notification`; không route qua Gateway |
 | Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
 
-Không có rule nào cho `notification-service`, `analytics-service` inbound HTTP: hai service này
-chỉ nhận Kafka. Mọi path không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới vào
+Không có rule nào cho `analytics-service` inbound HTTP: service này chỉ nhận Kafka.
+`notification-service` nhận HTTP từ Traefik (inbox), từ support workload (status) và từ
+`notification-ops` (ops); SES event đi qua SNS → SQS nên không có webhook route. Mọi path
+không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới vào
 `interactions.yaml`, PR phải kèm dòng mới trong bảng này và policy tương ứng.
 
 ### 5.3 Namespace `observability` (L4, ztunnel)
@@ -173,6 +179,9 @@ của Istio.
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
 
 `DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa
+| `GET /internal/v1/auth/users/*/notification-contact` | 2 lần, `connect-failure,refused-stream` | 2 giây | Pure read; Notification cache 15 phút và có bulkhead theo lane |
+| `GET /internal/v1/notifications/requests/*`, `GET /internal/v1/notifications/deliveries` | 2 lần, `connect-failure,refused-stream` | 3 giây | Pure read cho support tooling |
+| `/internal/v1/notifications/ops/**` | 0 | 10 giây | Caller sở hữu retry bằng `Idempotency-Key`; mesh không retry |
 50 % endpoint), `connectionPool` giới hạn theo load test, `loadBalancer: LEAST_REQUEST`. Giá trị
 là chính sách khởi điểm, phải được load test xác nhận và ghi vào manifest version hóa.
 

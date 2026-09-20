@@ -126,7 +126,7 @@ services:
     bounded_context: notification
     runtime: undecided
     status: documented
-    contract_adoption: not_started
+    contract_adoption: pilot
     docs: docs/notification/README.md
 
   - id: chat-service

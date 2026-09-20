@@ -3,6 +3,24 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-20
+
+- Notification Events v1 mới: ba request lane `t.notification.{critical,transactional,bulk}.v1`
+  (message `com.ecommerce.notification.requested.v1`, key `subject`, `template_data`
+  ràng buộc `oneOf` theo template, không mang email/secret) và outcome topic
+  `t.notification.outcomes.v1` với `delivered`/`bounced`/`failed`/`complaint-received`.
+  Catalog 15 template tại `events/notification/v1/templates/catalog.yaml`; 5 schema
+  `template_data` cho Order.
+- Order Events v1 thêm `publishNotificationRequests` lên lane transactional của Notification
+  cho `ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`,
+  `ORDER_REFUNDED`; snapshot phải mang tên sản phẩm. Notification không consume Payment/
+  Delivery facts vì chúng không có `user_id`.
+- Auth internal v1 thêm `GET /internal/v1/auth/users/{user_id}/notification-contact`
+  (mTLS, `no-store`) để Notification resolve email lúc gửi cho mọi nguồn không phải Auth.
+- Notification HTTP v1 (inbox in-app qua Gateway) và Notification internal v1 (status cho
+  support, ops không qua Gateway) mới. Catalog interactions, Gateway route và Mesh
+  authorization/deadline matrix cập nhật tương ứng.
+
 ## 2026-09-18
 
 - Order Events v1 mở rộng từ Review-only subset thành toàn bộ async integration

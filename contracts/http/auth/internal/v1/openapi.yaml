@@ -12,6 +12,7 @@ servers:
     description: Internal cluster endpoint only
 tags:
   - name: Notification delivery
+  - name: Notification contact
 paths:
   /internal/v1/auth/notification-deliveries/{delivery_id}/content:
     post:
@@ -41,6 +42,35 @@ paths:
         '410': { $ref: '#/components/responses/DeliveryExpired' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /internal/v1/auth/users/{user_id}/notification-contact:
+    get:
+      tags: [Notification contact]
+      operationId: getNotificationContact
+      summary: Resolve email người nhận theo user_id
+      description: >-
+        Dùng cho mọi thông báo không do Auth khởi phát (Order, Review, Cart): recipient
+        email không đi qua Kafka, Notification resolve lúc gửi. Chỉ Notification Service
+        được gọi qua mTLS/service identity. Response chứa PII nên no-store; Notification
+        chỉ được cache trong memory/Redis tối đa 15 phút, không ghi xuống DB. Adapter
+        không được log body. Không trả secret; không trả số điện thoại ở phase 1.
+      security:
+        - notificationServiceMtls: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Contact hiện tại của user.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationContact' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/UserNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
 components:
   securitySchemes:
     notificationServiceMtls:
@@ -54,6 +84,11 @@ components:
   parameters:
     DeliveryId:
       name: delivery_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: user_id
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -153,6 +188,29 @@ components:
       properties:
         event: { type: string, const: ACCOUNT_UNLOCKED, x-data-classification: INTERNAL }
         unlocked_at: { type: string, format: date-time, x-data-classification: INTERNAL }
+    NotificationContact:
+      type: object
+      additionalProperties: false
+      required: [user_id, email, email_verified]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          x-data-classification: INTERNAL
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          x-data-classification: PII
+        email_verified:
+          type: boolean
+          description: >-
+            false khi user chưa xác minh email. Notification vẫn gửi transactional
+            (đơn hàng của họ) nhưng không gửi bulk tới địa chỉ chưa xác minh.
+        locale:
+          type: [string, 'null']
+          pattern: '^[a-z]{2}(-[A-Z]{2})?$'
+          description: Tuỳ chọn; Notification mặc định vi khi null.
   responses:
     UnauthorizedService:
       description: Không có hoặc không xác minh được service identity mTLS.
@@ -160,6 +218,8 @@ components:
       description: Service identity không phải Notification Service.
     DeliveryNotFound:
       description: delivery_id không tồn tại hoặc không được phép truy cập.
+    UserNotFound:
+      description: user_id không tồn tại hoặc tài khoản đã xoá; Notification đánh delivery FAILED (no_recipient), không retry.
     DeliveryExpired:
       description: Delivery state đã hết TTL; không thể gửi lại secret cũ.
     RateLimited:

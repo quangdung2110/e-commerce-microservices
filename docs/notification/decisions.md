@@ -191,6 +191,37 @@ Chi tiết: [08-decide.md](./08-decide.md).
 
 Chi tiết: [09-data-model.md](./09-data-model.md).
 
+## D-13 · Contract Notification sở hữu: ba channel request khai báo ngay, một topic outcome, schema chỉ cho template đi qua Kafka, sửa thẳng contract của service khác
+
+**Bối cảnh.** Cần contract thật để Order bắt đầu việc của họ và để mesh/gateway khai báo policy. Dự án có convention AsyncAPI/CloudEvents với `x-*` bắt buộc, `interactions.yaml` là nguồn của ma trận AuthorizationPolicy, và một người duy trì toàn bộ repo.
+
+**Quyết định.**
+- `contracts/events/notification/v1/asyncapi.yaml` khai báo **cả ba** channel request (`t.notification.{critical,transactional,bulk}.v1`, key `subject`) dù phase 1 chỉ transactional có producer; và **một** channel outcome `t.notification.outcomes.v1` (key `user_id`) với bốn type `delivered`, `bounced`, `failed`, `complaint-received`.
+- `schemas/notification-requested.schema.json` dùng `oneOf` theo `template` để `template_data` bị ràng buộc đúng schema và `dedup_key` đúng công thức; `additionalProperties: false` chặn PII lọt vào. Đã kiểm tra chặn 6 lớp lỗi bằng negative test.
+- `templates/catalog.yaml` liệt kê đủ 15 template với `data_source`; **chỉ 5 template Order có file schema** — Auth/Review/Cart đã có schema ở contract của họ, sao chép là tạo hai nguồn sự thật.
+- Sửa thẳng contract của Auth (`notification-contact`), Order (`publishNotificationRequests`), `services.yaml`, `interactions.yaml` (7 interaction), mesh §5.2 + retry, gateway route — tất cả `proposed`.
+
+**Bị loại.** *Chỉ khai báo transactional*: producer đầu tiên của critical/bulk phải chờ một PR contract; topic rẻ, hạ tầng lane provision đồng nhất. *Bốn topic outcome*: consumer Analytics cần bốn subscription; các service khác đều dùng một topic nhiều type. *Schema đầy đủ cho cả 15 template*: trùng lặp với Auth OpenAPI và Review schema. *Chỉ soạn đề xuất, không sửa contract của service khác*: thêm một vòng vô nghĩa khi một người duy trì cả repo; convention owner vẫn được tôn trọng bằng `proposed` và ghi rõ trong 10-interfaces §7.
+
+**Hệ quả.** Hai topic trống ở phase 1. Order còn phải xác nhận snapshot có `name`. User và Analytics phải đăng ký consumer phía họ. Mọi thay đổi `catalog.yaml`/`templates/*.schema.json` là thay đổi contract công khai.
+
+Chi tiết: [10-interfaces.md](./10-interfaces.md) §2–3, §7.
+
+## D-14 · Ba bề mặt HTTP: inbox qua Gateway, status internal cho support, ops internal-only
+
+**Bối cảnh.** In-app cần read API cho frontend; support cần trả lời "email đơn này gửi chưa"; SRE cần công tắc pause/redrive/suppression. Preference đã có API ở User Service. Không có webhook nào (SES → SNS → SQS).
+
+**Quyết định.**
+- **Inbox** (`contracts/http/notification/v1/openapi.yaml`, qua Gateway, `gatewayIdentity`, `no-store`): list cursor `(created_at, id)` ≤ 50, `unread-count` từ Redis với contract ghi rõ có thể lệch vài giây, `PATCH {read}`, `DELETE` = archive, `POST mark-all-read`. Không realtime phase 1 (poll 30–60 s); không API preference; không API lịch sử email.
+- **Status** (`internal/v1`, mTLS, caller `order-service`, `finance-ops`): theo `request_id` và theo `subject`; trả timeline, không `template_data`, không email.
+- **Ops** (`internal/v1/notifications/ops/**`, mTLS principal `notification-ops`, **không qua Gateway**): `PUT lanes/{lane}`, `POST deliveries/{id}/redrive`, `POST dlq/redrive` (202), `POST/DELETE suppressions` (không gỡ được `HARD_BOUNCE`/`COMPLAINT`), `PUT replay-mode`. `Idempotency-Key` bắt buộc, audit mọi call. Phase 1 có thể là CLI dùng chung handler.
+
+**Bị loại.** *Ops qua Gateway như `/api/v1/admin/**` của Order*: admin của Order là người dùng nghiệp vụ hằng ngày; ops của Notification là SRE với thao tác hiếm và nguy hiểm — không đáng mở ra edge. *Realtime phase 1*: Gateway đã hỗ trợ WebSocket cho Chat nên thêm sau chỉ là route; poll đủ cho badge. *Gỡ được HARD_BOUNCE/COMPLAINT qua API*: làm hỏng reputation với provider; user đổi email hoặc bounce mới sẽ tự cập nhật.
+
+**Hệ quả.** Gateway thêm một route; mesh thêm 3 dòng policy và 3 dòng retry; principal `notification-ops` phải tồn tại trong mesh. Support tooling của Order/Finance có endpoint để tích hợp.
+
+Chi tiết: [10-interfaces.md](./10-interfaces.md) §5–6.
+
 ## Quyết định chưa chốt
 
 Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): A4 (topic của Auth — khuyến nghị giữ ở phase 1) và A5 (runtime Go hay Java). Không mục D nào phụ thuộc vào câu trả lời của hai câu này.

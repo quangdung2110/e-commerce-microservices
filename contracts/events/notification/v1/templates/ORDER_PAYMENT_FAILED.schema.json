@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/ORDER_PAYMENT_FAILED.schema.json",
+  "title": "ORDER_PAYMENT_FAILED template_data",
+  "description": "Một payment attempt thất bại hoặc hết hạn; can_retry cho biết user còn thanh toán lại được không.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order_id",
+    "order_code",
+    "amount_minor",
+    "currency",
+    "attempt",
+    "can_retry",
+    "order_url"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19,
+      "description": "Order-owned positive int64, base-10 không đệm."
+    },
+    "order_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "amount_minor": {
+      "type": "integer",
+      "format": "int64",
+      "minimum": 0,
+      "description": "Đơn vị nhỏ nhất của currency (VND: đồng)."
+    },
+    "currency": {
+      "const": "VND"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "can_retry": {
+      "type": "boolean"
+    },
+    "retry_deadline": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Có khi can_retry = true."
+    },
+    "order_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "description": "URL tuyệt đối tới frontend; Notification không tự lắp."
+    }
+  }
+}

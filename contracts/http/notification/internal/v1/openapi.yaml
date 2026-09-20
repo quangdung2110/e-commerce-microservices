@@ -1,0 +1,451 @@
+openapi: 3.1.0
+info:
+  title: Notification Internal API
+  version: 1.0.0
+  description: >-
+    Hai nhóm endpoint không đi qua public Gateway: (1) tra cứu trạng thái cho
+    support/admin tool của service khác — trả timeline, không trả template_data
+    hay email; (2) ops — công tắc vận hành (pause lane, redrive, suppression thủ
+    công, replay mode). Ops endpoint yêu cầu Idempotency-Key và được ghi audit.
+    Phase 1 có thể triển khai ops bằng CLI dùng chung handler; contract giữ để
+    thiết kế có chỗ. Xem docs/notification/10-interfaces.md.
+x-adoption-status: proposed
+servers:
+  - url: http://notification-service:8090
+    description: Internal cluster endpoint only
+tags:
+  - name: Status
+  - name: Ops
+paths:
+  /internal/v1/notifications/requests/{request_id}:
+    get:
+      tags: [Status]
+      operationId: getNotificationRequest
+      summary: Request và các delivery của nó
+      security:
+        - supportServiceMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Timeline một request.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestStatus' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/v1/notifications/deliveries:
+    get:
+      tags: [Status]
+      operationId: listDeliveriesBySubject
+      summary: Delivery theo aggregate — câu hỏi "email đơn này gửi chưa"
+      description: >-
+        Bắt buộc có subject. Trả tối đa 100 delivery mới nhất của subject đó, lọc
+        thêm theo template nếu có. Không cursor vì một aggregate không có nhiều
+        delivery; vượt 100 là dấu hiệu bất thường.
+      security:
+        - supportServiceMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: subject
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+          description: Ví dụ orders/1000234.
+        - name: template
+          in: query
+          required: false
+          schema: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$' }
+      responses:
+        '200':
+          description: Danh sách delivery.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [deliveries]
+                properties:
+                  deliveries:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: '#/components/schemas/DeliveryStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+  /internal/v1/notifications/ops/lanes/{lane}:
+    put:
+      tags: [Ops]
+      operationId: setLaneState
+      summary: Pause / resume một lane (tuỳ chọn theo kênh)
+      description: >-
+        paused: consumer vẫn nhận và ghi DB, deliver worker của lane (hoặc lane × channel)
+        dừng claim. Idempotent theo Idempotency-Key trong 24 h; cùng key khác body → 409.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: lane
+          in: path
+          required: true
+          schema: { type: string, enum: [critical, transactional, bulk] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LaneStateUpdate' }
+      responses:
+        '200':
+          description: Trạng thái lane sau khi áp dụng.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LaneState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+    get:
+      tags: [Ops]
+      operationId: getLaneState
+      summary: Trạng thái hiện tại của lane
+      security:
+        - opsMtls: []
+      parameters:
+        - name: lane
+          in: path
+          required: true
+          schema: { type: string, enum: [critical, transactional, bulk] }
+      responses:
+        '200':
+          description: Trạng thái lane.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LaneState' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+  /internal/v1/notifications/ops/deliveries/{delivery_id}/redrive:
+    post:
+      tags: [Ops]
+      operationId: redriveDelivery
+      summary: Đưa một delivery FAILED/EXPIRED về PENDING
+      description: >-
+        Chỉ hợp lệ từ FAILED hoặc EXPIRED; trạng thái khác → 409. Reset attempt về 0,
+        giữ lịch sử lỗi. Không kéo dài expires_at: ops phải truyền expires_at mới nếu
+        delivery đã quá hạn, và chịu trách nhiệm về tính hợp thời của nội dung.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: delivery_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RedriveRequest' }
+      responses:
+        '200':
+          description: Delivery sau redrive.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryStatus' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+  /internal/v1/notifications/ops/dlq/redrive:
+    post:
+      tags: [Ops]
+      operationId: redriveDlq
+      summary: Re-drive theo lô các delivery FAILED của một lane
+      description: >-
+        Bất đồng bộ: trả 202 với operation_id; tiến độ đọc qua log/metric. Lọc theo
+        reason_code và khoảng thời gian để không re-drive nhầm lỗi contract của producer
+        (unknown_template, invalid_template_data) — những lỗi đó phải sửa ở producer.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DlqRedriveRequest' }
+      responses:
+        '202':
+          description: Đã nhận; xử lý nền.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [operation_id, matched]
+                properties:
+                  operation_id: { type: string, format: uuid }
+                  matched: { type: integer, minimum: 0, description: Số delivery khớp bộ lọc tại thời điểm nhận. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+  /internal/v1/notifications/ops/suppressions:
+    post:
+      tags: [Ops]
+      operationId: addManualSuppression
+      summary: Thêm suppression thủ công cho một user
+      description: >-
+        Ghi reason MANUAL với user_id và email_hash do Notification tự resolve qua Auth
+        (caller không gửi email). Dùng khi có yêu cầu pháp lý hoặc khiếu nại ngoài luồng SES.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualSuppressionRequest' }
+      responses:
+        '201':
+          description: Đã tạo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Suppression' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+  /internal/v1/notifications/ops/suppressions/{suppression_id}:
+    delete:
+      tags: [Ops]
+      operationId: removeSuppression
+      summary: Gỡ một dòng suppression
+      description: >-
+        Chỉ gỡ được reason MANUAL hoặc SOFT_BOUNCE. HARD_BOUNCE và COMPLAINT không gỡ
+        được qua API (→ 409): gỡ chúng làm hỏng reputation với provider; nếu địa chỉ
+        đã sống lại, user đổi email hoặc bounce mới sẽ tự cập nhật.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: suppression_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Đã gỡ. }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+  /internal/v1/notifications/ops/replay-mode:
+    put:
+      tags: [Ops]
+      operationId: setReplayMode
+      summary: Bật/tắt chế độ replay
+      description: >-
+        Khi bật, consumer bỏ qua (IGNORED, reason replay_too_old) mọi event có time cũ hơn
+        ignore_events_older_than. Dùng khi reset offset về quá khứ để không gửi lại thông
+        báo đã lỗi thời. Tự tắt sau ttl.
+      security:
+        - opsMtls: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayMode' }
+      responses:
+        '200':
+          description: Trạng thái replay mode.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayMode' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+components:
+  securitySchemes:
+    supportServiceMtls:
+      type: mutualTLS
+      description: >-
+        Mesh principal thuộc allowlist support/admin (phase 1: order-service cho admin
+        UI, finance-ops). X-Service-Identity là attribution.
+    opsMtls:
+      type: mutualTLS
+      description: >-
+        Mesh principal notification-ops (SRE). Không đi qua public Gateway; operator dùng
+        mesh/port-forward. Mọi call ghi audit (principal, thời điểm, tham số).
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+      description: Do caller sinh; giữ 24 h; cùng key + cùng body trả lại kết quả cũ; cùng key khác body → 409.
+  headers:
+    NoStore:
+      description: Không cache.
+      required: true
+      schema: { type: string, const: no-store }
+  schemas:
+    Problem:
+      $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+    DeliveryStatus:
+      type: object
+      additionalProperties: false
+      required: [delivery_id, request_id, lane, channel, template, status, attempt, created_at]
+      properties:
+        delivery_id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        lane: { type: string, enum: [critical, transactional, bulk] }
+        channel: { type: string, enum: [email, in_app] }
+        template: { type: string }
+        status: { type: string, enum: [PENDING, SENDING, SENT, RETRY, FAILED, DELIVERED, BOUNCED, EXPIRED, SKIPPED] }
+        attempt: { type: integer, minimum: 0 }
+        next_attempt_at: { type: [string, 'null'], format: date-time }
+        expires_at: { type: [string, 'null'], format: date-time }
+        provider: { type: [string, 'null'] }
+        provider_message_id: { type: [string, 'null'] }
+        possibly_duplicate: { type: boolean }
+        last_error_code: { type: [string, 'null'] }
+        skip_reason: { type: [string, 'null'] }
+        sent_at: { type: [string, 'null'], format: date-time }
+        delivered_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    RequestStatus:
+      type: object
+      additionalProperties: false
+      required: [request_id, source, event_type, decision, received_at, deliveries]
+      properties:
+        request_id: { type: string, format: uuid }
+        source: { type: string }
+        event_type: { type: string }
+        subject: { type: [string, 'null'] }
+        template: { type: [string, 'null'] }
+        lane: { type: [string, 'null'] }
+        decision: { type: string, enum: [DECIDED, SKIPPED, FAILED, EXPIRED, IGNORED] }
+        decision_reason: { type: [string, 'null'] }
+        received_at: { type: string, format: date-time }
+        deliveries:
+          type: array
+          items: { $ref: '#/components/schemas/DeliveryStatus' }
+    LaneStateUpdate:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: { type: string, enum: [active, paused] }
+        channel: { type: string, enum: [email, in_app], description: Bỏ trống = cả lane. }
+        reason: { type: string, maxLength: 512, description: Ghi vào audit. }
+    LaneState:
+      type: object
+      additionalProperties: false
+      required: [lane, email, in_app, updated_at]
+      properties:
+        lane: { type: string, enum: [critical, transactional, bulk] }
+        email: { type: string, enum: [active, paused] }
+        in_app: { type: string, enum: [active, paused] }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: [string, 'null'] }
+    RedriveRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expires_at: { type: string, format: date-time, description: Bắt buộc nếu delivery đã quá expires_at cũ. }
+        reason: { type: string, maxLength: 512 }
+    DlqRedriveRequest:
+      type: object
+      additionalProperties: false
+      required: [lane, reason]
+      properties:
+        lane: { type: string, enum: [critical, transactional, bulk] }
+        reason_code:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{2,63}$'
+          description: Chỉ re-drive delivery có last_error_code này. Bỏ trống = mọi lỗi retryable; không bao giờ bao gồm lỗi contract của producer.
+        failed_after: { type: string, format: date-time }
+        failed_before: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        reason: { type: string, maxLength: 512 }
+    ManualSuppressionRequest:
+      type: object
+      additionalProperties: false
+      required: [user_id, reason]
+      properties:
+        user_id: { type: string, format: uuid }
+        until: { type: [string, 'null'], format: date-time, description: null = vĩnh viễn. }
+        reason: { type: string, maxLength: 512, description: Ghi vào audit; không hiển thị cho user. }
+    Suppression:
+      type: object
+      additionalProperties: false
+      required: [id, reason, source, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: [string, 'null'], format: uuid }
+        reason: { type: string, enum: [HARD_BOUNCE, COMPLAINT, SOFT_BOUNCE, MANUAL] }
+        source: { type: string, enum: [ses, ops] }
+        until: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    ReplayMode:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        ignore_events_older_than: { type: string, pattern: '^P(?!$)(\d+D)?(T(\d+H)?(\d+M)?)?$', description: ISO-8601 duration, ví dụ P7D. Bắt buộc khi enabled. }
+        ttl: { type: string, pattern: '^PT\d+H$', default: PT6H, description: Tự tắt sau khoảng này. }
+        expires_at: { type: [string, 'null'], format: date-time, readOnly: true }
+  responses:
+    BadRequest:
+      description: Tham số không hợp lệ.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnauthorizedService:
+      description: Không có hoặc không xác minh được service identity mTLS.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ForbiddenService:
+      description: Service identity không thuộc allowlist của nhóm endpoint.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Không tìm thấy.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    IdempotencyConflict:
+      description: Cùng Idempotency-Key nhưng body khác, hoặc request cùng key đang xử lý.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    StateConflict:
+      description: Trạng thái hiện tại không cho phép thao tác (ví dụ redrive delivery đang PENDING, gỡ suppression HARD_BOUNCE).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

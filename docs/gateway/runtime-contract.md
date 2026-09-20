@@ -73,6 +73,7 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/api/v1/search/**` | GET | search-service | Không | `public-read` | **Không còn backend**: Search đã gỡ v1 khi viết lại theo `docs/search`. Route phải được xoá sau khi frontend chuyển sang v2 |
 | `/api/v2/search/**` (trừ reindex) | GET | search-service | Không | `public-read` | Search v2 canonical và là bề mặt storefront duy nhất còn backend |
 | `/api/v2/search/reindex-runs/**` | GET, POST | search-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Router priority cao hơn public v2 route; không expose qua `/internal` |
+| `/api/v1/notifications/inbox`, `/api/v1/notifications/inbox/**` | GET, PATCH, DELETE, POST (`mark-all-read`) | notification-service | Bắt buộc | `api-authenticated` | In-app inbox của user hiện tại theo [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml); mọi response `private, no-store`; không có route preference (thuộc User), không có webhook route (SES event đi SNS → SQS); `/internal/v1/notifications/**` chỉ trong mesh |
 | `/api/payments/webhook/stripe` | POST | payment-service | Stripe signature | `stripe-webhook` | Rewrite upstream thành `/v1/payments/webhook/stripe`; chỉ đổi path, giữ nguyên raw body và `Stripe-Signature`; bypass JWT; không retry ở gateway. **Route public duy nhất** của Payment: buyer/CSKH đọc payment qua Order (`docs/payment/architecture.md §1.2`), không có route `/api/payments/**` khác |
 | `/ws/**` | HTTP Upgrade | chat-service | Chỉ handshake | `websocket-handshake` | Service đóng session bị revoke |
 

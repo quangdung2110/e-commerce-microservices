@@ -29,6 +29,7 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 | [07-templates.md](./07-templates.md) | Catalog 15 template phase 1: quy ước, thuộc tính, chính sách theo lane, `template_data` từng template. |
 | [08-decide.md](./08-decide.md) | Stage Decide chạy ở đâu, thứ tự 13 bước, mã lý do, mặc định khi thiếu preference, suppression theo `user_id` + `email_hash`. |
 | [09-data-model.md](./09-data-model.md) | DDL các bảng, sổ dedup vì ràng buộc partition + unique của Postgres, partition/retention, outbox CDC, xử lý `user.deleted`. |
+| [10-interfaces.md](./10-interfaces.md) | Bản đồ mọi bề mặt vào/ra: Kafka request và outcome, Auth internal API, inbox API, status/ops API; link tới contract thật. |
 | [decisions.md](./decisions.md) | Các quyết định kiến trúc đã chốt trong thảo luận, kèm hệ quả. |
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
@@ -41,14 +42,14 @@ Notification nhận hai loại đầu vào — **request** (producer chỉ đị
 |---|---|---|---|---|---|---|
 | Auth | Request (dạng đặc biệt: resolve content theo `delivery_id`) | `t.auth.notification.events` | `userOtpRequested`, `passwordResetRequested`, `userEmailChanged`, `userPasswordChanged`, `userAccountLocked`, `userUnlocked` | `user_id` | critical | **Đã có.** Chỉ chứa `delivery_id`; email + template + secret resolve qua `POST /internal/v1/auth/notification-deliveries/{id}/content`. Retry 3 lần cùng CloudEvent id, không outbox, retention 24h. |
 | Review | Request | `t.review.events` | `reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested` | `product_id` | transactional | **Đã có.** Không mang nội dung reply hay lý do pháp lý. |
-| **Order** | **Request** | `t.notification.transactional.v1` | `notification.requested.v1` với 5 template `ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`, `ORDER_REFUNDED` | `subject` (= `orders/{order_id}`) | transactional | **Cần mở** (§7, mục 1). Order đóng gói item snapshot, tổng tiền, địa chỉ từ row đơn hàng của chính nó — kể cả các mốc thanh toán/hoàn tiền/giao hàng mà Order đã consume từ Payment và Delivery. |
+| **Order** | **Request** | `t.notification.transactional.v1` | `notification.requested.v1` với 5 template `ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`, `ORDER_REFUNDED` | `subject` (= `orders/{order_id}`) | transactional | **Contract đã viết** (§7, mục 1; Order còn phải xác nhận snapshot có tên sản phẩm, mục 3). Order đóng gói item snapshot, tổng tiền, địa chỉ từ row đơn hàng của chính nó — kể cả các mốc thanh toán/hoàn tiền/giao hàng mà Order đã consume từ Payment và Delivery. |
 | Cart | Fact | `t.cart.events` | `cartAbandonedV1` | `cart_id` | bulk | **Đã có.** Payload đủ (`cart_id, user_id, abandonment_cycle`). |
 | User | Fact (state replication) | `t.user.events` | `preferences-updated` (`email_enabled`, `in_app_enabled`, `marketing_enabled`) | `user_id` | — (consumer riêng) | **Đã có.** Có daily reconciliation. |
 | Payment, Delivery | **Không consume** | — | — | — | — | Fact của họ **không có `user_id`** (Payment cấm tường minh trong schema; Delivery chỉ có `order_id`/`order_line_id`). Notification không biết gửi cho ai nếu không replicate Order. Order đã consume các fact này để chạy state machine và phát request thay. |
 
 Ba điều rút ra từ bảng:
 
-- **Không có event nào mang email người nhận.** Email là PII, không đi qua Kafka (bản ghi Kafka tồn tại theo retention, được replicate, không xoá được khi user xoá tài khoản, và có thể lỗi thời khi user đổi email). Notification resolve email **lúc gửi** qua Auth internal API — với Auth là API `content` đã có, với mọi nguồn khác là API `notification-contact` cần mở (§7, mục 2). In-app không cần resolve gì vì chỉ cần `user_id`.
+- **Không có event nào mang email người nhận.** Email là PII, không đi qua Kafka (bản ghi Kafka tồn tại theo retention, được replicate, không xoá được khi user xoá tài khoản, và có thể lỗi thời khi user đổi email). Notification resolve email **lúc gửi** qua Auth internal API — với Auth là API `content` đã có, với mọi nguồn khác là API `notification-contact` đã thêm vào Auth OpenAPI (§7, mục 2). In-app không cần resolve gì vì chỉ cần `user_id`.
 - **Fact chỉ dùng được khi có `user_id` và đủ dữ liệu render.** Cart thoả; Payment và Delivery không — nên mọi mốc đơn hàng đi qua Order. Đây là cách áp dụng đúng quy tắc D-07 sau khi soi schema thật.
 - Preference hiện chỉ có `email_enabled`, `in_app_enabled`, `marketing_enabled` — khớp với phạm vi kênh phase 1 (D-08).
 
@@ -85,17 +86,19 @@ Các con số dưới đây được dùng xuyên suốt tài liệu để minh 
 | A4 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Giữ ở phase 1 (mô hình resolve-content-theo-`delivery_id` của Auth khác với request thường); Notification consume bằng consumer group riêng như lane critical thứ hai. Xem xét gộp khi Auth sẵn sàng sửa contract. | Số consumer group |
 | A5 | Runtime Go hay Java 21+? | Cả hai phù hợp (I/O-bound); chọn theo năng lực team | Development guide, vị trí thư mục |
 
-## 7. Contract cần mở với service khác
+## 7. Contract
 
-Ba việc dưới đây là **điều kiện tiên quyết** để thiết kế chạy được; chúng nằm ngoài `docs/notification` và cần đàm phán với owner tương ứng.
+Contract Notification sở hữu đã được viết (`x-adoption-status: proposed`), và các thay đổi cần thiết ở contract của service khác đã được áp trực tiếp trong repo. Tổng hợp ở [10-interfaces.md](./10-interfaces.md) §7.
 
-| # | Contract | Owner | Nội dung | Nếu thiếu |
-|---|---|---|---|---|
-| 1 | `contracts/events/notification/v1/asyncapi.yaml` + `templates/*.schema.json` | Notification | Ba channel `t.notification.{critical,transactional,bulk}.v1`; message `com.ecommerce.notification.requested.v1` với `template` (enum từ catalog Notification sở hữu), `user_id`, `dedup_key?`, `expires_at?`, `template_data` (oneOf theo template). Message key = `subject` (aggregate id, ví dụ `order_id`) để ordering theo aggregate và tránh hot key theo user. `x-access-policy` liệt kê producer được ghi. Producer đầu tiên: Order với 5 template ([07-templates.md](./07-templates.md) §5.2). | Order không có cách gửi thông báo; catalog template không có chỗ khai báo |
-| 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong `contracts/http/auth/internal/v1/openapi.yaml` | Auth | Trả `email`, `email_verified`, `locale?`. mTLS, `Cache-Control: no-store`, rate limit riêng cho `notification-service`. `404` khi user không tồn tại/đã xoá → delivery `FAILED (no_recipient)`. | Chỉ Auth gửi được email; Order/Review/Cart chỉ gửi được in-app |
-| 3 | Snapshot đơn hàng của Order có `name` sản phẩm | Order (và Checkout nếu snapshot được tạo ở đó) | `ORDER_CONFIRMED` và `ORDER_COMPLETED` cần tên sản phẩm trong `items[]`. `order.completed.v1` hiện chỉ có `product_id`, `sku_id`, `variant_name`; nếu snapshot nội bộ cũng thiếu `name`, Checkout ghi thêm một field lúc tạo snapshot. Thay đổi ở nguồn, không phải RPC lúc gửi. | Email xác nhận đơn chỉ hiện SKU — dùng được nhưng kém |
+| # | Contract | Trạng thái | Ghi chú |
+|---|---|---|---|
+| 1 | [`contracts/events/notification/v1/asyncapi.yaml`](../../contracts/events/notification/v1/asyncapi.yaml) + `schemas/` + [`templates/catalog.yaml`](../../contracts/events/notification/v1/templates/catalog.yaml) + `templates/ORDER_*.schema.json` | **Đã viết** | 3 channel request, 1 channel outcome, 15 template, 5 schema `template_data`; example đã validate |
+| 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) | **Đã thêm** | Auth owner xác nhận |
+| 3 | Snapshot đơn hàng của Order có `name` sản phẩm | **Còn mở với Order** | `ORDER_CONFIRMED`/`ORDER_COMPLETED` cần `items[].name`; ghi trong `publishNotificationRequests` của Order AsyncAPI |
+| 4 | [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml) (inbox) và [internal](../../contracts/http/notification/internal/v1/openapi.yaml) (status, ops) | **Đã viết** | Route Gateway và mesh policy đã khai báo |
+| 5 | User Service consume `notification.complaint-received.v1`; Analytics consume `t.notification.outcomes.v1` | **Còn mở với User, Analytics** | Đã ghi `x-consumers`; owner đăng ký phía họ |
 
-Ngoài ra, hạ tầng dev cần thêm **Mailpit** vào `docker-compose.yml` (SMTP + web UI + REST API để test tự động đọc email đã gửi).
+Ngoài ra, hạ tầng dev cần thêm **Mailpit** (SMTP) và **LocalStack** (SNS/SQS) vào `docker-compose.yml`.
 
 ## 8. Thuật ngữ
 

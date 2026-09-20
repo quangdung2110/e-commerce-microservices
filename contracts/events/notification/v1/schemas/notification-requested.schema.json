@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/schemas/notification-requested.schema.json",
+  "title": "Notification requested v1",
+  "description": "Producer yêu cầu Notification gửi một template cho một user. Không mang email, số điện thoại hay secret; recipient được Notification resolve lúc gửi.",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "type", "source", "dataschema", "subject", "correlationid", "data"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "type": { "const": "com.ecommerce.notification.requested.v1" },
+        "source": {
+          "type": "string",
+          "pattern": "^/services/[a-z0-9-]+$",
+          "description": "Producer, ví dụ /services/order. Phải khớp x-access-policy của channel."
+        },
+        "dataschema": { "const": "/contracts/events/notification/v1/schemas/notification-requested.schema.json" },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Aggregate mà thông báo nói về, ví dụ orders/1000234. Là Kafka message key: ordering theo aggregate, tránh hot key theo user."
+        },
+        "correlationid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sequence": { "type": "integer", "minimum": 0, "description": "Khuyến nghị: sequence của aggregate tại thời điểm phát, để Notification nhận biết request lỗi thời." },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["template", "user_id", "requested_at", "template_data"],
+          "properties": {
+            "template": { "$ref": "notification-event-common.schema.json#/$defs/template_id" },
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "dedup_key": { "$ref": "notification-event-common.schema.json#/$defs/dedup_key" },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Tuỳ chọn. Notification dùng min(expires_at, requested_at + max_age của template); producer chỉ rút ngắn được, không kéo dài."
+            },
+            "requested_at": { "type": "string", "format": "date-time" },
+            "template_data": { "type": "object" }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "template": { "const": "ORDER_CONFIRMED" },
+                "dedup_key": { "type": "string", "pattern": "^order_confirmed:[1-9][0-9]*$" },
+                "template_data": { "$ref": "../templates/ORDER_CONFIRMED.schema.json" }
+              },
+              "required": ["dedup_key"]
+            },
+            {
+              "properties": {
+                "template": { "const": "ORDER_PAYMENT_FAILED" },
+                "dedup_key": { "type": "string", "pattern": "^order_payment_failed:[1-9][0-9]*:[1-9][0-9]*$" },
+                "template_data": { "$ref": "../templates/ORDER_PAYMENT_FAILED.schema.json" }
+              },
+              "required": ["dedup_key"]
+            },
+            {
+              "properties": {
+                "template": { "const": "ORDER_CANCELLED" },
+                "dedup_key": { "type": "string", "pattern": "^order_cancelled:[1-9][0-9]*$" },
+                "template_data": { "$ref": "../templates/ORDER_CANCELLED.schema.json" }
+              },
+              "required": ["dedup_key"]
+            },
+            {
+              "properties": {
+                "template": { "const": "ORDER_COMPLETED" },
+                "dedup_key": { "type": "string", "pattern": "^order_completed:[1-9][0-9]*$" },
+                "template_data": { "$ref": "../templates/ORDER_COMPLETED.schema.json" }
+              },
+              "required": ["dedup_key"]
+            },
+            {
+              "properties": {
+                "template": { "const": "ORDER_REFUNDED" },
+                "dedup_key": { "type": "string", "pattern": "^order_refunded:[1-9][0-9]*:RFD_[0-9A-HJKMNP-TV-Z]{26}$" },
+                "template_data": { "$ref": "../templates/ORDER_REFUNDED.schema.json" }
+              },
+              "required": ["dedup_key"]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
