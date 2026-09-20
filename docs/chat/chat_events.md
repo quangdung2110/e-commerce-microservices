@@ -314,6 +314,6 @@ Client có thể detect gap và request resync.
 - [Thiết kế kiến trúc](chat_design.md)
 - [Cấu trúc Database](chat_db_schema.md)
 - [Quy trình nghiệp vụ](chat_workflow.md)
-- [Notification Service Events](../notification/events.md) - Event contracts của Notification Service
+- [Notification Service](../notification/README.md) - Thiết kế Notification Service (lane, pipeline, idempotency)
 - [User Events v1](../../contracts/events/user/v1/asyncapi.yaml) - Contract profile projection
 - [Auth Events v1](../../contracts/events/auth/v1/asyncapi.yaml) - Contract xóa account

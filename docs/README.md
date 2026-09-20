@@ -228,7 +228,7 @@ Service Contract Matrix legacy đã bị xóa.
 | [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
-| [notification/](./notification/) | Notification Service — ngoài scope. |
+| [notification/README.md](./notification/README.md) | Notification Service — thiết kế mới (`proposed`): lane ưu tiên, pipeline hai ranh giới, tracking, idempotency, ordering, backpressure. |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
 | [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |

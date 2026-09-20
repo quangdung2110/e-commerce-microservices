@@ -1,4 +1,0 @@
-1. Giải thích lý do vì sao lại có sự trùng lặp giữa bảng user_preferences trong User Service và notification_user_preferences trong Notification Service
-- Ở đây User Service đóng vai trò như Source of Truth lưu toàn bộ những tùy chọn của người dùng, bao gồm các cài đặt liên quan tới thông báo. Notification Service chỉ replicate ba cờ `email_enabled`, `in_app_enabled`, `marketing_enabled`; `language` và `currency` vẫn thuộc User. Khi có thay đổi, User Service sẽ publish event USER_PREFERENCES_UPDATED,
-Notification Service sẽ consume event này và cập nhật vào bảng notification_user_preferences 
-Việc duplicate dữ liệu như vậy là một dạng CQRS với read model riêng. Điều này đảm bảo tính nhất quán cuối cùng (eventual consistency) – hoàn toàn chấp nhận được trong ngữ cảnh cài đặt thông báo (vài giây trễ không ảnh hưởng lớn).
