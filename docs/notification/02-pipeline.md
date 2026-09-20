@@ -51,14 +51,60 @@ Ingest → Dedup → Decide → Render → Deliver → Track
 
 | Stage | Làm gì | Không làm gì |
 |---|---|---|
-| **Ingest** | Consume Kafka, validate CloudEvents envelope, chuẩn hoá thành `NotificationRequest` nội bộ | Không gọi ra ngoài |
+| **Ingest** | Consume Kafka, validate CloudEvents envelope, chuẩn hoá thành `NotificationRequest` nội bộ (xem §2.1) | Không gọi ra ngoài |
 | **Dedup** | Khoá idempotency `(source, event_id)` — xem [04-idempotency.md](./04-idempotency.md) | |
-| **Decide** | Áp preferences (bản replicate từ `t.user.events`), quiet hours, rate limit per-user, suppression list, chọn kênh, tính `dedup_key` nghiệp vụ | Không I/O ra provider |
-| **Render** | Template versioned, precompile & cache, i18n | Render fail → DLQ, không retry |
+| **Decide** | Với fact: tra bảng ánh xạ fact → template + lane (§2.2). Áp preferences (bản replicate từ `t.user.events`), quiet hours, rate limit per-user, suppression list, chọn kênh, gán `dedup_key` | Không I/O ra provider |
+| **Render** | Resolve email người nhận qua Auth (§2.3); template versioned, precompile & cache, i18n | Render fail → DLQ, không retry |
 | **Deliver** | Worker per `lane × channel`, rate limiter, circuit breaker, retry | |
 | **Track** | Nhận webhook/feedback provider, cập nhật trạng thái, nuôi suppression list — xem [03-tracking.md](./03-tracking.md) | |
 
 Sáu stage này là **mô hình logic**. Khi triển khai, chúng thu về **hai ranh giới vật lý** — đủ để giải quyết cả bốn lý do ở trên. Tách thêm chỉ khi số liệu chứng minh cần.
+
+### 2.1 Hai loại đầu vào, một `NotificationRequest`
+
+Notification nhận **request** (producer chỉ định template) và **fact** (sự kiện nghiệp vụ) — quy tắc phân loại ở [decisions.md](./decisions.md) D-07. Ingest có hai loại consumer, nhưng cả hai chuẩn hoá về cùng một cấu trúc nội bộ trước khi INSERT, để **từ Decide trở đi pipeline không phân biệt nguồn**:
+
+```
+request topic  t.notification.{lane}.v1 ──▶ consumer request ──┐
+                                                               ├──▶ NotificationRequest {
+fact topics    t.payment.events.v2                             │      source, event_id,        -- dedup lớp A
+               t.delivery.order.events.v1 ──▶ consumer fact ───┘      template,                -- request: từ payload; fact: từ bảng ánh xạ
+               t.cart.events                                          lane,                    -- request: theo topic; fact: từ bảng ánh xạ
+                                                                      user_id, subject,
+                                                                      template_data,           -- request: từ payload; fact: trích từ fact
+                                                                      dedup_key?, expires_at?  -- request: producer gửi kèm; fact: bảng ánh xạ sinh
+                                                                    }
+```
+
+Riêng Auth là request dạng đặc biệt: payload chỉ có `delivery_id`; `template`, `template_data` (secret) và email được resolve ở Render qua `POST /internal/v1/auth/notification-deliveries/{id}/content`.
+
+### 2.2 Bảng ánh xạ fact → template
+
+Với fact, "gửi gì" là quyết định của Notification và nằm trong một **bảng cấu hình có review**, không rải trong code:
+
+| Fact (`type`) | Template | Lane | `dedup_key` | `template_data` trích từ |
+|---|---|---|---|---|
+| `com.ecommerce.payment.failed.v2` | `PAYMENT_FAILED` | transactional | `payment_failed:{order_id}:{attempt}` | `order_id`, `amount`, `failure_reason` |
+| `com.ecommerce.payment.expired.v2` | `PAYMENT_EXPIRED` | transactional | `payment_expired:{order_id}` | `order_id`, `amount` |
+| `com.ecommerce.payment.refund-succeeded.v2` | `REFUND_SUCCEEDED` | transactional | `refund_succeeded:{refund_id}` | `order_id`, `amount` |
+| `com.ecommerce.payment.refund-failed.v2` | `REFUND_FAILED` | transactional | `refund_failed:{refund_id}` | `order_id`, `amount` |
+| `com.ecommerce.delivery.order-line-delivered.v1` | `ORDER_LINE_DELIVERED` | transactional | `line_delivered:{order_id}:{line_id}` | `order_id`, line snapshot |
+| `com.ecommerce.cart.abandoned.v1` | `CART_ABANDONED` | bulk | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id` |
+
+Fact không có trong bảng → ghi `IGNORED`, không phải lỗi. Thêm một fact mới = thêm một dòng cấu hình + template, không sửa consumer.
+
+### 2.3 Email người nhận: resolve lúc gửi, không đi qua Kafka
+
+Không event nào mang email (PII không đi qua Kafka — xem [README §4](./README.md)). Render resolve email qua Auth internal API ngay trước khi gửi:
+
+| Nguồn | API | Trả về |
+|---|---|---|
+| Auth | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | email + template + `template_data` (secret) + `expires_at` |
+| Mọi nguồn khác | `GET /internal/v1/auth/users/{user_id}/notification-contact` (**cần mở**, README §7) | email, `email_verified`, `locale?` |
+
+Ràng buộc: timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3), cache theo `user_id` 15 phút **trong memory/Redis có TTL — không ghi xuống DB của Notification** để không tạo thêm một bản PII lâu dài. `404` → delivery `FAILED (no_recipient)`, không retry.
+
+Delivery **in-app không cần resolve gì** (chỉ cần `user_id`), nên khi Auth API sự cố, in-app vẫn đến; hai delivery email và in-app của cùng một request độc lập nhau.
 
 ## 3. Hai ranh giới vật lý
 
@@ -211,9 +257,11 @@ loop forever:
 
         rate_limiter.acquire(lane, channel)       -- token bucket theo lane
         try:
-            recipient = resolve_recipient(row)    -- Auth internal API, timeout 2 s, có cache
+            if row.channel == 'email':
+                recipient = resolve_recipient(row)  -- Auth API (§2.3), timeout 2 s, cache 15 phút;
+                                                    -- 404 → FAILED(no_recipient), không retry
             body      = render(row)               -- template đã cache
-            result    = provider.send(body, idempotency_key = row.id)
+            result    = provider.send(body)       -- SES không có idempotency key; xem 04-idempotency.md lớp C
             mark_sent(row, result.message_id)     -- compare-and-set, xem 04-idempotency.md
         catch RetryableError:                     -- 5xx, timeout, 429
             schedule_retry(row)                   -- RETRY, next_attempt_at = now + backoff(attempt) + jitter
@@ -290,7 +338,7 @@ Pattern này đủ tới vài nghìn notification/s trên một Postgres; vượ
 | Kafka consumer | Rebalance liên tục sau 5 phút; lag tăng 60k; log toàn `Rebalance in progress` | Không biết provider sự cố; lag = 0; không rebalance |
 | Email trùng | Mỗi lần rebalance gửi lại phần batch dở → user nhận 2–3 email | Không, nhờ `SKIP LOCKED` + compare-and-set |
 | Nguyên nhân gốc | Mất ~40 phút để nhận ra là provider | Alert `pending_age_p99` + `provider_error_rate` bắn sau 1 phút |
-| Lựa chọn của ops | Đứng nhìn | Failover provider cho critical; để transactional chờ; pause bulk |
+| Lựa chọn của ops | Đứng nhìn | Pause bulk để nhường quota; để transactional chờ; theo dõi critical (phase 1 không có provider dự phòng, in-app vẫn đến) |
 | Khi provider hồi phục | 12 consumer đồng loạt xả 60k message hết cỡ, thêm đợt trùng | Worker xả ở đúng quota, không dội ngược provider |
 | "Email đơn #A1092 gửi lúc nào?" | Có lẽ đã gửi, 2–3 lần, không chắc lúc nào | Một câu SQL: `attempts 3 · 14:02:12 503 · 14:03:05 503 · 14:47:30 SENT` |
 

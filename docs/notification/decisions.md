@@ -13,7 +13,7 @@
 - *Partition range thay cho topic*: phá auto-rebalance, producer phải tự tính partition, ordering theo key không còn đảm bảo; tiết kiệm được hai topic.
 - *Tách thêm theo kênh / tenant*: email và push cùng lane không chặn nhau (pool riêng ở ranh giới 2); tách topic chỉ khi hai luồng có SLO khác nhau **và** có thể chặn nhau.
 
-**Hệ quả.** Quyết định lộ ra ngoài contract, khó đảo ngược → phải chốt trước khi producer đầu tiên tích hợp. Cần đàm phán với Auth về `t.auth.notification.events` (quyết định mở #5 trong [README](./README.md)).
+**Hệ quả.** Quyết định lộ ra ngoài contract, khó đảo ngược → phải chốt trước khi producer đầu tiên tích hợp. Cần đàm phán với Auth về `t.auth.notification.events` (quyết định mở A4 trong [README §6](./README.md); khuyến nghị phase 1: giữ topic Auth, consume bằng group riêng).
 
 Chi tiết: [01-lanes.md](./01-lanes.md).
 
@@ -31,15 +31,15 @@ Chi tiết: [01-lanes.md](./01-lanes.md).
 
 Chi tiết: [02-pipeline.md](./02-pipeline.md).
 
-## D-03 · Track: endpoint mỏng + worker poll; bounce/complaint là hành động
+## D-03 · Track: poller/endpoint mỏng + worker poll; bounce/complaint là hành động
 
 **Bối cảnh.** Webhook provider đến sai thứ tự, đến trùng, đến trước cả khi Notification kịp ghi `provider_message_id`; provider retry hung hãn khi endpoint trả lời chậm; volume webhook có thể gấp 5–10 lần số email gửi.
 
-**Quyết định.** Endpoint chỉ verify chữ ký → INSERT `provider_event` (raw, append-only, unique `provider_event_id`) → 200. Track worker poll bảng đó, correlate, chuyển trạng thái theo **thứ hạng** (`SENT < DELIVERED < BOUNCED/COMPLAINED`), event không khớp thì `UNMATCHED` + retry chứ không bỏ. Hard bounce / complaint ghi suppression list và tắt marketing preference. Không bật open/click tracking cho bulk. Với SES, ưu tiên SNS → SQS.
+**Quyết định.** Poller (SQS) hoặc endpoint (HTTP, phase sau) chỉ verify chữ ký → INSERT `provider_event` (raw, append-only, unique `provider_event_id`) → 200. Track worker poll bảng đó, correlate, chuyển trạng thái theo **thứ hạng** (`SENT < DELIVERED < BOUNCED/COMPLAINED`), event không khớp thì `UNMATCHED` + retry chứ không bỏ. Hard bounce / complaint ghi suppression list và tắt marketing preference. Không bật open/click tracking cho bulk. Với SES (D-09): SNS → SQS → poller, không mở endpoint public.
 
 **Bị loại.** *Xử lý đầy đủ trong endpoint*: một lần DB chậm là provider gửi lại → vòng xoáy. *Ghi đè status bằng event mới nhất*: sai với delayed bounce và event đến ngược thứ tự.
 
-**Hệ quả.** Gateway cần route `/webhooks/notification/{provider}` với chính sách như Stripe webhook của Payment. Track worker có quyền ghi suppression và publish event — nó không phải "chỉ cập nhật status".
+**Hệ quả.** Phase 1 không mở endpoint public nào (poll SQS bằng IAM). Khi thêm provider dùng HTTP webhook, Gateway cần route `/webhooks/notification/{provider}` với chính sách như Stripe webhook của Payment. Thêm dependency SNS + SQS. Track worker có quyền ghi suppression và publish event — nó không phải "chỉ cập nhật status".
 
 Chi tiết: [03-tracking.md](./03-tracking.md).
 
@@ -50,12 +50,12 @@ Chi tiết: [03-tracking.md](./03-tracking.md).
 **Quyết định.**
 - Lớp A (Kafka → DB): unique `(source, event_id)` trên `notification_request`; INSERT trước, commit offset sau; row nghiệp vụ chính là bản ghi dedup.
 - Lớp B (Decide): `dedup_key` nghiệp vụ theo template, partial unique index; OTP **cố ý không có** dedup_key; chặn spam là rate limiting, không phải idempotency.
-- Lớp C (DB → provider): idempotency key phía provider khi có + compare-and-set khi ghi trạng thái + chính sách theo lane khi lease hết hạn (bulk gửi lại; transactional gửi lại có đánh dấu; critical **không** gửi lại).
+- Lớp C (DB → provider): compare-and-set khi ghi trạng thái + chính sách theo lane khi lease hết hạn (bulk gửi lại; transactional gửi lại có đánh dấu `possibly_duplicate`; critical **không** gửi lại; in-app gửi lại an toàn vì cùng transaction). Idempotency key phía provider chỉ khi provider hỗ trợ — SES (D-09) không hỗ trợ.
 - Lớp D (Notification → Kafka): outbox, `event_id` sinh lúc INSERT.
 
 **Bị loại.** *Bảng `processed_event_ids` riêng hoặc key Redis*: ghi hai nơi không nguyên tử; Redis mất khi restart / hết TTL sớm hơn Kafka retention. *Dedup bằng hash payload*: vừa chặn nhầm OTP hợp lệ vừa bỏ lọt retry đóng gói lại. *Check `if exists` ở tầng ứng dụng*: race đúng lúc rebalance.
 
-**Hệ quả.** Yêu cầu producer retry với cùng CloudEvent id (convention đã có). "Có idempotency key không" là tiêu chí chọn provider cho lane critical. Test tích hợp bắt buộc: publish cùng event 3 lần + kill worker giữa chừng + webhook trùng → assert số email = 1.
+**Hệ quả.** Yêu cầu producer retry với cùng CloudEvent id (convention đã có). Vì SES không có idempotency key, `possibly_duplicate_rate` của lane transactional là metric sức khoẻ của cơ chế lease/heartbeat. Test tích hợp bắt buộc: publish cùng event 3 lần + kill worker giữa chừng + webhook trùng → assert số email = 1.
 
 Chi tiết: [04-idempotency.md](./04-idempotency.md).
 
@@ -79,7 +79,7 @@ Chi tiết: [05-ordering.md](./05-ordering.md).
 - Alert theo số lượng và tuổi row pending theo lane; công tắc `pause/resume lane`; không đẩy ngược áp lực lên producer.
 - Bulkhead theo `lane × channel` cho thread pool, HTTP client, **DB connection**, và limit phía client cho Auth API.
 - Quota provider chia theo lane, có phần dự trữ bulk không được mượn; token bucket trên Redis, fail-closed về mức an toàn khi Redis chết.
-- Breaker theo provider; khi mở: critical failover provider, transactional chờ, bulk chờ lâu hơn/tự pause; row bị breaker từ chối **không tăng `attempt`**; half-open thăm dò bằng row lane thấp.
+- Breaker theo provider; khi mở: critical `RETRY` ngắn + alert ngay (phase 1 không có provider dự phòng, D-09; in-app vẫn gửi), transactional chờ, bulk chờ lâu hơn/tự pause; row bị breaker từ chối **không tăng `attempt`**; half-open thăm dò bằng row lane thấp.
 - Retry budget ≤ 20 % tổng lượng gửi/phút. Timeout mọi hop ngắn hơn lease; heartbeat gia hạn lease.
 
 **Bị loại.** *Quota chung, bulk mượn phần dư của critical*: critical mất đường đi đúng lúc cần. *Breaker theo lane*: provider chết là chết cho cả ba. *Fail-open limiter khi Redis chết*: vượt quota → provider phạt cả account.
@@ -88,6 +88,52 @@ Chi tiết: [05-ordering.md](./05-ordering.md).
 
 Chi tiết: [06-backpressure.md](./06-backpressure.md).
 
+## D-07 · Hai loại đầu vào: request và fact, phân loại theo "dữ liệu render đang ở đâu"
+
+**Bối cảnh.** Các producer hiện dùng hai mô hình: Auth/Review gửi *yêu cầu* (chỉ định template), Order/Payment/Delivery/Cart phát *sự thật*. Fact-style thuần cho Order không chạy được với contract hiện tại: `order.paid.v1` chỉ có `order_id, user_id, sku_ids` (không đủ render), Order không phát event huỷ/hoàn tiền khi chưa có consumer đăng ký, và không event nào mang email. Request-style thuần thì bắt Payment/Delivery/Cart đóng gói lại thứ họ đã phát.
+
+**Quyết định.** Hybrid, với quy tắc: **request khi producer phải đóng gói dữ liệu nó đang sở hữu hoặc phải quyết định điều kiện gửi; fact khi payload sẵn có đã đủ để render.** Producer **không bao giờ gọi service khác** để gom dữ liệu cho request — nếu một template đòi hỏi điều đó, thu gọn template hoặc bổ sung snapshot ở nguồn.
+
+| Nguồn | Mô hình | Lý do |
+|---|---|---|
+| Auth | Request (resolve content theo `delivery_id`) | Secret không đi qua Kafka |
+| Review | Request | Điều kiện gửi là nghiệp vụ của Review |
+| **Order** | **Request** (`notification.requested.v1` với `template`, `template_data` lấy từ row đơn hàng) | Order sở hữu item snapshot, tổng tiền, địa chỉ; tránh Notification gọi ngược Order lúc render; khớp chính sách "business effect đăng ký trước" của Order |
+| Cart, Payment, Delivery | Fact | Payload đủ; fact đã tồn tại cho consumer khác |
+
+Cả hai loại chuẩn hoá về một `NotificationRequest` ở Ingest; từ Decide trở đi pipeline không phân biệt. Với fact, "gửi gì / lane nào / `dedup_key` gì" nằm trong **bảng ánh xạ có review** trong Notification. **Email luôn do Notification resolve lúc gửi** qua Auth internal API (không đi qua Kafka: retention, replication, không xoá được, có thể lỗi thời); cache 15 phút trong Redis/memory, không ghi DB.
+
+**Bị loại.** *Fact thuần cho Order + Notification gọi ngược Order lúc render*: thêm dependency trên đường gửi, Notification tấn công Order khi xả backlog, và vẫn cần Order mở internal read API. *Request thuần*: Payment/Delivery/Cart làm việc thừa. *Đưa email vào event*: PII rải khắp Kafka và backup, không xoá được theo `user.deleted`.
+
+**Hệ quả.** Ba contract cần mở (README §7): topic `t.notification.*.v1` + schema `notification.requested.v1` với catalog template do Notification sở hữu; `GET /internal/v1/auth/users/{user_id}/notification-contact`; đăng ký Notification là consumer của Payment/Delivery. Hai loại consumer phải maintain. Catalog template là contract công khai — đổi tên/xoá là breaking. Read-your-latest (D-05) thu hẹp: với request, producer chịu trách nhiệm không phát request lỗi thời; Notification không replicate trạng thái đơn hàng.
+
+Chi tiết: [README §4](./README.md), [02-pipeline.md](./02-pipeline.md) §2.1–2.3.
+
+## D-08 · Kênh phase 1: email + in-app
+
+**Bối cảnh.** `user-preferences-updated.v1` chỉ có `email_enabled`, `in_app_enabled`, `marketing_enabled`. Không có contract nào về device token hay số điện thoại.
+
+**Quyết định.** Phase 1 chỉ email và in-app. Push và SMS ở phase sau.
+
+**Bị loại (tạm).** *Push*: cần hệ con quản lý device token, xử lý `UNREGISTERED`, User Service thêm preference, frontend đăng ký token — thay đổi contract của nhiều bên. *SMS*: chi phí và ràng buộc pháp lý (opt-in, brand name với nhà mạng) không đáng khi chưa có traffic thật.
+
+**Hệ quả.** Pool ở ranh giới 2: `{critical,transactional,bulk} × {email,inapp}`. In-app không có dependency ngoài (ghi vào DB của Notification) nên là kênh duy nhất còn hoạt động khi SES hoặc Auth API sự cố; delivery in-app và email của cùng request độc lập nhau. `channel` là enum, adapter interface chung — thêm push sau là thêm adapter + pool + preference flag, không thiết kế lại. In-app buộc thiết kế inbox API và `unread_count` trên Redis ngay từ phase 1.
+
+## D-09 · Provider: Amazon SES cho production, Mailpit cho dev/CI, không có provider dự phòng
+
+**Bối cảnh.** Mục tiêu dự án là học tập; traffic thật thấp. Cần provider rẻ, và cần cách test email cục bộ (compose hiện chưa có mail server giả lập).
+
+**Quyết định.**
+- **SES** cho production: rẻ nhất (~$0,10/1.000; free tier 3.000/tháng năm đầu). Hai configuration set khớp lane (`critical-transactional`, `bulk`), bulk không bật open/click. Tracking qua **SNS → SQS → poller**, không mở HTTP endpoint.
+- **Mailpit** trong `docker-compose.yml` cho dev/CI; adapter `smtp` dùng Mailpit, test tự động đọc hộp thư qua REST API của Mailpit.
+- **Không có provider dự phòng** ở phase 1. Khi breaker SES mở: critical `RETRY` 30 s không tăng `attempt`, alert ngay, in-app vẫn gửi, OTP quá `expires_at` tự hết hạn. Adapter interface phải cho phép cắm provider thứ hai sau này mà không sửa worker.
+
+**Bị loại.** *Postmark*: deliverability và onboarding tốt hơn, Message Streams khớp lane tự nhiên, nhưng đắt gấp ~15 lần — không đáng cho mục tiêu học tập. *Provider dự phòng*: domain verification, DKIM, warm-up, giám sát cho provider thứ hai không xứng khi chưa có traffic.
+
+**Hệ quả.** SES **không có idempotency key** → D-04 lớp C dựa hoàn toàn vào compare-and-set + chính sách theo lane. SES sandbox (1/s, 200/ngày, chỉ gửi tới địa chỉ verify) → phải xin production access trước khi có user thật; dev không dùng SES. Bounce > 5 % / complaint > 0,1 % → account bị review → suppression list là bắt buộc từ ngày đầu. Quota là của AWS account: Notification nên là nơi duy nhất gọi SES. Phụ thuộc thêm SNS + SQS (theo dõi `ApproximateAgeOfOldestMessage`).
+
+Chi tiết: [03-tracking.md](./03-tracking.md) §2–3, [06-backpressure.md](./06-backpressure.md) §4–5.
+
 ## Quyết định chưa chốt
 
-Xem [README §6](./README.md#6-quyết-định-đang-mở): kênh phase 1, provider email, command vs fact cho Order lifecycle, runtime, và topic của Auth. Các mục D-01…D-06 không phụ thuộc vào câu trả lời của những câu hỏi này, trừ D-04 lớp C (phụ thuộc provider có idempotency key hay không).
+Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): A4 (topic của Auth — khuyến nghị giữ ở phase 1) và A5 (runtime Go hay Java). Không mục D nào phụ thuộc vào câu trả lời của hai câu này.

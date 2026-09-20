@@ -40,25 +40,29 @@ Kịch bản dùng xuyên suốt file này: provider email trả 40 % lỗi từ
 
 | Tài nguyên | Nếu dùng chung | Tách thế nào |
 |---|---|---|
-| Thread / goroutine gửi | 50 thread kẹt hết ở email 8 s → push không gửi được dù FCM khoẻ | Pool riêng theo `lane × channel`: `critical-email` 6, `critical-push` 4, `bulk-email` 30, ... |
+| Thread / goroutine gửi | 50 thread kẹt hết ở email 8 s → in-app không ghi được dù DB khoẻ | Pool riêng theo `lane × channel`: `critical-email` 6, `critical-inapp` 4, `bulk-email` 30, ... |
 | HTTP connection pool tới provider | Pool 100 kết nối đầy → worker critical chờ kết nối | Client HTTP riêng cho từng `lane × provider`, `max_connections` riêng |
 | **DB connection pool** | Bulk worker chiếm 40/50 kết nối để claim → Kafka consumer critical không có kết nối để INSERT → **critical hỏng vì bulk** | Quota riêng: consumer 10, deliver-critical 5, deliver-transactional 10, deliver-bulk 15, track 5, dự phòng 5 |
 | Quota provider | §4 | |
-| **Auth internal API** (resolve email) | Khi xả 300k backlog, Notification gọi Auth 150 req/s → Auth quá tải → **đăng nhập chậm vì email khuyến mãi** | Limit phía client riêng cho lane bulk (ví dụ 20 req/s), cache email 15 phút, batch API nếu Auth cung cấp |
+| **Auth internal API** (resolve email — `notification-contact` cho mọi nguồn, `content` cho Auth) | Khi xả 300k backlog, Notification gọi Auth 150 req/s → Auth quá tải → **đăng nhập chậm vì email khuyến mãi** | Limit phía client riêng theo lane (bulk 20 req/s, transactional 30, critical không giới hạn nhưng có breaker), cache email theo `user_id` 15 phút trong Redis/memory, batch API nếu Auth cung cấp. Với Auth `content` API không cache (chứa secret, `no-store`) |
 
 Dòng cuối là dạng lỗi rất thật và khó nhìn ra: Notification được thiết kế để không làm phiền ai, nhưng lúc xả backlog nó trở thành kẻ tấn công upstream. **Mọi dependency Notification gọi ra đều cần giới hạn phía client**, không chỉ provider.
 
+Kênh in-app không có dependency ngoài nào (ghi vào DB của chính Notification), nên nó không cần bulkhead riêng ngoài quota DB connection — và là kênh duy nhất còn hoạt động khi cả SES lẫn Auth API sự cố.
+
 ## 4. Rate limiter: khớp quota provider
 
-Provider nào cũng có giới hạn, vượt là bị phạt chứ không chỉ chậm:
+Provider nào cũng có giới hạn, vượt là bị phạt chứ không chỉ chậm. Với **SES** (D-09):
 
-- **SES**: `MaxSendRate` (ví dụ 50/s) và `Max24HourSend` (ví dụ 200.000/ngày). Vượt rate → `Throttling`; vượt daily → dừng gửi tới hết ngày, **kể cả OTP**.
-- **FCM**: giới hạn theo project, `429` kèm `Retry-After`; vi phạm lặp lại có thể bị giảm quota.
-- **Twilio**: hàng đợi phía họ; queue quá dài thì tin nhắn đến trễ hàng giờ.
+- **`MaxSendRate`** (email/giây) và **`Max24HourSend`** (email/ngày) do AWS cấp theo account, tăng dần theo lịch sử gửi. Account mới ở **sandbox**: 1 email/s, 200 email/ngày, và **chỉ gửi được tới địa chỉ đã verify** — phải xin production access trước khi có user thật. Vượt rate → `Throttling` (454/400); vượt daily → SES từ chối tới hết chu kỳ 24 h, **kể cả OTP**.
+- **Bounce rate > 5 % hoặc complaint rate > 0,1 %** → account bị đưa vào review; cao hơn nữa → bị tạm dừng gửi. Đây là lý do suppression list ([03-tracking.md](./03-tracking.md) §5.2) không phải tính năng phụ.
+- Quota là **của account**, không của service: nếu sau này service khác cũng dùng cùng SES account, quota bị chia. Notification nên là nơi duy nhất gọi SES.
+
+(Để tham khảo cho phase sau: FCM giới hạn theo project với `429` + `Retry-After`; Twilio xếp hàng phía họ, queue dài thì tin nhắn trễ hàng giờ.)
 
 ### 4.1 Chia quota theo lane, có phần dự trữ không ai được đụng
 
-Với `MaxSendRate = 50/s` (giả định):
+Với `MaxSendRate = 50/s` sau khi ra khỏi sandbox (giả định, README §5):
 
 | Lane | Quota | Ghi chú |
 |---|---|---|
@@ -67,9 +71,9 @@ Với `MaxSendRate = 50/s` (giả định):
 | Bulk | 15/s | |
 | Dự trữ | 5/s | Cho critical đột biến (sự cố buộc reset password hàng loạt) |
 
-Với daily quota: bulk phải dừng khi tổng ngày đạt 80 %, để 20 % cho hai lane kia.
+Với `Max24HourSend`: bulk phải dừng khi tổng ngày đạt 80 %, để 20 % cho hai lane kia. Bộ đếm ngày là bộ đếm **theo account**, đặt trong Redis, mọi lane cùng tăng.
 
-Nghe lãng phí, nhưng đây là giá của việc critical **luôn** có đường đi.
+Nghe lãng phí, nhưng đây là giá của việc critical **luôn** có đường đi. Ở sandbox (1/s, 200/ngày) các con số này vô nghĩa — dev và CI dùng **Mailpit**, không dùng SES.
 
 ### 4.2 Limiter phải phân tán
 
@@ -100,8 +104,8 @@ Ba quyết định quan trọng hơn bản thân cơ chế:
 
 | Lane | Khi breaker mở |
 |---|---|
-| Critical | Chuyển ngay sang provider dự phòng. Email OTP đến từ domain khác cũng được, miễn là đến |
-| Transactional | `RETRY`, `next_attempt_at = now + 5 phút`, chờ. Không failover vì domain/reputation của email giao dịch quan trọng và trễ 30 phút chấp nhận được |
+| Critical | **Phase 1 (D-09): không có provider dự phòng.** `RETRY` với `next_attempt_at = now + 30 s`, `attempt` không tăng; alert `circuit_breaker_open{provider=ses}` ngay lập tức. In-app vẫn gửi. OTP quá `expires_at` tự `EXPIRED`; user xin mã mới khi SES hồi phục. Adapter interface phải cho phép cắm provider thứ hai ở phase sau mà không sửa worker |
+| Transactional | `RETRY`, `next_attempt_at = now + 5 phút`, chờ. Kể cả khi có provider dự phòng sau này cũng không failover lane này, vì domain/reputation của email giao dịch quan trọng và trễ 30 phút chấp nhận được |
 | Bulk | Như transactional nhưng `+ 30 phút`; tự `pause` nếu breaker mở quá 1 giờ |
 
 **Breaker mở không phải lỗi của notification đó.** Row bị breaker từ chối quay về `RETRY` với `attempt` **không tăng**. Nếu không, sự cố provider 1 giờ sẽ đốt hết số lần retry của mọi row và đẩy tất cả vào DLQ dù chưa từng được thử thật.
@@ -149,7 +153,7 @@ Những gì phải có trước khi nhận traffic thật:
 | Alert | `dlq_rate{lane}` | > 0 với critical; tăng đột biến với lane khác |
 | Alert | `circuit_breaker_state{provider} = OPEN` | ngay lập tức |
 | Công tắc | `pause` / `resume` theo `lane` hoặc `lane × channel` | Không cần deploy |
-| Công tắc | `failover provider` theo lane | Không cần deploy |
+| Công tắc | `failover provider` theo lane | Phase sau, khi có provider thứ hai |
 | Công tắc | `replay_mode` với ngưỡng tuổi event | Xem [04-idempotency.md](./04-idempotency.md) §5 |
 
 Alert trên **lag của lane critical** và **DLQ tăng**, không alert trên tổng số lỗi — tổng số lỗi lúc provider sự cố luôn cao và không cho biết điều gì cần làm.

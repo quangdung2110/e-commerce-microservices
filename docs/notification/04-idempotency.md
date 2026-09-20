@@ -26,8 +26,8 @@ Chấp nhận message đến nhiều lần; thiết kế sao cho lần thứ 2, 
 |---|---|---|---|
 | 1 | **Producer retry** | Auth publish 3 lần cùng CloudEvent `id` khi Kafka timeout | `(source, event_id)` |
 | 2 | **Kafka redelivery** | Consumer INSERT xong, chết trước khi commit offset | `(source, event_id)` — cùng khoá #1 |
-| 3 | **Cùng một sự thật, nhiều event khác id** | Order dual-publish `order.paid.v1` và `.v2` khi migrate; Order gửi `paid` và Payment gửi `captured` cho cùng đơn | Khoá nghiệp vụ, ví dụ `order_confirmation:{order_id}` |
-| 4 | **Lease hết hạn ở deliver worker** | Worker gọi provider xong, chết trước `mark_sent`; reaper trả về `RETRY` | `delivery.id` làm idempotency key phía provider |
+| 3 | **Cùng một sự thật, nhiều event khác id** | Producer dual-publish `.v1` và `.v2` khi migrate; Order phát lại request `ORDER_CONFIRMED` với id mới sau khi sửa bug outbox; Payment phát `refund-succeeded` hai lần với id khác cho cùng refund | Khoá nghiệp vụ, ví dụ `order_confirmed:{order_id}` |
+| 4 | **Lease hết hạn ở deliver worker** | Worker gọi provider xong, chết trước `mark_sent`; reaper trả về `RETRY` | `delivery.id` + compare-and-set + chính sách theo lane (SES không có idempotency key) |
 | 5 | **Webhook provider retry** | SNS gửi lại `Delivery` vì endpoint trả 200 chậm | `(provider, provider_event_id)` |
 | 6 | **Replay có chủ đích** | Ops reset offset về 6 giờ trước sau sự cố | Tất cả khoá trên + cửa sổ dedup đủ dài |
 
@@ -65,14 +65,18 @@ Ba điểm bắt buộc:
 
 ### Lớp B — Stage Decide: dedup nghiệp vụ, và ranh giới với "không phải trùng"
 
-Lớp tinh tế nhất vì **không phải kỹ thuật thuần tuý** — là chính sách theo từng template. Mỗi template khai báo cách tính `dedup_key`:
+Lớp tinh tế nhất vì **không phải kỹ thuật thuần tuý** — là chính sách theo từng template. Ai sinh `dedup_key` phụ thuộc loại đầu vào (D-07):
 
-| Template | `dedup_key` | Lý do |
-|---|---|---|
-| `order_confirmation` | `order_confirmation:{order_id}` | Một đơn xác nhận một lần, bất kể Order và Payment cùng phát event |
-| `review_reply` | `review_reply:{review_id}` | Contract Review: "chỉ sau reply chính thức đầu tiên" |
-| `otp` | **không có** | Mỗi lần user bấm "gửi lại" là một OTP **mới**, phải gửi |
-| `cart_abandoned` | `cart_abandoned:{cart_id}:{cycle_id}` | Một chu kỳ bỏ giỏ nhắc một lần; chu kỳ mới nhắc lại |
+- **Request**: producer gửi kèm trong payload, vì producer biết ngữ nghĩa nghiệp vụ (Order biết `order_confirmed:{order_id}` là "một đơn xác nhận một lần"). Template có thể khai báo `dedup_key` là bắt buộc hay tuỳ chọn.
+- **Fact**: bảng ánh xạ fact → template ([02-pipeline.md](./02-pipeline.md) §2.2) sinh ra từ các field của fact.
+
+| Template | Nguồn | `dedup_key` | Lý do |
+|---|---|---|---|
+| `ORDER_CONFIRMED` | Request (Order) | `order_confirmed:{order_id}` | Một đơn xác nhận một lần, kể cả khi Order publish lại request |
+| `PAYMENT_FAILED` | Fact (Payment) | `payment_failed:{order_id}:{attempt}` | Mỗi lần thanh toán thất bại là một thông báo; cùng attempt thì không |
+| `REVIEW_REPLY` | Request (Review) | `review_reply:{review_id}` | Contract Review: "chỉ sau reply chính thức đầu tiên" |
+| OTP / password reset | Request (Auth) | **không có** | Mỗi lần user bấm "gửi lại" là một OTP **mới**, phải gửi |
+| `CART_ABANDONED` | Fact (Cart) | `cart_abandoned:{cart_id}:{abandonment_cycle}` | Một chu kỳ bỏ giỏ nhắc một lần; chu kỳ mới nhắc lại |
 
 Unique index `uq_delivery_dedup` (partial, `WHERE dedup_key IS NOT NULL`) trên `notification_delivery` chặn ở tầng DB.
 
@@ -84,7 +88,9 @@ OTP là điểm dễ nhầm: hai event OTP cách nhau 30 s có **id khác nhau**
 
 Khe hở nằm giữa `provider.send()` thành công và `UPDATE status = SENT`. Ba công cụ, dùng kết hợp:
 
-**C1 — Idempotency key phía provider.** Truyền `delivery.id` cho provider trong mọi lần gọi. Provider lưu key 24 h và trả kết quả cũ nếu thấy lại — trùng bị chặn *ở phía họ*. Sạch nhất, nhưng phụ thuộc provider: Stripe, Twilio, Postmark hỗ trợ; SendGrid qua `custom_args` + kiểm tra; **SES không hỗ trợ**. Khi chọn provider cho lane critical, "có idempotency key không" là tiêu chí ngang với giá (quyết định mở #2 trong [README](./README.md)).
+**C1 — Idempotency key phía provider.** Truyền `delivery.id` cho provider trong mọi lần gọi; provider lưu key và trả kết quả cũ nếu thấy lại — trùng bị chặn *ở phía họ*. Sạch nhất, nhưng **hầu hết email provider phổ biến không hỗ trợ**: SES, SendGrid, Postmark, Mailgun đều không có idempotency key ở API gửi (Resend có; Stripe có nhưng không phải email). Twilio SMS cũng không.
+
+Với **SES đã chọn (D-09), C1 không khả dụng**. Hệ quả: lớp C với email dựa hoàn toàn vào C2 + C3 dưới đây. Vẫn nên gắn `delivery.id` vào email qua header `X-Notification-Delivery-Id` / SES message tag để Track correlate và để điều tra trùng sau này, nhưng đó là truy vết, không phải chặn.
 
 **C2 — Compare-and-set khi ghi trạng thái.**
 
@@ -102,10 +108,11 @@ Nếu 0 row, worker biết mình đã thua cuộc đua và không làm gì thêm
 | Lane | Hành động | Lý do |
 |---|---|---|
 | Bulk | Gửi lại | Promo trùng là phiền, không phải sự cố |
-| Transactional | Gửi lại nếu provider có idempotency key; nếu không, gửi lại nhưng đánh `possibly_duplicate = true` | Xác nhận đơn trùng chấp nhận được, nhưng cần đo được tỷ lệ |
+| Transactional | Gửi lại, đánh `possibly_duplicate = true` (SES không có idempotency key nên không chặn được ở phía provider) | Xác nhận đơn trùng chấp nhận được, nhưng cần đo được tỷ lệ; metric `possibly_duplicate_rate` là chỉ số sức khoẻ của lease/heartbeat |
 | Critical (OTP) | **Không gửi lại**, đánh `FAILED (lease_expired)` | OTP thứ hai gây nhầm hơn là không có; user tự bấm "gửi lại" và đó là OTP mới, sạch |
+| In-app (mọi lane) | Gửi lại an toàn | Ghi inbox là thao tác trên DB của chính Notification → nằm trong cùng transaction với `mark_sent`, không có khe hở |
 
-Cùng một cơ chế kỹ thuật, ba hậu quả khác nhau — vì "hậu quả nhìn từ user" khác nhau theo lane.
+Cùng một cơ chế kỹ thuật, các hậu quả khác nhau — vì "hậu quả nhìn từ user" khác nhau theo lane và kênh.
 
 ### Lớp D — Event Notification tự phát ra: outbox và id sinh sớm
 
@@ -155,7 +162,7 @@ Row `notification_request` là bản ghi dedup và sống 90 ngày theo partitio
 |---|---|---|---|
 | A | Kafka → DB | `(source, event_id)` | Unique constraint, INSERT trước commit sau |
 | B | Decide | `dedup_key` theo template | Partial unique index; OTP cố ý không có |
-| C | DB → provider | `delivery.id` | Idempotency key provider + compare-and-set + chính sách theo lane |
+| C | DB → provider | `delivery.id` | Compare-and-set + chính sách theo lane; idempotency key provider chỉ khi provider hỗ trợ (SES: không) |
 | D | Notification → Kafka | `outbox.event_id` | Outbox, id sinh lúc INSERT |
 
 Lớp C là lớp duy nhất không đóng kín được về lý thuyết; thay vì cố đóng, ta **chọn hậu quả** — và hậu quả đúng cho OTP khác với hậu quả đúng cho promo. Đó là ý nghĩa của chữ "effect".

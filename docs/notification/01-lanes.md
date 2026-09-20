@@ -71,13 +71,18 @@ Giải thích:
 - **Bulk nhiều partition** không phải để đọc nhanh hơn mà để xả Kafka nhanh khi 300k message dồn vào, và để dư đầu vì tăng sau khó.
 - **Consumer group riêng cho mỗi topic**, không phải một group subscribe ba topic. Group chung thì một rebalance ở bulk vẫn làm dừng consumer critical vài giây. Ba group này thường là ba deployment của cùng codebase, khác biến môi trường `LANE`.
 - **Không có fan-out giữa ba topic.** Một message chỉ được producer ghi vào đúng một topic và được Notification đọc đúng một lần. Ba topic là ba hàng đợi song song, không phải ba bản sao. Fan-out (nhiều consumer group cùng đọc một topic) chỉ xảy ra ở các domain fact topic mà Notification consume chung với Analytics, Inventory, ...
-- **Deliver pool tách theo lane, bên trong tách theo kênh**: pool critical thực chất là `critical-email` + `critical-push`. Tách theo kênh xảy ra ở ranh giới 2, **không** tách topic theo kênh, vì kênh là kết quả của stage Decide (sau khi đọc preferences), chưa biết lúc producer publish.
+- **Deliver pool tách theo lane, bên trong tách theo kênh**: pool critical thực chất là `critical-email` + `critical-inapp` (phase 1, D-08; thêm `critical-push` sau này chỉ là thêm pool). Tách theo kênh xảy ra ở ranh giới 2, **không** tách topic theo kênh, vì kênh là kết quả của stage Decide (sau khi đọc preferences), chưa biết lúc producer publish.
 
 ## 6. Ai chọn lane
 
-**Producer chọn topic, ghi trong contract.** Auth publish thẳng lên critical, Cart abandoned lên bulk. Người hiểu rõ mức độ khẩn nhất là producer; không có tầng trung gian nào phải đọc hết bulk mới tới OTP.
+Phụ thuộc loại đầu vào (D-07):
 
-Phương án thay thế — một topic vào, Notification tự route — tạo ra đúng điểm nghẽn chung mà lane đang cố tránh, nên bị loại.
+- **Request**: **producer chọn topic, ghi trong contract.** Order publish `ORDER_CONFIRMED` thẳng lên `t.notification.transactional.v1`; Auth lên lane critical. Người hiểu rõ mức độ khẩn nhất là producer; không có tầng trung gian nào phải đọc hết bulk mới tới OTP.
+- **Fact**: producer không biết (và không cần biết) Notification sẽ làm gì với fact, nên **Notification gán lane trong bảng ánh xạ fact → template** ([02-pipeline.md](./02-pipeline.md) §2.2): `payment.failed → transactional`, `cart.abandoned → bulk`. Consumer fact đọc topic của producer rồi INSERT với `lane` tương ứng; từ ranh giới 2 trở đi, row đó đi đúng pool và quota của lane.
+
+Lưu ý: với fact, việc tách lane chỉ bắt đầu từ **ranh giới 2** (pool + quota), không có ở tầng topic — vì topic là của producer. Điều này chấp nhận được vì fact topic (`t.payment.events.v2`, `t.cart.events`) không trộn khối lượng bulk với critical: OTP không bao giờ đi qua đó.
+
+Phương án thay thế cho request — một topic vào, Notification tự route — tạo ra đúng điểm nghẽn chung mà lane đang cố tránh, nên bị loại.
 
 Hệ quả cần quản lý: producer có động cơ tự nâng mình lên critical. Contract phải ghi tiêu chí rõ ràng, và Notification là owner phê duyệt việc gán lane. Tiêu chí đề xuất:
 
@@ -89,18 +94,18 @@ Hệ quả cần quản lý: producer có động cơ tự nâng mình lên crit
 
 ### Trường hợp Auth hiện tại
 
-Contract Auth đang sở hữu topic riêng `t.auth.notification.events` với `x-access-policy: chỉ Notification consume`. Hai lựa chọn:
+Contract Auth đang sở hữu topic riêng `t.auth.notification.events` với `x-access-policy: chỉ Notification consume`, và payload chỉ có `delivery_id` (nội dung resolve qua API riêng). Hai lựa chọn:
 
-1. Auth chuyển sang publish lên `t.notification.critical.v1` (khuyến nghị: một lane, một topic, một group).
-2. Giữ topic Auth và Notification consume nó bằng consumer group riêng, coi như lane critical thứ hai. Tốn thêm một group phải vận hành, nhưng không phải sửa contract Auth.
+1. Auth chuyển sang publish lên `t.notification.critical.v1` theo schema `notification.requested.v1` — một lane, một topic, một group. Nhưng schema chung có `template_data` inline, còn Auth cố ý không đưa secret vào Kafka, nên Auth sẽ cần một biến thể "reference-only" của schema.
+2. **Giữ topic Auth** và Notification consume nó bằng consumer group riêng, coi như lane critical thứ hai. Tốn thêm một group phải vận hành, nhưng không phải sửa contract Auth và giữ nguyên mô hình bảo mật của họ.
 
-Đây là quyết định mở #5 trong [README](./README.md).
+Khuyến nghị phase 1: **lựa chọn 2**. Đây là quyết định mở A4 trong [README §6](./README.md).
 
 ## 7. Không tách quá tay
 
 Ba lane là đủ. Cám dỗ thường gặp là tách thêm theo kênh, theo tenant, theo loại nghiệp vụ → 15 topic, 15 consumer group, phần lớn thời gian nằm không, và mỗi group là một thứ phải monitor.
 
-Quy tắc: **tách topic chỉ khi hai luồng có SLO khác nhau và có khả năng chặn nhau.** Email và push cùng lane critical không chặn nhau (pool riêng ở ranh giới 2) nên không cần topic riêng. OTP và khuyến mãi thì có, nên cần.
+Quy tắc: **tách topic chỉ khi hai luồng có SLO khác nhau và có khả năng chặn nhau.** Email và in-app cùng lane critical không chặn nhau (pool riêng ở ranh giới 2) nên không cần topic riêng. OTP và khuyến mãi thì có, nên cần.
 
 ### Vì sao không dùng partition thay cho topic
 

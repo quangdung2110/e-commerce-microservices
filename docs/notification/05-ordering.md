@@ -24,7 +24,7 @@ Nhu cầu thực là **thứ tự trong phạm vi một aggregate**, không ph�
 
 Khuyến nghị: `order_id` cho event đơn hàng, `user_id` cho event tài khoản/preferences, `review_id` cho review. Key thường đã được producer quyết trong contract (`x-message-key`); việc của Notification là **kiểm tra key đó có đủ cho nhu cầu thứ tự của mình không**, và đàm phán nếu không, chứ không tự sửa.
 
-Đối chiếu với contract hiện tại: Auth dùng `user_id` (đúng cho security event), Cart dùng `cart_id`, Review dùng `product_id` (đủ vì notification review theo review_id nằm trong product), User dùng `user_id` (bắt buộc cho preferences).
+Đối chiếu với contract hiện tại: Auth dùng `user_id` (đúng cho security event), Cart dùng `cart_id`, Review dùng `product_id` (đủ vì notification review theo review_id nằm trong product), User dùng `user_id` (bắt buộc cho preferences). Với request topic `t.notification.*.v1` do Notification sở hữu, key = `subject` (aggregate id, ví dụ `order_id`) — producer đặt `subject` theo aggregate mà thông báo nói về.
 
 ## 3. Sự thật khó chịu: thứ tự Kafka mất ở ranh giới 2
 
@@ -32,7 +32,7 @@ Kafka giữ thứ tự trong partition; consumer INSERT vào DB đúng thứ t�
 
 Hệ quả cụ thể:
 
-- Order phát `order.confirmed` lúc 14:00:00 và `order.cancelled` lúc 14:00:03 (khách bấm huỷ ngay).
+- Order phát request `ORDER_CONFIRMED` lúc 14:00:00 và `ORDER_CANCELLED` lúc 14:00:03 (khách bấm huỷ ngay).
 - Hai row nằm đúng thứ tự trong DB.
 - Worker A claim `confirmed`, gọi provider, provider chậm 8 s. Worker B claim `cancelled`, provider trả về ngay.
 - Khách nhận "Đơn đã huỷ" lúc 14:00:04 và "Đơn đã xác nhận" lúc 14:00:12.
@@ -43,9 +43,16 @@ Không có bug; thứ tự đã bị hy sinh cho throughput.
 
 ### Cách 1 — Kiểm tra trạng thái hiện tại trước khi gửi ("read-your-latest")
 
-Ngay trước khi render, worker hỏi: *sự thật này còn đúng không?* Với `order_confirmation`, kiểm tra trong bản replicate cục bộ (hoặc gọi Order) xem đơn còn `CONFIRMED` không. Nếu đã `CANCELLED` → `SKIPPED (superseded)`, không gửi.
+Ngay trước khi render, worker hỏi: *sự thật này còn đúng không?* Nếu aggregate đã sang trạng thái khiến thông báo vô nghĩa → `SKIPPED (superseded)`, không gửi.
 
-Giải quyết trường hợp tệ nhất (gửi thông tin đã sai) mà không cần serialize gì. Điều kiện: producer kèm **version/sequence** của aggregate trong event (`sequence` extension trong convention đã có), để Notification so sánh "event này cũ hơn trạng thái tôi đã biết".
+Với quyết định D-07, phạm vi áp dụng của cách này **hẹp hơn** so với thiết kế ban đầu:
+
+| Nguồn | Ai chịu trách nhiệm "còn đúng không" | Notification làm gì |
+|---|---|---|
+| **Request** (Order, Review, Auth) | **Producer.** Order biết đơn đã huỷ, nên không phát request `ORDER_CONFIRMED` nữa — hoặc phát `ORDER_CANCELLED` với `expires_at`/`dedup_key` phù hợp. Auth kèm `expires_at` cho OTP. | Chỉ tôn trọng `expires_at` (cách 2). **Không replicate trạng thái đơn hàng** — đó là điều hybrid giúp tránh. |
+| **Fact** (Payment, Delivery, Cart) | Notification, trong phạm vi dữ liệu nó tự có | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
+
+Nghĩa là Notification không cần gọi ngược Order hay giữ bản sao state machine của đơn hàng; nó chỉ cần theo dõi những fact nó đã consume sẵn.
 
 ### Cách 2 — Hết hạn theo nội dung (TTL per template)
 
@@ -54,7 +61,7 @@ Mỗi template khai báo `max_age`; worker claim row có `created_at` cũ hơn `
 | Template | `max_age` | Lý do |
 |---|---|---|
 | `otp` | 5 phút | Quá hạn thì user đã bấm "gửi lại" và đang cầm mã mới; mã cũ đến sau gây nhầm. **Gửi đi còn hại hơn không gửi** |
-| `order_confirmation` | 6 giờ | Sau đó khách đã biết qua app; email trễ chỉ gây bối rối |
+| `ORDER_CONFIRMED` | 6 giờ | Sau đó khách đã biết qua app; email trễ chỉ gây bối rối |
 | `cart_abandoned` | 24 giờ | Nhắc giỏ hàng của hôm kia là vô nghĩa |
 | `promotion` | tới hết chiến dịch | |
 

@@ -30,19 +30,24 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
 
-## 4. Nguồn đầu vào đã có contract
+## 4. Nguồn đầu vào
 
-Các producer sau đã "hứa" gửi cho Notification trong `contracts/events/`. Đây là đầu vào thực tế của thiết kế, không phải giả định.
+Notification nhận hai loại đầu vào — **request** (producer chỉ định template và đóng gói dữ liệu nó đang sở hữu) và **fact** (sự kiện nghiệp vụ, Notification tự ánh xạ sang template). Cả hai đi qua cùng pipeline; quy tắc phân loại ở [decisions.md](./decisions.md) D-07.
 
-| Producer | Topic hiện tại | Message | Key / ordering | Ghi chú |
-|---|---|---|---|---|
-| Auth | `t.auth.notification.events` | `userOtpRequested`, `passwordResetRequested`, `userEmailChanged`, `userPasswordChanged`, `userAccountLocked`, `userUnlocked` | `user_id` | Chỉ chứa `delivery_id`; recipient email resolve qua internal API. Publish trực tiếp sau commit, retry 3 lần **cùng CloudEvent id**, không outbox. Retention 24h. |
-| Cart | `t.cart.events` | `cartAbandonedV1` | `cart_id` | Một abandonment cycle mới cần Notification xử lý. |
-| Review | `t.review.events` | `reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested` | `product_id` | Không mang nội dung reply hay lý do pháp lý. |
-| User | `t.user.events` | `preferences-updated` | `user_id` | Ba notification preference mà Notification replicate cục bộ. Có daily reconciliation. |
-| Order / Payment / Delivery | `t.order.events`, ... | domain facts (`order.paid`, `order-line.delivered`, ...) | `order_id` | Notification tự suy ra "gửi gì" từ fact — xem [decisions.md](./decisions.md) mục command vs fact. |
+| Producer | Mô hình | Topic | Message | Key | Lane | Trạng thái contract |
+|---|---|---|---|---|---|---|
+| Auth | Request (dạng đặc biệt: resolve content theo `delivery_id`) | `t.auth.notification.events` | `userOtpRequested`, `passwordResetRequested`, `userEmailChanged`, `userPasswordChanged`, `userAccountLocked`, `userUnlocked` | `user_id` | critical | **Đã có.** Chỉ chứa `delivery_id`; email + template + secret resolve qua `POST /internal/v1/auth/notification-deliveries/{id}/content`. Retry 3 lần cùng CloudEvent id, không outbox, retention 24h. |
+| Review | Request | `t.review.events` | `reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested` | `product_id` | transactional | **Đã có.** Không mang nội dung reply hay lý do pháp lý. |
+| **Order** | **Request** | `t.notification.transactional.v1` | `notification.requested.v1` với template `ORDER_CONFIRMED`, `ORDER_CANCELLED`, `ORDER_REFUNDED`, ... | `subject` (= `order_id`) | transactional | **Cần mở** (§7, mục 1). Order đóng gói item snapshot, tổng tiền, địa chỉ từ row đơn hàng của chính nó. |
+| Cart | Fact | `t.cart.events` | `cartAbandonedV1` | `cart_id` | bulk | **Đã có.** Payload đủ (`cart_id, user_id, abandonment_cycle`). |
+| Payment | Fact | `t.payment.events.v2` | `paymentFailed`, `paymentExpired`, `refundSucceeded`, `refundFailed`, ... | `data.order_id` | transactional | **Cần đăng ký consumer** (§7, mục 3). Payload đã đủ. |
+| Delivery | Fact | `t.delivery.order.events.v1` | `orderLineDelivered` | `order_id` | transactional | **Cần đăng ký consumer** (§7, mục 3). |
+| User | Fact (state replication) | `t.user.events` | `preferences-updated` (`email_enabled`, `in_app_enabled`, `marketing_enabled`) | `user_id` | — (consumer riêng) | **Đã có.** Có daily reconciliation. |
 
-Nhận xét quan trọng: các producer đang dùng **hai mô hình khác nhau** (Auth/Review gửi *yêu cầu*, Order gửi *sự thật*) và **bốn topic khác nhau**. Việc Notification xếp chúng vào ba lane như thế nào là quyết định trong [01-lanes.md](./01-lanes.md) §6.
+Hai điều rút ra từ bảng:
+
+- **Không có event nào mang email người nhận.** Email là PII, không đi qua Kafka (bản ghi Kafka tồn tại theo retention, được replicate, không xoá được khi user xoá tài khoản, và có thể lỗi thời khi user đổi email). Notification resolve email **lúc gửi** qua Auth internal API — với Auth là API `content` đã có, với mọi nguồn khác là API `notification-contact` cần mở (§7, mục 2). In-app không cần resolve gì vì chỉ cần `user_id`.
+- Preference hiện chỉ có `email_enabled`, `in_app_enabled`, `marketing_enabled` — khớp với phạm vi kênh phase 1 (D-08).
 
 ## 5. Giả định về tải (cần chốt)
 
@@ -52,25 +57,42 @@ Các con số dưới đây được dùng xuyên suốt tài liệu để minh 
 |---|---|---|
 | Tải ổn định | ~40 notification/s | Kích thước pool, DB write |
 | Burst chiến dịch | 300.000 message trong 2 phút | Thời gian xả bulk, số partition |
-| Quota email provider | 150 email/s, 200.000/ngày | Chia quota theo lane |
+| Quota email provider | SES sau khi ra khỏi sandbox: giả định 50 email/s, 50.000/ngày (free tier 3.000/tháng năm đầu); sandbox chỉ gửi tới địa chỉ đã verify | Chia quota theo lane |
 | Độ trễ provider bình thường / sự cố | 200 ms / 8 s | Lease, timeout, batch size |
 | SLO critical | p99 < 5 s từ event tới provider accepted | Thiết kế lane critical |
 | SLO transactional | p99 < 60 s | |
 | Bulk | phút → giờ, có thể tạm dừng | Load shedding |
 
-## 6. Quyết định đang mở
+## 6. Quyết định đã chốt và đang mở
 
-Những câu hỏi dưới đây **chưa được chốt** trong thảo luận và ảnh hưởng tới tài liệu chi tiết. Mỗi câu đều đã có khuyến nghị; cần người sở hữu quyết định.
+### Đã chốt
+
+| # | Câu hỏi | Quyết định | Chi tiết |
+|---|---|---|---|
+| A1 | Command-style hay fact-style? | **Hybrid.** Request khi producer phải đóng gói dữ liệu nó sở hữu hoặc quyết định điều kiện gửi (Auth, Review, **Order**); fact khi payload sẵn có đủ để render (Cart, Payment, Delivery). Email luôn do Notification resolve lúc gửi. | [decisions.md](./decisions.md) D-07 |
+| A2 | Kênh phase 1? | **Email + in-app.** Push/SMS để phase sau; thiết kế để thêm push chỉ là thêm adapter + pool + preference flag. | D-08 |
+| A3 | Provider email? | **Amazon SES** (rẻ nhất, mục tiêu học tập) + **Mailpit** cho dev/CI. Tracking qua SNS → SQS. **Không** có provider dự phòng ở phase 1. SES không có idempotency key → lớp C của idempotency dựa vào compare-and-set + chính sách theo lane. | D-09 |
+
+### Đang mở
 
 | # | Câu hỏi | Khuyến nghị hiện tại | Ảnh hưởng |
 |---|---|---|---|
-| 1 | Kênh trong phạm vi phase 1? | Email + in-app; push/SMS ở phase sau | Số pool ở ranh giới 2, số "cửa" Track |
-| 2 | Provider email? | Provider có idempotency key cho lane critical (Postmark/SendGrid); SES cho bulk nếu rẻ hơn | Lớp C của idempotency, cơ chế Track (SNS/SQS hay HTTP) |
-| 3 | Command-style hay fact-style cho Order lifecycle? | Hybrid: command cho security/moderation, fact cho order lifecycle | Notification giữ bao nhiêu logic nghiệp vụ |
-| 4 | Runtime Go hay Java 21+? | Cả hai đều phù hợp (I/O-bound); chọn theo năng lực team | Không ảnh hưởng thiết kế trong bộ tài liệu này |
-| 5 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Chuyển; nếu không, Notification consume topic Auth như một lane critical ngoại lệ | Contract Auth, số consumer group |
+| A4 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Giữ ở phase 1 (mô hình resolve-content-theo-`delivery_id` của Auth khác với request thường); Notification consume bằng consumer group riêng như lane critical thứ hai. Xem xét gộp khi Auth sẵn sàng sửa contract. | Số consumer group |
+| A5 | Runtime Go hay Java 21+? | Cả hai phù hợp (I/O-bound); chọn theo năng lực team | Development guide, vị trí thư mục |
 
-## 7. Thuật ngữ
+## 7. Contract cần mở với service khác
+
+Ba việc dưới đây là **điều kiện tiên quyết** để thiết kế chạy được; chúng nằm ngoài `docs/notification` và cần đàm phán với owner tương ứng.
+
+| # | Contract | Owner | Nội dung | Nếu thiếu |
+|---|---|---|---|---|
+| 1 | `contracts/events/notification/v1/asyncapi.yaml` | Notification | Ba channel `t.notification.{critical,transactional,bulk}.v1`; message `com.ecommerce.notification.requested.v1` với `template` (enum từ catalog Notification sở hữu), `user_id`, `dedup_key?`, `expires_at?`, `template_data` (oneOf theo template). Message key = `subject` (aggregate id, ví dụ `order_id`) để ordering theo aggregate và tránh hot key theo user. `x-access-policy` liệt kê producer được ghi. Producer đầu tiên: Order. | Order không có cách gửi thông báo; catalog template không có chỗ khai báo |
+| 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong `contracts/http/auth/internal/v1/openapi.yaml` | Auth | Trả `email`, `email_verified`, `locale?`. mTLS, `Cache-Control: no-store`, rate limit riêng cho `notification-service`. `404` khi user không tồn tại/đã xoá → delivery `FAILED (no_recipient)`. | Chỉ Auth gửi được email; Order/Payment/Delivery/Cart chỉ gửi được in-app |
+| 3 | `x-consumers` + `contracts/catalog/interactions.yaml` | Payment, Delivery | Đăng ký `notification-service` là consumer của `paymentFailed`, `paymentExpired`, `refundSucceeded`, `refundFailed`, `orderLineDelivered`. Thuần khai báo, bắt buộc theo quy tắc "consumer phải được đăng ký". | Vi phạm quy tắc catalog; producer không biết có consumer để giữ compatibility |
+
+Ngoài ra, hạ tầng dev cần thêm **Mailpit** vào `docker-compose.yml` (SMTP + web UI + REST API để test tự động đọc email đã gửi).
+
+## 8. Thuật ngữ
 
 | Thuật ngữ | Nghĩa trong tài liệu này |
 |---|---|
