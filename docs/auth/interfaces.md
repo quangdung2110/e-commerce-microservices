@@ -24,6 +24,7 @@ verified_against_commit: null
 | Identity event | Outbound | Kafka | Auth | User, Notification, Review, Chat | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Security notification request | Outbound | Kafka | Auth | Notification | [AsyncAPI Auth v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Resolve notification delivery | Inbound | Internal HTTP/mTLS | Auth | Notification | [Internal OpenAPI v1](../../contracts/http/auth/internal/v1/openapi.yaml) | proposed |
+| Resolve notification contact | Inbound | Internal HTTP/mTLS | Auth | Notification | [Internal OpenAPI v1](../../contracts/http/auth/internal/v1/openapi.yaml) `GET /internal/v1/auth/users/{user_id}/notification-contact` | proposed |
 | JWKS invalidation | Outbound | Redis Pub/Sub | Auth | API Gateway | Cần tạo: schema | proposed |
 
 ## 2. Nhóm HTTP API
@@ -80,6 +81,19 @@ và email không được đặt trong Kafka hoặc log.
 Auth hiện không tiêu thụ business event. Các thao tác quản trị được thực hiện qua
 HTTP API có authorization `ADMIN`; vì vậy không cần inbox/deduplication storage
 theo `event_id`.
+
+Auth còn là **nguồn email duy nhất** cho mọi thông báo không do Auth khởi phát (Order,
+Review, Cart): không event nào trong hệ thống mang email, nên Notification gọi
+`GET /internal/v1/auth/users/{user_id}/notification-contact` lúc gửi. Response `no-store`,
+Notification chỉ cache trong memory/Redis tối đa 15 phút và không ghi xuống DB; `404` khi
+account không tồn tại hoặc đã xoá → Notification đánh delivery `FAILED (no_recipient)`.
+Endpoint này chỉ trả `email`, `email_verified`, `locale?` — không secret, không số điện
+thoại. Rate limit riêng cho principal `notification-service`; khi Notification xả backlog
+lớn, Auth không được bị kéo theo (Notification tự giới hạn phía client theo lane, xem
+[Notification 06](../notification/06-backpressure.md) §3).
+
+`USER_DELETED` được Notification consume để xoá preference/inbox và anonymize lịch sử
+gửi trong 24 h ([Notification 09](../notification/09-data-model.md) §10).
 
 ## 5. JWKS invalidation
 

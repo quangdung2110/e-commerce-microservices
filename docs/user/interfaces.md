@@ -26,6 +26,7 @@ verified_against_commit: null
 | Identity đã xác minh | Đầu vào | Kafka | Auth | User | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Xóa account | Đầu vào | Kafka | Auth | User | [Auth AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) | proposed |
 | Profile/preference event | Đầu ra | Kafka | User | Chat, Notification | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) | proposed |
+| Complaint từ Notification | Đầu vào | Kafka | Notification | User | [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml) `com.ecommerce.notification.complaint-received.v1` | proposed — User chưa đăng ký consumer |
 
 ## 2. HTTP API
 
@@ -79,9 +80,15 @@ theo `updated_at` và chịu được delivery trùng.
 |---|---|---|---|
 | `USER_VERIFIED_SUCCESS` | Auth / `t.auth.events` | Tạo profile rỗng và preferences default | PK/FK theo `user_id`; duplicate là no-op; retry/DLQ policy cần chốt |
 | `USER_DELETED` | Auth / `t.auth.events` | Tạo retention record, anonymize PII và xóa address/preferences | Unique deletion `user_id`; duplicate không kéo dài retention hoặc phát event mới |
+| `NOTIFICATION_COMPLAINT_RECEIVED` (đề xuất) | Notification / `t.notification.outcomes.v1` | Đặt `marketing_enabled = false` cho `user_id` rồi phát `USER_PREFERENCES_UPDATED` như mọi thay đổi preference khác | Idempotent: cờ đã `false` thì no-op, không phát event; Notification đã tắt ở bản replicate cục bộ nên đây là đồng bộ nguồn sự thật, không phải điều kiện để ngừng gửi |
 
 User chỉ sử dụng `user_id` và field business đã được Auth contract định nghĩa;
-không lưu email. Consumer phải chịu được unknown optional field, từ chối/đưa DLQ
+không lưu email. Ba cờ preference là nguồn sự thật cho Notification (replicate qua
+`USER_PREFERENCES_UPDATED`, mặc định khi chưa có: email/in-app bật, marketing tắt — xem
+[Notification 08](../notification/08-decide.md) §5); khi user báo spam, Notification
+phát `complaint-received` để User tắt `marketing_enabled` ở nguồn thay vì hai bên lệch nhau.
+Notification chưa nhận timezone/locale từ User; khi User bổ sung vào payload preference,
+Notification sẽ dùng cho quiet hours và i18n. Consumer phải chịu được unknown optional field, từ chối/đưa DLQ
 version không hỗ trợ, giữ ordering theo user và chỉ acknowledge sau state change
 thành công. Consumer group, retry backoff, max attempt và DLQ topic chưa có
 contract/configuration được xác minh.

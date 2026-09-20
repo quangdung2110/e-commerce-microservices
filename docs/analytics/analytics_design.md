@@ -64,6 +64,13 @@ Analytics không chủ động moi móc Database của các Service. Tất cả 
     consumer là Review, Search và Notification.
 3.  **Pipeline Hạ tầng & Bảo mật (Auth/Security):** Nguồn `t.auth.events`. Đẩy nguyên thô mọi tác vụ Đăng Nhập Sai, Reset Pass làm Audit Log Pháp lý để Sàn truy vết Gian lận Tài khoản mà không làm nghẽn DB Auth gốc.
 4.  **Pipeline Hành vi Traffic (View/Click/Search):** Thông lượng lớn. Flink Gom rác và chỉ đổi JSON sang Columns, xả thẳng Data Khổng lồ xuống dạng Append-Only của Doris. Doris sẽ tự Rollup.
+5.  **Pipeline Notification outcomes (đề xuất):** nguồn khả dụng là
+    `t.notification.outcomes.v1` theo [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml):
+    `delivered`, `bounced`, `failed`, `complaint-received` cho từng delivery, key `user_id`.
+    Payload không có `template_data` hay email — đủ cho tỷ lệ delivered/bounce/complaint
+    theo template, lane, kênh và provider; không dùng để dựng nội dung đã gửi. Analytics
+    được ghi trong `x-consumers` của contract nhưng **chưa đăng ký** interaction phía mình;
+    phải đăng ký trước khi cấp ACL, như mọi nguồn khác.
 
 ### Cơ Chế Đổ Dữ Liệu (Doris Stream Load)
 Thay vì dùng `INSERT INTO`, Flink sử dụng tính năng **Micro-Batching**. Flink thu gom sự kiện vào một gói lớn (vd: 50.000 events / 5 giây) rồi bắn 1 phát (Stream Load / HTTP Put) thẳng vào Backend Node của Doris. Điều này tăng cường khả năng chịu tải lên tới triệu dòng/s mà không sập DB.

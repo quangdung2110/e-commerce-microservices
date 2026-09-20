@@ -30,6 +30,7 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 | [08-decide.md](./08-decide.md) | Stage Decide chạy ở đâu, thứ tự 13 bước, mã lý do, mặc định khi thiếu preference, suppression theo `user_id` + `email_hash`. |
 | [09-data-model.md](./09-data-model.md) | DDL các bảng, sổ dedup vì ràng buộc partition + unique của Postgres, partition/retention, outbox CDC, xử lý `user.deleted`. |
 | [10-interfaces.md](./10-interfaces.md) | Bản đồ mọi bề mặt vào/ra: Kafka request và outcome, Auth internal API, inbox API, status/ops API; link tới contract thật. |
+| [11-privacy.md](./11-privacy.md) | PII ở đâu, sống bao lâu, ai xoá; quy tắc log/metric/trace; checklist khi thêm template hoặc nguồn mới. |
 | [decisions.md](./decisions.md) | Các quyết định kiến trúc đã chốt trong thảo luận, kèm hệ quả. |
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
@@ -78,13 +79,13 @@ Các con số dưới đây được dùng xuyên suốt tài liệu để minh 
 | A1 | Command-style hay fact-style? | **Hybrid.** Request khi producer phải đóng gói dữ liệu nó sở hữu hoặc quyết định điều kiện gửi (Auth, Review, **Order**); fact khi payload sẵn có `user_id` và đủ để render (Cart). Payment/Delivery không consume vì fact của họ không có `user_id`; Order phát request thay. Email luôn do Notification resolve lúc gửi. | [decisions.md](./decisions.md) D-07 |
 | A2 | Kênh phase 1? | **Email + in-app.** Push/SMS để phase sau; thiết kế để thêm push chỉ là thêm adapter + pool + preference flag. | D-08 |
 | A3 | Provider email? | **Amazon SES** (rẻ nhất, mục tiêu học tập) + **Mailpit** cho dev/CI. Tracking qua SNS → SQS. **Không** có provider dự phòng ở phase 1. SES không có idempotency key → lớp C của idempotency dựa vào compare-and-set + chính sách theo lane. | D-09 |
+| A5 | Runtime? | **Go.** Nhất quán với Auth/User/Cart; goroutine + worker pool khớp workload I/O-bound; footprint nhỏ cho đồ án nhiều container. Vị trí `go/services/notification-service`. | D-15 |
 
 ### Đang mở
 
 | # | Câu hỏi | Khuyến nghị hiện tại | Ảnh hưởng |
 |---|---|---|---|
-| A4 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Giữ ở phase 1 (mô hình resolve-content-theo-`delivery_id` của Auth khác với request thường); Notification consume bằng consumer group riêng như lane critical thứ hai. Xem xét gộp khi Auth sẵn sàng sửa contract. | Số consumer group |
-| A5 | Runtime Go hay Java 21+? | Cả hai phù hợp (I/O-bound); chọn theo năng lực team | Development guide, vị trí thư mục |
+| A4 | Auth giữ `t.auth.notification.events` hay chuyển sang `t.notification.critical.v1`? | Giữ ở phase 1 (mô hình resolve-content-theo-`delivery_id` của Auth khác với request thường); Notification consume bằng consumer group riêng như lane critical thứ hai. Channel critical đã khai báo sẵn trong contract nên gộp sau không phá gì. | Số consumer group |
 
 ## 7. Contract
 

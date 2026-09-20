@@ -93,7 +93,7 @@ Hệ thống gồm các thành phần chính:
 | **Apache Kafka** | Lưu trữ tạm thời và phân phối message. Topic chính `chat.messages` |
 | **Message Persister** | Kafka Consumer Group riêng, đọc từ chat.messages và ghi vào Cassandra |
 | **Event Publisher** | Chat Service produce event `CHAT_MESSAGE_RECEIVED` vào topic riêng để Notification Service xử lý notification |
-| **Notification Service** | Subscribe topic `chat.message.received`, gửi push/in-app notification qua kênh thống nhất của hệ thống |
+| **Notification Service** | Nhận thông báo tin nhắn mới qua kênh thống nhất của hệ thống. Theo [Notification D-07](../notification/decisions.md), Chat phải chọn một trong hai: publish fact `chat.message.received` **có `user_id` người nhận** và đủ dữ liệu render để Notification ánh xạ sang template, hoặc gửi request `com.ecommerce.notification.requested.v1` với một template `CHAT_*` đăng ký trong catalog. Phase 1 của Notification chỉ có email + in-app; push là phase sau. Chưa có contract — cần đăng ký interaction trước khi Notification consume |
 | **Presence Service** | Dùng Redis để theo dõi trạng thái online/offline của user |
 | **Redis** | Dùng cho idempotency cache, presence, và hot cache (optional) |
 | **ScyllaDB** | Lưu trữ lịch sử tin nhắn (chính) |

@@ -222,6 +222,26 @@ Chi tiết: [10-interfaces.md](./10-interfaces.md) §2–3, §7.
 
 Chi tiết: [10-interfaces.md](./10-interfaces.md) §5–6.
 
+## D-15 · Runtime Go
+
+**Bối cảnh.** Notification là workload I/O-bound thuần (chờ Kafka, Postgres, Auth API, SES); không có phần CPU nặng ngoài render template. Dự án đã có Auth, User, Cart bằng Go và Product, Inventory, Search, Review, Promotion bằng Java; Payment dự kiến Java. Mục tiêu học tập, chạy nhiều container trên một máy.
+
+**Quyết định.** Go, tại `go/services/notification-service`. Consumer Kafka, deliver worker pool, SQS poller, reaper, HTTP server là các goroutine group trong một binary; lane chọn bằng biến môi trường (`LANE`) hoặc chạy tất cả trong một process ở dev.
+
+**Bị loại.** *Java 21 virtual threads*: hoàn toàn khả thi và có thư viện Kafka/Resilience4j phong phú, nhưng footprint lớn hơn cho đồ án nhiều container, và không có lý do kỹ thuật nào buộc phải cùng stack với các service Java (giao tiếp chỉ qua Kafka và HTTP).
+
+**Hệ quả.** B6 (template engine) chọn trong hệ sinh thái Go: `html/template` + `text/template` là mặc định an toàn (auto-escaping theo ngữ cảnh); MJML nếu cần email responsive thì compile trước ở build time. Development guide theo layout Go của dự án (`docs/common`). Kiểu chứa email phải implement `fmt.Stringer` che giá trị ([11-privacy.md](./11-privacy.md) §3).
+
+## D-16 · PII: Notification không lưu danh tính; hash thay địa chỉ; anonymize trong 24 giờ
+
+**Bối cảnh.** Notification chạm vào email của mọi user nhưng không phải nơi sở hữu danh tính. Kafka không xoá được từng bản ghi. Audit cần trả lời "PII ở đâu, sống bao lâu, ai xoá".
+
+**Quyết định.** Gom thành [11-privacy.md](./11-privacy.md): bản đồ dữ liệu cá nhân theo bảng/Redis/event với retention và cơ chế xoá; email chỉ tồn tại trong memory và cache 15 phút; `email_hash` (`sha256(lower(trim))`, không salt) ở suppression và log provider; không lưu bản render; `template_data` của Auth không lưu; quy tắc log/metric/trace (không email, không label theo người); quy trình 7 bước cho `USER_DELETED` với test tích hợp kiểm chứng; checklist review template.
+
+**Bị loại.** *Salt cho `email_hash`*: mất khả năng so khớp giữa bounce hôm nay và suppression tháng trước; hash không salt của một địa chỉ email là pseudonymous đủ cho mục đích này khi không lưu bảng tra ngược. *Xoá hẳn request/delivery khi user xoá*: thủng metric; anonymize đủ. *Lưu bản render để support xem lại*: bản PII thứ hai; render lại là đủ.
+
+**Hệ quả.** Mọi PR thêm template/nguồn phải qua checklist §7. Thêm SMS sau này phải đi cùng đường (resolve lúc gửi, không lưu, hash).
+
 ## Quyết định chưa chốt
 
-Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): A4 (topic của Auth — khuyến nghị giữ ở phase 1) và A5 (runtime Go hay Java). Không mục D nào phụ thuộc vào câu trả lời của hai câu này.
+Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): chỉ còn A4 (topic của Auth — khuyến nghị giữ ở phase 1; channel critical đã khai báo sẵn nên gộp sau không phá gì).

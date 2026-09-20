@@ -124,7 +124,7 @@ services:
 
   - id: notification-service
     bounded_context: notification
-    runtime: undecided
+    runtime: go-planned
     status: documented
     contract_adoption: pilot
     docs: docs/notification/README.md

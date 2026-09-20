@@ -34,6 +34,7 @@ verified_against_commit: null
 | Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
 | Payment activities | Outbound | HTTP | Payment | Order Temporal worker | [Payment OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | `t.order.events` | Outbound | Kafka | Order | Cart (`com.ecommerce.order.paid.v1`), Review (`com.ecommerce.order.completed.v1`) | [Order AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
+| `t.notification.transactional.v1` | Outbound | Kafka | Notification (topic owner) | Notification | [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml); Order là producer của `com.ecommerce.notification.requested.v1` cho 5 template `ORDER_*` |
 | `t.payment.events.v2` | Inbound | Kafka | Payment | Order | [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | `t.inventory.order.events.v1` | Inbound | Kafka | Inventory | Order | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | `t.delivery.order.events.v1` | Inbound | Kafka | Delivery | Order | [Delivery AsyncAPI v1](../../contracts/events/delivery/v1/asyncapi.yaml); proof ID + immutable record digest, no raw PII |
@@ -175,11 +176,41 @@ Order/Product trên write path. `variant_name` nullable cho historic order; prod
 mới gửi khi checkout snapshot có giá trị.
 
 Không phát created, cancelled, generic status-changed, line-fulfillment, refunded hoặc
-refund-failed event khi chưa có implemented consumer. Notification/Analytics mới chỉ có
-tài liệu; Payment cancellation được quyết định qua explicit HTTP command/recovery query,
-không phụ thuộc Kafka. Trạng thái còn lại được đọc qua Order HTTP API/operation resource.
-Một event mới chỉ được thêm sau khi consumer, business effect và catalog interaction
-được đăng ký.
+refund-failed **fact** khi chưa có implemented consumer. Analytics mới chỉ có tài liệu;
+Payment cancellation được quyết định qua explicit HTTP command/recovery query, không phụ
+thuộc Kafka. Trạng thái còn lại được đọc qua Order HTTP API/operation resource. Một event
+mới chỉ được thêm sau khi consumer, business effect và catalog interaction được đăng ký.
+
+### 5.1 Notification request (command, không phải fact)
+
+Thông báo cho buyer về vòng đời đơn hàng **không** đi bằng fact của Order, Payment hay
+Delivery mà bằng request Order gửi thẳng lên lane transactional do Notification sở hữu.
+Lý do: Payment và Delivery fact không mang `user_id` theo thiết kế, còn Order sở hữu đủ
+snapshot (tên sản phẩm, số tiền, địa chỉ) để Notification render mà không phải gọi ngược
+Order lúc gửi. Interaction `order-requests-notifications`; quy tắc phân loại ở
+[Notification D-07](../notification/decisions.md).
+
+| Template | Mốc | `template_data` chính | `dedup_key` |
+|---|---|---|---|
+| `ORDER_CONFIRMED` | `PENDING_PAYMENT -> PAID` | items (name, variant, quantity, unit price), subtotal/discount/shipping/total, payment method label, địa chỉ rút gọn (recipient_name, ward, district, city), `order_url` | `order_confirmed:{order_id}` |
+| `ORDER_PAYMENT_FAILED` | Payment attempt `failed`/`expired` (Order consume `t.payment.events.v2`) | amount, attempt, `can_retry`, `retry_deadline?` | `order_payment_failed:{order_id}:{attempt}` |
+| `ORDER_CANCELLED` | `-> CANCELLED` | `reason` ∈ buyer / payment_timeout / admin / out_of_stock, `refund_expected` | `order_cancelled:{order_id}` |
+| `ORDER_COMPLETED` | `-> COMPLETED` | items (name, variant, quantity), `review_url` | `order_completed:{order_id}` |
+| `ORDER_REFUNDED` | `refund.succeeded` (Order consume) | `refund_id`, amount | `order_refunded:{order_id}:{refund_id}` |
+
+Quy tắc phía Order:
+
+- Ghi request vào **cùng outbox và cùng transaction** với chuyển trạng thái; CloudEvents `id`
+  sinh lúc ghi outbox để retry giữ nguyên `id`. `subject = orders/{order_id}` là Kafka key.
+- `template_data` chỉ lấy từ row đơn hàng và snapshot của chính Order; **không gọi Product,
+  User hay Auth** để gom thêm. Không có email, số điện thoại, địa chỉ chi tiết trong payload;
+  Notification resolve email từ `user_id` lúc gửi.
+- Snapshot item của Order phải mang **tên sản phẩm** (`name`). `order.completed.v1` hiện
+  chỉ có `product_id`/`sku_id`/`variant_name`; nếu snapshot nội bộ cũng thiếu, Checkout ghi
+  thêm field này lúc tạo snapshot — khoảng trống ghi ở §8.
+- Schema `template_data`: `contracts/events/notification/v1/templates/ORDER_*.schema.json`;
+  request bị Notification từ chối (`FAILED`, DLQ, alert) nếu sai schema, sai lane hoặc thiếu
+  `dedup_key`.
 
 ## 6. Event tiêu thụ
 
@@ -259,5 +290,9 @@ là 30 ngày trước manual-verification lane.
   meaning hoặc field bắt buộc cần event version mới.
 - Mỗi event có unique ID; consumer xử lý at-least-once và duplicate.
 - Public và internal Order HTTP surface đã có machine-readable OpenAPI v1 ở trạng
-  thái `proposed`; hai outbound event và receive surface có machine-readable AsyncAPI
-  v1. Không đánh dấu `verified` trước khi Order producer/provider test tồn tại.
+  thái `proposed`; hai outbound event, năm notification request và receive surface có
+  machine-readable AsyncAPI v1. Không đánh dấu `verified` trước khi Order producer/provider
+  test tồn tại.
+- **Khoảng trống với Notification**: `ORDER_CONFIRMED` và `ORDER_COMPLETED` cần
+  `items[].name`; phải xác nhận item snapshot của Order (và Checkout snapshot nguồn) có
+  field này trước khi implement `publishNotificationRequests`.

@@ -171,7 +171,9 @@ qua API, event hoặc Temporal signal được Order xử lý.
   contract test hoặc implementation evidence để nâng trạng thái.
 - AsyncAPI v1 đã chốt chỉ phát `com.ecommerce.order.paid.v1` cho Cart và `com.ecommerce.order.completed.v1`
   cho Review; chưa có Order producer/provider test để nâng adoption status.
-- Notification và Analytics chưa có runtime consumer, nên không được coi là consumer
-  của Order event cho đến khi interaction/code/contract được đăng ký.
+- Analytics chưa có runtime consumer, nên không được coi là consumer của Order event cho
+  đến khi interaction/code/contract được đăng ký. Notification **không** consume Order fact;
+  Order gửi request `com.ecommerce.notification.requested.v1` cho 5 template `ORDER_*`
+  (interaction `order-requests-notifications`, xem `interfaces.md` §5.1) — chưa có runtime.
 - Chưa có SLO, capacity benchmark, retention đầy đủ cho order data, backup/restore,
   schema rollout hoặc runbook tự động hóa.
