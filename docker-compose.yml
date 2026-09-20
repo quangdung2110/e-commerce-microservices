@@ -422,6 +422,52 @@ services:
       - "traefik.http.routers.user-service.middlewares=jwt-auth-user@file"
       - "traefik.http.services.user-service.loadbalancer.server.port=8080"
 
+  # ── Notification dev dependencies (profile: notification) ──
+  # Chỉ bật bằng `docker compose --profile notification up`. Mailpit thay SES ở
+  # dev/CI; LocalStack giả lập SNS/SQS cho đường Track (SES → SNS → SQS).
+  # Thiết kế: docs/notification/13-development.md.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: mailpit
+    profiles: ["notification"]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_MAX_MESSAGES: "5000"
+    ports:
+      - "1025:1025"     # SMTP
+      - "8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-network
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: localstack
+    profiles: ["notification"]
+    environment:
+      SERVICES: sns,sqs
+      DEFAULT_REGION: ap-southeast-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "4566:4566"
+    volumes:
+      # Tạo SNS topic ses-events, SQS queue notification-ses-events (+ DLQ) và subscription.
+      - ./go/services/notification-service/deploy/localstack/init-ses-events.sh:/etc/localstack/init/ready.d/init-ses-events.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -Eq '\"sqs\": \"(running|available)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ecommerce-network
+
   # ── Frontend (Next.js) ────────────────────────────────────
   frontend:
     build:

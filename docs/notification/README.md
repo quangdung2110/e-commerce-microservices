@@ -31,6 +31,11 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 | [09-data-model.md](./09-data-model.md) | DDL các bảng, sổ dedup vì ràng buộc partition + unique của Postgres, partition/retention, outbox CDC, xử lý `user.deleted`. |
 | [10-interfaces.md](./10-interfaces.md) | Bản đồ mọi bề mặt vào/ra: Kafka request và outcome, Auth internal API, inbox API, status/ops API; link tới contract thật. |
 | [11-privacy.md](./11-privacy.md) | PII ở đâu, sống bao lâu, ai xoá; quy tắc log/metric/trace; checklist khi thêm template hoặc nguồn mới. |
+| [12-render.md](./12-render.md) | `html/template` vì escaping theo ngữ cảnh; template trong repo với `embed`; `template_version` từ hash; validate và render thử lúc khởi động; snapshot test. |
+| [13-development.md](./13-development.md) | Layout Go, môi trường dev (Mailpit, LocalStack, Debezium connector), cấu hình, khởi tạo lần đầu, vòng lặp phát triển. |
+| [14-observability.md](./14-observability.md) | Metric theo `stage × lane × channel`, alert theo mức, trace xuyên event → provider, timeline support, quy tắc log. |
+| [15-verification.md](./15-verification.md) | Test tích hợp bắt buộc gắn với từng quyết định; phép đo thay giả định; chaos nightly. |
+| [16-operations.md](./16-operations.md) | SLO, công tắc vận hành, 14 runbook, việc định kỳ, triển khai/rollback, bảo mật vận hành. |
 | [decisions.md](./decisions.md) | Các quyết định kiến trúc đã chốt trong thảo luận, kèm hệ quả. |
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
@@ -99,7 +104,7 @@ Contract Notification sở hữu đã được viết (`x-adoption-status: propo
 | 4 | [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml) (inbox) và [internal](../../contracts/http/notification/internal/v1/openapi.yaml) (status, ops) | **Đã viết** | Route Gateway và mesh policy đã khai báo |
 | 5 | User Service consume `notification.complaint-received.v1`; Analytics consume `t.notification.outcomes.v1` | **Còn mở với User, Analytics** | Đã ghi `x-consumers`; owner đăng ký phía họ |
 
-Ngoài ra, hạ tầng dev cần thêm **Mailpit** (SMTP) và **LocalStack** (SNS/SQS) vào `docker-compose.yml`.
+Hạ tầng dev: **Mailpit** và **LocalStack** đã có trong `docker-compose.yml` dưới profile `notification`; DB `notification_db` trong `init-db.sh`; connector Debezium và script LocalStack ở `go/services/notification-service/deploy/`. Xem [13-development.md](./13-development.md).
 
 ## 8. Thuật ngữ
 

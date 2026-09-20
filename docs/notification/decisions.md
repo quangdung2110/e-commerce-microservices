@@ -242,6 +242,30 @@ Chi tiết: [10-interfaces.md](./10-interfaces.md) §5–6.
 
 **Hệ quả.** Mọi PR thêm template/nguồn phải qua checklist §7. Thêm SMS sau này phải đi cùng đường (resolve lúc gửi, không lưu, hash).
 
+## D-17 · Render: `html/template`, template trong repo với `embed`, validate lúc khởi động
+
+**Bối cảnh.** `template_data` đến từ service khác qua Kafka và có thể chứa HTML/JS; email đã gửi không được lưu nên phải render lại được; lỗi template phát hiện lúc gửi nghĩa là DLQ đầy giữa đêm.
+
+**Quyết định.** `html/template` + `text/template` của Go (escaping theo ngữ cảnh, không dependency). Template nằm trong repo, `embed` vào binary, một thư mục mỗi `TEMPLATE_ID` × locale với `email.subject.txt`, `email.html`, `email.txt`, `inapp.yaml`. `template_version` = 12 ký tự đầu `sha256` nội dung thư mục + layout. `registry.Load()` lúc khởi động parse với `missingkey=error`, **render thử** mọi template với fixture sinh từ schema, kiểm tra giới hạn in-app và kích thước HTML < 100 KB, kiểm tra catalog embed byte-equal với `contracts/` — lỗi thì process không lên. Model typed, không map. CSS inline và `List-Unsubscribe` (bulk) ở build. Snapshot test golden cho mọi template; test injection cố định. Không I/O trong Render; không lỗi render nào retryable.
+
+**Bị loại.** *Template trong DB, đổi không cần deploy*: mất kiểm soát thay đổi trên thứ gửi thẳng tới user; không có đội content riêng để cần nó. *Engine bên thứ ba*: escaping không theo ngữ cảnh hoặc phụ thuộc developer nhớ filter. *MJML lúc chạy*: toolchain Node cho 15 template; nếu cần thì compile ở build. *Message catalog i18n*: mỗi template là file trọn vẹn theo locale đủ cho 15 × 2.
+
+**Hệ quả.** Đổi template = deploy; rollback binary = rollback template. Người viết template dùng `notifctl render --send-to mailpit`. Golden diff xuất hiện trong PR.
+
+Chi tiết: [12-render.md](./12-render.md).
+
+## D-18 · Môi trường dev: Mailpit + LocalStack sau compose profile; một binary nhiều `ROLE`
+
+**Bối cảnh.** SES sandbox không dùng được cho test lặp lại; đường Track cần SNS/SQS; compose mặc định đang được các service khác dùng.
+
+**Quyết định.** `docker-compose.yml` thêm `mailpit` (SMTP `1025`, UI/API `8025`) và `localstack` (SNS/SQS, `4566`) dưới profile `notification` — `docker compose up` mặc định không đổi. `init-db.sh` tạo `notification_db`. Script `deploy/localstack/init-ses-events.sh` dựng topic → queue (+ DLQ, `maxReceiveCount 5`, envelope SNS giữ nguyên để verify chữ ký). Connector Debezium `deploy/debezium/notification-outbox-connector.json` route `t.notification.outcomes.v1`, key `aggregateid = user_id`, publication tạo bằng migration. Service là một binary với `ROLE`/`LANE`; dev chạy `ROLE=all`. Cổng HTTP host `8091` (`8090` là dashboard Traefik). Adapter SES thật chỉ có contract test khi có credential; internal API nhận `X-Service-Identity` không xác thực **chỉ** khi `NOTIFICATION_ENV=dev`.
+
+**Bị loại.** *SES sandbox ở dev*: cần credential, chỉ gửi tới địa chỉ verify, 200/ngày. *LocalStack SES cho đường gửi*: không sinh event thật; Mailpit cho đường gửi + event mẫu bơm vào SNS cho đường Track là đủ và rõ ràng. *Nhiều binary theo vai trò*: hai đường code cho cùng logic.
+
+**Hệ quả.** Testcontainers cần ghim Docker API version trên máy dev hiện tại. `go/services/notification-service/` tồn tại trước khi có code (chỉ `deploy/` và README).
+
+Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14-observability.md), [15-verification.md](./15-verification.md), [16-operations.md](./16-operations.md).
+
 ## Quyết định chưa chốt
 
 Xem [README §6](./README.md#6-quyết-định-đã-chốt-và-đang-mở): chỉ còn A4 (topic của Auth — khuyến nghị giữ ở phase 1; channel critical đã khai báo sẵn nên gộp sau không phá gì).

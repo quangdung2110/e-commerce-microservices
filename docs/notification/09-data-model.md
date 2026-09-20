@@ -262,8 +262,8 @@ Unread count: Redis `inbox:unread:{user_id}`; `INCR` sau khi commit `inbox_item`
 ```sql
 CREATE TABLE outbox (
     id             uuid        PRIMARY KEY,                 -- = CloudEvents id, sinh lúc INSERT
-    aggregatetype  text        NOT NULL,                    -- notification
-    aggregateid    text        NOT NULL,                    -- delivery id
+    aggregatetype  text        NOT NULL,                    -- notification (Debezium route.by.field → t.notification.outcomes.v1)
+    aggregateid    text        NOT NULL,                    -- user_id: Debezium dùng làm Kafka key, khớp x-message-key data.user_id của contract
     type           text        NOT NULL,                    -- com.ecommerce.notification.delivered.v1 | bounced.v1 | failed.v1 | complaint-received.v1
     payload        jsonb       NOT NULL,                    -- CloudEvents đầy đủ
     created_at     timestamptz NOT NULL DEFAULT now(),
@@ -271,7 +271,7 @@ CREATE TABLE outbox (
 );
 ```
 
-Tên cột theo **Debezium Outbox Event Router** để dùng CDC qua `kafka-connect` đã có trong compose, nhất quán với Review (ADR-003). Nếu lúc triển khai thấy Debezium quá nặng, đổi sang poller (`SELECT ... FOR UPDATE SKIP LOCKED`, đánh `published_at`) không cần đổi schema. Purge dòng đã publish > 7 ngày (với CDC: Debezium đọc WAL, có thể `DELETE` ngay sau INSERT trong cùng transaction — pattern chuẩn của outbox router).
+Tên cột theo **Debezium Outbox Event Router** để dùng CDC qua `kafka-connect` đã có trong compose, nhất quán với Review (ADR-003). Connector: `go/services/notification-service/deploy/debezium/notification-outbox-connector.json`; cần `CREATE PUBLICATION notification_outbox_publication FOR TABLE outbox;` trong migration vì `publication.autocreate.mode = disabled` ([13-development.md](./13-development.md) §4). Nếu lúc triển khai thấy Debezium quá nặng, đổi sang poller (`SELECT ... FOR UPDATE SKIP LOCKED`, đánh `published_at`) không cần đổi schema. Purge dòng đã publish > 7 ngày (với CDC: Debezium đọc WAL, có thể `DELETE` ngay sau INSERT trong cùng transaction — pattern chuẩn của outbox router).
 
 ## 9. Partition và retention
 

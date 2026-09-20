@@ -11,7 +11,7 @@ info:
     thiết kế có chỗ. Xem docs/notification/10-interfaces.md.
 x-adoption-status: proposed
 servers:
-  - url: http://notification-service:8090
+  - url: http://notification-service:8080
     description: Internal cluster endpoint only
 tags:
   - name: Status

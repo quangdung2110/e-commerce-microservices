@@ -9,7 +9,7 @@ info:
     realtime; frontend poll unread-count. Xem docs/notification/10-interfaces.md.
 x-adoption-status: proposed
 servers:
-  - url: http://localhost:8090
+  - url: http://localhost:8091
     description: Local Docker Compose
 tags:
   - name: Inbox

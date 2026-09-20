@@ -1,0 +1,37 @@
+{
+  "name": "notification-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname": "notification_db",
+    "topic.prefix": "notification",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "notification_outbox_publication",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": "notification_outbox_slot",
+    "table.include.list": "public.outbox",
+    "tombstones.on.delete": "false",
+
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "id",
+    "transforms.outbox.table.field.event.key": "aggregateid",
+    "transforms.outbox.table.field.event.type": "type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.table.fields.additional.placement": "type:header:ce_type,aggregatetype:header:ce_aggregate_type,aggregateid:header:ce_aggregate_id",
+    "transforms.outbox.route.by.field": "aggregatetype",
+    "transforms.outbox.route.topic.regex": "(?<routedByValue>.*)",
+    "transforms.outbox.route.topic.replacement": "t.notification.outcomes.v1",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}
