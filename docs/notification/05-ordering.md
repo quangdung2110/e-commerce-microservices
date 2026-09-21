@@ -6,21 +6,25 @@
 
 Ordering là thứ đắt nhất trong hệ phân tán. Câu hỏi đầu tiên phải là: **thứ tự nào, giữa những gì, nhìn từ ai?**
 
-| Loại thứ tự | Cần? | Lý do |
-|---|---|---|
-| Giữa hai user khác nhau | **Không** | Email của A đến trước hay sau email của B không ai quan tâm |
-| Giữa hai notification không liên quan của cùng user | **Không** | OTP và email khuyến mãi độc lập |
+
+| Loại thứ tự                                                     | Cần?                                            | Lý do                                                                                                                |
+| --------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Giữa hai user khác nhau                                         | **Không**                                       | Email của A đến trước hay sau email của B không ai quan tâm                                                          |
+| Giữa hai notification không liên quan của cùng user             | **Không**                                       | OTP và email khuyến mãi độc lập                                                                                      |
 | Giữa các notification về **cùng một aggregate** (cùng đơn hàng) | **Có — thứ tự nhân quả, không phải thứ tự đến** | "Đơn đã huỷ" không được đến *trước* "Đơn đã xác nhận"; tệ hơn, "Đơn đã xác nhận" không được gửi *sau khi* đơn đã huỷ |
-| Giữa các bản cập nhật preferences của cùng user | **Có, nghiêm ngặt** | Áp "tắt marketing" rồi "bật marketing" ngược thứ tự là sai trạng thái |
+| Giữa các bản cập nhật preferences của cùng user                 | **Có, nghiêm ngặt**                             | Áp "tắt marketing" rồi "bật marketing" ngược thứ tự là sai trạng thái                                                |
+
 
 Nhu cầu thực là **thứ tự trong phạm vi một aggregate**, không phải toàn cục. Đây là thứ Kafka cho miễn phí bằng partition key — với điều kiện chọn key đúng.
 
 ## 2. Partition key: theo aggregate nhỏ nhất mà thứ tự có ý nghĩa
 
-| Key | Ưu | Nhược |
-|---|---|---|
-| `user_id` | Mọi thứ của một user trên cùng partition → bao cả thứ tự theo đơn | **Hot key**: tài khoản doanh nghiệp đặt 5.000 đơn/ngày dồn vào một partition, 23 partition kia rảnh |
-| `order_id` | Phân tán đều | "Đơn A xác nhận" và "đơn B xác nhận" của cùng user có thể ngược thứ tự — **không sao**, hai đơn độc lập |
+
+| Key        | Ưu                                                                | Nhược                                                                                                   |
+| ---------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `user_id`  | Mọi thứ của một user trên cùng partition → bao cả thứ tự theo đơn | **Hot key**: tài khoản doanh nghiệp đặt 5.000 đơn/ngày dồn vào một partition, 23 partition kia rảnh     |
+| `order_id` | Phân tán đều                                                      | "Đơn A xác nhận" và "đơn B xác nhận" của cùng user có thể ngược thứ tự — **không sao**, hai đơn độc lập |
+
 
 Khuyến nghị: `order_id` cho event đơn hàng, `user_id` cho event tài khoản/preferences, `review_id` cho review. Key thường đã được producer quyết trong contract (`x-message-key`); việc của Notification là **kiểm tra key đó có đủ cho nhu cầu thứ tự của mình không**, và đàm phán nếu không, chứ không tự sửa.
 
@@ -41,16 +45,20 @@ Không có bug; thứ tự đã bị hy sinh cho throughput.
 
 ## 4. Ba cách bảo vệ thứ tự nhân quả
 
+
+
 ### Cách 1 — Kiểm tra trạng thái hiện tại trước khi gửi ("read-your-latest")
 
 Ngay trước khi render, worker hỏi: *sự thật này còn đúng không?* Nếu aggregate đã sang trạng thái khiến thông báo vô nghĩa → `SKIPPED (superseded)`, không gửi.
 
 Với quyết định D-07, phạm vi áp dụng của cách này **hẹp hơn** so với thiết kế ban đầu:
 
-| Nguồn | Ai chịu trách nhiệm "còn đúng không" | Notification làm gì |
-|---|---|---|
-| **Request** (Order, Review, Auth) | **Producer.** Order biết đơn đã huỷ, nên không phát request `ORDER_CONFIRMED` nữa — hoặc phát `ORDER_CANCELLED` với `expires_at`/`dedup_key` phù hợp. Auth kèm `expires_at` cho OTP. | Chỉ tôn trọng `expires_at` (cách 2). **Không replicate trạng thái đơn hàng** — đó là điều hybrid giúp tránh. |
-| **Fact** (Cart) | Notification, trong phạm vi dữ liệu nó tự có | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
+
+| Nguồn                             | Ai chịu trách nhiệm "còn đúng không"                                                                                                                                                 | Notification làm gì                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Request** (Order, Review, Auth) | **Producer.** Order biết đơn đã huỷ, nên không phát request `ORDER_CONFIRMED` nữa — hoặc phát `ORDER_CANCELLED` với `expires_at`/`dedup_key` phù hợp. Auth kèm `expires_at` cho OTP. | Chỉ tôn trọng `expires_at` (cách 2). **Không replicate trạng thái đơn hàng** — đó là điều hybrid giúp tránh.                                                               |
+| **Fact** (Cart)                   | Notification, trong phạm vi dữ liệu nó tự có                                                                                                                                         | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
+
 
 Nghĩa là Notification không cần gọi ngược Order hay giữ bản sao state machine của đơn hàng; nó chỉ cần theo dõi những fact nó đã consume sẵn.
 
@@ -58,12 +66,14 @@ Nghĩa là Notification không cần gọi ngược Order hay giữ bản sao st
 
 Mỗi template khai báo `max_age`; worker claim row có `created_at` cũ hơn `max_age` → `EXPIRED`, không gửi.
 
-| Template | `max_age` | Lý do |
-|---|---|---|
-| `otp` | 5 phút | Quá hạn thì user đã bấm "gửi lại" và đang cầm mã mới; mã cũ đến sau gây nhầm. **Gửi đi còn hại hơn không gửi** |
-| `ORDER_CONFIRMED` | 6 giờ | Sau đó khách đã biết qua app; email trễ chỉ gây bối rối |
-| `cart_abandoned` | 24 giờ | Nhắc giỏ hàng của hôm kia là vô nghĩa |
-| `promotion` | tới hết chiến dịch | |
+
+| Template          | `max_age`          | Lý do                                                                                                          |
+| ----------------- | ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `otp`             | 5 phút             | Quá hạn thì user đã bấm "gửi lại" và đang cầm mã mới; mã cũ đến sau gây nhầm. **Gửi đi còn hại hơn không gửi** |
+| `ORDER_CONFIRMED` | 6 giờ              | Sau đó khách đã biết qua app; email trễ chỉ gây bối rối                                                        |
+| `cart_abandoned`  | 24 giờ             | Nhắc giỏ hàng của hôm kia là vô nghĩa                                                                          |
+| `promotion`       | tới hết chiến dịch |                                                                                                                |
+
 
 TTL vừa là ordering (không gửi thứ lỗi thời) vừa là backpressure (xem [06-backpressure.md](./06-backpressure.md)): khi hàng đợi dồn và xả mất 3 giờ, row bulk tạo lúc đầu vẫn có nghĩa, nhưng OTP nằm 6 phút thì tự rụng.
 
@@ -93,6 +103,8 @@ Preferences replicate từ `t.user.events` là trạng thái, không phải thô
 - Consumer preferences là consumer riêng, không đi qua ranh giới 2 (không có deliver worker nào song song hoá nó).
 - Áp dụng bằng compare-and-set trên version: `UPDATE user_preferences SET ... WHERE user_id = ? AND version < ?`. Event cũ đến muộn (sau replay) không ghi đè được trạng thái mới hơn.
 - Daily reconciliation của User Service (đã có trong contract) là lưới an toàn cuối.
+
+
 
 ## 7. Tóm lại
 
