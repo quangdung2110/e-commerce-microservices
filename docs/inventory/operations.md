@@ -30,7 +30,8 @@ Automatic fail-closed protection requires no approval. A manual global stop is r
 | Preview latency | p95 <= 300 ms, p99 <= 750 ms | Requests while primary is available. |
 | Infrastructure failure rate | <= 0.1% per 30 days | Excludes valid domain `REJECT_ALL`. |
 | Search freshness | <= 60 seconds | Inventory availability projection/export time to Search's applied revision for ready SKUs. |
-| PDP availability read latency/freshness | TBD before PDP rollout | Agreed Inventory/Storefront budget for a clean `SkuAvailabilityState` batch result; `UNKNOWN` is not counted as a successful known state. |
+| PDP availability read latency | p99 <= 200 ms for <= 500 SKU (starting target) | Agreed with Storefront in [Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md); BFF times out at 300 ms, so slower results become `UNKNOWN`. Load-test before PDP rollout. |
+| PDP availability read freshness | TBD before PDP rollout | Agreed Inventory/Storefront budget for a clean `SkuAvailabilityState` batch result; `UNKNOWN` is not counted as a successful known state. |
 | Committed-data loss | RPO = 0 | Proven by failover/restore drill. |
 | Authoritative recovery | RTO <= 60 minutes | Incident declaration to verified write reopening. |
 | Integrity | 0 violations | Bucket/ledger mismatch is SEV-1, not an error-budget item. |

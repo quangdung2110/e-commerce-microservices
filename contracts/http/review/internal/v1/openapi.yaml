@@ -25,6 +25,11 @@ paths:
           in: query
           required: false
           schema: { type: integer, minimum: 1, maximum: 5, default: 3 }
+        - name: X-Request-Id
+          in: header
+          required: false
+          description: Correlation fallback do BFF propagate từ request PDP; không thay thế traceparent.
+          schema: { type: string, minLength: 8, maxLength: 128 }
       responses:
         '200':
           description: >-
@@ -36,7 +41,7 @@ paths:
         '400': { description: product_id hoặc preview_limit không hợp lệ. }
         '401': { description: Missing or invalid service identity. }
         '403': { description: Caller is not Product Detail BFF. }
-        '503': { description: Review read store không sẵn sàng; BFF phải degrade review section. }
+        '503': { description: Review read store không sẵn sàng; BFF phải degrade review section, không retry trong hot path. }
 
   /internal/v1/reviews/rating-aggregate-exports:
     post:

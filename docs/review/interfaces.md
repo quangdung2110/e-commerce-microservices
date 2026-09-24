@@ -145,6 +145,9 @@ The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
 `GET /internal/v1/reviews/products/{product_id}/pdp-summary` remains a read-only BFF
 endpoint. It returns aggregate and a bounded preview of `APPROVED` reviews. A product
 with no review returns aggregate zero; PostgreSQL failure returns 503, never fake zero.
+BFF propagates `traceparent` and optional `X-Request-Id`, does not retry in the hot path
+and maps timeout/5xx to `review_section.status = UNAVAILABLE`
+([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)).
 
 ### Rating aggregate export
 

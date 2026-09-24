@@ -37,7 +37,7 @@ hay local stock fallback.
 | Markdown Consumer | Product | Kafka Promotion snapshots | Validate ACTIVE/INACTIVE shape, lock Product, guard `source_revision`, retry transient; missing Product ack no-op; ack sau DB commit |
 | Debezium connector | Platform | Liên tục đọc WAL | At-least-once; theo dõi slot lag |
 | Search catalog reindex | Search | Consume `CATALOG_REINDEX_REQUESTED` | Coalesce request; Product export category/Product kèm replay offsets, Search import rồi catch-up và alias swap |
-| PDP buyer-read | Product Detail BFF | Synchronous internal query | Alert latency/error của endpoint; stock freshness thuộc BFF/Inventory, không phải Product |
+| PDP buyer-read | Product Detail BFF | Synchronous internal query | Latency kỳ vọng p99 ≤ 250 ms vì BFF cắt ở 400 ms ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); alert latency/error của endpoint; stock freshness thuộc Inventory, không phải Product hay BFF |
 
 Product không có scheduled job. Promotion chịu trách nhiệm ghi ACTIVE full payload hoặc INACTIVE tombstone qua
 outbox tại logical campaign boundary và tự phục hồi schedule; Product theo dõi propagation

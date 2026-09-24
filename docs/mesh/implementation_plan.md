@@ -30,7 +30,7 @@
 | 1.2 | Manifest/Helm cho từng service có runtime (4 Go, 5 Java) với ServiceAccount riêng, Service port có `name`/`appProtocol` | `kubectl get sa` khớp `services.yaml`; không pod nào dùng SA `default`; port gRPC Product có `appProtocol: grpc` | Đã lập kế hoạch |
 | 1.3 | Triển khai tầng `data` và `observability` trên cluster | Service khởi động, health check đạt, OTel Collector/Prometheus/Loki nhận dữ liệu như Compose | Đã lập kế hoạch |
 | 1.4 | Traefik trên Kubernetes bằng Gateway API (`GatewayClass` Traefik, `HTTPRoute` theo gateway route matrix) — trùng mục 6.2 của [gateway/implementation_plan.md](../gateway/implementation_plan.md) | Route matrix chạy trên cluster không mesh | Đã lập kế hoạch |
-| 1.5 | Đối soát prefix route public giữa gateway matrix và contract (User, Order, Payment, Cart, Checkout, Inventory admin, PDP BFF) | Gateway matrix và mesh matrix §5.2 dùng cùng path | Đã lập kế hoạch |
+| 1.5 | Đối soát prefix route public giữa gateway matrix và contract (User, Order, Payment, Cart, Checkout, Inventory admin; PDP BFF đã đối soát `/api/v1/storefront/products/**`) | Gateway matrix và mesh matrix §5.2 dùng cùng path | Đã lập kế hoạch |
 
 ## Giai đoạn 2 — Cài Istio ambient
 

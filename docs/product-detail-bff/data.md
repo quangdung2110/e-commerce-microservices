@@ -29,6 +29,13 @@ Cache key, TTL, cache-control và invalidation là storefront runtime policy; ch
 phù hợp freshness budget đã chốt. Khi cache miss hoặc cache bypass, BFF gọi Product,
 Inventory và Review theo workflow chuẩn.
 
+Response degrade không bao giờ được cache: `200` có ít nhất một SKU `UNKNOWN` hoặc
+`review_section.status = UNAVAILABLE`, và mọi `503`, luôn mang `Cache-Control: no-store`
+và không được ghi vào in-process cache. Nếu cache như vậy, CDN sẽ tiếp tục phục vụ trạng
+thái degrade sau khi dependency đã phục hồi. Khi chưa có storefront cache policy, `200`
+đầy đủ cũng mang `no-store`
+([ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)).
+
 ## Availability data received from Inventory
 
 | Field | Ý nghĩa tại BFF |

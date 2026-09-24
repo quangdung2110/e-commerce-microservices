@@ -14,6 +14,13 @@ decision_owners:
 
 `Accepted`.
 
+Amended bởi [ADR-003](./ADR-003-checkout-preview-order-reserve-boundary.md): Checkout chỉ
+gọi allocation Preview, Order là caller duy nhất của Inventory Reserve. Câu "Checkout vẫn
+reserve trực tiếp tại Inventory" dưới đây là lịch sử tại thời điểm quyết định. Quyết định
+Inventory-owned batch availability read giữ nguyên. Con số timeout/bulkhead/circuit
+breaker mà ADR này yêu cầu được chốt ở
+[ADR-004](./ADR-004-resilience-budget-and-mesh-split.md).
+
 ## Context
 
 PDP cần hiển thị khả dụng theo variant nhưng Product không được giữ stock replica.

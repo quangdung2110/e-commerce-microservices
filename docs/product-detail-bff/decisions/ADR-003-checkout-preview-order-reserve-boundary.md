@@ -1,11 +1,29 @@
 ---
-title: ADR-003 Checkout Preview and Order Reserve boundary
+doc_id: product-detail-bff-adr-003
+service: product-detail-bff
 status: accepted
 date: 2026-09-20
-supersedes: ADR-001
+decision_owners:
+  - Storefront team
+  - Inventory Service team
+  - Checkout Service team
+  - Order Service team
+supersedes: null
+amends:
+  - ADR-001
+evidence:
+  - contracts/http/inventory/read/v1/openapi.yaml
+  - contracts/http/inventory/workflow/v1/openapi.yaml
+  - docs/mesh/runtime-contract.md
 ---
 
-# ADR-003: Checkout Preview and Order Reserve boundary
+# ADR-003 — Ranh giới Checkout Preview và Order Reserve
+
+## Status
+
+`Accepted`. Không supersede ADR nào. Amend
+[ADR-001](./ADR-001-availability-projection-over-live-query.md) ở điểm caller Reserve;
+quyết định Inventory-owned batch availability read của ADR-001 giữ nguyên.
 
 ## Context
 

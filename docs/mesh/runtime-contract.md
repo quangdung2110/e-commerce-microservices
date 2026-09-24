@@ -111,7 +111,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `review-service` | `/internal/v1/reviews/products/*/pdp-summary` | GET | `ecommerce/product-detail-bff` | `product-detail-bff-queries-review-summary` |
 | `review-service` | `/internal/v1/reviews/rating-aggregate-exports**` | X | `ecommerce/search-service` | `search-reindexes-review-rating-aggregates` |
 | `search-service` | `/api/v2/search/**` | X | `edge/traefik` | gateway matrix |
-| `product-detail-bff` | `/api/v1/storefront/**` | GET | `edge/traefik` | `storefront-queries-product-detail` |
+| `product-detail-bff` | `/api/v1/storefront/products/**` | GET | `edge/traefik` | `storefront-queries-product-detail`; gateway matrix |
 | `checkout-service` | `/api/v1/checkout/preview`, `/api/v1/checkout/submit` | POST | `edge/traefik` | `gateway-routes-checkout` |
 | `checkout-service` | `/api/v1/checkout/submissions/*` | GET | `edge/traefik` | `gateway-routes-checkout` |
 | `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
@@ -166,7 +166,7 @@ của Istio.
 
 | Route đích | Retry mesh | Timeout mesh | Ghi chú |
 |---|---|---|---|
-| `GET /internal/v1/products/*/snapshot`, `GET /internal/v1/product-details/*` | 2 lần, `connect-failure,refused-stream` | 3 giây | Idempotent read |
+| `GET /internal/v1/products/*/snapshot`, `GET /internal/v1/product-details/*` | 2 lần, `connect-failure,refused-stream` | 3 giây | Idempotent read. PDP BFF cắt `product-details` ở 400 ms và không retry ở ứng dụng ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | gRPC `ProductService/GetSku`, `GetBatchSkus` | 2 lần, `connect-failure,refused-stream,unavailable` | 2 giây | Proto ghi deadline 500 ms / 1 giây; mesh là giới hạn ngoài |
 | `GET .../checkout-snapshot` (User) | 2 lần, `connect-failure,refused-stream` | 2 giây | Checkout budget 500 ms |
 | `GET /internal/v1/carts/*/checkout-snapshot` | 2 lần, `connect-failure,refused-stream` | 1 giây | Pure Cart read; Checkout budget 500 ms |
@@ -177,7 +177,7 @@ của Istio.
 | `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout query Order status sau timeout thay vì nhân ba deadline. Webhook không nằm trong policy này |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
-| `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF degrade theo contract |
+| `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
 
@@ -250,7 +250,7 @@ tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
 Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
-v1. Cart, Inventory admin và Product Detail BFF chưa có đủ dòng
+v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`. Cart và Inventory admin chưa có đủ dòng
 trong gateway matrix — mục 5.2 dùng contract, gateway matrix phải được đối soát. Review Service
 dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
 riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một

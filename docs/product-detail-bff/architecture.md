@@ -58,8 +58,25 @@ các snapshot độc lập. `IN_STOCK` không phải reservation; khi Order Rese
 checkout báo hết hàng và refresh PDP/cart theo policy UI.
 
 Inventory là dependency degradable: failure chỉ làm availability thành `UNKNOWN`, không
-biến một catalog hợp lệ thành `503`. Product là dependency bắt buộc. Review có timeout,
-bulkhead và circuit breaker riêng để lỗi enrichment không làm cạn request pool của PDP.
+biến một catalog hợp lệ thành `503`. Product là dependency bắt buộc. Review là enrichment
+degradable. Mỗi dependency có timeout, bulkhead và circuit breaker riêng để lỗi của một
+dependency không làm cạn request pool của PDP.
+
+## Resilience: phân chia với mesh và gateway
+
+Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md):
+
+- **Gateway** chờ response header của route PDP tối đa 3 giây và chỉ retry lỗi kết nối
+  tới BFF.
+- **Mesh** lo mTLS, authorization theo principal, retry lỗi kết nối cho Product và Review,
+  outlier detection và timeout ngoài (Product 3 giây, Inventory/Review 2 giây). Mesh không
+  biết dependency nào được degrade.
+- **BFF** giữ deadline PDP 1 000 ms, cắt Product ở 400 ms và Inventory/Review ở
+  `min(300 ms, deadline còn lại − 50 ms)`, bỏ pha 2 khi còn dưới 100 ms, không retry ở
+  ứng dụng, mở circuit breaker và map lỗi sang `503`/`UNKNOWN`/`UNAVAILABLE`.
+
+Timeout BFF luôn ngắn hơn timeout mesh, nên BFF là tầng quyết định degrade; timeout mesh
+chỉ là giới hạn ngoài khi BFF có lỗi.
 
 Không dùng Search index làm shared PDP store: Search là browse projection, không có
 catalog point-read authority và không là fallback availability cho PDP.

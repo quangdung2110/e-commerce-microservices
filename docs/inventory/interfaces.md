@@ -99,8 +99,10 @@ Each result is `IN_STOCK`, `OUT_OF_STOCK`, or `UNKNOWN`, with
 `availability_revision` and `evaluated_at` only for a known state. `UNKNOWN` means the
 Inventory-owned derived state is missing or has pending dirty/recompute work; it never
 means `OUT_OF_STOCK`. A dependency-wide `503 INVENTORY_AVAILABILITY_UNAVAILABLE` has no
-partial result. PDP BFF maps that failure to `UNKNOWN` and does not retry repeatedly in
-the buyer hot path.
+partial result. PDP BFF maps that failure to `UNKNOWN` and does not retry in the buyer
+hot path (no application retry; the mesh route has `attempts: 0`). BFF cuts the call at
+`min(300 ms, remaining PDP deadline − 50 ms)` and has its own circuit breaker; see
+[Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md).
 
 The response is advisory UI data only. It never includes quantity, warehouse,
 availability algorithm internals, allocation plan, reservation, or an authority to

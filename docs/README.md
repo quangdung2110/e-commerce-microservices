@@ -168,8 +168,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
 | [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
 | [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
-| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary. |
-| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read và Review read composition không đổi ownership. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
+| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve và resilience budget. |
 
 ---
 

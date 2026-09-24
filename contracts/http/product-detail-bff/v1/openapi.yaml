@@ -22,17 +22,53 @@ paths:
         - name: slug
           in: path
           required: true
+          description: Slug không khớp pattern trả 404 mà BFF không gọi Product.
           schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
       responses:
         '200':
-          description: Catalog snapshot kèm availability và Review enrichment.
+          description: >-
+            Catalog snapshot kèm availability và Review enrichment. Response degrade
+            (có SKU UNKNOWN hoặc review_section UNAVAILABLE) vẫn là 200.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/ProductDetailCacheControl' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProductDetailResponse' }
-        '404': { description: Product không tồn tại hoặc không catalog-active. }
-        '503': { description: Product buyer-read dependency không sẵn sàng. }
+        '404':
+          description: >-
+            PRODUCT_DETAIL_NOT_FOUND; Product không tồn tại, không catalog-active hoặc slug
+            không khớp pattern. retryable=false.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            PRODUCT_DETAIL_UNAVAILABLE; Product buyer-read dependency không cho kết quả hợp lệ
+            (timeout, lỗi kết nối, 5xx, 4xx, sai contract), circuit breaker của Product đang mở
+            hoặc bulkhead Product đầy. retryable=true. Inventory/Review lỗi không tạo 503.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+            Retry-After:
+              description: Chỉ có khi circuit breaker của Product đang mở; số giây mở còn lại, làm tròn lên.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 components:
+  headers:
+    ProductDetailCacheControl:
+      description: >-
+        no-store khi có ít nhất một SKU UNKNOWN hoặc review_section.status là UNAVAILABLE.
+        Response đầy đủ theo storefront cache policy nếu cache được bật, mặc định no-store.
+      schema: { type: string }
   schemas:
+    Problem:
+      allOf:
+        - $ref: '../../../shared/json-schema/v1/problem.schema.json'
+        - type: object
+          properties:
+            code: { type: string, enum: [PRODUCT_DETAIL_NOT_FOUND, PRODUCT_DETAIL_UNAVAILABLE] }
     ProductDetailResponse:
       type: object
       additionalProperties: false

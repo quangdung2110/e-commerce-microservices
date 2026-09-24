@@ -55,8 +55,12 @@ hạn và không phải source of truth.
   gọi per-SKU và không truy cập database Inventory.
 - BFF chỉ map trạng thái `IN_STOCK`, `OUT_OF_STOCK` hoặc `UNKNOWN` do Inventory trả;
   không tính availability từ quantity hoặc cache dài hạn.
-- Thiếu một SKU trong response, `UNKNOWN` từ Inventory, timeout hoặc `503` từ
-  Inventory đều phải render SKU là `UNKNOWN`, không suy diễn `OUT_OF_STOCK`.
+- Thiếu một SKU trong response, `UNKNOWN` từ Inventory, hay call Inventory không cho kết
+  quả hợp lệ (timeout, `5xx`, `4xx`, sai contract, circuit open, bulkhead đầy, hết
+  budget) đều phải render SKU là `UNKNOWN`, không suy diễn `OUT_OF_STOCK`.
+- Ứng dụng không retry dependency nào trong hot path; timeout BFF luôn ngắn hơn timeout
+  mesh; response degrade không được cache
+  ([ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)).
 - BFF không gửi reserve/deduct/release và không dùng availability UI để xác nhận đơn.
 - BFF không gọi Search để lấy catalog hay stock cho PDP.
 - BFF không lưu Review data, không consume Review event và không nhận command Review.
@@ -72,9 +76,9 @@ hạn và không phải source of truth.
 | [Data](./data.md) | Không có persistent read model; cache boundary |
 | [Interfaces](./interfaces.md) | Public PDP API và internal dependencies |
 | [Workflows](./workflows.md) | Read và degradation flow |
-| [Operations](./operations.md) | Dependency SLO, circuit breaker và runbook |
+| [Operations](./operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook |
 | [Development](./development.md) | Contract/integration test và Definition of Done |
-| [Decisions](./decisions/README.md) | Availability batch-read và Review read composition |
+| [Decisions](./decisions/README.md) | Availability batch-read, Review read composition, ranh giới Preview/Reserve và resilience budget |
 
 ## Trạng thái rollout
 

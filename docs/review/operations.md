@@ -17,6 +17,7 @@ verified_against_commit: null
 |---|---:|
 | Public review/PDP read availability | 99.9% monthly |
 | Public read p95, 20 rows | < 200 ms |
+| Internal PDP summary p99, preview ≤ 5 | < 200 ms (Product Detail BFF cắt ở 300 ms, [ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)) |
 | Create review p95 | < 400 ms |
 | Aggregate convergence p95 | < 5 s |
 | CDC publish p95 | < 3 s |

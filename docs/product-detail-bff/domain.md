@@ -17,12 +17,12 @@ owners:
 | Availability query result | Trạng thái advisory theo SKU do Inventory Availability Read API trả |
 | `IN_STOCK` | Inventory đã xác nhận SKU có thể hiển thị còn hàng tại `evaluated_at` |
 | `OUT_OF_STOCK` | Inventory đã xác nhận SKU không còn available-to-sell tại `evaluated_at` |
-| `UNKNOWN` | Inventory không có trạng thái tin cậy, BFF thiếu item, hoặc Inventory dependency lỗi |
+| `UNKNOWN` | Inventory không có trạng thái tin cậy, BFF thiếu item, hoặc call Inventory không cho kết quả hợp lệ (lỗi, timeout, circuit open, bulkhead đầy, hết budget) |
 | Product display availability | Derived UI state: có ít nhất một SKU catalog-active `IN_STOCK` |
 | Review summary | Aggregate rating và tổng số review do Review trả |
 | Review preview | Danh sách hữu hạn review `APPROVED` mới nhất do Review trả |
 | Review section `AVAILABLE` | Review trả thành công; aggregate 0 là trạng thái hợp lệ |
-| Review section `UNAVAILABLE` | Review timeout/lỗi; không được diễn giải là chưa có review |
+| Review section `UNAVAILABLE` | Call Review không cho kết quả hợp lệ (lỗi, timeout, circuit open, bulkhead đầy, hết budget); không được diễn giải là chưa có review |
 
 ## Quy tắc hiển thị
 
@@ -30,7 +30,7 @@ owners:
 |---|---|
 | `PDP-BR-001` | Availability được quyết định theo SKU đã chọn, không theo Product aggregate. |
 | `PDP-BR-002` | Chỉ Inventory được map một SKU thành `IN_STOCK`/`OUT_OF_STOCK`; BFF không tự suy diễn từ quantity, cache hoặc sự vắng mặt của data. |
-| `PDP-BR-003` | Không có item, item `UNKNOWN`, timeout hoặc `503` từ Inventory phải trả `UNKNOWN`, không mặc định còn hay hết hàng. |
+| `PDP-BR-003` | Không có item, item `UNKNOWN`, hoặc call Inventory không cho kết quả hợp lệ phải trả `UNKNOWN`, không mặc định còn hay hết hàng. |
 | `PDP-BR-004` | SKU `INACTIVE` hoặc Product không `ACTIVE` không được trả cho buyer, bất kể Inventory trả gì. |
 | `PDP-BR-005` | BFF chỉ gửi một batch query cho các SKU active; không gửi reserve/deduct/release và không dùng availability UI để xác nhận đơn. |
 | `PDP-BR-006` | BFF chỉ đọc Review summary/preview; không nhận command hay sở hữu invariant Review. |
