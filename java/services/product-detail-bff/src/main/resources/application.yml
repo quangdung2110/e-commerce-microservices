@@ -56,6 +56,8 @@ pdp:
   media:
     cdn-base-url: ${PDP_MEDIA_CDN_BASE_URL:}
     placeholder-url: ${PDP_MEDIA_PLACEHOLDER_URL:}
+    # Chỉ docker-compose local đặt false: MinIO được phát qua gateway bằng http.
+    require-https: ${PDP_MEDIA_REQUIRE_HTTPS:true}
 
 management:
   endpoints:

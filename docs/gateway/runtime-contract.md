@@ -83,6 +83,14 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 
 Path không xác định trả về `404` từ gateway; không có catch-all router nào được forward path tùy ý đến business service.
 
+Product Detail BFF đã có runtime (`java/services/product-detail-bff`); docker-compose khai báo
+router `product-detail-bff` cho dòng `/api/v1/storefront/products/**` ở trên, với serversTransport
+`product-detail-bff` (response-header timeout 3 giây) và middleware `retry-connection-only` (Traefik
+chỉ phát lại khi upstream không trả lời, không retry theo status). Riêng môi trường local có thêm
+router `/media/**` (GET/HEAD) trỏ vào bucket MinIO `product-media` làm CDN giả cho ảnh Product; route
+này **không** thuộc ma trận production, nơi media được phát từ domain CDN riêng
+([Product Detail BFF ADR-005](../product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md)).
+
 Promotion Service đã có runtime module (`java/services/promotion-service`) theo
 [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml). docker-compose khai báo
 ba router: `promotion-admin` (`/api/v1/admin/promotion-campaigns`, `/api/v1/admin/promotions`,

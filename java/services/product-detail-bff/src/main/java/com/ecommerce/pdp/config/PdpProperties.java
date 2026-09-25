@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 
 import java.net.URI;
@@ -82,17 +83,24 @@ public record PdpProperties(
             @Min(1) int halfOpenCalls) {
     }
 
-    /** URL media = {@code cdnBaseUrl} + storage key (ADR-005); không bao giờ lộ storage key. */
-    public record Media(String cdnBaseUrl, String placeholderUrl) {
+    /**
+     * URL media = {@code cdnBaseUrl} + storage key (ADR-005); không bao giờ lộ storage key.
+     *
+     * @param requireHttps chỉ tắt ở môi trường local, nơi MinIO được phát qua gateway bằng
+     *                     {@code http}; mọi môi trường khác phải phát media qua {@code https}
+     */
+    public record Media(String cdnBaseUrl, String placeholderUrl, @DefaultValue("true") boolean requireHttps) {
 
-        @AssertTrue(message = "PDP_MEDIA_CDN_BASE_URL must be an absolute https URL without trailing slash")
+        @AssertTrue(message = "PDP_MEDIA_CDN_BASE_URL must be an absolute URL (https unless "
+                + "PDP_MEDIA_REQUIRE_HTTPS=false) without trailing slash")
         public boolean isCdnBaseUrlValid() {
-            return isAbsoluteUrl(cdnBaseUrl, true) && !cdnBaseUrl.endsWith("/");
+            return isAbsoluteUrl(cdnBaseUrl, requireHttps) && !cdnBaseUrl.endsWith("/");
         }
 
-        @AssertTrue(message = "PDP_MEDIA_PLACEHOLDER_URL must be an absolute https URL")
+        @AssertTrue(message = "PDP_MEDIA_PLACEHOLDER_URL must be an absolute URL (https unless "
+                + "PDP_MEDIA_REQUIRE_HTTPS=false)")
         public boolean isPlaceholderUrlValid() {
-            return isAbsoluteUrl(placeholderUrl, true);
+            return isAbsoluteUrl(placeholderUrl, requireHttps);
         }
     }
 

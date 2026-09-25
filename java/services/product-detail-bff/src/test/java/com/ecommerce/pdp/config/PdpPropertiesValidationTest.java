@@ -86,6 +86,18 @@ class PdpPropertiesValidationTest {
     }
 
     @Test
+    @DisplayName("Chỉ khi tắt require-https (local) thì http mới được chấp nhận; URL tương đối vẫn bị từ chối")
+    void httpMediaIsAcceptedOnlyWhenHttpsIsNotRequired() {
+        ApplicationContextRunner local = runner.withPropertyValues(
+                "pdp.media.require-https=false",
+                "pdp.media.cdn-base-url=http://localhost:8088/media",
+                "pdp.media.placeholder-url=http://localhost:8088/media/placeholder/product.svg");
+        local.run(context -> assertThat(context).hasNotFailed());
+        local.withPropertyValues("pdp.media.placeholder-url=/placeholder/product.svg")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
     @DisplayName("preview_limit ngoài 1..5 thì không khởi động")
     void previewLimitOutOfRangeFails() {
         runner.withPropertyValues("pdp.review.preview-limit=6")

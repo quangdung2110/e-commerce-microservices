@@ -158,11 +158,11 @@ vet:
 # Check Go version compatibility
 check-version:
 	@echo "Checking version compatibility..."
-	@TRAEFIK_VERSION=$$(docker run --rm traefik:v3.0 --version 2>&1 | grep -oP 'v[\d.]+') && \
+	@TRAEFIK_VERSION=$$(docker run --rm traefik:v3.7.1 --version 2>&1 | grep -oP 'v[\d.]+') && \
 	GO_VERSION=$$(go version | grep -oP 'go[\d.]+') && \
 	echo "Traefik: $$TRAEFIK_VERSION" && \
 	echo "Go: $$GO_VERSION" && \
-	if ! echo "$$TRAEFIK_VERSION" | grep -q "3.0"; then \
+	if ! echo "$$TRAEFIK_VERSION" | grep -q "3.7"; then \
 		echo "$(YELLOW)Warning: Plugin may not be compatible with this Traefik version$(NC)"; \
 	fi
 

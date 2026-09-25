@@ -229,6 +229,25 @@ http:
       compress: {}
 
     # -------------------------------------------------------------------------
+    # Product Detail BFF (docs/product-detail-bff ADR-004, runtime-contract.md muc 5)
+    #
+    # Retry cua Traefik chi phat lai khi upstream khong tra loi (loi ket noi); da nhan
+    # response thi dung, bat ke status. Dung dung yeu cau "chi retry loi ket noi toi
+    # BFF": 5xx/504 cua BFF da la ket qua degrade hoac fail fast, khong duoc retry.
+    # -------------------------------------------------------------------------
+    retry-connection-only:
+      retry:
+        attempts: 2
+        initialInterval: 50ms
+
+    # LOCAL ONLY: /media/<storage_key> -> /product-media/<storage_key> tren MinIO, thay
+    # cho CDN that. Luon tro vao bucket product-media nen khong the doc review-media.
+    product-media-path:
+      replacePathRegex:
+        regex: "^/media/(.*)"
+        replacement: "/product-media/$1"
+
+    # -------------------------------------------------------------------------
     # Circuit Breaker (basic)
     # -------------------------------------------------------------------------
     circuit-breaker:
@@ -308,6 +327,15 @@ http:
       forwardingTimeouts:
         dialTimeout: 3s
         responseHeaderTimeout: 25s
+        idleConnTimeout: 120s
+
+    # Product Detail BFF - runtime-contract.md muc 5.1: cho response header toi da 3 giay;
+    # BFF co deadline noi bo 1 giay nen gioi han nay chi cham khi BFF loi.
+    product-detail-bff:
+      maxIdleConnsPerHost: 100
+      forwardingTimeouts:
+        dialTimeout: 3s
+        responseHeaderTimeout: 3s
         idleConnTimeout: 120s
 
 # =============================================================================

@@ -28,11 +28,27 @@ buộc, sai kiểu/enum/giới hạn hoặc vi phạm ràng buộc tham chiếu 
 ## Chạy local
 
 Máy dev không cần JDK: build bằng container `maven:3.9-eclipse-temurin-21` như các service
-Java khác. Inventory chưa có service chạy được, nên để `PDP_INVENTORY_ENABLED=false` (mặc
-định). Review trong docker-compose chấp nhận token dev `dev-product-detail-bff-token`
-(`REVIEW_INTERNAL_PDP_TOKENS`); đặt `PDP_REVIEW_SERVICE_TOKEN` cùng giá trị. Cấu hình đầy
-đủ ở [operations.md](./operations.md#cấu-hình). Việc thêm service `product-detail-bff` và
-route PDP vào docker-compose/gateway local là một phần của implementation, chưa có sẵn.
+Java khác. `docker-compose.yml` có service `product-detail-bff` (host port `8093`) và route
+qua gateway tại `http://localhost:8088/api/v1/storefront/products/{slug}`:
+
+| Thành phần local | Giá trị |
+|---|---|
+| Inventory | `PDP_INVENTORY_ENABLED=false`: chưa có Inventory service, mọi SKU `UNKNOWN` với outcome `disabled` |
+| Review | `PDP_REVIEW_SERVICE_TOKEN=dev-product-detail-bff-token`, khớp `REVIEW_INTERNAL_PDP_TOKENS` của review-service |
+| Media ("CDN" local) | Bucket MinIO `product-media` (anonymous read) phát qua gateway tại `http://localhost:8088/media/<storage_key>`; `PDP_MEDIA_REQUIRE_HTTPS=false` |
+| Placeholder | `http://localhost:8088/media/placeholder/product.svg`, file nằm ở `infra/minio/product-media/` và được `minio-init` upload |
+
+Search dùng đúng hai giá trị media này (`CDN_BASE_URL`, `THUMBNAIL_PLACEHOLDER_URL`) và dựng
+URL cùng cách, nên thẻ sản phẩm ở trang danh sách và PDP trỏ cùng một file.
+
+Product không có API upload: admin chỉ ghi `storage_key`. Muốn thấy ảnh thật ở local, đặt
+file vào bucket đúng key đó, ví dụ với key `products/watch/hero.jpg`:
+
+```bash
+docker run --rm --network ecommerce-network -v "$PWD:/work" --entrypoint /bin/sh minio/mc:RELEASE.2024-01-18T07-03-39Z -c "mc alias set local http://minio:9000 minioadmin minioadmin && mc cp /work/hero.jpg local/product-media/products/watch/hero.jpg"
+```
+
+Cấu hình đầy đủ ở [operations.md](./operations.md#cấu-hình).
 
 Integration test không phụ thuộc service thật: WireMock giả lập Product, Inventory và
 Review theo đúng contract, kể cả khi test bật Inventory.

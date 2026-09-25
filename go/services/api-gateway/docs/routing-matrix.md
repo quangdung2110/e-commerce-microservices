@@ -19,6 +19,8 @@
 | `/api/v1/search/**` (GET) | search-service | No | 100 req/s | 10 | Public storefront browse/search |
 | `/api/v2/search/**` (GET, trừ reindex) | search-service | No | 100 req/s | 10 | Canonical Search v2; chạy song song v1 trong migration |
 | `/api/v2/search/reindex-runs/**` (GET, POST) | search-service | Yes, `ADMIN` | 50 req/s | 30 | Priority cao hơn route public Search; không dùng `/internal` |
+| `/api/v1/storefront/products/**` (GET) | product-detail-bff | No | 100 req/s | 30 | PDP; response-header timeout 3 s (`product-detail-bff@file` transport), retry only on connection failure, keeps the BFF `Cache-Control` |
+| `/media/**` (GET, HEAD) | minio (`product-media` bucket) | No | 100 req/s | 20 | **Local only**: stand-in for the product CDN, rewritten to `/product-media/**`; production serves media from its own CDN domain |
 | `/api/payments/**` | payment-service | Yes | 20 req/s | 10 | Strictest rate limit |
 | `/.well-known/jwks.json` | auth-service | No | 10 req/s | 5 | JWKS public key endpoint |
 | `/.well-known/openid-configuration` | auth-service | No | 10 req/s | 5 | OIDC discovery |
@@ -107,6 +109,12 @@ curl http://localhost:8088/api/v1/search/products
 
 # Canonical Search v2 storefront route
 curl http://localhost:8088/api/v2/search/products
+
+# Product Detail BFF (anonymous PDP read); media URLs in the body point at /media/**
+curl -i http://localhost:8088/api/v1/storefront/products/smart-watch
+
+# Local stand-in for the product CDN (MinIO product-media bucket)
+curl -I http://localhost:8088/media/placeholder/product.svg
 
 # Must stay 404 at the gateway; this endpoint is internal-only
 curl http://localhost:8088/internal/v1/products/export

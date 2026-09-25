@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MediaUrlsTest {
 
     private final MediaUrls urls = new MediaUrls(new PdpProperties(null, null, null, null, null, null, null,
-            new PdpProperties.Media("https://cdn.example.com/media", "https://cdn.example.com/placeholder.png"),
+            new PdpProperties.Media("https://cdn.example.com/media", "https://cdn.example.com/placeholder.png", true),
             "no-store"));
 
     @Test

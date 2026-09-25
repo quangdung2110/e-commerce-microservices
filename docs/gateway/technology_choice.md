@@ -33,6 +33,8 @@ Traefik cung cấp cloud-native discovery, routing, TLS, health checks, edge mid
 
 Cần upgrade khỏi Traefik v3.0 vì RateLimit configuration của phiên bản này không có Redis-backed distributed state. Limits và failure behavior do runtime contract kiểm soát.
 
+Image đã được nâng lên `traefik:v3.7.1` (2026-09-25) ở `docker-compose.yml`, hai file compose và `Dockerfile` của `go/services/api-gateway`. Ngoài lý do RateLimit, v3.0 còn gọi Docker Engine API ở version cố định cũ mà Docker Engine 29 đã bỏ, nên docker provider không đọc được label và mọi route khai báo bằng label đều mất. Việc nâng version chưa bật Redis-backed rate limit: các middleware `rateLimit` hiện tại vẫn in-memory theo replica cho tới khi cấu hình Redis theo runtime contract.
+
 ## Quyết định khả năng quan sát và triển khai
 
 Traefik và services export OTLP tới OpenTelemetry Collector thay vì coupling từng producer trực tiếp với Jaeger. Điều này tập trung batching, routing, thay đổi backend và policy enforcement. Access logs là JSON xuất stdout; Prometheus scrape private metrics endpoint trực tiếp, không qua Collector.

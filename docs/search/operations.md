@@ -58,7 +58,7 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Lịch job | Cron cho rebuild suggestion, recompute count, purge tombstone | Có | Không | Có |
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
 | Cửa sổ tombstone | Số ngày giữ tombstone trước khi purge | Có | Không | Không |
-| Thumbnail | CDN base URL và URL placeholder dùng để dựng `thumbnail_url` từ `thumbnail_storage_key` | Có | Không | Không, nếu cấu hình động |
+| Thumbnail | CDN base URL (`CDN_BASE_URL`) và URL placeholder (`THUMBNAIL_PLACEHOLDER_URL`) dùng để dựng `thumbnail_url` = base + `/` + `thumbnail_storage_key` percent-encode từng segment. Phải bằng `PDP_MEDIA_CDN_BASE_URL`/`PDP_MEDIA_PLACEHOLDER_URL` của Product Detail BFF, vốn dựng URL cùng cách, để thẻ sản phẩm và PDP trỏ cùng file; local là bucket MinIO `product-media` qua `http://localhost:8088/media` | Có | Không | Không, nếu cấu hình động |
 | Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review, `availability_snapshot_max_sessions` và `rating_export_max_sessions` (đều mặc định `2`) | Có | Không | Có |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 

@@ -6,7 +6,7 @@
 # For development, we use Traefik without custom plugins
 # =============================================================================
 
-FROM traefik:v3.0
+FROM traefik:v3.7.1
 
 # Install additional tools for debugging
 RUN apk add --no-cache \

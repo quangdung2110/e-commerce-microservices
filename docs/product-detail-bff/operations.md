@@ -35,7 +35,7 @@ Latency kỳ vọng của provider để các timeout dưới đây có nghĩa:
 ## Health và degradation
 
 BFF chỉ ready khi có thể phục vụ request và cấu hình bắt buộc ở mục
-[Cấu hình](#cấu-hình) hợp lệ: Product base URL; CDN base URL (tuyệt đối, `https`) và URL
+[Cấu hình](#cấu-hình) hợp lệ: Product base URL; CDN base URL (tuyệt đối, `https` trừ local) và URL
 placeholder cho SKU không ảnh
 ([ADR-005](./decisions/ADR-005-pdp-catalog-scope-and-media-url.md)); base URL của
 Inventory/Review khi dependency đó được bật; và `PDP_REVIEW_SERVICE_TOKEN` khi Review được
@@ -168,8 +168,9 @@ Spring property tương ứng. Secret lấy từ secret manager, không commit v
 | `PDP_REVIEW_BASE_URL` | none | Khi Review bật | Ví dụ `http://review-service:8080` |
 | `PDP_REVIEW_SERVICE_TOKEN` | none | Khi Review bật | Secret; phải nằm trong `REVIEW_INTERNAL_PDP_TOKENS` của Review. Dev dùng `dev-product-detail-bff-token` như docker-compose |
 | `PDP_REVIEW_PREVIEW_LIMIT` | `3` | Không | 1–5; startup từ chối giá trị ngoài khoảng |
-| `PDP_MEDIA_CDN_BASE_URL` | none | Có | URL tuyệt đối `https`, không có dấu `/` cuối; URL media = base + `/` + storage key percent-encode từng segment |
-| `PDP_MEDIA_PLACEHOLDER_URL` | none | Có | URL tuyệt đối `https` cho `thumbnail_url` khi SKU không có ảnh |
+| `PDP_MEDIA_CDN_BASE_URL` | none | Có | URL tuyệt đối, không có dấu `/` cuối; URL media = base + `/` + storage key percent-encode từng segment. Phải bằng `CDN_BASE_URL` của Search để thẻ sản phẩm và PDP trỏ cùng file |
+| `PDP_MEDIA_PLACEHOLDER_URL` | none | Có | URL tuyệt đối cho `thumbnail_url` khi SKU không có ảnh; bằng `THUMBNAIL_PLACEHOLDER_URL` của Search |
+| `PDP_MEDIA_REQUIRE_HTTPS` | `true` | Không | Chỉ docker-compose local đặt `false`, vì MinIO được phát qua gateway bằng `http://localhost:8088/media`; mọi môi trường khác bắt buộc `https` |
 | `PDP_DEADLINE_MS`, timeout, circuit breaker, bulkhead | Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)/[ADR-007](./decisions/ADR-007-hot-path-clarifications.md) | Không | Cấu hình được để load test hiệu chỉnh; đổi giá trị production phải cập nhật ADR và giữ quy tắc timeout BFF < mesh, deadline < gateway − 1 giây |
 
 Cờ tắt dependency chỉ dùng cho rollout hoặc sự cố kéo dài đã có quyết định; không dùng để
