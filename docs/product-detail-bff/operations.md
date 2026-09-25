@@ -123,9 +123,21 @@ Theo dõi latency/error public PDP; theo từng dependency: latency, kết quả
 `bulkhead_rejected`, `budget_skipped`, `disabled`) và trạng thái circuit breaker; số item
 Inventory vi phạm contract (thiếu, thừa); tỷ lệ SKU `UNKNOWN` tách theo nguồn (Inventory
 trả, Inventory thiếu item, lỗi call, bỏ qua vì circuit/bulkhead/budget, `disabled`); tỷ lệ
-response `review_section.status = UNAVAILABLE` tách theo nguồn tương tự. Tách lỗi Inventory và Review khỏi Product vì
-severity/degraded behavior khác nhau. Mesh cung cấp golden metrics theo cạnh gọi; metric
-trên là ngữ nghĩa mà chỉ BFF biết.
+response `review_section.status = UNAVAILABLE` tách theo nguồn tương tự. Tách lỗi Inventory
+và Review khỏi Product vì severity/degraded behavior khác nhau. Mesh cung cấp golden metrics
+theo cạnh gọi; metric dưới đây là ngữ nghĩa mà chỉ BFF biết.
+
+| Metric | Label | Ý nghĩa |
+|---|---|---|
+| `pdp_dependency_calls_seconds` (timer) | `dependency`, `outcome` | Mỗi lời gọi và kết quả phân loại; call không phát đi (`circuit_open`, `bulkhead_rejected`, `budget_skipped`, `disabled`) ghi thời lượng 0 |
+| `pdp_sku_unknown_total` | `source` = `inventory_returned`, `inventory_missing_item`, `call_failed`, `skipped`, `disabled` | Số SKU `UNKNOWN` theo nguồn |
+| `pdp_review_unavailable_total` | `source` = `call_failed`, `skipped`, `disabled` | Số response có review `UNAVAILABLE` |
+| `pdp_inventory_item_violations_total` | `kind` = `missing`, `extra` | Item Inventory vi phạm cam kết một item mỗi SKU |
+| `resilience4j_circuitbreaker_state` | `name` = `product`, `inventory`, `review` | Trạng thái circuit breaker |
+
+SLO "Degrade do Inventory/Review" đếm từ `pdp_dependency_calls_seconds_count` với outcome
+khác `success` và khác `disabled`; không dùng số SKU `UNKNOWN` vì `inventory_returned` là
+trạng thái Inventory tự khai, không phải lỗi call.
 
 Alert khi PDP availability hoặc latency vượt SLO; circuit Product mở; circuit Inventory
 hoặc Review mở liên tục quá 5 phút; tỷ lệ degrade vượt budget ở mục SLO; bất kỳ

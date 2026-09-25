@@ -1,0 +1,89 @@
+spring:
+  application:
+    name: product-detail-bff
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    # Contract đánh dấu nhiều field nullable là bắt buộc (description, summary,
+    # availability_observed_at...), nên null phải được serialize.
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+    # Tolerant reader: provider thêm field không làm PDP 503 (ADR-006).
+    deserialization:
+      fail-on-unknown-properties: false
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+# Số mặc định là giá trị khởi điểm của ADR-004/ADR-007; load test có thể hiệu chỉnh nhưng
+# giá trị production phải qua ADR và giữ timeout BFF < mesh, deadline < gateway - 1 giây.
+pdp:
+  deadline: ${PDP_DEADLINE_MS:1000}ms
+  phase-min-remaining: 100ms
+  compose-reserve: 50ms
+  full-response-cache-control: ${PDP_FULL_RESPONSE_CACHE_CONTROL:no-store}
+  product:
+    enabled: true
+    base-url: ${PDP_PRODUCT_BASE_URL:}
+    timeout: 400ms
+    bulkhead: 100
+    slow-call-threshold: 320ms
+  inventory:
+    # Tắt tới khi đạt rollout gate (docs/product-detail-bff/README.md).
+    enabled: ${PDP_INVENTORY_ENABLED:false}
+    base-url: ${PDP_INVENTORY_BASE_URL:}
+    timeout: 300ms
+    bulkhead: 80
+    slow-call-threshold: 240ms
+  review:
+    enabled: ${PDP_REVIEW_ENABLED:true}
+    base-url: ${PDP_REVIEW_BASE_URL:}
+    service-token: ${PDP_REVIEW_SERVICE_TOKEN:}
+    preview-limit: ${PDP_REVIEW_PREVIEW_LIMIT:3}
+    timeout: 300ms
+    bulkhead: 80
+    slow-call-threshold: 240ms
+  circuit-breaker:
+    sliding-window: 10s
+    minimum-calls: 20
+    failure-rate-threshold: 50
+    slow-call-rate-threshold: 50
+    open-duration: 10s
+    half-open-calls: 5
+  media:
+    cdn-base-url: ${PDP_MEDIA_CDN_BASE_URL:}
+    placeholder-url: ${PDP_MEDIA_PLACEHOLDER_URL:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+      group:
+        # Inventory/Review có degradation riêng và circuit mở không được làm mất
+        # readiness (operations.md §Health và degradation); cấu hình sai thì ứng dụng
+        # đã không khởi động được.
+        liveness:
+          include: ping
+        readiness:
+          include: ping
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        pdp.dependency.calls: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+
+logging:
+  level:
+    root: INFO

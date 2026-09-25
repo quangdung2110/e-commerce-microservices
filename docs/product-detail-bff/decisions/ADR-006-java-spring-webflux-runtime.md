@@ -76,8 +76,8 @@ tiết:
 
 Cấu hình resilience của ADR-004 viết được gần như nguyên văn. Đổi lại đội phải quen code
 reactive (Reactor), khó debug stack trace hơn MVC, và footprint JVM lớn hơn Go. Không được
-gọi blocking I/O trong pipeline; ArchUnit/BlockHound trong test dùng để chặn việc này.
-`contracts/catalog/services.yaml` đổi `runtime` thành `java-planned`.
+gọi blocking I/O trong pipeline; BlockHound trong test dùng để chặn việc này.
+`contracts/catalog/services.yaml` ghi `runtime: java`.
 
 ## Verification
 

@@ -61,9 +61,9 @@ services:
 
   - id: product-detail-bff
     bounded_context: storefront-product-read
-    runtime: java-planned
-    status: documented
-    contract_adoption: not_started
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
     docs: docs/product-detail-bff/README.md
 
   - id: checkout-service
