@@ -40,8 +40,16 @@ owners:
 | `PDP-BR-006` | BFF chỉ đọc Review summary/preview; không nhận command hay sở hữu invariant Review. |
 | `PDP-BR-007` | Review lỗi không làm mất catalog và không được map thành rating/count bằng 0. |
 | `PDP-BR-008` | Chỉ review `APPROVED` do Review trả mới xuất hiện trong preview; BFF không tự kiểm duyệt. |
+| `PDP-BR-009` | Nút thêm vào giỏ theo SKU đã chọn: `IN_STOCK` và `UNKNOWN` cho phép thêm; `OUT_OF_STOCK` tắt nút và hiển thị hết hàng. `UNKNOWN` không hiển thị nhãn còn hay hết hàng. |
 | `PDP-BR-010` | Category, thuộc tính, trục biến thể, nhãn và thứ tự hiển thị do Product quyết định; BFF giữ nguyên thứ tự Product trả, không sắp lại hay tự tra nhãn. |
 | `PDP-BR-011` | Public response không chứa storage key. Media và thumbnail là URL CDN do BFF dựng; SKU không có ảnh nhận URL placeholder cấu hình. |
+
+`PDP-BR-009` là quy tắc của storefront, không phải kiểm tra phía server: Cart không gọi
+Inventory và không chặn SKU hết hàng ([Cart interfaces](../cart/interfaces.md#2-http-apis)).
+`UNKNOWN` được phép thêm vào giỏ vì nó là lỗi hoặc thiếu dữ liệu, không phải hết hàng;
+chặn ở đây sẽ biến sự cố Inventory thành mất doanh thu. Checkout allocation Preview và
+Order Reserve vẫn là nơi quyết định có bán được hay không. `OUT_OF_STOCK` có thể đã cũ;
+buyer thấy trạng thái mới khi tải lại PDP.
 
 Public response chỉ cần `availability_status`; không expose quantity thật. `evaluated_at`
 có thể được trả cho client dưới tên `availability_observed_at` nếu storefront cần giải

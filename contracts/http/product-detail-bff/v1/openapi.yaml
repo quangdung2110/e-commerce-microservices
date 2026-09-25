@@ -245,6 +245,10 @@ components:
     AvailabilityStatus:
       type: string
       enum: [IN_STOCK, OUT_OF_STOCK, UNKNOWN]
+      description: >-
+        Advisory UI state, không phải reservation. Storefront cho thêm vào giỏ khi
+        IN_STOCK hoặc UNKNOWN, tắt khi OUT_OF_STOCK (PDP-BR-009). UNKNOWN nghĩa là
+        Inventory không cho trạng thái tin cậy, không có nghĩa là hết hàng.
     ProductDetailReviewSection:
       type: object
       additionalProperties: false

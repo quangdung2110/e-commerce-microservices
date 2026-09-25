@@ -17,6 +17,10 @@ gallery do Product resolve), trạng thái khả dụng advisory theo SKU từ I
 Availability Read API, cùng rating aggregate và preview hữu hạn từ Review. BFF không
 sở hữu catalog, tồn kho, Review domain, database nghiệp vụ hoặc Inventory projection.
 
+BFF chỉ phục vụ phần **đọc** của PDP qua một endpoint `GET`. Mọi thao tác khác trên
+trang, kể cả thao tác chỉ đọc như phân trang review, đi thẳng từ storefront qua Gateway
+tới service sở hữu, không qua BFF (xem [Thao tác ngoài BFF](#thao-tác-ngoài-bff)).
+
 ## Boundary
 
 | Năng lực | Owner | Vai trò của BFF |
@@ -29,6 +33,20 @@ sở hữu catalog, tồn kho, Review domain, database nghiệp vụ hoặc Inve
 
 PDP không đưa stock về Product. Khi buyer checkout, Checkout gọi Inventory allocation
 preview và Order mới Reserve; `IN_STOCK` trên PDP là UI state, không phải xác nhận có thể mua.
+
+## Thao tác ngoài BFF
+
+| Thao tác trên PDP | Route qua Gateway | Service |
+|---|---|---|
+| Phân trang, lọc review | `GET /api/v1/reviews/products/**` | Review |
+| Viết/sửa/report review, upload media | `/api/v1/reviews/**` | Review |
+| Thêm, bớt, xoá SKU trong giỏ; xem giỏ | `/api/v1/carts/mine`, `/api/v1/carts/mine/items` | Cart |
+| Lưu hoặc nhận voucher | `/api/v1/me/promotion-vouchers/**`, `/api/v1/me/promotion-voucher-claims` | Promotion |
+| Checkout Preview và Submit | `/api/v1/checkout/preview`, `/api/v1/checkout/submit` | Checkout |
+
+Route và policy chuẩn nằm trong
+[gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc). Nút
+thêm vào giỏ theo availability tuân theo `PDP-BR-009` trong [Domain](./domain.md).
 
 ## Dependencies
 
