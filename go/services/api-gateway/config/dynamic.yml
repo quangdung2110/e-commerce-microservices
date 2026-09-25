@@ -12,70 +12,95 @@ http:
   middlewares:
     # -------------------------------------------------------------------------
     # JWT Authentication Middleware (Go Plugin)
+    #
+    # Bon block duoi day phai giu nguyen cung mot gia tri. Khoa cua chung duoc
+    # chot tai docs/gateway/runtime-contract.md muc 6 va 6.1: doi mot block ma
+    # quen cac block con lai la cach loi lech claim/redis-key quay tro lai.
     # -------------------------------------------------------------------------
 
     # User Service JWT Auth
     jwt-auth-user:
       plugin:
         jwt-auth:
-          authServiceURL: "http://auth-service:8081"
+          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
+          # Port 8081 la listener internal mTLS va khong co route JWKS.
+          authServiceURL: "http://auth-service:8080"
           jwksPath: "/.well-known/jwks.json"
           redisAddr: "redis:6379"
           redisDB: 0
           jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
+          revocationPrefix: "auth:revocation"
           jwksInvalidateChannel: "auth:jwks:update"
           publicPaths:
             - "/health"
             - "/.well-known/"
           userIdHeader: "X-User-Id"
           userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
           userSessionHeader: "X-User-Session-Id"
+          tokenJtiHeader: "X-Token-Jti"
+
+    # Product Service JWT Auth
+    jwt-auth-product:
+      plugin:
+        jwt-auth:
+          # Product Service tự thực thi authorization role ADMIN sau khi gateway
+          # xác minh token và inject trusted identity headers.
+          authServiceURL: "http://auth-service:8080"
+          jwksPath: "/.well-known/jwks.json"
+          redisAddr: "redis:6379"
+          redisDB: 0
+          jwksCacheTTLMinutes: 10
+          revocationPrefix: "auth:revocation"
+          jwksInvalidateChannel: "auth:jwks:update"
+          publicPaths:
+            - "/health"
+            - "/.well-known/"
+          userIdHeader: "X-User-Id"
+          userRolesHeader: "X-User-Roles"
+          userSessionHeader: "X-User-Session-Id"
+          tokenJtiHeader: "X-Token-Jti"
 
     # Order Service JWT Auth
     jwt-auth-order:
       plugin:
         jwt-auth:
-          authServiceURL: "http://auth-service:8081"
+          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
+          # Port 8081 la listener internal mTLS va khong co route JWKS.
+          authServiceURL: "http://auth-service:8080"
           jwksPath: "/.well-known/jwks.json"
           redisAddr: "redis:6379"
           redisDB: 0
           jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
+          revocationPrefix: "auth:revocation"
           jwksInvalidateChannel: "auth:jwks:update"
           publicPaths:
             - "/health"
             - "/.well-known/"
           userIdHeader: "X-User-Id"
           userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
           userSessionHeader: "X-User-Session-Id"
+          tokenJtiHeader: "X-Token-Jti"
 
     # Payment Service JWT Auth (strictest)
     jwt-auth-payment:
       plugin:
         jwt-auth:
-          authServiceURL: "http://auth-service:8081"
+          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
+          # Port 8081 la listener internal mTLS va khong co route JWKS.
+          authServiceURL: "http://auth-service:8080"
           jwksPath: "/.well-known/jwks.json"
           redisAddr: "redis:6379"
           redisDB: 0
           jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
+          revocationPrefix: "auth:revocation"
           jwksInvalidateChannel: "auth:jwks:update"
           publicPaths:
             - "/health"
             - "/.well-known/"
           userIdHeader: "X-User-Id"
           userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
           userSessionHeader: "X-User-Session-Id"
+          tokenJtiHeader: "X-Token-Jti"
 
     # -------------------------------------------------------------------------
     # Rate Limiting Middlewares
@@ -156,11 +181,45 @@ http:
         customResponseHeaders:
           X-Request-Id: ""
 
+    # -------------------------------------------------------------------------
+    # Identity header sanitization
+    #
+    # runtime-contract.md muc 1 va muc 4: Traefik phai loai bo moi identity
+    # header do client gui TRUOC khi xac thuc, ke ca tren route anonymous. Gia
+    # tri rong nghia la xoa header. X-Service-Identity nam trong danh sach nay vi
+    # Product Service dung header do cho API noi bo /internal/v1 (chi mTLS trong
+    # mang private, khong bao gio duoc route qua gateway).
+    # -------------------------------------------------------------------------
+    strip-identity-headers:
+      headers:
+        customRequestHeaders:
+          X-User-Id: ""
+          X-User-Roles: ""
+          X-User-Session-Id: ""
+          X-Token-Jti: ""
+          X-Service-Identity: ""
+
     # Dev Auth Middleware (injects default X-User-Id for dev testing)
     dev-auth:
       headers:
         customRequestHeaders:
-          X-User-Id: "user-123"
+          # Phai la UUID: service downstream parse header nay bang uuid.Parse va
+          # tra 401 neu khong parse duoc. CHI dung cho development - middleware
+          # nay bo qua toan bo viec verify token.
+          X-User-Id: "00000000-0000-4000-8000-000000000123"
+          X-User-Roles: "BUYER"
+
+    # Dev Admin Auth Middleware (catalog admin API cua Product Service)
+    #
+    # CHI dung cho development, giong dev-auth nhung voi role ADMIN vi
+    # /api/v1/products, /api/v1/categories va /api/v1/attributes deu la admin
+    # API. Production thay bang jwt-auth/gateway-auth: role phai den tu claim
+    # `roles` cua access token da verify, khong phai tu middleware nay.
+    dev-admin-auth:
+      headers:
+        customRequestHeaders:
+          X-User-Id: "00000000-0000-4000-8000-000000000999"
+          X-User-Roles: "ADMIN"
 
 
     # -------------------------------------------------------------------------
@@ -242,6 +301,14 @@ http:
     # Insecure transport (for internal services)
     insecure-transport:
       insecureSkipVerify: true
+
+    # Business API transport - ngan sach timeout tai runtime-contract.md muc 5.1
+    business-api:
+      maxIdleConnsPerHost: 100
+      forwardingTimeouts:
+        dialTimeout: 3s
+        responseHeaderTimeout: 25s
+        idleConnTimeout: 120s
 
 # =============================================================================
 # TCP Services (for non-HTTP protocols)

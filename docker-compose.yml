@@ -69,7 +69,7 @@ services:
       CONFIG_STORAGE_TOPIC: product-service-connect-configs
       OFFSET_STORAGE_TOPIC: product-service-connect-offsets
       STATUS_STORAGE_TOPIC: product-service-connect-status
-      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
       VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
@@ -103,7 +103,15 @@ services:
       POSTGRES_DB: product_service
       POSTGRES_MAX_CONNECTIONS: "100"
       POSTGRES_SHARED_BUFFERS: "256MB"
-      POSTGRES_WAL_LEVEL: "logical"
+    # Debezium đọc logical replication slot, nên wal_level phải là logical.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
     ports:
       - "15432:5432"
     volumes:
@@ -140,6 +148,46 @@ services:
     networks:
       - ecommerce-network
 
+  # ── MinIO (S3-compatible object storage) ───────────────────
+  # Review media bytes. Review owns the metadata and the lifecycle; the bytes live
+  # here, and the API never exposes an object key (ADR-011).
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ecommerce-network
+
+  # Creates the review media bucket once and exits; MinIO has no declarative bucket
+  # configuration and Review deliberately never creates buckets at runtime.
+  minio-init:
+    image: minio/mc:RELEASE.2024-01-18T07-03-39Z
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/review-media &&
+      echo 'review-media bucket ready'"
+    networks:
+      - ecommerce-network
+
   # ── Search Service ─────────────────────────────────────────
   search-service:
     build:
@@ -154,15 +202,91 @@ services:
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
       SPRING_PROFILES_ACTIVE: dev
+      # Bearer service identity for Review's internal rating export. It matches
+      # REVIEW_INTERNAL_EXPORT_TOKENS on review-service and reaches that route only.
+      REVIEW_INTERNAL_TOKEN: dev-search-export-token
     ports:
       - "8081:8080"
     networks:
       - ecommerce-network
     labels:
       - "traefik.enable=true"
+      # Search doc catalog la route anonymous theo thiet ke: khong endpoint nao
+      # duoi /api/v1/search can identity. API reindex nam o /internal/v1/search
+      # va khong duoc route qua gateway.
       - "traefik.http.routers.search-service.rule=PathPrefix(`/api/v1/search`)"
       - "traefik.http.routers.search-service.entrypoints=web"
       - "traefik.http.services.search-service.loadbalancer.server.port=8080"
+
+  # ── Review Service ─────────────────────────────────────────
+  review-service:
+    build:
+      context: ./java/services/review-service
+    container_name: review-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+
+      DB_URL: jdbc:postgresql://postgres:5432/review_service?currentSchema=review,public
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      KAFKA_BOOTSTRAP: kafka:9092
+
+      # Both HMAC secrets are required and stable. Rotating the alias secret starts a
+      # new pseudonym namespace; rotating the guard secret orphans every committed
+      # deletion guard. Development values only - production reads a secret manager.
+      REVIEW_AUTHOR_ALIAS_HMAC_SECRET: dev-review-author-alias-secret
+      REVIEW_PRIVACY_GUARD_HMAC_SECRET: dev-review-privacy-guard-secret
+
+      # Bearer service identity for /internal/v1/**, split per route group so the
+      # Product Detail BFF cannot page the rating export and Search cannot read the
+      # PDP summary.
+      REVIEW_INTERNAL_PDP_TOKENS: dev-product-detail-bff-token
+      REVIEW_INTERNAL_EXPORT_TOKENS: dev-search-export-token
+
+      REVIEW_S3_ENDPOINT: http://minio:9000
+      REVIEW_S3_BUCKET: review-media
+      REVIEW_S3_ACCESS_KEY: minioadmin
+      REVIEW_S3_SECRET_KEY: minioadmin
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8087:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Admin moderation first and at a higher priority: it must never fall through to
+      # the buyer router, which does not require the ADMIN role.
+      - "traefik.http.routers.review-admin.rule=PathPrefix(`/api/v1/admin/reviews`)"
+      - "traefik.http.routers.review-admin.entrypoints=web"
+      - "traefik.http.routers.review-admin.service=review-service"
+      - "traefik.http.routers.review-admin.priority=40"
+      - "traefik.http.routers.review-admin.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
+      # Buyer and public reads. GET /api/v1/reviews/products/** is anonymous by design;
+      # every other route authorizes ownership inside the service.
+      - "traefik.http.routers.review-service.rule=PathPrefix(`/api/v1/reviews`)"
+      - "traefik.http.routers.review-service.entrypoints=web"
+      - "traefik.http.routers.review-service.service=review-service"
+      - "traefik.http.routers.review-service.priority=30"
+      - "traefik.http.routers.review-service.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.review-service.loadbalancer.server.port=8080"
+      # /internal/v1/** has no router: the PDP summary and the rating export travel
+      # only inside the cluster network, with a bearer service identity.
 
   # ── Product Service ────────────────────────────────────────
   product-service:
@@ -170,15 +294,14 @@ services:
       context: ./java/services/product-service
       dockerfile: Dockerfile
     container_name: product-service
+    # Không phụ thuộc Redis: catalog không có cache hay distributed lock.
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: docker
+      SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8081
       GRPC_PORT: 9091
 
@@ -187,30 +310,18 @@ services:
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
 
-      # Redis
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-
-      # Kafka
+      # Kafka: chỉ consume markdown snapshot của Promotion.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      SPRING_KAFKA_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
-      SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
+      MARKDOWN_TOPIC: t.promotion.markdown.events
+      MARKDOWN_DLQ_TOPIC: t.promotion.markdown.events.dlq
 
-      # gRPC
-      # GRPC_PORT: 9091
-      GRPC_SECURITY_INTERNAL_SECRET: dev-secret
-
-      # Debezium
-      DEBEZIUM_CONNECT_HOST: kafka-connect
-      DEBEZIUM_CONNECT_PORT: 8083
+      # Ký cursor export nội bộ; môi trường thật lấy từ secret manager.
+      EXPORT_CURSOR_SECRET: dev-export-cursor-secret
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
       - "8082:8081"
       - "9091:9091"
-    volumes:
-      - ./java/services/product-service/src/main/resources/lua:/app/lua:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
       interval: 30s
@@ -219,6 +330,28 @@ services:
       start_period: 90s
     networks:
       - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Catalog admin API. Ca ba prefix deu yeu cau role ADMIN nen dung chung mot
+      # router; khong co route public GET vi browse/search thuoc Search Service.
+      # Ket hop Path + PathPrefix co dau / cuoi de /api/v1/products-foo khong bi
+      # match nham vao Product Service.
+      - "traefik.http.routers.product-service.rule=(Path(`/api/v1/products`) || PathPrefix(`/api/v1/products/`)) || (Path(`/api/v1/categories`) || PathPrefix(`/api/v1/categories/`)) || (Path(`/api/v1/attributes`) || PathPrefix(`/api/v1/attributes/`))"
+      - "traefik.http.routers.product-service.entrypoints=web"
+      - "traefik.http.routers.product-service.service=product-service"
+      - "traefik.http.routers.product-service.priority=30"
+      # strip-identity-headers chay truoc: client khong the tu xung ADMIN.
+      # dev-admin-auth la middleware development, production thay bang
+      # jwt-auth/gateway-auth (runtime-contract.md muc 6.1).
+      - "traefik.http.routers.product-service.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.product-service.loadbalancer.server.port=8081"
+      - "traefik.http.services.product-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.product-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** cua Product khong co router: export/snapshot cho Search
+      # chi di trong mang noi bo bang service identity, khong qua gateway.
 
   # ── Promotion Service ──────────────────────────────────────
   promotion-service:
@@ -300,10 +433,9 @@ services:
       context: ./go/services/cart-service
       dockerfile: Dockerfile
     container_name: cart-service
+    # Cart has no PostgreSQL dependency: Redis is its only store (ADR-010).
     depends_on:
       redis:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
@@ -311,24 +443,18 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: development
-      LOG_LEVEL: debug
 
       # Override yaml config via CART_-prefixed env vars (viper maps . → _)
-      # Database: overrides configs/application.yaml database.*
-      CART_DATABASE_HOST: postgres
-      CART_DATABASE_PORT: "5432"
-      CART_DATABASE_USER: postgres
-      CART_DATABASE_PASSWORD: postgres
-      CART_DATABASE_NAME: cart_db
-
-      # Redis: overrides configs/application.yaml redis.*
+      # Redis: the cart source of truth.
       CART_REDIS_ADDRS: redis:6379
 
-      # Kafka: overrides configs/application.yaml kafka.*
+      # Kafka: CART_ABANDONED out, ORDER_PAID in.
       CART_KAFKA_BROKERS: kafka:9092
 
-      # gRPC Product Service: overrides configs/application.yaml grpc.*
-      CART_GRPC_PRODUCT_SERVICE_ADDR: product-service:9091
+      # gRPC Product Service.
+      CART_PRODUCT_ADDRESS: product-service:9091
+
+      CART_LOGGING_LEVEL: debug
     ports:
       - "8085:8080"
     volumes:
@@ -337,9 +463,11 @@ services:
       - ecommerce-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.cart-service.rule=PathPrefix(`/api/v1/carts`)"
+      # Only the paths of Cart OpenAPI v1; /internal/v1/carts/** has no router and is
+      # reached by checkout-service inside the network only.
+      - "traefik.http.routers.cart-service.rule=Path(`/api/v1/carts/mine`) || Path(`/api/v1/carts/mine/items`)"
       - "traefik.http.routers.cart-service.entrypoints=web"
-      - "traefik.http.routers.cart-service.middlewares=dev-auth@file"
+      - "traefik.http.routers.cart-service.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.cart-service.loadbalancer.server.port=8080"
 
   # ── Auth Service ───────────────────────────────────────────
@@ -356,18 +484,21 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: auth_db
-      DATABASE_USERNAME: postgres
-      DATABASE_PASSWORD: postgres
+      # Config doc override qua tien to AUTH_ (viper SetEnvPrefix trong
+      # internal/common/config). Bien khong co tien to bi bo qua im lang, tru
+      # DB_PASSWORD va REDIS_PASSWORD duoc noi thang trong application.yaml.
+      AUTH_DATABASE_HOST: postgres
+      AUTH_DATABASE_PORT: "5432"
+      AUTH_DATABASE_NAME: auth_db
+      AUTH_DATABASE_USERNAME: postgres
       DB_PASSWORD: postgres
-      DATABASE_MAX_OPEN_CONNS: "100"
-      DATABASE_MAX_IDLE_CONNS: "10"
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
+      AUTH_REDIS_HOST: redis
+      AUTH_REDIS_PORT: "6379"
       REDIS_PASSWORD: ''
-      KAFKA_BROKERS: kafka:9092
+      AUTH_KAFKA_BROKERS: kafka:9092
+      # AES-256-GCM key bao ve private JWT key trong auth.jwt_keys.
+      # CHI danh cho development. Production phai lay tu secret manager.
+      AUTH_KEYS_MASTER_KEY: "CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0="
     ports:
       - "8086:8080"
     volumes:
@@ -394,22 +525,16 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      APP_PORT: 8080
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: postgres
+      # Every key of configs/application.yaml is overridable with a USER_ prefix.
+      USER_APP_ENV: development
+      USER_DATABASE_HOST: postgres
+      # init-db.sh creates this database in the shared PostgreSQL instance; the
+      # schema itself is applied with `make migrate-up`.
+      USER_DATABASE_NAME: user_service
+      USER_REDIS_HOST: redis
+      USER_KAFKA_BROKERS: kafka:9092
       DB_PASSWORD: postgres
-      DB_NAME: user_service
-      DB_SSLMODE: disable
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      KAFKA_BROKERS: kafka:9092
-      KAFKA_AUTH_TOPIC: t.auth.events
-      KAFKA_USER_TOPIC: t.user.events
-      KAFKA_CONSUMER_GROUP: user-service
-      KAFKA_OFFSET_RESET: earliest
-      JWT_SECRET: your-secret-key-change-in-production
-      RATE_LIMIT_ENABLED: "true"
+      REDIS_PASSWORD: ""
     # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
     volumes:
       - ./go/services/user-service/configs:/app/configs:ro
@@ -420,7 +545,8 @@ services:
       - "traefik.http.routers.user-service.rule=PathPrefix(`/api/v1/users`)"
       - "traefik.http.routers.user-service.entrypoints=web"
       - "traefik.http.routers.user-service.middlewares=jwt-auth-user@file"
-      - "traefik.http.services.user-service.loadbalancer.server.port=8080"
+      # 8082 is the public API; the internal checkout API on 8083 stays off Traefik.
+      - "traefik.http.services.user-service.loadbalancer.server.port=8082"
 
   # ── Notification dev dependencies (profile: notification) ──
   # Chỉ bật bằng `docker compose --profile notification up`. Mailpit thay SES ở
@@ -467,6 +593,64 @@ services:
       start_period: 20s
     networks:
       - ecommerce-network
+
+  # ── Notification Service (profile: notification) ──────────
+  # Một binary nhiều ROLE; dev chạy ROLE=all. Public 8080 (inbox, qua Traefik)
+  # map host 8091; internal 8081 (status/ops/metrics) map host 8092 — không qua
+  # Gateway. Thiết kế: docs/notification/13-development.md.
+  notification-service:
+    build:
+      context: ./go/services/notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    profiles: ["notification"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    environment:
+      # Mọi key của configs/application.yaml override được với tiền tố NOTIFICATION_.
+      NOTIFICATION_APP_ENV: development
+      NOTIFICATION_APP_ROLE: all
+      NOTIFICATION_DATABASE_HOST: postgres
+      NOTIFICATION_DATABASE_NAME: notification_db
+      DB_PASSWORD: postgres
+      NOTIFICATION_REDIS_HOST: redis
+      REDIS_PASSWORD: ""
+      NOTIFICATION_KAFKA_BROKERS: kafka:9092
+      NOTIFICATION_EMAIL_PROVIDER: smtp
+      NOTIFICATION_EMAIL_SMTP_HOST: mailpit
+      NOTIFICATION_EMAIL_SMTP_PORT: "1025"
+      NOTIFICATION_TRACK_QUEUE_URL: http://localstack:4566/000000000000/notification-ses-events
+      NOTIFICATION_TRACK_AWS_ENDPOINT: http://localstack:4566
+      NOTIFICATION_TRACK_CORRELATE_PROVIDER: mailpit
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      # Auth internal listener (8081), không phải public 8080.
+      NOTIFICATION_AUTH_BASE_URL: http://auth-service:8081
+      NOTIFICATION_FRONTEND_BASE_URL: http://localhost:3000
+      # Outbox: debezium (cần đăng ký connector, 13-development.md §4) hoặc poller.
+      NOTIFICATION_OUTBOX_PUBLISHER: poller
+    ports:
+      - "8091:8080"
+      - "8092:8081"
+    volumes:
+      - ./go/services/notification-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification-service.rule=PathPrefix(`/api/v1/notifications`)"
+      - "traefik.http.routers.notification-service.entrypoints=web"
+      - "traefik.http.routers.notification-service.middlewares=jwt-auth-user@file"
+      - "traefik.http.services.notification-service.loadbalancer.server.port=8080"
 
   # ── Frontend (Next.js) ────────────────────────────────────
   frontend:
@@ -516,6 +700,7 @@ volumes:
   postgres-data:
   redis-data:
   kafka-data:
+  minio-data:
 
 # ── Networks ───────────────────────────────────────────────
 networks:

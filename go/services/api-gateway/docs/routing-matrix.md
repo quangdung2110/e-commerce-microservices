@@ -13,8 +13,12 @@
 | `/api/users/**` | user-service | Yes | 50 req/s | 10 | All endpoints require auth |
 | `/api/v1/orders/**`, `/api/v1/order-operations/**` | order-service | Yes | 50 req/s | 20 | Buyer-scoped Order API |
 | `/api/v1/admin/orders/**`, `/api/v1/admin/order-operations/**` | order-service | Yes, `ADMIN` | 20 req/s | 30 | Admin Order API |
-| `/api/products/**` (GET) | product-service | No | 100 req/s | 10 | Public read access |
-| `/api/products/**` (POST/PUT/DELETE) | product-service | Yes | 50 req/s | 20 | Write operations require auth |
+| `/api/v1/products/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Product, SKU, media and lifecycle administration |
+| `/api/v1/categories/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Category and category-attribute administration |
+| `/api/v1/attributes/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Attribute and option administration |
+| `/api/v1/search/**` (GET) | search-service | No | 100 req/s | 10 | Public storefront browse/search |
+| `/api/v2/search/**` (GET, trừ reindex) | search-service | No | 100 req/s | 10 | Canonical Search v2; chạy song song v1 trong migration |
+| `/api/v2/search/reindex-runs/**` (GET, POST) | search-service | Yes, `ADMIN` | 50 req/s | 30 | Priority cao hơn route public Search; không dùng `/internal` |
 | `/api/payments/**` | payment-service | Yes | 20 req/s | 10 | Strictest rate limit |
 | `/.well-known/jwks.json` | auth-service | No | 10 req/s | 5 | JWKS public key endpoint |
 | `/.well-known/openid-configuration` | auth-service | No | 10 req/s | 5 | OIDC discovery |
@@ -38,17 +42,29 @@ All three routes strip client-supplied identity headers and return `Cache-Contro
 private, no-store`. Gateway never retries either POST. Access logs must record the
 route template or redact/hash the submission token path segment before activation.
 
+`docker-compose.yml` là cấu hình development nên router Product dùng
+`dev-admin-auth@file` để inject một identity `ADMIN` cố định sau khi đã xóa các
+header giả mạo từ client. Khi triển khai thật, thay middleware này bằng
+`jwt-auth-product@file` (hoặc ForwardAuth tương đương); Product Service vẫn là
+nơi quyết định caller có role `ADMIN` hay không.
+
 # =============================================================================
 # HEADER ENRICHMENT (after authentication)
 # =============================================================================
 
+Nguon chuan cua bang nay la docs/gateway/runtime-contract.md muc 6.1. Khi hai
+file lech nhau thi runtime-contract dung; dung sua bang duoi day mot minh.
+
 | Header Name | Source (JWT Claim) | Description | Required |
 |-------------|-------------------|-------------|----------|
 | `X-User-Id` | `sub` | User's unique identifier | Yes |
-| `X-User-Email` | `email` | User's email address | No |
 | `X-User-Roles` | `roles` | Comma-separated roles | Yes |
-| `X-User-Device-Id` | `device_id` | Device identifier | No |
-| `X-User-Session-Id` | `session_id` | Session identifier | No |
+| `X-User-Session-Id` | `sid` | Session family id | Yes |
+| `X-Token-Jti` | `jti` | Verified token id; Auth denylists it on logout | Yes |
+
+Access token khong co claim `email` va `device_id`, nen gateway khong sinh
+`X-User-Email` hay `X-User-Device-Id`. Ca bon header tren deu bi xoa khoi
+request cua client truoc khi xac thuc, ke ca tren route anonymous.
 
 # =============================================================================
 # LOAD BALANCING METHODS
@@ -58,7 +74,7 @@ route template or redact/hash the submission token path segment before activatio
 |---------|--------|----------|
 | user-service | Round Robin | Default, stateless |
 | order-service | Round Robin | Default, stateless |
-| product-service | Round Robin | Default, caching layer upstream |
+| product-service | Round Robin | Default, stateless catalog API |
 | payment-service | Round Robin | Transaction integrity |
 | auth-service | Round Robin | JWKS fetch requests |
 
@@ -70,7 +86,7 @@ route template or redact/hash the submission token path segment before activatio
 |---------|-------------|----------|---------|----------------|
 | user-service | `/health` | 10s | 5s | 200 |
 | order-service | `/health` | 10s | 5s | 200 |
-| product-service | `/health` | 10s | 5s | 200 |
+| product-service | `/actuator/health` | 10s | 5s | 200 |
 | payment-service | `/health` | 10s | 5s | 200 |
 | auth-service | `/health` | 10s | 5s | 200 |
 
@@ -83,8 +99,17 @@ route template or redact/hash the submission token path segment before activatio
 curl -k https://localhost/api/users/123 \
   -H "Authorization: Bearer <token>"
 
-# Test routing - Product Service (public)
-curl -k https://localhost/api/products
+# Test routing - Product Service admin API (development compose injects ADMIN)
+curl http://localhost:8088/api/v1/products
+
+# Public product browse remains on Search Service
+curl http://localhost:8088/api/v1/search/products
+
+# Canonical Search v2 storefront route
+curl http://localhost:8088/api/v2/search/products
+
+# Must stay 404 at the gateway; this endpoint is internal-only
+curl http://localhost:8088/internal/v1/products/export
 
 # Test routing - JWKS Endpoint
 curl -k https://localhost/.well-known/jwks.json
