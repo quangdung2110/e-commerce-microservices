@@ -1,6 +1,7 @@
 package com.platform.productservice.web.dto;
 
 import com.platform.productservice.common.ReplayOffset;
+import com.platform.productservice.domain.ProductSlug;
 import com.platform.productservice.domain.enums.MediaType;
 import com.platform.productservice.domain.enums.ProductStatus;
 import com.platform.productservice.domain.enums.SkuStatus;
@@ -9,6 +10,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
@@ -113,7 +115,8 @@ public final class ProductDtos {
 
     public record CreateProductRequest(@NotNull UUID categoryId,
                                        @NotBlank @Size(max = 255) String name,
-                                       @NotBlank @Size(max = 180) String slug,
+                                       @NotBlank @Size(max = ProductSlug.MAX_LENGTH)
+                                       @Pattern(regexp = ProductSlug.PATTERN) String slug,
                                        String description,
                                        @NotNull Map<String, Object> attributes,
                                        @Valid @Size(max = 100) List<CreateMediaInput> media,
@@ -122,7 +125,8 @@ public final class ProductDtos {
 
     public record ReplaceProductRequest(@NotNull UUID categoryId,
                                         @NotBlank @Size(max = 255) String name,
-                                        @NotBlank @Size(max = 180) String slug,
+                                        @NotBlank @Size(max = ProductSlug.MAX_LENGTH)
+                                        @Pattern(regexp = ProductSlug.PATTERN) String slug,
                                         String description,
                                         @NotNull Map<String, Object> attributes) {
     }

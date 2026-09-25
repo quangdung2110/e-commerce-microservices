@@ -4,6 +4,7 @@ import com.platform.productservice.common.DomainException;
 import com.platform.productservice.common.ErrorCode;
 import com.platform.productservice.common.Uuids;
 import com.platform.productservice.domain.ProductLifecycle;
+import com.platform.productservice.domain.ProductSlug;
 import com.platform.productservice.domain.entity.CategoryEntity;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.domain.entity.ProductMediaEntity;
@@ -61,6 +62,7 @@ public class ProductCommandService {
     @Transactional
     public ProductDtos.ProductResponse create(ProductDtos.CreateProductRequest request) {
         Instant now = Instant.now();
+        ProductSlug.require(request.slug());
         CategoryEntity category = categoryTree.requireLeaf(request.categoryId());
         AttributeValidator.CategorySchema schema = attributeValidator.schemaOf(category.getCategoryId());
         attributeValidator.validateProductAttributes(schema, request.attributes());
@@ -141,6 +143,7 @@ public class ProductCommandService {
                                                String ifMatch,
                                                ProductDtos.ReplaceProductRequest request) {
         Instant now = Instant.now();
+        ProductSlug.require(request.slug());
         ProductEntity product = writeSupport.lockProduct(productId);
         writeSupport.requireRevision(product, ifMatch);
         List<SkuEntity> skus = writeSupport.lockSkus(productId);

@@ -305,6 +305,50 @@ class ProductCommandIntegrationTest extends AbstractCatalogIntegrationTest {
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
+    @Test
+    @DisplayName("Slug sai định dạng bị từ chối trước khi ghi (PRODUCT-BR-013)")
+    void createRejectsMalformedSlug() {
+        UUID categoryId = givenLeafCategory("phones");
+        List<String> malformed = List.of("Pixel-9", "pixel_9", "điện-thoại", "pixel 9",
+                "-pixel", "pixel-", "pixel--9", "a".repeat(181));
+
+        for (String slug : malformed) {
+            assertThatThrownBy(() -> productCommandService.create(new ProductDtos.CreateProductRequest(
+                    categoryId, "Pixel", slug, null, Map.of(), List.of(), List.of(sku("P-1", 1000L)))))
+                    .as(slug)
+                    .isInstanceOf(DomainException.class)
+                    .extracting(e -> ((DomainException) e).errorCode())
+                    .isEqualTo(ErrorCode.INVALID_REQUEST);
+        }
+        assertThat(productRepository.count()).isZero();
+        assertThat(outboxRowsOfType(CatalogEventTypes.SKU_UPSERTED)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Đổi sang slug sai định dạng bị từ chối, slug cũ giữ nguyên")
+    void replaceRejectsMalformedSlug() {
+        UUID categoryId = givenLeafCategory("phones");
+        ProductDtos.ProductResponse product = givenProduct(categoryId, "pixel-9", 1000L);
+
+        assertThatThrownBy(() -> productCommandService.replace(product.productId(), etagOf(product.productId()),
+                new ProductDtos.ReplaceProductRequest(categoryId, "Pixel 9", "Pixel-9", null, Map.of())))
+                .isInstanceOf(DomainException.class)
+                .extracting(e -> ((DomainException) e).errorCode())
+                .isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(productRepository.findById(product.productId()).orElseThrow().getSlug()).isEqualTo("pixel-9");
+    }
+
+    @Test
+    @DisplayName("CHECK constraint chặn slug sai định dạng ở mọi đường ghi")
+    void databaseRejectsMalformedSlug() {
+        UUID categoryId = givenLeafCategory("phones");
+        ProductDtos.ProductResponse product = givenProduct(categoryId, "pixel", 1000L);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "UPDATE products SET slug = 'Pixel_9' WHERE product_id = ?", product.productId()))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
     private ProductDtos.CreateSkuRequest sku(String code, long basePriceVnd) {
         return new ProductDtos.CreateSkuRequest(code, basePriceVnd, SkuStatus.ACTIVE, Map.of(), List.of());
     }

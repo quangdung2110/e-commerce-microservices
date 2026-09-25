@@ -60,9 +60,11 @@ trên môi trường dùng chung nếu chưa có runbook/approval vận hành.
 - `category_revision`, tombstone revision và `CATALOG_REINDEX_REQUESTED` được test khi logic chạm category tree.
 - Media test phải bao phủ ưu tiên ảnh SKU, fallback ảnh Product, loại `VIDEO`, giá trị `null` và fan-out đúng SKU khi ảnh Product đổi.
 - Slug test (PRODUCT-BR-013): tạo/sửa Product với slug có chữ hoa, dấu gạch dưới, dấu tiếng
-  Việt, gạch nối ở đầu/cuối hoặc liên tiếp, hay dài hơn 180 đều trả `400`. Migration Flyway
-  thêm CHECK slug phải liệt kê và sửa các slug hiện có không khớp pattern trước khi thêm
-  constraint, không được để migration thất bại giữa chừng.
+  Việt, gạch nối ở đầu/cuối hoặc liên tiếp, hay dài hơn 180 đều trả `400`. Migration
+  `V3__product_slug_format.sql` không tự sửa slug: đổi slug phải đi qua admin API để tăng
+  `catalog_revision` và phát `sku-upserted` cho Search. Khi còn slug sai, migration dừng trước
+  khi đổi bất cứ thứ gì và liệt kê `product_id => slug` để admin sửa rồi chạy lại; khi sạch
+  thì thêm `chk_products_slug_format`.
 - Compatibility và rollout/rollback được review.
 - Buyer Product Detail read test bao phủ `ACTIVE`/`HIDDEN`, media/variant/price và chứng minh response không có stock field.
   Theo ADR-018 còn phải chứng minh: category path gốc → lá; `value_label` chỉ có với `SELECT`;

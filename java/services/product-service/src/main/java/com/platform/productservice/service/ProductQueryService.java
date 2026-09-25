@@ -10,8 +10,10 @@ import com.platform.productservice.domain.enums.SkuStatus;
 import com.platform.productservice.infrastructure.persistence.ProductMediaRepository;
 import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
+import com.platform.productservice.service.support.BuyerDetailAssembler;
 import com.platform.productservice.service.support.CatalogAssembler;
 import com.platform.productservice.service.support.CursorCodec;
+import com.platform.productservice.web.dto.BuyerDtos;
 import com.platform.productservice.web.dto.ProductDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -36,6 +38,7 @@ public class ProductQueryService {
     private final SkuRepository skuRepository;
     private final ProductMediaRepository mediaRepository;
     private final CatalogAssembler assembler;
+    private final BuyerDetailAssembler buyerAssembler;
     private final CursorCodec cursorCodec;
 
     public ProductDtos.ProductPageResponse list(UUID categoryId,
@@ -67,20 +70,19 @@ public class ProductQueryService {
     }
 
     /**
-     * Buyer-read theo slug cho Product Detail BFF (ADR-015, WF-PRODUCT-007).
+     * Buyer-read theo slug cho Product Detail BFF (ADR-015, ADR-018, WF-PRODUCT-007).
      *
-     * <p>Khác {@link #get(UUID)} ở ba điểm, vì đây là dữ liệu cuối cùng đi tới
-     * trình duyệt người mua chứ không phải màn hình quản trị: chỉ Product
-     * {@code ACTIVE} được trả, SKU {@code INACTIVE} bị lọc, và Product không còn
-     * SKU saleable trả {@code 404}. Slug không tồn tại, {@code DRAFT} và
-     * {@code HIDDEN} dùng chung một lỗi để không rò rỉ sự tồn tại của catalog
-     * chưa công bố.
+     * <p>Chỉ Product {@code ACTIVE} được trả, SKU {@code INACTIVE} bị lọc cùng media
+     * của chúng, và Product không còn SKU saleable trả {@code 404}. Slug không tồn tại,
+     * {@code DRAFT} và {@code HIDDEN} dùng chung một lỗi để không rò rỉ sự tồn tại của
+     * catalog chưa công bố.
      *
-     * <p>Response không có field tồn kho nào — {@link ProductDtos.ProductResponse}
-     * không định nghĩa chúng — và method này không gọi Inventory hay Search.
-     * Availability theo SKU là read composition của BFF (ADR-009).
+     * <p>Response là projection buyer đã resolve category path, nhãn thuộc tính, trục
+     * biến thể và gallery giới hạn. Nó không có field tồn kho nào —
+     * {@link BuyerDtos.BuyerProductDetail} không định nghĩa chúng — và method này không
+     * gọi Inventory hay Search. Availability theo SKU là read composition của BFF.
      */
-    public ProductDtos.ProductResponse getBuyerDetail(String slug) {
+    public BuyerDtos.BuyerProductDetail getBuyerDetail(String slug) {
         ProductEntity product = productRepository.findBySlug(slug)
                 .filter(candidate -> candidate.getStatus() == ProductStatus.ACTIVE)
                 .orElseThrow(() -> DomainException.of(ErrorCode.PRODUCT_NOT_FOUND,
@@ -95,8 +97,12 @@ public class ProductQueryService {
                     "No catalog-active product is published at slug " + slug);
         }
 
-        List<ProductMediaEntity> media = mediaRepository
-                .findByProductIdOrderBySortOrderAscMediaIdAsc(product.getProductId());
-        return assembler.toProduct(product, saleableSkus, media);
+        UUID productId = product.getProductId();
+        return buyerAssembler.toBuyerDetail(
+                product,
+                saleableSkus,
+                mediaRepository.findBuyerGallery(productId,
+                        BuyerDetailAssembler.PRODUCT_MEDIA_LIMIT, BuyerDetailAssembler.SKU_MEDIA_LIMIT),
+                mediaRepository.findThumbnailCandidates(productId));
     }
 }

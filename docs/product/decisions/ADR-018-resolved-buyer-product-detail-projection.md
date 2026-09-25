@@ -13,6 +13,8 @@ evidence:
   - contracts/http/product/v1/openapi.yaml
   - contracts/http/product-detail-bff/v1/openapi.yaml
   - docs/product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md
+  - java/services/product-service/src/main/java/com/platform/productservice/service/support/BuyerDetailAssembler.java
+  - java/services/product-service/src/test/java/com/platform/productservice/integration/BuyerProductDetailIntegrationTest.java
 ---
 
 # ADR-018 — Buyer Product Detail read trả projection đã resolve

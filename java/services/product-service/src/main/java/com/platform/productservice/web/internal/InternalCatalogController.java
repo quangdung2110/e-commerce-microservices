@@ -4,6 +4,7 @@ import com.platform.productservice.config.ProductProperties;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.service.CatalogExportService;
 import com.platform.productservice.service.ProductQueryService;
+import com.platform.productservice.web.dto.BuyerDtos;
 import com.platform.productservice.web.dto.CategoryDtos;
 import com.platform.productservice.web.dto.ProductDtos;
 import lombok.RequiredArgsConstructor;
@@ -27,8 +28,8 @@ import java.util.UUID;
  * export. Không chụp được đủ mọi partition thì trả {@code 503} và Search giữ
  * alias cũ (contracts/http/product/v1/openapi.yaml, ADR-014).
  *
- * <p>Nhóm buyer-read phục vụ Product Detail BFF và chỉ trả catalog đã công bố,
- * không có field tồn kho nào (ADR-015).
+ * <p>Nhóm buyer-read phục vụ Product Detail BFF và chỉ trả catalog đã công bố dưới
+ * dạng projection buyer đã resolve, không có field tồn kho nào (ADR-015, ADR-018).
  */
 @RestController
 @RequestMapping("/internal/v1")
@@ -63,17 +64,13 @@ public class InternalCatalogController {
     }
 
     /**
-     * Buyer-read theo slug cho Product Detail BFF (WF-PRODUCT-007). ETag dùng
-     * chung {@code catalog_revision} của aggregate như snapshot, nên BFF có thể
-     * conditional-GET mà không cần khái niệm version riêng.
+     * Buyer-read theo slug cho Product Detail BFF (WF-PRODUCT-007, ADR-018). Không có
+     * ETag: response gồm category và nhãn attribute đọc lúc request, những thứ đổi mà
+     * không tăng {@code catalog_revision}, nên revision đó không định danh được response.
      */
     @GetMapping("/product-details/{slug}")
-    public ResponseEntity<ProductDtos.ProductResponse> buyerProductDetail(
-            @PathVariable("slug") String slug) {
-        ProductDtos.ProductResponse product = productQueryService.getBuyerDetail(slug);
-        return ResponseEntity.ok()
-                .eTag(ProductEntity.etagOf(product.catalogRevision()))
-                .body(product);
+    public BuyerDtos.BuyerProductDetail buyerProductDetail(@PathVariable("slug") String slug) {
+        return productQueryService.getBuyerDetail(slug);
     }
 
     private int boundedLimit(Integer limit) {
