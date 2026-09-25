@@ -61,7 +61,7 @@ services:
 
   - id: product-detail-bff
     bounded_context: storefront-product-read
-    runtime: undecided
+    runtime: java-planned
     status: documented
     contract_adoption: not_started
     docs: docs/product-detail-bff/README.md

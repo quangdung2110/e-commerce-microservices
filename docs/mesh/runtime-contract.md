@@ -166,7 +166,7 @@ của Istio.
 
 | Route đích | Retry mesh | Timeout mesh | Ghi chú |
 |---|---|---|---|
-| `GET /internal/v1/products/*/snapshot`, `GET /internal/v1/product-details/*` | 2 lần, `connect-failure,refused-stream` | 3 giây | Idempotent read. PDP BFF cắt `product-details` ở 400 ms và không retry ở ứng dụng ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
+| `GET /internal/v1/products/*/snapshot`, `GET /internal/v1/product-details/*` | 2 lần, `connect-failure,refused-stream` | 3 giây | Idempotent read. PDP BFF cắt `product-details` ở `min(400 ms, deadline còn lại − 50 ms)` và không retry ở ứng dụng ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md), [ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md)); mesh là giới hạn ngoài |
 | gRPC `ProductService/GetSku`, `GetBatchSkus` | 2 lần, `connect-failure,refused-stream,unavailable` | 2 giây | Proto ghi deadline 500 ms / 1 giây; mesh là giới hạn ngoài |
 | `GET .../checkout-snapshot` (User) | 2 lần, `connect-failure,refused-stream` | 2 giây | Checkout budget 500 ms |
 | `GET /internal/v1/carts/*/checkout-snapshot` | 2 lần, `connect-failure,refused-stream` | 1 giây | Pure Cart read; Checkout budget 500 ms |

@@ -12,23 +12,31 @@ owners:
 ## WF-PDP-001 — Read Product Detail
 
 1. Gateway định tuyến request public (anonymous, rate profile `public-read`) tới BFF.
-   BFF đặt deadline PDP 1 000 ms tính từ lúc nhận request. Slug không khớp pattern
-   thì trả `404` ngay.
-2. BFF gọi Product internal buyer-read theo slug với timeout 400 ms.
-3. Product trả `404` thì BFF trả `404` ngay, không gọi Inventory hoặc Review. Product
-   timeout/lỗi/circuit open/bulkhead đầy thì BFF trả `503`.
+   BFF đặt deadline PDP 1 000 ms tính từ lúc nhận request và chuẩn hóa request ID
+   (`X-Request-Id` hợp lệ, nếu không thì trace ID). Slug không khớp pattern hoặc dài hơn
+   180 thì trả `404` ngay.
+2. Nếu deadline còn dưới 100 ms thì trả `503` mà không gọi Product. Ngược lại BFF gọi
+   Product internal buyer-read theo slug với timeout `min(400 ms, deadline còn lại − 50 ms)`.
+3. Product trả `404` thì BFF trả `404` (`no-store`) ngay, không gọi Inventory hoặc Review. Product
+   timeout/lỗi/circuit open/bulkhead đầy, hoặc response vi phạm schema hay ràng buộc tham
+   chiếu (media trỏ SKU không có, variant value không có option, trùng `sku_id`/`media_id`)
+   thì BFF trả `503`.
 4. Với Product catalog-active, BFF lấy các `sku_id` active. Nếu deadline còn lại từ
    100 ms trở lên, BFF đồng thời gọi một Inventory batch availability read và Review
-   internal PDP read, mỗi call với timeout `min(300 ms, deadline còn lại − 50 ms)`;
-   dependency có circuit mở hoặc bulkhead đầy thì không được gọi. Nếu còn dưới 100 ms,
-   BFF bỏ cả hai call.
-5. Với mỗi SKU active, BFF map kết quả Inventory `IN_STOCK`/`OUT_OF_STOCK`; item thiếu
-   hoặc `UNKNOWN` được map thành `UNKNOWN`. Call Inventory không cho kết quả hợp lệ hoặc
+   internal PDP read (`preview_limit` theo cấu hình, kèm Bearer token), mỗi call với
+   timeout `min(300 ms, deadline còn lại − 50 ms)`; dependency bị tắt bằng cờ, có circuit
+   mở hoặc bulkhead đầy thì không được gọi. Nếu còn dưới 100 ms, BFF bỏ cả hai call.
+5. Với mỗi SKU active, BFF map kết quả Inventory `IN_STOCK`/`OUT_OF_STOCK`; item
+   `UNKNOWN` giữ `UNKNOWN`; item thiếu thành `UNKNOWN` và item cho SKU không yêu cầu bị bỏ,
+   cả hai ghi `contract_violation` mức item. Call Inventory không cho kết quả hợp lệ hoặc
    không được gọi thì mọi SKU là `UNKNOWN`.
 6. Review trả thành công thì map `AVAILABLE`; aggregate 0/preview rỗng là hợp lệ.
    Review không cho kết quả hợp lệ hoặc không được gọi thì map `UNAVAILABLE` và không
    tạo rating/count giả.
-7. Trả response, kèm `Cache-Control: no-store` nếu có SKU `UNKNOWN` hoặc Review
+7. Compose response: chép category, thuộc tính, trục biến thể theo đúng thứ tự Product trả;
+   dựng `media[].url` và `skus[].thumbnail_url` từ CDN base URL cùng storage key, dùng URL
+   placeholder khi thumbnail `null`; không đưa storage key ra public.
+8. Trả response, kèm `Cache-Control: no-store` nếu có SKU `UNKNOWN` hoặc Review
    `UNAVAILABLE`. Không gọi Search, không gửi Inventory command và không mutate state.
 
 Inventory batch read là advisory UI query: BFF không retry ở ứng dụng; mesh cũng không

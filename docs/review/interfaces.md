@@ -145,9 +145,14 @@ The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
 `GET /internal/v1/reviews/products/{product_id}/pdp-summary` remains a read-only BFF
 endpoint. It returns aggregate and a bounded preview of `APPROVED` reviews. A product
 with no review returns aggregate zero; PostgreSQL failure returns 503, never fake zero.
-BFF propagates `traceparent` and optional `X-Request-Id`, does not retry in the hot path
-and maps timeout/5xx to `review_section.status = UNAVAILABLE`
-([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)).
+BFF propagates `traceparent` and a normalized `X-Request-Id` (8–128 characters, never a raw
+client value), sends the bearer token from its `PDP_REVIEW_SERVICE_TOKEN` and
+`preview_limit=3` by default, does not retry in the hot path and maps timeout/5xx to
+`review_section.status = UNAVAILABLE`
+([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md),
+[ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md)). Token
+rotation order: add the new token to `REVIEW_INTERNAL_PDP_TOKENS`, roll BFF, then remove
+the old token.
 
 ### Rating aggregate export
 

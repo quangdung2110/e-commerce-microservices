@@ -60,7 +60,7 @@ khi không còn category con lẫn Product. `path` và `is_leaf` là giá trị 
 
 | Bảng | Cột/chức năng chính | Constraint |
 |---|---|---|
-| `products` | Product root, category, nội dung, `status`, `catalog_revision`, timestamps | `slug` unique; status `DRAFT`/`ACTIVE`/`HIDDEN` |
+| `products` | Product root, category, nội dung, `status`, `catalog_revision`, timestamps | `slug` unique, CHECK kebab-case chữ thường `^[a-z0-9]+(-[a-z0-9]+)*$` (PRODUCT-BR-013); status `DRAFT`/`ACTIVE`/`HIDDEN` |
 | `product_skus` | SKU, `base_price_vnd`, `selling_price_vnd`, saleability admin | `sku_code` unique; status `ACTIVE`/`INACTIVE`; selling trong `[0, base]` |
 | `product_media` | Media Product hoặc SKU | Composite FK bảo đảm SKU thuộc đúng Product |
 

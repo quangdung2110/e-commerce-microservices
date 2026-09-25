@@ -45,7 +45,7 @@ workload nghiệp vụ duy nhất của Product; Product không chạy scheduled
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị catalog |
 | Inbound | Cart, Checkout | gRPC | Catalog saleability và giá hiện hành |
-| Inbound | Product Detail BFF | HTTP nội bộ mTLS | Buyer-read Product detail, không có stock |
+| Inbound | Product Detail BFF | HTTP nội bộ mTLS | Buyer-read Product detail đã resolve category path, thuộc tính, trục biến thể và media giới hạn ([ADR-018](./decisions/ADR-018-resolved-buyer-product-detail-projection.md)); không có stock |
 | Inbound | Promotion | Kafka | ACTIVE full markdown hoặc INACTIVE tombstone, guard `source_revision` |
 | Outbound | Search | Kafka | SKU/category snapshot, tombstone và category-tree reindex control |
 | Outbound | Promotion | Kafka | Product tombstone để persist terminal watermark và cleanup markdown rule |

@@ -59,6 +59,14 @@ trên môi trường dùng chung nếu chưa có runbook/approval vận hành.
   ACTIVE→INACTIVE clear configuration/reset price và ACTIVE đến muộn sau `ends_at`.
 - `category_revision`, tombstone revision và `CATALOG_REINDEX_REQUESTED` được test khi logic chạm category tree.
 - Media test phải bao phủ ưu tiên ảnh SKU, fallback ảnh Product, loại `VIDEO`, giá trị `null` và fan-out đúng SKU khi ảnh Product đổi.
+- Slug test (PRODUCT-BR-013): tạo/sửa Product với slug có chữ hoa, dấu gạch dưới, dấu tiếng
+  Việt, gạch nối ở đầu/cuối hoặc liên tiếp, hay dài hơn 180 đều trả `400`. Migration Flyway
+  thêm CHECK slug phải liệt kê và sửa các slug hiện có không khớp pattern trước khi thêm
+  constraint, không được để migration thất bại giữa chừng.
 - Compatibility và rollout/rollback được review.
 - Buyer Product Detail read test bao phủ `ACTIVE`/`HIDDEN`, media/variant/price và chứng minh response không có stock field.
+  Theo ADR-018 còn phải chứng minh: category path gốc → lá; `value_label` chỉ có với `SELECT`;
+  attribute/trục biến thể sắp theo tên (collation tiếng Việt, tie-break `code`); option chỉ gồm
+  giá trị SKU `ACTIVE` dùng và đúng thứ tự; cắt 20/10 media đúng thứ tự, không có media của SKU
+  `INACTIVE`; `thumbnail_storage_key` không đổi khi media bị cắt; response không có `ETag`.
 - Tài liệu hiện hành và ADR (khi có quyết định khó đảo ngược) được cập nhật.

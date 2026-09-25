@@ -46,7 +46,7 @@ CREATE TABLE products (
     product_id UUID PRIMARY KEY,
     category_id UUID NOT NULL REFERENCES categories(category_id) ON DELETE RESTRICT,
     name VARCHAR(255) NOT NULL,
-    slug VARCHAR(180) NOT NULL UNIQUE,
+    slug VARCHAR(180) NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
     description TEXT NULL,
     attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     status VARCHAR(16) NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'ACTIVE', 'HIDDEN')),

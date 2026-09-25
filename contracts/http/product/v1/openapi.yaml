@@ -747,9 +747,13 @@ paths:
       operationId: getBuyerProductDetail
       summary: Lấy catalog Product Detail cho Product Detail BFF
       description: >-
-        Chỉ Product Detail BFF gọi qua mTLS. Response chỉ chứa catalog, published
-        price, media và SKU variant của Product ACTIVE; không chứa quantity, stock
-        availability, reservation, stock revision hay stock timestamp.
+        Chỉ Product Detail BFF gọi qua mTLS. Response là projection buyer đã resolve
+        (ADR-018): Product ACTIVE, chỉ SKU ACTIVE, category kèm breadcrumb path, thuộc
+        tính không biến thể kèm tên/nhãn, trục biến thể kèm option đang dùng, và media
+        giới hạn 20 cấp Product + 10 mỗi SKU. Không chứa quantity, stock availability,
+        reservation, stock revision hay stock timestamp. Nhãn category/attribute được
+        resolve tại thời điểm đọc và không thuộc Product aggregate, nên response không
+        mang ETag.
       security: [{ productDetailBffMtls: [] }]
       parameters:
         - name: slug
@@ -760,11 +764,9 @@ paths:
       responses:
         '200':
           description: Buyer-readable catalog snapshot; BFF tự ghép advisory availability từ Inventory Availability Read API.
-          headers:
-            ETag: { $ref: '#/components/headers/ProductETag' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Product' }
+              schema: { $ref: '#/components/schemas/BuyerProductDetail' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '404': { $ref: '#/components/responses/ProductNotFound' }
@@ -950,6 +952,10 @@ components:
       type: string
       minLength: 1
       maxLength: 180
+      pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+      description: >-
+        Slug Product dạng kebab-case ASCII chữ thường (PRODUCT-BR-013). Admin gửi slug sai
+        pattern nhận 400; Product Detail BFF dùng cùng pattern để trả 404 mà không gọi Product.
     ProductStatus:
       type: string
       enum: [DRAFT, ACTIVE, HIDDEN]
@@ -1113,6 +1119,166 @@ components:
           maxItems: 100
           items: { $ref: '#/components/schemas/ProductSummary' }
         next_cursor: { type: string, minLength: 1, maxLength: 512 }
+    BuyerProductDetail:
+      type: object
+      additionalProperties: false
+      description: >-
+        Projection buyer của Product ACTIVE cho Product Detail BFF (ADR-018). Chỉ
+        catalog_revision là version của Product aggregate; category và nhãn
+        attribute/option phản ánh trạng thái hiện hành lúc đọc.
+      required:
+        - product_id
+        - name
+        - slug
+        - description
+        - catalog_revision
+        - updated_at
+        - category
+        - attributes
+        - variant_axes
+        - media
+        - skus
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        description:
+          oneOf:
+            - type: string
+            - type: 'null'
+        catalog_revision: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+        category: { $ref: '#/components/schemas/BuyerCategory' }
+        attributes:
+          type: array
+          maxItems: 100
+          description: >-
+            Thuộc tính không biến thể (mapping is_variant=false) có giá trị trong
+            Product.attributes. Sắp theo name bằng collation tiếng Việt, tie-break code.
+          items: { $ref: '#/components/schemas/BuyerAttributeValue' }
+        variant_axes:
+          type: array
+          maxItems: 100
+          description: >-
+            Mỗi mapping is_variant=true có ít nhất một SKU ACTIVE mang giá trị. Sắp như
+            attributes. Mọi giá trị trong skus[].variant_attributes có đúng một option
+            tương ứng ở đây.
+          items: { $ref: '#/components/schemas/BuyerVariantAxis' }
+        media:
+          type: array
+          maxItems: 5020
+          description: >-
+            Danh sách phẳng: tối đa 20 media cấp Product (sku_id null) và tối đa 10 media
+            cho mỗi SKU ACTIVE, mỗi nhóm lấy theo sort_order rồi media_id tăng dần. Sắp
+            media cấp Product trước, rồi theo sku_id, sort_order, media_id. Không có
+            media của SKU INACTIVE.
+          items: { $ref: '#/components/schemas/BuyerMedia' }
+        skus:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Chỉ SKU ACTIVE, sắp theo sku_code.
+          items: { $ref: '#/components/schemas/BuyerSku' }
+    BuyerCategoryRef:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+    BuyerCategory:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, path]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+        path:
+          type: array
+          minItems: 1
+          maxItems: 64
+          description: Breadcrumb từ category gốc tới chính category lá của Product (phần tử cuối).
+          items: { $ref: '#/components/schemas/BuyerCategoryRef' }
+    BuyerAttributeValue:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, value, value_label]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        value: { $ref: '#/components/schemas/AttributeValue' }
+        value_label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label của option khi value_type là SELECT; null với TEXT/NUMBER/BOOLEAN. Không có đơn vị đo.
+    BuyerVariantAxis:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, options]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        options:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: >-
+            Giá trị phân biệt mà ít nhất một SKU ACTIVE đang dùng. SELECT sắp theo option
+            sort_order rồi code; kiểu khác sắp theo value tăng dần.
+          items: { $ref: '#/components/schemas/BuyerVariantOption' }
+    BuyerVariantOption:
+      type: object
+      additionalProperties: false
+      required: [value, label]
+      properties:
+        value: { $ref: '#/components/schemas/AttributeValue' }
+        label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label của option khi trục là SELECT; null với kiểu khác.
+    BuyerMedia:
+      type: object
+      additionalProperties: false
+      required: [media_id, sku_id, media_type, storage_key, alt_text, sort_order]
+      properties:
+        media_id: { $ref: '#/components/schemas/Uuid' }
+        sku_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Null là media cấp Product; khác null luôn là một SKU có trong skus[].
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+    BuyerSku:
+      type: object
+      additionalProperties: false
+      required: [sku_id, sku_code, base_price_vnd, selling_price_vnd, variant_attributes, thumbnail_storage_key]
+      properties:
+        sku_id: { $ref: '#/components/schemas/Uuid' }
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        base_price_vnd: { type: integer, format: int64, minimum: 1 }
+        selling_price_vnd: { type: integer, format: int64, minimum: 0 }
+        variant_attributes: { $ref: '#/components/schemas/AttributeValues' }
+        thumbnail_storage_key:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 1024
+            - type: 'null'
+          x-data-classification: INTERNAL
+          description: >-
+            Thumbnail hiệu lực theo ADR-013, resolve trên toàn bộ media của SKU/Product,
+            không phụ thuộc giới hạn media của projection này.
     CreateProductRequest:
       type: object
       additionalProperties: false

@@ -13,6 +13,13 @@ evidence:
 
 # ADR-015 — Buyer Product Detail read nội bộ cho BFF
 
+## Status
+
+`Proposed`. Amended bởi [ADR-018](./ADR-018-resolved-buyer-product-detail-projection.md):
+response là projection buyer đã resolve (category path, nhãn thuộc tính, trục biến thể,
+media giới hạn) thay vì schema `Product` của admin, và không mang `ETag`. Endpoint, caller
+và nguyên tắc không trả stock dưới đây giữ nguyên.
+
 ## Context
 
 PDP cần toàn bộ catalog Product theo slug, trong khi gRPC hiện phục vụ Cart/Checkout

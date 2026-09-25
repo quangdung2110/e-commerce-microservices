@@ -12,7 +12,8 @@ owners:
 # Product Detail BFF
 
 Product Detail BFF là read-composition layer cho trang chi tiết sản phẩm (PDP). Nó
-trả catalog và giá từ Product, trạng thái khả dụng advisory theo SKU từ Inventory
+trả catalog và giá từ Product (gồm category breadcrumb, bảng thông số, trục biến thể và
+gallery do Product resolve), trạng thái khả dụng advisory theo SKU từ Inventory
 Availability Read API, cùng rating aggregate và preview hữu hạn từ Review. BFF không
 sở hữu catalog, tồn kho, Review domain, database nghiệp vụ hoặc Inventory projection.
 
@@ -20,7 +21,7 @@ sở hữu catalog, tồn kho, Review domain, database nghiệp vụ hoặc Inve
 
 | Năng lực | Owner | Vai trò của BFF |
 |---|---|---|
-| Nội dung Product, media, variant, giá công bố, catalog lifecycle | Product | Đọc qua internal buyer-read API |
+| Nội dung Product, category path, thuộc tính, trục biến thể, media, giá công bố, catalog lifecycle | Product | Đọc projection đã resolve qua internal buyer-read API; chỉ dựng URL CDN từ storage key |
 | Quy tắc `is_in_stock`, quantity, reserve và quyết định bán cuối cùng | Inventory | Batch-read trạng thái advisory; không gửi command reserve |
 | Review content, eligibility, moderation và rating aggregate | Review | Đọc summary/preview qua internal API; không lưu hay nhận command Review |
 | Browse, search, facet, suggestion | Search | Không gọi trong PDP hot path |
@@ -34,14 +35,19 @@ preview và Order mới Reserve; `IN_STOCK` trên PDP là UI state, không phả
 | Direction | Service/System | Protocol | Purpose |
 |---|---|---|---|
 | Inbound | Storefront qua Gateway | HTTP | Đọc Product Detail theo slug |
-| Outbound | Product | HTTP nội bộ mTLS | Catalog/price/variant buyer-read |
+| Outbound | Product | HTTP nội bộ mTLS | Buyer-read catalog, category path, thuộc tính, trục biến thể, media giới hạn và giá |
 | Outbound | Inventory | HTTP nội bộ mTLS | Batch-read advisory availability cho các SKU active |
-| Outbound | Review | HTTP nội bộ mTLS/service identity | Rating aggregate và review preview cho PDP |
+| Outbound | Review | HTTP nội bộ mTLS + Bearer token | Rating aggregate và review preview cho PDP |
 
 mTLS và quyền gọi ba internal API trên do service mesh thực thi theo principal
 `product-detail-bff` ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
-BFF gửi `X-Service-Identity: product-detail-bff` cho attribution (Review hiện còn nhận static
-bearer token làm defense-in-depth).
+BFF gửi `X-Service-Identity: product-detail-bff` cho attribution. Review còn bắt buộc
+static bearer token làm defense-in-depth, nên BFF gửi `Authorization: Bearer` lấy từ
+`PDP_REVIEW_SERVICE_TOKEN` ([interfaces.md](./interfaces.md#header-gửi-cho-dependency)).
+
+Runtime là Java 21 + Spring Boot WebFlux + Resilience4j
+([ADR-006](./decisions/ADR-006-java-spring-webflux-runtime.md)); cấu hình ở
+[operations.md](./operations.md#cấu-hình).
 
 Không có Kafka consumer, PostgreSQL read model, Inventory export client hoặc Search
 dependency trong BFF. Cache process-local hoặc CDN, nếu được bật, chỉ là tối ưu ngắn
@@ -63,6 +69,10 @@ hạn và không phải source of truth.
   ([ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)).
 - BFF không gửi reserve/deduct/release và không dùng availability UI để xác nhận đơn.
 - BFF không gọi Search để lấy catalog hay stock cho PDP.
+- Category, thuộc tính, trục biến thể và media chỉ đến từ Product buyer-read, giữ nguyên
+  thứ tự Product trả; BFF không gọi API category/attribute và không tự tra nhãn. Public
+  response không chứa storage key: BFF dựng URL CDN, SKU không ảnh nhận URL placeholder
+  ([ADR-005](./decisions/ADR-005-pdp-catalog-scope-and-media-url.md)).
 - BFF không lưu Review data, không consume Review event và không nhận command Review.
 - Review unavailable phải được biểu diễn bằng `review_section.status = UNAVAILABLE`,
   không được giả thành aggregate 0 hoặc làm mất phần catalog của PDP.
@@ -78,15 +88,17 @@ hạn và không phải source of truth.
 | [Workflows](./workflows.md) | Read và degradation flow |
 | [Operations](./operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook |
 | [Development](./development.md) | Contract/integration test và Definition of Done |
-| [Decisions](./decisions/README.md) | Availability batch-read, Review read composition, ranh giới Preview/Reserve và resilience budget |
+| [Decisions](./decisions/README.md) | Availability batch-read, Review read composition, ranh giới Preview/Reserve, resilience budget, phạm vi catalog và URL media, runtime, làm rõ hot path |
 
 ## Trạng thái rollout
 
 PDP có thể public availability khi Inventory Availability Read API đã có contract test
 với BFF, service identity cho `product-detail-bff` được cấp và Inventory chứng minh
 read model của chính nó đáp ứng freshness SLO. Trước đó, BFF có thể rollout catalog và
-Review enrichment, nhưng mọi SKU phải là `UNKNOWN` thay vì sử dụng event/export cũ.
+Review enrichment với `PDP_INVENTORY_ENABLED=false`: BFF không gọi Inventory, mọi SKU là
+`UNKNOWN` với outcome `disabled` (không tính SLO degrade, không alert), thay vì sử dụng
+event/export cũ. Bật cờ là bước rollout riêng sau khi đạt gate.
 
-Review enrichment có thể rollout độc lập. Trước khi Review internal PDP contract sẵn
-sàng, BFF trả review section ở trạng thái `UNAVAILABLE`; trạng thái này không đồng
-nghĩa Product chưa có review.
+Review enrichment có thể rollout độc lập bằng `PDP_REVIEW_ENABLED`. Khi cờ tắt, BFF trả
+review section ở trạng thái `UNAVAILABLE`; trạng thái này không đồng nghĩa Product chưa
+có review ([ADR-007](./decisions/ADR-007-hot-path-clarifications.md)).

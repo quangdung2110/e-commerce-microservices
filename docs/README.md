@@ -31,6 +31,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
 | [promotion/decisions/ADR-014-claim-and-markdown-consistency.md](./promotion/decisions/ADR-014-claim-and-markdown-consistency.md) | Promotion + Product | Atomic claim boundary, immutable definition, causal markdown dedup và Product tombstone invalidation. |
 | [product/decisions/ADR-016-state-discriminated-markdown-snapshot.md](./product/decisions/ADR-016-state-discriminated-markdown-snapshot.md) | Product + Promotion | ACTIVE full markdown; INACTIVE reason-only tombstone; nullable guarded projection. |
+| [product/decisions/ADR-018-resolved-buyer-product-detail-projection.md](./product/decisions/ADR-018-resolved-buyer-product-detail-projection.md) | Product + Product Detail BFF | Buyer-read trả category path, nhãn thuộc tính, trục biến thể, media 20/10; không ETag. |
+| [product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md](./product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md) | Product Detail BFF + Product | PDP trả category/thuộc tính/trục biến thể/gallery; BFF dựng URL CDN từ `storage_key`. |
 
 ---
 
@@ -170,7 +172,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
 | [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
 | [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook. |
-| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve và resilience budget. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux và làm rõ hot path. |
 
 ---
 

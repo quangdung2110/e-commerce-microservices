@@ -3,6 +3,24 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-09-25
+
+- Product HTTP v1: `GET /internal/v1/product-details/{slug}` trả schema mới
+  `BuyerProductDetail` thay cho `Product` của admin: category kèm breadcrumb `path`,
+  `attributes[]` có tên/`value_label`, `variant_axes[]` với option đang được SKU `ACTIVE`
+  dùng, media phẳng tối đa 20 cấp Product + 10 mỗi SKU, chỉ SKU `ACTIVE` và không còn
+  `ETag` (Product ADR-018). Consumer duy nhất là Product Detail BFF, chưa implement.
+- Product Detail BFF v1: `ProductDetailResponse` thêm bắt buộc `category`, `attributes`,
+  `variant_axes`, `media`; `description` thành bắt buộc (nullable); `ProductDetailSku`
+  bắt buộc `sku_code`, `variant_attributes`, `thumbnail_url` (không còn null: URL CDN hoặc
+  placeholder), `base_price_vnd`; `variant_attributes` chỉ nhận giá trị scalar. URL media
+  do BFF dựng từ storage key (BFF ADR-005).
+- Product slug (HTTP v1 `Slug`, event `catalog-common.product.slug`) thêm pattern
+  `^[a-z0-9]+(?:-[a-z0-9]+)*$`, giữ max 180 (PRODUCT-BR-013); admin gửi slug sai nhận `400`.
+  Product Detail BFF v1 hạ max slug trên path/response từ 255 xuống 180 cho khớp.
+- Product Detail BFF v1: `404` luôn `Cache-Control: no-store`; `503` còn xảy ra khi deadline
+  còn dưới 100 ms trước khi gọi Product (BFF ADR-007).
+
 ## 2026-09-20
 
 - Notification Events v1 mới: ba request lane `t.notification.{critical,transactional,bulk}.v1`

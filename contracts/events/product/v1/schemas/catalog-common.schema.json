@@ -25,7 +25,7 @@
         "product_id": { "$ref": "#/$defs/uuid" },
         "category_id": { "$ref": "#/$defs/uuid" },
         "name": { "type": "string", "minLength": 1, "maxLength": 255 },
-        "slug": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 180, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
         "description": { "type": ["string", "null"], "maxLength": 20000 },
         "attributes": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": ["string", "number", "boolean"] } },
         "status": { "type": "string", "enum": ["DRAFT", "ACTIVE", "HIDDEN"] },

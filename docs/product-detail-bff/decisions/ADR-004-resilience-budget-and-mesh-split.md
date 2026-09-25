@@ -25,6 +25,11 @@ evidence:
 release gate phải được load test xác nhận trước khi public PDP, không phải mô tả
 implementation hiện tại.
 
+Amended bởi [ADR-007](./ADR-007-hot-path-clarifications.md): timeout Product thành
+`min(400 ms, deadline còn lại − 50 ms)`, quy tắc "còn dưới 100 ms" áp dụng trước cả pha
+Product (trả `503`), và việc bỏ pha 2 được kiểm chứng bằng độ trễ chèn trước pha Product
+chứ không bằng Product chậm. ADR-007 cũng thêm `no-store` cho `404`. Phần còn lại giữ nguyên.
+
 ## Context
 
 ADR-001 và ADR-002 yêu cầu BFF có timeout, bulkhead và circuit breaker riêng cho từng

@@ -13,7 +13,11 @@ owners:
 
 | Term | Định nghĩa |
 |---|---|
-| Catalog snapshot | Product detail/variant/price do Product trả |
+| Catalog snapshot | Projection buyer do Product trả: nội dung, category path, thuộc tính, trục biến thể, media giới hạn, SKU và giá |
+| Category path | Breadcrumb từ category gốc tới category lá của Product |
+| Thuộc tính | Dòng bảng thông số từ mapping không biến thể: tên, giá trị và nhãn option khi `SELECT` |
+| Trục biến thể | Một attribute biến thể cùng các option đang được SKU active dùng; nguồn nhãn cho bộ chọn SKU |
+| Gallery | Media cấp Product và cấp SKU; gallery của SKU đang chọn là media của SKU đó, fallback media cấp Product |
 | Availability query result | Trạng thái advisory theo SKU do Inventory Availability Read API trả |
 | `IN_STOCK` | Inventory đã xác nhận SKU có thể hiển thị còn hàng tại `evaluated_at` |
 | `OUT_OF_STOCK` | Inventory đã xác nhận SKU không còn available-to-sell tại `evaluated_at` |
@@ -36,11 +40,16 @@ owners:
 | `PDP-BR-006` | BFF chỉ đọc Review summary/preview; không nhận command hay sở hữu invariant Review. |
 | `PDP-BR-007` | Review lỗi không làm mất catalog và không được map thành rating/count bằng 0. |
 | `PDP-BR-008` | Chỉ review `APPROVED` do Review trả mới xuất hiện trong preview; BFF không tự kiểm duyệt. |
+| `PDP-BR-010` | Category, thuộc tính, trục biến thể, nhãn và thứ tự hiển thị do Product quyết định; BFF giữ nguyên thứ tự Product trả, không sắp lại hay tự tra nhãn. |
+| `PDP-BR-011` | Public response không chứa storage key. Media và thumbnail là URL CDN do BFF dựng; SKU không có ảnh nhận URL placeholder cấu hình. |
 
 Public response chỉ cần `availability_status`; không expose quantity thật. `evaluated_at`
 có thể được trả cho client dưới tên `availability_observed_at` nếu storefront cần giải
 thích freshness; nó không phải thời điểm reserve. `availability_revision` chỉ dành cho
 nội bộ/trace, không là revision toàn cục của PDP.
+
+Thuộc tính `NUMBER` chưa có đơn vị đo; storefront hiển thị giá trị trần cho tới khi Product
+bổ sung đơn vị. `value_label`/`label` chỉ có với `SELECT`; kiểu khác hiển thị `value`.
 
 Public response có thể chứa Review summary và preview, nhưng `review_revision`, report
 counter, eligibility và moderation state không được expose. Pagination tiếp theo và

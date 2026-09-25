@@ -34,7 +34,7 @@ Inventory chỉ được tham chiếu qua `sku_id` ở contract liên service. P
 | Command | Activate, hide hoặc show Product | Admin |
 | Command | Apply markdown snapshot và reprice | Promotion qua Kafka |
 | Query | Catalog point-read một/batch SKU | Cart, Checkout |
-| Query | Buyer Product Detail theo slug, chỉ catalog/price/variant | Product Detail BFF |
+| Query | Buyer Product Detail theo slug: catalog, category path, nhãn thuộc tính/biến thể, media giới hạn và giá; không stock | Product Detail BFF |
 | Query | Snapshot/export catalog | Search |
 
 ## Quy tắc nghiệp vụ
@@ -53,6 +53,7 @@ Inventory chỉ được tham chiếu qua `sku_id` ở contract liên service. P
 | PRODUCT-BR-010 | Hard delete Product/SKU phải ghi tombstone event trong cùng transaction. | Insert outbox trước delete; không FK outbox tới aggregate. |
 | PRODUCT-BR-011 | Xóa category chỉ khi không còn category con và Product. | Trả lỗi khi category chưa rỗng; không cascade hide. |
 | PRODUCT-BR-012 | Thumbnail SKU ưu tiên IMAGE của SKU, rồi IMAGE Product; VIDEO không được chọn. | Product resolve `thumbnail_storage_key` trong snapshot; `null` là hợp lệ. |
+| PRODUCT-BR-013 | Slug Product là kebab-case ASCII chữ thường `^[a-z0-9]+(?:-[a-z0-9]+)*$`, dài 1–180. Product không tự chuẩn hóa slug admin gửi. | Validate ở HTTP admin API, trả `400`; DB CHECK là lớp phòng thủ cuối. Product Detail BFF dùng cùng pattern để trả `404` mà không gọi Product. |
 
 ## Giá markdown
 

@@ -36,9 +36,13 @@ Gateway.
 | `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex, kèm `replay_from_offsets` của `t.product.events` chụp trước scan |
 | `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất và `replay_from_offsets` của `t.category.events`; Search đọc trước Product export |
 | `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
-| `GET /internal/v1/product-details/{slug}` | Buyer-read Product detail cho Product Detail BFF; chỉ trả catalog-active Product, media, variant và giá công bố, không có stock |
+| `GET /internal/v1/product-details/{slug}` | Buyer-read Product detail cho Product Detail BFF; projection đã resolve của Product catalog-active: category path, thuộc tính, trục biến thể, media giới hạn và giá công bố, không có stock |
 
-Mọi response chứa SKU — admin API, export và snapshot — mang `thumbnail_storage_key`
+Slug Product phải khớp `^[a-z0-9]+(?:-[a-z0-9]+)*$` và dài tối đa 180 (PRODUCT-BR-013);
+admin API trả `400` khi sai, Product không tự chuẩn hóa. Product Detail BFF dùng cùng quy
+tắc cho path PDP.
+
+Mọi response chứa SKU — admin API, export, snapshot và buyer-read — mang `thumbnail_storage_key`
 đã resolve, cùng giá trị với `sku-upserted`. Nhờ vậy full reindex từ export và luồng
 event cho ra cùng kết quả, và consumer không phải derive lại từ `media[]` (ADR-013).
 
@@ -62,10 +66,24 @@ trong tương lai phải thêm persistence idempotency và version contract/roll
 ## Internal buyer Product Detail read
 
 Product Detail BFF gọi `GET /internal/v1/product-details/{slug}` qua mTLS/service
-identity. Response là snapshot Product và toàn bộ SKU catalog-active: nội dung, category,
-media đã resolve, variant attribute, `base_price_vnd`, `selling_price_vnd`,
-`catalog_revision` và `updated_at`. Product `DRAFT`/`HIDDEN`, slug không tồn tại, hoặc
-Product không còn SKU saleable trả `404` để không rò rỉ catalog không công bố.
+identity. Response là schema `BuyerProductDetail`, một projection buyer đã resolve
+([ADR-018](./decisions/ADR-018-resolved-buyer-product-detail-projection.md)), không phải
+schema `Product` của admin:
+
+| Phần | Nội dung |
+|---|---|
+| Product | `product_id`, `name`, `slug`, `description`, `catalog_revision`, `updated_at` |
+| `category` | Category lá kèm `path` từ category gốc tới chính nó, mỗi phần tử có `category_id`/`name`/`slug` |
+| `attributes[]` | Mapping `is_variant=false` có giá trị: `code`, `name`, `value_type`, `value`, `value_label` (label option khi `SELECT`, còn lại `null`); chưa có đơn vị đo |
+| `variant_axes[]` | Mapping `is_variant=true` có SKU `ACTIVE` dùng; `options[]` chỉ gồm giá trị đang dùng, `SELECT` sắp theo option `sort_order` rồi `code`, kiểu khác theo giá trị |
+| `media[]` | Danh sách phẳng, tối đa 20 media cấp Product và 10 media mỗi SKU `ACTIVE`, lấy theo `sort_order` rồi `media_id`; chỉ `storage_key`, không có CDN URL |
+| `skus[]` | Chỉ SKU `ACTIVE`: `sku_id`, `sku_code`, `base_price_vnd`, `selling_price_vnd`, `variant_attributes` (code), `thumbnail_storage_key` |
+
+`attributes` và `variant_axes` sắp theo `name` bằng collation tiếng Việt, tie-break `code`.
+Category và nhãn attribute/option phản ánh trạng thái hiện hành lúc đọc; chúng không thuộc
+Product aggregate nên đổi chúng không tăng `catalog_revision`, và buyer-read không phát
+`ETag`. Product `DRAFT`/`HIDDEN`, slug không tồn tại, hoặc Product không còn SKU saleable
+trả `404` để không rò rỉ catalog không công bố.
 
 Endpoint không trả `available_quantity`, `is_in_stock`, `OUT_OF_STOCK`, reservation,
 stock revision hay stock timestamp. Product Detail BFF ghép availability advisory từ

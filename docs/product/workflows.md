@@ -88,8 +88,10 @@ Kafka key hiện hành nằm tại
 ## WF-PRODUCT-007 — Internal buyer Product Detail read
 
 Product Detail BFF xác thực mTLS/service identity rồi query Product theo slug. Product
-kiểm tra Product `ACTIVE`, lọc SKU catalog-inactive, resolve media/thumbnail và trả
-catalog snapshot cùng giá công bố. Không đọc Inventory, không ghi cache, không thay đổi
+kiểm tra Product `ACTIVE`, lọc SKU catalog-inactive, resolve category path, tên/nhãn
+thuộc tính và trục biến thể, cắt media còn 20 cấp Product và 10 mỗi SKU, resolve thumbnail
+trên toàn bộ media, rồi trả `BuyerProductDetail` cùng giá công bố
+([ADR-018](./decisions/ADR-018-resolved-buyer-product-detail-projection.md)). Không đọc Inventory, không ghi cache, không thay đổi
 state và không trả bất kỳ field stock nào. Availability theo SKU là trách nhiệm read
 composition của BFF qua Inventory Availability Read API, được ghi ở
 [`docs/product-detail-bff`](../product-detail-bff/README.md).

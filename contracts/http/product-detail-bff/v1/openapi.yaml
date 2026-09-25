@@ -3,8 +3,10 @@ info:
   title: Product Detail BFF Storefront API
   version: 1.0.0
   description: >-
-    Contract PDP cho buyer. BFF ghép catalog/giá do Product sở hữu với availability
-    advisory được batch-read từ Inventory và Review summary/preview do Review sở hữu.
+    Contract PDP cho buyer. BFF ghép catalog/giá do Product sở hữu (gồm category
+    breadcrumb, bảng thông số, trục biến thể và gallery đã được Product resolve) với
+    availability advisory được batch-read từ Inventory và Review summary/preview do
+    Review sở hữu. URL media do BFF dựng từ storage key Product trả.
     Availability chỉ là UI snapshot; Review là enrichment có thể degrade độc lập.
 x-adoption-status: proposed
 servers:
@@ -22,8 +24,10 @@ paths:
         - name: slug
           in: path
           required: true
-          description: Slug không khớp pattern trả 404 mà BFF không gọi Product.
-          schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+          description: >-
+            Cùng quy tắc slug của Product (PRODUCT-BR-013). Slug không khớp pattern hoặc dài
+            hơn 180 trả 404 mà BFF không gọi Product.
+          schema: { type: string, minLength: 1, maxLength: 180, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
       responses:
         '200':
           description: >-
@@ -37,15 +41,20 @@ paths:
         '404':
           description: >-
             PRODUCT_DETAIL_NOT_FOUND; Product không tồn tại, không catalog-active hoặc slug
-            không khớp pattern. retryable=false.
+            không khớp pattern. retryable=false. Luôn no-store để CDN không giữ 404 sau khi
+            Product được activate (404 có thể bị cache heuristic theo RFC 9111).
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: >-
             PRODUCT_DETAIL_UNAVAILABLE; Product buyer-read dependency không cho kết quả hợp lệ
-            (timeout, lỗi kết nối, 5xx, 4xx, sai contract), circuit breaker của Product đang mở
-            hoặc bulkhead Product đầy. retryable=true. Inventory/Review lỗi không tạo 503.
+            (timeout, lỗi kết nối, 5xx, 4xx, sai contract), circuit breaker của Product đang mở,
+            bulkhead Product đầy hoặc deadline PDP còn dưới 100 ms trước khi gọi Product.
+            retryable=true. Inventory/Review lỗi không tạo 503.
           headers:
             Cache-Control:
               schema: { type: string, const: no-store }
@@ -72,35 +81,161 @@ components:
     ProductDetailResponse:
       type: object
       additionalProperties: false
-      required: [product_id, name, slug, catalog_revision, skus, review_section]
+      required:
+        - product_id
+        - name
+        - slug
+        - description
+        - catalog_revision
+        - category
+        - attributes
+        - variant_axes
+        - media
+        - skus
+        - review_section
       properties:
         product_id: { type: string, minLength: 1, maxLength: 64 }
         name: { type: string, minLength: 1, maxLength: 255 }
-        slug: { type: string, minLength: 1, maxLength: 255 }
+        slug: { type: string, minLength: 1, maxLength: 180 }
         description: { type: [string, 'null'] }
-        catalog_revision: { type: integer, minimum: 1 }
+        catalog_revision:
+          type: integer
+          minimum: 1
+          description: >-
+            Revision của Product aggregate. Không bao gồm category và nhãn thuộc tính, nên
+            không đủ để làm cache key hay version của toàn response.
+        category: { $ref: '#/components/schemas/ProductDetailCategory' }
+        attributes:
+          type: array
+          maxItems: 100
+          description: >-
+            Bảng thông số (thuộc tính không biến thể), giữ nguyên thứ tự Product trả: theo
+            tên bằng collation tiếng Việt, tie-break code.
+          items: { $ref: '#/components/schemas/ProductDetailAttribute' }
+        variant_axes:
+          type: array
+          maxItems: 100
+          description: >-
+            Trục của bộ chọn biến thể, giữ nguyên thứ tự Product trả. Mọi giá trị trong
+            skus[].variant_attributes có đúng một option tương ứng.
+          items: { $ref: '#/components/schemas/ProductDetailVariantAxis' }
+        media:
+          type: array
+          maxItems: 5020
+          description: >-
+            Gallery phẳng: tối đa 20 media cấp Product (sku_id null) và 10 media mỗi SKU.
+            Gallery của SKU đang chọn là media có sku_id đó, fallback media cấp Product.
+          items: { $ref: '#/components/schemas/ProductDetailMedia' }
         skus:
           type: array
           minItems: 1
           maxItems: 500
           items: { $ref: '#/components/schemas/ProductDetailSku' }
         review_section: { $ref: '#/components/schemas/ProductDetailReviewSection' }
+    AttributeScalar:
+      oneOf:
+        - { type: string, maxLength: 500 }
+        - { type: number }
+        - { type: boolean }
+    AttributeValueType:
+      type: string
+      enum: [TEXT, NUMBER, BOOLEAN, SELECT]
+    ProductDetailCategoryRef:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug]
+      properties:
+        category_id: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+    ProductDetailCategory:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, path]
+      properties:
+        category_id: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+        path:
+          type: array
+          minItems: 1
+          maxItems: 64
+          description: Breadcrumb từ category gốc tới category của Product (phần tử cuối).
+          items: { $ref: '#/components/schemas/ProductDetailCategoryRef' }
+    ProductDetailAttribute:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, value, value_label]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        value: { $ref: '#/components/schemas/AttributeScalar' }
+        value_label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label option khi SELECT; null với kiểu khác, khi đó client hiển thị value. Chưa có đơn vị đo.
+    ProductDetailVariantAxis:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, options]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        options:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/ProductDetailVariantOption' }
+    ProductDetailVariantOption:
+      type: object
+      additionalProperties: false
+      required: [value, label]
+      properties:
+        value: { $ref: '#/components/schemas/AttributeScalar' }
+        label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label option khi trục là SELECT; null với kiểu khác.
+    ProductDetailMedia:
+      type: object
+      additionalProperties: false
+      required: [media_id, sku_id, media_type, url, alt_text, sort_order]
+      properties:
+        media_id: { type: string, minLength: 1, maxLength: 64 }
+        sku_id:
+          type: [string, 'null']
+          maxLength: 64
+          description: Null là media cấp Product; khác null luôn là một SKU có trong skus[].
+        media_type: { type: string, enum: [IMAGE, VIDEO] }
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Public CDN URL do BFF dựng từ storage key; không trả internal storage key.
+        alt_text: { type: [string, 'null'], maxLength: 255 }
+        sort_order: { type: integer, minimum: 0 }
     ProductDetailSku:
       type: object
       additionalProperties: false
-      required: [sku_id, selling_price_vnd, availability_status]
+      required: [sku_id, sku_code, variant_attributes, thumbnail_url, base_price_vnd, selling_price_vnd, availability_status]
       properties:
         sku_id: { type: string, minLength: 1, maxLength: 64 }
         sku_code: { type: string, minLength: 1, maxLength: 64 }
         variant_attributes:
           type: object
-          additionalProperties: true
-          description: Product-owned variant attributes; exact object format follows Product contract.
+          maxProperties: 100
+          additionalProperties: { $ref: '#/components/schemas/AttributeScalar' }
+          description: Map attribute code → value; nhãn hiển thị lấy từ variant_axes.
         thumbnail_url:
-          type: [string, 'null']
+          type: string
+          format: uri
           maxLength: 2048
-          description: Public CDN URL hoặc null/placeholder; không trả internal storage key.
-        base_price_vnd: { type: integer, minimum: 0 }
+          description: >-
+            Public CDN URL dựng từ thumbnail hiệu lực của Product, hoặc URL placeholder cấu
+            hình khi SKU không có ảnh; không trả internal storage key.
+        base_price_vnd: { type: integer, minimum: 1 }
         selling_price_vnd: { type: integer, minimum: 0 }
         availability_status: { $ref: '#/components/schemas/AvailabilityStatus' }
         availability_observed_at:

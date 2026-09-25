@@ -41,6 +41,7 @@ chấp nhận.
 | [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md) | Outbox partition key theo Product aggregate | Accepted | 2026-09-02 | ADR-002 |
 | [ADR-013](./ADR-013-effective-sku-thumbnail.md) | Product resolve effective thumbnail theo SKU | Accepted | 2026-09-04 | — |
 | [ADR-014](./ADR-014-catalog-snapshot-replay-offsets.md) | Catalog export trả replay offsets cho Search | Accepted | 2026-09-05 | — |
-| [ADR-015](./ADR-015-buyer-product-detail-read.md) | Buyer Product Detail read nội bộ cho BFF | Proposed | 2026-09-06 | — |
+| [ADR-015](./ADR-015-buyer-product-detail-read.md) | Buyer Product Detail read nội bộ cho BFF | Proposed | 2026-09-06 | —; amended by ADR-018 |
 | [ADR-016](./ADR-016-state-discriminated-markdown-snapshot.md) | Markdown snapshot phân biệt ACTIVE và INACTIVE | Accepted | 2026-09-11 | ADR-011 |
 | [ADR-017](./ADR-017-catalog-price-and-inventory-orchestration-boundary.md) | Product catalog/price SoT; Checkout Preview, Order Reserve | Accepted | 2026-09-20 | ADR-009 |
+| [ADR-018](./ADR-018-resolved-buyer-product-detail-projection.md) | Buyer-read trả projection đã resolve: category path, nhãn thuộc tính, trục biến thể, media 20/10 | Proposed | 2026-09-25 | — (amends ADR-015) |

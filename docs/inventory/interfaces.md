@@ -103,6 +103,11 @@ partial result. PDP BFF maps that failure to `UNKNOWN` and does not retry in the
 hot path (no application retry; the mesh route has `attempts: 0`). BFF cuts the call at
 `min(300 ms, remaining PDP deadline − 50 ms)` and has its own circuit breaker; see
 [Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md).
+A missing item or an item for an unrequested SKU breaks the one-result-per-SKU promise:
+BFF degrades only the missing SKU to `UNKNOWN`, drops the extra item, and records an
+item-level contract violation that alerts Inventory
+([ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md)). BFF sends
+`X-Correlation-ID` as a normalized 8–128 character value, never a raw client header.
 
 The response is advisory UI data only. It never includes quantity, warehouse,
 availability algorithm internals, allocation plan, reservation, or an authority to
