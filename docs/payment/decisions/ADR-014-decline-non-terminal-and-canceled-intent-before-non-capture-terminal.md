@@ -56,7 +56,8 @@ Stripe bắn `payment_failed` nhiều lần trước khi `succeeded`. Hệ quả
    (capture thắng race), áp `T2` `SUCCESS` — không bao giờ terminal non-capture.
 4. Expiration Scanner theo đó: quét `expires_at <= now()`, persist `CANCEL`
    (`reason = SESSION_EXPIRED`), cancel intent, rồi `T4` `EXPIRED`. Intent ở trạng
-   thái `processing` không cancel được → giữ `PROCESSING`, chờ `succeeded`/`failed`.
+   thái `processing` phải gọi provider và xử lý actual response: canceled → terminal
+   phù hợp, succeeded → success, temporarily-not-cancelable/unknown → recovery.
 5. `payment_intent.canceled` webhook map về terminal theo `CANCEL` operation đã ghi cho
    payment đó: `DECLINED_*` → `FAILED`; `SESSION_EXPIRED` → `EXPIRED`; reason từ Order
    command hoặc không có operation (Stripe/Dashboard hủy) → `CANCELED`.

@@ -9,77 +9,63 @@ supersedes: null
 evidence:
   - docs/payment/architecture.md
   - docs/payment/data.md
+  - java/services/payment-service/src/main/resources/db/migration/V1__payment_baseline.sql
 ---
 
-# ADR-006 — Optimistic lock mặc định cho transition, Redis lock cho side effect, có fallback khi Redis sập
+# ADR-006 — PostgreSQL optimistic lock, lease và fencing cho concurrency
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; chưa xác minh implementation. Ngày quyết định gốc không
-được ghi lại.
+`Accepted`, được hiệu chỉnh theo implementation Gate 3 ngày 2026-09-25. Ngày quyết
+định gốc không được ghi lại. Redis lock trong bản thiết kế đầu đã bị loại khỏi
+runtime vì durable DB lease/fencing giải quyết đầy đủ quyền thực thi và recovery.
 
 ## Bối cảnh
 
 Payment cần xử lý race condition và idempotency mạnh: webhook Stripe có thể ghi
 đè nhau, frontend và webhook có thể tác động cùng transaction, cronjob nhiều
-instance có thể quét trùng, và lệnh gọi Stripe (tạo PaymentIntent/Refund) là side
-effect ngoài không rollback được qua DB. Cần chọn giữa lock DB, lock Redis, hoặc
-kết hợp — và hành vi khi Redis không khả dụng.
+instance có thể quét trùng, và lệnh gọi Stripe là side effect ngoài không rollback
+được qua DB. Cần một cơ chế vừa cấp quyền gọi provider, vừa từ chối stale completion
+sau crash/takeover mà không giữ DB transaction mở trong lúc gọi mạng.
 
 ## Quyết định
 
-Chiến lược kết hợp:
-
-- **Optimistic Locking (cột `version`, JPA `@Version`)** là default guard cho
-  **tất cả** state transition (ví dụ webhook Stripe ghi đè nhau). Không tốn
-  overhead gọi sang Redis.
-- **Distributed Lock (Redis Redisson)** được ưu tiên cho tác vụ có side effect
-  ngoài không thể rollback qua DB: gọi Stripe tạo PaymentIntent/Refund, cronjob
-  quét transaction. Naming `lock:payment:{action}:{txn_id}` (ví dụ
-  `lock:payment:refund:txn_123`, `lock:payment:initiate:order_10001`,
-  `lock:payment:refund_call:{txn_id}`, `lock:payment:refund_poll:{refund_transaction_id}`).
-  TTL 15–30s để tránh lock treo vĩnh viễn khi worker crash.
-- **Idempotency:** Redis `SETNX payment:initiate:{order_id}:{attempt_number}` (TTL 15 phút + 60s)
-  cho initiate; `Idempotency-Key` header cho refund check trên Redis và DB
-  `refund_transactions.idempotency_key` UNIQUE; bảng `payment_idempotency`
-  `PRIMARY KEY (key, action)` lưu response.
-- **Redis degradation/fallback:** API read/reconciliation không bị ảnh hưởng;
-  Idempotency API (initiate/refund) fallback xuống insert + check unique constraint
-  ở DB (`payment_idempotency`, `refund_transactions`); worker không lấy được lock
-  thì **reject operation và đẩy vào Kafka retry cycle**; khi đã có durable
-  `webhook_logs`, exhaustion mở review case để bảo vệ tính toàn vẹn
-  thay vì ignore lock.
-
-> **Ghi chú 2026-09-19:** quyết định (optimistic lock mặc định, Redis lock chỉ giảm
-> side effect trùng, DB là safety cuối) giữ nguyên. Chi tiết naming/cột ở trên là
-> lịch sử; hiện hành theo `data.md §6`: key Redis `payment:idem:{action}:{key}` và
-> `payment:lock:{payment_transaction_id}`, cột `refund_transactions.command_idempotency_key`,
-> và quyền cho side effect thuộc `provider_operations` ([ADR-012](./ADR-012-recoverable-initiation-and-cancel.md)).
+- **Optimistic locking/CAS** trên `version` là guard cho mọi state transition.
+- HTTP command claim row `payment_idempotency` bằng execution lease và tăng fencing
+  token. Cùng fingerprint replay response; khác fingerprint bị reject.
+- Mọi side effect Stripe có một `provider_operations` row commit ở TX1 với stable
+  provider idempotency key, lease và fencing token. Provider call nằm ngoài DB
+  transaction; TX2 chỉ bind kết quả nếu token vẫn hiện hành.
+- Worker claim inbox/operation bằng row lock ngắn, lease có hạn và fencing. Crash
+  cho phép takeover; stale worker không thể commit.
+- Unique constraint bảo vệ attempt/refund/provider key; reconciliation singleton
+  dùng partial unique index, retention singleton dùng PostgreSQL advisory lock.
+- Redis không phải dependency Gate 3. Namespace trong `data.md §6` chỉ là dự trù
+  accelerator tương lai và không được thay đổi quyền thực thi hoặc kết quả.
 
 ## Phương án đã cân nhắc
 
-- **Chỉ Redis lock cho mọi transition:** overhead mỗi transition và Redis trở
-  thành single point of failure cho correctness. Không chọn.
-- **Chỉ optimistic lock:** không ngăn được gọi Stripe hai lần song song (side
-  effect đã xảy ra trước khi DB conflict). Không chọn.
+- **Redis lock cho transition/side effect:** thêm một failure domain, không tạo
+  durable recovery record và không chặn stale completion sau TTL. Không chọn.
+- **Chỉ optimistic lock:** không đủ cho provider call ngoài transaction. Không chọn.
 - **Pessimistic row lock:** giữ lock lâu trong khi gọi Stripe. Không chọn.
-- **Kết hợp có fallback:** DB là safety cuối; Redis chỉ giảm side effect trùng.
-  Được chọn.
+- **Durable operation + lease/fencing:** DB transaction ngắn, provider call ngoài
+  transaction, recovery có bằng chứng. Được chọn.
 
 ## Hệ quả
 
-Tích cực: correctness không phụ thuộc Redis; chi phí thấp cho transition thường;
-side effect Stripe được bảo vệ. Tiêu cực: hai cơ chế cần hiểu đúng; lock TTL phải
-lớn hơn Stripe latency; conflict optimistic lock cần requeue/retry ở consumer;
-Redis sập làm worker chậm (Kafka redelivery hoặc DB-backed retry/review) chứ không sai.
+Tích cực: một durable authority, crash/takeover quan sát được, stale completion bị
+fence, không có Redis readiness/degradation mode. Tiêu cực: claim/bind phải chia
+TX1/TX2; mọi adapter phải giữ đúng token và provider key; conflict cần durable retry.
 
 ## Ảnh hưởng migration
 
-Cần cột `version` trên bảng transaction (DB design cũ chưa khai báo — xem
-`README.md` §9), Redisson client, `payment_idempotency` với PK `(key, action)`.
+Có cột `version`, `payment_idempotency` PK `(idempotency_key, action)`, lease/fencing
+fields trong idempotency/inbox/provider operation, và các unique/partial indexes ở
+`V1__payment_baseline.sql`. Không cần Redisson client.
 
 ## Xác minh
 
-Cần entity `@Version`, Redisson lock wrapper với naming/TTL, test hai webhook đồng
-thời, test Redis outage với initiate/refund fallback DB, test worker reject khi
-không lấy được lock, metric lock conflict rate.
+ArchUnit/domain tests và PostgreSQL integration tests kiểm concurrent claim, crash
+takeover, stale fencing reject, duplicate provider key, webhook retry và singleton
+workers. `mvn verify` là bằng chứng executable.

@@ -28,6 +28,9 @@ Order command remains mandatory.
 - Payment accepts at most one refund transaction for an `order_id` across all
   payment attempts. `refund_transactions.order_id` is unique; a replay uses the
   same `Idempotency-Key` and returns the existing transaction.
+- The single transaction covers exactly one Order-selected scope. Every selected
+  line refunds its full ordered quantity. Partial quantity, incremental refund and
+  a second provider payout are not supported.
 - The command contains `refund_request_id` and one immutable Inventory evidence:
   selected-return scope inspection completion, or atomic all-line committed release
   before dispatch for Admin. Payment verifies command shape/identity, but Order

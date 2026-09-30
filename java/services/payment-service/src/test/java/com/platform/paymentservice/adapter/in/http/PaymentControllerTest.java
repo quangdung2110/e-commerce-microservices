@@ -1,0 +1,164 @@
+package com.platform.paymentservice.adapter.in.http;
+
+import com.platform.paymentservice.application.service.InitiatePaymentService;
+import com.platform.paymentservice.application.service.CancelPaymentService;
+import com.platform.paymentservice.application.service.CancelPaymentResult;
+import com.platform.paymentservice.application.service.CancelPaymentCommand;
+import com.platform.paymentservice.domain.Money;
+import com.platform.paymentservice.application.service.PaymentClientDataResult;
+import com.platform.paymentservice.application.service.PaymentClientDataService;
+import com.platform.paymentservice.application.service.RefundPaymentCommand;
+import com.platform.paymentservice.application.service.RefundPaymentResult;
+import com.platform.paymentservice.application.service.RefundPaymentService;
+import com.platform.paymentservice.domain.PaymentStatus;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.time.Instant;
+
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(PaymentController.class)
+class PaymentControllerTest {
+    private static final String TXN = "TXN_01K5V7M4R8Q2K7V6W5X1Y0ZABE";
+
+    @Autowired MockMvc mvc;
+    @MockBean InitiatePaymentService initiate;
+    @MockBean PaymentClientDataService clientData;
+    @MockBean CancelPaymentService cancel;
+    @MockBean RefundPaymentService refund;
+
+    @Test
+    void client_data_response_is_private_no_store_and_contract_shaped() throws Exception {
+        when(clientData.get(TXN)).thenReturn(new PaymentClientDataResult.Usable(
+                TXN, 1, PaymentStatus.PENDING, "pi_client_secret".toCharArray(),
+                "pk_test_contract", Instant.parse("2026-09-22T10:14:30Z")));
+
+        mvc.perform(get("/v1/payments/{transactionId}/client-data", TXN)
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "checkout-1"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(header().string("X-Correlation-Id", "checkout-1"))
+                .andExpect(jsonPath("$.usable").value(true))
+                .andExpect(jsonPath("$.client_secret").value("pi_client_secret"))
+                .andExpect(jsonPath("$.publishable_key").value("pk_test_contract"));
+    }
+
+    @Test
+    void unusable_response_has_explicit_null_client_fields() throws Exception {
+        when(clientData.get(TXN)).thenReturn(new PaymentClientDataResult.Unusable(
+                TXN, 1, PaymentStatus.PROCESSING, Instant.parse("2026-09-22T10:14:30Z")));
+
+        mvc.perform(get("/v1/payments/{transactionId}/client-data", TXN)
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "checkout-2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usable").value(false))
+                .andExpect(jsonPath("$.client_secret").value((Object) null))
+                .andExpect(jsonPath("$.publishable_key").value((Object) null));
+    }
+
+    @Test
+    void invalid_workload_attribution_is_a_no_store_problem() throws Exception {
+        mvc.perform(get("/v1/payments/{transactionId}/client-data", TXN)
+                        .header("X-Service-Identity", "other-service")
+                        .header("X-Correlation-Id", "checkout-3"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentType("application/problem+json"))
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void cancel_success_response_matches_discriminated_contract_and_is_no_store() throws Exception {
+        when(cancel.cancel(any(CancelPaymentCommand.class), anyString()))
+                .thenReturn(new CancelPaymentResult.AlreadySucceeded(
+                        TXN, 10001, new Money(995000, "VND"), 2));
+
+        mvc.perform(post("/v1/payments/{transactionId}/cancel", TXN)
+                        .header("Idempotency-Key", "cancel-key")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "cancel-1")
+                        .contentType("application/json")
+                        .content("{\"order_id\":\"10001\",\"reason\":\"PAYMENT_TIMEOUT\"}"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.outcome").value("ALREADY_SUCCEEDED"))
+                .andExpect(jsonPath("$.amount.amount_minor").value(995000))
+                .andExpect(jsonPath("$.financial_state_version").value(2));
+    }
+
+    @Test
+    void non_capture_cancel_response_omits_amount_as_required_by_openapi() throws Exception {
+        when(cancel.cancel(any(CancelPaymentCommand.class), anyString()))
+                .thenReturn(new CancelPaymentResult.Canceled(TXN, 10001, 2));
+
+        mvc.perform(post("/v1/payments/{transactionId}/cancel", TXN)
+                        .header("Idempotency-Key", "cancel-key")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "cancel-2")
+                        .contentType("application/json")
+                        .content("{\"order_id\":\"10001\",\"reason\":\"BUYER_CANCELLED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.outcome").value("CANCELED"))
+                .andExpect(jsonPath("$.amount").doesNotExist());
+    }
+
+    @Test
+    void refund_command_accepts_contract_evidence_and_returns_processing() throws Exception {
+        when(refund.refund(any(RefundPaymentCommand.class), anyString()))
+                .thenReturn(new RefundPaymentResult.Processing(
+                        "RFD_01K5V7M4R8Q2K7V6W5X1Y0ZABC", TXN));
+
+        mvc.perform(post("/v1/payments/{transactionId}/refund", TXN)
+                        .header("Idempotency-Key", "refund-command-key-0001")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "refund-1")
+                        .contentType("application/json")
+                        .content("""
+                                {"order_id":"10001","refund_request_id":"request-1",
+                                 "amount":{"amount_minor":995000,"currency":"VND"},
+                                 "reason":"CUSTOMER_RETURN_SELECTED_LINES",
+                                 "inventory_evidence":{"type":"RETURN_SCOPE_INSPECTION_COMPLETED",
+                                  "refund_scope_id":"scope-1","expected":2,"received":2,
+                                  "passed":1,"failed":1}}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.refund_transaction_id")
+                        .value("RFD_01K5V7M4R8Q2K7V6W5X1Y0ZABC"))
+                .andExpect(jsonPath("$.payment_transaction_id").value(TXN))
+                .andExpect(jsonPath("$.status").value("PROCESSING"));
+    }
+
+    @Test
+    void refund_reason_and_evidence_mismatch_is_rejected_before_service_call() throws Exception {
+        mvc.perform(post("/v1/payments/{transactionId}/refund", TXN)
+                        .header("Idempotency-Key", "refund-command-key-0001")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "refund-2")
+                        .contentType("application/json")
+                        .content("""
+                                {"order_id":"10001","refund_request_id":"request-1",
+                                 "amount":{"amount_minor":995000,"currency":"VND"},
+                                 "reason":"ADMIN_FORCE_REFUND_BEFORE_DISPATCH",
+                                 "inventory_evidence":{"type":"RETURN_SCOPE_INSPECTION_COMPLETED",
+                                  "refund_scope_id":"scope-1","expected":1,"received":1,
+                                  "passed":1,"failed":0}}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+}

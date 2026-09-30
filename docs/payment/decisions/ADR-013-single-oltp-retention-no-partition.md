@@ -17,7 +17,8 @@ evidence:
 
 `Accepted` 2026-09-19. Thay thế hoàn toàn
 [ADR-009](./ADR-009-monthly-partitioning-and-tiered-archive.md). Chưa xác minh
-implementation.
+implementation. Phần giữ financial row vô thời hạn được ADR-020 refine thành 7 năm
++ legal hold; quyết định một OLTP/no partition vẫn giữ nguyên.
 
 ## Bối cảnh
 
@@ -50,9 +51,8 @@ schema, retention bằng policy thay vì bằng storage tier).
 - Retention thực hiện bằng **row-level trimmer** theo bảng, không bằng drop
   partition (chi tiết ở `data.md §7`): `outbox_events` và `payment_idempotency`
   xóa theo watermark/`expires_at`; `webhook_logs` và `reconciliation_runs` xóa
-  theo tuổi; `payment_transactions`, `refund_transactions`,
-  `provider_operations`, `payment_status_history`, `payment_review_cases` **giữ
-  vô thời hạn** cho audit/CSKH.
+  theo tuổi; financial transaction/operation/history/review giữ 7 năm + legal hold
+  theo ADR-020, vẫn trong cùng OLTP và không tiered read.
 - Hiệu năng scanner/poller giải quyết bằng **partial index** theo trạng thái
   đang hoạt động (`WHERE status IN (...)`) thay vì bằng partition pruning: tập
   row đang chờ luôn nhỏ bất kể tổng số row lịch sử.

@@ -24,7 +24,9 @@ evidence:
 
 `Accepted` — 2026-09-20. Quyết định này giữ nguyên business semantics, topic và
 partition key của ADR-004/005/007/008, đồng thời chốt wire representation và schema
-máy đọc được. Payment implementation vẫn chưa tồn tại để xác minh runtime.
+máy đọc được. Phần internal message chưa xác thực/candidate key ở mục 6–7 và phương
+án loại bỏ parse-ingress đã bị ADR-016 supersede: contract hiện chỉ mang verified
+delivery. ADR-019 mở danh mục financial event từ 10 lên 15.
 
 ## Bối cảnh
 
@@ -42,7 +44,7 @@ raw HTTP body trực tiếp trong JSON string tạo nguy cơ normalize byte trư
 ## Quyết định
 
 1. `t.payment.events.v2` giữ nguyên tên vì contract và service đều còn `proposed`.
-   Mỗi business alias `PAYMENT_*`/`REFUND_*` có một Message Object và một JSON
+   Mỗi business alias `PAYMENT_*`/`REFUND_*`/`DISPUTE_*` có một Message Object và một JSON
    Schema Draft 2020-12 riêng. CloudEvents `type` canonical có reverse-DNS namespace
    và hậu tố `.v2`; alias viết hoa chỉ dùng cho domain/FSM và tiêu đề tài liệu.
 2. Kafka value canonical là **toàn bộ CloudEvents 1.0 structured JSON envelope**.
@@ -60,13 +62,12 @@ raw HTTP body trực tiếp trong JSON string tạo nguy cơ normalize byte trư
 5. `data.schema_version=2` được giữ để tương thích tài liệu v2. ID, money và timestamp
    dùng cùng constraint với Payment OpenAPI. Schema cấm `client_secret`, Stripe
    object ID, payment-method data, `user_id` và raw provider payload.
-6. Topic nội bộ `t.payment.webhooks.raw` có AsyncAPI v1 riêng. `payment-api` phát và
-   `payment-worker` consume. Exact raw HTTP bytes được base64 encode; candidate event
-   ID chỉ là untrusted routing hint. Verified `stripe_event_id` trong `webhook_logs`
-   vẫn là identity dedup duy nhất.
-7. Không tạo Kafka DLQ mới cho raw webhook. Trước DB commit dùng Kafka redelivery;
-   sau khi có `webhook_logs`, Auto-Retry Worker và review case là durable retry/dead
-   letter mechanism hiện hành. Thêm DLQ vật lý cần ADR khác.
+6. Topic nội bộ `t.payment.webhooks.raw` có AsyncAPI v1 riêng. Theo ADR-016,
+   `payment-api` chỉ phát delivery đã verify; exact bytes base64, hash và verified
+   `stripe_event_id` là key/identity.
+7. Không tạo Kafka DLQ mới. Durable inbox được commit trước publish; sau đó DB Retry
+   Worker/review case là retry/dead mechanism. Kafka fail làm ingress trả `503` và
+   duplicate non-terminal có thể publish lại trigger mà không tạo inbox thứ hai.
 8. Payment không consume Order/Inventory/Delivery/Promotion events. Cancel/refund
    vẫn chỉ đến qua explicit HTTP command từ Order.
 
@@ -75,13 +76,13 @@ raw HTTP body trực tiếp trong JSON string tạo nguy cơ normalize byte trư
 - **CloudEvents binary mode:** khớp mô tả outbox headers cũ nhưng trái event
   convention chung của repo và khiến schema message bị tách giữa Kafka headers/value.
   Không chọn.
-- **Một union schema cho mười event:** ít file hơn nhưng không khóa được field bắt
+- **Một union schema cho 15 event:** ít file hơn nhưng không khóa được field bắt
   buộc và dễ chấp nhận tổ hợp field sai. Không chọn.
 - **Đổi sang `t.payment.events.v3`:** đúng nếu đã có deployed consumer, nhưng hiện
   contract/provider/consumer đều `proposed`, chưa có implementation. Không chọn;
   nếu trạng thái adoption thay đổi trước implementation thì phải mở migration ADR.
-- **Parse raw webhook ở ingress:** có thể lấy key đẹp hơn nhưng đưa untrusted parsing
-  vào đường nhận và có nguy cơ thay đổi raw bytes. Không chọn.
+- **Parse payload chưa verify ở ingress:** không chọn. ADR-016 yêu cầu verify trên
+  exact bytes trước, rồi mới parse envelope tối thiểu và persist/publish.
 
 ## Hệ quả
 
@@ -101,10 +102,10 @@ generate/validate từ Payment AsyncAPI v2 và không dispatch theo alias viết
 ## Xác minh
 
 - AsyncAPI/JSON Schema parse và resolve toàn bộ `$ref`.
-- Một valid fixture và các invalid fixture thiếu field riêng cho cả mười event.
+- Một valid fixture và các invalid fixture thiếu field riêng cho cả 15 event.
 - Contract test khẳng định Kafka key = `data.order_id`, type ↔ dataschema chính xác,
   `client_secret` không validate và `amount_minor > 0`.
 - Debezium integration test chứng minh Kafka value là full CloudEvent và connector
   restart chỉ tạo duplicate cùng `(source,id)`.
-- Raw webhook test decode base64 về đúng byte ban đầu, verify signature, xử lý
-  malformed body bằng hash key và không tin `candidate_event_id` trước verify.
+- Verified webhook test chứng minh ingress reject auth/malformed trước DB/Kafka,
+  base64 decode đúng byte, hash khớp và key là verified `stripe_event_id`.

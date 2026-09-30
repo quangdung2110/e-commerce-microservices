@@ -12,7 +12,7 @@ evidence:
   - docs/payment/workflows.md
 ---
 
-# ADR-002 — Giữ Refund trong Payment Service (Phase 1), tách khi đạt ngưỡng Phase 2
+# ADR-002 — Giữ Refund trong Payment Service
 
 ## Trạng thái
 
@@ -35,13 +35,16 @@ vẫn valid; single-provider chỉ giảm nhẹ phần "provider variance" trong
 
 ## Quyết định
 
-**Không tách Refund Service ở thời điểm hiện tại.** Refund là logical module
-trong Payment Service (Phase 1) nhưng phải giữ code boundary rõ (`src/refund/`,
-interface riêng, contract độc lập) để tách thành service độc lập khi đạt ngưỡng.
+**Không tách Refund Service.** Refund là logical module trong Payment Service và
+giữ code boundary rõ (`src/refund/`, interface riêng). Volume/complexity chỉ là
+metric capacity; không tự động kích hoạt tách service. Mọi thay đổi boundary cần
+quyết định sản phẩm/ownership và ADR mới. ADR-019 mở rộng cùng nguyên tắc cho
+dispute/subledger.
 
-### Trigger chuyển sang Phase 2 (Refund Service riêng)
+### Tín hiệu buộc phải đánh giá lại boundary (không phải trigger tự động)
 
-Chuyển phase khi đạt ít nhất một điều kiện chính trong 2 chu kỳ liên tiếp:
+Mở review kiến trúc khi có một tín hiệu kéo dài; kết quả mặc định vẫn là scale/
+tối ưu module trong Payment, chỉ tách nếu một ADR mới được phê duyệt:
 
 | Trigger | Ngưỡng gợi ý | Tác động |
 |---|---|---|
@@ -58,7 +61,7 @@ Chuyển phase khi đạt ít nhất một điều kiện chính trong 2 chu k�
 4. Outbox publish only-after-commit.
 5. Reconciliation job vẫn bắt buộc.
 
-### Phase 2 Readiness Checklist
+### Checklist nếu một ADR tương lai quyết định tách
 
 1. Tách interface nội bộ: `RefundApplicationService`, `RefundProviderPort`.
 2. Chuẩn hóa schema event `REFUND_INITIATED`, `REFUND_SUCCESS`, `REFUND_FAILED`

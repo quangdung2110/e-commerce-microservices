@@ -29,7 +29,7 @@ giao, variance signature/callback theo từng cổng) và làm FSM/refund phức
 ## Quyết định
 
 - Hệ thống chỉ dùng **Stripe** làm payment provider duy nhất. Bỏ hoàn toàn VNPay,
-  MoMo, ZaloPay; bỏ Provider Adapter Pattern.
+  MoMo, ZaloPay; bỏ Provider Adapter/Factory đa provider.
 - **COD không được hỗ trợ.** Mọi đơn hàng thanh toán online qua Stripe trước khi
   giao hàng; Refund xử lý hoàn toàn qua Stripe API (`Refund.create`).
 - Payment Service gọi trực tiếp `com.stripe:stripe-java` SDK. Toàn bộ
@@ -37,8 +37,8 @@ giao, variance signature/callback theo từng cổng) và làm FSM/refund phức
   `PaymentIntentClient` (wrap `PaymentIntent.create/retrieve`), `RefundClient`
   (wrap `Refund.create/retrieve`), `WebhookVerifier` (wrap
   `Webhook.constructEvent` + signature validation).
-- Application code (UseCase layer) gọi qua interface `PaymentProviderPort` với
-  đúng một implementation `StripeAdapter`.
+- Application code gọi qua narrow `PaymentProviderPort` với đúng một
+  `StripeAdapter` để cô lập SDK/test seam; port không cam kết thay provider.
 - Một `StripeClient` singleton với API key từ Vault/Secret Manager, dùng chung cho
   toàn service; mọi call site (`PaymentIntent.create`, `Refund.create`,
   `PaymentIntent.retrieve`, `Webhook.constructEvent`) dùng chung instance này.

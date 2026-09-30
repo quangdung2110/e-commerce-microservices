@@ -2,10 +2,12 @@
 doc_id: payment-workflows
 service: payment
 scope: target
-status: proposed
+status: implemented
 owners:
   - Payment Service team
-evidence: []
+evidence:
+  - java/services/payment-service/src/main/java/com/platform/paymentservice
+  - java/services/payment-service/src/test/java/com/platform/paymentservice
 verified_against_commit: null
 ---
 
@@ -20,18 +22,20 @@ verified_against_commit: null
 
 | ID | Workflow | Trigger | Tác nhân | Trạng thái |
 |---|---|---|---|---|
-| `WF-PAYMENT-001` | Khởi tạo thanh toán | HTTP | Order (`InitiatePaymentActivity`) | proposed |
-| `WF-PAYMENT-002` | Nhận và xử lý webhook Stripe | HTTPS + Kafka | Stripe, Webhook Processor | proposed |
-| `WF-PAYMENT-003` | Tra cứu trạng thái và client data | HTTP | Order | proposed |
-| `WF-PAYMENT-004` | Khởi tạo hoàn tiền và chốt kết quả | HTTP + webhook | Order (`OrderRefundWorkflow`) | proposed |
-| `WF-PAYMENT-005` | Hết hạn phiên thanh toán | Schedule 1–2 phút | Expiration Scanner | proposed |
-| `WF-PAYMENT-006` | Đối soát với Stripe | Schedule hourly | Reconciliation Worker | proposed |
-| `WF-PAYMENT-007` | Poll trạng thái refund | Schedule 5–15 phút | Refund Status Poller | proposed |
-| `WF-PAYMENT-008` | Recover provider operation | Schedule 30–60s | Provider-operation Recovery Worker | proposed |
-| `WF-PAYMENT-009` | Webhook auto-retry và webhook-log replay | Schedule/manual | Auto-Retry Worker, Ops | proposed |
-| `WF-PAYMENT-010` | Review case và correction thủ công | Hệ thống mở, CSKH/Kế toán xử lý | Ops | proposed |
-| `WF-PAYMENT-011` | Hủy payment trước capture | HTTP + provider recovery | Order (`CancelPaymentActivity`), Stripe | proposed |
-| `WF-PAYMENT-012` | Tự chấm dứt attempt sau decline | Webhook | Webhook Processor | proposed |
+| `WF-PAYMENT-001` | Khởi tạo thanh toán | HTTP | Order (`InitiatePaymentActivity`) | implemented |
+| `WF-PAYMENT-002` | Nhận và xử lý webhook Stripe | HTTPS + Kafka | Stripe, Webhook Processor | implemented |
+| `WF-PAYMENT-003` | Tra cứu trạng thái và client data | HTTP | Order | implemented |
+| `WF-PAYMENT-004` | Khởi tạo hoàn tiền và chốt kết quả | HTTP + webhook | Order (`OrderRefundWorkflow`) | implemented |
+| `WF-PAYMENT-005` | Hết hạn phiên thanh toán | Schedule 1–2 phút | Expiration Scanner | implemented |
+| `WF-PAYMENT-006` | Đối soát với Stripe | Schedule hourly | Reconciliation Worker | implemented |
+| `WF-PAYMENT-007` | Poll trạng thái refund | Schedule 5–15 phút | Refund Status Poller | implemented |
+| `WF-PAYMENT-008` | Recover provider operation | Schedule 30–60s | Provider-operation Recovery Worker | implemented |
+| `WF-PAYMENT-009` | Webhook auto-retry và webhook-log replay | Schedule/manual | Auto-Retry Worker, Ops | implemented |
+| `WF-PAYMENT-010` | Review case và correction thủ công | Hệ thống mở, CSKH/Kế toán xử lý | Ops | implemented |
+| `WF-PAYMENT-011` | Hủy payment trước capture | HTTP + provider recovery | Order (`CancelPaymentActivity`), Stripe | implemented |
+| `WF-PAYMENT-012` | Tự chấm dứt attempt sau decline | Webhook | Webhook Processor | implemented |
+| `WF-PAYMENT-013` | Quản lý dispute/chargeback | Verified webhook + reconciliation | Dispute Worker, Finance Ops | implemented |
+| `WF-PAYMENT-014` | Post subledger và đối soát balance/fee/payout | Transition + schedule | Payment core, Balance Reconciliation Worker | implemented |
 
 ## WF-PAYMENT-001 — Khởi tạo thanh toán
 
@@ -58,16 +62,18 @@ sequenceDiagram
 
 **Happy path:**
 
-1. `[PostgreSQL]` TX1 (atomic): insert `payment_idempotency (key, INITIATE,
-   fingerprint, IN_PROGRESS)`; insert `payment_transactions` `INITIATING` với
+1. `[PostgreSQL]` TX1 (atomic): insert/claim `payment_idempotency (key, INITIATE,
+   fingerprint, IN_PROGRESS, lease_owner/token/expiry)`; insert `payment_transactions` `INITIATING` với
    `expires_at = now() + payment_session_ttl`; insert `provider_operations CREATE`
-   với `provider_idempotency_key` sinh một lần và `request_fingerprint`. Unique
-   `(order_id, payment_attempt_number)` là guard chống double-initiate; Redis SETNX
-   chỉ là fast-path.
-2. `[Stripe API]` `PaymentIntent.create` với đúng key đó, `amount_minor` nguyên
+   với `provider_idempotency_key = pay:create:{transaction_id}` sinh một lần,
+   safety horizon 23 giờ và `request_fingerprint`. Unique
+   `(order_id, payment_attempt_number)` là guard chống double-initiate. Gate 3 chưa
+   dùng Redis fast-path.
+2. `[Stripe API]` worker đang giữ đúng DB fencing token gọi
+   `PaymentIntent.create` với đúng key đó, `amount_minor` nguyên
    (VND zero-decimal), `currency=vnd`, metadata bất biến. Không bao giờ sinh key thứ
    hai khi retry.
-3. `[PostgreSQL]` TX2 (atomic): `T0.1` → `PENDING`, ghi `provider_transaction_id`,
+3. `[PostgreSQL]` TX2 (atomic, CAS đúng fencing token): `T0.1` → `PENDING`, ghi `provider_transaction_id`,
    `client_secret_ciphertext`/`client_secret_key_id`/`client_expires_at`, operation
    `PROVIDER_CONFIRMED`, idempotency `COMPLETED` (response **không** chứa secret,
    `resource_id = TXN_…`), history `T0.1`, outbox `PAYMENT_INITIATED`
@@ -86,14 +92,18 @@ terminal non-capture của attempt trước.
 
 **Failure/timeout/retry:** Stripe timeout sau khi dispatch → operation `UNKNOWN`,
 payment ở `INITIATING`, idempotency `IN_PROGRESS`; trả `503 PROVIDER_OUTCOME_UNKNOWN`.
-`WF-PAYMENT-008` replay cùng key; nếu vẫn không bind được, tìm intent theo metadata
+`WF-PAYMENT-008` replay cùng key chỉ trước safety horizon; sau đó tìm intent theo metadata
 `payment_transaction_id`; zero/nhiều ứng viên → review case
-`PROVIDER_IDENTITY_UNBOUND`. Scanner không expire `INITIATING`.
+`PROVIDER_IDENTITY_UNBOUND`. Stripe xác định từ chối CREATE → operation
+`PROVIDER_REJECTED`; không tạo transition giả `INITIATING → FAILED`; cùng TX set
+`requires_manual_review`, mở case `PROVIDER_CREATE_REJECTED`, complete command bằng
+`503 PROVIDER_REQUEST_REJECTED` không retry. Replay trả stored failure và không gọi
+Stripe. Scanner không expire `INITIATING`.
 
 **Test scenarios:** same-attempt replay; replay `INITIATING` khi recovery đã nhận
 operation và không còn active request; concurrent request còn active → `409`; replay sau khi payment đã `SUCCESS` (không
 trả secret); new attempt sau `EXPIRED`/`FAILED`/`CANCELED`; reject attempt number
-nhảy cóc/tái dùng; fingerprint khác; Redis mất → unique DB; Stripe timeout trước/sau
+nhảy cóc/tái dùng; fingerprint khác; Stripe timeout trước/sau
 khi Stripe đã tạo intent; hai request đồng thời cùng attempt.
 
 ## WF-PAYMENT-002 — Nhận và xử lý webhook Stripe
@@ -103,48 +113,47 @@ trùng, không sai thứ tự. **Trigger:** Stripe gọi `POST /v1/payments/webh
 
 **Happy path:**
 
-1. `[API]` Envelope thiếu body hoặc thiếu `Stripe-Signature` → `400`, không enqueue.
-   Nếu đủ envelope, nhận exact raw body bytes + headers; không deserialize/validate
-   business payload. Candidate event ID chỉ được đọc best-effort để chọn partition.
-2. `[Kafka]` Produce lên `t.payment.webhooks.raw`: key
-   `STRIPE:<candidate_event_id>` nếu extraction thành công, nếu không
-   `RAW:<sha256(raw_body)>`; value là full structured CloudEvent
-   `com.ecommerce.payment.stripe-webhook.received.v1`, trong đó exact body bytes
-   nằm ở `data.raw_body_base64` theo internal AsyncAPI. Candidate và body đều chưa
-   được tin cậy; producer ack → trả `200 OK` (< 500ms), produce lỗi → `503` để Stripe retry.
-3. `[Worker]` Decode base64 về exact bytes rồi verify `Stripe-Signature`
-   (`Webhook.constructEvent`, `|now - t| <= 300s`).
-   Thất bại → insert `webhook_logs` `FAILED_SIGNATURE` với `stripe_event_id = NULL`,
-   `raw_body` nguyên byte, `next_retry_at`; dừng.
-4. `[PostgreSQL]` `INSERT webhook_logs (stripe_event_id, event_type, event_created_at,
-   provider_object_id, …) ON CONFLICT (stripe_event_id) DO NOTHING`; 0 row → event đã
-   được ghi nhận trước đó → ack, không tạo row, không transition.
+1. `[Ingress]` Giới hạn body 256 KiB, đọc exact bytes; thiếu body/signature,
+   signature sai, `|now-t| > 300s` hoặc không parse được envelope tối thiểu → `400`.
+   Không persist/publish payload chưa xác thực.
+2. `[PostgreSQL]` Sau verify, encrypt exact raw/signature và upsert durable inbox
+   theo `stripe_event_id`. Row mới ở `RECEIVED`; duplicate terminal
+   `PROCESSED/IGNORED` → trả `200`; duplicate non-terminal tiếp tục bước publish để
+   phục hồi trường hợp lần trước DB commit nhưng Kafka fail.
+3. `[Kafka]` Produce verified internal CloudEvent lên `t.payment.webhooks.raw`, key
+   `STRIPE:<stripe_event_id>`, value theo internal AsyncAPI gồm verified metadata,
+   signing-secret id, SHA-256 và exact bytes base64. Kafka ack → `200` (<500ms);
+   Kafka/inbox unavailable → `503` để Stripe gửi delivery mới với timestamp/signature mới.
+4. `[Worker]` Đối chiếu SHA-256, atomic claim inbox (`PROCESSING`, lease token).
+   Message trùng khi row đang được owner khác giữ lease → ack Kafka; DB retry path
+   chịu trách nhiệm. Worker không kiểm tra lại signature recency.
 5. Resolve transaction: `pi_xxx` → `provider_transaction_id`; `ch_xxx` →
    `provider_charge_id`; `re_xxx` → `provider_refund_id`; fallback metadata
    `payment_transaction_id`. Không map được → `IGNORED`. Guard amount/currency; lệch
    → `AMOUNT_MISMATCH` + review case.
-6. Map event → transition theo `interfaces.md §4` (`processing` → `T1`;
+6. So provider checkpoint rồi map event → transition theo `interfaces.md §4` (`processing` → `T1`;
    `succeeded` → `T2`; `payment_failed` → `T3a` hoặc `WF-PAYMENT-012`; `canceled` →
-   `T3`/`T4`/`T5` theo `CANCEL` operation; `charge.refunded` → `R2`+`T7`;
-   `charge.refund.updated status=failed` → `R3`+`T8` hoặc `R5`+`T9`; dispute → review
-   case). State precedence dùng `event_created_at`.
+   `T3`/`T4`/`T5` theo `CANCEL` operation; `charge.refunded` → `Refund.retrieve` rồi
+   áp `Refund.status` (`succeeded` → `R2`+`T7`); `refund.updated status=succeeded` →
+   `R2`+`T7`; `refund.updated`/`refund.failed` với `failed`/`canceled` → `R3`+`T8` hoặc
+   `R5`+`T9` ([ADR-022](./decisions/ADR-022-refund-lifecycle-hardening.md));
+   dispute/funds events → `WF-PAYMENT-013`). Event cũ hơn checkpoint → `IGNORED`;
+   cùng timestamp và xung đột → retrieve provider object.
 7. Cùng một ACID transaction: `UPDATE` aggregate (optimistic `version`,
    `financial_state_version++` nếu là financial fact, `provider_status_snapshot`) +
-   `INSERT payment_status_history` + `INSERT outbox_events` + review case nếu có +
+   `INSERT payment_status_history` + journal cân bằng khi có movement + `INSERT outbox_events` + review case nếu có +
    `webhook_logs.status = PROCESSED`.
 
-**Events:** `PAYMENT_SUCCESS`, `PAYMENT_FAILED`, `PAYMENT_EXPIRED`, `PAYMENT_CANCELED`,
-`REFUND_SUCCESS`, `REFUND_FAILED`, `REFUND_REVERSED` tùy transition. `T1`/`T3a` không
-phát event.
+**Events:** một trong 15 financial facts theo transition. `T1`/`T3a`/`D2`/`D5c`
+không phát event.
 
-**Vì sao không xử lý đồng bộ:** Stripe retry nếu response > 5s (3–5 lần, exponential
-backoff) → duplicate; DB down lúc webhook đến → mất event vĩnh viễn; Kafka
-at-least-once + worker idempotent → không mất, không trùng
+**Vì sao tách worker:** ingress chỉ làm authentication + durable accept trong cửa sổ
+signature ngắn; xử lý FSM/Stripe retrieve không kéo dài response. Inbox + Kafka
+at-least-once + worker idempotent xử lý duplicate/crash
 ([ADR-004](./decisions/ADR-004-async-webhook-processing-via-kafka.md)).
 
-**Failure/retry:** lỗi tạm (optimistic conflict, lock, DB) → `webhook_logs.status =
-FAILED_PROCESSING`, `next_retry_at` backoff, `WF-PAYMENT-009` đẩy lại; không lấy được
-Redis lock → cùng đường. Hết retry với event tài chính → review case
+**Failure/retry:** lỗi tạm → inbox `RETRY_WAIT`, `next_retry_at` backoff;
+`WF-PAYMENT-009` claim trực tiếp row. Hết retry → `DEAD` + review case
 `WEBHOOK_RETRY_EXHAUSTED`.
 
 **Race/out-of-order:** `succeeded` đến sau khi payment đã `FAILED`/`EXPIRED`/`CANCELED`
@@ -152,12 +161,12 @@ Redis lock → cùng đường. Hết retry với event tài chính → review c
 review case `CAPTURE_AFTER_CANCEL`. `payment_failed` đến sau `succeeded` → `IGNORED`
 theo precedence.
 
-**Test scenarios:** thiếu body/`Stripe-Signature` → `400`; body không deserialize được
-nhưng envelope đủ → endpoint vẫn enqueue với key hash và trả `200`; signature sai
-nhưng envelope hợp lệ → endpoint `200`, worker ghi `FAILED_SIGNATURE`; timestamp ngoài 300s;
-duplicate `evt_xxx`; hai
+**Test scenarios:** thiếu body/signature, body >256 KiB, malformed envelope,
+signature sai hoặc timestamp ngoài 300s → `400` và không có inbox/Kafka; DB commit
+rồi Kafka fail → `503`, delivery kế tiếp republish cùng inbox row; duplicate terminal;
+duplicate đang retry; hai
 `payment_failed` liên tiếp cùng intent rồi `succeeded`; `succeeded` sau `canceled`;
-`pi_xxx` không map được; amount lệch; optimistic conflict rồi retry; `charge.refund.updated`
+`pi_xxx` không map được; amount lệch; optimistic conflict rồi DB retry; `refund.updated`
 cho refund `PROCESSING` và cho refund `SUCCESS`; endpoint trả 200 khi Kafka chậm.
 
 ## WF-PAYMENT-003 — Tra cứu trạng thái và client data
@@ -181,8 +190,9 @@ transaction đều trong một schema ([ADR-013](./decisions/ADR-013-single-oltp
 
 ## WF-PAYMENT-004 — Khởi tạo hoàn tiền và chốt kết quả
 
-**Mục tiêu:** thực thi một refund transaction trọn đời cho order đã thanh toán, không
-vượt paid amount. **Trigger:** `POST /v1/payments/{transactionId}/refund` từ
+**Mục tiêu:** thực thi đúng một refund single-shot trọn đời cho order đã thanh toán;
+scope có thể gồm nhiều line nhưng mỗi line phải hoàn toàn bộ ordered quantity, không
+incremental/partial quantity. **Trigger:** `POST /v1/payments/{transactionId}/refund` từ
 `OrderRefundWorkflow` sau Inventory evidence
 ([ADR-011](./decisions/ADR-011-one-lifetime-order-refund.md)).
 
@@ -214,9 +224,10 @@ sequenceDiagram
 2. `[PostgreSQL]` TX1: validate `RULE-PAY-003/004/006`; insert `refund_transactions`
    `PENDING` (unique `order_id`/`refund_request_id`/`command_idempotency_key` là
    guard đồng thời cuối); `T6` payment `REFUNDING`; insert `provider_operations REFUND`
-   với `provider_idempotency_key = Idempotency-Key` của Order; history; outbox
+   với `provider_idempotency_key = pay:refund:{refund_transaction_id}` (không dùng
+   raw Order key), safety horizon; history; outbox
    `REFUND_INITIATED`.
-3. `[Redis]` `payment:lock:{payment_transaction_id}` (giảm đồng thời; không phải quyền).
+3. DB operation lease/fencing cấp quyền; Gate 3 không dùng Redis lock.
 4. `[Stripe API]` `Refund.create` với `payment_intent=pi_xxx`, `amount`,
    `reason=requested_by_customer`, metadata `order_id`/`refund_request_id`,
    `RequestOptions.setIdempotencyKey`.
@@ -226,25 +237,28 @@ sequenceDiagram
    `PROVIDER_CONFIRMED`; idempotency `COMPLETED`.
 6. Trả `{refund_transaction_id, payment_transaction_id, status: PROCESSING}`
    (Accepted != Final — kể cả khi đã success nội bộ, Order chốt qua event).
-7. Finalization bất đồng bộ: `charge.refunded` → `R2`/`T7`; `charge.refund.updated
-   status=failed` → `R3`/`T8` (`REFUND_FAILED`, review case) hoặc — nếu đã `SUCCESS` —
-   `R5`/`T9` (`REFUND_REVERSED`, review case); Refund Status Poller là safety net khi
-   webhook miss.
+7. Finalization bất đồng bộ, luôn theo `Refund.status` (bảng `domain.md §6.3`):
+   `refund.updated status=succeeded` (hoặc `charge.refunded` rồi `Refund.retrieve`
+   `succeeded`) → `R2`/`T7`; `failed`/`canceled` → `R3`/`T8` (`REFUND_FAILED`, review
+   case) hoặc — nếu đã `SUCCESS` — `R5`/`T9` (`REFUND_REVERSED`, review case). Refund
+   `pending` (Stripe giữ khi số dư khả dụng không đủ) vẫn `PROCESSING`. Refund Status
+   Poller là safety net khi webhook miss.
 
 **Failure/timeout/retry:** Stripe timeout sau TX1 → operation `UNKNOWN`, refund
-`PENDING`, trả `503 retryable`; `WF-PAYMENT-008` replay cùng key (Stripe idempotency
-đảm bảo không tạo refund kép). Stripe reject sớm → operation `PROVIDER_REJECTED`,
+`PENDING`, trả `503 retryable`; `WF-PAYMENT-008` chỉ replay đúng key trong safety
+horizon, sau đó lookup/review. Stripe reject sớm → operation `PROVIDER_REJECTED`,
 `R4` `FAILED` + `T8`, `REFUND_FAILED`; command đã durably accepted nên HTTP vẫn trả
 response lưu `PROCESSING`, còn event/GET là authority cho trạng thái final. Không lấy
-được lock → reject, không gọi Stripe.
+được DB lease/fencing → không gọi Stripe.
 
 **Race:** hai request khác key cho cùng order → chỉ một insert thắng unique
 `order_id`, request kia `409 ORDER_REFUND_ALREADY_EXISTS`.
 
 **Test scenarios:** selected-line và admin pre-dispatch evidence; mixed PASS/FAIL;
 second key/order rejected; payment không `SUCCESS`; thiếu key; replay cùng key;
-`succeeded` ngay vs `pending`; webhook miss + poller chốt; reversal sau `REFUNDED`;
-Redis mất → unique DB; timeout rồi recovery bind `re_xxx`.
+`succeeded` ngay vs `pending`; `charge.refunded` khi refund còn `pending` (không chốt
+`SUCCESS`); `refund.updated succeeded` chốt `R2`; refund `canceled` → `R3`; webhook miss +
+poller chốt; reversal sau `REFUNDED`; timeout rồi recovery bind `re_xxx`.
 
 ## WF-PAYMENT-005 — Hết hạn phiên thanh toán
 
@@ -254,23 +268,22 @@ Redis mất → unique DB; timeout rồi recovery bind `re_xxx`.
 
 **Happy path:**
 
-1. `[PostgreSQL]` Quét `payment_transactions WHERE status = 'PENDING' AND expires_at <=
+1. `[PostgreSQL]` Quét `payment_transactions WHERE status IN ('PENDING','PROCESSING') AND expires_at <=
    now()` (partial index), batch nhỏ, `SKIP LOCKED`.
 2. Với mỗi row: TX1 insert `provider_operations CANCEL` (`reason = SESSION_EXPIRED`,
-   key ổn định `cancel:{payment_transaction_id}`) — partial unique một `CANCEL`/payment
+   key ổn định `pay:cancel:{payment_transaction_id}`) — partial unique một `CANCEL`/payment
    nên nếu Order đã cancel song song thì reuse operation đó.
 3. `[Stripe API]` `PaymentIntent.cancel(pi_xxx, cancellation_reason=abandoned)`.
 4. TX2 theo kết quả: `canceled` → `T4` `EXPIRED`, xóa client secret, history, outbox
-   `PAYMENT_EXPIRED`; `succeeded` (buyer xác nhận đúng lúc) → `T2` `SUCCESS` +
-   `PAYMENT_SUCCESS`; intent `processing` → không cancel được, giữ nguyên, thử lại
-   lần quét sau; timeout → operation `UNKNOWN` → `WF-PAYMENT-008`.
+   `PAYMENT_EXPIRED`; `succeeded` → `T2` `SUCCESS` + `PAYMENT_SUCCESS`; provider
+   tạm thời chưa cancel được hoặc outcome chưa rõ → giữ operation pending/unknown và
+   `WF-PAYMENT-008`. Không suy luận chỉ từ local status `PROCESSING`.
 
-**Không quét:** `INITIATING` (recovery lo), `PROCESSING` (Stripe đang xử lý, không
-cancel được; kết quả đến qua webhook).
+**Không quét:** `INITIATING` (recovery lo) và terminal/refund states.
 
 **Race:** webhook `succeeded` đến giữa TX1 và cancel → Stripe trả lỗi
 "already succeeded" hoặc `succeeded` → `T2`; optimistic `version` bảo vệ ghi đè.
-Nhiều instance scanner dùng `payment:lock:{payment_transaction_id}` + `SKIP LOCKED`.
+Nhiều instance scanner dùng `SKIP LOCKED` + operation lease/fencing.
 
 **Test scenarios:** hết hạn đúng giờ; cancel trả `succeeded`; intent `processing`;
 hai instance đồng thời; Stripe timeout rồi recovery; `payment_intent.canceled` webhook
@@ -278,32 +291,47 @@ hai instance đồng thời; Stripe timeout rồi recovery; `payment_intent.canc
 
 ## WF-PAYMENT-006 — Đối soát với Stripe
 
-**Mục tiêu:** phát hiện và sửa sai lệch DB ↔ Stripe. **Trigger:** Reconciliation
-Worker hourly, singleton (`payment:lock:reconciliation`).
+**Mục tiêu:** phát hiện và sửa sai lệch object state và mọi money movement DB ↔ Stripe.
+**Trigger:** Reconciliation
+Worker hourly, singleton bằng partial unique row `RUNNING` trong PostgreSQL.
 
 **Happy path:**
 
-1. Insert `reconciliation_runs` (`RUNNING`, cửa sổ `[last_window_to, now - 5 phút)`,
+1. Chạy hai lane độc lập `OBJECT_STATE` và `BALANCE_LEDGER`; insert
+   `reconciliation_runs` (`RUNNING`, cửa sổ/cursor có overlap,
    `auto_correction_frozen` copy từ cấu hình vận hành).
 2. Tập đối soát: payment `updated_at` trong cửa sổ hoặc còn `PENDING`/`PROCESSING`/
-   `REFUNDING`; refund `PROCESSING`/`SUCCESS` trong cửa sổ; operation `UNKNOWN` quá
-   hạn recovery.
-3. `[Stripe API]` `PaymentIntent.retrieve`/`Refund.retrieve` (hoặc `list` theo
+   `REFUNDING`; refund `PROCESSING`, hoặc `SUCCESS` có `finalized_at` trong
+   `refund-success-lookback` (`P35D`, `RULE-PAY-024`) — không phụ thuộc `updated_at`, vì
+   reversal có thể đến tới ~30 ngày sau; dispute trong cửa sổ hoặc active. Refund được
+   quét theo `provider_synced_at` cũ nhất trước (NULLS FIRST) để refund mới không bị bỏ
+   đói khi vượt `batch-size`.
+   Operation `UNKNOWN` thuộc Provider-operation Recovery, không bị xử lý lặp ở lane này.
+3. `[Stripe API]` `PaymentIntent.retrieve`/`Refund.retrieve`/`Dispute.retrieve` (hoặc `list` theo
    metadata) → cập nhật `provider_status_snapshot`/`provider_synced_at`.
 4. So khớp status/amount. Khớp → không làm gì. Lệch:
    - Không freeze và transition đích hợp lệ → `CORR` (history `triggered_by =
      RECONCILIATION`, `cause_ref = run id`) + outbox event tương ứng; `corrected_count++`.
    - Freeze, hoặc lệch amount, hoặc đích không hợp lệ → review case
      `RECONCILIATION_DRIFT` với `evidence`; `review_opened_count++`.
-   - Refund `SUCCESS` nhưng Stripe `failed` → `CORR` tương đương `R5`/`T9`.
-5. Update run `COMPLETED` với counters. Lỗi → `FAILED` + `error_message`.
+   - Refund `SUCCESS` nhưng Stripe `failed`/`canceled`/`requires_action` → `CORR` tương
+     đương `R5`/`T9`.
+5. Lane `BALANCE_LEDGER` list balance transactions, dedup theo provider id, post
+   journal capture/refund/dispute withdrawal hoặc reinstatement theo dấu amount,
+   fee/payout và tính totals/currency. Source không map được hoặc currency sai làm
+   run `FAILED` + alert; lifecycle drift có aggregate owner mở ReviewCase ở lane
+   `OBJECT_STATE`. Không tự sửa journal cũ.
+6. Chỉ advance provider cursor khi run `COMPLETED`. Lỗi → `FAILED` + `error_message`.
 
-**Recovery:** drift tăng đột biến → vận hành bật `auto_correction_frozen`; run sau chỉ
+**Recovery:** drift tăng đột biến → vận hành gọi internal freeze API maker-checker;
+row `CONTROL` bền vững được scheduler đọc trước mỗi run, run sau chỉ
 mở review case. `CORR` idempotent: chạy lại cùng cửa sổ không phát event thứ hai
 (state đã khớp).
 
 **Test scenarios:** không lệch; lệch status; lệch amount; freeze; Stripe API lỗi;
-chạy lại cùng cửa sổ; reversal phát hiện bởi reconciliation khi webhook miss.
+chạy lại cùng cửa sổ; reversal phát hiện bởi reconciliation khi webhook miss, kể cả với
+refund `SUCCESS` cũ 20 ngày; refund mới không bị bỏ đói khi có nhiều hơn `batch-size`
+refund `SUCCESS`.
 
 ## WF-PAYMENT-007 — Poll trạng thái refund
 
@@ -311,20 +339,25 @@ chạy lại cùng cửa sổ; reversal phát hiện bởi reconciliation khi we
 Poller mỗi 5–15 phút, jitter.
 
 **Happy path:** quét `refund_transactions WHERE status = 'PROCESSING' AND updated_at <
-now() - 1 phút` (partial index); `payment:lock:{payment_transaction_id}`;
+now() - 1 phút AND provider_refund_id IS NOT NULL` (partial index). Gate 3 không
+dùng Redis lock; optimistic `version` trên payment/refund quyết định writer thắng;
 `Refund.retrieve(re_xxx)`:
 
 - `succeeded` → `R2` + `T7`, `REFUND_SUCCESS`.
-- `failed` → `R3` + `T8`, `provider_failure_reason`, review case
-  `REFUND_FAILED_AFTER_ACCEPT`, `REFUND_FAILED`.
-- `pending` → chỉ cập nhật `provider_synced_at`.
+- `failed` hoặc `canceled` → `R3` + `T8`, `provider_failure_reason` (`canceled` →
+  `MERCHANT_REQUEST`), review case `REFUND_FAILED_AFTER_ACCEPT`, `REFUND_FAILED`.
+- `requires_action` → giữ `PROCESSING`; mở review case `RECONCILIATION_DRIFT`
+  (`provider_status=requires_action`); không transition.
+- `pending` → chỉ cập nhật `provider_status_snapshot`, `provider_synced_at` và
+  technical `version`; không tăng `financial_state_version`, không history/outbox.
+  Refund `pending` lâu là dấu hiệu số dư Stripe khả dụng không đủ (`operations.md §9.9`).
 
 Poller **không** phát hiện reversal (chỉ quét `PROCESSING`); reversal do webhook hoặc
 `WF-PAYMENT-006`.
 
-**Race:** poller và webhook cùng lúc → optimistic lock + state precedence; kết quả
-idempotent. **Test scenarios:** webhook đến trước poller; poller chốt khi webhook
-miss; lock không lấy được; Stripe timeout.
+**Race:** poller và webhook cùng lúc → optimistic lock + state precedence; loser bỏ
+kết quả retrieve, lần quét sau đọc state mới; kết quả idempotent. **Test scenarios:**
+webhook đến trước poller; poller chốt khi webhook miss; concurrent poller; Stripe timeout.
 
 ## WF-PAYMENT-008 — Recover provider operation
 
@@ -335,15 +368,16 @@ miss; lock không lấy được; Stripe timeout.
 **Happy path:** quét `provider_operations WHERE status IN ('REQUESTED','UNKNOWN') AND
 next_retry_at <= now()`; với mỗi operation:
 
-1. Replay đúng call (`PaymentIntent.create`/`cancel`/`Refund.create`) với cùng
-   `provider_idempotency_key`; Stripe trả lại object cũ nếu đã tạo.
+1. Atomic claim DB lease/fencing. Nếu `now < safe_replay_until`, replay đúng call
+   với cùng `provider_idempotency_key`.
 2. Bind kết quả: `provider_object_id`, `PROVIDER_CONFIRMED`/`PROVIDER_REJECTED`, và áp
    transition tương ứng (`T0.1`, `T2`/`T3`/`T4`/`T5`, `R1`/`R4`) trong cùng TX như
    đường đồng bộ.
-3. Không bind được (Stripe không nhận key, hoặc trả lỗi không rõ) → tìm theo
-   metadata `payment_transaction_id`/`refund_request_id`; đúng một → bind; khác →
+3. Khi qua safety horizon hoặc retry vẫn không rõ, chỉ search/list/retrieve theo
+   metadata `payment_transaction_id`/`refund_request_id` + amount/currency; đúng một → bind; khác →
    `MANUAL_REVIEW_REQUIRED` + review case `PROVIDER_IDENTITY_UNBOUND`.
-4. `attempt_count++`, `next_retry_at` backoff (30s → 5 phút, tối đa `max_attempts`).
+4. TX hoàn tất phải CAS đúng fencing token. `attempt_count++`, `next_retry_at`
+   backoff; quá recovery deadline → review. Không blind-create/refund sau horizon.
 
 **Test scenarios:** create timeout trước/sau Stripe tạo intent; cancel timeout;
 refund timeout; key bị Stripe từ chối vì payload khác (fingerprint drift → review);
@@ -351,19 +385,20 @@ nhiều ứng viên metadata.
 
 ## WF-PAYMENT-009 — Webhook auto-retry và webhook-log replay
 
-**Auto-retry (CronJob):** quét `webhook_logs WHERE status IN ('FAILED_SIGNATURE',
-'UNPROCESSED', 'FAILED_PROCESSING') AND next_retry_at <= now()`; `retry_count <
-max_retries`; `FAILED_SIGNATURE` re-verify `raw_body` bằng `whsec_` hiện hành (cover
-đổi secret); đẩy lại vào `t.payment.webhooks.raw` để `WF-PAYMENT-002` xử lý; hết
-retry với event tài chính → review case `WEBHOOK_RETRY_EXHAUSTED`.
+**Auto-retry:** quét inbox `RECEIVED/RETRY_WAIT` đến hạn và `PROCESSING` có lease
+hết hạn; atomic claim DB row, tăng fencing token rồi chạy bước worker của WF-002.
+Không re-publish Kafka và không re-verify timestamp/signature. Hết retry → `DEAD` +
+review case `WEBHOOK_RETRY_EXHAUSTED`.
 
 **Webhook-log replay (manual/on-demand, không phải Kafka DLQ):** chọn durable row
 trong `webhook_logs` theo filter (time range, event type,
-`order_id`); re-validate idempotency (dedup `stripe_event_id` vẫn áp dụng); batch nhỏ
-có rate limit; history `triggered_by = MANUAL` với `actor`.
+`order_id`); chỉ row đã từng verified và còn ciphertext trong retention mới replay
+được; reset sang `RETRY_WAIT` bằng maker-checker, ghi actor/cause, rồi DB worker claim.
+Terminal replay vẫn đi qua checkpoint/idempotency nên là no-op nếu state đã khớp.
 
-**Test scenarios:** retry đến `max_retries`; replay message đã xử lý (no-op); đổi
-secret rồi re-verify pass; rate limit; audit đầy đủ.
+**Test scenarios:** lease owner crash/takeover; stale fencing token không commit;
+retry đến `max_retries`; replay terminal (no-op); raw đã crypto-shred (reject);
+rate limit; audit đầy đủ.
 
 ## WF-PAYMENT-010 — Review case và correction thủ công
 
@@ -374,12 +409,13 @@ chủ, có kết luận. **Trigger:** hệ thống mở (`WEBHOOK`/`SCHEDULER`/`
 **Mở case:** insert `payment_review_cases` (`OPEN`, `reason_code`, `evidence` snapshot)
 + set `payment_transactions.requires_manual_review = TRUE` trong cùng TX với transition
 gây ra (`T8`, `T9`, `CAPTURE_AFTER_CANCEL`, `AMOUNT_MISMATCH`,
-`PROVIDER_IDENTITY_UNBOUND`, `WEBHOOK_RETRY_EXHAUSTED`, `RECONCILIATION_DRIFT`,
-`DISPUTE_OPENED`). Partial unique: một case mở/payment; sự kiện mới append vào
+`PROVIDER_IDENTITY_UNBOUND`, `PROVIDER_RETRIEVE_REJECTED`,
+`DISPUTE_FUNDS_TIE_UNRESOLVED`, `WEBHOOK_RETRY_EXHAUSTED`, `RECONCILIATION_DRIFT`,
+`PROVIDER_CREATE_REJECTED`, `DISPUTE_OPENED`). Partial unique: một case mở/payment; sự kiện mới append vào
 `evidence`.
 
 **Xử lý:** `IN_PROGRESS` + `assigned_to`. Người xử lý đối chiếu Stripe Dashboard,
-`payment_status_history`, `webhook_logs.raw_body`.
+`payment_status_history`, webhook ciphertext qua break-glass và ledger journals.
 
 **Đóng:** `RESOLVED`/`ESCALATED` với `resolution_type` bắt buộc:
 
@@ -389,7 +425,11 @@ gây ra (`T8`, `T9`, `CAPTURE_AFTER_CANCEL`, `AMOUNT_MISMATCH`,
   `REFUND_FAILED_AFTER_ACCEPT`/`REFUND_REVERSED`; hệ thống **không** tạo refund thứ hai.
 - `NO_ACTION_NEEDED`; `ESCALATED_TO_ORDER`; `ESCALATED_TO_ACCOUNTING`.
 
-Cùng TX clear `requires_manual_review` nếu không còn case mở.
+Correction commit FSM/history/outbox/journal trước. Sau đó resolve
+`CORRECTION_APPLIED` chỉ thành công nếu tìm thấy history `MANUAL`/`RECONCILIATION`
+với `cause_ref = case id`; transaction resolve mới clear `requires_manual_review`
+nếu không còn case mở. Crash giữa hai bước để case `IN_PROGRESS`, an toàn để replay
+resolve bằng idempotency key.
 
 **Test scenarios:** mở case trùng cho cùng payment (append evidence); đóng thiếu
 resolution (reject); correction sai transition (reject `INVALID_TRANSITION`); audit
@@ -428,10 +468,9 @@ sequenceDiagram
 ```
 
 Idempotent trong DB Payment và tại Stripe. Không bao giờ biến `SUCCESS` thành
-`CANCELED`; `ALREADY_SUCCEEDED` là kết quả hợp lệ của race. Payment `PROCESSING`
-(Stripe đang xử lý payment method bất đồng bộ) không cancel được → `CANCEL_PENDING`
-tới khi `succeeded` hoặc `payment_failed` (về `PENDING`, cancel được). Timeout →
-operation `UNKNOWN` → `WF-PAYMENT-008`. Cùng cơ chế `CANCEL` operation được dùng bởi
+`CANCELED`; `ALREADY_SUCCEEDED` là kết quả hợp lệ của race. Với `PROCESSING`, Payment
+vẫn gọi cancel và tin actual provider response: canceled → `T5`, succeeded → `T2`,
+temporarily not cancelable/unknown → `CANCEL_PENDING` + recovery. Cùng cơ chế `CANCEL` operation được dùng bởi
 `WF-PAYMENT-005` và `WF-PAYMENT-012`; partial unique một `CANCEL`/payment nên Order
 command và scanner không tạo hai operation.
 
@@ -450,7 +489,7 @@ bị chặn; và không có terminal non-capture nào khi intent còn sống
 2. Nếu decline retryable và `decline_count <= max_declines_per_attempt` → dừng; payment
    vẫn `PENDING`, buyer tiếp tục trên cùng intent.
 3. Nếu non-retryable hoặc quá ngưỡng → cùng TX insert `provider_operations CANCEL`
-   (`reason = DECLINED_NON_RETRYABLE`/`DECLINE_LIMIT`, key `cancel:{payment_transaction_id}`;
+   (`reason = DECLINED_NON_RETRYABLE`/`DECLINE_LIMIT`, key `pay:cancel:{payment_transaction_id}`;
    reuse nếu đã tồn tại).
 4. `[Stripe API]` `PaymentIntent.cancel`. `canceled` → `T3` `FAILED`, `terminal_at`,
    xóa client secret, `PAYMENT_FAILED` với `error_code` chuẩn hóa (`STOLEN_CARD`,
@@ -460,3 +499,31 @@ bị chặn; và không có terminal non-capture nào khi intent còn sống
 **Test scenarios:** decline retryable rồi succeeded; decline non-retryable → `FAILED`;
 decline thứ `max+1` → `FAILED`; cancel trả `succeeded`; `payment_intent.canceled`
 webhook đến sau (no-op); `PAYMENT_FAILED` chỉ phát một lần dù webhook retry.
+
+## WF-PAYMENT-013 — Quản lý dispute/chargeback
+
+Verified events `charge.dispute.created/updated/closed/funds_withdrawn/
+funds_reinstated` resolve charge → payment, đi qua dispute checkpoint. `created`
+insert `payment_disputes`, mở ReviewCase (kèm `evidence.refund_overlap = true` nếu payment
+đã có refund `PROCESSING`/`SUCCESS`, `RULE-PAY-023`) và phát `DISPUTE_OPENED`; `updated` cập nhật
+deadline/status audit-only; funds events post journal cân bằng rồi phát đúng fact;
+`closed` phát `DISPUTE_WON` hoặc `DISPUTE_LOST` (warning-closed audit-only). Không
+transition Payment FSM. Duplicate/stale no-op; cùng timestamp xung đột phải retrieve
+Dispute. Finance Ops claim case, nộp evidence trên Stripe theo quy trình kiểm soát
+ngoài API buyer, và theo dõi `evidence_due_at`.
+
+**Test:** created rồi funds-withdrawn/closed/reinstated theo mọi thứ tự; duplicate;
+stale; amount/reference lệch; warning dispute; deadline alert; ledger cân bằng.
+
+## WF-PAYMENT-014 — Post subledger và đối soát balance/fee/payout
+
+Mọi transition có money movement gọi `post_financial_journal` trong cùng DB
+transaction; stored procedure insert immutable header + ít nhất hai line và deferred
+trigger kiểm balance. Capture/refund/reversal/dispute dùng source identity của object
+và balance transaction khi có. Balance Reconciliation Worker ingest fee/payout bằng
+cursor overlap, unique provider balance transaction ngăn double-post, tính tổng theo
+currency và mở drift case. Correction chỉ là reversal journal + journal đúng mới;
+không update/delete ledger cũ.
+
+**Test:** debit=credit; rollback khi lệch; duplicate balance transaction; cursor
+không advance khi run fail; fee/payout; reversal; concurrent webhook/reconciliation.
