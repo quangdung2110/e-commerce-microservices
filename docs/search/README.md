@@ -14,7 +14,7 @@ verified_against_commit: null
 
 > Điểm bắt đầu để hiểu Search Service. Tài liệu mô tả thiết kế hiện hành đã được
 > align với [Product Service](../product/README.md) và
-> [Inventory](../inventory/interfaces.md#4-events-phát-ra); trạng thái vẫn là `proposed` cho
+> [Inventory](../inventory/interfaces.md#6-public-events); trạng thái vẫn là `proposed` cho
 > tới khi được đối chiếu với implementation.
 
 ## 1. Service status
@@ -67,7 +67,7 @@ là projection.
 |---|---|---|
 | Product, SKU, category, media, attribute | [Product](../product/data.md) | `t.product.events`, `t.category.events` + internal snapshot export/replay offsets |
 | `base_price_vnd`, `selling_price_vnd` | [Product](../product/domain.md) | `t.product.events` |
-| `is_in_stock` | [Inventory](../inventory/interfaces.md#4-events-phát-ra) | Per-SKU availability event + readiness/snapshot/change export |
+| `is_in_stock` | [Inventory](../inventory/interfaces.md#6-public-events) | Per-SKU availability event + readiness/snapshot/change export |
 | `product_rating_avg`, `product_rating_count` | [Review](../review/interfaces.md) | `t.review.events` + internal aggregate snapshot export |
 | Index mapping, alias, ranking, suggestion weight | Search | Sở hữu nội bộ |
 

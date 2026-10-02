@@ -134,9 +134,12 @@ one request and returns exactly one result per requested SKU, in no guaranteed o
 It does not accept quantity, create a hold, call Product, or change Inventory state.
 
 Each result is `IN_STOCK`, `OUT_OF_STOCK`, or `UNKNOWN`, with
-`availability_revision` and `evaluated_at` only for a known state. `UNKNOWN` means the
-Inventory-owned derived state is missing or has pending dirty/recompute work; it never
-means `OUT_OF_STOCK`. A dependency-wide `503 INVENTORY_AVAILABILITY_UNAVAILABLE` has no
+`availability_revision` and `evaluated_at` only for a known state. The freshness budget
+is 30 seconds: a known state is the last completed boolean, returned while the SKU's
+oldest pending recompute work is at most 30 seconds old. `UNKNOWN` means the
+Inventory-owned derived state is missing or its pending work is older than the budget
+([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)); it never means
+`OUT_OF_STOCK`. A dependency-wide `503 INVENTORY_AVAILABILITY_UNAVAILABLE` has no
 partial result. PDP BFF maps that failure to `UNKNOWN` and does not retry in the buyer
 hot path (no application retry; the mesh route has `attempts: 0`). BFF cuts the call at
 `min(300 ms, remaining PDP deadline − 50 ms)` and has its own circuit breaker; see

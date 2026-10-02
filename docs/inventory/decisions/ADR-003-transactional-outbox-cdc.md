@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-003
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-011-authoritative-consistency, ADR-014-integration-and-search-contracts
 evidence:
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
   - java/services/inventory-service/src/main/resources/debezium/inventory-postgres-connector.json
@@ -15,7 +16,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-011](./ADR-011-authoritative-consistency.md) and [ADR-014](./ADR-014-integration-and-search-contracts.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -96,10 +97,10 @@ trở thành breaking change cho consumer. Bảng outbox tách hai thứ đó ra
 ## Verification
 
 - `inventory_outbox` và hai index của nó nằm trong
-  [migration V1](../../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql);
+  migration V1 (legacy code, removed);
   partial unique index chống double-emit nằm trong
-  [migration V3](../../../java/services/inventory-service/src/main/resources/db/migration/V3__partial_unique_outbox_return_received.sql).
+  migration V3 (legacy code, removed).
 - Cấu hình connector nằm tại
-  [`src/main/resources/debezium`](../../../java/services/inventory-service/src/main/resources/debezium).
+  `src/main/resources/debezium` (legacy code, removed).
 - Cần bổ sung: test crash sau commit trước khi CDC đọc, chứng minh event vẫn tới; và
   sửa cleanup job để dựa trên offset CDC thay vì thời gian. Chưa hạng mục nào hoàn thành.

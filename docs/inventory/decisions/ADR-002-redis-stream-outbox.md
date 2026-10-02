@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-002
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-011-authoritative-consistency, ADR-014-integration-and-search-contracts
 evidence:
   - java/services/inventory-service/src/main/resources/lua
 ---
@@ -14,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-011](./ADR-011-authoritative-consistency.md) and [ADR-014](./ADR-014-integration-and-search-contracts.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -102,7 +103,7 @@ bị xóa là một mutation vĩnh viễn không vào sổ cái.
 ## Verification
 
 - Cả ba script tại
-  [`src/main/resources/lua`](../../../java/services/inventory-service/src/main/resources/lua)
+  `src/main/resources/lua` (legacy code, removed)
   đều kết thúc bằng `XADD` sau khi mutate, và đều trả về sớm mà không `XADD` khi gặp
   idempotent hit hoặc lỗi nghiệp vụ.
 - Cần bổ sung: test giết Relay Worker giữa produce và `XACK` rồi kiểm tra sổ cái không

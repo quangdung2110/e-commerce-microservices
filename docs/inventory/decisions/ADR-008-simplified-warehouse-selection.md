@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-008
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-012-order-allocation-lifecycle
 evidence:
   - java/services/inventory-service/src/main/java/com/platform/inventoryservice/routing
 ---
@@ -14,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-012](./ADR-012-order-allocation-lifecycle.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -99,7 +100,7 @@ trợ chia SKU cho nhiều kho.
 ## Verification
 
 - Logic chọn kho nằm tại
-  [`routing/`](../../../java/services/inventory-service/src/main/java/com/platform/inventoryservice/routing);
+  `routing/` (legacy code, removed);
   `WarehouseSelector` xử lý cả trường hợp `city_code` là `null`.
 - Partial index `idx_physical_inventory_sku_available` phục vụ bước sinh ứng viên.
 - Cần bổ sung: test chứng minh tie-break ổn định qua nhiều lần gọi, và một phép đo phân

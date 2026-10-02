@@ -36,7 +36,7 @@ chấp nhận.
 | [ADR-007](./ADR-007-admin-only-product-lifecycle.md) | Vòng đời admin-only ba trạng thái | Accepted | 2026-08-30 | — |
 | [ADR-008](./ADR-008-price-and-inventory-snapshot-ownership.md) | Product tính sẵn `best_price`; `display_quantity` là replica | Superseded | 2026-08-30 | ADR-009 |
 | [ADR-009](./ADR-009-catalog-boundary-and-published-price.md) | Product là catalog SoT; Inventory không phản chiếu, caller Reserve cũ | Superseded | 2026-09-01 | ADR-003, ADR-005, ADR-008; superseded by ADR-017 |
-| [ADR-010](./ADR-010-catalog-event-revision-and-category-reindex.md) | Catalog event revision và full reindex khi đổi cây Category | Accepted | 2026-09-02 | ADR-006 |
+| [ADR-010](./ADR-010-catalog-event-revision-and-category-reindex.md) | Catalog event revision và full reindex khi đổi cây Category | Accepted; bước "Inventory tombstone guard" bị bỏ theo [Inventory ADR-026](../../inventory/decisions/ADR-026-no-product-lifecycle-dependency.md) | 2026-09-02 | ADR-006 |
 | [ADR-011](./ADR-011-markdown-consumer-only-background-processing.md) | Markdown Consumer là background workload duy nhất | Superseded | 2026-09-02 | ADR-004 |
 | [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md) | Outbox partition key theo Product aggregate | Accepted | 2026-09-02 | ADR-002 |
 | [ADR-013](./ADR-013-effective-sku-thumbnail.md) | Product resolve effective thumbnail theo SKU | Accepted | 2026-09-04 | — |

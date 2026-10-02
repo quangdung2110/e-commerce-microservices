@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted — 2026-09-07. Supersedes ADR-010.
+Superseded by [ADR-018](./ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md)
+(originally accepted 2026-09-07; it superseded ADR-010). This file is historical evidence;
+current scope, receipt and inspection rules live in [domain.md](../domain.md) and ADR-018.
 
 ## Context
 

@@ -22,8 +22,10 @@ paths:
       summary: Read advisory availability for a bounded set of SKUs
       description: >-
         PRODUCT_DETAIL_BFF only. The response contains exactly one item for every
-        distinct requested SKU. UNKNOWN means Inventory cannot currently provide a
-        trustworthy display state for that SKU; callers must not infer OUT_OF_STOCK.
+        distinct requested SKU. A known state is the last computed boolean, returned
+        while the SKU's oldest pending recompute work is at most 30 seconds old
+        (Inventory ADR-025). UNKNOWN means no state exists or pending work is older than
+        that budget; callers must not infer OUT_OF_STOCK.
         A 503 means the availability read dependency itself is unavailable; PDP BFF
         degrades every requested SKU to UNKNOWN rather than retrying on the buyer hot
         path.
@@ -83,8 +85,9 @@ components:
         status:
           $ref: '#/components/schemas/AvailabilityStatus'
           description: >-
-            IN_STOCK and OUT_OF_STOCK are advisory UI states. UNKNOWN is returned when
-            the Inventory availability read model has no trustworthy state for the SKU.
+            IN_STOCK and OUT_OF_STOCK are advisory UI states that may lag stock by up to
+            the 30-second freshness budget. UNKNOWN is returned when the SKU has no
+            computed state or its oldest pending work exceeds the budget.
         availability_revision:
           type: [integer, 'null']
           minimum: 1
@@ -94,8 +97,9 @@ components:
           type: [string, 'null']
           format: date-time
           description: >-
-            Time Inventory last confirmed the returned availability state; null when
-            status is UNKNOWN. It is not a reservation or quantity timestamp.
+            Time Inventory computed the returned availability state; null when status is
+            UNKNOWN. Newer work younger than 30 seconds may be pending. It is not a
+            reservation or quantity timestamp.
     BatchSkuAvailabilityResponse:
       type: object
       additionalProperties: false

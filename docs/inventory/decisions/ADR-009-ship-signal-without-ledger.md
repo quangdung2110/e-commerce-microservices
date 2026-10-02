@@ -1,12 +1,13 @@
 ---
 doc_id: inventory-adr-009
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
   - Order Service team
 supersedes: null
+superseded_by: ADR-012-order-allocation-lifecycle
 evidence:
   - java/services/inventory-service/src/main/java/com/platform/inventoryservice/controller/ShipToCustomerController.java
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
@@ -16,7 +17,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-012](./ADR-012-order-allocation-lifecycle.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -103,7 +104,7 @@ vụ nghiêm trọng nhất mà quyết định này ngăn.
 ## Verification
 
 - `ck_inventory_ledger_reference_type_enum` trong
-  [migration V1](../../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql)
+  migration V1 (legacy code, removed)
   không chứa giá trị nào cho việc xuất kho, nên ghi ledger cho hành động này là bất khả
   thi ở tầng database — ràng buộc bảo vệ chính quyết định này.
 - `ck_inventory_outbox_event_type_enum` cho phép `INVENTORY_SHIP_TO_CUSTOMER`.

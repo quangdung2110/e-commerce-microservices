@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-001
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-011-authoritative-consistency
 evidence:
   - java/services/inventory-service/src/main/resources/lua
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
@@ -15,7 +16,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-011](./ADR-011-authoritative-consistency.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 Quyết định này đã được implement. Ngày ghi ở trên là ngày ADR được viết lại từ tài liệu
 thiết kế cũ, không phải ngày quyết định được đưa ra lần đầu.
@@ -106,7 +107,7 @@ PostgreSQL. Đối soát là quy trình thủ công theo runbook.
 ## Verification
 
 - Ba Lua script tại
-  [`src/main/resources/lua`](../../../java/services/inventory-service/src/main/resources/lua)
+  `src/main/resources/lua` (legacy code, removed)
   chứa toàn bộ logic mutate và đều `XADD` event trong cùng script.
 - Cần bổ sung: metric đo độ trễ materialize, load test đo độ trễ đường nóng dưới tranh
   chấp cao, và một bài test chứng minh hai reserve đồng thời trên cùng stock item không

@@ -132,8 +132,9 @@ Kafka thành một transaction; publisher lag vẫn phải được quan sát tr
 
 Hard delete Product cascade SKU/media/markdown projection. Command chụp `sku_ids`, tính
 revision tombstone kế tiếp và ghi tombstone trước khi delete. Search xóa document từ
-tombstone và không tạo document mới chỉ từ stock event. Inventory phải consume tombstone
-hoặc có guard reserve tương đương để từ chối SKU đã xóa.
+tombstone và không tạo document mới chỉ từ stock event. Inventory không consume tombstone
+và không guard SKU đã xóa: Checkout chặn SKU unsaleable ở preview và revalidate Product khi
+submit trước khi Order reserve ([Inventory ADR-026](../inventory/decisions/ADR-026-no-product-lifecycle-dependency.md)).
 
 Category rename, đổi slug hoặc đổi `parent_id` làm path dẫn xuất của cả subtree thay đổi.
 Product ghi category snapshot cùng `CATALOG_REINDEX_REQUESTED` trong một transaction

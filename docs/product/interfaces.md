@@ -116,8 +116,8 @@ state/tombstone hiện có.
 | Topic / event | Consumer | Hành vi |
 |---|---|---|
 | `t.product.events` / `sku-upserted` | Search | Snapshot SKU khi Product/SKU/media/lifecycle/markdown làm SKU bị ảnh hưởng, gồm `thumbnail_storage_key` đã resolve. |
-| `t.product.events` / `sku-deleted` | Search; Inventory nếu không có reserve guard | Tombstone một SKU với revision kế tiếp. |
-| `t.product.events` / `product-deleted` | Search, Promotion; Inventory nếu cần | Tombstone Product và toàn bộ `sku_ids`. |
+| `t.product.events` / `sku-deleted` | Search | Tombstone một SKU với revision kế tiếp. Inventory không consume ([Inventory ADR-026](../inventory/decisions/ADR-026-no-product-lifecycle-dependency.md)). |
+| `t.product.events` / `product-deleted` | Search, Promotion | Tombstone Product và toàn bộ `sku_ids`. Inventory không consume. |
 | `t.category.events` / `category-upserted`, `category-deleted` | Search | Category snapshot/tombstone; `sequence = category_revision`; snapshot có path dẫn xuất. |
 | `t.catalog.control.events` / `catalog-reindex-requested` | Search | Rename, đổi slug hoặc đổi parent Category yêu cầu Search coalesce rồi full reindex. |
 

@@ -40,7 +40,7 @@ flowchart LR
 | Outbox relay (Debezium) | Publish sequenced durable facts at least once. | Reapply business movement or treat broker publish as transaction success condition. |
 | Availability projector | Serialize affected work per SKU and derive the global boolean from warehouse/position truth; update `SkuAvailabilityState` and create a Search outbox fact only when readiness exists. | Delay or participate in Reserve/ADMIN command commits; publish before readiness; expose raw warehouse quantities. |
 | Cache | Optional read acceleration. | Decide availability, Reserve, Commit, Release, or correction. |
-| Availability Read API | Serve Product Detail BFF one bounded, advisory result per SKU from Inventory-owned state. | Create a hold, expose quantity/warehouse/reservation, call Product, or use a stale/dirty state as certain. |
+| Availability Read API | Serve Product Detail BFF one bounded, advisory result per SKU from Inventory-owned state. | Create a hold, expose quantity/warehouse/reservation, call Product, or return a state whose pending work exceeds the 30-second freshness budget. |
 | Search Projection API | Record Search document readiness and serve per-SKU snapshot/change feed. | Serve checkout correctness or raw stock exposure. |
 
 ## 3. Trust and service boundaries
@@ -63,8 +63,9 @@ flowchart LR
   may compute and retain availability before registration, but the projector cannot
   publish or export it until the readiness guard exists.
 - Product Detail BFF has no Search readiness role and no broker/export credential. It
-  reads Inventory's state synchronously through a separate mTLS batch API; a state that
-  is missing or dirty is returned as `UNKNOWN` rather than as a stale boolean.
+  reads Inventory's state synchronously through a separate mTLS batch API; a missing
+  state, or one whose pending work exceeds the 30-second freshness budget, is returned
+  as `UNKNOWN` ([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)).
 - Inventory publishes physical dispatch facts; Order converts them to its shipment/delivery state.
 - Warehouse `inactive`/`OUTAGE` filters only new allocation. It does not rewrite existing reservation/commitment or prevent ADMIN from recording a real physical fact.
 
@@ -82,7 +83,7 @@ No distributed lock is required or accepted as correctness authority. Multi-item
 | Broker/relay unavailable after durable commit | Continue commands while primary capacity is safe; relay later replays outbox. |
 | Search/cache unavailable | Checkout and authoritative commands continue against primary state; Search can be stale/rebuilt. |
 | Search readiness absent | Inventory commands continue; the current per-SKU availability state remains pending and is published when readiness is registered. |
-| Availability Read API/read model unavailable or dirty | Authoritative commands continue; BFF receives `503` for a dependency outage or `UNKNOWN` per affected SKU. |
+| Availability Read API/read model unavailable or lagging beyond 30 s | Authoritative commands continue; BFF receives `503` for a dependency outage or `UNKNOWN` per affected SKU. |
 | Order timeout worker unavailable | Reservation remains; only Order decides later commit/release. |
 
 The production topology must demonstrate zero loss for a committed command and recover writes safely within 60 minutes. The runtime, database and relay are fixed by [ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md); replication and deployment mechanics remain implementation choices provided they satisfy [operations.md](operations.md) recovery gates.

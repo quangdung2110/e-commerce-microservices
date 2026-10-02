@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-006
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-012-order-allocation-lifecycle, ADR-015-fail-closed-operations
 evidence:
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
 ---
@@ -14,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-012](./ADR-012-order-allocation-lifecycle.md) and [ADR-015](./ADR-015-fail-closed-operations.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -98,7 +99,7 @@ không phải dữ liệu cần archive. Job archive chỉ được đụng vào
 ## Verification
 
 - Comment trên cột `expires_at` trong
-  [migration V1](../../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql)
+  migration V1 (legacy code, removed)
   ghi rõ: "Order Temporal Saga owns the timer; Inventory does NOT scan expiry."
 - Index `idx_inventory_reservations_status_expiry` được đánh dấu là dùng cho debug, không
   trigger scan.

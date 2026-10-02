@@ -10,7 +10,7 @@
 | [ADR-014](ADR-014-integration-and-search-contracts.md) | Accepted, publication scope partially superseded; ADMIN path and error catalog refined by ADR-024 | Contract surfaces, at-least-once facts, and general recovery policy; ADR-016 owns Search details and ADR-020 removes reservation-result publication to Order. Export sequencing is refined by ADR-022. |
 | [ADR-015](ADR-015-fail-closed-operations.md) | Accepted, ADMIN MFA made a production gate by ADR-024 | Fail-closed safety, reconciliation without auto-correction, audit/security, and DR proof requirements. |
 | [ADR-016](ADR-016-per-sku-search-availability.md) | Accepted, snapshot watermark semantics refined by ADR-022 | Inventory derives per-SKU availability, publishes only after Search document readiness, and exports per-SKU snapshots/change feed. |
-| [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
+| [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted, `UNKNOWN` rule refined by ADR-025 | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
 | [ADR-018](ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Accepted, single-line committed release removed and scope dispatch guard added by ADR-021 | Selected full-quantity order-line scope, one scope per order lifetime, and atomic pre-dispatch release for admin refund. |
 | [ADR-019](ADR-019-fenced-late-payment-recovery.md) | Accepted, publication wording refined by ADR-020 | Fenced whole-root recovery for a verified payment captured after the timeout release; durable command receipt and affected-SKU work replace an Order-facing commit acknowledgment. |
 | [ADR-020](ADR-020-command-receipts-and-minimal-order-events.md) | Accepted | Reservation commands use durable receipts/query/replay; Order receives only dispatch and inspection completion; required outbox and availability work remain atomic. |
@@ -18,6 +18,8 @@
 | [ADR-022](ADR-022-commit-ordered-export-sequence.md) | Accepted | A single fenced sequencer assigns the commit-ordered export sequence; snapshot rows are current state guarded by per-SKU revision. |
 | [ADR-023](ADR-023-java-spring-boot-postgresql-runtime.md) | Accepted | Java 21 + Spring Boot 3.x, PostgreSQL 16 with an explicit-SQL write path, Flyway, Debezium relay of the sequenced event table, and leased in-service workers. |
 | [ADR-024](ADR-024-admin-surface-and-error-catalog.md) | Accepted | ADMIN surface at `/api/v1/admin/inventory` with role `ADMIN` and MFA as a production gate; read-only operational queues; whole-line dispatch, non-terminal HOLD and reversal limits; stable error-code catalog and rejected command outcomes. |
+| [ADR-025](ADR-025-pdp-availability-staleness-budget.md) | Accepted | PDP freshness budget is 30 s: return the last computed state while the oldest pending work is at most 30 s old; `UNKNOWN` only for missing state or older pending work. |
+| [ADR-026](ADR-026-no-product-lifecycle-dependency.md) | Accepted | Inventory consumes no Product event and does not guard deleted/inactive SKUs; Product and Checkout block them before Reserve. |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 
@@ -28,7 +30,7 @@ uniqueness and endpoint reason enums remain unchanged.
 
 ## Historical ADR status
 
-ADRs 001–010 are preserved as historical evidence and are **superseded** by the target decision set above. They must not be used as implementation authority, even where a narrow conclusion resembles the target. Their old context depends on the replaced service design.
+ADRs 001–010 are preserved as historical evidence and are **superseded** by the target decision set above. They must not be used as implementation authority, even where a narrow conclusion resembles the target. Their old context depends on the replaced service design. Each historical file, and ADR-013, records its supersession in its status block; bodies are unchanged except that links to the removed legacy Java code are now plain text.
 
 | Historical ADR | Superseded by | Reason |
 |---|---|---|

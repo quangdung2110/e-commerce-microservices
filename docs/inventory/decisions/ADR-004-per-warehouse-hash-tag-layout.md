@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-004
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-011-authoritative-consistency
 evidence:
   - java/services/inventory-service/src/main/resources/lua
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
@@ -15,7 +16,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-011](./ADR-011-authoritative-consistency.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -100,10 +101,10 @@ phân tán tải theo kho. Không chọn.
 ## Verification
 
 - Header của cả ba Lua script tại
-  [`src/main/resources/lua`](../../../java/services/inventory-service/src/main/resources/lua)
+  `src/main/resources/lua` (legacy code, removed)
   ghi rõ bốn key dùng chung hash tag `{sku:wh}`.
 - `uq_physical_inventory_sku_warehouse` và `uq_inventory_reservations_active` trong
-  [migration V1](../../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql)
+  migration V1 (legacy code, removed)
   đều lấy `(sku, kho)` làm khóa.
 - Cần bổ sung: test chạy trên Redis Cluster thật để chứng minh không có lỗi cross-slot.
   Chưa được ghi nhận.

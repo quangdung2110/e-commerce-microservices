@@ -68,7 +68,7 @@ Excluded: warehouse transfer; bins/lots/serials/expiry tracking; WMS and supplie
 
 ## Acceptance priorities and targets
 
-Priority order is **no oversell**, auditability, operational simplicity, checkout availability, checkout latency, throughput, then read freshness. Baseline targets to prove before production are Reserve p95/p99 <= 200/500 ms, Preview <= 300/750 ms, Search freshness <= 60 seconds, RPO = 0 for committed mutations, and RTO <= 60 minutes. PDP availability-read latency starts at p99 <= 200 ms for <= 500 SKU ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); Inventory and Storefront must still set the freshness budget and load-test both before PDP availability rollout. They are release gates requiring evidence, not claims about the current implementation.
+Priority order is **no oversell**, auditability, operational simplicity, checkout availability, checkout latency, throughput, then read freshness. Baseline targets to prove before production are Reserve p95/p99 <= 200/500 ms, Preview <= 300/750 ms, Search freshness <= 60 seconds, RPO = 0 for committed mutations, and RTO <= 60 minutes. PDP availability-read latency starts at p99 <= 200 ms for <= 500 SKU ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); The PDP freshness budget is 30 seconds ([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)); Inventory and Storefront must load-test latency and freshness before PDP availability rollout. They are release gates requiring evidence, not claims about the current implementation.
 
 ## Non-negotiable rules
 

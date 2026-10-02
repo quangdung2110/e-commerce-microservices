@@ -1,12 +1,13 @@
 ---
 doc_id: inventory-adr-010
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
   - Order Service team
 supersedes: null
+superseded_by: ADR-013-refund-quarantine-lifecycle, ADR-018-selected-line-refund-scope-and-pre-dispatch-release
 evidence:
   - java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql
   - java/services/inventory-service/src/main/resources/db/migration/V3__partial_unique_outbox_return_received.sql
@@ -16,7 +17,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-013](./ADR-013-refund-quarantine-lifecycle.md) and [ADR-018](./ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -108,9 +109,9 @@ làm signal phát sớm hoặc không bao giờ phát. Từ chối là lựa ch�
 ## Verification
 
 - Ba cột refund và `idx_inventory_reservations_refund_completion` nằm trong
-  [migration V1](../../../java/services/inventory-service/src/main/resources/db/migration/V1__init_schema.sql).
+  migration V1 (legacy code, removed).
 - `uq_inventory_outbox_return_received` trong
-  [migration V3](../../../java/services/inventory-service/src/main/resources/db/migration/V3__partial_unique_outbox_return_received.sql)
+  migration V3 (legacy code, removed)
   có comment ghi rõ nó tồn tại để chặn race khi hai transaction cùng thấy phép đếm bằng 0.
 - Cần bổ sung: test hai transaction đồng thời nhận hai món cuối, chứng minh chỉ một
   signal được ghi; và test đăng ký lại với tập món khác bị từ chối. Chưa được ghi nhận.

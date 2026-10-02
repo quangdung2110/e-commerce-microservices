@@ -1,11 +1,12 @@
 ---
 doc_id: inventory-adr-005
 service: inventory
-status: accepted
+status: superseded
 date: 2026-09-05
 decision_owners:
   - Inventory Service team
 supersedes: null
+superseded_by: ADR-015-fail-closed-operations
 evidence:
   - java/services/inventory-service/src/main/resources/lua/deduct_inventory.lua
 ---
@@ -14,7 +15,7 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Superseded` by [ADR-015](./ADR-015-fail-closed-operations.md). This file is historical evidence and is not implementation authority. Code references point to the removed legacy implementation.
 
 ## Context
 
@@ -99,7 +100,7 @@ khóa mà không ai biết.
 
 ## Verification
 
-- [`deduct_inventory.lua`](../../../java/services/inventory-service/src/main/resources/lua/deduct_inventory.lua)
+- `deduct_inventory.lua` (legacy code, removed)
   kiểm tra invariant ở hai điểm và trả mã `-1` với lý do drift.
 - Cả ba script đều bắt đầu bằng kiểm tra `EXISTS` trên key suspension.
 - Cần bổ sung: alert cảnh báo trước khi TTL hết hạn, một quyết định rõ ràng về việc có

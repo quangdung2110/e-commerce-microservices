@@ -12,11 +12,15 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 |---|---|---|
 | `Warehouse` | `warehouse_id` | Address, active/outage state, fulfillment priority. |
 | `StockPosition` | `(warehouse_id, sku_id)` | Current buckets and position revision. |
-| `SkuAvailabilityState` | `sku_id` | Inventory-owned derived boolean and monotonic `availability_revision` for Search integration. |
-| `SkuAvailabilityDirty` | `sku_id` | Durable coalescing signal/checkpoint for asynchronous recomputation. |
+| `SkuAvailabilityState` | `sku_id` | Inventory-owned derived boolean, monotonic `availability_revision` and `evaluated_at`; source for Search publication and BFF reads. |
+| `SkuAvailabilityDirty` | `sku_id` | Durable coalescing signal with `first_marked_at` (oldest unprocessed mark, never reset by coalescing) and a mark sequence the projector clears up to its start. |
+| `AvailabilityFanoutJob` | `fanout_job_id`; one active job per `(warehouse_id, warehouse_revision)` | Checkpointed scan of distinct SKU IDs at a warehouse after an `is_active`/`operational_state` change: `created_at`, cursor, completion. |
 | `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
+| `ReadinessPublicationTask` | `(sku_id, catalog_revision)` | Durable task created atomically with a readiness registration to publish the current snapshot even without a later stock change. |
+| `SnapshotSession` | `snapshot_id` | Search snapshot session: `export_watermark`, `created_at`, `expires_at` (24 h); holds no copy of state. |
 | `OrderReservation` | `order_id` | Derived root state, `accepted_at`, advisory `expires_at`, stored `allocation_plan_id`, immutable release reason, commit/recovery `payment_reference`, correlation. |
-| `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, line state (`RESERVED`/`COMMITTED`/`DISPATCHED`/`RELEASED`) and dispatch reference. |
+| `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, line state (`RESERVED`/`COMMITTED`/`DISPATCHED`/`RELEASED`), `committed_at` and dispatch reference. |
+| `PhysicalDispatch` | `(warehouse_id, dispatch_id, dispatch_line_id)`; one per `(order_id, order_line_id)` | Whole-line dispatch fact: handover reference/time, evidence reference, actor and movement link; source of the dispatch event and query fields. |
 | `RefundScope` | `order_id` lifetime unique; `refund_request_id` unique | Immutable selected-line scope state for the one Order refund case. |
 | `RefundScopeLine` | `(refund_scope_id, order_line_id)` | Immutable expected quantity and received/pass/fail counters. |
 | `ReturnReceiptLine` | `(refund_scope_id, return_receipt_id, return_receipt_line_id)` | Physical inbound provenance and residual final-inspection quantity. |
@@ -161,9 +165,13 @@ Every successful calculation records the latest `evaluated_at` on
 transaction increments `availability_revision` and writes its Search public/export outbox
 fact. Quantity changes that keep the boolean unchanged emit no public fact.
 
-The Availability Read API serves Product Detail BFF from this Inventory-owned state. A
-SKU with no completed state or pending dirty/recompute work returns `UNKNOWN`; otherwise
-the response contains the boolean, its `availability_revision`, and `evaluated_at`. The
+The Availability Read API serves Product Detail BFF from this Inventory-owned state with
+a 30-second freshness budget ([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)).
+A SKU returns `UNKNOWN` when it has no completed state, or when its oldest pending work
+is older than 30 seconds: `SkuAvailabilityDirty.first_marked_at`, or the `created_at` of
+an unfinished `AvailabilityFanoutJob` for a warehouse where the SKU has a position.
+Otherwise the response contains the last completed boolean, its `availability_revision`,
+and `evaluated_at`, even while younger work is pending. The
 API never exposes `available_to_sell`, raw quantity, warehouse, reservation, or outbox
 cursor. It neither writes state nor depends on Search readiness.
 

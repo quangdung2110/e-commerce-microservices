@@ -199,8 +199,10 @@ unavailable. Only boolean transitions produce normal public events.
 
 Product Detail BFF does not participate in this event workflow. It calls the
 Availability Read API with a bounded SKU batch after Product resolves catalog-active
-SKUs. The API reads `SkuAvailabilityState` without a write: a clean, completed state
-maps to `IN_STOCK` or `OUT_OF_STOCK`; a missing or dirty state maps to `UNKNOWN`. Search
+SKUs. The API reads `SkuAvailabilityState` without a write: a completed state maps to
+`IN_STOCK` or `OUT_OF_STOCK` while the SKU's oldest pending work (dirty mark or
+unfinished warehouse fan-out) is at most 30 seconds old; a missing state or older
+pending work maps to `UNKNOWN` ([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)). Search
 readiness does not gate this API, and a BFF read never creates a publication task.
 
 After Search successfully creates a catalog SKU document, it registers readiness with
@@ -218,7 +220,7 @@ Search revokes readiness after tombstone and before physical purge.
 | Physical dispatch, receipt, inspection, disposition, adjustment | `ADMIN` | Validate authority, physical guards, stock movement, audit. |
 | Warehouse active/outage/priority | `ADMIN` | Own master state; use it only for new allocation. |
 | Derive per-SKU `is_in_stock` | Inventory availability projector | Recompute asynchronously and publish only after Search document readiness. |
-| Serve PDP advisory availability | Inventory Availability Read API | Return a bounded per-SKU state to Product Detail BFF; return `UNKNOWN` when state is missing/dirty; never reserve or expose quantity. |
+| Serve PDP advisory availability | Inventory Availability Read API | Return a bounded per-SKU state to Product Detail BFF; return `UNKNOWN` when state is missing or pending work exceeds the 30-second budget; never reserve or expose quantity. |
 | Register/revoke SKU document readiness | Search | Register only after catalog write succeeds; revoke after tombstone and before purge. |
 | Refund registration/close/incomplete close | Order Temporal Saga | Enforce immutable scope and state guards. |
 | Shipment/delivery | Order | Consume Inventory dispatch fact; not stored as Inventory lifecycle. |
