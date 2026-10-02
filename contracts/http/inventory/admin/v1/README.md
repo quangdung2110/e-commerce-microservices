@@ -2,8 +2,18 @@
 
 [OpenAPI](openapi.yaml) is the only supported contract for warehouse master data,
 sellable receipts/adjustments, physical dispatch, return receipt, final inspection,
-quarantine disposition, and append-only reversal.
+quarantine disposition, append-only reversal, and the read-only operational queues
+(warehouses, stock positions, movements, dispatch queue, inspection queue, quarantine
+items, Refund Scope by order).
 
-The caller must be an authenticated `ADMIN` with MFA. Actor identity comes from the
-authentication context, never the request body. There is no generic bucket, ledger,
+The surface is `/api/v1/admin/inventory/**` behind the API Gateway. The caller must be
+an authenticated interactive user whose `X-User-Roles` contains `ADMIN`; actor identity
+comes from the gateway-injected `X-User-Id`/`X-User-Session-Id`, never the request body.
+There is no non-interactive ADMIN principal. MFA is mandatory for production and is a
+release gate until an Auth/gateway decision forwards an MFA assertion
+([Inventory ADR-024](../../../../../docs/inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)).
+
+Dispatch records an entire reservation line. `HOLD` is non-terminal; only `DISPOSE`
+and `RETURN_TO_SUPPLIER` consume failed quantity. Every `409` carries a stable catalog
+`code` and is replayed with the same body. There is no generic bucket, ledger,
 reservation, or Refund Scope update endpoint.

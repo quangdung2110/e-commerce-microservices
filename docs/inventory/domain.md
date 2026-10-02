@@ -154,7 +154,9 @@ For every immutable scope line:
   Order financial case. Order's durable orchestration is defined by
   [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
-Failed inspection may be `HOLD`, `DISPOSE`, or `RETURN_TO_SUPPLIER`. Physical departure is required before the latter two reduce `on_hand`/`quarantine`. Their specialized reversal requires evidence that the unit is physically back at the same warehouse and returns it to quarantine, never directly to sellable stock.
+Failed inspection may be `HOLD`, `DISPOSE`, or `RETURN_TO_SUPPLIER`. `HOLD` is a non-terminal annotation: it moves no bucket and the quantity stays eligible for a later outbound disposition. Only `DISPOSE` and `RETURN_TO_SUPPLIER` consume failed, undisposed quantity, and physical departure is required before they reduce `on_hand`/`quarantine`. Their specialized reversal (`WRONG_RECORD`, `DISPOSAL_ABORTED` or `SUPPLIER_RETURNED`) requires evidence that the unit is physically back at the same warehouse and returns it to quarantine, never directly to sellable stock ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
+
+Physical dispatch always records an entire `ReservationLine`: its quantity equals the immutable line quantity at the allocated warehouse and SKU. A sellable reversal compensates a successful receipt or adjustment in numbered steps whose cumulative quantity never exceeds the original; reversing an increase requires enough `available_to_sell`.
 
 Final inspection failure reason is exactly one of `DAMAGED`, `USED_OR_ALTERED`, `MISSING_COMPONENTS`, `SAFETY_OR_HYGIENE`, `COUNTERFEIT_OR_UNVERIFIABLE`, or `NOT_RESELLABLE_BY_POLICY`; there is no `OTHER`. `HOLD` requires `AWAITING_DISPOSITION`, `SUPPLIER_CLAIM`, `SAFETY_REVIEW`, or `EVIDENCE_PRESERVATION`. `DISPOSE` requires `UNSAFE`, `UNREPAIRABLE`, `EXPIRED`, or `POLICY_REQUIRED`; `RETURN_TO_SUPPLIER` requires `SUPPLIER_RETURN_AUTHORIZED`. Every final inspection/disposition carries the required checklist or physical-evidence reference.
 

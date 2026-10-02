@@ -8,7 +8,7 @@
 |---|---|---|
 | `/internal/inventory/v1` | Checkout and Order Temporal Saga | Allocation preview, reservation/refund workflow commands, and workflow queries. |
 | `/internal/inventory/v1/sku-availabilities:batch-get` | Product Detail BFF | Read-only advisory per-SKU availability; no hold, quantity, warehouse, or reservation data. |
-| `/admin/inventory/v1` | Authenticated `ADMIN` | Warehouse configuration and physical stock operations. |
+| `/api/v1/admin/inventory` | Authenticated `ADMIN` through the gateway | Warehouse configuration, physical stock operations and read-only operational queues. |
 | `/exports/inventory/v1` | Search Projection only | SKU-document readiness plus consistent per-SKU snapshot/change feed. |
 
 Machine-readable contracts are split by trust boundary: [Workflow OpenAPI](../../contracts/http/inventory/workflow/v1/openapi.yaml),
@@ -155,19 +155,40 @@ Reserve. Checkout uses the Workflow API for Preview; Order uses it for Reserve.
 
 ADMIN commands are the only physical-operation path. Every stock-affecting input includes `warehouse_id`, `sku_id` when relevant, positive quantity, command ID, operation identity, reason/evidence reference, and actor identity.
 
+The surface is `/api/v1/admin/inventory/**`, routed by Traefik with `api-authenticated`
+and role `ADMIN`; the gateway never retries a write. Inventory authorizes from
+`X-User-Roles` containing `ADMIN` and writes `X-User-Id`/`X-User-Session-Id` to audit.
+There is no non-interactive ADMIN principal. MFA is mandatory for production and is a
+release gate: it needs a separate Auth/gateway decision that issues and forwards an MFA
+assertion, which Inventory then verifies on every ADMIN mutation. Local and development
+environments run without MFA ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
+
 | Capability | Endpoint family | Rules |
 |---|---|---|
-| Warehouse master | `/admin/inventory/v1/warehouses` | Create/update address, `is_active`, `operational_state`, `fulfillment_priority`; no implicit movement or release/reroute. |
-| Sellable receipt | `/admin/inventory/v1/stock-receipts` | `INITIAL_STOCK_LOAD` needs approved baseline batch; `SUPPLIER_RECEIPT` needs delivery/GRN reference. |
-| Adjustment | `/admin/inventory/v1/stock-adjustments` | `+/-`, ADMIN-only, approved reason code and evidence; negative only from sellable. |
-| Sellable reversal | `/admin/inventory/v1/stock-movements/{movement_id}/reversals` | Only successful sellable receipt/adjustment; append-only compensating movement. |
-| Physical dispatch | `/admin/inventory/v1/physical-dispatches` | Only exact committed allocation at assigned warehouse and only when goods left physically. |
-| Return receipt | `/admin/inventory/v1/return-receipts` | Exact active scope line; goes into quarantine. |
-| Final inspection | `/admin/inventory/v1/inspections` | `PASS`/`FAIL` final per receipt quantity at receiving warehouse; evidence required. |
-| Quarantine disposition | `/admin/inventory/v1/quarantine-dispositions` | `HOLD`, `DISPOSE`, `RETURN_TO_SUPPLIER`; physical departure proof for last two. |
-| Disposition reversal | `/admin/inventory/v1/quarantine-dispositions/{id}/reversals` | Only verified physical return to same warehouse; restores quarantine, not sellable. |
+| Warehouse master | `/api/v1/admin/inventory/warehouses` | Create/update address, `is_active`, `operational_state`, `fulfillment_priority`; no implicit movement or release/reroute. |
+| Sellable receipt | `/api/v1/admin/inventory/stock-receipts` | `INITIAL_STOCK_LOAD` needs approved baseline batch; `SUPPLIER_RECEIPT` needs delivery/GRN reference. |
+| Adjustment | `/api/v1/admin/inventory/stock-adjustments` | `+/-`, ADMIN-only, approved reason code and evidence; negative only from sellable. |
+| Sellable reversal | `/api/v1/admin/inventory/stock-movements/{movement_id}/reversals` | Only successful sellable receipt/adjustment; append-only compensating movement. `reversal_sequence` is 1..n per original movement and the cumulative reversed quantity cannot exceed the original. Reversing an increase needs `quantity <= available_to_sell`; reversing a decrease adds back to sellable. |
+| Physical dispatch | `/api/v1/admin/inventory/physical-dispatches` | Whole line only: `quantity` equals the immutable line quantity, at its assigned warehouse and SKU, while the line is `COMMITTED`, and only when goods left physically. |
+| Return receipt | `/api/v1/admin/inventory/return-receipts` | Exact active scope line; goes into quarantine. |
+| Final inspection | `/api/v1/admin/inventory/inspections` | `PASS`/`FAIL` final per receipt quantity at receiving warehouse; evidence required. |
+| Quarantine disposition | `/api/v1/admin/inventory/quarantine-dispositions` | `HOLD` is a non-terminal annotation with no bucket movement; the quantity stays disposable. `DISPOSE`/`RETURN_TO_SUPPLIER` consume failed, undisposed quantity and require physical departure proof. |
+| Disposition reversal | `/api/v1/admin/inventory/quarantine-dispositions/{id}/reversals` | Only for `DISPOSE`/`RETURN_TO_SUPPLIER`, with verified physical return to the same warehouse; restores quarantine, not sellable. |
 
-Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustment reasons are `COUNT_GAIN`, `COUNT_LOSS`, `DAMAGE_REMOVAL`, `EXPIRY_REMOVAL`, and `DATA_CORRECTION`. Reversal reasons are `DUPLICATE_ENTRY`, `WRONG_QUANTITY`, `WRONG_SKU`, `WRONG_WAREHOUSE`, and `SOURCE_DOCUMENT_VOIDED`. There is no catch-all `OTHER`. Inspection fail reasons and disposition reasons are enumerated in [domain.md](domain.md).
+Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustment reasons are `COUNT_GAIN`, `COUNT_LOSS`, `DAMAGE_REMOVAL`, `EXPIRY_REMOVAL`, and `DATA_CORRECTION`. Sellable reversal reasons are `DUPLICATE_ENTRY`, `WRONG_QUANTITY`, `WRONG_SKU`, `WRONG_WAREHOUSE`, and `SOURCE_DOCUMENT_VOIDED`. Disposition reversal reasons are `WRONG_RECORD`, `DISPOSAL_ABORTED`, and `SUPPLIER_RETURNED`. There is no catch-all `OTHER`. Inspection fail reasons and disposition reasons are enumerated in [domain.md](domain.md).
+
+Read-only operational queries are cursor-paginated (`limit <= 100`), never mutate state
+and return no customer PII:
+
+| Query | Purpose |
+|---|---|
+| `GET /api/v1/admin/inventory/warehouses` | List warehouses; optional `is_active`. |
+| `GET /api/v1/admin/inventory/stock-positions` | Positions filtered by `warehouse_id` and/or `sku_id` (at least one). |
+| `GET /api/v1/admin/inventory/dispatch-queue?warehouse_id=` | `COMMITTED`, undispatched lines allocated to the warehouse, oldest commit first. |
+| `GET /api/v1/admin/inventory/inspection-queue?warehouse_id=` | Return receipt lines with uninspected quantity at the warehouse. |
+| `GET /api/v1/admin/inventory/quarantine-items?warehouse_id=` | Failed-inspection quantity not yet disposed out, with the latest `HOLD` reason. |
+| `GET /api/v1/admin/inventory/refund-scopes?order_id=` | Resolve the order's lifetime scope. |
+| `GET /api/v1/admin/inventory/stock-movements` | Movement evidence by `warehouse_id`, `sku_id` and `recorded_from`/`recorded_to`. |
 
 ## 5. Errors and retries
 
@@ -181,7 +202,36 @@ Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustm
 | `409` | Invalid state guard, immutable scope mismatch, operation identity conflict, or reused ID with different payload. | Treat as durable business conflict; investigate or issue a correct new command. |
 | `503` | `INVENTORY_UNAVAILABLE` or `INVENTORY_BUSY`; no accepted transition was returned. | Retry with the same command ID and backoff. |
 
-Every error response includes stable `code`, `retryable`, `correlation_id`, and, when supplied, `command_id`. A technical failure is never represented as `REJECT_ALL`.
+Every error response includes stable `code`, `retryable`, `correlation_id`, and, when supplied, `command_id`. A technical failure is never represented as `REJECT_ALL`. A durable `409` is replayed with the same body for the same command ID/payload, and the command query reports it as `result: REJECTED` with its `http_status` and `error_code` ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
+
+| HTTP | `code` | Raised by |
+|---:|---|---|
+| `400` | `INVALID_REQUEST` | Any surface: syntax/shape failure before a durable command exists. |
+| `401` | `UNAUTHENTICATED` | Missing or invalid workload/ADMIN identity. |
+| `403` | `FORBIDDEN` | Caller lacks the required service principal or `ADMIN` role. |
+| `404` | `NOT_FOUND` | Query target or command not visible to the caller. |
+| `409` | `IDEMPOTENCY_KEY_REUSED` | Same caller namespace and key with a different fingerprint. |
+| `409` | `RESERVATION_ALREADY_EXISTS` | Reserve for an `order_id` that already has a root under another command. |
+| `409` | `RESERVATION_NOT_RESERVED` | Commit or Release on a root that is not `RESERVED`. |
+| `409` | `RESERVATION_NOT_RECOVERABLE` | `recover-timed-out-payment` guard failed (reason, dispatch, stock). |
+| `409` | `PRE_DISPATCH_RELEASE_NOT_ALLOWED` | `release-committed-before-dispatch` when not every line is `COMMITTED` and undispatched. |
+| `409` | `REFUND_SCOPE_ALREADY_EXISTS` | A second `refund_request_id` for the order's lifetime scope. |
+| `409` | `REFUND_SCOPE_LINE_INVALID` | Unknown/duplicate line, SKU mismatch or partial quantity. |
+| `409` | `REFUND_SCOPE_LINE_NOT_DISPATCHED` | A selected line is not `DISPATCHED`. |
+| `409` | `REFUND_SCOPE_STATE_CONFLICT` | Close/cancel/close-incomplete guard, or receipt on a terminal scope. |
+| `409` | `OPERATION_IDENTITY_CONFLICT` | Business operation identity already claimed by another accepted operation. |
+| `409` | `INSUFFICIENT_SELLABLE_STOCK` | Negative adjustment or reversal larger than `available_to_sell`. |
+| `409` | `DISPATCH_NOT_ALLOWED` | Line not `COMMITTED`, or warehouse/SKU/quantity differs from the allocation. |
+| `409` | `RETURN_RECEIPT_REJECTED` | Wrong line/SKU, over-receipt or inactive scope. |
+| `409` | `INSPECTION_REJECTED` | Quantity above the uninspected residual or wrong warehouse. |
+| `409` | `DISPOSITION_REJECTED` | Quantity above failed undisposed quantity, missing departure, or ineligible reversal. |
+| `409` | `MOVEMENT_NOT_REVERSIBLE` | Target is not a sellable receipt/adjustment or the cumulative limit is exceeded. |
+| `409` | `WAREHOUSE_CONFLICT` | Warehouse configuration conflicts with its current revision. |
+| `503` | `INVENTORY_UNAVAILABLE` / `INVENTORY_BUSY` | Retryable technical failure; same command ID. |
+
+`REJECT_ALL` is a `200` domain outcome, never an error code. The Export surface adds
+`SNAPSHOT_SESSION_EXPIRED` and `REPLAY_WINDOW_EXPIRED` (`410`), and the Read surface uses
+`INVENTORY_AVAILABILITY_UNAVAILABLE` (`503`).
 
 The table above governs workflow/admin commands and their recovery queries. The BFF
 availability read is defined by its own OpenAPI: it has no idempotency key or business

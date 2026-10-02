@@ -57,7 +57,7 @@ flowchart LR
   reuses neither allocation preview nor normal Reserve: it commits the original released
   root only when all original physical guards still hold; otherwise Order owns the
   financial-reconciliation/manual path.
-- Only ADMIN invokes warehouse and physical commands. Interactive ADMIN requires MFA; all commands are attributed.
+- Only ADMIN invokes warehouse and physical commands, through the gateway at `/api/v1/admin/inventory` with role `ADMIN`; all commands are attributed. MFA is mandatory before production and is verified once Auth/gateway forward an MFA assertion ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
 - Inventory accepts opaque `sku_id` and has no synchronous Product dependency. Product/Checkout prevent inactive SKU from entering checkout.
 - Search registers readiness only after its Product-owned SKU document exists. Inventory
   may compute and retain availability before registration, but the projector cannot
@@ -70,7 +70,7 @@ flowchart LR
 
 ## 4. Concurrency model
 
-The `StockPosition` row is the stock contention unit. Every mutation has a defined transaction boundary and lock order in [data.md](data.md). Reserve locks the exact preview plan and validates all lines before any bucket changes. A conflicting command is serialised by row locks/guards; after two bounded internal retries it returns `503 BUSY`, never an invented stock outcome.
+The `StockPosition` row is the stock contention unit. Every mutation has a defined transaction boundary and lock order in [data.md](data.md). Reserve locks the exact preview plan and validates all lines before any bucket changes. A conflicting command is serialised by row locks/guards; after two bounded internal retries it returns `503 INVENTORY_BUSY`, never an invented stock outcome.
 
 No distributed lock is required or accepted as correctness authority. Multi-item/multi-warehouse atomicity is provided by the relational transaction, not a compensating partial workflow.
 

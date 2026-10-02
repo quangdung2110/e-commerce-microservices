@@ -7,7 +7,7 @@ customer stock-write API.
 |---|---|---|
 | [Workflow v1](workflow/v1/openapi.yaml) | Checkout, Order Temporal Saga | Advisory allocation, reservation lifecycle, Refund Scope, recovery queries |
 | [Storefront availability read v1](read/v1/openapi.yaml) | Product Detail BFF | Bounded advisory per-SKU availability read; no quantity, warehouse, hold, or reservation data |
-| [ADMIN v1](admin/v1/openapi.yaml) | Authenticated `ADMIN` with MFA | Warehouse master data and physical stock operations |
+| [ADMIN v1](admin/v1/openapi.yaml) | Gateway-routed `ADMIN` at `/api/v1/admin/inventory` (MFA is a production gate) | Warehouse master data, physical stock operations and operational queues |
 | [Export v1](exports/v1/openapi.yaml) | Search Projection | Product-document readiness register/revoke plus fixed-watermark per-SKU availability snapshot/change feed |
 
 All mutation results are durable. The `Idempotency-Key` is scoped by authenticated

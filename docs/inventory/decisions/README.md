@@ -7,8 +7,8 @@
 | [ADR-011](ADR-011-authoritative-consistency.md) | Accepted, publication wording refined by ADR-020; runtime fixed by ADR-023 | One relational authoritative write source; state + immutable evidence + required transactional outbox/work commit atomically. |
 | [ADR-012](ADR-012-order-allocation-lifecycle.md) | Accepted, Commit deadline, release reasons and plan semantics refined by ADR-021 | Whole-order reserve, one warehouse per line, Order-owned timeout and physical-dispatch semantics. |
 | [ADR-013](ADR-013-refund-quarantine-lifecycle.md) | Superseded | Historical whole-order Refund Scope and quarantine/inspection lifecycle; ADR-018 owns current scope policy. |
-| [ADR-014](ADR-014-integration-and-search-contracts.md) | Accepted, publication scope partially superseded | Contract surfaces, at-least-once facts, and general recovery policy; ADR-016 owns Search details and ADR-020 removes reservation-result publication to Order. Export sequencing is refined by ADR-022. |
-| [ADR-015](ADR-015-fail-closed-operations.md) | Accepted | Fail-closed safety, reconciliation without auto-correction, audit/security, and DR proof requirements. |
+| [ADR-014](ADR-014-integration-and-search-contracts.md) | Accepted, publication scope partially superseded; ADMIN path and error catalog refined by ADR-024 | Contract surfaces, at-least-once facts, and general recovery policy; ADR-016 owns Search details and ADR-020 removes reservation-result publication to Order. Export sequencing is refined by ADR-022. |
+| [ADR-015](ADR-015-fail-closed-operations.md) | Accepted, ADMIN MFA made a production gate by ADR-024 | Fail-closed safety, reconciliation without auto-correction, audit/security, and DR proof requirements. |
 | [ADR-016](ADR-016-per-sku-search-availability.md) | Accepted, snapshot watermark semantics refined by ADR-022 | Inventory derives per-SKU availability, publishes only after Search document readiness, and exports per-SKU snapshots/change feed. |
 | [ADR-017](ADR-017-pdp-availability-read-api.md) | Accepted | Product Detail BFF reads Inventory-owned advisory availability through a bounded synchronous API, not Search events/exports. |
 | [ADR-018](ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Accepted, single-line committed release removed and scope dispatch guard added by ADR-021 | Selected full-quantity order-line scope, one scope per order lifetime, and atomic pre-dispatch release for admin refund. |
@@ -17,6 +17,7 @@
 | [ADR-021](ADR-021-order-integration-lifecycle-corrections.md) | Accepted | Commit is not deadline-gated; complete whole-root release reasons; no single-line committed or `STOCK_DISCREPANCY` release; Refund Scope lines must be dispatched; stateless allocation plan. |
 | [ADR-022](ADR-022-commit-ordered-export-sequence.md) | Accepted | A single fenced sequencer assigns the commit-ordered export sequence; snapshot rows are current state guarded by per-SKU revision. |
 | [ADR-023](ADR-023-java-spring-boot-postgresql-runtime.md) | Accepted | Java 21 + Spring Boot 3.x, PostgreSQL 16 with an explicit-SQL write path, Flyway, Debezium relay of the sequenced event table, and leased in-service workers. |
+| [ADR-024](ADR-024-admin-surface-and-error-catalog.md) | Accepted | ADMIN surface at `/api/v1/admin/inventory` with role `ADMIN` and MFA as a production gate; read-only operational queues; whole-line dispatch, non-terminal HOLD and reversal limits; stable error-code catalog and rejected command outcomes. |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 

@@ -329,6 +329,7 @@ paths:
         Returns the original result of this specific command, not current aggregate
         state. A missing result does not prove an in-flight command failed; recover
         using the same command ID and payload. No reservation-result event is emitted.
+      x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/CommandId' }]
       responses:
@@ -346,6 +347,7 @@ paths:
         Returns current reservation state, which may reflect transitions after an
         earlier command receipt. Use command query/replay to prove a specific command
         outcome and this resource for current-state reconciliation.
+      x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/OrderId' }]
       responses:
@@ -359,6 +361,7 @@ paths:
       tags: [Recovery]
       operationId: getRefundScope
       summary: Read an Inventory refund-scope fact
+      x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RefundScopeId' }]
       responses:
@@ -707,9 +710,12 @@ components:
       allOf:
         - $ref: '#/components/schemas/CorrelatedResult'
         - type: object
-          required: [operation]
+          required: [operation, result]
           properties:
             operation: { type: string, minLength: 1, maxLength: 80 }
+            result: { enum: [ACCEPTED, REJECTED] }
+            http_status: { type: integer, minimum: 200, maximum: 599, description: Original HTTP status; 409 for a durable rejection. }
+            error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$', description: Catalog code; present only when result is REJECTED. }
             resource_id: { $ref: '#/components/schemas/OpaqueId' }
     InventoryProblem:
       allOf:
@@ -727,7 +733,7 @@ components:
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller lacks the required capability., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Resource is absent or not visible to this caller., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: 'Durable state, operation identity, or idempotency conflict.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, RESERVATION_ALREADY_EXISTS, RESERVATION_NOT_RESERVED, RESERVATION_NOT_RECOVERABLE, PRE_DISPATCH_RELEASE_NOT_ALLOWED, REFUND_SCOPE_ALREADY_EXISTS, REFUND_SCOPE_LINE_INVALID, REFUND_SCOPE_LINE_NOT_DISPATCHED or REFUND_SCOPE_STATE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
       description: INVENTORY_UNAVAILABLE or INVENTORY_BUSY; retry the same command ID with backoff.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }

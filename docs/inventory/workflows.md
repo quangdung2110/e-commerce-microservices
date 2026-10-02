@@ -63,7 +63,7 @@ sequenceDiagram
 | Condition | Result | Caller action |
 |---|---|---|
 | Primary Inventory store unavailable | Preview/mutation returns `503 INVENTORY_UNAVAILABLE`; no cache plan or pending hold. | Retry using the same command ID after recovery. |
-| Lock/deadlock/serialization remains after two internal retries | `503 BUSY`, never `OUT_OF_STOCK`. | Saga retries safely. |
+| Lock/deadlock/serialization remains after two internal retries | `503 INVENTORY_BUSY`, never `OUT_OF_STOCK`. | Saga retries safely. |
 | Exact plan cannot reserve a complete order | `200` terminal domain outcome `REJECT_ALL`. | End this checkout attempt or start a new customer interaction; do not reroute silently. |
 
 ### Failure F2 — timeout, retry, and explicit release

@@ -10,7 +10,7 @@
 |---|---|---|
 | Authoritative primary unavailable or recovery unverified | Fail closed for mutation; Preview returns `503 INVENTORY_UNAVAILABLE`; no cache fallback/pending order. | Platform + Inventory recover/fail over, validate all gates, then jointly reopen writes. |
 | State/audit/command/outbox cannot commit atomically | Abort entire command as retryable technical failure. | Inventory fixes datastore health; caller retries same ID. |
-| Lock timeout/deadlock/serialization conflict | Retry internally at most twice, then `503 BUSY`. | Inventory + Platform investigate contention; never classify as out of stock. |
+| Lock timeout/deadlock/serialization conflict | Retry internally at most twice, then `503 INVENTORY_BUSY`. | Inventory + Platform investigate contention; never classify as out of stock. |
 | Broker/relay unavailable after commit | Durable outbox accumulates; commands continue while capacity is safe. | Platform + Inventory restore relay and publish original records. |
 | Export sequencer stalled or lease lost | Facts stay durable but unsequenced, so neither Kafka nor the change feed sees them; commands continue while capacity is safe. A stale fenced instance cannot assign sequence. | Inventory restores the single sequencer; it resumes in `outbox_id` order ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). |
 | Search readiness absent/stale/unavailable | Authoritative commands continue; affected per-SKU availability remains pending and is not published/exported until readiness exists. | Search registers after its Product document exists; Inventory emits the current snapshot, then Search resumes change feed/replay. |
@@ -49,7 +49,7 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 | Search freshness > 30 s / > 60 s, or readiness-suppressed facts grow | Warning / page: Inventory + Search | Repair readiness/projector, replay or snapshot bootstrap. |
 | Availability Read API latency/error or BFF `UNKNOWN` rate breaches its agreed budget | Warning / page: Inventory + Storefront | Repair read endpoint/projector/cache; BFF continues to degrade rather than replaying data. |
 | Any `RESERVED` root > 60 min | Operational page: Order | Order decides explicit outcome; no Inventory cleanup. |
-| `503 BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
+| `503 INVENTORY_BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
 | Audit failure, privileged anomaly, direct-write attempt | Security page | Deny/contain, preserve evidence, investigate. |
 
 Refund-scope/quarantine age is dashboarded but has no automatic closure threshold:
@@ -89,7 +89,7 @@ Reconciliation detects only. Correction requires ADMIN reason/evidence and norma
 
 ## 5. Security and audit
 
-Service calls use authenticated workload identity and encrypted transport, both enforced by the service mesh (mTLS plus per-principal, per-path `AuthorizationPolicy` — [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); the caller-set `X-Service-Identity` header is attribution only. Interactive ADMIN requires MFA. Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
+Service calls use authenticated workload identity and encrypted transport, both enforced by the service mesh (mTLS plus per-principal, per-path `AuthorizationPolicy` — [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); the caller-set `X-Service-Identity` header is attribution only. ADMIN arrives only through the gateway with role `ADMIN` from `X-User-Roles`; MFA is a production release gate that depends on an Auth/gateway MFA assertion ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)). Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
 
 Audit retains actor/effective role, command and operation identity, reason/evidence reference, before/after values, timestamp, correlation/causation IDs, and result for at least seven years. Events/logs omit credentials, raw evidence contents, and unnecessary customer PII. Compliance/Legal validation of retention/evidence remains a production-release gate.
 

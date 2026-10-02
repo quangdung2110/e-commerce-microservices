@@ -273,7 +273,10 @@ interactions:
     consumers: [api-gateway]
     contract: http/inventory/admin/v1/openapi.yaml
     status: proposed
-    notes: ADMIN-with-MFA warehouse master, physical movement, return, inspection, and disposition contract.
+    notes: >-
+      Gateway-routed /api/v1/admin/inventory for role ADMIN (MFA is a production gate):
+      warehouse master, physical movement, return, inspection, disposition and read-only
+      operational queues; stable 409 code catalog.
 
   - id: checkout-calculates-promotions
     protocol: http

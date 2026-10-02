@@ -21,10 +21,10 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `RefundScopeLine` | `(refund_scope_id, order_line_id)` | Immutable expected quantity and received/pass/fail counters. |
 | `ReturnReceiptLine` | `(refund_scope_id, return_receipt_id, return_receipt_line_id)` | Physical inbound provenance and residual final-inspection quantity. |
 | `InspectionResult` | Inspection/receipt-line operation identity | Final pass/fail evidence at receiving warehouse. |
-| `QuarantineDisposition` | `(warehouse_id, disposition_id, disposition_line_id)` | Hold/outbound disposition and reversal trace. |
+| `QuarantineDisposition` | `(warehouse_id, disposition_id, disposition_line_id)` | Non-terminal `HOLD` annotation or outbound `DISPOSE`/`RETURN_TO_SUPPLIER` consuming failed, undisposed quantity, with reversal trace. |
 | `StockMovement` | `movement_id`; immutable | Bucket delta, original/reversal linkage, source command. |
 | `AuditEntry` | append-only | Actor, role, reason/evidence, before/after values, causation. |
-| `CommandExecution` | `(caller_namespace, command_id)` | Input fingerprint and terminal accepted/rejected outcome. |
+| `CommandExecution` | `(caller_namespace, command_id)` | Input fingerprint and terminal outcome: `ACCEPTED` response or `REJECTED` HTTP status, catalog `code` and problem body for exact replay. |
 | `OperationIdentity` | Business operation key | Enforces one accepted physical/business operation. |
 | `OutboxEvent` | `event_id`; `outbox_id` | Public fact written in the business/projector transaction, not yet sequenced. |
 | `PublishedEvent` | `event_id`; unique export `sequence` | Finalized CloudEvent with commit-ordered sequence; the only Kafka relay and change-feed source ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). |
@@ -98,7 +98,7 @@ Commit locks the root and lines and requires only root state `RESERVED`; it does
 4. Refund Scope, line, receipt, inspection, and disposition records;
 5. StockPosition rows in `(warehouse_id ASC, sku_id ASC)` order.
 
-The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 BUSY`.
+The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 INVENTORY_BUSY`.
 
 When warehouse configuration and Reserve race, the first committed transaction determines the result: a status change first makes Reserve reject the whole order; a Reserve first creates a commitment that later status changes do not revoke.
 

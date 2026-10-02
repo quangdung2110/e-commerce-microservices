@@ -3,12 +3,14 @@ info:
   title: Inventory Warehouse Administration API
   version: 1.0.0
   description: >-
-    Target ADMIN contract for warehouse master data and physical stock operations.
-    Every accepted mutation atomically persists state, immutable evidence, command
-    outcome, successful operation identity, and required outbox events.
+    Target ADMIN contract for warehouse master data, physical stock operations and
+    read-only operational queues. Every accepted mutation atomically persists state,
+    immutable evidence, command outcome, successful operation identity, and required
+    outbox events. Routed by the gateway at /api/v1/admin/inventory with role ADMIN;
+    MFA is a production release gate (Inventory ADR-024).
 x-adoption-status: proposed
 x-required-role: ADMIN
-x-mfa-required: true
+x-mfa-required: production-gate
 servers:
   - url: http://inventory-service:8080
     description: ADMIN service endpoint behind the trusted gateway
@@ -20,7 +22,16 @@ tags:
   - name: Returns
   - name: Quarantine
 paths:
-  /admin/inventory/v1/warehouses:
+  /api/v1/admin/inventory/warehouses:
+    get:
+      tags: [Warehouses]
+      operationId: listWarehouses
+      summary: List warehouses
+      parameters:
+        - { name: is_active, in: query, required: false, schema: { type: boolean } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Warehouse page., content: { application/json: { schema: { $ref: '#/components/schemas/WarehousePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
     post:
       tags: [Warehouses]
       operationId: createWarehouse
@@ -29,7 +40,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateWarehouseRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/WarehouseSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/warehouses/{warehouse_id}:
+  /api/v1/admin/inventory/warehouses/{warehouse_id}:
     get:
       tags: [Warehouses]
       operationId: getWarehouse
@@ -45,7 +56,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateWarehouseRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/WarehouseSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/stock-receipts:
+  /api/v1/admin/inventory/stock-receipts:
     post:
       tags: [Sellable stock]
       operationId: recordSellableStockReceipt
@@ -54,7 +65,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StockReceiptRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/stock-adjustments:
+  /api/v1/admin/inventory/stock-adjustments:
     post:
       tags: [Sellable stock]
       operationId: recordStockAdjustment
@@ -64,26 +75,36 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StockAdjustmentRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/stock-movements/{movement_id}/reversals:
+  /api/v1/admin/inventory/stock-movements/{movement_id}/reversals:
     post:
       tags: [Sellable stock]
       operationId: reverseSellableStockMovement
       summary: Append a compensating movement for an eligible receipt or adjustment
+      description: >-
+        Target must be a successful sellable receipt or adjustment. reversal_sequence is
+        1..n per original movement and the cumulative reversed quantity cannot exceed the
+        original quantity (409 MOVEMENT_NOT_REVERSIBLE). Reversing an increase requires
+        quantity <= available_to_sell (409 INSUFFICIENT_SELLABLE_STOCK); reversing a
+        decrease adds back to sellable.
       parameters: [{ $ref: '#/components/parameters/MovementId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MovementReversalRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/physical-dispatches:
+  /api/v1/admin/inventory/physical-dispatches:
     post:
       tags: [Dispatch]
       operationId: recordPhysicalDispatch
       summary: Record that a committed allocation physically left its warehouse
-      description: This is the sale-flow operation that reduces on_hand and committed.
+      description: >-
+        This is the sale-flow operation that reduces on_hand and committed. It records
+        an entire line: quantity must equal the immutable ReservationLine quantity at its
+        allocated warehouse and SKU while the line is COMMITTED; otherwise durable 409
+        DISPATCH_NOT_ALLOWED. Partial-line dispatch does not exist.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PhysicalDispatchRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/return-receipts:
+  /api/v1/admin/inventory/return-receipts:
     post:
       tags: [Returns]
       operationId: recordReturnReceipt
@@ -92,7 +113,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReturnReceiptRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/inspections:
+  /api/v1/admin/inventory/inspections:
     post:
       tags: [Returns]
       operationId: recordFinalInspection
@@ -102,25 +123,103 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InspectionRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/quarantine-dispositions:
+  /api/v1/admin/inventory/quarantine-dispositions:
     post:
       tags: [Quarantine]
       operationId: recordQuarantineDisposition
       summary: Hold or physically remove failed-inspection stock
+      description: >-
+        HOLD is a non-terminal annotation with no bucket movement; the quantity stays
+        eligible for a later DISPOSE or RETURN_TO_SUPPLIER. Only those two consume
+        failed, undisposed quantity and require physical departure evidence.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineDispositionRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/quarantine-dispositions/{disposition_id}/reversals:
+  /api/v1/admin/inventory/quarantine-dispositions/{disposition_id}/reversals:
     post:
       tags: [Quarantine]
       operationId: reverseQuarantineDisposition
       summary: Restore physically returned stock to quarantine only
+      description: >-
+        Only for a DISPOSE or RETURN_TO_SUPPLIER disposition whose units are verified
+        physically back at the same warehouse; restores quarantine, never sellable.
       parameters: [{ $ref: '#/components/parameters/DispositionId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DispositionReversalRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
-  /admin/inventory/v1/stock-positions/{warehouse_id}/{sku_id}:
+  /api/v1/admin/inventory/stock-positions:
+    get:
+      tags: [Sellable stock]
+      operationId: listStockPositions
+      summary: List stock positions by warehouse and/or SKU
+      description: At least one of warehouse_id or sku_id is required.
+      parameters:
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Stock position page., content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/stock-movements:
+    get:
+      tags: [Sellable stock]
+      operationId: listStockMovements
+      summary: Search immutable movement evidence
+      description: At least one of warehouse_id or sku_id is required; newest first.
+      parameters:
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: recorded_from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: recorded_to, in: query, required: false, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Movement page., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovementPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/dispatch-queue:
+    get:
+      tags: [Dispatch]
+      operationId: listDispatchQueue
+      summary: List committed, undispatched lines allocated to a warehouse
+      description: Oldest commit first.
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Dispatch queue page., content: { application/json: { schema: { $ref: '#/components/schemas/DispatchQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/inspection-queue:
+    get:
+      tags: [Returns]
+      operationId: listInspectionQueue
+      summary: List return receipt lines with uninspected quantity at a warehouse
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Inspection queue page., content: { application/json: { schema: { $ref: '#/components/schemas/InspectionQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/quarantine-items:
+    get:
+      tags: [Quarantine]
+      operationId: listQuarantineItems
+      summary: List failed-inspection quantity not yet disposed out
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Quarantine item page., content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineItemPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/refund-scopes:
+    get:
+      tags: [Returns]
+      operationId: findAdminRefundScopeByOrder
+      summary: Resolve the lifetime Refund Scope of an order
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/stock-positions/{warehouse_id}/{sku_id}:
     get:
       tags: [Sellable stock]
       operationId: getStockPosition
@@ -128,7 +227,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/WarehouseId' }, { $ref: '#/components/parameters/SkuId' }]
       responses: { '200': { description: Stock position., content: { application/json: { schema: { $ref: '#/components/schemas/StockPosition' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
-  /admin/inventory/v1/stock-movements/{movement_id}:
+  /api/v1/admin/inventory/stock-movements/{movement_id}:
     get:
       tags: [Sellable stock]
       operationId: getStockMovement
@@ -136,7 +235,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/MovementId' }]
       responses: { '200': { description: Movement evidence., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovement' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
-  /admin/inventory/v1/commands/{command_id}:
+  /api/v1/admin/inventory/commands/{command_id}:
     get:
       tags: [Sellable stock]
       operationId: getAdminCommandOutcome
@@ -144,7 +243,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CommandId' }]
       responses: { '200': { description: Command outcome., content: { application/json: { schema: { $ref: '#/components/schemas/AdminCommandOutcome' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
-  /admin/inventory/v1/reservations/{order_id}:
+  /api/v1/admin/inventory/reservations/{order_id}:
     get:
       tags: [Dispatch]
       operationId: getAdminReservationFact
@@ -152,7 +251,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrderId' }]
       responses: { '200': { description: Reservation operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminReservation' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
 
-  /admin/inventory/v1/refund-scopes/{refund_scope_id}:
+  /api/v1/admin/inventory/refund-scopes/{refund_scope_id}:
     get:
       tags: [Returns]
       operationId: getAdminRefundScopeFact
@@ -163,10 +262,15 @@ paths:
 components:
   securitySchemes:
     adminIdentity:
-      type: http
-      scheme: bearer
-      bearerFormat: admin-identity-with-mfa
-      description: Interactive ADMIN identity authenticated with MFA or an explicitly authorized warehouse-operations principal.
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: >-
+        Trusted interactive identity injected by the API Gateway after JWT verification,
+        with X-User-Roles containing ADMIN and X-User-Session-Id recorded in audit. The
+        Gateway strips client-supplied identity headers. There is no non-interactive
+        ADMIN principal. MFA is a production release gate that requires an Auth/gateway
+        MFA assertion (Inventory ADR-024).
   parameters:
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, description: Caller-scoped command ID retained with its fingerprint and result for at least seven years., schema: { type: string, minLength: 16, maxLength: 128 } }
     CorrelationId: { name: X-Correlation-ID, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 128 } }
@@ -178,6 +282,8 @@ components:
     CommandId: { name: command_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     OrderId: { name: order_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     RefundScopeId: { name: refund_scope_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    Cursor: { name: cursor, in: query, required: false, description: Opaque cursor from the previous page., schema: { type: string, minLength: 1, maxLength: 512 } }
+    Limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
   schemas:
     OpaqueId: { type: string, minLength: 1, maxLength: 128 }
     Quantity: { type: integer, format: int64, minimum: 1 }
@@ -437,14 +543,101 @@ components:
     AdminCommandOutcome:
       type: object
       additionalProperties: false
-      required: [command_id, correlation_id, operation, outcome, recorded_at]
+      required: [command_id, correlation_id, operation, result, outcome, recorded_at]
       properties:
         command_id: { $ref: '#/components/schemas/OpaqueId' }
         correlation_id: { $ref: '#/components/schemas/OpaqueId' }
         operation: { type: string, minLength: 1, maxLength: 80 }
+        result: { enum: [ACCEPTED, REJECTED] }
         outcome: { type: string, minLength: 1, maxLength: 64 }
+        http_status: { type: integer, minimum: 200, maximum: 599, description: Original HTTP status; 409 for a durable rejection. }
+        error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$', description: Catalog code; present only when result is REJECTED. }
         resource_id: { $ref: '#/components/schemas/OpaqueId' }
         recorded_at: { type: string, format: date-time }
+    PageCursor: { type: [string, 'null'], maxLength: 512, description: Opaque cursor for the next page; null on the last page. }
+    WarehousePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Warehouse' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    StockPositionPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StockPosition' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    StockMovementPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StockMovement' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    DispatchQueueItem:
+      type: object
+      additionalProperties: false
+      required: [order_id, order_line_id, sku_id, quantity, warehouse_id, committed_at]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        committed_at: { type: string, format: date-time }
+    DispatchQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/DispatchQueueItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    InspectionQueueItem:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, order_id, order_line_id, return_receipt_id, return_receipt_line_id, sku_id, warehouse_id, received_quantity, uninspected_quantity, received_at]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        return_receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+        return_receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        received_quantity: { $ref: '#/components/schemas/Quantity' }
+        uninspected_quantity: { $ref: '#/components/schemas/Quantity' }
+        received_at: { type: string, format: date-time }
+    InspectionQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/InspectionQueueItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    QuarantineItem:
+      type: object
+      additionalProperties: false
+      required: [inspection_id, warehouse_id, sku_id, fail_reason, failed_quantity, disposable_quantity, inspected_at]
+      properties:
+        inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        fail_reason: { enum: [DAMAGED, USED_OR_ALTERED, MISSING_COMPONENTS, SAFETY_OR_HYGIENE, COUNTERFEIT_OR_UNVERIFIABLE, NOT_RESELLABLE_BY_POLICY] }
+        failed_quantity: { $ref: '#/components/schemas/Quantity' }
+        disposable_quantity:
+          allOf: [{ $ref: '#/components/schemas/Quantity' }]
+          description: Failed quantity not yet consumed by DISPOSE or RETURN_TO_SUPPLIER; HOLD does not reduce it.
+        latest_hold_reason: { enum: [AWAITING_DISPOSITION, SUPPLIER_CLAIM, SAFETY_REVIEW, EVIDENCE_PRESERVATION] }
+        inspected_at: { type: string, format: date-time }
+    QuarantineItemPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/QuarantineItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
     AdminReservationLine:
       type: object
       additionalProperties: false
@@ -526,7 +719,7 @@ components:
     Unauthorized: { description: Missing or invalid identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: ADMIN authority or MFA is missing., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Resource not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: Durable state, quantity, operation identity, or idempotency conflict., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, OPERATION_IDENTITY_CONFLICT, INSUFFICIENT_SELLABLE_STOCK, DISPATCH_NOT_ALLOWED, RETURN_RECEIPT_REJECTED, INSPECTION_REJECTED, DISPOSITION_REJECTED, MOVEMENT_NOT_REVERSIBLE, REFUND_SCOPE_STATE_CONFLICT or WAREHOUSE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
       description: INVENTORY_UNAVAILABLE or INVENTORY_BUSY; retry the same command ID.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }

@@ -102,7 +102,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `promotion-service` | `/internal/v1/promotion-discount-calculations` | POST | `ecommerce/checkout-service` | `checkout-calculates-promotions` |
 | `promotion-service` | `/internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | POST | `ecommerce/order-service` | `order-commands-promotion-allocation` |
 | `promotion-service` | `/internal/v1/promotion-allocation/technical-cancellations` | POST | `ecommerce/promotion-legacy-migrator` | `legacy-migrator-technical-cancels-promotion-allocation` |
-| `inventory-service` | `/admin/inventory/v1/**` | X | `edge/traefik` | `warehouse-admin-operates-inventory` |
+| `inventory-service` | `/api/v1/admin/inventory/**` | X | `edge/traefik` | `warehouse-admin-operates-inventory` |
 | `inventory-service` | `/internal/inventory/v1/allocation-previews` | POST | `ecommerce/checkout-service` | `checkout-previews-inventory-allocation` |
 | `inventory-service` | `/internal/inventory/v1/reservations/**`, `/internal/inventory/v1/refund-scopes/**`, `/internal/inventory/v1/commands/*` | X | `ecommerce/order-service` | `order-commands-inventory-workflow` |
 | `inventory-service` | `/internal/inventory/v1/sku-availabilities:batch-get` | POST | `ecommerce/product-detail-bff` | `product-detail-bff-queries-inventory-availability` |
