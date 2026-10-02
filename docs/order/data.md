@@ -124,6 +124,9 @@ erDiagram
       varchar refund_transaction_id UK
       uuid inspection_event_id UK
       bigint inventory_scope_revision
+      varchar inventory_scope_finalization_status
+      int inventory_scope_finalization_generation
+      varchar inventory_scope_terminal_state
     }
     ORDER_ADMIN_REFUND_ATTEMPTS {
       uuid id PK
@@ -297,12 +300,13 @@ CREATE TABLE order_refund_cases (
     refund_request_id VARCHAR(128) NOT NULL UNIQUE,
     workflow_id VARCHAR(255) NOT NULL,
     trigger_source VARCHAR(40) NOT NULL,
-    case_status VARCHAR(30) NOT NULL
+    case_status VARCHAR(40) NOT NULL
         CHECK (case_status IN ('INITIATED',
           'WAITING_INVENTORY_SCOPE_INSPECTION',
           'WAITING_INVENTORY_RELEASE',
           'WAITING_PAYMENT_REFUND_RESULT',
-          'MANUAL_VERIFICATION_REQUIRED', 'SUCCEEDED', 'FAILED')),
+          'MANUAL_VERIFICATION_REQUIRED', 'SUCCEEDED', 'FAILED',
+          'CLOSED_INCOMPLETE')),
     refund_mode VARCHAR(40) NOT NULL
         CHECK (refund_mode IN ('BUYER_RETURN_SELECTED_LINES',
           'ADMIN_PRE_DISPATCH_FULL_ORDER')),
@@ -313,6 +317,18 @@ CREATE TABLE order_refund_cases (
     inventory_inspection_payload_hash VARCHAR(128) NULL,
     inventory_scope_revision BIGINT NULL,
     inventory_inspection_lines JSONB NULL,
+    inventory_scope_finalization_status VARCHAR(32) NOT NULL DEFAULT 'NOT_REQUESTED'
+        CHECK (inventory_scope_finalization_status IN ('NOT_REQUIRED',
+          'NOT_REQUESTED', 'PENDING', 'RECOVERY_REQUIRED', 'CONFLICT', 'COMPLETED')),
+    inventory_scope_finalization_generation INT NOT NULL DEFAULT 0
+        CHECK (inventory_scope_finalization_generation >= 0),
+    inventory_scope_finalization_command_id VARCHAR(128) NULL UNIQUE,
+    inventory_scope_finalization_decision_id UUID NULL,
+    inventory_scope_terminal_state VARCHAR(32) NULL
+        CHECK (inventory_scope_terminal_state IN ('CLOSED', 'CLOSED_INCOMPLETE', 'CANCELLED')),
+    inventory_scope_finalization_response_revision BIGINT NULL,
+    inventory_scope_finalization_response_hash VARCHAR(128) NULL,
+    inventory_scope_finalized_at TIMESTAMPTZ NULL,
     inventory_committed_release_at TIMESTAMPTZ NULL,
     inventory_release_command_id VARCHAR(128) NULL UNIQUE,
     inventory_release_correlation_id VARCHAR(128) NULL,
@@ -346,8 +362,10 @@ Amount được khóa cùng lúc với case: với Buyer là
 orders.final_amount_minor)`; với Admin pre-dispatch là `orders.final_amount_minor`. Không có
 discount re-proration hay Promotion mutation. `refund_transaction_id` chỉ được
 tạo sau Inventory scope-inspection evidence (Buyer) hoặc committed-release evidence
-(Admin). Terminal state là `SUCCEEDED|FAILED`; provider `REVERSED` gộp vào `FAILED`
-nhưng vẫn không mở case/refund transaction mới.
+(Admin). Financial outcomes are `SUCCEEDED|FAILED`; a later provider reversal enters
+`MANUAL_VERIFICATION_REQUIRED` on the same case. An approved no-payout return ends
+as `CLOSED_INCOMPLETE` only after an Inventory close-incomplete/cancel receipt.
+None of these outcomes opens another case/refund transaction.
 
 Inspection evidence is authoritative only when Order persists the Inventory event ID,
 payload digest, scope revision and every selected line's expected/received/passed/failed
@@ -359,6 +377,32 @@ refund command and are never reconstructed from Redis/Kafka retention.
 A provider `REVERSED` after case `SUCCEEDED` changes that same case to
 `MANUAL_VERIFICATION_REQUIRED` and reopens the master refund lane; it never opens a
 new case/refund transaction.
+
+Scope finalization fields summarize an independent control state. Admin mode requires
+`NOT_REQUIRED` and no scope/finalization command. Buyer starts `NOT_REQUESTED`.
+The financial-result or approved no-payout-decision transaction sets `PENDING`,
+advances the generation, freezes its command/decision references, and writes the
+canonical operation/reason/request and recovery dispatch in the Saga checkpoint.
+Financial `SUCCEEDED`/`FAILED` does not imply finalization `COMPLETED`.
+
+Only a matching accepted Inventory command receipt may set `COMPLETED`, terminal
+scope state, positive response revision, digest and `inventory_scope_finalized_at`.
+Keep inspection revision/evidence separate from the closure response revision.
+Remote query state alone does not establish our command/reason receipt; recover the
+original command outcome. `503`/transport loss replays that command; retry exhaustion
+sets `RECOVERY_REQUIRED`; durable rejection or mismatched evidence sets `CONFLICT`.
+An audited corrected generation is allowed only after proven rejection. Earlier
+command results remain immutable in checkpoints/audit; never replace an unknown or
+accepted intent, including when a reversal changes the financial case.
+
+`CLOSED_INCOMPLETE` case requires Buyer mode, null `refund_transaction_id`, no
+accepted/unknown Payment-initiation checkpoint, a no-payout decision, and confirmed
+scope `CLOSED_INCOMPLETE` or zero-receipt `CANCELLED`. Set case `resolved_at` and
+close reconciliation only in the receipt transaction. Master remains `RETURN_REQUESTED`,
+payment `PAID`, and no refunded notification/event is written. Implement these
+cross-field guards transactionally and expose sanitized progress through the optional
+`scope_finalization` API projection. See
+[ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
 
 ### 3.7. `order_admin_refund_attempts`
 
@@ -376,7 +420,18 @@ atomically creates the case and evidence described above.
 UUID `case_id`, monotonic `case_revision`, the triggering checkpoint/event IDs,
 `evidence_digest`, owner queue, timestamps and a mandatory named decision. `case_status` is `OPEN`, `EVIDENCE_PENDING`, `DECIDED` or
 `CLOSED`; `resolution_type` is only `RESUME_FORWARD_REPAIR`,
-`CLOSE_AS_MANUAL_FULFILLMENT`, or `ESCALATE_TO_ACCOUNTING`. Every decision has a UUID
+`CLOSE_AS_MANUAL_FULFILLMENT`, `ESCALATE_TO_ACCOUNTING`, or
+`CLOSE_RETURN_WITHOUT_REFUND`. The last stores the bound refund request/scope and
+enumerated reason, plus a matching Inventory query checkpoint containing every
+expected/received/passed/failed counter. The case stays `DECIDED` until scope closure
+is proven; Inventory guard conflict returns it to `EVIDENCE_PENDING` for a new decision.
+Scope retry exhaustion/conflict creates or attaches a scope-repair obligation here even
+when the refund financial status is `SUCCEEDED`/`FAILED`; it does not change the master
+or payment fact. Resolving return closure cannot close other unresolved dispute/financial
+obligations. An audited resume after proven no-payout rejection and full inspection
+evidence clears the active finalization summary to `NOT_REQUESTED`, retaining the rejected
+generation/decision/checkpoints before the original case's first Payment initiation.
+Manual fulfillment cannot close a Buyer case with an unfinalized scope. Every decision has a UUID
 `decision_id`, authenticated Finance/Ops actor, reason and immutable evidence references.
 It never writes a Payment/Inventory/Promotion state directly and cannot authorize an
 unproven refund.
@@ -399,13 +454,22 @@ may reduce retry latency, but Redis cannot decide a duplicate, late or malformed
 financial/inventory event.
 
 `order_saga_checkpoints` stores one stable remote command identity per `(order_id, phase,
-operation)`: command ID/key, request digest, canonical remote resource reference and
+operation)`, extended with `scope_finalization_generation` for return close/cancel:
+command ID/key, request digest, canonical remote resource reference and
 sanitized response payload/digest, outcome and timestamps. Reserve checkpoint must persist
 `inventory_allocation_plan_id` and the complete `(checkout_line_reference, order_line_id,
 allocated_warehouse_id, quantity)` mapping; it is the local proof used by
 dispatch/delivery consumers. An ambiguous
 Inventory/Payment/Promotion response is resolved by its command query/replay and then updates
 this checkpoint; compensation/recovery may never infer that an unknown remote mutation failed.
+
+Scope-finalization checkpoints freeze `CLOSE|CLOSE_INCOMPLETE|CANCEL`, reason,
+scope/order/request IDs, generation, decision reference, command ID, canonical request
+and accepted/rejected outcome. A finalization dispatch uses
+`order-refund-scope-finalization-{order_id}-{generation}`. The dispatcher/reconciler
+also scans financially terminal refund cases with pending/recovery work, and suppresses
+stale dispatches after confirmed completion. Duplicate immediate/recovery execution
+uses the same remote key and the receipt update locks the same case/generation.
 
 ### 3.10. `outbox_events`
 
@@ -438,6 +502,9 @@ là `outbox_events.event_id`, đồng thời là CloudEvents `id` ổn định x
 - Index `idx_outbox_created_at(created_at DESC)` phục vụ retention.
 - Index `idx_order_refund_cases_status_updated(case_status, updated_at DESC)` phục
   vụ worker/Ops tìm case treo.
+- Index `(inventory_scope_finalization_status, updated_at)` finds unresolved scope work
+  independently of case financial status; generation-specific checkpoint identity must
+  be unique and retain previous rejected attempts.
 - Unique `order_consumed_events(event_id)` plus `(source, order_id, source_revision)`;
   index `order_workflow_dispatches(status, created_at)` and
   `order_saga_checkpoints(order_id, phase, operation)` are recovery-critical.
@@ -476,6 +543,12 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
   signals Temporal. A signal-start failure leaves a recoverable dispatch row.
 - Admin pre-dispatch release writes/recovers an attempt first. Only a proven accepted
   Inventory response atomically creates the lifetime refund case and all evidence.
+- Buyer terminal Payment result and scope-finalization intent/checkpoint/dispatch commit
+  together. Ops no-payout decision likewise locks the refund/reconciliation rows, rechecks
+  no accepted/unknown Payment initiation or full completion, and freezes intent/dispatch
+  atomically. A pending no-payout intent blocks Payment initiation; incoming inspection
+  completion still persists evidence without dispatching payout. Receipt recording locks
+  the matching generation and atomically resolves finalization/case/operation/reconciliation.
 - Delivery consumer persists its proof/inbox and CASes a single line
   `DISPATCHED -> DELIVERED`; it recomputes `order_items.status`. Only when no line of the
   order remains non-`DELIVERED` may it CAS `PROCESSING -> COMPLETED` and insert
@@ -583,6 +656,11 @@ Public `order-operations/{operation_id}` là projection có authorization từ
 nó không tạo một FSM nghiệp vụ thứ hai. Operation status map về
 `ACCEPTED/RUNNING/SUCCEEDED/REJECTED/FAILED/MANUAL_REVIEW_REQUIRED` và chỉ chứa
 sanitized result reference/problem, không chứa raw provider response hay PII.
+Buyer return stays `RUNNING` while scope finalization is pending, or
+`MANUAL_REVIEW_REQUIRED` on recovery/conflict. After the receipt, financial success
+maps to `SUCCEEDED`, terminal failure to `FAILED`, a reversal remains manual review,
+and approved no-payout closure maps to `SUCCEEDED` with case `CLOSED_INCOMPLETE`.
+The latter means the close-return operation completed; it does not mean money was paid.
 
 Thiết kế trước Phase 21 từng có `order_product_metrics`, counter per-product và
 event `ORDER_PRODUCT_METRICS_UPDATED`; toàn bộ đã bị loại cùng worker
@@ -617,6 +695,11 @@ WHERE ori.resource_id = o.id::varchar
   “refund succeeded” assertion are forbidden.
 - Backup/restore, schema version rollout, online index strategy, order retention and
   reconciliation outbox-với-Kafka vẫn cần deployment runbook.
+- Add/backfill finalization metadata and generation checkpoints before enabling the
+  new workflow. Admin becomes `NOT_REQUIRED`; historical Buyer terminal/manual cases
+  require Inventory command/state reconciliation before preparing a close intent.
+  A terminal query cannot invent a missing command receipt. Never backfill by repeating
+  Payment or by replacing the lifetime scope; unresolved evidence stays manual review.
 
 ## 9. Bảo mật và quyền riêng tư
 

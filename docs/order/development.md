@@ -53,6 +53,8 @@ ghi tại đây.
 ### Unit test
 
 - Master/item/refund FSM, invalid transition và buyer-tab precedence.
+- Financial case outcome versus scope-finalization status; no-payout
+  `CLOSED_INCOMPLETE`, zero-receipt cancellation mapping, frozen reason after reversal.
 - Pricing snapshot PLATFORM-only; customer refund không tạo promotion allocation/call.
 - Pre-payment compensation versus post-capture forward-repair/reconciliation, and deterministic replay logic.
 - Cursor encode/decode, visibility/filter mapping và accent normalization.
@@ -66,6 +68,10 @@ ghi tại đây.
   Redis; durable inbox/dispatch/checkpoint remains the authority.
 - Debezium outbox at-least-once, partition key và connector restart.
 - Temporal crash/resume, timer/signal race, activity retry, workflow identity and dispatcher recovery after local commit/start failure.
+- Financial result/no-payout decision atomically commits frozen scope intent and dispatch;
+  accepted close with response loss recovers the same key; retry exhaustion/restart
+  retains durable work even on financial terminal cases. Generation advances only after
+  an audited decision and proven rejection; operation is not completed before receipt.
 - Promotion final activity: same-key stored response, different-payload conflict, crash
   sau durable receipt trước Redis convergence; assert no active post-capture `CANCEL_FINAL`.
 
@@ -79,7 +85,12 @@ snapshot, voucher toàn đơn snapshot, selected full-quantity scope, Inspection
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
 Checkout item `category_ids` persistence và exact Promotion Reserve context reconstruction,
 Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
-from `REFUNDED`. Payment fixtures phải dùng full structured CloudEvents, exact
+from `REFUNDED`.
+Also test all three scope-finalization Activities/guards/reasons, conditional
+`CLOSE_RETURN_WITHOUT_REFUND` payload and evidence/identity checks, optional API
+`scope_finalization`, and the `CLOSED_INCOMPLETE` case enum. No-receipt case uses cancel;
+received-but-uninspected fails; Admin finalization is `NOT_REQUIRED`.
+Payment fixtures phải dùng full structured CloudEvents, exact
 namespaced `type`, canonical `source`, matching `dataschema` và Kafka key
 `data.order_id`; unknown/legacy type phải được ACK/ignore theo policy, không dispatch
 bằng alias uppercase. Refund amount/multiplicity is fixed by ADR-010, not deferred.
@@ -92,6 +103,10 @@ payment recovery/manual verification, multi-warehouse physical dispatch and sepa
 proof (never auto-delivery),
 Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
 verification, refund success/fail/reverse after `REFUNDED` và Redis/Kafka/DB/Temporal outage.
+Add terminal success/failure close, no automatic close at 30 days, approved partial/no
+receipt closure without Payment, receipt/inspection race with pending decision, late
+completion blocked from payout, durable 409/manual correction, wrong closure receipt,
+and reversal before/after Inventory closure without reopening/repeating refund.
 Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
@@ -108,6 +123,11 @@ verification state.
 Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, numbered payment
 attempt identity/version, refund evidence, reconciliation case/decision and admin attempt tables before retiring historical
 idempotency storage. Index trigram lớn nên tạo theo kế hoạch không khóa production.
+Add finalization status/generation/receipt metadata, generation-keyed checkpoints and
+the unresolved-finalization index. Backfill Admin to `NOT_REQUIRED`; query/recover
+Inventory evidence for historical Buyer terminal cases without reissuing Payment or
+inventing command receipts. Version the refund workflow change for replay and register
+`OrderRefundScopeFinalizationWorkflow` on the existing refund queue before dispatch.
 
 Cần command tạo/up/down/verify migration, seed order đa kho và rollback policy.
 Destructive down migration không được xóa order production. Schema test phải đảm

@@ -260,7 +260,10 @@ interactions:
       Scope, and automatic admin pre-dispatch refund decisions. Inventory atomically
       releases every committed line or none; scope is one per order lifetime and each
       selected line has full quantity. Commands are durable and idempotent by caller
-      namespace plus key.
+      namespace plus key. Order also finalizes Buyer scopes through completed close,
+      or audited no-payout incomplete close/zero-receipt cancel; uncertain outcomes
+      replay the frozen command. Admin pre-dispatch has no scope, and terminal scopes
+      never reopen after Payment reversal.
 
   - id: warehouse-admin-operates-inventory
     protocol: http
@@ -316,7 +319,12 @@ interactions:
     consumers: [finance-ops, accounting-ops]
     contract: http/order/internal/v1/openapi.yaml
     status: proposed
-    notes: A Finance or Accounting operator records an evidence-backed, optimistic-concurrency decision for an existing Order financial reconciliation case; it cannot mutate Payment or Promotion directly.
+    notes: >-
+      A Finance or Accounting operator records an evidence-backed, optimistic-concurrency
+      decision for an existing Order reconciliation case. CLOSE_RETURN_WITHOUT_REFUND
+      additionally binds the existing Buyer request/scope and missing-return reason;
+      it dispatches guarded Inventory finalization without payout and closes the case
+      only after a matching receipt. No decision mutates Payment or Promotion directly.
 
   - id: inventory-publishes-public-facts
     protocol: kafka

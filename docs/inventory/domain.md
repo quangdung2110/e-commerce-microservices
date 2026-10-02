@@ -108,7 +108,7 @@ scope never frees the order for another `refund_request_id`.
 ```mermaid
 stateDiagram-v2
   [*] --> REGISTERED: RegisterRefundScope
-  REGISTERED --> CANCELLED: Cancel before any receipt
+  REGISTERED --> CANCELLED: Order decision before any receipt
   REGISTERED --> IN_PROGRESS: First return receipt
   IN_PROGRESS --> INSPECTION_COMPLETED: All expected units final inspected
   INSPECTION_COMPLETED --> CLOSED: Order closes terminal refund
@@ -124,7 +124,18 @@ For every immutable scope line:
 - `RecordReturnReceipt` accepts only an exact registered SKU/order line and remaining quantity. It places units in `quarantine` at the physical receiving warehouse. Multiple packages are permitted; partial scope is not.
 - `RecordInspectionPass` and `RecordInspectionFail` are final, exactly-once results for quantity on a receipt line at that warehouse. `PASS` moves stock to sellable. `FAIL` remains quarantined and cannot become `PASS` through re-inspection in Release 1.
 - When every expected unit has a final result, Inventory sets `INSPECTION_COMPLETED` and emits exactly one `AllItemsInspectionCompleted` fact. This is neither refund payout nor final Order decision.
-- Only Order changes `INSPECTION_COMPLETED → CLOSED`, releasing the lock. It may close incomplete returns only when every received unit is final inspected; this becomes `CLOSED_INCOMPLETE` and emits no completion fact.
+- Only Order changes `INSPECTION_COMPLETED → CLOSED` after its terminal refund
+  outcome, including financial failure. The per-order lifetime uniqueness remains;
+  closure never permits another refund request/scope. It may change `IN_PROGRESS →
+  CLOSED_INCOMPLETE` only when every received unit is final inspected and some expected
+  quantity is missing; this emits no completion fact and does not authorize payout.
+  With zero receipt, `REGISTERED → CANCELLED` is the valid terminal path.
+- Close/cancel serialize with receipt/inspection and atomically persist their command
+  outcome/audit. They do not change stock buckets or failed-unit disposition duties.
+  Order's 30-day timer is only a manual-review trigger, never Inventory auto-close.
+  Payment reversal cannot reopen a terminal scope; it is resolved on the existing
+  Order financial case. Order's durable orchestration is defined by
+  [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
 Failed inspection may be `HOLD`, `DISPOSE`, or `RETURN_TO_SUPPLIER`. Physical departure is required before the latter two reduce `on_hand`/`quarantine`. Their specialized reversal requires evidence that the unit is physically back at the same warehouse and returns it to quarantine, never directly to sellable stock.
 

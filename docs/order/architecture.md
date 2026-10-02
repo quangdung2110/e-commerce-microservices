@@ -119,7 +119,11 @@ has a separate reconciliation lane.
 | Refund local/recovery | `RecordAdminRefundAttemptActivity` | Persist attempt/command ID; create lifetime case only after accepted all-line release proof |
 | Refund wait | `WaitInventoryReturnScopeInspectionCompletedSignal` | Chờ toàn bộ selected quantity final-inspect, PASS/FAIL đều completion |
 | Refund remote | `InitiateRefundActivity` | Gọi Payment refund với key ổn định |
-| Refund local | `FinalizeRefundResultActivity` | Commit success/fail/reverse; không phát event khi chưa có consumer |
+| Refund local | `FinalizeRefundResultActivity` | Commit success/fail/reverse and freeze Buyer close intent/checkpoint/dispatch in the same transaction |
+| Refund remote | `CloseRefundScopeActivity` | Buyer `INSPECTION_COMPLETED -> CLOSED` after terminal Payment outcome; stable frozen reason/key |
+| Refund remote | `CloseIncompleteRefundScopeActivity` | Approved no-payout Ops decision; only missing expected quantity with every received unit final-inspected |
+| Refund remote | `CancelRefundScopeActivity` | Approved no-payout Ops decision; only `REGISTERED` with no receipt; decision reason retained in Order audit |
+| Refund local | `RecordRefundScopeFinalizationActivity` | Validate/persist matching command receipt and revision; resolve finalization, then complete no-payout case/operation |
 | Recovery | `RecoverPaidOrderFromTimeoutActivity` | Verify payment muộn, call fenced Inventory recovery, then forward repair/reconciliation |
 | Pre-payment compensation | `CancelPaymentActivity` | Resolve Payment cancel/capture fact before any resource release |
 | Pre-payment compensation | `RollbackPromotionActivity` | `POST /internal/v1/promotion-allocation/cancellations`; nhả reservation runtime |
@@ -131,6 +135,14 @@ has a separate reconciliation lane.
 Workflow dùng Temporal `Selector`/signal-versus-timer semantics ở payment wait;
 implementation cụ thể có thể dùng API SDK tương đương nhưng phải giữ quyết định đơn
 trong history và tính deterministic.
+
+Buyer financial finalization and scope-finalization intent commit together before
+the remote close. Scope retry exhaustion is `RECOVERY_REQUIRED`, not financial
+rollback. Durable dispatch/reconciliation starts
+`OrderRefundScopeFinalizationWorkflow` on the existing refund queue for the frozen
+command/generation, including financially terminal cases. It only calls Inventory;
+Admin pre-dispatch has no scope and uses `NOT_REQUIRED`. See
+[ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
 
 ## 4. Mô hình nhất quán
 
@@ -152,6 +164,9 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
   `SELECT ... FOR UPDATE`/conditional `UPDATE`; không dùng Redis lock. Các command
   khác cũng phải giữ row lock/CAS ở boundary sở hữu FSM.
 - Buyer return dùng first-write-wins CAS trên `orders.buyer_return_locked_at`.
+- Refund result/approved return closure and its frozen Inventory intent/dispatch share
+  one transaction. Receipt/inspection versus close is guarded by Inventory; a pending
+  no-payout decision blocks Order Payment initiation. Reversal never reopens Inventory.
 - Bốn request Redis mirrors không thay thế durable workflow dispatch/checkpoint rows.
 - Consumed events dùng durable inbox, semantic revision/proof guard; không có Redis
   event fast-path.
@@ -178,6 +193,8 @@ Thiết kế yêu cầu các process/runtime logic sau, nhưng chưa chốt ch�
 - Temporal worker đăng ký bốn task queue: `order-checkout-queue`,
   `order-refund-queue`, `order-late-payment-recovery-queue`,
   `order-financial-reconciliation-queue`.
+- Refund scope finalization recovery uses `order-refund-queue`; the finalization
+  reconciler finds pending/recovery/conflict work independently of financial case status.
 - PostgreSQL và tùy chọn Redis request-replay cache.
 - Debezium/Kafka Connect outbox connector.
 - CronJob dọn outbox hàng ngày, ví dụ 04:00.
@@ -196,6 +213,9 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
   workflow is owner of master financial/refund transition.
 - Không gọi Payment refund trước Buyer Inventory scope-inspection completion hoặc
   Admin Inventory all-line pre-dispatch release evidence.
+- A Buyer refund operation completes only after a matching Inventory close/cancel
+  receipt; workflow termination without it requires a durable recovery dispatch.
+  Closing return scope cannot change Payment facts or free a lifetime refund entitlement.
 - Không reserve promotion tại Preview; reserve chỉ xảy ra sau submit và sau khi
   `order_id` tồn tại.
 - Customer refund không gọi Promotion: không restore voucher, không hoàn budget và không
@@ -226,3 +246,5 @@ phải chỉ có một execution logic trên mỗi kỳ hoặc dùng distributed
   Redis/LIFO assumptions for active Saga paths.
 - [ADR-012](./decisions/ADR-012-redis-request-mirror-scope.md): giữ Redis chỉ cho
   replay request của bốn command; loại bỏ create mirror, event fast-path và FSM lock.
+- [ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md): durable scope
+  close/cancel, no-payout Ops decision, recovery and financial/physical outcome separation.

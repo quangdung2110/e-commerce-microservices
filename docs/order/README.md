@@ -49,6 +49,8 @@ Order Service chịu trách nhiệm:
   payment-attempt mapping, refund/reconciliation case, durable inbox và checkpoints.
 - Bảo vệ FSM của order và per-line fulfillment; physical dispatch không bị hiểu nhầm là delivery.
 - Điều phối checkout saga, refund saga, late-payment recovery và financial reconciliation.
+- Đóng Inventory RefundScope bằng durable close/cancel Activity và recovery; Ops kết
+  thúc return thiếu hàng bằng named no-payout decision, không tự đóng ở mốc 30 ngày.
 - Phục vụ chi tiết đơn và tìm kiếm/lọc lịch sử đơn trực tiếp từ PostgreSQL.
 - Phát integration event đáng tin cậy qua transactional outbox và CDC.
 - Nhận tín hiệu Payment/Inventory rồi route vào workflow hoặc cập nhật delivery
@@ -99,6 +101,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Xử lý thanh toán | Validate mapped Payment attempt fact, freeze captured transaction, then forward-repair post-payment checkpoints |
 | Physical dispatch/delivery | Map Inventory fact only to `DISPATCHED`; Delivery proof v1 moves a line to `DELIVERED`/may complete master |
 | Hoàn tiền | Buyer chờ Inventory final-inspect selected scope; admin chỉ automatic sau Inventory release toàn bộ committed lines trước dispatch; Payment gọi đúng một lần kể cả inspection FAIL |
+| Đóng return scope | Buyer terminal refund result tạo frozen close intent; approved no-payout Ops decision dùng incomplete close/zero-receipt cancel. Financial outcome và finalization progress được theo dõi riêng |
 | Khôi phục payment muộn | Fenced recovery of the same timeout-released Inventory root; nếu không an toàn thì financial reconciliation, không system auto-refund |
 | Phát event vòng đời | Công bố event Order/per-line fulfillment theo outbox CDC at-least-once |
 
@@ -149,6 +152,9 @@ qua API, event hoặc Temporal signal được Order xử lý.
   trước Reserve/dispatch.
 - [`INV-ORD-022`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): only the immutable
   captured payment transaction is eligible for refund.
+- [`INV-ORD-025/026`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): Buyer scope closure
+  needs durable command evidence/recovery; incomplete no-payout closure needs an audited
+  decision and never resets lifetime case/scope guards.
 
 ## 8. Bản đồ tài liệu
 

@@ -121,6 +121,21 @@ evidence references và permitted resolutions. Existing
 `POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` ghi quyết
 định evidence-backed; `Idempotency-Key` phải bằng `decision_id`.
 
+`CLOSE_RETURN_WITHOUT_REFUND` additionally requires
+`return_closure {refund_request_id, refund_scope_id, reason}`; reason is
+`RETURN_WINDOW_EXPIRED`, `PACKAGE_LOST`, or `CUSTOMER_WITHDREW`, and must equal the
+parent `reason_code`. The decision applies only to the existing Buyer manual case
+with no accepted/unknown Payment initiation and no
+full completion evidence. Order persists the matching Inventory query counters,
+freezes close-incomplete or zero-receipt cancel, and returns `202` for durable work.
+The reconciliation case closes only after the Inventory receipt; no payout is authorized.
+Manual fulfillment cannot bypass this procedure for an unfinalized Buyer scope.
+Scope-only `RESUME_FORWARD_REPAIR` can repair unresolved finalization on financially
+`SUCCEEDED`/`FAILED` cases without changing master/payment facts. Resume of a proven
+rejected no-payout decision requires full completion evidence and retains the rejected
+generation/history; accepted/unknown commands cannot be superseded. Return-closure
+resolution does not close other unresolved dispute/financial obligations.
+
 ## 3. Remote activities do Order gọi
 
 | Activity | Service | Ý nghĩa | Retry/idempotency |
@@ -128,12 +143,25 @@ evidence references và permitted resolutions. Existing
 | Reserve/rollback inventory | Inventory | Giữ/nhả stock theo immutable allocation plan | Activity timeout/retry; stable request identity |
 | Commit payment / recover timed-out payment | Inventory | Commit whole reserved root after payment; fenced recovery only for same timeout-released root | Stable command ID; query `GET /commands/{id}` after unknown outcome; never re-reserve/reroute |
 | Register refund scope | Inventory | Đăng ký selected `order_line_id` với full ordered quantity | Key lifetime theo order + refund request |
+| `CloseRefundScopeActivity` | Inventory | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close`; only `INSPECTION_COMPLETED` | Frozen command ID/body; success reason `REFUNDED`, terminal failure/reversal without prior intent `REJECTED`; response must prove `CLOSED` |
+| `CloseIncompleteRefundScopeActivity` | Inventory | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete`; approved no-payout decision, missing expected units and all received final-inspected | Stable command per approved generation; decision reason; response `CLOSED_INCOMPLETE` |
+| `CancelRefundScopeActivity` | Inventory | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel`; approved no-payout decision, `REGISTERED` with no receipt | No request body; retain reason in Order audit; response `CANCELLED` |
 | Release committed order before dispatch | Inventory | Admin automatic path: atomic release tất cả committed lines hoặc no-op conflict | Không có Refund Scope; Inventory là authority dispatch |
 | `POST /internal/v1/promotion-allocation/reservations` | Promotion | TRY giữ budget runtime sau submit | Natural key order/promotion; cùng payload replay, khác payload conflict |
 | `POST /internal/v1/promotion-allocation/cancellations` | Promotion | CANCEL nhả reservation trước payment confirm | Chỉ nhả `RESERVED`; trả `RELEASED`, `NO_RESERVATION` hoặc `REPAIR_REQUIRED` |
 | `POST /internal/v1/promotion-allocation/confirmations` | Promotion | CONFIRM wallet `USED` + durable budget/receipt/outbox | Bắt buộc `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` |
 | Initiate/cancel payment | Payment | Tạo Stripe PaymentIntent; cancel must resolve capture/non-capture before Order final-cancel | Persist numbered attempt + transaction mapping; stable Payment create/cancel key; `ALREADY_SUCCEEDED` enters paid repair |
 | Initiate refund | Payment | Tạo Stripe Refund đúng một lần from the immutable captured transaction after gate | Stable refund key/transaction ID |
+
+All scope mutations require Inventory `Idempotency-Key`, `X-Correlation-ID` and
+`X-Causation-ID`. Persist intent/checkpoint/dispatch before HTTP; require matching
+order/request/scope/command IDs, target outcome and scope revision on the receipt.
+Timeout/503 queries `GET /internal/inventory/v1/commands/{command_id}` or replays
+the frozen command. Retry exhaustion leaves durable `RECOVERY_REQUIRED`; a durable
+409/mismatched receipt is `CONFLICT`, not an endpoint fallback. Reversal preserves
+the original close payload, and a terminal scope cannot be reopened/replaced.
+Admin pre-dispatch finalization is `NOT_REQUIRED`. API `scope_finalization` is an
+optional sanitized progress projection separate from case financial status.
 
 Promotion keys do Order sinh và giữ xuyên retry:
 
@@ -229,9 +257,9 @@ Quy tắc phía Order:
 | `PAYMENT_EXPIRED` | `com.ecommerce.payment.transaction.expired.v2` | terminal non-capture | Như failed; chỉ fact này mới cho phép hoàn tất timeout cancellation |
 | `PAYMENT_CANCELED` | `com.ecommerce.payment.transaction.canceled.v2` | terminal non-capture + `reason_code` | Match active transaction rồi hoàn tất pre-capture cancellation |
 | `REFUND_PROCESSING` | `com.ecommerce.payment.refund.processing.v2` | refund txn, captured payment txn, amount, financial version | Match existing case, set `REFUNDING`; chưa final |
-| `REFUND_SUCCESS` | `com.ecommerce.payment.refund.succeeded.v2` | refund txn, captured payment txn, VND amount/currency, financial version | Commit `REFUNDED` + audit/checkpoint; không phát Order event |
-| `REFUND_FAILED` | `com.ecommerce.payment.refund.failed.v2` | refund txn, error code, financial version | Giữ `RETURN_REQUESTED`, set failure, alert |
-| `REFUND_REVERSED` | `com.ecommerce.payment.refund.reversed.v2` | refund txn, reason code, financial version | Reopen cùng case về manual verification; không tạo refund mới |
+| `REFUND_SUCCESS` | `com.ecommerce.payment.refund.succeeded.v2` | refund txn, captured payment txn, VND amount/currency, financial version | Workflow atomically commits `REFUNDED` + Buyer `CLOSE/REFUNDED` intent/dispatch; closure receipt follows separately |
+| `REFUND_FAILED` | `com.ecommerce.payment.refund.failed.v2` | refund txn, error code, financial version | Giữ `RETURN_REQUESTED`, set failure; Buyer `CLOSE/REJECTED` intent/dispatch |
+| `REFUND_REVERSED` | `com.ecommerce.payment.refund.reversed.v2` | refund txn, reason code, financial version | Same case manual verification; preserve existing close intent/terminal scope; otherwise close completed Buyer scope with `REJECTED`; no new refund |
 
 Order không subscribe `com.ecommerce.payment.transaction.initiated.v2`
 (`PAYMENT_INITIATED`) hoặc `com.ecommerce.payment.refund.initiated.v2`
@@ -266,6 +294,10 @@ Ops, không thành state master mới.
 Consumers persist event identity/digest and aggregate/scope revision in durable inbox.
 Inspection consumer must compare all per-line counters to immutable Order case then persist
 the full evidence before signal; `courier_note` và package detail không nằm trong event.
+When a no-payout decision is unresolved, completion is retained as evidence but cannot
+initiate Payment. Inventory closure has no new integration event; the accepted HTTP
+command receipt proves it. Late completion for a terminal no-payout case is reconciled,
+never used to reopen the scope or mint a refund.
 
 ### 6.3. Delivery events — `order-delivery-consumer`
 
@@ -282,13 +314,18 @@ bound to another line, or a mismatched warehouse is parked and never mapped to d
 |---|---|---|---|
 | `OrderCheckoutWorkflow` | `order-checkout-{checkout_token}` | `order-checkout-queue` | PaymentResult, CancelOrder; pre/post-payment saga |
 | `OrderRefundWorkflow` | `order-refund-{order_id}` | `order-refund-queue` | InventoryReturnScopeInspectionCompleted, InventoryPreDispatchReleaseResult, RefundResult, manual verification |
+| `OrderRefundScopeFinalizationWorkflow` | `order-refund-scope-finalization-{order_id}-{generation}` | `order-refund-queue` | Recover the frozen Inventory close/cancel checkpoint only; never call Payment |
 | `OrderLatePaymentRecoveryWorkflow` | `order-late-payment-recovery-{order_id}` | `order-late-payment-recovery-queue` | Khôi phục payment muộn hoặc đưa manual verification; không system auto-refund ở Release 1 |
-| `OrderFinancialReconciliationWorkflow` | `order-financial-reconciliation-{order_id}` | `order-financial-reconciliation-queue` | Execute an evidence-backed `RESUME_FORWARD_REPAIR` decision only; never blind rollback or direct financial mutation |
+| `OrderFinancialReconciliationWorkflow` | `order-financial-reconciliation-{order_id}` | `order-financial-reconciliation-queue` | Execute proof-backed resume or dispatch an approved no-payout scope finalization; never blind rollback or direct financial mutation |
 
 All starts/attaches originate from durable `order_workflow_dispatches`; consumer/API crash
 after local acceptance is retried by dispatcher. Activity timeout mục tiêu 30 giây, retry tối đa 3 lần. Checkout workflow timeout
 30 phút gồm payment window 15 phút và buffer retry/rollback. Refund wait Inventory
 là 30 ngày trước manual-verification lane.
+Scope retry exhaustion is not end-of-work: durable finalization dispatch/reconciler
+retains the same command generation even on a financially terminal case. The 30-day
+timer never triggers closure by itself. See
+[ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
 
 ## 8. Tương thích và khoảng trống contract
 
@@ -302,3 +339,7 @@ là 30 ngày trước manual-verification lane.
 - **Khoảng trống với Notification**: `ORDER_CONFIRMED` và `ORDER_COMPLETED` cần
   `items[].name`; phải xác nhận item snapshot của Order (và Checkout snapshot nguồn) có
   field này trước khi implement `publishNotificationRequests`.
+- Order proposed HTTP v1 adds `CLOSED_INCOMPLETE`, optional `scope_finalization`, and
+  conditional no-payout decision input. Existing generated clients must support these
+  enums before rollout; no implementation/adoption status is promoted by this edit.
+  Inventory close/cancel wire shapes, guards and reason enums are unchanged.

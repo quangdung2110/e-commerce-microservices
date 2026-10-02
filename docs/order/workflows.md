@@ -30,6 +30,7 @@ verified_against_commit: null
 | `WF-ORDER-006a` | Nhận verified delivery proof | Kafka | Delivery consumer | proposed |
 | `WF-ORDER-007` | Buyer yêu cầu return one-shot | HTTP | Buyer | proposed |
 | `WF-ORDER-008` | Refund/return saga | Temporal + Kafka | Buyer/Admin/Inventory/Payment | proposed |
+| `WF-ORDER-008a` | Đóng/recover Inventory Refund Scope | Temporal + durable dispatch | Order worker/Finance/Ops | proposed |
 | `WF-ORDER-009` | Payment timeout và auto-cancel | Temporal timer | Checkout workflow | proposed |
 | `WF-ORDER-010` | Financial reconciliation decision | Internal HTTP + Temporal | Finance/Ops | proposed |
 | `WF-ORDER-011` | Buyer tạo payment attempt kế tiếp | HTTP + Temporal activity | Buyer | proposed |
@@ -370,8 +371,8 @@ giao, non-owner, Temporal unavailable sau CAS và permanent guard sau failure.
 ## WF-ORDER-008 — Refund/return saga
 
 **Mục tiêu:** khóa một refund case/amount, chờ evidence Inventory phù hợp rồi gọi
-Payment đúng một lần. Buyer return và Admin pre-dispatch force refund có gate
-Inventory khác nhau.
+Payment đúng một lần và hoàn tất Inventory scope của Buyer bằng durable Activity.
+Buyer return và Admin pre-dispatch force refund có gate Inventory khác nhau.
 
 **Preconditions:** trigger là `API_RETURN` hoặc `ADMIN_FORCE_REFUND`. Buyer đã pass
 guard; Admin automatic path chỉ được thử tại `PAID/PROCESSING`. WorkflowID
@@ -391,18 +392,42 @@ sequenceDiagram
     T->>O: Lock amount + transition RETURN_REQUESTED
     T->>I: RegisterRefundScope(selected full-quantity lines)
     Note over T,I: chờ tối đa 30 ngày
-    I-->>T: AllItemsInspectionCompleted signal
-    T->>O: Persist scope-inspection evidence
+    alt matching full inspection evidence
+      I-->>T: AllItemsInspectionCompleted signal
+      T->>O: Persist scope-inspection evidence
+    else 30-day deadline without completion
+      T->>O: MANUAL_VERIFICATION_REQUIRED + reconciliation case
+      Note over T,P: No automatic close or Payment bypass; await audited Ops decision
+    end
   else Admin pre-dispatch
     T->>I: ReleaseCommittedOrderBeforeDispatch(all lines, atomic)
     T->>O: Persist accepted release evidence, then create case + transition RETURN_REQUESTED + lock amount
   end
-  T->>P: InitiateRefund (một lần)
-  P-->>T: RefundResult qua Kafka consumer
-  alt success
-    T->>O: REFUNDED (không integration event)
-  else failed/reversed
-    T->>O: keep RETURN_REQUESTED + evidence/manual-review
+  opt gate proven and no unresolved no-payout decision
+    T->>P: InitiateRefund (một lần)
+    P-->>T: validated terminal RefundResult qua Kafka consumer
+    alt success
+      T->>O: REFUNDED + SUCCEEDED + Buyer close intent/dispatch (atomic)
+    else failed/reversed
+      T->>O: RETURN_REQUESTED + failure/manual evidence + Buyer close intent/dispatch (atomic)
+    end
+    opt Buyer has RefundScope
+      T->>I: CloseRefundScopeActivity(frozen command ID + reason)
+      I-->>T: CLOSED + scope revision
+      T->>O: Persist matching closure receipt; complete operation
+    end
+  end
+  opt approved CLOSE_RETURN_WITHOUT_REFUND instead of payout
+    T->>I: Query scope; persist matching counters as checkpoint
+    T->>O: Freeze Ops decision + finalization intent/dispatch
+    alt IN_PROGRESS, missing expected units, all received final-inspected
+      T->>I: CloseIncompleteRefundScopeActivity(decision reason)
+      I-->>T: CLOSED_INCOMPLETE
+    else REGISTERED with no receipt
+      T->>I: CancelRefundScopeActivity()
+      I-->>T: CANCELLED
+    end
+    T->>O: Case CLOSED_INCOMPLETE after matching receipt; no Payment command
   end
 ```
 
@@ -430,8 +455,12 @@ Payment. Admin does not register a scope and retains `PAID/PROCESSING` while cal
 to `RETURN_REQUESTED`, locks `orders.final_amount_minor`, and continues. Any
 dispatched/mixed result rejects with no stock movement. Only after the applicable
 evidence creates the unique `refund_transaction_id`, set `REFUNDING` and call Payment.
-Success commit `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED`; không
-phát refunded event khi chưa có implemented consumer.
+Success commits `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` and,
+for Buyer, the frozen `CLOSE` intent/checkpoint/durable dispatch in one transaction.
+`CloseRefundScopeActivity` then calls Inventory outside that transaction and persists
+the matching `CLOSED` receipt. Admin finalization is `NOT_REQUIRED`. No Order refunded
+integration fact is emitted; the existing `ORDER_REFUNDED` notification request remains
+in the financial-success transaction and is not emitted again on scope closure.
 
 **Promotion and amount boundary:** Buyer selected-line refund does not call Promotion
 or publish a Promotion-facing event. Voucher remains a whole-order
@@ -440,24 +469,77 @@ the gross selected-line snapshot value capped at `orders.final_amount_minor`; di
 not re-prorated. Admin pre-dispatch amount is `orders.final_amount_minor`.
 
 **Timeout/manual recovery:** chờ Inventory tối đa 30 ngày. Quá hạn alert Ops và
-vào lane `MANUAL_VERIFICATION_REQUIRED`. This is not a Payment bypass: the case can
-resume only with the matching Inventory evidence. Finance/Ops may create an auditable
-reconciliation decision only to resume an existing proof-backed forward repair, close it
-as manual fulfillment, or escalate it to accounting; it cannot create another scope,
-refund transaction, or invent a Payment success/refund fact.
+vào lane `MANUAL_VERIFICATION_REQUIRED` and creates/attaches the durable reconciliation
+case. This is not an automatic closure or Payment bypass. Finance/Ops may resume only
+with matching full Inventory evidence, or approve `CLOSE_RETURN_WITHOUT_REFUND` through
+WF-ORDER-010/008a when no Payment initiation is accepted/unknown. That decision ends
+the existing return by incomplete close or zero-receipt cancellation. Received units
+still awaiting final inspection prevent the decision. Manual fulfillment/accounting
+resolutions cannot substitute for these scope guards or fabricate a payout.
 
 **Payment failure/reverse:** a normal failure keeps master `RETURN_REQUESTED`, sets
-`payment_status=REFUND_FAILED` and case `FAILED`; Buyer
-guard không reset. `REFUND_PROCESSING` giữ/set `REFUNDING`. A `REFUND_REVERSED` after
+`payment_status=REFUND_FAILED` and case `FAILED`; Buyer also freezes `CLOSE` with
+reason `REJECTED` and completes/recovers that Inventory command. `REJECTED` is a
+terminal payout outcome, not inspection `FAIL`. Buyer guard không reset.
+`REFUND_PROCESSING` giữ/set `REFUNDING` and does not trigger closure. A `REFUND_REVERSED` after
 previous `REFUNDED` reopens the same case to `MANUAL_VERIFICATION_REQUIRED`, transitions
 master `REFUNDED -> RETURN_REQUESTED` and persists the reversal event proof. Không phát
-failure event chưa có consumer và không mở refund transaction thứ hai.
+failure event chưa có consumer và không mở refund transaction thứ hai. Reversal never
+reopens Inventory. If a close intent already exists, retain its exact ID/reason/body;
+otherwise a verified reversal freezes `CLOSE/REJECTED` for the completed Buyer scope.
 
 **Test:** selected full-quantity boundaries (A×1 rejects when line is A×2), two
 workflow starts, duplicate/mismatched Inventory completion, multi-package mixed
 PASS/FAIL, 30-day timeout, refund exactly once, provider fail/reverse, no Promotion,
-crash between remote refund/local commit, permanent one-shot, and atomic admin
-all-undispatched versus any-dispatched conflict.
+crash between remote refund/local commit, permanent one-shot, atomic admin
+all-undispatched versus any-dispatched conflict, and every WF-ORDER-008a case below.
+
+## WF-ORDER-008a — Durable Refund Scope finalization
+
+**Trigger/identity:** Buyer terminal Payment result or approved no-payout Ops decision
+creates the intent in the same Order transaction as its result/decision. The refund
+saga may execute immediately. A durable dispatcher/reconciler also starts/attaches
+`order-refund-scope-finalization-{order_id}-{generation}` on `order-refund-queue` for
+unfinished work, including cases already `SUCCEEDED`/`FAILED` financially. It never
+calls Payment. See [ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
+
+| Frozen operation | Inventory guard | Activity / reason | Accepted outcome |
+|---|---|---|---|
+| `CLOSE` after success | `INSPECTION_COMPLETED` | `CloseRefundScopeActivity`, `REFUNDED` | `CLOSED` |
+| `CLOSE` after terminal failure/reversal without prior intent | `INSPECTION_COMPLETED` | `CloseRefundScopeActivity`, `REJECTED` | `CLOSED` |
+| `CLOSE_INCOMPLETE` after approved no-payout decision | `IN_PROGRESS`; every received unit final-inspected; some expected units missing | `CloseIncompleteRefundScopeActivity`, decision reason | `CLOSED_INCOMPLETE` |
+| `CANCEL` after approved no-payout decision | `REGISTERED`; zero receipt | `CancelRefundScopeActivity`; reason retained in Order audit | `CANCELLED` |
+
+**Persistence/recovery:** Freeze scope/order/request IDs, generation, command ID,
+operation, reason and canonical request digest before HTTP. Require a response matching
+all IDs, command and target outcome; persist response digest/revision before marking
+finalization `COMPLETED`. Unknown transport/503 queries or replays the same command.
+After three attempts set `RECOVERY_REQUIRED`, retain durable dispatch and alert Order
+on-call; create/attach an audited scope-repair reconciliation obligation without changing
+master/payment financial facts. A durable `409` sets `CONFLICT`; it cannot switch endpoint
+or bypass a guard.
+Only an audited corrected decision after proven rejection may create a new generation
+and command. Preserve old checkpoints; unknown/accepted commands are never replaced.
+
+**Completion boundary:** Financial `SUCCEEDED`/`FAILED` may precede scope completion;
+never roll back `REFUNDED` or reissue Payment because close failed. Buyer operation
+stays `RUNNING`, or `MANUAL_REVIEW_REQUIRED` on recovery/conflict, until the receipt is
+durable; then maps the financial outcome. An approved no-payout decision sets case
+`CLOSED_INCOMPLETE`/`resolved_at` only after Inventory confirms `CLOSED_INCOMPLETE`
+or zero-receipt `CANCELLED`; master stays `RETURN_REQUESTED`, payment `PAID`, refund
+transaction null. Resolve the return-closure obligation then; close reconciliation only
+when no other financial/dispute obligation remains unresolved, not at decision acceptance.
+Saga termination requires a closure receipt or a durable recovery dispatch. Scope
+closure does not change buckets, disposition duties, or lifetime case/scope guards.
+
+**Race/test:** Receipt/final inspection and close serialize inside Inventory. Full
+completion arriving during a pending no-payout decision is stored as evidence but
+cannot initiate Payment. A rejected incomplete close requires a new audited decision;
+never fall back automatically to complete close/refund. Test local commit before call,
+accepted close with response loss, duplicate dispatch/Activity, wrong resource/revision
+receipt, retry exhaustion/restart, final receipt/inspection race, no-receipt cancel,
+uninspected rejection, corrected generation after durable 409, and reversal before/after
+closure with no second Payment refund or Inventory scope.
 
 ## WF-ORDER-009 — Payment timeout và auto-cancel
 
@@ -491,27 +573,51 @@ không “sửa thẳng” trạng thái Order hoặc suy đoán payment/refund 
 **Trigger/input:** Finance/Ops workload gọi
 [`POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions`](../../contracts/http/order/internal/v1/openapi.yaml)
 với `case_id`, `expected_case_revision`, `decision_id`, evidence references/digest và một
-`resolution_type`: `RESUME_FORWARD_REPAIR`, `CLOSE_AS_MANUAL_FULFILLMENT` hoặc
-`ESCALATE_TO_ACCOUNTING`.
+`resolution_type`: `RESUME_FORWARD_REPAIR`, `CLOSE_AS_MANUAL_FULFILLMENT`,
+`ESCALATE_TO_ACCOUNTING`, or `CLOSE_RETURN_WITHOUT_REFUND`. The last requires
+`return_closure {refund_request_id, refund_scope_id, reason}`.
 
-**Guards:** order phải có `FINANCIAL_RECONCILIATION_REQUIRED` hoặc refund case
-`MANUAL_VERIFICATION_REQUIRED`; caller must have Finance/Ops capability. `decision_id` is
+**Guards:** order phải có `FINANCIAL_RECONCILIATION_REQUIRED`, refund case
+`MANUAL_VERIFICATION_REQUIRED`, or unresolved scope finalization
+`RECOVERY_REQUIRED/CONFLICT`; caller must have Finance/Ops capability. A scope-only
+repair may preserve financially `SUCCEEDED`/`FAILED` cases and master `REFUNDED`.
+`decision_id` is
 idempotent with a canonical payload hash. The server locks case revision, verifies every
 evidence reference comes from a persisted Payment/Inventory/Promotion checkpoint or
 provider reconciliation result, writes the decision/outbox atomically and starts/attaches
-only its stable existing repair workflow.
+only its stable repair workflow. No-payout closure additionally requires the same Buyer
+case in `MANUAL_VERIFICATION_REQUIRED`, no refund transaction or accepted/unknown
+Payment initiation checkpoint, no full completion evidence, and a durable matching
+Inventory scope query with all received units final-inspected and expected units missing
+(or `REGISTERED` with zero receipt). Query outside the transaction, then recheck locked
+local guards. Freeze the intent/dispatch atomically with the decision and block Payment
+initiation/resume while it is unresolved; Inventory revalidates at command commit.
 
 **Outcomes:** `RESUME_FORWARD_REPAIR` replays the original command IDs and keeps financial
 facts unchanged. `CLOSE_AS_MANUAL_FULFILLMENT` closes the case with accountability but does
 not emit an Order integration event or change Payment. `ESCALATE_TO_ACCOUNTING` creates an external
-accounting work reference and leaves the Order financial state pending. None of them may
-call Inventory rollback, Promotion technical cancellation or mint a second Payment refund.
+accounting work reference and leaves the Order financial state pending.
+`CLOSE_RETURN_WITHOUT_REFUND` dispatches only the bound scope finalization in WF-ORDER-008a;
+it cannot pay a partial return. `CLOSE_AS_MANUAL_FULFILLMENT` cannot close a Buyer case
+with an unfinalized scope; use the explicit return decision instead. A prior no-payout
+intent in `CONFLICT` may be superseded by an audited resume only after proven remote
+rejection and matching full inspection evidence; that resumes the existing case's
+original gate, not a new refund entitlement. This clears the rejected no-payout intent
+from the active summary to `NOT_REQUESTED` while retaining its generation/checkpoint
+and decision history; the first validated Payment result later freezes a fresh `CLOSE`
+generation. Unknown or accepted no-payout commands cannot be cleared this way.
+Scope-only repair replays the existing close/cancel command; a corrected generation
+after proven rejection must revalidate the applicable Inventory guard and retain the
+prior command evidence. None of these resolutions may call
+Inventory rollback, Promotion technical cancellation or mint a second Payment refund.
 
 **Failure/race:** same `decision_id` replays stored response; different payload or stale
 case revision is `409`; missing evidence is `422`; outage leaves no decision and is retried.
 Tests cover unauthorized caller, evidence from another order, duplicate/conflicting
 decision, manual fulfillment without financial mutation, and resume of an unknown remote
-outcome via its original checkpoint only.
+outcome via its original checkpoint only, no-payout decision conditional payload/identity,
+received-but-uninspected rejection, concurrent completion versus manual close, and
+reconciliation remaining open until a matching Inventory closure receipt.
 
 ## WF-ORDER-011 — Buyer tạo payment attempt kế tiếp
 

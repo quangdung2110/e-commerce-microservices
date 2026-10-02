@@ -64,6 +64,8 @@ Metrics tối thiểu:
   miss, compensation failure, workflow age theo type.
 - Business counters: order created/paid/cancelled/completed, late recovery outcome,
   return rejected, refund waiting/processing/succeeded/failed, oldest refund wait.
+- Scope finalization status/oldest pending age, recovery/conflict count and no-payout
+  closure outcomes; include financially `SUCCEEDED`/`FAILED` cases in this measurement.
 - Outbox row count/oldest age và cleanup deleted/skipped-by-watermark.
 
 Structured log/traces cần correlation/request/event/workflow/order reference và
@@ -82,6 +84,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Late payment recovery failed | Chuyển manual verification, không auto-refund | Critical | Finance/Ops |
 | Refund waiting overdue | Gần/quá 30 ngày không confirmation | Cao | Returns Ops |
 | Refund failed/reversed | Event critical lane xuất hiện | Critical | Payment/Ops |
+| Refund scope finalization unresolved | Three Activity attempts exhausted, durable guard conflict, mismatched receipt, or pending age beyond agreed budget | Cao | Order on-call + Inventory; frozen command query/replay and audited reconciliation |
 | CDC/outbox lag | Oldest outbox chưa publish vượt ngưỡng | Cao | Data platform/Order |
 | DB pool/deadlock | Saturation/lock wait vượt ngưỡng | Cao | Database exhaustion |
 | Redis unavailable | Error rate liên tục; request replay fast path mất | Trung bình | DB fallback và tăng tải đọc/lock |
@@ -100,6 +103,8 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Promotion timeout/failure | Pre-payment rollback và structured recalculation; final activity retry cùng stable key/receipt; post-payment forward repair or financial reconciliation, never technical cancellation; customer refund không gọi Promotion |
 | Payment timeout | Initiate/cancel/refund retry/query theo stable key; Order remains cancelling/reconciling until provider fact, không tạo transaction/refund thứ hai |
 | Unknown Inventory/Promotion result | Query/replay same durable command; never compensate by assuming remote mutation failed |
+| Inventory scope close/cancel unknown or unavailable | Preserve financial result and frozen finalization intent; query/replay same command. After three attempts mark `RECOVERY_REQUIRED`, retain durable dispatch and alert; never repeat Payment |
+| Scope close/cancel durable 409 or receipt mismatch | Set `CONFLICT`, park operation for manual review and reconcile current scope/counters; no endpoint fallback, auto-payout or replacement of an unknown/accepted command |
 | Workflow start failure after accepted API | Dispatcher retries/attaches durable workflow dispatch; no accepted command is lost |
 | Mixed-version deploy | Workflow code phải replay-compatible; consumer validates additive financial fields/version; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |
@@ -141,6 +146,7 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | CAS line `DISPATCHED -> DELIVERED`; complete master only after all line proofs |
 | Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence then signal refund workflow |
 | Workflow dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API/consumer crash |
+| Refund scope finalization reconciler | Unresolved finalization metadata/checkpoints, including financially terminal Buyer cases | Same scope/generation/command; conflict requires audited decision | Restore durable finalization dispatch on `order-refund-queue`; never call Payment |
 | Temporal worker | Four task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
 | Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; watermark guard | Xóa row >15 ngày khi an toàn |
 
@@ -157,10 +163,15 @@ escalation owner. Tối thiểu phải có:
 2. Temporal workflow mắc kẹt/cancel or forward-repair fail: inspect history, dispatch
    and remote checkpoint; repair dependency, query/replay same activity key, không update
    DB thủ công thiếu inbox/outbox.
-3. Refund quá 30 ngày/manual verification: đối chiếu selected locked scope với
-   Inventory, tạo một Finance/Ops reconciliation decision cùng evidence digest qua internal
-   API, rồi chỉ resume checkpoint có sẵn hoặc escalate accounting. Xác minh lifetime case
-   chưa tạo transaction thứ hai; không coi inspection `FAIL` là lý do bỏ Payment.
+3. Refund quá 30 ngày/manual verification: đối chiếu selected locked scope và toàn bộ
+   expected/received/passed/failed counters qua Inventory query, persist query checkpoint,
+   rồi ghi Finance/Ops decision/evidence digest qua internal API. Full completion mới
+   cho phép resume Payment gate; inspection `FAIL` không bỏ Payment. Nếu quyết định
+   kết thúc return thiếu hàng không payout, dùng `CLOSE_RETURN_WITHOUT_REFUND` với
+   bound request/scope/reason, chỉ khi không có refund transaction hoặc accepted/unknown
+   Payment initiation. `IN_PROGRESS` cần mọi received unit final-inspected; `REGISTERED`
+   zero receipt dùng cancel. Timer không tự đóng; unresolved decision chặn Payment.
+   Case chỉ `CLOSED_INCOMPLETE` và reconciliation chỉ đóng sau Inventory receipt.
 4. CDC/outbox backlog: dừng trimmer, kiểm tra connector/WAL/offset/topic, resume,
    xác minh sequence/duplicate downstream.
 5. Redis corruption/outage: đánh giá request replay hit/miss và DB fallback,
@@ -174,3 +185,12 @@ escalation owner. Tối thiểu phải có:
    refund case.
 8. Outbox retention cleanup failure: kiểm tra watermark và oldest row; chỉ chạy lại
    delete khi connector đã vượt dữ liệu mục tiêu.
+9. Scope finalization stuck after financial success/failure: inspect frozen generation,
+   operation/reason/command/body digest, dispatch and Inventory command result. Replay an
+   accepted command after response loss; unknown/503 uses the same key. Repair dispatcher/
+   worker and let the finalization reconciler resume the same intent, including terminal
+   financial cases. Persist only matching IDs/outcome/revision/receipt. Durable rejection
+   requires an audited corrected decision before a new generation; retain earlier attempts.
+   Never change `REFUNDED`, repeat Payment, reopen a closed scope or discard failed
+   quarantine. After reversal preserve the original close reason and separate financial
+   review. Verify operation progress and scope receipt, not Payment success alone.

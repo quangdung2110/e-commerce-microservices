@@ -16,6 +16,8 @@
 | Availability read model has no clean state for a SKU | Batch-read returns `UNKNOWN` for that SKU; authoritative commands continue. | Inventory repairs/recomputes the affected state; PDP BFF does not replay or use a stale fallback. |
 | Availability Read API unavailable | BFF receives `503` and degrades affected PDP SKU to `UNKNOWN`; authoritative commands continue. | Inventory + Platform restore read endpoint/capacity; Storefront observes dependency outcome. |
 | Order/Payment workflow delayed | Leave `RESERVED` unchanged; issue orphan alert only when older than 60 minutes. | Order explicitly commits/releases; Inventory never auto-releases. |
+| Order terminal refund but scope remains open | Retain scope/command truth; never auto-close or infer payout. | Order queries/replays its frozen finalization command and repairs durable dispatch, including financially terminal cases. |
+| Receipt/inspection races incomplete close | Atomic guard decides; rejected close moves no stock. | Order reconciles the durable rejection; no automatic endpoint switch or Payment bypass. |
 | Warehouse outage/inactive | Exclude from new allocation only. | ADMIN verifies/reconfigures; existing commitments use Order exception flow if needed. |
 | Count discrepancy | Do not modify protected buckets silently. | ADMIN + Order use explicit exception, release/correction workflow. |
 | Consumer failure / replay window expired | Producer fact remains durable; consumer can lag. | Order uses its inbox/DLQ; Search does not ACK retryable/readiness violations and starts a new per-SKU snapshot after `410`. |
@@ -53,6 +55,9 @@ Refund-scope/quarantine age is dashboarded but has no automatic closure threshol
 Order owns return-window policy and Operations owns inspection cadence. A terminal
 scope remains retained as the order's lifetime scope identity; it is not cleanup
 eligible merely because the case closed.
+Order separately alerts on pending/recovery/conflict finalization. A financial
+terminal case paired with nonterminal Inventory scope requires Order's durable
+close/cancel recovery, not an Inventory age-based cleanup.
 
 ## 3. Reconciliation and correction
 
@@ -62,7 +67,7 @@ eligible merely because the case closed.
 | Hourly | Full current StockPosition bucket/non-negative scan. | SEV-1 and affected-write freeze. |
 | Daily | Replay movement ledger from last verified checkpoint and compare current state. | SEV-1; preserve state/ledger snapshot. |
 | Every 5 minutes | Identify `RESERVED` roots older than 60 minutes. | Alert Order; do not mutate. |
-| Daily | Order compares its active orders/refunds to Inventory query results. | Idempotent command or Order exception; no DB write. |
+| Daily | Order compares active orders/refunds and financially terminal Buyer cases with unresolved scope finalization to Inventory command/state queries. | Recover the same frozen command or audited Order exception; no direct DB write or second Payment refund. |
 | Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF clean-state rate, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
 | Pre/post recovery | Bucket scan, ledger replay, identity, outbox/export, and consumer checks. | Writes stay closed until all pass. |
 
@@ -89,5 +94,13 @@ Audit retains actor/effective role, command and operation identity, reason/evide
 4. **Validate:** prove primary durability; scan buckets; replay ledger checkpoint; verify identities/final inspections/revisions; validate outbox/export; verify authorization/audit.
 5. **Rebuild:** discard cache, restart relay/projector from durable state, and instruct Order to replay/dedupe or Search to bootstrap per-SKU availability after readiness is verified.
 6. **Resume:** Inventory and Platform document gate evidence and jointly reopen writes; Order resumes normal idempotent decisions only.
+
+For scope closure recovery, first inspect the Order intent/command ID and Inventory
+command outcome. An accepted close with lost response replays that exact command;
+409 requires audited reconciliation. A no-receipt `REGISTERED` return uses cancel;
+incomplete close requires every received unit final-inspected. Scope cancellation/
+closure does not release the lifetime identity, change a Payment result, or remove
+failed quarantine. See [Order runbook](../order/operations.md) and
+[Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
 Backup restore integrity is tested monthly. Full failover/restore, outbox/consumer replay, access/audit review, and discrepancy exercises run quarterly. Any failed drill blocks claiming the corresponding RPO/RTO target until remediated.

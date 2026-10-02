@@ -62,6 +62,7 @@ không thay thế invariants trong PostgreSQL.
 | Lệnh | Đánh dấu line đã physical dispatch | Inventory event | OrderLine Fulfillment FSM |
 | Lệnh | Đánh dấu line đã giao khách | Delivery verified event | OrderLine Fulfillment FSM |
 | Lệnh | Xác nhận scope đã final-inspect | Inventory event | OrderRefundWorkflow |
+| Lệnh | Đóng/recover scope hoàn hàng hiện hữu | Order worker/approved Finance/Ops decision | OrderRefundWorkflow/OrderRefundScopeFinalizationWorkflow |
 | Lệnh | Complete order | Delivery verified-proof consumer | Order aggregate; Inventory dispatch is insufficient |
 | Lệnh | Quyết định financial reconciliation | Finance/Ops workload | Existing repair checkpoint only; never direct financial mutation |
 
@@ -91,7 +92,9 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-019` | Sau Payment financial watermark, active Saga chỉ forward-repair; không Inventory rollback hay Promotion `CANCEL_FINAL` | Master recovery state + remote-command checkpoint | `FINANCIAL_RECONCILIATION_REQUIRED`, never business rollback |
 | `INV-ORD-020` | Admin rejected pre-dispatch release không được tạo/refuse lifetime refund case | Durable admin attempt separate from refund case | Attempt terminal no-op; Buyer guard/case remains available |
 | `INV-ORD-022` | Chỉ một captured transaction được refund; terminal non-capture fact mới mở attempt kế tiếp | Attempt mapping + immutable captured ID | Second/foreign capture → reconciliation |
-| `INV-ORD-023` | Finance/Ops chỉ resolve reconciliation bằng evidence + named audited decision; không direct SQL, không suy luận payment/refund fact | Reconciliation case + authenticated contract | Resume checkpoint, close manual fulfillment, or accounting escalation |
+| `INV-ORD-023` | Finance/Ops chỉ resolve reconciliation bằng evidence + named audited decision; không direct SQL, không suy luận payment/refund fact | Reconciliation case + authenticated contract | Resume proof-backed case, guarded no-payout return closure, manual fulfillment, or accounting escalation |
+| `INV-ORD-025` | Buyer terminal refund result phải atomically lưu ý định đóng Inventory scope; only matching command receipt proves closure | Frozen command checkpoint + durable dispatch + finalization reconciler | Pending/recovery/conflict; never roll back Payment or create a second refund |
+| `INV-ORD-026` | Kết thúc return thiếu hàng không payout cần named Ops decision, no accepted/unknown Payment initiation, và Inventory close/cancel guards | Locked case + query evidence + Inventory atomic command | Case `CLOSED_INCOMPLETE` only after receipt; no automatic 30-day close/Payment bypass |
 
 ## 5. State machine
 
@@ -173,7 +176,38 @@ on the same lifetime case; a provider reversal after success changes `SUCCEEDED 
 MANUAL_VERIFICATION_REQUIRED` and reopens the master financial lane. No second scope
 or refund transaction is allowed.
 
-### 5.5. Buyer tab precedence
+Buyer may also follow `MANUAL_VERIFICATION_REQUIRED -> CLOSED_INCOMPLETE` after
+an approved `CLOSE_RETURN_WITHOUT_REFUND` decision and a matching Inventory
+`CLOSED_INCOMPLETE` receipt, or `CANCELLED` receipt when no return was received.
+The case remains manual until that receipt; master stays `RETURN_REQUESTED`, payment
+`PAID`, refund transaction null and the Buyer guard remains consumed. This is a
+closed case without payout, not master `REFUNDED`.
+
+Scope finalization is a separate control state:
+
+| From | To | Guard |
+|---|---|---|
+| `NOT_REQUESTED` | `PENDING` | Financial result or approved no-payout decision atomically freezes intent/dispatch |
+| `PENDING/RECOVERY_REQUIRED` | `COMPLETED` | Matching accepted receipt for the frozen command |
+| `PENDING` | `RECOVERY_REQUIRED` | Retry budget exhausted; same command remains durable |
+| `PENDING/RECOVERY_REQUIRED` | `CONFLICT` | Durable rejection or mismatched receipt; audited reconciliation required |
+| `CONFLICT` | `COMPLETED` | Reconciliation recovers the matching accepted original-command receipt; no replacement |
+| `CONFLICT` | `PENDING` | Corrected audited decision after proven rejection; new generation/command, prior evidence retained |
+| `CONFLICT` | `NOT_REQUESTED` | Approved resume after proven no-payout command rejection and full completion evidence; clear active intent, retain rejected generation/history |
+
+Recovery keeps the same command ID/body. Accepted/unknown commands cannot be replaced.
+Admin uses only `NOT_REQUIRED`; `COMPLETED` has no outgoing Inventory transition.
+
+`SUCCEEDED`/`FAILED` financial cases can therefore have unfinished finalization.
+Complete Buyer return scope uses `CLOSE/REFUNDED` after success or `CLOSE/REJECTED`
+after terminal failure/reversal without a prior intent; `REJECTED` is not inspection
+`FAIL`. Reversal never changes a frozen close reason or reopens terminal Inventory.
+Incomplete close is only `IN_PROGRESS`, missing expected units, and all received units
+final-inspected; zero-receipt `REGISTERED` uses cancel. Pending no-payout intent blocks
+Payment initiation/resume. See [WF-ORDER-008a](./workflows.md#wf-order-008a--durable-refund-scope-finalization)
+and [ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
+
+### 5.6. Buyer tab precedence
 
 Mỗi order chỉ thuộc một tab, chọn theo thứ tự:
 
@@ -227,6 +261,7 @@ fallback rank `99`.
 | `PAYMENT_TIMEOUT` | Không có success trong 15 phút | Không trên workflow cũ | Cancel + có thể recovery lane |
 | `REFUND_WINDOW_EXPIRED` | Payment provider từ chối refund | Theo Payment policy | Failure event/Ops |
 | `MANUAL_VERIFICATION_REQUIRED` | Không có scope-inspection completion sau 30 ngày | Cần reconciliation/manual exception trên case hiện hữu; không tự bypass Payment gate | Alert/workflow state |
+| `REFUND_SCOPE_FINALIZATION_CONFLICT` | Inventory từ chối frozen close/cancel guard hoặc evidence không khớp | Cần audited reconciliation; không đổi endpoint/reason bằng retry | Finalization `CONFLICT`; operation manual review |
 
 Timeout DB/Redis/Kafka/Temporal là lỗi hạ tầng, không phải domain error. Redis lỗi
 chỉ làm mất request replay fast-path; fallback durable phải được dùng. Redis không được

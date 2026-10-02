@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-02
+
+- Order proposed HTTP v1 adds refund-case `CLOSED_INCOMPLETE` and optional
+  `scope_finalization` progress separate from the financial outcome. Generated clients
+  must support the new response enum before adoption; incompatible adopted consumers
+  require a versioned migration rather than an assumed compatible enum expansion.
+- Order internal v1 adds `CLOSE_RETURN_WITHOUT_REFUND` and its conditional
+  `return_closure` identities/reason. Only a proof-backed existing Buyer manual case
+  with no accepted/unknown payout initiation can use incomplete close or zero-receipt
+  cancel; decision acceptance is not closure or payout evidence.
+- Inventory workflow v1 clarifies existing close/cancel guards, terminal financial
+  reason mapping, response-loss replay and terminal lifetime identity. No endpoint,
+  request reason enum, stock transition or public closure event is added. Catalogs
+  and both service target documents follow Order ADR-013; adoption remains proposed.
+
 ## 2026-09-25
 
 - Product HTTP v1: `GET /internal/v1/product-details/{slug}` trả schema mới

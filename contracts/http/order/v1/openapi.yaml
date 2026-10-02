@@ -577,6 +577,12 @@ components:
         - MANUAL_VERIFICATION_REQUIRED
         - SUCCEEDED
         - FAILED
+        - CLOSED_INCOMPLETE
+      description: >-
+        CLOSED_INCOMPLETE is an approved Buyer return ended without payout, only
+        after Inventory confirms incomplete closure or zero-receipt cancellation.
+        It never means master REFUNDED. SUCCEEDED/FAILED are financial outcomes;
+        consult optional scope_finalization for remaining physical finalization work.
     RefundMode:
       type: string
       enum: [BUYER_RETURN_SELECTED_LINES, ADMIN_PRE_DISPATCH_FULL_ORDER]
@@ -663,6 +669,7 @@ components:
         mode: { $ref: '#/components/schemas/RefundMode' }
         status: { $ref: '#/components/schemas/RefundCaseStatus' }
         amount: { $ref: '#/components/schemas/Money' }
+        scope_finalization: { $ref: '#/components/schemas/RefundScopeFinalization' }
         refund_transaction_id:
           oneOf:
             - $ref: '#/components/schemas/OpaqueId'
@@ -917,6 +924,7 @@ components:
         trigger_source: { type: string, enum: [API_RETURN, ADMIN_FORCE_REFUND] }
         mode: { $ref: '#/components/schemas/RefundMode' }
         status: { $ref: '#/components/schemas/RefundCaseStatus' }
+        scope_finalization: { $ref: '#/components/schemas/RefundScopeFinalization' }
         amount: { $ref: '#/components/schemas/Money' }
         lines:
           type: array
@@ -929,6 +937,37 @@ components:
         started_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         resolved_at: { type: [string, 'null'], format: date-time }
+
+    RefundScopeFinalization:
+      type: object
+      additionalProperties: false
+      required: [status, terminal_scope_state, finalized_at]
+      description: >-
+        Sanitized Inventory finalization progress, separate from financial case status.
+        Admin pre-dispatch uses NOT_REQUIRED. Buyer operation remains RUNNING while
+        PENDING, or MANUAL_REVIEW_REQUIRED during RECOVERY_REQUIRED/CONFLICT. Only a
+        matching accepted Inventory command receipt establishes COMPLETED; Payment
+        success alone does not. Reversal never reopens a completed Inventory scope.
+      properties:
+        status:
+          type: string
+          enum: [NOT_REQUIRED, NOT_REQUESTED, PENDING, RECOVERY_REQUIRED, CONFLICT, COMPLETED]
+        terminal_scope_state:
+          type: [string, 'null']
+          enum: [CLOSED, CLOSED_INCOMPLETE, CANCELLED, null]
+        finalized_at: { type: [string, 'null'], format: date-time }
+      allOf:
+        - if:
+            properties:
+              status: { const: COMPLETED }
+          then:
+            properties:
+              terminal_scope_state: { type: string, enum: [CLOSED, CLOSED_INCOMPLETE, CANCELLED] }
+              finalized_at: { type: string, format: date-time }
+          else:
+            properties:
+              terminal_scope_state: { type: 'null' }
+              finalized_at: { type: 'null' }
 
   responses:
     BadRequest:

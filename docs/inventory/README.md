@@ -20,6 +20,7 @@ catalog, or Search's indexed copy.
 | Payment and dispatch | Payment moves `reserved → committed`; only physical dispatch reduces `on_hand`. Order owns payment and delivery state. |
 | Timeout | Order Temporal Saga owns the 15-minute timeout and explicit release. Inventory alerts at 60 minutes but never auto-releases. |
 | Return | Order registers one immutable selected-line Refund Scope per order lifetime before receipt; every selected line is full quantity. A returned item is saleable only after final inspection `PASS`. |
+| Scope finalization | Order closes completed scopes after terminal refund outcome, or ends missing returns by an audited no-payout decision using incomplete close/zero-receipt cancel; no automatic Inventory closure. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |
 | Integration | Transactional outbox is mandatory. Inventory publishes its per-SKU boolean to Search and exposes the same advisory state through a BFF-only batch-read API; neither path is a checkout dependency. |
 | Degradation | If authoritative state or the atomic audit/outbox transaction is unavailable, mutations fail closed and Preview returns `503 INVENTORY_UNAVAILABLE`. |

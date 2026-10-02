@@ -98,6 +98,7 @@ sequenceDiagram
   participant O as Order + Temporal Saga
   participant I as Inventory
   participant A as Warehouse ADMIN
+  participant P as Payment
 
   O->>I: RegisterRefundScope(selected full-quantity lines)
   I-->>O: REGISTERED
@@ -108,11 +109,22 @@ sequenceDiagram
   end
   alt all expected units final inspected
     I-->>O: com.ecommerce.inventory.refund.all-items-inspection-completed.v1
-    O->>I: CloseRefundScope(terminal Order reason)
+    O->>P: InitiateRefund (existing single refund identity)
+    P-->>O: validated terminal success/failure
+    Note over O: Persist financial result + frozen close intent/dispatch atomically
+    O->>I: CloseRefundScope(stable command ID, REFUNDED or REJECTED)
     I-->>O: CLOSED
-  else returns incomplete after Order decision
-    O->>I: CloseIncompleteRefundScope(reason)
+    Note over O: Persist matching command receipt; recover if response is lost
+  else some received, some expected missing, all received final-inspected
+    Note over O: 30 days only alerts/manual lane; audited no-payout Ops decision required
+    O->>I: CloseIncompleteRefundScope(stable command ID, decision reason)
     I-->>O: CLOSED_INCOMPLETE
+  else no receipt, REGISTERED
+    Note over O: Audited no-payout Ops decision
+    O->>I: CancelRefundScope(stable command ID)
+    I-->>O: CANCELLED
+  else received units await final inspection
+    Note over O,I: Cannot close; continue inspection/manual review
   end
 ```
 
@@ -123,6 +135,21 @@ sequenceDiagram
 - Receipt is physical inbound to quarantine. Final `PASS` moves only that receipt-line quantity to `available_to_sell`; final `FAIL` stays quarantined.
 - All expected units final inspected (pass **or** fail) creates one completion fact. Inventory cannot decide payout and cannot close the scope.
 - `CloseIncompleteRefundScope` requires that all received units already have final inspection while some expected quantity is missing. It emits no completion event.
+- `CloseRefundScope` accepts only `INSPECTION_COMPLETED`, whether Payment settled
+  successfully or ended in failure. Order maps success to `REFUNDED` and terminal
+  failure/reversal without an earlier intent to `REJECTED`; this does not describe
+  inspection PASS/FAIL. Inventory never queries Payment or decides payout.
+- An entirely missing return is still `REGISTERED` and uses `CancelRefundScope`,
+  not incomplete close. Receipt/inspection and closure lock/revalidate the same scope;
+  the first accepted transition wins. A close conflict does not permit endpoint fallback.
+- Order persists a frozen close/cancel command before calling Inventory and recovers
+  an uncertain result by command query/replay. Retry exhaustion requires durable
+  recovery and alerting even if Order is already financially `REFUNDED`.
+- Closure retains the lifetime scope identity and does not reopen return entitlement,
+  reverse inspection movements, or dispose failed quarantine. A later Payment reversal
+  is an Order financial exception and never reopens Inventory's terminal scope. There
+  is no new public closure event; the matching command receipt proves finalization.
+  See [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
 ## 3. Warehouse discrepancy and correction
 

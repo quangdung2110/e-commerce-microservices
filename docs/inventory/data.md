@@ -110,6 +110,23 @@ Payment reference, and records the terminal `CommandExecution` result. A failed 
 is a durable rejection with no movement. This is not a re-Reserve and cannot create a
 new allocation plan or root.
 
+### Refund Scope finalization transaction
+
+Close/cancel locks the same RefundScope and line/receipt records as receipt/inspection.
+`close` requires `INSPECTION_COMPLETED`; `close-incomplete` requires `IN_PROGRESS`,
+every line `passed + failed = received`, and at least one missing expected quantity;
+`cancel` requires `REGISTERED` with no receipt. Revalidate these guards in the command
+transaction, then persist terminal scope state, close reason when the endpoint carries
+one, command result, actor/correlation/causation and audit atomically. Buckets and
+failed-quarantine disposition duties remain unchanged. No new public closure fact is
+introduced; Order retains the command receipt as its completion evidence.
+
+Accepted and rejected command outcomes retain normal idempotency rules. A delayed
+retry returns its original outcome, even if the scope progressed since a rejection.
+Only a corrected new Order decision may use a new command ID after proven rejection.
+Terminal scope/Order lifetime identities remain retained; payment reversal never
+reopens or replaces them.
+
 ## 5. Per-SKU availability projection
 
 Every transaction that can change `available_to_sell` records the distinct affected SKU

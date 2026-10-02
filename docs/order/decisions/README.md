@@ -30,3 +30,4 @@ có nghĩa implementation đã được xác minh.
 | [ADR-010](./ADR-010-selected-line-refund-policy.md) | Một refund case trọn đời, selected full-quantity lines, admin chỉ automatic trước dispatch | Accepted | 2026-09-15 | ADR-006 (scope/gate) |
 | [ADR-011](./ADR-011-financial-saga-recovery-and-durable-dispatch.md) | Financial watermark, durable inbox/dispatch/checkpoint, fenced recovery and refund reversal handling | Accepted | 2026-09-16 | Refines ADR-001, ADR-005, ADR-008, ADR-010 |
 | [ADR-012](./ADR-012-redis-request-mirror-scope.md) | Giới hạn Redis ở request replay mirror; bỏ event fast-path, FSM lock và create mirror | Accepted | 2026-09-18 | ADR-005 (một phần) |
+| [ADR-013](./ADR-013-durable-refund-scope-finalization.md) | Đóng Inventory scope bằng durable Activity/recovery; quyết định Ops kết thúc return thiếu hàng không payout | Accepted | 2026-10-02 | Refines ADR-010, ADR-011 |

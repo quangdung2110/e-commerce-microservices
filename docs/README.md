@@ -26,6 +26,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 |---|---|---|
 | [order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md](./order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md) | Order + Promotion | Customer refund không mutate Promotion; không allocation theo SKU, không hoàn voucher/budget. |
 | [order/decisions/ADR-010-selected-line-refund-policy.md](./order/decisions/ADR-010-selected-line-refund-policy.md) | Order + Inventory + Payment | Một refund case trọn đời/order; selected full-quantity lines; admin automatic chỉ trước dispatch. |
+| [order/decisions/ADR-013-durable-refund-scope-finalization.md](./order/decisions/ADR-013-durable-refund-scope-finalization.md) | Order + Inventory | Durable close/cancel scope; approved no-payout incomplete return; financial result và finalization progress tách biệt. |
 | [inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md](./inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Inventory + Order | Lifetime selected scope và atomic all-line committed release trước dispatch. |
 | [payment/decisions/ADR-011-one-lifetime-order-refund.md](./payment/decisions/ADR-011-one-lifetime-order-refund.md) | Payment + Order + Inventory | Một Payment refund transaction/order, Inventory evidence dạng Buyer/Admin. |
 | [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
@@ -76,7 +77,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
 | [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
 | [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
-| [order/workflows.md](./order/workflows.md) | Chín workflow gồm checkout, timeout, delivery, return, refund và late recovery. |
+| [order/workflows.md](./order/workflows.md) | Checkout, timeout, delivery proof, return/refund, durable scope finalization, late recovery và financial reconciliation. |
 | [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
 | [order/development.md](./order/development.md) | Checklist local/build/test/migration khi implementation được thêm. |
 | [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR bảo toàn các quyết định của thiết kế cũ. |
@@ -218,6 +219,7 @@ Service Contract Matrix legacy đã bị xóa.
 | `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | Order (Temporal) → Payment |
 | `POST /api/payments/webhook/stripe` | Stripe → Gateway → Payment `/v1/payments/webhook/stripe` |
 | `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |
+| `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/{close,close-incomplete,cancel}` | Order → Inventory; guarded durable finalization; no-payout Ops decision for incomplete/no-receipt return |
 | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Order → Inventory; automatic admin refund all-or-nothing release |
 | `POST /api/v1/me/promotion-voucher-suggestions` | Client → Gateway → Promotion; chỉ wallet `SAVED` |
 | `POST /api/v1/promotion-discovery` | Client → Gateway → Promotion; wallet + public `ACTIVE` |

@@ -16,6 +16,11 @@
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 
+[Order ADR-013](../../order/decisions/ADR-013-durable-refund-scope-finalization.md)
+defines the cross-service orchestration of existing scope close/cancel commands,
+durable recovery and the no-payout Ops decision. Inventory state guards, lifetime
+uniqueness and endpoint reason enums remain unchanged.
+
 ## Historical ADR status
 
 ADRs 001–010 are preserved as historical evidence and are **superseded** by the target decision set above. They must not be used as implementation authority, even where a narrow conclusion resembles the target. Their old context depends on the replaced service design.

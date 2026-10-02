@@ -24,6 +24,12 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
 ## Required verification before release
 
 - Domain/property tests for all bucket movements, Refund Scope counters, state guards, and correction restrictions.
+- Scope-finalization contract/concurrency tests: completed close after financial success
+  or terminal failure; incomplete close only after all received final-inspected;
+  zero-receipt cancel; duplicate/response-loss command replay; durable rejected result
+  replay after state progression; final receipt/inspection race; terminal scope cannot
+  reopen after Payment reversal or admit another lifetime request. Coordinate with
+  [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 - Concurrency/load tests proving exact-plan all-or-nothing Reserve and no oversell under hot-SKU contention.
 - Contract and concurrency tests proving late-payment recovery only commits the original
   `RESERVATION_EXPIRED` root as one whole root, preserves its durable replay outcome,

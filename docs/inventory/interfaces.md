@@ -70,6 +70,26 @@ Preview excludes inactive/outage warehouses and selects priority deterministical
 | Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
 | Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
 
+`close` reasons are `REFUNDED`, `REJECTED`, `CANCELLED`. Order maps terminal Payment
+success to `REFUNDED`, terminal failure/reversal without a previous close intent to
+`REJECTED`; `REJECTED` is financial finality, not inspection FAIL. If a prior intent
+exists, replay its original reason even after reversal. Inventory does not verify
+Payment or own the financial decision.
+
+`close-incomplete` reasons are `RETURN_WINDOW_EXPIRED`, `PACKAGE_LOST`,
+`CUSTOMER_WITHDREW`; only an approved no-payout Order/Ops decision invokes it.
+For every line `passed_quantity + failed_quantity = received_quantity`, and at least
+one line has `received_quantity < expected_quantity`. A zero-receipt `REGISTERED`
+scope uses `cancel`, which has no body; Order retains the decision reason in its audit.
+The 30-day timer alone never invokes a terminal command.
+
+Same command ID/body replays the accepted/rejected result. Receipt/inspection races
+are resolved by Inventory's atomic state guards; a durable 409 cannot silently become
+another close command. Closure returns `refund_scope_id`, `order_id`,
+`refund_request_id`, command ID, target outcome and `scope_revision`; Order must persist
+the matching receipt. No closure integration event is added. Terminal scopes stay
+lifetime unique, reject subsequent receipt, and are never reopened after reversal.
+
 Order can query its own command result and state:
 
 - `GET /internal/inventory/v1/commands/{command_id}`

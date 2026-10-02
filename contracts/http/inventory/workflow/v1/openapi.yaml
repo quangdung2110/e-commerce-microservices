@@ -271,6 +271,11 @@ paths:
       tags: [Refund scopes]
       operationId: cancelRefundScope
       summary: Cancel a registered scope before any receipt
+      description: >-
+        Only REGISTERED with no receipt. Order invokes this after an approved
+        no-payout return decision; the decision reason remains in Order audit because
+        this endpoint has no body. Terminal lifetime scope identity is retained and
+        cannot be reopened/replaced. Receipt and cancel are serialized atomically.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -285,6 +290,11 @@ paths:
       tags: [Refund scopes]
       operationId: closeRefundScope
       summary: Close a scope after all expected items have final inspection
+      description: >-
+        Only INSPECTION_COMPLETED. Order closes after its validated terminal refund
+        outcome, including financial failure. Scope closure changes no stock buckets
+        and cannot be reopened by a later Payment reversal. Replay the frozen command
+        ID/body after an uncertain outcome; no new public closure event is emitted.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -302,6 +312,13 @@ paths:
       tags: [Refund scopes]
       operationId: closeIncompleteRefundScope
       summary: Close an incomplete scope after every received item is final-inspected
+      description: >-
+        Only IN_PROGRESS, with passed_quantity + failed_quantity = received_quantity
+        on every line and received_quantity < expected_quantity on at least one line.
+        Order invokes this for an audited no-payout decision, never automatically at
+        30 days. REGISTERED with zero receipt uses cancel. Receipt/inspection races
+        revalidate these guards atomically; rejection cannot fall back to completed
+        close or authorize Payment. No inspection-completion fact is emitted.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -606,6 +623,11 @@ components:
       type: object
       additionalProperties: false
       required: [reason]
+      description: >-
+        REFUNDED for terminal payout success; REJECTED for terminal payout failure
+        or reversal without a prior close intent. REJECTED does not mean inspection
+        FAIL. If an intent already exists, retain its reason even after reversal.
+        Inventory stores Order's reason and never queries or decides Payment outcome.
       properties: { reason: { enum: [REFUNDED, REJECTED, CANCELLED] } }
     CloseIncompleteRefundScopeRequest:
       type: object
@@ -699,7 +721,7 @@ components:
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller lacks the required capability., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Resource is absent or not visible to this caller., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: Durable state, operation identity, or idempotency conflict., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable state, operation identity, or idempotency conflict.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
       description: INVENTORY_UNAVAILABLE or INVENTORY_BUSY; retry the same command ID with backoff.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }

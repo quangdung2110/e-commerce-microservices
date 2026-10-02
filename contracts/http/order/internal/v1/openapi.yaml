@@ -111,7 +111,20 @@ paths:
       summary: Record one evidence-backed Finance/Ops decision
       description: >-
         The command never invents a remote business fact. RESUME_FORWARD_REPAIR may
-        only replay stable command IDs already stored by Order.
+        only resume the existing proof-backed case/checkpoints. CLOSE_RETURN_WITHOUT_REFUND
+        requires return_closure bound to the same Buyer manual refund case, no refund
+        transaction or accepted/unknown Payment initiation, and no full inspection
+        completion. Order checkpoints the matching Inventory scope query and allows
+        only IN_PROGRESS with missing expected units and every received unit final-inspected,
+        or REGISTERED with zero receipt. Decision acceptance freezes a scope-finalization
+        intent/dispatch; it does not prove Inventory closure or authorize payout.
+        CLOSE_AS_MANUAL_FULFILLMENT cannot close a Buyer case with an unfinalized scope.
+        Scope-only RESUME_FORWARD_REPAIR is also permitted for unresolved finalization
+        on financially SUCCEEDED/FAILED cases, preserving master/payment facts. It
+        replays the frozen command, or creates a corrected generation only after an
+        audited decision and proven remote rejection. Resuming a rejected no-payout
+        decision additionally requires full completion evidence and retains its history.
+        Resolving return closure does not close other unresolved financial/dispute work.
       security: [{ financeOpsWorkloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -122,6 +135,23 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ReconciliationDecisionRequest' }
+            examples:
+              closeMissingReturn:
+                summary: End the existing missing return without payout after verified inspection
+                value:
+                  case_id: 10000000-0000-4000-8000-000000000001
+                  expected_case_revision: 3
+                  decision_id: 20000000-0000-4000-8000-000000000001
+                  resolution_type: CLOSE_RETURN_WITHOUT_REFUND
+                  reason_code: RETURN_WINDOW_EXPIRED
+                  return_closure:
+                    refund_request_id: refund-7001
+                    refund_scope_id: scope-7001
+                    reason: RETURN_WINDOW_EXPIRED
+                  evidence:
+                    - source: ORDER_CHECKPOINT
+                      reference: refund-scope-query/order-10001/scope-7001/revision-5
+                      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       responses:
         '202':
           description: Durable decision recorded; any repair is dispatched asynchronously.
@@ -396,7 +426,7 @@ components:
         sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
     ReconciliationResolution:
       type: string
-      enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING]
+      enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING, CLOSE_RETURN_WITHOUT_REFUND]
     ReconciliationCase:
       type: object
       additionalProperties: false
@@ -413,7 +443,7 @@ components:
           items: { $ref: '#/components/schemas/EvidenceReference' }
         permitted_resolutions:
           type: array
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items: { $ref: '#/components/schemas/ReconciliationResolution' }
         opened_at: { type: string, format: date-time }
@@ -422,18 +452,50 @@ components:
       type: object
       additionalProperties: false
       required: [case_id, expected_case_revision, decision_id, resolution_type, reason_code, evidence]
+      allOf:
+        - if:
+            properties:
+              resolution_type: { const: CLOSE_RETURN_WITHOUT_REFUND }
+          then:
+            additionalProperties: true
+            required: [return_closure]
+            properties:
+              return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
+          else:
+            not:
+              additionalProperties: true
+              required: [return_closure]
+              properties:
+                return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
       properties:
         case_id: { type: string, format: uuid }
         expected_case_revision: { type: integer, minimum: 1 }
         decision_id: { type: string, format: uuid }
         resolution_type: { $ref: '#/components/schemas/ReconciliationResolution' }
         reason_code: { type: string, minLength: 1, maxLength: 100 }
+        return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
         accounting_case_reference: { type: [string, 'null'], maxLength: 128 }
         evidence:
           type: array
           minItems: 1
           maxItems: 20
           items: { $ref: '#/components/schemas/EvidenceReference' }
+    ReturnClosureDecision:
+      type: object
+      additionalProperties: false
+      required: [refund_request_id, refund_scope_id, reason]
+      description: >-
+        Only for CLOSE_RETURN_WITHOUT_REFUND. Identities must match the existing
+        Buyer manual case and persisted Inventory query checkpoint. Reason must equal
+        the parent reason_code. IN_PROGRESS selects close-incomplete; REGISTERED with
+        no receipt selects cancel (reason retained in Order audit, no Inventory body).
+        Pending no-payout finalization blocks Payment initiation/resume. Receipt or
+        inspection races remain governed by Inventory's atomic guards; a rejected close
+        requires a new audited decision and never falls back to payout automatically.
+      properties:
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { type: string, enum: [RETURN_WINDOW_EXPIRED, PACKAGE_LOST, CUSTOMER_WITHDREW] }
     ReconciliationDecisionAccepted:
       type: object
       additionalProperties: false
