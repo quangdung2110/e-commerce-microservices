@@ -21,12 +21,12 @@ sequenceDiagram
   I-->>O: RESERVED | REJECT_ALL | retryable failure
   O->>P: Collect payment
   P-->>O: payment outcome
-  alt payment succeeds before expiry
+  alt payment succeeds (Order timer has not released)
     O->>I: CommitPayment(command ID)
     I-->>O: COMMITTED
     A->>I: RecordPhysicalDispatch(line, warehouse)
     I-->>O: com.ecommerce.inventory.reservation.line-dispatched.v1
-  else payment fails or Order timeout decides
+  else payment fails, Order timeout or pre-payment cancel decides
     O->>I: ReleaseReservation(reason, command ID)
     I-->>O: RELEASED
   end
@@ -35,10 +35,10 @@ sequenceDiagram
 ### Allocation and Reserve
 
 1. Checkout requests an advisory Preview. Inventory excludes inactive/outage warehouses and selects a single eligible warehouse per line by `(fulfillment_priority, warehouse_id)`.
-2. Preview success never promises stock. Checkout records the proposed plan in Order; Inventory does not create a hold.
-3. Only Order Temporal Saga calls `ReserveOrder`. Inventory locks/revalidates the **exact** planned warehouse/line quantities.
+2. Preview success never promises stock. Checkout records the proposed plan in Order; Inventory persists no plan and creates no hold. `allocation_plan_id` is an opaque correlation identifier with no expiry ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
+3. Only Order Temporal Saga calls `ReserveOrder`. Inventory stores `allocation_plan_id` for audit without looking it up, then locks/revalidates the **exact** submitted warehouse/line quantities.
 4. If any line is unavailable or its plan became invalid, the entire command returns durable domain outcome `REJECT_ALL`. No reservation, no partial allocation, and no silent attempt of another warehouse remains.
-5. A successful command creates one root and all lines in `RESERVED`, sets `expires_at = accepted_at + 15 minutes`, writes command result, audit/movements and affected-SKU dirty markers atomically, and returns the exact durable result. It emits no reservation-result event to Order.
+5. A successful command creates one root and all lines in `RESERVED`, records the advisory `expires_at = accepted_at + 15 minutes`, writes command result, audit/movements and affected-SKU dirty markers atomically, and returns the exact durable result. It emits no reservation-result event to Order.
 
 ### Payment, release, and dispatch
 
@@ -48,8 +48,8 @@ sequenceDiagram
   the matching result. Unknown outcomes use command query/same-ID replay, not a Kafka
   acknowledgment; retry exhaustion leaves durable repair work and alerting. Current
   reservation state is reconciled separately from the original command result.
-- Commit is accepted only for the entire `RESERVED` root before the deadline. It moves every line to `COMMITTED` atomically. A late *new* commit is rejected; a late retry of an already accepted commit returns success.
-- On payment failure or timeout, Order calls `ReleaseReservation(PAYMENT_FAILED | RESERVATION_EXPIRED)`. Inventory does not run an expiry worker.
+- Commit is accepted for the entire root whenever it is still `RESERVED`, including after the advisory `expires_at`: Order's timer is the only payment window, and Order commits only after its financial watermark. It moves every line to `COMMITTED` atomically. Commit on a root that is no longer `RESERVED` is a durable `409 RESERVATION_NOT_RESERVED`; a retry of an already accepted commit returns success ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
+- On payment failure, timeout or a pre-payment cancellation/compensation, Order calls `ReleaseReservation` with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED` or `PRE_PAYMENT_SAGA_FAILED`. Inventory does not run an expiry worker.
 - If Payment later proves success after the timeout release, Order may call only
   `RecoverTimedOutPayment` with that payment reference. Inventory locks the original
   root/plan and atomically commits all lines only when the release reason was
@@ -68,9 +68,9 @@ sequenceDiagram
 
 ### Failure F2 — timeout, retry, and explicit release
 
-Order owns all timeout/retry decisions. At 15 minutes it issues `ReleaseReservation(RESERVATION_EXPIRED)` if no payment commit has succeeded. Inventory stores the deadline only to reject a new late commit and to observe aging. A root still `RESERVED` beyond 60 minutes produces an orphan alert to Order/operations; Inventory must neither delete nor release it.
+Order owns all timeout/retry decisions. When its 15-minute payment timer wins and Payment proves non-capture, it issues `ReleaseReservation(RESERVATION_EXPIRED)`. Inventory stores `expires_at` only to observe aging and never rejects a Commit by time. A root still `RESERVED` 60 minutes after `accepted_at` produces an orphan alert to Order/operations; Inventory must neither delete nor release it.
 
-`ReleaseReservation` is valid only while the whole root is `RESERVED`. `STOCK_DISCREPANCY` is allowed only with an `order_exception_id` and releases the entire root. No single-line reserved release exists.
+`ReleaseReservation` is valid only while the whole root is `RESERVED` and always releases the entire root. The reason is immutable on the root; only `RESERVATION_EXPIRED` can later be recovered. No single-line release exists.
 
 ### Failure F2.1 — verified late payment after timeout release
 
@@ -85,12 +85,11 @@ financial-reconciliation/manual-review case.
 
 The two contenders lock the same reservation line and its stock position. Whichever commits first changes the line; the second command revalidates and returns its already-applied/invalid-state outcome. There is no compensating hidden stock movement.
 
-For a targeted committed-but-undispatched recovery, Order may call
-`ReleaseCommittedAllocation`. Automatic admin refund must instead call
+There is no single-line committed release in Release 1. Automatic admin refund calls
 `ReleaseCommittedOrderBeforeDispatch`: one transaction locks all reservation lines
 and affected positions, releases all only if every line is committed/undispatched,
 or rejects with no movement. If any line is dispatched, automatic refund has no
-partial-release fallback. Dispatched stock is never restored through either command.
+partial-release fallback. Dispatched stock is never restored through this command.
 
 ### Failure F4 — outbox unavailable after business decision
 
@@ -143,8 +142,9 @@ sequenceDiagram
 ```
 
 - Before a warehouse receives any item, Order registers an immutable selected-line
-  scope. Each selected line equals its original order quantity, and `order_id` has
-  one scope for its full retained lifetime, not merely while active.
+  scope. Each selected line equals its original order quantity and must already be
+  `DISPATCHED`, and `order_id` has one scope for its full retained lifetime, not
+  merely while active.
 - ADMIN may accept many package receipts, but only exact scoped SKU/order-line residual quantity. Wrong/extra/over-receipt rejects the whole command with no stock mutation.
 - Receipt is physical inbound to quarantine. Final `PASS` moves only that receipt-line quantity to `available_to_sell`; final `FAIL` stays quarantined.
 - All expected units final inspected (pass **or** fail) creates one completion fact. Inventory cannot decide payout and cannot close the scope.
@@ -168,9 +168,9 @@ sequenceDiagram
 ## 3. Warehouse discrepancy and correction
 
 1. ADMIN records a verified count discrepancy with reason and evidence; it cannot negative-adjust stock that is reserved, committed, or quarantined.
-2. If the affected order is `RESERVED`, Order records an exception and releases the complete root using `STOCK_DISCREPANCY`.
-3. If it is committed or dispatched, Order makes its cancellation/post-dispatch exception decision first.
-4. ADMIN submits the appropriate append-only adjustment or permitted reversal. Inventory writes its normal audit/movement/outbox transaction.
+2. If the shortage affects a `RESERVED` order, Order resolves it through its existing Admin pre-payment cancellation, which releases the complete root with `ADMIN_CANCELLED`.
+3. If it affects a `COMMITTED`, undispatched order, Order resolves it through its existing Admin pre-dispatch refund, which calls `ReleaseCommittedOrderBeforeDispatch`. A dispatched, partially dispatched or otherwise unresolvable case is an operations incident handled manually in Order; Inventory has no exception release ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
+4. Once the units are back in `available_to_sell`, ADMIN submits the appropriate append-only adjustment or permitted reversal. Inventory writes its normal audit/movement/outbox transaction.
 5. Reconciliation is rerun. A ledger/state mismatch is an incident, not an adjustment case.
 
 ## 4. Per-SKU availability derivation for Search and PDP BFF

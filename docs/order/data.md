@@ -80,7 +80,7 @@ erDiagram
     ORDER_ITEMS {
       bigint id PK
       bigint order_id FK
-      bigint warehouse_id
+      varchar warehouse_id
       varchar status
       jsonb delivery_address_snapshot
     }
@@ -199,7 +199,7 @@ không phụ thuộc address book bị sửa/xóa về sau.
 | `total_amount_minor` | `BIGINT` | Integer VND, tổng tiền hàng |
 | `total_discount_minor` | `BIGINT` | Integer VND, tổng PLATFORM discount |
 | `final_amount_minor` | `BIGINT` | `total_amount_minor - total_discount_minor` |
-| `inventory_allocation_plan_id` | `VARCHAR(128)` | Plan ID từ Inventory Preview, immutable snapshot dùng cho Reserve/reconciliation |
+| `inventory_allocation_plan_id` | `VARCHAR(128)` | Opaque plan ID từ Inventory Preview, immutable snapshot gửi kèm Reserve để audit/reconciliation; Inventory không lưu plan và ID không hết hạn ([Inventory ADR-021](../inventory/decisions/ADR-021-order-integration-lifecycle-corrections.md)) |
 | `payment_status` | `VARCHAR(50)` | `PENDING/PAID/FAILED/REFUNDING/REFUNDED/REFUND_FAILED`; read/UI denormalized |
 | `active_payment_attempt_number` | `INT` nullable | Attempt Payment hiện tại. Chỉ tăng sau financial fact terminal non-capture của attempt trước; không bao giờ tái dùng. |
 | `active_payment_transaction_id` | `VARCHAR(120)` nullable | Transaction của active attempt. Pre-capture cancel/fail/expired và event active phải match field này. |
@@ -228,7 +228,7 @@ Các nguồn field được tham chiếu trực tiếp trong read model gồm `o
 |---|---|---|
 | `id` | `BIGSERIAL` PK | Delivery unit ID |
 | `order_id` | `BIGINT` FK | Master owner |
-| `warehouse_id` | `BIGINT` | Kho xuất hàng |
+| `warehouse_id` | `VARCHAR(128)` | Kho xuất hàng; opaque Inventory `warehouse_id` |
 | `status` | `VARCHAR(50)` | Derived only from child line state: `PROCESSING/PARTIALLY_DISPATCHED/DISPATCHED/PARTIALLY_DELIVERED/DELIVERED`; không phải source cho mutation line |
 | `delivery_address_snapshot` | `JSONB NOT NULL` | `recipient_name`, `recipient_phone`, `address_line`, `province_code`, `district_code`, `ward_code` |
 
@@ -242,7 +242,7 @@ viết lại lịch sử đơn.
 | `id` | `BIGSERIAL` PK | Line identity |
 | `order_item_id` | `BIGINT` FK | Delivery unit owner |
 | `allocation_plan_line_reference` | `VARCHAR(64) UNIQUE NOT NULL` | Immutable `line_reference=sku_id` from the accepted Checkout v1 Inventory Preview; is the only bridge from Checkout plan to generated Order line identity. |
-| `allocated_warehouse_id` | `BIGINT NOT NULL` | Warehouse immutable từ Inventory allocation plan; phải khớp parent `order_items.warehouse_id` |
+| `allocated_warehouse_id` | `VARCHAR(128) NOT NULL` | Opaque warehouse ID immutable từ Inventory allocation plan; phải khớp parent `order_items.warehouse_id` |
 | `sku_id`, `product_id` | `VARCHAR(255)` | External identifiers dạng snapshot/reference |
 | `quantity` | `INT` | Phải lớn hơn 0 |
 | `unit_price_minor` | `BIGINT` | Integer VND snapshot; không dùng floating point |

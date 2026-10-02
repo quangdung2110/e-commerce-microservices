@@ -14,18 +14,26 @@ dispatch and selected-scope inspection completion arrive asynchronously from Inv
 See [Inventory ADR-020](../../../../../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md).
 
 Every mutation requires `Idempotency-Key`, `X-Correlation-ID`, and
-`X-Causation-ID`. Expected outcomes such as `REJECT_ALL` and
-`RESERVATION_EXPIRED` are durable `200` results. `503 INVENTORY_UNAVAILABLE` and
-`503 INVENTORY_BUSY` mean no authoritative transition was returned and must be
-retried with the same command ID.
+`X-Causation-ID`. Expected domain outcomes such as `REJECT_ALL` are durable `200`
+results. `503 INVENTORY_UNAVAILABLE` and `503 INVENTORY_BUSY` mean no authoritative
+transition was returned and must be retried with the same command ID.
+
+Preview is stateless and `allocation_plan_id` never expires; Reserve stores it but
+revalidates only the submitted lines. Commit is accepted whenever the root is still
+`RESERVED`; `expires_at` is advisory and Order alone owns the payment timeout. Release
+is always whole-root with one immutable reason (`PAYMENT_FAILED`,
+`RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED`,
+`PRE_PAYMENT_SAGA_FAILED`). There is no single-line committed release; committed stock
+is released only by `release-committed-before-dispatch`. See
+[Inventory ADR-021](../../../../../docs/inventory/decisions/ADR-021-order-integration-lifecycle-corrections.md).
 
 `recover-timed-out-payment` is a fenced late-payment recovery, not a second Reserve:
 it can commit only the same root released for `RESERVATION_EXPIRED`, with its exact
 original plan still entirely available and no dispatch. A guarded rejection moves no
 stock and leaves Order to financial reconciliation.
 
-Refund Scope is a selected set of full-quantity `order_line_id` values, not a
-whole-order or partial-quantity mechanism. Inventory retains one scope identity per
+Refund Scope is a selected set of full-quantity, already `DISPATCHED`
+`order_line_id` values, not a whole-order or partial-quantity mechanism. Inventory retains one scope identity per
 order lifetime. The admin automatic-refund path uses the separate all-or-nothing
 `release-committed-before-dispatch` command and never registers a return scope.
 

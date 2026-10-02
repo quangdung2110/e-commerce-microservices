@@ -43,29 +43,33 @@ partial order reservation or a partial quantity of a selected Refund Scope line.
 
 `POST /internal/inventory/v1/allocation-previews`
 
-Input is `line_reference`, opaque `sku_id`, and positive quantity. Với Checkout v1,
-cả hai identifier dài tối đa 64 ký tự và `line_reference=sku_id`. A `line_reference`
+Input is `line_reference`, opaque `sku_id`, and positive quantity. For Checkout v1,
+both identifiers are at most 64 characters and `line_reference=sku_id`; elsewhere
+Inventory identifiers are opaque strings of at most 128 characters. A `line_reference`
 is mapped to the Order line by Checkout/Order, not by Inventory. The response is one of:
 
 | Transport | Domain outcome | Meaning |
 |---:|---|---|
-| `200` | `ALLOCATABLE` | Advisory plan with `plan_id`, per-line warehouse, SKU, quantity, and policy explanation. |
+| `200` | `ALLOCATABLE` | Advisory plan with `allocation_plan_id`, per-line warehouse, SKU, quantity, and policy explanation. |
 | `200` | `REJECT_ALL` | At least one line has no eligible whole-quantity warehouse. No partial plan is a commitment. |
 | `503` | `INVENTORY_UNAVAILABLE` | Primary authoritative store is unavailable; caller may retry. |
 
-Preview excludes inactive/outage warehouses and selects priority deterministically. It creates no reservation; Reserve must revalidate the exact plan.
+Preview excludes inactive/outage warehouses and selects priority deterministically. It
+is stateless: it creates no reservation and persists no plan. `allocation_plan_id` is an
+opaque correlation identifier with no expiry; Reserve stores it for audit but never
+looks it up, and revalidates exactly the submitted per-line warehouse plan
+([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
 ### Order Temporal Saga commands
 
 | Command | Endpoint | Essential guard / terminal result |
 |---|---|---|
-| Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, order lines, exact preview plan. Returns `RESERVED` or `REJECT_ALL`; all lines or none. |
-| Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED` and a new command must be before `expires_at`; moves all lines to `COMMITTED`. |
-| Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or `STOCK_DISCREPANCY` plus `order_exception_id`. |
+| Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, `allocation_plan_id` (stored, not looked up), order lines with exact preview warehouse. Returns `RESERVED` or `REJECT_ALL`; all lines or none. |
+| Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED`; no wall-clock deadline applies. Moves all lines to `COMMITTED`; otherwise durable `409 RESERVATION_NOT_RESERVED`. |
+| Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; releases the whole root with one immutable reason: `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED`, or `PRE_PAYMENT_SAGA_FAILED`. |
 | Recover timed-out payment | `POST /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment` | Only this root was released for `RESERVATION_EXPIRED`; no dispatch and the full original plan is still available. Atomically restores the whole root `RELEASED -> COMMITTED`; any guard failure is durable `409`, no movement. |
-| Release committed line | `POST /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release` | Target is committed and undispatched; reason guard defined in [workflows.md](workflows.md). |
 | Release committed order before dispatch | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Admin automatic refund only; atomically releases every committed undispatched line or releases none. |
-| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines; rejects a second scope for the order even after closure. |
+| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines, each already `DISPATCHED` (`409 REFUND_SCOPE_LINE_NOT_DISPATCHED` otherwise); rejects a second scope for the order even after closure. |
 | Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel` | Only `REGISTERED` and no receipt. |
 | Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
 | Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
@@ -115,7 +119,12 @@ The late-payment command includes the verified Payment transaction reference. It
 idempotent by the ordinary Order command ID, records both success and rejected guard
 outcomes, and is the only allowed path from a released timeout allocation to a committed
 allocation. It may not reserve a new root, select another warehouse, or recover a
-`PAYMENT_FAILED`/customer-cancelled release.
+`PAYMENT_FAILED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED` or `PRE_PAYMENT_SAGA_FAILED` release.
+
+There is no single-line committed release and no `STOCK_DISCREPANCY` release in
+Release 1; committed stock is released only by the all-or-nothing
+`release-committed-before-dispatch` command
+([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
 ## 3. Storefront availability read API
 
@@ -204,8 +213,10 @@ onto the shared contract convention rather than introducing a second custom enve
 ```
 
 `id` supports deduplication. `aggregaterevision` supports per-aggregate ordering. `sequence` is
-the strictly increasing export sequence assigned at durable creation and can contain gaps; no
-global Kafka ordering is promised.
+the export sequence assigned after commit by Inventory's single fenced sequencer, so it
+follows commit order: once a reader has seen sequence `N`, no new fact with a sequence
+`<= N` appears later. It can contain permanent gaps that are safe to skip. No global Kafka
+ordering is promised beyond this ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)).
 
 | Event | Consumer | Minimum data / semantic |
 |---|---|---|
@@ -241,8 +252,11 @@ boolean as checkout authority.
 2. After tombstone and before purge, Search calls `DELETE` on the same resource with the
    tombstone `catalog_revision`; stale revocation returns a conflict.
 3. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export
-   watermark, and 24-hour session expiry.
-4. Paginate registered per-SKU availability snapshots at that fixed watermark.
+   watermark (the greatest assigned sequence at creation), and 24-hour session expiry.
+4. Paginate registered per-SKU availability snapshots. Each row is the current state
+   with its `availability_revision`, so it may be newer than the watermark but never
+   older; Search's strict revision guard makes the overlap safe
+   ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)).
 5. `GET /exports/inventory/v1/changes?after_sequence=N` returns only the same per-SKU
    availability CloudEvents after a sequence.
 6. Search applies snapshots/changes directly to existing Product documents using

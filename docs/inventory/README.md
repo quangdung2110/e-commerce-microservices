@@ -2,7 +2,9 @@
 
 > **Status:** Target design accepted for Release 1.
 >
-> **Implementation status:** Not started; existing service code is not a design constraint.
+> **Implementation status:** Not started; the legacy Java implementation is not reused and is being removed.
+> Runtime: Java 21 + Spring Boot 3.x, PostgreSQL 16, Flyway, Debezium relay
+> ([ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md)).
 
 Inventory is the sole owner of warehouse master data, stock at each warehouse, the
 derived per-SKU stock-availability integration state, reservations, physical dispatch
@@ -18,7 +20,7 @@ catalog, or Search's indexed copy.
 | Reserve | A whole order is all-or-nothing. One unavailable line returns `REJECT_ALL`; there is no backorder or partial reservation. |
 | Allocation | Each order line has exactly one warehouse for its entire quantity. Different lines may use different warehouses. |
 | Payment and dispatch | Payment moves `reserved → committed`; only physical dispatch reduces `on_hand`. Order owns payment and delivery state. |
-| Timeout | Order Temporal Saga owns the 15-minute timeout and explicit release. Inventory alerts at 60 minutes but never auto-releases. |
+| Timeout | Order Temporal Saga owns the 15-minute timeout and explicit whole-root release. Commit is accepted whenever the root is still `RESERVED`; `expires_at` is advisory. Inventory alerts at 60 minutes but never auto-releases ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)). |
 | Return | Order registers one immutable selected-line Refund Scope per order lifetime before receipt; every selected line is full quantity. A returned item is saleable only after final inspection `PASS`. |
 | Scope finalization | Order closes completed scopes after terminal refund outcome, or ends missing returns by an audited no-payout decision using incomplete close/zero-receipt cancel; no automatic Inventory closure. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |

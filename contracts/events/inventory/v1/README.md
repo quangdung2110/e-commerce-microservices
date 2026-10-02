@@ -24,8 +24,10 @@ scope with expected/received/passed/failed quantities. It is emitted after final
 inspection of all expected selected quantity; failed inspection remains quarantine and
 does not express a payout decision.
 
-`sequence` is the durable Inventory export sequence. It is increasing at creation,
-may contain gaps, and is not a promise of global Kafka ordering. Search guards by
+`sequence` is the durable Inventory export sequence. A single fenced sequencer assigns
+it after commit, so it follows commit order; it may contain permanent gaps and is not a
+promise of global Kafka ordering. Only sequenced facts are relayed
+([Inventory ADR-022](../../../../docs/inventory/decisions/ADR-022-commit-ordered-export-sequence.md)). Search guards by
 per-SKU `aggregaterevision` and recovers with the
 [Export API](../../../http/inventory/exports/v1/openapi.yaml), not broker retention
 alone. Inventory must not publish a SKU availability fact until Search has registered

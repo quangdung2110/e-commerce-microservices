@@ -67,19 +67,34 @@ stateDiagram-v2
   RESERVED --> COMMITTED: CommitPayment
   RESERVED --> RELEASED: ReleaseReservation
   RELEASED --> COMMITTED: RecoverTimedOutPayment [timeout fence]
-  COMMITTED --> DISPATCHED: RecordPhysicalDispatch
-  COMMITTED --> RELEASED: ReleaseCommittedAllocation
+  COMMITTED --> PARTIALLY_DISPATCHED: RecordPhysicalDispatch (some lines)
+  COMMITTED --> DISPATCHED: RecordPhysicalDispatch (last line)
+  PARTIALLY_DISPATCHED --> DISPATCHED: RecordPhysicalDispatch (last line)
+  COMMITTED --> RELEASED: ReleaseCommittedOrderBeforeDispatch (all lines)
 ```
+
+Line states are `RESERVED`, `COMMITTED`, `DISPATCHED` and `RELEASED`; the root state is
+derived from them. Because every release is whole-root, a root never mixes released
+lines with committed or dispatched lines ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
 | State | Meaning | Valid transition |
 |---|---|---|
 | `RESERVED` | Entire order waits for payment. | Whole-root `CommitPayment` or whole-root `ReleaseReservation`. |
-| `COMMITTED` | Payment succeeded for all lines; units remain physically at their warehouses. | Per-line physical dispatch or eligible pre-dispatch release. |
-| `PARTIALLY_DISPATCHED` | Derived root state: some, not all, lines dispatched. | Remaining lines dispatch; Order exception is required for pre-dispatch release. |
+| `COMMITTED` | Payment succeeded for all lines; units remain physically at their warehouses. | Per-line physical dispatch or whole-root `ReleaseCommittedOrderBeforeDispatch`. |
+| `PARTIALLY_DISPATCHED` | Derived root state: some, not all, lines dispatched. | Remaining lines dispatch only; no Inventory release exists for this state. |
 | `DISPATCHED` | Every line physically dispatched. | Terminal for allocation; return uses Refund Scope. |
 | `RELEASED` | Every line released before dispatch. | Terminal except the fenced whole-root `RecoverTimedOutPayment` after `RESERVATION_EXPIRED`. |
 
-`CommitPayment` moves every line `RESERVED → COMMITTED` together. `expires_at` is a 15-minute deadline, not an Inventory auto-transition: a new Commit after it is rejected while a retry of a previously successful command returns its original result. Only Order Temporal Saga issues release with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, or whole-root `STOCK_DISCREPANCY` plus `order_exception_id`. A reservation over 60 minutes alerts; it never cleans up automatically.
+`CommitPayment` moves every line `RESERVED → COMMITTED` together and is accepted
+whenever the root is `RESERVED`; it is not gated by wall-clock time. `expires_at`
+(`accepted_at + 15 minutes`) is an advisory payment-window reference used only for
+aging observation, never an Inventory transition or rejection. Commit on a root that is
+not `RESERVED` is a durable `409` with no movement; a retry of a previously successful
+command returns its original result. Order is the sole owner of the timeout and issues
+whole-root release with exactly one immutable reason: `PAYMENT_FAILED`,
+`RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED` or
+`PRE_PAYMENT_SAGA_FAILED`. A reservation still `RESERVED` 60 minutes after
+`accepted_at` alerts; it never cleans up automatically.
 
 `RecoverTimedOutPayment` is deliberately narrower than Reserve: it is callable only by
 Order with a verified payment reference after the same root was released for
@@ -89,9 +104,9 @@ It either moves every line `RELEASED → COMMITTED` in one transaction or record
 durable rejection with no stock movement. It never reroutes, creates a new root, or
 recovers any other release reason.
 
-`ReleaseCommittedAllocation` remains a targeted recovery/exception command for an
-undispatched committed line. Automatic admin refund instead calls
-`ReleaseCommittedOrderBeforeDispatch`: it locks the root, every line and affected
+There is no single-line committed release in Release 1. The only committed-stock
+release is `ReleaseCommittedOrderBeforeDispatch`, used by Order's automatic admin
+refund and Admin discrepancy handling: it locks the root, every line and affected
 stock positions and releases all lines only when every line is `COMMITTED` and no
 line has dispatched. Any other state produces no movement. When release and dispatch
 race, the first atomic transition wins and the other receives its guarded/idempotent
@@ -101,8 +116,10 @@ outcome.
 
 Order Temporal Saga registers an immutable Refund Scope before the warehouse accepts
 any package. A scope may select a proper subset of order lines, but each selected
-line must use its entire immutable `ReservationLine.quantity`; SKU identity and
-partial quantity are prohibited. `order_id` is lifetime unique, so an old terminal
+line must use its entire immutable `ReservationLine.quantity` and must already be in
+line state `DISPATCHED`; SKU identity and partial quantity are prohibited. A selected
+line that has not physically left the warehouse is rejected with no scope created
+([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)). `order_id` is lifetime unique, so an old terminal
 scope never frees the order for another `refund_request_id`.
 
 ```mermaid
@@ -149,7 +166,7 @@ For each line, Inventory considers only warehouses that are active, not in outag
 (fulfillment_priority ASC, warehouse_id ASC)
 ```
 
-No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exists in Release 1. Preview is advisory: Reserve locks and revalidates exactly the previewed warehouse plan. If it is stale or unavailable, the whole request is `REJECT_ALL`; Reserve never tries the next ranked warehouse. Warehouse status changes affect new allocation only, not existing commitments or physical facts.
+No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exists in Release 1. Preview is advisory and stateless: it persists no plan, and its `allocation_plan_id` is an opaque correlation identifier with no expiry that Reserve stores for audit but never looks up. Reserve locks and revalidates exactly the submitted per-line warehouse plan. If it is stale or unavailable, the whole request is `REJECT_ALL`; Reserve never tries the next ranked warehouse. Warehouse status changes affect new allocation only, not existing commitments or physical facts.
 
 ## Domain invariants
 
@@ -159,7 +176,7 @@ No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exi
 4. Every ReservationLine has one immutable warehouse and its configured SKU/quantity cannot change.
 5. Payment never changes physical stock; dispatch is the only sale flow that reduces `on_hand`.
 6. A release, dispatch, inspection, or disposition transition is guarded, idempotent, and cannot occur twice for the same business identity.
-7. Refund receipt is permitted only for an active immutable scope; wrong item, over-receipt, receipt after close, and duplicated final inspection cannot mutate stock.
+7. A Refund Scope selects only dispatched lines at full quantity. Refund receipt is permitted only for an active immutable scope; wrong item, over-receipt, receipt after close, and duplicated final inspection cannot mutate stock.
 8. Quarantine is never saleable without final `PASS`; failed stock remains traceable through disposition/reversal.
 9. Administrative correction is append-only and cannot conceal a systemic ledger/state mismatch.
 10. Inventory alone derives per-SKU availability. It never publishes/exports a SKU

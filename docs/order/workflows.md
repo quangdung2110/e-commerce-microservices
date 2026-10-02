@@ -182,8 +182,10 @@ sequenceDiagram
    order/items/lines/promotions, address/product snapshot, `checkout_token`, trạng thái
    `PENDING_PAYMENT`; không tạo outbox vì chưa có consumer cho created fact. Chỉ sau bước này mới có `order_id` và
    `order_line_id`; lỗi DB dừng trước mọi remote call.
-2. `ReserveInventoryActivity` truyền đúng plan/mapping đã persist; bất kỳ plan expired,
-   mapping mismatch hoặc unknown outcome đều được query/replay theo command ID, không reroute.
+2. `ReserveInventoryActivity` truyền đúng plan/mapping đã persist. Inventory Preview là
+   stateless: `allocation_plan_id` không hết hạn và Inventory chỉ revalidate các line đã gửi,
+   nên plan cũ biểu hiện bằng `REJECT_ALL` chứ không có kết quả "plan expired". Mapping
+   mismatch hoặc unknown outcome đều được query/replay theo command ID, không reroute.
    Thành công đăng ký `RollbackInventoryActivity`.
    Reserve/Commit/Release/recovery use durable HTTP receipts and Saga checkpoints;
    the workflow never waits for a reservation-result Kafka event. Persist command
@@ -222,7 +224,11 @@ stack:
 
 1. `CommitInventoryActivity` calls Inventory `CommitPayment` with stable command ID;
    every ambiguous response is recovered through `GET /commands/{command_id}` before a
-   decision.
+   decision. Inventory accepts Commit whenever the root is still `RESERVED`; its
+   `expires_at` is advisory and never rejects a post-watermark Commit. Because Order never
+   releases after the watermark, a durable `409 RESERVATION_NOT_RESERVED` here is an
+   integrity anomaly that enters `FINANCIAL_RECONCILIATION_REQUIRED`, never a rollback
+   ([Inventory ADR-021](../inventory/decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 2. `ConfirmPromotionActivity` calls confirmations with `REDEEM_FINAL` key riêng mỗi
    promotion and replays the durable receipt after timeout/crash.
 3. `UpdateOrderStatusActivity` chuyển `PAID -> PROCESSING`; không phát generic status

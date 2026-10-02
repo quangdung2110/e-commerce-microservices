@@ -12,14 +12,15 @@
 | State/audit/command/outbox cannot commit atomically | Abort entire command as retryable technical failure. | Inventory fixes datastore health; caller retries same ID. |
 | Lock timeout/deadlock/serialization conflict | Retry internally at most twice, then `503 BUSY`. | Inventory + Platform investigate contention; never classify as out of stock. |
 | Broker/relay unavailable after commit | Durable outbox accumulates; commands continue while capacity is safe. | Platform + Inventory restore relay and publish original records. |
+| Export sequencer stalled or lease lost | Facts stay durable but unsequenced, so neither Kafka nor the change feed sees them; commands continue while capacity is safe. A stale fenced instance cannot assign sequence. | Inventory restores the single sequencer; it resumes in `outbox_id` order ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). |
 | Search readiness absent/stale/unavailable | Authoritative commands continue; affected per-SKU availability remains pending and is not published/exported until readiness exists. | Search registers after its Product document exists; Inventory emits the current snapshot, then Search resumes change feed/replay. |
 | Availability read model has no clean state for a SKU | Batch-read returns `UNKNOWN` for that SKU; authoritative commands continue. | Inventory repairs/recomputes the affected state; PDP BFF does not replay or use a stale fallback. |
 | Availability Read API unavailable | BFF receives `503` and degrades affected PDP SKU to `UNKNOWN`; authoritative commands continue. | Inventory + Platform restore read endpoint/capacity; Storefront observes dependency outcome. |
 | Order/Payment workflow delayed | Leave `RESERVED` unchanged; issue orphan alert only when older than 60 minutes. | Order explicitly commits/releases; Inventory never auto-releases. |
 | Order terminal refund but scope remains open | Retain scope/command truth; never auto-close or infer payout. | Order queries/replays its frozen finalization command and repairs durable dispatch, including financially terminal cases. |
 | Receipt/inspection races incomplete close | Atomic guard decides; rejected close moves no stock. | Order reconciles the durable rejection; no automatic endpoint switch or Payment bypass. |
-| Warehouse outage/inactive | Exclude from new allocation only. | ADMIN verifies/reconfigures; existing commitments use Order exception flow if needed. |
-| Count discrepancy | Do not modify protected buckets silently. | ADMIN + Order use explicit exception, release/correction workflow. |
+| Warehouse outage/inactive | Exclude from new allocation only. | ADMIN verifies/reconfigures; an affected order uses Order's Admin cancellation or pre-dispatch refund if needed. |
+| Count discrepancy | Do not modify protected buckets silently. | Order's Admin cancellation (`RESERVED`) or pre-dispatch refund (`COMMITTED`) returns units to sellable first; ADMIN then adjusts. Other cases are incidents ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)). |
 | Consumer failure / replay window expired | Producer fact remains durable; consumer can lag. | Order uses its inbox/DLQ; Search does not ACK retryable/readiness violations and starts a new per-SKU snapshot after `410`. |
 
 Automatic fail-closed protection requires no approval. A manual global stop is requested by the Inventory incident commander and executed by Platform/SRE. Inventory and Platform jointly authorize write reopening; Order, Search, and warehouse ADMIN cannot override the control.
@@ -44,7 +45,7 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 |---|---|---|
 | Bucket invariant/ledger mismatch, duplicate final inspection, impossible negative balance | SEV-1: Inventory + Platform | Freeze affected writes, preserve evidence, incident recovery; never mask with adjustment. |
 | Primary unavailable, atomicity uncertain, backup/restore failure, RPO proof lost | SEV-1: Platform + Inventory + Security | Fail closed and recover authoritative source. |
-| Oldest unpublished outbox > 30 s / > 60 s | Warning / page: Platform + Inventory | Restore relay; notify Order/Search at page threshold. |
+| Oldest unpublished outbox (unsequenced or unrelayed) > 30 s / > 60 s | Warning / page: Platform + Inventory | Restore sequencer/relay; notify Order/Search at page threshold. |
 | Search freshness > 30 s / > 60 s, or readiness-suppressed facts grow | Warning / page: Inventory + Search | Repair readiness/projector, replay or snapshot bootstrap. |
 | Availability Read API latency/error or BFF `UNKNOWN` rate breaches its agreed budget | Warning / page: Inventory + Storefront | Repair read endpoint/projector/cache; BFF continues to degrade rather than replaying data. |
 | Any `RESERVED` root > 60 min | Operational page: Order | Order decides explicit outcome; no Inventory cleanup. |
@@ -71,11 +72,11 @@ close/cancel recovery, not an Inventory age-based cleanup.
 | Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF clean-state rate, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
 | Pre/post recovery | Bucket scan, ledger replay, identity, outbox/export, and consumer checks. | Writes stay closed until all pass. |
 
-Reconciliation detects only. Correction requires ADMIN reason/evidence and normal command audit. For `RESERVED` discrepancy, Order first releases the whole root with `STOCK_DISCREPANCY`; for committed/dispatched stock it decides a cancellation/post-dispatch exception. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.
+Reconciliation detects only. Correction requires ADMIN reason/evidence and normal command audit. For a `RESERVED` order, Order first cancels it through its Admin pre-payment cancellation (whole-root `ADMIN_CANCELLED` release); for a `COMMITTED` undispatched order it uses its Admin pre-dispatch refund (`ReleaseCommittedOrderBeforeDispatch`); a dispatched case is a manual Order incident. Inventory has no exception release. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.
 
 ## 4. Outbox, consumer recovery, and backpressure
 
-- State, audit/movement, command outcome, required public outbox records and availability dirty work commit together. Relay publishes public facts at least once from bounded durable batches with exponential backoff/jitter and a five-minute maximum interval.
+- State, audit/movement, command outcome, required public outbox records and availability dirty work commit together. A single fenced sequencer assigns commit-ordered export sequence into `PublishedEvent`; Debezium relays it at least once with exponential backoff/jitter and a five-minute maximum interval ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)).
 - Order receives only physical dispatch and selected-scope inspection completion.
   Reserve/Commit/Release/recovery use durable command receipts and query/replay; an
   unknown outcome is not resolved by waiting for a reservation-result event. Order

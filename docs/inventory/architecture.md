@@ -4,7 +4,7 @@
 
 ## 1. Architecture decision
 
-Inventory uses one relational primary database as the only write source for stock correctness. The service atomically persists authoritative state, immutable movement/audit, idempotency state, and transactional outbox. Redis/cache, broker order, Search, and any worker are excluded from the correctness decision path.
+Inventory uses one relational primary database as the only write source for stock correctness. The service atomically persists authoritative state, immutable movement/audit, idempotency state, and transactional outbox. Redis/cache, broker order, Search, and any worker are excluded from the correctness decision path. The concrete stack is Java 21 + Spring Boot 3.x on PostgreSQL 16 with Flyway and a Debezium relay ([ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md)).
 
 This choice follows the priority order: no oversell, auditability, and operational simplicity outrank latency/throughput optimizations until evidence requires a change.
 
@@ -21,7 +21,9 @@ flowchart LR
   DB --> AP[Per-SKU availability projector]
   AP --> DB
   AR --> DB
-  Relay[Outbox relay] -->|at-least-once events| Bus[Event backbone]
+  DB --> Seq[Export sequencer]
+  Seq -->|PublishedEvent with commit-ordered sequence| DB
+  Relay[Debezium relay] -->|at-least-once events| Bus[Event backbone]
   DB --> Relay
   API -->|durable command receipt and recovery query| Order
   Bus -->|physical dispatch and inspection completion only| Order
@@ -34,7 +36,8 @@ flowchart LR
 |---|---|---|
 | Inventory API/domain | Authenticate/authorize callers, enforce domain guards, execute one atomic command. | Call Product, Payment, Order, broker, cache, or evidence repository synchronously inside a write transaction. |
 | Relational primary | Durable source of current state and append-only evidence. | Be bypassed by direct table writes. |
-| Outbox relay | Publish durable facts at least once. | Reapply business movement or treat broker publish as transaction success condition. |
+| Export sequencer | Single fenced leader that assigns the commit-ordered export sequence and finalizes `PublishedEvent` ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). | Run as more than one active writer, or let a fact reach Kafka/change feed unsequenced. |
+| Outbox relay (Debezium) | Publish sequenced durable facts at least once. | Reapply business movement or treat broker publish as transaction success condition. |
 | Availability projector | Serialize affected work per SKU and derive the global boolean from warehouse/position truth; update `SkuAvailabilityState` and create a Search outbox fact only when readiness exists. | Delay or participate in Reserve/ADMIN command commits; publish before readiness; expose raw warehouse quantities. |
 | Cache | Optional read acceleration. | Decide availability, Reserve, Commit, Release, or correction. |
 | Availability Read API | Serve Product Detail BFF one bounded, advisory result per SKU from Inventory-owned state. | Create a hold, expose quantity/warehouse/reservation, call Product, or use a stale/dirty state as certain. |
@@ -82,7 +85,7 @@ No distributed lock is required or accepted as correctness authority. Multi-item
 | Availability Read API/read model unavailable or dirty | Authoritative commands continue; BFF receives `503` for a dependency outage or `UNKNOWN` per affected SKU. |
 | Order timeout worker unavailable | Reservation remains; only Order decides later commit/release. |
 
-The production topology must demonstrate zero loss for a committed command and recover writes safely within 60 minutes. Exact vendor, replication, runtime, and deployment mechanics remain implementation choices provided they satisfy [operations.md](operations.md) recovery gates.
+The production topology must demonstrate zero loss for a committed command and recover writes safely within 60 minutes. The runtime, database and relay are fixed by [ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md); replication and deployment mechanics remain implementation choices provided they satisfy [operations.md](operations.md) recovery gates.
 
 ## 6. Explicitly rejected Release 1 designs
 

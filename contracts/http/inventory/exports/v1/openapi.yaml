@@ -5,9 +5,12 @@ info:
   description: >-
     Search-only readiness, bootstrap, and recovery API. Search registers a SKU only
     after its Product-owned document exists. Inventory then publishes and exports the
-    Inventory-owned per-SKU availability boolean. A snapshot session is fixed at one
-    durable export watermark; Search applies later changes by sequence. This surface
-    is never used to make checkout or reservation decisions.
+    Inventory-owned per-SKU availability boolean. A snapshot session records one
+    export watermark (the greatest commit-ordered sequence assigned at creation);
+    snapshot rows are current per-SKU state that may be newer than the watermark, and
+    Search applies later changes by sequence under its strict revision guard
+    (Inventory ADR-022). This surface is never used to make checkout or reservation
+    decisions.
 x-adoption-status: proposed
 servers:
   - url: http://inventory-service:8080
@@ -77,9 +80,12 @@ paths:
   /exports/inventory/v1/snapshot-sessions/{snapshot_id}/sku-availabilities:
     get:
       operationId: listSnapshotSkuAvailabilities
-      summary: Page registered per-SKU availability at the fixed watermark
+      summary: Page registered current per-SKU availability for a snapshot session
       description: >-
-        Only SKU states with an active Search readiness registration are returned.
+        Only SKU states with an active Search readiness registration are returned. Each
+        row is the current SkuAvailabilityState with its availability_revision; it may
+        be newer than the session watermark but never older, so Search must apply rows
+        and later changes only when the revision is greater than its stored revision.
         Raw warehouse, on-hand, reserved, committed, and quarantine data are not exposed.
       parameters:
         - $ref: '#/components/parameters/SnapshotId'
@@ -101,8 +107,10 @@ paths:
       summary: Read ordered per-SKU availability changes after an export sequence
       description: >-
         The feed contains only sku-availability.changed facts. Export sequence is
-        increasing and may contain gaps. Retention is at least 30 days; an older cursor
-        returns REPLAY_WINDOW_EXPIRED.
+        assigned after commit by a single fenced sequencer, so it follows commit order:
+        a fact with a sequence at or below an already returned sequence never appears
+        later. Gaps are permanent and safe to skip. Retention is at least 30 days; an
+        older cursor returns REPLAY_WINDOW_EXPIRED.
       parameters:
         - name: after_sequence
           in: query

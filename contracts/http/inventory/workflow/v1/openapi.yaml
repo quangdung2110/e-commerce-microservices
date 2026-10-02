@@ -27,8 +27,9 @@ paths:
       operationId: createAllocationPreview
       summary: Build an advisory exact warehouse plan
       description: >-
-        CHECKOUT only. The operation creates no hold. A later Reserve must send and
-        revalidate the exact selected warehouse for every line.
+        CHECKOUT only. The operation is stateless: it creates no hold and persists no
+        plan. allocation_plan_id is an opaque correlation identifier with no expiry. A
+        later Reserve must send and revalidate the exact selected warehouse for every line.
       x-authorized-callers: [checkout-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -56,8 +57,10 @@ paths:
       operationId: reserveOrder
       summary: Reserve every order line atomically
       description: >-
-        ORDER_SAGA only. Returns RESERVED or REJECT_ALL. One line is never split
-        between warehouses and no alternate warehouse is selected when the plan is stale.
+        ORDER_SAGA only. Returns RESERVED or REJECT_ALL. allocation_plan_id is stored for
+        audit and never looked up; Inventory revalidates exactly the submitted lines and
+        warehouses under locks. One line is never split between warehouses and no
+        alternate warehouse is selected when the plan is stale.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -86,6 +89,11 @@ paths:
       tags: [Reservations]
       operationId: commitPayment
       summary: Move the entire reserved order to committed
+      description: >-
+        ORDER_SAGA only. Accepted whenever the root is RESERVED; no wall-clock deadline
+        applies and expires_at is advisory. Order owns the payment timeout. A root that is
+        not RESERVED returns durable 409 RESERVATION_NOT_RESERVED with no movement; a
+        timeout-released root can be committed only by recover-timed-out-payment.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -100,7 +108,7 @@ paths:
             schema: { $ref: '#/components/schemas/CommitPaymentRequest' }
       responses:
         '200':
-          description: Durable COMMITTED or RESERVATION_EXPIRED outcome.
+          description: Durable COMMITTED outcome.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CommitPaymentResponse' }
@@ -115,6 +123,10 @@ paths:
       tags: [Reservations]
       operationId: releaseReservation
       summary: Release the entire reserved order
+      description: >-
+        ORDER_SAGA only. Valid only while the root is RESERVED; always releases every
+        line. The reason is stored immutably on the root; only RESERVATION_EXPIRED can
+        later be recovered by recover-timed-out-payment.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -175,36 +187,6 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
-  /internal/inventory/v1/reservations/{order_id}/lines/{order_line_id}/release:
-    post:
-      tags: [Reservations]
-      operationId: releaseCommittedAllocation
-      summary: Release one committed, undispatched allocation
-      x-authorized-callers: [order-service]
-      security: [{ serviceIdentity: [] }]
-      parameters:
-        - $ref: '#/components/parameters/OrderId'
-        - $ref: '#/components/parameters/OrderLineId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/CorrelationId'
-        - $ref: '#/components/parameters/CausationId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ReleaseCommittedRequest' }
-      responses:
-        '200':
-          description: Durable line RELEASED outcome.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReservationLineCommandResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-
   /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch:
     post:
       tags: [Reservations]
@@ -246,7 +228,9 @@ paths:
       summary: Register an immutable selected full-quantity refund scope
       description: >-
         A scope selects one or more order_line_id values. Inventory verifies each
-        expected_quantity equals that immutable ReservationLine quantity. A second
+        expected_quantity equals that immutable ReservationLine quantity and that every
+        selected line is DISPATCHED; otherwise durable 409 REFUND_SCOPE_LINE_NOT_DISPATCHED
+        with no scope created. A second
         refund_request_id for the same order is rejected even after the first scope is terminal.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
@@ -410,7 +394,6 @@ components:
       required: true
       schema: { type: string, minLength: 8, maxLength: 128 }
     OrderId: { name: order_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
-    OrderLineId: { name: order_line_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     RefundScopeId: { name: refund_scope_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     CommandId: { name: command_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
   schemas:
@@ -470,7 +453,9 @@ components:
           required: [outcome, allocation_plan_id, generated_at, lines]
           properties:
             outcome: { const: ALLOCATABLE }
-            allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
+            allocation_plan_id:
+              allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+              description: Opaque correlation identifier; Inventory persists no plan and the identifier never expires.
             generated_at: { type: string, format: date-time }
             lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/PlannedLine' } }
         - type: object
@@ -499,7 +484,9 @@ components:
       required: [order_id, allocation_plan_id, lines]
       properties:
         order_id: { $ref: '#/components/schemas/OpaqueId' }
-        allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
+        allocation_plan_id:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Stored on the reservation for audit/reconciliation; never looked up or validated against a stored plan.
         lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineInput' } }
     ReserveOrderResponse:
       oneOf:
@@ -510,7 +497,10 @@ components:
               properties:
                 outcome: { const: RESERVED }
                 order_id: { $ref: '#/components/schemas/OpaqueId' }
-                expires_at: { type: string, format: date-time }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Advisory payment-window reference (accepted_at + 15 minutes); never a Commit deadline.
                 reservation_revision: { type: integer, minimum: 1 }
                 lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineInput' } }
         - allOf:
@@ -526,36 +516,25 @@ components:
       additionalProperties: false
       required: [payment_reference]
       properties: { payment_reference: { $ref: '#/components/schemas/OpaqueId' } }
+    ReleaseReason:
+      type: string
+      description: >-
+        Immutable whole-root release reason. Order maps cancel_reason PAYMENT_FAILED,
+        PAYMENT_TIMEOUT, USER_CANCEL, ADMIN_FORCE_CANCEL and PRE_PAYMENT_SAGA_FAILED to
+        these values in order. Only RESERVATION_EXPIRED is recoverable.
+      enum: [PAYMENT_FAILED, RESERVATION_EXPIRED, BUYER_CANCELLED, ADMIN_CANCELLED, PRE_PAYMENT_SAGA_FAILED]
     ReleaseReservationRequest:
-      oneOf:
-        - type: object
-          additionalProperties: false
-          required: [reason]
-          properties: { reason: { enum: [PAYMENT_FAILED, RESERVATION_EXPIRED] } }
-        - type: object
-          additionalProperties: false
-          required: [reason, order_exception_id]
-          properties:
-            reason: { const: STOCK_DISCREPANCY }
-            order_exception_id: { $ref: '#/components/schemas/OpaqueId' }
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { $ref: '#/components/schemas/ReleaseReason' }
     RecoverTimedOutPaymentRequest:
       type: object
       additionalProperties: false
       required: [payment_reference]
       properties:
         payment_reference: { $ref: '#/components/schemas/OpaqueId' }
-    ReleaseCommittedRequest:
-      oneOf:
-        - type: object
-          additionalProperties: false
-          required: [reason]
-          properties: { reason: { enum: [ORDER_CANCELLED, REFUND_BEFORE_DISPATCH] } }
-        - type: object
-          additionalProperties: false
-          required: [reason, order_exception_id]
-          properties:
-            reason: { const: POST_DISPATCH_EXCEPTION }
-            order_exception_id: { $ref: '#/components/schemas/OpaqueId' }
     ReleaseCommittedOrderBeforeDispatchRequest:
       type: object
       additionalProperties: false
@@ -568,14 +547,14 @@ components:
         - type: object
           required: [order_id, reservation_revision]
           properties:
-            outcome: { enum: [COMMITTED, RELEASED, RESERVATION_EXPIRED] }
+            outcome: { enum: [COMMITTED, RELEASED] }
             order_id: { $ref: '#/components/schemas/OpaqueId' }
             reservation_revision: { type: integer, minimum: 1 }
     CommitPaymentResponse:
       allOf:
         - $ref: '#/components/schemas/ReservationCommandResponse'
         - type: object
-          properties: { outcome: { enum: [COMMITTED, RESERVATION_EXPIRED] } }
+          properties: { outcome: { const: COMMITTED } }
     RecoverTimedOutPaymentResponse:
       allOf:
         - $ref: '#/components/schemas/ReservationCommandResponse'
@@ -598,17 +577,6 @@ components:
               minItems: 1
               maxItems: 100
               items: { $ref: '#/components/schemas/OpaqueId' }
-    ReservationLineCommandResponse:
-      allOf:
-        - $ref: '#/components/schemas/CorrelatedResult'
-        - type: object
-          required: [order_id, order_line_id, line_state, reservation_revision]
-          properties:
-            outcome: { const: RELEASED }
-            order_id: { $ref: '#/components/schemas/OpaqueId' }
-            order_line_id: { $ref: '#/components/schemas/OpaqueId' }
-            line_state: { const: RELEASED }
-            reservation_revision: { type: integer, minimum: 1 }
     RefundScopeLineInput:
       type: object
       additionalProperties: false
@@ -678,16 +646,41 @@ components:
         - $ref: '#/components/schemas/RefundScopeCommandResponse'
         - type: object
           properties: { outcome: { const: CLOSED_INCOMPLETE } }
+    ReservationLineState:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, quantity, warehouse_id, state]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, RESERVED, COMMITTED, DISPATCHED, RELEASED] }
+        handover_reference:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Present only when the line is DISPATCHED.
+        handed_over_at:
+          type: string
+          format: date-time
+          description: Present only when the line is DISPATCHED.
     Reservation:
       type: object
       additionalProperties: false
-      required: [order_id, state, expires_at, revision, lines]
+      required: [order_id, allocation_plan_id, state, accepted_at, expires_at, revision, lines]
       properties:
         order_id: { $ref: '#/components/schemas/OpaqueId' }
+        allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
         state: { enum: [UNKNOWN, RESERVED, COMMITTED, PARTIALLY_DISPATCHED, DISPATCHED, RELEASED] }
-        expires_at: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          description: Advisory payment-window reference; never a Commit deadline.
+        release_reason:
+          allOf: [{ $ref: '#/components/schemas/ReleaseReason' }]
+          description: Present only when the root was released by ReleaseReservation; immutable.
         revision: { type: integer, minimum: 1 }
-        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineInput' } }
+        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineState' } }
     RefundScopeLine:
       type: object
       additionalProperties: false

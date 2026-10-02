@@ -14,8 +14,8 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Product gRPC v1 | `proposed` | Proto đang bị copy, package/service name cũ khác target, giá dùng `double` |
 | Cart events v1 | `proposed` | Code cũ dùng custom envelope; target dùng CloudEvents và JSON Schema |
 | Search HTTP v2 | `proposed` | Search Service đã implement v2 và gỡ hẳn v1. Chưa `implemented` vì còn thiếu contract test provider/consumer; frontend vẫn gọi `/api/v1/search/**`, route đó nay không còn backend. |
-| Inventory HTTP v1 | `proposed` | Target có Workflow, Storefront Availability Read, ADMIN và Search Export API; implementation Java hiện tại vẫn theo lifecycle legacy và chưa được dùng làm bằng chứng adoption. |
-| Inventory Events v1 | `proposed` | Target có sáu CloudEvents fact; Search nhận per-SKU availability sau readiness, Order nhận năm lifecycle fact; producer/consumer chưa có contract test. |
+| Inventory HTTP v1 | `proposed` | Target có Workflow, Storefront Availability Read, ADMIN và Search Export API; code Java legacy không được dùng lại, chưa có implementation mới (runtime đã chốt Java/Spring Boot + PostgreSQL theo Inventory ADR-023). |
+| Inventory Events v1 | `proposed` | Target có ba CloudEvents fact; Search nhận per-SKU availability sau readiness, Order chỉ nhận physical dispatch và inspection completion (Inventory ADR-020); sequence do sequencer gán theo thứ tự commit (ADR-022); producer/consumer chưa có contract test. |
 | Order HTTP v1 | `proposed` | Public Buyer/Admin và internal Checkout/Finance-Ops contract đã chốt; chưa có Order runtime, provider test hoặc consumer test. |
 | Order Events v1 | `proposed` | Chỉ phát `ORDER_PAID` cho Cart và `ORDER_COMPLETED` cho Review. Cart consumer đã đọc CloudEvents v1; Review consumer đã đọc completed event, nhưng chưa có Order producer/provider test. |
 | Review HTTP v1 | `proposed` | Service chưa có runtime; contract chốt public approved-review read, buyer media/create/edit/report và admin moderation/takedown. |

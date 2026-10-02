@@ -8,7 +8,8 @@ info:
     Order consumes only physical dispatch and selected-scope inspection completion.
     Reservation commands use durable HTTP receipts and command query/replay, with no
     public reservation-result messages. Consumers use aggregate revision to reject stale
-    facts. Export sequence may contain gaps and is not global Kafka order.
+    facts. Export sequence is assigned after commit by a single fenced sequencer
+    (commit order, permanent gaps allowed) and is not a global Kafka order guarantee.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
 servers:

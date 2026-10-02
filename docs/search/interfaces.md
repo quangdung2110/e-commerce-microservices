@@ -266,6 +266,10 @@ sau đó lấy page qua `GET /internal/v1/reviews/rating-aggregate-exports/{sess
 để backfill catalog, availability và rating. Product/Review trả Kafka replay boundary của
 contract tương ứng; Inventory trả fixed `export_watermark`, sau đó Search đọc mọi change
 có `sequence > watermark`. Search không tự đọc Kafka Admin để dựng Inventory watermark.
+Row snapshot của Inventory là state hiện tại nên có thể mới hơn watermark; Search chỉ
+apply row/change khi `availability_revision` lớn hơn revision đang lưu. Sequence do
+sequencer của Inventory gán theo thứ tự commit, nên cursor không bỏ sót fact
+([Inventory ADR-022](../inventory/decisions/ADR-022-commit-ordered-export-sequence.md)).
 
 Snapshot session của Inventory sống 24 giờ. Page snapshot có thể trả `410
 SNAPSHOT_SESSION_EXPIRED`, còn change feed trả `410 REPLAY_WINDOW_EXPIRED`; hai mã này

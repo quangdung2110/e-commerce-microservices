@@ -13,6 +13,15 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
 - [ ] Failure test plan covers primary loss, broker outage, duplicate commands/events, deadlock, stale preview, release/dispatch race, fenced late payment recovery (including every rejected guard), and return/inspection retries.
 - [ ] Operational dashboards, alert routes, backup/restore rehearsal, BFF availability read load/freshness tests, and Search per-SKU availability readiness/snapshot/change-feed integration are planned before production launch.
 
+## Runtime baseline
+
+[ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md) fixes the stack:
+Java 21 and Maven, Spring Boot 3.x, PostgreSQL 16 with explicit SQL on the locked write
+path, Flyway migrations, Kafka with a Debezium connector on `PublishedEvent`, leased
+in-service workers (availability projector, warehouse fan-out, readiness publication,
+single fenced export sequencer), JUnit 5 and Testcontainers. Code lives in
+`java/services/inventory-service`, package `com.ecommerce.inventory`.
+
 ## Implementation guardrails
 
 1. No direct data migration or operational script may establish a second write path; all cutover stock loading uses `RecordSellableStockReceipt(INITIAL_STOCK_LOAD)` with approved baseline batch/audit.
@@ -29,6 +38,16 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
   after response loss/crash; durable repair after retry exhaustion; distinguish original
   command receipt from current reservation state; preserve affected-SKU dirty markers
   for Reserve/Release/recovery and atomic dispatch/inspection outbox creation.
+- Lifecycle gates under
+  [ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md): Commit after
+  `expires_at` on a `RESERVED` root succeeds; Commit on a non-`RESERVED` root is a
+  durable `409`; every release reason releases the whole root and is stored immutably;
+  no single-line or `STOCK_DISCREPANCY` release exists; Refund Scope registration
+  rejects non-`DISPATCHED` lines; Reserve never looks up `allocation_plan_id`.
+- Export gates under
+  [ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md): out-of-order commits
+  never let a change-feed reader skip a fact; a fenced stale sequencer cannot publish;
+  snapshot plus feed converge to the current revision while mutations run.
 - Domain/property tests for all bucket movements, Refund Scope counters, state guards, and correction restrictions.
 - Scope-finalization contract/concurrency tests: completed close after financial success
   or terminal failure; incomplete close only after all received final-inspected;

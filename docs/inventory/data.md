@@ -15,8 +15,8 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `SkuAvailabilityState` | `sku_id` | Inventory-owned derived boolean and monotonic `availability_revision` for Search integration. |
 | `SkuAvailabilityDirty` | `sku_id` | Durable coalescing signal/checkpoint for asynchronous recomputation. |
 | `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
-| `OrderReservation` | `order_id` | Root state, `expires_at`, correlation. |
-| `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, lifecycle. |
+| `OrderReservation` | `order_id` | Derived root state, `accepted_at`, advisory `expires_at`, stored `allocation_plan_id`, immutable release reason, commit/recovery `payment_reference`, correlation. |
+| `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, line state (`RESERVED`/`COMMITTED`/`DISPATCHED`/`RELEASED`) and dispatch reference. |
 | `RefundScope` | `order_id` lifetime unique; `refund_request_id` unique | Immutable selected-line scope state for the one Order refund case. |
 | `RefundScopeLine` | `(refund_scope_id, order_line_id)` | Immutable expected quantity and received/pass/fail counters. |
 | `ReturnReceiptLine` | `(refund_scope_id, return_receipt_id, return_receipt_line_id)` | Physical inbound provenance and residual final-inspection quantity. |
@@ -26,7 +26,8 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `AuditEntry` | append-only | Actor, role, reason/evidence, before/after values, causation. |
 | `CommandExecution` | `(caller_namespace, command_id)` | Input fingerprint and terminal accepted/rejected outcome. |
 | `OperationIdentity` | Business operation key | Enforces one accepted physical/business operation. |
-| `OutboxEvent` | `event_id`, export sequence | Durable public/export event pending or completed relay. |
+| `OutboxEvent` | `event_id`; `outbox_id` | Public fact written in the business/projector transaction, not yet sequenced. |
+| `PublishedEvent` | `event_id`; unique export `sequence` | Finalized CloudEvent with commit-ordered sequence; the only Kafka relay and change-feed source ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). |
 
 Current state and append-only evidence serve different purposes: state decides a command; movements/audit explain and reconcile it. Release 1 is not event sourced.
 
@@ -39,8 +40,11 @@ The database enforces, or the transaction guards before commit enforce:
 - one Order has at most one Refund Scope in its entire retained history; a terminal
   scope is never deleted/replaced to permit another `refund_request_id`;
 - every registered `RefundScopeLine.order_line_id` must be a distinct immutable
-  ReservationLine of the order, with `expected_quantity = ReservationLine.quantity`;
-  a selected scope is allowed to omit other lines but cannot split a selected line;
+  ReservationLine of the order in line state `DISPATCHED`, with
+  `expected_quantity = ReservationLine.quantity`; a selected scope is allowed to omit
+  other lines but cannot split a selected line;
+- a reservation root never mixes released lines with committed or dispatched lines;
+  every release is whole-root;
 - scope counters satisfy `0 <= passed + failed <= received <= expected`;
 - a return receipt cannot exceed the immutable line residual or be accepted after scope closure;
 - final inspection quantity is consumed exactly once from the exact receiving warehouse receipt line;
@@ -82,7 +86,9 @@ required public outbox records ([ADR-020](decisions/ADR-020-command-receipts-and
 
 ### Reserve transaction
 
-Inventory groups planned quantities by `(warehouse_id, sku_id)`, locks the exact selected Warehouse/StockPosition rows in a stable order, revalidates activity/outage and full-line availability, then creates the root/lines and all bucket deltas in one commit. It does not rerank or choose an alternate warehouse after its preview plan fails.
+Inventory groups planned quantities by `(warehouse_id, sku_id)`, locks the exact selected Warehouse/StockPosition rows in a stable order, revalidates activity/outage and full-line availability, then creates the root/lines and all bucket deltas in one commit. It does not rerank or choose an alternate warehouse after its preview plan fails. `allocation_plan_id` is stored on the root but never looked up, because Preview persists no plan.
+
+Commit locks the root and lines and requires only root state `RESERVED`; it does not compare the clock with `expires_at`. Release stores its reason immutably on the root ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
 ### Required lock order
 
@@ -103,8 +109,8 @@ ReservationLine rows, then their StockPositions in the required stable order. It
 revalidates that every line is `COMMITTED` and no physical-dispatch fact exists
 before changing any bucket. Success moves every line `COMMITTED -> RELEASED` and
 `committed -> available_to_sell` in this one transaction. A mixed, released or
-dispatched line is a durable `409` with no stock movement; callers must not emulate
-this command by issuing per-line release calls.
+dispatched line is a durable `409` with no stock movement. No per-line committed
+release exists ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
 ### Atomic late-payment recovery
 
@@ -169,7 +175,7 @@ tombstone and before purge; an older revision cannot revoke a newer lifecycle.
 
 ## 6. Outbox, consumers, and retention
 
-The outbox is written in the command transaction and relayed at least once. Each event has immutable `event_id`, schema version, aggregate revision, correlation/causation IDs, and increasing export sequence. The relay leases bounded durable batches, retries with exponential backoff and jitter (maximum interval five minutes), and never reruns business movement to recreate an event.
+The outbox is written in the command transaction and relayed at least once. Each event has immutable `event_id`, schema version, aggregate revision and correlation/causation IDs. The writing transaction assigns no export sequence: a single fenced sequencer later takes committed unsequenced `OutboxEvent` rows in `outbox_id` order and, in one short transaction per batch, assigns the next export sequence values and inserts the finalized CloudEvent into `PublishedEvent`. Because sequencer transactions are serialized and see only committed rows, sequence follows commit order and a reader past `N` never later sees a new fact `<= N` ([ADR-022](decisions/ADR-022-commit-ordered-export-sequence.md)). Debezium relays `PublishedEvent` to Kafka with bounded retries and exponential backoff/jitter (maximum interval five minutes); the change feed reads the same table. Neither path reruns business movement to recreate an event.
 
 Consumers can receive duplicates and events from unrelated aggregates in arbitrary
 order. Order keeps its inbox/dedupe record atomically with its effect and owns a DLQ.
@@ -186,7 +192,7 @@ Public/export events are retained for at least 30 days from durable creation. An
 | Primary state, command/operation identity, movement/audit, outbox | Authoritative | Restore/fail over as a single consistent point. |
 | Allocation/read cache | Optimization only | Discard and rebuild from primary; never use on correctness path. |
 | `SkuAvailabilityState` | Inventory-owned availability read/integration projection | Recompute from Warehouse/StockPosition; reconcile continuously. It serves BFF advisory reads and feeds Search publication. |
-| Search projection | External indexed copy | Apply registered per-SKU snapshot at watermark, then replay change feed. |
+| Search projection | External indexed copy | Apply registered current per-SKU snapshot rows, then replay change feed after the session watermark under the revision guard. |
 | Relay leases/cursors | Ephemeral | Clear/rebuild; relay reprocesses durable outbox safely. |
 
 Backups must include every authoritative record class. Losing command or operation identity would turn a late retry into a new mutation. Restore validation requires bucket scan, ledger checkpoint replay, uniqueness checks, outbox/export sequence validation, and access/audit health before writes reopen.

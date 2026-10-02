@@ -140,8 +140,8 @@ resolution does not close other unresolved dispute/financial obligations.
 
 | Activity | Service | Ý nghĩa | Retry/idempotency |
 |---|---|---|---|
-| Reserve/rollback inventory | Inventory | Giữ/nhả stock theo immutable allocation plan | Activity timeout/retry; stable request identity |
-| Commit payment / recover timed-out payment | Inventory | Commit whole reserved root after payment; fenced recovery only for same timeout-released root | Stable command ID; query `GET /commands/{id}` after unknown outcome; never re-reserve/reroute |
+| Reserve/rollback inventory | Inventory | Giữ/nhả stock theo immutable allocation plan; rollback luôn release toàn root với reason map từ `cancel_reason` (bảng dưới) | Activity timeout/retry; stable request identity |
+| Commit payment / recover timed-out payment | Inventory | Commit whole reserved root after payment, accepted whenever still `RESERVED` (no Inventory deadline); fenced recovery only for same timeout-released root | Stable command ID; query `GET /commands/{id}` after unknown outcome; never re-reserve/reroute |
 | Register refund scope | Inventory | Đăng ký selected `order_line_id` với full ordered quantity | Key lifetime theo order + refund request |
 | `CloseRefundScopeActivity` | Inventory | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close`; only `INSPECTION_COMPLETED` | Frozen command ID/body; success reason `REFUNDED`, terminal failure/reversal without prior intent `REJECTED`; response must prove `CLOSED` |
 | `CloseIncompleteRefundScopeActivity` | Inventory | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete`; approved no-payout decision, missing expected units and all received final-inspected | Stable command per approved generation; decision reason; response `CLOSED_INCOMPLETE` |
@@ -152,6 +152,20 @@ resolution does not close other unresolved dispute/financial obligations.
 | `POST /internal/v1/promotion-allocation/confirmations` | Promotion | CONFIRM wallet `USED` + durable budget/receipt/outbox | Bắt buộc `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` |
 | Initiate/cancel payment | Payment | Tạo Stripe PaymentIntent; cancel must resolve capture/non-capture before Order final-cancel | Persist numbered attempt + transaction mapping; stable Payment create/cancel key; `ALREADY_SUCCEEDED` enters paid repair |
 | Initiate refund | Payment | Tạo Stripe Refund đúng một lần from the immutable captured transaction after gate | Stable refund key/transaction ID |
+
+`RollbackInventoryActivity` maps Order `cancel_reason` to the Inventory whole-root
+release reason ([Inventory ADR-021](../inventory/decisions/ADR-021-order-integration-lifecycle-corrections.md)):
+
+| Order `cancel_reason` | Inventory `ReleaseReservation.reason` |
+|---|---|
+| `PAYMENT_FAILED` | `PAYMENT_FAILED` |
+| `PAYMENT_TIMEOUT` | `RESERVATION_EXPIRED` (the only reason later recoverable by `RecoverTimedOutPayment`) |
+| `USER_CANCEL` | `BUYER_CANCELLED` |
+| `ADMIN_FORCE_CANCEL` | `ADMIN_CANCELLED` |
+| `PRE_PAYMENT_SAGA_FAILED` | `PRE_PAYMENT_SAGA_FAILED` |
+
+Inventory has no single-line committed release and no exception release; paid
+pre-dispatch stock is released only through the all-line admin path above.
 
 All scope mutations require Inventory `Idempotency-Key`, `X-Correlation-ID` and
 `X-Causation-ID`. Persist intent/checkpoint/dispatch before HTTP; require matching
