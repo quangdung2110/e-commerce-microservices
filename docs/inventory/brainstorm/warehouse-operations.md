@@ -19,6 +19,11 @@ verified_against_commit: null
 
 # Inventory Service — Warehouse Operations (Phase 5)
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> governs public-event scope. Command/audit evidence and affected-SKU dirty work remain
+> atomic; internal movement or work is not an extra public event. Only dispatch and
+> selected-scope inspection completion are sent to Order. Parent target documents govern.
+
 > Working document cho nghiệp vụ kho và lifecycle hàng vật lý. Document này không thiết kế
 > API, database schema, ledger implementation hay transaction/locking; các phần đó thuộc
 > Phase 6–7. Phase 5 cũng không được nới lỏng reservation, allocation hay refund lifecycle

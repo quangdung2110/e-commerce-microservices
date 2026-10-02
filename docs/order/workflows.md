@@ -185,6 +185,11 @@ sequenceDiagram
 2. `ReserveInventoryActivity` truyền đúng plan/mapping đã persist; bất kỳ plan expired,
    mapping mismatch hoặc unknown outcome đều được query/replay theo command ID, không reroute.
    Thành công đăng ký `RollbackInventoryActivity`.
+   Reserve/Commit/Release/recovery use durable HTTP receipts and Saga checkpoints;
+   the workflow never waits for a reservation-result Kafka event. Persist command
+   identity/request before each remote call, retain durable recovery after retry
+   exhaustion, and distinguish the original command result from current reservation
+   state ([Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 3. `ReservePromotionActivity` gọi
    `POST /internal/v1/promotion-allocation/reservations` all-or-nothing; thành công đăng ký
    `RollbackPromotionActivity` gọi `/internal/v1/promotion-allocation/cancellations`.

@@ -15,6 +15,11 @@ có nghĩa implementation đã được xác minh.
 
 ## Danh mục quyết định
 
+Inventory's cross-service [ADR-020](../../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+narrows its Order-facing event contract to dispatch and inspection completion. Reservation
+commands retain ADR-011's durable checkpoint/query/replay recovery; no acknowledgment
+event is required and historical Order ADR bodies are unchanged.
+
 | ADR | Quyết định | Trạng thái | Ngày | Thay thế |
 |---|---|---|---|---|
 | [ADR-000](./ADR-000-template.md) | Template, không phải quyết định | Template | N/A | N/A |

@@ -41,6 +41,8 @@ owned by other providers:
 - verified Delivery facts from `t.delivery.order.events.v1`.
 
 Order does not consume Payment initiation facts or Inventory reserve/commit/release
-facts. Those commands already return durable HTTP activity results and provide recovery
-queries. Every accepted inbound event first passes semantic identity/revision validation
+acknowledgments. Inventory publishes no reservation-result events; its reservation
+commands return durable HTTP receipts and provide same-command recovery queries/replay
+([Inventory ADR-020](../../../../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
+Every accepted inbound event first passes semantic identity/revision validation
 and a durable inbox before it can signal a Temporal workflow.

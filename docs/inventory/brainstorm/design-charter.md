@@ -20,6 +20,12 @@ verified_against_commit: null
 
 # Inventory Service — Design Charter (Phase 0)
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> supersedes earlier per-mutation outbox wording in this historical working record.
+> Reservation commands use durable receipts and query/replay; only dispatch and selected-scope
+> inspection completion are public Order facts. Required public outbox and availability
+> dirty work remain atomic with their originating transition. Parent target documents govern.
+
 > Đây là working draft cho Phase 0 của kế hoạch thiết kế lại. Nó chốt mục tiêu và
 > ràng buộc cần đáp ứng, **không** chọn implementation, database, cache, message
 > broker, schema hay API. Mọi mục đánh dấu `TBD` cần một owner xác nhận trước khi

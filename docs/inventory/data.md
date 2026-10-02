@@ -66,11 +66,19 @@ One accepted command transaction performs, in order:
 3. apply every permitted state and bucket transition;
 4. append `StockMovement` and `AuditEntry` evidence;
 5. claim successful `OperationIdentity` when applicable;
-6. persist the terminal command result, workflow facts, and durable per-SKU availability
-   dirty markers required by the state change;
+6. persist the terminal command result, public outbox facts required by the documented
+   publication policy, and durable per-SKU availability dirty markers required by the
+   state change;
 7. commit once.
 
 No broker, HTTP call, cache call, or external evidence-store call is inside this transaction. If any required step fails, it rolls back completely. Expected domain `REJECT_ALL` is durable but has no stock movement; technical failures leave no accepted result and can retry.
+
+Reserve/Commit/Release/recovery results are retained in `CommandExecution` and returned
+as HTTP receipts; none creates a reservation-result public event. Reserve/Release and
+successful recovery still atomically mark affected SKUs when sellable quantity changes.
+Normal Commit changes only reserved/committed buckets. Internal audit/work records do
+not become broker messages. Physical dispatch and inspection completion retain their
+required public outbox records ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 
 ### Reserve transaction
 

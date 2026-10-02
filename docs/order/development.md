@@ -111,6 +111,13 @@ Timer dài cần test clock/time skipping, không chờ thật.
 
 ## 6. Contract code generation
 
+Inventory's [ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+requires exactly two Inventory inbound event types: physical dispatch and selected-scope
+inspection completion. Verify reservation commands progress without Kafka acknowledgments,
+response-loss/crash recovery uses the persisted original ID/body, retry exhaustion keeps
+durable repair, and historical receipts are distinguished from current reservation state.
+Retain duplicate/reordered dispatch and inspection consumer tests and the refund gate.
+
 Order đã có public/internal OpenAPI v1 ở `contracts/http/order`; AsyncAPI v1 mô tả
 hai outbound event có consumer và ba inbound provider channels. Cần pin generator/linter version, output path, generated-code
 policy và CI drift check. Markdown example không phải source để generate model.

@@ -5,6 +5,14 @@ không cần xuất hiện ở đây.
 
 ## 2026-10-02
 
+- Inventory proposed events v1 removes the reservation-result `reserved`, `committed`
+  and `released` messages, send operations, schemas/examples and unused allocation-line
+  helper. Order receives only physical dispatch and selected-scope inspection completion;
+  Search availability is unchanged. Reserve/Commit/Release/recovery retain durable HTTP
+  receipts, command query/replay and atomic audit/required availability work. Inventory
+  and Order docs/catalogs follow [Inventory ADR-020](../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md).
+  This corrects a proposed pre-implementation contract; an adopted consumer still
+  requires the documented breaking-change/version and parallel-support migration.
 - Order proposed HTTP v1 adds refund-case `CLOSED_INCOMPLETE` and optional
   `scope_finalization` progress separate from the financial outcome. Generated clients
   must support the new response enum before adoption; incompatible adopted consumers

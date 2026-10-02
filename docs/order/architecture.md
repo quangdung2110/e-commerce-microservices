@@ -20,7 +20,7 @@ verified_against_commit: null
 
 Order nằm sau API Gateway cho Buyer/Admin và nhận submit nội bộ từ Checkout.
 Service điều phối Inventory, Promotion và Payment bằng Temporal activities; nhận
-payment/refund signal và inventory lifecycle qua Kafka; công bố thay đổi Order qua
+payment/refund signal và Inventory dispatch/inspection completion qua Kafka; công bố thay đổi Order qua
 transactional outbox và WAL CDC.
 
 PostgreSQL vừa là source of truth vừa là read path cho detail và search/filter.
@@ -83,6 +83,10 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
 - Payment-attempt POST và Checkout submission là synchronous-to-checkpoint: HTTP chỉ
   đợi đến khi Payment client data được durable checkpoint, không đợi capture.
 - Temporal activity gọi Inventory/Promotion/Payment đồng bộ theo timeout/retry.
+- Inventory reservation commands complete from durable HTTP receipts and checkpointed
+  command query/replay; they have no Kafka acknowledgment consumer. Only physical
+  dispatch and selected-scope inspection completion enter the Inventory event path
+  ([Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 
 ### 3.2. Bất đồng bộ và transaction boundary
 

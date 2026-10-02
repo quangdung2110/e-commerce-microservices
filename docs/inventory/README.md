@@ -23,6 +23,7 @@ catalog, or Search's indexed copy.
 | Scope finalization | Order closes completed scopes after terminal refund outcome, or ends missing returns by an audited no-payout decision using incomplete close/zero-receipt cancel; no automatic Inventory closure. |
 | Warehouse operation | `ADMIN` alone records receipt, adjustment, dispatch, return receipt, inspection, disposition, and warehouse configuration. |
 | Integration | Transactional outbox is mandatory. Inventory publishes its per-SKU boolean to Search and exposes the same advisory state through a BFF-only batch-read API; neither path is a checkout dependency. |
+| Order integration | Reserve/Commit/Release/recovery use durable HTTP receipts and command query/replay. Only physical dispatch and selected-scope inspection completion are published to Order ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)). |
 | Degradation | If authoritative state or the atomic audit/outbox transaction is unavailable, mutations fail closed and Preview returns `503 INVENTORY_UNAVAILABLE`. |
 
 ## Ownership boundary
@@ -71,7 +72,7 @@ Priority order is **no oversell**, auditability, operational simplicity, checkou
 
 1. `available_to_sell + reserved + committed + quarantine = on_hand`; every bucket is non-negative.
 2. No caller writes Inventory persistence directly. Cache, Redis, broker ordering, and Search have no authority to accept or reject a stock transition.
-3. Each accepted mutation atomically commits business state, immutable movement/audit evidence, command result, and outbox record—or commits none.
+3. Each accepted mutation atomically commits business state, immutable movement/audit evidence, command result, and required outbox/availability-work records—or commits none. Public outbox records are required when a documented public fact is created; a command receipt does not require a reservation-result event.
 4. A business rejection is a valid terminal result; a lock/database/outbox failure is a retryable technical failure, never disguised as out of stock.
 5. Correction uses an explicit audited command. It cannot silently remove reserved, committed, or quarantined units.
 6. Inventory does not publish or export a SKU availability fact until Search has

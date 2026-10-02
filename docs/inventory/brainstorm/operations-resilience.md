@@ -1,5 +1,11 @@
 # Inventory Service — Operations & Resilience Contract
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> supersedes earlier per-mutation outbox wording in this historical working record.
+> Reservation commands use durable receipts and query/replay; only dispatch and selected-scope
+> inspection completion are public Order facts. Required public outbox and availability
+> dirty work remain atomic with their originating transition. Parent target documents govern.
+
 > **Status:** Accepted — Phase 8 complete
 >
 > **Scope:** Release 1 operational model, observability, reconciliation, security, and recovery.

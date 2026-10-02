@@ -6,6 +6,11 @@ info:
     Target contract for Checkout allocation preview and Order Temporal Saga inventory
     commands. Inventory is the sole authority for stock transitions. There is no
     customer, Payment, Product, Search, or ADMIN mutation on this surface.
+    Reservation commands return durable HTTP receipts without public acknowledgment
+    events. Order checkpoints stable command identity/request before calling and
+    recovers uncertain outcomes by command query or same-ID/body replay; exhausted
+    retries retain durable recovery work. Only physical dispatch and selected-scope
+    inspection completion are delivered to Order through Inventory events.
 x-adoption-status: proposed
 servers:
   - url: http://inventory-service:8080
@@ -336,6 +341,10 @@ paths:
       tags: [Recovery]
       operationId: getCommandOutcome
       summary: Read a durable command outcome after an uncertain transport result
+      description: >-
+        Returns the original result of this specific command, not current aggregate
+        state. A missing result does not prove an in-flight command failed; recover
+        using the same command ID and payload. No reservation-result event is emitted.
       security: [{ serviceIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/CommandId' }]
       responses:
@@ -349,6 +358,10 @@ paths:
       tags: [Recovery]
       operationId: getReservation
       summary: Read Inventory reservation facts for an Order-owned order
+      description: >-
+        Returns current reservation state, which may reflect transitions after an
+        earlier command receipt. Use command query/replay to prove a specific command
+        outcome and this resource for current-state reconciliation.
       security: [{ serviceIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/OrderId' }]
       responses:

@@ -23,7 +23,8 @@ flowchart LR
   AR --> DB
   Relay[Outbox relay] -->|at-least-once events| Bus[Event backbone]
   DB --> Relay
-  Bus --> Order
+  API -->|durable command receipt and recovery query| Order
+  Bus -->|physical dispatch and inspection completion only| Order
   Bus -->|per-SKU availability| Search[Search projection]
   Search -->|document readiness + snapshot/change feed| Export[Inventory Search Projection API]
   DB --> Export
@@ -44,6 +45,11 @@ flowchart LR
 - Only Order's authenticated Temporal Saga invokes reservation, atomic pre-dispatch
   release, and Refund Scope workflow mutations. Payment sends its result to Order,
   not Inventory.
+- Reservation command results use durable HTTP receipts and command query/replay.
+  The relay sends Order only physical dispatch and selected-scope inspection completion;
+  Order never waits for a reservation acknowledgment event. State, command identity,
+  movement/audit, required public outbox records and availability dirty work retain their
+  atomic transaction boundary ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 - A late captured payment can use only Inventory's fenced recovery command. Inventory
   reuses neither allocation preview nor normal Reserve: it commits the original released
   root only when all original physical guards still hold; otherwise Order owns the

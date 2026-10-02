@@ -4,6 +4,15 @@
 Order Temporal Saga commands. Preview is advisory. Reserve is exact-plan and
 whole-order atomic; Payment never calls Inventory directly.
 
+Reserve/Commit/Release/recovery results are durable HTTP receipts, with no corresponding
+public reservation-result events. Persist the stable command ID and request before the
+call; after timeout/crash query `GET /commands/{command_id}` or replay the exact ID/body.
+Do not infer failure from timeout or an absent query result while a command may be in
+flight. Retain durable recovery work after retry exhaustion. Command queries prove the
+original outcome, while `GET /reservations/{order_id}` proves current state. Only physical
+dispatch and selected-scope inspection completion arrive asynchronously from Inventory.
+See [Inventory ADR-020](../../../../../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md).
+
 Every mutation requires `Idempotency-Key`, `X-Correlation-ID`, and
 `X-Causation-ID`. Expected outcomes such as `REJECT_ALL` and
 `RESERVATION_EXPIRED` are durable `200` results. `503 INVENTORY_UNAVAILABLE` and

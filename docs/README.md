@@ -28,6 +28,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/decisions/ADR-010-selected-line-refund-policy.md](./order/decisions/ADR-010-selected-line-refund-policy.md) | Order + Inventory + Payment | Một refund case trọn đời/order; selected full-quantity lines; admin automatic chỉ trước dispatch. |
 | [order/decisions/ADR-013-durable-refund-scope-finalization.md](./order/decisions/ADR-013-durable-refund-scope-finalization.md) | Order + Inventory | Durable close/cancel scope; approved no-payout incomplete return; financial result và finalization progress tách biệt. |
 | [inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md](./inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Inventory + Order | Lifetime selected scope và atomic all-line committed release trước dispatch. |
+| [inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md](./inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md) | Inventory + Order | Reservation commands dùng durable receipt/query/replay; chỉ dispatch và inspection completion gửi qua Kafka; giữ atomic audit/outbox/availability work. |
 | [payment/decisions/ADR-011-one-lifetime-order-refund.md](./payment/decisions/ADR-011-one-lifetime-order-refund.md) | Payment + Order + Inventory | Một Payment refund transaction/order, Inventory evidence dạng Buyer/Admin. |
 | [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
 | [promotion/decisions/ADR-014-claim-and-markdown-consistency.md](./promotion/decisions/ADR-014-claim-and-markdown-consistency.md) | Promotion + Product | Atomic claim boundary, immutable definition, causal markdown dedup và Product tombstone invalidation. |
@@ -107,23 +108,25 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 4. Inventory Service (Redis Lua + PG)
+## 4. Inventory Service (Relational authoritative state)
 
-> Đã refactor theo cấu trúc chuẩn tại
-> [`_templates/service-documentation`](./_templates/service-documentation/README.md).
+> Target design đã accepted cho Release 1; implementation chưa bắt đầu.
+> Một relational primary là write authority; Redis/cache không quyết định stock.
+> Reservation results dùng durable HTTP receipts/query/replay; Order chỉ nhận physical
+> dispatch và selected-scope inspection completion qua Kafka.
 > Bắt đầu từ [inventory/README.md](./inventory/README.md).
 
 | File | Mô tả |
 |---|---|
 | [inventory/README.md](./inventory/README.md) | Điểm bắt đầu: trạng thái, boundary, data ownership, invariant, known gaps. |
-| [inventory/architecture.md](./inventory/architecture.md) | Component, processing model, consistency và concurrency; vì sao Redis đứng trước PostgreSQL. |
+| [inventory/architecture.md](./inventory/architecture.md) | Relational write authority, transaction/concurrency, projector và trust boundaries. |
 | [inventory/domain.md](./inventory/domain.md) | Thuật ngữ, business rule, state machine và domain error. |
-| [inventory/data.md](./inventory/data.md) | Ownership, schema, constraint, Redis key, outbox và lifecycle. |
-| [inventory/interfaces.md](./inventory/interfaces.md) | HTTP, Temporal Activity và event semantics. |
-| [inventory/workflows.md](./inventory/workflows.md) | 10 workflow end-to-end kèm failure path và idempotency. |
+| [inventory/data.md](./inventory/data.md) | Authoritative state, command identity/receipt, movement/audit, required outbox và availability work. |
+| [inventory/interfaces.md](./inventory/interfaces.md) | Workflow/read/admin/export API và ba public event types; Order nhận hai type. |
+| [inventory/workflows.md](./inventory/workflows.md) | Reserve/payment/dispatch, timeout/recovery, selected refund scope và availability projection. |
 | [inventory/operations.md](./inventory/operations.md) | SLI, alert, failure mode, runbook và worker. |
-| [inventory/development.md](./inventory/development.md) | Chạy, build, test và migration local. |
-| [inventory/decisions/](./inventory/decisions/README.md) | 10 ADR: Redis commit source, stream outbox, CDC, suspension, snapshot v1... |
+| [inventory/development.md](./inventory/development.md) | Preconditions và verification gates trước implementation/production. |
+| [inventory/decisions/](./inventory/decisions/README.md) | Current accepted ADRs, publication scope ADR-020 và superseded historical decisions. |
 
 ---
 
@@ -187,7 +190,7 @@ Service Contract Matrix legacy đã bị xóa.
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
 | Payment | `t.payment.webhooks.raw` (internal, raw body base64) | Payment webhook processor |
-| Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes reservation/physical-dispatch/selected-scope inspection completion; Search consumes per-SKU availability |
+| Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
 | Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
 | Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |

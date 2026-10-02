@@ -18,6 +18,11 @@ Smoke validator kiểm tra:
 - CloudEvents example có đủ field lõi;
 - Markdown trong `contracts/` không có relative link bị gãy.
 
+Các bước scan source bỏ qua `node_modules/` và `generated/`; dependency/bundle không
+phải contract nguồn. JSON parser hỗ trợ empty object keys trong package lock, và bước
+Markdown-link check chấp nhận file rỗng. Semantic linters vẫn cần chạy riêng hoặc
+được tìm thấy trong `PATH`; smoke pass không xác nhận đầy đủ JSON Schema semantics.
+
 ## Auth → Review persistence contract test
 
 `USER_DELETED` của Auth có fixture riêng và một test persistence cho Review. Test

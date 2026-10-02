@@ -75,7 +75,13 @@ Reconciliation detects only. Correction requires ADMIN reason/evidence and norma
 
 ## 4. Outbox, consumer recovery, and backpressure
 
-- State, audit/movement, command outcome, and outbox record commit together. Relay publishes at least once from bounded durable batches with exponential backoff/jitter and a five-minute maximum interval.
+- State, audit/movement, command outcome, required public outbox records and availability dirty work commit together. Relay publishes public facts at least once from bounded durable batches with exponential backoff/jitter and a five-minute maximum interval.
+- Order receives only physical dispatch and selected-scope inspection completion.
+  Reserve/Commit/Release/recovery use durable command receipts and query/replay; an
+  unknown outcome is not resolved by waiting for a reservation-result event. Order
+  retains the original command checkpoint and durable recovery work after retry
+  exhaustion. Reconciliation compares the specific command result and current
+  reservation state separately ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 - Public/export events are retained at least 30 days; an undelivered record stays beyond ordinary cleanup. If retention/capacity becomes unsafe, stop accepting new mutations before dropping evidence.
 - Order owns an inbox/dedupe record and DLQ. DLQ preserves the original event, attempt/error history, and replay goes through the normal inbox path. Operators never synthesize a replacement fact.
 - Search relies on per-SKU `availability_revision`, does not use a DLQ or Inventory inbox, and never upserts a missing Product document. It uses a 24-hour per-SKU snapshot session plus ordered change feed; after `410 REPLAY_WINDOW_EXPIRED` it must bootstrap availability again in its existing Product index.

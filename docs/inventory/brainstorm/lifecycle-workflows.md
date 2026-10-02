@@ -18,6 +18,12 @@ verified_against_commit: null
 
 # Inventory Service — Lifecycle Workflows (Phase 3)
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> supersedes earlier per-mutation outbox wording in this historical working record.
+> Reservation commands use durable receipts and query/replay; only dispatch and selected-scope
+> inspection completion are public Order facts. Required public outbox and availability
+> dirty work remain atomic with their originating transition. Parent target documents govern.
+
 > Working document cho workflow liên service và transition authority. Không chọn API
 > payload, database hay protocol implementation; các nội dung đó thuộc phase sau.
 
@@ -74,13 +80,13 @@ sequenceDiagram
 
     Checkout->>Order: Create order intent(lines)
     Order->>Inventory: ReserveOrder(order, all lines, command_id)
-    Note over Inventory: Atomic: revalidate exact preview plan, tạo OrderReservation + ReservationLine,<br/>available → reserved, audit movement + transactional outbox
+    Note over Inventory: Atomic: revalidate exact preview plan, tạo OrderReservation + ReservationLine,<br/>available → reserved, command result + audit movement + SKU dirty work
     Inventory-->>Order: RESERVED(allocations, expires_at = now + 15m)
 
     Order->>Payment: Authorize/Capture payment
     Payment-->>Order: PaymentSucceeded
     Order->>Inventory: CommitPayment(order, command_id)
-    Note over Inventory: Atomic toàn order: reserved → committed,<br/>audit movement + transactional outbox
+    Note over Inventory: Atomic toàn order: reserved → committed,<br/>command result + audit movement; no Order acknowledgment event
     Inventory-->>Order: COMMITTED
 
     loop Một hoặc nhiều ReservationLine tại các warehouse đã allocation
@@ -107,8 +113,9 @@ sequenceDiagram
 - Payment chỉ thông báo Order; Payment không gọi Inventory trực tiếp.
 - `ReserveOrder` và `CommitPayment` chỉ từ Order Temporal Saga Worker; `RecordPhysicalDispatch`
   chỉ từ Warehouse Admin.
-- Mỗi mutation bao gồm business state, stock movement/audit và transactional outbox record
-  trong cùng durable transaction.
+- Mỗi mutation bao gồm business state, command result, stock movement/audit và required
+  public outbox/availability dirty work trong cùng durable transaction; command receipt
+  không tạo public reservation-result event.
 - Các line khác nhau có thể physical dispatch độc lập theo warehouse; một line vẫn có đúng
   một warehouse allocation.
 - Tên/payload chính thức của physical-dispatch fact thuộc Phase 7; diagram chỉ chốt semantic.
@@ -179,7 +186,7 @@ sequenceDiagram
     alt Payment failure trước deadline
         Payment-->>Order: PaymentFailed
         Order->>Inventory: ReleaseReservation(PAYMENT_FAILED, command_id)
-        Note over Inventory: Atomic toàn order: reserved → available,<br/>audit movement + transactional outbox
+        Note over Inventory: Atomic toàn order: reserved → available,<br/>command result + audit movement + SKU dirty work
         Inventory-->>Order: RELEASED
     else Không có payment outcome tới deadline
         Timer-->>Order: Reservation expired
@@ -332,10 +339,10 @@ business. Tên event/payload, endpoint và protocol cụ thể thuộc Phase 7.
 | Transition / command | Caller duy nhất | Precondition chính | Retry / race | Fact / outbox semantic |
 |---|---|---|---|---|
 | `AllocationPreview` | Checkout | Authoritative store sẵn sàng. | Không giữ hàng; `503` nếu store unavailable. | Không có outbox. |
-| `ReserveOrder` | Order Saga | Toàn bộ line có warehouse active đủ hàng. | Cùng `command_id` trả kết quả cũ; thiếu một line là `REJECT_ALL`. | Stock-availability changed và reservation-lifecycle fact. |
-| `CommitPayment` | Order Saga | Root `RESERVED`, trước `expires_at`. | Retry idempotent; sau deadline từ chối commit mới. | Allocation-committed fact; outbox cùng mutation. |
-| `ReleaseReservation` | Order Saga | Root `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, hoặc `STOCK_DISCREPANCY` kèm `order_exception_id`. | Luôn release toàn root; không thể release root đã `COMMITTED`. | Stock-availability changed và release fact. |
-| `ReleaseCommittedAllocation` | Order Saga | Target line `COMMITTED`, chưa dispatch; `POST_DISPATCH_EXCEPTION` cần `order_exception_id`. | Dispatch/release cùng line: first atomic transition wins. | Stock-availability changed và release/exception fact. |
+| `ReserveOrder` | Order Saga | Toàn bộ line có warehouse active đủ hàng. | Cùng `command_id` trả kết quả cũ; thiếu một line là `REJECT_ALL`. | Durable receipt + audit + SKU dirty work; projector creates Search fact later; no Order acknowledgment. |
+| `CommitPayment` | Order Saga | Root `RESERVED`, trước `expires_at`. | Retry idempotent; sau deadline từ chối commit mới. | Durable receipt + audit; no Order acknowledgment or sellable-availability dirty work. |
+| `ReleaseReservation` | Order Saga | Root `RESERVED`; reason `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, hoặc `STOCK_DISCREPANCY` kèm `order_exception_id`. | Luôn release toàn root; không thể release root đã `COMMITTED`. | Durable receipt + audit + SKU dirty work; no Order acknowledgment. |
+| `ReleaseCommittedAllocation` | Order Saga | Target line `COMMITTED`, chưa dispatch; `POST_DISPATCH_EXCEPTION` cần `order_exception_id`. | Dispatch/release cùng line: first atomic transition wins. | Durable receipt + audit + SKU dirty work; no Order acknowledgment. |
 | `RecordPhysicalDispatch` | Warehouse Admin | Line `COMMITTED`, đúng warehouse allocation. | Retry idempotent; release thắng trước thì từ chối dispatch. | Physical-dispatch fact cho Order. |
 | `RegisterRefundScope` | Order Saga | Không có RefundScope historical cho `order_id`; selected lines use full quantity. | Idempotent; scope immutable. | Refund-scope lifecycle fact. |
 | `CancelRefundScope` | Order Saga | `REGISTERED`, chưa receipt. | Idempotent. | Audit/lifecycle fact; retains lifetime identity. |
@@ -349,7 +356,7 @@ business. Tên event/payload, endpoint và protocol cụ thể thuộc Phase 7.
 
 **Cross-cutting rule:** mọi state-changing command có `command_id`, actor hoặc system
 actor, correlation/causation ID và reason khi applicable. Business state, stock
-movement/audit và outbox record phải durable commit cùng transaction. Payment không gọi
+movement/audit và required public outbox/availability work phải durable commit cùng transaction. Payment không gọi
 Inventory; `CompleteInspection` không được tách thành command riêng vì có thể làm mất
 completion fact sau inspection cuối.
 

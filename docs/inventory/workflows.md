@@ -38,11 +38,16 @@ sequenceDiagram
 2. Preview success never promises stock. Checkout records the proposed plan in Order; Inventory does not create a hold.
 3. Only Order Temporal Saga calls `ReserveOrder`. Inventory locks/revalidates the **exact** planned warehouse/line quantities.
 4. If any line is unavailable or its plan became invalid, the entire command returns durable domain outcome `REJECT_ALL`. No reservation, no partial allocation, and no silent attempt of another warehouse remains.
-5. A successful command creates one root and all lines in `RESERVED`, sets `expires_at = accepted_at + 15 minutes`, writes audit/movements/outbox atomically, and returns the exact durable result.
+5. A successful command creates one root and all lines in `RESERVED`, sets `expires_at = accepted_at + 15 minutes`, writes command result, audit/movements and affected-SKU dirty markers atomically, and returns the exact durable result. It emits no reservation-result event to Order.
 
 ### Payment, release, and dispatch
 
 - Payment never calls Inventory. Order Saga decides and sends `CommitPayment` exactly once in business effect; same command ID safely replays the outcome.
+- Reserve, Commit, Release and late-payment recovery complete from their durable HTTP
+  result. Order persists stable command identity/request before each call and checkpoints
+  the matching result. Unknown outcomes use command query/same-ID replay, not a Kafka
+  acknowledgment; retry exhaustion leaves durable repair work and alerting. Current
+  reservation state is reconciled separately from the original command result.
 - Commit is accepted only for the entire `RESERVED` root before the deadline. It moves every line to `COMMITTED` atomically. A late *new* commit is rejected; a late retry of an already accepted commit returns success.
 - On payment failure or timeout, Order calls `ReleaseReservation(PAYMENT_FAILED | RESERVATION_EXPIRED)`. Inventory does not run an expiry worker.
 - If Payment later proves success after the timeout release, Order may call only
@@ -89,7 +94,16 @@ partial-release fallback. Dispatched stock is never restored through either comm
 
 ### Failure F4 — outbox unavailable after business decision
 
-Business state, command result, audit/movement, and outbox record share one database transaction. If that transaction succeeds but relay/broker fails, Inventory returns the accepted command result and later publishes the durable event at least once. If the outbox record cannot commit, the business command aborts. The relay never reruns a movement to recreate an event.
+Business state, command result, audit/movement, required public outbox records and
+availability dirty markers share one database transaction. An accepted command returns
+its durable result without waiting for the broker. Reserve/Release/recovery mark affected
+SKUs when sellable quantity changes; normal Commit creates no Order-facing event or
+availability dirty marker. The projector later creates Search facts. Physical dispatch
+and inspection completion create their Order-facing outbox facts atomically with the
+corresponding transition. If a required outbox/work record cannot commit, the entire
+transaction aborts. The relay later publishes original public facts at least once and
+never reruns a movement to recreate an event. See
+[ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md).
 
 ## 2. Refund, receipt, inspection, and closure
 

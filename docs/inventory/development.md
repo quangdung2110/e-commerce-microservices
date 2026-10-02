@@ -23,6 +23,12 @@ Implementation may start only after Inventory, Order, Checkout, Search, Warehous
 
 ## Required verification before release
 
+- Command-result/publication contract gates under
+  [ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md): exactly two
+  Order-facing public types; no reservation-result publication; same-ID query/replay
+  after response loss/crash; durable repair after retry exhaustion; distinguish original
+  command receipt from current reservation state; preserve affected-SKU dirty markers
+  for Reserve/Release/recovery and atomic dispatch/inspection outbox creation.
 - Domain/property tests for all bucket movements, Refund Scope counters, state guards, and correction restrictions.
 - Scope-finalization contract/concurrency tests: completed close after financial success
   or terminal failure; incomplete close only after all received final-inspected;

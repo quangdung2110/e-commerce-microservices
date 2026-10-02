@@ -5,7 +5,9 @@ info:
   description: >-
     Target Inventory facts emitted from the transactional outbox. Delivery is
     at-least-once. Search consumes an Inventory-owned per-SKU availability snapshot;
-    Order consumes workflow facts. Consumers use aggregate revision to reject stale
+    Order consumes only physical dispatch and selected-scope inspection completion.
+    Reservation commands use durable HTTP receipts and command query/replay, with no
+    public reservation-result messages. Consumers use aggregate revision to reject stale
     facts. Export sequence may contain gaps and is not global Kafka order.
 x-adoption-status: proposed
 defaultContentType: application/cloudevents+json
@@ -33,7 +35,7 @@ channels:
       skuAvailabilityChanged: { $ref: '#/components/messages/skuAvailabilityChanged' }
   orderFacts:
     address: t.inventory.order.events.v1
-    description: Reservation, physical dispatch, and refund-inspection facts for Order reconciliation.
+    description: Physical dispatch and selected-scope refund-inspection completion facts for Order.
     x-owner: inventory-service
     x-message-key: order_id
     x-ordering-scope: order_id
@@ -48,9 +50,6 @@ channels:
     x-data-classification: INTERNAL
     x-consumers: [order-service]
     messages:
-      reservationReserved: { $ref: '#/components/messages/reservationReserved' }
-      reservationCommitted: { $ref: '#/components/messages/reservationCommitted' }
-      reservationReleased: { $ref: '#/components/messages/reservationReleased' }
       reservationLineDispatched: { $ref: '#/components/messages/reservationLineDispatched' }
       allItemsInspectionCompleted: { $ref: '#/components/messages/allItemsInspectionCompleted' }
 operations:
@@ -61,18 +60,6 @@ operations:
     x-message-key: sku_id
     x-publication-precondition: Search has registered that the Product-owned SKU document exists.
     messages: [{ $ref: '#/channels/availabilityFacts/messages/skuAvailabilityChanged' }]
-  publishReservationReserved:
-    action: send
-    channel: { $ref: '#/channels/orderFacts' }
-    messages: [{ $ref: '#/channels/orderFacts/messages/reservationReserved' }]
-  publishReservationCommitted:
-    action: send
-    channel: { $ref: '#/channels/orderFacts' }
-    messages: [{ $ref: '#/channels/orderFacts/messages/reservationCommitted' }]
-  publishReservationReleased:
-    action: send
-    channel: { $ref: '#/channels/orderFacts' }
-    messages: [{ $ref: '#/channels/orderFacts/messages/reservationReleased' }]
   publishReservationLineDispatched:
     action: send
     channel: { $ref: '#/channels/orderFacts' }
@@ -88,21 +75,6 @@ components:
       title: Per-SKU stock availability changed
       contentType: application/cloudevents+json
       payload: { $ref: './schemas/sku-availability-changed.schema.json' }
-    reservationReserved:
-      name: reservationReservedV1
-      title: Whole order reserved
-      contentType: application/cloudevents+json
-      payload: { $ref: './schemas/reservation-reserved.schema.json' }
-    reservationCommitted:
-      name: reservationCommittedV1
-      title: Whole order committed
-      contentType: application/cloudevents+json
-      payload: { $ref: './schemas/reservation-committed.schema.json' }
-    reservationReleased:
-      name: reservationReleasedV1
-      title: Whole order reservation released
-      contentType: application/cloudevents+json
-      payload: { $ref: './schemas/reservation-released.schema.json' }
     reservationLineDispatched:
       name: reservationLineDispatchedV1
       title: Reservation line physically dispatched

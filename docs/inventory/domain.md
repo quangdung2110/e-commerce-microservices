@@ -154,7 +154,7 @@ No locality, cost, capacity, stock-age, transfer, or consolidation heuristic exi
 ## Domain invariants
 
 1. Bucket equation and non-negative buckets always hold.
-2. Inventory is the only writer; every accepted mutation has command ID, actor/system actor, reason, timestamp, immutable movement/audit, and transactional outbox evidence.
+2. Inventory is the only writer; every accepted mutation has command ID, actor/system actor, reason, timestamp and immutable movement/audit. Required public facts and availability dirty work commit atomically with the transition that creates them; reservation command results are durable receipts, not public events ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 3. Reserve is all-or-nothing for the complete order; no backorder, partial reservation, or split line quantity exists.
 4. Every ReservationLine has one immutable warehouse and its configured SKU/quantity cannot change.
 5. Payment never changes physical stock; dispatch is the only sale flow that reduces `on_hand`.

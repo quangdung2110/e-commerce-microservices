@@ -19,6 +19,12 @@ verified_against_commit: null
 
 # Inventory Service — Consistency Model (Phase 6)
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> supersedes earlier per-mutation outbox wording in this historical working record.
+> Reservation commands use durable receipts and query/replay; only dispatch and selected-scope
+> inspection completion are public Order facts. Required public outbox and availability
+> dirty work remain atomic with their originating transition. Parent target documents govern.
+
 > Working document cho consistency, persistence và concurrency. Document này chọn nơi
 > authoritative commit trước khi thiết kế schema vật lý, endpoint, broker topic hay code.
 
@@ -193,9 +199,9 @@ application không được dựa vào cache hoặc in-memory state để chứn
 | Command / command group | Record phải lock/revalidate | Cùng transaction commit khi success | Business reject durable |
 |---|---|---|---|
 | `AllocationPreview` | Read authoritative warehouse/stock state, không giữ lock qua response. | Không có mutation, movement hay outbox. | `503 INVENTORY_UNAVAILABLE` nếu không đọc authoritative store; preview stale là expected. |
-| `ReserveOrder` | Selected `Warehouse` rows và grouped `StockPosition` của **exact plan**; group quantity theo `(warehouse_id, sku_id)`, lock mỗi position một lần rồi revalidate active/outage/available. | `CommandExecution` + accepted `OperationIdentity` + reservation root/lines + bucket mutation + movement/audit + outbox. | `REJECT_ALL` chỉ sau khi đã lock và chứng minh ít nhất một exact allocation không eligible; commit result/audit, không reservation/stock/outbox. |
-| `CommitPayment` / `ReleaseReservation` | Reservation root, tất cả lines, rồi mọi linked `StockPosition`. Revalidate root state, expiry/reason guard và line state. | Command/operation result + root/line transition + bucket movement/audit + outbox. | State/deadline/reason không hợp lệ commit deterministic result, không bucket/outbox. |
-| `ReleaseCommittedAllocation` / `RecordPhysicalDispatch` | Reservation root, target line, rồi target `StockPosition`. | Command/operation result + line/root-derived state + bucket movement/audit + outbox. | First transition khác đã thắng, wrong state/warehouse/reason commit deterministic reject; không compensation. |
+| `ReserveOrder` | Selected `Warehouse` rows và grouped `StockPosition` của **exact plan**; group quantity theo `(warehouse_id, sku_id)`, lock mỗi position một lần rồi revalidate active/outage/available. | `CommandExecution` + accepted `OperationIdentity` + reservation root/lines + bucket mutation + movement/audit + SKU dirty work; no Order acknowledgment outbox. | `REJECT_ALL` chỉ sau khi đã lock và chứng minh ít nhất một exact allocation không eligible; commit result/audit, không reservation/stock/outbox. |
+| `CommitPayment` / `ReleaseReservation` | Reservation root, tất cả lines, rồi mọi linked `StockPosition`. Revalidate root state, expiry/reason guard và line state. | Command/operation result + root/line transition + bucket movement/audit; Release adds SKU dirty work, normal Commit does not; no Order acknowledgment outbox. | State/deadline/reason không hợp lệ commit deterministic result, không bucket/outbox. |
+| `ReleaseCommittedAllocation` / `RecordPhysicalDispatch` | Reservation root, target line, rồi target `StockPosition`. | Command/operation result + line/root-derived state + bucket movement/audit; release adds SKU dirty work, dispatch adds its public Order outbox fact. | First transition khác đã thắng, wrong state/warehouse/reason commit deterministic reject; không compensation. |
 | Warehouse master update | Target `Warehouse`. | Command/operation result + warehouse revision + audit + applicable lifecycle/outbox fact. | Invalid state/config commit reject/audit; không stock mutation. |
 | Sellable receipt, adjustment, sellable reversal | Accepted `OperationIdentity` guard rồi target `StockPosition`. | Command/operation result + stock bucket + movement/audit + outbox. | Invalid evidence/reason, duplicate conflict hoặc insufficient sellable commit reject/audit; không movement/outbox. |
 | Register/cancel/close Refund Scope | Lifetime RefundScope identity by `order_id`; target scope/lines when one exists. | Command/operation result + scope/line state + audit + lifecycle outbox fact. | Second historical scope/state guard rejects deterministically; không stock mutation. |

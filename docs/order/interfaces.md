@@ -286,6 +286,14 @@ Ops, không thành state master mới.
 
 ### 6.2. Inventory events
 
+The Inventory topic contains only the two types below. Reserve/Commit/Release and
+fenced late-payment recovery complete through durable HTTP receipts, not Kafka
+acknowledgments. Order persists command identity/request before the remote Activity,
+then checkpoints the matching result; an unknown result uses command query/same-ID
+replay. Reconciliation distinguishes that original receipt from current reservation
+state. Retry exhaustion retains durable recovery work and alerting. See
+[Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md).
+
 | Event/group | Payload semantics tối thiểu | Xử lý |
 |---|---|---|
 | `com.ecommerce.inventory.reservation.line-dispatched.v1` / `order-inventory-ship-consumer` | order, order line, warehouse, event ID, aggregate revision, dispatched time | Durable inbox/revision validate immutable allocation, CAS `PROCESSING -> DISPATCHED`; no customer-delivery or auto-complete inference |

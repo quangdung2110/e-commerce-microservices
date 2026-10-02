@@ -293,6 +293,14 @@ thư mục `brainstorm/` là evidence của quá trình ra quyết định.
 
 ## 4. Decision register ban đầu
 
+Post-target update — 2026-10-02:
+[ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md) narrows
+Order-facing public events to dispatch and inspection completion. Reservation results
+use durable command receipts/checkpoints and query/replay. Earlier phase notes that
+say every mutation creates an outbox fact describe historical design wording; required
+public outbox and availability work remain atomic, without reservation-result publication.
+The contract catalogue and parent target documents reflect the accepted scope.
+
 | Chủ đề từ thiết kế cũ | Trạng thái khi thiết kế lại | Câu hỏi cần trả lời |
 |---|---|---|
 | Tồn kho per warehouse | Giữ để đánh giá lại | Có cần lot, zone, condition hoặc split allocation không? |

@@ -8,7 +8,16 @@ per-SKU revision. All consumers continue a business trace with
 | Topic | Key | Consumers | Facts |
 |---|---|---|---|
 | `t.inventory.stock.events.v1` | `sku_id` | Search | Inventory-owned per-SKU availability snapshots |
-| `t.inventory.order.events.v1` | `order_id` | Order | Reserved, committed, released, physical dispatch, refund inspection completion |
+| `t.inventory.order.events.v1` | `order_id` | Order | Physical line dispatch and selected-scope refund inspection completion only |
+
+Reserve/Commit/Release and fenced late-payment recovery return durable HTTP command
+receipts and publish no reservation-result event. Order stores stable command/request
+checkpoints and recovers unknown outcomes by command query or same-ID/body replay through
+the [Workflow API](../../../http/inventory/workflow/v1/openapi.yaml). Current reservation
+queries support reconciliation; a historical command receipt does not establish current
+state. Required availability work and public outbox records still commit atomically with
+the transition that creates them. See
+[Inventory ADR-020](../../../../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md).
 
 The refund inspection-completion fact contains every line in the immutable selected
 scope with expected/received/passed/failed quantities. It is emitted after final

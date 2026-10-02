@@ -463,6 +463,14 @@ dispatch/delivery consumers. An ambiguous
 Inventory/Payment/Promotion response is resolved by its command query/replay and then updates
 this checkpoint; compensation/recovery may never infer that an unknown remote mutation failed.
 
+Reserve/Commit/Release and fenced Inventory recovery produce no public acknowledgment
+event. Persist the stable command identity and canonical request before calling, then
+record the matching receipt. A missing command-query result alone does not prove failure
+of an in-flight call; replay the same ID/body and retain durable recovery after retry
+exhaustion. Current reservation state is separate evidence from an original command
+receipt. These checkpoints, not an Inventory acknowledgment inbox, support reservation
+reconciliation ([Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
+
 Scope-finalization checkpoints freeze `CLOSE|CLOSE_INCOMPLETE|CANCEL`, reason,
 scope/order/request IDs, generation, decision reference, command ID, canonical request
 and accepted/rejected outcome. A finalization dispatch uses

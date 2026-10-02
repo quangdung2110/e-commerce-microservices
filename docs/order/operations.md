@@ -99,7 +99,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Kafka unavailable/consumer lag | API/local transaction có thể tiếp tục ghi outbox; downstream/event signal trễ; alert, không xóa outbox |
 | Debezium/Kafka Connect lỗi | Outbox backlog tăng; không publish tay bằng cách phá ordering; phục hồi connector từ WAL/offset |
 | Temporal unavailable | Read API còn có thể phục vụ; command start/signal trả lỗi/202 chỉ khi đã có durable acceptance; không commit terminal state inline |
-| Inventory timeout | Activity retry/compensate; refund tiếp tục chờ, không gọi Payment refund |
+| Inventory timeout | Query/replay same durable command; unknown outcome never authorizes compensation. Pre-payment cleanup requires proven outcome/non-capture; post-capture uses forward repair. Buyer refund keeps waiting for validated inspection evidence |
 | Promotion timeout/failure | Pre-payment rollback và structured recalculation; final activity retry cùng stable key/receipt; post-payment forward repair or financial reconciliation, never technical cancellation; customer refund không gọi Promotion |
 | Payment timeout | Initiate/cancel/refund retry/query theo stable key; Order remains cancelling/reconciling until provider fact, không tạo transaction/refund thứ hai |
 | Unknown Inventory/Promotion result | Query/replay same durable command; never compensate by assuming remote mutation failed |
@@ -108,6 +108,13 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Workflow start failure after accepted API | Dispatcher retries/attaches durable workflow dispatch; no accepted command is lost |
 | Mixed-version deploy | Workflow code phải replay-compatible; consumer validates additive financial fields/version; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |
+
+Inventory Reserve/Commit/Release/recovery results have no Kafka acknowledgment path.
+Use the persisted command checkpoint to query/replay the exact ID/body; a missing query
+result alone cannot prove an in-flight command failed. Retain durable repair work and
+alert after retry exhaustion. Reconcile current reservation state separately from the
+original receipt. The Inventory inbox/DLQ handles only physical dispatch and selected-scope
+inspection completion ([Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
 
 ## 6. Scaling và capacity
 

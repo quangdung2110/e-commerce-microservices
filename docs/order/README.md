@@ -123,6 +123,12 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Internal | Redis | Redis commands | Replay request nhanh cho cancel/admin-refund/return/payment-attempt | Tùy chọn; lỗi thì fallback PostgreSQL | Key/TTL trong `data.md` |
 | Internal | Debezium/Kafka Connect | WAL CDC | Relay outbox sang Kafka | Bắt buộc | Cấu hình chưa có evidence |
 
+Inventory reservation commands return durable HTTP receipts; Order does not consume
+reservation-result acknowledgment events. Unknown Reserve/Commit/Release/recovery
+outcomes use the original command query/replay and durable Saga checkpoints. The
+Inventory Kafka contract contains only dispatch and selected-scope inspection completion
+([Inventory ADR-020](../inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
+
 ## 7. Bất biến quan trọng
 
 - [`INV-ORD-001`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): một

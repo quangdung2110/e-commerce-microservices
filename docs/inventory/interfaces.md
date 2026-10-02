@@ -100,7 +100,16 @@ Registration accepts Order's immutable `(order_id, refund_request_id)` business 
 returns Inventory's opaque `refund_scope_id`. Subsequent resource operations use
 `refund_scope_id`; facts and queries retain all three identifiers for reconciliation.
 
-These queries are the recovery path when an Order event is delayed or missed; no generic cross-service event replay API is promised to Order.
+Reserve, Commit, Release and timed-out-payment recovery return durable command receipts;
+they publish no reservation-result event to Order. Order checkpoints a stable command
+ID and request before calling, then persists the matching outcome. On response loss or
+crash, query the original command or replay the same ID/body; never infer failure from
+timeout or a missing query result while execution may still be in flight. Exhausted
+retries retain durable recovery work and alert instead of completing an unknown step.
+Command queries prove a specific command's original result; reservation queries prove
+current state and may reflect later transitions. These queries also recover delayed or
+missed dispatch/inspection facts; no generic cross-service event replay API is promised
+to Order. See [ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md).
 
 The late-payment command includes the verified Payment transaction reference. It is
 idempotent by the ordinary Order command ID, records both success and rejected guard
@@ -201,11 +210,13 @@ global Kafka ordering is promised.
 | Event | Consumer | Minimum data / semantic |
 |---|---|---|
 | `com.ecommerce.inventory.sku-availability.changed.v1` | Search | Opaque SKU, derived `is_in_stock`, monotonic per-SKU `availability_revision`, and `observed_at`; no warehouse or quantity data. |
-| `com.ecommerce.inventory.reservation.reserved.v1` | Order | Durable Inventory fact for reconciliation. |
-| `com.ecommerce.inventory.reservation.committed.v1` | Order | Payment commit fact; Order still owns payment state. |
-| `com.ecommerce.inventory.reservation.released.v1` | Order | Release fact/reason. |
 | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Order | Physical dispatch fact; Order owns shipment/delivery transition. |
 | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order | Selected scope ID and aggregated expected/received/pass/fail per-line results; not payout. |
+
+This table is the complete public event catalog for Release 1. The Order topic contains
+only physical dispatch and selected-scope inspection completion. Reservation command
+results and scope-finalization results use durable HTTP receipts and query/replay;
+movement/audit and internal work are not additional public event types.
 
 Events are written through the transactional outbox and delivered at least once. Order
 atomically records inbox/dedupe with its effect. Search uses strict per-SKU revision

@@ -167,7 +167,7 @@ Mọi event public dùng envelope versioned:
 
 ```text
 event_id                 stable UUID, dedupe key
-event_type               namespaced type, ví dụ inventory.reservation.reserved.v1
+event_type               namespaced type, ví dụ com.ecommerce.inventory.reservation.line-dispatched.v1
 schema_version           1
 export_sequence          strictly increasing committed export sequence; gaps allowed
 occurred_at              durable business commit time, không phải broker publish time
@@ -188,11 +188,17 @@ trở thành broker contract.
 | Event type | Consumer đã biết | `data` tối thiểu | Contract semantic |
 |---|---|---|---|
 | `com.ecommerce.inventory.sku-availability.changed.v1` | Search projection | `sku_id`, `is_in_stock`, `availability_revision`, `observed_at`. | Inventory-owned full snapshot per-SKU; chỉ publish/export sau Search document readiness. Không lộ warehouse/position/quantity. |
-| `inventory.reservation.reserved.v1` | Order Service | `order_id`, `expires_at`, allocation lines `{order_line_id, sku_id, quantity, warehouse_id}`. | Recovery/reconciliation fact cho Reservation đã toàn order reserve; không thay command response. |
-| `inventory.reservation.committed.v1` | Order Service | `order_id`, committed allocation lines. | Fact payment-result Inventory đã chuyển full root sang committed; không là payment instruction. |
-| `inventory.reservation.released.v1` | Order Service | `order_id`, release reason, released allocation lines, `order_exception_id` when applicable. | Fact inventory release; không quyết định refund/customer outcome. |
-| `inventory.reservation.line-dispatched.v1` | Order Service | `order_id`, `order_line_id`, `sku_id`, `quantity`, `warehouse_id`, physical handover reference/time. | Fact physical departure; Order mới sở hữu shipment/delivery transition. |
-| `inventory.refund.all-items-inspection-completed.v1` | Order Service | `refund_scope_id`, `order_id`, per-line `{order_line_id, sku_id, expected, received, passed, failed}`. | Tạo đúng một lần khi toàn scope final inspected; không đồng nghĩa refund approved/paid/closed. |
+| `com.ecommerce.inventory.reservation.line-dispatched.v1` | Order Service | `order_id`, `order_line_id`, `sku_id`, `quantity`, `warehouse_id`, physical handover reference/time. | Fact physical departure; Order mới sở hữu shipment/delivery transition. |
+| `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Order Service | `refund_scope_id`, `order_id`, per-line `{order_line_id, sku_id, expected, received, passed, failed}`. | Tạo đúng một lần khi toàn scope final inspected; không đồng nghĩa refund approved/paid/closed. |
+
+Publication scope aligned on 2026-10-02 with
+[ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md): this is
+the complete public catalog. Reserve/Commit/Release/recovery results use durable HTTP
+receipts and original-command query/replay. Order persists command identity/request
+before calling, checkpoints the matching result and retains durable repair after retry
+exhaustion; current reservation state is separate reconciliation evidence. No public
+reservation-result event is created. Availability dirty work and required public outbox
+records remain atomic with the transition that creates them.
 
 Inventory công bố cho Search derived boolean `is_in_stock`, không raw quantity hay warehouse
 detail. Boolean là `true` khi tồn tại ít nhất một `StockPosition` có `available_to_sell > 0` tại

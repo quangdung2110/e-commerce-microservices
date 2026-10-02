@@ -263,7 +263,9 @@ interactions:
       namespace plus key. Order also finalizes Buyer scopes through completed close,
       or audited no-payout incomplete close/zero-receipt cancel; uncertain outcomes
       replay the frozen command. Admin pre-dispatch has no scope, and terminal scopes
-      never reopen after Payment reversal.
+      never reopen after Payment reversal. Reservation command results use durable
+      HTTP receipts and same-command query/replay, with no Kafka acknowledgment;
+      Order retains checkpoints and durable recovery after retry exhaustion.
 
   - id: warehouse-admin-operates-inventory
     protocol: http
@@ -335,7 +337,8 @@ interactions:
     notes: >-
       Search consumes one Inventory-owned per-SKU availability snapshot only after
       Search has registered Product-document readiness; Order consumes
-      reservation, physical-dispatch, and selected-scope refund-inspection facts.
+      only physical-dispatch and selected-scope refund-inspection completion facts.
+      Reservation command results use the Workflow HTTP contract and are not public events.
       Inspection completion is payout-independent and contains pass/fail counters. Delivery is
       at-least-once with a 30-day minimum replay window.
 

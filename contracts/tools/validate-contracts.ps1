@@ -24,6 +24,13 @@ function Get-RelativeDisplayPath {
     return [System.IO.Path]::GetRelativePath($repoRoot, $Path).Replace('\', '/')
 }
 
+function Get-ContractSourceFiles {
+    param([string]$Filter)
+    # Installed tool dependencies and generated bundles are not source contracts.
+    Get-ChildItem $contractRoot -Recurse -File -Filter $Filter |
+        Where-Object { $_.FullName -notmatch '[\\/](node_modules|generated)[\\/]' }
+}
+
 function Invoke-OptionalTool {
     param(
         [string]$Name,
@@ -51,11 +58,11 @@ function Invoke-OptionalTool {
 }
 
 Write-Host 'Validating JSON files...'
-Get-ChildItem $contractRoot -Recurse -File -Filter '*.json' | ForEach-Object {
+Get-ContractSourceFiles -Filter '*.json' | ForEach-Object {
     # Bên trong catch, $_ là ErrorRecord chứ không còn là file của pipeline.
     $file = $_
     try {
-        $null = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 100
+        $null = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 100 -AsHashtable
     } catch {
         Add-ContractError "Invalid JSON in $(Get-RelativeDisplayPath $file.FullName): $($_.Exception.Message)"
     }
@@ -202,7 +209,7 @@ Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json'
 }
 
 Write-Host 'Checking JSON Schema references...'
-Get-ChildItem $contractRoot -Recurse -File -Filter '*.schema.json' | ForEach-Object {
+Get-ContractSourceFiles -Filter '*.schema.json' | ForEach-Object {
     $file = $_
     $display = Get-RelativeDisplayPath $file.FullName
     $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -218,9 +225,9 @@ Get-ChildItem $contractRoot -Recurse -File -Filter '*.schema.json' | ForEach-Obj
 
 Write-Host 'Checking Markdown links in contracts...'
 $linkPattern = '\[[^\]]+\]\(([^)]+)\)'
-Get-ChildItem $contractRoot -Recurse -File -Filter '*.md' | ForEach-Object {
+Get-ContractSourceFiles -Filter '*.md' | ForEach-Object {
     $file = $_
-    $content = Get-Content -LiteralPath $file.FullName -Raw
+    $content = [string](Get-Content -LiteralPath $file.FullName -Raw)
     [regex]::Matches($content, $linkPattern) | ForEach-Object {
         $link = $_.Groups[1].Value.Trim()
         if ($link -match '^(https?://|mailto:|#)') { return }

@@ -17,6 +17,12 @@ verified_against_commit: null
 
 # Inventory Service — Domain Foundation (Phase 2)
 
+> Publication update — 2026-10-02: [ADR-020](../decisions/ADR-020-command-receipts-and-minimal-order-events.md)
+> supersedes earlier per-mutation outbox wording in this historical working record.
+> Reservation commands use durable receipts and query/replay; only dispatch and selected-scope
+> inspection completion are public Order facts. Required public outbox and availability
+> dirty work remain atomic with their originating transition. Parent target documents govern.
+
 > Working document cho glossary, stock bucket, aggregate và invariant của thiết kế
 > đích. Nội dung ghi **Đã chốt** là domain decision đã được owner xác nhận; các phần
 > còn lại vẫn là proposal cho tới khi được chốt. Không mô tả schema hoặc implementation.
