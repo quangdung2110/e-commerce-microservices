@@ -8,7 +8,7 @@ info:
     returns UI advisory state only; it never creates a hold and is not a substitute for
     Order Reserve. It does not expose quantity, warehouse, allocation, or
     reservation data, and is distinct from the Search-only projection export surface.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://inventory-service:8080
     description: Internal service endpoint
@@ -52,7 +52,11 @@ components:
   securitySchemes:
     serviceIdentity:
       type: mutualTLS
-      description: Service identity issued only to Product Detail BFF on the internal network.
+      description: >-
+        Service identity issued only to Product Detail BFF on the internal network and
+        enforced by the service mesh. The caller also sends X-Service-Identity:
+        product-detail-bff, checked as defense-in-depth (401 when missing, 403 for another
+        service; Inventory ADR-027).
   parameters:
     CorrelationId:
       name: X-Correlation-ID

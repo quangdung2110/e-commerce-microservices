@@ -16,6 +16,7 @@ import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -53,6 +54,7 @@ class InventoryReadinessClientTest {
     void registersTheAppliedCatalogRevisionForTheSku() {
         inventory.expect(requestTo(BASE + "/exports/inventory/v1/search-projection-readiness/sku-1"))
                 .andExpect(method(HttpMethod.PUT))
+                .andExpect(header("X-Service-Identity", "search-service"))
                 .andExpect(jsonPath("$.catalog_revision").value(7))
                 .andRespond(withSuccess());
 
@@ -73,6 +75,7 @@ class InventoryReadinessClientTest {
         inventory.expect(requestTo(
                         BASE + "/exports/inventory/v1/search-projection-readiness/sku-1?catalog_revision=9"))
                 .andExpect(method(HttpMethod.DELETE))
+                .andExpect(header("X-Service-Identity", "search-service"))
                 .andRespond(withStatus(HttpStatus.NO_CONTENT));
 
         assertThat(client.revoke("sku-1", 9L)).isEqualTo(InventoryReadinessClient.Outcome.OK);

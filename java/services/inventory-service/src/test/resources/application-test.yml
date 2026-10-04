@@ -1,9 +1,9 @@
-spring:
-  flyway:
+inventory:
+  workers:
+    # Workers are driven directly by the tests (runOnce) for deterministic assertions.
     enabled: false
-  jpa:
-    hibernate:
-      ddl-auto: none
+    backlog-refresh-interval: PT1H
 
-debezium:
-  skip: true
+logging:
+  level:
+    com.ecommerce.inventory: INFO

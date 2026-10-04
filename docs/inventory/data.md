@@ -10,7 +10,7 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 
 | Record | Key / uniqueness | Role |
 |---|---|---|
-| `Warehouse` | `warehouse_id` | Address, active/outage state, fulfillment priority. |
+| `Warehouse` | `warehouse_id` (Inventory-generated) | Display `name`, address, active/outage state, fulfillment priority and `revision` used by the update guard. |
 | `StockPosition` | `(warehouse_id, sku_id)` | Current buckets and position revision. |
 | `SkuAvailabilityState` | `sku_id` | Inventory-owned derived boolean, monotonic `availability_revision` and `evaluated_at`; source for Search publication and BFF reads. |
 | `SkuAvailabilityDirty` | `sku_id` | Durable coalescing signal with `first_marked_at` (oldest unprocessed mark, never reset by coalescing) and a mark sequence the projector clears up to its start. |
@@ -18,14 +18,14 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
 | `ReadinessPublicationTask` | `(sku_id, catalog_revision)` | Durable task created atomically with a readiness registration to publish the current snapshot even without a later stock change. |
 | `SnapshotSession` | `snapshot_id` | Search snapshot session: `export_watermark`, `created_at`, `expires_at` (24 h); holds no copy of state. |
-| `OrderReservation` | `order_id` | Derived root state, `accepted_at`, advisory `expires_at`, stored `allocation_plan_id`, immutable release reason, commit/recovery `payment_reference`, correlation. |
+| `OrderReservation` | `order_id` | Derived root state, `accepted_at`, advisory `expires_at`, stored `allocation_plan_id`, immutable `ReleaseReservation` reason (kept after recovery), separate committed-release reason `ADMIN_FORCE_REFUND_BEFORE_DISPATCH`, commit/recovery `payment_reference`, correlation. |
 | `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, line state (`RESERVED`/`COMMITTED`/`DISPATCHED`/`RELEASED`), `committed_at` and dispatch reference. |
 | `PhysicalDispatch` | `(warehouse_id, dispatch_id, dispatch_line_id)`; one per `(order_id, order_line_id)` | Whole-line dispatch fact: handover reference/time, evidence reference, actor and movement link; source of the dispatch event and query fields. |
 | `RefundScope` | `order_id` lifetime unique; `refund_request_id` unique | Immutable selected-line scope state for the one Order refund case. |
 | `RefundScopeLine` | `(refund_scope_id, order_line_id)` | Immutable expected quantity and received/pass/fail counters. |
-| `ReturnReceiptLine` | `(refund_scope_id, return_receipt_id, return_receipt_line_id)` | Physical inbound provenance and residual final-inspection quantity. |
-| `InspectionResult` | Inspection/receipt-line operation identity | Final pass/fail evidence at receiving warehouse. |
-| `QuarantineDisposition` | `(warehouse_id, disposition_id, disposition_line_id)` | Non-terminal `HOLD` annotation or outbound `DISPOSE`/`RETURN_TO_SUPPLIER` consuming failed, undisposed quantity, with reversal trace. |
+| `ReturnReceiptLine` | `(return_receipt_id, return_receipt_line_id)` globally unique; recorded with its `refund_scope_id` | Physical inbound provenance and residual final-inspection quantity. |
+| `InspectionResult` | `inspection_id` globally unique; many per receipt line until its residual is zero | Final pass/fail evidence at receiving warehouse. |
+| `QuarantineDisposition` | `(disposition_id, disposition_line_id)` globally unique; recorded with `warehouse_id` | Non-terminal `HOLD` annotation or outbound `DISPOSE`/`RETURN_TO_SUPPLIER` consuming failed, undisposed quantity, with reversal trace. |
 | `StockMovement` | `movement_id`; immutable | Bucket delta, original/reversal linkage, source command. |
 | `AuditEntry` | append-only | Actor, role, reason/evidence, before/after values, causation. |
 | `CommandExecution` | `(caller_namespace, command_id)` | Input fingerprint and terminal outcome: `ACCEPTED` response or `REJECTED` HTTP status, catalog `code` and problem body for exact replay. |
@@ -63,7 +63,7 @@ The database enforces, or the transaction guards before commit enforce:
 
 `CommandExecution` stores a durable terminal result for every command with key `(caller_namespace, command_id)` and canonical request fingerprint. It records both accepted results and domain rejections. A retry after unknown transport outcome therefore returns the same result without a second mutation.
 
-`OperationIdentity` is a separate business key. Examples are `(warehouse_id, receipt_id, receipt_line_id)`, `(warehouse_id, adjustment_case_id, adjustment_line_id)`, `(refund_scope_id, return_receipt_id, return_receipt_line_id)`, and `(original_movement_id, reversal_sequence)`. It is claimed only by a successful operation. A rejected command must not poison a corrected later attempt with a new command ID.
+`OperationIdentity` is a separate business key. Examples are `(warehouse_id, receipt_id, receipt_line_id)`, `(warehouse_id, adjustment_case_id, adjustment_line_id)`, `(return_receipt_id, return_receipt_line_id)`, `inspection_id`, `(disposition_id, disposition_line_id)`, `(warehouse_id, dispatch_id, dispatch_line_id)`, `(original_movement_id, reversal_sequence)` and `(disposition_id, disposition_line_id, reversal_sequence)`; `reversal_sequence` is contiguous ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)). It is claimed only by a successful operation. A rejected command must not poison a corrected later attempt with a new command ID.
 
 ## 4. Transaction boundary
 
@@ -102,7 +102,7 @@ Commit locks the root and lines and requires only root state `RESERVED`; it does
 4. Refund Scope, line, receipt, inspection, and disposition records;
 5. StockPosition rows in `(warehouse_id ASC, sku_id ASC)` order.
 
-The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 INVENTORY_BUSY`.
+The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Every transaction runs with `lock_timeout = 2 s`. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 INVENTORY_BUSY` with `Retry-After: 1` ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 
 When warehouse configuration and Reserve race, the first committed transaction determines the result: a status change first makes Reserve reject the whole order; a Reserve first creates a commitment that later status changes do not revoke.
 
@@ -178,8 +178,11 @@ cursor. It neither writes state nor depends on Search readiness.
 The state may be calculated before Search readiness, but publication/export remains
 pending. An idempotent readiness registration atomically stores the greatest Product
 `catalog_revision` plus a durable publication task for the current snapshot; it returns
-success only after both are durable. Search revokes it after
-tombstone and before purge; an older revision cannot revoke a newer lifecycle.
+success only after both are durable. Only a new registration or a greater
+`catalog_revision` creates the task; after revocation only a greater revision registers
+again. A SKU with no state is evaluated (`false`, revision 1) before publication. Search
+revokes it after tombstone and before purge; an older revision cannot revoke a newer
+lifecycle ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 
 ## 6. Outbox, consumers, and retention
 
@@ -191,7 +194,7 @@ Search applies a strict per-SKU availability revision guard without upsert, retr
 document-readiness violations without ACK, and uses snapshot/change-feed rebuild for
 recovery.
 
-Public/export events are retained for at least 30 days from durable creation. An undelivered event remains durable past ordinary cleanup. If retained outbox growth threatens capacity or the replay guarantee, Inventory fails new mutations closed rather than dropping evidence.
+Public/export events are retained for at least 30 days from durable creation. An undelivered event remains durable past ordinary cleanup. If retained outbox growth threatens capacity or the replay guarantee, Inventory fails new mutations closed rather than dropping evidence: more than `inventory.outbox.max-unsequenced` (default 100 000) unsequenced `OutboxEvent` rows make every mutation return `503 INVENTORY_UNAVAILABLE` ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 
 ## 7. Cache, projection, and recovery classification
 

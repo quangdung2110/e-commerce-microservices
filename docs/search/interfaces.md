@@ -253,6 +253,12 @@ payload, đặc biệt không đọc `recipient_user_id` của Notification requ
 
 ## 5. Contract nội bộ Search gọi ra
 
+Mọi lời gọi tới `/internal/v1/**` của Product và `/exports/inventory/v1/**` của Inventory
+gửi `X-Service-Identity: search-service` theo
+[mesh runtime contract §6](../mesh/runtime-contract.md#6-quy-ước-identity-header); hai
+service này kiểm allowlist header như defense-in-depth và trả `401` khi thiếu
+([Inventory ADR-027](../inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)).
+
 Luồng thường gọi `PUT /exports/inventory/v1/search-projection-readiness/{sku_id}`
 sau khi catalog upsert thành công. Khi SKU tombstone, Search gọi `DELETE` readiness
 sau khi tombstone đã được ghi và bắt buộc hoàn tất trước physical purge.

@@ -25,6 +25,10 @@ import java.time.Duration;
 @EnableAsync
 public class WebConfig implements WebMvcConfigurer {
 
+    /** Caller attribution required on every internal/export call (mesh runtime contract §6). */
+    public static final String SERVICE_IDENTITY_HEADER = "X-Service-Identity";
+    public static final String SERVICE_IDENTITY = "search-service";
+
     private final SearchProperties properties;
 
     public WebConfig(SearchProperties properties) {
@@ -91,11 +95,16 @@ public class WebConfig implements WebMvcConfigurer {
      * an Inventory that accepts connections but never answers would hold the poll thread
      * forever; a bounded failure is what turns that into an uncommitted offset and a
      * redelivery ({@code operations.md §5}).
+     *
+     * <p>Every call carries {@code X-Service-Identity}: Product and Inventory check it
+     * against their internal allowlists and answer {@code 401} without it
+     * ({@code docs/mesh/runtime-contract.md §6}, Inventory ADR-027).
      */
     @Bean
     public RestClient.Builder restClientBuilder(ObjectMapper objectMapper) {
         Duration timeout = properties.export().timeout();
         return RestClient.builder()
+                .defaultHeader(SERVICE_IDENTITY_HEADER, SERVICE_IDENTITY)
                 .requestFactory(ClientHttpRequestFactories.get(ClientHttpRequestFactorySettings.DEFAULTS
                         .withConnectTimeout(timeout)
                         .withReadTimeout(timeout)))

@@ -11,7 +11,7 @@ info:
     Search applies later changes by sequence under its strict revision guard
     (Inventory ADR-022). This surface is never used to make checkout or reservation
     decisions.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://inventory-service:8080
     description: Internal Search projection endpoint
@@ -23,12 +23,15 @@ paths:
       summary: Confirm that the Product-owned Search document exists
       description: >-
         Search calls this only after the catalog write for sku_id succeeded. Inventory
-        atomically stores the greatest catalog revision and a durable publication task,
-        and must not make a SKU availability fact externally visible before this
-        registration exists. The operation returns success only after that task is
-        durable. Registration causes the current availability snapshot to be published
-        even when the boolean did not change, so Search never depends on a future stock
-        mutation.
+        atomically stores the greatest catalog revision and, for a new registration or a
+        greater catalog_revision, a durable publication task; an equal or lower revision
+        returns the stored registration without a task, and after revocation only a greater
+        revision registers again (Inventory ADR-027). Inventory must not make a SKU
+        availability fact externally visible before this registration exists. The
+        operation returns success only after that task is durable. Registration causes the
+        current availability snapshot to be published even when the boolean did not
+        change (a SKU with no state is first evaluated as false, revision 1), so Search
+        never depends on a future stock mutation.
       parameters:
         - $ref: '#/components/parameters/SkuId'
       requestBody:
@@ -49,7 +52,8 @@ paths:
       summary: Stop future availability publication before a SKU document is purged
       description: >-
         Search calls this after tombstoning and before physical purge. The catalog
-        revision prevents an old delete from revoking a newer lifecycle registration.
+        revision prevents an old delete from revoking a newer lifecycle registration: a
+        catalog_revision lower than the stored one returns 409.
       parameters:
         - $ref: '#/components/parameters/SkuId'
         - name: catalog_revision
@@ -133,7 +137,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: internal-workload-identity
-      description: Only the registered search-service projection principal is authorized.
+      description: >-
+        Only the registered search-service projection principal is authorized, enforced by
+        the service mesh. The caller also sends X-Service-Identity: search-service, checked as
+        defense-in-depth (401 when missing, 403 for another service; Inventory ADR-027).
   parameters:
     SkuId: { name: sku_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
     SnapshotId: { name: snapshot_id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
@@ -190,9 +197,9 @@ components:
       required: [items, minimum_retained_sequence, latest_sequence]
       properties:
         items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/ProjectionChange' } }
-        minimum_retained_sequence: { type: integer, format: int64, minimum: 0 }
+        minimum_retained_sequence: { type: integer, format: int64, minimum: 0, description: Smallest sequence that may still be retained; an after_sequence below minimum_retained_sequence - 1 returns 410 REPLAY_WINDOW_EXPIRED. }
         latest_sequence: { type: integer, format: int64, minimum: 0 }
-        next_after_sequence: { type: [integer, 'null'], format: int64, minimum: 0 }
+        next_after_sequence: { type: [integer, 'null'], format: int64, minimum: 0, description: Sequence to pass as after_sequence for the next page; null when the feed is drained. }
     InventoryProblem:
       allOf:
         - $ref: '../../../../shared/json-schema/v1/problem.schema.json'
@@ -204,7 +211,7 @@ components:
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller is not the registered Search projection., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Snapshot session not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: A stale catalog revision cannot revoke newer readiness., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'READINESS_REVISION_CONFLICT; a stale catalog revision cannot revoke newer readiness.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     SnapshotExpired: { description: SNAPSHOT_SESSION_EXPIRED; create a new snapshot session., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     ReplayWindowExpired: { description: REPLAY_WINDOW_EXPIRED; rebuild availability in the existing Product index from a new snapshot., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:

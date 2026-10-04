@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-05
+
+- Inventory proposed HTTP v1 pre-implementation corrections
+  ([Inventory ADR-027](../docs/inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)):
+  Workflow `CloseRefundScopeRequest.reason` is only `REFUNDED`/`REJECTED`; ADMIN
+  `Warehouse`/`CreateWarehouseRequest` add `name`, `UpdateWarehouseRequest` requires
+  `expected_revision` (stale → `409 WAREHOUSE_CONFLICT`), `DispositionReversalRequest`
+  requires `disposition_line_id`, and the catalog adds `409 WAREHOUSE_NOT_FOUND`. Receipt on
+  a terminal scope is `REFUND_SCOPE_STATE_CONFLICT`. Inspection, return-receipt-line and
+  disposition-line identifiers are globally unique. Workflow/Read/Export callers must send
+  `X-Service-Identity` (defense-in-depth allowlist); Export readiness re-registration and
+  revocation follow explicit revision rules. The ADMIN UI must regenerate its types.
+- Search sends `X-Service-Identity: search-service` on Product and Inventory
+  internal/export calls, as the mesh runtime contract requires.
+
 ## 2026-10-02
 
 - Inventory proposed events v1 removes the reservation-result `reserved`, `committed`

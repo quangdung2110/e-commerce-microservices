@@ -11,7 +11,7 @@ info:
     recovers uncertain outcomes by command query or same-ID/body replay; exhausted
     retries retain durable recovery work. Only physical dispatch and selected-scope
     inspection completion are delivered to Order through Inventory events.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://inventory-service:8080
     description: Internal service endpoint
@@ -376,6 +376,12 @@ components:
       type: http
       scheme: bearer
       bearerFormat: internal-workload-identity
+      description: >-
+        Workload identity enforced by the service mesh (mTLS plus per-principal, per-path
+        AuthorizationPolicy). The caller must also send X-Service-Identity with its
+        ServiceAccount name; Inventory checks it against the x-authorized-callers allowlist
+        as defense-in-depth (401 UNAUTHENTICATED when missing, 403 FORBIDDEN otherwise,
+        Inventory ADR-027).
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -612,7 +618,9 @@ components:
         or reversal without a prior close intent. REJECTED does not mean inspection
         FAIL. If an intent already exists, retain its reason even after reversal.
         Inventory stores Order's reason and never queries or decides Payment outcome.
-      properties: { reason: { enum: [REFUNDED, REJECTED, CANCELLED] } }
+        A zero-receipt REGISTERED scope uses cancel; CANCELLED is not a close reason
+        (Inventory ADR-027).
+      properties: { reason: { enum: [REFUNDED, REJECTED] } }
     CloseIncompleteRefundScopeRequest:
       type: object
       additionalProperties: false
@@ -733,8 +741,8 @@ components:
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller lacks the required capability., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     NotFound: { description: Resource is absent or not visible to this caller., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, RESERVATION_ALREADY_EXISTS, RESERVATION_NOT_RESERVED, RESERVATION_NOT_RECOVERABLE, PRE_DISPATCH_RELEASE_NOT_ALLOWED, REFUND_SCOPE_ALREADY_EXISTS, REFUND_SCOPE_LINE_INVALID, REFUND_SCOPE_LINE_NOT_DISPATCHED or REFUND_SCOPE_STATE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. An unknown order or scope keeps the operation code (Inventory ADR-027). code is one of IDEMPOTENCY_KEY_REUSED, RESERVATION_ALREADY_EXISTS, RESERVATION_NOT_RESERVED, RESERVATION_NOT_RECOVERABLE, PRE_DISPATCH_RELEASE_NOT_ALLOWED, REFUND_SCOPE_ALREADY_EXISTS, REFUND_SCOPE_LINE_INVALID, REFUND_SCOPE_LINE_NOT_DISPATCHED or REFUND_SCOPE_STATE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
-      description: INVENTORY_UNAVAILABLE or INVENTORY_BUSY; retry the same command ID with backoff.
+      description: INVENTORY_UNAVAILABLE (store unavailable, write freeze or outbox backpressure) or INVENTORY_BUSY (Retry-After 1); retry the same command ID with backoff.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

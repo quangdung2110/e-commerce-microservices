@@ -362,7 +362,8 @@ interactions:
     notes: >-
       Idempotent Product-document readiness register/revoke plus fixed-watermark
       per-SKU availability snapshot and ordered change feed. Inventory does not expose
-      warehouse/position projection facts to Search.
+      warehouse/position projection facts to Search. Search sends X-Service-Identity:
+      search-service; a stale revocation is 409 READINESS_REVISION_CONFLICT (Inventory ADR-027).
 
   - id: gateway-routes-review-api
     protocol: http

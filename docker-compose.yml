@@ -109,9 +109,9 @@ services:
       - -c
       - wal_level=logical
       - -c
-      - max_replication_slots=4
+      - max_replication_slots=10
       - -c
-      - max_wal_senders=4
+      - max_wal_senders=10
     ports:
       - "15432:5432"
     volumes:
@@ -385,8 +385,8 @@ services:
 
   # ── Product Detail BFF ─────────────────────────────────────
   # Read composition for the PDP (docs/product-detail-bff). Stateless: no database, no
-  # Kafka. Inventory has no service yet, so availability stays disabled and every SKU is
-  # UNKNOWN until the rollout gate (README.md "Trạng thái rollout").
+  # Kafka. Inventory availability stays disabled, so every SKU is UNKNOWN, until the PDP
+  # rollout gate (load/freshness test, README.md "Trạng thái rollout") is passed.
   product-detail-bff:
     build:
       context: ./java/services/product-detail-bff
@@ -509,6 +509,57 @@ services:
       - "traefik.http.services.promotion-service.loadbalancer.serverstransport=business-api@file"
       # /internal/v1/** cua Promotion khong co router: Checkout/Order goi trong service
       # network voi workload identity (X-Service-Identity), khong qua gateway.
+
+  # ── Inventory Service ──────────────────────────────────────
+  # Authoritative stock, reservations, returns and per-SKU availability (docs/inventory,
+  # ADR-023). PostgreSQL is the only write authority; public facts leave through the
+  # commit-ordered published_event table and the Debezium connector in
+  # java/services/inventory-service/src/main/resources/kafka (register it manually).
+  inventory-service:
+    build:
+      context: ./java/services/inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/inventory_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      # Manual fail-closed switch (docs/inventory/operations.md §1, ADR-027).
+      INVENTORY_WRITE_FREEZE: "false"
+      WORKERS_ENABLED: "true"
+      JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
+    ports:
+      - "8094:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # ADMIN only (ADR-024): authenticated = strip-identity-headers + gateway-auth;
+      # Inventory checks role ADMIN itself and the gateway never retries a write.
+      - "traefik.http.routers.inventory-admin.rule=Path(`/api/v1/admin/inventory`) || PathPrefix(`/api/v1/admin/inventory/`)"
+      - "traefik.http.routers.inventory-admin.entrypoints=web"
+      - "traefik.http.routers.inventory-admin.service=inventory-service"
+      - "traefik.http.routers.inventory-admin.priority=40"
+      - "traefik.http.routers.inventory-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.inventory-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.inventory-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.inventory-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/inventory/v1/** and /exports/inventory/v1/** have no router: Checkout,
+      # Order, Product Detail BFF and Search call them on the service network with
+      # X-Service-Identity (docs/mesh/runtime-contract.md §5.2).
 
   # ── Cart Service ───────────────────────────────────────────
   cart-service:

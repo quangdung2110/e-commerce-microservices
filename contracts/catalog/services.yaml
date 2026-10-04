@@ -41,8 +41,8 @@ services:
   - id: inventory-service
     bounded_context: inventory
     runtime: java
-    status: documented
-    contract_adoption: not_started
+    status: implemented
+    contract_adoption: pilot
     docs: docs/inventory/README.md
 
   - id: delivery-service

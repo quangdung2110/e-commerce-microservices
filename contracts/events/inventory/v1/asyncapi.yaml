@@ -10,7 +10,7 @@ info:
     public reservation-result messages. Consumers use aggregate revision to reject stale
     facts. Export sequence is assigned after commit by a single fenced sequencer
     (commit order, permanent gaps allowed) and is not a global Kafka order guarantee.
-x-adoption-status: proposed
+x-adoption-status: implemented
 defaultContentType: application/cloudevents+json
 servers:
   local:

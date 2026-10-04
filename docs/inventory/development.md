@@ -1,12 +1,29 @@
 # Inventory Service — Development Readiness
 
-> **Status:** Implementation intentionally deferred. This document prevents target design from being replaced by assumptions from the old service.
+> **Status:** Implemented in [`java/services/inventory-service`](../../java/services/inventory-service/README.md)
+> after the owner accepted the target documents and the pre-implementation corrections of
+> [ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md). The production
+> gates below remain open. This document still prevents target design from being replaced
+> by assumptions from the old service.
 
-## Preconditions to start implementation
+## Implementation status
 
-Implementation may start only after Inventory, Order, Checkout, Search, Warehouse Operations, Platform, and Security review the target documents and nominate accountable owners for their contracts.
+| Area | Evidence in the repository |
+|---|---|
+| Runtime baseline (ADR-023) | Java 21, Spring Boot 3.3, PostgreSQL 16, Flyway `V1__inventory_baseline.sql`, explicit SQL on the locked write path, Debezium connector `src/main/resources/kafka/debezium-connector-inventory-outbox.json`. |
+| Command transaction (data.md §4) | `CommandExecutor`: command claim, write guard, savepoint, durable accepted/rejected result, `lock_timeout` 2 s, two internal retries then `503 INVENTORY_BUSY`. Bucket equation and scope counters are database CHECK constraints; movement/audit are append-only by trigger. |
+| Workflow, ADMIN, Read and Export surfaces | All operations of the four OpenAPI documents, `X-Service-Identity` allowlist and `X-User-Roles: ADMIN`. |
+| Workers | Availability projector, warehouse fan-out, readiness publisher, fenced export sequencer, detection-only reconciliation, retention and outbox backpressure. |
+| Automated tests | Domain/property tests and Testcontainers integration tests listed in the service README, including emitted CloudEvents validated against `contracts/events/inventory/v1`. |
+| Relay smoke test | Throwaway PostgreSQL + Kafka + `debezium/connect:3.0.0.Final`: `published_event` rows reach `t.inventory.stock.events.v1`/`t.inventory.order.events.v1` with the documented key and full sequenced CloudEvent. |
 
-- [ ] Contract owners accept [interfaces.md](interfaces.md), including idempotency, `REJECT_ALL`, the BFF availability read, event consumers, and the 90-day breaking-change policy.
+## Preconditions before production
+
+The original start preconditions (contract owner review and nominated owners) are
+satisfied for implementation by the owner's acceptance of ADR-027; the remaining items
+below are production gates.
+
+- [x] Contract owners accept [interfaces.md](interfaces.md), including idempotency, `REJECT_ALL`, the BFF availability read, event consumers, and the 90-day breaking-change policy.
 - [ ] Platform demonstrates a relational-primary deployment proposal capable of atomic state/audit/command/outbox commit, RPO=0 target, and RTO <= 60 minutes.
 - [ ] Compliance/Legal validates the seven-year audit/evidence retention policy.
 - [ ] Before production: an Auth/gateway ADR issues and forwards an MFA assertion for ADMIN, and Inventory verifies it on every ADMIN mutation ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
@@ -32,6 +49,19 @@ single fenced export sequencer), JUnit 5 and Testcontainers. Code lives in
 5. Repository code, schemas, deployment manifests, and contracts are implementation artifacts; when they conflict with this target documentation, the target documentation wins until an accepted ADR changes it.
 
 ## Required verification before release
+
+Covered by the automated suite today: exact-plan all-or-nothing Reserve and hot-SKU
+no-oversell; same-ID replay, `IDEMPOTENCY_KEY_REUSED` and durable rejected-result replay
+with command query `REJECTED`; Commit after `expires_at`; recovery only for
+`RESERVATION_EXPIRED` including a stock shortfall; pre-dispatch release versus dispatch race;
+whole-line dispatch; Refund Scope dispatch guard, lifetime uniqueness, multi-package mixed
+PASS/FAIL completion once, close/close-incomplete/cancel guards; HOLD keeps quantity
+disposable and disposition reversal returns to quarantine only; reversal sequence and
+cumulative limits; BFF `UNKNOWN` for missing or > 30 s pending work including warehouse
+fan-out; no publication before readiness, registration publishes the current snapshot,
+stale revocation conflict; fenced stale sequencer; snapshot plus change feed; write freeze;
+emitted CloudEvents valid against their schemas. Load, failover/restore, MFA and
+cross-service consumer contract tests remain open.
 
 - Command-result/publication contract gates under
   [ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md): exactly two

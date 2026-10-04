@@ -8,7 +8,7 @@ info:
     immutable evidence, command outcome, successful operation identity, and required
     outbox events. Routed by the gateway at /api/v1/admin/inventory with role ADMIN;
     MFA is a production release gate (Inventory ADR-024).
-x-adoption-status: proposed
+x-adoption-status: implemented
 x-required-role: ADMIN
 x-mfa-required: production-gate
 servers:
@@ -50,8 +50,11 @@ paths:
     patch:
       tags: [Warehouses]
       operationId: updateWarehouse
-      summary: Update address or new-allocation eligibility
-      description: Status changes never release, reroute, or rewrite existing commitments.
+      summary: Update name, address or new-allocation eligibility
+      description: >-
+        Requires expected_revision equal to the current warehouse revision; otherwise durable
+        409 WAREHOUSE_CONFLICT (Inventory ADR-027). Status changes never release, reroute, or
+        rewrite existing commitments.
       parameters: [{ $ref: '#/components/parameters/WarehouseId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateWarehouseRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/WarehouseSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -83,7 +86,8 @@ paths:
       description: >-
         Target must be a successful sellable receipt or adjustment. reversal_sequence is
         1..n per original movement and the cumulative reversed quantity cannot exceed the
-        original quantity (409 MOVEMENT_NOT_REVERSIBLE). Reversing an increase requires
+        original quantity (409 MOVEMENT_NOT_REVERSIBLE). The sequence is contiguous (next value =
+        accepted reversals + 1) and a reversal movement is not itself reversible. Reversing an increase requires
         quantity <= available_to_sell (409 INSUFFICIENT_SELLABLE_STOCK); reversing a
         decrease adds back to sellable.
       parameters: [{ $ref: '#/components/parameters/MovementId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
@@ -109,6 +113,11 @@ paths:
       tags: [Returns]
       operationId: recordReturnReceipt
       summary: Receive an exact Refund Scope line into quarantine
+      description: >-
+        (return_receipt_id, return_receipt_line_id) is globally unique. Unknown scope/line,
+        SKU mismatch or over-receipt is 409 RETURN_RECEIPT_REJECTED; a terminal or
+        INSPECTION_COMPLETED scope is 409 REFUND_SCOPE_STATE_CONFLICT; an unknown warehouse is
+        409 WAREHOUSE_NOT_FOUND.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReturnReceiptRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -118,7 +127,10 @@ paths:
       tags: [Returns]
       operationId: recordFinalInspection
       summary: Record a final PASS or FAIL for received quantity
-      description: PASS moves quarantine to sellable. FAIL remains quarantined and cannot later become PASS.
+      description: >-
+        PASS moves quarantine to sellable. FAIL remains quarantined and cannot later become PASS.
+        inspection_id is globally unique; the receipt line is addressed by its globally unique
+        (return_receipt_id, return_receipt_line_id) and may be consumed by several inspections.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InspectionRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -132,6 +144,7 @@ paths:
         HOLD is a non-terminal annotation with no bucket movement; the quantity stays
         eligible for a later DISPOSE or RETURN_TO_SUPPLIER. Only those two consume
         failed, undisposed quantity and require physical departure evidence.
+        (disposition_id, disposition_line_id) is globally unique.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineDispositionRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -142,8 +155,11 @@ paths:
       operationId: reverseQuarantineDisposition
       summary: Restore physically returned stock to quarantine only
       description: >-
-        Only for a DISPOSE or RETURN_TO_SUPPLIER disposition whose units are verified
-        physically back at the same warehouse; restores quarantine, never sellable.
+        Only for a DISPOSE or RETURN_TO_SUPPLIER disposition line, selected by the path
+        disposition_id plus body disposition_line_id, whose units are verified physically
+        back at the same warehouse; restores quarantine, never sellable. reversal_sequence
+        is contiguous per disposition line and the cumulative quantity cannot exceed the
+        disposed quantity (409 DISPOSITION_REJECTED).
       parameters: [{ $ref: '#/components/parameters/DispositionId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DispositionReversalRequest' } } } }
       responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -299,12 +315,16 @@ components:
         region: { type: string, minLength: 1, maxLength: 120 }
         postal_code: { type: string, minLength: 1, maxLength: 32 }
         country_code: { type: string, pattern: '^[A-Z]{2}$' }
+    WarehouseName: { type: string, minLength: 1, maxLength: 120 }
     Warehouse:
       type: object
       additionalProperties: false
-      required: [warehouse_id, address, is_active, operational_state, fulfillment_priority, revision]
+      required: [warehouse_id, name, address, is_active, operational_state, fulfillment_priority, revision]
       properties:
-        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Generated by Inventory on create.
+        name: { $ref: '#/components/schemas/WarehouseName' }
         address: { $ref: '#/components/schemas/Address' }
         is_active: { type: boolean }
         operational_state: { enum: [UNKNOWN, NORMAL, OUTAGE] }
@@ -313,8 +333,9 @@ components:
     CreateWarehouseRequest:
       type: object
       additionalProperties: false
-      required: [address, is_active, operational_state, fulfillment_priority, reason, evidence_reference]
+      required: [name, address, is_active, operational_state, fulfillment_priority, reason, evidence_reference]
       properties:
+        name: { $ref: '#/components/schemas/WarehouseName' }
         address: { $ref: '#/components/schemas/Address' }
         is_active: { type: boolean }
         operational_state: { enum: [NORMAL, OUTAGE] }
@@ -324,9 +345,12 @@ components:
     UpdateWarehouseRequest:
       type: object
       additionalProperties: false
-      required: [reason, evidence_reference]
-      minProperties: 3
+      required: [expected_revision, reason, evidence_reference]
+      minProperties: 4
+      description: At least one of name, address, is_active, operational_state or fulfillment_priority.
       properties:
+        expected_revision: { type: integer, minimum: 1, description: Current warehouse revision; a mismatch is 409 WAREHOUSE_CONFLICT. }
+        name: { $ref: '#/components/schemas/WarehouseName' }
         address: { $ref: '#/components/schemas/Address' }
         is_active: { type: boolean }
         operational_state: { enum: [NORMAL, OUTAGE] }
@@ -496,8 +520,9 @@ components:
     DispositionReversalRequest:
       type: object
       additionalProperties: false
-      required: [reversal_sequence, quantity, reason, reason_note, physically_returned_at, physical_return_reference, evidence_reference]
+      required: [disposition_line_id, reversal_sequence, quantity, reason, reason_note, physically_returned_at, physical_return_reference, evidence_reference]
       properties:
+        disposition_line_id: { $ref: '#/components/schemas/OpaqueId' }
         reversal_sequence: { type: integer, minimum: 1 }
         quantity: { $ref: '#/components/schemas/Quantity' }
         reason: { enum: [WRONG_RECORD, DISPOSAL_ABORTED, SUPPLIER_RETURNED] }
@@ -718,9 +743,9 @@ components:
     BadRequest: { description: INVALID_REQUEST; correct input and use a new command ID., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unauthorized: { description: Missing or invalid identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: ADMIN authority or MFA is missing., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    NotFound: { description: Resource not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, OPERATION_IDENTITY_CONFLICT, INSUFFICIENT_SELLABLE_STOCK, DISPATCH_NOT_ALLOWED, RETURN_RECEIPT_REJECTED, INSPECTION_REJECTED, DISPOSITION_REJECTED, MOVEMENT_NOT_REVERSIBLE, REFUND_SCOPE_STATE_CONFLICT or WAREHOUSE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    NotFound: { description: 'Resource not found; for a command path target (warehouse update, movement or disposition reversal) this is a durable outcome replayed with the same body.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, OPERATION_IDENTITY_CONFLICT, INSUFFICIENT_SELLABLE_STOCK, DISPATCH_NOT_ALLOWED, RETURN_RECEIPT_REJECTED, INSPECTION_REJECTED, DISPOSITION_REJECTED, MOVEMENT_NOT_REVERSIBLE, REFUND_SCOPE_STATE_CONFLICT, WAREHOUSE_CONFLICT or WAREHOUSE_NOT_FOUND (unknown warehouse_id in a command body, Inventory ADR-027).', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unavailable:
-      description: INVENTORY_UNAVAILABLE or INVENTORY_BUSY; retry the same command ID.
+      description: INVENTORY_UNAVAILABLE (store unavailable, write freeze or outbox backpressure) or INVENTORY_BUSY (Retry-After 1); retry the same command ID.
       headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

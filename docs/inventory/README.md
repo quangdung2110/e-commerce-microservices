@@ -2,9 +2,12 @@
 
 > **Status:** Target design accepted for Release 1.
 >
-> **Implementation status:** Not started; the legacy Java implementation is not reused and is being removed.
-> Runtime: Java 21 + Spring Boot 3.x, PostgreSQL 16, Flyway, Debezium relay
-> ([ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md)).
+> **Implementation status:** Implemented in [`java/services/inventory-service`](../../java/services/inventory-service/README.md)
+> (the legacy Java implementation was not reused). Runtime: Java 21 + Spring Boot 3.x,
+> PostgreSQL 16, Flyway, Debezium relay ([ADR-023](decisions/ADR-023-java-spring-boot-postgresql-runtime.md)).
+> Pre-implementation contract corrections are in [ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md).
+> Production gates (ADMIN MFA, RPO/RTO drills, load tests, retention approval) remain open in
+> [development.md](development.md).
 
 Inventory is the sole owner of warehouse master data, stock at each warehouse, the
 derived per-SKU stock-availability integration state, reservations, physical dispatch
@@ -51,7 +54,7 @@ catalog, or Search's indexed copy.
 | [architecture.md](architecture.md) | Components, trust boundaries, authoritative write path, concurrency, and deployment constraints. |
 | [operations.md](operations.md) | Failure modes, SLOs, reconciliation, security, DLQ/replay, backup, and DR runbook. |
 | [decisions/README.md](decisions/README.md) | Current ADR index and status of historical ADRs. |
-| [development.md](development.md) | Preconditions and verification plan before implementation starts. |
+| [development.md](development.md) | Implementation status, verification evidence and the gates still open before production. |
 
 The working record that led to this target design is retained in [brainstorm/redesign-plan.md](brainstorm/redesign-plan.md). It is evidence, not a competing source of truth.
 

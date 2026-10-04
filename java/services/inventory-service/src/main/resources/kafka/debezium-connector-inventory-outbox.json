@@ -1,0 +1,49 @@
+{
+  "name": "inventory-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "${DB_HOSTNAME:postgres}",
+    "database.port": "${DB_PORT:5432}",
+    "database.user": "${DB_USERNAME:postgres}",
+    "database.password": "${DB_PASSWORD:postgres}",
+    "database.dbname": "${DB_NAME:inventory_service}",
+    "topic.prefix": "inventory-db",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "dbz_inventory_published_publication",
+    "publication.autocreate.mode": "filtered",
+    "slot.name": "inventory_published_slot",
+    "snapshot.mode": "no_data",
+    "table.include.list": "public.published_event",
+    "skipped.operations": "u,d,t",
+    "tombstones.on.delete": "false",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "message_key",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.table.fields.additional.placement": "event_type:header:ce_type,sequence:header:ce_sequence",
+    "transforms.outbox.route.by.field": "topic",
+    "transforms.outbox.route.topic.regex": "(?<routedByValue>.*)",
+    "transforms.outbox.route.topic.replacement": "${routedByValue}",
+
+    "errors.tolerance": "none",
+    "event.processing.failure.handling.mode": "fail",
+    "errors.retry.timeout": "-1",
+    "errors.retry.delay.max.ms": "300000",
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "200",
+
+    "heartbeat.interval.ms": "60000",
+    "provide.transaction.metadata": "false"
+  }
+}

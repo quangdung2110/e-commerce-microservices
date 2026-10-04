@@ -23,7 +23,7 @@
 | Count discrepancy | Do not modify protected buckets silently. | Order's Admin cancellation (`RESERVED`) or pre-dispatch refund (`COMMITTED`) returns units to sellable first; ADMIN then adjusts. Other cases are incidents ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)). |
 | Consumer failure / replay window expired | Producer fact remains durable; consumer can lag. | Order uses its inbox/DLQ; Search does not ACK retryable/readiness violations and starts a new per-SKU snapshot after `410`. |
 
-Automatic fail-closed protection requires no approval. A manual global stop is requested by the Inventory incident commander and executed by Platform/SRE. Inventory and Platform jointly authorize write reopening; Order, Search, and warehouse ADMIN cannot override the control.
+Automatic fail-closed protection requires no approval; it includes outbox backpressure (more than `inventory.outbox.max-unsequenced`, default 100 000, unsequenced outbox rows). A manual global stop is requested by the Inventory incident commander and executed by Platform/SRE by setting `INVENTORY_WRITE_FREEZE=true` (`inventory.write-freeze`): every mutation, including readiness registration, returns `503 INVENTORY_UNAVAILABLE` while reads stay available ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)). Inventory and Platform jointly authorize write reopening; Order, Search, and warehouse ADMIN cannot override the control.
 
 ## 2. Service objectives and alerts
 
@@ -72,7 +72,7 @@ close/cancel recovery, not an Inventory age-based cleanup.
 | Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF known-state rate and oldest pending-work age, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
 | Pre/post recovery | Bucket scan, ledger replay, identity, outbox/export, and consumer checks. | Writes stay closed until all pass. |
 
-Reconciliation detects only. Correction requires ADMIN reason/evidence and normal command audit. For a `RESERVED` order, Order first cancels it through its Admin pre-payment cancellation (whole-root `ADMIN_CANCELLED` release); for a `COMMITTED` undispatched order it uses its Admin pre-dispatch refund (`ReleaseCommittedOrderBeforeDispatch`); a dispatched case is a manual Order incident. Inventory has no exception release. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.
+Reconciliation detects only: it publishes metrics and error logs and never mutates state. Correction requires ADMIN reason/evidence and normal command audit. For a `RESERVED` order, Order first cancels it through its Admin pre-payment cancellation (whole-root `ADMIN_CANCELLED` release); for a `COMMITTED` undispatched order it uses its Admin pre-dispatch refund (`ReleaseCommittedOrderBeforeDispatch`); a dispatched case is a manual Order incident. Inventory has no exception release. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.
 
 ## 4. Outbox, consumer recovery, and backpressure
 
@@ -95,7 +95,7 @@ Audit retains actor/effective role, command and operation identity, reason/evide
 
 ## 6. Disaster recovery runbook
 
-1. **Contain:** enable fail-closed mode; Preview returns `503`; stop retention cleanup for relevant evidence.
+1. **Contain:** enable fail-closed mode (`INVENTORY_WRITE_FREEZE=true`; Preview returns `503` while the primary is unavailable); stop retention cleanup for relevant evidence.
 2. **Preserve:** capture incident ID, affected time, deployment, audit/ledger/outbox ranges, backup point, and affected aggregates.
 3. **Recover:** fail over only to a verified zero-loss candidate or restore one consistent authoritative point; never restore state separately from command/operation identity, audit, or outbox.
 4. **Validate:** prove primary durability; scan buckets; replay ledger checkpoint; verify identities/final inspections/revisions; validate outbox/export; verify authorization/audit.

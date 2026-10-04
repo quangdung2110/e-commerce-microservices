@@ -31,5 +31,8 @@ caller-set `X-Service-Identity` header is attribution and defense-in-depth only,
 caller the mesh rejects receives `403 text/plain` before any `401`/`403` problem response
 defined here.
 
-The specifications describe the target Release 1 contract and remain `proposed`
-until provider and consumer contract tests satisfy [contract adoption](../../ADOPTION.md).
+The provider is implemented in `java/services/inventory-service`; the contracts are
+`implemented` and become `verified` only when consumer contract tests satisfy
+[contract adoption](../../ADOPTION.md). Inventory checks `X-Service-Identity` against a
+per-path allowlist: a missing header is `401`, another service `403`
+([Inventory ADR-027](../../../docs/inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)).

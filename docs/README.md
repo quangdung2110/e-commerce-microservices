@@ -110,7 +110,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 4. Inventory Service (Relational authoritative state)
 
-> Target design đã accepted cho Release 1; implementation chưa bắt đầu.
+> Target design đã accepted cho Release 1 và đã implement tại `java/services/inventory-service`
+> ([ADR-027](./inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)); các gate production
+> (MFA, RPO/RTO, load test, retention) còn mở theo [development.md](./inventory/development.md).
 > Một relational primary là write authority; Redis/cache không quyết định stock.
 > Reservation results dùng durable HTTP receipts/query/replay; Order chỉ nhận physical
 > dispatch và selected-scope inspection completion qua Kafka.
@@ -125,7 +127,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [inventory/interfaces.md](./inventory/interfaces.md) | Workflow/read/admin/export API và ba public event types; Order nhận hai type. |
 | [inventory/workflows.md](./inventory/workflows.md) | Reserve/payment/dispatch, timeout/recovery, selected refund scope và availability projection. |
 | [inventory/operations.md](./inventory/operations.md) | SLI, alert, failure mode, runbook và worker. |
-| [inventory/development.md](./inventory/development.md) | Preconditions và verification gates trước implementation/production. |
+| [inventory/development.md](./inventory/development.md) | Trạng thái implementation, verification đã có và gates còn mở trước production. |
 | [inventory/decisions/](./inventory/decisions/README.md) | Current accepted ADRs, publication scope ADR-020 và superseded historical decisions. |
 
 ---

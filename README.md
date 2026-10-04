@@ -93,7 +93,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | **Order Service** | Temporal Saga, CQRS + Elasticsearch, cold data archiving |
 | **Checkout Service** | Idempotency, security analysis, caching |
 | **Payment Service** | Stripe direct, payment/refund state machine, Outbox CDC và financial facts AsyncAPI v2 |
-| **Inventory Service** | Smart routing engine, Redis reservation, SLO observability |
+| **Inventory Service** | PostgreSQL authoritative stock, exact-plan whole-order reservation, returns/quarantine, transactional outbox + commit-ordered export ([docs/inventory](docs/inventory/README.md)) |
 | **Search Service** | Elasticsearch schema, Vietnamese full-text search |
 | **Review Service** | Rating aggregation, moderation workflow |
 | **Notification Service** | Multi-channel delivery (email, SMS, push) |
@@ -117,7 +117,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | Công nghệ | Vai trò |
 |------------|---------|
 | **PostgreSQL** | Primary database, Event Store |
-| **Redis** | Caching, session, rate limiting, inventory reservation |
+| **Redis** | Caching, session, rate limiting (không phải nguồn sự thật tồn kho) |
 | **Apache Kafka** | Event streaming, async communication |
 | **Elasticsearch** | Full-text search, CQRS read model |
 | **ScyllaDB** | Chat message storage (high-throughput) |
