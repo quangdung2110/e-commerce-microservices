@@ -29,10 +29,10 @@
       ],
       "subtotal_minor": 398000,
       "discount_minor": 0,
-      "shipping_fee_minor": 30000,
-      "total_minor": 428000,
+      "shipping_fee_minor": 0,
+      "total_minor": 398000,
       "currency": "VND",
-      "payment_method_label": "Thẻ Visa •••• 4242",
+      "payment_method_label": "Thanh toán trực tuyến",
       "shipping_address": {
         "recipient_name": "Nguyễn Văn A",
         "ward": "Phường 7",

@@ -88,7 +88,19 @@ SENT (1) → DELIVERED (2) → BOUNCED (3) / COMPLAINED (3)
 
 Quy tắc: chỉ chuyển sang trạng thái có hạng **cao hơn hoặc bằng**. Event hạng thấp đến muộn chỉ ghi timestamp, không đổi status. `Delivery` đến trước `Send` → nhảy thẳng `DELIVERED`; `Send` đến sau bị bỏ qua. `Bounce` đến sau `Delivered` → vẫn nhận, vì bounce là thông tin quan trọng hơn.
 
-Race tinh tế hơn: provider có thể gửi `Send` **trước khi** deliver worker kịp commit `UPDATE ... provider_message_id = ...` (cửa sổ vài chục ms). Track worker correlate không thấy row nào. Không được bỏ event — đánh `UNMATCHED`, `next_attempt_at = now + 30 s`, thử lại; sau 3 lần vẫn không khớp thì alert (email gửi ngoài hệ thống, hoặc bug). Đây là lý do `provider_event` là bảng có worker poll, không xử lý trong endpoint.
+Race tinh tế hơn: provider có thể gửi `Send` **trước khi** deliver worker kịp commit `UPDATE ... provider_message_id = ...` (cửa sổ vài chục ms). Track worker correlate không thấy row nào. Không được bỏ event — đánh `UNMATCHED`, `next_attempt_at = now + 30 s × min(attempt, 10)`, thử lại; sau 3 lần vẫn không khớp thì alert (`provider_event_unmatched_age_seconds`; email gửi ngoài hệ thống, hoặc bug) nhưng **vẫn tiếp tục thử** với khoảng giãn tới 5 phút; quá 24 h kể từ khi nhận thì `IGNORED` (R-09). Đây là lý do `provider_event` là bảng có worker poll, không xử lý trong endpoint.
+
+Ánh xạ event → hành động của Track worker:
+
+| Event | Trạng thái delivery | Suppression | Outbox |
+|---|---|---|---|
+| `Send` | `→ SENT` (theo hạng; thường không đổi) | — | — |
+| `Delivery` | `→ DELIVERED` | — | `notification.delivered.v1` khi status đổi |
+| `Bounce` Permanent | `→ BOUNCED` | `HARD_BOUNCE` vĩnh viễn (lane ≠ critical) | `notification.bounced.v1` |
+| `Bounce` Transient | không đổi | `SOFT_BOUNCE` tới `now + 48 h` (lane ≠ critical) | `notification.bounced.v1` (`transient`) |
+| `Complaint` | **không đổi** (thường đến sau `DELIVERED`) | `COMPLAINT` vĩnh viễn (lane ≠ critical) + `marketing_enabled = false` cục bộ | `notification.complaint-received.v1` |
+| `Reject` (SES từ chối sau khi accept, ví dụ virus) | `→ BOUNCED` (ghi chú `reject`) | không | `notification.bounced.v1` (`permanent`, `suppressed = false`) |
+| `DeliveryDelay`, khác | không đổi | — | — (`PROCESSED`, không hành động) |
 
 ### 5.2 Bounce và complaint không phải trạng thái — chúng là hành động
 
@@ -117,7 +129,7 @@ Một email sinh 2–3 event (`Send`, `Delivery`, có thể `Open`); chiến d�
 
 1. **Xác thực chữ ký SNS** trên từng message lấy từ SQS — tải certificate từ đúng domain `sns.*.amazonaws.com`, không tin URL trong payload. Verify fail → ghi log, xoá khỏi queue, **không INSERT**.
 2. **Chống replay.** Từ chối event có timestamp lệch quá 5–10 phút, cộng unique constraint trên `provider_event_id` (SES `mail.messageId` + `eventType` + timestamp, vì SES không cấp event id riêng).
-3. **Payload là dữ liệu, không phải lệnh.** Không dùng địa chỉ email hay message id trong event để gọi tiếp hệ thống khác khi chưa đối chiếu với row nội bộ. Chỉ suppress địa chỉ **nếu** nó khớp `recipient` của delivery mà `provider_message_id` trỏ tới — nếu không, một event có chữ ký hợp lệ nhưng nội dung bị thao túng có thể chặn email của người khác.
+3. **Payload là dữ liệu, không phải lệnh.** Không dùng địa chỉ email hay message id trong event để gọi tiếp hệ thống khác khi chưa đối chiếu với row nội bộ. Chỉ suppress địa chỉ **nếu** nó khớp delivery mà `provider_message_id` trỏ tới — Notification không lưu địa chỉ người nhận, nên phép đối chiếu là: tag `delivery_id` mà worker gắn vào email lúc gửi (`mail.tags.delivery_id`) phải bằng `id` của delivery đã correlate (khi SES không trả tag, chấp nhận correlate theo `messageId`). Nếu không, một event có chữ ký hợp lệ nhưng nội dung bị thao túng có thể chặn email của người khác. Chứng cứ giữ lại là `email_hash`, không phải địa chỉ.
 
 Khi thêm provider dùng HTTP webhook (phase sau), Gateway cần route `/webhooks/notification/{provider}` với chính sách như Stripe webhook của Payment: không qua auth user, rate limit riêng, chỉ Notification nhận, và endpoint verify chữ ký theo provider (SendGrid: ECDSA; Twilio: HMAC-SHA1).
 

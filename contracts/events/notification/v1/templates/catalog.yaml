@@ -117,7 +117,7 @@ templates:
     data_source: kafka-inline
     schema: ORDER_CANCELLED.schema.json
     producer: order-service
-    trigger: "Order chuyển CANCELLED (buyer, payment_timeout, admin, out_of_stock)"
+    trigger: "Order chuyển CANCELLED pre-capture (buyer, payment_timeout, admin, out_of_stock, checkout_failed); refund_expected=false"
     max_age: PT24H
     dedup_key: { mode: required, formula: "order_cancelled:{order_id}" }
   - id: ORDER_COMPLETED

@@ -431,7 +431,9 @@ interactions:
       Order publishes NOTIFICATION_REQUESTED on the Notification-owned lane
       t.notification.transactional.v1 for five templates (ORDER_CONFIRMED,
       ORDER_PAYMENT_FAILED, ORDER_CANCELLED, ORDER_COMPLETED, ORDER_REFUNDED), via
-      the Order outbox, with template_data from the Order snapshot only. Payment
+      the Order multi-destination outbox, with deterministic template_data from the
+      Order snapshot/config only, a required per-order notification sequence, and
+      per-destination delivery receipts. Payment
       and Delivery facts are not consumed by Notification because they carry no
       user_id; Order relays those milestones.
 
@@ -492,10 +494,11 @@ interactions:
   - id: notification-ops-operates-notification
     protocol: http
     provider: notification-service
-    consumers: [notification-ops]
+    consumers: [finance-ops]
     contract: http/notification/internal/v1/openapi.yaml
     status: proposed
     notes: >-
-      Operator-only, not routed through the public Gateway: pause/resume lane, redrive
+      Finance Ops workload acting with the notification-ops principal, not routed through
+      the public Gateway: pause/resume lane, redrive
       delivery or DLQ batch, manual suppression, replay mode. Idempotency-Key required,
       every call audited. Phase 1 may implement these as a CLI sharing the same handlers.

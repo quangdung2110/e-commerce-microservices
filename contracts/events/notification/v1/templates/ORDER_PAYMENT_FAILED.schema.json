@@ -5,6 +5,19 @@
   "description": "Một payment attempt thất bại hoặc hết hạn; can_retry cho biết user còn thanh toán lại được không.",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "can_retry": { "const": true }
+        },
+        "required": ["can_retry"]
+      },
+      "then": {
+        "required": ["retry_deadline"]
+      }
+    }
+  ],
   "required": [
     "order_id",
     "order_code",
@@ -40,7 +53,8 @@
       "minimum": 1
     },
     "can_retry": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "true only for a FAILED attempt before the immutable order deadline while Inventory/Promotion holds remain accepted; EXPIRED/CANCELED are always false."
     },
     "retry_deadline": {
       "type": "string",

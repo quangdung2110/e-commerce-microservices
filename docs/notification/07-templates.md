@@ -21,7 +21,7 @@ Với fact (Cart), producer không biết tới template; bảng ánh xạ trong
 | **i18n** | `vi` bắt buộc, `en` tuỳ chọn. Locale lấy từ Auth `notification-contact` (`locale?`), mặc định `vi`. Thiếu bản dịch → fallback `vi`, không lỗi. |
 | **PII trong `template_data`** | Chỉ những gì cần hiển thị. **Không** email, số điện thoại, địa chỉ đầy đủ (địa chỉ giao hàng chỉ `recipient_name`, `ward`, `district`, `city`). Secret (OTP, reset URL) chỉ đi qua Auth `content` API, không bao giờ nằm trong Kafka. |
 | **Tiền tệ** | `*_minor` (integer, đơn vị nhỏ nhất) + `currency` (`VND`), khớp `vnd_money` của Payment. Template render định dạng. |
-| **URL** | Producer request gửi URL tuyệt đối tới frontend (`order_url`, `review_url`). Notification không tự lắp URL để không phải biết routing của frontend. Ngoại lệ: template từ fact (`CART_ABANDONED`) — fact không có chỗ cho URL nên Notification lắp `cart_url` từ một base URL cấu hình. |
+| **URL** | Producer request gửi URL tuyệt đối tới frontend (`order_url`). Notification không tự lắp URL để không phải biết routing của frontend. Ngoại lệ: template từ nguồn mà contract **không có chỗ cho URL** — `CART_ABANDONED` (fact) và `REVIEW_REPLIED` (message của Review không mang URL) — Notification lắp `cart_url` / `review_url` từ `frontend.base_url` cấu hình (`/cart`, `/products/{product_id}?review={review_id}`). Khi Review bổ sung `review_url` vào contract thì bỏ ngoại lệ này. |
 
 ## 3. Thuộc tính của một template
 
@@ -55,7 +55,7 @@ Ghi chú về complaint: user bấm "báo spam" trên **bất kỳ** email nào 
 
 ### 5.1 Critical — 7 template từ Auth
 
-Tên giữ nguyên theo enum trong `contracts/http/auth/internal/v1/openapi.yaml`. `template_data` không nằm trong Kafka; Notification lấy qua `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` cùng với email và `expires_at`.
+Tên giữ nguyên theo enum trong `contracts/http/auth/internal/v1/openapi.yaml`; template được gán ngay ở Ingest từ CloudEvents `type` (+ `purpose`) — bảng ánh xạ ở [10-interfaces.md](./10-interfaces.md) §2. Với ba template OTP/reset, `template_data` là secret, không nằm trong Kafka và không lưu; Notification lấy qua `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` cùng với email và `expires_at` lúc gửi. Với bốn template cảnh báo, `template_data` (`changed_at`, `locked_at`, `locked_until`, `unlocked_at`) nằm sẵn trong event của Auth và được lưu như mọi request khác — kênh in-app render từ đó, không gọi Auth; kênh email vẫn gọi `content` để lấy địa chỉ.
 
 | Template | Kênh | `governed_by` | `max_age` | `dedup_key` | `template_data` (từ Auth API) |
 |---|---|---|---|---|---|
@@ -79,13 +79,16 @@ Order đóng gói `template_data` từ row đơn hàng và snapshot của chính
 |---|---|---|---|---|---|
 | `ORDER_CONFIRMED` | Chuyển `PAID` | email + in_app | 6 h | `order_confirmed:{order_id}` | `order_id`, `order_code`, `placed_at`, `items[]{name, variant_name?, quantity, unit_price_minor}`, `subtotal_minor`, `discount_minor`, `shipping_fee_minor`, `total_minor`, `currency`, `payment_method_label`, `shipping_address{recipient_name, ward, district, city}`, `order_url` |
 | `ORDER_PAYMENT_FAILED` | Payment attempt thất bại (Order consume `payment.failed`/`expired`) | email + in_app | 2 h | `order_payment_failed:{order_id}:{attempt}` | `order_id`, `order_code`, `amount_minor`, `currency`, `attempt`, `can_retry`, `retry_deadline?`, `order_url` |
-| `ORDER_CANCELLED` | Chuyển `CANCELLED` (buyer, payment timeout, admin, hết hàng) | email + in_app | 24 h | `order_cancelled:{order_id}` | `order_id`, `order_code`, `cancelled_at`, `reason` ∈ {`buyer`, `payment_timeout`, `admin`, `out_of_stock`}, `refund_expected`, `order_url` |
+| `ORDER_CANCELLED` | Chuyển `CANCELLED` pre-capture (buyer, payment timeout, admin, hết hàng, checkout failure) | email + in_app | 24 h | `order_cancelled:{order_id}` | `order_id`, `order_code`, `cancelled_at`, `reason` ∈ {`buyer`, `payment_timeout`, `admin`, `out_of_stock`, `checkout_failed`}, `refund_expected=false`, `order_url` |
 | `ORDER_COMPLETED` | Chuyển `COMPLETED` (mọi line có delivery proof) | email + in_app | 48 h | `order_completed:{order_id}` | `order_id`, `order_code`, `completed_at`, `items[]{name, variant_name?, quantity}`, `review_url` |
 | `ORDER_REFUNDED` | Refund thành công (Order consume `refund.succeeded`) | email + in_app | 48 h | `order_refunded:{order_id}:{refund_id}` | `order_id`, `order_code`, `refund_id`, `amount_minor`, `currency`, `refunded_at`, `order_url` |
 
 `governed_by` cho cả 5: `email_enabled`, `in_app_enabled`.
 
-- **Yêu cầu với Order**: item snapshot phải có **tên sản phẩm** (`name`). `order.completed.v1` hiện chỉ có `product_id`, `sku_id`, `variant_name` — nếu snapshot nội bộ của Order cũng thiếu `name`, cần Checkout ghi thêm field này lúc tạo snapshot (thay đổi một field ở nguồn, không phải RPC lúc gửi).
+- **Nguồn đã chốt với Order**: Checkout bắt buộc `items[].snapshot_name`; Order lưu
+  immutable `order_item_lines.snapshot_name` và map sang notification `items[].name`.
+  `order.completed.v1` không cần mang name vì Review chỉ dùng product/SKU/variant;
+  Notification không RPC Product/User để enrich item.
 - **Không có trong phase 1, thêm sau không phá gì**: `ORDER_CREATED` (user đang nhìn màn hình đặt hàng), `ORDER_LINE_DELIVERED` (quá nhiều email; `ORDER_COMPLETED` đủ), `REFUND_FAILED` (vấn đề vận hành, user không làm gì được), return-request lifecycle (chưa rõ scope).
 - `ORDER_COMPLETED` có email dù là email thứ 2–3 cho một đơn, vì nó dẫn user tới `review_url` — có giá trị nghiệp vụ cho Review.
 
@@ -95,16 +98,16 @@ Order đóng gói `template_data` từ row đơn hàng và snapshot của chính
 
 | Template | Kênh | `governed_by` | `max_age` | `dedup_key` | `template_data` |
 |---|---|---|---|---|---|
-| `REVIEW_REPLIED` | email + in_app | `email_enabled`, `in_app_enabled` | 72 h | `review_replied:{review_id}` | `review_id`, `product_id`, `review_url` |
+| `REVIEW_REPLIED` | email + in_app | `email_enabled`, `in_app_enabled` | 72 h | `review_replied:{review_id}` | `review_id`, `product_id`, `review_url` (Notification lắp từ `frontend.base_url` — ngoại lệ §2) |
 | `REVIEW_REMOVED` | email + in_app | `email_enabled`, `in_app_enabled` | 72 h | `review_removed:{review_id}` | `review_id`, `product_id` |
 
-Theo contract Review, payload **không** mang nội dung reply, lý do gỡ, hay danh tính admin — email chỉ là "đánh giá của bạn có phản hồi mới" + link. Không có tên sản phẩm; chấp nhận cho phase 1.
+Theo contract Review, payload **không** mang nội dung reply, lý do gỡ, danh tính admin, hay URL — email chỉ là "đánh giá của bạn có phản hồi mới" + link Notification lắp. Không có tên sản phẩm; chấp nhận cho phase 1.
 
 ### 5.4 Bulk — 1 template từ Cart (fact, contract đã có)
 
 | Template | Kênh | `governed_by` | `max_age` | `dedup_key` (bảng ánh xạ sinh) | `template_data` |
 |---|---|---|---|---|---|
-| `CART_ABANDONED` | email + in_app | `marketing_enabled`, `email_enabled`, `in_app_enabled` | 24 h | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id`; `cart_url` do Notification lắp từ base URL frontend (fact không có chỗ cho URL — ngoại lệ duy nhất của quy ước URL) |
+| `CART_ABANDONED` | email + in_app | `marketing_enabled`, `email_enabled`, `in_app_enabled` | 24 h | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id`, `abandonment_cycle`; `cart_url` do Notification lắp từ base URL frontend (fact không có chỗ cho URL — ngoại lệ §2) |
 
 Fact `cart.abandoned.v1` chỉ có `cart_id`, `user_id`, `abandonment_cycle`, `occurred_at` — email là lời nhắc + link, không có danh sách sản phẩm. Muốn có sản phẩm thì Cart bổ sung snapshot vào event (thay đổi ở nguồn), không phải Notification gọi Cart.
 
@@ -147,10 +150,10 @@ Bulk còn chỗ cho `PROMOTION_*` khi Promotion có nhu cầu; chưa có contrac
       ],
       "subtotal_minor": 398000,
       "discount_minor": 0,
-      "shipping_fee_minor": 30000,
-      "total_minor": 428000,
+      "shipping_fee_minor": 0,
+      "total_minor": 398000,
       "currency": "VND",
-      "payment_method_label": "Thẻ Visa •••• 4242",
+      "payment_method_label": "Thanh toán trực tuyến",
       "shipping_address": { "recipient_name": "Nguyễn Văn A", "ward": "Phường 7", "district": "Quận 3", "city": "TP. Hồ Chí Minh" },
       "order_url": "https://shop.example.com/orders/1000234"
     }

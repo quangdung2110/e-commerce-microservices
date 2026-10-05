@@ -71,7 +71,7 @@ request topics t.notification.{lane}.v1  (Order)     ─┐
                                                                              │      source, event_id,        -- dedup lớp A
 fact topic     t.cart.events             (Cart)      ───▶ consumer fact ─────┘      template,                -- request: từ payload; fact: từ bảng ánh xạ
                                                                                     lane,                    -- request: theo topic/catalog; fact: từ bảng ánh xạ
-                                                                                    user_id, subject,
+                                                                                    user_id, subject, source_sequence?,
                                                                                     template_data,           -- request: từ payload; fact: trích từ fact
                                                                                     dedup_key?, expires_at?  -- request: producer gửi kèm; fact: bảng ánh xạ sinh
                                                                                   }
@@ -79,9 +79,10 @@ fact topic     t.cart.events             (Cart)      ───▶ consumer fact 
 
 Ba consumer request khác nhau ở cách đọc payload nhưng cùng đích:
 
-- **Order** gửi đúng schema `notification.requested.v1` → ánh xạ trực tiếp.
+- **Order** gửi đúng schema `notification.requested.v1` với `sequence` bắt buộc,
+  monotonic riêng theo order subject → ánh xạ trực tiếp và dùng cho supersession/serialization.
 - **Review** gửi message riêng của họ (`reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested`) → consumer ánh xạ 1-1 sang `REVIEW_REPLIED` / `REVIEW_REMOVED`, `recipient_user_id` → `user_id`.
-- **Auth** là request dạng đặc biệt: payload chỉ có `delivery_id`; `template`, `template_data` (secret) và email được resolve ở Render qua `POST /internal/v1/auth/notification-deliveries/{id}/content`.
+- **Auth** là request dạng đặc biệt: payload chỉ có `delivery_id` + metadata. Consumer **gán `template` ngay ở Ingest** từ CloudEvents `type` (+ `data.purpose` với OTP) theo bảng ánh xạ ở [10-interfaces.md](./10-interfaces.md) §2 — Decide cần template để biết kênh, `dedup_key`, `max_age`. Với 4 template cảnh báo (`EMAIL_CHANGED`, `PASSWORD_CHANGED`, `ACCOUNT_LOCKED`, `ACCOUNT_UNLOCKED`) `template_data` (`changed_at`, `locked_at`, …) nằm sẵn trong event và được lưu như mọi request khác; với 3 template OTP/reset `template_data` **không lưu** (secret). Email (và secret) được resolve ở Render qua `POST /internal/v1/auth/notification-deliveries/{id}/content` cho kênh email; `source_ref` của request/delivery giữ `delivery_id` của Auth để worker gọi API này.
 
 **Không có consumer cho Payment và Delivery**: fact của họ không mang `user_id` (Payment cấm tường minh trong schema), nên Notification không biết gửi cho ai. Order đã consume các fact đó để chạy state machine và phát request `ORDER_PAYMENT_FAILED`, `ORDER_REFUNDED`, `ORDER_COMPLETED` thay ([07-templates.md](./07-templates.md) §6).
 
@@ -101,12 +102,12 @@ Không event nào mang email (PII không đi qua Kafka — xem [README §4](./RE
 
 | Nguồn | API | Trả về |
 |---|---|---|
-| Auth | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | email + template + `template_data` (secret) + `expires_at` |
-| Mọi nguồn khác | `GET /internal/v1/auth/users/{user_id}/notification-contact` (đã thêm, README §7) | email, `email_verified`, `locale?` |
+| Auth (kênh email) | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | email + template + `template_data` (secret) + `expires_at`; `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`; `410` → `FAILED (content_expired)` |
+| Mọi nguồn khác | `GET /internal/v1/auth/users/{user_id}/notification-contact` (đã thêm vào contract và code Auth) | email, `email_verified`, `locale?` |
 
-Ràng buộc: timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3), cache theo `user_id` 15 phút **trong memory/Redis có TTL — không ghi xuống DB của Notification** để không tạo thêm một bản PII lâu dài. `404` → delivery `FAILED (no_recipient)`, không retry.
+Cả hai endpoint nằm trên listener **internal 8081** của Auth. Ràng buộc: timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3), cache theo `user_id` 15 phút **trong memory/Redis có TTL — không ghi xuống DB của Notification** để không tạo thêm một bản PII lâu dài. `404` → delivery `FAILED (no_recipient)`, không retry.
 
-Delivery **in-app không cần resolve gì** (chỉ cần `user_id`), nên khi Auth API sự cố, in-app vẫn đến; hai delivery email và in-app của cùng một request độc lập nhau.
+Delivery **in-app không cần resolve gì** (chỉ cần `user_id`) — kể cả in-app của 4 template cảnh báo Auth, vì `template_data` của chúng đã lưu từ event — nên khi Auth API sự cố, in-app vẫn đến; hai delivery email và in-app của cùng một request độc lập nhau.
 
 ## 3. Hai ranh giới vật lý
 
@@ -149,16 +150,29 @@ onMessage(event):
       INSERT ingest_dedup (source, event_id) ON CONFLICT DO NOTHING
           → 0 row ⇒ trùng: COMMIT, commit offset, return
       INSERT notification_request (...)
+      if HMAC(event.data.user_id) exists in deleted_user_tombstone:
+          anonymize request, decision = SKIPPED(user_deleted), COMMIT, commit offset, return
+      if source == '/services/order':
+          require integer sequence >= 1
+          compute versioned HMAC subject key; lock/upsert notification_subject_sequence
+          same sequence + same event + same payload => SKIPPED(duplicate), no delivery
+          same sequence + different event or payload => FAILED(sequence_collision)
+          lower sequence => request timeline kept, deliveries SKIPPED(superseded)
       decision = decide(request)                        -- 08-decide.md, chỉ đọc DB/Redis
       UPDATE notification_request SET decision, decision_reason
-      for each channel kept:
-        INSERT delivery_dedup (dedup_key, channel) ON CONFLICT DO NOTHING
-            → 0 row ⇒ kênh này SKIPPED (duplicate)
-        INSERT notification_delivery (status = PENDING, ...)
+      for each channel of template:
+        if kept:
+          INSERT delivery_dedup (dedup_key, channel) ON CONFLICT DO NOTHING
+              → 0 row ⇒ kênh này bị bỏ với skip_reason = duplicate
+          INSERT notification_delivery (status = PENDING, ...)
+        else:
+          INSERT notification_delivery (status = SKIPPED, skip_reason, finished_at = now)   -- timeline thấy vì sao kênh bị bỏ
     COMMIT
     NOTIFY delivery_ready(lane)                         -- lane critical
     commit offset
 ```
+
+Envelope không parse được (thiếu `id`/`type`/`source`/`data`) → publish nguyên message sang topic `<topic>.dlq` của nguồn (kèm header `x-dlq-reason`) rồi commit offset; lỗi DB tạm thời → retry tại chỗ tối đa `consume_max_attempts` rồi mới DLQ. Lỗi contract của producer (`unknown_template`, `invalid_template_data`, …) **không** đi Kafka DLQ: row `notification_request.decision = FAILED` chính là "DLQ" dạng bảng mà ops API `dlq/redrive` và alert đọc.
 
 Ba quy tắc:
 
@@ -180,6 +194,8 @@ Các cột liên quan tới cơ chế hàng đợi (schema đầy đủ, partiti
 CREATE TABLE notification_delivery (
     id                  uuid NOT NULL,
     request_id          uuid NOT NULL,         -- 1 request → N delivery theo kênh
+    source              text NOT NULL,
+    source_sequence     bigint,
     lane                text NOT NULL,         -- critical | transactional | bulk
     channel             text NOT NULL,         -- email | in_app (phase 1)
     template            text NOT NULL,
@@ -190,7 +206,7 @@ CREATE TABLE notification_delivery (
     lease_until         timestamptz,           -- worker giữ tới lúc nào (chống crash)
     locked_by           text,                  -- worker id, để debug
     dedup_key           text,                  -- khoá nghiệp vụ; unique theo (dedup_key, channel) ở bảng delivery_dedup
-    ordering_key        text,                  -- chỉ dùng khi template cần serialize, xem 05-ordering.md
+    ordering_key        text,                  -- Order: versioned HMAC(source:subject), không lưu raw subject
     expires_at          timestamptz NOT NULL,  -- effective_expires_at do Decide tính, xem 05-ordering.md
     provider            text,
     provider_message_id text,
@@ -268,28 +284,51 @@ loop forever:
         -- re-check rẻ những gì có thể đã đổi trong lúc chờ (08-decide.md §2)
         if row.expires_at < now():                -- TTL theo template
             mark(row, EXPIRED); continue
+        if lane_paused(row.lane, row.channel):    -- công tắc ops (ops_control), poll mỗi 5 s
+            release(row, next = now + 5 s); continue          -- attempt không tính
         if row.lane == 'bulk' and not marketing_enabled(row.user_id):
             mark(row, SKIPPED, preference_off); continue
-        if superseded(row):                       -- chỉ fact: aggregate đã đổi, xem 05-ordering.md
-            mark(row, SKIPPED); continue
+        if row.last_error_code == 'lease_expired':            -- reaper đã trả row về; 04-idempotency.md lớp C3
+            critical → mark(row, FAILED, lease_expired); continue
+            transactional → possibly_duplicate = true
+        if superseded(row):                       -- fact projection, xem 05-ordering.md
+            mark(row, SKIPPED, superseded); continue
 
-        rate_limiter.acquire(lane, channel)       -- token bucket theo lane
+        ordering_lease = false
         try:
-            if row.channel == 'email':
-                recipient = resolve_recipient(row)  -- Auth API (§2.3), timeout 2 s, cache 15 phút;
-                                                    -- 404 → FAILED(no_recipient), không retry
-                if suppressed_by_hash(sha256(recipient.email)) and row.lane != 'critical':
-                    mark(row, SKIPPED, suppressed); continue   -- 08-decide.md §4
-            body      = render(row)               -- template đã cache
+            if row.source == '/services/order':
+                ordering_lease = acquire_ordering_lease(row.ordering_key)  -- HMAC key, không raw subject
+                    → busy: release row về PENDING/RETRY, không tính attempt; continue
+                start heartbeat; mất lease trước provider call → release/retry, không gửi
+                if row.source_sequence < highest_subject_sequence(row.source, row.subject):
+                    mark(row, SKIPPED, superseded); continue
             if row.channel == 'in_app':
-                INSERT inbox_item + mark DELIVERED  -- cùng transaction; INCR unread sau commit
+                body = render_inapp(row)          -- template đã cache
+                INSERT inbox_item + mark DELIVERED + INSERT outbox(delivered)  -- cùng transaction; INCR unread sau commit
                 continue
-            result    = provider.send(body)       -- SES không có idempotency key; xem 04-idempotency.md lớp C
-            mark_sent(row, result.message_id)     -- compare-and-set, xem 04-idempotency.md
-        catch RetryableError:                     -- 5xx, timeout, 429
-            schedule_retry(row)                   -- RETRY, next_attempt_at = now + backoff(attempt) + jitter
-        catch PermanentError:                     -- template thiếu field, địa chỉ không hợp lệ, hard bounce
-            mark_failed(row)                      -- FAILED + ghi parking table / DLQ
+            if not breaker.allow():               -- provider chết: 06-backpressure.md §5
+                release(row, next = now + breaker_open_retry(lane)); continue   -- attempt không tính
+            if row.template is Auth:
+                content   = auth.content(row.source_ref)   -- email + secret; 404/410 → FAILED, không retry
+            else:
+                recipient = auth.contact(row.user_id)      -- cache 15 phút; 404 → FAILED(no_recipient)
+                if row.lane == 'bulk' and not recipient.email_verified:
+                    mark(row, SKIPPED, email_unverified); continue
+                if row.lane != 'critical' and suppressed(row.user_id):
+                    hash == suppression.email_hash → mark(row, SKIPPED, suppressed); continue   -- 08-decide.md §4
+                    hash != → suppression.superseded_at = now (user đã đổi email), gửi tiếp
+            body = render_email(row, data)
+            rate_limiter.acquire(lane, email, wait 5 s)   -- token bucket theo lane; hết chờ → release(row, next = now), không tính attempt
+            result = provider.send(body)          -- SES không có idempotency key; xem 04-idempotency.md lớp C
+            mark_sent(row, result.message_id, template_version, possibly_duplicate)   -- compare-and-set
+        catch RetryableError:                     -- 5xx, timeout, 429, breaker
+            attempt >= max_attempts(lane) → mark(row, FAILED, provider_error)
+            else schedule_retry(row)              -- RETRY, next_attempt_at = now + backoff(attempt) + jitter (hoặc retry_budget_defer)
+        catch PermanentError:                     -- render_failed, no_recipient, invalid_recipient, provider_rejected
+            mark(row, FAILED, code)               -- FAILED + outbox(failed); parking table = chính bảng delivery
+        finally:
+            stop ordering heartbeat
+            if ordering_lease: release_ordering_lease(row.ordering_key, row.id)
 ```
 
 Chi tiết đáng chú ý:
@@ -297,8 +336,15 @@ Chi tiết đáng chú ý:
 - **Transaction claim rất ngắn**: chỉ bao câu `UPDATE ... RETURNING`, commit ngay, rồi mới gọi provider. Không giữ transaction mở trong lúc gọi HTTP 8 s — làm vậy giữ lock, giữ connection pool, và chặn vacuum. `lease_until` là thứ thay cho việc giữ lock lâu.
 - **Backoff có jitter**: `next_attempt_at = now + min(2^attempt × 30 s, 1 h) + random(0, 30 s)`. Không jitter, 10.000 row fail cùng lúc sẽ cùng hết hạn retry cùng lúc và dội vào provider vừa hồi phục.
 - **Rate limiter đứng trước provider, không đứng trước claim**. Đặt trước claim thì row nằm `PENDING` không ai nhặt, không phân biệt được "đang throttle" với "worker chết".
+- **Claim tăng `attempt`; row không thực sự được thử thì trả lại bằng `release`** (`RETRY`, `attempt - 1`, `next_attempt_at`, `last_error_code` = `breaker_open` / `rate_limited` / `lane_paused`) — nên `attempt` luôn đếm số lần gọi provider thật ([06-backpressure.md](./06-backpressure.md) §5).
 - **Adaptive sleep khi rảnh**: poll 50 ms liên tục trên bảng trống là lãng phí. Lane critical có thể thêm Postgres `LISTEN/NOTIFY` để consumer Kafka đánh thức worker ngay sau INSERT, giảm độ trễ từ ~500 ms xuống ~5 ms.
 - **Gia hạn lease theo chu kỳ** (heartbeat `UPDATE lease_until = now + 60 s` mỗi 20 s cho row đang giữ) để batch lớn hoặc timeout dài không làm row hết lease trước khi được gửi — xem [06-backpressure.md](./06-backpressure.md) §6.
+- **Ordering lease của Order cũng có heartbeat riêng.** Worker chỉ gọi provider khi vẫn
+  sở hữu lease và timeout provider nhỏ hơn lease trừ safety margin. Nếu lease mất trong
+  provider call, kết quả là không chắc chắn: CAS của owner cũ không được ghi đè owner mới,
+  delivery được quan sát như `possibly_duplicate`/`ordering_lease_lost`. Không thiết kế
+  nào ở đây có thể bắt provider email/SMS giao tới inbox theo thứ tự tuyệt đối sau khi đã
+  accept/timeout; ordering này là local provider-call ordering, không phải saga proof.
 
 ### 5.4 Worker crash giữa chừng: lease và reaper
 
@@ -308,12 +354,14 @@ Worker claim 20 row, đánh `SENDING`, gửi được 7 rồi bị kill. 13 row 
 UPDATE notification_delivery
 SET    status = 'RETRY',
        next_attempt_at = now(),
-       last_error = 'lease expired (worker ' || locked_by || ')'
+       last_error_code = 'lease_expired',
+       last_error = 'lease expired (worker ' || locked_by || ')',
+       lease_until = NULL, locked_by = NULL
 WHERE  status = 'SENDING'
   AND  lease_until < now();
 ```
 
-13 row quay lại hàng đợi sau tối đa 60 s. Riêng row thứ 8 — đã gọi provider thành công, chưa kịp `mark_sent` — sẽ bị gửi lại. Đây là khe hở không đóng kín được về lý thuyết; cách xử lý theo lane ở [04-idempotency.md](./04-idempotency.md) §3 lớp C.
+13 row quay lại hàng đợi sau tối đa 60 s. Riêng row thứ 8 — đã gọi provider thành công, chưa kịp `mark_sent` — sẽ bị gửi lại. Đây là khe hở không đóng kín được về lý thuyết; cách xử lý theo lane ở [04-idempotency.md](./04-idempotency.md) §3 lớp C — worker nhận biết qua `last_error_code = 'lease_expired'` của row vừa claim, không suy từ `attempt`.
 
 ### 5.5 Trạng thái và ai được chuyển
 
@@ -334,6 +382,9 @@ PENDING ──claim──▶ SENDING ──ok──▶ SENT ──webhook──�
 | `SENDING → RETRY` | reaper | `lease_until < now()` |
 | `SENT → DELIVERED/BOUNCED` | track worker | theo thứ hạng, xem [03-tracking.md](./03-tracking.md) |
 | `* → EXPIRED/SKIPPED` | deliver worker lúc claim | xem [05-ordering.md](./05-ordering.md) |
+| `(không tạo) → SKIPPED` | consumer lúc Decide | kênh bị bỏ (`preference_off`, `suppressed`, `duplicate`, `channel_not_allowed`) vẫn có row `SKIPPED` để timeline đầy đủ |
+| `PENDING/RETRY → SKIPPED` | consumer `user.deleted` | `skip_reason = user_deleted` |
+| `FAILED/EXPIRED → PENDING` | ops redrive | `attempt = 0`, giữ lịch sử lỗi |
 
 ### 5.6 Vì sao đủ nhanh
 

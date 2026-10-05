@@ -103,7 +103,7 @@ WHERE  id = ? AND status = 'SENDING' AND locked_by = ?;
 
 Nếu 0 row, worker biết mình đã thua cuộc đua và không làm gì thêm: không publish event, không tăng metric. Không ngăn được email trùng đã đi, nhưng ngăn **hậu quả dây chuyền** trong hệ thống: 2 event `notification.sent`, 2 lần cập nhật analytics, 2 dòng timeline.
 
-**C3 — Chính sách theo lane khi lease hết hạn.** Row `RETRY` với `attempt > 1` do lease hết hạn là row *đã từng được thử*:
+**C3 — Chính sách theo lane khi lease hết hạn.** Reaper ghi `last_error_code = 'lease_expired'` khi trả row về `RETRY`; worker claim thấy mã đó là biết row *đã từng được thử* (không suy từ `attempt`, vì `attempt` còn bị `release` trừ lại khi breaker/rate-limit từ chối):
 
 | Lane | Hành động | Lý do |
 |---|---|---|
@@ -137,7 +137,7 @@ COMMIT;
 3. Consumer mới nhận lại cả 3: bản 1 `ON CONFLICT DO NOTHING`, bản 2 và 3 cũng vậy. Commit. **Lớp A: 3 message → 1 row.**
 4. Decide: template `otp` không có dedup_key → 1 delivery. **Lớp B: cho qua, đúng.**
 5. Deliver worker claim, gọi provider thành công, **chết trước `mark_sent`**. 60 s sau reaper trả về `RETRY`, `attempt = 2`.
-6. Worker khác nhặt: lane critical, `attempt > 1`, lease từng hết hạn → **không gửi lại**, đánh `FAILED (lease_expired)`. **Lớp C3.**
+6. Worker khác nhặt: lane critical, `last_error_code = lease_expired` → **không gửi lại**, đánh `FAILED (lease_expired)`. **Lớp C3.**
 7. Webhook `Delivery` cho email đã gửi ở bước 5 đến hai lần (SNS retry). Unique `provider_event_id` chặn bản 2. Track worker thấy row `FAILED (lease_expired)` nhưng có `Delivery` từ provider → chuyển `DELIVERED` (hạng cao hơn), ghi chú `recovered by webhook`. **Lớp D + state ranking.**
 
 Kết quả: user nhận **đúng 1 email**, trạng thái cuối cùng đúng, không event downstream nào bị nhân đôi — dù 5 điểm hỏng xảy ra liên tiếp. Thiếu bất kỳ lớp nào, con số là 2, 3 hoặc 4.
@@ -153,15 +153,15 @@ Sổ `ingest_dedup` giữ 30 ngày (≥ 2× retention 14 ngày) → thoả mãn;
 - **Dedup bằng hash payload.** Hai OTP hợp lệ khác nhau có payload gần giống → bị coi là trùng và mất. Ngược lại, retry đóng gói lại với `time` mới → hash khác → không phát hiện. Luôn dedup bằng **định danh**, không bằng nội dung.
 - **Một bảng dedup toàn cục.** Trộn khoá kỹ thuật (event id) và khoá nghiệp vụ (order_id) vào một cột `key text` → không ai hiểu row nào chặn cái gì, và không có chính sách khác nhau theo template.
 - **Check ở tầng ứng dụng thay vì constraint.** Race condition xuất hiện đúng lúc rebalance, tức đúng lúc tải cao.
-- **Coi retry là hiếm nên không test.** Retry, rebalance, lease hết hạn là **đường đi bình thường** dưới tải. Test tích hợp bắt buộc có: publish cùng event 3 lần, kill worker giữa chừng, gửi webhook trùng — assert số email = 1.
+- **Coi retry là hiếm nên không test.** Retry, rebalance, lease hết hạn là **đường đi bình thường** dưới tải. Test tích hợp bắt buộc có: publish cùng event 3 lần, kill worker giữa chừng, gửi webhook trùng — assert kỹ thuật dedup đúng và khe hở provider cho kết quả đúng theo lane; transactional không được giả vờ luôn chỉ có một email.
 - **Idempotent xử lý nhưng không idempotent side-effect.** Row không trùng, nhưng metric `emails_sent` tăng 2 hoặc outbox ghi 2 lần vì nằm ngoài transaction. Mọi side-effect nằm **cùng transaction** với chuyển trạng thái, hoặc được gác bằng compare-and-set.
 
 ## 7. Tóm lại
 
 | Lớp | Vị trí | Khoá | Cơ chế |
 |---|---|---|---|
-| A | Kafka → DB | `(source, event_id)` | Unique constraint, INSERT trước commit sau |
-| B | Decide | `dedup_key` theo template | Partial unique index; OTP cố ý không có |
+| A | Kafka → DB | `(source, event_id)` | PK trong `ingest_dedup`, cùng transaction; INSERT trước commit sau |
+| B | Decide | `(dedup_key, channel)` theo template | PK trong `delivery_dedup`; OTP cố ý không có key |
 | C | DB → provider | `delivery.id` | Compare-and-set + chính sách theo lane; idempotency key provider chỉ khi provider hỗ trợ (SES: không) |
 | D | Notification → Kafka | `outbox.event_id` | Outbox, id sinh lúc INSERT |
 

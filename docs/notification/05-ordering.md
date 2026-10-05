@@ -34,14 +34,14 @@ Khuyến nghị: `order_id` cho event đơn hàng, `user_id` cho event tài kho�
 
 Kafka giữ thứ tự trong partition; consumer INSERT vào DB đúng thứ tự đó. Nhưng deliver worker **claim song song 20 row một lúc, 30 worker cùng chạy**, và retry đẩy row về sau bằng `next_attempt_at`. Thứ tự gửi thực tế ra provider là hỗn loạn có kiểm soát — **và đó là chủ ý**, vì song song hoá là toàn bộ mục đích của ranh giới 2.
 
-Hệ quả cụ thể:
+Hệ quả cụ thể nếu không có cơ chế bảo vệ riêng cho Order:
 
-- Order phát request `ORDER_CONFIRMED` lúc 14:00:00 và `ORDER_CANCELLED` lúc 14:00:03 (khách bấm huỷ ngay).
-- Hai row nằm đúng thứ tự trong DB.
-- Worker A claim `confirmed`, gọi provider, provider chậm 8 s. Worker B claim `cancelled`, provider trả về ngay.
-- Khách nhận "Đơn đã huỷ" lúc 14:00:04 và "Đơn đã xác nhận" lúc 14:00:12.
+- Order phát `ORDER_PAYMENT_FAILED` với `sequence=7` lúc 14:00:00, sau đó checkout hết hạn và phát `ORDER_CANCELLED` với `sequence=8` lúc 14:03:00.
+- Hai row được ingest đúng thứ tự nhưng deliver worker claim song song.
+- Worker A gọi provider cho sequence 7 và bị chậm; worker B gửi sequence 8 ngay.
+- Khách có thể nhận thông báo huỷ trước rồi lại nhận thông báo mời thử thanh toán — một nghịch đảo nhân quả có hại.
 
-Không có bug; thứ tự đã bị hy sinh cho throughput.
+Vì vậy throughput song song vẫn là mặc định, nhưng lane transactional của Order là ngoại lệ có thứ tự theo từng `order_id`.
 
 ## 4. Ba cách bảo vệ thứ tự nhân quả
 
@@ -56,8 +56,8 @@ Với quyết định D-07, phạm vi áp dụng của cách này **hẹp hơn**
 
 | Nguồn                             | Ai chịu trách nhiệm "còn đúng không"                                                                                                                                                 | Notification làm gì                                                                                                                                                        |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Request** (Order, Review, Auth) | **Producer.** Order biết đơn đã huỷ, nên không phát request `ORDER_CONFIRMED` nữa — hoặc phát `ORDER_CANCELLED` với `expires_at`/`dedup_key` phù hợp. Auth kèm `expires_at` cho OTP. | Chỉ tôn trọng `expires_at` (cách 2). **Không replicate trạng thái đơn hàng** — đó là điều hybrid giúp tránh.                                                               |
-| **Fact** (Cart)                   | Notification, trong phạm vi dữ liệu nó tự có                                                                                                                                         | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED`. Cần producer kèm `sequence` (convention đã có) để so sánh. |
+| **Request** (Order, Review, Auth) | **Producer.** Order phát sequence tăng đơn điệu riêng cho notification trong cùng transaction với outbox command; Auth kèm `expires_at` cho OTP. | Với `/services/order`, persist highest sequence theo `source + subject`, phát hiện collision và skip sequence thấp hơn; không gọi ngược Order và không replicate state machine. Với nguồn khác chỉ tôn trọng contract/TTL tương ứng. |
+| **Fact** (Cart)                   | Notification, trong phạm vi dữ liệu nó tự có                                                                                                                                         | Ví dụ: `CART_ABANDONED` đang chờ trong hàng đợi bulk mà nhận `cart.checked-out` cho cùng `cart_id` → `SKIPPED (superseded)`. Cần producer kèm `sequence` (convention đã có) để so sánh. **Phase 1: no-op** — contract Cart chỉ có `cart.abandoned.v1`, không có fact nào "vượt qua" nó; hook `superseded()` trong worker tồn tại nhưng luôn trả false. |
 
 
 Nghĩa là Notification không cần gọi ngược Order hay giữ bản sao state machine của đơn hàng; nó chỉ cần theo dõi những fact nó đã consume sẵn.
@@ -79,23 +79,33 @@ TTL vừa là ordering (không gửi thứ lỗi thời) vừa là backpressure 
 
 ### Cách 3 — Serialize theo aggregate ở deliver worker
 
-Chỉ khi thực sự cần thứ tự gửi nghiêm ngặt (hiếm — ví dụ chuỗi SMS nhiều phần). Thêm cột `ordering_key`; câu claim thêm điều kiện "không có row nào cùng `ordering_key` đang `SENDING`":
+Với request transactional của Order, cách này **được bật bắt buộc**; các luồng khác mặc định không bật:
 
-```sql
-... AND NOT EXISTS (
-        SELECT 1 FROM notification_delivery s
-        WHERE  s.ordering_key = d.ordering_key AND s.status = 'SENDING')
-```
+1. Logical scope là `source + subject`; persisted `ordering_key` dùng
+   `source:key-version:HMAC(subject)` để không giữ raw order ID vô hạn.
+2. Worker acquire row trong `notification_ordering_lease` bằng compare-and-set có `lease_until`; chỉ một delivery cùng order được gọi provider tại một thời điểm.
+3. Sau khi có lease, worker đọc lại `notification_subject_sequence.highest_sequence`. Nếu delivery có sequence thấp hơn, chuyển `SKIPPED (superseded)` mà không gọi provider.
+4. Worker giữ lease xuyên suốt provider call và release trong `finally`; reaper chỉ thu hồi lease hết hạn. Timeout phải lớn hơn provider timeout cộng safety margin.
 
-Đắt hơn nhiều (subquery trong claim, giảm song song) → **chỉ bật cho template khai báo cần**, mặc định tắt.
+Lease chỉ serialize **cùng một order**, không serialize toàn bộ partition hay toàn bộ Notification. Thiết kế này tránh subquery/race kiểu "không có row `SENDING`" và vẫn cho phép các order khác chạy song song.
 
-**Với dự án này, cách 1 + cách 2 đủ cho 99 % trường hợp.** Cách 3 giữ làm lối thoát.
+Giới hạn bắt buộc phải hiểu đúng: lease bảo vệ thứ tự **bắt đầu provider call** khi worker
+còn quyền sở hữu. Nó không thể buộc SES/mailbox giao email theo thứ tự, và timeout sau khi
+provider đã accept tạo kết quả không chắc chắn. Vì vậy Order saga tuyệt đối không suy ra
+business state từ thứ tự notification; `ordering_lease_lost`/`possibly_duplicate` phải
+được quan sát và xử lý như delivery anomaly, không sửa FSM Order.
 
-## 5. Retry phá thứ tự — và đó là đúng
+## 5. Retry và thứ tự
 
-Thứ tự và retry là hai mục tiêu xung đột, và ta **chọn retry**. Giữ thứ tự nghiêm ngặt nghĩa là một row fail phải chặn mọi row sau nó cùng key cho tới khi thành công — chính là head-of-line blocking vừa loại bỏ. Cách 1 ở trên là lưới an toàn cho row retry: khi nó cuối cùng được gửi, nếu sự thật đã thay đổi thì tự bỏ.
+Với traffic thông thường, retry vẫn có thể đổi thứ tự và TTL/supersession là lưới an toàn. Riêng Order:
 
-## 6. Preferences: nơi duy nhất cần thứ tự nghiêm ngặt
+- Nếu sequence cũ fail rồi sequence mới được ingest, `highest_sequence` khiến lần retry cũ bị `SKIPPED (superseded)`.
+- Nếu sequence cũ đang ở trong provider call, sequence mới phải chờ cùng ordering lease; do đó thứ tự bắt đầu provider call không bị đảo.
+- Lease không biến email/SMS thành exactly-once: provider có thể timeout sau khi đã nhận request. Idempotency key theo delivery vẫn là lớp chống gửi trùng; reconciliation xử lý kết quả không chắc chắn.
+
+Không giữ row cũ để chặn vô hạn row mới: sequence mới có quyền supersede retry cũ chưa bắt đầu provider call.
+
+## 6. Preferences: state projection cần thứ tự nghiêm ngặt
 
 Preferences replicate từ `t.user.events` là trạng thái, không phải thông báo. Áp dụng ngược thứ tự là sai vĩnh viễn (cho tới daily reconciliation). Cách xử lý:
 
@@ -108,4 +118,4 @@ Preferences replicate từ `t.user.events` là trạng thái, không phải thô
 
 ## 7. Tóm lại
 
-Chỉ trả tiền cho thứ tự trong phạm vi aggregate. Chấp nhận thứ tự Kafka mất ở ranh giới 2 vì đó là chủ ý. Bảo vệ tính đúng đắn bằng *kiểm tra trạng thái trước khi gửi* và *TTL theo template*, không bằng serialize toàn bộ. Preferences là ngoại lệ duy nhất cần thứ tự nghiêm ngặt, và nó đi đường riêng.
+Chỉ trả chi phí ordering trong phạm vi aggregate. Traffic thông thường chấp nhận việc retry/worker song song làm đổi thứ tự và dựa vào TTL/supersession. Order transactional là ngoại lệ rõ ràng: sequence tăng đơn điệu riêng, highest-sequence state và durable per-order lease ngăn thông báo cũ được gửi sau thông báo mới. Preferences vẫn đi đường projection riêng với compare-and-set theo version.

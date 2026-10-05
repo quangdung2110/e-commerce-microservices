@@ -24,7 +24,7 @@
           "description": "Aggregate mà thông báo nói về, ví dụ orders/1000234. Là Kafka message key: ordering theo aggregate, tránh hot key theo user."
         },
         "correlationid": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "sequence": { "type": "integer", "minimum": 0, "description": "Khuyến nghị: sequence của aggregate tại thời điểm phát, để Notification nhận biết request lỗi thời." },
+        "sequence": { "type": "integer", "minimum": 0, "description": "Sequence của aggregate tại thời điểm phát. Bắt buộc và >= 1 khi source=/services/order; optional cho producer khác." },
         "data": {
           "type": "object",
           "additionalProperties": false,
@@ -83,6 +83,20 @@
               "required": ["dedup_key"]
             }
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": { "const": "/services/order" }
+        },
+        "required": ["source"]
+      },
+      "then": {
+        "required": ["sequence"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 }
         }
       }
     }

@@ -20,11 +20,12 @@ Các quy tắc ở đây đã được rải trong 02, 03, 07, 08, 09 khi từng
 | **Email người nhận** | PII | **Chỉ** trong memory của worker giữa resolve và gọi SES; Redis cache `contact:{user_id}` TTL 15 phút | ≤ 15 phút | TTL; `user.deleted` → `DEL` | Không bao giờ vào Postgres, log, metric label, event |
 | Email trong `raw` của SES event | PII | **Không** — poller thay bằng `sha256` trước khi INSERT `provider_event` | — | — | Bản gốc từ SQS bị xoá sau khi INSERT |
 | `email_hash` | Pseudonymous | `suppression`, `provider_event.raw` | Suppression hard/complaint: vĩnh viễn; `provider_event`: 30 ngày | Không xoá khi `user.deleted` (địa chỉ chết vẫn chết; hash không truy ngược) | `sha256(lower(trim(email)))`, không salt để so khớp được giữa các lần |
-| `template_data` (tên người nhận, phường/quận/thành phố, tên sản phẩm, số tiền, mã đơn) | PII mức thấp | `notification_request.template_data` | 90 ngày (partition) | `user.deleted` → NULL trong 24 h | Auth template: **không lưu** (`NULL`), vì đến qua API `content` chứa secret |
+| `template_data` (tên người nhận, phường/quận/thành phố, tên sản phẩm, số tiền, mã đơn) | PII mức thấp | `notification_request.template_data` | 90 ngày (partition) | `user.deleted` → NULL trong 24 h | Ba template OTP/reset của Auth: **không lưu** (`NULL`), vì đến qua API `content` chứa secret. Bốn template cảnh báo của Auth chỉ có timestamp (`changed_at`, `locked_at`…) — INTERNAL, lưu bình thường |
 | Secret (OTP, reset URL) | SECRET | **Không ở đâu** — chỉ trong memory giữa gọi Auth `content` API và gọi SES | ms | — | Không cache, không log, không `template_data` |
 | Nội dung in-app (`title`, `body`, `deep_link`) | PII mức thấp | `inbox_item` | 90 ngày | `user.deleted` → DELETE | Do template sinh từ `template_data`; không chứa gì ngoài những gì `template_data` có |
 | Preference (3 cờ, timezone, locale) | INTERNAL | `user_preference` | Tới khi user xoá | `user.deleted` → DELETE | Bản replicate; nguồn sự thật ở User |
-| `subject` (`orders/1000234`) | INTERNAL | `notification_request`, `notification_delivery`, event | 90 ngày | `user.deleted` → NULL ở request | Nối được về đơn hàng → về người; anonymize cùng lúc |
+| `subject` (`orders/1000234`) | INTERNAL | `notification_request`, `notification_delivery`, event | 90 ngày | `user.deleted` → NULL ở request và delivery | Nối được về đơn hàng → về người; anonymize cùng lúc |
+| Subject/user HMAC key | Pseudonymous | `notification_subject_sequence`, `notification_ordering_lease`, `deleted_user_tombstone` | Không TTL phase 1 | Purge chỉ theo replay-safe policy | Versioned HMAC secret trong secret manager; không raw subject/user ID, rotation dual-read/dual-write |
 | Frequency cap, unread count | INTERNAL | Redis, TTL 48 h / không TTL | | `user.deleted` → `DEL` | |
 | Audit ops (principal, tham số) | INTERNAL | Log audit | Theo chính sách log của dự án | — | Tham số có `user_id`, không có email |
 
@@ -48,15 +49,16 @@ Consumer riêng đọc `t.auth.events`, idempotent theo `user_id`. Trong 24 h:
 
 | Bước | Nơi | Hành động |
 |---|---|---|
-| 1 | Delivery đang `PENDING`/`RETRY` | `SKIPPED (user_deleted)` — không gửi cho tài khoản đã xoá; Auth `notification-contact` cũng trả `404` nên đây là lớp thứ hai |
-| 2 | `user_preference`, `inbox_item` | `DELETE` |
-| 3 | `notification_request` | `user_id`, `template_data`, `subject` → `NULL`; giữ `decision`, `decision_reason`, timestamp |
-| 4 | `notification_delivery` | `user_id` → `NULL`; giữ status/timestamp |
-| 5 | `suppression` | `user_id` → `NULL`; giữ `email_hash` |
-| 6 | Redis | `DEL contact:{user_id}`, `freq:{user_id}:*`, `inbox:unread:{user_id}` |
-| 7 | Outbox | Không phát event mới; outcome đã publish trước đó chỉ có `user_id` — Analytics tự xử lý theo event `USER_DELETED` của Auth |
+| 1 | `deleted_user_tombstone` | Insert versioned HMAC(user_id) trước mọi xoá; ingest check tombstone để replay cũ không tái tạo delivery/inbox |
+| 2 | Delivery đang `PENDING`/`RETRY` | `SKIPPED (user_deleted)` — không gửi cho tài khoản đã xoá; Auth `notification-contact` cũng trả `404` nên đây là lớp thứ hai |
+| 3 | `user_preference`, `inbox_item` | `DELETE` |
+| 4 | `notification_request` | `user_id`, `template_data`, `subject` → `NULL`; giữ `decision`, `decision_reason`, timestamp |
+| 5 | `notification_delivery` | `user_id`, `subject` → `NULL`; giữ status/timestamp; ordering key đã là HMAC |
+| 6 | `suppression` | `user_id` → `NULL`; giữ `email_hash` |
+| 7 | Redis | `DEL contact:{user_id}`, `freq:{user_id}:*`, `inbox:unread:{user_id}` |
+| 8 | Outbox | Không phát event mới; outcome đã publish trước đó chỉ có `user_id` — Analytics tự xử lý theo event `USER_DELETED` của Auth |
 
-Kiểm chứng: sau bước 6, `SELECT count(*) FROM notification_request WHERE user_id = ?` và tương tự trên mọi bảng phải bằng 0; đây là một test tích hợp bắt buộc (C2).
+Kiểm chứng: sau bước 8, `SELECT count(*) FROM notification_request WHERE user_id = ?` và tương tự trên mọi bảng phải bằng 0; replay event cũ chỉ tạo sanitized `SKIPPED (user_deleted)`. Đây là test tích hợp bắt buộc (C2).
 
 ## 5. Quyền truy cập
 
@@ -85,7 +87,7 @@ Dùng khi review PR vào `contracts/events/notification/v1/templates/`:
 - [ ] Nếu là fact mới: có `user_id`? đủ dữ liệu render? Không → producer gửi request (D-07).
 - [ ] `max_age` hợp lý với nội dung (thông báo có thời hạn ngắn không được sống lâu trong hàng đợi).
 - [ ] `governed_by` đúng lane; critical chỉ dành cho hành động user đang chờ hoặc cảnh báo bảo mật.
-- [ ] Không có URL do Notification tự lắp (trừ ngoại lệ `CART_ABANDONED` đã ghi).
+- [ ] Không có URL do Notification tự lắp (trừ ngoại lệ `CART_ABANDONED`, `REVIEW_REPLIED` đã ghi ở 07-templates.md §2).
 - [ ] Bản render in-app không lộ gì hơn bản email.
 - [ ] Không thêm cột PII mới vào bảng nào của Notification; nếu bắt buộc, cập nhật §2 và quy trình §4 trong cùng PR.
 

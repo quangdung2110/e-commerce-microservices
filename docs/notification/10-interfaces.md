@@ -32,7 +32,7 @@ Ba channel cùng một message type; lane được xác định bởi topic và 
 | `source` | `/services/<producer>`; phải nằm trong `x-access-policy` của channel |
 | `subject` | Aggregate mà thông báo nói về (`orders/1000234`); **là Kafka message key** — ordering theo aggregate, tránh hot key theo user |
 | `correlationid` | Bắt buộc; nối với flow gốc (checkout/order) |
-| `sequence` | Khuyến nghị; để Notification nhận biết request lỗi thời |
+| `sequence` | Bắt buộc, integer `>=1` cho `/services/order`; optional cho producer khác. Notification dùng để phát hiện collision/superseded request |
 
 | `data` | Quy tắc |
 |---|---|
@@ -51,12 +51,12 @@ Ví dụ đầy đủ: [notification-requested.v1.json](../../contracts/examples
 | Nguồn | Consumer đọc gì | Ánh xạ |
 |---|---|---|
 | Order | Đúng schema trên | Trực tiếp |
-| Review | `reviewReplyNotificationRequested` / `reviewRemovalNotificationRequested` | → `REVIEW_REPLIED` / `REVIEW_REMOVED`; `recipient_user_id` → `user_id`; `dedup_key` sinh theo công thức |
-| Auth | Chỉ `delivery_id` | `template`, `template_data`, email, `expires_at` resolve ở Render qua `content` API |
+| Review | `reviewReplyNotificationRequested` / `reviewRemovalNotificationRequested` | → `REVIEW_REPLIED` / `REVIEW_REMOVED`; `recipient_user_id` → `user_id`; `dedup_key` sinh theo công thức; `review_url` do Notification lắp từ base URL frontend (contract Review không mang URL — ngoại lệ thứ hai cùng loại với `cart_url`, [07-templates.md](./07-templates.md) §2) |
+| Auth | `delivery_id` + metadata | **Template gán ngay ở Ingest** từ CloudEvents `type` (+ `data.purpose` với OTP): `user-otp-requested/REGISTRATION_VERIFICATION` → `REGISTRATION_VERIFICATION`, `…/EMAIL_CHANGE_VERIFICATION` → `EMAIL_CHANGE_VERIFICATION`, `password-reset-requested` → `PASSWORD_RESET`, `user-email-changed` → `EMAIL_CHANGED`, `user-password-changed` → `PASSWORD_CHANGED`, `user-account-locked` → `ACCOUNT_LOCKED`, `user-unlocked` → `ACCOUNT_UNLOCKED`. `source_ref = delivery_id`. Bốn template cảnh báo lấy `template_data` (`changed_at`, `locked_at`, …) từ chính event; ba template OTP/reset không lưu `template_data` (secret) và `expires_at` lấy từ event. Email + secret resolve ở Render qua `content` API cho kênh email; kênh in-app của 4 cảnh báo render từ dữ liệu đã lưu, không gọi Auth |
 
 ## 3. Kafka ra: `t.notification.outcomes.v1`
 
-Một topic, bốn type, key `data.user_id`, publish qua outbox (Debezium), `id` sinh lúc ghi outbox. `data` lõi chung (`delivery_id`, `request_id`, `template`, `lane`, `channel`, `user_id`, `subject`, `provider`, `occurred_at`) — **không có `template_data`, không có địa chỉ**.
+Một topic, bốn type, key `data.user_id`, publish qua outbox (Debezium, hoặc poller của chính service khi `outbox.publisher = poller` — cùng schema bảng), `id` sinh lúc ghi outbox. `data` lõi chung (`delivery_id`, `request_id`, `template`, `lane`, `channel`, `user_id`, `subject`, `provider`, `occurred_at`) — **không có `template_data`, không có địa chỉ**. `request_id` là `notification_request.id` do Notification sinh (UUID mới), **không phải** CloudEvents `id` của request gốc (id của Cart không phải UUID).
 
 | Type | Khi | Thêm | Consumer |
 |---|---|---|---|
@@ -74,11 +74,11 @@ Không có event cho `SENT` hay `SKIPPED`: `SENT` là trạng thái trung gian, 
 | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | Request từ Auth | **Không** (chứa secret) | `404`/`410` → `FAILED (no_recipient)` / `EXPIRED` |
 | `GET /internal/v1/auth/users/{user_id}/notification-contact` (**mới**) | Mọi kênh email không phải Auth | Redis/memory 15 phút theo `user_id`; không ghi DB | `404` → `FAILED (no_recipient)`, không retry |
 
-Cả hai: mTLS, `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). `email_verified = false` → vẫn gửi transactional, không gửi bulk.
+Cả hai: mTLS, `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). Cả hai nằm trên **listener internal 8081** của Auth (public 8080 không serve `/internal/**`). `email_verified = false` → vẫn gửi transactional, không gửi bulk (delivery `SKIPPED (email_unverified)`). Với `content`: `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`.
 
 ## 5. HTTP vào: inbox (public qua Gateway)
 
-Identity từ Gateway (`X-User-Id`), mọi response `no-store`, lỗi `problem+json`.
+Listener public `8080` (host dev `8091`), chỉ có nhóm này. Identity từ Gateway (`X-User-Id`), mọi response `no-store`, lỗi `problem+json`.
 
 | Method | Path | Ghi chú |
 |---|---|---|
@@ -91,6 +91,8 @@ Identity từ Gateway (`X-User-Id`), mọi response `no-store`, lỗi `problem+j
 **Không có**: API preference (User Service sở hữu `replaceMyNotificationPreferences`), API lịch sử email (không lưu bản render), API gửi thủ công, realtime (SSE/WebSocket để phase sau — Gateway đã hỗ trợ WebSocket cho Chat nên khi cần chỉ là thêm route).
 
 ## 6. HTTP vào: internal
+
+Listener internal `8081` (host dev `8092`), không qua Gateway; cũng serve `/metrics`, `/livez`, `/readyz`. Principal xác thực bằng mTLS (CN chứng chỉ client); ở `app.env = development` chấp nhận header `X-Service-Identity` không xác thực. Allowlist: status → `order-service`, `finance-ops`; ops → `notification-ops`.
 
 ### Status (support / admin tool)
 
@@ -111,14 +113,14 @@ Không trả `template_data`, không trả email. Caller phase 1: `order-service
 | `POST` / `DELETE` | `/internal/v1/notifications/ops/suppressions[/{id}]` | Thêm `MANUAL` / gỡ | Không gỡ được `HARD_BOUNCE`/`COMPLAINT` (`409`) |
 | `PUT` | `/internal/v1/notifications/ops/replay-mode` | Bỏ qua event cũ hơn X khi replay | Tự tắt sau `ttl` |
 
-Mọi ops call ghi audit (principal, thời điểm, tham số). Phase 1 có thể triển khai bằng CLI dùng chung handler; contract giữ để thiết kế có chỗ và để mesh policy khai báo được trước.
+Mọi ops call ghi audit (principal, thời điểm, tham số) vào bảng `ops_audit` và stream log `audit=true`. `Idempotency-Key` lưu 24 h trong `ops_idempotency` (hash = method + path + body); trạng thái pause lane và replay mode lưu trong `ops_control` để mọi process (deliver worker ở replica khác) cùng thấy ([09-data-model.md](./09-data-model.md) §8.1). Phase 1 có cả HTTP handler lẫn `notifctl` gọi cùng handler.
 
 ## 7. Thay đổi đã áp vào contract của service khác
 
 | File | Thay đổi |
 |---|---|
 | `contracts/http/auth/internal/v1/openapi.yaml` | Thêm `GET /internal/v1/auth/users/{user_id}/notification-contact`, schema `NotificationContact`, response `UserNotFound` |
-| `contracts/events/order/v1/asyncapi.yaml` | Thêm channel `notificationRequests` (tham chiếu message của Notification) và operation `publishNotificationRequests` với 5 template và mốc phát; ghi yêu cầu snapshot có tên sản phẩm |
+| `contracts/events/order/v1/asyncapi.yaml` | Channel `notificationRequests` tham chiếu message của Notification và operation `publishNotificationRequests` với 5 template/mốc phát; deterministic item-name source đã khóa từ Checkout/Order snapshot |
 | `contracts/catalog/services.yaml` | `notification-service.contract_adoption: pilot` |
 | `contracts/catalog/interactions.yaml` | 7 interaction mới (`order-requests-notifications`, `notification-resolves-auth-contact`, `notification-consumes-cart-abandoned`, `notification-publishes-outcomes`, `gateway-routes-notification-inbox`, `support-queries-notification-status`, `notification-ops-operates-notification`) |
 | `docs/mesh/runtime-contract.md` | 4 dòng AuthorizationPolicy §5.2; 3 dòng retry/timeout; sửa ghi chú "Notification chỉ nhận Kafka" |

@@ -60,8 +60,22 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-CTR-04 | Thiếu `dedup_key` với template `required` | `FAILED (missing_dedup_key)` |
 | IT-CTR-05 | Mọi file trong `contracts/examples/events/notification-*.json` | Consumer chấp nhận; event outcome sinh ra validate được bằng schema tương ứng |
 | IT-CTR-06 | Sáu negative case của schema request (đã chạy tay khi viết contract) | Đưa vào CI như test cố định |
+| IT-CTR-07 | Order request thiếu `sequence` | Schema từ chối; không tạo request/delivery |
+| IT-CTR-08 | Hai Order request cùng subject + sequence nhưng khác event/payload | Request sau `FAILED (sequence_collision)`, không delivery, metric/alert tăng |
+| IT-CTR-09 | Replay đúng Order event cao nhất sau khi giả lập purge `ingest_dedup` và `delivery_dedup` | Request timeline `SKIPPED (duplicate)`, không delivery/provider call mới |
 
-### 2.4 Đường gửi và Track (D-09)
+### 2.4 Ordering của Order (D-05)
+
+| ID | Kịch bản | Assert |
+|---|---|---|
+| IT-ORD-01 | Publish sequence 7 rồi 8 cùng Order; giữ provider call sequence 7 trong 8 s | Sequence 8 không bắt đầu provider call trước sequence 7; order khác vẫn gửi song song |
+| IT-ORD-02 | Sequence 7 đang RETRY, ingest sequence 8 | Retry sequence 7 thành `SKIPPED (superseded)`; chỉ sequence 8 gọi provider |
+| IT-ORD-03 | Ingest sequence 8 trước rồi replay sequence 7 với event id mới | Sequence 7 được lưu timeline nhưng mọi delivery `SKIPPED (superseded)` |
+| IT-ORD-04 | Kill worker đang giữ ordering lease trước provider call; chờ lease/reaper | Không provider call từ owner cũ; worker khác chỉ tiếp tục sau lease expiry/reaper |
+| IT-ORD-05 | Hai channel của cùng sequence và sequence kế tiếp dưới 20 worker | Không đảo thứ tự bắt đầu provider call theo sequence; không serialize hai Order khác nhau |
+| IT-ORD-06 | Provider accept nhưng client timeout hoặc ordering heartbeat mất ở sequence 7 | Delivery/metric đánh dấu outcome không chắc chắn (`possibly_duplicate`/`ordering_lease_lost`); sequence 8 không được xem là bằng chứng sequence 7 đã/không tới user |
+
+### 2.5 Đường gửi và Track (D-09)
 
 | ID | Kịch bản | Assert |
 |---|---|---|
@@ -71,7 +85,7 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-TRACK-01 | Bơm `Delivery`/`Bounce`/`Complaint` mẫu (JSON thật của SES, đã ẩn danh) | Correlate đúng; `raw` không chứa địa chỉ email rõ (assert regex trên toàn bảng) |
 | IT-TRACK-02 | Message SNS chữ ký sai | Không INSERT; log `invalid_signature`; xoá khỏi queue |
 
-### 2.5 In-app và API (D-14)
+### 2.6 In-app và API (D-14)
 
 | ID | Kịch bản | Assert |
 |---|---|---|
@@ -82,11 +96,13 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-OPS-01 | `POST .../redrive` cùng `Idempotency-Key` 2 lần; lần 3 khác body | 200, 200 (cùng kết quả), 409 |
 | IT-OPS-02 | Gỡ suppression `HARD_BOUNCE` | `409` |
 
-### 2.6 Dữ liệu và privacy (D-12, D-16)
+### 2.7 Dữ liệu và privacy (D-12, D-16)
 
 | ID | Kịch bản | Assert |
 |---|---|---|
 | IT-DEL-01 | Tạo đủ dữ liệu cho user U (request, delivery, inbox, preference, suppression, Redis); publish `USER_DELETED` | Sau xử lý: `count(*) WHERE user_id = U` = 0 trên mọi bảng; `template_data`/`subject` NULL ở request của U; `email_hash` của U vẫn còn trong suppression với `user_id NULL`; Redis key biến mất; delivery đang chờ → `SKIPPED (user_deleted)` |
+| IT-DEL-02 | Sau IT-DEL-01, replay Order request cũ bằng event id mới rồi để ingest dedup hết TTL giả lập | Request bị `SKIPPED (user_deleted)`, không delivery/inbox; DB dài hạn không chứa raw user/order subject ngoài partition retention |
+| IT-DEL-03 | Rotate privacy HMAC key theo dual-read/dual-write migration dưới traffic | Cùng subject/user không tách sequence stream, không mất tombstone; key cũ chỉ retire sau merge verification |
 | IT-PII-01 | Chạy toàn bộ bộ test trên với log ở mức `debug` | Grep toàn bộ log và mọi bảng: không có chuỗi khớp regex email (`[^@\s]+@[^@\s]+\.[a-z]{2,}`) ngoài Mailpit |
 | IT-PART-01 | Đồng hồ giả tới tháng sau khi chưa tạo partition | Job tạo partition chạy trước; INSERT không lỗi; metric `partition_future_months` đúng |
 | IT-PART-02 | DROP partition tháng cũ có row `PENDING` | Job từ chối drop, alert |

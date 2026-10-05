@@ -43,11 +43,15 @@ Chọn **repo + `embed`**. "Đổi template không cần deploy" là tính năng
 ### Cấu trúc
 
 ```
+go/services/notification-service/internal/catalog/
+  catalog.yaml                -- bản sao read-only của contracts/events/notification/v1/templates/catalog.yaml
+                                 (test khẳng định byte-equal)
+  schemas/<ID>.schema.json    -- 15 JSON Schema template_data: 5 ORDER_* copy nguyên từ contracts (test byte-equal),
+                                 10 còn lại viết tại đây vì contract nguồn (Auth OpenAPI, Review, Cart) không có schema riêng
 go/services/notification-service/internal/templates/
   registry.go                 -- nạp catalog + embed, validate, expose Render()
-  funcs.go                    -- template function: money, date, truncate, plural
-  catalog/                    -- bản sao read-only của contracts/events/notification/v1/templates/catalog.yaml
-                                 (kiểm tra bằng test rằng hai file giống nhau)
+  model.go                    -- struct typed cho từng template (decode nghiêm, không nhận field lạ)
+  funcs.go                    -- template function: money, date, truncate, plural, mask
   ORDER_CONFIRMED/
     vi/
       email.subject.txt
@@ -59,11 +63,12 @@ go/services/notification-service/internal/templates/
   ORDER_PAYMENT_FAILED/
     ...
   _layout/
-    email.base.html           -- khung chung: header, footer, unsubscribe (bulk), CSS inline
+    email.base.html           -- khung chung: header, footer, unsubscribe (bulk); style viết inline sẵn bằng tay
     email.base.txt
+  testdata/<ID>/*.json        -- fixture; *.golden.* là snapshot
 ```
 
-Một template = một thư mục = một `<TEMPLATE_ID>` trong catalog. Test khởi động kiểm tra: mọi template `active`/`proposed` trong catalog có thư mục `vi` đủ file; không có thư mục thừa ngoài catalog.
+Một template = một thư mục = một `<TEMPLATE_ID>` trong catalog. Test khởi động kiểm tra: mọi template `active`/`proposed` trong catalog có thư mục `vi` đủ file (`inapp.yaml` chỉ bắt buộc khi catalog khai báo kênh `in_app`); không có thư mục thừa ngoài catalog. Phase 1 chỉ ship `vi`; cơ chế fallback và metric cho `en` vẫn có.
 
 ### `template_version`
 
@@ -101,8 +106,8 @@ Ghi chú:
 
 - **Model typed, không map**: `template_data` được unmarshal vào struct Go theo schema; template tham chiếu `.Items`, `.TotalMinor`… Sai tên field là lỗi compile-time của test render thử, không phải lỗi lúc gửi.
 - **Không có I/O trong Render**. Dữ liệu đã đủ; không gọi Product để lấy ảnh, không gọi User để lấy tên hiển thị (D-07).
-- **CSS inline ở build time** (email client bỏ `<style>`): file `email.html` viết với `<style>` cho dễ đọc, bước build chạy inliner và test render thử chạy trên bản đã inline. Không dùng MJML ở phase 1 — thêm một toolchain Node cho 15 template không đáng; nếu sau này cần layout responsive phức tạp, MJML → HTML cũng làm ở build time, không lúc chạy.
-- **Bulk có `List-Unsubscribe`** trỏ tới trang preference của frontend (User Service sở hữu preference) và `List-Unsubscribe-Post: List-Unsubscribe=One-Click` — Gmail/Yahoo yêu cầu cho bulk sender từ 2024; thiếu là bị đánh spam.
+- **CSS inline viết tay** (email client bỏ `<style>`): layout và 15 template dùng `style` attribute trực tiếp, không có `<style>` block — test khẳng định output không chứa `<style`. Không có bước inliner hay MJML ở phase 1: một layout nhỏ cho 15 template không đáng thêm toolchain; nếu sau này cần layout responsive phức tạp, MJML → HTML làm ở build time, không lúc chạy.
+- **Bulk có `List-Unsubscribe: <url>`** trỏ tới trang preference của frontend (`email.unsubscribe_url`; User Service sở hữu preference). `List-Unsubscribe-Post: One-Click` **chưa có ở phase 1**: Gmail gửi POST không xác thực tới URL đó, tức cần một endpoint public nhận token — chưa có trong contract/gateway; bổ sung khi bulk có volume thật (Gmail/Yahoo yêu cầu cho bulk sender > 5.000/ngày).
 - Kích thước: HTML email > 100 KB bị Gmail cắt ("[Message clipped]") — test render thử với fixture lớn nhất phải < 100 KB.
 
 ## 6. Template function (Go, có unit test)
@@ -125,7 +130,7 @@ Không có func nào gọi ra ngoài, đọc file hay đọc env.
 
 ## 8. Preview và snapshot test
 
-- **CLI** `notification-service render --template ORDER_CONFIRMED --locale vi --data fixture.json --out ./out/` ghi `email.html`, `email.txt`, `inapp.json`; với `--send-to mailpit` gửi thẳng vào Mailpit để xem trong trình duyệt. Người viết template không cần chạy Kafka.
+- **CLI** `notifctl render --template ORDER_CONFIRMED --locale vi --data fixture.json --out ./out/` ghi `email.html`, `email.txt`, `inapp.json`; với `--send-to mailpit` gửi thẳng vào Mailpit để xem trong trình duyệt. Người viết template không cần chạy Kafka.
 - **Snapshot test**: mỗi template có ≥ 1 fixture trong `testdata/<TEMPLATE_ID>/*.json`; test render và so với `.golden`. Đổi template → golden đổi → diff hiện trong PR, reviewer thấy chính xác email thay đổi ra sao. Cập nhật golden bằng `go test -update`.
 - **Test bảo mật cố định**: fixture có `name = "<script>alert(1)</script>"`, `order_url = "javascript:alert(1)"`; assert HTML output không chứa `<script>` và URL bị vô hiệu (`#ZgotmplZ`).
 
@@ -144,4 +149,4 @@ Không có lỗi render nào là retryable: cùng input sẽ cho cùng lỗi. Re
 
 ## 10. Tóm lại
 
-`html/template` vì escaping theo ngữ cảnh; template trong repo với `embed` vì kiểm soát thay đổi; `template_version` từ hash nội dung; validate và render thử **lúc khởi động** để lỗi template không bao giờ xuất hiện lần đầu ở DLQ; model typed; không I/O; CSS inline và `List-Unsubscribe` ở build; snapshot test làm reviewer thấy email thay đổi ra sao trong PR.
+`html/template` vì escaping theo ngữ cảnh; template trong repo với `embed` vì kiểm soát thay đổi; `template_version` từ hash nội dung; validate và render thử **lúc khởi động** để lỗi template không bao giờ xuất hiện lần đầu ở DLQ; model typed; không I/O; CSS inline viết tay và `List-Unsubscribe` cho bulk; snapshot test làm reviewer thấy email thay đổi ra sao trong PR.

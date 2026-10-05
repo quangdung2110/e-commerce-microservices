@@ -135,6 +135,21 @@ Auth publish best-effort không outbox: retry 3 lần rồi bỏ ([README §4](.
 3. Khởi động lại consumer; dedup lớp A chặn mọi event đã xử lý trong 30 ngày; chỉ event chưa từng thấy được xử lý.
 4. Tắt replay mode (hoặc để tự hết `ttl`). Kiểm tra `ingest_events_total{decision=IGNORED, reason_code=replay_too_old}` và `DUPLICATE` để xác nhận replay đúng phạm vi.
 
+### R-15 · Ordering lease Order bị kẹt (`OrderNotificationOrderingLeaseStuck`)
+
+1. Xác nhận `notification_ordering_lease` theo `ordering_key`, `delivery_id`, `locked_by`,
+   `lease_until`; đối chiếu delivery owner và log heartbeat. Không xoá
+   `notification_subject_sequence`.
+2. Nếu owner còn sống/provider call còn trong timeout, chờ heartbeat hoặc timeout; không
+   cưỡng bức release vì có thể tạo hai provider call đồng thời cùng order.
+3. Nếu owner đã chết và lease quá hạn, reaper compare-and-delete bằng cả
+   `(ordering_key, delivery_id)`; worker mới acquire. Không update/delete chỉ theo key.
+4. Nếu `ordering_lease_lost{stage=during_send}` tăng, coi kết quả gửi là không chắc chắn:
+   kiểm tra `possibly_duplicate`, provider message id/log đã khử PII; không sửa Order FSM
+   và không phát lại command với sequence tuỳ ý.
+5. Kết thúc khi lease age về 0, pending age của transactional lane giảm và test một order
+   khác xác nhận không có global head-of-line blocking.
+
 ## 4. Việc định kỳ
 
 | Việc | Tần suất | Cơ chế | Kiểm tra |
@@ -142,7 +157,7 @@ Auth publish best-effort không outbox: retry 3 lần rồi bỏ ([README §4](.
 | Tạo partition tháng tới (+2) | Hằng ngày | `workers/partition` | `partition_future_months ≥ 2` |
 | Drop partition quá retention | Hằng ngày | `workers/partition`, từ chối nếu còn row chưa kết thúc | Log + metric |
 | Purge sổ dedup (30/30/14 ngày), outbox đã publish | Hằng ngày, batch 10k | `workers/purge` | `purge_rows_deleted_total` |
-| Reaper lease | 30 s | `workers/reaper` | `delivery_lease_expired_total` |
+| Reaper delivery + ordering lease | 30 s | `workers/reaper`, compare owner trước khi thu hồi | `delivery_lease_expired_total`, `ordering_lease_oldest_age_seconds` |
 | Đối soát Auth (R-13) | Hằng ngày | Báo cáo | Chênh lệch < 0,1 % |
 | Kiểm tra reputation SES | Hằng tuần | Dashboard Quality + SES console | Bounce < 2 %, complaint < 0,05 % |
 | Rà soát DLQ | Hằng tuần | Status API / SQL | Không có `FAILED` nào chưa được phân loại |

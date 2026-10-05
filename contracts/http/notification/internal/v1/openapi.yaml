@@ -11,8 +11,8 @@ info:
     thiết kế có chỗ. Xem docs/notification/10-interfaces.md.
 x-adoption-status: proposed
 servers:
-  - url: http://notification-service:8080
-    description: Internal cluster endpoint only
+  - url: http://notification-service:8081
+    description: Internal cluster listener only (8080 chỉ serve inbox qua Gateway); dev host 8092
 tags:
   - name: Status
   - name: Ops

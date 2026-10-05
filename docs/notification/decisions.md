@@ -48,26 +48,26 @@ Chi tiết: [03-tracking.md](./03-tracking.md).
 **Bối cảnh.** Trùng phát sinh ở sáu điểm dọc pipeline với sáu khoá khác nhau. Khe hở giữa `provider.send()` và `mark_sent` không đóng kín được về lý thuyết.
 
 **Quyết định.**
-- Lớp A (Kafka → DB): unique `(source, event_id)` trên `notification_request`; INSERT trước, commit offset sau; row nghiệp vụ chính là bản ghi dedup.
-- Lớp B (Decide): `dedup_key` nghiệp vụ theo template, partial unique index; OTP **cố ý không có** dedup_key; chặn spam là rate limiting, không phải idempotency.
+- Lớp A (Kafka → DB): unique `(source, event_id)` trong sổ `ingest_dedup`, cùng transaction với request; INSERT trước, commit offset sau.
+- Lớp B (Decide): `dedup_key` nghiệp vụ theo template trong sổ `delivery_dedup(dedup_key,channel)`, cùng transaction với delivery; OTP **cố ý không có** dedup_key; chặn spam là rate limiting, không phải idempotency.
 - Lớp C (DB → provider): compare-and-set khi ghi trạng thái + chính sách theo lane khi lease hết hạn (bulk gửi lại; transactional gửi lại có đánh dấu `possibly_duplicate`; critical **không** gửi lại; in-app gửi lại an toàn vì cùng transaction). Idempotency key phía provider chỉ khi provider hỗ trợ — SES (D-09) không hỗ trợ.
 - Lớp D (Notification → Kafka): outbox, `event_id` sinh lúc INSERT.
 
 **Bị loại.** *Bảng `processed_event_ids` riêng hoặc key Redis*: ghi hai nơi không nguyên tử; Redis mất khi restart / hết TTL sớm hơn Kafka retention. *Dedup bằng hash payload*: vừa chặn nhầm OTP hợp lệ vừa bỏ lọt retry đóng gói lại. *Check `if exists` ở tầng ứng dụng*: race đúng lúc rebalance.
 
-**Hệ quả.** Yêu cầu producer retry với cùng CloudEvent id (convention đã có). Vì SES không có idempotency key, `possibly_duplicate_rate` của lane transactional là metric sức khoẻ của cơ chế lease/heartbeat. Test tích hợp bắt buộc: publish cùng event 3 lần + kill worker giữa chừng + webhook trùng → assert số email = 1.
+**Hệ quả.** Yêu cầu producer retry với cùng CloudEvent id (convention đã có). Vì SES không có idempotency key, tỷ lệ suy ra từ `delivery_possibly_duplicate_total` của lane transactional là chỉ số sức khoẻ của cơ chế lease/heartbeat. Test tích hợp bắt buộc: publish cùng event 3 lần chỉ tạo một effect; kill worker trong khe hở provider/DB phải cho kết quả theo lane (transactional có thể 2 email và cờ `possibly_duplicate`, critical không resend); webhook trùng chỉ apply một lần.
 
 Chi tiết: [04-idempotency.md](./04-idempotency.md).
 
-## D-05 · Ordering: chỉ trong aggregate; bảo vệ bằng kiểm tra trạng thái + TTL, không serialize
+## D-05 · Ordering: chỉ trong aggregate; Order có sequence và per-subject serialization
 
 **Bối cảnh.** Thứ tự toàn cục vô nghĩa với notification; thứ tự Kafka mất ở ranh giới 2 theo chủ ý; retry phá thứ tự và ta chọn retry. Rủi ro thật là gửi thông tin đã lỗi thời ("đơn đã xác nhận" sau khi đơn đã huỷ).
 
-**Quyết định.** Partition key theo aggregate nhỏ nhất mà thứ tự có nghĩa (`order_id`, `user_id`, `review_id`). Trước khi gửi, worker kiểm tra trạng thái hiện tại của aggregate (cần `sequence` từ producer) → `SKIPPED` nếu đã lỗi thời. Mỗi template có `max_age` → `EXPIRED` nếu quá hạn (OTP 5 phút). Serialize theo `ordering_key` chỉ bật cho template khai báo cần. Preferences đi consumer riêng, áp dụng bằng compare-and-set trên version.
+**Quyết định.** Partition key theo aggregate nhỏ nhất mà thứ tự có nghĩa (`order_id`, `user_id`, `review_id`). Mỗi template có `max_age` → `EXPIRED` nếu quá hạn (OTP 5 phút). Mọi request `/services/order` bắt buộc mang notification `sequence` tăng đơn điệu riêng theo subject. Consumer atomically lưu highest sequence: thấp hơn bị `SKIPPED (superseded)`; cùng sequence + cùng event/payload là durable duplicate; cùng sequence lệch event hoặc payload là contract collision. Deliver worker serialize provider call theo logical `source:subject`; persisted ordering key là versioned HMAC nên không giữ raw subject vô hạn, rồi recheck highest sequence sau khi acquire lease. Preferences đi consumer riêng, áp dụng bằng compare-and-set trên version.
 
-**Bị loại.** *Serialize mặc định theo user*: subquery trong claim, giảm song song, tái tạo head-of-line blocking. *Giữ thứ tự nghiêm ngặt qua retry*: một row fail chặn mọi row sau nó.
+**Bị loại.** *Serialize mặc định theo user*: giảm song song, tái tạo head-of-line blocking. *Dùng Order integration fact sequence*: notification command sẽ tạo gap/ghép sai hai stream có vòng đời khác nhau. *Chỉ dựa Kafka partition*: ordering mất ở deliver worker song song. *Giữ row cũ chặn vô hạn row mới*: một provider failure sẽ làm head-of-line blocking; sequence mới được quyền supersede retry cũ chưa bắt đầu provider call.
 
-**Hệ quả.** Cần producer kèm `sequence`/version trong event (convention đã có extension). TTL vừa là ordering vừa là load shedding.
+**Hệ quả.** Order phải cấp sequence và outbox command trong cùng transaction. Notification cần `notification_subject_sequence`, `notification_ordering_lease`, metric/alert/test collision và lease. Đây chỉ đảm bảo thứ tự bắt đầu provider call trong điều kiện lease hợp lệ; provider có thể timeout sau accept hoặc tự reorder delivery, nên không được dùng notification ordering làm correctness proof cho Order saga. TTL vừa là ordering vừa là load shedding.
 
 Chi tiết: [05-ordering.md](./05-ordering.md).
 
@@ -149,7 +149,9 @@ Chi tiết: [03-tracking.md](./03-tracking.md) §2–3, [06-backpressure.md](./0
 
 **Bị loại.** *Cho 4 template cảnh báo bảo mật tuân theo `email_enabled`*: cảnh báo "mật khẩu của bạn vừa bị đổi" không nên tắt được — đó là lớp phòng thủ khi tài khoản bị chiếm. *`ORDER_LINE_DELIVERED`*: quá nhiều email cho một đơn; `ORDER_COMPLETED` đủ. *`ORDER_CREATED`*: user đang nhìn màn hình đặt hàng. *`REFUND_FAILED`*: vấn đề vận hành, user không làm gì được. *Notification tự lắp URL*: phải biết routing frontend.
 
-**Hệ quả.** Order cần snapshot có `name` sản phẩm (README §7 mục 3). Review email không có tên sản phẩm (contract Review không mang) — chấp nhận. `CART_ABANDONED` là lời nhắc + link, không có danh sách sản phẩm cho tới khi Cart bổ sung snapshot. Cần bảng `user_preference` replicate có timezone khi User publish; trước đó dùng mặc định.
+**Hệ quả.** Order target contract đã khóa nguồn tên sản phẩm: Checkout
+`items[].snapshot_name` -> `order_item_lines.snapshot_name` -> notification
+`items[].name`, không runtime RPC (README §7 mục 3). Review email không có tên sản phẩm và **không có URL** (contract Review không mang) — Notification lắp `review_url` như `cart_url` (ngoại lệ thứ hai của quy ước URL, ghi ở 07 §2 và D-20). `CART_ABANDONED` là lời nhắc + link, không có danh sách sản phẩm cho tới khi Cart bổ sung snapshot. Cần bảng `user_preference` replicate có timezone khi User publish; trước đó dùng mặc định.
 
 Chi tiết: [07-templates.md](./07-templates.md).
 
@@ -161,7 +163,7 @@ Chi tiết: [07-templates.md](./07-templates.md).
 - Decide chạy **trong cùng transaction** với `INSERT notification_request` ở ranh giới 1 (+3–5 ms). `INSERT delivery` cùng transaction → không có request mồ côi. Worker ranh giới 2 chỉ resolve email, render, gửi; re-check rẻ lúc claim: `expires_at`, `marketing_enabled` (bulk), suppression theo hash sau khi resolve.
 - Thứ tự 13 bước cố định: lỗi của producer trước (`unknown_template`, `lane_mismatch`, `invalid_template_data`, `missing_dedup_key`, `no_recipient` → DLQ + alert), rồi hết hạn, rồi chính sách theo user (preference → suppression → frequency cap → quiet hours → dedup). Mã lý do là contract vận hành.
 - Chưa có preference → mặc định `email_enabled = true`, `in_app_enabled = true`, `marketing_enabled = false`, timezone `Asia/Ho_Chi_Minh`, locale `vi`.
-- Suppression ghi cả `user_id` và `email_hash`; Decide chặn theo `user_id`, worker xác nhận theo hash sau khi resolve — **hash khác nghĩa là user đã đổi email → suppression hết hiệu lực**. Không lưu email rõ ở đâu.
+- Suppression ghi cả `user_id` và `email_hash`; Decide chỉ *ghi nhận* theo `user_id` (metric), worker **quyết định** theo hash sau khi resolve — **hash khác nghĩa là user đã đổi email → suppression hết hiệu lực** (D-20 làm rõ: bỏ kênh ngay tại Decide sẽ chặn user vĩnh viễn sau khi đổi email). Không lưu email rõ ở đâu.
 - Frequency cap (bulk, 2/ngày/user) đếm ở Decide trên Redis; Redis lỗi → fail-open + alert. Quiet hours đặt `next_attempt_at` một lần; không tính lại.
 - Dedup nghiệp vụ khoá theo **`(dedup_key, channel)`**, không phải `dedup_key` đơn — một request sinh nhiều kênh cùng `dedup_key`. Sửa lỗi của bản đầu 02 §5.1.
 - In-app đi qua cùng worker path như email; không render trong consumer.
@@ -183,6 +185,8 @@ Chi tiết: [08-decide.md](./08-decide.md).
 - Không có cột email rõ trong toàn schema: `suppression.email_hash`, `provider_event.raw` đã hash trước khi ghi, `template_data` của Auth không lưu. Không lưu bản email đã render.
 - Retention: request/delivery/inbox 90 ngày, provider_event 30 ngày. Job tạo partition trước 2 tháng + alert khi partition tương lai < 1 tháng.
 - `user.deleted` trong 24 h: `DELETE` preference và inbox; **anonymize** request/delivery (`user_id`, `template_data`, `subject` → NULL) để giữ metric; `suppression.user_id → NULL` giữ hash; skip delivery đang chờ; xoá key Redis.
+- Trước anonymize, ghi versioned HMAC deleted-user tombstone để replay cũ không tái tạo
+  inbox; Order subject high-watermark/ordering key cũng dùng versioned HMAC thay raw subject.
 - Frequency cap, unread count, cache email chỉ ở Redis — không có bảng.
 
 **Bị loại.** *Không partition, `DELETE` theo retention*: bloat và vacuum không kịp ở tải giả định. *Unique trên bảng partition có thêm partition key*: mất ý nghĩa dedup. *Dedup bằng Redis*: mất khi restart / TTL sớm hơn Kafka retention. *In-app dùng chung bảng delivery*: `UPDATE read_at` chạm bảng hot, index và retention xung đột. *Xoá hẳn request/delivery khi user xoá*: thủng metric và audit; anonymize đủ cho yêu cầu xoá PII. *Lưu email đã render*: bản PII thứ hai, render lại từ `template_data` là đủ.
@@ -203,7 +207,9 @@ Chi tiết: [09-data-model.md](./09-data-model.md).
 
 **Bị loại.** *Chỉ khai báo transactional*: producer đầu tiên của critical/bulk phải chờ một PR contract; topic rẻ, hạ tầng lane provision đồng nhất. *Bốn topic outcome*: consumer Analytics cần bốn subscription; các service khác đều dùng một topic nhiều type. *Schema đầy đủ cho cả 15 template*: trùng lặp với Auth OpenAPI và Review schema. *Chỉ soạn đề xuất, không sửa contract của service khác*: thêm một vòng vô nghĩa khi một người duy trì cả repo; convention owner vẫn được tôn trọng bằng `proposed` và ghi rõ trong 10-interfaces §7.
 
-**Hệ quả.** Hai topic trống ở phase 1. Order còn phải xác nhận snapshot có `name`. User và Analytics phải đăng ký consumer phía họ. Mọi thay đổi `catalog.yaml`/`templates/*.schema.json` là thay đổi contract công khai.
+**Hệ quả.** Hai topic trống ở phase 1. Order đã xác nhận deterministic `snapshot_name`
+source trong target contract nhưng vẫn cần producer test/runtime evidence. User và Analytics
+phải đăng ký consumer phía họ. Mọi thay đổi `catalog.yaml`/`templates/*.schema.json` là thay đổi contract công khai.
 
 Chi tiết: [10-interfaces.md](./10-interfaces.md) §2–3, §7.
 
@@ -258,7 +264,7 @@ Chi tiết: [12-render.md](./12-render.md).
 
 **Bối cảnh.** SES sandbox không dùng được cho test lặp lại; đường Track cần SNS/SQS; compose mặc định đang được các service khác dùng.
 
-**Quyết định.** `docker-compose.yml` thêm `mailpit` (SMTP `1025`, UI/API `8025`) và `localstack` (SNS/SQS, `4566`) dưới profile `notification` — `docker compose up` mặc định không đổi. `init-db.sh` tạo `notification_db`. Script `deploy/localstack/init-ses-events.sh` dựng topic → queue (+ DLQ, `maxReceiveCount 5`, envelope SNS giữ nguyên để verify chữ ký). Connector Debezium `deploy/debezium/notification-outbox-connector.json` route `t.notification.outcomes.v1`, key `aggregateid = user_id`, publication tạo bằng migration. Service là một binary với `ROLE`/`LANE`; dev chạy `ROLE=all`. Cổng HTTP host `8091` (`8090` là dashboard Traefik). Adapter SES thật chỉ có contract test khi có credential; internal API nhận `X-Service-Identity` không xác thực **chỉ** khi `NOTIFICATION_ENV=dev`.
+**Quyết định.** `docker-compose.yml` thêm `mailpit` (SMTP `1025`, UI/API `8025`) và `localstack` (SNS/SQS, `4566`) dưới profile `notification` — `docker compose up` mặc định không đổi. `init-db.sh` tạo `notification_db`. Script `deploy/localstack/init-ses-events.sh` dựng topic → queue (+ DLQ, `maxReceiveCount 5`, envelope SNS giữ nguyên để verify chữ ký). Connector Debezium `deploy/debezium/notification-outbox-connector.json` route `t.notification.outcomes.v1`, key `aggregateid = user_id`, publication tạo bằng migration. Service là một binary với `ROLE`/`LANE`; dev chạy `ROLE=all`. Cổng HTTP host `8091` inbox và `8092` internal (`8090` là dashboard Traefik). Adapter SES thật chỉ có contract test khi có credential; internal API nhận `X-Service-Identity` không xác thực **chỉ** khi `NOTIFICATION_APP_ENV=development` (D-20 sửa tên biến).
 
 **Bị loại.** *SES sandbox ở dev*: cần credential, chỉ gửi tới địa chỉ verify, 200/ngày. *LocalStack SES cho đường gửi*: không sinh event thật; Mailpit cho đường gửi + event mẫu bơm vào SNS cho đường Track là đủ và rõ ràng. *Nhiều binary theo vai trò*: hai đường code cho cùng logic.
 
@@ -276,6 +282,33 @@ Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14
 
 **Hệ quả.** Thêm một consumer group phải vận hành và theo dõi lag (`kafka_consumer_lag{lane=critical,topic=t.auth.notification.events}`). Nếu sau này có producer critical thứ hai dùng schema chung, xem xét lại việc gộp — không phá gì vì channel đã tồn tại.
 
+## D-20 · Làm rõ lúc implement: những chỗ tài liệu thiếu hoặc sai so với contract thật
+
+**Bối cảnh.** Khi viết code phase 1 đối chiếu từng dòng tài liệu với contract và code Auth hiện có, một số chỗ thiếu quyết định hoặc sai chi tiết. Ghi lại để tài liệu và code đồng bộ 100 %.
+
+**Quyết định.**
+- **Auth request gán template ở Ingest** từ CloudEvents `type` (+ `purpose`); Decide cần template (kênh, dedup, max_age). Bốn template cảnh báo lưu `template_data` từ event; ba template OTP/reset không lưu (secret). Kênh email gọi `content`; kênh in-app của cảnh báo không gọi Auth. `source_ref` giữ `delivery_id` của Auth ở request và delivery.
+- **Kênh bị bỏ ở Decide vẫn có row delivery `SKIPPED` + `skip_reason`** để timeline support đầy đủ; thêm `skip_reason` `email_unverified`, `superseded`, `user_deleted`.
+- **DLQ có hai nghĩa rõ ràng**: topic `*.dlq` chỉ cho envelope hỏng / lỗi hạ tầng quá số lần retry; lỗi contract producer là row `notification_request.decision = FAILED` (bảng là DLQ).
+- **Auth internal API ở cổng 8081** (không phải 8080 như bản đầu của 13-development và Auth OpenAPI `servers`). `GET .../notification-contact` được implement trong auth-service cùng đợt.
+- **Hai listener HTTP**: 8080 inbox (qua Gateway, host 8091), 8081 status/ops/metrics/health (host 8092).
+- **Ops state trong Postgres** (`ops_control`, `ops_idempotency`, `ops_audit`) thay vì memory — nhiều process phải cùng thấy pause/replay.
+- **`notification_delivery` có `subject`** (denormalize cho outcome event, anonymize cùng `user_id`) và `source_ref`; `notification_request` có `event_time`, `source_ref`.
+- **`request_id` của outcome = `notification_request.id`** (UUID mới), không phải CloudEvents id.
+- **Lớp C3 nhận biết bằng `last_error_code = lease_expired`**; `release` trả `attempt` về khi breaker/rate-limit/pause từ chối; `max_attempts` theo lane → `FAILED (provider_error)`.
+- **URL do Notification lắp** cho hai nguồn không có chỗ cho URL: `cart_url` (Cart) và `review_url` (Review).
+- **`List-Unsubscribe` không one-click** ở phase 1 (cần endpoint public chưa có contract); **CSS inline viết tay**, không inliner; **chỉ locale `vi`**.
+- **Outbox poller** có sẵn cạnh Debezium (`outbox.publisher`), compose dev dùng poller.
+- **Consumer group** cho nguồn chưa đặt tên: `notification-review-transactional`, `notification-cart-bulk`, `notification-preferences`, `notification-user-lifecycle`.
+- **Suppression được thực thi ở worker, không ở Decide**: Decide bước 9 chỉ ghi metric; worker so `email_hash` sau khi resolve — nếu không, user đổi email vẫn bị chặn mãi (IT-SUPP-02).
+- **`track.correlate_provider`** (`ses` production, `mailpit` dev): Track correlate event SES với delivery do provider nào gửi, vì dev bơm event SES mẫu cho mail Mailpit đã gửi.
+- **Track**: `Complaint` không đổi status; `Reject` → `BOUNCED` (ghi chú); `UNMATCHED` retry giãn dần, alert sau 3 lần, `IGNORED` sau 24 h.
+- **Cách 1 ordering cho fact là no-op phase 1** (Cart không có fact nào vượt qua `cart.abandoned`).
+- **Order ordering là ngoại lệ phase 1**: request bắt buộc có sequence riêng; consumer giữ highest sequence và deliver worker dùng per-subject lease. Không gọi ngược Order và không dùng integration fact sequence.
+- **`internal/catalog`** giữ bản sao byte-equal của catalog và 5 schema ORDER_*, cộng 10 schema viết tại chỗ cho template mà contract nguồn không có schema `template_data` riêng.
+
+**Hệ quả.** Các file 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14 đã được sửa tương ứng; `contracts/http/notification/internal/v1/openapi.yaml` và Auth internal OpenAPI đổi `servers` sang 8081; catalog ghi `note` cho `REVIEW_REPLIED`.
+
 ## Quyết định chưa chốt
 
-Không còn. D-01…D-19 khép kín thiết kế phase 1; việc tiếp theo là implement ([13-development.md](./13-development.md)) và thay giả định bằng số đo ([15-verification.md](./15-verification.md) §3).
+Không còn. D-01…D-20 khép kín thiết kế phase 1; việc tiếp theo là chạy bộ test tích hợp đầy đủ và thay giả định bằng số đo ([15-verification.md](./15-verification.md) §3).

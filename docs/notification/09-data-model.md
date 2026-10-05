@@ -20,15 +20,21 @@ Cửa sổ dedup phải ≥ khoảng thời gian dài nhất mà một bản sao
 | `ingest_dedup` | Sổ dedup lớp A | Không | 30 ngày | Consumer | Consumer |
 | `notification_request` | Một dòng mỗi event đã nhận + kết quả Decide | Tháng (`received_at`) | 90 ngày | Consumer | Ops, support |
 | `delivery_dedup` | Sổ dedup lớp B | Không | 30 ngày | Consumer (Decide) | Consumer |
+| `notification_subject_sequence` | Highest Order notification sequence theo source/subject | Không | Không TTL trong phase 1 | Consumer | Consumer, deliver worker |
+| `deleted_user_tombstone` | Chặn replay tái tạo notification sau `user.deleted` bằng HMAC user key | Không | Không TTL phase 1 | Lifecycle consumer | Consumer |
 | `notification_delivery` | Hàng đợi + trạng thái từng lần gửi | Tháng (`created_at`) | 90 ngày | Consumer, deliver worker, reaper, track worker | Deliver worker, track worker, ops |
+| `notification_ordering_lease` | Serialize provider call theo từng Order subject | Không | Row được reuse; lease hết hạn được thu hồi | Deliver worker, reaper | Deliver worker, ops |
 | `provider_event_dedup` | Sổ dedup của Track | Không | 14 ngày | SQS poller | SQS poller |
 | `provider_event` | Log thô từ SES, hàng đợi cho Track worker | Tháng (`received_at`) | 30 ngày | SQS poller, track worker | Track worker, ops |
 | `user_preference` | Bản replicate từ `t.user.events` | Không | Xoá khi `user.deleted` | Preference consumer, track worker (complaint) | Consumer (Decide), deliver worker |
 | `suppression` | Địa chỉ không được gửi | Không | Hard/complaint: vĩnh viễn; soft: theo `until` | Track worker, ops | Consumer (Decide), deliver worker |
 | `inbox_item` | Read model in-app | Tháng (`created_at`) | 90 ngày | Deliver worker, inbox API | Inbox API |
-| `outbox` | Event Notification phát ra (lớp D) | Không | Đã publish > 7 ngày | Deliver worker, track worker | Debezium |
+| `outbox` | Event Notification phát ra (lớp D) | Không | Đã publish > 7 ngày | Deliver worker, track worker | Debezium hoặc outbox poller |
+| `ops_control` | Công tắc vận hành (pause lane × channel, replay mode) | Không | Vĩnh viễn (vài dòng) | Ops API | Deliver worker, consumer (poll 5 s) |
+| `ops_idempotency` | `Idempotency-Key` của ops call | Không | 24 h | Ops API | Ops API |
+| `ops_audit` | Audit mọi ops call | Không | Theo chính sách audit | Ops API | Ops, audit |
 
-**Không có bảng** cho: frequency cap (Redis `freq:{user_id}:{date}`, TTL 48 h), unread count (Redis `inbox:unread:{user_id}`, recompute từ `inbox_item` khi miss), cache email (Redis TTL 15 phút, không bao giờ xuống DB — D-07), template (phase 1 nằm trong repo, compile vào service — B6).
+**Không có bảng** cho: frequency cap (Redis `freq:{user_id}:{date}`, TTL 48 h), unread count (Redis `inbox:unread:{user_id}`, recompute từ `inbox_item` khi miss), cache email (Redis TTL 15 phút, không bao giờ xuống DB — D-07), template (phase 1 nằm trong repo, compile vào service — D-17), token bucket / daily quota / retry budget (Redis, [06-backpressure.md](./06-backpressure.md)).
 
 ## 3. Đường ghi Kafka → DB
 
@@ -53,14 +59,17 @@ CREATE TABLE notification_request (
     source           text        NOT NULL,                 -- CloudEvents source
     event_id         text        NOT NULL,                 -- CloudEvents id
     event_type       text        NOT NULL,                 -- CloudEvents type
+    event_time       timestamptz,                          -- CloudEvents time; replay mode so với cột này
     subject          text,                                 -- aggregate, ví dụ orders/1000234
+    source_sequence  bigint,                               -- bắt buộc với /services/order; monotonic per subject
     input_kind       text        NOT NULL,                 -- request | fact
     template         text,                                 -- NULL nếu fact không ánh xạ được
     lane             text,
     user_id          uuid,
     dedup_key        text,
     expires_at       timestamptz,                          -- effective_expires_at sau Decide
-    template_data    jsonb,                                -- NULL với Auth: secret không bao giờ lưu
+    template_data    jsonb,                                -- NULL với 3 template OTP/reset của Auth: secret không bao giờ lưu
+    source_ref       text,                                 -- tham chiếu ở nguồn worker cần lúc gửi: delivery_id của Auth
     correlation_id   text,
     traceparent      text,
     decision         text        NOT NULL,                 -- DECIDED | SKIPPED | FAILED | EXPIRED | IGNORED
@@ -71,10 +80,44 @@ CREATE TABLE notification_request (
 
 CREATE INDEX idx_request_user     ON notification_request (user_id, received_at DESC);
 CREATE INDEX idx_request_subject  ON notification_request (subject) WHERE subject IS NOT NULL;
+CREATE INDEX idx_request_subject_sequence ON notification_request (source, subject, source_sequence)
+    WHERE source_sequence IS NOT NULL;
 CREATE INDEX idx_request_decision ON notification_request (decision, received_at) WHERE decision <> 'DECIDED';
+CREATE INDEX idx_request_id       ON notification_request (id);           -- status API tra theo request_id không biết received_at
 ```
 
 `template_data` là PII mức thấp (tên người nhận, phường/quận). Nó tồn tại để render lại khi điều tra và để `FAILED (invalid_template_data)` có bằng chứng; bị anonymize theo §7.
+
+Order request bắt buộc có `sequence`. Consumer lock/upsert state sau trong cùng
+transaction với request/delivery creation. Cùng sequence + cùng event ID + cùng payload
+digest là durable duplicate và không tạo delivery kể cả khi `ingest_dedup` đã hết TTL;
+lệch event ID hoặc digest là contract collision và vào `FAILED`. Sequence thấp hơn highest
+được lưu timeline nhưng delivery `SKIPPED (superseded)`:
+
+```sql
+CREATE TABLE notification_subject_sequence (
+    source            text        NOT NULL,
+    subject_key_version smallint  NOT NULL,
+    subject_key_hash  char(64)    NOT NULL,
+    highest_sequence  bigint      NOT NULL,
+    highest_event_id  text        NOT NULL,
+    highest_payload_sha256 text    NOT NULL,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, subject_key_version, subject_key_hash)
+);
+```
+
+`subject_key_hash = HMAC-SHA256(notification_privacy_key[version], source || NUL ||
+subject)`: bảng high-watermark không giữ raw `orders/{id}` vô hạn. Raw subject chỉ nằm ở
+request/delivery có retention và bị anonymize. Privacy key nằm trong secret manager, không
+log; rotation phải chạy dual-read/dual-write + online merge trong khi key cũ còn sẵn,
+không được đổi key đột ngột làm tách một subject thành hai sequence stream.
+
+Phase 1 không purge bảng này theo TTL. Xoá highest-sequence state sớm hơn khả năng replay
+sẽ cho phép một Order command cũ sống lại sau khi `ingest_dedup` hết 30 ngày. Khi có
+chính sách đóng/purge subject, retention tối thiểu phải lớn hơn **đồng thời** Kafka replay
+horizon, Order notification business horizon và mọi backup/replay được hỗ trợ; rollout cần
+tombstone hoặc high-watermark archive, không được chỉ `DELETE` theo `updated_at`.
 
 ## 4. Hàng đợi gửi
 
@@ -99,6 +142,9 @@ CREATE TABLE notification_delivery (
     id                   uuid        NOT NULL,
     request_id           uuid        NOT NULL,
     user_id              uuid,                              -- NULL sau anonymize
+    subject              text,                              -- denormalize từ request cho outcome event; NULL sau anonymize
+    source               text        NOT NULL,
+    source_sequence      bigint,
     lane                 text        NOT NULL,              -- critical | transactional | bulk
     channel              text        NOT NULL,              -- email | in_app
     template             text        NOT NULL,
@@ -110,14 +156,15 @@ CREATE TABLE notification_delivery (
     lease_until          timestamptz,
     locked_by            text,
     dedup_key            text,
-    ordering_key         text,                              -- chỉ template khai báo cần serialize
+    ordering_key         text,                              -- Order: source:key-version:HMAC(subject), không raw subject
     expires_at           timestamptz NOT NULL,
     provider             text,                              -- ses | mailpit | inbox
     provider_message_id  text,
     possibly_duplicate   boolean     NOT NULL DEFAULT false,
     last_error_code      text,
     last_error           text,
-    skip_reason          text,                              -- channel_reason ở 08-decide.md §7
+    skip_reason          text,                              -- channel_reason ở 08-decide.md §7 (row SKIPPED được tạo cả ở Decide)
+    source_ref           text,                              -- delivery_id của Auth (worker gọi content API)
     sent_at              timestamptz,
     delivered_at         timestamptz,
     finished_at          timestamptz,                       -- thời điểm vào trạng thái cuối
@@ -141,10 +188,31 @@ CREATE INDEX idx_delivery_provider_msg
     ON notification_delivery (provider, provider_message_id)
     WHERE provider_message_id IS NOT NULL;
 
--- Support / timeline
+-- Support / timeline / ops
 CREATE INDEX idx_delivery_request ON notification_delivery (request_id);
 CREATE INDEX idx_delivery_user    ON notification_delivery (user_id, created_at DESC);
+CREATE INDEX idx_delivery_subject ON notification_delivery (subject, created_at DESC) WHERE subject IS NOT NULL;
+CREATE INDEX idx_delivery_id      ON notification_delivery (id);                       -- tra theo delivery_id không biết created_at
+CREATE INDEX idx_delivery_failed  ON notification_delivery (lane, finished_at) WHERE status = 'FAILED';   -- dlq redrive theo lô
 ```
+
+Order transactional deliveries đặt `ordering_key = source || ':' || key_version || ':' ||
+subject_key_hash`. Một lease
+table nhỏ serialize provider calls per key mà không phụ thuộc partition của delivery:
+
+```sql
+CREATE TABLE notification_ordering_lease (
+    ordering_key text PRIMARY KEY,
+    delivery_id  uuid        NOT NULL,
+    lease_until  timestamptz NOT NULL,
+    locked_by    text        NOT NULL
+);
+```
+
+Worker acquire bằng `INSERT ... ON CONFLICT ... WHERE lease_until < now()`; dưới lease nó
+recheck `notification_subject_sequence`. Sequence thấp hơn highest bị skip trước provider.
+Lease được release sau terminal/retry decision và reaper thu hồi lease hết hạn. Đây chỉ
+áp dụng cho Order templates; không serialize toàn bộ Notification traffic.
 
 Câu claim ở [02-pipeline.md](./02-pipeline.md) §5.2 không đổi. Với bảng partition, planner dùng `idx_delivery_ready` của từng partition và gộp — row `PENDING`/`RETRY` gần như chỉ nằm ở partition tháng hiện tại nên chi phí không đổi.
 
@@ -271,7 +339,35 @@ CREATE TABLE outbox (
 );
 ```
 
-Tên cột theo **Debezium Outbox Event Router** để dùng CDC qua `kafka-connect` đã có trong compose, nhất quán với Review (ADR-003). Connector: `go/services/notification-service/deploy/debezium/notification-outbox-connector.json`; cần `CREATE PUBLICATION notification_outbox_publication FOR TABLE outbox;` trong migration vì `publication.autocreate.mode = disabled` ([13-development.md](./13-development.md) §4). Nếu lúc triển khai thấy Debezium quá nặng, đổi sang poller (`SELECT ... FOR UPDATE SKIP LOCKED`, đánh `published_at`) không cần đổi schema. Purge dòng đã publish > 7 ngày (với CDC: Debezium đọc WAL, có thể `DELETE` ngay sau INSERT trong cùng transaction — pattern chuẩn của outbox router).
+Tên cột theo **Debezium Outbox Event Router** để dùng CDC qua `kafka-connect` đã có trong compose, nhất quán với Review (ADR-003). Connector: `go/services/notification-service/deploy/debezium/notification-outbox-connector.json`; cần `CREATE PUBLICATION notification_outbox_publication FOR TABLE outbox;` trong migration vì `publication.autocreate.mode = disabled` ([13-development.md](./13-development.md) §4). Service có sẵn **poller** thay thế (`outbox.publisher = poller`: `SELECT ... WHERE published_at IS NULL FOR UPDATE SKIP LOCKED`, publish, đánh `published_at`) — cùng schema, chọn bằng cấu hình; compose dev dùng poller để không phải đăng ký connector. Purge dòng đã publish > 7 ngày (ở chế độ Debezium, `published_at` không được ghi nên purge theo `created_at`).
+
+### 8.1 Bảng ops
+
+```sql
+CREATE TABLE ops_control (            -- key: lane:<lane> → LaneState JSON; replay_mode → ReplayMode JSON
+    key         text        PRIMARY KEY,
+    value       jsonb       NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    updated_by  text
+);
+CREATE TABLE ops_idempotency (        -- Idempotency-Key 24 h; cùng key khác request_hash → 409
+    key           text        PRIMARY KEY,
+    request_hash  text        NOT NULL,
+    status        int,                -- NULL khi đang xử lý
+    response      jsonb,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE ops_audit (
+    id          uuid        PRIMARY KEY,
+    principal   text        NOT NULL,
+    operation   text        NOT NULL,
+    params      jsonb       NOT NULL,  -- không có email
+    result      text        NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Trạng thái pause/replay nằm trong Postgres (không phải memory của một process) vì deliver worker ở replica khác phải thấy công tắc; worker cache và poll lại mỗi 5 s.
 
 ## 9. Partition và retention
 
@@ -279,12 +375,16 @@ Tên cột theo **Debezium Outbox Event Router** để dùng CDC qua `kafka-conn
 |---|---|---|---|---|
 | `notification_request` | Tháng | 2 tháng | 90 ngày | `DROP PARTITION` |
 | `notification_delivery` | Tháng | 2 tháng | 90 ngày | `DROP PARTITION` — nhưng **kiểm tra** partition không còn row `PENDING`/`RETRY`/`SENDING` trước khi drop (bulk có thể nằm lâu; `max_age` tối đa 72 h nên thực tế không xảy ra, kiểm tra là lưới an toàn) |
+| `notification_subject_sequence` | — | — | Không TTL phase 1 | Chỉ purge theo subject-closure protocol đã chứng minh replay-safe |
+| `deleted_user_tombstone` | — | — | Không TTL phase 1 | Chỉ purge khi mọi source replay/backup horizon và account re-creation policy cho phép |
+| `notification_ordering_lease` | — | — | Không áp dụng | Reuse theo key; reaper chỉ thu hồi lease hết hạn, không xoá sequence state |
 | `provider_event` | Tháng | 2 tháng | 30 ngày | `DROP PARTITION` |
 | `inbox_item` | Tháng | 2 tháng | 90 ngày | `DROP PARTITION` |
 | `ingest_dedup` | — | — | 30 ngày | `DELETE` batch hàng ngày |
 | `delivery_dedup` | — | — | 30 ngày | `DELETE` batch |
 | `provider_event_dedup` | — | — | 14 ngày | `DELETE` batch |
-| `outbox` | — | — | 7 ngày sau publish | `DELETE` batch (hoặc ngay trong tx với CDC) |
+| `outbox` | — | — | 7 ngày sau publish | `DELETE` batch |
+| `ops_idempotency` | — | — | 24 h | `DELETE` batch |
 | `user_preference`, `suppression` | — | — | Theo vòng đời user | §10 |
 
 Job tạo partition chạy hàng ngày, luôn giữ sẵn partition cho tháng hiện tại + 2 tháng tới; thiếu partition là INSERT lỗi toàn bộ — đây là sự cố kinh điển, cần alert khi partition tương lai < 1 tháng.
@@ -297,12 +397,28 @@ Với giả định README §5 (40 request/s): ~3,5M request, ~5M delivery, ~10M
 
 Auth đã có event xoá account. Trong vòng 24 h sau khi nhận:
 
+```sql
+CREATE TABLE deleted_user_tombstone (
+    user_key_version smallint    NOT NULL,
+    user_key_hash    char(64)    NOT NULL,
+    deleted_at       timestamptz NOT NULL,
+    PRIMARY KEY (user_key_version, user_key_hash)
+);
+```
+
+Lifecycle consumer insert HMAC tombstone **trước** khi xoá/anonymize dữ liệu. Ingest mọi
+request có `user_id` phải check tombstone trong cùng transaction; match thì ghi request
+`SKIPPED (user_deleted)` không chứa raw user/template data và không tạo delivery. Điều này
+chặn Kafka/backup replay cũ tái tạo inbox sau khi `ingest_dedup` hết TTL.
+
 | Nơi | Hành động | Lý do |
 |---|---|---|
 | `user_preference` | `DELETE` | |
 | `inbox_item` | `DELETE` (theo `idx_inbox_user_list`) | |
 | `notification_request` | `UPDATE SET user_id = NULL, template_data = NULL, subject = NULL` | Giữ `decision`, timestamp để metric và audit không thủng; xoá thứ nhận diện được |
-| `notification_delivery` | `UPDATE SET user_id = NULL` | Không có PII khác trong bảng này |
+| `notification_delivery` | `UPDATE SET user_id = NULL, subject = NULL` | Không có PII khác trong bảng này |
+| `notification_subject_sequence` / ordering lease | Không chứa raw subject; giữ HMAC high-watermark, release lease của delivery bị skip | Chống replay/order inversion mà không giữ `order_id` rõ |
+| `deleted_user_tombstone` | `INSERT` HMAC(user_id), không lưu UUID | Chặn replay sau deletion |
 | `suppression` | `UPDATE SET user_id = NULL` | Giữ `email_hash`: địa chỉ chết vẫn là địa chỉ chết; hash không truy ngược được |
 | `provider_event.raw` | Không cần | Email đã hash từ lúc ghi |
 | Redis `freq:*`, `inbox:unread:*`, cache email | `DEL` | |

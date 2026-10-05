@@ -46,7 +46,9 @@ channels:
     address: t.notification.transactional.v1
     description: >-
       Request lane transactional: xác nhận một sự thật nghiệp vụ đã xảy ra với
-      user; trễ vài chục phút không gây thiệt hại.
+      user; trễ vài chục phút không gây thiệt hại. Request từ /services/order bắt
+      buộc có CloudEvents sequence tăng đơn điệu riêng theo subject; Notification
+      dùng sequence này để supersede request cũ và serialize provider call per order.
     x-owner: notification-service
     x-lane: transactional
     x-message-key: subject
@@ -151,7 +153,8 @@ components:
       summary: >-
         Producer yêu cầu gửi một template cho một user. template phải active trong
         templates/catalog.yaml; template_data theo schema của template; lane của
-        template phải khớp channel.
+        template phải khớp channel. Producer Order bắt buộc gửi notification sequence
+        riêng, không dùng Order integration fact sequence.
       contentType: application/cloudevents+json
       payload:
         $ref: './schemas/notification-requested.schema.json'

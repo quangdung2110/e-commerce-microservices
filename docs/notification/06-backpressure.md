@@ -108,7 +108,7 @@ Ba quyết định quan trọng hơn bản thân cơ chế:
 | Transactional | `RETRY`, `next_attempt_at = now + 5 phút`, chờ. Kể cả khi có provider dự phòng sau này cũng không failover lane này, vì domain/reputation của email giao dịch quan trọng và trễ 30 phút chấp nhận được |
 | Bulk | Như transactional nhưng `+ 30 phút`; tự `pause` nếu breaker mở quá 1 giờ |
 
-**Breaker mở không phải lỗi của notification đó.** Row bị breaker từ chối quay về `RETRY` với `attempt` **không tăng**. Nếu không, sự cố provider 1 giờ sẽ đốt hết số lần retry của mọi row và đẩy tất cả vào DLQ dù chưa từng được thử thật.
+**Breaker mở không phải lỗi của notification đó.** Row bị breaker từ chối quay về `RETRY` với `attempt` **không tăng** — cụ thể: claim đã tăng `attempt`, nên worker gọi `release` (`attempt - 1`, `last_error_code = breaker_open`, `next_attempt_at` theo bảng trên). Cùng cơ chế cho `rate_limited` (hết 5 s chờ token) và `lane_paused`. Nếu không, sự cố provider 1 giờ sẽ đốt hết số lần retry của mọi row và đẩy tất cả vào DLQ dù chưa từng được thử thật. Ngược lại, lỗi retryable **thật** (5xx, timeout) tăng `attempt`; vượt `max_attempts` của lane (config, mặc định 5 critical / 8 còn lại) → `FAILED (provider_error)`.
 
 **Half-open thăm dò bằng request thật, nhưng của lane ít quan trọng.** Không dùng OTP làm request thăm dò; dùng row bulk hoặc transactional. Không có row nào để thăm dò thì dùng health-check API của provider.
 
@@ -126,7 +126,7 @@ Backoff + jitter bảo vệ khỏi retry đồng loạt. Còn một dạng nữa
 lease 60 s
   ├─ resolve email (Auth)      timeout 2 s
   ├─ render                    < 50 ms
-  ├─ acquire rate-limit token  timeout 5 s   (không có token → trả row về PENDING, không tính attempt)
+  ├─ acquire rate-limit token  timeout 5 s   (không có token → release: RETRY ngay, không tính attempt)
   └─ provider.send()           connect 2 s, read 10 s
                                ─────────────
                                tối đa ~17 s / row → batch 20 × 17 s = 340 s > lease 60 s !

@@ -26,6 +26,8 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `ingest_duration_seconds` | histogram | `lane` | Từ poll tới commit offset; SLO nội bộ p99 < 50 ms |
 | `kafka_consumer_lag` | gauge | `lane`, `topic`, `partition` | Từ Kafka client; lag critical > 100 là alert |
 | `decide_step_rejections_total` | counter | `lane`, `step` (1–13), `reason_code` | Bước nào từ chối — cho biết producer sai contract hay chính sách chặn |
+| `dead_letter_total` | counter | `topic`, `reason` | Message publish sang topic `*.dlq` (envelope hỏng, DB lỗi quá số lần retry) |
+| `subject_sequence_events_total` | counter | `source`, `outcome` (`advanced`/`duplicate`/`superseded`/`collision`/`missing`) | Sức khoẻ monotonic sequence; `collision`/Order `missing` là producer contract bug |
 
 ### 2.2 Ranh giới 2 — deliver
 
@@ -41,7 +43,11 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `delivery_end_to_end_seconds` | histogram | `lane`, `channel` | `sent_at - request.received_at`; SLO critical p99 < 5 s, transactional < 60 s |
 | `delivery_possibly_duplicate_total` | counter | `lane` | Sức khoẻ lease/heartbeat ([04-idempotency.md](./04-idempotency.md) C3) |
 | `delivery_lease_expired_total` | counter | `lane` | Reaper trả row về RETRY |
+| `ordering_lease_contention_total` | counter | `source` | Worker không acquire được per-subject lease; tăng liên tục có thể là hot subject/lease kẹt |
+| `ordering_lease_oldest_age_seconds` | gauge | `source` | Tuổi lease Order đã hết hạn nhưng chưa được thu hồi |
+| `ordering_lease_lost_total` | counter | `source`, `stage` (`before_send`/`during_send`) | Mất ownership; before_send không gọi provider, during_send là kết quả delivery không chắc chắn |
 | `retry_budget_ratio` | gauge | `lane` | Retry / tổng gửi trong cửa sổ 1 phút; > 0,2 kích hoạt budget |
+| `lane_paused` | gauge | `lane`, `channel` | 1 khi công tắc ops đang pause |
 
 ### 2.3 Dependency và bulkhead
 
@@ -54,7 +60,9 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `rate_limiter_wait_seconds` | histogram | `lane`, `channel` | Chờ token; tăng nghĩa là quota lane không đủ |
 | `rate_limiter_tokens_available` | gauge | `lane`, `channel` | |
 | `provider_daily_quota_used_ratio` | gauge | `provider` | Bộ đếm ngày / `Max24HourSend`; 0,8 là ngưỡng dừng bulk |
-| `contact_cache_hit_ratio` | gauge | — | Cache email 15 phút |
+| `contact_cache_total` | counter | `result` (`hit`/`miss`) | Cache email 15 phút; hit ratio suy ra bằng PromQL |
+| `frequency_cap_degraded` | gauge | — | 1 khi Redis lỗi và cap đang fail-open |
+| `render_locale_fallback_total` | counter | `template` | Locale thiếu, dùng `vi` |
 
 ### 2.4 Track
 
@@ -62,8 +70,9 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 |---|---|---|---|
 | `sqs_messages_received_total` | counter | `event_type` | |
 | `sqs_oldest_message_age_seconds` | gauge | — | Từ CloudWatch `ApproximateAgeOfOldestMessage` hoặc tự tính |
-| `provider_event_processed_total` | counter | `event_type`, `outcome` (`applied`/`ignored_lower_rank`/`unmatched`/`invalid_signature`) | |
+| `provider_event_processed_total` | counter | `event_type`, `outcome` (`applied`/`ignored_lower_rank`/`unmatched`/`ignored`/`invalid_signature`/`duplicate`/`malformed`) | |
 | `provider_event_unmatched_age_seconds` | gauge | — | UNMATCHED cũ nhất; > 5 phút là bug correlate |
+| `bounce_total` / `complaint_total` | counter | `lane`, `bounce_type` / `lane` | Nguồn cho `bounce_rate` / `complaint_rate` |
 | `bounce_rate` / `complaint_rate` | derived, cửa sổ 24 h | `lane` | Bounce / sent; complaint / delivered — ngưỡng SES 5 % / 0,1 % |
 | `suppression_added_total` | counter | `reason` | |
 
@@ -76,6 +85,9 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `outbox_unpublished_count` / `outbox_oldest_age_seconds` | gauge | — | Chỉ có nghĩa với poller; với Debezium theo dõi connector lag ở Kafka Connect |
 | `table_dead_tuple_ratio` | gauge | `table` | Từ `pg_stat_user_tables`; bloat của `notification_delivery` |
 | `inbox_unread_recompute_total` | counter | — | Redis miss/lệch; tăng đột biến = Redis flap |
+| `ops_calls_total` | counter | `operation`, `result` | Ops API; audit chi tiết nằm ở `ops_audit` |
+
+Mọi metric khai báo trong `internal/telemetry/metrics.go` với prefix `notification_`; `/metrics` nằm trên listener internal `8081`.
 
 ## 3. Alert
 
@@ -89,7 +101,8 @@ Gom từ [06-backpressure.md](./06-backpressure.md) §7 và [08-decide.md](./08-
 | **Page** | `PartitionRunway` | `partition_future_months < 1` | R-08 |
 | **Page** | `ComplaintRateHigh` | `complaint_rate > 0.001` (0,1 %) | R-06 |
 | **Page** | `SesDailyQuotaNearLimit` | `provider_daily_quota_used_ratio > 0.9` | R-05 |
-| Ticket | `ProducerContractError` | `ingest_events_total{decision=FAILED, reason_code=~"unknown_template\|lane_mismatch\|invalid_template_data\|missing_dedup_key"} > 0` | R-04 |
+| Ticket | `ProducerContractError` | `ingest_events_total{decision=FAILED, reason_code=~"unknown_template\|lane_mismatch\|invalid_template_data\|missing_dedup_key\|missing_sequence\|sequence_collision"} > 0` | R-04 |
+| Ticket | `OrderNotificationOrderingLeaseStuck` | `ordering_lease_oldest_age_seconds{source="/services/order"} > 120` | R-15 |
 | Ticket | `TransactionalLaneDelayed` | `pending_age{lane=transactional} p99 > 5m` | R-01 |
 | Ticket | `BulkBacklogGrowing` | `delivery_pending_count{lane=bulk}` tăng liên tục 1 giờ hoặc > 1M | R-01 |
 | Ticket | `BounceRateHigh` | `bounce_rate > 0.05` | R-06 |

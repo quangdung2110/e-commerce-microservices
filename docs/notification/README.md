@@ -1,6 +1,6 @@
 # Notification Service
 
-**Trạng thái:** `proposed` — chưa có runtime, chưa có load test. Mọi con số trong bộ tài liệu này là giả định thiết kế và được đánh dấu rõ; chúng phải được chốt lại bằng đo đạc trước khi coi là cam kết.
+**Trạng thái:** `proposed` — mã nguồn phase 1 đã có tại `go/services/notification-service` (Go), chưa có load test. Mọi con số trong bộ tài liệu này là giả định thiết kế và được đánh dấu rõ; chúng phải được chốt lại bằng đo đạc trước khi coi là cam kết. Những chỗ tài liệu được làm rõ hoặc sửa khi implement gom ở [decisions.md](./decisions.md) D-20.
 
 ## 1. Vấn đề cần giải quyết
 
@@ -46,16 +46,16 @@ Notification nhận hai loại đầu vào — **request** (producer chỉ đị
 
 | Producer | Mô hình | Topic | Message | Key | Lane | Trạng thái contract |
 |---|---|---|---|---|---|---|
-| Auth | Request (dạng đặc biệt: resolve content theo `delivery_id`) | `t.auth.notification.events` | `userOtpRequested`, `passwordResetRequested`, `userEmailChanged`, `userPasswordChanged`, `userAccountLocked`, `userUnlocked` | `user_id` | critical | **Đã có.** Chỉ chứa `delivery_id`; email + template + secret resolve qua `POST /internal/v1/auth/notification-deliveries/{id}/content`. Retry 3 lần cùng CloudEvent id, không outbox, retention 24h. |
+| Auth | Request (dạng đặc biệt: resolve content theo `delivery_id`) | `t.auth.notification.events` | `userOtpRequested`, `passwordResetRequested`, `userEmailChanged`, `userPasswordChanged`, `userAccountLocked`, `userUnlocked` | `user_id` | critical | **Đã có.** Chỉ chứa `delivery_id` + metadata; template gán từ `type` ngay ở Ingest, email + secret resolve qua `POST /internal/v1/auth/notification-deliveries/{id}/content` lúc gửi. Retry 3 lần cùng CloudEvent id, không outbox, retention 24h. |
 | Review | Request | `t.review.events` | `reviewReplyNotificationRequested`, `reviewRemovalNotificationRequested` | `product_id` | transactional | **Đã có.** Không mang nội dung reply hay lý do pháp lý. |
-| **Order** | **Request** | `t.notification.transactional.v1` | `notification.requested.v1` với 5 template `ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`, `ORDER_REFUNDED` | `subject` (= `orders/{order_id}`) | transactional | **Contract đã viết** (§7, mục 1; Order còn phải xác nhận snapshot có tên sản phẩm, mục 3). Order đóng gói item snapshot, tổng tiền, địa chỉ từ row đơn hàng của chính nó — kể cả các mốc thanh toán/hoàn tiền/giao hàng mà Order đã consume từ Payment và Delivery. |
+| **Order** | **Request** | `t.notification.transactional.v1` | `notification.requested.v1` với 5 template `ORDER_CONFIRMED`, `ORDER_PAYMENT_FAILED`, `ORDER_CANCELLED`, `ORDER_COMPLETED`, `ORDER_REFUNDED` | `subject` (= `orders/{order_id}`) | transactional | **Contract đã viết** (§7, mục 1). Order đóng gói immutable item snapshot (Checkout bắt buộc `snapshot_name`), tổng tiền và địa chỉ từ row đơn hàng của chính nó — kể cả các mốc thanh toán/hoàn tiền/giao hàng mà Order đã consume từ Payment và Delivery; không runtime-enrich từ Product/User. |
 | Cart | Fact | `t.cart.events` | `cartAbandonedV1` | `cart_id` | bulk | **Đã có.** Payload đủ (`cart_id, user_id, abandonment_cycle`). |
 | User | Fact (state replication) | `t.user.events` | `preferences-updated` (`email_enabled`, `in_app_enabled`, `marketing_enabled`) | `user_id` | — (consumer riêng) | **Đã có.** Có daily reconciliation. |
 | Payment, Delivery | **Không consume** | — | — | — | — | Fact của họ **không có `user_id`** (Payment cấm tường minh trong schema; Delivery chỉ có `order_id`/`order_line_id`). Notification không biết gửi cho ai nếu không replicate Order. Order đã consume các fact này để chạy state machine và phát request thay. |
 
 Ba điều rút ra từ bảng:
 
-- **Không có event nào mang email người nhận.** Email là PII, không đi qua Kafka (bản ghi Kafka tồn tại theo retention, được replicate, không xoá được khi user xoá tài khoản, và có thể lỗi thời khi user đổi email). Notification resolve email **lúc gửi** qua Auth internal API — với Auth là API `content` đã có, với mọi nguồn khác là API `notification-contact` đã thêm vào Auth OpenAPI (§7, mục 2). In-app không cần resolve gì vì chỉ cần `user_id`.
+- **Không có event nào mang email người nhận.** Email là PII, không đi qua Kafka (bản ghi Kafka tồn tại theo retention, được replicate, không xoá được khi user xoá tài khoản, và có thể lỗi thời khi user đổi email). Notification resolve email **lúc gửi** qua Auth internal API (listener 8081) — với Auth là API `content` đã có, với mọi nguồn khác là API `notification-contact` (§7, mục 2). In-app không cần resolve gì vì chỉ cần `user_id`.
 - **Fact chỉ dùng được khi có `user_id` và đủ dữ liệu render.** Cart thoả; Payment và Delivery không — nên mọi mốc đơn hàng đi qua Order. Đây là cách áp dụng đúng quy tắc D-07 sau khi soi schema thật.
 - Preference hiện chỉ có `email_enabled`, `in_app_enabled`, `marketing_enabled` — khớp với phạm vi kênh phase 1 (D-08).
 
@@ -98,12 +98,12 @@ Contract Notification sở hữu đã được viết (`x-adoption-status: propo
 | # | Contract | Trạng thái | Ghi chú |
 |---|---|---|---|
 | 1 | [`contracts/events/notification/v1/asyncapi.yaml`](../../contracts/events/notification/v1/asyncapi.yaml) + `schemas/` + [`templates/catalog.yaml`](../../contracts/events/notification/v1/templates/catalog.yaml) + `templates/ORDER_*.schema.json` | **Đã viết** | 3 channel request, 1 channel outcome, 15 template, 5 schema `template_data`; example đã validate |
-| 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) | **Đã thêm** | Auth owner xác nhận |
-| 3 | Snapshot đơn hàng của Order có `name` sản phẩm | **Còn mở với Order** | `ORDER_CONFIRMED`/`ORDER_COMPLETED` cần `items[].name`; ghi trong `publishNotificationRequests` của Order AsyncAPI |
+| 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) | **Đã thêm và đã implement trong auth-service** (listener internal 8081; `locale` luôn `null` ở phase 1) | Test tích hợp `TestHTTPInternalNotificationContact` của Auth |
+| 3 | Snapshot đơn hàng của Order có `name` sản phẩm | **Đã chốt ở target contract** | Checkout bắt buộc `items[].snapshot_name`; Order persist `order_item_lines.snapshot_name` và map sang notification `items[].name`, không runtime RPC |
 | 4 | [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml) (inbox) và [internal](../../contracts/http/notification/internal/v1/openapi.yaml) (status, ops) | **Đã viết** | Route Gateway và mesh policy đã khai báo |
 | 5 | User Service consume `notification.complaint-received.v1`; Analytics consume `t.notification.outcomes.v1` | **Còn mở với User, Analytics** | Đã ghi `x-consumers`; owner đăng ký phía họ |
 
-Hạ tầng dev: **Mailpit** và **LocalStack** đã có trong `docker-compose.yml` dưới profile `notification`; DB `notification_db` trong `init-db.sh`; connector Debezium và script LocalStack ở `go/services/notification-service/deploy/`. Xem [13-development.md](./13-development.md).
+Hạ tầng dev: **Mailpit**, **LocalStack** và container **notification-service** (host 8091 inbox, 8092 internal) trong `docker-compose.yml` dưới profile `notification`; DB `notification_db` trong `init-db.sh`; connector Debezium và script LocalStack ở `go/services/notification-service/deploy/`. Xem [13-development.md](./13-development.md).
 
 ## 8. Thuật ngữ
 
