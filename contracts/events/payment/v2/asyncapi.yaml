@@ -19,7 +19,7 @@ channels:
   financialFacts:
     address: t.payment.events.v2
     description: >-
-      Payment and refund facts. The Kafka record key is the exact decimal string
+      Payment, refund and dispute facts. The Kafka record key is the exact decimal string
       in data.order_id, so every fact for one order remains in one partition.
     x-owner: payment-service
     x-message-key: data.order_id
@@ -54,11 +54,16 @@ channels:
       refundSucceeded: { $ref: '#/components/messages/refundSucceeded' }
       refundFailed: { $ref: '#/components/messages/refundFailed' }
       refundReversed: { $ref: '#/components/messages/refundReversed' }
+      disputeOpened: { $ref: '#/components/messages/disputeOpened' }
+      disputeFundsWithdrawn: { $ref: '#/components/messages/disputeFundsWithdrawn' }
+      disputeFundsReinstated: { $ref: '#/components/messages/disputeFundsReinstated' }
+      disputeWon: { $ref: '#/components/messages/disputeWon' }
+      disputeLost: { $ref: '#/components/messages/disputeLost' }
 operations:
   publishFinancialFacts:
     action: send
     title: Publish Payment financial facts
-    summary: Publish committed payment and refund facts through the outbox relay.
+    summary: Publish 15 committed payment, refund and dispute facts through the outbox relay.
     channel: { $ref: '#/channels/financialFacts' }
     messages:
       - { $ref: '#/channels/financialFacts/messages/paymentInitiated' }
@@ -71,6 +76,11 @@ operations:
       - { $ref: '#/channels/financialFacts/messages/refundSucceeded' }
       - { $ref: '#/channels/financialFacts/messages/refundFailed' }
       - { $ref: '#/channels/financialFacts/messages/refundReversed' }
+      - { $ref: '#/channels/financialFacts/messages/disputeOpened' }
+      - { $ref: '#/channels/financialFacts/messages/disputeFundsWithdrawn' }
+      - { $ref: '#/channels/financialFacts/messages/disputeFundsReinstated' }
+      - { $ref: '#/channels/financialFacts/messages/disputeWon' }
+      - { $ref: '#/channels/financialFacts/messages/disputeLost' }
 components:
   messages:
     paymentInitiated:
@@ -183,10 +193,66 @@ components:
       x-example-file: ../../../examples/events/payment-refund-reversed.v2.json
       bindings: { $ref: '#/components/messageBindings/orderKey' }
       payload: { $ref: './schemas/refund-reversed.schema.json' }
+    disputeOpened:
+      name: disputeOpenedV2
+      title: DISPUTE_OPENED
+      summary: A provider dispute was opened against a captured payment.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.dispute.opened.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-dispute-opened.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/dispute-opened.schema.json' }
+    disputeFundsWithdrawn:
+      name: disputeFundsWithdrawnV2
+      title: DISPUTE_FUNDS_WITHDRAWN
+      summary: Stripe withdrew disputed funds; Payment posted the matching balanced journal.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.dispute.funds-withdrawn.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-dispute-funds-withdrawn.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/dispute-funds-withdrawn.schema.json' }
+    disputeFundsReinstated:
+      name: disputeFundsReinstatedV2
+      title: DISPUTE_FUNDS_REINSTATED
+      summary: Stripe reinstated disputed funds; Payment posted the matching balanced journal.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.dispute.funds-reinstated.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-dispute-funds-reinstated.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/dispute-funds-reinstated.schema.json' }
+    disputeWon:
+      name: disputeWonV2
+      title: DISPUTE_WON
+      summary: The provider closed the dispute in the merchant's favor.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.dispute.won.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-dispute-won.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/dispute-won.schema.json' }
+    disputeLost:
+      name: disputeLostV2
+      title: DISPUTE_LOST
+      summary: The provider closed the dispute against the merchant; the loss remains final.
+      contentType: application/cloudevents+json
+      correlationId: { $ref: '#/components/correlationIds/cloudEventCorrelationId' }
+      x-event-type: com.ecommerce.payment.dispute.lost.v2
+      x-consumers: [order-service, analytics-service]
+      x-example-file: ../../../examples/events/payment-dispute-lost.v2.json
+      bindings: { $ref: '#/components/messageBindings/orderKey' }
+      payload: { $ref: './schemas/dispute-lost.schema.json' }
   schemas:
     OrderId:
       type: string
-      pattern: '^[1-9][0-9]{0,18}$'
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
   correlationIds:
     cloudEventCorrelationId:
       description: Original Order/Temporal correlation when it is available.

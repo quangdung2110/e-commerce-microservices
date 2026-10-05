@@ -239,7 +239,7 @@ interactions:
     consumers: [order-service, analytics-service]
     contract: events/payment/v2/asyncapi.yaml
     status: proposed
-    notes: Full CloudEvents structured JSON with exact com.ecommerce.payment.*.v2 types, per-event schemas, VND money and per-transaction financial version; no client_secret/provider identifiers in events. PAYMENT_FAILED/EXPIRED/CANCELED aliases are emitted only after the PaymentIntent is canceled (ADR-014/015); retryable declines emit nothing.
+    notes: Fifteen full CloudEvents structured facts with exact types, per-event schemas, VND money and per-transaction financial version. Five dispute facts are orthogonal and do not rewrite Payment state. No client_secret/provider identifiers. Terminal non-capture facts require provider cancellation; retryable declines emit nothing.
 
   - id: checkout-previews-inventory-allocation
     protocol: http

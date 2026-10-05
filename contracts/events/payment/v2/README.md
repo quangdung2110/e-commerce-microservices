@@ -22,6 +22,10 @@ Unknown optional fields remain allowed for additive evolution; consumers ignore
 them. The explicitly forbidden sensitive/provider fields remain invalid even when
 added by mistake.
 
+The topic also carries the Payment-owned dispute lifecycle: opened, provider funds
+withdrawn/reinstated, won and lost. A dispute is orthogonal to PaymentTransaction
+status; its facts still advance `financial_state_version` on the captured payment.
+
 See `docs/payment/interfaces.md` for business semantics and
-`contracts/events/payment/internal/v1/asyncapi.yaml` for the internal raw Stripe
-webhook buffer.
+`contracts/events/payment/internal/v1/asyncapi.yaml` for the internal verified
+Stripe webhook buffer.
