@@ -28,6 +28,7 @@ verified_against_commit: null
 | PostgreSQL `order_admin_refund_attempts` | Durable pre-dispatch release attempt; separate from lifetime refund entitlement | Order Service |
 | PostgreSQL `order_payment_attempts` | Immutable mapping payment attempt ↔ Payment transaction and financial version | Order Service |
 | PostgreSQL `order_financial_reconciliation_cases` + obligation/evidence/decision children | Audited envelope cho nhiều post-capture/dispute/scope obligations độc lập | Order Service |
+| PostgreSQL `order_checkout_submissions` | Canonical Checkout submission, digest và trạng thái chuẩn bị (`PREPARING/PAYMENT_READY/RECALCULATION_REQUIRED/FAILED`) cho recovery read | Order Service |
 | PostgreSQL `order_operations` | Buyer/Admin async operation, scoped idempotency identity và authorization owner | Order Service |
 | PostgreSQL `order_workflow_dispatches` | Transactional intent to start/attach a fixed Temporal workflow after local commit | Order Service |
 | PostgreSQL `order_workflow_messages` | Transactional outbox cho Temporal signal/message sau Kafka/API acceptance | Order Service |
@@ -82,6 +83,7 @@ erDiagram
       varchar captured_payment_transaction_id
       timestamptz inventory_reservation_expires_at
       timestamptz payment_deadline_at
+      timestamptz payment_deadline_locked_at
       timestamptz buyer_return_locked_at
       bigint last_notification_sequence_id
       bigint last_event_sequence_id
@@ -111,6 +113,7 @@ erDiagram
       bigint net_amount_minor
       varchar fulfillment_status
       varchar snapshot_name
+      varchar snapshot_variant_name
       varchar snapshot_image_url
       jsonb snapshot_attributes
       jsonb snapshot_category_ids
@@ -235,7 +238,8 @@ không phụ thuộc address book bị sửa/xóa về sau.
 | `active_payment_transaction_id` | `VARCHAR(120)` nullable | Transaction của active attempt. Pre-capture cancel/fail/expired và event active phải match field này. |
 | `captured_payment_transaction_id` | `VARCHAR(120)` nullable, unique when set | First/only successful transaction của order; immutable sau khi set. Refund phải dùng identity này, không dùng một attempt thất bại hoặc active ID đã stale. |
 | `inventory_reservation_expires_at` | `TIMESTAMPTZ` nullable | Exact advisory `expires_at` từ accepted Inventory Reserve receipt; bắt buộc trước `PAYMENT_READY`, dùng để cap Order-owned deadline và retry eligibility |
-| `payment_deadline_at` | `TIMESTAMPTZ NOT NULL` | Immutable deadline = min(`PAYMENT_READY + 15 phút`, mọi resource-hold expiry trừ clock-skew safety mặc định 30 giây); nếu không có expiring hold dùng business ceiling. Next attempt không gia hạn |
+| `payment_deadline_at` | `TIMESTAMPTZ NOT NULL` | Khi tạo order ghi business ceiling `created_at + 15 phút`; tại `PAYMENT_READY` khoá một lần = min(ceiling hiện tại, `PAYMENT_READY + 15 phút`, mọi resource-hold expiry trừ clock-skew safety mặc định 30 giây) — chỉ có thể giảm. Sau khi khoá là immutable; next attempt không gia hạn |
+| `payment_deadline_locked_at` | `TIMESTAMPTZ` nullable | Thời điểm deadline được khoá tại `PAYMENT_READY` ([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)) |
 | `last_notification_sequence_id` | `BIGINT NOT NULL DEFAULT 0` | Monotonic sequence riêng cho Order-owned Notification commands; không dùng/chạm integration fact sequence |
 | `status` | `VARCHAR(50)` | Master FSM state |
 | `checkout_token` | `VARCHAR(255)` unique, not null | Route workflow `order-checkout-{checkout_token}` |
@@ -285,8 +289,9 @@ viết lại lịch sử đơn.
 | `fulfillment_status` | `VARCHAR(50)` | Authoritative line FSM `PROCESSING/DISPATCHED/DELIVERED` |
 | `dispatch_event_id`, `delivery_proof_id`, `delivery_proof_sha256`, `delivered_at` | `UUID/VARCHAR/VARCHAR(64)/TIMESTAMPTZ` nullable | Immutable fact identity/proof receipt sau mỗi transition; raw proof/PII không lưu ở Order; duplicate phải replay/no-op |
 | `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất |
+| `snapshot_variant_name` | `VARCHAR(255)` nullable | Nhãn biến thể từ Checkout `items[].variant_name`; nguồn duy nhất của `variant_name` trong `order.completed.v1` và notification |
 | `snapshot_image_url` | `VARCHAR(2048)` nullable | Ảnh lúc mua; khớp public/internal OpenAPI URI limit |
-| `snapshot_name_search` | `TEXT NOT NULL` | Unicode NFKD, remove combining marks và lowercase bằng pinned application normalizer; immutable search input |
+| `snapshot_name_search` | `TEXT NOT NULL` | Unicode NFKD, remove combining marks, fold `đ/Đ -> d` và lowercase (`Locale.ROOT`) bằng pinned application normalizer; immutable search input |
 | `snapshot_attributes` | `JSONB` | Ví dụ color/size; nguồn cho variant snapshot khi có |
 | `snapshot_category_ids` | `JSONB` | Tối đa 20 Product-owned category ID; immutable input để Promotion Reserve re-evaluate đúng context Preview |
 
@@ -486,13 +491,15 @@ owner queue and timestamps. Child `order_reconciliation_obligations` is 1:N and 
 `obligation_id`, typed resource identity, `OPEN|EVIDENCE_PENDING|DECIDED|CLOSED` and
 revision. Types include `POST_CAPTURE_INVENTORY_REPAIR`, `POST_CAPTURE_PROMOTION_REPAIR`,
 `CAPTURE_AFTER_TERMINAL_NON_CAPTURE`, `REFUND_REVERSAL`, `CUSTOMER_PAYOUT_REMEDIATION`,
-`REFUND_SCOPE_FINALIZATION` and `PAYMENT_DISPUTE`; unique active key is
-`(order_id, obligation_type, resource_id)`.
+`REFUND_SCOPE_FINALIZATION`, `RETURN_MANUAL_VERIFICATION` (30-day inspection timeout or
+durable scope-registration rejection; resource = `refund_request_id`) and `PAYMENT_DISPUTE`;
+unique active key is `(order_id, obligation_type, resource_id)`.
 
 `order_reconciliation_evidence` and `order_reconciliation_decisions` are append-only
 children of one obligation. Evidence stores provider/checkpoint/event reference, digest,
 financial/scope version and timestamp. Decision stores UUID `decision_id`, expected case
-and obligation revision, authenticated actor, named resolution, reason and evidence set.
+and obligation revision, authenticated actor (`X-Actor-Id`) plus mesh workload principal,
+named resolution, reason and evidence set.
 This preserves corrected decisions and concurrent dispute/scope/repair work instead of
 overwriting one row. The case envelope becomes `CLOSED` only when every obligation is
 closed; resolving return closure cannot close an unrelated dispute or accounting duty.
@@ -598,6 +605,22 @@ and accepted/rejected outcome. A finalization dispatch uses
 also scans financially terminal refund cases with pending/recovery work, and suppresses
 stale dispatches after confirmed completion. Duplicate immediate/recovery execution
 uses the same remote key and the receipt update locks the same case/generation.
+
+### 3.9a. `order_checkout_submissions`
+
+| Field | Kiểu | Quy tắc |
+|---|---|---|
+| `checkout_token` | `UUID` PK | Idempotency-Key của Checkout; một token chỉ một submission |
+| `request_digest` | `CHAR(64)` | SHA-256 canonical request; cùng token khác digest → `409 IDEMPOTENCY_KEY_REUSED` |
+| `request` | `JSONB NOT NULL` | Snapshot đầy đủ (có PII địa chỉ); chỉ `CreateOrderActivity` đọc, không đưa vào Temporal history |
+| `state` | `VARCHAR(32)` | `PREPARING`, `PAYMENT_READY`, `RECALCULATION_REQUIRED`, `FAILED` |
+| `order_id` | `BIGINT` nullable | Gán khi `CreateOrderActivity` commit |
+| `failure` | `JSONB` nullable | RFC 9457 problem đã sanitize cho `RECALCULATION_REQUIRED/FAILED` |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | Audit |
+
+API insert row này cùng `order_workflow_dispatches` của `order-checkout-{checkout_token}`
+trong một transaction; workflow chỉ nhận `checkout_token`. Response `201/200` và recovery
+read đọc row này rồi relay Payment client data tươi ([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
 
 ### 3.10. `order_notification_commands`
 
@@ -805,7 +828,7 @@ FROM orders o;
   `primary_store_name='PLATFORM'` trong Release 1.
 - Class B trước hết lấy `DISTINCT order_id` từ line có
   `snapshot_name_search LIKE '%' || :normalized_q || '%'`, rồi áp cùng filter class A.
-  `:normalized_q` được tạo bằng đúng pinned NFKD/remove-combining-marks/lowercase
+  `:normalized_q` được tạo bằng đúng pinned NFKD/remove-combining-marks/`đ->d`/lowercase
   application normalizer dùng lúc ghi snapshot. Chỉ tìm theo snapshot product name.
 - Mỗi class chạy total count riêng với cùng filter nhưng bỏ cursor/limit.
 - Visibility: Buyer bắt buộc filter `user_id`; Admin bỏ filter này.

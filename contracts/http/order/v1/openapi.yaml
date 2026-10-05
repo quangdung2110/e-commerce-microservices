@@ -123,8 +123,9 @@ paths:
       operationId: requestMyOrderReturn
       summary: Submit the one lifetime Buyer return request
       description: >-
-        Every order line must already be DELIVERED by verified Delivery proof. The
-        selected set may be a proper subset of the order, but each selected line must
+        Every order line must already be DELIVERED by verified Delivery proof and the
+        order must be COMPLETED. Release 1 has no return time window after completion.
+        The selected set may be a proper subset of the order, but each selected line must
         use its complete ordered quantity. A new idempotency key never bypasses the
         permanent Buyer-return guard or lifetime refund-case uniqueness.
       parameters:
@@ -559,6 +560,24 @@ components:
         PAID/PROCESSING with no DISPATCHED/DELIVERED line => TO_SHIP; PAID/PROCESSING
         with any such line => TO_RECEIVE; return/refund/reconciliation states take the
         RETURN_REFUND lane. It is not a direct mapping from one master or line state.
+    UiPrimaryStatus:
+      type: string
+      description: >-
+        Display status code derived from order_status and buyer_tab (Order ADR-020):
+        PENDING_PAYMENT=AWAITING_PAYMENT, CANCELLING=CANCELLING, PAID/PROCESSING in
+        TO_SHIP=PREPARING, PAID/PROCESSING in TO_RECEIVE=IN_DELIVERY, COMPLETED=COMPLETED,
+        CANCELLED=CANCELLED, RETURN_REQUESTED=RETURN_IN_PROGRESS, REFUNDED=REFUNDED,
+        FINANCIAL_RECONCILIATION_REQUIRED=UNDER_REVIEW.
+      enum:
+        - AWAITING_PAYMENT
+        - CANCELLING
+        - PREPARING
+        - IN_DELIVERY
+        - COMPLETED
+        - CANCELLED
+        - RETURN_IN_PROGRESS
+        - REFUNDED
+        - UNDER_REVIEW
     FulfillmentStatus:
       type: string
       enum: [PROCESSING, DISPATCHED, DELIVERED]
@@ -654,7 +673,7 @@ components:
         lines:
           type: array
           minItems: 1
-          maxItems: 200
+          maxItems: 100
           items: { $ref: '#/components/schemas/OrderLine' }
     PromotionSnapshot:
       type: object
@@ -739,7 +758,7 @@ components:
         items:
           type: array
           minItems: 1
-          maxItems: 200
+          maxItems: 100
           items: { $ref: '#/components/schemas/OrderItem' }
         promotions:
           type: array
@@ -780,8 +799,12 @@ components:
         order_id: { $ref: '#/components/schemas/OrderId' }
         buyer_id: { type: string, format: uuid }
         buyer_tab: { $ref: '#/components/schemas/BuyerTab' }
-        ui_primary_status: { type: string, minLength: 1, maxLength: 64 }
-        ui_status_rank: { type: integer, minimum: 1, maximum: 99 }
+        ui_primary_status: { $ref: '#/components/schemas/UiPrimaryStatus' }
+        ui_status_rank:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: Sort rank of buyer_tab (TO_PAY=10, TO_SHIP=20, TO_RECEIVE=30, RETURN_REFUND=40, COMPLETED=50, CANCELLED=60, fallback 99).
         created_at: { type: string, format: date-time }
         primary_item_name:
           type: string
@@ -844,7 +867,7 @@ components:
         lines:
           type: array
           minItems: 1
-          maxItems: 200
+          maxItems: 100
           items: { $ref: '#/components/schemas/ReturnLineRequest' }
           description: order_line_id values must be unique; enforced by the provider.
         reason_code: { type: string, minLength: 1, maxLength: 100 }
@@ -976,7 +999,7 @@ components:
         amount: { $ref: '#/components/schemas/Money' }
         lines:
           type: array
-          maxItems: 200
+          maxItems: 100
           items: { $ref: '#/components/schemas/RefundCaseLine' }
         refund_transaction_id:
           oneOf:

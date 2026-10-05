@@ -152,8 +152,8 @@ Workflow dùng Temporal `Selector`/signal-versus-timer semantics ở payment wai
 implementation cụ thể có thể dùng API SDK tương đương nhưng phải giữ quyết định đơn
 trong history và tính deterministic.
 
-Buyer financial finalization and scope-finalization intent commit together before
-the remote close. Scope retry exhaustion is `RECOVERY_REQUIRED`, not financial
+Buyer financial finalization and scope-finalization intent/dispatch commit together before
+the remote close; only `OrderRefundScopeFinalizationWorkflow` calls Inventory close/cancel. Scope retry exhaustion is `RECOVERY_REQUIRED`, not financial
 rollback. Durable dispatch/reconciliation starts
 `OrderRefundScopeFinalizationWorkflow` on the existing refund queue for the frozen
 command/generation, including financially terminal cases. It only calls Inventory;
@@ -211,6 +211,10 @@ Thiết kế yêu cầu các process/runtime logic sau, nhưng chưa chốt ch�
 - Delivery Kafka consumer group `order-delivery-consumer`.
 - Temporal worker đăng ký ba task queue: `order-checkout-queue`,
   `order-refund-queue`, `order-financial-reconciliation-queue`.
+- Runtime đã chốt: Java 21 + Spring Boot 3.3 + Temporal Java SDK tại
+  `java/services/order-service`; mặc định một process chạy HTTP, consumers, workers và
+  Temporal worker, mỗi nhóm có cờ bật/tắt riêng để tách pod
+  ([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
 - Workflow-message dispatcher, prerequisite-proof replayer và completion convergence
   worker; mọi worker claim row bằng `FOR UPDATE SKIP LOCKED` và lease/attempt metrics.
 - Refund scope finalization recovery uses `order-refund-queue`; the finalization

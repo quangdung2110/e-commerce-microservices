@@ -14,6 +14,12 @@ reserve can choose a different plan, fail after a financial capture, or create a
 second root. Treating a released root as automatically committable can also consume
 stock that another order validly acquired after the timeout.
 
+> Current caller status: the command remains implemented and its guards unchanged, but
+> Order Release 1 never invokes it. Order
+> [ADR-014](../../order/decisions/ADR-014-payment-attempt-deadline-and-terminal-semantics.md)
+> keeps a timed-out order `CANCELLED` and routes a later capture to an Order financial
+> reconciliation obligation ([Order ADR-020](../../order/decisions/ADR-020-release-1-implementation-clarifications.md)).
+
 ## Decision
 
 Inventory adds `RecoverTimedOutPayment(order_id, payment_reference)`, callable only

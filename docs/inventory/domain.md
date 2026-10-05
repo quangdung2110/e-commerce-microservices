@@ -96,7 +96,8 @@ whole-root release with exactly one immutable reason: `PAYMENT_FAILED`,
 `PRE_PAYMENT_SAGA_FAILED`. A reservation still `RESERVED` 60 minutes after
 `accepted_at` alerts; it never cleans up automatically.
 
-`RecoverTimedOutPayment` is deliberately narrower than Reserve: it is callable only by
+`RecoverTimedOutPayment` is deliberately narrower than Reserve (Order Release 1 never
+invokes it, Order ADR-014/ADR-020): it is callable only by
 Order with a verified payment reference after the same root was released for
 `RESERVATION_EXPIRED`. It locks the complete root and original stock positions, then
 requires no physical dispatch and full original quantity at every original warehouse.

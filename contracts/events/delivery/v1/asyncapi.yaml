@@ -41,7 +41,7 @@ components:
       properties:
         specversion: { const: '1.0' }
         id: { type: string, format: uuid }
-        source: { const: delivery-service }
+        source: { const: /services/delivery }
         type: { const: com.ecommerce.delivery.order-line.delivered.v1 }
         subject: { type: string, pattern: '^orders/[A-Za-z0-9_.-]+/lines/[A-Za-z0-9_.-]+$' }
         time: { type: string, format: date-time }

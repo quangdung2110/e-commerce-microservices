@@ -51,7 +51,9 @@ sequenceDiagram
 - Commit is accepted for the entire root whenever it is still `RESERVED`, including after the advisory `expires_at`: Order's timer is the only payment window, and Order commits only after its financial watermark. It moves every line to `COMMITTED` atomically. Commit on a root that is no longer `RESERVED` is a durable `409 RESERVATION_NOT_RESERVED`; a retry of an already accepted commit returns success ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 - On payment failure, timeout or a pre-payment cancellation/compensation, Order calls `ReleaseReservation` with `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED` or `PRE_PAYMENT_SAGA_FAILED`. Inventory does not run an expiry worker.
 - If Payment later proves success after the timeout release, Order may call only
-  `RecoverTimedOutPayment` with that payment reference. Inventory locks the original
+  `RecoverTimedOutPayment` with that payment reference. Order Release 1 does not call it
+  at all (Order ADR-014/ADR-020): a late capture becomes an Order financial-reconciliation
+  obligation; the command stays available with unchanged guards. Inventory locks the original
   root/plan and atomically commits all lines only when the release reason was
   `RESERVATION_EXPIRED`, none dispatched, and all exact original stock is still
   available. It otherwise returns durable `409` without movement; Order must reconcile

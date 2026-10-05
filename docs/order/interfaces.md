@@ -77,13 +77,18 @@ Search trả một card trên mỗi order với `order_id`, `buyer_id`, `buyer_t
 `ui_primary_status`, `ui_status_rank`, `created_at`, `primary_item_name`,
 `primary_item_image_url`, `primary_store_name="PLATFORM"`, `item_count`,
 `remaining_item_count` và `final_amount`. Không trả `matched_lines_count`,
-`matched_context[]`, `match_reason` hay `matched_lines`.
+`matched_context[]`, `match_reason` hay `matched_lines`. `ui_primary_status` là enum
+`AWAITING_PAYMENT/CANCELLING/PREPARING/IN_DELIVERY/COMPLETED/CANCELLED/RETURN_IN_PROGRESS/REFUNDED/UNDER_REVIEW`
+dẫn xuất từ master state + tab; `ui_status_rank` là rank của tab
+([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
+Buyer return không có cửa sổ thời gian ở Release 1.
 
 ### 2.2 Checkout service-to-service
 
 `POST /internal/v1/checkout-order-submissions` chỉ cho principal
 `checkout-service`; `Idempotency-Key` bắt buộc bằng UUID `checkout_token`. Request
-chứa `user_id`, address snapshot, `items[]` (gồm Product-owned `category_ids`), pricing, promotion snapshot,
+chứa `user_id`, address snapshot, tối đa 100 `items[]` (gồm Product-owned `category_ids` và
+`variant_name` optional), pricing, promotion snapshot,
 `allocation_plan`, `pricing_hash`, `items_hash` và campaign revision. Trường legacy
 `user_ack_degraded_pricing` vẫn bắt buộc trên wire ở v1 nhưng bị khóa `false`;
 Checkout không submit quotation degraded.
@@ -100,8 +105,11 @@ attempt number, transaction ID và `payment` client data (`usable`, `client_secr
 `publishable_key`, `expires_at`) mà Order lấy từ Payment `client-data` **tại thời điểm
 trả** — Order không lưu bản sao; `usable=false` → secret `null`. Checkout relay tiếp,
 không cache (Checkout ADR-010).
-Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; timeout
-hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body. Recovery read dùng
+Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inventory
+`REJECT_ALL` trả `409 INVENTORY_RESERVATION_REJECTED`; Payment từ chối initiate bền vững
+trả `409 PAYMENT_INITIATION_REJECTED` (cả hai terminal cho token, recovery read
+`state=FAILED`). Timeout hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body.
+Trạng thái submission được lưu trong `order_checkout_submissions`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
 Create replay và attach chỉ dựa trên unique `checkout_token`, fixed WorkflowID và
 durable workflow dispatch/checkpoint; endpoint này không dùng Redis create mirror.
@@ -121,9 +129,11 @@ toàn bộ obligations, evidence references và permitted resolutions theo từn
 Existing
 `POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` ghi quyết
 định evidence-backed vào chính xác `obligation_id`; `Idempotency-Key` phải bằng
-`decision_id`. Case envelope chỉ đóng khi mọi obligation đã terminal-resolved.
+`decision_id`; header `X-Actor-Id` (UUID người ra quyết định) bắt buộc và được lưu cùng
+workload principal. Case envelope chỉ đóng khi mọi obligation đã terminal-resolved.
 
-`CLOSE_RETURN_WITHOUT_REFUND` additionally requires
+`CLOSE_RETURN_WITHOUT_REFUND` targets the `RETURN_MANUAL_VERIFICATION` obligation opened
+by the 30-day timeout or a durable scope-registration rejection, and additionally requires
 `return_closure {refund_request_id, refund_scope_id, reason}`; reason is
 `RETURN_WINDOW_EXPIRED`, `PACKAGE_LOST`, or `CUSTOMER_WITHDREW`, and must equal the
 parent `reason_code`. The decision applies only to the existing Buyer manual case
@@ -159,7 +169,7 @@ to `REFUNDED`; this path emits no `ORDER_REFUNDED` command/fact.
 | `POST /internal/v1/promotion-allocation/reservations` | Promotion | TRY giữ budget runtime sau submit | Natural key order/promotion; cùng payload replay, khác payload conflict |
 | `POST /internal/v1/promotion-allocation/cancellations` | Promotion | CANCEL nhả reservation trước payment confirm | Chỉ nhả `RESERVED`; trả `RELEASED`, `NO_RESERVATION` hoặc `REPAIR_REQUIRED` |
 | `POST /internal/v1/promotion-allocation/confirmations` | Promotion | CONFIRM wallet `USED` + durable budget/receipt/outbox | Bắt buộc `Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}` |
-| Initiate/cancel payment | Payment | Tạo Stripe PaymentIntent; cancel must resolve capture/non-capture before Order final-cancel | Persist numbered attempt + transaction mapping; stable Payment create/cancel key; `ALREADY_SUCCEEDED` enters paid repair |
+| Initiate/cancel payment | Payment | Tạo Stripe PaymentIntent; cancel must resolve capture/non-capture before Order final-cancel | Persist numbered attempt + transaction mapping; stable Payment create/cancel key; `ALREADY_SUCCEEDED` enters paid repair; cancel `reason` map theo bảng dưới |
 | Initiate refund | Payment | Tạo Stripe Refund đúng một lần from the immutable captured transaction after gate | Stable refund key/transaction ID |
 
 `RollbackInventoryActivity` maps Order `cancel_reason` to the Inventory whole-root
@@ -173,8 +183,18 @@ release reason ([Inventory ADR-021](../inventory/decisions/ADR-021-order-integra
 | `ADMIN_FORCE_CANCEL` | `ADMIN_CANCELLED` |
 | `PRE_PAYMENT_SAGA_FAILED` | `PRE_PAYMENT_SAGA_FAILED` |
 
+`CancelPaymentActivity` maps Order `cancel_reason` to Payment cancel `reason`
+([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)):
+
+| Order `cancel_reason` | Payment cancel `reason` |
+|---|---|
+| `USER_CANCEL` | `BUYER_CANCELLED` |
+| `PAYMENT_TIMEOUT`, `PAYMENT_FAILED` | `PAYMENT_TIMEOUT` |
+| `ADMIN_FORCE_CANCEL`, `PRE_PAYMENT_SAGA_FAILED` | `ORDER_CANCELLED_PRE_CAPTURE` |
+
 Inventory has no single-line committed release and no exception release; paid
-pre-dispatch stock is released only through the all-line admin path above.
+pre-dispatch stock is released only through the all-line admin path above. Order Release 1
+never calls Inventory `recover-timed-out-payment` (ADR-014).
 
 All scope mutations require Inventory `Idempotency-Key`, `X-Correlation-ID` and
 `X-Causation-ID`. Persist intent/checkpoint/dispatch before HTTP; require matching
@@ -202,8 +222,8 @@ BIGINT/`*_vnd` storage shape qua wire.
 
 Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 `failed_promotion_id`, `failed_reason`, `reserve_mode=ALL_OR_NOTHING`; Checkout mới
-evaluate lại và tạo token mới. Trước confirm promotion ở race payment/timer, activity
-gia hạn reservation thêm 60 giây grace window.
+evaluate lại và tạo token mới. Order không gọi API gia hạn reservation: Promotion tự gia hạn
+grace khi Confirm-Prepare fence `RESERVED -> CONFIRMING`.
 
 ## 4. Event envelope, delivery và ordering
 
@@ -267,7 +287,8 @@ Quy tắc phía Order:
   User hay Auth** để gom thêm. Không có email, số điện thoại, địa chỉ chi tiết trong payload;
   Notification resolve email từ `user_id` lúc gửi.
 - Tên notification item map từ bắt buộc Checkout `items[].snapshot_name` sang immutable
-  `order_item_lines.snapshot_name`; `order.completed.v1` không cần lặp name vì Review chỉ
+  `order_item_lines.snapshot_name`; `variant_name` (notification và `order.completed.v1`)
+  chỉ lấy từ `order_item_lines.snapshot_variant_name`, null khi Checkout không gửi; `order.completed.v1` không cần lặp name vì Review chỉ
   cần product/SKU/variant entitlement snapshot.
 - Schema `template_data`: `contracts/events/notification/v1/templates/ORDER_*.schema.json`;
   request bị Notification từ chối (`FAILED`, DLQ, alert) nếu sai schema, sai lane hoặc thiếu
@@ -377,10 +398,16 @@ is rejected/reconciliation evidence and never mapped to delivery.
 | Workflow | WorkflowID | Task queue | Signals/chức năng |
 |---|---|---|---|
 | `OrderCheckoutWorkflow` | `order-checkout-{checkout_token}` | `order-checkout-queue` | PaymentResult, CancelOrder, RequestNextPaymentAttempt; pre/post-payment saga |
-| `OrderRefundWorkflow` | `order-refund-{order_id}` | `order-refund-queue` | InventoryReturnScopeInspectionCompleted, InventoryPreDispatchReleaseResult, RefundResult, manual verification |
+| `OrderRefundWorkflow` (Buyer) | `order-refund-{order_id}` | `order-refund-queue` | InventoryReturnScopeInspectionCompleted, RefundResult, manual-verification resume |
+| `OrderRefundWorkflow` (Admin pre-dispatch attempt) | `order-admin-refund-{attempt_id}` | `order-refund-queue` | Inventory atomic release, then RefundResult when the attempt created the lifetime case |
 | `OrderRefundScopeFinalizationWorkflow` | `order-refund-scope-finalization-{order_id}-{generation}` | `order-refund-queue` | Recover the frozen Inventory close/cancel checkpoint only; never call Payment |
 | `OrderFinancialReconciliationWorkflow` | `order-financial-reconciliation-{order_id}` | `order-financial-reconciliation-queue` | Execute proof-backed resume or dispatch an approved no-payout scope finalization; never blind rollback or direct financial mutation |
 
+Refund result messages route to `order_refund_cases.workflow_id`, so a rejected Admin
+attempt never occupies the Buyer Workflow ID. Reuse policy is `REJECT_DUPLICATE` for
+checkout/refund/Admin attempt and `ALLOW_DUPLICATE` for scope finalization and financial
+reconciliation, which only replay frozen commands through DB-idempotent activities
+([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
 Workflow starts originate from durable `order_workflow_dispatches`; every signal/message
 originates from `order_workflow_messages`. Dispatcher dùng Temporal `SignalWithStart`,
 scoped stable `message_id`, workflow dedup state carried across Continue-As-New và

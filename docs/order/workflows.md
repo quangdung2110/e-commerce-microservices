@@ -91,8 +91,9 @@ line collapse, equal timestamp ordering, last page và total count không bị c
 `POST /api/v1/orders/{order_id}/cancellation-requests`; Admin pre-payment gọi
 `POST /api/v1/admin/orders/{order_id}/cancellation-requests`; Admin paid lane gọi
 `POST /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests`. Mọi command có
-`Idempotency-Key` bắt buộc. Redis mirror dùng `order:req:cancel:{key}` hoặc
-`order:req:admin-refund:{key}` TTL 7 ngày; cùng key/payload có thể replay, khác payload
+`Idempotency-Key` bắt buộc. Redis mirror dùng
+`order:req:{principal_id}:cancel:{sha256(key)}` hoặc
+`order:req:{principal_id}:admin-refund:{sha256(key)}` TTL 7 ngày; cùng key/payload có thể replay, khác payload
 trả `409 IDEMPOTENCY_KEY_REUSED`. API khóa row bằng `SELECT ... FOR UPDATE` trong
 transaction; request mirror chỉ phục vụ replay nhanh.
 
@@ -121,7 +122,9 @@ Không signal CancelOrder vào checkout workflow cũ.
 **Output/state:** trả `202 Accepted`, `operation_id` và `Location` tới operation
 resource; durable dispatch/attempt là authority, Redis chỉ mirror replay. Invalid
 role/state trả 403/409. Cancel endpoint không đổi nghĩa thành refund theo state.
-WorkflowID serialize retry nhánh B; DB FSM giữ invariant nếu Redis mất key.
+Nhánh B chạy trong `order-admin-refund-{attempt_id}`; unique active attempt serialize retry
+nhánh B và một attempt bị từ chối không chiếm Workflow ID `order-refund-{order_id}` của
+Buyer. DB FSM giữ invariant nếu Redis mất key.
 
 **Race/recovery:** concurrent Buyer/Admin cancel chỉ một CAS transition thắng.
 Payment success cạnh cancel/timer được resolved by Payment's cancel/capture fact, then
@@ -268,7 +271,10 @@ legacy cleanup and prohibited here. Cùng key khác canonical payload là lỗi 
 client data relay từ Payment (`usable`, `client_secret`, `publishable_key`, `expires_at`;
 `null` khi không còn dùng được). Recovery read `GET …/{checkout_token}` cũng relay tươi
 ở mỗi lần gọi. Promotion conflict trả structured
-RFC 9457 `409`; HTTP deadline trước checkpoint trả `503 retryable=true`, và Checkout
+RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inventory `REJECT_ALL` trả
+`409 INVENTORY_RESERVATION_REJECTED` và Payment initiation bị từ chối bền vững trả
+`409 PAYMENT_INITIATION_REJECTED` (recovery read `state=FAILED`, order đi pre-payment
+cleanup với `cancel_reason=PRE_PAYMENT_SAGA_FAILED`); HTTP deadline trước checkpoint trả `503 retryable=true`, và Checkout
 retry cùng token/key/body hoặc đọc recovery resource. Đây là synchronous-to-checkpoint,
 không chờ Payment capture hay order terminal state.
 
@@ -404,7 +410,7 @@ giao; request khóa một selected-line scope trước khi start refund saga.
 
 **Trigger/input:** `POST /api/v1/orders/{order_id}/return-requests`, JWT Buyer, header
 `Idempotency-Key`, `lines[] {order_line_id, quantity}`, `reason_code`, `reason_details`.
-Không có `refund_type`. Redis mirror `order:req:return:{key}` TTL 7 ngày không thay
+Không có `refund_type`. Redis mirror `order:req:{principal_id}:return:{sha256(key)}` TTL 7 ngày không thay
 thế business guard.
 
 **Preconditions:** Buyer sở hữu order; state thuộc lane cho phép return; mọi
@@ -523,8 +529,9 @@ to `RETURN_REQUESTED`, locks `orders.final_amount_minor`, and continues. Any
   phát durable workflow message—không reject nhầm và không tạo command thứ hai.
 Success commits `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` and,
 for Buyer, the frozen `CLOSE` intent/checkpoint/durable dispatch in one transaction.
-`CloseRefundScopeActivity` then calls Inventory outside that transaction and persists
-the matching `CLOSED` receipt. Admin finalization is `NOT_REQUIRED`. No Order refunded
+The dispatcher then starts `OrderRefundScopeFinalizationWorkflow`, whose
+`CloseRefundScopeActivity` calls Inventory outside that transaction and persists the
+matching `CLOSED` receipt; the refund saga never calls Inventory close inline (ADR-020). Admin finalization is `NOT_REQUIRED`. No Order refunded
 integration fact is emitted; the existing `ORDER_REFUNDED` notification request remains
 in the financial-success transaction and is not emitted again on scope closure.
 
@@ -539,7 +546,8 @@ amount is `orders.final_amount_minor`.
 
 **Timeout/manual recovery:** chờ Inventory tối đa 30 ngày. Quá hạn alert Ops và
 vào lane `MANUAL_VERIFICATION_REQUIRED` and creates/attaches the durable reconciliation
-case. This is not an automatic closure or Payment bypass. Finance/Ops may resume only
+case with a `RETURN_MANUAL_VERIFICATION` obligation (the same obligation is opened when
+Inventory durably rejects `RegisterRefundScope`). This is not an automatic closure or Payment bypass. Finance/Ops may resume only
 with matching full Inventory evidence, or approve `CLOSE_RETURN_WITHOUT_REFUND` through
 WF-ORDER-010/008a when no Payment initiation is accepted/unknown. That decision ends
 the existing return by incomplete close or zero-receipt cancellation. Received units
@@ -569,8 +577,8 @@ all-undispatched versus any-dispatched conflict, and every WF-ORDER-008a case be
 ## WF-ORDER-008a — Durable Refund Scope finalization
 
 **Trigger/identity:** Buyer terminal Payment result or approved no-payout Ops decision
-creates the intent in the same Order transaction as its result/decision. The refund
-saga may execute immediately. A durable dispatcher/reconciler also starts/attaches
+creates the intent in the same Order transaction as its result/decision, together with the
+dispatch row. The dispatcher (and, for unfinished work, the reconciler) starts/attaches
 `order-refund-scope-finalization-{order_id}-{generation}` on `order-refund-queue` for
 unfinished work, including cases already `SUCCEEDED`/`FAILED` financially. It never
 calls Payment. See [ADR-013](./decisions/ADR-013-durable-refund-scope-finalization.md).
@@ -624,7 +632,8 @@ workflow first commits `CANCELLING` and its durable cancellation dispatch, then 
 Payment cancel with the stable key. Only matching `CANCELED`/`ALREADY_NON_CAPTURED`
 permits independent durable Promotion/Inventory cleanup obligations. Both are attempted
 even when one dependency is unavailable; only after both receipts are proven does
-`CancelOrderActivity` commit `CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` without an
+`CancelOrderActivity` commit `CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` (hoặc
+`PAYMENT_FAILED` khi attempt cuối là `FAILED`, theo `INV-ORD-034`) without an
 Order fact event (the cancellation Notification command is still transactional).
 
 **Race:** if payment signal/cancel response says `ALREADY_SUCCEEDED`, the timer must

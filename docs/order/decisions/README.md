@@ -42,3 +42,4 @@ event is required and historical Order ADR bodies are unchanged.
 | [ADR-017](./ADR-017-deterministic-line-net-refund-and-search.md) | Line-net refund allocation, deterministic search/idempotency/secret policy | Accepted | 2026-10-05 | Refines ADR-004, ADR-010, ADR-012 |
 | [ADR-018](./ADR-018-reconciliation-obligations.md) | Một envelope, nhiều obligation/evidence/decision độc lập | Accepted | 2026-10-05 | Refines ADR-011, ADR-013 |
 | [ADR-019](./ADR-019-external-remediation-refund-convergence.md) | Hội tụ refund lane sau full external customer payout, không giả Payment fact | Accepted | 2026-10-05 | Refines ADR-018 |
+| [ADR-020](./ADR-020-release-1-implementation-clarifications.md) | Làm rõ trước implementation: runtime, line limit 100, cancel reason, `variant_name`, submission state, obligation return thủ công, Admin workflow ID | Accepted | 2026-10-05 | Refines ADR-012…018 |
