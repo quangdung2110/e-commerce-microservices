@@ -55,6 +55,16 @@ channels:
         $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundFailed'
       refundReversed:
         $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundReversed'
+      disputeOpened:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeOpened'
+      disputeFundsWithdrawn:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeFundsWithdrawn'
+      disputeFundsReinstated:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeFundsReinstated'
+      disputeWon:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeWon'
+      disputeLost:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeLost'
   inventoryOrderFacts:
     address: t.inventory.order.events.v1
     description: Inventory-owned physical-dispatch and refund-inspection facts accepted by Order.
@@ -91,7 +101,7 @@ operations:
   publishOrderPaid:
     action: send
     channel: { $ref: '#/channels/orderEvents' }
-    summary: Publish once when the immutable captured payment moves the Order into PAID, including fenced late-payment recovery.
+    summary: Publish once when an immutable capture moves a non-terminal Order into PAID; success after terminal non-capture is reconciliation-only and emits no paid fact.
     x-consumers: [cart-service]
     messages: [{ $ref: '#/channels/orderEvents/messages/orderPaid' }]
   publishOrderCompleted:
@@ -108,17 +118,20 @@ operations:
       Order outbox in the same transaction as the state change. Templates and triggers:
       ORDER_CONFIRMED on PAID; ORDER_PAYMENT_FAILED when a payment attempt fails or
       expires; ORDER_CANCELLED on CANCELLED (buyer, payment_timeout, admin,
-      out_of_stock); ORDER_COMPLETED on COMPLETED; ORDER_REFUNDED when a refund
+      out_of_stock, checkout_failed); ORDER_COMPLETED on COMPLETED; ORDER_REFUNDED when a refund
       succeeds. template_data schemas live in
       contracts/events/notification/v1/templates/. Requires the Order item snapshot
-      to carry the product name.
+      to carry the product name. All source fields and URL/address fallbacks are
+      deterministic Order snapshots/config; no runtime Product/User enrichment call.
+      Order supplies a separate monotonic notification sequence per subject so the
+      Notification deliverer can serialize and supersede stale pending commands.
     x-consumers: [notification-service]
     x-templates: [ORDER_CONFIRMED, ORDER_PAYMENT_FAILED, ORDER_CANCELLED, ORDER_COMPLETED, ORDER_REFUNDED]
     messages: [{ $ref: '#/channels/notificationRequests/messages/notificationRequested' }]
   consumePaymentFacts:
     action: receive
     channel: { $ref: '#/channels/paymentFacts' }
-    summary: Consume only terminal payment facts and refund lifecycle facts that can advance or reconcile an Order workflow; dispatch by exact namespaced CloudEvents type.
+    summary: Consume terminal payment, refund lifecycle, and dispute facts; dispute facts only update financial reconciliation and never imply refund or fulfillment transitions.
     x-consumer-group: order-payment-consumer
     x-accepted-event-types:
       - com.ecommerce.payment.transaction.succeeded.v2
@@ -129,6 +142,11 @@ operations:
       - com.ecommerce.payment.refund.succeeded.v2
       - com.ecommerce.payment.refund.failed.v2
       - com.ecommerce.payment.refund.reversed.v2
+      - com.ecommerce.payment.dispute.opened.v2
+      - com.ecommerce.payment.dispute.funds-withdrawn.v2
+      - com.ecommerce.payment.dispute.funds-reinstated.v2
+      - com.ecommerce.payment.dispute.won.v2
+      - com.ecommerce.payment.dispute.lost.v2
     messages:
       - { $ref: '#/channels/paymentFacts/messages/paymentSucceeded' }
       - { $ref: '#/channels/paymentFacts/messages/paymentCanceled' }
@@ -138,6 +156,11 @@ operations:
       - { $ref: '#/channels/paymentFacts/messages/refundSucceeded' }
       - { $ref: '#/channels/paymentFacts/messages/refundFailed' }
       - { $ref: '#/channels/paymentFacts/messages/refundReversed' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeOpened' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeFundsWithdrawn' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeFundsReinstated' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeWon' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeLost' }
   consumeInventoryOrderFacts:
     action: receive
     channel: { $ref: '#/channels/inventoryOrderFacts' }

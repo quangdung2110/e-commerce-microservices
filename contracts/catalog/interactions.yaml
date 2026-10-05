@@ -215,7 +215,7 @@ interactions:
     consumers: [api-gateway]
     contract: http/order/v1/openapi.yaml
     status: proposed
-    notes: Buyer and Admin reads, lifecycle commands, payment-attempt retry, and operation polling use trusted Gateway identity.
+    notes: Buyer and Admin reads, lifecycle commands, FAILED-only payment-attempt request before the immutable deadline/while resource holds remain accepted, and operation polling use trusted Gateway identity.
 
   - id: order-initiates-payment
     protocol: http
@@ -223,7 +223,7 @@ interactions:
     consumers: [order-service]
     contract: http/payment/v1/openapi.yaml
     status: proposed
-    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction.
+    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction. EXPIRED/CANCELED attempts are not retryable; success after terminal non-capture is an Order reconciliation obligation, not a revived order.
 
   - id: stripe-delivers-payment-webhook
     protocol: http

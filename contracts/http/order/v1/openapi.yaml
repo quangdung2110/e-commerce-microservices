@@ -2,6 +2,9 @@ openapi: 3.1.0
 info:
   title: Order Service Public API
   version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
   description: >-
     Buyer and Admin contract for reading orders and accepting lifecycle commands.
     PostgreSQL is the read source of truth. Cancellation, return, and Admin
@@ -13,10 +16,15 @@ servers:
     description: Local development
 tags:
   - name: Buyer Orders
+    description: Buyer-owned order reads and cancellation commands.
   - name: Buyer Payments
+    description: Buyer payment-attempt requests and reads.
   - name: Buyer Returns
+    description: Buyer one-shot return request and refund-case reads.
   - name: Admin Orders
+    description: Privileged order reads and pre-dispatch lifecycle commands.
   - name: Operations
+    description: Authorized polling of durable asynchronous Order operations.
 security:
   - gatewayIdentity: []
 
@@ -168,12 +176,15 @@ paths:
     post:
       tags: [Buyer Payments]
       operationId: createMyOrderPaymentAttempt
-      summary: Create or replay the next numbered payment attempt
+      summary: Request or replay creation of the next numbered payment attempt
       description: >-
-        The previous attempt must have a durable FAILED, EXPIRED, or CANCELED
-        non-capture fact and the order must remain payment-eligible. The HTTP call
-        waits only until Payment client data is durably checkpointed; it never waits
-        for capture. Retry a timeout with the same Idempotency-Key.
+        The immediately previous attempt must have a durable FAILED fact, the immutable
+        order payment deadline (capped by the earliest resource-hold expiry minus clock
+        skew safety) must not have passed, and both Inventory and Promotion
+        holds must remain accepted. EXPIRED or CANCELED attempts, cleanup started, and
+        terminal orders are not eligible. Acceptance atomically records an operation and
+        durable workflow message; read the operation and then the numbered attempt for
+        Payment client data. Retry a timeout with the same Idempotency-Key.
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -184,21 +195,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CreatePaymentAttemptRequest' }
       responses:
-        '201':
-          description: A new numbered Payment attempt is ready for Stripe confirmation.
+        '202':
+          description: Durable request accepted, or idempotent replay of the same operation.
           headers:
-            Location: { $ref: '#/components/headers/PaymentAttemptLocation' }
-            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Location: { $ref: '#/components/headers/OperationLocation' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/PaymentAttempt' }
-        '200':
-          description: Idempotent replay of the previously created attempt.
-          headers:
-            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+              schema: { $ref: '#/components/schemas/OperationAccepted' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -507,9 +511,6 @@ components:
     AdminOperationLocation:
       description: Admin-scoped operation resource.
       schema: { type: string, pattern: '^/api/v1/admin/order-operations/[0-9a-fA-F-]{36}$' }
-    PaymentAttemptLocation:
-      description: Newly created payment-attempt resource.
-      schema: { type: string, pattern: '^/api/v1/orders/[1-9][0-9]*/payment-attempts/[1-9][0-9]*$' }
 
   schemas:
     OrderId:
@@ -536,6 +537,7 @@ components:
       $ref: '../../../shared/json-schema/v1/problem.schema.json'
     OrderStatus:
       type: string
+      description: CREATED is transaction-local/transient and is never exposed by the public API.
       enum:
         - PENDING_PAYMENT
         - CANCELLING
@@ -552,6 +554,11 @@ components:
     BuyerTab:
       type: string
       enum: [TO_PAY, TO_SHIP, TO_RECEIVE, RETURN_REFUND, COMPLETED, CANCELLED]
+      description: >-
+        Derived with one-tab precedence: PENDING_PAYMENT/CANCELLING => TO_PAY;
+        PAID/PROCESSING with no DISPATCHED/DELIVERED line => TO_SHIP; PAID/PROCESSING
+        with any such line => TO_RECEIVE; return/refund/reconciliation states take the
+        RETURN_REFUND lane. It is not a direct mapping from one master or line state.
     FulfillmentStatus:
       type: string
       enum: [PROCESSING, DISPATCHED, DELIVERED]
@@ -563,10 +570,14 @@ components:
       enum: [ACCEPTED, RUNNING, SUCCEEDED, REJECTED, FAILED, MANUAL_REVIEW_REQUIRED]
     OperationType:
       type: string
-      enum: [BUYER_CANCELLATION, ADMIN_CANCELLATION, BUYER_RETURN, ADMIN_PRE_DISPATCH_REFUND]
+      enum: [BUYER_CANCELLATION, ADMIN_CANCELLATION, BUYER_RETURN, ADMIN_PRE_DISPATCH_REFUND, PAYMENT_ATTEMPT]
     PaymentAttemptStatus:
       type: string
-      enum: [INITIATING, PENDING, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELED]
+      enum: [PENDING, SUCCESS, FAILED, EXPIRED, CANCELED]
+      description: >-
+        PENDING means a bound provider transaction is awaiting a terminal result.
+        Initiation progress/unknown create outcome is exposed by OrderOperation, not by
+        inventing an attempt state before transaction identity is bound.
     RefundCaseStatus:
       type: string
       enum:
@@ -577,11 +588,15 @@ components:
         - MANUAL_VERIFICATION_REQUIRED
         - SUCCEEDED
         - FAILED
+        - EXTERNALLY_REMEDIATED
         - CLOSED_INCOMPLETE
       description: >-
         CLOSED_INCOMPLETE is an approved Buyer return ended without payout, only
         after Inventory confirms incomplete closure or zero-receipt cancellation.
-        It never means master REFUNDED. SUCCEEDED/FAILED are financial outcomes;
+        It never means master REFUNDED. EXTERNALLY_REMEDIATED means immutable
+        Accounting/settlement evidence proves the customer received the full locked
+        amount outside the original Payment refund transaction; Payment status remains
+        provider-truth REFUND_FAILED. SUCCEEDED/FAILED are provider refund outcomes;
         consult optional scope_finalization for remaining physical finalization work.
     RefundMode:
       type: string
@@ -597,6 +612,9 @@ components:
         province_code: { type: string, minLength: 1, maxLength: 32 }
         district_code: { type: string, minLength: 1, maxLength: 32 }
         ward_code: { type: string, minLength: 1, maxLength: 32 }
+        province_name: { type: [string, 'null'], maxLength: 128 }
+        district_name: { type: [string, 'null'], maxLength: 128 }
+        ward_name: { type: [string, 'null'], maxLength: 128 }
     OrderLine:
       type: object
       additionalProperties: false
@@ -648,9 +666,13 @@ components:
     PaymentSummary:
       type: object
       additionalProperties: false
-      required: [status]
+      required: [status, payment_deadline_at]
       properties:
         status: { $ref: '#/components/schemas/PaymentStatus' }
+        payment_deadline_at:
+          type: string
+          format: date-time
+          description: Immutable order deadline capped by the earliest resource-hold expiry minus clock-skew safety; a new attempt never extends it.
         active_attempt_number: { type: [integer, 'null'], minimum: 1 }
         active_payment_transaction_id:
           oneOf:
@@ -681,7 +703,9 @@ components:
       properties:
         can_cancel: { type: boolean }
         can_return: { type: boolean }
-        can_retry_payment: { type: boolean }
+        can_retry_payment:
+          type: boolean
+          description: True only when the previous attempt is FAILED, the immutable order deadline is future, and Inventory/Promotion holds remain accepted.
     OrderDetail:
       type: object
       additionalProperties: false
@@ -732,7 +756,10 @@ components:
         paid_at: { type: [string, 'null'], format: date-time }
         completed_at: { type: [string, 'null'], format: date-time }
         cancelled_at: { type: [string, 'null'], format: date-time }
-        refunded_at: { type: [string, 'null'], format: date-time }
+        refunded_at:
+          type: [string, 'null']
+          format: date-time
+          description: Economic-resolution time for master REFUNDED; inspect refund_case.status to distinguish provider success from external remediation.
     OrderCard:
       type: object
       additionalProperties: false
@@ -756,11 +783,25 @@ components:
         ui_primary_status: { type: string, minLength: 1, maxLength: 64 }
         ui_status_rank: { type: integer, minimum: 1, maximum: 99 }
         created_at: { type: string, format: date-time }
-        primary_item_name: { type: string, minLength: 1, maxLength: 255 }
-        primary_item_image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        primary_item_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Name from the first line ordered by (order_item_id, order_line_id).
+        primary_item_image_url:
+          type: [string, 'null']
+          format: uri
+          maxLength: 2048
+          description: Image from the same line as primary_item_name.
         primary_store_name: { type: string, const: PLATFORM }
-        item_count: { type: integer, minimum: 1 }
-        remaining_item_count: { type: integer, minimum: 0 }
+        item_count:
+          type: integer
+          minimum: 1
+          description: Number of distinct order lines, not warehouse groups.
+        remaining_item_count:
+          type: integer
+          minimum: 0
+          description: Exactly max(item_count - 1, 0).
         final_amount: { $ref: '#/components/schemas/Money' }
     OrderSearchPage:
       type: object
@@ -899,11 +940,17 @@ components:
     RefundCaseLine:
       type: object
       additionalProperties: false
-      required: [order_line_id, expected_quantity, unit_price_snapshot]
+      required: [order_line_id, expected_quantity, unit_price_snapshot, discount_share_snapshot, net_amount_snapshot]
       properties:
         order_line_id: { $ref: '#/components/schemas/EntityId' }
         expected_quantity: { type: integer, minimum: 1 }
         unit_price_snapshot: { $ref: '#/components/schemas/Money' }
+        discount_share_snapshot:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Immutable proportional largest-remainder share of the order discount for this line.
+        net_amount_snapshot:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: expected_quantity * unit price minus discount share; refund amount sums this field.
     RefundCase:
       type: object
       additionalProperties: false
@@ -918,6 +965,7 @@ components:
         - refund_transaction_id
         - started_at
         - updated_at
+        - resolved_at
       properties:
         order_id: { $ref: '#/components/schemas/OrderId' }
         refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
@@ -937,6 +985,18 @@ components:
         started_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         resolved_at: { type: [string, 'null'], format: date-time }
+      allOf:
+        - if:
+            properties:
+              status:
+                enum: [SUCCEEDED, FAILED, EXTERNALLY_REMEDIATED, CLOSED_INCOMPLETE]
+            required: [status]
+          then:
+            properties:
+              resolved_at: { type: string, format: date-time }
+          else:
+            properties:
+              resolved_at: { type: 'null' }
 
     RefundScopeFinalization:
       type: object
