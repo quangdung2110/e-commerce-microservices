@@ -23,6 +23,7 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/config"
 	"github.com/ecommerce/notification-service/internal/common/constants"
 	"github.com/ecommerce/notification-service/internal/common/errors"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/domain/service/outcome"
@@ -76,6 +77,9 @@ type Deps struct {
 	// Breaker guards the email provider; shared across lanes (06 §5).
 	Breaker port.CircuitBreaker
 	Catalog *catalog.Catalog
+	// Keyring re-derives every key version of an Order subject for the
+	// superseded check (dual-read); nil → only the stored ordering key.
+	Keyring *pii.Keyring
 	Clock   clock.Clock
 	Metrics *telemetry.Metrics // nilable
 	Logger  *zap.Logger        // nilable
@@ -153,6 +157,8 @@ type run struct {
 	reqDone  bool
 	pref     entity.Preference
 	possDup  bool
+	// ordering is the held per-Order-subject lease; nil for other rows.
+	ordering *orderingGuard
 }
 
 // errStop aborts a transaction on a lost compare-and-set (another worker or
@@ -220,6 +226,24 @@ func (s *Service) Process(ctx context.Context, d entity.Delivery, workerID strin
 		}
 	}
 
+	// (e) Order rows: one provider call per order at a time, and never a
+	// lower sequence after a newer one was ingested (05-ordering.md §4).
+	if d.OrderingKey != nil {
+		g, handled, err := s.acquireOrdering(r)
+		if handled || err != nil {
+			return err
+		}
+		defer g.stop()
+		r.ordering = g
+		superseded, err := s.supersededUnderLease(r)
+		if err != nil {
+			return err
+		}
+		if superseded {
+			return s.skip(r, entity.ReasonSuperseded)
+		}
+	}
+
 	switch d.Channel {
 	case entity.ChannelInApp:
 		return s.processInApp(r)
@@ -265,6 +289,17 @@ func (s *Service) processInApp(r *run) error {
 		return fmt.Errorf("deliver: build delivered event: %w", err)
 	}
 	err = s.deps.Store.WithinTx(r.ctx, func(ctx context.Context, tx port.Tx) error {
+		// Order rows commit only while still owning the ordering lease; the
+		// FOR SHARE lock holds it for the rest of this transaction.
+		if r.ordering != nil {
+			holds, err := tx.Ordering().HoldsLease(ctx, r.ordering.key, d.ID, r.workerID)
+			if err != nil {
+				return err
+			}
+			if !holds {
+				return errOrderingLost
+			}
+		}
 		ok, err := tx.Deliveries().MarkDeliveredInApp(ctx, d.ID, r.workerID, version, r.now)
 		if err != nil {
 			return err
@@ -280,6 +315,10 @@ func (s *Service) processInApp(r *run) error {
 	if stderrors.Is(err, errStop) {
 		r.log.Info("lost race on in_app delivery; another worker finished it")
 		return nil
+	}
+	if stderrors.Is(err, errOrderingLost) {
+		r.ordering.lost(stageBeforeSend)
+		return s.release(r, r.now.Add(s.cfg.Deliver.OrderingBusyRetry), entity.ReasonOrderingLost, OutcomeOrderingLost)
 	}
 	if err != nil {
 		return fmt.Errorf("deliver: in_app transaction: %w", err)
@@ -420,12 +459,27 @@ func (s *Service) processEmail(r *run) error {
 		return s.release(r, r.now, entity.ReasonRateLimited, OutcomeRateLimited)
 	}
 
+	// Order rows: never start a provider call the ordering lease cannot cover
+	// (05-ordering.md §4) — release and let the next claim re-acquire.
+	if r.ordering != nil && r.ordering.lostWithin(s.sendBudget()) {
+		r.ordering.lost(stageBeforeSend)
+		return s.release(r, r.now.Add(s.cfg.Deliver.OrderingBusyRetry), entity.ReasonOrderingLost, OutcomeOrderingLost)
+	}
+
 	// Send.
 	msg := &entity.EmailMessage{DeliveryID: d.ID, Lane: d.Lane, To: to.Email, Content: *content}
 	sendStart := s.deps.Clock.Now()
 	res, err := s.deps.Email.Send(r.ctx, msg)
 	sendDur := s.deps.Clock.Now().Sub(sendStart)
 	s.observeSend(providerLabel, d.Lane, sendDur, err)
+
+	// Ownership lost while the provider call was in flight: another delivery
+	// of the order may have started meanwhile, so the outcome is uncertain —
+	// record it, never repair Order state from it (05-ordering.md §4).
+	if r.ordering != nil && r.ordering.lostWithin(0) {
+		r.ordering.lost(stageDuringSend)
+		r.possDup = true
+	}
 
 	if err == nil {
 		s.deps.Breaker.Success()

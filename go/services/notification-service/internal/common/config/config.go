@@ -8,12 +8,19 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/ecommerce/notification-service/internal/common/pii"
 )
+
+// orderingLeaseMargin is the safety margin of deliver.ordering_lease over the
+// worst-case send path.
+const orderingLeaseMargin = 5 * time.Second
 
 // Role selects which goroutine groups a process runs (13-development.md §1).
 const (
@@ -45,6 +52,7 @@ type Config struct {
 	Logging    LoggingConfig    `mapstructure:"logging"`
 	Telemetry  TelemetryConfig  `mapstructure:"telemetry"`
 	Templates  TemplatesConfig  `mapstructure:"templates"`
+	Privacy    PrivacyConfig    `mapstructure:"privacy"`
 	Extensions ExtensionsConfig `mapstructure:"extensions"`
 }
 
@@ -359,6 +367,15 @@ type DeliverConfig struct {
 	Breaker             BreakerConfig `mapstructure:"breaker"`
 	// UseListenNotify wakes critical workers through Postgres NOTIFY.
 	UseListenNotify bool `mapstructure:"use_listen_notify"`
+	// OrderingLease is how long a worker owns the per-Order-subject
+	// serialisation lease (05-ordering.md §4 cách 3); it must outlive the
+	// whole resolve → render → rate-limit → provider call path.
+	OrderingLease time.Duration `mapstructure:"ordering_lease"`
+	// OrderingHeartbeatInterval extends OrderingLease while the row is in flight.
+	OrderingHeartbeatInterval time.Duration `mapstructure:"ordering_heartbeat_interval"`
+	// OrderingBusyRetry is how far a row is pushed when another delivery of the
+	// same Order holds the lease (released, attempt not counted).
+	OrderingBusyRetry time.Duration `mapstructure:"ordering_busy_retry"`
 }
 
 type FrontendConfig struct {
@@ -419,6 +436,35 @@ type TelemetryConfig struct {
 
 type TemplatesConfig struct {
 	DefaultLocale string `mapstructure:"default_locale"`
+}
+
+// PrivacyConfig holds the versioned HMAC keys that pseudonymise Order subjects
+// and deleted user ids in long-lived tables (09-data-model.md §3, §10;
+// 11-privacy.md §2). The key is a secret: set it through
+// NOTIFICATION_PRIVACY_HMAC_KEY, never in the YAML file.
+type PrivacyConfig struct {
+	HMACKey        string `mapstructure:"hmac_key"`
+	HMACKeyVersion int    `mapstructure:"hmac_key_version"`
+	// PreviousHMACKeys keeps older versions readable during a rotation
+	// ("version:key,version:key"); new rows always use the active key.
+	PreviousHMACKeys string `mapstructure:"previous_hmac_keys"`
+}
+
+// devHMACKey is used only when app.env=development and no key is configured,
+// mirroring the development-only X-Service-Identity leniency.
+const devHMACKey = "notification-development-only-hmac-key-not-a-secret"
+
+// Keyring builds the privacy keyring. Validate has already checked the input.
+func (c *Config) Keyring() (*pii.Keyring, error) {
+	key := c.Privacy.HMACKey
+	if key == "" && c.App.IsDevelopment() {
+		key = devHMACKey
+	}
+	prev, err := pii.ParsePreviousKeys(c.Privacy.PreviousHMACKeys)
+	if err != nil {
+		return nil, fmt.Errorf("config: privacy.previous_hmac_keys: %w", err)
+	}
+	return pii.NewKeyring(int16(c.Privacy.HMACKeyVersion), []byte(key), prev)
 }
 
 // ExtensionsConfig holds rarely-changed knobs.
@@ -503,6 +549,28 @@ func (c *Config) Validate() error {
 	}
 	if c.Deliver.Lease <= c.Email.SendTimeout+c.Auth.Timeout {
 		return fmt.Errorf("config: deliver.lease must exceed email.send_timeout + auth.timeout")
+	}
+	// The ordering lease spans resolve → render → rate-limit wait → provider
+	// call; a lease that can expire mid-call lets two deliveries of one Order
+	// reach the provider at once (05-ordering.md §4).
+	minOrdering := c.Email.ConnectTimeout + c.Email.SendTimeout + c.Auth.Timeout + c.Deliver.RateLimitWait + orderingLeaseMargin
+	if c.Deliver.OrderingLease <= minOrdering {
+		return fmt.Errorf("config: deliver.ordering_lease must exceed email.connect_timeout + email.send_timeout + auth.timeout + deliver.rate_limit_wait + %s (= %s)", orderingLeaseMargin, minOrdering)
+	}
+	if c.Deliver.OrderingHeartbeatInterval <= 0 || c.Deliver.OrderingHeartbeatInterval*3 > c.Deliver.OrderingLease {
+		return fmt.Errorf("config: deliver.ordering_heartbeat_interval must be > 0 and <= ordering_lease/3")
+	}
+	if c.Deliver.OrderingBusyRetry <= 0 {
+		return fmt.Errorf("config: deliver.ordering_busy_retry must be > 0")
+	}
+	if c.Privacy.HMACKeyVersion < 1 || c.Privacy.HMACKeyVersion > math.MaxInt16 {
+		return fmt.Errorf("config: privacy.hmac_key_version must be in 1..%d", math.MaxInt16)
+	}
+	if !c.App.IsDevelopment() && len(c.Privacy.HMACKey) < pii.MinHMACKeyBytes {
+		return fmt.Errorf("config: privacy.hmac_key (NOTIFICATION_PRIVACY_HMAC_KEY) must be at least %d bytes outside development", pii.MinHMACKeyBytes)
+	}
+	if _, err := c.Keyring(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -656,6 +724,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("deliver.breaker.open_duration", "30s")
 	v.SetDefault("deliver.breaker.half_open_successes", 3)
 	v.SetDefault("deliver.use_listen_notify", true)
+	v.SetDefault("deliver.ordering_lease", "45s")
+	v.SetDefault("deliver.ordering_heartbeat_interval", "10s")
+	v.SetDefault("deliver.ordering_busy_retry", "2s")
 
 	v.SetDefault("frontend.base_url", "http://localhost:3000")
 	v.SetDefault("frontend.cart_path", "/cart")
@@ -692,4 +763,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("templates.default_locale", "vi")
 	v.SetDefault("extensions.replay_mode_default_ttl", "6h")
 	v.SetDefault("extensions.idempotency_ttl", "24h")
+
+	v.SetDefault("privacy.hmac_key", "")
+	v.SetDefault("privacy.hmac_key_version", 1)
+	v.SetDefault("privacy.previous_hmac_keys", "")
 }

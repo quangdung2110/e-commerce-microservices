@@ -306,8 +306,16 @@ Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14
 - **Cách 1 ordering cho fact là no-op phase 1** (Cart không có fact nào vượt qua `cart.abandoned`).
 - **Order ordering là ngoại lệ phase 1**: request bắt buộc có sequence riêng; consumer giữ highest sequence và deliver worker dùng per-subject lease. Không gọi ngược Order và không dùng integration fact sequence.
 - **`internal/catalog`** giữ bản sao byte-equal của catalog và 5 schema ORDER_*, cộng 10 schema viết tại chỗ cho template mà contract nguồn không có schema `template_data` riêng.
+- **Order sequence / ordering lease / tombstone (đợt implement thứ hai)** — các chi tiết tài liệu chưa chốt, nay chốt theo code:
+  - Request Order thiếu `sequence >= 1` **hoặc thiếu `subject`** → row `FAILED (missing_sequence)`, không delivery — cùng quy ước "bảng là DLQ cho lỗi contract", khớp alert `ProducerContractError`; IT-CTR-07 sửa câu chữ ("schema từ chối, không tạo request" là sai so với cách service xử lý mọi lỗi contract khác).
+  - Request có sequence thấp hơn highest → `SKIPPED (superseded)` **không chạy Decide**: không chiếm `delivery_dedup`/frequency cap; mỗi kênh của template một delivery `SKIPPED (superseded)`.
+  - Ledger khoá đồng thời bằng `pg_advisory_xact_lock` theo HMAC subject (row ledger có thể chưa tồn tại); payload digest = sha256 của JSON chuẩn hoá (key sắp xếp, số nguyên văn).
+  - HMAC user dùng tiền tố miền `"user" ‖ NUL`; tombstone ghi dưới **mọi** key version; ledger ghi version active, đọc mọi version, gộp dần. Keyring cấu hình qua `NOTIFICATION_PRIVACY_HMAC_KEY` / `_VERSION` / `_PREVIOUS_HMAC_KEYS`; `development` được dùng dev key cố định; quy trình rotate 3 bước ở 13-development §3.
+  - Ordering lease: bận → `release` sau `deliver.ordering_busy_retry` (2 s, key mới) với mã `ordering_busy`; chỉ bắt đầu provider call khi lease còn ≥ connect + send timeout, nếu không `release (ordering_lease_lost)`; mất lease trong lúc gọi → `possibly_duplicate`; in-app kiểm `HoldsLease … FOR SHARE` trong transaction ghi inbox; acquire tiếp quản lease hết hạn ngay.
+  - Consumer `preferences-updated` kiểm tombstone dưới cùng advisory lock với `user.deleted` (đề xuất được chấp nhận; tài liệu trước đó chưa yêu cầu) — replay không tạo lại `user_preference`.
+  - **Sửa lỗi lớp C3**: `release`/`schedule_retry` từng ghi đè `last_error_code = lease_expired` (lane pause giữa chừng làm OTP bị gửi lại; breaker/rate-limit làm mất `possibly_duplicate`). Nay dấu này dính tới khi gửi thành công; ops redrive xoá dấu (trước đó redrive một critical `FAILED (lease_expired)` sẽ lập tức `FAILED` lại).
 
-**Hệ quả.** Các file 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14 đã được sửa tương ứng; `contracts/http/notification/internal/v1/openapi.yaml` và Auth internal OpenAPI đổi `servers` sang 8081; catalog ghi `note` cho `REVIEW_REPLIED`.
+**Hệ quả.** Các file 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14 đã được sửa tương ứng; `contracts/http/notification/internal/v1/openapi.yaml` và Auth internal OpenAPI đổi `servers` sang 8081; catalog ghi `note` cho `REVIEW_REPLIED`. Đợt implement thứ hai (sequence/lease/tombstone) sửa thêm 02, 04, 05, 06, 08, 09, 11, 13, 14, 15, 16; code ở migration `004_ordering_privacy`, `internal/common/pii/hmac.go`, `internal/domain/service/ingest/sequence.go`, `internal/domain/service/deliver/ordering.go`.
 
 ## Quyết định chưa chốt
 

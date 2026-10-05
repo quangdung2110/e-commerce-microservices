@@ -61,7 +61,7 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-CTR-04 | Thiếu `dedup_key` với template `required` | `FAILED (missing_dedup_key)` |
 | IT-CTR-05 | Mọi file trong `contracts/examples/events/notification-*.json` | Consumer chấp nhận; event outcome sinh ra validate được bằng schema tương ứng |
 | IT-CTR-06 | Sáu negative case của schema request (đã chạy tay khi viết contract) | Đưa vào CI như test cố định |
-| IT-CTR-07 | Order request thiếu `sequence` | Schema từ chối; không tạo request/delivery |
+| IT-CTR-07 | Order request thiếu `sequence` (hoặc `< 1`, hoặc thiếu `subject`) | Request `FAILED (missing_sequence)` — lỗi contract producer ghi vào bảng như mọi lỗi contract khác (02-pipeline.md §4); không delivery, không ghi ledger, alert `ProducerContractError` |
 | IT-CTR-08 | Hai Order request cùng subject + sequence nhưng khác event/payload | Request sau `FAILED (sequence_collision)`, không delivery, metric/alert tăng |
 | IT-CTR-09 | Replay đúng Order event cao nhất sau khi giả lập purge `ingest_dedup` và `delivery_dedup` | Request timeline `SKIPPED (duplicate)`, không delivery/provider call mới |
 
@@ -75,6 +75,8 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-ORD-04 | Kill worker đang giữ ordering lease trước provider call; chờ lease/reaper | Không provider call từ owner cũ; worker khác chỉ tiếp tục sau lease expiry/reaper |
 | IT-ORD-05 | Hai channel của cùng sequence và sequence kế tiếp dưới 20 worker | Không đảo thứ tự bắt đầu provider call theo sequence; không serialize hai Order khác nhau |
 | IT-ORD-06 | Provider accept nhưng client timeout hoặc ordering heartbeat mất ở sequence 7 | Delivery/metric đánh dấu outcome không chắc chắn (`possibly_duplicate`/`ordering_lease_lost`); sequence 8 không được xem là bằng chứng sequence 7 đã/không tới user |
+
+Hiện thực (`test/integration/e2e_ordering_test.go`): provider call được giữ / làm chậm / làm lỗi bằng decorator `gatedSender` bọc SMTP sender thật (Mailpit), theo địa chỉ người nhận. IT-ORD-01 chạy 2 email worker transactional để chứng minh order khác không bị chặn; IT-ORD-02 tạo trạng thái "đang chờ" bằng pause lane email (row `RETRY`); IT-ORD-04 giả lập owner chết bằng một lease còn hạn 3 s của `dead-worker`; IT-ORD-05 dùng 3 sequence liên tiếp, assert số provider call đồng thời tới một order luôn = 1; IT-ORD-06 xoá lease trong lúc call đang mở (heartbeat bị từ chối). Mức unit tương ứng ở `internal/domain/service/ingest/sequence_test.go` và `internal/domain/service/deliver/ordering_test.go`.
 
 ### 2.5 Đường gửi và Track (D-09)
 
@@ -102,8 +104,8 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | ID | Kịch bản | Assert |
 |---|---|---|
 | IT-DEL-01 | Tạo đủ dữ liệu cho user U (request, delivery, inbox, preference, suppression, Redis); publish `USER_DELETED` | Sau xử lý: `count(*) WHERE user_id = U` = 0 trên mọi bảng; `template_data`/`subject` NULL ở request của U; `email_hash` của U vẫn còn trong suppression với `user_id NULL`; Redis key biến mất; delivery đang chờ → `SKIPPED (user_deleted)` |
-| IT-DEL-02 | Sau IT-DEL-01, replay Order request cũ bằng event id mới rồi để ingest dedup hết TTL giả lập | Request bị `SKIPPED (user_deleted)`, không delivery/inbox; DB dài hạn không chứa raw user/order subject ngoài partition retention |
-| IT-DEL-03 | Rotate privacy HMAC key theo dual-read/dual-write migration dưới traffic | Cùng subject/user không tách sequence stream, không mất tombstone; key cũ chỉ retire sau merge verification |
+| IT-DEL-02 | Sau IT-DEL-01, replay Order request cũ bằng event id mới rồi để ingest dedup hết TTL giả lập | Request bị `SKIPPED (user_deleted)` và đã làm sạch (`user_id`, `subject`, `template_data`, `dedup_key`, `source_ref` = NULL), không delivery/inbox; `preferences-updated` đến muộn không tạo lại `user_preference`; DB dài hạn không chứa raw user/order subject ngoài partition retention |
+| IT-DEL-03 | Rotate privacy HMAC key theo dual-read/dual-write migration dưới traffic | Cùng subject/user không tách sequence stream (high-watermark ghi dưới key cũ vẫn chặn sequence thấp hơn, key active giữ bản gộp), không mất tombstone (ghi dưới mọi key version, đọc mọi key version); key cũ chỉ retire khi mọi process đã chạy keyring mới và qua replay horizon. Hiện thực: `test/integration/rotation_test.go` (Postgres thật, hai keyring) |
 | IT-PII-01 | Chạy toàn bộ bộ test trên với log ở mức `debug` | Grep toàn bộ log và mọi bảng: không có chuỗi khớp regex email (`[^@\s]+@[^@\s]+\.[a-z]{2,}`) ngoài Mailpit |
 | IT-PART-01 | Đồng hồ giả tới tháng sau khi chưa tạo partition | Job tạo partition chạy trước; INSERT không lỗi; metric `partition_future_months` đúng |
 | IT-PART-02 | DROP partition tháng cũ có row `PENDING` | Job từ chối drop, alert |

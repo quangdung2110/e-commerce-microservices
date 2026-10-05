@@ -12,6 +12,7 @@ import (
 	"github.com/ecommerce/notification-service/internal/catalog"
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	apperr "github.com/ecommerce/notification-service/internal/common/errors"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/domain/service/decide"
@@ -30,23 +31,35 @@ type fakeTx struct {
 	deliveries []*entity.Delivery
 	insertErr  error
 
+	// Order sequence ledger and tombstones (key: source|version|hash).
+	ledger     map[string]entity.SubjectSequence
+	tombstones map[string]bool
+	locks      int
+
 	// pending writes visible only after commit
-	pReq  []*entity.Request
-	pDel  []*entity.Delivery
-	pKeys []string
+	pReq    []*entity.Request
+	pDel    []*entity.Delivery
+	pKeys   []string
+	pLedger map[string]entity.SubjectSequence
 }
 
 func newTx() *fakeTx {
-	return &fakeTx{ingestKeys: map[string]bool{}, dedupKeys: map[string]bool{}, prefs: map[uuid.UUID]entity.Preference{}}
+	return &fakeTx{ingestKeys: map[string]bool{}, dedupKeys: map[string]bool{}, prefs: map[uuid.UUID]entity.Preference{},
+		ledger: map[string]entity.SubjectSequence{}, tombstones: map[string]bool{}}
 }
 
-func (t *fakeTx) begin()    { t.pReq, t.pDel, t.pKeys = nil, nil, nil }
+func (t *fakeTx) begin() {
+	t.pReq, t.pDel, t.pKeys, t.pLedger = nil, nil, nil, map[string]entity.SubjectSequence{}
+}
 func (t *fakeTx) rollback() { t.begin() }
 func (t *fakeTx) commit() {
 	t.requests = append(t.requests, t.pReq...)
 	t.deliveries = append(t.deliveries, t.pDel...)
 	for _, k := range t.pKeys {
 		t.ingestKeys[k] = true
+	}
+	for k, v := range t.pLedger {
+		t.ledger[k] = v
 	}
 	t.begin()
 }
@@ -144,6 +157,8 @@ func (a txAdapter) Deliveries() port.DeliveryRepository      { return fakeDelive
 func (a txAdapter) Dedup() port.DedupRepository              { return fakeDedup{tx: a.t} }
 func (a txAdapter) Preferences() port.PreferenceRepository   { return fakePrefs{tx: a.t} }
 func (a txAdapter) Suppressions() port.SuppressionRepository { return fakeSupp{} }
+func (a txAdapter) Ordering() port.OrderingRepository        { return fakeOrdering{tx: a.t} }
+func (a txAdapter) Tombstones() port.TombstoneRepository     { return fakeTombstones{tx: a.t} }
 
 type store struct {
 	port.Store
@@ -206,6 +221,7 @@ func orderConfirmed() entity.IngestInput {
 		EventTime: now.Add(-time.Minute), Subject: "orders/1000234", InputKind: entity.InputRequest,
 		Lane: entity.LaneTransactional, Template: "ORDER_CONFIRMED", UserID: userID.String(),
 		DedupKey: "order_confirmed:1000234", CorrelationID: "corr-1", TraceParent: "00-t-s-01",
+		Sequence: seqPtr(1), PayloadSHA256: "digest-1",
 		TemplateData: json.RawMessage(`{"order_id":"1000234","order_code":"ORD-1000234","placed_at":"2026-09-20T10:15:02Z","items":[{"name":"A","quantity":1,"unit_price_minor":1}],"subtotal_minor":1,"discount_minor":0,"shipping_fee_minor":0,"total_minor":1,"currency":"VND","payment_method_label":"x","shipping_address":{"recipient_name":"A","ward":"","district":"","city":""},"order_url":"https://shop.example.com/orders/1000234"}`),
 	}
 }
@@ -221,6 +237,7 @@ func emailChanged() entity.IngestInput {
 
 type env struct {
 	svc     *Service
+	keyring *pii.Keyring
 	st      *store
 	lane    *fakeLaneCtl
 	clk     *clock.Fake
@@ -236,7 +253,12 @@ func newEnv(t *testing.T) *env {
 	e := &env{st: &store{t: newTx()}, lane: &fakeLaneCtl{}, clk: clock.NewFake(now), metrics: telemetry.New()}
 	dec := decide.New(decide.Deps{Catalog: cat, FreqCap: fakeFreq{}, Clock: e.clk, Metrics: e.metrics,
 		Policy: decide.Policy{QuietFrom: "22:00", QuietTo: "08:00", DefaultTimezone: "Asia/Ho_Chi_Minh", FrequencyCapPerDay: 2}})
-	e.svc = New(e.st, dec, e.lane, e.clk, e.metrics, nil)
+	keyring, err := pii.NewKeyring(2, []byte("unit-test-key-v2-unit-test-key-v2"), map[int16][]byte{1: []byte("unit-test-key-v1-unit-test-key-v1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.keyring = keyring
+	e.svc = New(e.st, dec, cat, keyring, e.lane, e.clk, e.metrics, nil)
 	return e
 }
 
@@ -313,9 +335,10 @@ func TestIngest_SkippedRowsForDroppedChannels(t *testing.T) {
 		t.Fatalf("skipped row %+v", skipped)
 	}
 
-	// Second request with a fresh event id: both channels now duplicate.
+	// Second request with a fresh event id (and, as Order must, a new
+	// sequence): both channels now duplicate.
 	in := orderConfirmed()
-	in.EventID = "evt-2"
+	in.EventID, in.Sequence = "evt-2", seqPtr(2)
 	e.st.t.prefs[userID] = entity.Preference{UserID: userID, EmailEnabled: true, InAppEnabled: true}
 	out, err = e.svc.Ingest(context.Background(), in)
 	if err != nil {

@@ -120,6 +120,10 @@ const (
 	ReasonInvalidTemplateData = "invalid_template_data"
 	ReasonMissingDedupKey     = "missing_dedup_key"
 	ReasonNoRecipient         = "no_recipient"
+	// Order requests: CloudEvents sequence missing or < 1, or the same
+	// sequence reused for a different event / payload (05-ordering.md §4).
+	ReasonMissingSequence   = "missing_sequence"
+	ReasonSequenceCollision = "sequence_collision"
 	// Request-level EXPIRED.
 	ReasonAlreadyExpired       = "already_expired"
 	ReasonQuietHoursPastExpiry = "quiet_hours_past_expiry"
@@ -127,6 +131,10 @@ const (
 	ReasonAllChannelsOff = "all_channels_off"
 	ReasonFrequencyCap   = "frequency_cap"
 	ReasonDuplicate      = "duplicate"
+	// A request is also SKIPPED with ReasonSuperseded (Order sequence lower
+	// than the highest seen for the subject) or ReasonUserDeleted (recipient
+	// has a deleted-user tombstone) — the codes are shared with the delivery
+	// level below.
 	// Request-level IGNORED.
 	ReasonUnmappedFact = "unmapped_fact"
 	ReasonReplayTooOld = "replay_too_old"
@@ -148,6 +156,9 @@ const (
 	ReasonRateLimited      = "rate_limited"
 	ReasonContentExpired   = "content_expired"
 	ReasonTemplateMismatch = "template_mismatch"
+	// Release codes (attempt not counted).
+	ReasonOrderingBusy = "ordering_busy"
+	ReasonOrderingLost = "ordering_lease_lost"
 )
 
 // ProducerContractReasons are the FAILED reasons that must never be redriven
@@ -160,4 +171,6 @@ var ProducerContractReasons = map[string]bool{
 	ReasonNoRecipient:         true,
 	ReasonRenderFailed:        true,
 	ReasonTemplateMismatch:    true,
+	ReasonMissingSequence:     true,
+	ReasonSequenceCollision:   true,
 }

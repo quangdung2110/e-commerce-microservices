@@ -46,6 +46,8 @@ Row bulk có thể nằm 4 giờ; user có thể tắt marketing trong lúc đó
 
 Thứ tự có chủ ý: **lỗi của producer trước** (để họ thấy ngay trong DLQ và alert), rồi **hết hạn**, rồi **chính sách** theo user. Mỗi bước hoặc cho qua, hoặc kết thúc với một mã lý do ghi vào `notification_request.decision_reason`.
 
+Hai cổng chạy **trước** Decide, cùng transaction ([02-pipeline.md](./02-pipeline.md) §4): (a) tombstone user đã xoá → `SKIPPED (user_deleted)`, request làm sạch, không delivery; (b) với `/services/order`, ledger sequence → `FAILED (missing_sequence)` / `FAILED (sequence_collision)` / `SKIPPED (duplicate)` không delivery, hoặc `SKIPPED (superseded)` với delivery `SKIPPED (superseded)` cho mọi kênh của template. Request qua được cả hai cổng mới vào 13 bước dưới đây.
+
 | # | Kiểm tra | Nếu không qua | Áp cho | Ai chịu trách nhiệm |
 |---|---|---|---|---|
 | 1 | Template tồn tại trong catalog và ở trạng thái `active` | `FAILED (unknown_template)` → DLQ, **alert** (lỗi contract) | Tất cả | Producer |
@@ -60,7 +62,7 @@ Thứ tự có chủ ý: **lỗi của producer trước** (để họ thấy ng
 | 10 | Frequency cap: `INCR freq:{user_id}:{local_date}` (Redis, `EXPIRE 48h`); kết quả > 2 | `SKIPPED (frequency_cap)`. Redis lỗi → **fail-open + alert** | Bulk | — |
 | 11 | Quiet hours: giờ địa phương của user ∈ [22:00, 08:00) → `next_attempt_at = 08:00 kế tiếp`; nếu > `effective_expires_at` | `EXPIRED (quiet_hours_past_expiry)` | Bulk | — |
 | 12 | INSERT `delivery_dedup (dedup_key, channel)`; conflict | Kênh đó `SKIPPED (duplicate)` — không phải lỗi, không alert | Tất cả có `dedup_key` | — |
-| 13 | INSERT `notification_delivery` cho **mọi** kênh của template: kênh còn lại `status = PENDING`, `next_attempt_at` (= now, hoặc giờ quiet-hours), `expires_at = effective_expires_at`; kênh bị bỏ ở bước 8/9/12 `status = SKIPPED`, `skip_reason` = `channel_reason`, `finished_at = now` — để timeline support thấy vì sao kênh không đi | — | Tất cả | — |
+| 13 | INSERT `notification_delivery` cho **mọi** kênh của template: kênh còn lại `status = PENDING`, `next_attempt_at` (= now, hoặc giờ quiet-hours), `expires_at = effective_expires_at`; kênh bị bỏ ở bước 8/12 `status = SKIPPED`, `skip_reason` = `channel_reason`, `finished_at = now` — để timeline support thấy vì sao kênh không đi | — | Tất cả | — |
 
 `decision` cuối cùng của request: `DECIDED` nếu có ít nhất một delivery `PENDING` được tạo; ngược lại `SKIPPED (duplicate)` khi mọi kênh bị bỏ vì dedup, `SKIPPED (all_channels_off)` khi mọi kênh bị bỏ vì preference; `FAILED` / `EXPIRED` / `IGNORED` (bước 1–6, 10, 11) không tạo delivery nào. Với Auth, `template` đã được gán ở Ingest ([10-interfaces.md](./10-interfaces.md) §2) nên bước 1 áp dụng bình thường; bước 3 chấp nhận `template_data = NULL` **chỉ** với ba template OTP/reset (secret, resolve lúc gửi).
 
@@ -106,13 +108,13 @@ Mã lý do là **contract vận hành**: dashboard, alert và support đều đ�
 
 | `decision` | `decision_reason` | Ai cần biết | Alert |
 |---|---|---|---|
-| `FAILED` | `unknown_template`, `lane_mismatch`, `invalid_template_data`, `missing_dedup_key`, `no_recipient` | Producer (lỗi contract) | **Có**, ngay lần đầu |
+| `FAILED` | `unknown_template`, `lane_mismatch`, `invalid_template_data`, `missing_dedup_key`, `no_recipient`, `missing_sequence`, `sequence_collision` | Producer (lỗi contract) | **Có**, ngay lần đầu |
 | `EXPIRED` | `already_expired`, `quiet_hours_past_expiry` | Ops (lag hoặc `max_age` quá ngắn) | Khi tỷ lệ > 1 % |
-| `SKIPPED` | `all_channels_off`, `frequency_cap`, `duplicate` | Không ai — hành vi bình thường | Không (metric để theo dõi xu hướng) |
+| `SKIPPED` | `all_channels_off`, `frequency_cap`, `duplicate`, `superseded`, `user_deleted` | Không ai — hành vi bình thường | Không (metric để theo dõi xu hướng) |
 | `IGNORED` | `unmapped_fact`, `replay_too_old` | Không ai | Không |
 | `DECIDED` | — | | |
 
-Ở mức delivery, `skip_reason` (`channel_reason`) cho kênh bị bỏ hoặc row bị bỏ sau này: `preference_off`, `suppressed`, `duplicate`, `channel_not_allowed` (Decide); `email_unverified` (worker, bulk tới địa chỉ chưa xác minh — [10-interfaces.md](./10-interfaces.md) §4), `superseded` (worker, [05-ordering.md](./05-ordering.md) §4), `user_deleted` (consumer `user.deleted`, [09-data-model.md](./09-data-model.md) §10). `last_error_code` của delivery `FAILED`/`RETRY`: `provider_error`, `no_recipient`, `content_expired`, `template_mismatch`, `render_failed`, `lease_expired`, `breaker_open`, `rate_limited`, `lane_paused`, `invalid_recipient`, `provider_rejected`; `EXPIRED` mang `expired`.
+Ở mức delivery, `skip_reason` (`channel_reason`) cho kênh bị bỏ hoặc row bị bỏ sau này: `preference_off`, `duplicate` (Decide); `suppressed` (worker, so `email_hash` sau khi resolve — §4), `email_unverified` (worker, bulk tới địa chỉ chưa xác minh — [10-interfaces.md](./10-interfaces.md) §4), `superseded` (consumer khi request Order có sequence thấp hơn, hoặc worker dưới ordering lease — [05-ordering.md](./05-ordering.md) §4), `user_deleted` (consumer `user.deleted`, [09-data-model.md](./09-data-model.md) §10). `last_error_code` của delivery `FAILED`/`RETRY`: `provider_error`, `no_recipient`, `content_expired`, `template_mismatch`, `render_failed`, `channel_not_allowed`, `lease_expired`, `breaker_open`, `rate_limited`, `lane_paused`, `ordering_busy`, `ordering_lease_lost`, `invalid_recipient`, `provider_rejected`; `EXPIRED` mang `expired`. Các mã `breaker_open`, `rate_limited`, `lane_paused`, `ordering_busy`, `ordering_lease_lost` là mã của `release` (không tính attempt) và không bao giờ ghi đè `lease_expired` ([04-idempotency.md](./04-idempotency.md) §3).
 
 ## 8. In-app đi cùng đường với email
 

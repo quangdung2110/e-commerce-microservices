@@ -7,7 +7,10 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -160,4 +163,23 @@ func runIngest(ctx context.Context, deps HandlerDeps, in entity.IngestInput) err
 		logger.Info("request ingested", fields...)
 	}
 	return nil
+}
+
+// payloadDigest is the hex sha256 of the canonical JSON of a data block:
+// object keys sorted, numbers kept verbatim, insignificant whitespace dropped.
+// It identifies "the same payload" for the Order sequence ledger even when a
+// producer re-serialises the same command (09-data-model.md §3). A block that
+// is not JSON is hashed as raw bytes.
+func payloadDigest(data json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	canon := []byte(data)
+	if err := dec.Decode(&v); err == nil {
+		if b, err := json.Marshal(v); err == nil {
+			canon = b
+		}
+	}
+	sum := sha256.Sum256(canon)
+	return hex.EncodeToString(sum[:])
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	"github.com/ecommerce/notification-service/internal/common/config"
 	"github.com/ecommerce/notification-service/internal/common/logging"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/domain/service/decide"
@@ -84,6 +85,7 @@ type app struct {
 	metrics *telemetry.Metrics
 	catalog *catalog.Catalog
 	render  *templates.Registry
+	keyring *pii.Keyring
 
 	redis    *goredis.Client
 	keys     nredis.Keys
@@ -125,6 +127,10 @@ func run(configPath string) error {
 		return err
 	}
 	a.ready["templates"] = func(context.Context) error { return nil }
+	// Privacy keyring: HMAC of Order subjects and deleted user ids (09-data-model.md §3, §10).
+	if a.keyring, err = cfg.Keyring(); err != nil {
+		return err
+	}
 
 	// Redis is shared by every role (cache, limiter, counters). Its absence
 	// degrades gracefully (fail-closed limiter, fail-open cap), so a failed
@@ -258,9 +264,9 @@ func (a *app) startConsumers(ctx context.Context) error {
 		Metrics: a.metrics, Logger: a.logger,
 	})
 	deps := handlers.HandlerDeps{
-		Ingest:      ingest.New(store, decider, a.control, a.clk, a.metrics, a.logger),
-		Preferences: preference.New(store, a.clk, a.logger),
-		Lifecycle: lifecycle.New(lifecycle.Deps{
+		Ingest:      ingest.New(store, decider, a.catalog, a.keyring, a.control, a.clk, a.metrics, a.logger),
+		Preferences: preference.New(store, a.keyring, a.clk, a.logger),
+		Lifecycle: lifecycle.New(lifecycle.Deps{Keyring: a.keyring,
 			Store: store, Contacts: a.contacts,
 			FrequencyCap:  nredis.NewFrequencyCap(a.redis, a.keys),
 			UnreadCounter: nredis.NewUnreadCounter(a.redis, a.keys),
@@ -365,7 +371,7 @@ func (a *app) startDeliver(ctx context.Context) error {
 		svc := deliver.New(deliver.Deps{
 			Store: store, Renderer: a.render, Email: sender, Contacts: a.contacts,
 			Limiter: limiter, Daily: daily, RetryBudget: budget, Unread: unread,
-			Control: a.control, Breaker: providerBreaker, Catalog: a.catalog,
+			Control: a.control, Breaker: providerBreaker, Catalog: a.catalog, Keyring: a.keyring,
 			Clock: a.clk, Metrics: a.metrics, Logger: a.logger,
 		}, deliver.Config{
 			Lanes: cfg.Lanes, Deliver: cfg.Deliver, Email: cfg.Email,
@@ -386,7 +392,7 @@ func (a *app) startDeliver(ctx context.Context) error {
 		a.spawn("deliver "+string(lane), func() error { workers.Run(ctx); return nil })
 	}
 	if reaperStore != nil {
-		r := reaper.New(reaperStore.Deliveries(), a.control, cfg.Deliver.ReaperInterval, cfg.Jobs.MetricsInterval, a.clk, a.metrics, a.logger)
+		r := reaper.New(reaperStore.Deliveries(), reaperStore.Ordering(), a.control, cfg.Deliver.ReaperInterval, cfg.Jobs.MetricsInterval, a.clk, a.metrics, a.logger)
 		a.spawn("reaper", func() error { r.Run(ctx); return nil })
 	}
 	a.logger.Info("deliver pools started", zap.Int("lanes", len(lanes)), zap.String("provider", providerName))

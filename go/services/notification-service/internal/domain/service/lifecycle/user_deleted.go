@@ -1,6 +1,8 @@
 // Package lifecycle handles com.ecommerce.auth.user-deleted.v1
-// (11-privacy.md §4, 09-data-model.md §10): every table keyed by the user is
-// anonymised or emptied in one transaction, then the Redis keys are dropped.
+// (11-privacy.md §4, 09-data-model.md §10): a versioned HMAC tombstone is
+// written first, then every table keyed by the user is anonymised or emptied
+// in the same transaction, then the Redis keys are dropped. The tombstone
+// stops a replayed event (after ingest_dedup expired) from rebuilding an inbox.
 // The whole thing is idempotent on user_id so at-least-once delivery is safe.
 package lifecycle
 
@@ -12,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 )
@@ -20,6 +23,7 @@ import (
 // (a role without Redis or the Auth client) and are then skipped.
 type Deps struct {
 	Store         port.Store
+	Keyring       *pii.Keyring
 	Contacts      port.ContactResolver
 	FrequencyCap  port.FrequencyCap
 	UnreadCounter port.UnreadCounter
@@ -36,7 +40,7 @@ type Result struct {
 	SuppressionsDetached int64
 }
 
-// Service runs the seven steps of 11-privacy.md §4.
+// Service runs the eight steps of 11-privacy.md §4.
 type Service struct {
 	deps Deps
 }
@@ -48,10 +52,11 @@ func New(deps Deps) *Service {
 	return &Service{deps: deps}
 }
 
-// HandleUserDeleted applies the deletion. Steps 1–5 are one transaction; step
-// 6 (Redis/cache) runs after commit and is best effort — a missed key expires
-// on its own TTL and holds no PII beyond the user id. Step 7 is "publish
-// nothing" (Analytics follows Auth's own USER_DELETED).
+// HandleUserDeleted applies the deletion. Steps 1–6 are one transaction under
+// the per-user advisory lock (so preferences-updated cannot re-create a row
+// in between); step 7 (Redis/cache) runs after commit and is best effort — a
+// missed key expires on its own TTL and holds no PII beyond the user id.
+// Step 8 is "publish nothing" (Analytics follows Auth's own USER_DELETED).
 func (s *Service) HandleUserDeleted(ctx context.Context, userID uuid.UUID) (Result, error) {
 	if userID == uuid.Nil {
 		return Result{}, fmt.Errorf("lifecycle: missing user_id")
@@ -60,26 +65,35 @@ func (s *Service) HandleUserDeleted(ctx context.Context, userID uuid.UUID) (Resu
 	var r Result
 	err := s.deps.Store.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
 		var err error
-		// 1. Nothing pending may still go out to a deleted account.
+		// 1. Tombstone first, under every key version (dual-write during a
+		//    rotation), so ingest refuses replays from here on.
+		keys := s.deps.Keyring.UserHashes(userID.String())
+		if err = tx.Tombstones().Lock(ctx, keys); err != nil {
+			return fmt.Errorf("lock user: %w", err)
+		}
+		if err = tx.Tombstones().Insert(ctx, keys, now); err != nil {
+			return fmt.Errorf("insert tombstone: %w", err)
+		}
+		// 2. Nothing pending may still go out to a deleted account.
 		if r.DeliveriesSkipped, err = tx.Deliveries().SkipPendingByUser(ctx, userID, entity.ReasonUserDeleted, now); err != nil {
 			return fmt.Errorf("skip pending deliveries: %w", err)
 		}
-		// 2. Preference and inbox are deleted outright.
+		// 3. Preference and inbox are deleted outright.
 		if err = tx.Preferences().Delete(ctx, userID); err != nil {
 			return fmt.Errorf("delete preference: %w", err)
 		}
 		if r.InboxDeleted, err = tx.Inbox().DeleteByUser(ctx, userID); err != nil {
 			return fmt.Errorf("delete inbox: %w", err)
 		}
-		// 3. Requests keep decision + timestamps, lose user_id/template_data/subject.
+		// 4. Requests keep decision + timestamps, lose user_id/template_data/subject.
 		if r.RequestsAnonymised, err = tx.Requests().AnonymizeByUser(ctx, userID); err != nil {
 			return fmt.Errorf("anonymise requests: %w", err)
 		}
-		// 4. Deliveries lose user_id.
+		// 5. Deliveries lose user_id and subject; the ordering key is already an HMAC.
 		if r.DeliveriesAnonymised, err = tx.Deliveries().AnonymizeByUser(ctx, userID); err != nil {
 			return fmt.Errorf("anonymise deliveries: %w", err)
 		}
-		// 5. Suppression keeps email_hash: a dead address stays dead.
+		// 6. Suppression keeps email_hash: a dead address stays dead.
 		if r.SuppressionsDetached, err = tx.Suppressions().DetachUser(ctx, userID); err != nil {
 			return fmt.Errorf("detach suppressions: %w", err)
 		}
@@ -89,7 +103,7 @@ func (s *Service) HandleUserDeleted(ctx context.Context, userID uuid.UUID) (Resu
 		return Result{}, fmt.Errorf("lifecycle: user_deleted %s: %w", userID, err)
 	}
 
-	// 6. Redis: contact cache, frequency-cap counters, unread counter.
+	// 7. Redis: contact cache, frequency-cap counters, unread counter.
 	if s.deps.Contacts != nil {
 		if err := s.deps.Contacts.ForgetContact(ctx, userID); err != nil {
 			s.deps.Logger.Warn("forget contact cache failed", zap.String("user_id", userID.String()), zap.Error(err))

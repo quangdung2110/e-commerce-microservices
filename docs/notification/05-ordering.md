@@ -81,11 +81,17 @@ TTL vừa là ordering (không gửi thứ lỗi thời) vừa là backpressure 
 
 Với request transactional của Order, cách này **được bật bắt buộc**; các luồng khác mặc định không bật:
 
+0. Ở consumer (ranh giới 1), request Order đi qua ledger `notification_subject_sequence`
+   dưới advisory lock theo subject ([02-pipeline.md](./02-pipeline.md) §4): sequence thấp
+   hơn highest được lưu timeline với mọi delivery `SKIPPED (superseded)` và **không chạy
+   Decide** — không chiếm `delivery_dedup` hay frequency cap cho thông báo sẽ không gửi.
 1. Logical scope là `source + subject`; persisted `ordering_key` dùng
-   `source:key-version:HMAC(subject)` để không giữ raw order ID vô hạn.
-2. Worker acquire row trong `notification_ordering_lease` bằng compare-and-set có `lease_until`; chỉ một delivery cùng order được gọi provider tại một thời điểm.
-3. Sau khi có lease, worker đọc lại `notification_subject_sequence.highest_sequence`. Nếu delivery có sequence thấp hơn, chuyển `SKIPPED (superseded)` mà không gọi provider.
-4. Worker giữ lease xuyên suốt provider call và release trong `finally`; reaper chỉ thu hồi lease hết hạn. Timeout phải lớn hơn provider timeout cộng safety margin.
+   `source:key-version:HMAC(source ‖ NUL ‖ subject)` để không giữ raw order ID vô hạn.
+   Mọi delivery của request Order (email và in-app) mang cùng key, nên in-app cũng chờ khi
+   email cùng order đang trong provider call.
+2. Worker acquire row trong `notification_ordering_lease` bằng `INSERT … ON CONFLICT DO UPDATE … WHERE lease_until < now` (tiếp quản lease đã hết hạn ngay, không cần chờ reaper; owner hiện tại được re-enter). Lease bận → `release` với `next_attempt_at = now + deliver.ordering_busy_retry` (2 s), `last_error_code = ordering_busy`, không tính attempt.
+3. Sau khi có lease, worker đọc lại `notification_subject_sequence` dưới **mọi** key version (khi row còn raw `subject`). Nếu delivery có sequence thấp hơn, chuyển `SKIPPED (superseded)` mà không gọi provider.
+4. Worker giữ lease xuyên suốt provider call, heartbeat mỗi `deliver.ordering_heartbeat_interval` (10 s) gia hạn `deliver.ordering_lease` (45 s), và release (compare-and-delete theo key + delivery + worker) trong `finally`. Trước provider call, lease phải còn hiệu lực ít nhất `email.connect_timeout + email.send_timeout`, nếu không thì `release (ordering_lease_lost)` và không gửi; config từ chối khởi động nếu `ordering_lease` không lớn hơn connect + send + auth timeout + `rate_limit_wait` + 5 s. In-app chỉ commit khi `HoldsLease … FOR SHARE` trong cùng transaction. Reaper thu hồi lease hết hạn (compare-and-delete) và xuất gauge tuổi lease.
 
 Lease chỉ serialize **cùng một order**, không serialize toàn bộ partition hay toàn bộ Notification. Thiết kế này tránh subquery/race kiểu "không có row `SENDING`" và vẫn cho phép các order khác chạy song song.
 
@@ -101,7 +107,7 @@ Với traffic thông thường, retry vẫn có thể đổi thứ tự và TTL/
 
 - Nếu sequence cũ fail rồi sequence mới được ingest, `highest_sequence` khiến lần retry cũ bị `SKIPPED (superseded)`.
 - Nếu sequence cũ đang ở trong provider call, sequence mới phải chờ cùng ordering lease; do đó thứ tự bắt đầu provider call không bị đảo.
-- Lease không biến email/SMS thành exactly-once: provider có thể timeout sau khi đã nhận request. Idempotency key theo delivery vẫn là lớp chống gửi trùng; reconciliation xử lý kết quả không chắc chắn.
+- Lease không biến email/SMS thành exactly-once: provider có thể timeout sau khi đã nhận request, và SES không có idempotency key ([04-idempotency.md](./04-idempotency.md) §3 lớp C). Mất lease trong lúc gọi được đánh `possibly_duplicate` + `ordering_lease_lost_total{stage=during_send}`; Track/reconciliation xử lý kết quả không chắc chắn.
 
 Không giữ row cũ để chặn vô hạn row mới: sequence mới có quyền supersede retry cũ chưa bắt đầu provider call.
 
@@ -113,6 +119,7 @@ Preferences replicate từ `t.user.events` là trạng thái, không phải thô
 - Consumer preferences là consumer riêng, không đi qua ranh giới 2 (không có deliver worker nào song song hoá nó).
 - Áp dụng bằng compare-and-set trên version: `UPDATE user_preferences SET ... WHERE user_id = ? AND version < ?`. Event cũ đến muộn (sau replay) không ghi đè được trạng thái mới hơn.
 - Daily reconciliation của User Service (đã có trong contract) là lưới an toàn cuối.
+- User đã xoá: consumer kiểm tra `deleted_user_tombstone` dưới cùng advisory lock theo user với consumer `user.deleted`, nên `preferences-updated` đến muộn hay bị replay không tạo lại row ([09-data-model.md](./09-data-model.md) §10).
 
 
 

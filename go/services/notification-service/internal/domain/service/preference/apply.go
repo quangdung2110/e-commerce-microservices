@@ -2,6 +2,8 @@
 // local user_preference table (05-ordering.md §6): the event is state, not a
 // notification, so it is applied compare-and-set on version = updated_at in
 // epoch milliseconds and a late replay can never overwrite a newer row.
+// A user with a deleted-user tombstone is never re-created (09-data-model.md
+// §10): the check and the upsert share the per-user lock with user.deleted.
 package preference
 
 import (
@@ -13,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 )
@@ -32,21 +35,22 @@ type Update struct {
 
 // Service applies preference updates.
 type Service struct {
-	store  port.Store
-	clock  clock.Clock
-	logger *zap.Logger
+	store   port.Store
+	keyring *pii.Keyring
+	clock   clock.Clock
+	logger  *zap.Logger
 }
 
-func New(store port.Store, clk clock.Clock, logger *zap.Logger) *Service {
+func New(store port.Store, keyring *pii.Keyring, clk clock.Clock, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Service{store: store, clock: clk, logger: logger}
+	return &Service{store: store, keyring: keyring, clock: clk, logger: logger}
 }
 
 // Apply upserts the replica. It returns applied=false (no error) when the
 // stored version is already newer — expected under replay, logged for
-// visibility only.
+// visibility only — or when the user was deleted.
 func (s *Service) Apply(ctx context.Context, u Update) (applied bool, err error) {
 	if u.UserID == uuid.Nil {
 		return false, fmt.Errorf("preference: missing user_id")
@@ -61,9 +65,26 @@ func (s *Service) Apply(ctx context.Context, u Update) (applied bool, err error)
 		Version:          u.UpdatedAt.UnixMilli(),
 		SyncedAt:         s.clock.Now(),
 	}
-	applied, err = s.store.Preferences().Upsert(ctx, p)
+	var deleted bool
+	err = s.store.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+		keys := s.keyring.UserHashes(u.UserID.String())
+		if err := tx.Tombstones().Lock(ctx, keys); err != nil {
+			return err
+		}
+		dead, err := tx.Tombstones().Exists(ctx, keys)
+		if err != nil || dead {
+			deleted = dead
+			return err
+		}
+		applied, err = tx.Preferences().Upsert(ctx, p)
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("preference: upsert: %w", err)
+	}
+	if deleted {
+		s.logger.Info("preferences-updated for a deleted user ignored", zap.String("user_id", u.UserID.String()))
+		return false, nil
 	}
 	if !applied {
 		s.logger.Info("stale preferences-updated ignored",

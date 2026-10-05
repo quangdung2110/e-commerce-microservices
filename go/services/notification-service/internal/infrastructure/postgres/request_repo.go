@@ -21,17 +21,18 @@ type RequestRepository struct {
 const requestColumns = `
 	id, source, event_id, event_type, event_time, subject, input_kind, template, lane,
 	user_id, dedup_key, expires_at, template_data, source_ref, correlation_id, traceparent,
-	decision, decision_reason, received_at`
+	decision, decision_reason, received_at, source_sequence`
 
 func (r *RequestRepository) Insert(ctx context.Context, req *entity.Request) error {
 	const query = `
 		INSERT INTO notification_request (` + requestColumns + `)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 	_, err := r.q.Exec(ctx, query,
 		req.ID, req.Source, req.EventID, req.EventType, req.EventTime, req.Subject,
 		string(req.InputKind), req.Template, laneOrNil(req.Lane),
 		req.UserID, req.DedupKey, req.ExpiresAt, rawJSONOrNil(req.TemplateData), req.SourceRef,
 		req.CorrelationID, req.TraceParent, string(req.Decision), req.DecisionReason, req.ReceivedAt,
+		req.SourceSequence,
 	)
 	return mapError(err)
 }
@@ -96,6 +97,7 @@ func scanRequest(rows pgx.Rows) (entity.Request, error) {
 		&req.ID, &req.Source, &req.EventID, &req.EventType, &req.EventTime, &req.Subject, &kind,
 		&req.Template, &lane, &req.UserID, &req.DedupKey, &req.ExpiresAt, &data, &req.SourceRef,
 		&req.CorrelationID, &req.TraceParent, &decision, &req.DecisionReason, &req.ReceivedAt,
+		&req.SourceSequence,
 	)
 	if err != nil {
 		return req, err

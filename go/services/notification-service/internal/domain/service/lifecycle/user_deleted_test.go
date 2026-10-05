@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 )
@@ -83,6 +84,28 @@ func (t tx) Preferences() port.PreferenceRepository   { return prefs{c: t.c} }
 func (t tx) Inbox() port.InboxRepository              { return inbox{c: t.c} }
 func (t tx) Requests() port.RequestRepository         { return requests{c: t.c} }
 func (t tx) Suppressions() port.SuppressionRepository { return supp{c: t.c} }
+func (t tx) Tombstones() port.TombstoneRepository     { return tombs{c: t.c} }
+
+type tombs struct {
+	port.TombstoneRepository
+	c *calls
+}
+
+func (x tombs) Lock(context.Context, []pii.KeyedHash) error { return x.c.hit("lock_user") }
+func (x tombs) Insert(_ context.Context, keys []pii.KeyedHash, _ time.Time) error {
+	if len(keys) != 2 {
+		return errors.New("tombstone must be written under every key version")
+	}
+	return x.c.hit("insert_tombstone")
+}
+
+func testKeyring() *pii.Keyring {
+	k, err := pii.NewKeyring(2, []byte("lifecycle-test-key-v2-lifecycle-v2"), map[int16][]byte{1: []byte("lifecycle-test-key-v1-lifecycle-v1")})
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
 
 type store struct {
 	port.Store
@@ -120,12 +143,12 @@ func (u unread) Delete(context.Context, uuid.UUID) error { return u.c.hit("delet
 func TestHandleUserDeleted_AllStepsInOrder(t *testing.T) {
 	c := &calls{}
 	st := &store{c: c}
-	svc := New(Deps{Store: st, Contacts: contacts{c: c}, FrequencyCap: freq{c: c}, UnreadCounter: unread{c: c}, Clock: clock.NewFake(time.Now())})
+	svc := New(Deps{Store: st, Keyring: testKeyring(), Contacts: contacts{c: c}, FrequencyCap: freq{c: c}, UnreadCounter: unread{c: c}, Clock: clock.NewFake(time.Now())})
 	r, err := svc.HandleUserDeleted(context.Background(), uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"skip_pending", "delete_pref", "delete_inbox", "anon_requests", "anon_deliveries", "detach_supp", "forget_contact", "forget_freq", "delete_unread"}
+	want := []string{"lock_user", "insert_tombstone", "skip_pending", "delete_pref", "delete_inbox", "anon_requests", "anon_deliveries", "detach_supp", "forget_contact", "forget_freq", "delete_unread"}
 	if len(c.steps) != len(want) {
 		t.Fatalf("steps %v", c.steps)
 	}
@@ -142,7 +165,7 @@ func TestHandleUserDeleted_AllStepsInOrder(t *testing.T) {
 func TestHandleUserDeleted_DBErrorAbortsBeforeRedis(t *testing.T) {
 	c := &calls{failAt: "anon_requests"}
 	st := &store{c: c}
-	svc := New(Deps{Store: st, Contacts: contacts{c: c}, FrequencyCap: freq{c: c}, UnreadCounter: unread{c: c}, Clock: clock.NewFake(time.Now())})
+	svc := New(Deps{Store: st, Keyring: testKeyring(), Contacts: contacts{c: c}, FrequencyCap: freq{c: c}, UnreadCounter: unread{c: c}, Clock: clock.NewFake(time.Now())})
 	if _, err := svc.HandleUserDeleted(context.Background(), uuid.New()); err == nil {
 		t.Fatal("expected error")
 	}
@@ -159,7 +182,7 @@ func TestHandleUserDeleted_DBErrorAbortsBeforeRedis(t *testing.T) {
 func TestHandleUserDeleted_RedisErrorsToleratedAndNilPorts(t *testing.T) {
 	c := &calls{failAt: "forget_freq"}
 	st := &store{c: c}
-	svc := New(Deps{Store: st, FrequencyCap: freq{c: c}, Clock: clock.NewFake(time.Now())})
+	svc := New(Deps{Store: st, Keyring: testKeyring(), FrequencyCap: freq{c: c}, Clock: clock.NewFake(time.Now())})
 	if _, err := svc.HandleUserDeleted(context.Background(), uuid.New()); err != nil {
 		t.Fatalf("redis failure must not fail the event: %v", err)
 	}

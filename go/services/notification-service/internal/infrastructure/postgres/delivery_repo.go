@@ -34,7 +34,7 @@ const deliveryColumns = `
 	id, request_id, user_id, subject, lane, channel, template, template_version, status,
 	attempt, next_attempt_at, lease_until, locked_by, dedup_key, ordering_key, expires_at,
 	provider, provider_message_id, possibly_duplicate, last_error_code, last_error, skip_reason,
-	source_ref, sent_at, delivered_at, finished_at, created_at, updated_at`
+	source_ref, sent_at, delivered_at, finished_at, created_at, updated_at, source, source_sequence`
 
 // deliveryColumnsOf prefixes every column with an alias for UPDATE ... RETURNING.
 func deliveryColumnsOf(alias string) string {
@@ -56,13 +56,13 @@ func (r *DeliveryRepository) Insert(ctx context.Context, d *entity.Delivery) err
 	const query = `
 		INSERT INTO notification_delivery (` + deliveryColumns + `)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-		        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)`
+		        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`
 	_, err := r.q.Exec(ctx, query,
 		d.ID, d.RequestID, d.UserID, d.Subject, string(d.Lane), string(d.Channel), d.Template,
 		d.TemplateVersion, string(d.Status), d.Attempt, d.NextAttemptAt, d.LeaseUntil, d.LockedBy,
 		d.DedupKey, d.OrderingKey, d.ExpiresAt, providerOrNil(d.Provider), d.ProviderMessageID,
 		d.PossiblyDuplicate, d.LastErrorCode, d.LastError, d.SkipReason, d.SourceRef,
-		d.SentAt, d.DeliveredAt, d.FinishedAt, d.CreatedAt, d.UpdatedAt,
+		d.SentAt, d.DeliveredAt, d.FinishedAt, d.CreatedAt, d.UpdatedAt, d.Source, d.SourceSequence,
 	)
 	return mapError(err)
 }
@@ -157,7 +157,7 @@ func (r *DeliveryRepository) ExtendLease(ctx context.Context, ids []uuid.UUID, w
 const stickyLeaseExpired = `CASE WHEN last_error_code = 'lease_expired' THEN last_error_code ELSE $4 END`
 
 // Release puts a claimed row back without counting the attempt (breaker
-// open, no rate-limit token, lane paused).
+// open, no rate-limit token, lane paused, ordering lease busy).
 func (r *DeliveryRepository) Release(ctx context.Context, id uuid.UUID, workerID string, nextAttemptAt time.Time, errorCode string) (bool, error) {
 	const query = `
 		UPDATE notification_delivery
@@ -555,7 +555,7 @@ func scanDelivery(rows pgx.Rows) (entity.Delivery, error) {
 		&d.ID, &d.RequestID, &d.UserID, &d.Subject, &lane, &channel, &d.Template, &d.TemplateVersion, &status,
 		&d.Attempt, &d.NextAttemptAt, &d.LeaseUntil, &d.LockedBy, &d.DedupKey, &d.OrderingKey, &d.ExpiresAt,
 		&provider, &d.ProviderMessageID, &d.PossiblyDuplicate, &d.LastErrorCode, &d.LastError, &d.SkipReason,
-		&d.SourceRef, &d.SentAt, &d.DeliveredAt, &d.FinishedAt, &d.CreatedAt, &d.UpdatedAt,
+		&d.SourceRef, &d.SentAt, &d.DeliveredAt, &d.FinishedAt, &d.CreatedAt, &d.UpdatedAt, &d.Source, &d.SourceSequence,
 	)
 	if err != nil {
 		return d, err

@@ -28,6 +28,7 @@ import (
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	"github.com/ecommerce/notification-service/internal/common/config"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	apperr "github.com/ecommerce/notification-service/internal/common/errors"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
@@ -116,7 +117,7 @@ func newRequest(userID uuid.UUID) *entity.Request {
 		EventType: "com.ecommerce.notification.request.v1", EventTime: &now, Subject: &subject,
 		InputKind: entity.InputRequest, Template: ptr("ORDER_CONFIRMED"), Lane: &lane,
 		UserID: &userID, ExpiresAt: ptr(now.Add(time.Hour)), TemplateData: []byte(`{"order_id":"1"}`),
-		Decision: entity.DecisionDecided, ReceivedAt: now,
+		Decision: entity.DecisionDecided, ReceivedAt: now, SourceSequence: ptr(int64(7)),
 	}
 }
 
@@ -125,6 +126,7 @@ func newDelivery(userID uuid.UUID, lane entity.Lane, ch entity.Channel) *entity.
 	subject := "orders/" + uuid.NewString()
 	return &entity.Delivery{
 		ID: uuid.New(), RequestID: uuid.New(), UserID: &userID, Subject: &subject,
+		Source: "/services/order", SourceSequence: ptr(int64(1)),
 		Lane: lane, Channel: ch, Template: "ORDER_CONFIRMED", Status: entity.StatusPending,
 		NextAttemptAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
 	}
@@ -288,7 +290,17 @@ func TestPostgresConcurrentClaimsDoNotOverlap(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Empty(t, dups, "no row claimed by two workers")
-	assert.Len(t, seen, 40, "every row claimed exactly once")
+	assert.NotEmpty(t, seen)
+	// When the whole suite runs, the e2e harness's deliver workers poll the
+	// same lane×channel and may win some rows; the invariant is still "every
+	// row claimed exactly once", which the attempt counter proves.
+	for _, id := range ids {
+		d := getDelivery(t, id)
+		assert.Equal(t, 1, d.Attempt, "row %s claimed exactly once", id)
+		if _, ours := seen[id]; !ours && d.LockedBy != nil {
+			assert.NotContains(t, []string{"a", "b", "c"}, *d.LockedBy, "a row we did not see was claimed by someone else")
+		}
+	}
 }
 
 func TestPostgresMarkSentCompareAndSet(t *testing.T) {
@@ -1004,12 +1016,222 @@ func TestPostgresPartitions(t *testing.T) {
 
 func TestPostgresMigrateIsIdempotentAndReversible(t *testing.T) {
 	ctx := context.Background()
+	tableExists := func(name string) bool {
+		var exists bool
+		require.NoError(t, testPool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists))
+		return exists
+	}
 	require.NoError(t, postgres.Migrate(ctx, testDB.DSN()), "second Up is a no-op")
-	require.NoError(t, postgres.MigrateDown(ctx, testDB.DSN()), "one step down (publication)")
+	require.NoError(t, postgres.MigrateDown(ctx, testDB.DSN()), "one step down (004 ordering/privacy)")
+	for _, table := range []string{"notification_subject_sequence", "notification_ordering_lease", "deleted_user_tombstone"} {
+		assert.False(t, tableExists(table), table)
+	}
+	require.NoError(t, postgres.Migrate(ctx, testDB.DSN()))
+	for _, table := range []string{"notification_subject_sequence", "notification_ordering_lease", "deleted_user_tombstone"} {
+		assert.True(t, tableExists(table), table)
+	}
 	var exists bool
 	require.NoError(t, testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'notification_outbox_publication')`).Scan(&exists))
-	assert.False(t, exists)
-	require.NoError(t, postgres.Migrate(ctx, testDB.DSN()))
-	require.NoError(t, testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'notification_outbox_publication')`).Scan(&exists))
 	assert.True(t, exists)
+}
+
+// ---- Order ordering state (05-ordering.md §4) --------------------------------
+
+func testKeyring(t *testing.T) *pii.Keyring {
+	t.Helper()
+	k, err := pii.NewKeyring(2, []byte("integration-key-v2-integration-key-v2"), map[int16][]byte{1: []byte("integration-key-v1-integration-key-v1")})
+	require.NoError(t, err)
+	return k
+}
+
+func TestPostgresRequestAndDeliveryKeepSourceSequence(t *testing.T) {
+	ctx := context.Background()
+	req := newRequest(uuid.New())
+	require.NoError(t, testStore.Requests().Insert(ctx, req))
+	got, err := testStore.Requests().GetByID(ctx, req.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.SourceSequence)
+	assert.EqualValues(t, 7, *got.SourceSequence)
+
+	ids := insertDeliveries(t, 1, entity.LaneTransactional, entity.ChannelInApp)
+	d := getDelivery(t, ids[0])
+	assert.Equal(t, "/services/order", d.Source)
+	require.NotNil(t, d.SourceSequence)
+	assert.EqualValues(t, 1, *d.SourceSequence)
+}
+
+func TestPostgresSubjectSequenceLedger(t *testing.T) {
+	ctx := context.Background()
+	k := testKeyring(t)
+	subject := "orders/" + uuid.NewString()
+	keys := k.SubjectHashes(entity.SourceOrder, subject)
+
+	rows, err := testStore.Ordering().SubjectSequences(ctx, entity.SourceOrder, keys)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+
+	// An old-version row (written before a rotation) is read back (dual-read).
+	old := &entity.SubjectSequence{Source: entity.SourceOrder, KeyVersion: keys[1].Version, KeyHash: keys[1].Hash,
+		HighestSequence: 4, HighestEventID: "e4", HighestPayloadSHA256: "d4"}
+	require.NoError(t, testStore.Ordering().SaveSubjectSequence(ctx, old))
+	active := &entity.SubjectSequence{Source: entity.SourceOrder, KeyVersion: keys[0].Version, KeyHash: keys[0].Hash,
+		HighestSequence: 5, HighestEventID: "e5", HighestPayloadSHA256: "d5"}
+	require.NoError(t, testStore.Ordering().SaveSubjectSequence(ctx, active))
+	active.HighestSequence, active.HighestEventID = 6, "e6"
+	require.NoError(t, testStore.Ordering().SaveSubjectSequence(ctx, active), "upsert")
+
+	rows, err = testStore.Ordering().SubjectSequences(ctx, entity.SourceOrder, keys)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, keys[0].Version, rows[0].KeyVersion, "active version first")
+	assert.EqualValues(t, 6, rows[0].HighestSequence)
+	assert.Equal(t, "e6", rows[0].HighestEventID)
+	assert.EqualValues(t, 4, rows[1].HighestSequence)
+
+	other, err := testStore.Ordering().SubjectSequences(ctx, "/services/review", keys)
+	require.NoError(t, err)
+	assert.Empty(t, other, "the source is part of the key")
+
+	var raw int
+	require.NoError(t, testPool.QueryRow(ctx, `SELECT count(*) FROM notification_subject_sequence WHERE subject_key_hash LIKE '%'||$1||'%'`, subject).Scan(&raw))
+	assert.Zero(t, raw, "no raw subject in the ledger")
+}
+
+// Two consumers of the same subject serialise on LockSubject even when the
+// ledger row does not exist yet (nothing to lock FOR UPDATE).
+func TestPostgresLockSubjectSerialises(t *testing.T) {
+	ctx := context.Background()
+	keys := testKeyring(t).SubjectHashes(entity.SourceOrder, "orders/"+uuid.NewString())
+
+	firstLocked := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = testStore.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+			require.NoError(t, tx.Ordering().LockSubject(ctx, entity.SourceOrder, keys))
+			close(firstLocked)
+			time.Sleep(300 * time.Millisecond)
+			mu.Lock()
+			order = append(order, "first")
+			mu.Unlock()
+			return nil
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		<-firstLocked
+		_ = testStore.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+			require.NoError(t, tx.Ordering().LockSubject(ctx, entity.SourceOrder, keys))
+			mu.Lock()
+			order = append(order, "second")
+			mu.Unlock()
+			return nil
+		})
+	}()
+	wg.Wait()
+	assert.Equal(t, []string{"first", "second"}, order)
+}
+
+func TestPostgresOrderingLease(t *testing.T) {
+	ctx := context.Background()
+	repo := testStore.Ordering()
+	key := testKeyring(t).OrderingKey(entity.SourceOrder, "orders/"+uuid.NewString())
+	d1, d2 := uuid.New(), uuid.New()
+
+	ok, err := repo.AcquireLease(ctx, key, d1, "w1", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "free key")
+	ok, err = repo.AcquireLease(ctx, key, d2, "w2", time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "held by another delivery")
+	ok, err = repo.AcquireLease(ctx, key, d1, "w1", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "re-entrant for the owner")
+
+	ok, err = repo.ExtendLease(ctx, key, d1, "w1", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = repo.ExtendLease(ctx, key, d1, "other-worker", time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "only the owner extends")
+
+	require.NoError(t, testStore.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+		holds, err := tx.Ordering().HoldsLease(ctx, key, d1, "w1")
+		require.NoError(t, err)
+		assert.True(t, holds)
+		holds, err = tx.Ordering().HoldsLease(ctx, key, d2, "w2")
+		require.NoError(t, err)
+		assert.False(t, holds)
+		return nil
+	}))
+
+	ok, err = repo.ReleaseLease(ctx, key, d1, "w2")
+	require.NoError(t, err)
+	assert.False(t, ok, "release is compare-and-delete on the owner")
+	ok, err = repo.ReleaseLease(ctx, key, d1, "w1")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	// An expired lease is taken over by the next acquirer without the reaper.
+	ok, err = repo.AcquireLease(ctx, key, d1, "w1", time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ok)
+	time.Sleep(20 * time.Millisecond)
+	ok, err = repo.ExtendLease(ctx, key, d1, "w1", time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "an expired lease cannot be extended: ownership is lost")
+	ok, err = repo.AcquireLease(ctx, key, d2, "w2", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "expired lease taken over")
+
+	// Reaper: expired leases are reported, then deleted; live ones stay. Done
+	// in one uncommitted transaction so the e2e harness's background reaper
+	// (running when the whole suite runs) cannot take the stale row first.
+	stale := testKeyring(t).OrderingKey(entity.SourceOrder, "orders/"+uuid.NewString())
+	require.NoError(t, testStore.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+		ok, err := tx.Ordering().AcquireLease(ctx, stale, uuid.New(), "dead", time.Millisecond)
+		require.NoError(t, err)
+		require.True(t, ok)
+		time.Sleep(20 * time.Millisecond)
+		ages, err := tx.Ordering().ExpiredLeaseAges(ctx, time.Now().UTC())
+		require.NoError(t, err)
+		require.NotEmpty(t, ages)
+		assert.Equal(t, entity.SourceOrder, ages[0].Source)
+		assert.Greater(t, ages[0].Age, time.Duration(0))
+		n, err := tx.Ordering().ReapExpiredLeases(ctx, time.Now().UTC())
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, n, int64(1))
+		return nil
+	}))
+	holds := false
+	require.NoError(t, testStore.WithinTx(ctx, func(ctx context.Context, tx port.Tx) error {
+		holds, err = tx.Ordering().HoldsLease(ctx, key, d2, "w2")
+		return err
+	}))
+	assert.True(t, holds, "the live lease survives the reaper")
+}
+
+func TestPostgresTombstones(t *testing.T) {
+	ctx := context.Background()
+	k := testKeyring(t)
+	user := uuid.NewString()
+	keys := k.UserHashes(user)
+
+	found, err := testStore.Tombstones().Exists(ctx, keys)
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// Written under the old version only (before a rotation) — still found.
+	require.NoError(t, testStore.Tombstones().Insert(ctx, keys[1:], time.Now().UTC()))
+	found, err = testStore.Tombstones().Exists(ctx, keys)
+	require.NoError(t, err)
+	assert.True(t, found, "dual-read finds an old-version tombstone")
+	require.NoError(t, testStore.Tombstones().Insert(ctx, keys, time.Now().UTC()), "idempotent")
+
+	var raw int
+	require.NoError(t, testPool.QueryRow(ctx, `SELECT count(*) FROM deleted_user_tombstone WHERE user_key_hash = $1`, user).Scan(&raw))
+	assert.Zero(t, raw, "no raw user id")
 }

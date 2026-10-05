@@ -88,30 +88,43 @@ CREATE INDEX idx_request_id       ON notification_request (id);           -- sta
 
 `template_data` là PII mức thấp (tên người nhận, phường/quận). Nó tồn tại để render lại khi điều tra và để `FAILED (invalid_template_data)` có bằng chứng; bị anonymize theo §7.
 
-Order request bắt buộc có `sequence`. Consumer lock/upsert state sau trong cùng
-transaction với request/delivery creation. Cùng sequence + cùng event ID + cùng payload
+Order request bắt buộc có `sequence` (và `subject`). Consumer lock/upsert state sau trong
+cùng transaction với request/delivery creation. Cùng sequence + cùng event ID + cùng payload
 digest là durable duplicate và không tạo delivery kể cả khi `ingest_dedup` đã hết TTL;
 lệch event ID hoặc digest là contract collision và vào `FAILED`. Sequence thấp hơn highest
-được lưu timeline nhưng delivery `SKIPPED (superseded)`:
+được lưu timeline, Decide không chạy, mọi delivery `SKIPPED (superseded)`:
 
 ```sql
 CREATE TABLE notification_subject_sequence (
-    source            text        NOT NULL,
-    subject_key_version smallint  NOT NULL,
-    subject_key_hash  char(64)    NOT NULL,
-    highest_sequence  bigint      NOT NULL,
-    highest_event_id  text        NOT NULL,
-    highest_payload_sha256 text    NOT NULL,
-    updated_at        timestamptz NOT NULL DEFAULT now(),
+    source                 text        NOT NULL,
+    subject_key_version    smallint    NOT NULL,
+    subject_key_hash       char(64)    NOT NULL,
+    highest_sequence       bigint      NOT NULL CHECK (highest_sequence >= 1),
+    highest_event_id       text        NOT NULL,
+    highest_payload_sha256 text        NOT NULL,
+    updated_at             timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (source, subject_key_version, subject_key_hash)
 );
 ```
 
-`subject_key_hash = HMAC-SHA256(notification_privacy_key[version], source || NUL ||
-subject)`: bảng high-watermark không giữ raw `orders/{id}` vô hạn. Raw subject chỉ nằm ở
-request/delivery có retention và bị anonymize. Privacy key nằm trong secret manager, không
-log; rotation phải chạy dual-read/dual-write + online merge trong khi key cũ còn sẵn,
-không được đổi key đột ngột làm tách một subject thành hai sequence stream.
+- **Payload digest** = `sha256` hex của JSON chuẩn hoá từ khối CloudEvents `data`: decode
+  giữ nguyên số (`UseNumber`), marshal lại với key sắp xếp, không khoảng trắng. Thứ tự key
+  hay khoảng trắng khác nhau vẫn là cùng payload; đổi một giá trị bất kỳ là payload khác.
+- **Khoá đồng thời**: row ledger có thể chưa tồn tại (lần đầu thấy subject) nên không
+  `SELECT … FOR UPDATE` được. Consumer lấy `pg_advisory_xact_lock` theo
+  `HMAC(source, subject)` của **mọi** key version, theo thứ tự tăng dần, rồi mới đọc/ghi.
+- `subject_key_hash = HMAC-SHA256(notification_privacy_key[version], source ‖ NUL ‖
+  subject)`: bảng high-watermark không giữ raw `orders/{id}` vô hạn. Raw subject chỉ nằm ở
+  request/delivery có retention và bị anonymize. Privacy key là secret
+  (`NOTIFICATION_PRIVACY_HMAC_KEY`, [13-development.md](./13-development.md) §3), không log.
+- **Rotation (dual-read + gộp dần)**: keyring có một version active và các version cũ trong
+  `privacy.previous_hmac_keys`. Consumer đọc row của mọi version, lấy highest lớn nhất, và
+  luôn để row của version active giữ highest đó (ghi lại khi lệch) — subject nào được chạm
+  lại thì tự gộp sang key mới; row của key cũ để nguyên. Vì raw subject không lưu ở bảng
+  này nên không có "re-hash hàng loạt": key cũ chỉ được bỏ khỏi keyring khi mọi process đã
+  chạy keyring mới **và** đã qua replay horizon của Order (quy trình: [13-development.md](./13-development.md) §3). Không bao giờ đổi key một bước
+  (thay key active mà không giữ key cũ để đọc) — làm vậy tách một subject thành hai
+  sequence stream và làm mất tombstone.
 
 Phase 1 không purge bảng này theo TTL. Xoá highest-sequence state sớm hơn khả năng replay
 sẽ cho phép một Order command cũ sống lại sau khi `ingest_dedup` hết 30 ngày. Khi có
@@ -207,12 +220,24 @@ CREATE TABLE notification_ordering_lease (
     lease_until  timestamptz NOT NULL,
     locked_by    text        NOT NULL
 );
+CREATE INDEX idx_ordering_lease_until ON notification_ordering_lease (lease_until);
 ```
 
-Worker acquire bằng `INSERT ... ON CONFLICT ... WHERE lease_until < now()`; dưới lease nó
-recheck `notification_subject_sequence`. Sequence thấp hơn highest bị skip trước provider.
-Lease được release sau terminal/retry decision và reaper thu hồi lease hết hạn. Đây chỉ
-áp dụng cho Order templates; không serialize toàn bộ Notification traffic.
+Worker acquire bằng
+`INSERT … ON CONFLICT (ordering_key) DO UPDATE … WHERE lease_until < now OR (delivery_id, locked_by) = mình`
+(tiếp quản lease hết hạn hoặc re-enter; không row trả về = bận); heartbeat là
+`UPDATE … SET lease_until WHERE ordering_key, delivery_id, locked_by khớp AND lease_until >= now`
+(0 row = mất quyền); in-app kiểm `SELECT … FOR SHARE` trong transaction ghi inbox; release là
+`DELETE … WHERE ordering_key, delivery_id, locked_by khớp`. Dưới lease worker recheck
+`notification_subject_sequence` (mọi key version). Sequence thấp hơn highest bị skip trước
+provider. Reaper xoá lease có `lease_until < now` (compare-and-delete theo
+`(ordering_key, delivery_id)`). Đây chỉ áp dụng cho Order templates; không serialize toàn bộ
+Notification traffic.
+
+Cột mới (`notification_request.source_sequence`, `notification_delivery.source`,
+`.source_sequence`) và ba bảng `notification_subject_sequence`, `notification_ordering_lease`,
+`deleted_user_tombstone` nằm ở migration `004_ordering_privacy`; row delivery cũ được backfill
+`source` từ request.
 
 Câu claim ở [02-pipeline.md](./02-pipeline.md) §5.2 không đổi. Với bảng partition, planner dùng `idx_delivery_ready` của từng partition và gộp — row `PENDING`/`RETRY` gần như chỉ nằm ở partition tháng hiện tại nên chi phí không đổi.
 
@@ -406,10 +431,17 @@ CREATE TABLE deleted_user_tombstone (
 );
 ```
 
-Lifecycle consumer insert HMAC tombstone **trước** khi xoá/anonymize dữ liệu. Ingest mọi
-request có `user_id` phải check tombstone trong cùng transaction; match thì ghi request
-`SKIPPED (user_deleted)` không chứa raw user/template data và không tạo delivery. Điều này
-chặn Kafka/backup replay cũ tái tạo inbox sau khi `ingest_dedup` hết TTL.
+`user_key_hash = HMAC-SHA256(key[version], "user" ‖ NUL ‖ lower(user_id))` — tiền tố
+`user` tách miền khoá user khỏi miền khoá subject. Lifecycle consumer lấy
+`pg_advisory_xact_lock` theo user (mọi key version) rồi insert tombstone dưới **mọi** key
+version đang cấu hình (dual-write khi rotation) **trước** khi xoá/anonymize dữ liệu, cùng
+một transaction. Ingest mọi request có `user_id` check tombstone (mọi key version) trong
+cùng transaction, trước ledger sequence và Decide; match thì ghi request
+`SKIPPED (user_deleted)` đã làm sạch (`user_id`, `subject`, `template_data`, `dedup_key` —
+vốn chứa order id —, `source_ref` = NULL) và không tạo delivery. Consumer
+`preferences-updated` kiểm tombstone dưới cùng advisory lock nên không tạo lại
+`user_preference` cho user đã xoá. Điều này chặn Kafka/backup replay cũ tái tạo inbox hay
+preference sau khi `ingest_dedup` hết TTL.
 
 | Nơi | Hành động | Lý do |
 |---|---|---|
@@ -417,7 +449,7 @@ chặn Kafka/backup replay cũ tái tạo inbox sau khi `ingest_dedup` hết TTL
 | `inbox_item` | `DELETE` (theo `idx_inbox_user_list`) | |
 | `notification_request` | `UPDATE SET user_id = NULL, template_data = NULL, subject = NULL` | Giữ `decision`, timestamp để metric và audit không thủng; xoá thứ nhận diện được |
 | `notification_delivery` | `UPDATE SET user_id = NULL, subject = NULL` | Không có PII khác trong bảng này |
-| `notification_subject_sequence` / ordering lease | Không chứa raw subject; giữ HMAC high-watermark, release lease của delivery bị skip | Chống replay/order inversion mà không giữ `order_id` rõ |
+| `notification_subject_sequence` / ordering lease | Không chứa raw subject; giữ HMAC high-watermark. Lease chỉ do row `SENDING` giữ và được chính worker release (hoặc reaper thu hồi); delivery `PENDING`/`RETRY` bị skip không giữ lease | Chống replay/order inversion mà không giữ `order_id` rõ |
 | `deleted_user_tombstone` | `INSERT` HMAC(user_id), không lưu UUID | Chặn replay sau deletion |
 | `suppression` | `UPDATE SET user_id = NULL` | Giữ `email_hash`: địa chỉ chết vẫn là địa chỉ chết; hash không truy ngược được |
 | `provider_event.raw` | Không cần | Email đã hash từ lúc ghi |

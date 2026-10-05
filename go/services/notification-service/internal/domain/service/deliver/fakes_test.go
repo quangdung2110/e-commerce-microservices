@@ -31,6 +31,7 @@ type fakeStore struct {
 	supp     *fakeSuppressions
 	inbox    *fakeInbox
 	outbox   *fakeOutbox
+	ord      *fakeOrdering
 	inTxSeen []string // repository calls made inside a transaction
 }
 
@@ -42,6 +43,7 @@ func newFakeStore() *fakeStore {
 		supp:   &fakeSuppressions{},
 		inbox:  &fakeInbox{},
 		outbox: &fakeOutbox{},
+		ord:    &fakeOrdering{holds: true, extendOK: true},
 	}
 	s.deliv.store = s
 	s.inbox.store = s
@@ -100,6 +102,7 @@ func (s *fakeStore) Preferences() port.PreferenceRepository   { return s.prefs }
 func (s *fakeStore) Suppressions() port.SuppressionRepository { return s.supp }
 func (s *fakeStore) Inbox() port.InboxRepository              { return s.inbox }
 func (s *fakeStore) Outbox() port.OutboxRepository            { return s.outbox }
+func (s *fakeStore) Ordering() port.OrderingRepository        { return s.ord }
 
 // delivCall records one state write on the delivery repository.
 type delivCall struct {
@@ -319,12 +322,16 @@ type fakeSender struct {
 	err      error
 	sent     []*entity.EmailMessage
 	msgID    string
+	onSend   func() // runs inside Send (e.g. advance the clock past a lease)
 }
 
 func (f *fakeSender) Provider() entity.Provider { return f.provider }
 
 func (f *fakeSender) Send(_ context.Context, msg *entity.EmailMessage) (*entity.SendResult, error) {
 	f.sent = append(f.sent, msg)
+	if f.onSend != nil {
+		f.onSend()
+	}
 	if f.err != nil {
 		return nil, f.err
 	}

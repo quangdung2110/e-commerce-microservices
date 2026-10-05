@@ -25,6 +25,8 @@ bash scripts/go.sh run ./cmd/notifctl publish-example --file ../../../contracts/
 
 `NOTIFICATION_APP_ROLE` = `all` (dev) | `api` | `consumer` | `deliver` | `track` | `jobs`; `NOTIFICATION_APP_LANE` giới hạn consumer/deliver về một lane. Mọi key trong `configs/application.yaml` override được với tiền tố `NOTIFICATION_`.
 
+Secret bắt buộc ngoài `development`: `NOTIFICATION_PRIVACY_HMAC_KEY` (≥ 32 byte) — khoá HMAC cho ledger sequence của Order, ordering lease và tombstone user đã xoá; `development` tự dùng một dev key cố định. Quy trình rotate (`..._HMAC_KEY_VERSION`, `..._PREVIOUS_HMAC_KEYS`) ở [13-development.md](../../../docs/notification/13-development.md) §3.
+
 ## Build và test
 
 Máy dev không cần Go: `scripts/go.sh` chạy lệnh trong container `golang:1.25` với module cache trên Docker volume.
@@ -47,6 +49,6 @@ bash scripts/go.sh test ./internal/templates/ -update         # cập nhật gol
 | `internal/infrastructure` | Postgres, Redis, Kafka, Auth client, SES/SMTP, SQS, CloudEvents |
 | `internal/templates` | 15 template (vi), layout, golden test |
 | `internal/workers` | deliver, reaper, track, outbox, partition, purge |
-| `migrations` | golang-migrate, embed vào binary |
+| `migrations` | golang-migrate, embed vào binary (001 schema, 002 partitions, 003 publication, 004 ordering/privacy) |
 | `deploy/localstack/init-ses-events.sh` | LocalStack dựng SNS `ses-events` → SQS `notification-ses-events` (+ DLQ) |
 | `deploy/debezium/notification-outbox-connector.json` | Debezium outbox connector (tuỳ chọn; dev dùng `outbox.publisher: poller`) |

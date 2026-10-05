@@ -1,5 +1,6 @@
-// Package reaper returns rows whose worker died mid-send to the queue and
-// exports the queue gauges (02-pipeline.md §5.4, 14-observability.md §2.2).
+// Package reaper returns rows whose worker died mid-send to the queue,
+// reclaims expired per-Order ordering leases and exports the queue gauges
+// (02-pipeline.md §5.4, 05-ordering.md §4, 14-observability.md §2.2).
 package reaper
 
 import (
@@ -17,6 +18,7 @@ import (
 // Worker runs the lease reaper and the queue-stats exporter.
 type Worker struct {
 	deliveries      port.DeliveryRepository
+	ordering        port.OrderingRepository
 	control         port.LaneControl
 	clk             clock.Clock
 	metrics         *telemetry.Metrics
@@ -25,8 +27,8 @@ type Worker struct {
 	metricsInterval time.Duration
 }
 
-// New wires the worker. control and metrics may be nil.
-func New(deliveries port.DeliveryRepository, control port.LaneControl, reapInterval, metricsInterval time.Duration, clk clock.Clock, metrics *telemetry.Metrics, logger *zap.Logger) *Worker {
+// New wires the worker. ordering, control and metrics may be nil.
+func New(deliveries port.DeliveryRepository, ordering port.OrderingRepository, control port.LaneControl, reapInterval, metricsInterval time.Duration, clk clock.Clock, metrics *telemetry.Metrics, logger *zap.Logger) *Worker {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -41,6 +43,7 @@ func New(deliveries port.DeliveryRepository, control port.LaneControl, reapInter
 	}
 	return &Worker{
 		deliveries:      deliveries,
+		ordering:        ordering,
 		control:         control,
 		clk:             clk,
 		metrics:         metrics,
@@ -86,7 +89,49 @@ func (w *Worker) ReapOnce(ctx context.Context) int64 {
 			w.metrics.DeliveryLeaseExpired.WithLabelValues("all").Add(float64(n))
 		}
 	}
+	w.reapOrdering(ctx)
 	return n
+}
+
+// reapOrdering deletes ordering leases past lease_until (compare-and-delete;
+// a lease renewed or taken over meanwhile is kept — 16-operations.md R-15).
+// The next acquirer takes an expired lease over anyway; this keeps the table
+// and the oldest-age gauge honest when no other delivery of the order comes.
+func (w *Worker) reapOrdering(ctx context.Context) {
+	if w.ordering == nil {
+		return
+	}
+	n, err := w.ordering.ReapExpiredLeases(ctx, w.clk.Now())
+	if err != nil {
+		w.logger.Error("reap expired ordering leases", zap.Error(err))
+		return
+	}
+	if n > 0 {
+		w.logger.Warn("ordering leases expired and reclaimed", zap.Int64("leases", n))
+	}
+}
+
+// exportOrdering sets ordering_lease_oldest_age_seconds per source (0 when
+// nothing expired is waiting to be reclaimed).
+func (w *Worker) exportOrdering(ctx context.Context, now time.Time) {
+	if w.ordering == nil {
+		return
+	}
+	ages, err := w.ordering.ExpiredLeaseAges(ctx, now)
+	if err != nil {
+		w.logger.Warn("ordering lease stats", zap.Error(err))
+		return
+	}
+	seen := map[string]bool{entity.SourceOrder: false}
+	for _, a := range ages {
+		w.metrics.OrderingLeaseOldestAge.WithLabelValues(a.Source).Set(a.Age.Seconds())
+		seen[a.Source] = true
+	}
+	for source, set := range seen {
+		if !set {
+			w.metrics.OrderingLeaseOldestAge.WithLabelValues(source).Set(0)
+		}
+	}
 }
 
 // ExportStats refreshes delivery_pending_count / _age / scheduled_count and
@@ -111,6 +156,7 @@ func (w *Worker) ExportStats(ctx context.Context) {
 			w.metrics.DeliveryScheduledCount.WithLabelValues(string(lane)).Set(float64(scheduled[lane]))
 		}
 	}
+	w.exportOrdering(ctx, now)
 	if w.control == nil {
 		return
 	}

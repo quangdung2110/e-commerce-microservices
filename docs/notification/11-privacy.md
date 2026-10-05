@@ -25,7 +25,7 @@ Các quy tắc ở đây đã được rải trong 02, 03, 07, 08, 09 khi từng
 | Nội dung in-app (`title`, `body`, `deep_link`) | PII mức thấp | `inbox_item` | 90 ngày | `user.deleted` → DELETE | Do template sinh từ `template_data`; không chứa gì ngoài những gì `template_data` có |
 | Preference (3 cờ, timezone, locale) | INTERNAL | `user_preference` | Tới khi user xoá | `user.deleted` → DELETE | Bản replicate; nguồn sự thật ở User |
 | `subject` (`orders/1000234`) | INTERNAL | `notification_request`, `notification_delivery`, event | 90 ngày | `user.deleted` → NULL ở request và delivery | Nối được về đơn hàng → về người; anonymize cùng lúc |
-| Subject/user HMAC key | Pseudonymous | `notification_subject_sequence`, `notification_ordering_lease`, `deleted_user_tombstone` | Không TTL phase 1 | Purge chỉ theo replay-safe policy | Versioned HMAC secret trong secret manager; không raw subject/user ID, rotation dual-read/dual-write |
+| Subject/user HMAC key | Pseudonymous | `notification_subject_sequence`, `notification_ordering_lease`, `deleted_user_tombstone` | Không TTL phase 1 | Purge chỉ theo replay-safe policy | Versioned HMAC secret (`NOTIFICATION_PRIVACY_HMAC_KEY`, ≥ 32 byte ngoài development) trong secret manager; không raw subject/user ID; rotation: đọc mọi version, ghi subject ledger dưới version active, ghi tombstone dưới mọi version ([09-data-model.md](./09-data-model.md) §3, §10) |
 | Frequency cap, unread count | INTERNAL | Redis, TTL 48 h / không TTL | | `user.deleted` → `DEL` | |
 | Audit ops (principal, tham số) | INTERNAL | Log audit | Theo chính sách log của dự án | — | Tham số có `user_id`, không có email |
 
@@ -49,7 +49,7 @@ Consumer riêng đọc `t.auth.events`, idempotent theo `user_id`. Trong 24 h:
 
 | Bước | Nơi | Hành động |
 |---|---|---|
-| 1 | `deleted_user_tombstone` | Insert versioned HMAC(user_id) trước mọi xoá; ingest check tombstone để replay cũ không tái tạo delivery/inbox |
+| 1 | `deleted_user_tombstone` | Dưới advisory lock theo user, insert HMAC(user_id) dưới mọi key version trước mọi xoá (cùng transaction với bước 2–6); ingest check tombstone để replay cũ không tái tạo delivery/inbox, consumer `preferences-updated` check dưới cùng lock để không tạo lại preference |
 | 2 | Delivery đang `PENDING`/`RETRY` | `SKIPPED (user_deleted)` — không gửi cho tài khoản đã xoá; Auth `notification-contact` cũng trả `404` nên đây là lớp thứ hai |
 | 3 | `user_preference`, `inbox_item` | `DELETE` |
 | 4 | `notification_request` | `user_id`, `template_data`, `subject` → `NULL`; giữ `decision`, `decision_reason`, timestamp |

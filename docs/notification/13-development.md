@@ -13,7 +13,7 @@ go/services/notification-service/
     notifctl/main.go            -- CLI ops/dev: migrate, render preview, publish-example, status, lane pause, partitions
   configs/
     application.yaml            -- override qua env prefix NOTIFICATION_ (viper, giống Auth)
-  migrations/                   -- golang-migrate, embed vào binary: 001 schema (09-data-model.md), 002 partition function + 3 tháng, 003 publication
+  migrations/                   -- golang-migrate, embed vào binary: 001 schema (09-data-model.md), 002 partition function + 3 tháng, 003 publication, 004 ordering/privacy (ledger sequence, ordering lease, tombstone)
   internal/
     catalog/                    -- bản sao byte-equal của contracts/.../templates/catalog.yaml + 15 JSON Schema template_data
                                    (5 ORDER_* copy nguyên từ contracts; 10 còn lại viết tại đây vì contract nguồn của Auth/Review/Cart
@@ -29,16 +29,16 @@ go/services/notification-service/
       port/                     -- Store/Tx + repository; ContactResolver, EmailSender, Renderer, RateLimiter, FrequencyCap, …
       service/
         decide/                 -- 08-decide.md: 13 bước, thuần, test bằng bảng
-        ingest/                 -- ranh giới 1: dedup → INSERT request → Decide → INSERT delivery trong một transaction
-        deliver/                -- ranh giới 2: một delivery đã claim → resolve → render → send → CAS
+        ingest/                 -- ranh giới 1: dedup → tombstone → ledger sequence Order (sequence.go) → Decide → INSERT delivery, một transaction
+        deliver/                -- ranh giới 2: một delivery đã claim → ordering lease Order (ordering.go) → resolve → render → send → CAS
         track/                  -- correlate, state ranking, suppression, complaint
         outcome/                -- dựng 4 CloudEvents outcome thành row outbox
-        preference/ lifecycle/  -- áp preferences-updated; tombstone-first user.deleted flow
+        preference/ lifecycle/  -- áp preferences-updated (chặn user có tombstone); tombstone-first user.deleted flow
         inbox/ status/ ops/     -- use case cho ba bề mặt HTTP
     infrastructure/
       cloudevents/              -- parse envelope CloudEvents structured JSON
       kafka/                    -- consumer group runner, producer (DLQ + outbox poller), handlers/ theo nguồn
-      postgres/                 -- repo, claim query, reaper, partition, LISTEN/NOTIFY, control cache
+      postgres/                 -- repo, claim query, reaper, partition, LISTEN/NOTIFY, control cache, ordering_repo (ledger, lease, tombstone)
       redis/                    -- token bucket, frequency cap, contact cache, unread count, daily quota, retry budget
       auth/                     -- client content + notification-contact (bulkhead theo lane, breaker, cache)
       ses/  smtp/               -- hai adapter cùng interface EmailSender (SES production, Mailpit dev/CI)
@@ -47,13 +47,13 @@ go/services/notification-service/
     workers/
       deliver/ reaper/ track/ outbox/ partition/ purge/
     common/
-      config/ logging/ reqctx/ clock/ errors/ constants/ pii/ breaker/
+      config/ logging/ reqctx/ clock/ errors/ constants/ pii/ breaker/   -- pii/hmac.go: keyring HMAC có version
   deploy/
     localstack/init-ses-events.sh
     debezium/notification-outbox-connector.json
   scripts/go.sh                 -- chạy go build/test trong container golang:1.25 (máy dev không cần cài Go)
   test/
-    integration/                -- testcontainers: Postgres, Redis, Kafka, Mailpit, LocalStack
+    integration/                -- testcontainers: Postgres, Redis, Kafka, Mailpit, LocalStack; e2e_ordering_test.go (IT-ORD/IT-CTR-07…09/IT-DEL-02), rotation_test.go (IT-DEL-03)
 ```
 
 Một binary, nhiều vai trò: `NOTIFICATION_APP_ROLE=all` ở dev chạy mọi thứ trong một process; production chạy các deployment tách theo `ROLE=consumer LANE=critical`, `ROLE=deliver LANE=bulk`, `ROLE=track`, `ROLE=api`, `ROLE=jobs` để bulkhead ở mức process ([06-backpressure.md](./06-backpressure.md) §3). Cùng code, khác env — không có hai đường code.
@@ -113,15 +113,21 @@ Env prefix `NOTIFICATION_` (viper `SetEnvPrefix`, giống Auth); mọi key trong
 | Track | `NOTIFICATION_TRACK_QUEUE_URL`, `NOTIFICATION_TRACK_AWS_ENDPOINT` (LocalStack), `NOTIFICATION_TRACK_VERIFY_SIGNATURE`, `..._TRACK_ALLOWED_CERT_HOSTS`, `..._TRACK_CORRELATE_PROVIDER` (`ses` | `mailpit` — dev bơm event SES mẫu cho mail Mailpit đã gửi) | `http://localstack:4566/000000000000/notification-ses-events`, compose: `mailpit` |
 | Auth | `NOTIFICATION_AUTH_BASE_URL`, timeout, `auth.rate_per_second.<lane>`, `auth.max_conns.<lane>`, breaker | `http://auth-service:8081`, `2s` |
 | Lane | `lanes.<lane>.{email_workers,in_app_workers,batch_size,email_quota_per_second,breaker_open_retry,max_attempts}` | Bảng ở [01-lanes.md](./01-lanes.md) §5 chia 10 cho dev |
-| Deliver | `deliver.{lease,heartbeat_interval,ordering_lease,ordering_heartbeat_interval,retry_base,retry_max,retry_jitter,rate_limit_wait,retry_budget_ratio,limiter_fallback_replicas,use_listen_notify}` | `60s`, `20s`, `45s`, `10s`, `30s`, `1h`, `30s`, `5s`, `0.2`, `4`, `true`; ordering lease phải lớn hơn provider timeout + safety margin |
+| Deliver | `deliver.{lease,heartbeat_interval,ordering_lease,ordering_heartbeat_interval,ordering_busy_retry,retry_base,retry_max,retry_jitter,rate_limit_wait,retry_budget_ratio,limiter_fallback_replicas,use_listen_notify}` | `60s`, `20s`, `45s`, `10s`, `2s`, `30s`, `1h`, `30s`, `5s`, `0.2`, `4`, `true`; `config.Validate()` đòi `ordering_lease` > `email.connect_timeout + email.send_timeout + auth.timeout + rate_limit_wait + 5s`, `ordering_heartbeat_interval` ≤ `ordering_lease/3`, `ordering_busy_retry` > 0 |
+| Privacy | `NOTIFICATION_PRIVACY_HMAC_KEY` (`privacy.hmac_key`), `NOTIFICATION_PRIVACY_HMAC_KEY_VERSION` (`privacy.hmac_key_version`), `NOTIFICATION_PRIVACY_PREVIOUS_HMAC_KEYS` (`privacy.previous_hmac_keys`, dạng `1:<key>,2:<key>`) | rỗng → ở `app.env = development` dùng dev key cố định (không phải secret); version `1`; không có key cũ |
 | Frontend | `NOTIFICATION_FRONTEND_BASE_URL`, `..._FRONTEND_CART_PATH` (chỉ để lắp `cart_url`, `review_url` — §7 của [07-templates.md](./07-templates.md)) | `http://localhost:3000`, `/cart` |
 | Quiet hours / cap | `NOTIFICATION_BULK_QUIET_FROM/TO`, `..._BULK_FREQUENCY_CAP_PER_DAY`, `..._BULK_DEFAULT_TIMEZONE` | `22:00`/`08:00`, `2`, `Asia/Ho_Chi_Minh` |
 | Outbox | `NOTIFICATION_OUTBOX_PUBLISHER` = `debezium` \| `poller` | compose dev: `poller`; `application.yaml`: `debezium` |
 | Jobs | `jobs.{partition_interval,partition_ahead_months,purge_interval,purge_batch,retention_days.*}` | `1h`, `2`, `1h`, `10000`, 90/90/30/90/30/30/14/7 |
 
 Secret (`DB_PASSWORD`, `REDIS_PASSWORD`, AWS credential) không có prefix, giống quy ước Auth trong compose. Không có secret nào trong `application.yaml`. `config.Validate()` từ chối chạy production nếu `email.provider != ses`, thiếu mTLS internal, hoặc `track.verify_signature = false`.
-`NOTIFICATION_PRIVACY_HMAC_KEY` và version của nó cũng là secret bắt buộc; rotation dùng
-dual-read/dual-write migration, không đổi nóng một bước vì sẽ phá sequence/tombstone key.
+`NOTIFICATION_PRIVACY_HMAC_KEY` là secret bắt buộc ngoài development (≥ 32 byte; `Validate()` từ chối khởi động nếu thiếu). Compose dev không cần đặt: `app.env = development` tự dùng dev key cố định. Rotation, không bao giờ đổi nóng một bước (sẽ tách sequence stream và làm mất tombstone):
+
+1. Khai báo key mới ở chế độ chỉ-đọc trên **mọi** process: giữ active = version N, đặt `..._PREVIOUS_HMAC_KEYS` = `N+1:<key mới>`. Chưa có gì được ghi bằng N+1, nhưng từ đây mọi process đã đọc được cả hai version.
+2. Đổi active (rolling deploy được): `NOTIFICATION_PRIVACY_HMAC_KEY` = key mới, `..._HMAC_KEY_VERSION` = N+1, `..._PREVIOUS_HMAC_KEYS` = `N:<key cũ>`. Trong lúc rollout, process cũ (active N) và process mới (active N+1) cùng đọc cả hai version nên không tách sequence stream; ledger ghi version active của từng process và gộp dần row cũ khi subject được chạm lại; tombstone luôn ghi dưới mọi version.
+3. Chỉ bỏ key cũ khỏi `previous_hmac_keys` khi đã qua replay horizon của Order **và** không còn cần chặn replay cho user bị xoá trước rotation (tombstone của họ chỉ có dưới key cũ — raw user_id không còn để ghi lại dưới key mới).
+
+Bỏ qua bước 1 (đổi active thẳng) là lỗi: trong rolling deploy, process còn keyring cũ không đọc được row ghi bằng key mới.
 
 ## 4. Khởi tạo lần đầu
 

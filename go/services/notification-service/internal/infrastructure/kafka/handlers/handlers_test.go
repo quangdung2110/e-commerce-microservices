@@ -118,6 +118,7 @@ func TestOrderRequestExample(t *testing.T) {
 	assert.Equal(t, "order-checkout-9d40d5ae-c636-4d55-bf7d-bad6d388bd7f", in.CorrelationID)
 	require.NotNil(t, in.Sequence)
 	assert.EqualValues(t, 3, *in.Sequence)
+	assert.Len(t, in.PayloadSHA256, 64, "Order requests carry the canonical payload digest")
 	// The template_data passes the catalog schema untouched.
 	assert.NoError(t, f.catalog.ValidateTemplateData(in.Template, in.TemplateData))
 

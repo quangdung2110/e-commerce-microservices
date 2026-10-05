@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 )
 
@@ -36,6 +37,8 @@ type Tx interface {
 	ProviderEvents() ProviderEventRepository
 	Ops() OpsRepository
 	Maintenance() MaintenanceRepository
+	Ordering() OrderingRepository
+	Tombstones() TombstoneRepository
 }
 
 // RequestRepository persists notification_request.
@@ -215,4 +218,49 @@ type MaintenanceRepository interface {
 	DeadTupleRatio(ctx context.Context, table string) (float64, error)
 	// Notify wakes deliver workers of a lane (LISTEN/NOTIFY); no-op when unsupported.
 	Notify(ctx context.Context, lane entity.Lane) error
+}
+
+// OrderingRepository is the Order ordering state (05-ordering.md §4,
+// 09-data-model.md §3–§4): the highest-sequence ledger written by the
+// consumer and the per-subject provider-call lease used by deliver workers.
+type OrderingRepository interface {
+	// LockSubject serialises consumers of one subject inside the current
+	// transaction (advisory xact locks on every key version, in a fixed order,
+	// so a rotation in progress cannot split the lock).
+	LockSubject(ctx context.Context, source string, keys []pii.KeyedHash) error
+	// SubjectSequences returns the ledger rows of the subject under every given
+	// key version (dual-read); empty when the subject was never seen.
+	SubjectSequences(ctx context.Context, source string, keys []pii.KeyedHash) ([]entity.SubjectSequence, error)
+	// SaveSubjectSequence upserts one ledger row (the consumer writes the
+	// active key version, folding older versions in).
+	SaveSubjectSequence(ctx context.Context, s *entity.SubjectSequence) error
+
+	// AcquireLease takes the ordering lease for deliveryID held by workerID:
+	// inserts it, takes over an expired one, or re-enters one this worker
+	// already holds for the same delivery. false = another delivery holds it.
+	AcquireLease(ctx context.Context, orderingKey string, deliveryID uuid.UUID, workerID string, lease time.Duration) (bool, error)
+	// ExtendLease is the ordering heartbeat; false = ownership lost.
+	ExtendLease(ctx context.Context, orderingKey string, deliveryID uuid.UUID, workerID string, lease time.Duration) (bool, error)
+	// HoldsLease checks ownership and locks the lease row FOR SHARE until the
+	// transaction ends (in_app commits only while still owning the lease).
+	HoldsLease(ctx context.Context, orderingKey string, deliveryID uuid.UUID, workerID string) (bool, error)
+	// ReleaseLease deletes the lease only if (key, delivery, worker) still own it.
+	ReleaseLease(ctx context.Context, orderingKey string, deliveryID uuid.UUID, workerID string) (bool, error)
+	// ReapExpiredLeases compare-and-deletes leases past lease_until.
+	ReapExpiredLeases(ctx context.Context, now time.Time) (int64, error)
+	// ExpiredLeaseAges reports, per source, the oldest lease past lease_until
+	// that has not been reclaimed yet.
+	ExpiredLeaseAges(ctx context.Context, now time.Time) ([]entity.OrderingLeaseAge, error)
+}
+
+// TombstoneRepository is deleted_user_tombstone (09-data-model.md §10).
+type TombstoneRepository interface {
+	// Lock serialises user.deleted and preferences-updated of one user inside
+	// the current transaction, so a preference row cannot be re-created
+	// between the tombstone insert and the preference delete.
+	Lock(ctx context.Context, keys []pii.KeyedHash) error
+	// Insert records HMAC(user_id) under every given key version (idempotent).
+	Insert(ctx context.Context, keys []pii.KeyedHash, deletedAt time.Time) error
+	// Exists reports whether any of the given key versions is tombstoned.
+	Exists(ctx context.Context, keys []pii.KeyedHash) (bool, error)
 }

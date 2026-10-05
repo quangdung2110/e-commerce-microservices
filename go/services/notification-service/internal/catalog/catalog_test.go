@@ -81,7 +81,7 @@ func TestValidateTemplateData(t *testing.T) {
 	if err := c.ValidateTemplateData("ORDER_PAYMENT_FAILED", retryNoDeadline); err == nil {
 		t.Fatal("can_retry=true without retry_deadline should be rejected")
 	}
-	if err := c.ValidateTemplateData("CART_ABANDONED",[]byte(`{"cart_id":"c1:x","cart_url":"http://localhost:3000/cart"}`)); err != nil {
+	if err := c.ValidateTemplateData("CART_ABANDONED", []byte(`{"cart_id":"c1:x","cart_url":"http://localhost:3000/cart"}`)); err != nil {
 		t.Fatalf("cart data rejected: %v", err)
 	}
 	if err := c.ValidateTemplateData("PASSWORD_RESET", []byte(`{"reset_url":"not a url"}`)); err == nil {

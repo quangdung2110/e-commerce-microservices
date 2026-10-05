@@ -53,6 +53,7 @@ func Request(deps HandlerDeps, lane entity.Lane) kafka.MessageHandler {
 		in.DedupKey = data.DedupKey
 		in.ExpiresAt = data.ExpiresAt
 		in.TemplateData = data.TemplateData
+		in.PayloadSHA256 = payloadDigest(env.Data)
 		if env.Type != TypeNotificationRequested {
 			in.Template = ""
 		}

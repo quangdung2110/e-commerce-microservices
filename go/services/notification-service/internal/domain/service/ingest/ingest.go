@@ -3,6 +3,11 @@
 // ingest_dedup claim, a notification_request row, a Decide run and one
 // notification_delivery row per template channel. The Kafka offset is
 // committed by the caller only after this returns without error.
+//
+// Two gates run before Decide (09-data-model.md §3, §10; 05-ordering.md §4):
+// a deleted-user tombstone turns the request into a sanitised SKIPPED
+// (user_deleted) row, and every /services/order request goes through the
+// per-subject sequence ledger (missing / collision / duplicate / superseded).
 package ingest
 
 import (
@@ -13,7 +18,9 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/ecommerce/notification-service/internal/catalog"
 	"github.com/ecommerce/notification-service/internal/common/clock"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/domain/service/decide"
@@ -30,12 +37,16 @@ type Outcome struct {
 	Reason    string
 	// Kept lists the channels that received a PENDING delivery.
 	Kept []entity.Channel
+	// Sequence is the Order sequence-ledger outcome; empty for other sources.
+	Sequence entity.SequenceOutcome
 }
 
 // Service runs Ingest → Dedup → Decide for every source consumer.
 type Service struct {
 	store   port.Store
 	decider *decide.Decider
+	catalog *catalog.Catalog
+	keyring *pii.Keyring
 	laneCtl port.LaneControl // nilable (replay mode never active)
 	clock   clock.Clock
 	metrics *telemetry.Metrics // nilable
@@ -44,11 +55,13 @@ type Service struct {
 
 // New wires the service. decider carries the process-wide Decide deps; its
 // repositories are replaced per message with the transaction-bound ones.
-func New(store port.Store, decider *decide.Decider, laneCtl port.LaneControl, clk clock.Clock, metrics *telemetry.Metrics, logger *zap.Logger) *Service {
+// catalog gives the channels of a superseded Order request; keyring hashes
+// subjects and user ids for the ledger, the ordering key and tombstones.
+func New(store port.Store, decider *decide.Decider, cat *catalog.Catalog, keyring *pii.Keyring, laneCtl port.LaneControl, clk clock.Clock, metrics *telemetry.Metrics, logger *zap.Logger) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Service{store: store, decider: decider, laneCtl: laneCtl, clock: clk, metrics: metrics, logger: logger}
+	return &Service{store: store, decider: decider, catalog: cat, keyring: keyring, laneCtl: laneCtl, clock: clk, metrics: metrics, logger: logger}
 }
 
 // Ingest processes one normalised message. An error means nothing was
@@ -60,6 +73,9 @@ func (s *Service) Ingest(ctx context.Context, in entity.IngestInput) (Outcome, e
 		return Outcome{}, err
 	}
 	s.observe(in, out, s.clock.Now().Sub(start))
+	if out.Sequence != "" && s.metrics != nil {
+		s.metrics.SubjectSequenceEvents.WithLabelValues(in.Source, string(out.Sequence)).Inc()
+	}
 	return out, nil
 }
 
@@ -82,6 +98,19 @@ func (s *Service) ingest(ctx context.Context, in entity.IngestInput, now time.Ti
 			return nil
 		}
 
+		// Deleted-user tombstone (09-data-model.md §10): a replayed or late
+		// event must not rebuild an inbox. The row keeps no user/template data.
+		if dead, err := s.tombstoned(ctx, tx, in); err != nil {
+			return err
+		} else if dead {
+			req := sanitizedRequest(in, now)
+			if err := tx.Requests().Insert(ctx, req); err != nil {
+				return fmt.Errorf("ingest: insert request: %w", err)
+			}
+			out = Outcome{RequestID: req.ID, Decision: req.Decision, Reason: entity.ReasonUserDeleted}
+			return nil
+		}
+
 		req := newRequest(in, now)
 		if err := tx.Requests().Insert(ctx, req); err != nil {
 			return fmt.Errorf("ingest: insert request: %w", err)
@@ -100,6 +129,27 @@ func (s *Service) ingest(ctx context.Context, in entity.IngestInput, now time.Ti
 			return nil
 		}
 
+		// Order: per-subject monotonic sequence (05-ordering.md §4).
+		var orderingKey string
+		if in.Source == entity.SourceOrder {
+			seq, err := s.applySequence(ctx, tx, in)
+			if err != nil {
+				return err
+			}
+			out.Sequence = seq
+			switch seq {
+			case entity.SequenceMissing:
+				return s.conclude(ctx, tx, req, &out, entity.DecisionFailed, entity.ReasonMissingSequence)
+			case entity.SequenceCollision:
+				return s.conclude(ctx, tx, req, &out, entity.DecisionFailed, entity.ReasonSequenceCollision)
+			case entity.SequenceDuplicate:
+				return s.conclude(ctx, tx, req, &out, entity.DecisionSkipped, entity.ReasonDuplicate)
+			case entity.SequenceSuperseded:
+				return s.supersede(ctx, tx, req, in, now, &out)
+			}
+			orderingKey = s.keyring.OrderingKey(in.Source, in.Subject)
+		}
+
 		res, err := s.decider.WithRepos(tx.Preferences(), tx.Suppressions(), tx.Dedup()).Decide(ctx, in)
 		if err != nil {
 			return err
@@ -114,6 +164,7 @@ func (s *Service) ingest(ctx context.Context, in entity.IngestInput, now time.Ti
 		// SKIPPED with skip_reason for dropped, so the timeline shows why.
 		for _, cd := range res.Channels {
 			d := newDelivery(req, in, res, cd, now)
+			d.OrderingKey = optStr(orderingKey)
 			if err := tx.Deliveries().Insert(ctx, d); err != nil {
 				return fmt.Errorf("ingest: insert delivery %s: %w", cd.Channel, err)
 			}
@@ -169,21 +220,22 @@ func (s *Service) observe(in entity.IngestInput, out Outcome, took time.Duration
 // NULL; a crash before the update rolls the row back anyway).
 func newRequest(in entity.IngestInput, now time.Time) *entity.Request {
 	req := &entity.Request{
-		ID:            uuid.New(),
-		Source:        in.Source,
-		EventID:       in.EventID,
-		EventType:     in.EventType,
-		Subject:       optStr(in.Subject),
-		InputKind:     in.InputKind,
-		Template:      optStr(in.Template),
-		DedupKey:      optStr(in.DedupKey),
-		ExpiresAt:     in.ExpiresAt,
-		TemplateData:  in.TemplateData,
-		SourceRef:     optStr(in.SourceRef),
-		CorrelationID: optStr(in.CorrelationID),
-		TraceParent:   optStr(in.TraceParent),
-		Decision:      entity.DecisionIgnored,
-		ReceivedAt:    now,
+		ID:             uuid.New(),
+		Source:         in.Source,
+		EventID:        in.EventID,
+		EventType:      in.EventType,
+		Subject:        optStr(in.Subject),
+		SourceSequence: in.Sequence,
+		InputKind:      in.InputKind,
+		Template:       optStr(in.Template),
+		DedupKey:       optStr(in.DedupKey),
+		ExpiresAt:      in.ExpiresAt,
+		TemplateData:   in.TemplateData,
+		SourceRef:      optStr(in.SourceRef),
+		CorrelationID:  optStr(in.CorrelationID),
+		TraceParent:    optStr(in.TraceParent),
+		Decision:       entity.DecisionIgnored,
+		ReceivedAt:     now,
 	}
 	if !in.EventTime.IsZero() {
 		t := in.EventTime.UTC()
@@ -215,20 +267,22 @@ func applyDecision(req *entity.Request, res entity.DecideResult) {
 func newDelivery(req *entity.Request, in entity.IngestInput, res entity.DecideResult, cd entity.ChannelDecision, now time.Time) *entity.Delivery {
 	userID := res.UserID
 	d := &entity.Delivery{
-		ID:            uuid.New(),
-		RequestID:     req.ID,
-		UserID:        &userID,
-		Subject:       optStr(in.Subject),
-		Lane:          in.Lane,
-		Channel:       cd.Channel,
-		Template:      in.Template,
-		Status:        entity.StatusPending,
-		NextAttemptAt: cd.NextAttemptAt,
-		DedupKey:      optStr(in.DedupKey),
-		ExpiresAt:     res.EffectiveExpiresAt,
-		SourceRef:     optStr(in.SourceRef),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:             uuid.New(),
+		RequestID:      req.ID,
+		UserID:         &userID,
+		Subject:        optStr(in.Subject),
+		Source:         in.Source,
+		SourceSequence: in.Sequence,
+		Lane:           in.Lane,
+		Channel:        cd.Channel,
+		Template:       in.Template,
+		Status:         entity.StatusPending,
+		NextAttemptAt:  cd.NextAttemptAt,
+		DedupKey:       optStr(in.DedupKey),
+		ExpiresAt:      res.EffectiveExpiresAt,
+		SourceRef:      optStr(in.SourceRef),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if !cd.Keep {
 		d.Status = entity.StatusSkipped

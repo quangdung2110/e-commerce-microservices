@@ -40,8 +40,14 @@ type IngestInput struct {
 
 	CorrelationID string
 	TraceParent   string
-	// Sequence is the optional aggregate sequence from the envelope.
+	// Sequence is the CloudEvents sequence; required (>= 1) for /services/order,
+	// optional for every other source (05-ordering.md §4).
 	Sequence *int64
+	// PayloadSHA256 is the hex sha256 of the canonical JSON of the CloudEvents
+	// data block (keys sorted, numbers verbatim). Two Order requests with the
+	// same sequence must carry the same event id and digest, otherwise they
+	// collide (09-data-model.md §3).
+	PayloadSHA256 string
 }
 
 // Request is the persisted notification_request row (09-data-model.md §3.2).
@@ -52,6 +58,7 @@ type Request struct {
 	EventType      string
 	EventTime      *time.Time
 	Subject        *string
+	SourceSequence *int64
 	InputKind      InputKind
 	Template       *string
 	Lane           *Lane

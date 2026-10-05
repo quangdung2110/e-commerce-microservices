@@ -149,15 +149,23 @@ onMessage(event):
     BEGIN
       INSERT ingest_dedup (source, event_id) ON CONFLICT DO NOTHING
           → 0 row ⇒ trùng: COMMIT, commit offset, return
-      INSERT notification_request (...)
-      if HMAC(event.data.user_id) exists in deleted_user_tombstone:
-          anonymize request, decision = SKIPPED(user_deleted), COMMIT, commit offset, return
+      if HMAC(data.user_id) exists in deleted_user_tombstone (mọi key version):
+          INSERT notification_request đã làm sạch (user_id, subject, template_data,
+              dedup_key, source_ref = NULL), decision = SKIPPED(user_deleted)
+          COMMIT, commit offset, return                  -- không delivery, không chạm ledger
+      INSERT notification_request (..., source_sequence)
+      replay mode: event cũ hơn ngưỡng → IGNORED(replay_too_old), return
       if source == '/services/order':
-          require integer sequence >= 1
-          compute versioned HMAC subject key; lock/upsert notification_subject_sequence
-          same sequence + same event + same payload => SKIPPED(duplicate), no delivery
-          same sequence + different event or payload => FAILED(sequence_collision)
-          lower sequence => request timeline kept, deliveries SKIPPED(superseded)
+          thiếu sequence >= 1 (hoặc thiếu subject)      → FAILED(missing_sequence), không delivery
+          pg_advisory_xact_lock(HMAC(source, subject)) cho mọi key version
+          đọc notification_subject_sequence mọi key version → highest
+          sequence > highest                             → ghi ledger (key active), tiếp tục Decide
+          == highest, cùng event id + payload digest     → SKIPPED(duplicate), không delivery
+          == highest, lệch event id hoặc digest          → FAILED(sequence_collision), không delivery
+          < highest                                      → SKIPPED(superseded), KHÔNG chạy Decide;
+                                                            mỗi kênh của template một delivery SKIPPED(superseded)
+          ledger key active luôn giữ highest (gộp dần row của key cũ khi subject được chạm lại)
+          delivery của request được gán ordering_key = source:key_version:HMAC(source ‖ NUL ‖ subject)
       decision = decide(request)                        -- 08-decide.md, chỉ đọc DB/Redis
       UPDATE notification_request SET decision, decision_reason
       for each channel of template:
@@ -172,7 +180,9 @@ onMessage(event):
     commit offset
 ```
 
-Envelope không parse được (thiếu `id`/`type`/`source`/`data`) → publish nguyên message sang topic `<topic>.dlq` của nguồn (kèm header `x-dlq-reason`) rồi commit offset; lỗi DB tạm thời → retry tại chỗ tối đa `consume_max_attempts` rồi mới DLQ. Lỗi contract của producer (`unknown_template`, `invalid_template_data`, …) **không** đi Kafka DLQ: row `notification_request.decision = FAILED` chính là "DLQ" dạng bảng mà ops API `dlq/redrive` và alert đọc.
+Envelope không parse được (thiếu `id`/`type`/`source`/`data`) → publish nguyên message sang topic `<topic>.dlq` của nguồn (kèm header `x-dlq-reason`) rồi commit offset; lỗi DB tạm thời → retry tại chỗ tối đa `consume_max_attempts` rồi mới DLQ. Lỗi contract của producer (`unknown_template`, `invalid_template_data`, `missing_sequence`, `sequence_collision`, …) **không** đi Kafka DLQ: row `notification_request.decision = FAILED` chính là "DLQ" dạng bảng mà ops API `dlq/redrive` và alert đọc.
+
+"Payload digest" của ledger là `sha256` của JSON chuẩn hoá từ khối `data` (key sắp xếp, số giữ nguyên chữ số, bỏ khoảng trắng) — Order serialize lại cùng một command theo thứ tự key khác vẫn là cùng payload; đổi bất kỳ giá trị nào là payload khác ([09-data-model.md](./09-data-model.md) §3).
 
 Ba quy tắc:
 
@@ -296,15 +306,19 @@ loop forever:
 
         ordering_lease = false
         try:
-            if row.source == '/services/order':
+            if row.ordering_key is not null:      -- chỉ delivery của /services/order
                 ordering_lease = acquire_ordering_lease(row.ordering_key)  -- HMAC key, không raw subject
-                    → busy: release row về PENDING/RETRY, không tính attempt; continue
-                start heartbeat; mất lease trước provider call → release/retry, không gửi
-                if row.source_sequence < highest_subject_sequence(row.source, row.subject):
+                    → busy: release(row, next = now + ordering_busy_retry, ordering_busy)   -- attempt không tính
+                start ordering heartbeat (ordering_heartbeat_interval)
+                if row.source_sequence < highest_subject_sequence(mọi key version của subject):
                     mark(row, SKIPPED, superseded); continue
             if row.channel == 'in_app':
                 body = render_inapp(row)          -- template đã cache
-                INSERT inbox_item + mark DELIVERED + INSERT outbox(delivered)  -- cùng transaction; INCR unread sau commit
+                BEGIN
+                  if ordering_lease and not holds_lease(... FOR SHARE):
+                      ROLLBACK; release(row, ordering_lease_lost); continue
+                  INSERT inbox_item + mark DELIVERED + INSERT outbox(delivered)
+                COMMIT                            -- INCR unread sau commit
                 continue
             if not breaker.allow():               -- provider chết: 06-backpressure.md §5
                 release(row, next = now + breaker_open_retry(lane)); continue   -- attempt không tính
@@ -319,7 +333,10 @@ loop forever:
                     hash != → suppression.superseded_at = now (user đã đổi email), gửi tiếp
             body = render_email(row, data)
             rate_limiter.acquire(lane, email, wait 5 s)   -- token bucket theo lane; hết chờ → release(row, next = now), không tính attempt
+            if ordering_lease and lease không còn hiệu lực đủ (connect + send timeout):
+                release(row, next = now + ordering_busy_retry, ordering_lease_lost); continue   -- không gửi
             result = provider.send(body)          -- SES không có idempotency key; xem 04-idempotency.md lớp C
+            if ordering_lease and lease đã mất trong lúc gọi: possibly_duplicate = true   -- ordering_lease_lost{during_send}
             mark_sent(row, result.message_id, template_version, possibly_duplicate)   -- compare-and-set
         catch RetryableError:                     -- 5xx, timeout, 429, breaker
             attempt >= max_attempts(lane) → mark(row, FAILED, provider_error)
@@ -336,15 +353,17 @@ Chi tiết đáng chú ý:
 - **Transaction claim rất ngắn**: chỉ bao câu `UPDATE ... RETURNING`, commit ngay, rồi mới gọi provider. Không giữ transaction mở trong lúc gọi HTTP 8 s — làm vậy giữ lock, giữ connection pool, và chặn vacuum. `lease_until` là thứ thay cho việc giữ lock lâu.
 - **Backoff có jitter**: `next_attempt_at = now + min(2^attempt × 30 s, 1 h) + random(0, 30 s)`. Không jitter, 10.000 row fail cùng lúc sẽ cùng hết hạn retry cùng lúc và dội vào provider vừa hồi phục.
 - **Rate limiter đứng trước provider, không đứng trước claim**. Đặt trước claim thì row nằm `PENDING` không ai nhặt, không phân biệt được "đang throttle" với "worker chết".
-- **Claim tăng `attempt`; row không thực sự được thử thì trả lại bằng `release`** (`RETRY`, `attempt - 1`, `next_attempt_at`, `last_error_code` = `breaker_open` / `rate_limited` / `lane_paused`) — nên `attempt` luôn đếm số lần gọi provider thật ([06-backpressure.md](./06-backpressure.md) §5).
+- **Claim tăng `attempt`; row không thực sự được thử thì trả lại bằng `release`** (`RETRY`, `attempt - 1`, `next_attempt_at`, `last_error_code` = `breaker_open` / `rate_limited` / `lane_paused` / `ordering_busy` / `ordering_lease_lost`) — nên `attempt` luôn đếm số lần gọi provider thật ([06-backpressure.md](./06-backpressure.md) §5). Ngoại lệ có chủ đích: nếu row đang mang `last_error_code = lease_expired` (reaper vừa trả về), `release` và `schedule_retry` **giữ nguyên** mã đó — lớp C3 vẫn phải áp dụng ở lần claim sau; chỉ gửi thành công hoặc ops redrive mới xoá nó ([04-idempotency.md](./04-idempotency.md) §3).
 - **Adaptive sleep khi rảnh**: poll 50 ms liên tục trên bảng trống là lãng phí. Lane critical có thể thêm Postgres `LISTEN/NOTIFY` để consumer Kafka đánh thức worker ngay sau INSERT, giảm độ trễ từ ~500 ms xuống ~5 ms.
 - **Gia hạn lease theo chu kỳ** (heartbeat `UPDATE lease_until = now + 60 s` mỗi 20 s cho row đang giữ) để batch lớn hoặc timeout dài không làm row hết lease trước khi được gửi — xem [06-backpressure.md](./06-backpressure.md) §6.
-- **Ordering lease của Order cũng có heartbeat riêng.** Worker chỉ gọi provider khi vẫn
-  sở hữu lease và timeout provider nhỏ hơn lease trừ safety margin. Nếu lease mất trong
-  provider call, kết quả là không chắc chắn: CAS của owner cũ không được ghi đè owner mới,
-  delivery được quan sát như `possibly_duplicate`/`ordering_lease_lost`. Không thiết kế
-  nào ở đây có thể bắt provider email/SMS giao tới inbox theo thứ tự tuyệt đối sau khi đã
-  accept/timeout; ordering này là local provider-call ordering, không phải saga proof.
+- **Ordering lease của Order cũng có heartbeat riêng** (`ordering_heartbeat_interval` 10 s
+  gia hạn `ordering_lease` 45 s). Worker chỉ bắt đầu provider call khi lease còn hiệu lực ít
+  nhất bằng `email.connect_timeout + email.send_timeout`; heartbeat bị từ chối (0 row) là
+  mất quyền sở hữu vĩnh viễn cho lần xử lý này. Nếu lease mất trong provider call, kết quả
+  là không chắc chắn: CAS của owner cũ không ghi đè owner mới, delivery được đánh
+  `possibly_duplicate` và tăng `ordering_lease_lost_total{stage=during_send}`. Không thiết
+  kế nào ở đây có thể bắt provider email/SMS giao tới inbox theo thứ tự tuyệt đối sau khi
+  đã accept/timeout; ordering này là local provider-call ordering, không phải saga proof.
 
 ### 5.4 Worker crash giữa chừng: lease và reaper
 
@@ -382,9 +401,11 @@ PENDING ──claim──▶ SENDING ──ok──▶ SENT ──webhook──�
 | `SENDING → RETRY` | reaper | `lease_until < now()` |
 | `SENT → DELIVERED/BOUNCED` | track worker | theo thứ hạng, xem [03-tracking.md](./03-tracking.md) |
 | `* → EXPIRED/SKIPPED` | deliver worker lúc claim | xem [05-ordering.md](./05-ordering.md) |
-| `(không tạo) → SKIPPED` | consumer lúc Decide | kênh bị bỏ (`preference_off`, `suppressed`, `duplicate`, `channel_not_allowed`) vẫn có row `SKIPPED` để timeline đầy đủ |
+| `(không tạo) → SKIPPED` | consumer lúc Decide | kênh bị bỏ (`preference_off`, `duplicate`) vẫn có row `SKIPPED` để timeline đầy đủ |
+| `(không tạo) → SKIPPED` | consumer, request Order có sequence thấp hơn | mọi kênh của template `skip_reason = superseded`; Decide không chạy |
+| `SENDING → SKIPPED` | deliver worker dưới ordering lease | `superseded` khi `source_sequence` < highest |
 | `PENDING/RETRY → SKIPPED` | consumer `user.deleted` | `skip_reason = user_deleted` |
-| `FAILED/EXPIRED → PENDING` | ops redrive | `attempt = 0`, giữ lịch sử lỗi |
+| `FAILED/EXPIRED → PENDING` | ops redrive | `attempt = 0`, giữ `last_error` làm lịch sử; xoá dấu `lease_expired` (ops chủ động chấp nhận gửi lại) |
 
 ### 5.6 Vì sao đủ nhanh
 

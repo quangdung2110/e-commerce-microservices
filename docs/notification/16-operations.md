@@ -19,7 +19,7 @@
 |---|---|---|---|
 | Pause lane / lane×channel | `PUT /internal/v1/notifications/ops/lanes/{lane}` hoặc `notifctl lane bulk pause` | Consumer vẫn nhận và ghi DB; deliver worker dừng claim | Provider sự cố, quota sắp hết, reputation đang xấu |
 | Replay mode | `PUT .../ops/replay-mode` | Consumer `IGNORED` event cũ hơn X | Trước khi reset offset Kafka về quá khứ |
-| Redrive một delivery | `POST .../ops/deliveries/{id}/redrive` | `FAILED`/`EXPIRED` → `PENDING` | Sau khi sửa nguyên nhân |
+| Redrive một delivery | `POST .../ops/deliveries/{id}/redrive` | `FAILED`/`EXPIRED` → `PENDING`; xoá dấu `lease_expired` (redrive critical `FAILED (lease_expired)` nghĩa là chủ động gửi lại OTP); delivery Order có sequence đã bị vượt sẽ thành `SKIPPED (superseded)` khi được claim | Sau khi sửa nguyên nhân |
 | Redrive DLQ theo lô | `POST .../ops/dlq/redrive` | Theo `lane` + `reason_code` + khoảng thời gian | Sau sự cố provider |
 | Suppression thủ công | `POST/DELETE .../ops/suppressions` | Thêm `MANUAL` / gỡ `MANUAL`/`SOFT_BOUNCE` | Yêu cầu pháp lý; địa chỉ nội bộ test |
 | Failover provider | Không có ở phase 1 (D-09) | | |
@@ -142,7 +142,7 @@ Auth publish best-effort không outbox: retry 3 lần rồi bỏ ([README §4](.
    `notification_subject_sequence`.
 2. Nếu owner còn sống/provider call còn trong timeout, chờ heartbeat hoặc timeout; không
    cưỡng bức release vì có thể tạo hai provider call đồng thời cùng order.
-3. Nếu owner đã chết và lease quá hạn, reaper compare-and-delete bằng cả
+3. Nếu owner đã chết và lease quá hạn, delivery kế tiếp của order tiếp quản lease ngay khi acquire (không chờ reaper); reaper (mỗi `deliver.reaper_interval`) compare-and-delete bằng cả
    `(ordering_key, delivery_id)`; worker mới acquire. Không update/delete chỉ theo key.
 4. Nếu `ordering_lease_lost{stage=during_send}` tăng, coi kết quả gửi là không chắc chắn:
    kiểm tra `possibly_duplicate`, provider message id/log đã khử PII; không sửa Order FSM

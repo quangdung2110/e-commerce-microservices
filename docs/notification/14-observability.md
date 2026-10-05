@@ -37,14 +37,14 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `delivery_pending_age_seconds` | gauge (p50/p99 tính từ DB) | `lane`, `channel` | `now - created_at` của row sẵn sàng cũ nhất — **metric quan trọng nhất** |
 | `delivery_scheduled_count` | gauge | `lane` | Row có `next_attempt_at` trong tương lai (quiet hours, backoff) — tách khỏi pending để không báo động giả |
 | `delivery_claim_duration_seconds` | histogram | `lane` | Câu claim; > 20 ms là dấu hiệu index/bloat |
-| `delivery_attempts_total` | counter | `lane`, `channel`, `provider`, `outcome` (`sent`/`retryable_error`/`permanent_error`/`breaker_open`/`rate_limited`) | Mỗi lần thử |
+| `delivery_attempts_total` | counter | `lane`, `channel`, `provider`, `outcome` (`sent`/`retryable_error`/`permanent_error`/`breaker_open`/`rate_limited`/`lane_paused`/`daily_quota`/`ordering_busy`/`ordering_lease_lost`) | Mỗi lần thử hoặc release (các outcome release không tính attempt) |
 | `delivery_send_duration_seconds` | histogram | `provider`, `lane` | Chỉ thời gian gọi provider |
 | `delivery_finished_total` | counter | `lane`, `channel`, `template`, `final_status`, `reason_code` | Trạng thái cuối: DELIVERED/BOUNCED/FAILED/EXPIRED/SKIPPED |
 | `delivery_end_to_end_seconds` | histogram | `lane`, `channel` | `sent_at - request.received_at`; SLO critical p99 < 5 s, transactional < 60 s |
 | `delivery_possibly_duplicate_total` | counter | `lane` | Sức khoẻ lease/heartbeat ([04-idempotency.md](./04-idempotency.md) C3) |
 | `delivery_lease_expired_total` | counter | `lane` | Reaper trả row về RETRY |
 | `ordering_lease_contention_total` | counter | `source` | Worker không acquire được per-subject lease; tăng liên tục có thể là hot subject/lease kẹt |
-| `ordering_lease_oldest_age_seconds` | gauge | `source` | Tuổi lease Order đã hết hạn nhưng chưa được thu hồi |
+| `ordering_lease_oldest_age_seconds` | gauge | `source` | Tuổi lease Order đã hết hạn nhưng chưa được thu hồi (reaper xuất mỗi `jobs.metrics_interval`; về 0 khi đã thu hồi). Lease còn hạn nhưng owner treo không hiện ở đây — xem `ordering_lease_contention_total` |
 | `ordering_lease_lost_total` | counter | `source`, `stage` (`before_send`/`during_send`) | Mất ownership; before_send không gọi provider, during_send là kết quả delivery không chắc chắn |
 | `retry_budget_ratio` | gauge | `lane` | Retry / tổng gửi trong cửa sổ 1 phút; > 0,2 kích hoạt budget |
 | `lane_paused` | gauge | `lane`, `channel` | 1 khi công tắc ops đang pause |

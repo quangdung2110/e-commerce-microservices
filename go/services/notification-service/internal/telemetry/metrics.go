@@ -15,11 +15,12 @@ type Metrics struct {
 	Registry *prometheus.Registry
 
 	// 2.1 consumer
-	IngestEventsTotal    *prometheus.CounterVec   // lane, source, decision, reason_code
-	IngestDuration       *prometheus.HistogramVec // lane
-	KafkaConsumerLag     *prometheus.GaugeVec     // lane, topic, partition
-	DecideStepRejections *prometheus.CounterVec   // lane, step, reason_code
-	DeadLetterTotal      *prometheus.CounterVec   // topic, reason
+	IngestEventsTotal     *prometheus.CounterVec   // lane, source, decision, reason_code
+	IngestDuration        *prometheus.HistogramVec // lane
+	KafkaConsumerLag      *prometheus.GaugeVec     // lane, topic, partition
+	DecideStepRejections  *prometheus.CounterVec   // lane, step, reason_code
+	DeadLetterTotal       *prometheus.CounterVec   // topic, reason
+	SubjectSequenceEvents *prometheus.CounterVec   // source, outcome
 
 	// 2.2 deliver
 	DeliveryPendingCount     *prometheus.GaugeVec     // lane, channel
@@ -34,6 +35,9 @@ type Metrics struct {
 	DeliveryLeaseExpired     *prometheus.CounterVec   // lane
 	RetryBudgetRatio         *prometheus.GaugeVec     // lane
 	LanePaused               *prometheus.GaugeVec     // lane, channel (1 paused)
+	OrderingLeaseContention  *prometheus.CounterVec   // source
+	OrderingLeaseOldestAge   *prometheus.GaugeVec     // source (seconds, expired not reclaimed)
+	OrderingLeaseLost        *prometheus.CounterVec   // source, stage
 
 	// 2.3 dependencies
 	DependencyDuration   *prometheus.HistogramVec // dependency, lane, status
@@ -77,6 +81,7 @@ func New() *Metrics {
 	m.KafkaConsumerLag = f.gauge("kafka_consumer_lag", "Consumer lag", "lane", "topic", "partition")
 	m.DecideStepRejections = f.counter("decide_step_rejections_total", "Decide step that rejected", "lane", "step", "reason_code")
 	m.DeadLetterTotal = f.counter("dead_letter_total", "Messages parked on a DLQ topic", "topic", "reason")
+	m.SubjectSequenceEvents = f.counter("subject_sequence_events_total", "Order notification sequence outcomes", "source", "outcome")
 
 	m.DeliveryPendingCount = f.gauge("delivery_pending_count", "Ready rows not yet claimed", "lane", "channel")
 	m.DeliveryPendingAge = f.gauge("delivery_pending_age_seconds", "Age of the oldest ready row", "lane", "channel")
@@ -90,6 +95,9 @@ func New() *Metrics {
 	m.DeliveryLeaseExpired = f.counter("delivery_lease_expired_total", "Rows reaped back to RETRY", "lane")
 	m.RetryBudgetRatio = f.gauge("retry_budget_ratio", "Retries / sends in the last minute", "lane")
 	m.LanePaused = f.gauge("lane_paused", "1 when lane×channel is paused", "lane", "channel")
+	m.OrderingLeaseContention = f.counter("ordering_lease_contention_total", "Per-subject ordering lease held by another delivery", "source")
+	m.OrderingLeaseOldestAge = f.gauge("ordering_lease_oldest_age_seconds", "Oldest expired ordering lease not reclaimed yet", "source")
+	m.OrderingLeaseLost = f.counter("ordering_lease_lost_total", "Ordering lease ownership lost", "source", "stage")
 
 	m.DependencyDuration = f.histogram("dependency_request_duration_seconds", "Outbound call", []float64{.01, .025, .05, .1, .25, .5, 1, 2, 5, 10}, "dependency", "lane", "status")
 	m.CircuitBreakerState = f.gauge("circuit_breaker_state", "0 closed, 1 half-open, 2 open", "dependency")

@@ -99,6 +99,8 @@ type repos struct {
 	providerEvents *ProviderEventRepository
 	ops            *OpsRepository
 	maintenance    *MaintenanceRepository
+	ordering       *OrderingRepository
+	tombstones     *TombstoneRepository
 }
 
 var _ port.Tx = repos{}
@@ -115,6 +117,8 @@ func newRepos(q querier, clk clock.Clock) repos {
 		providerEvents: &ProviderEventRepository{q: q},
 		ops:            &OpsRepository{q: q},
 		maintenance:    &MaintenanceRepository{q: q},
+		ordering:       &OrderingRepository{q: q},
+		tombstones:     &TombstoneRepository{q: q},
 	}
 }
 
@@ -128,6 +132,8 @@ func (r repos) Outbox() port.OutboxRepository                { return r.outbox }
 func (r repos) ProviderEvents() port.ProviderEventRepository { return r.providerEvents }
 func (r repos) Ops() port.OpsRepository                      { return r.ops }
 func (r repos) Maintenance() port.MaintenanceRepository      { return r.maintenance }
+func (r repos) Ordering() port.OrderingRepository            { return r.ordering }
+func (r repos) Tombstones() port.TombstoneRepository         { return r.tombstones }
 
 // mapError converts driver errors into the shared vocabulary. Not-found is the
 // only sentinel repositories rely on; everything else is wrapped so the

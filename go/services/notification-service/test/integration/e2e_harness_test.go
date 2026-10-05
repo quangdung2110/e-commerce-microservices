@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/breaker"
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	"github.com/ecommerce/notification-service/internal/common/config"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/service/decide"
 	"github.com/ecommerce/notification-service/internal/domain/service/deliver"
@@ -85,6 +87,8 @@ type e2eEnv struct {
 	control  *postgres.Control
 	contacts *auth.Client
 	catalog  *catalog.Catalog
+	keyring  *pii.Keyring
+	sender   *gatedSender
 	metrics  *telemetry.Metrics
 	trackW   *trackworker.Worker
 	outboxW  *outboxworker.Worker
@@ -187,11 +191,18 @@ func startE2E() (*e2eEnv, error) {
 	cfg.Deliver.ControlPollInterval = 200 * time.Millisecond
 	cfg.Deliver.UseListenNotify = false
 	cfg.Deliver.RetryBase, cfg.Deliver.RetryJitter = 200*time.Millisecond, 50*time.Millisecond
+	// Order ordering: fast heartbeat so a lost lease is noticed within a test,
+	// short busy retry so a waiting delivery follows quickly.
+	cfg.Deliver.OrderingHeartbeatInterval = time.Second
+	cfg.Deliver.OrderingBusyRetry = 300 * time.Millisecond
 	for _, l := range []*config.LaneConfig{&cfg.Lanes.Critical, &cfg.Lanes.Transactional, &cfg.Lanes.Bulk} {
 		l.EmailWorkers, l.InAppWorkers, l.BatchSize = 1, 1, 5
 		l.EmailQuotaPerSecond = 50
 		l.MaxAttempts = 3
 	}
+	// Two transactional email workers: while one holds an Order provider call
+	// open, the other proves a different order is not blocked (IT-ORD-01).
+	cfg.Lanes.Transactional.EmailWorkers = 2
 	// A one-minute quiet window that the wall clock practically never hits,
 	// so bulk scenarios are deterministic regardless of when CI runs.
 	cfg.Bulk.QuietFrom, cfg.Bulk.QuietTo = "03:17", "03:18"
@@ -206,6 +217,9 @@ func startE2E() (*e2eEnv, error) {
 	logger := zap.NewNop()
 	env.metrics = telemetry.New()
 	if env.catalog, err = catalog.Load(); err != nil {
+		return nil, err
+	}
+	if env.keyring, err = cfg.Keyring(); err != nil {
 		return nil, err
 	}
 	render, err := templates.Load(env.catalog, env.metrics)
@@ -242,9 +256,9 @@ func startE2E() (*e2eEnv, error) {
 		Metrics: env.metrics, Logger: logger,
 	})
 	deps := handlers.HandlerDeps{
-		Ingest:      ingest.New(store, decider, env.control, clk, env.metrics, logger),
-		Preferences: preference.New(store, clk, logger),
-		Lifecycle: lifecycle.New(lifecycle.Deps{Store: store, Contacts: env.contacts,
+		Ingest:      ingest.New(store, decider, env.catalog, env.keyring, env.control, clk, env.metrics, logger),
+		Preferences: preference.New(store, env.keyring, clk, logger),
+		Lifecycle: lifecycle.New(lifecycle.Deps{Store: store, Keyring: env.keyring, Contacts: env.contacts,
 			FrequencyCap: nredis.NewFrequencyCap(env.redis, env.keys), UnreadCounter: nredis.NewUnreadCounter(env.redis, env.keys),
 			Clock: clk, Logger: logger}),
 		Catalog: env.catalog, Frontend: cfg.Frontend, Logger: logger, Clock: clk,
@@ -273,7 +287,7 @@ func startE2E() (*e2eEnv, error) {
 	}
 
 	// ---- boundary 2: deliver pools + reaper ----
-	sender := smtp.NewSender(cfg.Email, clk, env.metrics, logger)
+	env.sender = newGatedSender(smtp.NewSender(cfg.Email, clk, env.metrics, logger))
 	providerBreaker := breaker.New(cfg.Deliver.Breaker, clk)
 	rates := map[entity.Lane]float64{}
 	for _, lane := range entity.AllLanes {
@@ -281,10 +295,10 @@ func startE2E() (*e2eEnv, error) {
 	}
 	limiter := nredis.NewTokenBucket(env.redis, env.keys, clk, rates, cfg.Deliver.LimiterFallbackReplicas, env.metrics, logger)
 	svc := deliver.New(deliver.Deps{
-		Store: store, Renderer: render, Email: sender, Contacts: env.contacts, Limiter: limiter,
+		Store: store, Renderer: render, Email: env.sender, Contacts: env.contacts, Limiter: limiter,
 		Daily: nredis.NewDailyQuota(env.redis, env.keys), RetryBudget: nredis.NewRetryBudget(env.redis, env.keys, clk, env.metrics, logger),
 		Unread: nredis.NewUnreadCounter(env.redis, env.keys), Control: env.control, Breaker: providerBreaker,
-		Catalog: env.catalog, Clock: clk, Metrics: env.metrics, Logger: logger,
+		Catalog: env.catalog, Keyring: env.keyring, Clock: clk, Metrics: env.metrics, Logger: logger,
 	}, deliver.Config{Lanes: cfg.Lanes, Deliver: cfg.Deliver, Email: cfg.Email, Frontend: cfg.Frontend, Bulk: cfg.Bulk, Templates: cfg.Templates})
 	for _, lane := range entity.AllLanes {
 		pool := deliverworker.NewPool(lane, deliverworker.Config{Lane: cfg.Lanes.For(string(lane)), Deliver: cfg.Deliver, InstanceID: "e2e", OtherLanesInProcess: true},
@@ -292,7 +306,7 @@ func startE2E() (*e2eEnv, error) {
 		env.wg.Add(1)
 		go func() { defer env.wg.Done(); pool.Run(runCtx) }()
 	}
-	r := reaper.New(store.Deliveries(), env.control, time.Second, time.Second, clk, env.metrics, logger)
+	r := reaper.New(store.Deliveries(), store.Ordering(), env.control, time.Second, time.Second, clk, env.metrics, logger)
 	env.wg.Add(1)
 	go func() { defer env.wg.Done(); r.Run(runCtx) }()
 
@@ -713,7 +727,13 @@ type requestOpts struct {
 	id, template, dedupKey, orderID, subject string
 	templateData                             map[string]any
 	expiresAt                                *time.Time
+	// sequence is the per-order notification sequence; 0 = next value of a
+	// process-wide counter (monotonic, so it is also monotonic per order).
+	sequence int64
 }
+
+// orderSequence feeds requestOpts.sequence when a test does not pin one.
+var orderSequence atomic.Int64
 
 func requestEvent(user uuid.UUID, o requestOpts) (string, []byte) {
 	if o.id == "" {
@@ -724,6 +744,9 @@ func requestEvent(user uuid.UUID, o requestOpts) (string, []byte) {
 	}
 	if o.template == "" {
 		o.template = "ORDER_CONFIRMED"
+	}
+	if o.sequence == 0 {
+		o.sequence = orderSequence.Add(1)
 	}
 	if o.subject == "" {
 		o.subject = "orders/" + o.orderID
@@ -744,7 +767,10 @@ func requestEvent(user uuid.UUID, o requestOpts) (string, []byte) {
 		"specversion": "1.0", "id": o.id, "type": "com.ecommerce.notification.requested.v1", "source": "/services/order",
 		"subject": o.subject, "time": time.Now().UTC().Format(time.RFC3339), "datacontenttype": "application/json",
 		"dataschema": "/contracts/events/notification/v1/schemas/notification-requested.schema.json",
-		"correlationid": "e2e-" + o.id, "data": data,
+		"correlationid": "e2e-" + o.id, "sequence": o.sequence, "data": data,
+	}
+	if o.sequence < 0 {
+		delete(ev, "sequence") // IT-CTR-07: Order request without sequence
 	}
 	b, _ := json.Marshal(ev)
 	return o.id, b
