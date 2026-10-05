@@ -17,8 +17,13 @@ the workflow rechecks those guards before it calls Payment. Checkout submission 
 waits until initial Payment client data is durably checkpointed because its caller needs
 that data to continue Stripe confirmation; it does not wait for capture.
 
-Both contracts are target/proposed. They become verified only after provider and
-consumer contract tests run against an Order implementation.
+Both contracts are `implemented` by [`java/services/order-service`](../../../java/services/order-service/README.md):
+its MockMvc + Testcontainers + in-memory Temporal tests validate every response shape
+against these OpenAPI component schemas. They become `verified` only after Checkout,
+Gateway/frontend and Finance/Ops consumer tests exist. Since ADR-020 the Checkout item
+carries optional `variant_name`, line arrays are capped at 100 (Inventory's Reserve limit),
+Finance/Ops decisions require `X-Actor-Id`, and external payout remediation carries
+`external_settlement`.
 
 Refund case `SUCCEEDED`/`FAILED` is the financial outcome; optional `scope_finalization`
 reports Inventory closure progress separately. Buyer return operation stays running

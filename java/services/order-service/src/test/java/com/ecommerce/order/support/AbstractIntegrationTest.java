@@ -11,6 +11,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.temporal.testing.TestWorkflowEnvironment;
+import com.networknt.schema.JsonSchema;
+import com.networknt.schema.JsonSchemaFactory;
+import com.networknt.schema.SchemaLocation;
+import com.networknt.schema.SpecVersion;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import static org.assertj.core.api.Assertions.assertThat;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -346,5 +354,27 @@ public abstract class AbstractIntegrationTest {
         deliverAll(orderId);
         awaitStatus(orderId, "COMPLETED");
         return orderId;
+    }
+
+    protected void validateAgainstContracts(long orderId) throws Exception {
+        Path contracts = Paths.get("..", "..", "..", "contracts").toAbsolutePath().normalize();
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isDirectory(contracts),
+                "contracts/ is present only inside the repository");
+        String prefix = "https://contracts.ecommerce.local/";
+        JsonSchemaFactory factory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012, builder ->
+                builder.schemaMappers(m -> m.mapPrefix(prefix, contracts.toUri().toString())));
+        Map<String, String> schemas = Map.of(
+                "com.ecommerce.order.paid.v1", "events/order/v1/schemas/order-paid.schema.json",
+                "com.ecommerce.order.completed.v1", "events/order/v1/schemas/order-completed.schema.json",
+                "com.ecommerce.notification.requested.v1",
+                "events/notification/v1/schemas/notification-requested.schema.json");
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT event_type, payload::text AS payload FROM outbox_events WHERE aggregate_id = ?", Long.toString(orderId));
+        assertThat(rows).isNotEmpty();
+        for (Map<String, Object> row : rows) {
+            JsonNode event = mapper.readTree((String) row.get("payload"));
+            JsonSchema schema = factory.getSchema(SchemaLocation.of(prefix + schemas.get((String) row.get("event_type"))));
+            assertThat(schema.validate(event)).as(row.get("event_type") + " " + event).isEmpty();
+        }
     }
 }

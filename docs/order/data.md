@@ -2,19 +2,21 @@
 doc_id: order-data
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Thiết kế dữ liệu
 
-> Đây là logical/physical design được chuyển từ tài liệu cũ. Các câu SQL minh
-> họa không phải migration chuẩn; hiện chưa có migration Order để xác minh.
+> Đây là logical/physical design. Migration chuẩn là
+> `java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql`; các câu
+> SQL dưới đây chỉ minh họa và migration là nguồn chân lý khi có khác biệt cú pháp.
 
 ## 1. Quyền sở hữu dữ liệu
 
@@ -279,7 +281,7 @@ viết lại lịch sử đơn.
 | `id` | `BIGSERIAL` PK | Line identity |
 | `order_item_id` | `BIGINT` FK | Delivery unit owner |
 | `inventory_allocation_plan_id` | `VARCHAR(128) NOT NULL` | Denormalized immutable plan identity, phải khớp master; cho phép enforce bridge unique không cần global line reference |
-| `allocation_plan_line_reference` | `VARCHAR(64) NOT NULL` | Immutable `line_reference=sku_id` from accepted Checkout v1 Inventory Preview; unique only within `(inventory_allocation_plan_id, line_reference)`/order, không global vì cùng SKU xuất hiện ở nhiều order. |
+| `allocation_plan_line_reference` | `VARCHAR(64) NOT NULL` | Immutable `line_reference=sku_id` from accepted Checkout v1 Inventory Preview; unique `(order_id, allocation_plan_line_reference)`, không global và không theo plan vì Inventory không lưu plan và cùng plan có thể được gửi lại với token mới ([ADR-020 §18](./decisions/ADR-020-release-1-implementation-clarifications.md)). |
 | `allocated_warehouse_id` | `VARCHAR(128) NOT NULL` | Opaque warehouse ID immutable từ Inventory allocation plan; phải khớp parent `order_items.warehouse_id` |
 | `sku_id`, `product_id` | `VARCHAR(255)` | External identifiers dạng snapshot/reference |
 | `quantity` | `INT` | Phải lớn hơn 0 |
@@ -319,7 +321,8 @@ budget khi customer refund và không cho phép suy diễn/ghi lại wallet stat
 | `amount_minor`, `currency` | `BIGINT`, `VARCHAR(3)` | Snapshot canonical `VND`; phải khớp order pricing snapshot và Payment event. |
 | `terminal_status` | `VARCHAR(32)` nullable | `NULL` maps to public `PENDING` after transaction identity is bound; otherwise `FAILED/EXPIRED/CANCELED/SUCCESS`. Initiation/unknown-create progress lives on `order_operations`, not an invented attempt state. Chỉ `FAILED` có thể mở attempt sau dưới deadline/hold guards. |
 | `last_financial_state_version` | `BIGINT NOT NULL DEFAULT 0` | Monotonic per **payment transaction**, không so sánh version giữa hai attempt khác nhau. |
-| `request_principal_id`, `request_idempotency_key`, `request_digest` | `UUID/VARCHAR(255)/VARCHAR(64)` | Durable replay scope cho create-next-attempt; unique theo principal/action/key, không dựa Redis TTL |
+| `operation_id` | `UUID` nullable | Operation `PAYMENT_ATTEMPT` đã tạo attempt; durable replay scope (principal/type/key + digest) nằm trên `order_operations`, không dựa Redis TTL ([ADR-020 §19](./decisions/ADR-020-release-1-implementation-clarifications.md)) |
+| `terminal_reason_code` | `VARCHAR(64)` nullable | `error_code`/`reason_code` của fact terminal |
 | `created_at`, `resolved_at` | `TIMESTAMPTZ` | Bắt buộc để phục vụ PaymentAttempt API và audit deadline/race |
 
 Order **không lưu** Stripe client data (`client_secret`, `publishable_key`,
@@ -475,7 +478,10 @@ cross-field guards transactionally and expose sanitized progress through the opt
 
 ### 3.7. `order_admin_refund_attempts`
 
-An Admin pre-dispatch action is an attempt, not a refund case. It has `attempt_id`,
+An Admin pre-dispatch action is an attempt, not a refund case. While the attempt is
+`PENDING` it plays the role of `WAITING_INVENTORY_RELEASE`; the Admin case is created only
+with the `RELEASED` receipt, starts at `INITIATED` and never stores
+`WAITING_INVENTORY_RELEASE` (ADR-020 §20). It has `attempt_id`,
 `order_id`, fixed `workflow_id`, stable `inventory_command_id`, canonical request hash,
 `status` (`PENDING`, `ACCEPTED`, `REJECTED`, `RECOVERY_REQUIRED`), provider outcome
 digest, timestamps and audit actor/reason. `(order_id, active_attempt)` is unique while
@@ -499,7 +505,9 @@ unique active key is `(order_id, obligation_type, resource_id)`.
 children of one obligation. Evidence stores provider/checkpoint/event reference, digest,
 financial/scope version and timestamp. Decision stores UUID `decision_id`, expected case
 and obligation revision, authenticated actor (`X-Actor-Id`) plus mesh workload principal,
-named resolution, reason and evidence set.
+named resolution, reason and evidence set. External payout remediation also needs the
+request's `external_settlement` (amount, customer, `settled_at`, reference) and a Payment
+state read appended as evidence (ADR-020 §16/§21).
 This preserves corrected decisions and concurrent dispute/scope/repair work instead of
 overwriting one row. The case envelope becomes `CLOSED` only when every obligation is
 closed; resolving return closure cannot close an unrelated dispute or accounting duty.
@@ -691,8 +699,8 @@ xóa row cũ đã có receipt; observer outage gây retention leak an toàn, kh�
 - Index `(inventory_scope_finalization_status, updated_at)` finds unresolved scope work
   independently of case financial status; generation-specific checkpoint identity must
   be unique and retain previous rejected attempts.
-- Unique `order_item_lines(inventory_allocation_plan_id,
-  allocation_plan_line_reference)`; không đặt unique toàn cục lên line reference.
+- Unique `order_item_lines(order_id, allocation_plan_line_reference)`; không đặt unique
+  toàn cục hay theo plan lên line reference (ADR-020 §18).
 - `order_consumed_events` dùng PK `(source,event_id)` và semantic unique
   `(source,event_type,stream_id,source_revision)`; cùng revision của hai aggregate hoặc
   hai event type khác nhau không được đụng nhau.

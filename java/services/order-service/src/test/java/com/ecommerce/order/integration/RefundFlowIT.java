@@ -1,6 +1,7 @@
 package com.ecommerce.order.integration;
 
 import com.ecommerce.order.support.AbstractIntegrationTest;
+import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
@@ -58,6 +59,7 @@ class RefundFlowIT extends AbstractIntegrationTest {
         Response accepted = returnAC(placed);
         assertThat(accepted.status()).as(String.valueOf(accepted.body())).isEqualTo(202);
         assertThat(accepted.body().path("refund_request_id").asText()).startsWith("rfr_");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "ReturnOperationAccepted", accepted.body());
         String operationId = accepted.body().path("operation_id").asText();
         assertThat(orderStatus(orderId)).isEqualTo("RETURN_REQUESTED");
 
@@ -86,10 +88,14 @@ class RefundFlowIT extends AbstractIntegrationTest {
         assertThat(fakes.callsFor(orderId)).contains("inventory.closeScope:" + orderId + ":REFUNDED");
         await("operation succeeded", () -> "SUCCEEDED".equals(operationStatus(operationId)));
         assertThat(notificationTemplates(orderId)).containsExactly("ORDER_CONFIRMED", "ORDER_COMPLETED", "ORDER_REFUNDED");
+        validateAgainstContracts(orderId);
         Response refundCase = buyerGet("/api/v1/orders/" + orderId + "/refund-case", placed.user());
         assertThat(refundCase.body().path("status").asText()).isEqualTo("SUCCEEDED");
         assertThat(refundCase.body().path("scope_finalization").path("terminal_scope_state").asText()).isEqualTo("CLOSED");
         assertThat(refundCase.body().path("lines")).hasSize(2);
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "RefundCase", refundCase.body());
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderDetail",
+                buyerGet("/api/v1/orders/" + orderId, placed.user()).body());
     }
 
     @Test
@@ -199,6 +205,9 @@ class RefundFlowIT extends AbstractIntegrationTest {
         assertThat(order(orderId).get("payment_status")).isEqualTo("PAID");
         assertThat(operationStatus(operationId)).isEqualTo("SUCCEEDED");
         assertThat(fakes.callsFor(orderId)).noneMatch(c -> c.startsWith("payment.refund"));
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "RefundCase",
+                buyerGet("/api/v1/orders/" + orderId + "/refund-case", placed.user()).body());
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "ReconciliationCase", reconciliationCase(orderId));
         // Late full completion is evidence only: it can never mint a payout.
         inspectionCompleted(orderId, new long[][]{{placed.lines().get(0), 2, 2}, {placed.lines().get(2), 3, 3}});
         assertThat(fakes.callsFor(orderId)).noneMatch(c -> c.startsWith("payment.refund"));

@@ -49,6 +49,10 @@ Order does not consume Payment initiation facts or Inventory reserve/commit/rele
 acknowledgments. Inventory publishes no reservation-result events; its reservation
 commands return durable HTTP receipts and provide same-command recovery queries/replay
 ([Inventory ADR-020](../../../../docs/inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
+The producer is implemented in [`java/services/order-service`](../../../../java/services/order-service/README.md)
+(multi-destination outbox + `debezium-connector-order-outbox.json`); its tests validate both
+facts and all five notification commands against the provider JSON Schemas.
+
 Every accepted inbound event first passes semantic identity/revision validation and is
 committed to a durable inbox plus workflow-message outbox. Only the dispatcher signals
 Temporal with a stable message ID; consumers never depend on a DB-to-Temporal dual write.

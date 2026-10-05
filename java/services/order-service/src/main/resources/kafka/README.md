@@ -29,6 +29,11 @@ curl -sS -X POST -H "Content-Type: application/json" --data @/tmp/order-connecto
 curl -sS http://localhost:8084/connectors/order-outbox-connector/status
 ```
 
+Cấu hình đã được smoke test với `debezium/connect:3.0.0.Final` + `cp-kafka:7.5.0`: row
+`INTEGRATION_FACT` tới `t.order.events` với key `order_id`, row `NOTIFICATION_COMMAND` tới
+`t.notification.transactional.v1` với key `orders/{order_id}`; value là CloudEvent nguyên
+vẹn, header `id`, `ce_type`, `order_message_class`.
+
 Receipt observer (`order-outbox-receipt-observer`) đọc lại cả hai topic và ghi
 `outbox_delivery_receipts(event_id,destination_topic)`; trimmer chỉ xoá row quá 15 ngày khi
 đã có receipt khớp chính xác và qua safety delay. Connector hoặc observer dừng thì row được

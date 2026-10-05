@@ -2,12 +2,13 @@
 doc_id: order-domain
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
@@ -198,8 +199,10 @@ customer refund and cannot consume, reopen or create the lifetime refund transac
 Buyer: `INITIATED -> WAITING_INVENTORY_SCOPE_INSPECTION ->
 WAITING_PAYMENT_REFUND_RESULT -> SUCCEEDED|FAILED`; timeout goes to
 `MANUAL_VERIFICATION_REQUIRED` and opens a `RETURN_MANUAL_VERIFICATION` reconciliation
-obligation (also opened when Inventory durably rejects scope registration). Admin pre-dispatch: `INITIATED ->
-WAITING_INVENTORY_RELEASE -> WAITING_PAYMENT_REFUND_RESULT -> SUCCEEDED|FAILED`.
+obligation (also opened when Inventory durably rejects scope registration). Admin pre-dispatch: the release wait is the Admin attempt (`PENDING`); the lifetime case is
+created after `RELEASED` and goes `INITIATED -> WAITING_PAYMENT_REFUND_RESULT ->
+SUCCEEDED|FAILED` (`WAITING_INVENTORY_RELEASE` stays in the enum but is not stored,
+ADR-020 §20).
 The two Inventory evidences are mutually exclusive. A normal terminal failure stays
 on the same lifetime case; a provider reversal after success changes `SUCCEEDED ->
 MANUAL_VERIFICATION_REQUIRED` and reopens the master financial lane. No second scope

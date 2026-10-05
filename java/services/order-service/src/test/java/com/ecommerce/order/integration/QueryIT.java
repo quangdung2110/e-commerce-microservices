@@ -1,6 +1,7 @@
 package com.ecommerce.order.integration;
 
 import com.ecommerce.order.support.AbstractIntegrationTest;
+import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,14 @@ class QueryIT extends AbstractIntegrationTest {
         assertThat(body.path("refund_case").isNull()).isTrue();
         assertThat(body.path("available_actions").path("can_cancel").asBoolean()).isTrue();
         assertThat(body.path("items").get(0).path("delivery_address").path("ward_code").asText()).isEqualTo("26734");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderDetail", body);
+        // The validator is not vacuous: a mutated body is rejected.
+        assertThat(ContractSchemas.errors(ContractSchemas.PUBLIC, "OrderDetail",
+                ((com.fasterxml.jackson.databind.node.ObjectNode) body.deepCopy()).put("buyer_tab", "BOGUS"))).isNotEmpty();
+        assertThat(ContractSchemas.errors(ContractSchemas.PUBLIC, "OrderDetail",
+                ((com.fasterxml.jackson.databind.node.ObjectNode) body.deepCopy()).put("unexpected", 1))).isNotEmpty();
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "Problem",
+                buyerGet("/api/v1/orders/" + orderId, UUID.randomUUID().toString()).body());
 
         assertThat(buyerGet("/api/v1/orders/" + orderId, UUID.randomUUID().toString()).status()).isEqualTo(404);
         assertThat(buyerGet("/api/v1/orders/0" + orderId, user).status()).isEqualTo(404);
@@ -49,6 +58,7 @@ class QueryIT extends AbstractIntegrationTest {
         assertThat(page1.status()).isEqualTo(200);
         assertThat(page1.body().path("total_orders").asLong()).isEqualTo(3);
         assertThat(page1.body().path("items")).hasSize(2);
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderSearchPage", page1.body());
         JsonNode card = page1.body().path("items").get(0);
         assertThat(card.path("order_id").asText()).isEqualTo(Long.toString(third));
         assertThat(card.path("item_count").asInt()).isEqualTo(3);
@@ -62,6 +72,7 @@ class QueryIT extends AbstractIntegrationTest {
         assertThat(page2.body().path("items")).hasSize(1);
         assertThat(page2.body().path("items").get(0).path("order_id").asText()).isEqualTo(Long.toString(first));
         assertThat(page2.body().path("next_cursor").isNull()).isTrue();
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderSearchPage", page2.body());
 
         // Accent-insensitive substring on the immutable snapshot name, including đ.
         Response accentless = call(buyer(MockMvcRequestBuilders.get("/api/v1/orders").param("q", "BINH NUOC"), user));

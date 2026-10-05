@@ -2,18 +2,19 @@
 doc_id: order-operations
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Vận hành
 
-> Thiết kế cũ mô tả worker, timeout và cleanup nhưng chưa chốt SLO, config runtime
-> hay runbook production. Các mục “cần” dưới đây là acceptance criteria, không phải
-> cam kết đã triển khai.
+> Worker, timeout, cleanup và config runtime đã được implement tại
+> `java/services/order-service` (bảng §2). SLO, ngưỡng cảnh báo và runbook production vẫn là
+> acceptance criteria chưa chốt.
 
 ## 1. SLO, SLI và health
 
@@ -31,25 +32,28 @@ fast-path nhưng không được bỏ FSM safety; Kafka/CDC/consumer/Temporal wo
 để tránh loại HTTP read instance không cần thiết. Startup probe phải chờ migration/
 config, nhưng chi tiết chưa có evidence.
 
-## 2. Cấu hình cần công bố
+## 2. Cấu hình
 
-| Nhóm property | Mục đích | Giá trị thiết kế hiện biết | Secret |
+Nguồn: `java/services/order-service/src/main/resources/application.yml`. Mọi thay đổi cần
+restart process.
+
+| Property / env | Mục đích | Default | Secret |
 |---|---|---|---|
-| PostgreSQL DSN/pool/timeouts | Source of truth/read path | Chưa chốt | Có |
-| Redis endpoint/auth | Request replay mirrors | TTL request 7 ngày; DB fallback khi Redis lỗi | Có |
-| Kafka brokers/security | Consume/produce via CDC | Topics trong `interfaces.md` | Có |
-| Consumer group IDs | Payment/Inventory/Delivery workers | Bốn group đã nêu | Không |
-| Temporal endpoint/namespace/TLS | Saga runtime | Chưa chốt | Có |
-| Temporal task queues | Route workflow/activity | Ba queue cố định | Không |
-| Activity timeout/retry | Remote/local activity | 30 giây, tối đa 3 lần | Không |
-| Checkout payment window/clock skew | Timer | Business ceiling 15 phút; cap bởi earliest hold expiry minus safety 30 giây (configurable, không được âm) | Không |
-| Checkout workflow execution timeout | Full workflow | Không dùng làm correctness boundary; continue-as-new/reconciler | Không |
-| Refund return wait | Inventory gate | 30 ngày | Không |
-| Search default window | Performance bound | 90 ngày | Không |
-| Outbox retention/schedule | CDC cleanup | Minimum 15 ngày + exact destination receipt + safety delay; ví dụ 04:00 hàng ngày | Không |
+| `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE` | PostgreSQL source of truth/read path, `READ COMMITTED` | `jdbc:postgresql://localhost:15432/order_service`, pool 24 | Có |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `ORDER_REDIS_MIRROR_ENABLED` | Request replay mirrors, timeout 200 ms, fail-open | `localhost:6379`, bật; `order.redis-mirror.ttl=7d` | Có |
+| `KAFKA_BROKERS`, `ORDER_CONSUMERS_ENABLED` | Bốn consumer group + receipt observer `order-outbox-receipt-observer` | `localhost:29092`, bật | Có (khi có security) |
+| `TEMPORAL_TARGET`, `TEMPORAL_NAMESPACE`, `TEMPORAL_ENABLED`, `TEMPORAL_WORKER_ENABLED` | Temporal client + worker ba queue `order-checkout-queue`, `order-refund-queue`, `order-financial-reconciliation-queue` | `localhost:7233`, `default`, bật | Có (TLS khi có) |
+| `order.temporal.activity-timeout`, `activity-max-attempts` | Activity start-to-close/retry burst | 30 giây, 3 lần; hết burst thì workflow sleep có backoff rồi thử lại | Không |
+| `order.checkout.payment-window`, `clock-skew-safety`, `submit-wait` | Business ceiling; safety trừ vào hold expiry; thời gian HTTP chờ `PAYMENT_READY` | 15 phút, 30 giây, 12 giây (mesh timeout 15 giây) | Không |
+| `order.refund.inspection-wait` | Inventory inspection gate trước manual verification | 30 ngày | Không |
+| `order.search.default-window` | Khoảng mặc định khi thiếu `created_from/to` | 90 ngày | Không |
+| `INVENTORY_BASE_URL`, `PROMOTION_BASE_URL`, `PAYMENT_BASE_URL`, `order.clients.*-timeout` | Remote activities; gửi `X-Service-Identity: order-service` | `:8094`, `:8085`, `:8089`; connect 2 giây, read 10 giây | Không |
+| `ORDER_FRONTEND_BASE_URL` | Dựng `order_url`/`review_url` cho notification | `http://localhost:3000` | Không |
+| `WORKERS_ENABLED`, `order.workers.*` | Dispatcher (poll 200 ms + nudge sau commit, lease 30 giây), reconciler 30 giây | bật | Không |
+| `order.outbox.retention`, `receipt-safety-delay`, `trim-cron` | Trimmer chỉ xoá khi có exact receipt | 15 ngày, 1 giờ, `0 0 4 * * *` | Không |
 
-Tên environment variable, default, restart requirement và secret manager chưa
-được xác minh; không ghi secret thật vào repository.
+Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi history vượt
+8.000 event. Không ghi secret thật vào repository.
 
 ## 3. Quan sát hệ thống
 

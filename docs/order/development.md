@@ -2,53 +2,101 @@
 doc_id: order-development
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
-evidence: []
+evidence:
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Hướng dẫn phát triển
 
-> Repository chưa có implementation Order Service để suy ra runtime, command,
-> port, package hoặc migration. File này là checklist triển khai/kiểm thử trung
-> thực với thiết kế, không bịa lệnh copy-paste chưa tồn tại.
+> Hướng dẫn build, test và chạy local cho `java/services/order-service`. Checklist kiểm thử
+> ở §5 giữ nguyên làm acceptance; bảng "Hiện trạng" cho biết phần nào đã có test tự động.
 
 ## 1. Điều kiện tiên quyết
 
-Cần chốt và ghi phiên bản ngôn ngữ/framework, build tool, formatter/linter,
-container runtime, PostgreSQL, Redis request-replay cache, Kafka/Kafka Connect/Debezium, Temporal server/
-CLI/UI và công cụ migration. Runtime phải có client/SDK hỗ trợ durable Temporal
-workflow, PostgreSQL transaction/locking và Kafka consumer.
+Java 21 + Maven 3.9 (hoặc Docker với image `maven:3.9-eclipse-temurin-21`), Docker cho
+Testcontainers, PostgreSQL 16 (`pg_trgm`), Kafka + Kafka Connect (`debezium/connect:3.0.0.Final`),
+Redis 7 (tùy chọn) và Temporal server 1.25 (`temporalio/auto-setup:1.25.2`) + UI.
+Runtime/framework đã chốt ở [ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md):
+Spring Boot 3.3, JDBC + Flyway, Spring Kafka, Temporal Java SDK 1.25.1.
+
+| Thư mục | Nội dung |
+|---|---|
+| `src/main/java/com/ecommerce/order/web` | Controller public/internal, `IdentityFilter`, problem+json |
+| `.../service` | Saga activities (`CheckoutSaga`, `RefundSaga`, `ScopeFinalization`), command/query/search, outbox/notification, reconciliation |
+| `.../workflow` | Bốn Temporal workflow + `OrderActivities` |
+| `.../messaging` | Payment/Inventory/Delivery intake (durable inbox), Kafka listeners, receipt observer |
+| `.../worker` | Workflow dispatcher (SignalWithStart), closed-target resolver, reconcilers, trimmer |
+| `.../store` | SQL tường minh, row lock/CAS |
+| `src/main/resources/db/migration` | `V1__order_baseline.sql` |
+| `src/main/resources/kafka` | Debezium connector multi-destination outbox |
 
 ## 2. Chạy local và dependency
 
-Khi implementation được thêm, tài liệu phải cung cấp command chính thức để cài
-dependency, start PostgreSQL/Redis/Kafka/Connect/Temporal, chạy migration, start
-HTTP server, bốn Kafka consumer, dispatch/reconciliation workers và Temporal worker,
-kiểm tra health, rồi cleanup an toàn.
+Stack compose ở root đã có `temporal`, `temporal-ui` (http://localhost:8233) và
+`order-service` (http://localhost:8095, Traefik route `/api/v1/orders/**`,
+`/api/v1/admin/orders/**`, `/api/v1/order-operations/**`):
 
-Local stack cần topic `t.order.events`, `t.payment.events.v2`, `t.inventory.order.events.v1`,
-`t.delivery.order.events.v1`, `t.notification.transactional.v1`, bốn consumer group,
-workflow start/message dispatcher, receipt observer và ba Temporal task queue. Inventory/Promotion/Payment có thể
-mock bằng contract fixture có idempotency/retry behavior; không mock Temporal bằng
-thread sleep cho test workflow.
+```bash
+docker compose up -d postgres redis zookeeper kafka kafka-connect temporal temporal-ui
+```
+
+Volume Postgres đã khởi tạo trước khi có Order thì `init-db.sh` không chạy lại; tạo DB một lần:
+
+```bash
+docker compose exec postgres psql -U postgres -c "CREATE DATABASE order_service"
+```
+
+```bash
+docker compose up -d --build order-service inventory-service promotion-service
+```
+
+Payment chạy theo profile riêng (`docker compose --profile payment up -d payment-service`).
+Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout và Delivery
+chưa có runtime: gọi `POST /internal/v1/checkout-order-submissions` với
+`X-Service-Identity: checkout-service` trên service network/cổng 8095, và phát Delivery
+fact `com.ecommerce.delivery.order-line.delivered.v1` thủ công lên
+`t.delivery.order.events.v1` khi cần thử auto-complete.
 
 ## 3. Cấu hình local
 
-Cần `.env.example` hoặc profile local không chứa secret thật. Bảng cấu hình phải
-bao phủ DSN/pool, Redis request-replay cache, Kafka security/group, Temporal namespace/task queue/TLS,
-timeouts/retry, timer 15 phút, refund wait 30 ngày, request-mirror TTL, search window và
-outbox retention. Stripe secret/client secret thuộc Payment, không được commit/log
-ở Order.
+Toàn bộ property/env và default nằm ở [operations.md §2](./operations.md#2-cấu-hình).
+Không có secret Stripe trong Order. Tắt thành phần khi debug: `TEMPORAL_WORKER_ENABLED=false`,
+`ORDER_CONSUMERS_ENABLED=false`, `WORKERS_ENABLED=false`, `ORDER_REDIS_MIRROR_ENABLED=false`.
 
-## 4. Build, lint và format
+## 4. Build, lint và test
 
-Command chuẩn phải trùng CI và có tiêu chí pass rõ ràng. Ngoài compile/lint/format,
-CI cần validate migration, deterministic Temporal workflow, event serialization,
-SQL query plan smoke test và Markdown links/frontmatter. Chưa có command cụ thể để
-ghi tại đây.
+Build (không cần JDK cài sẵn):
+
+```bash
+docker run --rm -v "$PWD/java/services/order-service:/app" -v order-mvn-repo:/root/.m2 -w /app maven:3.9-eclipse-temurin-21 mvn -B -DskipTests package
+```
+
+Toàn bộ test (unit + integration Testcontainers + Temporal in-memory; mount repo root để
+contract test đọc `contracts/`; trên Docker Engine mới cần ghim API version):
+
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/repo" -v order-mvn-repo:/root/.m2 --add-host=host.docker.internal:host-gateway -e DOCKER_HOST=unix:///var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true -w /repo/java/services/order-service maven:3.9-eclipse-temurin-21 mvn -B test -DargLine=-Dapi.version=1.44
+```
+
+Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Surefire chạy cả
+`*Test` lẫn `*IT`.
+
+### Hiện trạng kiểm thử tự động
+
+| Nhóm | Test |
+|---|---|
+| Domain | `DomainRulesTest` (largest remainder, normalizer `đ`, tab/ui status, cancel reason mapping, JCS), `CheckoutRulesTest` (hash, invariants), `HttpRemoteTest` (classify unknown/rejected) |
+| Checkout/payment | `CheckoutFlowIT`: happy path tới `COMPLETED`, replay/409, Promotion `409 PROMOTION_RECALCULATION_NEEDED`, Inventory `REJECT_ALL`, deadline cancel + capture-after-terminal, Buyer cancel idempotent, capture thắng cancel, FAILED retry attempt, duplicate/stale fact, proof trước dispatch, post-capture repair + manual fulfilment |
+| Refund | `RefundFlowIT`: return một lần + refund đúng một lần + close `REFUNDED`, scope sai/chưa giao, refund fail + external settlement, reversal sau success, timeout 30 ngày + no-payout close-incomplete, Admin pre-dispatch reject/accept, finalization `RECOVERY_REQUIRED` rồi hoàn tất |
+| Read/search | `QueryIT`: owner/404/admin/403/401, card/keyset/`q` không dấu |
+| Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
+
+Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
+E2E tự động, load test.
 
 ## 5. Kiểm thử
 
@@ -145,15 +193,18 @@ response-loss/crash recovery uses the persisted original ID/body, retry exhausti
 durable repair, and historical receipts are distinguished from current reservation state.
 Retain duplicate/reordered dispatch and inspection consumer tests and the refund gate.
 
-Order đã có public/internal OpenAPI v1 ở `contracts/http/order`; AsyncAPI v1 mô tả
-hai outbound event có consumer và ba inbound provider channels. Cần pin generator/linter version, output path, generated-code
-policy và CI drift check. Markdown example không phải source để generate model.
+Order không generate code từ contract: DTO request là record viết tay (bean validation +
+`fail-on-unknown-properties`), response được dựng tường minh và **được kiểm bằng test** với
+chính schema OpenAPI/JSON Schema trong `contracts/` (`ContractSchemas`). Đổi contract mà quên
+code sẽ làm integration test đỏ. Chưa có CI drift check tự động ngoài các test này.
 
 ## 7. Database migration
 
-Migration đầu tiên phải tạo schema/tables/FK/check/index/view/extensions trong
-`data.md`, gồm `paid_at`, `completed_at`, `cancelled_at`, `refunded_at` và manual
-verification state.
+`V1__order_baseline.sql` tạo toàn bộ schema/table/FK/CHECK/index/view/extension của
+`data.md` (kể cả `pg_trgm`, `v_orders_buyer_tab`, inbox, dispatch/message, checkpoint,
+reconciliation, ledger/outbox/receipt). Flyway chạy khi service khởi động. Repository không
+có dữ liệu Order lịch sử nên các bước backfill dưới đây chỉ áp dụng nếu sau này import từ
+hệ thống cũ:
 Migration phải add/backfill durable inbox, workflow dispatch/message, operation, saga
 checkpoint, numbered payment attempt identity/version, refund evidence, reconciliation
 case/obligation/evidence/decision and admin attempt tables before retiring historical
@@ -164,9 +215,9 @@ Inventory evidence for historical Buyer terminal cases without reissuing Payment
 inventing command receipts. Version the refund workflow change for replay and register
 `OrderRefundScopeFinalizationWorkflow` on the existing refund queue before dispatch.
 
-Cần command tạo/up/down/verify migration, seed order đa kho và rollback policy.
-Destructive down migration không được xóa order production. Schema test phải đảm
-bảo query design không tham chiếu cột thiếu.
+Migration mới là file `V{n}__*.sql` additive; không có down migration và không xoá order
+production. Integration test chạy Flyway trên PostgreSQL thật nên query tham chiếu cột thiếu
+sẽ fail ngay. Seed order đa kho: `Fixtures.defaultLines()` trong test.
 
 ## 8. Test data và fixture
 
@@ -184,8 +235,16 @@ command checkpoint, row lock/state/outbox in read-only transaction; kiểm tra K
 và request-replay TTL mà không dump PII.
 Không update FSM trực tiếp để “gỡ kẹt” vì sẽ bỏ sequence/outbox/compensation.
 
-## 10. Lỗi local thường gặp cần ghi khi có code
+## 10. Lỗi local thường gặp
 
+- `order_service` chưa tồn tại vì volume Postgres tạo trước khi `init-db.sh` có Order: tạo
+  thủ công (§2).
+- Testcontainers báo "Could not find a valid Docker environment" khi chạy trong container
+  Maven: thiếu `-Dapi.version=1.44` hoặc `TESTCONTAINERS_HOST_OVERRIDE` (§4).
+- Submission trả `503 SUBMISSION_IN_PROGRESS` lặp lại: Inventory/Promotion/Payment không tới
+  được; xem log `outcome unknown ... same command will be replayed` và Temporal UI.
+- Payload Temporal phải là record thuần: getter dạng `isX()` cần `@JsonIgnore`, nếu không
+  Jackson tạo field lạ và workflow task fail khi deserialize.
 - Extension `pg_trgm` chưa bật, application normalizer lệch version hoặc trigram index
   trên `snapshot_name_search` không dùng được.
 - Temporal worker đăng ký sai task queue/activity hoặc workflow nondeterministic.
@@ -200,4 +259,4 @@ Một thay đổi chỉ hoàn tất khi build/lint/test tương ứng pass; migr
 được kiểm tra; FSM/state-outbox atomicity không bị phá; workflow replay-compatible;
 idempotency/race/failure path có test; interface/data/workflow/operations docs được
 cập nhật; breaking decision có ADR mới; PII/secret không log; evidence/frontmatter
-được cập nhật trước khi nâng trạng thái khỏi `proposed`.
+được cập nhật trước khi nâng trạng thái lên `verified`.

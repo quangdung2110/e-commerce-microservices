@@ -8,7 +8,7 @@ info:
     only PAID for Cart cleanup and COMPLETED for Review eligibility, plus
     NOTIFICATION_REQUESTED commands on the Notification-owned transactional lane. Delivery is
     at-least-once; consumers deduplicate by CloudEvents id.
-x-adoption-status: proposed
+x-adoption-status: implemented
 x-contract-scope: order-integration-events
 defaultContentType: application/cloudevents+json
 servers:

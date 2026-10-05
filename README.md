@@ -90,7 +90,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 |---------|-----------|
 | **Auth Service** | JWT + Redis Denylist, JWKS, token rotation |
 | **Product Service** | Catalog management, state machine, caching |
-| **Order Service** | Temporal Saga, CQRS + Elasticsearch, cold data archiving |
+| **Order Service** | Temporal checkout/refund Saga, PostgreSQL read/search, durable inbox + multi-destination outbox; implemented in `java/services/order-service` ([docs/order](docs/order/README.md)) |
 | **Checkout Service** | Idempotency, security analysis, caching |
 | **Payment Service** | Stripe direct, payment/refund state machine, Outbox CDC và financial facts AsyncAPI v2 |
 | **Inventory Service** | PostgreSQL authoritative stock, exact-plan whole-order reservation, returns/quarantine, transactional outbox + commit-ordered export ([docs/inventory](docs/inventory/README.md)) |

@@ -186,7 +186,7 @@ interactions:
     provider: order-service
     consumers: [cart-service]
     contract: events/order/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       ORDER_PAID is a minimal CloudEvent containing canonical string order_id,
       user_id and unique purchased sku_ids; Cart removes those SKUs idempotently.
@@ -196,7 +196,7 @@ interactions:
     provider: order-service
     consumers: [review-service]
     contract: events/order/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       ORDER_COMPLETED carries the immutable product/SKU/variant snapshot Review needs
       to grant one entitlement per purchased SKU without a synchronous Order lookup.
@@ -206,7 +206,7 @@ interactions:
     provider: order-service
     consumers: [checkout-service]
     contract: http/order/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Checkout submits one immutable snapshot, including Product-owned category_ids, with Idempotency-Key equal to checkout_token and receives freshly relayed Payment client data.
 
   - id: gateway-manages-orders
@@ -214,7 +214,7 @@ interactions:
     provider: order-service
     consumers: [api-gateway]
     contract: http/order/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Buyer and Admin reads, lifecycle commands, FAILED-only payment-attempt request before the immutable deadline/while resource holds remain accepted, and operation polling use trusted Gateway identity.
 
   - id: order-initiates-payment
@@ -222,7 +222,7 @@ interactions:
     provider: payment-service
     consumers: [order-service]
     contract: http/payment/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction. EXPIRED/CANCELED attempts are not retryable; success after terminal non-capture is an Order reconciliation obligation, not a revived order.
 
   - id: stripe-delivers-payment-webhook
@@ -254,7 +254,7 @@ interactions:
     provider: inventory-service
     consumers: [order-service]
     contract: http/inventory/workflow/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Order Temporal Saga exclusively owns Reserve/Commit/Release, selected Refund
       Scope, and automatic admin pre-dispatch refund decisions. Inventory atomically
@@ -307,7 +307,7 @@ interactions:
     provider: promotion-service
     consumers: [order-service]
     contract: http/promotion/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Order Temporal owns reserve, pre-payment cancel and confirm only; technical cancellation is denied to Order and reserved for the separately capability-bound legacy migrator.
 
   - id: legacy-migrator-technical-cancels-promotion-allocation
@@ -323,7 +323,7 @@ interactions:
     provider: order-service
     consumers: [finance-ops, accounting-ops]
     contract: http/order/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       A Finance or Accounting operator records an evidence-backed, optimistic-concurrency
       decision for an existing Order reconciliation case. CLOSE_RETURN_WITHOUT_REFUND
@@ -426,7 +426,7 @@ interactions:
     provider: order-service
     consumers: [notification-service]
     contract: events/notification/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Order publishes NOTIFICATION_REQUESTED on the Notification-owned lane
       t.notification.transactional.v1 for five templates (ORDER_CONFIRMED,

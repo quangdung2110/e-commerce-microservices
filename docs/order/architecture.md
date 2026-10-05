@@ -2,19 +2,21 @@
 doc_id: order-architecture
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Kiến trúc
 
-> File này mô tả kiến trúc mục tiêu được chuyển từ thiết kế cũ. Chưa có source
-> path hoặc deployment config để đánh dấu `implemented`/`verified`.
+> Kiến trúc này đã được implement tại `java/services/order-service` (Java 21, Spring Boot
+> 3.3, Temporal Java SDK; [ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
+> Chưa có Kubernetes/mesh manifest để đánh dấu `verified`.
 
 ## 1. Bối cảnh kiến trúc
 
@@ -202,7 +204,8 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
 
 ## 6. Mô hình triển khai
 
-Thiết kế yêu cầu các process/runtime logic sau, nhưng chưa chốt chạy chung hay tách pod:
+Mặc định một process chạy tất cả vai trò dưới đây; cờ `TEMPORAL_WORKER_ENABLED`,
+`ORDER_CONSUMERS_ENABLED`, `WORKERS_ENABLED` cho phép tách pod theo vai trò:
 
 - Order HTTP/query server.
 - Payment Kafka consumer group `order-payment-consumer`.

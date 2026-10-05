@@ -1,6 +1,7 @@
 package com.ecommerce.order.integration;
 
 import com.ecommerce.order.support.AbstractIntegrationTest;
+import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
 import com.ecommerce.order.web.dto.CheckoutDtos.CheckoutOrderSubmissionRequest;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,6 +42,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(payment.path("client_secret").asText()).startsWith("cs_test_");
         assertThat(created.body().path("order_status").asText()).isEqualTo("PENDING_PAYMENT");
         long orderId = created.body().path("order_id").asLong();
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "CheckoutOrderReady", created.body());
 
         // Replay with the same key/body returns 200 and the same order; another body is 409.
         Response replay = submit(request);
@@ -50,6 +52,10 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 "promo-other"));
         assertThat(conflict.status()).isEqualTo(409);
         assertThat(conflict.body().path("code").asText()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "Problem", conflict.body());
+        Response recovery = call(MockMvcRequestBuilders.get("/internal/v1/checkout-order-submissions/"
+                + request.checkoutToken()).header("X-Service-Identity", "checkout-service"));
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "CheckoutOrderSubmissionStatus", recovery.body());
 
         Map<String, Object> order = order(orderId);
         assertThat(order.get("status")).isEqualTo("PENDING_PAYMENT");
@@ -74,6 +80,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         dispatchAll(orderId);
         Response detail = buyerGet("/api/v1/orders/" + orderId, user);
         assertThat(detail.body().path("buyer_tab").asText()).isEqualTo("TO_RECEIVE");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderDetail", detail.body());
         assertThat(orderStatus(orderId)).isEqualTo("PROCESSING");
         deliverAll(orderId);
         awaitStatus(orderId, "COMPLETED");
@@ -97,6 +104,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(response.body().path("code").asText()).isEqualTo("PROMOTION_RECALCULATION_NEEDED");
         assertThat(response.body().path("failed_promotion_id").asText()).isEqualTo(promotion);
         assertThat(response.body().path("failed_reason").asText()).isEqualTo("BUDGET_EXHAUSTED");
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "PromotionRecalculationProblem", response.body());
         Response status = call(MockMvcRequestBuilders.get("/internal/v1/checkout-order-submissions/" + request.checkoutToken())
                 .header("X-Service-Identity", "checkout-service"));
         assertThat(status.body().path("state").asText()).isEqualTo("RECALCULATION_REQUIRED");
@@ -131,6 +139,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(fakes.callsFor(orderId)).contains("payment.cancel:" + orderId + ":PAYMENT_TIMEOUT",
                 "inventory.release:" + orderId + ":RESERVATION_EXPIRED");
         assertThat(notificationTemplates(orderId)).containsExactly("ORDER_CANCELLED");
+        validateAgainstContracts(orderId);
 
         // A capture asserted after terminal non-capture is a reconciliation anomaly only.
         String txn = activeTxn(orderId);
@@ -154,6 +163,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 .header("Idempotency-Key", key).contentType("application/json").content(mapper.writeValueAsString(body)));
         assertThat(first.status()).isEqualTo(202);
         assertThat(first.raw().getResponse().getHeader("Location")).startsWith("/api/v1/order-operations/");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OperationAccepted", first.body());
         Response replay = call(buyer(MockMvcRequestBuilders.post("/api/v1/orders/" + orderId + "/cancellation-requests"), user)
                 .header("Idempotency-Key", key).contentType("application/json").content(mapper.writeValueAsString(body)));
         assertThat(replay.body().path("operation_id")).isEqualTo(first.body().path("operation_id"));
@@ -168,6 +178,8 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 "inventory.release:" + orderId + ":BUYER_CANCELLED");
         Response operation = buyerGet("/api/v1/order-operations/" + operationId, user);
         assertThat(operation.body().path("status").asText()).isEqualTo("SUCCEEDED");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderOperation", operation.body());
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "OrderDetail", buyerGet("/api/v1/orders/" + orderId, user).body());
     }
 
     @Test
@@ -212,13 +224,17 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(attempt.status()).isEqualTo(200);
         assertThat(attempt.body().path("status").asText()).isEqualTo("PENDING");
         assertThat(attempt.body().path("client_secret").asText()).startsWith("cs_test_");
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "PaymentAttempt", attempt.body());
         Response old = buyerGet("/api/v1/orders/" + orderId + "/payment-attempts/1", user);
         assertThat(old.body().path("status").asText()).isEqualTo("FAILED");
         assertThat(old.body().path("client_secret").isNull()).isTrue();
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "PaymentAttempt", old.body());
 
         paymentSucceeded(orderId);
         awaitStatus(orderId, "PROCESSING");
         assertThat(order(orderId).get("captured_payment_transaction_id")).isNotEqualTo(firstTxn);
+        assertThat(notificationTemplates(orderId)).containsExactly("ORDER_PAYMENT_FAILED", "ORDER_CONFIRMED");
+        validateAgainstContracts(orderId);
     }
 
     @Test
@@ -274,6 +290,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         Response reconciliation = call(MockMvcRequestBuilders.get("/internal/v1/orders/" + orderId
                 + "/financial-reconciliation-case").header("X-Service-Identity", "finance-ops"));
         assertThat(reconciliation.status()).isEqualTo(200);
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "ReconciliationCase", reconciliation.body());
         JsonNode obligation = reconciliation.body().path("obligations").get(0);
         assertThat(obligation.path("obligation_type").asText()).isEqualTo("POST_CAPTURE_INVENTORY_REPAIR");
         JsonNode evidence = obligation.path("evidence").get(0);
@@ -291,6 +308,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 .contentType("application/json").content(mapper.writeValueAsString(body)));
         assertThat(decided.status()).as(String.valueOf(decided.body())).isEqualTo(202);
         assertThat(decided.body().path("obligation_status").asText()).isEqualTo("CLOSED");
+        ContractSchemas.assertComponent(ContractSchemas.INTERNAL, "ReconciliationDecisionAccepted", decided.body());
         assertThat(orderStatus(orderId)).isEqualTo("PROCESSING");
         // Same decision replays; a stale revision with a new decision ID is 409.
         Response replay = call(MockMvcRequestBuilders.post("/internal/v1/orders/" + orderId
@@ -298,27 +316,5 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 .header("X-Actor-Id", UUID.randomUUID().toString()).header("Idempotency-Key", decision)
                 .contentType("application/json").content(mapper.writeValueAsString(body)));
         assertThat(replay.status()).isEqualTo(202);
-    }
-
-    private void validateAgainstContracts(long orderId) throws Exception {
-        Path contracts = Paths.get("..", "..", "..", "contracts").toAbsolutePath().normalize();
-        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isDirectory(contracts),
-                "contracts/ is present only inside the repository");
-        String prefix = "https://contracts.ecommerce.local/";
-        JsonSchemaFactory factory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012, builder ->
-                builder.schemaMappers(m -> m.mapPrefix(prefix, contracts.toUri().toString())));
-        Map<String, String> schemas = Map.of(
-                "com.ecommerce.order.paid.v1", "events/order/v1/schemas/order-paid.schema.json",
-                "com.ecommerce.order.completed.v1", "events/order/v1/schemas/order-completed.schema.json",
-                "com.ecommerce.notification.requested.v1",
-                "events/notification/v1/schemas/notification-requested.schema.json");
-        List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT event_type, payload::text AS payload FROM outbox_events WHERE aggregate_id = ?", Long.toString(orderId));
-        assertThat(rows).hasSizeGreaterThanOrEqualTo(4);
-        for (Map<String, Object> row : rows) {
-            JsonNode event = mapper.readTree((String) row.get("payload"));
-            JsonSchema schema = factory.getSchema(SchemaLocation.of(prefix + schemas.get((String) row.get("event_type"))));
-            assertThat(schema.validate(event)).as(row.get("event_type") + " " + event).isEmpty();
-        }
     }
 }

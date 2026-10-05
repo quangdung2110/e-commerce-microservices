@@ -2,7 +2,7 @@
 doc_id: order-interfaces
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
@@ -15,6 +15,7 @@ evidence:
   - contracts/http/payment/v1/openapi.yaml
   - contracts/events/payment/v2/asyncapi.yaml
   - contracts/events/delivery/v1/asyncapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
@@ -39,7 +40,7 @@ verified_against_commit: null
 | `t.inventory.order.events.v1` | Inbound | Kafka | Inventory | Order | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | `t.delivery.order.events.v1` | Inbound | Kafka | Delivery | Order | [Delivery AsyncAPI v1](../../contracts/events/delivery/v1/asyncapi.yaml); proof ID + immutable record digest, no raw PII |
 | Financial reconciliation decision | Inbound | Internal HTTP | Order | Finance/Ops | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
-| Temporal workflows/signals | Internal | Temporal | Order workers | Order adapters/consumers | proposed |
+| Temporal workflows/signals | Internal | Temporal | Order workers | Order adapters/consumers | implemented (`java/services/order-service`) |
 
 ## 2. HTTP API đầu vào
 
@@ -109,7 +110,8 @@ Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inve
 `REJECT_ALL` trả `409 INVENTORY_RESERVATION_REJECTED`; Payment từ chối initiate bền vững
 trả `409 PAYMENT_INITIATION_REJECTED` (cả hai terminal cho token, recovery read
 `state=FAILED`). Timeout hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body.
-Trạng thái submission được lưu trong `order_checkout_submissions`. Recovery read dùng
+Trạng thái submission được lưu trong `order_checkout_submissions`. `final_amount` phải
+≥ 1 VND vì Payment chỉ nhận amount dương; `0` là `422 INVALID_CHECKOUT_SNAPSHOT`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
 Create replay và attach chỉ dựa trên unique `checkout_token`, fixed WorkflowID và
 durable workflow dispatch/checkpoint; endpoint này không dùng Redis create mirror.
@@ -153,7 +155,12 @@ settlement. It is not offered for Inventory/Promotion forward repair or refund-s
 finalization. It never changes Payment/provider facts or revives `CANCELLED`. For an
 existing `CUSTOMER_PAYOUT_REMEDIATION`/`REFUND_REVERSAL`, evidence of the exact full
 locked payout may set the case `EXTERNALLY_REMEDIATED` and converge the open master lane
-to `REFUNDED`; this path emits no `ORDER_REFUNDED` command/fact.
+to `REFUNDED`; this path emits no `ORDER_REFUNDED` command/fact. That decision must carry
+`external_settlement {amount, customer_user_id, settled_at, settlement_reference}`; Order
+checks the exact locked VND amount and buyer, reads the latest Payment state and uses
+`settled_at` as `refunded_at` (ADR-020 §16). Evidence references follow ADR-020 §21:
+`checkpoint/{command_id}` with a frozen digest, `refund-scope-query/...` re-queried by Order,
+or appended `PAYMENT_RECONCILIATION` settlement records; anything else is `422`.
 
 ## 3. Remote activities do Order gọi
 
@@ -426,14 +433,13 @@ timer never triggers closure by itself. See
 - Chỉ thêm optional field là compatible; đổi CloudEvents type, Kafka key, business
   meaning hoặc field bắt buộc cần event version mới.
 - Mỗi event có unique ID; consumer xử lý at-least-once và duplicate.
-- Public và internal Order HTTP surface đã có machine-readable OpenAPI v1 ở trạng
-  thái `proposed`; hai outbound event, năm notification request và receive surface có
-  machine-readable AsyncAPI v1. Không đánh dấu `verified` trước khi Order producer/provider
-  test tồn tại.
-- Notification field sources và deterministic fallbacks đã được khóa ở §5.1; contract
-  test phải validate cả năm template trước rollout. Không còn runtime enrichment call.
-- Order proposed HTTP v1 adds `CLOSED_INCOMPLETE`/`EXTERNALLY_REMEDIATED`, optional
-  `scope_finalization`, and conditional no-payout/external-settlement semantics. Existing
-  generated clients must support these enums before rollout; no implementation/adoption
-  status is promoted by this edit.
+- Public và internal Order HTTP surface (OpenAPI v1) cùng AsyncAPI v1 ở trạng thái
+  `implemented`: provider test validate response HTTP với schema OpenAPI và mọi outbox
+  payload với JSON Schema. Chưa `verified` vì chưa có consumer contract test.
+- Notification field sources và deterministic fallbacks đã được khóa ở §5.1; provider test
+  validate command của cả năm template theo `notification-requested.schema.json`. Không còn
+  runtime enrichment call.
+- Order HTTP v1 có `CLOSED_INCOMPLETE`/`EXTERNALLY_REMEDIATED`, optional
+  `scope_finalization`, conditional no-payout/external-settlement semantics, `variant_name`,
+  line cap 100 và `X-Actor-Id` (ADR-020). Generated clients phải hỗ trợ các enum này.
   Inventory close/cancel wire shapes, guards and reason enums are unchanged.

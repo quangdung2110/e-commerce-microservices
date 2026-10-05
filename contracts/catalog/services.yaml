@@ -75,9 +75,9 @@ services:
 
   - id: order-service
     bounded_context: order
-    runtime: undecided
-    status: documented
-    contract_adoption: not_started
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
     docs: docs/order/README.md
 
   - id: payment-service

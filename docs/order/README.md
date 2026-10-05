@@ -2,28 +2,36 @@
 doc_id: order-overview
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
+  - contracts/events/order/v1/asyncapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
+  - java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql
+  - java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json
+  - java/services/order-service/src/test/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Tổng quan dịch vụ
 
-> Đây là điểm bắt đầu để hiểu thiết kế mục tiêu của Order Service. Bộ tài liệu
-> được tái cấu trúc từ các tài liệu thiết kế Order cũ; chưa được xác minh với một
-> implementation hiện hữu. Các contract có liên kết bên dưới là target đồng bộ liên service.
+> Đây là điểm bắt đầu để hiểu thiết kế của Order Service. Thiết kế đã được implement tại
+> [`java/services/order-service`](../../java/services/order-service/README.md); các điểm còn mở
+> trước khi code được chốt ở [ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md).
+> Các contract có liên kết bên dưới là nguồn wire-level đồng bộ liên service.
 
 ## 1. Trạng thái dịch vụ
 
-Order Service đang ở mức thiết kế `proposed`, phạm vi `target`. Chưa tìm thấy mã
-nguồn Order Service, migration hay cấu hình triển khai trong repository để chứng
-minh runtime, framework, port hoặc hành vi production. Thiết kế chọn PostgreSQL,
-Redis, Kafka, Debezium/Kafka Connect và Temporal, nhưng các lựa chọn này chỉ được
-xem là đã triển khai sau khi có evidence tương ứng.
+| Khía cạnh | Trạng thái |
+|---|---|
+| Thiết kế | `implemented`, scope `target`; tài liệu và contracts đồng bộ với code theo ADR-020 |
+| Implementation | Java 21 + Spring Boot 3.3, JDBC + Flyway (`V1__order_baseline.sql`), Spring Kafka, Temporal Java SDK 1.25 tại `java/services/order-service`; bốn workflow, durable inbox/dispatch/message/checkpoint, multi-destination outbox, receipt observer/trimmer, Redis request mirror |
+| Kiểm chứng | Unit test domain + integration test PostgreSQL (Testcontainers) + Temporal in-memory cho checkout, timeout/cancel/race, retry attempt, fulfilment/delivery, return/refund/reversal, no-payout, external remediation, Admin pre-dispatch, scope recovery và search; response HTTP validate với OpenAPI, outbox validate với JSON Schema; smoke test jar với Postgres + Temporal thật và Debezium connector với Kafka thật |
+| Local runtime | `docker compose up -d order-service` (kèm `temporal`, `temporal-ui`); xem [development.md](./development.md) |
+| Contract | Order HTTP/AsyncAPI `x-adoption-status: implemented`; chưa `verified` vì chưa có consumer contract test |
 
 Mức áp dụng contract liên service chưa được đánh giá trong lần tái cấu trúc này.
 Contract hiện có, nếu có, không được dùng để âm thầm thay đổi đặc điểm của thiết
@@ -117,7 +125,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Inbound | Inventory | Kafka | Physical line-dispatch và selected-scope inspection completion | Bắt buộc | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Inbound | Delivery | Kafka | Verified per-line delivery proof | Bắt buộc để auto-complete/return guard | [Delivery events v1](../../contracts/events/delivery/v1/asyncapi.yaml) |
 | Outbound | Inventory | HTTP activity | Reserve exact plan/release/commit, selected scope, atomic pre-dispatch release | Bắt buộc | [Inventory workflow v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
-| Outbound | Promotion | HTTP activity | Reserve/cancel runtime and durable confirm; Order has no technical-cancellation capability | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — proposed |
+| Outbound | Promotion | HTTP activity | Reserve/cancel runtime and durable confirm; Order has no technical-cancellation capability | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — implemented |
 | Outbound | Payment | HTTP activity | Tạo PaymentIntent attempt, cancel và refund captured transaction | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Outbound | Kafka | CDC | Hai Order facts cho Cart/Review và năm Notification commands | Bắt buộc | Order/Notification AsyncAPI v1 |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |
@@ -177,23 +185,22 @@ Inventory Kafka contract contains only dispatch and selected-scope inspection co
 | [Luồng nghiệp vụ](./workflows.md) | Happy path, timeout, retry, race và recovery | Khi sửa use case/saga |
 | [Dữ liệu](./data.md) | Logical schema, index, transaction, Redis và lifecycle | Khi sửa persistence/search |
 | [Vận hành](./operations.md) | Worker, failure mode, alert và runbook | Khi deploy hoặc xử lý sự cố |
-| [Phát triển](./development.md) | Checklist build/test/migration khi có code | Khi bắt đầu implementation |
+| [Phát triển](./development.md) | Build/test/migration/chạy local của `java/services/order-service` | Khi sửa code hoặc chạy local |
 | [Quyết định](./decisions/README.md) | ADR bảo toàn lý do của thiết kế cũ | Khi đánh giá trade-off |
 
 ## 9. Khoảng trống đã biết
 
-- Chưa có implementation, migration Order, cấu hình Temporal,
-  Kafka Connect, Redis hoặc deployment để xác minh.
-- OpenAPI public/internal v1 đã được chốt ở mức `proposed`; chưa có provider/consumer
-  contract test hoặc implementation evidence để nâng trạng thái.
-- AsyncAPI v1 đã chốt chỉ phát `com.ecommerce.order.paid.v1` cho Cart và `com.ecommerce.order.completed.v1`
-  cho Review; chưa có Order producer/provider test để nâng adoption status.
+- Checkout Service và Delivery Service chưa có runtime, nên chưa chạy được E2E qua Gateway
+  thật; luồng được kiểm bằng contract fake trong test tích hợp.
+- Contracts mới ở mức `implemented`: chưa có consumer contract test (Checkout, frontend,
+  Finance/Ops, Cart/Review/Notification với producer thật); Debezium mới smoke test thủ công.
+- Chưa có Temporal replay test trên history production, Kubernetes manifest, phân pod
+  HTTP/consumer/worker hay mesh `AuthorizationPolicy` thật.
 - Analytics chưa có runtime consumer, nên không được coi là consumer của Order event cho
   đến khi interaction/code/contract được đăng ký. Notification **không** consume Order fact;
   Order gửi request `com.ecommerce.notification.requested.v1` cho 5 template `ORDER_*`
-  (interaction `order-requests-notifications`, xem `interfaces.md` §5.1) — chưa có runtime.
+  (interaction `order-requests-notifications`, xem `interfaces.md` §5.1).
 - Chưa có SLO, capacity benchmark, retention đầy đủ cho order data, backup/restore,
   schema rollout hoặc runbook tự động hóa.
-- Các chính sách wire/business không còn để mở; implementation vẫn phải cung cấp
-  migration, provider/consumer contract tests, Temporal replay tests và operational
-  evidence trước khi nâng status khỏi `proposed`.
+- Các chính sách wire/business không còn để mở; trước production vẫn cần consumer
+  contract tests, Temporal replay tests và operational evidence (dashboard, alert, load).

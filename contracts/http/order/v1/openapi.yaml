@@ -10,7 +10,7 @@ info:
     PostgreSQL is the read source of truth. Cancellation, return, and Admin
     pre-dispatch refund commands are asynchronous and expose an operation resource.
     Order and line identifiers are canonical unpadded base-10 strings on the wire.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://localhost:8080
     description: Local development

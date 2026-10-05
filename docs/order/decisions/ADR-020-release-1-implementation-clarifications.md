@@ -119,6 +119,41 @@ và Payment.
 15. **Search normalizer** = NFKD, bỏ combining marks, fold `đ/Đ -> d` (NFKD không tách
     `đ`), lowercase `Locale.ROOT`. Fold này là một phần của version pinned của normalizer.
 
+### Bổ sung khi implement (cùng ngày)
+
+16. **`external_settlement`.** `CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION` trên
+    `CUSTOMER_PAYOUT_REMEDIATION`/`REFUND_REVERSAL` bắt buộc
+    `external_settlement {amount, customer_user_id, settled_at, settlement_reference}`;
+    contract cũ không có trường nào để Order kiểm "đúng customer, đúng VND, đủ locked
+    amount" và lấy `refunded_at = settled_at` như ADR-019 yêu cầu. Order còn gọi Payment
+    `GET /v1/payments/{captured}`; refund provider `SUCCESS` thắng race thì decision bị `409`.
+17. **`final_amount ≥ 1 VND`.** Payment chỉ tạo attempt với amount dương, nên submission có
+    `final_amount = 0` bị `422 INVALID_CHECKOUT_SNAPSHOT` thay vì tạo order không thể trả.
+18. **Unique bridge theo order.** `order_item_lines` unique `(order_id,
+    allocation_plan_line_reference)` thay cho `(inventory_allocation_plan_id, line_reference)`:
+    Inventory không lưu plan, nên cùng `allocation_plan_id` có thể được Checkout gửi lại với
+    token mới sau khi submission trước thất bại.
+19. **Request identity của payment attempt** nằm trên `order_operations` (unique theo
+    principal/type/key + digest có `order_id`); `order_payment_attempts.operation_id` trỏ tới
+    operation đã tạo attempt. Bảng attempt không lặp các cột request.
+20. **Admin case.** Lifetime case Admin chỉ được tạo sau receipt `RELEASED`, nên trạng thái
+    chờ release được biểu diễn bởi `order_admin_refund_attempts.status=PENDING`; case Admin
+    đi `INITIATED -> WAITING_PAYMENT_REFUND_RESULT -> SUCCEEDED|FAILED`.
+    `WAITING_INVENTORY_RELEASE` giữ trong enum để tương thích nhưng không được ghi.
+21. **Evidence của decision.** `ORDER_CHECKPOINT` tham chiếu `checkpoint/{command_id}` với
+    digest request/response đã đóng băng; `refund-scope-query/...` được Order query lại và
+    checkpoint dưới decision; `PAYMENT_RECONCILIATION` là settlement record bất biến được
+    append. Tham chiếu khác phải đã có trên obligation, nếu không trả `422`.
+22. **Resume return thủ công.** `RESUME_FORWARD_REPAIR` trên `RETURN_MANUAL_VERIFICATION`
+    yêu cầu full completion evidence, đưa case về `WAITING_INVENTORY_SCOPE_INSPECTION`,
+    đóng obligation và gửi `RESUME_REFUND` cho refund workflow; Payment gate cũ được dùng lại.
+23. **Consumer Kafka không có DLQ phía Order.** Lỗi hạ tầng không ACK và redeliver với
+    backoff mũ (tối đa 60 giây); fact sai schema/identity được lưu `REJECTED` trong inbox rồi
+    ACK, nên inbox là nơi quarantine và audit.
+24. **Operation mapping.** Cancellation `SUCCEEDED` khi order `CANCELLED`, `REJECTED` khi
+    capture thắng race; payment-attempt `REJECTED` nếu deadline đã qua lúc Payment trả kết quả,
+    `MANUAL_REVIEW_REQUIRED` nếu outcome không xác định.
+
 ## Hệ quả
 
 Contract Order public/internal và Delivery v1 thay đổi ở trạng thái `proposed`, chưa có
@@ -128,6 +163,8 @@ consumer đã adopt nên không cần version mới. Inventory giữ endpoint
 
 ## Xác minh
 
-Unit/integration test của `java/services/order-service` bao phủ bảng cancel reason, line
+`java/services/order-service` (`DomainRulesTest`, `CheckoutRulesTest`, `CheckoutFlowIT`,
+`RefundFlowIT`, `QueryIT`) kiểm toàn bộ các điểm trên; response HTTP được validate với schema
+OpenAPI và outbox với JSON Schema của contracts. Unit/integration test của `java/services/order-service` bao phủ bảng cancel reason, line
 limit, `variant_name` trong `order.completed.v1`, mapping `ui_primary_status`, submission
 state, obligation `RETURN_MANUAL_VERIFICATION` và normalizer có `đ`.

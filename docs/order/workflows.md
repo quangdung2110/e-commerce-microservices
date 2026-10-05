@@ -2,12 +2,13 @@
 doc_id: order-workflows
 service: order
 scope: target
-status: proposed
+status: implemented
 owners:
   - Order Service team
 evidence:
   - contracts/http/order/v1/openapi.yaml
   - contracts/http/order/internal/v1/openapi.yaml
+  - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
@@ -21,19 +22,19 @@ verified_against_commit: null
 
 | ID | Workflow | Trigger | Tác nhân | Trạng thái |
 |---|---|---|---|---|
-| `WF-ORDER-001` | Xem chi tiết order | HTTP | Buyer/Admin | proposed |
-| `WF-ORDER-002` | Search/filter order | HTTP | Buyer/Admin | proposed |
-| `WF-ORDER-003` | Cancel hoặc admin force-refund | HTTP | Buyer/Admin | proposed |
-| `WF-ORDER-004` | Checkout submit saga | HTTP + Temporal | Checkout | proposed |
-| `WF-ORDER-005` | Xử lý payment signal và capture/cancel race | Kafka + durable Temporal message | Payment consumer | proposed |
-| `WF-ORDER-006` | Nhận physical-dispatch fact | Kafka | Inventory consumer | proposed |
-| `WF-ORDER-006a` | Nhận verified delivery proof | Kafka | Delivery consumer | proposed |
-| `WF-ORDER-007` | Buyer yêu cầu return one-shot | HTTP | Buyer | proposed |
-| `WF-ORDER-008` | Refund/return saga | Temporal + Kafka | Buyer/Admin/Inventory/Payment | proposed |
-| `WF-ORDER-008a` | Đóng/recover Inventory Refund Scope | Temporal + durable dispatch | Order worker/Finance/Ops | proposed |
-| `WF-ORDER-009` | Payment timeout và auto-cancel | Temporal timer | Checkout workflow | proposed |
-| `WF-ORDER-010` | Financial reconciliation decision | Internal HTTP + Temporal | Finance/Ops | proposed |
-| `WF-ORDER-011` | Buyer tạo payment attempt kế tiếp | HTTP + Temporal activity | Buyer | proposed |
+| `WF-ORDER-001` | Xem chi tiết order | HTTP | Buyer/Admin | implemented |
+| `WF-ORDER-002` | Search/filter order | HTTP | Buyer/Admin | implemented |
+| `WF-ORDER-003` | Cancel hoặc admin force-refund | HTTP | Buyer/Admin | implemented |
+| `WF-ORDER-004` | Checkout submit saga | HTTP + Temporal | Checkout | implemented |
+| `WF-ORDER-005` | Xử lý payment signal và capture/cancel race | Kafka + durable Temporal message | Payment consumer | implemented |
+| `WF-ORDER-006` | Nhận physical-dispatch fact | Kafka | Inventory consumer | implemented |
+| `WF-ORDER-006a` | Nhận verified delivery proof | Kafka | Delivery consumer | implemented |
+| `WF-ORDER-007` | Buyer yêu cầu return one-shot | HTTP | Buyer | implemented |
+| `WF-ORDER-008` | Refund/return saga | Temporal + Kafka | Buyer/Admin/Inventory/Payment | implemented |
+| `WF-ORDER-008a` | Đóng/recover Inventory Refund Scope | Temporal + durable dispatch | Order worker/Finance/Ops | implemented |
+| `WF-ORDER-009` | Payment timeout và auto-cancel | Temporal timer | Checkout workflow | implemented |
+| `WF-ORDER-010` | Financial reconciliation decision | Internal HTTP + Temporal | Finance/Ops | implemented |
+| `WF-ORDER-011` | Buyer tạo payment attempt kế tiếp | HTTP + Temporal activity | Buyer | implemented |
 
 ## WF-ORDER-001 — Xem chi tiết order
 

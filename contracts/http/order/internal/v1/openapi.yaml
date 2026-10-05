@@ -9,7 +9,7 @@ info:
     Workload-identity protected contract for Checkout submission and evidence-backed
     financial reconciliation. Checkout submission waits only until a durable Payment
     attempt is ready; the order lifecycle remains asynchronous after that checkpoint.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://order-service:8080
 tags:
@@ -317,7 +317,9 @@ components:
         total_amount: { $ref: '#/components/schemas/VndMoney' }
         total_discount: { $ref: '#/components/schemas/VndMoney' }
         final_amount: { $ref: '#/components/schemas/VndMoney' }
-      description: final_amount.amount_minor must equal total_amount minus total_discount.
+      description: >-
+        final_amount.amount_minor must equal total_amount minus total_discount and be at least
+        1 VND, because Payment only creates positive-amount attempts (Order ADR-020 §17).
     PromotionSnapshot:
       type: object
       additionalProperties: false
@@ -458,6 +460,12 @@ components:
       type: object
       additionalProperties: false
       required: [source, reference, sha256]
+      description: >-
+        ORDER_CHECKPOINT references use checkpoint/{command_id} with the frozen request or
+        response digest; refund-scope-query/... references are re-queried and checkpointed by
+        Order under the decision; PAYMENT_RECONCILIATION references are immutable settlement
+        records appended as new evidence. Any other reference must already be persisted on
+        the obligation, otherwise the decision is 422.
       properties:
         source: { type: string, enum: [ORDER_CHECKPOINT, PAYMENT_RECONCILIATION, INVENTORY_COMMAND, PROMOTION_RECEIPT] }
         reference: { type: string, minLength: 1, maxLength: 255 }
@@ -538,6 +546,16 @@ components:
                 return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
         - if:
             properties:
+              resolution_type: { const: CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION }
+            required: [resolution_type]
+          then: {}
+          else:
+            not:
+              required: [external_settlement]
+              properties:
+                external_settlement: {}
+        - if:
+            properties:
               resolution_type:
                 enum: [ESCALATE_TO_ACCOUNTING, CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION]
             required: [resolution_type]
@@ -562,11 +580,29 @@ components:
           type: [string, 'null']
           maxLength: 128
           description: Required for accounting escalation and evidence-backed external financial remediation.
+        external_settlement:
+          allOf: [{ $ref: '#/components/schemas/ExternalSettlement' }]
+          description: >-
+            Only for CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION; required when the target is a
+            CUSTOMER_PAYOUT_REMEDIATION or REFUND_REVERSAL obligation (Order ADR-020 §16).
         evidence:
           type: array
           minItems: 1
           maxItems: 20
           items: { $ref: '#/components/schemas/EvidenceReference' }
+    ExternalSettlement:
+      type: object
+      additionalProperties: false
+      required: [amount, customer_user_id, settled_at, settlement_reference]
+      description: >-
+        Accounting/Payment settlement proven outside the original refund transaction. Order
+        rechecks under the order/case lock that amount equals the locked refund amount in VND
+        and customer_user_id equals the order buyer, then uses settled_at as refunded_at.
+      properties:
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        customer_user_id: { type: string, format: uuid }
+        settled_at: { type: string, format: date-time }
+        settlement_reference: { type: string, minLength: 1, maxLength: 128 }
     ReturnClosureDecision:
       type: object
       additionalProperties: false

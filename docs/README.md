@@ -67,9 +67,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 2. Order Service (Orchestrator + Temporal Saga)
 
-> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, đã có contract Saga liên service được liên kết nhưng chưa xác minh
-> implementation/provider-consumer contract test.
+> Đã implement tại `java/services/order-service` (Java 21, Spring Boot 3.3, Temporal; Order
+> ADR-020); contracts Order ở mức `implemented` với provider test, chưa có consumer contract test.
 
 | File | Mô tả |
 |---|---|
@@ -80,8 +79,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
 | [order/workflows.md](./order/workflows.md) | Checkout, timeout, delivery proof, return/refund, durable scope finalization, late recovery và financial reconciliation. |
 | [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
-| [order/development.md](./order/development.md) | Checklist local/build/test/migration khi implementation được thêm. |
-| [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR bảo toàn các quyết định của thiết kế cũ. |
+| [order/development.md](./order/development.md) | Build/test/chạy local, hiện trạng test tự động và migration. |
+| [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR, gồm ADR-020 chốt runtime và các điểm làm rõ khi implement. |
 
 ---
 
