@@ -19,6 +19,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     GRANT ALL PRIVILEGES ON DATABASE payment_service TO postgres;
     CREATE DATABASE inventory_service;
     GRANT ALL PRIVILEGES ON DATABASE inventory_service TO postgres;
+    CREATE DATABASE order_service;
+    GRANT ALL PRIVILEGES ON DATABASE order_service TO postgres;
 EOSQL
 
 # ── Apply Cart Service schema ─────────────────────────────

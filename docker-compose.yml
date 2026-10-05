@@ -561,6 +561,107 @@ services:
       # Order, Product Detail BFF and Search call them on the service network with
       # X-Service-Identity (docs/mesh/runtime-contract.md §5.2).
 
+  # ── Temporal (Order Saga runtime) ─────────────────────────
+  # auto-setup creates the temporal/temporal_visibility schemas in the shared Postgres.
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health | grep -q SERVING"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - ecommerce-network
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8233:8080"
+    networks:
+      - ecommerce-network
+
+  # ── Order Service (docs/order, Order ADR-020) ─────────────
+  # Needs the order_service database (init-db.sh) and the Debezium outbox connector in
+  # java/services/order-service/src/main/resources/kafka/ for Cart/Review/Notification.
+  order-service:
+    build:
+      context: ./java/services/order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      temporal:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/order_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      KAFKA_BROKERS: kafka:9092
+      REDIS_HOST: redis
+      TEMPORAL_TARGET: temporal:7233
+      INVENTORY_BASE_URL: http://inventory-service:8080
+      PROMOTION_BASE_URL: http://promotion-service:8085
+      PAYMENT_BASE_URL: http://payment-service:8080
+      ORDER_FRONTEND_BASE_URL: http://localhost:3000
+      JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
+    ports:
+      - "8095:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Buyer + Admin surface (Order public OpenAPI v1); the gateway never retries a command.
+      - "traefik.http.routers.order.rule=PathPrefix(`/api/v1/orders`) || PathPrefix(`/api/v1/order-operations/`)"
+      - "traefik.http.routers.order.entrypoints=web"
+      - "traefik.http.routers.order.service=order-service"
+      - "traefik.http.routers.order.priority=40"
+      - "traefik.http.routers.order.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      # Admin namespace: authenticated identity; Order itself requires role ADMIN.
+      - "traefik.http.routers.order-admin.rule=PathPrefix(`/api/v1/admin/orders`) || PathPrefix(`/api/v1/admin/order-operations/`)"
+      - "traefik.http.routers.order-admin.entrypoints=web"
+      - "traefik.http.routers.order-admin.service=order-service"
+      - "traefik.http.routers.order-admin.priority=40"
+      - "traefik.http.routers.order-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.order-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.order-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.order-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** has no router: Checkout and Finance/Ops call it on the service
+      # network with X-Service-Identity (docs/mesh/runtime-contract.md §5.2).
+
   # ── Cart Service ───────────────────────────────────────────
   cart-service:
     build:
