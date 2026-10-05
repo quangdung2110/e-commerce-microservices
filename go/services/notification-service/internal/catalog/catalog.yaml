@@ -1,0 +1,177 @@
+version: 1
+x-adoption-status: proposed
+# Catalog template do Notification Service sở hữu. Tên template và schema template_data là
+# contract công khai với producer: thêm field optional là compatible; đổi/xoá field required
+# là breaking → template mới <ID>_V2, template cũ chuyển deprecated.
+# Quy ước, thuộc tính và chính sách theo lane: docs/notification/07-templates.md.
+#
+# status:       proposed | active | deprecated | retired  (producer chỉ được gửi active)
+# data_source:  kafka-inline      — template_data đi trong notification.requested.v1, schema tại templates/<ID>.schema.json
+#               auth-content-api  — resolve qua POST /internal/v1/auth/notification-deliveries/{id}/content; schema trong Auth OpenAPI
+#               review-event      — ánh xạ 1-1 từ message của Review trên t.review.events
+#               cart-fact         — trích từ com.ecommerce.cart.abandoned.v1 theo bảng ánh xạ của Notification
+# governed_by:  preference có quyền chặn template (email_enabled | in_app_enabled | marketing_enabled | none)
+# dedup_key:    required | optional | none, kèm công thức; unique theo (dedup_key, channel) trong 30 ngày
+# max_age:      ISO-8601 duration; producer chỉ được rút ngắn bằng data.expires_at
+
+defaults:
+  locales: { required: [vi], optional: [en] }
+  renders: [email, in_app]
+
+lanes:
+  critical:
+    ignores: [email_enabled, suppression, quiet_hours, frequency_cap]
+  transactional:
+    ignores: [quiet_hours, frequency_cap]
+  bulk:
+    quiet_hours: { from: "22:00", to: "08:00", default_timezone: Asia/Ho_Chi_Minh }
+    frequency_cap: { per_user_per_day: 2 }
+
+templates:
+  # ---- critical: Auth (data_source auth-content-api, tên giữ theo enum của Auth) ----
+  - id: REGISTRATION_VERIFICATION
+    status: proposed
+    lane: critical
+    channels: [email]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: auth-expires_at
+    dedup_key: { mode: none, note: "mỗi lần user bấm gửi lại là một delivery_id mới" }
+  - id: EMAIL_CHANGE_VERIFICATION
+    status: proposed
+    lane: critical
+    channels: [email]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: auth-expires_at
+    dedup_key: { mode: none }
+  - id: PASSWORD_RESET
+    status: proposed
+    lane: critical
+    channels: [email]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: auth-expires_at
+    dedup_key: { mode: none }
+  - id: EMAIL_CHANGED
+    status: proposed
+    lane: critical
+    channels: [email, in_app]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "email_changed:{delivery_id}" }
+  - id: PASSWORD_CHANGED
+    status: proposed
+    lane: critical
+    channels: [email, in_app]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "password_changed:{delivery_id}" }
+  - id: ACCOUNT_LOCKED
+    status: proposed
+    lane: critical
+    channels: [email, in_app]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "account_locked:{delivery_id}" }
+  - id: ACCOUNT_UNLOCKED
+    status: proposed
+    lane: critical
+    channels: [email, in_app]
+    governed_by: none
+    data_source: auth-content-api
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "account_unlocked:{delivery_id}" }
+
+  # ---- transactional: Order (data_source kafka-inline, t.notification.transactional.v1) ----
+  - id: ORDER_CONFIRMED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: kafka-inline
+    schema: ORDER_CONFIRMED.schema.json
+    producer: order-service
+    trigger: "Order chuyển PAID"
+    max_age: PT6H
+    dedup_key: { mode: required, formula: "order_confirmed:{order_id}" }
+  - id: ORDER_PAYMENT_FAILED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: kafka-inline
+    schema: ORDER_PAYMENT_FAILED.schema.json
+    producer: order-service
+    trigger: "Payment attempt thất bại hoặc hết hạn (Order consume payment.failed / expired)"
+    max_age: PT2H
+    dedup_key: { mode: required, formula: "order_payment_failed:{order_id}:{attempt}" }
+  - id: ORDER_CANCELLED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: kafka-inline
+    schema: ORDER_CANCELLED.schema.json
+    producer: order-service
+    trigger: "Order chuyển CANCELLED pre-capture (buyer, payment_timeout, admin, out_of_stock, checkout_failed); refund_expected=false"
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "order_cancelled:{order_id}" }
+  - id: ORDER_COMPLETED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: kafka-inline
+    schema: ORDER_COMPLETED.schema.json
+    producer: order-service
+    trigger: "Order chuyển COMPLETED (mọi line có delivery proof)"
+    max_age: PT48H
+    dedup_key: { mode: required, formula: "order_completed:{order_id}" }
+  - id: ORDER_REFUNDED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: kafka-inline
+    schema: ORDER_REFUNDED.schema.json
+    producer: order-service
+    trigger: "Refund thành công (Order consume refund.succeeded)"
+    max_age: PT48H
+    dedup_key: { mode: required, formula: "order_refunded:{order_id}:{refund_id}" }
+
+  # ---- transactional: Review (data_source review-event) ----
+  - id: REVIEW_REPLIED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: review-event
+    source_message: reviewReplyNotificationRequested
+    max_age: PT72H
+    dedup_key: { mode: required, formula: "review_replied:{review_id}" }
+    note: "contract Review không mang URL; Notification lắp review_url từ base URL frontend — ngoại lệ của quy ước producer gửi URL (docs/notification/07-templates.md §2)"
+  - id: REVIEW_REMOVED
+    status: proposed
+    lane: transactional
+    channels: [email, in_app]
+    governed_by: [email_enabled, in_app_enabled]
+    data_source: review-event
+    source_message: reviewRemovalNotificationRequested
+    max_age: PT72H
+    dedup_key: { mode: required, formula: "review_removed:{review_id}" }
+
+  # ---- bulk: Cart (data_source cart-fact) ----
+  - id: CART_ABANDONED
+    status: proposed
+    lane: bulk
+    channels: [email, in_app]
+    governed_by: [marketing_enabled, email_enabled, in_app_enabled]
+    data_source: cart-fact
+    source_type: com.ecommerce.cart.abandoned.v1
+    max_age: PT24H
+    dedup_key: { mode: required, formula: "cart_abandoned:{cart_id}:{abandonment_cycle}" }
+    note: "fact không có URL; Notification lắp cart_url từ base URL frontend — ngoại lệ của quy ước producer gửi URL, cùng với review_url của REVIEW_REPLIED (docs/notification/07-templates.md §2)"

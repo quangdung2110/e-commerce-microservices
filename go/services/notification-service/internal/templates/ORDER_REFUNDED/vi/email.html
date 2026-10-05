@@ -1,0 +1,9 @@
+{{template "h" "Hoàn tiền thành công"}}
+<p style="margin:0 0 16px 0;">Chúng tôi đã hoàn <strong>{{money .AmountMinor .Currency}}</strong> cho đơn hàng <strong>{{.OrderCode}}</strong> vào lúc {{date .RefundedAt .Timezone}}.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;border-collapse:collapse;">
+{{template "row" (dict "Label" "Mã hoàn tiền" "Value" .RefundID)}}
+{{template "row" (dict "Label" "Đơn hàng" "Value" .OrderCode)}}
+{{template "total" (dict "Label" "Số tiền hoàn" "Value" (money .AmountMinor .Currency))}}
+</table>
+{{template "p" "Số tiền sẽ về phương thức thanh toán ban đầu của bạn. Tuỳ ngân hàng hoặc ví điện tử, việc ghi nhận có thể mất vài ngày làm việc."}}
+{{template "button" (dict "URL" .OrderURL "Label" "Xem chi tiết đơn hàng")}}

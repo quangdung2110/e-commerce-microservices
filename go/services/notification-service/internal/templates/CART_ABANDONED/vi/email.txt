@@ -1,0 +1,7 @@
+Bạn còn sản phẩm trong giỏ hàng
+
+Bạn đã thêm sản phẩm vào giỏ hàng nhưng chưa hoàn tất đặt hàng. Giỏ hàng vẫn được giữ nguyên để bạn tiếp tục bất cứ lúc nào.
+
+Quay lại giỏ hàng: {{.CartURL}}
+
+Số lượng sản phẩm có thể thay đổi; hãy hoàn tất đơn hàng sớm để không bỏ lỡ.

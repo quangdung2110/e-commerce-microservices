@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS ops_audit;
+DROP TABLE IF EXISTS ops_idempotency;
+DROP TABLE IF EXISTS ops_control;
+DROP TABLE IF EXISTS outbox;
+DROP TABLE IF EXISTS inbox_item;
+DROP TABLE IF EXISTS suppression;
+DROP TABLE IF EXISTS user_preference;
+DROP TABLE IF EXISTS provider_event;
+DROP TABLE IF EXISTS notification_delivery;
+DROP TABLE IF EXISTS notification_request;
+DROP TABLE IF EXISTS provider_event_dedup;
+DROP TABLE IF EXISTS delivery_dedup;
+DROP TABLE IF EXISTS ingest_dedup;

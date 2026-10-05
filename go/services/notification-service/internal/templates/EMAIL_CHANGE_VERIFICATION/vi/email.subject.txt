@@ -1,0 +1,1 @@
+{{.OTP}} là mã xác minh thay đổi email {{.Brand}} của bạn

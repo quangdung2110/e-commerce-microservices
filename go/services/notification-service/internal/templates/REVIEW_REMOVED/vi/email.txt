@@ -1,0 +1,7 @@
+Đánh giá của bạn đã bị gỡ
+
+Một đánh giá bạn đã viết không còn hiển thị vì không phù hợp với tiêu chuẩn cộng đồng của chúng tôi (ví dụ: ngôn từ không phù hợp, nội dung không liên quan đến sản phẩm hoặc chứa thông tin cá nhân).
+
+Mã đánh giá: {{.ReviewID}}
+
+Bạn vẫn có thể viết đánh giá mới cho sản phẩm này. Nếu cho rằng việc gỡ là nhầm lẫn, vui lòng liên hệ bộ phận chăm sóc khách hàng và cung cấp mã đánh giá ở trên.

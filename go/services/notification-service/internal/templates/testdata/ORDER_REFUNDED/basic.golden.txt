@@ -1,0 +1,18 @@
+E-Commerce
+====================
+
+Hoàn tiền thành công
+
+Chúng tôi đã hoàn 728.000 ₫ cho đơn hàng ORD-1000234 vào lúc 21/09/2026 15:00.
+
+Mã hoàn tiền: RFD_01J8Z3K2M4N5P6Q7R8S9T0V1W2
+Đơn hàng: ORD-1000234
+Số tiền hoàn: 728.000 ₫
+
+Số tiền sẽ về phương thức thanh toán ban đầu của bạn. Tuỳ ngân hàng hoặc ví điện tử, việc ghi nhận có thể mất vài ngày làm việc.
+
+Xem chi tiết đơn hàng: https://shop.example.com/orders/1000234
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/REGISTRATION_VERIFICATION.schema.json",
+  "title": "REGISTRATION_VERIFICATION template_data (Auth content API, SECRET, never persisted)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["otp"],
+  "properties": { "otp": { "type": "string", "pattern": "^[0-9]{6}$" } }
+}

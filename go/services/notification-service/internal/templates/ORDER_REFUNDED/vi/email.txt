@@ -1,0 +1,11 @@
+Hoàn tiền thành công
+
+Chúng tôi đã hoàn {{money .AmountMinor .Currency}} cho đơn hàng {{.OrderCode}} vào lúc {{date .RefundedAt .Timezone}}.
+
+Mã hoàn tiền: {{.RefundID}}
+Đơn hàng: {{.OrderCode}}
+Số tiền hoàn: {{money .AmountMinor .Currency}}
+
+Số tiền sẽ về phương thức thanh toán ban đầu của bạn. Tuỳ ngân hàng hoặc ví điện tử, việc ghi nhận có thể mất vài ngày làm việc.
+
+Xem chi tiết đơn hàng: {{.OrderURL}}

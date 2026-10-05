@@ -1,0 +1,1 @@
+Đơn hàng {{.OrderCode}} đã giao thành công — hãy chia sẻ đánh giá của bạn

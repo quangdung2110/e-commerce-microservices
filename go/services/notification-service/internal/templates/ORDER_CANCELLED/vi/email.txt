@@ -1,0 +1,11 @@
+Đơn hàng đã bị huỷ
+
+Đơn hàng {{.OrderCode}} đã bị huỷ vào lúc {{date .CancelledAt .Timezone}}.
+
+Lý do: {{reasonLabel .Reason}}.
+
+Đơn hàng chưa phát sinh thanh toán nên không có khoản nào cần hoàn lại.
+
+Xem chi tiết đơn hàng: {{.OrderURL}}
+
+Nếu bạn cần hỗ trợ thêm, vui lòng liên hệ bộ phận chăm sóc khách hàng.

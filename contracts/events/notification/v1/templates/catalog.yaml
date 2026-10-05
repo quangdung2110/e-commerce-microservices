@@ -153,6 +153,7 @@ templates:
     source_message: reviewReplyNotificationRequested
     max_age: PT72H
     dedup_key: { mode: required, formula: "review_replied:{review_id}" }
+    note: "contract Review không mang URL; Notification lắp review_url từ base URL frontend — ngoại lệ của quy ước producer gửi URL (docs/notification/07-templates.md §2)"
   - id: REVIEW_REMOVED
     status: proposed
     lane: transactional
@@ -173,4 +174,4 @@ templates:
     source_type: com.ecommerce.cart.abandoned.v1
     max_age: PT24H
     dedup_key: { mode: required, formula: "cart_abandoned:{cart_id}:{abandonment_cycle}" }
-    note: "fact không có URL; Notification lắp cart_url từ base URL frontend — ngoại lệ duy nhất của quy ước producer gửi URL"
+    note: "fact không có URL; Notification lắp cart_url từ base URL frontend — ngoại lệ của quy ước producer gửi URL, cùng với review_url của REVIEW_REPLIED (docs/notification/07-templates.md §2)"

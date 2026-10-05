@@ -1,0 +1,4 @@
+{{template "h" "Tài khoản đã bị tạm khoá"}}
+<p style="margin:0 0 16px 0;">Tài khoản của bạn đã bị tạm khoá vào lúc <strong>{{date .LockedAt .Timezone}}</strong> do đăng nhập sai quá số lần cho phép.</p>
+<p style="margin:0 0 16px 0;">Bạn có thể đăng nhập lại từ <strong>{{date .LockedUntil .Timezone}}</strong>. Trong thời gian này, mọi lần đăng nhập đều bị từ chối.</p>
+{{template "p" "Nếu bạn không thực hiện các lần đăng nhập này, có thể ai đó đang thử truy cập tài khoản của bạn. Hãy đặt lại mật khẩu ngay khi tài khoản được mở khoá."}}

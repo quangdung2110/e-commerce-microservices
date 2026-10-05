@@ -1,0 +1,3 @@
+title: "Đơn hàng {{.OrderCode}} đã giao thành công"
+body: "Đơn {{.OrderCode}} đã được giao đầy đủ. Hãy đánh giá “{{truncate .FirstItemName 60}}”{{if gt (len .Items) 1}} và các sản phẩm khác{{end}} để giúp người mua sau."
+deep_link_field: review_url

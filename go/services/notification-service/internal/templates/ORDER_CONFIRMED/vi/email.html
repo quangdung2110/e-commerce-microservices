@@ -1,0 +1,32 @@
+{{template "h" "Cảm ơn bạn đã đặt hàng"}}
+<p style="margin:0 0 16px 0;">Đơn hàng <strong>{{.OrderCode}}</strong> đặt lúc {{date .PlacedAt .Timezone}} đã được thanh toán và xác nhận. Chúng tôi sẽ thông báo khi đơn được giao.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 16px 0;border-collapse:collapse;">
+<tr>
+<th align="left" style="padding:8px 0;border-bottom:2px solid #e3e6ea;font-size:13px;color:#6b7280;font-weight:bold;">Sản phẩm</th>
+<th align="center" style="padding:8px 8px;border-bottom:2px solid #e3e6ea;font-size:13px;color:#6b7280;font-weight:bold;">SL</th>
+<th align="right" style="padding:8px 0;border-bottom:2px solid #e3e6ea;font-size:13px;color:#6b7280;font-weight:bold;">Đơn giá</th>
+</tr>
+{{- range .ShownItems}}
+<tr>
+<td style="padding:8px 0;border-bottom:1px solid #e3e6ea;font-size:14px;color:#1a1f36;">{{.Name}}{{with .Variant}}<br><span style="font-size:12px;color:#6b7280;">{{.}}</span>{{end}}</td>
+<td align="center" style="padding:8px 8px;border-bottom:1px solid #e3e6ea;font-size:14px;color:#1a1f36;white-space:nowrap;">{{.Quantity}}</td>
+<td align="right" style="padding:8px 0;border-bottom:1px solid #e3e6ea;font-size:14px;color:#1a1f36;white-space:nowrap;">{{money .UnitPriceMinor $.Currency}}</td>
+</tr>
+{{- end}}
+{{- if .HiddenItems}}
+<tr><td colspan="3" style="padding:8px 0;font-size:13px;color:#6b7280;">… và {{plural .HiddenItems "sản phẩm"}} khác. Xem đầy đủ trong chi tiết đơn hàng.</td></tr>
+{{- end}}
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;border-collapse:collapse;">
+{{template "row" (dict "Label" "Tạm tính" "Value" (money .SubtotalMinor .Currency))}}
+{{- if .DiscountMinor}}
+{{template "row" (dict "Label" "Giảm giá" "Value" (printf "−%s" (money .DiscountMinor .Currency)))}}
+{{- end}}
+{{template "row" (dict "Label" "Phí vận chuyển" "Value" (money .ShippingFeeMinor .Currency))}}
+{{template "total" (dict "Label" "Tổng thanh toán" "Value" (money .TotalMinor .Currency))}}
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px 0;border-collapse:collapse;">
+<tr><td style="padding:4px 0;font-size:14px;color:#6b7280;width:40%;">Phương thức thanh toán</td><td style="padding:4px 0;font-size:14px;color:#1a1f36;">{{mask .PaymentMethodLabel}}</td></tr>
+<tr><td style="padding:4px 0;font-size:14px;color:#6b7280;vertical-align:top;">Giao đến</td><td style="padding:4px 0;font-size:14px;color:#1a1f36;">{{.ShippingAddress.RecipientName}}<br>{{.ShippingAddress.Line}}</td></tr>
+</table>
+{{template "button" (dict "URL" .OrderURL "Label" "Xem chi tiết đơn hàng")}}

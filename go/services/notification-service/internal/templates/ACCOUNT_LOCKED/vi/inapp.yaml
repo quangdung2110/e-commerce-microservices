@@ -1,0 +1,2 @@
+title: "Tài khoản đã bị tạm khoá"
+body: "Tài khoản bị khoá lúc {{date .LockedAt .Timezone}} do đăng nhập sai nhiều lần. Bạn có thể đăng nhập lại từ {{date .LockedUntil .Timezone}}."

@@ -1,0 +1,22 @@
+E-Commerce
+====================
+
+Cảm ơn bạn đã đặt hàng
+
+Đơn hàng ORD-<b>1000235</b> đặt lúc 20/09/2026 17:15 đã được thanh toán và xác nhận. Chúng tôi sẽ thông báo khi đơn được giao.
+
+Sản phẩm:
+- <script>alert(1)</script> ("><img src=x onerror=alert(2)>) x1 — 1.000 ₫
+
+Tạm tính: 1.000 ₫
+Phí vận chuyển: 0 ₫
+Tổng thanh toán: 1.000 ₫
+
+Phương thức thanh toán: COD & <i>tiền mặt</i>
+Giao đến: <a href="http://evil">A</a>, P.1, Q.1, HCM
+
+Xem chi tiết đơn hàng: javascript:alert(1)
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

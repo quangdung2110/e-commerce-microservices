@@ -1,0 +1,9 @@
+Đặt lại mật khẩu
+
+Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn. Mở liên kết bên dưới để tạo mật khẩu mới:
+
+{{.ResetURL}}
+
+Liên kết chỉ có hiệu lực trong thời gian ngắn và dùng được một lần.
+
+Nếu bạn không yêu cầu đặt lại mật khẩu, hãy bỏ qua email này; mật khẩu hiện tại vẫn được giữ nguyên.

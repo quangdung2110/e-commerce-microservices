@@ -1,0 +1,23 @@
+Cảm ơn bạn đã đặt hàng
+
+Đơn hàng {{.OrderCode}} đặt lúc {{date .PlacedAt .Timezone}} đã được thanh toán và xác nhận. Chúng tôi sẽ thông báo khi đơn được giao.
+
+Sản phẩm:
+{{- range .ShownItems}}
+- {{.Name}}{{with .Variant}} ({{.}}){{end}} x{{.Quantity}} — {{money .UnitPriceMinor $.Currency}}
+{{- end}}
+{{- if .HiddenItems}}
+… và {{plural .HiddenItems "sản phẩm"}} khác. Xem đầy đủ trong chi tiết đơn hàng.
+{{- end}}
+
+Tạm tính: {{money .SubtotalMinor .Currency}}
+{{- if .DiscountMinor}}
+Giảm giá: −{{money .DiscountMinor .Currency}}
+{{- end}}
+Phí vận chuyển: {{money .ShippingFeeMinor .Currency}}
+Tổng thanh toán: {{money .TotalMinor .Currency}}
+
+Phương thức thanh toán: {{mask .PaymentMethodLabel}}
+Giao đến: {{.ShippingAddress.RecipientName}}, {{.ShippingAddress.Line}}
+
+Xem chi tiết đơn hàng: {{.OrderURL}}

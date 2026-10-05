@@ -1,0 +1,17 @@
+{
+  "order_id": "1000234",
+  "order_code": "ORD-1000234",
+  "placed_at": "2026-09-20T10:15:02Z",
+  "items": [
+    { "name": "Áo thun cotton", "variant_name": "Đen / L", "quantity": 2, "unit_price_minor": 199000 },
+    { "name": "Bình giữ nhiệt 500ml", "variant_name": null, "quantity": 1, "unit_price_minor": 350000 }
+  ],
+  "subtotal_minor": 748000,
+  "discount_minor": 50000,
+  "shipping_fee_minor": 30000,
+  "total_minor": 728000,
+  "currency": "VND",
+  "payment_method_label": "Thẻ Visa •••• 4242",
+  "shipping_address": { "recipient_name": "Nguyễn Văn A", "ward": "Phường 7", "district": "Quận 3", "city": "TP. Hồ Chí Minh" },
+  "order_url": "https://shop.example.com/orders/1000234"
+}

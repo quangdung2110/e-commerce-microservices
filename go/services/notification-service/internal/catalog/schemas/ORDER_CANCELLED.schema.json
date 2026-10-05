@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/ORDER_CANCELLED.schema.json",
+  "title": "ORDER_CANCELLED template_data",
+  "description": "Đơn pre-capture đã huỷ. reason là enum hiển thị được; không mang lý do nội bộ hay danh tính admin. refund_expected luôn false trong Order Release 1 vì paid orders đi refund lane.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order_id",
+    "order_code",
+    "cancelled_at",
+    "reason",
+    "refund_expected",
+    "order_url"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19,
+      "description": "Order-owned positive int64, base-10 không đệm."
+    },
+    "order_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "cancelled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "buyer",
+        "payment_timeout",
+        "admin",
+        "out_of_stock",
+        "checkout_failed"
+      ]
+    },
+    "refund_expected": {
+      "const": false,
+      "description": "CANCELLED chỉ được commit sau proven non-capture; paid orders không dùng cancel lane."
+    },
+    "order_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "description": "URL tuyệt đối tới frontend; Notification không tự lắp."
+    }
+  }
+}

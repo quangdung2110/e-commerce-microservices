@@ -1,0 +1,36 @@
+{
+  "eventType": "Complaint",
+  "complaint": {
+    "feedbackId": "0100019996a1c2bb-12345678-9abc-def0-1234-56789abcdef0-000000",
+    "complainedRecipients": [
+      {"emailAddress": "angry.user@example.net"}
+    ],
+    "timestamp": "2026-09-22T09:12:08.000Z",
+    "userAgent": "Yahoo!-Mail-Feedback/2.0",
+    "complaintFeedbackType": "abuse",
+    "arrivalDate": "2026-09-22T09:12:00.000Z"
+  },
+  "mail": {
+    "timestamp": "2026-09-22T07:49:55.000Z",
+    "source": "no-reply@ecommerce.local",
+    "sourceArn": "arn:aws:ses:ap-southeast-1:000000000000:identity/ecommerce.local",
+    "sendingAccountId": "000000000000",
+    "messageId": "0100019996a1b2c3-4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a-000000",
+    "destination": ["angry.user@example.net"],
+    "headersTruncated": false,
+    "headers": [
+      {"name": "From", "value": "no-reply@ecommerce.local"},
+      {"name": "To", "value": "angry.user@example.net"},
+      {"name": "Subject", "value": "Giỏ hàng của bạn đang chờ"}
+    ],
+    "commonHeaders": {
+      "from": ["no-reply@ecommerce.local"],
+      "to": ["angry.user@example.net"],
+      "subject": "Giỏ hàng của bạn đang chờ"
+    },
+    "tags": {
+      "ses:configuration-set": ["notification-bulk"],
+      "delivery_id": ["b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e"]
+    }
+  }
+}

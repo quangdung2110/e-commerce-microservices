@@ -1,0 +1,16 @@
+{
+  "order_id": "1000235",
+  "order_code": "ORD-<b>1000235</b>",
+  "placed_at": "2026-09-20T10:15:02Z",
+  "items": [
+    { "name": "<script>alert(1)</script>", "variant_name": "\"><img src=x onerror=alert(2)>", "quantity": 1, "unit_price_minor": 1000 }
+  ],
+  "subtotal_minor": 1000,
+  "discount_minor": 0,
+  "shipping_fee_minor": 0,
+  "total_minor": 1000,
+  "currency": "VND",
+  "payment_method_label": "COD & <i>tiền mặt</i>",
+  "shipping_address": { "recipient_name": "<a href=\"http://evil\">A</a>", "ward": "P.1", "district": "Q.1", "city": "HCM" },
+  "order_url": "javascript:alert(1)"
+}
