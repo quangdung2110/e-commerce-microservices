@@ -1,11 +1,13 @@
 ---
 doc_id: order-adr-006
 service: order
-status: accepted
+status: superseded
 date: null
 decision_owners:
   - Architecture Team
 supersedes: null
+superseded_by:
+  - ADR-010
 evidence:
   - docs/order/domain.md
   - docs/order/workflows.md
@@ -15,7 +17,8 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` theo “policy B” của thiết kế cũ; ngày gốc chưa được ghi.
+`Superseded` bởi ADR-010; đây là lịch sử “policy B” của thiết kế cũ, ngày gốc
+chưa được ghi.
 
 ## Bối cảnh
 

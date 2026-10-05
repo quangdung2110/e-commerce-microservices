@@ -19,12 +19,14 @@ verified_against_commit: null
 
 Cần định nghĩa SLI/SLO cho HTTP availability/error/latency; search p95/p99 theo
 class A/B; PostgreSQL pool; Redis request-replay errors; Kafka consumer lag/oldest event;
-outbox-to-Kafka age; Temporal schedule-to-start/activity/workflow completion;
-checkout success/timeout/cancel fact/forward repair; refund wait age; late-payment recovery và
-auto-complete delay. Error budget và ngưỡng số chưa được chốt.
+outbox-to-Kafka age/receipt age; Temporal schedule-to-start/activity/workflow completion;
+workflow-message oldest pending age; checkout success/timeout/cancel fact/forward repair;
+refund wait age; capture-after-terminal anomaly và auto-complete delay. Error budget và
+ngưỡng số chưa được chốt.
 
-Liveness chỉ kiểm tra process. Readiness API ghi cần PostgreSQL và khả năng start/
-signal Temporal; read API phụ thuộc PostgreSQL. Redis lỗi có thể bỏ request replay
+Liveness chỉ kiểm tra process. Readiness write API cần PostgreSQL; Temporal outage
+không làm mất accepted command vì dispatch/message đã durable, nhưng phải được expose
+qua dependency health. Read API phụ thuộc PostgreSQL. Redis lỗi có thể bỏ request replay
 fast-path nhưng không được bỏ FSM safety; Kafka/CDC/consumer/Temporal worker health nên báo riêng
 để tránh loại HTTP read instance không cần thiết. Startup probe phải chờ migration/
 config, nhưng chi tiết chưa có evidence.
@@ -38,13 +40,13 @@ config, nhưng chi tiết chưa có evidence.
 | Kafka brokers/security | Consume/produce via CDC | Topics trong `interfaces.md` | Có |
 | Consumer group IDs | Payment/Inventory/Delivery workers | Bốn group đã nêu | Không |
 | Temporal endpoint/namespace/TLS | Saga runtime | Chưa chốt | Có |
-| Temporal task queues | Route workflow/activity | Bốn queue cố định | Không |
+| Temporal task queues | Route workflow/activity | Ba queue cố định | Không |
 | Activity timeout/retry | Remote/local activity | 30 giây, tối đa 3 lần | Không |
-| Checkout payment window | Timer | 15 phút | Không |
-| Checkout workflow timeout | Full workflow | 30 phút | Không |
+| Checkout payment window/clock skew | Timer | Business ceiling 15 phút; cap bởi earliest hold expiry minus safety 30 giây (configurable, không được âm) | Không |
+| Checkout workflow execution timeout | Full workflow | Không dùng làm correctness boundary; continue-as-new/reconciler | Không |
 | Refund return wait | Inventory gate | 30 ngày | Không |
 | Search default window | Performance bound | 90 ngày | Không |
-| Outbox retention/schedule | CDC cleanup | 15 ngày; ví dụ 04:00 hàng ngày | Không |
+| Outbox retention/schedule | CDC cleanup | Minimum 15 ngày + exact destination receipt + safety delay; ví dụ 04:00 hàng ngày | Không |
 
 Tên environment variable, default, restart requirement và secret manager chưa
 được xác minh; không ghi secret thật vào repository.
@@ -62,26 +64,30 @@ Metrics tối thiểu:
 - Kafka consume result/retry/lag/oldest age/duplicate và CDC connector lag/error.
 - Temporal workflow started/completed/failed/timed-out, activity retry, signal route
   miss, compensation failure, workflow age theo type.
-- Business counters: order created/paid/cancelled/completed, late recovery outcome,
+- Business counters: order created/paid/cancelled/completed, capture-after-terminal anomaly,
   return rejected, refund waiting/processing/succeeded/failed, oldest refund wait.
 - Scope finalization status/oldest pending age, recovery/conflict count and no-payout
   closure outcomes; include financially `SUCCEEDED`/`FAILED` cases in this measurement.
-- Outbox row count/oldest age và cleanup deleted/skipped-by-watermark.
+- Workflow-message pending/retry/oldest age, `SignalWithStart` duplicate/no-op và
+  pending-prerequisite proof age.
+- Outbox row count/oldest age, receipt lag theo destination và cleanup
+  deleted/skipped-without-receipt.
 
 Structured log/traces cần correlation/request/event/workflow/order reference và
 transition old/new. Hash/redact user reference; không log delivery address, phone,
 client secret, raw reason detail hay provider secrets. Trace bao phủ HTTP -> workflow,
-activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
+activity remote call, Kafka consume -> workflow message -> dispatcher signal, DB transaction
+và CDC publish.
 
 ## 4. Cảnh báo
 
 | Cảnh báo | Điều kiện đo cần chốt | Mức độ | Owner/runbook |
 |---|---|---|---|
 | Payment consumer lag | Lag/oldest event vượt payment SLO | Cao | Order on-call / consumer lag |
-| Inventory consumer lag | Ship/return signal trễ vượt SLO | Cao | Order + Inventory |
+| Inventory consumer lag | Ship/return workflow message trễ vượt SLO | Cao | Order + Inventory |
 | Temporal task queue backlog | Schedule-to-start hoặc workflow age vượt ngưỡng | Cao | Order on-call |
 | Compensation failed | Activity cạn retry | Critical | Saga recovery |
-| Late payment recovery failed | Chuyển manual verification, không auto-refund | Critical | Finance/Ops |
+| Capture after terminal non-capture | Obligation mới hoặc chưa resolve; order không được hồi sinh | Critical | Payment + Finance/Ops |
 | Refund waiting overdue | Gần/quá 30 ngày không confirmation | Cao | Returns Ops |
 | Refund failed/reversed | Event critical lane xuất hiện | Critical | Payment/Ops |
 | Refund scope finalization unresolved | Three Activity attempts exhausted, durable guard conflict, mismatched receipt, or pending age beyond agreed budget | Cao | Order on-call + Inventory; frozen command query/replay and audited reconciliation |
@@ -96,7 +102,7 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 |---|---|
 | PostgreSQL unavailable/pool exhausted | Không ready cho API; activity/consumer không ack/không commit; Temporal retry |
 | Redis unavailable | Fallback vào durable request record/DB FSM/WorkflowID; safety vẫn giữ, nhưng replay nhanh mất và tải DB tăng. Không được từ chối write nếu fallback đã được chứng minh an toàn |
-| Kafka unavailable/consumer lag | API/local transaction có thể tiếp tục ghi outbox; downstream/event signal trễ; alert, không xóa outbox |
+| Kafka unavailable/consumer lag | API/local transaction có thể tiếp tục ghi outbox; downstream/event workflow message trễ; alert, không xóa outbox |
 | Debezium/Kafka Connect lỗi | Outbox backlog tăng; không publish tay bằng cách phá ordering; phục hồi connector từ WAL/offset |
 | Temporal unavailable | Read API còn có thể phục vụ; command start/signal trả lỗi/202 chỉ khi đã có durable acceptance; không commit terminal state inline |
 | Inventory timeout | Query/replay same durable command; unknown outcome never authorizes compensation. Pre-payment cleanup requires proven outcome/non-capture; post-capture uses forward repair. Buyer refund keeps waiting for validated inspection evidence |
@@ -106,10 +112,13 @@ activity remote call, Kafka consume -> signal, DB transaction và CDC publish.
 | Inventory scope close/cancel unknown or unavailable | Preserve financial result and frozen finalization intent; query/replay same command. After three attempts mark `RECOVERY_REQUIRED`, retain durable dispatch and alert; never repeat Payment |
 | Scope close/cancel durable 409 or receipt mismatch | Set `CONFLICT`, park operation for manual review and reconcile current scope/counters; no endpoint fallback, auto-payout or replacement of an unknown/accepted command |
 | Workflow start failure after accepted API | Dispatcher retries/attaches durable workflow dispatch; no accepted command is lost |
+| DB commit before Temporal RPC / RPC response lost | Workflow-message dispatcher retries `SignalWithStart` với cùng scoped `message_id`; workflow state carries dedup across Continue-As-New and activity remains DB-idempotent; không ACK/xóa message khi chưa có durable acknowledgement |
+| Workflow target đã closed trước dispatch | Reuse policy cấm start lại; reconcile DB proof để mark applied/stale no-op hoặc atomic reroute sang named recovery owner; ambiguous giữ retry/quarantine + alert |
+| Delivery proof before dispatch | Persist `PENDING_PREREQUISITE`; dispatch consumer/replayer validate mapping rồi apply proof và chạy convergence |
 | Mixed-version deploy | Workflow code phải replay-compatible; consumer validates additive financial fields/version; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |
 
-Inventory Reserve/Commit/Release/recovery results have no Kafka acknowledgment path.
+Inventory Reserve/Commit/Release results have no Kafka acknowledgment path.
 Use the persisted command checkpoint to query/replay the exact ID/body; a missing query
 result alone cannot prove an in-flight command failed. Retain durable repair work and
 alert after retry exhaustion. Reconcile current reservation state separately from the
@@ -126,8 +135,9 @@ inspection completion ([Inventory ADR-020](../inventory/decisions/ADR-020-comman
   limit và DB pool giới hạn concurrency.
 - Refund workflow ngủ 30 ngày không giữ thread nhưng tăng Temporal history/storage;
   cần capacity assumption và continue-as-new policy nếu history lớn.
-- Outbox retention chỉ 15 ngày đòi CDC outage recovery nhỏ hơn retention hoặc trimmer
-  phải dừng theo watermark.
+- Outbox retention chỉ 15 ngày là minimum age; row không có exact destination receipt
+  không bao giờ bị trimmer xóa, nên observer/connector outage đổi thành storage-growth
+  incident thay vì data loss.
 
 Chưa có load test, partition count, pool size, RPS hay storage growth evidence.
 
@@ -147,15 +157,18 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 
 | Worker/job | Trigger/input | Concurrency/idempotency | Timeout/retry/output |
 |---|---|---|---|
-| Outbox CDC pipeline | WAL row `outbox_events` | Partition theo order; connector offset | Kafka Connect retry/DLQ/backoff; `t.order.events` |
-| Payment consumer | `t.payment.events.v2` | Exact namespaced type + full CloudEvent/dataschema validation; durable inbox `(source,id)` + mapped attempt/amount/currency/per-transaction financial-version guard | Signal checkout/refund/recovery; không ghi master trực tiếp |
-| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + aggregate revision + line/warehouse guard | `DISPATCHED` line fact only; no completion |
-| Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | CAS line `DISPATCHED -> DELIVERED`; complete master only after all line proofs |
-| Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence then signal refund workflow |
-| Workflow dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API/consumer crash |
+| Outbox CDC pipeline | WAL row `outbox_events` | Destination allowlist + partition key; connector offset | Kafka Connect retry/DLQ/backoff; Order facts hoặc Notification command topic |
+| Outbox receipt observer | Messages on each allowed destination | PK event/topic, idempotent insert | Supplies per-row deletion proof; outage retains rows |
+| Payment consumer | `t.payment.events.v2` | Exact accepted types; stream-scoped inbox + mapping/amount/currency/per-transaction version guard | Atomically persist evidence/workflow message; dispute chỉ update obligation evidence |
+| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + `reservation_revision` + line/warehouse guard | `DISPATCHED`, replay prerequisite proof, convergence |
+| Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | Park before dispatch; otherwise CAS `DELIVERED` + convergence |
+| Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence + workflow message in one transaction |
+| Workflow start dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API crash |
+| Workflow message dispatcher | `order_workflow_messages` | Stable message ID + `SignalWithStart`; DB leases with `SKIP LOCKED` | Retry until Temporal durable acknowledgement; duplicate history is no-op |
+| Prerequisite/convergence reconciler | Pending proofs, open required obligations, deliverable orders | Order lock + deterministic guards | Replay proof; invoke `TryCompleteOrder`; never infer evidence |
 | Refund scope finalization reconciler | Unresolved finalization metadata/checkpoints, including financially terminal Buyer cases | Same scope/generation/command; conflict requires audited decision | Restore durable finalization dispatch on `order-refund-queue`; never call Payment |
-| Temporal worker | Four task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry; durable history |
-| Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; watermark guard | Xóa row >15 ngày khi an toàn |
+| Temporal worker | Three task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry burst; durable history/continue-as-new |
+| Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; exact receipt guard | Xóa row >15 ngày + safety delay chỉ khi receipt khớp destination |
 
 Không còn order metrics projector, search projection/reindex worker, Kafka CQRS
 retry/DLQ hoặc cold archive batcher trong thiết kế hiện tại.
@@ -185,13 +198,14 @@ escalation owner. Tối thiểu phải có:
    không flush broad keyspace, khôi phục rồi theo dõi replay/error rate.
 6. DB pool/deadlock: xác định query/lock holder, giảm concurrency, không kill
    transaction mù, xác minh state/outbox atomicity.
-7. Late-payment recovery/manual verification: xác nhận mapped payment attempt identity/version,
-   timeout non-capture fact, Inventory fenced-recovery outcome and physical-dispatch evidence
-   trước mọi manual action. Automatic admin refund chỉ được tiếp tục after an accepted
-   all-line atomic pre-dispatch attempt; mixed/rejected attempt must not have created a
-   refund case.
-8. Outbox retention cleanup failure: kiểm tra watermark và oldest row; chỉ chạy lại
-   delete khi connector đã vượt dữ liệu mục tiêu.
+7. Capture-after-terminal anomaly: xác nhận mapped attempt/transaction/version, terminal
+   non-capture evidence và provider ledger; giữ order terminal, attach immutable evidence
+   vào `CAPTURE_AFTER_TERMINAL_NON_CAPTURE`, chỉ xử lý qua authenticated decision API.
+   Không sửa DB/hồi sinh order hoặc phát `order.paid` thủ công. Sau khi Payment/Accounting
+   thực sự settle charge, attach settlement proof + accounting reference rồi dùng
+   `CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION`; không close chỉ dựa ticket/comment.
+8. Outbox retention cleanup failure: kiểm tra exact `(event_id,destination_topic)`
+   receipt, connector/observer lag và oldest row; không dùng watermark thay receipt.
 9. Scope finalization stuck after financial success/failure: inspect frozen generation,
    operation/reason/command/body digest, dispatch and Inventory command result. Replay an
    accepted command after response loss; unknown/503 uses the same key. Repair dispatcher/

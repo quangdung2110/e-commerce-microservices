@@ -18,6 +18,10 @@ evidence:
 `Accepted` trong thiết kế; chưa xác minh implementation. Ngày quyết định gốc không
 được ghi lại.
 
+> Current authority: ADR-014 loại late-payment workflow; ADR-015 bổ sung durable
+> workflow-message dispatch/convergence. Danh sách workflow lịch sử bên dưới không còn
+> là runtime catalog đầy đủ.
+
 ## Bối cảnh
 
 Checkout tác động Order, Inventory, Promotion và Payment; refund chờ tín hiệu vật

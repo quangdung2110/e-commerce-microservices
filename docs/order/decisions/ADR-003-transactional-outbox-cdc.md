@@ -17,6 +17,9 @@ evidence:
 
 `Accepted` trong thiết kế; chưa có connector/migration evidence.
 
+> Current authority: ADR-016 mở rộng outbox sang allowlisted multi-destination
+> notification commands và yêu cầu exact delivery receipt trước cleanup.
+
 ## Bối cảnh
 
 Ghi FSM và publish Kafka theo hai thao tác độc lập có thể tạo state không có event

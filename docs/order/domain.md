@@ -29,7 +29,7 @@ verified_against_commit: null
 | Refund scope | Tập `order_line_id` được Buyer chọn; mỗi line luôn full ordered quantity | SKU set hoặc partial quantity của một line |
 | Refund case | Control plane trọn đời, duy nhất cho một order | Payment refund record do Payment sở hữu |
 | Buyer return guard | Quyền submit return một lần của Buyer | Request idempotency key TTL 7 ngày |
-| Late-payment recovery | Lane phục hồi payment success đến sau timeout/cancel | Retry checkout workflow đã đóng |
+| Capture/cancel race | Capture được Payment chứng minh trong lúc Order còn `CANCELLING` | Success bất thường sau terminal non-capture |
 | Buyer tab | Read-model value duy nhất suy ra từ master/item/payment state | FSM state lưu trực tiếp |
 | Compensation | Hoạt động đảo side effect đã hoàn tất trong saga | Database rollback xuyên service |
 
@@ -52,13 +52,13 @@ không thay thế invariants trong PostgreSQL.
 | Loại | Năng lực | Tác nhân | Aggregate/năng lực xử lý |
 |---|---|---|---|
 | Lệnh | Tạo order từ checkout | Checkout Service | OrderCheckoutWorkflow/Order |
-| Lệnh | Tạo payment attempt kế tiếp | Buyer owner | OrderCheckoutWorkflow/Payment attempt |
+| Lệnh | Tạo payment attempt kế tiếp | Buyer owner | Durable workflow message vào OrderCheckoutWorkflow/Payment attempt |
 | Truy vấn | Xem order detail | Buyer owner/Admin | Order query |
 | Truy vấn | Search/filter order | Buyer/Admin | PostgreSQL query model |
 | Lệnh | Hủy pre-payment order | Buyer/Admin | Checkout workflow |
 | Lệnh | Force refund order đã trả tiền trước dispatch | Admin | OrderRefundWorkflow + Inventory atomic release |
 | Lệnh | Return selected full-quantity lines | Buyer owner | Buyer guard + OrderRefundWorkflow |
-| Lệnh | Áp payment result | Payment consumer | Checkout/refund/recovery workflow |
+| Lệnh | Áp payment result | Payment consumer | Checkout/refund workflow hoặc reconciliation owner đã định danh |
 | Lệnh | Đánh dấu line đã physical dispatch | Inventory event | OrderLine Fulfillment FSM |
 | Lệnh | Đánh dấu line đã giao khách | Delivery verified event | OrderLine Fulfillment FSM |
 | Lệnh | Xác nhận scope đã final-inspect | Inventory event | OrderRefundWorkflow |
@@ -71,12 +71,12 @@ không thay thế invariants trong PostgreSQL.
 | ID | Quy tắc/bất biến | Enforcement mục tiêu | Lỗi/kết quả vi phạm |
 |---|---|---|---|
 | `INV-ORD-001` | Một `checkout_token` chỉ có một checkout workflow/order logic | Unique DB + WorkflowID + durable workflow dispatch | Attach/replay workflow hoặc conflict |
-| `INV-ORD-002` | Payment/refund consumer không commit master FSM; workflow là owner | Adapter boundary + row lock trong activity | Event chỉ được signal/dedup |
+| `INV-ORD-002` | Payment/refund consumer không commit master FSM; workflow là owner | Adapter boundary + row lock trong activity | Event chỉ được inbox/enqueue/dedup |
 | `INV-ORD-003` | Buyer chỉ submit return một lần; guard không reset | CAS `buyer_return_locked_at` | `REFUND_CUSTOMER_REQUEST_ALREADY_USED` |
 | `INV-ORD-004` | Mỗi order tối đa một refund case và một Payment refund transaction trong toàn bộ vòng đời | Lifetime PK refund case + unique txn + WorkflowID | Reject/attach existing case |
 | `INV-ORD-005` | Buyer refund chỉ sau Inventory final-inspect toàn bộ selected scope; Admin automatic refund chỉ sau Inventory atomic release toàn order trước dispatch | Refund case state + evidence + Temporal wait | Tiếp tục chờ/manual verification hoặc reject no-mutation |
 | `INV-ORD-006` | Order chỉ complete khi tất cả `order_item_lines` `DELIVERED` bằng verified Delivery fact | Lock/count + CAS master | Không transition/phát event |
-| `INV-ORD-007` | Transition có registered integration event phải commit state, event sequence và outbox cùng transaction; transition khác không tạo outbox | PostgreSQL transaction | Rollback toàn transaction |
+| `INV-ORD-007` | Order fact đã đăng ký phải commit state, integration sequence và outbox cùng transaction. Notification command commit cùng milestone với monotonic notification sequence riêng, không tăng integration sequence | PostgreSQL transaction + multi-destination outbox | Rollback toàn transaction |
 | `INV-ORD-008` | Customer refund không gọi/mutate Promotion; wallet và budget đã confirm giữ nguyên | Workflow boundary | Không phát promotion allocation |
 | `INV-ORD-009` | Snapshot line/address/category không phụ thuộc dữ liệu upstream về sau; category chỉ dùng dựng lại Promotion context | Persist khi create | Reject create nếu snapshot thiếu |
 | `INV-ORD-010` | `final_amount_minor = total_amount_minor - total_discount_minor`; tất cả money là integer VND | Domain validation | Reject pricing snapshot sai |
@@ -85,16 +85,24 @@ không thay thế invariants trong PostgreSQL.
 | `INV-ORD-013` | Admin action với `PAID/PROCESSING` đi refund lane, không cancel pre-payment | Cancel command branching | `409` nếu transition sai |
 | `INV-ORD-014` | Buyer return chỉ hợp lệ khi toàn bộ line đã `DELIVERED` bằng verified proof | Locked read trước CAS/start workflow | `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` |
 | `INV-ORD-021` | Inventory allocation plan, bridge `(checkout_line_reference, order_line_id)` và `(order_line_id, warehouse_id)` mapping phải được persist trước Reserve/dispatch consumer | Checkout snapshot + reserve checkpoint | Reject/park mismatch; không query DB Inventory trực tiếp |
-| `INV-ORD-015` | Mỗi selected `order_line_id` dùng đúng full original quantity; refund amount là gross selected lines, cap `final_amount_minor` | Case-line snapshot + calculation lúc lock | `INVALID_REFUND_SCOPE` |
+| `INV-ORD-015` | Mỗi selected `order_line_id` dùng đúng full original quantity; refund amount bằng tổng immutable `net_amount_minor` của selected lines sau largest-remainder discount allocation | Case-line net snapshot + calculation lúc checkout/lock | `INVALID_REFUND_SCOPE` |
 | `INV-ORD-016` | Không tính lại discount/Promotion khi refund; inspection FAIL không chặn Payment command | Workflow boundary + locked amount | Không gọi Promotion; gọi Payment sau completion fact |
 | `INV-ORD-017` | Automatic admin force refund bị cấm nếu Inventory không thể release tất cả committed lines trước dispatch trong một transaction | Inventory response evidence | `ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` |
 | `INV-ORD-018` | Payment fact phải khớp mapped attempt, order, amount, currency và financial version per transaction; consumer inbox durable | `order_payment_attempts` + inbox/version guard in same transaction | Stale/mismatched event rejected to reconciliation |
 | `INV-ORD-019` | Sau Payment financial watermark, active Saga chỉ forward-repair; không Inventory rollback hay Promotion `CANCEL_FINAL` | Master recovery state + remote-command checkpoint | `FINANCIAL_RECONCILIATION_REQUIRED`, never business rollback |
 | `INV-ORD-020` | Admin rejected pre-dispatch release không được tạo/refuse lifetime refund case | Durable admin attempt separate from refund case | Attempt terminal no-op; Buyer guard/case remains available |
-| `INV-ORD-022` | Chỉ một captured transaction được refund; terminal non-capture fact mới mở attempt kế tiếp | Attempt mapping + immutable captured ID | Second/foreign capture → reconciliation |
-| `INV-ORD-023` | Finance/Ops chỉ resolve reconciliation bằng evidence + named audited decision; không direct SQL, không suy luận payment/refund fact | Reconciliation case + authenticated contract | Resume proof-backed case, guarded no-payout return closure, manual fulfillment, or accounting escalation |
+| `INV-ORD-022` | Chỉ một captured transaction được refund; chỉ durable `FAILED` fact có thể mở attempt kế tiếp dưới `INV-ORD-028` | Attempt mapping + immutable captured ID | Second/foreign capture → reconciliation |
+| `INV-ORD-023` | Finance/Ops chỉ resolve reconciliation bằng evidence + named audited decision; external payout phải khớp customer/VND/full locked amount/latest Payment version và không giả provider fact | Reconciliation case + authenticated contract + order/case lock | Resume proof-backed case, guarded no-payout closure, external remediation, manual fulfillment, or accounting escalation |
+| `INV-ORD-024` | Payment dispute là exception orthogonal; không tự đổi master/payment/refund FSM, release resource hoặc tạo refund | 5 exact dispute types + durable inbox/version + reconciliation case | Park mismatch; Accounting/manual decision |
 | `INV-ORD-025` | Buyer terminal refund result phải atomically lưu ý định đóng Inventory scope; only matching command receipt proves closure | Frozen command checkpoint + durable dispatch + finalization reconciler | Pending/recovery/conflict; never roll back Payment or create a second refund |
 | `INV-ORD-026` | Kết thúc return thiếu hàng không payout cần named Ops decision, no accepted/unknown Payment initiation, và Inventory close/cancel guards | Locked case + query evidence + Inventory atomic command | Case `CLOSED_INCOMPLETE` only after receipt; no automatic 30-day close/Payment bypass |
+| `INV-ORD-027` | Kafka fact đã accepted phải tạo durable workflow message trong cùng transaction với inbox; RPC signal không nằm trên correctness path | Inbox + workflow-message outbox + workflow message-ID dedup | Không ACK nếu durable message chưa commit |
+| `INV-ORD-028` | Payment deadline immutable được cap bởi earliest resource-hold expiry trừ clock skew; attempt kế tiếp chỉ cho `FAILED` trước deadline và khi holds còn hiệu lực; `EXPIRED/CANCELED` đi cleanup | Stored provider expiry + order row lock + checkout workflow message | Reject retry hoặc cancel/reconcile; không tạo PaymentIntent thiếu resource |
+| `INV-ORD-029` | Revision dedup có scope theo provider stream identity, không theo order chung | Unique `(source,event_type,stream_id,source_revision)` + `(source,event_id)` | Duplicate no-op; collision khác payload bị quarantine |
+| `INV-ORD-030` | Mọi trạng thái không terminal có durable convergence owner; delivery/cleanup/repair không phụ thuộc một event cuối cùng được phát lại | Reconciler + checkpoints + `TryCompleteOrder` | Alert/manual obligation thay vì mắc kẹt im lặng |
+| `INV-ORD-031` | Mỗi notification business `dedup_key` của một order chỉ được cấp đúng một notification sequence/event identity xuyên cả sau khi outbox đã trim | Durable `order_notification_commands` ledger + order row lock + payload digest | Replay trả identity cũ; digest collision bị quarantine, không tăng counter/phát command mới |
+| `INV-ORD-032` | Workflow message duplicate không được double-apply qua run boundary/`Continue-As-New` | Carry per-stream high-watermark + bounded recent message IDs vào new run; DB activity idempotency/checkpoint | Duplicate no-op; collision/quá cũ bất thường bị quarantine/reconcile |
+| `INV-ORD-033` | Message gặp closed/terminal target không được restart saga hoặc bị drop mù | Workflow ID reuse reject-duplicate + DB-applied/superseded proof hoặc transactional reroute tới recovery owner | Proven no-op/reroute; ambiguous case giữ retry/quarantine + alert |
 
 ## 5. State machine
 
@@ -108,25 +116,33 @@ Các state: `CREATED` (transient), `PENDING_PAYMENT`, `CANCELLING`, `PAID`,
 |---|---|---|---|---|
 | `T1` | `CREATED` | `PENDING_PAYMENT` | `CREATE_ORDER_ACTIVITY_COMMITTED` | Persist snapshot; không phát integration event |
 | `T2` | `PENDING_PAYMENT` | `PAID` | `PAYMENT_SUCCESS` trong workflow | `com.ecommerce.order.paid.v1` cùng transaction |
-| `T3` | `PENDING_PAYMENT` | `CANCELLING` | `PAYMENT_TIMEOUT` | Persist cancel command/dispatch; wait Payment non-capture fact |
+| `T2.1` | `PENDING_PAYMENT` | `PENDING_PAYMENT` | Active attempt `PAYMENT_FAILED` trước order payment deadline | Mark attempt terminal, `payment_status=FAILED`; giữ Inventory/Promotion hold và cho phép một next-attempt message |
+| `T2.2` | `PENDING_PAYMENT` | `PENDING_PAYMENT` | Durable next-attempt command passes `INV-ORD-028` | Persist next attempt/checkpoint; `payment_status=PENDING` |
+| `T3` | `PENDING_PAYMENT` | `CANCELLING` | Order payment deadline, active attempt `EXPIRED/CANCELED`, hoặc explicit cancel | Persist cancel command/dispatch; resolve Payment non-capture before cleanup |
 | `T3.1` | `CANCELLING` | `CANCELLED` | Matching `CANCELED`/`ALREADY_NON_CAPTURED` + cleanup proven | Persist cancellation; không phát event |
 | `T3.2` | `CANCELLING` | `PAID` | Matching `ALREADY_SUCCEEDED`/`PAYMENT_SUCCESS` | `com.ecommerce.order.paid.v1`, forward repair |
-| `T3.3` | `CANCELLED` | `PAID` | Matching late success after `PAYMENT_TIMEOUT` | Fenced recovery evidence + `com.ecommerce.order.paid.v1` |
 | `T4` | `PENDING_PAYMENT` | `CANCELLING` | `USER_CANCEL` | Persist cancel command/dispatch |
 | `T4.1` | `PENDING_PAYMENT` | `CANCELLING` | `ADMIN_FORCE_CANCEL` | Persist cancel command/dispatch |
+| `T4.2` | `PENDING_PAYMENT` | `CANCELLING` | `PRE_PAYMENT_SAGA_FAILED` and Payment create is proven absent/non-captured | Persist independent Inventory/Promotion cleanup obligations |
 | `T7` | `PAID` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Tạo/khóa admin refund case |
 | `T8` | `PAID` | `PROCESSING` | `POST_PAYMENT_SAGA_COMPLETED` | Persist state; không phát event |
 | `T8.1` | `PAID/PROCESSING` | `FINANCIAL_RECONCILIATION_REQUIRED` | Post-capture repair cannot prove a required checkpoint | Preserve financial fact; no business compensation |
 | `T8.2` | `PROCESSING` | `RETURN_REQUESTED` | `ADMIN_FORCE_REFUND_PRE_DISPATCH` + Inventory all-line release evidence | Vào admin refund lane |
 | `T8.3` | `PROCESSING` | `COMPLETED` | Tất cả line `DELIVERED` bởi verified Delivery fact + CAS | `com.ecommerce.order.completed.v1` |
+| `T8.4` | `FINANCIAL_RECONCILIATION_REQUIRED` | `PAID` | Proof-backed repair còn required post-capture obligations | Resume original checkpoint IDs; không mint command identity mới |
+| `T8.5` | `FINANCIAL_RECONCILIATION_REQUIRED` | `PROCESSING` | Tất cả required post-capture obligations đã proven | Chạy `TryCompleteOrder` ở cùng hoặc bước convergence kế tiếp |
 | `T9` | `COMPLETED` | `RETURN_REQUESTED` | Buyer one-shot pass + mọi line delivered | Khóa selected full-quantity line scope, chờ final inspection |
 | `T10` | `RETURN_REQUESTED` | `REFUNDED` | `REFUND_SUCCESS` | Persist refund result; không phát event |
 | `T10.1` | `RETURN_REQUESTED` | `RETURN_REQUESTED` | `REFUND_PROCESSING`, `REFUND_FAILED` hoặc reversed | Chỉ cập nhật `payment_status`/evidence |
 | `T10.2` | `REFUNDED` | `RETURN_REQUESTED` | `REFUND_REVERSED` for the existing refund transaction | Same case enters manual verification; không phát event |
+| `T10.3` | `RETURN_REQUESTED` | `REFUNDED` | Full-amount external payout evidence approved for existing `CUSTOMER_PAYOUT_REMEDIATION/REFUND_REVERSAL` | Case `EXTERNALLY_REMEDIATED`, `refunded_at=settled_at`; giữ `payment_status=REFUND_FAILED`; không phát provider-refund fact/notification |
 
 Invalid transition không được “sửa” bằng update không điều kiện; trả conflict/no-op
 theo ngữ cảnh và giữ state cũ. `REFUND_REVERSED` từ Payment được map thành
 `payment_status=REFUND_FAILED`, lý do gốc giữ cho escalation.
+Success evidence xuất hiện sau một Payment terminal non-capture không chạy `T3.2` và
+không hồi sinh `CANCELLED`; nó tạo financial-reconciliation obligation vì Payment v2
+không cho phép terminal provider intent capture trở lại.
 Tên trigger legacy của T8.3 là `AUTO_COMPLETE_ALL_ITEMS_DELIVERED`; implementation mới
 chỉ nhận delivery proof v1 per-line. Command action legacy cho hủy là `CANCEL_ORDER`.
 
@@ -142,8 +158,11 @@ không được cập nhật trực tiếp từ một line fact.
 | `I2` | `DISPATCHED` | `DELIVERED` | [Delivery verified fact v1](../../contracts/events/delivery/v1/asyncapi.yaml), đúng order + line + warehouse + unique proof ID/digest |
 Update I1/I2 dùng `WHERE fulfillment_status=:old`; duplicate/stale event là no-op sau
 durable inbox. Inventory physical dispatch must never be mapped to customer delivery or
-`ORDER_COMPLETED`. Sau mỗi line transition Order transactionally recalculate parent status;
-I2 của line cuối cùng mới có thể CAS master `PROCESSING -> COMPLETED`.
+`ORDER_COMPLETED`. Sau mỗi line transition Order transactionally recalculate parent status
+và gọi `TryCompleteOrder`. Cùng convergence guard chạy sau
+`PAID/FINANCIAL_RECONCILIATION_REQUIRED -> PROCESSING`, vì delivery proof có thể đã
+được persist trong lúc financial repair chưa hoàn tất. I2 hoặc convergence run cuối cùng
+mới có thể CAS master `PROCESSING -> COMPLETED`.
 Return/refund is recorded on `OrderRefundCase` and its selected line records, not
 by changing a whole delivery unit state: one delivery unit can contain both selected
 and unselected lines.
@@ -159,11 +178,19 @@ and unselected lines.
 
 Order persists a numbered attempt before it exposes Payment client data. Retry init/cancel
 always targets the same `payment_transaction_id`; `financial_state_version` only orders
-facts from that transaction. `FAILED`, `EXPIRED` or proven `CANCELED` permits the next
-attempt while the order remains eligible; `PAYMENT_SUCCESS` atomically freezes
+facts from that transaction. Release 1 only permits a next attempt after `FAILED`, trước
+immutable order payment deadline và khi Inventory/Promotion holds vẫn được giữ.
+`EXPIRED` hoặc proven `CANCELED` đi cancellation cleanup và không retry-eligible.
+`PAYMENT_SUCCESS` atomically freezes
 `captured_payment_transaction_id`. A second success, an unknown transaction, a currency or
 amount mismatch, or an event for a non-active attempt that cannot be explained as the
 captured attempt is parked in `FINANCIAL_RECONCILIATION_REQUIRED`.
+
+Payment dispute facts (`OPENED`, funds withdrawn/reinstated, won/lost) preserve the
+current master and `payment_status`. They attach to a typed `PAYMENT_DISPUTE`
+obligation and its append-only evidence/version stream under the order reconciliation
+envelope. A dispute is not a
+customer refund and cannot consume, reopen or create the lifetime refund transaction.
 
 ### 5.5. Refund case lifecycle
 
@@ -182,6 +209,13 @@ an approved `CLOSE_RETURN_WITHOUT_REFUND` decision and a matching Inventory
 The case remains manual until that receipt; master stays `RETURN_REQUESTED`, payment
 `PAID`, refund transaction null and the Buyer guard remains consumed. This is a
 closed case without payout, not master `REFUNDED`.
+
+`FAILED|MANUAL_VERIFICATION_REQUIRED -> EXTERNALLY_REMEDIATED` is allowed only through
+the audited external-financial-remediation decision for the existing payout/reversal
+obligation, with immutable evidence that the customer received exactly the locked VND
+amount. It may converge the open master lane back to `REFUNDED`, but preserves
+`payment_status=REFUND_FAILED`, the original refund transaction/reversal and all evidence.
+It emits neither the Payment-success-based `ORDER_REFUNDED` notification nor an Order fact.
 
 Scope finalization is a separate control state:
 
@@ -214,15 +248,16 @@ Mỗi order chỉ thuộc một tab, chọn theo thứ tự:
 | Ưu tiên | Điều kiện | Tab |
 |---|---|---|
 | 1 | `PENDING_PAYMENT/CANCELLING` | `TO_PAY` (cancelling shows pending resolution) |
-| 2 | `PAID/PROCESSING` và chưa line nào `DELIVERED` | `TO_SHIP` |
-| 3 | `PAID/PROCESSING` và có ít nhất một line `DELIVERED` | `TO_RECEIVE` |
+| 2 | `PAID/PROCESSING` và chưa line nào `DISPATCHED/DELIVERED` | `TO_SHIP` |
+| 3 | `PAID/PROCESSING` và có ít nhất một line `DISPATCHED/DELIVERED` | `TO_RECEIVE` |
 | 4 | `COMPLETED` và không trong return/refund | `COMPLETED` |
 | 5 | `CANCELLED` | `CANCELLED` |
 | 6 | `RETURN_REQUESTED/REFUNDED/FINANCIAL_RECONCILIATION_REQUIRED` hoặc payment refund state | `RETURN_REFUND`/manual-review UI |
 
-UI mapping: `TO_PAY=10/PENDING_PAYMENT`, `TO_SHIP=20/PROCESSING`,
-`TO_RECEIVE=30/DELIVERED`, `RETURN_REFUND=40`, `COMPLETED=50`, `CANCELLED=60`,
-fallback rank `99`.
+Optional UI sort rank: `TO_PAY=10`, `TO_SHIP=20`, `TO_RECEIVE=30`,
+`RETURN_REFUND=40`, `COMPLETED=50`, `CANCELLED=60`, fallback rank `99`. Rank chỉ
+phục vụ sắp xếp; tab luôn được derive bằng bảng precedence phía trên, không ánh xạ
+trực tiếp từ một master/line state đơn lẻ.
 
 ## 6. Quy tắc phân quyền
 
@@ -258,7 +293,7 @@ fallback rank `99`.
 | `INVALID_REFUND_SCOPE` | Line không thuộc order, trùng, quantity không đúng full line, hoặc scope rỗng | Không | HTTP 422 |
 | `ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` | Inventory không thể atomic-release toàn bộ committed lines trước dispatch | Không | HTTP 409 |
 | `PROMOTION_RECALCULATION_NEEDED` | Batch reserve promotion all-or-nothing thất bại | Có sau preview mới | HTTP 409 về Checkout |
-| `PAYMENT_TIMEOUT` | Không có success trong 15 phút | Không trên workflow cũ | Cancel + có thể recovery lane |
+| `PAYMENT_TIMEOUT` | Không có success trước immutable payment deadline | Không | Vào `CANCELLING`, resolve terminal non-capture rồi cleanup; success bất thường sau terminal non-capture chỉ mở reconciliation obligation |
 | `REFUND_WINDOW_EXPIRED` | Payment provider từ chối refund | Theo Payment policy | Failure event/Ops |
 | `MANUAL_VERIFICATION_REQUIRED` | Không có scope-inspection completion sau 30 ngày | Cần reconciliation/manual exception trên case hiện hữu; không tự bypass Payment gate | Alert/workflow state |
 | `REFUND_SCOPE_FINALIZATION_CONFLICT` | Inventory từ chối frozen close/cancel guard hoặc evidence không khớp | Cần audited reconciliation; không đổi endpoint/reason bằng retry | Finalization `CONFLICT`; operation manual review |
@@ -277,10 +312,10 @@ tự động biến một transition không hợp lệ thành hợp lệ.
    delivery/completion.
 3. Buyer gửi return lần đầu khi tất cả line delivered: CAS guard thành công và
    workflow chờ hàng hoàn. Refund fail vẫn không mở quyền submit lần hai.
-4. Payment success đến sau timeout cancellation đã được Payment xác nhận non-capture:
-   start recovery, call Inventory fenced recovery for the exact timeout-released root,
-   then forward repair; a rejected fence enters financial reconciliation, never a fresh
-   reservation/reroute or automatic refund.
+4. Payment capture thắng race khi order còn `CANCELLING`: Payment trả
+   `ALREADY_SUCCEEDED`/fact success, Order không release resource mà chuyển sang paid
+   forward repair. Một success bất thường sau terminal non-capture/`CANCELLED` chỉ tạo
+   reconciliation evidence; không tự hồi sinh order hay re-reserve Inventory.
 5. Buyer refund selected full-quantity lines: Order không gọi Promotion; wallet/budget
-   giữ nguyên; gross refund amount is capped at `final_amount_minor`. Một line inspection
+   giữ nguyên; refund amount là tổng immutable selected-line net amounts. Một line inspection
    `FAIL` vẫn không chặn Payment after Inventory completion.

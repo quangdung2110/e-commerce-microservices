@@ -1,11 +1,13 @@
 ---
 doc_id: order-adr-008
 service: order
-status: accepted
+status: superseded
 date: null
 decision_owners:
   - Architecture Team
 supersedes: drop-payment-signal-after-checkout-timeout
+superseded_by:
+  - ADR-014
 evidence:
   - docs/order/workflows.md
   - docs/order/domain.md
@@ -15,7 +17,8 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` trong thiết kế; ngày gốc và implementation evidence chưa có.
+`Superseded` bởi ADR-014. Nội dung dưới đây được giữ làm lịch sử; ngày gốc và
+implementation evidence chưa có.
 
 ## Bối cảnh
 

@@ -18,6 +18,10 @@ evidence:
 `Accepted` từ Phase 15; supersede kiến trúc CQRS Elasticsearch cũ. Ngày gốc và
 benchmark chưa được ghi.
 
+> Current authority: ADR-017 giữ PostgreSQL/`pg_trgm` nhưng thay expression
+> `unaccent(snapshot_name)` bằng pinned application-normalized `snapshot_name_search`
+> và khóa deterministic card projection.
+
 ## Bối cảnh
 
 Buyer/admin cần lọc lịch sử order và tìm theo tên sản phẩm snapshot. Elasticsearch

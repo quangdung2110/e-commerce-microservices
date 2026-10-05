@@ -1,9 +1,32 @@
+---
+doc_id: order-adr-011
+service: order
+status: accepted
+date: 2026-09-16
+decision_owners:
+  - Order Service team
+supersedes: null
+refined_by:
+  - ADR-014
+  - ADR-015
+  - ADR-018
+evidence:
+  - docs/order/domain.md
+  - docs/order/workflows.md
+  - docs/order/data.md
+---
+
 # ADR-011 — Financial Saga recovery and durable dispatch
 
 ## Status
 
 Accepted — 2026-09-16. Refines the active recovery/compensation interpretation of
 ADR-001, ADR-005, ADR-008 and ADR-010; their historical decisions remain retained.
+
+> Current authority: ADR-014 supersedes the late-timeout/fenced-recovery paragraph;
+> ADR-015 replaces direct post-inbox signaling with durable workflow messages; ADR-018
+> models independent repairs as obligations. The remaining financial-watermark and
+> stable-command rules stay active.
 
 ## Context
 

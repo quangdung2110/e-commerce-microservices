@@ -26,10 +26,12 @@ workflow, PostgreSQL transaction/locking và Kafka consumer.
 
 Khi implementation được thêm, tài liệu phải cung cấp command chính thức để cài
 dependency, start PostgreSQL/Redis/Kafka/Connect/Temporal, chạy migration, start
-HTTP server, bốn Kafka consumer và Temporal worker, kiểm tra health, rồi cleanup an toàn.
+HTTP server, bốn Kafka consumer, dispatch/reconciliation workers và Temporal worker,
+kiểm tra health, rồi cleanup an toàn.
 
 Local stack cần topic `t.order.events`, `t.payment.events.v2`, `t.inventory.order.events.v1`,
-`t.delivery.order.events.v1`, bốn consumer group, workflow dispatcher và bốn Temporal task queue. Inventory/Promotion/Payment có thể
+`t.delivery.order.events.v1`, `t.notification.transactional.v1`, bốn consumer group,
+workflow start/message dispatcher, receipt observer và ba Temporal task queue. Inventory/Promotion/Payment có thể
 mock bằng contract fixture có idempotency/retry behavior; không mock Temporal bằng
 thread sleep cho test workflow.
 
@@ -54,20 +56,38 @@ ghi tại đây.
 
 - Master/item/refund FSM, invalid transition và buyer-tab precedence.
 - Financial case outcome versus scope-finalization status; no-payout
-  `CLOSED_INCOMPLETE`, zero-receipt cancellation mapping, frozen reason after reversal.
+  `CLOSED_INCOMPLETE`, external full-payout `EXTERNALLY_REMEDIATED`, zero-receipt
+  cancellation mapping, frozen reason after reversal.
 - Pricing snapshot PLATFORM-only; customer refund không tạo promotion allocation/call.
 - Pre-payment compensation versus post-capture forward-repair/reconciliation, and deterministic replay logic.
-- Cursor encode/decode, visibility/filter mapping và accent normalization.
+- Pre-payment Inventory/Promotion compensations both run when either fails; case envelope
+  remains open until all required obligations resolve.
+- Cursor encode/decode, visibility/filter mapping, pinned accent normalization,
+  deterministic primary line và item/remaining counts.
 
 ### Integration test
 
-- PostgreSQL transaction: state + sequence + outbox + durable inbox/workflow-dispatch/checkpoint atomicity; row-lock/CAS races.
+- PostgreSQL transaction: state + sequence + multi-destination outbox + durable
+  inbox/workflow-message/dispatch/checkpoint atomicity; fixed lock-order and row-lock/CAS races.
+- Inventory/Promotion accepted receipt persist exact expiry; immutable payment deadline
+  lấy minimum có clock-skew safety, gồm race reserve gần hết hạn và replay expiry mismatch.
 - Buyer return first-write-wins; unique checkout/refund transaction constraints.
-- Search class A/B với extensions/index/view và equal timestamp cursor.
+- Search class A/B với `pg_trgm` trên `snapshot_name_search`, view tab
+  DISPATCHED/DELIVERED và equal timestamp cursor.
 - Request replay mirror hit/miss/outage/TTL expiry; duplicate events must be safe without
   Redis; durable inbox/dispatch/checkpoint remains the authority.
-- Debezium outbox at-least-once, partition key và connector restart.
-- Temporal crash/resume, timer/signal race, activity retry, workflow identity and dispatcher recovery after local commit/start failure.
+- Debezium outbox at-least-once, destination allowlist, both topics, connector restart,
+  exact receipt observer và trimmer refusal when a receipt is missing.
+- Notification command sequence: concurrent milestones cấp sequence tăng đơn điệu dưới
+  order-row lock; durable command ledger khiến duplicate `dedup_key` không tăng counter
+  kể cả sau outbox trim, payload collision bị quarantine; provider contract từ chối thiếu
+  sequence và Notification test supersede/serialize theo cùng `source + subject`.
+- Temporal crash/resume, timer/signal race, activity retry, workflow identity; inject
+  crash after DB commit before RPC and after successful `SignalWithStart` before message
+  acknowledgement; force `Continue-As-New` before dispatcher redelivery to prove carried
+  high-watermark/recent-ID dedup + DB activity idempotency prevent reapply.
+- Closed-target dispatch: test already-applied, state-superseded, open-obligation reroute,
+  ambiguous-evidence quarantine và xác nhận Workflow ID reuse không start saga cũ.
 - Financial result/no-payout decision atomically commits frozen scope intent and dispatch;
   accepted close with response loss recovers the same key; retry exhaustion/restart
   retains durable work even on financial terminal cases. Generation advances only after
@@ -84,25 +104,32 @@ SKU list, nullable completed-item variant
 snapshot, voucher toàn đơn snapshot, selected full-quantity scope, InspectionCompleted
 PASS/FAIL full evidence persistence, atomic admin pre-dispatch release attempt/case boundary,
 Checkout item `category_ids` persistence và exact Promotion Reserve context reconstruction,
-Payment attempt↔transaction/amount/currency/per-transaction financial-version validation and refund reverse
-from `REFUNDED`.
+Payment attempt↔transaction/amount/currency/per-transaction financial-version validation,
+FAILED-only retry before immutable deadline with both holds still accepted,
+refund reverse from `REFUNDED`, và đủ 5 dispute facts chỉ đi reconciliation case.
 Also test all three scope-finalization Activities/guards/reasons, conditional
-`CLOSE_RETURN_WITHOUT_REFUND` payload and evidence/identity checks, optional API
-`scope_finalization`, and the `CLOSED_INCOMPLETE` case enum. No-receipt case uses cancel;
+  `CLOSE_RETURN_WITHOUT_REFUND` payload and evidence/identity checks, optional API
+  `scope_finalization`, `CLOSED_INCOMPLETE` and `EXTERNALLY_REMEDIATED` case enums, exact
+  external payout amount/currency/customer + latest Payment-version fencing. No-receipt case uses cancel;
 received-but-uninspected fails; Admin finalization is `NOT_REQUIRED`.
 Payment fixtures phải dùng full structured CloudEvents, exact
 namespaced `type`, canonical `source`, matching `dataschema` và Kafka key
 `data.order_id`; unknown/legacy type phải được ACK/ignore theo policy, không dispatch
-bằng alias uppercase. Refund amount/multiplicity is fixed by ADR-010, not deferred.
+bằng alias uppercase. Refund amount là tổng immutable selected-line net amount được
+phân bổ discount theo largest remainder; multiplicity không deferred.
 
 ### End-to-end/failure injection
 
 Chạy checkout success, từng pre-payment failure, post-capture forward-repair failure,
-cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, fenced late
-payment recovery/manual verification, multi-warehouse physical dispatch and separate Delivery
-proof (never auto-delivery),
+cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, anomalous
+success after terminal non-capture (reconciliation only), multi-warehouse physical
+dispatch and separate Delivery proof including proof-before-dispatch replay,
 Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
-verification, refund success/fail/reverse after `REFUNDED` và Redis/Kafka/DB/Temporal outage.
+verification, refund success/fail/reverse after `REFUNDED`, dispute
+opened/funds-withdrawn/reinstated/won/lost theo thứ tự lệch mà không đổi FSM, external
+financial remediation chỉ đóng đúng financial obligation khi có settlement evidence và
+accounting reference, không phát Order fact hoặc đổi terminal FSM, cùng với
+Redis/Kafka/DB/Temporal outage.
 Add terminal success/failure close, no automatic close at 30 days, approved partial/no
 receipt closure without Payment, receipt/inspection race with pending decision, late
 completion blocked from payout, durable 409/manual correction, wrong closure receipt,
@@ -127,8 +154,9 @@ policy và CI drift check. Markdown example không phải source để generate 
 Migration đầu tiên phải tạo schema/tables/FK/check/index/view/extensions trong
 `data.md`, gồm `paid_at`, `completed_at`, `cancelled_at`, `refunded_at` và manual
 verification state.
-Migration phải add/backfill durable inbox, workflow dispatch, saga checkpoint, numbered payment
-attempt identity/version, refund evidence, reconciliation case/decision and admin attempt tables before retiring historical
+Migration phải add/backfill durable inbox, workflow dispatch/message, operation, saga
+checkpoint, numbered payment attempt identity/version, refund evidence, reconciliation
+case/obligation/evidence/decision and admin attempt tables before retiring historical
 idempotency storage. Index trigram lớn nên tạo theo kế hoạch không khóa production.
 Add finalization status/generation/receipt metadata, generation-keyed checkpoints and
 the unresolved-finalization index. Backfill Admin to `NOT_REQUIRED`; query/recover
@@ -158,7 +186,8 @@ Không update FSM trực tiếp để “gỡ kẹt” vì sẽ bỏ sequence/ou
 
 ## 10. Lỗi local thường gặp cần ghi khi có code
 
-- Extension `pg_trgm`/`unaccent` chưa bật hoặc expression index không dùng được.
+- Extension `pg_trgm` chưa bật, application normalizer lệch version hoặc trigram index
+  trên `snapshot_name_search` không dùng được.
 - Temporal worker đăng ký sai task queue/activity hoặc workflow nondeterministic.
 - Kafka Connect không route outbox/partition key đúng.
 - Redis key namespace/TTL sai làm duplicate hoặc conflict giả.

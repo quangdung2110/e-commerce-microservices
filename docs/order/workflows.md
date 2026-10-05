@@ -25,7 +25,7 @@ verified_against_commit: null
 | `WF-ORDER-002` | Search/filter order | HTTP | Buyer/Admin | proposed |
 | `WF-ORDER-003` | Cancel hoặc admin force-refund | HTTP | Buyer/Admin | proposed |
 | `WF-ORDER-004` | Checkout submit saga | HTTP + Temporal | Checkout | proposed |
-| `WF-ORDER-005` | Xử lý payment signal và late recovery | Kafka + Temporal | Payment consumer | proposed |
+| `WF-ORDER-005` | Xử lý payment signal và capture/cancel race | Kafka + durable Temporal message | Payment consumer | proposed |
 | `WF-ORDER-006` | Nhận physical-dispatch fact | Kafka | Inventory consumer | proposed |
 | `WF-ORDER-006a` | Nhận verified delivery proof | Kafka | Delivery consumer | proposed |
 | `WF-ORDER-007` | Buyer yêu cầu return one-shot | HTTP | Buyer | proposed |
@@ -59,17 +59,19 @@ multi-warehouse, promotion rỗng, snapshot nullable và order không tồn tạ
 dashboard, trực tiếp từ PostgreSQL. **Trigger:** `GET /api/v1/orders` hoặc
 `GET /api/v1/admin/orders`.
 
-**Input:** `tab` mặc định `ALL`; optional `q,from,to,cursor,limit`, order/payment
-statuses và min/max amount theo query layer. Nếu thiếu range, dùng 90 ngày gần nhất.
+**Input:** `tab` optional; bỏ qua `tab` nghĩa là lấy tất cả (không có enum `ALL`). Các
+filter optional khác là `q,created_from,created_to,cursor,limit`, `order_status`,
+`payment_status`, `min_amount_minor` và `max_amount_minor`. Nếu thiếu cả hai mốc thời
+gian, dùng 90 ngày gần nhất.
 
 **Happy path:** Gateway dựng scope Buyer/Admin. Không có `q` thì chạy class A trên
-`orders`; có `q` thì class B tìm substring accent-insensitive trên
-`order_item_lines.snapshot_name`, collapse về order rồi áp filter. Chạy count riêng
+`orders`; có `q` thì application normalize input bằng cùng pinned normalizer và class B
+tìm substring trên `order_item_lines.snapshot_name_search`, collapse về order rồi áp filter. Chạy count riêng
 với cùng filter, derive buyer tab/card fields, lấy `limit+1`, trả `total_orders`,
 `items[]`, `next_cursor`.
 
-Tên khái niệm `snapshot_product_name` trong API/search description ánh xạ tới cột
-`order_item_lines.snapshot_name`; CTE SQL cũ đặt alias `filtered` cho tập order sau
+Tên khái niệm `snapshot_product_name` trong API/search description ánh xạ display tới
+`order_item_lines.snapshot_name` và filter tới `snapshot_name_search`; CTE SQL cũ đặt alias `filtered` cho tập order sau
 filter/cursor/limit.
 
 **Pagination/idempotency:** cursor base64 chứa `(created_at_iso,order_id)`; tuple
@@ -196,16 +198,29 @@ sequenceDiagram
    `POST /internal/v1/promotion-allocation/reservations` all-or-nothing; thành công đăng ký
    `RollbackPromotionActivity` gọi `/internal/v1/promotion-allocation/cancellations`.
    Context được dựng từ line/category snapshot đã persist; `user_tier` omit/null ở v1.
-   Reserve chỉ ở submit, không ở Preview.
+   Reserve chỉ ở submit, không ở Preview. Workflow persist exact response `expires_at`;
+   một replay chỉ hợp lệ khi provider vẫn trả matching live reservation.
 4. `InitiatePaymentActivity` persists the returned `payment_attempt_number` and
    transaction ID in `order_payment_attempts`, then marks that identity active. An
    uncertain Payment create is recovered by replay/query of the same Payment key until
    one provider intent is proven; Order never continues with a blank/unknown payment.
    It returns `client_secret`, `publishable_key`, transaction ID; pre-capture cancel is
    registered only as a fact-based cancellation activity.
-5. Workflow suspend chờ payment signal 15 phút, không giữ thread/CPU.
+5. Khi initial attempt đạt `PAYMENT_READY`, workflow khóa
+   `payment_deadline_at = min(PAYMENT_READY + 15 phút,
+   orders.inventory_reservation_expires_at - clock-skew safety,
+   min(order_promotions.reservation_expires_at) - clock-skew safety)`, với safety mặc định
+   30 giây. Nếu cap không còn ở tương lai,
+   không trả client data mà đi cleanup/recalculation. Workflow suspend đến deadline này,
+   không giữ thread/CPU.
+   `PAYMENT_FAILED` kết thúc đúng attempt nhưng không nhả Inventory/Promotion; Buyer có
+   thể gửi một durable next-attempt message trước deadline. `EXPIRED/CANCELED`, explicit
+   cancel hoặc deadline chuyển sang cancellation cleanup và không cho attempt mới.
 
-Failure chạy compensation đảo ngược các bước đã thành công. Promotion failure
+Failure trước khi Payment client data sẵn sàng tạo durable cleanup obligations cho mọi
+side effect đã thành công. Sau khi Payment create được chứng minh absent/non-captured,
+Promotion và Inventory cleanup chạy độc lập (không block lẫn nhau); Order chỉ terminal
+`CANCELLED` khi cả hai receipt đã proven. Promotion failure
 phải bubble structured error cho Checkout dựng `409 PROMOTION_RECALCULATION_NEEDED`;
 Order không tự evaluate lại discount. `RollbackPromotionActivity` chỉ release
 runtime reservation, không thay wallet `USED/SAVED`.
@@ -231,8 +246,11 @@ stack:
    ([Inventory ADR-021](../inventory/decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 2. `ConfirmPromotionActivity` calls confirmations with `REDEEM_FINAL` key riêng mỗi
    promotion and replays the durable receipt after timeout/crash.
-3. `UpdateOrderStatusActivity` chuyển `PAID -> PROCESSING`; không phát generic status
-   event khi chưa có consumer.
+3. Hai forward-repair obligation được checkpoint/retry độc lập sau watermark; lỗi của
+   một obligation không ngăn obligation còn lại được thử. Khi cả hai proven,
+   `UpdateOrderStatusActivity` chuyển
+   `PAID/FINANCIAL_RECONCILIATION_REQUIRED -> PROCESSING`, gọi `TryCompleteOrder`; không
+   phát generic status event khi chưa có consumer.
 
 After the watermark no active checkout may call Inventory rollback or Promotion
 `technical-cancellations`. A failed/unknown step retains the order in `PAID` or
@@ -254,43 +272,48 @@ RFC 9457 `409`; HTTP deadline trước checkpoint trả `503 retryable=true`, v�
 retry cùng token/key/body hoặc đọc recovery resource. Đây là synchronous-to-checkpoint,
 không chờ Payment capture hay order terminal state.
 
-**Timeout/retry:** activity timeout 30 giây, retry tối đa 3; remote technical
+**Timeout/retry:** activity attempt timeout 30 giây, retry tối đa 3 trước khi chuyển
+sang durable recovery/reconciliation; remote technical
 timeout is never treated as a negative business outcome: query/replay the exact command
-ID first. Workflow timeout 30 phút gồm payment window 15 phút và pre-payment rollback
-buffer; post-capture repair has its own durable recovery lane. A committed workflow
+ID first. Không dùng Workflow Execution Timeout 30 phút làm correctness boundary:
+payment window vẫn là 15 phút, còn cleanup/repair tiếp tục bằng checkpoint, reconciler
+và `Continue-As-New` khi history đạt ngưỡng. Trước rollover, workflow carry per-stream
+revision high-watermarks và bounded recent `message_id` set trong new-run input; API
+message không có provider revision dùng stable operation/message identity. Không dựa vào
+run history cũ để dedup. A committed workflow
 dispatch record is written before API reports accepted; its dispatcher start/attaches the
 fixed workflow ID after crash. Test phải inject failure tại từng activity, crash/resume,
 duplicate submit, stale token, all-or-nothing promotion failure, signal/timer race,
 stored-response replay/payload mismatch và từng post-capture forward-repair outcome.
 
-## WF-ORDER-005 — Payment signal và late-payment recovery
+## WF-ORDER-005 — Payment signal và capture/cancel race
 
-**Mục tiêu:** route payment/refund event đúng workflow; không drop khoản thanh toán
-thành công đến sau checkout timeout.
+**Mục tiêu:** route payment/refund event đúng workflow, resolve capture/cancel race khi
+order còn active và quarantine mọi success mâu thuẫn với terminal non-capture.
 
 **Trigger:** `order-payment-consumer` nhận `t.payment.events.v2`, dispatch theo exact
-namespaced CloudEvents `type` trong Payment AsyncAPI v2. Before signaling it validates
+namespaced CloudEvents `type` trong Payment AsyncAPI v2. Before accepting/routing it validates
 full structured CloudEvent, `dataschema`, `(source,id)`, `order_id`, a persisted
 `payment_attempt_number`/transaction mapping, VND amount, currency and monotonic
-`financial_state_version` **per transaction**; then inserts a durable inbox
-record in the same local transaction as any financial-routing state. Redis is only an
-optional accelerator. It routes by persisted order/payment identity, not aggregate ID.
+`financial_state_version` **per transaction**; then inserts a durable inbox record và
+durable workflow message trong cùng local transaction với routing checkpoint. Kafka ACK
+sau commit này; dispatcher dùng `SignalWithStart`, workflow dedup theo
+`message_id=scope(source,event_id,target_workflow_id,message_type)`. Raw event ID alone
+is not a cross-source/target identity. Redis is only an optional accelerator. It routes by persisted
+order/payment identity, not aggregate ID.
 
-**Active checkout:** matching active-attempt `PAYMENT_SUCCESS` signals `PaymentResult.SUCCESS`; workflow
-commits `PAID`, phát `com.ecommerce.order.paid.v1`, runs forward repair. `PAYMENT_FAILED/EXPIRED` signals
-pre-payment failure; cancellation still requires the Payment non-capture fact. Consumer
-does not directly commit master financial FSM.
+**Active checkout:** matching active-attempt `PAYMENT_SUCCESS` sends durable
+`PaymentResult.SUCCESS`; workflow commits `PAID`, phát `com.ecommerce.order.paid.v1`,
+runs forward repair. `PAYMENT_FAILED` marks only that attempt terminal and keeps the order
+`PENDING_PAYMENT`/holds intact until next attempt or deadline. `PAYMENT_EXPIRED/CANCELED`
+enters cancellation cleanup. Consumer does not directly commit master financial FSM.
 
-**Late success:** only a matching success for the cancelled attempt after a timeout
-cancellation starts/attaches
-`order-late-payment-recovery-{order_id}` via durable dispatch. Recovery calls Inventory
-`RecoverTimedOutPayment` with a stable command ID: it may commit only the original root
-released for `RESERVATION_EXPIRED`, with full original stock still available and no
-dispatch. It never performs a new Reserve/reroute. On success Order enters paid forward
-repair, re-reserves and confirms Promotion only if its pre-payment reservation was
-released. If Inventory recovery or subsequent Promotion repair cannot prove completion,
-Order enters `FINANCIAL_RECONCILIATION_REQUIRED`; no automatic refund or business rollback
-is allowed.
+**Capture/cancel race:** trong `CANCELLING`, matching `PAYMENT_SUCCESS` hoặc synchronous
+`ALREADY_SUCCEEDED` thắng race và chuyển sang paid forward repair; không chạy cleanup
+chưa thực hiện. Sau durable terminal non-capture và `CANCELLED`, Payment v2 không cho
+intent capture lại. Bất kỳ provider evidence trái invariant này được persist vào
+`CAPTURE_AFTER_TERMINAL_NON_CAPTURE` reconciliation obligation và không tự chuyển master,
+re-reserve Inventory hay tạo refund.
 
 **Refund events:** processing/success/fail/reverse route the existing
 `order-refund-{order_id}` case. `REFUND_REVERSED` may reopen a previously `REFUNDED`
@@ -298,13 +321,32 @@ master into `RETURN_REQUESTED` with `payment_status=REFUND_FAILED` and case
 `MANUAL_VERIFICATION_REQUIRED`; it never publishes an unconsumed failure event or creates another
 refund transaction.
 
-**Race/idempotency:** Temporal history serializes a signal/timer only after the consumer
-has validated and durably recorded the fact. Duplicate/stale events are no-ops by inbox
+**Dispute events:** all five `DISPUTE_*` types attach/update a typed `PAYMENT_DISPUTE`
+obligation dưới durable reconciliation case envelope, với dispute identity,
+funds/outcome và version evidence. They do not signal checkout/refund FSM, do not rewrite
+`payment_status`/master fulfillment, do not release resource and never create a
+refund. `DISPUTE_LOST` requires Accounting escalation; won/reinstated may resolve the
+financial case only when all evidence/checkpoints agree.
+
+**Race/idempotency:** Temporal history serializes a dispatcher-delivered signal/timer only
+after the consumer has validated and durably recorded the fact/message. Duplicate/stale events are no-ops by inbox
 and financial version, not request replay TTL. Test cần event duplicate/out-of-order, wrong
-transaction/amount/currency, workflow not found, timeout-before/signal-before,
-cancellation reason khác timeout, Inventory fenced recovery success/rejection, Promotion
+transaction/amount/currency, workflow not found, timeout-before/message-before,
+cancellation reason khác timeout, anomalous success-after-terminal quarantine, Promotion
 repair failure -> financial reconciliation without a Payment refund command, and refund
-reverse after Order already marked `REFUNDED`.
+reverse after Order already marked `REFUNDED`, and every dispute/funds ordering without
+changing Order/payment/refund FSM.
+
+Dispatcher redelivery còn được dedup bằng stable `message_id` trước activity. Workflow
+carry stream high-watermarks + bounded recent IDs qua `Continue-As-New`; local activity
+vẫn row-lock/CAS/check checkpoint nên duplicate không thể double-apply dù crash xảy ra
+sau Temporal accept nhưng trước dispatcher acknowledgement.
+
+Nếu `SignalWithStart` gặp closed target chain, Workflow ID reuse policy cấm start lại
+saga. Dispatcher không tự coi là thành công: reconciler phải chứng minh message đã
+`APPLIED`/bị state mới supersede rồi ghi `ALREADY_APPLIED|STALE_NOOP`, hoặc atomically
+tạo replacement message/dispatch tới named recovery/convergence workflow và ghi
+`REROUTED`. Không đủ proof thì giữ retry/quarantine + alert.
 
 ## WF-ORDER-006 — Nhận physical-dispatch fact
 
@@ -345,11 +387,15 @@ another line, and CASes exactly that line `DISPATCHED -> DELIVERED`. It persists
 the parent `order_items.status`, and only after a locked `NOT EXISTS` check for any
 non-`DELIVERED` line CASes master `PROCESSING -> COMPLETED` plus `ORDER_COMPLETED` outbox.
 
-**Failure/race:** duplicate event/proof or stale revision is a no-op; bad mapping or a
-proof before dispatch is parked, not coerced into a state change. DB/outbox failure is not
-ACKed. Tests cover partial delivery across warehouses, same proof on two lines, duplicate
-and out-of-order proof, final-line CAS race, and the invariant that buyer return cannot
-start until every line is delivered.
+**Failure/race:** duplicate event/proof or stale revision is a no-op; bad mapping is
+quarantined. Một proof hợp lệ đến trước dispatch được persist `PENDING_PREREQUISITE` và
+ACK sau khi inbox + convergence work commit; dispatch transition của chính line đó đánh
+thức replay. Nó không bị ACK rồi bỏ quên và không bị coerced thành delivery sớm. DB/outbox
+failure is not ACKed. `TryCompleteOrder` khóa master và chạy cả sau final-line proof lẫn
+sau financial repair về `PROCESSING`, tránh missed-final-event race. Tests cover partial
+delivery across warehouses, same proof on two lines, duplicate/out-of-order proof,
+concurrent final lines, proof-before-dispatch replay, delivery-while-master-PAID và invariant
+Buyer return chỉ mở sau khi mọi line delivered.
 
 ## WF-ORDER-007 — Buyer yêu cầu return one-shot
 
@@ -450,9 +496,12 @@ release (including recovery of an uncertain command through its command outcome)
 Order to atomically persist the response evidence, create the lifetime case and transition
 to `RETURN_REQUESTED`. A rejected/mixed/dispatched release is a terminal attempt with no
 Order case, no scope and no Buyer one-shot guard burned. Buyer then
-transitions `COMPLETED -> RETURN_REQUESTED`, locks selected `order_line_id` and each
-line's full quantity, snapshots price and locks
-`min(sum(quantity * unit_price_minor), final_amount_minor)`, then calls `RegisterRefundScope`.
+  transitions `COMPLETED -> RETURN_REQUESTED`, locks selected `order_line_id` and each
+  line's full quantity, snapshots gross/discount-share/net amounts and locks
+  `sum(selected_line.net_amount_minor)`. Discount share was allocated once at checkout by
+  proportional largest-remainder over immutable line gross values, so a proper subset
+  cannot consume the full-order payment merely because its gross value is large. It then
+  calls `RegisterRefundScope`.
 Consumer receives
 `com.ecommerce.inventory.refund.all-items-inspection-completed.v1`, dedups and
 signals only when `refund_scope_id`, request and every line/counter match the case. In
@@ -461,11 +510,17 @@ completion time and the complete expected/received/passed/failed counters before
 Payment command. Admin persists Inventory command ID, correlation ID, reservation
 revision, exact released line IDs and response digest before Payment.
 Mixed/all inspection `FAIL` is still a valid completion fact and therefore calls
-Payment. Admin does not register a scope and retains `PAID/PROCESSING` while calling
+  Payment. A durable RegisterRefundScope rejection or identity mismatch moves the existing
+  case/operation to manual review; it never deletes the case, resets the Buyer guard or
+  initiates Payment. Admin does not register a scope and retains `PAID/PROCESSING` while calling
 `ReleaseCommittedOrderBeforeDispatch`; only its all-line atomic success transitions
 to `RETURN_REQUESTED`, locks `orders.final_amount_minor`, and continues. Any
-dispatched/mixed result rejects with no stock movement. Only after the applicable
-evidence creates the unique `refund_transaction_id`, set `REFUNDING` and call Payment.
+  dispatched/mixed result rejects with no stock movement. Only after applicable evidence
+  Order persists a stable Payment-refund command/checkpoint and sets `REFUNDING`, then
+  calls Payment. Payment owns creation of `refund_transaction_id`; Order binds the returned
+  ID before processing its result. Nếu Kafka result wins the HTTP-response race, inbox giữ
+  event ở `PENDING_IDENTITY_BIND`, replay/query cùng refund command để bind ID, rồi mới
+  phát durable workflow message—không reject nhầm và không tạo command thứ hai.
 Success commits `payment_status=REFUNDED`, master `REFUNDED`, case `SUCCEEDED` and,
 for Buyer, the frozen `CLOSE` intent/checkpoint/durable dispatch in one transaction.
 `CloseRefundScopeActivity` then calls Inventory outside that transaction and persists
@@ -474,10 +529,13 @@ integration fact is emitted; the existing `ORDER_REFUNDED` notification request 
 in the financial-success transaction and is not emitted again on scope closure.
 
 **Promotion and amount boundary:** Buyer selected-line refund does not call Promotion
-or publish a Promotion-facing event. Voucher remains a whole-order
-benefit; wallet stays `USED` and budget stays consumed. The only amount calculation is
-the gross selected-line snapshot value capped at `orders.final_amount_minor`; discounts are
-not re-prorated. Admin pre-dispatch amount is `orders.final_amount_minor`.
+or publish a Promotion-facing event. Voucher remains a whole-order benefit; wallet stays
+`USED` and budget stays consumed. Order allocates `orders.total_discount_minor` exactly
+once across immutable lines at checkout, proportional to gross value with deterministic
+largest-remainder tie-break by `order_line_id`; shares sum exactly to the order discount.
+Buyer amount is the sum of selected line net amounts and therefore never exceeds
+`orders.final_amount_minor`. Refund time never recalculates Promotion. Admin pre-dispatch
+amount is `orders.final_amount_minor`.
 
 **Timeout/manual recovery:** chờ Inventory tối đa 30 ngày. Quá hạn alert Ops và
 vào lane `MANUAL_VERIFICATION_REQUIRED` and creates/attaches the durable reconciliation
@@ -489,7 +547,10 @@ still awaiting final inspection prevent the decision. Manual fulfillment/account
 resolutions cannot substitute for these scope guards or fabricate a payout.
 
 **Payment failure/reverse:** a normal failure keeps master `RETURN_REQUESTED`, sets
-`payment_status=REFUND_FAILED` and case `FAILED`; Buyer also freezes `CLOSE` with
+`payment_status=REFUND_FAILED` and case `FAILED`; it also opens a typed
+`CUSTOMER_PAYOUT_REMEDIATION` obligation, so the public operation remains
+`MANUAL_REVIEW_REQUIRED` until Finance/Accounting records a permitted resolution. Buyer
+also freezes `CLOSE` with
 reason `REJECTED` and completes/recovers that Inventory command. `REJECTED` is a
 terminal payout outcome, not inspection `FAIL`. Buyer guard không reset.
 `REFUND_PROCESSING` giữ/set `REFUNDING` and does not trigger closure. A `REFUND_REVERSED` after
@@ -557,24 +618,28 @@ closure with no second Payment refund or Inventory scope.
 **Mục tiêu:** giải phóng tài nguyên và cancel order nếu không thanh toán trong 15
 phút, đồng thời vẫn xử lý an toàn payment success đến muộn.
 
-**Trigger:** Temporal timer chạy song song với `PaymentResult`. Khi timer wins,
+**Trigger:** immutable order payment-deadline timer chạy song song với durable
+`PaymentResult`/next-attempt messages. Khi timer wins,
 workflow first commits `CANCELLING` and its durable cancellation dispatch, then calls
 Payment cancel with the stable key. Only matching `CANCELED`/`ALREADY_NON_CAPTURED`
-permits `RollbackPromotion -> RollbackInventory -> CancelOrderActivity`, then commit
-`CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` without an outbound event.
+permits independent durable Promotion/Inventory cleanup obligations. Both are attempted
+even when one dependency is unavailable; only after both receipts are proven does
+`CancelOrderActivity` commit `CANCELLED`, `cancel_reason=PAYMENT_TIMEOUT` without an
+Order fact event (the cancellation Notification command is still transactional).
 
 **Race:** if payment signal/cancel response says `ALREADY_SUCCEEDED`, the timer must
 not release inventory/promotion or publish cancellation; it enters paid forward repair.
-If a confirmed non-capture timeout cancellation closes the workflow, a later matching
-success is routed to `WF-ORDER-005` fenced late recovery. Promotion reservation grace
-60 giây trước confirm giảm race ở biên but does not authorize post-capture rollback.
+After confirmed terminal non-capture and `CANCELLED`, a later success assertion is a
+Payment-contract anomaly routed to reconciliation, never fenced re-reservation. Promotion
+reservation grace 60 giây trước confirm giảm race ở biên but does not authorize
+post-capture rollback.
 
 **Recovery/metrics:** every uncertain Payment/Inventory/Promotion response is
 query/replayed with its stable command identity before any compensating decision.
 Failure cần alert và workflow visibility để resume/manual action, không được đánh dấu
 cancel hoàn tất khi Payment non-capture or resource cleanup chưa được chứng minh. Test
 gồm timer chính xác, crash/resume, từng uncertain outcome, cancel/capture race,
-duplicate timer/signal và late recovery.
+duplicate timer/signal và anomalous success sau terminal non-capture.
 
 ## WF-ORDER-010 — Financial reconciliation decision
 
@@ -583,9 +648,10 @@ không “sửa thẳng” trạng thái Order hoặc suy đoán payment/refund 
 
 **Trigger/input:** Finance/Ops workload gọi
 [`POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions`](../../contracts/http/order/internal/v1/openapi.yaml)
-với `case_id`, `expected_case_revision`, `decision_id`, evidence references/digest và một
+với `case_id`, `obligation_id`, `expected_case_revision`, `decision_id`, evidence references/digest và một
 `resolution_type`: `RESUME_FORWARD_REPAIR`, `CLOSE_AS_MANUAL_FULFILLMENT`,
-`ESCALATE_TO_ACCOUNTING`, or `CLOSE_RETURN_WITHOUT_REFUND`. The last requires
+`ESCALATE_TO_ACCOUNTING`, `CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION`, or
+`CLOSE_RETURN_WITHOUT_REFUND`. The last requires
 `return_closure {refund_request_id, refund_scope_id, reason}`.
 
 **Guards:** order phải có `FINANCIAL_RECONCILIATION_REQUIRED`, refund case
@@ -595,7 +661,8 @@ repair may preserve financially `SUCCEEDED`/`FAILED` cases and master `REFUNDED`
 `decision_id` is
 idempotent with a canonical payload hash. The server locks case revision, verifies every
 evidence reference comes from a persisted Payment/Inventory/Promotion checkpoint or
-provider reconciliation result, writes the decision/outbox atomically and starts/attaches
+provider reconciliation result, appends the decision against exactly one typed obligation,
+advances the case-envelope revision atomically and starts/attaches
 only its stable repair workflow. No-payout closure additionally requires the same Buyer
 case in `MANUAL_VERIFICATION_REQUIRED`, no refund transaction or accepted/unknown
 Payment initiation checkpoint, no full completion evidence, and a durable matching
@@ -608,6 +675,20 @@ initiation/resume while it is unresolved; Inventory revalidates at command commi
 facts unchanged. `CLOSE_AS_MANUAL_FULFILLMENT` closes the case with accountability but does
 not emit an Order integration event or change Payment. `ESCALATE_TO_ACCOUNTING` creates an external
 accounting work reference and leaves the Order financial state pending.
+`CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION` requires that accounting reference plus
+immutable Payment/provider reconciliation evidence that the unexpected charge, reversed
+refund, payout duty or dispute balance was actually settled. It is permitted only for
+`CAPTURE_AFTER_TERMINAL_NON_CAPTURE`, `REFUND_REVERSAL`,
+`CUSTOMER_PAYOUT_REMEDIATION` or `PAYMENT_DISPUTE`; it closes that obligation without
+changing Payment/provider facts, reviving `CANCELLED` or emitting a false Order fact.
+For `CUSTOMER_PAYOUT_REMEDIATION`/`REFUND_REVERSAL` on the lifetime case, exact evidence
+that the customer received the full locked VND amount plus latest Payment terminal/version
+proof is rechecked under the order/case lock, then atomically sets case
+`EXTERNALLY_REMEDIATED` and may converge master `RETURN_REQUESTED -> REFUNDED`, while
+keeping `payment_status=REFUND_FAILED`; it emits no `ORDER_REFUNDED` notification/fact.
+Provider success that wins the lock/version race rejects this decision. Contradictory
+success after commit becomes a new financial anomaly; it never silently overwrites the
+external-settlement audit trail.
 `CLOSE_RETURN_WITHOUT_REFUND` dispatches only the bound scope finalization in WF-ORDER-008a;
 it cannot pay a partial return. `CLOSE_AS_MANUAL_FULFILLMENT` cannot close a Buyer case
 with an unfinalized scope; use the explicit return decision instead. A prior no-payout
@@ -628,32 +709,47 @@ Tests cover unauthorized caller, evidence from another order, duplicate/conflict
 decision, manual fulfillment without financial mutation, and resume of an unknown remote
 outcome via its original checkpoint only, no-payout decision conditional payload/identity,
 received-but-uninspected rejection, concurrent completion versus manual close, and
-reconciliation remaining open until a matching Inventory closure receipt.
+reconciliation remaining open until a matching Inventory closure receipt. External
+remediation tests must reject partial/wrong-currency/wrong-customer evidence, preserve
+Payment reversal facts, keep `CANCELLED` terminal, and converge a full customer payout
+exactly once without publishing `ORDER_REFUNDED`.
 
 ## WF-ORDER-011 — Buyer tạo payment attempt kế tiếp
 
 **Mục tiêu:** cho Buyer tiếp tục thanh toán mà không tái sử dụng transaction identity
 cũ. **Trigger:** `POST /api/v1/orders/{order_id}/payment-attempts` với mandatory
-`Idempotency-Key`; Redis mirror `order:req:payment-attempt:{key}` TTL 7 ngày;
+`Idempotency-Key`; Redis mirror được scope theo principal/action/key TTL 7 ngày;
 `GET .../payment-attempts/{attempt_number}` đọc lại attempt.
 
-**Guards:** Buyer sở hữu order; order vẫn ở payment-eligible lane; không có captured
-transaction; attempt trước phải có durable terminal non-capture fact `FAILED`, `EXPIRED`
-hoặc `CANCELED`. API không nhận amount/provider; Order dùng immutable
-`orders.final_amount_minor`, currency `VND` và next monotonic attempt number.
+**Guards:** Buyer sở hữu order; order là `PENDING_PAYMENT`; immutable
+`payment_deadline_at` chưa qua; không có captured transaction; Inventory/Promotion hold
+checkpoints vẫn accepted và chưa cleanup; attempt trước phải có durable `FAILED` fact.
+`EXPIRED/CANCELED`, `CANCELLING/CANCELLED` và unknown Payment create đều không đủ điều
+kiện. API không nhận amount/provider; Order dùng immutable `orders.final_amount_minor`,
+currency `VND` và next monotonic attempt number.
 
-**Happy path:** trong local transaction Order persist stable Payment command/checkpoint
-cho attempt number kế tiếp. Activity gọi Payment với idempotency key ổn định; ambiguous
-outcome được query/replay, không tạo attempt khác. Khi transaction ID và client data đã
-được checkpoint, API trả `201`; cùng request replay `200`. `client_secret` không được Order
-lưu; mỗi lần đọc (replay, `GET payment-attempts`, Checkout recovery) Order gọi Payment
+**Happy path:** trong local transaction Order persist scoped request identity/digest,
+operation reference và durable `RequestNextPaymentAttempt` workflow message. Checkout
+workflow rechecks deadline/holds dưới order lock, rồi persist stable Payment
+command/checkpoint cho attempt number kế tiếp. Activity gọi Payment với idempotency key ổn định; ambiguous
+outcome được query/replay, không tạo attempt khác. API trả `202` cùng operation ngay sau
+local commit; replay cùng key/body trả đúng operation đó. Khi operation đã `SUCCEEDED`,
+client đọc numbered attempt. `client_secret` không được Order lưu; mỗi lần đọc
+(`GET payment-attempts`, Checkout recovery) Order gọi Payment
 `GET /v1/payments/{transactionId}/client-data`, chỉ nhận được secret khi attempt còn
 active `PENDING`, và mọi response dùng `Cache-Control: private, no-store`.
 
-**Failure/race:** state/one-shot/idempotency conflict trả 409; unknown dependency outcome
-trả 503 retryable và caller dùng cùng key. Concurrent retry requests chỉ một numbered
+**Failure/race:** state/deadline/hold/idempotency conflict trước acceptance trả 409; DB
+acceptance failure trả 503 và caller dùng cùng key. Unknown downstream outcome sau
+acceptance giữ operation `RUNNING`/`MANUAL_REVIEW_REQUIRED`, không đổi thành HTTP failure.
+Concurrent retry requests chỉ một numbered
 attempt thắng. PAYMENT_SUCCESS đồng thời freeze captured identity như WF-ORDER-005;
-request retry sau capture bị reject và không thể mint transaction thứ hai.
+request retry sau capture bị reject và không thể mint transaction thứ hai. Deadline thắng
+message thì workflow enters `CANCELLING`; message maps to a rejected operation and cannot
+run after cleanup. Nếu message thắng ngay trước deadline nhưng Payment create chưa hoàn
+tất khi timer fire, deadline vẫn không được gia hạn: workflow resolve/cancel đúng same
+transaction ID; operation không được `SUCCEEDED` với usable client data, unknown cancel
+đi `MANUAL_REVIEW_REQUIRED` thay vì tạo attempt khác.
 
 ## Tình huống kiểm thử xuyên suốt
 
@@ -661,7 +757,10 @@ request retry sau capture bị reject và không thể mint transaction thứ ha
 - Request duplicate khi Redis còn key, mất key và quá TTL; event duplicate phải an toàn
   không cần Redis event key.
 - Workflow replay/determinism sau restart hoặc deploy mixed version.
-- Concurrent cancel, return, payment success, Inventory ship và refund result.
+- Concurrent cancel, failed-attempt retry, payment success, return, Inventory ship và refund result.
+- Crash tại DB-inbox commit trước Temporal RPC, signal accepted trước Kafka ACK, và
+  workflow-message duplicate; mọi trường hợp phải hội tụ đúng một business transition.
 - Multi-warehouse isolation; tất cả buyer-tab precedence và search cursor.
 - Không log PII/client secret; Buyer/Admin/service identity authorization.
-- CDC at-least-once duplicate, connector lag và outbox cleanup watermark.
+- CDC at-least-once duplicate, connector/receipt-observer lag và trimmer chỉ xóa khi
+  exact `(event_id,destination_topic)` receipt đã qua safety delay.

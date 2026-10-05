@@ -24,6 +24,10 @@ evidence:
 `Accepted` — 2026-09-15. ADR này thay thế phần scope/gate của ADR-006. Lịch sử
 ADR-006 vẫn được giữ nguyên; quyết định mới là authority cho Release 1.
 
+> Current authority: ADR-014 thay late-payment paragraph; ADR-017 thay gross-cap amount
+> formula bằng tổng immutable selected-line net amounts. Lifetime case/full-quantity
+> scope và Inventory gate của ADR này vẫn hiệu lực.
+
 ## Bối cảnh
 
 Thiết kế cũ dùng đồng thời các từ `FULL/PARTIAL`, `order item` và “một scope đang

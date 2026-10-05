@@ -22,6 +22,9 @@ evidence:
 `Accepted` — 2026-09-18. ADR này chỉ refine một phần ADR-005; lịch sử ADR-005
 không bị sửa. Redis không là source of truth cho Order.
 
+> Current authority: ADR-017 scopes every mirror key by principal/action and a hash of
+> the caller key; durable request identity/digest remains authoritative.
+
 ## Bối cảnh
 
 ADR-011 đã đưa durable inbox, workflow dispatch và remote-command checkpoint vào

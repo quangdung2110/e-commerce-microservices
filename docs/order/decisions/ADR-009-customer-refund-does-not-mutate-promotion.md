@@ -16,7 +16,10 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` ở mức boundary liên service; chưa implemented. Supersede ADR-007.
+`Accepted` ở mức boundary liên service; chưa implemented. Supersede ADR-007. Mọi
+ví dụ many/partial refund trong ADR này là bối cảnh lịch sử; amount/multiplicity đã
+được ADR-010 và Payment ADR-011/019 khóa thành một selected full-quantity scope,
+một refund trọn đời/order.
 
 ## Bối cảnh
 
@@ -27,15 +30,15 @@ chưa phải quyết định của ADR này.
 
 ## Quyết định
 
-- Customer refund partial, nhiều partial hoặc full-order không gọi Promotion.
+- Customer refund theo policy hiện hành không gọi Promotion.
 - Order không phát refunded event khi chưa có consumer; Promotion không consume refund.
 - Wallet giữ `USED`; Promotion used quantity/budget không giảm; voucher không được tái cấp.
 - `order_promotions` tiếp tục là voucher toàn đơn snapshot cho lịch sử/đối soát, không là
   line allocation.
 - Pre-payment cancel và post-confirm technical `cancel-confirmed` vẫn là checkout saga
   compensation, không phải customer refund.
-- Chính sách amount và multiplicity của partial refund sẽ được chốt khi refactor
-  Order/Payment; boundary Promotion ở trên không phụ thuộc kết quả đó.
+- Amount/multiplicity theo ADR-010 và Payment ADR-011/019; boundary Promotion ở
+  trên không phụ thuộc selected scope.
 
 ## Phương án đã cân nhắc
 
