@@ -403,6 +403,50 @@ func TestPostgresReapExpiredLeases(t *testing.T) {
 	assert.True(t, row.WasLeaseExpired())
 }
 
+// The reaper's lease_expired marker survives release and retry (layer C3 must
+// still apply after a lane pause / breaker / ordering-busy release) and is
+// cleared only by an ops redrive.
+func TestPostgresLeaseExpiredMarkerIsSticky(t *testing.T) {
+	ctx := context.Background()
+	ids := insertDeliveries(t, 2, entity.LaneCritical, entity.ChannelEmail)
+	require.Len(t, claimIDs(t, entity.LaneCritical, entity.ChannelEmail, "dead", time.Millisecond, ids...), 2)
+	time.Sleep(20 * time.Millisecond)
+	_, err := testStore.Deliveries().ReapExpiredLeases(ctx, time.Now().UTC())
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	require.Len(t, claimIDs(t, entity.LaneCritical, entity.ChannelEmail, "w", 10*time.Minute, ids...), 2)
+	ok, err := testStore.Deliveries().Release(ctx, ids[0], "w", now, entity.ReasonRateLimited)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, getDelivery(t, ids[0]).WasLeaseExpired(), "release must not erase the C3 marker")
+
+	ok, err = testStore.Deliveries().MarkRetry(ctx, ids[1], "w", now, entity.ReasonProviderError, "503")
+	require.NoError(t, err)
+	require.True(t, ok)
+	d := getDelivery(t, ids[1])
+	assert.True(t, d.WasLeaseExpired(), "retry must not erase the C3 marker")
+	assert.Equal(t, "503", *d.LastError)
+
+	// Without the marker a release still records its own code. (Claim takes
+	// every ready row of the lane, so ids[0] is re-claimed here too.)
+	plain := insertDeliveries(t, 1, entity.LaneCritical, entity.ChannelEmail)
+	require.Len(t, claimIDs(t, entity.LaneCritical, entity.ChannelEmail, "w", 10*time.Minute, plain[0], ids[0]), 2)
+	ok, err = testStore.Deliveries().Release(ctx, plain[0], "w", now.Add(time.Hour), entity.ReasonBreakerOpen)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, entity.ReasonBreakerOpen, *getDelivery(t, plain[0]).LastErrorCode)
+
+	// Ops redrive is an explicit decision to resend: the marker goes.
+	ok, err = testStore.Deliveries().MarkFinal(ctx, ids[0], "w", entity.StatusFailed, entity.ReasonLeaseExpired, "", now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	redriven, err := testStore.Deliveries().Redrive(ctx, ids[0], nil, now)
+	require.NoError(t, err)
+	assert.False(t, redriven.WasLeaseExpired())
+	assert.NotNil(t, redriven.LastError, "error text is kept as history")
+}
+
 func TestPostgresTransitionTrackedRanking(t *testing.T) {
 	ctx := context.Background()
 	ids := insertDeliveries(t, 1, entity.LaneBulk, entity.ChannelEmail)

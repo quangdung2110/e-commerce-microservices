@@ -114,6 +114,8 @@ Nếu 0 row, worker biết mình đã thua cuộc đua và không làm gì thêm
 
 Cùng một cơ chế kỹ thuật, các hậu quả khác nhau — vì "hậu quả nhìn từ user" khác nhau theo lane và kênh.
 
+**Dấu `lease_expired` là dính (sticky).** Giữa lúc reaper trả row về và lúc row thật sự được gửi lại, row có thể bị `release` (lane pause, breaker mở, hết token, ordering lease bận) hoặc `schedule_retry` (provider lỗi tạm thời). Cả hai **giữ nguyên** `last_error_code = lease_expired` nếu row đang mang nó — nếu không, một lần pause lane giữa chừng sẽ xoá dấu và OTP bị gửi lại ở lần claim sau. Dấu chỉ hết khi gửi thành công, hoặc khi ops redrive (`FAILED/EXPIRED → PENDING`, `last_error_code = NULLIF(..., 'lease_expired')`) — redrive là quyết định chủ động gửi lại của người vận hành, `last_error` vẫn giữ làm lịch sử.
+
 ### Lớp D — Event Notification tự phát ra: outbox và id sinh sớm
 
 Notification publish `notification.delivered.v1`, `notification.bounced.v1` cho Analytics/User. Để consumer phía họ dedup được, phải làm đúng điều đòi hỏi ở Auth: **cùng sự kiện → cùng id, kể cả khi publish lại**. Cách duy nhất là outbox:

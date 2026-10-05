@@ -32,6 +32,7 @@ Mỗi test dưới đây gắn với một quyết định; PR làm test fail ph
 | IT-IDEM-05 | Bơm cùng event SES `Delivery` 2 lần vào SNS | 1 `provider_event` (dedup), delivery `DELIVERED` một lần, 1 event outbox | Lớp D + Track dedup |
 | IT-IDEM-06 | Bơm `Delivery` rồi `Send` (ngược thứ tự), rồi `Bounce` | Trạng thái cuối `BOUNCED`; `Send` không hạ trạng thái | State ranking |
 | IT-IDEM-07 | Bơm `Delivery` **trước khi** worker commit `provider_message_id` (tạm dừng worker) | Event `UNMATCHED` rồi `PROCESSED` sau khi worker commit; không mất event | Race correlate |
+| IT-IDEM-08 | Row bị reaper trả về (`lease_expired`) rồi bị `release` (pause lane) / `schedule_retry` trước khi gửi lại; sau đó ops redrive | `lease_expired` còn nguyên sau release/retry (critical vẫn không gửi lại); redrive xoá dấu, giữ `last_error` | Lớp C3 dính (04-idempotency.md §3) |
 
 ### 2.2 Lane và chính sách preference (D-01, D-10, D-11)
 

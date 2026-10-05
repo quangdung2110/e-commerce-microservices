@@ -150,6 +150,12 @@ func (r *DeliveryRepository) ExtendLease(ctx context.Context, ids []uuid.UUID, w
 	return mapError(err)
 }
 
+// stickyLeaseExpired keeps the reaper's lease_expired marker through a
+// release or retry: the row was already handed to a provider once, so the
+// layer-C3 lane policy must still apply on the next claim (04-idempotency.md
+// §3). Only a successful send ends it, or an ops redrive clears it.
+const stickyLeaseExpired = `CASE WHEN last_error_code = 'lease_expired' THEN last_error_code ELSE $4 END`
+
 // Release puts a claimed row back without counting the attempt (breaker
 // open, no rate-limit token, lane paused).
 func (r *DeliveryRepository) Release(ctx context.Context, id uuid.UUID, workerID string, nextAttemptAt time.Time, errorCode string) (bool, error) {
@@ -158,7 +164,7 @@ func (r *DeliveryRepository) Release(ctx context.Context, id uuid.UUID, workerID
 		SET    status          = 'RETRY',
 		       attempt         = GREATEST(attempt - 1, 0),
 		       next_attempt_at = $3,
-		       last_error_code = $4,
+		       last_error_code = ` + stickyLeaseExpired + `,
 		       lease_until     = NULL,
 		       locked_by       = NULL,
 		       updated_at      = $5
@@ -188,7 +194,7 @@ func (r *DeliveryRepository) MarkRetry(ctx context.Context, id uuid.UUID, worker
 		UPDATE notification_delivery
 		SET    status          = 'RETRY',
 		       next_attempt_at = $3,
-		       last_error_code = $4,
+		       last_error_code = ` + stickyLeaseExpired + `,
 		       last_error      = $5,
 		       lease_until     = NULL,
 		       locked_by       = NULL,
@@ -321,6 +327,7 @@ func (r *DeliveryRepository) Redrive(ctx context.Context, id uuid.UUID, newExpir
 		SET    status          = 'PENDING',
 		       attempt         = 0,
 		       next_attempt_at = $2,
+		       last_error_code = NULLIF(last_error_code, 'lease_expired'),
 		       finished_at     = NULL,
 		       lease_until     = NULL,
 		       locked_by       = NULL,
@@ -413,6 +420,7 @@ func (r *DeliveryRepository) RedriveBatch(ctx context.Context, f entity.RedriveF
 		SET    status          = 'PENDING',
 		       attempt         = 0,
 		       next_attempt_at = $%d,
+		       last_error_code = NULLIF(d.last_error_code, 'lease_expired'),
 		       finished_at     = NULL,
 		       lease_until     = NULL,
 		       locked_by       = NULL,
