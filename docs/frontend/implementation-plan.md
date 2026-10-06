@@ -1,7 +1,7 @@
 # Frontend Implementation Plan
 
 Kế hoạch xây dựng giao diện người mua và giao diện quản trị trong `frontend/`. Tài liệu
-gồm lộ trình tổng thể và các bước 0–5, 7–9. Bước 3 đã hoàn thành code, kiểm thử offline và
+gồm lộ trình tổng thể và các bước 0–5, 7–10. Bước 3 đã hoàn thành code, kiểm thử offline và
 kiểm chứng live local với Inventory Service qua gateway; MFA vẫn là gate production.
 
 Route và API của từng màn hình nằm ở [sitemap.md](./sitemap.md). Quy tắc giao diện nằm
@@ -26,7 +26,7 @@ Trạng thái cập nhật ngày **06/10/2026**:
 | 7 | Đơn hàng của tôi: tab, chi tiết, huỷ, thanh toán lại, trả hàng, hoàn tiền | `order/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
-| 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Chưa hoàn thành |
+| 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Hoàn thành code/offline và live local (Auth, gateway, Product, Promotion) |
 | 11 | Voucher trong checkout | `promotion/v1` (me) | Chưa hoàn thành |
 | 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Chưa hoàn thành |
 | 13 | Hoàn thiện: trang chủ, SEO/ISR, trạng thái rỗng/lỗi, responsive, a11y, E2E | — | Chưa hoàn thành |
@@ -649,11 +649,53 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Typecheck, 180 test, lint 0 lỗi, production build; live Review/Notification qua gateway.
 - [ ] Bấm thử nút đánh giá trên đơn hàng thật (cần checkout, bước 6) và Debezium cho Review outbox; visual QA đủ ma trận 375/768/1280 px, light/dark, screen reader.
 
-## 12. Phụ thuộc backend
+## 12. Bước 10 — Admin Khuyến mãi
+
+> **Trạng thái (06/10/2026): hoàn thành code, kiểm chứng offline và live local.**
+> Typecheck, 209 test, lint không có lỗi và production build qua. Auth, gateway-auth,
+> Product và Promotion chạy thật; luồng tạo → sửa → xuất bản → tạm dừng → huỷ → nhân bản
+> và cấp voucher đã chạy hết trên UI.
+
+- `/admin/promotions` liệt kê campaign, lọc theo trạng thái xuất bản và giai đoạn (URL),
+  cursor trong state. `/admin/promotions/new` tạo campaign nháp.
+- `/admin/promotions/[campaignId]` có bốn tab đồng bộ `?tab=`: thông tin và lịch (sửa khi còn
+  nháp), voucher, giảm giá theo sản phẩm, vòng đời (xuất bản / tạm dừng / huỷ có lý do, huỷ
+  phải gõ lại mã; nhân bản kèm mã mới cho từng voucher).
+- Voucher (`…/vouchers/new`, `…/vouchers/[promotionId]`): cách phát hành, mức giảm theo
+  phần trăm (đổi sang basis point bằng số nguyên) hoặc số tiền, đơn tối thiểu, hạn dùng, giới
+  hạn, và **Rule AST builder** (nhóm AND/OR lồng nhau, field theo allowlist v1, danh mục chọn từ
+  Product). Voucher `DIRECT_GRANT` trên campaign đã xuất bản có nút cấp cho một người dùng.
+- Markdown (`…/markdowns/new`, `…/markdowns/[ruleId]`): chọn sản phẩm bằng tìm kiếm Search v2
+  hoặc dán UUID, mức giảm, độ ưu tiên, bật/tắt; hiển thị rule đã bị vô hiệu hoá do sản phẩm bị xoá.
+- Mọi lệnh sửa gửi `If-Match` là revision của **campaign cha**; `412` giữ nguyên dữ liệu đang
+  nhập và cho tải lại. PATCH là merge-patch chỉ gồm trường đã đổi; object lồng gửi nguyên khối.
+  Campaign đã xuất bản chỉ đọc (bất biến), muốn đổi phải nhân bản.
+- **Gateway được sửa cho bước này**: router `promotion-admin` chuyển từ `dev-admin-auth` sang
+  `authenticated@file`; role `ADMIN` nay lấy từ token thật, `created_by` là tài khoản đăng nhập.
+  Router customer (`promotion-me`, `promotion-discovery`) vẫn `dev-auth` tới bước 11. Tài liệu
+  gateway đã đồng bộ ([runtime-contract](../gateway/runtime-contract.md),
+  [implementation_plan §3.6](../gateway/implementation_plan.md)).
+- Chi tiết phạm vi, giới hạn của contract và bằng chứng live ở
+  [step-10-verification.md](./step-10-verification.md).
+
+### 12.1. Tiêu chí xong
+
+- [x] Danh sách, tạo, sửa, xuất bản/tạm dừng/huỷ và nhân bản campaign đúng Promotion v1.
+- [x] Voucher: form đủ trường, Rule AST builder có kiểm tra giống `RuleValidator`, cấp trực tiếp.
+- [x] Markdown theo sản phẩm; campaign đã xuất bản chỉ đọc.
+- [x] ETag/`If-Match` của campaign cha, `412` không ghi đè; PATCH chỉ gửi trường đổi.
+- [x] Gateway `promotion-admin` dùng token thật: ẩn danh `401`, `USER` `403`, `ADMIN` `200`,
+  header identity giả bị bỏ.
+- [x] Typecheck, 209 test, lint 0 lỗi, production build.
+- [x] Live qua gateway; responsive 375px (light) và 800px (dark) không tràn ngang.
+- [ ] Visual QA đủ ma trận 375/768/1280 px × light/dark, bàn phím và screen reader.
+
+## 13. Phụ thuộc backend
 
 | Phụ thuộc | Cần cho | Ảnh hưởng nếu thiếu |
 |---|---|---|
-| Router Promotion chuyển từ `dev-auth`/`dev-admin-auth` sang `authenticated@file` | Bước 10, 11 | Promotion còn identity cố định. Cart và Review đã chuyển ở bước 4; Auth, User, Notification, Product cũng dùng gateway-auth |
+| Router customer Promotion (`promotion-me`, `promotion-discovery`) chuyển từ `dev-auth` sang `authenticated@file` | Bước 11 | Voucher của người mua còn identity cố định. `promotion-admin` đã chuyển ở bước 10; Cart, Review, Auth, User, Notification, Product cũng dùng gateway-auth |
+| API tìm người dùng và API liệt kê voucher đã cấp | Cấp voucher (bước 10) | Admin phải dán UUID người dùng; UI chỉ hiển thị kết quả lần cấp vừa rồi, không có danh sách người đã nhận |
 | `user-service` build được | Hồ sơ, địa chỉ, checkout | `go build` thiếu entry `go.sum` cho `golang.org/x/crypto/*` (sha3, md4, pbkdf2) |
 | Product Service và gateway chạy được trong docker-compose | 4.6 | Đạt: `GET /api/v1/products` qua gateway trả 401/403/200 đúng theo token; dữ liệu mẫu tạo bằng `frontend/scripts/seed-dev-catalog.sh` |
 | Debezium cho Review outbox; Notification chạy với profile `notification` (+ `notifctl migrate up`) | Bước 9 trên local | Không có CDC thì `REVIEW_REPLIED` không tự tới hộp thư (đã chuyển tay khi kiểm chứng); thiếu Notification thì chuông và `/notifications` báo lỗi/ẩn số |

@@ -488,7 +488,9 @@ services:
       - "traefik.http.routers.promotion-admin.entrypoints=web"
       - "traefik.http.routers.promotion-admin.service=promotion-service"
       - "traefik.http.routers.promotion-admin.priority=40"
-      - "traefik.http.routers.promotion-admin.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
+      # authenticated = strip-identity-headers + gateway-auth: role ADMIN den tu claim `roles`
+      # cua access token da verify. Router customer (me/discovery) van dev-auth toi buoc 11.
+      - "traefik.http.routers.promotion-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       # Public discovery: authenticated user, profile promotion-discovery 20 req/user/phut (ADR-015).
       - "traefik.http.routers.promotion-discovery.rule=Path(`/api/v1/promotion-discovery`)"
       - "traefik.http.routers.promotion-discovery.entrypoints=web"

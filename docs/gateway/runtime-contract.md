@@ -95,10 +95,13 @@ này **không** thuộc ma trận production, nơi media được phát từ dom
 Promotion Service đã có runtime module (`java/services/promotion-service`) theo
 [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml). docker-compose khai báo
 ba router: `promotion-admin` (`/api/v1/admin/promotion-campaigns`, `/api/v1/admin/promotions`,
-`/api/v1/admin/markdown-rules`, role ADMIN, priority 40), `promotion-discovery`
+`/api/v1/admin/markdown-rules`, role ADMIN, priority 40, middleware `authenticated` — role lấy từ
+claim `roles` của access token đã verify, đã chuyển khỏi `dev-admin-auth` ở bước 10 frontend ngày
+06/10/2026), `promotion-discovery`
 (`POST /api/v1/promotion-discovery`, middleware `rate-limit-promotion-discovery` 20 request/
 user/phút theo `X-User-Id`, priority 35) và `promotion-me` (`/api/v1/me/promotion-vouchers/**`,
-`/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30).
+`/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30);
+hai router customer này còn dùng `dev-auth` (identity cố định) cho tới bước 11 frontend.
 Cấu hình docker-compose hiện tại dùng rate limit in-memory per replica; trước khi chạy nhiều
 replica production, profile này phải chuyển sang Redis-backed shared state như mục 2 và mục 7
 yêu cầu (Traefik CE hỗ trợ Redis backend cho `RateLimit` từ v3.2). Không thay quota này bằng một

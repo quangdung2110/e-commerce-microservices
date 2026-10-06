@@ -157,13 +157,13 @@ sửa kho phải gửi `expected_revision` ([Inventory ADR-027](../inventory/dec
 
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
-| `/admin/promotions` | Danh sách campaign theo trạng thái xuất bản và phase | `GET /api/v1/admin/promotion-campaigns` | 10 | mới |
-| `/admin/promotions/new` | Tạo campaign DRAFT | `POST /api/v1/admin/promotion-campaigns` | 10 | mới |
-| `/admin/promotions/[campaignId]` | Campaign theo tab: thông tin và lịch, voucher, markdown; publish/pause/cancel; nhân bản | `GET/PATCH …/promotion-campaigns/{id}`, `POST …/transitions`, `POST …/copies` | 10 | mới |
-| `/admin/promotions/[campaignId]/vouchers/new` | Tạo voucher: mức giảm, đơn tối thiểu, điều kiện (Rule AST), thời hạn, ngân sách | `POST …/promotion-campaigns/{id}/promotions` | 10 | mới |
-| `/admin/promotions/[campaignId]/vouchers/[promotionId]` | Sửa voucher khi campaign còn DRAFT; cấp voucher trực tiếp cho người dùng | `GET/PATCH /api/v1/admin/promotions/{id}`, `POST …/grants` | 10 | mới |
-| `/admin/promotions/[campaignId]/markdowns/new` | Tạo markdown giảm giá theo sản phẩm | `POST …/promotion-campaigns/{id}/markdown-rules` | 10 | mới |
-| `/admin/promotions/[campaignId]/markdowns/[ruleId]` | Sửa markdown | `GET/PATCH /api/v1/admin/markdown-rules/{id}` | 10 | mới |
+| `/admin/promotions` | Danh sách campaign theo trạng thái xuất bản và phase | `GET /api/v1/admin/promotion-campaigns` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/new` | Tạo campaign DRAFT | `POST /api/v1/admin/promotion-campaigns` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/[campaignId]` | Campaign theo tab: thông tin và lịch, voucher, markdown; publish/pause/cancel; nhân bản | `GET/PATCH …/promotion-campaigns/{id}`, `POST …/transitions`, `POST …/copies` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/[campaignId]/vouchers/new` | Tạo voucher: mức giảm, đơn tối thiểu, điều kiện (Rule AST), thời hạn, ngân sách | `POST …/promotion-campaigns/{id}/promotions` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/[campaignId]/vouchers/[promotionId]` | Sửa voucher khi campaign còn DRAFT; cấp voucher trực tiếp cho người dùng | `GET/PATCH /api/v1/admin/promotions/{id}`, `POST …/grants` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/[campaignId]/markdowns/new` | Tạo markdown giảm giá theo sản phẩm | `POST …/promotion-campaigns/{id}/markdown-rules` | 10 | có — đã kiểm chứng live |
+| `/admin/promotions/[campaignId]/markdowns/[ruleId]` | Sửa markdown | `GET/PATCH /api/v1/admin/markdown-rules/{id}` | 10 | có — đã kiểm chứng live |
 
 API get-by-id của voucher và markdown không lồng dưới campaign; route lồng chỉ để có
 breadcrumb, `campaign_id` lấy từ chính resource.
@@ -209,7 +209,9 @@ lộ trình.
 | Tạo Product không idempotent nhưng API admin không có tra cứu theo slug như mô tả retry của contract | `/admin/products/new` | Thêm lookup theo slug hoặc idempotency store; trước khi có, UI không tự retry lỗi mơ hồ và yêu cầu admin kiểm tra danh sách |
 | Không có API liệt kê người dùng cho admin | Không có route "Người dùng" | Endpoint tìm account ở Auth |
 | Review/Order snapshot không có `slug` sản phẩm | `/reviews`, `/reviews/[reviewId]` (không link về PDP) | Thêm `product_slug` vào snapshot Checkout → Order → `ORDER_COMPLETED` → Review nếu muốn có link ([ADR-012](../review/decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md) §4) |
-| Router local Promotion còn `dev-auth`/`dev-admin-auth` | voucher, `/admin/promotions/**` — identity cố định | Chuyển sang `authenticated@file` ở bước 10–11. Cart/Review đã chuyển ở bước 4; Review public list/aggregate tách router anonymous |
+| Router customer Promotion (`promotion-me`, `promotion-discovery`) còn `dev-auth` | voucher của người mua, `/vouchers`, checkout — identity cố định | Chuyển sang `authenticated@file` ở bước 11. `promotion-admin` đã chuyển ở bước 10; Cart/Review đã chuyển ở bước 4; Review public list/aggregate tách router anonymous |
+| Không có API tìm người dùng và API liệt kê voucher đã cấp | `/admin/promotions/[campaignId]/vouchers/[promotionId]` (cấp voucher) | Endpoint tìm account (Auth) và endpoint đọc wallet theo promotion; trước khi có, admin dán UUID và UI chỉ hiện kết quả lần cấp vừa rồi |
+| Contract Rule AST không liệt kê allowlist `field` và không có cách diễn đạt “không thêm điều kiện” | Rule builder của voucher | Allowlist v1 (`cart.total_amount`, `cart.items.category_id`, `cart.payment_method`, `cart.checkout_channel`, `user.id`, `user.tier`) nằm ở `lib/promotion/rule.ts`; “mọi đơn hàng” được gửi là `cart.total_amount ≥ 0`. Nên thêm `enum` field và/hoặc node `ALWAYS` ở `rule_schema_version` kế tiếp |
 
 ## 6. Điều hướng
 

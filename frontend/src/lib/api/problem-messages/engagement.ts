@@ -18,6 +18,14 @@ export const PROMOTION_MESSAGES: Record<string, string> = {
   CONDITIONS_NOT_MET: "Đơn hàng chưa đáp ứng điều kiện của voucher.",
   MIN_ORDER_NOT_MET: "Đơn hàng chưa đạt giá trị tối thiểu của voucher.",
   CLAIM_GATE_STALE: "Chương trình vừa thay đổi. Vui lòng tải lại rồi thử nhận voucher.",
+  CAMPAIGN_NOT_FOUND: "Không tìm thấy campaign. Có thể campaign đã bị xoá.",
+  PROMOTION_NOT_FOUND: "Không tìm thấy voucher.",
+  MARKDOWN_RULE_NOT_FOUND: "Không tìm thấy giảm giá theo sản phẩm.",
+  DISTRIBUTION_MODE_MISMATCH: "Cách phát hành của voucher không cho phép thao tác này.",
+  PRODUCT_TOMBSTONED: "Sản phẩm này đã bị xoá khỏi catalog nên không thể tạo giảm giá.",
+  PROMOTION_CONSTRAINT_VIOLATION: "Dữ liệu voucher vi phạm một ràng buộc. Hãy kiểm tra mã và các giới hạn rồi thử lại.",
+  RUNTIME_NOT_READY: "Hệ thống khuyến mãi đang khôi phục dữ liệu. Vui lòng thử lại sau ít phút.",
+  PROMOTION_UNAVAILABLE: "Hệ thống khuyến mãi đang bận. Vui lòng thử lại sau ít phút.",
 };
 
 export const REVIEW_MESSAGES: Record<string, string> = {
