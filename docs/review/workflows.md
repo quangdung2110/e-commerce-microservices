@@ -38,7 +38,8 @@ verified_against_commit: null
 **Trigger:** `ORDER_COMPLETED` on `t.order.events`.
 
 1. Validate CloudEvents `id`, order ID, buyer UUID, completion time and every
-   item’s product/SKU; consume `variant_name` snapshot when supplied.
+   item’s product/SKU; consume the `variant_name`, `product_name` and `product_image_url`
+   snapshots when supplied.
 2. Derive the buyer's HMAC privacy subject key. Begin transaction, take that
    transaction-scoped subject lock, then insert receipt `(order-sync, id)`. Existing
    receipt means no-op and ACK.
@@ -55,7 +56,8 @@ verified_against_commit: null
 4. Commit then ACK.
 
 Missing product/SKU is contract failure and goes DLQ. Missing variant name is accepted
-as null for old orders, but new producers must send it. `created_at` records ingestion
+as null for old orders, but new producers must send it; the same holds for the product name
+and image snapshots (ADR-012). `created_at` records ingestion
 only; it never extends the review window. `now()` is the transaction timestamp. No
 event leaves Review.
 
@@ -63,7 +65,9 @@ event leaves Review.
 
 **Issue.** `POST /media/upload-urls` creates an `ISSUED` asset owned by caller, with
 opaque key and TTL, and returns `asset_id` plus a provider-neutral signed upload
-instruction. The object key never appears in the HTTP response. Issuing is bounded by
+instruction. No response field carries the object key; it appears only inside the signed
+URL that authorizes writing exactly that object, which is unguessable and
+identifier-free. Issuing is bounded by
 per-review, per-user-unattached and byte quotas. In its mutation transaction Review
 takes the caller's privacy subject lock and rejects an existing deletion guard before
 it writes `owner_user_id`. For a caller without a guard, ownership is unchanged:

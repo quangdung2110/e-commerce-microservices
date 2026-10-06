@@ -21,7 +21,7 @@ Với fact (Cart), producer không biết tới template; bảng ánh xạ trong
 | **i18n** | `vi` bắt buộc, `en` tuỳ chọn. Locale lấy từ Auth `notification-contact` (`locale?`), mặc định `vi`. Thiếu bản dịch → fallback `vi`, không lỗi. |
 | **PII trong `template_data`** | Chỉ những gì cần hiển thị. **Không** email, số điện thoại, địa chỉ đầy đủ (địa chỉ giao hàng chỉ `recipient_name`, `ward`, `district`, `city`). Secret (OTP, reset URL) chỉ đi qua Auth `content` API, không bao giờ nằm trong Kafka. |
 | **Tiền tệ** | `*_minor` (integer, đơn vị nhỏ nhất) + `currency` (`VND`), khớp `vnd_money` của Payment. Template render định dạng. |
-| **URL** | Producer request gửi URL tuyệt đối tới frontend (`order_url`). Notification không tự lắp URL để không phải biết routing của frontend. Ngoại lệ: template từ nguồn mà contract **không có chỗ cho URL** — `CART_ABANDONED` (fact) và `REVIEW_REPLIED` (message của Review không mang URL) — Notification lắp `cart_url` / `review_url` từ `frontend.base_url` cấu hình (`/cart`, `/products/{product_id}?review={review_id}`). Khi Review bổ sung `review_url` vào contract thì bỏ ngoại lệ này. |
+| **URL** | Producer request gửi URL tuyệt đối tới frontend (`order_url`). Notification không tự lắp URL để không phải biết routing của frontend. Ngoại lệ: template từ nguồn mà contract **không có chỗ cho URL** — `CART_ABANDONED` (fact) và `REVIEW_REPLIED` (message của Review không mang URL) — Notification lắp `cart_url` / `review_url` từ `frontend.base_url` cấu hình (`/cart`, `/reviews/{review_id}` — trang đánh giá của chính tác giả, vì người nhận REVIEW_REPLIED luôn là tác giả; trang sản phẩm đánh địa chỉ theo slug mà Review không biết). Khi Review bổ sung `review_url` vào contract thì bỏ ngoại lệ này. |
 
 ## 3. Thuộc tính của một template
 

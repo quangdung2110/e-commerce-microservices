@@ -73,6 +73,8 @@ public class OrderConvergence {
                 item.put("product_id", line.productId());
                 item.put("sku_id", line.skuId());
                 item.put("variant_name", line.snapshotVariantName());
+                item.put("product_name", line.snapshotName());
+                item.put("product_image_url", line.snapshotImageUrl());
                 item.put("quantity", line.quantity());
                 byProductSku.put(key, item);
             } else {

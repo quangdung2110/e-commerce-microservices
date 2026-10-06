@@ -30,6 +30,13 @@ verified_against_commit: null
 
 ## 2. Public API semantics
 
+Signed media URLs phải truy cập được từ trình duyệt. Presigner dùng
+`REVIEW_S3_PUBLIC_ENDPOINT` (fallback `REVIEW_S3_ENDPOINT` khi trống); client nhận
+URL hoàn chỉnh và không sửa host/path. S3 metadata/delete client vẫn dùng origin nội
+bộ. Gateway root Compose giữ list/aggregate anonymous và xác thực JWT cho buyer/admin,
+không inject danh tính dev cố định.
+
+
 ### Read
 
 `GET /api/v1/reviews/products/{product_id}` lists only `APPROVED` reviews with
@@ -41,7 +48,13 @@ assets; persistent URLs are not stored.
 aggregate or all-zero values if no aggregate row exists.
 
 `GET /api/v1/reviews/me/pending` reads the caller's `PENDING` eligibility rows,
-including `variant_name_snapshot` and `expires_at`.
+including `order_id`, the variant/product-name/product-image snapshots and `expires_at`.
+
+`GET /api/v1/reviews/me` lists the caller's own reviews newest first (keyset
+`(created_at, review_id)`), whatever their visibility: `HIDDEN_BY_REPORT` and `REMOVED`
+reviews stay visible to their owner, with no signed media URL and no report, legal record
+or takedown reason. Every item is the same `OwnerReview` the single read returns, so it
+carries `product_name` and `product_image_url` ([ADR-012](./decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md)).
 
 `GET /api/v1/reviews/me/eligibilities/{eligibility_id}` is the recovery read for a
 create response lost after commit: it returns the caller-owned entitlement state and,
@@ -74,8 +87,12 @@ does not support reordering retained attachments.
 ### Upload asset
 
 `POST /api/v1/reviews/media/upload-urls` creates an `ISSUED` media asset and returns
-`asset_id`, a provider-neutral signed upload instruction and expiry. It never returns
-the opaque object key. Client uploads directly to storage, then simply sends `asset_id`
+`asset_id`, a provider-neutral signed upload instruction and expiry. No response field
+carries the object key. The signature necessarily addresses the object it authorizes, so
+the key appears inside that URL; that is harmless because the key is unguessable random
+material, holds no identifier, and the signature opens nothing else. A client never
+chooses a key and never sends a key or an arbitrary URL back to Review.
+Client uploads directly to storage, then simply sends `asset_id`
 in create/edit; there is no client-facing verify/poll endpoint. Review verifies
 existence/type/size/checksum when declared before attachment. An asset belongs to one
 user, attaches to at most one review and is bounded by attachment and unattached-upload
@@ -243,11 +260,14 @@ Auth.
 
 Review consumes [Order's CloudEvents contract](../../contracts/events/order/v1/asyncapi.yaml):
 `id`, canonical decimal-string `order_id`, `user_id`, `completed_at` and every item’s
-`product_id`, `sku_id`, `variant_name` snapshot and quantity. Review stores
+`product_id`, `sku_id`, `variant_name`, `product_name` and `product_image_url` snapshots
+and quantity. Review stores
 `order_id` as text and compares it for equality; it does not cast the wire value to a
 JSON number. Product and SKU identifiers remain opaque strings. `variant_name` is
 nullable for historic orders
-but must be supplied by current producer when known. `completed_at` is the business
+but must be supplied by current producer when known; `product_name` and
+`product_image_url` are likewise nullable snapshots (absent for historic orders and for
+producers older than ADR-012). `completed_at` is the business
 timestamp stored on the eligibility and is the sole basis for its review window; it is
 not replaced by Review's event-ingestion time.
 
@@ -278,12 +298,12 @@ missed event before Review can start this lifecycle.
 
 ## 6. Compatibility
 
-The service is not implemented and all contracts remain `proposed`; the replacement
-export endpoints are deliberately still v1. Consumers must move from the removed
-stateless endpoint before adoption is marked verified.
+All contracts remain `proposed`; the replacement export endpoints are deliberately still
+v1. Search already calls the session endpoints, and any other consumer must move off the
+removed stateless endpoint before adoption is marked verified.
 
-New producers must populate nullable `ORDER_COMPLETED.items[].variant_name` whenever
-the source snapshot exists. For outbound events, adding an optional field is
+New producers must populate nullable `ORDER_COMPLETED.items[].variant_name`,
+`product_name` and `product_image_url` whenever the source snapshot exists. For outbound events, adding an optional field is
 compatible; changing a message type, `partition_key`, CloudEvents `id`, or the meaning
 of `review_revision` is breaking. Contract tests must cover duplicate event no-op,
 content-only update, notification payload redaction, export-session expiry,

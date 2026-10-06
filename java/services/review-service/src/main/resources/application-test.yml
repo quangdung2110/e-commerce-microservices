@@ -1,0 +1,22 @@
+# Integration tests point the datasource, Kafka and S3 at Testcontainers through
+# @DynamicPropertySource; only the fixed test secrets live here.
+spring:
+  kafka:
+    listener:
+      concurrency: 1
+
+review:
+  # The Kafka listeners stay down for the suite: every other test drives the consumer
+  # services directly, and a live consumer writing in the background would race the
+  # truncation each test starts from. OutboxCdcIT turns them on for itself.
+  consumers:
+    auto-startup: false
+
+  secrets:
+    author-alias-hmac: test-review-author-alias-secret
+    privacy-guard-hmac: test-review-privacy-guard-secret
+  internal:
+    pdp-tokens: test-pdp-token
+    export-tokens: test-export-token
+  scheduler:
+    enabled: false

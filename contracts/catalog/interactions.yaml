@@ -45,7 +45,7 @@ interactions:
     notes: >-
       Bốn API storefront anonymous cộng hai operation admin reindex. Một hit là một SKU;
       facet và category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên
-      route /api/v1/search/** không còn backend.
+      route /api/v1/search/** không còn backend và đã bỏ khỏi gateway local ở bước 4 frontend.
 
   - id: search-reindexes-product-catalog
     protocol: http
@@ -198,8 +198,9 @@ interactions:
     contract: events/order/v1/asyncapi.yaml
     status: implemented
     notes: >-
-      ORDER_COMPLETED carries the immutable product/SKU/variant snapshot Review needs
-      to grant one entitlement per purchased SKU without a synchronous Order lookup.
+      ORDER_COMPLETED carries the immutable product/SKU/variant snapshot (including the
+      product name and thumbnail shown on the buyer's review screens) Review needs to
+      grant one entitlement per purchased SKU without a synchronous Order lookup.
 
   - id: checkout-creates-order
     protocol: http
@@ -231,7 +232,15 @@ interactions:
     consumers: [api-gateway]
     contract: http/payment/v1/openapi.yaml
     status: proposed
-    notes: External Stripe delivery enters at the Gateway public path; the Gateway preserves raw bytes and rewrites only the path before forwarding to Payment.
+    notes: External Stripe delivery enters at the Gateway public path; Gateway preserves exact bytes. Payment verifies signature and the 300-second window before encrypted inbox persistence or internal Kafka publication.
+
+  - id: finance-ops-operates-payment
+    protocol: http
+    provider: payment-service
+    consumers: [finance-ops, accounting-ops]
+    contract: http/payment/internal/v1/openapi.yaml
+    status: proposed
+    notes: Internal-only RBAC and maker-checker surface for review cases, verified-inbox replay, reconciliation/freeze, immutable ledger lookup and dispute lookup; never exposed by the public Gateway.
 
   - id: payment-publishes-payment-events
     protocol: kafka

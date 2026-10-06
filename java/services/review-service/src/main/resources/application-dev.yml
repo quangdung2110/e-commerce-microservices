@@ -1,0 +1,13 @@
+# Local development only. Both secrets are fixed so a restart keeps the same author
+# pseudonyms and the same HMAC deletion guards; they are never used outside dev.
+review:
+  secrets:
+    author-alias-hmac: dev-review-author-alias-secret
+    privacy-guard-hmac: dev-review-privacy-guard-secret
+  internal:
+    pdp-tokens: dev-product-detail-bff-token
+    export-tokens: dev-search-export-token
+
+logging:
+  level:
+    com.ecommerce.review: DEBUG

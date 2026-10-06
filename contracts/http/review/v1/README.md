@@ -21,6 +21,11 @@ Client không được tự gửi chúng; Review vẫn phải authorize ownershi
 - `X-Request-Id` là correlation ID, **không** là idempotency key. Khi create/edit
   timeout, buyer dùng recovery read theo eligibility hoặc review ID thay vì retry write
   mù quáng.
+- Bề mặt owner (`/reviews/me/**`) trả snapshot `product_name`/`product_image_url` (và
+  `order_id` ở entitlement chờ) lấy từ `ORDER_COMPLETED` lúc mua, nullable với entitlement
+  cũ; `GET /reviews/me` liệt kê review của chính caller kể cả khi `HIDDEN_BY_REPORT`/`REMOVED`
+  (không signed media, report hay lý do pháp lý). Xem
+  [Review ADR-012](../../../../docs/review/decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md).
 - Media có ba bước ở client: xin signed upload instruction, upload trực tiếp, gửi
   `asset_id` trong create/edit. Không có verify/poll API; Review tự kiểm metadata object
   immutable trước attach và không trả object key.

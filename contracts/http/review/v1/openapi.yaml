@@ -8,6 +8,9 @@ info:
     headers do API Gateway inject sau JWT verification, không phải client-controlled
     headers. Mọi domain write commit outbox cùng transaction; HTTP thành công không
     có nghĩa Kafka message đã được consumer quan sát.
+    Gateway local tách GET public list/aggregate sang router anonymous chỉ bỏ
+    forged identity headers. Buyer/admin dùng authenticated@file qua gateway-auth;
+    không inject danh tính dev cố định và không retry write ở gateway.
 x-adoption-status: proposed
 servers:
   - url: http://review-service:8080
@@ -81,6 +84,31 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingEligibilityPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/me:
+    get:
+      tags: [Buyer reviews]
+      operationId: listMyReviews
+      summary: Liệt kê review của chính buyer, kể cả khi không còn public
+      description: >-
+        Mới nhất trước, cursor là opaque keyset (created_at, review_id). Mỗi item là
+        OwnerReview: gồm review HIDDEN_BY_REPORT và REMOVED nhưng không có signed media
+        URL, report, legal record hay takedown reason. Trang đầy limit item luôn có
+        next_cursor; trang kế tiếp có thể rỗng.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PublicLimit'
+      responses:
+        '200':
+          description: Review của caller, mới nhất trước.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnerReviewPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
@@ -499,7 +527,11 @@ components:
         url:
           type: string
           format: uri
-          description: Short-lived signed download URL generated for this response only.
+          description: >-
+            Short-lived signed download URL generated for this response only, using
+            the browser-reachable storage origin (REVIEW_S3_PUBLIC_ENDPOINT, falling
+            back to REVIEW_S3_ENDPOINT). Clients must use the URL unchanged; replacing
+            its host/path breaks SigV4. Do not shared-cache it beyond url_expires_at.
         url_expires_at: { type: string, format: date-time }
         sort_order: { type: integer, minimum: 0, maximum: 32767 }
     OfficialReply:
@@ -539,14 +571,25 @@ components:
       type: object
       additionalProperties: false
       required:
-        [review_id, product_id, sku_id, author_name, variant_name, rating, content,
-         has_media, media, admin_reply, visibility_status, edit_count, created_at, updated_at]
+        [review_id, product_id, sku_id, author_name, variant_name, product_name,
+         product_image_url, rating, content, has_media, media, admin_reply,
+         visibility_status, edit_count, created_at, updated_at]
       properties:
         review_id: { $ref: '#/components/schemas/Uuid' }
         product_id: { $ref: '#/components/schemas/ProductId' }
         sku_id: { $ref: '#/components/schemas/SkuId' }
         author_name: { type: string, minLength: 1, maxLength: 255 }
         variant_name: { type: [string, 'null'], maxLength: 255 }
+        product_name:
+          type: [string, 'null']
+          maxLength: 255
+          description: >-
+            Tên sản phẩm lúc mua, snapshot từ ORDER_COMPLETED; null với entitlement cấp
+            trước khi có snapshot. Chỉ owner thấy; PublicReview không có field này.
+        product_image_url:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Thumbnail lúc mua, cùng snapshot với product_name; null khi không có.
         rating: { $ref: '#/components/schemas/Rating' }
         content: { type: [string, 'null'], maxLength: 5000 }
         has_media: { type: boolean }
@@ -584,13 +627,38 @@ components:
     PendingEligibility:
       type: object
       additionalProperties: false
-      required: [eligibility_id, product_id, sku_id, variant_name, expires_at]
+      required:
+        [eligibility_id, order_id, product_id, sku_id, variant_name, product_name,
+         product_image_url, expires_at]
       properties:
         eligibility_id: { $ref: '#/components/schemas/Uuid' }
+        order_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Opaque Order ID của đơn đã mua; chỉ để dẫn buyer về đúng đơn, không parse.
         product_id: { $ref: '#/components/schemas/ProductId' }
         sku_id: { $ref: '#/components/schemas/SkuId' }
         variant_name: { type: [string, 'null'], maxLength: 255 }
+        product_name:
+          type: [string, 'null']
+          maxLength: 255
+          description: Tên sản phẩm lúc mua, snapshot từ ORDER_COMPLETED; null với entitlement cấp trước khi có snapshot.
+        product_image_url:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Thumbnail lúc mua, cùng snapshot với product_name; null khi không có.
         expires_at: { type: string, format: date-time }
+    OwnerReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/OwnerReview' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
     PendingEligibilityPage:
       type: object
       additionalProperties: false
@@ -742,7 +810,10 @@ components:
         hidden_at:
           type: [string, 'null']
           format: date-time
-          description: Lần gần nhất report threshold ẩn review; null nếu chưa từng bị ẩn.
+          description: >-
+            Lần gần nhất report threshold ẩn review; null nếu chưa từng bị ẩn. Giá trị này
+            được giữ lại sau khi dismiss khôi phục review nên có thể khác null ngay cả khi
+            visibility_status là APPROVED.
         first_reported_at:
           type: [string, 'null']
           format: date-time
@@ -771,7 +842,10 @@ components:
         hidden_at:
           type: [string, 'null']
           format: date-time
-          description: Null khi status là REPORTED.
+          description: >-
+            Null khi review chưa từng bị ẩn. Dismiss cố ý giữ lại hidden_at khi khôi phục
+            review, nên một case status=REPORTED vẫn có thể mang hidden_at khác null nếu
+            review từng bị ẩn ở chu kỳ trước.
     AdminModerationCaseReport:
       type: object
       additionalProperties: false

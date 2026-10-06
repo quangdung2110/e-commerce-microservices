@@ -151,7 +151,7 @@ Chi tiết: [03-tracking.md](./03-tracking.md) §2–3, [06-backpressure.md](./0
 
 **Hệ quả.** Order target contract đã khóa nguồn tên sản phẩm: Checkout
 `items[].snapshot_name` -> `order_item_lines.snapshot_name` -> notification
-`items[].name`, không runtime RPC (README §7 mục 3). Review email không có tên sản phẩm và **không có URL** (contract Review không mang) — Notification lắp `review_url` như `cart_url` (ngoại lệ thứ hai của quy ước URL, ghi ở 07 §2 và D-20). `CART_ABANDONED` là lời nhắc + link, không có danh sách sản phẩm cho tới khi Cart bổ sung snapshot. Cần bảng `user_preference` replicate có timezone khi User publish; trước đó dùng mặc định.
+`items[].name`, không runtime RPC (README §7 mục 3). Review email không có tên sản phẩm và **không có URL** (contract Review không mang) — Notification lắp `review_url` như `cart_url` (ngoại lệ thứ hai của quy ước URL, ghi ở 07 §2 và D-20). Đường dẫn là `{base}/reviews/{review_id}` (trang đánh giá của chính tác giả, vì người nhận luôn là tác giả); trang sản phẩm đánh địa chỉ theo slug mà Review không biết nên `/products/{product_id}?review=` sẽ không mở được (chỉnh ngày 06/10/2026). `CART_ABANDONED` là lời nhắc + link, không có danh sách sản phẩm cho tới khi Cart bổ sung snapshot. Cần bảng `user_preference` replicate có timezone khi User publish; trước đó dùng mặc định.
 
 Chi tiết: [07-templates.md](./07-templates.md).
 

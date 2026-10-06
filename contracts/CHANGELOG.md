@@ -3,6 +3,19 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-06
+
+- Order events v1 `order-completed` items add optional `product_name` and
+  `product_image_url` (from the checkout line snapshot). Review stores them as nullable
+  snapshots ([Review ADR-012](../docs/review/decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md)).
+- Review HTTP v1 (proposed, response-only additions): `OwnerReview` adds required-nullable
+  `product_name` and `product_image_url`; `PendingEligibility` adds `order_id` and the same
+  two fields; new `GET /api/v1/reviews/me` (`listMyReviews`, `OwnerReviewPage`) lists the
+  caller's own reviews including hidden/removed ones. Regenerate typed clients.
+- Notification `REVIEW_REPLIED` in-app/email link is now
+  `{frontend.base_url}/reviews/{review_id}` instead of `/products/{product_id}?review=…`,
+  because the storefront addresses products by slug.
+
 ## 2026-10-05
 
 - Inventory proposed HTTP v1 pre-implementation corrections

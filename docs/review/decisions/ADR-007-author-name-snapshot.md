@@ -22,7 +22,9 @@ dùng secret `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`; Review chỉ nhận `owner_user_
 trusted Gateway identity. Alias chỉ để hiển thị, không cần unique và không được dùng
 authorization. Nó không consume profile-update event. `review_eligibilities.variant_name_snapshot`
 là snapshot nullable từ `ORDER_COMPLETED.items[].variant_name`; Review không gọi đồng
-bộ Order/Product.
+bộ Order/Product. Từ [ADR-012](./ADR-012-owner-surface-product-snapshot-and-review-list.md)
+(06/10/2026) cùng nguyên tắc áp dụng cho `product_name_snapshot` và
+`product_image_url_snapshot`.
 
 `USER_DELETED` tạo durable `privacy_erasure_requests` với `subject_match_key`:
 `HMAC-SHA-256(key=REVIEW_PRIVACY_GUARD_HMAC_SECRET,

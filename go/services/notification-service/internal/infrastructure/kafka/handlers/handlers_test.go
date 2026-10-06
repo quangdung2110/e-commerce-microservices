@@ -201,7 +201,7 @@ func TestReviewFixtures(t *testing.T) {
 	require.NoError(t, json.Unmarshal(in.TemplateData, &td))
 	assert.NotEmpty(t, in.UserID, "recipient_user_id → user_id")
 	assert.NotEmpty(t, td["review_id"])
-	assert.Contains(t, td["review_url"], "http://localhost:3000/")
+	assert.Equal(t, "http://localhost:3000/reviews/"+td["review_id"], td["review_url"])
 	assert.NoError(t, f.catalog.ValidateTemplateData(in.Template, in.TemplateData))
 
 	require.NoError(t, handlers.Review(f.deps)(context.Background(), f.local("review-removal-notification-requested.v1.json")))

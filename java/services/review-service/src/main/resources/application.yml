@@ -1,0 +1,143 @@
+spring:
+  application:
+    name: review-service
+
+  datasource:
+    # currentSchema keeps every unqualified relation and every PostgreSQL enum cast
+    # inside the schema Review owns (docs/review/data.md 1).
+    url: ${DB_URL:jdbc:postgresql://localhost:15432/review_service?currentSchema=review,public}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:16}
+      minimum-idle: 4
+      connection-timeout: 5000
+      pool-name: review-pool
+
+  flyway:
+    enabled: true
+    schemas: review
+    default-schema: review
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 200
+      properties:
+        max.poll.interval.ms: 300000
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 3
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+      group:
+        # A Kafka or storage outage must not restart instances: committed outbox rows
+        # simply wait for CDC (docs/review/operations.md 2).
+        liveness:
+          include: ping
+        readiness:
+          include: reviewReadiness
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+review:
+  # WF-REVIEW-001: expires_at = ORDER_COMPLETED.completed_at + window-days.
+  window-days: ${REVIEW_WINDOW_DAYS:30}
+  # Cannot exceed the ck_review_content_valid hard cap without a migration.
+  max-content-length: ${REVIEW_MAX_CONTENT_LENGTH:5000}
+  max-media-per-review: ${REVIEW_MAX_MEDIA_PER_REVIEW:9}
+  # Report threshold is sensitive: never echoed on any response (ADR-008).
+  report-threshold: ${REVIEW_REPORT_THRESHOLD:10}
+  export-session-ttl: ${REVIEW_EXPORT_SESSION_TTL:30m}
+  # Must stay above Kafka retention (14d) plus a replay safety margin.
+  event-receipt-retention-days: ${REVIEW_EVENT_RECEIPT_RETENTION_DAYS:30}
+  outbox-retention-days: ${REVIEW_OUTBOX_RETENTION_DAYS:30}
+
+  secrets:
+    # Both are required at startup; readiness fails without them
+    # (docs/review/operations.md 2).
+    author-alias-hmac: ${REVIEW_AUTHOR_ALIAS_HMAC_SECRET:}
+    privacy-guard-hmac: ${REVIEW_PRIVACY_GUARD_HMAC_SECRET:}
+
+  media:
+    # In v1 this is both the signed-upload expiry and the attachment deadline
+    # (ADR-011); expiry queues UNATTACHED_EXPIRED cleanup.
+    upload-ttl: ${REVIEW_MEDIA_UPLOAD_TTL:15m}
+    max-unattached-assets-per-user: ${REVIEW_MAX_UNATTACHED_ASSETS_PER_USER:18}
+    max-unattached-bytes-per-user: ${REVIEW_MAX_UNATTACHED_BYTES_PER_USER:536870912}
+    max-image-bytes: ${REVIEW_MAX_IMAGE_BYTES:10485760}
+    max-video-bytes: ${REVIEW_MAX_VIDEO_BYTES:104857600}
+    image-content-types: [image/jpeg, image/png, image/webp]
+    video-content-types: [video/mp4, video/webm]
+    # The admin TTL must stay strictly shorter than the public one: the moderation
+    # surface is the one place a non-APPROVED review gets a signed URL at all.
+    public-url-ttl: ${REVIEW_MEDIA_PUBLIC_URL_TTL:5m}
+    admin-url-ttl: ${REVIEW_MEDIA_ADMIN_URL_TTL:2m}
+
+  storage:
+    endpoint: ${REVIEW_S3_ENDPOINT:http://localhost:9000}
+    # Sign the browser-facing origin directly: rewriting a signed host invalidates SigV4.
+    # Empty falls back to the internal endpoint (single-origin deployments/tests).
+    public-endpoint: ${REVIEW_S3_PUBLIC_ENDPOINT:}
+    region: ${REVIEW_S3_REGION:us-east-1}
+    bucket: ${REVIEW_S3_BUCKET:review-media}
+    access-key: ${REVIEW_S3_ACCESS_KEY:minioadmin}
+    secret-key: ${REVIEW_S3_SECRET_KEY:minioadmin}
+    # MinIO and most S3-compatible servers need path-style addressing.
+    path-style-access: ${REVIEW_S3_PATH_STYLE:true}
+
+  gateway:
+    user-id-header: X-User-Id
+    roles-header: X-User-Roles
+    request-id-header: X-Request-Id
+    admin-role: ADMIN
+
+  internal:
+    # Bearer service identity for /internal/v1/**. Empty allowlists reject every
+    # caller; the dev profile supplies the local tokens.
+    pdp-tokens: ${REVIEW_INTERNAL_PDP_TOKENS:}
+    export-tokens: ${REVIEW_INTERNAL_EXPORT_TOKENS:}
+
+  topics:
+    review: t.review.events
+    order: t.order.events
+    auth: t.auth.events
+
+  consumer-groups:
+    order: review-order-sync
+    privacy: review-privacy-sync
+    rating: review-rating-aggregator
+
+  scheduler:
+    enabled: ${REVIEW_SCHEDULER_ENABLED:true}
+    lifecycle-cron: "0 */5 * * * *"
+    daily-cron: "0 15 2 * * *"
+    sweep-batch-size: 500
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce.review: INFO
+    org.springframework.kafka: WARN
+    software.amazon.awssdk: WARN

@@ -290,9 +290,9 @@ viết lại lịch sử đơn.
 | `net_amount_minor` | `BIGINT` | `quantity * unit_price_minor - discount_share_minor`, không âm; Buyer selected-line refund cộng field này |
 | `fulfillment_status` | `VARCHAR(50)` | Authoritative line FSM `PROCESSING/DISPATCHED/DELIVERED` |
 | `dispatch_event_id`, `delivery_proof_id`, `delivery_proof_sha256`, `delivered_at` | `UUID/VARCHAR/VARCHAR(64)/TIMESTAMPTZ` nullable | Immutable fact identity/proof receipt sau mỗi transition; raw proof/PII không lưu ở Order; duplicate phải replay/no-op |
-| `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất |
+| `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất; cũng là nguồn của `product_name` trong `order.completed.v1` |
 | `snapshot_variant_name` | `VARCHAR(255)` nullable | Nhãn biến thể từ Checkout `items[].variant_name`; nguồn duy nhất của `variant_name` trong `order.completed.v1` và notification |
-| `snapshot_image_url` | `VARCHAR(2048)` nullable | Ảnh lúc mua; khớp public/internal OpenAPI URI limit |
+| `snapshot_image_url` | `VARCHAR(2048)` nullable | Ảnh lúc mua; khớp public/internal OpenAPI URI limit; cũng là nguồn của `product_image_url` trong `order.completed.v1` |
 | `snapshot_name_search` | `TEXT NOT NULL` | Unicode NFKD, remove combining marks, fold `đ/Đ -> d` và lowercase (`Locale.ROOT`) bằng pinned application normalizer; immutable search input |
 | `snapshot_attributes` | `JSONB` | Ví dụ color/size; nguồn cho variant snapshot khi có |
 | `snapshot_category_ids` | `JSONB` | Tối đa 20 Product-owned category ID; immutable input để Promotion Reserve re-evaluate đúng context Preview |

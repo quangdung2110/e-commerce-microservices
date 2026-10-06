@@ -31,6 +31,7 @@ implementation đã được verified — Review Service hiện chưa có implem
 | [ADR-009](./ADR-009-review-owns-report-flow.md) | Review sở hữu toàn bộ luồng báo cáo vi phạm | Accepted | 2026-09-05 | — |
 | [ADR-010](./ADR-010-single-admin-legal-takedown.md) | Một admin có thẩm quyền thực hiện legal takedown | Accepted | 2026-09-09 | — |
 | [ADR-011](./ADR-011-attachment-time-media-verification.md) | Xác minh media lúc attach và cleanup asset chưa gắn | Accepted | 2026-09-09 | — |
+| [ADR-012](./ADR-012-owner-surface-product-snapshot-and-review-list.md) | Product snapshot trên bề mặt owner và danh sách review của tôi | Accepted | 2026-10-06 | Bổ sung ADR-007 |
 
 ## Quyết định của service khác ảnh hưởng tới Review
 

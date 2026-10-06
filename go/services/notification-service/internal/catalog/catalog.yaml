@@ -153,7 +153,7 @@ templates:
     source_message: reviewReplyNotificationRequested
     max_age: PT72H
     dedup_key: { mode: required, formula: "review_replied:{review_id}" }
-    note: "contract Review không mang URL; Notification lắp review_url từ base URL frontend — ngoại lệ của quy ước producer gửi URL (docs/notification/07-templates.md §2)"
+    note: "contract Review không mang URL; Notification lắp review_url = {frontend.base_url}/reviews/{review_id} (trang đánh giá của tác giả) — ngoại lệ của quy ước producer gửi URL (docs/notification/07-templates.md §2)"
   - id: REVIEW_REMOVED
     status: proposed
     lane: transactional

@@ -65,14 +65,17 @@ func Review(deps HandlerDeps) kafka.MessageHandler {
 		in.DedupKey = dedupKey(tpl, map[string]string{"review_id": data.ReviewID})
 		td := map[string]string{"review_id": data.ReviewID, "product_id": data.ProductID}
 		if message == reviewMessageReply {
-			td["review_url"] = ReviewURL(deps.Frontend.BaseURL, data.ProductID, data.ReviewID)
+			td["review_url"] = ReviewURL(deps.Frontend.BaseURL, data.ReviewID)
 		}
 		in.TemplateData = mustJSON(td)
 		return runIngest(ctx, deps, in)
 	}
 }
 
-// ReviewURL is the frontend deep link to a review on its product page.
-func ReviewURL(baseURL, productID, reviewID string) string {
-	return strings.TrimRight(baseURL, "/") + "/products/" + url.PathEscape(productID) + "?review=" + url.QueryEscape(reviewID)
+// ReviewURL is the frontend deep link to the author's own review. The recipient of a
+// reply or removal notice is always the review author, and the storefront exposes
+// the owner view at /reviews/{review_id}; the product page is addressed by slug, which
+// Review does not know, so a product-page link would not resolve.
+func ReviewURL(baseURL, reviewID string) string {
+	return strings.TrimRight(baseURL, "/") + "/reviews/" + url.PathEscape(reviewID)
 }

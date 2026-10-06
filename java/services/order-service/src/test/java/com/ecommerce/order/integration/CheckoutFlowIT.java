@@ -88,6 +88,10 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(completed).hasSize(1);
         assertThat(completed.get(0).path("sequence").asLong()).isEqualTo(2);
         assertThat(completed.get(0).path("data").path("items").toString()).contains("Đỏ / M");
+        assertThat(completed.get(0).path("data").path("items").toString())
+                .contains("\"product_name\":\"Áo thun cổ tròn\"")
+                .contains("\"product_name\":\"Giày chạy bộ\"")
+                .contains("\"product_image_url\":\"https://cdn.example.test/SKU-B.jpg\"");
         assertThat(notificationTemplates(orderId)).containsExactly("ORDER_CONFIRMED", "ORDER_COMPLETED");
         validateAgainstContracts(orderId);
     }

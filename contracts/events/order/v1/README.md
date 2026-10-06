@@ -32,7 +32,11 @@ the durable PAID transition time.
 or Product on its write path. `variant_name` is nullable for historical orders, but new
 Order producers populate it whenever the accepted checkout snapshot contains it. The
 producer groups items by `(product_id, sku_id)` and sends one entry per pair; quantity
-does not grant multiple review entitlements.
+does not grant multiple review entitlements. Each item also carries `product_name` and
+`product_image_url` from the same checkout line snapshot (`OrderLine.snapshot_name` and
+`snapshot_image_url`), so Review can show the buyer what they are reviewing without a
+synchronous call; both are optional on the wire only for compatibility with older
+producers and Review stores them as nullable snapshots.
 
 The same AsyncAPI also documents Order's receive operations without copying schemas
 owned by other providers:

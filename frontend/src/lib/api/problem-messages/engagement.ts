@@ -1,0 +1,43 @@
+/** Promotion Service và Review Service. */
+export const PROMOTION_MESSAGES: Record<string, string> = {
+  CAMPAIGN_REVISION_MISMATCH:
+    "Campaign vừa được người khác thay đổi. Hãy tải lại để xem bản mới trước khi sửa tiếp.",
+  CAMPAIGN_NOT_DRAFT: "Chỉ sửa được campaign đang ở trạng thái nháp.",
+  CAMPAIGN_NOT_ACTIVE: "Chương trình khuyến mãi chưa bắt đầu hoặc đã kết thúc.",
+  CAMPAIGN_CODE_ALREADY_EXISTS: "Mã campaign đã được dùng. Vui lòng chọn mã khác.",
+  PROMOTION_CODE_ALREADY_EXISTS: "Mã voucher đã được dùng. Vui lòng chọn mã khác.",
+  MARKDOWN_RULE_ALREADY_EXISTS: "Sản phẩm này đã có markdown trong campaign.",
+  INVALID_RULE: "Điều kiện áp dụng voucher chưa hợp lệ.",
+  PROMOTION_DISABLED: "Voucher này đang tạm ngưng.",
+  ALREADY_CLAIMED: "Bạn đã nhận voucher này rồi.",
+  BUDGET_EXHAUSTED: "Voucher đã hết lượt.",
+  OUT_OF_STOCK: "Voucher đã hết lượt.",
+  VOUCHER_EXPIRED: "Voucher đã hết hạn.",
+  VOUCHER_NOT_OWNED: "Bạn chưa sở hữu voucher này.",
+  ALREADY_USED_VOUCHER: "Voucher đã được sử dụng.",
+  CONDITIONS_NOT_MET: "Đơn hàng chưa đáp ứng điều kiện của voucher.",
+  MIN_ORDER_NOT_MET: "Đơn hàng chưa đạt giá trị tối thiểu của voucher.",
+  CLAIM_GATE_STALE: "Chương trình vừa thay đổi. Vui lòng tải lại rồi thử nhận voucher.",
+};
+
+export const REVIEW_MESSAGES: Record<string, string> = {
+  REVIEW_NOT_FOUND: "Không tìm thấy đánh giá.",
+  ALREADY_REVIEWED: "Bạn đã đánh giá sản phẩm này rồi.",
+  ELIGIBILITY_NOT_FOUND: "Không tìm thấy lượt đánh giá của bạn cho sản phẩm này.",
+  ELIGIBILITY_EXPIRED: "Đã quá thời hạn đánh giá sản phẩm này.",
+  NOT_ELIGIBILITY_OWNER: "Bạn không có quyền đánh giá cho đơn hàng này.",
+  NOT_REVIEW_OWNER: "Bạn không có quyền sửa đánh giá này.",
+  EDIT_QUOTA_EXHAUSTED: "Mỗi đánh giá chỉ được sửa một lần.",
+  REVIEW_NOT_EDITABLE: "Đánh giá này không thể sửa nữa.",
+  REVIEW_NOT_REPORTABLE: "Đánh giá này không thể báo cáo.",
+  REVIEW_REPORT_FORBIDDEN: "Bạn không thể báo cáo đánh giá của chính mình.",
+  ALREADY_REPORTED: "Bạn đã báo cáo đánh giá này rồi.",
+  REVIEW_NOT_REPLYABLE: "Không thể phản hồi đánh giá ở trạng thái hiện tại.",
+  TAKEDOWN_ALREADY_EXISTS: "Đánh giá này đã bị gỡ theo yêu cầu pháp lý.",
+  INVALID_MEDIA_REFERENCE: "Ảnh hoặc video đính kèm không hợp lệ. Vui lòng tải lên lại.",
+  MEDIA_NOT_VERIFIED: "Ảnh hoặc video chưa tải lên đầy đủ hoặc đã hết hạn. Hãy gỡ tệp đó rồi tải lên lại.",
+  MEDIA_QUOTA_EXCEEDED: "Bạn đã tải lên quá nhiều tệp chưa dùng. Hãy gỡ bớt hoặc chờ một lát rồi thử lại.",
+  MEDIA_STORAGE_UNAVAILABLE: "Kho lưu trữ ảnh và video đang bận. Vui lòng thử lại sau ít phút.",
+  REVIEW_STORE_UNAVAILABLE: "Hệ thống đánh giá đang bận. Vui lòng thử lại sau ít phút.",
+  INVALID_CURSOR: "Danh sách đã thay đổi. Hãy tải lại trang để xem từ đầu.",
+};

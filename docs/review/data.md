@@ -74,6 +74,13 @@ erDiagram
 là globally unique và xác định buyer, nên không cần giữ `user_id` trong unique key.
 Điều này cho phép null hóa owner ID khi privacy purge mà không phá idempotency.
 
+`variant_name_snapshot`, `product_name_snapshot` (`VARCHAR(255)`) và
+`product_image_url_snapshot` (`VARCHAR(2048)`) đều nullable và là snapshot ghi một lần từ
+`ORDER_COMPLETED.items[]` lúc cấp entitlement ([ADR-012](./decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md),
+migration `V2`, schema [0002](./schema/0002_eligibility_product_snapshot.sql)). Hai cột
+sản phẩm chỉ được trả trên bề mặt owner; chúng không phải PII và không có trong event
+Review phát ra.
+
 `order_id` là canonical positive decimal string do Order sở hữu, lưu `VARCHAR(64)` để
 không mất precision. Review chỉ so sánh bằng và không cast wire value sang số. Nó
 không phải JSON number: IEEE-754 double ở JavaScript có thể
@@ -120,7 +127,11 @@ ISSUED -- attachment deadline --> DELETE_PENDING -- storage confirmation --> DEL
                     +--> ATTACHED -- replacement/takedown --> DELETE_PENDING
 ```
 
-- `object_key` là opaque, không chứa `user_id` và không xuất hiện trong public API.
+- `object_key` là opaque và không chứa `user_id`. Nó không phải field của public API:
+  response chỉ có `asset_id` và signed instruction. Chữ ký tất nhiên phải trỏ đúng object
+  mà nó cho phép ghi nên key nằm trong URL đó; điều này vô hại vì key là material ngẫu
+  nhiên không đoán được, không mang định danh, và chữ ký không mở thêm object nào khác.
+  Client không tự chọn được key và không gửi key hay URL tùy ý cho Review.
 - Signed upload phải single-write/no-overwrite. Review xác minh object tồn tại, loại
   và metadata trước khi state thành `VERIFIED`; object đã kiểm tra không được thay
   byte trước khi attach.
@@ -201,6 +212,15 @@ Rating aggregator, order consumer và privacy consumer ghi receipt vào
 `(consumer_name, event_id)` biến delivery at-least-once thành no-op khi event tới lại.
 Receipt được giữ ít nhất bằng Kafka retention cộng recovery margin; cleanup chỉ được
 chạy sau khi khoảng replay tương ứng đã đóng.
+
+`uq_event_receipt_source_position (consumer_name, source_topic, source_partition,
+source_offset)` là một ràng buộc thứ hai và độc lập với primary key: nó khẳng định một
+consumer không thể ghi hai event khác nhau tại cùng một vị trí log. Trong vận hành bình
+thường điều đó không thể xảy ra vì một offset chỉ chứa một message. Nó chỉ vi phạm được
+khi ai đó xóa rồi tạo lại topic — offset quay về 0 trong khi receipt cũ vẫn còn theo đúng
+retention nêu trên. Khi đó consumer sẽ fail và message đi DLQ chứ không âm thầm coi event
+mới là bản sao của event cũ; đây là hành vi mong muốn, và cách xử lý là dọn receipt của
+topic đã bị tạo lại trước khi cho consumer chạy tiếp.
 
 ## 7. Export session cho Search
 
@@ -333,6 +353,9 @@ report chỉ được batch-load theo `review_id` qua `ix_report_review_status`.
 
 Các query secondary tải media/reply theo batch cho page review, không N+1; admin
 moderation list cũng batch-load media và report chưa `DISMISSED` theo cùng cách.
-Aggregate đọc theo primary key. Search export keyset theo `product_id`. Mọi `updated_at` trên
-bảng mutable được trigger database cập nhật, không phụ thuộc việc application code
-nhớ set cột.
+Aggregate đọc theo primary key. Search export keyset theo `product_id`. `updated_at` của
+năm bảng domain mutable (`review_eligibilities`, `reviews`, `review_media_assets`,
+`review_admin_replies`, `privacy_erasure_requests`) do trigger database cập nhật, không
+phụ thuộc việc application code nhớ set cột. `product_rating_aggregates` cố ý không có
+trigger: mọi write vào nó đã là một câu lệnh tính lại toàn bộ row nên câu lệnh đó set
+luôn `updated_at`; thêm trigger chỉ là ghi hai lần cùng một giá trị.

@@ -253,12 +253,15 @@ Order chỉ phát event có consumer runtime và interaction đã đăng ký:
 | CloudEvents type | Trigger | Payload | Consumer/hành vi |
 |---|---|---|---|
 | `com.ecommerce.order.paid.v1` | Commit mốc tài chính `PENDING_PAYMENT/CANCELLING -> PAID` khi capture thắng race trước terminal non-capture | canonical `order_id`, UUID `user_id`, unique purchased `sku_ids[]` | Cart xóa đúng SKU đã mua, không đổi activity |
-| `com.ecommerce.order.completed.v1` | Mọi line có verified Delivery proof và master CAS sang `COMPLETED` | `order_id`, `user_id`, `completed_at`, immutable product/SKU/variant/quantity items | Review cấp tối đa một entitlement cho mỗi `(order_id,product_id,sku_id)` |
+| `com.ecommerce.order.completed.v1` | Mọi line có verified Delivery proof và master CAS sang `COMPLETED` | `order_id`, `user_id`, `completed_at`, immutable product/SKU/variant/product-name/product-image/quantity items | Review cấp tối đa một entitlement cho mỗi `(order_id,product_id,sku_id)` |
 
 `com.ecommerce.order.paid.v1` không mang amount, payment transaction/provider hay recovery flag vì
 Cart không dùng. `com.ecommerce.order.completed.v1` giữ item snapshot vì Review không gọi đồng bộ
 Order/Product trên write path. `variant_name` nullable cho historic order; producer
-mới gửi khi checkout snapshot có giá trị.
+mới gửi khi checkout snapshot có giá trị. Mỗi item còn mang `product_name` và
+`product_image_url` từ cùng snapshot dòng đơn (`snapshot_name`, `snapshot_image_url`) để
+Review hiện sản phẩm đang được đánh giá cho buyer
+([Review ADR-012](../review/decisions/ADR-012-owner-surface-product-snapshot-and-review-list.md)).
 
 Không phát created, cancelled, generic status-changed, line-fulfillment, refunded hoặc
 refund-failed **fact** khi chưa có implemented consumer. Analytics mới chỉ có tài liệu;
