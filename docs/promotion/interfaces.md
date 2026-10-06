@@ -75,11 +75,17 @@ storage representation, không phải wire shape.
 
 | Method và path | Dùng khi nào | Side effect |
 |---|---|---|
-| `POST /api/v1/me/promotion-voucher-suggestions` | Trang checkout đã xác thực user qua Gateway; chỉ xếp hạng voucher `SAVED` trong wallet | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
-| `POST /api/v1/promotion-discovery` | Trang checkout muốn tìm cả wallet voucher và public `ACTIVE` voucher chưa lưu | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
-| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User chọn public voucher và muốn lưu rồi evaluate ngay | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Client tự có checkout context; chỉ xếp hạng voucher `SAVED` trong wallet. Trang checkout không dùng | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
+| `POST /api/v1/promotion-discovery` | Client tự có checkout context, tìm cả wallet và public `ACTIVE` chưa lưu. Trang checkout không dùng | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn là `proposed`, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |
 | `POST /api/v1/me/promotion-voucher-claims` | User claim voucher `LIMITED_CLAIM` | `201` sau DB commit; có thể `202 CLAIM_PENDING` để retry |
 | `POST /internal/v1/promotion-discount-calculations` | Checkout server tính lại 0/1 voucher từ trusted context | Pure/replay-safe; không save và không reserve |
+| `POST /internal/v1/promotion-voucher-options` | `proposed` (ADR-018): Checkout dựng khay voucher của trang checkout từ trusted snapshot | Safe query như discovery; trả `evaluation` + `display` (`code`, `name`, `description`, `discount`, `min_order_amount`, `valid_until`) |
+
+Khay voucher của trang checkout đi qua Checkout
+`GET /api/v1/checkout/previews/{checkout_token}/voucher-options`
+([Checkout ADR-017](../checkout/decisions/ADR-017-voucher-options-read-composition.md)) vì chỉ
+Checkout có giá và `category_ids` tin cậy; Gateway áp quota ở route đó.
 
 Hai query customer dùng POST vì checkout context chứa nhiều item/category và không phù hợp
 query string; POST ở đây không đồng nghĩa mutation. `payment_method` hiện bị khóa `STRIPE`

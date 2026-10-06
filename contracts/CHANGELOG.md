@@ -3,6 +3,28 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-07
+
+- Checkout HTTP v1 (proposed, no runtime yet) is aligned with a real Backend for Frontend
+  ([Checkout ADR-014…017](../docs/checkout/decisions/README.md)):
+  - every error now uses `CheckoutProblem` with a stable `code` enum, `retryable`, `action`
+    and optional `status_url`, `changed_fields`, `sku_ids`, `rejected_lines`,
+    `promotion_reason`, `dropped_promotion`; Order outcomes are relayed explicitly;
+  - Preview without `previous_checkout_token` starts a fresh quotation that supersedes the
+    current `PREVIEWED` one; while a submission is in flight Preview returns
+    `409 SUBMISSION_IN_PROGRESS`;
+  - new `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`;
+  - `PreviewItem` drops `warehouse_id`, adds `list_unit_price`, makes `variant_attributes`
+    and `image_url` (CDN URL or placeholder) required and `product_id` a UUID;
+  - `X-Request-Id` is a non-failing hint; no shipping fee and `final_amount ≥ 1 VND` are
+    stated in the schema. Regenerate the frontend `checkout` types.
+- Promotion HTTP v1 (proposed parts, [Promotion ADR-018](../docs/promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)):
+  new internal `POST /internal/v1/promotion-voucher-options` (checkout-service only) and
+  optional `context` on `PUT /api/v1/me/promotion-vouchers/{promotion_id}` with nullable
+  `evaluation`. Regenerate the frontend `promotion` types.
+- Product gRPC v1 documents that `Sku.image_url` carries the storage key of the
+  representative image, not an absolute URL (comment only, wire unchanged).
+
 ## 2026-10-06
 
 - Order events v1 `order-completed` items add optional `product_name` and

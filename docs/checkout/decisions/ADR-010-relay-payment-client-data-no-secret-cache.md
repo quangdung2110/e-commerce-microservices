@@ -22,6 +22,15 @@ evidence:
 lưu đúng ba giá trị" của [ADR-008](./ADR-008-single-payment-provider-stripe.md);
 không thay thế hai ADR đó. Chưa có implementation evidence.
 
+> **Ghi chú 2026-10-07:** nguyên tắc "không lưu `client_secret`, luôn relay từ Order trong
+> cùng request" vẫn hiệu lực. Keyspace `checkout:response:{user_id}:{token}` và các mục
+> `data.md §8.2, §11`, `WF-CHK-003/004` nhắc bên dưới là của thiết kế cũ; hiện kết quả nằm ở
+> `checkout:result:{token_hash}` ([ADR-011](./ADR-011-token-keyed-session-and-recovery.md),
+> [data.md](../data.md)) và luồng replay ở
+> [workflows.md WF-03/WF-04](../workflows.md#wf-03-submit-trùng-hoặc-đồng-thời). Nhánh
+> conflict không còn cache đề xuất tính lại voucher; Checkout relay problem của Order
+> ([ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
+
 ## Bối cảnh
 
 Từ 2026-09-19 Payment là **nơi lưu duy nhất** của Stripe `client_secret` (mã hóa,

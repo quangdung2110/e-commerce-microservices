@@ -2,8 +2,10 @@
 
 `Sku.price` is the published selling price, `Sku.base_price` is the admin-managed
 list price, and `Sku.category_ids` is the Product-owned category ancestry consumed
-by Checkout when building trusted Promotion facts. The API never exposes Inventory
-stock state.
+by Checkout when building trusted Promotion facts. `Sku.image_url` carries the object
+storage key of the representative image (SKU image, else Product image; empty when
+none), not an absolute URL; consumers build the CDN URL from it. The API never exposes
+Inventory stock state.
 
 **Trạng thái:** `proposed`
 
@@ -17,7 +19,7 @@ giỏ. Product sở hữu capability này; Cart chỉ là consumer.
 Nguồn chuẩn: [`product_service.proto`](product_service.proto).
 
 - Provider: `product-service`
-- Consumer đầu tiên: `cart-service`
+- Consumer: `cart-service`, `checkout-service`
 - `GetSku` deadline đề xuất: 500 ms
 - `GetBatchSkus` deadline đề xuất: 1 giây, tối đa 100 SKU
 - Cả hai RPC là read-only và có thể retry trong retry budget

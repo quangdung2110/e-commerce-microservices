@@ -120,7 +120,9 @@ promotion enabled bằng PostgreSQL clock trong cùng transaction với wallet i
 kiểm campaign `PUBLISHED` và `now < end_time`. Nếu `total_claim_quantity` hữu hạn, cả hai
 tăng `claimed_quantity` bằng guarded update và trả `OUT_OF_STOCK` khi đã chạm total. Existing
 SAVED còn hạn trả idempotent success mà không kéo dài expiry; USED bị từ chối. Không có
-default 30 ngày: expiry lấy từ validity policy.
+default 30 ngày: expiry lấy từ validity policy. Public save chỉ evaluate khi request có
+`context`; trang checkout gửi body rỗng và nhận `evaluation: null`, discount chính thức đến từ
+Checkout Preview (`context` tùy chọn là `proposed`, ADR-018).
 
 ## WF-PROMO-004 — Discovery và calculate
 
@@ -138,6 +140,14 @@ default 30 ngày: expiry lấy từ validity policy.
 
 `POST /api/v1/promotion-discovery` ngoài wallet còn query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
 user đã sở hữu, evaluate/sort/limit. Campaign đã end không xuất hiện cho save mới.
+
+### Checkout voucher options (`proposed`, ADR-018)
+
+Checkout gọi `POST /internal/v1/promotion-voucher-options` với `user_id` và
+`TrustedCheckoutContext` dựng từ báo giá. Promotion chạy cùng bước wallet tray và public
+discovery ở trên (theo `include_public`/`include_ineligible`), giữ ranking, rồi gắn thông tin
+hiển thị từ definition snapshot (`code`, `name`, `description`, `discount`,
+`min_order_amount`, `valid_until`). Không save, claim hay reserve; không local rate limit.
 
 ### Calculate
 

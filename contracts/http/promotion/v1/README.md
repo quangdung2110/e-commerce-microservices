@@ -50,11 +50,17 @@ bởi `java/services/promotion-service` (provider test `HttpContractIntegrationT
 
 | Method | Path | Mục đích |
 |---|---|---|
-| POST | `/api/v1/me/promotion-voucher-suggestions` | Evaluate voucher SAVED trong wallet |
-| POST | `/api/v1/promotion-discovery` | Wallet + public promotion discovery |
-| PUT | `/api/v1/me/promotion-vouchers/{promotion_id}` | Save public voucher và evaluate |
+| POST | `/api/v1/me/promotion-voucher-suggestions` | Evaluate voucher SAVED trong wallet theo context client gửi; trang checkout không dùng |
+| POST | `/api/v1/promotion-discovery` | Wallet + public promotion discovery theo context client gửi; trang checkout không dùng |
+| PUT | `/api/v1/me/promotion-vouchers/{promotion_id}` | Save public voucher; evaluate chỉ khi có `context` (context tùy chọn là `proposed`) |
 | POST | `/api/v1/me/promotion-voucher-claims` | Claim limited voucher; có thể trả `202 CLAIM_PENDING` |
 | POST | `/internal/v1/promotion-discount-calculations` | Checkout tính 0/1 platform voucher, không mutate |
+| POST | `/internal/v1/promotion-voucher-options` | `proposed`: Checkout dựng khay voucher từ trusted snapshot; kèm thông tin hiển thị |
+
+Trang checkout lấy khay voucher qua Checkout
+`GET /api/v1/checkout/previews/{checkout_token}/voucher-options`, vì chỉ Checkout có giá
+và `category_ids` tin cậy; save/claim vẫn gọi thẳng Promotion
+([Promotion ADR-018](../../../../docs/promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)).
 
 ### Order / Temporal allocation
 

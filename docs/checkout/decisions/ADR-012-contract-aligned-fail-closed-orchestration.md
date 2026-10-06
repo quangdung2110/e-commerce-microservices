@@ -1,18 +1,34 @@
 ---
-title: ADR-012 Contract-aligned fail-closed orchestration
+doc_id: checkout-adr-012
+service: checkout
 status: accepted
 date: 2026-09-20
-owners:
-  - domain: checkout
-    team: commerce-platform
+decision_owners:
+  - Checkout Service team
 supersedes:
-  - ADR-004
-  - ADR-005
-  - ADR-006
-  - ADR-009
+  - checkout-adr-004
+  - checkout-adr-005
+  - checkout-adr-006
+  - checkout-adr-009
+evidence:
+  - docs/checkout/interfaces.md
+  - docs/checkout/workflows.md
 ---
 
 # ADR-012: Contract-aligned fail-closed orchestration
+
+## Status
+
+`Accepted` 2026-09-20. Thay thế ADR-004, ADR-005, ADR-006, ADR-009.
+
+> **Ghi chú 2026-10-07 (đính chính):** Inventory allocation preview **không** nhận địa chỉ;
+> request chỉ có `lines[{line_reference, sku_id, quantity}]` theo
+> [Inventory Workflow OpenAPI](../../../contracts/http/inventory/workflow/v1/openapi.yaml).
+> "Revalidate revisions/expiry" được cụ thể hoá thành: Cart `items_hash`, Product
+> saleability/`price`/`category_ids`, kết quả Promotion calculation (Promotion không trả
+> expiry). Thay cho nhánh tính lại voucher của ADR-006, Checkout relay
+> `PROMOTION_RECALCULATION_NEEDED` của Order theo
+> [ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md).
 
 ## Context
 

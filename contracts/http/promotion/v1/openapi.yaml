@@ -534,11 +534,15 @@ paths:
     put:
       tags: [Customer promotions]
       operationId: saveAndEvaluatePromotionVoucher
-      summary: Lưu public voucher rồi evaluate cho checkout hiện tại
+      summary: Lưu public voucher, evaluate khi có checkout context
       description: >-
         Chỉ PUBLIC_SAVE thuộc campaign ACTIVE. Existing SAVED còn hạn trả 200 và không kéo
         dài expired_at; tạo mới trả 201; USED hoặc expired ownership trả 409. Identity user
-        lấy từ token, không nhận user_id trong payload.
+        lấy từ token, không nhận user_id trong payload. context là tùy chọn: thiếu context
+        thì chỉ lưu wallet và evaluation là null. Trang checkout gửi body rỗng vì giá và
+        category tin cậy chỉ có ở Checkout; Checkout Preview tính discount chính thức
+        (Promotion ADR-018). Phần context tùy chọn ở trạng thái proposed: runtime hiện tại
+        vẫn yêu cầu context.
       security: [{ gatewayUserIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/PromotionId'
@@ -637,6 +641,40 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DiscountCalculationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/v1/promotion-voucher-options:
+    post:
+      tags: [Checkout queries]
+      operationId: listPromotionVoucherOptions
+      summary: Xếp hạng voucher wallet và public cho trusted checkout context
+      description: >-
+        Chỉ checkout-service gọi để dựng khay voucher của trang checkout (Checkout ADR-017,
+        Promotion ADR-018). Cùng logic với suggestion/discovery nhưng context do Checkout
+        dựng từ snapshot server-owned, không từ browser. Safe query ngoài lazy-normalize
+        SAVED hết hạn thành EXPIRED; không save, không claim, không reserve. Ranking:
+        eligible trước, discount giảm dần, promotion_id tăng dần. Mỗi item kèm thông tin
+        hiển thị của voucher. Rate limit thuộc Gateway profile checkout-voucher-options ở
+        route Checkout; Promotion không giữ local limiter.
+      x-adoption-status: proposed
+      security: [{ workloadIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoucherOptionRequest' }
+      responses:
+        '200':
+          description: Voucher đã evaluate, xếp hạng và kèm thông tin hiển thị.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherOptionList' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1347,9 +1385,10 @@ components:
     SaveAndEvaluateRequest:
       type: object
       additionalProperties: true
-      required: [context]
       properties:
-        context: { $ref: '#/components/schemas/CheckoutContext' }
+        context:
+          allOf: [{ $ref: '#/components/schemas/CheckoutContext' }]
+          description: Optional (proposed, Promotion ADR-018); omitted means save only and evaluation=null.
     WalletVoucher:
       type: object
       additionalProperties: false
@@ -1396,13 +1435,60 @@ components:
         evaluated_at: { type: string, format: date-time }
     PromotionDiscoveryResponse:
       $ref: '#/components/schemas/VoucherSuggestionResponse'
+    VoucherOptionRequest:
+      type: object
+      additionalProperties: true
+      required: [user_id, context]
+      properties:
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        user_tier:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 64
+          description: Optional trusted snapshot; Checkout v1 omits it so user.tier rules evaluate false.
+        context: { $ref: '#/components/schemas/TrustedCheckoutContext' }
+        include_public: { type: boolean, default: true }
+        include_ineligible: { type: boolean, default: true }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 50 }
+    VoucherDisplay:
+      type: object
+      additionalProperties: false
+      required: [code, name, description, discount, min_order_amount, valid_until]
+      properties:
+        code: { type: string, maxLength: 80 }
+        name: { type: string, maxLength: 255 }
+        description: { type: [string, 'null'] }
+        discount: { $ref: '#/components/schemas/Discount' }
+        min_order_amount: { $ref: '#/components/schemas/VndMoney' }
+        valid_until:
+          type: [string, 'null']
+          format: date-time
+          description: wallet.expired_at cho WALLET; thời điểm hết hạn theo validity policy hoặc campaign end_time cho PUBLIC.
+    VoucherOption:
+      type: object
+      additionalProperties: false
+      required: [evaluation, display]
+      properties:
+        evaluation: { $ref: '#/components/schemas/VoucherEvaluation' }
+        display: { $ref: '#/components/schemas/VoucherDisplay' }
+    VoucherOptionList:
+      type: object
+      additionalProperties: false
+      required: [items, evaluated_at]
+      properties:
+        items: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/VoucherOption' } }
+        evaluated_at: { type: string, format: date-time }
     SaveAndEvaluateResponse:
       type: object
       additionalProperties: false
       required: [wallet, evaluation]
       properties:
         wallet: { $ref: '#/components/schemas/WalletVoucher' }
-        evaluation: { $ref: '#/components/schemas/VoucherEvaluation' }
+        evaluation:
+          oneOf:
+            - $ref: '#/components/schemas/VoucherEvaluation'
+            - type: 'null'
+          description: Null when the request carried no context (Promotion ADR-018).
     ClaimVoucherRequest:
       type: object
       additionalProperties: true

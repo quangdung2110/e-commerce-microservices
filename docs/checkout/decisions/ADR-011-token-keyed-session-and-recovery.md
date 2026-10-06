@@ -1,17 +1,32 @@
 ---
-title: ADR-011 Token-keyed session and atomic recovery
+doc_id: checkout-adr-011
+service: checkout
 status: accepted
 date: 2026-09-20
-owners:
-  - domain: checkout
-    team: commerce-platform
+decision_owners:
+  - Checkout Service team
 supersedes:
-  - ADR-002
-  - ADR-003
-  - ADR-007
+  - checkout-adr-002
+  - checkout-adr-003
+  - checkout-adr-007
+evidence:
+  - docs/checkout/data.md
+  - docs/checkout/workflows.md
 ---
 
 # ADR-011: Token-keyed session and atomic recovery
+
+## Status
+
+`Accepted` 2026-09-20. Thay thế ADR-002, ADR-003, ADR-007.
+
+> **Ghi chú 2026-10-07:** vai trò con trỏ active và luật Preview khi submission đang chạy
+> được làm rõ bởi [ADR-016](./ADR-016-fresh-preview-and-in-flight-submission-guard.md); giới
+> hạn re-POST trong recovery bởi [ADR-014](./ADR-014-resilience-budget-and-mesh-gateway-split.md).
+> Không có reconciler nền: "reconciler" dưới đây là luồng status do client gọi. Trạng thái
+> chưa rõ được trả bằng `202` với `state=RESULT_UNKNOWN`, không phải problem
+> `SUBMISSION_RESULT_UNKNOWN`
+> ([ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
 
 ## Context
 

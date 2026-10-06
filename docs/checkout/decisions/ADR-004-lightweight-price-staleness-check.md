@@ -1,7 +1,8 @@
 ---
 doc_id: checkout-adr-004
 service: checkout
-status: accepted
+status: superseded
+superseded_by: checkout-adr-012
 date: null
 decision_owners:
   - Checkout Service team
@@ -15,7 +16,7 @@ evidence:
 
 ## Trạng thái
 
-`Accepted` theo thiết kế cũ. Chưa có implementation evidence.
+`Superseded` bởi [ADR-012](./ADR-012-contract-aligned-fail-closed-orchestration.md) ngày 2026-09-20; nội dung dưới đây là lịch sử, không phải contract hiện hành. Trước đó: `Accepted` theo thiết kế cũ, chưa có implementation evidence.
 
 ## Bối cảnh
 

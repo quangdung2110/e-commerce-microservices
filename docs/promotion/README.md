@@ -111,7 +111,7 @@ CloudEvents `id`.
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
 | Inbound | Customer qua Gateway | HTTP | Discovery, suggestion, save và claim voucher |
-| Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context |
+| Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context; voucher options cho khay voucher của trang checkout (`proposed`, ADR-018) |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel only; technical cancellation is denied to Order |
 | Inbound | `promotion-legacy-migrator` | HTTP | Deprecated technical cleanup with proof header/body digest |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
@@ -214,5 +214,9 @@ ký các fact đó; thêm sau là thay đổi additive theo
   `X-User-Id`) và router cho admin/discovery/wallet trong docker-compose, nhưng rateLimit của
   Traefik CE là in-memory per replica; production nhiều replica cần shared state theo
   `docs/gateway/runtime-contract.md`. Promotion không sở hữu Redis rate-limit key.
+- Chưa triển khai hai thay đổi contract `proposed` của
+  [ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md):
+  `POST /internal/v1/promotion-voucher-options` cho Checkout và `context` tùy chọn khi lưu
+  voucher (runtime hiện vẫn bắt buộc `context`).
 - `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
   `domain/rule/RuleEvaluator` + `RuleValidator` trong service.

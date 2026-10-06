@@ -1,114 +1,110 @@
 ---
-title: Checkout Data and Caching
+doc_id: checkout-data
+service: checkout-service
+scope: target
 status: proposed
-last_updated: 2026-09-20
 owners:
-  - domain: checkout
-    team: commerce-platform
-    contact: commerce-platform@example.com
-review_cycle_days: 30
-source_of_truth: false
+  - Checkout Service team
 evidence:
   - ../../contracts/http/checkout/v1/openapi.yaml
   - decisions/ADR-011-token-keyed-session-and-recovery.md
-tags: [checkout, redis, caching]
+  - decisions/ADR-016-fresh-preview-and-in-flight-submission-guard.md
+verified_against_commit: null
 ---
 
-# Checkout Data and Caching
+# Checkout Service — Data Design
 
 ## Nguyên tắc
 
-Checkout Redis là durable-enough workflow store trong thời gian ngắn, không phải cache dùng chung của domain khác. Mọi record phục vụ submit được định danh theo token, có TTL và state transition atomically.
+Checkout Redis là kho trạng thái workflow ngắn hạn, không phải cache dùng chung của domain
+khác. Mọi record được định danh theo token hash, có TTL và đổi trạng thái atomically bằng
+Lua. Không có PostgreSQL, Kafka, outbox hay worker nền.
 
 ## Keyspace
 
-| Key | Nội dung | TTL mặc định |
-|---|---|---:|
-| `checkout:session:{token_hash}` | Session snapshot + state | logical expiry 20 phút; physical retention 30 phút khi chưa submit |
-| `checkout:active:{user_id}` | Token hash mới nhất cho UX | 20 phút |
-| `checkout:submit-payload:{token_hash}` | Order request bất biến + idempotency key | 30 phút, 24 giờ khi success |
-| `checkout:result:{token_hash}` | Terminal result/problem | success 24 giờ; conflict/failure 30 phút |
-| `checkout:idem:{user_id}:{idem_hash}` | Encrypted Preview response replay + request fingerprint | 5 phút |
-| `checkout:rate:{user_id}:{bucket}` | Rate counter | 60 giây |
+| Key | Kiểu | Nội dung | TTL |
+|---|---|---|---:|
+| `checkout:session:{token_hash}` | Hash | Field điều khiển plaintext + snapshot mã hoá | 30 phút từ lúc tạo; claim đặt lại 30 phút từ `claimed_at` |
+| `checkout:active:{user_id}` | String | `token_hash` của token chưa terminal duy nhất | Bằng TTL của session nó trỏ tới, cập nhật trong cùng script |
+| `checkout:submit-payload:{token_hash}` | String | Request Order bất biến (mã hoá, chứa raw token) | 30 phút từ `claimed_at`, không gia hạn |
+| `checkout:result:{token_hash}` | Hash | `user_id`, terminal state, `order_id`, problem đã lưu | `SUCCEEDED` 24 giờ; `CONFLICT`/`FAILED` 30 phút |
+| `checkout:idem:{user_id}:{idem_hash}` | String | Fingerprint request + response Preview (mã hoá, chứa raw token) | 5 phút |
 
-`token_hash` dùng keyed HMAC-SHA-256 với server key/version, không dùng hash trần cho token có entropy không chắc chắn. `idem_hash` không lưu raw client idempotency key.
+Không có key rate limit: quota thuộc Gateway. Replay một `SUCCEEDED` không cần payload vì
+client gửi token trong request và Payment data luôn lấy mới từ Order.
 
-## Session schema tối thiểu
+`token_hash` = HMAC-SHA-256(server key, token) kèm version của key; `idem_hash` tương tự
+cho `Idempotency-Key`. Không lưu raw token hay raw idempotency key trong key name.
 
-```json
-{
-  "schema_version": 1,
-  "state": "PREVIEWED",
-  "user_id": "uuid",
-  "items_hash": "sha256:...",
-  "address_snapshot": {},
-  "line_items": [],
-  "allocation_plan": [],
-  "promotion_quote": null,
-  "subtotal": 100000,
-  "discount_total": 0,
-  "total": 100000,
-  "currency": "VND",
-  "pricing_expires_at": "RFC3339",
-  "created_at": "RFC3339",
-  "updated_at": "RFC3339"
-}
-```
+## Session hash
 
-Không lưu raw token trong key/session/log. Preview idempotency response và Submit payload
-đều chứa `checkout_token`, nên các Redis value này phải được envelope-encrypt bằng
-versioned key. Không lưu payment/client secret, access token, cookie, full auth header
-hoặc dữ liệu thẻ.
+| Field | Dạng | Ý nghĩa |
+|---|---|---|
+| `schema_version` | plaintext | `1` |
+| `user_id` | plaintext | Owner check trong Lua |
+| `state` | plaintext | State machine ở [domain.md](./domain.md#state-machine) |
+| `expires_at` | plaintext (epoch ms) | Hạn logic của báo giá |
+| `claimed_at`, `revalidated_at`, `last_order_call_started_at`, `attempt_id` | plaintext | Điều phối submit/recovery |
+| `snapshot` | ciphertext | Address (PII), line items, allocation plan, promotion, tổng tiền, `items_hash`, `pricing_hash` |
+| `key_version` | plaintext | Version khoá mã hoá đã dùng |
+
+Lua chỉ đọc field plaintext nên không cần giải mã trong Redis. Snapshot, submit payload và
+replay idempotency được envelope-encrypt bằng khoá có version (AES-GCM, khoá dữ liệu bọc
+bởi khoá từ secret manager). Không lưu Payment client secret, access token, cookie, header
+xác thực hay dữ liệu thẻ dưới bất kỳ dạng nào.
 
 ## Atomic operations
 
-### Tạo preview
+### Tạo Preview (một script)
 
-Một transaction/script phải:
+1. Đọc `checkout:active:{user_id}`; nếu session được trỏ tới đang `SUBMITTING`/`RETRYABLE`
+   → trả `SUBMISSION_IN_PROGRESS`, không ghi gì.
+2. Nếu request có `previous_checkout_token`: hash của nó phải bằng con trỏ và session phải
+   `PREVIEWED`; sai → `ACTIVE_CHECKOUT_CHANGED`, không ghi gì.
+3. Ghi session mới (`HSET` + `PEXPIRE`), chuyển session `PREVIEWED` cũ (nếu có) sang
+   `SUPERSEDED` mà không đổi TTL, đặt con trỏ active sang token mới với cùng TTL, ghi replay
+   idempotency.
 
-1. Kiểm tra active pointer bằng CAS: `previous_checkout_token` phải đúng active
-   `PREVIEWED`; request không có previous chỉ được tạo khi không có active
-   `PREVIEWED` (active đang submit/terminal không bị supersede).
-2. `SET NX` session mới với TTL chỉ trong cùng script sau khi CAS hợp lệ.
-3. Lưu idempotency replay cùng response digest và cập nhật active pointer.
-4. Chỉ chuyển previous session từ `PREVIEWED` sang `SUPERSEDED`; không chạm token đang submit/terminal.
+Script fail không để lại session mồ côi. Hai Preview đồng thời không thể cùng tạo token
+`PREVIEWED`: script sau thấy con trỏ đã đổi.
 
-CAS fail không để lại session mồ côi và trả `409 ACTIVE_CHECKOUT_CHANGED`. Nhờ đó hai
-Preview đồng thời không tạo hai token cùng ở trạng thái có thể Submit.
+### Claim Submit (một script)
 
-### Claim submit
+Kiểm tra owner, `state=PREVIEWED`, `now < expires_at`; rồi cùng lúc ghi `state=SUBMITTING`,
+`attempt_id`, `claimed_at`, submit payload, đặt lại TTL session/payload/con trỏ thành 30 phút.
+Không materialize được payload thì state không đổi. Không dùng chuỗi `SETNX`/`EXPIRE`/`DEL`
+rời rạc.
 
-Một script duy nhất phải kiểm tra owner/state/expiry rồi cùng lúc ghi:
+### Recovery claim
 
-- `state=SUBMITTING`;
-- `submission_attempt_id`;
-- `submission_claimed_at` và configurable owner timeout;
-- Order idempotency key bằng UUID checkout token;
-- submit payload hoặc immutable payload digest + record payload;
-- recovery TTL.
-
-Nếu payload không thể được materialize thì state không được đổi. Không dùng chuỗi `SETNX`, `EXPIRE`, `DEL` rời rạc và không release lock bằng raw `DEL`.
-`SUBMITTING` quá owner timeout không được reset về `PREVIEWED`; recovery phải hỏi Order
-trước, rồi CAS claim lại đúng encrypted payload/token và cùng idempotency key.
+`SUBMITTING` quá owner timeout hoặc `RETRYABLE` → `SUBMITTING` với `attempt_id` mới, giữ
+nguyên payload. Không bao giờ quay về `PREVIEWED`.
 
 ### Hoàn tất
 
-Ghi metadata result trước hoặc atomically với terminal state. Result giữ `user_id`, terminal state và `order_id` để status vẫn kiểm tra ownership; reader không được thấy `SUCCEEDED` mà thiếu `order_id`. Payment client data không nằm trong result; replay/status phải lấy mới từ Order.
+Ghi `checkout:result:*` và terminal state trong cùng script; reader không bao giờ thấy
+`SUCCEEDED` thiếu `order_id`. Con trỏ active giữ nguyên trỏ tới token terminal cho tới khi
+hết TTL hoặc bị Preview mới thay; token terminal không chặn Preview.
 
 ## Chính sách cache
 
-Không tạo cache độc lập cho Cart, Product, User/address, Inventory availability/allocation hoặc Promotion quote. Những bản chụp này chỉ nằm bên trong session và không được tái sử dụng cho token khác.
-
-Nếu tương lai cần cache downstream data, phải có ADR nêu owner, key version, TTL, stale policy, invalidation signal, failure mode và metrics; mặc định hiện tại là không cache.
+Không tạo cache độc lập cho Cart, Product, User, Inventory hay Promotion, kể cả voucher
+options. Những bản chụp này chỉ nằm trong session của đúng token. Thêm cache downstream cần
+ADR nêu owner, key version, TTL, stale policy, invalidation, failure mode và metric.
 
 ## Eviction và mất Redis
 
-- Preview quá logical expiry nhưng record còn retention grace: trả `410` sau owner check.
-- Preview chưa submit đã physical eviction: trả `404`; client preview lại.
-- Submit đã materialize payload nhưng local state mất: query Order bằng checkout token/idempotency key nếu có thể khôi phục an toàn; không tạo key mới.
-- Nếu không thể chứng minh không có Order, trả `SUBMISSION_RESULT_UNKNOWN` và vận hành recovery, không khuyến khích submit mới.
-- Redis phải cấu hình eviction/HA phù hợp với workflow keys; memory pressure là sự cố, không phải cache miss bình thường.
+- Redis phải chạy `maxmemory-policy noeviction`, có replica/HA và persistence (AOF
+  `everysec`). Memory pressure là sự cố, không phải cache miss.
+- Báo giá quá hạn logic nhưng record còn: `410` sau owner check. Record đã mất: `404`, client
+  tạo báo giá mới.
+- Submission đã claim mà local state mất: client hỏi status → không còn record → `404`;
+  runbook dùng Order recovery theo token để xác định đơn đã tạo hay chưa. Không tạo key mới
+  cho token cũ.
+- Mất Redis toàn phần: readiness `false`, Preview/Submit trả `503`, không có đường fallback.
 
 ## Quan sát
 
-Đo `session_created`, CAS conflict, active pointer overwrite, submission state count, recovery lookup, result unknown, Redis latency/error, key eviction và TTL remaining. Labels không chứa token/user ID raw.
+Đo số session tạo mới, kết quả CAS Preview, chuyển state, recovery outcome, độ trễ và lỗi
+Redis, eviction (phải bằng 0). Label không chứa token, user ID hay SKU. Chi tiết ở
+[operations.md](./operations.md#metric).

@@ -47,6 +47,11 @@ message Sku {
   string product_id = 2;
   string product_name = 3;
   map<string, string> variant_attributes = 4;
+  // Despite the field name, this is the object storage key (not an absolute URL)
+  // of the representative image: the first IMAGE media of the SKU, falling back
+  // to the first Product-level IMAGE; empty when there is none. Consumers that
+  // render it build the public CDN URL from it, exactly like Search and the
+  // Product Detail BFF.
   string image_url = 5;
   // Published selling price after markdown. Same value as selling_price_vnd.
   ecommerce.common.v1.Money price = 6;

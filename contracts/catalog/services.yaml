@@ -68,7 +68,7 @@ services:
 
   - id: checkout-service
     bounded_context: checkout
-    runtime: undecided
+    runtime: java-planned
     status: documented
     contract_adoption: not_started
     docs: docs/checkout/README.md

@@ -27,7 +27,7 @@ Trạng thái cập nhật ngày **06/10/2026**:
 | 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
 | 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Hoàn thành code/offline và live local (Auth, gateway, Product, Promotion) |
-| 11 | Voucher trong checkout | `promotion/v1` (me) | Chưa hoàn thành |
+| 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Chưa hoàn thành |
 | 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Chưa hoàn thành |
 | 13 | Hoàn thiện: trang chủ, SEO/ISR, trạng thái rỗng/lỗi, responsive, a11y, E2E | — | Chưa hoàn thành |
 

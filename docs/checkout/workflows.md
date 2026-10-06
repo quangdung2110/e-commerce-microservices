@@ -1,77 +1,153 @@
 ---
-title: Checkout Workflows
+doc_id: checkout-workflows
+service: checkout-service
+scope: target
 status: proposed
-last_updated: 2026-09-20
 owners:
-  - domain: checkout
-    team: commerce-platform
-    contact: commerce-platform@example.com
-review_cycle_days: 30
-source_of_truth: false
+  - Checkout Service team
 evidence:
   - ../../contracts/http/checkout/v1/openapi.yaml
   - ../../contracts/http/order/internal/v1/openapi.yaml
-tags: [checkout, workflows]
+  - ../../contracts/http/promotion/v1/openapi.yaml
+verified_against_commit: null
 ---
 
-# Checkout Workflows
+# Checkout Service — Workflows
+
+Timeout và deadline trong các bước là giá trị của
+[ADR-014](./decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md); mapping chi tiết
+ở [interfaces.md](./interfaces.md).
 
 ## WF-01 Preview
 
-1. Gateway xác thực và chuyển trusted user context.
-2. Checkout validate body và `Idempotency-Key`.
-3. Nếu preview idempotency record còn hạn, replay response đã lưu.
-4. Lấy Cart checkout snapshot. Cart rỗng trả `422 CART_EMPTY`; canonicalize danh sách thành `items_hash`.
-5. Song song lấy address từ User và SKU batch từ Product.
-6. Đối chiếu Product `product_id` với Cart, chuẩn hóa item/prices/categories, sort theo UTF-8 `sku_id` và đặt `line_reference=sku_id`; thiếu, mismatch hoặc unsaleable SKU trả conflict.
-7. Gọi Inventory whole-order allocation preview. Bất kỳ timeout/5xx nào trả dependency problem; `REJECT_ALL` trả stock problem.
-8. Nếu có `promotion_id`, gọi Promotion với context trusted. Không tự fallback discount về 0 khi call lỗi.
-9. Tính totals integer VND, đặt `pricing_expires_at` không vượt TTL/revision của dependency.
-10. Sinh UUIDv4 bằng CSPRNG; Redis key chỉ dùng HMAC token hash. Token cần cho replay/Order recovery chỉ được lưu trong encrypted value.
-11. Lua transaction CAS active pointer với `previous_checkout_token`, rồi mới lưu session, pointer và idempotency replay. Chỉ một successor thắng; CAS fail trả `409 ACTIVE_CHECKOUT_CHANGED` và không để session mồ côi. Token cũ chỉ chuyển `SUPERSEDED` khi còn `PREVIEWED`.
-12. Trả preview với `Cache-Control: private, no-store`.
+1. Gateway xác thực, áp profile `checkout-preview` và inject `X-User-Id`. Checkout đặt
+   deadline 5 000 ms, chuẩn hoá request ID, validate body và `Idempotency-Key`.
+2. Nếu replay idempotency còn hạn: cùng fingerprint thì trả lại response đã lưu; khác thì
+   `409 IDEMPOTENCY_KEY_REUSED`.
+3. Đọc con trỏ active: token hiện hành đang `SUBMITTING`/`RETRYABLE` thì trả
+   `409 SUBMISSION_IN_PROGRESS` kèm `status_url`, không gọi dependency nào.
+4. Wave 1: Cart checkout snapshot. Rỗng → `422 CART_EMPTY`. Tính `items_hash`.
+5. Wave 2 song song: User address snapshot và Product `GetBatchSkus`. Áp
+   [mapping Cart + Product](./interfaces.md#mapping-cart--product--báo-giá); tính
+   `total_amount`.
+6. Wave 3 song song: Inventory allocation preview và (nếu có `promotion_id`) Promotion
+   calculation. `REJECT_ALL` → `422 INSUFFICIENT_STOCK`; `eligible=false` →
+   `422 PROMOTION_INVALID`. Không có `promotion_id` thì discount 0, revision 0.
+7. Tính `final_amount`; dưới 1 VND → `422 FINAL_AMOUNT_NOT_PAYABLE`. Tính `pricing_hash`.
+8. Sinh token UUIDv4 bằng CSPRNG; key Redis chỉ dùng HMAC token hash.
+9. Wave 4, một Lua script: kiểm tra lại không có token `SUBMITTING`/`RETRYABLE`; nếu request
+   có `previous_checkout_token` thì nó phải là token `PREVIEWED` hiện hành, sai thì
+   `409 ACTIVE_CHECKOUT_CHANGED`; ghi session mới, chuyển token `PREVIEWED` hiện hành (nếu có)
+   sang `SUPERSEDED`, cập nhật con trỏ active và ghi replay idempotency. Script thất bại
+   không để lại session mồ côi.
+10. Trả `200` với `Cache-Control: private, no-store`.
+
+Bất kỳ lỗi hạ tầng, timeout, circuit mở, bulkhead đầy hay hết deadline ở bước 4–9 đều trả
+`503 CHECKOUT_UNAVAILABLE` và không đổi state. Client hủy request thì mọi lời gọi bị hủy.
 
 ## WF-02 Submit lần đầu
 
-1. Validate auth và token format, hash token.
-2. Lua/CAS xác minh owner và state.
-3. Nếu `PREVIEWED`, kiểm tra expiry rồi atomically:
-   - chuyển `SUBMITTING`;
-   - đặt Order idempotency key bằng checkout token;
-   - materialize và lưu submit payload bất biến;
-   - gia hạn TTL recovery 30 phút.
-4. Revalidate cart `items_hash`, Product pricing/catalog revision và Promotion revision. Inventory plan vẫn advisory; Order sẽ revalidate đúng plan khi Reserve.
-5. Có thay đổi material thì lưu `CONFLICT` cùng `changed_fields`; client phải preview lại.
-6. Không đổi thì gọi Order bằng payload/idempotency key đã lưu.
-7. Order success: lưu `SUCCEEDED` và `order_id` 24 giờ; relay Payment client data trực tiếp nhưng không cache secret.
-8. Order business conflict: lưu `CONFLICT` 30 phút.
-9. Transport timeout/connection reset: không kết luận thất bại; chuyển `RETRYABLE` và chạy recovery.
+1. Gateway áp profile `checkout-submit`. Checkout đặt deadline 20 000 ms, validate token, tính
+   token hash.
+2. Circuit Order đang mở → `503 CHECKOUT_UNAVAILABLE`, chưa claim.
+3. Lua đọc session và kiểm tra owner (sai user → `404 CHECKOUT_NOT_FOUND`):
+   - `SUPERSEDED` → `410 CHECKOUT_SUPERSEDED`; `PREVIEWED` quá `expires_at` →
+     `410 CHECKOUT_EXPIRED`;
+   - `SUBMITTING`/`RETRYABLE` → [WF-03](#wf-03-submit-trùng-hoặc-đồng-thời); terminal → replay;
+   - `PREVIEWED` còn hạn → atomically chuyển `SUBMITTING`, ghi `attempt_id`, `claimed_at`,
+     payload Order bất biến (mã hoá) và gia hạn TTL recovery 30 phút.
+4. Từ đây phần việc tách khỏi client cancellation. Revalidate song song Cart (`items_hash`) và
+   Product (saleability, `price`, `category_ids`), sau đó Promotion (nếu có voucher) với giá
+   hiện tại. Inventory không revalidate: Order Reserve kiểm tra đúng plan.
+5. Có thay đổi vật chất → ghi `CONFLICT` với code theo thứ tự ưu tiên và `changed_fields`
+   đầy đủ; trả `409`. Lỗi hạ tầng khi revalidate → chuyển `RETRYABLE` (chưa có
+   `revalidated_at`, chưa gọi Order) và trả `503 CHECKOUT_UNAVAILABLE`; client gửi lại Submit
+   cùng token để recovery revalidate rồi mới gọi Order.
+6. Không đổi: ghi `revalidated_at`. Deadline còn ≥ 2 000 ms thì ghi
+   `last_order_call_started_at` và gọi Order với payload/key đã lưu; còn ít hơn thì chuyển
+   `RETRYABLE` và trả `202 RESULT_UNKNOWN`.
+7. Ghi kết quả theo [mapping kết quả Order](./interfaces.md#mapping-kết-quả-order):
+   thành công lưu `SUCCEEDED` + `order_id` 24 giờ và trả `201` với Payment data vừa nhận
+   (không lưu secret); kết quả không rõ chuyển `RETRYABLE` và trả `202 RESULT_UNKNOWN`.
 
 ## WF-03 Submit trùng hoặc đồng thời
 
-- `SUCCEEDED`: gọi Order status để relay Payment client data mới rồi trả `200` với cùng `order_id`; không replay secret từ Redis.
-- `CONFLICT`/`FAILED`: replay problem terminal.
-- `SUBMITTING`: trả `202` với status endpoint và `Retry-After`.
-- `RETRYABLE`: một request có thể CAS claim recovery; tất cả đều dùng cùng payload/idempotency key.
-- `SUPERSEDED`/`EXPIRED` chưa từng submit: trả `410` và yêu cầu preview lại.
+- `SUCCEEDED`: gọi Order GET để lấy Payment data mới rồi trả `200` cùng `order_id`; Order GET
+  lỗi thì trả `202 RESULT_UNKNOWN` (không trả secret cũ vì không có).
+- `CONFLICT`/`FAILED`: replay đúng problem đã lưu.
+- `SUBMITTING` chưa quá owner timeout (30 giây): `202 PREPARING` kèm `Retry-After`.
+- `SUBMITTING` quá owner timeout, hoặc `RETRYABLE`: chạy [WF-04](#wf-04-recovery-sau-kết-quả-không-rõ).
+- `SUPERSEDED`/`EXPIRED` chưa từng submit: `410`.
 
-Không request nào giữ Redis lock trong lúc chờ network. Safety đến từ CAS cục bộ cộng Order idempotency.
-Nếu `SUBMITTING` quá configurable owner timeout (target ban đầu 30 giây), status/reconciler
-query Order trước rồi mới CAS takeover; state không quay lại `PREVIEWED`.
+Không request nào giữ lock trong lúc chờ network. An toàn đến từ Lua/CAS cộng Order
+idempotency.
 
 ## WF-04 Recovery sau kết quả không rõ
 
-1. Đọc local result.
-2. Nếu chưa terminal nhưng có checkout token/idempotency key, gọi `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
-3. Map Order state: `PAYMENT_READY` -> lưu `SUCCEEDED`; `PREPARING` -> trả `202`;
-   `RECALCULATION_REQUIRED` -> lưu `CONFLICT`; `FAILED` -> lưu terminal problem.
-4. Nếu Order trả `404` và snapshot/payload vẫn retryable, retry POST với cùng payload và token/key.
-5. Nếu chưa thể phân giải, trả `202 SUBMISSION_RESULT_UNKNOWN`, không trả `410` và không hướng dẫn tạo token mới có nguy cơ double order.
+Kích hoạt bởi `GET /api/v1/checkout/submissions/{checkout_token}` hoặc Submit trùng; không có
+worker nền.
 
-## WF-05 Preview mới khi submit cũ đang chạy
+1. Đọc kết quả local; terminal thì trả ngay (với `SUCCEEDED` lấy Payment data mới từ Order).
+2. Gọi Order `GET /internal/v1/checkout-order-submissions/{checkout_token}` và map theo
+   [bảng](./interfaces.md#mapping-kết-quả-order).
+3. Order trả `404`:
+   - nếu `now − last_order_call_started_at < 15 giây + 5 giây` (một lời gọi trước còn có thể
+     đang bay): trả `202 RESULT_UNKNOWN`, không gửi lại;
+   - nếu còn trong submit retry window (2 phút kể từ `claimed_at`): CAS claim recovery
+     (`RETRYABLE`/`SUBMITTING` quá hạn → `SUBMITTING`); nếu chưa có `revalidated_at` thì chạy
+     lại revalidation của WF-02 bước 4–5 (có thể kết thúc `CONFLICT`); sau đó ghi
+     `last_order_call_started_at`, POST lại **đúng** payload và `Idempotency-Key`, rồi map kết
+     quả như WF-02 bước 7;
+   - nếu đã qua cửa sổ retry: ghi `FAILED` với `SUBMISSION_NOT_ACCEPTED` và trả `409`.
+     Order đã xác nhận không có submission và không lời gọi nào còn có thể tới Order, nên
+     người dùng an toàn để tạo báo giá mới.
+4. Order GET lỗi hạ tầng: giữ nguyên state, trả `202 RESULT_UNKNOWN` kèm `Retry-After`; không
+   bao giờ trả `410` hay khuyên tạo báo giá mới khi chưa phân giải.
 
-Preview mới được phép tạo để người dùng tiếp tục UX, nhưng không supersede/xóa token đang `SUBMITTING`, `RETRYABLE` hoặc terminal. Active pointer có thể trỏ token mới; status của token cũ vẫn truy vấn trực tiếp được.
+Giới hạn cửa sổ retry ngăn gửi một báo giá đã cũ sang Order quá lâu sau khi user bấm đặt
+hàng. Rủi ro còn lại (Order nhận request nhưng chưa ghi nhận sau hơn 2 phút) được chấp nhận
+và có alert ở [operations.md](./operations.md#alert).
+
+## WF-05 Preview khi submission đang chạy
+
+Preview bị từ chối với `409 SUBMISSION_IN_PROGRESS` kèm `status_url` khi token hiện hành của
+user đang `SUBMITTING` hoặc `RETRYABLE`. Frontend chuyển sang màn trạng thái. Khi token đó
+terminal (`SUCCEEDED`, `CONFLICT`, `FAILED`), Preview lại được phép. Cách này ngăn tạo hai đơn
+từ hai token khi người dùng tải lại trang giữa lúc đặt hàng
+([ADR-016](./decisions/ADR-016-fresh-preview-and-in-flight-submission-guard.md)).
 
 ## WF-06 Promotion thay đổi
 
-Khi Promotion báo revision khác hoặc promotion không còn hợp lệ, Checkout lưu `CONFLICT` với `PROMOTION_CHANGED`. Vì contract hiện chỉ có một `promotion_id`, response không mô tả drop một phần của promotion stack.
+- Lúc Preview: voucher không đủ điều kiện → `422 PROMOTION_INVALID`; báo giá cũ không đổi.
+- Lúc Submit: revalidation khác báo giá → `409 PROMOTION_CHANGED`.
+- Lúc Order Reserve: `409 PROMOTION_RECALCULATION_NEEDED` kèm `dropped_promotion`.
+
+Trong cả ba trường hợp Checkout không tự trừ discount; frontend mở khay voucher hoặc bỏ
+voucher rồi Preview lại.
+
+## WF-07 Tải lại trang hoặc mở tab mới
+
+1. Frontend chưa có token: gọi Preview **không** kèm `previous_checkout_token` với địa chỉ mặc
+   định (từ User API) và voucher người dùng đã chọn nếu còn nhớ ở phía client.
+2. `200`: báo giá mới thay báo giá cũ; tab cũ bấm đặt hàng sẽ nhận `410 CHECKOUT_SUPERSEDED`.
+3. `409 SUBMISSION_IN_PROGRESS`: chuyển tới `status_url`.
+
+Mỗi lần tải trang là một `Idempotency-Key` mới.
+
+## WF-08 Khay voucher
+
+1. Có token `PREVIEWED`, frontend gọi
+   `GET /api/v1/checkout/previews/{checkout_token}/voucher-options` (profile
+   `checkout-voucher-options`).
+2. Checkout đọc session, dựng trusted context từ snapshot và gọi Promotion voucher options.
+   Token không còn `PREVIEWED` → `410`/`409` theo error catalog; Promotion lỗi →
+   `503 VOUCHER_OPTIONS_UNAVAILABLE` (frontend ẩn khay, vẫn cho đặt hàng không voucher).
+3. Người dùng chọn một voucher theo `required_action`:
+   - `NONE`: Preview kèm `previous` và `promotion_id`;
+   - `SAVE`: `PUT /api/v1/me/promotion-vouchers/{promotion_id}` với body `{}`, rồi Preview;
+   - `CLAIM`: `POST /api/v1/me/promotion-voucher-claims` với `promotion_id` và
+     `expected_campaign_revision`; `202 CLAIM_PENDING` thì retry claim theo Promotion, xong
+     mới Preview.
+4. Bỏ voucher: Preview kèm `previous` và `promotion_id=null`.
+
+Khay voucher không bao giờ đổi state của báo giá; chỉ Preview mới tạo báo giá có voucher.

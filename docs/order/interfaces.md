@@ -109,7 +109,11 @@ không cache (Checkout ADR-010).
 Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inventory
 `REJECT_ALL` trả `409 INVENTORY_RESERVATION_REJECTED`; Payment từ chối initiate bền vững
 trả `409 PAYMENT_INITIATION_REJECTED` (cả hai terminal cho token, recovery read
-`state=FAILED`). Timeout hạ tầng trả `503 retryable=true` và Checkout retry cùng key/body.
+`state=FAILED`). Recovery read `state=FAILED` còn có thể mang `failure.code`
+`CHECKOUT_PAYMENT_WINDOW_EXHAUSTED` (thời gian giữ hàng không đủ để thanh toán) hoặc
+`ORDER_CANCELLED_DURING_PREPARATION` (đơn bị huỷ trước `PAYMENT_READY`); Checkout relay
+nguyên các code này ([Checkout ADR-015](../checkout/decisions/ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
+Timeout hạ tầng trả `503 retryable=true` và Checkout gửi lại cùng key/body qua luồng recovery.
 Trạng thái submission được lưu trong `order_checkout_submissions`. `final_amount` phải
 ≥ 1 VND vì Payment chỉ nhận amount dương; `0` là `422 INVALID_CHECKOUT_SNAPSHOT`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.

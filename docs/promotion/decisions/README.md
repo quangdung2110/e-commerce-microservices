@@ -34,6 +34,7 @@ implemented/verified vì Promotion Service hiện chưa có source module.
 | [ADR-015](./ADR-015-lean-redis-runtime-keyspace.md) | Redis runtime keyspace gọn; discovery rate limit tại Gateway | Accepted | 2026-09-13 | — |
 | [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md) | Phạm vi event v1 chỉ markdown snapshot + product tombstone; finalizer trigger bằng receipt `redis_finalized_at` | Accepted | 2026-09-13 | — (amends ADR-013, ADR-014) |
 | [ADR-017](./ADR-017-post-capture-forward-repair.md) | Post-capture failure uses forward repair; `cancel-confirmed` is legacy-only | Accepted | 2026-09-16 | Refines active use of ADR-013, ADR-016 |
+| [ADR-018](./ADR-018-checkout-voucher-options-and-context-free-save.md) | Voucher options nội bộ cho Checkout; lưu voucher không cần context (contract `proposed`) | Accepted | 2026-10-07 | — |
 
 ADR-015 chỉ refine physical Redis mapping/edge ownership của ADR-013 và ADR-014; hai ADR
 trước vẫn là nguồn quyết định cho durable finalization và claim boundary semantics.

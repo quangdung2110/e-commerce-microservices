@@ -41,27 +41,29 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 ## 1. Checkout Service (BFF/Stateless)
 
 > Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
-> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Repository chưa
-> có Checkout implementation nên adoption runtime vẫn là `not_started`.
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Runtime đích là Java 21 +
+> Spring Boot WebFlux (Checkout ADR-013). Repository chưa có Checkout implementation nên
+> adoption runtime vẫn là `not_started`.
 
 | File | Mô tả |
 |---|---|
-| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary, authoritative sources, API và bất biến. |
-| [checkout/architecture.md](./checkout/architecture.md) | BFF stateless, fail-closed preview, atomic submit và recovery. |
-| [checkout/domain.md](./checkout/domain.md) | Token-owned snapshot, state machine, rule và lỗi miền. |
-| [checkout/interfaces.md](./checkout/interfaces.md) | Public API và mapping exact tới Cart, User, Product, Inventory, Promotion, Order. |
-| [checkout/workflows.md](./checkout/workflows.md) | Preview, Submit, retry đồng thời, recovery và preview mới. |
-| [checkout/data.md](./checkout/data.md) | Redis token-keyed state, TTL, CAS/Lua và no-secret/no-domain-cache policy. |
-| [checkout/operations.md](./checkout/operations.md) | Deadline/retry, telemetry, failure mode, runbook và rollout. |
-| [checkout/development.md](./checkout/development.md) | Checklist build/test khi implementation được thêm. |
+| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary, thao tác ngoài BFF, dependency và bất biến. |
+| [checkout/architecture.md](./checkout/architecture.md) | Wave gọi song song, deadline, hủy request, phân vai mesh/Gateway. |
+| [checkout/domain.md](./checkout/domain.md) | Token-owned snapshot, state machine, luật `CHK-BR` và nhóm lỗi. |
+| [checkout/interfaces.md](./checkout/interfaces.md) | Public API, nguồn từng field, error catalog, header và mapping tới Cart, User, Product, Inventory, Promotion, Order. |
+| [checkout/workflows.md](./checkout/workflows.md) | Preview, khay voucher, Submit, recovery có giới hạn, tải lại trang. |
+| [checkout/data.md](./checkout/data.md) | Redis token-keyed state, TTL, CAS/Lua, mã hoá và no-secret/no-domain-cache policy. |
+| [checkout/operations.md](./checkout/operations.md) | SLO, ma trận lỗi, resilience, metric, alert, cấu hình, runbook và rollout. |
+| [checkout/development.md](./checkout/development.md) | Stack Java, chạy local, test bắt buộc và Definition of Done. |
 | [checkout/decisions/README.md](./checkout/decisions/README.md) | Danh mục ADR hiện hành và lịch sử superseded. |
 
 ### Checkout contracts chuẩn
 
-- `POST /api/v1/checkout/preview` — tạo immutable quotation.
+- `POST /api/v1/checkout/preview` — tạo báo giá hiện hành của user.
+- `GET /api/v1/checkout/previews/{checkout_token}/voucher-options` — khay voucher theo báo giá.
 - `POST /api/v1/checkout/submit` — submit theo token.
 - `GET /api/v1/checkout/submissions/{checkout_token}` — recovery/status.
-- Checkout gọi Cart snapshot, User address snapshot, Product batch, Inventory allocation preview, Promotion calculation và Order submission bằng contracts owner tương ứng.
+- Checkout gọi Cart snapshot, User address snapshot, Product batch, Inventory allocation preview, Promotion calculation/voucher options và Order submission bằng contracts owner tương ứng.
 
 ---
 
@@ -206,6 +208,7 @@ Service Contract Matrix legacy đã bị xóa.
 | Endpoint | Direction |
 |---|---|
 | `POST /api/v1/checkout/preview` | Client → Gateway → Checkout |
+| `GET /api/v1/checkout/previews/{checkout_token}/voucher-options` | Client → Gateway → Checkout |
 | `POST /api/v1/checkout/submit` | Client → Gateway → Checkout |
 | `GET /api/v1/checkout/submissions/{checkout_token}` | Client → Gateway → Checkout |
 | `GET /internal/v1/carts/{user_id}/checkout-snapshot` | Checkout → Cart |
@@ -213,6 +216,7 @@ Service Contract Matrix legacy đã bị xóa.
 | Product gRPC `GetBatchSkus` | Checkout → Product |
 | `POST /internal/inventory/v1/allocation-previews` | Checkout → Inventory |
 | `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion |
+| `POST /internal/v1/promotion-voucher-options` | Checkout → Promotion; khay voucher (`proposed`) |
 | `POST /internal/v1/checkout-order-submissions` | Checkout → Order |
 | `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Checkout → Order recovery |
 | `GET /api/v1/orders` / `GET /api/v1/orders/{order_id}` | Buyer → Order |
@@ -225,9 +229,9 @@ Service Contract Matrix legacy đã bị xóa.
 | `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |
 | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/{close,close-incomplete,cancel}` | Order → Inventory; guarded durable finalization; no-payout Ops decision for incomplete/no-receipt return |
 | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Order → Inventory; automatic admin refund all-or-nothing release |
-| `POST /api/v1/me/promotion-voucher-suggestions` | Client → Gateway → Promotion; chỉ wallet `SAVED` |
-| `POST /api/v1/promotion-discovery` | Client → Gateway → Promotion; wallet + public `ACTIVE` |
-| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save + evaluate explicit |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Client → Gateway → Promotion; chỉ wallet `SAVED`; trang checkout không dùng |
+| `POST /api/v1/promotion-discovery` | Client → Gateway → Promotion; wallet + public `ACTIVE`; trang checkout không dùng |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save explicit, evaluate khi có `context` |
 | `POST /api/v1/me/promotion-voucher-claims` | Customer → Promotion; limited claim |
 | `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations}` | Order (Temporal) → Promotion |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | `promotion-legacy-migrator` → Promotion; dedicated proof/capability only |

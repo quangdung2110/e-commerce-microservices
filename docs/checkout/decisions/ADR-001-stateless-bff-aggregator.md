@@ -17,6 +17,14 @@ evidence:
 
 `Accepted` theo thiết kế cũ. Chưa có implementation evidence.
 
+> **Ghi chú 2026-10-07:** quyết định "Checkout là BFF tách khỏi Order, không có database
+> bền vững" vẫn hiệu lực. Các chi tiết thực thi bên dưới đã được thay: session/lock theo
+> user bởi [ADR-011](./ADR-011-token-keyed-session-and-recovery.md); wave gọi và timeout bởi
+> [ADR-014](./ADR-014-resilience-budget-and-mesh-gateway-split.md); runtime Java bởi
+> [ADR-013](./ADR-013-java-spring-webflux-runtime.md); payload cố gửi quantity nay bị
+> từ chối bằng `400 INVALID_REQUEST` (schema `additionalProperties: false`) thay cho
+> `INVALID_CHECKOUT_MUTATION_SCOPE` ([ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
+
 ## Bối cảnh
 
 Khách hàng thao tác liên tục trên màn hình Checkout: đổi địa chỉ, thử 5–7 mã giảm

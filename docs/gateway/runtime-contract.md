@@ -60,14 +60,15 @@ Mọi tham chiếu middleware khác provider phải tường minh, ví dụ `edg
 | `/.well-known/**` | GET | auth-service | Không | `public-read` | Chỉ JWKS/OIDC metadata |
 | `/api/users/**` | do service định nghĩa | user-service | Bắt buộc | `api-authenticated` | Authorization thuộc service |
 | `/api/v1/checkout/preview` | POST | checkout-service | Bắt buộc | `checkout-preview` | `Idempotency-Key` bắt buộc; gateway không retry POST; response `private, no-store` |
+| `/api/v1/checkout/previews/**` | GET | checkout-service | Bắt buộc | `checkout-voucher-options` | Chỉ `/{checkout_token}/voucher-options` ([Checkout ADR-017](../checkout/decisions/ADR-017-voucher-options-read-composition.md)); log route template/redact token path segment; chỉ retry connection failure; response `private, no-store` |
 | `/api/v1/checkout/submit` | POST | checkout-service | Bắt buộc | `checkout-submit` | `checkout_token` là identity; gateway không retry POST; response `private, no-store` |
-| `/api/v1/checkout/submissions/**` | GET | checkout-service | Bắt buộc | `api-authenticated` | Recovery read; log route template/redact token path segment; chỉ retry connection failure trong deadline, response `private, no-store` |
+| `/api/v1/checkout/submissions/**` | GET | checkout-service | Bắt buộc | `api-authenticated` | Recovery read (có thể gửi lại submission sang Order trong cửa sổ retry, nên không coi là read thuần); log route template/redact token path segment; chỉ retry connection failure trong deadline, response `private, no-store` |
 | `/api/v1/orders/**`, `/api/v1/order-operations/**` | OpenAPI Order v1 | order-service | Bắt buộc | `api-authenticated` | Buyer scope; không retry command ở gateway |
 | `/api/v1/admin/orders/**`, `/api/v1/admin/order-operations/**` | OpenAPI Order v1 | order-service | `ADMIN` | `api-authenticated` + role policy | Admin scope; không retry command ở gateway |
 | `/api/v1/admin/inventory/**` | GET, POST, PATCH theo [Inventory ADMIN OpenAPI v1](../../contracts/http/inventory/admin/v1/openapi.yaml) | inventory-service | `ADMIN` | `api-authenticated` + role policy | Warehouse/physical stock command và operational queue; Inventory tự kiểm role từ `X-User-Roles` và ghi audit actor; không retry write ở gateway; MFA là production gate ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)) |
-| `/api/v1/me/promotion-voucher-suggestions` | POST | promotion-service | Bắt buộc | `api-authenticated` | Safe query với body checkout context; không gateway retry, response `no-store` |
-| `/api/v1/promotion-discovery` | POST | promotion-service | Bắt buộc | `promotion-discovery` | Quota 20 request/user/phút tại edge; safe query nhưng không gateway retry POST |
-| `/api/v1/me/promotion-vouchers/**` | PUT | promotion-service | Bắt buộc | `api-authenticated` | Save/evaluate explicit; Promotion tự xử lý natural idempotency |
+| `/api/v1/me/promotion-voucher-suggestions` | POST | promotion-service | Bắt buộc | `api-authenticated` | Safe query với body checkout context; không gateway retry, response `no-store`; trang checkout dùng voucher options của Checkout thay vì route này |
+| `/api/v1/promotion-discovery` | POST | promotion-service | Bắt buộc | `promotion-discovery` | Quota 20 request/user/phút tại edge; safe query nhưng không gateway retry POST; trang checkout không dùng |
+| `/api/v1/me/promotion-vouchers/**` | PUT | promotion-service | Bắt buộc | `api-authenticated` | Save explicit, evaluate chỉ khi body có `context` ([Promotion ADR-018](../promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); Promotion tự xử lý natural idempotency |
 | `/api/v1/me/promotion-voucher-claims` | POST | promotion-service | Bắt buộc | `api-authenticated` | Limited claim; không gateway retry, hỗ trợ `202 CLAIM_PENDING` |
 | `/api/v1/admin/promotion-campaigns`, `/api/v1/admin/promotion-campaigns/**`, `/api/v1/admin/promotions/**`, `/api/v1/admin/markdown-rules/**` | GET, POST, PATCH | promotion-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Promotion tự authorize; mutation dùng `If-Match`/natural key, gateway không retry write |
 | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | do service định nghĩa | product-service | Bắt buộc, role `ADMIN` | `api-authenticated` | Catalog administration; Product Service tự kiểm tra role |
@@ -128,7 +129,7 @@ Timeout là một phần của API contract, không phải giá trị mặc đ�
 | Kết nối từ gateway đến upstream | 3 giây | Xem là lỗi upstream; chỉ GET/HEAD/OPTIONS còn ngân sách mới được retry |
 | Chờ response header từ public-read/auth API | 10 giây | Trả `504` cho client |
 | Chờ response header từ Product Detail BFF (`/api/v1/storefront/products/**`) | 3 giây | Trả `504`; BFF có deadline nội bộ 1 giây nên chỉ chạm khi BFF lỗi |
-| Chờ response header từ business API | 25 giây | Trả `504` cho client |
+| Chờ response header từ business API | 25 giây | Trả `504` cho client. Checkout (`/api/v1/checkout/**`) dùng giá trị này với deadline nội bộ Preview 5 giây, voucher options 1,5 giây, Submit/status 20 giây ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)) |
 | Chờ response header từ payment webhook route | 20 giây | Trả `504`; gateway không retry (Stripe sẽ retry) |
 | Stripe webhook — toàn bộ thời gian proxy | 5 giây | Trả `504`; gateway không retry, Stripe tự delivery lại |
 | ForwardAuth → `gateway-auth` | 3 giây | Trả `503`; không được cho request đi tiếp |
@@ -200,6 +201,7 @@ Không route authentication nào được fail open, kể cả read-only route.
 | `promotion-discovery` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 20 request/user/phút | Bảo vệ query discovery; distributed state ở Gateway, không service-local limiter |
 | `checkout-preview` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 10 request/user/phút | Chặn fan-out Preview; trả `429` + `Retry-After` |
 | `checkout-submit` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 3 request/user/phút | Chặn click/spam Submit; replay hợp lệ vẫn có status GET riêng |
+| `checkout-voucher-options` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 20 request/user/phút | Bảo vệ fan-out sang Promotion khi mở khay voucher; Checkout không có limiter riêng |
 | `stripe-webhook` | Stripe allow-list + endpoint quota | 50 req/s, burst 100 | Bảo vệ delivery burst |
 | `websocket-handshake` | User ID và trusted IP | 5/phút | Hạn chế connection churn |
 

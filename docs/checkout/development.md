@@ -1,85 +1,135 @@
 ---
-title: Checkout Development Guide
+doc_id: checkout-development
+service: checkout-service
+scope: target
 status: proposed
-last_updated: 2026-09-20
 owners:
-  - domain: checkout
-    team: commerce-platform
-    contact: commerce-platform@example.com
-review_cycle_days: 30
-source_of_truth: false
+  - Checkout Service team
 evidence:
   - ../../contracts/http/checkout/v1/openapi.yaml
   - ../../contracts/catalog/interactions.yaml
-tags: [checkout, development, testing]
+verified_against_commit: null
 ---
 
-# Checkout Development Guide
+# Checkout Service — Development Guide
+
+Checkout cần client cho Cart, User, Product (gRPC), Inventory, Promotion, Order và Redis.
+Không cần PostgreSQL, Kafka, Temporal hay quyền truy cập database của service khác.
+
+## Stack và cấu trúc
+
+Theo [ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md): Java 21, Spring Boot
+3.3.x WebFlux trên Reactor Netty, `WebClient` riêng cho mỗi HTTP dependency, grpc-java với
+stub non-blocking cho Product, Lettuce reactive cho Redis (`EVALSHA`), Resilience4j
+(`CircuitBreaker`, `Bulkhead` semaphore, `TimeLimiter`; không `Retry`), Micrometer +
+Prometheus, Micrometer Tracing bridge OpenTelemetry. Module `java/services/checkout-service`,
+package gốc `com.ecommerce.checkout`. Pipeline request không được gọi blocking I/O;
+BlockHound chạy trong test.
+
+Response dependency đọc theo tolerant reader: bỏ qua field không biết; thiếu field bắt
+buộc, sai kiểu/enum hoặc vi phạm ràng buộc ở [interfaces.md](./interfaces.md) mới là sai
+contract. Enum chưa biết của Promotion được map về `UNKNOWN` hoặc bị bỏ như interfaces mô tả.
 
 ## Thứ tự triển khai
 
-1. Generate server/client types từ Checkout OpenAPI và các downstream contracts.
-2. Triển khai token generation/HMAC lookup, Redis schemas và Lua/CAS scripts.
-3. Triển khai typed clients cho Cart, Product, User, Inventory, Promotion, Order.
-4. Triển khai preview orchestration và server-side totals.
-5. Triển khai submit state machine, immutable payload và Order idempotency.
-6. Triển khai submission status/recovery.
-7. Thêm telemetry, rate limiting và Gateway route sau smoke tests.
+1. Sinh server stub/model từ Checkout OpenAPI; client model từ Cart, User, Inventory,
+   Promotion, Order OpenAPI và Product proto. Không viết tay DTO khác contract.
+2. Crypto: HMAC token lookup, envelope encryption có version, xoay khoá.
+3. Redis repository và Lua scripts (Preview, claim, recovery claim, finalize).
+4. Dependency clients với timeout/circuit breaker/bulkhead/header propagation.
+5. Preview orchestrator, media URL builder, tính tiền integer VND.
+6. Submit, recovery, mapping kết quả Order.
+7. Voucher options.
+8. Telemetry, readiness, graceful shutdown; route Gateway sau smoke test.
 
-Không hand-code DTO khác contract nếu generator có thể dùng được. Money là integer VND; không dùng floating point.
+## Chạy local
 
-## Unit tests bắt buộc
+Máy dev không cần JDK: build bằng container `maven:3.9-eclipse-temurin-21` như các service
+Java khác. Khi module có code, thêm service `checkout-service` vào `docker-compose.yml`
+(host port `8096`, network `ecommerce-network`, Redis dùng chung với database index riêng)
+và router Gateway cho bốn route; trước đó compose không khai báo Checkout.
 
-- Tổng tiền, rounding và discount bounds.
-- Token HMAC lookup và encryption-key rotation; không để raw token trong key/log, chỉ giữ bản mã hóa trong submit payload recovery.
-- Mọi state transition hợp lệ/không hợp lệ.
-- Preview mới không xóa token đang submit.
-- Claim submit materialize payload atomically.
-- Hai submit đồng thời chỉ có một owner side effect.
-- Tier absent và `checkout_channel=CHECKOUT` mapping.
-- Promotion scalar, không giả định stacking.
+| Thành phần local | Giá trị |
+|---|---|
+| Cart | `http://cart-service:8080` |
+| User | `http://user-service:8083` (cổng internal, không qua Traefik) |
+| Product gRPC | `product-service:9091` |
+| Inventory | `http://inventory-service:8080` |
+| Promotion | `http://promotion-service:8085`; `CHECKOUT_VOUCHER_OPTIONS_ENABLED=false` cho tới khi Promotion có endpoint |
+| Order | `http://order-service:8080` |
+| Media | `CHECKOUT_MEDIA_CDN_BASE_URL=http://localhost:8088/media`, placeholder `http://localhost:8088/media/placeholder/product.svg`, `CHECKOUT_MEDIA_REQUIRE_HTTPS=false` (giống PDP) |
+
+Local không có mesh: Checkout vẫn gửi `X-Service-Identity: checkout-service`, và các provider
+kiểm allowlist header này.
+
+Integration test không phụ thuộc service thật: WireMock giả lập các HTTP dependency, gRPC
+in-process server giả lập Product, Testcontainers Redis chạy Lua thật.
+
+## Test bắt buộc
+
+**Tính tiền và view model:** rounding integer VND; `final_amount = total − discount`;
+`final_amount < 1` → `FINAL_AMOUNT_NOT_PAYABLE`; `image_url` dựng đúng từ storage key có ký
+tự đặc biệt; key rỗng → placeholder trong báo giá nhưng `snapshot_image_url = null` sang
+Order; response không chứa `warehouse_id`, `category_ids`, hash.
+
+**Preview:** giỏ rỗng; SKU not found/inactive/`product_id` lệch → `SKU_UNAVAILABLE` kèm
+`sku_ids`; address `404`; `REJECT_ALL` → `INSUFFICIENT_STOCK` kèm `rejected_lines`; Promotion
+`eligible=false` mọi `reason`; Promotion `subtotal` lệch → `503`; plan Inventory thiếu/thừa
+dòng → `503`; không có `promotion_id` thì không gọi Promotion; Inventory và Promotion chạy
+song song (trace).
+
+**Cạnh tranh (Redis thật):** fresh preview thay `PREVIEWED` cũ; `previous` cũ →
+`ACTIVE_CHECKOUT_CHANGED`; hai Preview đồng thời chỉ một token `PREVIEWED`; Preview khi
+`SUBMITTING`/`RETRYABLE` → `SUBMISSION_IN_PROGRESS` và không fan-out; replay idempotency cùng
+body/khác body; hai Submit đồng thời chỉ một claim; Preview lỗi không đổi state.
+
+**Submit và recovery:** revalidation từng loại thay đổi và thứ tự ưu tiên code +
+`changed_fields`; revalidation lỗi hạ tầng → `RETRYABLE` rồi Submit lại revalidate trước khi
+gọi Order; Order success/`409` mỗi code/`422`/`400`/`401`/`403`/`503`/timeout trước và sau khi
+Order ghi; recovery tìm thấy đơn sau khi mất response; Order `404` khi còn lời gọi có thể đang
+bay → `202`, trong cửa sổ → re-POST cùng payload/key, quá cửa sổ → `SUBMISSION_NOT_ACCEPTED`;
+replay `SUCCEEDED` lấy Payment data mới, `usable=false` trả secret `null`; client ngắt kết nối
+sau claim vẫn ghi kết quả.
+
+**Voucher options:** context dựng từ session (không gọi Cart/Product); mapping
+`required_action` mọi tổ hợp; enum chưa biết bị bỏ và đếm metric; token không `PREVIEWED` →
+`409`/`410`; Promotion lỗi → `503`, Preview vẫn chạy; cờ tắt không gọi Promotion.
+
+**Resilience:** timeout Checkout kích hoạt trước timeout mesh; deadline còn < 200 ms trước
+wave → `503` không gọi; Order không được gọi khi deadline còn < 2 000 ms; không retry ứng
+dụng; circuit từng dependency mở/half-open/đóng độc lập; bulkhead từ chối không tính vào
+circuit; `400`/`401`/`403` không tính vào circuit và phát alert.
+
+**Header và bảo mật:** `X-Request-Id` sai được thay bằng trace ID và không tới Inventory/Order;
+Inventory nhận `X-Correlation-ID`, `X-Causation-ID`, `X-Service-Identity`; Order nhận
+`Idempotency-Key = checkout_token`; raw token không xuất hiện trong Redis key, log, trace;
+`SCAN` Redis không thấy `_secret_` hay địa chỉ plaintext; token của user khác → `404`.
 
 ## Contract tests
 
-- Validate Checkout OpenAPI examples/schema.
-- Checkout consumer tests với Cart checkout snapshot.
-- Product `GetBatchSkus` trả `category_ids`.
-- Inventory request là whole-order `lines` và xử lý đúng `ALLOCATABLE`/`REJECT_ALL`.
-- Promotion chấp nhận tier omit/null, channel cố định.
-- Order nhận `user_ack_degraded_pricing=false` và replay cùng idempotency key.
-- RFC 9457 mapping không leak downstream body.
-
-## Integration/concurrency tests
-
-- Redis TTL/eviction và Lua scripts trên Redis thật hoặc compatible test container.
-- POST Order success, conflict, timeout-before-write, timeout-after-write.
-- Recovery tìm thấy Order sau khi Checkout mất response.
-- Retry cùng token/payload/key không tạo Order thứ hai.
-- Preview A, preview B, submit A/B xen kẽ.
-- Dependency partial outage; Inventory/Product/User fail-closed.
-
-## End-to-end acceptance
-
-- Preview -> submit -> status success.
-- Repeated preview `Idempotency-Key` replay cùng response.
-- Cùng preview `Idempotency-Key` nhưng fingerprint khác trả `409`; replay value vẫn encrypted at rest.
-- Cart/price/promotion/allocation đổi trả conflict và yêu cầu preview lại.
-- Token của user khác trả `404`.
-- Raw token không xuất hiện trong logs, traces hoặc Redis key names.
-- Response có `Cache-Control: private, no-store`.
+- Validate Checkout OpenAPI và example; mọi response lỗi khớp `CheckoutProblem`.
+- Consumer test với Cart snapshot, User address snapshot, Product `GetBatchSkus`, Inventory
+  allocation preview (`ALLOCATABLE`/`REJECT_ALL`), Promotion calculation và voucher options,
+  Order POST/GET dùng fixture hash chung với Order.
 
 ## CI gates
 
-- OpenAPI lint/validation và protobuf breaking check.
-- Catalog validation cho services/interactions.
+- OpenAPI lint, protobuf breaking check, catalog validation (`contracts/tools/validate-contracts.ps1`).
 - Link/frontmatter validation cho docs.
-- `rg` guard chống endpoint/key/field cũ trong tài liệu active.
-- Race/concurrency tests và dependency contract tests.
+- Race/concurrency test và consumer contract test.
+
+## Definition of Done
+
+Bốn endpoint public và mọi internal dependency có contract test; error catalog khớp
+OpenAPI; mapping kết quả Order đầy đủ; Lua scripts có test cạnh tranh trên Redis thật;
+resilience test pass; load test xác nhận SLO; Gateway, mesh, catalog và frontend type được
+cập nhật cùng PR; không có database migration, Kafka consumer, cache downstream hay rate
+limiter riêng trong Checkout.
 
 ## Review checklist
 
-- Không đọc trực tiếp storage của service khác.
-- Không thêm downstream cache khi chưa có ADR/invalidation contract.
-- Không thay Order idempotency key (= checkout token) giữa retry.
-- Không thêm degraded availability/pricing path.
-- Mọi thay đổi endpoint phải cập nhật Checkout, owner service, Gateway, Mesh và catalog trong cùng PR.
+- Không đọc storage của service khác; không thêm cache downstream khi chưa có ADR.
+- Không thay `Idempotency-Key` Order (= checkout token) giữa các lần gửi.
+- Không thêm degraded availability/pricing path; không tự trừ discount.
+- Mọi thay đổi endpoint phải cập nhật Checkout, owner service, Gateway, Mesh và catalog trong
+  cùng PR.

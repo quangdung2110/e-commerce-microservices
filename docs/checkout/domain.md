@@ -1,30 +1,30 @@
 ---
-title: Checkout Domain Model
+doc_id: checkout-domain
+service: checkout-service
+scope: target
 status: proposed
-last_updated: 2026-09-20
 owners:
-  - domain: checkout
-    team: commerce-platform
-    contact: commerce-platform@example.com
-review_cycle_days: 30
-source_of_truth: false
+  - Checkout Service team
 evidence:
   - ../../contracts/http/checkout/v1/openapi.yaml
   - ../../contracts/http/order/internal/v1/openapi.yaml
-tags: [checkout, domain]
+verified_against_commit: null
 ---
 
-# Checkout Domain Model
+# Checkout Service — Domain Model
 
 ## Thuật ngữ
 
 | Thuật ngữ | Nghĩa |
 |---|---|
-| Checkout token | Opaque bearer token đại diện cho đúng một preview snapshot |
-| Snapshot | Bản chụp server-owned của cart, product, address, allocation, promotion và totals |
-| Active pointer | Con trỏ UX tới preview mới nhất của user; không phải authority của submit |
-| Submit payload | Request Order bất biến được materialize khi token được claim |
-| Result | Trạng thái/kết quả có thể replay hoặc recovery sau timeout |
+| Checkout token | UUIDv4 ngẫu nhiên (CSPRNG) đại diện cho đúng một báo giá; cũng là Order `Idempotency-Key` |
+| Báo giá (quotation) | Snapshot server-owned của cart, product, address, allocation, promotion và tổng tiền; bất biến |
+| Active pointer | Con trỏ tới token chưa terminal duy nhất của user; con trỏ UX và hàng rào cạnh tranh, không phải nguồn chọn phiên khi submit |
+| Fresh preview | Preview không kèm `previous_checkout_token`; thay thế báo giá `PREVIEWED` hiện tại |
+| Submit payload | Request Order bất biến được tạo ngay khi token được claim |
+| Voucher option | Một voucher trong ví hoặc công khai, đã được Promotion đánh giá trên báo giá; chỉ advisory |
+| Submit retry window | 2 phút kể từ claim; chỉ trong cửa sổ này Checkout được gửi lại payload khi Order xác nhận chưa nhận |
+| Result | Trạng thái terminal (kết quả hoặc problem) có thể replay |
 
 ## Aggregate cục bộ
 
@@ -32,67 +32,96 @@ tags: [checkout, domain]
 
 ```text
 CheckoutSession
-  token_hash
-  user_id
-  state
-  items_hash
-  address_snapshot
-  line_items[]
-  allocation_plan[]
-  promotion_quote?
-  subtotal
-  discount_total
-  total
-  currency = VND
-  pricing_expires_at
-  created_at / updated_at
+  token_hash, user_id, state, schema_version
+  expires_at                     (tạo + 20 phút)
+  items_hash, pricing_hash
+  address_snapshot               (PII, mã hoá)
+  line_items[]                   (sku_id, product_id, quantity, unit_price, list_unit_price,
+                                  category_ids, product_name, variant_attributes,
+                                  image_storage_key, catalog_revision)
+  allocation_plan                (allocation_plan_id, lines[])
+  promotion?                     (promotion_id, campaign_revision, discount)
+  total_amount, total_discount, final_amount   (VND, integer)
+  submission?                    (attempt_id, claimed_at, revalidated_at,
+                                  last_order_call_started_at)
+  created_at, updated_at
 ```
 
-`line_items` lưu ID, quantity, authoritative unit price, product/catalog revision và category IDs cần cho audit. Nó không biến Checkout thành owner của Product; dữ liệu chỉ có hiệu lực trong phiên.
+Dữ liệu chỉ có hiệu lực trong phiên; Checkout không thành owner của Product hay Cart.
 
-## Commands
+## Commands và queries
 
-- `PreviewCheckout(user_id, address_id, promotion_id?, previous_token?, idempotency_key)`
+- `PreviewCheckout(user_id, idempotency_key, address_id, promotion_id?, previous_token?)`
+- `ListVoucherOptions(user_id, checkout_token)`
 - `SubmitCheckout(user_id, checkout_token)`
 - `GetSubmission(user_id, checkout_token)`
 
 ## Luật nghiệp vụ
 
-1. Cart phải tồn tại, không rỗng và mọi quantity hợp lệ.
-2. Mọi SKU phải được Product trả về và saleable.
-3. Address phải thuộc user hiện tại.
-4. Inventory phải trả whole-order allocation plan hợp lệ cho cùng tập item.
-5. Promotion tối đa một ID; discount không âm và không vượt subtotal.
-6. Totals dùng số nguyên VND và được tính server-side.
-7. Token thuộc đúng user; mismatch trả `404` để không tiết lộ sự tồn tại.
-8. Submit chỉ dùng snapshot/payload gắn với token; không đọc active pointer để chọn phiên.
-9. Cùng token tạo tối đa một logical Order nhờ Order idempotency key ổn định.
-10. Active-pointer CAS bảo đảm mỗi user chỉ có một token `PREVIEWED` hiện hành; token đang submit/terminal không bị preview mới xóa.
-11. Không có degraded stock hoặc degraded pricing acknowledgement.
+| ID | Luật |
+|---|---|
+| `CHK-BR-001` | Cart phải có ít nhất một dòng; quantity 1–100; tối đa 50 dòng. |
+| `CHK-BR-002` | Mọi SKU phải có trong Product, `SKU_STATUS_ACTIVE`, và `product_id` khớp với Cart. |
+| `CHK-BR-003` | Địa chỉ phải thuộc user hiện tại (User xác minh). |
+| `CHK-BR-004` | Inventory phải trả `ALLOCATABLE` với plan phủ đúng một dòng cho mỗi `sku_id`; `REJECT_ALL` là hết hàng. |
+| `CHK-BR-005` | Tối đa một `promotion_id`. Discount chỉ do Promotion tính; Checkout không tự cộng trừ discount. Promotion `subtotal` phải bằng `total_amount` của Checkout. |
+| `CHK-BR-006` | Tiền là integer VND. `line_total = unit_price × quantity`; `total_amount = Σ line_total`; `final_amount = total_amount − total_discount`. Không có phí ship. |
+| `CHK-BR-007` | `final_amount` phải ≥ 1 VND vì Payment chỉ tạo attempt dương; nếu không, Preview trả `422 FINAL_AMOUNT_NOT_PAYABLE`. |
+| `CHK-BR-008` | Token thuộc đúng user; token của user khác trả `404` để không lộ sự tồn tại. |
+| `CHK-BR-009` | Mỗi user có tối đa một token chưa terminal; con trỏ active luôn trỏ tới token đó. |
+| `CHK-BR-010` | Fresh preview thay thế token `PREVIEWED` hiện tại; preview kèm `previous_checkout_token` chỉ thành công khi token đó đang là `PREVIEWED` hiện hành. |
+| `CHK-BR-011` | Khi token hiện hành đang `SUBMITTING` hoặc `RETRYABLE`, không được tạo báo giá mới (`409 SUBMISSION_IN_PROGRESS`). |
+| `CHK-BR-012` | Submit chỉ dùng snapshot/payload gắn với token; claim chỉ thành công khi token `PREVIEWED` và chưa quá `expires_at`. |
+| `CHK-BR-013` | Thay đổi vật chất lúc Submit (quantity, saleability, giá bán, `category_ids`, kết quả Promotion) làm token kết thúc `CONFLICT`; tên, ảnh, giá niêm yết đổi không phải thay đổi vật chất. |
+| `CHK-BR-014` | Cùng token tạo tối đa một đơn logic: mọi lần gọi Order dùng cùng payload và `Idempotency-Key = checkout_token`. |
+| `CHK-BR-015` | Checkout chỉ gửi payload sang Order sau khi revalidation thành công; chỉ gửi lại khi Order xác nhận chưa nhận, không còn lời gọi nào có thể đang bay, và còn trong submit retry window. |
+| `CHK-BR-016` | Không có degraded stock hay degraded pricing; `user_ack_degraded_pricing` gửi Order luôn `false`. |
+| `CHK-BR-017` | Voucher options chỉ cho token `PREVIEWED` chưa hết hạn; kết quả là advisory, áp voucher luôn qua Preview mới. |
+| `CHK-BR-018` | Checkout không ghi vào ví voucher; lưu và nhận voucher là thao tác tường minh của user tại Promotion. |
 
 ## State machine
 
-| State | Có thể chuyển tới | Ý nghĩa |
-|---|---|---|
-| `PREVIEWED` | `SUBMITTING`, `SUPERSEDED`, `EXPIRED` | Snapshot sẵn sàng submit |
-| `SUBMITTING` | `SUCCEEDED`, `CONFLICT`, `RETRYABLE`, `FAILED` | Đã claim và có payload bất biến |
-| `RETRYABLE` | `SUBMITTING`, `SUCCEEDED`, `CONFLICT`, `FAILED` | Kết quả trước chưa rõ hoặc dependency tạm lỗi |
-| `SUCCEEDED` | — | Có Order ID; replay trong 24 giờ |
-| `CONFLICT` | — | Business revision đã đổi; client phải preview lại |
-| `FAILED` | — | Lỗi terminal không an toàn để retry cùng snapshot |
-| `SUPERSEDED` | — | Preview cũ bị thay trước khi submit |
-| `EXPIRED` | — | Snapshot chưa submit hết TTL |
+```text
+            fresh preview
+PREVIEWED ───────────────► SUPERSEDED
+    │  quá expires_at (logic, không ghi) ► EXPIRED
+    │ claim
+    ▼
+SUBMITTING ──► SUCCEEDED
+    │  ├─────► CONFLICT
+    │  ├─────► FAILED
+    ▼  │
+RETRYABLE ──► SUBMITTING (recovery claim) | SUCCEEDED | CONFLICT | FAILED
+```
 
-`RETRYABLE` không cho phép materialize payload mới; mọi retry dùng đúng payload/idempotency key cũ.
+| State | Chuyển tới | Ý nghĩa | Client thấy |
+|---|---|---|---|
+| `PREVIEWED` | `SUBMITTING`, `SUPERSEDED`, `EXPIRED` | Báo giá sẵn sàng submit | Báo giá; voucher options |
+| `SUBMITTING` | `SUCCEEDED`, `CONFLICT`, `FAILED`, `RETRYABLE` | Đã claim, có payload bất biến | `202 PREPARING` |
+| `RETRYABLE` | `SUBMITTING`, `SUCCEEDED`, `CONFLICT`, `FAILED` | Kết quả Order chưa rõ | `202 RESULT_UNKNOWN` |
+| `SUCCEEDED` | — | Có `order_id`; replay 24 giờ | `200`/`201` với Payment data mới |
+| `CONFLICT` | — | Revalidation phát hiện thay đổi, hoặc Order yêu cầu tính lại voucher | `409` problem |
+| `FAILED` | — | Order từ chối/thất bại, hoặc Order xác nhận không nhận submission sau cửa sổ retry | `409` problem |
+| `SUPERSEDED` | — | Bị fresh preview thay thế trước khi submit | `410 CHECKOUT_SUPERSEDED` |
+| `EXPIRED` | — | Quá `expires_at` khi còn `PREVIEWED` | `410 CHECKOUT_EXPIRED` |
 
-## Lỗi domain chính
+`RETRYABLE` không cho materialize payload mới; mọi retry dùng đúng payload và key cũ.
+`SUBMITTING` quá owner timeout không quay về `PREVIEWED`.
 
-- `CART_EMPTY`, `CART_CHANGED`
-- `SKU_UNAVAILABLE`, `PRICE_CHANGED`
-- `ADDRESS_NOT_FOUND`
-- `INSUFFICIENT_STOCK`, `ALLOCATION_CHANGED`
-- `PROMOTION_INVALID`, `PROMOTION_CHANGED`
-- `CHECKOUT_SUPERSEDED`, `CHECKOUT_EXPIRED`
-- `SUBMISSION_IN_PROGRESS`, `SUBMISSION_RESULT_UNKNOWN`
+## Lỗi domain
 
-Các lỗi được biểu diễn bằng RFC 9457 Problem Details; mã ổn định nằm ở trường `code`.
+Danh mục đầy đủ với HTTP status, `retryable` và `action` ở
+[interfaces.md](./interfaces.md#error-catalog). Nhóm chính:
+
+- Dựng báo giá: `CART_EMPTY`, `SKU_UNAVAILABLE`, `ADDRESS_NOT_FOUND`, `INSUFFICIENT_STOCK`,
+  `PROMOTION_INVALID`, `FINAL_AMOUNT_NOT_PAYABLE`.
+- Cạnh tranh: `ACTIVE_CHECKOUT_CHANGED`, `SUBMISSION_IN_PROGRESS`,
+  `CHECKOUT_ALREADY_SUBMITTED`, `IDEMPOTENCY_KEY_REUSED`.
+- Vòng đời token: `CHECKOUT_NOT_FOUND`, `SUBMISSION_NOT_FOUND`, `CHECKOUT_EXPIRED`,
+  `CHECKOUT_SUPERSEDED`.
+- Revalidation lúc Submit: `CART_CHANGED`, `SKU_UNAVAILABLE`, `PRICE_CHANGED`,
+  `PROMOTION_CHANGED`.
+- Kết quả từ Order: `PROMOTION_RECALCULATION_NEEDED`, `INVENTORY_RESERVATION_REJECTED`,
+  `PAYMENT_INITIATION_REJECTED`, `CHECKOUT_PAYMENT_WINDOW_EXHAUSTED`,
+  `ORDER_CANCELLED_DURING_PREPARATION`, `SUBMISSION_NOT_ACCEPTED`, `SUBMISSION_REJECTED`.
+- Hạ tầng: `CHECKOUT_UNAVAILABLE`, `VOUCHER_OPTIONS_UNAVAILABLE`.
