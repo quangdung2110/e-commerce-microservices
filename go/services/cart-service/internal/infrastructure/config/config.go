@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ type Config struct {
 	Redis   Redis   `mapstructure:"redis"`
 	Kafka   Kafka   `mapstructure:"kafka"`
 	Product Product `mapstructure:"product"`
+	Media   Media   `mapstructure:"media"`
 	Cart    Cart    `mapstructure:"cart"`
 	Worker  Worker  `mapstructure:"worker"`
 	Logging Logging `mapstructure:"logging"`
@@ -78,6 +80,21 @@ type Product struct {
 	CacheSize           int           `mapstructure:"cache_size"`
 	CacheTTL            time.Duration `mapstructure:"cache_ttl"`
 	Breaker             Breaker       `mapstructure:"circuit_breaker"`
+}
+
+// Media holds the public media settings used to turn Product image storage
+// keys into URLs. Both URLs must equal the Product Detail BFF
+// (PDP_MEDIA_CDN_BASE_URL, PDP_MEDIA_PLACEHOLDER_URL) and Search
+// (CDN_BASE_URL, THUMBNAIL_PLACEHOLDER_URL), so a cart line shows the same file
+// as the product card and the detail page.
+type Media struct {
+	// CDNBaseURL is absolute and has no trailing slash.
+	CDNBaseURL string `mapstructure:"cdn_base_url"`
+	// PlaceholderURL is returned for a SKU without an image.
+	PlaceholderURL string `mapstructure:"placeholder_url"`
+	// RequireHTTPS is only turned off locally, where MinIO is served through
+	// the gateway over plain http.
+	RequireHTTPS bool `mapstructure:"require_https"`
 }
 
 // Breaker tunes the Product circuit breaker.
@@ -165,6 +182,10 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("CART")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	// https is the safe default; a bool zero value would silently allow http.
+	v.SetDefault("media.require_https", true)
+	v.SetDefault("media.cdn_base_url", "")
+	v.SetDefault("media.placeholder_url", "")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config file %s: %w", path, err)
@@ -197,6 +218,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("product.address is required")
 	}
 
+	// Without these the cart would hand storage keys or broken URLs to the
+	// browser, so refuse to start instead.
+	if err := validateMediaURL("media.cdn_base_url", c.Media.CDNBaseURL, c.Media.RequireHTTPS); err != nil {
+		return err
+	}
+	if strings.HasSuffix(c.Media.CDNBaseURL, "/") {
+		return fmt.Errorf("media.cdn_base_url must not end with a slash")
+	}
+	if err := validateMediaURL("media.placeholder_url", c.Media.PlaceholderURL, c.Media.RequireHTTPS); err != nil {
+		return err
+	}
+
 	// The bucket count is a data contract, not a tunable. Silently accepting a
 	// different value would route carts to keys the running namespace does not
 	// own, which no rollback could repair.
@@ -225,6 +258,28 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cart.idempotency_ttl must be positive")
 	}
 	return nil
+}
+
+// validateMediaURL accepts an absolute https URL, or http as well when https
+// is not required.
+func validateMediaURL(name, value string, requireHTTPS bool) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute URL, got %q", name, value)
+	}
+	switch {
+	case parsed.Scheme == "https":
+		return nil
+	case parsed.Scheme == "http" && !requireHTTPS:
+		return nil
+	case parsed.Scheme == "http":
+		return fmt.Errorf("%s must use https unless media.require_https is false", name)
+	default:
+		return fmt.Errorf("%s must be an http(s) URL, got %q", name, value)
+	}
 }
 
 func applyDefaults(c *Config) {

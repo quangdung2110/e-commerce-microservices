@@ -691,6 +691,12 @@ services:
       # gRPC Product Service.
       CART_PRODUCT_ADDRESS: product-service:9091
 
+      # Same local CDN and placeholder as the Product Detail BFF and Search: Product
+      # returns storage keys and Cart builds the URL (Product gRPC image_url).
+      CART_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      CART_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      CART_MEDIA_REQUIRE_HTTPS: "false"
+
       CART_LOGGING_LEVEL: debug
     ports:
       - "8085:8080"

@@ -27,6 +27,14 @@ phủ `current_price` và catalog saleability. Product timeout/breaker mở tr�
 rỗng; không rehydrate. GET là query thuần: không cập nhật snapshot Redis, TTL hay
 abandonment schedule.
 
+`image_url` trong response luôn là URL tuyệt đối. Product gRPC trả storage key của ảnh
+đại diện (không phải URL); Cart lưu nguyên key trong snapshot và chỉ dựng URL khi render
+response: `CART_MEDIA_CDN_BASE_URL` + `/` + key percent-encode từng segment, SKU không ảnh
+nhận `CART_MEDIA_PLACEHOLDER_URL`, dòng cũ đã lưu URL tuyệt đối được giữ nguyên. Hai giá trị
+này phải bằng cấu hình của Product Detail BFF và Search để giỏ hàng, thẻ sản phẩm và PDP
+trỏ cùng một file ([PDP ADR-005](../product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md)).
+Storage key không bao giờ ra khỏi Cart.
+
 `GET /internal/v1/carts/{user_id}/checkout-snapshot` chỉ dành cho principal
 `checkout-service`. Endpoint đọc cùng Redis source of truth nhưng chỉ trả
 `{product_id, sku_id, quantity}`, không gọi Product, không refresh TTL và không

@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/handler"
+	"cart-service/internal/api/media"
 	"cart-service/internal/api/middleware"
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
@@ -23,7 +24,12 @@ const (
 	testIdempoKey = "idempotency-key-000001"
 	itemsPath     = "/api/v1/carts/mine/items"
 	cartPath      = "/api/v1/carts/mine"
+
+	testCDNBaseURL     = "https://cdn.example.test/media"
+	testPlaceholderURL = "https://cdn.example.test/media/placeholder/product.svg"
 )
+
+var testMediaURLs = media.NewURLs(testCDNBaseURL, testPlaceholderURL)
 
 type stubStore struct {
 	items        []domain.Item
@@ -77,7 +83,7 @@ func (s *stubCatalog) Ready(context.Context) error { return nil }
 func newTestEngine(store port.CartStore, catalog port.ProductCatalog) http.Handler {
 	cartService := service.New(store, catalog, service.Config{ProductValidationTTL: time.Minute})
 	return New(Config{
-		Cart:   handler.NewCart(cartService, zap.NewNop()),
+		Cart:   handler.NewCart(cartService, testMediaURLs, zap.NewNop()),
 		Health: handler.NewHealth(map[string]handler.Probe{}, time.Second),
 		Logger: zap.NewNop(),
 	})
@@ -223,6 +229,52 @@ func TestGetCartRendersTheContractShape(t *testing.T) {
 	}
 	if body["total_units"] != float64(2) {
 		t.Fatalf("total_units = %v, want 2", body["total_units"])
+	}
+}
+
+// Product supplies a storage key, never a URL. The browser must receive an
+// absolute CDN URL (the contract declares format: uri), the placeholder when
+// the SKU has no image, and a legacy absolute URL unchanged.
+func TestGetCartRendersImageStorageKeysAsCDNURLs(t *testing.T) {
+	line := func(skuID, imageKey string) domain.Item {
+		return domain.Item{SkuID: skuID, StoredItem: domain.StoredItem{
+			ProductID:      "PRODUCT-" + skuID,
+			ProductName:    "Ao thun",
+			Quantity:       1,
+			UnitPriceAtAdd: domain.Money{AmountMinor: 100000, Currency: "VND"},
+			ImageKey:       imageKey,
+			IsAvailable:    true,
+			AddedAt:        domain.Millis(1780000000000),
+			UpdatedAt:      domain.Millis(1780000000000),
+		}}
+	}
+	store := &stubStore{items: []domain.Item{
+		line("SKU-KEY", "products/ao thun/hero.jpg"),
+		line("SKU-NONE", ""),
+		line("SKU-LEGACY", "https://example.test/products/tshirt-red.png"),
+	}}
+	// Product is down: the stored snapshot alone must still render valid URLs.
+	catalog := &stubCatalog{batchErr: domain.NewRetryableError(domain.CodeProductUnavailable, "timeout")}
+
+	recorder := do(t, newTestEngine(store, catalog), http.MethodGet, cartPath, "", map[string]string{
+		middleware.HeaderUserID: testUserID,
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+
+	want := map[string]string{
+		"SKU-KEY":    testCDNBaseURL + "/products/ao%20thun/hero.jpg",
+		"SKU-NONE":   testPlaceholderURL,
+		"SKU-LEGACY": "https://example.test/products/tshirt-red.png",
+	}
+	body := decode[map[string]any](t, recorder)
+	for _, raw := range body["items"].([]any) {
+		item := raw.(map[string]any)
+		sku := item["sku_id"].(string)
+		if item["image_url"] != want[sku] {
+			t.Fatalf("%s image_url = %v, want %s", sku, item["image_url"], want[sku])
+		}
 	}
 }
 
@@ -444,7 +496,7 @@ func TestHealthEndpoints(t *testing.T) {
 func TestReadinessFailsWhenADependencyIsDown(t *testing.T) {
 	cartService := service.New(&stubStore{}, &stubCatalog{}, service.Config{})
 	engine := New(Config{
-		Cart: handler.NewCart(cartService, zap.NewNop()),
+		Cart: handler.NewCart(cartService, testMediaURLs, zap.NewNop()),
 		Health: handler.NewHealth(map[string]handler.Probe{
 			"redis": func(context.Context) error { return domain.NewError(domain.CodeCartStoreUnavailable, "down") },
 		}, time.Second),

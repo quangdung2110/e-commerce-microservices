@@ -99,7 +99,7 @@ hoặc Search.
 dựng trusted Promotion facts; consumer không tự suy diễn category rule. Dù tên là
 `image_url`, field này mang storage key của ảnh đại diện (ảnh `IMAGE` đầu tiên của SKU,
 fallback ảnh cấp Product, rỗng khi không có ảnh), không phải URL tuyệt đối; consumer cần
-hiển thị (Checkout) dựng URL CDN từ key như Search và Product Detail BFF. Chúng không trả quantity, `OUT_OF_STOCK` hay stock
+hiển thị (Cart, Checkout) dựng URL CDN từ key như Search và Product Detail BFF. Chúng không trả quantity, `OUT_OF_STOCK` hay stock
 status. Nếu Product/SKU không catalog-active, response là unavailable; Cart có thể giữ
 SKU hết stock; Checkout phải lấy allocation preview và Order mới reserve tại Inventory.
 

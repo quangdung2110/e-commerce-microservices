@@ -222,7 +222,7 @@ func snapshotFromSku(skuID string, sku *productv1.Sku) domain.ProductSnapshot {
 		ProductID:         sku.GetProductId(),
 		ProductName:       sku.GetProductName(),
 		VariantAttributes: sku.GetVariantAttributes(),
-		ImageURL:          sku.GetImageUrl(),
+		ImageKey:          sku.GetImageUrl(),
 		IsAvailable:       sku.GetStatus() == productv1.SkuStatus_SKU_STATUS_ACTIVE,
 	}
 	if price := sku.GetPrice(); price != nil {

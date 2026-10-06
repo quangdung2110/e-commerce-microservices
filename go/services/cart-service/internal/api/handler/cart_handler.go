@@ -12,6 +12,7 @@ import (
 
 	"cart-service/internal/api/dto/request"
 	"cart-service/internal/api/dto/response"
+	"cart-service/internal/api/media"
 	"cart-service/internal/api/middleware"
 	"cart-service/internal/domain"
 	"cart-service/internal/service"
@@ -20,12 +21,14 @@ import (
 // Cart serves the cart routes.
 type Cart struct {
 	service *service.CartService
+	media   media.URLs
 	logger  *zap.Logger
 }
 
-// NewCart builds the cart handler.
-func NewCart(cartService *service.CartService, logger *zap.Logger) *Cart {
-	return &Cart{service: cartService, logger: logger}
+// NewCart builds the cart handler. urls turns stored image storage keys into
+// the public CDN URLs the response carries.
+func NewCart(cartService *service.CartService, urls media.URLs, logger *zap.Logger) *Cart {
+	return &Cart{service: cartService, media: urls, logger: logger}
 }
 
 // Get handles GET /api/v1/carts/mine.
@@ -41,7 +44,7 @@ func (h *Cart) Get(c *gin.Context) {
 
 	// The cart is personal data and must never sit in a shared cache.
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, response.NewCart(view))
+	c.JSON(http.StatusOK, response.NewCart(view, h.media))
 }
 
 // AdjustItem handles POST /api/v1/carts/mine/items.

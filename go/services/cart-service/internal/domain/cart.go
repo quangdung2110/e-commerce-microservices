@@ -128,7 +128,12 @@ type StoredItem struct {
 	UnitPriceAtAdd    Money             `json:"unit_price_at_add"`
 	ProductName       string            `json:"product_name"`
 	VariantAttributes VariantAttributes `json:"variant_attributes,omitempty"`
-	ImageURL          string            `json:"image_url,omitempty"`
+	// ImageKey is the Product storage key of the representative image, empty
+	// when there is none. Lines written before Product switched to storage keys
+	// may still hold an absolute URL. The JSON name stays image_url so existing
+	// carts keep decoding; the public URL is built only when a response is
+	// rendered (internal/api/media).
+	ImageKey string `json:"image_url,omitempty"`
 
 	// IsAvailable is catalog saleability (Product and SKU are ACTIVE) at the
 	// time of validation. It is not an Inventory or reservation result.
@@ -193,9 +198,10 @@ type ProductSnapshot struct {
 	ProductID         string
 	ProductName       string
 	VariantAttributes map[string]string
-	ImageURL          string
-	Price             Money
-	IsAvailable       bool
+	// ImageKey is Product gRPC Sku.image_url: a storage key, not a URL.
+	ImageKey    string
+	Price       Money
+	IsAvailable bool
 }
 
 // ToStoredItem renders a snapshot as the item JSON the upsert script expects.
@@ -209,7 +215,7 @@ func (s ProductSnapshot) ToStoredItem(validatedAt, expiresAt Millis) StoredItem 
 		UnitPriceAtAdd:             s.Price,
 		ProductName:                s.ProductName,
 		VariantAttributes:          VariantAttributes(s.VariantAttributes),
-		ImageURL:                   s.ImageURL,
+		ImageKey:                   s.ImageKey,
 		IsAvailable:                s.IsAvailable,
 		CatalogValidatedAt:         validatedAt,
 		CatalogValidationExpiresAt: expiresAt,

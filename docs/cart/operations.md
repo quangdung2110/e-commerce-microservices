@@ -36,6 +36,9 @@ PostgreSQL health check.
 | `CART_ABANDONED_TTL` | `7d` |
 | `CART_PRODUCT_VALIDATION_TTL` | `30–60s`; cận trên độ cũ catalog khi positive delta |
 | `CART_IDEMPOTENCY_TTL` | `24h` |
+| `CART_MEDIA_CDN_BASE_URL` | Bắt buộc; URL tuyệt đối, không `/` cuối; bằng `PDP_MEDIA_CDN_BASE_URL` và `CDN_BASE_URL` của Search. Thiếu hoặc sai thì service không khởi động |
+| `CART_MEDIA_PLACEHOLDER_URL` | Bắt buộc; URL ảnh cho SKU không có ảnh, bằng `PDP_MEDIA_PLACEHOLDER_URL` |
+| `CART_MEDIA_REQUIRE_HTTPS` | `true`; chỉ local docker-compose đặt `false` vì MinIO được phát qua gateway bằng `http` |
 | Redis eviction | `noeviction` |
 | Redis persistence | AOF `appendfsync everysec`, ít nhất một replica, TLS |
 | Redis memory reserve | Dành chỗ cho forecast cart active 37 ngày, abandoned 7 ngày và outbox trong Kafka outage 24 giờ ở peak |

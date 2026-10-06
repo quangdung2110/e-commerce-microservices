@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"cart-service/internal/api/handler"
+	"cart-service/internal/api/media"
 	"cart-service/internal/api/middleware"
 	"cart-service/internal/api/router"
 	"cart-service/internal/infrastructure/cartredis"
@@ -134,7 +135,7 @@ func run(configPath string) error {
 
 	// ── HTTP surface ─────────────────────────────────────────────────────
 	engine := router.New(router.Config{
-		Cart: handler.NewCart(cartService, logger),
+		Cart: handler.NewCart(cartService, media.NewURLs(cfg.Media.CDNBaseURL, cfg.Media.PlaceholderURL), logger),
 		Health: handler.NewHealth(map[string]handler.Probe{
 			// Redis is the only dependency required to serve the read path.
 			// Product failures degrade GET and Kafka failures only delay the

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,11 @@ func baseConfig() *Config {
 		Redis:   Redis{Addrs: []string{"localhost:6379"}},
 		Kafka:   Kafka{Brokers: []string{"localhost:9092"}, TopicCartEvents: "t.cart.events"},
 		Product: Product{Address: "localhost:9091"},
+		Media: Media{
+			CDNBaseURL:     "https://cdn.example.test/media",
+			PlaceholderURL: "https://cdn.example.test/media/placeholder/product.svg",
+			RequireHTTPS:   true,
+		},
 		Cart: Cart{
 			BucketCount:          domain.BucketCount,
 			AbandonedAfter:       30 * 24 * time.Hour,
@@ -85,10 +91,12 @@ func TestValidateRejectsATTLShorterThanTheAbandonmentWindow(t *testing.T) {
 
 func TestValidateRequiresItsDependencies(t *testing.T) {
 	cases := map[string]func(*Config){
-		"redis":   func(c *Config) { c.Redis.Addrs = nil },
-		"kafka":   func(c *Config) { c.Kafka.Brokers = nil },
-		"topic":   func(c *Config) { c.Kafka.TopicCartEvents = "" },
-		"product": func(c *Config) { c.Product.Address = "" },
+		"redis":       func(c *Config) { c.Redis.Addrs = nil },
+		"kafka":       func(c *Config) { c.Kafka.Brokers = nil },
+		"topic":       func(c *Config) { c.Kafka.TopicCartEvents = "" },
+		"product":     func(c *Config) { c.Product.Address = "" },
+		"cdn":         func(c *Config) { c.Media.CDNBaseURL = "" },
+		"placeholder": func(c *Config) { c.Media.PlaceholderURL = "" },
 	}
 
 	for name, mutate := range cases {
@@ -97,5 +105,58 @@ func TestValidateRequiresItsDependencies(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("a configuration missing %s was accepted", name)
 		}
+	}
+}
+
+// A malformed media URL would put broken image links in every cart response.
+func TestValidateRejectsUnusableMediaURLs(t *testing.T) {
+	cases := map[string]func(*Config){
+		"relative cdn":         func(c *Config) { c.Media.CDNBaseURL = "/media" },
+		"trailing slash":       func(c *Config) { c.Media.CDNBaseURL = "https://cdn.example.test/media/" },
+		"http cdn":             func(c *Config) { c.Media.CDNBaseURL = "http://cdn.example.test/media" },
+		"http placeholder":     func(c *Config) { c.Media.PlaceholderURL = "http://cdn.example.test/p.svg" },
+		"non-http placeholder": func(c *Config) { c.Media.PlaceholderURL = "ftp://cdn.example.test/p.svg" },
+	}
+
+	for name, mutate := range cases {
+		cfg := baseConfig()
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
+// Local docker-compose serves MinIO over plain http through the gateway.
+func TestValidateAllowsHTTPMediaWhenHTTPSIsNotRequired(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Media = Media{
+		CDNBaseURL:     "http://localhost:8088/media",
+		PlaceholderURL: "http://localhost:8088/media/placeholder/product.svg",
+		RequireHTTPS:   false,
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("local http media was rejected: %v", err)
+	}
+}
+
+// require_https defaults to true: leaving it out of a file must not quietly
+// allow plain http.
+func TestLoadDefaultsToRequiringHTTPS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "application.yaml")
+	content := strings.Join([]string{
+		"redis: {addrs: [\"localhost:6379\"]}",
+		"kafka: {brokers: [\"localhost:9092\"], topic_cart_events: t.cart.events}",
+		"product: {address: \"localhost:9091\"}",
+		"media: {cdn_base_url: \"http://localhost:8088/media\", placeholder_url: \"http://localhost:8088/media/p.svg\"}",
+		"cart: {abandoned_after: 720h, active_ttl: 888h, abandoned_ttl: 168h, product_validation_ttl: 45s, idempotency_ttl: 24h}",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("Load accepted http media without media.require_https=false: %v", err)
 	}
 }

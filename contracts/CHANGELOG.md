@@ -5,6 +5,10 @@ không cần xuất hiện ở đây.
 
 ## 2026-10-07
 
+- Cart HTTP v1 `CartItem.image_url` is now always an absolute CDN URL (or the configured
+  placeholder when the SKU has no image), as the schema's `format: uri` already required.
+  Cart used to return the raw Product image storage key. The field is now always present;
+  the shape is unchanged.
 - Checkout HTTP v1 (proposed, no runtime yet) is aligned with a real Backend for Frontend
   ([Checkout ADR-014…017](../docs/checkout/decisions/README.md)):
   - every error now uses `CheckoutProblem` with a stable `code` enum, `retryable`, `action`

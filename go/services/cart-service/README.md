@@ -104,6 +104,13 @@ disagrees with the namespace, and an `active_ttl` that does not exceed
 the marker reaches it never emits `CART_ABANDONED` and nothing reports the
 loss.
 
+It also requires `media.cdn_base_url` and `media.placeholder_url`
+(`CART_MEDIA_CDN_BASE_URL`, `CART_MEDIA_PLACEHOLDER_URL`): Product gRPC returns
+the image storage key, and Cart stores that key unchanged and builds the public
+URL only when it renders `GET /api/v1/carts/mine` (`internal/api/media`). Both
+must be absolute URLs, https unless `media.require_https` is `false` (local
+docker-compose only), and equal to the Product Detail BFF and Search values.
+
 Production Redis must run with AOF, a replica, TLS and **`maxmemory-policy
 noeviction`**. Under `allkeys-lru`, Redis silently discards live carts under
 memory pressure and there is no store to recover them from. Product and Kafka

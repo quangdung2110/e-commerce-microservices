@@ -53,6 +53,16 @@ product:
     half_open_max_calls: 1
     open_timeout: 30s
 
+# Public media. Product gRPC returns image storage keys; Cart builds the CDN URL
+# when it renders a response. Values must match the Product Detail BFF and
+# Search so a cart line shows the same file. Local values serve MinIO through
+# the gateway over http; every other environment overrides them with https
+# (CART_MEDIA_CDN_BASE_URL, CART_MEDIA_PLACEHOLDER_URL, CART_MEDIA_REQUIRE_HTTPS).
+media:
+  cdn_base_url: "http://localhost:8088/media"
+  placeholder_url: "http://localhost:8088/media/placeholder/product.svg"
+  require_https: false
+
 cart:
   # A data contract, not a tunable. The service refuses to start on a mismatch.
   bucket_count: 64

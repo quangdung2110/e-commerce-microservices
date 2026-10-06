@@ -92,7 +92,7 @@ func activeSku() *productv1.Sku {
 		ProductId:         "PRODUCT-A",
 		ProductName:       "Ao thun do",
 		VariantAttributes: map[string]string{"color": "red"},
-		ImageUrl:          "https://example.test/a.png",
+		ImageUrl:          "products/a/hero.png",
 		Price:             &commonv1.Money{AmountMinor: 125000, Currency: "VND"},
 		Status:            productv1.SkuStatus_SKU_STATUS_ACTIVE,
 	}
@@ -115,6 +115,11 @@ func TestGetSkuMapsAnActiveSku(t *testing.T) {
 	}
 	if snapshot.Price.AmountMinor != 125000 || snapshot.Price.Currency != "VND" {
 		t.Fatalf("price = %+v", snapshot.Price)
+	}
+	// Product sends a storage key; Cart keeps it as is and builds the URL only
+	// when it renders a response.
+	if snapshot.ImageKey != "products/a/hero.png" {
+		t.Fatalf("image key = %q, want the unchanged Product storage key", snapshot.ImageKey)
 	}
 	if !snapshot.IsAvailable {
 		t.Fatalf("catalog availability = %v, want true", snapshot.IsAvailable)

@@ -69,7 +69,7 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
   "unit_price_at_add": { "amount_minor": 125000, "currency": "VND" },
   "product_name": "Áo thun đỏ",
   "variant_attributes": { "color": "red", "size": "M" },
-  "image_url": "https://example.test/products/tshirt-red.png",
+  "image_url": "products/tshirt/red.png",
   "catalog_validated_at_ms": "1780000000000",
   "catalog_validation_expires_at_ms": "1780000060000",
   "added_at": "1780000000000",
@@ -78,7 +78,10 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
 ```
 
 `unit_price_at_add` và `added_at` immutable. `current_price` không được lưu; nó chỉ
-có trong response `GET`. `catalog_validated_at_ms` chỉ nói Product đã xác nhận
+có trong response `GET`. Field lưu trữ `image_url` giữ tên cũ để item đã có vẫn đọc được,
+nhưng chứa storage key Product trả (rỗng khi SKU không có ảnh; item ghi trước khi Product
+chuyển sang storage key có thể còn URL tuyệt đối). URL công khai chỉ được dựng khi render
+response ([interfaces.md](./interfaces.md)). `catalog_validated_at_ms` chỉ nói Product đã xác nhận
 catalog saleability, không phải inventory reservation hay stock snapshot.
 
 ## 4. Constraints

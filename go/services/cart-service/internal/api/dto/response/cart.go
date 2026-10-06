@@ -3,6 +3,7 @@
 package response
 
 import (
+	"cart-service/internal/api/media"
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
 )
@@ -19,8 +20,10 @@ type CartItem struct {
 	ProductID         string            `json:"product_id"`
 	ProductName       string            `json:"product_name"`
 	VariantAttributes map[string]string `json:"variant_attributes,omitempty"`
-	ImageURL          string            `json:"image_url,omitempty"`
-	Quantity          int               `json:"quantity"`
+	// ImageURL is always an absolute CDN URL, or the placeholder when the SKU
+	// has no image. A storage key never leaves the service.
+	ImageURL string `json:"image_url"`
+	Quantity int    `json:"quantity"`
 	// UnitPriceAtAdd is frozen at the moment the SKU entered the cart.
 	UnitPriceAtAdd Money `json:"unit_price_at_add"`
 	// CurrentPrice is null when Product could not supply a live price. It is
@@ -53,10 +56,10 @@ type DeleteItemsResult struct {
 }
 
 // NewCart maps a domain view onto the wire contract.
-func NewCart(view domain.CartView) Cart {
+func NewCart(view domain.CartView, urls media.URLs) Cart {
 	items := make([]CartItem, 0, len(view.Items))
 	for _, line := range view.Items {
-		items = append(items, newCartItem(line))
+		items = append(items, newCartItem(line, urls))
 	}
 	return Cart{
 		Items:            items,
@@ -66,13 +69,13 @@ func NewCart(view domain.CartView) Cart {
 	}
 }
 
-func newCartItem(line domain.ViewItem) CartItem {
+func newCartItem(line domain.ViewItem, urls media.URLs) CartItem {
 	item := CartItem{
 		SkuID:             line.SkuID,
 		ProductID:         line.ProductID,
 		ProductName:       line.ProductName,
 		VariantAttributes: line.VariantAttributes,
-		ImageURL:          line.ImageURL,
+		ImageURL:          urls.Image(line.ImageKey),
 		Quantity:          line.Quantity,
 		UnitPriceAtAdd:    newMoney(line.UnitPriceAtAdd),
 		IsAvailable:       line.Available,

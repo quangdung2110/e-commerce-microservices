@@ -103,7 +103,7 @@ func (h *harness) snapshot(_ ...int64) *domain.StoredItem {
 		ProductID:         "PRODUCT-TSHIRT",
 		ProductName:       "Ao thun do",
 		VariantAttributes: map[string]string{"color": "red", "size": "M"},
-		ImageURL:          "https://example.test/products/tshirt-red.png",
+		ImageKey:          "products/tshirt/red.png",
 		Price:             domain.Money{AmountMinor: 125000, Currency: "VND"},
 		IsAvailable:       true,
 	}.ToStoredItem(
