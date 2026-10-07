@@ -124,6 +124,12 @@ delays outbox relay.
 
 ## Development
 
+Root stack: `docker compose up -d --build cart-service` from the repository root.
+Cart has no published host port; use the authenticated gateway at
+`http://localhost:8088/api/v1/carts/mine`. Host port 8085 belongs to Promotion.
+Checkout keeps `http://cart-service:8080` within the network. The standalone
+service compose is a separate development stack.
+
 ```bash
 make deps && make test
 ```
