@@ -1,85 +1,154 @@
-# Application Configuration
+# Auth Service configuration.
+#
+# Values are the local development defaults. Every ${VAR} is expanded from the
+# environment at load time and every key can also be overridden directly, so
+# AUTH_JWT_ISSUER overrides jwt.issuer. Secrets belong in the environment or in
+# a secret manager, never in this file.
+
 app:
   name: "auth-service"
   host: "0.0.0.0"
   port: 8080
-  env: "development"  # development, staging, production
+  env: "development" # development | staging | production
 
-# Server Configuration
 server:
-  read_timeout: 30s
-  write_timeout: 30s
+  read_timeout: 15s
+  write_timeout: 15s
   idle_timeout: 120s
-  shutdown_timeout: 30s
+  shutdown_timeout: 20s
 
-# Database Configuration
+# Cluster-internal listener serving the notification delivery API. It must never
+# be exposed through the public gateway, and production requires mTLS.
+internal:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8081
+  tls_cert_file: "${AUTH_INTERNAL_TLS_CERT_FILE}"
+  tls_key_file: "${AUTH_INTERNAL_TLS_KEY_FILE}"
+  client_ca_file: "${AUTH_INTERNAL_CLIENT_CA_FILE}"
+  allowed_client_cn: "${AUTH_INTERNAL_ALLOWED_CLIENT_CN}"
+
 database:
   host: "localhost"
   port: 5432
   name: "auth_db"
   username: "postgres"
   password: "${DB_PASSWORD}"
+  sslmode: "disable" # require or verify-full outside local development
   max_open_conns: 25
-  max_idle_conns: 5
-  conn_max_lifetime: 5m
-  sslmode: "disable"
+  min_conns: 5
+  conn_max_lifetime: 30m
+  connect_timeout: 5s
+  statement_timeout: 5s
 
-# Redis Configuration
 redis:
   host: "localhost"
   port: 6379
   password: "${REDIS_PASSWORD}"
   db: 0
-  pool_size: 10
+  pool_size: 20
   min_idle_conns: 5
+  dial_timeout: 1s
+  read_timeout: 1s
+  write_timeout: 1s
+  # Namespace shared with gateway-auth, which only reads it. Changing it requires
+  # the same change in the gateway configuration.
+  revocation_prefix: "auth:revocation"
+  state_prefix: "auth"
 
-# Kafka Configuration
 kafka:
+  enabled: true
   brokers:
     - "localhost:9092"
-  topic_prefix: "t.auth"
-  consumer_group: "auth-service"
-  admin_topic: "t.admin"
+  identity_topic: "t.auth.events"
+  notification_topic: "t.auth.notification.events"
+  # Bounded retry with the same CloudEvent id (ADR-005). Exhausted retries are
+  # logged and left to operational reconciliation.
+  publish_max_attempts: 3
+  publish_backoff: 200ms
+  publish_timeout: 5s
 
-# JWT Configuration
 jwt:
-  access_token_ttl: 15m
-  refresh_token_ttl: 720h  # 30 days
-  grace_period: 10s
-  issuer: "auth-service"
+  # These four must match the gateway-auth configuration exactly.
+  issuer: "https://auth.ecommerce.local"
+  audience: "ecommerce-api"
   algorithm: "RS256"
+  access_token_ttl: 15m
+  clock_skew: 30s
+  key_cache_ttl: 5m
+  jwks_cache_control: "public, max-age=600"
 
-# Security Configuration
+refresh:
+  sliding_ttl: 168h  # 7 days, extended on every rotation
+  absolute_ttl: 720h # 30 days, never extended
+  cookie_name: "auth_refresh"
+  cookie_path: "/api/v1/auth/sessions"
+  cookie_domain: ""
+  cookie_secure: false # must be true outside local development
+
 security:
+  # Empty means gin trusts no proxy header. List the gateway CIDRs in a cluster
+  # so the client IP used for rate limiting is the real one.
+  trusted_proxies: []
   argon2:
-    memory: 65536      # 64MB
+    memory: 65536
     iterations: 3
     parallelism: 4
     salt_length: 16
     key_length: 32
-  
+  lockout:
+    max_failed_attempts: 5
+    lock_duration: 15m
+    counter_reset_after: 1h
+  password_policy:
+    min_length: 12
+    max_length: 128
   rate_limit:
-    login_max_attempts: 5
-    login_lockout_duration: 30m
-    login_window: 60m
-  
-  session:
-    max_concurrent: 10
+    login_per_ip: { limit: 20, window: 5m }
+    login_per_account: { limit: 10, window: 5m }
+    registration_per_ip: { limit: 10, window: 1h }
+    otp_per_account: { limit: 5, window: 15m }
+    password_reset_per_ip: { limit: 5, window: 1h }
+    refresh_per_ip: { limit: 60, window: 5m }
+    internal_per_client: { limit: 600, window: 1m }
 
-# Key Management
+otp:
+  ttl: 5m
+  max_attempts: 5
+  resend_limit: 3
+  resend_window: 15m
+
+password_reset:
+  ttl: 15m
+  # The token travels in the fragment so it never reaches a server log.
+  url_template: "https://app.ecommerce.local/reset-password#token={token}"
+
+notification:
+  # How long Notification Service may resolve the render content of a delivery.
+  delivery_ttl: 30m
+
 keys:
-  rotation_interval: 720h  # 30 days
-  retirement_delay: 744h  # 31 days
-  key_size: 2048          # RSA key size
+  rsa_bits: 2048
+  rotation_interval: 720h # 30 days
+  # Must be at least jwt.access_token_ttl: a PHASE_OUT key stays in JWKS until
+  # every access token it signed has expired.
+  retirement_delay: 24h
+  # Base64 of 32 random bytes. Supplied as a secret, never committed.
+  master_key: "${AUTH_KEYS_MASTER_KEY}"
+  master_key_version: 1
+  # Older master keys by version, so rows written before a rotation stay
+  # readable: previous_master_keys: { "1": "${AUTH_KEYS_MASTER_KEY_V1}" }
+  previous_master_keys: {}
 
-# Cleanup Configuration
-cleanup:
-  refresh_token_retention: 168h   # 7 days
-  audit_log_retention: 4320h      # 6 months
-  outbox_retention: 336h          # 14 days
-  auto_unlock_interval: 30m
+workers:
+  lock_ttl: 5m
+  refresh_token_retention: 168h
+  refresh_token_cleanup: { enabled: true, interval: 1h, timeout: 2m, batch: 1000 }
+  key_rotation: { enabled: true, interval: 1h, timeout: 1m }
+  key_retirement: { enabled: true, interval: 1h, timeout: 1m }
+  auto_unlock: { enabled: true, interval: 1m, timeout: 1m, batch: 500 }
+  account_hard_delete: { enabled: true, interval: 6h, timeout: 5m, batch: 500 }
 
-# Logging Configuration
 logging:
-  level: "info"      # debug, info, warn, error
-  format: "json"     # json, console
+  level: "info"   # debug | info | warn | error
+  format: "json"  # json | console

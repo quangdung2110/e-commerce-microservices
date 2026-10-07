@@ -1,108 +1,60 @@
 package middleware
 
 import (
-	"fmt"
-	"net/http"
-	"time"
-
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
-	"github.com/ecommerce/auth-service/internal/common/constants"
+	"github.com/ecommerce/auth-service/internal/api/httpx"
+	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
-type RateLimiterMiddleware struct {
-	limiter       port.RateLimiter
-	defaultLimit  int
-	defaultWindow time.Duration
-	logger        *zap.Logger
-}
-
-func NewRateLimiterMiddleware(limiter port.RateLimiter, logger *zap.Logger) *RateLimiterMiddleware {
-	return &RateLimiterMiddleware{
-		limiter:       limiter,
-		defaultLimit:  constants.DefaultRateLimitPerMinute,
-		defaultWindow: 1 * time.Minute,
-		logger:        logger.With(zap.String("middleware", "RateLimiter")),
+// RateLimit applies one fixed-window rule keyed by the client IP.
+//
+// It fails closed: when Redis cannot answer, the request is rejected rather than
+// let through unlimited, because these routes are the brute-force surface of the
+// whole platform.
+func RateLimit(limiter port.RateLimiter, scope string, rule port.RateLimitRule) gin.HandlerFunc {
+	if !rule.Enabled() {
+		return func(c *gin.Context) { c.Next() }
 	}
-}
 
-// RateLimit returns a rate limiting middleware with custom limits
-func (m *RateLimiterMiddleware) RateLimit(action string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		logger := m.logger.With(
-			zap.String("action", action),
-			zap.Int("limit", limit),
-			zap.Duration("window", window),
-		)
-
-		identifier := c.ClientIP()
-		if userID, exists := c.Get("user_id"); exists {
-			identifier = userID.(string)
-		}
-
-		allowed, err := m.limiter.Allow(c.Request.Context(), action, identifier, limit, window)
+		result, err := limiter.Allow(c.Request.Context(), scope, c.ClientIP(), rule)
 		if err != nil {
-			logger.Error("Rate limiter error",
-				zap.String("identifier", identifier),
-				zap.Error(err),
-			)
-			c.Next()
+			httpx.WriteProblem(c, err)
 			return
 		}
-
-		remaining, _ := m.limiter.GetCount(c.Request.Context(), action, identifier)
-		retryAfter := int(window.Seconds())
-
-		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
-		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", max(0, limit-remaining)))
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
-
-		if !allowed {
-			logger.Warn("Rate limit exceeded",
-				zap.String("identifier", identifier),
-				zap.Int("retry_after", retryAfter),
-			)
-
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{
-					"code":                "RATE_LIMIT_EXCEEDED",
-					"message":             "Too many requests. Please try again later.",
-					"retry_after_seconds": retryAfter,
-				},
-			})
+		if !result.Allowed {
+			httpx.WriteProblem(c, apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter))
 			return
 		}
-
 		c.Next()
 	}
 }
 
-// RateLimitByIP returns a rate limiting middleware for IP-based limiting
-func (m *RateLimiterMiddleware) RateLimitByIP(limit int, window time.Duration) gin.HandlerFunc {
-	return m.RateLimit("ip", limit, window)
-}
+// RateLimitByIdentity applies a rule keyed by the authenticated account, so one
+// noisy account cannot spend the budget of a shared egress IP.
+func RateLimitByIdentity(limiter port.RateLimiter, scope string, rule port.RateLimitRule) gin.HandlerFunc {
+	if !rule.Enabled() {
+		return func(c *gin.Context) { c.Next() }
+	}
 
-// RateLimitByUser returns a rate limiting middleware for user-based limiting
-func (m *RateLimiterMiddleware) RateLimitByUser(limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, exists := c.Get("user_id")
-		if !exists {
-			c.Next()
+		identity, ok := IdentityFrom(c)
+		if !ok {
+			httpx.WriteProblem(c, apperr.ErrUnauthorized)
 			return
 		}
 
-		m.RateLimit("user", limit, window)(c)
+		result, err := limiter.Allow(c.Request.Context(), scope, identity.AccountID.String(), rule)
+		if err != nil {
+			httpx.WriteProblem(c, err)
+			return
+		}
+		if !result.Allowed {
+			httpx.WriteProblem(c, apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter))
+			return
+		}
+		c.Next()
 	}
-}
-
-// LoginRateLimit applies strict rate limiting for login endpoint
-func (m *RateLimiterMiddleware) LoginRateLimit() gin.HandlerFunc {
-	return m.RateLimit("login", constants.LoginRateLimitPerMinute, 1*time.Minute)
-}
-
-// APIRateLimit applies general rate limiting for API endpoints
-func (m *RateLimiterMiddleware) APIRateLimit() gin.HandlerFunc {
-	return m.RateLimit("api", constants.DefaultRateLimitPerMinute, 1*time.Minute)
 }

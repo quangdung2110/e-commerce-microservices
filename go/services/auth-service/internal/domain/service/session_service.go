@@ -2,200 +2,237 @@ package service
 
 import (
 	"context"
-	"fmt"
-	"time"
+	"errors"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/ecommerce/auth-service/internal/common/clock"
+	"github.com/ecommerce/auth-service/internal/common/constants"
+	apperr "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/common/secret"
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
-// SessionInfo represents a user session
-type SessionInfo struct {
-	ID         string
-	DeviceID   string
-	DeviceInfo string
-	IPAddress  string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	IsCurrent  bool
-}
+// DefaultSessionPageSize matches the `limit` default of the public contract.
+const DefaultSessionPageSize = 50
 
-// SessionService handles session operations
+// MaxSessionPageSize matches the `limit` maximum of the public contract.
+const MaxSessionPageSize = 100
+
+// SessionService implements WF-AUTH-003 and WF-AUTH-004: refresh-token rotation
+// plus session listing and revocation.
 type SessionService struct {
-	refreshTokenRepo port.RefreshTokenRepository
-	tokenCache       port.TokenCache
-	auditService     *AuditService
-	logger           *zap.Logger
+	accounts port.AccountRepository
+	tokens   port.RefreshTokenRepository
+	issuer   *TokenService
+	revoker  *Revoker
+	clock    clock.Clock
+	policy   SessionPolicy
+	logger   *zap.Logger
 }
 
+// NewSessionService wires the session use cases.
 func NewSessionService(
-	refreshTokenRepo port.RefreshTokenRepository,
-	tokenCache port.TokenCache,
-	auditService *AuditService,
+	accounts port.AccountRepository,
+	tokens port.RefreshTokenRepository,
+	issuer *TokenService,
+	revoker *Revoker,
+	clk clock.Clock,
+	policy SessionPolicy,
 	logger *zap.Logger,
 ) *SessionService {
 	return &SessionService{
-		refreshTokenRepo: refreshTokenRepo,
-		tokenCache:       tokenCache,
-		auditService:     auditService,
-		logger:           logger.With(zap.String("service", "SessionService")),
+		accounts: accounts,
+		tokens:   tokens,
+		issuer:   issuer,
+		revoker:  revoker,
+		clock:    clk,
+		policy:   policy,
+		logger:   logger,
 	}
 }
 
-// ListSessions returns all active sessions for a user
-func (s *SessionService) ListSessions(ctx context.Context, userID, currentTokenHash string) ([]*SessionInfo, error) {
-	tokens, err := s.refreshTokenRepo.GetActiveByUserID(ctx, userID)
-	if err != nil {
-		s.logger.Error("Failed to get active tokens", zap.String("user_id", userID), zap.Error(err))
-		return nil, fmt.Errorf("failed to get active tokens: %w", err)
+// RefreshCommand is the input of a rotation request.
+type RefreshCommand struct {
+	RefreshToken string
+	UserAgent    string
+	IPAddress    string
+}
+
+// Refresh rotates the presented refresh token and issues a new token pair.
+//
+// A replayed, revoked or expired token only produces an error: it never issues a
+// second pair and never revokes the family that legitimately replaced it.
+func (s *SessionService) Refresh(ctx context.Context, cmd RefreshCommand) (*LoginResult, error) {
+	if cmd.RefreshToken == "" {
+		return nil, apperr.ErrRefreshTokenInvalid
 	}
 
-	sessions := make([]*SessionInfo, 0, len(tokens))
-	for _, token := range tokens {
-		session := &SessionInfo{
-			ID:         token.ID,
-			DeviceID:   token.DeviceID,
-			DeviceInfo: token.DeviceInfo,
-			IPAddress:  token.IPAddress,
-			CreatedAt:  token.CreatedAt,
-			ExpiresAt:  token.ExpiresAt,
-			IsCurrent:  token.TokenHash == currentTokenHash,
+	plaintext, err := secret.NewOpaqueToken(constants.RefreshTokenBytes)
+	if err != nil {
+		return nil, apperr.ErrInternal.WithCause(err)
+	}
+
+	now := s.clock.Now()
+	rotated, err := s.tokens.Rotate(ctx,
+		secret.Hash(cmd.RefreshToken),
+		secret.Hash(plaintext),
+		s.policy.SlidingTTL,
+		entity.SessionContext{UserAgent: cmd.UserAgent, IPAddress: cmd.IPAddress},
+		now,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	account, err := s.accounts.GetByID(ctx, rotated.AccountID)
+	if err != nil {
+		if errors.Is(err, apperr.ErrAccountNotFound) {
+			return nil, apperr.ErrRefreshTokenInvalid
 		}
-		sessions = append(sessions, session)
+		return nil, err
+	}
+	if account.UnlockIfExpired(now) {
+		if err := s.accounts.Update(ctx, account); err != nil {
+			return nil, err
+		}
+	}
+	if !account.IsActive() {
+		// AUTH-BR-001: only an ACTIVE account may hold credentials. The token
+		// just created is withdrawn so the caller keeps nothing usable.
+		s.revokeAfterFailure(ctx, account.ID, rotated.FamilyID)
+		return nil, apperr.ErrRefreshTokenInvalid
 	}
 
-	return sessions, nil
-}
-
-// GetSessionByID retrieves a specific session
-func (s *SessionService) GetSessionByID(ctx context.Context, userID, sessionID string) (*SessionInfo, error) {
-	token, err := s.refreshTokenRepo.GetByID(ctx, sessionID)
+	access, err := s.issuer.Issue(ctx, account, rotated.FamilyID)
 	if err != nil {
-		s.logger.Error("Failed to get session", zap.String("session_id", sessionID), zap.Error(err))
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		s.revokeAfterFailure(ctx, account.ID, rotated.FamilyID)
+		return nil, err
 	}
 
-	// Verify ownership
-	if token.UserID != userID {
-		return nil, fmt.Errorf("session does not belong to user")
-	}
-
-	return &SessionInfo{
-		ID:         token.ID,
-		DeviceID:   token.DeviceID,
-		DeviceInfo: token.DeviceInfo,
-		IPAddress:  token.IPAddress,
-		CreatedAt:  token.CreatedAt,
-		ExpiresAt:  token.ExpiresAt,
+	return &LoginResult{
+		Access:           access,
+		SessionID:        rotated.FamilyID,
+		RefreshToken:     plaintext,
+		RefreshExpiresAt: rotated.ExpiresAt,
 	}, nil
 }
 
-// RevokeSession revokes a specific session
-func (s *SessionService) RevokeSession(ctx context.Context, userID, sessionID, currentTokenHash string) error {
-	logger := s.logger.With(
-		zap.String("user_id", userID),
-		zap.String("session_id", sessionID),
-	)
+// ListSessions returns the active sessions of the caller, page by page.
+func (s *SessionService) ListSessions(ctx context.Context, accountID uuid.UUID, rawCursor string, limit int) ([]entity.Session, string, error) {
+	if limit <= 0 {
+		limit = DefaultSessionPageSize
+	}
+	if limit > MaxSessionPageSize {
+		limit = MaxSessionPageSize
+	}
 
-	// Get the session token
-	token, err := s.refreshTokenRepo.GetByID(ctx, sessionID)
+	var cursor *port.SessionCursor
+	if rawCursor != "" {
+		decoded, err := port.DecodeSessionCursor(rawCursor)
+		if err != nil {
+			return nil, "", apperr.ErrValidation.WithFields(apperr.FieldError{
+				Field:   "cursor",
+				Message: "is not a cursor returned by this API",
+			})
+		}
+		cursor = &decoded
+	}
+
+	sessions, next, err := s.tokens.ListSessions(ctx, accountID, cursor, limit)
 	if err != nil {
-		logger.Error("Session not found", zap.Error(err))
-		return fmt.Errorf("session not found")
+		return nil, "", err
 	}
-
-	// Verify the session belongs to the user
-	if token.UserID != userID {
-		logger.Warn("Attempted to revoke session belonging to another user")
-		return fmt.Errorf("forbidden: session does not belong to user")
+	if next == nil {
+		return sessions, "", nil
 	}
-
-	// Don't allow revoking current session
-	if token.TokenHash == currentTokenHash {
-		return fmt.Errorf("cannot revoke current session: use logout instead")
-	}
-
-	// Revoke the refresh token
-	if err := s.refreshTokenRepo.Revoke(ctx, sessionID); err != nil {
-		logger.Error("Failed to revoke session", zap.Error(err))
-		return fmt.Errorf("failed to revoke session: %w", err)
-	}
-
-	// Log the revocation
-	if s.auditService != nil {
-		_ = s.auditService.LogSessionRevoked(ctx, userID, sessionID, token.DeviceInfo)
-	}
-
-	logger.Info("Session revoked successfully")
-	return nil
+	return sessions, next.Encode(), nil
 }
 
-// RevokeAllSessions revokes all sessions except the current one
-func (s *SessionService) RevokeAllSessions(ctx context.Context, userID, currentTokenHash string) error {
-	logger := s.logger.With(zap.String("user_id", userID))
-
-	// Get all active tokens
-	tokens, err := s.refreshTokenRepo.GetActiveByUserID(ctx, userID)
-	if err != nil {
-		logger.Error("Failed to get active tokens", zap.Error(err))
-		return fmt.Errorf("failed to get active tokens: %w", err)
-	}
-
-	// Revoke all except current
-	revokedCount := 0
-	for _, token := range tokens {
-		if token.TokenHash != currentTokenHash {
-			if err := s.refreshTokenRepo.Revoke(ctx, token.ID); err != nil {
-				logger.Error("Failed to revoke session", zap.String("session_id", token.ID), zap.Error(err))
-				continue
-			}
-			revokedCount++
-		}
-	}
-
-	// Log the mass revocation
-	if s.auditService != nil {
-		_ = s.auditService.LogAllSessionsRevoked(ctx, userID, revokedCount)
-	}
-
-	logger.Info("All other sessions revoked", zap.Int("revoked_count", revokedCount))
-	return nil
+// RevokeSessionCommand is the input of a single-session revocation.
+type RevokeSessionCommand struct {
+	AccountID uuid.UUID
+	SessionID uuid.UUID
+	// TokenJti is the verified jti the gateway injected for the caller.
+	TokenJti string
+	// RefreshToken is the cookie the browser sent with the request, if any. It
+	// identifies whether the revoked session is the caller's current one.
+	RefreshToken string
+	// CurrentSessionID is the session id the gateway forwarded from the access
+	// token, when it forwards one.
+	CurrentSessionID *uuid.UUID
 }
 
-// RevokeSessionByDeviceID revokes a specific device's session
-func (s *SessionService) RevokeSessionByDeviceID(ctx context.Context, userID, deviceID, currentTokenHash string) error {
-	logger := s.logger.With(
-		zap.String("user_id", userID),
-		zap.String("device_id", deviceID),
-	)
+// RevokeSessionResult tells the adapter whether the caller just revoked the
+// session it is using, in which case the refresh cookie must be cleared.
+type RevokeSessionResult struct {
+	CurrentSessionRevoked bool
+}
 
-	tokens, err := s.refreshTokenRepo.GetActiveByUserID(ctx, userID)
+// RevokeSession revokes one session family of the caller. It is idempotent: a
+// family that is already revoked still returns success.
+func (s *SessionService) RevokeSession(ctx context.Context, cmd RevokeSessionCommand) (RevokeSessionResult, error) {
+	exists, err := s.tokens.FamilyExists(ctx, cmd.AccountID, cmd.SessionID)
 	if err != nil {
-		logger.Error("Failed to get active tokens", zap.Error(err))
-		return fmt.Errorf("failed to get active tokens: %w", err)
+		return RevokeSessionResult{}, err
+	}
+	if !exists {
+		// A family of another account is reported as not found so the endpoint
+		// cannot be used to probe other accounts.
+		return RevokeSessionResult{}, apperr.ErrSessionNotFound
 	}
 
-	for _, token := range tokens {
-		if token.DeviceID == deviceID {
-			// Don't allow revoking current session
-			if token.TokenHash == currentTokenHash {
-				return fmt.Errorf("cannot revoke current session: use logout instead")
-			}
+	isCurrent := s.isCurrentSession(ctx, cmd)
 
-			if err := s.refreshTokenRepo.Revoke(ctx, token.ID); err != nil {
-				logger.Error("Failed to revoke session", zap.Error(err))
-				return fmt.Errorf("failed to revoke session: %w", err)
-			}
+	if _, err := s.revoker.RevokeSession(ctx, cmd.AccountID, cmd.SessionID); err != nil {
+		return RevokeSessionResult{}, err
+	}
 
-			if s.auditService != nil {
-				_ = s.auditService.LogSessionRevoked(ctx, userID, token.ID, token.DeviceInfo)
-			}
-
-			logger.Info("Session revoked by device ID")
-			return nil
+	if isCurrent && cmd.TokenJti != "" {
+		// The access token of this device stays valid until it expires unless it
+		// is denylisted (ADR-001).
+		if err := s.revoker.DenyAccessToken(ctx, cmd.TokenJti); err != nil {
+			return RevokeSessionResult{}, err
 		}
 	}
+	return RevokeSessionResult{CurrentSessionRevoked: isCurrent}, nil
+}
 
-	return fmt.Errorf("session for device not found")
+// RevokeAllSessions revokes every session of the caller and blocks every access
+// token issued so far.
+func (s *SessionService) RevokeAllSessions(ctx context.Context, accountID uuid.UUID) error {
+	_, err := s.revoker.RevokeAllSessions(ctx, accountID)
+	return err
+}
+
+func (s *SessionService) isCurrentSession(ctx context.Context, cmd RevokeSessionCommand) bool {
+	if cmd.CurrentSessionID != nil {
+		return *cmd.CurrentSessionID == cmd.SessionID
+	}
+	if cmd.RefreshToken == "" {
+		return false
+	}
+	current, err := s.tokens.GetByHash(ctx, secret.Hash(cmd.RefreshToken))
+	if err != nil {
+		if !errors.Is(err, apperr.ErrRefreshTokenInvalid) {
+			s.logger.Warn("could not resolve the current session from the refresh cookie",
+				zap.String("account_id", cmd.AccountID.String()),
+				zap.Error(err),
+			)
+		}
+		return false
+	}
+	return current.AccountID == cmd.AccountID && current.FamilyID == cmd.SessionID
+}
+
+func (s *SessionService) revokeAfterFailure(ctx context.Context, accountID, familyID uuid.UUID) {
+	if _, err := s.tokens.RevokeFamily(ctx, accountID, familyID, s.clock.Now()); err != nil {
+		s.logger.Error("could not revoke the session of a failed refresh",
+			zap.String("account_id", accountID.String()),
+			zap.String("session_id", familyID.String()),
+			zap.Error(err),
+		)
+	}
 }

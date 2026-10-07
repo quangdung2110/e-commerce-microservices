@@ -2,66 +2,66 @@ package entity
 
 import (
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/ecommerce/auth-service/internal/domain/vo"
 )
 
-type KeyStatus string
-
-const (
-	KeyStatusActive   KeyStatus = "ACTIVE"
-	KeyStatusPhaseOut KeyStatus = "PHASE_OUT"
-	KeyStatusRetired  KeyStatus = "RETIRED"
-)
-
-type JWTKey struct {
-	Kid        string     `json:"kid"`
-	PublicKey  string     `json:"public_key"`
-	PrivateKey string     `json:"-"`
-	Status     KeyStatus  `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	RotatedAt  *time.Time `json:"rotated_at,omitempty"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+// JwtKey is one RSA signing key pair. The private half is stored as AES-256-GCM
+// ciphertext and is never published or logged (AUTH-INV-003, AUTH-BR-006).
+type JwtKey struct {
+	KID                  uuid.UUID
+	Algorithm            string
+	PublicKeyPEM         string
+	PrivateKeyCiphertext []byte
+	PrivateKeyNonce      []byte
+	EncryptionKeyVersion int16
+	Status               vo.JwtKeyStatus
+	ActivatedAt          *time.Time
+	PhaseOutAt           *time.Time
+	RetiredAt            *time.Time
+	CreatedAt            time.Time
 }
 
-func NewJWTKey(kid, publicKey, privateKey string) *JWTKey {
-	return &JWTKey{
-		Kid:        kid,
-		PublicKey:  publicKey,
-		PrivateKey: privateKey,
-		Status:     KeyStatusActive,
-		CreatedAt:  time.Now(),
+// NewJwtKey builds an ACTIVE key from freshly generated, already encrypted
+// material.
+func NewJwtKey(publicKeyPEM string, ciphertext, nonce []byte, encryptionKeyVersion int16, now time.Time) *JwtKey {
+	now = now.UTC()
+	activatedAt := now
+	return &JwtKey{
+		KID:                  uuid.New(),
+		Algorithm:            "RS256",
+		PublicKeyPEM:         publicKeyPEM,
+		PrivateKeyCiphertext: ciphertext,
+		PrivateKeyNonce:      nonce,
+		EncryptionKeyVersion: encryptionKeyVersion,
+		Status:               vo.JwtKeyActive,
+		ActivatedAt:          &activatedAt,
+		CreatedAt:            now,
 	}
 }
 
-func (k *JWTKey) IsActive() bool {
-	return k.Status == KeyStatusActive
+// IsPublishable reports whether the public half belongs in the JWKS document.
+// ACTIVE keys sign new tokens; PHASE_OUT keys still verify tokens in flight.
+func (k *JwtKey) IsPublishable() bool {
+	return k.Status == vo.JwtKeyActive || k.Status == vo.JwtKeyPhaseOut
 }
 
-func (k *JWTKey) IsPhaseOut() bool {
-	return k.Status == KeyStatusPhaseOut
+// Age reports how long the key has been active.
+func (k *JwtKey) Age(now time.Time) time.Duration {
+	reference := k.CreatedAt
+	if k.ActivatedAt != nil {
+		reference = *k.ActivatedAt
+	}
+	return now.UTC().Sub(reference)
 }
 
-func (k *JWTKey) IsRetired() bool {
-	return k.Status == KeyStatusRetired
-}
-
-func (k *JWTKey) CanSign() bool {
-	return k.IsActive()
-}
-
-func (k *JWTKey) CanVerify() bool {
-	return k.IsActive() || k.IsPhaseOut()
-}
-
-func (k *JWTKey) SetPhaseOut() {
-	k.Status = KeyStatusPhaseOut
-	now := time.Now()
-	k.RotatedAt = &now
-}
-
-func (k *JWTKey) SetRetired() {
-	k.Status = KeyStatusRetired
-}
-
-func (k *JWTKey) SetExpiresAt(expiresAt time.Time) {
-	k.ExpiresAt = &expiresAt
+// RetirementDue reports whether every access token this key could have signed
+// has expired, which is the only safe moment to retire it (ADR-003).
+func (k *JwtKey) RetirementDue(now time.Time, retirementDelay time.Duration) bool {
+	if k.Status != vo.JwtKeyPhaseOut || k.PhaseOutAt == nil {
+		return false
+	}
+	return !now.UTC().Before(k.PhaseOutAt.Add(retirementDelay))
 }

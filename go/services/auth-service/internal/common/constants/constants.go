@@ -1,71 +1,58 @@
+// Package constants holds contract-level literals shared by adapters and the
+// domain. Values that operators tune live in configuration, not here.
 package constants
 
-import "time"
-
+// Trusted identity headers injected by the API Gateway. They are never accepted
+// from a public client (contracts/conventions/http.md).
 const (
-	AccessTokenTTLDefault  = 15 * time.Minute
-	RefreshTokenTTLDefault = 30 * 24 * time.Hour
-	GracePeriodDefault     = 10 * time.Second
+	HeaderUserID       = "X-User-Id"
+	HeaderUserRoles    = "X-User-Roles"
+	HeaderTokenJti     = "X-Token-Jti"
+	HeaderRequestID    = "X-Request-Id"
+	HeaderTraceparent  = "traceparent"
+	HeaderRetryAfter   = "Retry-After"
+	HeaderCacheControl = "Cache-Control"
 )
 
+// RefreshCookieName is the only transport for the opaque refresh token.
+const RefreshCookieName = "auth_refresh"
+
+// RefreshCookiePath scopes the cookie to the session endpoints.
+const RefreshCookiePath = "/api/v1/auth/sessions"
+
+// ContentTypeProblem is the media type of every error response.
+const ContentTypeProblem = "application/problem+json"
+
+// NoStore is required on every response that carries a credential.
+const NoStore = "no-store"
+
+// OTP purposes bound to a Redis state entry and to the OTP event payload.
 const (
-	MaxFailedLoginAttempts     = 5
-	LockoutDuration            = 30 * time.Minute
-	FailedLoginWindow          = 60 * time.Minute
-	MaxConcurrentSessions      = 10
-	DistributedAttackThreshold = 20
+	OtpPurposeRegistration = "REGISTRATION_VERIFICATION"
+	OtpPurposeEmailChange  = "EMAIL_CHANGE_VERIFICATION"
 )
 
+// Notification templates from contracts/http/auth/internal/v1/openapi.yaml.
 const (
-	KeyRotationIntervalDefault = 30 * 24 * time.Hour
-	KeyRetirementDelayDefault  = 31 * 24 * time.Hour
-	RSAKeySizeDefault          = 2048
+	TemplateRegistrationVerification = "REGISTRATION_VERIFICATION"
+	TemplateEmailChangeVerification  = "EMAIL_CHANGE_VERIFICATION"
+	TemplatePasswordReset            = "PASSWORD_RESET"
+	TemplateEmailChanged             = "EMAIL_CHANGED"
+	TemplatePasswordChanged          = "PASSWORD_CHANGED"
+	TemplateAccountLocked            = "ACCOUNT_LOCKED"
+	TemplateAccountUnlocked          = "ACCOUNT_UNLOCKED"
 )
 
-const (
-	RefreshTokenRetention = 7 * 24 * time.Hour
-	AuditLogRetention     = 180 * 24 * time.Hour
-	AutoUnlockInterval    = 5 * time.Minute
-)
+// HardDeleteRetentionDays is fixed by AUTH-BR-007 and enforced by a CHECK
+// constraint in the schema, so it is not configurable.
+const HardDeleteRetentionDays = 90
 
-const (
-	OTPLength       = 6
-	OTPTTL          = 5 * time.Minute
-	OTPResendMinGap = 60 * time.Second
-)
+// OtpLength is fixed by the OpenAPI `Otp` schema (six digits).
+const OtpLength = 6
 
-const (
-	ResetTokenLength = 32
-	ResetTokenTTL    = 15 * time.Minute
-)
+// ResetTokenBytes yields a 43-character base64url secret, matching the
+// `reset_token` minLength in the public contract.
+const ResetTokenBytes = 32
 
-const (
-	DefaultRateLimitPerMinute = 60
-	LoginRateLimitPerMinute   = 5
-	StrictRateLimitPerMinute  = 10
-)
-
-const (
-	StatusPendingVerification = "PENDING_VERIFICATION"
-	StatusActive              = "ACTIVE"
-	StatusLocked              = "LOCKED"
-	StatusBanned              = "BANNED"
-)
-
-const (
-	ActorTypeUser   = "USER"
-	ActorTypeAdmin  = "ADMIN"
-	ActorTypeSystem = "SYSTEM"
-	ActorTypeGuest  = "GUEST"
-)
-
-const (
-	SecurityLevelInfo     = "INFO"
-	SecurityLevelWarning  = "WARNING"
-	SecurityLevelCritical = "CRITICAL"
-)
-
-const (
-	LogCategoryUser   = "USER"
-	LogCategorySystem = "SYSTEM"
-)
+// RefreshTokenBytes is the entropy of an opaque refresh token.
+const RefreshTokenBytes = 32

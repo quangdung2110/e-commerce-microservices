@@ -1,4 +1,7 @@
-version: '3.8'
+# Local development stack for Auth Service.
+#
+# The public API is published on 8080. The internal delivery API on 8081 is
+# reachable only inside the compose network, which is why it is not published.
 
 services:
   auth-service:
@@ -8,15 +11,22 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DB_PASSWORD=postgres
-      - REDIS_PASSWORD=redis
+      AUTH_APP_ENV: development
+      AUTH_DATABASE_HOST: postgres
+      AUTH_REDIS_HOST: redis
+      AUTH_KAFKA_BROKERS: kafka:9092
+      AUTH_REFRESH_COOKIE_SECURE: "false"
+      DB_PASSWORD: postgres
+      REDIS_PASSWORD: ""
+      # Development-only key. Generate a real one with: openssl rand -base64 32
+      AUTH_KEYS_MASTER_KEY: "ZGV2ZWxvcG1lbnQtb25seS0zMi1ieXRlLW1hc3RlciE="
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -29,10 +39,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: auth_db
+      TZ: UTC
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # The initial schema is applied on first start of an empty volume.
+      - ./migrations/0001_initial_auth_schema.up.sql:/docker-entrypoint-initdb.d/0001_initial_auth_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -43,13 +56,13 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --requirepass redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -57,14 +70,16 @@ services:
       - auth-network
 
   kafka:
-    image: bitnami/kafka:latest
+    image: bitnami/kafka:3.7
     environment:
       KAFKA_CFG_NODE_ID: 0
       KAFKA_CFG_PROCESS_ROLES: controller,broker
       KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
       - "9092:9092"
     volumes:

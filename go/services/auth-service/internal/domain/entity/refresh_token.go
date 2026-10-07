@@ -2,74 +2,118 @@ package entity
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
+// RefreshToken is one opaque credential inside a session family. Only the
+// SHA-256 digest is persisted; the plaintext exists only in the cookie.
+//
+// FamilyID is the stable session identifier exposed as `session_id`; a rotation
+// creates a new row in the same family (ADR-002).
 type RefreshToken struct {
-	ID         string
-	UserID     string
-	TokenHash  string
-	FamilyID   string
-	ReplacedBy *string
-	DeviceID   string
-	DeviceInfo string
+	ID                uuid.UUID
+	AccountID         uuid.UUID
+	FamilyID          uuid.UUID
+	TokenHash         []byte
+	DeviceID          *uuid.UUID
+	DeviceName        string
+	UserAgent         string
+	IPAddress         string
+	ExpiresAt         time.Time
+	AbsoluteExpiresAt time.Time
+	RevokedAt         *time.Time
+	ReplacedBy        *uuid.UUID
+	LastUsedAt        *time.Time
+	CreatedAt         time.Time
+}
+
+// SessionContext carries the client attributes recorded with a session.
+type SessionContext struct {
+	DeviceName string
+	UserAgent  string
 	IPAddress  string
-	ExpiresAt  time.Time
-	RevokedAt  *time.Time
-	CreatedAt  time.Time
 }
 
-func NewRefreshToken(id, userID, tokenHash, deviceID, deviceInfo, ipAddress string, ttl time.Duration) *RefreshToken {
+// NewSession starts a new session family for an account.
+func NewSession(accountID uuid.UUID, tokenHash []byte, sliding, absolute time.Duration, ctx SessionContext, now time.Time) *RefreshToken {
+	now = now.UTC()
+	absoluteExpiry := now.Add(absolute)
+	expiry := now.Add(sliding)
+	if expiry.After(absoluteExpiry) {
+		expiry = absoluteExpiry
+	}
 	return &RefreshToken{
-		ID:         id,
-		UserID:     userID,
-		TokenHash:  tokenHash,
-		FamilyID:   generateFamilyID(),
-		ReplacedBy: nil,
-		DeviceID:   deviceID,
-		DeviceInfo: deviceInfo,
-		IPAddress:  ipAddress,
-		ExpiresAt:  time.Now().Add(ttl),
-		RevokedAt:  nil,
-		CreatedAt:  time.Now(),
+		ID:                uuid.New(),
+		AccountID:         accountID,
+		FamilyID:          uuid.New(),
+		TokenHash:         tokenHash,
+		DeviceName:        ctx.DeviceName,
+		UserAgent:         ctx.UserAgent,
+		IPAddress:         ctx.IPAddress,
+		ExpiresAt:         expiry,
+		AbsoluteExpiresAt: absoluteExpiry,
+		CreatedAt:         now,
 	}
 }
 
-func (t *RefreshToken) IsExpired() bool {
-	return time.Now().After(t.ExpiresAt)
-}
-
-func (t *RefreshToken) IsActive() bool {
-	return t.RevokedAt == nil && !t.IsExpired()
-}
-
-func (t *RefreshToken) IsRevoked() bool {
-	return t.RevokedAt != nil
-}
-
-func (t *RefreshToken) Revoke() {
-	now := time.Now()
-	t.RevokedAt = &now
-}
-
-func (t *RefreshToken) WithinGracePeriod() bool {
-	if t.RevokedAt == nil {
-		return false
+// Rotate builds the successor of this token inside the same family. The sliding
+// expiry is extended but never beyond the absolute expiry of the session.
+func (t *RefreshToken) Rotate(tokenHash []byte, sliding time.Duration, ctx SessionContext, now time.Time) *RefreshToken {
+	now = now.UTC()
+	expiry := now.Add(sliding)
+	if expiry.After(t.AbsoluteExpiresAt) {
+		expiry = t.AbsoluteExpiresAt
 	}
-	gracePeriod := 10 * time.Second
-	return time.Since(*t.RevokedAt) <= gracePeriod
-}
-
-func (t *RefreshToken) GracePeriodExpiresAt() time.Time {
-	if t.RevokedAt == nil {
-		return time.Time{}
+	deviceName := ctx.DeviceName
+	if deviceName == "" {
+		deviceName = t.DeviceName
 	}
-	return t.RevokedAt.Add(10 * time.Second)
+	userAgent := ctx.UserAgent
+	if userAgent == "" {
+		userAgent = t.UserAgent
+	}
+	ipAddress := ctx.IPAddress
+	if ipAddress == "" {
+		ipAddress = t.IPAddress
+	}
+	return &RefreshToken{
+		ID:                uuid.New(),
+		AccountID:         t.AccountID,
+		FamilyID:          t.FamilyID,
+		TokenHash:         tokenHash,
+		DeviceID:          t.DeviceID,
+		DeviceName:        deviceName,
+		UserAgent:         userAgent,
+		IPAddress:         ipAddress,
+		ExpiresAt:         expiry,
+		AbsoluteExpiresAt: t.AbsoluteExpiresAt,
+		CreatedAt:         now,
+	}
 }
 
-func (t *RefreshToken) MarkReplaced(newTokenID string) {
-	t.ReplacedBy = &newTokenID
+// IsRevoked reports whether the token has already been consumed or revoked.
+func (t *RefreshToken) IsRevoked() bool { return t.RevokedAt != nil }
+
+// IsExpired reports whether either expiry has passed.
+func (t *RefreshToken) IsExpired(now time.Time) bool {
+	now = now.UTC()
+	return !now.Before(t.ExpiresAt) || !now.Before(t.AbsoluteExpiresAt)
 }
 
-func generateFamilyID() string {
-	return time.Now().Format("20060102150405") + "-" + randomString(8)
+// IsUsable reports whether the token may still be exchanged (AUTH-BR-002).
+// There is no grace period: a revoked or expired token is terminal.
+func (t *RefreshToken) IsUsable(now time.Time) bool {
+	return !t.IsRevoked() && !t.IsExpired(now)
+}
+
+// Session is the read model returned by the session listing. It is derived from
+// the newest active token of a family and never exposes a token or its hash.
+type Session struct {
+	ID         uuid.UUID
+	DeviceName string
+	IPAddress  string
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	ExpiresAt  time.Time
 }

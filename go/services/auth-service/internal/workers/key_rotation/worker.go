@@ -1,148 +1,45 @@
+// Package keyrotation replaces the ACTIVE signing key once it reaches the
+// configured age (WF-AUTH-008).
 package keyrotation
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
 	"github.com/ecommerce/auth-service/internal/domain/service"
-	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
-	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
 )
 
-type KeyRotationWorker struct {
-	keyService  *service.KeyService
-	jwksService *service.JWKSService
-	redisClient *redis.Client
-	pubsub      *pubsub.Publisher
-	config      config.KeysConfig
-	logger      *zap.Logger
-	stopCh      chan struct{}
-	stopWg      sync.WaitGroup
+// Worker rotates the signing key.
+type Worker struct {
+	keys *service.KeyLifecycleService
+	cfg  config.WorkerConfig
 }
 
-func NewKeyRotationWorker(
-	keyService *service.KeyService,
-	jwksService *service.JWKSService,
-	redisClient *redis.Client,
-	pubsubPublisher *pubsub.Publisher,
-	cfg config.KeysConfig,
-	logger *zap.Logger,
-) *KeyRotationWorker {
-	return &KeyRotationWorker{
-		keyService:  keyService,
-		jwksService: jwksService,
-		redisClient: redisClient,
-		pubsub:      pubsubPublisher,
-		config:      cfg,
-		logger:      logger.With(zap.String("worker", "KeyRotation")),
-		stopCh:      make(chan struct{}),
-	}
+// New wires the rotation worker.
+func New(keys *service.KeyLifecycleService, cfg config.WorkerConfig) *Worker {
+	return &Worker{keys: keys, cfg: cfg}
 }
 
-func (w *KeyRotationWorker) Start(ctx context.Context) error {
-	w.logger.Info("Starting key rotation worker",
-		zap.Duration("rotation_interval", w.config.RotationInterval),
-	)
+// Name identifies the worker and its lock.
+func (w *Worker) Name() string { return "key-rotation" }
 
-	if err := w.keyService.EnsureActiveKey(ctx); err != nil {
-		w.logger.Error("Failed to ensure active key on startup", zap.Error(err))
+// Interval is how often rotation is considered; zero disables it.
+func (w *Worker) Interval() time.Duration {
+	if !w.cfg.Enabled {
+		return 0
 	}
-
-	ticker := time.NewTicker(w.config.RotationInterval)
-	w.stopWg.Add(1)
-
-	go func() {
-		defer w.stopWg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				w.logger.Info("Key rotation worker context cancelled")
-				ticker.Stop()
-				return
-			case <-w.stopCh:
-				w.logger.Info("Key rotation worker stopped")
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				if err := w.rotateKeys(ctx); err != nil {
-					w.logger.Error("Key rotation failed", zap.Error(err))
-				}
-			}
-		}
-	}()
-
-	return nil
+	return w.cfg.Interval
 }
 
-func (w *KeyRotationWorker) rotateKeys(ctx context.Context) error {
-	w.logger.Info("Starting key rotation")
+// Timeout bounds one pass.
+func (w *Worker) Timeout() time.Duration { return w.cfg.Timeout }
 
-	lockKey := "lock:key_rotation"
-	acquired, err := w.acquireLock(ctx, lockKey, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !acquired {
-		w.logger.Info("Another instance is already rotating keys, skipping")
-		return nil
-	}
-	defer w.releaseLock(ctx, lockKey)
-
-	newKey, err := w.keyService.CreateNewActiveKey(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create new key: %w", err)
-	}
-	w.logger.Info("New key created",
-		zap.String("kid", newKey.Kid),
-		zap.Time("created_at", newKey.CreatedAt),
-	)
-
-	w.jwksService.InvalidateCache()
-	w.logger.Info("JWKS cache invalidated")
-
-	if err := w.publishJWKSUpdate(ctx, newKey.Kid); err != nil {
-		w.logger.Warn("Failed to publish JWKS update", zap.Error(err))
-	}
-
-	w.logger.Info("Key rotation completed successfully")
-	return nil
-}
-
-func (w *KeyRotationWorker) acquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	result, err := w.redisClient.SetNX(ctx, key, "locked", ttl).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to set lock: %w", err)
-	}
-	return result, nil
-}
-
-func (w *KeyRotationWorker) releaseLock(ctx context.Context, key string) {
-	if err := w.redisClient.Del(ctx, key).Err(); err != nil {
-		w.logger.Warn("Failed to release lock", zap.Error(err))
-	}
-}
-
-func (w *KeyRotationWorker) publishJWKSUpdate(ctx context.Context, kid string) error {
-	if w.pubsub == nil {
-		w.logger.Warn("PubSub publisher not available, skipping JWKS update notification")
-		return nil
-	}
-
-	if err := w.pubsub.PublishJWKSUpdateWithKID(ctx, kid); err != nil {
-		return fmt.Errorf("failed to publish JWKS update: %w", err)
-	}
-
-	return nil
-}
-
-func (w *KeyRotationWorker) Stop() {
-	w.logger.Info("Stopping key rotation worker")
-	close(w.stopCh)
-	w.stopWg.Wait()
-	w.logger.Info("Key rotation worker stopped")
+// Run rotates the key when it is due. The old key moves to PHASE_OUT in the same
+// transaction, so the service is never without exactly one ACTIVE key.
+func (w *Worker) Run(ctx context.Context) ([]zap.Field, error) {
+	rotated, err := w.keys.RotateIfDue(ctx)
+	return []zap.Field{zap.Bool("rotated", rotated)}, err
 }
