@@ -37,3 +37,9 @@ Thumbs.db
 .agents
 .agents/
 .agents/
+
+# Generated contract code is a build artifact. Do not edit or commit it.
+contracts/generated/
+.tools/
+**/node_modules/
+.pnpm-store/
