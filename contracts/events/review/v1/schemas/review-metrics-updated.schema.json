@@ -9,7 +9,11 @@
       "properties": {
         "type": { "const": "com.ecommerce.review.metrics-updated.v1" },
         "dataschema": { "const": "/contracts/events/review/v1/schemas/review-metrics-updated.schema.json" },
-        "subject": { "type": "string", "pattern": "^product-rating-aggregates/[0-9A-Za-z-]{1,64}$" },
+        "subject": {
+          "type": "string",
+          "pattern": "^product-rating-aggregates/[A-Za-z0-9_:.-]{1,64}$",
+          "description": "product_id is opaque and owned by Catalog; the character class matches what an identifier may contain, not a format Review may assume."
+        },
         "sequence": { "type": "integer", "minimum": 1, "description": "Must equal data.review_revision." },
         "data": {
           "type": "object",

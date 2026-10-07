@@ -263,6 +263,8 @@ paths:
       responses:
         '204':
           description: SKU và media liên quan đã bị hard delete; SKU_DELETED tombstone đã commit.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/SkuNotFound' }
@@ -344,7 +346,10 @@ paths:
         - $ref: '#/components/parameters/IfMatchProduct'
         - $ref: '#/components/parameters/RequestId'
       responses:
-        '204': { description: Media đã bị xóa. }
+        '204':
+          description: Media đã bị xóa.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/MediaNotFound' }
@@ -1666,8 +1671,10 @@ components:
     DomainConflict:
       description: >-
         Conflict nghiệp vụ, gồm CATEGORY_NOT_LEAF, CATEGORY_NOT_EMPTY,
-        SKU_CODE_ALREADY_EXISTS, PRODUCT_NOT_SUBMITTABLE,
-        SKU_LAST_DELETE_FORBIDDEN, INVALID_STATE_TRANSITION và ATTRIBUTE_IN_USE.
+        CATEGORY_CYCLE_DETECTED, SKU_CODE_ALREADY_EXISTS, SLUG_ALREADY_EXISTS,
+        ATTRIBUTE_CODE_ALREADY_EXISTS, ATTRIBUTE_OPTION_CODE_ALREADY_EXISTS,
+        PRODUCT_NOT_SUBMITTABLE, SKU_LAST_DELETE_FORBIDDEN,
+        INVALID_STATE_TRANSITION, ATTRIBUTE_IN_USE và CATALOG_CONSTRAINT_VIOLATION.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ProductRevisionMismatch:
       description: If-Match không bằng catalog_revision hiện tại; code PRODUCT_REVISION_MISMATCH.

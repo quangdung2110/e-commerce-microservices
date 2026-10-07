@@ -27,7 +27,11 @@ channels:
     x-publication-reliability: >-
       User publish trực tiếp sau PostgreSQL commit, retry tối đa 3 lần với cùng
       CloudEvent id. Retry cạn có thể làm mất event và phải được metric, alert,
-      reconciliation vận hành xử lý; không dùng outbox.
+      reconciliation hằng ngày của current snapshot xử lý; không dùng outbox.
+    x-reconciliation: >-
+      Hằng ngày ngoài giờ, User quét profile/preferences active và phát current
+      snapshot corrective với CloudEvent id mới, giữ nguyên data.updated_at.
+      Không republish USER_DELETED và không tự động redrive DLQ.
     x-max-message-bytes: 65536
     x-retention: 7d
     x-consumer-dlq-topic: t.user.events.dlq

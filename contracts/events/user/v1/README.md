@@ -27,7 +27,10 @@ không được publish.
 
 User publish trực tiếp sau PostgreSQL commit với retry có giới hạn và không dùng
 outbox. Vì vậy, khi retry cạn, event có thể mất và reconciliation vận hành là bắt
-buộc; contract không tuyên bố exactly-once hoặc durable delivery.
+bắt buộc; contract không tuyên bố exactly-once hoặc durable delivery. Một job hằng
+ngày ngoài giờ quét profile/preferences active và phát corrective current snapshot
+với CloudEvent `id` mới, giữ nguyên `updated_at`; không republish `USER_DELETED`
+và không tự động redrive DLQ.
 
 Thêm field optional là tương thích. Bất kỳ thay đổi breaking nào với payload,
 Kafka key, ordering scope hoặc event type phải tạo major version mới.

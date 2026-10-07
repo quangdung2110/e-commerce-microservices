@@ -8,7 +8,7 @@ info:
     hoặc secret nên bắt buộc mTLS/service identity và Cache-Control: no-store.
 x-adoption-status: proposed
 servers:
-  - url: http://auth-service:8080
+  - url: http://auth-service:8081
     description: Internal cluster endpoint only
 tags:
   - name: Notification delivery

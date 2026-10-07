@@ -1,0 +1,300 @@
+openapi: 3.1.0
+info:
+  title: Payment Operations API
+  version: 1.0.0
+  license: { name: MIT, identifier: MIT }
+  description: >-
+    Internal-only operations contract. It is never exposed by the public Gateway.
+    Mutations require workload identity, an attributable actor, correlation and an
+    idempotency key. Sensitive financial mutations (review resolution, replay,
+    reconciliation execution and freeze changes) are subject to RBAC and
+    maker-checker policy.
+x-adoption-status: implemented
+servers:
+  - url: https://payment-service.internal
+security: [{ workloadIdentity: [] }]
+paths:
+  /internal/v1/payment/review-cases:
+    get:
+      summary: List payment review cases
+      operationId: listPaymentReviewCases
+      parameters:
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/CorrelationId'
+        - { name: status, in: query, schema: { type: string, enum: [OPEN, IN_PROGRESS, RESOLVED, ESCALATED] } }
+      responses:
+        '200':
+          description: Review cases visible to the caller.
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ReviewCase' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/review-cases/{caseId}/claim:
+    post:
+      summary: Claim a payment review case
+      operationId: claimPaymentReviewCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { description: Claimed case, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewCase' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/review-cases/{caseId}/resolve:
+    post:
+      summary: Resolve or escalate a payment review case
+      operationId: resolvePaymentReviewCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Approver'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ResolveReviewCaseRequest' } } }
+      responses:
+        '200': { description: Resolved or escalated case, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewCase' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/review-cases/{caseId}/corrections:
+    post:
+      summary: Apply an approved FSM correction
+      operationId: correctPaymentReviewCase
+      description: >-
+        Applies an approved correction by a named FSM trigger. The API never accepts
+        a status value to write directly. Amount/currency are provider evidence and
+        must exactly match the durable aggregate; amount changes require reversal and
+        a new journal, never an UPDATE of an immutable journal.
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Approver'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualCorrectionRequest' }
+      responses:
+        '200': { description: Correction atomically committed through the aggregate FSM. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/webhooks/{stripeEventId}/replay:
+    post:
+      summary: Replay a retained verified Stripe webhook
+      operationId: replayVerifiedPaymentWebhook
+      description: >-
+        Moves a retained, previously verified inbox row to RETRY_WAIT. It never
+        re-verifies signature recency and never accepts a new raw payload.
+      parameters:
+        - $ref: '#/components/parameters/StripeEventId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Approver'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [cause_ref]
+              properties: { cause_ref: { type: string, minLength: 1, maxLength: 255 } }
+      responses:
+        '202': { description: Replay scheduled through the durable inbox. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '410': { description: Encrypted payload has passed retention and was crypto-shredded. }
+        '422': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/reconciliation-runs:
+    post:
+      summary: Start a payment reconciliation run
+      operationId: startPaymentReconciliation
+      parameters:
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Approver'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lane, window_from, window_to]
+              properties:
+                lane: { type: string, enum: [OBJECT_STATE, BALANCE_LEDGER] }
+                window_from: { type: string, format: date-time }
+                window_to: { type: string, format: date-time }
+      responses:
+        '202': { description: Run accepted. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/reconciliation/freeze:
+    put:
+      summary: Change the reconciliation correction freeze
+      operationId: setPaymentReconciliationFreeze
+      parameters:
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Approver'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [frozen, cause_ref]
+              properties:
+                frozen: { type: boolean }
+                cause_ref: { type: string, minLength: 1, maxLength: 255 }
+      responses:
+        '200': { description: Freeze state stored and audited. }
+        '403': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/ledger/journals/{journalId}:
+    get:
+      summary: Read an immutable financial journal
+      operationId: getPaymentFinancialJournal
+      parameters:
+        - $ref: '#/components/parameters/JournalId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200': { description: Immutable balanced journal, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialJournal' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /internal/v1/payment/disputes/{disputeTransactionId}:
+    get:
+      summary: Read a payment dispute
+      operationId: getPaymentDispute
+      parameters:
+        - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Current dispute and funds state.
+          content: { application/json: { schema: { $ref: '#/components/schemas/PaymentDispute' } } }
+        '404': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    workloadIdentity: { type: mutualTLS }
+  parameters:
+    Actor: { name: X-Actor, in: header, required: true, schema: { type: string, minLength: 3, maxLength: 128 } }
+    Approver: { name: X-Approver, in: header, required: true, description: Must differ from X-Actor., schema: { type: string, minLength: 3, maxLength: 128 } }
+    CorrelationId: { name: X-Correlation-Id, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 16, maxLength: 255 } }
+    CaseId: { name: caseId, in: path, required: true, schema: { type: string, pattern: '^PRC_[0-9A-HJKMNP-TV-Z]{26}$' } }
+    StripeEventId: { name: stripeEventId, in: path, required: true, schema: { type: string, pattern: '^evt_[A-Za-z0-9_]+$' } }
+    JournalId: { name: journalId, in: path, required: true, schema: { type: string, pattern: '^FJN_[0-9A-HJKMNP-TV-Z]{26}$' } }
+    DisputeId: { name: disputeTransactionId, in: path, required: true, schema: { type: string, pattern: '^DSP_[0-9A-HJKMNP-TV-Z]{26}$' } }
+  schemas:
+    ReviewCase:
+      type: object
+      additionalProperties: false
+      required: [case_id, payment_transaction_id, reason_code, status, opened_at]
+      properties:
+        case_id: { type: string }
+        payment_transaction_id: { type: string }
+        refund_transaction_id: { type: [string, 'null'] }
+        reason_code: { type: string }
+        status: { type: string, enum: [OPEN, IN_PROGRESS, RESOLVED, ESCALATED] }
+        assigned_to: { type: [string, 'null'] }
+        opened_at: { type: string, format: date-time }
+        resolution_type: { type: [string, 'null'] }
+        resolved_by: { type: [string, 'null'] }
+        resolved_at: { type: [string, 'null'], format: date-time }
+    ResolveReviewCaseRequest:
+      type: object
+      additionalProperties: false
+      required: [resolution_type, resolution_note, cause_ref]
+      properties:
+        resolution_type: { type: string, enum: [CORRECTION_APPLIED, NO_ACTION_NEEDED, MANUAL_REFUND_OUTSIDE_SYSTEM, ESCALATED_TO_ORDER, ESCALATED_TO_ACCOUNTING] }
+        resolution_note: { type: string, minLength: 1, maxLength: 2000 }
+        cause_ref: { type: string, minLength: 1, maxLength: 255 }
+    ManualCorrectionRequest:
+      type: object
+      additionalProperties: false
+      required: [aggregate_type, aggregate_id, trigger, amount_minor, currency, provider_status, provider_response_json]
+      properties:
+        aggregate_type: { type: string, enum: [PAYMENT, REFUND, DISPUTE] }
+        aggregate_id: { type: string, minLength: 1, maxLength: 64 }
+        trigger:
+          type: string
+          description: A PaymentTrigger, RefundTrigger or DisputeTrigger enum value; the current FSM must accept it.
+        amount_minor: { type: integer, format: int64, minimum: 1 }
+        currency: { type: string, const: VND }
+        provider_status: { type: string, minLength: 1, maxLength: 64 }
+        provider_object_id: { type: [string, 'null'], maxLength: 120 }
+        provider_balance_transaction_id: { type: [string, 'null'], maxLength: 120 }
+        provider_response_json:
+          type: string
+          minLength: 2
+          maxLength: 10000
+          description: Sanitized provider evidence encoded as a JSON object string; secrets and PII are forbidden.
+    FinancialJournal:
+      type: object
+      additionalProperties: false
+      required: [journal_id, journal_type, amount, occurred_at, lines]
+      properties:
+        journal_id: { type: string }
+        journal_type: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        occurred_at: { type: string, format: date-time }
+        lines:
+          type: array
+          minItems: 2
+          items:
+            type: object
+            additionalProperties: false
+            required: [line_no, account_code, direction, amount]
+            properties:
+              line_no: { type: integer, minimum: 1 }
+              account_code: { type: string }
+              direction: { type: string, enum: [DEBIT, CREDIT] }
+              amount: { $ref: '#/components/schemas/Money' }
+    PaymentDispute:
+      type: object
+      additionalProperties: false
+      required: [dispute_transaction_id, payment_transaction_id, order_id,
+                 provider_dispute_id, amount, reason_code, status, funds_state,
+                 opened_at]
+      properties:
+        dispute_transaction_id: { type: string }
+        payment_transaction_id: { type: string }
+        order_id: { type: string, pattern: '^[1-9][0-9]*$' }
+        provider_dispute_id: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        reason_code: { type: string }
+        status: { type: string, enum: [OPEN, UNDER_REVIEW, WON, LOST, WARNING_CLOSED] }
+        funds_state: { type: string, enum: [UNCHANGED, WITHDRAWN, REINSTATED] }
+        evidence_due_at: { type: [string, 'null'], format: date-time }
+        opened_at: { type: string, format: date-time }
+        closed_at: { type: [string, 'null'], format: date-time }
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 1 }
+        currency: { type: string, const: VND }
+    Problem:
+      type: object
+      required: [code, retryable, correlation_id]
+      properties:
+        code: { type: string }
+        retryable: { type: boolean }
+        correlation_id: { type: string }
+  responses:
+    Problem:
+      description: Operation failed.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

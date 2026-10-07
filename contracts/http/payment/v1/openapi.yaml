@@ -14,7 +14,7 @@ info:
     /v1/payments/webhook/stripe without changing the raw body. Actuator, dependency
     health, administrative, DLQ, review-case, and correction operations are outside
     this contract.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: https://payment-service.internal
 security: [{ workloadIdentity: [] }]
@@ -170,13 +170,15 @@ paths:
   /v1/payments/webhook/stripe:
     post:
       operationId: ingestStripeWebhook
-      summary: Durably enqueue one raw Stripe webhook delivery
+      summary: Authenticate and durably accept one Stripe webhook delivery
       description: >-
         Public callers use /api/payments/webhook/stripe at the Gateway. The Gateway
         rewrites only the path and preserves the exact request-body bytes and
         Stripe-Signature header. This endpoint does not authenticate with the Order
-        workload identity and does not deserialize, verify, or apply the event
-        synchronously.
+        workload identity. Payment reads at most 256 KiB of exact bytes and verifies
+        Stripe-Signature with a 300-second tolerance before persisting the encrypted
+        inbox row or publishing the verified internal message. Business FSM handling
+        remains asynchronous.
       security: []
       parameters:
         - $ref: '#/components/parameters/StripeSignature'
@@ -187,15 +189,15 @@ paths:
             schema: {}
       responses:
         '200':
-          description: Kafka acknowledged the raw delivery; Stripe must not retry it.
+          description: Verified delivery is durable and Kafka acknowledged, or it was already terminal.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
         '400':
-          description: The HTTP envelope has no body or no Stripe-Signature header; nothing was enqueued.
+          description: Missing, malformed, oversized, invalid-signature, or stale delivery; nothing was persisted or published.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
         '503':
-          description: The raw delivery could not be durably enqueued; Stripe should retry it.
+          description: Inbox, encryption, or Kafka unavailable; Stripe should retry with a fresh delivery.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
 components:
@@ -258,8 +260,9 @@ components:
     OpaqueId: { type: string, minLength: 1, maxLength: 128 }
     OrderId:
       type: string
-      pattern: '^[1-9][0-9]{0,18}$'
-      description: Positive decimal order ID serialized as a string and stored as PostgreSQL BIGINT.
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
+      description: Canonical unpadded base-10 Order-owned BIGINT identifier; parsed value must not exceed signed BIGINT max.
     PaymentTransactionId:
       type: string
       maxLength: 64
@@ -434,7 +437,7 @@ components:
     PaymentStatus:
       type: object
       additionalProperties: false
-      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version, requires_manual_review, succeeded_at, terminal_at, refund]
+      required: [transaction_id, order_id, payment_attempt_number, amount, status, financial_state_version, requires_manual_review, succeeded_at, terminal_at, refund, disputes]
       properties:
         transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
         order_id: { $ref: '#/components/schemas/OrderId' }
@@ -450,6 +453,10 @@ components:
           oneOf:
             - { type: 'null' }
             - { $ref: '#/components/schemas/RefundStatus' }
+        disputes:
+          type: array
+          description: Provider disputes known for this captured payment, ordered by opened_at.
+          items: { $ref: '#/components/schemas/DisputeStatus' }
     RefundStatus:
       type: object
       additionalProperties: false
@@ -460,6 +467,23 @@ components:
         order_id: { $ref: '#/components/schemas/OrderId' }
         amount: { $ref: '#/components/schemas/VndMoney' }
         status: { enum: [PENDING, PROCESSING, SUCCESS, FAILED, REVERSED] }
+    DisputeStatus:
+      type: object
+      additionalProperties: false
+      required: [dispute_transaction_id, payment_transaction_id, order_id, amount, status, funds_state, reason_code, evidence_due_at, opened_at, closed_at]
+      properties:
+        dispute_transaction_id:
+          type: string
+          pattern: '^DSP_[0-9A-HJKMNP-TV-Z]{26}$'
+        payment_transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        status: { enum: [OPEN, UNDER_REVIEW, WON, LOST, WARNING_CLOSED] }
+        funds_state: { enum: [UNCHANGED, WITHDRAWN, REINSTATED] }
+        reason_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+        evidence_due_at: { type: [string, 'null'], format: date-time }
+        opened_at: { type: string, format: date-time }
+        closed_at: { type: [string, 'null'], format: date-time }
     Problem:
       type: object
       additionalProperties: false
@@ -479,6 +503,7 @@ components:
             - ATTEMPT_ALREADY_EXISTS
             - IDEMPOTENCY_KEY_REUSED
             - PROVIDER_OUTCOME_UNKNOWN
+            - PROVIDER_REQUEST_REJECTED
             - PROVIDER_UNAVAILABLE
             - DEPENDENCY_UNAVAILABLE
         retryable: { type: boolean }

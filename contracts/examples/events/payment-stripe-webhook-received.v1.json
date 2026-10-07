@@ -9,7 +9,14 @@
   "dataschema": "/contracts/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json",
   "data": {
     "provider": "STRIPE",
-    "candidate_event_id": "evt_test",
+    "stripe_event_id": "evt_test",
+    "event_type": "payment_intent.succeeded",
+    "event_created_at": "2026-09-20T08:02:04Z",
+    "api_version": "2026-08-26.dahlia",
+    "livemode": false,
+    "received_at": "2026-09-20T08:02:05Z",
+    "verified_at": "2026-09-20T08:02:05Z",
+    "signing_secret_id": "stripe-webhook-current",
     "raw_body_base64": "eyJpZCI6ImV2dF90ZXN0In0=",
     "raw_body_sha256": "4bb7406fc70ad66cef957cacf20a81aea8ddff2a5dfe12721f016c0baaa1a225",
     "stripe_signature": "t=1789891325,v1=example-signature"

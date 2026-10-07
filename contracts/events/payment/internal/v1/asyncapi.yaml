@@ -1,12 +1,13 @@
-asyncapi: 3.0.0
+asyncapi: 3.1.0
 info:
   title: Payment Internal Stripe Webhook Buffer
   version: 1.0.0
   description: >-
     Internal contract between the Payment webhook ingress and Payment webhook
-    processor. The message preserves the exact Stripe request body as base64;
-    candidate identifiers remain untrusted until the worker verifies the signature.
-x-adoption-status: proposed
+    processor. Ingress verifies Stripe HMAC and recency before producing; the
+    message preserves the exact verified request body as base64 for deterministic
+    parsing and forensic evidence.
+x-adoption-status: implemented
 x-contract-scope: payment-internal-webhook-buffer
 defaultContentType: application/cloudevents+json
 servers:
@@ -17,20 +18,21 @@ servers:
 channels:
   rawStripeWebhooks:
     address: t.payment.webhooks.raw
-    description: Raw Stripe deliveries accepted by the HTTP ingress after Kafka acknowledgement.
+    description: Verified Stripe deliveries accepted by the HTTP ingress after Kafka acknowledgement.
     x-owner: payment-service
     x-visibility: internal
-    x-message-key: STRIPE:<candidate_event_id> or RAW:<raw_body_sha256>
-    x-ordering-scope: ingress key only; payment correctness never relies on partition order
+    x-message-key: STRIPE:<stripe_event_id>
+    x-ordering-scope: Stripe delivery identity only; payment correctness never relies on partition order
     x-delivery-semantic: at-least-once
-    x-deduplication-key: verified Stripe event id in webhook_logs, not candidate_event_id
-    x-max-payload-bytes: 262144
+    x-deduplication-key: verified Stripe event id in webhook_logs
+    x-max-payload-bytes: 393216
     x-retention: 7d
     x-retry-policy:
-      strategy: kafka-redelivery-before-db-commit-then-webhook-log-auto-retry
+      strategy: kafka-redelivery-before-inbox-commit-then-database-inbox-lease-retry
       durable-retry-store: payment.webhook_logs
       exhausted-financial-event-action: open-WEBHOOK_RETRY_EXHAUSTED-review-case
       kafka-dlq: none
+      terminal-inbox-state: DEAD
     x-data-classification: CONFIDENTIAL
     bindings:
       kafka:
@@ -39,7 +41,7 @@ channels:
         topicConfiguration:
           cleanup.policy: [delete]
           retention.ms: 604800000
-          max.message.bytes: 262144
+          max.message.bytes: 393216
         bindingVersion: '0.5.0'
     messages:
       stripeWebhookReceived: { $ref: '#/components/messages/stripeWebhookReceived' }
@@ -47,13 +49,13 @@ operations:
   bufferStripeWebhook:
     action: send
     title: Buffer a Stripe webhook
-    summary: payment-api sends the raw delivery only after Kafka acknowledges it.
+    summary: payment-api verifies HMAC/recency and sends the exact delivery; HTTP 200 follows Kafka acknowledgement.
     channel: { $ref: '#/channels/rawStripeWebhooks' }
     messages: [{ $ref: '#/channels/rawStripeWebhooks/messages/stripeWebhookReceived' }]
   processStripeWebhook:
     action: receive
     title: Verify and process a Stripe webhook
-    summary: payment-worker verifies, parses, deduplicates and applies the matching FSM transition.
+    summary: payment-worker claims the verified delivery inbox, parses, orders, deduplicates and applies the matching transition.
     channel: { $ref: '#/channels/rawStripeWebhooks' }
     bindings:
       kafka:
@@ -65,7 +67,7 @@ components:
     stripeWebhookReceived:
       name: stripeWebhookReceivedV1
       title: STRIPE_WEBHOOK_RECEIVED
-      summary: Untrusted raw Stripe delivery awaiting signature verification.
+      summary: Stripe delivery whose signature and 300-second recency window were verified at ingress.
       contentType: application/cloudevents+json
       x-event-type: com.ecommerce.payment.stripe-webhook.received.v1
       x-producer-component: payment-api
@@ -75,6 +77,6 @@ components:
         kafka:
           key:
             type: string
-            pattern: '^(STRIPE:evt_[A-Za-z0-9]+|RAW:[a-f0-9]{64})$'
+            pattern: '^STRIPE:evt_[A-Za-z0-9_]+$'
           bindingVersion: '0.5.0'
       payload: { $ref: './schemas/stripe-webhook-received.schema.json' }

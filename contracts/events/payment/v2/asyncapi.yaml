@@ -1,4 +1,4 @@
-asyncapi: 3.0.0
+asyncapi: 3.1.0
 info:
   title: Payment Service Financial Facts
   version: 2.0.0
@@ -7,7 +7,7 @@ info:
     a CloudEvents 1.0 structured JSON document. Delivery is at-least-once;
     consumers deduplicate by CloudEvents source plus id and guard ordering with
     data.financial_state_version scoped to one payment transaction.
-x-adoption-status: proposed
+x-adoption-status: implemented
 x-contract-scope: payment-financial-facts
 defaultContentType: application/cloudevents+json
 servers:

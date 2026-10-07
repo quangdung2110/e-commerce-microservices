@@ -548,7 +548,7 @@ components:
         session_id:
           type: string
           format: uuid
-          description: `family_id` ổn định của session, không phải refresh-token row ID.
+          description: '`family_id` ổn định của session, không phải refresh-token row ID.'
     Session:
       type: object
       additionalProperties: false
@@ -557,7 +557,7 @@ components:
         id:
           type: string
           format: uuid
-          description: `family_id` ổn định của session.
+          description: '`family_id` ổn định của session.'
         device_name: { type: string, maxLength: 200 }
         ip_address:
           type: string

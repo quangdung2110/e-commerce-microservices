@@ -5,6 +5,8 @@ info:
   description: >-
     Contract đích cho Cart Service Redis-only. Cart được xác định từ identity do
     API Gateway inject; client không gửi cart_id hoặc user_id.
+    Gateway local dùng authenticated@file (ForwardAuth gateway-auth), không inject
+    danh tính dev cố định. POST/DELETE không retry ở gateway.
 x-adoption-status: proposed
 servers:
   - url: http://localhost:8085

@@ -1,17 +1,19 @@
-# Payment internal Stripe webhook buffer
+# Payment internal verified Stripe webhook buffer
 
 This contract is internal to Payment Service. `payment-api` sends one structured
 CloudEvent to `t.payment.webhooks.raw`; `payment-worker` receives it in consumer
 group `payment-webhook-processor`.
 
-The HTTP body is base64 encoded so decoding reproduces the exact bytes required by
-Stripe signature verification. `candidate_event_id` and the subject are routing
-hints only. The verified Stripe event ID stored in `webhook_logs` is the sole
-business deduplication identity.
+`payment-api` verifies HMAC and the 300-second recency window before producing. An
+invalid or stale signature receives HTTP `400` and never enters this topic. The HTTP
+body remains base64 encoded so decoding reproduces the exact verified bytes for
+deterministic parsing and forensic evidence. `stripe_event_id` is canonical and is
+the sole business deduplication identity in `webhook_logs`.
 
 The message `x-example-file` points to
 `contracts/examples/events/payment-stripe-webhook-received.v1.json`; its digest is
 the SHA-256 of the decoded raw bytes, so the fixture also exercises byte fidelity.
 
-The topic contains confidential raw provider data and is not an integration
-contract for other services.
+The topic contains confidential verified provider data and is not an integration
+contract for other services. After an inbox row exists, retries claim that row
+directly with a lease; they do not publish the same delivery back to Kafka.

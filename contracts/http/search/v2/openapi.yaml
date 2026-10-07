@@ -1,12 +1,15 @@
 openapi: 3.1.0
 info:
   title: Search Service Storefront API
-  version: 2.0.0
+  version: 2.1.0
   description: >-
     Contract đích cho storefront search/browse và vận hành reindex. Search là
     Elasticsearch projection eventual-consistent, không phải nguồn catalog, giá
-    hay tồn kho để quyết định giao dịch. Một search hit là một SKU; facet và
+    hay tồn kho để quyết định giao dịch. Mỗi item là một Product đại diện bởi SKU giá bán thấp nhất thỏa bộ lọc; facet và
     category count đếm DISTINCT product_id.
+    Gateway local chỉ expose bốn endpoint storefront bằng GET tại /api/v2/search;
+    reindex-runs dùng router riêng xác thực JWT qua gateway-auth, role ADMIN do
+    Search kiểm tra. Không có route Search v1.
 x-adoption-status: proposed
 servers:
   - url: http://localhost:8081
@@ -21,12 +24,15 @@ paths:
     get:
       tags: [Storefront search]
       operationId: searchProducts
-      summary: Search và browse SKU catalog đang hiển thị
+      summary: Search và browse Product catalog đang hiển thị
       description: >-
-        Public read qua API Gateway. Kết quả là SKU projection, có thể cũ vài
+        Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài
         giây so với Product/Inventory. Không dùng response này để reserve, chốt
-        giá hoặc xác nhận tồn kho. Mỗi sort dùng sku_id asc làm tie-break;
-        cursor chỉ hợp lệ với đúng query/filter/sort đã sinh nó.
+        giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break;
+        cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó.
+        Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp,
+        newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp.
+        Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu.
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/SearchQuery'
@@ -41,7 +47,7 @@ paths:
         - $ref: '#/components/parameters/SearchSize'
       responses:
         '200':
-          description: Trang SKU theo search_after; total_skus là total chính xác khi response hoàn tất.
+          description: Trang Product duy nhất; total_products chính xác trong cùng snapshot.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SearchPage' }
@@ -240,8 +246,8 @@ components:
       name: cursor
       in: query
       required: false
-      description: Opaque cursor từ next_cursor; không tự sinh hoặc dùng lại với query khác.
-      schema: { type: string, minLength: 1, maxLength: 2048 }
+      description: Opaque signed cursor từ next_cursor; không tự sinh hoặc dùng lại với query khác. Cursor SKU cũ không còn hợp lệ.
+      schema: { type: string, minLength: 1, maxLength: 16384 }
     SearchSize:
       name: size
       in: query
@@ -279,24 +285,25 @@ components:
     SearchPage:
       type: object
       additionalProperties: false
-      required: [items, total_skus, next_cursor, facets]
+      required: [items, total_products, next_cursor, facets]
       properties:
         items:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/SearchProductItem' }
-        total_skus:
+        total_products:
           type: integer
           format: int64
           minimum: 0
-          description: Exact total number of matching SKU documents, not Product cards.
+          description: Exact number of distinct matching products in the PIT snapshot.
         next_cursor:
           type: [string, 'null']
           minLength: 1
-          maxLength: 2048
-          description: Null khi không còn SKU tiếp theo.
+          maxLength: 16384
+          description: Null khi không còn Product tiếp theo.
         facets: { $ref: '#/components/schemas/FacetSet' }
     SearchProductItem:
+      description: Một Product duy nhất; sku_id, giá, thumbnail và tồn kho thuộc SKU đại diện giá thấp nhất thỏa tất cả bộ lọc.
       type: object
       additionalProperties: false
       required:
