@@ -9,7 +9,7 @@ interactions:
     provider: product-service
     consumers: [cart-service, checkout-service]
     contract: grpc/ecommerce/product/v1/product_service.proto
-    status: proposed
+    status: implemented
     notes: Canonical Product price/catalog/category snapshot; never carries Inventory stock.
 
   - id: checkout-reads-cart-snapshot
@@ -17,7 +17,7 @@ interactions:
     provider: cart-service
     consumers: [checkout-service]
     contract: http/cart/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Minimal mTLS snapshot of product_id, sku_id and authoritative quantity; no direct Cart Redis access.
 
   - id: checkout-reads-user-address-snapshot
@@ -33,7 +33,7 @@ interactions:
     provider: checkout-service
     consumers: [api-gateway]
     contract: http/checkout/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Buyer Preview, token-scoped voucher options, Submit and token-owned durable submission recovery; all responses private/no-store; stable CheckoutProblem catalog.
 
   - id: storefront-queries-search

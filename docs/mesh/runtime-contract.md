@@ -100,7 +100,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-and-checkout-query-product-skus` |
 | `promotion-service` | `/api/v1/me/**`, `/api/v1/promotion-discovery`, `/api/v1/admin/**` | X | `edge/traefik` | gateway matrix |
 | `promotion-service` | `/internal/v1/promotion-discount-calculations` | POST | `ecommerce/checkout-service` | `checkout-calculates-promotions` |
-| `promotion-service` | `/internal/v1/promotion-voucher-options` | POST | `ecommerce/checkout-service` | `checkout-lists-voucher-options` (contract `proposed`) |
+| `promotion-service` | `/internal/v1/promotion-voucher-options` | POST | `ecommerce/checkout-service` | `checkout-lists-voucher-options` |
 | `promotion-service` | `/internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | POST | `ecommerce/order-service` | `order-commands-promotion-allocation` |
 | `promotion-service` | `/internal/v1/promotion-allocation/technical-cancellations` | POST | `ecommerce/promotion-legacy-migrator` | `legacy-migrator-technical-cancels-promotion-allocation` |
 | `inventory-service` | `/api/v1/admin/inventory/**` | X | `edge/traefik` | `warehouse-admin-operates-inventory` |

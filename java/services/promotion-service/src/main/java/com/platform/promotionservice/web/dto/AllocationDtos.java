@@ -19,7 +19,7 @@ public final class AllocationDtos {
     public record ReserveRequest(
             @NotBlank String orderId,
             @NotNull UUID userId,
-            @NotBlank @Size(max = 64) String userTier,
+            @Size(max = 64) String userTier,
             @NotBlank String promotionId,
             @NotNull MoneyDto expectedDiscount,
             @NotNull @Valid CheckoutDtos.CheckoutContext context) {

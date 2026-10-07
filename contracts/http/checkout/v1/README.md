@@ -1,8 +1,9 @@
 # Checkout HTTP v1
 
-Canonical buyer contract: [`openapi.yaml`](openapi.yaml). Adoption: `proposed`
-(no Checkout runtime yet; target runtime Java, see
+Canonical buyer contract: [`openapi.yaml`](openapi.yaml). Adoption: `implemented`
+(`java/services/checkout-service`, see
 [Checkout ADR-013](../../../../docs/checkout/decisions/ADR-013-java-spring-webflux-runtime.md)).
+Contract tests validate every response of the service against this document.
 
 | Method | Path | Purpose |
 |---|---|---|

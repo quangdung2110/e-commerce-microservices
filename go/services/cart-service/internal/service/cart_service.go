@@ -81,6 +81,19 @@ func (s *CartService) GetCart(ctx context.Context, identity domain.Identity) (do
 	return view, nil
 }
 
+// CheckoutSnapshot returns the identifiers and quantities Checkout needs (contracts/http/cart/v1,
+// getCheckoutCartSnapshot): the same Redis source of truth as GetCart, ordered by SKU, and nothing
+// else. It never calls Product, never extends a TTL, never touches the scheduler ZSET and emits no
+// event, so Checkout reading the cart cannot postpone abandonment. A Redis miss is an empty cart.
+func (s *CartService) CheckoutSnapshot(ctx context.Context, identity domain.Identity) ([]domain.Item, error) {
+	items, err := s.store.LoadItems(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].SkuID < items[j].SkuID })
+	return items, nil
+}
+
 // AdjustItem applies a delta to one SKU (WF-CART-001).
 //
 // The script decides whether a fresh product snapshot is needed, because only

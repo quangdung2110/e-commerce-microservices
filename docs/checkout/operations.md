@@ -84,7 +84,7 @@ phải UUID.
 | Promotion voucher options | `min(1 000 ms, còn lại − 100 ms)` | 0 | 2 s | 0 | 10 |
 | Order POST | `min(13 000 ms, còn lại − 200 ms)` | 0 trong request; recovery dùng cùng payload/key | 15 s | 0 | 50 |
 | Order GET | `min(2 000 ms, còn lại − 100 ms)` | 0 | 15 s | 0 | 10 |
-| Redis | 200 ms mỗi lệnh/script | 0 | — | — | pool 64 |
+| Redis | 200 ms mỗi lệnh/script | 0 | — | — | một kết nối Lettuce multiplex, không pool (không có lời gọi blocking nào cần connection riêng) |
 
 - **Deadline:** Preview 5 000 ms, voucher options 1 500 ms, Submit và status 20 000 ms, tính
   từ lúc Checkout nhận request. Gateway chờ response header tối đa 25 giây cho route business
@@ -114,7 +114,7 @@ biết.
 | `checkout_preview_cas_total` | `result` | `created`, `superseded_previous`, `active_changed`, `in_flight_blocked`, `idempotent_replay`, `idempotency_mismatch` |
 | `checkout_state_transitions_total` | `from`, `to` | Chuyển state |
 | `checkout_recovery_total` | `outcome` | `resolved_success`, `resolved_conflict`, `resolved_failed`, `still_preparing`, `reposted`, `not_accepted`, `unknown` |
-| `checkout_voucher_options_dropped_total` | `reason` | Item Promotion bị bỏ vì giá trị enum chưa biết |
+| `checkout_voucher_options_dropped_total` | `reason` | Item Promotion bị bỏ: `source` (UNKNOWN), `distribution_mode` (tổ hợp không map được) hoặc `discount_type` (loại discount chưa biết) |
 | `checkout_promotion_budget_guard_total` | `value` | Phân bố `budget_guard` từ Promotion |
 | `checkout_cart_lines` (histogram) | — | Số dòng mỗi Preview |
 | `checkout_redis_seconds` (timer) | `operation` | Độ trễ lệnh/script Redis |
@@ -146,9 +146,9 @@ không commit.
 | Variable | Default | Bắt buộc | Ghi chú |
 |---|---|---|---|
 | `SERVER_PORT` | `8080` | Không | Khớp `servers` của OpenAPI và upstream Gateway |
-| `CHECKOUT_REDIS_URL` | none | Có | Ví dụ `redis://redis:6379/0`; TLS và auth ngoài local |
-| `CHECKOUT_TOKEN_HMAC_KEYS`, `CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION` | none | Có | Secret; giữ version cũ tới khi mọi record dùng nó hết TTL (≥ 24 giờ) |
-| `CHECKOUT_ENCRYPTION_KEYS`, `CHECKOUT_ENCRYPTION_ACTIVE_VERSION` | none | Có | Secret; envelope encryption; xoay vòng như HMAC |
+| `CHECKOUT_REDIS_URL` | none | Có | Redis riêng `noeviction`, ví dụ `redis://checkout-redis:6379/0`; TLS và auth ngoài local |
+| `CHECKOUT_TOKEN_HMAC_KEYS`, `CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION` | none | Có | Secret, dạng `v1:<base64>,v2:<base64>` (≥ 32 byte mỗi khoá); giữ version cũ tới khi mọi record dùng nó hết TTL (≥ 24 giờ) |
+| `CHECKOUT_ENCRYPTION_KEYS`, `CHECKOUT_ENCRYPTION_ACTIVE_VERSION` | none | Có | Secret, cùng định dạng, đúng 32 byte mỗi khoá (AES-256); envelope encryption; xoay vòng như HMAC |
 | `CHECKOUT_CART_BASE_URL` | none | Có | Ví dụ `http://cart-service:8080` |
 | `CHECKOUT_USER_BASE_URL` | none | Có | Cổng internal, ví dụ `http://user-service:8083` |
 | `CHECKOUT_PRODUCT_GRPC_TARGET` | none | Có | Ví dụ `product-service:9091` |
@@ -168,7 +168,10 @@ không commit.
 | Deadline, timeout, circuit breaker, bulkhead | Theo [Resilience](#resilience) | Không | Đổi giá trị production phải cập nhật ADR-014 và giữ quy tắc timeout Checkout < mesh, deadline < Gateway − 1 s |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER_ARG` | none | Không | |
 
-Thiếu cấu hình bắt buộc thì service không ready thay vì chạy với URL hỏng.
+Thiếu cấu hình bắt buộc thì service không khởi động (validate lúc start) thay vì chạy với URL hỏng.
+Các bất biến timeout (Checkout < mesh, deadline < Gateway − 1 giây, owner timeout > deadline
+Submit, cửa sổ retry > 20 giây) cũng được kiểm lúc khởi động. Prometheus ở `/actuator/prometheus`;
+probe ở `/health/live` và `/health/ready`.
 
 ## Runbook
 
@@ -196,7 +199,7 @@ cờ `CHECKOUT_VOUCHER_OPTIONS_ENABLED`.
 
 ### Rollout
 
-1. Promotion triển khai `promotion-voucher-options` (có thể sau; giữ cờ tắt).
+1. Promotion triển khai `promotion-voucher-options` (đã có; ở môi trường mà Promotion chưa có thì giữ cờ tắt).
 2. Deploy Checkout tối thiểu hai replica; readiness đạt.
 3. Contract test và smoke test nội bộ với Cart, User, Product, Inventory, Promotion, Order.
 4. Load test đạt SLO ở trên.

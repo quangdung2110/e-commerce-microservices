@@ -489,20 +489,20 @@ services:
       - "traefik.http.routers.promotion-admin.service=promotion-service"
       - "traefik.http.routers.promotion-admin.priority=40"
       # authenticated = strip-identity-headers + gateway-auth: role ADMIN den tu claim `roles`
-      # cua access token da verify. Router customer (me/discovery) van dev-auth toi buoc 11.
+      # cua access token da verify. Router customer (me/discovery) cung dung authenticated: Checkout Preview tinh voucher theo user that, nen vi voucher phai nam cua dung user do.
       - "traefik.http.routers.promotion-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       # Public discovery: authenticated user, profile promotion-discovery 20 req/user/phut (ADR-015).
       - "traefik.http.routers.promotion-discovery.rule=Path(`/api/v1/promotion-discovery`)"
       - "traefik.http.routers.promotion-discovery.entrypoints=web"
       - "traefik.http.routers.promotion-discovery.service=promotion-service"
       - "traefik.http.routers.promotion-discovery.priority=35"
-      - "traefik.http.routers.promotion-discovery.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-promotion-discovery@file,compress@file"
+      - "traefik.http.routers.promotion-discovery.middlewares=authenticated@file,rate-limit-promotion-discovery@file,compress@file"
       # Wallet: suggestions, save, claim theo identity user da verify.
       - "traefik.http.routers.promotion-me.rule=PathPrefix(`/api/v1/me/promotion-vouchers`) || Path(`/api/v1/me/promotion-voucher-suggestions`) || Path(`/api/v1/me/promotion-voucher-claims`)"
       - "traefik.http.routers.promotion-me.entrypoints=web"
       - "traefik.http.routers.promotion-me.service=promotion-service"
       - "traefik.http.routers.promotion-me.priority=30"
-      - "traefik.http.routers.promotion-me.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.routers.promotion-me.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.promotion-service.loadbalancer.server.port=8085"
       - "traefik.http.services.promotion-service.loadbalancer.server.scheme=http"
       - "traefik.http.services.promotion-service.loadbalancer.healthcheck.path=/actuator/health"
@@ -950,3 +950,116 @@ networks:
   ecommerce-network:
     name: ecommerce-network
     driver: bridge
+  # ── Checkout Service ───────────────────────────────────────
+  # Backend for Frontend of the checkout page (docs/checkout). Its only state is the short-lived
+  # workflow state in its own Redis; every other dependency is a service on this network.
+  checkout-redis:
+    image: redis:7-alpine
+    container_name: checkout-redis
+    # noeviction is a requirement, not a tuning choice: losing a SUBMITTING session to an
+    # eviction could end in a duplicate order (docs/checkout/data.md). The shared redis above
+    # runs allkeys-lru, so Checkout does not use it.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - checkout-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ecommerce-network
+
+  checkout-service:
+    build:
+      context: ./java/services/checkout-service
+      dockerfile: Dockerfile
+    container_name: checkout-service
+    # Order of start only. Checkout answers 503 problems while a dependency is down and keeps
+    # its own readiness (Redis + scripts), so it does not wait for their healthchecks.
+    depends_on:
+      checkout-redis:
+        condition: service_healthy
+      cart-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      promotion-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+    environment:
+      SERVER_PORT: 8080
+      CHECKOUT_REDIS_URL: redis://checkout-redis:6379/0
+      # DEVELOPMENT ONLY keys (32 random bytes, base64). Production keys come from the secret
+      # manager and are rotated by adding a version and moving the active-version setting.
+      CHECKOUT_TOKEN_HMAC_KEYS: "v1:bG9jYWwtZGV2LW9ubHktY2hlY2tvdXQtaG1hYy1rZXktMDAwMSE="
+      CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION: v1
+      CHECKOUT_ENCRYPTION_KEYS: "v1:bG9jYWwtZGV2LW9ubHktY2hlY2tvdXQtYWVzLWtleSE="
+      CHECKOUT_ENCRYPTION_ACTIVE_VERSION: v1
+      CHECKOUT_CART_BASE_URL: http://cart-service:8080
+      # Internal listener of User (8083); it is not published through Traefik.
+      CHECKOUT_USER_BASE_URL: http://user-service:8083
+      CHECKOUT_PRODUCT_GRPC_TARGET: product-service:9091
+      CHECKOUT_INVENTORY_BASE_URL: http://inventory-service:8080
+      CHECKOUT_PROMOTION_BASE_URL: http://promotion-service:8085
+      CHECKOUT_ORDER_BASE_URL: http://order-service:8080
+      # Promotion implements promotion-voucher-options, so the tray is on locally.
+      CHECKOUT_VOUCHER_OPTIONS_ENABLED: "true"
+      # Same local CDN and placeholder as Cart, Search and the Product Detail BFF.
+      CHECKOUT_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      CHECKOUT_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      CHECKOUT_MEDIA_REQUIRE_HTTPS: "false"
+      TRACING_SAMPLING_PROBABILITY: "1.0"
+    ports:
+      - "8096:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Four routes of contracts/http/checkout/v1/openapi.yaml, each with its Gateway rate profile
+      # (docs/gateway/runtime-contract.md section 7). The gateway never retries a POST, and the
+      # token segment of the path is not logged (the access log records the route template).
+      - "traefik.http.routers.checkout-preview.rule=Path(`/api/v1/checkout/preview`) && Method(`POST`)"
+      - "traefik.http.routers.checkout-preview.entrypoints=web"
+      - "traefik.http.routers.checkout-preview.service=checkout-service"
+      - "traefik.http.routers.checkout-preview.priority=50"
+      - "traefik.http.routers.checkout-preview.middlewares=authenticated@file,rate-limit-checkout-preview@file,compress@file"
+      - "traefik.http.routers.checkout-submit.rule=Path(`/api/v1/checkout/submit`) && Method(`POST`)"
+      - "traefik.http.routers.checkout-submit.entrypoints=web"
+      - "traefik.http.routers.checkout-submit.service=checkout-service"
+      - "traefik.http.routers.checkout-submit.priority=50"
+      - "traefik.http.routers.checkout-submit.middlewares=authenticated@file,rate-limit-checkout-submit@file,compress@file"
+      - "traefik.http.routers.checkout-voucher-options.rule=PathRegexp(`^/api/v1/checkout/previews/[0-9a-fA-F-]{36}/voucher-options$$`) && Method(`GET`)"
+      - "traefik.http.routers.checkout-voucher-options.entrypoints=web"
+      - "traefik.http.routers.checkout-voucher-options.service=checkout-service"
+      - "traefik.http.routers.checkout-voucher-options.priority=50"
+      - "traefik.http.routers.checkout-voucher-options.middlewares=authenticated@file,rate-limit-checkout-voucher-options@file,retry-connection-only@file,compress@file"
+      - "traefik.http.routers.checkout-submissions.rule=PathRegexp(`^/api/v1/checkout/submissions/[0-9a-fA-F-]{36}$$`) && Method(`GET`)"
+      - "traefik.http.routers.checkout-submissions.entrypoints=web"
+      - "traefik.http.routers.checkout-submissions.service=checkout-service"
+      - "traefik.http.routers.checkout-submissions.priority=50"
+      - "traefik.http.routers.checkout-submissions.middlewares=authenticated@file,rate-limit-api@file,retry-connection-only@file,compress@file"
+      - "traefik.http.services.checkout-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.checkout-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.path=/health/ready"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.checkout-service.loadbalancer.serverstransport=business-api@file"
+
+  checkout-redis-data:

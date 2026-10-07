@@ -541,8 +541,7 @@ paths:
         lấy từ token, không nhận user_id trong payload. context là tùy chọn: thiếu context
         thì chỉ lưu wallet và evaluation là null. Trang checkout gửi body rỗng vì giá và
         category tin cậy chỉ có ở Checkout; Checkout Preview tính discount chính thức
-        (Promotion ADR-018). Phần context tùy chọn ở trạng thái proposed: runtime hiện tại
-        vẫn yêu cầu context.
+        (Promotion ADR-018).
       security: [{ gatewayUserIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/PromotionId'
@@ -659,7 +658,7 @@ paths:
         eligible trước, discount giảm dần, promotion_id tăng dần. Mỗi item kèm thông tin
         hiển thị của voucher. Rate limit thuộc Gateway profile checkout-voucher-options ở
         route Checkout; Promotion không giữ local limiter.
-      x-adoption-status: proposed
+      x-adoption-status: implemented
       security: [{ workloadIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
       requestBody:
@@ -1388,7 +1387,7 @@ components:
       properties:
         context:
           allOf: [{ $ref: '#/components/schemas/CheckoutContext' }]
-          description: Optional (proposed, Promotion ADR-018); omitted means save only and evaluation=null.
+          description: Optional (Promotion ADR-018); omitted means save only and evaluation=null.
     WalletVoucher:
       type: object
       additionalProperties: false

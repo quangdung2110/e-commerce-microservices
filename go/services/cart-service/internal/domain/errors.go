@@ -17,6 +17,7 @@ const (
 	CodeProductNotAvailable     Code = "PRODUCT_NOT_AVAILABLE"
 	CodeIdempotencyConflict     Code = "IDEMPOTENCY_CONFLICT"
 	CodeUnauthenticated         Code = "UNAUTHENTICATED"
+	CodeForbidden               Code = "FORBIDDEN"
 	CodeValidationFailed        Code = "VALIDATION_FAILED"
 	CodeRateLimited             Code = "RATE_LIMITED"
 	CodeCartStoreUnavailable    Code = "CART_STORE_UNAVAILABLE"

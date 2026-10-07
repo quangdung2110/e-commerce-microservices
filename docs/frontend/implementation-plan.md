@@ -672,7 +672,7 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
   Campaign đã xuất bản chỉ đọc (bất biến), muốn đổi phải nhân bản.
 - **Gateway được sửa cho bước này**: router `promotion-admin` chuyển từ `dev-admin-auth` sang
   `authenticated@file`; role `ADMIN` nay lấy từ token thật, `created_by` là tài khoản đăng nhập.
-  Router customer (`promotion-me`, `promotion-discovery`) vẫn `dev-auth` tới bước 11. Tài liệu
+  Router customer (`promotion-me`, `promotion-discovery`) đã chuyển sang `authenticated@file` ngày 07/10/2026 cùng Checkout. Tài liệu
   gateway đã đồng bộ ([runtime-contract](../gateway/runtime-contract.md),
   [implementation_plan §3.6](../gateway/implementation_plan.md)).
 - Chi tiết phạm vi, giới hạn của contract và bằng chứng live ở
@@ -694,7 +694,7 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 
 | Phụ thuộc | Cần cho | Ảnh hưởng nếu thiếu |
 |---|---|---|
-| Router customer Promotion (`promotion-me`, `promotion-discovery`) chuyển từ `dev-auth` sang `authenticated@file` | Bước 11 | Voucher của người mua còn identity cố định. `promotion-admin` đã chuyển ở bước 10; Cart, Review, Auth, User, Notification, Product cũng dùng gateway-auth |
+| Router customer Promotion (`promotion-me`, `promotion-discovery`) chuyển từ `dev-auth` sang `authenticated@file` | Đã làm 07/10/2026 (cùng Checkout) | Trước đó voucher của người mua dùng identity cố định. `promotion-admin` đã chuyển ở bước 10; Cart, Review, Auth, User, Notification, Product cũng dùng gateway-auth |
 | API tìm người dùng và API liệt kê voucher đã cấp | Cấp voucher (bước 10) | Admin phải dán UUID người dùng; UI chỉ hiển thị kết quả lần cấp vừa rồi, không có danh sách người đã nhận |
 | `user-service` build được | Hồ sơ, địa chỉ, checkout | `go build` thiếu entry `go.sum` cho `golang.org/x/crypto/*` (sha3, md4, pbkdf2) |
 | Product Service và gateway chạy được trong docker-compose | 4.6 | Đạt: `GET /api/v1/products` qua gateway trả 401/403/200 đúng theo token; dữ liệu mẫu tạo bằng `frontend/scripts/seed-dev-catalog.sh` |

@@ -148,6 +148,7 @@ func run(configPath string) error {
 			Burst:             cfg.Cart.RateLimit.Burst,
 			IdleTimeout:       cfg.Cart.RateLimit.IdleTimeout,
 		},
+		InternalCallers: cfg.Cart.InternalCallers,
 		Registry: metrics.Registry(),
 		Logger:   logger,
 		Debug:    cfg.App.Env == "development",

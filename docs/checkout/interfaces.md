@@ -32,7 +32,10 @@ Canonical contract: [`contracts/http/checkout/v1/openapi.yaml`](../../contracts/
 Mọi response, kể cả lỗi, mang `Cache-Control: private, no-store`. Auth context đến từ
 Gateway (`X-User-Id`); client không gửi `user_id`, tier, role, channel hay giá trong body.
 `X-Request-Id` là gợi ý không bắt buộc: giá trị không khớp `^[A-Za-z0-9._:-]{8,128}$` bị
-thay bằng trace ID, không bao giờ làm request lỗi.
+thay bằng trace ID, không bao giờ làm request lỗi. `X-User-Id` thiếu hoặc không phải UUID là
+`401`; `{checkout_token}` trong path không phải UUID là `404 CHECKOUT_NOT_FOUND` (không thể tồn
+tại), còn `checkout_token` sai trong body Submit là `400`. Body có field lạ (kể cả
+`payment_method`, `quantity`, `unit_price`) là `400 INVALID_REQUEST`.
 
 ### Preview: ngữ nghĩa `previous_checkout_token`
 
@@ -42,8 +45,12 @@ thay bằng trace ID, không bao giờ làm request lỗi.
 | Không gửi `previous` (tải trang, tab mới, sau kết quả terminal) | Tạo báo giá mới; token `PREVIEWED` hiện tại (nếu có) thành `SUPERSEDED` |
 | Gửi `previous` = token `PREVIEWED` hiện hành (đổi địa chỉ/voucher) | Tạo báo giá mới; token cũ thành `SUPERSEDED` |
 | Gửi `previous` khác token `PREVIEWED` hiện hành | `409 ACTIVE_CHECKOUT_CHANGED`; client báo người dùng rồi gọi lại không kèm `previous` |
-| Cùng `Idempotency-Key`, cùng body trong 5 phút | Replay đúng response cũ |
+| Cùng `Idempotency-Key`, cùng body trong 5 phút | Replay đúng response cũ; chỉ response `200` được lưu, lỗi thì lần gọi lại chạy lại từ đầu |
 | Cùng `Idempotency-Key`, body khác | `409 IDEMPOTENCY_KEY_REUSED` |
+
+Fingerprint của body là SHA-256 của JSON chuẩn hoá (RFC 8785) `{delivery_address_id,
+previous_checkout_token, promotion_id}`; field vắng mặt và `null` là cùng một request. Hai request đồng
+thời cùng key được phân xử trong script Wave 4: request thua trả lại response của request thắng.
 
 Preview lỗi (`422`, `503`) không đổi trạng thái nào; báo giá cũ vẫn dùng được. Quyết định ở
 [ADR-016](./decisions/ADR-016-fresh-preview-and-in-flight-submission-guard.md).
@@ -95,6 +102,8 @@ Checkout không lưu `client_secret`/`publishable_key`; `usable=false` thì hai 
 `CheckoutSubmissionPending.state`: `PREPARING` khi Order đang xử lý; `RESULT_UNKNOWN` khi
 chưa biết Order đã nhận hay chưa. Cả hai kèm `Retry-After` và `status_url`; client chỉ
 được poll, không được tạo báo giá mới (Preview cũng sẽ trả `409 SUBMISSION_IN_PROGRESS`).
+`Retry-After` mặc định: `PREPARING` 2 giây, `RESULT_UNKNOWN` 3 giây, `503` 2 giây (hoặc thời gian
+circuit còn mở).
 
 ## Error catalog
 
@@ -258,9 +267,11 @@ Bỏ `user_tier`. Map response theo bảng [VoucherOptions](#voucheroptions-ngu�
 | POST `409 PROMOTION_RECALCULATION_NEEDED` | `CONFLICT` | `409 PROMOTION_RECALCULATION_NEEDED`, `dropped_promotion` = phần tử đầu của `dropped_promotions` |
 | POST `409 INVENTORY_RESERVATION_REJECTED` | `FAILED` | `409 INVENTORY_RESERVATION_REJECTED` |
 | POST `409 PAYMENT_INITIATION_REJECTED` | `FAILED` | `409 PAYMENT_INITIATION_REJECTED` |
+| POST `409 CHECKOUT_PAYMENT_WINDOW_EXHAUSTED` hoặc `409 ORDER_CANCELLED_DURING_PREPARATION` | `FAILED` | `409` cùng code (Order lưu một failure và trả cùng một problem ở POST lẫn GET) |
 | POST `409` code khác, hoặc `422` (ví dụ `INVALID_CHECKOUT_SNAPSHOT`) | `FAILED` | `409 SUBMISSION_REJECTED`; alert `contract_violation` |
-| POST `400`/`401`/`403` | `RETRYABLE` (Order chưa nhận) | `503 CHECKOUT_UNAVAILABLE`; alert cấu hình |
-| POST `503`, timeout, lỗi kết nối | `RETRYABLE` | `202 RESULT_UNKNOWN` |
+| POST `400`/`401`/`403`/`429` | `RETRYABLE` (Order chưa nhận) | `503 CHECKOUT_UNAVAILABLE`; alert cấu hình |
+| POST `503 SUBMISSION_IN_PROGRESS` (hết 12 giây chờ `PAYMENT_READY` mà Order vẫn `PREPARING`) | `RETRYABLE` | `202 PREPARING`: Order đã nhận, không phải kết quả chưa rõ |
+| POST `503` khác, timeout, lỗi kết nối, body không đọc được | `RETRYABLE` | `202 RESULT_UNKNOWN` |
 | GET `state=PAYMENT_READY` | `SUCCEEDED` | `200` với `payment` mới |
 | GET `state=PREPARING` | giữ nguyên | `202 PREPARING` |
 | GET `state=RECALCULATION_REQUIRED` | `CONFLICT` | `409 PROMOTION_RECALCULATION_NEEDED` |

@@ -54,12 +54,14 @@ public class CustomerPromotionController {
     @PutMapping("/api/v1/me/promotion-vouchers/{promotion_id}")
     public ResponseEntity<CheckoutDtos.SaveAndEvaluateResponse> save(
             @PathVariable("promotion_id") String promotionId,
-            @Valid @RequestBody CheckoutDtos.SaveAndEvaluateRequest request) {
+            @Valid @RequestBody(required = false) CheckoutDtos.SaveAndEvaluateRequest request) {
         UUID userId = CallerContext.requireUserId();
         WalletService.SaveOutcome outcome = wallets.savePublic(userId, Ids.parse(promotionId, "promotion_id"));
         CheckoutDtos.SaveAndEvaluateResponse body = new CheckoutDtos.SaveAndEvaluateResponse(
                 wallets.toDto(outcome.wallet()),
-                wallets.evaluateWallet(outcome.wallet(), userId, request.context(), clock.instant()));
+                // Without a context there is nothing to evaluate against: save only (Promotion ADR-018).
+                request == null || request.context() == null ? null
+                        : wallets.evaluateWallet(outcome.wallet(), userId, request.context(), clock.instant()));
         if (outcome.created()) {
             return ResponseEntity.created(URI.create("/api/v1/me/promotion-vouchers/" + promotionId))
                     .cacheControl(CacheControl.noStore()).body(body);

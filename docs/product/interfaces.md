@@ -96,7 +96,9 @@ hoặc Search.
 `variant_attributes`, `image_url`, `base_price`, published selling `price`,
 `category_ids` (tối đa 20 ID duy nhất), catalog saleability,
 `catalog_revision`, `updated_at`. `category_ids` là Product-owned ancestry để Checkout
-dựng trusted Promotion facts; consumer không tự suy diễn category rule. Dù tên là
+dựng trusted Promotion facts: category của Product và mọi ancestor tới root, root trước; nếu
+cây sâu hơn 20 cấp thì giữ 20 category gần Product nhất (là những category mà rule gọi tên).
+Consumer không tự suy diễn category rule. Dù tên là
 `image_url`, field này mang storage key của ảnh đại diện (ảnh `IMAGE` đầu tiên của SKU,
 fallback ảnh cấp Product, rỗng khi không có ảnh), không phải URL tuyệt đối; consumer cần
 hiển thị (Cart, Checkout) dựng URL CDN từ key như Search và Product Detail BFF. Chúng không trả quantity, `OUT_OF_STOCK` hay stock

@@ -12,6 +12,7 @@ import com.ecommerce.contracts.product.v1.SkuStatus;
 import com.ecommerce.contracts.product.v1.SkuUnavailable;
 import com.ecommerce.contracts.product.v1.SkuUnavailableReason;
 import com.google.protobuf.Timestamp;
+import com.platform.productservice.common.DomainException;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.domain.entity.ProductMediaEntity;
 import com.platform.productservice.domain.entity.SkuEntity;
@@ -20,6 +21,7 @@ import com.platform.productservice.domain.enums.ProductStatus;
 import com.platform.productservice.infrastructure.persistence.ProductMediaRepository;
 import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
+import com.platform.productservice.service.support.CategoryTreeService;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +53,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
 
     private static final String CURRENCY_VND = "VND";
     private static final int MAX_BATCH_SIZE = 100;
+    /** Contract bound of {@code Sku.category_ids}; Promotion rules and the Order snapshot share it. */
+    private static final int MAX_CATEGORY_IDS = 20;
 
     private static final Comparator<ProductMediaEntity> MEDIA_ORDER =
             Comparator.comparingInt(ProductMediaEntity::getSortOrder)
@@ -58,6 +63,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
     private final ProductRepository productRepository;
     private final SkuRepository skuRepository;
     private final ProductMediaRepository mediaRepository;
+    private final CategoryTreeService categoryTree;
 
     @Override
     @Transactional(readOnly = true)
@@ -99,7 +105,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
         } else {
             List<ProductMediaEntity> media =
                     mediaRepository.findByProductIdOrderBySortOrderAscMediaIdAsc(product.getProductId());
-            response.setSku(toProto(product, sku.get(), media));
+            response.setSku(toProto(product, sku.get(), media, categoryIds(product, new HashMap<>())));
         }
         responseObserver.onNext(response.build());
         responseObserver.onCompleted();
@@ -144,6 +150,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                 : mediaRepository.findByProductIdInOrderBySortOrderAscMediaIdAsc(productIds).stream()
                         .collect(Collectors.groupingBy(ProductMediaEntity::getProductId));
 
+        Map<UUID, List<String>> ancestry = new HashMap<>();
         for (UUID skuId : skuIds) {
             SkuEntity sku = skus.get(skuId);
             ProductEntity product = sku == null ? null : products.get(sku.getProductId());
@@ -153,7 +160,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                 response.addUnavailableSkuIds(skuId.toString());
             } else {
                 response.putSkus(skuId.toString(), toProto(product, sku,
-                        mediaByProduct.getOrDefault(product.getProductId(), List.of())));
+                        mediaByProduct.getOrDefault(product.getProductId(), List.of()),
+                        categoryIds(product, ancestry)));
             }
         }
 
@@ -167,7 +175,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                 && sku.getStatus() == com.platform.productservice.domain.enums.SkuStatus.ACTIVE;
     }
 
-    private Sku toProto(ProductEntity product, SkuEntity sku, List<ProductMediaEntity> media) {
+    private Sku toProto(ProductEntity product, SkuEntity sku, List<ProductMediaEntity> media,
+                         List<String> categoryIds) {
         Sku.Builder builder = Sku.newBuilder()
                 .setSkuId(sku.getSkuId().toString())
                 .setProductId(product.getProductId().toString())
@@ -178,12 +187,34 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                         ? SkuStatus.SKU_STATUS_ACTIVE
                         : SkuStatus.SKU_STATUS_INACTIVE)
                 .setCatalogRevision(product.getCatalogRevision())
-                .setUpdatedAt(timestamp(sku.getUpdatedAt()));
+                .setUpdatedAt(timestamp(sku.getUpdatedAt()))
+                .addAllCategoryIds(categoryIds);
 
         sku.getVariantAttributes()
                 .forEach((key, value) -> builder.putVariantAttributes(key, String.valueOf(value)));
         imageReference(sku.getSkuId(), media).ifPresent(builder::setImageUrl);
         return builder.build();
+    }
+
+    /**
+     * Product-owned ancestry used by trusted Checkout promotion facts: the product's category and every
+     * ancestor up to the root, root first. Computed once per category per call. A path longer than the
+     * contract bound keeps the categories closest to the product, because those are the ones rules name.
+     * A category that cannot be resolved yields no ids rather than failing the whole read.
+     */
+    private List<String> categoryIds(ProductEntity product, Map<UUID, List<String>> cache) {
+        return cache.computeIfAbsent(product.getCategoryId(), categoryId -> {
+            try {
+                List<String> path = categoryTree.path(categoryTree.require(categoryId)).stream()
+                        .map(category -> category.getCategoryId().toString())
+                        .toList();
+                return path.size() <= MAX_CATEGORY_IDS
+                        ? path
+                        : path.subList(path.size() - MAX_CATEGORY_IDS, path.size());
+            } catch (DomainException e) {
+                return List.of();
+            }
+        });
     }
 
     /** Ảnh của chính SKU nếu có, ngược lại ảnh cấp Product. */

@@ -112,6 +112,33 @@ http:
         average: 100
         burst: 200
         period: 1s
+    # Checkout profiles (docs/gateway/runtime-contract.md muc 7): quota theo user da xac thuc,
+    # Gateway so huu quota; Checkout khong co limiter rieng. Luu y: rateLimit cua Traefik CE la
+    # in-memory per replica; production nhieu replica can shared state truoc khi bat route.
+    rate-limit-checkout-preview:
+      rateLimit:
+        average: 10
+        burst: 10
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-submit:
+      rateLimit:
+        average: 3
+        burst: 3
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-voucher-options:
+      rateLimit:
+        average: 20
+        burst: 20
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
         sourceCriterion:
           ipStrategy:
             depth: 2

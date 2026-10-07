@@ -68,9 +68,9 @@ services:
 
   - id: checkout-service
     bounded_context: checkout
-    runtime: java-planned
-    status: documented
-    contract_adoption: not_started
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
     docs: docs/checkout/README.md
 
   - id: order-service
@@ -85,7 +85,7 @@ services:
     runtime: java-planned
     status: documented
     contract_adoption: not_started
-    docs: docs/payment/payment_workflow.md
+    docs: docs/payment/README.md
 
   - id: promotion-service
     bounded_context: promotion

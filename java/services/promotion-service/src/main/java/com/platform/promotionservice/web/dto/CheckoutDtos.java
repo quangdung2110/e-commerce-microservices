@@ -56,7 +56,8 @@ public final class CheckoutDtos {
                                    Boolean includeIneligible) {
     }
 
-    public record SaveAndEvaluateRequest(@NotNull @Valid CheckoutContext context) {
+    /** {@code context} is optional (Promotion ADR-018): without it the call only saves and evaluation is null. */
+    public record SaveAndEvaluateRequest(@Valid CheckoutContext context) {
     }
 
     public record VoucherEvaluation(
@@ -75,6 +76,32 @@ public final class CheckoutDtos {
 
     public record VoucherSuggestionResponse(List<VoucherEvaluation> items,
                                             @JsonProperty("evaluated_at") Instant evaluatedAt) {
+    }
+
+    /** Internal request of Checkout (ADR-018): the context is built by Checkout from its own snapshot. */
+    public record VoucherOptionRequest(
+            @NotNull UUID userId,
+            @Size(max = 64) String userTier,
+            @NotNull @Valid CheckoutContext context,
+            Boolean includePublic,
+            Boolean includeIneligible,
+            @Min(1) @Max(50) Integer limit) {
+    }
+
+    /** Display data of one voucher; {@code discount} is the PERCENTAGE/FIXED_VND definition. */
+    public record VoucherDisplay(
+            String code,
+            String name,
+            String description,
+            DiscountDto discount,
+            @JsonProperty("min_order_amount") MoneyDto minOrderAmount,
+            @JsonProperty("valid_until") Instant validUntil) {
+    }
+
+    public record VoucherOption(VoucherEvaluation evaluation, VoucherDisplay display) {
+    }
+
+    public record VoucherOptionList(List<VoucherOption> items, @JsonProperty("evaluated_at") Instant evaluatedAt) {
     }
 
     public record SaveAndEvaluateResponse(WalletDtos.WalletVoucher wallet, VoucherEvaluation evaluation) {
@@ -105,7 +132,7 @@ public final class CheckoutDtos {
 
     public record DiscountCalculationRequest(
             @NotNull UUID userId,
-            @NotBlank @Size(max = 64) String userTier,
+            @Size(max = 64) String userTier,
             String promotionId,
             @NotNull @Valid CheckoutContext context) {
     }

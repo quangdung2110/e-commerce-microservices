@@ -24,17 +24,23 @@ Lua. Không có PostgreSQL, Kafka, outbox hay worker nền.
 
 | Key | Kiểu | Nội dung | TTL |
 |---|---|---|---:|
-| `checkout:session:{token_hash}` | Hash | Field điều khiển plaintext + snapshot mã hoá | 30 phút từ lúc tạo; claim đặt lại 30 phút từ `claimed_at` |
-| `checkout:active:{user_id}` | String | `token_hash` của token chưa terminal duy nhất | Bằng TTL của session nó trỏ tới, cập nhật trong cùng script |
-| `checkout:submit-payload:{token_hash}` | String | Request Order bất biến (mã hoá, chứa raw token) | 30 phút từ `claimed_at`, không gia hạn |
-| `checkout:result:{token_hash}` | Hash | `user_id`, terminal state, `order_id`, problem đã lưu | `SUCCEEDED` 24 giờ; `CONFLICT`/`FAILED` 30 phút |
-| `checkout:idem:{user_id}:{idem_hash}` | String | Fingerprint request + response Preview (mã hoá, chứa raw token) | 5 phút |
+| `checkout:session:{token_ref}` | Hash | Field điều khiển plaintext + snapshot mã hoá | 30 phút từ lúc tạo; claim đặt lại 30 phút từ `claimed_at` |
+| `checkout:active:{user_id}` | String | `token_ref` của token chưa terminal duy nhất | Bằng TTL của session nó trỏ tới, cập nhật trong cùng script |
+| `checkout:submit-payload:{token_ref}` | String | Request Order bất biến (mã hoá, chứa raw token) | 30 phút từ `claimed_at`, không gia hạn |
+| `checkout:result:{token_ref}` | Hash | `user_id`, terminal `state`, `order_id`, `problem` (mã hoá) | `SUCCEEDED` 24 giờ; `CONFLICT`/`FAILED` 30 phút |
+| `checkout:idem:{user_id}:{idem_ref}` | Hash | `fp` (fingerprint request) + `resp` (response Preview, mã hoá, chứa raw token) | 5 phút |
 
 Không có key rate limit: quota thuộc Gateway. Replay một `SUCCEEDED` không cần payload vì
 client gửi token trong request và Payment data luôn lấy mới từ Order.
 
-`token_hash` = HMAC-SHA-256(server key, token) kèm version của key; `idem_hash` tương tự
-cho `Idempotency-Key`. Không lưu raw token hay raw idempotency key trong key name.
+`token_ref` = `{key_version}:{hex HMAC-SHA-256(key, "token:" + token)}`; `idem_ref` tương tự với
+tiền tố `idem:`, nên hai không gian không trùng nhau. Không lưu raw token hay raw idempotency
+key trong key name. Khi xoay khoá, một record được tìm dưới mọi version đang cấu hình (active
+trước), nên đổi version active không làm mồ côi session còn sống.
+
+Format cấu hình khoá: `v1:<base64>,v2:<base64>`; khoá HMAC tối thiểu 32 byte, khoá mã hoá đúng
+32 byte (AES-256). Redis chạy standalone hoặc Sentinel, không Cluster: mỗi script chạm nhiều key
+của cùng một user và không có hash tag.
 
 ## Session hash
 
@@ -44,16 +50,20 @@ cho `Idempotency-Key`. Không lưu raw token hay raw idempotency key trong key n
 | `user_id` | plaintext | Owner check trong Lua |
 | `state` | plaintext | State machine ở [domain.md](./domain.md#state-machine) |
 | `expires_at` | plaintext (epoch ms) | Hạn logic của báo giá |
-| `claimed_at`, `revalidated_at`, `last_order_call_started_at`, `attempt_id` | plaintext | Điều phối submit/recovery |
+| `claimed_at`, `attempt_started_at`, `revalidated_at`, `last_order_call_started_at`, `attempt_id` | plaintext | Điều phối submit/recovery. `claimed_at` neo cửa sổ retry 2 phút; `attempt_started_at` (đặt lúc claim và recovery claim) neo owner timeout |
 | `snapshot` | ciphertext | Address (PII), line items, allocation plan, promotion, tổng tiền, `items_hash`, `pricing_hash` |
 | `key_version` | plaintext | Version khoá mã hoá đã dùng |
 
 Lua chỉ đọc field plaintext nên không cần giải mã trong Redis. Snapshot, submit payload và
 replay idempotency được envelope-encrypt bằng khoá có version (AES-GCM, khoá dữ liệu bọc
-bởi khoá từ secret manager). Không lưu Payment client secret, access token, cookie, header
+bởi khoá từ secret manager; wire form `e1.<kek-version>.<dek-đã-bọc>.<dữ-liệu>`, `purpose` là
+authenticated data nên một ciphertext không thể chuyển sang field khác). Không lưu Payment client secret, access token, cookie, header
 xác thực hay dữ liệu thẻ dưới bất kỳ dạng nào.
 
 ## Atomic operations
+
+Mỗi thao tác là một Lua script nạp lúc khởi động và gọi bằng `EVALSHA`: `peek_preview`,
+`create_preview`, `claim`, `recovery_claim`, `mark`, `to_retryable`, `finalize`.
 
 ### Tạo Preview (một script)
 
@@ -95,7 +105,9 @@ ADR nêu owner, key version, TTL, stale policy, invalidation, failure mode và m
 ## Eviction và mất Redis
 
 - Redis phải chạy `maxmemory-policy noeviction`, có replica/HA và persistence (AOF
-  `everysec`). Memory pressure là sự cố, không phải cache miss.
+  `everysec`). Memory pressure là sự cố, không phải cache miss. Vì chính sách này áp cho cả
+  server, Checkout dùng Redis riêng (`checkout-redis` trong compose), không dùng chung với
+  Redis `allkeys-lru` của các service khác ([ADR-018](./decisions/ADR-018-implementation-decisions.md)).
 - Báo giá quá hạn logic nhưng record còn: `410` sau owner check. Record đã mất: `404`, client
   tạo báo giá mới.
 - Submission đã claim mà local state mất: client hỏi status → không còn record → `404`;

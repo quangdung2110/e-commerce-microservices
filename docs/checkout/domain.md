@@ -42,8 +42,8 @@ CheckoutSession
   allocation_plan                (allocation_plan_id, lines[])
   promotion?                     (promotion_id, campaign_revision, discount)
   total_amount, total_discount, final_amount   (VND, integer)
-  submission?                    (attempt_id, claimed_at, revalidated_at,
-                                  last_order_call_started_at)
+  submission?                    (attempt_id, claimed_at, attempt_started_at,
+                                  revalidated_at, last_order_call_started_at)
   created_at, updated_at
 ```
 
@@ -78,6 +78,8 @@ Dữ liệu chỉ có hiệu lực trong phiên; Checkout không thành owner c�
 | `CHK-BR-016` | Không có degraded stock hay degraded pricing; `user_ack_degraded_pricing` gửi Order luôn `false`. |
 | `CHK-BR-017` | Voucher options chỉ cho token `PREVIEWED` chưa hết hạn; kết quả là advisory, áp voucher luôn qua Preview mới. |
 | `CHK-BR-018` | Checkout không ghi vào ví voucher; lưu và nhận voucher là thao tác tường minh của user tại Promotion. |
+| `CHK-BR-019` | Khi Preview gặp nhiều vấn đề cùng lúc: lỗi hạ tầng (`503`) thắng mọi lỗi nghiệp vụ; giữa các lỗi nghiệp vụ theo thứ tự `CART_EMPTY` > `SKU_UNAVAILABLE` > `ADDRESS_NOT_FOUND` > `INSUFFICIENT_STOCK` > `PROMOTION_INVALID` > `FINAL_AMOUNT_NOT_PAYABLE`. |
+| `CHK-BR-020` | Owner timeout của `SUBMITTING` tính từ `attempt_started_at` (đặt lúc claim và lúc recovery claim), không từ `claimed_at`; `claimed_at` chỉ neo cửa sổ retry 2 phút. |
 
 ## State machine
 

@@ -77,10 +77,10 @@ storage representation, không phải wire shape.
 |---|---|---|
 | `POST /api/v1/me/promotion-voucher-suggestions` | Client tự có checkout context; chỉ xếp hạng voucher `SAVED` trong wallet. Trang checkout không dùng | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
 | `POST /api/v1/promotion-discovery` | Client tự có checkout context, tìm cả wallet và public `ACTIVE` chưa lưu. Trang checkout không dùng | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
-| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn là `proposed`, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |
 | `POST /api/v1/me/promotion-voucher-claims` | User claim voucher `LIMITED_CLAIM` | `201` sau DB commit; có thể `202 CLAIM_PENDING` để retry |
 | `POST /internal/v1/promotion-discount-calculations` | Checkout server tính lại 0/1 voucher từ trusted context | Pure/replay-safe; không save và không reserve |
-| `POST /internal/v1/promotion-voucher-options` | `proposed` (ADR-018): Checkout dựng khay voucher của trang checkout từ trusted snapshot | Safe query như discovery; trả `evaluation` + `display` (`code`, `name`, `description`, `discount`, `min_order_amount`, `valid_until`) |
+| `POST /internal/v1/promotion-voucher-options` | ADR-018: Checkout dựng khay voucher của trang checkout từ trusted snapshot; chỉ `checkout-service`; `checkout_channel` phải là `CHECKOUT` | Safe query như discovery; trả `evaluation` + `display` (`code`, `name`, `description`, `discount`, `min_order_amount`, `valid_until`) |
 
 Khay voucher của trang checkout đi qua Checkout
 `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`

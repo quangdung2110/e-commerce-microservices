@@ -35,6 +35,12 @@ public class InternalPromotionController {
         return discovery.calculate(request);
     }
 
+    @PostMapping("/internal/v1/promotion-voucher-options")
+    public CheckoutDtos.VoucherOptionList voucherOptions(
+            @Valid @RequestBody CheckoutDtos.VoucherOptionRequest request) {
+        return discovery.options(request);
+    }
+
     @PostMapping("/internal/v1/promotion-allocation/reservations")
     public ResponseEntity<AllocationDtos.ReservationResponse> reserve(
             @Valid @RequestBody AllocationDtos.ReserveRequest request) {

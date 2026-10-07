@@ -42,6 +42,27 @@ type Cart struct {
 	CatalogFreshness string     `json:"catalog_freshness"`
 }
 
+// CheckoutCartItem is one line of the internal Checkout snapshot: identifiers and quantity only.
+type CheckoutCartItem struct {
+	ProductID string `json:"product_id"`
+	SkuID     string `json:"sku_id"`
+	Quantity  int    `json:"quantity"`
+}
+
+// CheckoutCartSnapshot is the GET /internal/v1/carts/{user_id}/checkout-snapshot body.
+type CheckoutCartSnapshot struct {
+	Items []CheckoutCartItem `json:"items"`
+}
+
+// NewCheckoutCartSnapshot maps stored lines onto the internal snapshot contract.
+func NewCheckoutCartSnapshot(items []domain.Item) CheckoutCartSnapshot {
+	lines := make([]CheckoutCartItem, 0, len(items))
+	for _, item := range items {
+		lines = append(lines, CheckoutCartItem{ProductID: item.ProductID, SkuID: item.SkuID, Quantity: item.Quantity})
+	}
+	return CheckoutCartSnapshot{Items: lines}
+}
+
 // CartMutationResult is the adjust-item response body.
 type CartMutationResult struct {
 	SkuID     string `json:"sku_id"`

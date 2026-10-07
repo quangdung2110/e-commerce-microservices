@@ -71,6 +71,8 @@ cart:
   abandoned_ttl: 168h     # 7 days of retention after the transition
   product_validation_ttl: 45s
   idempotency_ttl: 24h
+  # Service identities allowed on /internal/v1 (Checkout reads the cart snapshot).
+  internal_callers: [checkout-service]
   rate_limit:
     requests_per_second: 20
     burst: 40

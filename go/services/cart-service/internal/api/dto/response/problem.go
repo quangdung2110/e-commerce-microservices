@@ -58,6 +58,8 @@ func StatusFor(code domain.Code) int {
 		return http.StatusBadRequest
 	case domain.CodeUnauthenticated:
 		return http.StatusUnauthorized
+	case domain.CodeForbidden:
+		return http.StatusForbidden
 	case domain.CodeIdempotencyConflict:
 		return http.StatusConflict
 	case domain.CodeCartFull,

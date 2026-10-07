@@ -119,6 +119,8 @@ type Cart struct {
 	ProductValidationTTL time.Duration `mapstructure:"product_validation_ttl"`
 	// IdempotencyTTL is how long an HTTP write stays replayable.
 	IdempotencyTTL time.Duration `mapstructure:"idempotency_ttl"`
+	// InternalCallers are the service identities allowed on /internal/v1 (checkout-service).
+	InternalCallers []string `mapstructure:"internal_callers"`
 	RateLimit      RateLimit     `mapstructure:"rate_limit"`
 }
 
@@ -309,6 +311,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.Cart.BucketCount == 0 {
 		c.Cart.BucketCount = domain.BucketCount
+	}
+	if len(c.Cart.InternalCallers) == 0 {
+		c.Cart.InternalCallers = []string{"checkout-service"}
 	}
 	if c.Kafka.RequiredAcks == "" {
 		c.Kafka.RequiredAcks = "all"

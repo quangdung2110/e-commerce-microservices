@@ -135,6 +135,25 @@ class ProductCatalogGrpcIntegrationTest extends AbstractCatalogIntegrationTest {
     }
 
     @Test
+    @DisplayName("category_ids là ancestry Product-owned: category của product và mọi ancestor, root trước")
+    void returnsCategoryAncestryRootFirst() {
+        UUID root = givenLeafCategory("electronics");
+        UUID middle = givenChildCategory(root, "phones");
+        UUID leaf = givenChildCategory(middle, "flagship");
+        ProductDtos.ProductResponse product = givenProduct(leaf, "pixel-flagship", 25_000_000L);
+        productCommandService.changeStatus(product.productId(), ProductEntity.etagOf(1L), ProductStatus.ACTIVE);
+        String skuId = product.skus().get(0).skuId().toString();
+
+        CapturingObserver<GetBatchSkusResponse> batch = new CapturingObserver<>();
+        grpcService.getBatchSkus(GetBatchSkusRequest.newBuilder().addSkuIds(skuId).build(), batch);
+
+        assertThat(batch.value.getSkusOrThrow(skuId).getCategoryIdsList())
+                .containsExactly(root.toString(), middle.toString(), leaf.toString());
+        assertThat(getSku(skuId).getSku().getCategoryIdsList())
+                .containsExactly(root.toString(), middle.toString(), leaf.toString());
+    }
+
+    @Test
     @DisplayName("Batch quá 100 SKU bị từ chối")
     void batchSizeIsCapped() {
         GetBatchSkusRequest.Builder request = GetBatchSkusRequest.newBuilder();

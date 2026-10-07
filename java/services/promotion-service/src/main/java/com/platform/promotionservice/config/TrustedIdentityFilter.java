@@ -43,6 +43,7 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
     private static final String USER_PATHS_PREFIX = "/api/v1/";
     private static final String INTERNAL_PATH = "/internal/v1/";
     private static final String CALCULATION_PATH = "/internal/v1/promotion-discount-calculations";
+    private static final String OPTIONS_PATH = "/internal/v1/promotion-voucher-options";
     private static final String ALLOCATION_PATH = "/internal/v1/promotion-allocation/";
 
     private static final String TRACEPARENT_HEADER = "traceparent";
@@ -132,6 +133,9 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
         PromotionProperties.Internal internal = properties.getInternal();
         if (path.equals(CALCULATION_PATH)) {
             return internal.getCalculationClients();
+        }
+        if (path.equals(OPTIONS_PATH)) {
+            return internal.getOptionsClients();
         }
         if (path.startsWith(ALLOCATION_PATH)) {
             return internal.getAllocationClients();

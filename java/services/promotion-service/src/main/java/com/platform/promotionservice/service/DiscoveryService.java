@@ -1,5 +1,7 @@
 package com.platform.promotionservice.service;
 
+import com.platform.promotionservice.common.DomainException;
+import com.platform.promotionservice.common.ErrorCode;
 import com.platform.promotionservice.common.Ids;
 import com.platform.promotionservice.domain.entity.PromotionEntity;
 import com.platform.promotionservice.domain.entity.UserCouponWalletEntity;
@@ -11,6 +13,7 @@ import com.platform.promotionservice.infrastructure.persistence.PromotionJdbc;
 import com.platform.promotionservice.infrastructure.persistence.PromotionRepository;
 import com.platform.promotionservice.infrastructure.persistence.UserCouponWalletRepository;
 import com.platform.promotionservice.web.dto.CheckoutDtos;
+import com.platform.promotionservice.web.dto.DiscountDto;
 import com.platform.promotionservice.web.dto.MoneyDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -38,6 +41,8 @@ public class DiscoveryService {
 
     private static final int PUBLIC_CANDIDATE_LIMIT = 200;
     private static final int DEFAULT_LIMIT = 20;
+    private static final int OPTIONS_DEFAULT_LIMIT = 50;
+    private static final String CHECKOUT_CHANNEL = "CHECKOUT";
 
     private final UserCouponWalletRepository wallets;
     private final PromotionRepository promotions;
@@ -46,7 +51,8 @@ public class DiscoveryService {
     private final VoucherEvaluationService evaluator;
     private final Clock clock;
 
-    private record Ranked(CheckoutDtos.VoucherEvaluation dto, long promotionId) {
+    /** {@code validUntil}: wallet expiry for a WALLET voucher, campaign end for a PUBLIC one. */
+    private record Ranked(CheckoutDtos.VoucherEvaluation dto, long promotionId, PromotionView view, Instant validUntil) {
     }
 
     @Transactional
@@ -68,16 +74,61 @@ public class DiscoveryService {
         wallets.findByUserIdAndStatus(userId, WalletStatus.USED).forEach(w -> owned.add(w.getPromotionId()));
         wallets.findByUserIdAndStatus(userId, WalletStatus.EXPIRED).forEach(w -> owned.add(w.getPromotionId()));
 
+        addPublic(ranked, owned, context, now);
+        return respond(ranked, limitOf(request.limit()), Boolean.TRUE.equals(request.includeIneligible()), now);
+    }
+
+    /**
+     * Voucher tray of the checkout page (Promotion ADR-018, Checkout ADR-017): wallet and public vouchers
+     * evaluated on the trusted context Checkout built from its own quotation. Same logic and ranking as
+     * suggest/discover, plus the display data of each voucher. A safe query apart from the lazy
+     * normalization of expired SAVED vouchers: it saves, claims and reserves nothing.
+     */
+    @Transactional
+    public CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request) {
+        if (!CHECKOUT_CHANNEL.equals(request.context().checkoutChannel())) {
+            throw new DomainException(ErrorCode.INVALID_REQUEST, "context.checkout_channel must be CHECKOUT",
+                    List.of(new DomainException.FieldError("context.checkout_channel", "must be CHECKOUT")));
+        }
+        Instant now = clock.instant();
+        RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
+        List<Ranked> ranked = new ArrayList<>(evaluateWallet(request.userId(), context, now));
+        if (!Boolean.FALSE.equals(request.includePublic())) {
+            Set<Long> owned = new HashSet<>();
+            ranked.forEach(item -> owned.add(item.promotionId()));
+            wallets.findByUserIdAndStatus(request.userId(), WalletStatus.USED).forEach(w -> owned.add(w.getPromotionId()));
+            wallets.findByUserIdAndStatus(request.userId(), WalletStatus.EXPIRED).forEach(w -> owned.add(w.getPromotionId()));
+            addPublic(ranked, owned, context, now);
+        }
+        List<CheckoutDtos.VoucherOption> items = rank(ranked,
+                request.limit() == null ? OPTIONS_DEFAULT_LIMIT : request.limit(),
+                !Boolean.FALSE.equals(request.includeIneligible())).stream()
+                .map(item -> new CheckoutDtos.VoucherOption(item.dto(), display(item)))
+                .toList();
+        return new CheckoutDtos.VoucherOptionList(items, now);
+    }
+
+    private static CheckoutDtos.VoucherDisplay display(Ranked item) {
+        PromotionView view = item.view();
+        // A snapshot cached before the name was added has none: the code still identifies the voucher.
+        String name = view.name() == null || view.name().isBlank() ? view.code() : view.name();
+        return new CheckoutDtos.VoucherDisplay(view.code(), name, view.description(),
+                DiscountDto.fromStorage(view.discountType(), view.discountValue(), view.maxDiscountVnd()),
+                MoneyDto.vnd(view.minOrderAmountVnd()), item.validUntil());
+    }
+
+    /** Active public campaigns the user does not already own, evaluated without a wallet. */
+    private void addPublic(List<Ranked> ranked, Set<Long> owned, RuleFactsBuilder.Context context, Instant now) {
         for (PromotionEntity promotion : promotions.findPublicActive(now, PageRequest.of(0, PUBLIC_CANDIDATE_LIMIT))) {
             if (owned.contains(promotion.getId())) {
                 continue;
             }
             snapshots.find(promotion.getId()).ifPresent(view -> {
                 VoucherEvaluationService.Evaluation evaluation = evaluator.evaluate(view, null, context, now, true);
-                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), promotion.getId()));
+                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), promotion.getId(), view,
+                        view.endTime()));
             });
         }
-        return respond(ranked, limitOf(request.limit()), Boolean.TRUE.equals(request.includeIneligible()), now);
     }
 
     /** Checkout tính lại 0/1 voucher từ trusted context; pure/replay-safe. */
@@ -118,7 +169,7 @@ public class DiscoveryService {
             snapshots.find(wallet.getPromotionId()).ifPresent(view -> {
                 VoucherEvaluationService.Evaluation evaluation = evaluator.evaluate(view, wallet, context, now, true);
                 ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.WALLET, wallet.getId()),
-                        wallet.getPromotionId()));
+                        wallet.getPromotionId(), view, wallet.getExpiredAt()));
             });
         }
         return ranked;
@@ -126,18 +177,25 @@ public class DiscoveryService {
 
     private static CheckoutDtos.VoucherSuggestionResponse respond(List<Ranked> ranked, int limit,
                                                                   boolean includeIneligible, Instant now) {
-        Comparator<Ranked> order = Comparator
-                .comparing((Ranked r) -> !r.dto().eligible())
-                .thenComparing(r -> -r.dto().discount().amountMinor())
-                .thenComparingLong(Ranked::promotionId);
-        List<CheckoutDtos.VoucherEvaluation> items = ranked.stream()
-                .filter(r -> includeIneligible || r.dto().eligible())
-                .sorted(order)
-                .limit(limit)
+        List<CheckoutDtos.VoucherEvaluation> items = rank(ranked, limit, includeIneligible).stream()
                 .map(Ranked::dto)
                 .toList();
         return new CheckoutDtos.VoucherSuggestionResponse(items, now);
     }
+
+    /** Eligible first, then larger discount, then promotion_id ascending; deterministic. */
+    private static List<Ranked> rank(List<Ranked> ranked, int limit, boolean includeIneligible) {
+        Comparator<Ranked> order = Comparator
+                .comparing((Ranked r) -> !r.dto().eligible())
+                .thenComparing(r -> -r.dto().discount().amountMinor())
+                .thenComparingLong(Ranked::promotionId);
+        return ranked.stream()
+                .filter(r -> includeIneligible || r.dto().eligible())
+                .sorted(order)
+                .limit(limit)
+                .toList();
+    }
+
 
     private static int limitOf(Integer limit) {
         return limit == null ? DEFAULT_LIMIT : limit;

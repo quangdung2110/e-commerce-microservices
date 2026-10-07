@@ -41,9 +41,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 ## 1. Checkout Service (BFF/Stateless)
 
 > Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
-> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Runtime đích là Java 21 +
-> Spring Boot WebFlux (Checkout ADR-013). Repository chưa có Checkout implementation nên
-> adoption runtime vẫn là `not_started`.
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Checkout là Java 21 +
+> Spring Boot WebFlux (`java/services/checkout-service`, Checkout ADR-013) và đã được
+> triển khai; adoption runtime là `pilot`. Chưa có kiểm thử end-to-end qua provider thật.
 
 | File | Mô tả |
 |---|---|
@@ -216,7 +216,7 @@ Service Contract Matrix legacy đã bị xóa.
 | Product gRPC `GetBatchSkus` | Checkout → Product |
 | `POST /internal/inventory/v1/allocation-previews` | Checkout → Inventory |
 | `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion |
-| `POST /internal/v1/promotion-voucher-options` | Checkout → Promotion; khay voucher (`proposed`) |
+| `POST /internal/v1/promotion-voucher-options` | Checkout → Promotion; khay voucher |
 | `POST /internal/v1/checkout-order-submissions` | Checkout → Order |
 | `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Checkout → Order recovery |
 | `GET /api/v1/orders` / `GET /api/v1/orders/{order_id}` | Buyer → Order |

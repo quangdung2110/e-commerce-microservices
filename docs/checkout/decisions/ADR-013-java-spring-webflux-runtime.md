@@ -38,6 +38,9 @@ Inventory, Product cũng là Java.
 - Resilience4j: `CircuitBreaker`, `Bulkhead` (semaphore), `TimeLimiter`; không dùng `Retry`.
 - Micrometer + Prometheus; Micrometer Tracing bridge OpenTelemetry.
 - Server stub và client model sinh từ OpenAPI/proto trong `contracts/`.
+  > **Ghi chú 2026-10-07:** chỉ stub gRPC Product được sinh từ proto; DTO HTTP là record viết tay
+  > theo tolerant reader và được kiểm với OpenAPI bằng contract test
+  > ([ADR-018](./ADR-018-implementation-decisions.md)).
 - Phần việc sau claim chạy trên scheduler riêng, không gắn với subscription của request, để
   client cancellation không hủy lời gọi Order.
 - BlockHound trong test để chặn blocking I/O trên event loop.
@@ -61,8 +64,8 @@ Inventory, Product cũng là Java.
 
 ## Migration impact
 
-Chưa có code. Catalog đổi `runtime` sang `java-planned`; khi có module, thêm service vào
-`docker-compose.yml` và router Gateway ([development.md](../development.md#chạy-local)).
+Module `java/services/checkout-service` đã có; catalog `runtime: java`, compose và router Gateway đã
+thêm ([development.md](../development.md#chạy-local)).
 
 ## Verification
 

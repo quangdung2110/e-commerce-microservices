@@ -28,11 +28,11 @@ checkout trong Redis.
 
 | Mục | Giá trị |
 |---|---|
-| Triển khai | `planned`: chưa có code trong repository |
-| Runtime đích | Java 21, Spring Boot WebFlux, Resilience4j, Lettuce, grpc-java ([ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md)); module dự kiến `java/services/checkout-service` |
+| Triển khai | `implemented`: `java/services/checkout-service`; compose chạy `checkout-service` (cổng host `8096`) và `checkout-redis` riêng |
+| Runtime | Java 21, Spring Boot WebFlux, Resilience4j, Lettuce, grpc-java ([ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md)); module `java/services/checkout-service`, package `com.ecommerce.checkout` |
 | Tài liệu | `proposed` |
-| Contract adoption | `not_started` ([catalog](../../contracts/catalog/services.yaml)) |
-| Gateway route | Đã có trong [gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc) nhưng chỉ bật khi upstream deploy và readiness đạt |
+| Contract adoption | `pilot` ([catalog](../../contracts/catalog/services.yaml)); contract test validate mọi response với OpenAPI và mọi fixture provider với OpenAPI/proto của provider |
+| Gateway route | Bốn router và ba profile rate limit `checkout-*` chạy trong compose local; production chỉ bật theo [gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc) khi readiness và load test đạt |
 
 ## 2. Mục tiêu
 
@@ -112,7 +112,7 @@ chỉ nhận `previous_checkout_token`, `delivery_address_id`, `promotion_id`; S
 | Outbound | Inventory | HTTP nội bộ mTLS | Allocation preview | Required | [Inventory Workflow OpenAPI](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
 | Outbound | Promotion | HTTP nội bộ mTLS | Discount calculation; voucher options | Required khi có `promotion_id`; voucher options tách riêng, lỗi không chặn Preview/Submit | [Promotion OpenAPI](../../contracts/http/promotion/v1/openapi.yaml) |
 | Outbound | Order | HTTP nội bộ mTLS | Checkout order submission và recovery | Required cho Submit | [Order internal OpenAPI](../../contracts/http/order/internal/v1/openapi.yaml) |
-| Outbound | Checkout Redis | RESP + Lua | Workflow state | Required | [data.md](./data.md) |
+| Outbound | Checkout Redis (riêng, `noeviction`) | RESP + Lua | Workflow state | Required | [data.md](./data.md) |
 
 Quyền gọi do service mesh thực thi theo principal `checkout-service`
 ([mesh §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); Checkout gửi
@@ -150,11 +150,14 @@ Giải thích chi tiết ở [domain.md](./domain.md#luật-nghiệp-vụ).
 
 ## 9. Known gaps
 
-- Chưa có code; mọi số timeout, SLO và bulkhead là giá trị khởi điểm, phải được load test
-  xác nhận trước khi bật route.
-- Promotion chưa triển khai `POST /internal/v1/promotion-voucher-options` và `context` tùy
-  chọn khi lưu voucher (`proposed`, [Promotion ADR-018](../promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)).
-  Trước đó chỉ bật được Preview/Submit, chưa bật khay voucher.
+- Mọi số timeout, SLO và bulkhead là giá trị khởi điểm, phải được load test xác nhận trước khi
+  bật route production.
+- Chưa có kiểm thử end-to-end tự động qua Cart, User, Product, Inventory, Promotion và Order
+  thật: các test của Checkout dùng fixture đã được validate với contract của từng provider
+  (xem [development.md](./development.md#test-bắt-buộc)).
+- Cổng internal của User giới hạn `internal_per_client` 600 request/phút theo IP, dùng chung cho
+  mọi pod Checkout; ở mức 20 RPS Preview mỗi pod sẽ gặp `429` và Checkout trả `503`. Nâng giới
+  hạn này cho principal `checkout-service` trước load test.
 - Product gRPC không có nhãn biến thể: báo giá trả `variant_attributes` dạng mã → giá trị
   và Order nhận `variant_name` vắng mặt cho tới khi Product bổ sung nhãn.
 - User snapshot không có tên tỉnh/huyện/xã; Order nhận `province_name`, `district_name`,

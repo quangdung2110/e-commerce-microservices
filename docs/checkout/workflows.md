@@ -49,7 +49,8 @@ Bất kỳ lỗi hạ tầng, timeout, circuit mở, bulkhead đầy hay hết d
 
 1. Gateway áp profile `checkout-submit`. Checkout đặt deadline 20 000 ms, validate token, tính
    token hash.
-2. Circuit Order đang mở → `503 CHECKOUT_UNAVAILABLE`, chưa claim.
+2. Token `PREVIEWED` còn hạn mà circuit Order đang mở → `503 CHECKOUT_UNAVAILABLE`, chưa claim
+   (replay một kết quả terminal không cần Order nên không bị chặn).
 3. Lua đọc session và kiểm tra owner (sai user → `404 CHECKOUT_NOT_FOUND`):
    - `SUPERSEDED` → `410 CHECKOUT_SUPERSEDED`; `PREVIEWED` quá `expires_at` →
      `410 CHECKOUT_EXPIRED`;
@@ -75,7 +76,8 @@ Bất kỳ lỗi hạ tầng, timeout, circuit mở, bulkhead đầy hay hết d
 - `SUCCEEDED`: gọi Order GET để lấy Payment data mới rồi trả `200` cùng `order_id`; Order GET
   lỗi thì trả `202 RESULT_UNKNOWN` (không trả secret cũ vì không có).
 - `CONFLICT`/`FAILED`: replay đúng problem đã lưu.
-- `SUBMITTING` chưa quá owner timeout (30 giây): `202 PREPARING` kèm `Retry-After`.
+- `SUBMITTING` chưa quá owner timeout (30 giây tính từ `attempt_started_at`): `202 PREPARING` kèm
+  `Retry-After`, không hỏi Order.
 - `SUBMITTING` quá owner timeout, hoặc `RETRYABLE`: chạy [WF-04](#wf-04-recovery-sau-kết-quả-không-rõ).
 - `SUPERSEDED`/`EXPIRED` chưa từng submit: `410`.
 
@@ -88,6 +90,9 @@ Kích hoạt bởi `GET /api/v1/checkout/submissions/{checkout_token}` hoặc Su
 worker nền.
 
 1. Đọc kết quả local; terminal thì trả ngay (với `SUCCEEDED` lấy Payment data mới từ Order).
+   Token `SUBMITTING` chưa quá owner timeout là attempt đang chạy của request khác: `202
+   PREPARING`, không hỏi Order. Token `PREVIEWED`, `SUPERSEDED` hoặc đã quá hạn là chưa từng submit:
+   `404 SUBMISSION_NOT_FOUND`.
 2. Gọi Order `GET /internal/v1/checkout-order-submissions/{checkout_token}` và map theo
    [bảng](./interfaces.md#mapping-kết-quả-order).
 3. Order trả `404`:

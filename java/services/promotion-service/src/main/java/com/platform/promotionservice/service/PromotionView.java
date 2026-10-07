@@ -18,6 +18,8 @@ public record PromotionView(
         long promotionId,
         long campaignId,
         long campaignRevision,
+        String name,
+        String description,
         PublicationStatus publicationStatus,
         Instant startTime,
         Instant endTime,
@@ -37,7 +39,8 @@ public record PromotionView(
 
     public static PromotionView of(PromotionEntity promotion, CampaignEntity campaign, long cacheVersion) {
         return new PromotionView(
-                promotion.getId(), campaign.getId(), campaign.getRevision(), campaign.getPublicationStatus(),
+                promotion.getId(), campaign.getId(), campaign.getRevision(), promotion.getName(), promotion.getDescription(),
+                campaign.getPublicationStatus(),
                 campaign.getStartTime(), campaign.getEndTime(), promotion.getCode(),
                 promotion.getDistributionMode(), promotion.getDiscountType(), promotion.getDiscountValue(),
                 promotion.getMaxDiscountVnd(), promotion.getMinOrderAmountVnd(), promotion.getConditionsRule(),

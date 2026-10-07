@@ -37,8 +37,11 @@ Storage key không bao giờ ra khỏi Cart.
 
 `GET /internal/v1/carts/{user_id}/checkout-snapshot` chỉ dành cho principal
 `checkout-service`. Endpoint đọc cùng Redis source of truth nhưng chỉ trả
-`{product_id, sku_id, quantity}`, không gọi Product, không refresh TTL và không
-mutate lifecycle. Checkout không được đọc trực tiếp keyspace bucketed của Cart.
+`{product_id, sku_id, quantity}` sắp theo `sku_id`, không gọi Product, không refresh TTL và không
+mutate lifecycle. Checkout không được đọc trực tiếp keyspace bucketed của Cart. Service kiểm
+`X-Service-Identity` theo allowlist `cart.internal_callers` (mặc định `checkout-service`) như phòng thủ
+bổ sung cho mesh: thiếu header `401`, service khác `403`; `user_id` không phải UUID `400`; Redis lỗi
+`503`. Route nằm ngoài Gateway (không có router Traefik).
 
 `POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0. Delta
 dương thêm/tăng, delta âm giảm; Cart không nhận quantity tuyệt đối. SKU mới hoặc

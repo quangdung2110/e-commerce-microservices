@@ -95,7 +95,7 @@ Promotion trả `503 VOUCHER_OPTIONS_UNAVAILABLE` và không ảnh hưởng Prev
 ## 5. Submit
 
 ```text
-Bước 0  Kiểm tra circuit Order; mở thì trả 503, chưa claim
+Bước 0  Token PREVIEWED còn hạn: kiểm tra circuit Order; mở thì trả 503, chưa claim
 Bước 1  Lua claim PREVIEWED → SUBMITTING, ghi payload Order bất biến (mã hoá) và attempt
 Bước 2  Revalidate: Cart ∥ Product (≤ 500 ∥ ≤ 1 000 ms), rồi Promotion (≤ 2 000 ms)
 Bước 3  Order POST /internal/v1/checkout-order-submissions (≤ 13 000 ms)
@@ -160,8 +160,8 @@ Checkout không có rate limiter riêng; quota thuộc Gateway để mọi repli
 ## 9. Triển khai và mạng
 
 - Public API chỉ qua Gateway; internal APIs yêu cầu service identity/mTLS.
-- Tối thiểu hai replica, scale ngang; Redis phải hỗ trợ Lua (`EVALSHA`), có HA và
-  `maxmemory-policy noeviction` cho keyspace Checkout.
+- Tối thiểu hai replica, scale ngang; Redis riêng cho Checkout, hỗ trợ Lua (`EVALSHA`), có HA
+  (standalone hoặc Sentinel, không Cluster) và `maxmemory-policy noeviction`.
 - Khi nhận SIGTERM: readiness chuyển `false`, ngừng nhận request mới, chờ tối đa 25 giây
   cho request đang chạy (đủ cho deadline Submit 20 giây) rồi mới dừng.
 

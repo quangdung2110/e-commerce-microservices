@@ -50,6 +50,8 @@ public class PromotionProperties {
         private String identityHeader = "X-Service-Identity";
         /** Caller của POST /internal/v1/promotion-discount-calculations (Checkout). */
         private List<String> calculationClients = new ArrayList<>(List.of("checkout-service"));
+        /** Caller của POST /internal/v1/promotion-voucher-options (Checkout, ADR-018). */
+        private List<String> optionsClients = new ArrayList<>(List.of("checkout-service"));
         /** Caller của /internal/v1/promotion-allocation/** (Order/Temporal). */
         private List<String> allocationClients = new ArrayList<>(List.of("order-service"));
     }

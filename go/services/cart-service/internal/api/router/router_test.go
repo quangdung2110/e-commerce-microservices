@@ -508,3 +508,137 @@ func TestReadinessFailsWhenADependencyIsDown(t *testing.T) {
 		t.Fatalf("/health/ready = %d, want 503", recorder.Code)
 	}
 }
+
+// ── internal checkout snapshot ───────────────────────────────────────────
+
+const snapshotPath = "/internal/v1/carts/" + testUserID + "/checkout-snapshot"
+
+func newSnapshotEngine(store port.CartStore) http.Handler {
+	cartService := service.New(store, &stubCatalog{}, service.Config{ProductValidationTTL: time.Minute})
+	return New(Config{
+		Cart:            handler.NewCart(cartService, testMediaURLs, zap.NewNop()),
+		Health:          handler.NewHealth(map[string]handler.Probe{}, time.Second),
+		Logger:          zap.NewNop(),
+		InternalCallers: []string{"checkout-service"},
+	})
+}
+
+func checkoutCaller() map[string]string {
+	return map[string]string{middleware.HeaderServiceIdentity: "checkout-service"}
+}
+
+func TestCheckoutSnapshotReturnsIdentifiersAndQuantitiesOnly(t *testing.T) {
+	store := &stubStore{items: []domain.Item{
+		{SkuID: "SKU-B", StoredItem: domain.StoredItem{ProductID: "PRODUCT-B", Quantity: 1, ProductName: "B",
+			UnitPriceAtAdd: domain.Money{AmountMinor: 1, Currency: "VND"}, IsAvailable: true}},
+		{SkuID: "SKU-A", StoredItem: domain.StoredItem{ProductID: "PRODUCT-A", Quantity: 3, ProductName: "A",
+			UnitPriceAtAdd: domain.Money{AmountMinor: 2, Currency: "VND"}, IsAvailable: true}},
+	}}
+	engine := newSnapshotEngine(store)
+
+	recorder := do(t, engine, http.MethodGet, snapshotPath, "", checkoutCaller())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store", got)
+	}
+
+	body := decode[map[string]any](t, recorder)
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("items = %v", body["items"])
+	}
+	// Ordered by SKU, and nothing but the three contract fields.
+	first := items[0].(map[string]any)
+	if first["sku_id"] != "SKU-A" || first["product_id"] != "PRODUCT-A" || first["quantity"] != float64(3) {
+		t.Fatalf("first line = %v", first)
+	}
+	if len(first) != 3 {
+		t.Fatalf("a snapshot line must carry only product_id, sku_id and quantity, got %v", first)
+	}
+	if len(body) != 1 {
+		t.Fatalf("the snapshot carries only items, got %v", body)
+	}
+}
+
+func TestCheckoutSnapshotOfAMissingCartIsEmpty(t *testing.T) {
+	engine := newSnapshotEngine(&stubStore{})
+
+	recorder := do(t, engine, http.MethodGet, snapshotPath, "", checkoutCaller())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := decode[map[string]any](t, recorder)
+	if items, ok := body["items"].([]any); !ok || len(items) != 0 {
+		t.Fatalf("items = %v, want an empty array", body["items"])
+	}
+}
+
+func TestCheckoutSnapshotNeedsAnAllowedServiceIdentity(t *testing.T) {
+	engine := newSnapshotEngine(&stubStore{})
+
+	missing := do(t, engine, http.MethodGet, snapshotPath, "", nil)
+	if missing.Code != http.StatusUnauthorized {
+		t.Fatalf("without identity = %d, want 401", missing.Code)
+	}
+	if problem := decode[map[string]any](t, missing); problem["code"] != string(domain.CodeUnauthenticated) {
+		t.Fatalf("code = %v", problem["code"])
+	}
+
+	other := do(t, engine, http.MethodGet, snapshotPath, "", map[string]string{
+		middleware.HeaderServiceIdentity: "order-service",
+	})
+	if other.Code != http.StatusForbidden {
+		t.Fatalf("other service = %d, want 403", other.Code)
+	}
+	if problem := decode[map[string]any](t, other); problem["code"] != string(domain.CodeForbidden) {
+		t.Fatalf("code = %v", problem["code"])
+	}
+
+	// A buyer's X-User-Id is not a service identity and the user comes from the path only.
+	buyer := do(t, engine, http.MethodGet, snapshotPath, "", map[string]string{middleware.HeaderUserID: testUserID})
+	if buyer.Code != http.StatusUnauthorized {
+		t.Fatalf("buyer header only = %d, want 401", buyer.Code)
+	}
+}
+
+func TestCheckoutSnapshotRejectsAMalformedUser(t *testing.T) {
+	engine := newSnapshotEngine(&stubStore{})
+
+	recorder := do(t, engine, http.MethodGet, "/internal/v1/carts/not-a-uuid/checkout-snapshot", "", checkoutCaller())
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestCheckoutSnapshotSurfacesAStoreFailureAs503(t *testing.T) {
+	store := &stubStore{loadErr: domain.NewRetryableError(domain.CodeCartStoreUnavailable, "redis is down")}
+	engine := newSnapshotEngine(store)
+
+	recorder := do(t, engine, http.MethodGet, snapshotPath, "", checkoutCaller())
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+}
+
+// The snapshot is a pure read: it must not call Product, which would turn a cart read into a
+// dependency of Product (and it has no TTL side effect, because it only uses LoadItems).
+func TestCheckoutSnapshotNeverCallsProduct(t *testing.T) {
+	store := &stubStore{items: []domain.Item{{SkuID: "SKU-A", StoredItem: domain.StoredItem{
+		ProductID: "PRODUCT-A", Quantity: 1, IsAvailable: true}}}}
+	catalog := &stubCatalog{batchErr: domain.NewError(domain.CodeProductUnavailable, "must not be called"),
+		skuErr: domain.NewError(domain.CodeProductUnavailable, "must not be called")}
+	cartService := service.New(store, catalog, service.Config{ProductValidationTTL: time.Minute})
+	engine := New(Config{
+		Cart:            handler.NewCart(cartService, testMediaURLs, zap.NewNop()),
+		Health:          handler.NewHealth(map[string]handler.Probe{}, time.Second),
+		Logger:          zap.NewNop(),
+		InternalCallers: []string{"checkout-service"},
+	})
+
+	recorder := do(t, engine, http.MethodGet, snapshotPath, "", checkoutCaller())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even though Product is down", recorder.Code)
+	}
+}

@@ -3,13 +3,29 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-07 (implementation)
+
+- Checkout HTTP v1 is `implemented` (`java/services/checkout-service`); the contract is unchanged except for
+  a wording fix in the Preview description (a submission in flight is SUBMITTING or RETRYABLE). Behaviour
+  the contract already stated and the code now enforces: unknown request fields are `400 INVALID_REQUEST`.
+- Cart HTTP v1 `GET /internal/v1/carts/{user_id}/checkout-snapshot` now exists in `cart-service`; it requires
+  `X-Service-Identity: checkout-service` (`401` without it, `403` for another service) and a UUID `user_id`
+  (`400`). Wire shape unchanged.
+- Product gRPC v1 `Sku.category_ids` is now populated (Product-owned ancestry, root first, at most 20, the
+  categories closest to the product when longer). Before, Product never set it, so Promotion category rules
+  could not match. The proto copy in `product-service` is refreshed from `contracts/`.
+- Promotion HTTP v1: `POST /internal/v1/promotion-voucher-options` is `implemented`; `user_tier` is optional on
+  calculate and Reserve as the schema already said (the DTO used to require it); `context` is optional on
+  `PUT /api/v1/me/promotion-vouchers/{promotion_id}`. Promotion options accept only
+  `checkout_channel=CHECKOUT`.
+
 ## 2026-10-07
 
 - Cart HTTP v1 `CartItem.image_url` is now always an absolute CDN URL (or the configured
   placeholder when the SKU has no image), as the schema's `format: uri` already required.
   Cart used to return the raw Product image storage key. The field is now always present;
   the shape is unchanged.
-- Checkout HTTP v1 (proposed, no runtime yet) is aligned with a real Backend for Frontend
+- Checkout HTTP v1 (proposed at that time) is aligned with a real Backend for Frontend
   ([Checkout ADR-014…017](../docs/checkout/decisions/README.md)):
   - every error now uses `CheckoutProblem` with a stable `code` enum, `retryable`, `action`
     and optional `status_url`, `changed_fields`, `sku_ids`, `rejected_lines`,

@@ -196,4 +196,138 @@ class HttpContractIntegrationTest extends AbstractPromotionIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.outcome").value("NO_RESERVATION"));
     }
+
+    private static String checkoutContext(long subtotal, String channel) {
+        return """
+                {"subtotal":{"amount_minor":%d,"currency":"VND"},"payment_method":"STRIPE",
+                 "checkout_channel":"%s","items":[{"product_id":"%s","sku_id":"S1","quantity":1,
+                 "unit_price":{"amount_minor":%d,"currency":"VND"},"category_ids":["c1"]}]}
+                """.formatted(subtotal, channel, UUID.randomUUID(), subtotal);
+    }
+
+    @Test
+    @DisplayName("Checkout and Order calls may omit user_tier: Checkout v1 has no tier authority")
+    void userTierIsOptional() throws Exception {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        publish(campaign);
+        String promotionId = Long.toString(promotion.getId());
+        String user = UUID.randomUUID().toString();
+        mvc.perform(put("/api/v1/me/promotion-vouchers/" + promotionId)
+                        .header("X-User-Id", user).contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated());
+
+        String calculation = "{\"user_id\":\"" + user + "\",\"promotion_id\":\"" + promotionId + "\",\"context\":"
+                + checkoutContext(350_000, "CHECKOUT") + "}";
+        mvc.perform(post("/internal/v1/promotion-discount-calculations")
+                        .header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON).content(calculation))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.eligible").value(true))
+                .andExpect(jsonPath("$.discount.amount_minor").value(35000));
+
+        String reserve = "{\"order_id\":\"901\",\"user_id\":\"" + user + "\",\"promotion_id\":\"" + promotionId
+                + "\",\"expected_discount\":{\"amount_minor\":35000,\"currency\":\"VND\"},\"context\":"
+                + checkoutContext(350_000, "CHECKOUT") + "}";
+        mvc.perform(post("/internal/v1/promotion-allocation/reservations")
+                        .header("X-Service-Identity", "order-service")
+                        .contentType(MediaType.APPLICATION_JSON).content(reserve))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.state").value("RESERVED"));
+    }
+
+    @Test
+    @DisplayName("PUT promotion-vouchers without a context only saves: evaluation is null (Promotion ADR-018)")
+    void saveWithoutContext() throws Exception {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        publish(campaign);
+        String user = UUID.randomUUID().toString();
+
+        mvc.perform(put("/api/v1/me/promotion-vouchers/" + promotion.getId())
+                        .header("X-User-Id", user).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.wallet.status").value("SAVED"))
+                .andExpect(jsonPath("$.evaluation").value((Object) null));
+        mvc.perform(put("/api/v1/me/promotion-vouchers/" + promotion.getId())
+                        .header("X-User-Id", user).contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.evaluation").value((Object) null));
+    }
+
+    @Test
+    @DisplayName("voucher options: only checkout-service, wallet and public vouchers ranked with display data")
+    void voucherOptions() throws Exception {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity saved = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        PromotionEntity open = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        publish(campaign);
+        String user = UUID.randomUUID().toString();
+        mvc.perform(put("/api/v1/me/promotion-vouchers/" + saved.getId())
+                        .header("X-User-Id", user).contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isCreated());
+        String url = "/internal/v1/promotion-voucher-options";
+        String body = "{\"user_id\":\"" + user + "\",\"context\":" + checkoutContext(350_000, "CHECKOUT") + "}";
+
+        mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post(url).header("X-Service-Identity", "order-service")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
+
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.evaluated_at").exists())
+                // Equal discount: promotion_id ascending, so the saved one comes first.
+                .andExpect(jsonPath("$.items[0].evaluation.promotion_id").value(Long.toString(saved.getId())))
+                .andExpect(jsonPath("$.items[0].evaluation.source").value("WALLET"))
+                .andExpect(jsonPath("$.items[0].evaluation.distribution_mode").value("PUBLIC_SAVE"))
+                .andExpect(jsonPath("$.items[0].evaluation.eligible").value(true))
+                .andExpect(jsonPath("$.items[0].evaluation.discount.amount_minor").value(35000))
+                .andExpect(jsonPath("$.items[0].display.code").value(saved.getCode()))
+                .andExpect(jsonPath("$.items[0].display.name").value("Ten percent"))
+                .andExpect(jsonPath("$.items[0].display.description").value((Object) null))
+                .andExpect(jsonPath("$.items[0].display.discount.type").value("PERCENTAGE"))
+                .andExpect(jsonPath("$.items[0].display.discount.value_basis_points").value(1000))
+                .andExpect(jsonPath("$.items[0].display.discount.max_discount.amount_minor").value(50000))
+                .andExpect(jsonPath("$.items[0].display.min_order_amount.amount_minor").value(100000))
+                .andExpect(jsonPath("$.items[0].display.valid_until").exists())
+                .andExpect(jsonPath("$.items[1].evaluation.promotion_id").value(Long.toString(open.getId())))
+                .andExpect(jsonPath("$.items[1].evaluation.source").value("PUBLIC"))
+                .andExpect(jsonPath("$.items[1].evaluation.wallet_id").value((Object) null));
+
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"user_id\":\"" + user + "\",\"include_public\":false,\"context\":"
+                                + checkoutContext(350_000, "CHECKOUT") + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].evaluation.source").value("WALLET"));
+
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"user_id\":\"" + user + "\",\"limit\":1,\"context\":"
+                                + checkoutContext(350_000, "CHECKOUT") + "}"))
+                .andExpect(jsonPath("$.items.length()").value(1));
+
+        // Below the minimum order: ineligible vouchers are listed with their reason unless excluded.
+        String small = "\"context\":" + checkoutContext(50_000, "CHECKOUT");
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"user_id\":\"" + user + "\"," + small + "}"))
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].evaluation.eligible").value(false))
+                .andExpect(jsonPath("$.items[0].evaluation.reason").value("MIN_ORDER_NOT_MET"));
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"user_id\":\"" + user + "\",\"include_ineligible\":false," + small + "}"))
+                .andExpect(jsonPath("$.items.length()").value(0));
+
+        // The context of this operation is trusted: only the CHECKOUT channel.
+        mvc.perform(post(url).header("X-Service-Identity", "checkout-service")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"user_id\":\"" + user + "\",\"context\":" + checkoutContext(350_000, "web") + "}"))
+                .andExpect(status().isBadRequest());
+    }
 }

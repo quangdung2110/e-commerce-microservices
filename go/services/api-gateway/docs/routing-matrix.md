@@ -28,21 +28,27 @@
 | `/health` | - | No | No limit | 1 | Health check endpoint |
 | `/ping` | - | No | No limit | 1 | Liveness probe |
 
-## Target routes not active in runtime config
+## Checkout routes
 
-Checkout has no deployed upstream in this repository, so the following contract routes
-must remain absent from `config/dynamic.yml` and Compose labels until its readiness probe
-passes. Their canonical source is `contracts/http/checkout/v1/openapi.yaml`.
+Checkout runs in Compose (`checkout-service`, host port 8096) and its four routes are active:
+the Traefik labels live on the `checkout-service` container and the three user-keyed rate
+profiles in `config/dynamic.yml`. The canonical source is
+`contracts/http/checkout/v1/openapi.yaml`.
 
-| Path | Method | Auth | Target rate profile |
-|---|---|---|---|
-| `/api/v1/checkout/preview` | POST | Required | `checkout-preview` (10/user/minute) |
-| `/api/v1/checkout/submit` | POST | Required | `checkout-submit` (3/user/minute) |
-| `/api/v1/checkout/submissions/{checkout_token}` | GET | Required | `api-authenticated` |
+| Path | Method | Auth | Rate profile (`dynamic.yml` / Compose) | Retry |
+|---|---|---|---|---|
+| `/api/v1/checkout/preview` | POST | `authenticated` | `rate-limit-checkout-preview` (10/user/minute) | none |
+| `/api/v1/checkout/submit` | POST | `authenticated` | `rate-limit-checkout-submit` (3/user/minute) | none |
+| `/api/v1/checkout/previews/{checkout_token}/voucher-options` | GET | `authenticated` | `rate-limit-checkout-voucher-options` (20/user/minute) | connection failures only |
+| `/api/v1/checkout/submissions/{checkout_token}` | GET | `authenticated` | `rate-limit-api` (`api-authenticated`) | connection failures only |
 
-All three routes strip client-supplied identity headers and return `Cache-Control:
-private, no-store`. Gateway never retries either POST. Access logs must record the
-route template or redact/hash the submission token path segment before activation.
+All four routes strip client-supplied identity headers (`authenticated` = strip + ForwardAuth),
+use the `business-api` transport (25 s response-header wait, above the Checkout deadlines of
+5 s, 1.5 s and 20 s) and return `Cache-Control: private, no-store`. Gateway never retries a POST.
+The token segments are matched by regex, and Checkout's own access line records the route
+template, never the path. The rate limit is Traefik CE's in-memory counter per replica;
+production with several replicas needs the shared state of `docs/gateway/runtime-contract.md`
+section 7.
 
 `docker-compose.yml` là cấu hình development nên router Product dùng
 `dev-admin-auth@file` để inject một identity `ADMIN` cố định sau khi đã xóa các

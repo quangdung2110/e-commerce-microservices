@@ -16,8 +16,14 @@ evidence:
 
 ## Status
 
-`Accepted` 2026-10-07; contract `proposed`, chưa có code. Phía Checkout:
+`Accepted` 2026-10-07; implemented 2026-10-07 (xem Ghi chú triển khai). Phía Checkout:
 [Checkout ADR-017](../../checkout/decisions/ADR-017-voucher-options-read-composition.md).
+
+> **Ghi chú triển khai 2026-10-07:** `POST /internal/v1/promotion-voucher-options` và `context` tùy chọn
+> khi lưu voucher đã có code và provider test (`HttpContractIntegrationTest`). Hai điều chỉnh đi kèm:
+> (1) `user_tier` là tùy chọn ở calculate và Reserve đúng như contract: DTO cũ bắt buộc nó nên Checkout và
+> Order (đều không có tier authority) bị `400`; (2) options chỉ nhận `checkout_channel=CHECKOUT` vì
+> context của operation này là trusted. `PromotionView` thêm `name` và `description` để dựng `display`.
 
 ## Context
 

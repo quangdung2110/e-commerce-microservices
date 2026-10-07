@@ -1,0 +1,122 @@
+spring:
+  application:
+    name: checkout-service
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    # Contract fields that are required-but-nullable (promotion_id, client_secret...) must be
+    # serialized as null.
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+    # Tolerant reader: a provider adding a field must not break Checkout (ADR-013).
+    deserialization:
+      fail-on-unknown-properties: false
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+  data:
+    redis:
+      url: ${checkout.redis-url}
+      timeout: 200ms
+      connect-timeout: 1s
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+# Defaults are the starting values of ADR-014; production values need an ADR and must keep
+# Checkout timeout < mesh timeout and deadline < Gateway wait - 1 s (CHK-INV-07).
+checkout:
+  redis-url: ${CHECKOUT_REDIS_URL:}
+  keys:
+    token-hmac-keys: ${CHECKOUT_TOKEN_HMAC_KEYS:}
+    token-hmac-active-version: ${CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION:}
+    encryption-keys: ${CHECKOUT_ENCRYPTION_KEYS:}
+    encryption-active-version: ${CHECKOUT_ENCRYPTION_ACTIVE_VERSION:}
+  endpoints:
+    cart-base-url: ${CHECKOUT_CART_BASE_URL:}
+    user-base-url: ${CHECKOUT_USER_BASE_URL:}
+    product-grpc-target: ${CHECKOUT_PRODUCT_GRPC_TARGET:}
+    inventory-base-url: ${CHECKOUT_INVENTORY_BASE_URL:}
+    promotion-base-url: ${CHECKOUT_PROMOTION_BASE_URL:}
+    order-base-url: ${CHECKOUT_ORDER_BASE_URL:}
+  voucher-options-enabled: ${CHECKOUT_VOUCHER_OPTIONS_ENABLED:false}
+  deadlines:
+    preview: 5000ms
+    voucher-options: 1500ms
+    submit: 20000ms
+  # Before a wave the remaining deadline must be at least this long (otherwise 503, no call).
+  phase-min-remaining: 200ms
+  # timeout = min(ceiling, remaining - reserve); Order gets a larger reserve to write the result.
+  dependency-reserve: 100ms
+  order-reserve: 200ms
+  # Order is not called when less than this remains; the token becomes RETRYABLE instead.
+  order-min-remaining: 2000ms
+  redis-timeout: 200ms
+  timeouts:
+    cart: 500ms
+    user: 500ms
+    product: 1000ms
+    inventory: 3000ms
+    promotion-calculation: 2000ms
+    promotion-options: 1000ms
+    order-post: 13000ms
+    order-get: 2000ms
+  bulkheads:
+    cart: 10
+    user: 10
+    product: 10
+    inventory: 20
+    promotion-calculation: 15
+    promotion-options: 10
+    order-post: 50
+    order-get: 10
+  circuit-breaker:
+    sliding-window: 10s
+    minimum-calls: 20
+    failure-rate-threshold: 50
+    slow-call-rate-threshold: 50
+    # A call is slow when it exceeds this share of its Checkout timeout.
+    slow-call-timeout-ratio: 0.8
+    open-duration: 10s
+    half-open-calls: 5
+  lifecycle:
+    quote-ttl: ${CHECKOUT_QUOTE_TTL:20m}
+    session-retention: ${CHECKOUT_SESSION_RETENTION:30m}
+    preview-idempotency-ttl: ${CHECKOUT_PREVIEW_IDEMPOTENCY_TTL:5m}
+    submit-owner-timeout: ${CHECKOUT_SUBMIT_OWNER_TIMEOUT:30s}
+    submit-retry-window: ${CHECKOUT_SUBMIT_RETRY_WINDOW:2m}
+    # 15 s mesh timeout of the Order POST + 5 s: until then an earlier POST may still be in flight.
+    order-call-in-flight-window: 20s
+    success-result-ttl: ${CHECKOUT_SUCCESS_RESULT_TTL:24h}
+  retry-after:
+    preparing-seconds: 2
+    result-unknown-seconds: 3
+    unavailable-seconds: 2
+  media:
+    cdn-base-url: ${CHECKOUT_MEDIA_CDN_BASE_URL:}
+    placeholder-url: ${CHECKOUT_MEDIA_PLACEHOLDER_URL:}
+    # Only docker-compose local sets false: MinIO is served through the gateway over http.
+    require-https: ${CHECKOUT_MEDIA_REQUIRE_HTTPS:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        checkout.dependency.calls: true
+        checkout.redis: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+
+logging:
+  level:
+    root: INFO

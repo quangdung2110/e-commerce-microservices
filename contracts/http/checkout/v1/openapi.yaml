@@ -13,7 +13,7 @@ info:
     address snapshots. There is no shipping fee: final_amount equals total_amount minus
     total_discount and is at least 1 VND. Every error is application/problem+json with
     a stable code from the CheckoutProblem catalog (Checkout ADR-015).
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://checkout-service:8080
     description: Internal service endpoint behind API Gateway
@@ -32,7 +32,8 @@ paths:
         supersedes the user's current PREVIEWED quotation, so a reload never blocks the
         buyer. With previous_checkout_token the token must equal the current PREVIEWED
         quotation, otherwise 409 ACTIVE_CHECKOUT_CHANGED. While the user's latest
-        quotation is being submitted (SUBMITTING or RESULT_UNKNOWN) Preview returns 409
+        quotation is being submitted (state SUBMITTING or RETRYABLE, shown to the client as
+        PREPARING or RESULT_UNKNOWN) Preview returns 409
         SUBMISSION_IN_PROGRESS with status_url and creates nothing (Checkout ADR-016).
         Items and quantities come from Cart; prices and category facts from Product;
         address snapshot from User; allocation plan from Inventory; discount from

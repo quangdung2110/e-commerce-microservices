@@ -102,7 +102,7 @@ claim `roles` của access token đã verify, đã chuyển khỏi `dev-admin-au
 (`POST /api/v1/promotion-discovery`, middleware `rate-limit-promotion-discovery` 20 request/
 user/phút theo `X-User-Id`, priority 35) và `promotion-me` (`/api/v1/me/promotion-vouchers/**`,
 `/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30);
-hai router customer này còn dùng `dev-auth` (identity cố định) cho tới bước 11 frontend.
+hai router customer này dùng `authenticated@file` từ 07/10/2026 (trước đó là `dev-auth`, identity cố định).
 Cấu hình docker-compose hiện tại dùng rate limit in-memory per replica; trước khi chạy nhiều
 replica production, profile này phải chuyển sang Redis-backed shared state như mục 2 và mục 7
 yêu cầu (Traefik CE hỗ trợ Redis backend cho `RateLimit` từ v3.2). Không thay quota này bằng một

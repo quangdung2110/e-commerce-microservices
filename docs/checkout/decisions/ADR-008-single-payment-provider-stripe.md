@@ -31,6 +31,10 @@ route theo provider không còn cần thiết.
 
 - Checkout **không nhận** `payment_method` từ client; field này bị loại khỏi
   Submit payload và response. Nếu client vẫn gửi, field bị bỏ qua (N/A).
+  > **Ghi chú 2026-10-07:** OpenAPI (`additionalProperties: false`) và
+  > [ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md) quy định field lạ là
+  > `400 INVALID_REQUEST`; hành vi hiện hành là từ chối, không bỏ qua
+  > ([ADR-018](./ADR-018-implementation-decisions.md)).
 - Redis session không lưu `payment_method`; chỉ lưu `pricing_summary` +
   `delivery_address_snapshot` + voucher selection. Provider được fix cứng = Stripe
   ở Order Service và Payment Service.

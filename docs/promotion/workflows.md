@@ -122,7 +122,7 @@ tăng `claimed_quantity` bằng guarded update và trả `OUT_OF_STOCK` khi đã
 SAVED còn hạn trả idempotent success mà không kéo dài expiry; USED bị từ chối. Không có
 default 30 ngày: expiry lấy từ validity policy. Public save chỉ evaluate khi request có
 `context`; trang checkout gửi body rỗng và nhận `evaluation: null`, discount chính thức đến từ
-Checkout Preview (`context` tùy chọn là `proposed`, ADR-018).
+Checkout Preview (`context` tùy chọn, ADR-018).
 
 ## WF-PROMO-004 — Discovery và calculate
 
@@ -141,13 +141,16 @@ Checkout Preview (`context` tùy chọn là `proposed`, ADR-018).
 `POST /api/v1/promotion-discovery` ngoài wallet còn query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
 user đã sở hữu, evaluate/sort/limit. Campaign đã end không xuất hiện cho save mới.
 
-### Checkout voucher options (`proposed`, ADR-018)
+### Checkout voucher options (ADR-018)
 
 Checkout gọi `POST /internal/v1/promotion-voucher-options` với `user_id` và
 `TrustedCheckoutContext` dựng từ báo giá. Promotion chạy cùng bước wallet tray và public
 discovery ở trên (theo `include_public`/`include_ineligible`), giữ ranking, rồi gắn thông tin
 hiển thị từ definition snapshot (`code`, `name`, `description`, `discount`,
-`min_order_amount`, `valid_until`). Không save, claim hay reserve; không local rate limit.
+`min_order_amount`, `valid_until`). `valid_until` là `expired_at` của wallet với voucher `WALLET`
+và `end_time` của campaign với voucher `PUBLIC`. Mặc định `include_public` và
+`include_ineligible` là `true`, `limit` là 50. Không save, claim hay reserve; không local rate
+limit.
 
 ### Calculate
 

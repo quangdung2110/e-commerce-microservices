@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/dto/request"
@@ -45,6 +46,33 @@ func (h *Cart) Get(c *gin.Context) {
 	// The cart is personal data and must never sit in a shared cache.
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, response.NewCart(view, h.media))
+}
+
+// CheckoutSnapshot handles GET /internal/v1/carts/{user_id}/checkout-snapshot for Checkout.
+//
+// The caller names the user in the path, so the route is only reachable inside the mesh and only for
+// the checkout-service principal (see middleware.ServiceIdentity). Responses are private: a cart is
+// personal data.
+func (h *Cart) CheckoutSnapshot(c *gin.Context) {
+	userID := c.Param("user_id")
+	if _, err := uuid.Parse(userID); err != nil {
+		h.badRequest(c, []request.FieldError{{Field: "user_id", Message: "user_id must be a UUID"}})
+		return
+	}
+	identity, err := domain.NewIdentity(userID)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+
+	items, err := h.service.CheckoutSnapshot(c.Request.Context(), identity)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response.NewCheckoutCartSnapshot(items))
 }
 
 // AdjustItem handles POST /api/v1/carts/mine/items.

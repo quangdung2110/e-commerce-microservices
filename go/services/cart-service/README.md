@@ -12,9 +12,13 @@ carries exactly one outbound event, `CART_ABANDONED`, to Notification Service.
 | Interaction | Direction | Contract |
 |---|---|---|
 | Cart HTTP API | Inbound | [`contracts/http/cart/v1/openapi.yaml`](../../../contracts/http/cart/v1/openapi.yaml) |
+| Checkout cart snapshot (`GET /internal/v1/carts/{user_id}/checkout-snapshot`) | Inbound, internal | Same OpenAPI, `getCheckoutCartSnapshot`; only `X-Service-Identity: checkout-service`, no Gateway route |
 | `com.ecommerce.order.paid.v1` | Inbound Kafka | [Order Events AsyncAPI v1](../../../contracts/events/order/v1/asyncapi.yaml) |
 | Product lookup | Outbound gRPC | [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../../contracts/grpc/ecommerce/product/v1/product_service.proto) |
 | `CART_ABANDONED` | Outbound Kafka | [`contracts/events/cart/v1/asyncapi.yaml`](../../../contracts/events/cart/v1/asyncapi.yaml) |
+
+Run Go through the container wrapper (the machine has no Go toolchain): `bash scripts/go.sh vet ./...` and
+`bash scripts/go.sh test ./internal/...`.
 
 Neither the Lua scripts nor the gRPC stubs are authored here:
 

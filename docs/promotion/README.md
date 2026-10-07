@@ -28,7 +28,7 @@ hoạt động.
 | Runtime | Java 21, Spring Boot 3.3 (đồng bộ với các service Java khác), PostgreSQL 16, Redis 7, Kafka + Debezium |
 | Implementation path | `java/services/promotion-service` (package `com.platform.promotionservice`) |
 | Độ tin cậy tài liệu | `implemented`; tài liệu đã được đồng bộ với source/migration trong lần implement đầu; `verified_against_commit` sẽ được ghi khi merge |
-| Contract adoption | Promotion Events v1 đã có provider/consumer tests. HTTP v1 là target `proposed`/partial: implementation hiện có phần lớn route, nhưng Checkout context mới (`checkout_channel=CHECKOUT`, nullable `user_tier`) chưa được provider DTO/test adopt |
+| Contract adoption | Promotion Events v1 đã có provider/consumer tests. HTTP v1 đã có provider test MockMvc (`HttpContractIntegrationTest`), gồm `user_tier` tùy chọn ở calculate/Reserve, `POST /internal/v1/promotion-voucher-options` cho Checkout và `context` tùy chọn khi lưu voucher ([ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); phần Checkout context đã được provider DTO/test adopt |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -111,7 +111,7 @@ CloudEvents `id`.
 |---|---|---|---|
 | Inbound | Admin qua Gateway | HTTP | Quản trị campaign/voucher/markdown |
 | Inbound | Customer qua Gateway | HTTP | Discovery, suggestion, save và claim voucher |
-| Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context; voucher options cho khay voucher của trang checkout (`proposed`, ADR-018) |
+| Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context; voucher options cho khay voucher của trang checkout (`implemented`, ADR-018) |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel only; technical cancellation is denied to Order |
 | Inbound | `promotion-legacy-migrator` | HTTP | Deprecated technical cleanup with proof header/body digest |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
@@ -214,9 +214,11 @@ ký các fact đó; thêm sau là thay đổi additive theo
   `X-User-Id`) và router cho admin/discovery/wallet trong docker-compose, nhưng rateLimit của
   Traefik CE là in-memory per replica; production nhiều replica cần shared state theo
   `docs/gateway/runtime-contract.md`. Promotion không sở hữu Redis rate-limit key.
-- Chưa triển khai hai thay đổi contract `proposed` của
-  [ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md):
-  `POST /internal/v1/promotion-voucher-options` cho Checkout và `context` tùy chọn khi lưu
-  voucher (runtime hiện vẫn bắt buộc `context`).
+- `user_tier` là tùy chọn ở `promotion-discount-calculations` và Reserve (Checkout v1 chưa có
+  tier authority, Order không gửi). Trước ADR-018 DTO bắt buộc nó, nên mọi lần gọi của Checkout
+  và Order bị `400`; đã sửa cùng đợt triển khai voucher options.
+- `display.name` và `display.description` của voucher options lấy từ snapshot; snapshot đã cache
+  trước khi có hai field này không có `name`, nên Promotion trả `code` thay `name` cho tới khi
+  snapshot được ghi lại (TTL hoặc bump version).
 - `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
   `domain/rule/RuleEvaluator` + `RuleValidator` trong service.
