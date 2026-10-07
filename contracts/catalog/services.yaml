@@ -45,13 +45,6 @@ services:
     contract_adoption: pilot
     docs: docs/inventory/README.md
 
-  - id: delivery-service
-    bounded_context: delivery-proof
-    runtime: undecided
-    status: documented
-    contract_adoption: not_started
-    docs: docs/delivery/README.md
-
   - id: search-service
     bounded_context: search
     runtime: java

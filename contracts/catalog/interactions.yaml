@@ -362,14 +362,6 @@ interactions:
       Inspection completion is payout-independent and contains pass/fail counters. Delivery is
       at-least-once with a 30-day minimum replay window.
 
-  - id: delivery-publishes-order-line-delivered
-    protocol: kafka
-    provider: delivery-service
-    consumers: [order-service]
-    contract: events/delivery/v1/asyncapi.yaml
-    status: proposed
-    notes: Verified per-line proof is the only fact that permits Order DISPATCHED→DELIVERED and an all-line completion CAS.
-
   - id: search-exports-inventory-availability
     protocol: http
     provider: inventory-service
