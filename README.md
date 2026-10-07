@@ -1,6 +1,9 @@
 # E-Commerce Microservices Platform
 
-Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices** với **Event Sourcing** và **CQRS**, sử dụng hai hệ sinh thái chính: **Java (Spring Boot 4)** và **Go**.
+Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices**, sử dụng hai
+hệ sinh thái chính là **Java** và **Go**. Event-driven, CQRS, Saga, Outbox hoặc
+Event Sourcing được chọn theo nhu cầu của từng service, không phải yêu cầu bắt
+buộc cho toàn hệ thống.
 
 ## Kiến trúc tổng quan
 
@@ -20,15 +23,24 @@ Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices**
 
 ### Nguyên tắc thiết kế
 
-- **Event Sourcing**: Mọi thay đổi trạng thái được lưu dưới dạng chuỗi events bất biến
-- **CQRS**: Tách biệt luồng đọc và ghi để tối ưu hiệu năng
-- **Saga Pattern**: Quản lý transaction phân tán qua Temporal workflows
-- **Outbox Pattern**: Đảm bảo tính nhất quán giữa database và message broker
+- **Contract-first**: HTTP, gRPC và event dùng nguồn contract độc lập Go/Java.
+- **Bounded context**: Mỗi service sở hữu dữ liệu và capability của mình.
+- **Pattern theo nhu cầu**: Chỉ dùng CQRS/Event Sourcing/Saga khi độ phức tạp được chứng minh.
+- **Reliable messaging**: Với dual-write quan trọng, cân nhắc Outbox và idempotent consumer.
+- **Observable by default**: Propagate trace context và dùng structured log/metrics.
+
+Machine-readable contract và hướng dẫn migration nằm tại [`contracts/`](contracts/README.md).
 
 ## Cấu trúc thư mục
 
 ```
 e-commerce-microservices/
+├── contracts/                   # Contract Go/Java dùng chung
+│   ├── catalog/                 # Service và interaction catalog
+│   ├── http/                    # OpenAPI
+│   ├── grpc/                    # Protobuf
+│   └── events/                  # AsyncAPI + JSON Schema
+│
 ├── go/                          # Golang microservices
 │   ├── services/
 │   │   ├── api-gateway/         # API Gateway (Traefik v3.x)

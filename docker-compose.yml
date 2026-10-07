@@ -256,11 +256,18 @@ services:
       - ecommerce-network
     labels:
       - "traefik.enable=true"
-      # Search doc catalog la route anonymous theo thiet ke: khong endpoint nao
-      # duoi /api/v1/search can identity. API reindex nam o /internal/v1/search
-      # va khong duoc route qua gateway.
-      - "traefik.http.routers.search-service.rule=PathPrefix(`/api/v1/search`)"
+      # Canonical Search v2. Reindex has a separate authenticated router; exclude
+      # it from anonymous routing even when a write/read method is forged.
+      - "traefik.http.routers.search-service.rule=(Path(`/api/v2/search/products`) || Path(`/api/v2/search/suggestions`) || Path(`/api/v2/search/categories`) || PathRegexp(`^/api/v2/search/categories/[^/]+/facets$`)) && Method(`GET`)"
       - "traefik.http.routers.search-service.entrypoints=web"
+      - "traefik.http.routers.search-service.service=search-service"
+      - "traefik.http.routers.search-service.priority=10"
+      - "traefik.http.routers.search-service.middlewares=strip-identity-headers@file,rate-limit-default@file,compress@file"
+      - "traefik.http.routers.search-reindex.rule=(Path(`/api/v2/search/reindex-runs`) || PathPrefix(`/api/v2/search/reindex-runs/`)) && (Method(`GET`) || Method(`POST`))"
+      - "traefik.http.routers.search-reindex.entrypoints=web"
+      - "traefik.http.routers.search-reindex.service=search-service"
+      - "traefik.http.routers.search-reindex.priority=40"
+      - "traefik.http.routers.search-reindex.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.search-service.loadbalancer.server.port=8080"
 
   # ── Review Service ─────────────────────────────────────────
@@ -298,6 +305,8 @@ services:
       REVIEW_INTERNAL_EXPORT_TOKENS: dev-search-export-token
 
       REVIEW_S3_ENDPOINT: http://minio:9000
+      # Browser-visible origin for upload/download signatures; internal HEAD stays on minio.
+      REVIEW_S3_PUBLIC_ENDPOINT: http://localhost:9000
       REVIEW_S3_BUCKET: review-media
       REVIEW_S3_ACCESS_KEY: minioadmin
       REVIEW_S3_SECRET_KEY: minioadmin
@@ -306,7 +315,7 @@ services:
     ports:
       - "8087:8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/liveness || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -321,14 +330,19 @@ services:
       - "traefik.http.routers.review-admin.entrypoints=web"
       - "traefik.http.routers.review-admin.service=review-service"
       - "traefik.http.routers.review-admin.priority=40"
-      - "traefik.http.routers.review-admin.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
-      # Buyer and public reads. GET /api/v1/reviews/products/** is anonymous by design;
-      # every other route authorizes ownership inside the service.
+      - "traefik.http.routers.review-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      # Public list and aggregate are anonymous and never inject a dev identity.
+      - "traefik.http.routers.review-public.rule=(PathRegexp(`^/api/v1/reviews/products/[^/]+$`) || PathRegexp(`^/api/v1/reviews/products/[^/]+/aggregate$`)) && Method(`GET`)"
+      - "traefik.http.routers.review-public.entrypoints=web"
+      - "traefik.http.routers.review-public.service=review-service"
+      - "traefik.http.routers.review-public.priority=40"
+      - "traefik.http.routers.review-public.middlewares=strip-identity-headers@file,rate-limit-default@file,compress@file"
+      # Buyer writes/owner reads authorize the actual access-token identity.
       - "traefik.http.routers.review-service.rule=PathPrefix(`/api/v1/reviews`)"
       - "traefik.http.routers.review-service.entrypoints=web"
       - "traefik.http.routers.review-service.service=review-service"
       - "traefik.http.routers.review-service.priority=30"
-      - "traefik.http.routers.review-service.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.routers.review-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.review-service.loadbalancer.server.port=8080"
       # /internal/v1/** has no router: the PDP summary and the rating export travel
       # only inside the cluster network, with a bearer service identity.
@@ -385,10 +399,9 @@ services:
       - "traefik.http.routers.product-service.entrypoints=web"
       - "traefik.http.routers.product-service.service=product-service"
       - "traefik.http.routers.product-service.priority=30"
-      # strip-identity-headers chay truoc: client khong the tu xung ADMIN.
-      # dev-admin-auth la middleware development, production thay bang
-      # jwt-auth/gateway-auth (runtime-contract.md muc 6.1).
-      - "traefik.http.routers.product-service.middlewares=strip-identity-headers@file,dev-admin-auth@file,rate-limit-api@file,compress@file"
+      # authenticated = strip-identity-headers + gateway-auth: identity va role
+      # ADMIN lay tu access token da verify; Product Service tu kiem role.
+      - "traefik.http.routers.product-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.product-service.loadbalancer.server.port=8081"
       - "traefik.http.services.product-service.loadbalancer.server.scheme=http"
       - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health"
@@ -725,7 +738,7 @@ services:
       # reached by checkout-service inside the network only.
       - "traefik.http.routers.cart-service.rule=Path(`/api/v1/carts/mine`) || Path(`/api/v1/carts/mine/items`)"
       - "traefik.http.routers.cart-service.entrypoints=web"
-      - "traefik.http.routers.cart-service.middlewares=strip-identity-headers@file,dev-auth@file,rate-limit-api@file,compress@file"
+      - "traefik.http.routers.cart-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.cart-service.loadbalancer.server.port=8080"
 
   # ── Auth Service ───────────────────────────────────────────
@@ -765,9 +778,42 @@ services:
       - ecommerce-network
     labels:
       - "traefik.enable=true"
+      # Route cong khai: dang ky, xac minh, dang nhap, refresh, quen mat khau.
+      # Van xoa header danh tinh do client gui (runtime-contract.md muc 4).
       - "traefik.http.routers.auth-service.rule=PathPrefix(`/api/v1/auth`)"
       - "traefik.http.routers.auth-service.entrypoints=web"
+      - "traefik.http.routers.auth-service.service=auth-service"
+      - "traefik.http.routers.auth-service.middlewares=strip-identity-headers@file"
+      # Nhanh can danh tinh cua contracts/http/auth/v1 (security gatewayIdentity):
+      # di qua gateway-auth. Priority cao hon router cong khai o tren.
+      - "traefik.http.routers.auth-service-protected.rule=(Path(`/api/v1/auth/sessions`) && (Method(`GET`) || Method(`DELETE`))) || (PathPrefix(`/api/v1/auth/sessions/`) && Method(`DELETE`)) || Path(`/api/v1/auth/password`) || Path(`/api/v1/auth/email-change-requests`) || Path(`/api/v1/auth/email-changes/confirmations`) || Path(`/api/v1/auth/accounts/me/deletion-requests`) || PathPrefix(`/api/v1/auth/admin/`)"
+      - "traefik.http.routers.auth-service-protected.entrypoints=web"
+      - "traefik.http.routers.auth-service-protected.service=auth-service"
+      - "traefik.http.routers.auth-service-protected.priority=200"
+      - "traefik.http.routers.auth-service-protected.middlewares=authenticated@file"
       - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
+
+  # ── gateway-auth (ForwardAuth verifier) ────────────────────
+  # Verify JWT cho moi route can danh tinh (docs/gateway/design.md). Khong publish
+  # port: chi Traefik goi http://gateway-auth:8080/verify.
+  gateway-auth:
+    build:
+      context: ./go/services/gateway-auth
+      dockerfile: Dockerfile
+    container_name: gateway-auth
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Ten bien dung chung voi auth-service (runtime-contract.md muc 6). Gia tri
+      # phai khop go/services/auth-service/configs/application.yaml.
+      AUTH_JWT_ISSUER: "https://auth.ecommerce.local"
+      AUTH_JWT_AUDIENCE: "ecommerce-api"
+      AUTH_JWT_ALLOWED_ALGORITHMS: "RS256"
+      AUTH_JWKS_URL: "http://auth-service:8080/.well-known/jwks.json"
+      AUTH_REVOCATION_REDIS_URL: "redis://redis:6379/0"
+    networks:
+      - ecommerce-network
 
   # ── User Service ───────────────────────────────────────────
   # Versioned migration runs before User, including on existing root-stack volumes.
@@ -819,7 +865,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.user-service.rule=PathPrefix(`/api/v1/users`)"
       - "traefik.http.routers.user-service.entrypoints=web"
-      - "traefik.http.routers.user-service.middlewares=jwt-auth-user@file"
+      - "traefik.http.routers.user-service.middlewares=authenticated@file"
       # 8082 is the public API; the internal checkout API on 8083 stays off Traefik.
       - "traefik.http.services.user-service.loadbalancer.server.port=8082"
 
@@ -924,8 +970,49 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.notification-service.rule=PathPrefix(`/api/v1/notifications`)"
       - "traefik.http.routers.notification-service.entrypoints=web"
-      - "traefik.http.routers.notification-service.middlewares=jwt-auth-user@file"
+      - "traefik.http.routers.notification-service.middlewares=authenticated@file"
       - "traefik.http.services.notification-service.loadbalancer.server.port=8080"
+
+  # Payment is opt-in because Stripe test credentials belong to an individual sandbox.
+  # Start explicitly with: docker compose --profile payment up -d payment-service
+  payment-service:
+    profiles: ["payment"]
+    build:
+      context: ./java/services/payment-service
+    container_name: payment-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
+      PAYMENT_DATABASE_USERNAME: postgres
+      DB_PASSWORD: postgres
+      PAYMENT_KAFKA_BROKERS: kafka:9092
+      PAYMENT_STRIPE_SECRET_KEY: ${PAYMENT_STRIPE_SECRET_KEY:-sk_test_local_change_me}
+      PAYMENT_STRIPE_PUBLISHABLE_KEY: ${PAYMENT_STRIPE_PUBLISHABLE_KEY:-pk_test_local_change_me}
+      PAYMENT_STRIPE_WEBHOOK_SECRETS: ${PAYMENT_STRIPE_WEBHOOK_SECRETS:-whsec_local_change_me}
+      PAYMENT_STRIPE_API_VERSION: 2026-08-26.dahlia
+      PAYMENT_CRYPTO_LOCAL_KEY: ${PAYMENT_CRYPTO_LOCAL_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    ports:
+      - "8089:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payment-webhook.rule=Path(`/v1/payments/webhook/stripe`)"
+      - "traefik.http.routers.payment-webhook.entrypoints=web"
+      - "traefik.http.routers.payment-webhook.service=payment-service"
+      - "traefik.http.routers.payment-webhook.priority=50"
+      - "traefik.http.services.payment-service.loadbalancer.server.port=8080"
 
   # ── Frontend (Next.js) ────────────────────────────────────
   frontend:
@@ -945,45 +1032,6 @@ services:
       - ecommerce-network
 
   # ── API Gateway (Traefik) ─────────────────────────────────
-  api-gateway:
-    image: traefik:v3.7.1
-    container_name: api-gateway
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    ports:
-      - "8088:80"       # HTTP
-      - "8443:443"      # HTTPS
-      - "8090:8090"     # Dashboard & Metrics
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./go/services/api-gateway/config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
-      - ./go/services/api-gateway/plugins:/plugins
-      - ./go/services/api-gateway/certs:/certs:ro
-      - ./go/services/api-gateway/letsencrypt:/letsencrypt
-    environment:
-      - TZ=Asia/Ho_Chi_Minh
-    networks:
-      - ecommerce-network
-    depends_on:
-      - redis
-
-# ── Volumes ────────────────────────────────────────────────
-volumes:
-  es-data:
-  postgres-data:
-  redis-data:
-  kafka-data:
-  zookeeper-data:
-  zookeeper-log:
-  minio-data:
-
-# ── Networks ───────────────────────────────────────────────
-networks:
-  ecommerce-network:
-    name: ecommerce-network
-    driver: bridge
   # ── Checkout Service ───────────────────────────────────────
   # Backend for Frontend of the checkout page (docs/checkout). Its only state is the short-lived
   # workflow state in its own Redis; every other dependency is a service on this network.
@@ -1096,4 +1144,42 @@ networks:
       - "traefik.http.services.checkout-service.loadbalancer.healthcheck.timeout=5s"
       - "traefik.http.services.checkout-service.loadbalancer.serverstransport=business-api@file"
 
+  api-gateway:
+    image: traefik:v3.7.1
+    container_name: api-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8088:80"       # HTTP
+      - "8443:443"      # HTTPS
+      - "8090:8090"     # Dashboard & Metrics
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./go/services/api-gateway/config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - ./go/services/api-gateway/certs:/certs:ro
+      - ./go/services/api-gateway/letsencrypt:/letsencrypt
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+
+# ── Volumes ────────────────────────────────────────────────
+volumes:
+  es-data:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+  minio-data:
   checkout-redis-data:
+
+# ── Networks ───────────────────────────────────────────────
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    driver: bridge
