@@ -1,7 +1,7 @@
 ---
 doc_id: search-adr-012
 service: search
-status: accepted
+status: superseded
 date: 2026-09-04
 decision_owners:
   - Search Service team
@@ -12,6 +12,8 @@ evidence:
 ---
 
 # ADR-012 — API search trả SKU hit trực tiếp, phân trang bằng `search_after`
+
+> Superseded by [ADR-020](./ADR-020-product-cards-with-cheapest-eligible-sku.md), 2026-09-30. Nội dung bên dưới giữ lại lịch sử.
 
 ## Context
 

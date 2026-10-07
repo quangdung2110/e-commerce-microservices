@@ -36,56 +36,24 @@ verified_against_commit: null
 
 ## WF-SEARCH-001 — Tìm kiếm sản phẩm
 
-**Mục tiêu.** Trả trang SKU kết quả ổn định, kèm ngữ cảnh Product và facet dùng
-được cho bộ lọc.
+**Mục tiêu.** Một Product một card, đại diện bằng SKU giá thấp nhất thỏa bộ lọc.
 
-**Trigger và participants.** `GET /api/v2/search/products` qua Gateway; chỉ Search
-và Elasticsearch tham gia.
-
-**Preconditions.** Không có. Index rỗng vẫn là trạng thái hợp lệ.
+**Trigger.** GET /api/v2/search/products qua Gateway; chỉ Search và Elasticsearch.
 
 **Happy path.**
-1. Validate và chuẩn hóa tham số: giới hạn `size`, chuẩn hóa `q` (trim, hạ chữ,
-   gộp khoảng trắng), phân giải `category` theo id hoặc slug.
-2. Nếu có `cursor`: decode base64, kiểm tra khớp với bộ tham số hiện tại.
-3. Build query: `multi_match` với `fuzziness: AUTO` khi có `q`; filter bắt buộc
-   (`is_deleted=false`, `product_status=ACTIVE`, `sku_status=ACTIVE`) cộng filter
-   của buyer; filter attribute dùng `filter_tokens`, OR các value cùng attribute
-   code và AND giữa các code khác nhau.
-4. Thêm sort đã chọn kèm tie-break `sku_id asc`, `search_after` khi có cursor,
-   và các aggregation facet với `cardinality` trên `product_id`. Không dùng
-   `collapse` hoặc `inner_hits`.
-5. Transform mỗi hit thành đúng một SKU item, tính `discount_percentage` theo
-   `SEARCH-BR-005`, sinh `next_cursor` từ sort values của hit cuối.
+1. Validate/chuẩn hóa q, size và category; decode/kiểm tra chữ ký cursor trước khi mở PIT.
+2. Build SKU query với visibility, full text, category, filter attribute (OR cùng code, AND khác code), giá, stock và promotion.
+3. Mở PIT hoặc dùng PIT cursor. Composite scan mọi Product bucket theo product_id; top_hits chọn selling_price_vnd asc rồi sku_id asc. Facet cùng snapshot chỉ cần tính trong batch đầu.
+4. Sort Product theo lựa chọn, tie product_id asc; cắt trang theo offset. total_products là số bucket chính xác. SKU đại diện không đổi theo lựa chọn sort.
+5. Response từ cùng SKU đại diện; cursor ký mang PIT mới nhất và vị trí tiếp theo. Đóng PIT khi kết thúc hoặc lỗi; bỏ dở tự hết hạn.
 
-**State/data changes.** Không có. Đây là luồng thuần đọc.
+**Consistency.** Giá, catalog và SKU eligibility đóng băng trong PIT cho toàn bộ pagination. Mutation hoặc alias cutover không thêm/lặp/mất Product của snapshot cũ. Category id đã resolve dùng trong query; khi danh mục không còn hiển thị, tải lại trang đầu.
 
-**Output.** Danh sách SKU item, `total_skus` chính xác, facet kèm
-`count_semantics = DISTINCT_PRODUCT` và `count_accuracy = APPROXIMATE`,
-và `next_cursor` (`null` khi hết dữ liệu). Cùng Product có thể có nhiều item.
+**Failure/retry.** INVALID_CURSOR cho token cũ/tamper/đổi filter/sort/PIT hết hạn; tải lại trang đầu. Ngân sách grouping 5 giây toàn request; timeout/shard failure/over-cap không trả partial. Client quyết định retry, server không retry. Kết quả rỗng là HTTP 200.
 
-**Failure paths.** Tham số sai → `INVALID_QUERY_PARAMETER`. Cursor hỏng hoặc
-không khớp tham số → `INVALID_CURSOR`. Elasticsearch không sẵn sàng →
-`ELASTICSEARCH_UNAVAILABLE`. Vượt ngân sách thời gian → `SEARCH_TIMEOUT`. Kết quả
-rỗng không phải lỗi.
+**Cost.** O(P) nhớ và O(P log P) sort cho mỗi trang; batch 500, cap 50000 Product khớp. Xem [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md) và operations trước khi scale.
 
-**Timeout và retry.** Timeout truy vấn 5s, fail fast. Search không tự retry; client
-quyết định thử lại. Không có retry nào ẩn ở tầng server.
-
-**Idempotency.** Thuần đọc, không có tác dụng phụ.
-
-**Concurrency.** Kết quả có thể đổi giữa hai trang liên tiếp vì indexing chạy song
-song; `search_after` cộng tie-break giữ cho pagination không lặp hoặc bỏ sót
-document không đổi, nhưng document mới vẫn có thể xuất hiện.
-
-**Metrics.** Latency theo endpoint, tỉ lệ lỗi, tỉ lệ kết quả rỗng, tỉ lệ dùng
-cursor, thời gian truy vấn Elasticsearch.
-
-**Test scenarios.** Không có `q`; có `q` kèm lỗi chính tả; filter nhiều giá trị;
-range giá biên; `in_stock=false`; từng kiểu sort; phân trang đến hết; cursor lỗi;
-cursor dùng lại sau khi đổi query/filter/sort; một Product nhiều SKU trả nhiều
-SKU item theo sort; Elasticsearch timeout; kiểm tra facet đếm DISTINCT product;
-kiểm tra hàng `DRAFT`/`HIDDEN`/đã xóa không bao giờ lộ ra.
+**Test.** Nhiều SKU cùng Product chỉ một card; minimum/tie; lọc màu/giá/stock; price_desc theo minimum; mọi sort; composite nhiều batch; không lặp Product qua trang; mutation sau trang đầu; exact total và final full page; cursor cũ/tamper/hết hạn; visibility và facet DISTINCT.
 
 ---
 

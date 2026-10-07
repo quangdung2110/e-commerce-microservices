@@ -163,3 +163,7 @@ Category. Search consume stock snapshot v1 trực tiếp từ Inventory với gu
 Breaking HTTP/gRPC/event change phải có version contract, rollout producer/consumer song
 song và contract test. Không tái sử dụng số field protobuf đã loại bỏ; field quantity
 cũ đã được reserve vĩnh viễn.
+
+## Search product-card consumer (2026-09-30)
+
+[Search ADR-020](../search/decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md) gom SKU thành một card/Product và chọn SKU giá thấp nhất thỏa bộ lọc. Product vẫn công bố snapshot từng SKU với giá/thuộc tính/thumbnail và revision; không thêm best-price field, không đổi event/export/API. Search sở hữu query-dependent representative; Product không chọn SKU thay cho Search.

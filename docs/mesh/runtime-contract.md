@@ -120,12 +120,12 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/v1/payments/webhook/stripe` | POST | `edge/traefik` | gateway public `/api/payments/webhook/stripe` rewrite sang service path này; route public duy nhất của Payment |
 | `payment-service` | `/v1/payments/initiate`, `/v1/payments/{transactionId}/cancel`, `/v1/payments/{transactionId}/refund` | POST | `ecommerce/order-service` | `order-initiates-payment`; policy triển khai phải dùng match tương đương nhưng không được bao trùm webhook |
-| `payment-service` | `/v1/payments/{transactionId}`, `/v1/payments/{transactionId}/client-data`, `/v1/refunds/{refundTransactionId}` | GET | `ecommerce/order-service` | `order-initiates-payment` |
-| `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
 | `auth-service` | `/internal/v1/auth/users/*/notification-contact` | GET | `ecommerce/notification-service` | `notification-resolves-auth-contact` |
 | `notification-service` | `/api/v1/notifications/**` | X | `edge/traefik` | `gateway-routes-notification-inbox` |
 | `notification-service` | `/internal/v1/notifications/requests/*`, `/internal/v1/notifications/deliveries` | GET | `ecommerce/order-service`, `ecommerce/finance-ops` | `support-queries-notification-status` |
 | `notification-service` | `/internal/v1/notifications/ops/**` | X | `ecommerce/notification-ops` | `notification-ops-operates-notification`; không route qua Gateway |
+| `payment-service` | `/v1/payments/{transactionId}`, `/v1/payments/{transactionId}/client-data`, `/v1/refunds/{refundTransactionId}` | GET | `ecommerce/order-service` | `order-initiates-payment` |
+| `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
 | Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
 
 Không có rule nào cho `analytics-service` inbound HTTP: service này chỉ nhận Kafka.
@@ -181,12 +181,12 @@ của Istio.
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
-| Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
-
-`DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa
 | `GET /internal/v1/auth/users/*/notification-contact` | 2 lần, `connect-failure,refused-stream` | 2 giây | Pure read; Notification cache 15 phút và có bulkhead theo lane |
 | `GET /internal/v1/notifications/requests/*`, `GET /internal/v1/notifications/deliveries` | 2 lần, `connect-failure,refused-stream` | 3 giây | Pure read cho support tooling |
 | `/internal/v1/notifications/ops/**` | 0 | 10 giây | Caller sở hữu retry bằng `Idempotency-Key`; mesh không retry |
+| Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
+
+`DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa
 50 % endpoint), `connectionPool` giới hạn theo load test, `loadBalancer: LEAST_REQUEST`. Giá trị
 là chính sách khởi điểm, phải được load test xác nhận và ghi vào manifest version hóa.
 
@@ -252,8 +252,8 @@ tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
 Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
-v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`. Cart và Inventory admin chưa có đủ dòng
-trong gateway matrix — mục 5.2 dùng contract, gateway matrix phải được đối soát. Review Service
+v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
+và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service
 dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
 riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một
 năng lực không được gọi là "hoàn thành" trước khi tiêu chí xác minh của nó đạt.

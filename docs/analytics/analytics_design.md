@@ -53,8 +53,9 @@ Analytics không chủ động moi móc Database của các Service. Tất cả 
 1.  **Pipeline giao dịch (Payment):** nguồn khả dụng là `t.payment.events.v2` theo
     [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml). Pipeline
     chỉ dispatch theo exact namespaced CloudEvents `type`, validate `dataschema`,
-    deduplicate bằng `(source, id)` và upsert theo transaction/refund identity cùng
-    `financial_state_version`; không đọc Kafka headers như contract authority.
+    deduplicate bằng `(source, id)` và upsert theo payment/refund/dispute identity
+    cùng `financial_state_version`; 15 exact types gồm 5 dispute facts. Không suy
+    dispute status thành payment/refund state và không đọc Kafka headers làm authority.
     Analytics chưa phải consumer được đăng ký của Order Events v1:
     hai fact Order hiện tại chỉ dành cho Cart và Review. Mọi pipeline doanh thu/order
     mới phải có consumer contract riêng trước khi cấp ACL, thay vì suy diễn lifecycle

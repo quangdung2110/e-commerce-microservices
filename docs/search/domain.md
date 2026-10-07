@@ -81,8 +81,8 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-003` | Search copy nguyên `is_in_stock` từ snapshot per-SKU; chỉ Inventory sở hữu công thức và revision | Khi apply availability event | Hiển thị sai khả dụng |
 | `SEARCH-BR-004` | `has_promotion = selling_price_vnd < base_price_vnd` | Khi apply event catalog | Gắn cờ giảm giá sai |
 | `SEARCH-BR-005` | `discount_percentage = floor((base - selling) / base * 100)` khi `base > 0` và `selling < base`; ngược lại bằng `0` | Khi build response | Sai số phần trăm giảm giá |
-| `SEARCH-BR-006` | Mọi sort kết thúc bằng tie-break `sku_id asc` | Khi build query | Pagination lặp hoặc bỏ sót |
-| `SEARCH-BR-007` | Mọi count hiển thị đếm DISTINCT `product_id` | Facet, category count | Số đếm phồng theo số SKU |
+| `SEARCH-BR-006` | SKU đại diện: giá bán asc, sku_id asc; sort Product kết thúc product_id asc | Khi gom/sort Product | Pagination lặp hoặc bỏ sót |
+| `SEARCH-BR-007` | Mọi count hiển thị đếm DISTINCT `product_id` | Facet, category count, total_products | Số đếm phồng theo số SKU |
 | `SEARCH-BR-008` | Enrichment category miss thì bỏ trống field category, vẫn index document | Apply event catalog | Mất sản phẩm khỏi index |
 | `SEARCH-BR-009` | Event từ một nguồn chỉ ghi các field thuộc nguồn đó. Ngoại lệ duy nhất: catalog tombstone đặt `is_in_stock = false` mà không đổi `availability_revision` ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)) | Apply mọi event | Nguồn này xóa dữ liệu của nguồn kia |
 | `SEARCH-BR-010` | Availability chỉ được publish sau readiness; nếu document vẫn thiếu thì không ACK và không upsert. Rating thiếu document được bỏ qua có metric | Apply availability/review | Mất availability hoặc sinh document rỗng không có catalog |
@@ -185,3 +185,7 @@ phải lỗi.
 - **Đổi cây danh mục.** Product phát `catalog-reindex-requested` sau rename, đổi
   slug hoặc move category. Search coalesce request rồi reindex category trước,
   Product sau; Product không fan-out toàn subtree trong write transaction.
+
+## Product result semantics
+
+[ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md): lọc SKU trước, mỗi Product một kết quả. Chọn SKU giá bán thấp nhất đủ điều kiện. Tất cả field SKU trên card từ cùng representative. PIT giữ eligibility/giá/ranking giữa các trang; total_products chính xác, facet vẫn approximate.

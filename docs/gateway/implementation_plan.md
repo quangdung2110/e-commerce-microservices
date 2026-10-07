@@ -41,11 +41,12 @@
 
 | ID | Công việc | Acceptance criteria | Trạng thái |
 |---|---|---|---|
-| 3.1 | Định nghĩa và deploy `gateway-auth` | ForwardAuth protocol, health check, headers và timeout JWKS/Redis được test | Đã lập kế hoạch |
-| 3.2 | Triển khai JWT/JWKS validation | Issuer/audience/algorithm/expiry/not-before không hợp lệ bị reject | Đã lập kế hoạch |
-| 3.3 | Triển khai JWKS cache và Redis revocation checks | Rotation, denylisted token, force logout hoạt động | Đã lập kế hoạch |
-| 3.4 | Enforce dependency failure và header-sanitization policy | Dependency outage là 503; client `X-User-*` injection không tới service | Đã lập kế hoạch |
-| 3.5 | Xóa `.so` plugin runtime/build paths cũ | Không active deployment nào tham chiếu chúng | Đã lập kế hoạch |
+| 3.1 | Định nghĩa và deploy `gateway-auth` | ForwardAuth protocol, health check, headers và timeout JWKS/Redis được test | Đạt ở local compose: [`go/services/gateway-auth`](../../go/services/gateway-auth/README.md), middleware `gateway-auth`/`authenticated` trong `dynamic.yml` |
+| 3.2 | Triển khai JWT/JWKS validation | Issuer/audience/algorithm/expiry/not-before không hợp lệ bị reject | Đạt: unit test gồm sai `iss`/`aud`, HS256/`none`, hết hạn, `nbf`/`iat` tương lai, thiếu/thừa claim, sai chữ ký |
+| 3.3 | Triển khai JWKS cache và Redis revocation checks | Rotation, denylisted token, force logout hoạt động | Đạt: unit test rotation/grace/invalidation/stale; chạy thật qua gateway — token sau "đăng xuất tất cả" bị `401 TOKEN_REVOKED`, tắt auth-service vẫn verify bằng key cache |
+| 3.4 | Enforce dependency failure và header-sanitization policy | Dependency outage là 503; client `X-User-*` injection không tới service | Đạt: pause Redis → `503 DEPENDENCY_UNAVAILABLE` + `Retry-After`; `X-User-Roles: ADMIN` tự gửi bị xóa (Product vẫn trả 403) |
+| 3.5 | Xóa `.so` plugin runtime/build paths cũ | Không active deployment nào tham chiếu chúng | Đạt: đã xóa `go/services/api-gateway/cmd/traefik-plugin` và thư mục `plugins/`, target build/test plugin trong Makefile (`make test`/`vet` giờ chạy test `gateway-auth`), service `go-builder` và mount `/plugins` trong các file compose, `/plugins` trong Dockerfile; `scripts/test-phase4.sh` kiểm tra `gateway-auth` qua gateway; frontend bỏ nhánh đọc lỗi `{error,message}` của plugin. ForwardAuth đặt `maxResponseBodySize: 8192` |
+| 3.6 | Chuyển các router còn dùng `dev-auth`/`dev-admin-auth` sang `authenticated@file` | Không router nào inject identity cố định | Không còn router nào dùng `dev-auth` trong `docker-compose.yml` gốc: `promotion-discovery` và `promotion-me` chuyển ngày 07/10/2026 cùng Checkout (voucher phải thuộc đúng user đang checkout); `promotion-admin` đã chuyển ngày 06/10/2026 ở bước 10 frontend. Cart, Review buyer/admin và Search reindex đã chuyển ở bước 4 frontend (30/09/2026); Review public list/aggregate tách router anonymous. Product, User, Notification và nhánh cần danh tính của Auth đã chuyển |
 
 ## Giai đoạn 4 — Bảo vệ phân tán
 

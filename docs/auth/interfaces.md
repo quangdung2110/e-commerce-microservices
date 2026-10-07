@@ -50,6 +50,12 @@ record thay đổi theo rotation. Khi thu hồi một session hiện tại, Gate
 `X-Token-Jti` đã được verify để Auth denylist access token đó; các header identity/JTI
 không được phép nhận trực tiếp từ public client.
 
+Claim set của access token và ánh xạ claim sang identity header là contract chung
+giữa Auth và Gateway, được chốt một chỗ duy nhất tại
+[runtime-contract mục 6 và 6.1](../gateway/runtime-contract.md#6-quy-ước-xác-thực).
+Không mô tả lại claim set ở file này: hai bản sao lệch nhau chính là nguyên nhân
+gốc của sự cố identity header trước đây.
+
 ## 3. Event phát ra
 
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng account. Auth publish
@@ -76,12 +82,6 @@ notification chỉ có `delivery_id` cùng metadata: Notification gọi internal
 qua mTLS để lấy email và nội dung render. OTP, reset token, reset URL, password
 và email không được đặt trong Kafka hoặc log.
 
-## 4. Event tiêu thụ
-
-Auth hiện không tiêu thụ business event. Các thao tác quản trị được thực hiện qua
-HTTP API có authorization `ADMIN`; vì vậy không cần inbox/deduplication storage
-theo `event_id`.
-
 Auth còn là **nguồn email duy nhất** cho mọi thông báo không do Auth khởi phát (Order,
 Review, Cart): không event nào trong hệ thống mang email, nên Notification gọi
 `GET /internal/v1/auth/users/{user_id}/notification-contact` lúc gửi. Response `no-store`,
@@ -92,8 +92,29 @@ thoại. Rate limit riêng cho principal `notification-service`; khi Notificatio
 lớn, Auth không được bị kéo theo (Notification tự giới hạn phía client theo lane, xem
 [Notification 06](../notification/06-backpressure.md) §3).
 
+Cả hai internal endpoint được phục vụ trên **listener nội bộ riêng (cổng 8081)**, không
+bao giờ qua Gateway, sau cùng một chuỗi middleware: service identity (mTLS, bắt buộc ở
+production) rồi rate limit theo client `security.rate_limit.internal_per_client`. Ánh xạ
+trạng thái account sang response của `notification-contact`:
+
+| Trạng thái account | Response |
+|---|---|
+| `PENDING_VERIFICATION` | `200`, `email_verified = false` — vẫn là người nhận cho thông báo giao dịch của chính họ; Notification không gửi bulk |
+| `ACTIVE`, `LOCKED` | `200`, `email_verified = true` — khoá tài khoản không đổi chủ hộp thư |
+| `DELETED` (đã anonymize theo AUTH-BR-007) hoặc không tồn tại | `404 ACCOUNT_NOT_FOUND` — hai trường hợp không phân biệt được với caller vì email đã bị xoá ngay lúc anonymize |
+
+`locale` luôn có mặt trong body và là `null` ở phase 1 vì Auth không lưu locale;
+Notification dùng mặc định của mình. Email không bao giờ xuất hiện trong log (access log
+chỉ ghi route và status) hay trong body của problem response.
+
 `USER_DELETED` được Notification consume để xoá preference/inbox và anonymize lịch sử
 gửi trong 24 h ([Notification 09](../notification/09-data-model.md) §10).
+
+## 4. Event tiêu thụ
+
+Auth hiện không tiêu thụ business event. Các thao tác quản trị được thực hiện qua
+HTTP API có authorization `ADMIN`; vì vậy không cần inbox/deduplication storage
+theo `event_id`.
 
 ## 5. JWKS invalidation
 

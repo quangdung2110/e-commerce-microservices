@@ -21,6 +21,15 @@ verified_against_commit: null
 
 ## 2. HTTP APIs
 
+Gateway local dùng `authenticated@file` qua ForwardAuth `gateway-auth`; identity
+lấy từ JWT đã verify, không inject user dev cố định. Gateway không retry POST/DELETE.
+Bước 5 frontend dùng cùng module `lib/api/cart.ts` và cache theo account cho PDP,
+badge header và `/cart` protected. Màn giỏ gửi delta để đổi số lượng, xóa đơn/batch
+với cùng DELETE, và giữ key/payload khi retry. `DEGRADED` hoặc giá null không tạo
+tổng từ snapshot cũ; `is_available` chỉ là catalog saleability. Xem
+[báo cáo bước 5](../frontend/step-5-verification.md).
+
+
 `GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchSkus` để
 phủ `current_price` và catalog saleability. Product timeout/breaker mở trả snapshot với
 `catalog_freshness = DEGRADED` và `current_price` có thể null. Redis miss trả cart

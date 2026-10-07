@@ -65,31 +65,14 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
 - **Tham số:** `q`, `category`, `filter` (repeatable opaque token từ facet), `price_min`, `price_max`,
   `in_stock` (mặc định `true`), `has_promotion`, `sort`, `cursor`, `size`
   (mặc định 20, tối đa 100).
-- **Sort:** `relevance` (mặc định), `price_asc`, `price_desc`, `newest`, `rating`.
-  Mọi sort kết thúc bằng tie-break `sku_id asc` (`SEARCH-BR-006`).
-  Range và sort theo giá dùng `selling_price_vnd`.
-- **Precondition:** không có. Kết quả rỗng là kết quả hợp lệ.
-- **Pagination:** cursor-based trên `search_after`. Cursor là base64 của sort
-  values thuộc hit cuối cùng, trong đó `sku_id` luôn là tie-break cuối. Cursor
-  mang fingerprint của toàn bộ query/filter/sort đã chuẩn hóa (trừ `size`); dùng
-  lại nó sau khi đổi bộ tham số trả `INVALID_CURSOR`. `next_cursor = null` nghĩa
-  là hết dữ liệu. Không hỗ trợ nhảy tới trang bất kỳ
-  ([ADR-007](./decisions/ADR-007-cursor-pagination.md)).
-- **Đơn vị kết quả:** mỗi item là đúng một SKU khớp query, mang field
-  product-level đã denormalize để UI dựng product card. Cùng một `product_id` có
-  thể xuất hiện nhiều lần nếu nhiều SKU của Product cùng khớp. API không trả
-  `inner_hits` và không hứa “một Product duy nhất” trên toàn bộ pagination;
-  điều này cho phép `search_after` hoạt động đúng với relevance, giá và rating
-  ([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)).
-- **Total:** `total_skus` là số SKU khớp chính xác. Count trong facet vẫn là DISTINCT
-  `product_id`; client không được suy diễn đó là số trang hay tổng số item Product.
-- **Facet:** đi kèm response, mọi count là DISTINCT `product_id`; response khai báo
-  `count_semantics = DISTINCT_PRODUCT` để client không tự diễn giải.
-- **Lọc bắt buộc phía server:** `is_deleted = false`, `product_status = ACTIVE`,
-  `sku_status = ACTIVE`. Client không thể tắt các filter này.
-- **Idempotency:** GET thuần đọc, không có side effect.
-- **Giới hạn:** `size` tối đa 100; timeout truy vấn Elasticsearch 5s, vượt thì trả
-  `SEARCH_TIMEOUT`.
+- **Sort:** relevance (max SKU score), price_asc/price_desc (giá SKU đại diện), newest (max updated_at), rating (max rating), luôn product_id asc khi bằng điểm.
+- **Đơn vị kết quả:** một Product duy nhất trên toàn bộ snapshot; sku_id, giá, ảnh, giảm giá và tồn kho thuộc SKU có selling_price_vnd thấp nhất THỎA TẤT CẢ bộ lọc, tie sku_id asc. Lọc màu đen không lấy giá SKU trắng rẻ hơn.
+- **Pagination:** signed cursor generation 2 mang PIT + vị trí Product + resolved category id + query chuẩn hóa (trừ size). PIT gia hạn 2 phút mỗi request. Đổi query/filter/sort, token sửa tay/cũ/hết hạn trả INVALID_CURSOR. Trang cuối next_cursor=null và đóng PIT; tải lại trang đầu để nhận dữ liệu mới.
+- **Total:** total_products đếm chính xác Product trong snapshot. Thay total_skus là breaking change cho consumer pilot: rollout backend/frontend/types đồng bộ, không dùng cursor cũ.
+- **Facet:** DISTINCT_PRODUCT, APPROXIMATE; aggregation trên toàn bộ SKU khớp cùng PIT, không chỉ SKU đại diện hoặc trang đang tải.
+- **Lọc bắt buộc:** is_deleted=false, product_status=ACTIVE, sku_status=ACTIVE. in_stock=true mặc định; thiếu stock không khớp true.
+- **Giới hạn:** size tối đa 100, toàn bộ grouping 5 giây, mặc định tối đa 50000 Product khớp. Không trả tổng/trang thiếu khi timeout, shard failure hay vượt cap. Không ghi catalog/index, chỉ quản lý context PIT.
+- **Triển khai:** composite scan + top_hits trước sort/paging, [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md). Product Service không đổi event/export hay ownership.
 
 ### 3.2 `GET /api/v2/search/suggestions`
 
@@ -283,6 +266,11 @@ SNAPSHOT_SESSION_EXPIRED`, còn change feed trả `410 REPLAY_WINDOW_EXPIRED`; h
 `DELETE` trả `409` khi Inventory giữ readiness ở `catalog_revision` mới hơn tombstone —
 trạng thái mà guard `is_deleted` của Search lẽ ra đã loại trừ. Xử lý như lệch trạng thái
 giữa hai service: không purge, không retry, báo động.
+
+Hai endpoint export của Review nằm sau bearer service identity: Search gửi
+`Authorization: Bearer <REVIEW_INTERNAL_TOKEN>`, và Review giữ allowlist token riêng cho
+từng nhóm route nội bộ nên token này chỉ mở đúng rating export, không đọc được PDP
+summary. Thiếu token thì Review trả `401` và rating build dừng lại thay vì import rỗng.
 
 Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 

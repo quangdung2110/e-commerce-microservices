@@ -87,7 +87,6 @@ Search/Notification không tìm thấy message. Replacement là literal, không 
 "transforms.outbox.table.field.event.key": "partition_key",
 "transforms.outbox.table.field.event.type": "event_type",
 "transforms.outbox.table.field.event.payload": "payload",
-"transforms.outbox.table.field.event.timestamp": "created_at",
 "transforms.outbox.table.expand.json.payload": "true",
 "transforms.outbox.table.fields.additional.placement":
     "event_type:header:ce_type,aggregate_type:header:ce_aggregate_type,aggregate_id:header:ce_aggregate_id",
@@ -110,6 +109,15 @@ Search/Notification không tìm thấy message. Replacement là literal, không 
 `table.include.list` trỏ tới bảng parent vì publication đã khai báo
 `publish_via_partition_root = true`; connector không được liệt kê từng partition
 tháng. `publication.autocreate.mode` là `disabled` vì publication do schema tạo.
+
+Cấu hình **không** có `table.field.event.timestamp`. `EventRouter` đọc field đó bằng
+`getInt64` để đặt timestamp của Kafka record, trong khi `created_at` là `TIMESTAMPTZ` và
+Debezium map nó thành `io.debezium.time.ZonedTimestamp`, tức một string — ở cả hai
+`time.precision.mode`, vì giá trị mang timezone. Khai báo nó làm connector task chết ngay
+lần publish đầu tiên với `DataException: Field 'created_at' is not of type INT64`. Không
+mất mát gì: thời điểm nghiệp vụ nằm ở `payload.time`, và structured mode quy định consumer
+đọc envelope chứ không đọc record timestamp. Đổi lại, muốn giữ field này thì phải thêm một
+cột epoch millis vào outbox — chi phí schema cho một giá trị không consumer nào dùng.
 
 Structured mode (`application/cloudevents+json`, toàn bộ envelope nằm trong message
 body) là dạng normative. Các header `ce_*` chỉ là bản sao để filter/debug rẻ tiền;

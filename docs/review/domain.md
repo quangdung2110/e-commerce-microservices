@@ -182,7 +182,7 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 | `MEDIA_QUOTA_EXCEEDED` | 429 | Đã chạm quota asset chưa attach hoặc byte upload của caller |
 | `ALREADY_REPORTED` | 409 | Partial unique guard từ chối report active trùng |
 | `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author hoặc không còn report identity |
-| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress |
+| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress. **Không phát sinh ở v1**: review không `APPROVED` thì không tồn tại trên surface public, nên report nó trả `REVIEW_NOT_FOUND`. Một code riêng cho "đã bị ẩn" sẽ nói đúng điều mà response 202 trung tính cố ý không nói (ADR-008) |
 | `REVIEW_NOT_REPLYABLE` | 409 | Review không ở state `APPROVED` |
 | `TAKEDOWN_ALREADY_EXISTS` | 409 | Review đã có legal takedown; takedown không thể lặp hay đảo ngược |
 | `EXPORT_SESSION_NOT_FOUND` | 404 | Không có export session |

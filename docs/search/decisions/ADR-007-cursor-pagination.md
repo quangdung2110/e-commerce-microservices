@@ -9,6 +9,8 @@ supersedes: null
 evidence: []
 ---
 
+> Storefront product pagination superseded by [ADR-020](./ADR-020-product-cards-with-cheapest-eligible-sku.md), 2026-09-30. search_after vẫn dùng cho các job scan nội bộ.
+
 # ADR-007 — Cursor pagination bằng `search_after`
 
 ## Context

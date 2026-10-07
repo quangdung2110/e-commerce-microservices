@@ -30,8 +30,11 @@ percentage: `review_event_receipts` makes the normal aggregator path idempotent.
 
 ## 2. Health and dependencies
 
-API readiness requires PostgreSQL and configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET`
-and `REVIEW_PRIVACY_GUARD_HMAC_SECRET`.
+API readiness requires PostgreSQL, configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` and
+`REVIEW_PRIVACY_GUARD_HMAC_SECRET`, and at least one existing `review_outbox` partition.
+The partition is part of readiness rather than a background alert because every command
+writes an outbox row: with no partition the instance cannot commit a single write, so it
+must not receive traffic.
 Kafka/Connect outage must not make public review commands unavailable: committed outbox rows wait for CDC. Consumer readiness
 requires Kafka and PostgreSQL. Export-session creation additionally requires Kafka;
 PDP/public reads do not. Media upload-instruction issuance and create/edit containing
@@ -46,7 +49,10 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_MAX_CONTENT_LENGTH` | 5000 | Cannot exceed schema hard cap without migration |
 | `REVIEW_MAX_MEDIA_PER_REVIEW` | 9 | Attach-command validation |
 | `REVIEW_MEDIA_UPLOAD_TTL` | 15m | Expiry of the signed upload instruction and, in v1, attachment deadline for an `ISSUED`/`VERIFIED` asset; expiry queues storage cleanup rather than leaving a media `EXPIRED` state |
+| `REVIEW_MEDIA_PUBLIC_URL_TTL` | 5m | TTL của signed download URL trên public/owner read |
+| `REVIEW_MEDIA_ADMIN_URL_TTL` | 2m | TTL của signed download URL trên `/api/v1/admin/**`. Startup từ chối cấu hình nếu giá trị này không ngắn hơn TTL public |
 | `REVIEW_MAX_UNATTACHED_ASSETS_PER_USER` | 18 | Quota cho asset `ISSUED`/`VERIFIED`; bắt buộc để direct upload không thành unlimited storage |
+| `REVIEW_MAX_UNATTACHED_BYTES_PER_USER` | 512 MiB | Tổng byte đã khai báo của asset `ISSUED`/`VERIFIED` theo user. Quota số lượng một mình không đủ: 18 slot video là lượng storage hoàn toàn khác 18 thumbnail |
 | `REVIEW_MAX_IMAGE_BYTES` | 10 MiB | Enforce trong signed upload policy và metadata verification |
 | `REVIEW_MAX_VIDEO_BYTES` | 100 MiB | Enforce trong signed upload policy và metadata verification |
 | `REVIEW_EXPORT_SESSION_TTL` | 30m | Search must complete/restart before expiry |
@@ -55,6 +61,23 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_REPORT_THRESHOLD` | 10 | Sensitive; never expose publicly |
 | `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` | none | Required, stable v1 secret for author pseudonym without direct PII; secret rotation changes aliases for future reviews |
 | `REVIEW_PRIVACY_GUARD_HMAC_SECRET` | none | Required, stable secret for HMAC deletion guards. Do not rotate while a guard with its key version is retained. |
+| `REVIEW_INTERNAL_PDP_TOKENS` | none | Bearer token allowlist cho `/internal/v1/reviews/products/**`. Rỗng nghĩa là từ chối mọi caller |
+| `REVIEW_INTERNAL_EXPORT_TOKENS` | none | Bearer token allowlist cho `/internal/v1/reviews/rating-aggregate-exports**`. Tách khỏi PDP để Product Detail BFF không phân trang được rating export và Search không đọc được PDP summary |
+| `REVIEW_S3_ENDPOINT` / `REVIEW_S3_BUCKET` / `REVIEW_S3_ACCESS_KEY` / `REVIEW_S3_SECRET_KEY` | none | Object storage S3-compatible cho media bytes; đổi provider là thay cấu hình, không phải đổi contract |
+| `REVIEW_S3_PUBLIC_ENDPOINT` | empty → `REVIEW_S3_ENDPOINT` | Origin storage mà trình duyệt truy cập được; presigner ký trực tiếp origin này cho upload/download. S3 client HEAD/DELETE vẫn dùng endpoint nội bộ. Compose local: `http://localhost:9000`; không rewrite host của signed URL |
+| `REVIEW_S3_REGION` | `us-east-1` | Region dùng để ký SigV4; MinIO chấp nhận bất kỳ giá trị nào miễn là ổn định |
+| `REVIEW_S3_PATH_STYLE` | true | Path-style addressing. MinIO và phần lớn S3 server tự host không phục vụ virtual-host bucket |
+| `REVIEW_SCHEDULER_ENABLED` | true | Tắt hai scheduled pass. Chỉ dùng cho test và cho instance chạy read-only; môi trường thật phải có ít nhất một instance bật, nếu không partition outbox và cleanup ngừng chạy |
+| `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` / `DB_POOL_SIZE` | none / none / none / 16 | PostgreSQL. `DB_URL` phải mang `currentSchema=review,public` để enum cast và relation không định danh giải đúng schema Review sở hữu |
+| `KAFKA_BOOTSTRAP` | `localhost:9092` | Cluster cho ba consumer và cho lần chụp offset của export session |
+
+Ba giá trị còn lại không có biến môi trường riêng vì đổi chúng là đổi hành vi chứ không
+phải tinh chỉnh vận hành, nên chúng nằm trong `application.yml`: allowlist MIME
+(`review.media.image-content-types`, `review.media.video-content-types`), cron của hai
+scheduled pass (`review.scheduler.lifecycle-cron` mặc định mỗi 5 phút,
+`review.scheduler.daily-cron`) cùng `review.scheduler.sweep-batch-size`, và tên ba consumer
+group Kafka (`review-order-sync`, `review-privacy-sync`, `review-rating-aggregator`) — đổi
+tên group là reset vị trí đọc, và replay đó chỉ an toàn khi receipt tương ứng còn được giữ.
 
 ## 4. Metrics and alerts
 
@@ -73,7 +96,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `review_notification_request_total{type,result}` | First-reply/removal request written or intentionally skipped because the recipient has a deletion guard |
 | Kafka Connect `FAILED`/`PAUSED` | Critical after two minutes |
 | replication slot retained WAL bytes | Critical before disk-risk threshold |
-| next outbox partition missing | Critical |
+| `review_outbox_partition_missing` | 1 khi rolling window hai tháng không đủ; đồng thời readiness DOWN nếu không còn partition nào. Critical |
 
 Do not publish `product_id`, `user_id`, `review_id` or `session_id` as metric labels.
 Do not log review content, display names, reporter identity, legal takedown reason,

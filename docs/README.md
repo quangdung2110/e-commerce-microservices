@@ -95,17 +95,19 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | File | Mô tả |
 |---|---|
 | [payment/README.md](./payment/README.md) | Tổng quan, boundary, ownership, capability, dependency, bất biến và known gaps. |
+| [payment/implementation-gates.md](./payment/implementation-gates.md) | Gate 1–3, điều kiện pass và bằng chứng executable trước từng giai đoạn implementation. |
 | [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
 | [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T0–T9, gồm T3a) + Refund FSM (R1–R5), guard rules, invariant, lỗi miền. |
-| [payment/data.md](./payment/data.md) | Schema logic 9 bảng, constraint, transaction, Redis key, outbox và retention. |
+| [payment/data.md](./payment/data.md) | Schema logic 12 bảng, inbox lease, provider checkpoint, subledger, outbox và retention. |
 | [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
-| [payment/workflows.md](./payment/workflows.md) | Mười hai workflow: initiate, webhook, query/client-data, refund, expiration, reconciliation, poller, recovery, DLQ replay, review/correction, cancel và decline termination. |
+| [payment/workflows.md](./payment/workflows.md) | Mười bốn workflow: payment/refund, verified webhook/inbox recovery, provider recovery, review, dispute và subledger/balance reconciliation. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
 | [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
-| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 15 ADR, gồm canonical AsyncAPI/structured CloudEvents, runtime, Stripe, webhook/outbox, concurrency, ordering, refund, retention, recovery và secret handling. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 20 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
 | [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
-| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
-| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Raw Stripe webhook buffer nội bộ, raw body base64 và DB-backed retry; target/proposed. |
+| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; target/proposed. |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
+| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; target/proposed. |
 
 ---
 
@@ -192,7 +194,7 @@ Service Contract Matrix legacy đã bị xóa.
 |---|---|---|
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
-| Payment | `t.payment.webhooks.raw` (internal, raw body base64) | Payment webhook processor |
+| Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
 | Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
@@ -271,3 +273,17 @@ attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đ�
 | [mesh/design.md](./mesh/design.md) | Namespace/ztunnel/waypoint, identity SPIFFE, ranh giới tin cậy `X-User-*`/`X-Service-Identity`, traffic policy, gRPC, Traefik trong mesh, chế độ lỗi. |
 | [mesh/runtime-contract.md](./mesh/runtime-contract.md) | Quy ước bắt buộc: runtime, nhãn namespace, mTLS, ma trận `AuthorizationPolicy` dẫn xuất từ `contracts/catalog/interactions.yaml`, identity header, retry/timeout, egress, telemetry, tiêu chí xác minh, gaps. |
 | [mesh/implementation_plan.md](./mesh/implementation_plan.md) | Giai đoạn 0–7 từ baseline Kubernetes tới vận hành, kiểm thử bắt buộc, migration/rollback. |
+
+---
+
+## 12. Frontend (`docs/frontend/`)
+
+Ứng dụng Next.js trong `frontend/` gồm storefront và trang quản trị `/admin`.
+
+| File | Mô tả |
+|---|---|
+| [frontend/README.md](./frontend/README.md) | Điểm bắt đầu của tài liệu frontend. |
+| [frontend/tech-stack.md](./frontend/tech-stack.md) | Công nghệ đã chọn và lý do. |
+| [frontend/sitemap.md](./frontend/sitemap.md) | Route storefront, tài khoản, admin; API nguồn, quyền, hiện trạng, khoảng trống API. |
+| [frontend/implementation-plan.md](./frontend/implementation-plan.md) | Lộ trình 14 bước; chi tiết bước 0 (nền tảng) và bước 1 (khung admin). |
+| [frontend/decisions/](./frontend/decisions/README.md) | ADR-001 admin chung ứng dụng; ADR-002 ranh giới render và xác thực. |

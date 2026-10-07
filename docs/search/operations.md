@@ -224,3 +224,11 @@ enforce bằng giới hạn action/byte, rate và in-flight request; không đư
 429/503 hoặc timeout, job phải dừng dispatch mới, retry chunk hiện tại với backoff có
 jitter và hạ tốc độ hiệu lực trước khi tăng dần lại sau các bulk thành công. Lịch chạy
 cụ thể là `TBD` cho tới khi đọc từ cấu hình runtime.
+
+## Product grouping and PIT rollout (ADR-020)
+
+Mỗi request scan toàn tập Product khớp; mặc định product-scan-batch-size=500, max-matching-products=50000 và tổng query budget=5s. Không trả partial/approximate total_products. Budget timeout trả SEARCH_TIMEOUT; shard failure hoặc vượt cap trả lỗi hạ tầng.
+
+Cursor PIT keep-alive=2m, renew theo request; trang cuối/lỗi đóng context, bỏ dở tự expire. Theo dõi heap, open PIT, es_query_duration_seconds query_type=product_groups và latency/throughput. Benchmark trước khi tăng cap hoặc rollout catalog lớn. Không có result cache ứng dụng.
+
+Cấu hình SEARCH_CURSOR_SECRET tối thiểu 32 ký tự bằng secret deployment, giống nhau trên mọi replica. Giá trị mặc định chỉ dành cho dev; đổi secret làm cursor cũ invalid. Rollout backend/frontend/contracts pilot cùng đợt vì total_skus thành total_products và cursor generation 2. Rollback phải rollback cả consumer và reset pagination; không cần đổi index/alias.

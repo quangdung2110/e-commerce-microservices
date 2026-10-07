@@ -122,9 +122,7 @@ erDiagram
 
 Quan hệ chỉ là quan hệ logic bằng identifier: Elasticsearch không có join và
 thiết kế cố tình tránh `nested`/`join` field
-([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)). Mỗi hit của API search
-là một SKU; `product_id` chỉ giữ liên kết logic, dùng cho count DISTINCT và ngữ
-cảnh hiển thị, không dùng để field collapse ([ADR-012](./decisions/ADR-012-sku-results-with-search-after.md)).
+([ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md)). Index vẫn chứa SKU; API nhóm product_id và chọn SKU giá thấp nhất thỏa bộ lọc. Không nested/join, không index mới, không cần mapping migration hay reindex.
 
 ## 3. Schema sources
 
@@ -224,7 +222,7 @@ nghĩa quan hệ được thay bằng mapping type và alias. Các quyết đị
 | `name` + `name.autocomplete` + `name.keyword` | Full-text, prefix fallback, sort/exact | Tăng disk và thời gian index |
 | `filter_tokens` | Filter/facet attribute bằng term filter | Encoding bắt buộc phân biệt string/number/boolean; UI OR các value cùng code, AND giữa các code |
 | `selling_price_vnd` | Range filter và sort giá | Phải reprice document khi markdown đổi |
-| `product_id` | Ngữ cảnh Product trên SKU hit và `cardinality` count | `cardinality` là xấp xỉ; cần `precision_threshold` đủ lớn |
+| `product_id` | Composite grouping Product, ngữ cảnh SKU và `cardinality` facet count | `cardinality` là xấp xỉ; cần `precision_threshold` đủ lớn |
 | `is_in_stock`, `has_promotion`, `is_deleted` | Term filter được cache bitset | Inventory recompute availability; Search chỉ copy boolean |
 | `refresh_interval` 1s cho `products` | Buyer thấy thay đổi gần realtime | Giảm throughput indexing; có thể nới tạm khi ingest spike |
 | `refresh_interval` 5s cho hai index còn lại | Dữ liệu đổi chậm | — |

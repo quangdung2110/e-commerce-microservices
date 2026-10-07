@@ -32,7 +32,7 @@ trong database.
 | Kind | Operation | Actor |
 |---|---|---|
 | Query | Đọc cart của mình | Authenticated user |
-| Command | Thêm SKU hoặc đặt quantity | Authenticated user |
+| Command | Thêm SKU hoặc điều chỉnh quantity theo delta | Authenticated user |
 | Command | Xóa nhiều SKU | Authenticated user |
 | Command | Xóa SKU đã mua | `com.ecommerce.order.paid.v1` consumer |
 | Command | Đánh dấu abandoned | Marker worker |
@@ -91,6 +91,8 @@ relay chạy system identity.
 | `CART_FULL` | SKU mới vượt `max_skus` |
 | `PRODUCT_SNAPSHOT_REQUIRED` | SKU mới hoặc delta dương trên validation hết hạn cần Product refresh nội bộ |
 | `DELTA_INVALID` | Delta bằng 0 hoặc sai kiểu |
+| `QUANTITY_INVALID` | Delta làm quantity không còn dương; client phải dùng DELETE |
+| `ITEM_NOT_FOUND` | Delta âm gửi cho SKU không có trong cart |
 | `PRODUCT_NOT_AVAILABLE` | Product/SKU không active theo catalog |
 | `IDEMPOTENCY_CONFLICT` | Cùng key nhưng payload khác hoặc đang xử lý |
 | `UNAUTHENTICATED` | Thiếu trusted identity |

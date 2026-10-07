@@ -29,6 +29,12 @@ verified_against_commit: null
 
 ## 2. Chạy local
 
+Gateway root Compose expose bốn GET `/api/v2/search/{products,suggestions,categories}`
+và `/api/v2/search/categories/{id}/facets`, strip forged identity. Router reindex riêng
+qua `authenticated@file`; Search kiểm tra ADMIN. Router Search v1 đã được bỏ khi
+frontend chuyển sang v2 ở bước 4 (30/09/2026).
+
+
 ```bash
 docker compose -f java/services/search-service/docker-compose.yml up -d elasticsearch kafka zookeeper
 ```
@@ -179,7 +185,7 @@ bịa; không dùng export production. Index không chứa PII nên fixture cũn
 | Mọi lệnh ghi lỗi mapping | Index chưa được tạo từ template, `dynamic: strict` | `GET <index>/_mapping` |
 | Search luôn rỗng | Thiếu filter mặc định trong dữ liệu mẫu: sản phẩm chưa `ACTIVE` | Đọc `_source` một document |
 | Event bị bỏ qua im lặng | CloudEvents `type` ngoài allowlist hoặc guard chặn | Metric ignored, đọc guard field |
-| Kết quả phân trang lặp | Sort thiếu tie-break `sku_id asc` | Xem DSL đã build |
+| Kết quả phân trang lặp | Product sort thiếu tie-break product_id asc hoặc không dùng cùng PIT | Xem DSL đã build |
 | Kết quả cũ | Chưa qua `refresh_interval` | Chờ, hoặc gọi refresh thủ công trong test |
 
 ## 12. Definition of Done
@@ -196,3 +202,7 @@ Một thay đổi hoàn thành khi:
 - Kiểm tra tương thích ngược với document đang tồn tại trong index và với producer
   đang chạy.
 - Cập nhật trạng thái tài liệu và `evidence` khi đã đối chiếu implementation.
+
+## Product-card verification (ADR-020)
+
+Chạy SearchCursorTest, ProductQueryBuilderTest và ProductSearchApiIT trên ES ICU thật. Test scan batch=2 để đi qua nhiều batch; kiểm tra minimum khi lọc, price_desc, snapshot mutation và no duplicate product_id. Contract/frontend cần total_products, sinh lại Search types. Seed 28 Product/84 SKU phải hiển thị 28 card; tai nghe 3 card, giữ UNKNOWN stock. Không cần reindex.

@@ -56,7 +56,7 @@ flowchart LR
 |---|---|---|---|---|
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
 | Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
-| Query layer | Build Elasticsearch DSL, transform SKU hit thành response, encode/decode cursor | Ghi vào index hoặc gom Product bằng field collapse | Elasticsearch read alias | `service`, `repository` |
+| Query layer | Build SKU filters, PIT composite grouping, chọn cheapest eligible SKU, sort/page Product, ký cursor | Ghi catalog/index hoặc suy luận stock | Elasticsearch read alias | `service`, `repository` |
 | Indexing worker | Consume snapshot catalog/category/availability/review, transform event thành lệnh ghi, apply guard; đăng ký readiness sau catalog create | Bỏ qua guard hoặc upsert document từ Availability | Kafka, write alias, Inventory readiness API | `worker` |
 | Reindex job | Build index mới, import catalog/per-SKU availability/rating snapshot, catch-up, cutover alias | Tạo index availability riêng hoặc tự chụp catalog watermark | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
@@ -65,8 +65,7 @@ flowchart LR
 
 ## 3. Processing model
 
-Đường đọc là synchronous và không có side effect: request → validate → một
-Elasticsearch query → transform → response. Không có cache tầng ứng dụng; Search
+Đường đọc synchronous: request → validate → PIT → composite scan Product + top_hits cheapest eligible SKU → sort/page → response. [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md). Không ghi projection; chỉ mở/gia hạn/đóng PIT. Không có cache tầng ứng dụng; Search
 dựa vào filter cache và request cache của Elasticsearch
 ([ADR-001](./decisions/ADR-001-elasticsearch-only-store.md)).
 

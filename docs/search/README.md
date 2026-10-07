@@ -110,7 +110,7 @@ cho projection, không đưa nó vào đường reserve/stock authoritative.
 | ID | Invariant |
 |---|---|
 | `SEARCH-INV-001` | Search không bao giờ là nguồn để chốt giá hoặc tồn kho cho giao dịch; mọi số liệu hiển thị là snapshot có độ trễ. |
-| `SEARCH-INV-002` | Một document trong index `products` và một item của API search là đúng một SKU; `_id = sku_id`. Product chỉ là ngữ cảnh hiển thị và khóa đếm DISTINCT. |
+| `SEARCH-INV-002` | Một document trong index `products` là một SKU, `_id = sku_id`. Mỗi item API search là một Product đại diện bởi SKU giá thấp nhất thỏa bộ lọc (ADR-020). |
 | `SEARCH-INV-003` | Mọi count hiển thị cho browse/facet phải đếm DISTINCT `product_id`, không dùng `doc_count` theo SKU. |
 | `SEARCH-INV-004` | Event cũ hơn state hiện tại của document không được ghi đè state đó; guard theo từng nguồn dữ liệu. |
 | `SEARCH-INV-005` | Event availability hoặc rating không được tạo document mới; chỉ Product được tạo document. Search phải đăng ký readiness sau khi document đã tồn tại; Inventory không được publish/export availability trước mốc đó. Missing document khi apply availability là contract violation, không ACK và tuyệt đối không upsert. |
@@ -157,10 +157,7 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   offsets; Inventory đã có contract đích cho per-SKU availability, readiness và snapshot/change export. Các
   contract vẫn mang trạng thái `proposed` và cần producer implementation, contract
   test, rồi mới chuyển Search khỏi adapter legacy.
-- **API v1 legacy đã bị gỡ.** Storefront chỉ còn `/api/v2/search/**`. Frontend đang
-  gọi `/api/v1/search/products`, `/api/v1/search/categories` và
-  `/api/v1/search/suggest` nên phải được migrate; Gateway route `/api/v1/search/**`
-  không còn backend.
+- **Search Product cards đã đổi ngữ nghĩa.** Backend/frontend cùng dùng `total_products`, signed PIT cursor và một card/Product; consumer pilot cần rollout đồng bộ. Xem ADR-020.
 - **Không có field `created_at` cho sort `newest`.** Mapping đích chỉ có `updated_at`
   và allowlist của `catalog_upsert.painless` không cho ghi `created_at`, nên `newest`
   sắp theo `updated_at` — nghĩa là một lần đổi giá cũng đẩy SKU lên đầu. Sửa đúng cần
@@ -170,3 +167,7 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   bên trên), nên implementation tạm dựng `code`/`label` từ chính token
   `code:type:value` trong `filter_tokens`. Label vì vậy là chuỗi đã case-fold và bỏ
   dấu, không phải tên hiển thị do Product đặt.
+
+## Product cards (2026-09-30)
+
+[ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md) thay kết quả SKU bằng Product duy nhất và SKU đại diện giá thấp nhất thỏa bộ lọc. Store giữ nguyên SKU document, không cần reindex hay thay Product event. `total_products` chính xác; query grouping có cap/time budget và cần benchmark catalog lớn.

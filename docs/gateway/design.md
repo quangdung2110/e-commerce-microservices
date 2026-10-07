@@ -19,7 +19,8 @@ API Gateway (Traefik)
        ▼
 gateway-auth ───► Auth Service (JWKS)
        │                 │
-       └──────────────► Redis (denylist/revocation)
+       │                 └── ghi revoke/denylist ──► Redis
+       └── đọc revoke/denylist ───────────────────► Redis
        │
        ▼
 User / Order / Product / Payment / Chat services
@@ -47,7 +48,9 @@ Khi client hủy request hoặc gateway hết deadline, context bị hủy đư�
 
 ## Xác thực và phân quyền
 
-Traefik gọi `gateway-auth` thông qua ForwardAuth trên protected routes. Service này verify JWT issuer, audience, signature algorithm, expiry, JWKS, denylist và user-wide revocation, sau đó phát một tập identity headers tối thiểu trong allowlist.
+Traefik gọi `gateway-auth` thông qua ForwardAuth trên protected routes. `auth-service` sở hữu public auth API, phát JWT và công bố JWKS; `gateway-auth` không phát token hay giữ private signing key. Nó verify JWT issuer, audience, signature algorithm, expiry, JWKS, denylist và user-wide revocation, sau đó phát một tập identity headers tối thiểu trong allowlist.
+
+`auth-service` ghi trạng thái revoke vào Redis logical store dùng chung, còn `gateway-auth` chỉ đọc trạng thái này trong đường xác thực. JWKS được `gateway-auth` cache và hỗ trợ key rotation: khi Auth Service/JWKS tạm không truy cập được nhưng key cache vẫn hợp lệ, token vẫn được verify từ cache; chỉ khi không có key cache dùng được mới fail closed. Contract chung về claims, JWKS và Redis được định nghĩa trong [runtime-contract.md](runtime-contract.md#6-quy-ước-xác-thực).
 
 Thiết kế này thay legacy Traefik plugin bằng service lifecycle bình thường, có thể test độc lập. Authentication dependency failure fail closed.
 
@@ -59,9 +62,9 @@ Redis-backed shared state làm quota đúng trên nhiều gateway replicas. Chí
 
 ## Khả năng quan sát
 
-Gateway tiếp tục hoặc bắt đầu W3C Trace Context và export OTLP traces tới OpenTelemetry Collector. Access logs là JSON xuất ra stdout; cùng một Collector đọc log qua `filelog` receiver và export sang Loki, giữ nguyên `trace_id`/`span_id` để correlate log với trace. Private metrics (Prometheus scrape trực tiếp endpoint `metrics`, không qua Collector) hỗ trợ SLOs và alerts. Tokens, cookies, request bodies, Stripe signatures, passwords và full query strings được redact khỏi cả log lẫn trace.
+Gateway tiếp tục hoặc bắt đầu W3C Trace Context và export OTLP traces tới OpenTelemetry Collector. Access logs là JSON xuất ra stdout; cùng một Collector đọc log qua `filelog` receiver và export sang Loki, giữ nguyên `trace_id`/`span_id` để correlate log với trace. Private metrics (Prometheus scrape trực tiếp endpoint `metrics`, không qua Collector) hỗ trợ SLOs và alerts; latency histogram mang exemplar `trace_id` để Grafana bật click-through từ điểm trên biểu đồ metric sang trace tương ứng — với `gateway-auth`, exemplar do team tự implement nên đảm bảo được; với Traefik, exemplar phụ thuộc khả năng của framework và hiện là best-effort ([technology_choice.md](technology_choice.md#quyết-định-prometheus-exemplars)). Tokens, cookies, request bodies, Stripe signatures, passwords và full query strings được redact khỏi cả log lẫn trace.
 
-Application services phải được instrument riêng để trace có thể đi xuyên gateway, authentication và business operation.
+Application services phải được instrument riêng để trace có thể đi xuyên gateway, authentication và business operation. Ba pillar quan sát (traces/Jaeger, logs/Loki, metrics/Prometheus) đều hiển thị qua một Grafana duy nhất, cho phép triage theo chuỗi metric spike → log chi tiết → trace end-to-end mà không cần chuyển công cụ.
 
 ## WebSocket và webhook
 

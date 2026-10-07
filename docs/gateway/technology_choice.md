@@ -49,6 +49,18 @@ Traefik và services export OTLP tới OpenTelemetry Collector thay vì coupling
 
 Collector đọc container stdout qua `filelog` receiver, parse access log JSON, giữ `trace_id`/`span_id` sẵn có rồi export sang Loki. Metrics vẫn ngoài luồng này vì Prometheus scrape trực tiếp — Collector không phải single point of failure cho metrics.
 
+### Quyết định Prometheus exemplars
+
+| Lựa chọn | Quyết định | Lý do |
+|---|---|---|
+| Không dùng exemplar, chỉ khớp thời điểm thủ công giữa Prometheus và Loki khi triage | Loại bỏ làm mục tiêu | Operator phải tự chọn time range đúng lúc spike xảy ra, chậm khi incident đang diễn ra |
+| Route metrics qua OTel Collector (OTLP) để giữ exemplar tự nhiên từ span context, thay Prometheus pull trực tiếp | Không chọn cho đợt này | Đảo ngược quyết định giữ Prometheus pull trực tiếp ở trên và biến Collector thành single point of failure cho cả traces lẫn metrics |
+| Giữ Prometheus pull trực tiếp từ `/metrics`; gắn exemplar (`trace_id`) vào latency histogram ngay tại nơi emit metric | Chọn | Không đổi metrics data path đã quyết định; chỉ cần emitter đính `trace_id` của active span vào sample lúc ghi nhận |
+
+Prometheus phải bật `--enable-feature=exemplar-storage`. Grafana Prometheus datasource cấu hình exemplar link trỏ tới Jaeger datasource, match theo label `trace_id` — cho phép click thẳng từ điểm trên biểu đồ Prometheus sang trace tương ứng.
+
+`gateway-auth` là service tự viết (Go, `client_golang`), nên emit exemplar qua `ObserveWithExemplar`/`AddWithExemplar` nằm trong tầm kiểm soát của team. Traefik v3.7.1 là third-party dependency — khả năng expose exemplar trên histogram request duration của Traefik **chưa được xác minh** tại thời điểm viết tài liệu này. Đây là gap cần xác minh trong implementation plan (mục 10, [runtime-contract.md](runtime-contract.md)) trước khi cam kết click-through metric → trace cho toàn bộ traffic qua gateway; nếu Traefik không hỗ trợ, fallback là time-range matching thủ công trong Grafana Explore cho phần traffic đó, trong khi `gateway-auth` vẫn có exemplar đầy đủ.
+
 Docker Compose vẫn là local integration tooling. Kubernetes Gateway API/CRDs là production route source. Production images dùng exact tags kèm digests; cấm `latest`.
 
 ## Quan hệ với service mesh
