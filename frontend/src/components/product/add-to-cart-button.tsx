@@ -1,110 +1,38 @@
 "use client";
-
-import { ShoppingCart, Loader2, Check } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { usePDPStore } from "@/store/usePDPStore";
-import { useAddToCart } from "@/hooks/use-cart";
+import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
+import { useCommand } from "@/hooks/use-command";
+import { cartApi } from "@/lib/api/cart";
+import { cartKeys } from "@/hooks/use-cart";
+import { canAddSku } from "@/lib/product-detail";
+import { isRetryable } from "@/lib/api/problem";
+import type { DetailSku } from "@/lib/api/product-detail";
+import { useAuthStore } from "@/store/useAuthStore";
 import { useToast } from "@/components/ui/toast";
+import { useEffect } from "react";
 
-export function AddToCartButton() {
-  const selectedSku = usePDPStore((s) => s.getSelectedSku());
-  const quantity = usePDPStore((s) => s.quantity);
-  const isAddingToCart = usePDPStore((s) => s.isAddingToCart);
-  const setIsAddingToCart = usePDPStore((s) => s.setIsAddingToCart);
-
-  const addToCartMutation = useAddToCart();
+export function AddToCartButton({ sku, quantity, slug, onLockChange }: { sku?: DetailSku; quantity: number; slug: string; onLockChange: (locked: boolean) => void }) {
+  const status = useAuthStore((state) => state.status);
+  const client = useQueryClient();
   const { addToast } = useToast();
-
-  const isOutOfStock =
-    !selectedSku ||
-    selectedSku.display_quantity <= 0 ||
-    selectedSku.sku_status !== "ACTIVE";
-
-  const handleAddToCart = async () => {
-    if (!selectedSku || isOutOfStock) return;
-
-    setIsAddingToCart(true);
-    try {
-      await addToCartMutation.mutateAsync({
-        sku_id: selectedSku.sku_id,
-        quantity,
-      });
-
-      addToast({
-        type: "success",
-        title: "Đã thêm vào giỏ hàng",
-        message: `${selectedSku.sku_code || selectedSku.sku_id} x${quantity}`,
-        duration: 3000,
-      });
-    } catch (error: any) {
-      const message =
-        error?.response?.data?.message ||
-        "Không thể thêm sản phẩm. Vui lòng thử lại.";
-      addToast({
-        type: "error",
-        title: "Thêm thất bại",
-        message,
-        duration: 5000,
-      });
-    } finally {
-      setIsAddingToCart(false);
-    }
-  };
-
-  // Out of stock
-  if (isOutOfStock) {
-    return (
-      <Button
-        disabled
-        className="w-full h-14 rounded-xl text-base font-bold"
-        size="lg"
-      >
-        Hết hàng
-      </Button>
-    );
-  }
-
-  // No SKU selected
-  if (!selectedSku) {
-    return (
-      <Button
-        disabled
-        className="w-full h-14 rounded-xl text-base font-bold"
-        size="lg"
-      >
-        Vui lòng chọn phân loại
-      </Button>
-    );
-  }
-
-  // Normal add to cart
-  return (
-    <Button
-      variant="secondary"
-      className="w-full h-14 rounded-2xl text-base font-black gap-2 uppercase tracking-widest font-mono shadow-[0_0_20px_rgba(40,200,64,0.3)] hover:shadow-[0_0_30px_rgba(40,200,64,0.6)] group relative overflow-hidden"
-      size="lg"
-      onClick={handleAddToCart}
-      disabled={isAddingToCart}
-    >
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-      <div className="relative flex items-center gap-2 z-10">
-        {isAddingToCart ? (
-          <>
-            <Loader2 className="h-5 w-5 animate-spin" />
-            Đang thêm...
-          </>
-        ) : addToCartMutation.isSuccess ? (
-          <>
-            <Check className="h-5 w-5" />
-            Đã thêm vào giỏ hàng
-          </>
-        ) : (
-          <>
-            <ShoppingCart className="h-5 w-5 group-hover:scale-110 transition-transform duration-300" />
-            Thêm vào giỏ hàng
-          </>
-        )}
-      </div>
-    </Button>
-  );
+  const command = useCommand({
+    mutationFn: (body: { sku_id: string; delta: number }, { commandId }) => cartApi.adjust(body, commandId),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: cartKeys.all });
+      addToast({ type: "success", title: "Đã thêm vào giỏ hàng", message: `${quantity} sản phẩm` });
+    },
+  });
+  const locked = command.isPending || (command.isError && isRetryable(command.error));
+  useEffect(() => { onLockChange(locked); }, [locked, onLockChange]);
+  const next = `/products/${encodeURIComponent(slug)}${sku ? `?sku=${encodeURIComponent(sku.sku_id)}` : ""}`;
+  if (!sku) return <Button className="w-full" disabled>Chọn một biến thể hợp lệ</Button>;
+  if (!canAddSku(sku)) return <Button className="w-full" disabled>Tạm hết hàng</Button>;
+  if (status === "anonymous") return <Link href={`/login?next=${encodeURIComponent(next)}`} className={buttonVariants({ variant: "clay", className: "w-full" })}>Đăng nhập để thêm vào giỏ</Link>;
+  return <div className="space-y-4">
+    <Button variant="clay" size="lg" className="w-full" disabled={command.isPending || status === "loading"} onClick={() => command.mutate(command.isError && isRetryable(command.error) && command.variables ? command.variables : { sku_id: sku.sku_id, delta: quantity })}>{command.isPending ? "Đang thêm…" : locked ? "Thử thêm lại" : "Thêm vào giỏ hàng"}</Button>
+    {command.isError && <ErrorState error={command.error} />}
+    {locked && !command.isPending && <p className="text-caption text-muted-foreground">Kết quả lần gửi trước chưa rõ. Thử lại cùng lựa chọn để tránh thêm hai lần.</p>}
+  </div>;
 }

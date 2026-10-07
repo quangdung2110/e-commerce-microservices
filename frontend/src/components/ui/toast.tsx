@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from "lucide-react";
+import { X, CircleCheck, CircleAlert, Info, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -35,17 +35,17 @@ export function useToast() {
 // ─── Provider ───────────────────────────────────────────────────
 
 const ICONS: Record<ToastType, ReactNode> = {
-  success: <CheckCircle className="h-5 w-5 text-green-500" />,
-  error: <AlertCircle className="h-5 w-5 text-red-500" />,
-  warning: <AlertTriangle className="h-5 w-5 text-amber-500" />,
-  info: <Info className="h-5 w-5 text-blue-500" />,
+  success: <CircleCheck className="size-5 text-success" />,
+  error: <CircleAlert className="size-5 text-danger" />,
+  warning: <TriangleAlert className="size-5 text-warning" />,
+  info: <Info className="size-5 text-info" />,
 };
 
 const BORDERS: Record<ToastType, string> = {
-  success: "border-green-200 dark:border-green-900",
-  error: "border-red-200 dark:border-red-900",
-  warning: "border-amber-200 dark:border-amber-900",
-  info: "border-blue-200 dark:border-blue-900",
+  success: "border-success-border",
+  error: "border-danger-border",
+  warning: "border-warning-border",
+  info: "border-info-border",
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -75,12 +75,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
 
       {/* Toast container */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+      <div
+        className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2"
+        role="status"
+        aria-live="polite"
+      >
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={cn(
-              "flex items-start gap-3 p-4 rounded-2xl border bg-card shadow-lg animate-in slide-in-from-right-2 fade-in",
+              "flex items-start gap-3 rounded-xl border bg-surface-overlay p-4 shadow-md animate-in fade-in slide-in-from-right-2 duration-200",
               BORDERS[toast.type]
             )}
           >
@@ -90,12 +94,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             </div>
 
             {/* Content */}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-foreground">
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-medium text-foreground">
                 {toast.title}
               </p>
               {toast.message && (
-                <p className="text-xs text-muted-foreground mt-0.5">
+                <p className="mt-0.5 text-caption text-muted-foreground">
                   {toast.message}
                 </p>
               )}
@@ -103,10 +107,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
             {/* Close */}
             <button
-              className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+              type="button"
+              aria-label="Đóng thông báo"
+              className="focus-ring shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
               onClick={() => removeToast(toast.id)}
             >
-              <X className="h-4 w-4" />
+              <X className="size-4" />
             </button>
           </div>
         ))}

@@ -94,3 +94,55 @@ export const VIETNAM_ADDRESS_DATA: Province[] = [
     ],
   },
 ];
+
+/**
+ * Tra tên hành chính từ mã mà User Service lưu.
+ *
+ * Backend chỉ kiểm tra *định dạng* mã (`^[A-Za-z0-9_-]{1,20}$`), không đối
+ * chiếu xem phường có thuộc quận hay không — đó là việc của một master-data
+ * contract chưa tồn tại. Vì vậy bảng dưới đây là nguồn duy nhất để đổi mã thành
+ * tên khi hiển thị, và nó là dữ liệu mẫu, chưa đầy đủ 63 tỉnh thành.
+ */
+export function findProvince(code: string): Province | undefined {
+  return VIETNAM_ADDRESS_DATA.find((province) => province.id === code);
+}
+
+export function findDistrict(
+  provinceCode: string,
+  districtCode: string
+): District | undefined {
+  return findProvince(provinceCode)?.districts.find(
+    (district) => district.id === districtCode
+  );
+}
+
+export function findWard(
+  provinceCode: string,
+  districtCode: string,
+  wardCode: string
+): Ward | undefined {
+  return findDistrict(provinceCode, districtCode)?.wards.find(
+    (ward) => ward.id === wardCode
+  );
+}
+
+/**
+ * Địa chỉ đầy đủ để hiển thị. Mã nào không tra được tên thì giữ nguyên mã, để
+ * người dùng vẫn thấy dữ liệu thật thay vì một khoảng trống.
+ */
+export function formatAddressLine(address: {
+  address_line: string;
+  province_code: string;
+  district_code: string;
+  ward_code: string;
+}): string {
+  const ward =
+    findWard(address.province_code, address.district_code, address.ward_code)?.name ??
+    address.ward_code;
+  const district =
+    findDistrict(address.province_code, address.district_code)?.name ??
+    address.district_code;
+  const province = findProvince(address.province_code)?.name ?? address.province_code;
+
+  return [address.address_line, ward, district, province].filter(Boolean).join(", ");
+}

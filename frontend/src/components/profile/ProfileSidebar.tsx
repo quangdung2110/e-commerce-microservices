@@ -2,53 +2,52 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn } from "@/lib/utils";
-import { User, MapPin, Settings, ShieldAlert } from "lucide-react";
+import { MapPin, ShieldCheck, SlidersHorizontal, User } from "lucide-react";
 
-const sidebarNavItems = [
-  {
-    title: "Hồ sơ cá nhân",
-    href: "/profile",
-    icon: User,
-  },
-  {
-    title: "Sổ địa chỉ",
-    href: "/profile/addresses",
-    icon: MapPin,
-  },
-  {
-    title: "Cài đặt & Thông báo",
-    href: "/profile/preferences",
-    icon: Settings,
-  },
+import { cn } from "@/lib/utils";
+
+const NAV_ITEMS = [
+  { title: "Hồ sơ cá nhân", href: "/profile", icon: User },
+  { title: "Sổ địa chỉ", href: "/profile/addresses", icon: MapPin },
+  { title: "Tuỳ chọn thông báo", href: "/profile/preferences", icon: SlidersHorizontal },
+  { title: "Bảo mật", href: "/profile/security", icon: ShieldCheck },
 ];
 
+/**
+ * Điều hướng giữa các mục cài đặt. Trên mobile là hàng ngang cuộn được chứ
+ * không phải dropdown — người dùng cần thấy có những mục gì mà không phải bấm.
+ */
 export function ProfileSidebar() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex space-x-2 lg:flex-col lg:space-x-0 lg:space-y-1">
-      {sidebarNavItems.map((item) => {
-        const isActive = pathname === item.href;
+    <nav
+      aria-label="Mục cài đặt tài khoản"
+      className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 md:mx-0 md:flex-col md:overflow-visible md:px-0 md:pb-0"
+    >
+      {NAV_ITEMS.map(({ title, href, icon: Icon }) => {
+        const isActive = pathname === href;
         return (
           <Link
-            key={item.href}
-            href={item.href}
+            key={href}
+            href={href}
+            aria-current={isActive ? "page" : undefined}
             className={cn(
-              "group flex items-center gap-x-3 rounded-md px-3 py-2 text-sm font-medium transition-all duration-300",
+              "focus-ring relative flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-[14px] transition-colors duration-200",
               isActive
-                ? "bg-zinc-800/50 text-emerald-400 border border-zinc-700/50 shadow-[0_0_15px_rgba(16,185,129,0.1)]"
-                : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
+                ? "bg-accent font-medium text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
-            <item.icon
-              className={cn(
-                "h-5 w-5 flex-shrink-0 transition-colors",
-                isActive ? "text-emerald-400" : "text-zinc-500 group-hover:text-zinc-300"
-              )}
-              aria-hidden="true"
-            />
-            {item.title}
+            {/* Thanh clay mảnh là dấu hiệu "đang ở đây", chỉ hiện trên cột dọc. */}
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute inset-y-1.5 left-0 hidden w-0.5 rounded-full bg-clay md:block"
+              />
+            )}
+            <Icon className="size-4 shrink-0" aria-hidden />
+            {title}
           </Link>
         );
       })}

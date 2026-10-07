@@ -1,79 +1,59 @@
+import Link from "next/link";
+
+import { Logo } from "@/components/layout/logo";
+
+const COLUMNS = [
+  {
+    title: "Về chúng tôi",
+    links: ["Giới thiệu", "Tuyển dụng", "Tin tức", "Liên hệ"],
+  },
+  {
+    title: "Hỗ trợ khách hàng",
+    links: ["Trung tâm trợ giúp", "Chính sách đổi trả", "Bảo hành", "Vận chuyển"],
+  },
+  {
+    title: "Chính sách",
+    links: ["Điều khoản sử dụng", "Chính sách bảo mật", "Chính sách cookie"],
+  },
+];
+
 export function Footer() {
   return (
-    <footer className="w-full bg-black border-t border-white/[0.08] mt-auto relative overflow-hidden">
-      {/* Subtle bottom glow */}
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[60%] h-[1px] bg-gradient-to-r from-transparent via-forest-bright/30 to-transparent shadow-[0_0_20px_rgba(40,200,64,0.3)]"></div>
-      
-      <div className="container mx-auto px-4 py-16 relative z-10">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-12">
-          {/* Brand */}
+    <footer className="mt-auto border-t border-border bg-surface-2">
+      <div className="mx-auto w-full max-w-main px-6 py-14 md:px-8">
+        <div className="grid gap-10 md:grid-cols-[1.5fr_repeat(3,1fr)]">
           <div className="space-y-4">
-            <div className="flex items-center gap-2 group cursor-default">
-              <div className="h-8 w-8 rounded-[5px] bg-[#0c0c0f] border border-white/10 flex items-center justify-center shadow-[0_0_15px_rgba(255,255,255,0.05)] group-hover:border-forest/50 transition-all duration-300">
-                <span className="text-lg font-black text-white group-hover:text-forest-bright transition-colors duration-300">T</span>
-              </div>
-              <span className="text-xl font-black tracking-tighter text-white/90">
-                TechNova
-              </span>
-            </div>
-            <p className="text-sm text-white/40 leading-relaxed max-w-xs">
-              Trải nghiệm mua sắm thiết bị công nghệ cao cấp, chính hãng với dịch vụ chăm sóc khách hàng tận tâm nhất.
+            <Logo />
+            <p className="max-w-prose-narrow text-[14px] leading-relaxed text-muted-foreground">
+              Nền tảng thương mại điện tử cho sản phẩm công nghệ chính hãng, với
+              giá minh bạch và giao hàng nhanh.
             </p>
           </div>
 
-          {/* Links */}
-          <div>
-            <h4 className="font-bold mb-4 text-white/90 font-mono text-sm tracking-wide uppercase">Về chúng tôi</h4>
-            <ul className="space-y-3">
-              {["Giới thiệu", "Tuyển dụng", "Chính sách bảo mật", "Điều khoản sử dụng"].map((item) => (
-                <li key={item}>
-                  <a href="#" className="text-sm text-white/40 hover:text-forest-bright transition-colors duration-300 flex items-center gap-2 before:content-['›'] before:text-forest-bright/0 hover:before:text-forest-bright before:transition-colors">
-                    {item}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="font-bold mb-4 text-white/90 font-mono text-sm tracking-wide uppercase">Hỗ trợ khách hàng</h4>
-            <ul className="space-y-3">
-              {["Trung tâm trợ giúp", "Chính sách đổi trả", "Chính sách bảo hành", "Hướng dẫn mua hàng"].map((item) => (
-                <li key={item}>
-                  <a href="#" className="text-sm text-white/40 hover:text-forest-bright transition-colors duration-300 flex items-center gap-2 before:content-['›'] before:text-forest-bright/0 hover:before:text-forest-bright before:transition-colors">
-                    {item}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Newsletter */}
-          <div>
-            <h4 className="font-bold mb-4 text-white/90 font-mono text-sm tracking-wide uppercase">Đăng ký nhận tin</h4>
-            <p className="text-sm text-white/40 mb-4">
-              Nhận thông tin ưu đãi mới nhất và cập nhật công nghệ.
-            </p>
-            <div className="flex gap-2">
-              <input 
-                type="email" 
-                placeholder="Email của bạn..." 
-                className="flex-1 rounded-full bg-white/[0.04] border border-white/10 px-4 py-2 text-sm text-white placeholder:text-white/20 focus:bg-white/[0.08] focus:border-forest-bright focus:ring-1 focus:ring-forest-bright outline-none transition-all duration-300 font-mono"
-              />
-              <button className="px-6 py-2 bg-white text-black rounded-full text-sm font-bold hover:bg-forest-bright hover:shadow-[0_0_15px_rgba(40,200,64,0.3)] transition-all duration-300 active:scale-95">
-                Gửi
-              </button>
+          {COLUMNS.map((column) => (
+            <div key={column.title} className="space-y-3">
+              <h2 className="text-caption font-medium uppercase tracking-wide text-muted-foreground">
+                {column.title}
+              </h2>
+              <ul className="space-y-2">
+                {column.links.map((label) => (
+                  <li key={label}>
+                    <Link
+                      href="/"
+                      className="focus-ring rounded-sm text-[14px] text-foreground-secondary transition-colors hover:text-clay-strong"
+                    >
+                      {label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
+          ))}
         </div>
-        
-        <div className="mt-16 pt-8 border-t border-white/[0.06] flex flex-col md:flex-row items-center justify-between gap-4 text-xs font-mono text-white/30">
-          <p>© 2026 TechNova. Designed for Developers.</p>
-          <div className="flex items-center gap-6">
-             <span className="hover:text-white transition-colors cursor-pointer">Facebook</span>
-             <span className="hover:text-white transition-colors cursor-pointer">Instagram</span>
-             <span className="hover:text-white transition-colors cursor-pointer">X.com</span>
-          </div>
+
+        <div className="mt-12 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 text-caption text-muted-foreground md:flex-row">
+          <p>© {new Date().getFullYear()} TechNova. Bảo lưu mọi quyền.</p>
+          <p>Đã đăng ký với Bộ Công Thương</p>
         </div>
       </div>
     </footer>
