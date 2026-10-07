@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.qa/
 
 # next.js
 /.next/
@@ -32,6 +33,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# Mẫu cấu hình thì nên theo repo — nó không chứa bí mật nào.
+!.env.example
 
 # vercel
 .vercel
