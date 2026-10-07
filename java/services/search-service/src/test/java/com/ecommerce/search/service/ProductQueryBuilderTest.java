@@ -16,29 +16,20 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** DSL construction rules from {@code WF-SEARCH-001} and ADR-012. */
+/** DSL construction rules from {@code WF-SEARCH-001} and ADR-020. */
 class ProductQueryBuilderTest {
 
     private final ProductQueryBuilder builder = new ProductQueryBuilder(properties());
 
-    @ParameterizedTest
-    @EnumSource(SortOption.class)
-    void everySortEndsWithTheSkuIdTieBreak(SortOption sort) {
-        // SEARCH-BR-006: without it search_after repeats or skips documents.
-        List<SortOptions> options = builder.sortOptions(sort);
-        SortOptions last = options.get(options.size() - 1);
-
-        assertThat(last.isField()).isTrue();
-        assertThat(last.field().field()).isEqualTo("sku_id");
-        assertThat(last.field().order()).isEqualTo(SortOrder.Asc);
-    }
-
     @Test
-    void priceSortsUseThePublishedSellingPrice() {
-        assertThat(builder.sortOptions(SortOption.PRICE_ASC).get(0).field().field())
-                .isEqualTo("selling_price_vnd");
-        assertThat(builder.sortOptions(SortOption.PRICE_DESC).get(0).field().order())
-                .isEqualTo(SortOrder.Desc);
+    void groupsProductsAndPicksTheCheapestMatchingSkuDeterministically() {
+        var agg = builder.productGroups(500, null);
+        assertThat(agg.composite().sources().getFirst().get("product").terms().field()).isEqualTo("product_id");
+        var top = agg.aggregations().get("representative").topHits();
+        assertThat(top.size()).isEqualTo(1);
+        assertThat(top.sort().get(0).field().field()).isEqualTo("selling_price_vnd");
+        assertThat(top.sort().get(1).field().field()).isEqualTo("sku_id");
+        assertThat(agg.aggregations()).containsKeys("relevance", "newest", "rating");
     }
 
     @Test
@@ -127,6 +118,6 @@ class ProductQueryBuilderTest {
                 new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),
                 new SearchProperties.Cors(List.of("*")),
                 new SearchProperties.Export("http://product", "http://inventory", "http://review",
-                        true, Duration.ofSeconds(30), 2, 2));
+                        "review-token", true, Duration.ofSeconds(30), 2, 2));
     }
 }

@@ -91,6 +91,10 @@ search:
   pagination:
     default-size: 20
     max-size: 100
+    cursor-secret: ${SEARCH_CURSOR_SECRET:dev-product-cursor-secret-change-in-production}
+    pit-keep-alive: 2m
+    product-scan-batch-size: 500
+    max-matching-products: 50000
 
   # Client-side _bulk throttling. requests-per-second throttles bulk dispatch;
   # task-requests-per-second is the ES task API parameter for _update_by_query and
@@ -158,6 +162,8 @@ search:
     product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8080}
     inventory-base-url: ${INVENTORY_INTERNAL_URL:http://inventory-service:8080}
     review-base-url: ${REVIEW_INTERNAL_URL:http://review-service:8080}
+    # Bearer service identity for Review's /internal/v1/** rating export.
+    review-token: ${REVIEW_INTERNAL_TOKEN:}
     review-enabled: ${REVIEW_EXPORT_ENABLED:true}
     timeout: 30s
     # A snapshot session lives 24h and a re-created one must be paged from the start,

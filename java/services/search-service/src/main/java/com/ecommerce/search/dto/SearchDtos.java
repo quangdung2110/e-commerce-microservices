@@ -17,15 +17,15 @@ public final class SearchDtos {
     private SearchDtos() {
     }
 
-    /** {@code SearchPage}. {@code totalSkus} counts SKU documents, not product cards. */
+    /** Exact distinct matching products; every item is one product card. */
     public record SearchPage(
             List<SearchProductItem> items,
-            long totalSkus,
+            long totalProducts,
             String nextCursor,
             FacetSet facets) {
     }
 
-    /** {@code SearchProductItem}: one SKU, carrying denormalised product context. */
+    /** One Product represented by its cheapest matching SKU (price, then sku_id). */
     public record SearchProductItem(
             String skuId,
             String productId,

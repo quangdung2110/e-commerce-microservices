@@ -20,13 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Builds the Elasticsearch DSL for the storefront search.
- *
- * <p>Deliberately absent: {@code collapse} and {@code inner_hits}. Elasticsearch only
- * combines collapse with {@code search_after} when the sort field equals the collapse
- * field and there is no secondary sort, which is incompatible with a {@code sku_id}
- * tie-break on every sort — so a hit is a SKU and the same product may appear more than
- * once (ADR-012).
+ * Filters SKU documents before grouping products and selecting representatives (ADR-020).
  */
 @Component
 public class ProductQueryBuilder {
@@ -124,21 +118,21 @@ public class ProductQueryBuilder {
                 .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.And)));
     }
 
-    /**
-     * Sort options for the requested ordering, always closed by the {@code sku_id asc}
-     * tie-break ({@code SEARCH-BR-006}) that makes {@code search_after} deterministic.
-     */
-    public List<SortOptions> sortOptions(SortOption sort) {
-        List<SortOptions> options = new ArrayList<>();
-        switch (sort) {
-            case RELEVANCE -> options.add(SortOptions.of(s -> s.score(score -> score.order(SortOrder.Desc))));
-            case PRICE_ASC -> options.add(fieldSort("selling_price_vnd", SortOrder.Asc));
-            case PRICE_DESC -> options.add(fieldSort("selling_price_vnd", SortOrder.Desc));
-            case NEWEST -> options.add(fieldSort("updated_at", SortOrder.Desc));
-            case RATING -> options.add(fieldSort("product_rating_avg", SortOrder.Desc));
-        }
-        options.add(fieldSort("sku_id", SortOrder.Asc));
-        return options;
+    /** Composite visits every product, without shard-local top-N truncation. */
+    public Aggregation productGroups(int batchSize, Map<String, FieldValue> after) {
+        return Aggregation.of(a -> a.composite(c -> {
+            c.size(batchSize).sources(List.of(Map.of("product", co.elastic.clients.elasticsearch._types.aggregations.CompositeAggregationSource.of(
+                    s -> s.terms(t -> t.field("product_id"))))));
+            if (after != null) c.after(after);
+            return c;
+        }).aggregations("representative", sub -> sub.topHits(t -> t.size(1)
+                .source(s -> s.filter(f -> f.includes(List.of("sku_id", "product_id", "product_slug", "name",
+                        "thumbnail_storage_key", "base_price_vnd", "selling_price_vnd", "product_rating_avg",
+                        "product_rating_count", "is_in_stock"))))
+                .sort(List.of(fieldSort("selling_price_vnd", SortOrder.Asc), fieldSort("sku_id", SortOrder.Asc)))))
+                .aggregations("relevance", sub -> sub.max(m -> m.script(s -> s.inline(i -> i.source("_score")))))
+                .aggregations("newest", sub -> sub.max(m -> m.field("updated_at")))
+                .aggregations("rating", sub -> sub.max(m -> m.field("product_rating_avg"))));
     }
 
     /**

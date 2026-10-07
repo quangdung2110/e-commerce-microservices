@@ -7,9 +7,9 @@ import java.util.Locale;
 /**
  * The five sorts the storefront contract exposes.
  *
- * <p>Every one of them ends with the {@code sku_id asc} tie-break added by the query
- * builder ({@code SEARCH-BR-006}); without it {@code search_after} would repeat or skip
- * documents.
+ * <p>Every Product sort ends with {@code product_id asc} in {@link ProductMatch}
+ * ({@code SEARCH-BR-006}). The representative SKU is chosen separately by price then
+ * {@code sku_id asc}; paging uses a signed PIT cursor (ADR-020).
  *
  * <p>{@code NEWEST} sorts on {@code updated_at}: the target mapping carries no
  * {@code created_at}, and {@code catalog_upsert.painless} does not allow writing one, so

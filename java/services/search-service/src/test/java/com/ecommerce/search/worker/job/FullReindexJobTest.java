@@ -279,7 +279,7 @@ class FullReindexJobTest {
                 "search_suggestions", "search_jobs"));
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", "http://inventory-service:8080", "http://review-service:8080",
-                true, Duration.ofSeconds(30), maxSessions, maxSessions));
+                "review-token", true, Duration.ofSeconds(30), maxSessions, maxSessions));
         when(properties.reindex()).thenReturn(new SearchProperties.Reindex(
                 Duration.ofHours(6), 500, 1, Duration.ofMillis(10), Duration.ofSeconds(5), 0.02));
         when(properties.topics()).thenReturn(new SearchProperties.Topics(

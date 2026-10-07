@@ -148,6 +148,13 @@ public record SearchProperties(
             @DefaultValue("http://product-service:8080") String productBaseUrl,
             @DefaultValue("http://inventory-service:8080") String inventoryBaseUrl,
             @DefaultValue("http://review-service:8080") String reviewBaseUrl,
+            /*
+             * Bearer service identity for Review's /internal/v1/** routes. Review splits
+             * its internal routes into two token groups, and Search is only allowed on the
+             * rating export; an empty value means the calls go out unauthenticated and
+             * Review answers 401.
+             */
+            @DefaultValue("") String reviewToken,
             @DefaultValue("true") boolean reviewEnabled,
             @DefaultValue("30s") Duration timeout,
             /*

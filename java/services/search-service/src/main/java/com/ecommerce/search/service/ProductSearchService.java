@@ -1,14 +1,10 @@
 package com.ecommerce.search.service;
 
-import co.elastic.clients.elasticsearch._types.FieldValue;
-import co.elastic.clients.elasticsearch._types.SortOptions;
-import co.elastic.clients.elasticsearch._types.query_dsl.Query;
-import co.elastic.clients.elasticsearch.core.SearchResponse;
-import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.ecommerce.search.common.SearchException;
 import com.ecommerce.search.domain.document.CategoryDocument;
 import com.ecommerce.search.domain.document.ProductDocument;
 import com.ecommerce.search.domain.model.SearchCursor;
+import com.ecommerce.search.domain.model.ProductMatch;
 import com.ecommerce.search.domain.model.SearchQuery;
 import com.ecommerce.search.dto.SearchDtos;
 import com.ecommerce.search.repository.CategoryRepository;
@@ -22,7 +18,7 @@ import java.util.Optional;
 /**
  * {@code WF-SEARCH-001} — the core storefront query.
  *
- * <p>Pure read: validate, run one Elasticsearch query, transform, respond. No side effect,
+ * <p>Snapshot read: filter SKUs, group products, select cheapest eligible SKU, sort and page. No writes,
  * no application cache and no internal retry; the client decides whether to try again.
  */
 @Service
@@ -50,44 +46,32 @@ public class ProductSearchService {
     }
 
     public SearchDtos.SearchPage search(SearchQuery request) throws IOException {
+        // Decode before opening a PIT so invalid cursors do not allocate ES resources.
+        SearchCursor.Position position = request.cursor().map(c -> cursors.decode(request, c)).orElse(null);
         Optional<String> categoryId = resolveCategory(request.category());
-        Query query = queryBuilder.build(request, categoryId);
-        List<SortOptions> sort = queryBuilder.sortOptions(request.sort());
-
-        List<FieldValue> searchAfter = request.cursor()
-                .map(cursor -> cursors.decode(request, cursor))
-                .orElse(null);
-
-        SearchResponse<ProductDocument> response = repository.search(
-                query, sort, queryBuilder.facetAggregations(), request.size(), searchAfter);
-
-        List<Hit<ProductDocument>> hits = response.hits().hits();
-        List<SearchDtos.SearchProductItem> items = hits.stream()
-                .map(Hit::source)
-                .filter(java.util.Objects::nonNull)
-                .map(this::toItem)
-                .toList();
-
-        String nextCursor = nextCursor(request, hits);
-        long totalSkus = response.hits().total() == null ? items.size() : response.hits().total().value();
-
-        return new SearchDtos.SearchPage(
-                items,
-                totalSkus,
-                nextCursor,
-                facetAssembler.assemble(response.aggregations().get(ProductQueryBuilder.FACET_AGG)));
-    }
-
-    /**
-     * A full page means there may be more; a short page is the end of the result set and
-     * yields {@code next_cursor = null}.
-     */
-    private String nextCursor(SearchQuery request, List<Hit<ProductDocument>> hits) {
-        if (hits.size() < request.size() || hits.isEmpty()) {
-            return null;
+        if (position != null && !java.util.Objects.equals(position.categoryId(), categoryId.orElse(null))) {
+            throw SearchException.invalidCursor("category changed since this snapshot; restart pagination");
         }
-        List<FieldValue> sortValues = hits.get(hits.size() - 1).sort();
-        return sortValues == null || sortValues.isEmpty() ? null : cursors.encode(request, sortValues);
+        var query = queryBuilder.build(request, categoryId);
+        String pit = position == null ? repository.openSnapshot() : position.pitId();
+        var snapshot = repository.products(query, pit);
+        boolean keepSnapshot = false;
+        try {
+            List<ProductMatch> products = snapshot.products().stream().sorted(ProductMatch.ordering(request.sort())).toList();
+            int offset = position == null ? 0 : position.offset();
+            if (offset > products.size()) throw SearchException.invalidCursor("cursor is outside the product result set");
+            int end = Math.min(products.size(), offset + request.size());
+            List<SearchDtos.SearchProductItem> items = products.subList(offset, end).stream()
+                    .map(ProductMatch::representative).map(this::toItem).toList();
+            String next = end < products.size()
+                    ? cursors.encode(request, new SearchCursor.Position(snapshot.pitId(), end, categoryId.orElse(null))) : null;
+            var page = new SearchDtos.SearchPage(items, products.size(), next,
+                    facetAssembler.assemble(snapshot.facets().get(ProductQueryBuilder.FACET_AGG)));
+            keepSnapshot = next != null;
+            return page;
+        } finally {
+            if (!keepSnapshot) repository.closeSnapshot(snapshot.pitId());
+        }
     }
 
     /**
