@@ -11,96 +11,44 @@ http:
   # =============================================================================
   middlewares:
     # -------------------------------------------------------------------------
-    # JWT Authentication Middleware (Go Plugin)
+    # Xac thuc: ForwardAuth toi gateway-auth
     #
-    # Bon block duoi day phai giu nguyen cung mot gia tri. Khoa cua chung duoc
-    # chot tai docs/gateway/runtime-contract.md muc 6 va 6.1: doi mot block ma
-    # quen cac block con lai la cach loi lech claim/redis-key quay tro lai.
+    # docs/gateway/design.md va runtime-contract.md muc 6: Traefik goi
+    # gateway-auth cho moi request toi route can danh tinh. 2xx cho request di
+    # tiep kem dung bon header danh tinh; moi status khac (401 problem+json,
+    # 503 khi JWKS/Redis khong san sang) duoc tra nguyen ve client, khong bao gio
+    # fail open. Traefik khong nap plugin nao; plugin jwt-auth cu da duoc go
+    # (implementation_plan.md muc 3.5).
+    #
+    # Router dung chain `authenticated`, khong dung `gateway-auth` truc tiep:
+    # strip-identity-headers phai chay TRUOC de header X-User-* do client gui
+    # khong bao gio toi duoc upstream.
     # -------------------------------------------------------------------------
+    gateway-auth:
+      forwardAuth:
+        address: "http://gateway-auth:8080/verify"
+        trustForwardHeader: false
+        # Body cua gateway-auth chi la problem+json vai tram byte; gioi han de mot
+        # upstream xac thuc hong khong day duoc body tuy y ve client.
+        maxResponseBodySize: 8192
+        # Chi gui cho gateway-auth nhung header no can; cookie va body khong di.
+        authRequestHeaders:
+          - "Authorization"
+          - "X-Request-Id"
+          - "traceparent"
+          - "tracestate"
+        # Allowlist runtime-contract muc 6.1.
+        authResponseHeaders:
+          - "X-User-Id"
+          - "X-User-Roles"
+          - "X-User-Session-Id"
+          - "X-Token-Jti"
 
-    # User Service JWT Auth
-    jwt-auth-user:
-      plugin:
-        jwt-auth:
-          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
-          # Port 8081 la listener internal mTLS va khong co route JWKS.
-          authServiceURL: "http://auth-service:8080"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          revocationPrefix: "auth:revocation"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userSessionHeader: "X-User-Session-Id"
-          tokenJtiHeader: "X-Token-Jti"
-
-    # Product Service JWT Auth
-    jwt-auth-product:
-      plugin:
-        jwt-auth:
-          # Product Service tự thực thi authorization role ADMIN sau khi gateway
-          # xác minh token và inject trusted identity headers.
-          authServiceURL: "http://auth-service:8080"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          revocationPrefix: "auth:revocation"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userSessionHeader: "X-User-Session-Id"
-          tokenJtiHeader: "X-Token-Jti"
-
-    # Order Service JWT Auth
-    jwt-auth-order:
-      plugin:
-        jwt-auth:
-          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
-          # Port 8081 la listener internal mTLS va khong co route JWKS.
-          authServiceURL: "http://auth-service:8080"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          revocationPrefix: "auth:revocation"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userSessionHeader: "X-User-Session-Id"
-          tokenJtiHeader: "X-Token-Jti"
-
-    # Payment Service JWT Auth (strictest)
-    jwt-auth-payment:
-      plugin:
-        jwt-auth:
-          # Port 8080 la listener public phuc vu /.well-known/jwks.json.
-          # Port 8081 la listener internal mTLS va khong co route JWKS.
-          authServiceURL: "http://auth-service:8080"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          revocationPrefix: "auth:revocation"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userSessionHeader: "X-User-Session-Id"
-          tokenJtiHeader: "X-Token-Jti"
+    authenticated:
+      chain:
+        middlewares:
+          - strip-identity-headers
+          - gateway-auth
 
     # -------------------------------------------------------------------------
     # Rate Limiting Middlewares
@@ -112,33 +60,6 @@ http:
         average: 100
         burst: 200
         period: 1s
-    # Checkout profiles (docs/gateway/runtime-contract.md muc 7): quota theo user da xac thuc,
-    # Gateway so huu quota; Checkout khong co limiter rieng. Luu y: rateLimit cua Traefik CE la
-    # in-memory per replica; production nhieu replica can shared state truoc khi bat route.
-    rate-limit-checkout-preview:
-      rateLimit:
-        average: 10
-        burst: 10
-        period: 1m
-        sourceCriterion:
-          requestHeaderName: X-User-Id
-
-    rate-limit-checkout-submit:
-      rateLimit:
-        average: 3
-        burst: 3
-        period: 1m
-        sourceCriterion:
-          requestHeaderName: X-User-Id
-
-    rate-limit-checkout-voucher-options:
-      rateLimit:
-        average: 20
-        burst: 20
-        period: 1m
-        sourceCriterion:
-          requestHeaderName: X-User-Id
-
         sourceCriterion:
           ipStrategy:
             depth: 2
@@ -191,6 +112,33 @@ http:
         sourceCriterion:
           requestHeaderName: X-User-Id
 
+    # Checkout profiles (docs/gateway/runtime-contract.md muc 7): quota theo user da xac thuc,
+    # Gateway so huu quota; Checkout khong co limiter rieng. Luu y: rateLimit cua Traefik CE la
+    # in-memory per replica; production nhieu replica can shared state truoc khi bat route.
+    rate-limit-checkout-preview:
+      rateLimit:
+        average: 10
+        burst: 10
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-submit:
+      rateLimit:
+        average: 3
+        burst: 3
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-voucher-options:
+      rateLimit:
+        average: 20
+        burst: 20
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
     # -------------------------------------------------------------------------
     # Security Headers Middleware
     # -------------------------------------------------------------------------
@@ -236,12 +184,12 @@ http:
           X-User-Id: "00000000-0000-4000-8000-000000000123"
           X-User-Roles: "BUYER"
 
-    # Dev Admin Auth Middleware (catalog admin API cua Product Service)
+    # Dev Admin Auth Middleware
     #
-    # CHI dung cho development, giong dev-auth nhung voi role ADMIN vi
-    # /api/v1/products, /api/v1/categories va /api/v1/attributes deu la admin
-    # API. Production thay bang jwt-auth/gateway-auth: role phai den tu claim
-    # `roles` cua access token da verify, khong phai tu middleware nay.
+    # CHI dung cho development, giong dev-auth nhung voi role ADMIN. Con dung
+    # cho promotion-admin; router nao chuyen sang
+    # `authenticated@file` thi role den tu claim `roles` cua access token da
+    # verify (implementation_plan.md muc 3.6).
     dev-admin-auth:
       headers:
         customRequestHeaders:

@@ -76,7 +76,7 @@ services:
       - "traefik.http.services.order-service.loadbalancer.healthcheck.interval=10s"
 
 # =============================================================================
-# PRODUCT SERVICE TEMPLATE (Mixed Auth - Public GET, Protected Write)
+# PRODUCT SERVICE TEMPLATE (Admin API; storefront reads use Search Service)
 # =============================================================================
 
 services:
@@ -89,23 +89,21 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # Public router (GET requests only)
-      - "traefik.http.routers.product-service-public.rule=PathPrefix(`/api/products`) && Method(GET)"
-      - "traefik.http.routers.product-service-public.entrypoints=websecure"
-      - "traefik.http.routers.product-service-public.tls=true"
-      - "traefik.http.routers.product-service-public.middlewares=rate-limit-default"
-      - "traefik.http.routers.product-service-public.priority=20"
-
-      # Protected router (all methods)
-      - "traefik.http.routers.product-service.rule=PathPrefix(`/api/products`)"
+      # Protected catalog administration router. Do not expose /internal/v1/**.
+      - "traefik.http.routers.product-service.rule=(Path(`/api/v1/products`) || PathPrefix(`/api/v1/products/`)) || (Path(`/api/v1/categories`) || PathPrefix(`/api/v1/categories/`)) || (Path(`/api/v1/attributes`) || PathPrefix(`/api/v1/attributes/`))"
       - "traefik.http.routers.product-service.entrypoints=websecure"
       - "traefik.http.routers.product-service.tls=true"
-      - "traefik.http.routers.product-service.middlewares=rate-limit-api"
-      - "traefik.http.routers.product-service.priority=10"
+      - "traefik.http.routers.product-service.service=product-service"
+      - "traefik.http.routers.product-service.middlewares=authenticated@file,rate-limit-api@file,secure-headers@file,compress@file"
+      - "traefik.http.routers.product-service.priority=30"
 
       # Service
-      - "traefik.http.services.product-service.loadbalancer.server.port=8080"
-      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.product-service.loadbalancer.server.port=8081"
+      - "traefik.http.services.product-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.product-service.loadbalancer.serverstransport=business-api@file"
 
 # =============================================================================
 # PAYMENT SERVICE TEMPLATE (Strictest Rate Limit)

@@ -2,7 +2,7 @@
 # API Gateway Makefile
 # =============================================================================
 
-.PHONY: help build up down restart logs ps clean test lint fmt vet
+.PHONY: help build up down restart logs ps clean test vet
 
 # Variables
 COMPOSE_FILE := docker-compose.yml
@@ -27,10 +27,9 @@ help:
 	@echo "  make logs-all     Show logs (all services)"
 	@echo "  make ps           Show running containers"
 	@echo "  make clean        Remove containers and volumes"
-	@echo "  make build        Build Go plugins"
-	@echo "  make test         Run tests"
-	@echo "  make lint         Run linter"
-	@echo "  make fmt          Format code"
+	@echo "  make build        Build Docker image"
+	@echo "  make test         Run gateway-auth tests (Docker)"
+	@echo "  make vet          Vet gateway-auth (Docker)"
 	@echo ""
 	@echo "Services:"
 	@echo "  make traefik-up   Start Traefik only"
@@ -70,20 +69,7 @@ ps:
 # Clean up (remove containers and volumes)
 clean:
 	docker compose -f $(COMPOSE_FILE) down -v
-	rm -rf plugins/*.so
 	@echo "$(GREEN)Cleaned up containers and volumes$(NC)"
-
-# Build Go plugins using Docker (for Windows users)
-build-plugin: check-env
-	@echo "$(GREEN)Building Go plugins using Docker...$(NC)"
-	@mkdir -p plugins
-	@docker compose run --rm go-builder
-	@echo "$(GREEN)Plugin built successfully!$(NC)"
-
-# Run unit tests using Docker
-test-docker:
-	@echo "$(GREEN)Running unit tests using Docker...$(NC)"
-	@docker run --rm -v "$(PWD)/cmd/traefik-plugin:/app" -w /app golang:1.21 go test -v ./...
 
 # Run integration tests
 test-integration:
@@ -139,32 +125,13 @@ traefik-down:
 traefik-logs:
 	docker compose -f $(COMPOSE_FILE) logs -f traefik
 
-# Run tests
+# Xac thuc JWT nam o service rieng go/services/gateway-auth (ForwardAuth), khong con
+# plugin Traefik. Test/vet chay trong container golang vi may khong co Go.
 test:
-	@cd cmd/traefik-plugin && go test -v ./...
+	@bash ../gateway-auth/scripts/go.sh test ./...
 
-# Run linter
-lint:
-	@cd cmd/traefik-plugin && golangci-lint run
-
-# Format code
-fmt:
-	@cd cmd/traefik-plugin && go fmt ./...
-
-# Vet code
 vet:
-	@cd cmd/traefik-plugin && go vet ./...
-
-# Check Go version compatibility
-check-version:
-	@echo "Checking version compatibility..."
-	@TRAEFIK_VERSION=$$(docker run --rm traefik:v3.7.1 --version 2>&1 | grep -oP 'v[\d.]+') && \
-	GO_VERSION=$$(go version | grep -oP 'go[\d.]+') && \
-	echo "Traefik: $$TRAEFIK_VERSION" && \
-	echo "Go: $$GO_VERSION" && \
-	if ! echo "$$TRAEFIK_VERSION" | grep -q "3.7"; then \
-		echo "$(YELLOW)Warning: Plugin may not be compatible with this Traefik version$(NC)"; \
-	fi
+	@bash ../gateway-auth/scripts/go.sh vet ./...
 
 # Generate self-signed certificate for development
 cert-dev:

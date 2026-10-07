@@ -16,9 +16,12 @@
 | `/api/v1/products/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Product, SKU, media and lifecycle administration |
 | `/api/v1/categories/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Category and category-attribute administration |
 | `/api/v1/attributes/**` | product-service | Yes, `ADMIN` | 50 req/s | 30 | Attribute and option administration |
-| `/api/v1/search/**` (GET) | search-service | No | 100 req/s | 10 | Public storefront browse/search |
-| `/api/v2/search/**` (GET, trừ reindex) | search-service | No | 100 req/s | 10 | Canonical Search v2; chạy song song v1 trong migration |
-| `/api/v2/search/reindex-runs/**` (GET, POST) | search-service | Yes, `ADMIN` | 50 req/s | 30 | Priority cao hơn route public Search; không dùng `/internal` |
+| `/api/v2/search/products`, `/suggestions`, `/categories`, `/categories/{id}/facets` (GET) | search-service | No | 100 req/s | 10 | Bốn public route v2; không còn router v1 |
+| `/api/v2/search/reindex-runs/**` (GET, POST) | search-service | Yes, `ADMIN` | 50 req/s | 40 | Priority cao hơn route public Search; không dùng `/internal` |
+| `/api/v1/reviews/products/{id}` và `/{id}/aggregate` (GET) | review-service | No | 100 req/s | 40 | Public list/aggregate; strip forged identity |
+| `/api/v1/reviews/**` (còn lại) | review-service | Yes | 50 req/s | 30 | authenticated@file; Review kiểm tra owner/report rules; không retry write |
+| `/api/v1/admin/reviews/**` | review-service | Yes, `ADMIN` | 50 req/s | 40 | authenticated@file; Review kiểm tra role |
+| `/api/v1/carts/mine`, `/api/v1/carts/mine/items` | cart-service | Yes | 50 req/s | mặc định | authenticated@file; POST/DELETE cần Idempotency-Key; không retry write |
 | `/api/v1/storefront/products/**` (GET) | product-detail-bff | No | 100 req/s | 30 | PDP; response-header timeout 3 s (`product-detail-bff@file` transport), retry only on connection failure, keeps the BFF `Cache-Control` |
 | `/media/**` (GET, HEAD) | minio (`product-media` bucket) | No | 100 req/s | 20 | **Local only**: stand-in for the product CDN, rewritten to `/product-media/**`; production serves media from its own CDN domain |
 | `/api/payments/**` | payment-service | Yes | 20 req/s | 10 | Strictest rate limit |
@@ -50,11 +53,9 @@ template, never the path. The rate limit is Traefik CE's in-memory counter per r
 production with several replicas needs the shared state of `docs/gateway/runtime-contract.md`
 section 7.
 
-`docker-compose.yml` là cấu hình development nên router Product dùng
-`dev-admin-auth@file` để inject một identity `ADMIN` cố định sau khi đã xóa các
-header giả mạo từ client. Khi triển khai thật, thay middleware này bằng
-`jwt-auth-product@file` (hoặc ForwardAuth tương đương); Product Service vẫn là
-nơi quyết định caller có role `ADMIN` hay không.
+Router Product dùng chain `authenticated@file` (xóa header giả mạo từ client rồi
+ForwardAuth tới `gateway-auth`): identity và role lấy từ access token đã verify.
+Product Service vẫn là nơi quyết định caller có role `ADMIN` hay không.
 
 # =============================================================================
 # HEADER ENRICHMENT (after authentication)
@@ -111,7 +112,7 @@ curl -k https://localhost/api/users/123 \
 curl http://localhost:8088/api/v1/products
 
 # Public product browse remains on Search Service
-curl http://localhost:8088/api/v1/search/products
+curl http://localhost:8088/api/v2/search/products
 
 # Canonical Search v2 storefront route
 curl http://localhost:8088/api/v2/search/products

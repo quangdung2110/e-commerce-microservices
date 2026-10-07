@@ -2,8 +2,8 @@
 # Traefik Dockerfile
 # =============================================================================
 # API Gateway with Traefik v3.x
-# Note: Go plugins require CGO and are complex to build in Docker
-# For development, we use Traefik without custom plugins
+# Xac thuc JWT do service go/services/gateway-auth dam nhiem qua ForwardAuth;
+# Traefik khong nap plugin nao.
 # =============================================================================
 
 FROM traefik:v3.7.1
@@ -18,8 +18,8 @@ RUN apk add --no-cache \
 COPY config/ /etc/traefik/
 
 # Create necessary directories
-RUN mkdir -p /letsencrypt /certs /plugins && \
-    chown -R non-root:non-root /letsencrypt /certs /plugins || true
+RUN mkdir -p /letsencrypt /certs && \
+    chown -R non-root:non-root /letsencrypt /certs || true
 
 # Default command
 CMD ["--configfile=/etc/traefik/traefik.yml"]
