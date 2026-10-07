@@ -65,9 +65,9 @@ Layout: `app/(site)/(protected)/layout.tsx` (bọc `RequireAuth`).
 
 | Route | Màn hình | API chính | Quyền | Bước | Hiện trạng |
 |---|---|---|---|---|---|
-| `/cart` | Giỏ hàng: đổi số lượng theo delta, xoá đơn/nhiều dòng, cảnh báo đổi giá, xử lý giá chưa xác minh | `GET /api/v1/carts/mine`, `POST/DELETE /api/v1/carts/mine/items` | Đăng nhập | 5 | có — protected, Cart v1/Money, idempotency retry, cache chung theo account; checkout chờ bước 6 |
-| `/checkout` | Chọn địa chỉ giao, chọn voucher, xem báo giá, đặt hàng | `POST /api/v1/checkout/preview` (tải trang gọi không kèm `previous_checkout_token`; `409 SUBMISSION_IN_PROGRESS` → màn trạng thái), `POST …/submit`, `GET …/submissions/{checkout_token}`; `GET /api/v1/users/me/addresses`; voucher: `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`, `PUT /api/v1/me/promotion-vouchers/{id}` (body rỗng), `POST /api/v1/me/promotion-voucher-claims`; xử lý lỗi theo `action` của `CheckoutProblem` | Đăng nhập | 6, 11 | mới |
-| `/orders/[orderId]/payment` | Thanh toán bằng Stripe Payment Element; hiện đã hỗ trợ payment attempt sẵn có và thanh toán lại, checkout lần đầu sẽ nối vào ở bước 6 | `GET /api/v1/orders/{id}/payment-attempts/{n}`, `POST /api/v1/orders/{id}/payment-attempts` | Đăng nhập | 6, 7 | có — Payment Element tối thiểu cho bước 7 |
+| `/cart` | Giỏ hàng: đổi số lượng theo delta, xoá đơn/nhiều dòng, cảnh báo đổi giá, xử lý giá chưa xác minh | `GET /api/v1/carts/mine`, `POST/DELETE /api/v1/carts/mine/items` | Đăng nhập | 5 | có — protected, Cart v1/Money, idempotency retry, cache chung theo account; nút sang checkout ở bước 6 |
+| `/checkout` | Chọn địa chỉ giao, chọn voucher, xem báo giá, đặt hàng | `POST /api/v1/checkout/preview` (tải trang gọi không kèm `previous_checkout_token`; `409 SUBMISSION_IN_PROGRESS` → màn trạng thái), `POST …/submit`, `GET …/submissions/{checkout_token}`; `GET /api/v1/users/me/addresses`; voucher: `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`, `PUT /api/v1/me/promotion-vouchers/{id}` (body rỗng), `POST /api/v1/me/promotion-voucher-claims`; xử lý lỗi theo `action` của `CheckoutProblem` | Đăng nhập | 6, 11 | có — checkout không voucher, token recovery/polling/Stripe; voucher bước 11 và live còn chờ |
+| `/orders/[orderId]/payment` | Thanh toán bằng Stripe Payment Element cho đơn từ checkout và thanh toán lại | `GET /api/v1/orders/{id}/payment-attempts/{n}`, `POST /api/v1/orders/{id}/payment-attempts` | Đăng nhập | 6, 7 | có — nối submission usable của bước 6; chờ Stripe Sandbox E2E |
 | `/orders/[orderId]/payment/complete` | Trang `return_url` sau khi Stripe chuyển hướng (3DS); poll Order vì webhook là nguồn cuối | `GET /api/v1/orders/{id}` (polling) | Đăng nhập | 6, 7 | có |
 
 ### 3.2. Đơn hàng và sau mua
@@ -204,6 +204,8 @@ lộ trình.
 | Khoảng trống | Route bị ảnh hưởng | Cần gì |
 |---|---|---|
 | Không có API liệt kê voucher trong ví của người dùng | `/vouchers` | Endpoint đọc wallet không cần checkout context |
+| User build lỗi thiếu checksum `golang.org/x/crypto`; Cart/Promotion cùng publish host 8085 | `/checkout` và live bước 6 | Đồng bộ module graph User và cổng Compose; bằng chứng tái hiện ở [step-6-verification](./step-6-verification.md) |
+| Payment README module còn nói chưa có runtime, trong khi code/Gate 3 đã hiện thực | `/checkout`, Stripe | Đồng bộ README; Sandbox E2E cần Stripe test keys và webhook thật, chưa có bằng chứng live |
 | MFA cho `ADMIN` là production gate; Auth chưa có MFA | Toàn bộ `/admin/inventory/**` (production) | ADR Auth/gateway phát hành và chuyển tiếp MFA assertion; dev/local chạy với role `ADMIN` |
 | Product không có API tải media lên, chỉ nhận `storage_key` | `/admin/products/[productId]` (tab media) | Endpoint cấp signed upload URL, tương tự Review |
 | Tạo Product không idempotent nhưng API admin không có tra cứu theo slug như mô tả retry của contract | `/admin/products/new` | Thêm lookup theo slug hoặc idempotency store; trước khi có, UI không tự retry lỗi mơ hồ và yêu cầu admin kiểm tra danh sách |

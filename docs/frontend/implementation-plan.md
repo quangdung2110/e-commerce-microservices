@@ -1,7 +1,7 @@
 # Frontend Implementation Plan
 
 Kế hoạch xây dựng giao diện người mua và giao diện quản trị trong `frontend/`. Tài liệu
-gồm lộ trình tổng thể và các bước 0–5, 7–10. Bước 3 đã hoàn thành code, kiểm thử offline và
+gồm lộ trình tổng thể và các bước 0–10. Bước 3 đã hoàn thành code, kiểm thử offline và
 kiểm chứng live local với Inventory Service qua gateway; MFA vẫn là gate production.
 
 Route và API của từng màn hình nằm ở [sitemap.md](./sitemap.md). Quy tắc giao diện nằm
@@ -12,7 +12,7 @@ trong skill Terra (`.claude/skills/terra-ui/`).
 Làm theo lát cắt dọc cho tới khi mua được một đơn hàng thật từ đầu đến cuối. Màn admin
 nào tạo ra dữ liệu thì làm ngay trước màn người mua cần dữ liệu đó.
 
-Trạng thái cập nhật ngày **06/10/2026**:
+Trạng thái cập nhật ngày **07/10/2026**:
 
 | Bước | Nội dung | Contract chính | Trạng thái |
 |---|---|---|---|
@@ -22,7 +22,7 @@ Trạng thái cập nhật ngày **06/10/2026**:
 | 3 | Admin Kho bản tối thiểu: tạo kho, nhập hàng, điều chỉnh, tra tồn | `inventory/admin/v1` | Hoàn thành |
 | 4 | Duyệt sản phẩm: chuyển sang Search v2, trang danh mục, tìm kiếm, PDP qua BFF, review công khai | `search/v2`, `product-detail-bff/v1`, `review/v1` | Hoàn thành |
 | 5 | Giỏ hàng khớp contract | `cart/v1` | Hoàn thành |
-| 6 | Checkout và thanh toán Stripe (chưa có voucher) | `checkout/v1`, `order/v1` | Chưa hoàn thành |
+| 6 | Checkout và thanh toán Stripe (chưa có voucher) | `checkout/v1`, `order/v1` | Hoàn thành code/offline; live bị chặn (User build, cổng Cart/Promotion, Stripe keys) |
 | 7 | Đơn hàng của tôi: tab, chi tiết, huỷ, thanh toán lại, trả hàng, hoàn tiền | `order/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
@@ -535,8 +535,8 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
   Inventory nên bước này không phụ thuộc bước 3.
 - Cảnh báo tăng/giảm giá so với lúc thêm chỉ so cùng currency, có giá CURRENT và
   còn bán. Không gọi chênh lệch giá lịch sử là khuyến mãi.
-- Nút thanh toán hiện disabled kèm giải thích vì checkout thuộc bước 6; không
-  tạo link tới route chưa triển khai.
+- Nút thanh toán đã mở tới `/checkout` ở bước 6; khóa khi đang cập nhật giỏ,
+  stale read hoặc kết quả lệnh còn chưa rõ.
 
 ### 8.4. Tiêu chí xong
 
@@ -548,6 +548,22 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Kế hoạch, sitemap và tài liệu Cart frontend được cập nhật; không sửa backend
   hoặc contract trong bước này. Bằng chứng/giới hạn ở
   [step-5-verification.md](./step-5-verification.md).
+
+## Bước 6 — Checkout và thanh toán Stripe
+
+> **07/10/2026: hoàn thành code, chờ kiểm chứng live toàn luồng.** Không voucher
+> (bước 11). User build, cổng host Cart/Promotion và Stripe test configuration là
+> các blocker đã ghi ở [step-6-verification.md](./step-6-verification.md).
+
+- Chọn địa chỉ User; Preview tự tải lần đầu và thay quote khi đổi địa chỉ.
+- Quote chỉ dùng giá/tổng của backend; hết hạn hoặc conflict yêu cầu xem báo giá mới.
+- Preview retry giữ nguyên key/body; Submit idempotent bằng checkout token.
+- URL phục hồi submission được đặt trước Submit; `202`, mất phản hồi hoặc
+  `VIEW_SUBMISSION` đọc status cùng token, tôn trọng Retry-After và dừng sau 90 giây.
+- Payment usable nối tới Stripe Payment Element của bước 7; unusable về chi tiết đơn.
+- Giỏ hàng mở nút Thanh toán và khóa khi thao tác trước còn chưa xác định kết quả.
+- Đã đối chiếu contract với controller/DTO/backend; không thiếu API cho bước 6.
+  Không coi code hoàn tất là bằng chứng Stripe Sandbox E2E thành công.
 
 ## 9. Bước 7 — Đơn hàng của tôi
 
@@ -564,10 +580,10 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
   được diễn đạt là “vẫn đang xử lý”, không mời gửi lệnh mới.
 - `/orders/[orderId]/return` gửi đúng full quantity của mỗi dòng đã chọn; UI cảnh báo
   guard một lần và không tự suy diễn thời hạn trả hàng.
-- Payment tối thiểu cho “Thanh toán lại” nằm ở `/orders/[orderId]/payment`: đọc
+- Payment cho “Thanh toán lại” và đơn từ bước 6 nằm ở `/orders/[orderId]/payment`: đọc
   `client_secret`/`publishable_key` từ Order, render Stripe Payment Element và về
   `/payment/complete`. Trang complete poll Order vì webhook/backend mới là nguồn xác
-  nhận cuối cùng. Phần chọn địa chỉ/preview/submit checkout của bước 6 vẫn ngoài phạm vi.
+  nhận cuối cùng. Phần chọn địa chỉ/preview/submit nằm ở mục bước 6.
 - Chi tiết kiểm chứng và giới hạn ở
   [step-7-verification.md](./step-7-verification.md).
 
@@ -697,6 +713,8 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 | Router customer Promotion (`promotion-me`, `promotion-discovery`) chuyển từ `dev-auth` sang `authenticated@file` | Đã làm 07/10/2026 (cùng Checkout) | Trước đó voucher của người mua dùng identity cố định. `promotion-admin` đã chuyển ở bước 10; Cart, Review, Auth, User, Notification, Product cũng dùng gateway-auth |
 | API tìm người dùng và API liệt kê voucher đã cấp | Cấp voucher (bước 10) | Admin phải dán UUID người dùng; UI chỉ hiển thị kết quả lần cấp vừa rồi, không có danh sách người đã nhận |
 | `user-service` build được | Hồ sơ, địa chỉ, checkout | `go build` thiếu entry `go.sum` cho `golang.org/x/crypto/*` (sha3, md4, pbkdf2) |
+| Cart và Promotion không chiếm cùng cổng host | Live bước 6 | Compose cùng publish 8085, đã tái hiện lỗi bind; cần cổng host riêng hoặc bỏ publish Cart |
+| Stripe test keys, webhook và Order/Payment/CDC chạy | Live mua hàng thật bước 6 | Compose đang có khóa mẫu; Payment Gate 3 chưa chạy Stripe Sandbox E2E. README module Payment còn ghi sai là chưa có runtime |
 | Product Service và gateway chạy được trong docker-compose | 4.6 | Đạt: `GET /api/v1/products` qua gateway trả 401/403/200 đúng theo token; dữ liệu mẫu tạo bằng `frontend/scripts/seed-dev-catalog.sh` |
 | Debezium cho Review outbox; Notification chạy với profile `notification` (+ `notifctl migrate up`) | Bước 9 trên local | Không có CDC thì `REVIEW_REPLIED` không tự tới hộp thư (đã chuyển tay khi kiểm chứng); thiếu Notification thì chuông và `/notifications` báo lỗi/ẩn số |
 | MFA assertion cho `ADMIN` | Triển khai Inventory admin lên production | Frontend và live local bước 3 đã hoàn thành; Auth/gateway production vẫn phải phát hành và xác thực MFA assertion |
