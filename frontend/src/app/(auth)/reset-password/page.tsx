@@ -1,201 +1,196 @@
-'use client';
+"use client";
 
-import { useState, Suspense } from 'react';
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as z from 'zod';
-import { Loader2, ArrowRight, Check, KeyRound } from 'lucide-react';
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { LoaderCircle } from "lucide-react";
 
-import { Button } from '@/components/ui/button';
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { AuthAPI } from '@/lib/api/auth';
+} from "@/components/ui/form";
+import { PasswordInput } from "@/components/ui/password-input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { authApi } from "@/lib/api/auth";
+import { useLocationHashValue } from "@/hooks/use-client-value";
+import { useSubmitError } from "@/hooks/use-submit-error";
+import {
+  PASSWORD_HINT,
+  PASSWORD_MISMATCH,
+  passwordSchema,
+} from "@/lib/validation/password";
 
-const formSchema = z.object({
-  newPassword: z.string().min(8, { message: 'Password must be at least 8 characters' }).max(128),
-  confirmPassword: z.string()
-}).refine((data) => data.newPassword === data.confirmPassword, {
-  message: "Passwords don't match",
-  path: ["confirmPassword"],
-});
-
-function ResetPasswordForm() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const token = searchParams.get('token') || '';
-  
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState(false);
-
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      newPassword: '',
-      confirmPassword: '',
-    },
+const schema = z
+  .object({
+    password: passwordSchema,
+    confirm_password: z.string().min(1, { message: "Vui lòng nhập lại mật khẩu." }),
+  })
+  .refine((values) => values.password === values.confirm_password, {
+    message: PASSWORD_MISMATCH,
+    path: ["confirm_password"],
   });
 
-  const passwordValue = form.watch('newPassword');
-  const hasMinLength = passwordValue.length >= 8;
-  const hasNumber = /\d/.test(passwordValue);
-  const hasUpper = /[A-Z]/.test(passwordValue);
+type ResetValues = z.infer<typeof schema>;
 
-  async function onSubmit(values: z.infer<typeof formSchema>) {
-    if (!token) {
-      setError('Invalid or missing reset token.');
-      return;
-    }
+/**
+ * Auth Service phát liên kết dạng `/reset-password#token=…` — token nằm trong
+ * fragment chứ không phải query string, nên nó không bao giờ đi vào log của
+ * server hay header Referer. Vì vậy phải đọc bằng `location.hash`.
+ *
+ * Vẫn chấp nhận `?token=` để một liên kết cũ hoặc dán tay không bị vứt bỏ.
+ */
+function readResetToken(): string | null {
+  const fromHash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const fromQuery = new URLSearchParams(window.location.search);
+  return fromHash.get("token") ?? fromQuery.get("token");
+}
 
+export default function ResetPasswordPage() {
+  const router = useRouter();
+  const error = useSubmitError();
+  // location chỉ tồn tại ở client, nên trạng thái "chưa biết có token không"
+  // (`undefined`) phải được render riêng thay vì đoán bừa là không có (`null`).
+  const hashToken = useLocationHashValue(readResetToken);
+  const ready = hashToken !== undefined;
+  const token = hashToken ?? null;
+
+  const form = useForm<ResetValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { password: "", confirm_password: "" },
+  });
+
+  async function onSubmit(values: ResetValues) {
+    if (!token) return;
+    error.reset();
     try {
-      setIsLoading(true);
-      setError(null);
-      await AuthAPI.resetPassword({
-        token,
-        new_password: values.newPassword
+      await authApi.completePasswordReset({
+        reset_token: token,
+        new_password: values.password,
+        confirm_password: values.confirm_password,
       });
-      setSuccess(true);
-      setTimeout(() => {
-        router.push('/login');
-      }, 3000);
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to reset password. The link might have expired.');
-    } finally {
-      setIsLoading(false);
+      router.replace("/login?reset=1");
+    } catch (submitError) {
+      error.capture(submitError, {
+        fields: ["password", "confirm_password"] as const,
+        setFieldError: (field, message) => form.setError(field, { message }),
+      });
     }
   }
 
-  if (!token && !error) {
+  if (!ready) {
     return (
-      <div className="glass-card p-8 rounded-3xl w-full mx-auto animate-in fade-in duration-500 text-center">
-        <div className="text-destructive font-medium mb-4">Invalid Reset Link</div>
-        <p className="text-muted-foreground text-sm mb-6">
-          The password reset link is missing or invalid. Please request a new one.
-        </p>
-        <Link href="/forgot-password" className="w-full block">
-          <Button className="w-full rounded-xl">Request New Link</Button>
+      <div className="space-y-8">
+        <Skeleton className="h-8 w-52" />
+        <Skeleton className="h-11 w-full rounded-lg" />
+        <Skeleton className="h-11 w-full rounded-lg" />
+      </div>
+    );
+  }
+
+  if (!token) {
+    return (
+      <div className="space-y-8">
+        <header className="space-y-2">
+          <h1 className="text-headline-3">Liên kết không hợp lệ</h1>
+          <p className="text-[15px] leading-relaxed text-muted-foreground">
+            Liên kết đặt lại mật khẩu thiếu mã xác thực, hoặc đã bị cắt ngắn khi
+            sao chép. Hãy yêu cầu một liên kết mới.
+          </p>
+        </header>
+
+        <Link href="/forgot-password" className="block">
+          <Button size="lg" className="w-full">
+            Yêu cầu liên kết mới
+          </Button>
         </Link>
       </div>
     );
   }
 
+  const isSubmitting = form.formState.isSubmitting;
+
   return (
-    <div className="glass-card p-8 rounded-3xl w-full mx-auto animate-in fade-in zoom-in duration-500">
-      <div className="mb-8 text-center flex flex-col items-center">
-        <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mb-4">
-          <KeyRound className="w-8 h-8 text-primary" />
-        </div>
-        <h1 className="text-3xl font-bold tracking-tight mb-2">Create New Password</h1>
-        <p className="text-muted-foreground text-sm max-w-sm">
-          Your new password must be different from previous used passwords.
+    <div className="space-y-8">
+      <header className="space-y-2">
+        <h1 className="text-headline-3">Đặt mật khẩu mới</h1>
+        <p className="text-[15px] text-muted-foreground">
+          Sau khi đổi, mọi thiết bị đang đăng nhập sẽ bị đăng xuất.
         </p>
-      </div>
+      </header>
 
-      {error && (
-        <div className="mb-6 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm font-medium animate-in slide-in-from-top-2">
-          {error}
-        </div>
+      {error.message && (
+        <Alert variant="danger" traceId={error.traceId}>
+          {error.message}
+          {error.isCoolingDown && ` Thử lại sau ${error.cooldown} giây.`}
+        </Alert>
       )}
 
-      {success ? (
-        <div className="space-y-6 text-center animate-in slide-in-from-bottom-4">
-          <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20 text-green-500 text-sm font-medium">
-            Password reset successfully! Redirecting you to login...
-          </div>
-          <Link href="/login" className="w-full block">
-            <Button className="w-full rounded-xl" variant="outline">Go to Login Now</Button>
-          </Link>
-        </div>
-      ) : (
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            <FormField
-              control={form.control}
-              name="newPassword"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-foreground/80">New Password</FormLabel>
-                  <FormControl>
-                    <Input 
-                      type="password" 
-                      placeholder="••••••••" 
-                      {...field} 
-                      className="glass bg-transparent focus-visible:ring-primary focus-visible:border-primary transition-all duration-300"
-                    />
-                  </FormControl>
-                  <div className="mt-2 space-y-1">
-                    <div className={`text-xs flex items-center ${hasMinLength ? 'text-green-500' : 'text-muted-foreground'}`}>
-                      <Check className="w-3 h-3 mr-1" /> 8+ characters
-                    </div>
-                    <div className={`text-xs flex items-center ${hasNumber ? 'text-green-500' : 'text-muted-foreground'}`}>
-                      <Check className="w-3 h-3 mr-1" /> At least 1 number
-                    </div>
-                    <div className={`text-xs flex items-center ${hasUpper ? 'text-green-500' : 'text-muted-foreground'}`}>
-                      <Check className="w-3 h-3 mr-1" /> At least 1 uppercase letter
-                    </div>
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
+          <FormField
+            control={form.control}
+            name="password"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Mật khẩu mới</FormLabel>
+                <FormControl>
+                  <PasswordInput autoComplete="new-password" autoFocus {...field} />
+                </FormControl>
+                <FormDescription>{PASSWORD_HINT}</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-            <FormField
-              control={form.control}
-              name="confirmPassword"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-foreground/80">Confirm New Password</FormLabel>
-                  <FormControl>
-                    <Input 
-                      type="password" 
-                      placeholder="••••••••" 
-                      {...field} 
-                      className="glass bg-transparent focus-visible:ring-primary focus-visible:border-primary transition-all duration-300"
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+          <FormField
+            control={form.control}
+            name="confirm_password"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Nhập lại mật khẩu mới</FormLabel>
+                <FormControl>
+                  <PasswordInput autoComplete="new-password" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-            <Button 
-              type="submit" 
-              className="w-full group glow transition-all duration-500 rounded-xl"
-              disabled={isLoading || !hasMinLength}
-            >
-              {isLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  Reset Password
-                  <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                </>
-              )}
-            </Button>
-          </form>
-        </Form>
-      )}
+          <Button
+            type="submit"
+            size="lg"
+            className="w-full"
+            disabled={isSubmitting || error.isCoolingDown}
+          >
+            {isSubmitting ? (
+              <>
+                <LoaderCircle className="animate-spin" aria-hidden />
+                Đang đặt lại
+              </>
+            ) : (
+              "Đặt lại mật khẩu"
+            )}
+          </Button>
+        </form>
+      </Form>
+
+      <p className="text-center text-[14px] text-muted-foreground">
+        <Link
+          href="/login"
+          className="focus-ring rounded-sm font-medium text-clay-strong hover:underline"
+        >
+          Quay lại đăng nhập
+        </Link>
+      </p>
     </div>
-  );
-}
-
-export default function ResetPasswordPage() {
-  return (
-    <Suspense fallback={
-      <div className="flex justify-center items-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    }>
-      <ResetPasswordForm />
-    </Suspense>
   );
 }

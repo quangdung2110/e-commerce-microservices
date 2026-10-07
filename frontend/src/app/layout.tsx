@@ -1,25 +1,40 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Inter, Newsreader } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { QueryProvider } from "@/components/query-provider";
+import { AuthProvider } from "@/components/auth-provider";
 import { ToastProvider } from "@/components/ui/toast";
-import { Header } from "@/components/layout/header";
-import { Footer } from "@/components/layout/footer";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+/**
+ * Terra dùng sans cho toàn bộ UI và serif cho tiêu đề — sự tương phản giữa hai
+ * họ chữ là chữ ký thị giác của hệ thống. Cả hai đều nạp subset `vietnamese`
+ * để chữ có dấu không rơi về font hệ thống.
+ */
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin", "vietnamese"],
+  display: "swap",
+});
+
+const newsreader = Newsreader({
+  variable: "--font-newsreader",
+  subsets: ["latin", "vietnamese"],
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "TechNova E-Commerce",
-  description: "Premium E-Commerce Experience",
+  title: {
+    default: "TechNova",
+    template: "%s · TechNova",
+  },
+  description: "Nền tảng thương mại điện tử TechNova.",
 };
 
 export default function RootLayout({
@@ -29,25 +44,22 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang="vi"
+      className={`${inter.variable} ${newsreader.variable} ${geistMono.variable} h-full antialiased`}
+      // next-themes gán class lên <html> ở phía client, nên server render lệch là bình thường.
       suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col bg-background text-foreground relative">
-        {/* Deep Space Background Layer */}
-        <div className="fixed inset-0 z-[-1] pointer-events-none bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-[#1a2e22] via-black to-black opacity-90" />
+      <body className="min-h-full bg-background text-foreground">
         <ThemeProvider
           attribute="class"
-          defaultTheme="dark"
-          enableSystem={false}
+          defaultTheme="system"
+          enableSystem
           disableTransitionOnChange
         >
           <QueryProvider>
-            <ToastProvider>
-              <Header />
-              <main className="flex-1 flex flex-col z-0">{children}</main>
-              <Footer />
-            </ToastProvider>
+            <AuthProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </AuthProvider>
           </QueryProvider>
         </ThemeProvider>
       </body>

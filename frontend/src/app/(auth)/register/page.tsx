@@ -1,98 +1,107 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as z from 'zod';
-import { Loader2, ArrowRight, Check } from 'lucide-react';
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { LoaderCircle } from "lucide-react";
 
-import { Button } from '@/components/ui/button';
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { AuthAPI } from '@/lib/api/auth';
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
+import { authApi } from "@/lib/api/auth";
+import { useSubmitError } from "@/hooks/use-submit-error";
+import {
+  PASSWORD_HINT,
+  PASSWORD_MISMATCH,
+  passwordSchema,
+} from "@/lib/validation/password";
 
-const formSchema = z.object({
-  email: z.string().email({ message: 'Invalid email address' }),
-  password: z.string().min(8, { message: 'Password must be at least 8 characters' }).max(128),
-  confirmPassword: z.string()
-}).refine((data) => data.password === data.confirmPassword, {
-  message: "Passwords don't match",
-  path: ["confirmPassword"],
-});
+const schema = z
+  .object({
+    email: z
+      .string()
+      .min(1, { message: "Vui lòng nhập email." })
+      .email({ message: "Email chưa đúng định dạng." }),
+    password: passwordSchema,
+    confirm_password: z.string().min(1, { message: "Vui lòng nhập lại mật khẩu." }),
+  })
+  .refine((values) => values.password === values.confirm_password, {
+    message: PASSWORD_MISMATCH,
+    path: ["confirm_password"],
+  });
+
+type RegisterValues = z.infer<typeof schema>;
+const FIELDS = ["email", "password", "confirm_password"] as const;
 
 export default function RegisterPage() {
   const router = useRouter();
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const error = useSubmitError();
 
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      email: '',
-      password: '',
-      confirmPassword: '',
-    },
+  const form = useForm<RegisterValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { email: "", password: "", confirm_password: "" },
   });
 
-  const passwordValue = form.watch('password');
-  const hasMinLength = passwordValue.length >= 8;
-  const hasNumber = /\d/.test(passwordValue);
-  const hasUpper = /[A-Z]/.test(passwordValue);
-
-  async function onSubmit(values: z.infer<typeof formSchema>) {
+  async function onSubmit(values: RegisterValues) {
+    error.reset();
     try {
-      setIsLoading(true);
-      setError(null);
-      await AuthAPI.register({
-        email: values.email,
-        password: values.password
-      });
-      // Redirect to email verification on success
+      await authApi.register(values);
+      // Tài khoản ở trạng thái PENDING_VERIFICATION; bước tiếp theo là nhập OTP.
       router.push(`/verify-email?email=${encodeURIComponent(values.email)}`);
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to register. Please try again later.');
-    } finally {
-      setIsLoading(false);
+    } catch (submitError) {
+      error.capture(submitError, {
+        fields: FIELDS,
+        setFieldError: (field, message) => form.setError(field, { message }),
+      });
     }
   }
 
-  return (
-    <div className="glass-card p-8 rounded-3xl w-full mx-auto animate-in fade-in zoom-in duration-500">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight mb-2">Create Account</h1>
-        <p className="text-muted-foreground text-sm">
-          Join us and experience the future of commerce
-        </p>
-      </div>
+  const isSubmitting = form.formState.isSubmitting;
 
-      {error && (
-        <div className="mb-6 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm font-medium animate-in slide-in-from-top-2">
-          {error}
-        </div>
+  return (
+    <div className="space-y-8">
+      <header className="space-y-2">
+        <h1 className="text-headline-3">Tạo tài khoản</h1>
+        <p className="text-[15px] text-muted-foreground">
+          Chỉ mất một phút. Chúng tôi sẽ gửi mã xác minh tới email của bạn.
+        </p>
+      </header>
+
+      {error.message && (
+        <Alert variant="danger" traceId={error.traceId}>
+          {error.message}
+          {error.isCoolingDown && ` Thử lại sau ${error.cooldown} giây.`}
+        </Alert>
       )}
 
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
           <FormField
             control={form.control}
             name="email"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-foreground/80">Email Address</FormLabel>
+                <FormLabel>Email</FormLabel>
                 <FormControl>
-                  <Input 
-                    placeholder="name@example.com" 
-                    {...field} 
-                    className="glass bg-transparent focus-visible:ring-primary focus-visible:border-primary transition-all duration-300"
+                  <Input
+                    type="email"
+                    inputMode="email"
+                    autoComplete="email"
+                    autoFocus
+                    placeholder="ban@example.com"
+                    {...field}
                   />
                 </FormControl>
                 <FormMessage />
@@ -105,26 +114,11 @@ export default function RegisterPage() {
             name="password"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-foreground/80">Password</FormLabel>
+                <FormLabel>Mật khẩu</FormLabel>
                 <FormControl>
-                  <Input 
-                    type="password" 
-                    placeholder="••••••••" 
-                    {...field} 
-                    className="glass bg-transparent focus-visible:ring-primary focus-visible:border-primary transition-all duration-300"
-                  />
+                  <PasswordInput autoComplete="new-password" {...field} />
                 </FormControl>
-                <div className="mt-2 space-y-1">
-                  <div className={`text-xs flex items-center ${hasMinLength ? 'text-green-500' : 'text-muted-foreground'}`}>
-                    <Check className="w-3 h-3 mr-1" /> 8+ characters
-                  </div>
-                  <div className={`text-xs flex items-center ${hasNumber ? 'text-green-500' : 'text-muted-foreground'}`}>
-                    <Check className="w-3 h-3 mr-1" /> At least 1 number
-                  </div>
-                  <div className={`text-xs flex items-center ${hasUpper ? 'text-green-500' : 'text-muted-foreground'}`}>
-                    <Check className="w-3 h-3 mr-1" /> At least 1 uppercase letter
-                  </div>
-                </div>
+                <FormDescription>{PASSWORD_HINT}</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -132,46 +126,45 @@ export default function RegisterPage() {
 
           <FormField
             control={form.control}
-            name="confirmPassword"
+            name="confirm_password"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-foreground/80">Confirm Password</FormLabel>
+                <FormLabel>Nhập lại mật khẩu</FormLabel>
                 <FormControl>
-                  <Input 
-                    type="password" 
-                    placeholder="••••••••" 
-                    {...field} 
-                    className="glass bg-transparent focus-visible:ring-primary focus-visible:border-primary transition-all duration-300"
-                  />
+                  <PasswordInput autoComplete="new-password" {...field} />
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
 
-          <Button 
-            type="submit" 
-            className="w-full group glow transition-all duration-500 rounded-xl"
-            disabled={isLoading || !hasMinLength}
+          <Button
+            type="submit"
+            size="lg"
+            className="w-full"
+            disabled={isSubmitting || error.isCoolingDown}
           >
-            {isLoading ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
+            {isSubmitting ? (
               <>
-                Create Account
-                <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                <LoaderCircle className="animate-spin" aria-hidden />
+                Đang tạo tài khoản
               </>
+            ) : (
+              "Tạo tài khoản"
             )}
           </Button>
         </form>
       </Form>
 
-      <div className="mt-8 text-center text-sm text-muted-foreground">
-        Already have an account?{' '}
-        <Link href="/login" className="text-primary hover:underline font-medium hover:text-glow transition-all">
-          Sign in
+      <p className="text-center text-[14px] text-muted-foreground">
+        Đã có tài khoản?{" "}
+        <Link
+          href="/login"
+          className="focus-ring rounded-sm font-medium text-clay-strong hover:underline"
+        >
+          Đăng nhập
         </Link>
-      </div>
+      </p>
     </div>
   );
 }
