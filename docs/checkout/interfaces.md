@@ -2,7 +2,7 @@
 doc_id: checkout-interfaces
 service: checkout-service
 scope: target
-status: proposed
+status: implemented
 owners:
   - Checkout Service team
 evidence:

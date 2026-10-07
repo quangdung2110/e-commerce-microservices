@@ -30,6 +30,17 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
     ports:
       - "2181:2181"
+    # Metadata must survive alongside Kafka log volumes. Existing stacks must
+    # copy the old anonymous volumes before adopting these mounts; see runbook.
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "cub zk-ready 127.0.0.1:2181 5 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 8s
+      retries: 10
+      start_period: 10s
     networks:
       - ecommerce-network
 
@@ -38,7 +49,8 @@ services:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -112,6 +124,9 @@ services:
       - max_replication_slots=10
       - -c
       - max_wal_senders=10
+      # Local shared DB: Temporal plus all service pools and CDC exceed the default 100.
+      - -c
+      - max_connections=300
     ports:
       - "15432:5432"
     volumes:
@@ -698,8 +713,8 @@ services:
       CART_MEDIA_REQUIRE_HTTPS: "false"
 
       CART_LOGGING_LEVEL: debug
-    ports:
-      - "8085:8080"
+    # Access through the gateway; host 8085 belongs to Promotion.
+    # Checkout still uses cart-service:8080 inside the network.
     volumes:
       - ./go/services/cart-service/configs:/app/configs:ro
     networks:
@@ -755,12 +770,27 @@ services:
       - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
 
   # ── User Service ───────────────────────────────────────────
+  # Versioned migration runs before User, including on existing root-stack volumes.
+  user-migrate:
+    image: migrate/migrate:v4.18.3
+    command: ["-path", "/migrations", "-database", "postgres://postgres:postgres@postgres:5432/user_service?sslmode=disable", "up"]
+    volumes:
+      - ./go/services/user-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    restart: "no"
+
   user-service:
     build:
       context: ./go/services/user-service
       dockerfile: Dockerfile
     container_name: user-service
     depends_on:
+      user-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -772,10 +802,12 @@ services:
       USER_APP_ENV: development
       USER_DATABASE_HOST: postgres
       # init-db.sh creates this database in the shared PostgreSQL instance; the
-      # schema itself is applied with `make migrate-up`.
+      # schema itself is applied by user-migrate before this service starts.
       USER_DATABASE_NAME: user_service
       USER_REDIS_HOST: redis
       USER_KAFKA_BROKERS: kafka:9092
+      # Temporary triage switch only; buyer bootstrap requires the consumer enabled.
+      USER_KAFKA_CONSUMER_ENABLED: ${USER_KAFKA_CONSUMER_ENABLED:-true}
       DB_PASSWORD: postgres
       REDIS_PASSWORD: ""
     # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
@@ -943,6 +975,8 @@ volumes:
   postgres-data:
   redis-data:
   kafka-data:
+  zookeeper-data:
+  zookeeper-log:
   minio-data:
 
 # ── Networks ───────────────────────────────────────────────

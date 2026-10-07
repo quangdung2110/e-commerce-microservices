@@ -16,6 +16,12 @@ verified_against_commit: null
 
 ## 1. SLO, health và cấu hình
 
+Runtime local hiện có trong [development.md](./development.md): Go service, root
+`user-migrate`, public listener 8082 và internal 8083. `/health/live` dùng GET;
+readiness/startup kiểm tra PostgreSQL required, Redis optional. Docker probe dùng
+GET readiness; Kafka consumer healthy phải kiểm tra riêng qua lag/bootstrap, không
+suy ra từ probe. SLO/metric/production acceptance bên dưới vẫn cần bằng chứng đo.
+
 Cần định nghĩa SLI cho HTTP availability/latency/error rate, Postgres pool,
 Redis fallback/cache error, Kafka producer failure, Auth-event consumer lag/DLQ,
 age/count retention record quá hạn và projection reconciliation duration/failure.

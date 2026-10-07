@@ -46,6 +46,13 @@ băng thay đổi FSM/webhook cho tới khi có RCA.
 
 ### 1.2. Health
 
+**Hiện trạng runtime:** Actuator liveness/readiness đã có. Bảng dưới là mục tiêu
+probe theo vai trò; chưa có custom HealthIndicator kiểm tra đủ Stripe/KMS/Kafka/CDC
+hoặc route `/internal/health/deps`. `UP` chưa chứng minh key hợp lệ với Stripe hay
+Order nhận payment fact. Local gate dùng [checkout runbook](../frontend/checkout-local-runbook.md)
+và kiểm tra connector/tasks cùng giao dịch Sandbox thật. Không dựa vào endpoint
+thiết kế chưa có để đánh dấu runtime đạt.
+
 | Probe | Kiểm tra | Ghi chú |
 |---|---|---|
 | Liveness | Process + event loop | Không gọi dependency |
@@ -59,15 +66,17 @@ băng thay đổi FSM/webhook cho tới khi có RCA.
 
 Property naming đề xuất `payment.<nhóm>.<tên>`; giá trị secret chỉ qua Vault/Secret
 Manager, **không** commit và không log. Đổi property có đánh dấu "restart" cần
-rolling restart; các property khác reload được.
+rolling restart. Runtime hiện tại nạp env/config lúc startup, chưa có hot reload;
+local Compose phải recreate container khi đổi env. Các ô reload trong bảng dưới
+là khả năng thiết kế, chưa phải bằng chứng runtime.
 
 ### 2.1. Stripe
 
 | Property | Mục đích | Giá trị thiết kế | Secret | Restart |
 |---|---|---|---|---|
 | `payment.stripe.secret-key` | `StripeClient` singleton | `sk_test_…` (dev/staging), `sk_live_…` (prod) | Có | Có |
-| `payment.stripe.publishable-key` | Trả cho Order qua initiate/`client-data` | `pk_…` cùng sandbox với secret key | Không | Không |
-| `payment.stripe.webhook-secrets` | Verify `Stripe-Signature`; **danh sách** (tối đa 2) để rotation không gián đoạn | `whsec_…` | Có | Không (reload) |
+| `payment.stripe.publishable-key` | Trả cho Order qua initiate/`client-data` | `pk_…` cùng sandbox với secret key | Không | Có (runtime hiện tại) |
+| `payment.stripe.webhook-secrets` | Verify `Stripe-Signature`; **danh sách** (tối đa 2) để rotation không gián đoạn | `whsec_…` | Có | Có (runtime hiện tại) |
 | `payment.stripe.api-version` | Pin API version cho SDK và webhook payload | `2026-08-26.dahlia` (ADR-021) | Không | Có |
 | `payment.stripe.timeout.connect/read` | HTTP timeout SDK | 5s / 15s | Không | Không |
 | `payment.stripe.max-network-retries` | Retry của SDK cho lỗi mạng (idempotent nhờ key) | 2 | Không | Không |
@@ -286,7 +295,8 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
    cho tuần đầu.
 6. Smoke: initiate test mode → `PENDING`; `client-data` → `usable=true`.
 7. Đăng ký webhook endpoint trên Stripe (đúng tập event §2.1), lấy `whsec_` → nạp
-   Vault → reload; `stripe trigger payment_intent.succeeded` → thấy `PROCESSED`.
+   Vault → restart/recreate runtime; trigger chỉ smoke fixture riêng. Gate mua hàng
+   phải dùng PaymentIntent của đơn Checkout và đối chiếu Order PAID.
 8. Bật Order gọi Payment; theo dõi dashboard 1–3 ngày rồi unfreeze.
 
 ### 7.2. Rolling deploy
@@ -301,7 +311,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 ### 7.3. Rotation
 
 - **Webhook secret:** tạo secret mới trên Stripe (Stripe cho phép hai secret song
-  song 24h) → thêm vào `payment.stripe.webhook-secrets` (reload) → xác nhận
+  song 24h) → thêm vào `payment.stripe.webhook-secrets` (restart/recreate) → xác nhận
   ingress `auth_failed` không tăng → xóa secret cũ trên Stripe → bỏ khỏi config.
   Không bao giờ chỉ có một secret trong lúc rotation.
 - **Stripe API key:** restricted key mới → nạp Vault → rolling restart → thu hồi key
@@ -404,7 +414,7 @@ thật để đối chiếu; (3) ghi timeline vào incident trước khi thao t�
 ### 9.6. Webhook authentication fail hàng loạt
 
 1. Spike ngay sau deploy/rotation → so `payment.stripe.webhook-secrets` với Stripe
-   Dashboard → Webhooks → Signing secret; sửa config (reload).
+   Dashboard → Webhooks → Signing secret; sửa config và restart/recreate runtime.
 2. Payload auth fail không được lưu nên không có auto-reverify. Sau khi sửa secret,
    yêu cầu Stripe Resend delivery (signature/timestamp mới) cho khoảng bị ảnh hưởng;
    chạy object/balance reconciliation để kiểm tra gap.

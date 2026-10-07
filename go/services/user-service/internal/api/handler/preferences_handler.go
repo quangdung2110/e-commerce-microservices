@@ -1,125 +1,72 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
-	"user-service/internal/api/dto/request"
-	"user-service/internal/api/dto/response"
-	"user-service/internal/api/middleware"
-	"user-service/internal/domain/service"
-	"user-service/internal/infrastructure/kafka"
+	"github.com/ecommerce/user-service/internal/api/dto/request"
+	"github.com/ecommerce/user-service/internal/api/dto/response"
+	"github.com/ecommerce/user-service/internal/api/httpx"
+	"github.com/ecommerce/user-service/internal/api/middleware"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/service"
 )
 
-// PreferencesHandler handles preferences-related HTTP requests
+// PreferencesHandler serves the preference endpoints.
 type PreferencesHandler struct {
-	preferencesService *service.PreferencesService
-	producer           *kafka.UserEventProducer
-	logger             *zap.Logger
+	preferences *service.PreferencesService
 }
 
-// NewPreferencesHandler creates a new preferences handler
-func NewPreferencesHandler(preferencesService *service.PreferencesService, producer *kafka.UserEventProducer, logger *zap.Logger) *PreferencesHandler {
-	return &PreferencesHandler{
-		preferencesService: preferencesService,
-		producer:           producer,
-		logger:             logger,
-	}
+// NewPreferencesHandler wires the preference endpoints.
+func NewPreferencesHandler(preferences *service.PreferencesService) *PreferencesHandler {
+	return &PreferencesHandler{preferences: preferences}
 }
 
-// GetPreferences handles GET /api/v1/users/me/preferences
-func (h *PreferencesHandler) GetPreferences(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Get handles GET /api/v1/users/me/preferences.
+func (h *PreferencesHandler) Get(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	prefs, err := h.preferencesService.GetPreferences(c.Request.Context(), userID)
+	preferences, err := h.preferences.Get(c.Request.Context(), identity.UserID)
 	if err != nil {
-		if errors.Is(err, service.ErrPreferencesNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodePreferencesNotFound,
-				"Cài đặt người dùng không tồn tại",
-			))
-			return
-		}
-		h.logger.Error("failed to get preferences", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while fetching preferences",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.PreferencesResponseFromEntity(prefs))
+	httpx.WriteJSON(c, http.StatusOK, response.NewPreferences(preferences))
 }
 
-// UpdatePreferences handles PUT /api/v1/users/me/preferences
-func (h *PreferencesHandler) UpdatePreferences(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Replace handles PUT /api/v1/users/me/preferences. Only the three notification
+// flags are writable; a missing profile is a 404 rather than a silent bootstrap
+// of an account that may have been deleted (WF-USER-005).
+func (h *PreferencesHandler) Replace(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	var req request.UpdatePreferencesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"Dữ liệu không hợp lệ",
-			[]response.ErrorDetail{{Field: "body", Message: err.Error()}},
-		))
+	var payload request.NotificationPreferencesUpdate
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	ctx := c.Request.Context()
-
-	prefs, err := h.preferencesService.UpdatePreferences(
-		ctx,
-		userID,
-		req.Language,
-		req.Currency,
-		req.EmailEnabled,
-		req.InAppEnabled,
-		req.MarketingEnabled,
-	)
-
+	changes, err := payload.ToChanges()
 	if err != nil {
-		if errors.Is(err, service.ErrPreferencesNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodePreferencesNotFound,
-				"Cài đặt người dùng không tồn tại",
-			))
-			return
-		}
-		h.logger.Error("failed to update preferences", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	// Publish preferences updated event to Kafka (best-effort async)
-	if err := h.producer.PublishUserPreferencesUpdated(ctx, kafka.PreferencesUpdatedPayload{
-		ID:               prefs.UserID,
-		Language:         prefs.Language,
-		Currency:         prefs.Currency,
-		EmailEnabled:     prefs.EmailEnabled,
-		InAppEnabled:     prefs.InAppEnabled,
-		MarketingEnabled: prefs.MarketingEnabled,
-	}); err != nil {
-		h.logger.Error("failed to publish preferences updated event", zap.Error(err))
+	preferences, err := h.preferences.Replace(c.Request.Context(), identity.UserID, changes)
+	if err != nil {
+		httpx.WriteProblem(c, err)
+		return
 	}
 
-	c.JSON(http.StatusOK, response.PreferencesResponseFromEntity(prefs))
+	httpx.WriteJSON(c, http.StatusOK, response.NewPreferences(preferences))
 }

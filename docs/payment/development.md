@@ -33,7 +33,7 @@ verified_against_commit: null
 | Java / build | JDK 21, Maven 3.9, Spring Boot 3.3.x (parent như `promotion-service/pom.xml`) | Máy dev không cần JDK: build bằng container `maven:3.9-eclipse-temurin-21` (§2) |
 | Container runtime | Docker Engine + Compose v2 | `docker-compose.yml` ở gốc repo cung cấp PostgreSQL, Redis, Kafka, Kafka Connect (Debezium 3.0) |
 | Stripe | Tài khoản Stripe test mode, một **Sandbox riêng** cho mỗi dev; Stripe CLI ≥ 1.19 | `stripe login` với sandbox; không dùng chung `whsec_` giữa các máy |
-| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một dev KMS key cố định | Đặt trong `.env.local` (gitignored), không bao giờ trong `application*.yml` |
+| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một dev KMS key cố định | Root `.env.local` đã gitignore; Compose cần `--env-file .env.local`; mẫu `.env.checkout.example` |
 | Công cụ test | JUnit 5, Testcontainers PostgreSQL và các fake port có trạng thái trong JVM | Chi tiết §6; WireMock/stripe-mock/Toxiproxy chưa được cấu hình trong module |
 | Contract tooling | Node.js ≥ 24.11, npm, Redocly CLI 2.53.3, AsyncAPI CLI 6.1.0 | Pin trong `contracts/tools/package-lock.json`; §7 |
 
@@ -53,7 +53,7 @@ docker compose up -d postgres redis kafka kafka-connect
 ```
 
 `init-db.sh` đã tạo `payment_service`. Nếu volume PostgreSQL có từ trước thay đổi
-này, tạo DB một lần thủ công hoặc recreate volume dev. Payment dùng port
+này, tạo riêng DB một lần thủ công, giữ dữ liệu volume hiện hữu. Payment dùng port
 `8089:8080` và profile Compose opt-in `payment` để không buộc mọi dev phải có Stripe
 sandbox secrets.
 
@@ -74,7 +74,7 @@ SPRING_PROFILES_ACTIVE=dev java -jar java/services/payment-service/target/paymen
 hoặc:
 
 ```bash
-docker compose --profile payment up -d payment-service
+docker compose --env-file .env.local --profile payment up -d --build payment-service
 ```
 
 Compose build từ `java/services/payment-service/Dockerfile`, chạy profile `dev`,
@@ -89,17 +89,26 @@ stripe listen --forward-to localhost:8089/v1/payments/webhook/stripe \
 ```
 
 Lệnh in ra `whsec_…` — đặt vào `PAYMENT_STRIPE_WEBHOOK_SECRETS` rồi khởi động lại
-(hoặc reload config). Không đăng ký endpoint local trên Stripe Dashboard.
+container bằng `docker compose --env-file .env.local --profile payment up -d --force-recreate payment-service`.
+Runtime hiện tại đọc env lúc startup; không có hot reload secret. Listener phải cùng
+Sandbox với `sk_test_`/`pk_test_`. Có thể forward qua Gateway `localhost:8088` cùng path;
+frontend 3000 không rewrite webhook. Không đăng ký endpoint local trên Stripe Dashboard.
 
 ### 2.5. Debezium connector
 
 Artifact `src/main/resources/kafka/debezium-connector-payment-outbox.json` (theo mẫu
 của `promotion-service`), đăng ký:
 
-```bash
-curl -sS -X PUT http://localhost:8084/connectors/payment-outbox-connector/config \
-  -H 'Content-Type: application/json' -d @- < <(jq .config java/services/payment-service/src/main/resources/kafka/debezium-connector-payment-outbox.json)
+```powershell
+pwsh -NoProfile -File scripts/register-checkout-connectors.ps1 -Services payment
+pwsh -NoProfile -File scripts/register-checkout-connectors.ps1 -Services payment -CheckOnly
 ```
+
+Chạy từ gốc repo. Kafka Connect không tự thay `${VAR:default}` trong template;
+script thay DB fields và giữ literal EventRouter expression. Root default là
+`postgres:5432/payment_service`; custom credential truyền bằng tham số, không log
+resolved config. Connector và mọi task phải RUNNING. Đăng ký trước đơn mới vì
+`snapshot.mode=no_data` không snapshot outbox cũ khi khởi tạo connector.
 
 Connector: `table.include.list=public.outbox_events`, outbox `EventRouter` với
 `route.by.field=aggregate_type` → `t.payment.events.v2`, key từ `partition_key`,
@@ -109,11 +118,17 @@ trace cho observability, không được dùng để dựng lại hoặc hiểu 
 
 ### 2.6. Kiểm tra và dọn dẹp
 
-- `GET /actuator/health/readiness` → `UP` khi PostgreSQL + KMS key + Stripe key nạp
-  được; `GET /internal/health/deps` liệt kê từng dependency (`operations.md §1.2`).
-- Smoke: `POST /v1/payments/initiate` với `Idempotency-Key` → `PENDING` + `client_secret`;
-  `stripe trigger payment_intent.succeeded` → `webhook_logs.status = PROCESSED`.
-- Dọn: `docker compose down -v` xóa volume; `stripe listen` dừng bằng Ctrl-C.
+- Actuator `/actuator/health/liveness` và `/actuator/health/readiness` là probes hiện có.
+  Chưa có custom probe chứng minh Stripe credential/CDC/Kafka assignment; `UP` không
+  chứng minh thanh toán được. `/internal/health/deps` là mục tiêu chưa hiện thực.
+- `/v1/payments/initiate` là command service-to-service, cần identity/correlation,
+  idempotency và body hợp lệ. Frontend đặt đơn qua Checkout, đọc credentials qua Order.
+- `stripe trigger payment_intent.succeeded` smoke transport với fixture riêng;
+  không chứng minh PaymentIntent của đơn Checkout. E2E phải thanh toán đơn từ UI và
+  đối chiếu webhook → Payment fact → Order PAID → Inventory/Cart theo
+  [checkout runbook](../frontend/checkout-local-runbook.md).
+- Dọn: dừng service đã bật để test bằng `docker compose stop <service...>`;
+  giữ volume. Dừng `stripe listen` bằng Ctrl-C.
 
 ## 3. Dependency local
 
@@ -230,7 +245,7 @@ lại khi Stripe đổi).
   Reconciliation (payment) hoặc Refund Poller (refund) chốt trạng thái từ
   `PaymentIntent.retrieve`/`Refund.retrieve`; bật lại `listen` để xác nhận webhook
   đến muộn bị bỏ qua idempotent.
-- Đổi `whsec_`: giữ secret cũ+mới overlap, reload app rồi rotate; delivery đã bị
+- Đổi `whsec_`: giữ secret cũ+mới overlap, recreate/restart app rồi rotate; delivery đã bị
   `400` phải Resend để có signature/timestamp mới, không re-verify payload cũ.
 - Retry 3–5 lần của Stripe: endpoint trả `503` có chủ đích (feature flag test) →
   quan sát Stripe retry và xác nhận không xử lý trùng.

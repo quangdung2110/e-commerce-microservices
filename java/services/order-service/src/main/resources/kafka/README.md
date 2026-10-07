@@ -17,6 +17,11 @@ Bảng có CHECK allowlist destination nên row sai topic không thể được 
 Kafka Connect không tự thay placeholder `${VAR:default}`; thay trước khi đăng ký (Kafka
 Connect publish cổng host `8084`):
 
+Root stack/PowerShell: `pwsh -NoProfile -File scripts/register-checkout-connectors.ps1 -Services order`
+từ gốc repo; `-CheckOnly` kiểm tra connector và mọi task RUNNING, `-ValidateOnly`
+kiểm tra template không gọi mạng. Script thay DB fields, giữ nguyên EventRouter
+expression và không log password. Các lệnh Bash bên dưới dành cho môi trường có Perl.
+
 ```bash
 perl -pe 's/\$\{(\w+):([^}]*)\}/$ENV{$1} \/\/ $2/ge' debezium-connector-order-outbox.json > /tmp/order-connector.json
 ```

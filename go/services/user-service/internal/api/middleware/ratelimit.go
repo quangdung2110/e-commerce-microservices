@@ -1,76 +1,62 @@
 package middleware
 
 import (
-	"net/http"
-	"sync"
-	"time"
-
 	"github.com/gin-gonic/gin"
+
+	"github.com/ecommerce/user-service/internal/api/httpx"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/port"
 )
 
-// RateLimiter implements a simple token bucket rate limiter
-type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     int           // requests per window
-	window   time.Duration // time window
-	capacity int           // max tokens
-}
-
-type bucket struct {
-	tokens    int
-	lastReset time.Time
-}
-
-// NewRateLimiter creates a new rate limiter
-func NewRateLimiter(rate int, window time.Duration, capacity int) *RateLimiter {
-	return &RateLimiter{
-		buckets:  make(map[string]*bucket),
-		rate:     rate,
-		window:   window,
-		capacity: capacity,
-	}
-}
-
-// Allow checks if a request is allowed
-func (rl *RateLimiter) Allow(key string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	b, exists := rl.buckets[key]
-
-	if !exists || now.Sub(b.lastReset) >= rl.window {
-		rl.buckets[key] = &bucket{
-			tokens:    rl.capacity - 1,
-			lastReset: now,
-		}
-		return true
+// RateLimitByIdentity applies one fixed-window rule keyed by the authenticated
+// caller, which is the right subject here: every route of this API belongs to
+// one owner, and a shared egress IP would otherwise let one noisy client spend
+// everybody's budget.
+//
+// It fails closed: when Redis cannot answer, the request is rejected rather
+// than let through unlimited.
+func RateLimitByIdentity(limiter port.RateLimiter, scope string, rule port.RateLimitRule) gin.HandlerFunc {
+	if !rule.Enabled() {
+		return func(c *gin.Context) { c.Next() }
 	}
 
-	if b.tokens > 0 {
-		b.tokens--
-		return true
-	}
-
-	return false
-}
-
-// RateLimitMiddleware creates a rate limiting middleware
-func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		key := c.ClientIP()
-
-		if !limiter.Allow(key) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{
-					"code":    "RATE_LIMIT_EXCEEDED",
-					"message": "Too many requests. Please try again later.",
-				},
-			})
+		identity, ok := IdentityFrom(c)
+		if !ok {
+			httpx.WriteProblem(c, apperr.ErrUnauthorized)
 			return
 		}
 
+		result, err := limiter.Allow(c.Request.Context(), scope, identity.UserID.String(), rule)
+		if err != nil {
+			httpx.WriteProblem(c, err)
+			return
+		}
+		if !result.Allowed {
+			httpx.WriteProblem(c, apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter))
+			return
+		}
+		c.Next()
+	}
+}
+
+// RateLimit applies a rule keyed by the client IP. It guards the internal
+// listener, whose caller is a service rather than an end user.
+func RateLimit(limiter port.RateLimiter, scope string, rule port.RateLimitRule) gin.HandlerFunc {
+	if !rule.Enabled() {
+		return func(c *gin.Context) { c.Next() }
+	}
+
+	return func(c *gin.Context) {
+		result, err := limiter.Allow(c.Request.Context(), scope, c.ClientIP(), rule)
+		if err != nil {
+			httpx.WriteProblem(c, err)
+			return
+		}
+		if !result.Allowed {
+			httpx.WriteProblem(c, apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter))
+			return
+		}
 		c.Next()
 	}
 }

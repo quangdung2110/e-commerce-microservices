@@ -1,61 +1,120 @@
-# User Service Configuration
-# All configuration can be overridden via environment variables
+# User Service configuration.
+#
+# Values are the local development defaults. Every ${VAR} is expanded from the
+# environment at load time and every key can also be overridden directly, so
+# USER_APP_PORT overrides app.port. Secrets belong in the environment or in a
+# secret manager, never in this file.
 
 app:
-  host: "0.0.0.0"
-  port: 8080
   name: "user-service"
+  host: "0.0.0.0"
+  port: 8082
+  env: "development" # development | staging | production
+  # Turn the public listener off to deploy a replica as consumer or worker only.
+  api_enabled: true
 
-# Database Configuration (PostgreSQL)
+server:
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 120s
+  shutdown_timeout: 20s
+
+# Cluster-internal listener serving the checkout address snapshot. It must never
+# be exposed through the public gateway, and production requires mTLS: the
+# endpoint takes a user id from its caller instead of from a verified identity.
+internal:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8083
+  tls_cert_file: "${USER_INTERNAL_TLS_CERT_FILE}"
+  tls_key_file: "${USER_INTERNAL_TLS_KEY_FILE}"
+  client_ca_file: "${USER_INTERNAL_CLIENT_CA_FILE}"
+  allowed_client_cn: "${USER_INTERNAL_ALLOWED_CLIENT_CN}"
+
 database:
   host: "localhost"
   port: 5432
-  user: "postgres"
-  password: "postgres"
-  name: "user_service"
-  sslmode: "disable"
-  max_conns: 25
+  name: "user_db"
+  username: "postgres"
+  password: "${DB_PASSWORD}"
+  sslmode: "disable" # require or verify-full outside local development
+  max_open_conns: 25
   min_conns: 5
-  max_conn_lifetime: "5m"
+  conn_max_lifetime: 30m
+  connect_timeout: 5s
+  statement_timeout: 5s
 
-# Redis Configuration
 redis:
   host: "localhost"
   port: 6379
-  password: ""
+  password: "${REDIS_PASSWORD}"
   db: 0
+  pool_size: 20
+  min_idle_conns: 5
+  dial_timeout: 1s
+  read_timeout: 1s
+  write_timeout: 1s
+  # Produces user:caches:addresses:{user_id}, the key pinned by the data design.
+  cache_prefix: "user:caches"
+  state_prefix: "user"
 
-# Kafka Configuration
 kafka:
+  enabled: true
+  # Set to false on a replica that should publish but not join the consumer
+  # group.
+  consumer_enabled: true
   brokers:
     - "localhost:9092"
   auth_topic: "t.auth.events"
+  auth_dlq_topic: "t.auth.events.dlq"
   user_topic: "t.user.events"
   consumer_group: "user-service"
-  offset_reset: "earliest"
-  session_timeout: "30s"
-  heartbeat_interval: "3s"
-  max_wait_time: "10s"
-  min_bytes: 1
-  max_bytes: 10485760  # 10MB
+  session_timeout: 30s
+  heartbeat_interval: 3s
+  # Retry ladder of user-auth-lifecycle-consumer: 1s doubling up to 5m, then the
+  # message is parked in the DLQ. Nothing is redriven automatically.
+  consume_max_attempts: 10
+  consume_min_backoff: 1s
+  consume_max_backoff: 5m
+  # Bounded direct publish (ADR-004). Exhausted retries are logged and left to
+  # the daily reconciliation sweep.
+  publish_max_attempts: 3
+  publish_backoff: 200ms
+  publish_timeout: 5s
 
-# Rate Limiting
-rate_limit:
-  enabled: true
-  rate: 100           # requests per window
-  window: "1m"         # time window
-  capacity: 100        # max tokens per window
+cache:
+  # PostgreSQL stays the source of truth; this is a TTL-bound copy (ADR-002).
+  address_ttl: 12h
+  # An empty list is cached briefly so a user without addresses cannot be used
+  # to hammer the database.
+  address_empty_ttl: 15m
 
-# Security
 security:
-  jwt_secret: "your-secret-key-change-in-production"
+  # Empty means gin trusts no proxy header. List the gateway CIDRs in a cluster
+  # so the client IP used for rate limiting is the real one.
+  trusted_proxies: []
+  rate_limit:
+    # Keyed by the authenticated caller: every route belongs to one owner.
+    read_per_identity: { limit: 120, window: 1m }
+    write_per_identity: { limit: 30, window: 1m }
+    # Keyed by client IP; the caller here is Checkout Service.
+    internal_per_client: { limit: 600, window: 1m }
 
-# Logging
+workers:
+  lock_ttl: 5m
+  # Hourly UTC pass, at most 100 due records, each claimed and purged in its own
+  # transaction (WF-USER-007).
+  retention_purge: { enabled: true, interval: 1h, timeout: 10m, batch: 100 }
+  # Daily off-peak sweep republishing the current snapshot of active users
+  # (WF-USER-008). Only one run is active service-wide thanks to the lock.
+  projection_reconciliation:
+    enabled: true
+    interval: 24h
+    timeout: 2h
+    batch: 500
+    run_at_hour_utc: 18
+    batch_gap: 200ms
+
 logging:
-  level: "info"
-  encoding: "json"
-
-# Health Check
-health:
-  liveness_path: "/health"
-  readiness_path: "/ready"
+  level: "info"   # debug | info | warn | error
+  format: "json"  # json | console

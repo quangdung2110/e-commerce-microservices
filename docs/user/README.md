@@ -1,25 +1,30 @@
 ---
 doc_id: user-overview
 service: user
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - User Service team
-evidence: []
+evidence:
+  - go/services/user-service/cmd/server/main.go
+  - go/services/user-service/internal/api/router/internal_router.go
+  - go/services/user-service/migrations/0001_initial_user_schema.up.sql
+  - go/services/user-service/test
 verified_against_commit: null
 ---
 
 # User Service — Tổng quan dịch vụ
 
-> Điểm bắt đầu để hiểu thiết kế mục tiêu của User Service. Tài liệu được tái cấu
-> trúc từ thiết kế cũ và không xác minh implementation hiện hữu.
+> Runtime hiện hữu được mô tả trong [development.md](./development.md) và README
+> module. Các mục tiêu production/SLO chưa có bằng chứng vẫn là thiết kế.
 
 ## 1. Trạng thái dịch vụ
 
 User Service là bounded context sở hữu hồ sơ khách hàng sau khi account đã được
-xác minh bởi Auth Service. Thiết kế đang ở mức `proposed`, phạm vi `target`.
-Runtime, source path, contract machine-readable và bằng chứng test sẽ chỉ được
-ghi khi được xác minh riêng.
+xác minh bởi Auth Service. Runtime Go 1.25 nằm ở `go/services/user-service`, có public
+API 8082, internal checkout API 8083, Auth consumer và lifecycle workers. Root Compose
+chạy migration có version trước User. Contract chuẩn nằm ở `contracts/http/user/v1`
+và `contracts/events/user/v1`; Stripe checkout E2E được ghi riêng.
 
 ## 2. Mục tiêu
 
@@ -100,10 +105,10 @@ Quy tắc và domain error tương ứng nằm trong [Domain Model](./domain.md)
 
 - [OpenAPI User v1](../../contracts/http/user/v1/openapi.yaml) và
   [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) đang ở trạng
-  thái `proposed`; migration vẫn chưa có nguồn chuẩn.
-- Thiết kế cũ nêu direct Kafka publish sau commit, nhưng chưa chứng minh retry,
-  reconciliation, DLQ hoặc observability; xem ADR-004.
-- Cơ chế xác thực identity giữa Gateway và User API, SLO, runtime configuration,
-  deployment topology và lệnh local chưa được xác minh.
-- OpenAPI chưa được kiểm chứng với implementation; public API và internal Checkout
-  endpoint chưa được đánh dấu `implemented` hoặc `verified`.
+  thái `proposed` trong metadata contract; không suy ra contract certification từ
+  runtime implemented. Migration chuẩn hiện có trong `go/services/user-service/migrations`.
+- Runtime có direct publish/retry/reconciliation/DLQ; unit/integration kiểm tra
+  lifecycle, repository và HTTP. Broker E2E/observability cần bằng chứng riêng.
+- Root local config/migration và listener đã có runbook; production SLO/capacity,
+  metrics và contract-schema test tự động chưa hoàn chỉnh.
+- Checkout snapshot đã có implementation; full Stripe checkout E2E là gate riêng.

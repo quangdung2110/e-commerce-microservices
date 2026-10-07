@@ -1,142 +1,59 @@
+// Package redis implements the cache-aside address list, the worker lock and
+// the API rate limiter.
+//
+// Unlike a security-critical store, the address cache degrades instead of
+// failing closed: when Redis cannot answer, reads fall back to PostgreSQL and
+// mutations still commit (ADR-002). The lock and the limiter do fail closed,
+// because skipping them would let two sweeps run at once or remove a limit.
 package redis
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/common/config"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/common/keybuilder"
 )
 
-// Key constants for Redis cache
-const (
-	KeyPrefixAddresses = "user:caches:addresses"
-	TTL12Hours        = 12 * time.Hour
-	TTL30Minutes      = 30 * time.Minute
-)
+// NewClient opens the Redis client shared by every adapter.
+func NewClient(ctx context.Context, cfg config.RedisConfig) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:         cfg.Addr(),
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+	})
 
-// AddressCache defines the interface for address caching
-type AddressCache interface {
-	// Get retrieves cached addresses for a user
-	// Returns nil if cache miss (caller should query DB)
-	Get(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error)
-
-	// Set caches addresses for a user with appropriate TTL
-	// Empty arrays get shorter TTL to prevent cache penetration
-	Set(ctx context.Context, userID uuid.UUID, addresses []*entity.Address) error
-
-	// Delete removes cached addresses for a user
-	Delete(ctx context.Context, userID uuid.UUID) error
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("redis: ping: %w", err)
+	}
+	return client, nil
 }
 
-// RedisAddressCache implements AddressCache using Redis
-type RedisAddressCache struct {
+// errUnexpectedScriptResult means a Lua script returned a shape the adapter
+// does not understand, which is a bug rather than an outage.
+var errUnexpectedScriptResult = errors.New("redis: unexpected script result")
+
+// store is the shared state of every Redis adapter.
+type store struct {
 	client *redis.Client
+	keys   *keybuilder.Builder
 }
 
-// NewRedisAddressCache creates a new RedisAddressCache
-func NewRedisAddressCache(client *redis.Client) *RedisAddressCache {
-	return &RedisAddressCache{client: client}
-}
-
-// key generates the Redis key for user addresses
-func (c *RedisAddressCache) key(userID uuid.UUID) string {
-	return fmt.Sprintf("%s:%s", KeyPrefixAddresses, userID.String())
-}
-
-// Get retrieves cached addresses for a user
-// Returns nil, nil on cache miss (caller should query DB)
-// Returns addresses, nil on cache hit
-// Returns nil, error on Redis error
-func (c *RedisAddressCache) Get(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
-	key := c.key(userID)
-
-	data, err := c.client.Get(ctx, key).Bytes()
-	if err == redis.Nil {
-		// Cache miss - caller should query database
-		return nil, nil
+// mapError turns a driver failure into a domain error. redis.Nil is a normal
+// "missing key" and must be handled by the caller, never here.
+func mapError(err error) error {
+	if err == nil {
+		return nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("redis get: %w", err)
-	}
-
-	var addresses []*entity.Address
-	if err := json.Unmarshal(data, &addresses); err != nil {
-		// Invalid cache data - treat as cache miss
-		// Delete the invalid key to prevent future issues
-		_ = c.client.Del(ctx, key).Err()
-		return nil, nil
-	}
-
-	return addresses, nil
-}
-
-// Set caches addresses for a user with appropriate TTL
-// Empty arrays get shorter TTL (30 minutes) to prevent cache penetration
-// Non-empty arrays get standard TTL (12 hours)
-func (c *RedisAddressCache) Set(ctx context.Context, userID uuid.UUID, addresses []*entity.Address) error {
-	key := c.key(userID)
-
-	data, err := json.Marshal(addresses)
-	if err != nil {
-		return fmt.Errorf("json marshal: %w", err)
-	}
-
-	// Apply shorter TTL for empty results to prevent cache penetration
-	ttl := TTL12Hours
-	if len(addresses) == 0 {
-		ttl = TTL30Minutes
-	}
-
-	if err := c.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return fmt.Errorf("redis set: %w", err)
-	}
-
-	return nil
-}
-
-// Delete removes cached addresses for a user
-// Called after any write operation (create, update, delete) to invalidate cache
-func (c *RedisAddressCache) Delete(ctx context.Context, userID uuid.UUID) error {
-	key := c.key(userID)
-
-	if err := c.client.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("redis del: %w", err)
-	}
-
-	return nil
-}
-
-// Ping checks Redis connectivity
-func (c *RedisAddressCache) Ping(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return c.client.Ping(ctx).Err()
-}
-
-// GetTTL returns the remaining TTL for a user's address cache
-// Returns 0 if key doesn't exist
-func (c *RedisAddressCache) GetTTL(ctx context.Context, userID uuid.UUID) (time.Duration, error) {
-	key := c.key(userID)
-	return c.client.TTL(ctx, key).Result()
-}
-
-// Exists checks if cache exists for a user
-func (c *RedisAddressCache) Exists(ctx context.Context, userID uuid.UUID) (bool, error) {
-	key := c.key(userID)
-	result, err := c.client.Exists(ctx, key).Result()
-	if err != nil {
-		return false, fmt.Errorf("redis exists: %w", err)
-	}
-	return result > 0, nil
-}
-
-// Refresh extends the TTL for cached addresses
-func (c *RedisAddressCache) Refresh(ctx context.Context, userID uuid.UUID) error {
-	key := c.key(userID)
-	return c.client.Expire(ctx, key, TTL12Hours).Err()
+	return apperr.ErrDependencyUnavailable.WithCause(err)
 }

@@ -13,6 +13,7 @@ và trang quản trị `/admin`. Quy tắc giao diện nằm trong skill Terra
 | [step-4-verification.md](./step-4-verification.md) | Search v2/PDP BFF/Review, đồng bộ backend và kiểm chứng |
 | [step-5-verification.md](./step-5-verification.md) | Cart v1, delta/xóa batch, giá degrade, idempotency và kiểm chứng |
 | [step-6-verification.md](./step-6-verification.md) | Checkout không voucher, Stripe, phục hồi submission và blocker backend/local |
+| [checkout-local-runbook.md](./checkout-local-runbook.md) | User migration, Cart/Gateway, Stripe Sandbox, CDC và gate mua hàng end-to-end |
 | [step-7-verification.md](./step-7-verification.md) | Đơn hàng Buyer, huỷ/trả/hoàn tiền và Stripe Payment Element tối thiểu |
 | [step-8-verification.md](./step-8-verification.md) | Đơn hàng Admin, lệnh vòng đời và ghi nhận physical dispatch |
 | [step-9-verification.md](./step-9-verification.md) | Đánh giá sau mua (media, sửa một lần), hộp thông báo, backend bổ sung và kiểm chứng live |

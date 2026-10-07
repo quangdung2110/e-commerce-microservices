@@ -17,6 +17,11 @@ Kafka Connect không tự thay placeholder `${VAR:default}`, nên thay bằng bi
 (hoặc giá trị mặc định) trước khi đăng ký trên stack local (Kafka Connect publish cổng host
 `8084`):
 
+Root stack/PowerShell: `pwsh -NoProfile -File scripts/register-checkout-connectors.ps1 -Services inventory`
+từ gốc repo; `-CheckOnly` kiểm tra connector và mọi task RUNNING, `-ValidateOnly`
+kiểm tra template không gọi mạng. Script thay DB fields, giữ literal EventRouter
+expression và không log password. Các lệnh Bash bên dưới dành cho môi trường có Perl.
+
 ```bash
 perl -pe 's/\$\{(\w+):([^}]*)\}/$ENV{$1} \/\/ $2/ge' debezium-connector-inventory-outbox.json > /tmp/inventory-connector.json
 ```

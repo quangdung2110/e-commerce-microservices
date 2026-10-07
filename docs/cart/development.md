@@ -24,6 +24,11 @@ Go, Redis 7+ (Cluster-compatible testing), Kafka và Product Service/mock gRPC. 
 
 ## 3. Local configuration
 
+Root stack: `docker compose up -d --build cart-service` từ gốc repo. Cart không publish
+cổng host; frontend gọi `/api/v1/carts/mine` qua Gateway `localhost:8088` với phiên Auth.
+Host `8085` dành cho Promotion; internal Cart giữ `cart-service:8080`. Standalone
+Compose trong thư mục service là stack riêng.
+
 Không commit secret. Local Redis vẫn nên bật AOF nếu muốn test restart behavior. Dùng `noeviction` để test không vô tình che memory-pressure failure.
 
 ## 4. Lua scripts

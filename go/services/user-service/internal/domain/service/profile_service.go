@@ -2,139 +2,71 @@ package service
 
 import (
 	"context"
-	"errors"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 
-	"user-service/internal/domain/entity"
-	"user-service/internal/domain/port"
-	"user-service/internal/domain/vo"
+	"github.com/ecommerce/user-service/internal/common/clock"
+	"github.com/ecommerce/user-service/internal/common/reqctx"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/event"
+	"github.com/ecommerce/user-service/internal/domain/port"
 )
 
-var (
-	ErrProfileNotFound     = errors.New("profile not found")
-	ErrPhoneNumberExists   = errors.New("phone number already exists")
-	ErrInvalidDateOfBirth = errors.New("date of birth cannot be in the future")
-)
-
-// ProfileService handles profile business logic
+// ProfileService implements WF-USER-002: the owner reads and patches their own
+// profile. Reads go straight to PostgreSQL; profiles are not cached by design
+// (ADR-002).
 type ProfileService struct {
-	profileRepo port.ProfileRepository
-	db          *pgxpool.Pool
-	logger      *zap.Logger
+	profiles port.ProfileRepository
+	tx       port.TxManager
+	emitter  *EventEmitter
+	clock    clock.Clock
 }
 
-// NewProfileService creates a new ProfileService
-func NewProfileService(profileRepo port.ProfileRepository, db *pgxpool.Pool, logger *zap.Logger) *ProfileService {
-	return &ProfileService{
-		profileRepo: profileRepo,
-		db:          db,
-		logger:      logger,
-	}
+// NewProfileService wires the profile use cases.
+func NewProfileService(profiles port.ProfileRepository, tx port.TxManager, emitter *EventEmitter, clk clock.Clock) *ProfileService {
+	return &ProfileService{profiles: profiles, tx: tx, emitter: emitter, clock: clk}
 }
 
-// CreateProfile creates a new profile (idempotent)
-func (s *ProfileService) CreateProfile(ctx context.Context, userID uuid.UUID) error {
-	profile := entity.NewProfile(userID)
-	return s.profileRepo.Create(ctx, profile)
+// Get returns the profile of the authenticated owner, or ErrProfileNotFound
+// when it has not been bootstrapped yet or was already purged.
+func (s *ProfileService) Get(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	return s.profiles.GetByID(ctx, userID)
 }
 
-// CreateProfileTx creates a new profile within a transaction (idempotent)
-func (s *ProfileService) CreateProfileTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	profile := entity.NewProfile(userID)
-	return s.profileRepo.CreateTx(ctx, tx, profile)
-}
+// Update applies a merge patch and publishes USER_PROFILE_UPDATED after the
+// commit. An unchanged patch is a no-op: it neither writes nor emits an event.
+func (s *ProfileService) Update(ctx context.Context, userID uuid.UUID, changes entity.ProfileChanges) (*entity.Profile, error) {
+	now := s.clock.Now()
 
-// GetProfile retrieves a profile by user ID
-func (s *ProfileService) GetProfile(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
-	profile, err := s.profileRepo.GetByID(ctx, userID)
+	var (
+		profile *entity.Profile
+		changed bool
+	)
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		// The row lock serializes this update against a concurrent
+		// anonymization, so a late update can never restore deleted PII.
+		current, err := s.profiles.GetForUpdate(txCtx, userID)
+		if err != nil {
+			return err
+		}
+
+		changed, err = current.Apply(changes, now)
+		if err != nil {
+			return err
+		}
+		profile = current
+		if !changed {
+			return nil
+		}
+		return s.profiles.Update(txCtx, current)
+	})
 	if err != nil {
 		return nil, err
 	}
-	if profile == nil {
-		return nil, ErrProfileNotFound
+
+	if changed {
+		s.emitter.Emit(ctx, event.NewProfileUpdated(
+			profile.ID, profile.DisplayName(), profile.UpdatedAt, reqctx.EventMetadata(ctx)))
 	}
 	return profile, nil
-}
-
-// UpdateProfile updates a profile
-func (s *ProfileService) UpdateProfile(ctx context.Context, userID uuid.UUID, firstName, lastName, phone string, dateOfBirth *time.Time, genderStr string) (*entity.Profile, error) {
-	// Get existing profile
-	profile, err := s.profileRepo.GetByID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if profile == nil {
-		return nil, ErrProfileNotFound
-	}
-
-	// Validate and set name
-	if firstName != "" || lastName != "" {
-		nameVO, err := vo.NewName(firstName, lastName)
-		if err != nil {
-			return nil, err
-		}
-		if firstName != "" {
-			profile.FirstName = nameVO.FirstName
-		}
-		if lastName != "" {
-			profile.LastName = nameVO.LastName
-		}
-	}
-
-	// Validate and set phone number
-	if phone != "" {
-		// Check if phone is already used by another user
-		exists, err := s.profileRepo.ExistsByPhoneNumber(ctx, phone, &userID)
-		if err != nil {
-			return nil, err
-		}
-		if exists {
-			return nil, ErrPhoneNumberExists
-		}
-
-		phoneVO, err := vo.NewPhoneNumber(phone)
-		if err != nil {
-			return nil, err
-		}
-		profile.PhoneNumber = &phoneVO.Value
-	}
-
-	// Validate and set date of birth
-	if dateOfBirth != nil {
-		if dateOfBirth.After(time.Now()) {
-			return nil, ErrInvalidDateOfBirth
-		}
-		profile.DateOfBirth = dateOfBirth
-	}
-
-	// Validate and set gender
-	if genderStr != "" {
-		genderVO, err := vo.NewGender(genderStr)
-		if err != nil {
-			return nil, err
-		}
-		profile.Gender = genderVO
-	}
-
-	// Update in database
-	if err := s.profileRepo.Update(ctx, profile); err != nil {
-		return nil, err
-	}
-
-	return profile, nil
-}
-
-// DeleteProfile deletes a profile
-func (s *ProfileService) DeleteProfile(ctx context.Context, userID uuid.UUID) error {
-	return s.profileRepo.Delete(ctx, userID)
-}
-
-// ProfileExists checks if a profile exists
-func (s *ProfileService) ProfileExists(ctx context.Context, userID uuid.UUID) (bool, error) {
-	return s.profileRepo.Exists(ctx, userID)
 }

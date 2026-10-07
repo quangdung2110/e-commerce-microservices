@@ -2,347 +2,234 @@ package service
 
 import (
 	"context"
-	"errors"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 
-	"user-service/internal/domain/entity"
-	"user-service/internal/domain/port"
-	"user-service/internal/domain/vo"
+	"github.com/ecommerce/user-service/internal/common/clock"
+	"github.com/ecommerce/user-service/internal/common/constants"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/common/logging"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/port"
 )
 
-var (
-	ErrAddressNotFound         = errors.New("address not found")
-	ErrAddressNotOwned         = errors.New("address does not belong to user")
-	ErrCannotDeleteOnlyAddress = errors.New("cannot delete the only default address")
-	ErrCannotDeleteOnlyDefault = errors.New("cannot delete the only default address")
-)
-
-// AddressService handles address business logic with caching
+// AddressService implements WF-USER-003 and WF-USER-004: the owner manages
+// their address book and checkout reads it with low latency.
+//
+// PostgreSQL is the source of truth. Redis only holds a TTL-bound copy of the
+// list, is invalidated after every committed mutation and is bypassed whenever
+// it cannot answer (ADR-002).
 type AddressService struct {
-	repo    port.AddressRepository
-	cache   port.AddressCache
-	db      *pgxpool.Pool
-	logger  *zap.Logger
-	sfGroup singleflight.Group
+	addresses port.AddressRepository
+	profiles  port.ProfileRepository
+	cache     port.AddressCache
+	tx        port.TxManager
+	clock     clock.Clock
+	logger    *zap.Logger
 }
 
-// NewAddressService creates a new AddressService
-func NewAddressService(repo port.AddressRepository, cache port.AddressCache, db *pgxpool.Pool, logger *zap.Logger) *AddressService {
+// NewAddressService wires the address use cases.
+func NewAddressService(
+	addresses port.AddressRepository,
+	profiles port.ProfileRepository,
+	cache port.AddressCache,
+	tx port.TxManager,
+	clk clock.Clock,
+	logger *zap.Logger,
+) *AddressService {
 	return &AddressService{
-		repo:   repo,
-		cache:  cache,
-		db:     db,
-		logger: logger,
+		addresses: addresses,
+		profiles:  profiles,
+		cache:     cache,
+		tx:        tx,
+		clock:     clk,
+		logger:    logger,
 	}
 }
 
-// GetByUserID retrieves addresses for a user with cache-aside pattern
-func (s *AddressService) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
-	// Try cache first
-	cached, err := s.cache.Get(ctx, userID)
-	if err != nil {
-		s.logger.Warn("cache get failed, falling back to DB", zap.Error(err))
-	}
-	if cached != nil {
-		s.logger.Debug("cache hit for addresses", zap.String("user_id", userID.String()))
+// List returns the address book of the owner, default first and newest after.
+//
+// A cache hit is served as-is. On a miss, PostgreSQL answers and the result is
+// cached; an empty result is only cached once the profile is known to exist, so
+// a lookup for an unknown user cannot poison the cache with a 200.
+func (s *AddressService) List(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
+	if cached, found := s.cache.Get(ctx, userID); found {
 		return cached, nil
 	}
 
-	// Use singleflight to prevent thundering herd
-	sfKey := userID.String()
-
-	result, err, _ := s.sfGroup.Do(sfKey, func() (interface{}, error) {
-		// Double-check cache (another goroutine might have populated it)
-		cached, err := s.cache.Get(ctx, userID)
-		if err == nil && cached != nil {
-			return cached, nil
-		}
-
-		// Query DB
-		addresses, err := s.repo.GetByUserID(ctx, userID)
-		if err != nil {
+	addresses, err := s.addresses.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(addresses) == 0 {
+		// An empty address book and a missing profile are indistinguishable
+		// from the address table alone, and the contract separates them.
+		if _, err := s.profiles.GetByID(ctx, userID); err != nil {
 			return nil, err
 		}
+	}
 
-		// Cache result
-		if err := s.cache.Set(ctx, userID, addresses); err != nil {
-			s.logger.Warn("cache set failed", zap.Error(err))
+	if err := s.cache.Put(ctx, userID, addresses); err != nil {
+		logging.FromContext(ctx).Warn("address cache could not be filled", zap.Error(err))
+	}
+	return addresses, nil
+}
+
+// Get resolves one address of one owner. It never reads the cache: the internal
+// checkout snapshot and every mutation need the authoritative row.
+func (s *AddressService) Get(ctx context.Context, userID, addressID uuid.UUID) (*entity.Address, error) {
+	return s.addresses.GetOwned(ctx, userID, addressID)
+}
+
+// Create adds an address. The first address of a profile becomes the default
+// (USER-BR-002); the per-user lock is what keeps two concurrent creates from
+// both claiming it.
+func (s *AddressService) Create(ctx context.Context, userID uuid.UUID, input entity.AddressInput) (*entity.Address, error) {
+	now := s.clock.Now()
+
+	var address *entity.Address
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		if err := s.addresses.LockUser(txCtx, userID); err != nil {
+			return err
+		}
+		// The profile must exist: an address book without an owner would be
+		// orphaned data, and the foreign key would refuse it anyway.
+		if _, err := s.profiles.GetByID(txCtx, userID); err != nil {
+			return err
 		}
 
-		return addresses, nil
+		count, err := s.addresses.CountByUser(txCtx, userID)
+		if err != nil {
+			return err
+		}
+		if count >= constants.AddressBookLimit {
+			return apperr.ErrInvalidAddress.WithDetail("Address book đã đạt giới hạn số địa chỉ.")
+		}
+
+		created, err := entity.NewAddress(userID, input, count == 0, now)
+		if err != nil {
+			return err
+		}
+		address = created
+		return s.addresses.Insert(txCtx, created)
 	})
-
 	if err != nil {
 		return nil, err
 	}
 
-	return result.([]*entity.Address), nil
+	s.invalidate(ctx, userID)
+	return address, nil
 }
 
-// GetByID retrieves a single address by ID
-func (s *AddressService) GetByID(ctx context.Context, addressID uuid.UUID) (*entity.Address, error) {
-	addr, err := s.repo.GetByID(ctx, addressID)
-	if err != nil {
-		return nil, err
-	}
-	if addr == nil {
-		return nil, ErrAddressNotFound
-	}
-	return addr, nil
-}
+// Replace overwrites one address of the owner. The default flag is not part of
+// the payload and stays untouched.
+func (s *AddressService) Replace(ctx context.Context, userID, addressID uuid.UUID, input entity.AddressInput) (*entity.Address, error) {
+	now := s.clock.Now()
 
-// Create creates a new address with auto-default logic
-func (s *AddressService) Create(ctx context.Context, userID uuid.UUID, recipientName, phone, addressLine, wardID, districtID, cityID string) (*entity.Address, error) {
-	// Check if this is the first address for the user
-	existingAddresses, err := s.repo.GetByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
+	var address *entity.Address
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		if err := s.addresses.LockUser(txCtx, userID); err != nil {
+			return err
+		}
 
-	isFirstAddress := len(existingAddresses) == 0
-
-	// Create new address
-	addr, err := entity.NewAddress(userID, recipientName, phone, addressLine, wardID, districtID, cityID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set as default if first address
-	if isFirstAddress {
-		addr.SetAsDefault()
-	}
-
-	// Save to database
-	if err := s.repo.Create(ctx, addr); err != nil {
-		return nil, err
-	}
-
-	// Invalidate cache
-	if err := s.cache.Delete(ctx, userID); err != nil {
-		s.logger.Warn("cache delete failed after create", zap.Error(err))
-	}
-
-	s.logger.Info("address created",
-		zap.String("address_id", addr.ID.String()),
-		zap.String("user_id", userID.String()),
-		zap.Bool("is_default", addr.IsDefault))
-
-	return addr, nil
-}
-
-// Update updates an existing address
-func (s *AddressService) Update(ctx context.Context, userID, addressID uuid.UUID, recipientName, phone, addressLine, wardID, districtID, cityID string) (*entity.Address, error) {
-	// Get existing address
-	addr, err := s.repo.GetByID(ctx, addressID)
-	if err != nil {
-		return nil, err
-	}
-	if addr == nil {
-		return nil, ErrAddressNotFound
-	}
-
-	// Verify ownership
-	if !addr.BelongsTo(userID) {
-		return nil, ErrAddressNotOwned
-	}
-
-	// Update fields
-	if err := addr.Update(recipientName, phone, addressLine, wardID, districtID, cityID); err != nil {
-		return nil, err
-	}
-
-	// Save to database
-	if err := s.repo.Update(ctx, addr); err != nil {
-		return nil, err
-	}
-
-	// Invalidate cache
-	if err := s.cache.Delete(ctx, userID); err != nil {
-		s.logger.Warn("cache delete failed after update", zap.Error(err))
-	}
-
-	s.logger.Info("address updated",
-		zap.String("address_id", addr.ID.String()),
-		zap.String("user_id", userID.String()))
-
-	return addr, nil
-}
-
-// Delete deletes an address with business rules
-func (s *AddressService) Delete(ctx context.Context, userID, addressID uuid.UUID) error {
-	// Get existing address
-	addr, err := s.repo.GetByID(ctx, addressID)
-	if err != nil {
-		return err
-	}
-	if addr == nil {
-		return ErrAddressNotFound
-	}
-
-	// Verify ownership
-	if !addr.BelongsTo(userID) {
-		return ErrAddressNotOwned
-	}
-
-	// Check business rules
-	count, err := s.repo.CountByUserID(ctx, userID)
-	if err != nil {
-		return err
-	}
-
-	// If this is the only address and it's default, reject deletion
-	if count == 1 && addr.IsDefault {
-		return ErrCannotDeleteOnlyDefault
-	}
-
-	// If deleting default address and there are others, promote oldest
-	if addr.IsDefault && count > 1 {
-		tx, err := s.db.Begin(ctx)
+		current, err := s.addresses.GetOwned(txCtx, userID, addressID)
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback(ctx)
-
-		// Delete current default address
-		if err := s.repo.DeleteTx(ctx, tx, addressID); err != nil {
+		if err := current.Replace(input, now); err != nil {
 			return err
 		}
-
-		// Promote oldest remaining address
-		_, err = s.repo.PromoteOldestToDefault(ctx, tx, userID, addressID)
-		if err != nil {
-			return err
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-	} else {
-		// Simple delete for non-default addresses
-		if err := s.repo.Delete(ctx, addressID); err != nil {
-			return err
-		}
+		address = current
+		return s.addresses.Update(txCtx, current)
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// Invalidate cache
-	if err := s.cache.Delete(ctx, userID); err != nil {
-		s.logger.Warn("cache delete failed after delete", zap.Error(err))
-	}
-
-	s.logger.Info("address deleted",
-		zap.String("address_id", addressID.String()),
-		zap.String("user_id", userID.String()))
-
-	return nil
+	s.invalidate(ctx, userID)
+	return address, nil
 }
 
-// SetDefault sets an address as default
+// SetDefault promotes one address. Clearing the previous default and setting
+// the new one happen in the same transaction, so at most one default exists at
+// any time (USER-BR-003). Repeating the call is a no-op.
 func (s *AddressService) SetDefault(ctx context.Context, userID, addressID uuid.UUID) (*entity.Address, error) {
-	// Get existing address
-	addr, err := s.repo.GetByID(ctx, addressID)
+	var (
+		address *entity.Address
+		changed bool
+	)
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		if err := s.addresses.LockUser(txCtx, userID); err != nil {
+			return err
+		}
+
+		current, err := s.addresses.GetOwned(txCtx, userID, addressID)
+		if err != nil {
+			return err
+		}
+		address = current
+		if current.IsDefault {
+			return nil
+		}
+
+		if err := s.addresses.ClearDefault(txCtx, userID, addressID); err != nil {
+			return err
+		}
+		updatedAt, err := s.addresses.SetDefault(txCtx, userID, addressID)
+		if err != nil {
+			return err
+		}
+
+		current.IsDefault = true
+		current.UpdatedAt = updatedAt
+		changed = true
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if addr == nil {
-		return nil, ErrAddressNotFound
+
+	if changed {
+		s.invalidate(ctx, userID)
 	}
-
-	// Verify ownership
-	if !addr.BelongsTo(userID) {
-		return nil, ErrAddressNotOwned
-	}
-
-	// Check if already default
-	if addr.IsDefault {
-		return addr, nil // No-op
-	}
-
-	// Set as default (handles transaction internally)
-	if err := s.repo.SetDefault(ctx, userID, addressID); err != nil {
-		return nil, err
-	}
-
-	// Refresh address
-	addr, err = s.repo.GetByID(ctx, addressID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Invalidate cache
-	if err := s.cache.Delete(ctx, userID); err != nil {
-		s.logger.Warn("cache delete failed after set default", zap.Error(err))
-	}
-
-	s.logger.Info("address set as default",
-		zap.String("address_id", addressID.String()),
-		zap.String("user_id", userID.String()))
-
-	return addr, nil
+	return address, nil
 }
 
-// CreateAddressWithTx creates address within a transaction
-func (s *AddressService) CreateAddressWithTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, recipientName, phone, addressLine, wardID, districtID, cityID string) (*entity.Address, error) {
-	// Check if this is the first address for the user
-	existingAddresses, err := s.repo.GetByUserID(ctx, userID)
+// Delete hard-deletes an address. The current default is refused with 409: the
+// owner promotes a replacement first (USER-BR-004). Orders keep their own
+// snapshot, so nothing downstream changes (USER-INV-004).
+func (s *AddressService) Delete(ctx context.Context, userID, addressID uuid.UUID) error {
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		if err := s.addresses.LockUser(txCtx, userID); err != nil {
+			return err
+		}
+
+		current, err := s.addresses.GetOwned(txCtx, userID, addressID)
+		if err != nil {
+			return err
+		}
+		if err := current.EnsureDeletable(); err != nil {
+			return err
+		}
+		return s.addresses.Delete(txCtx, userID, addressID)
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	isFirstAddress := len(existingAddresses) == 0
-
-	// Create new address
-	addr, err := entity.NewAddress(userID, recipientName, phone, addressLine, wardID, districtID, cityID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set as default if first address
-	if isFirstAddress {
-		addr.SetAsDefault()
-	}
-
-	// Save to database within transaction
-	if err := s.repo.CreateTx(ctx, tx, addr); err != nil {
-		return nil, err
-	}
-
-	// Invalidate cache
-	if err := s.cache.Delete(ctx, userID); err != nil {
-		s.logger.Warn("cache delete failed after create", zap.Error(err))
-	}
-
-	return addr, nil
-}
-
-// ValidateAddressFields validates address fields
-func ValidateAddressFields(recipientName, phone, addressLine, wardID, districtID, cityID string) error {
-	if recipientName == "" {
-		return ErrRecipientNameRequired
-	}
-
-	if _, err := vo.NewPhoneNumber(phone); err != nil {
 		return err
 	}
 
-	if addressLine == "" {
-		return ErrAddressLineRequired
-	}
-
-	if wardID == "" || districtID == "" || cityID == "" {
-		return ErrLocationRequired
-	}
-
+	s.invalidate(ctx, userID)
 	return nil
 }
 
-// Errors for validation
-var (
-	ErrRecipientNameRequired = errors.New("recipient name is required")
-	ErrAddressLineRequired  = errors.New("address line is required")
-	ErrLocationRequired     = errors.New("ward, district, and city IDs are required")
-)
+// invalidate drops the cached list after a committed mutation. A failure here
+// leaves a stale list until the TTL expires; it is reported for alerting but
+// never rolls the mutation back (ADR-002).
+func (s *AddressService) invalidate(ctx context.Context, userID uuid.UUID) {
+	if err := s.cache.Invalidate(ctx, userID); err != nil {
+		logging.FromContext(ctx).Error("address cache invalidation failed",
+			zap.String("user_id", userID.String()),
+			zap.Error(err),
+		)
+	}
+}

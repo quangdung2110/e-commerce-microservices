@@ -1,59 +1,104 @@
 ---
 doc_id: user-development
 service: user
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - User Service team
-evidence: []
+evidence:
+  - go/services/user-service/go.mod
+  - go/services/user-service/Makefile
+  - go/services/user-service/cmd/server/main.go
+  - go/services/user-service/migrations/0001_initial_user_schema.up.sql
+  - docker-compose.yml
 verified_against_commit: null
 ---
 
 # User Service — Hướng dẫn phát triển
 
-> Không suy diễn lệnh, runtime, port hoặc source path từ thiết kế. Các mục này là
-> checklist cần hoàn thiện khi implementation được đưa vào phạm vi xác minh.
+Runtime Go 1.25, Gin, pgx/PostgreSQL, Redis và Sarama/Kafka nằm ở
+`go/services/user-service`. Profile/address/preferences và checkout snapshot đã có.
+[Checkout runbook](../frontend/checkout-local-runbook.md) ghi gate tích hợp riêng.
 
-## 1. Điều kiện tiên quyết và phụ thuộc local
+## 1. Build và test
 
-Cần công bố runtime/language, package manager, container runtime và tool lint/
-format chính thức. Local dependency dự kiến là PostgreSQL, Redis và Kafka; port,
-image, seed data và service nào có thể mock phải lấy từ compose/configuration đã
-xác minh. Không dùng PII production trong fixture.
+PowerShell từ **gốc repo**, không cần Go trên host:
 
-## 2. Chạy local và cấu hình
+```powershell
+docker run --rm -e GOTOOLCHAIN=local -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -race ./test/unit/...
+docker run --rm -e GOTOOLCHAIN=local -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go vet ./...
+docker compose build user-service
+```
 
-Tài liệu implementation phải cung cấp command copy-paste để cài dependency,
-chạy migration, start API/consumer/worker, check health và cleanup an toàn.
-Configuration cần có bảng variable/purpose/required/default/secret/restart. Secret
-Kafka/DB/TLS không commit; identity test phải được Gateway/Auth mock hoặc contract
-fixture cấp đúng cách.
+Đổi dependency: chạy `go mod tidy` bằng Go 1.25, review `go.mod`/`go.sum` và build
+Docker cùng module graph. Integration suite dùng PostgreSQL/Redis Testcontainers
+riêng và reset fixture; không trỏ vào database ứng dụng:
 
-## 3. Biên dịch, chất lượng và kiểm thử
+```powershell
+docker run --rm -e GOTOOLCHAIN=local -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -tags=integration -count=1 -timeout=15m ./test/integration/...
+```
 
-CI cần có command chuẩn cho build, format, lint, unit/integration/contract test.
-Test tối thiểu phải bao phủ ownership address, partial unique default, từ chối xóa
-default address, profile ID từ Auth event, cache hit/miss/invalidation/fallback,
-duplicate/out-of-order Auth event, deletion retention và worker resume. Consumer
-test phải xác minh ack sau commit, retry/DLQ và idempotency; contract test chỉ có
-thể hoàn thiện với OpenAPI/AsyncAPI User v1 và Auth AsyncAPI v1. Worker test phải
-bao phủ purge trước/sau deadline, `SKIP LOCKED`/crash-resume, profile/preferences
-đã bị deletion loại khỏi reconciliation, corrective event ID mới và `updated_at`
-không bị thay đổi.
+Test kiểm tra ownership, unique default, xóa default bị từ chối, profile bootstrap,
+cache fallback, deletion/lifecycle và reconciliation. Contract/load/production
+metrics còn thiếu bằng chứng được ghi trong README module.
 
-## 4. Phát triển schema và contract
+## 2. Root Compose: frontend và Checkout
 
-Mọi thay đổi persistent data phải đi kèm migration có thể chạy local, kiểm tra
-backward compatibility/backfill và fixture test. [OpenAPI User v1](../../contracts/http/user/v1/openapi.yaml)
-và [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) là nguồn
-contract hiện tại; generated code (nếu có) cần command/version/output path và
-drift check trong CI. Không coi bảng/JSON copy trong Markdown là schema nguồn.
+```powershell
+docker compose up -d --build user-service
+```
 
-## 5. Gỡ lỗi và tiêu chí hoàn thành
+`user-migrate` dùng `migrate/migrate:v4.18.3` sau PostgreSQL healthy; User chỉ start
+khi migration exit 0. Version tracking hoạt động cả khi volume đã tồn tại. Root
+`init-db.sh` tạo DB `user_service` trên volume mới; volume cũ thiếu DB cần tạo riêng
+DB trước khi migrate. Khi thêm migration hoặc triển khai lại, chạy tường minh:
 
-Debug local phải dùng log redacted, trace/correlation ID và truy vấn read-only
-đến DB/Redis/Kafka khi có thể. Không in phone, address hoặc full event payload
-vào log. Một thay đổi hoàn thành khi build/lint/test pass, migration/contract
-được cập nhật, backward compatibility được kiểm tra, workflow/domain/data thay
-đổi được phản ánh, ADR được thêm nếu có quyết định dài hạn và evidence/status
-tài liệu được cập nhật.
+```powershell
+docker compose run --rm user-migrate
+```
+
+Root DB: host `localhost:15432`, container `postgres:5432`, database `user_service`.
+User không publish host port. Public API 8082 đi qua Gateway
+`localhost:8088/api/v1/users/me/*`; internal snapshot 8083 chỉ trong mạng backend.
+
+Schema từng được nạp bằng SQL thủ công mà thiếu `schema_migrations` cần dừng và
+đối chiếu schema/version trước khi baseline. Không tự force version, chạy down
+migration hoặc xóa volume để bỏ qua lỗi. Root schema rỗng migrate bình thường.
+
+## 3. Standalone stack
+
+Từ thư mục service, `docker compose up -d`: DB `user_db`, PostgreSQL host `5433`,
+Redis `6380`, Kafka `9093`, public API host `8082`. Standalone nạp SQL ban đầu qua
+initdb trên volume rỗng nhưng chưa có version tracking; không chạy lại migration
+đầu tiên khi chưa baseline. `make migrate-up DB_URL=...` dành cho DB golang-migrate
+quản lý; mặc định host standalone là `localhost:5433/user_db`. Root dùng mục 2.
+
+Chạy `make run` trên host cần override DB/Redis/Kafka theo stack; Kafka advertised
+listener phải truy cập được từ process host.
+
+## 4. Config và buyer
+
+Mọi key trong `configs/application.yaml` override qua `USER_`; secret lấy từ
+`DB_PASSWORD`, `REDIS_PASSWORD`. Env thay đổi cần recreate process. Production
+bắt buộc mTLS cho internal API; root dev dùng mạng nội bộ.
+
+| Biến root stack | Giá trị / tác dụng |
+|---|---|
+| USER_DATABASE_HOST / USER_DATABASE_NAME | postgres / user_service |
+| USER_REDIS_HOST | redis |
+| USER_KAFKA_BROKERS | kafka:9092 |
+| USER_KAFKA_CONSUMER_ENABLED | Bật consumer để bootstrap profile từ Auth |
+| USER_INTERNAL_ENABLED | Bật checkout snapshot trên cổng nội bộ 8083 |
+
+Buyer phải qua Auth/Gateway. Consumer xử lý `USER_VERIFIED_SUCCESS` tạo profile
+bằng Auth user_id; login không tự tạo profile. Kiểm tra profile/addresses qua phiên
+thật, tạo địa chỉ hợp lệ rồi Preview. Account cũ thiếu profile: kiểm tra retention,
+consumer group/offset trước khi replay được hỗ trợ; không giả identity hay chèn row.
+
+## 5. Health, debug và giới hạn
+
+`/health/live`: process. `/health/ready` và `/health/startup`: probes runtime;
+PostgreSQL required, Redis optional/degraded. Health không chứng minh buyer đã được
+bootstrap; đọc log consumer và dữ liệu đã lưu. Xem [README module](../../go/services/user-service/README.md)
+cho metrics/contract test còn thiếu. Không log phone/address/credential/full event.
+Schema chuẩn nằm trong migration/OpenAPI; thay đổi phải đồng bộ code và tài liệu.

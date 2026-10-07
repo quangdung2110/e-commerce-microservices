@@ -2,7 +2,7 @@
 doc_id: checkout-overview
 service: checkout-service
 scope: target
-status: proposed
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -30,7 +30,7 @@ checkout trong Redis.
 |---|---|
 | Triển khai | `implemented`: `java/services/checkout-service`; compose chạy `checkout-service` (cổng host `8096`) và `checkout-redis` riêng |
 | Runtime | Java 21, Spring Boot WebFlux, Resilience4j, Lettuce, grpc-java ([ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md)); module `java/services/checkout-service`, package `com.ecommerce.checkout` |
-| Tài liệu | `proposed` |
+| Tài liệu | Overview/interfaces đã đối chiếu runtime; các SLO/production gate vẫn là mục tiêu thiết kế. Stripe E2E theo [runbook](../frontend/checkout-local-runbook.md), không suy ra từ trạng thái implemented |
 | Contract adoption | `pilot` ([catalog](../../contracts/catalog/services.yaml)); contract test validate mọi response với OpenAPI và mọi fixture provider với OpenAPI/proto của provider |
 | Gateway route | Bốn router và ba profile rate limit `checkout-*` chạy trong compose local; production chỉ bật theo [gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc) khi readiness và load test đạt |
 
