@@ -1,30 +1,49 @@
 package com.ecommerce.search.domain.document;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.Builder;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Elasticsearch document mapping 1:1 with {@code categories_v1} index.
+ * A node of the {@code categories} index, {@code _id = category_id}.
  *
- * <p>Each document represents a single category node in the category tree.
- * The {@code product_count} field is maintained in real-time via
- * {@code _update_by_query} triggered by product lifecycle events.
+ * <p>{@code ancestorIds}, {@code ancestorSlugs}, {@code level} and {@code isLeaf} are
+ * materialised from the Category snapshot Product publishes; Search does not own the tree
+ * algorithm (ADR-013).
+ *
+ * <p>{@code productCount} and {@code productCountUpdatedAt} are null until the recompute
+ * job has run at least once for this node (ADR-008).
  */
-@Builder
-@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CategoryDocument(
-    @JsonProperty("category_id") String categoryId,
-    String name,
-    String slug,
-    @JsonProperty("parent_id") String parentId,
-    Integer level,
-    @JsonProperty("is_leaf") Boolean isLeaf,
-    String path,
-    @JsonProperty("product_count") Long productCount,
-    @JsonProperty("is_deleted") Boolean isDeleted,
-    @JsonProperty("deleted_at") Instant deletedAt,
-    Instant version
-) {}
+        String categoryId,
+        String name,
+        String slug,
+        String parentId,
+        List<String> ancestorIds,
+        List<String> ancestorSlugs,
+        Integer level,
+        Boolean isLeaf,
+        Map<String, Object> facetDefinitions,
+
+        Long productCount,
+        Instant productCountUpdatedAt,
+
+        Boolean isDeleted,
+        Instant deletedAt,
+        Instant updatedAt,
+        Instant categoryIndexedAt,
+
+        Long categoryRevision,
+        String lastEventId) {
+
+    public long productCountOrZero() {
+        return productCount == null ? 0L : productCount;
+    }
+
+    public int levelOrZero() {
+        return level == null ? 0 : level;
+    }
+}

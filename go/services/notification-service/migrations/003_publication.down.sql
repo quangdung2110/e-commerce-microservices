@@ -1,0 +1,1 @@
+DROP PUBLICATION IF EXISTS notification_outbox_publication;

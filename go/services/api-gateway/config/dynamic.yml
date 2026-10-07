@@ -11,71 +11,44 @@ http:
   # =============================================================================
   middlewares:
     # -------------------------------------------------------------------------
-    # JWT Authentication Middleware (Go Plugin)
+    # Xac thuc: ForwardAuth toi gateway-auth
+    #
+    # docs/gateway/design.md va runtime-contract.md muc 6: Traefik goi
+    # gateway-auth cho moi request toi route can danh tinh. 2xx cho request di
+    # tiep kem dung bon header danh tinh; moi status khac (401 problem+json,
+    # 503 khi JWKS/Redis khong san sang) duoc tra nguyen ve client, khong bao gio
+    # fail open. Traefik khong nap plugin nao; plugin jwt-auth cu da duoc go
+    # (implementation_plan.md muc 3.5).
+    #
+    # Router dung chain `authenticated`, khong dung `gateway-auth` truc tiep:
+    # strip-identity-headers phai chay TRUOC de header X-User-* do client gui
+    # khong bao gio toi duoc upstream.
     # -------------------------------------------------------------------------
+    gateway-auth:
+      forwardAuth:
+        address: "http://gateway-auth:8080/verify"
+        trustForwardHeader: false
+        # Body cua gateway-auth chi la problem+json vai tram byte; gioi han de mot
+        # upstream xac thuc hong khong day duoc body tuy y ve client.
+        maxResponseBodySize: 8192
+        # Chi gui cho gateway-auth nhung header no can; cookie va body khong di.
+        authRequestHeaders:
+          - "Authorization"
+          - "X-Request-Id"
+          - "traceparent"
+          - "tracestate"
+        # Allowlist runtime-contract muc 6.1.
+        authResponseHeaders:
+          - "X-User-Id"
+          - "X-User-Roles"
+          - "X-User-Session-Id"
+          - "X-Token-Jti"
 
-    # User Service JWT Auth
-    jwt-auth-user:
-      plugin:
-        jwt-auth:
-          authServiceURL: "http://auth-service:8081"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
-          userSessionHeader: "X-User-Session-Id"
-
-    # Order Service JWT Auth
-    jwt-auth-order:
-      plugin:
-        jwt-auth:
-          authServiceURL: "http://auth-service:8081"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
-          userSessionHeader: "X-User-Session-Id"
-
-    # Payment Service JWT Auth (strictest)
-    jwt-auth-payment:
-      plugin:
-        jwt-auth:
-          authServiceURL: "http://auth-service:8081"
-          jwksPath: "/.well-known/jwks.json"
-          redisAddr: "redis:6379"
-          redisDB: 0
-          jwksCacheTTLMinutes: 10
-          denylistKeyPrefix: "auth:denylist"
-          revokedBeforePrefix: "auth:revoked_before"
-          jwksInvalidateChannel: "auth:jwks:update"
-          publicPaths:
-            - "/health"
-            - "/.well-known/"
-          userIdHeader: "X-User-Id"
-          userRolesHeader: "X-User-Roles"
-          userEmailHeader: "X-User-Email"
-          userDeviceHeader: "X-User-Device-Id"
-          userSessionHeader: "X-User-Session-Id"
+    authenticated:
+      chain:
+        middlewares:
+          - strip-identity-headers
+          - gateway-auth
 
     # -------------------------------------------------------------------------
     # Rate Limiting Middlewares
@@ -126,6 +99,46 @@ http:
           ipStrategy:
             depth: 2
 
+    # Promotion discovery profile: 20 request/phut/authenticated user cho
+    # POST /api/v1/promotion-discovery (docs/promotion ADR-015, runtime-contract.md).
+    # Gateway so huu quota nay; Promotion Service khong giu local rate-limit key.
+    # Luu y: rateLimit cua Traefik CE la in-memory per replica; production nhieu
+    # replica can shared state theo runtime-contract.md truoc khi expose route.
+    rate-limit-promotion-discovery:
+      rateLimit:
+        average: 20
+        burst: 20
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    # Checkout profiles (docs/gateway/runtime-contract.md muc 7): quota theo user da xac thuc,
+    # Gateway so huu quota; Checkout khong co limiter rieng. Luu y: rateLimit cua Traefik CE la
+    # in-memory per replica; production nhieu replica can shared state truoc khi bat route.
+    rate-limit-checkout-preview:
+      rateLimit:
+        average: 10
+        burst: 10
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-submit:
+      rateLimit:
+        average: 3
+        burst: 3
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
+    rate-limit-checkout-voucher-options:
+      rateLimit:
+        average: 20
+        burst: 20
+        period: 1m
+        sourceCriterion:
+          requestHeaderName: X-User-Id
+
     # -------------------------------------------------------------------------
     # Security Headers Middleware
     # -------------------------------------------------------------------------
@@ -144,10 +157,70 @@ http:
           X-Request-Id: ""
 
     # -------------------------------------------------------------------------
+    # Identity header sanitization
+    #
+    # runtime-contract.md muc 1 va muc 4: Traefik phai loai bo moi identity
+    # header do client gui TRUOC khi xac thuc, ke ca tren route anonymous. Gia
+    # tri rong nghia la xoa header. X-Service-Identity nam trong danh sach nay vi
+    # Product Service dung header do cho API noi bo /internal/v1 (chi mTLS trong
+    # mang private, khong bao gio duoc route qua gateway).
+    # -------------------------------------------------------------------------
+    strip-identity-headers:
+      headers:
+        customRequestHeaders:
+          X-User-Id: ""
+          X-User-Roles: ""
+          X-User-Session-Id: ""
+          X-Token-Jti: ""
+          X-Service-Identity: ""
+
+    # Dev Auth Middleware (injects default X-User-Id for dev testing)
+    dev-auth:
+      headers:
+        customRequestHeaders:
+          # Phai la UUID: service downstream parse header nay bang uuid.Parse va
+          # tra 401 neu khong parse duoc. CHI dung cho development - middleware
+          # nay bo qua toan bo viec verify token.
+          X-User-Id: "00000000-0000-4000-8000-000000000123"
+          X-User-Roles: "BUYER"
+
+    # Dev Admin Auth Middleware
+    #
+    # CHI dung cho development, giong dev-auth nhung voi role ADMIN. Con dung
+    # cho promotion-admin; router nao chuyen sang
+    # `authenticated@file` thi role den tu claim `roles` cua access token da
+    # verify (implementation_plan.md muc 3.6).
+    dev-admin-auth:
+      headers:
+        customRequestHeaders:
+          X-User-Id: "00000000-0000-4000-8000-000000000999"
+          X-User-Roles: "ADMIN"
+
+
+    # -------------------------------------------------------------------------
     # Compression Middleware
     # -------------------------------------------------------------------------
     compress:
       compress: {}
+
+    # -------------------------------------------------------------------------
+    # Product Detail BFF (docs/product-detail-bff ADR-004, runtime-contract.md muc 5)
+    #
+    # Retry cua Traefik chi phat lai khi upstream khong tra loi (loi ket noi); da nhan
+    # response thi dung, bat ke status. Dung dung yeu cau "chi retry loi ket noi toi
+    # BFF": 5xx/504 cua BFF da la ket qua degrade hoac fail fast, khong duoc retry.
+    # -------------------------------------------------------------------------
+    retry-connection-only:
+      retry:
+        attempts: 2
+        initialInterval: 50ms
+
+    # LOCAL ONLY: /media/<storage_key> -> /product-media/<storage_key> tren MinIO, thay
+    # cho CDN that. Luon tro vao bucket product-media nen khong the doc review-media.
+    product-media-path:
+      replacePathRegex:
+        regex: "^/media/(.*)"
+        replacement: "/product-media/$1"
 
     # -------------------------------------------------------------------------
     # Circuit Breaker (basic)
@@ -215,12 +288,30 @@ http:
     # Default transport
     default:
       maxIdleConnsPerHost: 200
-      idleTimeout:: 200s
-      responseHeaderTimeout: 60s
+      forwardingTimeouts:
+        idleConnTimeout: 200s
+        responseHeaderTimeout: 60s
 
     # Insecure transport (for internal services)
     insecure-transport:
       insecureSkipVerify: true
+
+    # Business API transport - ngan sach timeout tai runtime-contract.md muc 5.1
+    business-api:
+      maxIdleConnsPerHost: 100
+      forwardingTimeouts:
+        dialTimeout: 3s
+        responseHeaderTimeout: 25s
+        idleConnTimeout: 120s
+
+    # Product Detail BFF - runtime-contract.md muc 5.1: cho response header toi da 3 giay;
+    # BFF co deadline noi bo 1 giay nen gioi han nay chi cham khi BFF loi.
+    product-detail-bff:
+      maxIdleConnsPerHost: 100
+      forwardingTimeouts:
+        dialTimeout: 3s
+        responseHeaderTimeout: 3s
+        idleConnTimeout: 120s
 
 # =============================================================================
 # TCP Services (for non-HTTP protocols)

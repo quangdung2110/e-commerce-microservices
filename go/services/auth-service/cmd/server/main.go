@@ -1,7 +1,12 @@
+// Command server runs the Auth Service: the public HTTP API, the internal
+// notification-delivery and notification-contact API and the scheduled workers.
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -9,331 +14,335 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/tylerb/graceful"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/ecommerce/auth-service/internal/api/handler"
-	"github.com/ecommerce/auth-service/internal/api/middleware"
+	"github.com/ecommerce/auth-service/internal/api/httpx"
 	"github.com/ecommerce/auth-service/internal/api/router"
+	"github.com/ecommerce/auth-service/internal/common/clock"
 	"github.com/ecommerce/auth-service/internal/common/config"
-	infracommon "github.com/ecommerce/auth-service/internal/infrastructure/common"
-	"github.com/ecommerce/auth-service/internal/infrastructure/kafka"
-	kafkaHandler "github.com/ecommerce/auth-service/internal/infrastructure/kafka/handler"
-	"github.com/ecommerce/auth-service/internal/infrastructure/postgres"
-	"github.com/ecommerce/auth-service/internal/infrastructure/pubsub"
-	"github.com/ecommerce/auth-service/internal/infrastructure/redis"
+	"github.com/ecommerce/auth-service/internal/common/keybuilder"
+	"github.com/ecommerce/auth-service/internal/common/logging"
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/service"
+	"github.com/ecommerce/auth-service/internal/domain/vo"
+	"github.com/ecommerce/auth-service/internal/infrastructure/crypto"
+	"github.com/ecommerce/auth-service/internal/infrastructure/kafka"
+	"github.com/ecommerce/auth-service/internal/infrastructure/postgres"
+	redisadapter "github.com/ecommerce/auth-service/internal/infrastructure/redis"
 	"github.com/ecommerce/auth-service/internal/workers"
-	"github.com/ecommerce/auth-service/internal/workers/audit_cleanup"
-	"github.com/ecommerce/auth-service/internal/workers/auto_unlock"
-	"github.com/ecommerce/auth-service/internal/workers/key_retirement"
-	"github.com/ecommerce/auth-service/internal/workers/key_rotation"
-	"github.com/ecommerce/auth-service/internal/workers/token_cleanup"
+	accountharddelete "github.com/ecommerce/auth-service/internal/workers/account_hard_delete"
+	autounlock "github.com/ecommerce/auth-service/internal/workers/auto_unlock"
+	keyretirement "github.com/ecommerce/auth-service/internal/workers/key_retirement"
+	keyrotation "github.com/ecommerce/auth-service/internal/workers/key_rotation"
+	refreshtokencleanup "github.com/ecommerce/auth-service/internal/workers/refresh_token_cleanup"
 )
 
 func main() {
-	configPath := flag.String("config", "", "Path to config file")
+	configPath := flag.String("config", "", "path to the configuration file")
 	flag.Parse()
 
-	logger, err := initLogger()
+	if err := run(*configPath); err != nil {
+		log.Fatalf("auth-service: %v", err)
+	}
+}
+
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		return err
 	}
-	defer logger.Sync()
 
-	cfg, err := config.Load(*configPath)
+	logger, err := logging.New(cfg.Logging.Level, cfg.Logging.Format, cfg.App.Name)
 	if err != nil {
-		logger.Fatal("Failed to load configuration", zap.Error(err))
+		return fmt.Errorf("build logger: %w", err)
 	}
+	defer func() { _ = logger.Sync() }()
 
-	if cfg.App.Env == "production" {
-		gin.SetMode(gin.ReleaseMode)
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	logger.Info("Starting auth-service",
+	logger.Info("starting auth-service",
 		zap.String("env", cfg.App.Env),
 		zap.Int("port", cfg.App.Port),
 	)
 
-	db, err := postgres.NewConnection(cfg.Database)
+	// Infrastructure.
+	pool, err := postgres.NewPool(ctx, cfg.Database)
 	if err != nil {
-		logger.Fatal("Failed to connect to database", zap.Error(err))
+		return err
 	}
-	defer db.Close()
+	defer pool.Close()
 
-	redisClient, err := redis.NewClient(cfg.Redis)
+	redisClient, err := redisadapter.NewClient(ctx, cfg.Redis)
 	if err != nil {
-		logger.Fatal("Failed to connect to Redis", zap.Error(err))
+		return err
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
-	var eventPublisher port.EventPublisher
+	systemClock := clock.System{}
+	keys := keybuilder.New(cfg.Redis.RevocationPrefix, cfg.Redis.StatePrefix)
 
-	kafkaProducer, err := kafka.NewProducer(cfg.Kafka, logger)
+	keyCipher, err := crypto.NewKeyCipher(cfg.Keys)
 	if err != nil {
-		logger.Warn("Failed to create Kafka producer, running without Kafka", zap.Error(err))
-		eventPublisher = &port.NoOpEventPublisher{}
-	} else {
-		defer kafkaProducer.Close()
-		eventPublisher = kafkaProducer
+		return err
 	}
 
-	userRepo := postgres.NewUserRepository(db.Pool)
-	refreshTokenRepo := postgres.NewRefreshTokenRepository(db.Pool)
-	auditLogRepo := postgres.NewAuditLogRepository(db.Pool)
-	jwtKeyRepo := postgres.NewJWTKeyRepository(db.Pool)
+	// Repositories and adapters.
+	accounts := postgres.NewAccountRepository(pool)
+	refreshTokens := postgres.NewRefreshTokenRepository(pool)
+	jwtKeys := postgres.NewJwtKeyRepository(pool)
+	txManager := postgres.NewTxManager(pool)
 
-	tokenCache := redis.NewCacheRepository(redisClient)
-	failedLoginCache := redis.NewFailedLoginCounter(redisClient)
-	rateLimiter := redis.NewRateLimit(redisClient)
-	gracePeriodCache := redis.NewGracePeriod(redisClient)
-	resetTokenCache := redis.NewResetTokenCache(redisClient)
-	otpCache := redis.NewOTPCache(redisClient)
+	revocation := redisadapter.NewRevocationStore(redisClient, keys)
+	limiter := redisadapter.NewRateLimiter(redisClient, keys)
+	otps := redisadapter.NewOtpStore(redisClient, keys)
+	resets := redisadapter.NewResetTokenStore(redisClient, keys)
+	deliveries := redisadapter.NewDeliveryStore(redisClient, keys, systemClock)
+	jwksNotifier := redisadapter.NewJwksNotifier(redisClient, keys)
+	locker := redisadapter.NewLocker(redisClient, keys)
 
-	passwordHasher := infracommon.NewArgon2Hasher(infracommon.Argon2Config{
-		Memory:       65536,
-		Iterations:   3,
-		Parallelism:  4,
-		SaltLength:   16,
-		KeyLength:    32,
+	hasher := crypto.NewArgon2Hasher(cfg.Security.Argon2)
+	keyGenerator := crypto.NewRSAKeyGenerator(cfg.Keys.RSABits, keyCipher)
+	signer := crypto.NewSigner(jwtKeys, keyCipher, systemClock, cfg.JWT.KeyCacheTTL)
+
+	publisher, closePublisher, err := newPublisher(cfg.Kafka, logger)
+	if err != nil {
+		return err
+	}
+	defer closePublisher()
+
+	// Domain services.
+	notifier := service.NewNotifier(deliveries, publisher, systemClock, logger, cfg.Notification.DeliveryTTL)
+
+	tokenService := service.NewTokenService(signer, systemClock, service.TokenConfig{
+		Issuer:    cfg.JWT.Issuer,
+		Audience:  cfg.JWT.Audience,
+		AccessTTL: cfg.JWT.AccessTokenTTL,
+		ClockSkew: cfg.JWT.ClockSkew,
 	})
+	jwksService := service.NewJwksService(signer)
+	revoker := service.NewRevoker(refreshTokens, revocation, systemClock, cfg.JWT.AccessTokenTTL, cfg.JWT.ClockSkew)
 
-	jwtService := service.NewJWTService(jwtKeyRepo, gracePeriodCache, tokenCache, logger)
-	auditService := service.NewAuditService(auditLogRepo, logger)
-	otpService := service.NewOTPService(otpCache)
+	passwordPolicy := vo.NewPasswordPolicy(cfg.Security.PasswordPolicy.MinLength, cfg.Security.PasswordPolicy.MaxLength)
+	otpPolicy := service.OtpPolicy{
+		TTL:          cfg.OTP.TTL,
+		MaxAttempts:  cfg.OTP.MaxAttempts,
+		ResendLimit:  cfg.OTP.ResendLimit,
+		ResendWindow: cfg.OTP.ResendWindow,
+	}
+	sessionPolicy := service.SessionPolicy{
+		SlidingTTL:  cfg.Refresh.SlidingTTL,
+		AbsoluteTTL: cfg.Refresh.AbsoluteTTL,
+	}
+	lockoutPolicy := entity.LockoutPolicy{
+		MaxFailedAttempts: cfg.Security.Lockout.MaxFailedAttempts,
+		LockDuration:      cfg.Security.Lockout.LockDuration,
+		CounterResetAfter: cfg.Security.Lockout.CounterResetAfter,
+	}
 
-	keyService := service.NewKeyService(jwtKeyRepo, logger)
-	jwksService := service.NewJWKSService(jwtKeyRepo, logger)
+	registrationService := service.NewRegistrationService(
+		accounts, otps, hasher, notifier, systemClock, passwordPolicy, otpPolicy, logger)
 
-	bruteForceService := service.NewBruteForceService(
-		userRepo,
-		failedLoginCache,
-		auditService,
-		eventPublisher,
-		logger,
-	)
-	_ = bruteForceService
-
-	authService := service.NewAuthService(
-		userRepo,
-		refreshTokenRepo,
-		tokenCache,
-		passwordHasher,
-		failedLoginCache,
-		eventPublisher,
-		auditService,
-		jwtService,
-		logger,
-	)
-
-	refreshService := service.NewRefreshService(
-		userRepo,
-		refreshTokenRepo,
-		tokenCache,
-		gracePeriodCache,
-		jwtService,
-		eventPublisher,
-		auditService,
-		logger,
-	)
-
-	userService := service.NewUserService(
-		userRepo,
-		otpService,
-		passwordHasher,
-		eventPublisher,
-	)
+	authenticationService := service.NewAuthenticationService(
+		accounts, refreshTokens, hasher, limiter, tokenService, notifier, systemClock,
+		lockoutPolicy, sessionPolicy, toRule(cfg.Security.RateLimit.LoginPerAccount), logger)
 
 	sessionService := service.NewSessionService(
-		refreshTokenRepo,
-		tokenCache,
-		auditService,
-		logger,
-	)
+		accounts, refreshTokens, tokenService, revoker, systemClock, sessionPolicy, logger)
 
 	passwordService := service.NewPasswordService(
-		userRepo,
-		refreshTokenRepo,
-		tokenCache,
-		passwordHasher,
-		resetTokenCache,
-		eventPublisher,
-		auditService,
-		logger,
-	)
+		accounts, resets, hasher, limiter, revoker, notifier, systemClock, passwordPolicy,
+		service.ResetPolicy{TTL: cfg.PasswordReset.TTL, URLTemplate: cfg.PasswordReset.URLTemplate},
+		toRule(cfg.Security.RateLimit.OtpPerAccount), logger)
 
-	jwtService.SetEventPublisher(eventPublisher)
-	jwtService.SetAuditService(auditService)
+	emailChangeService := service.NewEmailChangeService(
+		accounts, otps, hasher, revoker, notifier, systemClock, otpPolicy, logger)
 
-	authMiddleware := middleware.NewAuthMiddleware(jwtService, tokenCache, logger)
-	rateLimiterMiddleware := middleware.NewRateLimiterMiddleware(rateLimiter, logger)
+	deletionService := service.NewAccountDeletionService(
+		accounts, refreshTokens, hasher, revoker, notifier, txManager, systemClock, logger)
 
-	healthHandler := handler.NewHealthHandler(
-		db.Ping,
-		func(ctx context.Context) error {
-			return redisClient.Ping(ctx).Err()
-		},
-	)
+	maintenanceService := service.NewMaintenanceService(accounts, refreshTokens, notifier, systemClock, logger)
 
-	userHandler := handler.NewUserHandler(userService)
-	authHandler := handler.NewAuthHandler(authService, refreshService, jwtService, logger)
-	sessionHandler := handler.NewSessionHandler(sessionService, logger)
-	passwordHandler := handler.NewPasswordHandler(passwordService, logger)
-	auditHandler := handler.NewAuditHandler(auditService, logger)
-	jwksHandler := handler.NewJWKSHandler(jwksService, logger)
+	keyLifecycleService := service.NewKeyLifecycleService(
+		jwtKeys, keyGenerator, signer, jwksNotifier, systemClock,
+		service.KeyPolicy{
+			RotationInterval: cfg.Keys.RotationInterval,
+			RetirementDelay:  cfg.Keys.RetirementDelay,
+		}, logger)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	deliveryService := service.NewDeliveryService(deliveries)
+	contactService := service.NewContactService(accounts)
 
-	pubsubPublisher := pubsub.NewPublisher(redisClient, logger)
-
-	// Initialize worker runner
-	workerRunner := workers.NewRunner(logger)
-
-	// Token cleanup worker
-	tokenCleanupWorker := tokencleanup.NewTokenCleanupWorker(
-		refreshTokenRepo,
-		redisClient,
-		cfg.Cleanup,
-		logger,
-	)
-	workerRunner.Register(tokenCleanupWorker)
-
-	// Auto-unlock worker
-	autoUnlockWorker := autounlock.NewAutoUnlockWorker(
-		userRepo,
-		eventPublisher,
-		redisClient,
-		cfg.Cleanup,
-		logger,
-	)
-	workerRunner.Register(autoUnlockWorker)
-
-	// Audit cleanup worker
-	auditCleanupWorker := auditcleanup.NewAuditCleanupWorker(
-		auditLogRepo,
-		redisClient,
-		cfg.Cleanup,
-		logger,
-	)
-	workerRunner.Register(auditCleanupWorker)
-
-	// Key rotation worker
-	keyRotationWorker := keyrotation.NewKeyRotationWorker(
-		keyService,
-		jwksService,
-		redisClient,
-		pubsubPublisher,
-		cfg.Keys,
-		logger,
-	)
-	workerRunner.Register(keyRotationWorker)
-
-	// Key retirement worker
-	keyRetirementWorker := keyretirement.NewKeyRetirementWorker(
-		keyService,
-		jwksService,
-		redisClient,
-		pubsubPublisher,
-		cfg.Keys,
-		logger,
-	)
-	workerRunner.Register(keyRetirementWorker)
-
-	// Start all workers using the worker runner
-	workerRunner.Start(ctx)
-
-	adminEventHandler := kafkaHandler.NewAdminEventHandler(
-		func(ctx context.Context, userID, reason string) error {
-			return authService.ForceLogoutAll(ctx, userID, reason)
-		},
-		func(ctx context.Context, userID, reason string) error {
-			return userService.BanUser(ctx, userID, reason)
-		},
-		logger,
-	)
-
-	// Kafka consumer for admin events
-	var kafkaConsumer *kafka.Consumer
-	if kafkaProducer != nil {
-		adminTopic := cfg.Kafka.TopicPrefix + "." + cfg.Kafka.AdminTopic
-		kafkaConsumer, err = kafka.NewConsumer(cfg.Kafka, []string{adminTopic}, adminEventHandler, logger)
-		if err != nil {
-			logger.Warn("Failed to create Kafka consumer", zap.Error(err))
-		} else {
-			go func() {
-				if err := kafkaConsumer.Start(ctx); err != nil {
-					logger.Error("Failed to start Kafka consumer", zap.Error(err))
-				}
-			}()
-		}
+	// A service without a signing key cannot issue tokens, so the first key is
+	// created before the listener opens.
+	if err := keyLifecycleService.EnsureActiveKey(ctx); err != nil {
+		return fmt.Errorf("ensure an active signing key: %w", err)
 	}
 
-	r := router.NewRouter(
-		healthHandler,
-		userHandler,
-		authHandler,
-		sessionHandler,
-		passwordHandler,
-		auditHandler,
-		jwksHandler,
-		authMiddleware,
-		rateLimiterMiddleware,
-	)
-	r.SetupRoutes()
+	// HTTP layer.
+	cookieSettings := httpx.NewCookieSettings(cfg.Refresh)
 
-	server := &graceful.Server{
-		Server: &http.Server{
-			Addr:         fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port),
-			Handler:      r.Engine(),
+	healthHandler := handler.NewHealthHandler(2 * time.Second)
+	healthHandler.AddProbe("postgres", pool.Ping)
+	healthHandler.AddProbe("redis", func(probeCtx context.Context) error {
+		return redisClient.Ping(probeCtx).Err()
+	})
+	healthHandler.AddProbe("signing-key", func(probeCtx context.Context) error {
+		_, err := signer.PublicKeys(probeCtx)
+		return err
+	})
+
+	publicEngine := router.NewPublic(router.PublicDeps{
+		Config:       cfg,
+		Logger:       logger,
+		Limiter:      limiter,
+		Registration: handler.NewRegistrationHandler(registrationService),
+		Session:      handler.NewSessionHandler(authenticationService, sessionService, cookieSettings),
+		Password:     handler.NewPasswordHandler(passwordService, cookieSettings),
+		Account:      handler.NewAccountHandler(emailChangeService, deletionService, cookieSettings),
+		Jwks:         handler.NewJwksHandler(jwksService, cfg.JWT.JwksCacheControl),
+		Health:       healthHandler,
+	})
+
+	publicServer := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port),
+		Handler:      publicEngine,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
+
+	var internalServer *http.Server
+	if cfg.Internal.Enabled {
+		internalEngine := router.NewInternal(router.InternalDeps{
+			Config:   cfg,
+			Logger:   logger,
+			Limiter:  limiter,
+			Delivery: handler.NewDeliveryHandler(deliveryService),
+			Contact:  handler.NewContactHandler(contactService),
+			Health:   healthHandler,
+		})
+		internalServer = &http.Server{
+			Addr:         fmt.Sprintf("%s:%d", cfg.Internal.Host, cfg.Internal.Port),
+			Handler:      internalEngine,
 			ReadTimeout:  cfg.Server.ReadTimeout,
 			WriteTimeout: cfg.Server.WriteTimeout,
 			IdleTimeout:  cfg.Server.IdleTimeout,
-		},
-		Timeout: cfg.Server.ShutdownTimeout,
+		}
+		if cfg.Internal.MutualTLSEnabled() {
+			tlsConfig, err := newMutualTLSConfig(cfg.Internal)
+			if err != nil {
+				return err
+			}
+			internalServer.TLSConfig = tlsConfig
+		}
 	}
 
+	// Workers.
+	runner := workers.NewRunner(locker, cfg.Workers.LockTTL, logger)
+	runner.Register(refreshtokencleanup.New(maintenanceService, cfg.Workers.RefreshTokenCleanup, cfg.Workers.RefreshTokenRetention))
+	runner.Register(autounlock.New(maintenanceService, cfg.Workers.AutoUnlock))
+	runner.Register(accountharddelete.New(maintenanceService, cfg.Workers.AccountHardDelete))
+	runner.Register(keyrotation.New(keyLifecycleService, cfg.Workers.KeyRotation))
+	runner.Register(keyretirement.New(keyLifecycleService, cfg.Workers.KeyRetirement))
+	runner.Start(ctx)
+
+	serverErrors := make(chan error, 2)
+
 	go func() {
-		logger.Info("Starting HTTP server",
-			zap.String("addr", server.Addr),
-		)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start server", zap.Error(err))
+		logger.Info("public API listening", zap.String("addr", publicServer.Addr))
+		if err := publicServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- fmt.Errorf("public server: %w", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	if internalServer != nil {
+		go func() {
+			logger.Info("internal API listening",
+				zap.String("addr", internalServer.Addr),
+				zap.Bool("mtls", internalServer.TLSConfig != nil),
+			)
+			var err error
+			if internalServer.TLSConfig != nil {
+				err = internalServer.ListenAndServeTLS(cfg.Internal.TLSCertFile, cfg.Internal.TLSKeyFile)
+			} else {
+				err = internalServer.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- fmt.Errorf("internal server: %w", err)
+			}
+		}()
+	}
 
-	logger.Info("Shutting down server...")
+	var runErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	case runErr = <-serverErrors:
+		logger.Error("server stopped unexpectedly", zap.Error(runErr))
+		stop()
+	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer shutdownCancel()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
 
-	if kafkaConsumer != nil {
-		if err := kafkaConsumer.Close(); err != nil {
-			logger.Error("Failed to close Kafka consumer", zap.Error(err))
+	if err := publicServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("public server shutdown failed", zap.Error(err))
+	}
+	if internalServer != nil {
+		if err := internalServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("internal server shutdown failed", zap.Error(err))
 		}
 	}
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Server forced to shutdown", zap.Error(err))
-	}
-
-	logger.Info("Server exited properly")
-
-	// Stop all workers
-	workerRunner.Stop()
+	runner.Wait()
+	logger.Info("auth-service stopped")
+	return runErr
 }
 
-func initLogger() (*zap.Logger, error) {
-	cfg := zap.NewProductionConfig()
-	cfg.EncoderConfig.TimeKey = "timestamp"
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	return cfg.Build()
+// newPublisher returns the Kafka publisher, or a logging stand-in when the
+// broker is disabled for a local run.
+func newPublisher(cfg config.KafkaConfig, logger *zap.Logger) (port.EventPublisher, func(), error) {
+	if !cfg.Enabled {
+		logger.Warn("kafka is disabled, identity events will not be published")
+		return kafka.NewLoggingPublisher(logger), func() {}, nil
+	}
+
+	publisher, err := kafka.NewPublisher(cfg, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	return publisher, func() {
+		if err := publisher.Close(); err != nil {
+			logger.Error("could not close the Kafka producer", zap.Error(err))
+		}
+	}, nil
+}
+
+// newMutualTLSConfig requires and verifies a client certificate signed by the
+// configured CA, which is how the internal API authenticates Notification
+// Service.
+func newMutualTLSConfig(cfg config.InternalConfig) (*tls.Config, error) {
+	caPEM, err := os.ReadFile(cfg.ClientCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read internal client CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("internal client CA does not contain a certificate")
+	}
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs:  pool,
+	}, nil
+}
+
+func toRule(rule config.RateLimitRule) port.RateLimitRule {
+	return port.RateLimitRule{Limit: rule.Limit, Window: rule.Window}
 }

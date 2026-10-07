@@ -1,0 +1,1686 @@
+openapi: 3.1.0
+info:
+  title: Product Service HTTP API
+  version: 1.0.0
+  description: >-
+    Contract đích cho Product Service. API Gateway xác thực caller và chỉ chuyển
+    request admin tới các endpoint /api/v1. Product là source of truth cho
+    catalog, published selling price, category, attribute và media; API này
+    không nhận, trả hoặc suy luận quantity, stock status hay reservation.
+x-adoption-status: proposed
+servers:
+  - url: http://localhost:8082
+    description: Local Docker Compose
+  - url: http://product-service:8080
+    description: Internal cluster endpoint
+tags:
+  - name: Products
+  - name: Product SKUs
+  - name: Product media
+  - name: Categories
+  - name: Attributes
+  - name: Internal reindex
+  - name: Internal buyer read
+paths:
+  /api/v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: Liệt kê Product cho màn hình quản trị
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/CategoryIdQuery'
+        - $ref: '#/components/parameters/ProductStatusQuery'
+      responses:
+        '200':
+          description: Trang Product theo cursor; không phải search/browse API cho shopper.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Tạo Product DRAFT cùng ít nhất một SKU
+      description: >-
+        Command tạo Product, SKU và media trong một transaction. Server sinh UUIDv7.
+        Operation này không idempotent vì target schema không có idempotency store;
+        client gặp timeout phải GET/tra cứu theo slug trước khi gửi command mới.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProductRequest' }
+      responses:
+        '201':
+          description: Product DRAFT đã được tạo và SKU snapshot `sku-upserted` đã nằm trong outbox transaction.
+          headers:
+            Location: { $ref: '#/components/headers/ProductLocation' }
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}:
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Lấy Product aggregate cho quản trị
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Snapshot Product, SKU và media hiện tại.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+    put:
+      tags: [Products]
+      operationId: replaceProduct
+      summary: Thay toàn bộ phần Product-level của aggregate
+      description: >-
+        Chỉ thay category, nội dung và thuộc tính Product-level; SKU và media có
+        resource riêng. If-Match là ETag từ lần GET/command thành công gần nhất,
+        để tránh admin ghi đè thay đổi đồng thời, bao gồm repricing markdown.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceProductRequest' }
+      responses:
+        '200':
+          description: Product đã thay; catalog_revision tăng đúng một lần.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+    delete:
+      tags: [Products]
+      operationId: deleteProduct
+      summary: Hard delete Product
+      description: >-
+        Server chụp Product/SKU ID và ghi PRODUCT_DELETED tombstone vào outbox
+        trước khi xóa. Đây không phải soft delete và không thể khôi phục qua API.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204':
+          description: Product đã bị hard delete; tombstone đã commit.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}/status:
+    patch:
+      tags: [Products]
+      operationId: changeProductStatus
+      summary: Activate, hide hoặc show Product
+      description: >-
+        Chỉ ADMIN quyết định lifecycle. ACTIVE yêu cầu tối thiểu một SKU ACTIVE;
+        không có guard liên quan tồn kho. Gửi target status trùng trạng thái hiện
+        tại là INVALID_STATE_TRANSITION (409), không phải no-op.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangeProductStatusRequest' }
+      responses:
+        '200':
+          description: Lifecycle transition đã commit và status event đã vào outbox.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}/skus:
+    post:
+      tags: [Product SKUs]
+      operationId: createSku
+      summary: Thêm SKU vào Product
+      description: >-
+        Server tính selling_price_vnd từ base_price_vnd và markdown projection
+        hiện hành. Client không được gửi selling price hoặc dữ liệu tồn kho.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSkuRequest' }
+      responses:
+        '201':
+          description: SKU đã được tạo.
+          headers:
+            Location: { $ref: '#/components/headers/SkuLocation' }
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sku' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}/skus/{sku_id}:
+    put:
+      tags: [Product SKUs]
+      operationId: replaceSku
+      summary: Thay toàn bộ SKU
+      description: >-
+        Mọi thay đổi base_price_vnd được repricing trong cùng transaction. SKU
+        INACTIVE không làm Product HIDDEN tự động.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/SkuId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceSkuRequest' }
+      responses:
+        '200':
+          description: SKU đã được thay và Product revision tăng một lần.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sku' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/SkuNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+    delete:
+      tags: [Product SKUs]
+      operationId: deleteSku
+      summary: Hard delete một SKU không phải SKU cuối cùng
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/SkuId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204':
+          description: SKU và media liên quan đã bị hard delete; SKU_DELETED tombstone đã commit.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/SkuNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}/media:
+    post:
+      tags: [Product media]
+      operationId: createProductMedia
+      summary: Thêm media cấp Product hoặc gắn với một SKU thuộc Product
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMediaRequest' }
+      responses:
+        '201':
+          description: Media đã được tạo.
+          headers:
+            Location: { $ref: '#/components/headers/MediaLocation' }
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Media' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/products/{product_id}/media/{media_id}:
+    put:
+      tags: [Product media]
+      operationId: replaceProductMedia
+      summary: Thay toàn bộ metadata media
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/MediaId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceMediaRequest' }
+      responses:
+        '200':
+          description: Media đã được thay.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Media' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MediaNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+    delete:
+      tags: [Product media]
+      operationId: deleteProductMedia
+      summary: Hard delete media
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/MediaId'
+        - $ref: '#/components/parameters/IfMatchProduct'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204':
+          description: Media đã bị xóa.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MediaNotFound' }
+        '412': { $ref: '#/components/responses/ProductRevisionMismatch' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/categories:
+    get:
+      tags: [Categories]
+      operationId: listCategories
+      summary: Liệt kê category
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CategoryParentIdQuery'
+        - $ref: '#/components/parameters/RootOnly'
+      responses:
+        '200':
+          description: Category matching filter, sắp xếp name tăng dần.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Categories]
+      operationId: createCategory
+      summary: Tạo category
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCategoryRequest' }
+      responses:
+        '201':
+          description: Category đã tạo.
+          headers: { Location: { $ref: '#/components/headers/CategoryLocation' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/categories/{category_id}:
+    get:
+      tags: [Categories]
+      operationId: getCategory
+      summary: Lấy category cùng mapping attribute
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Category hiện tại.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/CategoryNotFound' }
+    put:
+      tags: [Categories]
+      operationId: replaceCategory
+      summary: Thay toàn bộ category
+      description: >-
+        Parent mới không được tạo cycle; moving category không tự thay đổi Product,
+        nhưng ghi CATALOG_REINDEX_REQUESTED để Search rebuild path dẫn xuất.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceCategoryRequest' }
+      responses:
+        '200':
+          description: Category đã thay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/CategoryNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+    delete:
+      tags: [Categories]
+      operationId: deleteCategory
+      summary: Hard delete category rỗng
+      description: Bị từ chối khi category còn category con hoặc Product.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Category đã bị xóa. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/CategoryNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/categories/{category_id}/attributes:
+    get:
+      tags: [Categories, Attributes]
+      operationId: listCategoryAttributes
+      summary: Liệt kê attribute được gán vào category
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Attribute mappings của category.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryAttributeList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/CategoryNotFound' }
+
+  /api/v1/categories/{category_id}/attributes/{attribute_id}:
+    put:
+      tags: [Categories, Attributes]
+      operationId: putCategoryAttribute
+      summary: Tạo hoặc thay mapping category–attribute
+      description: >-
+        PUT idempotent ở cấp resource mapping. Implementation phải từ chối thay
+        đổi mapping làm Product hiện hữu trong category không còn hợp lệ. Mutation
+        thành công tăng category_revision và phát category snapshot.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutCategoryAttributeRequest' }
+      responses:
+        '200':
+          description: Mapping đã tồn tại và được thay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryAttribute' }
+        '201':
+          description: Mapping mới đã được tạo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryAttribute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeOrCategoryNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+    delete:
+      tags: [Categories, Attributes]
+      operationId: deleteCategoryAttribute
+      summary: Bỏ mapping category–attribute
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Mapping đã bị xóa. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeOrCategoryNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/attributes:
+    get:
+      tags: [Attributes]
+      operationId: listAttributes
+      summary: Liệt kê attribute cấu hình
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200':
+          description: Tất cả attribute, gồm option cho SELECT.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Attributes]
+      operationId: createAttribute
+      summary: Tạo attribute cấu hình
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAttributeRequest' }
+      responses:
+        '201':
+          description: Attribute đã được tạo.
+          headers: { Location: { $ref: '#/components/headers/AttributeLocation' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attribute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/attributes/{attribute_id}:
+    get:
+      tags: [Attributes]
+      operationId: getAttribute
+      summary: Lấy attribute cùng option
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Attribute hiện tại.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attribute' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeNotFound' }
+    put:
+      tags: [Attributes]
+      operationId: replaceAttribute
+      summary: Thay code, name và value type của attribute
+      description: >-
+        Không được đổi value_type khi option/mapping/Product hiện hữu khiến dữ
+        liệu cũ không hợp lệ; server trả ATTRIBUTE_IN_USE (409).
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceAttributeRequest' }
+      responses:
+        '200':
+          description: Attribute đã thay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attribute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+    delete:
+      tags: [Attributes]
+      operationId: deleteAttribute
+      summary: Hard delete attribute không còn được tham chiếu
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Attribute đã bị xóa. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/attributes/{attribute_id}/options:
+    post:
+      tags: [Attributes]
+      operationId: createAttributeOption
+      summary: Thêm option cho attribute SELECT
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAttributeOptionRequest' }
+      responses:
+        '201':
+          description: Option đã tạo.
+          headers: { Location: { $ref: '#/components/headers/AttributeOptionLocation' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeOption' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /api/v1/attributes/{attribute_id}/options/{option_id}:
+    put:
+      tags: [Attributes]
+      operationId: replaceAttributeOption
+      summary: Thay toàn bộ option SELECT
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/OptionId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceAttributeOptionRequest' }
+      responses:
+        '200':
+          description: Option đã thay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeOption' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeOptionNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+    delete:
+      tags: [Attributes]
+      operationId: deleteAttributeOption
+      summary: Hard delete option không còn được Product tham chiếu
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AttributeId'
+        - $ref: '#/components/parameters/OptionId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Option đã bị xóa. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AttributeOptionNotFound' }
+        '409': { $ref: '#/components/responses/DomainConflict' }
+
+  /internal/v1/products/export:
+    get:
+      tags: [Internal reindex]
+      operationId: exportProductsForReindex
+      summary: Export keyset hữu hạn cho Search full reindex
+      description: >-
+        Chỉ Search Service gọi qua mTLS. Khi mở export session, Product chụp offset
+        hiện tại của mọi partition t.product.events trước khi scan; mọi trang trong
+        session trả cùng replay_from_offsets. Cursor đầu tiên chụp upper bound UUIDv7,
+        sau đó các trang đi theo product_id tăng dần đến bound này; không có duplicate
+        hoặc product mới vô hạn làm export không kết thúc. Search import xong toàn bộ
+        snapshot rồi seek inclusive từ replay_from_offsets để bắt update/delete phát
+        sinh trong lúc export.
+      security: [{ searchServiceMtls: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ExportCursor'
+        - $ref: '#/components/parameters/ExportLimit'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Một trang catalog snapshot, không có stock fields.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductExportPage' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /internal/v1/products/{product_id}/snapshot:
+    get:
+      tags: [Internal reindex]
+      operationId: getProductSnapshotForReindex
+      summary: Lấy snapshot mới nhất của một Product cho Search rebuild
+      security: [{ searchServiceMtls: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Snapshot catalog hiện tại.
+          headers:
+            ETag: { $ref: '#/components/headers/ProductETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /internal/v1/product-details/{slug}:
+    get:
+      tags: [Internal buyer read]
+      operationId: getBuyerProductDetail
+      summary: Lấy catalog Product Detail cho Product Detail BFF
+      description: >-
+        Chỉ Product Detail BFF gọi qua mTLS. Response là projection buyer đã resolve
+        (ADR-018): Product ACTIVE, chỉ SKU ACTIVE, category kèm breadcrumb path, thuộc
+        tính không biến thể kèm tên/nhãn, trục biến thể kèm option đang dùng, và media
+        giới hạn 20 cấp Product + 10 mỗi SKU. Không chứa quantity, stock availability,
+        reservation, stock revision hay stock timestamp. Nhãn category/attribute được
+        resolve tại thời điểm đọc và không thuộc Product aggregate, nên response không
+        mang ETag.
+      security: [{ productDetailBffMtls: [] }]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Slug' }
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Buyer-readable catalog snapshot; BFF tự ghép advisory availability từ Inventory Availability Read API.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuyerProductDetail' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/ProductNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /internal/v1/categories/export:
+    get:
+      tags: [Internal reindex]
+      operationId: exportCategoriesForReindex
+      summary: Export keyset category tree cho Search full reindex
+      description: >-
+        Chỉ Search Service gọi qua mTLS. Khi mở export session, Product chụp offset
+        hiện tại của mọi partition t.category.events trước khi scan; mọi trang trong
+        session trả cùng replay_from_offsets. Mỗi item có path và is_leaf dẫn xuất tại
+        thời điểm đọc; Search import export này trước Product export rồi seek inclusive
+        từ replay_from_offsets trong pha Catch-up.
+      security: [{ searchServiceMtls: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ExportCursor'
+        - $ref: '#/components/parameters/ExportLimit'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Một trang category snapshot, không chứa Product hay stock.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryExportPage' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted identity do API Gateway inject sau JWT verification; không phải public header.
+    gatewayRoles:
+      type: apiKey
+      in: header
+      name: X-User-Roles
+      description: Trusted roles do API Gateway inject. Mọi endpoint /api/v1 trong spec yêu cầu role ADMIN.
+    searchServiceMtls:
+      type: mutualTLS
+      description: >-
+        Service identity mTLS trên internal network cho Search Service (export + snapshot) và
+        Promotion Service (chỉ GET /internal/v1/products/{product_id}/snapshot để validate
+        Product trước khi tạo/sửa markdown rule). mTLS và allowlist caller theo principal do
+        service mesh thực thi (docs/mesh/runtime-contract.md mục 5.2); Product không nhìn thấy
+        chứng chỉ caller. Header X-Service-Identity do caller tự đặt; allowlist
+        product.internal.reindex-clients trong Product chỉ là defense-in-depth.
+    productDetailBffMtls:
+      type: mutualTLS
+      description: >-
+        Service identity mTLS chỉ cấp cho Product Detail BFF trên internal network; do service
+        mesh thực thi theo principal product-detail-bff (docs/mesh/runtime-contract.md mục 5.2),
+        header X-Service-Identity chỉ là attribution/defense-in-depth.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IfMatchProduct:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag Product dạng `"catalog-revision-<n>"`; wildcard không được chấp nhận.
+      schema: { type: string, pattern: '^"catalog-revision-[1-9][0-9]*"$' }
+    ProductId:
+      name: product_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    SkuId:
+      name: sku_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    MediaId:
+      name: media_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    CategoryId:
+      name: category_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    AttributeId:
+      name: attribute_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    OptionId:
+      name: option_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor từ next_cursor của trang trước.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    CategoryIdQuery:
+      name: category_id
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/Uuid' }
+    ProductStatusQuery:
+      name: status
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/ProductStatus' }
+    CategoryParentIdQuery:
+      name: parent_id
+      in: query
+      required: false
+      description: Chỉ trả direct children của parent. Không kết hợp với root_only=true.
+      schema: { $ref: '#/components/schemas/Uuid' }
+    RootOnly:
+      name: root_only
+      in: query
+      required: false
+      description: Chỉ trả category root. Không kết hợp với parent_id.
+      schema: { type: boolean, default: false }
+    ExportCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque, signed keyset cursor chứa last ID và upper bound; TTL do service cấu hình.
+      schema: { type: string, minLength: 1, maxLength: 1024 }
+    ExportLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+  headers:
+    ProductETag:
+      description: Strong ETag đại diện catalog_revision hiện tại, ví dụ `"catalog-revision-42"`.
+      required: true
+      schema: { type: string, pattern: '^"catalog-revision-[1-9][0-9]*"$' }
+    ProductLocation:
+      description: URI Product vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference, example: /api/v1/products/018f68d2-6af6-7b79-8e6f-cde8d68e7574 }
+    SkuLocation:
+      description: URI SKU vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference }
+    MediaLocation:
+      description: URI media vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference }
+    CategoryLocation:
+      description: URI category vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference }
+    AttributeLocation:
+      description: URI attribute vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference }
+    AttributeOptionLocation:
+      description: URI option vừa tạo.
+      required: true
+      schema: { type: string, format: uri-reference }
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7 do Product Service sinh; consumer phải coi ID là opaque.
+    NonEmptyText:
+      type: string
+      minLength: 1
+    Slug:
+      type: string
+      minLength: 1
+      maxLength: 180
+      pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+      description: >-
+        Slug Product dạng kebab-case ASCII chữ thường (PRODUCT-BR-013). Admin gửi slug sai
+        pattern nhận 400; Product Detail BFF dùng cùng pattern để trả 404 mà không gọi Product.
+    ProductStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, HIDDEN]
+    SkuStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE]
+    AttributeValueType:
+      type: string
+      enum: [TEXT, NUMBER, BOOLEAN, SELECT]
+    MediaType:
+      type: string
+      enum: [IMAGE, VIDEO]
+    AttributeValue:
+      oneOf:
+        - type: string
+          maxLength: 500
+        - type: number
+        - type: boolean
+      description: >-
+        Giá trị scalar. Key phải là attribute code thuộc category; application
+        kiểm tra type theo attribute config và với SELECT kiểm tra option code.
+    AttributeValues:
+      type: object
+      additionalProperties: { $ref: '#/components/schemas/AttributeValue' }
+      maxProperties: 100
+      description: >-
+        attributes dùng các mapping is_variant=false; variant_attributes dùng
+        các mapping is_variant=true. Required mapping phải có giá trị hợp lệ.
+    Media:
+      type: object
+      additionalProperties: false
+      required: [media_id, product_id, media_type, storage_key, sort_order, created_at, updated_at]
+      properties:
+        media_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        sku_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Null là media cấp Product; giá trị khác null phải là SKU của product_id.
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Sku:
+      type: object
+      additionalProperties: false
+      required:
+        - sku_id
+        - product_id
+        - sku_code
+        - base_price_vnd
+        - selling_price_vnd
+        - status
+        - variant_attributes
+        - media
+        - thumbnail_storage_key
+        - created_at
+        - updated_at
+      properties:
+        sku_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        base_price_vnd: { type: integer, format: int64, minimum: 1 }
+        selling_price_vnd:
+          type: integer
+          format: int64
+          minimum: 0
+          readOnly: true
+          description: Giá VND Product công bố sau markdown; admin không được gửi field này.
+        status: { $ref: '#/components/schemas/SkuStatus' }
+        variant_attributes: { $ref: '#/components/schemas/AttributeValues' }
+        media:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Media' }
+        thumbnail_storage_key:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 1024
+            - type: 'null'
+          readOnly: true
+          x-data-classification: INTERNAL
+          description: >-
+            Thumbnail hiệu lực do Product resolve: IMAGE của chính SKU có sort_order
+            nhỏ nhất, fallback IMAGE cấp Product có sort_order nhỏ nhất, còn lại null.
+            Giá trị khớp sku.thumbnail_storage_key trong sku-upserted nên full reindex
+            từ export và luồng event cho ra cùng kết quả; consumer không tự derive từ
+            media[].
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Product:
+      type: object
+      additionalProperties: false
+      required:
+        - product_id
+        - category_id
+        - name
+        - slug
+        - attributes
+        - status
+        - catalog_revision
+        - media
+        - skus
+        - created_at
+        - updated_at
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        description:
+          oneOf:
+            - type: string
+            - type: 'null'
+        attributes: { $ref: '#/components/schemas/AttributeValues' }
+        status: { $ref: '#/components/schemas/ProductStatus' }
+        catalog_revision:
+          type: integer
+          format: int64
+          minimum: 1
+          readOnly: true
+          description: Version ordering guard của toàn Product aggregate.
+        media:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Media' }
+        skus:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/Sku' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ProductSummary:
+      type: object
+      additionalProperties: false
+      required: [product_id, category_id, name, slug, status, catalog_revision, updated_at]
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        status: { $ref: '#/components/schemas/ProductStatus' }
+        catalog_revision: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    ProductPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ProductSummary' }
+        next_cursor: { type: string, minLength: 1, maxLength: 512 }
+    BuyerProductDetail:
+      type: object
+      additionalProperties: false
+      description: >-
+        Projection buyer của Product ACTIVE cho Product Detail BFF (ADR-018). Chỉ
+        catalog_revision là version của Product aggregate; category và nhãn
+        attribute/option phản ánh trạng thái hiện hành lúc đọc.
+      required:
+        - product_id
+        - name
+        - slug
+        - description
+        - catalog_revision
+        - updated_at
+        - category
+        - attributes
+        - variant_axes
+        - media
+        - skus
+      properties:
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        description:
+          oneOf:
+            - type: string
+            - type: 'null'
+        catalog_revision: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+        category: { $ref: '#/components/schemas/BuyerCategory' }
+        attributes:
+          type: array
+          maxItems: 100
+          description: >-
+            Thuộc tính không biến thể (mapping is_variant=false) có giá trị trong
+            Product.attributes. Sắp theo name bằng collation tiếng Việt, tie-break code.
+          items: { $ref: '#/components/schemas/BuyerAttributeValue' }
+        variant_axes:
+          type: array
+          maxItems: 100
+          description: >-
+            Mỗi mapping is_variant=true có ít nhất một SKU ACTIVE mang giá trị. Sắp như
+            attributes. Mọi giá trị trong skus[].variant_attributes có đúng một option
+            tương ứng ở đây.
+          items: { $ref: '#/components/schemas/BuyerVariantAxis' }
+        media:
+          type: array
+          maxItems: 5020
+          description: >-
+            Danh sách phẳng: tối đa 20 media cấp Product (sku_id null) và tối đa 10 media
+            cho mỗi SKU ACTIVE, mỗi nhóm lấy theo sort_order rồi media_id tăng dần. Sắp
+            media cấp Product trước, rồi theo sku_id, sort_order, media_id. Không có
+            media của SKU INACTIVE.
+          items: { $ref: '#/components/schemas/BuyerMedia' }
+        skus:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: Chỉ SKU ACTIVE, sắp theo sku_code.
+          items: { $ref: '#/components/schemas/BuyerSku' }
+    BuyerCategoryRef:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+    BuyerCategory:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, path]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+        path:
+          type: array
+          minItems: 1
+          maxItems: 64
+          description: Breadcrumb từ category gốc tới chính category lá của Product (phần tử cuối).
+          items: { $ref: '#/components/schemas/BuyerCategoryRef' }
+    BuyerAttributeValue:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, value, value_label]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        value: { $ref: '#/components/schemas/AttributeValue' }
+        value_label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label của option khi value_type là SELECT; null với TEXT/NUMBER/BOOLEAN. Không có đơn vị đo.
+    BuyerVariantAxis:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type, options]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        options:
+          type: array
+          minItems: 1
+          maxItems: 500
+          description: >-
+            Giá trị phân biệt mà ít nhất một SKU ACTIVE đang dùng. SELECT sắp theo option
+            sort_order rồi code; kiểu khác sắp theo value tăng dần.
+          items: { $ref: '#/components/schemas/BuyerVariantOption' }
+    BuyerVariantOption:
+      type: object
+      additionalProperties: false
+      required: [value, label]
+      properties:
+        value: { $ref: '#/components/schemas/AttributeValue' }
+        label:
+          type: [string, 'null']
+          maxLength: 120
+          description: Label của option khi trục là SELECT; null với kiểu khác.
+    BuyerMedia:
+      type: object
+      additionalProperties: false
+      required: [media_id, sku_id, media_type, storage_key, alt_text, sort_order]
+      properties:
+        media_id: { $ref: '#/components/schemas/Uuid' }
+        sku_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Null là media cấp Product; khác null luôn là một SKU có trong skus[].
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+    BuyerSku:
+      type: object
+      additionalProperties: false
+      required: [sku_id, sku_code, base_price_vnd, selling_price_vnd, variant_attributes, thumbnail_storage_key]
+      properties:
+        sku_id: { $ref: '#/components/schemas/Uuid' }
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        base_price_vnd: { type: integer, format: int64, minimum: 1 }
+        selling_price_vnd: { type: integer, format: int64, minimum: 0 }
+        variant_attributes: { $ref: '#/components/schemas/AttributeValues' }
+        thumbnail_storage_key:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 1024
+            - type: 'null'
+          x-data-classification: INTERNAL
+          description: >-
+            Thumbnail hiệu lực theo ADR-013, resolve trên toàn bộ media của SKU/Product,
+            không phụ thuộc giới hạn media của projection này.
+    CreateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, attributes, skus]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        description:
+          oneOf:
+            - type: string
+            - type: 'null'
+        attributes: { $ref: '#/components/schemas/AttributeValues' }
+        media:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CreateProductMediaInput' }
+        skus:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CreateSkuRequest' }
+    ReplaceProductRequest:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, description, attributes]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        slug: { $ref: '#/components/schemas/Slug' }
+        description:
+          oneOf:
+            - type: string
+            - type: 'null'
+        attributes: { $ref: '#/components/schemas/AttributeValues' }
+    ChangeProductStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE, HIDDEN]
+          description: DRAFT chỉ được tạo, không phải target của lifecycle transition.
+    CreateSkuRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_code, base_price_vnd, status, variant_attributes]
+      properties:
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        base_price_vnd: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/SkuStatus' }
+        variant_attributes: { $ref: '#/components/schemas/AttributeValues' }
+        media:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CreateSkuMediaInput' }
+    ReplaceSkuRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_code, base_price_vnd, status, variant_attributes]
+      properties:
+        sku_code: { type: string, minLength: 1, maxLength: 64 }
+        base_price_vnd: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/SkuStatus' }
+        variant_attributes: { $ref: '#/components/schemas/AttributeValues' }
+    CreateProductMediaInput:
+      type: object
+      additionalProperties: false
+      required: [media_type, storage_key, sort_order]
+      properties:
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647, default: 0 }
+    CreateSkuMediaInput:
+      allOf:
+        - $ref: '#/components/schemas/CreateProductMediaInput'
+      description: Media được gắn với SKU đang được tạo; không nhận sku_id.
+    CreateMediaRequest:
+      type: object
+      additionalProperties: false
+      required: [media_type, storage_key, sort_order]
+      properties:
+        sku_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: Missing hoặc null tạo media Product-level.
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647, default: 0 }
+    ReplaceMediaRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_id, media_type, storage_key, alt_text, sort_order]
+      properties:
+        sku_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        media_type: { $ref: '#/components/schemas/MediaType' }
+        storage_key: { type: string, minLength: 1, maxLength: 1024, x-data-classification: INTERNAL }
+        alt_text:
+          oneOf:
+            - type: string
+              maxLength: 255
+            - type: 'null'
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+    Category:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, category_revision, attributes, created_at, updated_at]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        parent_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+        category_revision: { type: integer, format: int64, minimum: 1, readOnly: true }
+        attributes:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CategoryAttribute' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CategoryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Category' }
+    CreateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        parent_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+    ReplaceCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [parent_id, name, slug]
+      properties:
+        parent_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 160 }
+    AttributeOption:
+      type: object
+      additionalProperties: false
+      required: [option_id, attribute_id, code, label, sort_order, created_at, updated_at]
+      properties:
+        option_id: { $ref: '#/components/schemas/Uuid' }
+        attribute_id: { $ref: '#/components/schemas/Uuid' }
+        code: { type: string, minLength: 1, maxLength: 64 }
+        label: { type: string, minLength: 1, maxLength: 120 }
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Attribute:
+      type: object
+      additionalProperties: false
+      required: [attribute_id, code, name, value_type, options, created_at, updated_at]
+      properties:
+        attribute_id: { $ref: '#/components/schemas/Uuid' }
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        options:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/AttributeOption' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AttributeList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Attribute' }
+    CreateAttributeRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+    ReplaceAttributeRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, value_type]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+    CreateAttributeOptionRequest:
+      type: object
+      additionalProperties: false
+      required: [code, label, sort_order]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        label: { type: string, minLength: 1, maxLength: 120 }
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647, default: 0 }
+    ReplaceAttributeOptionRequest:
+      type: object
+      additionalProperties: false
+      required: [code, label, sort_order]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        label: { type: string, minLength: 1, maxLength: 120 }
+        sort_order: { type: integer, minimum: 0, maximum: 2147483647 }
+    CategoryAttribute:
+      type: object
+      additionalProperties: false
+      required: [category_id, attribute_id, attribute_code, attribute_name, value_type, is_required, is_variant]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        attribute_id: { $ref: '#/components/schemas/Uuid' }
+        attribute_code: { type: string, maxLength: 64 }
+        attribute_name: { type: string, maxLength: 120 }
+        value_type: { $ref: '#/components/schemas/AttributeValueType' }
+        is_required: { type: boolean }
+        is_variant: { type: boolean }
+    CategoryAttributeList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CategoryAttribute' }
+    PutCategoryAttributeRequest:
+      type: object
+      additionalProperties: false
+      required: [is_required, is_variant]
+      properties:
+        is_required: { type: boolean }
+        is_variant: { type: boolean }
+    ProductExportPage:
+      type: object
+      additionalProperties: false
+      required: [products, replay_from_offsets]
+      properties:
+        products:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/Product' }
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Missing khi đã export tới upper bound.
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          description: >-
+            Offset của mọi partition t.product.events được chụp trước scan ở trang
+            đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là
+            record đầu tiên Search phải replay, theo semantics inclusive.
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    CategoryExport:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, category_revision, path, is_leaf, updated_at]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        parent_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name: { type: string, maxLength: 160 }
+        slug: { type: string, maxLength: 160 }
+        category_revision: { type: integer, format: int64, minimum: 1 }
+        path:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [category_id, name, slug]
+            properties:
+              category_id: { $ref: '#/components/schemas/Uuid' }
+              name: { type: string, maxLength: 160 }
+              slug: { type: string, maxLength: 160 }
+        is_leaf: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    CategoryExportPage:
+      type: object
+      additionalProperties: false
+      required: [categories, replay_from_offsets]
+      properties:
+        categories:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CategoryExport' }
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Missing khi đã export tới upper bound.
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          description: >-
+            Offset của mọi partition t.category.events được chụp trước scan ở trang
+            đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là
+            record đầu tiên Search phải replay, theo semantics inclusive.
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    ReplayOffset:
+      type: object
+      additionalProperties: false
+      required: [topic, partition, offset]
+      properties:
+        topic: { type: string, minLength: 1, maxLength: 249 }
+        partition: { type: integer, format: int32, minimum: 0 }
+        offset: { type: integer, format: int64, minimum: 0 }
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+  responses:
+    BadRequest:
+      description: Request không hợp lệ; code INVALID_PRICE hoặc validation code khác.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Thiếu hoặc không hợp lệ trusted Gateway identity.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: Caller không có role ADMIN.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    UnauthorizedService:
+      description: >-
+        Thiếu header X-Service-Identity (defense-in-depth trong Product). Principal không được
+        mesh cho phép bị từ chối sớm hơn bằng 403 text/plain từ waypoint, không có body
+        problem+json.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ForbiddenService:
+      description: >-
+        X-Service-Identity không nằm trong allowlist của nhóm route (defense-in-depth trong
+        Product). Principal sai đã bị mesh chặn trước đó bằng 403 text/plain.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ProductNotFound:
+      description: PRODUCT_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    SkuNotFound:
+      description: SKU_NOT_FOUND, bao gồm trường hợp SKU không thuộc Product trên path.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    MediaNotFound:
+      description: MEDIA_NOT_FOUND hoặc media không thuộc Product trên path.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    CategoryNotFound:
+      description: CATEGORY_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    AttributeNotFound:
+      description: ATTRIBUTE_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    AttributeOrCategoryNotFound:
+      description: CATEGORY_NOT_FOUND hoặc ATTRIBUTE_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    AttributeOptionNotFound:
+      description: ATTRIBUTE_OPTION_NOT_FOUND hoặc option không thuộc Attribute trên path.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    DomainConflict:
+      description: >-
+        Conflict nghiệp vụ, gồm CATEGORY_NOT_LEAF, CATEGORY_NOT_EMPTY,
+        CATEGORY_CYCLE_DETECTED, SKU_CODE_ALREADY_EXISTS, SLUG_ALREADY_EXISTS,
+        ATTRIBUTE_CODE_ALREADY_EXISTS, ATTRIBUTE_OPTION_CODE_ALREADY_EXISTS,
+        PRODUCT_NOT_SUBMITTABLE, SKU_LAST_DELETE_FORBIDDEN,
+        INVALID_STATE_TRANSITION, ATTRIBUTE_IN_USE và CATALOG_CONSTRAINT_VIOLATION.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ProductRevisionMismatch:
+      description: If-Match không bằng catalog_revision hiện tại; code PRODUCT_REVISION_MISMATCH.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RetryableUnavailable:
+      description: PostgreSQL/lock dependency tạm thời không khả dụng; problem.retryable=true.
+      headers:
+        Retry-After: { schema: { type: integer, minimum: 1 } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

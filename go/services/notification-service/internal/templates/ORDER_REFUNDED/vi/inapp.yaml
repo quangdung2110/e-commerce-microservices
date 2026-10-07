@@ -1,0 +1,3 @@
+title: "Đã hoàn tiền cho đơn hàng {{.OrderCode}}"
+body: "Đã hoàn {{money .AmountMinor .Currency}} cho đơn {{.OrderCode}} lúc {{date .RefundedAt .Timezone}} (mã {{.RefundID}}). Tiền sẽ về phương thức thanh toán ban đầu."
+deep_link_field: order_url

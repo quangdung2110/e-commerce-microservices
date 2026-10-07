@@ -1,59 +1,134 @@
+// Package workers runs the scheduled work of Auth: session cleanup, signing-key
+// rotation and retirement, auto-unlock and the GDPR hard delete.
+//
+// Every run is singleton across replicas through a Redis lock, bounded by a
+// timeout and reported with a duration and an outcome, as required by
+// docs/auth/operations.md.
 package workers
 
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
-// Worker interface for all background workers
-type Worker interface {
-	Start(ctx context.Context) error
-	Stop()
+// Job is one scheduled unit of work.
+type Job interface {
+	// Name identifies the job in logs and in its distributed lock.
+	Name() string
+	// Interval is how often the job runs.
+	Interval() time.Duration
+	// Timeout bounds a single run.
+	Timeout() time.Duration
+	// Run performs one pass and returns a short outcome for the log.
+	Run(ctx context.Context) ([]zap.Field, error)
 }
 
-// Runner manages all background workers
+// Runner schedules the registered jobs until the context is cancelled.
 type Runner struct {
-	workers []Worker
+	jobs    []Job
+	locker  port.Locker
+	lockTTL time.Duration
 	logger  *zap.Logger
 	wg      sync.WaitGroup
 }
 
-// NewRunner creates a new worker runner
-func NewRunner(logger *zap.Logger) *Runner {
-	return &Runner{
-		workers: make([]Worker, 0),
-		logger:  logger.With(zap.String("component", "workers")),
+// NewRunner wires the scheduler.
+func NewRunner(locker port.Locker, lockTTL time.Duration, logger *zap.Logger) *Runner {
+	return &Runner{locker: locker, lockTTL: lockTTL, logger: logger}
+}
+
+// Register adds a job. A job with a non-positive interval is ignored, which is
+// how a worker is disabled by configuration.
+func (r *Runner) Register(job Job) {
+	if job == nil || job.Interval() <= 0 {
+		return
 	}
+	r.jobs = append(r.jobs, job)
 }
 
-// Register registers a worker to be started
-func (r *Runner) Register(worker Worker) {
-	r.workers = append(r.workers, worker)
-}
-
-// Start starts all registered workers
+// Start launches every registered job.
 func (r *Runner) Start(ctx context.Context) {
-	r.logger.Info("Starting workers", zap.Int("count", len(r.workers)))
-
-	for _, worker := range r.workers {
+	for _, job := range r.jobs {
 		r.wg.Add(1)
-		go func(w Worker) {
-			defer r.wg.Done()
-			if err := w.Start(ctx); err != nil {
-				r.logger.Error("Worker error", zap.Error(err))
-			}
-		}(worker)
+		go r.loop(ctx, job)
 	}
 }
 
-// Stop stops all registered workers
-func (r *Runner) Stop() {
-	r.logger.Info("Stopping all workers", zap.Int("count", len(r.workers)))
-	for _, worker := range r.workers {
-		worker.Stop()
-	}
+// Wait blocks until every job stopped.
+func (r *Runner) Wait() {
 	r.wg.Wait()
-	r.logger.Info("All workers stopped")
+}
+
+func (r *Runner) loop(ctx context.Context, job Job) {
+	defer r.wg.Done()
+
+	ticker := time.NewTicker(job.Interval())
+	defer ticker.Stop()
+
+	// The first pass runs immediately so a restart picks up work that piled up
+	// while the process was down.
+	r.runOnce(ctx, job)
+
+	for {
+		select {
+		case <-ctx.Done():
+			r.logger.Info("worker stopped", zap.String("worker", job.Name()))
+			return
+		case <-ticker.C:
+			r.runOnce(ctx, job)
+		}
+	}
+}
+
+func (r *Runner) runOnce(ctx context.Context, job Job) {
+	lockTTL := r.lockTTL
+	if job.Timeout() > lockTTL {
+		// The lock must outlive the run it protects, otherwise a second replica
+		// could start the same pass halfway through.
+		lockTTL = job.Timeout() + time.Minute
+	}
+
+	lock, err := r.locker.Acquire(ctx, job.Name(), lockTTL)
+	if err != nil {
+		r.logger.Error("could not acquire the worker lock",
+			zap.String("worker", job.Name()), zap.Error(err))
+		return
+	}
+	if lock == nil {
+		// Another replica is running this pass; skipping is the expected outcome.
+		r.logger.Debug("worker skipped, lock held elsewhere", zap.String("worker", job.Name()))
+		return
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := lock.Release(releaseCtx); err != nil {
+			r.logger.Warn("could not release the worker lock",
+				zap.String("worker", job.Name()), zap.Error(err))
+		}
+	}()
+
+	runCtx := ctx
+	if job.Timeout() > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, job.Timeout())
+		defer cancel()
+	}
+
+	started := time.Now()
+	fields, err := job.Run(runCtx)
+	fields = append(fields,
+		zap.String("worker", job.Name()),
+		zap.Duration("duration", time.Since(started)),
+	)
+	if err != nil {
+		r.logger.Error("worker run failed", append(fields, zap.Error(err))...)
+		return
+	}
+	r.logger.Info("worker run completed", fields...)
 }

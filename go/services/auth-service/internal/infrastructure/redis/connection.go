@@ -1,82 +1,57 @@
+// Package redis implements the TTL-bound security state of ADR-004: revocation
+// signals, rate limits, one-time secrets and notification delivery state.
+//
+// Every adapter here fails closed. A Redis outage is reported as
+// ErrDependencyUnavailable so a security check is never skipped silently.
 package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ecommerce/auth-service/internal/common/config"
+	apperr "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/common/keybuilder"
 )
 
-type Client struct {
-	*redis.Client
-}
-
-func NewClient(cfg config.RedisConfig) (*Client, error) {
+// NewClient opens the Redis client shared by every adapter.
+func NewClient(ctx context.Context, cfg config.RedisConfig) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Addr:         cfg.Addr(),
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,
 		MinIdleConns: cfg.MinIdleConns,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		_ = client.Close()
+		return nil, fmt.Errorf("redis: ping: %w", err)
 	}
-
-	return &Client{Client: client}, nil
+	return client, nil
 }
 
-func (c *Client) Close() error {
-	return c.Client.Close()
+// errUnexpectedScriptResult means a Lua script returned a shape the adapter does
+// not understand, which is a bug rather than an outage.
+var errUnexpectedScriptResult = errors.New("redis: unexpected script result")
+
+// store is the shared state of every Redis adapter.
+type store struct {
+	client *redis.Client
+	keys   *keybuilder.Builder
 }
 
-func (c *Client) Ping(ctx context.Context) *redis.StatusCmd {
-	return c.Client.Ping(ctx)
-}
-
-func (c *Client) Pipeline() redis.Pipeliner {
-	return c.Client.Pipeline()
-}
-
-func (c *Client) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
-	return c.Client.SetEx(ctx, key, value, expiration)
-}
-
-func (c *Client) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd {
-	return c.Client.SetNX(ctx, key, value, expiration)
-}
-
-func (c *Client) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd {
-	return c.Client.SetXX(ctx, key, value, expiration)
-}
-
-func (c *Client) Incr(ctx context.Context, key string) *redis.IntCmd {
-	return c.Client.Incr(ctx, key)
-}
-
-func (c *Client) ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd {
-	return c.Client.ZAdd(ctx, key, members...)
-}
-
-func (c *Client) ZCard(ctx context.Context, key string) *redis.IntCmd {
-	return c.Client.ZCard(ctx, key)
-}
-
-func (c *Client) ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd {
-	return c.Client.ZRemRangeByScore(ctx, key, min, max)
-}
-
-func (c *Client) Publish(ctx context.Context, channel string, message interface{}) *redis.IntCmd {
-	return c.Client.Publish(ctx, channel, message)
-}
-
-func (c *Client) Subscribe(ctx context.Context, channels ...string) *redis.PubSub {
-	return c.Client.Subscribe(ctx, channels...)
+// mapError turns a driver failure into the fail-closed domain error. redis.Nil
+// is a normal "missing key" and must be handled by the caller, never here.
+func mapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return apperr.ErrDependencyUnavailable.WithCause(err)
 }

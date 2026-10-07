@@ -1,0 +1,16 @@
+E-Commerce
+====================
+
+Xác minh địa chỉ email
+
+Cảm ơn bạn đã đăng ký tài khoản. Vui lòng nhập mã bên dưới để hoàn tất xác minh:
+
+    000000
+
+Mã chỉ có hiệu lực trong thời gian ngắn và dùng được một lần. Không chia sẻ mã này với bất kỳ ai, kể cả người tự xưng là nhân viên của chúng tôi.
+
+Nếu bạn không thực hiện đăng ký, hãy bỏ qua email này.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

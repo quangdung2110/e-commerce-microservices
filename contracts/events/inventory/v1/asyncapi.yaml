@@ -1,0 +1,88 @@
+asyncapi: 3.0.0
+info:
+  title: Inventory Service Public Facts
+  version: 1.0.0
+  description: >-
+    Target Inventory facts emitted from the transactional outbox. Delivery is
+    at-least-once. Search consumes an Inventory-owned per-SKU availability snapshot;
+    Order consumes only physical dispatch and selected-scope inspection completion.
+    Reservation commands use durable HTTP receipts and command query/replay, with no
+    public reservation-result messages. Consumers use aggregate revision to reject stale
+    facts. Export sequence is assigned after commit by a single fenced sequencer
+    (commit order, permanent gaps allowed) and is not a global Kafka order guarantee.
+x-adoption-status: implemented
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  availabilityFacts:
+    address: t.inventory.stock.events.v1
+    description: Per-SKU stock availability snapshots for Search.
+    x-owner: inventory-service
+    x-message-key: sku_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-scope: sku_id
+    x-ordering-guard: aggregaterevision
+    x-max-payload-bytes: 16384
+    x-retention: 30d-minimum
+    x-retry-policy:
+      strategy: retry-without-ack-then-projection-rebuild
+    x-data-classification: INTERNAL
+    x-consumers: [search-service]
+    messages:
+      skuAvailabilityChanged: { $ref: '#/components/messages/skuAvailabilityChanged' }
+  orderFacts:
+    address: t.inventory.order.events.v1
+    description: Physical dispatch and selected-scope refund-inspection completion facts for Order.
+    x-owner: inventory-service
+    x-message-key: order_id
+    x-ordering-scope: order_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: aggregaterevision
+    x-max-payload-bytes: 262144
+    x-retention: 30d-minimum
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.inventory.order.events.v1.dlq
+    x-data-classification: INTERNAL
+    x-consumers: [order-service]
+    messages:
+      reservationLineDispatched: { $ref: '#/components/messages/reservationLineDispatched' }
+      allItemsInspectionCompleted: { $ref: '#/components/messages/allItemsInspectionCompleted' }
+operations:
+  publishSkuAvailabilityChanged:
+    action: send
+    channel: { $ref: '#/channels/availabilityFacts' }
+    summary: Publish the complete Search-facing availability state after the derived boolean changes or is initialized.
+    x-message-key: sku_id
+    x-publication-precondition: Search has registered that the Product-owned SKU document exists.
+    messages: [{ $ref: '#/channels/availabilityFacts/messages/skuAvailabilityChanged' }]
+  publishReservationLineDispatched:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/reservationLineDispatched' }]
+  publishAllItemsInspectionCompleted:
+    action: send
+    channel: { $ref: '#/channels/orderFacts' }
+    messages: [{ $ref: '#/channels/orderFacts/messages/allItemsInspectionCompleted' }]
+components:
+  messages:
+    skuAvailabilityChanged:
+      name: skuAvailabilityChangedV1
+      title: Per-SKU stock availability changed
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/sku-availability-changed.schema.json' }
+    reservationLineDispatched:
+      name: reservationLineDispatchedV1
+      title: Reservation line physically dispatched
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/reservation-line-dispatched.schema.json' }
+    allItemsInspectionCompleted:
+      name: allItemsInspectionCompletedV1
+      title: All selected refund-scope items received and final-inspected
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/all-items-inspection-completed.schema.json' }

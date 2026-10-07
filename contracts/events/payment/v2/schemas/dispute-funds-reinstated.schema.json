@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/v2/schemas/dispute-funds-reinstated.schema.json",
+  "title": "Payment dispute funds reinstated v2",
+  "allOf": [
+    { "$ref": "./payment-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.payment.dispute.funds-reinstated.v2" },
+        "dataschema": { "const": "/contracts/events/payment/v2/schemas/dispute-funds-reinstated.schema.json" },
+        "data": { "$ref": "payment-event-common.schema.json#/$defs/dispute_data" }
+      }
+    }
+  ]
+}

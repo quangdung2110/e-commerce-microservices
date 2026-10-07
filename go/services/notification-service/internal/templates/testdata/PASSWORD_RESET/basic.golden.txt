@@ -1,0 +1,16 @@
+E-Commerce
+====================
+
+Đặt lại mật khẩu
+
+Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn. Mở liên kết bên dưới để tạo mật khẩu mới:
+
+https://shop.example.com/reset-password?token=abc123
+
+Liên kết chỉ có hiệu lực trong thời gian ngắn và dùng được một lần.
+
+Nếu bạn không yêu cầu đặt lại mật khẩu, hãy bỏ qua email này; mật khẩu hiện tại vẫn được giữ nguyên.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

@@ -1,0 +1,34 @@
+{
+  "eventType": "Send",
+  "mail": {
+    "timestamp": "2026-09-22T07:47:30.000Z",
+    "source": "E-Commerce <no-reply@ecommerce.local>",
+    "sourceArn": "arn:aws:ses:ap-southeast-1:000000000000:identity/ecommerce.local",
+    "sendingAccountId": "000000000000",
+    "messageId": "0100019996a1b2c3-1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d-000000",
+    "destination": ["recipient@example.com"],
+    "headersTruncated": false,
+    "headers": [
+      {"name": "From", "value": "E-Commerce <no-reply@ecommerce.local>"},
+      {"name": "To", "value": "recipient@example.com"},
+      {"name": "Subject", "value": "Đơn hàng #1001 đã được xác nhận"},
+      {"name": "MIME-Version", "value": "1.0"},
+      {"name": "Content-Type", "value": "multipart/alternative; boundary=\"----=_Part_1\""}
+    ],
+    "commonHeaders": {
+      "from": ["E-Commerce <no-reply@ecommerce.local>"],
+      "to": ["recipient@example.com"],
+      "messageId": "<0100019996a1b2c3-1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d-000000@ap-southeast-1.amazonses.com>",
+      "subject": "Đơn hàng #1001 đã được xác nhận"
+    },
+    "tags": {
+      "ses:configuration-set": ["notification-critical-transactional"],
+      "ses:source-ip": ["203.0.113.10"],
+      "ses:from-domain": ["ecommerce.local"],
+      "ses:caller-identity": ["notification-service"],
+      "delivery_id": ["4f6c1d2e-8a9b-4c3d-9e0f-1a2b3c4d5e6f"],
+      "lane": ["transactional"]
+    }
+  },
+  "send": {}
+}

@@ -1,0 +1,21 @@
+{
+  "specversion": "1.0",
+  "id": "00000000-0000-4000-8000-000000000001",
+  "source": "/services/payment",
+  "subject": "payments/TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC",
+  "type": "com.ecommerce.payment.transaction.initiated.v2",
+  "time": "2026-09-20T08:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/payment/v2/schemas/payment-initiated.schema.json",
+  "correlationid": "checkout-99183",
+  "data": {
+    "schema_version": 2,
+    "order_id": "99183",
+    "payment_transaction_id": "TXN_01J9Z3M4R8Q2K7V6W5X1Y0ZABC",
+    "payment_attempt_number": 1,
+    "financial_state_version": 1,
+    "occurred_at": "2026-09-20T08:00:00Z",
+    "amount": { "amount_minor": 1500000, "currency": "VND" },
+    "expires_at": "2026-09-20T08:15:00Z"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/CART_ABANDONED.schema.json",
+  "title": "CART_ABANDONED template_data (extracted from com.ecommerce.cart.abandoned.v1; cart_url assembled by Notification)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cart_id", "cart_url"],
+  "properties": {
+    "cart_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "abandonment_cycle": { "type": "integer", "minimum": 1 },
+    "cart_url": { "type": "string", "format": "uri", "maxLength": 2048 }
+  }
+}

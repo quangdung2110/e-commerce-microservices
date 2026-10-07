@@ -1,0 +1,24 @@
+E-Commerce
+====================
+
+Cảm ơn bạn đã đặt hàng
+
+Đơn hàng ORD-1000234 đặt lúc 20/09/2026 17:15 đã được thanh toán và xác nhận. Chúng tôi sẽ thông báo khi đơn được giao.
+
+Sản phẩm:
+- Áo thun cotton (Đen / L) x2 — 199.000 ₫
+- Bình giữ nhiệt 500ml x1 — 350.000 ₫
+
+Tạm tính: 748.000 ₫
+Giảm giá: −50.000 ₫
+Phí vận chuyển: 30.000 ₫
+Tổng thanh toán: 728.000 ₫
+
+Phương thức thanh toán: Thẻ Visa •••• 4242
+Giao đến: Nguyễn Văn A, Phường 7, Quận 3, TP. Hồ Chí Minh
+
+Xem chi tiết đơn hàng: https://shop.example.com/orders/1000234
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

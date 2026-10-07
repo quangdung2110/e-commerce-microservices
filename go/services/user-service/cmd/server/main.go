@@ -1,535 +1,313 @@
+// Command server runs User Service: the public HTTP API, the internal checkout
+// snapshot API, the Auth event consumer and the scheduled workers.
+//
+// All four live in one binary and are switched on individually by
+// configuration, so a deployment can scale the API, the consumer and the
+// workers independently while shipping a single image
+// (docs/user/architecture.md §5).
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	"user-service/internal/api/handler"
-	"user-service/internal/api/router"
-	"user-service/internal/api/validator"
-	"user-service/internal/domain/port"
-	"user-service/internal/domain/service"
-	"user-service/internal/infrastructure/postgres"
-	redisinfra "user-service/internal/infrastructure/redis"
-	kafkainfra "user-service/internal/infrastructure/kafka"
-	kafkahandler "user-service/internal/infrastructure/kafka/handler"
-	kafkaconsumer "user-service/internal/workers/kafka_consumer"
+	"github.com/ecommerce/user-service/internal/api/handler"
+	"github.com/ecommerce/user-service/internal/api/router"
+	"github.com/ecommerce/user-service/internal/common/clock"
+	"github.com/ecommerce/user-service/internal/common/config"
+	"github.com/ecommerce/user-service/internal/common/keybuilder"
+	"github.com/ecommerce/user-service/internal/common/logging"
+	"github.com/ecommerce/user-service/internal/domain/port"
+	"github.com/ecommerce/user-service/internal/domain/service"
+	"github.com/ecommerce/user-service/internal/infrastructure/kafka"
+	"github.com/ecommerce/user-service/internal/infrastructure/postgres"
+	redisadapter "github.com/ecommerce/user-service/internal/infrastructure/redis"
+	"github.com/ecommerce/user-service/internal/workers"
+	projectionreconciliation "github.com/ecommerce/user-service/internal/workers/projection_reconciliation"
+	retentionpurge "github.com/ecommerce/user-service/internal/workers/retention_purge"
 )
 
 func main() {
-	// Register custom validators
-	validator.RegisterCustomValidators()
+	configPath := flag.String("config", "", "path to the configuration file")
+	flag.Parse()
 
-	app := fx.New(
-		fx.Provide(
-			// Infrastructure
-			NewLogger,
-			NewConfig,
-			NewPostgresPool,
-			NewRedisClient,
-			NewPostgresDB,
+	if err := run(*configPath); err != nil {
+		log.Fatalf("user-service: %v", err)
+	}
+}
 
-			// Repositories (implementations)
-			NewProfileRepository,
-			NewAddressRepository,
-			NewPreferencesRepository,
-			NewOutboxRepository,
-			NewUserDeletionRepository,
-			NewAddressCache,
-
-			// Services
-			NewProfileService,
-			NewAddressService,
-			NewPreferencesService,
-
-			// HTTP Handlers
-			NewProfileHandler,
-			NewAddressHandler,
-			NewPreferencesHandler,
-			NewHealthHandler,
-
-			// Router Config
-			NewRouterConfig,
-
-			// Kafka Infrastructure
-			NewKafkaConfig,
-			NewKafkaUserVerifiedHandler,
-			NewKafkaUserDeletedHandler,
-			NewUserVerifiedConsumer,
-			NewUserDeletedConsumer,
-
-			// HTTP Server
-			fx.Annotate(
-				NewHTTPServer,
-				fx.ParamTags(`group:"server"`),
-			),
-		),
-		fx.Invoke(RegisterHooks),
-		fx.Invoke(RegisterKafkaConsumers),
-	)
-
-	ctx := context.Background()
-	if err := app.Start(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start application: %v\n", err)
-		os.Exit(1)
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
 	}
 
-	// Wait for interrupt signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	logger, err := logging.New(cfg.Logging.Level, cfg.Logging.Format, cfg.App.Name)
+	if err != nil {
+		return fmt.Errorf("build logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
 
-	fmt.Println("\nShutting down server...")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	logger.Info("starting user-service",
+		zap.String("env", cfg.App.Env),
+		zap.Bool("api", cfg.App.APIEnabled),
+		zap.Bool("consumer", cfg.Kafka.ConsumerEnabled),
+	)
+
+	// Infrastructure.
+	pool, err := postgres.NewPool(ctx, cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	redisClient, err := redisadapter.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = redisClient.Close() }()
+
+	systemClock := clock.System{}
+	keys := keybuilder.New(cfg.Redis.CachePrefix, cfg.Redis.StatePrefix)
+
+	// Repositories and adapters.
+	profiles := postgres.NewProfileRepository(pool)
+	addresses := postgres.NewAddressRepository(pool)
+	preferences := postgres.NewPreferencesRepository(pool)
+	deletions := postgres.NewDeletionRepository(pool)
+	projections := postgres.NewProjectionRepository(pool)
+	txManager := postgres.NewTxManager(pool)
+
+	addressCache := redisadapter.NewAddressCache(
+		redisClient, keys, cfg.Cache.AddressTTL, cfg.Cache.AddressEmptyTTL, logger)
+	limiter := redisadapter.NewRateLimiter(redisClient, keys)
+	locker := redisadapter.NewLocker(redisClient, keys)
+
+	publisher, closePublisher, err := newPublisher(cfg.Kafka, logger)
+	if err != nil {
+		return err
+	}
+	defer closePublisher()
+
+	// Domain services.
+	emitter := service.NewEventEmitter(publisher, logger)
+	profileService := service.NewProfileService(profiles, txManager, emitter, systemClock)
+	preferencesService := service.NewPreferencesService(preferences, txManager, emitter, systemClock)
+	addressService := service.NewAddressService(addresses, profiles, addressCache, txManager, systemClock, logger)
+	lifecycleService := service.NewLifecycleService(
+		profiles, addresses, preferences, deletions, addressCache, txManager, systemClock, logger)
+	reconciliationService := service.NewReconciliationService(projections, emitter, logger)
+
+	// HTTP layer.
+	healthHandler := handler.NewHealthHandler(2 * time.Second)
+	healthHandler.AddProbe("postgres", pool.Ping)
+	// Redis only accelerates the address list, so its failure degrades the
+	// service instead of taking it out of rotation.
+	healthHandler.AddOptionalProbe("redis", func(probeCtx context.Context) error {
+		return redisClient.Ping(probeCtx).Err()
+	})
+
+	var (
+		publicServer   *http.Server
+		internalServer *http.Server
+	)
+	if cfg.App.APIEnabled {
+		publicEngine := router.NewPublic(router.PublicDeps{
+			Config:      cfg,
+			Logger:      logger,
+			Limiter:     limiter,
+			Profile:     handler.NewProfileHandler(profileService),
+			Address:     handler.NewAddressHandler(addressService),
+			Preferences: handler.NewPreferencesHandler(preferencesService),
+			Health:      healthHandler,
+		})
+		publicServer = &http.Server{
+			Addr:         fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port),
+			Handler:      publicEngine,
+			ReadTimeout:  cfg.Server.ReadTimeout,
+			WriteTimeout: cfg.Server.WriteTimeout,
+			IdleTimeout:  cfg.Server.IdleTimeout,
+		}
+	}
+
+	if cfg.Internal.Enabled {
+		internalEngine := router.NewInternal(router.InternalDeps{
+			Config:   cfg,
+			Logger:   logger,
+			Limiter:  limiter,
+			Checkout: handler.NewCheckoutHandler(addressService),
+			Health:   healthHandler,
+		})
+		internalServer = &http.Server{
+			Addr:         fmt.Sprintf("%s:%d", cfg.Internal.Host, cfg.Internal.Port),
+			Handler:      internalEngine,
+			ReadTimeout:  cfg.Server.ReadTimeout,
+			WriteTimeout: cfg.Server.WriteTimeout,
+			IdleTimeout:  cfg.Server.IdleTimeout,
+		}
+		if cfg.Internal.MutualTLSEnabled() {
+			tlsConfig, err := newMutualTLSConfig(cfg.Internal)
+			if err != nil {
+				return err
+			}
+			internalServer.TLSConfig = tlsConfig
+		}
+	}
+
+	// Auth event consumer.
+	var (
+		consumer   *kafka.Consumer
+		consumerWG sync.WaitGroup
+	)
+	if cfg.Kafka.ConsumerEnabled {
+		consumer, err = kafka.NewConsumer(cfg.Kafka, lifecycleService, publisher, logger)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Workers.
+	runner := workers.NewRunner(locker, cfg.Workers.LockTTL, logger)
+	runner.Register(retentionpurge.New(lifecycleService, cfg.Workers.RetentionPurge))
+	runner.Register(projectionreconciliation.New(reconciliationService, cfg.Workers.ProjectionReconciliation))
+	runner.Start(ctx)
+
+	serverErrors := make(chan error, 2)
+
+	if publicServer != nil {
+		go func() {
+			logger.Info("public API listening", zap.String("addr", publicServer.Addr))
+			if err := publicServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- fmt.Errorf("public server: %w", err)
+			}
+		}()
+	}
+
+	if internalServer != nil {
+		go func() {
+			logger.Info("internal API listening",
+				zap.String("addr", internalServer.Addr),
+				zap.Bool("mtls", internalServer.TLSConfig != nil),
+			)
+			var err error
+			if internalServer.TLSConfig != nil {
+				err = internalServer.ListenAndServeTLS(cfg.Internal.TLSCertFile, cfg.Internal.TLSKeyFile)
+			} else {
+				err = internalServer.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- fmt.Errorf("internal server: %w", err)
+			}
+		}()
+	}
+
+	if consumer != nil {
+		consumerWG.Add(1)
+		go func() {
+			defer consumerWG.Done()
+			logger.Info("auth event consumer starting",
+				zap.String("topic", cfg.Kafka.AuthTopic),
+				zap.String("group", cfg.Kafka.ConsumerGroup),
+			)
+			if err := consumer.Run(ctx); err != nil {
+				serverErrors <- fmt.Errorf("auth event consumer: %w", err)
+			}
+		}()
+	}
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	case runErr = <-serverErrors:
+		logger.Error("component stopped unexpectedly", zap.Error(runErr))
+		stop()
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
-	if err := app.Stop(shutdownCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "Server forced to shutdown: %v\n", err)
+	if publicServer != nil {
+		if err := publicServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("public server shutdown failed", zap.Error(err))
+		}
 	}
-}
-
-// Logger setup
-func NewLogger() (*zap.Logger, error) {
-	return zap.NewProduction()
-}
-
-// Config holds application configuration
-type Config struct {
-	Port      string
-	JWTSecret string
-	DB        DBConfig
-	Redis     RedisConfig
-	RateLimit RateLimitConfig
-	Kafka     KafkaConfig
-}
-
-// KafkaConfig holds Kafka configuration
-type KafkaConfig struct {
-	Brokers        []string
-	AuthTopic      string
-	UserTopic      string
-	ConsumerGroup  string
-	OffsetReset    string
-	SessionTimeout time.Duration
-}
-
-// RateLimitConfig holds rate limiting configuration
-type RateLimitConfig struct {
-	Enabled  bool
-	Rate     int
-	Window   time.Duration
-	Capacity int
-}
-
-// DBConfig holds database configuration
-type DBConfig struct {
-	Host            string
-	Port            string
-	User            string
-	Password        string
-	Database        string
-	SSLMode         string
-	MaxConns        int32
-	MinConns        int32
-	MaxConnLifetime string
-}
-
-// RedisConfig holds Redis configuration
-type RedisConfig struct {
-	Host     string
-	Port     string
-	Password string
-	DB       int
-}
-
-func NewConfig() *Config {
-	return &Config{
-		Port:      getEnv("APP_PORT", "8080"),
-		JWTSecret: getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
-		DB: DBConfig{
-			Host:            getEnv("DB_HOST", "localhost"),
-			Port:            getEnv("DB_PORT", "5432"),
-			User:            getEnv("DB_USER", "postgres"),
-			Password:        getEnv("DB_PASSWORD", "postgres"),
-			Database:        getEnv("DB_NAME", "user_service"),
-			SSLMode:         getEnv("DB_SSLMODE", "disable"),
-			MaxConns:        25,
-			MinConns:        5,
-			MaxConnLifetime: "5m",
-		},
-		Redis: RedisConfig{
-			Host:     getEnv("REDIS_HOST", "localhost"),
-			Port:     getEnv("REDIS_PORT", "6379"),
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       0,
-		},
-		RateLimit: RateLimitConfig{
-			Enabled:  getEnv("RATE_LIMIT_ENABLED", "true") == "true",
-			Rate:     100,
-			Window:   1 * time.Minute,
-			Capacity: 100,
-		},
-		Kafka: KafkaConfig{
-			Brokers:       []string{getEnv("KAFKA_BROKERS", "localhost:9092")},
-			AuthTopic:     getEnv("KAFKA_AUTH_TOPIC", "t.auth.events"),
-			UserTopic:     getEnv("KAFKA_USER_TOPIC", "t.user.events"),
-			ConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "user-service"),
-			OffsetReset:   getEnv("KAFKA_OFFSET_RESET", "earliest"),
-			SessionTimeout: 30 * time.Second,
-		},
+	if internalServer != nil {
+		if err := internalServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("internal server shutdown failed", zap.Error(err))
+		}
 	}
-}
-
-func NewPostgresPool(logger *zap.Logger, cfg *Config) (*pgxpool.Pool, error) {
-	return postgres.NewPostgresPool(logger, postgres.DBConfig{
-		Host:            cfg.DB.Host,
-		Port:            cfg.DB.Port,
-		User:            cfg.DB.User,
-		Password:        cfg.DB.Password,
-		Database:        cfg.DB.Database,
-		SSLMode:         cfg.DB.SSLMode,
-		MaxConns:        cfg.DB.MaxConns,
-		MinConns:        cfg.DB.MinConns,
-		MaxConnLifetime: cfg.DB.MaxConnLifetime,
-	})
-}
-
-func NewRedisClient(logger *zap.Logger, cfg *Config) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%s", cfg.Redis.Host, cfg.Redis.Port),
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	})
-
-	// Verify connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	if consumer != nil {
+		// Leaving the group before the process exits hands the partitions over
+		// without waiting for the session timeout.
+		if err := consumer.Close(); err != nil {
+			logger.Error("auth event consumer shutdown failed", zap.Error(err))
+		}
+		consumerWG.Wait()
 	}
 
-	logger.Info("Redis client created",
-		zap.String("host", cfg.Redis.Host),
-		zap.String("port", cfg.Redis.Port),
-	)
-
-	return client, nil
+	runner.Wait()
+	logger.Info("user-service stopped")
+	return runErr
 }
 
-// PostgresDB wraps the pool for dependency injection
-type PostgresDB struct {
-	Pool *pgxpool.Pool
+// eventPublisher is what the wiring needs from the Kafka adapter: publishing
+// the two user events and parking what the consumer cannot process.
+type eventPublisher interface {
+	port.EventPublisher
+	kafka.DeadLetterSink
 }
 
-func NewPostgresDB(pool *pgxpool.Pool) *PostgresDB {
-	return &PostgresDB{Pool: pool}
-}
-
-// Repository constructors - using real implementations from infrastructure package
-
-func NewProfileRepository(db *PostgresDB) port.ProfileRepository {
-	return postgres.NewPostgresProfileRepository(db.Pool)
-}
-
-func NewAddressRepository(db *PostgresDB) port.AddressRepository {
-	return postgres.NewPostgresAddressRepository(db.Pool)
-}
-
-func NewPreferencesRepository(db *PostgresDB) port.PreferencesRepository {
-	return postgres.NewPostgresPreferencesRepository(db.Pool)
-}
-
-func NewOutboxRepository(db *PostgresDB) port.OutboxRepository {
-	return postgres.NewPostgresOutboxRepository(db.Pool)
-}
-
-func NewUserDeletionRepository(db *PostgresDB) port.UserDeletionRepository {
-	return postgres.NewPostgresUserDeletionRepository(db.Pool)
-}
-
-func NewAddressCache(client *redis.Client) port.AddressCache {
-	return redisinfra.NewRedisAddressCache(client)
-}
-
-// Service constructors
-
-func NewProfileService(
-	repo port.ProfileRepository,
-	db *PostgresDB,
-	logger *zap.Logger,
-) *service.ProfileService {
-	return service.NewProfileService(repo, db.Pool, logger)
-}
-
-func NewAddressService(
-	repo port.AddressRepository,
-	cache port.AddressCache,
-	db *PostgresDB,
-	logger *zap.Logger,
-) *service.AddressService {
-	return service.NewAddressService(repo, cache, db.Pool, logger)
-}
-
-func NewPreferencesService(
-	prefsRepo port.PreferencesRepository,
-	profileRepo port.ProfileRepository,
-	outboxRepo port.OutboxRepository,
-	db *PostgresDB,
-	logger *zap.Logger,
-) *service.PreferencesService {
-	return service.NewPreferencesService(prefsRepo, profileRepo, outboxRepo, db.Pool, logger)
-}
-
-// Handler constructors
-
-func NewProfileHandler(profileService *service.ProfileService, outboxRepo port.OutboxRepository, db *PostgresDB, logger *zap.Logger) *handler.ProfileHandler {
-	return handler.NewProfileHandler(profileService, outboxRepo, db.Pool, logger)
-}
-
-func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *handler.AddressHandler {
-	return handler.NewAddressHandler(addressService, logger)
-}
-
-func NewPreferencesHandler(preferencesService *service.PreferencesService, db *PostgresDB, logger *zap.Logger) *handler.PreferencesHandler {
-	return handler.NewPreferencesHandler(preferencesService, db.Pool, logger)
-}
-
-func NewHealthHandler(db *PostgresDB, redisClient *redis.Client) *handler.HealthHandler {
-	return handler.NewHealthHandler(db.Pool, redisClient)
-}
-
-// Router configuration
-func NewRouterConfig(cfg *Config) *router.Config {
-	return &router.Config{
-		JWTSecret: cfg.JWTSecret,
-		RateLimit: cfg.RateLimit.Rate,
-		Window:    cfg.RateLimit.Window,
-		Capacity:  cfg.RateLimit.Capacity,
-	}
-}
-
-// Kafka configuration
-func NewKafkaConfig(cfg *Config) *kafkainfra.Config {
-	return &kafkainfra.Config{
-		Brokers:           cfg.Kafka.Brokers,
-		AuthEventsTopic:   cfg.Kafka.AuthTopic,
-		UserEventsTopic:   cfg.Kafka.UserTopic,
-		ConsumerGroup:     cfg.Kafka.ConsumerGroup,
-		OffsetReset:       cfg.Kafka.OffsetReset,
-		SessionTimeout:    cfg.Kafka.SessionTimeout,
-		HeartbeatInterval: 3 * time.Second,
-		MaxWaitTime:       10 * time.Second,
-		MinBytes:          1,
-		MaxBytes:          10485760, // 10MB
-	}
-}
-
-// Kafka Handler constructors
-
-func NewKafkaUserVerifiedHandler(
-	profileRepo port.ProfileRepository,
-	prefsRepo port.PreferencesRepository,
-	outboxRepo port.OutboxRepository,
-	addressRepo port.AddressRepository,
-	db *PostgresDB,
-	logger *zap.Logger,
-) *kafkahandler.UserVerifiedHandler {
-	return kafkahandler.NewUserVerifiedHandler(
-		profileRepo,
-		prefsRepo,
-		outboxRepo,
-		addressRepo,
-		db.Pool,
-		logger,
-	)
-}
-
-func NewKafkaUserDeletedHandler(
-	profileRepo port.ProfileRepository,
-	prefsRepo port.PreferencesRepository,
-	addressRepo port.AddressRepository,
-	deletionRepo port.UserDeletionRepository,
-	outboxRepo port.OutboxRepository,
-	cache port.AddressCache,
-	db *PostgresDB,
-	logger *zap.Logger,
-) *kafkahandler.UserDeletedHandler {
-	return kafkahandler.NewUserDeletedHandler(
-		profileRepo,
-		prefsRepo,
-		addressRepo,
-		deletionRepo,
-		outboxRepo,
-		cache,
-		db.Pool,
-		logger,
-	)
-}
-
-// Kafka Consumer constructors
-
-func NewUserVerifiedConsumer(
-	kafkaCfg *kafkainfra.Config,
-	userVerifiedHandler *kafkahandler.UserVerifiedHandler,
-	logger *zap.Logger,
-) *kafkaconsumer.Consumer {
-	return kafkaconsumer.NewConsumer(
-		kafkaconsumer.ConsumerConfig{
-			Brokers:     kafkaCfg.Brokers,
-			GroupID:     kafkaCfg.ConsumerGroup + "-profile-creator",
-			Topic:       kafkaCfg.AuthEventsTopic,
-			OffsetReset: kafkaCfg.OffsetReset,
-			MaxWaitTime: kafkaCfg.MaxWaitTime,
-			MinBytes:    kafkaCfg.MinBytes,
-			MaxBytes:    kafkaCfg.MaxBytes,
-		},
-		userVerifiedHandler,
-		logger,
-	)
-}
-
-func NewUserDeletedConsumer(
-	kafkaCfg *kafkainfra.Config,
-	userDeletedHandler *kafkahandler.UserDeletedHandler,
-	logger *zap.Logger,
-) *kafkaconsumer.Consumer {
-	return kafkaconsumer.NewConsumer(
-		kafkaconsumer.ConsumerConfig{
-			Brokers:     kafkaCfg.Brokers,
-			GroupID:     kafkaCfg.ConsumerGroup + "-account-deletion",
-			Topic:       kafkaCfg.AuthEventsTopic,
-			OffsetReset: kafkaCfg.OffsetReset,
-			MaxWaitTime: kafkaCfg.MaxWaitTime,
-			MinBytes:    kafkaCfg.MinBytes,
-			MaxBytes:    kafkaCfg.MaxBytes,
-		},
-		userDeletedHandler,
-		logger,
-	)
-}
-
-// GinEngine creates the Gin router with all routes configured
-func GinEngine(
-	logger *zap.Logger,
-	profileHandler *handler.ProfileHandler,
-	addressHandler *handler.AddressHandler,
-	preferencesHandler *handler.PreferencesHandler,
-	healthHandler *handler.HealthHandler,
-	routerConfig *router.Config,
-) *gin.Engine {
-	return router.Setup(
-		logger,
-		profileHandler,
-		addressHandler,
-		preferencesHandler,
-		healthHandler,
-		routerConfig,
-	)
-}
-
-// HTTP Layer constructors
-
-func NewHTTPServer(lc fx.Lifecycle, router *gin.Engine, config *Config, logger *zap.Logger) *http.Server {
-	addr := fmt.Sprintf(":%s", config.Port)
-	server := &http.Server{
-		Addr:         addr,
-		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+// newPublisher returns the Kafka publisher, or a logging stand-in when the
+// broker is disabled for a local run.
+func newPublisher(cfg config.KafkaConfig, logger *zap.Logger) (eventPublisher, func(), error) {
+	if !cfg.Enabled {
+		logger.Warn("kafka is disabled, user events will not be published")
+		return kafka.NewLoggingPublisher(logger), func() {}, nil
 	}
 
-	lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			go func() {
-				logger.Info("Starting HTTP server", zap.String("addr", addr))
-				if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.Error("HTTP server error", zap.Error(err))
-				}
-			}()
-			return nil
-		},
-		OnStop: func(ctx context.Context) error {
-			return server.Shutdown(ctx)
-		},
-	})
-
-	return server
-}
-
-func RegisterHooks(lifecycle fx.Lifecycle, logger *zap.Logger) {
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			logger.Info("Application started")
-			return nil
-		},
-		OnStop: func(ctx context.Context) error {
-			logger.Info("Application stopped")
-			return nil
-		},
-	})
-}
-
-// Kafka lifecycle hooks
-
-func RegisterKafkaConsumers(
-	lifecycle fx.Lifecycle,
-	userVerifiedConsumer *kafkaconsumer.Consumer,
-	userDeletedConsumer *kafkaconsumer.Consumer,
-	logger *zap.Logger,
-) {
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			// Start user verified consumer
-			if err := userVerifiedConsumer.Start(ctx); err != nil {
-				return fmt.Errorf("failed to start user verified consumer: %w", err)
-			}
-			logger.Info("User verified Kafka consumer started")
-
-			// Start user deleted consumer
-			if err := userDeletedConsumer.Start(ctx); err != nil {
-				return fmt.Errorf("failed to start user deleted consumer: %w", err)
-			}
-			logger.Info("User deleted Kafka consumer started")
-
-			return nil
-		},
-		OnStop: func(ctx context.Context) error {
-			logger.Info("Stopping Kafka consumers...")
-
-			// Stop user deleted consumer first
-			if err := userDeletedConsumer.Stop(); err != nil {
-				logger.Error("Failed to stop user deleted consumer", zap.Error(err))
-			}
-
-			// Stop user verified consumer
-			if err := userVerifiedConsumer.Stop(); err != nil {
-				logger.Error("Failed to stop user verified consumer", zap.Error(err))
-			}
-
-			logger.Info("Kafka consumers stopped")
-			return nil
-		},
-	})
-}
-
-// Utility functions
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	publisher, err := kafka.NewPublisher(cfg, logger)
+	if err != nil {
+		return nil, nil, err
 	}
-	return defaultValue
+	return publisher, func() {
+		if err := publisher.Close(); err != nil {
+			logger.Error("could not close the Kafka producer", zap.Error(err))
+		}
+	}, nil
+}
+
+// newMutualTLSConfig requires and verifies a client certificate signed by the
+// configured CA, which is how the internal API authenticates Checkout Service.
+func newMutualTLSConfig(cfg config.InternalConfig) (*tls.Config, error) {
+	caPEM, err := os.ReadFile(cfg.ClientCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read internal client CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("internal client CA does not contain a certificate")
+	}
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs:  pool,
+	}, nil
 }

@@ -1,0 +1,20 @@
+E-Commerce
+====================
+
+Đơn hàng đã giao thành công
+
+Đơn hàng ORD-1000234 đã được giao đầy đủ vào lúc 23/09/2026 16:30. Cảm ơn bạn đã mua sắm tại E-Commerce.
+
+Sản phẩm trong đơn:
+- Áo thun cotton (Đen / L) x2
+- Bình giữ nhiệt 500ml x1
+
+Bạn thấy sản phẩm thế nào? Đánh giá của bạn giúp người mua khác lựa chọn tốt hơn và chỉ mất một phút.
+
+Viết đánh giá: https://shop.example.com/orders/1000234/review
+
+Nếu có vấn đề với đơn hàng, vui lòng liên hệ bộ phận chăm sóc khách hàng để được hỗ trợ.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

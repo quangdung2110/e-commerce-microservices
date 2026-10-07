@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/order/v1/schemas/order-completed.schema.json",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "type", "source", "dataschema", "subject", "sequence", "data"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "type": { "const": "com.ecommerce.order.completed.v1" },
+        "source": { "const": "/services/order" },
+        "dataschema": { "const": "/contracts/events/order/v1/schemas/order-completed.schema.json" },
+        "subject": { "type": "string", "pattern": "^orders/[1-9][0-9]*$" },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Monotonic integration-event sequence for this order; gaps are allowed." },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["order_id", "user_id", "completed_at", "items"],
+          "properties": {
+            "order_id": { "type": "string", "maxLength": 19, "pattern": "^[1-9][0-9]*$",
+              "description": "Canonical unpadded base-10 representation of the Order-owned positive int64 identifier. Consumers compare it as a string and never parse it into a JSON number." },
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "completed_at": { "type": "string", "format": "date-time" },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 200,
+              "description": "Producers MUST NOT emit two entries with the same (product_id, sku_id): quantity carries the count. JSON Schema cannot express uniqueness on a key subset, so a consumer that receives a duplicate deduplicates on that key and keeps the first occurrence in array order.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["product_id", "sku_id", "variant_name", "quantity"],
+                "properties": {
+                  "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "sku_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "variant_name": { "type": ["string", "null"], "maxLength": 255 },
+                  "product_name": { "type": "string", "minLength": 1, "maxLength": 255,
+                    "description": "Product name from the accepted checkout snapshot (OrderLine.snapshot_name), so Review can show what was bought without calling Order or Product. Optional only for compatibility with producers older than this field." },
+                  "product_image_url": { "type": ["string", "null"], "maxLength": 2048,
+                    "description": "Thumbnail URL from the same snapshot (OrderLine.snapshot_image_url); null when the line had none." },
+                  "quantity": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

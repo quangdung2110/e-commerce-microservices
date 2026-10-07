@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/ACCOUNT_UNLOCKED.schema.json",
+  "title": "ACCOUNT_UNLOCKED template_data (from Auth event user-unlocked.v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "unlocked_at"],
+  "properties": {
+    "event": { "const": "ACCOUNT_UNLOCKED" },
+    "unlocked_at": { "type": "string", "format": "date-time" }
+  }
+}

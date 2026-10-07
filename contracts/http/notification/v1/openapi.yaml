@@ -1,0 +1,213 @@
+openapi: 3.1.0
+info:
+  title: Notification Service HTTP API
+  version: 1.0.0
+  description: >-
+    Inbox in-app của user hiện tại. Identity do API Gateway inject; client không gửi
+    user_id. Notification không expose API preference (thuộc User Service) và không
+    lưu bản email đã render nên không có API xem lịch sử email. Phase 1 không có
+    realtime; frontend poll unread-count. Xem docs/notification/10-interfaces.md.
+x-adoption-status: proposed
+servers:
+  - url: http://localhost:8091
+    description: Local Docker Compose
+tags:
+  - name: Inbox
+paths:
+  /api/v1/notifications/inbox:
+    get:
+      tags: [Inbox]
+      operationId: listInbox
+      summary: Danh sách thông báo in-app của user hiện tại
+      description: >-
+        Cursor pagination theo (created_at DESC, id). Chỉ trả item chưa archive.
+        Đọc từ read model inbox_item; item xuất hiện ngay khi deliver worker commit,
+        không có cache trung gian.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, maxLength: 256 }
+          description: Giá trị next_cursor của trang trước; bỏ trống để lấy trang đầu.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: unread_only
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Một trang inbox; dữ liệu cá nhân, không được shared-cache.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InboxPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/notifications/inbox/unread-count:
+    get:
+      tags: [Inbox]
+      operationId: getUnreadCount
+      summary: Số thông báo chưa đọc, cho badge
+      description: >-
+        Đọc từ Redis; có thể lệch vài giây so với inbox_item và được recompute khi
+        cache miss. Frontend poll mỗi 30–60 s; không thiết kế cho realtime.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Số chưa đọc.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UnreadCount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/notifications/inbox/{item_id}:
+    patch:
+      tags: [Inbox]
+      operationId: updateInboxItem
+      summary: Đánh dấu đã đọc / chưa đọc
+      description: >-
+        Idempotent tự nhiên: đặt read = true trên item đã đọc không đổi gì và vẫn trả 200.
+        Item không thuộc user hiện tại trả 404 (không lộ tồn tại).
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InboxItemUpdate' }
+      responses:
+        '200':
+          description: Item sau cập nhật.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InboxItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Inbox]
+      operationId: archiveInboxItem
+      summary: Ẩn item khỏi inbox (archive, không xoá vật lý)
+      description: Idempotent; archive lần hai vẫn trả 204. Item đã archive không còn xuất hiện trong list và không tính vào unread.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '204': { description: Đã archive. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/notifications/inbox/mark-all-read:
+    post:
+      tags: [Inbox]
+      operationId: markAllInboxRead
+      summary: Đánh dấu toàn bộ inbox đã đọc
+      description: >-
+        Action vì không biểu diễn được bằng một resource. Idempotent: gọi lại khi
+        không còn item chưa đọc vẫn trả 204. Không cần Idempotency-Key vì kết quả
+        cuối không phụ thuộc số lần gọi.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Đã đánh dấu. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted identity Gateway inject sau JWT verification; không phải header public client được phép tự đặt.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    ItemId:
+      name: item_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Bằng delivery_id của kênh in_app.
+  headers:
+    NoStore:
+      description: Dữ liệu cá nhân; không cache.
+      required: true
+      schema: { type: string, const: no-store }
+  schemas:
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    InboxItem:
+      type: object
+      additionalProperties: false
+      required: [id, template, title, body, created_at, read]
+      properties:
+        id: { type: string, format: uuid }
+        template: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$' }
+        title: { type: string, maxLength: 80 }
+        body: { type: string, maxLength: 200 }
+        deep_link: { type: [string, 'null'], format: uri-reference, maxLength: 2048 }
+        created_at: { type: string, format: date-time }
+        read: { type: boolean }
+        read_at: { type: [string, 'null'], format: date-time }
+    InboxPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/InboxItem' }
+        next_cursor:
+          type: [string, 'null']
+          description: null khi hết trang.
+    UnreadCount:
+      type: object
+      additionalProperties: false
+      required: [count, as_of]
+      properties:
+        count: { type: integer, minimum: 0 }
+        as_of: { type: string, format: date-time, description: Thời điểm giá trị được tính; có thể cũ vài giây. }
+    InboxItemUpdate:
+      type: object
+      additionalProperties: false
+      required: [read]
+      properties:
+        read: { type: boolean }
+  responses:
+    BadRequest:
+      description: Tham số không hợp lệ (cursor hỏng, limit ngoài khoảng, body sai).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Thiếu trusted identity.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Item không tồn tại hoặc không thuộc user hiện tại.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

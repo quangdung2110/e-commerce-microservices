@@ -1,65 +1,111 @@
 spring:
   application:
     name: inventory-service
-  profiles:
-    active: dev
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:15432/inventory_service}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:24}
+      minimum-idle: 4
+      connection-timeout: 3000
+      max-lifetime: 1200000
+      # READ COMMITTED with explicit row locks is the isolation baseline (data.md §4).
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # JSON is snake_case per contracts/http/inventory/**. Every request schema is
+  # additionalProperties: false, so an unknown field is a 400 INVALID_REQUEST.
   jackson:
-    default-property-inclusion: non_null
+    property-naming-strategy: SNAKE_CASE
+    # Nullable required fields (next_cursor, availability_revision) stay as explicit null;
+    # optional fields are omitted per DTO with @JsonInclude(NON_NULL).
+    default-property-inclusion: always
     serialization:
       write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: true
+
+  mvc:
+    problemdetails:
+      enabled: false
 
 server:
-  port: 8083
+  port: ${SERVER_PORT:8080}
   shutdown: graceful
+
+inventory:
+  # Manual fail-closed switch executed by Platform/SRE (operations.md §1, ADR-027).
+  write-freeze: ${INVENTORY_WRITE_FREEZE:false}
+  identity:
+    service-header: X-Service-Identity
+    user-id-header: X-User-Id
+    roles-header: X-User-Roles
+    session-header: X-User-Session-Id
+    admin-role: ADMIN
+    # Defense-in-depth allowlists behind the mesh AuthorizationPolicy
+    # (docs/mesh/runtime-contract.md §5.2).
+    preview-clients: [checkout-service]
+    workflow-clients: [order-service]
+    availability-read-clients: [product-detail-bff]
+    export-clients: [search-service]
+  command:
+    lock-timeout: 2s
+    internal-retries: 2
+  reservation:
+    payment-window: 15m
+    orphan-alert-after: 60m
+  availability:
+    freshness-budget: 30s
+  outbox:
+    # More unsequenced outbox rows than this fails new mutations closed (ADR-027).
+    max-unsequenced: ${INVENTORY_OUTBOX_MAX_UNSEQUENCED:100000}
+    retention: 30d
+  export:
+    snapshot-ttl: 24h
+  workers:
+    enabled: ${WORKERS_ENABLED:true}
+    instance-id: ${HOSTNAME:inventory-local}
+    projector-interval: PT0.2S
+    projector-batch-size: 200
+    fanout-interval: PT0.5S
+    fanout-batch-size: 500
+    readiness-interval: PT0.5S
+    readiness-batch-size: 200
+    sequencer-interval: PT0.2S
+    sequencer-batch-size: 500
+    sequencer-lease-ttl: 10s
+    claim-ttl: 30s
+    backlog-refresh-interval: PT5S
+    orphan-scan-interval: PT5M
+    bucket-scan-interval: PT1H
+    ledger-replay-cron: "0 30 2 * * *"
+    retention-interval: PT1H
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:
         enabled: true
-      show-details: when_authorized
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
   metrics:
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-        inventory.lua.duration: true
-  tracing:
-    sampling:
-      probability: 1.0
+    tags:
+      application: inventory-service
 
-inventory:
-  redis:
-    cluster:
-      nodes: ${REDIS_CLUSTER_NODES:localhost:6379}
-      max-redirects: 3
-    lettuce:
-      pool:
-        max-active: 32
-        max-idle: 16
-        min-idle: 4
-    timeout-ms: 2000
-    idempotency-ttl-days: 30
-    suspension-ttl-hours: 24
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
-    topic-events: t.inventory.events
-    consumer-group-relay: inventory-stream-relay
-    consumer-group-ledger: inventory-ledger-writer
-    poll-interval-ms: 100
-  temporal:
-    target: ${TEMPORAL_TARGET:localhost:7233}
-    namespace: inventory
-    task-queue: inventory-activities
-    worker-identity: ${HOSTNAME:inventory-worker-1}
-  restock:
-    reservation-ttl-minutes: 30
-  routing:
-    plan-ttl-minutes: 20
-  cleanup:
-    cron: "0 0 2 * * *"
-    watermark-hours: 24
-    batch-size: 10000
+logging:
+  level:
+    root: INFO
+    com.ecommerce.inventory: INFO

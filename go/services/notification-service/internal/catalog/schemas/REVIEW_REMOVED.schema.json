@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/REVIEW_REMOVED.schema.json",
+  "title": "REVIEW_REMOVED template_data (mapped 1-1 from reviewRemovalNotificationRequested)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["review_id", "product_id"],
+  "properties": {
+    "review_id": { "type": "string", "format": "uuid" },
+    "product_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+  }
+}

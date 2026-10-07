@@ -1,0 +1,751 @@
+openapi: 3.1.0
+info:
+  title: Inventory Warehouse Administration API
+  version: 1.0.0
+  description: >-
+    Target ADMIN contract for warehouse master data, physical stock operations and
+    read-only operational queues. Every accepted mutation atomically persists state,
+    immutable evidence, command outcome, successful operation identity, and required
+    outbox events. Routed by the gateway at /api/v1/admin/inventory with role ADMIN;
+    MFA is a production release gate (Inventory ADR-024).
+x-adoption-status: implemented
+x-required-role: ADMIN
+x-mfa-required: production-gate
+servers:
+  - url: http://inventory-service:8080
+    description: ADMIN service endpoint behind the trusted gateway
+security: [{ adminIdentity: [] }]
+tags:
+  - name: Warehouses
+  - name: Sellable stock
+  - name: Dispatch
+  - name: Returns
+  - name: Quarantine
+paths:
+  /api/v1/admin/inventory/warehouses:
+    get:
+      tags: [Warehouses]
+      operationId: listWarehouses
+      summary: List warehouses
+      parameters:
+        - { name: is_active, in: query, required: false, schema: { type: boolean } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Warehouse page., content: { application/json: { schema: { $ref: '#/components/schemas/WarehousePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+    post:
+      tags: [Warehouses]
+      operationId: createWarehouse
+      summary: Create an Inventory-owned warehouse
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateWarehouseRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/WarehouseSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/warehouses/{warehouse_id}:
+    get:
+      tags: [Warehouses]
+      operationId: getWarehouse
+      summary: Read warehouse master data
+      parameters: [{ $ref: '#/components/parameters/WarehouseId' }]
+      responses: { '200': { description: Warehouse., content: { application/json: { schema: { $ref: '#/components/schemas/Warehouse' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+    patch:
+      tags: [Warehouses]
+      operationId: updateWarehouse
+      summary: Update name, address or new-allocation eligibility
+      description: >-
+        Requires expected_revision equal to the current warehouse revision; otherwise durable
+        409 WAREHOUSE_CONFLICT (Inventory ADR-027). Status changes never release, reroute, or
+        rewrite existing commitments.
+      parameters: [{ $ref: '#/components/parameters/WarehouseId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateWarehouseRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/WarehouseSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/stock-receipts:
+    post:
+      tags: [Sellable stock]
+      operationId: recordSellableStockReceipt
+      summary: Record initial or supplier stock as sellable
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StockReceiptRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/stock-adjustments:
+    post:
+      tags: [Sellable stock]
+      operationId: recordStockAdjustment
+      summary: Apply an audited sellable-stock adjustment
+      description: A negative adjustment can remove only available_to_sell units.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StockAdjustmentRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/stock-movements/{movement_id}/reversals:
+    post:
+      tags: [Sellable stock]
+      operationId: reverseSellableStockMovement
+      summary: Append a compensating movement for an eligible receipt or adjustment
+      description: >-
+        Target must be a successful sellable receipt or adjustment. reversal_sequence is
+        1..n per original movement and the cumulative reversed quantity cannot exceed the
+        original quantity (409 MOVEMENT_NOT_REVERSIBLE). The sequence is contiguous (next value =
+        accepted reversals + 1) and a reversal movement is not itself reversible. Reversing an increase requires
+        quantity <= available_to_sell (409 INSUFFICIENT_SELLABLE_STOCK); reversing a
+        decrease adds back to sellable.
+      parameters: [{ $ref: '#/components/parameters/MovementId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MovementReversalRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/physical-dispatches:
+    post:
+      tags: [Dispatch]
+      operationId: recordPhysicalDispatch
+      summary: Record that a committed allocation physically left its warehouse
+      description: >-
+        This is the sale-flow operation that reduces on_hand and committed. It records
+        an entire line: quantity must equal the immutable ReservationLine quantity at its
+        allocated warehouse and SKU while the line is COMMITTED; otherwise durable 409
+        DISPATCH_NOT_ALLOWED. Partial-line dispatch does not exist.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PhysicalDispatchRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/return-receipts:
+    post:
+      tags: [Returns]
+      operationId: recordReturnReceipt
+      summary: Receive an exact Refund Scope line into quarantine
+      description: >-
+        (return_receipt_id, return_receipt_line_id) is globally unique. Unknown scope/line,
+        SKU mismatch or over-receipt is 409 RETURN_RECEIPT_REJECTED; a terminal or
+        INSPECTION_COMPLETED scope is 409 REFUND_SCOPE_STATE_CONFLICT; an unknown warehouse is
+        409 WAREHOUSE_NOT_FOUND.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReturnReceiptRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/inspections:
+    post:
+      tags: [Returns]
+      operationId: recordFinalInspection
+      summary: Record a final PASS or FAIL for received quantity
+      description: >-
+        PASS moves quarantine to sellable. FAIL remains quarantined and cannot later become PASS.
+        inspection_id is globally unique; the receipt line is addressed by its globally unique
+        (return_receipt_id, return_receipt_line_id) and may be consumed by several inspections.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InspectionRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/quarantine-dispositions:
+    post:
+      tags: [Quarantine]
+      operationId: recordQuarantineDisposition
+      summary: Hold or physically remove failed-inspection stock
+      description: >-
+        HOLD is a non-terminal annotation with no bucket movement; the quantity stays
+        eligible for a later DISPOSE or RETURN_TO_SUPPLIER. Only those two consume
+        failed, undisposed quantity and require physical departure evidence.
+        (disposition_id, disposition_line_id) is globally unique.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineDispositionRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/quarantine-dispositions/{disposition_id}/reversals:
+    post:
+      tags: [Quarantine]
+      operationId: reverseQuarantineDisposition
+      summary: Restore physically returned stock to quarantine only
+      description: >-
+        Only for a DISPOSE or RETURN_TO_SUPPLIER disposition line, selected by the path
+        disposition_id plus body disposition_line_id, whose units are verified physically
+        back at the same warehouse; restores quarantine, never sellable. reversal_sequence
+        is contiguous per disposition line and the cumulative quantity cannot exceed the
+        disposed quantity (409 DISPOSITION_REJECTED).
+      parameters: [{ $ref: '#/components/parameters/DispositionId' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/CorrelationId' }, { $ref: '#/components/parameters/CausationId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DispositionReversalRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/StockMutationSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/stock-positions:
+    get:
+      tags: [Sellable stock]
+      operationId: listStockPositions
+      summary: List stock positions by warehouse and/or SKU
+      description: At least one of warehouse_id or sku_id is required.
+      parameters:
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Stock position page., content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/stock-movements:
+    get:
+      tags: [Sellable stock]
+      operationId: listStockMovements
+      summary: Search immutable movement evidence
+      description: At least one of warehouse_id or sku_id is required; newest first.
+      parameters:
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: recorded_from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: recorded_to, in: query, required: false, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Movement page., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovementPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/dispatch-queue:
+    get:
+      tags: [Dispatch]
+      operationId: listDispatchQueue
+      summary: List committed, undispatched lines allocated to a warehouse
+      description: Oldest commit first.
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Dispatch queue page., content: { application/json: { schema: { $ref: '#/components/schemas/DispatchQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/inspection-queue:
+    get:
+      tags: [Returns]
+      operationId: listInspectionQueue
+      summary: List return receipt lines with uninspected quantity at a warehouse
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Inspection queue page., content: { application/json: { schema: { $ref: '#/components/schemas/InspectionQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/quarantine-items:
+    get:
+      tags: [Quarantine]
+      operationId: listQuarantineItems
+      summary: List failed-inspection quantity not yet disposed out
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Quarantine item page., content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineItemPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /api/v1/admin/inventory/refund-scopes:
+    get:
+      tags: [Returns]
+      operationId: findAdminRefundScopeByOrder
+      summary: Resolve the lifetime Refund Scope of an order
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/stock-positions/{warehouse_id}/{sku_id}:
+    get:
+      tags: [Sellable stock]
+      operationId: getStockPosition
+      summary: Read all authoritative buckets for warehouse operations
+      parameters: [{ $ref: '#/components/parameters/WarehouseId' }, { $ref: '#/components/parameters/SkuId' }]
+      responses: { '200': { description: Stock position., content: { application/json: { schema: { $ref: '#/components/schemas/StockPosition' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/stock-movements/{movement_id}:
+    get:
+      tags: [Sellable stock]
+      operationId: getStockMovement
+      summary: Read immutable movement evidence
+      parameters: [{ $ref: '#/components/parameters/MovementId' }]
+      responses: { '200': { description: Movement evidence., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovement' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/commands/{command_id}:
+    get:
+      tags: [Sellable stock]
+      operationId: getAdminCommandOutcome
+      summary: Read a durable ADMIN command outcome
+      parameters: [{ $ref: '#/components/parameters/CommandId' }]
+      responses: { '200': { description: Command outcome., content: { application/json: { schema: { $ref: '#/components/schemas/AdminCommandOutcome' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/reservations/{order_id}:
+    get:
+      tags: [Dispatch]
+      operationId: getAdminReservationFact
+      summary: Read allocation facts needed for warehouse operations
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses: { '200': { description: Reservation operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminReservation' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/v1/admin/inventory/refund-scopes/{refund_scope_id}:
+    get:
+      tags: [Returns]
+      operationId: getAdminRefundScopeFact
+      summary: Read immutable expected-return and inspection progress
+      parameters: [{ $ref: '#/components/parameters/RefundScopeId' }]
+      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+
+components:
+  securitySchemes:
+    adminIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: >-
+        Trusted interactive identity injected by the API Gateway after JWT verification,
+        with X-User-Roles containing ADMIN and X-User-Session-Id recorded in audit. The
+        Gateway strips client-supplied identity headers. There is no non-interactive
+        ADMIN principal. MFA is a production release gate that requires an Auth/gateway
+        MFA assertion (Inventory ADR-024).
+  parameters:
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, description: Caller-scoped command ID retained with its fingerprint and result for at least seven years., schema: { type: string, minLength: 16, maxLength: 128 } }
+    CorrelationId: { name: X-Correlation-ID, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 128 } }
+    CausationId: { name: X-Causation-ID, in: header, required: true, description: For an initial ADMIN command use the command ID., schema: { type: string, minLength: 8, maxLength: 128 } }
+    WarehouseId: { name: warehouse_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    SkuId: { name: sku_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    MovementId: { name: movement_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    DispositionId: { name: disposition_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    CommandId: { name: command_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    OrderId: { name: order_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    RefundScopeId: { name: refund_scope_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    Cursor: { name: cursor, in: query, required: false, description: Opaque cursor from the previous page., schema: { type: string, minLength: 1, maxLength: 512 } }
+    Limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+  schemas:
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    Quantity: { type: integer, format: int64, minimum: 1 }
+    EvidenceReference: { type: string, minLength: 1, maxLength: 512 }
+    Address:
+      type: object
+      additionalProperties: false
+      required: [line1, locality, country_code]
+      properties:
+        line1: { type: string, minLength: 1, maxLength: 200 }
+        line2: { type: string, minLength: 1, maxLength: 200 }
+        locality: { type: string, minLength: 1, maxLength: 120 }
+        region: { type: string, minLength: 1, maxLength: 120 }
+        postal_code: { type: string, minLength: 1, maxLength: 32 }
+        country_code: { type: string, pattern: '^[A-Z]{2}$' }
+    WarehouseName: { type: string, minLength: 1, maxLength: 120 }
+    Warehouse:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, name, address, is_active, operational_state, fulfillment_priority, revision]
+      properties:
+        warehouse_id:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Generated by Inventory on create.
+        name: { $ref: '#/components/schemas/WarehouseName' }
+        address: { $ref: '#/components/schemas/Address' }
+        is_active: { type: boolean }
+        operational_state: { enum: [UNKNOWN, NORMAL, OUTAGE] }
+        fulfillment_priority: { type: integer, minimum: 0 }
+        revision: { type: integer, minimum: 1 }
+    CreateWarehouseRequest:
+      type: object
+      additionalProperties: false
+      required: [name, address, is_active, operational_state, fulfillment_priority, reason, evidence_reference]
+      properties:
+        name: { $ref: '#/components/schemas/WarehouseName' }
+        address: { $ref: '#/components/schemas/Address' }
+        is_active: { type: boolean }
+        operational_state: { enum: [NORMAL, OUTAGE] }
+        fulfillment_priority: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 160 }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    UpdateWarehouseRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, reason, evidence_reference]
+      minProperties: 4
+      description: At least one of name, address, is_active, operational_state or fulfillment_priority.
+      properties:
+        expected_revision: { type: integer, minimum: 1, description: Current warehouse revision; a mismatch is 409 WAREHOUSE_CONFLICT. }
+        name: { $ref: '#/components/schemas/WarehouseName' }
+        address: { $ref: '#/components/schemas/Address' }
+        is_active: { type: boolean }
+        operational_state: { enum: [NORMAL, OUTAGE] }
+        fulfillment_priority: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 160 }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    StockReceiptRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [warehouse_id, sku_id, quantity, receipt_id, receipt_line_id, reason, baseline_batch_id, evidence_reference]
+          properties:
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            sku_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+            receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            reason: { const: INITIAL_STOCK_LOAD }
+            baseline_batch_id: { $ref: '#/components/schemas/OpaqueId' }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+        - type: object
+          additionalProperties: false
+          required: [warehouse_id, sku_id, quantity, receipt_id, receipt_line_id, reason, goods_receipt_reference, evidence_reference]
+          properties:
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            sku_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+            receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            reason: { const: SUPPLIER_RECEIPT }
+            goods_receipt_reference: { $ref: '#/components/schemas/OpaqueId' }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    StockAdjustmentRequest:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, sku_id, direction, quantity, adjustment_case_id, adjustment_line_id, reason, evidence_reference]
+      properties:
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        direction: { enum: [INCREASE, DECREASE] }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        adjustment_case_id: { $ref: '#/components/schemas/OpaqueId' }
+        adjustment_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { enum: [COUNT_GAIN, COUNT_LOSS, DAMAGE_REMOVAL, EXPIRY_REMOVAL, DATA_CORRECTION] }
+        reason_note: { type: string, minLength: 1, maxLength: 1000 }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+      allOf:
+        - if: { properties: { reason: { const: COUNT_GAIN } }, required: [reason] }
+          then: { properties: { direction: { const: INCREASE } } }
+        - if: { properties: { reason: { enum: [COUNT_LOSS, DAMAGE_REMOVAL, EXPIRY_REMOVAL] } }, required: [reason] }
+          then: { properties: { direction: { const: DECREASE } } }
+        - if: { properties: { reason: { const: DATA_CORRECTION } }, required: [reason] }
+          then: { required: [reason_note] }
+    MovementReversalRequest:
+      type: object
+      additionalProperties: false
+      required: [reversal_sequence, quantity, reason, reason_note, correction_case_reference, evidence_reference]
+      properties:
+        reversal_sequence: { type: integer, minimum: 1 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        reason: { enum: [DUPLICATE_ENTRY, WRONG_QUANTITY, WRONG_SKU, WRONG_WAREHOUSE, SOURCE_DOCUMENT_VOIDED] }
+        reason_note: { type: string, minLength: 1, maxLength: 1000 }
+        correction_case_reference: { $ref: '#/components/schemas/OpaqueId' }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    PhysicalDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [dispatch_id, dispatch_line_id, order_id, order_line_id, warehouse_id, sku_id, quantity, handed_over_at, handover_reference, evidence_reference]
+      properties:
+        dispatch_id: { $ref: '#/components/schemas/OpaqueId' }
+        dispatch_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        handed_over_at: { type: string, format: date-time }
+        handover_reference: { $ref: '#/components/schemas/OpaqueId' }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    ReturnReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, order_line_id, actual_sku_id, warehouse_id, quantity, return_receipt_id, return_receipt_line_id, package_reference, received_at, evidence_reference]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        actual_sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        return_receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+        return_receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        package_reference: { $ref: '#/components/schemas/OpaqueId' }
+        received_at: { type: string, format: date-time }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    InspectionRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [inspection_id, return_receipt_id, return_receipt_line_id, warehouse_id, quantity, result, checklist_reference, evidence_reference]
+          properties:
+            inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+            return_receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+            return_receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            result: { const: PASS }
+            checklist_reference: { $ref: '#/components/schemas/OpaqueId' }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+        - type: object
+          additionalProperties: false
+          required: [inspection_id, return_receipt_id, return_receipt_line_id, warehouse_id, quantity, result, fail_reason, checklist_reference, evidence_reference]
+          properties:
+            inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+            return_receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+            return_receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            result: { const: FAIL }
+            fail_reason: { enum: [DAMAGED, USED_OR_ALTERED, MISSING_COMPONENTS, SAFETY_OR_HYGIENE, COUNTERFEIT_OR_UNVERIFIABLE, NOT_RESELLABLE_BY_POLICY] }
+            checklist_reference: { $ref: '#/components/schemas/OpaqueId' }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    QuarantineDispositionRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [disposition_id, disposition_line_id, inspection_id, warehouse_id, sku_id, quantity, disposition, reason, evidence_reference]
+          properties:
+            disposition_id: { $ref: '#/components/schemas/OpaqueId' }
+            disposition_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            sku_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            disposition: { const: HOLD }
+            reason: { enum: [AWAITING_DISPOSITION, SUPPLIER_CLAIM, SAFETY_REVIEW, EVIDENCE_PRESERVATION] }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+        - type: object
+          additionalProperties: false
+          required: [disposition_id, disposition_line_id, inspection_id, warehouse_id, sku_id, quantity, disposition, reason, physical_departure_reference, departed_at, evidence_reference]
+          properties:
+            disposition_id: { $ref: '#/components/schemas/OpaqueId' }
+            disposition_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            sku_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            disposition: { const: DISPOSE }
+            reason: { enum: [UNSAFE, UNREPAIRABLE, EXPIRED, POLICY_REQUIRED] }
+            physical_departure_reference: { $ref: '#/components/schemas/OpaqueId' }
+            departed_at: { type: string, format: date-time }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+        - type: object
+          additionalProperties: false
+          required: [disposition_id, disposition_line_id, inspection_id, warehouse_id, sku_id, quantity, disposition, reason, physical_departure_reference, departed_at, evidence_reference]
+          properties:
+            disposition_id: { $ref: '#/components/schemas/OpaqueId' }
+            disposition_line_id: { $ref: '#/components/schemas/OpaqueId' }
+            inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+            warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+            sku_id: { $ref: '#/components/schemas/OpaqueId' }
+            quantity: { $ref: '#/components/schemas/Quantity' }
+            disposition: { const: RETURN_TO_SUPPLIER }
+            reason: { const: SUPPLIER_RETURN_AUTHORIZED }
+            physical_departure_reference: { $ref: '#/components/schemas/OpaqueId' }
+            departed_at: { type: string, format: date-time }
+            evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    DispositionReversalRequest:
+      type: object
+      additionalProperties: false
+      required: [disposition_line_id, reversal_sequence, quantity, reason, reason_note, physically_returned_at, physical_return_reference, evidence_reference]
+      properties:
+        disposition_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        reversal_sequence: { type: integer, minimum: 1 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        reason: { enum: [WRONG_RECORD, DISPOSAL_ABORTED, SUPPLIER_RETURNED] }
+        reason_note: { type: string, minLength: 1, maxLength: 1000 }
+        physically_returned_at: { type: string, format: date-time }
+        physical_return_reference: { $ref: '#/components/schemas/OpaqueId' }
+        evidence_reference: { $ref: '#/components/schemas/EvidenceReference' }
+    StockPosition:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, sku_id, on_hand, available_to_sell, reserved, committed, quarantine, revision]
+      properties:
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        on_hand: { type: integer, format: int64, minimum: 0 }
+        available_to_sell: { type: integer, format: int64, minimum: 0 }
+        reserved: { type: integer, format: int64, minimum: 0 }
+        committed: { type: integer, format: int64, minimum: 0 }
+        quarantine: { type: integer, format: int64, minimum: 0 }
+        revision: { type: integer, minimum: 1 }
+    StockMovement:
+      type: object
+      additionalProperties: false
+      required: [movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, deltas, recorded_at]
+      properties:
+        movement_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        source_operation_type: { type: string, minLength: 1, maxLength: 64 }
+        source_operation_id: { $ref: '#/components/schemas/OpaqueId' }
+        reverses_movement_id: { $ref: '#/components/schemas/OpaqueId' }
+        deltas:
+          type: object
+          additionalProperties: false
+          required: [on_hand, available_to_sell, reserved, committed, quarantine]
+          properties:
+            on_hand: { type: integer, format: int64 }
+            available_to_sell: { type: integer, format: int64 }
+            reserved: { type: integer, format: int64 }
+            committed: { type: integer, format: int64 }
+            quarantine: { type: integer, format: int64 }
+        recorded_at: { type: string, format: date-time }
+    AdminCommandOutcome:
+      type: object
+      additionalProperties: false
+      required: [command_id, correlation_id, operation, result, outcome, recorded_at]
+      properties:
+        command_id: { $ref: '#/components/schemas/OpaqueId' }
+        correlation_id: { $ref: '#/components/schemas/OpaqueId' }
+        operation: { type: string, minLength: 1, maxLength: 80 }
+        result: { enum: [ACCEPTED, REJECTED] }
+        outcome: { type: string, minLength: 1, maxLength: 64 }
+        http_status: { type: integer, minimum: 200, maximum: 599, description: Original HTTP status; 409 for a durable rejection. }
+        error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$', description: Catalog code; present only when result is REJECTED. }
+        resource_id: { $ref: '#/components/schemas/OpaqueId' }
+        recorded_at: { type: string, format: date-time }
+    PageCursor: { type: [string, 'null'], maxLength: 512, description: Opaque cursor for the next page; null on the last page. }
+    WarehousePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Warehouse' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    StockPositionPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StockPosition' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    StockMovementPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StockMovement' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    DispatchQueueItem:
+      type: object
+      additionalProperties: false
+      required: [order_id, order_line_id, sku_id, quantity, warehouse_id, committed_at]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        committed_at: { type: string, format: date-time }
+    DispatchQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/DispatchQueueItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    InspectionQueueItem:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, order_id, order_line_id, return_receipt_id, return_receipt_line_id, sku_id, warehouse_id, received_quantity, uninspected_quantity, received_at]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        return_receipt_id: { $ref: '#/components/schemas/OpaqueId' }
+        return_receipt_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        received_quantity: { $ref: '#/components/schemas/Quantity' }
+        uninspected_quantity: { $ref: '#/components/schemas/Quantity' }
+        received_at: { type: string, format: date-time }
+    InspectionQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/InspectionQueueItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    QuarantineItem:
+      type: object
+      additionalProperties: false
+      required: [inspection_id, warehouse_id, sku_id, fail_reason, failed_quantity, disposable_quantity, inspected_at]
+      properties:
+        inspection_id: { $ref: '#/components/schemas/OpaqueId' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        fail_reason: { enum: [DAMAGED, USED_OR_ALTERED, MISSING_COMPONENTS, SAFETY_OR_HYGIENE, COUNTERFEIT_OR_UNVERIFIABLE, NOT_RESELLABLE_BY_POLICY] }
+        failed_quantity: { $ref: '#/components/schemas/Quantity' }
+        disposable_quantity:
+          allOf: [{ $ref: '#/components/schemas/Quantity' }]
+          description: Failed quantity not yet consumed by DISPOSE or RETURN_TO_SUPPLIER; HOLD does not reduce it.
+        latest_hold_reason: { enum: [AWAITING_DISPOSITION, SUPPLIER_CLAIM, SAFETY_REVIEW, EVIDENCE_PRESERVATION] }
+        inspected_at: { type: string, format: date-time }
+    QuarantineItemPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/QuarantineItem' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
+    AdminReservationLine:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, quantity, warehouse_id, state]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, RESERVED, COMMITTED, DISPATCHED, RELEASED] }
+    AdminReservation:
+      type: object
+      additionalProperties: false
+      required: [order_id, state, revision, lines]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, RESERVED, COMMITTED, PARTIALLY_DISPATCHED, DISPATCHED, RELEASED] }
+        revision: { type: integer, minimum: 1 }
+        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/AdminReservationLine' } }
+    AdminRefundScopeLine:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, expected_quantity, received_quantity, passed_quantity, failed_quantity]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_quantity: { $ref: '#/components/schemas/Quantity' }
+        received_quantity: { type: integer, format: int64, minimum: 0 }
+        passed_quantity: { type: integer, format: int64, minimum: 0 }
+        failed_quantity: { type: integer, format: int64, minimum: 0 }
+    AdminRefundScope:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, refund_request_id, order_id, state, revision, lines]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, REGISTERED, IN_PROGRESS, INSPECTION_COMPLETED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] }
+        revision: { type: integer, minimum: 1 }
+        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/AdminRefundScopeLine' } }
+    StockMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [command_id, correlation_id, outcome, operation_id, recorded_at]
+      properties:
+        command_id: { $ref: '#/components/schemas/OpaqueId' }
+        correlation_id: { $ref: '#/components/schemas/OpaqueId' }
+        outcome: { const: ACCEPTED }
+        operation_id: { $ref: '#/components/schemas/OpaqueId' }
+        movement_id:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Present only when the accepted operation changes a stock bucket.
+        recorded_at: { type: string, format: date-time }
+        replayed: { type: boolean, default: false }
+    WarehouseMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [command_id, correlation_id, outcome, warehouse, recorded_at]
+      properties:
+        command_id: { $ref: '#/components/schemas/OpaqueId' }
+        correlation_id: { $ref: '#/components/schemas/OpaqueId' }
+        outcome: { const: ACCEPTED }
+        warehouse: { $ref: '#/components/schemas/Warehouse' }
+        recorded_at: { type: string, format: date-time }
+        replayed: { type: boolean, default: false }
+    InventoryProblem:
+      allOf:
+        - $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+        - type: object
+          required: [correlation_id]
+          properties:
+            correlation_id: { type: string, minLength: 8, maxLength: 128 }
+            command_id: { type: string, minLength: 16, maxLength: 128 }
+  responses:
+    WarehouseSuccess: { description: Durable warehouse command outcome., content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseMutationResponse' } } } }
+    StockMutationSuccess: { description: Durable accepted stock operation or exact idempotent replay., content: { application/json: { schema: { $ref: '#/components/schemas/StockMutationResponse' } } } }
+    BadRequest: { description: INVALID_REQUEST; correct input and use a new command ID., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unauthorized: { description: Missing or invalid identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Forbidden: { description: ADMIN authority or MFA is missing., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    NotFound: { description: 'Resource not found; for a command path target (warehouse update, movement or disposition reversal) this is a durable outcome replayed with the same body.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. code is one of IDEMPOTENCY_KEY_REUSED, OPERATION_IDENTITY_CONFLICT, INSUFFICIENT_SELLABLE_STOCK, DISPATCH_NOT_ALLOWED, RETURN_RECEIPT_REJECTED, INSPECTION_REJECTED, DISPOSITION_REJECTED, MOVEMENT_NOT_REVERSIBLE, REFUND_SCOPE_STATE_CONFLICT, WAREHOUSE_CONFLICT or WAREHOUSE_NOT_FOUND (unknown warehouse_id in a command body, Inventory ADR-027).', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unavailable:
+      description: INVENTORY_UNAVAILABLE (store unavailable, write freeze or outbox backpressure) or INVENTORY_BUSY (Retry-After 1); retry the same command ID.
+      headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

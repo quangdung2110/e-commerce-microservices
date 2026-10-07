@@ -1,0 +1,32 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda007",
+  "type": "com.ecommerce.inventory.refund.all-items-inspection-completed.v1",
+  "source": "/services/inventory",
+  "subject": "orders/order-10001/refund-scopes/scope-7001",
+  "time": "2026-09-07T06:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/inventory/v1/schemas/all-items-inspection-completed.schema.json",
+  "correlationid": "corr-refund-7001",
+  "causationid": "cmd-inspection-7001",
+  "sequence": 42007,
+  "aggregatetype": "refund-scope",
+  "aggregateid": "scope-7001",
+  "aggregaterevision": 6,
+  "data": {
+    "refund_scope_id": "scope-7001",
+    "refund_request_id": "refund-7001",
+    "order_id": "order-10001",
+    "scope_revision": 6,
+    "lines": [
+      {
+        "order_line_id": "line-a",
+        "sku_id": "sku-blue-m",
+        "expected_quantity": 2,
+        "received_quantity": 2,
+        "passed_quantity": 1,
+        "failed_quantity": 1
+      }
+    ]
+  }
+}

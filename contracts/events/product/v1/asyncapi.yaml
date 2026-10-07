@@ -1,0 +1,143 @@
+asyncapi: 3.0.0
+info:
+  title: Product Service Catalog Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho Product catalog outbox và markdown snapshot Product tiêu thụ.
+    Product là catalog source of truth; không message nào mang quantity, stock status,
+    reservation hoặc quyết định availability của Inventory.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  productEvents:
+    address: t.product.events
+    description: SKU catalog snapshot và Product/SKU tombstone do Product phát.
+    x-message-key: product_id
+    x-ordering-scope: product_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: data.product.catalog_revision hoặc data.catalog_revision
+    x-max-payload-bytes: 524288
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.product.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      skuUpserted: { $ref: '#/components/messages/skuUpserted' }
+      skuDeleted: { $ref: '#/components/messages/skuDeleted' }
+      productDeleted: { $ref: '#/components/messages/productDeleted' }
+  categoryEvents:
+    address: t.category.events
+    description: Category snapshot/tombstone do Product phát cho Search.
+    x-message-key: category_id
+    x-ordering-scope: category_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: data.category.category_revision hoặc data.category_revision
+    x-max-payload-bytes: 131072
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.category.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      categoryUpserted: { $ref: '#/components/messages/categoryUpserted' }
+      categoryDeleted: { $ref: '#/components/messages/categoryDeleted' }
+  catalogControlEvents:
+    address: t.catalog.control.events
+    description: Control event hiếm, yêu cầu Search chạy full reindex khi cây category đổi.
+    x-message-key: root_category_id
+    x-ordering-scope: root_category_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-max-payload-bytes: 16384
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.catalog.control.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      catalogReindexRequested: { $ref: '#/components/messages/catalogReindexRequested' }
+  promotionMarkdownEvents:
+    address: t.promotion.markdown.events
+    description: >-
+      ACTIVE full markdown hoặc INACTIVE tombstone Product scope do Promotion sở hữu và
+      phát; contract chuẩn nằm tại events/promotion/v1/asyncapi.yaml. Product là consumer
+      duy nhất.
+    x-owner: promotion-service
+    messages:
+      productMarkdownSnapshot:
+        $ref: '../../promotion/v1/asyncapi.yaml#/components/messages/productMarkdownSnapshot'
+operations:
+  publishSkuUpserted:
+    action: send
+    channel: { $ref: '#/channels/productEvents' }
+    summary: Product phát một SKU snapshot cho mỗi SKU bị ảnh hưởng bởi Product aggregate mutation; snapshot luôn chứa thumbnail_storage_key đã resolve.
+    messages: [{ $ref: '#/channels/productEvents/messages/skuUpserted' }]
+  publishSkuDeleted:
+    action: send
+    channel: { $ref: '#/channels/productEvents' }
+    summary: Product phát tombstone khi xóa riêng một SKU.
+    messages: [{ $ref: '#/channels/productEvents/messages/skuDeleted' }]
+  publishProductDeleted:
+    action: send
+    channel: { $ref: '#/channels/productEvents' }
+    summary: Product phát tombstone chứa toàn bộ SKU khi hard delete Product; Promotion consume theo operation consumeProductDeleted trong events/promotion/v1/asyncapi.yaml.
+    messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
+  publishCategoryUpserted:
+    action: send
+    channel: { $ref: '#/channels/categoryEvents' }
+    summary: Product phát snapshot category, gồm path dẫn xuất tại thời điểm commit.
+    messages: [{ $ref: '#/channels/categoryEvents/messages/categoryUpserted' }]
+  publishCategoryDeleted:
+    action: send
+    channel: { $ref: '#/channels/categoryEvents' }
+    summary: Product phát tombstone category rỗng.
+    messages: [{ $ref: '#/channels/categoryEvents/messages/categoryDeleted' }]
+  publishCatalogReindexRequested:
+    action: send
+    channel: { $ref: '#/channels/catalogControlEvents' }
+    summary: Product yêu cầu Search coalesce và chạy full reindex sau đổi cây category.
+    messages: [{ $ref: '#/channels/catalogControlEvents/messages/catalogReindexRequested' }]
+  consumeProductMarkdownSnapshot:
+    action: receive
+    channel: { $ref: '#/channels/promotionMarkdownEvents' }
+    summary: Product apply ACTIVE full payload hoặc INACTIVE tombstone mới hơn theo source_revision, reprice SKU và ghi outbox cùng transaction.
+    messages: [{ $ref: '#/channels/promotionMarkdownEvents/messages/productMarkdownSnapshot' }]
+components:
+  messages:
+    skuUpserted:
+      name: skuUpsertedV1
+      title: SKU catalog snapshot upserted
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/sku-upserted.schema.json' }
+    skuDeleted:
+      name: skuDeletedV1
+      title: SKU tombstone
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/sku-deleted.schema.json' }
+    productDeleted:
+      name: productDeletedV1
+      title: Product tombstone
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/product-deleted.schema.json' }
+    categoryUpserted:
+      name: categoryUpsertedV1
+      title: Category snapshot upserted
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/category-upserted.schema.json' }
+    categoryDeleted:
+      name: categoryDeletedV1
+      title: Category tombstone
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/category-deleted.schema.json' }
+    catalogReindexRequested:
+      name: catalogReindexRequestedV1
+      title: Catalog reindex requested
+      contentType: application/cloudevents+json
+      payload: { $ref: './schemas/catalog-reindex-requested.schema.json' }

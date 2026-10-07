@@ -1,170 +1,159 @@
 package entity
 
 import (
-	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
-	"user-service/internal/domain/vo"
+	"github.com/ecommerce/user-service/internal/common/constants"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/vo"
 )
 
-var (
-	ErrCannotDeleteLastDefault = errors.New("cannot delete the only default address")
-	ErrAddressNotOwned         = errors.New("address does not belong to user")
-)
-
-// Address represents a shipping address entity
+// Address is a shipping address inside the address book of one profile. It only
+// has meaning together with its owner, which is why every lookup is keyed on
+// (address_id, user_id) (USER-BR-001).
 type Address struct {
-	ID            uuid.UUID `json:"id" db:"id"`
-	UserID        uuid.UUID `json:"user_id" db:"user_id"`
-	IsDefault     bool      `json:"is_default" db:"is_default"`
-	RecipientName string    `json:"recipient_name" db:"recipient_name"`
-	PhoneNumber   string    `json:"phone_number" db:"phone_number"`
-	AddressLine   string    `json:"address_line" db:"address_line"`
-	WardID        string    `json:"ward_id" db:"ward_id"`
-	DistrictID    string    `json:"district_id" db:"district_id"`
-	CityID        string    `json:"city_id" db:"city_id"`
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	IsDefault      bool
+	RecipientName  string
+	RecipientPhone vo.Phone
+	AddressLine    string
+	ProvinceCode   string
+	DistrictCode   string
+	WardCode       string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
-// NewAddress creates a new Address entity
-func NewAddress(userID uuid.UUID, recipientName, phone, addressLine, wardID, districtID, cityID string) (*Address, error) {
-	phoneVO, err := vo.NewPhoneNumber(phone)
+// AddressInput is the validated write payload shared by create and replace.
+type AddressInput struct {
+	RecipientName  string
+	RecipientPhone string
+	AddressLine    string
+	ProvinceCode   string
+	DistrictCode   string
+	WardCode       string
+}
+
+// validatedAddress is the input after normalization.
+type validatedAddress struct {
+	recipientName  string
+	recipientPhone vo.Phone
+	addressLine    string
+	provinceCode   string
+	districtCode   string
+	wardCode       string
+}
+
+// Validate normalizes and checks every field against the OpenAPI schema. All
+// violations are collected so the caller sees one complete 422 response.
+func (in AddressInput) Validate() (validatedAddress, error) {
+	invalid := apperr.ErrInvalidAddress
+	out := validatedAddress{}
+
+	out.recipientName = strings.TrimSpace(in.RecipientName)
+	if out.recipientName == "" || len([]rune(out.recipientName)) > constants.MaxRecipientNameLength {
+		invalid = invalid.WithFields(apperr.FieldError{
+			Field:   "recipient_name",
+			Message: "must be between 1 and 200 characters",
+		})
+	}
+
+	phone, ok := vo.NewPhone(in.RecipientPhone)
+	if !ok {
+		invalid = invalid.WithFields(apperr.FieldError{
+			Field:   "recipient_phone",
+			Message: "must be an E.164 number, for example +84901234567",
+		})
+	}
+	out.recipientPhone = phone
+
+	out.addressLine = strings.TrimSpace(in.AddressLine)
+	if out.addressLine == "" || len([]rune(out.addressLine)) > constants.MaxAddressLineLength {
+		invalid = invalid.WithFields(apperr.FieldError{
+			Field:   "address_line",
+			Message: "must be between 1 and 500 characters",
+		})
+	}
+
+	codes := []struct {
+		field string
+		value string
+		out   *string
+	}{
+		{"province_code", in.ProvinceCode, &out.provinceCode},
+		{"district_code", in.DistrictCode, &out.districtCode},
+		{"ward_code", in.WardCode, &out.wardCode},
+	}
+	for _, code := range codes {
+		trimmed := strings.TrimSpace(code.value)
+		if !vo.ValidAreaCode(trimmed) {
+			invalid = invalid.WithFields(apperr.FieldError{
+				Field:   code.field,
+				Message: "must be a Vietnamese administrative code of at most 20 characters",
+			})
+			continue
+		}
+		*code.out = trimmed
+	}
+
+	if invalid.HasFields() {
+		return validatedAddress{}, invalid
+	}
+	return out, nil
+}
+
+// NewAddress creates an address for a profile. isDefault is decided by the
+// application layer: the first address of a profile becomes the default
+// (USER-BR-002).
+func NewAddress(userID uuid.UUID, in AddressInput, isDefault bool, now time.Time) (*Address, error) {
+	valid, err := in.Validate()
 	if err != nil {
 		return nil, err
 	}
 
-	if recipientName == "" {
-		return nil, ErrRecipientNameRequired
-	}
-
-	if addressLine == "" {
-		return nil, ErrAddressLineRequired
-	}
-
-	if wardID == "" || districtID == "" || cityID == "" {
-		return nil, ErrLocationRequired
-	}
-
+	now = now.UTC()
 	return &Address{
-		ID:            uuid.New(),
-		UserID:        userID,
-		IsDefault:     false, // Will be set by service logic
-		RecipientName: recipientName,
-		PhoneNumber:   phoneVO.Value,
-		AddressLine:   addressLine,
-		WardID:        wardID,
-		DistrictID:    districtID,
-		CityID:        cityID,
+		ID:             uuid.New(),
+		UserID:         userID,
+		IsDefault:      isDefault,
+		RecipientName:  valid.recipientName,
+		RecipientPhone: valid.recipientPhone,
+		AddressLine:    valid.addressLine,
+		ProvinceCode:   valid.provinceCode,
+		DistrictCode:   valid.districtCode,
+		WardCode:       valid.wardCode,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}, nil
 }
 
-// Update updates address fields with validation
-func (a *Address) Update(recipientName, phone, addressLine, wardID, districtID, cityID string) error {
-	if recipientName != "" {
-		a.RecipientName = recipientName
+// Replace applies a full update. The default flag is not part of the payload:
+// it only changes through the dedicated set-default operation.
+func (a *Address) Replace(in AddressInput, now time.Time) error {
+	valid, err := in.Validate()
+	if err != nil {
+		return err
 	}
 
-	if phone != "" {
-		phoneVO, err := vo.NewPhoneNumber(phone)
-		if err != nil {
-			return err
-		}
-		a.PhoneNumber = phoneVO.Value
-	}
-
-	if addressLine != "" {
-		a.AddressLine = addressLine
-	}
-
-	if wardID != "" {
-		a.WardID = wardID
-	}
-
-	if districtID != "" {
-		a.DistrictID = districtID
-	}
-
-	if cityID != "" {
-		a.CityID = cityID
-	}
-
+	a.RecipientName = valid.recipientName
+	a.RecipientPhone = valid.recipientPhone
+	a.AddressLine = valid.addressLine
+	a.ProvinceCode = valid.provinceCode
+	a.DistrictCode = valid.districtCode
+	a.WardCode = valid.wardCode
+	a.UpdatedAt = now.UTC()
 	return nil
 }
 
-// SetAsDefault marks this address as default
-func (a *Address) SetAsDefault() {
-	a.IsDefault = true
-}
-
-// UnsetDefault marks this address as not default
-func (a *Address) UnsetDefault() {
-	a.IsDefault = false
-}
-
-// BelongsTo checks if the address belongs to the specified user
-func (a *Address) BelongsTo(userID uuid.UUID) bool {
-	return a.UserID == userID
-}
-
-// FormattedAddress returns a formatted full address string
-func (a *Address) FormattedAddress() string {
-	return a.AddressLine
-}
-
-// GetID returns the address ID
-func (a *Address) GetID() uuid.UUID {
-	return a.ID
-}
-
-// GetUserID returns the user ID
-func (a *Address) GetUserID() uuid.UUID {
-	return a.UserID
-}
-
-// IsDefault returns whether this is the default address
-func (a *Address) IsDefaultAddress() bool {
-	return a.IsDefault
-}
-
-// GetRecipientName returns the recipient name
-func (a *Address) GetRecipientName() string {
-	return a.RecipientName
-}
-
-// GetPhoneNumber returns the phone number
-func (a *Address) GetPhoneNumber() string {
-	return a.PhoneNumber
-}
-
-// GetAddressLine returns the address line
-func (a *Address) GetAddressLine() string {
-	return a.AddressLine
-}
-
-// GetWardID returns the ward ID
-func (a *Address) GetWardID() string {
-	return a.WardID
-}
-
-// GetDistrictID returns the district ID
-func (a *Address) GetDistrictID() string {
-	return a.DistrictID
-}
-
-// GetCityID returns the city ID
-func (a *Address) GetCityID() string {
-	return a.CityID
-}
-
-// GetCreatedAt returns the created timestamp
-func (a *Address) GetCreatedAt() time.Time {
-	return a.CreatedAt
-}
-
-// GetUpdatedAt returns the updated timestamp
-func (a *Address) GetUpdatedAt() time.Time {
-	return a.UpdatedAt
+// EnsureDeletable refuses to remove the address a checkout would pick by
+// default (USER-BR-004). The owner promotes another address first.
+func (a *Address) EnsureDeletable() error {
+	if a.IsDefault {
+		return apperr.ErrDefaultAddressCannotBeDeleted
+	}
+	return nil
 }

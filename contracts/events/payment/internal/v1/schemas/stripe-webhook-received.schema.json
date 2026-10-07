@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json",
+  "title": "Verified Stripe webhook received v1",
+  "allOf": [
+    { "$ref": "../../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "type", "source", "subject", "time", "datacontenttype", "dataschema", "data"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "type": { "const": "com.ecommerce.payment.stripe-webhook.received.v1" },
+        "source": { "const": "/services/payment/webhook-ingress" },
+        "subject": {
+          "type": "string",
+          "pattern": "^stripe-events/evt_[A-Za-z0-9_]+$"
+        },
+        "datacontenttype": { "const": "application/json" },
+        "dataschema": {
+          "const": "/contracts/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider", "stripe_event_id", "event_type", "event_created_at",
+            "api_version", "livemode", "received_at", "verified_at",
+            "signing_secret_id", "raw_body_base64", "raw_body_sha256", "stripe_signature"
+          ],
+          "properties": {
+            "provider": { "const": "STRIPE" },
+            "stripe_event_id": { "type": "string", "pattern": "^evt_[A-Za-z0-9_]+$" },
+            "event_type": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "event_created_at": { "type": "string", "format": "date-time" },
+            "api_version": { "type": ["string", "null"], "maxLength": 20 },
+            "livemode": { "type": "boolean" },
+            "received_at": { "type": "string", "format": "date-time" },
+            "verified_at": { "type": "string", "format": "date-time" },
+            "signing_secret_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Non-secret configuration identifier for the active signing key."
+            },
+            "raw_body_base64": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "description": "Exact verified HTTP request-body bytes, base64 encoded without normalization."
+            },
+            "raw_body_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "stripe_signature": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        }
+      }
+    }
+  ]
+}

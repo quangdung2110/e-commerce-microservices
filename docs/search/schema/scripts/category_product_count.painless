@@ -1,0 +1,6 @@
+// Canonical reconciliation write for the periodic product_count recompute.
+// No upsert: a category absent from the projection must not be created by a
+// count job. Required params: product_count (long), computed_at.
+if (ctx._source.is_deleted == true) { ctx.op = 'none'; return; }
+ctx._source.product_count = params.product_count;
+ctx._source.product_count_updated_at = params.computed_at;

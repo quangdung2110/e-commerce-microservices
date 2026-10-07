@@ -1,0 +1,513 @@
+version: 1
+
+# status: legacy_documented | proposed | implemented | verified
+# Mọi interaction http/grpc ở đây là nguồn dẫn xuất cho ma trận AuthorizationPolicy
+# tại docs/mesh/runtime-contract.md mục 5.2; thêm/sửa interaction phải kèm dòng tương ứng.
+interactions:
+  - id: cart-and-checkout-query-product-skus
+    protocol: grpc
+    provider: product-service
+    consumers: [cart-service, checkout-service]
+    contract: grpc/ecommerce/product/v1/product_service.proto
+    status: implemented
+    notes: Canonical Product price/catalog/category snapshot; never carries Inventory stock.
+
+  - id: checkout-reads-cart-snapshot
+    protocol: http
+    provider: cart-service
+    consumers: [checkout-service]
+    contract: http/cart/v1/openapi.yaml
+    status: implemented
+    notes: Minimal mTLS snapshot of product_id, sku_id and authoritative quantity; no direct Cart Redis access.
+
+  - id: checkout-reads-user-address-snapshot
+    protocol: http
+    provider: user-service
+    consumers: [checkout-service]
+    contract: http/user/v1/openapi.yaml
+    status: proposed
+    notes: User verifies address ownership and returns the immutable delivery snapshot required by Order.
+
+  - id: gateway-routes-checkout
+    protocol: http
+    provider: checkout-service
+    consumers: [api-gateway]
+    contract: http/checkout/v1/openapi.yaml
+    status: implemented
+    notes: Buyer Preview, token-scoped voucher options, Submit and token-owned durable submission recovery; all responses private/no-store; stable CheckoutProblem catalog.
+
+  - id: storefront-queries-search
+    protocol: http
+    provider: search-service
+    consumers: [api-gateway]
+    contract: http/search/v2/openapi.yaml
+    status: proposed
+    notes: >-
+      Bốn API storefront anonymous cộng hai operation admin reindex. Một hit là một SKU;
+      facet và category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên
+      route /api/v1/search/** không còn backend và đã bỏ khỏi gateway local ở bước 4 frontend.
+
+  - id: search-reindexes-product-catalog
+    protocol: http
+    provider: product-service
+    consumers: [search-service]
+    contract: http/product/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS Product/Category export and Product snapshot API for Search reindex; catalog event consumer must also run during export.
+
+  - id: storefront-queries-product-detail
+    protocol: http
+    provider: product-detail-bff
+    consumers: [api-gateway]
+    contract: http/product-detail-bff/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Buyer PDP API composes Product catalog (category breadcrumb, attributes, variant
+      axes, gallery with BFF-built CDN URLs) and optional Review summary/preview.
+      It reads advisory per-SKU availability from Inventory's dedicated internal
+      batch-read API; BFF does not consume Inventory events or exports.
+
+  - id: product-detail-bff-queries-product-catalog
+    protocol: http
+    provider: product-service
+    consumers: [product-detail-bff]
+    contract: http/product/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal mTLS buyer-read by slug; Product returns the resolved BuyerProductDetail
+      projection (category path, attribute labels, variant axes, media capped 20 per
+      Product and 10 per SKU, price) with storage keys only, no ETag, and never stock.
+
+  - id: product-detail-bff-queries-review-summary
+    protocol: http
+    provider: review-service
+    consumers: [product-detail-bff]
+    contract: http/review/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal service-identity PDP read after Product resolves product_id; BFF sends
+      the static Bearer token from PDP_REVIEW_SERVICE_TOKEN and preview_limit=3. Review
+      remains source of truth; timeout degrades only the Review section and never
+      becomes aggregate zero.
+
+  - id: product-detail-bff-queries-inventory-availability
+    protocol: http
+    provider: inventory-service
+    consumers: [product-detail-bff]
+    contract: http/inventory/read/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal mTLS batch read after Product resolves active SKU IDs. Inventory returns
+      advisory IN_STOCK, OUT_OF_STOCK, or UNKNOWN only; timeout/503 degrades PDP SKU
+      availability to UNKNOWN; Checkout uses allocation Preview and Order is the only Reserve caller.
+
+  - id: product-publishes-catalog-events
+    protocol: kafka
+    provider: product-service
+    consumers: [search-service, promotion-service]
+    contract: events/product/v1/asyncapi.yaml
+    status: proposed
+    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Promotion consumes only product-deleted, persists a terminal catalog-revision watermark, invalidates markdown rules and emits no reverse event. Inventory consumes no Product event; Checkout blocks unsaleable SKUs before Order reserves (Inventory ADR-026).
+
+  - id: promotion-publishes-product-markdown-snapshots
+    protocol: kafka
+    provider: promotion-service
+    consumers: [product-service]
+    contract: events/promotion/v1/asyncapi.yaml
+    status: implemented
+    notes: Promotion transactional outbox/CDC emits product-scope current-state snapshots keyed by product_id with monotonic source_revision; ACTIVE carries full rule data and INACTIVE is a reason-only tombstone. Promotion owns the contract; Product AsyncAPI references the message by $ref. This is the only Promotion-published event in v1; coupon, budget and reservation facts are intentionally absent because no consumer is registered.
+
+  - id: cart-publishes-cart-events
+    protocol: kafka
+    provider: cart-service
+    consumers: [cart-service, analytics-service, notification-service]
+    contract: events/cart/v1/asyncapi.yaml
+    status: proposed
+    notes: Pilot contains CART_ITEM_ADDED only; more event types migrate incrementally.
+
+  - id: auth-publishes-identity-events
+    protocol: kafka
+    provider: auth-service
+    consumers: [user-service, notification-service, review-service, chat-service]
+    contract: events/auth/v1/asyncapi.yaml
+    status: proposed
+    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract; mọi Auth CloudEvents id là UUID để consumer persist receipt cùng kiểu.
+
+  - id: user-publishes-profile-preference-events
+    protocol: kafka
+    provider: user-service
+    consumers: [chat-service, notification-service]
+    contract: events/user/v1/asyncapi.yaml
+    status: proposed
+    notes: USER_PROFILE_UPDATED cho Chat và USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
+
+  - id: auth-requests-security-notifications
+    protocol: kafka
+    provider: auth-service
+    consumers: [notification-service]
+    contract: events/auth/v1/asyncapi.yaml
+    status: proposed
+    notes: Notification event chỉ có delivery_id; không mang email, OTP hoặc reset token.
+
+  - id: notification-resolves-auth-delivery-content
+    protocol: http
+    provider: auth-service
+    consumers: [notification-service]
+    contract: http/auth/internal/v1/openapi.yaml
+    status: proposed
+    notes: Internal mTLS API để resolve PII/secret theo delivery_id, không qua public Gateway.
+
+  - id: gateway-verifies-auth-tokens
+    protocol: http
+    provider: auth-service
+    consumers: [api-gateway]
+    contract: http/auth/v1/openapi.yaml
+    status: implemented
+    notes: >-
+      Gateway đọc JWKS tại /.well-known/jwks.json rồi verify access token ở edge.
+      Claim set, ánh xạ claim sang identity header, key Redis auth:revocation:*
+      và payload invalidation được chốt tại docs/gateway/runtime-contract.md mục
+      6 và 6.1. Đây là contract duy nhất cho identity header; không service nào
+      được tự định nghĩa lại tên claim hay tên key.
+
+  - id: auth-signals-jwks-rotation
+    protocol: redis-pubsub
+    provider: auth-service
+    consumers: [api-gateway]
+    contract: null
+    status: implemented
+    notes: >-
+      Channel auth:jwks:update mang JSON {"type","kid","timestamp"}. Chỉ là tối
+      ưu hóa: gateway vẫn phải refresh khi gặp kid lạ hoặc khi cache hết TTL, nên
+      mất tín hiệu chỉ làm chậm rotation chứ không phá verification.
+
+  - id: order-paid-clears-cart
+    protocol: kafka
+    provider: order-service
+    consumers: [cart-service]
+    contract: events/order/v1/asyncapi.yaml
+    status: implemented
+    notes: >-
+      ORDER_PAID is a minimal CloudEvent containing canonical string order_id,
+      user_id and unique purchased sku_ids; Cart removes those SKUs idempotently.
+
+  - id: order-completed-grants-review-entitlements
+    protocol: kafka
+    provider: order-service
+    consumers: [review-service]
+    contract: events/order/v1/asyncapi.yaml
+    status: implemented
+    notes: >-
+      ORDER_COMPLETED carries the immutable product/SKU/variant snapshot (including the
+      product name and thumbnail shown on the buyer's review screens) Review needs to
+      grant one entitlement per purchased SKU without a synchronous Order lookup.
+
+  - id: checkout-creates-order
+    protocol: http
+    provider: order-service
+    consumers: [checkout-service]
+    contract: http/order/internal/v1/openapi.yaml
+    status: implemented
+    notes: Checkout submits one immutable snapshot, including Product-owned category_ids, with Idempotency-Key equal to checkout_token and receives freshly relayed Payment client data.
+
+  - id: gateway-manages-orders
+    protocol: http
+    provider: order-service
+    consumers: [api-gateway]
+    contract: http/order/v1/openapi.yaml
+    status: implemented
+    notes: Buyer and Admin reads, lifecycle commands, FAILED-only payment-attempt request before the immutable deadline/while resource holds remain accepted, and operation polling use trusted Gateway identity.
+
+  - id: order-initiates-payment
+    protocol: http
+    provider: payment-service
+    consumers: [order-service]
+    contract: http/payment/v1/openapi.yaml
+    status: implemented
+    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction. EXPIRED/CANCELED attempts are not retryable; success after terminal non-capture is an Order reconciliation obligation, not a revived order.
+
+  - id: stripe-delivers-payment-webhook
+    protocol: http
+    provider: payment-service
+    consumers: [api-gateway]
+    contract: http/payment/v1/openapi.yaml
+    status: proposed
+    notes: External Stripe delivery enters at the Gateway public path; Gateway preserves exact bytes. Payment verifies signature and the 300-second window before encrypted inbox persistence or internal Kafka publication.
+
+  - id: finance-ops-operates-payment
+    protocol: http
+    provider: payment-service
+    consumers: [finance-ops, accounting-ops]
+    contract: http/payment/internal/v1/openapi.yaml
+    status: proposed
+    notes: Internal-only RBAC and maker-checker surface for review cases, verified-inbox replay, reconciliation/freeze, immutable ledger lookup and dispute lookup; never exposed by the public Gateway.
+
+  - id: payment-publishes-payment-events
+    protocol: kafka
+    provider: payment-service
+    consumers: [order-service, analytics-service]
+    contract: events/payment/v2/asyncapi.yaml
+    status: proposed
+    notes: Fifteen full CloudEvents structured facts with exact types, per-event schemas, VND money and per-transaction financial version. Five dispute facts are orthogonal and do not rewrite Payment state. No client_secret/provider identifiers. Terminal non-capture facts require provider cancellation; retryable declines emit nothing.
+
+  - id: checkout-previews-inventory-allocation
+    protocol: http
+    provider: inventory-service
+    consumers: [checkout-service]
+    contract: http/inventory/workflow/v1/openapi.yaml
+    status: proposed
+    notes: Preview is advisory, creates no hold, and returns ALLOCATABLE or REJECT_ALL.
+
+  - id: order-commands-inventory-workflow
+    protocol: http
+    provider: inventory-service
+    consumers: [order-service]
+    contract: http/inventory/workflow/v1/openapi.yaml
+    status: implemented
+    notes: >-
+      Order Temporal Saga exclusively owns Reserve/Commit/Release, selected Refund
+      Scope, and automatic admin pre-dispatch refund decisions. Inventory atomically
+      releases every committed line or none; scope is one per order lifetime and each
+      selected line has full quantity. Commands are durable and idempotent by caller
+      namespace plus key. Order also finalizes Buyer scopes through completed close,
+      or audited no-payout incomplete close/zero-receipt cancel; uncertain outcomes
+      replay the frozen command. Admin pre-dispatch has no scope, and terminal scopes
+      never reopen after Payment reversal. Reservation command results use durable
+      HTTP receipts and same-command query/replay, with no Kafka acknowledgment;
+      Order retains checkpoints and durable recovery after retry exhaustion.
+
+  - id: warehouse-admin-operates-inventory
+    protocol: http
+    provider: inventory-service
+    consumers: [api-gateway]
+    contract: http/inventory/admin/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Gateway-routed /api/v1/admin/inventory for role ADMIN (MFA is a production gate):
+      warehouse master, physical movement, return, inspection, disposition and read-only
+      operational queues; stable 409 code catalog.
+
+  - id: checkout-calculates-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [checkout-service]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: Checkout uses the pure internal discount-calculation query; it never reserves budget during Preview.
+
+  - id: checkout-lists-voucher-options
+    protocol: http
+    provider: promotion-service
+    consumers: [checkout-service]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: Checkout builds the trusted context from its token-owned snapshot and calls POST /internal/v1/promotion-voucher-options for the checkout voucher tray; read-only, no save/claim/reserve (Checkout ADR-017, Promotion ADR-018).
+
+  - id: gateway-routes-customer-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [api-gateway]
+    contract: http/promotion/v1/openapi.yaml
+    status: implemented
+    notes: Authenticated suggestion/discovery/save/claim surface; discovery is rate-limited at the Gateway.
+
+  - id: gateway-administers-promotions
+    protocol: http
+    provider: promotion-service
+    consumers: [api-gateway]
+    contract: http/promotion/v1/openapi.yaml
+    status: implemented
+    notes: ADMIN-only campaign, promotion, grant, and markdown management surface.
+
+  - id: order-commands-promotion-allocation
+    protocol: http
+    provider: promotion-service
+    consumers: [order-service]
+    contract: http/promotion/v1/openapi.yaml
+    status: implemented
+    notes: Order Temporal owns reserve, pre-payment cancel and confirm only; technical cancellation is denied to Order and reserved for the separately capability-bound legacy migrator.
+
+  - id: legacy-migrator-technical-cancels-promotion-allocation
+    protocol: http
+    provider: promotion-service
+    consumers: [promotion-legacy-migrator]
+    contract: http/promotion/v1/openapi.yaml
+    status: proposed
+    notes: The legacy migrator alone must present the dedicated workload identity and an immutable pre-watermark proof; this route is not a Saga compensation or Order recovery path.
+
+  - id: finance-ops-decides-order-financial-reconciliation
+    protocol: http
+    provider: order-service
+    consumers: [finance-ops, accounting-ops]
+    contract: http/order/internal/v1/openapi.yaml
+    status: implemented
+    notes: >-
+      A Finance or Accounting operator records an evidence-backed, optimistic-concurrency
+      decision for an existing Order reconciliation case. CLOSE_RETURN_WITHOUT_REFUND
+      additionally binds the existing Buyer request/scope and missing-return reason;
+      it dispatches guarded Inventory finalization without payout and closes the case
+      only after a matching receipt. No decision mutates Payment or Promotion directly.
+
+  - id: inventory-publishes-public-facts
+    protocol: kafka
+    provider: inventory-service
+    consumers: [search-service, order-service]
+    contract: events/inventory/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Search consumes one Inventory-owned per-SKU availability snapshot only after
+      Search has registered Product-document readiness; Order consumes
+      only physical-dispatch and selected-scope refund-inspection completion facts.
+      Reservation command results use the Workflow HTTP contract and are not public events.
+      Inspection completion is payout-independent and contains pass/fail counters. Delivery is
+      at-least-once with a 30-day minimum replay window.
+
+  - id: search-exports-inventory-availability
+    protocol: http
+    provider: inventory-service
+    consumers: [search-service]
+    contract: http/inventory/exports/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Idempotent Product-document readiness register/revoke plus fixed-watermark
+      per-SKU availability snapshot and ordered change feed. Inventory does not expose
+      warehouse/position projection facts to Search. Search sends X-Service-Identity:
+      search-service; a stale revocation is 409 READINESS_REVISION_CONFLICT (Inventory ADR-027).
+
+  - id: gateway-routes-review-api
+    protocol: http
+    provider: review-service
+    consumers: [api-gateway]
+    contract: http/review/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Public list/pagination and all Review commands (create, edit, media, report,
+      reply, moderation, takedown) route directly to Review Service, never through
+      Product Detail BFF. The contract separates anonymous product reads, authenticated
+      buyer commands and Gateway-admin moderation; no Review `/internal/v1/**` route is
+      exposed by Gateway.
+
+  - id: review-publishes-rating-aggregate-events
+    protocol: kafka
+    provider: review-service
+    consumers: [search-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Review phát rating aggregate snapshot theo product_id, guarded bằng
+      review_revision. Search VNext chỉ consume event metrics này, không consume
+      review business event để tính lại aggregate.
+
+  - id: review-self-consumes-rating-lifecycle-events
+    protocol: kafka
+    provider: review-service
+    consumers: [review-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Review's idempotent rating aggregator self-consumes created, updated, hidden,
+      restored and removed facts. Metrics snapshots and notification requests are ACKed
+      without an aggregate effect.
+
+  - id: review-requests-user-notifications
+    protocol: kafka
+    provider: review-service
+    consumers: [notification-service]
+    contract: events/review/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Notification receives only first-official-reply and legal-removal requests.
+      Payloads exclude reply content, legal case/reason and administrator identity.
+
+  - id: search-reindexes-review-rating-aggregates
+    protocol: http
+    provider: review-service
+    consumers: [search-service]
+    contract: http/review/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Internal service-identity export cho full reindex. POST tạo durable session và
+      chụp Review Kafka offsets trước scan; Search import page snapshot rồi replay
+      inclusive từ offsets cố định của session.
+
+  - id: order-requests-notifications
+    protocol: kafka
+    provider: order-service
+    consumers: [notification-service]
+    contract: events/notification/v1/asyncapi.yaml
+    status: implemented
+    notes: >-
+      Order publishes NOTIFICATION_REQUESTED on the Notification-owned lane
+      t.notification.transactional.v1 for five templates (ORDER_CONFIRMED,
+      ORDER_PAYMENT_FAILED, ORDER_CANCELLED, ORDER_COMPLETED, ORDER_REFUNDED), via
+      the Order multi-destination outbox, with deterministic template_data from the
+      Order snapshot/config only, a required per-order notification sequence, and
+      per-destination delivery receipts. Payment
+      and Delivery facts are not consumed by Notification because they carry no
+      user_id; Order relays those milestones.
+
+  - id: notification-resolves-auth-contact
+    protocol: http
+    provider: auth-service
+    consumers: [notification-service]
+    contract: http/auth/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      GET /internal/v1/auth/users/{user_id}/notification-contact resolves the recipient
+      email at send time for every notification not initiated by Auth. mTLS, no-store,
+      15-minute in-memory/Redis cache only; never persisted by Notification.
+
+  - id: notification-consumes-cart-abandoned
+    protocol: kafka
+    provider: cart-service
+    consumers: [notification-service]
+    contract: events/cart/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      Only fact-style input in phase 1: CART_ABANDONED is mapped by Notification to the
+      bulk template CART_ABANDONED; dedup_key cart_abandoned:{cart_id}:{abandonment_cycle}.
+
+  - id: notification-publishes-outcomes
+    protocol: kafka
+    provider: notification-service
+    consumers: [analytics-service, user-service]
+    contract: events/notification/v1/asyncapi.yaml
+    status: proposed
+    notes: >-
+      t.notification.outcomes.v1 carries delivered, bounced, failed and complaint-received
+      per delivery, keyed by user_id, without template_data or email. User consumes
+      complaint-received to switch off marketing_enabled at the source.
+
+  - id: gateway-routes-notification-inbox
+    protocol: http
+    provider: notification-service
+    consumers: [api-gateway]
+    contract: http/notification/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      In-app inbox for the authenticated user: cursor list, unread count, mark read,
+      archive, mark-all-read. All responses no-store. No preference endpoints (User
+      Service owns them), no realtime in phase 1, no webhook route (SES events arrive
+      via SNS -> SQS).
+
+  - id: support-queries-notification-status
+    protocol: http
+    provider: notification-service
+    consumers: [order-service, finance-ops]
+    contract: http/notification/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Read-only timeline per request_id or per subject for support/admin tooling;
+      returns statuses, attempts and error codes, never template_data or addresses.
+
+  - id: notification-ops-operates-notification
+    protocol: http
+    provider: notification-service
+    consumers: [finance-ops]
+    contract: http/notification/internal/v1/openapi.yaml
+    status: proposed
+    notes: >-
+      Finance Ops workload acting with the notification-ops principal, not routed through
+      the public Gateway: pause/resume lane, redrive
+      delivery or DLQ batch, manual suppression, replay mode. Idempotency-Key required,
+      every call audited. Phase 1 may implement these as a CLI sharing the same handlers.

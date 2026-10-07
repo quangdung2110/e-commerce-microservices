@@ -1,22 +1,20 @@
-# ============================================================
-# Promotion Service - Dev Profile
-# ============================================================
-
+# Chạy local với PostgreSQL/Redis/Kafka của docker-compose ở repo root.
 spring:
-  jpa:
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
-
+  datasource:
+    url: jdbc:postgresql://localhost:15432/promotion_service
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: localhost
+      port: 6379
   kafka:
-    consumer:
-      properties:
-        spring.json.trusted.packages: "*"
+    bootstrap-servers: localhost:9092
+
+promotion:
+  product:
+    base-url: http://localhost:8082
 
 logging:
   level:
-    root: INFO
-    com.ecommerce.promotion: DEBUG
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    com.platform.promotionservice: DEBUG

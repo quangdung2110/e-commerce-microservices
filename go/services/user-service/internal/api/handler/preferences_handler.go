@@ -1,136 +1,72 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 
-	"user-service/internal/api/dto/request"
-	"user-service/internal/api/dto/response"
-	"user-service/internal/api/middleware"
-	"user-service/internal/domain/service"
+	"github.com/ecommerce/user-service/internal/api/dto/request"
+	"github.com/ecommerce/user-service/internal/api/dto/response"
+	"github.com/ecommerce/user-service/internal/api/httpx"
+	"github.com/ecommerce/user-service/internal/api/middleware"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/service"
 )
 
-// PreferencesHandler handles preferences-related HTTP requests
+// PreferencesHandler serves the preference endpoints.
 type PreferencesHandler struct {
-	preferencesService *service.PreferencesService
-	db                 *pgxpool.Pool
-	logger             *zap.Logger
+	preferences *service.PreferencesService
 }
 
-// NewPreferencesHandler creates a new preferences handler
-func NewPreferencesHandler(preferencesService *service.PreferencesService, db *pgxpool.Pool, logger *zap.Logger) *PreferencesHandler {
-	return &PreferencesHandler{
-		preferencesService: preferencesService,
-		db:                 db,
-		logger:             logger,
-	}
+// NewPreferencesHandler wires the preference endpoints.
+func NewPreferencesHandler(preferences *service.PreferencesService) *PreferencesHandler {
+	return &PreferencesHandler{preferences: preferences}
 }
 
-// GetPreferences handles GET /api/v1/users/me/preferences
-func (h *PreferencesHandler) GetPreferences(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Get handles GET /api/v1/users/me/preferences.
+func (h *PreferencesHandler) Get(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	prefs, err := h.preferencesService.GetPreferences(c.Request.Context(), userID)
+	preferences, err := h.preferences.Get(c.Request.Context(), identity.UserID)
 	if err != nil {
-		if errors.Is(err, service.ErrPreferencesNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodePreferencesNotFound,
-				"Cài đặt người dùng không tồn tại",
-			))
-			return
-		}
-		h.logger.Error("failed to get preferences", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while fetching preferences",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.PreferencesResponseFromEntity(prefs))
+	httpx.WriteJSON(c, http.StatusOK, response.NewPreferences(preferences))
 }
 
-// UpdatePreferences handles PUT /api/v1/users/me/preferences
-// Uses transactional outbox pattern to ensure preferences update and outbox event are committed atomically
-func (h *PreferencesHandler) UpdatePreferences(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Replace handles PUT /api/v1/users/me/preferences. Only the three notification
+// flags are writable; a missing profile is a 404 rather than a silent bootstrap
+// of an account that may have been deleted (WF-USER-005).
+func (h *PreferencesHandler) Replace(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	var req request.UpdatePreferencesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"Dữ liệu không hợp lệ",
-			[]response.ErrorDetail{{Field: "body", Message: err.Error()}},
-		))
+	var payload request.NotificationPreferencesUpdate
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	// Begin transaction for atomic preferences update + outbox event
-	ctx := c.Request.Context()
-	tx, err := h.db.Begin(ctx)
+	changes, err := payload.ToChanges()
 	if err != nil {
-		h.logger.Error("failed to begin transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
-	defer tx.Rollback(ctx)
 
-	prefs, err := h.preferencesService.UpdatePreferencesWithOutbox(
-		ctx,
-		tx,
-		userID,
-		req.Language,
-		req.Currency,
-		req.EmailEnabled,
-		req.InAppEnabled,
-		req.MarketingEnabled,
-	)
-
+	preferences, err := h.preferences.Replace(c.Request.Context(), identity.UserID, changes)
 	if err != nil {
-		if errors.Is(err, service.ErrPreferencesNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodePreferencesNotFound,
-				"Cài đặt người dùng không tồn tại",
-			))
-			return
-		}
-		h.logger.Error("failed to update preferences", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		h.logger.Error("failed to commit transaction", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating preferences",
-		))
-		return
-	}
-
-	c.JSON(http.StatusOK, response.PreferencesResponseFromEntity(prefs))
+	httpx.WriteJSON(c, http.StatusOK, response.NewPreferences(preferences))
 }

@@ -1,0 +1,41 @@
+{
+  "eventType": "Bounce",
+  "bounce": {
+    "feedbackId": "0100019996a1c0ff-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-000000",
+    "bounceType": "Permanent",
+    "bounceSubType": "General",
+    "bouncedRecipients": [
+      {
+        "emailAddress": "Nguyen Van A <nobody@example.com>",
+        "action": "failed",
+        "status": "5.1.1",
+        "diagnosticCode": "smtp; 550 5.1.1 <nobody@example.com>: Recipient address rejected: User unknown in virtual mailbox table"
+      }
+    ],
+    "timestamp": "2026-09-22T07:47:36.100Z",
+    "reportingMTA": "dns; a8-50.smtp-out.amazonses.com"
+  },
+  "mail": {
+    "timestamp": "2026-09-22T07:47:30.000Z",
+    "source": "no-reply@ecommerce.local",
+    "sourceArn": "arn:aws:ses:ap-southeast-1:000000000000:identity/ecommerce.local",
+    "sendingAccountId": "000000000000",
+    "messageId": "0100019996a1b2c3-2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e-000000",
+    "destination": ["nobody@example.com"],
+    "headersTruncated": false,
+    "headers": [
+      {"name": "From", "value": "no-reply@ecommerce.local"},
+      {"name": "To", "value": "nobody@example.com"},
+      {"name": "Subject", "value": "Có người trả lời đánh giá của bạn"}
+    ],
+    "commonHeaders": {
+      "from": ["no-reply@ecommerce.local"],
+      "to": ["nobody@example.com"],
+      "subject": "Có người trả lời đánh giá của bạn"
+    },
+    "tags": {
+      "ses:configuration-set": ["notification-critical-transactional"],
+      "delivery_id": ["7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"]
+    }
+  }
+}

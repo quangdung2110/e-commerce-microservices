@@ -1,0 +1,137 @@
+asyncapi: 3.0.0
+info:
+  title: Promotion Service Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho Kafka event của Promotion Service. Promotion phát đúng một
+    message type qua transactional outbox + Debezium CDC: current-state markdown
+    snapshot cho Product. Promotion tiêu thụ đúng một message type: Product tombstone
+    `product-deleted.v1`. Không có coupon/wallet, budget, reservation, campaign lifecycle
+    hay refund event ở v1 vì chưa có consumer đã được xác nhận; thêm message type mới là
+    thay đổi additive khi consumer thật xuất hiện.
+x-adoption-status: implemented
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  promotionMarkdownEvents:
+    address: t.promotion.markdown.events
+    description: >-
+      Current-state markdown snapshot theo product. ACTIVE mang full winning rule,
+      discount và effective interval; INACTIVE là tombstone chỉ có reason. Mọi cause
+      (publish trong window, START/END, pause, cancel) đều phát cùng một message type;
+      không có delta MARKDOWN_CREATED/UPDATED/ENDED. Product là consumer duy nhất.
+    x-owner: promotion-service
+    x-message-key: product_id
+    x-ordering-scope: product_id
+    x-transport: >-
+      PostgreSQL outbox + Debezium CDC. promotion_outbox_events.payload giữ complete
+      CloudEvents envelope và lên wire nguyên văn; connector chỉ chọn topic, key và
+      header. CloudEvents.id bằng promotion_outbox_events.event_id nên ổn định qua mọi
+      lần CDC retry.
+    x-outbox-table: promotion.promotion_outbox_events
+    x-outbox-payload: full-cloudevents-envelope
+    x-outbox-dedup-key: >-
+      markdown:{product_id}:campaign:{campaign_id}:rev:{campaign_revision}:trigger:{START|END|PUBLISH|PAUSE|CANCEL}.
+      Causal identity đầy đủ; resulting state không thuộc key nên một cause chỉ tạo tối
+      đa một snapshot.
+    x-message-key-source: promotion_outbox_events.partition_key, mirrored from data.product_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: data.source_revision (mirrored to CloudEvents.sequence); consumer bỏ revision không lớn hơn projection hiện tại
+    x-publication-precondition: >-
+      Không phát cho product đã có terminal watermark trong catalog_product_tombstones;
+      Promotion không phát INACTIVE ngược lại Product đã hard delete.
+    x-max-payload-bytes: 16384
+    x-retention: 14d
+    x-retry-policy:
+      strategy: consumer-managed-retry-with-dlq
+      dead-letter-topic: t.promotion.markdown.events.dlq
+    x-data-classification: INTERNAL
+    x-consumers: [product-service]
+    messages:
+      productMarkdownSnapshot: { $ref: '#/components/messages/productMarkdownSnapshot' }
+  productEvents:
+    address: t.product.events
+    description: >-
+      SKU/Product catalog snapshot và tombstone do Product sở hữu. Promotion chỉ
+      subscribe message product-deleted; các message khác trên topic được ACK không
+      tạo hiệu ứng.
+    x-owner: product-service
+    messages:
+      productDeleted:
+        $ref: '../../product/v1/asyncapi.yaml#/components/messages/productDeleted'
+operations:
+  publishProductMarkdownSnapshot:
+    action: send
+    channel: { $ref: '#/channels/promotionMarkdownEvents' }
+    summary: >-
+      Phát current-state snapshot của product sau khi transaction có advisory lock theo
+      product tính winning rule, cấp source_revision và insert outbox bằng causal dedup key.
+    x-message-key: product_id
+    messages: [{ $ref: '#/channels/promotionMarkdownEvents/messages/productMarkdownSnapshot' }]
+  consumeProductDeleted:
+    action: receive
+    channel: { $ref: '#/channels/productEvents' }
+    summary: >-
+      Persist terminal catalog-revision watermark vào catalog_product_tombstones (kể cả khi
+      chưa có rule), invalidate mọi markdown rule của product với reason PRODUCT_DELETED,
+      ack sau PostgreSQL commit; không bump campaign revision/claim gate và không phát
+      reverse markdown event.
+    x-consumer-guard: >-
+      Cùng PostgreSQL advisory transaction lock theo product_id với mọi admin markdown
+      mutation; watermark chỉ tiến theo data.catalog_revision lớn hơn; duplicate/stale event
+      không lùi watermark nhưng vẫn repair rule chưa invalidated.
+    messages: [{ $ref: '#/channels/productEvents/messages/productDeleted' }]
+components:
+  messages:
+    productMarkdownSnapshot:
+      name: productMarkdownSnapshotV1
+      title: Product markdown snapshot
+      summary: ACTIVE full markdown hoặc INACTIVE tombstone cho một product.
+      contentType: application/cloudevents+json
+      x-consumers: [product-service]
+      payload: { $ref: './schemas/product-markdown-snapshot.schema.json' }
+      examples:
+        - name: active
+          summary: Campaign START phát winning rule cho product.
+          payload:
+            specversion: '1.0'
+            id: 0198e110-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.promotion.product-markdown-snapshot.v1
+            source: /services/promotion
+            subject: products/0198e0b3-97e4-7d66-8a2c-997d792ae826
+            time: '2026-09-02T09:30:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
+            sequence: 12
+            data:
+              product_id: 0198e0b3-97e4-7d66-8a2c-997d792ae826
+              promotion_rule_id: 42
+              source_revision: 12
+              state: ACTIVE
+              discount:
+                type: PERCENTAGE
+                discount_bps: 1000
+                max_discount_vnd: 50000
+              starts_at: '2026-09-02T09:30:00Z'
+              ends_at: '2026-09-05T09:30:00Z'
+        - name: inactive
+          summary: Campaign END phát tombstone; Product reset selling price.
+          payload:
+            specversion: '1.0'
+            id: 0198e110-97e4-7d66-8a2c-997d792ae827
+            type: com.ecommerce.promotion.product-markdown-snapshot.v1
+            source: /services/promotion
+            subject: products/0198e0b3-97e4-7d66-8a2c-997d792ae826
+            time: '2026-09-05T09:30:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
+            sequence: 13
+            data:
+              product_id: 0198e0b3-97e4-7d66-8a2c-997d792ae826
+              source_revision: 13
+              state: INACTIVE
+              inactive_reason: EXPIRED

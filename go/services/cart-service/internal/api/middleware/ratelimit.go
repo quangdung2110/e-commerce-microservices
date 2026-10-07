@@ -2,103 +2,117 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"cart-service/internal/api/dto/response"
+	"cart-service/internal/domain"
 )
 
-type rateLimiterEntry struct {
-	mu        sync.Mutex
-	tokens    float64
-	lastRefill time.Time
-	burst     int
-	rps       float64
+// RateLimitConfig configures the per-user token bucket.
+type RateLimitConfig struct {
+	// RequestsPerSecond is the sustained refill rate.
+	RequestsPerSecond float64
+	// Burst is the bucket capacity.
+	Burst int
+	// IdleTimeout is how long an unused bucket is kept before eviction.
+	IdleTimeout time.Duration
 }
 
-// RateLimiter implements per-user rate limiting using token bucket.
-type RateLimiter struct {
-	limiters sync.Map
-	rps      float64
-	burst    int
-}
-
-// NewRateLimiter creates a new rate limiter.
-func NewRateLimiter(rps float64, burst int) *RateLimiter {
-	return &RateLimiter{
-		rps:   rps,
-		burst: burst,
-	}
-}
-
-func (rl *RateLimiter) getEntry(userID string) *rateLimiterEntry {
-	entry, ok := rl.limiters.Load(userID)
-	if ok {
-		return entry.(*rateLimiterEntry)
-	}
-
-	e := &rateLimiterEntry{
-		tokens:     float64(rl.burst),
-		lastRefill: time.Now(),
-		burst:      rl.burst,
-		rps:        rl.rps,
-	}
-	actual, _ := rl.limiters.LoadOrStore(userID, e)
-	return actual.(*rateLimiterEntry)
-}
-
-// Allow checks if a request is allowed for the given user.
-func (rl *RateLimiter) Allow(userID string) bool {
-	now := time.Now()
-	entry := rl.getEntry(userID)
-
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-
-	elapsed := now.Sub(entry.lastRefill).Seconds()
-	entry.lastRefill = now
-	entry.tokens += elapsed * entry.rps
-	if entry.tokens > float64(entry.burst) {
-		entry.tokens = float64(entry.burst)
-	}
-
-	if entry.tokens >= 1 {
-		entry.tokens--
-		return true
-	}
-	return false
-}
-
-// RateLimit returns the rate limiting middleware.
+// RateLimit applies a per-user token bucket.
+//
+// The limit is keyed by the cart token rather than the user id, so no user
+// identifier ends up in the limiter's memory or in any metric derived from it.
+// This is a local safety net; the Gateway owns the real policy.
 func RateLimit(cfg RateLimitConfig) gin.HandlerFunc {
-	if !cfg.Enabled {
+	if cfg.RequestsPerSecond <= 0 {
 		return func(c *gin.Context) { c.Next() }
 	}
-
-	burst := cfg.MaxReqsPerMin / 10
-	if burst < 1 {
-		burst = 1
-	}
-	limiter := NewRateLimiter(float64(cfg.MaxReqsPerMin)/60.0, burst)
+	limiter := newBucketLimiter(cfg)
 
 	return func(c *gin.Context) {
-		userID := GetUserID(c)
-		if userID == "" {
-			userID = c.ClientIP()
+		identity := GetIdentity(c)
+		if identity.UserToken == "" {
+			c.Next()
+			return
 		}
 
-		if !limiter.Allow(userID) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests,
-				response.NewErrorResponse(
-					response.ErrRateLimited,
-					"Too many requests",
-					GetRequestID(c),
-				),
+		if !limiter.allow(identity.UserToken) {
+			retryAfter := int(1/cfg.RequestsPerSecond) + 1
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			problem := response.NewProblem(
+				http.StatusTooManyRequests,
+				domain.CodeRateLimited,
+				"too many cart requests; retry shortly",
+				c.Request.URL.Path,
+				GetRequestID(c),
 			)
+			problem.Retryable = true
+			AbortWithProblem(c, problem)
 			return
 		}
 		c.Next()
+	}
+}
+
+type bucket struct {
+	tokens   float64
+	lastSeen time.Time
+}
+
+type bucketLimiter struct {
+	cfg RateLimitConfig
+	now func() time.Time
+
+	mu      sync.Mutex
+	buckets map[string]*bucket
+}
+
+func newBucketLimiter(cfg RateLimitConfig) *bucketLimiter {
+	if cfg.Burst <= 0 {
+		cfg.Burst = 1
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = 10 * time.Minute
+	}
+	return &bucketLimiter{cfg: cfg, now: time.Now, buckets: make(map[string]*bucket)}
+}
+
+func (l *bucketLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	entry, ok := l.buckets[key]
+	if !ok {
+		l.evictIdle(now)
+		l.buckets[key] = &bucket{tokens: float64(l.cfg.Burst) - 1, lastSeen: now}
+		return true
+	}
+
+	elapsed := now.Sub(entry.lastSeen).Seconds()
+	entry.tokens += elapsed * l.cfg.RequestsPerSecond
+	if entry.tokens > float64(l.cfg.Burst) {
+		entry.tokens = float64(l.cfg.Burst)
+	}
+	entry.lastSeen = now
+
+	if entry.tokens < 1 {
+		return false
+	}
+	entry.tokens--
+	return true
+}
+
+// evictIdle drops buckets nobody has touched recently, so the map cannot grow
+// without bound across the lifetime of the process.
+func (l *bucketLimiter) evictIdle(now time.Time) {
+	for key, entry := range l.buckets {
+		if now.Sub(entry.lastSeen) > l.cfg.IdleTimeout {
+			delete(l.buckets, key)
+		}
 	}
 }

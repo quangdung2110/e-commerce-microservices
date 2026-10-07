@@ -1,0 +1,2 @@
+title: "Mật khẩu đã được thay đổi"
+body: "Mật khẩu của bạn đã được thay đổi lúc {{date .ChangedAt .Timezone}}. Nếu không phải bạn, hãy đặt lại mật khẩu ngay và liên hệ hỗ trợ."

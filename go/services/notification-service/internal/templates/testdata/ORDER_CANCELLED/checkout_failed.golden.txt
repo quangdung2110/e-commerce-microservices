@@ -1,0 +1,18 @@
+E-Commerce
+====================
+
+Đơn hàng đã bị huỷ
+
+Đơn hàng ORD-1000234 đã bị huỷ vào lúc 20/09/2026 19:00.
+
+Lý do: Đơn hàng không thể hoàn tất do sự cố trong quá trình đặt hàng.
+
+Đơn hàng chưa phát sinh thanh toán nên không có khoản nào cần hoàn lại.
+
+Xem chi tiết đơn hàng: https://shop.example.com/orders/1000234
+
+Nếu bạn cần hỗ trợ thêm, vui lòng liên hệ bộ phận chăm sóc khách hàng.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

@@ -12,7 +12,7 @@ services:
   # API Gateway (Traefik v3.x)
   # =============================================================================
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.7.1
     container_name: api-gateway
     restart: unless-stopped
     security_opt:
@@ -28,8 +28,6 @@ services:
       # Configuration files
       - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
-      # Plugins directory
-      - ./plugins:/plugins
       # TLS certificates (if using custom certs)
       - ./certs:/certs:ro
       # Let's Encrypt certificates
@@ -160,31 +158,6 @@ services:
       - ecommerce-network
     depends_on:
       - prometheus
-
-  # =============================================================================
-  # Go Plugin Builder (for Windows users)
-  # =============================================================================
-  # Use this service to build Go plugins since -buildmode=plugin
-  # is not supported on Windows. Run with:
-  #   docker compose run --rm go-builder
-  # =============================================================================
-  go-builder:
-    image: golang:1.21
-    container_name: go-builder
-    working_dir: /app
-    volumes:
-      - ./cmd/traefik-plugin:/app
-      - ./plugins:/plugins
-    command: >
-      sh -c "cd /app &&
-             go mod download &&
-             go build -buildmode=plugin -o /plugins/jwt_auth.so . &&
-             echo 'Plugin built successfully!' &&
-             ls -la /plugins/"
-    networks:
-      - ecommerce-network
-    profiles:
-      - builder
 
   # =============================================================================
   # Auth Service Mock (for testing)

@@ -1,0 +1,37 @@
+{
+  "name": "review-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname": "review_service",
+    "topic.prefix": "review",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "review_outbox_publication",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": "review_outbox_slot",
+    "table.include.list": "review.review_outbox",
+    "tombstones.on.delete": "false",
+
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "partition_key",
+    "transforms.outbox.table.field.event.type": "event_type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.table.fields.additional.placement": "event_type:header:ce_type,aggregate_type:header:ce_aggregate_type,aggregate_id:header:ce_aggregate_id",
+    "transforms.outbox.route.by.field": "event_type",
+    "transforms.outbox.route.topic.regex": "(?<routedByValue>.*)",
+    "transforms.outbox.route.topic.replacement": "t.review.events",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}

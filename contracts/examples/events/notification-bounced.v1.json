@@ -1,0 +1,24 @@
+{
+  "specversion": "1.0",
+  "id": "e4b8d1c6-7a2f-4e9b-8d05-6c3a1f9b2d77",
+  "type": "com.ecommerce.notification.bounced.v1",
+  "source": "/services/notification",
+  "subject": "deliveries/7d2e9c40-3b1f-4f6a-8e21-0c9d5a7b3e10",
+  "time": "2026-09-20T10:15:41Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/notification/v1/schemas/notification-bounced.schema.json",
+  "correlationid": "order-checkout-9d40d5ae-c636-4d55-bf7d-bad6d388bd7f",
+  "data": {
+    "delivery_id": "7d2e9c40-3b1f-4f6a-8e21-0c9d5a7b3e10",
+    "request_id": "5b1c0f2e-2f0a-4d0e-9c1a-1a2b3c4d5e6f",
+    "template": "ORDER_CONFIRMED",
+    "lane": "transactional",
+    "channel": "email",
+    "user_id": "0f6d3a8e-6a4e-4d0d-9c3b-2b1e6f7a8c9d",
+    "subject": "orders/1000234",
+    "provider": "ses",
+    "occurred_at": "2026-09-20T10:15:40Z",
+    "bounce_type": "permanent",
+    "suppressed": true
+  }
+}

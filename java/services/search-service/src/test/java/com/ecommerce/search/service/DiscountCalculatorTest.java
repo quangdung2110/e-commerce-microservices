@@ -1,41 +1,41 @@
 package com.ecommerce.search.service;
 
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.MethodSource;
-
-import java.util.List;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@DisplayName("DiscountCalculator")
+/** {@code SEARCH-BR-004} and {@code SEARCH-BR-005}. */
 class DiscountCalculatorTest {
 
-    @ParameterizedTest
-    @MethodSource("calculations")
-    @DisplayName("should calculate discount percentage correctly")
-    void calculate(Long original, Long best, int expected) {
-        assertThat(DiscountCalculator.calculate(original, best)).isEqualTo(expected);
+    @Test
+    void matchesTheWorkedExampleFromTheDomainDoc() {
+        // docs/search/domain.md §9: 34.990.000 down to 28.891.500 is 17%.
+        assertThat(DiscountCalculator.discountPercentage(34_990_000L, 28_891_500L)).isEqualTo(17);
+        assertThat(DiscountCalculator.hasPromotion(34_990_000L, 28_891_500L)).isTrue();
     }
 
-    static Stream<Arguments> calculations() {
-        return Stream.of(
-            // Basic cases
-            Arguments.of(100L, 80L, 20),      // 20% off
-            Arguments.of(1000L, 750L, 25),     // 25% off
-            Arguments.of(34_990_000L, 28_891_500L, 17),  // real-world: ~17% off
-            // Edge cases
-            Arguments.of(100L, 100L, 0),       // same price → 0%
-            Arguments.of(100L, 120L, 0),       // best > original → 0%
-            Arguments.of(100L, 0L, 100),       // 100% off (giveaway)
-            // Null / zero
-            Arguments.of(null, 100L, 0),       // null original → 0
-            Arguments.of(100L, null, 0),       // null best → 0
-            Arguments.of(0L, 0L, 0),           // zero original → 0
-            Arguments.of(-100L, 50L, 0)        // negative original → 0
-        );
+    @Test
+    void floorsRatherThanRounds() {
+        assertThat(DiscountCalculator.discountPercentage(1000L, 801L)).isEqualTo(19);
+    }
+
+    @Test
+    void isZeroWhenThereIsNoDiscount() {
+        assertThat(DiscountCalculator.discountPercentage(1000L, 1000L)).isZero();
+        assertThat(DiscountCalculator.discountPercentage(1000L, 1200L)).isZero();
+        assertThat(DiscountCalculator.hasPromotion(1000L, 1000L)).isFalse();
+    }
+
+    @Test
+    void isZeroRatherThanFailingOnMissingOrZeroPrices() {
+        assertThat(DiscountCalculator.discountPercentage(null, 100L)).isZero();
+        assertThat(DiscountCalculator.discountPercentage(100L, null)).isZero();
+        assertThat(DiscountCalculator.discountPercentage(0L, 0L)).isZero();
+        assertThat(DiscountCalculator.hasPromotion(null, 100L)).isFalse();
+    }
+
+    @Test
+    void reachesOneHundredOnlyWhenTheSellingPriceIsZero() {
+        assertThat(DiscountCalculator.discountPercentage(1000L, 0L)).isEqualTo(100);
     }
 }

@@ -1,5 +1,10 @@
 # Bản Thiết Kế Toàn Diện: Analytics Service
 
+> **Trạng thái:** thiết kế tương lai, chưa có Analytics Service/runtime và chưa là
+> consumer được đăng ký của Order hay Review event nào. Không cấp Kafka ACL, không
+> tạo pipeline và không suy diễn schema Analytics từ `t.order.events` hoặc
+> `t.review.events` cho tới khi có contract integration riêng.
+
 Tài liệu này là bản đúc kết từ quá trình phân tích và thảo luận chuyên sâu, quy định mọi mặt về kiến trúc, luồng sự kiện (Data Pipeline), cơ chế bảo mật cô lập và Database Schema cho **Analytics Service** (Dịch vụ Phân tích Dữ liệu) của hệ thống E-commerce.
 
 ---
@@ -45,10 +50,28 @@ Giải pháp áp dụng **4 Lớp Chốt Chặn (Defense in Depth)**:
 Analytics không chủ động moi móc Database của các Service. Tất cả đi qua **Transactional Outbox Event** đẩy vào Kafka.
 
 ### Bố cục các luồng Flink Pipelines (Job)
-1.  **Pipeline Giao dịch (Order/Payment/Promotion):** Nguồn `t.order.events`. Đòi hỏi tính chính xác, không trùng lặp (Checkpointing 2PC Strict). Ghi xuống các bảng thiết kế dạng Unique Update ở Doris (Khứ hồi tiền tức thì khi Hủy đơn).
-2.  **Pipeline Khách hàng & Phễu (Cart/Review):** Nguồn `t.cart.events`, `t.review.events`. Được Flink Join dữ liệu tạo ra bức tranh Phễu thoái thác lúc checkout (Cart Abandonment). Phục vụ Hệ thống Marketing bắn Notification nhắc Khách quay lại mua.
+1.  **Pipeline giao dịch (Payment):** nguồn khả dụng là `t.payment.events.v2` theo
+    [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml). Pipeline
+    chỉ dispatch theo exact namespaced CloudEvents `type`, validate `dataschema`,
+    deduplicate bằng `(source, id)` và upsert theo payment/refund/dispute identity
+    cùng `financial_state_version`; 15 exact types gồm 5 dispute facts. Không suy
+    dispute status thành payment/refund state và không đọc Kafka headers làm authority.
+    Analytics chưa phải consumer được đăng ký của Order Events v1:
+    hai fact Order hiện tại chỉ dành cho Cart và Review. Mọi pipeline doanh thu/order
+    mới phải có consumer contract riêng trước khi cấp ACL, thay vì suy diễn lifecycle
+    từ `t.order.events`.
+2.  **Pipeline Khách hàng & Phễu (Cart):** Mục tiêu tương lai là dùng `t.cart.events`
+    để dựng phễu bỏ giỏ. Review không phải source đã đăng ký: Review Events v1 chỉ có
+    consumer là Review, Search và Notification.
 3.  **Pipeline Hạ tầng & Bảo mật (Auth/Security):** Nguồn `t.auth.events`. Đẩy nguyên thô mọi tác vụ Đăng Nhập Sai, Reset Pass làm Audit Log Pháp lý để Sàn truy vết Gian lận Tài khoản mà không làm nghẽn DB Auth gốc.
 4.  **Pipeline Hành vi Traffic (View/Click/Search):** Thông lượng lớn. Flink Gom rác và chỉ đổi JSON sang Columns, xả thẳng Data Khổng lồ xuống dạng Append-Only của Doris. Doris sẽ tự Rollup.
+5.  **Pipeline Notification outcomes (đề xuất):** nguồn khả dụng là
+    `t.notification.outcomes.v1` theo [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml):
+    `delivered`, `bounced`, `failed`, `complaint-received` cho từng delivery, key `user_id`.
+    Payload không có `template_data` hay email — đủ cho tỷ lệ delivered/bounce/complaint
+    theo template, lane, kênh và provider; không dùng để dựng nội dung đã gửi. Analytics
+    được ghi trong `x-consumers` của contract nhưng **chưa đăng ký** interaction phía mình;
+    phải đăng ký trước khi cấp ACL, như mọi nguồn khác.
 
 ### Cơ Chế Đổ Dữ Liệu (Doris Stream Load)
 Thay vì dùng `INSERT INTO`, Flink sử dụng tính năng **Micro-Batching**. Flink thu gom sự kiện vào một gói lớn (vd: 50.000 events / 5 giây) rồi bắn 1 phát (Stream Load / HTTP Put) thẳng vào Backend Node của Doris. Điều này tăng cường khả năng chịu tải lên tới triệu dòng/s mà không sập DB.

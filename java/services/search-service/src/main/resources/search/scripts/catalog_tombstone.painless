@@ -1,0 +1,17 @@
+// Canonical catalog delete path for `sku-deleted` and `product-deleted`.
+// Do not use scripted_upsert. A missing document is a normal no-op that the
+// caller must classify and ACK; an Update API script cannot turn a 404 into a no-op.
+// Required params: catalog_revision (long), deleted_at, indexed_at, event_id.
+if (ctx._source.catalog_revision != null
+    && params.catalog_revision <= ctx._source.catalog_revision) {
+  ctx.op = 'none';
+  return;
+}
+
+ctx._source.is_deleted = true;
+ctx._source.deleted_at = params.deleted_at;
+ctx._source.is_in_stock = false;
+ctx._source.catalog_revision = params.catalog_revision;
+ctx._source.catalog_indexed_at = params.indexed_at;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_catalog_event_id = params.event_id;

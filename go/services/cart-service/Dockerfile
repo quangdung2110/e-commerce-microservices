@@ -10,23 +10,27 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w -extldflags '-static'" \
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
     -o /app/cart-service \
     ./cmd/server
 
-# ---- Runtime Stage (Distroless) ----
-FROM gcr.io/distroless/static-debian12:nonroot
+# ---- Runtime Stage ----
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata wget
 
 WORKDIR /app
 
 COPY --from=builder /app/cart-service /app/cart-service
-
 COPY configs/ /app/configs/
 
+RUN addgroup -S nonroot && adduser -S nonroot -G nonroot
 USER nonroot:nonroot
 
+EXPOSE 8080
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["wget", "-q", "--spider", "http://localhost:8080/healthz"]
+    CMD ["wget", "-q", "-O-", "http://localhost:8080/health/live"]
 
 ENTRYPOINT ["/app/cart-service"]

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/auth/v1/schemas/user-deleted.schema.json",
+  "title": "User Deleted v1",
+  "allOf": [
+    { "$ref": "./auth-event-common.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "com.ecommerce.auth.user-deleted.v1" },
+        "dataschema": { "const": "/contracts/events/auth/v1/schemas/user-deleted.schema.json" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["user_id", "deleted_at", "reason", "hard_delete_after"],
+          "properties": {
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "deleted_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" },
+            "reason": { "type": "string", "enum": ["GDPR_REQUEST", "ADMIN_DELETION"], "x-data-classification": "INTERNAL" },
+            "hard_delete_after": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

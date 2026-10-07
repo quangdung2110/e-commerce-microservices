@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/EMAIL_CHANGED.schema.json",
+  "title": "EMAIL_CHANGED template_data (from Auth event user-email-changed.v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "changed_at"],
+  "properties": {
+    "event": { "const": "EMAIL_CHANGED" },
+    "changed_at": { "type": "string", "format": "date-time" }
+  }
+}

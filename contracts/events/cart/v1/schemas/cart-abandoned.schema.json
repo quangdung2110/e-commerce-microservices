@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cart Abandoned v1",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "required": ["data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.cart.abandoned.v1" },
+        "source": { "const": "/services/cart" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cart_id", "user_id", "abandonment_cycle", "occurred_at"],
+          "properties": {
+            "cart_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "user_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "abandonment_cycle": { "type": "integer", "minimum": 1 },
+            "occurred_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    }
+  ]
+}

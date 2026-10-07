@@ -1,75 +1,85 @@
+// Package router wires the HTTP surface described by
+// contracts/http/cart/v1/openapi.yaml.
 package router
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
+	"cart-service/internal/api/dto/response"
 	"cart-service/internal/api/handler"
 	"cart-service/internal/api/middleware"
-	"cart-service/internal/infrastructure/config"
+	"cart-service/internal/domain"
 )
 
-// Router holds all handlers and the Gin engine.
-type Router struct {
-	engine        *gin.Engine
-	cartHandler   *handler.CartHandler
-	healthHandler *handler.HealthHandler
-	logger        *zap.Logger
+// Config holds the router's dependencies.
+type Config struct {
+	Cart      *handler.Cart
+	Health    *handler.Health
+	RateLimit middleware.RateLimitConfig
+	// InternalCallers are the service identities allowed on /internal/v1 (the mesh enforces the
+	// principal; X-Service-Identity is checked as defence in depth).
+	InternalCallers []string
+	Registry  prometheus.Gatherer
+	Logger    *zap.Logger
+	// Debug switches Gin out of release mode.
+	Debug bool
 }
 
-// NewRouter creates a new router with all routes configured.
-func NewRouter(
-	cartHandler *handler.CartHandler,
-	healthHandler *handler.HealthHandler,
-	logger *zap.Logger,
-	redisHealth, pgHealth handler.HealthChecker,
-	cfg *config.AppConfig,
-) *Router {
-	if cfg.App.Env == "production" {
+// New builds the HTTP engine.
+func New(cfg Config) *gin.Engine {
+	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	engine := gin.New()
+	engine.Use(
+		middleware.RequestID(),
+		middleware.Recovery(cfg.Logger),
+		middleware.Logging(cfg.Logger),
+	)
+	engine.NoRoute(notFound)
 
-	mwCfg := middleware.MiddlewareConfig{
-		RateLimit: middleware.RateLimitConfig{
-			Enabled:       cfg.App.Env != "development",
-			MaxReqsPerMin: 1000,
-		},
-	}
-	engine.Use(middleware.Stack(logger, mwCfg)...)
-
-	r := &Router{
-		engine:        engine,
-		cartHandler:   cartHandler,
-		healthHandler: healthHandler,
-		logger:        logger,
+	engine.GET("/health/live", cfg.Health.Live)
+	engine.GET("/health/ready", cfg.Health.Ready)
+	if cfg.Registry != nil {
+		engine.GET("/metrics", gin.WrapH(promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})))
 	}
 
-	r.setupRoutes()
-
-	return r
-}
-
-// setupRoutes configures all API routes.
-func (r *Router) setupRoutes() {
-	r.engine.GET("/healthz", r.healthHandler.Liveness)
-	r.engine.GET("/readyz", r.healthHandler.Readiness)
-	r.engine.GET("/metrics", r.healthHandler.Metrics)
-
-	v1 := r.engine.Group("/api/v1")
+	// Every cart route requires a trusted identity, and every write also
+	// requires an idempotency key.
+	carts := engine.Group("/api/v1/carts/mine")
+	carts.Use(middleware.Identity(), middleware.RateLimit(cfg.RateLimit))
 	{
-		carts := v1.Group("/carts")
-		carts.Use(middleware.Auth())
+		carts.GET("", cfg.Cart.Get)
+
+		items := carts.Group("/items")
+		items.Use(middleware.RequireIdempotencyKey())
 		{
-			carts.GET("/mine", r.cartHandler.GetCart)
-			carts.POST("/items", r.cartHandler.AddItem)
-			carts.DELETE("/items", r.cartHandler.BatchDelete)
+			items.POST("", cfg.Cart.AdjustItem)
+			items.DELETE("", cfg.Cart.DeleteItems)
 		}
 	}
+
+	// Internal read for Checkout. The user comes from the path, never from X-User-Id, so this group
+	// must stay off the public gateway and behind the service identity check.
+	internal := engine.Group("/internal/v1/carts")
+	internal.Use(middleware.ServiceIdentity(cfg.InternalCallers))
+	internal.GET("/:user_id/checkout-snapshot", cfg.Cart.CheckoutSnapshot)
+
+	return engine
 }
 
-// Engine returns the Gin engine.
-func (r *Router) Engine() *gin.Engine {
-	return r.engine
+func notFound(c *gin.Context) {
+	middleware.AbortWithProblem(c, response.NewProblem(
+		http.StatusNotFound,
+		domain.Code("NOT_FOUND"),
+		"no route matches this path",
+		c.Request.URL.Path,
+		middleware.GetRequestID(c),
+	))
 }

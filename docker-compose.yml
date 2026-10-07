@@ -1,0 +1,1185 @@
+services:
+  # ── Elasticsearch ──────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elasticsearch
+    command: >
+      bash -c "bin/elasticsearch-plugin install --batch analysis-icu || true;
+      /bin/tini -- /usr/local/bin/docker-entrypoint.sh eswrapper"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - ecommerce-network
+
+  # ── Zookeeper (for Kafka) ──────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    # Metadata must survive alongside Kafka log volumes. Existing stacks must
+    # copy the old anonymous volumes before adopting these mounts; see runbook.
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "cub zk-ready 127.0.0.1:2181 5 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 8s
+      retries: 10
+      start_period: 10s
+    networks:
+      - ecommerce-network
+
+  # ── Kafka ──────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ecommerce-network
+
+  # ── Kafka Connect (Debezium CDC for Product Service) ───────
+  kafka-connect:
+    image: debezium/connect:3.0.0.Final
+    container_name: kafka-connect
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: product-service-connect-cluster
+      CONFIG_STORAGE_TOPIC: product-service-connect-configs
+      OFFSET_STORAGE_TOPIC: product-service-connect-offsets
+      STATUS_STORAGE_TOPIC: product-service-connect-status
+      KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_PRODUCER_ACKS: all
+      CONNECT_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_HEAP_MAX_SIZE: 512m
+    ports:
+      - "8084:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/ || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ecommerce-network
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: product_service
+      POSTGRES_MAX_CONNECTIONS: "100"
+      POSTGRES_SHARED_BUFFERS: "256MB"
+    # Debezium đọc logical replication slot, nên wal_level phải là logical.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      # Local shared DB: Temporal plus all service pools and CDC exceed the default 100.
+      - -c
+      - max_connections=300
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d product_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ecommerce-network
+
+  # ── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ecommerce-network
+
+  # ── MinIO (S3-compatible object storage) ───────────────────
+  # Review media bytes. Review owns the metadata and the lifecycle; the bytes live
+  # here, and the API never exposes an object key (ADR-011).
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # LOCAL ONLY: stand-in for the product CDN. /media/<storage_key> is rewritten to the
+      # anonymous-read product-media bucket; only GET/HEAD, and review-media stays
+      # unreachable because the rewrite always targets product-media. Production serves
+      # media from its own CDN domain, not through the gateway.
+      # PathRegexp requires a key after /media/: the bucket root would be a listing.
+      - "traefik.http.routers.product-media.rule=PathRegexp(`^/media/.+`) && (Method(`GET`) || Method(`HEAD`))"
+      - "traefik.http.routers.product-media.entrypoints=web"
+      - "traefik.http.routers.product-media.service=product-media"
+      - "traefik.http.routers.product-media.priority=20"
+      - "traefik.http.routers.product-media.middlewares=strip-identity-headers@file,product-media-path@file,rate-limit-default@file"
+      - "traefik.http.services.product-media.loadbalancer.server.port=9000"
+
+  # Creates the buckets once and exits; MinIO has no declarative bucket configuration
+  # and no service creates buckets at runtime.
+  #  - review-media: private, Review signs every URL (ADR-011).
+  #  - product-media: the local stand-in for the product CDN. Anonymous read only, served
+  #    to browsers through the gateway at http://localhost:8088/media/<storage_key>; the
+  #    Product Detail BFF and Search build URLs from PDP_MEDIA_CDN_BASE_URL/CDN_BASE_URL
+  #    (docs/product-detail-bff ADR-005). Product has no upload API: put images for a
+  #    storage key with `mc cp` (docs/product-detail-bff/development.md).
+  minio-init:
+    image: minio/mc:RELEASE.2024-01-18T07-03-39Z
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./infra/minio:/seed:ro
+    # Anonymous access to product-media is GetObject only: the built-in "download" policy
+    # would also allow ListBucket and expose every storage key.
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/review-media &&
+      mc mb --ignore-existing local/product-media &&
+      mc anonymous set-json /seed/policies/product-media-read.json local/product-media &&
+      mc cp --recursive /seed/product-media/ local/product-media/ &&
+      echo 'review-media and product-media buckets ready'"
+    networks:
+      - ecommerce-network
+
+  # ── Search Service ─────────────────────────────────────────
+  search-service:
+    build:
+      context: ./java/services/search-service
+    container_name: search-service
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      ES_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: kafka:9092
+      SPRING_PROFILES_ACTIVE: dev
+      # Bearer service identity for Review's internal rating export. It matches
+      # REVIEW_INTERNAL_EXPORT_TOKENS on review-service and reaches that route only.
+      REVIEW_INTERNAL_TOKEN: dev-search-export-token
+      # Same local CDN and placeholder as the Product Detail BFF, so a product card and
+      # its detail page show the same file (docs/product-detail-bff ADR-005).
+      CDN_BASE_URL: http://localhost:8088/media
+      THUMBNAIL_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+    ports:
+      - "8081:8080"
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Canonical Search v2. Reindex has a separate authenticated router; exclude
+      # it from anonymous routing even when a write/read method is forged.
+      - "traefik.http.routers.search-service.rule=(Path(`/api/v2/search/products`) || Path(`/api/v2/search/suggestions`) || Path(`/api/v2/search/categories`) || PathRegexp(`^/api/v2/search/categories/[^/]+/facets$`)) && Method(`GET`)"
+      - "traefik.http.routers.search-service.entrypoints=web"
+      - "traefik.http.routers.search-service.service=search-service"
+      - "traefik.http.routers.search-service.priority=10"
+      - "traefik.http.routers.search-service.middlewares=strip-identity-headers@file,rate-limit-default@file,compress@file"
+      - "traefik.http.routers.search-reindex.rule=(Path(`/api/v2/search/reindex-runs`) || PathPrefix(`/api/v2/search/reindex-runs/`)) && (Method(`GET`) || Method(`POST`))"
+      - "traefik.http.routers.search-reindex.entrypoints=web"
+      - "traefik.http.routers.search-reindex.service=search-service"
+      - "traefik.http.routers.search-reindex.priority=40"
+      - "traefik.http.routers.search-reindex.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.search-service.loadbalancer.server.port=8080"
+
+  # ── Review Service ─────────────────────────────────────────
+  review-service:
+    build:
+      context: ./java/services/review-service
+    container_name: review-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+
+      DB_URL: jdbc:postgresql://postgres:5432/review_service?currentSchema=review,public
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      KAFKA_BOOTSTRAP: kafka:9092
+
+      # Both HMAC secrets are required and stable. Rotating the alias secret starts a
+      # new pseudonym namespace; rotating the guard secret orphans every committed
+      # deletion guard. Development values only - production reads a secret manager.
+      REVIEW_AUTHOR_ALIAS_HMAC_SECRET: dev-review-author-alias-secret
+      REVIEW_PRIVACY_GUARD_HMAC_SECRET: dev-review-privacy-guard-secret
+
+      # Bearer service identity for /internal/v1/**, split per route group so the
+      # Product Detail BFF cannot page the rating export and Search cannot read the
+      # PDP summary.
+      REVIEW_INTERNAL_PDP_TOKENS: dev-product-detail-bff-token
+      REVIEW_INTERNAL_EXPORT_TOKENS: dev-search-export-token
+
+      REVIEW_S3_ENDPOINT: http://minio:9000
+      # Browser-visible origin for upload/download signatures; internal HEAD stays on minio.
+      REVIEW_S3_PUBLIC_ENDPOINT: http://localhost:9000
+      REVIEW_S3_BUCKET: review-media
+      REVIEW_S3_ACCESS_KEY: minioadmin
+      REVIEW_S3_SECRET_KEY: minioadmin
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8087:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Admin moderation first and at a higher priority: it must never fall through to
+      # the buyer router, which does not require the ADMIN role.
+      - "traefik.http.routers.review-admin.rule=PathPrefix(`/api/v1/admin/reviews`)"
+      - "traefik.http.routers.review-admin.entrypoints=web"
+      - "traefik.http.routers.review-admin.service=review-service"
+      - "traefik.http.routers.review-admin.priority=40"
+      - "traefik.http.routers.review-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      # Public list and aggregate are anonymous and never inject a dev identity.
+      - "traefik.http.routers.review-public.rule=(PathRegexp(`^/api/v1/reviews/products/[^/]+$`) || PathRegexp(`^/api/v1/reviews/products/[^/]+/aggregate$`)) && Method(`GET`)"
+      - "traefik.http.routers.review-public.entrypoints=web"
+      - "traefik.http.routers.review-public.service=review-service"
+      - "traefik.http.routers.review-public.priority=40"
+      - "traefik.http.routers.review-public.middlewares=strip-identity-headers@file,rate-limit-default@file,compress@file"
+      # Buyer writes/owner reads authorize the actual access-token identity.
+      - "traefik.http.routers.review-service.rule=PathPrefix(`/api/v1/reviews`)"
+      - "traefik.http.routers.review-service.entrypoints=web"
+      - "traefik.http.routers.review-service.service=review-service"
+      - "traefik.http.routers.review-service.priority=30"
+      - "traefik.http.routers.review-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.review-service.loadbalancer.server.port=8080"
+      # /internal/v1/** has no router: the PDP summary and the rating export travel
+      # only inside the cluster network, with a bearer service identity.
+
+  # ── Product Service ────────────────────────────────────────
+  product-service:
+    build:
+      context: ./java/services/product-service
+      dockerfile: Dockerfile
+    container_name: product-service
+    # Không phụ thuộc Redis: catalog không có cache hay distributed lock.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8081
+      GRPC_PORT: 9091
+
+      # Database
+      DB_URL: jdbc:postgresql://postgres:5432/product_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      # Kafka: chỉ consume markdown snapshot của Promotion.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MARKDOWN_TOPIC: t.promotion.markdown.events
+      MARKDOWN_DLQ_TOPIC: t.promotion.markdown.events.dlq
+
+      # Ký cursor export nội bộ; môi trường thật lấy từ secret manager.
+      EXPORT_CURSOR_SECRET: dev-export-cursor-secret
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8082:8081"
+      - "9091:9091"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Catalog admin API. Ca ba prefix deu yeu cau role ADMIN nen dung chung mot
+      # router; khong co route public GET vi browse/search thuoc Search Service.
+      # Ket hop Path + PathPrefix co dau / cuoi de /api/v1/products-foo khong bi
+      # match nham vao Product Service.
+      - "traefik.http.routers.product-service.rule=(Path(`/api/v1/products`) || PathPrefix(`/api/v1/products/`)) || (Path(`/api/v1/categories`) || PathPrefix(`/api/v1/categories/`)) || (Path(`/api/v1/attributes`) || PathPrefix(`/api/v1/attributes/`))"
+      - "traefik.http.routers.product-service.entrypoints=web"
+      - "traefik.http.routers.product-service.service=product-service"
+      - "traefik.http.routers.product-service.priority=30"
+      # authenticated = strip-identity-headers + gateway-auth: identity va role
+      # ADMIN lay tu access token da verify; Product Service tu kiem role.
+      - "traefik.http.routers.product-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.product-service.loadbalancer.server.port=8081"
+      - "traefik.http.services.product-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.product-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** cua Product khong co router: export/snapshot cho Search
+      # chi di trong mang noi bo bang service identity, khong qua gateway.
+
+  # ── Product Detail BFF ─────────────────────────────────────
+  # Read composition for the PDP (docs/product-detail-bff). Stateless: no database, no
+  # Kafka. Inventory availability stays disabled, so every SKU is UNKNOWN, until the PDP
+  # rollout gate (load/freshness test, README.md "Trạng thái rollout") is passed.
+  product-detail-bff:
+    build:
+      context: ./java/services/product-detail-bff
+    container_name: product-detail-bff
+    # Chỉ để thứ tự khởi động dễ đoán: BFF tự degrade khi Review chưa sẵn sàng, và trả
+    # 503 khi Product chưa sẵn sàng, nên không cần chờ healthcheck của chúng.
+    depends_on:
+      - product-service
+      - review-service
+    environment:
+      SERVER_PORT: 8080
+      PDP_PRODUCT_BASE_URL: http://product-service:8081
+      PDP_INVENTORY_ENABLED: "false"
+      PDP_REVIEW_ENABLED: "true"
+      PDP_REVIEW_BASE_URL: http://review-service:8080
+      # Phải nằm trong REVIEW_INTERNAL_PDP_TOKENS của review-service. Development only.
+      PDP_REVIEW_SERVICE_TOKEN: dev-product-detail-bff-token
+      # Local CDN = bucket product-media của MinIO phát qua gateway; Search dùng đúng
+      # cùng hai giá trị này (CDN_BASE_URL, THUMBNAIL_PLACEHOLDER_URL).
+      PDP_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      PDP_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      PDP_MEDIA_REQUIRE_HTTPS: "false"
+      TRACING_SAMPLING_PROBABILITY: "1.0"
+    ports:
+      - "8093:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Anonymous GET, rate profile public-read (local: rate-limit-default, như Search).
+      # Retry chỉ lỗi kết nối, chờ response header 3 giây, giữ nguyên Cache-Control do
+      # BFF đặt (docs/gateway/runtime-contract.md mục 5 và 5.1, ADR-004).
+      - "traefik.http.routers.product-detail-bff.rule=PathPrefix(`/api/v1/storefront/products/`) && Method(`GET`)"
+      - "traefik.http.routers.product-detail-bff.entrypoints=web"
+      - "traefik.http.routers.product-detail-bff.service=product-detail-bff"
+      - "traefik.http.routers.product-detail-bff.priority=30"
+      - "traefik.http.routers.product-detail-bff.middlewares=strip-identity-headers@file,retry-connection-only@file,rate-limit-default@file,compress@file"
+      - "traefik.http.services.product-detail-bff.loadbalancer.server.port=8080"
+      - "traefik.http.services.product-detail-bff.loadbalancer.serverstransport=product-detail-bff@file"
+      - "traefik.http.services.product-detail-bff.loadbalancer.healthcheck.path=/actuator/health/readiness"
+      - "traefik.http.services.product-detail-bff.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.product-detail-bff.loadbalancer.healthcheck.timeout=5s"
+
+  # ── Promotion Service ──────────────────────────────────────
+  promotion-service:
+    build:
+      context: ./java/services/promotion-service
+      dockerfile: Dockerfile
+    container_name: promotion-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8085
+
+      # Database (docs/promotion/data.md): PostgreSQL la source of truth.
+      DB_URL: jdbc:postgresql://postgres:5432/promotion_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+
+      # Redis runtime: snapshot cache, claim gate/pool, budget reservation, campaign schedule.
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Kafka: chi consume product-deleted.v1; outbound qua outbox + Debezium.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PRODUCT_EVENTS_TOPIC: t.product.events
+      PRODUCT_EVENTS_DLQ_TOPIC: t.product.events.promotion.dlq
+
+      # Validate Product dong bo khi tao/sua markdown rule.
+      PRODUCT_BASE_URL: http://product-service:8081
+
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Admin: campaign, promotion, markdown (role ADMIN). Priority cao hon router customer.
+      - "traefik.http.routers.promotion-admin.rule=PathPrefix(`/api/v1/admin/promotion-campaigns`) || PathPrefix(`/api/v1/admin/promotions`) || PathPrefix(`/api/v1/admin/markdown-rules`)"
+      - "traefik.http.routers.promotion-admin.entrypoints=web"
+      - "traefik.http.routers.promotion-admin.service=promotion-service"
+      - "traefik.http.routers.promotion-admin.priority=40"
+      # authenticated = strip-identity-headers + gateway-auth: role ADMIN den tu claim `roles`
+      # cua access token da verify. Router customer (me/discovery) cung dung authenticated: Checkout Preview tinh voucher theo user that, nen vi voucher phai nam cua dung user do.
+      - "traefik.http.routers.promotion-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      # Public discovery: authenticated user, profile promotion-discovery 20 req/user/phut (ADR-015).
+      - "traefik.http.routers.promotion-discovery.rule=Path(`/api/v1/promotion-discovery`)"
+      - "traefik.http.routers.promotion-discovery.entrypoints=web"
+      - "traefik.http.routers.promotion-discovery.service=promotion-service"
+      - "traefik.http.routers.promotion-discovery.priority=35"
+      - "traefik.http.routers.promotion-discovery.middlewares=authenticated@file,rate-limit-promotion-discovery@file,compress@file"
+      # Wallet: suggestions, save, claim theo identity user da verify.
+      - "traefik.http.routers.promotion-me.rule=PathPrefix(`/api/v1/me/promotion-vouchers`) || Path(`/api/v1/me/promotion-voucher-suggestions`) || Path(`/api/v1/me/promotion-voucher-claims`)"
+      - "traefik.http.routers.promotion-me.entrypoints=web"
+      - "traefik.http.routers.promotion-me.service=promotion-service"
+      - "traefik.http.routers.promotion-me.priority=30"
+      - "traefik.http.routers.promotion-me.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.promotion-service.loadbalancer.server.port=8085"
+      - "traefik.http.services.promotion-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.promotion-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.promotion-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** cua Promotion khong co router: Checkout/Order goi trong service
+      # network voi workload identity (X-Service-Identity), khong qua gateway.
+
+  # ── Inventory Service ──────────────────────────────────────
+  # Authoritative stock, reservations, returns and per-SKU availability (docs/inventory,
+  # ADR-023). PostgreSQL is the only write authority; public facts leave through the
+  # commit-ordered published_event table and the Debezium connector in
+  # java/services/inventory-service/src/main/resources/kafka (register it manually).
+  inventory-service:
+    build:
+      context: ./java/services/inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/inventory_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      # Manual fail-closed switch (docs/inventory/operations.md §1, ADR-027).
+      INVENTORY_WRITE_FREEZE: "false"
+      WORKERS_ENABLED: "true"
+      JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
+    ports:
+      - "8094:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # ADMIN only (ADR-024): authenticated = strip-identity-headers + gateway-auth;
+      # Inventory checks role ADMIN itself and the gateway never retries a write.
+      - "traefik.http.routers.inventory-admin.rule=Path(`/api/v1/admin/inventory`) || PathPrefix(`/api/v1/admin/inventory/`)"
+      - "traefik.http.routers.inventory-admin.entrypoints=web"
+      - "traefik.http.routers.inventory-admin.service=inventory-service"
+      - "traefik.http.routers.inventory-admin.priority=40"
+      - "traefik.http.routers.inventory-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.inventory-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.inventory-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.inventory-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.inventory-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/inventory/v1/** and /exports/inventory/v1/** have no router: Checkout,
+      # Order, Product Detail BFF and Search call them on the service network with
+      # X-Service-Identity (docs/mesh/runtime-contract.md §5.2).
+
+  # ── Temporal (Order Saga runtime) ─────────────────────────
+  # auto-setup creates the temporal/temporal_visibility schemas in the shared Postgres.
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health | grep -q SERVING"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - ecommerce-network
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8233:8080"
+    networks:
+      - ecommerce-network
+
+  # ── Order Service (docs/order, Order ADR-020) ─────────────
+  # Needs the order_service database (init-db.sh) and the Debezium outbox connector in
+  # java/services/order-service/src/main/resources/kafka/ for Cart/Review/Notification.
+  order-service:
+    build:
+      context: ./java/services/order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      temporal:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/order_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      KAFKA_BROKERS: kafka:9092
+      REDIS_HOST: redis
+      TEMPORAL_TARGET: temporal:7233
+      INVENTORY_BASE_URL: http://inventory-service:8080
+      PROMOTION_BASE_URL: http://promotion-service:8085
+      PAYMENT_BASE_URL: http://payment-service:8080
+      ORDER_FRONTEND_BASE_URL: http://localhost:3000
+      JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
+    ports:
+      - "8095:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Buyer + Admin surface (Order public OpenAPI v1); the gateway never retries a command.
+      - "traefik.http.routers.order.rule=PathPrefix(`/api/v1/orders`) || PathPrefix(`/api/v1/order-operations/`)"
+      - "traefik.http.routers.order.entrypoints=web"
+      - "traefik.http.routers.order.service=order-service"
+      - "traefik.http.routers.order.priority=40"
+      - "traefik.http.routers.order.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      # Admin namespace: authenticated identity; Order itself requires role ADMIN.
+      - "traefik.http.routers.order-admin.rule=PathPrefix(`/api/v1/admin/orders`) || PathPrefix(`/api/v1/admin/order-operations/`)"
+      - "traefik.http.routers.order-admin.entrypoints=web"
+      - "traefik.http.routers.order-admin.service=order-service"
+      - "traefik.http.routers.order-admin.priority=40"
+      - "traefik.http.routers.order-admin.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.order-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.order-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.order-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.order-service.loadbalancer.serverstransport=business-api@file"
+      # /internal/v1/** has no router: Checkout and Finance/Ops call it on the service
+      # network with X-Service-Identity (docs/mesh/runtime-contract.md §5.2).
+
+  # ── Cart Service ───────────────────────────────────────────
+  cart-service:
+    build:
+      context: ./go/services/cart-service
+      dockerfile: Dockerfile
+    container_name: cart-service
+    # Cart has no PostgreSQL dependency: Redis is its only store (ADR-010).
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+
+      # Override yaml config via CART_-prefixed env vars (viper maps . → _)
+      # Redis: the cart source of truth.
+      CART_REDIS_ADDRS: redis:6379
+
+      # Kafka: CART_ABANDONED out, ORDER_PAID in.
+      CART_KAFKA_BROKERS: kafka:9092
+
+      # gRPC Product Service.
+      CART_PRODUCT_ADDRESS: product-service:9091
+
+      # Same local CDN and placeholder as the Product Detail BFF and Search: Product
+      # returns storage keys and Cart builds the URL (Product gRPC image_url).
+      CART_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      CART_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      CART_MEDIA_REQUIRE_HTTPS: "false"
+
+      CART_LOGGING_LEVEL: debug
+    # Access through the gateway; host 8085 belongs to Promotion.
+    # Checkout still uses cart-service:8080 inside the network.
+    volumes:
+      - ./go/services/cart-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Only the paths of Cart OpenAPI v1; /internal/v1/carts/** has no router and is
+      # reached by checkout-service inside the network only.
+      - "traefik.http.routers.cart-service.rule=Path(`/api/v1/carts/mine`) || Path(`/api/v1/carts/mine/items`)"
+      - "traefik.http.routers.cart-service.entrypoints=web"
+      - "traefik.http.routers.cart-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
+      - "traefik.http.services.cart-service.loadbalancer.server.port=8080"
+
+  # ── Auth Service ───────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./go/services/auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      # Config doc override qua tien to AUTH_ (viper SetEnvPrefix trong
+      # internal/common/config). Bien khong co tien to bi bo qua im lang, tru
+      # DB_PASSWORD va REDIS_PASSWORD duoc noi thang trong application.yaml.
+      AUTH_DATABASE_HOST: postgres
+      AUTH_DATABASE_PORT: "5432"
+      AUTH_DATABASE_NAME: auth_db
+      AUTH_DATABASE_USERNAME: postgres
+      DB_PASSWORD: postgres
+      AUTH_REDIS_HOST: redis
+      AUTH_REDIS_PORT: "6379"
+      REDIS_PASSWORD: ''
+      AUTH_KAFKA_BROKERS: kafka:9092
+      # AES-256-GCM key bao ve private JWT key trong auth.jwt_keys.
+      # CHI danh cho development. Production phai lay tu secret manager.
+      AUTH_KEYS_MASTER_KEY: "CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0="
+    ports:
+      - "8086:8080"
+    volumes:
+      - ./go/services/auth-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Route cong khai: dang ky, xac minh, dang nhap, refresh, quen mat khau.
+      # Van xoa header danh tinh do client gui (runtime-contract.md muc 4).
+      - "traefik.http.routers.auth-service.rule=PathPrefix(`/api/v1/auth`)"
+      - "traefik.http.routers.auth-service.entrypoints=web"
+      - "traefik.http.routers.auth-service.service=auth-service"
+      - "traefik.http.routers.auth-service.middlewares=strip-identity-headers@file"
+      # Nhanh can danh tinh cua contracts/http/auth/v1 (security gatewayIdentity):
+      # di qua gateway-auth. Priority cao hon router cong khai o tren.
+      - "traefik.http.routers.auth-service-protected.rule=(Path(`/api/v1/auth/sessions`) && (Method(`GET`) || Method(`DELETE`))) || (PathPrefix(`/api/v1/auth/sessions/`) && Method(`DELETE`)) || Path(`/api/v1/auth/password`) || Path(`/api/v1/auth/email-change-requests`) || Path(`/api/v1/auth/email-changes/confirmations`) || Path(`/api/v1/auth/accounts/me/deletion-requests`) || PathPrefix(`/api/v1/auth/admin/`)"
+      - "traefik.http.routers.auth-service-protected.entrypoints=web"
+      - "traefik.http.routers.auth-service-protected.service=auth-service"
+      - "traefik.http.routers.auth-service-protected.priority=200"
+      - "traefik.http.routers.auth-service-protected.middlewares=authenticated@file"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
+
+  # ── gateway-auth (ForwardAuth verifier) ────────────────────
+  # Verify JWT cho moi route can danh tinh (docs/gateway/design.md). Khong publish
+  # port: chi Traefik goi http://gateway-auth:8080/verify.
+  gateway-auth:
+    build:
+      context: ./go/services/gateway-auth
+      dockerfile: Dockerfile
+    container_name: gateway-auth
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Ten bien dung chung voi auth-service (runtime-contract.md muc 6). Gia tri
+      # phai khop go/services/auth-service/configs/application.yaml.
+      AUTH_JWT_ISSUER: "https://auth.ecommerce.local"
+      AUTH_JWT_AUDIENCE: "ecommerce-api"
+      AUTH_JWT_ALLOWED_ALGORITHMS: "RS256"
+      AUTH_JWKS_URL: "http://auth-service:8080/.well-known/jwks.json"
+      AUTH_REVOCATION_REDIS_URL: "redis://redis:6379/0"
+    networks:
+      - ecommerce-network
+
+  # ── User Service ───────────────────────────────────────────
+  # Versioned migration runs before User, including on existing root-stack volumes.
+  user-migrate:
+    image: migrate/migrate:v4.18.3
+    command: ["-path", "/migrations", "-database", "postgres://postgres:postgres@postgres:5432/user_service?sslmode=disable", "up"]
+    volumes:
+      - ./go/services/user-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+    restart: "no"
+
+  user-service:
+    build:
+      context: ./go/services/user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    depends_on:
+      user-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      # Every key of configs/application.yaml is overridable with a USER_ prefix.
+      USER_APP_ENV: development
+      USER_DATABASE_HOST: postgres
+      # init-db.sh creates this database in the shared PostgreSQL instance; the
+      # schema itself is applied by user-migrate before this service starts.
+      USER_DATABASE_NAME: user_service
+      USER_REDIS_HOST: redis
+      USER_KAFKA_BROKERS: kafka:9092
+      # Temporary triage switch only; buyer bootstrap requires the consumer enabled.
+      USER_KAFKA_CONSUMER_ENABLED: ${USER_KAFKA_CONSUMER_ENABLED:-true}
+      DB_PASSWORD: postgres
+      REDIS_PASSWORD: ""
+    # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
+    volumes:
+      - ./go/services/user-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.user-service.rule=PathPrefix(`/api/v1/users`)"
+      - "traefik.http.routers.user-service.entrypoints=web"
+      - "traefik.http.routers.user-service.middlewares=authenticated@file"
+      # 8082 is the public API; the internal checkout API on 8083 stays off Traefik.
+      - "traefik.http.services.user-service.loadbalancer.server.port=8082"
+
+  # ── Notification dev dependencies (profile: notification) ──
+  # Chỉ bật bằng `docker compose --profile notification up`. Mailpit thay SES ở
+  # dev/CI; LocalStack giả lập SNS/SQS cho đường Track (SES → SNS → SQS).
+  # Thiết kế: docs/notification/13-development.md.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: mailpit
+    profiles: ["notification"]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_MAX_MESSAGES: "5000"
+    ports:
+      - "1025:1025"     # SMTP
+      - "8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-network
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: localstack
+    profiles: ["notification"]
+    environment:
+      SERVICES: sns,sqs
+      DEFAULT_REGION: ap-southeast-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "4566:4566"
+    volumes:
+      # Tạo SNS topic ses-events, SQS queue notification-ses-events (+ DLQ) và subscription.
+      - ./go/services/notification-service/deploy/localstack/init-ses-events.sh:/etc/localstack/init/ready.d/init-ses-events.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -Eq '\"sqs\": \"(running|available)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ecommerce-network
+
+  # ── Notification Service (profile: notification) ──────────
+  # Một binary nhiều ROLE; dev chạy ROLE=all. Public 8080 (inbox, qua Traefik)
+  # map host 8091; internal 8081 (status/ops/metrics) map host 8092 — không qua
+  # Gateway. Thiết kế: docs/notification/13-development.md.
+  notification-service:
+    build:
+      context: ./go/services/notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    profiles: ["notification"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    environment:
+      # Mọi key của configs/application.yaml override được với tiền tố NOTIFICATION_.
+      NOTIFICATION_APP_ENV: development
+      NOTIFICATION_APP_ROLE: all
+      NOTIFICATION_DATABASE_HOST: postgres
+      NOTIFICATION_DATABASE_NAME: notification_db
+      DB_PASSWORD: postgres
+      NOTIFICATION_REDIS_HOST: redis
+      REDIS_PASSWORD: ""
+      NOTIFICATION_KAFKA_BROKERS: kafka:9092
+      NOTIFICATION_EMAIL_PROVIDER: smtp
+      NOTIFICATION_EMAIL_SMTP_HOST: mailpit
+      NOTIFICATION_EMAIL_SMTP_PORT: "1025"
+      NOTIFICATION_TRACK_QUEUE_URL: http://localstack:4566/000000000000/notification-ses-events
+      NOTIFICATION_TRACK_AWS_ENDPOINT: http://localstack:4566
+      NOTIFICATION_TRACK_CORRELATE_PROVIDER: mailpit
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      # Auth internal listener (8081), không phải public 8080.
+      NOTIFICATION_AUTH_BASE_URL: http://auth-service:8081
+      NOTIFICATION_FRONTEND_BASE_URL: http://localhost:3000
+      # Outbox: debezium (cần đăng ký connector, 13-development.md §4) hoặc poller.
+      NOTIFICATION_OUTBOX_PUBLISHER: poller
+    ports:
+      - "8091:8080"
+      - "8092:8081"
+    volumes:
+      - ./go/services/notification-service/configs:/app/configs:ro
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification-service.rule=PathPrefix(`/api/v1/notifications`)"
+      - "traefik.http.routers.notification-service.entrypoints=web"
+      - "traefik.http.routers.notification-service.middlewares=authenticated@file"
+      - "traefik.http.services.notification-service.loadbalancer.server.port=8080"
+
+  # Payment is opt-in because Stripe test credentials belong to an individual sandbox.
+  # Start explicitly with: docker compose --profile payment up -d payment-service
+  payment-service:
+    profiles: ["payment"]
+    build:
+      context: ./java/services/payment-service
+    container_name: payment-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
+      PAYMENT_DATABASE_USERNAME: postgres
+      DB_PASSWORD: postgres
+      PAYMENT_KAFKA_BROKERS: kafka:9092
+      PAYMENT_STRIPE_SECRET_KEY: ${PAYMENT_STRIPE_SECRET_KEY:-sk_test_local_change_me}
+      PAYMENT_STRIPE_PUBLISHABLE_KEY: ${PAYMENT_STRIPE_PUBLISHABLE_KEY:-pk_test_local_change_me}
+      PAYMENT_STRIPE_WEBHOOK_SECRETS: ${PAYMENT_STRIPE_WEBHOOK_SECRETS:-whsec_local_change_me}
+      PAYMENT_STRIPE_API_VERSION: 2026-08-26.dahlia
+      PAYMENT_CRYPTO_LOCAL_KEY: ${PAYMENT_CRYPTO_LOCAL_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    ports:
+      - "8089:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payment-webhook.rule=Path(`/v1/payments/webhook/stripe`)"
+      - "traefik.http.routers.payment-webhook.entrypoints=web"
+      - "traefik.http.routers.payment-webhook.service=payment-service"
+      - "traefik.http.routers.payment-webhook.priority=50"
+      - "traefik.http.services.payment-service.loadbalancer.server.port=8080"
+
+  # ── Frontend (Next.js) ────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    depends_on:
+      - search-service
+      - cart-service
+      - auth-service
+      - user-service
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - ecommerce-network
+
+  # ── API Gateway (Traefik) ─────────────────────────────────
+  # ── Checkout Service ───────────────────────────────────────
+  # Backend for Frontend of the checkout page (docs/checkout). Its only state is the short-lived
+  # workflow state in its own Redis; every other dependency is a service on this network.
+  checkout-redis:
+    image: redis:7-alpine
+    container_name: checkout-redis
+    # noeviction is a requirement, not a tuning choice: losing a SUBMITTING session to an
+    # eviction could end in a duplicate order (docs/checkout/data.md). The shared redis above
+    # runs allkeys-lru, so Checkout does not use it.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - checkout-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ecommerce-network
+
+  checkout-service:
+    build:
+      context: ./java/services/checkout-service
+      dockerfile: Dockerfile
+    container_name: checkout-service
+    # Order of start only. Checkout answers 503 problems while a dependency is down and keeps
+    # its own readiness (Redis + scripts), so it does not wait for their healthchecks.
+    depends_on:
+      checkout-redis:
+        condition: service_healthy
+      cart-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      promotion-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+    environment:
+      SERVER_PORT: 8080
+      CHECKOUT_REDIS_URL: redis://checkout-redis:6379/0
+      # DEVELOPMENT ONLY keys (32 random bytes, base64). Production keys come from the secret
+      # manager and are rotated by adding a version and moving the active-version setting.
+      CHECKOUT_TOKEN_HMAC_KEYS: "v1:bG9jYWwtZGV2LW9ubHktY2hlY2tvdXQtaG1hYy1rZXktMDAwMSE="
+      CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION: v1
+      CHECKOUT_ENCRYPTION_KEYS: "v1:bG9jYWwtZGV2LW9ubHktY2hlY2tvdXQtYWVzLWtleSE="
+      CHECKOUT_ENCRYPTION_ACTIVE_VERSION: v1
+      CHECKOUT_CART_BASE_URL: http://cart-service:8080
+      # Internal listener of User (8083); it is not published through Traefik.
+      CHECKOUT_USER_BASE_URL: http://user-service:8083
+      CHECKOUT_PRODUCT_GRPC_TARGET: product-service:9091
+      CHECKOUT_INVENTORY_BASE_URL: http://inventory-service:8080
+      CHECKOUT_PROMOTION_BASE_URL: http://promotion-service:8085
+      CHECKOUT_ORDER_BASE_URL: http://order-service:8080
+      # Promotion implements promotion-voucher-options, so the tray is on locally.
+      CHECKOUT_VOUCHER_OPTIONS_ENABLED: "true"
+      # Same local CDN and placeholder as Cart, Search and the Product Detail BFF.
+      CHECKOUT_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      CHECKOUT_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      CHECKOUT_MEDIA_REQUIRE_HTTPS: "false"
+      TRACING_SAMPLING_PROBABILITY: "1.0"
+    ports:
+      - "8096:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ecommerce-network
+    labels:
+      - "traefik.enable=true"
+      # Four routes of contracts/http/checkout/v1/openapi.yaml, each with its Gateway rate profile
+      # (docs/gateway/runtime-contract.md section 7). The gateway never retries a POST, and the
+      # token segment of the path is not logged (the access log records the route template).
+      - "traefik.http.routers.checkout-preview.rule=Path(`/api/v1/checkout/preview`) && Method(`POST`)"
+      - "traefik.http.routers.checkout-preview.entrypoints=web"
+      - "traefik.http.routers.checkout-preview.service=checkout-service"
+      - "traefik.http.routers.checkout-preview.priority=50"
+      - "traefik.http.routers.checkout-preview.middlewares=authenticated@file,rate-limit-checkout-preview@file,compress@file"
+      - "traefik.http.routers.checkout-submit.rule=Path(`/api/v1/checkout/submit`) && Method(`POST`)"
+      - "traefik.http.routers.checkout-submit.entrypoints=web"
+      - "traefik.http.routers.checkout-submit.service=checkout-service"
+      - "traefik.http.routers.checkout-submit.priority=50"
+      - "traefik.http.routers.checkout-submit.middlewares=authenticated@file,rate-limit-checkout-submit@file,compress@file"
+      - "traefik.http.routers.checkout-voucher-options.rule=PathRegexp(`^/api/v1/checkout/previews/[0-9a-fA-F-]{36}/voucher-options$$`) && Method(`GET`)"
+      - "traefik.http.routers.checkout-voucher-options.entrypoints=web"
+      - "traefik.http.routers.checkout-voucher-options.service=checkout-service"
+      - "traefik.http.routers.checkout-voucher-options.priority=50"
+      - "traefik.http.routers.checkout-voucher-options.middlewares=authenticated@file,rate-limit-checkout-voucher-options@file,retry-connection-only@file,compress@file"
+      - "traefik.http.routers.checkout-submissions.rule=PathRegexp(`^/api/v1/checkout/submissions/[0-9a-fA-F-]{36}$$`) && Method(`GET`)"
+      - "traefik.http.routers.checkout-submissions.entrypoints=web"
+      - "traefik.http.routers.checkout-submissions.service=checkout-service"
+      - "traefik.http.routers.checkout-submissions.priority=50"
+      - "traefik.http.routers.checkout-submissions.middlewares=authenticated@file,rate-limit-api@file,retry-connection-only@file,compress@file"
+      - "traefik.http.services.checkout-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.checkout-service.loadbalancer.server.scheme=http"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.path=/health/ready"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.checkout-service.loadbalancer.healthcheck.timeout=5s"
+      - "traefik.http.services.checkout-service.loadbalancer.serverstransport=business-api@file"
+
+  api-gateway:
+    image: traefik:v3.7.1
+    container_name: api-gateway
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8088:80"       # HTTP
+      - "8443:443"      # HTTPS
+      - "8090:8090"     # Dashboard & Metrics
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./go/services/api-gateway/config/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - ./go/services/api-gateway/certs:/certs:ro
+      - ./go/services/api-gateway/letsencrypt:/letsencrypt
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - ecommerce-network
+    depends_on:
+      - redis
+
+# ── Volumes ────────────────────────────────────────────────
+volumes:
+  es-data:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+  minio-data:
+  checkout-redis-data:
+
+# ── Networks ───────────────────────────────────────────────
+networks:
+  ecommerce-network:
+    name: ecommerce-network
+    driver: bridge

@@ -1,0 +1,47 @@
+# gateway-auth — verifier JWT tại edge cho Traefik ForwardAuth.
+#
+# Contract: docs/gateway/runtime-contract.md mục 6. Các biến môi trường dưới đây
+# là tên chung với auth-service và ghi đè giá trị trong file:
+#   AUTH_JWT_ISSUER, AUTH_JWT_AUDIENCE, AUTH_JWT_ALLOWED_ALGORITHMS (phân tách
+#   bằng dấu phẩy), AUTH_JWKS_URL, AUTH_REVOCATION_REDIS_URL.
+# Khoá khác ghi đè bằng tiền tố GATEWAY_AUTH_, ví dụ GATEWAY_AUTH_SERVER_PORT.
+
+server:
+  port: 8080
+  read_timeout: 3s
+  write_timeout: 3s
+  # ForwardAuth có deadline 3 giây (runtime-contract mục 5.1); verify phải trả
+  # lời trước đó để Traefik nhận được 503 có nghĩa thay vì timeout.
+  verify_deadline: 2500ms
+  shutdown_timeout: 10s
+
+jwt:
+  issuer: "https://auth.ecommerce.local"
+  audience: "ecommerce-api"
+  allowed_algorithms: ["RS256"]
+  # Dung sai đồng hồ khi kiểm exp/nbf/iat.
+  leeway: 5s
+
+jwks:
+  url: "http://auth-service:8080/.well-known/jwks.json"
+  # Làm mới định kỳ khi còn nhận request.
+  refresh_interval: 10m
+  fetch_timeout: 3s
+  # Gặp kid lạ thì làm mới ngay, nhưng không dày hơn nhịp này.
+  min_refresh_interval: 30s
+  # Key biến mất khỏi JWKS vẫn được giữ thêm chừng này (≥ access-token TTL 15m
+  # của Auth) để token đã ký bằng nó hết hạn tự nhiên.
+  retired_key_grace: 20m
+  # Auth/JWKS không trả lời thì vẫn verify bằng cache tối đa chừng này kể từ lần
+  # làm mới thành công cuối; quá hạn thì fail closed (503).
+  max_stale: 24h
+  max_keys: 16
+
+redis:
+  url: "redis://redis:6379/0"
+  timeout: 1s
+  revocation_prefix: "auth:revocation"
+  jwks_invalidate_channel: "auth:jwks:update"
+
+logging:
+  level: info

@@ -10,7 +10,6 @@ RUN mvn dependency:go-offline -q
 
 COPY src ./src
 COPY proto ./proto
-COPY src/main/resources/lua ./lua/
 
 RUN mvn clean package -DskipTests -q -Dos.detected.classifier=linux-x86_64
 
@@ -23,7 +22,6 @@ RUN apk add --no-cache wget && \
     addgroup -S appgroup && adduser -S appuser -G appgroup
 
 COPY --from=builder /app/target/product-service-1.0.0-SNAPSHOT.jar app.jar
-COPY --from=builder /app/lua ./lua/
 
 USER appuser
 

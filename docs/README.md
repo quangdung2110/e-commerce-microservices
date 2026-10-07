@@ -1,165 +1,289 @@
 # E-Commerce Platform — Documentation Index
 
-> **Canonical source of truth:** [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md).
-> Mọi thay đổi về contract giữa các service phải cập nhật file đó trước, sau đó mới lan ra các doc khác.
+> **Contract foundation mới:** [`../contracts/`](../contracts/README.md) là nguồn
+> chuẩn cho machine-readable contract mới (OpenAPI, Protobuf, AsyncAPI và JSON
+> Schema). `docs/_contracts/CONTRACT_MATRIX.md` hiện là tài liệu legacy trong
+> thời gian migration; không dùng nó làm template cho service mới.
+
+Tài liệu trong `docs/` giải thích business, workflow và implementation. Khi dữ
+liệu trên wire mâu thuẫn với một contract đã được đánh dấu `implemented` hoặc
+`verified`, machine-readable spec trong `contracts/` được ưu tiên.
 
 ---
 
-## 0. Master Contracts (SSOT) — `docs/_contracts/`
+## 0. Legacy Contract Documents — `docs/_contracts/`
 
 | File | Mô tả |
 |---|---|
-| [CONTRACT_MATRIX.md](./_contracts/CONTRACT_MATRIX.md) | Bảng SSOT cho mọi event/payload/ID/state machine/TTL/idempotency. **Bắt buộc đọc trước khi sửa bất kỳ service doc nào.** |
-| [IDEMPOTENCY_GUIDELINES.md](./_contracts/IDEMPOTENCY_GUIDELINES.md) | Chuẩn chung về idempotency 2 lớp (Redis SETNX + DB Unique), key format, anti-pattern. |
-| [OUTBOX_PATTERNS.md](./_contracts/OUTBOX_PATTERNS.md) | CDC Pattern (Debezium) là chuẩn, Polling đã deprecated, Direct-Produce chỉ cho runtime event ngắn. |
-| [CHANGELOG.md](./_contracts/CHANGELOG.md) | Lịch sử mọi sync change theo phase. |
+| `CONTRACT_MATRIX.md` (đã xóa) | Matrix legacy; thay bằng [`contracts/catalog`](../contracts/catalog/) và machine-readable specs. |
+| `IDEMPOTENCY_GUIDELINES.md` (đã xóa) | Hướng dẫn legacy; quy tắc hiện hành nằm trong docs service và contract tương ứng. |
+| `OUTBOX_PATTERNS.md` (đã xóa) | Hướng dẫn legacy; contract/event docs hiện hành nêu boundary CDC/outbox. |
+| `CHANGELOG.md` (đã xóa) | Lịch sử legacy không còn trong repository. |
 
 ### ADRs (Architecture Decision Records)
 
 | File | Service | Decision |
 |---|---|---|
-| [order/refund_voucher_policy.md](./order/refund_voucher_policy.md) | Order + Promotion | Voucher types: PLATFORM + SHIPPING (no SHOP). FULL/PARTIAL refund allocation rule. Non-blocking voucher restore. |
+| [order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md](./order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md) | Order + Promotion | Customer refund không mutate Promotion; không allocation theo SKU, không hoàn voucher/budget. |
+| [order/decisions/ADR-010-selected-line-refund-policy.md](./order/decisions/ADR-010-selected-line-refund-policy.md) | Order + Inventory + Payment | Một refund case trọn đời/order; selected full-quantity lines; admin automatic chỉ trước dispatch. |
+| [order/decisions/ADR-013-durable-refund-scope-finalization.md](./order/decisions/ADR-013-durable-refund-scope-finalization.md) | Order + Inventory | Durable close/cancel scope; approved no-payout incomplete return; financial result và finalization progress tách biệt. |
+| [inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md](./inventory/decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md) | Inventory + Order | Lifetime selected scope và atomic all-line committed release trước dispatch. |
+| [inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md](./inventory/decisions/ADR-020-command-receipts-and-minimal-order-events.md) | Inventory + Order | Reservation commands dùng durable receipt/query/replay; chỉ dispatch và inspection completion gửi qua Kafka; giữ atomic audit/outbox/availability work. |
+| [payment/decisions/ADR-011-one-lifetime-order-refund.md](./payment/decisions/ADR-011-one-lifetime-order-refund.md) | Payment + Order + Inventory | Một Payment refund transaction/order, Inventory evidence dạng Buyer/Admin. |
+| [promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md](./promotion/decisions/ADR-013-command-receipts-and-durable-finalization.md) | Promotion + Order | Durable command receipt; confirm/cancel-confirmed PostgreSQL-first; Redis finalize/repair; customer refund không mutate Promotion. |
+| [promotion/decisions/ADR-014-claim-and-markdown-consistency.md](./promotion/decisions/ADR-014-claim-and-markdown-consistency.md) | Promotion + Product | Atomic claim boundary, immutable definition, causal markdown dedup và Product tombstone invalidation. |
+| [product/decisions/ADR-016-state-discriminated-markdown-snapshot.md](./product/decisions/ADR-016-state-discriminated-markdown-snapshot.md) | Product + Promotion | ACTIVE full markdown; INACTIVE reason-only tombstone; nullable guarded projection. |
+| [product/decisions/ADR-018-resolved-buyer-product-detail-projection.md](./product/decisions/ADR-018-resolved-buyer-product-detail-projection.md) | Product + Product Detail BFF | Buyer-read trả category path, nhãn thuộc tính, trục biến thể, media 20/10; không ETag. |
+| [product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md](./product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md) | Product Detail BFF + Product | PDP trả category/thuộc tính/trục biến thể/gallery; BFF dựng URL CDN từ `storage_key`. |
 
 ---
 
 ## 1. Checkout Service (BFF/Stateless)
 
-> Tài liệu 5 file thiết kế Checkout Service.
+> Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Checkout là Java 21 +
+> Spring Boot WebFlux (`java/services/checkout-service`, Checkout ADR-013) và đã được
+> triển khai; adoption runtime là `pilot`. Chưa có kiểm thử end-to-end qua provider thật.
 
 | File | Mô tả |
 |---|---|
-| [checkout/checkout_architecture_design.md](./checkout/checkout_architecture_design.md) | Kiến trúc tổng quan: BFF/Aggregator, chống giả mạo client, anti-tampering. |
-| [checkout/checkout_workflow.md](./checkout/checkout_workflow.md) | Luồng API Preview + Submit, parallel orchestration pattern, waterfall price, optimization decision tree. |
-| [checkout/checkout_caching_schema.md](./checkout/checkout_caching_schema.md) | Redis session schema, rate limit, distributed lock, response/payload cache. |
-| [checkout/checkout_idempotency.md](./checkout/checkout_idempotency.md) | One-time-use token, Lua script, anti-tampering validation. |
-| [checkout/checkout_security_analysis.md](./checkout/checkout_security_analysis.md) | Security analysis & session token lifecycle. |
+| [checkout/README.md](./checkout/README.md) | Tổng quan, boundary, thao tác ngoài BFF, dependency và bất biến. |
+| [checkout/architecture.md](./checkout/architecture.md) | Wave gọi song song, deadline, hủy request, phân vai mesh/Gateway. |
+| [checkout/domain.md](./checkout/domain.md) | Token-owned snapshot, state machine, luật `CHK-BR` và nhóm lỗi. |
+| [checkout/interfaces.md](./checkout/interfaces.md) | Public API, nguồn từng field, error catalog, header và mapping tới Cart, User, Product, Inventory, Promotion, Order. |
+| [checkout/workflows.md](./checkout/workflows.md) | Preview, khay voucher, Submit, recovery có giới hạn, tải lại trang. |
+| [checkout/data.md](./checkout/data.md) | Redis token-keyed state, TTL, CAS/Lua, mã hoá và no-secret/no-domain-cache policy. |
+| [checkout/operations.md](./checkout/operations.md) | SLO, ma trận lỗi, resilience, metric, alert, cấu hình, runbook và rollout. |
+| [checkout/development.md](./checkout/development.md) | Stack Java, chạy local, test bắt buộc và Definition of Done. |
+| [checkout/decisions/README.md](./checkout/decisions/README.md) | Danh mục ADR hiện hành và lịch sử superseded. |
 
 ### Checkout contracts chuẩn
-- `POST /v1/checkout/preview` (Preview API) — owner: Checkout
-- `POST /v1/checkout/submit` (Submit API) — owner: Checkout
-- Cross-ref: nhận `POST /v1/orders/create-from-checkout` từ Order Service
+
+- `POST /api/v1/checkout/preview` — tạo báo giá hiện hành của user.
+- `GET /api/v1/checkout/previews/{checkout_token}/voucher-options` — khay voucher theo báo giá.
+- `POST /api/v1/checkout/submit` — submit theo token.
+- `GET /api/v1/checkout/submissions/{checkout_token}` — recovery/status.
+- Checkout gọi Cart snapshot, User address snapshot, Product batch, Inventory allocation preview, Promotion calculation/voucher options và Order submission bằng contracts owner tương ứng.
 
 ---
 
 ## 2. Order Service (Orchestrator + Temporal Saga)
 
-> Tài liệu 9 file thiết kế Order Service.
+> Đã implement tại `java/services/order-service` (Java 21, Spring Boot 3.3, Temporal; Order
+> ADR-020); contracts Order ở mức `implemented` với provider test, chưa có consumer contract test.
 
 | File | Mô tả |
 |---|---|
-| [order/order_workflow.md](./order/order_workflow.md) | Luồng API (Get Order, Search, Cancel, Return) + Saga Checkout (Pre-Payment + Post-Payment) + Saga Refund. |
-| [order/order_db_design.md](./order/order_db_design.md) | Schema PostgreSQL: orders, order_items, order_item_lines, order_promotions, outbox, idempotency tables, refund cases. |
-| [order/order_state_machine.md](./order/order_state_machine.md) | Master Order FSM + Order Item Delivery FSM + Buyer Tab Precedence + Auto-Complete. |
-| [order/order_events.md](./order/order_events.md) | Event catalog cho `t.order.events` (10 events) + `t.search.metrics.events`. |
-| [order/order_workers.md](./order/order_workers.md) | Background workers: CDC pipeline, CQRS projection, Payment/Inventory consumers, Archive batcher. |
-| [order/temporal_saga_design.md](./order/temporal_saga_design.md) | Temporal workflow design: `OrderCheckoutWorkflow`, `OrderRefundWorkflow`, `OrderLatePaymentRecoveryWorkflow`. |
-
-### Order cross-refs
-- `docs/cqrs_elasticsearch_design.md` (CQRS read model) — file mở rộng
-- `docs/cold_data_archiving_design.md` (Cold data) — file mở rộng
+| [order/README.md](./order/README.md) | Tổng quan, boundary, ownership, capability, dependency và bất biến. |
+| [order/architecture.md](./order/architecture.md) | Temporal/Kafka/CDC, component, consistency, concurrency và topology. |
+| [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
+| [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
+| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
+| [order/workflows.md](./order/workflows.md) | Checkout, timeout, delivery proof, return/refund, durable scope finalization, late recovery và financial reconciliation. |
+| [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
+| [order/development.md](./order/development.md) | Build/test/chạy local, hiện trạng test tự động và migration. |
+| [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR, gồm ADR-020 chốt runtime và các điểm làm rõ khi implement. |
 
 ---
 
 ## 3. Payment Service (PG State + Outbox)
 
-> Tài liệu 4 file thiết kế Payment Service + 1 ADR.
+> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
+> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ. HTTP v1 và payment
+> facts v2 đã có target contract nhưng chưa xác minh implementation/provider-consumer test.
 
 | File | Mô tả |
 |---|---|
-| [payment/payment_workflow.md](./payment/payment_workflow.md) | Luồng API Initiate/Webhook/Query/Refund + Async Webhook processing. |
-| [payment/payment_db_design.md](./payment/payment_db_design.md) | Schema: payment_transactions, refund_transactions, webhook_logs, payment_status_history, outbox (CDC). |
-| [payment/payment_state_machine.md](./payment/payment_state_machine.md) | Payment FSM + Refund FSM + Guard rules + Audit trail. |
-| [payment/payment_events.md](./payment/payment_events.md) | Event catalog cho `t.payment.events` (9 events: 3 PAYMENT_* + 1 INITIATED + 4 REFUND_* + 1 REVERSED). |
-| [payment/payment_workers.md](./payment/payment_workers.md) | Background workers: Outbox CDC, Webhook Processor, Expiration Scanner, Reconciliation, Refund Poller. |
-| [payment/technology_choice.md](./payment/technology_choice.md) | Lý do chọn Java Spring Boot. |
-| [payment/refund_boundary_decision.md](./payment/refund_boundary_decision.md) | ADR: giữ Refund trong Payment Service (Phase 1) vs tách (Phase 2). |
+| [payment/README.md](./payment/README.md) | Tổng quan, boundary, ownership, capability, dependency, bất biến và known gaps. |
+| [payment/implementation-gates.md](./payment/implementation-gates.md) | Gate 1–3, điều kiện pass và bằng chứng executable trước từng giai đoạn implementation. |
+| [payment/architecture.md](./payment/architecture.md) | Stripe SDK direct, webhook async qua Kafka, Outbox CDC, lock strategy, topology. |
+| [payment/domain.md](./payment/domain.md) | Thuật ngữ, Payment FSM (T0–T9, gồm T3a) + Refund FSM (R1–R5), guard rules, invariant, lỗi miền. |
+| [payment/data.md](./payment/data.md) | Schema logic 12 bảng, inbox lease, provider checkpoint, subledger, outbox và retention. |
+| [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
+| [payment/workflows.md](./payment/workflows.md) | Mười bốn workflow: payment/refund, verified webhook/inbox recovery, provider recovery, review, dispute và subledger/balance reconciliation. |
+| [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
+| [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 20 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
+| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
+| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; target/proposed. |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
+| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; target/proposed. |
 
 ---
 
-## 4. Inventory Service (Redis Lua + PG)
+## 4. Inventory Service (Relational authoritative state)
 
-> Tài liệu 6 file thiết kế Inventory Service.
+> Target design đã accepted cho Release 1 và đã implement tại `java/services/inventory-service`
+> ([ADR-027](./inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)); các gate production
+> (MFA, RPO/RTO, load test, retention) còn mở theo [development.md](./inventory/development.md).
+> Một relational primary là write authority; Redis/cache không quyết định stock.
+> Reservation results dùng durable HTTP receipts/query/replay; Order chỉ nhận physical
+> dispatch và selected-scope inspection completion qua Kafka.
+> Bắt đầu từ [inventory/README.md](./inventory/README.md).
 
 | File | Mô tả |
 |---|---|
-| [inventory/inventory_workflow.md](./inventory/inventory_workflow.md) | Luồng Reserve/Deduct/Release + Routing Options + Admin Restock + Return Restock. |
-| [inventory/inventory_db_design.md](./inventory/inventory_db_design.md) | Schema: warehouses, physical_inventory, inventory_reservations, inventory_ledger, inventory_outbox (CDC). |
-| [inventory/inventory_redis_design.md](./inventory/inventory_redis_design.md) | Redis keys + Lua scripts 1/2/3 + cross-slot constraints. |
-| [inventory/inventory_events.md](./inventory/inventory_events.md) | Event catalog cho `t.inventory.events` (3 events: MUTATION, CHANGED, RETURN_RECEIVED_ALL). |
-| [inventory/inventory_endpoints.md](./inventory/inventory_endpoints.md) | API endpoints: routing-options, restock, refund-expectations, admin/unlock-sku. |
-| [inventory/inventory_workers.md](./inventory/inventory_workers.md) | Background workers: Ledger Worker, CDC outbox, Return Consumer, etc. |
-| [inventory/smart_routing_engine.md](./inventory/smart_routing_engine.md) | Smart Routing algorithm + cache + plan expiry handling. |
+| [inventory/README.md](./inventory/README.md) | Điểm bắt đầu: trạng thái, boundary, data ownership, invariant, known gaps. |
+| [inventory/architecture.md](./inventory/architecture.md) | Relational write authority, transaction/concurrency, projector và trust boundaries. |
+| [inventory/domain.md](./inventory/domain.md) | Thuật ngữ, business rule, state machine và domain error. |
+| [inventory/data.md](./inventory/data.md) | Authoritative state, command identity/receipt, movement/audit, required outbox và availability work. |
+| [inventory/interfaces.md](./inventory/interfaces.md) | Workflow/read/admin/export API và ba public event types; Order nhận hai type. |
+| [inventory/workflows.md](./inventory/workflows.md) | Reserve/payment/dispatch, timeout/recovery, selected refund scope và availability projection. |
+| [inventory/operations.md](./inventory/operations.md) | SLI, alert, failure mode, runbook và worker. |
+| [inventory/development.md](./inventory/development.md) | Trạng thái implementation, verification đã có và gates còn mở trước production. |
+| [inventory/decisions/](./inventory/decisions/README.md) | Current accepted ADRs, publication scope ADR-020 và superseded historical decisions. |
 
 ---
 
-## 4. Promotion Service (Caffeine L1 + Redis Lua + PG)
+## 5. Promotion Service (Redis Lua + PostgreSQL)
 
-> Tài liệu 10 file thiết kế Promotion Service.
+> Tài liệu đã refactor theo cấu trúc chuẩn trong `docs/_templates`; thiết kế đang ở
+> trạng thái `proposed` và chưa có implementation để verification.
 
 | File | Mô tả |
 |---|---|
-| [promotion/promotion_workflow.md](./promotion/promotion_workflow.md) | Workflows: Admin CRUD, Flash Sale Claim, Cart Calculate, Saga Checkout (Reserve/Confirm/Cancel), Refund, Voucher Discovery. |
-| [promotion/promotion_db_design.md](./promotion/promotion_db_design.md) | Schema: campaigns, promotions, promotion_budgets, coupon_claims, user_coupon_wallets, coupon_usages, promotion_event_idempotency, promotion_outbox (CDC). |
-| [promotion/promotion_state_machine.md](./promotion/promotion_state_machine.md) | State machine cho voucher lifecycle + discount sequencing waterfall. |
-| [promotion/promotion_events.md](./promotion/promotion_events.md) | Event catalog: `t.promotion.markdown.events` (3 events), `t.promotion.coupon.events` (5 events), `t.promotion.budget.events` (1 event). |
-| [promotion/redis_caching_design.md](./promotion/redis_caching_design.md) | L1/L2 cache + 5 Lua scripts (Claim, Reserve, Batch Reserve 2B, Confirm Redeem, Rollback, Refund Budget). |
-| [promotion/promotion_outbox_pattern.md](./promotion/promotion_outbox_pattern.md) | Outbox CDC pattern chi tiết cho Promotion. |
-| [promotion/promotion_workers.md](./promotion/promotion_workers.md) | Background workers: Outbox CDC, Order Events Consumer, Auth Events Consumer, Product State Consumer, Flash Sale Claim, Rule Cache Warmer, Claim Sweeper, Reservation TTL Sweep, Wallet Expiry Sweep, Cleanup, Reconciliation, Markdown Expiry Scheduler. |
-| [promotion/rule_engine_design.md](./promotion/rule_engine_design.md) | Rule Engine: AST JSONB + Visitor pattern + Discount logic. |
-| [promotion/voucher_discovery_api.md](./promotion/voucher_discovery_api.md) | Voucher Discovery API: voucher-suggestions, platform-voucher-discovery, save-and-apply. |
-| [promotion/coupon_claims_deletion_strategy.md](./promotion/coupon_claims_deletion_strategy.md) | Hard deletion strategy cho coupon_claims. |
+| [promotion/README.md](./promotion/README.md) | Tổng quan, boundary, ownership, capability, dependency và known gaps. |
+| [promotion/architecture.md](./promotion/architecture.md) | Thành phần, processing, consistency, concurrency và deployment. |
+| [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
+| [promotion/interfaces.md](./promotion/interfaces.md) | HTTP semantics đích, outbox event và Product markdown snapshot v1. |
+| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 24 operations; trạng thái `proposed`. |
+| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `proposed`. |
+| [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, Saga technical compensation và recovery. |
+| [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
+| [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
+| [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 16 ADR; ADR-016 chốt phạm vi event v1 và receipt-driven finalizer. |
 
 ---
 
-## 7. Service ↔ Service Contract Map (rút gọn từ CONTRACT_MATRIX)
+## 6. Delivery Service (target)
 
-Xem đầy đủ tại [Service Contract Matrix](./_contracts/CONTRACT_MATRIX.md#1-kafka-topic-map-ssot).
+> Delivery là boundary target/proposed cho verified customer-delivery proof. Repository
+> chưa có provider implementation; Inventory physical-dispatch không thay thế proof này.
+
+| File | Mô tả |
+|---|---|
+| [delivery/README.md](./delivery/README.md) | Boundary, ownership và điều kiện phát verified proof cho từng order line. |
+| [Delivery Events AsyncAPI v1](../contracts/events/delivery/v1/asyncapi.yaml) | `com.ecommerce.delivery.order-line.delivered.v1` cho Order; target/proposed. |
+
+---
+
+## 7. Product Detail BFF (target)
+
+> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
+> availability qua batch read; Review giữ review/rating. BFF không persist stock,
+> đọc Review summary/preview theo request; Checkout preview allocation và Order reserve tại Inventory.
+
+| File | Mô tả |
+|---|---|
+| [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
+| [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
+| [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
+| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux và làm rõ hot path. |
+
+---
+
+## 8. Service ↔ Service Contract Map (rút gọn từ CONTRACT_MATRIX)
+
+Nguồn đầy đủ hiện hành là [`contracts/catalog/interactions.yaml`](../contracts/catalog/interactions.yaml);
+Service Contract Matrix legacy đã bị xóa.
 
 | Producer | Topic | Consumer |
 |---|---|---|
-| Order | `t.order.events` (10 events) | Promotion, Inventory, Cart, Notification, Analytics, Search |
-| Order | `t.search.metrics.events` | Search |
-| Order | `t.order.archive.retry`, `t.order.cqrs.retry`, `t.order.cqrs.dlq` | Internal Ops |
-| Payment | `t.payment.events` (9 events) | Order |
-| Payment | `t.payment.webhooks.raw` (internal) | Payment |
-| Inventory | `t.inventory.events` (4 events: STOCK_MUTATION, STOCK_CHANGED, RETURN_RECEIVED_ALL, SHIP_TO_CUSTOMER) | Product, Order, Analytics |
-| Promotion | `t.promotion.markdown.events` (3 events) | Product |
-| Promotion | `t.promotion.coupon.events` (5 events) | Notification, Analytics |
-| Promotion | `t.promotion.budget.events` (1 event) | Notification, Frontend |
+| Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
+| Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
+| Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
+| Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
+| Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
+| Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
+| Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
 ---
 
-## 8. Sync API Catalog (rút gọn)
+## 9. Sync API Catalog (rút gọn)
 
-Xem đầy đủ tại [Service Contract Matrix §3](./_contracts/CONTRACT_MATRIX.md#3-sync-api-catalog-ssot).
+Nguồn đầy đủ hiện hành là [`contracts/catalog/interactions.yaml`](../contracts/catalog/interactions.yaml);
+Service Contract Matrix legacy đã bị xóa.
 
 | Endpoint | Direction |
 |---|---|
-| `POST /v1/checkout/preview` | Client → Checkout |
-| `POST /v1/checkout/submit` | Client → Checkout |
-| `POST /v1/orders/create-from-checkout` | Checkout → Order |
+| `POST /api/v1/checkout/preview` | Client → Gateway → Checkout |
+| `GET /api/v1/checkout/previews/{checkout_token}/voucher-options` | Client → Gateway → Checkout |
+| `POST /api/v1/checkout/submit` | Client → Gateway → Checkout |
+| `GET /api/v1/checkout/submissions/{checkout_token}` | Client → Gateway → Checkout |
+| `GET /internal/v1/carts/{user_id}/checkout-snapshot` | Checkout → Cart |
+| `GET /internal/v1/users/{user_id}/addresses/{address_id}/checkout-snapshot` | Checkout → User |
+| Product gRPC `GetBatchSkus` | Checkout → Product |
+| `POST /internal/inventory/v1/allocation-previews` | Checkout → Inventory |
+| `POST /internal/v1/promotion-discount-calculations` | Checkout → Promotion |
+| `POST /internal/v1/promotion-voucher-options` | Checkout → Promotion; khay voucher |
+| `POST /internal/v1/checkout-order-submissions` | Checkout → Order |
+| `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Checkout → Order recovery |
+| `GET /api/v1/orders` / `GET /api/v1/orders/{order_id}` | Buyer → Order |
+| `POST /api/v1/orders/{order_id}/{cancellation-requests,return-requests,payment-attempts}` | Buyer → Order |
+| `POST /api/v1/admin/orders/{order_id}/{cancellation-requests,pre-dispatch-refund-requests}` | Admin → Order |
 | `POST /v1/payments/initiate` | Order (Temporal) → Payment |
-| `POST /v1/payments/{txn_id}/refund` | Order (Temporal) → Payment |
-| `POST /v1/inventory/routing-options` | Checkout → Inventory |
-| `POST /v1/inventory/ship-to-customer` | Admin → Inventory |
-| `POST /v1/inventory/returns/refund-expectations` | Order → Inventory |
-| `POST /v1/promotions/calculate-discount` | Checkout → Promotion |
-| `POST /v1/promotions/{reserve,confirm,cancel,cancel-confirmed,refund}` | Order (Temporal) → Promotion |
+| `POST /v1/payments/{transactionId}/{cancel,refund}` | Order (Temporal) → Payment |
+| `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | Order (Temporal) → Payment |
+| `POST /api/payments/webhook/stripe` | Stripe → Gateway → Payment `/v1/payments/webhook/stripe` |
+| `POST /internal/inventory/v1/refund-scopes` | Order → Inventory; selected full-quantity lines, one scope/order lifetime |
+| `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/{close,close-incomplete,cancel}` | Order → Inventory; guarded durable finalization; no-payout Ops decision for incomplete/no-receipt return |
+| `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Order → Inventory; automatic admin refund all-or-nothing release |
+| `POST /api/v1/me/promotion-voucher-suggestions` | Client → Gateway → Promotion; chỉ wallet `SAVED`; trang checkout không dùng |
+| `POST /api/v1/promotion-discovery` | Client → Gateway → Promotion; wallet + public `ACTIVE`; trang checkout không dùng |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | Customer → Promotion; save explicit, evaluate khi có `context` |
+| `POST /api/v1/me/promotion-voucher-claims` | Customer → Promotion; limited claim |
+| `POST /internal/v1/promotion-allocation/{reservations,confirmations,cancellations}` | Order (Temporal) → Promotion |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | `promotion-legacy-migrator` → Promotion; dedicated proof/capability only |
+| `POST /internal/v1/orders/{order_id}/financial-reconciliation-decisions` | `finance-ops`/`accounting-ops` → Order; evidence-backed decision only |
 
 ---
 
-## 9. Service ngoài scope (chưa đồng bộ trong đợt này)
+## 10. Service ngoài scope (chưa đồng bộ trong đợt này)
 
 | File | Note |
 |---|---|
 | [auth/](./auth/) | Auth Service — ngoài scope 14 phase hiện tại. |
-| [cart/](./cart/) | Cart Service — ngoài scope. |
-| [review/](./review/) | Review Service — ngoài scope. |
-| [search/](./search/) | Search Service — ngoài scope. |
-| [notification/](./notification/) | Notification Service — ngoài scope. |
+| [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [notification/README.md](./notification/README.md) | Notification Service — thiết kế `proposed`, runtime Go: lane ưu tiên, pipeline hai ranh giới, tracking SES, idempotency, ordering, backpressure, catalog template, Decide, data model, contract và interface (`contracts/events/notification/v1`, `contracts/http/notification`). |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
-| [gateway/](./gateway/) | API Gateway — ngoài scope. |
-| [product/](./product/) | Product Service — ngoài scope. |
+| [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |
+| [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
 
-> Các service trên sẽ được sync ở giai đoạn tiếp theo. Hiện tại chỉ có 5 service (Checkout, Order, Payment, Inventory, Promotion) đạt 100% consistency sau Phase 14 (loại bỏ Shipping Service).
+> Các service trên sẽ được sync ở giai đoạn tiếp theo. Năm service Checkout, Order,
+> Payment, Inventory và Promotion được đồng bộ ở mức thiết kế; Delivery chỉ là boundary
+> target/proposed, chưa có implementation (không phải Shipping Service legacy).
+
+---
+
+## 11. Platform — Service Mesh (`docs/mesh/`, target/proposed)
+
+Istio ambient cho traffic east-west trên Kubernetes; Traefik giữ edge. Mesh là nơi thực thi
+duy nhất cho mTLS và phân quyền service-to-service; `X-Service-Identity` do caller đặt, chỉ dùng
+attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đảm chỉ tồn tại trên cluster.
+
+| File | Mô tả |
+|---|---|
+| [mesh/technology_choice.md](./mesh/technology_choice.md) | Vì sao Istio, Traefik giữ edge thay vì Istio Ingress Gateway, ambient thay vì sidecar, mesh là authority cho caller identity, phạm vi đợt 1. |
+| [mesh/design.md](./mesh/design.md) | Namespace/ztunnel/waypoint, identity SPIFFE, ranh giới tin cậy `X-User-*`/`X-Service-Identity`, traffic policy, gRPC, Traefik trong mesh, chế độ lỗi. |
+| [mesh/runtime-contract.md](./mesh/runtime-contract.md) | Quy ước bắt buộc: runtime, nhãn namespace, mTLS, ma trận `AuthorizationPolicy` dẫn xuất từ `contracts/catalog/interactions.yaml`, identity header, retry/timeout, egress, telemetry, tiêu chí xác minh, gaps. |
+| [mesh/implementation_plan.md](./mesh/implementation_plan.md) | Giai đoạn 0–7 từ baseline Kubernetes tới vận hành, kiểm thử bắt buộc, migration/rollback. |
+
+---
+
+## 12. Frontend (`docs/frontend/`)
+
+Ứng dụng Next.js trong `frontend/` gồm storefront và trang quản trị `/admin`.
+
+| File | Mô tả |
+|---|---|
+| [frontend/README.md](./frontend/README.md) | Điểm bắt đầu của tài liệu frontend. |
+| [frontend/tech-stack.md](./frontend/tech-stack.md) | Công nghệ đã chọn và lý do. |
+| [frontend/sitemap.md](./frontend/sitemap.md) | Route storefront, tài khoản, admin; API nguồn, quyền, hiện trạng, khoảng trống API. |
+| [frontend/implementation-plan.md](./frontend/implementation-plan.md) | Lộ trình 14 bước; chi tiết bước 0 (nền tảng) và bước 1 (khung admin). |
+| [frontend/decisions/](./frontend/decisions/README.md) | ADR-001 admin chung ứng dụng; ADR-002 ranh giới render và xác thực. |

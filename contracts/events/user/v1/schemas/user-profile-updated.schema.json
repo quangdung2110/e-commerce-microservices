@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User Profile Updated v1",
+  "allOf": [
+    { "$ref": "./user-event-common.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "com.ecommerce.user.profile-updated.v1" },
+        "dataschema": { "const": "/contracts/events/user/v1/schemas/user-profile-updated.schema.json" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["user_id", "sender_name", "updated_at"],
+          "properties": {
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "sender_name": { "type": "string", "minLength": 1, "maxLength": 201, "x-pii": true },
+            "updated_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

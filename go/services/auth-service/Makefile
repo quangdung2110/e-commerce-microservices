@@ -1,54 +1,61 @@
-.PHONY: build run test lint clean migrate docker
+.PHONY: build run test test-unit test-integration test-all fmt vet lint clean deps migrate-up migrate-down docker-build docker-up docker-down
 
-# Build
+BIN        := bin/auth-service
+CONFIG     := ./configs/application.yaml
+MIGRATIONS := ./migrations
+DB_URL     ?= postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable
+
 build:
-	go build -o bin/auth-service ./cmd/server
+	go build -o $(BIN) ./cmd/server
 
-# Run
 run:
-	go run ./cmd/server -config ./configs/application.yaml
+	go run ./cmd/server -config $(CONFIG)
 
-# Test
+# The default suite needs no Docker: the use cases run against in-memory doubles.
 test:
-	go test -v -race -cover ./...
+	go test -race -cover ./...
 
 test-unit:
-	go test -v -short ./...
+	go test -race ./test/unit/...
 
+# The integration suite starts PostgreSQL and Redis with testcontainers, so it
+# needs a running Docker daemon. It covers the SQL, the Lua scripts, the crypto
+# adapters and the HTTP surface.
 test-integration:
-	go test -v -tags=integration ./test/integration/...
+	go test -tags=integration -count=1 -timeout 15m ./test/integration/...
 
-# Lint
+test-all: test test-integration
+
+fmt:
+	gofmt -l -w .
+
+vet:
+	go vet ./...
+
 lint:
 	golangci-lint run ./...
 
-lint-fix:
-	golangci-lint run --fix ./...
+deps:
+	go mod download
+	go mod tidy
 
-# Database
+# Requires golang-migrate. The same SQL also seeds a local Postgres container
+# through docker-compose.
 migrate-up:
-	migrate -path ./internal/infrastructure/postgres/migrations -database "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" up
+	migrate -path $(MIGRATIONS) -database "$(DB_URL)" up
 
 migrate-down:
-	migrate -path ./internal/infrastructure/postgres/migrations -database "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" down
+	migrate -path $(MIGRATIONS) -database "$(DB_URL)" down 1
 
-# Clean
 clean:
 	rm -rf bin/
 	go clean
 
-# Docker
 docker-build:
 	docker build -t auth-service:latest .
 
-docker-run:
-	docker-compose up -d
+docker-up:
+	docker compose up -d
 
-# Generate mocks
-mocks:
-	mockery --dir=./internal/domain/port --all --output=./test/mocks
-
-# Dependencies
-deps:
-	go mod download
-	go mod tidy
+docker-down:
+	docker compose down

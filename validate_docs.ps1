@@ -1,8 +1,18 @@
-$root = "C:\Users\USER\E-Commerce Platform\docs"
+$ErrorActionPreference = 'Stop'
+$repoRoot = $PSScriptRoot
+$root = Join-Path $repoRoot 'docs'
 $dirs = @("checkout","order","payment","inventory","promotion")
 $files = @()
 foreach ($d in $dirs) {
-    $files += Get-ChildItem -Path "$root\$d" -Recurse -Filter "*.md"
+    $serviceDocs = Join-Path $root $d
+    if (-not (Test-Path -LiteralPath $serviceDocs -PathType Container)) {
+        throw "Documentation directory does not exist: $serviceDocs"
+    }
+    $files += Get-ChildItem -LiteralPath $serviceDocs -Recurse -File -Filter "*.md"
+}
+
+if ($files.Count -eq 0) {
+    throw "No Markdown files found under the configured service documentation directories."
 }
 
 $report = @()
@@ -44,7 +54,8 @@ foreach ($f in $files) {
     if ($count -gt 0) { $findings += "SHIPPING_DISCOUNT=$count" }
 
     if ($findings.Count -gt 0) {
-        $report += [PSCustomObject]@{File = $f.Name; Findings = ($findings -join ", ")}
+        $relativePath = [System.IO.Path]::GetRelativePath($repoRoot, $f.FullName).Replace('\', '/')
+        $report += [PSCustomObject]@{File = $relativePath; Findings = ($findings -join ", ")}
     }
 }
 
@@ -53,4 +64,5 @@ if ($report.Count -eq 0) {
 } else {
     Write-Host "Found $($report.Count) files with potential inconsistencies:" -ForegroundColor Yellow
     $report | Format-Table -AutoSize
+    exit 1
 }

@@ -92,22 +92,12 @@ try {
 }
 
 Write-Host ""
-Write-Host "6. Checking Plugin Build..." -ForegroundColor Yellow
-Write-Host "-------------------------"
+Write-Host "6. Running gateway-auth Unit Tests..." -ForegroundColor Yellow
+Write-Host "------------------------------------"
 
-$pluginPath = "plugins\jwt_auth.so"
-if (Test-Path $pluginPath) {
-    $pluginSize = (Get-Item $pluginPath).Length
-    Write-Host "Plugin built: plugins/jwt_auth.so ($pluginSize bytes)" -ForegroundColor Green
-} else {
-    Write-Host "Plugin not found. Build with: docker compose run --rm go-builder" -ForegroundColor Red
-}
-
-Write-Host ""
-Write-Host "7. Running Unit Tests..." -ForegroundColor Yellow
-Write-Host "-----------------------"
-
-docker run --rm -v "c:\Users\USER\E-Commerce Platform\go\services\api-gateway\cmd\traefik-plugin:/app" -w /app golang:1.21 go test -v
+# JWT verification lives in go/services/gateway-auth (ForwardAuth), not in a Traefik plugin.
+$gatewayAuth = (Resolve-Path (Join-Path $PSScriptRoot "..\..\gateway-auth")).Path
+docker run --rm -v "${gatewayAuth}:/app" -w /app golang:1.25 go test ./...
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Unit tests passed" -ForegroundColor Green
 } else {

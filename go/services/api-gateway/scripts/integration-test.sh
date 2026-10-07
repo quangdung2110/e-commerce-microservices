@@ -111,19 +111,11 @@ else
 fi
 echo ""
 
-echo "5. Checking Plugin Build..."
-echo "-------------------------"
-if [ -f "plugins/jwt_auth.so" ]; then
-    PLUGIN_SIZE=$(stat -c%s plugins/jwt_auth.so 2>/dev/null || stat -f%z plugins/jwt_auth.so 2>/dev/null || echo "unknown")
-    echo -e "${GREEN}Plugin built: plugins/jwt_auth.so (${PLUGIN_SIZE} bytes)${NC}"
-else
-    echo -e "${RED}Plugin not found. Build with: docker compose run --rm go-builder${NC}"
-fi
-echo ""
-
-echo "6. Running Unit Tests..."
-echo "-----------------------"
-docker run --rm -v "$(pwd)/cmd/traefik-plugin:/app" -w /app golang:1.21 go test -v 2>&1 | tee /tmp/test_output.txt
+echo "5. Running gateway-auth Unit Tests..."
+echo "------------------------------------"
+# JWT verification lives in go/services/gateway-auth (ForwardAuth), not in a
+# Traefik plugin.
+bash "$(dirname "$0")/../../gateway-auth/scripts/go.sh" test ./... 2>&1 | tee /tmp/test_output.txt
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo -e "${GREEN}Unit tests passed${NC}"
 else

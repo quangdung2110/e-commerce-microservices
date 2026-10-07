@@ -118,7 +118,7 @@ CREATE TABLE chat.messages (
   conversation_id text,
   message_id text,          -- Snowflake ID (sortable)
   sender_id text,
-  sender_name text,
+  sender_name text,        -- Projection từ User; anonymize khi nhận Auth USER_DELETED
   type text,
   content text,
   created_at timestamp,

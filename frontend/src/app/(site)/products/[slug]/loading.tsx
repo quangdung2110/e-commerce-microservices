@@ -1,0 +1,2 @@
+import { Skeleton } from "@/components/ui/skeleton";
+export default function Loading() { return <main aria-busy aria-label="Đang tải sản phẩm" className="mx-auto w-full max-w-medium space-y-12 px-6 py-12 md:px-8"><div className="grid gap-8 md:grid-cols-2"><Skeleton className="aspect-square w-full rounded-xl" /><div className="space-y-6"><Skeleton className="h-20 w-full" /><Skeleton className="h-10 w-1/2" /><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div></div><Skeleton className="h-32 w-full" /></main>; }

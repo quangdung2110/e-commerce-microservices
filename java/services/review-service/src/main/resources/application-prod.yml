@@ -1,0 +1,13 @@
+# Every secret and every internal token comes from the secret manager. A missing
+# REVIEW_AUTHOR_ALIAS_HMAC_SECRET or REVIEW_PRIVACY_GUARD_HMAC_SECRET fails startup
+# rather than silently starting a new pseudonym namespace
+# (docs/review/development.md 2).
+spring:
+  kafka:
+    listener:
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3}
+
+logging:
+  level:
+    root: INFO
+    com.ecommerce.review: INFO

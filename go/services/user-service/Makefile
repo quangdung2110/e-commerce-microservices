@@ -1,188 +1,62 @@
-# Makefile for User Service
+.PHONY: build run test test-unit test-integration test-all fmt vet lint clean deps migrate-up migrate-down docker-build docker-up docker-down
 
-.PHONY: help build run test test-coverage test-unit lint fmt docker-build docker-up docker-down migrate clean
+BIN        := bin/user-service
+CONFIG     := ./configs/application.yaml
+MIGRATIONS := ./migrations
+# Standalone compose host port. Root-stack users run `docker compose run --rm user-migrate`.
+DB_URL     ?= postgres://postgres:postgres@localhost:5433/user_db?sslmode=disable
 
-# Variables
-APP_NAME := user-service
-COMPLIANCE_APP_NAME := user-service-compliance
-DOCKER_IMAGE := $(APP_NAME):latest
-DOCKER_COMPLIANCE_IMAGE := $(COMPLIANCE_APP_NAME):latest
-GO := go
-GOFLAGS := -v
-BUILD_DIR := ./build
-MIGRATION_DIR := ./migrations
+build:
+	go build -o $(BIN) ./cmd/server
 
-# Default target
-help: ## Show this help message
-	@echo "User Service - Makefile Commands"
-	@echo ""
-	@echo "Usage: make <target>"
-	@echo ""
-	@echo "Targets:"
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+run:
+	go run ./cmd/server -config $(CONFIG)
 
-## Build
-build: ## Build main server binary
-	@echo "Building $(APP_NAME)..."
-	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(APP_NAME) ./cmd/server
+# The default suite needs no Docker: the use cases run against in-memory doubles.
+test:
+	go test -race -cover ./...
 
-build-compliance: ## Build compliance worker binary
-	@echo "Building $(COMPLIANCE_APP_NAME)..."
-	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(COMPLIANCE_APP_NAME) ./cmd/server/compliance
+test-unit:
+	go test -race ./test/unit/...
 
-build-all: build build-compliance ## Build both server and compliance worker
+# The integration suite starts PostgreSQL and Redis with testcontainers, so it
+# needs a running Docker daemon. It covers the SQL, the schema constraints, the
+# cache adapter and the HTTP surface.
+test-integration:
+	go test -tags=integration -count=1 -timeout 15m ./test/integration/...
 
-## Run
-run: ## Run the main server locally
-	@echo "Starting $(APP_NAME)..."
-	$(GO) run ./cmd/server
+test-all: test test-integration
 
-run-compliance: ## Run the compliance worker locally
-	@echo "Starting $(COMPLIANCE_APP_NAME)..."
-	$(GO) run ./cmd/server/compliance
+fmt:
+	gofmt -l -w .
 
-## Testing
-test: ## Run all tests
-	@echo "Running tests..."
-	$(GO) test $(GOFLAGS) ./...
+vet:
+	go vet ./...
 
-test-unit: ## Run unit tests only (exclude integration)
-	@echo "Running unit tests..."
-	$(GO) test $(GOFLAGS) -short ./...
-
-test-coverage: ## Run tests with coverage report
-	@echo "Running tests with coverage..."
-	$(GO) test -coverprofile=coverage.out ./...
-	$(GO) tool cover -html=coverage.out -o coverage.html
-	@echo "Coverage report generated: coverage.html"
-	@rm coverage.out
-
-test-watch: ## Run tests in watch mode
-	@echo "Running tests in watch mode..."
-	$(GO) test -watch ./...
-
-## Code Quality
-fmt: ## Format code
-	@echo "Formatting code..."
-	$(GO) fmt ./...
-
-lint: ## Run linters
-	@echo "Running linters..."
+lint:
 	golangci-lint run ./...
-	@echo "Lint complete"
 
-lint-fix: ## Run linters with auto-fix
-	@echo "Running linters with auto-fix..."
-	golangci-lint run --fix ./...
+deps:
+	go mod download
+	go mod tidy
 
-vet: ## Run go vet
-	@echo "Running go vet..."
-	$(GO) vet ./...
+# Requires golang-migrate. The same SQL also seeds a local Postgres container
+# through docker-compose.
+migrate-up:
+	migrate -path $(MIGRATIONS) -database "$(DB_URL)" up
 
-## Dependencies
-deps: ## Download dependencies
-	@echo "Downloading dependencies..."
-	$(GO) mod download
-	$(GO) mod tidy
+migrate-down:
+	migrate -path $(MIGRATIONS) -database "$(DB_URL)" down 1
 
-deps-update: ## Update dependencies
-	@echo "Updating dependencies..."
-	$(GO) get -u ./...
-	$(GO) mod tidy
+clean:
+	rm -rf bin/
+	go clean
 
-## Database
-migrate: ## Run database migrations
-	@echo "Running migrations..."
-	@for f in $(MIGRATION_DIR)/*.up.sql; do \
-		echo "Applying: $$f"; \
-		psql -h localhost -U postgres -d user_service -f "$$f" || true; \
-	done
+docker-build:
+	docker build -t user-service:latest .
 
-migrate-down: ## Rollback last migration
-	@echo "Rolling back migrations..."
-	@for f in $(shell ls $(MIGRATION_DIR)/*.down.sql | sort -r); do \
-		echo "Rolling back: $$f"; \
-		psql -h localhost -U postgres -d user_service -f "$$f" || true; \
-	done
+docker-up:
+	docker compose up -d
 
-migrate-create NAME=: ## Create a new migration (e.g., make migrate-create NAME=add_phone)
-	@if [ -z "$(NAME)" ] || [ "$(NAME)" = ":" ]; then \
-		echo "Usage: make migrate-create NAME=your_migration_name"; \
-		exit 1; \
-	fi
-	@TIMESTAMP=$$(date +%Y%m%d%H%M%S); \
-	echo "-- Migration: $(NAME)" > $(MIGRATION_DIR)/$$TIMESTAMP$(NAME).up.sql; \
-	echo "-- Rollback: $(NAME)" > $(MIGRATION_DIR)/$$TIMESTAMP$(NAME).down.sql; \
-	echo "Created migration files: $$TIMESTAMP$(NAME).up.sql and .down.sql"
-
-## Docker
-docker-build: ## Build Docker image
-	@echo "Building Docker image..."
-	docker build -t $(DOCKER_IMAGE) .
-
-docker-build-compliance: ## Build compliance worker Docker image
-	@echo "Building compliance worker Docker image..."
-	docker build -f Dockerfile.compliance -t $(DOCKER_COMPLIANCE_IMAGE) .
-
-docker-build-all: docker-build docker-build-compliance ## Build all Docker images
-
-docker-up: ## Start all services with Docker Compose
-	@echo "Starting services with Docker Compose..."
-	docker-compose up -d
-
-docker-down: ## Stop all services
-	@echo "Stopping services..."
-	docker-compose down
-
-docker-down-volumes: ## Stop and remove volumes
-	@echo "Stopping and removing volumes..."
-	docker-compose down -v
-
-docker-restart: docker-down docker-up ## Restart all services
-
-docker-logs: ## Show logs from all services
-	docker-compose logs -f
-
-docker-logs-service SERVICE=: ## Show logs from specific service (e.g., make docker-logs-service SERVICE=user-service)
-	@if [ -z "$(SERVICE)" ] || [ "$(SERVICE)" = ":" ]; then \
-		echo "Usage: make docker-logs-service SERVICE=user-service"; \
-		exit 1; \
-	fi
-	docker-compose logs -f $(SERVICE)
-
-## Development
-dev-deps: ## Install development dependencies
-	@echo "Installing development tools..."
-	go install github.com/golangci-lint/cmd/golangci-lint@latest
-	go install github.com/pressly/goose/cmd/goose@latest
-
-## Clean
-clean: ## Remove build artifacts
-	@echo "Cleaning build artifacts..."
-	rm -rf $(BUILD_DIR)
-	rm -f coverage.html
-
-clean-all: clean ## Remove all generated files including coverage
-	@echo "Cleaning all generated files..."
-	rm -f coverage.html
-
-## Generate
-generate: ## Run code generators
-	@echo "Running code generators..."
-	@# Add your code generation commands here
-	@# e.g., go generate ./...
-
-## Multi-architecture build
-docker-buildx: ## Build multi-architecture Docker image
-	@echo "Building multi-architecture Docker image..."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(DOCKER_IMAGE) --push .
-
-## Release
-release: build-all ## Create release artifacts
-	@echo "Creating release artifacts..."
-	@mkdir -p release
-	cp $(BUILD_DIR)/$(APP_NAME) release/
-	cp $(BUILD_DIR)/$(COMPLIANCE_APP_NAME) release/
-	@echo "Release artifacts created in ./release"
+docker-down:
+	docker compose down

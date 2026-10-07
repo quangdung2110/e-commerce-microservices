@@ -1,0 +1,21 @@
+Thanh toán không thành công
+
+Lần thanh toán thứ {{.Attempt}} cho đơn hàng {{.OrderCode}} với số tiền {{money .AmountMinor .Currency}} không thành công. Đơn hàng chưa được xác nhận.
+{{- if .CanRetry}}
+{{- if .HasRetryDeadline}}
+
+Bạn có thể thanh toán lại trước {{date .Deadline .Timezone}}. Sau thời điểm này, đơn hàng sẽ tự động huỷ.
+{{- else}}
+
+Bạn có thể thanh toán lại để giữ đơn hàng.
+{{- end}}
+
+Thanh toán lại: {{.OrderURL}}
+{{- else}}
+
+Đơn hàng không thể thanh toán lại. Nếu vẫn muốn mua, vui lòng đặt đơn hàng mới.
+
+Xem đơn hàng: {{.OrderURL}}
+{{- end}}
+
+Nếu tài khoản của bạn đã bị trừ tiền, số tiền sẽ được hoàn lại theo quy định của đơn vị thanh toán.

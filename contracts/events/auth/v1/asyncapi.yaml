@@ -1,0 +1,294 @@
+asyncapi: 3.0.0
+info:
+  title: Auth Events
+  version: 1.0.0
+  description: >-
+    Contract đích cho event do Auth Service publish. Mọi message dùng CloudEvents
+    1.0 JSON structured với `id` UUID; không mang password, OTP, reset token,
+    refresh token hoặc email. Notification resolve nội dung gửi qua internal Auth
+    API theo delivery_id.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+    description: Local development broker
+channels:
+  authIdentityEvents:
+    address: t.auth.events
+    description: >-
+      Event identity tối thiểu. USER_VERIFIED_SUCCESS chỉ dành cho User Service;
+      USER_DELETED được phát trực tiếp cho mọi service sở hữu dữ liệu theo user.
+      Partition key là user_id; ordering chỉ được cam kết trong cùng user_id.
+    x-owner: auth-service
+    x-message-key: user_id
+    x-ordering-scope: user_id
+    x-delivery-semantic: best-effort-after-commit
+    x-kafka-delivery-after-publish: at-least-once
+    x-publication-reliability: >-
+      Auth publish trực tiếp sau PostgreSQL commit, retry tối đa 3 lần với cùng
+      CloudEvent id. Retry cạn có thể làm mất event và phải được metric, alert,
+      reconciliation vận hành xử lý; không dùng outbox.
+    x-max-message-bytes: 65536
+    x-retention: 7d
+    x-consumer-dlq-topic: t.auth.events.dlq
+    x-data-classification: INTERNAL
+    messages:
+      userVerifiedSuccess:
+        $ref: '#/components/messages/userVerifiedSuccess'
+      userDeleted:
+        $ref: '#/components/messages/userDeleted'
+  authNotificationEvents:
+    address: t.auth.notification.events
+    description: >-
+      Yêu cầu Notification Service gửi email security/verification. Chỉ chứa
+      delivery_id và metadata nội bộ; recipient email cùng secret render được
+      resolve qua internal API, không nằm trong Kafka.
+    x-owner: auth-service
+    x-message-key: user_id
+    x-ordering-scope: user_id
+    x-delivery-semantic: best-effort-after-commit
+    x-kafka-delivery-after-publish: at-least-once
+    x-publication-reliability: >-
+      Auth publish trực tiếp sau PostgreSQL commit, retry tối đa 3 lần với cùng
+      CloudEvent id. Retry cạn có thể làm mất yêu cầu gửi và phải được
+      reconciliation vận hành xử lý; không dùng outbox.
+    x-max-message-bytes: 65536
+    x-retention: 24h
+    x-consumer-dlq-topic: t.auth.notification.events.dlq
+    x-data-classification: INTERNAL
+    x-access-policy: Chỉ Notification Service có quyền consume topic này.
+    messages:
+      userOtpRequested:
+        $ref: '#/components/messages/userOtpRequested'
+      passwordResetRequested:
+        $ref: '#/components/messages/passwordResetRequested'
+      userEmailChanged:
+        $ref: '#/components/messages/userEmailChanged'
+      userPasswordChanged:
+        $ref: '#/components/messages/userPasswordChanged'
+      userAccountLocked:
+        $ref: '#/components/messages/userAccountLocked'
+      userUnlocked:
+        $ref: '#/components/messages/userUnlocked'
+operations:
+  publishIdentityEvents:
+    action: send
+    summary: Auth Service publish identity lifecycle event
+    channel:
+      $ref: '#/channels/authIdentityEvents'
+    messages:
+      - $ref: '#/channels/authIdentityEvents/messages/userVerifiedSuccess'
+      - $ref: '#/channels/authIdentityEvents/messages/userDeleted'
+  publishNotificationRequests:
+    action: send
+    summary: Auth Service yêu cầu Notification Service gửi email bảo mật
+    channel:
+      $ref: '#/channels/authNotificationEvents'
+    messages:
+      - $ref: '#/channels/authNotificationEvents/messages/userOtpRequested'
+      - $ref: '#/channels/authNotificationEvents/messages/passwordResetRequested'
+      - $ref: '#/channels/authNotificationEvents/messages/userEmailChanged'
+      - $ref: '#/channels/authNotificationEvents/messages/userPasswordChanged'
+      - $ref: '#/channels/authNotificationEvents/messages/userAccountLocked'
+      - $ref: '#/channels/authNotificationEvents/messages/userUnlocked'
+components:
+  messages:
+    userVerifiedSuccess:
+      name: userVerifiedSuccessV1
+      title: USER_VERIFIED_SUCCESS
+      summary: Account đã hoàn tất xác minh email.
+      contentType: application/cloudevents+json
+      x-consumers: [user-service]
+      payload:
+        $ref: './schemas/user-verified-success.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e098-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-verified-success.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T12:00:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-verified-success.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              roles: [USER]
+              verified_at: '2026-08-27T12:00:00Z'
+    userDeleted:
+      name: userDeletedV1
+      title: USER_DELETED
+      summary: Account đã được anonymize và vào retention window 90 ngày.
+      contentType: application/cloudevents+json
+      x-consumers: [user-service, notification-service, review-service, chat-service]
+      payload:
+        $ref: './schemas/user-deleted.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e099-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-deleted.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T12:30:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-deleted.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              deleted_at: '2026-08-27T12:30:00Z'
+              reason: GDPR_REQUEST
+              hard_delete_after: '2026-11-25T12:30:00Z'
+    userOtpRequested:
+      name: userOtpRequestedV1
+      title: USER_OTP_REQUESTED
+      summary: Gửi OTP xác minh registration hoặc email mới.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-otp-requested.schema.json'
+      examples:
+        - name: emailChange
+          payload:
+            specversion: '1.0'
+            id: 0198e09a-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-otp-requested.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T12:40:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-otp-requested.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09a-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              purpose: EMAIL_CHANGE_VERIFICATION
+              requested_at: '2026-08-27T12:40:00Z'
+              expires_at: '2026-08-27T12:45:00Z'
+    passwordResetRequested:
+      name: passwordResetRequestedV1
+      title: PASSWORD_RESET_REQUESTED
+      summary: Gửi email có opaque reset-token link.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/password-reset-requested.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e09b-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.password-reset-requested.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T12:45:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/password-reset-requested.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09b-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              requested_at: '2026-08-27T12:45:00Z'
+              expires_at: '2026-08-27T13:00:00Z'
+    userEmailChanged:
+      name: userEmailChangedV1
+      title: USER_EMAIL_CHANGED
+      summary: Gửi cảnh báo đổi email tới email trước đó.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-email-changed.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e09c-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-email-changed.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T13:00:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-email-changed.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09c-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              changed_at: '2026-08-27T13:00:00Z'
+    userPasswordChanged:
+      name: userPasswordChangedV1
+      title: USER_PASSWORD_CHANGED
+      summary: Gửi thông báo password đã thay đổi.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-password-changed.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e09d-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-password-changed.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T13:05:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-password-changed.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09d-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              changed_at: '2026-08-27T13:05:00Z'
+    userAccountLocked:
+      name: userAccountLockedV1
+      title: USER_ACCOUNT_LOCKED
+      summary: Gửi cảnh báo account bị khóa tạm thời.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-account-locked.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e09e-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-account-locked.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T13:10:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-account-locked.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09e-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              locked_at: '2026-08-27T13:10:00Z'
+              locked_until: '2026-08-27T13:25:00Z'
+    userUnlocked:
+      name: userUnlockedV1
+      title: USER_UNLOCKED
+      summary: Gửi thông báo worker đã tự mở khóa account.
+      contentType: application/cloudevents+json
+      x-consumers: [notification-service]
+      payload:
+        $ref: './schemas/user-unlocked.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: 0198e09f-97e4-7d66-8a2c-997d792ae826
+            type: com.ecommerce.auth.user-unlocked.v1
+            source: /services/auth
+            subject: accounts/0198e098-96f2-7ad3-91d8-570608021328
+            time: '2026-08-27T13:25:00Z'
+            datacontenttype: application/json
+            dataschema: /contracts/events/auth/v1/schemas/user-unlocked.schema.json
+            correlationid: 0198e098-96f2-7ad3-91d8-570608021328
+            data:
+              delivery_id: 0198e09f-96f2-7ad3-91d8-570608021328
+              user_id: 0198e098-96f2-7ad3-91d8-570608021328
+              unlocked_at: '2026-08-27T13:25:00Z'

@@ -1,0 +1,962 @@
+openapi: 3.1.0
+info:
+  title: Review Service Public and Admin HTTP API
+  version: 1.0.0
+  description: >-
+    Contract đích cho public read, buyer command và admin moderation của Review.
+    Public review chỉ có khi status APPROVED. Caller identity và role là trusted
+    headers do API Gateway inject sau JWT verification, không phải client-controlled
+    headers. Mọi domain write commit outbox cùng transaction; HTTP thành công không
+    có nghĩa Kafka message đã được consumer quan sát.
+    Gateway local tách GET public list/aggregate sang router anonymous chỉ bỏ
+    forged identity headers. Buyer/admin dùng authenticated@file qua gateway-auth;
+    không inject danh tính dev cố định và không retry write ở gateway.
+x-adoption-status: proposed
+servers:
+  - url: http://review-service:8080
+    description: Internal cluster endpoint via API Gateway
+tags:
+  - name: Public reviews
+  - name: Buyer reviews
+  - name: Review media
+  - name: Admin moderation
+
+paths:
+  /api/v1/reviews/products/{product_id}:
+    get:
+      tags: [Public reviews]
+      operationId: listProductReviews
+      summary: Liệt kê review APPROVED của một product
+      description: >-
+        Product/SKU không được Review xác minh với Catalog ở read path. Product chưa
+        có review hoặc product ID không được biết bởi Review đều trả trang rỗng. Cursor
+        là opaque keyset (created_at, review_id), không dùng OFFSET.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PublicLimit'
+        - $ref: '#/components/parameters/SkuIdQuery'
+        - $ref: '#/components/parameters/RatingQuery'
+        - $ref: '#/components/parameters/HasMediaQuery'
+      responses:
+        '200':
+          description: Review APPROVED theo newest-first; signed media URL chỉ tồn tại trong response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicReviewPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/products/{product_id}/aggregate:
+    get:
+      tags: [Public reviews]
+      operationId: getProductReviewAggregate
+      summary: Lấy aggregate rating bất đồng bộ của product
+      description: >-
+        Không có row aggregate trả các counter bằng 0, không phải 404. Aggregate là
+        eventual projection: review create/edit vừa commit có thể chưa phản ánh ở đây.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Aggregate hiện tại hoặc zero aggregate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductReviewAggregate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/me/pending:
+    get:
+      tags: [Buyer reviews]
+      operationId: listMyPendingReviewEligibilities
+      summary: Liệt kê entitlement PENDING của buyer hiện tại
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PublicLimit'
+      responses:
+        '200':
+          description: Entitlement PENDING của caller, sắp expiry tăng dần.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingEligibilityPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/me:
+    get:
+      tags: [Buyer reviews]
+      operationId: listMyReviews
+      summary: Liệt kê review của chính buyer, kể cả khi không còn public
+      description: >-
+        Mới nhất trước, cursor là opaque keyset (created_at, review_id). Mỗi item là
+        OwnerReview: gồm review HIDDEN_BY_REPORT và REMOVED nhưng không có signed media
+        URL, report, legal record hay takedown reason. Trang đầy limit item luôn có
+        next_cursor; trang kế tiếp có thể rỗng.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PublicLimit'
+      responses:
+        '200':
+          description: Review của caller, mới nhất trước.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnerReviewPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/me/eligibilities/{eligibility_id}:
+    get:
+      tags: [Buyer reviews]
+      operationId: getMyEligibilityReviewStatus
+      summary: Xác nhận kết quả create review theo eligibility
+      description: >-
+        Recovery read khi POST create timeout hoặc mất response. Một eligibility
+        CLAIMED trả review_id, nên client không retry create command mù quáng.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EligibilityId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Trạng thái entitlement hiện tại của caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyEligibilityReviewStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotEligibilityOwner' }
+        '404': { $ref: '#/components/responses/EligibilityNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/me/{review_id}:
+    get:
+      tags: [Buyer reviews]
+      operationId: getMyReview
+      summary: Đọc review của chính buyer, kể cả khi không còn public
+      description: >-
+        Recovery read khi PATCH timeout hoặc mất response. Response không chứa report,
+        legal record hay takedown reason; visibility_status chỉ dành cho owner.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Review thuộc caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnerReview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotReviewOwner' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews:
+    post:
+      tags: [Buyer reviews]
+      operationId: createReview
+      summary: Tạo review cho một entitlement PENDING
+      description: >-
+        Review xác minh metadata của mỗi uploaded media asset trước transaction rồi
+        atomically claim entitlement, attach asset và ghi REVIEW_CREATED vào outbox.
+        Review tự sinh pseudonym tác giả từ trusted X-User-Id; không nhận profile name
+        hoặc email từ client/Gateway.
+        X-Request-Id chỉ dùng tracing, không phải idempotency key. Client nhận timeout
+        phải dùng recovery read theo eligibility_id.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReviewRequest' }
+      responses:
+        '201':
+          description: Review APPROVED đã commit; rating aggregate có thể chưa hội tụ.
+          headers: { Location: { $ref: '#/components/headers/ReviewLocation' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnerReview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotEligibilityOwner' }
+        '404': { $ref: '#/components/responses/EligibilityNotFound' }
+        '409': { $ref: '#/components/responses/CreateReviewConflict' }
+        '410': { $ref: '#/components/responses/EligibilityExpired' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/{review_id}:
+    patch:
+      tags: [Buyer reviews]
+      operationId: patchReview
+      summary: Sửa review đúng một lần
+      description: >-
+        Missing field được giữ nguyên; content:null xóa nội dung; missing
+        media_asset_ids giữ attachment và [] gỡ toàn bộ attachment. Asset mới được
+        xác minh trước transaction. PATCH thành công luôn tiêu quota sửa, kể cả khi
+        chỉ đổi content; recovery read phải được dùng sau timeout.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchReviewRequest' }
+      responses:
+        '200':
+          description: Review đã sửa và REVIEW_UPDATED đã được ghi vào outbox.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnerReview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotReviewOwner' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '409': { $ref: '#/components/responses/PatchReviewConflict' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/{review_id}/reports:
+    post:
+      tags: [Buyer reviews]
+      operationId: reportReview
+      summary: Report một review APPROVED
+      description: >-
+        Một caller có identity còn tồn tại chỉ có một active report/review. Sau khi
+        admin dismiss report cũ, caller có thể report lại. Response thành công cố ý
+        không có body để không tiết lộ active_report_count hay review có vừa chạm ngưỡng
+        ẩn hay không.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReviewReportRequest' }
+      responses:
+        '202': { description: Report đã được nhận mà không tiết lộ kết quả moderation. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ReviewReportForbidden' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '409': { $ref: '#/components/responses/ReportConflict' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/reviews/media/upload-urls:
+    post:
+      tags: [Review media]
+      operationId: issueReviewMediaUploadUrl
+      summary: Cấp signed direct-upload instruction cho media asset
+      description: >-
+        Caller upload byte trực tiếp vào storage. Response không có object key và API
+        không có verify/poll endpoint; create/edit tự xác minh object immutable trước
+        khi attach. Server/Gateway giới hạn số asset chưa attach và byte theo media type.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssueMediaUploadRequest' }
+      responses:
+        '201':
+          description: Asset ISSUED và upload instruction single-write/no-overwrite.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuedMediaAsset' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/MediaQuotaExceeded' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/admin/reviews:
+    get:
+      tags: [Admin moderation]
+      operationId: listReviewsUnderModeration
+      summary: Liệt kê review cần kiểm duyệt
+      description: >-
+        Surface moderation duy nhất của admin. Đơn vị là review, không phải report:
+        một review bị ba report là một case một dòng, và report-dismissals cũng thao
+        tác theo review. status=REPORTED là review còn public nhưng đã có report chưa
+        dismiss, xử lý được trước khi threshold tự ẩn nó. status=HIDDEN_BY_REPORT là
+        review đã bị ẩn; hide chuyển mọi report PENDING thành ACTIONED nên đây là
+        đường duy nhất lấy lại review_id cho dismiss. Cả hai không trả reporter_user_id.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ModerationStatusQuery'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: >-
+            Case theo first_reported_at tăng dần, case mở lâu nhất trước, cùng một
+            nghĩa sắp xếp cho cả hai status. Signed media URL chỉ tồn tại trong
+            response này.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModerationCasePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminForbidden' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/admin/reviews/{review_id}/report-dismissals:
+    post:
+      tags: [Admin moderation]
+      operationId: dismissReviewReports
+      summary: Dismiss toàn bộ active report của review
+      description: >-
+        Idempotent theo outcome: review không còn active report vẫn trả kết quả hiện
+        tại. Khi review đang HIDDEN_BY_REPORT, command restore APPROVED và ghi
+        REVIEW_APPROVED vào outbox; không có manual admin-hide operation.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Active reports đã dismissed; chỉ admin thấy counter kết quả.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModerationResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminForbidden' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/admin/reviews/{review_id}/reply:
+    put:
+      tags: [Admin moderation]
+      operationId: putReviewAdminReply
+      summary: Tạo hoặc thay thế official reply duy nhất
+      description: >-
+        PUT là upsert idempotent cấp resource. Chỉ lần tạo đầu tiên phát
+        REVIEW_REPLY_NOTIFICATION_REQUESTED khi eligibility owner không có HMAC
+        deletion guard; guard không từ chối reply nhưng suppress notification request.
+        Thay thế nội dung không phát notification mới.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutAdminReplyRequest' }
+      responses:
+        '200':
+          description: Official reply hiện tại.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OfficialReply' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminForbidden' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '409': { $ref: '#/components/responses/ReviewNotReplyable' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+  /api/v1/admin/reviews/{review_id}/takedown:
+    post:
+      tags: [Admin moderation]
+      operationId: takeDownReview
+      summary: Thực hiện legal takedown không thể đảo ngược
+      description: >-
+        Một admin có role phù hợp thực hiện command. Review lấy actor từ trusted Gateway
+        identity và persist taken_down_by_admin_id; request body không có requester hay
+        approver ID. Legal case, reason và identity admin không đi vào public response
+        hoặc event payload. Review chỉ tạo removal notification request khi eligibility
+        owner không có HMAC deletion guard; guard không từ chối takedown nhưng suppress
+        notification request.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReviewId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTakedownRequest' }
+      responses:
+        '201':
+          description: Review REMOVED, audit record và outbox record đã commit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TakedownReceipt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminForbidden' }
+        '404': { $ref: '#/components/responses/ReviewNotFound' }
+        '409': { $ref: '#/components/responses/TakedownAlreadyExists' }
+        '503': { $ref: '#/components/responses/RetryableUnavailable' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted identity injected by API Gateway after JWT verification; clients cannot set it.
+    gatewayRoles:
+      type: apiKey
+      in: header
+      name: X-User-Roles
+      description: Trusted roles injected by API Gateway. Admin operations require the configured Review admin role.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Correlation/tracing identifier only; it is not an idempotency key.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    ProductId:
+      name: product_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ProductId' }
+    ReviewId:
+      name: review_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    EligibilityId:
+      name: eligibility_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from next_cursor of the previous page.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    PublicLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+    AdminLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    SkuIdQuery:
+      name: sku_id
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/SkuId' }
+    RatingQuery:
+      name: rating
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/Rating' }
+    ModerationStatusQuery:
+      name: status
+      in: query
+      required: true
+      description: >-
+        Chỉ liệt kê state cần admin hành động. Required để một client quên filter
+        không vô tình phân trang toàn bộ review của hệ thống.
+      schema: { $ref: '#/components/schemas/ModerationQueueStatus' }
+    HasMediaQuery:
+      name: has_media
+      in: query
+      required: false
+      description: Khi có mặt chỉ nhận true; false tương đương không filter và bị từ chối để giữ contract/index rõ ràng.
+      schema: { type: boolean, const: true }
+
+  headers:
+    ReviewLocation:
+      required: true
+      description: URI của review vừa tạo.
+      schema: { type: string, format: uri-reference, pattern: '^/api/v1/reviews/[0-9a-fA-F-]{36}$' }
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: Opaque identifier owned by Review.
+    ProductId:
+      type: string
+      minLength: 1
+      maxLength: 64
+    SkuId:
+      type: string
+      minLength: 1
+      maxLength: 64
+    Rating:
+      type: integer
+      minimum: 1
+      maximum: 5
+    ReviewVisibilityStatus:
+      type: string
+      enum: [APPROVED, HIDDEN_BY_REPORT, REMOVED]
+    ReviewMediaType:
+      type: string
+      enum: [IMAGE, VIDEO]
+    ReviewReportReason:
+      type: string
+      enum: [SPAM, OFFENSIVE, FAKE, OTHER]
+    ReviewReportStatus:
+      type: string
+      enum: [PENDING, ACTIONED, DISMISSED]
+      description: >-
+        ACTIONED nghĩa là report đã góp phần ẩn review, không phải đã được admin phân
+        xử. Chỉ DISMISSED mới do admin quyết.
+    EligibilityStatus:
+      type: string
+      enum: [PENDING, CLAIMED, EXPIRED]
+    PublicReviewMedia:
+      type: object
+      additionalProperties: false
+      required: [asset_id, media_type, url, url_expires_at, sort_order]
+      properties:
+        asset_id: { $ref: '#/components/schemas/Uuid' }
+        media_type: { $ref: '#/components/schemas/ReviewMediaType' }
+        url:
+          type: string
+          format: uri
+          description: >-
+            Short-lived signed download URL generated for this response only, using
+            the browser-reachable storage origin (REVIEW_S3_PUBLIC_ENDPOINT, falling
+            back to REVIEW_S3_ENDPOINT). Clients must use the URL unchanged; replacing
+            its host/path breaks SigV4. Do not shared-cache it beyond url_expires_at.
+        url_expires_at: { type: string, format: date-time }
+        sort_order: { type: integer, minimum: 0, maximum: 32767 }
+    OfficialReply:
+      type: object
+      additionalProperties: false
+      required: [content, created_at, updated_at]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 5000 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PublicReview:
+      type: object
+      additionalProperties: false
+      required:
+        [review_id, product_id, sku_id, author_name, variant_name, rating, content,
+         has_media, media, admin_reply, created_at, updated_at]
+      properties:
+        review_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/ProductId' }
+        sku_id: { $ref: '#/components/schemas/SkuId' }
+        author_name: { type: string, minLength: 1, maxLength: 255 }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        rating: { $ref: '#/components/schemas/Rating' }
+        content: { type: [string, 'null'], maxLength: 5000 }
+        has_media: { type: boolean }
+        media:
+          type: array
+          maxItems: 9
+          items: { $ref: '#/components/schemas/PublicReviewMedia' }
+        admin_reply:
+          oneOf:
+            - $ref: '#/components/schemas/OfficialReply'
+            - type: 'null'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OwnerReview:
+      type: object
+      additionalProperties: false
+      required:
+        [review_id, product_id, sku_id, author_name, variant_name, product_name,
+         product_image_url, rating, content, has_media, media, admin_reply,
+         visibility_status, edit_count, created_at, updated_at]
+      properties:
+        review_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/ProductId' }
+        sku_id: { $ref: '#/components/schemas/SkuId' }
+        author_name: { type: string, minLength: 1, maxLength: 255 }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        product_name:
+          type: [string, 'null']
+          maxLength: 255
+          description: >-
+            Tên sản phẩm lúc mua, snapshot từ ORDER_COMPLETED; null với entitlement cấp
+            trước khi có snapshot. Chỉ owner thấy; PublicReview không có field này.
+        product_image_url:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Thumbnail lúc mua, cùng snapshot với product_name; null khi không có.
+        rating: { $ref: '#/components/schemas/Rating' }
+        content: { type: [string, 'null'], maxLength: 5000 }
+        has_media: { type: boolean }
+        media:
+          type: array
+          maxItems: 9
+          description: Empty when review is not APPROVED; signed URL is never issued for hidden/removed media.
+          items: { $ref: '#/components/schemas/PublicReviewMedia' }
+        admin_reply:
+          oneOf:
+            - $ref: '#/components/schemas/OfficialReply'
+            - type: 'null'
+        visibility_status: { $ref: '#/components/schemas/ReviewVisibilityStatus' }
+        edit_count: { type: integer, minimum: 0, maximum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PublicReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PublicReview' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    ProductReviewAggregate:
+      type: object
+      additionalProperties: false
+      required: [average_rating, total_reviews, total_with_media]
+      properties:
+        average_rating: { type: number, minimum: 0, maximum: 5 }
+        total_reviews: { type: integer, format: int64, minimum: 0 }
+        total_with_media: { type: integer, format: int64, minimum: 0 }
+    PendingEligibility:
+      type: object
+      additionalProperties: false
+      required:
+        [eligibility_id, order_id, product_id, sku_id, variant_name, product_name,
+         product_image_url, expires_at]
+      properties:
+        eligibility_id: { $ref: '#/components/schemas/Uuid' }
+        order_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Opaque Order ID của đơn đã mua; chỉ để dẫn buyer về đúng đơn, không parse.
+        product_id: { $ref: '#/components/schemas/ProductId' }
+        sku_id: { $ref: '#/components/schemas/SkuId' }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        product_name:
+          type: [string, 'null']
+          maxLength: 255
+          description: Tên sản phẩm lúc mua, snapshot từ ORDER_COMPLETED; null với entitlement cấp trước khi có snapshot.
+        product_image_url:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Thumbnail lúc mua, cùng snapshot với product_name; null khi không có.
+        expires_at: { type: string, format: date-time }
+    OwnerReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/OwnerReview' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    PendingEligibilityPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PendingEligibility' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    MyEligibilityReviewStatus:
+      type: object
+      additionalProperties: false
+      required: [eligibility_id, status, expires_at, review_id]
+      properties:
+        eligibility_id: { $ref: '#/components/schemas/Uuid' }
+        status: { $ref: '#/components/schemas/EligibilityStatus' }
+        expires_at: { type: string, format: date-time }
+        review_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+    CreateReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [eligibility_id, rating]
+      properties:
+        eligibility_id: { $ref: '#/components/schemas/Uuid' }
+        rating: { $ref: '#/components/schemas/Rating' }
+        content:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 5000
+          description: Must be non-blank after trim when non-null.
+        media_asset_ids:
+          type: array
+          maxItems: 9
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Uuid' }
+    PatchReviewRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        rating: { $ref: '#/components/schemas/Rating' }
+        content:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 5000
+          description: Null clears content; a missing field preserves it; non-null value must be non-blank after trim.
+        media_asset_ids:
+          type: array
+          maxItems: 9
+          uniqueItems: true
+          description: Missing preserves attachments; [] removes all; supplied IDs replace attachments and must be caller-owned uploaded, unattached assets. Retained attachment reordering is not supported in v1.
+          items: { $ref: '#/components/schemas/Uuid' }
+    CreateReviewReportRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { $ref: '#/components/schemas/ReviewReportReason' }
+        detail: { type: [string, 'null'], maxLength: 2000 }
+    IssueMediaUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [media_type, content_type, byte_size]
+      properties:
+        media_type: { $ref: '#/components/schemas/ReviewMediaType' }
+        content_type: { type: string, minLength: 1, maxLength: 100 }
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Declared source size; effective IMAGE/VIDEO limits are server configuration and signed upload policy.
+        checksum:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Optional checksum that Review verifies when supplied.
+    UploadInstruction:
+      type: object
+      additionalProperties: false
+      required: [method, url, headers]
+      properties:
+        method: { const: PUT }
+        url: { type: string, format: uri }
+        headers:
+          type: object
+          additionalProperties: { type: string, minLength: 1, maxLength: 512 }
+          description: Required storage headers. Client must not add a different object key or overwrite target.
+    IssuedMediaAsset:
+      type: object
+      additionalProperties: false
+      required: [asset_id, expires_at, upload]
+      properties:
+        asset_id: { $ref: '#/components/schemas/Uuid' }
+        expires_at: { type: string, format: date-time }
+        upload: { $ref: '#/components/schemas/UploadInstruction' }
+    ModerationQueueStatus:
+      type: string
+      enum: [REPORTED, HIDDEN_BY_REPORT]
+      description: >-
+        REPORTED là review APPROVED còn active_report_count > 0, tức case chưa chạm
+        threshold và admin còn kịp dismiss trước khi nó bị tự ẩn. HIDDEN_BY_REPORT là
+        review đã bị ẩn. Mỗi giá trị có partial index riêng; thêm giá trị mới đòi thêm
+        index vì mọi index review khác đều partial theo APPROVED.
+    AdminReviewMedia:
+      type: object
+      additionalProperties: false
+      required: [asset_id, media_type, url, url_expires_at, sort_order]
+      description: >-
+        Media của review đang bị ẩn, chỉ cấp trên admin moderation surface. Không có
+        signed URL nào cho media này ở public hay owner surface. Một report về ảnh/video
+        không thể phân xử nếu thiếu nó.
+      properties:
+        asset_id: { $ref: '#/components/schemas/Uuid' }
+        media_type: { $ref: '#/components/schemas/ReviewMediaType' }
+        url:
+          type: string
+          format: uri
+          description: >-
+            Short-lived signed download URL sinh riêng cho response này. TTL phải ngắn
+            hơn TTL của public read URL.
+        url_expires_at: { type: string, format: date-time }
+        sort_order: { type: integer, minimum: 0, maximum: 32767 }
+    AdminReviewSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        [review_id, product_id, sku_id, rating, content, has_media, media,
+         visibility_status, active_report_count, hidden_at, first_reported_at, created_at]
+      properties:
+        review_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/ProductId' }
+        sku_id: { $ref: '#/components/schemas/SkuId' }
+        rating: { $ref: '#/components/schemas/Rating' }
+        content: { type: [string, 'null'], maxLength: 5000 }
+        has_media: { type: boolean }
+        media:
+          type: array
+          maxItems: 9
+          description: >-
+            Rỗng khi review chưa có media. Signed URL được cấp kể cả khi review đang
+            HIDDEN_BY_REPORT, chỉ trên surface admin này.
+          items: { $ref: '#/components/schemas/AdminReviewMedia' }
+        visibility_status: { $ref: '#/components/schemas/ReviewVisibilityStatus' }
+        active_report_count: { type: integer, minimum: 0 }
+        hidden_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Lần gần nhất report threshold ẩn review; null nếu chưa từng bị ẩn. Giá trị này
+            được giữ lại sau khi dismiss khôi phục review nên có thể khác null ngay cả khi
+            visibility_status là APPROVED.
+        first_reported_at:
+          type: [string, 'null']
+          format: date-time
+          description: Report chưa dismiss đầu tiên của chu kỳ hiện tại; null khi không còn active report.
+        created_at: { type: string, format: date-time }
+    AdminModerationCase:
+      type: object
+      additionalProperties: false
+      required: [review, reports, first_reported_at, hidden_at]
+      description: >-
+        Một review cần phân xử kèm toàn bộ ngữ cảnh để quyết trong một lần đọc. Dùng
+        review.review_id làm path parameter cho report-dismissals.
+      properties:
+        review: { $ref: '#/components/schemas/AdminReviewSnapshot' }
+        reports:
+          type: array
+          maxItems: 50
+          description: >-
+            Report chưa DISMISSED của review, cũ trước. Không có reporter_user_id.
+            Bị cắt ở 50; active_report_count mới là con số đầy đủ.
+          items: { $ref: '#/components/schemas/AdminModerationCaseReport' }
+        first_reported_at:
+          type: string
+          format: date-time
+          description: Report chưa dismiss đầu tiên của chu kỳ hiện tại; khóa sắp xếp của cả hai status.
+        hidden_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Null khi review chưa từng bị ẩn. Dismiss cố ý giữ lại hidden_at khi khôi phục
+            review, nên một case status=REPORTED vẫn có thể mang hidden_at khác null nếu
+            review từng bị ẩn ở chu kỳ trước.
+    AdminModerationCaseReport:
+      type: object
+      additionalProperties: false
+      required: [report_id, reason, detail, status, created_at]
+      properties:
+        report_id: { $ref: '#/components/schemas/Uuid' }
+        reason: { $ref: '#/components/schemas/ReviewReportReason' }
+        detail: { type: [string, 'null'], maxLength: 2000 }
+        status: { $ref: '#/components/schemas/ReviewReportStatus' }
+        created_at: { type: string, format: date-time }
+    AdminModerationCasePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AdminModerationCase' }
+        next_cursor: { type: [string, 'null'], maxLength: 512 }
+    AdminModerationResult:
+      type: object
+      additionalProperties: false
+      required: [review_id, visibility_status, dismissed_report_count, active_report_count]
+      properties:
+        review_id: { $ref: '#/components/schemas/Uuid' }
+        visibility_status: { $ref: '#/components/schemas/ReviewVisibilityStatus' }
+        dismissed_report_count: { type: integer, minimum: 0 }
+        active_report_count: { type: integer, minimum: 0 }
+    PutAdminReplyRequest:
+      type: object
+      additionalProperties: false
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 5000, description: Must be non-blank after trim. }
+    CreateTakedownRequest:
+      type: object
+      additionalProperties: false
+      required: [legal_case_id, reason]
+      properties:
+        legal_case_id: { type: string, minLength: 1, maxLength: 128 }
+        reason: { type: string, minLength: 1, maxLength: 5000, description: Internal-only reason; must be non-blank after trim. }
+    TakedownReceipt:
+      type: object
+      additionalProperties: false
+      required: [takedown_id, review_id, legal_case_id, created_at]
+      properties:
+        takedown_id: { $ref: '#/components/schemas/Uuid' }
+        review_id: { $ref: '#/components/schemas/Uuid' }
+        legal_case_id: { type: string, minLength: 1, maxLength: 128 }
+        created_at: { type: string, format: date-time }
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+
+  responses:
+    BadRequest:
+      description: Validation failed; response code identifies the invalid field or domain input.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Missing or invalid trusted Gateway identity.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    AdminForbidden:
+      description: Caller does not have the configured Review admin role.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotEligibilityOwner:
+      description: NOT_ELIGIBILITY_OWNER; entitlement belongs to another caller or its owner identity was purged.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotReviewOwner:
+      description: NOT_REVIEW_OWNER.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    EligibilityNotFound:
+      description: ELIGIBILITY_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    EligibilityExpired:
+      description: ELIGIBILITY_EXPIRED; client must not retry create for this entitlement.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReviewNotFound:
+      description: REVIEW_NOT_FOUND or a review not visible to this endpoint.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    CreateReviewConflict:
+      description: >-
+        ALREADY_REVIEWED, INVALID_MEDIA_REFERENCE or MEDIA_NOT_VERIFIED. All media
+        rejections are 409: INVALID_MEDIA_REFERENCE when the asset_id does not resolve
+        to a usable asset of the caller (unknown and foreign are deliberately
+        indistinguishable), MEDIA_NOT_VERIFIED when the caller owns it but its object
+        or state is not usable and a re-upload can recover.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    PatchReviewConflict:
+      description: >-
+        EDIT_QUOTA_EXHAUSTED, REVIEW_NOT_EDITABLE, INVALID_MEDIA_REFERENCE or
+        MEDIA_NOT_VERIFIED, with the same media semantics as create.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReviewReportForbidden:
+      description: REVIEW_REPORT_FORBIDDEN, for example caller is the author.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReportConflict:
+      description: ALREADY_REPORTED or REVIEW_NOT_REPORTABLE; it never includes moderation progress.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReviewNotReplyable:
+      description: REVIEW_NOT_REPLYABLE because the review is not APPROVED.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    TakedownAlreadyExists:
+      description: TAKEDOWN_ALREADY_EXISTS; REMOVED is terminal.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    MediaQuotaExceeded:
+      description: Unattached media asset or byte quota exceeded.
+      headers:
+        Retry-After: { schema: { type: integer, minimum: 1 } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RetryableUnavailable:
+      description: PostgreSQL, storage metadata read, lock or signer dependency is temporarily unavailable; problem.retryable=true.
+      headers:
+        Retry-After: { schema: { type: integer, minimum: 1 } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

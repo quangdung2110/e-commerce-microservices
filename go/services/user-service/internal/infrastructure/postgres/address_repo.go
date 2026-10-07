@@ -2,403 +2,275 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"user-service/internal/domain/entity"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/port"
+	"github.com/ecommerce/user-service/internal/domain/vo"
 )
 
-// PostgresAddressRepository implements port.AddressRepository
-type PostgresAddressRepository struct {
-	db *pgxpool.Pool
+var _ port.AddressRepository = (*AddressRepository)(nil)
+
+// AddressRepository persists "user".user_addresses.
+type AddressRepository struct {
+	repository
 }
 
-// NewPostgresAddressRepository creates a new PostgresAddressRepository
-func NewPostgresAddressRepository(db *pgxpool.Pool) *PostgresAddressRepository {
-	return &PostgresAddressRepository{db: db}
+// NewAddressRepository wires the address repository.
+func NewAddressRepository(pool *pgxpool.Pool) *AddressRepository {
+	return &AddressRepository{repository{pool: pool}}
 }
 
-// Create creates a new address
-func (r *PostgresAddressRepository) Create(ctx context.Context, addr *entity.Address) error {
-	query := `
-		INSERT INTO user_addresses (id, user_id, is_default, recipient_name, phone_number, address_line, ward_id, district_id, city_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-		RETURNING created_at, updated_at`
+const addressColumns = `id, user_id, is_default, recipient_name, recipient_phone,
+	address_line, province_code, district_code, ward_code, created_at, updated_at`
 
-	err := r.db.QueryRow(ctx, query,
-		addr.ID,
-		addr.UserID,
-		addr.IsDefault,
-		addr.RecipientName,
-		addr.PhoneNumber,
-		addr.AddressLine,
-		addr.WardID,
-		addr.DistrictID,
-		addr.CityID,
-	).Scan(&addr.CreatedAt, &addr.UpdatedAt)
+// LockUser takes a transaction-scoped advisory lock on the address book of one
+// user.
+//
+// A row lock cannot serialize the case that matters here: two requests creating
+// the very first address both see an empty book, and rows that do not exist yet
+// cannot be locked. The advisory lock covers the whole address book, including
+// the empty one, and is released when the transaction ends
+// (docs/user/data.md §5).
+func (r *AddressRepository) LockUser(ctx context.Context, userID uuid.UUID) error {
+	const query = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
 
-	if err != nil {
-		return fmt.Errorf("failed to create address: %w", err)
+	if _, err := r.db(ctx).Exec(ctx, query, addressLockScope+userID.String()); err != nil {
+		return mapError(err)
 	}
-
 	return nil
 }
 
-// CreateTx creates a new address within a transaction
-func (r *PostgresAddressRepository) CreateTx(ctx context.Context, tx pgx.Tx, addr *entity.Address) error {
-	query := `
-		INSERT INTO user_addresses (id, user_id, is_default, recipient_name, phone_number, address_line, ward_id, district_id, city_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-		RETURNING created_at, updated_at`
+// addressLockScope namespaces the advisory lock so it cannot collide with a
+// lock another feature might take on the same user id.
+const addressLockScope = "user:addresses:"
 
-	err := tx.QueryRow(ctx, query,
-		addr.ID,
-		addr.UserID,
-		addr.IsDefault,
-		addr.RecipientName,
-		addr.PhoneNumber,
-		addr.AddressLine,
-		addr.WardID,
-		addr.DistrictID,
-		addr.CityID,
-	).Scan(&addr.CreatedAt, &addr.UpdatedAt)
-
-	if err != nil {
-		return fmt.Errorf("failed to create address in transaction: %w", err)
-	}
-
-	return nil
-}
-
-// GetByID retrieves an address by its ID
-func (r *PostgresAddressRepository) GetByID(ctx context.Context, id uuid.UUID) (*entity.Address, error) {
-	query := `
-		SELECT id, user_id, is_default, recipient_name, phone_number, address_line, ward_id, district_id, city_id, created_at, updated_at
-		FROM user_addresses
-		WHERE id = $1`
-
-	var addr entity.Address
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&addr.ID,
-		&addr.UserID,
-		&addr.IsDefault,
-		&addr.RecipientName,
-		&addr.PhoneNumber,
-		&addr.AddressLine,
-		&addr.WardID,
-		&addr.DistrictID,
-		&addr.CityID,
-		&addr.CreatedAt,
-		&addr.UpdatedAt,
-	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get address: %w", err)
-	}
-
-	return &addr, nil
-}
-
-// GetByUserID retrieves all addresses for a user
-func (r *PostgresAddressRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
-	query := `
-		SELECT id, user_id, is_default, recipient_name, phone_number, address_line, ward_id, district_id, city_id, created_at, updated_at
-		FROM user_addresses
+// ListByUser returns the address book ordered default first, then newest first,
+// which is the order checkout expects and the order the cache stores.
+func (r *AddressRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
+	const query = `
+		SELECT ` + addressColumns + `
+		FROM "user".user_addresses
 		WHERE user_id = $1
 		ORDER BY is_default DESC, created_at DESC`
 
-	rows, err := r.db.Query(ctx, query, userID)
+	rows, err := r.db(ctx).Query(ctx, query, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get addresses: %w", err)
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 
-	var addresses []*entity.Address
+	addresses := make([]*entity.Address, 0, 4)
 	for rows.Next() {
-		var addr entity.Address
-		err := rows.Scan(
-			&addr.ID,
-			&addr.UserID,
-			&addr.IsDefault,
-			&addr.RecipientName,
-			&addr.PhoneNumber,
-			&addr.AddressLine,
-			&addr.WardID,
-			&addr.DistrictID,
-			&addr.CityID,
-			&addr.CreatedAt,
-			&addr.UpdatedAt,
-		)
+		address, err := scanAddress(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan address: %w", err)
+			return nil, mapError(err)
 		}
-		addresses = append(addresses, &addr)
+		addresses = append(addresses, address)
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
+		return nil, mapError(err)
 	}
-
 	return addresses, nil
 }
 
-// Update updates an existing address
-func (r *PostgresAddressRepository) Update(ctx context.Context, addr *entity.Address) error {
-	query := `
-		UPDATE user_addresses
-		SET recipient_name = $2,
-		    phone_number = $3,
-		    address_line = $4,
-		    ward_id = $5,
-		    district_id = $6,
-		    city_id = $7,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING updated_at`
+// GetOwned looks an address up by owner and id together. An address of another
+// user is reported as missing, so the API never discloses that it exists
+// (USER-BR-001).
+func (r *AddressRepository) GetOwned(ctx context.Context, userID, addressID uuid.UUID) (*entity.Address, error) {
+	const query = `
+		SELECT ` + addressColumns + `
+		FROM "user".user_addresses
+		WHERE id = $1 AND user_id = $2`
 
-	err := r.db.QueryRow(ctx, query,
-		addr.ID,
-		addr.RecipientName,
-		addr.PhoneNumber,
-		addr.AddressLine,
-		addr.WardID,
-		addr.DistrictID,
-		addr.CityID,
-	).Scan(&addr.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
+	rows, err := r.db(ctx).Query(ctx, query, addressID, userID)
 	if err != nil {
-		return fmt.Errorf("failed to update address: %w", err)
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, mapError(err)
+		}
+		return nil, apperr.ErrAddressNotFound
 	}
 
-	return nil
+	address, err := scanAddress(rows)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return address, nil
 }
 
-// UpdateTx updates an address within a transaction
-func (r *PostgresAddressRepository) UpdateTx(ctx context.Context, tx pgx.Tx, addr *entity.Address) error {
-	query := `
-		UPDATE user_addresses
-		SET recipient_name = $2,
-		    phone_number = $3,
-		    address_line = $4,
-		    ward_id = $5,
-		    district_id = $6,
-		    city_id = $7,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING updated_at`
-
-	err := tx.QueryRow(ctx, query,
-		addr.ID,
-		addr.RecipientName,
-		addr.PhoneNumber,
-		addr.AddressLine,
-		addr.WardID,
-		addr.DistrictID,
-		addr.CityID,
-	).Scan(&addr.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
-	if err != nil {
-		return fmt.Errorf("failed to update address in transaction: %w", err)
-	}
-
-	return nil
-}
-
-// Delete hard deletes an address
-func (r *PostgresAddressRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM user_addresses WHERE id = $1`
-
-	result, err := r.db.Exec(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete address: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// DeleteTx hard deletes an address within a transaction
-func (r *PostgresAddressRepository) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
-	query := `DELETE FROM user_addresses WHERE id = $1`
-
-	result, err := tx.Exec(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete address in transaction: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// DeleteByUserID deletes all addresses for a user (used in GDPR deletion)
-func (r *PostgresAddressRepository) DeleteByUserID(ctx context.Context, userID uuid.UUID) error {
-	query := `DELETE FROM user_addresses WHERE user_id = $1`
-
-	_, err := r.db.Exec(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("failed to delete addresses by user: %w", err)
-	}
-
-	return nil
-}
-
-// DeleteByUserIDTx deletes all addresses for a user within a transaction
-func (r *PostgresAddressRepository) DeleteByUserIDTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	query := `DELETE FROM user_addresses WHERE user_id = $1`
-
-	_, err := tx.Exec(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("failed to delete addresses by user in transaction: %w", err)
-	}
-
-	return nil
-}
-
-// SetDefault sets an address as default for a user (removes default from others first)
-func (r *PostgresAddressRepository) SetDefault(ctx context.Context, userID, addrID uuid.UUID) error {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := r.SetDefaultTx(ctx, tx, userID, addrID); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// SetDefaultTx sets an address as default within a transaction
-func (r *PostgresAddressRepository) SetDefaultTx(ctx context.Context, tx pgx.Tx, userID, addrID uuid.UUID) error {
-	// First, remove default from all other addresses
-	unsetQuery := `UPDATE user_addresses SET is_default = FALSE, updated_at = NOW() WHERE user_id = $1 AND is_default = TRUE`
-	_, err := tx.Exec(ctx, unsetQuery, userID)
-	if err != nil {
-		return fmt.Errorf("failed to unset default address: %w", err)
-	}
-
-	// Then, set the new default
-	setQuery := `UPDATE user_addresses SET is_default = TRUE, updated_at = NOW() WHERE id = $1 AND user_id = $2`
-	result, err := tx.Exec(ctx, setQuery, addrID, userID)
-	if err != nil {
-		return fmt.Errorf("failed to set default address: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// PromoteOldestToDefault promotes the oldest remaining address to default
-// Returns the ID of the promoted address, or nil if no addresses remain
-func (r *PostgresAddressRepository) PromoteOldestToDefault(ctx context.Context, tx pgx.Tx, userID uuid.UUID, excludeAddrID uuid.UUID) (*uuid.UUID, error) {
-	// Find the oldest address excluding the one being deleted
-	query := `
-		UPDATE user_addresses
-		SET is_default = TRUE, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM user_addresses
-			WHERE user_id = $1 AND id != $2
-			ORDER BY created_at ASC
-			LIMIT 1
-		)
-		RETURNING id`
-
-	var promotedID uuid.UUID
-	err := tx.QueryRow(ctx, query, userID, excludeAddrID).Scan(&promotedID)
-
-	if err == pgx.ErrNoRows {
-		// No other addresses to promote
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to promote oldest address: %w", err)
-	}
-
-	return &promotedID, nil
-}
-
-// CountByUserID counts addresses for a user
-func (r *PostgresAddressRepository) CountByUserID(ctx context.Context, userID uuid.UUID) (int, error) {
-	query := `SELECT COUNT(*) FROM user_addresses WHERE user_id = $1`
+// CountByUser reports how many addresses the profile holds.
+func (r *AddressRepository) CountByUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	const query = `SELECT count(*) FROM "user".user_addresses WHERE user_id = $1`
 
 	var count int
-	err := r.db.QueryRow(ctx, query, userID).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("failed to count addresses: %w", err)
+	if err := r.db(ctx).QueryRow(ctx, query, userID).Scan(&count); err != nil {
+		return 0, mapError(err)
 	}
-
 	return count, nil
 }
 
-// HasOtherAddresses checks if user has other addresses besides the given one
-func (r *PostgresAddressRepository) HasOtherAddresses(ctx context.Context, userID uuid.UUID, excludeAddrID uuid.UUID) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM user_addresses WHERE user_id = $1 AND id != $2)`
+// Insert writes a new address.
+func (r *AddressRepository) Insert(ctx context.Context, address *entity.Address) error {
+	const query = `
+		INSERT INTO "user".user_addresses (
+			id, user_id, is_default, recipient_name, recipient_phone,
+			address_line, province_code, district_code, ward_code, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
-	var exists bool
-	err := r.db.QueryRow(ctx, query, userID, excludeAddrID).Scan(&exists)
+	_, err := r.db(ctx).Exec(ctx, query,
+		address.ID,
+		address.UserID,
+		address.IsDefault,
+		address.RecipientName,
+		address.RecipientPhone.String(),
+		address.AddressLine,
+		address.ProvinceCode,
+		address.DistrictCode,
+		address.WardCode,
+		address.CreatedAt,
+		address.UpdatedAt,
+	)
 	if err != nil {
-		return false, fmt.Errorf("failed to check other addresses: %w", err)
+		return mapError(err)
 	}
-
-	return exists, nil
+	return nil
 }
 
-// GetDefaultAddress retrieves the default address for a user
-func (r *PostgresAddressRepository) GetDefaultAddress(ctx context.Context, userID uuid.UUID) (*entity.Address, error) {
-	query := `
-		SELECT id, user_id, is_default, recipient_name, phone_number, address_line, ward_id, district_id, city_id, created_at, updated_at
-		FROM user_addresses
-		WHERE user_id = $1 AND is_default = TRUE
-		LIMIT 1`
+// Update replaces the mutable columns of one address. `is_default` is not among
+// them: it changes only through SetDefault and ClearDefault.
+func (r *AddressRepository) Update(ctx context.Context, address *entity.Address) error {
+	const query = `
+		UPDATE "user".user_addresses
+		SET recipient_name = $3,
+		    recipient_phone = $4,
+		    address_line = $5,
+		    province_code = $6,
+		    district_code = $7,
+		    ward_code = $8
+		WHERE id = $1 AND user_id = $2
+		RETURNING updated_at`
 
-	var addr entity.Address
-	err := r.db.QueryRow(ctx, query, userID).Scan(
-		&addr.ID,
-		&addr.UserID,
-		&addr.IsDefault,
-		&addr.RecipientName,
-		&addr.PhoneNumber,
-		&addr.AddressLine,
-		&addr.WardID,
-		&addr.DistrictID,
-		&addr.CityID,
-		&addr.CreatedAt,
-		&addr.UpdatedAt,
-	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
+	var updatedAt time.Time
+	err := r.db(ctx).QueryRow(ctx, query,
+		address.ID,
+		address.UserID,
+		address.RecipientName,
+		address.RecipientPhone.String(),
+		address.AddressLine,
+		address.ProvinceCode,
+		address.DistrictCode,
+		address.WardCode,
+	).Scan(&updatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get default address: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return apperr.ErrAddressNotFound
+		}
+		return mapError(err)
 	}
 
-	return &addr, nil
+	address.UpdatedAt = updatedAt.UTC()
+	return nil
+}
+
+// Delete hard-deletes one address of one owner. Orders keep their own snapshot,
+// so nothing downstream is affected (USER-INV-004).
+func (r *AddressRepository) Delete(ctx context.Context, userID, addressID uuid.UUID) error {
+	const query = `DELETE FROM "user".user_addresses WHERE id = $1 AND user_id = $2`
+
+	tag, err := r.db(ctx).Exec(ctx, query, addressID, userID)
+	if err != nil {
+		return mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperr.ErrAddressNotFound
+	}
+	return nil
+}
+
+// ClearDefault removes the flag from every other address of the owner. It runs
+// before SetDefault inside the same transaction, so the partial unique index is
+// never violated in between (USER-BR-003).
+func (r *AddressRepository) ClearDefault(ctx context.Context, userID, exceptAddressID uuid.UUID) error {
+	const query = `
+		UPDATE "user".user_addresses
+		SET is_default = FALSE
+		WHERE user_id = $1 AND id <> $2 AND is_default`
+
+	if _, err := r.db(ctx).Exec(ctx, query, userID, exceptAddressID); err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
+// SetDefault marks one address as the default of its owner and reports the
+// `updated_at` the schema trigger stored.
+func (r *AddressRepository) SetDefault(ctx context.Context, userID, addressID uuid.UUID) (time.Time, error) {
+	const query = `
+		UPDATE "user".user_addresses
+		SET is_default = TRUE
+		WHERE id = $1 AND user_id = $2
+		RETURNING updated_at`
+
+	var updatedAt time.Time
+	err := r.db(ctx).QueryRow(ctx, query, addressID, userID).Scan(&updatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, apperr.ErrAddressNotFound
+		}
+		return time.Time{}, mapError(err)
+	}
+	return updatedAt.UTC(), nil
+}
+
+// DeleteAllForUser empties the address book of an anonymized account.
+func (r *AddressRepository) DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	const query = `DELETE FROM "user".user_addresses WHERE user_id = $1`
+
+	tag, err := r.db(ctx).Exec(ctx, query, userID)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func scanAddress(rows pgx.Rows) (*entity.Address, error) {
+	var (
+		address entity.Address
+		phone   string
+	)
+	err := rows.Scan(
+		&address.ID,
+		&address.UserID,
+		&address.IsDefault,
+		&address.RecipientName,
+		&phone,
+		&address.AddressLine,
+		&address.ProvinceCode,
+		&address.DistrictCode,
+		&address.WardCode,
+		&address.CreatedAt,
+		&address.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// The CHECK constraint already guarantees the E.164 format of a stored
+	// number, so it is taken as-is rather than revalidated on every read.
+	address.RecipientPhone = vo.MustPhone(phone)
+	address.CreatedAt = address.CreatedAt.UTC()
+	address.UpdatedAt = address.UpdatedAt.UTC()
+	return &address, nil
 }

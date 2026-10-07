@@ -1,6 +1,9 @@
 # E-Commerce Microservices Platform
 
-Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices** với **Event Sourcing** và **CQRS**, sử dụng hai hệ sinh thái chính: **Java (Spring Boot 4)** và **Go**.
+Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices**, sử dụng hai
+hệ sinh thái chính là **Java** và **Go**. Event-driven, CQRS, Saga, Outbox hoặc
+Event Sourcing được chọn theo nhu cầu của từng service, không phải yêu cầu bắt
+buộc cho toàn hệ thống.
 
 ## Kiến trúc tổng quan
 
@@ -20,15 +23,24 @@ Hệ thống E-Commerce được xây dựng theo kiến trúc **Microservices**
 
 ### Nguyên tắc thiết kế
 
-- **Event Sourcing**: Mọi thay đổi trạng thái được lưu dưới dạng chuỗi events bất biến
-- **CQRS**: Tách biệt luồng đọc và ghi để tối ưu hiệu năng
-- **Saga Pattern**: Quản lý transaction phân tán qua Temporal workflows
-- **Outbox Pattern**: Đảm bảo tính nhất quán giữa database và message broker
+- **Contract-first**: HTTP, gRPC và event dùng nguồn contract độc lập Go/Java.
+- **Bounded context**: Mỗi service sở hữu dữ liệu và capability của mình.
+- **Pattern theo nhu cầu**: Chỉ dùng CQRS/Event Sourcing/Saga khi độ phức tạp được chứng minh.
+- **Reliable messaging**: Với dual-write quan trọng, cân nhắc Outbox và idempotent consumer.
+- **Observable by default**: Propagate trace context và dùng structured log/metrics.
+
+Machine-readable contract và hướng dẫn migration nằm tại [`contracts/`](contracts/README.md).
 
 ## Cấu trúc thư mục
 
 ```
 e-commerce-microservices/
+├── contracts/                   # Contract Go/Java dùng chung
+│   ├── catalog/                 # Service và interaction catalog
+│   ├── http/                    # OpenAPI
+│   ├── grpc/                    # Protobuf
+│   └── events/                  # AsyncAPI + JSON Schema
+│
 ├── go/                          # Golang microservices
 │   ├── services/
 │   │   ├── api-gateway/         # API Gateway (Traefik v3.x)
@@ -61,7 +73,8 @@ e-commerce-microservices/
     ├── notification/            # Notifications
     ├── chat/                    # Real-time chat
     ├── analytics/               # Analytics & reporting
-    └── gateway/                 # API Gateway design
+    ├── gateway/                 # API Gateway design (Traefik, north-south)
+    └── mesh/                    # Service mesh design (Istio ambient, east-west; target)
 ```
 
 ## Microservices
@@ -89,10 +102,10 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 |---------|-----------|
 | **Auth Service** | JWT + Redis Denylist, JWKS, token rotation |
 | **Product Service** | Catalog management, state machine, caching |
-| **Order Service** | Temporal Saga, CQRS + Elasticsearch, cold data archiving |
+| **Order Service** | Temporal checkout/refund Saga, PostgreSQL read/search, durable inbox + multi-destination outbox; implemented in `java/services/order-service` ([docs/order](docs/order/README.md)) |
 | **Checkout Service** | Idempotency, security analysis, caching |
-| **Payment Service** | State machine, refund boundary, multi-provider |
-| **Inventory Service** | Smart routing engine, Redis reservation, SLO observability |
+| **Payment Service** | Stripe direct, payment/refund state machine, Outbox CDC và financial facts AsyncAPI v2 |
+| **Inventory Service** | PostgreSQL authoritative stock, exact-plan whole-order reservation, returns/quarantine, transactional outbox + commit-ordered export ([docs/inventory](docs/inventory/README.md)) |
 | **Search Service** | Elasticsearch schema, Vietnamese full-text search |
 | **Review Service** | Rating aggregation, moderation workflow |
 | **Notification Service** | Multi-channel delivery (email, SMS, push) |
@@ -108,6 +121,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | **Go** | High-concurrency services (cart, user, gateway) |
 | **Java 21 / Spring Boot 4** | Business logic services (promotion) |
 | **Traefik v3.x** | API Gateway, reverse proxy, load balancing |
+| **Istio (ambient)** | Service mesh east-west trên Kubernetes: mTLS, workload identity, `AuthorizationPolicy` — target, chưa có manifest ([docs/mesh](docs/mesh/technology_choice.md)) |
 | **gRPC + Protobuf** | Inter-service communication |
 
 ### Data & Messaging
@@ -115,7 +129,7 @@ Ngoài các service đã implement, hệ thống có tài liệu thiết kế ch
 | Công nghệ | Vai trò |
 |------------|---------|
 | **PostgreSQL** | Primary database, Event Store |
-| **Redis** | Caching, session, rate limiting, inventory reservation |
+| **Redis** | Caching, session, rate limiting (không phải nguồn sự thật tồn kho) |
 | **Apache Kafka** | Event streaming, async communication |
 | **Elasticsearch** | Full-text search, CQRS read model |
 | **ScyllaDB** | Chat message storage (high-throughput) |
@@ -199,3 +213,5 @@ Tài liệu thiết kế chi tiết cho từng service nằm trong thư mục `d
 ## License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+
+hello

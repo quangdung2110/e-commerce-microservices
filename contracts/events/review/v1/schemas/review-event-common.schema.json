@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/review/v1/schemas/review-event-common.schema.json",
+  "title": "Review event common envelope and scalar types",
+  "allOf": [
+    { "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json" },
+    {
+      "type": "object",
+      "required": ["id", "source"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "source": { "const": "/services/review" },
+        "correlationid": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "review_id": { "$ref": "#/$defs/uuid" },
+    "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "sku_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "rating": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "review_subject": { "type": "string", "pattern": "^reviews/[0-9a-fA-F-]{36}$" },
+    "review_identity": {
+      "type": "object",
+      "required": ["review_id", "product_id", "sku_id"],
+      "properties": {
+        "review_id": { "$ref": "#/$defs/review_id" },
+        "product_id": { "$ref": "#/$defs/product_id" },
+        "sku_id": { "$ref": "#/$defs/sku_id" }
+      }
+    }
+  }
+}

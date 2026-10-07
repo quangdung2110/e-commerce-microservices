@@ -15,16 +15,14 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
     consumer:
-      group-id: search-product-indexer
+      group-id: search-indexer
       auto-offset-reset: earliest
       max-poll-records: 500
-      concurrency: 5
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      enable-auto-commit: false
       properties:
-        spring.json.trusted.packages: "com.ecommerce.search.domain.event"
-        spring.json.value.default.type: com.ecommerce.search.domain.event.CloudEventEnvelope
         max.poll.interval.ms: 600000
+    listener:
+      concurrency: 3
 
   lifecycle:
     timeout-per-shutdown-phase: 30s
@@ -43,54 +41,141 @@ management:
       probes:
         enabled: true
       show-details: when_authorized
+      group:
+        # Liveness is process-only on purpose: an Elasticsearch outage must not restart
+        # every instance (docs/search/operations.md 2).
+        liveness:
+          include: ping
+        readiness:
+          include: searchReadiness
   health:
     elasticsearch:
-      enabled: true
-    kafka:
-      enabled: true
+      enabled: false
   metrics:
     distribution:
       percentiles-histogram:
         http.server.requests: true
-        es.query.duration: true
+        es_query_duration_seconds: true
 
 search:
+  # Consumer group of the indexing worker. Changing it resets the read position.
+  consumer-group: search-indexer
+  # Only true for local development and tests; shared environments create the indices
+  # deliberately from docs/search/schema before the service starts.
+  bootstrap-indices: ${SEARCH_BOOTSTRAP_INDICES:false}
+
   topics:
     product: t.product.events
     category: t.category.events
+    catalog-control: t.catalog.control.events
+    stock: t.inventory.stock.events.v1
     review: t.review.events
-  jwt:
-    trust-gateway: true
-    claims-header: X-User-Claims
-  es:
-    query-timeout-product-ms: 5000
-    query-timeout-suggest-ms: 2000
-    update-by-query-throttle-rps: 300
-    index-aliases:
-      products: products
-      products-write: products_write
-      categories: categories
-      categories-write: categories_write
-      suggestions: search_suggestions
-  cors:
-    allowed-origins: "*"
+
+  aliases:
+    products: products
+    products-write: products_write
+    categories: categories
+    categories-write: categories_write
+    search-suggestions: search_suggestions
+    search-jobs: search_jobs
+
+  query:
+    product-timeout: 5s
+    suggest-timeout: 2s
+    category-timeout: 5s
+    update-by-query-timeout: 2m
+    cardinality-precision-threshold: 1000
+    facet-max-options: 50
+    facet-max-attributes: 100
+
   pagination:
     default-size: 20
     max-size: 100
+    cursor-secret: ${SEARCH_CURSOR_SECRET:dev-product-cursor-secret-change-in-production}
+    pit-keep-alive: 2m
+    product-scan-batch-size: 500
+    max-matching-products: 50000
+
+  # Client-side _bulk throttling. requests-per-second throttles bulk dispatch;
+  # task-requests-per-second is the ES task API parameter for _update_by_query and
+  # _delete_by_query. They are different mechanisms (docs/search/operations.md 11).
+  bulk:
+    max-actions: 1000
+    max-bytes: 5242880
+    max-in-flight: 4
+    requests-per-second: 20
+    throttle-backoff-factor: 0.5
+    throttle-recovery-factor: 1.1
+    recovery-window-requests: 20
+    max-retries: 8
+    initial-backoff: 500ms
+    max-backoff: 30s
+    task-requests-per-second: 300
+
   reindex:
-    checkpoint-interval-docs: 5000
-    build-chunk-size: 2000
+    run-deadline: 6h
+    export-page-size: 500
+    catch-up-zero-lag-polls: 5
+    catch-up-poll-timeout: 10s
+    catch-up-deadline: 30m
+    max-doc-count-drift-ratio: 0.02
+
   suggestions:
     rebuild-cron: "0 0 3 * * *"
-  draft-cleanup:
-    cron: "0 0 2 * * *"
-    tombstone-purger-cron: "0 30 2 * * *"
-    grace-period-hours: 24
-    tombstone-retention-days: 30
+    rebuild-enabled: true
+    min-docs: 1
+    min-ratio-to-previous-version: 0.80
+    pit-keep-alive: 5m
+    lease-duration: 5m
+    lease-renew-interval: 1m
+    category-weight-scale: 5000
+    product-weight-scale: 1000
+    promotion-multiplier: 1.10
+    max-weight: 9000000000000000000
+    language: vi
+    scope: GLOBAL
+    hot-prefixes: []
+
+  tombstone:
+    purge-cron: "0 30 2 * * *"
+    purge-enabled: true
+    # Must stay longer than the retention of every topic Search consumes, which is 14d
+    # in the AsyncAPI contracts (ADR-011).
+    protection-window: 30d
+    product-count-cron: "0 0 */4 * * *"
+    product-count-enabled: true
+
+  media:
+    cdn-base-url: ${CDN_BASE_URL:https://cdn.local/}
+    placeholder-url: ${THUMBNAIL_PLACEHOLDER_URL:/static/placeholder-product.png}
+
+  gateway:
+    user-id-header: X-User-Id
+    roles-header: X-User-Roles
+    request-id-header: X-Request-Id
+    admin-role: ADMIN
+
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
+
+  export:
+    product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8080}
+    inventory-base-url: ${INVENTORY_INTERNAL_URL:http://inventory-service:8080}
+    review-base-url: ${REVIEW_INTERNAL_URL:http://review-service:8080}
+    # Bearer service identity for Review's /internal/v1/** rating export.
+    review-token: ${REVIEW_INTERNAL_TOKEN:}
+    review-enabled: ${REVIEW_EXPORT_ENABLED:true}
+    timeout: 30s
+    # A snapshot session lives 24h and a re-created one must be paged from the start,
+    # so repeatedly outliving one is a capacity problem, not a blip (WF-SEARCH-007).
+    availability-snapshot-max-sessions: 2
+    # Same budget for the Review rating export: an expired session forces the rating
+    # import to restart from the first page (WF-SEARCH-009 step 3).
+    rating-export-max-sessions: 2
 
 logging:
   level:
     root: INFO
-    com.ecommerce.search: DEBUG
-    org.elasticsearch.client: INFO
+    com.ecommerce.search: INFO
+    org.elasticsearch.client: WARN
     org.springframework.kafka: INFO

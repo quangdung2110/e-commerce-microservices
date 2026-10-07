@@ -1,0 +1,193 @@
+asyncapi: 3.0.0
+info:
+  title: Order Service Integration Events
+  version: 1.0.0
+  description: >-
+    Provider-owned Order facts with registered consumers, plus the provider-owned
+    Payment, Inventory and Delivery facts consumed by Order workflows. Order publishes
+    only PAID for Cart cleanup and COMPLETED for Review eligibility, plus
+    NOTIFICATION_REQUESTED commands on the Notification-owned transactional lane. Delivery is
+    at-least-once; consumers deduplicate by CloudEvents id.
+x-adoption-status: implemented
+x-contract-scope: order-integration-events
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  orderEvents:
+    address: t.order.events
+    description: Order facts that have registered, implemented consumers.
+    x-owner: order-service
+    x-message-key: order_id
+    x-ordering-scope: order_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-ordering-guard: sequence
+    x-max-payload-bytes: 262144
+    x-retention: 14d
+    x-data-classification: INTERNAL
+    messages:
+      orderPaid: { $ref: '#/components/messages/orderPaid' }
+      orderCompleted: { $ref: '#/components/messages/orderCompleted' }
+  paymentFacts:
+    address: t.payment.events.v2
+    description: Payment-owned financial facts accepted by Order workflows.
+    x-owner: payment-service
+    x-message-key: data.order_id
+    x-deduplication-key: CloudEvents.source + CloudEvents.id
+    x-ordering-guard: data.financial_state_version per data.payment_transaction_id
+    messages:
+      paymentSucceeded:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentSucceeded'
+      paymentFailed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentFailed'
+      paymentExpired:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentExpired'
+      paymentCanceled:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/paymentCanceled'
+      refundProcessing:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundProcessing'
+      refundSucceeded:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundSucceeded'
+      refundFailed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundFailed'
+      refundReversed:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/refundReversed'
+      disputeOpened:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeOpened'
+      disputeFundsWithdrawn:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeFundsWithdrawn'
+      disputeFundsReinstated:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeFundsReinstated'
+      disputeWon:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeWon'
+      disputeLost:
+        $ref: '../../payment/v2/asyncapi.yaml#/components/messages/disputeLost'
+  inventoryOrderFacts:
+    address: t.inventory.order.events.v1
+    description: Inventory-owned physical-dispatch and refund-inspection facts accepted by Order.
+    x-owner: inventory-service
+    x-message-key: order_id
+    messages:
+      reservationLineDispatched:
+        $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/reservationLineDispatched'
+      allItemsInspectionCompleted:
+        $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/allItemsInspectionCompleted'
+  deliveryFacts:
+    address: t.delivery.order.events.v1
+    description: Delivery-owned verified customer-delivery facts accepted by Order.
+    x-owner: delivery-service
+    x-message-key: order_id
+    messages:
+      orderLineDelivered:
+        $ref: '../../delivery/v1/asyncapi.yaml#/components/messages/orderLineDelivered'
+  notificationRequests:
+    address: t.notification.transactional.v1
+    description: >-
+      Notification-owned request lane. Order publishes NOTIFICATION_REQUESTED with a
+      template from the Notification catalog and template_data taken from the Order row
+      and its immutable snapshot; Order never calls another service to assemble it.
+      Recipient email is never on Kafka; Notification resolves it at send time.
+    x-owner: notification-service
+    x-message-key: subject
+    x-ordering-scope: subject
+    x-deduplication-key: CloudEvents.id; data.dedup_key is the per-template business key
+    messages:
+      notificationRequested:
+        $ref: '../../notification/v1/asyncapi.yaml#/components/messages/notificationRequested'
+operations:
+  publishOrderPaid:
+    action: send
+    channel: { $ref: '#/channels/orderEvents' }
+    summary: Publish once when an immutable capture moves a non-terminal Order into PAID; success after terminal non-capture is reconciliation-only and emits no paid fact.
+    x-consumers: [cart-service]
+    messages: [{ $ref: '#/channels/orderEvents/messages/orderPaid' }]
+  publishOrderCompleted:
+    action: send
+    channel: { $ref: '#/channels/orderEvents' }
+    summary: Publish once after every line is delivered by verified Delivery proof and the master completion CAS succeeds.
+    x-consumers: [review-service]
+    messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
+  publishNotificationRequests:
+    action: send
+    channel: { $ref: '#/channels/notificationRequests' }
+    summary: >-
+      Publish one NOTIFICATION_REQUESTED per user-facing Order milestone, through the
+      Order outbox in the same transaction as the state change. Templates and triggers:
+      ORDER_CONFIRMED on PAID; ORDER_PAYMENT_FAILED when a payment attempt fails or
+      expires; ORDER_CANCELLED on CANCELLED (buyer, payment_timeout, admin,
+      out_of_stock, checkout_failed); ORDER_COMPLETED on COMPLETED; ORDER_REFUNDED when a refund
+      succeeds. template_data schemas live in
+      contracts/events/notification/v1/templates/. Requires the Order item snapshot
+      to carry the product name. All source fields and URL/address fallbacks are
+      deterministic Order snapshots/config; no runtime Product/User enrichment call.
+      Order supplies a separate monotonic notification sequence per subject so the
+      Notification deliverer can serialize and supersede stale pending commands.
+    x-consumers: [notification-service]
+    x-templates: [ORDER_CONFIRMED, ORDER_PAYMENT_FAILED, ORDER_CANCELLED, ORDER_COMPLETED, ORDER_REFUNDED]
+    messages: [{ $ref: '#/channels/notificationRequests/messages/notificationRequested' }]
+  consumePaymentFacts:
+    action: receive
+    channel: { $ref: '#/channels/paymentFacts' }
+    summary: Consume terminal payment, refund lifecycle, and dispute facts; dispute facts only update financial reconciliation and never imply refund or fulfillment transitions.
+    x-consumer-group: order-payment-consumer
+    x-accepted-event-types:
+      - com.ecommerce.payment.transaction.succeeded.v2
+      - com.ecommerce.payment.transaction.canceled.v2
+      - com.ecommerce.payment.transaction.failed.v2
+      - com.ecommerce.payment.transaction.expired.v2
+      - com.ecommerce.payment.refund.processing.v2
+      - com.ecommerce.payment.refund.succeeded.v2
+      - com.ecommerce.payment.refund.failed.v2
+      - com.ecommerce.payment.refund.reversed.v2
+      - com.ecommerce.payment.dispute.opened.v2
+      - com.ecommerce.payment.dispute.funds-withdrawn.v2
+      - com.ecommerce.payment.dispute.funds-reinstated.v2
+      - com.ecommerce.payment.dispute.won.v2
+      - com.ecommerce.payment.dispute.lost.v2
+    messages:
+      - { $ref: '#/channels/paymentFacts/messages/paymentSucceeded' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentCanceled' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentFailed' }
+      - { $ref: '#/channels/paymentFacts/messages/paymentExpired' }
+      - { $ref: '#/channels/paymentFacts/messages/refundProcessing' }
+      - { $ref: '#/channels/paymentFacts/messages/refundSucceeded' }
+      - { $ref: '#/channels/paymentFacts/messages/refundFailed' }
+      - { $ref: '#/channels/paymentFacts/messages/refundReversed' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeOpened' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeFundsWithdrawn' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeFundsReinstated' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeWon' }
+      - { $ref: '#/channels/paymentFacts/messages/disputeLost' }
+  consumeInventoryOrderFacts:
+    action: receive
+    channel: { $ref: '#/channels/inventoryOrderFacts' }
+    summary: Consume physical dispatch and completed selected-return inspection; HTTP activity results remain authoritative for reserve, commit and release commands.
+    x-consumer-groups: [order-inventory-ship-consumer, order-inventory-return-consumer]
+    messages:
+      - { $ref: '#/channels/inventoryOrderFacts/messages/reservationLineDispatched' }
+      - { $ref: '#/channels/inventoryOrderFacts/messages/allItemsInspectionCompleted' }
+  consumeDeliveryFacts:
+    action: receive
+    channel: { $ref: '#/channels/deliveryFacts' }
+    summary: Consume the only fact allowed to move one Order line from DISPATCHED to DELIVERED.
+    x-consumer-group: order-delivery-consumer
+    messages: [{ $ref: '#/channels/deliveryFacts/messages/orderLineDelivered' }]
+components:
+  messages:
+    orderPaid:
+      name: orderPaidV1
+      title: ORDER_PAID
+      summary: Minimal purchased-SKU fact used by Cart to remove only the items paid for.
+      contentType: application/cloudevents+json
+      x-consumers: [cart-service]
+      payload: { $ref: './schemas/order-paid.schema.json' }
+    orderCompleted:
+      name: orderCompletedV1
+      title: ORDER_COMPLETED
+      summary: Immutable completed-order item snapshot used by Review to grant one entitlement per SKU.
+      contentType: application/cloudevents+json
+      x-consumers: [review-service]
+      payload: { $ref: './schemas/order-completed.schema.json' }

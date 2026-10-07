@@ -1,0 +1,307 @@
+"use client";
+
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { LoaderCircle } from "lucide-react";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
+import { VIETNAM_ADDRESS_DATA } from "@/lib/constants/address";
+import { toE164 } from "@/lib/format";
+import { useSubmitError } from "@/hooks/use-submit-error";
+import type { Address, AddressWrite } from "@/lib/api/user";
+
+/**
+ * Số điện thoại nội địa Việt Nam: 10 chữ số bắt đầu bằng 0, hoặc đã ở dạng
+ * E.164. Server chỉ chấp nhận E.164 và **không** tự thêm mã quốc gia, nên
+ * `toE164` chuyển đổi trước khi gửi.
+ */
+const phoneSchema = z
+  .string()
+  .min(1, { message: "Vui lòng nhập số điện thoại." })
+  .refine((value) => /^\+[1-9]\d{7,14}$/.test(toE164(value)), {
+    message: "Số điện thoại chưa hợp lệ. Ví dụ: 0912 345 678.",
+  });
+
+const schema = z.object({
+  recipient_name: z
+    .string()
+    .trim()
+    .min(1, { message: "Vui lòng nhập tên người nhận." })
+    .max(100, { message: "Tối đa 100 ký tự." }),
+  recipient_phone: phoneSchema,
+  province_code: z.string().min(1, { message: "Vui lòng chọn tỉnh/thành phố." }),
+  district_code: z.string().min(1, { message: "Vui lòng chọn quận/huyện." }),
+  ward_code: z.string().min(1, { message: "Vui lòng chọn phường/xã." }),
+  address_line: z
+    .string()
+    .trim()
+    .min(1, { message: "Vui lòng nhập số nhà và tên đường." })
+    .max(255, { message: "Tối đa 255 ký tự." }),
+});
+
+type AddressValues = z.infer<typeof schema>;
+const FIELDS = [
+  "recipient_name",
+  "recipient_phone",
+  "province_code",
+  "district_code",
+  "ward_code",
+  "address_line",
+] as const;
+
+const EMPTY: AddressValues = {
+  recipient_name: "",
+  recipient_phone: "",
+  province_code: "",
+  district_code: "",
+  ward_code: "",
+  address_line: "",
+};
+
+interface AddressFormProps {
+  /** Có giá trị nghĩa là đang sửa; không có nghĩa là đang thêm mới. */
+  address?: Address | null;
+  onSubmit: (input: AddressWrite) => Promise<unknown>;
+  onCancel: () => void;
+}
+
+export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
+  const error = useSubmitError();
+
+  const form = useForm<AddressValues>({
+    resolver: zodResolver(schema),
+    defaultValues: address
+      ? {
+          recipient_name: address.recipient_name,
+          recipient_phone: address.recipient_phone,
+          province_code: address.province_code,
+          district_code: address.district_code,
+          ward_code: address.ward_code,
+          address_line: address.address_line,
+        }
+      : EMPTY,
+  });
+
+  const provinceCode = form.watch("province_code");
+  const districtCode = form.watch("district_code");
+
+  const province = VIETNAM_ADDRESS_DATA.find((item) => item.id === provinceCode);
+  const district = province?.districts.find((item) => item.id === districtCode);
+
+  async function handleSubmit(values: AddressValues) {
+    error.reset();
+    try {
+      await onSubmit({ ...values, recipient_phone: toE164(values.recipient_phone) });
+    } catch (submitError) {
+      error.capture(submitError, {
+        fields: FIELDS,
+        setFieldError: (field, message) => form.setError(field, { message }),
+      });
+    }
+  }
+
+  const isSaving = form.formState.isSubmitting;
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(handleSubmit)} noValidate>
+        <Card>
+          <CardHeader>
+            <CardTitle>{address ? "Sửa địa chỉ" : "Thêm địa chỉ mới"}</CardTitle>
+            <CardDescription>
+              Địa chỉ này sẽ được dùng làm nơi giao hàng khi bạn đặt đơn.
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent className="space-y-5">
+            {error.message && (
+              <Alert variant="danger" traceId={error.traceId}>
+                {error.message}
+              </Alert>
+            )}
+
+            <div className="grid gap-5 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="recipient_name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Người nhận</FormLabel>
+                    <FormControl>
+                      <Input autoComplete="name" placeholder="Nguyễn Văn A" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="recipient_phone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Số điện thoại</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        placeholder="0912 345 678"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      Số nội địa sẽ tự được lưu dưới dạng quốc tế (+84…).
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid gap-5 sm:grid-cols-3">
+              <FormField
+                control={form.control}
+                name="province_code"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Tỉnh/Thành phố</FormLabel>
+                    <FormControl>
+                      <NativeSelect
+                        {...field}
+                        onChange={(event) => {
+                          // Đổi tỉnh làm quận và phường đang chọn trở nên vô nghĩa.
+                          field.onChange(event);
+                          form.setValue("district_code", "", { shouldDirty: true });
+                          form.setValue("ward_code", "", { shouldDirty: true });
+                        }}
+                      >
+                        <option value="">Chọn tỉnh/thành</option>
+                        {VIETNAM_ADDRESS_DATA.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="district_code"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Quận/Huyện</FormLabel>
+                    <FormControl>
+                      <NativeSelect
+                        {...field}
+                        disabled={!province}
+                        onChange={(event) => {
+                          field.onChange(event);
+                          form.setValue("ward_code", "", { shouldDirty: true });
+                        }}
+                      >
+                        <option value="">
+                          {province ? "Chọn quận/huyện" : "Chọn tỉnh trước"}
+                        </option>
+                        {province?.districts.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="ward_code"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Phường/Xã</FormLabel>
+                    <FormControl>
+                      <NativeSelect {...field} disabled={!district}>
+                        <option value="">
+                          {district ? "Chọn phường/xã" : "Chọn quận trước"}
+                        </option>
+                        {district?.wards.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <FormField
+              control={form.control}
+              name="address_line"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Địa chỉ cụ thể</FormLabel>
+                  <FormControl>
+                    <Input
+                      autoComplete="street-address"
+                      placeholder="Số nhà, tên đường, toà nhà…"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </CardContent>
+
+          <CardFooter>
+            <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
+              Huỷ
+            </Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving ? (
+                <>
+                  <LoaderCircle className="animate-spin" aria-hidden />
+                  Đang lưu
+                </>
+              ) : address ? (
+                "Lưu địa chỉ"
+              ) : (
+                "Thêm địa chỉ"
+              )}
+            </Button>
+          </CardFooter>
+        </Card>
+      </form>
+    </Form>
+  );
+}

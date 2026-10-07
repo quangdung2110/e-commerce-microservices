@@ -1,0 +1,228 @@
+openapi: 3.1.0
+info:
+  title: Auth Internal Notification Delivery API
+  version: 1.0.0
+  description: >-
+    API nội bộ để Notification Service resolve nội dung email theo delivery_id.
+    Không được expose qua public Gateway; request và response có thể chứa PII
+    hoặc secret nên bắt buộc mTLS/service identity và Cache-Control: no-store.
+x-adoption-status: proposed
+servers:
+  - url: http://auth-service:8081
+    description: Internal cluster endpoint only
+tags:
+  - name: Notification delivery
+  - name: Notification contact
+paths:
+  /internal/v1/auth/notification-deliveries/{delivery_id}/content:
+    post:
+      tags: [Notification delivery]
+      operationId: resolveNotificationDeliveryContent
+      summary: Resolve nội dung email theo delivery_id
+      description: >-
+        Chỉ Notification Service được gọi qua mTLS/service identity. Operation
+        idempotent trong TTL: retry cùng delivery_id trả cùng nội dung; việc
+        resolve không consume OTP hoặc reset token. Adapter không được log body.
+      security:
+        - notificationServiceMtls: []
+      parameters:
+        - $ref: '#/components/parameters/DeliveryId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Nội dung cần render và gửi email.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationDeliveryContent' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/DeliveryNotFound' }
+        '410': { $ref: '#/components/responses/DeliveryExpired' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /internal/v1/auth/users/{user_id}/notification-contact:
+    get:
+      tags: [Notification contact]
+      operationId: getNotificationContact
+      summary: Resolve email người nhận theo user_id
+      description: >-
+        Dùng cho mọi thông báo không do Auth khởi phát (Order, Review, Cart): recipient
+        email không đi qua Kafka, Notification resolve lúc gửi. Chỉ Notification Service
+        được gọi qua mTLS/service identity. Response chứa PII nên no-store; Notification
+        chỉ được cache trong memory/Redis tối đa 15 phút, không ghi xuống DB. Adapter
+        không được log body. Không trả secret; không trả số điện thoại ở phase 1.
+      security:
+        - notificationServiceMtls: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Contact hiện tại của user.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationContact' }
+        '401': { $ref: '#/components/responses/UnauthorizedService' }
+        '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/UserNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    notificationServiceMtls:
+      type: mutualTLS
+      description: >-
+        mTLS/service identity chỉ cấp cho Notification Service trên internal
+        network. Public client và API Gateway không được gọi endpoint này. Transport
+        mTLS và allowlist principal notification-service do service mesh thực thi
+        (docs/mesh/runtime-contract.md mục 5.2); Auth không nhìn thấy chứng chỉ caller.
+        Caller gửi X-Service-Identity: notification-service cho attribution.
+  parameters:
+    DeliveryId:
+      name: delivery_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  headers:
+    NoStore:
+      description: Response có PII/secret không được cache hoặc ghi vào proxy log.
+      required: true
+      schema: { type: string, const: no-store }
+  schemas:
+    NotificationDeliveryContent:
+      type: object
+      additionalProperties: false
+      required: [delivery_id, recipient_email, template, expires_at, template_data]
+      properties:
+        delivery_id:
+          type: string
+          format: uuid
+          x-data-classification: INTERNAL
+        recipient_email:
+          type: string
+          format: email
+          maxLength: 254
+          x-data-classification: PII
+        template:
+          type: string
+          enum:
+            - REGISTRATION_VERIFICATION
+            - EMAIL_CHANGE_VERIFICATION
+            - PASSWORD_RESET
+            - EMAIL_CHANGED
+            - PASSWORD_CHANGED
+            - ACCOUNT_LOCKED
+            - ACCOUNT_UNLOCKED
+          x-data-classification: INTERNAL
+        expires_at:
+          type: string
+          format: date-time
+          x-data-classification: INTERNAL
+        template_data:
+          oneOf:
+            - $ref: '#/components/schemas/OtpTemplateData'
+            - $ref: '#/components/schemas/PasswordResetTemplateData'
+            - $ref: '#/components/schemas/EmailChangedTemplateData'
+            - $ref: '#/components/schemas/PasswordChangedTemplateData'
+            - $ref: '#/components/schemas/AccountLockedTemplateData'
+            - $ref: '#/components/schemas/AccountUnlockedTemplateData'
+    OtpTemplateData:
+      type: object
+      additionalProperties: false
+      required: [otp]
+      properties:
+        otp:
+          type: string
+          pattern: '^[0-9]{6}$'
+          x-data-classification: SECRET
+    PasswordResetTemplateData:
+      type: object
+      additionalProperties: false
+      required: [reset_url]
+      properties:
+        reset_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          x-data-classification: SECRET
+    EmailChangedTemplateData:
+      type: object
+      additionalProperties: false
+      required: [event, changed_at]
+      properties:
+        event: { type: string, const: EMAIL_CHANGED, x-data-classification: INTERNAL }
+        changed_at: { type: string, format: date-time, x-data-classification: INTERNAL }
+    PasswordChangedTemplateData:
+      type: object
+      additionalProperties: false
+      required: [event, changed_at]
+      properties:
+        event: { type: string, const: PASSWORD_CHANGED, x-data-classification: INTERNAL }
+        changed_at: { type: string, format: date-time, x-data-classification: INTERNAL }
+    AccountLockedTemplateData:
+      type: object
+      additionalProperties: false
+      required: [event, locked_at, locked_until]
+      properties:
+        event: { type: string, const: ACCOUNT_LOCKED, x-data-classification: INTERNAL }
+        locked_at: { type: string, format: date-time, x-data-classification: INTERNAL }
+        locked_until: { type: string, format: date-time, x-data-classification: INTERNAL }
+    AccountUnlockedTemplateData:
+      type: object
+      additionalProperties: false
+      required: [event, unlocked_at]
+      properties:
+        event: { type: string, const: ACCOUNT_UNLOCKED, x-data-classification: INTERNAL }
+        unlocked_at: { type: string, format: date-time, x-data-classification: INTERNAL }
+    NotificationContact:
+      type: object
+      additionalProperties: false
+      required: [user_id, email, email_verified]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          x-data-classification: INTERNAL
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          x-data-classification: PII
+        email_verified:
+          type: boolean
+          description: >-
+            false khi user chưa xác minh email. Notification vẫn gửi transactional
+            (đơn hàng của họ) nhưng không gửi bulk tới địa chỉ chưa xác minh.
+        locale:
+          type: [string, 'null']
+          pattern: '^[a-z]{2}(-[A-Z]{2})?$'
+          description: Tuỳ chọn; Notification mặc định vi khi null.
+  responses:
+    UnauthorizedService:
+      description: Không có hoặc không xác minh được service identity mTLS.
+    ForbiddenService:
+      description: Service identity không phải Notification Service.
+    DeliveryNotFound:
+      description: delivery_id không tồn tại hoặc không được phép truy cập.
+    UserNotFound:
+      description: user_id không tồn tại hoặc tài khoản đã xoá; Notification đánh delivery FAILED (no_recipient), không retry.
+    DeliveryExpired:
+      description: Delivery state đã hết TTL; không thể gửi lại secret cũ.
+    RateLimited:
+      description: Vượt rate limit nội bộ.
+    InternalError:
+      description: Lỗi không mong đợi; caller có thể retry theo policy.

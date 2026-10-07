@@ -1,0 +1,3 @@
+title: "Thanh toán đơn {{.OrderCode}} không thành công"
+body: "Thanh toán {{money .AmountMinor .Currency}} cho đơn {{.OrderCode}} (lần {{.Attempt}}) không thành công.{{if .CanRetry}} Vui lòng thanh toán lại{{if .HasRetryDeadline}} trước {{date .Deadline .Timezone}}{{end}} để giữ đơn hàng.{{else}} Đơn hàng không thể thanh toán lại.{{end}}"
+deep_link_field: order_url

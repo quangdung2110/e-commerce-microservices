@@ -1,0 +1,9 @@
+{
+  "order_id": "1000234",
+  "order_code": "ORD-1000234",
+  "amount_minor": 728000,
+  "currency": "VND",
+  "attempt": 3,
+  "can_retry": false,
+  "order_url": "https://shop.example.com/orders/1000234"
+}

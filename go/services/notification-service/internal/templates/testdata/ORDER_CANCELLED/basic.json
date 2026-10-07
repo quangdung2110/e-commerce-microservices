@@ -1,0 +1,8 @@
+{
+  "order_id": "1000234",
+  "order_code": "ORD-1000234",
+  "cancelled_at": "2026-09-20T12:00:00Z",
+  "reason": "buyer",
+  "refund_expected": false,
+  "order_url": "https://shop.example.com/orders/1000234"
+}

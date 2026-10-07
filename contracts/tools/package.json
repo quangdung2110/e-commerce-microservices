@@ -1,0 +1,19 @@
+{
+  "name": "ecommerce-contract-toolchain",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "scripts": {
+    "lint:payment:openapi": "redocly lint ../http/payment/v1/openapi.yaml ../http/payment/internal/v1/openapi.yaml",
+    "lint:payment:asyncapi": "asyncapi validate ../events/payment/v2/asyncapi.yaml && asyncapi validate ../events/payment/internal/v1/asyncapi.yaml",
+    "lint:payment": "npm run lint:payment:openapi && npm run lint:payment:asyncapi",
+    "generate:payment": "redocly bundle ../http/payment/v1/openapi.yaml --output ../generated/payment-public.openapi.yaml && redocly bundle ../http/payment/internal/v1/openapi.yaml --output ../generated/payment-internal.openapi.yaml && redocly bundle ../events/payment/v2/asyncapi.yaml --output ../generated/payment-events.asyncapi.yaml && redocly bundle ../events/payment/internal/v1/asyncapi.yaml --output ../generated/payment-webhook-internal.asyncapi.yaml",
+    "verify:payment": "npm run lint:payment && npm run generate:payment"
+  },
+  "devDependencies": {
+    "@asyncapi/cli": "6.1.0",
+    "@redocly/cli": "2.53.3"
+  }
+}

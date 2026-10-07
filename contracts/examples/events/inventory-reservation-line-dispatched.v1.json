@@ -1,0 +1,26 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda006",
+  "type": "com.ecommerce.inventory.reservation.line-dispatched.v1",
+  "source": "/services/inventory",
+  "subject": "orders/order-10001/lines/line-1",
+  "time": "2026-09-07T05:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/inventory/v1/schemas/reservation-line-dispatched.schema.json",
+  "correlationid": "corr-order-10001",
+  "causationid": "cmd-dispatch-9001",
+  "sequence": 42006,
+  "aggregatetype": "reservation-line",
+  "aggregateid": "order-10001:line-1",
+  "aggregaterevision": 3,
+  "data": {
+    "order_id": "order-10001",
+    "order_line_id": "line-1",
+    "sku_id": "sku-blue-m",
+    "quantity": 2,
+    "warehouse_id": "wh-bkk-01",
+    "handover_reference": "handover-9001",
+    "handed_over_at": "2026-09-07T05:00:00Z",
+    "reservation_revision": 3
+  }
+}

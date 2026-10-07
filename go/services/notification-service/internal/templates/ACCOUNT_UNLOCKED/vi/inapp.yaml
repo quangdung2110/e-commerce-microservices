@@ -1,0 +1,2 @@
+title: "Tài khoản đã được mở khoá"
+body: "Tài khoản của bạn đã được mở khoá lúc {{date .UnlockedAt .Timezone}}. Bạn có thể đăng nhập bình thường trở lại."

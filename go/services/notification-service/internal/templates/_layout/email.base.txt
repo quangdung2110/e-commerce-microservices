@@ -1,0 +1,11 @@
+{{.Brand}}
+====================
+
+{{template "content" .}}
+
+--
+Email này được gửi tự động từ {{.Brand}}, vui lòng không trả lời.
+{{- if .UnsubscribeURL}}
+Bạn nhận được email này vì đã bật thông báo khuyến mãi. Ngừng nhận email khuyến mãi tại: {{.UnsubscribeURL}}
+{{- end}}
+Mã tham chiếu: {{.DeliveryID}}

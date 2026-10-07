@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/schemas/notification-complaint-received.schema.json",
+  "title": "Notification complaint received v1",
+  "description": "User báo spam trên một email. Notification đã tắt marketing_enabled cục bộ; User Service tắt ở nguồn.",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "source",
+        "dataschema",
+        "subject",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "const": "com.ecommerce.notification.complaint-received.v1"
+        },
+        "source": {
+          "const": "/services/notification"
+        },
+        "dataschema": {
+          "const": "/contracts/events/notification/v1/schemas/notification-complaint-received.schema.json"
+        },
+        "subject": {
+          "$ref": "notification-event-common.schema.json#/$defs/outcome_subject"
+        },
+        "data": {
+          "allOf": [
+            {
+              "$ref": "notification-event-common.schema.json#/$defs/outcome_core"
+            },
+            {
+              "type": "object",
+              "required": [
+                "marketing_disabled"
+              ],
+              "properties": {
+                "marketing_disabled": {
+                  "type": "boolean",
+                  "description": "true khi Notification đã tắt marketing_enabled ở bản replicate cục bộ."
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "index_patterns": ["search_jobs_v*"],
+  "aliases_note": "Alias doc: search_jobs (read + write). Index noi bo cua Search cho reindex run, suggestion build va lease lock; khong phuc vu buyer va khong nam trong pham vi full reindex cutover.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "1s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "doc_kind": { "type": "keyword" },
+
+      "run_id": { "type": "keyword" },
+      "status": { "type": "keyword" },
+      "phase": { "type": "keyword" },
+      "reason": { "type": "keyword", "index": false },
+      "actor": { "type": "keyword" },
+      "started_at": { "type": "date" },
+      "finished_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "failure_code": { "type": "keyword" },
+      "failure_message": { "type": "keyword", "index": false },
+
+      "target_index": { "type": "keyword" },
+      "source_indices": { "type": "keyword" },
+      "current_version": { "type": "long" },
+      "rollback_version": { "type": "long" },
+
+      "progress": { "type": "object", "enabled": false },
+      "replay_from_offsets": { "type": "object", "enabled": false },
+      "checkpoint": { "type": "object", "enabled": false },
+      "validation": { "type": "object", "enabled": false },
+
+      "lock_name": { "type": "keyword" },
+      "owner_run_id": { "type": "keyword" },
+      "lease_expires_at": { "type": "date" },
+      "fencing_token": { "type": "long" }
+    }
+  }
+}

@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: Review Internal API
+  version: 1.0.0
+  description: >-
+    Contract nội bộ để Product Detail BFF đọc rating/preview và để Search tạo export
+    session, bootstrap hoặc phục hồi rating projection. Chỉ service identity được gọi;
+    các endpoint không expose qua API Gateway.
+x-adoption-status: proposed
+servers:
+  - url: http://review-service:8080
+    description: Internal cluster endpoint
+paths:
+  /internal/v1/reviews/products/{product_id}/pdp-summary:
+    get:
+      operationId: getProductReviewPdpSummary
+      summary: Lấy rating aggregate và review preview cho Product Detail BFF
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - name: preview_limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 5, default: 3 }
+        - name: X-Request-Id
+          in: header
+          required: false
+          description: Correlation fallback do BFF propagate từ request PDP; không thay thế traceparent.
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '200':
+          description: >-
+            Aggregate hiện tại và review APPROVED mới nhất. Product chưa có review
+            trả aggregate 0 và preview rỗng; trạng thái này khác lỗi dependency.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductReviewPdpSummary' }
+        '400': { description: product_id hoặc preview_limit không hợp lệ. }
+        '401': { description: Missing or invalid service identity. }
+        '403': { description: Caller is not Product Detail BFF. }
+        '503': { description: Review read store không sẵn sàng; BFF phải degrade review section, không retry trong hot path. }
+
+  /internal/v1/reviews/rating-aggregate-exports:
+    post:
+      operationId: createRatingAggregateExportSession
+      summary: Tạo một session export rating aggregate nhất quán cho Search
+      description: >-
+        Chụp end-offset hiện tại của mọi partition t.review.events trước khi Search
+        scan aggregate. replay_from_offsets là offset đầu tiên phải replay, tính
+        inclusive. Việc tạo session có state nên dùng POST, không dùng GET.
+      security: [{ serviceIdentity: [] }]
+      responses:
+        '201':
+          description: Export session mới, còn hiệu lực trong thời gian expires_at.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RatingAggregateExportSession' }
+        '401': { description: Missing or invalid service identity. }
+        '403': { description: Caller is not authorized to export review rating aggregates. }
+        '503': { description: Review cannot capture Kafka offsets or persist the export session. }
+
+  /internal/v1/reviews/rating-aggregate-exports/{session_id}:
+    get:
+      operationId: getRatingAggregateExportPage
+      summary: Lấy một trang rating aggregate thuộc export session đã tạo
+      description: >-
+        Các trang cùng session_id luôn trả đúng replay_from_offsets đã chụp lúc tạo
+        session. Snapshot có thể thấy mutation mới hơn watermark; Search phải dùng
+        review_revision để bỏ state cũ hoặc trùng khi replay.
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: after_product_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 64 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
+      responses:
+        '200':
+          description: Trang keyset ổn định theo product_id trong export session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RatingAggregateExportPage' }
+        '401': { description: Missing or invalid service identity. }
+        '403': { description: Caller is not authorized to export review rating aggregates. }
+        '404': { description: Export session does not exist. }
+        '410': { description: Export session expired; Search must start a new export. }
+        '503': { description: Review read store không sẵn sàng; Search must restart the run. }
+
+components:
+  securitySchemes:
+    serviceIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: internal-service-identity
+      description: >-
+        Static token allowlist trong Review (REVIEW_INTERNAL_PDP_TOKENS,
+        REVIEW_INTERNAL_EXPORT_TOKENS) là defense-in-depth. Caller được phép chạm từng
+        route do service mesh thực thi theo principal product-detail-bff / search-service
+        (docs/mesh/runtime-contract.md mục 5.2); principal sai bị mesh trả 403 text/plain
+        trước khi tới Review. Hợp nhất sang header X-Service-Identity chung là việc riêng.
+  schemas:
+    ProductReviewPdpSummary:
+      type: object
+      additionalProperties: false
+      required: [product_id, aggregate, preview]
+      properties:
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        aggregate: { $ref: '#/components/schemas/ProductReviewAggregate' }
+        preview:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/ProductReviewPreviewItem' }
+    ProductReviewAggregate:
+      type: object
+      additionalProperties: false
+      required: [average_rating, total_reviews, total_with_media]
+      properties:
+        average_rating: { type: number, minimum: 0, maximum: 5 }
+        total_reviews: { type: integer, format: int64, minimum: 0 }
+        total_with_media: { type: integer, format: int64, minimum: 0 }
+    ProductReviewPreviewItem:
+      type: object
+      additionalProperties: false
+      required: [review_id, rating, author_name, variant_name, has_media, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        content: { type: [string, 'null'] }
+        author_name: { type: string, minLength: 1, maxLength: 255 }
+        variant_name: { type: [string, 'null'], maxLength: 255 }
+        has_media: { type: boolean }
+        created_at: { type: string, format: date-time }
+    RatingAggregateExportSession:
+      type: object
+      additionalProperties: false
+      required: [session_id, expires_at, replay_from_offsets]
+      properties:
+        session_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    RatingAggregateExportPage:
+      type: object
+      additionalProperties: false
+      required: [session_id, items, next_after_product_id, replay_from_offsets]
+      properties:
+        session_id: { type: string, format: uuid }
+        items:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/RatingAggregateSnapshot' }
+        next_after_product_id:
+          type: [string, 'null']
+          maxLength: 64
+        replay_from_offsets:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ReplayOffset' }
+    RatingAggregateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [product_id, average_rating, total_reviews, review_revision, observed_at]
+      properties:
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        average_rating: { type: number, minimum: 0, maximum: 5 }
+        total_reviews: { type: integer, format: int64, minimum: 0 }
+        total_with_media: { type: integer, format: int64, minimum: 0 }
+        review_revision: { type: integer, format: int64, minimum: 1 }
+        observed_at: { type: string, format: date-time }
+    ReplayOffset:
+      type: object
+      additionalProperties: false
+      required: [topic, partition, offset]
+      properties:
+        topic: { const: t.review.events }
+        partition: { type: integer, format: int32, minimum: 0 }
+        offset: { type: integer, format: int64, minimum: 0 }

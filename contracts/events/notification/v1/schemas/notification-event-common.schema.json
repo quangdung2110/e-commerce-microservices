@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/schemas/notification-event-common.schema.json",
+  "title": "Notification event common definitions",
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "lane": { "type": "string", "enum": ["critical", "transactional", "bulk"] },
+    "channel": { "type": "string", "enum": ["email", "in_app"] },
+    "template_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{2,63}$",
+      "description": "Định danh template trong templates/catalog.yaml. Producer chỉ được dùng template status active."
+    },
+    "dedup_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9_]+:[A-Za-z0-9:_.-]+$",
+      "description": "Khoá dedup nghiệp vụ theo công thức của template, ví dụ order_confirmed:1000234. Unique theo (dedup_key, channel) trong cửa sổ 30 ngày."
+    },
+    "provider": { "type": "string", "enum": ["ses", "mailpit", "inbox"] },
+    "outcome_core": {
+      "type": "object",
+      "required": ["delivery_id", "request_id", "template", "lane", "channel", "user_id", "provider", "occurred_at"],
+      "properties": {
+        "delivery_id": { "$ref": "#/$defs/uuid", "x-data-classification": "INTERNAL" },
+        "request_id": { "$ref": "#/$defs/uuid", "x-data-classification": "INTERNAL" },
+        "template": { "$ref": "#/$defs/template_id" },
+        "lane": { "$ref": "#/$defs/lane" },
+        "channel": { "$ref": "#/$defs/channel" },
+        "user_id": { "$ref": "#/$defs/uuid", "x-data-classification": "INTERNAL" },
+        "subject": { "type": "string", "maxLength": 256, "description": "subject của request gốc, ví dụ orders/1000234." },
+        "provider": { "$ref": "#/$defs/provider" },
+        "occurred_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "outcome_subject": {
+      "type": "string",
+      "pattern": "^deliveries/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}

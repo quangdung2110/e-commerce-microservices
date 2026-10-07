@@ -6,78 +6,62 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
+	"github.com/ecommerce/auth-service/internal/api/dto/response"
+	"github.com/ecommerce/auth-service/internal/common/logging"
 )
 
+// probe is one readiness check.
+type probe struct {
+	name  string
+	check func(context.Context) error
+}
+
+// HealthHandler serves the liveness, readiness and startup probes.
+//
+// Readiness covers the dependencies without which authentication cannot be done
+// safely: the credential store and the security state store. A failing probe
+// reports which check failed to the log, never to the response body.
 type HealthHandler struct {
-	dbPingFn    func(ctx context.Context) error
-	redisPingFn func(ctx context.Context) error
+	probes  []probe
+	timeout time.Duration
 }
 
-type HealthResponse struct {
-	Status    string            `json:"status"`
-	Timestamp time.Time         `json:"timestamp"`
-	Checks    map[string]string `json:"checks,omitempty"`
+// NewHealthHandler wires the probes.
+func NewHealthHandler(timeout time.Duration) *HealthHandler {
+	return &HealthHandler{timeout: timeout}
 }
 
-func NewHealthHandler(
-	dbPingFn func(ctx context.Context) error,
-	redisPingFn func(ctx context.Context) error,
-) *HealthHandler {
-	return &HealthHandler{
-		dbPingFn:    dbPingFn,
-		redisPingFn: redisPingFn,
-	}
+// AddProbe registers one readiness dependency.
+func (h *HealthHandler) AddProbe(name string, check func(context.Context) error) {
+	h.probes = append(h.probes, probe{name: name, check: check})
 }
 
-func (h *HealthHandler) Health(c *gin.Context) {
-	c.JSON(http.StatusOK, HealthResponse{
-		Status:    "ok",
-		Timestamp: time.Now().UTC(),
-	})
+// Live handles GET /health/live: the process is running.
+func (h *HealthHandler) Live(c *gin.Context) {
+	c.JSON(http.StatusOK, response.Health{Status: "UP"})
 }
 
+// Ready handles GET /health/ready: the dependencies answer.
 func (h *HealthHandler) Ready(c *gin.Context) {
-	checks := make(map[string]string)
-	allHealthy := true
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
 	defer cancel()
 
-	if h.dbPingFn != nil {
-		if err := h.dbPingFn(ctx); err != nil {
-			checks["database"] = "unhealthy: " + err.Error()
-			allHealthy = false
-		} else {
-			checks["database"] = "healthy"
+	for _, p := range h.probes {
+		if err := p.check(ctx); err != nil {
+			logging.FromContext(c.Request.Context()).Warn("readiness probe failed",
+				zap.String("dependency", p.name),
+				zap.Error(err),
+			)
+			c.JSON(http.StatusServiceUnavailable, response.Health{Status: "DOWN"})
+			return
 		}
 	}
-
-	if h.redisPingFn != nil {
-		if err := h.redisPingFn(ctx); err != nil {
-			checks["redis"] = "unhealthy: " + err.Error()
-			allHealthy = false
-		} else {
-			checks["redis"] = "healthy"
-		}
-	}
-
-	status := "ok"
-	statusCode := http.StatusOK
-	if !allHealthy {
-		status = "degraded"
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	c.JSON(statusCode, HealthResponse{
-		Status:    status,
-		Timestamp: time.Now().UTC(),
-		Checks:    checks,
-	})
+	c.JSON(http.StatusOK, response.Health{Status: "UP"})
 }
 
-func (h *HealthHandler) Live(c *gin.Context) {
-	c.JSON(http.StatusOK, HealthResponse{
-		Status:    "ok",
-		Timestamp: time.Now().UTC(),
-	})
+// Startup handles GET /health/startup and runs the same checks as readiness.
+func (h *HealthHandler) Startup(c *gin.Context) {
+	h.Ready(c)
 }

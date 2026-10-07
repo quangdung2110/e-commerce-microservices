@@ -2,207 +2,130 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"user-service/internal/domain/entity"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/port"
+	"github.com/ecommerce/user-service/internal/domain/vo"
 )
 
-// PostgresPreferencesRepository implements port.PreferencesRepository
-type PostgresPreferencesRepository struct {
-	db *pgxpool.Pool
+var _ port.PreferencesRepository = (*PreferencesRepository)(nil)
+
+// PreferencesRepository persists "user".user_preferences, the 1:1 companion of
+// a profile.
+type PreferencesRepository struct {
+	repository
 }
 
-// NewPostgresPreferencesRepository creates a new PostgresPreferencesRepository
-func NewPostgresPreferencesRepository(db *pgxpool.Pool) *PostgresPreferencesRepository {
-	return &PostgresPreferencesRepository{db: db}
+// NewPreferencesRepository wires the preferences repository.
+func NewPreferencesRepository(pool *pgxpool.Pool) *PreferencesRepository {
+	return &PreferencesRepository{repository{pool: pool}}
 }
 
-// Create creates new preferences with defaults (idempotent - uses ON CONFLICT DO NOTHING)
-func (r *PostgresPreferencesRepository) Create(ctx context.Context, prefs *entity.Preferences) error {
-	query := `
-		INSERT INTO user_preferences (user_id, language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		ON CONFLICT (user_id) DO NOTHING
-		RETURNING updated_at`
+// Insert writes the bootstrap defaults. ON CONFLICT DO NOTHING keeps a replayed
+// verification event from resetting an opt-out the owner already made
+// (USER-BR-005).
+func (r *PreferencesRepository) Insert(ctx context.Context, preferences *entity.Preferences) (bool, error) {
+	const query = `
+		INSERT INTO "user".user_preferences (
+			user_id, language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (user_id) DO NOTHING`
 
-	err := r.db.QueryRow(ctx, query,
-		prefs.UserID,
-		prefs.Language,
-		prefs.Currency,
-		prefs.EmailEnabled,
-		prefs.InAppEnabled,
-		prefs.MarketingEnabled,
-	).Scan(&prefs.UpdatedAt)
-
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("failed to create preferences: %w", err)
+	tag, err := r.db(ctx).Exec(ctx, query,
+		preferences.UserID,
+		preferences.Language.String(),
+		preferences.Currency.String(),
+		preferences.EmailEnabled,
+		preferences.InAppEnabled,
+		preferences.MarketingEnabled,
+		preferences.UpdatedAt,
+	)
+	if err != nil {
+		return false, mapError(err)
 	}
-
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
-// CreateTx creates preferences within a transaction
-func (r *PostgresPreferencesRepository) CreateTx(ctx context.Context, tx pgx.Tx, prefs *entity.Preferences) error {
-	query := `
-		INSERT INTO user_preferences (user_id, language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		ON CONFLICT (user_id) DO NOTHING
-		RETURNING updated_at`
-
-	err := tx.QueryRow(ctx, query,
-		prefs.UserID,
-		prefs.Language,
-		prefs.Currency,
-		prefs.EmailEnabled,
-		prefs.InAppEnabled,
-		prefs.MarketingEnabled,
-	).Scan(&prefs.UpdatedAt)
-
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("failed to create preferences in transaction: %w", err)
-	}
-
-	return nil
-}
-
-// GetByUserID retrieves preferences by user ID
-func (r *PostgresPreferencesRepository) GetByUserID(ctx context.Context, userID uuid.UUID) (*entity.Preferences, error) {
-	query := `
+// GetByUser reads the preferences of one profile.
+func (r *PreferencesRepository) GetByUser(ctx context.Context, userID uuid.UUID) (*entity.Preferences, error) {
+	const query = `
 		SELECT user_id, language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at
-		FROM user_preferences
+		FROM "user".user_preferences
 		WHERE user_id = $1`
 
-	var prefs entity.Preferences
-	err := r.db.QueryRow(ctx, query, userID).Scan(
-		&prefs.UserID,
-		&prefs.Language,
-		&prefs.Currency,
-		&prefs.EmailEnabled,
-		&prefs.InAppEnabled,
-		&prefs.MarketingEnabled,
-		&prefs.UpdatedAt,
+	var (
+		preferences entity.Preferences
+		language    string
+		currency    string
 	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
+	err := r.db(ctx).QueryRow(ctx, query, userID).Scan(
+		&preferences.UserID,
+		&language,
+		&currency,
+		&preferences.EmailEnabled,
+		&preferences.InAppEnabled,
+		&preferences.MarketingEnabled,
+		&preferences.UpdatedAt,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get preferences: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Preferences exist exactly when the profile does, so a missing row
+			// is reported as a missing profile rather than as an empty result.
+			return nil, apperr.ErrProfileNotFound
+		}
+		return nil, mapError(err)
 	}
 
-	return &prefs, nil
+	preferences.Language = vo.Language(language)
+	preferences.Currency = vo.Currency(currency)
+	preferences.UpdatedAt = preferences.UpdatedAt.UTC()
+	return &preferences, nil
 }
 
-// Update updates existing preferences
-func (r *PostgresPreferencesRepository) Update(ctx context.Context, prefs *entity.Preferences) error {
-	query := `
-		UPDATE user_preferences
-		SET language = $2,
-		    currency = $3,
-		    email_enabled = $4,
-		    in_app_enabled = $5,
-		    marketing_enabled = $6,
-		    updated_at = NOW()
+// Update writes the three notification flags. Language and currency are fixed
+// by the contract and are never part of an update.
+func (r *PreferencesRepository) Update(ctx context.Context, preferences *entity.Preferences) error {
+	const query = `
+		UPDATE "user".user_preferences
+		SET email_enabled = $2,
+		    in_app_enabled = $3,
+		    marketing_enabled = $4
 		WHERE user_id = $1
 		RETURNING updated_at`
 
-	err := r.db.QueryRow(ctx, query,
-		prefs.UserID,
-		prefs.Language,
-		prefs.Currency,
-		prefs.EmailEnabled,
-		prefs.InAppEnabled,
-		prefs.MarketingEnabled,
-	).Scan(&prefs.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
+	var updatedAt time.Time
+	err := r.db(ctx).QueryRow(ctx, query,
+		preferences.UserID,
+		preferences.EmailEnabled,
+		preferences.InAppEnabled,
+		preferences.MarketingEnabled,
+	).Scan(&updatedAt)
 	if err != nil {
-		return fmt.Errorf("failed to update preferences: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return apperr.ErrProfileNotFound
+		}
+		return mapError(err)
 	}
 
+	preferences.UpdatedAt = updatedAt.UTC()
 	return nil
 }
 
-// UpdateTx updates preferences within a transaction
-func (r *PostgresPreferencesRepository) UpdateTx(ctx context.Context, tx pgx.Tx, prefs *entity.Preferences) error {
-	query := `
-		UPDATE user_preferences
-		SET language = $2,
-		    currency = $3,
-		    email_enabled = $4,
-		    in_app_enabled = $5,
-		    marketing_enabled = $6,
-		    updated_at = NOW()
-		WHERE user_id = $1
-		RETURNING updated_at`
+// DeleteForUser removes the preferences of an anonymized account.
+func (r *PreferencesRepository) DeleteForUser(ctx context.Context, userID uuid.UUID) (bool, error) {
+	const query = `DELETE FROM "user".user_preferences WHERE user_id = $1`
 
-	err := tx.QueryRow(ctx, query,
-		prefs.UserID,
-		prefs.Language,
-		prefs.Currency,
-		prefs.EmailEnabled,
-		prefs.InAppEnabled,
-		prefs.MarketingEnabled,
-	).Scan(&prefs.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
+	tag, err := r.db(ctx).Exec(ctx, query, userID)
 	if err != nil {
-		return fmt.Errorf("failed to update preferences in transaction: %w", err)
+		return false, mapError(err)
 	}
-
-	return nil
-}
-
-// Delete deletes preferences for a user
-func (r *PostgresPreferencesRepository) Delete(ctx context.Context, userID uuid.UUID) error {
-	query := `DELETE FROM user_preferences WHERE user_id = $1`
-
-	result, err := r.db.Exec(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("failed to delete preferences: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// DeleteTx deletes preferences within a transaction
-func (r *PostgresPreferencesRepository) DeleteTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	query := `DELETE FROM user_preferences WHERE user_id = $1`
-
-	result, err := tx.Exec(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("failed to delete preferences in transaction: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// Exists checks if preferences exist for a user
-func (r *PostgresPreferencesRepository) Exists(ctx context.Context, userID uuid.UUID) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM user_preferences WHERE user_id = $1)`
-
-	var exists bool
-	err := r.db.QueryRow(ctx, query, userID).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("failed to check preferences existence: %w", err)
-	}
-
-	return exists, nil
+	return tag.RowsAffected() == 1, nil
 }

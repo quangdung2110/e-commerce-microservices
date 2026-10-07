@@ -51,7 +51,7 @@ fi
 echo "3. Checking routing configuration..."
 echo "   Expected routes:"
 echo "   - /api/users/** → user-service"
-echo "   - /api/orders/** → order-service"
+echo "   - /api/v1/orders/** → order-service"
 echo "   - /api/products/** → product-service"
 echo "   - /api/payments/** → payment-service"
 echo ""
@@ -70,8 +70,8 @@ echo ""
 echo "1. User Service (/api/users)"
 curl -s -o /dev/null -w "   Status: %{http_code}\n" ${GATEWAY}/api/users/1
 
-echo "2. Order Service (/api/orders)"
-curl -s -o /dev/null -w "   Status: %{http_code}\n" ${GATEWAY}/api/orders/1
+echo "2. Order Service (/api/v1/orders)"
+curl -s -o /dev/null -w "   Status: %{http_code}\n" ${GATEWAY}/api/v1/orders/1
 
 echo "3. Product Service (/api/products)"
 curl -s -o /dev/null -w "   Status: %{http_code}\n" ${GATEWAY}/api/products/1

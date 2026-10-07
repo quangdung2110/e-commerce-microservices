@@ -2,311 +2,148 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"user-service/internal/domain/entity"
-	"user-service/internal/domain/vo"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/port"
+	"github.com/ecommerce/user-service/internal/domain/vo"
 )
 
-// PostgresProfileRepository implements port.ProfileRepository
-type PostgresProfileRepository struct {
-	db *pgxpool.Pool
+var _ port.ProfileRepository = (*ProfileRepository)(nil)
+
+// ProfileRepository persists "user".user_profiles.
+type ProfileRepository struct {
+	repository
 }
 
-// NewPostgresProfileRepository creates a new PostgresProfileRepository
-func NewPostgresProfileRepository(db *pgxpool.Pool) *PostgresProfileRepository {
-	return &PostgresProfileRepository{db: db}
+// NewProfileRepository wires the profile repository.
+func NewProfileRepository(pool *pgxpool.Pool) *ProfileRepository {
+	return &ProfileRepository{repository{pool: pool}}
 }
 
-// Create creates a new profile (idempotent - uses ON CONFLICT DO NOTHING)
-func (r *PostgresProfileRepository) Create(ctx context.Context, profile *entity.Profile) error {
-	query := `
-		INSERT INTO user_profiles (id, first_name, last_name, phone_number, date_of_birth, gender, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-		ON CONFLICT (id) DO NOTHING
-		RETURNING created_at, updated_at`
+const profileColumns = `id, first_name, last_name, date_of_birth, gender, created_at, updated_at`
 
-	err := r.db.QueryRow(ctx, query,
+// Insert writes the bootstrap row. ON CONFLICT DO NOTHING makes a redelivered
+// USER_VERIFIED_SUCCESS a no-op instead of an overwrite (USER-BR-005).
+func (r *ProfileRepository) Insert(ctx context.Context, profile *entity.Profile) (bool, error) {
+	const query = `
+		INSERT INTO "user".user_profiles (id, first_name, last_name, date_of_birth, gender, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (id) DO NOTHING`
+
+	tag, err := r.db(ctx).Exec(ctx, query,
 		profile.ID,
 		profile.FirstName,
 		profile.LastName,
-		profile.PhoneNumber,
 		profile.DateOfBirth,
 		profile.Gender.String(),
-	).Scan(&profile.CreatedAt, &profile.UpdatedAt)
-
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("failed to create profile: %w", err)
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
+	if err != nil {
+		return false, mapError(err)
 	}
-
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
-// CreateTx creates a new profile within a transaction
-func (r *PostgresProfileRepository) CreateTx(ctx context.Context, tx pgx.Tx, profile *entity.Profile) error {
-	query := `
-		INSERT INTO user_profiles (id, first_name, last_name, phone_number, date_of_birth, gender, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-		ON CONFLICT (id) DO NOTHING
-		RETURNING created_at, updated_at`
+// GetByID reads one profile.
+func (r *ProfileRepository) GetByID(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	const query = `SELECT ` + profileColumns + ` FROM "user".user_profiles WHERE id = $1`
+	return r.queryProfile(ctx, query, userID)
+}
 
-	err := tx.QueryRow(ctx, query,
+// GetForUpdate reads and locks the row for the rest of the transaction, so a
+// profile update and an incoming anonymization serialize (WF-USER-002).
+func (r *ProfileRepository) GetForUpdate(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	const query = `SELECT ` + profileColumns + ` FROM "user".user_profiles WHERE id = $1 FOR UPDATE`
+	return r.queryProfile(ctx, query, userID)
+}
+
+// Update persists the mutable columns. The stored `updated_at` is read back,
+// because the schema trigger owns that value and the published event has to
+// carry exactly what the database holds (ADR-007).
+func (r *ProfileRepository) Update(ctx context.Context, profile *entity.Profile) error {
+	const query = `
+		UPDATE "user".user_profiles
+		SET first_name = $2,
+		    last_name = $3,
+		    date_of_birth = $4,
+		    gender = $5
+		WHERE id = $1
+		RETURNING updated_at`
+
+	var updatedAt time.Time
+	err := r.db(ctx).QueryRow(ctx, query,
 		profile.ID,
 		profile.FirstName,
 		profile.LastName,
-		profile.PhoneNumber,
 		profile.DateOfBirth,
 		profile.Gender.String(),
-	).Scan(&profile.CreatedAt, &profile.UpdatedAt)
-
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("failed to create profile in transaction: %w", err)
+	).Scan(&updatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return apperr.ErrProfileNotFound
+		}
+		return mapError(err)
 	}
 
+	profile.UpdatedAt = updatedAt.UTC()
 	return nil
 }
 
-// GetByID retrieves a profile by its ID
-func (r *PostgresProfileRepository) GetByID(ctx context.Context, id uuid.UUID) (*entity.Profile, error) {
-	query := `
-		SELECT id, first_name, last_name, phone_number, date_of_birth, gender, created_at, updated_at
-		FROM user_profiles
-		WHERE id = $1`
+// HardDelete removes the profile once its retention window elapsed. Addresses
+// and preferences cascade, which is only a safety net: the deletion consumer
+// removed them at anonymization time (WF-USER-007).
+func (r *ProfileRepository) HardDelete(ctx context.Context, userID uuid.UUID) (bool, error) {
+	const query = `DELETE FROM "user".user_profiles WHERE id = $1`
 
-	var profile entity.Profile
-	var gender string
+	tag, err := r.db(ctx).Exec(ctx, query, userID)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
+func (r *ProfileRepository) queryProfile(ctx context.Context, query string, userID uuid.UUID) (*entity.Profile, error) {
+	var (
+		profile     entity.Profile
+		dateOfBirth *time.Time
+		gender      string
+	)
+	err := r.db(ctx).QueryRow(ctx, query, userID).Scan(
 		&profile.ID,
 		&profile.FirstName,
 		&profile.LastName,
-		&profile.PhoneNumber,
-		&profile.DateOfBirth,
+		&dateOfBirth,
 		&gender,
 		&profile.CreatedAt,
 		&profile.UpdatedAt,
 	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to get profile: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperr.ErrProfileNotFound
+		}
+		return nil, mapError(err)
 	}
 
-	profile.Gender = vo.Gender(gender)
+	parsedGender, err := vo.ParseGender(gender)
+	if err != nil {
+		// The CHECK constraint should make this unreachable; a stored value
+		// outside the enum is a schema defect, not client input.
+		return nil, apperr.ErrInternal.WithCause(err)
+	}
+	profile.Gender = parsedGender
+	if dateOfBirth != nil {
+		day := dateOfBirth.UTC()
+		profile.DateOfBirth = &day
+	}
+	profile.CreatedAt = profile.CreatedAt.UTC()
+	profile.UpdatedAt = profile.UpdatedAt.UTC()
 	return &profile, nil
-}
-
-// Update updates an existing profile
-func (r *PostgresProfileRepository) Update(ctx context.Context, profile *entity.Profile) error {
-	query := `
-		UPDATE user_profiles
-		SET first_name = $2,
-		    last_name = $3,
-		    phone_number = $4,
-		    date_of_birth = $5,
-		    gender = $6,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING updated_at`
-
-	err := r.db.QueryRow(ctx, query,
-		profile.ID,
-		profile.FirstName,
-		profile.LastName,
-		profile.PhoneNumber,
-		profile.DateOfBirth,
-		profile.Gender.String(),
-	).Scan(&profile.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
-	if err != nil {
-		return fmt.Errorf("failed to update profile: %w", err)
-	}
-
-	return nil
-}
-
-// UpdateTx updates a profile within a transaction
-func (r *PostgresProfileRepository) UpdateTx(ctx context.Context, tx pgx.Tx, profile *entity.Profile) error {
-	query := `
-		UPDATE user_profiles
-		SET first_name = $2,
-		    last_name = $3,
-		    phone_number = $4,
-		    date_of_birth = $5,
-		    gender = $6,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING updated_at`
-
-	err := tx.QueryRow(ctx, query,
-		profile.ID,
-		profile.FirstName,
-		profile.LastName,
-		profile.PhoneNumber,
-		profile.DateOfBirth,
-		profile.Gender.String(),
-	).Scan(&profile.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return sql.ErrNoRows
-	}
-	if err != nil {
-		return fmt.Errorf("failed to update profile in transaction: %w", err)
-	}
-
-	return nil
-}
-
-// Delete hard deletes a profile
-func (r *PostgresProfileRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM user_profiles WHERE id = $1`
-
-	result, err := r.db.Exec(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete profile: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// DeleteTx hard deletes a profile within a transaction
-func (r *PostgresProfileRepository) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
-	query := `DELETE FROM user_profiles WHERE id = $1`
-
-	result, err := tx.Exec(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete profile in transaction: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
-}
-
-// Exists checks if a profile exists
-func (r *PostgresProfileRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM user_profiles WHERE id = $1)`
-
-	var exists bool
-	err := r.db.QueryRow(ctx, query, id).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("failed to check profile existence: %w", err)
-	}
-
-	return exists, nil
-}
-
-// ExistsByPhoneNumber checks if a phone number is already used by another user
-func (r *PostgresProfileRepository) ExistsByPhoneNumber(ctx context.Context, phone string, excludeUserID *uuid.UUID) (bool, error) {
-	var query string
-	var args []interface{}
-
-	if excludeUserID != nil {
-		query = `SELECT EXISTS(SELECT 1 FROM user_profiles WHERE phone_number = $1 AND id != $2)`
-		args = []interface{}{phone, *excludeUserID}
-	} else {
-		query = `SELECT EXISTS(SELECT 1 FROM user_profiles WHERE phone_number = $1)`
-		args = []interface{}{phone}
-	}
-
-	var exists bool
-	err := r.db.QueryRow(ctx, query, args...).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("failed to check phone number existence: %w", err)
-	}
-
-	return exists, nil
-}
-
-// GetByIDWithTx retrieves a profile by its ID within a transaction
-func (r *PostgresProfileRepository) GetByIDWithTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*entity.Profile, error) {
-	query := `
-		SELECT id, first_name, last_name, phone_number, date_of_birth, gender, created_at, updated_at
-		FROM user_profiles
-		WHERE id = $1`
-
-	var profile entity.Profile
-	var gender string
-
-	err := tx.QueryRow(ctx, query, id).Scan(
-		&profile.ID,
-		&profile.FirstName,
-		&profile.LastName,
-		&profile.PhoneNumber,
-		&profile.DateOfBirth,
-		&gender,
-		&profile.CreatedAt,
-		&profile.UpdatedAt,
-	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get profile with tx: %w", err)
-	}
-
-	profile.Gender = vo.Gender(gender)
-	return &profile, nil
-}
-
-// Count returns total number of profiles (for metrics)
-func (r *PostgresProfileRepository) Count(ctx context.Context) (int64, error) {
-	query := `SELECT COUNT(*) FROM user_profiles`
-
-	var count int64
-	err := r.db.QueryRow(ctx, query).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("failed to count profiles: %w", err)
-	}
-
-	return count, nil
-}
-
-// Ping checks database connectivity
-func (r *PostgresProfileRepository) Ping(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return r.db.Ping(ctx)
-}
-
-// Anonymize anonymizes a profile for GDPR compliance (clears PII but keeps record)
-func (r *PostgresProfileRepository) Anonymize(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	query := `
-		UPDATE user_profiles
-		SET first_name = 'Deleted',
-		    last_name = 'User',
-		    phone_number = NULL,
-		    date_of_birth = NULL,
-		    gender = 'UNKNOWN',
-		    updated_at = NOW()
-		WHERE id = $1`
-
-	result, err := tx.Exec(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("failed to anonymize profile: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
 }

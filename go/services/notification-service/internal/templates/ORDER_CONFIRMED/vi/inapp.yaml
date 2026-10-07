@@ -1,0 +1,3 @@
+title: "Đơn hàng {{.OrderCode}} đã được xác nhận"
+body: "Đơn hàng {{.OrderCode}} ({{plural .ItemCount \"sản phẩm\"}}, {{money .TotalMinor .Currency}}) đã được thanh toán. Chúng tôi sẽ thông báo khi đơn được giao."
+deep_link_field: order_url

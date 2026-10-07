@@ -1,0 +1,226 @@
+// Package kafka publishes the User projection events and consumes the identity
+// lifecycle events of Auth.
+//
+// ADR-004 accepts a direct producer instead of a transactional outbox: the
+// message is sent after the PostgreSQL transaction committed, retried a bounded
+// number of times with the same CloudEvent id and, if every attempt fails,
+// reported so the daily reconciliation sweep can close the gap. Consumers
+// deduplicate on that id and drop snapshots older than what they already hold.
+package kafka
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/IBM/sarama"
+	"go.uber.org/zap"
+
+	"github.com/ecommerce/user-service/internal/common/config"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/event"
+	"github.com/ecommerce/user-service/internal/domain/port"
+)
+
+var _ port.EventPublisher = (*Publisher)(nil)
+
+// contentType marks the payload as a structured CloudEvent.
+const contentType = "application/cloudevents+json"
+
+// Publisher sends CloudEvents to t.user.events with bounded retry.
+type Publisher struct {
+	producer    sarama.SyncProducer
+	topic       string
+	dlqTopic    string
+	maxAttempts int
+	backoff     time.Duration
+	logger      *zap.Logger
+}
+
+// NewPublisher opens a synchronous producer. Acks are required from every
+// in-sync replica and the producer is idempotent, so a broker-side retry cannot
+// duplicate a message inside one send.
+func NewPublisher(cfg config.KafkaConfig, logger *zap.Logger) (*Publisher, error) {
+	saramaCfg := sarama.NewConfig()
+	saramaCfg.Version = sarama.V3_5_0_0
+	saramaCfg.ClientID = "user-service"
+	saramaCfg.Producer.RequiredAcks = sarama.WaitForAll
+	saramaCfg.Producer.Return.Successes = true
+	saramaCfg.Producer.Idempotent = true
+	saramaCfg.Producer.Retry.Max = 3
+	// Hashing the key is what keeps every event of one user on one partition,
+	// which is the only ordering the contract promises.
+	saramaCfg.Producer.Partitioner = sarama.NewHashPartitioner
+	saramaCfg.Net.MaxOpenRequests = 1
+	if cfg.PublishTimeout > 0 {
+		saramaCfg.Producer.Timeout = cfg.PublishTimeout
+	}
+
+	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: create producer: %w", err)
+	}
+
+	maxAttempts := cfg.PublishMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	return &Publisher{
+		producer:    producer,
+		topic:       cfg.UserTopic,
+		dlqTopic:    cfg.AuthDLQTopic,
+		maxAttempts: maxAttempts,
+		backoff:     cfg.PublishBackoff,
+		logger:      logger,
+	}, nil
+}
+
+// Publish sends one user event, keyed by user id.
+func (p *Publisher) Publish(ctx context.Context, envelope *event.Envelope) error {
+	if p.topic == "" {
+		return apperr.ErrInternal.WithDetail("The user event topic is not configured.")
+	}
+
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return apperr.ErrInternal.WithCause(err)
+	}
+
+	message := &sarama.ProducerMessage{
+		Topic: p.topic,
+		Key:   sarama.StringEncoder(envelope.Key),
+		Value: sarama.ByteEncoder(payload),
+		Headers: []sarama.RecordHeader{
+			{Key: []byte("content-type"), Value: []byte(contentType)},
+			{Key: []byte("ce_id"), Value: []byte(envelope.ID)},
+			{Key: []byte("ce_type"), Value: []byte(envelope.Type)},
+		},
+	}
+	if envelope.TraceParent != "" {
+		message.Headers = append(message.Headers, sarama.RecordHeader{
+			Key: []byte("traceparent"), Value: []byte(envelope.TraceParent),
+		})
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= p.maxAttempts; attempt++ {
+		// The same CloudEvent id is reused on every attempt so a consumer that
+		// receives two copies can deduplicate them.
+		partition, offset, err := p.producer.SendMessage(message)
+		if err == nil {
+			p.logger.Debug("published a user event",
+				zap.String("event_id", envelope.ID),
+				zap.String("event_type", envelope.Type),
+				zap.String("topic", p.topic),
+				zap.Int32("partition", partition),
+				zap.Int64("offset", offset),
+			)
+			return nil
+		}
+
+		lastErr = err
+		p.logger.Warn("could not publish a user event, retrying",
+			zap.String("event_id", envelope.ID),
+			zap.String("event_type", envelope.Type),
+			zap.Int("attempt", attempt),
+			zap.Error(err),
+		)
+
+		if attempt == p.maxAttempts {
+			break
+		}
+		if err := sleep(ctx, p.backoff*time.Duration(attempt)); err != nil {
+			lastErr = err
+			break
+		}
+	}
+
+	// Retries are exhausted. The domain change is already committed, so this is
+	// the reconciliation gap of ADR-004: it must be alerted on and is closed by
+	// the next sweep of ADR-007.
+	p.logger.Error("gave up publishing a user event",
+		zap.String("event_id", envelope.ID),
+		zap.String("event_type", envelope.Type),
+		zap.String("topic", p.topic),
+		zap.Int("attempts", p.maxAttempts),
+		zap.Error(lastErr),
+	)
+	return apperr.ErrDependencyUnavailable.WithCause(lastErr)
+}
+
+// PublishDeadLetter forwards a message the consumer could not process to the
+// DLQ topic, keeping the original key, value and headers so an operator can
+// replay it after fixing the cause.
+func (p *Publisher) PublishDeadLetter(_ context.Context, key, value []byte, reason string) error {
+	if p.dlqTopic == "" {
+		return apperr.ErrInternal.WithDetail("The dead-letter topic is not configured.")
+	}
+
+	message := &sarama.ProducerMessage{
+		Topic: p.dlqTopic,
+		Key:   sarama.ByteEncoder(key),
+		Value: sarama.ByteEncoder(value),
+		Headers: []sarama.RecordHeader{
+			{Key: []byte("content-type"), Value: []byte(contentType)},
+			// The reason is a short error class, never the payload itself.
+			{Key: []byte("x-dead-letter-reason"), Value: []byte(reason)},
+			{Key: []byte("x-dead-letter-service"), Value: []byte("user-service")},
+		},
+	}
+
+	if _, _, err := p.producer.SendMessage(message); err != nil {
+		return apperr.ErrDependencyUnavailable.WithCause(err)
+	}
+	return nil
+}
+
+// Close shuts the producer down.
+func (p *Publisher) Close() error {
+	return p.producer.Close()
+}
+
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+var _ port.EventPublisher = (*LoggingPublisher)(nil)
+
+// LoggingPublisher replaces the broker in a local run where Kafka is disabled.
+// It records what would have been sent so a developer still sees the flow.
+type LoggingPublisher struct {
+	logger *zap.Logger
+}
+
+// NewLoggingPublisher wires the no-broker publisher.
+func NewLoggingPublisher(logger *zap.Logger) *LoggingPublisher {
+	return &LoggingPublisher{logger: logger}
+}
+
+// Publish logs the envelope metadata. The payload is not logged: it carries the
+// display name, which is PII the log stream does not need.
+func (p *LoggingPublisher) Publish(_ context.Context, envelope *event.Envelope) error {
+	p.logger.Info("kafka is disabled, skipping a user event",
+		zap.String("event_id", envelope.ID),
+		zap.String("event_type", envelope.Type),
+	)
+	return nil
+}
+
+// PublishDeadLetter logs what would have been dead-lettered.
+func (p *LoggingPublisher) PublishDeadLetter(_ context.Context, _, _ []byte, reason string) error {
+	p.logger.Warn("kafka is disabled, skipping a dead-letter message",
+		zap.String("reason", reason))
+	return nil
+}

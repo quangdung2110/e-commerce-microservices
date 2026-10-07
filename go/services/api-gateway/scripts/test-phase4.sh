@@ -1,17 +1,23 @@
-# =============================================================================
-# Test Script for Phase 4 - JWT Middleware
-# =============================================================================
-
 #!/bin/bash
+# =============================================================================
+# Test Script for Phase 4 - JWT authentication (gateway-auth + ForwardAuth)
+#
+# Xac thuc JWT do service go/services/gateway-auth dam nhiem; Traefik goi no qua
+# middleware `authenticated@file` (strip-identity-headers + ForwardAuth). Chay
+# voi stack docker-compose o thu muc goc:
+#   docker compose up -d redis auth-service gateway-auth api-gateway
+#   go/services/api-gateway/scripts/test-phase4.sh
+# =============================================================================
 
-GATEWAY="http://localhost:80"
+GATEWAY="${GATEWAY:-http://localhost:8088}"
+# Route can danh tinh cua Auth, di qua gateway-auth.
+PROTECTED="${GATEWAY}/api/v1/auth/sessions"
 
 echo "=========================================="
-echo "Phase 4: JWT Middleware Verification"
+echo "Phase 4: JWT authentication (gateway-auth)"
 echo "=========================================="
 echo ""
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -21,110 +27,57 @@ pass() { echo -e "${GREEN}✓ PASS${NC}: $1"; }
 fail() { echo -e "${RED}✗ FAIL${NC}: $1"; }
 warn() { echo -e "${YELLOW}⚠ WARN${NC}: $1"; }
 
-# Test 1: Build plugin
-echo "1. Building Go Plugin..."
-cd cmd/traefik-plugin
-if go build -buildmode=plugin -o ../../plugins/jwt_auth.so . 2>/dev/null; then
-    pass "Plugin built successfully"
-    cd ../..
+# Test 1: gateway-auth health
+echo "1. Checking gateway-auth readiness..."
+if docker exec gateway-auth wget -q -O - http://localhost:8080/health/ready 2>/dev/null | grep -q UP; then
+    pass "gateway-auth ready (Redis + JWKS)"
 else
-    fail "Plugin build failed"
-    cd ../..
-    echo "Check Go version compatibility with Traefik"
+    fail "gateway-auth not ready — check: docker logs gateway-auth"
 fi
 
-# Test 2: Check plugin file
-echo "2. Checking plugin file..."
-if [ -f "plugins/jwt_auth.so" ]; then
-    pass "Plugin file exists: plugins/jwt_auth.so"
-else
-    fail "Plugin file not found"
-fi
-
-# Test 3: Test public path (no auth)
-echo "3. Testing public path without auth..."
-response=$(curl -s -o /dev/null -w "%{http_code}" ${GATEWAY}/.well-known/jwks.json 2>/dev/null)
-if [ "$response" == "200" ] || [ "$response" == "404" ]; then
-    pass "Public path accessible (HTTP $response)"
-else
-    warn "JWKS returned HTTP $response"
-fi
-
-# Test 4: Test protected path without auth
-echo "4. Testing protected path without auth..."
-response=$(curl -s -o /dev/null -w "%{http_code}" ${GATEWAY}/api/users/1 2>/dev/null)
+# Test 2: public path (no auth)
+echo "2. Testing public refresh route without token..."
+response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${GATEWAY}/api/v1/auth/sessions/refresh")
 if [ "$response" == "401" ]; then
-    pass "Protected path returns 401 (auth required)"
-elif [ "$response" == "404" ]; then
-    warn "Service not deployed yet, but auth middleware should return 401"
+    pass "Refresh route reaches Auth without ForwardAuth (401 from Auth: no cookie)"
 else
-    warn "Protected path returned HTTP $response (expected 401)"
+    warn "Refresh route returned HTTP $response"
 fi
 
-# Test 5: Test with invalid token
-echo "5. Testing with invalid token..."
-response=$(curl -s -w "%{http_code}" ${GATEWAY}/api/users/1 \
-    -H "Authorization: Bearer invalid.token.here" 2>/dev/null)
-if echo "$response" | grep -q "401"; then
-    pass "Invalid token rejected"
+# Test 3: protected path without token
+echo "3. Testing protected path without token..."
+body=$(curl -s -w "\n%{http_code}" "$PROTECTED")
+if [ "$(echo "$body" | tail -1)" == "401" ] && echo "$body" | grep -q '"code":"UNAUTHORIZED"'; then
+    pass "Missing token → 401 UNAUTHORIZED (problem+json)"
 else
-    warn "Invalid token response: $response"
+    fail "Expected 401 UNAUTHORIZED, got: $body"
 fi
 
-# Test 6: Check error response format
-echo "6. Checking error response format..."
-response=$(curl -s ${GATEWAY}/api/users/1 \
-    -H "Authorization: Bearer invalid" 2>/dev/null)
-if echo "$response" | grep -q "error"; then
-    pass "Error response contains 'error' field"
+# Test 4: invalid token
+echo "4. Testing with invalid token..."
+body=$(curl -s -w "\n%{http_code}" "$PROTECTED" -H "Authorization: Bearer invalid.token.here")
+if [ "$(echo "$body" | tail -1)" == "401" ] && echo "$body" | grep -q '"code":"TOKEN_INVALID"'; then
+    pass "Invalid token → 401 TOKEN_INVALID"
 else
-    warn "Could not verify error format"
+    fail "Expected 401 TOKEN_INVALID, got: $body"
 fi
 
-# Test 7: Generate test token (requires Auth Service)
-echo "7. Testing with Auth Service..."
-echo "   Note: This test requires a valid JWT token from Auth Service"
-echo ""
-echo "   To generate a test token:"
-echo "   1. Login to Auth Service"
-echo "   2. Copy the access_token"
-echo "   3. Run: curl -H 'Authorization: Bearer <token>' ${GATEWAY}/api/users/me"
-echo ""
+# Test 5: spoofed identity header without token
+echo "5. Testing spoofed X-User-Id without token..."
+response=$(curl -s -o /dev/null -w "%{http_code}" "$PROTECTED" \
+    -H "X-User-Id: 0b6f5e2e-3f7a-4c4e-9a53-3c1a0f2a9e11" -H "X-User-Roles: ADMIN")
+if [ "$response" == "401" ]; then
+    pass "Client identity headers are not trusted"
+else
+    fail "Spoofed identity returned HTTP $response (expected 401)"
+fi
 
-# Test 8: Check Redis denylist
-echo "8. Testing Redis denylist integration..."
-echo "   To test denylist:"
-echo "   1. Add token to denylist:"
-echo "      redis-cli SET auth:denylist:test-jti 1"
-echo "   2. Test request with that token"
-echo "   3. Should return 401"
 echo ""
-
-# Test 9: Check JWKS cache
-echo "9. Testing JWKS cache..."
-echo "   Check logs for cache hits/misses:"
-echo "   docker logs api-gateway | grep JWKS"
+echo "Manual checks (need a real token from Auth, e.g. frontend/scripts/create-dev-account.sh):"
+echo "  - Valid token → 200 on ${PROTECTED}"
+echo "  - DELETE ${PROTECTED} with the token, then reuse it → 401 TOKEN_REVOKED"
+echo "  - docker pause redis → 503 DEPENDENCY_UNAVAILABLE + Retry-After; docker unpause redis"
+echo "  - docker stop auth-service → a valid token still passes from the JWKS cache"
 echo ""
-
-# Test 10: Check Pub/Sub invalidation
-echo "10. Testing JWKS invalidation..."
-echo "    To test Pub/Sub invalidation:"
-echo "    1. Publish invalidation message:"
-echo '       redis-cli PUBLISH auth:jwks:update '"'"'{"type":"all"}'"'"'
-echo "    2. Check logs for cache clear:"
-echo "       docker logs api-gateway | grep invalidat"
-echo ""
-
+echo "Unit tests: bash go/services/gateway-auth/scripts/go.sh test ./..."
 echo "=========================================="
-echo "Phase 4 Verification Complete"
-echo "=========================================="
-echo ""
-echo "Summary:"
-echo "  - Plugin build: Check plugin file exists"
-echo "  - Auth middleware: Returns 401 for missing/invalid token"
-echo "  - Error format: JSON with 'error' field"
-echo ""
-echo "Next steps:"
-echo "  1. Deploy services with JWT auth labels"
-echo "  2. Test full auth flow with real tokens"
-echo "  3. Verify header enrichment in upstream requests"

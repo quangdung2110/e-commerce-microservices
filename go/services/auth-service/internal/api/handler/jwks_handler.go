@@ -4,35 +4,35 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
+	"github.com/ecommerce/auth-service/internal/api/dto/response"
+	"github.com/ecommerce/auth-service/internal/api/httpx"
+	"github.com/ecommerce/auth-service/internal/common/constants"
 	"github.com/ecommerce/auth-service/internal/domain/service"
 )
 
-type JWKSHandler struct {
-	jwksService *service.JWKSService
-	logger      *zap.Logger
+// JwksHandler serves the public key set.
+type JwksHandler struct {
+	jwks         *service.JwksService
+	cacheControl string
 }
 
-func NewJWKSHandler(jwksService *service.JWKSService, logger *zap.Logger) *JWKSHandler {
-	return &JWKSHandler{
-		jwksService: jwksService,
-		logger:      logger.With(zap.String("handler", "JWKSHandler")),
-	}
+// NewJwksHandler wires the JWKS endpoint. cacheControl is what gateway caches
+// see; a gateway must still refresh when it meets an unknown kid.
+func NewJwksHandler(jwks *service.JwksService, cacheControl string) *JwksHandler {
+	return &JwksHandler{jwks: jwks, cacheControl: cacheControl}
 }
 
-// GetJWKS handles GET /.well-known/jwks.json
-func (h *JWKSHandler) GetJWKS(c *gin.Context) {
-	jwks, err := h.jwksService.GetJWKS(c.Request.Context())
+// Keys handles GET /.well-known/jwks.json.
+func (h *JwksHandler) Keys(c *gin.Context) {
+	keys, err := h.jwks.Keys(c.Request.Context())
 	if err != nil {
-		h.logger.Error("Failed to get JWKS", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to get JWKS",
-		})
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.Header("Content-Type", "application/json")
-	c.Header("Cache-Control", "public, max-age=300") // Cache for 5 minutes
-	c.JSON(http.StatusOK, jwks)
+	if h.cacheControl != "" {
+		c.Header(constants.HeaderCacheControl, h.cacheControl)
+	}
+	c.JSON(http.StatusOK, response.NewJWKS(keys))
 }

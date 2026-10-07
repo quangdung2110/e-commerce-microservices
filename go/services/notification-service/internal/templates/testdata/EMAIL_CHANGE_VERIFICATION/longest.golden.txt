@@ -1,0 +1,16 @@
+E-Commerce
+====================
+
+Xác minh địa chỉ email mới
+
+Bạn vừa yêu cầu đổi địa chỉ email đăng nhập. Vui lòng nhập mã bên dưới để xác nhận địa chỉ mới:
+
+    999999
+
+Mã chỉ có hiệu lực trong thời gian ngắn và dùng được một lần. Không chia sẻ mã này với bất kỳ ai.
+
+Nếu bạn không yêu cầu thay đổi này, hãy bỏ qua email và đổi mật khẩu để bảo vệ tài khoản.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

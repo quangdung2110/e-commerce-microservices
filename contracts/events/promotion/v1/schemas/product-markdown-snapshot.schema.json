@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/promotion/v1/schemas/product-markdown-snapshot.schema.json",
+  "title": "Product markdown snapshot v1",
+  "description": "Current-state markdown snapshot cho một Product. ACTIVE mang full winning rule/discount/interval; INACTIVE là tombstone chỉ có reason. Product chỉ apply khi data.source_revision lớn hơn projection hiện tại.",
+  "allOf": [
+    { "$ref": "promotion-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "subject", "sequence", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.promotion.product-markdown-snapshot.v1" },
+        "subject": { "type": "string", "pattern": "^products/[0-9a-fA-F-]{36}$" },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Bằng data.source_revision; monotonic theo product_id."
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["product_id", "source_revision", "state"],
+          "properties": {
+            "product_id": { "$ref": "promotion-event-common.schema.json#/$defs/uuid" },
+            "source_revision": { "type": "integer", "minimum": 1 },
+            "state": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
+            "promotion_rule_id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "ID của markdown_rules thắng cuộc. Giữ integer ở v1 vì Product projection đã chốt shape này; opaque string là thay đổi breaking cần v2."
+            },
+            "discount": { "$ref": "promotion-event-common.schema.json#/$defs/markdown_discount" },
+            "starts_at": { "$ref": "promotion-event-common.schema.json#/$defs/timestamp" },
+            "ends_at": { "$ref": "promotion-event-common.schema.json#/$defs/timestamp" },
+            "inactive_reason": {
+              "type": "string",
+              "enum": ["NO_ACTIVE_RULE", "EXPIRED", "ADMIN_DISABLED"]
+            }
+          },
+          "oneOf": [
+            {
+              "properties": { "state": { "const": "ACTIVE" } },
+              "required": ["promotion_rule_id", "discount", "starts_at", "ends_at"],
+              "not": { "required": ["inactive_reason"] }
+            },
+            {
+              "properties": { "state": { "const": "INACTIVE" } },
+              "required": ["inactive_reason"],
+              "not": {
+                "anyOf": [
+                  { "required": ["promotion_rule_id"] },
+                  { "required": ["discount"] },
+                  { "required": ["starts_at"] },
+                  { "required": ["ends_at"] }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

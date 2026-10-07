@@ -1,0 +1,17 @@
+Đơn hàng đã giao thành công
+
+Đơn hàng {{.OrderCode}} đã được giao đầy đủ vào lúc {{date .CompletedAt .Timezone}}. Cảm ơn bạn đã mua sắm tại {{.Brand}}.
+
+Sản phẩm trong đơn:
+{{- range .ShownItems}}
+- {{.Name}}{{with .Variant}} ({{.}}){{end}} x{{.Quantity}}
+{{- end}}
+{{- if .HiddenItems}}
+… và {{plural .HiddenItems "sản phẩm"}} khác.
+{{- end}}
+
+Bạn thấy sản phẩm thế nào? Đánh giá của bạn giúp người mua khác lựa chọn tốt hơn và chỉ mất một phút.
+
+Viết đánh giá: {{.ReviewURL}}
+
+Nếu có vấn đề với đơn hàng, vui lòng liên hệ bộ phận chăm sóc khách hàng để được hỗ trợ.

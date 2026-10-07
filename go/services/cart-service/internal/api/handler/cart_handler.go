@@ -1,150 +1,175 @@
+// Package handler holds the HTTP adapters. They read the trusted identity,
+// validate request syntax and map domain outcomes onto the OpenAPI contract.
+// No business decision is made here.
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/dto/request"
 	"cart-service/internal/api/dto/response"
+	"cart-service/internal/api/media"
 	"cart-service/internal/api/middleware"
-	"cart-service/internal/domain/entity"
-	"cart-service/internal/domain/service"
+	"cart-service/internal/domain"
+	"cart-service/internal/service"
 )
 
-// CartHandler handles cart HTTP endpoints.
-type CartHandler struct {
-	cartService *service.CartService
-	logger      *zap.Logger
+// Cart serves the cart routes.
+type Cart struct {
+	service *service.CartService
+	media   media.URLs
+	logger  *zap.Logger
 }
 
-// NewCartHandler creates a new cart handler.
-func NewCartHandler(cartService *service.CartService, logger *zap.Logger) *CartHandler {
-	return &CartHandler{
-		cartService: cartService,
-		logger:      logger,
-	}
+// NewCart builds the cart handler. urls turns stored image storage keys into
+// the public CDN URLs the response carries.
+func NewCart(cartService *service.CartService, urls media.URLs, logger *zap.Logger) *Cart {
+	return &Cart{service: cartService, media: urls, logger: logger}
 }
 
-// AddItem handles POST /api/v1/carts/items
-func (h *CartHandler) AddItem(c *gin.Context) {
-	ctx := c.Request.Context()
-	requestID := middleware.GetRequestID(c)
-	userID := middleware.GetUserID(c)
-
-	var req request.AddItemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("invalid request body",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
-		return
-	}
-
-	if err := req.Validate(); err != nil {
-		h.logger.Warn("validation failed",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
-		return
-	}
-
-	result, err := h.cartService.AddItem(ctx, userID, &service.AddItemRequest{
-		SkuID:    req.SkuID,
-		Quantity: req.Quantity,
-	})
+// Get handles GET /api/v1/carts/mine.
+//
+// A Redis miss returns an empty cart with 200. A Product failure returns 200
+// with catalog_freshness=DEGRADED. Only a cart store failure produces 503.
+func (h *Cart) Get(c *gin.Context) {
+	view, err := h.service.GetCart(c.Request.Context(), middleware.GetIdentity(c))
 	if err != nil {
-		h.logger.Error("AddItem failed",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.String("sku_id", req.SkuID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, err, requestID)
+		h.fail(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, request.AddItemResponse{
-		Success:   true,
-		SkuID:     result.SkuID,
-		Quantity:  result.Quantity,
-		UpdatedAt: result.UpdatedAt,
-		Message:   "Thêm vào giỏ hàng thành công",
-	})
+	// The cart is personal data and must never sit in a shared cache.
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, response.NewCart(view, h.media))
 }
 
-// GetCart handles GET /api/v1/carts/mine
-func (h *CartHandler) GetCart(c *gin.Context) {
-	ctx := c.Request.Context()
-	requestID := middleware.GetRequestID(c)
-	userID := middleware.GetUserID(c)
-
-	cartView, err := h.cartService.GetCart(ctx, userID)
+// CheckoutSnapshot handles GET /internal/v1/carts/{user_id}/checkout-snapshot for Checkout.
+//
+// The caller names the user in the path, so the route is only reachable inside the mesh and only for
+// the checkout-service principal (see middleware.ServiceIdentity). Responses are private: a cart is
+// personal data.
+func (h *Cart) CheckoutSnapshot(c *gin.Context) {
+	userID := c.Param("user_id")
+	if _, err := uuid.Parse(userID); err != nil {
+		h.badRequest(c, []request.FieldError{{Field: "user_id", Message: "user_id must be a UUID"}})
+		return
+	}
+	identity, err := domain.NewIdentity(userID)
 	if err != nil {
-		h.logger.Error("GetCart failed",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, err, requestID)
+		h.fail(c, err)
 		return
 	}
 
-	cartResp := response.FromCartView(cartView)
-	c.JSON(http.StatusOK, cartResp)
-}
-
-// BatchDelete handles DELETE /api/v1/carts/items
-func (h *CartHandler) BatchDelete(c *gin.Context) {
-	ctx := c.Request.Context()
-	requestID := middleware.GetRequestID(c)
-	userID := middleware.GetUserID(c)
-
-	var req request.BatchDeleteRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("invalid request body",
-			zap.String("request_id", requestID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
-		return
-	}
-
-	if err := req.Validate(); err != nil {
-		h.logger.Warn("validation failed",
-			zap.String("request_id", requestID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, entity.ErrInvalidQuantity, requestID)
-		return
-	}
-
-	count, err := h.cartService.BatchDelete(ctx, userID, req.SkuIDs, "CART_CLEARED")
+	items, err := h.service.CheckoutSnapshot(c.Request.Context(), identity)
 	if err != nil {
-		h.logger.Error("BatchDelete failed",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-		)
-		h.abortWithError(c, err, requestID)
+		h.fail(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.BatchDeleteResponse{
-		Success:      true,
-		DeletedCount: count,
-		Message:      "Xóa sản phẩm thành công",
-	})
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response.NewCheckoutCartSnapshot(items))
 }
 
-// abortWithError converts domain errors to HTTP responses.
-func (h *CartHandler) abortWithError(c *gin.Context, err error, requestID string) {
-	errResp := response.FromDomainError(err, requestID)
-	statusCode := response.HTTPStatusCode(errResp.Code)
-	c.AbortWithStatusJSON(statusCode, errResp)
+// AdjustItem handles POST /api/v1/carts/mine/items.
+//
+// It returns 201 when the SKU entered the cart and 200 when an existing line
+// changed. A replayed idempotency key returns the stored outcome, and
+// therefore the same status as the original call.
+func (h *Cart) AdjustItem(c *gin.Context) {
+	var body request.AdjustItem
+	if err := c.ShouldBindJSON(&body); err != nil {
+		h.badRequest(c, []request.FieldError{{Field: "body", Message: "the request body is not valid JSON"}})
+		return
+	}
+	if fieldErrors := body.Validate(); len(fieldErrors) > 0 {
+		h.badRequest(c, fieldErrors)
+		return
+	}
+
+	result, err := h.service.AdjustItem(
+		c.Request.Context(),
+		middleware.GetIdentity(c),
+		body.SkuID,
+		*body.Delta,
+		middleware.GetIdempotencyKey(c),
+	)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, response.NewCartMutationResult(result))
+}
+
+// DeleteItems handles DELETE /api/v1/carts/mine/items.
+func (h *Cart) DeleteItems(c *gin.Context) {
+	var body request.DeleteItems
+	if err := c.ShouldBindJSON(&body); err != nil {
+		h.badRequest(c, []request.FieldError{{Field: "body", Message: "the request body is not valid JSON"}})
+		return
+	}
+	if fieldErrors := body.Validate(); len(fieldErrors) > 0 {
+		h.badRequest(c, fieldErrors)
+		return
+	}
+
+	result, err := h.service.DeleteItems(
+		c.Request.Context(),
+		middleware.GetIdentity(c),
+		body.SkuIDs,
+		middleware.GetIdempotencyKey(c),
+	)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, response.NewDeleteItemsResult(result))
+}
+
+func (h *Cart) badRequest(c *gin.Context, fieldErrors []request.FieldError) {
+	middleware.AbortWithProblem(c, response.NewValidationProblem(
+		c.Request.URL.Path,
+		middleware.GetRequestID(c),
+		fieldErrors,
+	))
+}
+
+// fail maps an error onto a problem document. A recognised domain error keeps
+// its code and status; anything else is an internal fault and is logged in
+// full rather than shown to the caller.
+func (h *Cart) fail(c *gin.Context, err error) {
+	var domainErr *domain.Error
+	if errors.As(err, &domainErr) {
+		if domainErr.Code == domain.CodeCartStoreUnavailable || domainErr.Code == domain.CodeProductUnavailable {
+			h.logger.Error("cart dependency unavailable",
+				zap.String("code", string(domainErr.Code)),
+				zap.String("request_id", middleware.GetRequestID(c)),
+				zap.Error(err),
+			)
+		}
+		middleware.AbortWithDomainError(c, domainErr)
+		return
+	}
+
+	h.logger.Error("unhandled cart error",
+		zap.String("request_id", middleware.GetRequestID(c)),
+		zap.Error(err),
+	)
+	middleware.AbortWithProblem(c, response.NewProblem(
+		http.StatusInternalServerError,
+		domain.CodeInternal,
+		"the request could not be completed",
+		c.Request.URL.Path,
+		middleware.GetRequestID(c),
+	))
 }

@@ -1,96 +1,62 @@
-version: '3.8'
+# Local development stack for User Service.
+#
+# The public API is published on 8082, so it can run next to auth-service on
+# 8080. The internal checkout API on 8083 is reachable only inside the compose
+# network, which is why it is not published.
 
 services:
-  # User Service
   user-service:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: user-service
     ports:
-      - "8080:8080"
+      - "8082:8082"
     environment:
-      - APP_PORT=8080
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=user_service
-      - DB_SSLMODE=disable
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - KAFKA_BROKERS=kafka:9092
-      - KAFKA_AUTH_TOPIC=t.auth.events
-      - KAFKA_USER_TOPIC=t.user.events
-      - KAFKA_CONSUMER_GROUP=user-service
-      - KAFKA_OFFSET_RESET=earliest
-      - JWT_SECRET=your-secret-key-change-in-production
-      - RATE_LIMIT_ENABLED=true
+      USER_APP_ENV: development
+      USER_DATABASE_HOST: postgres
+      USER_REDIS_HOST: redis
+      USER_KAFKA_BROKERS: kafka:9092
+      DB_PASSWORD: postgres
+      REDIS_PASSWORD: ""
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/health/ready >/dev/null || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 3s
       retries: 3
-      start_period: 10s
-    restart: unless-stopped
     networks:
-      - user-service-network
+      - user-network
 
-  # Compliance Worker (GDPR Hard Delete)
-  compliance-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.compliance
-    container_name: user-service-compliance
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=user_service
-      - DB_SSLMODE=disable
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - user-service-network
-
-  # PostgreSQL Database
   postgres:
-    image: postgres:15-alpine
-    container_name: user-service-postgres
-    ports:
-      - "5432:5432"
+    image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=user_service
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: user_db
+      TZ: UTC
+    ports:
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # The initial schema is applied on first start of an empty volume.
+      - ./migrations/0001_initial_user_schema.up.sql:/docker-entrypoint-initdb.d/0001_initial_user_schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d user_service"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    restart: unless-stopped
     networks:
-      - user-service-network
+      - user-network
 
-  # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: user-service-redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -98,67 +64,32 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 5s
-    restart: unless-stopped
     networks:
-      - user-service-network
+      - user-network
 
-  # Zookeeper (required for Kafka)
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: user-service-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    restart: unless-stopped
-    networks:
-      - user-service-network
-
-  # Kafka
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    container_name: user-service-kafka
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
+    image: bitnami/kafka:3.7
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    networks:
-      - user-service-network
-
-  # Kafka UI (optional - for debugging)
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: user-service-kafka-ui
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
-      - "8090:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-    depends_on:
-      - kafka
-    restart: unless-stopped
+      - "9093:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
     networks:
-      - user-service-network
+      - user-network
 
 volumes:
   postgres_data:
   redis_data:
+  kafka_data:
 
 networks:
-  user-service-network:
+  user-network:
     driver: bridge

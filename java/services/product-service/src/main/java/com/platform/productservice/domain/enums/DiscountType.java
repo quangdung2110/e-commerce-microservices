@@ -1,9 +1,7 @@
 package com.platform.productservice.domain.enums;
 
-/**
- * Markdown discount calculation type.
- */
+/** Công thức markdown do Promotion cấp (docs/product/domain.md — Giá markdown). */
 public enum DiscountType {
     PERCENTAGE,
-    FIXED_AMOUNT
+    FIXED_VND
 }

@@ -1,0 +1,42 @@
+{
+  "eventType": "Bounce",
+  "bounce": {
+    "feedbackId": "0100019996a1c1aa-ffffffff-1111-2222-3333-444444444444-000000",
+    "bounceType": "Transient",
+    "bounceSubType": "MailboxFull",
+    "bouncedRecipients": [
+      {
+        "emailAddress": "full.mailbox@example.org",
+        "action": "failed",
+        "status": "4.2.2",
+        "diagnosticCode": "smtp; 452 4.2.2 The email account that you tried to reach is over quota"
+      }
+    ],
+    "timestamp": "2026-09-22T07:50:00.000Z",
+    "reportingMTA": "dns; a8-50.smtp-out.amazonses.com"
+  },
+  "mail": {
+    "timestamp": "2026-09-22T07:49:55.000Z",
+    "source": "no-reply@ecommerce.local",
+    "sourceArn": "arn:aws:ses:ap-southeast-1:000000000000:identity/ecommerce.local",
+    "sendingAccountId": "000000000000",
+    "messageId": "0100019996a1b2c3-3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f-000000",
+    "destination": ["full.mailbox@example.org"],
+    "headersTruncated": false,
+    "headers": [
+      {"name": "From", "value": "no-reply@ecommerce.local"},
+      {"name": "To", "value": "full.mailbox@example.org"},
+      {"name": "Subject", "value": "Giỏ hàng của bạn đang chờ"},
+      {"name": "List-Unsubscribe", "value": "<http://localhost:3000/profile/preferences>"}
+    ],
+    "commonHeaders": {
+      "from": ["no-reply@ecommerce.local"],
+      "to": ["full.mailbox@example.org"],
+      "subject": "Giỏ hàng của bạn đang chờ"
+    },
+    "tags": {
+      "ses:configuration-set": ["notification-bulk"],
+      "delivery_id": ["9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f"]
+    }
+  }
+}

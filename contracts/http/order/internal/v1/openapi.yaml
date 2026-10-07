@@ -1,0 +1,663 @@
+openapi: 3.1.0
+info:
+  title: Order Service Internal API
+  version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: >-
+    Workload-identity protected contract for Checkout submission and evidence-backed
+    financial reconciliation. Checkout submission waits only until a durable Payment
+    attempt is ready; the order lifecycle remains asynchronous after that checkpoint.
+x-adoption-status: implemented
+servers:
+  - url: http://order-service:8080
+tags:
+  - name: Checkout Submission
+    description: Checkout-owned creation and recovery of immutable order submissions.
+  - name: Financial Reconciliation
+    description: Finance/Ops evidence reads and obligation-scoped decisions.
+paths:
+  /internal/v1/checkout-order-submissions:
+    post:
+      tags: [Checkout Submission]
+      operationId: submitCheckoutOrder
+      summary: Create or replay one Order from a server-owned Checkout snapshot
+      description: >-
+        Idempotency-Key MUST equal checkout_token. Order starts or attaches workflow
+        order-checkout-{checkout_token}, persists the snapshot and allocation bridge,
+        then waits until Payment client data or a terminal pre-payment conflict is
+        durably checkpointed. Retry a timeout with the identical key and body.
+      security: [{ checkoutWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CheckoutIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutOrderSubmissionRequest' }
+      responses:
+        '201':
+          description: First successful creation; initial Payment attempt is ready.
+          headers:
+            Location: { $ref: '#/components/headers/CheckoutSubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderReady' }
+        '200':
+          description: Idempotent replay of a previously successful submission.
+          headers:
+            Location: { $ref: '#/components/headers/CheckoutSubmissionLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderReady' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: >-
+            Token/key conflict, snapshot mismatch, Promotion recalculation requirement
+            (PROMOTION_RECALCULATION_NEEDED), Inventory Reserve REJECT_ALL
+            (INVENTORY_RESERVATION_REJECTED) or a durable Payment initiation rejection
+            (PAYMENT_INITIATION_REJECTED). The latter two are terminal for this token;
+            the recovery read reports state FAILED with the same problem.
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/PromotionRecalculationProblem'
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/checkout-order-submissions/{checkout_token}:
+    get:
+      tags: [Checkout Submission]
+      operationId: getCheckoutOrderSubmission
+      summary: Recover the durable result of one Checkout submission
+      security: [{ checkoutWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/CheckoutToken'
+      responses:
+        '200':
+          description: Current preparation state, including Payment data when ready.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutOrderSubmissionStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/orders/{order_id}/financial-reconciliation-case:
+    get:
+      tags: [Financial Reconciliation]
+      operationId: getOrderFinancialReconciliationCase
+      summary: Read one reconciliation case and its immutable evidence references
+      security: [{ financeOpsWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Current envelope revision, obligations, permitted decisions, and evidence references.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconciliationCase' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /internal/v1/orders/{order_id}/financial-reconciliation-decisions:
+    post:
+      tags: [Financial Reconciliation]
+      operationId: decideOrderFinancialReconciliation
+      summary: Record one evidence-backed Finance/Ops decision
+      description: >-
+        The command never invents a remote business fact. RESUME_FORWARD_REPAIR may
+        only resume the existing proof-backed case/checkpoints. CLOSE_RETURN_WITHOUT_REFUND
+        requires return_closure bound to the same Buyer manual refund case, no refund
+        transaction or accepted/unknown Payment initiation, and no full inspection
+        completion. Order checkpoints the matching Inventory scope query and allows
+        only IN_PROGRESS with missing expected units and every received unit final-inspected,
+        or REGISTERED with zero receipt. Decision acceptance freezes a scope-finalization
+        intent/dispatch; it does not prove Inventory closure or authorize payout.
+        CLOSE_AS_MANUAL_FULFILLMENT cannot close a Buyer case with an unfinalized scope.
+        Scope-only RESUME_FORWARD_REPAIR is also permitted for unresolved finalization
+        on financially SUCCEEDED/FAILED cases, preserving master/payment facts. It
+        replays the frozen command, or creates a corrected generation only after an
+        audited decision and proven remote rejection. Resuming a rejected no-payout
+        decision additionally requires full completion evidence and retains its history.
+        Resolving return closure does not close other unresolved financial/dispute work.
+        CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION is offered only for financial anomaly
+        obligations and requires accounting_case_reference plus immutable settlement
+        evidence. It never changes Payment/provider facts or revives CANCELLED. For an
+        existing CUSTOMER_PAYOUT_REMEDIATION/REFUND_REVERSAL obligation only, proof that
+        the customer received the full locked amount plus latest terminal Payment
+        transaction/version evidence may converge the open refund lane to master REFUNDED
+        + case EXTERNALLY_REMEDIATED without emitting a provider-refund fact.
+      security: [{ financeOpsWorkloadIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/DecisionIdempotencyKey'
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconciliationDecisionRequest' }
+            examples:
+              closeMissingReturn:
+                summary: End the existing missing return without payout after verified inspection
+                value:
+                  case_id: 10000000-0000-4000-8000-000000000001
+                  obligation_id: 11000000-0000-4000-8000-000000000001
+                  expected_case_revision: 3
+                  decision_id: 20000000-0000-4000-8000-000000000001
+                  resolution_type: CLOSE_RETURN_WITHOUT_REFUND
+                  reason_code: RETURN_WINDOW_EXPIRED
+                  return_closure:
+                    refund_request_id: refund-7001
+                    refund_scope_id: scope-7001
+                    reason: RETURN_WINDOW_EXPIRED
+                  evidence:
+                    - source: ORDER_CHECKPOINT
+                      reference: refund-scope-query/order-10001/scope-7001/revision-5
+                      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      responses:
+        '202':
+          description: Durable decision recorded; any repair is dispatched asynchronously.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconciliationDecisionAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    checkoutWorkloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: mTLS/service-mesh principal must be checkout-service; the header is attribution only.
+    financeOpsWorkloadIdentity:
+      type: apiKey
+      in: header
+      name: X-Service-Identity
+      description: mTLS/service-mesh principal must be allowlisted as finance-ops or accounting-ops.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    CheckoutIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID that must exactly equal request checkout_token.
+      schema: { type: string, format: uuid }
+    DecisionIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Must equal body decision_id; a different canonical body is rejected.
+      schema: { type: string, format: uuid }
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: >-
+        UUID of the authenticated Finance/Ops person recorded as decided_by. Attribution
+        only: authorization still uses the mesh workload principal, which Order stores
+        alongside it (Order ADR-020).
+      schema: { type: string, format: uuid }
+    CheckoutToken:
+      name: checkout_token
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/OrderId' }
+  headers:
+    CheckoutSubmissionLocation:
+      description: Durable Checkout submission recovery resource.
+      schema: { type: string, pattern: '^/internal/v1/checkout-order-submissions/[0-9a-fA-F-]{36}$' }
+    PrivateNoStore:
+      description: Response contains private transaction or Payment client data.
+      schema: { type: string, const: 'private, no-store' }
+    RetryAfter:
+      description: Suggested seconds before retrying the identical request.
+      schema: { type: integer, minimum: 1, maximum: 60 }
+  schemas:
+    Problem:
+      $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+    OrderId:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      maxLength: 19
+      description: Canonical unpadded base-10 representation of the Order-owned BIGINT ID.
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    VndMoney:
+      type: object
+      additionalProperties: false
+      required: [amount_minor, currency]
+      properties:
+        amount_minor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, const: VND }
+    Sha256:
+      type: string
+      pattern: '^sha256:[a-f0-9]{64}$'
+    AddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { type: string, minLength: 5, maxLength: 32 }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { type: string, minLength: 1, maxLength: 32 }
+        district_code: { type: string, minLength: 1, maxLength: 32 }
+        ward_code: { type: string, minLength: 1, maxLength: 32 }
+        province_name: { type: [string, 'null'], maxLength: 128 }
+        district_name: { type: [string, 'null'], maxLength: 128 }
+        ward_name: { type: [string, 'null'], maxLength: 128 }
+    CheckoutItem:
+      type: object
+      additionalProperties: false
+      required: [line_reference, product_id, sku_id, quantity, unit_price, category_ids, snapshot_name, snapshot_image_url, snapshot_attributes]
+      properties:
+        line_reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Equal to sku_id in Checkout v1.
+        product_id: { type: string, format: uuid }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        unit_price: { $ref: '#/components/schemas/VndMoney' }
+        category_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Trusted Product-owned ancestry persisted for Promotion Reserve re-evaluation.
+          items: { type: string, minLength: 1, maxLength: 64 }
+        snapshot_name: { type: string, minLength: 1, maxLength: 255 }
+        snapshot_image_url: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        snapshot_attributes:
+          type: object
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 255 }
+        variant_name:
+          type: [string, 'null']
+          maxLength: 255
+          description: >-
+            Optional display variant label from the Product snapshot. Order persists it
+            immutably and uses it for ORDER_COMPLETED items[].variant_name and notification
+            items; absent or null when the SKU has no variant label (Order ADR-020).
+    PricingSnapshot:
+      type: object
+      additionalProperties: false
+      required: [total_amount, total_discount, final_amount]
+      properties:
+        total_amount: { $ref: '#/components/schemas/VndMoney' }
+        total_discount: { $ref: '#/components/schemas/VndMoney' }
+        final_amount: { $ref: '#/components/schemas/VndMoney' }
+      description: >-
+        final_amount.amount_minor must equal total_amount minus total_discount and be at least
+        1 VND, because Payment only creates positive-amount attempts (Order ADR-020 §17).
+    PromotionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, discount_amount]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        discount_amount: { $ref: '#/components/schemas/VndMoney' }
+    AllocationPlanLine:
+      type: object
+      additionalProperties: false
+      required: [line_reference, sku_id, warehouse_id, quantity]
+      properties:
+        line_reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Equal to the corresponding item line_reference and sku_id in Checkout v1.
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+    AllocationPlan:
+      type: object
+      additionalProperties: false
+      required: [allocation_plan_id, lines]
+      properties:
+        allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: line_reference is unique and maps one-to-one to items; Order enforces SKU and quantity equality. Bounded by the Inventory Reserve line limit (Order ADR-020).
+          items: { $ref: '#/components/schemas/AllocationPlanLine' }
+    CheckoutOrderSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, user_id, pricing_hash, items_hash, promotion_campaign_revision, user_ack_degraded_pricing, delivery_address_snapshot, items, pricing, promotions, allocation_plan]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        pricing_hash:
+          allOf: [{ $ref: '#/components/schemas/Sha256' }]
+          description: >-
+            sha256: plus lowercase SHA-256 hex of UTF-8 RFC 8785 canonical JSON
+            {"items":[{"sku_id":string,"unit_price_minor":integer},...],
+            "promotion_campaign_revision":integer,"total_discount_minor":integer}.
+            Items are sorted by UTF-8 sku_id bytes and sku_id is unique.
+        items_hash:
+          allOf: [{ $ref: '#/components/schemas/Sha256' }]
+          description: >-
+            sha256: plus lowercase SHA-256 hex of UTF-8 RFC 8785 canonical JSON
+            {"items":[{"quantity":integer,"sku_id":string},...]}; items are sorted
+            by UTF-8 sku_id bytes and sku_id is unique.
+        promotion_campaign_revision:
+          type: integer
+          minimum: 0
+          description: Zero iff promotions is empty; otherwise the single Promotion calculation campaign revision.
+        user_ack_degraded_pricing:
+          type: boolean
+          const: false
+          deprecated: true
+          description: Compatibility field fixed to false; Checkout v1 never commits a degraded quotation.
+        delivery_address_snapshot: { $ref: '#/components/schemas/AddressSnapshot' }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: line_reference and sku_id are each unique; enforced by Order. Bounded by the Inventory Reserve line limit (Order ADR-020).
+          items: { $ref: '#/components/schemas/CheckoutItem' }
+        pricing: { $ref: '#/components/schemas/PricingSnapshot' }
+        promotions:
+          type: array
+          maxItems: 1
+          description: Checkout v1 supports zero or one PLATFORM_VOUCHER.
+          items: { $ref: '#/components/schemas/PromotionSnapshot' }
+        allocation_plan: { $ref: '#/components/schemas/AllocationPlan' }
+    PaymentClientData:
+      type: object
+      additionalProperties: false
+      description: >-
+        Relayed from Payment client-data at response time; Order stores no copy.
+        usable=false (attempt no longer PENDING or past expires_at) carries null
+        client_secret/publishable_key. Consumers must not cache the secret.
+      required: [payment_attempt_number, payment_transaction_id, usable, client_secret, publishable_key, expires_at]
+      properties:
+        payment_attempt_number: { type: integer, minimum: 1 }
+        payment_transaction_id: { $ref: '#/components/schemas/OpaqueId' }
+        usable: { type: boolean }
+        client_secret: { type: [string, 'null'], minLength: 1, maxLength: 4096 }
+        publishable_key: { type: [string, 'null'], minLength: 1, maxLength: 512 }
+        expires_at: { type: [string, 'null'], format: date-time }
+    CheckoutOrderReady:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, order_id, order_status, payment]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        order_status: { type: string, const: PENDING_PAYMENT }
+        payment: { $ref: '#/components/schemas/PaymentClientData' }
+    CheckoutOrderSubmissionStatus:
+      type: object
+      additionalProperties: false
+      required: [checkout_token, state, order_id, payment, failure, updated_at]
+      properties:
+        checkout_token: { type: string, format: uuid }
+        state: { type: string, enum: [PREPARING, PAYMENT_READY, RECALCULATION_REQUIRED, FAILED] }
+        order_id:
+          oneOf: [{ $ref: '#/components/schemas/OrderId' }, { type: 'null' }]
+        payment:
+          oneOf: [{ $ref: '#/components/schemas/PaymentClientData' }, { type: 'null' }]
+        failure:
+          oneOf: [{ $ref: '#/components/schemas/Problem' }, { type: 'null' }]
+        updated_at: { type: string, format: date-time }
+    DroppedPromotion:
+      type: object
+      additionalProperties: false
+      required: [promotion_id, reason]
+      properties:
+        promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { type: string, minLength: 1, maxLength: 100 }
+    PromotionRecalculationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [code, action, failed_promotion_id, failed_reason, reserve_mode, dropped_promotions]
+          properties:
+            code: { type: string, const: PROMOTION_RECALCULATION_NEEDED }
+            action: { type: string, const: RECALL_PREVIEW }
+            failed_promotion_id: { $ref: '#/components/schemas/OpaqueId' }
+            failed_reason: { type: string, minLength: 1, maxLength: 100 }
+            reserve_mode: { type: string, const: ALL_OR_NOTHING }
+            dropped_promotions:
+              type: array
+              minItems: 1
+              maxItems: 1
+              items: { $ref: '#/components/schemas/DroppedPromotion' }
+    EvidenceReference:
+      type: object
+      additionalProperties: false
+      required: [source, reference, sha256]
+      description: >-
+        ORDER_CHECKPOINT references use checkpoint/{command_id} with the frozen request or
+        response digest; refund-scope-query/... references are re-queried and checkpointed by
+        Order under the decision; PAYMENT_RECONCILIATION references are immutable settlement
+        records appended as new evidence. Any other reference must already be persisted on
+        the obligation, otherwise the decision is 422.
+      properties:
+        source: { type: string, enum: [ORDER_CHECKPOINT, PAYMENT_RECONCILIATION, INVENTORY_COMMAND, PROMOTION_RECEIPT] }
+        reference: { type: string, minLength: 1, maxLength: 255 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ReconciliationResolution:
+      type: string
+      enum: [RESUME_FORWARD_REPAIR, CLOSE_AS_MANUAL_FULFILLMENT, ESCALATE_TO_ACCOUNTING, CLOSE_RETURN_WITHOUT_REFUND, CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION]
+    ReconciliationObligationType:
+      type: string
+      enum:
+        - POST_CAPTURE_INVENTORY_REPAIR
+        - POST_CAPTURE_PROMOTION_REPAIR
+        - CAPTURE_AFTER_TERMINAL_NON_CAPTURE
+        - REFUND_REVERSAL
+        - CUSTOMER_PAYOUT_REMEDIATION
+        - REFUND_SCOPE_FINALIZATION
+        - RETURN_MANUAL_VERIFICATION
+        - PAYMENT_DISPUTE
+      description: >-
+        RETURN_MANUAL_VERIFICATION is opened when a Buyer return reaches the 30-day
+        inspection deadline or Inventory durably rejects scope registration; it permits
+        RESUME_FORWARD_REPAIR (with full completion evidence), CLOSE_RETURN_WITHOUT_REFUND
+        and ESCALATE_TO_ACCOUNTING (Order ADR-020).
+    ReconciliationObligation:
+      type: object
+      additionalProperties: false
+      required: [obligation_id, obligation_type, status, evidence_digest, evidence, permitted_resolutions, opened_at, updated_at]
+      properties:
+        obligation_id: { type: string, format: uuid }
+        obligation_type: { $ref: '#/components/schemas/ReconciliationObligationType' }
+        status: { type: string, enum: [OPEN, EVIDENCE_PENDING, DECIDED, CLOSED] }
+        evidence_digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        evidence:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/EvidenceReference' }
+        permitted_resolutions:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/ReconciliationResolution' }
+        opened_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ReconciliationCase:
+      type: object
+      additionalProperties: false
+      required: [case_id, order_id, revision, case_status, obligations, opened_at, updated_at]
+      properties:
+        case_id: { type: string, format: uuid }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        revision: { type: integer, minimum: 1 }
+        case_status: { type: string, enum: [OPEN, EVIDENCE_PENDING, DECIDED, CLOSED] }
+        obligations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ReconciliationObligation' }
+        opened_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ReconciliationDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [case_id, obligation_id, expected_case_revision, decision_id, resolution_type, reason_code, evidence]
+      allOf:
+        - if:
+            properties:
+              resolution_type: { const: CLOSE_RETURN_WITHOUT_REFUND }
+          then:
+            additionalProperties: true
+            required: [return_closure]
+            properties:
+              return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
+          else:
+            not:
+              additionalProperties: true
+              required: [return_closure]
+              properties:
+                return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
+        - if:
+            properties:
+              resolution_type: { const: CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION }
+            required: [resolution_type]
+          then: {}
+          else:
+            not:
+              required: [external_settlement]
+              properties:
+                external_settlement: {}
+        - if:
+            properties:
+              resolution_type:
+                enum: [ESCALATE_TO_ACCOUNTING, CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION]
+            required: [resolution_type]
+          then:
+            required: [accounting_case_reference]
+            properties:
+              accounting_case_reference: { type: string, minLength: 1, maxLength: 128 }
+          else:
+            not:
+              required: [accounting_case_reference]
+              properties:
+                accounting_case_reference: {}
+      properties:
+        case_id: { type: string, format: uuid }
+        obligation_id: { type: string, format: uuid }
+        expected_case_revision: { type: integer, minimum: 1 }
+        decision_id: { type: string, format: uuid }
+        resolution_type: { $ref: '#/components/schemas/ReconciliationResolution' }
+        reason_code: { type: string, minLength: 1, maxLength: 100 }
+        return_closure: { $ref: '#/components/schemas/ReturnClosureDecision' }
+        accounting_case_reference:
+          type: [string, 'null']
+          maxLength: 128
+          description: Required for accounting escalation and evidence-backed external financial remediation.
+        external_settlement:
+          allOf: [{ $ref: '#/components/schemas/ExternalSettlement' }]
+          description: >-
+            Only for CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION; required when the target is a
+            CUSTOMER_PAYOUT_REMEDIATION or REFUND_REVERSAL obligation (Order ADR-020 §16).
+        evidence:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/EvidenceReference' }
+    ExternalSettlement:
+      type: object
+      additionalProperties: false
+      required: [amount, customer_user_id, settled_at, settlement_reference]
+      description: >-
+        Accounting/Payment settlement proven outside the original refund transaction. Order
+        rechecks under the order/case lock that amount equals the locked refund amount in VND
+        and customer_user_id equals the order buyer, then uses settled_at as refunded_at.
+      properties:
+        amount: { $ref: '#/components/schemas/VndMoney' }
+        customer_user_id: { type: string, format: uuid }
+        settled_at: { type: string, format: date-time }
+        settlement_reference: { type: string, minLength: 1, maxLength: 128 }
+    ReturnClosureDecision:
+      type: object
+      additionalProperties: false
+      required: [refund_request_id, refund_scope_id, reason]
+      description: >-
+        Only for CLOSE_RETURN_WITHOUT_REFUND. Identities must match the existing
+        Buyer manual case and persisted Inventory query checkpoint. Reason must equal
+        the parent reason_code. IN_PROGRESS selects close-incomplete; REGISTERED with
+        no receipt selects cancel (reason retained in Order audit, no Inventory body).
+        Pending no-payout finalization blocks Payment initiation/resume. Receipt or
+        inspection races remain governed by Inventory's atomic guards; a rejected close
+        requires a new audited decision and never falls back to payout automatically.
+      properties:
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        reason: { type: string, enum: [RETURN_WINDOW_EXPIRED, PACKAGE_LOST, CUSTOMER_WITHDREW] }
+    ReconciliationDecisionAccepted:
+      type: object
+      additionalProperties: false
+      required: [case_id, obligation_id, decision_id, obligation_status, case_status, resolution_type]
+      properties:
+        case_id: { type: string, format: uuid }
+        obligation_id: { type: string, format: uuid }
+        decision_id: { type: string, format: uuid }
+        obligation_status: { type: string, enum: [DECIDED, CLOSED, EVIDENCE_PENDING] }
+        case_status: { type: string, enum: [OPEN, DECIDED, CLOSED, EVIDENCE_PENDING] }
+        resolution_type: { $ref: '#/components/schemas/ReconciliationResolution' }
+  responses:
+    BadRequest:
+      description: Invalid syntax, path/header mismatch, hash format, or malformed request.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unauthorized:
+      description: Missing or invalid workload identity.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Forbidden:
+      description: Workload lacks the capability required by this operation.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    NotFound:
+      description: Submission, Order, or reconciliation case does not exist.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Conflict:
+      description: Stale revision, idempotency payload mismatch, or invalid domain state.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unprocessable:
+      description: Snapshot, canonical hashes, allocation mapping, evidence, or resolution is inconsistent with durable state.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unavailable:
+      description: Durable dependency unavailable or exact remote outcome remains unknown; retry identically.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }

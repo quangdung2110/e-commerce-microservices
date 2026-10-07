@@ -1,0 +1,6 @@
+{{template "h" "Đơn hàng đã bị huỷ"}}
+<p style="margin:0 0 16px 0;">Đơn hàng <strong>{{.OrderCode}}</strong> đã bị huỷ vào lúc {{date .CancelledAt .Timezone}}.</p>
+<p style="margin:0 0 16px 0;">Lý do: <strong>{{reasonLabel .Reason}}</strong>.</p>
+{{template "p" "Đơn hàng chưa phát sinh thanh toán nên không có khoản nào cần hoàn lại."}}
+{{template "button" (dict "URL" .OrderURL "Label" "Xem chi tiết đơn hàng")}}
+{{template "p" "Nếu bạn cần hỗ trợ thêm, vui lòng liên hệ bộ phận chăm sóc khách hàng."}}

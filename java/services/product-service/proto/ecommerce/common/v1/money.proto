@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package ecommerce.common.v1;
+
+option go_package = "github.com/ecommerce/contracts/gen/go/ecommerce/common/v1;commonv1";
+option java_multiple_files = true;
+option java_package = "com.ecommerce.contracts.common.v1";
+
+// Money represents an amount in the currency's smallest unit.
+// Example: 125000 VND means 125,000 Vietnamese dong.
+message Money {
+  int64 amount_minor = 1;
+  string currency = 2;
+}

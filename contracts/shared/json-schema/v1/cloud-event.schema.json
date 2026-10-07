@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/shared/json-schema/v1/cloud-event.schema.json",
+  "title": "CloudEvent 1.0 JSON envelope",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "specversion",
+    "id",
+    "type",
+    "source",
+    "subject",
+    "time",
+    "datacontenttype",
+    "dataschema",
+    "data"
+  ],
+  "properties": {
+    "specversion": { "const": "1.0" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "type": {
+      "type": "string",
+      "pattern": "^com\\.ecommerce\\.[a-z0-9.-]+\\.v[1-9][0-9]*$"
+    },
+    "source": { "type": "string", "format": "uri-reference" },
+    "subject": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "time": { "type": "string", "format": "date-time" },
+    "datacontenttype": { "const": "application/json" },
+    "dataschema": { "type": "string", "format": "uri-reference" },
+    "correlationid": { "type": "string", "maxLength": 128 },
+    "traceparent": { "type": "string", "maxLength": 128 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "data": {}
+  }
+}

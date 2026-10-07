@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package ecommerce.product.v1;
+
+option go_package = "github.com/ecommerce/contracts/gen/go/ecommerce/product/v1;productv1";
+option java_multiple_files = true;
+option java_package = "com.ecommerce.contracts.product.v1";
+
+import "ecommerce/common/v1/money.proto";
+import "google/protobuf/timestamp.proto";
+
+// ProductService owns the product/SKU read capability consumed by Cart and Checkout.
+service ProductService {
+  // Recommended deadline: 500 ms. Safe to retry within the caller retry budget.
+  rpc GetSku(GetSkuRequest) returns (GetSkuResponse);
+
+  // Maximum 100 unique sku_ids. Recommended deadline: 1 second.
+  // Safe to retry within the caller retry budget.
+  rpc GetBatchSkus(GetBatchSkusRequest) returns (GetBatchSkusResponse);
+}
+
+message GetSkuRequest {
+  string sku_id = 1;
+}
+
+message GetSkuResponse {
+  oneof result {
+    Sku sku = 1;
+    SkuNotFound not_found = 2;
+    SkuUnavailable unavailable = 3;
+  }
+}
+
+message GetBatchSkusRequest {
+  // Caller removes duplicates. Provider rejects more than 100 IDs.
+  repeated string sku_ids = 1;
+}
+
+message GetBatchSkusResponse {
+  map<string, Sku> skus = 1;
+  repeated string not_found_sku_ids = 2;
+  repeated string unavailable_sku_ids = 3;
+}
+
+message Sku {
+  string sku_id = 1;
+  string product_id = 2;
+  string product_name = 3;
+  map<string, string> variant_attributes = 4;
+  // Despite the field name, this is the object storage key (not an absolute URL)
+  // of the representative image: the first IMAGE media of the SKU, falling back
+  // to the first Product-level IMAGE; empty when there is none. Consumers that
+  // render it build the public CDN URL from it, exactly like Search and the
+  // Product Detail BFF.
+  string image_url = 5;
+  // Published selling price after markdown. Same value as selling_price_vnd.
+  ecommerce.common.v1.Money price = 6;
+  SkuStatus status = 7;
+  // Field 8 used to expose an eventual-consistent Inventory projection. Cart
+  // must not use Product as an inventory authority, so the field is removed
+  // and its number is permanently reserved.
+  reserved 8;
+  google.protobuf.Timestamp updated_at = 9;
+  // Admin-managed list price before markdown. price <= base_price always holds.
+  ecommerce.common.v1.Money base_price = 10;
+  // Ordering guard of the whole Product aggregate. Callers comparing two
+  // snapshots of the same product must keep the higher revision.
+  int64 catalog_revision = 11;
+  // Product-owned category ancestry used by trusted Checkout promotion facts.
+  // At most 20 unique identifiers, each no longer than 64 characters; callers
+  // must not derive category rules locally.
+  repeated string category_ids = 12;
+}
+
+enum SkuStatus {
+  SKU_STATUS_UNSPECIFIED = 0;
+  SKU_STATUS_ACTIVE = 1;
+  SKU_STATUS_INACTIVE = 3;
+  reserved 2;
+}
+
+message SkuNotFound {
+  string sku_id = 1;
+}
+
+message SkuUnavailable {
+  string sku_id = 1;
+  SkuUnavailableReason reason = 2;
+}
+
+enum SkuUnavailableReason {
+  SKU_UNAVAILABLE_REASON_UNSPECIFIED = 0;
+  SKU_UNAVAILABLE_REASON_INACTIVE = 1;
+  SKU_UNAVAILABLE_REASON_DELETED = 2;
+  reserved 3;
+}

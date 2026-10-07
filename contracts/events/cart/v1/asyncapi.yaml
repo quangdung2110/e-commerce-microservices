@@ -1,0 +1,64 @@
+asyncapi: 3.0.0
+info:
+  title: Cart Events
+  version: 1.0.0
+  description: >-
+    Contract cho event duy nhất Cart Service phát hiện tại: CART_ABANDONED.
+    Redis Stream là durable outbox; Relay chuyển entry sang Kafka.
+x-adoption-status: proposed
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  cartEvents:
+    address: t.cart.events
+    description: CART_ABANDONED từ Cart Service đến Notification Service.
+    x-message-key: cart_id
+    x-ordering-scope: cart_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: id
+    x-redis-outbox-metadata: >-
+      CloudEvents id do Relay dựng xác định từ outbox_key + stream_id. Headers gồm
+      outbox_bucket, stream_id và cart_id; stream_id chỉ có thứ tự trong stream bucket.
+    x-retention: 7d
+    x-retry-policy:
+      max-attempts: 3
+      strategy: exponential-backoff-with-jitter
+      dead-letter-topic: t.cart.events.dlq
+    messages:
+      cartAbandoned:
+        $ref: '#/components/messages/cartAbandoned'
+operations:
+  publishCartAbandoned:
+    action: send
+    summary: Cart Service phát khi cart inactive vượt ngưỡng
+    channel:
+      $ref: '#/channels/cartEvents'
+    messages:
+      - $ref: '#/channels/cartEvents/messages/cartAbandoned'
+components:
+  messages:
+    cartAbandoned:
+      name: cartAbandonedV1
+      title: Cart abandoned
+      summary: Một abandonment cycle mới cần Notification xử lý
+      contentType: application/cloudevents+json
+      payload:
+        $ref: './schemas/cart-abandoned.schema.json'
+      examples:
+        - name: default
+          payload:
+            specversion: '1.0'
+            id: cart-outbox:v2:cart:v2:{b17}:outbox:1780000000000-0
+            type: com.ecommerce.cart.abandoned.v1
+            source: /services/cart
+            subject: carts/c1:MD...
+            time: '2026-08-30T14:30:00Z'
+            datacontenttype: application/json
+            data:
+              cart_id: c1:MD...
+              user_id: 0198e098-94f4-7f8f-9e16-ae42dfbd93c1
+              abandonment_cycle: 1
+              occurred_at: '2026-08-30T14:30:00Z'

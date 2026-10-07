@@ -1,244 +1,152 @@
 # User Service
 
-Microservice quản lý thông tin người dùng cho E-Commerce Platform, bao gồm profile, địa chỉ, và preferences.
+Bounded context sở hữu **profile**, **address book** và **preferences** của khách
+hàng sau khi account đã được Auth Service xác minh. Service không sở hữu email,
+credential, role hay trạng thái identity.
 
-## Features
+Implementation này bám theo [thiết kế trong `docs/user`](../../../docs/user/README.md)
+và hai contract chuẩn:
 
-- **User Profile Management**: Quản lý thông tin cá nhân của người dùng
-- **Address Management**: Quản lý danh sách địa chỉ giao hàng với caching
-- **User Preferences**: Quản lý preferences (email notifications, newsletter)
-- **Event-Driven Architecture**: Tiếp nhận events từ Auth Service qua Kafka
-- **GDPR Compliance**: Two-phase account deletion với 90-day retention
-- **Outbox Pattern**: Reliable event publishing qua outbox table
+- HTTP: [`contracts/http/user/v1/openapi.yaml`](../../../contracts/http/user/v1/openapi.yaml)
+- Event: [`contracts/events/user/v1/asyncapi.yaml`](../../../contracts/events/user/v1/asyncapi.yaml)
+  và [`contracts/events/auth/v1/asyncapi.yaml`](../../../contracts/events/auth/v1/asyncapi.yaml) (đầu vào)
 
-## Architecture
+## 1. Thành phần trong một binary
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Service                              │
-├─────────────────────────────────────────────────────────────────┤
-│  HTTP API (Gin)                                                 │
-│  ├── GET/PUT /api/v1/users/me/profile                           │
-│  ├── GET/POST/PUT/DELETE /api/v1/users/me/addresses            │
-│  └── GET/PUT /api/v1/users/me/preferences                       │
-├─────────────────────────────────────────────────────────────────┤
-│  Kafka Consumers                                                 │
-│  ├── USER_VERIFIED → Creates user profile                       │
-│  └── USER_DELETED → Initiates account deletion                 │
-├─────────────────────────────────────────────────────────────────┤
-│  Domain Services                                                 │
-│  ├── ProfileService     - Profile business logic                │
-│  ├── AddressService    - Address + caching logic               │
-│  └── PreferencesService - User preferences logic               │
-├─────────────────────────────────────────────────────────────────┤
-│  Infrastructure                                                  │
-│  ├── PostgreSQL - Primary data store                           │
-│  ├── Redis      - Address caching                               │
-│  └── Kafka      - Event consumption/publishing                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+`cmd/server` chạy bốn thành phần, mỗi thành phần bật/tắt riêng bằng config để có
+thể scale độc lập mà vẫn dùng chung một image:
 
-## Tech Stack
+| Thành phần | Bật bằng | Nhiệm vụ |
+|---|---|---|
+| Public API (`:8082`) | `app.api_enabled` | Profile, address, preferences của chính chủ |
+| Internal API (`:8083`) | `internal.enabled` | `checkout-snapshot` cho Checkout qua mTLS |
+| Auth event consumer | `kafka.consumer_enabled` | `USER_VERIFIED_SUCCESS`, `USER_DELETED` |
+| Workers | `workers.*.enabled` | `user-retention-purge`, `user-projection-reconciliation` |
 
-- **Language**: Go 1.21+
-- **Web Framework**: Gin
-- **Database**: PostgreSQL 15 (via pgx)
-- **Cache**: Redis 7
-- **Message Broker**: Apache Kafka
-- **Dependency Injection**: Uber FX
-- **Logging**: Zap
+Ví dụ: một deployment chạy API-only đặt `USER_KAFKA_CONSUMER_ENABLED=false` và
+tắt hai worker; một deployment worker-only đặt `USER_APP_API_ENABLED=false`.
 
-## Project Structure
+## 2. Cấu trúc mã nguồn
 
 ```
-user-service/
-├── cmd/
-│   └── server/
-│       ├── main.go              # Main HTTP server
-│       └── compliance/
-│           └── main.go          # GDPR compliance worker
-├── internal/
-│   ├── api/
-│   │   ├── handler/             # HTTP handlers
-│   │   ├── middleware/          # Auth, logging, rate limit
-│   │   ├── router/              # Route definitions
-│   │   ├── dto/                 # Request/Response DTOs
-│   │   └── validator/           # Request validators
-│   ├── domain/
-│   │   ├── entity/              # Domain entities
-│   │   ├── service/             # Business logic
-│   │   ├── port/                # Interface definitions
-│   │   ├── vo/                  # Value objects
-│   │   └── event/               # Domain events
-│   ├── infrastructure/
-│   │   ├── postgres/            # PostgreSQL repositories
-│   │   ├── redis/               # Redis cache
-│   │   └── kafka/               # Kafka consumers/handlers
-│   ├── workers/
-│   │   ├── kafka_consumer/      # Kafka consumer worker
-│   │   └── compliance/          # GDPR hard delete worker
-│   └── common/                  # Shared utilities (if needed)
-├── configs/
-│   ├── application.yaml         # Main configuration
-│   └── debezium/                # Debezium connector config
-├── migrations/                   # SQL migrations
-├── scripts/                      # Operational scripts
-├── docker-compose.yaml           # Local development
-├── Dockerfile                    # Container image
-└── go.mod                        # Go module
+cmd/server           điểm vào, wiring và graceful shutdown
+internal/api         adapter HTTP: router, handler, DTO, middleware, problem+json
+internal/common      config, logging, clock, error vocabulary, Redis key builder
+internal/domain      entity, value object, port, use case (không phụ thuộc transport)
+internal/infrastructure  PostgreSQL, Redis, Kafka adapter
+internal/workers     scheduler có Redis lock + hai worker
+migrations           schema "user" (nguồn chuẩn của dữ liệu)
+test/unit            use case + entity với in-memory double (không cần Docker)
+test/integration     PostgreSQL/Redis thật qua testcontainers
 ```
 
-## API Endpoints
+Quy tắc phụ thuộc: `api → domain ← infrastructure`. Domain không import gin,
+pgx, sarama hay redis; adapter không chứa business rule.
 
-### Health Checks
+## 3. Quyết định thiết kế được phản ánh trong code
 
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/health` | Liveness probe | No |
-| GET | `/ready` | Readiness probe | No |
+| Quyết định | Nơi thể hiện |
+|---|---|
+| [ADR-001](../../../docs/user/decisions/ADR-001-profile-bootstrap-from-auth-event.md) profile bootstrap từ event Auth | `LifecycleService.Bootstrap`, insert `ON CONFLICT DO NOTHING`, id lấy từ `user_id` |
+| [ADR-002](../../../docs/user/decisions/ADR-002-address-cache-aside.md) cache-aside chỉ cho address | `redis.AddressCache`, key `user:caches:addresses:{user_id}`, TTL 12h / empty 15m, đọc lỗi → fallback DB |
+| [ADR-003](../../../docs/user/decisions/ADR-003-default-address-and-hard-delete.md) một default + hard delete | advisory lock theo user, partial unique index, `EnsureDeletable` trả 409 |
+| [ADR-004](../../../docs/user/decisions/ADR-004-direct-event-publication.md) direct publish sau commit | `kafka.Publisher` retry 3 lần cùng CloudEvent id; `EventEmitter` không làm fail request |
+| [ADR-005](../../../docs/user/decisions/ADR-005-gdpr-two-stage-deletion.md) anonymize + purge hai giai đoạn | `LifecycleService.Anonymize` / `PurgeDue`, bảng `user_deletions` |
+| [ADR-006](../../../docs/user/decisions/ADR-006-auth-owns-account-deletion-event.md) Auth sở hữu event xóa | service **không** publish `USER_DELETED`; `t.user.events` chỉ có 2 event |
+| [ADR-007](../../../docs/user/decisions/ADR-007-projection-reconciliation-without-outbox.md) reconciliation không outbox | `ReconciliationService`, cursor chỉ trong bộ nhớ, CloudEvent id mới, `updated_at` giữ nguyên |
 
-### User Profile
+## 4. Chạy local
 
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/v1/users/me/profile` | Get current user profile | Yes |
-| PUT | `/api/v1/users/me/profile` | Update profile | Yes |
+**Root stack/frontend:** từ gốc repo chạy `docker compose up -d --build user-service`.
+Compose chạy `user-migrate` và chỉ start User khi migration exit 0. Khi bổ sung
+migration: `docker compose run --rm user-migrate`. Root stack dùng DB `user_service`,
+PostgreSQL host `15432`; public User chỉ qua Gateway `8088`, internal giữ `8083`.
+Xem [development runbook](../../../docs/user/development.md) về volume cũ, profile
+bootstrap và test bằng container.
 
-### Addresses
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/v1/users/me/addresses` | List all addresses | Yes |
-| POST | `/api/v1/users/me/addresses` | Create address | Yes |
-| PUT | `/api/v1/users/me/addresses/:id` | Update address | Yes |
-| DELETE | `/api/v1/users/me/addresses/:id` | Delete address | Yes |
-| POST | `/api/v1/users/me/addresses/:id/default` | Set as default | Yes |
-
-### User Preferences
-
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/v1/users/me/preferences` | Get preferences | Yes |
-| PUT | `/api/v1/users/me/preferences` | Update preferences | Yes |
-
-## Configuration
-
-Configuration được load từ `configs/application.yaml` và có thể override qua environment variables.
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APP_PORT` | `8080` | HTTP server port |
-| `DB_HOST` | `localhost` | PostgreSQL host |
-| `DB_PORT` | `5432` | PostgreSQL port |
-| `DB_USER` | `postgres` | PostgreSQL user |
-| `DB_PASSWORD` | `postgres` | PostgreSQL password |
-| `DB_NAME` | `user_service` | Database name |
-| `DB_SSLMODE` | `disable` | SSL mode |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `KAFKA_BROKERS` | `localhost:9092` | Kafka brokers |
-| `KAFKA_AUTH_TOPIC` | `t.auth.events` | Auth events topic |
-| `KAFKA_USER_TOPIC` | `t.user.events` | User events topic |
-| `KAFKA_CONSUMER_GROUP` | `user-service` | Consumer group |
-| `JWT_SECRET` | - | JWT signing secret |
-| `RATE_LIMIT_ENABLED` | `true` | Enable rate limiting |
-
-## Local Development
-
-### Prerequisites
-
-- Go 1.21+
-- Docker & Docker Compose
-- PostgreSQL 15
-- Redis 7
-- Kafka
-
-### Quick Start
+**Standalone:** các lệnh dưới đây chạy từ thư mục service, dùng DB `user_db`:
 
 ```bash
-# 1. Start infrastructure
-docker-compose up -d postgres redis kafka
+cp .env.example .env
+```
 
-# 2. Run migrations
-make migrate
+```bash
+docker compose up -d
+```
 
-# 3. Start the service
+Compose publish PostgreSQL ở `5433`, Redis ở `6380`, Kafka ở `9093` để chạy song
+song với `auth-service`. Migration đầu tiên được nạp tự động khi volume còn rỗng.
+
+Chạy trực tiếp bằng Go (cần PostgreSQL/Redis/Kafka sẵn sàng):
+
+```bash
 make run
-
-# Or use docker-compose for full stack
-docker-compose up -d
 ```
 
-### Running Tests
+Áp dụng migration bằng golang-migrate trên DB đã được version tracking quản lý:
 
 ```bash
-# Run all tests
+make migrate-up DB_URL="postgres://postgres:postgres@localhost:5433/user_db?sslmode=disable"
+```
+
+Standalone initdb đã nạp schema trên volume rỗng nhưng chưa có version tracking;
+cần đối chiếu/baseline trước khi chuyển sang golang-migrate. Không chạy lại SQL ban
+đầu hay tự force version trên dữ liệu hiện hữu. Root stack dùng `user-migrate`.
+
+Kiểm tra service standalone đã sẵn sàng:
+
+```bash
+curl -s localhost:8082/health/ready
+```
+
+Kiểm chứng buyer qua phiên Auth/Gateway thật tại `/api/v1/users/me/profile` và
+`/api/v1/users/me/addresses`. Profile phải được consumer bootstrap từ event Auth;
+header identity tự đặt hoặc GET health không chứng minh buyer đã sẵn sàng checkout.
+
+## 5. Kiểm thử
+
+```bash
 make test
-
-# Run with coverage
-make test-coverage
-
-# Run specific package tests
-go test ./internal/domain/...
 ```
-
-### Building
 
 ```bash
-# Build main server
-make build
-
-# Build compliance worker
-make build-compliance
-
-# Build Docker images
-make docker-build
+make test-integration
 ```
 
-## Kafka Events
+`make test` chạy `test/unit` với in-memory double, không cần Docker.
+`make test-integration` khởi động PostgreSQL và Redis bằng testcontainers nên cần
+Docker daemon; suite này phủ SQL, check constraint, partial unique index, cache
+serialization và toàn bộ bề mặt HTTP.
 
-### Consumed Events
+Các tình huống bắt buộc trong [development.md](../../../docs/user/development.md)
+được phủ ở: ownership address, partial unique default, từ chối xóa default,
+profile id lấy từ Auth event, cache hit/miss/invalidation/fallback, duplicate và
+out-of-order Auth event, deletion retention, purge trước/sau deadline,
+`SKIP LOCKED` với hai run đồng thời, reconciliation loại user đã xóa và giữ
+nguyên `updated_at`.
 
-| Topic | Event | Action |
-|-------|-------|--------|
-| `t.auth.events` | `USER_VERIFIED` | Create user profile |
-| `t.auth.events` | `USER_DELETED` | Anonymize user data |
+## 6. Cấu hình
 
-### Published Events (via Outbox)
+Mọi key trong [`configs/application.yaml`](configs/application.yaml) đều override
+được bằng biến môi trường tiền tố `USER_`, ví dụ `USER_APP_PORT`,
+`USER_KAFKA_BROKERS`, `USER_CACHE_ADDRESS_TTL`. Secret (`DB_PASSWORD`,
+`REDIS_PASSWORD`, đường dẫn TLS) lấy từ environment, không commit.
 
-| Event | Trigger |
-|-------|---------|
-| `ADDRESS_CREATED` | New address created |
-| `ADDRESS_UPDATED` | Address modified |
-| `ADDRESS_DELETED` | Address removed |
-| `ADDRESS_DEFAULT_CHANGED` | Default address changed |
-| `PREFERENCES_UPDATED` | Preferences modified |
+Config được validate lúc khởi động: TTL cache, topic khi Kafka bật, giờ chạy
+reconciliation, và bắt buộc mTLS cho internal API khi `app.env=production`.
 
-## GDPR Compliance
+## 7. Giới hạn đã biết
 
-Service hỗ trợ GDPR compliance qua two-phase deletion:
-
-1. **Soft Delete** (từ Auth Service): Thông tin cá nhân được anonymize
-2. **Hard Delete** (sau 90 ngày): Compliance worker xóa vĩnh viễn dữ liệu
-
-Xem `cmd/server/compliance/main.go` để biết chi tiết implementation.
-
-## Database Schema
-
-- `user_profiles` - User profile information
-- `user_addresses` - Delivery addresses
-- `user_preferences` - User preferences
-- `outbox_events` - Outbox table for reliable events
-- `user_deletions` - Deletion requests tracking
-
-## Monitoring
-
-Health check endpoints:
-- `/health` - Returns 200 nếu service đang chạy
-- `/ready` - Returns 200 nếu database và Redis đang kết nối
-
-## License
-
-Internal use only - E-Commerce Platform
+- Chưa export metric Prometheus; observability hiện dựa trên structured log
+  (result, duration, retry, DLQ, cache fallback, oldest due record). Danh sách
+  metric trong [operations.md](../../../docs/user/operations.md) chưa được đáp
+  ứng đầy đủ.
+- Chưa có contract test tự động chạy OpenAPI/AsyncAPI schema với
+  request/response thật; integration test đang kiểm tra thủ công theo contract.
+- Chưa có single-flight/lock chống cache stampede khi nhiều request cùng miss —
+  đúng như phần rủi ro còn để mở trong WF-USER-004.
+- Validation mã địa giới chỉ kiểm tra format; quan hệ province/district/ward cần
+  master-data contract riêng.
+- Service tự đặt trần 50 address cho một profile (`constants.AddressBookLimit`)
+  vì `GET /addresses` không phân trang trong contract v1. Đây là ràng buộc do
+  implementation thêm vào, chưa có trong OpenAPI; nếu chốt khác thì sửa cả hai.

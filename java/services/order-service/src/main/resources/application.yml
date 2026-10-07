@@ -1,0 +1,136 @@
+spring:
+  application:
+    name: order-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:15432/order_service}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:24}
+      minimum-idle: 4
+      connection-timeout: 3000
+      max-lifetime: 1200000
+      # READ COMMITTED with explicit row locks/CAS is the isolation baseline (data.md §5).
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # JSON is snake_case per contracts/http/order/**; request schemas are
+  # additionalProperties: false, so an unknown field is a 400.
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: true
+
+  mvc:
+    problemdetails:
+      enabled: false
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 200ms
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:29092}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 50
+    listener:
+      ack-mode: manual_immediate
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: false
+
+order:
+  identity:
+    service-header: X-Service-Identity
+    user-id-header: X-User-Id
+    roles-header: X-User-Roles
+    actor-header: X-Actor-Id
+    admin-role: ADMIN
+    # Defense-in-depth allowlists behind the mesh AuthorizationPolicy
+    # (docs/mesh/runtime-contract.md §5.2).
+    checkout-clients: [checkout-service]
+    finance-clients: [finance-ops, accounting-ops]
+  checkout:
+    payment-window: 15m
+    clock-skew-safety: 30s
+    # HTTP waits until PAYMENT_READY or this budget, then 503 retryable (mesh timeout 15s).
+    submit-wait: 12s
+  refund:
+    inspection-wait: 30d
+  search:
+    default-window: 90d
+  notification:
+    frontend-base-url: ${ORDER_FRONTEND_BASE_URL:http://localhost:3000}
+    payment-method-label: "Thanh toán trực tuyến"
+  temporal:
+    enabled: ${TEMPORAL_ENABLED:true}
+    target: ${TEMPORAL_TARGET:localhost:7233}
+    namespace: ${TEMPORAL_NAMESPACE:default}
+    worker-enabled: ${TEMPORAL_WORKER_ENABLED:true}
+    checkout-queue: order-checkout-queue
+    refund-queue: order-refund-queue
+    reconciliation-queue: order-financial-reconciliation-queue
+    activity-timeout: 30s
+    activity-max-attempts: 3
+  clients:
+    service-name: order-service
+    inventory-base-url: ${INVENTORY_BASE_URL:http://localhost:8094}
+    promotion-base-url: ${PROMOTION_BASE_URL:http://localhost:8085}
+    payment-base-url: ${PAYMENT_BASE_URL:http://localhost:8089}
+    connect-timeout: 2s
+    read-timeout: 10s
+  kafka:
+    consumers-enabled: ${ORDER_CONSUMERS_ENABLED:true}
+    payment-topic: t.payment.events.v2
+    inventory-topic: t.inventory.order.events.v1
+    delivery-topic: t.delivery.order.events.v1
+    order-topic: t.order.events
+    notification-topic: t.notification.transactional.v1
+    payment-group: order-payment-consumer
+    inventory-ship-group: order-inventory-ship-consumer
+    inventory-return-group: order-inventory-return-consumer
+    delivery-group: order-delivery-consumer
+    receipt-group: order-outbox-receipt-observer
+  workers:
+    enabled: ${WORKERS_ENABLED:true}
+    instance-id: ${HOSTNAME:order-local}
+    dispatch-interval: PT0.2S
+    dispatch-batch-size: 50
+    lease: PT30S
+    reconcile-interval: PT30S
+  outbox:
+    retention: 15d
+    receipt-safety-delay: 1h
+    trim-cron: "0 0 4 * * *"
+  redis-mirror:
+    enabled: ${ORDER_REDIS_MIRROR_ENABLED:true}
+    ttl: 7d

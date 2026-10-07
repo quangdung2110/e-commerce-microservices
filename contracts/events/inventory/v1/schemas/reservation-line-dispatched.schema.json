@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/inventory/v1/schemas/reservation-line-dispatched.schema.json",
+  "allOf": [
+    { "$ref": "./inventory-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "subject", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.inventory.reservation.line-dispatched.v1" },
+        "dataschema": { "const": "/contracts/events/inventory/v1/schemas/reservation-line-dispatched.schema.json" },
+        "subject": { "type": "string", "pattern": "^orders/[^/]{1,128}/lines/[^/]{1,128}$" },
+        "aggregatetype": { "const": "reservation-line" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["order_id", "order_line_id", "sku_id", "quantity", "warehouse_id", "handover_reference", "handed_over_at", "reservation_revision"],
+          "properties": {
+            "order_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "order_line_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sku_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "quantity": { "type": "integer", "minimum": 1 },
+            "warehouse_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "handover_reference": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "handed_over_at": { "type": "string", "format": "date-time" },
+            "reservation_revision": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    }
+  ]
+}

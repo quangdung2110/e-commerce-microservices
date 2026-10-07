@@ -1,0 +1,207 @@
+asyncapi: 3.0.0
+info:
+  title: Notification Service Events
+  version: 1.0.0
+  description: >-
+    Contract do Notification Service sở hữu: ba channel request theo lane ưu tiên
+    (producer chỉ định template và đóng gói dữ liệu nó sở hữu), và một channel
+    outcome cho consumer downstream. Recipient email không bao giờ đi qua Kafka;
+    Notification resolve lúc gửi qua Auth internal API. Xem docs/notification.
+x-adoption-status: proposed
+x-contract-scope: notification-integration-events
+defaultContentType: application/cloudevents+json
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+channels:
+  notificationCritical:
+    address: t.notification.critical.v1
+    description: >-
+      Request lane critical: user đang chờ chủ động để hoàn thành một hành động,
+      hoặc cảnh báo bảo mật. Phase 1 chưa có producer (Auth giữ topic riêng
+      t.auth.notification.events — quyết định D-19, Notification consume topic đó bằng
+      consumer group riêng như lane critical thứ hai). Khai báo
+      sẵn để lane đủ bộ và producer sau không cần đổi contract.
+    x-owner: notification-service
+    x-lane: critical
+    x-message-key: subject
+    x-ordering-scope: subject
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id; data.dedup_key là dedup nghiệp vụ theo template
+    x-max-payload-bytes: 65536
+    x-retention: 1d
+    x-retry-policy:
+      max-attempts: 3
+      strategy: exponential-backoff-with-jitter
+      dead-letter-topic: t.notification.critical.v1.dlq
+    x-data-classification: INTERNAL
+    x-access-policy: >-
+      Producer phải được liệt kê ở đây và trong contracts/catalog/interactions.yaml.
+      Phase 1: không có producer. Consumer duy nhất: notification-service.
+    messages:
+      notificationRequested:
+        $ref: '#/components/messages/notificationRequested'
+  notificationTransactional:
+    address: t.notification.transactional.v1
+    description: >-
+      Request lane transactional: xác nhận một sự thật nghiệp vụ đã xảy ra với
+      user; trễ vài chục phút không gây thiệt hại. Request từ /services/order bắt
+      buộc có CloudEvents sequence tăng đơn điệu riêng theo subject; Notification
+      dùng sequence này để supersede request cũ và serialize provider call per order.
+    x-owner: notification-service
+    x-lane: transactional
+    x-message-key: subject
+    x-ordering-scope: subject
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id; data.dedup_key là dedup nghiệp vụ theo template
+    x-max-payload-bytes: 131072
+    x-retention: 7d
+    x-retry-policy:
+      max-attempts: 3
+      strategy: exponential-backoff-with-jitter
+      dead-letter-topic: t.notification.transactional.v1.dlq
+    x-data-classification: INTERNAL
+    x-access-policy: >-
+      Producer được ghi: order-service (5 template ORDER_*). Consumer duy nhất:
+      notification-service.
+    messages:
+      notificationRequested:
+        $ref: '#/components/messages/notificationRequested'
+  notificationBulk:
+    address: t.notification.bulk.v1
+    description: >-
+      Request lane bulk: không gắn với hành động cụ thể của user; có thể tạm dừng
+      hoặc bỏ nếu quá hạn. Phase 1 chưa có producer (Cart abandoned là fact trên
+      t.cart.events); dành cho Promotion sau này.
+    x-owner: notification-service
+    x-lane: bulk
+    x-message-key: subject
+    x-ordering-scope: subject
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id; data.dedup_key là dedup nghiệp vụ theo template
+    x-max-payload-bytes: 131072
+    x-retention: 7d
+    x-retry-policy:
+      max-attempts: 3
+      strategy: exponential-backoff-with-jitter
+      dead-letter-topic: t.notification.bulk.v1.dlq
+    x-data-classification: INTERNAL
+    x-access-policy: >-
+      Phase 1: không có producer. Consumer duy nhất: notification-service.
+    messages:
+      notificationRequested:
+        $ref: '#/components/messages/notificationRequested'
+  notificationOutcomes:
+    address: t.notification.outcomes.v1
+    description: >-
+      Kết quả cuối của từng delivery. Không mang template_data, không mang địa
+      chỉ email. Publish qua outbox (Debezium), CloudEvents id sinh lúc ghi outbox.
+    x-owner: notification-service
+    x-message-key: data.user_id
+    x-ordering-scope: data.user_id
+    x-delivery-semantic: at-least-once
+    x-deduplication-key: CloudEvents.id
+    x-max-payload-bytes: 16384
+    x-retention: 7d
+    x-data-classification: INTERNAL
+    x-access-policy: >-
+      Consumer: analytics-service (mọi type), user-service (complaintReceived để
+      tắt marketing_enabled ở nguồn).
+    messages:
+      notificationDelivered:
+        $ref: '#/components/messages/notificationDelivered'
+      notificationBounced:
+        $ref: '#/components/messages/notificationBounced'
+      notificationFailed:
+        $ref: '#/components/messages/notificationFailed'
+      notificationComplaintReceived:
+        $ref: '#/components/messages/notificationComplaintReceived'
+operations:
+  consumeCriticalRequests:
+    action: receive
+    channel: { $ref: '#/channels/notificationCritical' }
+    summary: Consumer group riêng cho lane critical; INSERT + Decide trong một transaction rồi commit offset.
+    x-consumer-group: notification-critical
+    messages: [{ $ref: '#/channels/notificationCritical/messages/notificationRequested' }]
+  consumeTransactionalRequests:
+    action: receive
+    channel: { $ref: '#/channels/notificationTransactional' }
+    summary: Consumer group riêng cho lane transactional.
+    x-consumer-group: notification-transactional
+    messages: [{ $ref: '#/channels/notificationTransactional/messages/notificationRequested' }]
+  consumeBulkRequests:
+    action: receive
+    channel: { $ref: '#/channels/notificationBulk' }
+    summary: Consumer group riêng cho lane bulk.
+    x-consumer-group: notification-bulk
+    messages: [{ $ref: '#/channels/notificationBulk/messages/notificationRequested' }]
+  publishOutcomes:
+    action: send
+    channel: { $ref: '#/channels/notificationOutcomes' }
+    summary: Phát khi delivery vào trạng thái cuối hoặc khi nhận complaint.
+    messages:
+      - { $ref: '#/channels/notificationOutcomes/messages/notificationDelivered' }
+      - { $ref: '#/channels/notificationOutcomes/messages/notificationBounced' }
+      - { $ref: '#/channels/notificationOutcomes/messages/notificationFailed' }
+      - { $ref: '#/channels/notificationOutcomes/messages/notificationComplaintReceived' }
+components:
+  messages:
+    notificationRequested:
+      name: notificationRequestedV1
+      title: NOTIFICATION_REQUESTED
+      summary: >-
+        Producer yêu cầu gửi một template cho một user. template phải active trong
+        templates/catalog.yaml; template_data theo schema của template; lane của
+        template phải khớp channel. Producer Order bắt buộc gửi notification sequence
+        riêng, không dùng Order integration fact sequence.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: './schemas/notification-requested.schema.json'
+      examples:
+        - name: orderConfirmed
+          summary: Order xác nhận đơn đã thanh toán
+          payload:
+            $ref: '../../../examples/events/notification-requested.v1.json'
+    notificationDelivered:
+      name: notificationDeliveredV1
+      title: NOTIFICATION_DELIVERED
+      summary: Email được provider báo delivered, hoặc in-app đã ghi vào inbox.
+      contentType: application/cloudevents+json
+      x-consumers: [analytics-service]
+      payload:
+        $ref: './schemas/notification-delivered.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-delivered.v1.json'
+    notificationBounced:
+      name: notificationBouncedV1
+      title: NOTIFICATION_BOUNCED
+      summary: Provider báo bounce; suppressed cho biết địa chỉ đã vào suppression list.
+      contentType: application/cloudevents+json
+      x-consumers: [analytics-service]
+      payload:
+        $ref: './schemas/notification-bounced.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-bounced.v1.json'
+    notificationFailed:
+      name: notificationFailedV1
+      title: NOTIFICATION_FAILED
+      summary: Delivery vào trạng thái cuối FAILED hoặc EXPIRED; reason_code theo docs/notification/08-decide.md.
+      contentType: application/cloudevents+json
+      x-consumers: [analytics-service]
+      payload:
+        $ref: './schemas/notification-failed.schema.json'
+    notificationComplaintReceived:
+      name: notificationComplaintReceivedV1
+      title: NOTIFICATION_COMPLAINT_RECEIVED
+      summary: >-
+        User báo spam. Notification đã tắt marketing_enabled ở bản replicate cục bộ;
+        User Service tắt ở nguồn khi nhận event này.
+      contentType: application/cloudevents+json
+      x-consumers: [analytics-service, user-service]
+      payload:
+        $ref: './schemas/notification-complaint-received.schema.json'

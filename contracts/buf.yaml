@@ -1,0 +1,10 @@
+version: v2
+modules:
+  - path: grpc
+  - path: shared/proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

@@ -6,79 +6,74 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
+	"github.com/ecommerce/user-service/internal/api/dto/response"
+	"github.com/ecommerce/user-service/internal/common/logging"
 )
 
-// HealthHandler handles health check HTTP requests
+// probe is one dependency check.
+type probe struct {
+	name  string
+	check func(context.Context) error
+	// required marks a dependency the API cannot serve without. An optional one
+	// is reported as degraded instead, because a cache outage must not take a
+	// healthy API out of rotation (docs/user/operations.md §1).
+	required bool
+}
+
+// HealthHandler serves the liveness, readiness and startup probes.
 type HealthHandler struct {
-	db    *pgxpool.Pool
-	redis *redis.Client
+	probes  []probe
+	timeout time.Duration
 }
 
-// NewHealthHandler creates a new health handler
-func NewHealthHandler(db *pgxpool.Pool, redis *redis.Client) *HealthHandler {
-	return &HealthHandler{
-		db:    db,
-		redis: redis,
-	}
+// NewHealthHandler wires the probes.
+func NewHealthHandler(timeout time.Duration) *HealthHandler {
+	return &HealthHandler{timeout: timeout}
 }
 
-// HealthResponse represents the health check response
-type HealthResponse struct {
-	Status    string `json:"status"`
-	Timestamp string `json:"timestamp"`
+// AddProbe registers a dependency the service cannot work without.
+func (h *HealthHandler) AddProbe(name string, check func(context.Context) error) {
+	h.probes = append(h.probes, probe{name: name, check: check, required: true})
 }
 
-// ReadinessResponse represents the readiness check response
-type ReadinessResponse struct {
-	Status    string            `json:"status"`
-	Checks    map[string]string `json:"checks"`
-	Timestamp string            `json:"timestamp"`
+// AddOptionalProbe registers a dependency whose failure only degrades the
+// service.
+func (h *HealthHandler) AddOptionalProbe(name string, check func(context.Context) error) {
+	h.probes = append(h.probes, probe{name: name, check: check})
 }
 
-// Health handles GET /health - liveness check
-func (h *HealthHandler) Health(c *gin.Context) {
-	c.JSON(http.StatusOK, HealthResponse{
-		Status:    "healthy",
-		Timestamp: time.Now().Format(time.RFC3339),
-	})
+// Live handles GET /health/live: the process is running.
+func (h *HealthHandler) Live(c *gin.Context) {
+	c.JSON(http.StatusOK, response.Health{Status: "UP"})
 }
 
-// Ready handles GET /ready - readiness check
+// Ready handles GET /health/ready. It fails only on a required dependency; a
+// failing optional one is listed as degraded.
 func (h *HealthHandler) Ready(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
 	defer cancel()
 
-	checks := make(map[string]string)
-	allHealthy := true
-
-	// Check PostgreSQL
-	if err := h.db.Ping(ctx); err != nil {
-		checks["database"] = "disconnected"
-		allHealthy = false
-	} else {
-		checks["database"] = "connected"
+	var degraded []string
+	for _, p := range h.probes {
+		if err := p.check(ctx); err != nil {
+			logging.FromContext(c.Request.Context()).Warn("readiness probe failed",
+				zap.String("dependency", p.name),
+				zap.Bool("required", p.required),
+				zap.Error(err),
+			)
+			if p.required {
+				c.JSON(http.StatusServiceUnavailable, response.Health{Status: "DOWN"})
+				return
+			}
+			degraded = append(degraded, p.name)
+		}
 	}
+	c.JSON(http.StatusOK, response.Health{Status: "UP", Degraded: degraded})
+}
 
-	// Check Redis
-	if _, err := h.redis.Ping(ctx).Result(); err != nil {
-		checks["redis"] = "disconnected"
-		allHealthy = false
-	} else {
-		checks["redis"] = "connected"
-	}
-
-	status := "ready"
-	statusCode := http.StatusOK
-	if !allHealthy {
-		status = "not_ready"
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	c.JSON(statusCode, ReadinessResponse{
-		Status:    status,
-		Checks:    checks,
-		Timestamp: time.Now().Format(time.RFC3339),
-	})
+// Startup handles GET /health/startup and runs the same checks as readiness.
+func (h *HealthHandler) Startup(c *gin.Context) {
+	h.Ready(c)
 }

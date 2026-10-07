@@ -1,0 +1,9 @@
+Xác minh địa chỉ email
+
+Cảm ơn bạn đã đăng ký tài khoản. Vui lòng nhập mã bên dưới để hoàn tất xác minh:
+
+    {{.OTP}}
+
+Mã chỉ có hiệu lực trong thời gian ngắn và dùng được một lần. Không chia sẻ mã này với bất kỳ ai, kể cả người tự xưng là nhân viên của chúng tôi.
+
+Nếu bạn không thực hiện đăng ký, hãy bỏ qua email này.

@@ -1,0 +1,9 @@
+{
+  "order_id": "1000234",
+  "order_code": "ORD-1000234",
+  "refund_id": "RFD_01J8Z3K2M4N5P6Q7R8S9T0V1W2",
+  "amount_minor": 728000,
+  "currency": "VND",
+  "refunded_at": "2026-09-21T08:00:00Z",
+  "order_url": "https://shop.example.com/orders/1000234"
+}

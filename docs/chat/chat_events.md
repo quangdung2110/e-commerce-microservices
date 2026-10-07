@@ -24,6 +24,19 @@ Topic: chat.message.received
 - Retention: 1 ngày
 - Cleanup policy: delete
 - Mục đích: Gửi notification khi user offline
+
+Topic: t.user.events (consume)
+- Consumer group: chat-user-profile-projection
+- Event: USER_PROFILE_UPDATED
+- Partition key: user_id
+- Mục đích: Cập nhật projection `sender_name` từ payload `user_id`, `sender_name`;
+  `sender_name` do User Service suy ra từ first_name/last_name, fallback là "Người dùng".
+
+Topic: t.auth.events (consume)
+- Consumer group: chat-privacy-sync
+- Event: USER_DELETED
+- Partition key: user_id
+- Mục đích: Ẩn danh/xóa projection `sender_name` do Chat sở hữu khi account bị xóa.
 ```
 
 ### 1.2 Consumer Groups
@@ -33,6 +46,8 @@ Topic: chat.message.received
 | `ws-{hostname}` | N (1 per WS server) | chat.messages | Real-time broadcast |
 | `msg-persister` | 2-4 | chat.messages | Persist vào Cassandra |
 | `notification-chat-sync` | 2 | chat.message.received | Push/In-app notification |
+| `chat-user-profile-projection` | Theo partition `t.user.events` | t.user.events | Cập nhật projection `sender_name` từ User Service |
+| `chat-privacy-sync` | Theo partition `t.auth.events` | t.auth.events | Anonymize `sender_name` thuộc account đã bị xóa |
 
 ---
 
@@ -214,6 +229,10 @@ Tích hợp với Notification Service:
 - Message Persister: check `message_id` trước khi insert
 - WebSocket Gateway: không cần check (client dedup)
 - Notification Service: dùng `event_id` trong CloudEvents để deduplicate
+- `chat-user-profile-projection`: chỉ áp dụng `USER_PROFILE_UPDATED` có
+  `updated_at` mới hơn projection hiện tại.
+- `chat-privacy-sync`: xử lý `USER_DELETED` idempotent; deletion là terminal và
+  không để profile event đến muộn khôi phục tên hiển thị đã bị ẩn danh.
 
 ---
 
@@ -295,4 +314,6 @@ Client có thể detect gap và request resync.
 - [Thiết kế kiến trúc](chat_design.md)
 - [Cấu trúc Database](chat_db_schema.md)
 - [Quy trình nghiệp vụ](chat_workflow.md)
-- [Notification Service Events](../notification/events.md) - Event contracts của Notification Service
+- [Notification Service](../notification/README.md) - Thiết kế Notification Service (lane, pipeline, idempotency)
+- [User Events v1](../../contracts/events/user/v1/asyncapi.yaml) - Contract profile projection
+- [Auth Events v1](../../contracts/events/auth/v1/asyncapi.yaml) - Contract xóa account

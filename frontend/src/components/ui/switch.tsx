@@ -1,0 +1,50 @@
+"use client"
+
+import { Switch as SwitchPrimitive } from "@base-ui/react/switch"
+
+import { cn } from "@/lib/utils"
+
+function Switch({
+  className,
+  size = "default",
+  ...props
+}: SwitchPrimitive.Root.Props & {
+  size?: "sm" | "default"
+}) {
+  return (
+    <SwitchPrimitive.Root
+      data-slot="switch"
+      data-size={size}
+      className={cn(
+        [
+          "peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-transparent",
+          "transition-colors duration-200 ease-out-soft",
+          // Vùng bấm nới rộng ra ngoài phần nhìn thấy để đạt ngưỡng touch target.
+          "after:absolute after:-inset-x-3 after:-inset-y-2",
+          "outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+          "data-[size=default]:h-6 data-[size=default]:w-11",
+          "data-[size=sm]:h-5 data-[size=sm]:w-9",
+          "data-checked:bg-primary data-unchecked:bg-surface-3 data-unchecked:border-border-strong",
+          "data-disabled:cursor-not-allowed data-disabled:opacity-50",
+          "aria-invalid:outline-2 aria-invalid:outline-danger",
+        ].join(" "),
+        className
+      )}
+      {...props}
+    >
+      <SwitchPrimitive.Thumb
+        data-slot="switch-thumb"
+        className={cn(
+          "pointer-events-none block rounded-full bg-surface-overlay shadow-sm ring-0",
+          "transition-transform duration-200 ease-out-soft",
+          "group-data-[size=default]/switch:size-5 group-data-[size=sm]/switch:size-4",
+          "data-unchecked:translate-x-0.5",
+          "group-data-[size=default]/switch:data-checked:translate-x-[calc(100%+2px)]",
+          "group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%+2px)]"
+        )}
+      />
+    </SwitchPrimitive.Root>
+  )
+}
+
+export { Switch }

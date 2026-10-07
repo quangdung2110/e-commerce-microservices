@@ -1,9 +1,12 @@
 target/
-.git/
+*.class
+*.jar
+.git
 .idea/
 *.iml
 .vscode/
-.mvn/wrapper/maven-wrapper.jar
-.mvn/wrapper/maven-wrapper.jar.sha256
+*.md
+**/Dockerfile*
+**/.dockerignore
+**/src/test/
 *.log
-HELP.md

@@ -1,0 +1,14 @@
+{{template "h" "Thanh toán không thành công"}}
+<p style="margin:0 0 16px 0;">Lần thanh toán thứ {{.Attempt}} cho đơn hàng <strong>{{.OrderCode}}</strong> với số tiền <strong>{{money .AmountMinor .Currency}}</strong> không thành công. Đơn hàng chưa được xác nhận.</p>
+{{- if .CanRetry}}
+{{- if .HasRetryDeadline}}
+<p style="margin:0 0 16px 0;">Bạn có thể thanh toán lại trước <strong>{{date .Deadline .Timezone}}</strong>. Sau thời điểm này, đơn hàng sẽ tự động huỷ.</p>
+{{- else}}
+{{template "p" "Bạn có thể thanh toán lại để giữ đơn hàng."}}
+{{- end}}
+{{template "button" (dict "URL" .OrderURL "Label" "Thanh toán lại")}}
+{{- else}}
+{{template "p" "Đơn hàng không thể thanh toán lại. Nếu vẫn muốn mua, vui lòng đặt đơn hàng mới."}}
+{{template "button" (dict "URL" .OrderURL "Label" "Xem đơn hàng")}}
+{{- end}}
+{{template "p" "Nếu tài khoản của bạn đã bị trừ tiền, số tiền sẽ được hoàn lại theo quy định của đơn vị thanh toán."}}

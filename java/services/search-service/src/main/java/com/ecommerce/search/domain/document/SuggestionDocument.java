@@ -1,35 +1,39 @@
 package com.ecommerce.search.domain.document;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.Builder;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.time.Instant;
 
 /**
- * Elasticsearch document mapping 1:1 with {@code search_suggestions_v1} index.
+ * One entry of the {@code search_suggestions} index.
  *
- * <p>This index is rebuilt atomically on a daily cadence by {@code SuggestionRebuilder}.
- * Because there are no partial updates, no {@code version} field is needed —
- * ordering is guaranteed by the atomic alias-swap strategy.
+ * <p>A suggestion is a query-completion term, not a link to an entity: the public response
+ * exposes only {@code text} and {@code type}, and the client uses {@code text} as the
+ * {@code q} of the product search. {@code categoryId} / {@code productId} are kept for
+ * operational traceability of the build and never leave the service.
  *
- * <p>{@code productCount} is only meaningful for {@code CATEGORY} type suggestions.
+ * <p>{@code suggestionId} is the SHA-256 of {@code (type, scope, language,
+ * text_normalized)} joined with NUL, so a rebuild is deterministic
+ * ({@code docs/search/data.md §1.2}).
  */
-@Builder
-@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record SuggestionDocument(
-    @JsonProperty("suggestion_id") String suggestionId,
-    String text,
-    @JsonProperty("text_normalized") String textNormalized,
-    String type,
-    String source,
-    String scope,
-    @JsonProperty("category_id") String categoryId,
-    @JsonProperty("product_id") String productId,
-    Long weight,
-    @JsonProperty("product_rating_avg") Float productRatingAvg,
-    @JsonProperty("product_rating_count") Integer productRatingCount,
-    @JsonProperty("product_count") Long productCount,
-    @JsonProperty("build_version") Long buildVersion,
-    @JsonProperty("updated_at") Instant updatedAt
-) {}
+        String suggestionId,
+        String text,
+        String textNormalized,
+        String type,
+        String source,
+        String scope,
+        String language,
+
+        String categoryId,
+        String productId,
+
+        Long weight,
+        Double productRatingAvg,
+        Long productRatingCount,
+        Long productCount,
+
+        Long buildVersion,
+        Instant updatedAt) {
+}

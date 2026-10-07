@@ -1,103 +1,175 @@
 package com.ecommerce.search.config;
 
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.validation.annotation.Validated;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 
-@Data
-@Validated
+import java.time.Duration;
+import java.util.List;
+
+/**
+ * Runtime configuration of the Search Service, mirroring the configuration groups in
+ * {@code docs/search/operations.md §3}.
+ *
+ * <p>Only alias names are configurable — never physical index names. That is the
+ * precondition that makes reindex cutover work ({@code SEARCH-INV-007}, ADR-006).
+ */
 @ConfigurationProperties(prefix = "search")
-public class SearchProperties {
+public record SearchProperties(
+        Topics topics,
+        Aliases aliases,
+        QueryBudget query,
+        Pagination pagination,
+        Bulk bulk,
+        Reindex reindex,
+        Suggestions suggestions,
+        Tombstone tombstone,
+        Media media,
+        Gateway gateway,
+        Cors cors,
+        Export export) {
 
-    @NotNull
-    private Jwt jwt = new Jwt();
-
-    @NotNull
-    private Es es = new Es();
-
-    @NotNull
-    private Cors cors = new Cors();
-
-    @NotNull
-    private Pagination pagination = new Pagination();
-
-    @NotNull
-    private Topics topics = new Topics();
-
-    private Reindex reindex = new Reindex();
-    private Suggestions suggestions = new Suggestions();
-    private DraftCleanup draftCleanup = new DraftCleanup();
-
-    @Data
-    public static class Jwt {
-        private boolean trustGateway = true;
-        @NotBlank
-        private String claimsHeader = "X-User-Claims";
+    /** The five Kafka topics Search consumes. Search produces to none of them. */
+    public record Topics(
+            @DefaultValue("t.product.events") String product,
+            @DefaultValue("t.category.events") String category,
+            @DefaultValue("t.catalog.control.events") String catalogControl,
+            @DefaultValue("t.inventory.stock.events.v1") String stock,
+            @DefaultValue("t.review.events") String review) {
     }
 
-    @Data
-    public static class Es {
-        @Min(1000)
-        private int queryTimeoutProductMs = 5000;
-        @Min(500)
-        private int queryTimeoutSuggestMs = 2000;
-        @Min(1)
-        private int updateByQueryThrottleRps = 300;
-        @NotNull
-        private IndexAliases indexAliases = new IndexAliases();
+    /**
+     * Read and write alias names. {@code searchSuggestions} has no write alias: a build
+     * writes to the new physical index and publishes it with an atomic alias swap.
+     */
+    public record Aliases(
+            @DefaultValue("products") String products,
+            @DefaultValue("products_write") String productsWrite,
+            @DefaultValue("categories") String categories,
+            @DefaultValue("categories_write") String categoriesWrite,
+            @DefaultValue("search_suggestions") String searchSuggestions,
+            @DefaultValue("search_jobs") String searchJobs) {
     }
 
-    @Data
-    public static class IndexAliases {
-        @NotBlank private String products = "products";
-        @NotBlank private String productsWrite = "products_write";
-        @NotBlank private String categories = "categories";
-        @NotBlank private String categoriesWrite = "categories_write";
-        @NotBlank private String suggestions = "search_suggestions";
+    /**
+     * Client-side time budgets. These are the only quantified targets fixed at design
+     * level ({@code docs/search/operations.md §1}); Search never retries internally.
+     */
+    public record QueryBudget(
+            @DefaultValue("5s") Duration productTimeout,
+            @DefaultValue("2s") Duration suggestTimeout,
+            @DefaultValue("5s") Duration categoryTimeout,
+            @DefaultValue("2m") Duration updateByQueryTimeout,
+            @DefaultValue("1000") int cardinalityPrecisionThreshold,
+            @DefaultValue("50") int facetMaxOptions,
+            @DefaultValue("100") int facetMaxAttributes) {
     }
 
-    @Data
-    public static class Cors {
-        @NotBlank
-        private String allowedOrigins = "*";
+    public record Pagination(
+            @DefaultValue("20") int defaultSize,
+            @DefaultValue("100") int maxSize) {
     }
 
-    @Data
-    public static class Pagination {
-        @Min(1) private int defaultSize = 20;
-        @Min(1) @Max(100) private int maxSize = 100;
+    /**
+     * Client-enforced bulk throttling. {@code requestsPerSecond} throttles {@code _bulk}
+     * dispatch and must not be confused with the {@code requests_per_second} parameter of
+     * the ES task APIs, which is configured separately in {@link #taskRequestsPerSecond()}.
+     */
+    public record Bulk(
+            @DefaultValue("1000") int maxActions,
+            @DefaultValue("5242880") long maxBytes,
+            @DefaultValue("4") int maxInFlight,
+            @DefaultValue("20") double requestsPerSecond,
+            @DefaultValue("0.5") double throttleBackoffFactor,
+            @DefaultValue("1.1") double throttleRecoveryFactor,
+            @DefaultValue("20") int recoveryWindowRequests,
+            @DefaultValue("8") int maxRetries,
+            @DefaultValue("500ms") Duration initialBackoff,
+            @DefaultValue("30s") Duration maxBackoff,
+            @DefaultValue("300") float taskRequestsPerSecond) {
     }
 
-    @Data
-    public static class Reindex {
-        @Min(100) private int checkpointIntervalDocs = 5000;
-        @Min(100) private int buildChunkSize = 2000;
+    public record Reindex(
+            @DefaultValue("6h") Duration runDeadline,
+            @DefaultValue("500") int exportPageSize,
+            @DefaultValue("5") int catchUpZeroLagPolls,
+            @DefaultValue("10s") Duration catchUpPollTimeout,
+            @DefaultValue("30m") Duration catchUpDeadline,
+            @DefaultValue("0.02") double maxDocCountDriftRatio) {
     }
 
-    @Data
-    public static class Suggestions {
-        @NotBlank
-        private String rebuildCron = "0 0 3 * * *";
+    public record Suggestions(
+            @DefaultValue("0 0 3 * * *") String rebuildCron,
+            @DefaultValue("true") boolean rebuildEnabled,
+            @DefaultValue("1") long minDocs,
+            @DefaultValue("0.80") double minRatioToPreviousVersion,
+            @DefaultValue("5m") Duration pitKeepAlive,
+            @DefaultValue("5m") Duration leaseDuration,
+            @DefaultValue("1m") Duration leaseRenewInterval,
+            @DefaultValue("5000") double categoryWeightScale,
+            @DefaultValue("1000") double productWeightScale,
+            @DefaultValue("1.10") double promotionMultiplier,
+            @DefaultValue("9000000000000000000") long maxWeight,
+            @DefaultValue("vi") String language,
+            @DefaultValue("GLOBAL") String scope,
+            List<String> hotPrefixes) {
     }
 
-    @Data
-    public static class DraftCleanup {
-        @NotBlank
-        private String cron = "0 0 2 * * *";
-        @NotBlank
-        private String tombstonePurgerCron = "0 30 2 * * *";
-        @Min(1) private int gracePeriodHours = 24;
-        @Min(1) private int tombstoneRetentionDays = 30;
+    public record Tombstone(
+            @DefaultValue("0 30 2 * * *") String purgeCron,
+            @DefaultValue("true") boolean purgeEnabled,
+            @DefaultValue("30d") Duration protectionWindow,
+            @DefaultValue("0 0 */4 * * *") String productCountCron,
+            @DefaultValue("true") boolean productCountEnabled) {
     }
 
-    @Data
-    public static class Topics {
-        @NotBlank private String product = "t.product.events";
-        @NotBlank private String category = "t.category.events";
-        @NotBlank private String review = "t.review.events";
+    /**
+     * Thumbnail rendering. Product publishes an already-resolved
+     * {@code thumbnail_storage_key}; Search only turns it into a URL and never derives
+     * one from {@code media[]}.
+     */
+    public record Media(
+            @DefaultValue("https://cdn.local/") String cdnBaseUrl,
+            @DefaultValue("/static/placeholder-product.png") String placeholderUrl) {
+    }
+
+    /** Trusted headers injected by the API Gateway after JWT verification. */
+    public record Gateway(
+            @DefaultValue("X-User-Id") String userIdHeader,
+            @DefaultValue("X-User-Roles") String rolesHeader,
+            @DefaultValue("X-Request-Id") String requestIdHeader,
+            @DefaultValue("ADMIN") String adminRole) {
+    }
+
+    public record Cors(@DefaultValue("*") List<String> allowedOrigins) {
+    }
+
+    /** Internal export endpoints called only during a full reindex. */
+    public record Export(
+            @DefaultValue("http://product-service:8080") String productBaseUrl,
+            @DefaultValue("http://inventory-service:8080") String inventoryBaseUrl,
+            @DefaultValue("http://review-service:8080") String reviewBaseUrl,
+            /*
+             * Bearer service identity for Review's /internal/v1/** routes. Review splits
+             * its internal routes into two token groups, and Search is only allowed on the
+             * rating export; an empty value means the calls go out unauthenticated and
+             * Review answers 401.
+             */
+            @DefaultValue("") String reviewToken,
+            @DefaultValue("true") boolean reviewEnabled,
+            @DefaultValue("30s") Duration timeout,
+            /*
+             * How many Inventory snapshot sessions one bootstrap may burn through. A
+             * session expires 24 hours after creation, and a re-created one has to be paged
+             * from the first page, so repeatedly hitting the expiry means the import cannot
+             * keep up rather than that something transient happened — stop and alert
+             * instead of looping (WF-SEARCH-007).
+             */
+            @DefaultValue("2") int availabilitySnapshotMaxSessions,
+            /*
+             * The same budget for Review rating export sessions. A session that expires
+             * mid-scan forces the rating import to start over from the first page, so
+             * burning through the budget means the export cannot keep up (WF-SEARCH-009).
+             */
+            @DefaultValue("2") int ratingExportMaxSessions) {
     }
 }

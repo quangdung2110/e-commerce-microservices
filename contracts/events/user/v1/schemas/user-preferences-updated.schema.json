@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User Preferences Updated v1",
+  "allOf": [
+    { "$ref": "./user-event-common.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "com.ecommerce.user.preferences-updated.v1" },
+        "dataschema": { "const": "/contracts/events/user/v1/schemas/user-preferences-updated.schema.json" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["user_id", "email_enabled", "in_app_enabled", "marketing_enabled", "updated_at"],
+          "properties": {
+            "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
+            "email_enabled": { "type": "boolean" },
+            "in_app_enabled": { "type": "boolean" },
+            "marketing_enabled": { "type": "boolean" },
+            "updated_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
+          }
+        }
+      }
+    }
+  ]
+}

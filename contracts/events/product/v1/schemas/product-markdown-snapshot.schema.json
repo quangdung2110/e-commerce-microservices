@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/product/v1/schemas/product-markdown-snapshot.schema.json",
+  "title": "Product markdown snapshot v1 (compatibility shim)",
+  "description": "Schema này do Promotion sở hữu và đã chuyển sang contracts/events/promotion/v1/schemas/. File này chỉ giữ để dataschema URI cũ vẫn resolve; không sửa nội dung tại đây.",
+  "$ref": "../../../promotion/v1/schemas/product-markdown-snapshot.schema.json"
+}

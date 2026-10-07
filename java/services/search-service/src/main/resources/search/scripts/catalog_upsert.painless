@@ -1,0 +1,41 @@
+// Canonical catalog write path for `sku-upserted`.
+// Invoke with scripted_upsert: true and upsert: {}.
+// Required params: catalog_revision (long), indexed_at (ISO-8601), event_id,
+// and fields. `fields` may contain only catalog-owned product mapping fields;
+// it must never contain availability- or review-owned fields.
+if (ctx._source.is_deleted == true) { ctx.op = 'none'; return; }
+if (ctx._source.catalog_revision != null
+    && params.catalog_revision <= ctx._source.catalog_revision) {
+  ctx.op = 'none';
+  return;
+}
+
+for (entry in params.fields.entrySet()) {
+  String field = entry.getKey();
+  if (field == 'sku_id' || field == 'sku_code'
+      || field == 'product_id' || field == 'product_slug'
+      || field == 'category_id' || field == 'category_slug'
+      || field == 'category_name' || field == 'category_ancestor_ids'
+      || field == 'category_slug_path'
+      || field == 'name' || field == 'description' || field == 'thumbnail_storage_key'
+      || field == 'product_status' || field == 'sku_status'
+      || field == 'product_attribute_tokens' || field == 'variant_attribute_tokens'
+      || field == 'filter_tokens' || field == 'base_price_vnd'
+      || field == 'selling_price_vnd' || field == 'has_promotion'
+      || field == 'updated_at') {
+    ctx._source[field] = entry.getValue();
+  } else {
+    throw new IllegalArgumentException('catalog write attempted non-catalog field: ' + field);
+  }
+}
+
+// Only the first catalog write initializes Review-owned values. Later catalog
+// snapshots must preserve a newer review projection.
+if (!ctx._source.containsKey('product_rating_avg')) { ctx._source.product_rating_avg = 0.0; }
+if (!ctx._source.containsKey('product_rating_count')) { ctx._source.product_rating_count = 0; }
+
+ctx._source.is_deleted = false;
+ctx._source.catalog_revision = params.catalog_revision;
+ctx._source.catalog_indexed_at = params.indexed_at;
+ctx._source.indexed_at = params.indexed_at;
+ctx._source.last_catalog_event_id = params.event_id;

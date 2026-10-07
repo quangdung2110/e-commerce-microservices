@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/payment/v2/schemas/dispute-opened.schema.json",
+  "title": "Payment dispute opened v2",
+  "allOf": [
+    { "$ref": "./payment-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "dataschema", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.payment.dispute.opened.v2" },
+        "dataschema": { "const": "/contracts/events/payment/v2/schemas/dispute-opened.schema.json" },
+        "data": {
+          "type": "object",
+          "allOf": [
+            { "$ref": "payment-event-common.schema.json#/$defs/dispute_data" },
+            {
+              "type": "object",
+              "required": ["reason_code", "evidence_due_at"],
+              "properties": {
+                "reason_code": { "$ref": "payment-event-common.schema.json#/$defs/machine_code" },
+                "evidence_due_at": { "type": ["string", "null"], "format": "date-time" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

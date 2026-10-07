@@ -1,126 +1,135 @@
 package com.ecommerce.search.controller.api;
 
+import com.ecommerce.search.common.SearchException;
 import com.ecommerce.search.config.SearchProperties;
-import com.ecommerce.search.dto.ProductSearchResponse;
+import com.ecommerce.search.domain.model.SearchQuery;
+import com.ecommerce.search.domain.model.SortOption;
+import com.ecommerce.search.dto.SearchDtos;
+import com.ecommerce.search.service.CategoryFacetService;
+import com.ecommerce.search.service.CategoryTreeService;
 import com.ecommerce.search.service.ProductSearchService;
-import com.ecommerce.search.service.SearchParams;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.ResponseEntity;
+import com.ecommerce.search.service.SuggestionService;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.io.IOException;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 
 /**
- * REST controller for the product search API
- * ({@code GET /api/v1/search/products}).
+ * The four anonymous storefront endpoints of
+ * {@code contracts/http/search/v2/openapi.yaml}.
  *
- * <p>The primary search endpoint serving category browsing, full-text search,
- * and product discovery with cursor-based pagination and dynamic facets.
+ * <p>These are public reads behind the Gateway. The controller deliberately ignores every
+ * {@code X-User-*} header: the trust model for this path is anonymous, and a service that
+ * read identity here would be exploitable if it ever gained a public ingress
+ * ({@code docs/search/interfaces.md §2}).
  *
- * <p>Dynamic filters are passed as {@code filters[key]=value} query parameters
- * (e.g. {@code filters[brand]=Apple&filters[color]=Đen}) and are extracted
- * from the raw query string.
+ * <p>The controller only validates and normalises; ranking, DSL and cursor handling belong
+ * to the query layer.
  */
-@Slf4j
 @RestController
-@RequestMapping("/api/v1/search/products")
-@RequiredArgsConstructor
 public class ProductSearchController {
 
-    private final ProductSearchService productSearchService;
+    private static final int SUGGEST_MIN_LENGTH = 2;
+
+    private final ProductSearchService searchService;
+    private final SuggestionService suggestionService;
+    private final CategoryTreeService categoryTreeService;
+    private final CategoryFacetService facetService;
     private final SearchProperties properties;
 
-    /**
-     * Execute a product search with the given parameters.
-     *
-     * @param q            full-text search query (optional)
-     * @param category     category ID to filter by (optional)
-     * @param priceMin     minimum price (optional)
-     * @param priceMax     maximum price (optional)
-     * @param inStock      only show in-stock items (optional, defaults to true)
-     * @param hasPromotion only show promoted items (optional)
-     * @param sort         sort order (relevance/price_asc/price_desc/newest/rating)
-     * @param cursor       base64-encoded pagination cursor (optional)
-     * @param size         results per page (optional, default 20, max 100)
-     * @param request      the raw HTTP request (used to extract dynamic filters)
-     * @return a {@link ProductSearchResponse} with results and facets
-     */
-    @GetMapping
-    public ResponseEntity<ProductSearchResponse> search(
-            @RequestParam(required = false) String q,
-            @RequestParam(required = false) String category,
-            @RequestParam(required = false) Long priceMin,
-            @RequestParam(required = false) Long priceMax,
-            @RequestParam(required = false) Boolean inStock,
-            @RequestParam(required = false) Boolean hasPromotion,
-            @RequestParam(required = false) String sort,
-            @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) Integer size,
-            HttpServletRequest request) {
-
-        log.debug("GET /api/v1/search/products?q={}&category={}&sort={}&size={}",
-            q, category, sort, size);
-
-        // Extract dynamic filters from query string (filters[key]=value format)
-        Map<String, List<String>> filters = parseDynamicFilters(request);
-
-        // Build validated search params
-        SearchParams params = SearchParams.of(
-            q, category, filters, priceMin, priceMax,
-            inStock, hasPromotion, sort, cursor, size, properties);
-
-        // Execute search
-        ProductSearchResponse response = productSearchService.search(params);
-        return ResponseEntity.ok(response);
+    public ProductSearchController(ProductSearchService searchService,
+                                   SuggestionService suggestionService,
+                                   CategoryTreeService categoryTreeService,
+                                   CategoryFacetService facetService,
+                                   SearchProperties properties) {
+        this.searchService = searchService;
+        this.suggestionService = suggestionService;
+        this.categoryTreeService = categoryTreeService;
+        this.facetService = facetService;
+        this.properties = properties;
     }
 
-    /**
-     * Parse dynamic filter parameters from the raw query string.
-     *
-     * <p>Supports the format {@code filters[key]=value1&filters[key]=value2}
-     * for multi-value filters. Known parameters (q, category, etc.) are
-     * ignored — only {@code filters[...]} entries are extracted.
-     *
-     * @param request the HTTP servlet request
-     * @return a map of filter key to list of values, or {@code null} if none
-     */
-    private static Map<String, List<String>> parseDynamicFilters(HttpServletRequest request) {
-        String queryString = request.getQueryString();
-        if (queryString == null || queryString.isEmpty()) {
-            return null;
+    @GetMapping(value = "/api/v2/search/products", produces = MediaType.APPLICATION_JSON_VALUE)
+    public SearchDtos.SearchPage searchProducts(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String category,
+            @RequestParam(name = "filter", required = false) List<String> filters,
+            @RequestParam(name = "price_min", required = false) Long priceMin,
+            @RequestParam(name = "price_max", required = false) Long priceMax,
+            @RequestParam(name = "in_stock", required = false, defaultValue = "true") boolean inStock,
+            @RequestParam(name = "has_promotion", required = false) Boolean hasPromotion,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer size) throws IOException {
+
+        validatePriceRange(priceMin, priceMax);
+
+        SearchQuery request = new SearchQuery(
+                SearchQuery.normalizeQueryText(q),
+                Optional.ofNullable(category).filter(value -> !value.isBlank()),
+                filters == null ? List.of() : filters,
+                Optional.ofNullable(priceMin),
+                Optional.ofNullable(priceMax),
+                inStock,
+                Optional.ofNullable(hasPromotion),
+                SortOption.parse(sort),
+                resolveSize(size),
+                Optional.ofNullable(cursor).filter(value -> !value.isBlank()));
+
+        return searchService.search(request);
+    }
+
+    @GetMapping(value = "/api/v2/search/suggestions", produces = MediaType.APPLICATION_JSON_VALUE)
+    public SearchDtos.SuggestionList suggestions(
+            @RequestParam String q,
+            @RequestParam(required = false) Integer limit) throws IOException {
+
+        String prefix = q == null ? "" : q.trim();
+        if (prefix.length() < SUGGEST_MIN_LENGTH) {
+            throw SearchException.invalidParameter("q", "must be at least 2 characters");
         }
-
-        Map<String, List<String>> filters = new HashMap<>();
-        String[] pairs = queryString.split("&");
-
-        for (String pair : pairs) {
-            int idx = pair.indexOf("=");
-            if (idx < 0) continue;
-
-            String key = URLDecoder.decode(pair.substring(0, idx), StandardCharsets.UTF_8);
-            String value = idx + 1 < pair.length()
-                ? URLDecoder.decode(pair.substring(idx + 1), StandardCharsets.UTF_8)
-                : "";
-
-            // Match filters[key] pattern
-            if (key.startsWith("filters[") && key.endsWith("]")) {
-                String filterName = key.substring(8, key.length() - 1);
-                if (!filterName.isEmpty()) {
-                    filters.computeIfAbsent(filterName, k -> new ArrayList<>()).add(value);
-                }
-            }
+        int resolvedLimit = limit == null ? 8 : limit;
+        if (resolvedLimit < 1 || resolvedLimit > 20) {
+            throw SearchException.invalidParameter("limit", "must be between 1 and 20");
         }
+        return suggestionService.suggest(prefix, resolvedLimit);
+    }
 
-        return filters.isEmpty() ? null : filters;
+    @GetMapping(value = "/api/v2/search/categories", produces = MediaType.APPLICATION_JSON_VALUE)
+    public SearchDtos.CategoryTree categories() throws IOException {
+        return categoryTreeService.tree();
+    }
+
+    @GetMapping(value = "/api/v2/search/categories/{category_id}/facets", produces = MediaType.APPLICATION_JSON_VALUE)
+    public SearchDtos.FacetSet categoryFacets(@PathVariable("category_id") String categoryId) throws IOException {
+        return facetService.facetsOf(categoryId);
+    }
+
+    private int resolveSize(Integer size) {
+        if (size == null) {
+            return properties.pagination().defaultSize();
+        }
+        if (size < 1 || size > properties.pagination().maxSize()) {
+            throw SearchException.invalidParameter("size",
+                    "must be between 1 and " + properties.pagination().maxSize());
+        }
+        return size;
+    }
+
+    private static void validatePriceRange(Long priceMin, Long priceMax) {
+        if (priceMin != null && priceMin < 0) {
+            throw SearchException.invalidParameter("price_min", "must not be negative");
+        }
+        if (priceMax != null && priceMax < 0) {
+            throw SearchException.invalidParameter("price_max", "must not be negative");
+        }
+        if (priceMin != null && priceMax != null && priceMax < priceMin) {
+            throw SearchException.invalidParameter("price_max", "must be greater than or equal to price_min");
+        }
     }
 }

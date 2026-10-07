@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/inventory/v1/schemas/sku-availability-changed.schema.json",
+  "allOf": [
+    { "$ref": "./inventory-event-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["type", "subject", "data"],
+      "properties": {
+        "type": { "const": "com.ecommerce.inventory.sku-availability.changed.v1" },
+        "dataschema": { "const": "/contracts/events/inventory/v1/schemas/sku-availability-changed.schema.json" },
+        "subject": { "type": "string", "pattern": "^sku-availability/[^/]{1,128}$" },
+        "aggregatetype": { "const": "sku-availability" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sku_id", "is_in_stock", "availability_revision", "observed_at"],
+          "properties": {
+            "sku_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "is_in_stock": { "type": "boolean" },
+            "availability_revision": { "type": "integer", "minimum": 1 },
+            "observed_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{{template "h" "Đơn hàng đã giao thành công"}}
+<p style="margin:0 0 16px 0;">Đơn hàng <strong>{{.OrderCode}}</strong> đã được giao đầy đủ vào lúc {{date .CompletedAt .Timezone}}. Cảm ơn bạn đã mua sắm tại {{.Brand}}.</p>
+<p style="margin:0 0 8px 0;font-weight:bold;">Sản phẩm trong đơn</p>
+<ul style="margin:0 0 16px 0;padding:0 0 0 20px;">
+{{- range .ShownItems}}
+<li style="margin:0 0 6px 0;font-size:14px;">{{.Name}}{{with .Variant}} <span style="color:#6b7280;">({{.}})</span>{{end}} × {{.Quantity}}</li>
+{{- end}}
+{{- if .HiddenItems}}
+<li style="margin:0 0 6px 0;font-size:13px;color:#6b7280;list-style:none;margin-left:-20px;">… và {{plural .HiddenItems "sản phẩm"}} khác.</li>
+{{- end}}
+</ul>
+{{template "p" "Bạn thấy sản phẩm thế nào? Đánh giá của bạn giúp người mua khác lựa chọn tốt hơn và chỉ mất một phút."}}
+{{template "button" (dict "URL" .ReviewURL "Label" "Viết đánh giá")}}
+{{template "p" "Nếu có vấn đề với đơn hàng, vui lòng liên hệ bộ phận chăm sóc khách hàng để được hỗ trợ."}}

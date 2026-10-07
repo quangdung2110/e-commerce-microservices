@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/schemas/notification-delivered.schema.json",
+  "title": "Notification delivered v1",
+  "description": "Email được provider báo delivered, hoặc in-app đã ghi vào inbox.",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "source",
+        "dataschema",
+        "subject",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "const": "com.ecommerce.notification.delivered.v1"
+        },
+        "source": {
+          "const": "/services/notification"
+        },
+        "dataschema": {
+          "const": "/contracts/events/notification/v1/schemas/notification-delivered.schema.json"
+        },
+        "subject": {
+          "$ref": "notification-event-common.schema.json#/$defs/outcome_subject"
+        },
+        "data": {
+          "allOf": [
+            {
+              "$ref": "notification-event-common.schema.json#/$defs/outcome_core"
+            },
+            {
+              "type": "object",
+              "required": [
+                "delivered_at"
+              ],
+              "properties": {
+                "delivered_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    }
+  ]
+}

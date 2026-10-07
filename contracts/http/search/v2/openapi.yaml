@@ -1,0 +1,507 @@
+openapi: 3.1.0
+info:
+  title: Search Service Storefront API
+  version: 2.1.0
+  description: >-
+    Contract đích cho storefront search/browse và vận hành reindex. Search là
+    Elasticsearch projection eventual-consistent, không phải nguồn catalog, giá
+    hay tồn kho để quyết định giao dịch. Mỗi item là một Product đại diện bởi SKU giá bán thấp nhất thỏa bộ lọc; facet và
+    category count đếm DISTINCT product_id.
+    Gateway local chỉ expose bốn endpoint storefront bằng GET tại /api/v2/search;
+    reindex-runs dùng router riêng xác thực JWT qua gateway-auth, role ADMIN do
+    Search kiểm tra. Không có route Search v1.
+x-adoption-status: proposed
+servers:
+  - url: http://localhost:8081
+    description: Local Docker Compose
+  - url: http://search-service:8080
+    description: Internal cluster endpoint
+tags:
+  - name: Storefront search
+  - name: Search operations
+paths:
+  /api/v2/search/products:
+    get:
+      tags: [Storefront search]
+      operationId: searchProducts
+      summary: Search và browse Product catalog đang hiển thị
+      description: >-
+        Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài
+        giây so với Product/Inventory. Không dùng response này để reserve, chốt
+        giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break;
+        cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó.
+        Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp,
+        newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp.
+        Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Category'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/PriceMin'
+        - $ref: '#/components/parameters/PriceMax'
+        - $ref: '#/components/parameters/InStock'
+        - $ref: '#/components/parameters/HasPromotion'
+        - $ref: '#/components/parameters/SearchSort'
+        - $ref: '#/components/parameters/SearchCursor'
+        - $ref: '#/components/parameters/SearchSize'
+      responses:
+        '200':
+          description: Trang Product duy nhất; total_products chính xác trong cùng snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ElasticsearchUnavailable' }
+        '504': { $ref: '#/components/responses/SearchTimeout' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v2/search/suggestions:
+    get:
+      tags: [Storefront search]
+      operationId: suggestSearchTerms
+      summary: Gợi ý autocomplete từ projection pre-compute
+      description: >-
+        q có tối thiểu hai ký tự. Đây là capability degrade độc lập: client có
+        thể ẩn dropdown khi endpoint lỗi mà không chặn search chính. Mỗi item là
+        một cụm từ để hoàn tất truy vấn: khi được chọn, client dùng text làm q
+        cho tìm kiếm sản phẩm. Item không phải link đến Product, SKU hay Category
+        và response không cung cấp định danh để điều hướng.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/SuggestQuery'
+        - $ref: '#/components/parameters/SuggestLimit'
+      responses:
+        '200':
+          description: Suggestions theo weight giảm dần và text tăng dần khi hòa.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuggestionList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ElasticsearchUnavailable' }
+        '504': { $ref: '#/components/responses/SearchTimeout' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v2/search/categories:
+    get:
+      tags: [Storefront search]
+      operationId: getCategoryTree
+      summary: Lấy cây category storefront
+      description: >-
+        Chỉ category chưa tombstone được trả. product_count là DISTINCT Product
+        do job định kỳ tính lại, nên có thể trễ hơn search result.
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200':
+          description: Cây category đã materialize; node mồ côi bị loại khỏi response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryTree' }
+        '503': { $ref: '#/components/responses/ElasticsearchUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v2/search/categories/{category_id}/facets:
+    get:
+      tags: [Storefront search]
+      operationId: getCategoryFacets
+      summary: Lấy filter facets khả dụng trong một nhánh category
+      description: >-
+        Counts dùng cùng visibility filters với search (ACTIVE, chưa xóa và
+        in_stock=true mặc định), đếm DISTINCT product_id bằng cardinality nên là
+        ước lượng. Filter option value là opaque token để gửi lại qua query
+        parameter filter của searchProducts.
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Facet bootstrap cho category; không nhận buyer-selected filters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FacetSet' }
+        '404': { $ref: '#/components/responses/CategoryNotFound' }
+        '503': { $ref: '#/components/responses/ElasticsearchUnavailable' }
+        '504': { $ref: '#/components/responses/SearchTimeout' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v2/search/reindex-runs:
+    post:
+      tags: [Search operations]
+      operationId: createReindexRun
+      summary: Trigger full reindex bất đồng bộ
+      description: >-
+        Chỉ ADMIN qua Gateway. Server lấy actor từ trusted identity header, không
+        tin actor do body tự khai. Một reindex chưa kết thúc sẽ chặn trigger mới.
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReindexRunRequest' }
+      responses:
+        '202':
+          description: Run đã được nhận; công việc tiếp tục nền.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReindexRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/ReindexAlreadyRunning' }
+        '503': { $ref: '#/components/responses/ElasticsearchUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v2/search/reindex-runs/{run_id}:
+    get:
+      tags: [Search operations]
+      operationId: getReindexRun
+      summary: Đọc trạng thái một full reindex run
+      security: [{ gatewayIdentity: [], gatewayRoles: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReindexRunId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Trạng thái và tiến độ hiện tại của run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReindexRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ReindexRunNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted identity do API Gateway inject sau JWT verification; không phải public header.
+    gatewayRoles:
+      type: apiKey
+      in: header
+      name: X-User-Roles
+      description: Trusted roles do API Gateway inject; operation yêu cầu role ADMIN.
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    SearchQuery:
+      name: q
+      in: query
+      required: false
+      description: Trim, lower-case và collapse whitespace trước khi fingerprint cursor.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    Category:
+      name: category
+      in: query
+      required: false
+      description: Category ID hoặc slug; Search resolve từ projection category hiện hành.
+      schema: { type: string, minLength: 1, maxLength: 180 }
+    Filter:
+      name: filter
+      in: query
+      required: false
+      style: form
+      explode: true
+      description: >-
+        Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ
+        filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search
+        sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép.
+        OR trong cùng attribute code, AND giữa code khác nhau.
+      schema:
+        type: array
+        maxItems: 50
+        items: { type: string, minLength: 1, maxLength: 256 }
+    PriceMin:
+      name: price_min
+      in: query
+      required: false
+      schema: { type: integer, format: int64, minimum: 0, x-currency: VND }
+    PriceMax:
+      name: price_max
+      in: query
+      required: false
+      description: Must be greater than or equal to price_min when both are supplied.
+      schema: { type: integer, format: int64, minimum: 0, x-currency: VND }
+    InStock:
+      name: in_stock
+      in: query
+      required: false
+      schema: { type: boolean, default: true }
+    HasPromotion:
+      name: has_promotion
+      in: query
+      required: false
+      schema: { type: boolean }
+    SearchSort:
+      name: sort
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/SearchSort' }
+    SearchCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque signed cursor từ next_cursor; không tự sinh hoặc dùng lại với query khác. Cursor SKU cũ không còn hợp lệ.
+      schema: { type: string, minLength: 1, maxLength: 16384 }
+    SearchSize:
+      name: size
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    SuggestQuery:
+      name: q
+      in: query
+      required: true
+      schema: { type: string, minLength: 2, maxLength: 256 }
+    SuggestLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 20, default: 8 }
+    CategoryId:
+      name: category_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    ReindexRunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: Opaque UUID owned by the upstream service or Search for run IDs.
+    SearchSort:
+      type: string
+      enum: [relevance, price_asc, price_desc, newest, rating]
+      default: relevance
+    SearchPage:
+      type: object
+      additionalProperties: false
+      required: [items, total_products, next_cursor, facets]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SearchProductItem' }
+        total_products:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Exact number of distinct matching products in the PIT snapshot.
+        next_cursor:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 16384
+          description: Null khi không còn Product tiếp theo.
+        facets: { $ref: '#/components/schemas/FacetSet' }
+    SearchProductItem:
+      description: Một Product duy nhất; sku_id, giá, thumbnail và tồn kho thuộc SKU đại diện giá thấp nhất thỏa tất cả bộ lọc.
+      type: object
+      additionalProperties: false
+      required:
+        - sku_id
+        - product_id
+        - product_slug
+        - name
+        - thumbnail_url
+        - base_price_vnd
+        - selling_price_vnd
+        - discount_percentage
+        - product_rating_avg
+        - product_rating_count
+        - is_in_stock
+      properties:
+        sku_id: { $ref: '#/components/schemas/Uuid' }
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        product_slug: { type: string, minLength: 1, maxLength: 180 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        thumbnail_url:
+          type: string
+          format: uri-reference
+          maxLength: 2048
+          description: CDN URL hoặc configured placeholder; không phải thumbnail_storage_key.
+        base_price_vnd: { type: integer, format: int64, minimum: 0, x-currency: VND }
+        selling_price_vnd: { type: integer, format: int64, minimum: 0, x-currency: VND }
+        discount_percentage: { type: integer, minimum: 0, maximum: 100 }
+        product_rating_avg:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 5
+        product_rating_count: { type: integer, format: int64, minimum: 0 }
+        is_in_stock:
+          type: boolean
+          description: Eventual Inventory snapshot, không phải kết quả reserve.
+    SuggestionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/Suggestion' }
+    Suggestion:
+      type: object
+      additionalProperties: false
+      required: [text, type]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 255 }
+        type:
+          type: string
+          description: >-
+            Suggestion kind for dropdown presentation only; it is not a navigation
+            target and clients must tolerate newly added types.
+          maxLength: 64
+    CategoryTree:
+      type: object
+      additionalProperties: false
+      required: [count_semantics, categories]
+      properties:
+        count_semantics: { const: DISTINCT_PRODUCT }
+        categories:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/CategoryNode' }
+    CategoryNode:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, slug, product_count, product_count_updated_at, children]
+      properties:
+        category_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, minLength: 1, maxLength: 180 }
+        product_count: { type: integer, format: int64, minimum: 0 }
+        product_count_updated_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Null cho tới khi job recompute chạy lần đầu cho node này; category_upsert
+            không khởi tạo số đếm.
+        children:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/CategoryNode' }
+    FacetSet:
+      type: object
+      additionalProperties: false
+      required: [count_semantics, count_accuracy, filters]
+      properties:
+        count_semantics: { const: DISTINCT_PRODUCT }
+        count_accuracy: { const: APPROXIMATE }
+        filters:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AttributeFacet' }
+    AttributeFacet:
+      type: object
+      additionalProperties: false
+      required: [code, label, type, options]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        label: { type: string, minLength: 1, maxLength: 160 }
+        type: { const: MULTI_SELECT }
+        options:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/FacetOption' }
+    FacetOption:
+      type: object
+      additionalProperties: false
+      required: [value, label, count]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Opaque token accepted by the repeatable filter parameter.
+        label: { type: string, minLength: 1, maxLength: 160 }
+        count: { type: integer, format: int64, minimum: 0 }
+    CreateReindexRunRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    ReindexRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, status, phase, progress, status_url, started_at, finished_at, failure]
+      properties:
+        run_id: { $ref: '#/components/schemas/Uuid' }
+        status:
+          type: string
+          description: >-
+            SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc
+            Build/Catch-up; run bị bỏ, alias giữ nguyên và một run mới được coalesce.
+          enum: [STARTED, BUILDING, CATCHING_UP, CUTOVER, COMPLETED, FAILED, ROLLED_BACK, SUPERSEDED]
+        phase:
+          type: [string, 'null']
+          enum: [BUILDING, CATCHING_UP, CUTOVER, null]
+        progress: { $ref: '#/components/schemas/ReindexProgress' }
+        status_url: { type: string, format: uri-reference, maxLength: 2048 }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        failure:
+          oneOf:
+            - $ref: '#/components/schemas/ReindexFailure'
+            - type: 'null'
+    ReindexProgress:
+      type: object
+      additionalProperties: false
+      required:
+        - categories_exported
+        - products_exported
+        - stock_snapshots_imported
+        - rating_aggregates_imported
+        - catch_up_lag
+      properties:
+        categories_exported: { type: integer, format: int64, minimum: 0 }
+        products_exported: { type: integer, format: int64, minimum: 0 }
+        stock_snapshots_imported: { type: integer, format: int64, minimum: 0 }
+        rating_aggregates_imported: { type: integer, format: int64, minimum: 0 }
+        catch_up_lag: { type: [integer, 'null'], format: int64, minimum: 0 }
+    ReindexFailure:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string, minLength: 3, maxLength: 64 }
+        message: { type: string, minLength: 1, maxLength: 500 }
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+  responses:
+    BadRequest:
+      description: INVALID_QUERY_PARAMETER hoặc INVALID_CURSOR.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Missing or invalid trusted Gateway identity.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: Caller does not have role ADMIN.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    CategoryNotFound:
+      description: CATEGORY_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReindexRunNotFound:
+      description: REINDEX_RUN_NOT_FOUND.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ReindexAlreadyRunning:
+      description: REINDEX_ALREADY_RUNNING; retry after the active run completes.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ElasticsearchUnavailable:
+      description: ELASTICSEARCH_UNAVAILABLE; retryable infrastructure failure.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    SearchTimeout:
+      description: SEARCH_TIMEOUT; Search did not retry internally.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    InternalError:
+      description: INTERNAL_ERROR.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

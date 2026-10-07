@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/REVIEW_REPLIED.schema.json",
+  "title": "REVIEW_REPLIED template_data (mapped 1-1 from reviewReplyNotificationRequested)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["review_id", "product_id", "review_url"],
+  "properties": {
+    "review_id": { "type": "string", "format": "uuid" },
+    "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "review_url": { "type": "string", "format": "uri", "maxLength": 2048 }
+  }
+}

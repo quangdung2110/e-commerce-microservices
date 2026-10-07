@@ -1,98 +1,81 @@
-# API Gateway Architecture Design
+# Thiết kế kiến trúc API Gateway
 
-## 1. Overview
-API Gateway đóng vai trò là điểm vào duy nhất (Single Entry Point) cho toàn bộ hệ thống E-Commerce Microservices. Nhiệm vụ chính của Gateway bao gồm Routing, Rate Limiting, Authentication (Xác thực) và Logging / Tracing
+## Mục đích
 
+API Gateway là biên công khai của nền tảng E-Commerce microservices. Nó cung cấp một ranh giới API ổn định, trong khi các service vẫn sở hữu hành vi domain và phân quyền. Hành vi vận hành được định nghĩa trong [runtime-contract.md](runtime-contract.md); tài liệu này giải thích kiến trúc.
 
-## 2. Routing (Định tuyến thông minh)
-Gateway đóng vai trò như một "bảng chỉ đường" trung tâm. Client chỉ cần gọi một endpoint duy nhất, Gateway sẽ dựa vào path, method, header để điều hướng request đến đúng downstream service.
+## Kiến trúc
 
-### 2.1. Cơ chế Routing
-- **Path-based routing:**  
-  - `/api/users/**` → `user-service`  
-  - `/api/orders/**` → `order-service`  
-  - `/api/products/**` → `product-service`  
-  - `/api/payments/**` → `payment-service`
-- **Dynamic Service Discovery:** Gateway không cấu hình cứng địa chỉ service, mà sử dụng **Service Registry** (Consul, Eureka, hoặc Kubernetes DNS) để lấy danh sách các instance đang healthy. Cơ chế `Round Robin` hoặc `Least Connection` được dùng để load balancing nội bộ.
-
-## 3. Authentication Strategy (Uniform Security Checking)
-
-Hệ thống sử dụng chiến lược **Stateless Authentication** thông qua JSON Web Token (JWT) kết hợp với **Redis Denylist** để xử lý bài toán thu hồi token (Token Revocation).
-
-### 3.1. Authentication Flow
-Khi một request có mang JWT đi qua API Gateway, quy trình sau sẽ được thực hiện:
-
-1. **Token Extraction:** Trích xuất JWT từ header `Authorization: Bearer <token>`.
-2. **Signature Verification (Local Cache First):**
-   - Extract `kid` (Key ID) từ JWT header.
-   - Tìm kiếm Public Key trong **Local Cache (Caffeine/Guava)** của Gateway.
-   - **Trường hợp Cache Hit:** Dùng Public Key để verify chữ ký.
-   - **Trường hợp Cache Miss:**
-     - Gọi Auth Service endpoint `GET /.well-known/jwks.json`.
-     - Cập nhật toàn bộ JWKS vào Local Cache.
-     - Nếu tìm thấy `kid` mới -> Verify. Nếu vẫn không thấy -> Reject request (401 Unauthorized).
-3. **Claim Validation:** Kiểm tra các thông tin thời gian như `exp` (Expiration Time) và `nbf` (Not Before). Nếu token đã hết hạn, lập tức reject (401 Unauthorized).
-4. **Denylist Check (Redis Lookup):**
-   - Extract claim `jti` (JWT ID - định danh duy nhất của token).
-   - Thực hiện query tới Redis Cluster: `GET auth:denylist:{jti}`.
-   - Nếu tồn tại: Token đã bị thu hồi ➔ Reject request (401 Unauthorized).
-5. **Revocation Check (User Revision):** Kiểm tra claim `iat` (Issued At) với giá trị `auth:revoked_before:{user_id}` trên Redis để xử lý Force Logout/Password Change.
-6. **Header Enrichment:** API Gateway extract payload (`user_id`, `roles`, `device_id`) đưa vào header (vd: `X-User-Id`, `X-User-Roles`) để truyền xuống các downstream service.
-
-### 3.2. WebSocket Authentication
-
-**API Gateway chỉ verify JWT tại thời điểm WebSocket handshake (HTTP Upgrade)**. Sau khi WebSocket được thiết lập thành công, Gateway proxy trực tiếp các frame giữa client và downstream service mà không filter từng frame.
-
-**Hệ quả bảo mật:**
-- Nếu token bị revoke sau khi WebSocket đã established, các frame vẫn đi qua Gateway
-- Hacker đã mở WebSocket trước khi bị phát hiện vẫn có thể gửi/nhận data với Chat Service với identity đã được enriched lúc handshake
-- Do đó, khi Auth Service phát hiện `TOKEN_THEFT_DETECTED`, nó sẽ:
-  1. SET `auth:revoked_before:{user_id}` để chặn mọi **request HTTP** tiếp theo
-  2. Publish `TOKEN_THEFT_DETECTED` event để downstream services (đặc biệt là Chat Service) chủ động **đóng WebSocket connection** của user đó
-
-**Giải pháp thay thế (nếu cần):**
-- Nếu muốn Gateway active filter mọi WebSocket frame, cần implement stateful proxy tại Gateway, tốn thêm tài nguyên và phức tạp hơn nhiều.
-
-## 4. Performance & Optimizations
-- **JWKS Local Cache:** Gateway duy trì một bản sao của JWKS trong bộ nhớ nội bộ (TTL 10 phút). Điều này giúp loại bỏ hoàn toàn network call đến Auth Service trong điều kiện bình thường.
-- **Immediate Invalidation (Redis Pub/Sub):** Gateway subscribe vào channel `auth:jwks:update`. Khi Auth Service xoay key, Gateway sẽ xóa cache local ngay lập tức để lấy key mới, đảm bảo tính nhất quán mà không phụ thuộc hoàn toàn vào TTL.
-- **Connection Pooling:** API Gateway duy trì persistent connection tới Redis Cluster để tối ưu hóa việc lookup Denylist.
-
-## 5. Authorization (Phân quyền)
-- API Gateway **KHÔNG** làm nhiệm vụ Authorization (kiểm tra quyền hạn). 
-- Gateway chỉ trả lời câu hỏi: *"Mày là ai và token này có hợp lệ không?"*.
-- Câu hỏi *"Mày được làm gì (Mày có quyền sửa order không)?"* được ủy quyền hoàn toàn (delegate) cho từng Downstream Service cụ thể kiểm tra, vì chỉ có các service đó mới nắm Business Context.
-
-## 6. Rate Limiting (Giới hạn tốc độ)
-Bảo vệ hệ thống khỏi bị lạm dụng (DDoS, brute force, crawler quá mức) bằng cách giới hạn số request từ một client trong một khoảng thời gian.
-
-## 7. Logging & Tracing (OpenTelemetry Integration)
-Đây là phần giúp toàn bộ hệ thống có khả năng quan sát (observability). Gateway là điểm đầu tiên sinh ra **Trace ID** và đảm bảo nó được truyền xuyên suốt.
-
-### 7.1. Logging chi tiết
-Mỗi request qua Gateway đều được ghi log dưới dạng JSON với các trường bắt buộc:
-
-```json
-{
-  "timestamp": "2025-05-02T10:23:45.100Z",
-  "level": "info",
-  "trace_id": "a1b2c3d4e5f6...",
-  "span_id": "span001",
-  "service": "api-gateway",
-  "event": "request_received",
-  "method": "GET",
-  "path": "/api/orders/123",
-  "client_ip": "192.168.1.100",
-  "user_id": "789",
-  "duration_ms": 0
-}
+```
+Client
+  │ HTTPS + W3C trace context
+  ▼
+API Gateway (Traefik)
+  ├─ TLS, routing, health, timeouts/retry
+  ├─ distributed rate/concurrency protection
+  ├─ access logs, metrics, OTLP traces
+  └─ ForwardAuth
+       │
+       ▼
+gateway-auth ───► Auth Service (JWKS)
+       │                 │
+       │                 └── ghi revoke/denylist ──► Redis
+       └── đọc revoke/denylist ───────────────────► Redis
+       │
+       ▼
+User / Order / Product / Payment / Chat services
+       │
+       ▼
+OpenTelemetry Collector → traces (Jaeger), access logs qua filelog receiver (Loki)
+(Prometheus scrape metrics trực tiếp từ gateway/auth, không qua Collector)
 ```
 
-### 7.2. Distributed Tracing với OpenTelemetry
-**Trace ID sinh tại Gateway:** Nếu request không có header traceparent, Gateway sinh mới.
-**Inject header:** Mỗi khi Gateway gọi downstream service (bằng HTTP/gRPC), nó tự động thêm header traceparent: 00-{trace_id}-{span_id}-01.
-**Span tạo tự động:**
-   - Span root: Xử lý toàn bộ request tại Gateway.
-   - Span con cho mỗi lần gọi service (order-service, product-service...).
-   - Span con cho database query (nếu Gateway có cache hay gọi DB).
-**Log correlation:** Logger của Gateway được cấu hình để tự động lấy trace_id và span_id từ context hiện tại (xem phần 7.1). Nhờ đó, mọi dòng log đều gắn kết với trace.
+Gateway được giữ mỏng: không tổng hợp business data, không query database của service và không quyết định resource ownership.
+
+Trên Kubernetes, Traefik và `gateway-auth` là workload trong service mesh (Istio ambient, namespace `edge`): hop Traefik → service đi qua mTLS và mang principal `edge/traefik`, còn mesh chỉ cho principal đó chạm tới route public của service. Gateway giữ north-south; mesh giữ east-west; không có Istio Ingress Gateway. Kiến trúc và ma trận phân quyền nằm trong [mesh/design.md](../mesh/design.md).
+
+## Định tuyến và khả năng phục hồi
+
+Route dùng host/path/method rules và chỉ map đến service đã khai báo. Docker label discovery hỗ trợ local development; Kubernetes Gateway API/CRDs là nguồn production (trên Kubernetes, Traefik dựa vào readiness của Endpoints thay vì active health check để không phải mở path health qua mesh). Mọi service có health checks, timeouts giới hạn và retry behavior theo idempotency. Quy ước định nghĩa route priority, hành vi với path không xác định, WebSocket và Stripe webhook exceptions.
+
+### Ngân sách timeout và hủy request
+
+Gateway áp dụng một ngân sách timeout xuyên suốt thay vì để từng lớp dùng giá trị mặc định không giới hạn. Đọc request client tối đa 15 giây, ghi response tối đa 60 giây và keep-alive idle tối đa 120 giây. Kết nối upstream tối đa 3 giây; response header của public/auth API, business API và payment API lần lượt tối đa 10, 25 và 20 giây.
+
+Stripe webhook có tổng ngân sách proxy 5 giây, không retry và không buffer/biến đổi body. ForwardAuth có deadline 3 giây; JWKS là 3 giây và Redis là 1 giây. Nếu bất kỳ dependency xác thực nào hết thời gian, route protected trả `503` và tuyệt đối không fail open.
+
+Khi client hủy request hoặc gateway hết deadline, context bị hủy được truyền xuống upstream và `gateway-auth`. Service đặt deadline nội bộ ngắn hơn gateway ít nhất một giây. Retry chỉ được bắt đầu nếu còn đủ ngân sách cho lần thử kế tiếp và chỉ áp dụng cho method idempotent. Quy ước vận hành quy định đầy đủ các giá trị, mã lỗi và graceful shutdown trong [runtime-contract.md](runtime-contract.md#51-ngân-sách-timeout).
+
+## Xác thực và phân quyền
+
+Traefik gọi `gateway-auth` thông qua ForwardAuth trên protected routes. `auth-service` sở hữu public auth API, phát JWT và công bố JWKS; `gateway-auth` không phát token hay giữ private signing key. Nó verify JWT issuer, audience, signature algorithm, expiry, JWKS, denylist và user-wide revocation, sau đó phát một tập identity headers tối thiểu trong allowlist.
+
+`auth-service` ghi trạng thái revoke vào Redis logical store dùng chung, còn `gateway-auth` chỉ đọc trạng thái này trong đường xác thực. JWKS được `gateway-auth` cache và hỗ trợ key rotation: khi Auth Service/JWKS tạm không truy cập được nhưng key cache vẫn hợp lệ, token vẫn được verify từ cache; chỉ khi không có key cache dùng được mới fail closed. Contract chung về claims, JWKS và Redis được định nghĩa trong [runtime-contract.md](runtime-contract.md#6-quy-ước-xác-thực).
+
+Thiết kế này thay legacy Traefik plugin bằng service lifecycle bình thường, có thể test độc lập. Authentication dependency failure fail closed.
+
+Mỗi downstream service sở hữu authorization. Ví dụ, Order Service quyết định identity đã authenticate có được sửa một order cụ thể hay không. Service chỉ tin cậy identity headers khi caller là Traefik — điều mesh bảo đảm bằng `AuthorizationPolicy` theo principal ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)) — và Traefik chặn việc client inject trực tiếp chúng, kể cả `X-Service-Identity` vốn chỉ có nghĩa giữa các service trong mesh.
+
+## Giới hạn tốc độ
+
+Redis-backed shared state làm quota đúng trên nhiều gateway replicas. Chính sách phân biệt anonymous IP traffic, authenticated identity/API-key/tenant traffic, payment action, WebSocket handshake và Stripe delivery. Body size và concurrency controls bổ trợ rate limits. Payment write và provider webhook không bao giờ bị gateway retry; Payment Service sở hữu idempotency.
+
+## Khả năng quan sát
+
+Gateway tiếp tục hoặc bắt đầu W3C Trace Context và export OTLP traces tới OpenTelemetry Collector. Access logs là JSON xuất ra stdout; cùng một Collector đọc log qua `filelog` receiver và export sang Loki, giữ nguyên `trace_id`/`span_id` để correlate log với trace. Private metrics (Prometheus scrape trực tiếp endpoint `metrics`, không qua Collector) hỗ trợ SLOs và alerts; latency histogram mang exemplar `trace_id` để Grafana bật click-through từ điểm trên biểu đồ metric sang trace tương ứng — với `gateway-auth`, exemplar do team tự implement nên đảm bảo được; với Traefik, exemplar phụ thuộc khả năng của framework và hiện là best-effort ([technology_choice.md](technology_choice.md#quyết-định-prometheus-exemplars)). Tokens, cookies, request bodies, Stripe signatures, passwords và full query strings được redact khỏi cả log lẫn trace.
+
+Application services phải được instrument riêng để trace có thể đi xuyên gateway, authentication và business operation. Ba pillar quan sát (traces/Jaeger, logs/Loki, metrics/Prometheus) đều hiển thị qua một Grafana duy nhất, cho phép triage theo chuỗi metric spike → log chi tiết → trace end-to-end mà không cần chuyển công cụ.
+
+## WebSocket và webhook
+
+WebSocket authenticate tại HTTP Upgrade handshake, sau đó frame được proxy mà không inspect từng frame. Chat Service có trách nhiệm đóng sessions sau revocation events.
+
+WebSocket handshake có timeout 10 giây. Sau khi kết nối được nâng cấp, HTTP timeout không quản lý frame; Chat Service gửi ping mỗi 30 giây và đóng connection không có pong trong 90 giây. Khi gateway drain lúc rollout, client cần reconnect.
+
+`POST /api/payments/webhook/stripe` bypass JWT vì Payment Service verify `Stripe-Signature` trên raw body không thay đổi. Gateway áp dụng IP/rate policy riêng, forward nhanh và không retry.
+
+## Ranh giới bảo mật và các mục tiêu không thuộc phạm vi
+
+Traffic công khai chỉ dùng HTTPS; forwarded headers chỉ tin cậy từ proxy đã cấu hình. Metrics và dashboard là private operational endpoints. Secrets được externalize, images/configuration được validate trong CI và containers áp dụng least privilege.
+
+Gateway không phải backend-for-frontend aggregation layer, centralized business-authorization engine, per-WebSocket-frame security proxy, thay thế service telemetry, hoặc nơi thực thi phân quyền service-to-service (thuộc mesh).

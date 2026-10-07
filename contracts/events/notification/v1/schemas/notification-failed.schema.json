@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.ecommerce.local/events/notification/v1/schemas/notification-failed.schema.json",
+  "title": "Notification failed v1",
+  "description": "Delivery vào trạng thái cuối FAILED hoặc EXPIRED.",
+  "allOf": [
+    {
+      "$ref": "../../../../shared/json-schema/v1/cloud-event.schema.json"
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "source",
+        "dataschema",
+        "subject",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "const": "com.ecommerce.notification.failed.v1"
+        },
+        "source": {
+          "const": "/services/notification"
+        },
+        "dataschema": {
+          "const": "/contracts/events/notification/v1/schemas/notification-failed.schema.json"
+        },
+        "subject": {
+          "$ref": "notification-event-common.schema.json#/$defs/outcome_subject"
+        },
+        "data": {
+          "allOf": [
+            {
+              "$ref": "notification-event-common.schema.json#/$defs/outcome_core"
+            },
+            {
+              "type": "object",
+              "required": [
+                "final_status",
+                "reason_code",
+                "attempts"
+              ],
+              "properties": {
+                "final_status": {
+                  "type": "string",
+                  "enum": [
+                    "FAILED",
+                    "EXPIRED"
+                  ]
+                },
+                "reason_code": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{2,63}$",
+                  "description": "Mã ổn định theo docs/notification/08-decide.md §7, cộng provider_error, no_recipient, lease_expired, expired."
+                },
+                "attempts": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,441 @@
+openapi: 3.1.0
+info:
+  title: User Service HTTP API
+  version: 1.0.0
+  description: >-
+    Contract đích cho User Service. User sở hữu profile, address book và
+    preferences; không sở hữu email, credential, role hay trạng thái account.
+x-adoption-status: proposed
+tags:
+  - name: Profile
+  - name: Addresses
+  - name: Preferences
+  - name: Checkout Internal
+
+paths:
+  /api/v1/users/me/profile:
+    get:
+      tags: [Profile]
+      operationId: getMyProfile
+      summary: Đọc profile của caller hiện tại
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200':
+          description: Profile hiện tại.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Profile' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      tags: [Profile]
+      operationId: patchMyProfile
+      summary: Cập nhật một phần profile của caller hiện tại
+      description: >-
+        Dùng JSON Merge Patch. Field không gửi giữ nguyên; `null` xóa giá trị
+        nullable. `display_name` là read-only và không được gửi trong request.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/ProfilePatchRequest' }
+      responses:
+        '200':
+          description: Profile sau khi cập nhật.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Profile' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '422': { $ref: '#/components/responses/InvalidProfileField' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/me/preferences:
+    get:
+      tags: [Preferences]
+      operationId: getMyPreferences
+      summary: Đọc preferences của caller hiện tại
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200':
+          description: Preferences hiện tại.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Preferences' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [Preferences]
+      operationId: replaceMyNotificationPreferences
+      summary: Ghi toàn bộ notification preferences của caller hiện tại
+      description: >-
+        `language` và `currency` là read-only (`vi` và `VND`); request chỉ thay
+        đổi ba notification flags. Gửi lại cùng body là idempotent.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPreferencesUpdateRequest' }
+      responses:
+        '200':
+          description: Preferences sau khi cập nhật.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Preferences' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '422': { $ref: '#/components/responses/InvalidPreference' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/me/addresses:
+    get:
+      tags: [Addresses]
+      operationId: listMyAddresses
+      summary: Liệt kê address book của caller hiện tại
+      description: >-
+        Trả danh sách theo thứ tự address default trước, sau đó `created_at`
+        giảm dần. Server có thể phục vụ từ Redis cache-aside nhưng PostgreSQL là
+        nguồn chân lý.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      responses:
+        '200':
+          description: Danh sách address của caller.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/AddressList' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [Addresses]
+      operationId: createMyAddress
+      summary: Tạo address mới cho caller hiện tại
+      description: >-
+        Address đầu tiên của profile trở thành default. Operation này không có
+        idempotency key; client không được tự retry mù quáng sau timeout.
+      security: [{ gatewayIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RequestId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressWriteRequest' }
+      responses:
+        '201':
+          description: Address đã được tạo.
+          headers:
+            Location: { $ref: '#/components/headers/AddressLocation' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Address' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotFound' }
+        '422': { $ref: '#/components/responses/InvalidAddress' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/me/addresses/{address_id}:
+    put:
+      tags: [Addresses]
+      operationId: replaceMyAddress
+      summary: Thay thế đầy đủ một address của caller hiện tại
+      description: Gửi lại cùng body là idempotent.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AddressId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressWriteRequest' }
+      responses:
+        '200':
+          description: Address sau khi cập nhật.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Address' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/AddressNotFound' }
+        '422': { $ref: '#/components/responses/InvalidAddress' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Addresses]
+      operationId: deleteMyAddress
+      summary: Hard-delete một address không phải default
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AddressId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '204': { description: Address đã được xóa. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/AddressNotFound' }
+        '409': { $ref: '#/components/responses/DefaultAddressCannotBeDeleted' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/me/addresses/{address_id}/default:
+    put:
+      tags: [Addresses]
+      operationId: setMyDefaultAddress
+      summary: Đặt một address làm default
+      description: Gửi lại cùng request là idempotent.
+      security: [{ gatewayIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AddressId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Address đã là default.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Address' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/AddressNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /internal/v1/users/{user_id}/addresses/{address_id}/checkout-snapshot:
+    get:
+      tags: [Checkout Internal]
+      operationId: getCheckoutAddressSnapshot
+      summary: Resolve address snapshot cho Checkout Service
+      description: >-
+        Endpoint nội bộ chỉ dành cho Checkout qua mTLS/service credential. User
+        xác minh address thuộc `user_id` trước khi trả snapshot; endpoint này
+        không đi qua public API Gateway.
+      security: [{ checkoutService: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/AddressId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Snapshot address để Checkout persist vào session/Order.
+          headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/CheckoutAddressSnapshot' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/AddressNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: >-
+        UUID do API Gateway inject sau khi verify access token. Public client
+        không được phép tự kiểm soát header này.
+    checkoutService:
+      type: mutualTLS
+      description: >-
+        mTLS/service credential dành riêng cho Checkout Service trên network nội
+        bộ. Transport mTLS và allowlist principal checkout-service do service mesh thực
+        thi (docs/mesh/runtime-contract.md mục 5.2); User không nhìn thấy chứng chỉ
+        caller. Caller gửi X-Service-Identity: checkout-service cho attribution.
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    AddressId:
+      name: address_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+
+  headers:
+    PrivateNoStore:
+      required: true
+      description: Response chứa PII không được browser hoặc proxy cache.
+      schema: { type: string, const: 'private, no-store' }
+    AddressLocation:
+      required: true
+      description: URI của address mới tạo.
+      schema: { type: string, format: uri-reference }
+
+  responses:
+    BadRequest:
+      description: JSON, media type hoặc request shape không hợp lệ.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthorized:
+      description: Thiếu hoặc không tin cậy được identity/service credential.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ProfileNotFound:
+      description: Profile chưa bootstrap hoặc đã bị purge.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example: { type: 'https://errors.ecommerce.local/profile-not-found', title: 'Profile không tồn tại', status: 404, detail: 'Profile không tồn tại.', instance: '/api/v1/users/me/profile', code: PROFILE_NOT_FOUND }
+    AddressNotFound:
+      description: Address không tồn tại hoặc không thuộc user yêu cầu.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example: { type: 'https://errors.ecommerce.local/address-not-found', title: 'Address không tồn tại', status: 404, detail: 'Address không tồn tại.', instance: '/api/v1/users/me/addresses/00000000-0000-0000-0000-000000000000', code: ADDRESS_NOT_FOUND }
+    DefaultAddressCannotBeDeleted:
+      description: Address default phải được thay bằng address khác trước khi xóa.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example: { type: 'https://errors.ecommerce.local/default-address-cannot-be-deleted', title: 'Không thể xóa address default', status: 409, detail: 'Hãy đặt address khác làm default trước.', instance: '/api/v1/users/me/addresses/00000000-0000-0000-0000-000000000000', code: DEFAULT_ADDRESS_CANNOT_BE_DELETED }
+    InvalidProfileField:
+      description: Một hoặc nhiều field profile không hợp lệ.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    InvalidPreference:
+      description: Notification preferences không hợp lệ.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    InvalidAddress:
+      description: Address, recipient phone hoặc mã địa giới không hợp lệ.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RateLimited:
+      description: Gateway hoặc service tạm giới hạn request.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    InternalError:
+      description: Lỗi hạ tầng hoặc lỗi không mong muốn.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+
+  schemas:
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    Uuid:
+      type: string
+      format: uuid
+    Timestamp:
+      type: string
+      format: date-time
+    NullableDate:
+      type: [string, 'null']
+      format: date
+    NullableShortName:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 100
+    Profile:
+      type: object
+      additionalProperties: false
+      required: [id, first_name, last_name, display_name, date_of_birth, gender, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        first_name: { $ref: '#/components/schemas/NullableShortName' }
+        last_name: { $ref: '#/components/schemas/NullableShortName' }
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 201
+          readOnly: true
+        date_of_birth: { $ref: '#/components/schemas/NullableDate' }
+        gender:
+          type: string
+          enum: [MALE, FEMALE, OTHER, UNKNOWN]
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    ProfilePatchRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        first_name: { $ref: '#/components/schemas/NullableShortName' }
+        last_name: { $ref: '#/components/schemas/NullableShortName' }
+        date_of_birth: { $ref: '#/components/schemas/NullableDate' }
+        gender:
+          type: string
+          enum: [MALE, FEMALE, OTHER, UNKNOWN]
+    Preferences:
+      type: object
+      additionalProperties: false
+      required: [language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at]
+      properties:
+        language: { type: string, const: vi, readOnly: true }
+        currency: { type: string, const: VND, readOnly: true }
+        email_enabled: { type: boolean }
+        in_app_enabled: { type: boolean }
+        marketing_enabled: { type: boolean }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    NotificationPreferencesUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [email_enabled, in_app_enabled, marketing_enabled]
+      properties:
+        email_enabled: { type: boolean }
+        in_app_enabled: { type: boolean }
+        marketing_enabled: { type: boolean }
+    VietnameseAdministrativeCode:
+      type: string
+      minLength: 1
+      maxLength: 20
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: >-
+        Mã địa giới Việt Nam. V1 kiểm tra format; validation quan hệ province,
+        district và ward cần master-data contract riêng.
+    RecipientPhone:
+      type: string
+      pattern: '^\+[1-9][0-9]{7,14}$'
+      description: Số điện thoại người nhận ở dạng E.164.
+    AddressWriteRequest:
+      type: object
+      additionalProperties: false
+      required: [recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { $ref: '#/components/schemas/RecipientPhone' }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        district_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        ward_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+    Address:
+      type: object
+      additionalProperties: false
+      required: [id, recipient_name, recipient_phone, address_line, province_code, district_code, ward_code, is_default, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { $ref: '#/components/schemas/RecipientPhone' }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        district_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        ward_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        is_default: { type: boolean }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    AddressList:
+      type: object
+      additionalProperties: false
+      required: [addresses]
+      properties:
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
+    CheckoutAddressSnapshot:
+      type: object
+      additionalProperties: false
+      required: [address_id, recipient_name, recipient_phone, address_line, province_code, district_code, ward_code]
+      properties:
+        address_id: { $ref: '#/components/schemas/Uuid' }
+        recipient_name: { type: string, minLength: 1, maxLength: 200 }
+        recipient_phone: { $ref: '#/components/schemas/RecipientPhone' }
+        address_line: { type: string, minLength: 1, maxLength: 500 }
+        province_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        district_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }
+        ward_code: { $ref: '#/components/schemas/VietnameseAdministrativeCode' }

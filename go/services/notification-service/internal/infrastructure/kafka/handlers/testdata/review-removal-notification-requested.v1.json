@@ -1,0 +1,16 @@
+{
+  "specversion": "1.0",
+  "id": "7c0c2a40-1b6c-4f6e-9a3d-2f1e0d5b8c12",
+  "type": "com.ecommerce.review.removal-notification-requested.v1",
+  "source": "/services/review",
+  "subject": "reviews/3d0b9c3e-2f7a-4b1e-8c5d-6a7b8c9d0e1f",
+  "time": "2026-09-01T09:05:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/review/v1/schemas/review-removal-notification-requested.schema.json",
+  "correlationid": "review-removal-1",
+  "data": {
+    "review_id": "3d0b9c3e-2f7a-4b1e-8c5d-6a7b8c9d0e1f",
+    "product_id": "prod_123",
+    "recipient_user_id": "0198e098-96f2-7ad3-91d8-570608021328"
+  }
+}

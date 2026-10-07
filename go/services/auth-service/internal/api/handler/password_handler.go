@@ -4,135 +4,90 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/api/dto/request"
-	"github.com/ecommerce/auth-service/internal/api/dto/response"
-	apperrors "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/api/httpx"
+	"github.com/ecommerce/auth-service/internal/api/middleware"
+	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/service"
 )
 
+// PasswordHandler serves the password change and reset endpoints.
 type PasswordHandler struct {
-	passwordService *service.PasswordService
-	logger          *zap.Logger
+	passwords *service.PasswordService
+	cookie    httpx.CookieSettings
 }
 
-func NewPasswordHandler(passwordService *service.PasswordService, logger *zap.Logger) *PasswordHandler {
-	return &PasswordHandler{
-		passwordService: passwordService,
-		logger:          logger.With(zap.String("handler", "PasswordHandler")),
-	}
+// NewPasswordHandler wires the password endpoints.
+func NewPasswordHandler(passwords *service.PasswordService, cookie httpx.CookieSettings) *PasswordHandler {
+	return &PasswordHandler{passwords: passwords, cookie: cookie}
 }
 
-// ChangePassword handles POST /api/v1/auth/change-password
+// ChangePassword handles PUT /api/v1/auth/password. Every session is revoked, so
+// the cookie is cleared with the response.
 func (h *PasswordHandler) ChangePassword(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
-		respondError(c, apperrors.ErrUnauthorized)
+	identity, ok := middleware.IdentityFrom(c)
+	if !ok {
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	var req request.ChangePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request body", zap.Error(err))
-		respondError(c, apperrors.NewAppError("BAD_REQUEST", err.Error(), http.StatusBadRequest, nil))
+	var payload request.ChangePassword
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	err := h.passwordService.ChangePassword(c.Request.Context(), &service.PasswordChangeRequest{
-		UserID:          userID.(string),
-		CurrentPassword: req.CurrentPassword,
-		NewPassword:     req.NewPassword,
-		IPAddress:       c.ClientIP(),
-		DeviceInfo:      c.GetHeader("User-Agent"),
+	err := h.passwords.ChangePassword(c.Request.Context(), service.ChangePasswordCommand{
+		AccountID:       identity.AccountID,
+		CurrentPassword: payload.CurrentPassword,
+		NewPassword:     payload.NewPassword,
+		ConfirmPassword: payload.ConfirmPassword,
 	})
 	if err != nil {
-		h.logger.Error("Password change failed",
-			zap.String("user_id", userID.(string)),
-			zap.Error(err),
-		)
-
-		// Check for specific errors
-		if err.Error() == "invalid current password" {
-			respondError(c, apperrors.NewAppError("INVALID_PASSWORD", "Current password is incorrect", http.StatusBadRequest, nil))
-			return
-		}
-		if err.Error()[:12] == "weak password" {
-			respondError(c, apperrors.NewAppError("WEAK_PASSWORD", err.Error()[13:], http.StatusBadRequest, nil))
-			return
-		}
-
-		respondError(c, apperrors.ErrInternal)
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.MessageResponse{
-		Message: "Password changed successfully. All other sessions have been logged out.",
-	})
+	httpx.ClearRefreshCookie(c, h.cookie)
+	c.Status(http.StatusNoContent)
 }
 
-// ForgotPassword handles POST /api/v1/auth/public/forgot-password
-func (h *PasswordHandler) ForgotPassword(c *gin.Context) {
-	var req request.ForgotPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request body", zap.Error(err))
-		respondError(c, apperrors.NewAppError("BAD_REQUEST", err.Error(), http.StatusBadRequest, nil))
+// RequestReset handles POST /api/v1/auth/password-reset-requests. It answers the
+// same way whether or not the address has an account.
+func (h *PasswordHandler) RequestReset(c *gin.Context) {
+	var payload request.Email
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	err := h.passwordService.RequestPasswordReset(c.Request.Context(), &service.ForgotPasswordRequest{
-		Email:     req.Email,
-		IPAddress: c.ClientIP(),
-	})
-	if err != nil {
-		h.logger.Error("Password reset request failed",
-			zap.String("email", maskEmailForLog(req.Email)),
-			zap.Error(err),
-		)
-		respondError(c, apperrors.ErrInternal)
+	if err := h.passwords.RequestReset(c.Request.Context(), payload.Email); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	// Always return success to prevent email enumeration
-	c.JSON(http.StatusOK, response.ForgotPasswordResponse{
-		Message: "If an account with that email exists, a password reset link has been sent.",
-	})
+	httpx.Accepted(c, nil)
 }
 
-// ResetPassword handles POST /api/v1/auth/public/reset-password
-func (h *PasswordHandler) ResetPassword(c *gin.Context) {
-	var req request.ResetPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request body", zap.Error(err))
-		respondError(c, apperrors.NewAppError("BAD_REQUEST", err.Error(), http.StatusBadRequest, nil))
+// CompleteReset handles POST /api/v1/auth/password-resets.
+func (h *PasswordHandler) CompleteReset(c *gin.Context) {
+	var payload request.CompletePasswordReset
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	err := h.passwordService.ResetPassword(c.Request.Context(), &service.PasswordResetRequest{
-		ResetToken:  req.Token,
-		NewPassword: req.NewPassword,
-		IPAddress:   c.ClientIP(),
+	err := h.passwords.CompleteReset(c.Request.Context(), service.CompleteResetCommand{
+		ResetToken:      payload.ResetToken,
+		NewPassword:     payload.NewPassword,
+		ConfirmPassword: payload.ConfirmPassword,
 	})
 	if err != nil {
-		h.logger.Error("Password reset failed",
-			zap.String("ip", c.ClientIP()),
-			zap.Error(err),
-		)
-
-		if err.Error() == "invalid or expired reset token" {
-			respondError(c, apperrors.NewAppError("INVALID_TOKEN", "Reset token has expired or is invalid", http.StatusBadRequest, nil))
-			return
-		}
-		if err.Error()[:12] == "weak password" {
-			respondError(c, apperrors.NewAppError("WEAK_PASSWORD", err.Error()[13:], http.StatusBadRequest, nil))
-			return
-		}
-
-		respondError(c, apperrors.ErrInternal)
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.MessageResponse{
-		Message: "Password has been reset successfully. You can now log in with your new password.",
-	})
+	httpx.ClearRefreshCookie(c, h.cookie)
+	c.Status(http.StatusNoContent)
 }

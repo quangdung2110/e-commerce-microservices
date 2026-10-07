@@ -1,0 +1,22 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda001",
+  "type": "com.ecommerce.inventory.sku-availability.changed.v1",
+  "source": "/services/inventory",
+  "subject": "sku-availability/sku-blue-m",
+  "time": "2026-09-07T04:10:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/inventory/v1/schemas/sku-availability-changed.schema.json",
+  "correlationid": "corr-order-10001",
+  "causationid": "cmd-reserve-10001",
+  "sequence": 42001,
+  "aggregatetype": "sku-availability",
+  "aggregateid": "sku-blue-m",
+  "aggregaterevision": 17,
+  "data": {
+    "sku_id": "sku-blue-m",
+    "is_in_stock": true,
+    "availability_revision": 17,
+    "observed_at": "2026-09-07T04:09:59Z"
+  }
+}

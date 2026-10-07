@@ -1,0 +1,16 @@
+E-Commerce
+====================
+
+Thanh toán không thành công
+
+Lần thanh toán thứ 3 cho đơn hàng ORD-1000234 với số tiền 728.000 ₫ không thành công. Đơn hàng chưa được xác nhận.
+
+Đơn hàng không thể thanh toán lại. Nếu vẫn muốn mua, vui lòng đặt đơn hàng mới.
+
+Xem đơn hàng: https://shop.example.com/orders/1000234
+
+Nếu tài khoản của bạn đã bị trừ tiền, số tiền sẽ được hoàn lại theo quy định của đơn vị thanh toán.
+
+--
+Email này được gửi tự động từ E-Commerce, vui lòng không trả lời.
+Mã tham chiếu: 00000000-0000-4000-8000-000000000001

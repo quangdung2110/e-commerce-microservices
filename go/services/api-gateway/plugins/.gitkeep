@@ -1,5 +1,0 @@
-# Go Plugin directory - Go plugins (.so files) are loaded from here
-# This directory is mounted in the Traefik container
-
-# Place compiled plugins here
-*.so

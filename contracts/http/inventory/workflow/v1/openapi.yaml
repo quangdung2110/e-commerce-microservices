@@ -1,0 +1,748 @@
+openapi: 3.1.0
+info:
+  title: Inventory Workflow API
+  version: 1.0.0
+  description: >-
+    Target contract for Checkout allocation preview and Order Temporal Saga inventory
+    commands. Inventory is the sole authority for stock transitions. There is no
+    customer, Payment, Product, Search, or ADMIN mutation on this surface.
+    Reservation commands return durable HTTP receipts without public acknowledgment
+    events. Order checkpoints stable command identity/request before calling and
+    recovers uncertain outcomes by command query or same-ID/body replay; exhausted
+    retries retain durable recovery work. Only physical dispatch and selected-scope
+    inspection completion are delivered to Order through Inventory events.
+x-adoption-status: implemented
+servers:
+  - url: http://inventory-service:8080
+    description: Internal service endpoint
+tags:
+  - name: Allocation
+  - name: Reservations
+  - name: Refund scopes
+  - name: Recovery
+paths:
+  /internal/inventory/v1/allocation-previews:
+    post:
+      tags: [Allocation]
+      operationId: createAllocationPreview
+      summary: Build an advisory exact warehouse plan
+      description: >-
+        CHECKOUT only. The operation is stateless: it creates no hold and persists no
+        plan. allocation_plan_id is an opaque correlation identifier with no expiry. A
+        later Reserve must send and revalidate the exact selected warehouse for every line.
+      x-authorized-callers: [checkout-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AllocationPreviewRequest' }
+      responses:
+        '200':
+          description: ALLOCATABLE exact plan or terminal REJECT_ALL outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AllocationPreviewResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/reservations:
+    post:
+      tags: [Reservations]
+      operationId: reserveOrder
+      summary: Reserve every order line atomically
+      description: >-
+        ORDER_SAGA only. Returns RESERVED or REJECT_ALL. allocation_plan_id is stored for
+        audit and never looked up; Inventory revalidates exactly the submitted lines and
+        warehouses under locks. One line is never split between warehouses and no
+        alternate warehouse is selected when the plan is stale.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReserveOrderRequest' }
+      responses:
+        '200':
+          description: Durable RESERVED or REJECT_ALL command outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReserveOrderResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/reservations/{order_id}/commit:
+    post:
+      tags: [Reservations]
+      operationId: commitPayment
+      summary: Move the entire reserved order to committed
+      description: >-
+        ORDER_SAGA only. Accepted whenever the root is RESERVED; no wall-clock deadline
+        applies and expires_at is advisory. Order owns the payment timeout. A root that is
+        not RESERVED returns durable 409 RESERVATION_NOT_RESERVED with no movement; a
+        timeout-released root can be committed only by recover-timed-out-payment.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommitPaymentRequest' }
+      responses:
+        '200':
+          description: Durable COMMITTED outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommitPaymentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/reservations/{order_id}/release:
+    post:
+      tags: [Reservations]
+      operationId: releaseReservation
+      summary: Release the entire reserved order
+      description: >-
+        ORDER_SAGA only. Valid only while the root is RESERVED; always releases every
+        line. The reason is stored immutably on the root; only RESERVATION_EXPIRED can
+        later be recovered by recover-timed-out-payment.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseReservationRequest' }
+      responses:
+        '200':
+          description: Durable RELEASED outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleasedReservationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment:
+    post:
+      tags: [Recovery]
+      operationId: recoverTimedOutPayment
+      summary: Commit the original released allocation after a verified late payment
+      description: >-
+        ORDER_SAGA only. This is not Reserve and never selects a new plan. It is accepted
+        only when this same root was released with RESERVATION_EXPIRED, no line has physical
+        dispatch, and the exact original line quantities are still fully available at their
+        original warehouses. It atomically moves the whole root RELEASED to COMMITTED. Any
+        failed guard returns a durable 409 and moves no stock; callers must enter financial
+        reconciliation rather than reroute, partially reserve, or issue a second root.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoverTimedOutPaymentRequest' }
+      responses:
+        '200':
+          description: Durable COMMITTED recovery outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoverTimedOutPaymentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch:
+    post:
+      tags: [Reservations]
+      operationId: releaseCommittedOrderBeforeDispatch
+      summary: Atomically release every committed allocation before any dispatch
+      description: >-
+        ORDER_SAGA only for ADMIN_FORCE_REFUND_BEFORE_DISPATCH. Locks the reservation
+        root, every line, and affected stock positions. It returns RELEASED only when
+        every line is COMMITTED and none has physical dispatch; otherwise returns 409
+        and moves no stock. It never releases a subset.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseCommittedOrderBeforeDispatchRequest' }
+      responses:
+        '200':
+          description: Durable all-line RELEASED outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleasedCommittedOrderResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/refund-scopes:
+    post:
+      tags: [Refund scopes]
+      operationId: registerRefundScope
+      summary: Register an immutable selected full-quantity refund scope
+      description: >-
+        A scope selects one or more order_line_id values. Inventory verifies each
+        expected_quantity equals that immutable ReservationLine quantity and that every
+        selected line is DISPATCHED; otherwise durable 409 REFUND_SCOPE_LINE_NOT_DISPATCHED
+        with no scope created. A second
+        refund_request_id for the same order is rejected even after the first scope is terminal.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRefundScopeRequest' }
+      responses:
+        '200':
+          description: Durable REGISTERED outcome.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisteredRefundScopeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel:
+    post:
+      tags: [Refund scopes]
+      operationId: cancelRefundScope
+      summary: Cancel a registered scope before any receipt
+      description: >-
+        Only REGISTERED with no receipt. Order invokes this after an approved
+        no-payout return decision; the decision reason remains in Order audit because
+        this endpoint has no body. Terminal lifetime scope identity is retained and
+        cannot be reopened/replaced. Receipt and cancel are serialized atomically.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RefundScopeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      responses: { '200': { $ref: '#/components/responses/RefundScopeCancelledSuccess' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /internal/inventory/v1/refund-scopes/{refund_scope_id}/close:
+    post:
+      tags: [Refund scopes]
+      operationId: closeRefundScope
+      summary: Close a scope after all expected items have final inspection
+      description: >-
+        Only INSPECTION_COMPLETED. Order closes after its validated terminal refund
+        outcome, including financial failure. Scope closure changes no stock buckets
+        and cannot be reopened by a later Payment reversal. Replay the frozen command
+        ID/body after an uncertain outcome; no new public closure event is emitted.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RefundScopeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CloseRefundScopeRequest' } } }
+      responses: { '200': { $ref: '#/components/responses/RefundScopeClosedSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete:
+    post:
+      tags: [Refund scopes]
+      operationId: closeIncompleteRefundScope
+      summary: Close an incomplete scope after every received item is final-inspected
+      description: >-
+        Only IN_PROGRESS, with passed_quantity + failed_quantity = received_quantity
+        on every line and received_quantity < expected_quantity on at least one line.
+        Order invokes this for an audited no-payout decision, never automatically at
+        30 days. REGISTERED with zero receipt uses cancel. Receipt/inspection races
+        revalidate these guards atomically; rejection cannot fall back to completed
+        close or authorize Payment. No inspection-completion fact is emitted.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RefundScopeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CausationId'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CloseIncompleteRefundScopeRequest' } } }
+      responses: { '200': { $ref: '#/components/responses/RefundScopeClosedIncompleteSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /internal/inventory/v1/commands/{command_id}:
+    get:
+      tags: [Recovery]
+      operationId: getCommandOutcome
+      summary: Read a durable command outcome after an uncertain transport result
+      description: >-
+        Returns the original result of this specific command, not current aggregate
+        state. A missing result does not prove an in-flight command failed; recover
+        using the same command ID and payload. No reservation-result event is emitted.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/CommandId' }]
+      responses:
+        '200': { description: Durable outcome visible to the caller namespace., content: { application/json: { schema: { $ref: '#/components/schemas/CommandOutcome' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/inventory/v1/reservations/{order_id}:
+    get:
+      tags: [Recovery]
+      operationId: getReservation
+      summary: Read Inventory reservation facts for an Order-owned order
+      description: >-
+        Returns current reservation state, which may reflect transitions after an
+        earlier command receipt. Use command query/replay to prove a specific command
+        outcome and this resource for current-state reconciliation.
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200': { description: Reservation fact., content: { application/json: { schema: { $ref: '#/components/schemas/Reservation' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/inventory/v1/refund-scopes/{refund_scope_id}:
+    get:
+      tags: [Recovery]
+      operationId: getRefundScope
+      summary: Read an Inventory refund-scope fact
+      x-authorized-callers: [order-service]
+      security: [{ serviceIdentity: [] }]
+      parameters: [{ $ref: '#/components/parameters/RefundScopeId' }]
+      responses:
+        '200': { description: Refund scope fact., content: { application/json: { schema: { $ref: '#/components/schemas/RefundScope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    serviceIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: internal-workload-identity
+      description: >-
+        Workload identity enforced by the service mesh (mTLS plus per-principal, per-path
+        AuthorizationPolicy). The caller must also send X-Service-Identity with its
+        ServiceAccount name; Inventory checks it against the x-authorized-callers allowlist
+        as defense-in-depth (401 UNAUTHENTICATED when missing, 403 FORBIDDEN otherwise,
+        Inventory ADR-027).
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Caller-generated command ID. Scope is authenticated caller namespace plus key.
+        The same key and canonical payload returns the original result for at least seven years;
+        a different payload returns IDEMPOTENCY_KEY_REUSED.
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    CausationId:
+      name: X-Causation-ID
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    OrderId: { name: order_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    RefundScopeId: { name: refund_scope_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+    CommandId: { name: command_id, in: path, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+  schemas:
+    OpaqueId: { type: string, minLength: 1, maxLength: 128 }
+    Quantity: { type: integer, format: int64, minimum: 1 }
+    CorrelatedResult:
+      type: object
+      required: [command_id, correlation_id, outcome, recorded_at]
+      properties:
+        command_id: { $ref: '#/components/schemas/OpaqueId' }
+        correlation_id: { $ref: '#/components/schemas/OpaqueId' }
+        outcome: { type: string, minLength: 1, maxLength: 64 }
+        recorded_at: { type: string, format: date-time }
+        replayed: { type: boolean, default: false }
+    PreviewLine:
+      type: object
+      additionalProperties: false
+      required: [line_reference, sku_id, quantity]
+      properties:
+        line_reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Equal to sku_id for Checkout v1.
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+    AllocationPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/PreviewLine' } }
+    PlannedLine:
+      type: object
+      additionalProperties: false
+      required: [line_reference, sku_id, quantity, warehouse_id, fulfillment_priority, selection_reason]
+      properties:
+        line_reference: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        fulfillment_priority: { type: integer, minimum: 0 }
+        selection_reason: { const: FULFILLMENT_PRIORITY }
+    RejectedPreviewLine:
+      type: object
+      additionalProperties: false
+      required: [line_reference, sku_id, quantity, reason]
+      properties:
+        line_reference: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        reason: { const: NO_ELIGIBLE_WAREHOUSE }
+    AllocationPreviewResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [outcome, allocation_plan_id, generated_at, lines]
+          properties:
+            outcome: { const: ALLOCATABLE }
+            allocation_plan_id:
+              allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+              description: Opaque correlation identifier; Inventory persists no plan and the identifier never expires.
+            generated_at: { type: string, format: date-time }
+            lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/PlannedLine' } }
+        - type: object
+          additionalProperties: false
+          required: [outcome, generated_at, rejected_lines]
+          properties:
+            outcome: { const: REJECT_ALL }
+            generated_at: { type: string, format: date-time }
+            rejected_lines:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items: { $ref: '#/components/schemas/RejectedPreviewLine' }
+    ReservationLineInput:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, quantity, warehouse_id]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+    ReserveOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, allocation_plan_id, lines]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        allocation_plan_id:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Stored on the reservation for audit/reconciliation; never looked up or validated against a stored plan.
+        lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineInput' } }
+    ReserveOrderResponse:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/CorrelatedResult'
+            - type: object
+              required: [order_id, expires_at, reservation_revision, lines]
+              properties:
+                outcome: { const: RESERVED }
+                order_id: { $ref: '#/components/schemas/OpaqueId' }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Advisory payment-window reference (accepted_at + 15 minutes); never a Commit deadline.
+                reservation_revision: { type: integer, minimum: 1 }
+                lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineInput' } }
+        - allOf:
+            - $ref: '#/components/schemas/CorrelatedResult'
+            - type: object
+              required: [order_id, rejected_lines]
+              properties:
+                outcome: { const: REJECT_ALL }
+                order_id: { $ref: '#/components/schemas/OpaqueId' }
+                rejected_lines: { type: array, minItems: 1, maxItems: 100, items: { $ref: '#/components/schemas/OpaqueId' } }
+    CommitPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [payment_reference]
+      properties: { payment_reference: { $ref: '#/components/schemas/OpaqueId' } }
+    ReleaseReason:
+      type: string
+      description: >-
+        Immutable whole-root release reason. Order maps cancel_reason PAYMENT_FAILED,
+        PAYMENT_TIMEOUT, USER_CANCEL, ADMIN_FORCE_CANCEL and PRE_PAYMENT_SAGA_FAILED to
+        these values in order. Only RESERVATION_EXPIRED is recoverable.
+      enum: [PAYMENT_FAILED, RESERVATION_EXPIRED, BUYER_CANCELLED, ADMIN_CANCELLED, PRE_PAYMENT_SAGA_FAILED]
+    ReleaseReservationRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { $ref: '#/components/schemas/ReleaseReason' }
+    RecoverTimedOutPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [payment_reference]
+      properties:
+        payment_reference: { $ref: '#/components/schemas/OpaqueId' }
+    ReleaseCommittedOrderBeforeDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { const: ADMIN_FORCE_REFUND_BEFORE_DISPATCH }
+    ReservationCommandResponse:
+      allOf:
+        - $ref: '#/components/schemas/CorrelatedResult'
+        - type: object
+          required: [order_id, reservation_revision]
+          properties:
+            outcome: { enum: [COMMITTED, RELEASED] }
+            order_id: { $ref: '#/components/schemas/OpaqueId' }
+            reservation_revision: { type: integer, minimum: 1 }
+    CommitPaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          properties: { outcome: { const: COMMITTED } }
+    RecoverTimedOutPaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          properties: { outcome: { const: COMMITTED } }
+    ReleasedReservationResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          properties: { outcome: { const: RELEASED } }
+    ReleasedCommittedOrderResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReservationCommandResponse'
+        - type: object
+          required: [released_order_line_ids]
+          properties:
+            outcome: { const: RELEASED }
+            released_order_line_ids:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items: { $ref: '#/components/schemas/OpaqueId' }
+    RefundScopeLineInput:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, expected_quantity]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_quantity:
+          allOf: [{ $ref: '#/components/schemas/Quantity' }]
+          description: Must equal the immutable original ReservationLine quantity; partial line quantity is invalid.
+    RegisterRefundScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, refund_request_id, lines]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: Selected lines only. order_line_id values must be unique and every expected quantity must be full original quantity.
+          items: { $ref: '#/components/schemas/RefundScopeLineInput' }
+    CloseRefundScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      description: >-
+        REFUNDED for terminal payout success; REJECTED for terminal payout failure
+        or reversal without a prior close intent. REJECTED does not mean inspection
+        FAIL. If an intent already exists, retain its reason even after reversal.
+        Inventory stores Order's reason and never queries or decides Payment outcome.
+        A zero-receipt REGISTERED scope uses cancel; CANCELLED is not a close reason
+        (Inventory ADR-027).
+      properties: { reason: { enum: [REFUNDED, REJECTED] } }
+    CloseIncompleteRefundScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties: { reason: { enum: [RETURN_WINDOW_EXPIRED, PACKAGE_LOST, CUSTOMER_WITHDREW] } }
+    RefundScopeCommandResponse:
+      allOf:
+        - $ref: '#/components/schemas/CorrelatedResult'
+        - type: object
+          required: [refund_scope_id, order_id, refund_request_id, scope_revision]
+          properties:
+            outcome: { enum: [REGISTERED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] }
+            refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+            order_id: { $ref: '#/components/schemas/OpaqueId' }
+            refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+            scope_revision: { type: integer, minimum: 1 }
+    RegisteredRefundScopeResponse:
+      allOf:
+        - $ref: '#/components/schemas/RefundScopeCommandResponse'
+        - type: object
+          properties: { outcome: { const: REGISTERED } }
+    CancelledRefundScopeResponse:
+      allOf:
+        - $ref: '#/components/schemas/RefundScopeCommandResponse'
+        - type: object
+          properties: { outcome: { const: CANCELLED } }
+    ClosedRefundScopeResponse:
+      allOf:
+        - $ref: '#/components/schemas/RefundScopeCommandResponse'
+        - type: object
+          properties: { outcome: { const: CLOSED } }
+    ClosedIncompleteRefundScopeResponse:
+      allOf:
+        - $ref: '#/components/schemas/RefundScopeCommandResponse'
+        - type: object
+          properties: { outcome: { const: CLOSED_INCOMPLETE } }
+    ReservationLineState:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, quantity, warehouse_id, state]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        warehouse_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, RESERVED, COMMITTED, DISPATCHED, RELEASED] }
+        handover_reference:
+          allOf: [{ $ref: '#/components/schemas/OpaqueId' }]
+          description: Present only when the line is DISPATCHED.
+        handed_over_at:
+          type: string
+          format: date-time
+          description: Present only when the line is DISPATCHED.
+    Reservation:
+      type: object
+      additionalProperties: false
+      required: [order_id, allocation_plan_id, state, accepted_at, expires_at, revision, lines]
+      properties:
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        allocation_plan_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, RESERVED, COMMITTED, PARTIALLY_DISPATCHED, DISPATCHED, RELEASED] }
+        accepted_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          description: Advisory payment-window reference; never a Commit deadline.
+        release_reason:
+          allOf: [{ $ref: '#/components/schemas/ReleaseReason' }]
+          description: Present only when the root was released by ReleaseReservation; immutable.
+        revision: { type: integer, minimum: 1 }
+        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ReservationLineState' } }
+    RefundScopeLine:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, sku_id, expected_quantity, received_quantity, passed_quantity, failed_quantity]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/OpaqueId' }
+        sku_id: { $ref: '#/components/schemas/OpaqueId' }
+        expected_quantity: { $ref: '#/components/schemas/Quantity' }
+        received_quantity: { type: integer, format: int64, minimum: 0 }
+        passed_quantity: { type: integer, format: int64, minimum: 0 }
+        failed_quantity: { type: integer, format: int64, minimum: 0 }
+    RefundScope:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, order_id, refund_request_id, state, revision, lines]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [UNKNOWN, REGISTERED, IN_PROGRESS, INSPECTION_COMPLETED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] }
+        revision: { type: integer, minimum: 1 }
+        lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/RefundScopeLine' } }
+    CommandOutcome:
+      allOf:
+        - $ref: '#/components/schemas/CorrelatedResult'
+        - type: object
+          required: [operation, result]
+          properties:
+            operation: { type: string, minLength: 1, maxLength: 80 }
+            result: { enum: [ACCEPTED, REJECTED] }
+            http_status: { type: integer, minimum: 200, maximum: 599, description: Original HTTP status; 409 for a durable rejection. }
+            error_code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$', description: Catalog code; present only when result is REJECTED. }
+            resource_id: { $ref: '#/components/schemas/OpaqueId' }
+    InventoryProblem:
+      allOf:
+        - $ref: '../../../../shared/json-schema/v1/problem.schema.json'
+        - type: object
+          required: [correlation_id]
+          properties:
+            correlation_id: { type: string, minLength: 8, maxLength: 128 }
+            command_id: { type: string, minLength: 16, maxLength: 128 }
+  responses:
+    RefundScopeCancelledSuccess: { description: Durable CANCELLED outcome., content: { application/json: { schema: { $ref: '#/components/schemas/CancelledRefundScopeResponse' } } } }
+    RefundScopeClosedSuccess: { description: Durable CLOSED outcome., content: { application/json: { schema: { $ref: '#/components/schemas/ClosedRefundScopeResponse' } } } }
+    RefundScopeClosedIncompleteSuccess: { description: Durable CLOSED_INCOMPLETE outcome., content: { application/json: { schema: { $ref: '#/components/schemas/ClosedIncompleteRefundScopeResponse' } } } }
+    BadRequest: { description: INVALID_REQUEST; correct input and use a new command ID., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Forbidden: { description: Caller lacks the required capability., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    NotFound: { description: Resource is absent or not visible to this caller., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Conflict: { description: 'Durable conflict replayed with the same body. An unknown order or scope keeps the operation code (Inventory ADR-027). code is one of IDEMPOTENCY_KEY_REUSED, RESERVATION_ALREADY_EXISTS, RESERVATION_NOT_RESERVED, RESERVATION_NOT_RECOVERABLE, PRE_DISPATCH_RELEASE_NOT_ALLOWED, REFUND_SCOPE_ALREADY_EXISTS, REFUND_SCOPE_LINE_INVALID, REFUND_SCOPE_LINE_NOT_DISPATCHED or REFUND_SCOPE_STATE_CONFLICT.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    Unavailable:
+      description: INVENTORY_UNAVAILABLE (store unavailable, write freeze or outbox backpressure) or INVENTORY_BUSY (Retry-After 1); retry the same command ID with backoff.
+      headers: { Retry-After: { schema: { type: integer, minimum: 1 }, description: Suggested delay in seconds when known. } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } }

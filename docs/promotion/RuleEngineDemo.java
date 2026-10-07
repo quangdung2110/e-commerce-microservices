@@ -117,7 +117,7 @@ public class RuleEngineDemo {
                                     \"node_type\": \"CONDITION\",
                                     \"operator\": \"EQUAL\",
                                     \"field\": \"cart.payment_method\",
-                                    \"value\": \"VNPAY\"
+                                    \"value\": \"STRIPE\"
                                 },
                                 {
                                     \"node_type\": \"CONDITION\",
@@ -134,7 +134,7 @@ public class RuleEngineDemo {
 
         Map<String, Object> ctx = Map.of(
             "cart.total_amount", 350000,
-            "cart.payment_method", "VNPAY",
+            "cart.payment_method", "STRIPE",
             "cart.items.category_id", List.of(5, 12)
         );
 

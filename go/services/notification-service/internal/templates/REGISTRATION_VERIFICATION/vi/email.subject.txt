@@ -1,0 +1,1 @@
+{{.OTP}} là mã xác minh tài khoản {{.Brand}} của bạn

@@ -1,137 +1,69 @@
 package entity
 
 import (
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
+
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/vo"
 )
 
-var (
-	ErrInvalidLanguage   = errors.New("invalid language code")
-	ErrInvalidCurrency   = errors.New("invalid currency code")
-	ErrPreferencesExists = errors.New("preferences already exist for user")
-)
-
-// Preferences represents user application preferences
+// Preferences is the 1:1 companion of a profile. Only the three notification
+// flags are writable; language and currency are fixed by the contract and are
+// the fields Notification Service replicates.
 type Preferences struct {
-	UserID           uuid.UUID `json:"user_id" db:"user_id"`
-	Language         string    `json:"language" db:"language"`
-	Currency         string    `json:"currency" db:"currency"`
-	EmailEnabled     bool      `json:"email_enabled" db:"email_enabled"`
-	InAppEnabled     bool      `json:"in_app_enabled" db:"in_app_enabled"`
-	MarketingEnabled bool      `json:"marketing_enabled" db:"marketing_enabled"`
-	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
+	UserID           uuid.UUID
+	Language         vo.Language
+	Currency         vo.Currency
+	EmailEnabled     bool
+	InAppEnabled     bool
+	MarketingEnabled bool
+	UpdatedAt        time.Time
 }
 
-// Default preferences constants
-const (
-	DefaultLanguage = "vi"
-	DefaultCurrency = "VND"
-)
-
-// ValidLanguages contains valid language codes
-var ValidLanguages = map[string]bool{
-	"vi": true,
-	"en": true,
-	"zh": true,
-	"ja": true,
-	"ko": true,
-}
-
-// ValidCurrencies contains valid currency codes
-var ValidCurrencies = map[string]bool{
-	"VND": true,
-	"USD": true,
-	"EUR": true,
-	"JPY": true,
-	"CNY": true,
-}
-
-// NewPreferences creates a new Preferences entity with default values
-func NewPreferences(userID uuid.UUID) *Preferences {
+// NewDefaultPreferences creates the opted-in defaults written at bootstrap
+// (WF-USER-001).
+func NewDefaultPreferences(userID uuid.UUID, now time.Time) *Preferences {
 	return &Preferences{
 		UserID:           userID,
-		Language:         DefaultLanguage,
-		Currency:         DefaultCurrency,
+		Language:         vo.LanguageVietnamese,
+		Currency:         vo.CurrencyVND,
 		EmailEnabled:     true,
 		InAppEnabled:     true,
 		MarketingEnabled: true,
+		UpdatedAt:        now.UTC(),
 	}
 }
 
-// Update updates preferences with validation
-func (p *Preferences) Update(language, currency string, emailEnabled, inAppEnabled, marketingEnabled *bool) error {
-	if language != "" {
-		if !ValidLanguages[language] {
-			return ErrInvalidLanguage
-		}
-		p.Language = language
+// NotificationChanges is the full replacement payload of PUT /preferences.
+type NotificationChanges struct {
+	EmailEnabled     bool
+	InAppEnabled     bool
+	MarketingEnabled bool
+}
+
+// Replace applies the notification flags and reports whether anything changed,
+// so resending the same body neither writes nor emits a second event.
+func (p *Preferences) Replace(changes NotificationChanges, now time.Time) bool {
+	if p.EmailEnabled == changes.EmailEnabled &&
+		p.InAppEnabled == changes.InAppEnabled &&
+		p.MarketingEnabled == changes.MarketingEnabled {
+		return false
 	}
 
-	if currency != "" {
-		if !ValidCurrencies[currency] {
-			return ErrInvalidCurrency
-		}
-		p.Currency = currency
-	}
+	p.EmailEnabled = changes.EmailEnabled
+	p.InAppEnabled = changes.InAppEnabled
+	p.MarketingEnabled = changes.MarketingEnabled
+	p.UpdatedAt = now.UTC()
+	return true
+}
 
-	if emailEnabled != nil {
-		p.EmailEnabled = *emailEnabled
+// EnsureSupported guards the values read back from storage. A row that somehow
+// carries an unsupported language or currency is a defect, not client input.
+func (p *Preferences) EnsureSupported() error {
+	if !p.Language.Valid() || !p.Currency.Valid() {
+		return apperr.ErrInvalidPreference.WithDetail("Preferences carry an unsupported language or currency.")
 	}
-
-	if inAppEnabled != nil {
-		p.InAppEnabled = *inAppEnabled
-	}
-
-	if marketingEnabled != nil {
-		p.MarketingEnabled = *marketingEnabled
-	}
-
 	return nil
-}
-
-// IsValidLanguage checks if a language code is valid
-func IsValidLanguage(lang string) bool {
-	return ValidLanguages[lang]
-}
-
-// IsValidCurrency checks if a currency code is valid
-func IsValidCurrency(currency string) bool {
-	return ValidCurrencies[currency]
-}
-
-// GetUserID returns the user ID
-func (p *Preferences) GetUserID() uuid.UUID {
-	return p.UserID
-}
-
-// GetLanguage returns the language
-func (p *Preferences) GetLanguage() string {
-	return p.Language
-}
-
-// GetCurrency returns the currency
-func (p *Preferences) GetCurrency() string {
-	return p.Currency
-}
-
-// IsEmailEnabled returns email notification enabled status
-func (p *Preferences) IsEmailEnabled() bool {
-	return p.EmailEnabled
-}
-
-// IsInAppEnabled returns in-app notification enabled status
-func (p *Preferences) IsInAppEnabled() bool {
-	return p.InAppEnabled
-}
-
-// IsMarketingEnabled returns marketing notification enabled status
-func (p *Preferences) IsMarketingEnabled() bool {
-	return p.MarketingEnabled
-}
-
-// GetUpdatedAt returns the updated timestamp
-func (p *Preferences) GetUpdatedAt() time.Time {
-	return p.UpdatedAt
 }

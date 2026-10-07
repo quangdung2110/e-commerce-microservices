@@ -1,0 +1,340 @@
+openapi: 3.1.0
+info:
+  title: Cart Service HTTP API
+  version: 1.0.0
+  description: >-
+    Contract đích cho Cart Service Redis-only. Cart được xác định từ identity do
+    API Gateway inject; client không gửi cart_id hoặc user_id.
+    Gateway local dùng authenticated@file (ForwardAuth gateway-auth), không inject
+    danh tính dev cố định. POST/DELETE không retry ở gateway.
+x-adoption-status: proposed
+servers:
+  - url: http://localhost:8085
+    description: Local Docker Compose
+tags:
+  - name: Cart
+paths:
+  /api/v1/carts/mine:
+    get:
+      tags: [Cart]
+      operationId: getMyCart
+      summary: Lấy cart của user hiện tại
+      description: >-
+        Redis miss trả cart rỗng. Cart enrich giá và availability từ Product Service;
+        khi Product không khả dụng, response vẫn thành công nhưng catalog_freshness
+        là DEGRADED và current_price có thể null.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Cart snapshot; dữ liệu cá nhân, không được shared-cache.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/CartStoreUnavailable'
+
+  /api/v1/carts/mine/items:
+    post:
+      tags: [Cart]
+      operationId: adjustCartItem
+      summary: Thêm SKU hoặc điều chỉnh quantity theo delta
+      description: >-
+        delta dương thêm/tăng, delta âm giảm. Delta xử lý nguyên tử trong Redis,
+        nên request đến lệch thứ tự không ghi đè quantity tuyệt đối. Khi kết quả
+        không còn quantity dương, client phải gọi DELETE thay vì gửi delta âm thêm.
+        SKU mới hoặc validation catalog stale mới cần Product Service.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdjustItemRequest'
+      responses:
+        '200':
+          description: SKU đã tồn tại và quantity đã thay đổi.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CartMutationResult' }
+        '201':
+          description: SKU mới được thêm vào cart.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CartMutationResult' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDependencyUnavailable'
+
+    delete:
+      tags: [Cart]
+      operationId: deleteCartItems
+      summary: Xóa tối đa 100 SKU khỏi cart
+      description: SKU không tồn tại bị bỏ qua. Nếu không còn item, Cart xóa state và abandonment schedule Redis.
+      security:
+        - gatewayIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeleteItemsRequest' }
+      responses:
+        '200':
+          description: Kết quả xóa logic.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteItemsResult' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/CartStoreUnavailable'
+
+  /internal/v1/carts/{user_id}/checkout-snapshot:
+    get:
+      tags: [Cart]
+      operationId: getCheckoutCartSnapshot
+      summary: Resolve the authoritative Cart quantity snapshot for Checkout
+      description: >-
+        CHECKOUT only. Reads the same Redis source of truth as the public Cart API
+        but returns only identifiers and quantities. It does not call Product,
+        expose Redis keys, refresh TTL, or mutate cart lifecycle state. Redis miss
+        returns an empty items array.
+      security: [{ checkoutService: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Minimal server-to-server Cart snapshot.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutCartSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/CartStoreUnavailable' }
+
+components:
+  securitySchemes:
+    gatewayIdentity:
+      type: apiKey
+      in: header
+      name: X-User-Id
+      description: Trusted identity Gateway inject sau JWT verification; không phải header public client được phép tự đặt.
+    checkoutService:
+      type: mutualTLS
+      description: Mesh principal must be checkout-service; X-Service-Identity is attribution only.
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Money:
+      $ref: '../../../shared/json-schema/v1/money.schema.json'
+    Problem:
+      $ref: '../../../shared/json-schema/v1/problem.schema.json'
+    AdjustItemRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_id, delta]
+      properties:
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        delta:
+          type: integer
+          minimum: -100
+          maximum: 100
+          not: { const: 0 }
+          description: Lượng thay đổi tương đối; không phải quantity tuyệt đối.
+    DeleteItemsRequest:
+      type: object
+      additionalProperties: false
+      required: [sku_ids]
+      properties:
+        sku_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 64 }
+    CartMutationResult:
+      type: object
+      additionalProperties: false
+      required: [sku_id, quantity, created, updated_at]
+      properties:
+        sku_id: { type: string, maxLength: 64 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        created: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    DeleteItemsResult:
+      type: object
+      additionalProperties: false
+      required: [deleted_count]
+      properties:
+        deleted_count: { type: integer, minimum: 0, maximum: 100 }
+    CatalogFreshness:
+      type: string
+      enum: [CURRENT, DEGRADED]
+    Cart:
+      type: object
+      additionalProperties: false
+      required: [items, total_unique_skus, total_units, catalog_freshness]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/CartItem' }
+        total_unique_skus: { type: integer, minimum: 0, maximum: 50 }
+        total_units: { type: integer, minimum: 0, maximum: 5000 }
+        catalog_freshness: { $ref: '#/components/schemas/CatalogFreshness' }
+    CartItem:
+      type: object
+      additionalProperties: false
+      required:
+        - sku_id
+        - product_id
+        - product_name
+        - quantity
+        - unit_price_at_add
+        - current_price
+        - is_available
+        - added_at
+        - updated_at
+      properties:
+        sku_id: { type: string, maxLength: 64 }
+        product_id: { type: string, maxLength: 64 }
+        product_name: { type: string, maxLength: 300 }
+        variant_attributes:
+          type: object
+          additionalProperties: { type: string, maxLength: 200 }
+          maxProperties: 30
+        image_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: >-
+            Absolute CDN URL built by Cart from the Product image storage key, or the
+            configured placeholder when the SKU has no image. Never a storage key.
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        unit_price_at_add: { $ref: '#/components/schemas/Money' }
+        current_price:
+          oneOf:
+            - $ref: '#/components/schemas/Money'
+            - type: 'null'
+          description: Null khi Product Service không trả được giá hiện tại.
+        is_available:
+          type: boolean
+          description: Catalog saleability (Product và SKU ACTIVE), không phải stock Inventory. Giá trị CURRENT khi catalog_freshness=CURRENT, snapshot gần nhất khi DEGRADED.
+        added_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CheckoutCartSnapshot:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/CheckoutCartItem' }
+    CheckoutCartItem:
+      type: object
+      additionalProperties: false
+      required: [product_id, sku_id, quantity]
+      properties:
+        product_id: { type: string, minLength: 1, maxLength: 64 }
+        sku_id: { type: string, minLength: 1, maxLength: 64 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+
+  responses:
+    BadRequest:
+      description: Request không hợp lệ.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Thiếu trusted identity.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated workload is not Checkout Service.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    IdempotencyConflict:
+      description: Key dùng với payload khác hoặc request cùng key đang xử lý.
+      headers:
+        Retry-After:
+          description: Có khi request cùng key đang xử lý.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unprocessable:
+      description: Rule Cart hoặc Product validation không thỏa.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Vượt rate limit theo user.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    CartStoreUnavailable:
+      description: Redis Cart source of truth không khả dụng.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WriteDependencyUnavailable:
+      description: Redis hoặc Product dependency cần cho write không khả dụng.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

@@ -1,296 +1,154 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
 
-	"user-service/internal/api/dto/request"
-	"user-service/internal/api/dto/response"
-	"user-service/internal/api/middleware"
-	"user-service/internal/domain/service"
+	"github.com/ecommerce/user-service/internal/api/dto/request"
+	"github.com/ecommerce/user-service/internal/api/dto/response"
+	"github.com/ecommerce/user-service/internal/api/httpx"
+	"github.com/ecommerce/user-service/internal/api/middleware"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
+	"github.com/ecommerce/user-service/internal/domain/entity"
+	"github.com/ecommerce/user-service/internal/domain/service"
 )
 
-const (
-	// CacheTTLSeconds is the cache TTL for address list responses
-	CacheTTLSeconds = 43200 // 12 hours
-)
+// addressPathParam is the name of the address id path parameter.
+const addressPathParam = "address_id"
 
-// AddressHandler handles address-related HTTP requests
+// AddressHandler serves the address book endpoints.
 type AddressHandler struct {
-	addressService *service.AddressService
-	logger        *zap.Logger
+	addresses *service.AddressService
 }
 
-// NewAddressHandler creates a new address handler
-func NewAddressHandler(addressService *service.AddressService, logger *zap.Logger) *AddressHandler {
-	return &AddressHandler{
-		addressService: addressService,
-		logger:        logger,
-	}
+// NewAddressHandler wires the address endpoints.
+func NewAddressHandler(addresses *service.AddressService) *AddressHandler {
+	return &AddressHandler{addresses: addresses}
 }
 
-// ListAddresses handles GET /api/v1/users/me/addresses
-func (h *AddressHandler) ListAddresses(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// List handles GET /api/v1/users/me/addresses.
+func (h *AddressHandler) List(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	addresses, err := h.addressService.GetByUserID(c.Request.Context(), userID)
+	addresses, err := h.addresses.List(c.Request.Context(), identity.UserID)
 	if err != nil {
-		h.logger.Error("failed to get addresses", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while fetching addresses",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	// Convert to response DTOs
-	addressResponses := make([]*response.AddressResponse, len(addresses))
-	for i, addr := range addresses {
-		addressResponses[i] = response.AddressResponseFromEntity(addr)
-	}
-
-	c.JSON(http.StatusOK, response.AddressListResponse{
-		Addresses:       addressResponses,
-		Total:           len(addressResponses),
-		Cached:          true,
-		CacheTTLSeconds: CacheTTLSeconds,
-	})
+	httpx.WriteJSON(c, http.StatusOK, response.NewAddressList(addresses))
 }
 
-// CreateAddress handles POST /api/v1/users/me/addresses
-func (h *AddressHandler) CreateAddress(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Create handles POST /api/v1/users/me/addresses. The operation has no
+// idempotency key in v1, which the contract states explicitly.
+func (h *AddressHandler) Create(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	var req request.CreateAddressRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"Dữ liệu không hợp lệ",
-			[]response.ErrorDetail{{Field: "body", Message: err.Error()}},
-		))
-		return
-	}
-
-	// Validate request fields
-	if err := service.ValidateAddressFields(
-		req.RecipientName,
-		req.PhoneNumber,
-		req.AddressLine,
-		req.WardID,
-		req.DistrictID,
-		req.CityID,
-	); err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"Dữ liệu không hợp lệ",
-			[]response.ErrorDetail{{Field: "request", Message: err.Error()}},
-		))
-		return
-	}
-
-	address, err := h.addressService.Create(
-		c.Request.Context(),
-		userID,
-		req.RecipientName,
-		req.PhoneNumber,
-		req.AddressLine,
-		req.WardID,
-		req.DistrictID,
-		req.CityID,
-	)
-
+	input, err := decodeAddress(c)
 	if err != nil {
-		h.logger.Error("failed to create address", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while creating address",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, response.AddressResponseFromEntity(address))
+	address, err := h.addresses.Create(c.Request.Context(), identity.UserID, input)
+	if err != nil {
+		httpx.WriteProblem(c, err)
+		return
+	}
+
+	httpx.WriteCreated(c, "/api/v1/users/me/addresses/"+address.ID.String(), response.NewAddress(address))
 }
 
-// UpdateAddress handles PUT /api/v1/users/me/addresses/:id
-func (h *AddressHandler) UpdateAddress(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Replace handles PUT /api/v1/users/me/addresses/{address_id}.
+func (h *AddressHandler) Replace(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	addressID, err := uuid.Parse(c.Param("id"))
+	addressID, err := httpx.PathUUID(c, addressPathParam)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"ID địa chỉ không hợp lệ",
-			[]response.ErrorDetail{{Field: "id", Message: "UUID không hợp lệ"}},
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	var req request.UpdateAddressRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"Dữ liệu không hợp lệ",
-			[]response.ErrorDetail{{Field: "body", Message: err.Error()}},
-		))
-		return
-	}
-
-	address, err := h.addressService.Update(
-		c.Request.Context(),
-		userID,
-		addressID,
-		req.RecipientName,
-		req.PhoneNumber,
-		req.AddressLine,
-		req.WardID,
-		req.DistrictID,
-		req.CityID,
-	)
-
+	input, err := decodeAddress(c)
 	if err != nil {
-		if errors.Is(err, service.ErrAddressNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotFound,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		if errors.Is(err, service.ErrAddressNotOwned) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotOwned,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		h.logger.Error("failed to update address", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while updating address",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.AddressResponseFromEntity(address))
+	address, err := h.addresses.Replace(c.Request.Context(), identity.UserID, addressID, input)
+	if err != nil {
+		httpx.WriteProblem(c, err)
+		return
+	}
+
+	httpx.WriteJSON(c, http.StatusOK, response.NewAddress(address))
 }
 
-// DeleteAddress handles DELETE /api/v1/users/me/addresses/:id
-func (h *AddressHandler) DeleteAddress(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// SetDefault handles PUT /api/v1/users/me/addresses/{address_id}/default. It is
+// idempotent: repeating it on the current default changes nothing.
+func (h *AddressHandler) SetDefault(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	addressID, err := uuid.Parse(c.Param("id"))
+	addressID, err := httpx.PathUUID(c, addressPathParam)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"ID địa chỉ không hợp lệ",
-			[]response.ErrorDetail{{Field: "id", Message: "UUID không hợp lệ"}},
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	err = h.addressService.Delete(c.Request.Context(), userID, addressID)
+	address, err := h.addresses.SetDefault(c.Request.Context(), identity.UserID, addressID)
 	if err != nil {
-		if errors.Is(err, service.ErrAddressNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotFound,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		if errors.Is(err, service.ErrAddressNotOwned) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotOwned,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		if errors.Is(err, service.ErrCannotDeleteOnlyDefault) {
-			c.JSON(http.StatusConflict, response.NewErrorResponse(
-				response.ErrCodeCannotDeleteOnlyAddress,
-				"Không thể xóa địa chỉ mặc định duy nhất. Vui lòng thêm địa chỉ khác trước.",
-			))
-			return
-		}
-		h.logger.Error("failed to delete address", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while deleting address",
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.Status(http.StatusNoContent)
+	httpx.WriteJSON(c, http.StatusOK, response.NewAddress(address))
 }
 
-// SetDefaultAddress handles POST /api/v1/users/me/addresses/:id/default
-func (h *AddressHandler) SetDefaultAddress(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+// Delete handles DELETE /api/v1/users/me/addresses/{address_id}. Deleting the
+// current default is refused with 409.
+func (h *AddressHandler) Delete(c *gin.Context) {
+	identity, ok := middleware.IdentityFrom(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, response.NewErrorResponse(
-			response.ErrCodeUnauthorized,
-			"User not authenticated",
-		))
+		httpx.WriteProblem(c, apperr.ErrUnauthorized)
 		return
 	}
 
-	addressID, err := uuid.Parse(c.Param("id"))
+	addressID, err := httpx.PathUUID(c, addressPathParam)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, response.NewValidationErrorResponse(
-			"ID địa chỉ không hợp lệ",
-			[]response.ErrorDetail{{Field: "id", Message: "UUID không hợp lệ"}},
-		))
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	address, err := h.addressService.SetDefault(c.Request.Context(), userID, addressID)
-	if err != nil {
-		if errors.Is(err, service.ErrAddressNotFound) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotFound,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		if errors.Is(err, service.ErrAddressNotOwned) {
-			c.JSON(http.StatusNotFound, response.NewErrorResponse(
-				response.ErrCodeAddressNotOwned,
-				"Địa chỉ không tồn tại hoặc không thuộc về bạn",
-			))
-			return
-		}
-		h.logger.Error("failed to set default address", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, response.NewErrorResponse(
-			response.ErrCodeInternalError,
-			"An error occurred while setting default address",
-		))
+	if err := h.addresses.Delete(c.Request.Context(), identity.UserID, addressID); err != nil {
+		httpx.WriteProblem(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.AddressResponseFromEntity(address))
+	httpx.NoContent(c)
+}
+
+// decodeAddress reads the shared write payload of create and replace.
+func decodeAddress(c *gin.Context) (entity.AddressInput, error) {
+	var payload request.AddressWrite
+	if err := httpx.DecodeJSON(c, &payload); err != nil {
+		return entity.AddressInput{}, err
+	}
+	return payload.ToInput()
 }

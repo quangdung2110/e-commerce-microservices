@@ -2,326 +2,256 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
+	"errors"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/ecommerce/auth-service/internal/common/clock"
 	"github.com/ecommerce/auth-service/internal/common/constants"
-	"github.com/ecommerce/auth-service/internal/common/validator"
-	"github.com/ecommerce/auth-service/internal/domain/event"
+	apperr "github.com/ecommerce/auth-service/internal/common/errors"
+	"github.com/ecommerce/auth-service/internal/common/secret"
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/port"
+	"github.com/ecommerce/auth-service/internal/domain/vo"
 )
 
-// PasswordChangeRequest represents password change request
-type PasswordChangeRequest struct {
-	UserID          string
-	CurrentPassword string
-	NewPassword     string
-	IPAddress       string
-	DeviceInfo      string
+// ResetPolicy is the configured lifetime and link format of a reset token.
+type ResetPolicy struct {
+	TTL time.Duration
+	// URLTemplate carries the token in the fragment so it never lands in a
+	// server log: https://app.example.com/reset-password#token={token}.
+	URLTemplate string
 }
 
-// PasswordResetRequest represents password reset request
-type PasswordResetRequest struct {
-	ResetToken  string
-	NewPassword string
-	IPAddress   string
-}
+// MinResetTokenLength matches the `reset_token` minLength of the contract.
+const MinResetTokenLength = 43
 
-// ForgotPasswordRequest represents forgot password request
-type ForgotPasswordRequest struct {
-	Email     string
-	IPAddress string
-}
+// MaxResetTokenLength matches the `reset_token` maxLength of the contract.
+const MaxResetTokenLength = 128
 
-// PasswordService handles password management operations
+// PasswordService implements WF-AUTH-005: change a password with the current
+// credential, or reset it with a single-use opaque token.
 type PasswordService struct {
-	userRepo         port.UserRepository
-	refreshTokenRepo port.RefreshTokenRepository
-	tokenCache       port.TokenCache
-	passwordHasher   port.PasswordHasher
-	resetTokenCache  port.ResetTokenCache
-	eventPublisher   port.EventPublisher
-	auditService     *AuditService
-	logger           *zap.Logger
+	accounts    port.AccountRepository
+	resets      port.ResetTokenStore
+	hasher      port.PasswordHasher
+	limiter     port.RateLimiter
+	revoker     *Revoker
+	notifier    *Notifier
+	clock       clock.Clock
+	policy      vo.PasswordPolicy
+	reset       ResetPolicy
+	accountRule port.RateLimitRule
+	logger      *zap.Logger
 }
 
+// NewPasswordService wires the password use cases.
 func NewPasswordService(
-	userRepo port.UserRepository,
-	refreshTokenRepo port.RefreshTokenRepository,
-	tokenCache port.TokenCache,
-	passwordHasher port.PasswordHasher,
-	resetTokenCache port.ResetTokenCache,
-	eventPublisher port.EventPublisher,
-	auditService *AuditService,
+	accounts port.AccountRepository,
+	resets port.ResetTokenStore,
+	hasher port.PasswordHasher,
+	limiter port.RateLimiter,
+	revoker *Revoker,
+	notifier *Notifier,
+	clk clock.Clock,
+	policy vo.PasswordPolicy,
+	reset ResetPolicy,
+	accountRule port.RateLimitRule,
 	logger *zap.Logger,
 ) *PasswordService {
 	return &PasswordService{
-		userRepo:         userRepo,
-		refreshTokenRepo: refreshTokenRepo,
-		tokenCache:       tokenCache,
-		passwordHasher:   passwordHasher,
-		resetTokenCache:  resetTokenCache,
-		eventPublisher:   eventPublisher,
-		auditService:     auditService,
-		logger:           logger.With(zap.String("service", "PasswordService")),
+		accounts:    accounts,
+		resets:      resets,
+		hasher:      hasher,
+		limiter:     limiter,
+		revoker:     revoker,
+		notifier:    notifier,
+		clock:       clk,
+		policy:      policy,
+		reset:       reset,
+		accountRule: accountRule,
+		logger:      logger,
 	}
 }
 
-// ChangePassword changes user password
-func (s *PasswordService) ChangePassword(ctx context.Context, req *PasswordChangeRequest) error {
-	logger := s.logger.With(
-		zap.String("user_id", req.UserID),
-		zap.String("ip", req.IPAddress),
-	)
+// ChangePasswordCommand is the input of an authenticated password change.
+type ChangePasswordCommand struct {
+	AccountID       uuid.UUID
+	CurrentPassword string
+	NewPassword     string
+	ConfirmPassword string
+}
 
-	// Get user
-	user, err := s.userRepo.GetByID(ctx, req.UserID)
-	if err != nil {
-		logger.Error("User not found", zap.Error(err))
-		return fmt.Errorf("user not found")
-	}
-
-	// Verify current password
-	if !s.passwordHasher.Verify(req.CurrentPassword, user.PasswordHash) {
-		logger.Warn("Invalid current password")
-		if s.auditService != nil {
-			_ = s.auditService.LogPasswordChangeFailed(ctx, req.UserID, req.IPAddress)
-		}
-		return fmt.Errorf("invalid current password")
-	}
-
-	// Validate new password
-	if valid, msg := validator.ValidatePassword(req.NewPassword); !valid {
-		logger.Warn("Weak password", zap.String("reason", msg))
-		return fmt.Errorf("weak password: %s", msg)
-	}
-
-	// Check password history (simplified - in production, check against password history)
-	if err := s.checkPasswordHistory(ctx, req.UserID, req.NewPassword); err != nil {
+// ChangePassword updates the credential and revokes every session (AUTH-BR-003).
+func (s *PasswordService) ChangePassword(ctx context.Context, cmd ChangePasswordCommand) error {
+	if err := validatePasswordFormat(s.policy, "new_password", cmd.NewPassword, cmd.ConfirmPassword); err != nil {
 		return err
 	}
 
-	// Hash new password
-	newHash, err := s.passwordHasher.Hash(req.NewPassword)
+	account, err := s.accounts.GetByID(ctx, cmd.AccountID)
 	if err != nil {
-		logger.Error("Failed to hash password", zap.Error(err))
-		return fmt.Errorf("failed to hash password")
+		if errors.Is(err, apperr.ErrAccountNotFound) {
+			return apperr.ErrUnauthorized
+		}
+		return err
+	}
+	// A pending or deleted account has no usable credential to replace.
+	if account.Status != vo.AccountActive && account.Status != vo.AccountLocked {
+		return apperr.ErrUnauthorized
 	}
 
-	// Update password
-	user.PasswordHash = newHash
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		logger.Error("Failed to update password", zap.Error(err))
-		return fmt.Errorf("failed to update password")
+	valid, err := s.hasher.Verify(account.PasswordHash, cmd.CurrentPassword)
+	if err != nil {
+		return apperr.ErrInternal.WithCause(err)
+	}
+	if !valid {
+		return apperr.ErrInvalidCredentials
+	}
+	if cmd.NewPassword == cmd.CurrentPassword {
+		return apperr.ErrPasswordPolicy.WithDetail("The new password must differ from the current one.")
+	}
+	if err := validatePasswordStrength(s.policy, cmd.NewPassword, account.Email); err != nil {
+		return err
 	}
 
-	// Force logout all other sessions
-	if err := s.forceLogoutAll(ctx, req.UserID); err != nil {
-		logger.Error("Failed to force logout", zap.Error(err))
-	}
-
-	// Log password change
-	if s.auditService != nil {
-		_ = s.auditService.LogPasswordChanged(ctx, req.UserID, req.IPAddress, req.DeviceInfo)
-	}
-
-	// Publish password changed event
-	if s.eventPublisher != nil {
-		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.DeviceInfo)
-		_ = s.eventPublisher.Publish(ctx, passwordChanged)
-	}
-
-	logger.Info("Password changed successfully")
-	return nil
+	return s.applyNewPassword(ctx, account, cmd.NewPassword)
 }
 
-// RequestPasswordReset initiates password reset flow
-func (s *PasswordService) RequestPasswordReset(ctx context.Context, req *ForgotPasswordRequest) error {
-	logger := s.logger.With(
-		zap.String("email", maskEmailForLog(req.Email)),
-		zap.String("ip", req.IPAddress),
-	)
-
-	// Get user by email (don't reveal if email exists or not)
-	user, err := s.userRepo.GetByEmail(ctx, req.Email)
+// RequestReset emails an opaque reset link. It always reports success so the
+// endpoint cannot be used to discover which addresses have an account.
+func (s *PasswordService) RequestReset(ctx context.Context, rawEmail string) error {
+	email, err := vo.NewEmail(rawEmail)
 	if err != nil {
-		// Don't reveal if email exists
-		logger.Info("Password reset requested for non-existent email")
+		return err
+	}
+
+	account, err := s.accounts.GetByNormalizedEmail(ctx, email.Normalized())
+	if err != nil {
+		if errors.Is(err, apperr.ErrAccountNotFound) {
+			return nil
+		}
+		return err
+	}
+	// A pending or deleted account cannot be recovered through this flow.
+	if account.Status != vo.AccountActive && account.Status != vo.AccountLocked {
 		return nil
 	}
 
-	// Generate reset token
-	resetToken := generateResetToken()
-	resetTokenHash := hashResetToken(resetToken)
-
-	// Store in Redis
-	if err := s.resetTokenCache.Set(ctx, resetTokenHash, user.ID); err != nil {
-		logger.Error("Failed to store reset token", zap.Error(err))
-		return fmt.Errorf("failed to store reset token")
-	}
-
-	// Publish password reset requested event (for email sending)
-	if s.eventPublisher != nil {
-		resetEvent := event.NewPasswordResetRequested(user.ID, user.Email.String())
-		_ = s.eventPublisher.Publish(ctx, resetEvent)
-	}
-
-	// Log request
-	if s.auditService != nil {
-		_ = s.auditService.LogPasswordResetRequested(ctx, user.ID, req.IPAddress)
-	}
-
-	logger.Info("Password reset requested")
-	return nil
-}
-
-// ResetPassword resets password using reset token
-func (s *PasswordService) ResetPassword(ctx context.Context, req *PasswordResetRequest) error {
-	logger := s.logger.With(zap.String("ip", req.IPAddress))
-
-	// Hash the reset token
-	resetTokenHash := hashResetToken(req.ResetToken)
-
-	// Get user ID from cache (atomic verify and delete)
-	userID, err := s.resetTokenCache.Verify(ctx, resetTokenHash)
-	if err != nil {
-		logger.Error("Failed to verify reset token", zap.Error(err))
-		return fmt.Errorf("failed to verify reset token")
-	}
-
-	if userID == "" {
-		logger.Warn("Invalid or expired reset token")
-		if s.auditService != nil {
-			_ = s.auditService.LogPasswordResetFailed(ctx, "", req.IPAddress, "INVALID_TOKEN")
+	if s.accountRule.Enabled() {
+		result, err := s.limiter.Allow(ctx, "password-reset:account", account.ID.String(), s.accountRule)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("invalid or expired reset token")
-	}
-
-	// Get user
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		logger.Error("User not found", zap.Error(err))
-		return fmt.Errorf("user not found")
-	}
-
-	// Validate new password
-	if valid, msg := validator.ValidatePassword(req.NewPassword); !valid {
-		logger.Warn("Weak password", zap.String("reason", msg))
-		return fmt.Errorf("weak password: %s", msg)
-	}
-
-	// Hash new password
-	newHash, err := s.passwordHasher.Hash(req.NewPassword)
-	if err != nil {
-		logger.Error("Failed to hash password", zap.Error(err))
-		return fmt.Errorf("failed to hash password")
-	}
-
-	// Update password
-	user.PasswordHash = newHash
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		logger.Error("Failed to update password", zap.Error(err))
-		return fmt.Errorf("failed to update password")
-	}
-
-	// Force logout all sessions
-	if err := s.forceLogoutAll(ctx, user.ID); err != nil {
-		logger.Error("Failed to force logout", zap.Error(err))
-	}
-
-	// Log password reset
-	if s.auditService != nil {
-		_ = s.auditService.LogPasswordResetSuccess(ctx, user.ID, req.IPAddress)
-	}
-
-	// Publish password changed event
-	if s.eventPublisher != nil {
-		passwordChanged := event.NewUserPasswordChanged(user.ID, user.Email.String(), req.IPAddress)
-		_ = s.eventPublisher.Publish(ctx, passwordChanged)
-	}
-
-	logger.Info("Password reset successfully")
-	return nil
-}
-
-// forceLogoutAll revokes all tokens for a user
-func (s *PasswordService) forceLogoutAll(ctx context.Context, userID string) error {
-	logger := s.logger.With(zap.String("user_id", userID))
-
-	// Revoke all refresh tokens
-	if err := s.refreshTokenRepo.RevokeAllForUser(ctx, userID); err != nil {
-		logger.Error("Failed to revoke tokens", zap.Error(err))
-		return fmt.Errorf("failed to revoke tokens: %w", err)
-	}
-
-	// Set revocation timestamp
-	now := time.Now()
-	if s.tokenCache != nil {
-		if err := s.tokenCache.SetRevokedBefore(ctx, userID, now); err != nil {
-			logger.Error("Failed to set revoked_before", zap.Error(err))
+		if !result.Allowed {
+			// Throttling one mailbox is visible to the owner only, so returning
+			// 429 here does not disclose the account to a third party.
+			return apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter)
 		}
 	}
 
-	return nil
-}
-
-// checkPasswordHistory checks if password was used recently
-func (s *PasswordService) checkPasswordHistory(ctx context.Context, userID string, newPassword string) error {
-	// Simplified implementation - in production, check against password history stored in database
-	return nil
-}
-
-// GetResetTokenForEmail returns the reset token for sending via email
-// This is a temporary method - in production, the token should be sent via email service
-func (s *PasswordService) GetResetTokenForEmail(ctx context.Context, email string) (string, error) {
-	user, err := s.userRepo.GetByEmail(ctx, email)
+	token, err := secret.NewOpaqueToken(constants.ResetTokenBytes)
 	if err != nil {
-		return "", nil // Don't reveal if email exists
+		return apperr.ErrInternal.WithCause(err)
+	}
+	expiresAt := s.clock.Now().Add(s.reset.TTL)
+	if err := s.resets.Issue(ctx, secret.HashHex(token), account.ID, s.reset.TTL); err != nil {
+		return err
 	}
 
-	resetToken := generateResetToken()
-	resetTokenHash := hashResetToken(resetToken)
-
-	if err := s.resetTokenCache.Set(ctx, resetTokenHash, user.ID); err != nil {
-		return "", err
-	}
-
-	return resetToken, nil
+	s.notifier.PasswordResetRequested(ctx, account.ID, recipientOf(account), s.resetURL(token), expiresAt)
+	return nil
 }
 
-// generateResetToken generates a secure reset token
-func generateResetToken() string {
-	bytes := make([]byte, constants.ResetTokenLength)
-	if _, err := rand.Read(bytes); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(bytes)
+// CompleteResetCommand is the input of a reset completion.
+type CompleteResetCommand struct {
+	ResetToken      string
+	NewPassword     string
+	ConfirmPassword string
 }
 
-// hashResetToken creates SHA-256 hash of a reset token
-func hashResetToken(token string) string {
-	hash := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(hash[:])
-}
-
-func maskEmailForLog(email string) string {
-	if len(email) < 4 {
-		return "***"
+// CompleteReset consumes the token exactly once, updates the credential and
+// revokes every session.
+func (s *PasswordService) CompleteReset(ctx context.Context, cmd CompleteResetCommand) error {
+	if len(cmd.ResetToken) < MinResetTokenLength || len(cmd.ResetToken) > MaxResetTokenLength {
+		return apperr.ErrValidation.WithFields(apperr.FieldError{
+			Field:   "reset_token",
+			Message: "is not a reset token issued by this API",
+		})
 	}
-	atIndex := -1
-	for i, c := range email {
-		if c == '@' {
-			atIndex = i
-			break
+	if err := validatePasswordFormat(s.policy, "new_password", cmd.NewPassword, cmd.ConfirmPassword); err != nil {
+		return err
+	}
+
+	accountID, err := s.resets.Consume(ctx, secret.HashHex(cmd.ResetToken))
+	if err != nil {
+		return err
+	}
+
+	account, err := s.accounts.GetByID(ctx, accountID)
+	if err != nil {
+		if errors.Is(err, apperr.ErrAccountNotFound) {
+			return apperr.ErrResetTokenInvalid
 		}
+		return err
 	}
-	if atIndex <= 1 {
-		return email[:1] + "***"
+	if account.Status != vo.AccountActive && account.Status != vo.AccountLocked {
+		return apperr.ErrResetTokenInvalid
 	}
-	return email[:2] + "***" + email[atIndex:]
+	// The reset contract defines no 422 for policy, so a weak password is a
+	// request-validation error here.
+	if err := asValidation(validatePasswordStrength(s.policy, cmd.NewPassword, account.Email), "new_password"); err != nil {
+		return err
+	}
+
+	return s.applyNewPassword(ctx, account, cmd.NewPassword)
+}
+
+// applyNewPassword performs the shared tail of both flows: persist the new
+// credential, revoke every session and notify the owner.
+func (s *PasswordService) applyNewPassword(ctx context.Context, account *entity.Account, newPassword string) error {
+	recipient := recipientOf(account)
+	lockedBefore := account.Status == vo.AccountLocked
+
+	hash, err := s.hasher.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+
+	now := s.clock.Now()
+	if err := account.SetPasswordHash(hash, now); err != nil {
+		return err
+	}
+	if lockedBefore {
+		// Completing a reset or a change proves control of the account, so the
+		// failed-login lock is lifted with it.
+		account.ClearLockout(now)
+	}
+	if err := s.accounts.Update(ctx, account); err != nil {
+		return err
+	}
+
+	if _, err := s.revoker.RevokeAllSessions(ctx, account.ID); err != nil {
+		return err
+	}
+	if err := s.resets.InvalidateForAccount(ctx, account.ID); err != nil {
+		// A stale reset token is a security risk but the password already
+		// changed; report it rather than failing the request.
+		s.logger.Error("could not invalidate the pending reset token",
+			zap.String("account_id", account.ID.String()),
+			zap.Error(err),
+		)
+	}
+
+	s.notifier.PasswordChanged(ctx, account.ID, recipient, now)
+	return nil
+}
+
+func (s *PasswordService) resetURL(token string) string {
+	if strings.Contains(s.reset.URLTemplate, "{token}") {
+		return strings.ReplaceAll(s.reset.URLTemplate, "{token}", token)
+	}
+	return s.reset.URLTemplate + token
 }
