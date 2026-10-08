@@ -1,0 +1,139 @@
+1. Bản chất
+
+Checkout Service được thiết kế theo mô hình BFF, chịu trách nhiệm ghép nối dữ liệu từ nhiều service sở hữu (Cart, Product, User, Inventory, Promotion) để tạo ra bản báo giá ngắn hạn và điều phối submit idempotency
+sang Order Service
+Ranh giới dữ liệu:
+    Không sở hữu dữ liệu gốc: Không quản lý giỏ hàng (Cart), không định giá hay catalog (Product), không lưu địa chỉ (User), không giữ kho (Inventory), không quản lý ví/ngân sách voucher (Promotion), và không quản lý vòng đời đơn hàng/thanh toán (Order)
+
+
+2. Các workflow nghiệp vụ chính
+
+2.1 Preview
+Đầu vào của Request
+Endpoint: POST /api/v1/checkout/preview
+Headers:
+Idempotency-Key: Chuỗi UUID do client sinh để chống gửi lặp request.
+X-User-Id: Do API Gateway giải mã từ JWT và truyền vào.
+
+
+Bước 0
+Trước khi gọi bất kỳ service nào để tránh lãng phí tài nguyên:
+
+Kiểm tra Idempotency: Đọc Redis key checkout:idem:{user_id}:{idem_hash} (TTL 5 phút). Nếu cùng key và cùng nội dung, trả ngay kết quả cũ đã lưu. Nếu cùng key nhưng đổi body, trả lỗi 409 IDEMPOTENCY_KEY_REUSED.
+Hàng rào chặn đơn đang chạy (In-flight Submission Guard):
+    Checkout đọc nhanh con trỏ checkout:active:{user_id} trên Redis.
+    Nếu người dùng đang có một phiên đặt hàng chưa xong (trạng thái SUBMITTING hoặc RETRYABLE), Checkout từ chối ngay lập tức bằng mã lỗi: -> 409 SUBMISSION_IN_PROGRESS kèm đường dẫn status_url.
+    Mục đích: Ngăn người dùng tải lại trang rồi tạo thêm một báo giá khác để đặt hàng lần 2 dẫn đến trùng đơn
+
+
+Wave 1: Lấy Giỏ Hàng (Cart Checkout Snapshot)
+Lời gọi: GET /internal/v1/carts/{user_id}/checkout-snapshot
+Kiểm tra nghiệp vụ:
+    Nếu giỏ rỗng -> dừng và trả lỗi 422 CART_EMPTY
+
+Wave 2 (Chạy Song Song): Xác Minh Địa Chỉ & Lấy Giá Sản Phẩm
+Sau khi có danh sách SKU từ Wave 1, hai dịch vụ này được gọi đồng thời
+1. User Service (GET address snapshot)
+Lấy thông tin người nhận, số điện thoại, địa chỉ cụ thể.
+Xác minh địa chỉ có thuộc về đúng user_id hay không. Nếu không tìm thấy -> trả 422 ADDRESS_NOT_FOUND.
+2. Product Service (gRPC GetBatchSkus)
+Lấy chi tiết toàn bộ SKU trong 1 lời gọi gRPC duy nhất: tên sản phẩm, trạng thái (SKU_STATUS_ACTIVE), giá bán thực tế (price), giá niêm yết (base_price), mã danh mục (category_ids), và storage key của ảnh.
+Kiểm tra chéo & Tính toán:
+    Nếu có SKU bị xóa, không active hoặc product_id lệch với giỏ hàng -> trả 422 SKU_UNAVAILABLE kèm danh sách SKU lỗi.
+
+Wave 3 (Chạy Song Song): Kiểm Tra Tồn Kho & Tính Toán Giảm Giá
+1. Inventory Service (POST allocation-previews)
+    Lời gọi này chỉ là tư vấn thử nghiệm (advisory preview), hoàn toàn không giữ kho hay trừ hàng thật.
+    Nếu kho trả về REJECT_ALL -> trả 422 INSUFFICIENT_STOCK kèm danh sách dòng thiếu hàng để hiển thị cho user.
+    Nếu đủ hàng (ALLOCATABLE), nhận về allocation_plan_id và danh sách kho phân bổ.
+2. Promotion Service (POST promotion-discount-calculations)
+    Gửi giỏ hàng, tổng tiền subtotal và thông tin ngành hàng sang Promotion.
+    Nếu mã không hợp lệ hoặc không đủ điều kiện áp dụng -> trả 422 PROMOTION_INVALID kèm lý do cụ thể (chưa lưu mã, đơn chưa đủ giá trị tối thiểu, v.v.).
+
+
+2.2 Submit 
+Endpoint: POST /api/v1/checkout/submit
+
+Bước 0: Tiền Kiểm Tra Cầu Dao (Circuit Breaker Order)
+Trước khi chạm vào bất kỳ dữ liệu nào của token:
+
+Checkout kiểm tra trạng thái Circuit Breaker của Order Service.
+Nếu cầu dao đang MỞ (Order đang sập): Trả về ngay 503 CHECKOUT_UNAVAILABLE kèm Retry-After
+
+
+Bước 1: Claim Token Nguyên Tử & Đóng Băng Payload
+Kiểm tra trạng thái hiện tại:
+    Nếu đã quá 20 phút -> 410 CHECKOUT_EXPIRED
+    Nếu đang SUBMITTING hoặc RETRYABLE -> Chuyển sang xử lý tình huống submit trùng lặp (WF-03)
+
+
+Bước 2: Revalidation
+Checkout kiểm tra lại bằng các lời gọi song song
+Product Service: Kiểm tra sản phẩm còn ACTIVE không, giá bán (price) và mã danh mục (category_ids) có bị đổi không
+Promotion Service: Kiểm tra voucher còn áp dụng được với giá mới hay không. (Lưu ý: Inventory không cần revalidate ở bước này vì Order Service sẽ thực hiện giữ kho thật bằng Saga)
+
+Nếu có thay đổi vật chất: Chuyển trạng thái token thành CONFLICT, trả về 409 kèm danh sách changed_fields (CART_CHANGED, PRICE_CHANGED, hoặc PROMOTION_CHANGED)
+
+
+Bước 3: Gửi Lệnh Sang Order Service
+Gửi request: POST /internal/v1/checkout-order-submissions
+Header bắt buộc: Idempotency-Key = checkout_token
+Xử lý bên Order Service: Order tiếp nhận payload, chạy Saga để gọi Inventory Reserve (giữ kho thật), gọi Promotion Reserve (trừ ngân sách voucher) và gọi Stripe tạo Payment Intent (checkpoint PAYMENT_READY)
+
+
+Bước 4: Xử Lý Kết Quả & Ghi Nhận Terminal State
+Có 3 kịch bản kết quả trả về từ Order Service:
+
+Kịch bản A: Thành công (Order trả 201 Created hoặc 200 OK)
+Trạng thái token chuyển sang SUCCEEDED
+
+Kịch bản B: Thất bại do nghiệp vụ (Order trả 409 Conflict)
+Nếu kho không còn đủ chỗ giữ thật -> Trả 409 INVENTORY_RESERVATION_REJECTED (token thành FAILED).
+Nếu mã giảm giá vừa bị hết ngân sách -> Trả 409 PROMOTION_RECALCULATION_NEEDED (token thành CONFLICT)
+
+Kịch bản C: Lỗi hạ tầng / Timeout (Order trả 503, rớt mạng)
+
+
+3. Các nguyên tắc chống lỗi
+
+3.1 Nguyên tắc Fail-Closed
+Vấn đề thực tế: Trong một số hệ thống thông thường, khi một dịch vụ gặp sự cố (ví dụ hệ thống Khuyến mãi bị sập), lập trình viên hay dùng giải pháp dự phòng (fallback/degrade)
+Cách Checkout Service xử lý (Fail-Closed):
+    Tuyệt đối không có "báo giá tạm bợ" (no degraded quote).
+    Nếu Promotion Service bị lỗi hoặc timeout: Checkout từ chối tạo báo giá và trả về 503 CHECKOUT_UNAVAILABLE kèm thông báo thử lại sau.
+    Tương tự, nếu Inventory Service không xác nhận được hàng: Không bao giờ cho phép đặt.
+
+
+
+
+4. Fallback - Circuit Breaker
+Bản chất của Fallback: "Báo lỗi ngay lập tức" cũng chính là một Fallback (Fast-Failure)
+Fallback không đồng nghĩa với "trả về dữ liệu giả/dữ liệu cache".
+Fallback đơn giản chỉ là hành động được thực thi khi cầu dao ngắt. Trong Checkout Service
+Khi không có CB: 1.000 khách hàng vào thanh toán -> 1.000 request phải chờ hết timeout
+Khi có CB (Fallback là Fast-Failure): Cầu dao ngắt -> 1.000 request đó được trả về lỗi ngay lập tức với mã 503 CHECKOUT_UNAVAILABLE
+
+
+Phân biệt với Product Detail BFF
+
+Product Detail BFF phục vụ trang chi tiết sản phẩm (PDP) — một màn hình thuần duyệt nội dung (Read Path).
+Tại đây, các dependency được chia làm 2 loại: Bắt buộc và Degradable (Có thể hạ cấp):
+
+Dependency	            Tính chất	    Khi Circuit Breaker MỞ (Downstream sập)	    Dữ liệu Fallback thực tế trả về Client
+Product Service	        Bắt buộc	    Trả về 503 Service Unavailable	            Không có fallback (vì không có thông tin sản phẩm thì không thể vẽ trang)
+Inventory Service	    Degradable	    Vẫn trả về HTTP 200 OK	                    Fallback: Mọi SKU chuyển thành trạng thái UNKNOWN. Khách vẫn đọc được mô tả, xem ảnh, giá niêm yết; nút mua tạm thời mờ đi.
+Review Service	        Degradable      Vẫn trả về HTTP 200 OK	                    Fallback: Trả về review_section.status = UNAVAILABLE. Khách vẫn xem và mua hàng bình thường, chỉ tạm thời không đọc được đánh giá/bình luận.
+
+Mục tiêu ở PDP: Tối đa hóa Tính sẵn sàng (High Availability). Người dùng lướt web tìm đồ thì không được để họ gặp trang trắng hay lỗi 500 chỉ vì hệ thống đánh giá (Review) bị chậm
+
+Chính vì thế, việc dùng Circuit Breaker ở vẫn bắt buộc, chỉ có điều mục đích của nó đã thay đổi từ 
+- Trả ngay dữ liệu suy hao để trang web tải tức thì, không chờ đợi dependency lỗi
+sang
+- Bảo vệ tài nguyên server, cho downstream hồi phục
+
+Tóm lại:
+Quan điểm "chỉ dùng Circuit Breaker khi có fallback dữ liệu" chỉ đúng với các màn hình hiển thị nội dung đọc (Read/Catalog/Feed).
+
+Còn đối với các hệ thống giao dịch cốt lõi (Core Transaction/Checkout/Banking):
++ Fallback chuẩn mực nhất là Fast-Failure (Từ chối nhanh có kiểm soát).
++ Circuit Breaker sinh ra không phải để "chữa cháy dữ liệu cho client", mà là lá chắn bảo vệ hạ tầng (Downstream & Upstream) không bị sập dây chuyền và ngăn chặn trạng thái dữ liệu bị kẹt dở dang.

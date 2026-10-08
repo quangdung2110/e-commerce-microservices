@@ -1,0 +1,260 @@
+1. Nếu Cart dùng PostgreSQL làm SoT, ta thường làm:
+BEGIN;
+UPDATE carts ...;
+INSERT INTO outbox_events ...;
+COMMIT;
+Cả state và outbox record cùng nằm trong một transaction SQL, nên không có dual-write.
+Ở thiết kế này Redis là SoT, nên tương đương là Lua script:
+atomic Lua execution:
+  HSET cart state
+  XADD Redis Stream event
+Redis Stream chính là outbox record bền tạm thời của Cart. Lua script thay vai trò của SQL transaction: hoặc cart state và event cùng được ghi, hoặc cả hai không xảy ra.
+
+
+
+
+2. Lý do vì sao bắt buộc sử dụng Redis Stream làm outbox record tạm thời mà không phải các cấu trúc dữ liệu khác của Redis
+Giữ đến khi Kafka đã nhận chắc chắn, không phải fire-and-forget. Redis Stream được chọn vì nó có sẵn đúng các cơ chế của một outbox queue:
+- XADD: append event theo thứ tự, đồng thời Redis sinh stream_id — dùng luôn cho ordering và dedupe.
+- Consumer group: relay có thể đọc theo nhóm, scale trên các shard.
+- Pending Entry List: relay đã đọc nhưng chết trước XACK thì event không mất.
+- XAUTOCLAIM: instance khác nhặt lại event pending bị bỏ quên.
+- XACK: chỉ đánh dấu event đã bàn giao Kafka thành công.
+- XTRIM MINID: dọn RAM có kiểm soát, sau khi chắc event không còn cần giữ.
+
+
+
+
+
+3. Cart Service cần hiển thị giá mới nhất và trạng thái hiện tại của SKU, trong khi Product Service mới là nơi chứa dữ liệu thực sự của những thứ này. Chính vì thế chúng ta phải có cơ chế 
+cập nhật thông tin của giỏ hàng
+Ở đây chúng ta có 2 phương án:
+
+- Phương án 1: Lưu trữ thông tin về các giỏ hàng đang chứa sản phẩm đó trong một cấu trúc dữ liệu riêng trên Redis được gọi là Reverse Index (VD: Set, Sorted Set). Khi có sự kiện cập nhật sản phẩm của Product Service, chúng ta sẽ truy vấn cấu trúc dữ liệu này để lấy danh sách các giỏ hàng mà có chứa sản phẩm đó và cập nhật lại thông tin.
+Ưu điểm: 
++ Đọc cực nhanh: Cart Service chỉ cần lấy dữ liệu từ Redis mà không cần phải truy vấn đến Product Service để lấy thông tin về các giỏ hàng chứa sản phẩm đó
++ Đảm bảo tính nhất quán: Khi có sự kiện cập nhật sản phẩm, chúng ta sẽ ngay lập tức cập nhật lại thông tin trong cấu trúc dữ liệu trên Redis, đảm bảo rằng thông tin về các giỏ hàng luôn được cập nhật kịp thời
+Nhược điểm:
++ Tốn thêm bộ nhớ: Việc lưu trữ thông tin về các giỏ hàng chứa sản phẩm đó sẽ tốn thêm bộ nhớ trên Redis, đặc biệt nếu số lượng sản phẩm và giỏ hàng lớn
++ Write Amplification: Mỗi khi có sự kiện cập nhật sản phẩm, chúng ta sẽ phải thực hiện nhiều lần ghi vào Redis để cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó, điều này có thể
+gây ra hiện tượng write amplification, làm giảm hiệu năng của hệ thống
+
+- Phương án 2: Bỏ Reserve Index, đồng bộ dữ liệu qua gRPC khi truy cập 
+(nghĩa là mỗi khi khách hàng truy cập vào giỏ hàng aka Cart Service hoặc thực hiện Đặt hàng aka Checkout Service, 
+chúng ta sẽ thực hiện một lần gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về sản phẩm đó)
+Ưu điểm:
++ Tránh được Write Amplification: không có một Worker nào sẽ thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm, do đó tránh được hiện tượng write amplification.
++ Tiết kiệm tài nguyên: chỉ khi nào khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng thì chúng ta mới thực hiện việc đồng bộ dữ liệu, điều này giúp tiết kiệm tài nguyên hơn so với việc phải cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó mỗi khi có sự kiện cập nhật sản phẩm
++ Tinh gọn hơn: không cần phải duy trì một cấu trúc dữ liệu riêng trên Redis để lưu trữ thông tin về các giỏ hàng chứa sản phẩm đó, thêm vào đó tránh được Race Condition khi có nhiều Worker cùng thực hiện việc cập nhật lại thông tin về các giỏ hàng chứa sản phẩm trong khi đó thì khách hàng lại đang truy cập vào giỏ hàng đó
+Nhược điểm:
++ Tăng độ trễ: mỗi khi khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng, chúng ta sẽ phải thực hiện một lần gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về sản phẩm đó
++ Tăng tải cho Product Service: nếu có nhiều khách hàng truy cập vào giỏ hàng hoặc thực hiện đặt hàng cùng một lúc, điều này có thể được cải thiện bằng cách sử dụng một cơ chế caching tạm thời trên Product Service và trên Cart Service 
++ Tăng rủi ro phụ thuộc: việc đồng bộ dữ liệu qua gRPC sẽ làm tăng sự phụ thuộc giữa Cart Service và Product Service, nếu Product Service gặp sự cố hoặc có độ trễ cao thì sẽ ảnh hưởng đến trải nghiệm của
+khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (có thể được cải thiện bằng Circuit Breaker pattern)
+
+
+
+
+
+
+
+4. Sử dụng 2 đường RPC chính
+Luồng đọc:
+RPC sử dụng: GetBatchProductSKUs (lấy tất cả thông tin của SKU trong 1 lần gọi RPC duy nhất, tránh N + 1 network call)
+Mục đích: cập nhật thông tin mới nhất của giỏ hàng để hiển thị cho khách hàng. Sử dụng Circuit Breaker để tránh phụ thuộc của Cart Service vào Product Service
+
+Luồng ghi: 
+RPC sử dụng: GetProductSKU
+Mục đích: xác định tính hợp lệ của SKU trước khi thêm vào giỏ
+
+Để giảm tải cho Product Service và giữ độ trễ thấp cho Cart Service (ví dụ như khách hàng spam thêm/bớt quantity)
+1. Validation Freshness TTL (30–60 giây):
+Trong Redis item lưu trường catalog_validation_expires_at_ms.
+SKU mới: Luôn bắt buộc gọi gRPC GetProductSku
+SKU đã có:
+Khi giảm số lượng (delta âm): Không bao giờ cần gọi gRPC Product.
+Khi tăng số lượng (delta dương): Nếu validation snapshot còn hạn (Fresh), Cart Service bỏ qua gọi gRPC và cập nhật trực tiếp qua Lua script. Chỉ khi validation hết hạn (Stale) mới gọi gRPC refresh
+2. Coalescing với Singleflight
+Mỗi instance Cart Service sử dụng cơ chế singleflight gộp các request gọi gRPC đồng thời tới cùng một sku_id, ngăn chặn tình trạng Thundering Herd khi nhiều người dùng cùng thêm/sửa một mặt hàng hot
+
+
+
+
+
+
+
+5. Chi tiết cơ chế hoạt động của Singleflight
+
+Singleflight nhóm các Goroutine đang thực thi theo một key (chính là skuID)
+Goroutine đầu tiên gọi group.Do(skuID, ...) sẽ thực sự gửi lời gọi gRPC rpc.GetSku(...) sang Product Service
+49 Goroutine đến sau sẽ không gọi mạng, mà chuyển sang trạng thái chờ (block/wait) kết quả của Goroutine đầu tiên
+Khi Goroutine đầu tiên nhận được response từ Product Service, kết quả sẽ được nhân bản và trả về cho toàn bộ 49 Goroutine còn lại cùng lúc
+Bạn có thể băn khoăn: Nếu request thứ 51 đến trễ hơn 1 mili-giây (khi Singleflight vừa kết thúc và xóa key khỏi map), liệu nó có phải gọi lại gRPC không?
+👉 Không, vì lúc này In-memory LRU Cache đã tiếp quản!
+Sự kết hợp giữa Singleflight + LRU Cache tạo nên một chu trình bảo vệ khép kín:
+Trong lúc chưa có cache (20ms – 50ms đầu tiên): Singleflight đứng ra chắn, gom 50 request lại làm 1 cuộc gọi gRPC.
+Ngay khi gRPC xong: Kết quả được lưu vào LRU Cache với TTL 30–60 giây.
+Từ thời điểm này trở đi (trong suốt 30–60s): Request thứ 51, 52,... hay 10.000 đến sau sẽ không tạo Singleflight mới, mà đọc thẳng từ RAM của LRU Cache
+
+Để tránh trường hợp Product Service bị treo khiến toàn bộ các Goroutine đang gom nhóm bị "treo vĩnh viễn", Cart Service luôn áp đặt Deadline cứng (ví dụ 200ms)
+
+
+
+
+
+
+
+6. Thiết kế chi tiết về luồng hoạt động của Relay Worker
+Mỗi worker xử lý song song giữa các stream, nhưng tuần tự bên trong từng stream
+Ví dụ:
+
+relay-1 phụ trách b16..b31:
+relay-1 process
+├─ loop b16: entry 1 → Kafka ACK → XACK → entry 2 → ...
+├─ loop b17: entry 1 → Kafka ACK → XACK → entry 2 → ...
+├─ ...
+└─ loop b31: entry 1 → Kafka ACK → XACK → entry 2 → ...
+Giải thích rõ hơn: 
+Tuần tự bên trong từ stream:
++ Quy trình tuần tự đảm bảo an toàn (tránh out-of-order): Fetch Entry N -> Publish Kafka -> Wait Kafka ACK -> Redis ACK Entry N -> Fetch Entry N+1
+Song song giữa các stream:
++ 16 Goroutine chạy độc lập trong Go runtime Schedule: Nếu 1 stream gặp sự cố, chỉ duy nhất loop này bị delay và không ảnh hưởng tới stream khác
+Cơ chế phục hồi khi Crash / Restart
+Khi một worker bị Crash:
++ Các message đã được XREADGROUP (đọc message này) lấy ra nhưng worker chết trước khi kịp ACK sẽ nằm lại trong PEL của Redis Stream
+Quy trình khởi động lại của mỗi loop:
+Bước 1: Quét lại tin nhắn bị kẹt 
+Bước 2: Tiếp tục đọc tin nhắn mới
+
+
+
+
+
+
+7. Thiết kế chi tiết về luồng hoạt động của Stream Trimmer
+Lệnh XACK của Relay Worker chi đánh dấu là Consumer Group này đã xử lý xong message (gỡ khỏi PEL). Message này vẫn còn nằm trong RAM của Redis
+Tại sao không dùng MAXLEN lúc XADD
++ Nếu dùng MAXLEN (giới hạn độ dài), lỡ Kafka bị chậm -> Relay Worker chưa kịp đọc -> Các message mới tiếp tục đẩy vào sẽ đẩy văng các message cũ chưa kịp ACK ra khỏi Redis
+
+Cụ thể hoạt động:
+Relay worker kiêm một background trimmer loop cho đúng 16 stream mà nó sở hữu:
+relay-1
+├─ relay loops: b16 … b31
+└─ trimmer loop: định kỳ quét b16 … b31
+
+
+- Bước 1: Gọi XLEN và XINFO GROUPS để kiểm tra trạng thái Stream
+- Bước 2: Xác định mốc cắt tỉa an toàn (safeID)
+Mốc safeID là mốc ID nhỏ nhất mà mọi message đứng trước nó đã đảm bảo 100% đã được ACK
+Trường hợp 1: Không có tin nhắn kẹt (PendingList = 0)
+Toàn bộ tin nhắn trước LastDeliveredID đều đã xử lý xong
+safeID = group.LastDeliveredID
+Trường hợp 2 (Có tin bị kẹt - Pending > 0):
+Trimmer gọi XPENDING để tìm pending.Lower (ID của tin nhắn cũ nhất đang bị kẹt/chưa ACK)
+safeID = pending.Lower
+Ý nghĩa: Dù có những tin phía sau đã xong, nhưng vì tin pending.Lower này chưa xong, Trimmer chỉ được phép cắt đến trước vị trí của nó để Relay Worker còn có cơ hội retry/claim lại
+- Bước 3: Gọi XTRIM MINID để cắt bớt các messages đã xử lý xong
+
+Vì mỗi stream hiện chỉ có một consumer group, mốc trim chỉ cần dựa vào group đó. Nếu sau này thêm group khác đọc trực tiếp Redis Stream, thuật toán phải lấy mốc an toàn nhỏ nhất giữa tất cả group
+
+
+
+
+
+
+
+8. Giải đáp một số thắc mắc về Redis Stream và Kafka
+
+Stream được tạo tự động khi có event đầu tiên (lazy creation thông qua XADD với MKSTREAM)
+Stream có thể bị xóa hoàn toàn khi:
+  - Stream Trimmer dọn dẹp sau khi đã XACK hết message và stream rỗng
+  - Giỏ hàng rỗng sau khi checkout / xóa
+
+Khi chuyển từ Redis Stream sang Kafka, phải đảm bảo được tất cả event cùng một cart luôn đi vào một partition (partition key = cart_id)
+Tuy nhiên khác ở Redis Stream là số lượng Partition ở đây có giới hạn (ví dụ trong thiết kế Service này là 12), chính vì thế các sự kiện của các cart khác nhau vẫn có khả năng nằm cùng một Partition (phân bổ theo hash cart_id) theo công thức:
+  partition = hash(cart_id) % total_partitions
+
+Giả sử có 12 partitions (0-11):
+─────────────────────────────────────────────────────────────
+cart_id hash = 12345
+12345 % 12 = 9  → đi vào Partition 9
+
+cart_id hash = 67890
+67890 % 12 = 6  → đi vào Partition 6
+
+cart_id hash = 11111
+11111 % 12 = 7  → đi vào Partition 7
+─────────────────────────────────────────────────────────────
+
+Có nhiều cart cùng 1 partition và các offset các cart nằm lẫn lộn không theo tuần tự theo cart, mà là tuần tự theo thời gian ghi vào partition
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KAFKA PARTITION 7                                                     │
+│                                                                         │
+│  Offset:  0    1    2    3    4    5    6    7    8    9   ...     │
+│         ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬          │
+│  Event: │ E1 │ E2 │ E3 │ E4 │ E5 │ E6 │ E7 │ E8 │ E9 │E10 │          │
+│         │    │    │    │    │    │    │    │    │    │    │          │
+│  Cart:  │ A  │ B  │ A  │ C  │ B  │ A  │ D  │ C  │ A  │ B  │          │
+│         └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴          │
+│                                                                         │
+│  ★ Cart A có events tại offset: 0, 2, 5, 8                            │
+│  ★ Cart B có events tại offset: 1, 4, 9                               │
+│  ★ Cart C có events tại offset: 3, 7                                  │
+│  ★ Cart D có events tại offset: 6                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Offset tăng TUẦN TỰ theo thời gian ghi, không phải theo cart:
+
+Timeline thực tế trong Partition 7:
+─────────────────────────────────────────────────────────────────────────
+T=10:00:01   Offset 0  →  CART_A  ADD sku-001
+T=10:00:02   Offset 1  →  CART_B  ADD sku-002
+T=10:00:03   Offset 2  →  CART_A  UPDATE sku-001 qty=3
+T=10:00:04   Offset 3  →  CART_C  ADD sku-003
+T=10:00:05   Offset 4  →  CART_B  DELETE sku-002
+T=10:00:06   Offset 5  →  CART_A  ADD sku-004
+T=10:00:07   Offset 6  →  CART_D  ADD sku-005
+T=10:00:08   Offset 7  →  CART_C  UPDATE sku-003 qty=2
+T=10:00:09   Offset 8  →  CART_A  DELETE sku-001
+T=10:00:10   Offset 9  →  CART_B  ADD sku-006
+─────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+9. Chi tiết về cơ chế Batch Processing ở Postgres Sync Worker
+Bước 1: poll() nhận batch, láy 50 events từ các partition khác nhau
+Bước 2: sau khi parse 50 events, group theo cart_id
+Bước 3: Xử lý từng cart trong transaction riêng
+  Giả sử có một cart xử lý thất bại: chúng ta thực hiện retry 3 lần với exponential backoff, nếu sau 3 lần vẫn thất bại thì đẩy vào DLQ và tiếp tục xử lý các cart khác
+Bước 4: Sau khi xử lý xong tất cả event của các cart, thực hiện commit offset
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Xử lý CART_A ────► ✓ COMMIT riêng trong transaction của A          │
+│  Xử lý CART_B ────► ✓ COMMIT riêng trong transaction của B          │
+│  Xử lý CART_C ────► ✗ FAIL, vào DLQ                                 │
+│  Xử lý CART_D ────► ✓ COMMIT riêng trong transaction của D          │
+│  Xử lý CART_E ────► ✓ COMMIT riêng trong transaction của E          │
+└─────────────────────────────────────────────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Tất cả 5 carts đã xử lý xong (C vào DLQ)                           │
+│           │                                                           │
+│           ▼                                                           │
+│  consumer.commitSync() ← COMMIT 1 LẦN với offset = 149                 │
+│           │                                                           │
+│           ▼                                                           │
+│  Kafka ghi nhận: "Consumer đã xử lý hết đến offset 149"              │
+└─────────────────────────────────────────────────────────────────────────┘
+Chúng ta vẫn thực hiện commit offset đối với Cart C events (đã vào DQL), nó vẫn an toàn bởi vì:
+     • Events đã được consume (poll đã nhận)                            
+     • Đã xử lý (thất bại → vào DLQ)                                   
+     • DLQ đang giữ events, ops sẽ replay
+
+
+

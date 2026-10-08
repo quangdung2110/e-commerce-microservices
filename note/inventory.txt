@@ -1,0 +1,487 @@
+1. Bản chất 
+Inventory Service là nguồn sự thật duy nhất cho toàn bộ dữ liệu về số lượng tồn kho, trạng thái giữ chỗ (reservation), xuất kho vật lý (dispatch) và quy trình hoàn hàng/cách ly/kiểm định (quarantine/inspection)
+
+
+
+
+2. Mô hình tồn kho
+Mỗi vị trí tồn kho StockPosition được định danh bằng cặp (warehouse_id, sku_id). Mọi con số tồn kho được quản lý chặt chẽ qua 4 bucket số nguyên không âm với đẳng thức bắt buộc:
+
+available_to_sell + reserved + committed + quarantine = on_hand
+
+on_hand: Hàng thực tế có mặt tại kho vật lý.
+available_to_sell: Hàng đủ điều kiện mở bán, sẵn sàng cho việc giữ chỗ mới.
+reserved: Hàng đang giữ chỗ cho đơn hàng đang chờ thanh toán (thời hạn 15 phút).
+committed: Hàng đã thanh toán thành công, đang chờ nhân viên lấy hàng và xuất kho.
+quarantine: Hàng hoàn trả đã nhập vào kho nhưng bị cách ly, cấm mở bán lại cho đến khi vượt qua kiểm định (PASS).
+
+Bảng nghiệp vụ chuyển dịch trạng thái
+
+Sự kiện                       on_hand             available_to_sell           reserved                committed               quarantine              Ý nghĩa
+Nhập kho                      +q                  +q                                                                                                  Nhập hàng mới từ nhà cung cấp
+Reserve (Giữ chỗ)                                 -q                          +q                                                                      Khách bấm đặt hàng
+Release Reservation                               +q                          -q                                                                      Hết hạn hoặc thanh toán thất bại
+Xuất kho thực tế              -q                                                                      -q                                              Hàng thực sự rời khỏi kho
+Commit Payment                                                                -q                      +q                                              Khách đã thanh toán
+Release Committed                                 +q                                                  -q                                              Hủy đơn trước khi đóng gói/xuất kho
+Nhận hàng hoàn                +q                                                                                              +q                      Hàng hoàn vào kho nhưng đưa vào cách ly
+Kiểm định đạt                                     +q                                                                          -q                      Đạt chuẩn, mở bán lại
+Dispose                       -q                                                                                              -q                      Hỏng hóc/tiêu hủy, giảm thực tế
+Điều chỉnh âm                 -q                  -q                                                                                                  Chỉ trừ từ phần available_to_sell  
+
+Nguyên tắc quan trọng: Khách thanh toán (CommitPayment) không làm giảm on_hand. Chỉ khi nhân viên kho xác nhận hàng đã xuất đi thực tế (Physical Dispatch) thì on_hand mới giảm.
+
+
+
+
+
+
+3. Các workflow cụ thể 
+
+
+Nhóm 1: Quy trình đặt hàng & Hoàn tất Đơn hàng
+Đây là nhóm quy trình phối hợp giữa Checkout Service, Order Service (thông qua Saga Workflow) và Warehouse ADMIN API
+
+1. Giữ chỗ đơn hàng (Reserve Order)
+Tác nhân: Order Temporal Saga.
+API: POST /internal/inventory/v1/reservations.
+Quy tắc (All-or-Nothing): Khóa dòng và kiểm tra toàn bộ các dòng theo đúng kế hoạch đã preview.
+Nếu toàn bộ các dòng đủ hàng: chuyển available_to_sell -> reserved cho toàn bộ số lượng, thiết lập thời hạn thanh toán expires_at = accepted_at + 15 phút. Trả về trạng thái RESERVED.
+Nếu bất kỳ dòng nào không đủ: trả về REJECT_ALL, không giữ chỗ một phần, không tự ý chuyển sang kho khác.
+
+2. Xác nhận thanh toán (Commit Payment)
+Tác nhân: Order Temporal Saga (sau khi Payment thành công).
+API: POST /internal/inventory/v1/reservations/{order_id}/commit.
+Nghiệp vụ: Chỉ chấp nhận khi đơn đang ở trạng thái RESERVED và chưa quá hạn 15 phút. Chuyển đổi nguyên tử toàn bộ các dòng: reserved -> committed.
+Lưu ý: Lệnh này chưa làm giảm on_hand (vì hàng vẫn còn nằm tại kho vật lý)
+
+3. Giải phóng giữ chỗ (Release Reservation)
+Tác nhân: Order Temporal Saga.
+API: POST /internal/inventory/v1/reservations/{order_id}/release.
+Nghiệp vụ: Được kích hoạt khi thanh toán thất bại (PAYMENT_FAILED) hoặc quá hạn 15 phút (RESERVATION_EXPIRED), hoặc do sai lệch số lượng phát hiện sớm (STOCK_DISCREPANCY).
+Tác động: Hoàn trả toàn bộ số lượng: reserved -> available_to_sell, chuyển trạng thái đơn sang RELEASED. Inventory không tự động hủy, quyền quyết định hoàn toàn thuộc về Order Saga.
+
+4. Xuất kho thực tế (Record Physical Dispatch)
+Tác nhân: Warehouse ADMIN (bảo mật MFA).
+API: POST /admin/inventory/v1/physical-dispatches.
+Nghiệp vụ: Ghi nhận thực tế hàng đã rời khỏi kho.
+Tác động: Trừ on_hand và trừ committed (-q). Bắn sự kiện com.ecommerce.inventory.reservation.line-dispatched.v1 để Order Service cập nhật trạng thái vận chuyển (Order sở hữu trạng thái Delivery, Inventory chỉ ghi nhận sự thật vật lý).
+
+5. Hủy đơn và giải phóng tồn kho trước khi xuất (Release Committed Before Dispatch)
+Tác nhân: Order Temporal Saga - ReleaseCommittedOrderBeforeDispatch (hoặc Admin hủy đơn)
+API: Cho toàn bộ đơn: POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch
+Nghiệp vụ: Chỉ áp dụng cho các dòng đang ở COMMITTED và chưa hề xuất kho. Chuyển committed -> available_to_sell. Nếu có bất kỳ dòng nào đã xuất kho thực tế, lệnh hủy toàn bộ đơn sẽ bị từ chối (409 Conflict)
+
+6. Phục hồi thanh toán muộn (Recover Timed-Out Payment)
+Tác nhân: Order Temporal Saga.
+API: POST /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment.
+Bối cảnh: Khách thanh toán thành công nhưng webhook/kết quả từ Payment báo về trễ sau khi Order Saga đã gửi lệnh giải phóng do timeout (RESERVATION_EXPIRED
+
+
+
+
+Nhóm 2: Quy trình Hàng hoàn, Cách ly & Kiểm định (Refund, Quarantine & Inspection Workflows)
+
+1. Đăng ký Phạm vi Hoàn trả (Register Refund Scope)
+Tác nhân: Order Temporal Saga - RegisterRefundScopeActivity
+API: POST /internal/inventory/v1/refund-scopes.
+Quy tắc: Phải đăng ký trước khi kho nhận bất kỳ kiện hàng nào. Một đơn hàng chỉ có duy nhất 1 Refund Scope trong suốt vòng đời. Có thể chọn một số dòng để hoàn, nhưng mỗi dòng đã chọn phải hoàn trọn vẹn số lượng (full quantity).
+
+2. Nhận kiện hàng hoàn vật lý (Record Return Receipt)
+Tác nhân: Warehouse ADMIN.
+API: POST /admin/inventory/v1/return-receipts.
+Nghiệp vụ: Nhân viên quét mã nhận hàng tại kho. Cho phép nhận làm nhiều kiện (multi-package). Chỉ chấp nhận đúng SKU và số lượng còn lại trong Scope.
+Tác động: Tăng on_hand và đưa ngay vào vùng cách ly: quarantine (+q). Tuyệt đối không tăng available_to_sell
+
+3. Kiểm định chất lượng hàng hoàn (Record Inspection Result)
+Tác nhân: Warehouse ADMIN.
+API: POST /admin/inventory/v1/inspections.
+Nghiệp vụ: Kiểm tra từng phần số lượng của phiếu nhận hàng:
+Nếu PASS: Hàng đạt chuẩn -> chuyển quarantine -> available_to_sell (cho phép bán lại).
+Nếu FAIL: Giữ nguyên trong quarantine. Bắt buộc ghi nhận lý do cụ thể (DAMAGED, USED_OR_ALTERED, COUNTERFEIT,...), không có lý do chung chung OTHER.
+
+4. Đóng vụ việc hoàn trả (Close Refund Scope)
+Tác nhân: Order Temporal Saga.
+API:
+    Khi hoàn tất đủ: POST /internal/inventory/v1/refund-scopes/{id}/close.
+    Khi thiếu hàng nhưng kết thúc: POST /internal/inventory/v1/refund-scopes/{id}/close-incomplete.
+Nghiệp vụ: Khi toàn bộ số lượng dự kiến đã có kết quả kiểm định, Inventory phát sự kiện AllItemsInspectionCompleted. Order Saga nhận sự kiện này, tiến hành thanh toán tiền hoàn cho khách và gọi lệnh đóng RefundScope
+
+
+
+
+
+Nhóm 3: Quy trình Quản trị Kho & Điều chỉnh Tồn kho (Warehouse Operations & Adjustment Workflows)
+
+Dành cho nhân viên vận hành và quản lý kho quản lý dữ liệu thực tế tại kho.
+
+1. Quản lý Master Data Kho & Sự cố Kho (Warehouse State Management)
+Tác nhân: Warehouse ADMIN.
+API: POST/PUT /admin/inventory/v1/warehouses.
+Nghiệp vụ: Tạo mới kho, thay đổi mức độ ưu tiên (fulfillment_priority), hoặc chuyển trạng thái kho (NORMAL sang OUTAGE).
+Quy tắc: Kho bị OUTAGE hoặc inactive chỉ bị loại trừ khỏi các lần phân bổ mới (Preview/Reserve mới). Không làm ảnh hưởng đến các đơn hàng đã được giữ chỗ/committed trước đó.
+
+2. Nhập kho lần đầu & Nhập hàng từ NCC (Sellable Stock Receipt)
+Tác nhân: Warehouse ADMIN.
+API: POST /admin/inventory/v1/stock-receipts.
+Lý do hợp lệ: INITIAL_STOCK_LOAD (nhập số dư ban đầu) hoặc SUPPLIER_RECEIPT (nhập theo phiếu giao hàng GRN từ nhà cung cấp).
+Tác động: Tăng đồng thời: on_hand (+q) và available_to_sell (+q)
+
+3. Điều chỉnh tồn kho do kiểm kê (Stock Adjustment +/-)
+Tác nhân: Warehouse ADMIN.
+API: POST /admin/inventory/v1/stock-adjustments.
+Nghiệp vụ:
+Điều chỉnh tăng (+): Do phát hiện thừa hàng khi kiểm kê (COUNT_GAIN). Tăng cả on_hand và available_to_sell.
+Điều chỉnh giảm (-): Do mất mát (COUNT_LOSS), hư hỏng (DAMAGE_REMOVAL), hết hạn (EXPIRY_REMOVAL).
+Ràng buộc: Điều chỉnh giảm chỉ được phép trừ từ available_to_sell. Tuyệt đối không được trừ vào số lượng đang reserved, committed, hoặc quarantine.
+
+
+
+
+
+Nhóm 4: Chiếu dữ liệu (Availability Projection)
+
+Đảm bảo các service như Search Service và Storefront (PDP BFF) có dữ liệu hiển thị chính xác mà không làm chậm luồng ghi nghiệp vụ
+
+1. Tính toán trạng thái còn hàng theo SKU (note số 5)
+Tác nhân: Worker nền (Per-SKU Availability Projector)
+Cơ chế: Khi có bất kỳ giao dịch nào làm thay đổi available_to_sell, hệ thống ghi nhận sku_id vào bảng SkuAvailabilityDirty. Worker tuần tự xử lý từng SKU: 
+is_in_stock = true nếu tồn tại ít nhất 1 kho active, non-OUTAGE và có available_to_sell > 0
+
+Nếu trạng thái boolean thay đổi hoặc là lần đầu tính toán: tăng availability_revision và chuẩn bị sự kiện cho Search.
+
+2. Đăng ký tài liệu & Đồng bộ với Search (Search Document Readiness & Export)
+Tác nhân: Search Service phối hợp với Inventory.
+API: PUT/DELETE /exports/inventory/v1/search-projection-readiness/{sku_id}
+
+3. Đọc trạng thái cho trang chi tiết sản phẩm (PDP BFF Advisory Batch Read)
+Tác nhân: Product Detail BFF.
+API: POST /internal/inventory/v1/sku-availabilities:batch-get
+Đặc điểm: Chỉ trả về 3 giá trị: IN_STOCK, OUT_OF_STOCK, hoặc UNKNOWN (kèm revision).
+Fail-safe: Tuyệt đối không trả về số lượng hay vị trí kho. Nếu SKU đang được tính toán dở hoặc DB nghẽn -> trả về UNKNOWN (BFF map lỗi này để hiển thị UI an toàn mà không chặn người dùng)
+
+
+
+
+
+
+
+4. Phục hồi thanh toán muộn (Workflow nhóm 1 ở trên)
+Là một cơ chế xử lý ngoại lệ chặt chẽ được thiết kế chung giữa Order Service (đọc thêm note ở Order Service) và Inventory Service
+
+Hãy hình dung một kịch bản rất phổ biến trong thương mại điện tử:
+
++ Khách hàng đặt mua một đôi giày (SKU-A, số lượng: 1) tại Kho Q9.
++ Inventory giữ chỗ chiếc giày này (available_to_sell -> reserved).
++ Order Service đặt một đồng hồ đếm ngược qua Temporal Saga: 15 phút.
++ Khách quét mã QR / nhập thẻ tại cổng thanh toán (VNPay / MoMo / Stripe). Nhưng do mạng ngân hàng bị nghẽn, giao dịch xử lý mất 15 phút 10 giây.
++ Ở giây thứ 900 (15 phút):
+    Temporal Timer của Order hết hạn.
+    Order gửi lệnh sang Inventory: ReleaseReservation(RESERVATION_EXPIRED).
+    Inventory trả chiếc giày về kệ bán: reserved -> available_to_sell.
+    Order chuyển trạng thái đơn sang CANCELLED(PAYMENT_TIMEOUT).
++ Ở giây thứ 910 (15 phút 10 giây):
+    Ngân hàng trừ tiền của khách thành công.
+    Cổng thanh toán gửi Webhook báo về: PAYMENT_SUCCESS!
+
+
+Tại sao không thể xử lý theo những cách thông thường?
+Cách xử lý thông thường	                                          Tại sao hệ thống TỪ CHỐI?
+Bỏ qua Webhook (Drop signal)	                                  Khách mất tiền nhưng không nhận được đơn hàng, gây phẫn nộ và sai lệch sổ sách kế toán.
+Tự động ép đơn cũ thành Đã thanh toán (Auto-commit)	              Cực kỳ nguy hiểm: Lúc này chiếc giày đã về available_to_sell, lỡ có một khách hàng B vừa đặt mua nó 2 giây trước, việc ép đơn A thành công sẽ làm kho bị âm -> GÂY BÁN KHỐNG (OVERSELL).
+
+
+Order Service không mở lại quy trình checkout cũ mà kích hoạt một workflow riêng biệt là OrderLatePaymentRecoveryWorkflow, sau đó gọi API sang Inventory:
+POST /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment
+
+Chi tiết 3 rào chắn tại Inventory:
+Rào chắn 1 (Lý do hủy hợp lệ): Đơn hàng này trước đó phải được giải phóng với đúng nguyên nhân là RESERVATION_EXPIRED. Nếu đơn bị hủy do khách chủ động bấm hủy, do thanh toán thất bại (PAYMENT_FAILED), thì cấm phục hồi.
+Rào chắn 2 (Chưa từng xuất kho): Chưa có bất kỳ sản phẩm nào trong đơn bị ghi nhận xuất kho vật lý (RecordPhysicalDispatch).
+Rào chắn 3 (Toàn vẹn tồn kho tại đúng kho cũ): Inventory sẽ khóa dòng (SELECT FOR UPDATE) các vị trí kho StockPosition ban đầu. Yêu cầu 100% số lượng của tất cả các dòng đơn phải vẫn còn đủ tại đúng các kho ban đầu trong bucket available_to_sell
+
+Kịch bản 1: Còn đủ hàng (Phục hồi thành công)
+Tại Inventory: Thực hiện 1 transaction duy nhất:
+    Trạng thái đơn chuyển từ: RELEASED -> COMMITTED.
+    Chuyển bucket tồn kho: available_to_sell -> committed.
+    Ghi nhận mã giao dịch thanh toán (payment_reference) vào sổ cái kiểm toán (AuditEntry & StockMovement).
+Tại Order Service:
+    Đơn hàng được chuyển từ CANCELLED về làn hợp lệ (PAID -> PROCESSING).
+    Phát sự kiện com.ecommerce.order.paid.v1 để thông báo cho Cart Service dọn giỏ hàng.
+    Tiếp tục quy trình đóng gói và giao hàng bình thường cho khách. Khách vẫn nhận được hàng dù thanh toán muộn.
+
+Kịch bản 2: Hàng đã bị người khác mua mất (Phục hồi thất bại)
+Tại Inventory:
+    Trả về ngay lập tức mã lỗi 409 Conflict.
+    Tuyệt đối không có bất kỳ dịch chuyển tồn kho nào (không tự chuyển kho, không giữ một nửa, không ghi âm tồn kho).
+Tại Order Service:
+    Order nhận mã 409 Conflict và xác định không thể giao hàng được nữa.
+    Đơn hàng được đưa vào trạng thái FINANCIAL_RECONCILIATION_REQUIRED (Cần đối soát tài chính).
+
+
+
+
+
+
+
+5. Giải thích vì sao phải có bước Close ở Inventory Service
+
+Ví dụ trường hợp xảy ra
+Giải quyết bài toán: "Khách trả thiếu hàng hoặc bùng không gửi"
+Nếu không có lệnh Close do Saga gọi, hãy xem điều gì sẽ xảy ra trong thực tế:
+    Khách hàng bấm yêu cầu trả 2 món: Áo + Quần. Inventory tạo một RefundScope chờ nhận 2 món.
+    Khách chỉ đóng gói gửi chiếc Áo, còn chiếc Quần khách giữ lại mặc hoặc làm mất, không gửi nữa.
+    Kho nhận chiếc Áo, kiểm định xong chiếc Áo.
+    Lúc này, Scope tại Inventory đang ở trạng thái IN_PROGRESS (đang chờ chiếc Quần còn lại).
+    Vì thiếu chiếc Quần, Inventory sẽ không bao giờ đạt tới trạng thái INSPECTION_COMPLETED
+Bản thân Inventory không thể tự ý đóng sau 15 hay 30 ngày, bởi vì:
+
+Trong mô hình Saga điều phối (Orchestrated Saga) mà hệ thống đang áp dụng:
+    Order Temporal Saga là "Nhạc trưởng" (Orchestrator): Nắm toàn bộ trạng thái vòng đời của nghiệp vụ hoàn tiền từ đầu đến cuối (từ lúc khách bấm trả hàng → theo dõi hàng về -> hoàn tiền -> chốt sổ)
+    Inventory Service là "Nhạc công" (Participant): Chỉ là một bên tham gia, thực thi các bước cục bộ (nhận hàng, cách ly, kiểm định) và cung cấp các hàm (API) để Saga gọi vào.
+
+Theo nguyên tắc của Saga:
+1. Tính đối xứng của vòng đời (Lifecycle Symmetry):
+Saga là người mở Scope ở Inventory (RegisterRefundScope).
+Thì chính Saga bắt buộc phải là người đóng Scope ở Inventory (Close, CloseIncomplete, hoặc Cancel)
+2. Tránh phân rã điều phối
+Nếu Inventory tự ý dùng cron-job để tự đóng hoặc tự hủy Scope, quyền điều phối sẽ bị xé lẻ thành hai nơi.
+Khi đó, Saga (Order) nghĩ một kiểu, còn Inventory lại hành động một kiểu -> Phá vỡ tính tất định (Determinism) của Temporal Saga.
+3. Mọi nhánh rẽ đều cần lệnh điều phối tương ứng:
+Vì Saga quản lý toàn bộ các kịch bản ngoại lệ (khách đổi ý, hàng thất lạc, khách gửi thiếu, thanh toán fail), nên Saga bắt buộc phải có các Activity/Workflow tương ứng để ra lệnh cho Inventory chuyển trạng thái khớp với kịch bản đó:
+Saga thấy hoàn tất đủ -> Gọi CloseRefundScopeActivity.
+Saga thấy quá hạn / thiếu hàng -> Gọi CloseIncompleteRefundScopeActivity.
+Saga thấy khách hủy / chưa gửi món nào -> Gọi CancelRefundScopeActivity
+
+
+
+
+
+
+
+
+6. Cung cấp trạng thái còn hàng / hết hàng per-SKU theo thời gian thực cho Search Service
+Bài toán này giải quyết việc Search Service luôn có cờ is_in_stock mới nhất trên từng SKU document để người dùng Storefront có thể tìm kiếm và lọc sản phẩm (ví dụ: chỉ hiện sản phẩm còn hàng)
+
+1. Dữ liệu Inventory cung cấp là gì?
+Chỉ cung cấp giá trị Boolean tối giản: Inventory chỉ xuất duy nhất 4 trường:
+    sku_id: Định danh SKU.
+    is_in_stock: true hoặc false.
+    availability_revision: Số nguyên tăng đơn điệu theo từng SKU (phiên bản dữ liệu).
+    observed_at: Thời điểm ghi nhận.
+Tuyệt đối không lộ dữ liệu thô: Không gửi số lượng tồn kho (quantity), không gửi tồn kho từng kho (StockPosition), không gửi trạng thái giữ hàng (reserved/committed). Search chỉ sao chép cờ boolean này, không bao giờ dùng nó làm thẩm quyền kiểm tra tồn kho cho Checkout.
+
+2. Logic suy diễn tồn kho tổng
+Trong kho bãi, một SKU có thể nằm ở nhiều kho khác nhau. Công thức xác định is_in_stock được quy định
+is_in_stock=true ⟺ ∃ kho đang active, không bị OUTAGE mà có available_to_sell>0
+
+3. Quy trình tính toán & phát sinh Event ngầm (Asynchronous Projector)
+Không làm chậm luồng ghi kho: Khi có nghiệp vụ kho (nhập hàng, đặt hàng, hủy hàng), transaction ghi vào database chỉ cập nhật StockPosition và đánh dấu bản ghi bẩn SkuAvailabilityDirty.
+Lọc nhiễu sự kiện (Boolean Noise Suppression): Một worker ngầm (Availability Projector) gom dirty task theo từng sku_id và tính lại is_in_stock.
+    Nếu số lượng thay đổi nhưng boolean không đổi (ví dụ: từ 10 cái giảm còn 8 cái, vẫn còn hàng): Không tăng revision và không phát sinh bất kỳ event nào ra ngoài.
+    Chỉ khi có sự chuyển dịch trạng thái (true <-> false hoặc khởi tạo lần đầu), hệ thống mới tăng availability_revision và tạo sự kiện outbox.
+
+4. Bắt tay kiểm soát sẵn sàng (Document Readiness Gate)
+
+Search Service không lưu tồn kho ở index riêng, mà lưu vào chính document sản phẩm của Product Catalog. Nếu Inventory bắn event trước khi Search tạo xong document SKU, Search sẽ bị lỗi document_missing (Search có quy tắc nghiêm ngặt: không tự ý upsert document từ event tồn kho).
+Cơ chế Readiness:
+    Search tạo xong SKU document trong Elasticsearch -> Search gọi: PUT /exports/inventory/v1/search-projection-readiness/{sku_id} kèm catalog_revision.
+    Inventory lưu SearchProjectionReadiness và tự động tạo ReadinessPublicationTask để bắn ngay trạng thái hiện tại sang Search.
+    Quy tắc chặn: Inventory không bao giờ publish hay export dữ liệu của một SKU ra Search nếu SKU đó chưa được đăng ký Readiness.
+    Khi SKU bị xóa (tombstone), Search gọi DELETE endpoint trên để thu hồi quyền phát sự kiện.
+
+5. Đẩy sự kiện qua Kafka (CDC Relay & Outbox Sequencer)
+Để đảm bảo thứ tự commit chính xác, một Single Fenced Sequencer sẽ gán sequence tuần tự cho các outbox event và ghi vào bảng PublishedEvent.
+Debezium CDC bắt các dòng này và phát sự kiện com.ecommerce.inventory.sku-availability.changed.v1 lên Kafka.
+Search nhận event, so sánh: nếu event.availability_revision > doc.availability_revision thì mới cập nhật document trong Elasticsearch (tránh ghi đè sự kiện đến muộn/lộn xộn).
+
+
+
+
+
+
+
+
+
+7. Dữ liệu tồn kho cung cấp cho PDP (Product Detail BFF)
+Thay vì yêu cầu dữ liệu phải tuyệt đối mới 100% tại thời điểm đọc, hệ thống chấp nhận trả về trạng thái tồn kho đã tính gần nhất (IN_STOCK hoặc OUT_OF_STOCK) nếu công việc tính toán đang chờ xử lý chưa bị trễ quá 30 giây
+Khi BFF gọi API POST /internal/inventory/v1/sku-availabilities:batch-get, với mỗi sku_id, Inventory sẽ quyết định theo lưu đồ sau:
+                            ┌─────────────────────────────────┐
+                            │  Đọc SkuAvailabilityState(sku)  │
+                            └─────────────────────────────────┘
+                                             │
+                       Có dữ liệu đã tính trước đó không?
+                                      /     \
+                                  KHÔNG      CÓ
+                                   /           \
+                                  ▼             ▼
+                           Trả về UNKNOWN   Có công việc chờ tính toán 
+                                            (Dirty / Fan-out) không?
+                                                    /        \
+                                                KHÔNG         CÓ
+                                                 /              \
+                                                ▼                ▼
+                                      Trả về IN_STOCK     Tuổi công việc chờ 
+                                      hoặc OUT_OF_STOCK    (Pending Work Age)
+                                                            /         \
+                                                       <= 30s        > 30s
+                                                        /              \
+                                                       ▼                ▼
+                                             Trả về IN_STOCK       Trả về UNKNOWN
+                                             hoặc OUT_OF_STOCK    (Worker bị nghẽn)
+
+
+
+
+
+Nhiều người sẽ lo ngại: "Nếu sản phẩm chỉ còn 1 cái, khách A vừa mua xong, khách B xem PDP trong vòng 30 giây tiếp theo vẫn thấy báo IN_STOCK, liệu có bị bán khống không?"
+
+Kiến trúc phân định rạch ròi 2 khái niệm:
+Dữ liệu tư vấn hiển thị (Advisory UI Data): Dữ liệu trên PDP chỉ nhằm mục đích giúp khách hàng biết sơ bộ sản phẩm có mua được không. Nó không phải là cam kết giữ hàng hay bán hàng.
+Thẩm quyền quyết định tồn kho (Authoritative Correctness): Quyền quyết định bán hàng duy nhất thuộc về thao tác Reserve trong quá trình Checkout (được bảo vệ bằng row lock trên bảng StockPosition trong Relational Database).
+Kịch bản thực tế: Nếu khách B thấy PDP báo IN_STOCK, ấn Mua ngay:
+    Khi luồng Checkout gọi vào lệnh Reserve, Inventory sẽ kiểm tra tồn kho vật lý thực tế trong DB.
+    Lúc này số lượng thật đã bằng 0 -> Lệnh Reserve từ chối với kết quả REJECT_ALL.
+    Kết luận: Trễ 30s trên PDP chỉ có thể gây ra trải nghiệm "đặt hàng không thành công" ở trường hợp biên cực hẹp, nhưng hoàn toàn không thể gây bán vượt tồn kho (Zero Oversell).
+
+
+Khi có người mua hàng làm biến động tồn kho của một SKU:
+Đơn hàng số 1 lúc 12:00:00: Hệ thống tạo dòng SkuAvailabilityDirty với first_marked_at = 12:00:00. Đồng hồ 30 giây bắt đầu đếm từ đây.
+Đơn hàng số 2 lúc 12:00:05 (5 giây sau): Đơn này dồn vào chung (coalesce).
+    Quy tắc sống còn: Hệ thống tuyệt đối không cập nhật lại first_marked_at thành 12:00:05 mà giữ nguyên 12:00:00.
+    Tại sao? Nếu cứ mỗi đơn hàng mới lại reset đồng hồ, thì với sản phẩm bán liên tục, đồng hồ sẽ bị trôi mãi mãi, hệ thống sẽ bị "đánh lừa" rằng công việc lúc nào cũng mới tinh.
+
+
+Khi khách xem trang PDP lúc now, BFF gọi API POST /sku-availabilities:batch-get. Với mỗi SKU, Inventory thực hiện tính toán:
+Tuổi công việc chờ (Pending Work Age) = now−min(first_marked_at,fanout_created_at)
+
+Giả sử sản phẩm iPhone đang có cờ is_in_stock = true.
+
+Thời gian     Sự kiện diễn ra                                      Kết quả PDP nhận được
+──────────────────────────────────────────────────────────────────────────────────────────
+12:00:00  ──► Khách mua hàng, trừ kho vật lý.
+              DB ghi nhận: first_marked_at = 12:00:00.
+              (Bắt đầu đếm ngược 30s).
+              
+12:00:10  ──► Khách B vào xem trang PDP (now = 12:00:10).
+              Độ trễ = 12:00:10 - 12:00:00 = 10s (<= 30s).   ──► Trả về: IN_STOCK (bình thường)
+12:00:20  ──► Khách C lại mua hàng. first_marked_at vẫn giữ 12:00:00.
+              Khách D vào xem PDP (now = 12:00:20).
+              Độ trễ = 12:00:20 - 12:00:00 = 20s (<= 30s).   ──► Trả về: IN_STOCK (bình thường)
+─────────────────── KỊCH BẢN A: Worker hoạt động tốt (Bình thường) ──────────────────────
+12:00:25  ──► Worker ngầm chạy xong:
+              - Tính lại tồn kho.
+              - XÓA bản ghi trong SkuAvailabilityDirty.
+12:00:26  ──► Khách E vào xem PDP.
+              Không còn dirty (Độ trễ = 0s).                ──► Trả về: IN_STOCK hoặc OUT_OF_STOCK mới
+─────────────────── KỊCH BẢN B: Worker bị nghẽn / Lag (Sự cố) ──────────────────────────
+12:00:35  ──► Worker bị treo hoặc DB quá tải, sau 35s
+              vẫn CHƯA xử lý xong đơn lúc 12:00:00.
+              Khách F vào xem PDP (now = 12:00:35).
+              Độ trễ = 12:00:35 - 12:00:00 = 35s (> 30s).   ──► Trả về: UNKNOWN!
+
+
+
+
+
+
+
+8. CQRS
+Write Model (Mô hình Ghi): Là bảng StockPosition được chuẩn hóa cao theo từng kho, tối ưu cho việc đảm bảo tính toàn vẹn (ACID), khóa dòng (Row-level Locking) và ngăn chặn bán âm (Zero Oversell).
+Read Model (Mô hình Đọc): Là bảng SkuAvailabilityState, được phi chuẩn hóa (denormalized), gộp sẵn dữ liệu toàn cục theo từng SKU, tối ưu cho việc đọc tải cao (High-throughput Point-Read) với độ trễ cực thấp.
+
+Đặc điểm	            Bảng StockPosition	                                                                                    Bảng SkuAvailabilityState
+Khóa chính (Key)	Cặp (warehouse_id, sku_id)	                                                                                Duy nhất sku_id (1 dòng cho mỗi SKU trên toàn hệ thống)
+Bản chất dữ liệu	Dữ liệu gốc, phân mảnh theo từng kho hàng.	                                                                Dữ liệu hình chiếu (Read Projection) đã được tổng hợp sẵn.
+Các trường dữ liệu	Lưu số lượng thô và các bucket: available_to_sell, reserved, committed, quarantine, on_hand.	            Chỉ lưu kết quả luận lý: is_in_stock (true/false), availability_revision, evaluated_at.
+Mục đích sử dụng	Dành riêng cho luồng GHI (Authoritative Write Path): Khóa dòng (SELECT FOR UPDATE), 
+                    trừ kho, giữ hàng (Reserve/Commit) khi khách đặt hàng.	                                                    Dành riêng cho luồng ĐỌC tải cao (High-throughput Read Path): Phục vụ PDP BFF đọc theo batch và đẩy dữ liệu cho Search Service.
+
+
+
+Vì sao KHÔNG ĐỌC trực tiếp từ StockPosition khi khách xem PDP
+
+1. Truy vấn cực kỳ nặng trên luồng xem trang (Hot Read Path):
+Để biết một SKU còn hàng hay không từ StockPosition, database sẽ phải thực hiện:
+sql
+SELECT 1 FROM stock_positions sp
+JOIN warehouses w ON sp.warehouse_id = w.warehouse_id
+WHERE sp.sku_id = :sku_id
+  AND w.is_active = true 
+  AND w.operational_state != 'OUTAGE'
+  AND sp.available_to_sell > 0
+LIMIT 1;
+Khi khách hàng xem 1 trang sản phẩm có 20 biến thể (variant SKUs), và hệ thống có 10 kho hàng, thì một request PDP phải quét và JOIN hàng trăm bản ghi.
+Hàng triệu lượt xem PDP mỗi ngày sẽ đánh sập CPU và IOPS của PostgreSQL, không thể đáp ứng nổi cam kết độ trễ 
+
+2. Tránh xung đột tài nguyên với thanh toán (Lock Contention):
+Bảng StockPosition là nơi các transaction đặt hàng (Reserve/Checkout) liên tục khóa dòng để trừ tiền/hàng.
+Nếu để lượng traffic đọc khổng lồ từ PDP xông thẳng vào bảng này, nó sẽ gây nghẽn kết nối và tăng nguy cơ lock contention với luồng mua hàng thật.
+
+
+
+Chu trình dữ liệu diễn ra như thế nào?
+[Luồng Ghi: Đặt/Nhập hàng] 
+         │
+         ▼
+Cập nhật StockPosition  ──(đánh dấu dirty)──►  Worker ngầm (Availability Projector)
+                                                        │
+                                                        ▼ (quét & tính sẵn)
+                                               Ghi vào SkuAvailabilityState
+                                                        │
+                                        ┌───────────────┴───────────────┐
+                                        ▼                               ▼
+                                 [PDP BFF đọc]                 [Search Service đọc]
+                           GET nhanh theo PK sku_id           Export Snapshot / Kafka
+Worker ngầm (Availability Projector) chịu trách nhiệm đọc StockPosition để tính toán và lưu sẵn vào SkuAvailabilityState.
+Khi PDP BFF gọi API, Inventory chỉ việc thực hiện Point-Read siêu tốc theo khóa chính sku_id trên bảng SkuAvailabilityState, không tính toán lại, không lock bảng và phản hồi ngay lập tức cho người dùng.
+
+
+
+
+
+
+
+9. Giải thích từng bước xử lý đặc thù cơ chế reindex của Search
+
+Bước 1: Lấy mốc Snapshot Watermark (W)
+Search gọi POST /exports/inventory/v1/snapshot-sessions
+Inventory tạo một phiên snapshot và khóa mốc dữ liệu tại số thứ tự CSDL: ví dụ export_watermark = 50.000
+    export_watermark được lấy từ chính cột export_sequence lớn nhất đã được commit trong bảng OutboxEvent của CSDL PostgreSQL thuộc Inventory Service tại thời điểm Search gửi request tạo phiê
+Search tải danh sách tồn kho của các SKU tại mốc 50.000 này qua GET /snapshot-sessions/{id}/sku-availabilities và nạp vào index mới products_v2
+    Inventory chỉ quét bảng trạng thái SkuAvailabilityState kết hợp với bảng SearchProjectionReadiness
+    Bảng này đã lưu sẵn trạng thái tồn kho dạng boolean (is_in_stock: true/false) kèm con số phiên bản của SKU đó: availability_revision.
+    Nhờ vậy, endpoint snapshot chỉ việc duyệt tuần tự các dòng đã được chốt tại mốc W để trả về cho Search mà không cần phải tính toán lại từ các kho vật lý
+
+Bước 2: Khoảng trống dữ liệu và cần endpoint changes?after_sequence
+Search gọi endpoint HTTP kéo dữ liệu theo sequence:
+GET /exports/inventory/v1/changes?after_sequence=50000
+Endpoint này đọc trực tiếp từ bảng Outbox bền vững của Inventory (lưu trữ tới 30 ngày), trả về tuần tự các biến động: 50.001, 50.002... Search gọi lặp lại cho đến khi đuổi kịp sát nút với latest_sequence của Inventory
+
+
+Bước 3: Cơ chế Defer
+Trong Pha 1 (Build) của Reindex, Search phải nạp dữ liệu từ 2 nguồn khác nhau theo thứ tự:
+10:00: Search export Catalog từ Product Service -> Nạp toàn bộ SKU đang có vào index mới products_v2.
+10:15: Search nạp xong catalog, bắt đầu quay sang gọi Inventory: GET /exports/inventory/v1/changes?after_sequence=... để nạp các biến động tồn kho
+Điều gì xảy ra ở phút 10:05?
+
+Người bán vừa đăng một sản phẩm mới tinh: SKU-999
+Kho hàng lập tức nhập 100 cái cho SKU-999 -> CSDL Inventory sinh ra một biến động tồn kho tại sequence = 51200 mang nội dung: { sku_id: "SKU-999", is_in_stock: true, availability_revision: 1 }.
+Khi Search đọc endpoint changes ở phút 10:15:
+Search đọc tới dòng sequence = 51200, thấy event tồn kho của SKU-999.
+Search vào Elasticsearch products_v2 tìm SKU-999 để cập nhật tồn kho: 👉 KẾT QUẢ: KHÔNG TÌM THẤY DOCUMENT! (Bởi vì lúc 10:00 Search export Catalog thì SKU-999 chưa hề tồn tại)
+
+
+    Bước 1: Tạm giữ vào Deferred Queue
+    Khi gọi GET /exports/inventory/v1/changes:
+    Nếu SKU đã có document trong products_v2 -> Áp dụng script cập nhật is_in_stock ngay.
+    Nếu SKU chưa có document -> Search đưa event tồn kho đó vào một danh sách tạm gọi là Deferred Queue (lưu trong bộ nhớ job reindex). Không báo lỗi, tiếp tục đọc các sequence kế tiếp
+
+    Bước 2: Chờ Product Catch-up tạo Document
+    Search bước vào Pha 2 (Catch-up): Bật consumer group Kafka đọc topic t.product.events của Product từ mốc offset đã lưu
+    Consumer này sẽ đọc được event tạo mới của SKU-999.
+    Search tiến hành tạo document hoàn chỉnh cho SKU-999 trong products_v2
+
+    Bước 3: Replay lại các event bị Defer
+    Search quay lại quét sạch Deferred Queue
+    Lấy event tồn kho của SKU-999 ra và gọi script để gắn is_in_stock = true vào document SKU-999 vừa được tạo ở Bước 2
+

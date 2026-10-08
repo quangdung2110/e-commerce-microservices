@@ -1,0 +1,291 @@
+1. Lane
+Lane là 1 đường đi vật lý riêng biệt từ đầu đến cuối, phân tách triệt để 3 tầng:
+Tầng 1 (Kafka Topic)          Tầng 2 (Consumer & Worker)            Tầng 3 (Provider Quota)
+t.notification.critical      ──▶ Consumer Group / Worker Pool riêng ──▶ Quota riêng (dành sẵn 10-20/s)
+t.notification.transactional ──▶ Consumer Group / Worker Pool riêng ──▶ Quota riêng (50/s)
+t.notification.bulk          ──▶ Consumer Group / Worker Pool riêng ──▶ Quota riêng (tối đa 80/s)
+
+Tầng 1: Tách Kafka Topic & Partition
+Topic riêng: t.notification.critical.v1, t.notification.transactional.v1, t.notification.bulk.v1
+Số lượng Partition khác nhau:
+    Critical: Chỉ cần 3 partition vì volume nhỏ và consumer xử lý cực nhanh (~10–15ms)
+    Transactional: 12 partition
+    Bulk: Cần tới 24 partition để có thể xả nhanh lượng dồn 300.000 message khi có chiến dịch
+
+Tầng 2: Tách Consumer Group và Deliver Worker Pool (Hai ranh giới)
+Ranh giới 1 (Kafka Consumer): Mỗi topic có một Consumer Group riêng chạy độc lập (notification-critical, notification-transactional, notification-bulk)
+Ranh giới 2 (Deliver Worker đọc DB): Khi consumer lưu việc vào bảng notification_delivery (Postgres làm job table), các worker sẽ poll việc theo từng cặp (lane, channel):
+    Worker pool cho critical-email, critical-inapp
+    Worker pool cho transactional-email, transactional-inapp
+    Worker pool cho bulk-email...
+    Khi bulk bận gửi hàng trăm ngàn email, worker của critical vẫn luôn rảnh tay để gửi OTP.
+
+Tầng 3: Tách Quota Provider
+Thiết kế chia hạn mức bằng Rate Limiter (Token Bucket trên Redis):
+    Critical: Dành riêng 10/s + 5/s dự trữ (phần dư này cấm không cho bulk mượn).
+    Transactional: Dành riêng 20/s.
+    Bulk: Chỉ được dùng tối đa 15/s.
+Với quota theo ngày (daily send limit): Khi tổng quota toàn hệ thống đạt 80%, Bulk bắt buộc phải dừng gửi, để dành 20% còn lại cho Critical và Transactional.
+
+
+
+
+
+2. Lý do mỗi topic có một Consumer Group riêng
++ Tránh tình trạng "Stop-the-world" do Kafka Rebalance
++ Khả năng scale độc lập phù hợp với số Partition
++ Tối ưu hóa cấu hình cho từng loại (Throughput vs. Latency):
+    Cấu hình	        Critical Lane (Ưu tiên tuyệt đối Latency)	            Bulk Lane (Ưu tiên tuyệt đối Throughput)
+    fetch.min.bytes	    1 byte (có message là trả về ngay, không gom batch) 	Lớn (vài chục KB - MB) (gom nhiều message rồi mới trả để tiết kiệm network I/O).
+    fetch.max.wait.ms	0 – 50 ms (không chờ đợi)	                            500 – 1000 ms (chấp nhận chờ để gom đủ batch lớn).
+    max.poll.records	Nhỏ (10 – 20) (xử lý nhanh, commit nhanh)	            Lớn (500) (xả message nhanh vào DB).
++ Tránh hiện tượng tranh chấp tài nguyên trong tiến trình
+Vì 1 Consumer Group là 1 Deployment khác nhau:
+    Mỗi Deployment ó một pool kết nối Database độc lập được quy định hạn mức rõ ràng
+
+
+
+
+
+
+3. Worker pool 
+Worker Pool là một tập hợp các tiến trình/luồng chạy ngầm (trong Go là các goroutine), liên tục poll (quét) bảng DB để lấy việc và trực tiếp gọi các dịch vụ bên ngoài
+3.1 Tại sao phải dùng Worker Pool riêng mà không để Kafka Consumer gửi luôn ?
+Thảm họa Kafka Rebalance: Giả sử một batch có 500 email × 8s = 4.000s. Thời gian xử lý này vượt xa ngưỡng max.poll.interval.ms (300s) của Kafka -> Kafka tưởng consumer đã chết -> kích hoạt Rebalance liên tục
+Giải pháp của Worker Pool:
+    Kafka Consumer hoàn thành nhiệm vụ trong 15 mili-giây rồi commit offset ngay (Kafka lag luôn bằng 0)
+    Worker Pool ở phía sau sẽ thong thả lấy dữ liệu ra gửi với nhịp độ riêng, tự retry, tự quản lý lỗi mạng mà hoàn toàn không làm ảnh hưởng đến dòng chảy Kafka
+3.2 Worker Pool được chia theo công thức Lane x Channel
+Lợi ích của việc chia Pool này:
+    Cô lập kênh: Nếu provider email (SES) bị chết đứng (mất 8s timeout), worker của critical-email bị tắc thì worker của critical-inapp vẫn hoạt động trơn tru. User vẫn nhận được thông báo trong ứng dụng.
+    Cô lập mức độ ưu tiên: 30 worker của bulk-email dù có ngập đầu trong 300k email khuyến mãi thì các worker của critical-email vẫn hoàn toàn rảnh tay để phục vụ ngay khi có OTP.
+3.3 Làm sao để 50 worker cùng đọc một bảng DB mà không tranh giành, không gửi trùng một email?
+Hệ thống sử dụng tính năng cực mạnh của Postgres: FOR UPDATE SKIP LOCKED
+    FOR UPDATE: Khóa dòng dữ liệu lại.
+    SKIP LOCKED: Khi Worker A đang khóa 20 dòng đầu, Worker B chạy vào truy vấn sẽ tự động bỏ qua 20 dòng đó và nhặt tiếp 20 dòng kế tiếp
+    Kết quả: Các worker chạy song song với hiệu năng cực cao mà không cần đến Redis Lock, không sợ xung đột (race condition), và không bao giờ gửi trùng
+3.4 Xử lý khi Worker bị Crash giữa chừng (Cơ chế Lease & Reaper)
+Giả sử: Worker nhặt được 20 email, vừa đổi trạng thái thành SENDING thì Pod bị sập nguồn (hoặc bị OOM). Ai sẽ gửi tiếp số email này?
+
+Cơ chế Lease (Hợp đồng thuê 60 giây): Khi worker nhặt việc, nó đặt cờ lease_until = now() + 60s. Trong 60 giây đó, không worker nào khác được đụng vào các dòng này.
+Tiến trình Reaper (Người dọn dẹp): Hệ thống có một background job chạy mỗi 30 giây:
+sql
+UPDATE notification_delivery
+SET    status = 'RETRY', next_attempt_at = now();
+WHERE  status = 'SENDING' AND lease_until < now();
+
+Nếu một dòng ở trạng thái SENDING mà quá 60 giây vẫn chưa xong (chứng tỏ worker trước đó đã chết), Reaper sẽ tự động trả bản ghi đó về trạng thái RETRY để các worker khác nhặt lại và gửi tiếp. Không bao giờ có email nào bị kẹt hay thất lạc vĩnh viễn
+
+
+
+
+
+
+
+4. Pipeline
+Về mặt logic nghiệp vụ, mỗi thông báo phải đi qua đúng 6 công đoạn tuần tự:
+[Ingest] ──▶ [Dedup] ──▶ [Decide] ──▶ [Render] ──▶ [Deliver] ──▶ [Track]
+1. Ingest	Lắng nghe event từ Kafka, kiểm tra định dạng CloudEvents envelope, chuẩn hóa cả hai dạng đầu vào (Request và Fact) thành một struct chung: NotificationRequest
+2. Dedup (Khử trùng lớp A)	Kiểm tra chống xử lý trùng lặp ở tầng tiếp nhận bằng unique key (source, event_id) trong Postgres. Nếu trùng -> bỏ qua ngay.
+3. Decide (Ra quyết định)	Trả lời 3 câu hỏi: Có gửi không? Gửi qua kênh nào? Gửi khi nào?
+Áp dụng các quy tắc: Kiểm tra user preferences, suppression list (danh sách đen), quiet hours (giờ yên tĩnh 22h–8h), frequency cap (tối đa 2 bulk/ngày), tính thời gian hết hạn (expires_at).
+4. Render	Phân giải PII (gọi Auth API để lấy email thật từ user_id); Nạp template HTML/text theo ngôn ngữ (i18n), validate dữ liệu và biên dịch thành nội dung hoàn chỉnh.
+5. Deliver	Worker Pool nhặt việc, áp dụng Rate Limiter (Token bucket), kiểm tra Circuit Breaker và trực tiếp gọi Provider (AWS SES gửi email, hoặc ghi DB cho In-App). Quản lý retry và backoff
+6. Track	Tiếp nhận phản hồi (webhook / SQS event) từ Provider về kết quả gửi: Đã nhận (DELIVERED), Bị trả về (BOUNCED), hay Bị khiếu nại spam (COMPLAINED) để nuôi danh sách chặn (suppression list).
+
+Nếu chia 6 stage trên thành 6 microservice hoặc 6 topic Kafka trung gian, hệ thống sẽ cực kỳ phức tạp, tốn tài nguyên và khó truy vết một notification.
+
+Do đó, toàn bộ 6 stage logic được thu gọn vào 2 ranh giới vật lý chính:
+
+RANH GIỚI 1: Kafka ──▶ DB                   RANH GIỚI 2: DB ──▶ Provider
+┌──────────────────────────────────────┐     ┌────────────────────────────────────┐
+│ Kafka Consumer (Chạy Ingest,         │     │ Deliver Worker Pool (Chạy Render,  │
+│ Dedup lớp A, DECIDE)                 │     │ Deliver)                           │
+│                                      │     │                                    │
+│ 1. Nhận message từ Kafka             │     │ 1. Poll DB qua SKIP LOCKED         │
+│ 2. Chạy logic Decide (chỉ đọc RAM/DB)│     │ 2. Gọi Auth API lấy email thật     │
+│ 3. INSERT bảng notification_delivery │────▶│ 3. Render HTML template            │──▶ SES / In-App
+│ 4. Commit offset Kafka               │ DB  │ 4. Gửi qua Provider bên ngoài      │
+│                                      │     │ 5. Cập nhật kết quả vào DB         │
+│ ⏱ Tốc độ: ~15 ms / message          │     │ ⏱ Tốc độ: 200 ms – 8 giây (HTTP)   │
+└──────────────────────────────────────┘     └────────────────────────────────────┘
+Ranh giới 1 (Kafka -> DB): Tối ưu hóa tốc độ tiếp nhận
+Mục tiêu: Giải phóng consumer Kafka càng nhanh càng tốt (~15 mili-giây).
+Consumer Kafka làm các bước: Ingest -> Dedup -> Decide -> Lưu DB.
+Vì tất cả các bước này chỉ đọc/ghi DB cục bộ và Redis, không có bất kỳ cuộc gọi mạng (HTTP/RPC) nào ra ngoài, nên tốc độ luôn cực nhanh và ổn định.
+Khi bản ghi được lưu xuống bảng notification_delivery với trạng thái PENDING, consumer lập tức commit offset Kafka. Lag Kafka luôn giữ ở mức bằng 0.
+Ranh giới 2 (DB -> Provider): Bể chứa hấp thụ áp lực (Backpressure)
+Bảng Database đóng vai trò là Hàng đợi (Queue): Deliver Worker Pool quét bảng DB để nhặt các dòng PENDING ra xử lý (dùng lệnh SELECT ... FOR UPDATE SKIP LOCKED).
+Đây là nơi diễn ra các tác vụ tốn thời gian: Gọi Auth API lấy email, render HTML, gọi AWS SES qua Internet.
+Ý nghĩa kiến trúc: Khi AWS SES gặp sự cố hoặc phản hồi chậm (từ 200ms vọt lên 8 giây), chỉ có Worker Pool ở ranh giới 2 bị chậm lại. DB sẽ đóng vai trò như một "bể chứa" hấp thụ áp lực dồn ứ. Kafka ở ranh giới 1 và các service upstream (Order, Auth) hoàn toàn không hề bị ảnh hưởng.
+
+
+Vòng đời trạng thái của một thông báo (State Machine)
+Tất cả trạng thái của một notification nằm tại một nơi duy nhất: cột status trong bảng notification_delivery
+PENDING: Đã qua Decide thành công, đang nằm trong DB chờ worker nhặt.
+SENDING: Đã được 1 worker claim (giữ lease 60s) và đang tiến hành gửi.
+SENT: Provider (SES) đã tiếp nhận email thành công.
+DELIVERED: User đã nhận được email/tin nhắn (xác nhận qua webhook ở stage Track).
+RETRY: Gặp lỗi mạng tạm thời hoặc provider báo 429/5xx -> tự động lên lịch gửi lại với thuật toán Exponential Backoff + Jitter.
+SKIPPED / EXPIRED / FAILED: Các trạng thái kết thúc an toàn nếu người dùng tắt nhận tin, thông báo quá hạn (ví dụ OTP để quá 5 phút), hoặc lỗi dữ liệu không thể sửa.
+
+
+
+
+
+
+5. Idempotency
+Lớp A (Kafka -> DB): Khử trùng kỹ thuật
+Khóa: Cặp (source, event_id) trích xuất từ CloudEvents envelope.
+Bảng: ingest_dedup (source, event_id, received_at).
+Cơ chế:
+sql
+INSERT INTO ingest_dedup (source, event_id) ON CONFLICT DO NOTHING;
+Nếu kết quả trả về 0 rows affected -> Message này đã nhận rồi: Consumer COMMIT, commit offset Kafka và dừng xử lý ngay
+
+Các nguyên tắc của lớp A:
++ Dùng Unique constraint của Postgres, tuyệt đối không dùng pattern SELECT kiểm tra nếu có THEN INSERT (sẽ bị race-condition khi rebalance).
++ INSERT DB trước, commit offset Kafka sau.
++ Bảng ingest_dedup nằm trong cùng DB, cùng transaction với bản ghi nghiệp vụ (không lưu trên Redis vì Redis có thể mất data khi restart). Dữ liệu được lưu 30 ngày (gấp đôi retention của Kafka).
+
+
+Lớp B: Khử trùng theo logic nghiệp vụ
+Ngay cả khi producer gửi 2 event với 2 event_id hoàn toàn khác nhau cho cùng một hành động, Lớp B sẽ chặn lại.
+Khóa: (dedup_key, channel) lưu trong bảng delivery_dedup
+
+
+
+Lớp D (Notification -> Kafka Downstream): Outbox Pattern
+Notification Service cũng phát sự kiện ra ngoài
+    Để downstream có thể khử trùng (bằng Lớp A của họ), Notification phải đảm bảo: Mỗi lần retry phát lại event thì event_id phải giữ nguyên.
+    Giải pháp: Sử dụng Transactional Outbox
+    event_id được sinh bằng gen_random_uuid() ngay lúc INSERT vào bảng outbox trong cùng transaction với cập nhật DB, chứ không phải sinh lúc code publish Kafka. Nhờ đó, publisher có chết đi sống lại 10 lần thì event bắn sang Kafka vẫn mang đúng ID ban đầu
+
+
+
+
+6. Vì sao phải khử trùng theo logic nghiệp vụ
++  Có rất nhiều tình huống cùng một sự việc nghiệp vụ xảy ra một lần, nhưng lại bị phát tán thành nhiều event mang các event_id hoàn toàn khác nhau
++ Zero-Trust giữa các Microservices:
+Notification Service phục vụ rất nhiều team khác nhau:
+    Không thể đảm bảo 100% lập trình viên ở mọi team khác đều hiểu sâu về Kafka, đều cài đặt Transactional Outbox chuẩn chỉ, và không bao giờ làm rơi rụng hay sinh trùng event
+    Dù phía các service khác có bắn rác, bắn trùng hay retry sai cách, Notification Service vẫn đảm bảo ở đầu ra cuối cùng
+
+Tuy nhiên, Ngay cả khi 100% các service trong hệ thống đều dùng Transactional Outbox chuẩn chỉ và không bao giờ bị bug sinh ID, chúng ta VẪN BẮT BUỘC phải có Lớp B (Khử trùng nghiệp vụ)
+Lý do nằm ở sự khác biệt cốt lõi:
++ Transactional Outbox chỉ đảm bảo: Một dòng bản ghi trong outbox khi phát sang Kafka sẽ luôn giữ nguyên event_id.
++ Nhưng Outbox KHÔNG THỂ ngăn được việc: Ứng dụng nghiệp vụ tạo ra 2 dòng outbox khác nhau (mang 2 event_id hoàn toàn hợp lệ) cho cùng một thực tế nghiệp vụ.
+
+
+
+
+
+7. Ordering
+Kafka giữ đúng thứ tự trong partition, consumer INSERT vào Database đúng thứ tự đó. Tuy nhiên:
+    Tại ranh giới 2, deliver worker claim song song 20 row một lúc và 30 worker cùng chạy và retry đẩy row về sau bằng next_attempt_at
+    -> Thứ tự gửi thực tế ra provider là hỗn loạn, vì song song hóa mục đích cốt lõi nhằm đạt thông lượng (throughput) cao
+
+Ví dụ trong tài liệu: Khách đặt hàng lúc 14:00:00 (ORDER_CONFIRMED) và bấm huỷ lúc 14:00:03 (ORDER_CANCELLED). DB lưu đúng thứ tự. Nhưng Worker A claim confirmed gọi provider bị chậm 8 giây, Worker B claim cancelled gọi provider thành công ngay. Khách nhận thông báo "Đơn đã huỷ" lúc 14:00:04 và "Đơn đã xác nhận" lúc 14:00:12. Tài liệu kết luận: Không có bug, thứ tự đã bị hy sinh cho throughput
+
+
+
+
+8. Backpressure
+8.1 Nơi lưu trữ áp lực & Xả tải
+Database là bể chứa trung gian (DB as Queue):
+    Áp lực được giữ lại hoàn toàn tại bảng notification_delivery trong DB
+    Kafka không dâng (lag = 0): Consumer chỉ ghi DB cục bộ (~15 ms) rồi commit offset, không gọi provider nên không bị tắc lại ở tầng Kafka
+    Không đẩy ngược lên upstream: Order, Cart, Auth không bị chặn hay phụ thuộc vào tình trạng của provider; event bắn ra là xong
+Xả tải tự nhiên qua TTL per template (kỹ thuật)
+    Mỗi template có hạn sử dụng (max_age)
+    Khi hàng đợi dồn ứ lâu, các tin quá hạn (như OTP quá 5 phút, thông báo đơn quá 6 giờ) sẽ tự động chuyển sang trạng thái EXPIRED khi worker nhặt việc, giảm bớt số lượng phải gửi đi
+Công tắc ngắt tải khẩn cấp (nghiệp vụ)
+    Tạm dừng worker gửi của lane Bulk để nhường đường và tài nguyên xử lý cho lane Critical và Transactional.
+
+Cụ thể
+Pod Consumer của Bulk vẫn chạy bình thường:
+    Mục đích: Để Kafka không bao giờ bị nghẽn (lag Kafka luôn giữ ở mức 0)
+Pod Deliver của Bulk tạm dừng gửi:
+    Mục đích: Cắt đứt hoàn toàn lưu lượng gửi tin Bulk ra bên ngoài
+Khi sự cố qua đi (Ops bật resume lane=bulk)
+    Deliver Pod của Bulk hoạt động trở lại và nhặt dần hàng trăm nghìn bản ghi tích lũy trong DB
+    Trong thời gian nằm chờ ở DB, cơ chế TTL tự động phát huy tác dụng: các tin tiếp thị quá cũ sẽ tự chuyển sang EXPIRED, giúp hệ thống tự động loại bỏ bớt ~10% lượng tin không cần thiết mà không tốn công gửi
+
+8.2 Bulkhead: khoanh vùng tài nguyên thành từng khoang riêng biệt, để một việc không quan trọng không bao giờ có thể nuốt trọn tài nguyên của việc quan trọng khác
+Tầng 1: Tách Kafka Topic & Consumer Group (đã mô tả phần 1)
+Tầng 2: Worker Thread / Goroutine Pool
+Tầng 3: Tách Process & Deployment (đã mô tả phần 9)
+    Cùng một codebase, trên Production được tách thành các deployment/container độc lập theo biến môi trường ROLE và LANE:
+    ROLE=consumer LANE=critical
+    ROLE=deliver LANE=critical
+    ROLE=deliver LANE=bulk
+Tầng 4: Database Connection Pool (Postgres)
+Tầng 5: HTTP Client Connection Pool tới Provider
+Tầng 6: Quota Provider (AWS SES Rate Limiter)
+Tầng 7: Bảo vệ Upstream Dependency
+
+
+
+
+
+
+
+9. Lý do 1 thread (Goroutine) chạy bên trong tiến trình của ứng dụng lại có khả năng khoanh vùng tài nguyên khi chạy trên cùng 1 service
+Phân vùng vật lý ở mức tiến trình (Process-level Bulkhead trên Production)
+Trên môi trường Production, service này KHÔNG chạy tất cả trong một tiến trình
+Cùng một file mã nguồn (cùng 1 file binary), nhưng khi triển khai thực tế trên server/Kubernetes, hệ thống sẽ tách thành các tiến trình (container/pod) riêng biệt thông qua biến môi trường:
++ Container 1: Chạy với cấu hình ROLE=deliver LANE=critical (Tiến trình này chỉ làm duy nhất một việc: gửi tin Critical).
++ Container 2: Chạy với cấu hình ROLE=deliver LANE=bulk (Tiến trình này chuyên gửi tin Bulk).
++ Container 3: Chạy với cấu hình ROLE=consumer LANE=critical (Tiến trình này chuyên đọc Kafka ghi DB).
+
+Lợi ích của việc tách tiến trình ở Production:
++ Mỗi container được cấp phát hạn mức CPU và RAM riêng biệt.
++ Nếu lane Bulk bị nghẽn, ngốn quá nhiều RAM hoặc bị lỗi crash (Out of Memory - OOM), thì chỉ có container của Bulk bị chết và khởi động lại.
++ Container của lane Critical chạy trên một tiến trình hoàn toàn độc lập nên vẫn gửi OTP cho người dùng bình thường, không hề bị ảnh hưởng một mili-giây nào.
+
+Điểm giống và khác biệt giữa pod của consumer và deliver
+
+Điểm giống: Đều được tách Pod riêng trên Production
+Pod nhóm Consumer: ROLE=consumer LANE=critical, ROLE=consumer LANE=bulk
+Pod nhóm Deliver: ROLE=deliver LANE=critical, ROLE=deliver LANE=bulk
+Mỗi Pod này được cấp CPU và RAM riêng biệt. Nếu Pod Deliver Bulk bị treo hoặc tràn RAM (OOM) thì các Pod khác không bị ảnh hưởng.
+
+Điểm khác
+A. Pod Consumer (Ranh giới 1 — Đọc từ Kafka)
+Bị trói buộc bởi Kafka Partition: Trong cơ chế của Kafka, 1 partition chỉ có thể được đọc bởi 1 consumer instance tại một thời điểm.
+Vì vậy, số lượng Pod Consumer bị giới hạn cứng bởi số partition:
+Topic Critical có 3 partition -> bạn chỉ có thể chạy tối đa 1 đến 3 Pod Consumer. Nếu bạn bật Pod thứ 4, Pod đó sẽ ngồi chơi không có việc để làm.
+B. Pod Deliver (Ranh giới 2 — Đọc từ Database)
+KHÔNG đọc Kafka, mà đọc từ bảng Database: Deliver Pod không hề kết nối vào Kafka topic. Nhiệm vụ của nó là truy vấn bảng notification_delivery trong PostgreSQL.
+Không bị giới hạn bởi Partition:
+    Bạn muốn scale bao nhiêu Pod Deliver tùy ý, không phụ thuộc topic có bao nhiêu partition.
+Bên trong 1 Pod Deliver chứa NHIỀU Goroutines:
+    1 Pod Deliver không phải chỉ xử lý 1 việc. Bên trong 1 Pod Deliver chạy một Deliver Pool gồm nhiều goroutine đồng thời (ví dụ: cấu hình 30 goroutines/thread trong 1 Pod Bulk).
+
+
+
+
+
+
+10. Database Connection Pool
+Mỗi lần một worker cần gắp 20 email từ Postgres, nó phải làm tuần tự các bước:
+
+1. TCP 3-way Handshake: Gửi gói tin SYN -> nhận SYN-ACK -> gửi ACK (Mất ít nhất 1 vòng mạng - RTT).
+2. Xác thực bảo mật TLS / mTLS:
+    Trao đổi Client Hello, Server Hello, gửi Certificate của Server, gửi Client Certificate của Microservice (với mTLS).
+    Tính toán giải mã khóa bất đối xứng (RSA / ECDSA).
+    Mất thêm 1 đến 2 vòng mạng (RTT) cộng với thời gian CPU tính toán mã hóa.
+3. Xác thực và khởi tạo phiên của PostgreSQL:
+PostgreSQL trên máy chủ phải fork ra một process hệ điều hành mới.
+Trao đổi thông tin user/password (SCRAM-SHA-256) hoặc kiểm tra chứng chỉ.
+Khởi tạo các biến môi trường của session (timezone, search_path, encoding...).
+
+Khi ứng dụng khởi động, Connection Pool đã mở sẵn các kết nối TCP và hoàn tất toàn bộ quá trình mTLS cũng như xác thực Postgres từ trước.
+
+Khi Worker cần thực thi câu lệnh:
+Thời gian mượn kết nối: Chỉ tốn khoảng vài micro-giây bản chất chỉ là lấy một biến socket đã kết nối sẵn ra khỏi danh sách (memory queue) trong RAM.
+Bỏ qua hoàn toàn: Không cần bắt tay TCP, không cần mTLS, không cần Postgres fork process mới, không cần xác thực lại mật khẩu.
+Chạy query xong (2ms): Socket đó không bị đóng lại mà quay về trạng thái rảnh rỗi (Idle) trong Pool, sẵn sàng cho luồng tiếp theo mượn ngay lập tức.
+
+
+Vì Transaction bị giam cho tới khi commit (commit xong mới nhả pool), chính vì thế không giữ transaction mở trong lúc gọi HTTP Provider — làm vậy giữ lock, giữ connection pool, và chặn vacuum

@@ -1,0 +1,128 @@
+1. Tách biệt giữa dữ liệu lưu trữ nội bộ (storage) và đường dẫn hiển thị thực tế cho người dùng (public URL) thông qua một tầng chuyển đổi (Response Adapter) trong Search Service
+
+1.1 Phân biệt storage_key và URL hoàn chỉnh
+Khái niệm	Ví dụ	Ý nghĩa
+storage_key (Object Key)	catalog/products/2026/09/shoe-red.webp	Là đường dẫn tương đối định danh vị trí file trong thùng chứa (Bucket của S3, Google Cloud Storage, hoặc MinIO). Nó không có domain, không có https://.
+URL hoàn chỉnh (CDN URL)	https://cdn.my-ecommerce.com/catalog/products/2026/09/shoe-red.webp	Là đường dẫn tuyệt đối mà trình duyệt (Browser) hoặc Mobile App có thể gọi trực tiếp để tải ảnh về hiển thị.
+1.2 "Tùy theo môi trường CDN" nghĩa là sao?
+Hệ thống của bạn thường chạy trên nhiều môi trường khác nhau, và mỗi môi trường lại có một cấu hình CDN / Storage khác nhau:
+
+Môi trường Local / Dev: Bạn chạy MinIO trên máy cá nhân: 
+→ Base URL = http://localhost:9000/media-bucket
+Môi trường Staging (Kiểm thử): Dùng CDN nội bộ: 
+→ Base URL = https://staging-cdn.my-ecommerce.dev
+Môi trường Production (Thật): Dùng Cloudflare / CloudFront / Fastly: 
+→ Base URL=https://cdn.my-ecommerce.com
+Nếu lưu cứng CDN URL vào Database hay Elasticsearch: Khi bạn chuyển dữ liệu từ Production về Staging để test, hoặc khi công ty đổi nhà cung cấp CDN / đổi tên miền, toàn bộ hàng triệu URL trong cơ sở dữ liệu sẽ bị sai (gãy ảnh). Bạn sẽ phải chạy script cập nhật hàng triệu bản ghi và reindex lại toàn bộ Elasticsearch!
+Vì vậy, trong Database và Elasticsearch chỉ lưu storage_key để dữ liệu độc lập hoàn toàn với hạ tầng mạng
+
+1.3 "Response Adapter của Search Service đảm nhiệm" là gì?
+Adapter (Bộ chuyển đổi) là tầng code nằm ở cổng ra của Search Service, làm nhiệm vụ biến đổi dữ liệu thô đọc từ Elasticsearch thành định dạng JSON công khai (DTO) gửi về cho Frontend.
+Bước 1: Dữ liệu trong Elasticsearch Document Elasticsearch chỉ lưu key tương đối:
+json
+{
+  "sku_id": "sku-123",
+  "name": "Giày thể thao đỏ",
+  "thumbnail_storage_key": "catalog/products/2026/09/shoe-red.webp"
+}
+Bước 2: Logic trong Response Adapter của Search Service Trước khi trả kết quả cho người dùng, adapter đọc cấu hình môi trường (ví dụ biến cdn.base-url trong application.yml)
+Bước 3: Dữ liệu Frontend nhận được qua API (GET /api/v1/search/products) Frontend không cần biết storage_key hay Bucket là gì, chỉ nhận được URL sẵn sàng để dùng:
+json
+{
+  "sku_id": "sku-123",
+  "name": "Giày thể thao đỏ",
+  "thumbnail_url": "https://cdn.my-ecommerce.com/catalog/products/2026/09/shoe-red.webp"
+}
+
+
+
+
+
+2. Reindex
+Là cơ chế xây dựng lại toàn bộ dữ liệu (document) trên ES, sau đó chuyển hướng truy vấn (swap alias) sang một index mới một cách nguyên tử (atomic) mà không gây downtime cho cả luồng ghi và đọc
+Là quá trình:
++ Tạo 1 ES index vật lý mới (ví dụ từ product_v1 lên product_v2)
++ Kéo toàn bộ dữ liệu chuẩn từ các service gốc để đổ dữ liệu vào index này
++ Đọc bù các sự kiện phát sinh trong lúc đổ dữ liệu (catch-up)
++ Hoán đổi alias tức thời để người dùng có thể chuyển sang dùng index mới mà không gây ra 1 giây downtime nào
+Lý do: phần lớn mapping của ES là bất biến (immutable), muốn thay đổi cấu trúc document, cách duy nhất là tạo index mới và reindex
+
+Cơ chế index 3 pha:
+
+Pha 1: Build
+Tạo index mới, Search Service kéo toàn bộ dữ liệu qua HTTP từ các service gốc khác để nạp vào index này
+Pha 2: Catch-up
+Quá trình trên có thể kéo dài vài phút, trong lúc đó những biến động (thao tác của khách hàng) bắn lên topic và consumer group chính (search-indexer) vẫn đọc và ghi bình thường vào index cũ (product_N qua product_write)
+-> Khi pha 1 kết thúc, dữ liệu trong index mới (product_N+1) đã bị stale vài phút
+Chính vì thế, nhiệm vụ của pha 2: đọc lại toàn sự kiện phát sinh của Kafka từ thời điểm Build đến thời điểm hiện tại để ghi bù lại vào index mới cho tới khi index bắt kịp hoàn toàn dữ liệu thực
+
+Chi tiết cơ chế hoạt động của Catch-up:
+1. Điểm xuất phát
+Các service sẽ chụp offset của partition trên topic đó và gửi về response trong API
+Lưu ý: bắt buộc phải lấy offset trước khi thực hiện scan DB
+2. Khởi tạo consumer group tạm thời
+Vì consumer group chính đang bận việc ghi cho hệ thống đang chạy trên index cũ, Search Service sinh ra 1 consumer group mới hoàn toàn để thực hiện đọc đúng các offset đã ghi nhận từ các service
+
+Điều kiện để kết thúc Catch-up:
++ Lag về 0: Khoảng cách giữa giữa offset mà consumer group tạm thời xử lý và offset mới nhất trên tất cả partition của cả 3 topic bằng 0
++ Ổn định qua nhiều chu kỳ: Trạng thái lag = 0 phải được duy trì qua nhiều chu kỳ poll liên tiếp (đảm bảo index mới đã hoàn toàn bám sát index cũ theo thời gian thực)
+
+
+Pha 3: Cut-over
+Chạy 1 lệnh atomic trên ES
++ Mọi lượt đọc của buyer và các event ghi của worker tự động trỏ sang index mà không mất mát dữ liệu hay gián đoạn kết nối
++ Rollback: Nếu phát hiện lỗi sau khi cutover, chỉ cần chạy một lệnh đổi alias ngược lại. Index cũ được lưu giữ tối thiểu 24 giờ đề phòng rủi ro
+
+
+
+
+
+3. Bulk Index theo Chunk và Throttle
+ES là datastore duy nhất trong service, vừa phải tiếp nhận lượng ghi lớn (đồng bộ từ Kafka, chạy các reindex) vừa phải duy trì đỗ trễ thấp cho các truy vấn tìm kiếm của người dùng
+Để giải quyết bài toán ghi tải lớn mà không sập cluster hay làm ảnh hưởng xấu tới lưu lượng đọc, đây là cơ chế được áp dụng
+
+3.1 Bulk Index theo Chunk
+Mỗi request _bulk bị chặn đồng thời bởi 2 giới hạn:
++ bulk_max_actions: Số lượng action (thao tác index/update) tối đa trong một request _bulk
++ bulk_max_bytes: Tổng dung lượng payload (tính bằng byte) tối đa của một request _bulk
+
+3.2 Cơ chế Throttle (tiết lưu và điều áp)
+Toàn bộ việc điều tiết buld phải do client (Search worker) tự kiểm soát:
++ Giới hạn tần suất phát request (bulk_requests_per_second): Rate limiter phía client điều tiết số request _bulk được phép bắn vào Elasticsearch mỗi giây
++ Giới hạn request đồng thời (bulk_max_in_flight): Khống chế số lượng request _bulk đã gửi đi nhưng đang chờ kết quả trả về từ Elasticsearch
++ Áp dụng Back-pressure lên nguồn đọc
+  Worker chỉ đọc chunk từ service nguồn khi bulk_max_in_flight còn dung lượng
+  Điều này tránh việc nạp vào bộ đọc quá nhanh và dồn hàng loạt chunk vào RAM của Search worker trong khi ES chưa kịp xử lý xong
+Nếu không có bulk_max_in_flight: Bộ phận đọc dữ liệu (ví dụ đọc HTTP export từ Product Service hoặc scan snapshot hàng triệu bản ghi) sẽ tải dữ liệu ồ ạt về RAM của Search Service để chuẩn bị bulk. Nhưng vì Elasticsearch xử lý không kịp, 
+hàng trăm megabyte/gigabyte payload sẽ bị tích tụ trong heap memory của Search Service dẫn tới Search Service bị crash do tràn bộ nhớ (OOM)
+Khi có bulk_max_in_flight: Tốc độ đọc/export của Search Service bị ép phải chạy đồng tốc với khả năng tiêu thụ của Elasticsearch
+
+
+
+
+4. Sự khác nhau giữa _bulk và _update_by_query
+Vấn đề:
+Mỗi document trong index products là một SKU (_id = sku_id), còn product_id chỉ là thuộc tính denormalize
++ Khi luồng dữ liệu upstream cung cấp đích danh sku_id (Product catalog events, Inventory availability events): Search định vị chính xác _id, do đó sử dụng _bulk
++ Khi upstream chỉ cung cấp product_id mà không biết danh sách sku_id bên dưới (điển hình là Review Service phát rating aggregate theo product_id). Vì Search không lưu bảng reverse lookup giữa product_id và các sku_id. Vì vậy, Search không có sẵn danh sách sku_id để gọi bulk mà buộc phải dùng _update_by_query lọc theo product_id
+
+Cụ thể:
+Search Service chỉ gửi duy nhất 1 HTTP request sang Elasticsearch. Toàn bộ việc tìm kiếm các document và cập nhật chúng diễn ra hoàn toàn nội bộ bên trong cụm Elasticsearch (Server-side)
+Khi nhận request trên, chính Elasticsearch sẽ tự động thực hiện 2 pha:
++ Pha Search nội bộ: ES tự duyệt các shard để lọc ra tất cả document SKU đang có field product_id 
++ Pha Update nội bộ: Với mỗi document tìm thấy, ES chạy Painless script để kiểm tra guard review_revision và cập nhật rating trực tiếp trên shard
+
+
+
+
+
+5. Các chặng khi lấy dữ liệu từ các Service
+Chặng 1: Search Service gọi sang các Service để lấy (export) dữ liệu
+  Khởi tạo session (1 request)
+  Kéo dữ liệu theo trang lớn (10 – 20 request)
+Chặng 2: Search Service ghi dữ liệu đó vào cụm Elasticsearch
+  Khi đã nhận dữ liệu từ các service, theo quy trình Reindex Search Service sẽ phải thực thi _update_by_query vào Elasticsearch (mỗi lệnh cho 1 product_id)
+   Throttling bắt buộc qua requests_per_second
+
+Việc tạo một index mới (products_v{N+1}) thực chất chỉ mang lại sự cô lập về mặt logic (Logical Isolation), chứ không hề cô lập tài nguyên vật lý (Physical Resource Isolation)
+Dù ghi vào index khác, index đó vẫn nằm trên cùng các Node, cùng ổ đĩa (Disk), cùng CPU và cùng dung lượng RAM/JVM Heap của cụm Elasticsearch mà traffic tìm kiếm của khách hàng đang dùng

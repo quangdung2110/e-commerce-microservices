@@ -1,0 +1,309 @@
+1. Saga Pattern
+
+Trong môi hình Microservice, mỗi service sở hữu 1 database riêng biệt
+Chính vì thế sẽ xảy ra các trường hợp:
++ Không thể viết transaction thông qua 3 database khác nhau
++ Bạn đã trừ kho xong, trừ voucher xong, nhưng khách hàng quẹt thẻ thanh toán thất bại. Lúc này làm sao để "Rollback" lại số lượng tồn kho và voucher ở các service kia? Không có câu lệnh ROLLBACK nào làm được việc này
+
+Mỗi bước trong Saga:
++ Cập nhật dữ liệu vào Database của chính service đó
++ Nếu bước đó thành công -> Chuyển sang bước tiếp theo
++ Nếu một bước thất bại -> Saga kích hoạt chuỗi Giao dịch bù trừ (Compensating Transactions) theo thứ tự ngược lại để hoàn tác những gì đã làm trước đó
+
+
+
+
+
+
+2. Orchestration bằng Temporal
+Thay vì sử dụng Choreography thuần Kafka (dễ rơi vào tình trạng lơ lửng, khó xử lý timeout/retry và compensate), hệ thống sử dụng Temporal Workflow để kiểm tra trình tự tiến trình, quản lý timer, history và compensation
+
+Chi tiết các luồng Saga chính
+
+
+2.1 CheckoutSubmit Saga - OrderCheckoutWorkflow 
+Workflow ID: order-checkout-{checkout_token}
+Task Queue: order-checkout-queue
+Trigger: Endpoint POST /v1/orders/create-from-checkout từ Checkout Service
+
+Chi tiết các bước:
+Giai đoạn 1: Local Transaction & Khởi tạo dữ liệu (CreateOrderActivity)
+Hoạt động này chạy hoàn toàn trong 1 Database Transaction nội bộ của Order PostgreSQL
+1. Khởi tạo dữ liệu đa kho
++ Tạo Master Order trong bảng orders
++ Tạo Order Items trong bảng order_items
++ Tạo Order Item Lines trong bảng order_item_lines
++ Tạo Order Promotions trong bảng order_promotions
+
+Giai đoạn 2: Giữ tài nguyên & Ngăn xếp đền bù (Pre-Payment Reservation & Compensation)
+Temporal tiến hành gọi tuần tự các Remote Activity ra các microservices khác. Mỗi bước thành công sẽ đẩy một Activity đền bù tương ứng vào Compensation Stack (LIFO - Vào sau ra trước)
+1. Giữ tồn kho — ReserveInventoryActivity
+Tác vụ: Gọi HTTP sang Inventory Service
+Xử lý kết quả:
+    Thành công: Temporal đăng ký RollbackInventoryActivity vào compensation stack
+    Thất bại (Hết hàng / Kế hoạch hết hạn / Mismatch kho): Dừng saga, gọi CancelOrderActivity cập nhật DB sang CANCELLED và trả lỗi về Checkout
+
+2. Giữ ngân sách khuyến mãi — ReservePromotionActivity
+Tác vụ: Gọi HTTP sang Promotion Service: POST /internal/v1/promotion-allocation/reservations.
+Đặc điểm: Hoạt động theo cơ chế All-or-Nothing cho toàn bộ danh sách voucher trên đơn.
+Xử lý kết quả:
+    Thành công: Đăng ký RollbackPromotionActivity vào compensation stack. RollbackPromotionActivity chỉ nhả reservation runtime, không tác động vào ví voucher của khách
+    Nếu Promotion trả về thất bại (ví dụ: BUDGET_EXHAUSTED do hết ngân sách hoặc mã giảm giá bị vô hiệu hóa):
+        Temporal kích hoạt ngăn xếp đền bù (Compensation Stack)
+        Chạy RollbackInventoryActivity: Gọi Inventory nhả toàn bộ số hàng đã giữ ở bước 1.
+        Chạy CancelOrderActivity: Đánh dấu đơn hàng CANCELLED với lý do nội bộ PRE_PAYMENT_SAGA_FAILED.
+        Trả về cho Checkout Service mã lỗi cấu trúc 409 PROMOTION_RECALCULATION_NEEDED kèm ID của promotion bị lỗi. Order Service không tự tiện tính lại giảm giá, Checkout bắt buộc phải tính toán lại giỏ hàng và tạo checkout token mới cho người dùng
+
+3. Khởi tạo thanh toán — InitiatePaymentActivity
+Tác vụ: Gọi Payment Service để tạo Stripe PaymentIntent
+Kết quả trả về: Trả client_secret và publishable_key của Stripe về cho Checkout Service để frontend hiển thị giao diện nhập thẻ/thanh toán cho khách hàng
+
+
+Giai đoạn 3: Cửa sổ chờ thanh toán 15 phút & Giải quyết tranh chấp đồng thời (Wait & Race Resolution)
+Sau khi tạo xong PaymentIntent, workflow chuyển sang trạng thái Suspend (treo chờ tín hiệu trong Temporal, không tốn thread hay CPU server). Thời gian chờ tối đa là 15 phút.
+Kịch bản 1: Thanh toán thành công (Happy Path)
+    Khi khách thanh toán trên Stripe, Stripe gửi webhook sang Payment Service. Payment Service phát sự kiện lên Kafka topic t.payment.events.v2
+    order-payment-consumer nhận event:
+        Gửi signal PaymentResult.SUCCESS vào OrderCheckoutWorkflow
+    Workflow lập tức hủy Timer 15 phút và tiến thẳng vào Giai đoạn 4
+Kịch bản 2: Timer 15 phút nổ hoặc Khách chủ động bấm Hủy
+    FSM của Order Service không chuyển ngay sang CANCELLED mà chuyển sang trạng thái chuyển tiếp: CANCELLING
+    Workflow gọi CancelPaymentActivity sang Payment Service với payment transaction ID tương ứng
+    Xử lý Race Condition tại Payment
+        Trường hợp A (Thực sự chưa thanh toán): Stripe xác nhận giao dịch là CANCELED hoặc ALREADY_NON_CAPTURED.
+            Lúc này Order mới kích hoạt chuỗi đền bù: RollbackPromotionActivity -> RollbackInventoryActivity -> CancelOrderActivity
+            Đơn hàng chuyển sang CANCELLED, ghi nhận cancel_reason = 'PAYMENT_TIMEOUT' (hoặc USER_CANCEL), phát event ORDER_CANCELLED.
+        Trường hợp B (Race - Khách vừa thanh toán ngay thời khắc 14m59s): Stripe trả về ALREADY_SUCCEEDED (hoặc sự kiện PAYMENT_SUCCESS từ Kafka đến đồng thời).
+            Quy tắc bất biến: Order Service lập tức từ bỏ luồng hủy, không nhả kho, không nhả promotion
+            Workflow chuyển hướng ngay sang luồng Thanh toán thành công ở Giai đoạn 4
+Kịch bản 3: Tiền về muộn sau khi đơn hàng ĐÃ BỊ HỦY xong xuôi
+    Nếu đơn hàng đã hoàn tất chuyển sang CANCELLED, tài nguyên kho và promotion đã bị nhả, nhưng sau đó ngân hàng mới báo PAYMENT_SUCCESS:
+        order-payment-consumer phát hiện OrderCheckoutWorkflow đã đóng
+        Thay vì vứt bỏ sự kiện (làm mất tiền của khách), consumer kích hoạt workflow riêng biệt: OrderLatePaymentRecoveryWorkflow
+        Workflow này gọi lệnh có rào chắn RecoverTimedOutPayment của Inventory: Chỉ phục hồi đúng khối tồn kho cũ nếu kho chưa bị ai mua mất
+
+
+Giai đoạn 4: Mốc tài chính & Khắc phục tiến trình (Financial Watermark & Post-Payment Forward Repair)
+Khi tín hiệu thanh toán thành công được chấp nhận, hệ thống bước qua Mốc tài chính (Financial Watermark). Kể từ đây, khái niệm Rollback/Compensation hoàn toàn bị cấm. Mọi sự cố kỹ thuật đều được xử lý bằng cơ chế Forward Repair (Sửa chữa tiến)
+1. Khóa mốc tài chính (UpdateOrderStatusActivity):
+    Thực hiện SELECT ... FOR UPDATE trên dòng orders.
+    Đóng băng giao dịch thanh toán thành công vào cột captured_payment_transaction_id.
+    Chuyển trạng thái PENDING_PAYMENT -> PAID.
+    Ghi event ORDER_PAID vào bảng outbox trong cùng transaction. Event này sẽ kích hoạt Cart Service dọn sạch các item trong giỏ hàng của người dùng.
+2. Commit tồn kho chính thức (CommitInventoryActivity):
+    Gọi Inventory Service lệnh CommitPayment với command ID cố định
+    Kho chuyển trạng thái từ "giữ chỗ" (reserved) sang "đã cam kết xuất" (committed)
+    Nếu gặp lỗi mạng/timeout: Workflow không rollback mà gọi GET /commands/{command_id} để lấy kết quả đã lưu bên kho
+3. Xác nhận sử dụng voucher vĩnh viễn (ConfirmPromotionActivity):
+    Gọi Promotion Service: POST /internal/v1/promotion-allocation/confirmations
+    Truyền bắt buộc header Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}
+    Promotion Service ghi nhận receipt bền vững trong DB, trừ budget vĩnh viễn và đánh dấu voucher trong ví khách hàng là USED
+4. Chuyển sang khâu vận hành (UpdateOrderStatusActivity):
+    Chuyển trạng thái Master Order: PAID -> PROCESSING.
+    Tại đây, Checkout Submit Saga kết thúc nhiệm vụ. Đơn hàng chuyển giao sang cho các consumer theo dõi vận chuyển (Inventory line-dispatch và Delivery proof)
+
+
+
+
+
+2.2 Khôi phục thanh toán muộn — OrderLatePaymentRecoveryWorkflow
+Trong luồng Checkout Submit, Temporal thiết lập một Timer đếm ngược 15 phút để chờ khách thanh toán qua cổng Stripe
+Khi sự kiện PAYMENT_SUCCESS được gửi tới từ Payment Service:
+    Workflow khởi tạo ban đầu (OrderCheckoutWorkflow) đã đóng hoàn toàn và hoàn tất các hoạt động đền bù (LIFO compensation)
+Các giải pháp sai lầm thường gặp và lý do bị loại bỏ:
+    Bỏ qua sự kiện (Drop event): Khách mất tiền nhưng không có hàng -> Vi phạm nghiêm trọng về tính toàn vẹn tài chính và trải nghiệm khách hàng
+    Mở lại Checkout Workflow cũ: Vi phạm tính bất biến (determinism) của Temporal history cho các workflow đã Completed
+Vì vậy, kiến trúc lựa chọn giải pháp: Khởi chạy một Workflow phục hồi độc lập: OrderLatePaymentRecoveryWorkflow (order-late-payment-recovery-{order_id})
+
+Khi order-payment-consumer nhận event PAYMENT_SUCCESS từ Kafka topic t.payment.events.v2, nó phải chạy qua một loạt chốt chặn nghiêm ngặt trước khi kích hoạt recovery:
+1. Kiểm tra trạng thái đơn hàng:
+Đơn hàng trong DB phải đang ở trạng thái CANCELLED VÀ lý do hủy bắt buộc phải là cancel_reason = 'PAYMENT_TIMEOUT'.
+Lưu ý: Nếu đơn bị hủy do khách chủ động hủy (USER_CANCEL), Admin hủy (ADMIN_FORCE_CANCEL) hoặc lỗi khởi tạo (PAYMENT_FAILED), sự kiện PAYMENT_SUCCESS muộn này không được phép tự động recovery, mà phải đẩy ngay vào đối soát tài chính ngoại lệ.
+2. Xác thực phiên giao dịch tài chính
+Khớp đúng payment_attempt_number và payment_transaction_id đã lưu trong bảng order_payment_attempts
+3. Durable Inbox & Durable Dispatch:
+    Ghi nhận event_id vào bảng order_consumed_events để chống xử lý trùng (at-least-once dedup).
+    Ghi nhận bản ghi dispatch vào bảng order_workflow_dispatches.
+    Khởi chạy Temporal workflow với định danh ổn định:
+        Workflow ID: order-late-payment-recovery-{order_id}
+        Task Queue: order-late-payment-recovery-queue
+
+
+Cụ thể từng bước trong workflow
+Bước 1: Phục hồi tồn kho
+Activity chịu trách nhiệm: RecoverPaidOrderFromTimeoutActivity
+Activity này gọi sang Inventory Service endpoint nội bộ: POST /internal/v1/inventory/recover-timed-out-payment
+Inventory Service áp dụng quy tắc đóng băng cực kỳ khắt khe:
++ Chỉ tái cam kết đúng Root gốc: Chỉ chấp nhận phục hồi đúng khối tồn kho (allocation_plan_id và các dòng sản phẩm) đã bị nhả trước đó vì lý do RESERVATION_EXPIRED.
++ Kiểm tra tính sẵn sàng 100%: Kho kiểm tra xem toàn bộ số lượng của các mặt hàng đó có còn nằm nguyên vẹn trên kệ hay không, và tuyệt đối chưa có món nào bị điều phối xuất kho (dispatched).
++ Cấm tái phân bổ mới (Never re-reserve / reroute):
+    Nếu một phần hàng đã bị người mua khác đặt mất -> Từ chối ngay lập tức
+    Kho không được phép tự ý tìm kho khác thay thế, không chia nhỏ đơn hàng
+
+Bước 2: Rẽ nhánh
+
+Nhánh A: Phục hồi kho THÀNH CÔNG
+1. Chuyển trạng thái Master FSM:
+    Trong một transaction DB, cập nhật dòng orders:
+        Chuyển CANCELLED -> PAID.
+        Cập nhật payment_status = 'PAID'.
+        Đóng băng captured_payment_transaction_id.
+    Chèn sự kiện ORDER_PAID vào bảng outbox
+2. Khắc phục khuyến mãi:
+Do đợt reservation ban đầu đã bị nhả khi timeout, workflow sẽ tiến hành tái lập và chốt voucher:
+    Gọi Promotion Service: POST /internal/v1/promotion-allocation/confirmations với khóa Idempotency-Key: REDEEM_FINAL:{order_id}:{promotion_id}
+Nếu Promotion confirm thành công:
+    Order chuyển từ PAID -> PROCESSING
+Nếu Promotion confirm thất bại (ví dụ: chiến dịch khuyến mãi đã kết thúc, ngân sách voucher đã cạn):
+    Order chuyển sang FINANCIAL_RECONCILIATION_REQUIRED
+
+
+Nhánh B: Phục hồi kho THẤT BẠI (Stock Contention / Unrecoverable)
+Nếu Inventory Service báo lỗi (hàng đã bị mua hết hoặc không còn đủ số lượng):
+1. Không thực hiện hủy tiền tự động:
+    Hệ thống không gọi Stripe Refund ngay lập tức để tránh các rủi ro mất dấu vết giao dịch hoặc xung đột nếu cổng thanh toán đang xử lý tranh chấp.
+2. Kích hoạt hồ sơ đối soát tài chính:
+    Chuyển trạng thái đơn hàng sang: FINANCIAL_RECONCILIATION_REQUIRED.
+    Ghi nhận một bản ghi vào bảng order_financial_reconciliation_cases chứa:
+        Mã giao dịch đã thu tiền của Stripe (captured_payment_transaction_id)
+        Bằng chứng từ chối của kho (mã phản hồi, payload hash, checkpoint ID)
+    Đơn hàng kết thúc workflow tự động và chuyển quyền kiểm soát sang cho con người
+
+
+
+
+
+
+2.3 Luồng Hoàn tiền / Trả hàng — OrderRefundWorkflow
+Workflow ID: order-refund-{order_id}
+Task Queue: order-refund-queue
+Bất biến: Mỗi đơn hàng chỉ có tối đa một refund case và một giao dịch hoàn tiền duy nhất trên Payment Service trong toàn bộ vòng đời
+
+Phần 1: Chia làm 2 nhánh
+
+Nhánh 1: Buyer Return
++ Điều kiện tiên quyết: Toàn bộ các dòng hàng trong đơn phải có trạng thái DELIVERED
++ Quyền yêu cầu 1 lần: Buyer chỉ được submit return đúng 1 lần thông qua atomic CAS trên cột buyer_return_locked_at. Quyền này không bao giờ được reset dù sau đó hoàn tiền có lỗi
++ Phạm vi hoàn tiền: Khách hàng có thể chọn một số dòng sản phẩm (order_line_id), nhưng mỗi dòng đã chọn phải trả đủ số lượng ban đầu, không cho phép trả lẻ một phần số lượng của dòng
++ Không tính lại Voucher/Khuyến mãi: Order Service không gọi Promotion Service, không hoàn lại voucher vào ví, không phục hồi ngân sách khuyến mãi
++ Cổng kiểm định vật lý (Inventory Gate - tối đa 30 ngày):
+    Workflow gọi RegisterRefundScopeActivity sang Inventory và chờ sự kiện Kafka all-items-inspection-completed.
+    Ngay cả khi hàng hoàn về kho bị đánh giá kiểm định là FAIL, sự kiện hoàn tất kiểm định này vẫn cho phép tiến trình bước tiếp sang bước gọi Payment.
+
+
+Nhánh 2: Admin Force Refund Pre-dispatch
+Thời điểm: Đơn hàng đã thanh toán thành công (status = PAID hoặc PROCESSING), nhưng chưa giao cho khách. Lúc này khách gọi điện xin hủy đơn
++ Tạo order_admin_refund_attempts với inventory_command_id cố định
++ Gọi Inventory Service: Gọi ReleaseCommittedOrderBeforeDispatch(order_id)
+    Nếu có bất kỳ dòng nào đã xuất kho: Inventory từ chối ngay lập tức, không thay đổi bất kỳ số lượng tồn kho nào. Order nhận lỗi ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED, ghi nhận attempt thất bại và giữ nguyên đơn hàng ở PROCESSING
+    Nếu toàn bộ các dòng đều chưa xuất: Inventory nhả toàn bộ số hàng đã cam kết xuất trở về kệ trong 1 database transaction nguyên tử.
++ Chốt mốc tạo Refund Case:
+    Chỉ khi nhận được biên lai nhả kho thành công từ Inventory, Order Service mới chính thức:
+        Tạo bản ghi trong bảng order_refund_cases.
+        Chuyển Master FSM: PAID/PROCESSING -> RETURN_REQUESTED.
+        Khóa số tiền hoàn: Bằng đúng 100% tổng tiền thực tế khách đã trả 
+
+
+
+Phần 2: Gọi hoàn tiền qua Payment Service:
+Khi đã có đầy đủ bằng chứng từ kho (Nhánh 1 có bằng chứng hoàn tất kiểm định, Nhánh 2 có bằng chứng nhả toàn bộ kho), tiến trình sẽ bước vào giai đoạn tương tác với Payment Service.
+1. Bước gửi lệnh hoàn tiền — InitiateRefundActivity
+1.1 Thiết lập định danh bất biến (Idempotency)
+    Workflow sinh ra một refund_transaction_id duy nhất và lưu cứng vào bảng order_refund_cases.
+    Lấy đúng mã giao dịch đã thu tiền trước đó: captured_payment_transaction_id.
+    Cập nhật trạng thái hiển thị: payment_status = 'REFUNDING'
+1.2 Gọi HTTP sang Payment Service
+Gọi endpoint POST /v1/payments/refunds mang theo:
+    refund_transaction_id (làm Idempotency-Key)
+    payment_transaction_id (giao dịch gốc)
+    amount_minor và currency: "VND"
+Payment Service gọi tiếp API của Stripe để tạo lệnh hoàn tiền
+Do Stripe xử lý hoàn tiền về tài khoản ngân hàng của khách mất từ vài chục giây đến vài ngày, API này chỉ trả về 202 Accepted. Workflow sẽ tạm dừng (suspend) để chờ sự kiện từ Kafka.
+
+
+2. Đón nhận và Xác thực kết quả qua Kafka
+Khi Stripe hoàn tất xử lý, Payment Service phát sự kiện ra Kafka topic t.payment.events.v2. Consumer order-payment-consumer tiếp nhận và kiểm tra:
++ Khớp đúng order_id.
++ Khớp đúng refund_transaction_id và captured_payment_transaction_id.
++ Phiên bản tài chính financial_state_version phải hợp lệ.
++ Ghi vào bảng order_consumed_events để chống trùng lặp, sau đó gửi signal tương ứng vào Temporal workflow order-refund-{order_id}
+
+
+3. Xử lý kết quả trả về
+
+Kịch bản A: Hoàn tiền thành công (REFUND_SUCCESS) — Happy Path
+Chuyển dịch FSM (T10): Chuyển Master Order từ RETURN_REQUESTED -> REFUNDED.
+Cập nhật dữ liệu:
+orders.payment_status = 'REFUNDED'.
+order_refund_cases.case_status = 'SUCCEEDED'
+
+Kịch bản B: Hoàn tiền thất bại (REFUND_FAILED)
+Xảy ra khi: Thẻ tín dụng của khách đã bị đóng/hủy, tài khoản ngân hàng bị phong tỏa, hoặc cổng thanh toán từ chối giao dịch hoàn tiền
+Xử lý trạng thái (T10.1):
+Master Order VẪN GIỮ NGUYÊN trạng thái RETURN_REQUESTED, tuyệt đối không chuyển ngược về COMPLETED hay PROCESSING (vì hàng thực tế đã được nhả về kho hoặc khách đã trả lại kho rồi!).
+Cập nhật orders.payment_status = 'REFUND_FAILED'.
+Đánh dấu order_refund_cases.case_status = 'FAILED'
+
+
+
+
+
+
+
+
+
+
+2.4. Đối soát và xử lý ngoại lệ tài chính — OrderFinancialReconciliationWorkflow
+
+
+
+
+
+
+
+
+
+
+
+
+3. Vai trò của bảng order_workflow_dispatches
+Giải quyết vấn đề: lưu vào DB rồi gọi Workflow trong Temporal (Dual-Write Problem)
+
+Thông thường, khi người dùng bấm "Đặt hàng" hoặc khi nhận một Kafka event, lập trình viên hay viết code theo kiểu:
+
+1. db.save(order);               // Lưu trạng thái PENDING_PAYMENT vào DB
+2. temporalClient.start(order);   // Khởi chạy Temporal Workflow
+3. return 202 Accepted;
+Hiểm họa: Điều gì xảy ra nếu server bị sập nguồn (OOM, restart pod, mất điện) ngay giữa dòng 1 và dòng 2?
+
+Database đã commit đơn hàng PENDING_PAYMENT.
+Nhưng Temporal chưa bao giờ nhận được lệnh khởi chạy workflow!
+Hậu quả: Đơn hàng bị treo vĩnh viễn (Zombie Order) mà không có bất kỳ timer đếm ngược 15 phút hay tiến trình giữ kho nào chạy tiếp theo.
+
+
+
+Ví dụ cụ thể trong hệ thống
+
+1. Luồng Khách yêu cầu Trả hàng / Hoàn tiền
+Khách hàng chỉ được gửi yêu cầu trả hàng đúng 1 lần duy nhất trong đời
+Để chống việc khách bấm liên tục 2 lần (double-click) hoặc gửi 2 request đồng thời, API phải chạy lệnh CAS trực tiếp vào Database trước:
+Vấn đề xuất hiện: Lệnh trên commit vào DB thành công -> Cột buyer_return_locked_at đã bị khóa vĩnh viễn. Ngay tích tắc sau đó, pod API bị crash hoặc mạng sang Temporal bị đứt khiến lệnh gọi startWorkflow(OrderRefundWorkflow) thất bại
+
+2. Luồng Khôi phục thanh toán muộn
+Consumer đọc Kafka nhận được PAYMENT_SUCCESS khi đơn đã bị hủy
+Consumer bắt buộc phải ghi nhận vào hộp thư bền vững order_consumed_events trong Database trước để xác nhận "Tôi đã nhận event này".
+Nếu commit DB xong mà gọi Temporal start OrderLatePaymentRecoveryWorkflow bị lỗi mạng
+
+3. Luồng Admin hủy / Hủy trước khi thanh toán
+Khách hoặc Admin bấm Hủy đơn 
+→ Hệ thống phải khóa FSM chuyển sang CANCELLING (hoặc ghi nhận order_admin_refund_attempts) trong Database trước, rồi mới kích hoạt workflow xử lý hủy tài nguyên
+
+
+Cơ chế hoạt động
+1. Kích hoạt an toàn (Dispatch & Attach):
+Ứng dụng gọi Temporal để kích hoạt workflow bằng Workflow ID cố định (ví dụ: order-checkout-{checkout_token}, order-refund-{order_id}).
+Khi Temporal xác nhận workflow đã khởi chạy thành công -> cập nhật status = 'STARTED'.
+2. Cơ chế tự phục hồi sau sự cố (Crash Recovery):
+Một tiến trình nền định kỳ (Workflow Dispatcher Worker) sẽ quét bảng này theo index (status, created_at) để tìm các bản ghi vẫn đang ở trạng thái PENDING quá lâu (ví dụ > 5 giây do pod vừa bị restart).
+Dispatcher sẽ thực hiện gọi lại lệnh start/attach sang Temporal.
+Nhờ có Workflow ID duy nhất (Unique), Temporal sẽ tự động gom (attach) hoặc từ chối nếu workflow đã chạy, đảm bảo tính Idempotent 100%: không bao giờ sinh ra 2 workflow chạy song song cho cùng 1 đơn hàng.
