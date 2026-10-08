@@ -120,7 +120,21 @@ public final class CatalogProjection {
         // path includes the node itself, so its depth below the root is size - 1.
         fields.put("level", Math.max(0, path.size() - 1));
         fields.put("is_leaf", Boolean.TRUE.equals(category.isLeaf()));
-        fields.put("updated_at", com.ecommerce.search.common.Timestamps.iso(category.updatedAt()));
+        if (category.facetDefinitions() != null) {
+            // Absent means an older producer: leave whatever a newer snapshot wrote untouched.
+            // An empty list is a real answer ("no mapping") and replaces the previous one.
+            fields.put("facet_definitions", category.facetDefinitions().stream()
+                    .filter(definition -> definition.code() != null && definition.label() != null)
+                    .map(definition -> {
+                        Map<String, Object> descriptor = new LinkedHashMap<>();
+                        descriptor.put("code", definition.code());
+                        descriptor.put("label", definition.label());
+                        descriptor.put("type", definition.type());
+                        return descriptor;
+                    })
+                    .toList());
+        }
+        fields.put("updated_at",com.ecommerce.search.common.Timestamps.iso(category.updatedAt()));
         return fields;
     }
 }

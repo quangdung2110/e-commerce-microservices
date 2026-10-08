@@ -2,12 +2,43 @@
 doc_id: product-operations
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
+evidence:
+  - java/services/product-service/src/main/resources/application.yml
 ---
 
 # Product Service — Operations
+
+## Cấu hình
+
+Giá trị mặc định lấy từ `application.yml`; profile `prod` chỉ đổi Hikari `maximum-pool-size` lên
+20 và `spring.kafka.listener.concurrency` lên 3. Compose đặt `SPRING_PROFILES_ACTIVE=prod`.
+
+| Key (`product.*` nếu không ghi khác) | Biến môi trường | Mặc định |
+|---|---|---|
+| `server.port` | `SERVER_PORT` | `8081` (compose map host `8082:8081`) |
+| `grpc.server.port` | `GRPC_PORT` | `9091` |
+| `spring.datasource.url` / `username` / `password` | `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` | `jdbc:postgresql://localhost:15432/product_service` / `postgres` / `postgres` (chỉ cho dev) |
+| `spring.kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `admin.required-role` / `user-id-header` / `roles-header` | — | `ADMIN` / `X-User-Id` / `X-User-Roles` |
+| `internal.identity-header` | — | `X-Service-Identity` |
+| `internal.reindex-clients` | — | `search-service` (hai export) |
+| `internal.snapshot-clients` | — | `search-service`, `promotion-service` (snapshot một Product) |
+| `internal.buyer-read-clients` | — | `product-detail-bff` |
+| `export.cursor-secret` | `EXPORT_CURSOR_SECRET` | giá trị dev; môi trường thật lấy từ secret manager |
+| `export.cursor-ttl` / `default-limit` / `max-limit` | — | `30m` / `200` / `500` |
+| `export.product-topic` / `category-topic` | `PRODUCT_EVENTS_TOPIC` / `CATEGORY_EVENTS_TOPIC` | `t.product.events` / `t.category.events` |
+| `export.offset-timeout` | — | `5s` (quá hạn là `503 CATALOG_UNAVAILABLE`) |
+| `markdown.topic` / `dlq-topic` / `group-id` | `MARKDOWN_TOPIC` / `MARKDOWN_DLQ_TOPIC` / `MARKDOWN_GROUP_ID` | `t.promotion.markdown.events` / `t.promotion.markdown.events.dlq` / `product-markdown-consumer` |
+| `markdown.lock-timeout` | — | `3s` (`SET LOCAL lock_timeout`; timeout là lỗi tạm thời) |
+| `markdown.retry-attempts` / `retry-backoff` | — | `4` / `500ms`, nhân đôi mỗi lần; hết retry hoặc event sai contract thì sang DLQ |
+
+Danh sách allowlist đổi được bằng cấu hình nhưng nhóm route cố định trong code; mesh vẫn là lớp
+thực thi chính (xem [Interfaces](./interfaces.md)). Debezium connector
+`product-outbox-connector` (slot `product_outbox_slot`, publication `dbz_product_outbox_publication`)
+định nghĩa ở `src/main/resources/kafka`; compose chưa đăng ký nó tự động.
 
 ## SLI và telemetry
 

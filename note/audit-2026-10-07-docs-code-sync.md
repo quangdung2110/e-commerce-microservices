@@ -295,6 +295,32 @@
 
 ## 6. Product (`docs/product`, `contracts/http/product/v1`, `contracts/events/product/v1`, `contracts/grpc/ecommerce/product/v1`, `java/services/product-service`)
 
+> **Kiểm chứng và sửa xong 2026-10-09 (mục Product).** Đối chiếu lại từng mục với code, migration, OpenAPI,
+> AsyncAPI và compose: **P1–P5, P7, P8 đều đúng**; P4 được xử lý bằng cách implement (không hạ thành known gap)
+> theo [Product ADR-019](../docs/product/decisions/ADR-019-category-facet-definitions.md). Test: chạy toàn bộ 159 test của
+> `product-service` trên PostgreSQL thật, 0 fail; `ProductPropertiesBindingTest` (2 test) thêm sau và pass riêng;
+> `schema.sql` và V1–V3 cho cùng
+> catalog (141 dòng cột/constraint/index, so bằng `information_schema`/`pg_constraint`/`pg_indexes`);
+> OpenAPI qua Redocly lint, AsyncAPI qua `asyncapi validate`, 6 example catalog validate với JSON Schema.
+> Bổ sung ngoài báo cáo (đều đã sửa):
+> - **P5 nặng hơn mô tả:** `reindex-clients` khớp theo tiền tố `/internal/v1/products/` và `/internal/v1/categories/`, nên
+>   Promotion đọc được cả hai export (cả Product `DRAFT`/`HIDDEN`), không chỉ snapshot. Đã tách nhóm `snapshot-clients`.
+> - **ADR-013 sai so với code:** ADR, `interfaces.md`, `workflows.md` ghi media Product chỉ phát lại SKU đang fallback;
+>   code (và test) phát lại mọi SKU vì `media[]` của snapshot gồm media cấp Product. Code đúng → ADR-020 làm rõ.
+> - `INVALID_PRICE` có trong enum, `domain.md` và OpenAPI nhưng không bao giờ được trả (giá không dương là
+>   `INVALID_REQUEST`); đã ghi đúng vào docs/OpenAPI, không đổi code.
+> - Export `503 CATALOG_UNAVAILABLE` (không chụp được offsets) thiếu `Retry-After` dù OpenAPI hứa → đã thêm header + test.
+> - OpenAPI `servers` ghi `product-service:8080` (thật là `8081`); 3 `DELETE` thiếu `400`; `x-adoption-status`
+>   `proposed` dù đã implement. ADOPTION không có dòng nào cho Product HTTP/Events → đã thêm.
+> - README mục Dependencies ghi Search → Product HTTP là "Outbound"; ADR-002/004/009 frontmatter vẫn `accepted` dù index ghi
+>   Superseded; cột "Supersedes" của index lẫn hai chiều → đã tách "Superseded by"; ADR-015/018 `Accepted`.
+> - Docs ngoài Product có sai cổng/allowlist của Product: `docs/product-detail-bff/operations.md` (B2),
+>   `docs/promotion/README.md` (allowlist), `docs/search/README.md` ("Cần tạo: AsyncAPI product") → đã sửa.
+> - Search đã đọc `facet_definitions` (2026-10-09, `FacetLabelResolver`, nhãn nhóm facet; nhãn option vẫn dẫn xuất).
+> - Còn mở: `.proto` vẫn là bản copy
+>   (chọn giữ + `ProtoCopyDriftTest`, Checkout chưa có test tương đương); chưa có smoke test Debezium thật cho Product;
+>   S6 và PR6 đã sửa 2026-10-09 (xem checklist).
+
 ### P5 🟠 Interaction Promotion → Product thiếu trong catalog; allowlist rộng hơn contract
 - Promotion gọi `GET /internal/v1/products/{id}/snapshot` để validate trước khi lưu markdown rule. Có trong Product OpenAPI (`searchServiceMtls` description) và code allowlist, mesh matrix cũng có, nhưng **không có** trong `interactions.yaml` và bảng Dependencies của Product README.
 - Code `application.yml` đặt `promotion-service` vào nhóm `reindex-clients` → Promotion gọi được cả `/internal/v1/products/export` và `/internal/v1/categories/export` (contract chỉ cho snapshot).
@@ -567,10 +593,11 @@ Docs mới nhất, khớp code.
 - [x] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`). *(2026-10-09)*
 - [x] C12 Cart: consumer `USER_DELETED` + `purge_cart.lua` (ADR-014); Auth contract/docs/catalog đã thêm Cart vào consumers. *(2026-10-09)*
 - [ ] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge.
-- [ ] S6 Search: sửa default URL Product `:8081` + env compose.
+- [x] S6 Search: default URL Product `:8081` (yml, `SearchProperties`, compose gốc + compose riêng của Search). *(2026-10-09)*
 - [ ] S7 Search: bỏ `/` cuối ở default CDN URL.
-- [ ] P5 Product: tách allowlist snapshot cho Promotion.
-- [ ] P7 Product: build proto từ `contracts/`.
+- [x] P5 Product: tách allowlist snapshot cho Promotion (`snapshot-clients`, Promotion không còn đọc được export). *(2026-10-09)*
+- [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout chưa có test tương đương)*
+- [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
 - [ ] N4 Notification: gửi `X-Service-Identity` khi gọi Auth.
 - [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User đã chuyển sang mô hình mesh 2026-10-09, ADR-008; còn Auth, Notification)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
@@ -579,18 +606,18 @@ Docs mới nhất, khớp code.
 - [ ] PR4 sửa tham số `LegacyMigrationProof`.
 - [ ] K1/K2 bổ sung mã vào Order internal OpenAPI.
 - [x] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400. *(2026-10-09)*
-- [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [ ] PR6 Promotion OpenAPI `servers`.
+- [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; còn P5, N5, phần còn lại của K3, PY2, N2).
-- [ ] X1 đồng bộ mesh matrix sau khi sửa catalog.
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
+- [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; còn N5)*
 
 ### Docs
 - [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
 - [ ] Auth: A1–A8, A14.
 - [x] User: U1–U3, U6, U7, U8 (cộng U4, U5, U9–U11 ở docs; frontmatter `scope: current`/`status: implemented`, error catalog đầy đủ, bảng cấu hình, WF-USER-009). *(2026-10-09)*
 - [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
-- [ ] Product: P1–P4, P8.
+- [x] Product: P1–P4, P8 (cộng ADR-020, error catalog đầy đủ, bảng cấu hình, `schema.sql` khớp migration, frontmatter `status: implemented`). *(2026-10-09)*
 - [ ] Promotion: PR1–PR3, PR5–PR7, PR10, README §9.
 - [ ] Inventory: I1, I2.
 - [ ] Review: R1, R2.

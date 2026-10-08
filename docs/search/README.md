@@ -92,7 +92,7 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 |---|---|---|---|---|---|
 | Inbound | Storefront qua API Gateway | HTTP | Search, suggest, browse, facet | Required | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
-| Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | Cần tạo: AsyncAPI product |
+| Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) |
 | Inbound | `inventory-service` | Kafka | Snapshot `is_in_stock` theo SKU do Inventory tính | Required | [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Required cho rating freshness; không nằm trên query hot path | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
 | Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
@@ -139,10 +139,6 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   và hai operation admin reindex, nhưng provider/frontend chưa migrate và chưa có
    contract test. Contract Review v1 cũng mới là target contract và chưa có
    provider/consumer contract test.
-- **Facet metadata là dependency Product mới.** V2 hứa `code`/`label`/`type` ổn
-  định cho facet, trong khi Category snapshot v1 hiện chưa mang descriptor này.
-  Product phải mở rộng tương thích category event/export, rồi Search materialize
-  `facet_definitions` trước khi bật v2 facet cho storefront.
 - **Implementation đã được viết lại theo bộ tài liệu này.** Thế hệ code cũ (một field
   `version` chung, giá `original_price`/`promotional_price`, `is_in_stock` suy ra từ
   status, `product_count` cộng trừ theo event, Draft Cleanup Job gọi endpoint
@@ -163,10 +159,15 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   sắp theo `updated_at` — nghĩa là một lần đổi giá cũng đẩy SKU lên đầu. Sửa đúng cần
   thêm field vào mapping, mở rộng allowlist của script và Product phải công bố
   `created_at` trong `sku-upserted` cùng export.
-- **Facet label vẫn là giá trị dẫn xuất.** `facet_definitions` chưa có nguồn (xem gap
-  bên trên), nên implementation tạm dựng `code`/`label` từ chính token
-  `code:type:value` trong `filter_tokens`. Label vì vậy là chuỗi đã case-fold và bỏ
-  dấu, không phải tên hiển thị do Product đặt.
+- **Nhãn option của facet vẫn là giá trị dẫn xuất.** Nhãn nhóm đã lấy từ
+  `facet_definitions` Product phát ([ADR-019](../product/decisions/ADR-019-category-facet-definitions.md)),
+  nhưng descriptor không mang option, nên `label` của từng option được dựng từ token
+  `code:type:value`: chuỗi đã case-fold, viết hoa chữ đầu, không phải tên hiển thị do
+  Product đặt (ví dụ option có code `black` hiện là "Black", dù admin đặt nhãn "Đen"). Sửa đúng cần Product đưa option vào
+  descriptor và phát lại category khi option đổi. Nhãn nhóm của attribute chưa có
+  descriptor (snapshot từ producer cũ) cũng còn dẫn xuất.
+- **Nhãn nhóm facet cache 60 giây** trong `FacetLabelResolver`; đổi tên attribute hiển thị
+  chậm tối đa chừng đó sau khi snapshot được áp dụng.
 
 ## Product cards (2026-09-30)
 

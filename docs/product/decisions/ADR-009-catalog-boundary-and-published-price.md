@@ -1,7 +1,7 @@
 ---
 doc_id: product-adr-009
 service: product
-status: accepted
+status: superseded
 date: 2026-09-01
 decision_owners:
   - Product Service team
@@ -9,11 +9,17 @@ supersedes:
   - ADR-003
   - ADR-005
   - ADR-008
+superseded_by: ADR-017
 evidence:
   - docs/product/data.md
 ---
 
 # ADR-009 — Product là catalog SoT; Inventory không được phản chiếu vào Product
+
+## Status
+
+`Superseded` bởi [ADR-017](./ADR-017-catalog-price-and-inventory-orchestration-boundary.md), vốn giữ
+nguyên việc đưa stock ra khỏi Product nhưng sửa vai trò Checkout (chỉ Preview) và Order (Reserve).
 
 ## Context
 

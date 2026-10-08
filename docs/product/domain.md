@@ -2,7 +2,7 @@
 doc_id: product-domain
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
 ---
@@ -96,17 +96,42 @@ worker retry/requeue, không bỏ qua im lặng.
 
 ## Domain errors
 
-| Code | Khi nào trả | Mapping gợi ý |
-|---|---|---|
-| `CATEGORY_NOT_FOUND` | Category không tồn tại. | HTTP 404 |
-| `CATEGORY_NOT_LEAF` | Gán Product vào category không phải lá. | HTTP 409 |
-| `CATEGORY_NOT_EMPTY` | Xóa category còn con hoặc Product. | HTTP 409 |
-| `SKU_CODE_ALREADY_EXISTS` | `sku_code` trùng. | HTTP 409 |
-| `INVALID_PRICE` | Base/selling price vi phạm ràng buộc. | HTTP 400 |
-| `PRODUCT_NOT_SUBMITTABLE` | Activate không có SKU `ACTIVE`. | HTTP 409 |
-| `SKU_LAST_DELETE_FORBIDDEN` | Xóa SKU cuối cùng của Product. | HTTP 409 |
-| `PRODUCT_NOT_FOUND` | Product không tồn tại. | HTTP 404 |
-| `SKU_NOT_FOUND` | SKU không tồn tại hoặc không thuộc Product. | HTTP 404 |
-| `INVALID_STATE_TRANSITION` | Command không hợp lệ cho status hiện tại. | HTTP 409 |
+Mọi lỗi HTTP là `application/problem+json` với `code` và `retryable`
+(`common/ErrorCode.java` là nguồn duy nhất). Catalog đầy đủ:
 
-Hết hàng là kết quả reservation của Inventory, không phải domain error của Product.
+| Code | Khi nào trả | HTTP |
+|---|---|---|
+| `PRODUCT_NOT_FOUND` | Product không tồn tại; buyer-read còn dùng cho Product `DRAFT`/`HIDDEN` hoặc không còn SKU `ACTIVE` để không lộ catalog chưa công bố. | 404 |
+| `SKU_NOT_FOUND` | SKU không tồn tại hoặc không thuộc Product. | 404 |
+| `MEDIA_NOT_FOUND` | Media không tồn tại hoặc không thuộc Product. | 404 |
+| `CATEGORY_NOT_FOUND` | Category không tồn tại. | 404 |
+| `ATTRIBUTE_NOT_FOUND` | Attribute không tồn tại, hoặc chưa được map vào category khi bỏ mapping. | 404 |
+| `ATTRIBUTE_OPTION_NOT_FOUND` | Option không tồn tại hoặc không thuộc attribute. | 404 |
+| `CATEGORY_NOT_LEAF` | Gán Product vào category không phải lá, hoặc thêm category con vào category đang chứa Product. | 409 |
+| `CATEGORY_NOT_EMPTY` | Xóa category còn con hoặc Product. | 409 |
+| `CATEGORY_CYCLE_DETECTED` | Parent mới là chính category hoặc hậu duệ của nó. | 409 |
+| `SKU_CODE_ALREADY_EXISTS` | `sku_code` trùng, kể cả trùng trong cùng request. | 409 |
+| `SLUG_ALREADY_EXISTS` | Slug Product hoặc Category đã dùng. | 409 |
+| `ATTRIBUTE_CODE_ALREADY_EXISTS` | `code` attribute trùng. | 409 |
+| `ATTRIBUTE_OPTION_CODE_ALREADY_EXISTS` | `code` option trùng trong cùng attribute. | 409 |
+| `PRODUCT_NOT_SUBMITTABLE` | Activate không có SKU `ACTIVE`. | 409 |
+| `SKU_LAST_DELETE_FORBIDDEN` | Xóa SKU cuối cùng của Product. | 409 |
+| `INVALID_STATE_TRANSITION` | Command không hợp lệ cho status hiện tại, kể cả target trùng status hiện tại hoặc target `DRAFT`. | 409 |
+| `ATTRIBUTE_IN_USE` | Đổi `code`/`value_type`, xóa attribute/option/mapping, hoặc đặt mapping mà dữ liệu Product/SKU hiện hữu sẽ không còn hợp lệ. | 409 |
+| `CATALOG_CONSTRAINT_VIOLATION` | CHECK/unique của database chặn một race mà validate application không thấy (gồm selling price vượt base price). | 409 |
+| `PRODUCT_REVISION_MISMATCH` | `If-Match` khác `catalog_revision` hiện tại. | 412 |
+| `INVALID_REQUEST` | Body/tham số sai (kèm `errors[]` theo field), thiếu hoặc sai định dạng `If-Match`, slug Product vi phạm PRODUCT-BR-013, `base_price_vnd <= 0`. | 400 |
+| `INVALID_ATTRIBUTES` | Key không được map vào category của Product, đặt nhầm bên Product-level/biến thể, giá trị sai kiểu hoặc option `SELECT` không tồn tại, hoặc thiếu attribute bắt buộc; kèm `errors[]` theo field. | 400 |
+| `INVALID_CURSOR` | Cursor phân trang hoặc export hỏng, hết hạn hoặc thuộc export khác. | 400 |
+| `UNAUTHENTICATED` | Thiếu trusted identity (`X-User-Id`) hoặc `X-Service-Identity`. | 401 |
+| `FORBIDDEN` | Không có role `ADMIN`, hoặc service identity ngoài allowlist của nhóm route. | 403 |
+| `CATALOG_UNAVAILABLE` | Lock timeout, lỗi tạm thời PostgreSQL, hoặc không chụp được replay offsets của export; `retryable=true`, có `Retry-After`. | 503 |
+| `INTERNAL_ERROR` | Lỗi không lường trước; không lộ message tầng dưới. | 500 |
+
+`INVALID_PRICE` có trong enum nhưng hiện không được phát: giá `base_price_vnd` không dương bị
+bean validation báo `INVALID_REQUEST`, và selling price không bao giờ do client gửi nên chỉ vi phạm
+được qua CHECK của database (`CATALOG_CONSTRAINT_VIOLATION`).
+
+Hết hàng là kết quả reservation của Inventory, không phải domain error của Product. gRPC không
+dùng bảng này: SKU không tồn tại hoặc không catalog-active là `not_found`/`unavailable` trong
+response, còn request sai là `INVALID_ARGUMENT`.

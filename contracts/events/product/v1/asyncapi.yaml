@@ -6,7 +6,7 @@ info:
     Contract đích cho Product catalog outbox và markdown snapshot Product tiêu thụ.
     Product là catalog source of truth; không message nào mang quantity, stock status,
     reservation hoặc quyết định availability của Inventory.
-x-adoption-status: proposed
+x-adoption-status: implemented
 defaultContentType: application/cloudevents+json
 servers:
   local:
@@ -33,7 +33,10 @@ channels:
       productDeleted: { $ref: '#/components/messages/productDeleted' }
   categoryEvents:
     address: t.category.events
-    description: Category snapshot/tombstone do Product phát cho Search.
+    description: >-
+      Category snapshot/tombstone do Product phát cho Search. Snapshot mang path, is_leaf và
+      facet_definitions dẫn xuất; đổi tên attribute đã map tăng category_revision của mọi
+      category map nó (ADR-019).
     x-message-key: category_id
     x-ordering-scope: category_id
     x-delivery-semantic: at-least-once
@@ -92,7 +95,7 @@ operations:
   publishCategoryUpserted:
     action: send
     channel: { $ref: '#/channels/categoryEvents' }
-    summary: Product phát snapshot category, gồm path dẫn xuất tại thời điểm commit.
+    summary: Product phát snapshot category, gồm path, is_leaf và facet_definitions dẫn xuất tại thời điểm commit.
     messages: [{ $ref: '#/channels/categoryEvents/messages/categoryUpserted' }]
   publishCategoryDeleted:
     action: send

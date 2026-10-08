@@ -2,16 +2,20 @@
 doc_id: product-data
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
+evidence:
+  - java/services/product-service/src/main/resources/db/migration
 ---
 
 # Product Service — Data Design
 
-DDL để review nằm tại [schema/schema.sql](./schema/schema.sql). Đây là thiết kế đích;
-migration Flyway phải được tạo theo hướng additive trước khi implementation chuyển sang
-schema này.
+[schema/schema.sql](./schema/schema.sql) là DDL tổng hợp, tương đương trạng thái cuối của ba
+migration Flyway `V1__catalog_baseline`, `V2__markdown_projection_tombstone` và
+`V3__product_slug_format` (cùng tên constraint, đã đối chiếu bằng cách chạy cả hai lên PostgreSQL
+và so sánh). Flyway là nguồn thực thi: schema mới luôn đi bằng migration additive, rồi cập nhật
+file này cho khớp. Không chạy trực tiếp file này vào môi trường dùng chung.
 
 ## 1. Ownership và boundary
 
@@ -37,8 +41,9 @@ Detail BFF nhận advisory stock UI qua Inventory batch-read sau khi đọc cata
 - `products.catalog_revision` tăng đúng một lần cho mỗi thay đổi observable của Product
   aggregate. Mọi catalog event Product/SKU mang revision này và có Kafka key `product_id`.
 - `categories.category_revision` tăng đúng một lần cho mỗi thay đổi observable của
-  Category hoặc mapping category–attribute; Category event dùng revision này làm ordering
-  guard, không dùng `updated_at` để ghi đè event cũ/trùng.
+  Category, mapping category–attribute, hoặc tên một attribute mà category đang map (tên đó
+  nằm trong `facet_definitions`); Category event dùng revision này làm ordering guard, không
+  dùng `updated_at` để ghi đè event cũ/trùng.
 - `product_markdown_projection.source_revision` do Promotion cấp, tăng đơn điệu theo
   Product; event cũ/trùng không được ghi đè projection mới hơn.
 
@@ -54,7 +59,9 @@ Detail BFF nhận advisory stock UI qua Inventory batch-read sau khi đọc cata
 | `category_attributes` | Mapping category–attribute | PK `(category_id, attribute_id)`, `is_required`, `is_variant` |
 
 Application cấm category cycle, chỉ cho gán Product vào category lá, và chỉ xóa category
-khi không còn category con lẫn Product. `path` và `is_leaf` là giá trị dẫn xuất, không lưu.
+khi không còn category con lẫn Product. `path`, `is_leaf` và `facet_definitions` là giá trị
+dẫn xuất, không lưu: `facet_definitions` là `(code, name, value_type)` của các attribute trong
+`category_attributes` của chính category đó, sắp theo `code` ([ADR-019](./decisions/ADR-019-category-facet-definitions.md)).
 
 ### 3.2 Product aggregate
 
@@ -96,8 +103,10 @@ lag/DLQ cần được Promotion/operations khắc phục bằng replay snapshot
 `product_outbox_events` lưu `event_id`, `event_type`, `aggregate_type`, `aggregate_id`,
 `partition_key`, `payload`, `created_at`. Event Product/SKU đều dùng
 `aggregate_type = Product`, `aggregate_id = product_id`, `partition_key = product_id`.
-Event Category dùng Category/category ID và `category_revision`. Không đặt FK từ outbox
-tới aggregate để tombstone còn tồn tại sau hard delete.
+Event Category dùng `aggregate_type = Category`, `aggregate_id = partition_key = category_id` và
+`category_revision`; riêng `catalog-reindex-requested` có `aggregate_id` là category vừa đổi và
+`partition_key` là category gốc của cây. Không đặt FK từ outbox tới aggregate để tombstone còn
+tồn tại sau hard delete.
 
 ## 4. Indexes và toàn vẹn
 

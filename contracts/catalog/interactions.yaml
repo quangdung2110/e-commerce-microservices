@@ -56,8 +56,20 @@ interactions:
     provider: product-service
     consumers: [search-service]
     contract: http/product/v1/openapi.yaml
-    status: proposed
-    notes: Internal mTLS Product/Category export and Product snapshot API for Search reindex; catalog event consumer must also run during export.
+    status: implemented
+    notes: Internal mTLS Product/Category export and Product snapshot API for Search reindex; catalog event consumer must also run during export. Category export carries the same facet_definitions as category-upserted (Product ADR-019).
+
+  - id: promotion-validates-product-snapshot
+    protocol: http
+    provider: product-service
+    consumers: [promotion-service]
+    contract: http/product/v1/openapi.yaml
+    status: implemented
+    notes: >-
+      Promotion calls GET /internal/v1/products/{product_id}/snapshot synchronously to confirm the
+      Product exists before saving a markdown rule (Promotion WF-PROMO-001). It is the only Product route
+      Promotion may call: the mesh policy and Product's own snapshot-clients allowlist both deny it the
+      Product/Category export routes. Read-only and idempotent.
 
   - id: storefront-queries-product-detail
     protocol: http
@@ -110,8 +122,8 @@ interactions:
     provider: product-service
     consumers: [search-service, promotion-service]
     contract: events/product/v1/asyncapi.yaml
-    status: proposed
-    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Promotion consumes only product-deleted, persists a terminal catalog-revision watermark, invalidates markdown rules and emits no reverse event. Inventory consumes no Product event; Checkout blocks unsaleable SKUs before Order reserves (Inventory ADR-026).
+    status: implemented
+    notes: Product outbox emits CloudEvents SKU/category snapshots, tombstones and Category-tree reindex control. Category snapshots carry facet_definitions (Product ADR-019). Promotion consumes only product-deleted, persists a terminal catalog-revision watermark, invalidates markdown rules and emits no reverse event. Inventory consumes no Product event; Checkout blocks unsaleable SKUs before Order reserves (Inventory ADR-026).
 
   - id: promotion-publishes-product-markdown-snapshots
     protocol: kafka

@@ -19,7 +19,9 @@ import java.util.Optional;
  * {@code WF-SEARCH-001} — the core storefront query.
  *
  * <p>Snapshot read: filter SKUs, group products, select cheapest eligible SKU, sort and page. No writes,
- * no application cache and no internal retry; the client decides whether to try again.
+ * no application cache of results and no internal retry; the client decides whether to try again. The one
+ * exception is the 60-second cache of facet group labels in {@link FacetLabelResolver}, which never
+ * changes which products or counts are returned.
  */
 @Service
 public class ProductSearchService {
@@ -28,6 +30,7 @@ public class ProductSearchService {
     private final CategoryRepository categoryRepository;
     private final ProductQueryBuilder queryBuilder;
     private final FacetAssembler facetAssembler;
+    private final FacetLabelResolver facetLabels;
     private final ThumbnailUrlResolver thumbnails;
     private final SearchCursor cursors;
 
@@ -35,12 +38,14 @@ public class ProductSearchService {
                                 CategoryRepository categoryRepository,
                                 ProductQueryBuilder queryBuilder,
                                 FacetAssembler facetAssembler,
+                                FacetLabelResolver facetLabels,
                                 ThumbnailUrlResolver thumbnails,
                                 SearchCursor cursors) {
         this.repository = repository;
         this.categoryRepository = categoryRepository;
         this.queryBuilder = queryBuilder;
         this.facetAssembler = facetAssembler;
+        this.facetLabels = facetLabels;
         this.thumbnails = thumbnails;
         this.cursors = cursors;
     }
@@ -66,7 +71,8 @@ public class ProductSearchService {
             String next = end < products.size()
                     ? cursors.encode(request, new SearchCursor.Position(snapshot.pitId(), end, categoryId.orElse(null))) : null;
             var page = new SearchDtos.SearchPage(items, products.size(), next,
-                    facetAssembler.assemble(snapshot.facets().get(ProductQueryBuilder.FACET_AGG)));
+                    facetAssembler.assemble(snapshot.facets().get(ProductQueryBuilder.FACET_AGG),
+                            facetLabels.labels(categoryId)));
             keepSnapshot = next != null;
             return page;
         } finally {

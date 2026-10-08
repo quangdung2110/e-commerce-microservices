@@ -64,7 +64,7 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 | `promotion.receipt.retention` / `trim-interval` | 90d / 1h; không xóa receipt còn `redis_finalized_at IS NULL` |
 | `promotion.kafka.product-topic` / `product-dlq-topic` / `group-id` | `t.product.events` / `t.product.events.promotion.dlq` / `promotion-product-tombstone-consumer` |
 | `promotion.internal.calculation-clients` / `allocation-clients` | `checkout-service` / `order-service` |
-| `promotion.product.base-url` / `validation-enabled` | `http://product-service:8081` / true |
+| `promotion.product.base-url` / `validation-enabled` | `http://localhost:8082` (cổng host Product publish trong compose, cho chạy ngoài Docker; `PRODUCT_BASE_URL`) / true. Compose đặt `http://product-service:8081` |
 | Debezium connector | `src/main/resources/kafka/debezium-connector-promotion-outbox.json` (route `t.promotion.markdown.events`) |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.

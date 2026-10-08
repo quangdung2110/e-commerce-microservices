@@ -65,7 +65,20 @@ public final class CatalogPayloads {
     public record CategoryPathSegment(String categoryId, String name, String slug) {
     }
 
-    /** {@code catalog-common.schema.json#/$defs/category}. */
+    /**
+     * {@code catalog-common.schema.json#/$defs/facet_definition} (Product ADR-019): one attribute
+     * mapped directly into the category. {@code label} is the display name the admin gave the
+     * attribute; {@code type} is its value type and is not exposed by the facet API.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record FacetDefinition(String code, String label, String type) {
+    }
+
+    /**
+     * {@code catalog-common.schema.json#/$defs/category}. {@code facetDefinitions} is {@code null}
+     * when the producer predates ADR-019 and an empty list when the category has no mapping; the
+     * two must stay distinguishable so an old event never wipes descriptors a newer one wrote.
+     */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record CategorySnapshot(
             String categoryId,
@@ -75,6 +88,7 @@ public final class CatalogPayloads {
             Long categoryRevision,
             List<CategoryPathSegment> path,
             Boolean isLeaf,
+            List<FacetDefinition> facetDefinitions,
             Instant updatedAt) {
     }
 

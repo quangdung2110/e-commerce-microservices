@@ -95,7 +95,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `cart-service` | `/internal/v1/carts/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | `checkout-reads-cart-snapshot` |
 | `product-service` | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | X | `edge/traefik` | gateway matrix |
 | `product-service` | `/internal/v1/products/export`, `/internal/v1/categories/export` | X | `ecommerce/search-service` | `search-reindexes-product-catalog` |
-| `product-service` | `/internal/v1/products/*/snapshot` | GET | `ecommerce/search-service`, `ecommerce/promotion-service` | Product OpenAPI `searchServiceMtls` |
+| `product-service` | `/internal/v1/products/*/snapshot` | GET | `ecommerce/search-service`, `ecommerce/promotion-service` | `search-reindexes-product-catalog`, `promotion-validates-product-snapshot` |
 | `product-service` | `/internal/v1/product-details/*` | GET | `ecommerce/product-detail-bff` | `product-detail-bff-queries-product-catalog` |
 | `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-and-checkout-query-product-skus` |
 | `promotion-service` | `/api/v1/me/**`, `/api/v1/promotion-discovery`, `/api/v1/admin/**` | X | `edge/traefik` | gateway matrix |

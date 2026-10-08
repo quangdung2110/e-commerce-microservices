@@ -35,6 +35,7 @@ import java.util.List;
 public class GlobalExceptionHandler {
 
     private static final String PROBLEM_TYPE_BASE = "https://contracts.ecommerce.local/problems/";
+    private static final String RETRY_AFTER_SECONDS = "1";
 
     @ExceptionHandler(DomainException.class)
     public ResponseEntity<ProblemDetail> handleDomain(DomainException exception, HttpServletRequest request) {
@@ -91,9 +92,7 @@ public class GlobalExceptionHandler {
         log.warn("Transient storage failure on {} {}", request.getMethod(), request.getRequestURI(), exception);
         ProblemDetail problem = problem(ErrorCode.CATALOG_UNAVAILABLE,
                 "Catalog storage is temporarily unavailable", request);
-        return ResponseEntity.status(ErrorCode.CATALOG_UNAVAILABLE.status())
-                .header(HttpHeaders.RETRY_AFTER, "1")
-                .body(problem);
+        return respond(ErrorCode.CATALOG_UNAVAILABLE, problem);
     }
 
     @ExceptionHandler(Exception.class)
@@ -103,8 +102,17 @@ public class GlobalExceptionHandler {
                 problem(ErrorCode.INTERNAL_ERROR, "Unexpected server error", request));
     }
 
+    /**
+     * Mọi lỗi retryable kèm {@code Retry-After}, đúng response {@code RetryableUnavailable}
+     * của OpenAPI — kể cả {@code CATALOG_UNAVAILABLE} ném từ domain khi không chụp được
+     * replay offsets của export, không chỉ lỗi tạm thời của PostgreSQL.
+     */
     private ResponseEntity<ProblemDetail> respond(ErrorCode code, ProblemDetail problem) {
-        return ResponseEntity.status(code.status()).body(problem);
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(code.status());
+        if (code.retryable()) {
+            response.header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS);
+        }
+        return response.body(problem);
     }
 
     private ProblemDetail problem(ErrorCode code, String detail, HttpServletRequest request) {

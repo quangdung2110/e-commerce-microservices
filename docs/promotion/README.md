@@ -191,7 +191,7 @@ ký các fact đó; thêm sau là thay đổi additive theo
   defense-in-depth và attribution cho log (như Product). Trong docker-compose chưa có mesh nên
   header này spoof được từ service network; production chỉ an toàn khi mesh policy đã enforce.
 - Product validation đồng bộ dùng `GET /internal/v1/products/{id}/snapshot` với identity
-  `promotion-service` (Product allowlist `reindex-clients`); tắt bằng
+  `promotion-service` (Product allowlist `snapshot-clients`, chỉ route snapshot, không gồm export); tắt bằng
   `promotion.product.validation-enabled=false` khi không có Product.
 - Welcome voucher không thuộc scope v1. Nếu cần, dùng lazy grant khi user gọi API wallet
   lần đầu hoặc admin `DIRECT_GRANT`; không consume Auth Kafka vì Auth delivery là

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.platform.productservice.common.Uuids;
+import com.platform.productservice.domain.FacetDefinition;
 import com.platform.productservice.domain.entity.CategoryEntity;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.domain.entity.ProductMediaEntity;
@@ -107,13 +108,16 @@ public class CatalogEventPublisher {
     }
 
     /**
-     * Snapshot Category kèm path dẫn xuất tại thời điểm commit.
+     * Snapshot Category kèm path và facet descriptor dẫn xuất tại thời điểm commit.
      *
-     * @param path từ root tới chính category, mỗi phần tử là một segment
+     * @param path             từ root tới chính category, mỗi phần tử là một segment
+     * @param facetDefinitions attribute được map trực tiếp vào category, sắp theo code
+     *                         (ADR-019); rỗng khi category chưa có mapping
      */
     public void categoryUpserted(CategoryEntity category,
                                  List<CategoryEntity> path,
                                  boolean leaf,
+                                 List<FacetDefinition> facetDefinitions,
                                  CategoryChangeKind changeKind,
                                  Instant now) {
         ObjectNode categoryNode = objectMapper.createObjectNode();
@@ -134,6 +138,13 @@ public class CatalogEventPublisher {
             node.put("slug", segment.getSlug());
         }
         categoryNode.put("is_leaf", leaf);
+        ArrayNode facetNode = categoryNode.putArray("facet_definitions");
+        for (FacetDefinition definition : facetDefinitions) {
+            ObjectNode node = facetNode.addObject();
+            node.put("code", definition.code());
+            node.put("label", definition.label());
+            node.put("type", definition.type().name());
+        }
         categoryNode.put("updated_at", isoInstant(category.getUpdatedAt()));
 
         ObjectNode data = objectMapper.createObjectNode();

@@ -22,11 +22,11 @@ verified_against_commit: null
 |---|---|---|---|---|---|---|
 | Search, suggest, browse, facet | Inbound | HTTP | Search | Storefront qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
 | Full reindex admin | Inbound | HTTP | Search | Admin qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
-| Catalog và tombstone | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
-| Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | proposed |
+| Catalog và tombstone | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | implemented |
+| Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | implemented |
 | Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
 | Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
-| Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product interfaces](../product/interfaces.md) | proposed |
+| Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product OpenAPI v1](../../contracts/http/product/v1/openapi.yaml), [Product interfaces](../product/interfaces.md) | implemented |
 | Availability readiness + snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | proposed |
 | Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
 
@@ -112,11 +112,15 @@ Bộ lọc khả dụng cho một trang danh mục.
 - Mỗi `terms` aggregation kèm `cardinality` trên `product_id`. Response công khai
   `count_accuracy = APPROXIMATE`; value của option là opaque token được đưa lại
   qua `filter`, không phải chuỗi do client tự ghép.
-- **`code` và `label` hiện là giá trị dẫn xuất.** Nguồn đúng là `facet_definitions`
-  trong Category snapshot, nhưng Product chưa công bố descriptor này. Cho tới lúc đó
-  Search parse token `code:type:value` trong `filter_tokens` để dựng `code` và
-  `label`, nên label là chuỗi đã case-fold và bỏ dấu chứ không phải tên hiển thị do
-  Product đặt. Khi descriptor có, chỉ bước sinh label đổi; `value` không đổi.
+- **`label` của nhóm lấy từ `facet_definitions`, `label` của option vẫn dẫn xuất.**
+  Product công bố descriptor `{code,label,type}` trong category event và export (Product
+  [ADR-019](../product/decisions/ADR-019-category-facet-definitions.md)); Search ghi vào
+  index `categories` và đặt `label` nhóm bằng tên admin đặt cho attribute, tra theo `code` qua
+  danh mục và mọi danh mục con (kể cả khi search không có `category`). Attribute chưa có
+  descriptor (snapshot từ producer cũ, hoặc chưa được map) giữ nhãn dẫn xuất từ token
+  `code:type:value`. `label` của từng option luôn dẫn xuất — chuỗi đã case-fold, viết hoa chữ
+  đầu — vì descriptor không mang option; `value` không đổi. Đổi tên attribute hiển thị sau
+  tối đa 60 giây kể từ khi snapshot mới được áp dụng (cache nhãn, không ảnh hưởng số đếm).
 - `category_id` không tồn tại trả `CATEGORY_NOT_FOUND`.
 
 ### 3.5 `POST /api/v2/search/reindex-runs`

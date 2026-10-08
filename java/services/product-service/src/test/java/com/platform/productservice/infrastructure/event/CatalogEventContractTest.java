@@ -7,7 +7,9 @@ import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SpecVersion;
 import com.networknt.schema.ValidationMessage;
+import com.platform.productservice.domain.FacetDefinition;
 import com.platform.productservice.domain.entity.CategoryEntity;
+import com.platform.productservice.domain.enums.AttributeValueType;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.domain.entity.ProductMediaEntity;
 import com.platform.productservice.domain.entity.SkuEntity;
@@ -160,14 +162,35 @@ class CatalogEventContractTest {
         child.setCategoryRevision(3L);
 
         publisher.categoryUpserted(child, List.of(root, child), true,
+                List.of(new FacetDefinition("brand", "Thương hiệu", AttributeValueType.TEXT),
+                        new FacetDefinition("color", "Màu sắc", AttributeValueType.SELECT)),
                 CategoryChangeKind.CATEGORY_UPDATED, Instant.now());
 
         JsonNode event = single();
         assertValid("events/product/v1/schemas/category-upserted.schema.json", event);
         assertThat(event.get("sequence").asLong()).isEqualTo(3L);
         assertThat(event.path("data").path("category").path("path").size()).isEqualTo(2);
+        JsonNode facets = event.path("data").path("category").path("facet_definitions");
+        assertThat(facets.size()).isEqualTo(2);
+        assertThat(facets.get(1).path("type").asText()).isEqualTo("SELECT");
         assertThat(aggregateTypes.get(0)).isEqualTo(AggregateType.Category);
         assertThat(partitionKeys.get(0)).isEqualTo(child.getCategoryId());
+    }
+
+    @Test
+    @DisplayName("category-upserted không có mapping mang facet_definitions rỗng, không phải field vắng mặt")
+    void categoryUpsertedWithoutMappingsCarriesEmptyFacetDefinitions() throws IOException {
+        CategoryEntity root = category("Electronics", "electronics", null);
+
+        publisher.categoryUpserted(root, List.of(root), true, List.of(),
+                CategoryChangeKind.CATEGORY_CREATED, Instant.now());
+
+        JsonNode event = single();
+        assertValid("events/product/v1/schemas/category-upserted.schema.json", event);
+        JsonNode facets = event.path("data").path("category").path("facet_definitions");
+        assertThat(facets.isMissingNode()).isFalse();
+        assertThat(facets.isArray()).isTrue();
+        assertThat(facets.size()).isZero();
     }
 
     @Test

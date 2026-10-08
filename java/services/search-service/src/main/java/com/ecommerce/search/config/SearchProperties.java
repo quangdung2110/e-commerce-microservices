@@ -145,7 +145,7 @@ public record SearchProperties(
 
     /** Internal export endpoints called only during a full reindex. */
     public record Export(
-            @DefaultValue("http://product-service:8080") String productBaseUrl,
+            @DefaultValue("http://product-service:8081") String productBaseUrl,
             @DefaultValue("http://inventory-service:8080") String inventoryBaseUrl,
             @DefaultValue("http://review-service:8080") String reviewBaseUrl,
             /*

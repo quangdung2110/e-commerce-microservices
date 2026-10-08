@@ -7,7 +7,9 @@ storage key of the representative image (SKU image, else Product image; empty wh
 none), not an absolute URL; consumers build the CDN URL from it. The API never exposes
 Inventory stock state.
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `proposed` ([ADOPTION](../../../../ADOPTION.md)). Provider `product-service` và consumer
+`cart-service`/`checkout-service` đã dùng contract này; chưa `implemented` vì `.proto` vẫn là bản copy trong
+service (xem "Bản copy trong service" bên dưới).
 
 ## Vấn đề
 
@@ -33,9 +35,19 @@ Nguồn chuẩn: [`product_service.proto`](product_service.proto).
 - Provider quá tải dùng `RESOURCE_EXHAUSTED` hoặc `UNAVAILABLE` và không để
   consumer retry vô hạn.
 
-## Migration note
+## Bản copy trong service
 
-Wire cũ có package `com.platform.productservice.proto`, service name
-`CartServiceGrpc` và giá `double`. Target đổi package/service name và dùng Money,
-vì vậy đây là breaking migration. Provider và consumer phải được deploy có phối
-hợp hoặc chạy song song v1 legacy và canonical trong thời gian chuyển đổi.
+`product-service/proto/` và `checkout-service/proto/` chứa bản copy của file này và của
+`shared/proto/ecommerce/common/v1/money.proto`, vì Docker build context của từng service chỉ gồm thư
+mục service. Đây là ngoại lệ có chủ đích của quy tắc "service không copy `.proto`":
+
+- Sửa proto ở `contracts/` rồi chép lại; không bao giờ sửa trực tiếp bản copy.
+- `ProtoCopyDriftTest` (Product) fail khi bản copy lệch từng byte so với nguồn chuẩn. Checkout chưa có
+  test tương đương.
+- Ngoại lệ chỉ chấm dứt khi build đọc thẳng từ `contracts/`; lúc đó contract này chuyển `implemented`.
+
+## Lịch sử
+
+Wire cũ (package `com.platform.productservice.proto`, service `CartServiceGrpc`, giá `double`) đã được
+thay hoàn toàn bằng package `ecommerce.product.v1` và `Money`; không còn provider hay consumer nào dùng
+wire cũ.

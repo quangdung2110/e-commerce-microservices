@@ -48,12 +48,21 @@ public class ProductProperties {
         private String identityHeader = "X-Service-Identity";
 
         /**
-         * Caller của nhóm route reindex: Product/Category export và Product
-         * snapshot. Nhóm này đọc được cả Product chưa công bố nên chỉ cấp cho
-         * Search Service, khớp security scheme {@code searchServiceMtls} trong
+         * Caller của nhóm route export: Product/Category export. Nhóm này đọc được
+         * cả Product chưa công bố nên chỉ cấp cho Search Service, khớp phần export
+         * của security scheme {@code searchServiceMtls} trong
          * contracts/http/product/v1/openapi.yaml.
          */
         private List<String> reindexClients = new ArrayList<>(List.of("search-service"));
+
+        /**
+         * Caller của {@code GET /internal/v1/products/{product_id}/snapshot}: Search
+         * rebuild một document, Promotion validate Product trước khi tạo/sửa markdown
+         * rule. Tách khỏi nhóm export để Promotion không đọc được toàn catalog
+         * (contracts/http/product/v1/openapi.yaml — {@code searchServiceMtls}).
+         */
+        private List<String> snapshotClients =
+                new ArrayList<>(List.of("search-service", "promotion-service"));
 
         /**
          * Caller của nhóm route buyer-read ({@code /internal/v1/product-details/}),

@@ -26,7 +26,9 @@ x-known-runtime-gap: >-
   capability/proof guard. It must not claim conformance to this route until that guard and
   its provider tests are deployed.
 servers:
-  - url: http://promotion-service:8080
+  - url: http://localhost:8085
+    description: Local Docker Compose (host 8085 map tới container 8085)
+  - url: http://promotion-service:8085
     description: Internal cluster endpoint
 tags:
   - name: Admin campaigns

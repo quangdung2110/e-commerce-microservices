@@ -1,5 +1,6 @@
 package com.platform.productservice.service.support;
 
+import com.platform.productservice.domain.FacetDefinition;
 import com.platform.productservice.domain.entity.CategoryEntity;
 import com.platform.productservice.domain.entity.ProductEntity;
 import com.platform.productservice.domain.entity.ProductMediaEntity;
@@ -38,6 +39,7 @@ public class CatalogExportReader {
     private final ProductMediaRepository mediaRepository;
     private final CategoryRepository categoryRepository;
     private final CategoryTreeService categoryTree;
+    private final FacetDefinitionResolver facetResolver;
     private final CatalogAssembler assembler;
 
     /** Một trang Product theo keyset {@code (lastId, bound]}, kèm SKU và media. */
@@ -62,14 +64,23 @@ public class CatalogExportReader {
                 .toList();
     }
 
-    /** Một trang Category theo keyset, kèm path và {@code is_leaf} dẫn xuất khi đọc. */
+    /**
+     * Một trang Category theo keyset, kèm path, {@code is_leaf} và {@code facet_definitions}
+     * dẫn xuất khi đọc. Category được đọc trước, facet đọc sau: nếu một lần đổi tên attribute
+     * chen vào giữa, trang mang tên mới gắn revision cũ và event revision mới được replay sau
+     * đó ghi đè bằng cùng nội dung. Đọc ngược thứ tự có thể để tên cũ gắn revision mới, và
+     * replay cùng revision là no-op nên tên cũ sẽ còn mãi.
+     */
     public List<CategoryDtos.CategoryExportResponse> categories(UUID lastId, UUID bound, int limit) {
         List<CategoryEntity> categories = categoryRepository.findExportPage(
                 lastId.toString(), bound.toString(), limit);
+        Map<UUID, List<FacetDefinition>> facets = facetResolver.of(
+                categories.stream().map(CategoryEntity::getCategoryId).toList());
         return categories.stream()
                 .map(category -> assembler.toCategoryExport(category,
                         categoryTree.path(category),
-                        categoryTree.isLeaf(category.getCategoryId())))
+                        categoryTree.isLeaf(category.getCategoryId()),
+                        facets.getOrDefault(category.getCategoryId(), List.of())))
                 .toList();
     }
 }

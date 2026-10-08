@@ -118,7 +118,15 @@ sách sản phẩm hiển thị.
 
 **Happy path.** `GET /api/v2/search/categories/{category_id}/facets`: kiểm tra danh mục tồn tại → aggregation trên `products` giới hạn
 theo nhánh danh mục và bộ filter hiển thị mặc định → mỗi `terms` kèm `cardinality`
-trên `product_id` → trả nhóm filter kèm `count_semantics`.
+trên `product_id` → đặt nhãn nhóm → trả nhóm filter kèm `count_semantics`.
+
+**Nhãn nhóm.** `FacetLabelResolver` đọc `facet_definitions` của danh mục và mọi danh mục
+con hiển thị (`ancestor_ids` chứa danh mục đó), khớp theo `code` đã case-fold với `code` trong
+token. Có descriptor thì dùng `label` Product đặt; không có thì giữ nhãn dẫn xuất từ token.
+Nhãn từng option luôn dẫn xuất vì descriptor không mang option. Kết quả được cache 60 giây
+theo phạm vi (danh mục, hoặc toàn bộ cho search không có `category`); lỗi đọc index category
+không làm hỏng request mà rơi về nhãn dẫn xuất. Cùng cơ chế áp dụng cho facet của
+`GET /api/v2/search/products`.
 
 **Failure paths.** Danh mục không tồn tại → `CATEGORY_NOT_FOUND`. Aggregation quá
 hạn → `SEARCH_TIMEOUT`.
@@ -215,7 +223,10 @@ Search thành owner của cây danh mục.
 1. Apply `category-upserted` bằng
    [`category_upsert.painless`](./schema/scripts/category_upsert.painless), với
    `sequence = category_revision`; transform path Product gửi thành `ancestor_ids`,
-   `ancestor_slugs`, `level` và `is_leaf`.
+   `ancestor_slugs`, `level` và `is_leaf`; ghi nguyên `facet_definitions` (mảng
+   `{code,label,type}`, Product ADR-019). Snapshot không có field này (producer cũ) giữ nguyên
+   giá trị đang lưu, còn mảng rỗng thay thế giá trị cũ. Full reindex đọc cùng field từ Category
+   export.
 2. Apply `category-deleted` bằng
    [`category_tombstone.painless`](./schema/scripts/category_tombstone.painless)
    để tombstone node, không upsert.

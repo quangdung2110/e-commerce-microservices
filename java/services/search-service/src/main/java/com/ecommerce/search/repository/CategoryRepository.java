@@ -39,6 +39,21 @@ public class CategoryRepository {
      * ({@code WF-SEARCH-003}).
      */
     public List<CategoryDocument> findAllVisible() throws IOException {
+        return scan(notDeleted(), "category_tree");
+    }
+
+    /**
+     * Loads a category and every visible descendant (the node is in its own {@code ancestor_ids}),
+     * which is the set of categories whose products a branch facet aggregates over.
+     */
+    public List<CategoryDocument> findBranch(String categoryId) throws IOException {
+        Query branch = Query.of(q -> q.bool(bool -> bool
+                .filter(notDeleted())
+                .filter(filter -> filter.term(t -> t.field("ancestor_ids").value(categoryId)))));
+        return scan(branch, "category_branch");
+    }
+
+    private List<CategoryDocument> scan(Query query, String queryName) throws IOException {
         List<CategoryDocument> all = new ArrayList<>();
         List<FieldValue> searchAfter = null;
         long startedAt = System.nanoTime();
@@ -49,7 +64,7 @@ public class CategoryRepository {
                 builder.index(properties.aliases().categories())
                         .size(SCAN_PAGE_SIZE)
                         .trackTotalHits(track -> track.enabled(false))
-                        .query(notDeleted())
+                        .query(query)
                         .sort(sort -> sort.field(f -> f.field("level").order(SortOrder.Asc)))
                         .sort(sort -> sort.field(f -> f.field("category_id").order(SortOrder.Asc)))
                         .timeout(properties.query().categoryTimeout().toMillis() + "ms");
@@ -71,7 +86,7 @@ public class CategoryRepository {
             searchAfter = hits.get(hits.size() - 1).sort();
         }
 
-        metrics.esQuery(properties.aliases().categories(), "category_tree",
+        metrics.esQuery(properties.aliases().categories(), queryName,
                 Duration.ofNanos(System.nanoTime() - startedAt));
         return all;
     }

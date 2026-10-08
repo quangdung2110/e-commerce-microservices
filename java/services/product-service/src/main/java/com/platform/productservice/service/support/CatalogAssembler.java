@@ -1,5 +1,6 @@
 package com.platform.productservice.service.support;
 
+import com.platform.productservice.domain.FacetDefinition;
 import com.platform.productservice.domain.entity.AttributeEntity;
 import com.platform.productservice.domain.entity.AttributeOptionEntity;
 import com.platform.productservice.domain.entity.CategoryAttributeEntity;
@@ -209,7 +210,8 @@ public class CatalogAssembler {
 
     public CategoryDtos.CategoryExportResponse toCategoryExport(CategoryEntity category,
                                                                 List<CategoryEntity> path,
-                                                                boolean leaf) {
+                                                                boolean leaf,
+                                                                List<FacetDefinition> facetDefinitions) {
         return new CategoryDtos.CategoryExportResponse(
                 category.getCategoryId(),
                 category.getParentId(),
@@ -218,6 +220,10 @@ public class CatalogAssembler {
                 category.getCategoryRevision(),
                 toPath(path),
                 leaf,
+                facetDefinitions.stream()
+                        .map(definition -> new CategoryDtos.FacetDefinitionResponse(
+                                definition.code(), definition.label(), definition.type()))
+                        .toList(),
                 category.getUpdatedAt());
     }
 

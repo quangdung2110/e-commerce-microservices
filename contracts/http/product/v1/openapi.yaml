@@ -7,11 +7,11 @@ info:
     request admin tới các endpoint /api/v1. Product là source of truth cho
     catalog, published selling price, category, attribute và media; API này
     không nhận, trả hoặc suy luận quantity, stock status hay reservation.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://localhost:8082
-    description: Local Docker Compose
-  - url: http://product-service:8080
+    description: Local Docker Compose (host 8082 map tới container 8081)
+  - url: http://product-service:8081
     description: Internal cluster endpoint
 tags:
   - name: Products
@@ -140,6 +140,7 @@ paths:
       responses:
         '204':
           description: Product đã bị hard delete; tombstone đã commit.
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/ProductNotFound' }
@@ -265,6 +266,7 @@ paths:
           description: SKU và media liên quan đã bị hard delete; SKU_DELETED tombstone đã commit.
           headers:
             ETag: { $ref: '#/components/headers/ProductETag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/SkuNotFound' }
@@ -350,6 +352,7 @@ paths:
           description: Media đã bị xóa.
           headers:
             ETag: { $ref: '#/components/headers/ProductETag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/MediaNotFound' }
@@ -590,8 +593,10 @@ paths:
       operationId: replaceAttribute
       summary: Thay code, name và value type của attribute
       description: >-
-        Không được đổi value_type khi option/mapping/Product hiện hữu khiến dữ
-        liệu cũ không hợp lệ; server trả ATTRIBUTE_IN_USE (409).
+        Không được đổi code hoặc value_type khi option/mapping/Product hiện hữu khiến dữ
+        liệu cũ không hợp lệ; server trả ATTRIBUTE_IN_USE (409). Đổi name của attribute đã
+        được map tăng category_revision và phát lại category snapshot của mọi category map
+        nó, vì name là label trong facet_definitions (ADR-019).
       security: [{ gatewayIdentity: [], gatewayRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/AttributeId'
@@ -728,7 +733,10 @@ paths:
     get:
       tags: [Internal reindex]
       operationId: getProductSnapshotForReindex
-      summary: Lấy snapshot mới nhất của một Product cho Search rebuild
+      summary: Lấy snapshot mới nhất của một Product cho Search rebuild và Promotion validate
+      description: >-
+        Search gọi để rebuild một document; Promotion gọi đồng bộ để xác nhận Product tồn tại
+        trước khi tạo hoặc sửa markdown rule. Promotion không được gọi hai export.
       security: [{ searchServiceMtls: [] }]
       parameters:
         - $ref: '#/components/parameters/ProductId'
@@ -822,8 +830,10 @@ components:
         Promotion Service (chỉ GET /internal/v1/products/{product_id}/snapshot để validate
         Product trước khi tạo/sửa markdown rule). mTLS và allowlist caller theo principal do
         service mesh thực thi (docs/mesh/runtime-contract.md mục 5.2); Product không nhìn thấy
-        chứng chỉ caller. Header X-Service-Identity do caller tự đặt; allowlist
-        product.internal.reindex-clients trong Product chỉ là defense-in-depth.
+        chứng chỉ caller. Header X-Service-Identity do caller tự đặt; Product chỉ kiểm lại như
+        defense-in-depth bằng hai allowlist tách theo route: product.internal.reindex-clients
+        (hai export, chỉ Search) và product.internal.snapshot-clients (snapshot, Search và
+        Promotion).
     productDetailBffMtls:
       type: mutualTLS
       description: >-
@@ -1567,10 +1577,22 @@ components:
             đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là
             record đầu tiên Search phải replay, theo semantics inclusive.
           items: { $ref: '#/components/schemas/ReplayOffset' }
+    FacetDefinition:
+      type: object
+      additionalProperties: false
+      required: [code, label, type]
+      description: >-
+        Descriptor của một attribute được map trực tiếp vào category (ADR-019). label là
+        tên attribute admin đặt, type là value_type; không mang option, required hay variant.
+        Cùng giá trị với facet_definitions của category-upserted.
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        label: { type: string, minLength: 1, maxLength: 120 }
+        type: { $ref: '#/components/schemas/AttributeValueType' }
     CategoryExport:
       type: object
       additionalProperties: false
-      required: [category_id, name, slug, category_revision, path, is_leaf, updated_at]
+      required: [category_id, name, slug, category_revision, path, is_leaf, facet_definitions, updated_at]
       properties:
         category_id: { $ref: '#/components/schemas/Uuid' }
         parent_id:
@@ -1593,6 +1615,13 @@ components:
               name: { type: string, maxLength: 160 }
               slug: { type: string, maxLength: 160 }
         is_leaf: { type: boolean }
+        facet_definitions:
+          type: array
+          maxItems: 100
+          description: >-
+            Mapping category–attribute trực tiếp của category, sắp theo code; mảng rỗng khi
+            chưa có mapping. Tên attribute đổi tăng category_revision của mọi category map nó.
+          items: { $ref: '#/components/schemas/FacetDefinition' }
         updated_at: { type: string, format: date-time }
     CategoryExportPage:
       type: object
@@ -1628,7 +1657,9 @@ components:
       $ref: '../../../shared/json-schema/v1/problem.schema.json'
   responses:
     BadRequest:
-      description: Request không hợp lệ; code INVALID_PRICE hoặc validation code khác.
+      description: >-
+        Request không hợp lệ: INVALID_REQUEST (kèm errors[] theo field; gồm base_price_vnd không
+        dương, slug sai định dạng, thiếu hoặc sai If-Match), INVALID_ATTRIBUTES hoặc INVALID_CURSOR.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     Unauthorized:
       description: Thiếu hoặc không hợp lệ trusted Gateway identity.

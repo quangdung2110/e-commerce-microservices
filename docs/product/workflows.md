@@ -2,7 +2,7 @@
 doc_id: product-workflows
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
 ---
@@ -26,8 +26,10 @@ owners:
 1. Validate category lá, attribute và input SKU.
 2. Mở transaction; lock Product nếu đã tồn tại, sau đó lock SKU bị chạm.
 3. Insert/update Product, SKU và media; nếu base price đổi khi markdown active thì tính
-   lại `selling_price_vnd`. Media mutation resolve lại effective thumbnail: ảnh SKU chỉ
-   ảnh hưởng SKU đó; ảnh Product ảnh hưởng các SKU đang fallback Product-level.
+   lại `selling_price_vnd`. Media mutation resolve lại effective thumbnail: media gắn SKU
+   chỉ ảnh hưởng SKU đó; media cấp Product ảnh hưởng mọi SKU, vì `media[]` của mỗi snapshot
+   gồm cả media cấp Product, dù chỉ SKU đang fallback Product-level đổi thumbnail
+   ([ADR-020](./decisions/ADR-020-media-fan-out-follows-snapshot-content.md)).
 4. Tăng `catalog_revision` đúng một lần, build SKU snapshot cho từng SKU bị ảnh hưởng
    (gồm `thumbnail_storage_key` đã resolve) và insert CloudEvents outbox cùng revision.
 5. Commit, rồi trả response.
@@ -46,8 +48,13 @@ Product đã xóa.
 ## WF-PRODUCT-003 — Category và attribute
 
 Category chỉ xóa khi không có con và không có Product. Application validate cycle và
-category lá trong transaction, tăng `category_revision` đúng một lần và phát snapshot/
-tombstone Category. Rename, đổi slug hoặc đổi parent phát thêm `CATALOG_REINDEX_REQUESTED`;
+category lá trong transaction (category đang chứa Product không nhận thêm category con),
+tăng `category_revision` đúng một lần và phát snapshot/tombstone Category kèm `path`, `is_leaf`
+và `facet_definitions` ([ADR-019](./decisions/ADR-019-category-facet-definitions.md)).
+Đổi tên attribute đang được category map tăng `category_revision` và phát lại snapshot
+`CATEGORY_ATTRIBUTE_CHANGED` cho từng category đó trong cùng transaction, category được lock theo
+thứ tự ID; đổi attribute chưa map hoặc đổi option không phát event.
+Rename, đổi slug hoặc đổi parent phát thêm `CATALOG_REINDEX_REQUESTED`;
 Search coalesce rồi full reindex bằng export snapshot kèm replay offsets, không có
 worker Product fan-out subtree ([ADR-014](./decisions/ADR-014-catalog-snapshot-replay-offsets.md)).
 

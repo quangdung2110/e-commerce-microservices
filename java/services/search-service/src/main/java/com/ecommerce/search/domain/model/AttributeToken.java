@@ -124,6 +124,14 @@ public final class AttributeToken {
      * Unicode-normalise and case-fold a string the same way for codes and values, so that
      * the index-time token and the token echoed back through {@code filter} always match.
      */
+    /**
+     * The attribute code exactly as it appears in a token, so a Product-owned code (for example a
+     * facet descriptor's) can be matched against {@link Decoded#code()}.
+     */
+    public static String foldCode(String code) {
+        return foldString(code);
+    }
+
     private static String foldString(String raw) {
         String normalized = Normalizer.normalize(raw, Normalizer.Form.NFC);
         return normalized.toLowerCase(Locale.ROOT).trim().replaceAll("\\s+", " ");

@@ -161,7 +161,7 @@ Spring property tương ứng. Secret lấy từ secret manager, không commit v
 | Variable | Default | Bắt buộc | Notes |
 |---|---|---|---|
 | `SERVER_PORT` | `8080` | Không | Khớp `servers` của public OpenAPI và gateway upstream |
-| `PDP_PRODUCT_BASE_URL` | none | Có | Ví dụ `http://product-service:8080` |
+| `PDP_PRODUCT_BASE_URL` | none | Có | Ví dụ `http://product-service:8081` (cổng HTTP của Product) |
 | `PDP_INVENTORY_ENABLED` | `false` | Không | Để `false` cho tới khi đạt rollout gate ở [README](./README.md#trạng-thái-rollout); khi `false`, mọi SKU `UNKNOWN` với outcome `disabled` |
 | `PDP_INVENTORY_BASE_URL` | none | Khi Inventory bật | Ví dụ `http://inventory-service:8080` |
 | `PDP_REVIEW_ENABLED` | `true` | Không | Khi `false`, review section `UNAVAILABLE` với outcome `disabled` |

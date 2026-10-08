@@ -2,17 +2,17 @@
 doc_id: product-interfaces
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
 ---
 
 # Product Service — Interfaces
 
-HTTP đã có contract đề xuất tại
-[`contracts/http/product/v1/openapi.yaml`](../../contracts/http/product/v1/openapi.yaml).
-AsyncAPI/JSON Schema đề xuất nằm tại
+HTTP contract: [`contracts/http/product/v1/openapi.yaml`](../../contracts/http/product/v1/openapi.yaml).
+Event contract (AsyncAPI và JSON Schema):
 [`contracts/events/product/v1/asyncapi.yaml`](../../contracts/events/product/v1/asyncapi.yaml).
+Trạng thái adoption của từng contract ở [ADOPTION](../../contracts/ADOPTION.md).
 
 ## HTTP
 
@@ -20,22 +20,33 @@ Admin API dùng `/api/v1/products`, `/api/v1/categories`, `/api/v1/attributes` v
 cầu role `ADMIN` từ Gateway. Internal API phục vụ Search, Promotion và Product Detail BFF
 dùng mTLS/service identity do service mesh thực thi theo principal
 ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
-header `X-Service-Identity` do caller tự đặt và allowlist `product.internal.reindex-clients`
-trong Product chỉ là defense-in-depth. Canonical path là `/internal/v1/...`, không expose qua
-Gateway.
+header `X-Service-Identity` do caller tự đặt và Product chỉ kiểm lại như defense-in-depth.
+Canonical path là `/internal/v1/...`, không expose qua Gateway.
+
+Allowlist trong Product tách theo nhóm route; route internal chưa thuộc nhóm nào bị từ chối:
+
+| Nhóm route | Cấu hình `product.internal.*` | Caller |
+|---|---|---|
+| `GET /internal/v1/products/export`, `GET /internal/v1/categories/export` | `reindex-clients` | `search-service` |
+| `GET /internal/v1/products/{product_id}/snapshot` | `snapshot-clients` | `search-service`, `promotion-service` |
+| `GET /internal/v1/product-details/{slug}` | `buyer-read-clients` | `product-detail-bff` |
+
+Promotion chỉ có quyền ở hàng snapshot: nó validate một Product trước khi lưu markdown rule và
+không được đọc toàn catalog (gồm cả Product `DRAFT`/`HIDDEN`) qua export. Thiếu header là `401`,
+identity ngoài allowlist của nhóm là `403`.
 
 | Endpoint | Hành vi |
 |---|---|
 | `GET`/`POST /products` và `GET`/`PUT`/`DELETE /products/{id}` | Liệt kê, tạo Product `DRAFT`, thay phần Product-level, hard delete/tombstone |
 | `PATCH /products/{id}/status` | Admin activate/hide/show, không đọc Inventory |
 | `POST /products/{id}/skus`, `PUT`/`DELETE /products/{id}/skus/{sku_id}` | Quản lý SKU; không xóa SKU cuối cùng; ghi tombstone khi delete |
-| `POST /products/{id}/media`, `PUT`/`DELETE /products/{id}/media/{media_id}` | Quản lý media Product hoặc media gắn SKU thuộc Product; phát lại snapshot cho các SKU có thumbnail hiệu lực đổi |
+| `POST /products/{id}/media`, `PUT`/`DELETE /products/{id}/media/{media_id}` | Quản lý media Product hoặc media gắn SKU thuộc Product; media gắn SKU phát lại snapshot của SKU đó, media cấp Product phát lại snapshot của mọi SKU vì `media[]` của mỗi snapshot gồm cả media cấp Product ([ADR-020](./decisions/ADR-020-media-fan-out-follows-snapshot-content.md)) |
 | `GET`/`POST /categories`, `GET`/`PUT`/`DELETE /categories/{id}` | Quản lý category tree |
 | `GET`/`PUT`/`DELETE /categories/{id}/attributes/{attribute_id}` | Quản lý mapping category–attribute |
 | `GET`/`POST`/`PUT`/`DELETE /attributes` và `/attributes/{id}/options` | Quản lý attribute `TEXT`/`NUMBER`/`BOOLEAN`/`SELECT` và option |
 | `GET /internal/v1/products/export` | Keyset export hữu hạn cho Search full reindex, kèm `replay_from_offsets` của `t.product.events` chụp trước scan |
-| `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf dẫn xuất và `replay_from_offsets` của `t.category.events`; Search đọc trước Product export |
-| `GET /internal/v1/products/{product_id}/snapshot` | Rebuild một Product document |
+| `GET /internal/v1/categories/export` | Keyset export category tree, gồm path/is_leaf/`facet_definitions` dẫn xuất và `replay_from_offsets` của `t.category.events`; Search đọc trước Product export |
+| `GET /internal/v1/products/{product_id}/snapshot` | Search rebuild một Product document; Promotion xác nhận Product tồn tại trước khi lưu markdown rule |
 | `GET /internal/v1/product-details/{slug}` | Buyer-read Product detail cho Product Detail BFF; projection đã resolve của Product catalog-active: category path, thuộc tính, trục biến thể, media giới hạn và giá công bố, không có stock |
 
 Slug Product phải khớp `^[a-z0-9]+(?:-[a-z0-9]+)*$` và dài tối đa 180 (PRODUCT-BR-013);
@@ -105,10 +116,16 @@ hiển thị (Cart, Checkout) dựng URL CDN từ key như Search và Product De
 status. Nếu Product/SKU không catalog-active, response là unavailable; Cart có thể giữ
 SKU hết stock; Checkout phải lấy allocation preview và Order mới reserve tại Inventory.
 
-Proto hiện có tại
+`GetBatchSkus` nhận tối đa 100 `sku_id` duy nhất; vượt giới hạn hoặc `sku_id` không phải UUID là
+`INVALID_ARGUMENT`. SKU không tồn tại hoặc không catalog-active là kết quả nghiệp vụ trong response
+(`not_found`/`unavailable`), không phải lỗi transport.
+
+Proto nguồn chuẩn tại
 [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../contracts/grpc/ecommerce/product/v1/product_service.proto)
 đã diễn đạt `price` (selling price), `base_price`, `catalog_revision`, `category_ids`
-và catalog saleability; field tồn kho cũ vẫn được reserve vĩnh viễn.
+và catalog saleability; field tồn kho cũ vẫn được reserve vĩnh viễn. `product-service/proto` giữ
+một bản copy cho Docker build, được `ProtoCopyDriftTest` ép giống hệt từng byte; sửa proto ở
+`contracts/` rồi chép lại.
 
 ## Events Product phát ra
 
@@ -123,14 +140,24 @@ state/tombstone hiện có.
 | `t.product.events` / `sku-upserted` | Search | Snapshot SKU khi Product/SKU/media/lifecycle/markdown làm SKU bị ảnh hưởng, gồm `thumbnail_storage_key` đã resolve. |
 | `t.product.events` / `sku-deleted` | Search | Tombstone một SKU với revision kế tiếp. Inventory không consume ([Inventory ADR-026](../inventory/decisions/ADR-026-no-product-lifecycle-dependency.md)). |
 | `t.product.events` / `product-deleted` | Search, Promotion | Tombstone Product và toàn bộ `sku_ids`. Inventory không consume. |
-| `t.category.events` / `category-upserted`, `category-deleted` | Search | Category snapshot/tombstone; `sequence = category_revision`; snapshot có path dẫn xuất. |
-| `t.catalog.control.events` / `catalog-reindex-requested` | Search | Rename, đổi slug hoặc đổi parent Category yêu cầu Search coalesce rồi full reindex. |
+| `t.category.events` / `category-upserted`, `category-deleted` | Search | Category snapshot/tombstone; `sequence = category_revision`; snapshot có path, `is_leaf` và `facet_definitions` dẫn xuất. |
+| `t.catalog.control.events` / `catalog-reindex-requested` | Search | Rename, đổi slug hoặc đổi parent Category yêu cầu Search coalesce rồi full reindex; Kafka key là `root_category_id`. |
 
-Category event dùng Kafka key `category_id`; Category revision tăng với mutation category
-hoặc mapping category–attribute. Attribute/option không có event độc lập ở v1 vì chưa có
-consumer đã được xác nhận. Search HTTP v2 cần `facet_definitions` (`code`, `label`,
-`type`) trong category snapshot/export để render facet ổn định; đây là extension
-tương thích cần được thêm vào Product event/export trước khi Search bật v2 facet.
+Category event dùng Kafka key `category_id`; Category revision tăng với mutation category,
+mapping category–attribute, hoặc đổi tên một attribute đang được category map. Attribute/option
+không có event độc lập ở v1.
+
+Mọi category snapshot và item của category export mang `facet_definitions`: danh sách
+`{code, label, type}` của các attribute được map **trực tiếp** vào category, sắp theo `code`,
+rỗng khi chưa có mapping ([ADR-019](./decisions/ADR-019-category-facet-definitions.md)).
+`label` là `attributes.name`, `type` là `attributes.value_type`; descriptor không mang option,
+`is_required` hay `is_variant`. Event và export cho ra cùng giá trị nên full reindex không lệch
+luồng event. Đổi `code`/`value_type` của attribute đã map bị chặn bằng `ATTRIBUTE_IN_USE`, nên
+chỉ đổi `name` làm snapshot lỗi thời: Product tăng `category_revision` và phát lại snapshot
+`CATEGORY_ATTRIBUTE_CHANGED` cho mọi category map attribute đó. Tạo/sửa/xóa option không làm
+đổi descriptor nên không phát event. Search dùng `label` làm nhãn nhóm facet
+([Search interfaces](../search/interfaces.md)); nhãn từng option vẫn dẫn xuất từ token cho tới khi một
+ADR khác đưa option vào descriptor.
 
 ## Events Product tiêu thụ
 

@@ -22,11 +22,10 @@ import java.util.Map;
  * from {@code doc_count} ({@code SEARCH-INV-003}), which is why the response declares
  * {@code count_semantics = DISTINCT_PRODUCT} and {@code count_accuracy = APPROXIMATE}.
  *
- * <p>Labels are derived from the token itself. The design intends them to come from
- * {@code facet_definitions}, a Category descriptor Product does not publish yet
- * ({@code docs/search/README.md §9}); until it does, the attribute code and the folded
- * value are the only display text available and are title-cased here. When the descriptor
- * arrives, only {@link #label} needs to change.
+ * <p>The group label comes from the Category {@code facet_definitions} Product publishes
+ * (Product ADR-019) when the attribute has a descriptor, and is otherwise derived from the
+ * token. Option labels are always derived: the descriptor carries no options, so the folded
+ * value, title-cased by {@link #label}, is the only display text available for them.
  */
 @Component
 public class FacetAssembler {
@@ -37,8 +36,13 @@ public class FacetAssembler {
         this.properties = properties;
     }
 
-    /** Groups buckets by attribute code, ordered by count then value for stable output. */
-    public SearchDtos.FacetSet assemble(Aggregate aggregate) {
+    /**
+     * Groups buckets by attribute code, ordered by count then value for stable output.
+     *
+     * @param groupLabels display names from Product's {@code facet_definitions}, keyed by the
+     *                    folded attribute code; a code without an entry keeps the derived label
+     */
+    public SearchDtos.FacetSet assemble(Aggregate aggregate, Map<String, String> groupLabels) {
         if (aggregate == null || !aggregate.isSterms()) {
             return SearchDtos.FacetSet.of(List.of());
         }
@@ -66,7 +70,7 @@ public class FacetAssembler {
                 .limit(properties.query().facetMaxAttributes())
                 .map(entry -> SearchDtos.AttributeFacet.multiSelect(
                         entry.getKey(),
-                        label(entry.getKey()),
+                        groupLabels.getOrDefault(entry.getKey(), label(entry.getKey())),
                         entry.getValue().stream()
                                 .sorted(Comparator
                                         .comparingLong((SearchDtos.FacetOption o) -> -o.count())

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 
 /**
  * A node of the {@code categories} index, {@code _id = category_id}.
@@ -26,7 +25,7 @@ public record CategoryDocument(
         List<String> ancestorSlugs,
         Integer level,
         Boolean isLeaf,
-        Map<String, Object> facetDefinitions,
+        List<FacetDefinition> facetDefinitions,
 
         Long productCount,
         Instant productCountUpdatedAt,
@@ -38,6 +37,15 @@ public record CategoryDocument(
 
         Long categoryRevision,
         String lastEventId) {
+
+    /** Descriptor Product publishes for one attribute mapped into the category (Product ADR-019). */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record FacetDefinition(String code, String label, String type) {
+    }
+
+    public List<FacetDefinition> facetDefinitionsOrEmpty() {
+        return facetDefinitions == null ? List.of() : facetDefinitions;
+    }
 
     public long productCountOrZero() {
         return productCount == null ? 0L : productCount;

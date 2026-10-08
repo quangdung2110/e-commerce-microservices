@@ -158,7 +158,7 @@ xem trong file mapping.
 | `sku_status` | Product | `ACTIVE`, `INACTIVE` |
 | `category_ancestor_ids` | Product snapshot | ID của category hiện tại và tổ tiên; lọc theo nhánh bằng ID, không bằng slug |
 | `category_slug_path` | Product snapshot | Path để hiển thị; không dùng làm filter vì slug có thể đổi |
-| `facet_definitions` | Product category snapshot | Descriptor `{code,label,type}` của attribute có thể lọc trong category. Giữ `enabled: false`: Search đọc metadata này để render API facet, còn count/value luôn query từ `products.filter_tokens`. Product phải đưa cùng snapshot này vào category event và category export. |
+| `facet_definitions` | Product category snapshot | Descriptor `{code,label,type}` của các attribute được map trực tiếp vào category (Product [ADR-019](../product/decisions/ADR-019-category-facet-definitions.md)). Giữ `enabled: false`: Search đọc metadata này để render API facet, còn count/value luôn query từ `products.filter_tokens`. Product đưa cùng snapshot này vào category event và category export; Search ghi nguyên vào `categories` và `FacetLabelResolver` dùng `label` làm nhãn nhóm facet (`type` được lưu nhưng API chỉ có `MULTI_SELECT`). |
 | `thumbnail_storage_key` | Product `sku-upserted` | Thumbnail hiệu lực: SKU IMAGE ưu tiên Product IMAGE; `null` khi không có ảnh. Response adapter dựng URL CDN hoặc placeholder. |
 | `is_deleted`, `deleted_at` | Search | Tombstone chặn zombie update trước khi purge |
 | `catalog_revision` | Product | Guard cho mọi event catalog của Product aggregate |

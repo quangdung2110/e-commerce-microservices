@@ -3,6 +3,33 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-09 (Product sync)
+
+- Product Events v1 `category-upserted` và Product HTTP v1 `CategoryExport` có thêm `facet_definitions`: mảng
+  `{code, label, type}` của các attribute được map trực tiếp vào category, sắp theo `code`, rỗng khi chưa có
+  mapping ([Product ADR-019](../docs/product/decisions/ADR-019-category-facet-definitions.md)). Field là
+  `required` trong schema (producer luôn gửi). Rollout: consumer chấp nhận trước rồi producer phát; Search hiện
+  bỏ qua field lạ nên không bị ảnh hưởng khi rollout; Search nay ghi field này vào index `categories` và dùng
+  `label` làm nhãn nhóm facet (nhãn option vẫn dẫn xuất, chưa có trong descriptor).
+- Đổi `name` của attribute đã được category map nay tăng `category_revision` và phát lại `category-upserted`
+  (`change_kind = CATEGORY_ATTRIBUTE_CHANGED`) cho mọi category map nó, vì tên là `label` trong
+  `facet_definitions`. Tạo/sửa option vẫn không phát event.
+- Product HTTP v1 internal: `GET /internal/v1/products/{product_id}/snapshot` cho phép `search-service` và
+  `promotion-service`, nhưng hai export (`/internal/v1/products/export`, `/internal/v1/categories/export`) chỉ
+  cho `search-service`. Trước đây allowlist của Product cho Promotion gọi cả hai export, rộng hơn contract và
+  mesh policy. Wire shape không đổi; caller đúng contract không bị ảnh hưởng.
+- Product HTTP v1 error responses: mọi lỗi `retryable` (503) có `Retry-After`, kể cả `CATALOG_UNAVAILABLE` khi
+  export không chụp được replay offsets (trước đây chỉ lỗi tạm thời của PostgreSQL có header này).
+  `DELETE` Product/SKU/media nay khai báo `400` (thiếu hoặc sai `If-Match`). `BadRequest` liệt kê đúng mã
+  được phát: `INVALID_PRICE` có trong enum nhưng không bao giờ được trả, giá không dương là `INVALID_REQUEST`.
+  `servers` trỏ `product-service:8081` (cổng thật) thay vì `8080`.
+- Product HTTP v1 và Product Events v1 là `implemented`; Product gRPC v1 vẫn `proposed` vì `.proto` còn là bản
+  copy trong service (ngoại lệ có chủ đích, `ProtoCopyDriftTest` ép bản copy giống hệt nguồn chuẩn). README
+  của gRPC contract bỏ "Migration note" về wire cũ vì không còn provider hay consumer nào dùng nó.
+- Promotion HTTP v1 `servers`: `promotion-service:8085` (cổng thật) thay vì `8080`, thêm `localhost:8085`. Wire shape không đổi.
+- Catalog: thêm `promotion-validates-product-snapshot`; `search-reindexes-product-catalog` và
+  `product-publishes-catalog-events` là `implemented`. Mesh matrix trỏ dòng snapshot tới hai interaction này.
+
 ## 2026-10-09 (User sync)
 
 - User HTTP v1 wire shapes are unchanged; the contract text now matches `user-service`. Observable behaviour
