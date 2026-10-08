@@ -13,6 +13,9 @@ evidence:
 
 # ADR-002 — Cache-aside chỉ cho danh sách address
 
+> Cập nhật: phần cửa sổ stale sau invalidation được thay thế bởi
+> [ADR-011](./ADR-011-address-cache-invalidation-epoch.md) (epoch chống refill muộn).
+
 ## Bối cảnh
 
 Checkout đọc danh sách address thường xuyên. Profile và preferences không được giả

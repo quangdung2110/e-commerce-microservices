@@ -76,6 +76,25 @@ func TestDefaultAddressCannotBeDeleted(t *testing.T) {
 	require.NoError(t, h.addressService.Delete(context.Background(), userID, first.ID))
 }
 
+func TestTheOnlyAddressCanBeDeletedEvenThoughItIsTheDefault(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+
+	only, err := h.addressService.Create(context.Background(), userID, validAddress())
+	require.NoError(t, err)
+	require.True(t, only.IsDefault)
+
+	// USER-BR-004: with no other address there is nothing to promote, so the
+	// book would otherwise be impossible to empty again.
+	require.NoError(t, h.addressService.Delete(context.Background(), userID, only.ID))
+	require.Zero(t, h.addresses.count())
+
+	// The next address starts a fresh book and becomes the default again.
+	next, err := h.addressService.Create(context.Background(), userID, validAddress())
+	require.NoError(t, err)
+	require.True(t, next.IsDefault, "USER-BR-002 applies again to an emptied book")
+}
+
 func TestSetDefaultMovesTheFlagAndIsIdempotent(t *testing.T) {
 	h := newHarness(t)
 	userID := h.seedProfile(t)
@@ -164,6 +183,36 @@ func TestListServesCacheHitAndFillsOnMiss(t *testing.T) {
 	second, err := h.addressService.List(context.Background(), userID)
 	require.NoError(t, err)
 	require.Len(t, second, 1)
+}
+
+func TestListDoesNotCacheABookThatChangedWhileItWasBeingRead(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+
+	_, err := h.addressService.Create(context.Background(), userID, validAddress())
+	require.NoError(t, err)
+
+	// A mutation commits and invalidates after this reader took its snapshot of
+	// the book but before it fills the cache.
+	h.addresses.afterList = func() {
+		h.addresses.afterList = nil
+		_, createErr := h.addressService.Create(context.Background(), userID, validAddress())
+		require.NoError(t, createErr)
+	}
+
+	stale, err := h.addressService.List(context.Background(), userID)
+	require.NoError(t, err)
+	require.Len(t, stale, 1, "this reader legitimately saw the book as it was")
+
+	_, cached := h.cache.cached(userID)
+	require.False(t, cached, "ADR-002: the late fill must not re-cache a list the mutation already invalidated")
+	require.Equal(t, 1, h.cache.refused)
+
+	fresh, err := h.addressService.List(context.Background(), userID)
+	require.NoError(t, err)
+	require.Len(t, fresh, 2)
+	_, cached = h.cache.cached(userID)
+	require.True(t, cached, "the next reader fills it with the current book")
 }
 
 func TestListFallsBackToTheDatabaseWhenRedisIsDown(t *testing.T) {

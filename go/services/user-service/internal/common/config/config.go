@@ -46,22 +46,16 @@ type ServerConfig struct {
 }
 
 // InternalConfig configures the cluster-internal listener that serves the
-// checkout address snapshot. It is never published through the gateway and
-// requires mTLS whenever certificates are configured.
+// checkout address snapshot. It is never published through the gateway. Transport
+// security and caller admission belong to the service mesh (mTLS plus an
+// AuthorizationPolicy per principal and path); the application only checks the
+// X-Service-Identity header against AllowedCallers as defence in depth.
 type InternalConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	TLSCertFile  string `mapstructure:"tls_cert_file"`
-	TLSKeyFile   string `mapstructure:"tls_key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
-	// AllowedClientCN restricts which verified peer certificate may resolve a
-	// snapshot. Empty means any certificate signed by the client CA.
-	AllowedClientCN string `mapstructure:"allowed_client_cn"`
-}
-
-func (i InternalConfig) MutualTLSEnabled() bool {
-	return i.TLSCertFile != "" && i.TLSKeyFile != "" && i.ClientCAFile != ""
+	Enabled bool   `mapstructure:"enabled"`
+	Host    string `mapstructure:"host"`
+	Port    int    `mapstructure:"port"`
+	// AllowedCallers lists the service identities that may resolve a snapshot.
+	AllowedCallers []string `mapstructure:"allowed_callers"`
 }
 
 type DatabaseConfig struct {
@@ -111,6 +105,12 @@ type KafkaConfig struct {
 	// AuthDLQTopic parks what the consumer cannot process. Nothing is redriven
 	// automatically.
 	AuthDLQTopic string `mapstructure:"auth_dlq_topic"`
+	// NotificationTopic carries the delivery outcomes Notification publishes. The
+	// consumer reacts to complaint-received only and ignores the other outcomes.
+	NotificationTopic string `mapstructure:"notification_topic"`
+	// NotificationDLQTopic parks outcomes the consumer cannot process. It is
+	// separate from AuthDLQTopic so a redrive never mixes the two producers.
+	NotificationDLQTopic string `mapstructure:"notification_dlq_topic"`
 	// UserTopic carries the two events this service publishes.
 	UserTopic         string        `mapstructure:"user_topic"`
 	ConsumerGroup     string        `mapstructure:"consumer_group"`
@@ -147,9 +147,11 @@ type RateLimitRule struct {
 func (r RateLimitRule) Enabled() bool { return r.Limit > 0 && r.Window > 0 }
 
 type RateLimitConfig struct {
-	ReadPerIdentity   RateLimitRule `mapstructure:"read_per_identity"`
-	WritePerIdentity  RateLimitRule `mapstructure:"write_per_identity"`
-	InternalPerClient RateLimitRule `mapstructure:"internal_per_client"`
+	ReadPerIdentity  RateLimitRule `mapstructure:"read_per_identity"`
+	WritePerIdentity RateLimitRule `mapstructure:"write_per_identity"`
+	// InternalPerUser is applied per (calling service, user) on the internal
+	// listener.
+	InternalPerUser RateLimitRule `mapstructure:"internal_per_user"`
 }
 
 type SecurityConfig struct {
@@ -261,6 +263,12 @@ func (c *Config) Validate() error {
 			if c.Kafka.AuthDLQTopic == "" {
 				problems = append(problems, "kafka.auth_dlq_topic is required when the consumer is enabled")
 			}
+			if c.Kafka.NotificationTopic == "" {
+				problems = append(problems, "kafka.notification_topic is required when the consumer is enabled")
+			}
+			if c.Kafka.NotificationDLQTopic == "" {
+				problems = append(problems, "kafka.notification_dlq_topic is required when the consumer is enabled")
+			}
 			if c.Kafka.ConsumerGroup == "" {
 				problems = append(problems, "kafka.consumer_group is required when the consumer is enabled")
 			}
@@ -273,16 +281,26 @@ func (c *Config) Validate() error {
 	if hour < 0 || hour > 23 {
 		problems = append(problems, "workers.projection_reconciliation.run_at_hour_utc must be between 0 and 23")
 	}
-	if c.App.IsProduction() && c.Internal.Enabled && !c.Internal.MutualTLSEnabled() {
+	if c.Internal.Enabled && !hasName(c.Internal.AllowedCallers) {
 		// The snapshot endpoint returns a recipient name, phone number and
-		// street address to its caller.
-		problems = append(problems, "the internal checkout API requires mTLS certificates in production")
+		// street address, so an empty allowlist would refuse every caller and
+		// is a misconfigured deployment rather than a valid "closed" mode.
+		problems = append(problems, "internal.allowed_callers must name at least one service when the internal API is enabled")
 	}
 
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func hasName(names []string) bool {
+	for _, name := range names {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func setDefaults(v *viper.Viper) {
@@ -300,6 +318,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("internal.enabled", true)
 	v.SetDefault("internal.host", "0.0.0.0")
 	v.SetDefault("internal.port", 8083)
+	v.SetDefault("internal.allowed_callers", []string{"checkout-service"})
 
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
@@ -328,6 +347,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.brokers", []string{"localhost:9092"})
 	v.SetDefault("kafka.auth_topic", "t.auth.events")
 	v.SetDefault("kafka.auth_dlq_topic", "t.auth.events.dlq")
+	v.SetDefault("kafka.notification_topic", "t.notification.outcomes.v1")
+	v.SetDefault("kafka.notification_dlq_topic", "t.notification.outcomes.v1.dlq")
 	v.SetDefault("kafka.user_topic", "t.user.events")
 	v.SetDefault("kafka.consumer_group", "user-service")
 	v.SetDefault("kafka.session_timeout", "30s")
@@ -347,8 +368,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limit.read_per_identity.window", "1m")
 	v.SetDefault("security.rate_limit.write_per_identity.limit", 30)
 	v.SetDefault("security.rate_limit.write_per_identity.window", "1m")
-	v.SetDefault("security.rate_limit.internal_per_client.limit", 600)
-	v.SetDefault("security.rate_limit.internal_per_client.window", "1m")
+	v.SetDefault("security.rate_limit.internal_per_user.limit", 120)
+	v.SetDefault("security.rate_limit.internal_per_user.window", "1m")
 
 	v.SetDefault("workers.lock_ttl", "5m")
 	v.SetDefault("workers.retention_purge.enabled", true)

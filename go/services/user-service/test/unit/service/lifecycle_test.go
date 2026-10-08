@@ -34,7 +34,7 @@ func TestBootstrapCreatesProfileAndDefaultPreferences(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, preferences.EmailEnabled)
 	require.True(t, preferences.InAppEnabled)
-	require.True(t, preferences.MarketingEnabled)
+	require.False(t, preferences.MarketingEnabled, "marketing is opt-in, like Notification's default")
 	require.Equal(t, vo.LanguageVietnamese, preferences.Language)
 	require.Equal(t, vo.CurrencyVND, preferences.Currency)
 }
@@ -111,6 +111,58 @@ func TestAnonymizeScrubsProfileAndRemovesOwnedData(t *testing.T) {
 
 	// Auth owns the deletion fact: User republishes nothing (ADR-006).
 	require.NotContains(t, h.publisher.typesPublished(), "com.ecommerce.auth.user-deleted.v1")
+}
+
+func TestAnonymizeSerializesWithAddressMutations(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+
+	before := h.addresses.locks
+	_, err := h.lifecycleService.Anonymize(context.Background(), userID,
+		testNow, testNow.Add(retentionWindow), vo.DeletionGDPRRequest.String())
+	require.NoError(t, err)
+
+	// A create that already passed its "profile is active" check must finish
+	// before the address book is emptied, or its row would outlive the deletion.
+	require.Equal(t, before+1, h.addresses.locks, "the anonymization takes the per-user address lock")
+}
+
+func TestDeletedAccountCannotReadOrWriteItsProfileAgain(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+
+	_, err := h.profileService.Update(context.Background(), userID, mustNameChanges())
+	require.NoError(t, err)
+	_, err = h.addressService.Create(context.Background(), userID, validAddress())
+	require.NoError(t, err)
+	publishedBefore := len(h.publisher.events())
+
+	_, err = h.lifecycleService.Anonymize(context.Background(), userID,
+		testNow, testNow.Add(retentionWindow), vo.DeletionGDPRRequest.String())
+	require.NoError(t, err)
+
+	// The anonymized row survives until the purge, but no owner-facing path may
+	// reach it: it reads as a profile that does not exist (USER-INV-005).
+	_, err = h.profileService.Get(context.Background(), userID)
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound)
+
+	_, err = h.profileService.Update(context.Background(), userID, mustNameChanges())
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound, "a late PATCH must not write PII back")
+
+	_, err = h.addressService.Create(context.Background(), userID, validAddress())
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound, "a late POST must not create an address")
+
+	_, err = h.addressService.List(context.Background(), userID)
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound, "an empty book is not a 200 for a deleted account")
+
+	_, err = h.preferenceService.Get(context.Background(), userID)
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound)
+
+	stored, ok := h.profiles.get(userID)
+	require.True(t, ok)
+	require.True(t, stored.IsAnonymized(), "the row stayed scrubbed")
+	require.Zero(t, h.addresses.count())
+	require.Len(t, h.publisher.events(), publishedBefore, "no USER_PROFILE_UPDATED for a deleted account")
 }
 
 func TestDuplicateDeletionKeepsTheOriginalDeadline(t *testing.T) {

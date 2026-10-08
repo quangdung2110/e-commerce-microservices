@@ -20,16 +20,18 @@ server:
   shutdown_timeout: 20s
 
 # Cluster-internal listener serving the checkout address snapshot. It must never
-# be exposed through the public gateway, and production requires mTLS: the
-# endpoint takes a user id from its caller instead of from a verified identity.
+# be exposed through the public gateway: the endpoint takes a user id from its
+# caller instead of from a verified identity. Transport mTLS and the per-principal
+# AuthorizationPolicy are enforced by the service mesh, which hides the caller
+# certificate from the application (docs/mesh/runtime-contract.md), so this
+# service only checks the X-Service-Identity header as defence in depth. Without
+# a mesh (Docker Compose) the header is not authenticated.
 internal:
   enabled: true
   host: "0.0.0.0"
   port: 8083
-  tls_cert_file: "${USER_INTERNAL_TLS_CERT_FILE}"
-  tls_key_file: "${USER_INTERNAL_TLS_KEY_FILE}"
-  client_ca_file: "${USER_INTERNAL_CLIENT_CA_FILE}"
-  allowed_client_cn: "${USER_INTERNAL_ALLOWED_CLIENT_CN}"
+  allowed_callers:
+    - "checkout-service"
 
 database:
   host: "localhost"
@@ -67,6 +69,11 @@ kafka:
     - "localhost:9092"
   auth_topic: "t.auth.events"
   auth_dlq_topic: "t.auth.events.dlq"
+  # Delivery outcomes of Notification. Only complaint-received is acted on: it
+  # switches marketing_enabled off at the source. Failed messages are parked in
+  # their own DLQ so a redrive never mixes them with Auth events.
+  notification_topic: "t.notification.outcomes.v1"
+  notification_dlq_topic: "t.notification.outcomes.v1.dlq"
   user_topic: "t.user.events"
   consumer_group: "user-service"
   session_timeout: 30s
@@ -97,8 +104,10 @@ security:
     # Keyed by the authenticated caller: every route belongs to one owner.
     read_per_identity: { limit: 120, window: 1m }
     write_per_identity: { limit: 30, window: 1m }
-    # Keyed by client IP; the caller here is Checkout Service.
-    internal_per_client: { limit: 600, window: 1m }
+    # Keyed by (calling service, user id from the path): behind the mesh every
+    # pod of Checkout shares a few source IPs, so a per-IP budget would be one
+    # bucket for the whole platform.
+    internal_per_user: { limit: 120, window: 1m }
 
 workers:
   lock_ttl: 5m

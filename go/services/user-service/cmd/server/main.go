@@ -9,14 +9,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -161,13 +158,6 @@ func run(configPath string) error {
 			WriteTimeout: cfg.Server.WriteTimeout,
 			IdleTimeout:  cfg.Server.IdleTimeout,
 		}
-		if cfg.Internal.MutualTLSEnabled() {
-			tlsConfig, err := newMutualTLSConfig(cfg.Internal)
-			if err != nil {
-				return err
-			}
-			internalServer.TLSConfig = tlsConfig
-		}
 	}
 
 	// Auth event consumer.
@@ -176,7 +166,7 @@ func run(configPath string) error {
 		consumerWG sync.WaitGroup
 	)
 	if cfg.Kafka.ConsumerEnabled {
-		consumer, err = kafka.NewConsumer(cfg.Kafka, lifecycleService, publisher, logger)
+		consumer, err = kafka.NewConsumer(cfg.Kafka, lifecycleService, preferencesService, publisher, logger)
 		if err != nil {
 			return err
 		}
@@ -203,15 +193,9 @@ func run(configPath string) error {
 		go func() {
 			logger.Info("internal API listening",
 				zap.String("addr", internalServer.Addr),
-				zap.Bool("mtls", internalServer.TLSConfig != nil),
+				zap.Strings("allowed_callers", cfg.Internal.AllowedCallers),
 			)
-			var err error
-			if internalServer.TLSConfig != nil {
-				err = internalServer.ListenAndServeTLS(cfg.Internal.TLSCertFile, cfg.Internal.TLSKeyFile)
-			} else {
-				err = internalServer.ListenAndServe()
-			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := internalServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErrors <- fmt.Errorf("internal server: %w", err)
 			}
 		}()
@@ -221,12 +205,13 @@ func run(configPath string) error {
 		consumerWG.Add(1)
 		go func() {
 			defer consumerWG.Done()
-			logger.Info("auth event consumer starting",
-				zap.String("topic", cfg.Kafka.AuthTopic),
+			logger.Info("event consumer starting",
+				zap.String("auth_topic", cfg.Kafka.AuthTopic),
+				zap.String("notification_topic", cfg.Kafka.NotificationTopic),
 				zap.String("group", cfg.Kafka.ConsumerGroup),
 			)
 			if err := consumer.Run(ctx); err != nil {
-				serverErrors <- fmt.Errorf("auth event consumer: %w", err)
+				serverErrors <- fmt.Errorf("event consumer: %w", err)
 			}
 		}()
 	}
@@ -257,7 +242,7 @@ func run(configPath string) error {
 		// Leaving the group before the process exits hands the partitions over
 		// without waiting for the session timeout.
 		if err := consumer.Close(); err != nil {
-			logger.Error("auth event consumer shutdown failed", zap.Error(err))
+			logger.Error("event consumer shutdown failed", zap.Error(err))
 		}
 		consumerWG.Wait()
 	}
@@ -290,24 +275,5 @@ func newPublisher(cfg config.KafkaConfig, logger *zap.Logger) (eventPublisher, f
 		if err := publisher.Close(); err != nil {
 			logger.Error("could not close the Kafka producer", zap.Error(err))
 		}
-	}, nil
-}
-
-// newMutualTLSConfig requires and verifies a client certificate signed by the
-// configured CA, which is how the internal API authenticates Checkout Service.
-func newMutualTLSConfig(cfg config.InternalConfig) (*tls.Config, error) {
-	caPEM, err := os.ReadFile(cfg.ClientCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("read internal client CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("internal client CA does not contain a certificate")
-	}
-
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ClientAuth: tls.RequireAndVerifyClientCert,
-		ClientCAs:  pool,
 	}, nil
 }

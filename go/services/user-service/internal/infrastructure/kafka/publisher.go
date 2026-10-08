@@ -32,7 +32,6 @@ const contentType = "application/cloudevents+json"
 type Publisher struct {
 	producer    sarama.SyncProducer
 	topic       string
-	dlqTopic    string
 	maxAttempts int
 	backoff     time.Duration
 	logger      *zap.Logger
@@ -70,7 +69,6 @@ func NewPublisher(cfg config.KafkaConfig, logger *zap.Logger) (*Publisher, error
 	return &Publisher{
 		producer:    producer,
 		topic:       cfg.UserTopic,
-		dlqTopic:    cfg.AuthDLQTopic,
 		maxAttempts: maxAttempts,
 		backoff:     cfg.PublishBackoff,
 		logger:      logger,
@@ -151,15 +149,15 @@ func (p *Publisher) Publish(ctx context.Context, envelope *event.Envelope) error
 }
 
 // PublishDeadLetter forwards a message the consumer could not process to the
-// DLQ topic, keeping the original key, value and headers so an operator can
-// replay it after fixing the cause.
-func (p *Publisher) PublishDeadLetter(_ context.Context, key, value []byte, reason string) error {
-	if p.dlqTopic == "" {
+// DLQ topic of the topic it came from, keeping the original key and value so an
+// operator can replay it after fixing the cause.
+func (p *Publisher) PublishDeadLetter(_ context.Context, dlqTopic string, key, value []byte, reason string) error {
+	if dlqTopic == "" {
 		return apperr.ErrInternal.WithDetail("The dead-letter topic is not configured.")
 	}
 
 	message := &sarama.ProducerMessage{
-		Topic: p.dlqTopic,
+		Topic: dlqTopic,
 		Key:   sarama.ByteEncoder(key),
 		Value: sarama.ByteEncoder(value),
 		Headers: []sarama.RecordHeader{
@@ -219,8 +217,9 @@ func (p *LoggingPublisher) Publish(_ context.Context, envelope *event.Envelope) 
 }
 
 // PublishDeadLetter logs what would have been dead-lettered.
-func (p *LoggingPublisher) PublishDeadLetter(_ context.Context, _, _ []byte, reason string) error {
+func (p *LoggingPublisher) PublishDeadLetter(_ context.Context, dlqTopic string, _, _ []byte, reason string) error {
 	p.logger.Warn("kafka is disabled, skipping a dead-letter message",
+		zap.String("dlq_topic", dlqTopic),
 		zap.String("reason", reason))
 	return nil
 }

@@ -19,10 +19,18 @@ type AddressCache interface {
 	// Get returns the cached list. found is false on a miss, on unusable
 	// content and when Redis cannot answer.
 	Get(ctx context.Context, userID uuid.UUID) (addresses []*entity.Address, found bool)
-	// Put stores the list. An empty list gets the shorter TTL, so a user with no
-	// addresses cannot be used to hammer PostgreSQL.
-	Put(ctx context.Context, userID uuid.UUID, addresses []*entity.Address) error
-	// Invalidate drops the key after a committed mutation.
+	// Epoch returns the invalidation epoch of one user's list. A reader takes it
+	// BEFORE it loads the list from PostgreSQL and hands it back to Put, so a
+	// mutation that commits and invalidates in between makes the late fill a
+	// no-op instead of caching a list that is already stale. It returns "" when
+	// Redis cannot answer, and Put then skips the fill.
+	Epoch(ctx context.Context, userID uuid.UUID) string
+	// Put stores the list only while the epoch is unchanged. An empty list gets
+	// the shorter TTL, so a user with no addresses cannot be used to hammer
+	// PostgreSQL. A fill refused because the epoch moved is not an error.
+	Put(ctx context.Context, userID uuid.UUID, addresses []*entity.Address, epoch string) error
+	// Invalidate drops the key and advances the epoch after a committed
+	// mutation.
 	Invalidate(ctx context.Context, userID uuid.UUID) error
 }
 

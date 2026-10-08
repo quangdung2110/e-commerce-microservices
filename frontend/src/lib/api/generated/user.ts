@@ -55,13 +55,13 @@ export interface paths {
         };
         /**
          * Liệt kê address book của caller hiện tại
-         * @description Trả danh sách theo thứ tự address default trước, sau đó `created_at` giảm dần. Server có thể phục vụ từ Redis cache-aside nhưng PostgreSQL là nguồn chân lý.
+         * @description Trả danh sách theo thứ tự address default trước, sau đó `created_at` giảm dần, tối đa 50 address (giới hạn của address book, nên danh sách không phân trang). Server có thể phục vụ từ Redis cache-aside nhưng PostgreSQL là nguồn chân lý. Account đã bị xóa (đang trong retention window) trả `404 PROFILE_NOT_FOUND` như profile đã purge.
          */
         get: operations["listMyAddresses"];
         put?: never;
         /**
          * Tạo address mới cho caller hiện tại
-         * @description Address đầu tiên của profile trở thành default. Operation này không có idempotency key; client không được tự retry mù quáng sau timeout.
+         * @description Address đầu tiên của profile trở thành default. Một profile giữ tối đa 50 address; vượt giới hạn trả `422 INVALID_ADDRESS`. Operation này không có idempotency key; client không được tự retry mù quáng sau timeout.
          */
         post: operations["createMyAddress"];
         delete?: never;
@@ -84,7 +84,10 @@ export interface paths {
          */
         put: operations["replaceMyAddress"];
         post?: never;
-        /** Hard-delete một address không phải default */
+        /**
+         * Hard-delete một address
+         * @description Address default chỉ xóa được khi nó là address duy nhất còn lại; khi address book còn address khác, owner phải đặt address khác làm default trước, nếu không nhận `409 DEFAULT_ADDRESS_CANNOT_BE_DELETED`. Xóa address cuối cùng làm address book rỗng; address tạo sau đó lại trở thành default.
+         */
         delete: operations["deleteMyAddress"];
         options?: never;
         head?: never;
@@ -120,7 +123,7 @@ export interface paths {
         };
         /**
          * Resolve address snapshot cho Checkout Service
-         * @description Endpoint nội bộ chỉ dành cho Checkout qua mTLS/service credential. User xác minh address thuộc `user_id` trước khi trả snapshot; endpoint này không đi qua public API Gateway.
+         * @description Endpoint nội bộ chỉ dành cho Checkout, listener riêng không đi qua public API Gateway. Service mesh thực thi mTLS và chỉ cho principal `checkout-service` chạm path này; User thêm allowlist header `X-Service-Identity` làm defense-in-depth (thiếu header `401`, service không nằm trong allowlist `403`). User xác minh address thuộc `user_id` trước khi trả snapshot, và rate limit theo cặp (service gọi, `user_id`).
          */
         get: operations["getCheckoutAddressSnapshot"];
         put?: never;
@@ -168,6 +171,7 @@ export interface components {
             readonly currency: "VND";
             email_enabled: boolean;
             in_app_enabled: boolean;
+            /** @description Opt-in: mặc định `false` cho account mới và chỉ bật khi owner đồng ý. User tự tắt cờ này khi Notification báo người dùng đánh dấu spam. */
             marketing_enabled: boolean;
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -255,7 +259,26 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Profile chưa bootstrap hoặc đã bị purge. */
+        /** @description `X-Service-Identity` không nằm trong allowlist caller của listener nội bộ. */
+        Forbidden: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "type": "https://errors.ecommerce.local/forbidden",
+                 *       "title": "Forbidden",
+                 *       "status": 403,
+                 *       "detail": "This service identity may not resolve address snapshots.",
+                 *       "instance": "/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+                 *       "code": "FORBIDDEN"
+                 *     }
+                 */
+                "application/problem+json": components["schemas"]["problem.schema"];
+            };
+        };
+        /** @description Profile chưa bootstrap, đã bị anonymize khi account bị xóa (đang chờ purge) hoặc đã bị purge. Ba trường hợp không thể phân biệt từ phía client. */
         ProfileNotFound: {
             headers: {
                 [name: string]: unknown;
@@ -671,6 +694,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["AddressNotFound"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];

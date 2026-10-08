@@ -45,12 +45,13 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	logger := zap.NewNop()
+	deletions := newDeletionRepo()
 	h := &harness{
 		clock:       clock.NewFixed(testNow),
-		profiles:    newProfileRepo(),
+		profiles:    newProfileRepo(deletions),
 		addresses:   newAddressRepo(),
 		preferences: newPreferencesRepo(),
-		deletions:   newDeletionRepo(),
+		deletions:   deletions,
 		projections: &fakeProjectionRepo{},
 		cache:       newAddressCache(),
 		publisher:   newPublisher(),

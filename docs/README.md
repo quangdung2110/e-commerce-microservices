@@ -195,6 +195,8 @@ Service Contract Matrix legacy đã bị xóa.
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
 | Cart | `t.cart.events` (`com.ecommerce.cart.abandoned.v1`, event Cart duy nhất phát) | Notification |
 | Auth | `t.auth.events` (`com.ecommerce.auth.user-deleted.v1` cho mọi PII owner; `user-verified-success.v1` chỉ cho User) | User, Notification, Review, Chat, Cart |
+| User | `t.user.events` (`com.ecommerce.user.profile-updated.v1`, `com.ecommerce.user.preferences-updated.v1`; không republish `USER_DELETED`) | Chat (profile), Notification (preferences) |
+| Notification | `t.notification.outcomes.v1` (`delivered`, `bounced`, `failed`, `complaint-received`) | Analytics; User chỉ consume `complaint-received` để tắt `marketing_enabled` ở nguồn |
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
 | Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
@@ -256,6 +258,7 @@ Service Contract Matrix legacy đã bị xóa.
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
 | [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |
 | [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [user/README.md](./user/README.md) | User Service — profile, address book, preferences; đã đồng bộ với `go/services/user-service` theo `docs/_templates/service-documentation` (ADR-001..012). |
 
 > Các service trên sẽ được sync ở giai đoạn tiếp theo. Năm service Checkout, Order,
 > Payment, Inventory và Promotion được đồng bộ ở mức thiết kế; Delivery chỉ là boundary

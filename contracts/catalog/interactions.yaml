@@ -25,8 +25,12 @@ interactions:
     provider: user-service
     consumers: [checkout-service]
     contract: http/user/v1/openapi.yaml
-    status: proposed
-    notes: User verifies address ownership and returns the immutable delivery snapshot required by Order.
+    status: implemented
+    notes: >-
+      User verifies address ownership and returns the immutable delivery snapshot required by Order.
+      The listener is separate (port 8083) and never routed through the gateway. The mesh enforces mTLS
+      and the checkout-service principal; User checks the X-Service-Identity allowlist as defence in depth
+      (401 without the header, 403 for another service) and rate-limits per (calling service, user_id).
 
   - id: gateway-routes-checkout
     protocol: http
@@ -153,8 +157,12 @@ interactions:
     provider: user-service
     consumers: [chat-service, notification-service]
     contract: events/user/v1/asyncapi.yaml
-    status: proposed
-    notes: USER_PROFILE_UPDATED cho Chat và USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
+    status: implemented
+    notes: >-
+      USER_PROFILE_UPDATED cho Chat và USER_PREFERENCES_UPDATED cho Notification; không republish USER_DELETED.
+      Publish trực tiếp sau commit (không outbox) và có reconciliation hằng ngày. USER_PREFERENCES_UPDATED
+      cũng được phát khi User tắt marketing_enabled sau complaint-received. Provider đã implement và
+      Notification đã consume; chưa xác minh consumer phía Chat.
 
   - id: auth-requests-security-notifications
     protocol: kafka
@@ -491,7 +499,9 @@ interactions:
     notes: >-
       t.notification.outcomes.v1 carries delivered, bounced, failed and complaint-received
       per delivery, keyed by user_id, without template_data or email. User consumes
-      complaint-received to switch off marketing_enabled at the source.
+      complaint-received (group user-service, DLQ t.notification.outcomes.v1.dlq) to switch off
+      marketing_enabled at the source and ignores the other outcomes; the consumer is implemented
+      (User ADR-009). Analytics is the only other consumer.
 
   - id: gateway-routes-notification-inbox
     protocol: http

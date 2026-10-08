@@ -15,6 +15,8 @@ interface AddressCardProps {
   onDelete: (address: Address) => void;
   onSetDefault: (address: Address) => void;
   busy?: boolean;
+  /** Sổ địa chỉ chỉ còn một địa chỉ: địa chỉ mặc định duy nhất này xoá được. */
+  isOnlyAddress?: boolean;
 }
 
 export function AddressCard({
@@ -23,7 +25,11 @@ export function AddressCard({
   onDelete,
   onSetDefault,
   busy = false,
+  isOnlyAddress = false,
 }: AddressCardProps) {
+  // Địa chỉ mặc định chỉ xoá được khi không còn địa chỉ nào khác để chuyển mặc định
+  // sang; nếu không server trả 409 DEFAULT_ADDRESS_CANNOT_BE_DELETED.
+  const deleteBlocked = address.is_default && !isOnlyAddress;
   return (
     <li
       className={cn(
@@ -80,10 +86,9 @@ export function AddressCard({
             aria-label={`Xoá địa chỉ của ${address.recipient_name}`}
             className="text-danger hover:bg-danger-surface hover:text-danger"
             onClick={() => onDelete(address)}
-            // Địa chỉ mặc định không xoá được: server trả 409, nên chặn từ đây.
-            disabled={busy || address.is_default}
+            disabled={busy || deleteBlocked}
             title={
-              address.is_default
+              deleteBlocked
                 ? "Hãy đặt một địa chỉ khác làm mặc định trước khi xoá địa chỉ này."
                 : undefined
             }

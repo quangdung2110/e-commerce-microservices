@@ -65,6 +65,40 @@ func (r *ProfileRepository) GetForUpdate(ctx context.Context, userID uuid.UUID) 
 	return r.queryProfile(ctx, query, userID)
 }
 
+// GetActive reads a profile that has no retention record. The NOT EXISTS keeps a
+// deleted account indistinguishable from a purged one for every owner-facing
+// path (docs/user/domain.md §8).
+func (r *ProfileRepository) GetActive(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	const query = `
+		SELECT ` + profileColumns + `
+		FROM "user".user_profiles
+		WHERE id = $1
+		  AND NOT EXISTS (SELECT 1 FROM "user".user_deletions WHERE user_id = $1)`
+	return r.queryProfile(ctx, query, userID)
+}
+
+// GetActiveForUpdate locks the row first and checks the retention record in a
+// second statement. Under READ COMMITTED that statement takes a new snapshot, so
+// when an anonymization was holding the lock it already sees the record that
+// transaction committed. Folding the check into the FOR UPDATE query would not
+// guarantee that, because the subquery would read the pre-lock snapshot.
+func (r *ProfileRepository) GetActiveForUpdate(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	profile, err := r.GetForUpdate(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	const query = `SELECT EXISTS (SELECT 1 FROM "user".user_deletions WHERE user_id = $1)`
+	var deleted bool
+	if err := r.db(ctx).QueryRow(ctx, query, userID).Scan(&deleted); err != nil {
+		return nil, mapError(err)
+	}
+	if deleted {
+		return nil, apperr.ErrProfileNotFound
+	}
+	return profile, nil
+}
+
 // Update persists the mutable columns. The stored `updated_at` is read back,
 // because the schema trigger owns that value and the published event has to
 // carry exactly what the database holds (ADR-007).

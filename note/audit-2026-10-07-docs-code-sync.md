@@ -86,7 +86,7 @@
 ### G5 🟡 `contracts/catalog/interactions.yaml` lệch nhiều chỗ
 - `cart-publishes-cart-events` sai hoàn toàn (C1).
 - Thiếu interaction Promotion → Product snapshot (P5).
-- `notification-publishes-outcomes` liệt kê `user-service` là consumer `complaint-received`, nhưng User chưa có consumer (U5).
+- `notification-publishes-outcomes` liệt kê `user-service` là consumer `complaint-received`, nhưng User chưa có consumer (U5). *(đã xong 2026-10-09: User consume complaint-received, catalog cập nhật)*
 - `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5).
 - Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3).
 - `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2).
@@ -167,49 +167,64 @@
 
 ## 4. User (`docs/user`, `contracts/http/user/v1`, `contracts/events/user/v1`, `go/services/user-service`)
 
-### U9 🔴 [BUG] Profile đã xoá vẫn ghi lại được PII
+> **Kiểm chứng và sửa xong 2026-10-09 (mục User).** Đối chiếu lại từng mục với code: **U1–U11 đều đúng**,
+> không mục nào sai. Ghi chú theo mục bên dưới; chi tiết quyết định ở User ADR-008..012 và
+> `contracts/CHANGELOG.md` (2026-10-09 User sync). Bổ sung ngoài báo cáo:
+> - U9 còn một race thứ hai: `POST /addresses` đã qua bước kiểm profile có thể commit *sau* khi
+>   `Anonymize` xoá address book → address mồ côi của account đã xoá. Đã chặn bằng cách cho `Anonymize`
+>   lấy cùng advisory lock theo user. Preferences vốn đã `404` (row bị xoá); `GET /addresses` trả `200 []`
+>   cho account đã xoá nay là `404`.
+> - U5 nặng hơn mức 🟠: do User không consume `complaint-received`, lần user đổi bất kỳ preference nào
+>   sau khi báo spam, marketing bật lại. Đã implement consumer.
+> - Frontend `AddressCard` chặn xoá mọi địa chỉ default nên U7 không dùng được từ UI → đã sửa
+>   (`isOnlyAddress`).
+> - Còn mở: backfill migration `0002` không tắt marketing của user đã đổi cờ email/in-app (không phân
+>   biệt được với opt-in thật); Auth/Notification còn mTLS ở tầng app (X2); rate limiter internal
+>   của User vẫn fail closed khi Redis lỗi.
+
+### U9 🔴 [BUG] Profile đã xoá vẫn ghi lại được PII — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Sau `USER_DELETED`, `LifecycleService.Anonymize` giữ row profile (ẩn danh) tới hard-delete.
 - `ProfileService.Get/Update` (`internal/domain/service/profile_service.go`) và `AddressService.Create` không kiểm `user_deletions`; repo `profile_repo.go` cũng không lọc.
 - Hệ quả: GET trả 200 profile ẩn danh; PATCH ghi lại tên/ngày sinh vào profile ẩn danh và phát `USER_PROFILE_UPDATED` sang Chat; POST address tạo address chứa PII cho user đã xoá. Trái `docs/user/domain.md` §8 ("request update phải bị từ chối hoặc không tìm thấy profile đã anonymize"). Chỉ được che bởi revocation ở gateway — vốn có thể hỏng (A9).
 - Sửa: coi user có `user_deletions` là `PROFILE_NOT_FOUND` 404 ở mọi đường đọc/ghi (kể cả preferences/address), hoặc thêm cờ trên profile; thêm test.
 
-### U4 🔴 Mặc định `marketing_enabled` mâu thuẫn với Notification (xem N1)
+### U4 🔴 Mặc định `marketing_enabled` mâu thuẫn với Notification (xem N1) — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - `docs/user/data.md` + migration `0001`: `marketing_enabled DEFAULT TRUE`; bootstrap tạo preferences mặc định và **không phát** `USER_PREFERENCES_UPDATED`.
 - `docs/user/interfaces.md` §4 và `docs/notification/08-decide.md` §5: khi chưa có preference thì marketing **tắt** vì lý do compliance.
 - Reconciliation hằng ngày của User phát snapshot hiện hành (`marketing_enabled=true`) → trong 24h Notification bật marketing cho user chưa từng đồng ý.
 - Sửa: thống nhất mặc định `false` ở nguồn User (migration mới + docs), hoặc thêm cơ chế consent; cân nhắc phát `USER_PREFERENCES_UPDATED` khi bootstrap.
 
-### U10 🔴 Internal checkout-snapshot dùng app-level mTLS (xem X2)
+### U10 🔴 Internal checkout-snapshot dùng app-level mTLS (xem X2) — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Contract `checkoutService`: mesh thực thi, "User không nhìn thấy chứng chỉ caller", caller gửi `X-Service-Identity`.
 - Code `internal/api/router/internal_router.go` + `middleware/service_identity.go`: kiểm CN tầng app; production bắt buộc cert. Rate limit `internal-checkout:ip` theo IP (Checkout README cũng ghi gap: 600 req/phút dùng chung cho mọi pod Checkout → 429 → Checkout trả 503).
 
-### U5 🟠 Catalog khai User là consumer `complaint-received` nhưng chưa có
+### U5 🟠 Catalog khai User là consumer `complaint-received` nhưng chưa có — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - `interactions.yaml` `notification-publishes-outcomes`: consumers `[analytics-service, user-service]`.
 - `docs/user/interfaces.md` §1: "proposed — User chưa đăng ký consumer". Code: consumer chỉ đọc `t.auth.events`.
 - Sửa: bỏ khỏi catalog cho tới khi implement, hoặc implement consumer.
 
-### U7 🟠 Không xoá được địa chỉ duy nhất
+### U7 🟠 Không xoá được địa chỉ duy nhất — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - BR-004 cấm xoá địa chỉ default và không có thao tác bỏ default → user chỉ có một địa chỉ không bao giờ xoá được (chỉ sửa được). Docs không nêu.
 - Sửa: cho phép xoá default khi là địa chỉ cuối cùng, hoặc ghi rõ quyết định.
 
-### U8 🟠 Giới hạn 50 địa chỉ không có trong docs/contract
+### U8 🟠 Giới hạn 50 địa chỉ không có trong docs/contract — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Code `internal/common/constants/constants.go` `AddressBookLimit = 50`, vượt → `INVALID_ADDRESS` 422.
 - OpenAPI `AddressList.addresses` không có `maxItems` (vi phạm `contracts/conventions/data-types.md` "List MUST có maxItems").
 
-### U11 🟠 Race cache-aside có thể giữ list cũ tới 12h
+### U11 🟠 Race cache-aside có thể giữ list cũ tới 12h — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - `AddressService.List`: đọc DB rồi `Put` cache; nếu một mutation `DEL` cache xen giữa, list cũ được ghi lại và sống tới TTL 12h mà không có lỗi nào. Docs chỉ nói stale "giữa commit và invalidation, hoặc tới TTL nếu DEL thất bại".
 - Sửa: version/compare-and-set khi fill cache, hoặc ghi rõ rủi ro.
 
-### U1 🟡 `data.md` nói chưa có migration
+### U1 🟡 `data.md` nói chưa có migration — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Header: "Chưa tạo migration/schema machine-readable"; §3 "cần tạo migration trước khi đánh dấu implemented". Thực tế `migrations/0001_initial_user_schema.up.sql` có và khớp data.md; README cũng nói đã có.
 
-### U2 🟡 Trạng thái mâu thuẫn
+### U2 🟡 Trạng thái mâu thuẫn — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - `architecture.md` header "cấu trúc mục tiêu, không phải implementation đã xác minh" và §7 "Tất cả vẫn là proposed" — trong khi ADR index đều "Đã chấp thuận", README nói runtime đã có.
 
-### U3 🟡 Bảng lỗi thiếu mã
+### U3 🟡 Bảng lỗi thiếu mã — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - BR-003 dùng `DEFAULT_ADDRESS_CONFLICT` nhưng §7 không liệt kê. Code còn có `INVALID_PROFILE_FIELD`, `INVALID_ADDRESS` (422), `VALIDATION_FAILED`, `UNAUTHORIZED`, `RATE_LIMITED`, `DEPENDENCY_UNAVAILABLE`... Comment `errors.go` "Codes match docs/user/domain.md section 7" sai.
 
-### U6 🟡 Payload event mô tả thiếu
+### U6 🟡 Payload event mô tả thiếu — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - WF-USER-002: `USER_PROFILE_UPDATED` "chỉ với user_id và sender_name" — contract còn `updated_at`.
 
 Đã khớp: route/status/schema; event type/topic/key/payload; consumer retry 10 lần 1s→5m → DLQ; purge mỗi giờ batch 100 `SKIP LOCKED`; reconciliation hằng ngày; cache key/TTL 12h, empty 15m; migration == data.md.
@@ -481,7 +496,7 @@ Docs mới nhất, khớp code.
 - `architecture.md`/`domain.md` frontmatter `status: proposed`; `interfaces.md` dòng "Voucher options | `proposed`" (Promotion đã implement); các interaction của Checkout trong catalog vẫn `proposed`.
 
 ### K4 🟡 Known gap đã ghi (để nhớ khi sửa phía provider)
-- Rate limit internal User theo IP 600/phút chung cho mọi pod (U10).
+- Rate limit internal User theo IP 600/phút chung cho mọi pod (U10) — đã sửa 2026-10-09: theo (service gọi, user_id), 120/phút.
 - Product chưa có nhãn biến thể → Order `variant_name` null → ảnh hưởng Review/Notification.
 - User snapshot không có tên tỉnh/huyện/xã → Order/Notification dùng mã.
 - `user_tier` luôn omit.
@@ -543,10 +558,12 @@ Docs mới nhất, khớp code.
 - [ ] A9 Auth: luôn phát `USER_DELETED` / `USER_EMAIL_CHANGED` / `USER_PASSWORD_CHANGED` sau commit dù Redis lỗi.
 - [ ] A12 Auth: resend OTP không trả 429 phân biệt.
 - [ ] A13 Auth + gateway-auth: so sánh `revoked_before` không chặn token cùng giây.
-- [ ] A11/U10 Auth/User: rate limit internal theo principal.
-- [ ] U9 User: chặn đọc/ghi profile/address/preferences của user đã xoá.
-- [ ] U4/N1 User: mặc định `marketing_enabled=false` (migration mới) hoặc consent.
-- [ ] U11 User: chống race khi fill cache address (tuỳ chọn).
+- [ ] A11 Auth: rate limit internal theo principal. [x] U10 User: rate limit theo (service gọi, `user_id`) thay vì IP, `X-Service-Identity` allowlist thay mTLS ở app (ADR-008). *(2026-10-09)*
+- [x] U9 User: chặn đọc/ghi profile/address/preferences của user đã xoá (`GetActive*`, lock trong `Anonymize`, ADR-010). *(2026-10-09)*
+- [x] U4/N1 User: mặc định `marketing_enabled=false` + migration `0002` backfill row chưa chạm (ADR-009). *(2026-10-09)*
+- [x] U11 User: epoch chống fill cache address muộn (ADR-011). *(2026-10-09)*
+- [x] U7 User: cho xoá address duy nhất còn lại (ADR-012) + frontend `AddressCard`. *(2026-10-09)*
+- [x] U5 User: consumer `complaint-received` trên `t.notification.outcomes.v1` (ADR-009). *(2026-10-09)*
 - [x] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`). *(2026-10-09)*
 - [x] C12 Cart: consumer `USER_DELETED` + `purge_cart.lua` (ADR-014); Auth contract/docs/catalog đã thêm Cart vào consumers. *(2026-10-09)*
 - [ ] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge.
@@ -555,7 +572,7 @@ Docs mới nhất, khớp code.
 - [ ] P5 Product: tách allowlist snapshot cho Promotion.
 - [ ] P7 Product: build proto từ `contracts/`.
 - [ ] N4 Notification: gửi `X-Service-Identity` khi gọi Auth.
-- [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification).
+- [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User đã chuyển sang mô hình mesh 2026-10-09, ADR-008; còn Auth, Notification)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
 
 ### Contract / catalog
@@ -563,15 +580,15 @@ Docs mới nhất, khớp code.
 - [ ] K1/K2 bổ sung mã vào Order internal OpenAPI.
 - [x] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400. *(2026-10-09)*
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [ ] PR6 Promotion OpenAPI `servers`.
-- [ ] U8 User OpenAPI `maxItems: 50` cho `AddressList`.
+- [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; còn P5, U5, N5, K3, PY2, N2).
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; còn P5, N5, phần còn lại của K3, PY2, N2).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog.
 
 ### Docs
 - [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
 - [ ] Auth: A1–A8, A14.
-- [ ] User: U1–U3, U6, U7, U8.
+- [x] User: U1–U3, U6, U7, U8 (cộng U4, U5, U9–U11 ở docs; frontmatter `scope: current`/`status: implemented`, error catalog đầy đủ, bảng cấu hình, WF-USER-009). *(2026-10-09)*
 - [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
 - [ ] Product: P1–P4, P8.
 - [ ] Promotion: PR1–PR3, PR5–PR7, PR10, README §9.

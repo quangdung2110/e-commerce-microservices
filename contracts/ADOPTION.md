@@ -23,6 +23,8 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Checkout HTTP v1 | `implemented` | `java/services/checkout-service` phục vụ đủ bốn operation; contract test validate response thành công và `CheckoutProblem` với OpenAPI, enum lỗi khớp OpenAPI và bảng `interfaces.md`, mọi fixture provider validate với contract của provider (Cart, User, Inventory, Promotion, Order), test cạnh tranh trên Redis thật và BlockHound. Chưa có E2E qua provider thật; frontend mới sinh type, chưa gọi. |
 | Promotion Events v1 | `implemented` | Promotion ghi `product-markdown-snapshot.v1` vào outbox (JSON Schema contract test `MarkdownSnapshotContractTest`, connector `debezium-connector-promotion-outbox.json`) và consume `product-deleted.v1`; Product consumer đã chấp nhận INACTIVE tombstone (migration V2). Chưa có E2E qua Debezium thật. |
 
+| User HTTP v1 | `proposed` | `go/services/user-service` phục vụ đủ chín operation public và `checkout-snapshot` nội bộ; route, status, mã lỗi và wire shape đã được đối chiếu thủ công với OpenAPI và có integration test (Testcontainers) cho từng nhóm. Chưa `implemented` vì không có test tự động validate response với schema OpenAPI, và chưa có consumer test từ Checkout thật (Checkout dùng fixture). Cổng internal xác thực qua mesh + allowlist `X-Service-Identity` (User ADR-008), không còn mTLS ở tầng app. |
+| User Events v1 | `proposed` | Producer publish trực tiếp `USER_PROFILE_UPDATED`/`USER_PREFERENCES_UPDATED` (không outbox, có reconciliation hằng ngày); unit test kiểm envelope và payload. Chưa `implemented` vì chưa validate payload với JSON Schema; consumer Notification đã có, Chat chưa xác minh. User cũng consume `complaint-received` của Notification (User ADR-009). |
 ## Quy tắc chuyển trạng thái
 
 ### `proposed` → `implemented`

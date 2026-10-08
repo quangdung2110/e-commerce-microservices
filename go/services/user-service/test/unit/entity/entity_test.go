@@ -167,7 +167,7 @@ func TestAddressNormalizesAHumanTypedPhone(t *testing.T) {
 	require.Equal(t, "+84901234567", address.RecipientPhone.String())
 }
 
-func TestDefaultAddressRefusesDeletion(t *testing.T) {
+func TestDefaultAddressRefusesDeletionWhileOthersExist(t *testing.T) {
 	address, err := entity.NewAddress(uuid.New(), entity.AddressInput{
 		RecipientName:  "Nguyen Van A",
 		RecipientPhone: "+84901234567",
@@ -178,10 +178,21 @@ func TestDefaultAddressRefusesDeletion(t *testing.T) {
 	}, true, testNow)
 	require.NoError(t, err)
 
-	require.ErrorIs(t, address.EnsureDeletable(), apperr.ErrDefaultAddressCannotBeDeleted)
+	require.ErrorIs(t, address.EnsureDeletable(2), apperr.ErrDefaultAddressCannotBeDeleted)
+	require.NoError(t, address.EnsureDeletable(1),
+		"the only address has no replacement to promote, so it may go")
 
 	address.IsDefault = false
-	require.NoError(t, address.EnsureDeletable())
+	require.NoError(t, address.EnsureDeletable(2))
+}
+
+func TestNewPreferencesAreOptedOutOfMarketing(t *testing.T) {
+	preferences := entity.NewDefaultPreferences(uuid.New(), testNow)
+
+	require.True(t, preferences.EmailEnabled)
+	require.True(t, preferences.InAppEnabled)
+	require.False(t, preferences.MarketingEnabled,
+		"marketing is opt-in: the default must match Notification's no-row default")
 }
 
 func TestPreferencesReplaceReportsWhetherAnythingChanged(t *testing.T) {
@@ -190,15 +201,15 @@ func TestPreferencesReplaceReportsWhetherAnythingChanged(t *testing.T) {
 	require.False(t, preferences.Replace(entity.NotificationChanges{
 		EmailEnabled:     true,
 		InAppEnabled:     true,
-		MarketingEnabled: true,
+		MarketingEnabled: false,
 	}, testNow), "the defaults already say this")
 
 	require.True(t, preferences.Replace(entity.NotificationChanges{
 		EmailEnabled:     true,
 		InAppEnabled:     true,
-		MarketingEnabled: false,
+		MarketingEnabled: true,
 	}, testNow))
-	require.False(t, preferences.MarketingEnabled)
+	require.True(t, preferences.MarketingEnabled)
 }
 
 func TestDeletionRequiresADeadlineAfterTheDeletion(t *testing.T) {

@@ -126,4 +126,4 @@ Mọi ops call ghi audit (principal, thời điểm, tham số) vào bảng `ops
 | `docs/mesh/runtime-contract.md` | 4 dòng AuthorizationPolicy §5.2; 3 dòng retry/timeout; sửa ghi chú "Notification chỉ nhận Kafka" |
 | `docs/gateway/runtime-contract.md` | Route `/api/v1/notifications/inbox/**` |
 
-Còn lại cho owner tương ứng: Order xác nhận snapshot có `name` (README §7 mục 3); User Service đăng ký consume `notification.complaint-received.v1`; Analytics đăng ký consume `t.notification.outcomes.v1`.
+Còn lại cho owner tương ứng: Order xác nhận snapshot có `name` (README §7 mục 3); ~~User Service đăng ký consume `notification.complaint-received.v1`~~ (đã xong: User consume trên `t.notification.outcomes.v1`, group `user-service`, DLQ `t.notification.outcomes.v1.dlq`, xem [User ADR-009](../user/decisions/ADR-009-marketing-opt-in-and-complaint-opt-out.md)); Analytics đăng ký consume `t.notification.outcomes.v1`.

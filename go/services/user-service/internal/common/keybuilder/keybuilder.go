@@ -31,6 +31,13 @@ func (b *Builder) Addresses(userID string) string {
 	return fmt.Sprintf("%s:addresses:%s", b.cachePrefix, userID)
 }
 
+// AddressesEpoch keys the invalidation counter of one user's cached address
+// book. It lets a fill that raced with a committed mutation be refused instead
+// of re-caching a stale list until the TTL expires.
+func (b *Builder) AddressesEpoch(userID string) string {
+	return fmt.Sprintf("%s:addresses-epoch:%s", b.cachePrefix, userID)
+}
+
 // RateLimit keys a fixed-window counter for one scope and subject.
 func (b *Builder) RateLimit(scope, subject string) string {
 	return fmt.Sprintf("%s:ratelimit:%s:%s", b.statePrefix, scope, subject)

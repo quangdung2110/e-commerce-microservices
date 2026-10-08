@@ -14,6 +14,13 @@ và topic/message nằm trong [AsyncAPI](asyncapi.yaml).
 Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_id`. Consumer
 phải xử lý delivery trùng và chỉ áp dụng update mới hơn theo `updated_at`.
 
+`USER_PREFERENCES_UPDATED` có hai nguồn: owner đổi preferences qua HTTP, và User
+tắt `marketing_enabled` ở nguồn khi nhận `complaint-received` từ
+`t.notification.outcomes.v1` ([Notification Events v1](../../notification/v1/asyncapi.yaml)).
+Account mới được tạo với email/in-app bật và marketing **tắt** mà không phát event;
+Notification coi thiếu preference là cùng giá trị đó, nên hai bên không lệch nhau
+về consent.
+
 `USER_DELETED` không thuộc contract này. Auth Service là nguồn chân lý cho việc
 xóa account và phát event đó trực tiếp cho User, Notification, Review, Chat và Cart
 trên [`Auth Events v1`](../../auth/v1/asyncapi.yaml).

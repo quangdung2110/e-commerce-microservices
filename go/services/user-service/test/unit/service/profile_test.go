@@ -25,6 +25,17 @@ func TestProfileGetReturnsNotFoundForUnknownUser(t *testing.T) {
 	require.ErrorIs(t, err, apperr.ErrProfileNotFound)
 }
 
+func TestProfileGetReturnsNotFoundOnceTheAccountIsInItsRetentionWindow(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+	h.deletions.deletions[uuid.New()] = entity.Deletion{UserID: userID}
+
+	_, err := h.profileService.Get(context.Background(), userID)
+
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound,
+		"the anonymized row is kept for the purge, not for the owner")
+}
+
 func TestProfileUpdateStoresNamesAndPublishesDisplayName(t *testing.T) {
 	h := newHarness(t)
 	userID := h.seedProfile(t)

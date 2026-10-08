@@ -3,6 +3,32 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-09 (User sync)
+
+- User HTTP v1 wire shapes are unchanged; the contract text now matches `user-service`. Observable behaviour
+  that changed in the service and is now stated:
+  - `DELETE /api/v1/users/me/addresses/{address_id}` still answers `409 DEFAULT_ADDRESS_CANNOT_BE_DELETED`
+    for the default **while other addresses exist**, but the only remaining address (which is the default)
+    can now be deleted, leaving an empty address book. Before, the last address could never be removed.
+  - Every owner route answers `404 PROFILE_NOT_FOUND` for an account in its retention window (deleted, anonymized,
+    not yet purged), exactly like a purged one. Before, `GET /profile` returned the anonymized row, `PATCH
+    /profile` wrote names back into it and `POST /addresses` created an address for a deleted account.
+  - `AddressList.addresses` has `maxItems: 50`; creating a 51st address is `422 INVALID_ADDRESS`.
+  - `marketing_enabled` is **opt-in**: a new account starts with email and in-app on and marketing off
+    (it used to start on, which disagreed with Notification's no-row default and switched marketing on for
+    users who never agreed). Migration `0002` also switches off the rows whose owner never changed them.
+  - The internal checkout-snapshot operation documents `403` (identity outside the allowlist) and that the
+    caller must send `X-Service-Identity: checkout-service`. User no longer terminates TLS or checks the client
+    certificate itself: the mesh enforces mTLS and the principal, as `docs/mesh/runtime-contract.md` already
+    required. Its rate limit is per (calling service, `user_id`) instead of per client IP.
+- User Events v1 schemas are unchanged. `USER_PREFERENCES_UPDATED` is now also published when User switches
+  `marketing_enabled` off after a spam complaint.
+- Notification Events v1 `t.notification.outcomes.v1`: `user-service` now really consumes
+  `complaint-received` (group `user-service`, DLQ `t.notification.outcomes.v1.dlq`) and ignores the other
+  outcomes. The schema is unchanged.
+- Catalog: `checkout-reads-user-address-snapshot` and `user-publishes-profile-preference-events` are
+  `implemented`; `notification-publishes-outcomes` notes describe the implemented User consumer.
+
 ## 2026-10-09 (Cart sync)
 
 - Cart HTTP v1 and Cart Events v1 are `implemented`. HTTP wire shapes are unchanged; contract text now

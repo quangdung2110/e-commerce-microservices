@@ -155,9 +155,10 @@ Giải thích chi tiết ở [domain.md](./domain.md#luật-nghiệp-vụ).
 - Chưa có kiểm thử end-to-end tự động qua Cart, User, Product, Inventory, Promotion và Order
   thật: các test của Checkout dùng fixture đã được validate với contract của từng provider
   (xem [development.md](./development.md#test-bắt-buộc)).
-- Cổng internal của User giới hạn `internal_per_client` 600 request/phút theo IP, dùng chung cho
-  mọi pod Checkout; ở mức 20 RPS Preview mỗi pod sẽ gặp `429` và Checkout trả `503`. Nâng giới
-  hạn này cho principal `checkout-service` trước load test.
+- Cổng internal của User giới hạn `internal_per_user` 120 request/phút cho mỗi cặp (service gọi,
+  `user_id`) ([User ADR-008](../user/decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md));
+  nó không còn là một bucket theo IP dùng chung cho mọi pod Checkout. Một user bấm Preview liên
+  tục vẫn có thể gặp `429` và Checkout trả `503`; kiểm tra lại ngưỡng khi load test.
 - Product gRPC không có nhãn biến thể: báo giá trả `variant_attributes` dạng mã → giá trị
   và Order nhận `variant_name` vắng mặt cho tới khi Product bổ sung nhãn.
 - User snapshot không có tên tỉnh/huyện/xã; Order nhận `province_name`, `district_name`,

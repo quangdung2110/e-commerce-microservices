@@ -16,7 +16,7 @@
             "user_id": { "type": "string", "format": "uuid", "x-data-classification": "INTERNAL" },
             "email_enabled": { "type": "boolean" },
             "in_app_enabled": { "type": "boolean" },
-            "marketing_enabled": { "type": "boolean" },
+            "marketing_enabled": { "type": "boolean", "description": "Opt-in: false cho tới khi owner đồng ý; User tắt cờ này khi Notification báo complaint-received." },
             "updated_at": { "type": "string", "format": "date-time", "x-data-classification": "INTERNAL" }
           }
         }

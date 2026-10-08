@@ -10,6 +10,7 @@ evidence:
   - go/services/user-service/Makefile
   - go/services/user-service/cmd/server/main.go
   - go/services/user-service/migrations/0001_initial_user_schema.up.sql
+  - go/services/user-service/migrations/0002_marketing_opt_in_default.up.sql
   - docker-compose.yml
 verified_against_commit: null
 ---
@@ -25,22 +26,26 @@ Runtime Go 1.25, Gin, pgx/PostgreSQL, Redis và Sarama/Kafka nằm ở
 PowerShell từ **gốc repo**, không cần Go trên host:
 
 ```powershell
-docker run --rm -e GOTOOLCHAIN=local -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -race ./test/unit/...
+docker run --rm -e GOTOOLCHAIN=local -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -race ./internal/... ./test/unit/...
 docker run --rm -e GOTOOLCHAIN=local -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go vet ./...
 docker compose build user-service
 ```
 
 Đổi dependency: chạy `go mod tidy` bằng Go 1.25, review `go.mod`/`go.sum` và build
 Docker cùng module graph. Integration suite dùng PostgreSQL/Redis Testcontainers
-riêng và reset fixture; không trỏ vào database ứng dụng:
+riêng (áp `0001` rồi `0002`) và reset fixture; không trỏ vào database ứng dụng. Từ
+container Go, Testcontainers cần ghim API version của engine và tìm được host Docker:
 
 ```powershell
-docker run --rm -e GOTOOLCHAIN=local -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -tags=integration -count=1 -timeout=15m ./test/integration/...
+docker run --rm -e GOTOOLCHAIN=local -e DOCKER_API_VERSION=1.44 -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true --add-host=host.docker.internal:host-gateway -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}/go/services/user-service:/app" -w /app golang:1.25 go test -tags=integration -count=1 -timeout=15m ./test/integration/...
 ```
 
-Test kiểm tra ownership, unique default, xóa default bị từ chối, profile bootstrap,
-cache fallback, deletion/lifecycle và reconciliation. Contract/load/production
-metrics còn thiếu bằng chứng được ghi trong README module.
+Test kiểm tra ownership, unique default, xóa default bị từ chối (và xóa được address
+duy nhất), giới hạn 50 address, profile bootstrap, account đã xóa nhận 404 trên mọi route,
+cache fallback và epoch chống fill muộn, deletion/lifecycle, reconciliation, cổng internal
+(`401`/`403`/`200`/`404`/`429`), consumer Kafka (routing theo topic, retry, DLQ), complaint
+tắt marketing và backfill của migration `0002`. Contract/load/production metrics còn
+thiếu bằng chứng được ghi trong README module.
 
 ## 2. Root Compose: frontend và Checkout
 
@@ -49,7 +54,8 @@ docker compose up -d --build user-service
 ```
 
 `user-migrate` dùng `migrate/migrate:v4.18.3` sau PostgreSQL healthy; User chỉ start
-khi migration exit 0. Version tracking hoạt động cả khi volume đã tồn tại. Root
+khi migration exit 0 (hiện áp `0001` rồi `0002`; `0002` đổi mặc định marketing và tắt
+marketing của các row owner chưa từng chạm). Version tracking hoạt động cả khi volume đã tồn tại. Root
 `init-db.sh` tạo DB `user_service` trên volume mới; volume cũ thiếu DB cần tạo riêng
 DB trước khi migrate. Khi thêm migration hoặc triển khai lại, chạy tường minh:
 
@@ -68,9 +74,9 @@ migration hoặc xóa volume để bỏ qua lỗi. Root schema rỗng migrate b�
 ## 3. Standalone stack
 
 Từ thư mục service, `docker compose up -d`: DB `user_db`, PostgreSQL host `5433`,
-Redis `6380`, Kafka `9093`, public API host `8082`. Standalone nạp SQL ban đầu qua
+Redis `6380`, Kafka `9093`, public API host `8082`. Standalone nạp `0001` và `0002` qua
 initdb trên volume rỗng nhưng chưa có version tracking; không chạy lại migration
-đầu tiên khi chưa baseline. `make migrate-up DB_URL=...` dành cho DB golang-migrate
+đầu tiên khi chưa baseline. Volume standalone tạo trước `0002` cần áp `0002` thủ công. `make migrate-up DB_URL=...` dành cho DB golang-migrate
 quản lý; mặc định host standalone là `localhost:5433/user_db`. Root dùng mục 2.
 
 Chạy `make run` trên host cần override DB/Redis/Kafka theo stack; Kafka advertised
@@ -79,16 +85,19 @@ listener phải truy cập được từ process host.
 ## 4. Config và buyer
 
 Mọi key trong `configs/application.yaml` override qua `USER_`; secret lấy từ
-`DB_PASSWORD`, `REDIS_PASSWORD`. Env thay đổi cần recreate process. Production
-bắt buộc mTLS cho internal API; root dev dùng mạng nội bộ.
+`DB_PASSWORD`, `REDIS_PASSWORD`. Env thay đổi cần recreate process. Service không tự
+kết thúc TLS cho cổng internal: trên cluster mesh thực thi mTLS và principal, ở root dev
+(không có mesh) listener chỉ nằm trong mạng backend và `X-Service-Identity` không được
+xác thực. Bảng đầy đủ các key nằm ở [Operations](./operations.md#cấu-hình).
 
 | Biến root stack | Giá trị / tác dụng |
 |---|---|
 | USER_DATABASE_HOST / USER_DATABASE_NAME | postgres / user_service |
 | USER_REDIS_HOST | redis |
 | USER_KAFKA_BROKERS | kafka:9092 |
-| USER_KAFKA_CONSUMER_ENABLED | Bật consumer để bootstrap profile từ Auth |
+| USER_KAFKA_CONSUMER_ENABLED | Bật consumer: bootstrap/xóa từ Auth và tắt marketing từ complaint của Notification |
 | USER_INTERNAL_ENABLED | Bật checkout snapshot trên cổng nội bộ 8083 |
+| USER_INTERNAL_ALLOWED_CALLERS | Allowlist `X-Service-Identity` của cổng internal, mặc định `checkout-service` |
 
 Buyer phải qua Auth/Gateway. Consumer xử lý `USER_VERIFIED_SUCCESS` tạo profile
 bằng Auth user_id; login không tự tạo profile. Kiểm tra profile/addresses qua phiên

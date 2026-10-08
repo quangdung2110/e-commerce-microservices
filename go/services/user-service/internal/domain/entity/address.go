@@ -150,9 +150,13 @@ func (a *Address) Replace(in AddressInput, now time.Time) error {
 }
 
 // EnsureDeletable refuses to remove the address a checkout would pick by
-// default (USER-BR-004). The owner promotes another address first.
-func (a *Address) EnsureDeletable() error {
-	if a.IsDefault {
+// default while the book holds others (USER-BR-004): the owner promotes another
+// address first. addressesInBook counts every address of the owner, this one
+// included. The only address left is deletable even when it is the default,
+// because no replacement exists and refusing would make the book impossible to
+// empty again.
+func (a *Address) EnsureDeletable(addressesInBook int) error {
+	if a.IsDefault && addressesInBook > 1 {
 		return apperr.ErrDefaultAddressCannotBeDeleted
 	}
 	return nil

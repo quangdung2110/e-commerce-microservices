@@ -199,6 +199,63 @@ func TestParseRejectsAForeignOrMalformedMessage(t *testing.T) {
 	require.Error(t, err, "only Auth may produce on this topic")
 }
 
+func TestParseComplaintReceived(t *testing.T) {
+	raw := []byte(`{
+		"specversion": "1.0",
+		"id": "0198e09a-97e4-7d66-8a2c-997d792ae826",
+		"type": "com.ecommerce.notification.complaint-received.v1",
+		"source": "/services/notification",
+		"subject": "deliveries/0198e09b-97e4-7d66-8a2c-997d792ae826",
+		"time": "2026-08-27T12:40:00Z",
+		"datacontenttype": "application/json",
+		"dataschema": "/contracts/events/notification/v1/schemas/notification-complaint-received.schema.json",
+		"data": {
+			"delivery_id": "0198e09b-97e4-7d66-8a2c-997d792ae826",
+			"request_id": "0198e09c-97e4-7d66-8a2c-997d792ae826",
+			"template": "CART_ABANDONED",
+			"lane": "bulk",
+			"channel": "email",
+			"user_id": "0198e098-96f2-7ad3-91d8-570608021328",
+			"provider": "ses",
+			"occurred_at": "2026-08-27T12:40:00Z",
+			"marketing_disabled": true
+		}
+	}`)
+
+	envelope, err := event.ParseNotificationEnvelope(raw)
+	require.NoError(t, err)
+	require.Equal(t, event.TypeNotificationComplaintReceived, envelope.Type)
+
+	payload, err := event.ParseComplaintReceived(envelope.Data)
+	require.NoError(t, err)
+	require.Equal(t, "0198e098-96f2-7ad3-91d8-570608021328", payload.UserID.String())
+}
+
+func TestParseComplaintReceivedRejectsAMissingOrNonUUIDUser(t *testing.T) {
+	_, err := event.ParseComplaintReceived([]byte(`{"marketing_disabled": true}`))
+	require.Error(t, err)
+
+	_, err = event.ParseComplaintReceived([]byte(`{"user_id": "not-a-uuid"}`))
+	require.Error(t, err)
+
+	_, err = event.ParseComplaintReceived([]byte(`{"user_id": "00000000-0000-0000-0000-000000000000"}`))
+	require.Error(t, err, "the nil UUID identifies nobody")
+}
+
+func TestNotificationEnvelopeOnlyAcceptsNotification(t *testing.T) {
+	_, err := event.ParseNotificationEnvelope(
+		[]byte(`{"specversion":"1.0","id":"x","type":"t","source":"/services/auth"}`))
+	require.Error(t, err, "only Notification produces on t.notification.outcomes.v1")
+
+	_, err = event.ParseAuthEnvelope(
+		[]byte(`{"specversion":"1.0","id":"x","type":"t","source":"/services/notification"}`))
+	require.Error(t, err, "and only Auth produces on t.auth.events")
+
+	_, err = event.ParseNotificationEnvelope(
+		[]byte(`{"specversion":"1.0","id":"x","type":"com.ecommerce.notification.delivered.v1","source":"/services/notification"}`))
+	require.NoError(t, err, "other outcomes are structurally valid and simply not acted on")
+}
+
 func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {
