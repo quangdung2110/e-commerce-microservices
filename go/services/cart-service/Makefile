@@ -46,12 +46,14 @@ sync-lua:
 	cp $(LUA_SOURCE_DIR)/upsert_item.lua $(LUA_TARGET_DIR)/
 	cp $(LUA_SOURCE_DIR)/remove_items.lua $(LUA_TARGET_DIR)/
 	cp $(LUA_SOURCE_DIR)/mark_abandoned.lua $(LUA_TARGET_DIR)/
+	cp $(LUA_SOURCE_DIR)/purge_cart.lua $(LUA_TARGET_DIR)/
 
 ## check-lua fails when the embedded scripts have drifted from the canonical ones.
 check-lua:
 	diff -u $(LUA_SOURCE_DIR)/upsert_item.lua $(LUA_TARGET_DIR)/upsert_item.lua
 	diff -u $(LUA_SOURCE_DIR)/remove_items.lua $(LUA_TARGET_DIR)/remove_items.lua
 	diff -u $(LUA_SOURCE_DIR)/mark_abandoned.lua $(LUA_TARGET_DIR)/mark_abandoned.lua
+	diff -u $(LUA_SOURCE_DIR)/purge_cart.lua $(LUA_TARGET_DIR)/purge_cart.lua
 
 ## generate regenerates the Product gRPC stubs from the canonical proto.
 generate:

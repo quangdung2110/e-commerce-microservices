@@ -124,7 +124,7 @@ components:
       title: USER_DELETED
       summary: Account đã được anonymize và vào retention window 90 ngày.
       contentType: application/cloudevents+json
-      x-consumers: [user-service, notification-service, review-service, chat-service]
+      x-consumers: [user-service, notification-service, review-service, chat-service, cart-service]
       payload:
         $ref: './schemas/user-deleted.schema.json'
       examples:

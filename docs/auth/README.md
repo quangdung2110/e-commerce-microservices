@@ -63,7 +63,7 @@ Chi tiết ở [Data Design](./data.md).
 | Outbound | Redis | Cache / PubSub | Revocation, rate limit, OTP và JWKS invalidation | Required for security controls | [Data](./data.md) |
 | Outbound | Kafka | Events | Thông báo thay đổi identity | Required for asynchronous integrations | [Interfaces](./interfaces.md) |
 | Outbound | User Service | Kafka consumer | Khởi tạo/dọn profile từ identity event | Optional by workflow | [Interfaces](./interfaces.md) |
-| Outbound | Notification, Review, Chat Service | Kafka consumer | Tự cleanup/anonymize dữ liệu sở hữu khi account bị xóa | Optional by workflow | [Interfaces](./interfaces.md) |
+| Outbound | Notification, Review, Chat, Cart Service | Kafka consumer | Tự cleanup/anonymize dữ liệu sở hữu khi account bị xóa (Cart xóa giỏ hàng) | Optional by workflow | [Interfaces](./interfaces.md) |
 | Outbound | Notification Service | Kafka consumer | Gửi OTP và security notification | Optional by workflow | [Interfaces](./interfaces.md) |
 
 ## 7. Critical invariants

@@ -58,13 +58,17 @@ type Kafka struct {
 	// TopicCartEventsDLQ receives outbox entries that can never be published.
 	TopicCartEventsDLQ string `mapstructure:"topic_cart_events_dlq"`
 	// TopicOrderEvents carries the PAID and COMPLETED facts; Cart consumes PAID.
-	TopicOrderEvents   string        `mapstructure:"topic_order_events"`
-	ConsumerGroupOrder string        `mapstructure:"consumer_group_order"`
-	InitialOffset      string        `mapstructure:"initial_offset"`
-	RequiredAcks       string        `mapstructure:"required_acks"`
-	ProduceTimeout     time.Duration `mapstructure:"produce_timeout"`
-	SessionTimeout     time.Duration `mapstructure:"session_timeout"`
-	TLSEnabled         bool          `mapstructure:"tls_enabled"`
+	TopicOrderEvents   string `mapstructure:"topic_order_events"`
+	ConsumerGroupOrder string `mapstructure:"consumer_group_order"`
+	// TopicAuthEvents carries the identity facts; Cart consumes USER_DELETED to
+	// purge the cart of a deleted account.
+	TopicAuthEvents   string        `mapstructure:"topic_auth_events"`
+	ConsumerGroupAuth string        `mapstructure:"consumer_group_auth"`
+	InitialOffset     string        `mapstructure:"initial_offset"`
+	RequiredAcks      string        `mapstructure:"required_acks"`
+	ProduceTimeout    time.Duration `mapstructure:"produce_timeout"`
+	SessionTimeout    time.Duration `mapstructure:"session_timeout"`
+	TLSEnabled        bool          `mapstructure:"tls_enabled"`
 	// EventDataSchema is the dataschema URI stamped on every CloudEvent.
 	EventDataSchema string `mapstructure:"event_data_schema"`
 }
@@ -120,8 +124,8 @@ type Cart struct {
 	// IdempotencyTTL is how long an HTTP write stays replayable.
 	IdempotencyTTL time.Duration `mapstructure:"idempotency_ttl"`
 	// InternalCallers are the service identities allowed on /internal/v1 (checkout-service).
-	InternalCallers []string `mapstructure:"internal_callers"`
-	RateLimit      RateLimit     `mapstructure:"rate_limit"`
+	InternalCallers []string  `mapstructure:"internal_callers"`
+	RateLimit       RateLimit `mapstructure:"rate_limit"`
 }
 
 // RateLimit tunes the local per-user limiter.
@@ -137,6 +141,8 @@ type Worker struct {
 	OutboxRelay     RelayWorker   `mapstructure:"outbox_relay"`
 	StreamTrimmer   TrimmerWorker `mapstructure:"stream_trimmer"`
 	OrderConsumer   ToggleWorker  `mapstructure:"order_consumer"`
+	// UserDeletedConsumer purges the cart of a deleted account (USER_DELETED).
+	UserDeletedConsumer ToggleWorker `mapstructure:"user_deleted_consumer"`
 }
 
 // ToggleWorker is a worker with no tuning beyond an on/off switch.
@@ -218,6 +224,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Product.Address == "" {
 		return fmt.Errorf("product.address is required")
+	}
+	if c.Worker.UserDeletedConsumer.Enabled {
+		if c.Kafka.TopicAuthEvents == "" || c.Kafka.ConsumerGroupAuth == "" {
+			return fmt.Errorf("kafka.topic_auth_events and kafka.consumer_group_auth are required when worker.user_deleted_consumer is enabled")
+		}
 	}
 
 	// Without these the cart would hand storage keys or broken URLs to the
@@ -322,7 +333,7 @@ func applyDefaults(c *Config) {
 		c.Kafka.ProduceTimeout = 10 * time.Second
 	}
 	if c.Kafka.EventDataSchema == "" {
-		c.Kafka.EventDataSchema = "https://contracts.ecommerce.local/events/cart/v1/schemas/cart-abandoned.schema.json"
+		c.Kafka.EventDataSchema = "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json"
 	}
 	if c.Product.DialTimeout == 0 {
 		c.Product.DialTimeout = 5 * time.Second

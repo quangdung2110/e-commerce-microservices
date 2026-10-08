@@ -15,7 +15,7 @@ Kafka key là `user_id`; thứ tự chỉ được cam kết trong cùng `user_i
 phải xử lý delivery trùng và chỉ áp dụng update mới hơn theo `updated_at`.
 
 `USER_DELETED` không thuộc contract này. Auth Service là nguồn chân lý cho việc
-xóa account và phát event đó trực tiếp cho User, Notification, Review và Chat
+xóa account và phát event đó trực tiếp cho User, Notification, Review, Chat và Cart
 trên [`Auth Events v1`](../../auth/v1/asyncapi.yaml).
 
 ## Dữ liệu và độ tin cậy

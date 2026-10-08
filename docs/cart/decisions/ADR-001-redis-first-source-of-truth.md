@@ -1,7 +1,7 @@
 ---
 doc_id: cart-adr-001
 service: cart
-status: accepted
+status: superseded
 date: 2026-08-28
 decision_owners:
   - Cart Service team

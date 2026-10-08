@@ -2,9 +2,14 @@
 doc_id: cart-interfaces
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
+evidence:
+  - contracts/http/cart/v1/openapi.yaml
+  - contracts/events/cart/v1/asyncapi.yaml
+  - go/services/cart-service/internal/api/router/router.go
+  - go/services/cart-service/internal/api/dto/response/problem.go
 verified_against_commit: null
 ---
 
@@ -15,7 +20,9 @@ verified_against_commit: null
 | Interaction | Direction | Contract |
 |---|---|---|
 | Cart HTTP API | Inbound | [OpenAPI v1](../../contracts/http/cart/v1/openapi.yaml) |
+| Checkout cart snapshot | Inbound (nội bộ) | [OpenAPI v1](../../contracts/http/cart/v1/openapi.yaml), `getCheckoutCartSnapshot` |
 | `com.ecommerce.order.paid.v1` | Inbound Kafka | [Order Events AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
+| `com.ecommerce.auth.user-deleted.v1` | Inbound Kafka | [Auth Events AsyncAPI v1](../../contracts/events/auth/v1/asyncapi.yaml) |
 | Product lookup | Outbound gRPC | `product_service.proto` |
 | `CART_ABANDONED` | Outbound Kafka | [AsyncAPI v1](../../contracts/events/cart/v1/asyncapi.yaml) |
 
@@ -29,12 +36,15 @@ với cùng DELETE, và giữ key/payload khi retry. `DEGRADED` hoặc giá null
 tổng từ snapshot cũ; `is_available` chỉ là catalog saleability. Xem
 [báo cáo bước 5](../frontend/step-5-verification.md).
 
+Cart không publish cổng host trong Docker Compose gốc; client đi qua Gateway
+(`http://localhost:8088/api/v1/carts/mine`). Cổng 8085 thuộc Promotion.
 
 `GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchSkus` để
 phủ `current_price` và catalog saleability. Product timeout/breaker mở trả snapshot với
 `catalog_freshness = DEGRADED` và `current_price` có thể null. Redis miss trả cart
 rỗng; không rehydrate. GET là query thuần: không cập nhật snapshot Redis, TTL hay
-abandonment schedule.
+abandonment schedule. Một SKU mà Product báo không tồn tại hoặc không bán được vẫn nằm
+trong cart với `is_available = false` (`freshness` vẫn là `CURRENT`).
 
 `image_url` trong response luôn là URL tuyệt đối. Product gRPC trả storage key của ảnh
 đại diện (không phải URL); Cart lưu nguyên key trong snapshot và chỉ dựng URL khi render
@@ -50,16 +60,50 @@ Storage key không bao giờ ra khỏi Cart.
 mutate lifecycle. Checkout không được đọc trực tiếp keyspace bucketed của Cart. Service kiểm
 `X-Service-Identity` theo allowlist `cart.internal_callers` (mặc định `checkout-service`) như phòng thủ
 bổ sung cho mesh: thiếu header `401`, service khác `403`; `user_id` không phải UUID `400`; Redis lỗi
-`503`. Route nằm ngoài Gateway (không có router Traefik).
+`503`. Route nằm ngoài Gateway (không có router Traefik) và không bị rate limit.
 
-`POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0. Delta
+`POST /api/v1/carts/mine/items` cần `Idempotency-Key` và nhận `delta` khác 0 trong -100..100. Delta
 dương thêm/tăng, delta âm giảm; Cart không nhận quantity tuyệt đối. SKU mới hoặc
 delta dương trên validation stale gọi `GetSku`; các lần tăng khi validation
 còn tươi đi thẳng Lua. Cart không gọi Inventory và không chặn thao tác vì hết hàng;
-Checkout lấy allocation preview, còn Order Reserve tại Inventory mới là quyết định cuối. Response/status code và payload chuẩn nằm trong OpenAPI.
+Checkout lấy allocation preview, còn Order Reserve tại Inventory mới là quyết định cuối. Trả `201` khi SKU
+mới vào cart và `200` khi SKU đã có đổi quantity; replay cùng key trả lại đúng status ban đầu.
+Response/status code và payload chuẩn nằm trong OpenAPI.
 
 `DELETE /api/v1/carts/mine/items` xóa tối đa 100 SKU, tự nhiên idempotent. Nếu cart rỗng,
 script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
+
+### 2.1 Error catalog
+
+Mọi lỗi là `application/problem+json` với `code` ổn định, `trace_id` (= `X-Request-Id`) và, với lỗi
+validate, `errors[]` theo field. `retryable` chỉ có (và bằng `true`) khi client được phép gửi lại
+nguyên request.
+
+| Code | HTTP | Retryable | Khi nào |
+|---|---|---|---|
+| `VALIDATION_FAILED` | 400 | không | `Idempotency-Key` không dài 16–128 ký tự, body không phải JSON hoặc sai schema, `delta` bằng 0 hoặc ngoài -100..100, `sku_id` rỗng/quá 64 ký tự, `sku_ids` rỗng/trùng/quá 100, `user_id` nội bộ không phải UUID |
+| `UNAUTHENTICATED` | 401 | không | Thiếu `X-User-Id` (public) hoặc `X-Service-Identity` (nội bộ) |
+| `FORBIDDEN` | 403 | không | `X-Service-Identity` ngoài allowlist `cart.internal_callers` |
+| `NOT_FOUND` | 404 | không | Không có route khớp |
+| `IDEMPOTENCY_CONFLICT` | 409 | không | Cùng `Idempotency-Key` với payload khác |
+| `CART_FULL` | 422 | không | SKU mới khi cart đã có 50 SKU |
+| `PRODUCT_NOT_AVAILABLE` | 422 | không | Product/SKU không active, hoặc Product không biết SKU |
+| `QUANTITY_INVALID` | 422 | không | Delta làm quantity không còn dương; dùng DELETE |
+| `ITEM_NOT_FOUND` | 422 | không | Delta âm cho SKU không có trong cart |
+| `PRODUCT_SNAPSHOT_REQUIRED` | 422 | — | Tín hiệu nội bộ giữa script và application service để gọi Product; không bao giờ tới client trên đường ghi bình thường |
+| `DELTA_INVALID` | 400 | không | Delta bằng 0 ở script; handler đã chặn bằng `VALIDATION_FAILED` nên client không thấy mã này |
+| `RATE_LIMITED` | 429 | có (`Retry-After`) | Vượt rate limit cục bộ theo user (§2.2) |
+| `CART_STORE_UNAVAILABLE` | 503 | có | Redis lỗi hoặc timeout (GET, DELETE, snapshot nội bộ, và POST) |
+| `PRODUCT_UNAVAILABLE` | 503 | có | Product gRPC lỗi, timeout hoặc breaker mở khi POST cần xác thực SKU |
+| `INTERNAL_ERROR` | 500 | không | Lỗi không dự kiến (đã log đầy đủ, không lộ chi tiết) |
+
+### 2.2 Rate limit
+
+Mỗi pod giữ một token bucket theo user (khóa bằng `user_token`, không dùng `user_id`): 20 request/giây,
+burst 40, bucket idle 10 phút bị loại. Giới hạn áp dụng cho `GET`, `POST` và `DELETE` dưới
+`/api/v1/carts/mine`; không áp dụng cho `/internal/v1/**` hay `/health/**`. Vượt giới hạn trả
+`429 RATE_LIMITED` với `Retry-After` (giây) và `retryable = true`. Đây là lưới an toàn cục bộ theo từng
+pod; policy chính thức nằm ở Gateway (`rate-limit-api@file`).
 
 ## 3. gRPC APIs
 
@@ -69,7 +113,7 @@ script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
 | `GetBatchSkus` | Mở cart | Trả response degraded |
 
 Deadline 200ms và circuit breaker là bắt buộc. Cart không gọi Product khi xóa item,
-xử lý `ORDER_PAID`, relay hay marker.
+xử lý `ORDER_PAID`, xử lý `USER_DELETED`, relay hay marker.
 
 ## 4. Event phát ra: `CART_ABANDONED`
 
@@ -81,6 +125,8 @@ xử lý `ORDER_PAID`, relay hay marker.
 | Delivery | At-least-once |
 | Dedupe | CloudEvent `id` / `event_id` |
 | Ordering | Trong cùng cart/bucket |
+| `dataschema` | `/contracts/events/cart/v1/schemas/cart-abandoned.schema.json` (cấu hình `kafka.event_data_schema`) |
+| Kafka header | `outbox_bucket`, `stream_id`, `cart_id` |
 
 Event chỉ được tạo bởi `mark_abandoned.lua`. Relay đặt CloudEvent ID xác định từ
 `outbox_key + stream_id`; retry produce cho cùng stream entry phải dùng cùng ID.
@@ -90,7 +136,16 @@ item list, current price, payment hay PII trực tiếp.
 Không phát `CART_ITEM_*`, `CART_CLEARED` hay `CART_CHECKED_OUT` khi chưa có consumer
 được xác định.
 
-## 5. Event tiêu thụ: `com.ecommerce.order.paid.v1`
+**Retry và DLQ.** Retry là của relay: mỗi lượt thử một entry tối đa 3 lần
+(`worker.outbox_relay.max_publish_attempts`) với exponential backoff có jitter. Hết 3 lần entry vẫn
+pending và được thử lại ở lượt sau qua `XAUTOCLAIM`; relay dừng bucket tại entry lỗi đầu tiên để giữ
+thứ tự. Nghĩa là Kafka outage làm chậm event chứ không làm mất event. `t.cart.events.dlq` chỉ nhận
+entry outbox không bao giờ thành công (thiếu `cart_id` hoặc event type lạ); message DLQ là JSON chẩn
+đoán `{reason, outbox_key, stream_id, outbox_bucket, event_type}`, không phải CloudEvent.
+
+## 5. Event tiêu thụ
+
+### 5.1 `com.ecommerce.order.paid.v1`
 
 Cart dispatch theo exact CloudEvents `type`, kiểm `specversion=1.0`,
 `source=/services/order`, `subject=orders/{order_id}` và canonical decimal-string
@@ -99,9 +154,19 @@ remove-items script với `touch_activity = 0`. SKU không có trong cart bị b
 `HDEL` là idempotent nên Kafka redelivery không cần Redis key riêng. Event không tạo
 Kafka message Cart. `ORDER_COMPLETED` cùng topic được ACK mà không tạo effect.
 
+### 5.2 `com.ecommerce.auth.user-deleted.v1`
+
+Topic `t.auth.events`, consumer group `cart-auth-consumer`, key Kafka `user_id`. Cart kiểm
+`specversion=1.0`, `source=/services/auth`, `id` không rỗng, `data.user_id` là UUID và
+`data.deleted_at` là RFC 3339, dựng identity từ `user_id` (không nhận `cart_id` từ event) rồi gọi
+`purge_cart.lua`. Script xóa `items`, `meta` và member ZSET; chạy lại hoặc user chưa từng có giỏ chỉ trả
+`purged = false`. Mọi event khác trên topic (ví dụ `USER_VERIFIED_SUCCESS`) bị ACK mà không có effect;
+message không parse được hoặc thiếu trường bắt buộc bị log và ACK; lỗi Redis trả error để Kafka giao lại.
+Cart không phát event đáp lại ([ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)).
+
 ## 6. Compatibility
 
 Ưu tiên thêm optional field. `CART_ABANDONED` là event duy nhất Cart phát; inbound
-`ORDER_PAID` thuộc AsyncAPI do Order sở hữu. Các event Cart cũ bị loại khỏi public contract. HTTP v1 dùng delta, khớp Lua
-atomic; contract test phải chứng minh duplicate Idempotency-Key không áp dụng delta
-lần hai và các delta độc lập không lost update.
+`ORDER_PAID` thuộc AsyncAPI do Order sở hữu và `USER_DELETED` thuộc AsyncAPI do Auth sở hữu. Các
+event Cart cũ bị loại khỏi public contract. HTTP v1 dùng delta, khớp Lua atomic; test script xác nhận
+duplicate Idempotency-Key không áp dụng delta lần hai và các delta độc lập không lost update.

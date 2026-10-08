@@ -45,6 +45,10 @@ func (f *fakeStore) Remove(context.Context, port.RemoveCommand) (port.RemoveResu
 	return port.RemoveResult{}, nil
 }
 
+func (f *fakeStore) PurgeCart(context.Context, domain.Identity) (port.PurgeResult, error) {
+	return port.PurgeResult{}, nil
+}
+
 func (f *fakeStore) MarkAbandoned(_ context.Context, cmd port.MarkAbandonedCommand) (port.MarkAbandonedResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

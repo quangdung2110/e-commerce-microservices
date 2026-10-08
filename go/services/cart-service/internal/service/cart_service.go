@@ -177,6 +177,15 @@ func (s *CartService) RemovePurchased(
 	})
 }
 
+// PurgeUser deletes the whole cart of a deleted account (WF-CART-008).
+//
+// The script is idempotent, so a redelivered USER_DELETED simply reports that
+// nothing was left to purge. No Kafka event is emitted and no idempotency
+// record is needed.
+func (s *CartService) PurgeUser(ctx context.Context, identity domain.Identity) (port.PurgeResult, error) {
+	return s.store.PurgeCart(ctx, identity)
+}
+
 // degradedView renders a cart from stored snapshots alone.
 //
 // current_price is deliberately absent rather than guessed: showing a stale

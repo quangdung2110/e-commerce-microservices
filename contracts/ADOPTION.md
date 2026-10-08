@@ -10,9 +10,9 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 
 | Contract | Trạng thái | Khoảng cách cần migrate |
 |---|---|---|
-| Cart HTTP v1 | `proposed` | Code cũ dùng nhiều error shape và giá `float64`; target dùng Problem Details và Money |
+| Cart HTTP v1 | `implemented` | `go/services/cart-service` phục vụ đủ bốn operation (delta, Money, `application/problem+json`, idempotency bằng Lua, snapshot nội bộ cho Checkout); provider test `internal/api/router` và test script trên Redis (cả miniredis lẫn Redis thật qua `CART_TEST_REDIS_ADDR`). Còn thiếu: test validate response với OpenAPI và consumer test với Checkout thật. |
 | Product gRPC v1 | `proposed` | Proto đang bị copy, package/service name cũ khác target, giá dùng `double` |
-| Cart events v1 | `proposed` | Code cũ dùng custom envelope; target dùng CloudEvents và JSON Schema |
+| Cart events v1 | `implemented` | Cart ghi `CART_ABANDONED` vào Redis Stream outbox rồi relay sang Kafka bằng CloudEvents với `id` xác định; Notification đã consume. Test `internal/workers/relay` kiểm cấu trúc envelope, `id` ổn định, không XACK khi Kafka lỗi và DLQ cho entry hỏng. Còn thiếu: test validate payload với JSON Schema và consumer test với producer thật. |
 | Search HTTP v2 | `proposed` | Search Service đã implement v2 và gỡ hẳn v1. Chưa `implemented` vì còn thiếu contract test provider/consumer; frontend vẫn gọi `/api/v1/search/**`, route đó nay không còn backend. |
 | Inventory HTTP v1 | `implemented` | `java/services/inventory-service` phục vụ đủ Workflow, Storefront Availability Read, ADMIN và Search Export API (Inventory ADR-023, ADR-027); provider test MockMvc + Testcontainers kiểm identity allowlist, idempotency/replay, catalog `code` và wire shape. Search client đã gửi `X-Service-Identity`; chưa có consumer contract test từ Checkout/Order/BFF/Search hay ADMIN UI (UI còn phải sinh lại type theo ADR-027). |
 | Inventory Events v1 | `implemented` | Producer ghi ba CloudEvents fact qua outbox → fenced sequencer → `published_event` → Debezium (`debezium-connector-inventory-outbox.json`); test validate event phát ra với JSON Schema và smoke test Debezium thật đã chạy. Consumer Order chưa có; Search consumer chưa có contract test với producer thật. |

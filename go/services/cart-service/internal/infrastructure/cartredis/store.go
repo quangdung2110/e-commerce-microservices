@@ -97,6 +97,7 @@ func (s *Store) Upsert(ctx context.Context, cmd port.UpsertCommand) (port.Upsert
 		int64(s.opts.ActiveTTL.Seconds()),
 		s.opts.AbandonedAfter.Milliseconds(),
 		cmd.Fingerprint,
+		int64(s.opts.IdempotencyTTL.Seconds()),
 	}
 
 	raw, err := s.runScript(ctx, upsertItemScript, keys, args, "upsert item")
@@ -188,6 +189,30 @@ func (s *Store) MarkAbandoned(ctx context.Context, cmd port.MarkAbandonedCommand
 	var result port.MarkAbandonedResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return port.MarkAbandonedResult{}, fmt.Errorf("decode mark abandoned result %q: %w", raw, err)
+	}
+	return result, nil
+}
+
+// PurgeCart deletes the cart of a deleted account inside purge_cart.lua.
+//
+// It removes the items, the meta hash and the scheduler member together, and
+// is idempotent: a user without a cart reports Purged = false. Pending outbox
+// entries are left to the relay.
+func (s *Store) PurgeCart(ctx context.Context, id domain.Identity) (port.PurgeResult, error) {
+	keys := []string{
+		s.keys.Items(id),
+		s.keys.Meta(id),
+		s.keys.Index(id.Bucket),
+	}
+
+	raw, err := s.runScript(ctx, purgeCartScript, keys, []any{id.UserToken}, "purge cart")
+	if err != nil {
+		return port.PurgeResult{}, err
+	}
+
+	var result port.PurgeResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return port.PurgeResult{}, fmt.Errorf("decode purge result %q: %w", raw, err)
 	}
 	return result, nil
 }

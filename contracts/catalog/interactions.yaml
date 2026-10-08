@@ -120,18 +120,33 @@ interactions:
   - id: cart-publishes-cart-events
     protocol: kafka
     provider: cart-service
-    consumers: [cart-service, analytics-service, notification-service]
+    consumers: [notification-service]
     contract: events/cart/v1/asyncapi.yaml
-    status: proposed
-    notes: Pilot contains CART_ITEM_ADDED only; more event types migrate incrementally.
+    status: implemented
+    notes: >-
+      CART_ABANDONED is the only event Cart publishes (t.cart.events, key cart_id, at-least-once,
+      deterministic CloudEvent id from the Redis outbox key and stream id). Cart emits no
+      CART_ITEM_* event and has no other consumer; see notification-consumes-cart-abandoned
+      for the consuming side.
+
+  - id: cart-consumes-user-deleted
+    protocol: kafka
+    provider: auth-service
+    consumers: [cart-service]
+    contract: events/auth/v1/asyncapi.yaml
+    status: implemented
+    notes: >-
+      Cart consumes only USER_DELETED from t.auth.events (group cart-auth-consumer) and purges
+      the user's items, meta hash and abandonment schedule in one idempotent Lua script
+      (Cart ADR-014). It emits nothing in response. Other Auth events on the topic are ignored.
 
   - id: auth-publishes-identity-events
     protocol: kafka
     provider: auth-service
-    consumers: [user-service, notification-service, review-service, chat-service]
+    consumers: [user-service, notification-service, review-service, chat-service, cart-service]
     contract: events/auth/v1/asyncapi.yaml
     status: proposed
-    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review và Chat trên t.auth.events. CloudEvents v1 là target contract; mọi Auth CloudEvents id là UUID để consumer persist receipt cùng kiểu.
+    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review, Chat và Cart trên t.auth.events. CloudEvents v1 là target contract; mọi Auth CloudEvents id là UUID để consumer persist receipt cùng kiểu.
 
   - id: user-publishes-profile-preference-events
     protocol: kafka
@@ -483,7 +498,7 @@ interactions:
     provider: notification-service
     consumers: [api-gateway]
     contract: http/notification/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       In-app inbox for the authenticated user: cursor list, unread count, mark read,
       archive, mark-all-read. All responses no-store. No preference endpoints (User

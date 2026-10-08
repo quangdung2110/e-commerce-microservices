@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConsumerConfig configures the ORDER_PAID consumer group.
+// ConsumerConfig configures one consumer group (ORDER_PAID or USER_DELETED).
 type ConsumerConfig struct {
 	Brokers []string
 	Topic   string

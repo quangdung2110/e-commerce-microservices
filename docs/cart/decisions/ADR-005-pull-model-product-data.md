@@ -15,7 +15,8 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Accepted`. Pull model vẫn là thiết kế hiện hành; [ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md)
+chỉ điều chỉnh các chi tiết không còn đúng (GET không còn ghi lại snapshot vào Redis).
 
 ## Context
 

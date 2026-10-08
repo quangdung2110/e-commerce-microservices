@@ -56,6 +56,10 @@ func (s *stubStore) MarkAbandoned(context.Context, port.MarkAbandonedCommand) (p
 	return port.MarkAbandonedResult{}, nil
 }
 
+func (s *stubStore) PurgeCart(context.Context, domain.Identity) (port.PurgeResult, error) {
+	return port.PurgeResult{}, nil
+}
+
 func (s *stubStore) DueCarts(context.Context, int, time.Time, int) ([]port.DueCart, error) {
 	return nil, nil
 }

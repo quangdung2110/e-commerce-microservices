@@ -1,5 +1,6 @@
-// Command server runs the Cart Service: the HTTP API, the com.ecommerce.order.paid.v1 consumer
-// and the three background loops (marker, relay, trimmer).
+// Command server runs the Cart Service: the HTTP API, the com.ecommerce.order.paid.v1 and
+// com.ecommerce.auth.user-deleted.v1 consumers and the three background loops (marker, relay,
+// trimmer).
 //
 // At the load this service is sized for, one deployment runs all of them. When
 // it needs to scale, bucket ownership is split across deployments; a stream
@@ -37,6 +38,7 @@ import (
 	"cart-service/internal/workers/orderpaid"
 	"cart-service/internal/workers/relay"
 	"cart-service/internal/workers/trimmer"
+	"cart-service/internal/workers/userdeleted"
 )
 
 func main() {
@@ -115,7 +117,7 @@ func run(configPath string) error {
 	catalog.Observer = metrics
 	defer func() { _ = catalog.Close() }()
 
-	// ── Kafka: CART_ABANDONED out, com.ecommerce.order.paid.v1 in ───────
+	// ── Kafka: CART_ABANDONED out; order.paid and user-deleted in ────────
 	publisher, err := kafka.NewProducer(kafka.ProducerConfig{
 		Brokers:         cfg.Kafka.Brokers,
 		Topic:           cfg.Kafka.TopicCartEvents,
@@ -149,9 +151,9 @@ func run(configPath string) error {
 			IdleTimeout:       cfg.Cart.RateLimit.IdleTimeout,
 		},
 		InternalCallers: cfg.Cart.InternalCallers,
-		Registry: metrics.Registry(),
-		Logger:   logger,
-		Debug:    cfg.App.Env == "development",
+		Registry:        metrics.Registry(),
+		Logger:          logger,
+		Debug:           cfg.App.Env == "development",
 	})
 
 	server := &http.Server{
@@ -223,6 +225,30 @@ func run(configPath string) error {
 			logger.Info("order paid consumer started",
 				zap.String("topic", cfg.Kafka.TopicOrderEvents),
 				zap.String("group", cfg.Kafka.ConsumerGroupOrder),
+			)
+			return consumer.Run(groupCtx)
+		})
+	}
+
+	if cfg.Worker.UserDeletedConsumer.Enabled {
+		deletedHandler := userdeleted.NewHandler(cartService, metrics, logger)
+		consumer, err := kafka.NewConsumer(kafka.ConsumerConfig{
+			Brokers:        cfg.Kafka.Brokers,
+			Topic:          cfg.Kafka.TopicAuthEvents,
+			GroupID:        cfg.Kafka.ConsumerGroupAuth,
+			InitialOffset:  cfg.Kafka.InitialOffset,
+			TLSEnabled:     cfg.Kafka.TLSEnabled,
+			SessionTimeout: cfg.Kafka.SessionTimeout,
+		}, deletedHandler.Handle, logger)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = consumer.Close() }()
+
+		group.Go(func() error {
+			logger.Info("user deleted consumer started",
+				zap.String("topic", cfg.Kafka.TopicAuthEvents),
+				zap.String("group", cfg.Kafka.ConsumerGroupAuth),
 			)
 			return consumer.Run(groupCtx)
 		})

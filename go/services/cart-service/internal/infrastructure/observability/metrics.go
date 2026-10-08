@@ -31,6 +31,8 @@ type Metrics struct {
 
 	orderPaidOutcomes *prometheus.CounterVec
 	orderPaidDeleted  prometheus.Counter
+
+	userDeletedOutcomes *prometheus.CounterVec
 }
 
 // NewMetrics builds the registry and every collector.
@@ -83,6 +85,10 @@ func NewMetrics() *Metrics {
 			Name: "cart_order_paid_deleted_items_total",
 			Help: "Cart lines removed because an order was paid.",
 		}),
+		userDeletedOutcomes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "cart_user_deleted_outcomes_total",
+			Help: "USER_DELETED handling outcomes.",
+		}, []string{"outcome"}),
 	}
 
 	registry.MustRegister(
@@ -97,6 +103,7 @@ func NewMetrics() *Metrics {
 		m.trimmedTotal,
 		m.orderPaidOutcomes,
 		m.orderPaidDeleted,
+		m.userDeletedOutcomes,
 	)
 
 	return m
@@ -202,6 +209,26 @@ func (m *Metrics) OrderPaidSkipped(reason string) {
 // OrderPaidError records a cleanup that failed and will be redelivered.
 func (m *Metrics) OrderPaidError() {
 	m.orderPaidOutcomes.WithLabelValues("error").Inc()
+}
+
+// UserDeletedApplied records a handled USER_DELETED. purged is false when the
+// user had no cart (or it was already purged by a redelivery).
+func (m *Metrics) UserDeletedApplied(purged bool) {
+	outcome := "no_cart"
+	if purged {
+		outcome = "purged"
+	}
+	m.userDeletedOutcomes.WithLabelValues(outcome).Inc()
+}
+
+// UserDeletedSkipped records a message Cart chose not to act on.
+func (m *Metrics) UserDeletedSkipped(reason string) {
+	m.userDeletedOutcomes.WithLabelValues("skipped_" + reason).Inc()
+}
+
+// UserDeletedError records a purge that failed and will be redelivered.
+func (m *Metrics) UserDeletedError() {
+	m.userDeletedOutcomes.WithLabelValues("error").Inc()
 }
 
 func label(bucket int) string {

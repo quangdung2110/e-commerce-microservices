@@ -68,7 +68,7 @@ tuyệt đối; xem [ADR-004](./decisions/ADR-004-direct-event-publication.md).
 | `USER_PREFERENCES_UPDATED` | Preferences update đã commit; payload chỉ có ba flag Notification replicate và `updated_at` | Notification |
 
 `USER_DELETED` không được User republish. Auth là nguồn chân lý của việc xóa
-account và phát event đó trực tiếp cho User, Notification, Review và Chat; xem
+account và phát event đó trực tiếp cho User, Notification, Review, Chat và Cart; xem
 [ADR-006](./decisions/ADR-006-auth-owns-account-deletion-event.md). Event User
 không chứa credential, email do Auth sở hữu, raw address, ngày sinh, giới tính
 hoặc PII không cần cho consumer. Chat và Notification chỉ áp dụng update mới hơn

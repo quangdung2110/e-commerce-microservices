@@ -218,6 +218,20 @@
 
 ## 5. Cart (`docs/cart`, `contracts/http/cart/v1`, `contracts/events/cart/v1`, `go/services/cart-service`)
 
+> **Đã kiểm chứng và sửa xong ngày 2026-10-09.** Đối chiếu từng mục C1–C12 với docs, contract và code:
+> cả 12 mục đều đúng, không mục nào sai. Đã sửa code (C11, C12, `dataschema`), contract, catalog và docs;
+> chi tiết ở CHANGELOG `2026-10-09 (Cart sync)` và [Cart ADR-014](../docs/cart/decisions/ADR-014-purge-cart-on-user-deleted.md).
+> Kiểm chứng thêm: 15 test mới trong `go/services/cart-service` (script chạy cả miniredis lẫn Redis thật), mutation check
+> cho C11 (test fail khi hard-code lại `86400`). Phát hiện bổ sung ngoài báo cáo (đều đã sửa):
+> 1. `operations.md` ghi env `CART_ACTIVE_TTL`, `CART_BUCKET_COUNT`… nhưng env thật là `CART_CART_*` (khóa nằm dưới phần `cart:`
+>    của YAML); đã sửa và thêm test.
+> 2. Docs/contract hứa `409` kèm `Retry-After` cho request "đang xử lý"; không tồn tại trạng thái này vì ghi là nguyên tử.
+> 3. Relay đóng `dataschema` tuyệt đối (`https://contracts.ecommerce.local/...`) trong khi ví dụ chuẩn
+>    `contracts/examples/events/cart-abandoned.v1.json` và mọi service khác dùng dạng root-relative; đã sửa code theo contract.
+> 4. File ADR-001/002/012 ghi `status: accepted` dù đã bị thay thế; ADR-005/007/008 bị index ghi nhầm `Superseded` (ADR-011 chỉ
+>    điều chỉnh một phần); `data.md` thiếu `abandoned_at_ms` và việc DELETE kích hoạt lại cart `ABANDONED`.
+> 5. `CartItem.image_url` luôn có mặt trong response nhưng không nằm trong `required` của OpenAPI.
+
 ### C1 🟠 `interactions.yaml` mô tả sai event của Cart
 - Entry `cart-publishes-cart-events`: consumers `[cart-service, analytics-service, notification-service]`, notes "Pilot contains CART_ITEM_ADDED only".
 - Thực tế (AsyncAPI, README, interfaces, code): Cart chỉ phát `CART_ABANDONED`, Notification là consumer duy nhất, "không phát CART_ITEM_*". Entry còn trùng với `notification-consumes-cart-abandoned`.
@@ -533,7 +547,8 @@ Docs mới nhất, khớp code.
 - [ ] U9 User: chặn đọc/ghi profile/address/preferences của user đã xoá.
 - [ ] U4/N1 User: mặc định `marketing_enabled=false` (migration mới) hoặc consent.
 - [ ] U11 User: chống race khi fill cache address (tuỳ chọn).
-- [ ] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`).
+- [x] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`). *(2026-10-09)*
+- [x] C12 Cart: consumer `USER_DELETED` + `purge_cart.lua` (ADR-014); Auth contract/docs/catalog đã thêm Cart vào consumers. *(2026-10-09)*
 - [ ] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge.
 - [ ] S6 Search: sửa default URL Product `:8081` + env compose.
 - [ ] S7 Search: bỏ `/` cuối ở default CDN URL.
@@ -546,18 +561,18 @@ Docs mới nhất, khớp code.
 ### Contract / catalog
 - [ ] PR4 sửa tham số `LegacyMigrationProof`.
 - [ ] K1/K2 bổ sung mã vào Order internal OpenAPI.
-- [ ] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400.
-- [ ] C6 Cart OpenAPI `servers`; PR6 Promotion OpenAPI `servers`.
+- [x] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400. *(2026-10-09)*
+- [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [ ] PR6 Promotion OpenAPI `servers`.
 - [ ] U8 User OpenAPI `maxItems: 50` cho `AddressList`.
-- [ ] C9 Cart OpenAPI 429 cho GET.
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md`; G5 `interactions.yaml` (C1, P5, U5, N5, K3, PY2, N2).
+- [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; còn P5, U5, N5, K3, PY2, N2).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog.
 
 ### Docs
 - [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
 - [ ] Auth: A1–A8, A14.
 - [ ] User: U1–U3, U6, U7, U8.
-- [ ] Cart: C2–C5, C8–C10, C12.
+- [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
 - [ ] Product: P1–P4, P8.
 - [ ] Promotion: PR1–PR3, PR5–PR7, PR10, README §9.
 - [ ] Inventory: I1, I2.

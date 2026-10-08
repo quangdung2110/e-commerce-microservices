@@ -160,3 +160,59 @@ func TestLoadDefaultsToRequiringHTTPS(t *testing.T) {
 		t.Fatalf("Load accepted http media without media.require_https=false: %v", err)
 	}
 }
+
+// The user-deleted purge is part of the shipped behaviour (ADR-014).
+func TestShippedConfigurationConsumesUserDeleted(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "..", "configs", "application.yaml"))
+	if err != nil {
+		t.Fatalf("load the shipped configuration: %v", err)
+	}
+
+	if !cfg.Worker.UserDeletedConsumer.Enabled {
+		t.Fatal("the USER_DELETED consumer is disabled in the shipped configuration")
+	}
+	if cfg.Kafka.TopicAuthEvents != "t.auth.events" || cfg.Kafka.ConsumerGroupAuth != "cart-auth-consumer" {
+		t.Fatalf("auth consumer = %q / %q", cfg.Kafka.TopicAuthEvents, cfg.Kafka.ConsumerGroupAuth)
+	}
+	// Every other service stamps a root-relative dataschema (/contracts/events/...).
+	if cfg.Kafka.EventDataSchema != "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json" {
+		t.Fatalf("event_data_schema = %q", cfg.Kafka.EventDataSchema)
+	}
+}
+
+func TestValidateRequiresTheAuthTopicWhenTheUserDeletedConsumerIsEnabled(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Worker.UserDeletedConsumer.Enabled = true
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("an enabled USER_DELETED consumer without a topic and group was accepted")
+	}
+
+	cfg.Kafka.TopicAuthEvents = "t.auth.events"
+	cfg.Kafka.ConsumerGroupAuth = "cart-auth-consumer"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a complete USER_DELETED consumer was rejected: %v", err)
+	}
+}
+
+// Environment names are the config path with dots replaced by underscores
+// under the CART_ prefix, so the cart section needs CART_CART_*. The operations
+// doc lists exactly these names; this test keeps the two in step.
+func TestEnvironmentOverridesUseThePrefixedConfigPath(t *testing.T) {
+	t.Setenv("CART_CART_IDEMPOTENCY_TTL", "1h")
+	t.Setenv("CART_KAFKA_TOPIC_AUTH_EVENTS", "t.auth.events.override")
+	// A name without the section is not a config path and must not be honoured.
+	t.Setenv("CART_IDEMPOTENCY_TTL", "2h")
+
+	cfg, err := Load(filepath.Join("..", "..", "..", "configs", "application.yaml"))
+	if err != nil {
+		t.Fatalf("load the shipped configuration: %v", err)
+	}
+
+	if cfg.Cart.IdempotencyTTL != time.Hour {
+		t.Fatalf("idempotency_ttl = %s, want 1h from CART_CART_IDEMPOTENCY_TTL", cfg.Cart.IdempotencyTTL)
+	}
+	if cfg.Kafka.TopicAuthEvents != "t.auth.events.override" {
+		t.Fatalf("topic_auth_events = %q", cfg.Kafka.TopicAuthEvents)
+	}
+}

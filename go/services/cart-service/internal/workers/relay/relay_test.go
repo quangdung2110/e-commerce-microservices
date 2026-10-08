@@ -122,7 +122,7 @@ func newTestWorker(outbox *fakeOutbox, publisher *fakePublisher) *Worker {
 		MaxPublishAttempts: 3,
 		PublishBackoff:     time.Millisecond,
 		OperationTimeout:   time.Second,
-		DataSchema:         "https://contracts.ecommerce.local/events/cart/v1/schemas/cart-abandoned.schema.json",
+		DataSchema:         "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json",
 	}, observability.NewMetrics(), zap.NewNop())
 }
 

@@ -193,6 +193,8 @@ Service Contract Matrix legacy đã bị xóa.
 | Producer | Topic | Consumer |
 |---|---|---|
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
+| Cart | `t.cart.events` (`com.ecommerce.cart.abandoned.v1`, event Cart duy nhất phát) | Notification |
+| Auth | `t.auth.events` (`com.ecommerce.auth.user-deleted.v1` cho mọi PII owner; `user-verified-success.v1` chỉ cho User) | User, Notification, Review, Chat, Cart |
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
 | Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |

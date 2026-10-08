@@ -3,6 +3,28 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-09 (Cart sync)
+
+- Cart HTTP v1 and Cart Events v1 are `implemented`. HTTP wire shapes are unchanged; contract text now
+  matches `cart-service`: `GET /api/v1/carts/mine` documents `429 RATE_LIMITED` (the local limiter covers
+  every `/api/v1/carts/mine/**` route); the internal checkout-snapshot operation documents the required
+  `X-Service-Identity` allowlist header (not "attribution only") and its `400` for a non-UUID `user_id`;
+  `CartItem.image_url` is now listed as required (the service always sets it); `409 IDEMPOTENCY_CONFLICT`
+  no longer promises a `Retry-After` for "in progress" requests (writes are atomic, so that state does not
+  exist); `servers` points at the Gateway (`localhost:8088`) and `cart-service:8080` for the internal route
+  instead of `localhost:8085` (Promotion's port).
+- Cart Events v1: `x-retry-policy` now describes the relay (3 attempts per pass, then the entry stays
+  pending and is retried) and that `t.cart.events.dlq` only receives malformed outbox entries. The relay
+  stamped an absolute `dataschema` (`https://contracts.ecommerce.local/...`); it now stamps the
+  root-relative `/contracts/events/cart/v1/schemas/cart-abandoned.schema.json` already used by
+  `contracts/examples/events/cart-abandoned.v1.json` and by every other service.
+- Cart consumes `com.ecommerce.auth.user-deleted.v1` from `t.auth.events` (group `cart-auth-consumer`) and
+  purges the user's cart ([Cart ADR-014](../docs/cart/decisions/ADR-014-purge-cart-on-user-deleted.md)).
+  Auth Events v1 lists `cart-service` among the `USER_DELETED` consumers; the schema is unchanged.
+- Catalog: `cart-publishes-cart-events` listed `CART_ITEM_ADDED`, `cart-service` and `analytics-service` as
+  consumers; Cart publishes only `CART_ABANDONED` and Notification is its only consumer.
+  `cart-consumes-user-deleted` is new. Both Cart event interactions are `implemented`.
+
 ## 2026-10-07 (implementation)
 
 - Checkout HTTP v1 is `implemented` (`java/services/checkout-service`); the contract is unchanged except for

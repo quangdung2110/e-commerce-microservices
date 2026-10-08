@@ -2,11 +2,13 @@
 doc_id: cart-architecture
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
 evidence:
   - docs/cart/scripts
+  - go/services/cart-service/cmd/server/main.go
+  - go/services/cart-service/internal/workers
 verified_against_commit: null
 ---
 
@@ -15,8 +17,9 @@ verified_against_commit: null
 ## 1. Architecture context
 
 Cart nằm sau API Gateway; Gateway inject `X-User-Id`. Cart lấy dữ liệu Product theo
-Pull Model, nhận `com.ecommerce.order.paid.v1`, và chỉ phát `CART_ABANDONED` cho Notification qua
-Kafka. Redis là source of truth duy nhất, không có PostgreSQL fallback.
+Pull Model, nhận `com.ecommerce.order.paid.v1` và `com.ecommerce.auth.user-deleted.v1`, và chỉ
+phát `CART_ABANDONED` cho Notification qua Kafka. Checkout đọc quantity qua endpoint nội bộ.
+Redis là source of truth duy nhất, không có PostgreSQL fallback.
 
 ```mermaid
 flowchart LR
@@ -31,6 +34,9 @@ flowchart LR
   Kafka --> Notification
   Order[Kafka t.order.events] --> OrderConsumer[com.ecommerce.order.paid.v1]
   OrderConsumer --> LUA
+  Auth[Kafka t.auth.events] --> DeletedConsumer[com.ecommerce.auth.user-deleted.v1]
+  DeletedConsumer --> LUA
+  Checkout --> Snapshot[Checkout snapshot API] --> Redis
   Trimmer[Stream trimmer loop] --> Redis
 ```
 
@@ -38,12 +44,13 @@ flowchart LR
 
 | Component | Trách nhiệm |
 |---|---|
-| HTTP adapter | Đọc trusted identity, validate syntax, map error |
+| HTTP adapter | Đọc trusted identity, validate syntax, rate limit cục bộ theo user, map error |
 | Checkout snapshot API | Đọc tối thiểu SKU/product/quantity qua mTLS; không enrich Product hoặc refresh TTL |
 | Application service | Quyết định add/update/read; gọi Product và Lua |
 | Redis Lua adapter | Ghi duy nhất items/meta/ZSET/idempotency/outbox |
 | Product gRPC client | Validate SKU mới và batch enrich response đọc cart |
 | Order Event consumer | Gọi remove-items script idempotent cho `com.ecommerce.order.paid.v1` |
+| User-deleted consumer | Gọi `purge_cart.lua` idempotent khi nhận `com.ecommerce.auth.user-deleted.v1` (group `cart-auth-consumer`); bỏ qua event Auth khác ([ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)) |
 | Abandoned marker | Quét ZSET, gọi mark-abandoned script |
 | Relay | Đọc Redis Stream, produce Kafka, rồi `XACK` |
 | Trimmer | `XTRIM MINID` an toàn cho từng stream |
@@ -72,8 +79,8 @@ trả cart rỗng. Kafka delivery là at-least-once; Notification phải dedupe 
 
 ## 5. Deployment topology
 
-Một worker deployment có thể chạy API, Order consumer và ba background loop ở tải
-thấp. Redis là dependency bắt buộc của mọi HTTP read/write; Product là bắt buộc cho
+Một worker deployment có thể chạy API, hai Kafka consumer (Order, Auth) và ba background loop
+ở tải thấp. Redis là dependency bắt buộc của mọi HTTP read/write; Product là bắt buộc cho
 write cần xác thực, còn Kafka chỉ ảnh hưởng relay. Vì `GET` suy giảm mềm khi Product
 lỗi, `/health/ready` chỉ gate theo Redis; Product/Kafka được alert độc lập. Redis
 production bắt buộc AOF, replica, TLS và `noeviction`; Cart không có cơ chế khôi phục
