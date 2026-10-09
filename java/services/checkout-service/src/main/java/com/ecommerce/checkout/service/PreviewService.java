@@ -14,6 +14,7 @@ import com.ecommerce.checkout.domain.Hashes;
 import com.ecommerce.checkout.domain.Snapshot;
 import com.ecommerce.checkout.media.MediaUrls;
 import com.ecommerce.checkout.observability.CheckoutMetrics;
+import com.ecommerce.checkout.observability.Spans;
 import com.ecommerce.checkout.problem.ApiException;
 import com.ecommerce.checkout.problem.Problem;
 import com.ecommerce.checkout.problem.ProblemCode;
@@ -65,13 +66,14 @@ public class PreviewService {
     private final CheckoutProperties properties;
     private final Failures failures;
     private final CheckoutMetrics metrics;
+    private final Spans spans;
     private final Clock clock;
     private final ObjectMapper mapper;
 
     public PreviewService(DependencyGuard guard, CartClient carts, UserClient users, ProductClient products,
                           InventoryClient inventory, PromotionClient promotions, SessionStore store, Codec codec,
                           MediaUrls media, CheckoutProperties properties, Failures failures, CheckoutMetrics metrics,
-                          Clock clock, ObjectMapper mapper) {
+                          Spans spans, Clock clock, ObjectMapper mapper) {
         this.guard = guard;
         this.carts = carts;
         this.users = users;
@@ -84,6 +86,7 @@ public class PreviewService {
         this.properties = properties;
         this.failures = failures;
         this.metrics = metrics;
+        this.spans = spans;
         this.clock = clock;
         this.mapper = mapper;
     }
@@ -104,7 +107,7 @@ public class PreviewService {
     /** @return the {@code CheckoutPreview} JSON; a replay returns the stored JSON unchanged */
     public Mono<String> preview(Command command, RequestContext context) {
         String fingerprint = fingerprint(command);
-        return store.peekPreview(command.userId(), command.idempotencyKey(), fingerprint)
+        return spans.in("checkout.preview", store.peekPreview(command.userId(), command.idempotencyKey(), fingerprint)
                 .flatMap(peek -> switch (peek) {
                     case SessionStore.Peek.Replay replay -> {
                         metrics.previewCas("idempotent_replay");
@@ -119,7 +122,7 @@ public class PreviewService {
                         yield Mono.error(inFlightProblem(inFlight.payloadCipher()));
                     }
                     case SessionStore.Peek.Proceed proceed -> build(command, context, fingerprint);
-                });
+                }));
     }
 
     // ------------------------------------------------------------------ waves

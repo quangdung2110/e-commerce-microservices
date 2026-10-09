@@ -5,6 +5,7 @@ import com.ecommerce.checkout.resilience.DependencyGuard;
 import com.ecommerce.checkout.support.FakeProduct;
 import com.ecommerce.checkout.support.Fixtures;
 import com.ecommerce.checkout.support.MutableClock;
+import com.ecommerce.checkout.support.RecordedSpans;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
@@ -109,6 +110,12 @@ public abstract class AbstractCheckoutTest {
         MutableClock testClock() {
             return new MutableClock();
         }
+
+        /** Boot adds every SpanProcessor bean to the tracer provider; this one keeps the spans for assertions. */
+        @Bean
+        RecordedSpans recordedSpans() {
+            return new RecordedSpans();
+        }
     }
 
     @Autowired
@@ -121,6 +128,8 @@ public abstract class AbstractCheckoutTest {
     protected MutableClock clock;
     @Autowired
     protected ReactiveStringRedisTemplate redis;
+    @Autowired
+    protected RecordedSpans spans;
 
     /** Ports of the contexts already warmed up; contexts are cached across test classes. */
     private static final java.util.Set<Integer> WARMED = java.util.concurrent.ConcurrentHashMap.newKeySet();

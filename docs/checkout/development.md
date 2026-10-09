@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-development
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -21,8 +21,9 @@ Không cần PostgreSQL, Kafka, Temporal hay quyền truy cập database của s
 Theo [ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md): Java 21, Spring Boot
 3.3.x WebFlux trên Reactor Netty, `WebClient` riêng cho mỗi HTTP dependency, grpc-java với
 stub non-blocking cho Product, Lettuce reactive cho Redis (`EVALSHA`), Resilience4j
-(`CircuitBreaker`, `Bulkhead` semaphore, `TimeLimiter`; không `Retry`), Micrometer +
-Prometheus, Micrometer Tracing bridge OpenTelemetry. Module `java/services/checkout-service`,
+(`CircuitBreaker`, `Bulkhead` semaphore; timeout bằng `Mono.timeout` của Reactor, không dùng
+`TimeLimiter`; không `Retry`), Micrometer + Prometheus, Micrometer Tracing bridge OpenTelemetry
+(span nghiệp vụ do `Spans` tạo, xem [operations.md](./operations.md#span)). Module `java/services/checkout-service`,
 package gốc `com.ecommerce.checkout`. Pipeline request không được gọi blocking I/O;
 BlockHound chạy trong test.
 
@@ -116,6 +117,17 @@ Inventory nhận `X-Correlation-ID`, `X-Causation-ID`, `X-Service-Identity`; Ord
 `Idempotency-Key = checkout_token`; raw token không xuất hiện trong Redis key, log, trace;
 `SCAN` Redis không thấy `_secret_` hay địa chỉ plaintext; token của user khác → `404`.
 
+**Span:** mỗi use case có đúng một span `checkout.preview` / `checkout.voucher_options` /
+`checkout.submit` / `checkout.recovery` nằm dưới span server; mỗi lời gọi dependency là
+`checkout.dependency` (attribute `dependency`, `outcome`) và mỗi lệnh Redis là `checkout.redis`
+(attribute `operation`) ngay dưới use case; span client HTTP nằm dưới `checkout.dependency`; phần
+việc Submit chạy tách khỏi request vẫn thuộc `checkout.submit`; problem nghiệp vụ không đánh
+dấu lỗi, problem `5xx` thì có.
+
+**Route không khớp:** route hoặc method không có vẫn là `CheckoutProblem` (`INVALID_REQUEST`) với
+đúng HTTP status của framework (`404`, `405`) và `Cache-Control: private, no-store`; body không
+phải JSON là `400`.
+
 ### Bản đồ test (module `java/services/checkout-service`)
 
 | Nhóm trong danh sách trên | Test |
@@ -128,6 +140,8 @@ Inventory nhận `X-Correlation-ID`, `X-Causation-ID`, `X-Service-Identity`; Ord
 | Voucher options | `VoucherOptionsApiTest`, `VoucherOptionsDisabledTest` |
 | Resilience, deadline, hủy request | `ResilienceTest`, `NonBlockingTest` (BlockHound), `SubmitApiTest.clientCancellationAfterClaimStillRecordsTheResult` |
 | Header và bảo mật, không plaintext trong Redis | `PreviewApiTest`, `CryptoTest` |
+| Span (tên, cây cha–con, attribute, lỗi) | `TracingSpansTest` (đọc span thật qua `SpanProcessor` của OpenTelemetry SDK, không cần exporter) |
+| Route khớp theo path đã decode (`%61pi`, `;param`), route không khớp | `RequestContextFilterPathTest`, `UnroutedRequestTest` |
 | Cấu hình, bất biến timeout | `CheckoutPropertiesValidationTest` |
 | Contract | `ProviderFixturesContractTest`, `ProblemCatalogContractTest`, `ProtoCopyTest` |
 

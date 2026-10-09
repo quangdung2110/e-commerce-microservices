@@ -42,8 +42,8 @@ Nguồn chuẩn: [`product_service.proto`](product_service.proto).
 mục service. Đây là ngoại lệ có chủ đích của quy tắc "service không copy `.proto`":
 
 - Sửa proto ở `contracts/` rồi chép lại; không bao giờ sửa trực tiếp bản copy.
-- `ProtoCopyDriftTest` (Product) fail khi bản copy lệch từng byte so với nguồn chuẩn. Checkout chưa có
-  test tương đương.
+- `ProtoCopyDriftTest` (Product) và `ProtoCopyTest` (Checkout) fail khi bản copy lệch từng byte so với
+  nguồn chuẩn (Checkout kiểm cả `product_service.proto` lẫn `money.proto`).
 - Ngoại lệ chỉ chấm dứt khi build đọc thẳng từ `contracts/`; lúc đó contract này chuyển `implemented`.
 
 ## Lịch sử

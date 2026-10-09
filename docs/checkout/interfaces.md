@@ -1,7 +1,7 @@
 ---
 doc_id: checkout-interfaces
 service: checkout-service
-scope: target
+scope: current
 status: implemented
 owners:
   - Checkout Service team
@@ -162,7 +162,14 @@ Khi Submit phát hiện nhiều thay đổi, `changed_fields` liệt kê tất c
 lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá đã cũ).
 
 `429` do Gateway trả theo profile `checkout-preview`, `checkout-submit`,
-`checkout-voucher-options`; Checkout không có rate limiter riêng.
+`checkout-voucher-options`, và `api-authenticated` cho `GET /submissions/{checkout_token}`
+([Gateway §5](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc)); Checkout không có
+rate limiter riêng và không bao giờ tự sinh `429`.
+
+Request tới route hoặc method mà Checkout không có (không đi qua Gateway, chỉ thấy khi gọi thẳng
+service) vẫn là `application/problem+json` với `code=INVALID_REQUEST` và giữ nguyên HTTP status
+của framework (`404`, `405`); catalog không có mã riêng cho chúng. Body không phải JSON là `400`
+kể cả khi `Content-Type` khác `application/json` (Checkout đọc byte rồi tự parse).
 
 ## Internal dependencies
 
@@ -173,7 +180,7 @@ lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá
 | SKU batch | Product | gRPC `ProductService/GetBatchSkus` | Tối đa 100 SKU unique mỗi lời gọi; giỏ 50 dòng nên luôn một lời gọi |
 | Allocation preview | Inventory | `POST /internal/inventory/v1/allocation-previews` | Stateless, không giữ hàng; request chỉ có `lines`, không có địa chỉ |
 | Discount calculation | Promotion | `POST /internal/v1/promotion-discount-calculations` | Pure query; chỉ gọi khi có `promotion_id` |
-| Voucher options | Promotion | `POST /internal/v1/promotion-voucher-options` | `proposed`; chỉ `checkout-service` được gọi |
+| Voucher options | Promotion | `POST /internal/v1/promotion-voucher-options` | `implemented` ([Promotion ADR-018](../promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); chỉ `checkout-service` được gọi |
 | Order submission | Order | `POST /internal/v1/checkout-order-submissions` | `Idempotency-Key = checkout_token`; chờ tới `PAYMENT_READY` tối đa 12 giây |
 | Order recovery | Order | `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Nguồn duy nhất của Payment client data khi replay |
 
@@ -182,7 +189,7 @@ lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá
 | Header / metadata | Cart | User | Product | Inventory | Promotion | Order |
 |---|---|---|---|---|---|---|
 | `X-Service-Identity: checkout-service` | Có | Có | Có (metadata `x-service-identity`) | Có (bắt buộc) | Có | Có |
-| `traceparent`/`tracestate` | Có | Có | Có | Có | Có | Có |
+| `traceparent`/`tracestate` | Có | Có | Chỉ `traceparent` (metadata) | Có | Có | Có |
 | `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | — | Có | Có |
 | `X-Correlation-ID` (= request ID đã chuẩn hoá) | — | — | — | Có (bắt buộc) | — | — |
 | `X-Causation-ID` (= `Idempotency-Key` của Preview) | — | — | — | Có (bắt buộc) | — | — |

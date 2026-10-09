@@ -9,6 +9,7 @@ import com.ecommerce.checkout.crypto.TokenHasher;
 import com.ecommerce.checkout.domain.SessionState;
 import com.ecommerce.checkout.domain.Snapshot;
 import com.ecommerce.checkout.observability.CheckoutMetrics;
+import com.ecommerce.checkout.observability.Spans;
 import com.ecommerce.checkout.problem.ApiException;
 import com.ecommerce.checkout.problem.Problem;
 import com.ecommerce.checkout.problem.ProblemCode;
@@ -51,13 +52,14 @@ public class SubmissionService {
     private final Failures failures;
     private final CheckoutProperties properties;
     private final CheckoutMetrics metrics;
+    private final Spans spans;
     private final TokenHasher hasher;
     private final Clock clock;
 
     public SubmissionService(SessionStore store, Codec codec, DependencyGuard guard, OrderClient orders,
                              Revalidator revalidator, OrderPayloadFactory payloads, OrderOutcomeMapper outcomes,
                              Failures failures, CheckoutProperties properties, CheckoutMetrics metrics,
-                             TokenHasher hasher, Clock clock) {
+                             Spans spans, TokenHasher hasher, Clock clock) {
         this.store = store;
         this.codec = codec;
         this.guard = guard;
@@ -68,6 +70,7 @@ public class SubmissionService {
         this.failures = failures;
         this.properties = properties;
         this.metrics = metrics;
+        this.spans = spans;
         this.hasher = hasher;
         this.clock = clock;
     }
@@ -109,11 +112,11 @@ public class SubmissionService {
     // ------------------------------------------------------------------ Submit
 
     public Mono<SubmissionOutcome> submit(String userId, String token, RequestContext context) {
-        return lookup(userId, token).flatMap(found -> switch (found) {
+        return spans.in("checkout.submit", lookup(userId, token).flatMap(found -> switch (found) {
             case Found.Absent absent -> Mono.<SubmissionOutcome>error(notFound(ProblemCode.CHECKOUT_NOT_FOUND));
             case Found.Finished finished -> replay(finished.result(), token, context);
             case Found.Live live -> submitLive(live.control(), userId, token, context);
-        });
+        }));
     }
 
     private Mono<SubmissionOutcome> submitLive(SessionStore.Control control, String userId, String token,
@@ -318,7 +321,8 @@ public class SubmissionService {
     /** WF-04: ask Order for the durable truth before deciding anything. */
     private Mono<SubmissionOutcome> recover(SessionStore.Control control, String userId, String token,
                                             RequestContext context) {
-        return guard.call(Dependency.ORDER_GET, context.deadline(), () -> orders.get(token, context), Optional::isEmpty)
+        return spans.in("checkout.recovery", guard.call(Dependency.ORDER_GET, context.deadline(),
+                        () -> orders.get(token, context), Optional::isEmpty)
                 .flatMap(result -> {
                     if (!result.isUsable()) {
                         metrics.recovery("unknown");
@@ -329,7 +333,7 @@ public class SubmissionService {
                         return absentAtOrder(control, userId, token, context);
                     }
                     return resolveFromOrder(control, status.get(), userId, token, context);
-                });
+                }));
     }
 
     private Mono<SubmissionOutcome> resolveFromOrder(SessionStore.Control control, OrderClient.Status status,

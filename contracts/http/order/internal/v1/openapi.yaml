@@ -28,6 +28,11 @@ paths:
         order-checkout-{checkout_token}, persists the snapshot and allocation bridge,
         then waits until Payment client data or a terminal pre-payment conflict is
         durably checkpointed. Retry a timeout with the identical key and body.
+
+        The wait is bounded (12 seconds by default). A submission that is still PREPARING
+        when it ends answers 503 SUBMISSION_IN_PROGRESS (retryable, Retry-After): Order has
+        accepted the submission and keeps working, so the caller retries the identical key
+        and body or reads the submission, and must not treat it as "not received".
       security: [{ checkoutWorkloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -59,11 +64,15 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: >-
-            Token/key conflict, snapshot mismatch, Promotion recalculation requirement
-            (PROMOTION_RECALCULATION_NEEDED), Inventory Reserve REJECT_ALL
-            (INVENTORY_RESERVATION_REJECTED) or a durable Payment initiation rejection
-            (PAYMENT_INITIATION_REJECTED). The latter two are terminal for this token;
-            the recovery read reports state FAILED with the same problem.
+            Token/key conflict (IDEMPOTENCY_KEY_REUSED: the token was submitted with another
+            snapshot), Promotion recalculation requirement (PROMOTION_RECALCULATION_NEEDED),
+            Inventory Reserve REJECT_ALL (INVENTORY_RESERVATION_REJECTED), a durable Payment
+            initiation rejection (PAYMENT_INITIATION_REJECTED), resource holds that cannot cover
+            the payment window (CHECKOUT_PAYMENT_WINDOW_EXHAUSTED) or an order cancelled before
+            PAYMENT_READY (ORDER_CANCELLED_DURING_PREPARATION). Except IDEMPOTENCY_KEY_REUSED they
+            are terminal for this token: Order stores one failure and returns the same problem on
+            the first POST, on every replay and on the recovery read, which reports state FAILED
+            (RECALCULATION_REQUIRED for the recalculation).
           content:
             application/problem+json:
               schema:

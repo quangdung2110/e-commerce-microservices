@@ -77,6 +77,14 @@ Khi viết code theo tài liệu, một số điểm chưa chốt hoặc mâu th
 - **Thứ tự lỗi Preview** (CHK-BR-019): hạ tầng thắng nghiệp vụ; giữa các lỗi nghiệp vụ theo thứ tự cố
   định để kết quả không phụ thuộc thứ tự hoàn thành của wave song song.
 
+> **Ghi chú 2026-10-09 — Span.** Bốn span use case, `checkout.dependency` và `checkout.redis` ở
+> [operations.md](../operations.md#span) được hiện thực bằng `Spans`: span là Observation của một
+> registry chỉ có handler tracing, đặt vào Reactor context để span client `WebClient` nằm dưới span
+> của nó. Chọn registry riêng thay vì registry chung của Boot vì registry chung biến mỗi span thành
+> một timer, trùng tên với timer `checkout.redis` và counter `checkout.recovery` đã có (Prometheus
+> đòi cùng một bộ nhãn cho một tên metric) và làm đôi bảng metric của operations.md. Không thêm
+> exporter OTLP: chưa service Java nào có và nền tảng chưa chọn collector.
+
 ## Alternatives considered
 
 - **openapi-generator cho toàn bộ DTO:** đúng chữ ADR-013 nhưng model strict và build nặng hơn;

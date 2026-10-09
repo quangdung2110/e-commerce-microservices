@@ -402,7 +402,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["CheckoutProblem"];
             };
         };
-        /** @description Produced by Gateway profiles checkout-preview, checkout-submit or checkout-voucher-options; Checkout keeps no rate-limit state. */
+        /** @description Produced by Gateway, never by Checkout, which keeps no rate-limit state: profiles checkout-preview, checkout-submit and checkout-voucher-options, and api-authenticated for the status read. */
         RateLimited: {
             headers: {
                 "Retry-After": components["headers"]["RetryAfter"];
@@ -610,6 +610,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["SubmissionConflict"];
+            429: components["responses"]["RateLimited"];
             503: components["responses"]["Unavailable"];
         };
     };

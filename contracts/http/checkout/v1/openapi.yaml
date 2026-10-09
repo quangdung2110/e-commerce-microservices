@@ -185,6 +185,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/SubmissionConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
 components:
@@ -588,7 +589,9 @@ components:
       headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/CheckoutProblem' } } }
     RateLimited:
-      description: Produced by Gateway profiles checkout-preview, checkout-submit or checkout-voucher-options; Checkout keeps no rate-limit state.
+      description: >-
+        Produced by Gateway, never by Checkout, which keeps no rate-limit state: profiles checkout-preview,
+        checkout-submit and checkout-voucher-options, and api-authenticated for the status read.
       headers:
         Retry-After: { $ref: '#/components/headers/RetryAfter' }
         Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }

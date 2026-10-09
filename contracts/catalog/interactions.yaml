@@ -336,7 +336,7 @@ interactions:
     provider: promotion-service
     consumers: [checkout-service]
     contract: http/promotion/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Checkout uses the pure internal discount-calculation query; it never reserves budget during Preview.
 
   - id: checkout-lists-voucher-options
@@ -344,7 +344,7 @@ interactions:
     provider: promotion-service
     consumers: [checkout-service]
     contract: http/promotion/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Checkout builds the trusted context from its token-owned snapshot and calls POST /internal/v1/promotion-voucher-options for the checkout voucher tray; read-only, no save/claim/reserve (Checkout ADR-017, Promotion ADR-018).
 
   - id: gateway-routes-customer-promotions

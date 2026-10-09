@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-operations
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -130,12 +130,40 @@ biết.
 - Redis lỗi, eviction > 0 hoặc memory > 80 %.
 - `bulkhead_rejected` tăng đều mà dependency khoẻ (thiếu capacity).
 
-Log JSON gồm `timestamp`, `level`, `service`, `environment`, `trace_id`, `span_id`,
-`request_id`, route template, status, problem `code` và duration. Gateway và Checkout redact
-segment `{checkout_token}` trong path; token chỉ log fingerprint ngắn không đảo ngược. Không
-log payload Order, địa chỉ, header xác thực hay secret. Span chính `checkout.preview`,
-`checkout.voucher_options`, `checkout.submit`, `checkout.recovery`; span con theo dependency
-và Redis script.
+## Log và span
+
+Log production là JSON (`LogstashEncoder`; profile `dev`/`test` in dạng text). Mỗi dòng có
+`@timestamp`, `level`, `service` (`checkout-service`), `message` và `traceId`/`spanId` khi có
+span. Dòng truy cập `request completed` (một dòng cho mỗi request `/api/**`) thêm `method`,
+`route` (template, không bao giờ là path thật), `status`, `problem_code`, `duration_ms`,
+`request_id`, `trace_id`. Gateway và Checkout redact segment `{checkout_token}` trong path;
+token chỉ log fingerprint ngắn không đảo ngược. Không log payload Order, địa chỉ, header xác
+thực hay secret.
+
+### Span
+
+Spring tạo span server cho mỗi request và span client cho mỗi lời gọi `WebClient`. Checkout
+thêm các span con dưới đây (`Spans`, không sinh metric; tên và attribute cố định, giá trị
+attribute là tập hữu hạn như nhãn metric):
+
+| Span | Bao quanh | Attribute |
+|---|---|---|
+| `checkout.preview` | WF-01 Preview: replay/guard, bốn wave, ghi Redis | `problem` |
+| `checkout.voucher_options` | WF-08 khay voucher | `problem` |
+| `checkout.submit` | WF-02/WF-03 từ tra cứu token tới ghi kết quả, kể cả phần chạy tách khỏi request | `problem`, `cancelled` |
+| `checkout.recovery` | WF-04: Order GET rồi resolve hoặc re-POST (từ status hoặc Submit trùng) | `problem`, `cancelled` |
+| `checkout.dependency` | Một lời gọi qua `DependencyGuard` (Cart, User, Product gRPC, Inventory, Promotion, Order) | `dependency`, `outcome` (cùng giá trị `outcome` của `checkout_dependency_calls_seconds`) |
+| `checkout.redis` | Một lệnh hoặc script Redis | `operation` |
+
+Cây span: server → use case → `checkout.dependency` / `checkout.redis`; span client HTTP nằm
+dưới `checkout.dependency` của nó. Lời gọi không phát đi (circuit mở, bulkhead đầy, hết budget)
+không có span, chỉ có metric `budget_skipped`/`circuit_open`/`bulkhead_rejected`. Problem
+nghiệp vụ (`4xx`) không đánh dấu span lỗi; problem `5xx` và exception thì có. `cancelled=true`
+khi client ngắt kết nối giữa chừng (phần việc sau claim vẫn chạy tiếp ngoài span đã đóng).
+
+Hiện chưa có exporter OTLP: span chỉ tồn tại trong process và được tương quan qua `trace_id` của
+problem và của log. Xuất trace là việc chung của nền tảng (không service Java nào trong
+repository có exporter), không thuộc phạm vi Checkout.
 
 ## Cấu hình
 
@@ -166,7 +194,7 @@ không commit.
 | `CHECKOUT_SUBMIT_RETRY_WINDOW` | `2m` | Không | Phải lớn hơn timeout mesh Order + 5 giây |
 | `CHECKOUT_SUCCESS_RESULT_TTL` | `24h` | Không | |
 | Deadline, timeout, circuit breaker, bulkhead | Theo [Resilience](#resilience) | Không | Đổi giá trị production phải cập nhật ADR-014 và giữ quy tắc timeout Checkout < mesh, deadline < Gateway − 1 s |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER_ARG` | none | Không | |
+| `TRACING_SAMPLING_PROBABILITY` | `0.1` | Không | Xác suất lấy mẫu trace (`management.tracing.sampling.probability`); compose local đặt `1.0`. Chưa có biến cho exporter vì chưa có exporter |
 
 Thiếu cấu hình bắt buộc thì service không khởi động (validate lúc start) thay vì chạy với URL hỏng.
 Các bất biến timeout (Checkout < mesh, deadline < Gateway − 1 giây, owner timeout > deadline

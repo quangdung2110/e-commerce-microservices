@@ -55,10 +55,11 @@ docker compose up -d --build order-service inventory-service promotion-service
 ```
 
 Payment chạy theo profile riêng (`docker compose --profile payment up -d payment-service`).
-Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout và Delivery
-chưa có runtime: gọi `POST /internal/v1/checkout-order-submissions` với
-`X-Service-Identity: checkout-service` trên service network/cổng 8095, và phát Delivery
-fact `com.ecommerce.delivery.order-line.delivered.v1` thủ công lên
+Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout có runtime
+(`docker compose up -d checkout-service`, [checkout/development.md](../checkout/development.md)); khi
+chỉ thử Order, vẫn có thể gọi `POST /internal/v1/checkout-order-submissions` thủ công với
+`X-Service-Identity: checkout-service` trên service network/cổng 8095. Delivery chưa có runtime:
+phát Delivery fact `com.ecommerce.delivery.order-line.delivered.v1` thủ công lên
 `t.delivery.order.events.v1` khi cần thử auto-complete.
 
 ## 3. Cấu hình local

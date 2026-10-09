@@ -40,10 +40,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 1. Checkout Service (BFF/Stateless)
 
-> Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
-> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Checkout là Java 21 +
-> Spring Boot WebFlux (`java/services/checkout-service`, Checkout ADR-013) và đã được
-> triển khai; adoption runtime là `pilot`. Chưa có kiểm thử end-to-end qua provider thật.
+> Đã `implemented` và đồng bộ với code (2026-10-09): Java 21 + Spring Boot WebFlux
+> (`java/services/checkout-service`, Checkout ADR-013); contracts Checkout, Cart, Product, User,
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát; adoption runtime là `pilot`.
+> Chưa có kiểm thử end-to-end qua provider thật.
 
 | File | Mô tả |
 |---|---|

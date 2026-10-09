@@ -36,13 +36,21 @@ Inventory, Product cũng là Java.
 - Product: grpc-java với stub non-blocking, deadline đặt theo lời gọi.
 - Redis: Lettuce reactive, script nạp sẵn và gọi bằng `EVALSHA`.
 - Resilience4j: `CircuitBreaker`, `Bulkhead` (semaphore), `TimeLimiter`; không dùng `Retry`.
+  > **Ghi chú 2026-10-09:** không dùng `TimeLimiter`; timeout từng lời gọi là `Mono.timeout` của
+  > Reactor trong `DependencyGuard`, vì timeout phải tính theo `min(trần, deadline còn lại − biên)`
+  > ở mỗi lần gọi.
 - Micrometer + Prometheus; Micrometer Tracing bridge OpenTelemetry.
+  > **Ghi chú 2026-10-09:** bridge tạo span server/client tự động; span use case, dependency và
+  > Redis do `Spans` thêm ([operations.md](../operations.md#span)). Chưa có exporter OTLP.
 - Server stub và client model sinh từ OpenAPI/proto trong `contracts/`.
   > **Ghi chú 2026-10-07:** chỉ stub gRPC Product được sinh từ proto; DTO HTTP là record viết tay
   > theo tolerant reader và được kiểm với OpenAPI bằng contract test
   > ([ADR-018](./ADR-018-implementation-decisions.md)).
 - Phần việc sau claim chạy trên scheduler riêng, không gắn với subscription của request, để
   client cancellation không hủy lời gọi Order.
+  > **Ghi chú 2026-10-09:** hiện thực là subscription tách rời (`SubmissionService.detached`,
+  > `Sinks.One`), không có scheduler riêng: phần việc chạy tiếp trên event loop của Reactor Netty và
+  > chỉ tách khỏi việc hủy của client. Reactor context (kể cả span hiện hành) được chép sang.
 - BlockHound trong test để chặn blocking I/O trên event loop.
 
 ## Alternatives considered

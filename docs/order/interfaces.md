@@ -108,12 +108,20 @@ trả** — Order không lưu bản sao; `usable=false` → secret `null`. Check
 không cache (Checkout ADR-010).
 Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inventory
 `REJECT_ALL` trả `409 INVENTORY_RESERVATION_REJECTED`; Payment từ chối initiate bền vững
-trả `409 PAYMENT_INITIATION_REJECTED` (cả hai terminal cho token, recovery read
-`state=FAILED`). Recovery read `state=FAILED` còn có thể mang `failure.code`
-`CHECKOUT_PAYMENT_WINDOW_EXHAUSTED` (thời gian giữ hàng không đủ để thanh toán) hoặc
-`ORDER_CANCELLED_DURING_PREPARATION` (đơn bị huỷ trước `PAYMENT_READY`); Checkout relay
-nguyên các code này ([Checkout ADR-015](../checkout/decisions/ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
-Timeout hạ tầng trả `503 retryable=true` và Checkout gửi lại cùng key/body qua luồng recovery.
+trả `409 PAYMENT_INITIATION_REJECTED`; thời gian giữ hàng không đủ để thanh toán trả
+`409 CHECKOUT_PAYMENT_WINDOW_EXHAUSTED`; đơn bị huỷ trước `PAYMENT_READY` trả
+`409 ORDER_CANCELLED_DURING_PREPARATION`. Cả năm đều terminal cho token: Order lưu đúng một
+failure và trả **cùng một problem** ở POST (lần đầu lẫn replay) và ở recovery read
+(`state=FAILED`, hoặc `RECALCULATION_REQUIRED` cho recalculation). Cùng token nhưng snapshot
+khác là `409 IDEMPOTENCY_KEY_REUSED` (không terminal). Checkout relay nguyên các code này
+([Checkout ADR-015](../checkout/decisions/ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
+
+Order chỉ chờ `PAYMENT_READY` tối đa `order.checkout.submit-wait` (12 giây). Hết hạn mà
+submission vẫn `PREPARING` thì POST trả `503 SUBMISSION_IN_PROGRESS` (`retryable=true`,
+`Retry-After`): Order **đã nhận** và vẫn đang xử lý, nên Checkout gửi lại cùng key/body hoặc
+đọc recovery, không coi là chưa nhận. Các lỗi hạ tầng khác (`DEPENDENCY_UNAVAILABLE`,
+`ORDER_UNAVAILABLE`) cũng là `503 retryable=true`; Checkout xử lý chúng bằng luồng recovery với
+cùng key/body.
 Trạng thái submission được lưu trong `order_checkout_submissions`. `final_amount` phải
 ≥ 1 VND vì Payment chỉ nhận amount dương; `0` là `422 INVALID_CHECKOUT_SNAPSHOT`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.

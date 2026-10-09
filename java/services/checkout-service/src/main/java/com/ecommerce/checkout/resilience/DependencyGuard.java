@@ -1,6 +1,7 @@
 package com.ecommerce.checkout.resilience;
 
 import com.ecommerce.checkout.config.CheckoutProperties;
+import com.ecommerce.checkout.observability.Spans;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadConfig;
 import io.github.resilience4j.bulkhead.BulkheadFullException;
@@ -44,6 +45,7 @@ public class DependencyGuard {
 
     private final CheckoutProperties properties;
     private final MeterRegistry meterRegistry;
+    private final Spans spans;
     private final Map<Dependency, Guarded> guards = new EnumMap<>(Dependency.class);
 
     private record Guarded(Duration ceiling,
@@ -53,9 +55,10 @@ public class DependencyGuard {
                            AtomicLong openedAtNanos) {
     }
 
-    public DependencyGuard(CheckoutProperties properties, MeterRegistry meterRegistry) {
+    public DependencyGuard(CheckoutProperties properties, MeterRegistry meterRegistry, Spans spans) {
         this.properties = properties;
         this.meterRegistry = meterRegistry;
+        this.spans = spans;
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
         CheckoutProperties.Timeouts timeouts = properties.timeouts();
         CheckoutProperties.Bulkheads bulkheads = properties.bulkheads();
@@ -138,7 +141,7 @@ public class DependencyGuard {
             return Mono.just(recorded(dependency, CallResult.failure(Outcome.BUDGET_SKIPPED), Duration.ZERO));
         }
 
-        return Mono.defer(() -> {
+        Mono<CallResult<T>> guardedCall = Mono.defer(() -> {
             long startedAt = System.nanoTime();
             return Mono.defer(request)
                     .switchIfEmpty(Mono.error(() -> new ContractViolationException("empty response")))
@@ -151,6 +154,10 @@ public class DependencyGuard {
                     .onErrorResume(error -> Mono.just(classify(dependency, guarded, error)))
                     .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
         });
+        // A call that is not sent (budget, above) has no span; the metric records it with zero duration.
+        return spans.in("checkout.dependency",
+                span -> guardedCall.doOnNext(result -> span.lowCardinalityKeyValue("outcome", result.outcome().tag())),
+                "dependency", dependency.tag());
     }
 
     private <T> CallResult<T> classify(Dependency dependency, Guarded guarded, Throwable error) {

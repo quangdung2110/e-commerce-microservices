@@ -26,7 +26,7 @@
 
 | Nhóm | Đánh giá |
 |---|---|
-| Đồng bộ tốt nhất | Inventory, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. (Review từng bị xếp vào nhóm này nhưng kiểm chứng 2026-10-09 cho thấy sai: xem mục 9. Product Detail BFF cũng không "khớp tốt" như báo cáo gốc: kiểm chứng 2026-10-09 tìm thêm B3–B13, gồm readiness sai khi shutdown, circuit breaker bỏ qua status lạ, log không mang request ID: xem mục 11, đã sửa.) Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
+| Đồng bộ tốt nhất | Inventory, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. (Review từng bị xếp vào nhóm này nhưng kiểm chứng 2026-10-09 cho thấy sai: xem mục 9. Product Detail BFF cũng không "khớp tốt" như báo cáo gốc: kiểm chứng 2026-10-09 tìm thêm B3–B13, gồm readiness sai khi shutdown, circuit breaker bỏ qua status lạ, log không mang request ID: xem mục 11, đã sửa.) Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* *(Checkout: nhận định đúng về route/mã lỗi/config/logic nghiệp vụ, nhưng kiểm tra lại 2026-10-09 thấy phần quan sát sai — bốn span nghiệp vụ docs hứa không tồn tại (K5, đã thêm code) — và tìm thêm K5–K11, K3 thiếu; đã sửa, xem mục 14.)* |
 | Lệch nhiều nhất | Auth, User, Promotion, Search: docs cũ/tự mâu thuẫn và có bug thật trong code. |
 | Lỗi lặp lại khắp nơi | Nhãn trạng thái cũ ("proposed", "chưa có implementation") trong `docs/README.md`, `contracts/catalog/services.yaml`, `contracts/ADOPTION.md`, `interactions.yaml` và frontmatter nhiều file. |
 
@@ -67,7 +67,7 @@
 - §3 Payment: "HTTP v1 và payment facts v2 ... chưa xác minh implementation".
 - §5 Promotion: "thiết kế đang ở trạng thái `proposed` và chưa có implementation để verification"; nói "16 ADR" nhưng thực có 18 (ADR-001..018); nói Promotion HTTP v1 có "24 operations" (thực tế 25, xem PR3).
 - §7 "Product Detail BFF (target)" — đã implement. ✅ đã sửa 2026-10-09 (bỏ "(target)", thêm ba tài liệu còn thiếu: domain, workflows, development; xem B1).
-- §1 Checkout "Thiết kế ở mức target/proposed".
+- §1 Checkout "Thiết kế ở mức target/proposed". *(✅ đã sửa 2026-10-09)*
 - §10 "Service ngoài scope": auth "ngoài scope 14 phase", review/search/cart/product ghi chưa sync — đều cũ.
 - Sửa: cập nhật từng mục theo trạng thái code hiện tại.
 
@@ -81,7 +81,7 @@
 - Product gRPC v1 "proposed — proto bị copy, package/service name cũ, giá double": package `ecommerce.product.v1` và Money đã đúng; chỉ còn việc proto bị copy (P7). `interactions.yaml` ghi `implemented`.
 - Review HTTP v1 "Service chưa có runtime": `java/services/review-service` đã có.
 - Search HTTP v2 "frontend vẫn gọi `/api/v1/search/**`": gateway và `interactions.yaml` nói v1 đã bị gỡ khỏi router (bước 4 frontend).
-- Order Events v1 "Checkout chưa có runtime": Checkout đã implement.
+- Order Events v1 "Checkout chưa có runtime": Checkout đã implement. *(✅ đã sửa 2026-10-09; câu nằm ở dòng Order **HTTP** v1, không phải Events. Dòng Checkout "frontend … chưa gọi" và dòng Product gRPC "Checkout chưa có test tương đương" cũng sai và đã sửa, xem K8/K9)*
 - Promotion HTTP v1 "24 operation": thực có 25 (PR3).
 - Product Detail BFF (phát hiện 2026-10-09, B3): không có dòng cho PDP HTTP v1; dòng Product ghi BFF thiếu consumer test và dòng Review ghi BFF "chưa chạy với fixture sinh từ contract" dù `ProviderFixturesContractTest` validate fixture của cả ba provider. ✅ đã thêm dòng PDP HTTP v1 và sửa hai dòng provider.
 
@@ -90,7 +90,7 @@
 - Thiếu interaction Promotion → Product snapshot (P5).
 - `notification-publishes-outcomes` liệt kê `user-service` là consumer `complaint-received`, nhưng User chưa có consumer (U5). *(đã xong 2026-10-09: User consume complaint-received, catalog cập nhật)*
 - `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5).
-- Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3).
+- Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3). *(2026-10-09: chỉ hai trong bốn còn `proposed` — `checkout-previews-inventory-allocation` và `checkout-reads-user-address-snapshot` đã `implemented` từ các đợt sync Inventory/User; nay cả bốn `implemented`.)*
 - `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2).
 - `storefront-queries-product-detail` và `product-detail-bff-queries-product-catalog` vẫn `proposed` dù cả hai phía chạy (B3, phát hiện 2026-10-09). ✅ đã `implemented`; ghi chú `preview_limit` của `product-detail-bff-queries-review-summary` theo `PDP_REVIEW_PREVIEW_LIMIT`.
 
@@ -352,7 +352,7 @@
 >   `docs/promotion/README.md` (allowlist), `docs/search/README.md` ("Cần tạo: AsyncAPI product") → đã sửa.
 > - Search đã đọc `facet_definitions` (2026-10-09, `FacetLabelResolver`, nhãn nhóm facet; nhãn option vẫn dẫn xuất).
 > - Còn mở: `.proto` vẫn là bản copy
->   (chọn giữ + `ProtoCopyDriftTest`, Checkout chưa có test tương đương); chưa có smoke test Debezium thật cho Product;
+>   (chọn giữ + `ProtoCopyDriftTest`; Checkout **có** `ProtoCopyTest` tương đương — câu "chưa có" là sai, K8); chưa có smoke test Debezium thật cho Product;
 >   S6 và PR6 đã sửa 2026-10-09 (xem checklist).
 
 ### P5 🟠 Interaction Promotion → Product thiếu trong catalog; allowlist rộng hơn contract
@@ -642,7 +642,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 ### O1 🟡 README cũ / tự mâu thuẫn
 - §1 còn câu boilerplate "Mức áp dụng contract liên service chưa được đánh giá trong lần tái cấu trúc này" ngay dưới dòng nói contract đã implemented.
 - §6: PostgreSQL "Logical design, chưa có migration evidence"; Debezium "Cấu hình chưa có evidence" — đã có `V1__order_baseline.sql` và `debezium-connector-order-outbox.json` (README §1 nói đã smoke test).
-- §9: "Checkout Service ... chưa có runtime" — Checkout đã implement.
+- §9: "Checkout Service ... chưa có runtime" — Checkout đã implement. *(✅ đã sửa phần Checkout 2026-10-09, cùng `docs/order/development.md` §2 mà báo cáo bỏ sót; phần Delivery và phần còn lại của O1 chưa sửa)*
 
 ### O2 🟡 `interfaces.md` §1
 - Promotion activities "contract target exists" — README ghi implemented.
@@ -672,27 +672,72 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ## 14. Checkout (`docs/checkout`, `contracts/http/checkout/v1`, `java/services/checkout-service`)
 
-Docs mới nhất, khớp code.
+> **Kiểm chứng lại và sửa xong 2026-10-09 (mục Checkout).** Đọc toàn bộ `docs/checkout` (8 file + ADR-001..018),
+> OpenAPI, toàn bộ code `checkout-service` (controller, filter, parser, ba service, Revalidator, 7 script Lua, 6 client,
+> `DependencyGuard`, crypto, config) và đối chiếu từng điểm với contract của Cart, User, Product, Inventory, Promotion, Order
+> (kể cả code Order: `CheckoutRules`, `CheckoutSubmissionService`, `ErrorCode`), compose, Gateway `dynamic.yml`, mesh matrix và
+> frontend. Chạy lại toàn bộ test (138 xanh trước khi sửa). Kết quả: câu "docs mới nhất, khớp code" **đúng với hành vi nghiệp vụ**
+> (route, 28 mã lỗi và HTTP/`retryable`/`action`, state machine, Lua, TTL, cấu hình, tên metric và nhãn, mapping Order, công thức
+> hash == `CheckoutRules` của Order, allowlist `X-Service-Identity` của cả sáu provider, ba profile rate limit 10/3/20 mỗi phút) nhưng
+> **sai ở phần quan sát**, K1/K2/K3 đúng nhưng K3 thiếu, và báo cáo bỏ sót K5–K11 bên dưới. Không tìm thấy bug logic nào trong
+> luồng Preview/Submit/Recovery. Đã sửa code (K5), contract, catalog, docs và ADR; xem từng mục.
+>
+> Đã xem xét và **không** coi là lỗi: (a) `503 SUBMISSION_IN_PROGRESS` của Order tính vào circuit breaker `order_post` — đúng
+> docs, và là load-shedding có chủ ý khi Payment chậm; (b) Promotion có lý do `NO_VOUCHER_SELECTED` mà enum Checkout không có —
+> Checkout chỉ gọi Promotion khi có `promotion_id` nên không gặp, và giá trị lạ đã được map về `UNKNOWN`; (c) replay Preview theo
+> `Idempotency-Key` có thể trả token đã `SUPERSEDED` — là ngữ nghĩa idempotency, submit token đó trả `410`; (d) `ProductClient` gửi
+> `x-service-identity` nhưng Product gRPC không kiểm — việc của Product/mesh, không phải Checkout.
 
-### K1 🟠 [cross Order] Mã `SUBMISSION_IN_PROGRESS` chưa có trong contract Order
+### K1 🟠 [cross Order] Mã `SUBMISSION_IN_PROGRESS` chưa có trong contract Order — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Order trả `503 SUBMISSION_IN_PROGRESS` khi hết 12 giây chờ mà submission vẫn `PREPARING` (`order/common/ErrorCode.java`, `CheckoutSubmissionService.java`). Checkout dựa vào mã này để trả `202 PREPARING` thay vì `RESULT_UNKNOWN`.
 - Order internal OpenAPI và `docs/order/interfaces.md` §2.2 chỉ nói "Timeout hạ tầng trả 503 retryable" (chỉ `docs/order/development.md` nhắc tới mã).
 - Sửa: thêm mã vào Order OpenAPI (503 response) và interfaces.md.
+- **Đã sửa:** mô tả operation `submitCheckoutOrder` trong Order OpenAPI nêu 503 `SUBMISSION_IN_PROGRESS` (hết 12 giây chờ, Order đã nhận, gửi lại cùng key/body); `docs/order/interfaces.md` §2.2 cùng nội dung; `contracts/CHANGELOG.md`.
 
-### K2 🟠 [cross Order] Order POST có thể trả 409 hai mã chưa ghi
+### K2 🟠 [cross Order] Order POST có thể trả 409 hai mã chưa ghi — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - `CheckoutSubmissionService.failure()` trả lại failure đã lưu, gồm `CHECKOUT_PAYMENT_WINDOW_EXHAUSTED`, `ORDER_CANCELLED_DURING_PREPARATION`. Order OpenAPI 409 chỉ liệt kê `PROMOTION_RECALCULATION_NEEDED`, `INVENTORY_RESERVATION_REJECTED`, `PAYMENT_INITIATION_REJECTED`; `docs/order/interfaces.md` gán hai mã kia cho recovery read. Checkout docs/code đã đúng (xử lý trên POST).
 - Sửa: bổ sung vào Order OpenAPI + interfaces.md.
+- **Đã sửa** cả hai nơi, và nêu thêm điều audit bỏ sót: Order lưu đúng một failure và trả cùng problem ở POST đầu tiên, mọi POST replay và recovery read; `409 IDEMPOTENCY_KEY_REUSED` (cùng token, snapshot khác) cũng nằm trong 409 của POST và không terminal.
 
-### K3 🟡 Nhãn trạng thái
+### K3 🟡 Nhãn trạng thái — ⚠ đúng một phần (thiếu và có chỗ đã cũ); đã sửa hết 2026-10-09
 - `architecture.md`/`domain.md` frontmatter `status: proposed`; `interfaces.md` dòng "Voucher options | `proposed`" (Promotion đã implement); các interaction của Checkout trong catalog vẫn `proposed`.
+- **Thiếu:** không chỉ hai file đó mà cả `workflows.md`, `data.md`, `operations.md`, `development.md` đều `status: proposed`, và cả tám file đều `scope: target`. Đã đổi sang `scope: current` / `status: implemented`.
+- **Đã cũ:** chỉ hai trong bốn interaction còn `proposed` (`checkout-calculates-promotions`, `checkout-lists-voucher-options`); `checkout-previews-inventory-allocation` và `checkout-reads-user-address-snapshot` đã `implemented` từ các đợt sync Inventory/User. Hai interaction còn lại nay cũng `implemented`.
+- **Cùng nhóm, báo cáo bỏ sót:** `docs/README.md` §1 vừa ghi "target/proposed" vừa ghi "đã triển khai"; `contracts/ADOPTION.md` (dòng Checkout "frontend … chưa gọi" — thực tế có `checkoutApi`, hook và trang; dòng Order "Checkout … chưa có runtime"; dòng Product gRPC "Checkout chưa có test tương đương", xem K8); `docs/order/README.md` §9 và `docs/order/development.md` §2 cũng nói Checkout chưa có runtime; ADR-010 ghi "chưa có implementation evidence".
 
-### K4 🟡 Known gap đã ghi (để nhớ khi sửa phía provider)
+### K4 🟡 Known gap đã ghi (để nhớ khi sửa phía provider) — ✅ đúng
 - Rate limit internal User theo IP 600/phút chung cho mọi pod (U10) — đã sửa 2026-10-09: theo (service gọi, user_id), 120/phút.
 - Product chưa có nhãn biến thể → Order `variant_name` null → ảnh hưởng Review/Notification.
 - User snapshot không có tên tỉnh/huyện/xã → Order/Notification dùng mã.
 - `user_tier` luôn omit.
 
-Đã khớp: 4 endpoint public; config (deadline 5s/1.5s/20s, timeout, bulkhead, CB, TTL 20m/30m/5m/30s/2m/24h, cờ voucher options mặc định false + compose true) == operations.md; header gửi đi (`X-Service-Identity`, `X-Correlation-ID`, `X-Causation-ID` tới Inventory; `Idempotency-Key` = token tới Order); `checkout_channel=CHECKOUT`.
+### K5 🟠 [BUG docs↔code, báo cáo bỏ sót] Span nghiệp vụ không tồn tại — ✅ đã sửa code 2026-10-09
+- `operations.md` hứa bốn span chính `checkout.preview` / `checkout.voucher_options` / `checkout.submit` / `checkout.recovery` và "span con theo dependency và Redis script". Code không tạo span nào: chỉ có span server và span client `WebClient` tự động của Spring; lời gọi gRPC Product và lệnh Redis không có span. Không thể xem một Preview chậm ở bước nào.
+- Cũng trong `operations.md`: bảng cấu hình ghi `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_TRACES_SAMPLER_ARG`. `pom.xml` chỉ có `micrometer-tracing-bridge-otel`, không có exporter (và không service Java nào trong repo có), nên hai biến này vô tác dụng; biến thật là `TRACING_SAMPLING_PROBABILITY` (compose đặt `1.0`).
+- **Quyết định của chủ dự án:** không cần xuất trace qua OTLP; bốn span nghiệp vụ là cần thiết.
+- **Đã sửa:** `observability/Spans` (span là Observation của một registry chỉ có handler tracing, nên **không** sinh timer trùng với `checkout.redis`/`checkout.recovery` hiện có và nhãn metric không đổi; observation được đặt vào Reactor context để span client HTTP nằm dưới `checkout.dependency`); bốn span use case ở `PreviewService`, `VoucherOptionsService`, `SubmissionService.submit` (gồm phần chạy tách khỏi request) và `SubmissionService.recover`; `checkout.dependency` (attribute `dependency`, `outcome`) trong `DependencyGuard.call`; `checkout.redis` (attribute `operation`) trong `SessionStore.run`. Problem nghiệp vụ `4xx` không đánh dấu lỗi, `5xx`/exception thì có. Test `TracingSpansTest` đọc span thật qua `SpanProcessor` của OpenTelemetry SDK (tên, cha–con, attribute, lỗi). `operations.md` có mục "Span", bỏ hai biến OTEL, thêm `TRACING_SAMPLING_PROBABILITY`; ADR-013 có ghi chú; README ghi "chưa có exporter OTLP" là known gap chung.
+
+### K6 🟡 [báo cáo bỏ sót] Danh sách trường log JSON không đúng code — ✅ đã sửa docs 2026-10-09
+- Docs: `timestamp`, `level`, `service`, `environment`, `trace_id`, `span_id`, `request_id`, route, status, `code`, duration. Code (`LogstashEncoder` + dòng truy cập): `@timestamp`, `level`, `service`, `message`, `traceId`/`spanId` (MDC), và ở dòng `request completed`: `method`, `route`, `status`, `problem_code`, `duration_ms`, `request_id`, `trace_id`. Không có `environment`.
+- Sửa: `operations.md` ghi đúng các trường thật.
+
+### K7 🟡 [báo cáo bỏ sót] `getCheckoutSubmission` thiếu `429` — ✅ đã sửa 2026-10-09
+- Route status đi qua profile Gateway `api-authenticated` (compose: `rate-limit-api@file`; Gateway matrix §5), nên client có thể nhận `429`; OpenAPI chỉ khai `429` cho ba operation kia và `interfaces.md` chỉ kể ba profile `checkout-*` (cùng lỗi Cart đã sửa ở C9).
+- Sửa: thêm `429` vào operation, sửa mô tả `RateLimited`, `interfaces.md`, `contracts/CHANGELOG.md`; sinh lại `frontend/src/lib/api/generated/checkout.ts` (typecheck và 23 test checkout xanh).
+
+### K8 🟡 [báo cáo sai] "Checkout chưa có test tương đương `ProtoCopyDriftTest`" — ✅ đã sửa 2026-10-09
+- Checkout có `ProtoCopyTest`, kiểm cả `product_service.proto` lẫn `money.proto` với `contracts/` (và `docs/checkout/development.md` đã liệt kê nó). Câu sai nằm ở `contracts/ADOPTION.md` (dòng Product gRPC), `contracts/grpc/ecommerce/product/v1/README.md` và ghi chú P7 của chính báo cáo này.
+
+### K9 🟡 [báo cáo bỏ sót] Docs ngoài `docs/checkout` còn nói Checkout chưa chạy — ✅ đã sửa phần Checkout 2026-10-09
+- `contracts/ADOPTION.md` (Checkout: "frontend mới sinh type, chưa gọi"; Order: "chưa có consumer test từ Checkout (chưa có runtime)"), `docs/order/README.md` §9 và `docs/order/development.md` §2. Đã sửa riêng phần Checkout; phần Delivery và phần còn lại của O1 (README §1, §6) thuộc Order, chưa sửa.
+
+### K10 🟡 [báo cáo bỏ sót] Docs/ADR mô tả sai cơ chế — ✅ đã sửa 2026-10-09
+- `development.md` và ADR-013 ghi Resilience4j `TimeLimiter`; code dùng `Mono.timeout` trong `DependencyGuard` (timeout phải tính `min(trần, deadline còn lại − biên)` mỗi lần gọi). ADR-013 ghi "phần việc sau claim chạy trên scheduler riêng"; code dùng subscription tách rời (`SubmissionService.detached`, `Sinks.One`), không có scheduler riêng. Cả hai sửa bằng ghi chú có ngày (ADR đã accepted) và cập nhật `development.md`.
+
+### K11 🟡 [báo cáo bỏ sót] Chi tiết nhỏ trong docs — ✅ đã sửa 2026-10-09
+- `data.md` thiếu `created_at`/`updated_at` của session hash; `interfaces.md` ghi `tracestate` cũng gửi qua gRPC Product (chỉ `traceparent`); route/method không khớp (`404`/`405` vẫn là problem `INVALID_REQUEST`) và body không phải JSON (`400`, không `415`) chưa được nêu (`UnroutedRequestTest`); `README` ghi "body rỗng" cho `PUT /me/promotion-vouchers` trong khi Promotion bắt buộc body `{}`; bảng "Bản đồ test" thiếu test path đã decode.
+
+Đã khớp (kiểm lại từng điểm 2026-10-09): 4 endpoint public == OpenAPI (status, header `Location`/`Retry-After`/`Cache-Control`, schema, 28 mã lỗi); config (deadline 5s/1.5s/20s, timeout, bulkhead, CB, TTL 20m/30m/5m/30s/2m/24h, cờ voucher options mặc định false + compose true) == operations.md; header gửi đi (`X-Service-Identity`, `X-Request-Id`, `X-Correlation-ID`/`X-Causation-ID` tới Inventory; `Idempotency-Key` = token tới Order); `checkout_channel=CHECKOUT`; hai công thức hash == `CheckoutRules` của Order; payload Order qua được mọi ràng buộc `CheckoutRules`; allowlist của Cart/User/Inventory/Promotion/Order chứa `checkout-service`; ba profile rate limit `dynamic.yml` == Gateway runtime-contract §7; 7 script Lua và TTL == data.md; tên và nhãn metric == operations.md.
 
 ---
 
@@ -783,22 +828,24 @@ Docs mới nhất, khớp code.
 - [x] S6 Search: default URL Product `:8081` (yml, `SearchProperties`, compose gốc + compose riêng của Search). *(2026-10-09)*
 - [ ] S7 Search: bỏ `/` cuối ở default CDN URL.
 - [x] P5 Product: tách allowlist snapshot cho Promotion (`snapshot-clients`, Promotion không còn đọc được export). *(2026-10-09)*
-- [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout chưa có test tương đương)*
+- [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout có `ProtoCopyTest` tương đương, K8)*
 - [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
 - [x] N4 Notification: gửi `X-Service-Identity` khi gọi Auth. *(báo cáo sai: đã gửi từ trước, không cần sửa)*
 - [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; còn Notification)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
 - [x] X5 Order/Product/Promotion/Review: filter kiểm quyền theo path đã decode + bỏ `;param` (`UrlPathHelper`), mỗi service một `*PathTest` (đỏ → xanh); Checkout `RequestContextFilter` cùng cách (không phải lỗi bảo vệ). *(2026-10-09)*
+- [x] K5 Checkout: bốn span nghiệp vụ `checkout.preview`/`voucher_options`/`submit`/`recovery`, `checkout.dependency`, `checkout.redis` (`Spans`, `TracingSpansTest`; kiểm đột biến: bỏ Reactor context thì 5/6 test đỏ). *(2026-10-09)*
 - [x] X5 Go: đã rà middleware gin của cart/auth/user/notification + gateway-auth + cấu hình Traefik — không có lỗ hổng cùng mẫu, chỉ thêm `cart-service/.../router_path_test.go`. *(2026-10-09)*
 
 ### Contract / catalog
 - [ ] PR4 sửa tham số `LegacyMigrationProof`.
-- [ ] K1/K2 bổ sung mã vào Order internal OpenAPI.
+- [x] K1/K2 bổ sung mã vào Order internal OpenAPI. *(2026-10-09)*
+- [x] K7 Checkout OpenAPI: `429` cho `getCheckoutSubmission`; sinh lại `frontend/.../generated/checkout.ts`. *(2026-10-09)*
 - [x] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400. *(2026-10-09)*
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; K3 xong 2026-10-09 (cả bốn interaction Checkout, ba dòng ADOPTION Checkout/Order/Product gRPC); còn N5, PY2, N2).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; còn N5)*
 
 ### Docs
@@ -812,8 +859,8 @@ Docs mới nhất, khớp code.
 - [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
 - [ ] Search: S1–S3, S5.
 - [x] PDP BFF: B1, B2 (đã sửa từ Product sync), cộng B3–B13 phát hiện khi kiểm chứng. *(2026-10-09; ADR-008)*
-- [ ] Order: O1, O2, K1, K2.
+- [ ] Order: O1, O2. *(K1, K2 xong 2026-10-09; phần Checkout của O1 xong)*
 - [ ] Payment: PY2, PY3.
-- [ ] Checkout: K3.
+- [x] Checkout: K3 (frontmatter, `interfaces.md`, `docs/README.md` §1, catalog, ADOPTION, ADR-010) và K5–K11 (span và cấu hình tracing, trường log, `429` status, test proto, docs ngoài Checkout, `TimeLimiter`/scheduler, chi tiết nhỏ). *(2026-10-09)*
 - [ ] Notification: N2, N5, N6.
 - [ ] X3/X4: thống nhất tên mã lỗi và error catalog.

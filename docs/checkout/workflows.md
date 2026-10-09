@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-workflows
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:

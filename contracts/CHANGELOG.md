@@ -21,6 +21,21 @@ không cần xuất hiện ở đây.
 - Catalog: `storefront-queries-product-detail` and `product-detail-bff-queries-product-catalog` are `implemented`.
   `ADOPTION.md` has a row for the PDP HTTP contract.
 
+## 2026-10-09 (Checkout sync)
+
+- Checkout HTTP v1: `getCheckoutSubmission` now declares `429`. The status read goes through the Gateway profile
+  `api-authenticated`, which limits per client and answers `429` like the three `checkout-*` profiles do on the other
+  operations; the contract named only those three. Checkout still never produces a `429`. No wire shape changed.
+- Order internal HTTP v1 (documentation of behaviour that already existed; no wire shape changed): the `409` of
+  `POST /internal/v1/checkout-order-submissions` also covers `IDEMPOTENCY_KEY_REUSED`,
+  `CHECKOUT_PAYMENT_WINDOW_EXHAUSTED` and `ORDER_CANCELLED_DURING_PREPARATION`, and Order replays the one stored
+  failure on the first POST, on every later POST and on the recovery read. The operation also states `503
+  SUBMISSION_IN_PROGRESS`: the 12 s wait for `PAYMENT_READY` ended while the submission was still `PREPARING`; Order
+  has the submission, so the caller retries the identical key and body. Checkout already relied on both.
+- Catalog: `checkout-calculates-promotions` and `checkout-lists-voucher-options` are `implemented` (Promotion
+  implements both operations and Checkout calls them). `ADOPTION.md` no longer says Checkout lacks a proto copy test
+  (`ProtoCopyTest`) or a runtime, or that the frontend does not call it.
+
 ## 2026-10-09 (Auth sync)
 
 - Auth HTTP v1 wire shapes are unchanged; the contract text now matches `auth-service`. Observable behaviour that

@@ -3,6 +3,7 @@ package com.ecommerce.checkout.store;
 import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.crypto.TokenHasher;
 import com.ecommerce.checkout.domain.SessionState;
+import com.ecommerce.checkout.observability.Spans;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.core.io.ClassPathResource;
@@ -48,6 +49,7 @@ public class SessionStore {
     private final TokenHasher hasher;
     private final CheckoutProperties properties;
     private final MeterRegistry meters;
+    private final Spans spans;
 
     private final RedisScript<List> peekPreview = script("peek_preview", List.class);
     private final RedisScript<List> createPreview = script("create_preview", List.class);
@@ -58,11 +60,12 @@ public class SessionStore {
     private final RedisScript<List> finalizeScript = script("finalize", List.class);
 
     public SessionStore(ReactiveStringRedisTemplate redis, TokenHasher hasher, CheckoutProperties properties,
-                        MeterRegistry meters) {
+                        MeterRegistry meters, Spans spans) {
         this.redis = redis;
         this.hasher = hasher;
         this.properties = properties;
         this.meters = meters;
+        this.spans = spans;
     }
 
     /**
@@ -347,7 +350,7 @@ public class SessionStore {
     // ------------------------------------------------------------------ plumbing
 
     private <T> Mono<T> run(String operation, Supplier<Mono<T>> command) {
-        return Mono.defer(() -> {
+        Mono<T> timed = Mono.defer(() -> {
             long started = System.nanoTime();
             return command.get()
                     .timeout(properties.redisTimeout())
@@ -358,6 +361,7 @@ public class SessionStore {
                             .record(Duration.ofNanos(System.nanoTime() - started)))
                     .onErrorMap(error -> new RedisUnavailableException(operation, error));
         });
+        return spans.in("checkout.redis", timed, "operation", operation);
     }
 
     private static Control control(String ref, List<Object> values) {

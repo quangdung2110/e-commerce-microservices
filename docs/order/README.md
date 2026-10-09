@@ -190,10 +190,12 @@ Inventory Kafka contract contains only dispatch and selected-scope inspection co
 
 ## 9. Khoảng trống đã biết
 
-- Checkout Service và Delivery Service chưa có runtime, nên chưa chạy được E2E qua Gateway
-  thật; luồng được kiểm bằng contract fake trong test tích hợp.
-- Contracts mới ở mức `implemented`: chưa có consumer contract test (Checkout, frontend,
-  Finance/Ops, Cart/Review/Notification với producer thật); Debezium mới smoke test thủ công.
+- Delivery Service chưa có runtime, nên chưa chạy được E2E tới `DELIVERED`/`COMPLETED`. Checkout
+  Service đã có runtime (`java/services/checkout-service`) nhưng chưa có E2E tự động qua Order
+  thật: test của Checkout dùng fixture đã validate với OpenAPI internal của Order, còn test của
+  Order dùng contract fake.
+- Contracts mới ở mức `implemented`: chưa có consumer contract test với provider thật (Checkout,
+  frontend, Finance/Ops, Cart/Review/Notification); Debezium mới smoke test thủ công.
 - Chưa có Temporal replay test trên history production, Kubernetes manifest, phân pod
   HTTP/consumer/worker hay mesh `AuthorizationPolicy` thật.
 - Analytics chưa có runtime consumer, nên không được coi là consumer của Order event cho
