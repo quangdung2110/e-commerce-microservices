@@ -46,13 +46,13 @@
 | O3 | Order (+ Delivery) | Không có Delivery provider; đơn không bao giờ `COMPLETED` |
 | PY1 | Payment | Thiếu `GET /v1/payments/{id}` và `GET /v1/refunds/{id}` mà Order đang gọi |
 | PR8 + PR10 | Promotion | `technical-cancellations` mở cho `order-service`, không kiểm proof; docs nói đã chặn |
-| A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát |
+| A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát — ✅ đã kiểm chứng và sửa 2026-10-09 (ADR-006) |
 | N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý |
 | U9 | User | Profile đã xoá (ẩn danh) vẫn ghi lại được PII |
 | S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt *(phía Inventory đã sửa 2026-10-09: retention đúng 30d, xem I8; Search chưa)* |
 | I3 | Inventory | Kiểm role ADMIN/allowlist trên URI thô → né được bằng `%xx`/`;` *(đã sửa 2026-10-09)* |
 | S6 | Search | URL Product mặc định `:8080`, Product chạy `:8081` → full reindex lỗi ở compose |
-| X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call |
+| X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call — ✅ Auth (A10, ADR-007) và User (U10) đã sửa 2026-10-09; ⏳ còn Notification (N3) |
 
 ---
 
@@ -193,7 +193,7 @@
 ### A14 🟡 Lỗi policy password khi đăng ký trả 400 — ✅ đúng; đã ghi vào docs/contract 2026-10-09
 - Register không có 422 trong contract nên vi phạm policy trả `400 VALIDATION_FAILED` — hành vi đúng nhưng chưa được ghi.
 
-Đã khớp: route/status == OpenAPI; event type/topic/key/field == AsyncAPI; `docs/auth/schema/0001_initial_auth_schema.sql` == migration; cookie `auth_refresh` path `/api/v1/auth/sessions`; JWKS RS256.
+Đã khớp (theo báo cáo gốc; lần kiểm chứng 2026-10-09 xác nhận, và bổ sung các điểm lệch ở khối ghi chú đầu mục này): route/status == OpenAPI; event type/topic/key/field == AsyncAPI; `docs/auth/schema/0001_initial_auth_schema.sql` == migration; cookie `auth_refresh` path `/api/v1/auth/sessions`; JWKS RS256.
 
 ---
 
@@ -611,7 +611,7 @@ Docs mới nhất, khớp code.
 - Xem U4. `docs/notification/08-decide.md` §5: thiếu preference → `marketing_enabled=false` ("gửi marketing cho người chưa từng đồng ý là rủi ro compliance"). User nguồn mặc định `true` và reconciliation đẩy `true` sang → marketing (vd `CART_ABANDONED` lane bulk) được gửi cho user chưa opt-in.
 - Sửa: thống nhất mặc định với User (ưu tiên `false` ở nguồn).
 
-### N3 🔴 Internal API dùng app-level mTLS (xem X2)
+### N3 🔴 Internal API dùng app-level mTLS (xem X2) — ⏳ chưa sửa (Notification). Phía Auth đã chuyển sang mô hình mesh 2026-10-09 nên các cấu hình `NOTIFICATION_AUTH_TLS_*` của client trở thành tùy chọn/thừa
 - `internal/api/router/internal.go`: không phải dev + không có app mTLS → log "every status/ops call will be rejected". Mesh docs nói Istio ambient thực thi, app không thấy cert → production sau mesh sẽ từ chối mọi call status/ops nếu không cấu hình TLS ở app.
 
 ### N4 🟡 Client gọi Auth không gửi `X-Service-Identity` — ❌ báo cáo sai (kiểm chứng 2026-10-09): `client.go:294` gửi header khi `auth.service_identity` khác rỗng, mặc định `notification-service`, test `client_test.go` assert header
@@ -632,7 +632,7 @@ Docs mới nhất, khớp code.
 
 ## 16. Vấn đề xuyên suốt
 
-### X2 🔴 Hai mô hình xác thực internal không tương thích
+### X2 🔴 Hai mô hình xác thực internal không tương thích — 🔶 đã xong Auth (ADR-007) và User (ADR-008) 2026-10-09; còn Notification (N3)
 - Contract + `docs/mesh/runtime-contract.md`: Istio ambient thực thi mTLS + AuthorizationPolicy theo principal; service **không** thấy cert; `X-Service-Identity` chỉ để attribution/defense-in-depth.
 - Service Go (Auth, User, Notification): kiểm mTLS/CN ở tầng app, production bắt buộc cert, bỏ qua header.
 - Service Java (Product, Promotion, Inventory, Order, Checkout, PDP, Search...) và Cart (Go): kiểm allowlist header `X-Service-Identity` sau mesh.

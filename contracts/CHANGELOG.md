@@ -36,6 +36,44 @@ không cần xuất hiện ở đây.
 - Catalog: `auth-publishes-identity-events`, `auth-requests-security-notifications`,
   `notification-resolves-auth-delivery-content` and `notification-resolves-auth-contact` are `implemented`.
 
+## 2026-10-09 (Review sync)
+
+- Review HTTP v1 and Review Internal HTTP v1 are `implemented` (were `proposed`); `HttpContractIT` holds the
+  service to them. Wire shapes are unchanged. Observable behaviour that changed in the service and is now stated:
+  - Request bodies are `additionalProperties: false` and the service now enforces it: a field the contract does
+    not define is `400 INVALID_REQUEST` and `errors[].field` names it, on every operation (`PATCH` always did).
+    Before, `author_name` on create or `approved_by_admin_id` on takedown was silently dropped.
+  - A parameter outside its range answers `400 INVALID_REQUEST` naming the field: `limit` outside 1..50 (1..100 on
+    the admin queue, 1..1000 on the export page), `rating` outside 1..5, `preview_limit` above 5, a non-UUID path
+    parameter. Before, all of these answered `500 INTERNAL_ERROR`.
+  - A request with no operation answers `404 NOT_FOUND`, a known path with another method `405 METHOD_NOT_ALLOWED`
+    (with `Allow`) and a non-JSON body `415 UNSUPPORTED_MEDIA_TYPE`. Before, all three answered `500`. These
+    apply to every path and are not repeated per operation.
+  - `400` bodies no longer carry framework exception text (class names, method signatures); `detail` and
+    `errors[].message` are written by Review. `trace_id` echoes `X-Request-Id` only when it is 16..64 characters,
+    the bounds of the shared Problem schema (before, any 8..128 character value was echoed and could violate it).
+  - A `media_asset_ids` list that repeats an id is `400 INVALID_REQUEST` (it was `409 MEDIA_NOT_VERIFIED`).
+  - A lock that cannot be taken (lock timeout, deadlock victim) answers `503 REVIEW_STORE_UNAVAILABLE`
+    (retryable), as the OpenAPI always declared; before, only a lost connection or a query timeout did and the
+    rest answered `500`.
+  - The error code `INVALID_CURSOR` was never produced and is removed from the service; an invalid cursor is
+    `INVALID_REQUEST` with `errors[].field = "cursor"`. Full catalog: `docs/review/interfaces.md` section 7.
+- Review HTTP v1 text: `400` is declared for `listMyPendingReviewEligibilities`, `getMyEligibilityReviewStatus`,
+  `getMyReview` and `dismissReviewReports`; `REVIEW_NOT_REPORTABLE` is stated as reserved and never produced
+  (a non-`APPROVED` review answers `404 REVIEW_NOT_FOUND`); `IssueMediaUploadRequest` now states the accepted
+  content types, the size limits and that `checksum` is the hex MD5 / storage ETag of the object.
+- Review Internal HTTP v1: error responses are declared as `application/problem+json` (they always were on the
+  wire); `ProductReviewPreviewItem.content` and `RatingAggregateSnapshot.total_with_media` are `required` (the
+  service always sends them; the Events schema already required `total_with_media`); `400` is declared for the
+  export page.
+- Review Events v1: schemas are unchanged and `x-adoption-status` is `implemented`. A record that violates its
+  contract is dead-lettered at once, and the `USER_DELETED` listener retries transient failures without a time
+  limit instead of dead-lettering after 60 seconds ([Review ADR-013](../docs/review/decisions/ADR-013-privacy-failure-handling.md)).
+  Examples for all eight types are in `contracts/examples/events/review-*.v1.json`.
+- Catalog: the six Review interactions (`product-detail-bff-queries-review-summary`, `gateway-routes-review-api`,
+  `review-publishes-rating-aggregate-events`, `review-self-consumes-rating-lifecycle-events`,
+  `review-requests-user-notifications`, `search-reindexes-review-rating-aggregates`) are `implemented`.
+
 ## 2026-10-09 (Product sync)
 
 - Product Events v1 `category-upserted` và Product HTTP v1 `CategoryExport` có thêm `facet_definitions`: mảng
