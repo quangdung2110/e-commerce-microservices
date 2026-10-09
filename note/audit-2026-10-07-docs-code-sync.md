@@ -83,6 +83,7 @@
 - Search HTTP v2 "frontend vẫn gọi `/api/v1/search/**`": gateway và `interactions.yaml` nói v1 đã bị gỡ khỏi router (bước 4 frontend).
 - Order Events v1 "Checkout chưa có runtime": Checkout đã implement.
 - Promotion HTTP v1 "24 operation": thực có 25 (PR3).
+- Product Detail BFF (phát hiện 2026-10-09, B3): không có dòng cho PDP HTTP v1; dòng Product ghi BFF thiếu consumer test và dòng Review ghi BFF "chưa chạy với fixture sinh từ contract" dù `ProviderFixturesContractTest` validate fixture của cả ba provider. ✅ đã thêm dòng PDP HTTP v1 và sửa hai dòng provider.
 
 ### G5 🟡 `contracts/catalog/interactions.yaml` lệch nhiều chỗ
 - `cart-publishes-cart-events` sai hoàn toàn (C1).
@@ -91,6 +92,7 @@
 - `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5).
 - Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3).
 - `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2).
+- `storefront-queries-product-detail` và `product-detail-bff-queries-product-catalog` vẫn `proposed` dù cả hai phía chạy (B3, phát hiện 2026-10-09). ✅ đã `implemented`; ghi chú `preview_limit` của `product-detail-bff-queries-review-summary` theo `PDP_REVIEW_PREVIEW_LIMIT`.
 
 ---
 
@@ -796,7 +798,7 @@ Docs mới nhất, khớp code.
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; còn N5)*
 
 ### Docs
