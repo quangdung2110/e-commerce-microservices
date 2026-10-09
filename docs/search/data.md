@@ -289,8 +289,10 @@ phải lưu.
   `com.ecommerce.catalog.sku-deleted.v1` đặt `is_deleted = true`, `deleted_at` và
   `is_in_stock = false`. Document biến mất khỏi mọi kết quả ngay lập tức.
 - **Purge.** Tombstone purger revoke Inventory readiness rồi mới xóa vật lý document
-  sau cửa sổ bảo vệ; cửa sổ này phải dài hơn retention của các topic Search tiêu thụ
-  ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
+  sau cửa sổ bảo vệ 35 ngày; cửa sổ này phải dài hơn retention của các topic Search tiêu
+  thụ (dài nhất là 30 ngày, `t.inventory.stock.events.v1`)
+  ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md),
+  [ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)).
 - **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
   rồi mới xóa.
 - **Suggestion.** Mỗi build tạo index mới. Sau swap, giữ current index và đúng một

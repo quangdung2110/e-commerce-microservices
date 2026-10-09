@@ -597,9 +597,11 @@ nên document tombstone không sống lại và Search không đăng ký lại r
 vậy `409` là lệch trạng thái giữa Search và Inventory, không phải lỗi tạm thời — không
 retry, không purge SKU đó, ghi metric và điều tra.
 
-**Preconditions.** Cửa sổ bảo vệ phải dài hơn retention của mọi topic Search tiêu
-thụ và Inventory readiness của SKU đã bị revoke
-([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
+**Preconditions.** Cửa sổ bảo vệ (35 ngày) phải dài hơn retention của mọi topic Search
+tiêu thụ (dài nhất 30 ngày, `t.inventory.stock.events.v1`) và Inventory readiness của
+SKU đã bị revoke
+([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md),
+[ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)).
 
 **Failure paths.** Lỗi giữa chừng → lần chạy sau tiếp tục; không có trạng thái cần
 dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi bằng reindex.

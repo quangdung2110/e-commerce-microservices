@@ -6,7 +6,7 @@ date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
-extended_by: ADR-019-inventory-owned-sku-availability
+extended_by: ADR-019-inventory-owned-sku-availability, ADR-021-tombstone-protection-window-35d
 evidence:
   - docs/product/data.md
   - docs/search/schema/scripts/catalog_tombstone.painless
@@ -29,6 +29,8 @@ một endpoint của Product vốn không tồn tại.
 
 ADR-019 extends the Inventory-specific purge gate: Search revokes Inventory readiness
 after tombstone and physical purge cannot run before that revocation succeeds.
+ADR-021 sets the protection window to 35 days (longest consumed retention, 30 days
+for `t.inventory.stock.events.v1`, plus a 5-day margin).
 
 Xóa ở Search gồm hai bước tách bạch:
 

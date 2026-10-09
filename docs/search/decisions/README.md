@@ -37,7 +37,7 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-008](./ADR-008-category-product-count-recompute.md) | `product_count` tính lại theo lịch, không cộng trừ | Accepted; đã đính chính field gom bucket | 2026-09-02 | Thay cách cộng trừ theo event của thiết kế cũ |
 | [ADR-009](./ADR-009-stock-projection-ownership.md) | `is_in_stock` đến từ Inventory | Superseded | 2026-09-02 | Bị thay bởi ADR-014 |
 | [ADR-010](./ADR-010-derived-category-tree.md) | Search tự dẫn xuất cây danh mục | Superseded | 2026-09-02 | Bị thay bởi ADR-013 |
-| [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted; đã được mở rộng | 2026-09-02 | Thay Draft Cleanup Job cũ; ADR-019 mở rộng gate purge |
+| [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted; đã được mở rộng | 2026-09-02 | Thay Draft Cleanup Job cũ; ADR-019 mở rộng gate purge; ADR-021 chốt cửa sổ 35 ngày |
 | [ADR-012](./ADR-012-sku-results-with-search-after.md) | SKU hit trực tiếp, phân trang bằng `search_after` | Superseded | 2026-09-04 | Thay ADR-002; bị thay bởi ADR-020 |
 | [ADR-013](./ADR-013-product-category-snapshots.md) | Category snapshot Product và control-driven reindex | Accepted | 2026-09-04 | Thay ADR-010 |
 | [ADR-014](./ADR-014-inventory-stock-snapshot-contract.md) | Stock projection theo revision và snapshot Inventory | Superseded | 2026-09-04 | Thay ADR-009; bị thay bởi ADR-018 |
@@ -47,3 +47,4 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-018](./ADR-018-inventory-position-projection-contract.md) | Inventory position projection and export watermark | Superseded | 2026-09-07 | Thay ADR-014; bị thay bởi ADR-019 |
 | [ADR-019](./ADR-019-inventory-owned-sku-availability.md) | Inventory owns per-SKU availability; readiness guarantees Product document exists; no Search index added | Accepted | 2026-09-07 | Thay ADR-018 |
 | [ADR-020](./ADR-020-product-cards-with-cheapest-eligible-sku.md) | Một Product một card, SKU giá thấp nhất thỏa bộ lọc; signed PIT cursor | Accepted | 2026-09-30 | Thay ADR-012 và phần storefront của ADR-007 |
+| [ADR-021](./ADR-021-tombstone-protection-window-35d.md) | Cửa sổ bảo vệ tombstone 35 ngày, dài hơn retention dài nhất của topic Search tiêu thụ | Accepted | 2026-10-09 | Mở rộng ADR-011 |

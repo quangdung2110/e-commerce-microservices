@@ -103,7 +103,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-INV-003` | `cardinality` aggregation trên `product_id` trong mọi facet |
 | `SEARCH-INV-004` | Painless guard script trong [`schema/scripts`](./schema/scripts/README.md) |
 | `SEARCH-INV-005` | Availability dùng readiness handshake + `availability_patch` không upsert; missing document không ACK. Review cũng không `scripted_upsert` |
-| `SEARCH-INV-006` | Cửa sổ tombstone của purger dài hơn retention của topic |
+| `SEARCH-INV-006` | `search.tombstone.protection-window` (35 ngày) dài hơn retention dài nhất của topic Search tiêu thụ (30 ngày, `t.inventory.stock.events.v1`); `TombstoneProtectionWindowTest` ([ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)) |
 | `SEARCH-INV-007` | Client chỉ được cấu hình tên alias, không cấu hình tên index |
 
 Test bắt buộc cho từng invariant được liệt kê ở [Workflows](./workflows.md).

@@ -139,9 +139,11 @@ search:
   tombstone:
     purge-cron: "0 30 2 * * *"
     purge-enabled: true
-    # Must stay longer than the retention of every topic Search consumes, which is 14d
-    # in the AsyncAPI contracts (ADR-011).
-    protection-window: 30d
+    # Must stay strictly longer than the retention of every topic Search consumes. The longest
+    # is t.inventory.stock.events.v1 at exactly 30d (floor and ceiling, Inventory ADR-028); the
+    # Product, Category, catalog-control and Review topics are 14d in the AsyncAPI contracts.
+    # 30d + 5d margin = 35d (ADR-021, which extends ADR-011).
+    protection-window: 35d
     product-count-cron: "0 0 */4 * * *"
     product-count-enabled: true
 

@@ -112,7 +112,7 @@ class ProductQueryBuilderTest {
                 new SearchProperties.Suggestions("0 0 3 * * *", true, 1L, 0.8,
                         Duration.ofMinutes(5), Duration.ofMinutes(5), Duration.ofMinutes(1),
                         5000, 1000, 1.1, Long.MAX_VALUE, "vi", "GLOBAL", List.of()),
-                new SearchProperties.Tombstone("0 30 2 * * *", true, Duration.ofDays(30),
+                new SearchProperties.Tombstone("0 30 2 * * *", true, Duration.ofDays(35),
                         "0 0 */4 * * *", true),
                 new SearchProperties.Media("https://cdn.test/", "/static/placeholder.png"),
                 new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),

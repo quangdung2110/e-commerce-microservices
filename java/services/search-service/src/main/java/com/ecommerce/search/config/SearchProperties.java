@@ -117,7 +117,7 @@ public record SearchProperties(
     public record Tombstone(
             @DefaultValue("0 30 2 * * *") String purgeCron,
             @DefaultValue("true") boolean purgeEnabled,
-            @DefaultValue("30d") Duration protectionWindow,
+            @DefaultValue("35d") Duration protectionWindow,
             @DefaultValue("0 0 */4 * * *") String productCountCron,
             @DefaultValue("true") boolean productCountEnabled) {
     }
