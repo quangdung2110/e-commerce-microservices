@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-data
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -60,6 +60,12 @@ Media tối đa 20 cấp Product và 10 mỗi SKU do Product cắt; BFF không c
 BFF coi các vi phạm tham chiếu sau là response sai contract: `media[].sku_id` không có
 trong `skus[]`, giá trị `variant_attributes` không có option trong `variant_axes`, trùng
 `sku_id` hoặc `media_id` ([ADR-005](./decisions/ADR-005-pdp-catalog-scope-and-media-url.md)).
+`storage_key` và `thumbnail_storage_key` không rỗng, tối đa 1 024 ký tự và không có segment
+rỗng, `.` hoặc `..` (dấu `/` đầu được bỏ): URL CDN nối từ base và key, nên segment `..` sẽ
+bị trình duyệt chuẩn hóa thoát khỏi thư mục base. Chuỗi vượt giới hạn của contract Product
+(giá trị scalar 500, nhãn 120, `alt_text` 255, slug 180) cũng là sai contract, để response
+công khai không bao giờ vượt giới hạn của chính contract PDP
+([ADR-008](./decisions/ADR-008-post-implementation-audit-corrections.md)).
 
 ## Availability data received from Inventory
 
@@ -73,7 +79,7 @@ trong `skus[]`, giá trị `variant_attributes` không có option trong `variant
 Chỉ SKU Product trả về mới có thể xuất hiện trong public response. Một kết quả Inventory
 thừa hoặc cho SKU không được yêu cầu bị bỏ qua; nó không thể làm Product lộ ra. Item thừa
 và item thiếu đều vi phạm cam kết một item mỗi SKU của Inventory nên được ghi
-`contract_violation` mức item
+vi phạm mức item
 ([ADR-007](./decisions/ADR-007-hot-path-clarifications.md)).
 
 Không có bootstrap, import, export session, Kafka replay hoặc database rebuild trong

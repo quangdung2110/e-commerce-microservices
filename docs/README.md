@@ -168,20 +168,25 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 7. Product Detail BFF (target)
+## 7. Product Detail BFF
 
-> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
-> availability qua batch read; Review giữ review/rating. BFF không persist stock,
-> đọc Review summary/preview theo request; Checkout preview allocation và Order reserve tại Inventory.
+> Read composition layer cho PDP, đã implement (`java/services/product-detail-bff`, Java 21 +
+> Spring WebFlux), `scope: current`. Product giữ catalog/price; Inventory cấp advisory
+> availability qua batch read (gọi Inventory còn tắt bằng `PDP_INVENTORY_ENABLED=false` cho tới
+> rollout gate); Review giữ review/rating. BFF không persist stock, đọc Review summary/preview
+> theo request; Checkout preview allocation và Order reserve tại Inventory.
 
 | File | Mô tả |
 |---|---|
 | [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
 | [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
+| [product-detail-bff/domain.md](./product-detail-bff/domain.md) | Ngôn ngữ chung và quy tắc hiển thị `PDP-BR-001..011`. |
 | [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
+| [product-detail-bff/workflows.md](./product-detail-bff/workflows.md) | `WF-PDP-001` đọc Product Detail và `WF-PDP-002` degrade/recovery. |
 | [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
-| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook. |
-| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux và làm rõ hot path. |
+| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker, cấu hình và runbook. |
+| [product-detail-bff/development.md](./product-detail-bff/development.md) | Stack, chạy local, test bắt buộc và Definition of Done. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR-001..008: Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux, làm rõ hot path và hiệu chỉnh sau audit (status ngoài contract, `storage_key`, readiness, request ID trong log). |
 
 ---
 

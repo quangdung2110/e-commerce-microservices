@@ -76,7 +76,7 @@ interactions:
     provider: product-detail-bff
     consumers: [api-gateway]
     contract: http/product-detail-bff/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Buyer PDP API composes Product catalog (category breadcrumb, attributes, variant
       axes, gallery with BFF-built CDN URLs) and optional Review summary/preview.
@@ -88,7 +88,7 @@ interactions:
     provider: product-service
     consumers: [product-detail-bff]
     contract: http/product/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Internal mTLS buyer-read by slug; Product returns the resolved BuyerProductDetail
       projection (category path, attribute labels, variant axes, media capped 20 per
@@ -102,7 +102,8 @@ interactions:
     status: implemented
     notes: >-
       Internal service-identity PDP read after Product resolves product_id; BFF sends
-      the static Bearer token from PDP_REVIEW_SERVICE_TOKEN and preview_limit=3. Review
+      the static Bearer token from PDP_REVIEW_SERVICE_TOKEN and preview_limit from
+      PDP_REVIEW_PREVIEW_LIMIT (default 3, at most 5). Review
       remains source of truth; timeout degrades only the Review section and never
       becomes aggregate zero.
 

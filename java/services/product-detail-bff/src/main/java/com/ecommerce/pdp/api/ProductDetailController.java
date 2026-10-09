@@ -5,6 +5,7 @@ import com.ecommerce.pdp.compose.PdpResult;
 import com.ecommerce.pdp.compose.ProductDetailComposer;
 import com.ecommerce.pdp.config.PdpProperties;
 import com.ecommerce.pdp.resilience.Deadline;
+import com.ecommerce.pdp.resilience.DependencyGuard;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -48,8 +49,22 @@ public class ProductDetailController {
             if (slug.length() > SLUG_MAX_LENGTH || !SLUG.matcher(slug).matches()) {
                 return Mono.just(Problems.notFound(instance));
             }
-            return composer.compose(slug, context).map(result -> toResponse(result, context, instance));
+            return composer.compose(slug, context)
+                    .map(result -> toResponse(result, context, instance))
+                    .contextWrite(logContext -> logContext
+                            .put(DependencyGuard.REQUEST_ID_KEY, context.requestId())
+                            .put(DependencyGuard.TRACE_ID_KEY, context.traceId()));
         });
+    }
+
+    /**
+     * Mọi đường dẫn khác dưới {@code /api/v1/storefront/products/} không phải một slug hợp
+     * lệ (rỗng, dấu {@code /} cuối, nhiều segment): Gateway chuyển cả prefix tới BFF, nên
+     * đây là slug sai pattern và phải trả cùng {@code 404} problem {@code no-store}.
+     */
+    @GetMapping(path = "/api/v1/storefront/products/**", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Object> unknownPath(ServerHttpRequest request) {
+        return Problems.notFound(request.getPath().value());
     }
 
     private ResponseEntity<Object> toResponse(PdpResult result, RequestContext context, String instance) {

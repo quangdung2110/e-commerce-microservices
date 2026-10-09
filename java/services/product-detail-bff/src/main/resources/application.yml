@@ -69,14 +69,11 @@ management:
       probes:
         enabled: true
       show-details: when_authorized
-      group:
-        # Inventory/Review có degradation riêng và circuit mở không được làm mất
-        # readiness (operations.md §Health và degradation); cấu hình sai thì ứng dụng
-        # đã không khởi động được.
-        liveness:
-          include: ping
-        readiness:
-          include: ping
+      # Không khai báo group.liveness/readiness: mặc định của Spring Boot chỉ gồm
+      # livenessState/readinessState, nên Inventory/Review/circuit mở không làm mất
+      # readiness (operations.md §Health và degradation) còn graceful shutdown vẫn đưa
+      # readiness về OUT_OF_SERVICE. Ghi đè include sẽ bỏ readinessState; cấu hình sai thì
+      # ứng dụng đã không khởi động được.
   metrics:
     distribution:
       percentiles-histogram:

@@ -60,6 +60,57 @@ class ProductPayloadTest {
         assertViolation(product -> attributes(product).add(Fixtures.attribute("y", "Y", "COLOR", "red", null)));
     }
 
+    @Test
+    @DisplayName("Storage key có segment rỗng, \".\" hoặc \"..\" thoát khỏi thư mục CDN nên là sai contract")
+    void storageKeysThatEscapeTheCdnDirectoryAreRejected() {
+        for (String key : List.of("../private/x.jpg", "a/../../x.jpg", "a/./x.jpg", "a//x.jpg", "a/b/", "..", "///")) {
+            assertViolation(product -> media(product).add(Fixtures.media("m-bad", null, "IMAGE", key, 0)));
+            assertViolation(product -> skus(product).set(0, Fixtures.sku(Fixtures.SKU_BLACK_42, "W-BLACK-42",
+                    Map.of("size", 42, "color", "black"), key)));
+        }
+    }
+
+    @Test
+    @DisplayName("Storage key bình thường, có dấu cách, dấu chấm trong tên file hoặc dấu / đầu vẫn hợp lệ")
+    void ordinaryStorageKeysAreAccepted() {
+        for (String key : List.of("products/watch/hero shot.jpg", "/products/a.b/c..jpg", ".hidden/x.jpg", "x")) {
+            ProductPayload payload = read(mutate(product ->
+                    media(product).add(Fixtures.media("m-ok", null, "IMAGE", key, 0))));
+
+            assertThat(payload.validated()).isNotNull();
+        }
+    }
+
+    @Test
+    @DisplayName("Thumbnail key rỗng hoặc dài quá 1024 là sai contract, null là hợp lệ")
+    void thumbnailKeyIsValidated() {
+        assertViolation(product -> skus(product).set(0, Fixtures.sku(Fixtures.SKU_BLACK_42, "W-BLACK-42",
+                Map.of("size", 42, "color", "black"), "")));
+        assertViolation(product -> skus(product).set(0, Fixtures.sku(Fixtures.SKU_BLACK_42, "W-BLACK-42",
+                Map.of("size", 42, "color", "black"), "k".repeat(1025))));
+        assertThat(read(mutate(product -> skus(product).set(0, Fixtures.sku(Fixtures.SKU_BLACK_42, "W-BLACK-42",
+                Map.of("size", 42, "color", "black"), null)))).validated()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("Chuỗi vượt giới hạn của contract Product (value 500, label 120, alt_text 255, slug 180) là sai contract")
+    void overlongStringsAreRejected() {
+        assertViolation(product -> product.put("slug", "s".repeat(181)));
+        assertViolation(product -> attributes(product).add(
+                Fixtures.attribute("x", "X", "TEXT", "v".repeat(501), null)));
+        assertViolation(product -> attributes(product).add(
+                Fixtures.attribute("y", "Y", "SELECT", "a", "l".repeat(121))));
+        assertViolation(product -> media(product).add(altText(
+                Fixtures.media("m-alt", null, "IMAGE", "x.jpg", 0), "a".repeat(256))));
+        assertViolation(product -> axes(product).get(1).put("options", List.of(
+                Fixtures.option("black", "l".repeat(121)), Fixtures.option("white", "Trắng"))));
+    }
+
+    private static Map<String, Object> altText(Map<String, Object> media, String altText) {
+        media.put("alt_text", altText);
+        return media;
+    }
+
     private void assertViolation(Consumer<Map<String, Object>> mutation) {
         ProductPayload payload = read(mutate(mutation));
         assertThatThrownBy(payload::validated).isInstanceOf(ContractViolationException.class);
@@ -82,6 +133,11 @@ class ProductPayloadTest {
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> skus(Map<String, Object> product) {
         return (List<Map<String, Object>>) product.get("skus");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> axes(Map<String, Object> product) {
+        return (List<Map<String, Object>>) product.get("variant_axes");
     }
 
     @SuppressWarnings("unchecked")

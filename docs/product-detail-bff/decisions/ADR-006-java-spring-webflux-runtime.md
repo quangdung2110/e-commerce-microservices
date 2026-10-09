@@ -45,8 +45,7 @@ tiết:
   `minimumNumberOfCalls=20`, `failureRateThreshold=50`, `slowCallRateThreshold=50`,
   `slowCallDurationThreshold` 320 ms (Product) / 240 ms (Inventory, Review),
   `waitDurationInOpenState=10s`, `permittedNumberOfCallsInHalfOpenState=5`; predicate ghi
-  lỗi theo bảng phân loại của ADR-004 (bỏ qua `4xx`, bulkhead từ chối, bỏ vì budget, hủy
-  do client). `Bulkhead` semaphore với `maxWaitDuration=0`. Không dùng module `Retry`.
+  lỗi theo bảng phân loại của ADR-004 (bỏ qua `400`/`401`/`403` — status ngoài contract khác vẫn là lỗi, ADR-008 —, bulkhead từ chối, bỏ vì budget, hủy do client). `Bulkhead` semaphore với `maxWaitDuration=0`. Không dùng module `Retry`.
 - **Deadline và hủy:** deadline tuyệt đối đặt vào Reactor `Context` khi nhận request;
   timeout mỗi call là `Mono.timeout` tính từ deadline còn lại; pha 2 dùng `Mono.zip` hai
   nhánh đã có fallback. Khi client ngắt, subscription bị hủy và Reactor Netty hủy các

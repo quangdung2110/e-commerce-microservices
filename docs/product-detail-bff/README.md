@@ -1,12 +1,16 @@
 ---
 doc_id: product-detail-bff-overview
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
   - Product Service team
   - Inventory Service team
+evidence:
+  - java/services/product-detail-bff
+  - contracts/http/product-detail-bff/v1/openapi.yaml
+  - docker-compose.yml
 ---
 
 # Product Detail BFF
@@ -106,7 +110,7 @@ hạn và không phải source of truth.
 | [Workflows](./workflows.md) | Read và degradation flow |
 | [Operations](./operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook |
 | [Development](./development.md) | Contract/integration test và Definition of Done |
-| [Decisions](./decisions/README.md) | Availability batch-read, Review read composition, ranh giới Preview/Reserve, resilience budget, phạm vi catalog và URL media, runtime, làm rõ hot path |
+| [Decisions](./decisions/README.md) | Availability batch-read, Review read composition, ranh giới Preview/Reserve, resilience budget, phạm vi catalog và URL media, runtime, làm rõ hot path, hiệu chỉnh sau audit (status ngoài contract, storage key, readiness, request ID trong log) |
 
 ## Trạng thái rollout
 

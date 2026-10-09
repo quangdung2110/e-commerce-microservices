@@ -30,6 +30,10 @@ Amended bởi [ADR-007](./ADR-007-hot-path-clarifications.md): timeout Product t
 Product (trả `503`), và việc bỏ pha 2 được kiểm chứng bằng độ trễ chèn trước pha Product
 chứ không bằng Product chậm. ADR-007 cũng thêm `no-store` cho `404`. Phần còn lại giữ nguyên.
 
+Làm rõ bởi [ADR-008](./ADR-008-post-implementation-audit-corrections.md): chỉ `400`/`401`/`403`
+là lỗi cấu hình mà circuit breaker bỏ qua; mọi status ngoài contract khác (`4xx` khác, `3xx`,
+`404` của Inventory/Review) là "response không đúng contract" và tính là lỗi.
+
 ## Context
 
 ADR-001 và ADR-002 yêu cầu BFF có timeout, bulkhead và circuit breaker riêng cho từng

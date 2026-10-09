@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-operations
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -42,35 +42,45 @@ Inventory/Review khi dependency đó được bật; và `PDP_REVIEW_SERVICE_TOK
 bật. Thiếu cấu hình thì BFF không ready thay vì trả URL hỏng hay gọi Review chắc chắn bị
 `401`. Readiness không được phụ thuộc vào kết nối tới Inventory hoặc Review, vì hai
 dependency đó có degradation behavior riêng. Circuit breaker mở cũng không làm BFF mất
-readiness.
+readiness. Readiness và liveness dùng nhóm mặc định của Spring Boot (`readinessState`,
+`livenessState`), không khai báo lại danh sách include: khi nhận SIGTERM, graceful shutdown
+(20 giây) đưa readiness về `OUT_OF_SERVICE` (`503`) để Gateway ngừng gửi request mới trong
+lúc request đang chạy được hoàn tất; liveness chỉ phản ánh tiến trình
+([ADR-008](./decisions/ADR-008-post-implementation-audit-corrections.md)).
 
 | Dependency condition | Public behavior | Tính vào circuit breaker | Owner xử lý |
 |---|---|---|---|
-| Product timeout/lỗi kết nối/`5xx`/response sai contract | `503` PDP | Có | Product + Storefront |
+| Product timeout/lỗi kết nối/`5xx`/response sai contract/status ngoài contract | `503` PDP | Có | Product + Storefront |
 | Product `400`/`401`/`403` | `503` PDP; alert cấu hình | Không | Storefront (+ Product nếu contract đổi) |
 | Product circuit open | `503` PDP kèm `Retry-After`, không gọi Product | — | Product + Storefront |
 | Product bulkhead đầy | `503` PDP | Không | Storefront |
 | Deadline còn dưới 100 ms trước khi gọi Product | `503` PDP, không gọi Product (`budget_skipped`) | Không | Storefront |
 | Product `404` hoặc slug sai pattern | `404` PDP, `no-store` | Không | — |
-| Inventory timeout/lỗi kết nối/`5xx`/response sai contract | `200` PDP; mọi SKU `UNKNOWN` | Có | Inventory + Storefront |
+| Inventory timeout/lỗi kết nối/`5xx`/response sai contract/status ngoài contract | `200` PDP; mọi SKU `UNKNOWN` | Có | Inventory + Storefront |
 | Inventory `400`/`401`/`403` | `200` PDP; mọi SKU `UNKNOWN`; alert cấu hình | Không | Storefront + Inventory |
 | Inventory circuit open, bulkhead đầy hoặc hết budget sau pha Product | `200` PDP; mọi SKU `UNKNOWN`, không gọi Inventory | Không | Inventory + Storefront |
 | Inventory trả item `UNKNOWN` | `200` PDP; chính SKU đó là `UNKNOWN` | Không | Inventory |
 | Inventory thiếu item, hoặc trả item cho SKU không được yêu cầu | `200` PDP; SKU thiếu là `UNKNOWN`, item thừa bị bỏ; ghi `contract_violation` mức item và alert | Không | Inventory |
 | Inventory bị tắt (`PDP_INVENTORY_ENABLED=false`) | `200` PDP; mọi SKU `UNKNOWN`, không gọi Inventory (`disabled`); không tính SLO degrade, không alert | Không | Storefront |
-| Review timeout/lỗi kết nối/`5xx`/response sai contract | `200` PDP; `review_section.status = UNAVAILABLE` | Có | Review + Storefront |
+| Review timeout/lỗi kết nối/`5xx`/response sai contract/status ngoài contract | `200` PDP; `review_section.status = UNAVAILABLE` | Có | Review + Storefront |
 | Review `400`/`401`/`403` | `200` PDP; `UNAVAILABLE`; alert cấu hình | Không | Storefront + Review |
 | Review circuit open, bulkhead đầy hoặc hết budget sau pha Product | `200` PDP; `UNAVAILABLE`, không gọi Review | Không | Review + Storefront |
 | Review bị tắt (`PDP_REVIEW_ENABLED=false`) | `200` PDP; `UNAVAILABLE`, không gọi Review (`disabled`); không tính SLO degrade, không alert | Không | Storefront |
 | Client/gateway hủy request | BFF hủy mọi call đang chạy, không ghi response | Không | — |
 
-Response sai contract gồm body không parse được hoặc vi phạm schema. Với Product còn gồm
-vi phạm tham chiếu: `media[].sku_id` không có trong `skus[]`, giá trị `variant_attributes`
-không có option trong `variant_axes`, trùng `sku_id` hoặc `media_id`. Với Inventory còn
-gồm trùng `sku_id`, khi đó cả batch bị bỏ. Item Inventory thiếu hoặc thừa không làm hỏng
+Response sai contract gồm body không parse được hoặc vi phạm schema, kể cả chuỗi vượt giới
+hạn của contract provider. Với Product còn gồm vi phạm tham chiếu: `media[].sku_id` không có
+trong `skus[]`, giá trị `variant_attributes` không có option trong `variant_axes`, trùng
+`sku_id` hoặc `media_id`, và `storage_key`/`thumbnail_storage_key` có segment rỗng, `.` hoặc
+`..` (URL CDN sẽ thoát khỏi thư mục base). Với Inventory còn gồm trùng `sku_id`, khi đó cả
+batch bị bỏ. **Status ngoài contract** là mọi status không phải `2xx` mà không thuộc `400`/
+`401`/`403` (lỗi cấu hình ở các hàng trên) và không phải `404` của Product: `4xx` khác như
+`408`/`409`/`429`, `3xx`, hay `404` của Inventory/Review. Provider không hứa các status đó nên
+chúng là response sai contract: outcome `contract_violation`, tính vào circuit breaker, vẫn
+degrade như các hàng tương ứng ([ADR-008](./decisions/ADR-008-post-implementation-audit-corrections.md)). Item Inventory thiếu hoặc thừa không làm hỏng
 cả batch nhưng vẫn là vi phạm contract "exactly one item per SKU": BFF ghi
-`contract_violation` mức item (không tính vào circuit breaker) để lỗi phía Inventory không
-bị che thành `UNKNOWN` bình thường
+vi phạm mức item (không tính vào circuit breaker) để lỗi phía Inventory không bị che
+thành `UNKNOWN` bình thường
 ([ADR-007](./decisions/ADR-007-hot-path-clarifications.md)). Mọi `200` degrade, mọi `404`
 và mọi `503` mang `Cache-Control: no-store`.
 
@@ -132,7 +142,7 @@ theo cạnh gọi; metric dưới đây là ngữ nghĩa mà chỉ BFF biết.
 | `pdp_dependency_calls_seconds` (timer) | `dependency`, `outcome` | Mỗi lời gọi và kết quả phân loại; call không phát đi (`circuit_open`, `bulkhead_rejected`, `budget_skipped`, `disabled`) ghi thời lượng 0 |
 | `pdp_sku_unknown_total` | `source` = `inventory_returned`, `inventory_missing_item`, `call_failed`, `skipped`, `disabled` | Số SKU `UNKNOWN` theo nguồn |
 | `pdp_review_unavailable_total` | `source` = `call_failed`, `skipped`, `disabled` | Số response có review `UNAVAILABLE` |
-| `pdp_inventory_item_violations_total` | `kind` = `missing`, `extra` | Item Inventory vi phạm cam kết một item mỗi SKU |
+| `pdp_inventory_item_violations_total` | `kind` = `missing`, `extra` | Item Inventory vi phạm cam kết một item mỗi SKU ("`contract_violation` mức item" trong tài liệu này là counter này kèm một dòng log cảnh báo; outcome `contract_violation` của `pdp_dependency_calls_seconds` chỉ dành cho response sai contract của cả lời gọi) |
 | `resilience4j_circuitbreaker_state` | `name` = `product`, `inventory`, `review` | Trạng thái circuit breaker |
 
 SLO "Degrade do Inventory/Review" đếm từ `pdp_dependency_calls_seconds_count` với outcome
@@ -150,7 +160,11 @@ query.
 BFF truyền `traceparent`/`tracestate` tới cả ba dependency, request ID đã chuẩn hóa qua
 `X-Request-Id` tới Product/Review và qua `X-Correlation-ID` tới Inventory
 ([interfaces.md](./interfaces.md#header-gửi-cho-dependency)). Request ID đó cũng nằm trong
-mọi log dòng của request để tra chéo với log provider.
+mọi dòng log mà BFF ghi trong phạm vi một request (cảnh báo `4xx`/sai contract/lỗi lạ của
+dependency và cảnh báo item Inventory thiếu hoặc thừa) dưới dạng structured field
+`request_id` và `trace_id`, để tra chéo với log provider
+([ADR-008](./decisions/ADR-008-post-implementation-audit-corrections.md)). Log JSON của
+production có hai field này; profile `dev`/`test` in chúng dạng `request_id=...` trong dòng.
 
 ## Cấu hình
 
@@ -171,7 +185,9 @@ Spring property tương ứng. Secret lấy từ secret manager, không commit v
 | `PDP_MEDIA_CDN_BASE_URL` | none | Có | URL tuyệt đối, không có dấu `/` cuối; URL media = base + `/` + storage key percent-encode từng segment. Phải bằng `CDN_BASE_URL` của Search để thẻ sản phẩm và PDP trỏ cùng file |
 | `PDP_MEDIA_PLACEHOLDER_URL` | none | Có | URL tuyệt đối cho `thumbnail_url` khi SKU không có ảnh; bằng `THUMBNAIL_PLACEHOLDER_URL` của Search |
 | `PDP_MEDIA_REQUIRE_HTTPS` | `true` | Không | Chỉ docker-compose local đặt `false`, vì MinIO được phát qua gateway bằng `http://localhost:8088/media`; mọi môi trường khác bắt buộc `https` |
-| `PDP_DEADLINE_MS`, timeout, circuit breaker, bulkhead | Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)/[ADR-007](./decisions/ADR-007-hot-path-clarifications.md) | Không | Cấu hình được để load test hiệu chỉnh; đổi giá trị production phải cập nhật ADR và giữ quy tắc timeout BFF < mesh, deadline < gateway − 1 giây |
+| `PDP_FULL_RESPONSE_CACHE_CONTROL` | `no-store` | Không | `Cache-Control` của `200` đầy đủ (storefront cache policy, [data.md](./data.md#cache-boundary)); `200` degrade, `404` và `503` luôn `no-store` bất kể giá trị này |
+| `TRACING_SAMPLING_PROBABILITY` | `0.1` | Không | Tỷ lệ lấy mẫu trace; `traceparent` vẫn được truyền và trace ID vẫn dùng làm request ID dự phòng khi trace không được lấy mẫu |
+| `PDP_DEADLINE_MS`, timeout, circuit breaker, bulkhead | Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)/[ADR-007](./decisions/ADR-007-hot-path-clarifications.md) | Không | Cấu hình được để load test hiệu chỉnh: `PDP_DEADLINE_MS` là biến riêng, còn timeout, bulkhead và circuit breaker ghi đè bằng Spring property `pdp.product.*`, `pdp.inventory.*`, `pdp.review.*`, `pdp.circuit-breaker.*` (relaxed binding, ví dụ `PDP_INVENTORY_BULKHEAD`). Đổi giá trị production phải cập nhật ADR và giữ quy tắc timeout BFF < mesh, deadline < gateway − 1 giây |
 
 Cờ tắt dependency chỉ dùng cho rollout hoặc sự cố kéo dài đã có quyết định; không dùng để
 né circuit breaker. Response khi cờ tắt vẫn là degrade nên vẫn `no-store`.

@@ -10,7 +10,10 @@ public enum Outcome {
     TIMEOUT("timeout", true),
     CONNECT_ERROR("connect_error", true),
     SERVER_ERROR("5xx", true),
-    /** {@code 400}/{@code 401}/{@code 403}: lỗi cấu hình, alert riêng, không tính circuit. */
+    /**
+     * Đúng {@code 400}/{@code 401}/{@code 403}: lỗi cấu hình, alert riêng, không tính circuit.
+     * Status lạ khác (429, 408, 3xx, 404 của Inventory/Review) là {@link #CONTRACT_VIOLATION}.
+     */
     CLIENT_ERROR("4xx", true),
     CONTRACT_VIOLATION("contract_violation", true),
     CIRCUIT_OPEN("circuit_open", false),

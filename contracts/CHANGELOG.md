@@ -3,6 +3,24 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-09 (Product Detail BFF sync)
+
+- Product Detail BFF HTTP v1: wire shapes are unchanged and `x-adoption-status` is `implemented`. The `404` text now
+  also covers any path under `/api/v1/storefront/products/` that is not a slug (empty, trailing `/`, several
+  segments): the Gateway forwards the whole prefix, and the BFF answers these with the same `PRODUCT_DETAIL_NOT_FOUND`
+  `application/problem+json` and `Cache-Control: no-store` instead of the framework's default JSON error.
+- Observable behaviour that changed in the service and is now stated
+  ([PDP ADR-008](../docs/product-detail-bff/decisions/ADR-008-post-implementation-audit-corrections.md)):
+  - A status outside the provider contract (`4xx` other than `400`/`401`/`403`, `3xx`, `404` from Inventory or
+    Review) is a counted contract violation. Only `400`/`401`/`403` are ignored by the circuit breaker. The PDP
+    still answers `503`/`UNKNOWN`/`UNAVAILABLE` exactly as before.
+  - A Product whose `storage_key` or `thumbnail_storage_key` has an empty, `.` or `..` segment, or whose strings exceed
+    the Product limits (scalar 500, labels 120, `alt_text` 255, slug 180), is answered `503`: the CDN URL would escape
+    the CDN base directory, or the response would break the PDP schema.
+  - `/actuator/health/readiness` is `OUT_OF_SERVICE` once graceful shutdown starts.
+- Catalog: `storefront-queries-product-detail` and `product-detail-bff-queries-product-catalog` are `implemented`.
+  `ADOPTION.md` has a row for the PDP HTTP contract.
+
 ## 2026-10-09 (Auth sync)
 
 - Auth HTTP v1 wire shapes are unchanged; the contract text now matches `auth-service`. Observable behaviour that

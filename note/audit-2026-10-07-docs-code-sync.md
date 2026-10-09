@@ -26,7 +26,7 @@
 
 | Nhóm | Đánh giá |
 |---|---|
-| Đồng bộ tốt nhất | Inventory, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. (Review từng bị xếp vào nhóm này nhưng kiểm chứng 2026-10-09 cho thấy sai: xem mục 9.) Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
+| Đồng bộ tốt nhất | Inventory, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. (Review từng bị xếp vào nhóm này nhưng kiểm chứng 2026-10-09 cho thấy sai: xem mục 9. Product Detail BFF cũng không "khớp tốt" như báo cáo gốc: kiểm chứng 2026-10-09 tìm thêm B3–B13, gồm readiness sai khi shutdown, circuit breaker bỏ qua status lạ, log không mang request ID: xem mục 11, đã sửa.) Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
 | Lệch nhiều nhất | Auth, User, Promotion, Search: docs cũ/tự mâu thuẫn và có bug thật trong code. |
 | Lỗi lặp lại khắp nơi | Nhãn trạng thái cũ ("proposed", "chưa có implementation") trong `docs/README.md`, `contracts/catalog/services.yaml`, `contracts/ADOPTION.md`, `interactions.yaml` và frontmatter nhiều file. |
 
@@ -66,7 +66,7 @@
 ### G2 🟡 `docs/README.md` ghi trạng thái cũ
 - §3 Payment: "HTTP v1 và payment facts v2 ... chưa xác minh implementation".
 - §5 Promotion: "thiết kế đang ở trạng thái `proposed` và chưa có implementation để verification"; nói "16 ADR" nhưng thực có 18 (ADR-001..018); nói Promotion HTTP v1 có "24 operations" (thực tế 25, xem PR3).
-- §7 "Product Detail BFF (target)" — đã implement.
+- §7 "Product Detail BFF (target)" — đã implement. ✅ đã sửa 2026-10-09 (bỏ "(target)", thêm ba tài liệu còn thiếu: domain, workflows, development; xem B1).
 - §1 Checkout "Thiết kế ở mức target/proposed".
 - §10 "Service ngoài scope": auth "ngoài scope 14 phase", review/search/cart/product ghi chưa sync — đều cũ.
 - Sửa: cập nhật từng mục theo trạng thái code hiện tại.
@@ -566,12 +566,64 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ## 11. Product Detail BFF (`docs/product-detail-bff`, `contracts/http/product-detail-bff/v1`, `java/services/product-detail-bff`)
 
-Docs ↔ code khớp tốt.
+> **Kiểm chứng và sửa xong 2026-10-09 (mục PDP BFF).** B1 đúng; B2 đã được sửa từ lần đồng bộ Product (commit `658db8c`,
+> `operations.md` ghi `:8081`) nhưng mục này không được cập nhật. Nhận định "Docs ↔ code khớp tốt" **chỉ đúng với số liệu**
+> (endpoint, regex slug, deadline 1000/400/300 ms, bulkhead 100/80/80, ngưỡng circuit breaker, `preview_limit`, header,
+> bearer token đều khớp và đã được đối chiếu lại với code lẫn ba provider). Báo cáo gốc bỏ sót 11 điểm: B4–B6 là hành vi
+> runtime lệch tài liệu/ADR, B7–B9 là lệch contract/ràng buộc, còn lại là trạng thái cũ, tài liệu thiếu và test chưa phủ
+> "Test bắt buộc". Quyết định:
+> [PDP ADR-008](../docs/product-detail-bff/decisions/ADR-008-post-implementation-audit-corrections.md); wire ở
+> `contracts/CHANGELOG.md` (2026-10-09 Product Detail BFF sync). Test: 63 pass (trước khi sửa: 42), gồm `EdgeBehaviourTest` 5,
+> `DependencyStatusTest` 8, `DependencyIsolationTest` 3, `ProductBulkheadTest` 1 và 4 ca mới ở `ProductPayloadTest`.
+> Probe trên context Spring thật chứng minh B4 và B7 trước khi sửa.
 
-### B1 🟡 `docs/README.md` §7 ghi "(target)" — đã implement.
-### B2 🟡 `operations.md` ví dụ `PDP_PRODUCT_BASE_URL = http://product-service:8080` — Product chạy 8081 (compose dùng 8081).
+### B1 🟡 `docs/README.md` §7 ghi "(target)" — ✅ đúng và sửa
+- Sửa thêm: bảng chỉ liệt kê 5/8 tài liệu → thêm `domain.md`, `workflows.md`, `development.md`; mô tả ADR-001..008.
 
-Đã khớp: endpoint, regex slug, mã 404/503, `Retry-After`, deadline 1000ms / Product 400ms / Inventory+Review 300ms, bulkhead, circuit breaker, `preview_limit` 3 (tối đa 5 khớp Review contract), `X-Correlation-ID` gửi Inventory, `X-Service-Identity`, bearer token Review.
+### B2 🟡 `operations.md` ví dụ `PDP_PRODUCT_BASE_URL` ghi `:8080` — ✅ đã sửa từ trước (Product sync); xác nhận hiện là `http://product-service:8081`
+
+### B3 🟡 Trạng thái cũ ở 8 tài liệu, OpenAPI, catalog và ADOPTION — ✅ phát hiện mới, đã sửa
+- Cả 8 tài liệu `scope: target`/`status: proposed`; `x-adoption-status: proposed` của OpenAPI PDP; `interactions.yaml`: `storefront-queries-product-detail` và `product-detail-bff-queries-product-catalog` còn `proposed` dù cả hai phía chạy; `ADOPTION.md` không có dòng PDP HTTP v1, dòng Product ghi BFF thiếu consumer test và dòng Review ghi BFF "chưa chạy với fixture sinh từ contract", trong khi `ProviderFixturesContractTest` validate fixture của cả ba provider với contract của chúng.
+- Sửa: `scope: current`/`status: implemented` (README có `evidence`), `x-adoption-status: implemented`, hai interaction `implemented`, thêm dòng "Product Detail BFF HTTP v1" và sửa hai dòng provider.
+
+### B4 🟠 [BUG] Readiness không về `OUT_OF_SERVICE` khi graceful shutdown — ✅ phát hiện mới, đã sửa
+- `management.endpoint.health.group.readiness.include: ping` (và `liveness`) thay thế `readinessState` mặc định. Probe: `publish(REFUSING_TRAFFIC)` rồi `GET /actuator/health/readiness` vẫn `200 {"status":"UP"}`. Traefik/Kubernetes không rút instance khỏi pool khi nhận SIGTERM.
+- Sửa: bỏ khai báo hai group, dùng mặc định (đã không phụ thuộc Inventory/Review/circuit). Test `EdgeBehaviourTest` (UP khi cả ba circuit mở; `503 OUT_OF_SERVICE` khi `REFUSING_TRAFFIC`).
+
+### B5 🟠 `operations.md` hứa request ID trong mọi dòng log, code không ghi — ✅ phát hiện mới, đã sửa
+- Không có MDC; dòng cảnh báo của `DependencyGuard` không mang request ID hay trace ID (log test: `inventory answered 403…` với ngoặc correlation rỗng). Không tra chéo được với log Product/Inventory/Review như tài liệu hứa.
+- Sửa: request ID và trace ID vào Reactor context ở controller; mọi dòng log trong phạm vi request (cảnh báo dependency, và dòng mới cho item Inventory thiếu/thừa) gắn `request_id`/`trace_id` bằng structured argument. Tài liệu ghi đúng phạm vi. Test `EdgeBehaviourTest`.
+
+### B6 🟠 Circuit breaker bỏ qua mọi `4xx`, ADR-004 chỉ miễn `400`/`401`/`403` — ✅ phát hiện mới, đã sửa
+- `ignoredByBreaker` = `!isServerError()`: `429`/`408`/`409`, `3xx` và `404` của Inventory/Review không bao giờ mở circuit. ADR-004: "response không đúng contract" là lỗi.
+- Sửa (chủ dự án chọn theo ADR-004): chỉ `400`/`401`/`403` là lỗi cấu hình; status lạ khác là `contract_violation`, tính vào circuit breaker, vẫn degrade như cũ. `operations.md`, `workflows.md`, ADR-004/006 và CHANGELOG cập nhật. Test `DependencyStatusTest` cho cả ba dependency.
+
+### B7 🟡 Đường dẫn không phải slug trả lỗi mặc định của Spring — ✅ phát hiện mới, đã sửa
+- Gateway chuyển cả prefix `/api/v1/storefront/products/`. `…/products/`, `…/products/smart-watch/`, `…/products/a/b` nhận `404` JSON `{"timestamp","path","status","error","requestId"}`: không `application/problem+json`, không `no-store` (trái OpenAPI "slug sai pattern → 404" và lập luận RFC 9111 của ADR-007).
+- Sửa: `GET /api/v1/storefront/products/**` trả `404 PRODUCT_DETAIL_NOT_FOUND` problem `no-store`; OpenAPI (slug và `404`), `interfaces.md`, `workflows.md` và type sinh cho frontend cập nhật. `405`/`406` để nguyên (Gateway chỉ chuyển `GET`).
+
+### B8 🟡 `storage_key` có segment `..` thoát khỏi thư mục CDN; thumbnail key không được kiểm — ✅ phát hiện mới, đã sửa
+- Product chỉ kiểm không rỗng và ≤ 1024; BFF nối `cdn/media/` + key đã percent-encode từng segment nên `../x` bị trình duyệt chuẩn hóa ra ngoài `media/`. `thumbnail_storage_key` không bị kiểm gì.
+- Sửa (chủ dự án chọn coi là sai contract): segment rỗng/`.`/`..` ở `storage_key` và `thumbnail_storage_key` là response Product sai contract (`503`, tính vào circuit); `data.md`, `operations.md`, ADR-005/008. Test `ProductPayloadTest`.
+
+### B9 🟡 Giới hạn chuỗi của contract Product không được kiểm — ✅ phát hiện mới, đã sửa
+- Tài liệu: "sai giới hạn là sai contract", nhưng giá trị scalar 500, `value_label`/nhãn option 120, `alt_text` 255 không bị kiểm và slug được phép tới 255 (contract 180): response công khai có thể vượt giới hạn của chính OpenAPI PDP. Sửa trong `ProductPayload`; `development.md` ghi field nullable bắt buộc vắng mặt được đọc như `null`.
+
+### B10 🟡 Bảng cấu hình thiếu biến — ✅ phát hiện mới, đã sửa
+- Thiếu `PDP_FULL_RESPONSE_CACHE_CONTROL` (có trong `application.yml`, test đặt nó) và `TRACING_SAMPLING_PROBABILITY`; cách ghi đè timeout/bulkhead/circuit breaker (Spring property `pdp.*`) không được nêu.
+
+### B11 🟡 `development.md` ghi "chưa có Inventory service" — ✅ phát hiện mới, đã sửa
+- `inventory-service` có trong compose và Inventory read API đã implement; cờ `PDP_INVENTORY_ENABLED=false` chỉ do rollout gate. `development.md` sửa và nêu cách bật thử. (ADR-007 giữ nguyên câu "Inventory chưa tồn tại" vì đó là bối cảnh lịch sử của quyết định.)
+
+### B12 🟡 "Test bắt buộc" chưa được test phủ — ✅ phát hiện mới, đã bổ sung
+- Chỉ Review có test vòng đời circuit/bulkhead; không có test timeout Product/Inventory, "không retry ở ứng dụng", Product 500 SKU một batch, `400`/`401`/`403` của Review. Đã thêm `DependencyIsolationTest`, `ProductBulkheadTest`, `DependencyStatusTest`. Kịch bản "Order Reserve thất bại sau khi PDP hiện `IN_STOCK`" nằm trong danh sách nhưng không phải việc của BFF → chuyển thành ghi chú test liên service.
+
+### B13 🟡 "`contract_violation` mức item" lẫn với outcome cùng tên — ✅ phát hiện mới, đã sửa
+- Item thiếu/thừa chỉ tăng counter `pdp_inventory_item_violations_total`, không phải outcome `contract_violation` của `pdp_dependency_calls_seconds`. `operations.md` định nghĩa rõ; các tài liệu khác nói "vi phạm mức item".
+
+Đã khớp (đối chiếu lại 2026-10-09 với code và provider): endpoint, regex/độ dài slug (180), mã `404`/`503` và body problem, `Retry-After` (chỉ khi circuit Product mở), deadline 1000 ms / Product 400 ms / Inventory+Review 300 ms (cắt theo `deadline còn lại − 50 ms`, bỏ pha khi còn < 100 ms), bulkhead 100/80/80, circuit breaker (cửa sổ thời gian 10 s, tối thiểu 20 call, 50 %/50 %, call chậm 320/240/240 ms, mở 10 s, half-open 5), `preview_limit` 3 (tối đa 5), `X-Service-Identity` tới cả ba, `X-Request-Id` (Product/Review) và `X-Correlation-ID` (Inventory) chuẩn hóa 8–128, bearer token Review, đúng một Inventory batch ≤ 500 SKU, `Cache-Control: no-store` cho degrade/`404`/`503`, compose/gateway (response-header 3 s, retry chỉ lỗi kết nối), mesh §5.2/§7. Phía provider khớp: Product `buyer-read-clients` + slug, Inventory `X-Correlation-ID` bắt buộc 8–128 và allowlist `product-detail-bff`, Review chỉ kiểm bearer (không đọc `X-Service-Identity`).
+
+**Ghi chú ngoài phạm vi:** bốn file type sinh cho frontend (`auth.ts`, `cart.ts`, `inventory-admin.ts`, `product.ts`) lệch so với contract hiện tại (lộ ra khi chạy `gen:api` để kiểm chứng type PDP); đã hoàn tác, chỉ `product-detail-bff.ts` được cập nhật. Cần một lần `gen:api` riêng cho các file đó.
 
 ---
 
@@ -757,7 +809,7 @@ Docs mới nhất, khớp code.
 - [ ] Inventory: I1, I2.
 - [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
 - [ ] Search: S1–S3, S5.
-- [ ] PDP BFF: B1, B2.
+- [x] PDP BFF: B1, B2 (đã sửa từ Product sync), cộng B3–B13 phát hiện khi kiểm chứng. *(2026-10-09; ADR-008)*
 - [ ] Order: O1, O2, K1, K2.
 - [ ] Payment: PY2, PY3.
 - [ ] Checkout: K3.

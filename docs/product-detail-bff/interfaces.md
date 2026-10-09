@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-interfaces
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -38,8 +38,10 @@ quotation, reserve hoặc số lượng còn bán chính xác ở checkout.
 
 `404` khi Product không tồn tại, không catalog-active hoặc slug không khớp pattern của
 contract (khi đó BFF không gọi Product; pattern và độ dài tối đa 180 trùng với
-PRODUCT-BR-013 của Product). Product không sẵn sàng, hoặc deadline còn dưới 100 ms trước
-khi gọi Product, là `503`;
+PRODUCT-BR-013 của Product). Gateway chuyển cả prefix `/api/v1/storefront/products/` tới BFF,
+nên đường dẫn không phải một slug (rỗng, có `/` cuối, nhiều segment) cũng là slug sai pattern
+và nhận cùng `404` problem `no-store`, không phải lỗi mặc định của framework. Product không
+sẵn sàng, hoặc deadline còn dưới 100 ms trước khi gọi Product, là `503`;
 availability query unavailable không biến request thành `503`, mà trả
 `UNKNOWN` cho SKU bị ảnh hưởng. Review timeout/lỗi cũng không biến request thành `503`:
 BFF trả `review_section.status = UNAVAILABLE` và không trả aggregate giả bằng 0. Review
@@ -102,7 +104,7 @@ Item thiếu hoặc item `UNKNOWN` chỉ degrade SKU tương ứng thành `UNKNO
 không cho kết quả hợp lệ (timeout, `5xx`, `4xx`, sai contract, circuit open, bulkhead đầy,
 hết budget) degrade mọi SKU thành `UNKNOWN`. Item thiếu hoặc item cho SKU không được yêu
 cầu vi phạm cam kết "exactly one item per SKU" của Inventory: BFF không bỏ cả batch nhưng
-ghi `contract_violation` ở mức item để lỗi này không bị che
+ghi vi phạm mức item (counter và dòng log kèm request ID) để lỗi này không bị che
 ([operations.md](./operations.md#health-và-degradation)). Khi Inventory hoặc Review bị tắt
 bằng cờ cấu hình, BFF không gọi dependency đó (outcome `disabled`, xem
 [operations.md](./operations.md#cấu-hình)).

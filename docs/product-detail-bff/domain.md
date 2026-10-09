@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-domain
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
