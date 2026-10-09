@@ -121,7 +121,8 @@ Quy tắc và domain error tương ứng nằm trong [Domain Model](./domain.md)
 - Backfill marketing của migration `0002` chỉ tắt các row owner chưa từng chạm vào;
   user chỉ đổi cờ email/in-app trước đó vẫn giữ `marketing_enabled=true` mà không có
   bằng chứng đồng ý riêng (xem [ADR-009](./decisions/ADR-009-marketing-opt-in-and-complaint-opt-out.md)).
-- Auth và Notification còn xác thực cổng internal bằng mTLS ở tầng ứng dụng, khác mô hình
-  mesh mà User đã chuyển sang ([ADR-008](./decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md)).
+- Notification còn xác thực cổng internal bằng mTLS ở tầng ứng dụng, khác mô hình mesh mà User
+  ([ADR-008](./decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md)) và Auth
+  ([Auth ADR-007](../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md)) đã chuyển sang.
 - Chưa có single-flight chống cache stampede; epoch chỉ chặn fill muộn, không chặn nhiều
   request cùng miss.

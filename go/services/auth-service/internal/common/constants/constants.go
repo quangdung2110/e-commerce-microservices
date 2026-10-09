@@ -12,6 +12,10 @@ const (
 	HeaderTraceparent  = "traceparent"
 	HeaderRetryAfter   = "Retry-After"
 	HeaderCacheControl = "Cache-Control"
+	// HeaderServiceIdentity is the attribution header a service caller sends on
+	// the internal listener, equal to the caller's ServiceAccount name
+	// (docs/mesh/runtime-contract.md section 6).
+	HeaderServiceIdentity = "X-Service-Identity"
 )
 
 // RefreshCookieName is the only transport for the opaque refresh token.

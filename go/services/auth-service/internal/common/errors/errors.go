@@ -1,6 +1,6 @@
 // Package apperr defines the stable error vocabulary shared by the domain and
-// the HTTP adapters. Codes match docs/auth/domain.md section 7 and are surfaced
-// to clients through the RFC 9457 `code` extension.
+// the HTTP adapters. Codes match the error catalog in docs/auth/interfaces.md
+// section 6 and are surfaced to clients through the RFC 9457 `code` extension.
 package apperr
 
 import (
@@ -33,6 +33,7 @@ const (
 	CodeDeliveryExpired        = "DELIVERY_EXPIRED"
 	CodeSigningKeyMissing      = "SIGNING_KEY_MISSING"
 	CodeDependencyUnavailable  = "DEPENDENCY_UNAVAILABLE"
+	CodeConcurrentUpdate       = "CONCURRENT_UPDATE"
 	CodeInternal               = "INTERNAL_ERROR"
 )
 
@@ -138,7 +139,11 @@ var (
 	// ErrDependencyUnavailable is the fail-closed error used when Redis or another
 	// security-critical dependency cannot be reached (ADR-004).
 	ErrDependencyUnavailable = &Error{Code: CodeDependencyUnavailable, Detail: "A required dependency is unavailable.", Retryable: true}
-	ErrInternal              = newError(CodeInternal, "Unexpected error.")
+	// ErrConcurrentUpdate is returned by the account repository when the row
+	// changed since it was loaded. Services reload and re-apply their change; the
+	// error only reaches a client when every attempt lost the race.
+	ErrConcurrentUpdate = &Error{Code: CodeConcurrentUpdate, Detail: "The account was changed by another request. Retry.", Retryable: true}
+	ErrInternal         = newError(CodeInternal, "Unexpected error.")
 )
 
 // From normalizes any error into *Error so adapters always have a code.

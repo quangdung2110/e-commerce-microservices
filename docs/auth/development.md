@@ -2,54 +2,102 @@
 doc_id: auth-development
 service: auth
 scope: current
-status: proposed
+status: implemented
 owners:
   - Auth Service team
-evidence: []
+evidence:
+  - go/services/auth-service/go.mod
+  - go/services/auth-service/Makefile
+  - go/services/auth-service/docker-compose.yaml
+  - go/services/auth-service/README.md
+  - go/services/auth-service/test
+  - docker-compose.yml
 verified_against_commit: null
 ---
 
 # Auth Service — Development Guide
 
-> Đây là khung vận hành phát triển. Do refactor này không xem code hoặc build
-> configuration, không command, version hoặc path nào được bịa ra.
+Runtime Go 1.25, Gin, pgx/PostgreSQL, go-redis và Sarama/Kafka nằm ở `go/services/auth-service`. README
+của module có bảng endpoint và lệnh chạy; file này ghi những gì cần để phát triển và kiểm thử.
 
 ## 1. Prerequisites and local dependencies
 
-Khi có nguồn chính thức, tài liệu cần nêu runtime/compiler/package manager,
-container runtime, PostgreSQL, Redis, Kafka, port local và dependency nào được
-mock. Liên kết tới compose/script chính thức thay vì sao chép cấu hình ở đây.
+- Go 1.25 (hoặc Docker để chạy Go trong container, xem §3), PostgreSQL 16, Redis 7 và Kafka (Kafka có thể tắt
+  bằng `AUTH_KAFKA_ENABLED=false`, khi đó event chỉ được log).
+- Cổng local: public 8080, internal 8081 (không publish ra host). Root Compose publish public ra `8086`.
+- Dependency được mock trong test: Kafka (publisher ghi log hoặc fake), Gateway (header `X-User-*` do test
+  tự đặt), Notification (test gọi trực tiếp internal API). PostgreSQL và Redis là thật qua Testcontainers ở integration test.
 
 ## 2. Local run and configuration
 
-Phần hoàn chỉnh phải gồm command copy-and-run để cài dependency, build, khởi động,
-kiểm tra health endpoint và cleanup an toàn. Nó cũng phải liệt kê profile local,
-biến môi trường bắt buộc, cách cấp development secret và các giá trị cấm commit.
-Các thông tin này hiện `TBD`, không suy ra từ thiết kế.
+Từ thư mục service, có hai cách:
+
+```bash
+cp .env.example .env            # đặt AUTH_KEYS_MASTER_KEY: openssl rand -base64 32
+docker compose up -d            # compose riêng của Auth: Postgres, Redis, Kafka và service
+curl -s localhost:8080/health/ready
+```
+
+hoặc chạy trực tiếp khi Postgres/Redis/Kafka đã sẵn sàng:
+
+```bash
+go run ./cmd/server -config ./configs/application.yaml
+```
+
+Biến môi trường bắt buộc: `AUTH_KEYS_MASTER_KEY` (base64 của 32 byte), `DB_PASSWORD`; `REDIS_PASSWORD` có thể rỗng.
+Mọi key cấu hình override được bằng tiền tố `AUTH_` (xem bảng ở [Operations §1](./operations.md#cấu-hình)). Biến không có
+tiền tố và không có default trong `config.go` bị bỏ qua im lặng. Không commit master key, mật khẩu hay file `.env`.
+Schema được nạp tự động trong compose riêng của Auth khi volume Postgres còn trống; với database có sẵn dùng
+`make migrate-up` (cần golang-migrate).
+
+**Root Compose** (`docker-compose.yml` ở gốc repo): `init-db.sh` chỉ tạo database `auth_db` rỗng, **chưa có bước nạp
+schema Auth** (khác `user-migrate`). Trên volume mới phải nạp tay trước khi chạy `auth-service`:
+
+```bash
+docker exec -i postgres psql -U postgres -d auth_db -v ON_ERROR_STOP=1 < docs/auth/schema/0001_initial_auth_schema.sql
+docker compose up -d --build auth-service gateway-auth
+```
+
+Dữ liệu test local: `bash frontend/scripts/create-dev-account.sh` (buyer; `DEV_ADMIN=1` cấp thêm role `ADMIN` bằng
+cách ghi vào `auth.account_roles`, theo [seed-admin.sql.example](./schema/seed-admin.sql.example)). Script đọc OTP từ
+Redis `auth:delivery:*`.
 
 ## 3. Build, quality and tests
 
-Command build, lint, format và test phải trùng CI. Bộ test cần bao phủ unit,
-integration với PostgreSQL/Redis/Kafka, contract và workflow: refresh replay,
-lockout/tự mở khóa, revoke, đổi email, OTP one-time use, key overlap, duplicate event và dependency
-failure. Fixture không được chứa production data hoặc PII.
+Hai tầng test, tách bằng build tag `integration`. Từ thư mục service, khi có Go:
+
+```bash
+make test               # unit (go test -race -cover ./...), không cần Docker
+make test-integration   # PostgreSQL 16 + Redis 7 qua Testcontainers, cần Docker daemon
+```
+
+Khi máy không có Go, chạy trong container (PowerShell, từ thư mục `go/services/auth-service`):
+
+```powershell
+docker run --rm -e GOTOOLCHAIN=local -v "${PWD}:/app" -w /app golang:1.25 sh -c "gofmt -l . ; go vet ./... && go test -race -count=1 ./test/unit/..."
+docker run --rm -e GOTOOLCHAIN=local -e DOCKER_API_VERSION=1.44 -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true --add-host=host.docker.internal:host-gateway -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/app" -w /app golang:1.25 go test -tags=integration -count=1 -timeout=15m ./test/integration/...
+```
+
+Bộ test phủ: rotation đồng thời một winner, replay refresh token, lockout và tự mở khóa, OTP single-use, đổi email gắn với
+địa chỉ mới, xóa account GDPR, vòng đời signing key, lỗi Redis sau commit, ghi đè bản cũ (lost update) và đua giữa các
+lần lưu, không lộ account qua resend/reset/login, listener internal (allowlist, rate limit theo tài nguyên), cấu hình và
+toàn bộ WF-AUTH-001…007 qua HTTP thật. Fixture không chứa production data hay PII. Integration test nạp migration thẳng
+vào Postgres nên schema lệch với repository sẽ làm fail bộ test.
 
 ## 4. Schema và contract development
 
-Schema ban đầu nằm tại
-[`schema/0001_initial_auth_schema.sql`](./schema/0001_initial_auth_schema.sql)
-và admin bootstrap dùng
-[`schema/seed-admin.sql.example`](./schema/seed-admin.sql.example). Khi bổ sung
-migration runner, mọi thay đổi schema phải có bước chạy local, compatibility check,
-rollback (nếu hỗ trợ) và seed test. HTTP contract nằm tại
-[`contracts/http/auth/v1/openapi.yaml`](../../contracts/http/auth/v1/openapi.yaml).
-OpenAPI/AsyncAPI/JSON Schema phải có tool version, generate/check command và CI
-check chống drift/breaking change.
+Schema ban đầu nằm tại [`schema/0001_initial_auth_schema.sql`](./schema/0001_initial_auth_schema.sql) và phải giống từng
+byte với `go/services/auth-service/migrations/0001_initial_auth_schema.up.sql`; admin bootstrap dùng
+[`schema/seed-admin.sql.example`](./schema/seed-admin.sql.example). Khi thêm migration: thêm cặp `.up.sql`/`.down.sql` mới,
+cập nhật bản trong `docs/auth/schema/`, chạy lại integration test, và cân nhắc backward compatibility với phiên bản đang
+chạy. Contract nằm tại [`contracts/http/auth/v1/openapi.yaml`](../../contracts/http/auth/v1/openapi.yaml),
+[`contracts/http/auth/internal/v1/openapi.yaml`](../../contracts/http/auth/internal/v1/openapi.yaml) và
+[`contracts/events/auth/v1`](../../contracts/events/auth/v1/asyncapi.yaml). Validate bằng `pwsh ./contracts/tools/validate-contracts.ps1` (cần PowerShell 7) như [contracts/README.md](../../contracts/README.md) mô tả; chưa có CI check chống breaking change.
 
 ## 5. Debugging and Definition of Done
 
-Debug local phải dùng log/trace đã redaction và thao tác an toàn khi inspect
-database, cache hoặc message. Một thay đổi hoàn thành khi build/lint/test pass,
-contract/schema/workflow liên quan được cập nhật, compatibility được kiểm tra,
-ADR được thêm khi có quyết định kiến trúc, và trạng thái/evidence tài liệu được
-cập nhật. Hướng dẫn thực thi cụ thể chờ xác minh từ implementation.
+Debug local dùng log JSON (`AUTH_LOGGING_FORMAT=console` cho dễ đọc) đã redaction: không có email, token hay secret trong log.
+Muốn xem OTP/reset URL của một lần gửi, đọc `auth:delivery:{delivery_id}` trong Redis bằng `redis-cli` ở môi trường local;
+không bao giờ làm việc đó ở môi trường thật. Một thay đổi hoàn thành khi build/vet/test (unit và integration) pass,
+contract/schema/workflow liên quan được cập nhật, compatibility được kiểm tra, ADR được thêm khi có quyết định kiến trúc, và
+trạng thái/evidence tài liệu được cập nhật.

@@ -17,16 +17,20 @@ server:
   idle_timeout: 120s
   shutdown_timeout: 20s
 
-# Cluster-internal listener serving the notification delivery API. It must never
-# be exposed through the public gateway, and production requires mTLS.
+# Cluster-internal listener serving the notification delivery and notification
+# contact APIs. It must never be exposed through the public gateway: the
+# responses carry recipient addresses and, for verification and reset templates,
+# the secret itself. Transport mTLS and the per-principal AuthorizationPolicy are
+# enforced by the service mesh, which hides the caller certificate from the
+# application (docs/mesh/runtime-contract.md), so this service only checks the
+# X-Service-Identity header as defence in depth. Without a mesh (Docker Compose)
+# the header is not authenticated.
 internal:
   enabled: true
   host: "0.0.0.0"
   port: 8081
-  tls_cert_file: "${AUTH_INTERNAL_TLS_CERT_FILE}"
-  tls_key_file: "${AUTH_INTERNAL_TLS_KEY_FILE}"
-  client_ca_file: "${AUTH_INTERNAL_CLIENT_CA_FILE}"
-  allowed_client_cn: "${AUTH_INTERNAL_ALLOWED_CLIENT_CN}"
+  allowed_callers:
+    - "notification-service"
 
 database:
   host: "localhost"
@@ -110,7 +114,8 @@ security:
     otp_per_account: { limit: 5, window: 15m }
     password_reset_per_ip: { limit: 5, window: 1h }
     refresh_per_ip: { limit: 60, window: 5m }
-    internal_per_client: { limit: 600, window: 1m }
+    # Per (calling service, delivery id or user id) on the internal listener.
+    internal_per_resource: { limit: 120, window: 1m }
 
 otp:
   ttl: 5m

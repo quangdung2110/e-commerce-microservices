@@ -3,9 +3,11 @@ info:
   title: Auth Internal Notification Delivery API
   version: 1.0.0
   description: >-
-    API nội bộ để Notification Service resolve nội dung email theo delivery_id.
-    Không được expose qua public Gateway; request và response có thể chứa PII
-    hoặc secret nên bắt buộc mTLS/service identity và Cache-Control: no-store.
+    API nội bộ để Notification Service resolve nội dung email theo delivery_id và
+    email người nhận theo user_id. Không được expose qua public Gateway; request và
+    response có thể chứa PII hoặc secret nên chỉ chạy trên listener nội bộ riêng
+    (cổng 8081), được service mesh bảo vệ bằng mTLS + AuthorizationPolicy theo
+    principal, và response luôn Cache-Control: no-store.
 x-adoption-status: proposed
 servers:
   - url: http://auth-service:8081
@@ -20,13 +22,16 @@ paths:
       operationId: resolveNotificationDeliveryContent
       summary: Resolve nội dung email theo delivery_id
       description: >-
-        Chỉ Notification Service được gọi qua mTLS/service identity. Operation
+        Chỉ Notification Service được gọi: mesh chỉ cho principal notification-service chạm
+        path này, và Auth kiểm lại header X-Service-Identity với allowlist. Operation
         idempotent trong TTL: retry cùng delivery_id trả cùng nội dung; việc
-        resolve không consume OTP hoặc reset token. Adapter không được log body.
+        resolve không consume OTP hoặc reset token. Rate limit 120 request/phút theo cặp
+        (service gọi, delivery_id). Adapter không được log body.
       security:
         - notificationServiceMtls: []
       parameters:
         - $ref: '#/components/parameters/DeliveryId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
@@ -36,6 +41,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationDeliveryContent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '404': { $ref: '#/components/responses/DeliveryNotFound' }
@@ -50,13 +56,16 @@ paths:
       description: >-
         Dùng cho mọi thông báo không do Auth khởi phát (Order, Review, Cart): recipient
         email không đi qua Kafka, Notification resolve lúc gửi. Chỉ Notification Service
-        được gọi qua mTLS/service identity. Response chứa PII nên no-store; Notification
+        được gọi (mesh AuthorizationPolicy theo principal notification-service, cộng
+        allowlist X-Service-Identity ở Auth). Response chứa PII nên no-store; Notification
         chỉ được cache trong memory/Redis tối đa 15 phút, không ghi xuống DB. Adapter
-        không được log body. Không trả secret; không trả số điện thoại ở phase 1.
+        không được log body. Không trả secret; không trả số điện thoại ở phase 1. Rate
+        limit 120 request/phút theo cặp (service gọi, user_id).
       security:
         - notificationServiceMtls: []
       parameters:
         - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
@@ -66,6 +75,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationContact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '404': { $ref: '#/components/responses/UserNotFound' }
@@ -79,9 +89,19 @@ components:
         mTLS/service identity chỉ cấp cho Notification Service trên internal
         network. Public client và API Gateway không được gọi endpoint này. Transport
         mTLS và allowlist principal notification-service do service mesh thực thi
-        (docs/mesh/runtime-contract.md mục 5.2); Auth không nhìn thấy chứng chỉ caller.
-        Caller gửi X-Service-Identity: notification-service cho attribution.
+        (docs/mesh/runtime-contract.md mục 5.2); Auth không nhìn thấy chứng chỉ caller
+        và không tự kết thúc TLS (docs/auth/decisions/ADR-007). Caller bắt buộc gửi
+        X-Service-Identity: notification-service; Auth kiểm giá trị đó với allowlist cấu hình
+        (internal.allowed_callers) như defense-in-depth, không coi header là bằng chứng
+        authorization duy nhất. Không có mesh (Docker Compose) header này không được xác thực.
   parameters:
+    ServiceIdentity:
+      name: X-Service-Identity
+      in: header
+      required: true
+      description: >-
+        ServiceAccount name của service gọi. Thiếu header trả 401, giá trị ngoài allowlist trả 403.
+      schema: { type: string, const: notification-service }
     DeliveryId:
       name: delivery_id
       in: path
@@ -212,10 +232,12 @@ components:
           pattern: '^[a-z]{2}(-[A-Z]{2})?$'
           description: Tuỳ chọn; Notification mặc định vi khi null.
   responses:
+    BadRequest:
+      description: delivery_id hoặc user_id không phải UUID.
     UnauthorizedService:
-      description: Không có hoặc không xác minh được service identity mTLS.
+      description: Thiếu header X-Service-Identity.
     ForbiddenService:
-      description: Service identity không phải Notification Service.
+      description: X-Service-Identity không nằm trong allowlist (không phải notification-service).
     DeliveryNotFound:
       description: delivery_id không tồn tại hoặc không được phép truy cập.
     UserNotFound:
@@ -223,6 +245,6 @@ components:
     DeliveryExpired:
       description: Delivery state đã hết TTL; không thể gửi lại secret cũ.
     RateLimited:
-      description: Vượt rate limit nội bộ.
+      description: Vượt rate limit nội bộ (120/phút theo cặp service gọi và delivery_id hoặc user_id).
     InternalError:
       description: Lỗi không mong đợi; caller có thể retry theo policy.

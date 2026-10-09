@@ -70,9 +70,10 @@ func newTestApp(t *testing.T) *testApp {
 	cfg.Security.RateLimit = config.RateLimitConfig{
 		LoginPerIP: generous, LoginPerAccount: generous, RegistrationPerIP: generous,
 		OtpPerAccount: generous, PasswordResetPerIP: generous, RefreshPerIP: generous,
-		InternalPerClient: generous,
+		InternalPerResource: generous,
 	}
 	cfg.Security.PasswordPolicy = config.PasswordPolicyConfig{MinLength: 12, MaxLength: 128}
+	cfg.Internal = config.InternalConfig{AllowedCallers: []string{"notification-service"}}
 
 	keyCipher, err := crypto.NewKeyCipher(testMasterKey())
 	require.NoError(t, err)
@@ -130,7 +131,7 @@ func newTestApp(t *testing.T) *testApp {
 		Session: handler.NewSessionHandler(
 			service.NewAuthenticationService(accounts, refreshTokens, hasher, limiter, tokenService, notifier,
 				testClock, lockout, sessionPolicy, rule, logger),
-			service.NewSessionService(accounts, refreshTokens, tokenService, revoker, testClock, sessionPolicy, logger),
+			service.NewSessionService(accounts, refreshTokens, tokenService, revoker, notifier, testClock, sessionPolicy, logger),
 			cookie),
 		Password: handler.NewPasswordHandler(
 			service.NewPasswordService(accounts, resets, hasher, limiter, revoker, notifier, testClock, policy,
@@ -215,6 +216,7 @@ func (a *testApp) getInternal(t *testing.T, path string) response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, a.internal.URL+path, nil)
 	require.NoError(t, err)
+	req.Header.Set("X-Service-Identity", "notification-service")
 	return a.do(t, req, &http.Client{})
 }
 

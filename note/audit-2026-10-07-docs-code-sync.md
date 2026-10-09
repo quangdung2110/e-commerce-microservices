@@ -96,70 +96,101 @@
 
 ## 3. Auth (`docs/auth`, `contracts/http/auth/**`, `contracts/events/auth/v1`, `go/services/auth-service`)
 
-### A9 🔴 [BUG] `USER_DELETED` có thể không bao giờ được phát
+> **Kiểm chứng và sửa xong 2026-10-09 (mục Auth).** Đối chiếu lại từng mục với code, contract và test chạy thật
+> (unit + integration trên PostgreSQL/Redis thật). Kết quả: **A9–A12 và A1–A8, A14 đều đúng**; **A13 đúng về hành vi nhưng
+> là chủ ý** (OpenAPI đã ghi "trước hoặc đúng mốc", gateway có comment giải thích; độ nghiêm trọng bị thổi phồng vì
+> client chỉ gặp một lần `401` rồi refresh), nên chỉ sửa docs/contract, không sửa code; **N4 (Notification) sai**:
+> `client.go:294` đã gửi `X-Service-Identity` và cấu hình mặc định `notification-service`. Quyết định ở Auth
+> ADR-006..009 và `contracts/CHANGELOG.md` (2026-10-09 Auth sync). Bổ sung ngoài báo cáo (đều đã sửa trừ khi ghi khác):
+> 1. **Lost update ở `auth.accounts`** (nặng hơn mọi mục 🔴 của Auth): `Update` ghi lại cả hàng từ bản đọc cũ, mà login
+>    verify Argon2 ~100 ms giữa lúc đọc và lúc lưu. Một login (đúng hoặc sai mật khẩu) chạy chồng lên đổi/reset mật khẩu ghi lại
+>    `password_hash` cũ; chồng lên xóa account đưa hàng `DELETED` về `ACTIVE` kèm email sau khi `USER_DELETED` đã phát; hai login sai
+>    song song cùng ghi `failed_login_count = 1` nên lọt dưới ngưỡng khóa. Đã sửa bằng compare-and-set trên `updated_at`
+>    ([ADR-008](../docs/auth/decisions/ADR-008-account-optimistic-concurrency.md)); test đua + test PostgreSQL thật, mutation check.
+> 2. **Đăng nhập lộ trạng thái chưa cần mật khẩu**: `EnsureCanAuthenticate` chạy trước `Verify`, nên ai cũng biết một email đang
+>    chờ xác minh (`403`) hoặc bị khóa (`423`). Nay kiểm mật khẩu trước ([ADR-009](../docs/auth/decisions/ADR-009-login-password-before-state.md)).
+> 3. **`USER_UNLOCKED` có thể không bao giờ phát**: login/refresh tự mở khóa im lặng ("worker owns that event") nhưng sau đó
+>    worker không còn thấy account. Nay bên thắng ghi `LOCKED → ACTIVE` phát event, đúng một lần (ADR-009).
+> 4. **A12 cũng đúng với `password-reset-requests`**: 429 theo account chỉ xuất hiện khi account tồn tại (code ghi chú sai rằng
+>    "chỉ chủ hộp thư thấy"). Đã sửa cùng A12.
+> 5. **`docs/gateway/runtime-contract.md` §6 mâu thuẫn code**: bắt denylist TTL ≤ thời gian còn lại đến `exp`, trong khi gateway
+>    chỉ chuyển `jti` nên Auth phải dùng cận trên (access TTL + skew). Đã sửa contract gateway theo code; thêm câu về độ phân giải 1 giây.
+> 6. Hợp đồng OpenAPI: thiếu `400` ở `listSessions`, `revokeSession` và hai thao tác xóa account; 7 thao tác công khai thiếu
+>    `security: []` (Redocly báo 7 lỗi `security-defined`); thiếu `servers`. Đã sửa; Redocly và `asyncapi validate` sạch.
+> 7. `docs/auth` còn nhắc consumer, Kafka lag, DLQ phía Auth (Auth không consume event nào) ở architecture, operations và
+>    bảng dependency; ADR-001..005 ghi "chưa có implementation evidence". Đã sửa.
+> 8. **Còn mở**: (a) Root Compose không nạp schema Auth (`init-db.sh` chỉ tạo `auth_db` rỗng, không có `auth-migrate` như
+>    `user-migrate`) — đã ghi vào `docs/auth/development.md` cách nạp tay, chưa đổi compose vì migration của Auth không idempotent và
+>    sẽ vỡ volume đã nạp tay; (b) metric/alert/runbook/reconciliation cho event (ADR-005) và Prometheus metric; (c) Notification
+>    còn mTLS ở tầng app (N3) và các cấu hình `NOTIFICATION_AUTH_TLS_*` trở thành thừa; (d) lỗi Redis trả `500` vì contract chưa có
+>    `503`; (e) X3 (`UNAUTHORIZED` vs `UNAUTHENTICATED`) chưa thống nhất; (f) contract Auth vẫn `proposed` (chưa có test validate
+>    response với OpenAPI, chưa có consumer test).
+
+
+### A9 🔴 [BUG] `USER_DELETED` có thể không bao giờ được phát — ✅ đã kiểm chứng đúng và sửa 2026-10-09 (ADR-006)
 - Vị trí: `go/services/auth-service/internal/domain/service/account_deletion_service.go` hàm `delete`.
 - Hiện trạng: transaction DB commit (account `DELETED`, ẩn danh, revoke refresh token) → sau commit gọi `revoker.MarkAllTokensRevoked`. Nếu Redis lỗi, hàm **return error trước** `notifier.Publish(USER_DELETED)`. Client nhận 500; retry → `ACCOUNT_NOT_ACTIVE` 409 "already deleted" → event không bao giờ phát. User/Notification/Review/Chat không bao giờ purge PII. Không có reconciliation nào phát lại.
 - Pattern tương tự: `email_change_service.go` `Confirm` (email đã đổi, `RevokeAllSessions` lỗi → không phát `USER_EMAIL_CHANGED`), `password_service.go` (đổi/reset password rồi revoke lỗi → không phát `USER_PASSWORD_CHANGED`).
 - Sửa đề xuất: luôn publish event sau commit kể cả khi ghi marker lỗi (ghi log/alert riêng cho marker); hoặc cho phép retry idempotent phát lại event khi account đã `DELETED` mà chưa có bằng chứng publish; hoặc chuyển sang outbox (cần ADR thay ADR-005). Cập nhật WF-AUTH-006 + ADR-005.
 
-### A10 🔴 Mô hình xác thực internal API mâu thuẫn với contract/mesh (xem X2)
+### A10 🔴 Mô hình xác thực internal API mâu thuẫn với contract/mesh (xem X2) — ✅ đã kiểm chứng đúng và sửa 2026-10-09 (ADR-007)
 - Contract `contracts/http/auth/internal/v1/openapi.yaml` (securitySchemes `notificationServiceMtls`): "mTLS và allowlist principal notification-service do service mesh thực thi; **Auth không nhìn thấy chứng chỉ caller**. Caller gửi `X-Service-Identity: notification-service` cho attribution".
 - Code: `internal/api/middleware/service_identity.go` kiểm `r.TLS.VerifiedChains` + CN; `internal/common/config/config.go` (~dòng 374) **từ chối khởi động production** nếu internal listener không có cert mTLS ở tầng app; bỏ qua `X-Service-Identity`.
 - Hệ quả: sau Istio ambient (app không thấy cert) phải cấu hình TLS hai lớp, nếu không service không khởi động.
 - Sửa: chốt một mô hình (X2), cập nhật code hoặc contract + `docs/auth/interfaces.md` §3.
 
-### A11 🟠 Rate limit internal theo IP thay vì theo principal
+### A11 🟠 Rate limit internal theo IP thay vì theo principal — ✅ đã kiểm chứng đúng và sửa 2026-10-09 (theo cặp service gọi + `delivery_id`/`user_id`, 120/phút, ADR-007)
 - Docs `docs/auth/interfaces.md` §3: "Rate limit riêng cho principal `notification-service`", "rate limit theo client `security.rate_limit.internal_per_client`".
 - Code: `internal/api/router/internal_router.go` dùng scope `internal-delivery:ip` với `c.ClientIP()`.
 - Sửa: key theo service identity, hoặc sửa docs cho đúng.
 
-### A12 🟠 Endpoint gửi lại OTP lộ sự tồn tại của tài khoản
+### A12 🟠 Endpoint gửi lại OTP lộ sự tồn tại của tài khoản — ✅ đã kiểm chứng đúng và sửa 2026-10-09 (vượt ngân sách theo account thì vẫn `202`, không gửi; áp dụng cả `password-reset-requests`)
 - Contract `POST /api/v1/auth/email-verification-requests`: "Luôn trả cùng phản hồi thành công để không tiết lộ email có account chờ xác minh hay không".
 - Code `registration_service.go` `RequestVerification`: email không tồn tại / không `PENDING` → `nil` (202); tồn tại + `PENDING` + vượt resend limit → `429 RATE_LIMITED`. 429 chỉ xuất hiện khi tài khoản tồn tại → side-channel enumeration.
 - Sửa: khi vượt limit vẫn trả 202 (không gửi OTP), hoặc ghi rõ ngoại lệ trong contract.
 
-### A13 🟠 `revoked_before` theo giây gây từ chối token hợp lệ
+### A13 🟠 `revoked_before` theo giây gây từ chối token hợp lệ — ⚠️ hành vi có thật nhưng là chủ ý, không phải bug; chỉ sửa docs/contract 2026-10-09
 - Code `internal/infrastructure/redis/revocation_store.go` lưu `issuedBefore.Unix()`; gateway-auth từ chối `iat <= revoked_before`.
 - Token được cấp trong cùng giây sau "logout all"/đổi password/đổi email bị từ chối tới khi hết hạn (15 phút). Hiếm nhưng có thể gặp khi client tự đăng nhập lại ngay.
 - Sửa: lưu mốc millisecond hoặc so sánh `iat < revoked_before`, đồng bộ `docs/gateway/runtime-contract.md` §6.
 
-### A1 🟡 Bảng mã lỗi `domain.md` sai / thiếu
+### A1 🟡 Bảng mã lỗi `domain.md` sai / thiếu — ✅ đúng; đã sửa 2026-10-09 (24 mã gồm `CONCURRENT_UPDATE`, kèm HTTP và retryable; ma trận theo endpoint ở `interfaces.md` §6)
 - `docs/auth/domain.md` §4: BR-001 `ACCOUNT_NOT_ACTIVE` (đúng), BR-002 `REFRESH_TOKEN_REVOKED` (code: `REFRESH_TOKEN_INVALID`), BR-003 `SESSION_REVOCATION_FAILED` (không có trong code), BR-007 `ACCOUNT_ALREADY_DELETED` (code trả `ACCOUNT_NOT_ACTIVE` 409 detail "already deleted"; ngoài ra có `ACCOUNT_DELETED`).
 - §7 chỉ liệt kê 6 mã; code (`internal/common/errors/errors.go`) có 23: `VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, INVALID_CREDENTIALS, ACCOUNT_NOT_VERIFIED, ACCOUNT_LOCKED, ACCOUNT_NOT_ACTIVE, ACCOUNT_DELETED, ACCOUNT_NOT_FOUND, NOT_FOUND, METHOD_NOT_ALLOWED, EMAIL_ALREADY_REGISTERED, REFRESH_TOKEN_INVALID, SESSION_NOT_FOUND, OTP_INVALID, RESET_TOKEN_INVALID, PASSWORD_POLICY_VIOLATION, RATE_LIMITED, DELIVERY_NOT_FOUND, DELIVERY_EXPIRED, SIGNING_KEY_MISSING, DEPENDENCY_UNAVAILABLE, INTERNAL_ERROR`. Mapping HTTP ở `internal/api/httpx/problem.go`.
 - Comment `errors.go` "Codes match docs/auth/domain.md section 7" là sai.
 - OpenAPI không liệt kê `code` nào.
 - Sửa: viết lại §4/§7 theo code (kèm HTTP status); cân nhắc thêm enum `code` vào OpenAPI.
 
-### A2 🟡 TTL denylist mô tả mâu thuẫn
+### A2 🟡 TTL denylist mô tả mâu thuẫn — ✅ đúng; đã sửa 2026-10-09 (cả `docs/gateway/runtime-contract.md`)
 - `workflows.md` WF-AUTH-004: TTL denylist "không vượt quá thời gian còn lại của access token".
 - `data.md` §6 và code `revoker.go`: TTL = access TTL + clock skew (cận trên, có thể sống lâu hơn token).
 - Sửa WF-AUTH-004 theo data.md.
 
-### A3 🟡 State machine thiếu transition
+### A3 🟡 State machine thiếu transition — ✅ đúng; đã sửa 2026-10-09
 - `domain.md` §5: `LOCKED → ACTIVE` chỉ khi hết `locked_until` bởi worker; §6 "auto unlock chỉ do system worker".
 - Code: `entity/account.go` `UnlockIfExpired` được gọi inline trong login/refresh (không phát `USER_UNLOCKED`); `ClearLockout` trong reset password chuyển `LOCKED → ACTIVE`.
 - Sửa: bổ sung hai transition vào domain/workflows.
 
-### A4 🟡 Mô tả lockout/rate limit sai và thiếu giá trị
+### A4 🟡 Mô tả lockout/rate limit sai và thiếu giá trị — ✅ đúng; đã sửa 2026-10-09 (bảng rate limit ở `interfaces.md`, cấu hình ở `operations.md`)
 - WF-AUTH-002 "Login sai tăng counter theo email và IP". Code: counter bền vững per-account trong DB (`failed_login_count`) + Redis rate limit `login:ip` và `login:account` (theo email chuẩn hoá).
 - Giá trị lockout 5 lần / khoá 15 phút / reset counter sau 1 giờ (`configs/application.yaml`) không có trong docs.
 
-### A5 🟡 Docs nói "chưa có implementation / TBD"
+### A5 🟡 Docs nói "chưa có implementation / TBD" — ✅ đúng; đã sửa 2026-10-09 (`scope: current`, `status: implemented`)
 - Frontmatter `status: proposed`, README "chưa được xác minh theo implementation"; `development.md` "refactor này không xem code ... không command nào được bịa ra"; `operations.md` mọi giá trị "TBD".
 - Code + config đã có giá trị cụ thể: access 15m, refresh sliding 7d / absolute 30d, OTP 5m / 5 lần / resend 3 trong 15m, reset 15m, delivery TTL 30m, key rotation 30d, retirement 24h, interval các worker, cổng 8080/8081.
 - Sửa: viết lại development.md/operations.md theo code (tham khảo cách User docs làm).
 
-### A6 🟡 Diagram thiếu consumer
+### A6 🟡 Diagram thiếu consumer — ✅ đúng; đã sửa 2026-10-09
 - `architecture.md` diagram: Kafka → chỉ User, Notification. Thiếu Review, Chat (consumer `USER_DELETED`).
 
-### A7 🟡 Sai hướng / SLI thừa
+### A7 🟡 Sai hướng / SLI thừa — ✅ đúng; đã sửa 2026-10-09
 - `interfaces.md` §1 dòng JWKS ghi hướng "Outbound" — Gateway gọi Auth (inbound HTTP).
 - `operations.md` có SLI "Kafka consumer lag" dù Auth không consume event nào.
 
-### A8 🟡 WF-AUTH-006 nói "trong transaction ... đặt revoke marker"
+### A8 🟡 WF-AUTH-006 nói "trong transaction ... đặt revoke marker" — ✅ đúng; đã sửa 2026-10-09
 - Code ghi marker Redis sau commit (không thể nằm trong transaction PostgreSQL). Sửa mô tả.
 
-### A14 🟡 Lỗi policy password khi đăng ký trả 400
+### A14 🟡 Lỗi policy password khi đăng ký trả 400 — ✅ đúng; đã ghi vào docs/contract 2026-10-09
 - Register không có 422 trong contract nên vi phạm policy trả `400 VALIDATION_FAILED` — hành vi đúng nhưng chưa được ghi.
 
 Đã khớp: route/status == OpenAPI; event type/topic/key/field == AsyncAPI; `docs/auth/schema/0001_initial_auth_schema.sql` == migration; cookie `auth_refresh` path `/api/v1/auth/sessions`; JWKS RS256.
@@ -583,7 +614,7 @@ Docs mới nhất, khớp code.
 ### N3 🔴 Internal API dùng app-level mTLS (xem X2)
 - `internal/api/router/internal.go`: không phải dev + không có app mTLS → log "every status/ops call will be rejected". Mesh docs nói Istio ambient thực thi, app không thấy cert → production sau mesh sẽ từ chối mọi call status/ops nếu không cấu hình TLS ở app.
 
-### N4 🟡 Client gọi Auth không gửi `X-Service-Identity`
+### N4 🟡 Client gọi Auth không gửi `X-Service-Identity` — ❌ báo cáo sai (kiểm chứng 2026-10-09): `client.go:294` gửi header khi `auth.service_identity` khác rỗng, mặc định `notification-service`, test `client_test.go` assert header
 - `internal/infrastructure/auth/client.go` không set header `X-Service-Identity: notification-service`, trong khi Auth internal OpenAPI nói caller gửi để attribution. Không gây lỗi (Auth bỏ qua header).
 
 ### N5 🟡 Tên principal ops không thống nhất
@@ -624,10 +655,10 @@ Docs mới nhất, khớp code.
 - [ ] PY1 Payment: thêm `GET /v1/payments/{id}`, `GET /v1/refunds/{id}`.
 - [ ] PR8/PR10 Promotion: guard technical-cancellations (allowlist migrator, proof header, DTO, migration cột) hoặc gỡ route.
 - [ ] PR2 Promotion: enforce `checkout_channel=CHECKOUT` ở calculate + reserve.
-- [ ] A9 Auth: luôn phát `USER_DELETED` / `USER_EMAIL_CHANGED` / `USER_PASSWORD_CHANGED` sau commit dù Redis lỗi.
-- [ ] A12 Auth: resend OTP không trả 429 phân biệt.
-- [ ] A13 Auth + gateway-auth: so sánh `revoked_before` không chặn token cùng giây.
-- [ ] A11 Auth: rate limit internal theo principal. [x] U10 User: rate limit theo (service gọi, `user_id`) thay vì IP, `X-Service-Identity` allowlist thay mTLS ở app (ADR-008). *(2026-10-09)*
+- [x] A9 Auth: luôn phát `USER_DELETED` / `USER_EMAIL_CHANGED` / `USER_PASSWORD_CHANGED` sau commit dù Redis lỗi (ADR-006). *(2026-10-09)*
+- [x] A12 Auth: resend OTP (và yêu cầu reset) không trả 429 phân biệt. *(2026-10-09)*
+- [x] A13 Auth + gateway-auth: *không sửa code* — hành vi là chủ ý (độ phân giải 1 giây); đã ghi vào `docs/auth/data.md`, ADR-001, OpenAPI và `docs/gateway/runtime-contract.md` §6. *(2026-10-09)*
+- [x] A11 Auth: rate limit internal theo (service gọi, `delivery_id`/`user_id`) thay vì IP; `X-Service-Identity` allowlist thay mTLS ở app (ADR-007). *(2026-10-09)* [x] U10 User: rate limit theo (service gọi, `user_id`) thay vì IP, `X-Service-Identity` allowlist thay mTLS ở app (ADR-008). *(2026-10-09)*
 - [x] U9 User: chặn đọc/ghi profile/address/preferences của user đã xoá (`GetActive*`, lock trong `Anonymize`, ADR-010). *(2026-10-09)*
 - [x] U4/N1 User: mặc định `marketing_enabled=false` + migration `0002` backfill row chưa chạm (ADR-009). *(2026-10-09)*
 - [x] U11 User: epoch chống fill cache address muộn (ADR-011). *(2026-10-09)*
@@ -641,8 +672,8 @@ Docs mới nhất, khớp code.
 - [x] P5 Product: tách allowlist snapshot cho Promotion (`snapshot-clients`, Promotion không còn đọc được export). *(2026-10-09)*
 - [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout chưa có test tương đương)*
 - [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
-- [ ] N4 Notification: gửi `X-Service-Identity` khi gọi Auth.
-- [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User đã chuyển sang mô hình mesh 2026-10-09, ADR-008; còn Auth, Notification)*
+- [x] N4 Notification: gửi `X-Service-Identity` khi gọi Auth. *(báo cáo sai: đã gửi từ trước, không cần sửa)*
+- [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; còn Notification)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
 
 ### Contract / catalog
@@ -652,12 +683,12 @@ Docs mới nhất, khớp code.
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; còn N5, phần còn lại của K3, PY2, N2).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; còn N5)*
 
 ### Docs
 - [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
-- [ ] Auth: A1–A8, A14.
+- [x] Auth: A1–A8, A14 (cộng ADR-006..009, error catalog đầy đủ, bảng cấu hình, `scope: current`/`status: implemented`). *(2026-10-09)*
 - [x] User: U1–U3, U6, U7, U8 (cộng U4, U5, U9–U11 ở docs; frontmatter `scope: current`/`status: implemented`, error catalog đầy đủ, bảng cấu hình, WF-USER-009). *(2026-10-09)*
 - [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
 - [x] Product: P1–P4, P8 (cộng ADR-020, error catalog đầy đủ, bảng cấu hình, `schema.sql` khớp migration, frontmatter `status: implemented`). *(2026-10-09)*

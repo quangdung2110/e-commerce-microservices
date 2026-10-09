@@ -10,7 +10,7 @@ Implementation này bám theo bộ tài liệu thiết kế và contract:
 | [docs/auth/](../../../docs/auth/README.md) | Thiết kế: domain, workflow, data, operations |
 | [docs/auth/schema/0001_initial_auth_schema.sql](../../../docs/auth/schema/0001_initial_auth_schema.sql) | Schema gốc, được sao chép vào [`migrations/`](./migrations) |
 | [contracts/http/auth/v1/openapi.yaml](../../../contracts/http/auth/v1/openapi.yaml) | HTTP API public |
-| [contracts/http/auth/internal/v1/openapi.yaml](../../../contracts/http/auth/internal/v1/openapi.yaml) | Internal notification delivery và notification contact API (mTLS) |
+| [contracts/http/auth/internal/v1/openapi.yaml](../../../contracts/http/auth/internal/v1/openapi.yaml) | Internal notification delivery và notification contact API (mesh mTLS + allowlist `X-Service-Identity`) |
 | [contracts/events/auth/v1/asyncapi.yaml](../../../contracts/events/auth/v1/asyncapi.yaml) | Kafka event (CloudEvents 1.0) |
 | [docs/gateway/runtime-contract.md](../../../docs/gateway/runtime-contract.md) | Claim JWT, JWKS và namespace revocation dùng chung với `gateway-auth` |
 
@@ -29,11 +29,18 @@ Implementation này bám theo bộ tài liệu thiết kế và contract:
 - **Redis là trạng thái bảo mật có TTL (ADR-004).** Denylist, revoke marker, rate
   limit, OTP, reset token và notification delivery state. Mọi adapter Redis
   **fail closed**: lỗi Redis làm request thất bại thay vì bỏ qua kiểm tra.
-- **Direct publisher (ADR-005).** Event publish sau khi transaction commit, retry
+- **Direct publisher (ADR-005, ADR-006).** Event publish sau khi transaction commit, retry
   tối đa 3 lần với cùng CloudEvent `id`; retry cạn được log ở mức `error` để
-  reconciliation vận hành xử lý. Không có outbox.
+  reconciliation vận hành xử lý. Không có outbox. Với xóa account, đổi email và đổi/reset
+  mật khẩu, event được phát *trước* khi ghi marker Redis, nên lỗi Redis không làm mất event.
+- **Ghi account là compare-and-set (ADR-008).** `UPDATE ... WHERE updated_at = `; service
+  tải lại và áp dụng lại thay đổi khi thua, nên một lần đăng nhập đang chạy không thể ghi
+  mật khẩu cũ hay account đã xóa trở lại.
+- **Đăng nhập kiểm mật khẩu trước trạng thái (ADR-009).** `403`/`423` chỉ trả cho người đúng mật
+  khẩu. Bên mở khóa (worker, login hoặc refresh) phát `USER_UNLOCKED`.
 - **Secret không nằm trong Kafka.** Event chỉ mang `delivery_id`; Notification
-  Service gọi internal API qua mTLS để lấy email và OTP/reset URL. Với thông báo
+  Service gọi internal API để lấy email và OTP/reset URL. Listener internal không tự kết thúc
+  TLS: mesh thực thi mTLS và principal, Auth chỉ kiểm allowlist `X-Service-Identity` (ADR-007). Với thông báo
   không do Auth khởi phát, Notification resolve email lúc gửi qua
   `GET /internal/v1/auth/users/{user_id}/notification-contact` trên cùng listener.
 
@@ -63,9 +70,9 @@ interface trong `domain/port/`; `api/` chỉ gọi `domain/service`.
 | Method | Path | Auth | Ghi chú |
 |---|---|---|---|
 | POST | `/api/v1/auth/registrations` | – | `202`, trạng thái `PENDING_VERIFICATION` |
-| POST | `/api/v1/auth/email-verification-requests` | – | Luôn `202`, không tiết lộ account tồn tại |
+| POST | `/api/v1/auth/email-verification-requests` | – | Luôn `202`, không tiết lộ account tồn tại (vượt ngân sách theo account thì không gửi, vẫn `202`) |
 | POST | `/api/v1/auth/email-verifications` | – | `204`, OTP dùng một lần |
-| POST | `/api/v1/auth/sessions` | – | Login; access token trong JSON, refresh trong cookie |
+| POST | `/api/v1/auth/sessions` | – | Login; access token trong JSON, refresh trong cookie. Sai mật khẩu luôn `401`; `403`/`423` chỉ khi đúng mật khẩu |
 | POST | `/api/v1/auth/sessions/refresh` | Cookie `auth_refresh` | Rotate; replay trả `401` |
 | GET | `/api/v1/auth/sessions` | Gateway identity | Cursor pagination |
 | DELETE | `/api/v1/auth/sessions` | Gateway identity | Logout all + revoke marker |
@@ -79,8 +86,8 @@ interface trong `domain/port/`; `api/` chỉ gọi `domain/service`.
 | POST | `/api/v1/auth/admin/accounts/{account_id}/deletion-requests` | Gateway identity + role `ADMIN` | Admin deletion |
 | GET | `/.well-known/jwks.json` | – | Public key set |
 | GET | `/health/live`, `/health/ready`, `/health/startup` | – | Probe |
-| POST | `/internal/v1/auth/notification-deliveries/{delivery_id}/content` | mTLS (cổng 8081) | Chỉ Notification Service |
-| GET | `/internal/v1/auth/users/{user_id}/notification-contact` | mTLS (cổng 8081) | Chỉ Notification Service; `email`, `email_verified`, `locale` (null ở phase 1); `404` khi account không tồn tại hoặc đã xoá |
+| POST | `/internal/v1/auth/notification-deliveries/{delivery_id}/content` | `X-Service-Identity` (cổng 8081, mesh mTLS) | Chỉ Notification Service |
+| GET | `/internal/v1/auth/users/{user_id}/notification-contact` | `X-Service-Identity` (cổng 8081, mesh mTLS) | Chỉ Notification Service; `email`, `email_verified`, `locale` (null ở phase 1); `404` khi account không tồn tại hoặc đã xoá |
 
 Lỗi luôn trả `application/problem+json` theo RFC 9457 với `code` ổn định.
 
@@ -131,22 +138,23 @@ Hai tầng test, tách nhau bằng build tag `integration`.
 make test
 ```
 
-**Unit** (`test/unit/`, 67 test): chạy use case thật trên in-memory double,
+**Unit** (`test/unit/`, 107 test): chạy use case thật trên in-memory double,
 không cần Docker. Bao phủ business rule: rotation một lần duy nhất, replay
-refresh token, lockout và tự mở khóa, OTP single-use, đổi email gắn với địa chỉ
-mới, xóa account GDPR với hạn 90 ngày, vòng đời signing key.
+refresh token, lockout và tự mở khóa (kèm thông báo một lần), OTP single-use, đổi email gắn với địa chỉ
+mới, xóa account GDPR với hạn 90 ngày, vòng đời signing key, lỗi Redis sau commit, ghi đè bản cũ (lost update),
+không lộ account qua resend/reset/login, listener internal và cấu hình.
 
 ```bash
 make test-integration
 ```
 
-**Integration** (`test/integration/`, 57 test): dựng PostgreSQL 16 và Redis 7
+**Integration** (`test/integration/`, 61 test): dựng PostgreSQL 16 và Redis 7
 bằng testcontainers, nên cần Docker daemon đang chạy. Bao phủ những thứ chỉ
 dependency thật mới chứng minh được:
 
 | Nhóm | Nội dung |
 |---|---|
-| Repository | SQL của cả 3 repo, mapping lỗi unique constraint, transaction rollback, CHECK constraint 90 ngày |
+| Repository | SQL của cả 3 repo, mapping lỗi unique constraint, transaction rollback, CHECK constraint 90 ngày, compare-and-set của `accounts` (bản cũ không ghi được, không hồi sinh account đã xóa) |
 | Rotation | Đổi token, replay, clamp theo absolute expiry, và **8 request đồng thời chỉ 1 thành công** |
 | Redis | 4 Lua script: rate limit, OTP (single-use + subject binding + attempt budget), reset token, distributed lock |
 | Crypto | Argon2id PHC round trip, AES-256-GCM + master-key version, ký JWT → JWKS → verify như gateway làm |
@@ -171,14 +179,20 @@ docker run --rm -v "$PWD:/src" -v /var/run/docker.sock:/var/run/docker.sock -e T
 | `keys.retirement_delay` | Phải ≥ `jwt.access_token_ttl`, nếu không token đang sống sẽ mất key verify |
 | `refresh.cookie_secure` | Bắt buộc `true` ngoài môi trường local |
 | `security.trusted_proxies` | Rỗng nghĩa là không tin header proxy; khai báo CIDR gateway khi chạy cluster |
-| `internal.*` | Production bắt buộc mTLS cho internal delivery/contact API |
+| `internal.allowed_callers` | Allowlist `X-Service-Identity` của listener internal (mặc định `notification-service`); rỗng thì không khởi động. Auth không tự kết thúc TLS |
 
 ## 7. Khoảng trống đã biết
 
 - **Denylist TTL.** Gateway chỉ chuyển tiếp `jti` đã verify, không kèm `exp`, nên
-  entry denylist dùng TTL bằng access-token lifetime tối đa. Đây là cận trên: một
+  entry denylist dùng TTL bằng access TTL + clock skew (15m30s). Đây là cận trên: một
   entry có thể sống lâu hơn token vài phút, tốn bộ nhớ nhưng không bao giờ cho
   token đã thu hồi đi qua.
+- **`revoked_before` theo giây.** `iat` và marker đều có độ phân giải một giây và Gateway từ chối
+  `iat <= marker`, nên token cấp trong cùng giây với lần thu hồi cũng bị từ chối. Chủ ý: không
+  thể phân biệt token cấp ngay trước hay ngay sau lúc thu hồi, và bên an toàn là từ chối cả hai.
+- **Root Compose chưa nạp schema Auth.** `init-db.sh` chỉ tạo database `auth_db` rỗng; trên volume
+  mới phải nạp `docs/auth/schema/0001_initial_auth_schema.sql` bằng tay (xem
+  [development.md](../../../docs/auth/development.md)).
 - **Session hiện tại khi revoke.** Gateway luôn chuyển tiếp claim `sid` thành
   `X-User-Session-Id` (runtime-contract mục 6.1), nên đó là đường nhận diện
   chính; cookie `auth_refresh` chỉ còn là fallback khi service được gọi trực

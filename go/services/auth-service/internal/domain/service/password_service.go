@@ -117,7 +117,18 @@ func (s *PasswordService) ChangePassword(ctx context.Context, cmd ChangePassword
 		return err
 	}
 
-	return s.applyNewPassword(ctx, account, cmd.NewPassword)
+	// The current password was checked against this hash; if the credential moves
+	// before the save, that check no longer holds.
+	verifiedHash := account.PasswordHash
+	return s.applyNewPassword(ctx, account, cmd.NewPassword, func(a *entity.Account) error {
+		if a.PasswordHash != verifiedHash {
+			return apperr.ErrInvalidCredentials
+		}
+		if a.Status != vo.AccountActive && a.Status != vo.AccountLocked {
+			return apperr.ErrUnauthorized
+		}
+		return nil
+	})
 }
 
 // RequestReset emails an opaque reset link. It always reports success so the
@@ -146,9 +157,13 @@ func (s *PasswordService) RequestReset(ctx context.Context, rawEmail string) err
 			return err
 		}
 		if !result.Allowed {
-			// Throttling one mailbox is visible to the owner only, so returning
-			// 429 here does not disclose the account to a third party.
-			return apperr.ErrRateLimited.WithRetryAfter(result.RetryAfter)
+			// Anyone can send a request for any address, so a 429 that only an
+			// existing account can trigger would disclose that the account
+			// exists. The request is answered like any other and sends nothing;
+			// the per-IP limit of the router is the throttle a client can observe.
+			s.logger.Info("password reset suppressed by the per-account budget",
+				zap.String("account_id", account.ID.String()))
+			return nil
 		}
 	}
 
@@ -206,36 +221,53 @@ func (s *PasswordService) CompleteReset(ctx context.Context, cmd CompleteResetCo
 		return err
 	}
 
-	return s.applyNewPassword(ctx, account, cmd.NewPassword)
+	return s.applyNewPassword(ctx, account, cmd.NewPassword, func(a *entity.Account) error {
+		if a.Status != vo.AccountActive && a.Status != vo.AccountLocked {
+			return apperr.ErrResetTokenInvalid
+		}
+		return nil
+	})
 }
 
 // applyNewPassword performs the shared tail of both flows: persist the new
-// credential, revoke every session and notify the owner.
-func (s *PasswordService) applyNewPassword(ctx context.Context, account *entity.Account, newPassword string) error {
-	recipient := recipientOf(account)
-	lockedBefore := account.Status == vo.AccountLocked
-
+// credential, revoke every session and notify the owner. guard re-checks, on the
+// row that is actually saved, what the caller verified on the row it first read;
+// it runs again on every reload after a lost compare-and-set.
+func (s *PasswordService) applyNewPassword(ctx context.Context, account *entity.Account, newPassword string, guard func(*entity.Account) error) error {
 	hash, err := s.hasher.Hash(newPassword)
 	if err != nil {
 		return err
 	}
 
 	now := s.clock.Now()
-	if err := account.SetPasswordHash(hash, now); err != nil {
-		return err
-	}
-	if lockedBefore {
-		// Completing a reset or a change proves control of the account, so the
-		// failed-login lock is lifted with it.
-		account.ClearLockout(now)
-	}
-	if err := s.accounts.Update(ctx, account); err != nil {
+	var recipient string
+	account, _, err = updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		if err := guard(a); err != nil {
+			return false, err
+		}
+		recipient = recipientOf(a)
+		lockedBefore := a.Status == vo.AccountLocked
+		if err := a.SetPasswordHash(hash, now); err != nil {
+			return false, err
+		}
+		if lockedBefore {
+			// Completing a reset or a change proves control of the account, so the
+			// failed-login lock is lifted with it.
+			a.ClearLockout(now)
+		}
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 
-	if _, err := s.revoker.RevokeAllSessions(ctx, account.ID); err != nil {
-		return err
-	}
+	// The new credential is committed and neither a reset token nor the old
+	// password can repeat this request, so everything that must follow a committed
+	// change runs even when the revocation fails: the pending reset token is
+	// invalidated and the owner is told (ADR-006). The revocation failure is
+	// still reported to the caller at the end.
+	_, revokeErr := s.revoker.RevokeAllSessions(ctx, account.ID)
+
 	if err := s.resets.InvalidateForAccount(ctx, account.ID); err != nil {
 		// A stale reset token is a security risk but the password already
 		// changed; report it rather than failing the request.
@@ -246,7 +278,7 @@ func (s *PasswordService) applyNewPassword(ctx context.Context, account *entity.
 	}
 
 	s.notifier.PasswordChanged(ctx, account.ID, recipient, now)
-	return nil
+	return revokeErr
 }
 
 func (s *PasswordService) resetURL(token string) string {

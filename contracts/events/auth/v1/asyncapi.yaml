@@ -3,7 +3,7 @@ info:
   title: Auth Events
   version: 1.0.0
   description: >-
-    Contract đích cho event do Auth Service publish. Mọi message dùng CloudEvents
+    Event do Auth Service (`go/services/auth-service`) publish. Mọi message dùng CloudEvents
     1.0 JSON structured với `id` UUID; không mang password, OTP, reset token,
     refresh token hoặc email. Notification resolve nội dung gửi qua internal Auth
     API theo delivery_id.
@@ -29,7 +29,9 @@ channels:
     x-publication-reliability: >-
       Auth publish trực tiếp sau PostgreSQL commit, retry tối đa 3 lần với cùng
       CloudEvent id. Retry cạn có thể làm mất event và phải được metric, alert,
-      reconciliation vận hành xử lý; không dùng outbox.
+      reconciliation vận hành xử lý; không dùng outbox. Với USER_DELETED, event được phát
+      trước khi ghi revocation marker Redis nên lỗi Redis không làm mất event
+      (docs/auth/decisions/ADR-006).
     x-max-message-bytes: 65536
     x-retention: 7d
     x-consumer-dlq-topic: t.auth.events.dlq
@@ -271,7 +273,10 @@ components:
     userUnlocked:
       name: userUnlockedV1
       title: USER_UNLOCKED
-      summary: Gửi thông báo worker đã tự mở khóa account.
+      summary: >-
+        Thông báo account đã được mở khóa sau khi lock hết hạn. Do bên ghi chuyển LOCKED sang
+        ACTIVE phát: worker auto-unlock hoặc lần login/refresh thành công đầu tiên sau đó, và
+        chỉ phát một lần cho mỗi lần mở khóa.
       contentType: application/cloudevents+json
       x-consumers: [notification-service]
       payload:

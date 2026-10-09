@@ -244,3 +244,87 @@ func TestHardDeleteRemovesDueAccountsOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, deleted)
 }
+
+// Update is a compare-and-set on the version the copy was loaded at. A copy that
+// was read before another writer saved must not write its stale password hash,
+// status or email back over the newer row (lost update).
+func TestAccountRepositoryUpdateRefusesAStaleCopy(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	accounts := postgres.NewAccountRepository(testPool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	account := newAccount(t, "owner@example.com", now)
+	require.NoError(t, accounts.Create(ctx, account))
+	require.NoError(t, account.Activate(now))
+	require.NoError(t, accounts.Update(ctx, account))
+
+	// A slow login and a password change both start from the same row.
+	login, err := accounts.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	change, err := accounts.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+
+	require.NoError(t, change.SetPasswordHash("hashed:new password", now))
+	require.NoError(t, accounts.Update(ctx, change))
+
+	login.RegisterFailedLogin(now, entity.LockoutPolicy{MaxFailedAttempts: 5, LockDuration: time.Minute})
+	require.ErrorIs(t, accounts.Update(ctx, login), apperr.ErrConcurrentUpdate)
+
+	stored, err := accounts.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.Equal(t, "hashed:new password", stored.PasswordHash, "the stale copy wrote nothing")
+	require.Zero(t, stored.FailedLoginCount)
+}
+
+// A stale copy must not bring a deleted account back, with its email.
+func TestAccountRepositoryStaleUpdateCannotResurrectADeletedAccount(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	accounts := postgres.NewAccountRepository(testPool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	account := newAccount(t, "owner@example.com", now)
+	require.NoError(t, accounts.Create(ctx, account))
+	require.NoError(t, account.Activate(now))
+	require.NoError(t, accounts.Update(ctx, account))
+
+	stale, err := accounts.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+
+	require.NoError(t, account.MarkDeleted(vo.DeletionGDPRRequest, now))
+	require.NoError(t, accounts.Update(ctx, account))
+
+	stale.FailedLoginCount = 1
+	require.ErrorIs(t, accounts.Update(ctx, stale), apperr.ErrConcurrentUpdate)
+
+	stored, err := accounts.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.Equal(t, vo.AccountDeleted, stored.Status)
+	require.True(t, stored.Email.IsZero())
+}
+
+// A copy that is saved keeps the version of the row, so it can be saved again
+// without a reload; the missing row is still told apart from a stale one.
+func TestAccountRepositoryUpdateAdvancesTheRevision(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	accounts := postgres.NewAccountRepository(testPool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	account := newAccount(t, "owner@example.com", now)
+	require.NoError(t, accounts.Create(ctx, account))
+	first := account.Revision
+	require.False(t, first.IsZero(), "Create reports the version of the new row")
+
+	require.NoError(t, account.Activate(now))
+	require.NoError(t, accounts.Update(ctx, account))
+	require.True(t, account.Revision.After(first), "the trigger moved updated_at")
+
+	account.FailedLoginCount = 2
+	require.NoError(t, accounts.Update(ctx, account), "the same copy saves again")
+
+	ghost := newAccount(t, "ghost@example.com", now)
+	ghost.Revision = now
+	require.ErrorIs(t, accounts.Update(ctx, ghost), apperr.ErrAccountNotFound)
+}

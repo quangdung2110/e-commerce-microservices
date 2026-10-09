@@ -219,6 +219,14 @@ func TestHTTPRegistrationAndVerification(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, pending.Status)
 	require.Equal(t, apperr.CodeAccountNotVerified, pending.Code(t))
 
+	// ... and that is only said to someone who knows the password: a wrong one is
+	// the same 401 an unknown address gets.
+	pendingWrongPassword := app.post(t, "/api/v1/auth/sessions", map[string]any{
+		"email": flowEmail, "password": "wrong password here",
+	}, nil)
+	require.Equal(t, http.StatusUnauthorized, pendingWrongPassword.Status)
+	require.Equal(t, apperr.CodeInvalidCredentials, pendingWrongPassword.Code(t))
+
 	// A wrong code is rejected without revealing anything.
 	wrong := app.post(t, "/api/v1/auth/email-verifications", map[string]any{
 		"email": flowEmail, "otp": "000000",
@@ -384,6 +392,13 @@ func TestHTTPLoginLockout(t *testing.T) {
 		"email": flowEmail, "password": flowPassword,
 	}, nil)
 	require.Equal(t, http.StatusLocked, stillLocked.Status)
+
+	// A wrong password does not learn that the account is locked.
+	lockedWrongPassword := app.post(t, "/api/v1/auth/sessions", map[string]any{
+		"email": flowEmail, "password": "another wrong password",
+	}, nil)
+	require.Equal(t, http.StatusUnauthorized, lockedWrongPassword.Status)
+	require.Equal(t, apperr.CodeInvalidCredentials, lockedWrongPassword.Code(t))
 
 	// The worker returns the account to ACTIVE once the window elapsed.
 	app.clock.Advance(16 * time.Minute)

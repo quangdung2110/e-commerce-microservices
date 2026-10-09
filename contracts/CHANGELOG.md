@@ -3,6 +3,39 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-09 (Auth sync)
+
+- Auth HTTP v1 wire shapes are unchanged; the contract text now matches `auth-service`. Observable behaviour that
+  changed in the service and is now stated:
+  - `POST /api/v1/auth/sessions` checks the password before the account state. A wrong password is always
+    `401 INVALID_CREDENTIALS`; `403 ACCOUNT_NOT_VERIFIED` and `423 ACCOUNT_LOCKED` are returned only to a caller who
+    proved the password (the lock-triggering attempt still answers `423`). Before, anybody could learn that an
+    address was pending or locked without the password. A wrong password against a pending or locked account no
+    longer counts as a failure or extends the lock.
+  - `POST /email-verification-requests` and `POST /password-reset-requests` answer `202` even after the per-account
+    budget (3 resends / 15 min, 5 resets / 15 min) is spent; they send nothing instead of answering `429`, which
+    only an existing account could trigger. `429` on these two endpoints now comes from the per-IP limit only.
+  - Account writes are compare-and-set: a request can no longer write a stale password hash, email or status over a
+    newer one (a login racing a password change or a deletion). A request that loses the race four times in a row
+    answers `500 CONCURRENT_UPDATE` (`retryable`), documented on `InternalError`; a login whose password changed
+    during verification answers `401`.
+  - When Redis fails after a deletion, email change or password change has committed, the event (`USER_DELETED`,
+    `USER_EMAIL_CHANGED`, `USER_PASSWORD_CHANGED`) is still published; the request still answers
+    `500 DEPENDENCY_UNAVAILABLE`. Before, the event was lost for good and `USER_DELETED` never reached User,
+    Notification, Review, Chat or Cart.
+  - `400` is declared for `listSessions`, `revokeSession` and both deletion operations (bad cursor, limit, UUID or body).
+    Operations that need no identity declare `security: []`. `servers` lists `auth-service:8080` and `localhost:8086`.
+- Auth HTTP internal v1: User-style mesh model. Auth no longer terminates TLS or checks the client certificate: the mesh
+  enforces mTLS and the `notification-service` principal. Callers must send `X-Service-Identity: notification-service`
+  (Notification already did); a missing header is `401`, a service outside `internal.allowed_callers` is `403`. The rate
+  limit is 120 requests/minute per (calling service, `delivery_id` or `user_id`) instead of 600/minute per client IP.
+  `400` is declared for a non-UUID path parameter.
+- Auth Events v1 schemas are unchanged. `USER_UNLOCKED` is now also published when login or refresh lifts an expired
+  lock (exactly once per unlock: whoever wins the write publishes); before, it was lost whenever a login got there
+  before the worker.
+- Catalog: `auth-publishes-identity-events`, `auth-requests-security-notifications`,
+  `notification-resolves-auth-delivery-content` and `notification-resolves-auth-contact` are `implemented`.
+
 ## 2026-10-09 (Product sync)
 
 - Product Events v1 `category-upserted` và Product HTTP v1 `CategoryExport` có thêm `facet_definitions`: mảng

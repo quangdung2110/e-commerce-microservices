@@ -128,17 +128,11 @@ func (s *AuthenticationService) Login(ctx context.Context, cmd LoginCommand) (*L
 	}
 
 	now := s.clock.Now()
-	if account.UnlockIfExpired(now) {
-		// The lock simply expired. The auto-unlock worker owns the USER_UNLOCKED
-		// notification, so this inline transition stays silent.
-		if err := s.accounts.Update(ctx, account); err != nil {
-			return nil, err
-		}
-	}
-	if err := account.EnsureCanAuthenticate(now); err != nil {
-		return nil, err
-	}
 
+	// The password is checked before the account state is looked at. A pending or
+	// locked account is reported (403, 423) only to a caller who proves the
+	// credential; otherwise those answers would tell anybody which addresses are
+	// registered and in what state.
 	valid, err := s.hasher.Verify(account.PasswordHash, cmd.Password)
 	if err != nil {
 		return nil, apperr.ErrInternal.WithCause(err)
@@ -147,13 +141,9 @@ func (s *AuthenticationService) Login(ctx context.Context, cmd LoginCommand) (*L
 		return nil, s.registerFailure(ctx, account, now)
 	}
 
-	// Only write when a previous failure is still recorded, so a normal login
-	// costs one read instead of a read and a write.
-	if account.FailedLoginCount != 0 || account.LastFailedLoginAt != nil {
-		account.ResetFailedLogins(now)
-		if err := s.accounts.Update(ctx, account); err != nil {
-			return nil, err
-		}
+	account, err = s.confirmLogin(ctx, account, now)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.openSession(ctx, account, entity.SessionContext{
@@ -163,11 +153,65 @@ func (s *AuthenticationService) Login(ctx context.Context, cmd LoginCommand) (*L
 	})
 }
 
-// registerFailure applies AUTH-BR-004 and returns the error the client sees.
+// confirmLogin runs after a correct password. It lifts a lock that has run out,
+// refuses a pending or still-locked account and clears a recorded failure streak.
+// The save is a compare-and-set on the row the password was verified against: if
+// the credential changed while the (slow) verification ran, the password the
+// caller used is no longer valid.
+func (s *AuthenticationService) confirmLogin(ctx context.Context, account *entity.Account, now time.Time) (*entity.Account, error) {
+	verifiedHash := account.PasswordHash
+	var unlocked bool
+
+	account, saved, err := updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		unlocked = false
+		if a.PasswordHash != verifiedHash {
+			return false, apperr.ErrInvalidCredentials
+		}
+		unlocked = a.UnlockIfExpired(now)
+		if err := a.EnsureCanAuthenticate(now); err != nil {
+			return false, err
+		}
+		// Only write when something changed, so a normal login costs one read
+		// instead of a read and a write.
+		changed := unlocked
+		if a.FailedLoginCount != 0 || a.LastFailedLoginAt != nil {
+			a.ResetFailedLogins(now)
+			changed = true
+		}
+		return changed, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if saved && unlocked {
+		s.notifier.AccountUnlocked(ctx, account.ID, recipientOf(account), now)
+	}
+	return account, nil
+}
+
+// registerFailure applies AUTH-BR-004 and returns the error the client sees. A
+// wrong password against a pending, still-locked or deleted account is a plain
+// 401 and is not counted: nothing about the state is disclosed to a caller who
+// did not prove the credential.
 func (s *AuthenticationService) registerFailure(ctx context.Context, account *entity.Account, now time.Time) error {
-	locked := account.RegisterFailedLogin(now, s.lockout)
-	if err := s.accounts.Update(ctx, account); err != nil {
+	var locked, unlocked bool
+
+	account, saved, err := updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		locked = false
+		// A lock that ran out no longer protects the account, so the attempt is
+		// counted as it would be on an active one.
+		unlocked = a.UnlockIfExpired(now)
+		if a.Status != vo.AccountActive {
+			return unlocked, nil
+		}
+		locked = a.RegisterFailedLogin(now, s.lockout)
+		return true, nil
+	})
+	if err != nil {
 		return err
+	}
+	if saved && unlocked {
+		s.notifier.AccountUnlocked(ctx, account.ID, recipientOf(account), now)
 	}
 	if !locked {
 		return apperr.ErrInvalidCredentials

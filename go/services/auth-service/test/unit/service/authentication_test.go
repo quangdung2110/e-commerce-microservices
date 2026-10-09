@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/ecommerce/auth-service/internal/common/constants"
 	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/event"
 	"github.com/ecommerce/auth-service/internal/domain/service"
@@ -91,9 +92,49 @@ func TestLoginLocksTheAccountAtTheThreshold(t *testing.T) {
 	require.NotNil(t, stored.LockedUntil)
 	require.True(t, h.publisher.has(event.TypeUserAccountLocked))
 
-	// A correct password does not help while the lock holds.
+	// A correct password does not help while the lock holds, and the lock is only
+	// disclosed to a caller who proved the password.
 	_, err = h.auth.Login(ctx, service.LoginCommand{Email: testEmail, Password: testPassword})
 	require.ErrorIs(t, err, apperr.ErrAccountLocked)
+}
+
+// The state of an account is not disclosed to a caller who does not know the
+// password: a wrong password against a locked account is the same 401 as against
+// an unknown address, and it neither extends the lock nor counts as a failure.
+func TestLoginDoesNotRevealALockedAccountToAWrongPassword(t *testing.T) {
+	h := newHarness(t)
+	account := h.registerAndVerify(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		_, _ = h.auth.Login(ctx, service.LoginCommand{Email: testEmail, Password: "wrong password here"})
+	}
+	locked := mustGet(t, h, account.ID)
+	require.Equal(t, vo.AccountLocked, locked.Status)
+
+	_, err := h.auth.Login(ctx, service.LoginCommand{Email: testEmail, Password: "still wrong password"})
+	require.ErrorIs(t, err, apperr.ErrInvalidCredentials)
+	require.NotErrorIs(t, err, apperr.ErrAccountLocked)
+
+	after := mustGet(t, h, account.ID)
+	require.Equal(t, locked.FailedLoginCount, after.FailedLoginCount, "a refused attempt is not counted")
+	require.Equal(t, locked.LockedUntil, after.LockedUntil, "the lock is not extended")
+}
+
+// Likewise a pending account is reported (403) only to the owner of the password.
+func TestLoginDoesNotRevealAPendingAccountToAWrongPassword(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.registration.Register(ctx, service.RegisterCommand{
+		Email:           testEmail,
+		Password:        testPassword,
+		ConfirmPassword: testPassword,
+	}))
+
+	_, err := h.auth.Login(ctx, service.LoginCommand{Email: testEmail, Password: "wrong password here"})
+	require.ErrorIs(t, err, apperr.ErrInvalidCredentials)
+	require.NotErrorIs(t, err, apperr.ErrAccountNotVerified)
 }
 
 func TestLoginResetsTheFailureCounterOnSuccess(t *testing.T) {
@@ -112,8 +153,9 @@ func TestLoginResetsTheFailureCounterOnSuccess(t *testing.T) {
 	require.Nil(t, stored.LastFailedLoginAt)
 }
 
-// A lock that has run out is lifted on the next attempt, without a second
-// unlock notification: the worker owns that event.
+// A lock that has run out is lifted on the next successful attempt, and the
+// owner is told once: the account is ACTIVE afterwards, so the auto-unlock
+// worker would never see it and the notice would otherwise be lost.
 func TestLoginUnlocksAfterTheLockWindow(t *testing.T) {
 	h := newHarness(t)
 	account := h.registerAndVerify(t)
@@ -131,7 +173,14 @@ func TestLoginUnlocksAfterTheLockWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, vo.AccountActive, stored.Status)
 	require.Nil(t, stored.LockedUntil)
-	require.False(t, h.publisher.has(event.TypeUserUnlocked))
+	require.Equal(t, 1, countOf(h.publisher.types(), event.TypeUserUnlocked))
+	require.NotNil(t, h.deliveries.byTemplate(constants.TemplateAccountUnlocked))
+
+	// The worker finds nothing left to unlock and does not announce it again.
+	unlocked, err := h.maintenance.UnlockExpired(ctx, 100)
+	require.NoError(t, err)
+	require.Zero(t, unlocked)
+	require.Equal(t, 1, countOf(h.publisher.types(), event.TypeUserUnlocked))
 }
 
 // AUTH-BR-009: no session or device quota, so a second device does not evict a

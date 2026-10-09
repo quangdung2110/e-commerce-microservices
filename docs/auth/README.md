@@ -1,24 +1,35 @@
 ---
 doc_id: auth-overview
 service: auth
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Auth Service team
-evidence: []
+evidence:
+  - go/services/auth-service/cmd/server/main.go
+  - go/services/auth-service/internal/api/router/router.go
+  - go/services/auth-service/internal/api/router/internal_router.go
+  - go/services/auth-service/migrations/0001_initial_auth_schema.up.sql
+  - go/services/auth-service/test
 verified_against_commit: null
 ---
 
 # Auth Service — Service Overview
 
-> Điểm bắt đầu để hiểu Auth Service. Tài liệu này mô tả thiết kế mục tiêu từ bộ
-> tài liệu Auth hiện có; chưa được xác minh theo implementation.
+> Điểm bắt đầu để hiểu Auth Service. Runtime hiện hữu được mô tả trong
+> [development.md](./development.md) và README của module. Mục tiêu production
+> (SLO, metric, runbook) chưa có bằng chứng đo nên vẫn là thiết kế.
 
 ## 1. Service status
 
-Auth Service là Identity Provider của hệ thống. Thiết kế hiện ở trạng thái
-`proposed` và phạm vi là `target`: các chi tiết runtime, contract
-machine-readable và bằng chứng implementation chưa thuộc phạm vi tài liệu này.
+Auth Service là Identity Provider của hệ thống. Runtime Go nằm ở
+`go/services/auth-service`: listener public (cổng 8080; root Compose publish ra 8086)
+phục vụ đăng ký, đăng nhập, session, mật khẩu, đổi email, xóa account và JWKS;
+listener internal riêng (cổng 8081, không bao giờ qua Gateway) phục vụ Notification
+Service; worker nền chạy cleanup, mở khóa, xoay/retire khóa ký và hard delete.
+Contract machine-readable nằm ở `contracts/http/auth/v1`,
+`contracts/http/auth/internal/v1` và `contracts/events/auth/v1`; schema PostgreSQL
+`docs/auth/schema/0001_initial_auth_schema.sql` giống từng byte với migration.
 
 ## 2. Mục tiêu
 
@@ -41,8 +52,8 @@ hoặc gửi thông báo là side effect liên-service và được thực hiệ
 
 Auth là system of record cho account credential, role, refresh-token family và JWT
 signing key. Redis chỉ lưu trạng thái bảo mật có TTL (denylist, mốc revoke,
-rate limit, OTP/reset token); không thay thế PostgreSQL cho refresh token.
-Chi tiết ở [Data Design](./data.md).
+rate limit, OTP/reset token, trạng thái giao thông báo); không thay thế PostgreSQL
+cho refresh token. Chi tiết ở [Data Design](./data.md).
 
 ## 5. Capabilities
 
@@ -53,18 +64,25 @@ Chi tiết ở [Data Design](./data.md).
 - Cung cấp JWKS để Gateway xác minh JWT cục bộ.
 - Quản lý trạng thái `PENDING_VERIFICATION`, `ACTIVE`, `LOCKED`, `DELETED`.
 - Xóa account theo luồng GDPR: anonymize ngay và hard delete sau 90 ngày.
+- Cho Notification Service resolve nội dung email (OTP, reset URL) và email người nhận
+  theo `user_id` qua listener internal.
 
 ## 6. Dependencies
 
+Cột Direction tính theo Auth: *Inbound* là lời gọi đi vào Auth, *Outbound* là Auth ghi
+hoặc phát đi.
+
 | Direction | Service/System | Protocol | Purpose | Required | Contract |
 |---|---|---|---|---|---|
-| Inbound | Client/API Gateway | HTTP | Authentication, session và JWKS | Required | [Interfaces](./interfaces.md) |
+| Inbound | Client qua API Gateway | HTTP (public) | Authentication, session | Required | [Interfaces](./interfaces.md) |
+| Inbound | `gateway-auth` / API Gateway | HTTP | Đọc JWKS để verify JWT cục bộ | Required | [Interfaces](./interfaces.md) |
+| Inbound | Notification Service | HTTP (internal, mesh) | Resolve nội dung email và `notification-contact` | Required cho email | [Internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) |
 | Outbound | PostgreSQL | Database | Credential, session, key material | Required | [Data](./data.md) |
-| Outbound | Redis | Cache / PubSub | Revocation, rate limit, OTP và JWKS invalidation | Required for security controls | [Data](./data.md) |
-| Outbound | Kafka | Events | Thông báo thay đổi identity | Required for asynchronous integrations | [Interfaces](./interfaces.md) |
-| Outbound | User Service | Kafka consumer | Khởi tạo/dọn profile từ identity event | Optional by workflow | [Interfaces](./interfaces.md) |
-| Outbound | Notification, Review, Chat, Cart Service | Kafka consumer | Tự cleanup/anonymize dữ liệu sở hữu khi account bị xóa (Cart xóa giỏ hàng) | Optional by workflow | [Interfaces](./interfaces.md) |
-| Outbound | Notification Service | Kafka consumer | Gửi OTP và security notification | Optional by workflow | [Interfaces](./interfaces.md) |
+| Outbound | Redis | Key-value / Pub-Sub | Revocation, rate limit, OTP/reset, delivery state, worker lock, JWKS invalidation | Required (fail closed) | [Data](./data.md) |
+| Outbound | Kafka | Events | Phát identity event và yêu cầu thông báo; Auth không consume event nào | Required cho tích hợp bất đồng bộ | [AsyncAPI](../../contracts/events/auth/v1/asyncapi.yaml) |
+| Outbound (consumer của `USER_VERIFIED_SUCCESS`, `USER_DELETED`) | User Service | Kafka | Khởi tạo profile; dọn profile/address khi account bị xóa | Optional by workflow | [Interfaces](./interfaces.md) |
+| Outbound (consumer của `USER_DELETED`) | Notification, Review, Chat, Cart Service | Kafka | Tự cleanup/anonymize dữ liệu sở hữu khi account bị xóa (Cart xóa giỏ hàng) | Optional by workflow | [Interfaces](./interfaces.md) |
+| Outbound (consumer của security notification) | Notification Service | Kafka | Gửi OTP và security notification | Optional by workflow | [Interfaces](./interfaces.md) |
 
 ## 7. Critical invariants
 
@@ -82,18 +100,25 @@ Các quy tắc và cơ chế enforcement được mô tả tại [Domain Model](
 |---|---|---|
 | [Architecture](./architecture.md) | Component và processing model | Thay đổi cấu trúc service |
 | [Domain](./domain.md) | State, rule và error nghiệp vụ | Thay đổi business behavior |
-| [Interfaces](./interfaces.md) | API, JWKS và event semantics | Tích hợp service |
+| [Interfaces](./interfaces.md) | API, JWKS, event semantics và error catalog | Tích hợp service |
 | [Workflows](./workflows.md) | Luồng end-to-end và failure path | Sửa một use case |
 | [Data](./data.md) | Persistence, cache và lifecycle | Sửa schema/dữ liệu |
-| [Operations](./operations.md) | Vận hành, worker và runbook | Deploy/xử lý sự cố |
-| [Development](./development.md) | Local development và Definition of Done | Phát triển/kiểm thử |
+| [Operations](./operations.md) | Cấu hình, worker và runbook | Deploy/xử lý sự cố |
+| [Development](./development.md) | Chạy local, test và Definition of Done | Phát triển/kiểm thử |
 | [Decisions](./decisions/README.md) | Quyết định kiến trúc | Đánh giá trade-off |
 
 ## 9. Known gaps
 
-- HTTP public, internal delivery API và Kafka event đã có contract machine-readable
-  trong [`contracts/`](../../contracts/); việc phù hợp với implementation chưa được xác minh.
-- Event được phát trực tiếp sau commit, không dùng outbox; retry, reconciliation
-  và observability của direct publisher cần được xác minh trước khi production.
-- SLO, runbook, runtime configuration và hướng dẫn chạy local cần được xác minh
-  bằng implementation hoặc hạ tầng trước khi chuyển trạng thái `verified`.
+- Contract `proposed` → `implemented` còn thiếu test tự động validate response với
+  OpenAPI và consumer test từ Gateway/Notification thật; xem
+  [ADOPTION](../../contracts/ADOPTION.md).
+- Event được phát trực tiếp sau commit, không dùng outbox ([ADR-005](./decisions/ADR-005-event-publication-reliability.md),
+  [ADR-006](./decisions/ADR-006-publish-before-revocation-marker.md)): retry cạn chỉ ghi log
+  `error`. Chưa có metric, alert hay quy trình reconciliation; đây là việc phải đóng trước production.
+- Service chưa export metric Prometheus; SLO, alert threshold và runbook trong
+  [operations.md](./operations.md) vẫn là thiết kế.
+- Redis là điểm lỗi chung của login, refresh, đăng ký, reset và thu hồi (mọi adapter fail closed,
+  lỗi trả `500 DEPENDENCY_UNAVAILABLE` vì contract public chưa định nghĩa `503`).
+- Listener internal chỉ kiểm allowlist `X-Service-Identity`; admission thật do mesh thực thi
+  ([ADR-007](./decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md)). Docker Compose không có
+  mesh nên header không được xác thực ở đó.

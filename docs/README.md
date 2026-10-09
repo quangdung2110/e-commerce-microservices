@@ -249,7 +249,7 @@ Service Contract Matrix legacy đã bị xóa.
 
 | File | Note |
 |---|---|
-| [auth/](./auth/) | Auth Service — ngoài scope 14 phase hiện tại. |
+| [auth/README.md](./auth/README.md) | Auth Service — Identity Provider đã implement (`go/services/auth-service`), `scope: current`: account, session, JWKS, listener internal cho Notification; ADR-001..009 (gồm thứ tự publish/marker, mesh cho listener internal, compare-and-set account, đăng nhập kiểm mật khẩu trước trạng thái). Contract còn `proposed` trong `contracts/ADOPTION.md`. |
 | [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |

@@ -60,7 +60,9 @@ Biến `USER_INTERNAL_TLS_*` và `USER_INTERNAL_ALLOWED_CLIENT_CN` bị bỏ; th
 `USER_INTERNAL_ALLOWED_CALLERS`. `security.rate_limit.internal_per_client` (600/phút theo
 IP) đổi thành `internal_per_user` (120/phút theo caller và user). Checkout đã gửi
 `X-Service-Identity: checkout-service` nên không phải đổi. Auth và Notification còn dùng
-cùng mô hình mTLS ở tầng ứng dụng; chúng nằm ngoài quyết định này.
+cùng mô hình mTLS ở tầng ứng dụng; chúng nằm ngoài quyết định này. (Cập nhật 2026-10-09: Auth đã
+áp dụng cùng quyết định ở [Auth ADR-007](../../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md);
+Notification vẫn còn.)
 
 ## Xác minh
 

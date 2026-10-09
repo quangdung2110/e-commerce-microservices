@@ -74,7 +74,7 @@ Không có event cho `SENT` hay `SKIPPED`: `SENT` là trạng thái trung gian, 
 | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | Request từ Auth | **Không** (chứa secret) | `404`/`410` → `FAILED (no_recipient)` / `EXPIRED` |
 | `GET /internal/v1/auth/users/{user_id}/notification-contact` (**mới**) | Mọi kênh email không phải Auth | Redis/memory 15 phút theo `user_id`; không ghi DB | `404` → `FAILED (no_recipient)`, không retry |
 
-Cả hai: mTLS, `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). Cả hai nằm trên **listener internal 8081** của Auth (public 8080 không serve `/internal/**`). `email_verified = false` → vẫn gửi transactional, không gửi bulk (delivery `SKIPPED (email_unverified)`). Với `content`: `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`.
+Cả hai: mTLS do mesh thực thi (Auth không tự kết thúc TLS và chỉ kiểm allowlist `X-Service-Identity: notification-service`, [Auth ADR-007](../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md); Notification luôn gửi header này), `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). Cả hai nằm trên **listener internal 8081** của Auth (public 8080 không serve `/internal/**`). `email_verified = false` → vẫn gửi transactional, không gửi bulk (delivery `SKIPPED (email_unverified)`). Với `content`: `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`.
 
 ## 5. HTTP vào: inbox (public qua Gateway)
 

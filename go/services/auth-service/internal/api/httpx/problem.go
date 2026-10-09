@@ -67,7 +67,10 @@ var statusByCode = map[string]int{
 	// contract of these endpoints does not define 503.
 	apperr.CodeSigningKeyMissing:     http.StatusInternalServerError,
 	apperr.CodeDependencyUnavailable: http.StatusInternalServerError,
-	apperr.CodeInternal:              http.StatusInternalServerError,
+	// Four lost races in a row; declared as 500 because the public contract of
+	// the affected endpoints defines no 409 for it.
+	apperr.CodeConcurrentUpdate: http.StatusInternalServerError,
+	apperr.CodeInternal:         http.StatusInternalServerError,
 }
 
 // titleByCode gives each problem a short human title.
@@ -94,6 +97,7 @@ var titleByCode = map[string]string{
 	apperr.CodeRateLimited:            "Too many requests",
 	apperr.CodeSigningKeyMissing:      "Unexpected error",
 	apperr.CodeDependencyUnavailable:  "Unexpected error",
+	apperr.CodeConcurrentUpdate:       "Unexpected error",
 	apperr.CodeInternal:               "Unexpected error",
 }
 

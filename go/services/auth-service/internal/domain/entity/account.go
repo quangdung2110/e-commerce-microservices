@@ -37,6 +37,13 @@ type Account struct {
 	DeletionReason    *vo.DeletionReason
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+
+	// Revision is the optimistic-concurrency token: the updated_at the row had
+	// when this copy was loaded or last saved. The repository sets it and
+	// refuses to save over a row whose updated_at moved on (a lost update would
+	// otherwise write a stale password hash, status or email back). Domain code
+	// never sets it.
+	Revision time.Time
 }
 
 // NewAccount creates a PENDING_VERIFICATION account holding the USER role.

@@ -21,3 +21,7 @@ owner đã chấp thuận quyết định; nó không có nghĩa implementation 
 | [ADR-003](./ADR-003-jwks-key-rotation.md) | JWKS và overlap key rotation | Accepted | 2026-08-27 | — |
 | [ADR-004](./ADR-004-redis-security-state.md) | Redis cho ephemeral security state | Accepted | 2026-08-27 | — |
 | [ADR-005](./ADR-005-event-publication-reliability.md) | Reliability của identity event | Accepted | 2026-08-27 | — |
+| [ADR-006](./ADR-006-publish-before-revocation-marker.md) | Phát event trước khi ghi revocation marker | Accepted | 2026-10-09 | — (bổ sung ADR-005) |
+| [ADR-007](./ADR-007-internal-caller-auth-delegated-to-mesh.md) | Listener internal xác thực caller qua service mesh | Accepted | 2026-10-09 | — |
+| [ADR-008](./ADR-008-account-optimistic-concurrency.md) | Ghi account bằng compare-and-set, tải lại khi thua | Accepted | 2026-10-09 | — |
+| [ADR-009](./ADR-009-login-password-before-state.md) | Đăng nhập kiểm mật khẩu trước trạng thái; unlock inline phát `USER_UNLOCKED` | Accepted | 2026-10-09 | — |

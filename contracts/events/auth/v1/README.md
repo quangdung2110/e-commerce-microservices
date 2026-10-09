@@ -28,8 +28,9 @@ Fixture chuẩn cho `USER_DELETED` là
 ## Giới hạn delivery hiện tại
 
 `USER_DELETED` được Auth publish trực tiếp sau khi transaction account đã commit và
-retry tối đa ba lần với cùng CloudEvent `id`. Đây là best-effort, không dùng outbox:
-sau khi retry cạn event có thể bị mất. Auth phải phát metric/alert và reconciliation
+retry tối đa ba lần với cùng CloudEvent `id`. Event được phát trước khi ghi revocation marker
+Redis, nên lỗi Redis sau commit không làm mất nó ([ADR-006](../../../../docs/auth/decisions/ADR-006-publish-before-revocation-marker.md)).
+Đây là best-effort, không dùng outbox: sau khi retry cạn event có thể bị mất. Auth phải phát metric/alert và reconciliation
 vận hành phải redrive event bị mất cho mọi PII-owning consumer. Không có payload hay
 delivery guarantee mới được thêm bởi Review.
 
@@ -39,9 +40,10 @@ Event notification chỉ chứa `delivery_id`, `user_id`, loại sự kiện và
 thời gian. Nó không chứa email, OTP, opaque reset token, reset URL, password,
 refresh token hay private key.
 
-Notification Service resolve nội dung gửi qua
-[Internal Notification Delivery API](../../../http/auth/internal/v1/openapi.yaml)
-bằng mTLS/service identity. API trả cùng nội dung cho cùng `delivery_id` trong
+Notification Service resolve nội dung gửi bằng
+[Internal Notification Delivery API](../../../http/auth/internal/v1/openapi.yaml),
+gọi vào listener internal của Auth (mesh bảo vệ bằng mTLS và AuthorizationPolicy, Auth kiểm
+thêm `X-Service-Identity`). API trả cùng nội dung cho cùng `delivery_id` trong
 thời gian TTL để Notification có thể retry; OTP và reset token chỉ single-use ở
 bước xác minh/reset của user, không bị consume khi Notification đọc nội dung.
 

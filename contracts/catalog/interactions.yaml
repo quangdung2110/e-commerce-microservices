@@ -163,8 +163,12 @@ interactions:
     provider: auth-service
     consumers: [user-service, notification-service, review-service, chat-service, cart-service]
     contract: events/auth/v1/asyncapi.yaml
-    status: proposed
-    notes: USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review, Chat và Cart trên t.auth.events. CloudEvents v1 là target contract; mọi Auth CloudEvents id là UUID để consumer persist receipt cùng kiểu.
+    status: implemented
+    notes: >-
+      USER_VERIFIED_SUCCESS chỉ cho User; USER_DELETED được Auth phát trực tiếp cho User, Notification, Review, Chat và Cart
+      trên t.auth.events (direct publish sau commit, không outbox; phát trước khi ghi marker Redis, Auth ADR-006). Mọi Auth
+      CloudEvents id là UUID để consumer persist receipt cùng kiểu. Provider đã implement; User, Notification, Review và
+      Cart đã consume USER_DELETED, Chat chưa có runtime.
 
   - id: user-publishes-profile-preference-events
     protocol: kafka
@@ -183,16 +187,18 @@ interactions:
     provider: auth-service
     consumers: [notification-service]
     contract: events/auth/v1/asyncapi.yaml
-    status: proposed
-    notes: Notification event chỉ có delivery_id; không mang email, OTP hoặc reset token.
+    status: implemented
+    notes: Notification event chỉ có delivery_id; không mang email, OTP hoặc reset token. USER_UNLOCKED được phát bởi bên mở khóa (worker, login hoặc refresh), một lần.
 
   - id: notification-resolves-auth-delivery-content
     protocol: http
     provider: auth-service
     consumers: [notification-service]
     contract: http/auth/internal/v1/openapi.yaml
-    status: proposed
-    notes: Internal mTLS API để resolve PII/secret theo delivery_id, không qua public Gateway.
+    status: implemented
+    notes: >-
+      Internal API để resolve PII/secret theo delivery_id, không qua public Gateway. Mesh thực thi mTLS và principal
+      notification-service; Auth chỉ kiểm allowlist X-Service-Identity và rate limit theo (caller, delivery_id) (Auth ADR-007).
 
   - id: gateway-verifies-auth-tokens
     protocol: http
@@ -489,11 +495,12 @@ interactions:
     provider: auth-service
     consumers: [notification-service]
     contract: http/auth/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       GET /internal/v1/auth/users/{user_id}/notification-contact resolves the recipient
-      email at send time for every notification not initiated by Auth. mTLS, no-store,
-      15-minute in-memory/Redis cache only; never persisted by Notification.
+      email at send time for every notification not initiated by Auth. Mesh-enforced mTLS and principal,
+      X-Service-Identity allowlist at Auth (Auth ADR-007), no-store, 15-minute in-memory/Redis cache
+      only; never persisted by Notification.
 
   - id: notification-consumes-cart-abandoned
     protocol: kafka

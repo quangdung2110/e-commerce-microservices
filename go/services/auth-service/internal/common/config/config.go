@@ -50,22 +50,18 @@ type ServerConfig struct {
 }
 
 // InternalConfig configures the cluster-internal server that serves the
-// notification delivery API. It is never exposed through the public gateway and
-// requires mTLS whenever certificates are configured.
+// notification delivery and notification contact APIs. It is never exposed
+// through the public gateway. Transport security and caller admission belong to
+// the service mesh (mTLS plus an AuthorizationPolicy per principal and path);
+// the application only checks the X-Service-Identity header against
+// AllowedCallers as defence in depth (ADR-007).
 type InternalConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	TLSCertFile  string `mapstructure:"tls_cert_file"`
-	TLSKeyFile   string `mapstructure:"tls_key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
-	// AllowedClientCN restricts which verified peer certificate may call the
-	// internal API. Empty means any certificate signed by the client CA.
-	AllowedClientCN string `mapstructure:"allowed_client_cn"`
-}
-
-func (i InternalConfig) MutualTLSEnabled() bool {
-	return i.TLSCertFile != "" && i.TLSKeyFile != "" && i.ClientCAFile != ""
+	Enabled bool   `mapstructure:"enabled"`
+	Host    string `mapstructure:"host"`
+	Port    int    `mapstructure:"port"`
+	// AllowedCallers lists the service identities that may resolve a delivery or
+	// a contact.
+	AllowedCallers []string `mapstructure:"allowed_callers"`
 }
 
 type DatabaseConfig struct {
@@ -174,7 +170,9 @@ type RateLimitConfig struct {
 	OtpPerAccount      RateLimitRule `mapstructure:"otp_per_account"`
 	PasswordResetPerIP RateLimitRule `mapstructure:"password_reset_per_ip"`
 	RefreshPerIP       RateLimitRule `mapstructure:"refresh_per_ip"`
-	InternalPerClient  RateLimitRule `mapstructure:"internal_per_client"`
+	// InternalPerResource is applied per (calling service, delivery or user id) on
+	// the internal listener.
+	InternalPerResource RateLimitRule `mapstructure:"internal_per_resource"`
 }
 
 type PasswordPolicyConfig struct {
@@ -276,6 +274,15 @@ func (k KeysConfig) PreviousMasterKeys() (map[int16][]byte, error) {
 	return out, nil
 }
 
+func hasName(names []string) bool {
+	for _, name := range names {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func decodeKey(encoded string) ([]byte, error) {
 	if encoded == "" {
 		return nil, fmt.Errorf("is required")
@@ -371,8 +378,15 @@ func (c *Config) Validate() error {
 	if c.App.IsProduction() && !c.Refresh.CookieSecure {
 		problems = append(problems, "refresh.cookie_secure must be true in production")
 	}
-	if c.App.IsProduction() && c.Internal.Enabled && !c.Internal.MutualTLSEnabled() {
-		problems = append(problems, "internal API requires mTLS certificates in production")
+	if c.Internal.Enabled && !hasName(c.Internal.AllowedCallers) {
+		// The internal API returns recipient addresses and, for verification and
+		// reset templates, the secret itself, so an empty allowlist would refuse
+		// every caller and is a misconfigured deployment rather than a valid
+		// "closed" mode.
+		problems = append(problems, "internal.allowed_callers must name at least one service when the internal API is enabled")
+	}
+	if c.Internal.Enabled && c.Internal.Port == c.App.Port {
+		problems = append(problems, "internal.port must differ from app.port")
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
@@ -394,6 +408,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("internal.enabled", true)
 	v.SetDefault("internal.host", "0.0.0.0")
 	v.SetDefault("internal.port", 8081)
+	v.SetDefault("internal.allowed_callers", []string{"notification-service"})
 
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
@@ -461,8 +476,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limit.password_reset_per_ip.window", "1h")
 	v.SetDefault("security.rate_limit.refresh_per_ip.limit", 60)
 	v.SetDefault("security.rate_limit.refresh_per_ip.window", "5m")
-	v.SetDefault("security.rate_limit.internal_per_client.limit", 600)
-	v.SetDefault("security.rate_limit.internal_per_client.window", "1m")
+	v.SetDefault("security.rate_limit.internal_per_resource.limit", 120)
+	v.SetDefault("security.rate_limit.internal_per_resource.window", "1m")
 
 	v.SetDefault("otp.ttl", "5m")
 	v.SetDefault("otp.max_attempts", 5)

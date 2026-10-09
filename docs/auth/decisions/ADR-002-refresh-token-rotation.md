@@ -6,7 +6,9 @@ date: 2026-08-27
 decision_owners:
   - Auth Service team
 supersedes: null
-evidence: []
+evidence:
+  - go/services/auth-service/internal/infrastructure/postgres/refresh_token_repo.go
+  - go/services/auth-service/test/integration/refresh_token_repo_test.go
 ---
 
 # ADR-002 — Rotate refresh token without a grace period
@@ -35,5 +37,6 @@ single successful consumption dưới concurrency.
 
 ## Migration impact and verification
 
-Cần unique token hash, atomic update/CAS và concurrent-refresh test. Chưa xác
-minh implementation.
+Đã implement: `uq_refresh_tokens_token_hash` và một câu lệnh SQL duy nhất revoke token cũ rồi
+tạo token mới cùng `family_id`. Integration test `refresh_token_repo_test.go` chạy 8 request
+đồng thời trên cùng một token và chỉ một request thành công.

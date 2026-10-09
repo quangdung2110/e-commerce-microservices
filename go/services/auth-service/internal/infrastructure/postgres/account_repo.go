@@ -63,7 +63,8 @@ func (r *AccountRepository) Create(ctx context.Context, account *entity.Account)
 			$1::uuid, $2, $3, $4, $5::auth.account_status,
 			$6, $7, $8, $9,
 			$10, $11, $12::auth.deletion_reason, $13, $14
-		)`
+		)
+		RETURNING updated_at`
 
 	insertRole := `
 		INSERT INTO auth.account_roles (account_id, role_code)
@@ -72,7 +73,8 @@ func (r *AccountRepository) Create(ctx context.Context, account *entity.Account)
 
 	return withinTx(ctx, r.pool, func(txCtx context.Context) error {
 		db := r.db(txCtx)
-		if _, err := db.Exec(txCtx, insertAccount,
+		var revision time.Time
+		if err := db.QueryRow(txCtx, insertAccount,
 			account.ID.String(),
 			nullableString(account.Email.String()),
 			nullableString(account.Email.Normalized()),
@@ -87,9 +89,13 @@ func (r *AccountRepository) Create(ctx context.Context, account *entity.Account)
 			deletionReasonValue(account.DeletionReason),
 			account.CreatedAt,
 			account.UpdatedAt,
-		); err != nil {
+		).Scan(&revision); err != nil {
 			return mapError(err)
 		}
+		// The database keeps microseconds; the saved copy must carry the version
+		// the row really has so that it can be updated right away.
+		account.Revision = revision
+		account.UpdatedAt = revision
 
 		for _, role := range account.Roles {
 			if _, err := db.Exec(txCtx, insertRole, account.ID.String(), role.String()); err != nil {
@@ -125,8 +131,13 @@ func (r *AccountRepository) ExistsByNormalizedEmail(ctx context.Context, normali
 	return exists, nil
 }
 
-// Update persists the mutable columns. updated_at is maintained by the trigger
-// defined in the schema.
+// Update persists the mutable columns, but only over the row version the caller
+// loaded. updated_at is maintained by the trigger defined in the schema and is
+// the optimistic-concurrency token (entity.Account.Revision): a login that read
+// the row, spent its time verifying a password and then wrote the whole row back
+// would otherwise undo a password change, an email change or a deletion that
+// committed in between. A row that moved on is ErrConcurrentUpdate; the caller
+// reloads and re-applies its change.
 func (r *AccountRepository) Update(ctx context.Context, account *entity.Account) error {
 	query := `
 		UPDATE auth.accounts SET
@@ -141,9 +152,11 @@ func (r *AccountRepository) Update(ctx context.Context, account *entity.Account)
 			deleted_at = $10,
 			hard_delete_after = $11,
 			deletion_reason = $12::auth.deletion_reason
-		WHERE id = $1::uuid`
+		WHERE id = $1::uuid AND updated_at = $13
+		RETURNING updated_at`
 
-	tag, err := r.db(ctx).Exec(ctx, query,
+	var revision time.Time
+	err := r.db(ctx).QueryRow(ctx, query,
 		account.ID.String(),
 		nullableString(account.Email.String()),
 		nullableString(account.Email.Normalized()),
@@ -156,13 +169,27 @@ func (r *AccountRepository) Update(ctx context.Context, account *entity.Account)
 		account.DeletedAt,
 		account.HardDeleteAfter,
 		deletionReasonValue(account.DeletionReason),
-	)
+		account.Revision,
+	).Scan(&revision)
 	if err != nil {
-		return mapError(err)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return mapError(err)
+		}
+		// Either the account is gone or its version moved on.
+		var exists bool
+		if err := r.db(ctx).QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM auth.accounts WHERE id = $1::uuid)`,
+			account.ID.String(),
+		).Scan(&exists); err != nil {
+			return mapError(err)
+		}
+		if !exists {
+			return apperr.ErrAccountNotFound
+		}
+		return apperr.ErrConcurrentUpdate
 	}
-	if tag.RowsAffected() == 0 {
-		return apperr.ErrAccountNotFound
-	}
+	account.Revision = revision
+	account.UpdatedAt = revision
 	return nil
 }
 
@@ -314,6 +341,7 @@ func scanAccount(row rowScanner) (*entity.Account, error) {
 		HardDeleteAfter:   hardDeleteAfter,
 		CreatedAt:         createdAt,
 		UpdatedAt:         updatedAt,
+		Revision:          updatedAt,
 	}
 
 	if rawDeletionReason != nil {

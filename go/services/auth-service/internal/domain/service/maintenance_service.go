@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/clock"
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 )
 
@@ -38,7 +39,9 @@ func NewMaintenanceService(
 }
 
 // UnlockExpired returns accounts whose lock window elapsed to ACTIVE. The
-// transition is idempotent: an account already unlocked is simply skipped.
+// transition is idempotent and races with the inline unlock of login and
+// refresh: whichever of them wins the compare-and-set writes the row and sends
+// USER_UNLOCKED, and the others find the account already ACTIVE and skip it.
 func (s *MaintenanceService) UnlockExpired(ctx context.Context, limit int) (int, error) {
 	now := s.clock.Now()
 	accounts, err := s.accounts.ListExpiredLocks(ctx, now, limit)
@@ -48,18 +51,21 @@ func (s *MaintenanceService) UnlockExpired(ctx context.Context, limit int) (int,
 
 	unlocked := 0
 	for _, account := range accounts {
-		if !account.UnlockIfExpired(now) {
-			continue
-		}
-		if err := s.accounts.Update(ctx, account); err != nil {
+		current, saved, err := updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+			return a.UnlockIfExpired(now), nil
+		})
+		if err != nil {
 			s.logger.Error("could not unlock an account",
 				zap.String("account_id", account.ID.String()),
 				zap.Error(err),
 			)
 			continue
 		}
+		if !saved {
+			continue
+		}
 		unlocked++
-		s.notifier.AccountUnlocked(ctx, account.ID, recipientOf(account), now)
+		s.notifier.AccountUnlocked(ctx, current.ID, recipientOf(current), now)
 	}
 	return unlocked, nil
 }
